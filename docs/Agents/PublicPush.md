@@ -5,17 +5,11 @@ process; the per-push changelog lives in
 `docs/PM/Done/GitHubUpdates/GitHubUpdateN.md`, which are reports, not the
 how-to.
 
-## History: why Perforce is primary
-
-Codex started on GitHub as the primary repository. Around commit 1750 the
-project moved to Perforce and restarted numbering at 1, because GitHub was
-too slow under heavy agent-coder load (the same strain the tech press was
-reporting GitHub under at the time). The two histories were never
-consolidated; a copy of the pre-move GitHub history is kept locally. That
-consolidation is orthogonal to the push process and is not needed for it.
+## Perforce is primary
 
 Perforce `//Codex/main` is the source of truth. The public git mirror is a
-downstream publish, not a second master.
+downstream publish, not a second master; the pre-Perforce GitHub history
+(before commit 1750) was never consolidated and is not needed for the push.
 
 ## Where the mirror lives
 
@@ -39,11 +33,10 @@ or robocopy that `.git` to where you are working.**
 
 **Find it by asking the remote, not by reading a name off this paragraph
 and not by comparing dates.** Several `-main` workspaces hold a stale
-`.git` from an older release and they are indistinguishable by name. A date
-comparison is not enough either: measured 2026-08-12, `red-main` carried a
-2026-08-09 commit that was NEWER than `reek-main`'s and had never been
-pushed at all, so a newest-wins sort is ambiguous exactly where it matters.
-The remote tip is the only thing that settles it:
+`.git` from an older release and they are indistinguishable by name, and a
+workspace can carry a newer commit that was never pushed, so a newest-wins
+sort is ambiguous exactly where it matters. The remote tip is the only thing
+that settles it:
 
 ```powershell
 $remote = (git ls-remote https://github.com/damiant3/Cobblestone.git master) -split '\s+' |
@@ -64,22 +57,9 @@ Take the one at the remote tip. "Has the tip, local commits ahead" is also
 usable and means someone committed without pushing; find out why before you
 build on it. Anything reporting stale is a copy from an older release and
 must not be pushed from -- doing so re-uploads a history the remote already
-has and leaves a divergence to reconcile without forcing.
-
-Measured 2026-08-12 with the above, github master at `4175119c`:
-
-| workspace | HEAD | |
-|---|---|---|
-| `fester-main` | 2026-07-08 `6ac4ee35` | stale (Update 34) |
-| `reek-main` | 2026-07-24 `b1c50258` | stale (Update 36) |
-| `red-main` | 2026-08-09 `9f92c703` | stale, and newer than reek's |
-| `val-main` | 2026-08-10 `4175119c` | **at the remote tip** |
-
-That table is a reading, not a rule. It is here to show what the command
-prints and what the stale case looks like; re-run the command every time.
-This section named a fixed workspace until 2026-08-12 and it had been wrong
-for four days -- a named workspace in a doc is a count carried forward by
-another route (L-COUNT).
+has and leaves a divergence to reconcile without forcing. Re-run the command
+every time; a named workspace in a doc is a count carried forward by another
+route (L-COUNT).
 
 ## Remotes and branch mapping (mismatched, watch out)
 
@@ -113,28 +93,18 @@ its state as a thing to reconcile against.
     Git also collapses a wholly-new directory into ONE `??` line, so a
     twenty-file addition is one entry to overlook.
 
-    Re-measured at the Update 56 push (blu, 2026-09-08), and re-measure again
-    at the next release rather than quoting this (L-COUNT): **758** tracked
-    files are in the depot and absent from `github/master`, **437** ruled out
-    by `check-ignore`, leaving **321 survivors**, all of which were staged.
-    The previous reading, 2026-09-07 evening (red), was 482 / 420 / 62. Six `build/*.ps1` checkers
-    including `sign-seed.ps1`, five `docs/PM/Active/Stories/*.md`, twenty
-    `build/boot` flight artifacts, six `codex/test` fixtures with their
-    `.expected`, `codex/plugs/wasm/WasmStdio.codex` and the rest are ordinary
-    additions, nothing about them is secret, and the mirror does publish
-    `build/boot` images (`diag.img` is up), so those are a gap and not a
-    policy.
+    Re-measure the survivor set at every release rather than quoting a
+    figure (L-COUNT). A file that is neither ignored nor tracked is
+    permanently invisible to `git add -u`, so the reconcile is the only thing
+    that finds it.
 
     **RULED (Damian, 2026-09-07): the five third-party specifications are
-    NOT redistributed**, and the rule is now enforced rather than
-    remembered. `USB_2_0_Specification`, `xHCI_Specification`,
+    NOT redistributed.** `USB_2_0_Specification`, `xHCI_Specification`,
     `HID_1_11_Specification`, `Intel_I219_Datasheet` and
     `Intel_82583V_Datasheet`, each a `.pdf` and a `.txt` extract, are named
-    file by file at the bottom of `.gitignore`, so the reconcile no longer
-    proposes them: survivors went 62 to 55 on the re-run, with zero specs
-    among them. They are named individually and NOT as
-    `docs/Reference/*.pdf`, because that directory is published and carries
-    other third-party PDFs whose terms allow it (a PLDI paper,
+    file by file at the bottom of `.gitignore`. They are named individually
+    and NOT as `docs/Reference/*.pdf`, because that directory is published
+    and carries other third-party PDFs whose terms allow it (a PLDI paper,
     `AMI_Aptio_V_Deep_Dive.pdf`); a blanket rule would silently withhold
     those too.
 
@@ -142,17 +112,7 @@ its state as a thing to reconcile against.
     revision the depot holds, and a link to its publisher. A withheld file
     is otherwise invisible from outside and a reader cannot tell it from one
     somebody dropped, which is 2c's point. Add a row there when a document
-    joins the ignore rule, or the next reader is back to guessing.
-
-    **That file was missing from the mirror until Update 56 and is on it
-    now.** Measured 2026-09-08 (blu): `git ls-tree -r github/master` matched
-    nothing for it and the reconcile listed it as a survivor, so the one
-    document explaining what is withheld was itself invisible, which is 2c
-    happening to 2c. It shipped in the Update 56 commit. The general point
-    survives the fix: a file that is neither ignored nor tracked is
-    permanently invisible to `git add -u`, so the reconcile is the only
-    thing that finds it, and a document ABOUT the withholding is the one
-    most easily lost that way.
+    joins the ignore rule.
 
     The reconcile is one command from the main workspace and it needs no
     network:
@@ -168,41 +128,31 @@ its state as a thing to reconcile against.
     ```
 
     **Feed `check-ignore` LF, never CRLF, and never a PowerShell pipeline.**
-    Measured 2026-09-08 (blu, the Update 56 reconcile), both directions on
-    the same three paths: with LF input `check-ignore --stdin` returns every
-    ignored path; with CRLF input it returns only the ones matched by a
-    DIRECTORY rule and silently drops every one matched by an exact-path
+    With CRLF input `check-ignore --stdin` returns only the paths matched by
+    a DIRECTORY rule and silently drops every one matched by an exact-path
     rule, because the trailing carriage return is part of the name it
-    compares. A PowerShell `$paths | git check-ignore --stdin` sends CRLF, so
-    the recipe as written until this date under-reported the ignored set by
-    13 and listed all ten third-party specifications as survivors: the exact
-    files the 2026-09-07 rule was added to withhold, offered back for
-    staging on every run. The tell is a survivor list containing something
-    you know is in `.gitignore`; the check is
-    `git check-ignore -v <one path>`, which takes an argument rather than
-    stdin and names the rule and line that matched.
+    compares; a PowerShell `$paths | git check-ignore --stdin` sends CRLF.
+    The tell is a survivor list containing something you know is in
+    `.gitignore`; the check is `git check-ignore -v <one path>`, which takes
+    an argument rather than stdin and names the rule and line that matched.
 
     **A survivor list is what drives `git add`, so an under-reported ignore
     set is the expensive direction.** Verify any new ignore rule against a
     path it must match AND a path it must not, before trusting a run.
 
     **Anything left after check-ignore is a file nobody decided to withhold.**
-    Do not read a large raw difference as a disaster: of 479 paths missing
-    at the 2026-09-07 measurement, 435 were deliberate -- `apps/games/magic`,
+    Most of a raw difference is deliberate -- `apps/games/magic`,
     `assets/games`, `apps/wademo`, `apps/productbuilder`, `codex/product`,
     `build/boot/archive`, the third-party specification PDFs, and everything
     `*.exe` / `*.cdx`. The number that matters is the one that survives the
     ignore rules.
 
 2c. **A DELIBERATE EXCLUSION IS INVISIBLE FROM OUTSIDE, AND THAT IS ITS OWN
-    DEFECT.** Steve Howell's issue 123 reported three directories present in
-    the depot and 404 on the mirror. All three are ruled exclusions with good
-    reasons -- `codex/product` and `apps/productbuilder` are customer work
-    (Damian, 2026-08-18), `apps/wademo` carries an NHGIS extract whose terms
-    forbid redistribution -- and exactly ONE of them, `codex/product`, is a
-    quire. But a reader of the public tree cannot tell a withheld directory
-    from a lost one, so a contributor spends his time reporting our policy
-    back to us. The mirror should say which paths are withheld and why,
+    DEFECT.** `codex/product` and `apps/productbuilder` are customer work
+    (Damian, 2026-08-18) and `apps/wademo` carries an NHGIS extract whose
+    terms forbid redistribution, but a reader of the public tree cannot tell
+    a withheld directory from a lost one and reports our policy back to us
+    as a 404. The mirror should say which paths are withheld and why,
     without naming what is in them.
 3. Commit as author damiant, one line, comma-separated themes, no trailers.
    The Update-N report file is part of the same commit.
@@ -232,20 +182,16 @@ its state as a thing to reconcile against.
   any file in a gitignored folder was ever committed, `git add -A` keeps
   publishing it. Check `git ls-files apps/games/magic`. (The expanded
   commercial app `apps/games/codexmagic/` IS public and is different.)
-  **`annotations/apps/games/magic/` is withheld too since 2026-09-08**
-  (Damian, reversing the 2026-08-17 ruling that accepted it as public): the
-  solver's annotations left the mirror by `git rm -r --cached` at the Update
-  57 push. The game `apps/games/codexmagic/` and everything that cites it
-  stay public; the 2026-09-08 afternoon purge that withheld them was a
-  misreading of the order and was reversed the same evening.
-- **`build/boot/diag-sitting*.cfg` never ship.** Found at the Update 49
-  pre-push scan, 2026-08-21: five of them were untracked and new, and every
-  one names the box (`b3 peer=192.168.6.141:7 ip=192.168.6.200`). They are
-  the sitting IMAGE's questions one file over, which is exactly what
-  `build/check-shipping-images.ps1` keeps off the mirror for the image, and
-  nothing kept them off for the cfg. `git add` them never; re-measure with
-  `git status --porcelain | Select-String 'diag-sitting'` before every push.
-  `diag-default.cfg` ships: it names stages and no address.
+  **`annotations/apps/games/magic/` is withheld too (Damian, 2026-09-08).**
+  The game `apps/games/codexmagic/` and everything that cites it stay
+  public.
+- **`build/boot/diag-sitting*.cfg` never ship.** Every one names the box
+  (`b3 peer=... ip=...`): they are the sitting IMAGE's questions one file
+  over, which is what `build/check-shipping-images.ps1` keeps off the mirror
+  for the image, and nothing keeps them off for the cfg. `git add` them
+  never; re-measure with `git status --porcelain | Select-String
+  'diag-sitting'` before every push. `diag-default.cfg` ships: it names
+  stages and no address.
 - Do not publish the 8 MB boot image or PNG snapshots; `git reset` them out
   of the stage. **`build/boot/kbd-diag-v16.img` stays up** -- public since
   2026-08-03 and Damian ruled it kept 2026-08-17, on the grounds that it does
@@ -253,18 +199,13 @@ its state as a thing to reconcile against.
   build/boot/diag.rehearsed SHIP on the same grounds and by design
   (DiagnosticStick.md step 4): the stranger's instrument, 16 MB, no seed,
   no identity, its SHA-256 in the release notes.
-  **A SITTING image must never be the one that ships, and there is now a
-  runner: `build/check-shipping-images.ps1`.** The same file with a sitting
-  config baked onto its ESP names the box it was built to interrogate:
-  `diag-sitting6.cfg` is two lines and one is
-  `b3 peer=192.168.6.141:7 ip=192.168.6.200`. On 2026-08-21 a bulk
-  `p4 copy --from` carried a sitting image to main head inside a changelist
-  about harness timing, and nothing in the tree would have refused it; it
-  reached no mirror only because no push fell in that window, which is luck
-  rather than a control. The check refuses ANY `DIAG.CFG` on a shipping
-  image rather than arguing about which addresses are private enough to
-  publish. Falsified both ways 2026-08-21: REFUSED on 63EFDB8A naming the
-  two baked lines, OK on the default A92502F8.
+  **A SITTING image must never be the one that ships, and
+  `build/check-shipping-images.ps1` is the runner.** The same file with a
+  sitting config baked onto its ESP names the box it was built to
+  interrogate, so the check refuses ANY `DIAG.CFG` on a shipping image
+  rather than arguing about which addresses are private enough to publish.
+  Calibrated both ways: refused on a sitting image naming the baked lines,
+  OK on the default.
 
 ## Divergence (Damian's rule: pull but take nothing, keep all local)
 
@@ -316,13 +257,9 @@ The update procedure:
    apps/landing/web/compile/prism.html`. Both are tracked build outputs;
    against read-only files the build fails with "Access to the path ...
    is denied" (measured 2026-08-27).
-2. **Rebuild the plugs the assembly rides before trusting it.** Both
-   staleness failures happened on the first assembly, same day: an
-   8-day-old wasm-plug binary died OUT OF MEMORY on compiler-scale IR
-   (the fixes were in source, not in the binary it was graded through),
-   and an 11-day html plug emitted a `landing.html` that differed from
-   the fleet-built depot copy. `codex/plugs/wasm/build.ps1` and
-   `codex/plugs/html/build.ps1` are the rebuilds.
+2. **Rebuild the plugs the assembly rides before trusting it:**
+   `codex/plugs/wasm/build.ps1` and `codex/plugs/html/build.ps1`. A stale
+   plug binary reads as a defect in the page it built (L-SAMEVER).
 3. `apps/landing/build.ps1` assembles `web/` whole.
 4. **Compare the regenerated tracked artifacts against the depot before
    landing or shipping them, and take the better one per file.** The
@@ -330,32 +267,27 @@ The update procedure:
    `evidence-stdio.wasm`) exist only where they were built; a box
    without them assembles a Prism with those lenses dark, 365 KB
    smaller, and shipping that over a lens-carrying depot copy is a
-   regression that reads as a rebuild. On 2026-08-27 the depot copies
-   won on both counts: `p4 revert` restored them and only the untracked
-   `compile/` pieces shipped fresh.
+   regression that reads as a rebuild.
    **Normalise line endings before you compare, or this step lies about
    `landing.html`.** The html plug emits LF and that file is CRLF in the
-   workspace, so a rebuild that ADDED the hero CTA row still measured 104
-   bytes SMALLER than the depot copy and `p4 diff` called all 325 lines
-   changed: +221 content characters on one line against -325 line endings
-   (reek, 2026-08-27). Smaller is the staleness signature, so the raw size
-   reads as the trap when the rebuild is in fact the better file.
+   workspace, so a rebuild that added content can still measure SMALLER
+   than the depot copy and `p4 diff` calls every line changed. Smaller is
+   the staleness signature, so the raw size reads as the trap when the
+   rebuild is in fact the better file.
 5. `robocopy apps\landing\web D:\Projects\CobblestoneWeb /E /XF
    *.landing-save`, then in `D:\Projects\CobblestoneWeb`: `git add -u`
    plus `git add <path>` for each new file the site SERVES, commit as
    damiant naming the seed, `git push origin master`.
    **Stage what the site serves, not what the bundle holds** (red's
-   ruling, 2026-08-27, on reek's deviation). `git add -A` would have put
-   the 48 sibling lens modules into an append-only public history and
-   nothing ever requests them: `prism.html` resolves a module as
+   ruling, 2026-08-27). `git add -A` would put the sibling lens modules
+   into an append-only public history and nothing ever requests them:
+   `prism.html` resolves a module as
    `EMBED[file] ? b64ToBytes(...) : fetch(...)` with all 49 keys embedded,
    and `compile/index.html` fetches `codex-compiler.wasm` and no stdio
    module, which is why that one is the only module ever tracked there.
    Show those two facts before claiming a file is unserved; adding a
    module later is cheap and removing one from history is not.
-5b. **Grade before you stage** (root, 2026-09-03, the Update 55 site rebuild).
-   None of these is run by `build.ps1`, and the 2026-09-02 site shipped 48
-   lens modules built with a wasm plug the wat-wrap fix had not reached:
+5b. **Grade before you stage.** None of these is run by `build.ps1`:
    `codex/plugs/wasm/page-lens-test.ps1` (with `-Calibrate` first, then
    plain) and `page-bytes-test.ps1` over the modules the page copies;
    `page-wire-test.ps1` (same order) for the two the other two cannot
@@ -372,8 +304,7 @@ The update procedure:
    `chrome --headless=new --dump-dom "file:///.../apps/landing/web/experimental/index.html?auto=1"`
    with `--allow-file-access-from-files` and a `--virtual-time-budget`,
    then read the `stage` boxes out of the DOM. A module the site serves
-   that no grader ran is the fireworks skyline of 2026-09-02: it was never
-   staged and the live page 404'd on it for a day.
+   that no grader ran is a module that 404s on the live page.
 6. The Pages deploy takes a minute or two. Verify with a request, not by
    assumption: `landing.html` and `compile/prism.html` both answer 200.
 

@@ -167,8 +167,63 @@ Section: Filesystem Assembly
    in let wb = if len > 0 then __buf-write-bytes buf (fat16w-cluster-offset lay cluster) (__buf-read-bytes src-buf data-off len) else 0
    in fat16w-write-sources buf lay fat1 (cluster + clusters) (dir-off + 32) src-buf tbl-off (data-off + len) n (i + 1)
 
-  fat16w-write-all : Integer, Fat16Layout, List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
-  fat16w-write-all (buf) (lay) (efi-bytes) (cdx-bytes) (src-count) (src-buf) (tbl-off) (data-off) =
+  fat16w-sum-src-bytes : Integer, Integer, Integer, Integer -> Integer
+  fat16w-sum-src-bytes (src-buf) (tbl-off) (n) (i) =
+   if i >= n then 0
+   else fat16w-buf-read-i32 src-buf (tbl-off + i * 15 + 11) + fat16w-sum-src-bytes src-buf tbl-off n (i + 1)
+
+  fat16w-sum-src-clusters : Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16w-sum-src-clusters (src-buf) (tbl-off) (spc) (n) (i) =
+   if i >= n then 0
+   else fat16w-clusters-needed (fat16w-buf-read-i32 src-buf (tbl-off + i * 15 + 11)) spc + fat16w-sum-src-clusters src-buf tbl-off spc n (i + 1)
+
+  fat16w-dir-file-count : Integer, Integer, Integer -> Integer
+  fat16w-dir-file-count (src-buf) (dtbl-off) (d) =
+   fat16w-buf-read-i32 src-buf (dtbl-off + d * 15 + 11)
+
+ A directory carries its own dot and dot-dot entries beside its files, so a
+ directory of thirty files needs thirty-two slots.
+
+  fat16w-dir-entry-clusters : Integer, Integer -> Integer
+  fat16w-dir-entry-clusters (file-count) (spc) =
+   fat16w-clusters-needed ((file-count + 2) * 32) spc
+
+  fat16w-sum-dir-files : Integer, Integer, Integer, Integer -> Integer
+  fat16w-sum-dir-files (src-buf) (dtbl-off) (n) (i) =
+   if i >= n then 0
+   else fat16w-dir-file-count src-buf dtbl-off i + fat16w-sum-dir-files src-buf dtbl-off n (i + 1)
+
+  fat16w-sum-dir-clusters : Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16w-sum-dir-clusters (src-buf) (dtbl-off) (spc) (n) (i) =
+   if i >= n then 0
+   else fat16w-dir-entry-clusters (fat16w-dir-file-count src-buf dtbl-off i) spc + fat16w-sum-dir-clusters src-buf dtbl-off spc n (i + 1)
+
+ A directory's files are a contiguous run of the source table, so every offset
+ this loop needs is a prefix sum over the two tables rather than a value carried
+ out of the previous iteration. Carrying would want two returns from one
+ recursion, and an accumulator list is the alias trap (L-ALIAS).
+
+  fat16w-write-dirs : Integer, Fat16Layout, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16w-write-dirs (buf) (lay) (fat1) (root-off) (src-buf) (dtbl-off) (tbl-off) (data-off) (dir-start) (files-start) (n) (d) =
+   if d >= n then 0
+   else let spc = lay.sectors-per-cluster
+   in let name-bytes = __buf-read-bytes src-buf (dtbl-off + d * 15) 11
+   in let fcount = fat16w-dir-file-count src-buf dtbl-off d
+   in let dclusters = fat16w-dir-entry-clusters fcount spc
+   in let dcluster = dir-start + fat16w-sum-dir-clusters src-buf dtbl-off spc d 0
+   in let w0 = fat16w-write-fat-chain buf fat1 dcluster dclusters
+   in let w1 = fat16w-write-dir-entry-nb buf (root-off + d * 32) name-bytes 16 dcluster 0
+   in let dir-off = fat16w-cluster-offset lay dcluster
+   in let w2 = fat16w-write-dir-entry buf dir-off ".          " 16 dcluster 0
+   in let w3 = fat16w-write-dir-entry buf (dir-off + 32) "..         " 16 0 0
+   in let before = fat16w-sum-dir-files src-buf dtbl-off d 0
+   in let fcluster = files-start + fat16w-sum-src-clusters src-buf tbl-off spc before 0
+   in let fdata = data-off + fat16w-sum-src-bytes src-buf tbl-off before 0
+   in let w4 = fat16w-write-sources buf lay fat1 fcluster (dir-off + 64) src-buf (tbl-off + before * 15) fdata fcount 0
+   in fat16w-write-dirs buf lay fat1 root-off src-buf dtbl-off tbl-off data-off dir-start files-start n (d + 1)
+
+  fat16w-write-all : Integer, Fat16Layout, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16w-write-all (buf) (lay) (efi-bytes) (cdx-bytes) (src-count) (src-buf) (tbl-off) (data-off) (dir-count) (dtbl-off) =
    let cdx-size = list-length cdx-bytes
    in let efi-size = list-length efi-bytes
    in let spc = lay.sectors-per-cluster
@@ -177,10 +232,10 @@ Section: Filesystem Assembly
    in let efi-start = cdx-start + cdx-clusters
    in let w19 = __buf-write-bytes buf (fat16w-cluster-offset lay cdx-start) cdx-bytes
    in let w20 = __buf-write-bytes buf (fat16w-cluster-offset lay efi-start) efi-bytes
-   in fat16w-write-fs buf lay efi-size cdx-size src-count src-buf tbl-off data-off
+   in fat16w-write-fs buf lay efi-size cdx-size src-count src-buf tbl-off data-off dir-count dtbl-off
 
-  fat16w-write-fs : Integer, Fat16Layout, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  fat16w-write-fs (buf) (lay) (efi-size) (cdx-size) (src-count) (src-buf) (tbl-off) (data-off) =
+  fat16w-write-fs : Integer, Fat16Layout, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16w-write-fs (buf) (lay) (efi-size) (cdx-size) (src-count) (src-buf) (tbl-off) (data-off) (dir-count) (dtbl-off) =
    let fat1 = fat16w-fat-offset lay
    in let spc = lay.sectors-per-cluster
    in let w0 = fat16w-write-fat-entry buf fat1 0 65528
@@ -198,11 +253,16 @@ Section: Filesystem Assembly
    in let efi-clusters = fat16w-clusters-needed efi-size spc
    in let w6 = fat16w-write-fat-chain buf fat1 efi-start efi-clusters
    in let src-start = efi-start + efi-clusters
+   in let files-start = src-start + fat16w-sum-dir-clusters src-buf dtbl-off spc dir-count 0
+   in let dir-files = fat16w-sum-dir-files src-buf dtbl-off dir-count 0
    in let root-off = fat16w-root-offset lay
    in let w7 = fat16w-write-dir-entry buf root-off "EFI        " 16 efi-dir-cluster 0
    in let w8 = fat16w-write-dir-entry buf (root-off + 32) "SEED       " 16 seed-dir-cluster 0
    in let w9b = fat16w-write-dir-entry buf (root-off + 64) "CODEX OS   " 8 0 0
-   in let w9 = fat16w-write-sources buf lay fat1 src-start (root-off + 96) src-buf tbl-off data-off src-count 0
+   in let w9c = fat16w-write-dirs buf lay fat1 (root-off + 96) src-buf dtbl-off tbl-off data-off src-start files-start dir-count 0
+   in let root-cluster = files-start + fat16w-sum-src-clusters src-buf tbl-off spc dir-files 0
+   in let root-data = data-off + fat16w-sum-src-bytes src-buf tbl-off dir-files 0
+   in let w9 = fat16w-write-sources buf lay fat1 root-cluster (root-off + 96 + dir-count * 32) src-buf (tbl-off + dir-files * 15) root-data (src-count - dir-files) 0
    in let efi-dir-off = fat16w-cluster-offset lay efi-dir-cluster
    in let w10 = fat16w-write-dir-entry buf efi-dir-off ".          " 16 efi-dir-cluster 0
    in let w11 = fat16w-write-dir-entry buf (efi-dir-off + 32) "..         " 16 0 0

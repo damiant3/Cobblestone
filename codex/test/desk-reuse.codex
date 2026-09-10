@@ -1,0 +1,97 @@
+Chapter: DeskReuseTest
+  cites Works chapter GopDesk
+  cites Foreword chapter Console
+
+ What the mark stack's own arithmetic does once a pane is named by a BURIED
+ entry it never pushed, which is what reusing a hole produces and what
+ `ShellRefinement.md` records as unanalysed. The three functions that walk
+ the stack are `desk-marks-find`, `desk-marks-reclaim` and
+ `desk-marks-remark`, and each is asked here rather than argued about.
+
+ The fixture is REAL MEMORY, not the hand-built stack `codex/test/desk-span`
+ uses, because the claim under test is what the shipped enter and exit do:
+ a pane that finds a hole pushes NO mark of its own, so the entry naming it
+ is below a live entry and carries a mark it did not choose.
+
+ THE ORDER OF THE MARKS IS THE INVARIANT EVERYTHING ELSE RESTS ON.
+ `desk-marks-push` only ever appends at the frontier, so marks ascend, and
+ `desk-marks-extent` reads the next entry's mark as this one's ceiling. The
+ remark lines are the ones that would break it, and the guard that refuses
+ them is graded in both directions: the last line is an ordinary remark,
+ which must still write, or a guard that refused everything would pass every
+ other line here.
+
+Section: Body
+
+  dr-block : Integer = 8192
+
+Section: Main
+
+  opening : [Console] Nothing =
+    let ms = alloc-zeroed 128 64
+    in let block = alloc-zeroed dr-block 64
+    in let p0 = desk-marks-push ms desk-focus-files block
+    in let k0 = desk-marks-kill ms desk-focus-files
+    in let p1 = desk-marks-push ms desk-focus-edit __heap-save
+    in let d0 = desk-marks-depth ms
+    in let top = __heap-save
+    in let i = desk-hole-enter ms top 0 (dr-block / 2)
+    in let used = alloc-bytes 64
+    in let claimed = desk-hole-exit ms i desk-focus-sheet
+    in let d1 = desk-marks-depth ms
+    in let found = desk-marks-find ms desk-focus-sheet (d1 - 1)
+    in let m0 = desk-marks-mark ms 0
+    in let m1 = desk-marks-mark ms 1
+    in let ext0 = desk-marks-extent ms 0 top
+    in let rec-live = desk-marks-reclaim ms (0 - 1)
+    in let d2 = desk-marks-depth ms
+    in let ke = desk-marks-kill ms desk-focus-edit
+    in let rec-edit = desk-marks-reclaim ms (0 - 1)
+    in let d3 = desk-marks-depth ms
+    in let ks = desk-marks-kill ms desk-focus-sheet
+    in let pick-ok = desk-span-pick ms top 0 64 0
+    in let rec-sheet = desk-marks-reclaim ms (0 - 1)
+    in let d4 = desk-marks-depth ms
+    in let ms2 = alloc-zeroed 128 64
+    in let b2 = alloc-zeroed dr-block 64
+    in let q0 = desk-marks-push ms2 desk-focus-files b2
+    in let qk = desk-marks-kill ms2 desk-focus-files
+    in let q1 = desk-marks-push ms2 desk-focus-edit __heap-save
+    in let top2 = __heap-save
+    in let j = desk-hole-enter ms2 top2 0 (dr-block / 2)
+    in let uj = alloc-bytes 64
+    in let cj = desk-hole-exit ms2 j desk-focus-sheet
+    in let ext-ok = desk-marks-extent ms2 0 top2
+    in let grow = alloc-bytes 4096
+    in let rm = desk-marks-remark ms2 desk-focus-sheet __heap-save
+    in let n0 = desk-marks-mark ms2 0
+    in let n1 = desk-marks-mark ms2 1
+    in let ext-kept = desk-marks-extent ms2 0 top2
+    in let kj = desk-marks-kill ms2 desk-focus-sheet
+    in let pick-kept = desk-span-pick ms2 top2 0 64 0
+    in let rm-dead = desk-marks-remark ms2 desk-focus-sheet __heap-save
+    in let n0-dead = desk-marks-mark ms2 0
+    in let rm-low = desk-marks-remark ms2 desk-focus-edit 8
+    in let n1-low = desk-marks-mark ms2 1
+    in let rm-ok = desk-marks-remark ms2 desk-focus-edit __heap-save
+    in let n1-ok = desk-marks-mark ms2 1
+    in act
+    print-line-uni ("the reusing pane pushed no mark: " & dk-yn (d1 == d0))
+    print-line-uni ("the span picked: " & show i)
+    print-line-uni ("it is found at the buried entry: " & show found)
+    print-line-uni ("the allocation came from the hole: " & dk-yn (used >= block & used < block + dr-block))
+    print-line-uni ("the entry keeps the mark it did not choose: " & dk-yn (m0 == block))
+    print-line-uni ("the marks still ascend: " & dk-yn (m0 < m1))
+    print-line-uni ("the extent is still positive: " & dk-yn (ext0 > 0))
+    print-line-uni ("a live entry above stops the reclaim: " & show rec-live & " depth " & show d2)
+    print-line-uni ("killing the live entry pops it alone: " & dk-yn (rec-edit == m1) & " depth " & show d3)
+    print-line-uni ("killing the reusing pane restores the SPAN BASE: " & dk-yn (rec-sheet == block) & " depth " & show d4)
+    print-line-uni ("CONTROL, the released span is picked again: " & show pick-ok)
+    print-line-uni ("a remark that would overwrite the span base is REFUSED: " & show rm)
+    print-line-uni ("the span base is untouched: " & dk-yn (n0 == b2 & n0 < n1))
+    print-line-uni ("the extent is unchanged: " & show ext-ok & " " & show ext-kept)
+    print-line-uni ("and the span is still picked: " & show pick-kept)
+    print-line-uni ("a remark on a DEAD entry answers: " & show rm-dead & " mark held " & dk-yn (n0-dead == n0))
+    print-line-uni ("a mark below the entry below is REFUSED: " & show rm-low & " mark held " & dk-yn (n1-low == n1))
+    print-line-uni ("CONTROL, an ordinary remark still writes: " & show rm-ok & " moved " & dk-yn (n1-ok > n1))
+  end

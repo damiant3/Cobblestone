@@ -3,6 +3,8 @@ Chapter: NetRecvHeapTest
   cites Foreword chapter Console
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
 
  `ProtocolStack.md`, "Prerequisite Hardening": the receive loops recurse without
  restoring the heap on the branch where a frame arrives and carries no payload
@@ -166,6 +168,23 @@ Section: Fixtures
   ipv4-frame : Integer -> List Integer
   ipv4-frame (dummy) = zeros 12 [] & [8, 0] & zeros 46 []
 
+ AND THE SAME FRAME AT FULL LENGTH, because the 60-byte reading is a FLOOR
+ and saying so is not the same as knowing the slope. What `eth-payload`
+ copies is the PAYLOAD, so the cost recognition adds should grow with the
+ frame while the dropped path stays flat: `recognised-big` against
+ `recognised-cost` is that slope, measured rather than asserted.
+
+  ipv4-frame-big : Integer -> List Integer
+  ipv4-frame-big (dummy) = zeros 12 [] & [8, 0] & zeros 1500 []
+
+  recognised-big : Integer -> Integer
+  recognised-big (n) =
+    let ts = fresh-transport 0
+    in let a = __heap-save
+    in let k = spin-net (ts.session) (ipv4-frame-big 0) n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
   recognised-cost : Integer -> Integer
   recognised-cost (n) =
     let ts = fresh-transport 0
@@ -173,6 +192,366 @@ Section: Fixtures
     in let k = spin-net (ts.session) (ipv4-frame 0) n 0
     in let b = __heap-save
     in if k < n then 0 - 1 else (b - a) / n
+
+ WHERE THE 107,475 GOES. A total is not an attribution, and two copies at 8
+ bytes a byte with doubling do not account for that figure, so the terms are
+ measured here rather than reasoned about. `eth-payload` is the first copy and
+ is called once per recognised frame; `net-process-ip` is everything below it.
+ The residual against `recognised-big` is asserted, so a term this
+ decomposition MISSES cannot hide behind a tidy sum.
+
+  spin-eth : List Integer, Integer, Integer -> Integer
+  spin-eth (frame) (n) (acc) =
+    if n <= 0 then acc
+    else let p = eth-payload frame
+    in spin-eth frame (n - 1) (acc + (if list-length p > 0 then 1 else 0))
+
+  eth-payload-cost : Integer -> Integer
+  eth-payload-cost (n) =
+    let a = __heap-save
+    in let k = spin-eth (ipv4-frame-big 0) n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  spin-ip : NetSession, List Integer, Integer, Integer -> Integer
+  spin-ip (sess) (pkt) (n) (acc) =
+    if n <= 0 then acc
+    else let r = net-process-ip sess pkt
+    in spin-ip (r.session) pkt (n - 1) (acc + (if list-length (r.data) >= 0 then 1 else 0))
+
+  ip-stage-cost : Integer -> Integer
+  ip-stage-cost (n) =
+    let ts = fresh-transport 0
+    in let pkt = eth-payload (ipv4-frame-big 0)
+    in let a = __heap-save
+    in let k = spin-ip (ts.session) pkt n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ WHICH BUILTIN THE 107,435 BELONGS TO, and the answer is NOT the loop.
+ `eth-payload-loop` is the same `list-push` this arm prices at 16,400 for the
+ same count, and the only other term in it is `list-at frame i`. `copy-cost`
+ is that exact loop, reading each element with `list-at` instead of pushing a
+ constant, and it measures 16,400 as well: the read is free, and the two loops
+ agree. So `eth-payload` costing 107,435 is UNEXPLAINED by its own body, which
+ is a finding rather than a gap in this arm, and the difference has to be in
+ what its argument IS -- the frame here is built by `&` concatenation of three
+ lists, and no measurement in this file yet says what that representation
+ costs to read. Whoever takes the inbound conversion starts there.
+
+  copy-from-list : List Integer, Integer, Integer, List Integer -> List Integer
+  copy-from-list (src) (i) (len) (acc) =
+    if i >= len then acc
+    else copy-from-list src (i + 1) len (list-push acc (list-at src i))
+
+  concat-copy-cost : Integer -> Integer
+  concat-copy-cost (len) =
+    let src = zeros len []
+    in let a = __heap-save
+    in let f = [0, 6] & src
+    in let b = __heap-save
+    in b - a
+
+  copy-cost : Integer -> Integer
+  copy-cost (len) =
+    let src = zeros len []
+    in let a = __heap-save
+    in let f = copy-from-list src 0 len []
+    in let b = __heap-save
+    in b - a
+
+ AND THE ARGUMENT IS THE ANSWER. The two loops above agree at 16,400 on a
+ list built by ONE `zeros` call; the frame `eth-payload` is given is built by
+ `&` concatenation of three lists. This runs the SAME `eth-payload` over the
+ same 1,514 bytes in both representations, so the only term that changes is
+ how the frame was assembled.
+
+  flat-frame : Integer -> List Integer
+  flat-frame (dummy) = zeros 1514 []
+
+  eth-payload-flat-cost : Integer -> Integer
+  eth-payload-flat-cost (n) =
+    let f = flat-frame 0
+    in let a = __heap-save
+    in let k = spin-eth f n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ AND EVERY READING ABOVE IS A REFUSAL, WHICH THE RESIDUAL ASSERTION CANNOT SEE.
+ All 1,500 payload bytes of `ipv4-frame-big` are zero, so `ip-total-length`
+ reads 0, `ip-length-valid` answers False, and `net-process-ip` returns
+ `bad-ip-length` before `ip-payload`, `tcp-checksum-valid` and `tcp-parse` run.
+ `ip-stage-cost` therefore prices that refusal rather than the IP stage, and
+ `eth-payload-cost + ip-stage-cost == recognised-big` holds because the second
+ term is nearly zero. The frame below is built by the stack's own builders,
+ carries the session's local port so `net-session-owns-segment` admits it, and
+ is FLATTENED, because `e1000-read-bytes` delivers a flat list and reading a
+ concatenated one costs 6.5x (`CostModel.md`).
+
+  flat-of : List Integer -> List Integer
+  flat-of (l) = copy-from-list l 0 (list-length l) []
+
+  tcp-frame : Integer -> List Integer
+  tcp-frame (payload-len) =
+    let seg = tcp-with-checksum (tcp-build-segment 50000 4000 1 1 tcp-flag-ack 8192 (zeros payload-len [])) [10, 0, 0, 1] [10, 0, 0, 2]
+    in let pkt = ip-build-packet [10, 0, 0, 1] [10, 0, 0, 2] ip-proto-tcp seg
+    in flat-of (eth-build-frame [1, 2, 3, 4, 5, 6] [7, 8, 9, 10, 11, 12] eth-type-ipv4 pkt)
+
+  eth-payload-cost-of : List Integer, Integer -> Integer
+  eth-payload-cost-of (frame) (n) =
+    let a = __heap-save
+    in let k = spin-eth frame n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  accepted-cost : Integer, Integer -> Integer
+  accepted-cost (payload-len) (n) =
+    let ts = fresh-transport 0
+    in let f = tcp-frame payload-len
+    in let a = __heap-save
+    in let k = spin-net (ts.session) f n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  accepted-ip-stage-cost : Integer, Integer -> Integer
+  accepted-ip-stage-cost (payload-len) (n) =
+    let ts = fresh-transport 0
+    in let pkt = eth-payload (tcp-frame payload-len)
+    in let a = __heap-save
+    in let k = spin-ip (ts.session) pkt n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ AND THE IP STAGE WAS THREE COPIES OF THE SAME PAYLOAD BYTES. At 45,144 it was
+ `ip-payload` (a `list-push` copy out of the frame) 16,400, `tcp-checksum-valid`
+ (a `&` concatenation of a twelve-byte pseudo-header with the WHOLE segment,
+ built only so the sum could start at index 0) 12,272, `tcp-parse` (the
+ `payload` field of the `TcpSegment`) 16,432, and one `NetResult` 40, which is
+ the dropped-frame reading. Two are repaired: the checksum carries the
+ pseudo-header's unfolded sum into a second pass in place, and the whole IPv4
+ branch reads the packet at an OFFSET into the driver's flat frame rather than
+ calling `eth-payload` and `ip-payload` to get an index base of 0. What remains
+ is ONE copy, the `payload` field, and the arms below assert that shape and its
+ residual. `net-receive-segment` is measured too and is not where the cost is.
+ `eth-payload` and `ip-payload` are still measured here although nothing on
+ this path calls them, because what they would have cost is the size of the
+ repair.
+
+ The two builders do not agree on price: `&` allocates the exact sum while
+ `list-push` advances the frontier by a DOUBLED capacity, so a concatenated
+ copy is CHEAPER to build than a pushed copy of the same bytes, and dearer to
+ read (`CostModel.md`).
+
+  spin-ip-payload : List Integer, Integer, Integer -> Integer
+  spin-ip-payload (pkt) (n) (acc) =
+    if n <= 0 then acc
+    else let d = ip-payload pkt
+    in spin-ip-payload pkt (n - 1) (acc + (if list-length d > 0 then 1 else 0))
+
+  spin-cksum : List Integer, Integer, Integer -> Integer
+  spin-cksum (data) (n) (acc) =
+    if n <= 0 then acc
+    else let v = tcp-checksum-valid data [10, 0, 0, 1] [10, 0, 0, 2]
+    in spin-cksum data (n - 1) (acc + (if v then 1 else 0))
+
+  spin-parse : List Integer, Integer, Integer -> Integer
+  spin-parse (data) (n) (acc) =
+    if n <= 0 then acc
+    else let s = tcp-parse data
+    in spin-parse data (n - 1) (acc + (if s.dst-port > 0 then 1 else 0))
+
+  spin-recv : NetSession, TcpSegment, Integer, Integer -> Integer
+  spin-recv (sess) (seg) (n) (acc) =
+    if n <= 0 then acc
+    else let r = net-receive-segment sess seg
+    in spin-recv (r.session) seg (n - 1) (acc + (if list-length (r.data) >= 0 then 1 else 0))
+
+  accepted-packet : Integer -> List Integer
+  accepted-packet (payload-len) = eth-payload (tcp-frame payload-len)
+
+  ip-payload-term : Integer, Integer -> Integer
+  ip-payload-term (payload-len) (n) =
+    let pkt = accepted-packet payload-len
+    in let a = __heap-save
+    in let k = spin-ip-payload pkt n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ The two IP literals this harness builds per iteration are its OWN cost and not
+ the subject's, which `harness-null` below measures rather than assumes.
+
+  cksum-term : Integer, Integer -> Integer
+  cksum-term (payload-len) (n) =
+    let data = ip-payload (accepted-packet payload-len)
+    in let a = __heap-save
+    in let k = spin-cksum data n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  spin-null : List Integer, Integer, Integer -> Integer
+  spin-null (data) (n) (acc) =
+    if n <= 0 then acc
+    else let v = list-length data + list-length [10, 0, 0, 1] + list-length [10, 0, 0, 2]
+    in spin-null data (n - 1) (acc + (if v > 0 then 1 else 0))
+
+  harness-null : Integer, Integer -> Integer
+  harness-null (payload-len) (n) =
+    let data = ip-payload (accepted-packet payload-len)
+    in let a = __heap-save
+    in let k = spin-null data n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  parse-term : Integer, Integer -> Integer
+  parse-term (payload-len) (n) =
+    let data = ip-payload (accepted-packet payload-len)
+    in let a = __heap-save
+    in let k = spin-parse data n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ THE DELIVERY PATH IS NOT THE PATH ABOVE. This fixture's connection is CLOSED,
+ so `tcp-step` answers `ActNone`; a figure taken here is the cost of a segment
+ PARSED AND FOUND VALID, not of one whose bytes are handed up. The delivery
+ path no longer builds a list either: `ActDataAck` carries the range and
+ `transport-feed-range` writes from the frame. `tcp-seg-payload` is kept
+ measured here as what that path WOULD have cost, and `network-stack-test`
+ is what proves the delivered BYTES are still right.
+
+  spin-seg-payload : TcpSegment, Integer, Integer -> Integer
+  spin-seg-payload (seg) (n) (acc) =
+    if n <= 0 then acc
+    else let d = tcp-seg-payload seg
+    in spin-seg-payload seg (n - 1) (acc + (if list-length d > 0 then 1 else 0))
+
+  seg-payload-term : Integer, Integer -> Integer
+  seg-payload-term (payload-len) (n) =
+    let seg = tcp-parse (ip-payload (accepted-packet payload-len))
+    in let a = __heap-save
+    in let k = spin-seg-payload seg n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  recv-term : Integer, Integer -> Integer
+  recv-term (payload-len) (n) =
+    let ts = fresh-transport 0
+    in let seg = tcp-parse (ip-payload (accepted-packet payload-len))
+    in let a = __heap-save
+    in let k = spin-recv (ts.session) seg n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ STAGE 1 OF THE PAYLOAD-RANGE CAMPAIGN: `transport-feed-range` against
+ `transport-feed-from`, byte for byte. Nothing calls the range feed yet, so
+ this arm is the only thing that makes the stage provable on its own.
+
+ THE PAYLOAD IS A RAMP AND NOT ZEROS, deliberately: the receive buffer is
+ fresh and therefore already zero, so a zero payload cannot tell a correct
+ copy from a write that never happened. Each byte carries its own index.
+
+ EACH FEED GETS A FRESH TRANSPORT. `recv-base` is a raw address and both feeds
+ write at `recv-len`, so feeding twice from one transport would land the
+ second write on the first and compare a buffer against itself (L-ALIAS). The
+ bytes are read back BETWEEN the two feeds for the same reason.
+
+ THE OFFSET ARM IS THE ONE THAT MATTERS. A range feed that ignored `off`
+ would still pass a whole-buffer comparison at `off` 0, so the second pair
+ starts at 100 and its list side is the same range copied out.
+
+  ramp : Integer, Integer, List Integer -> List Integer
+  ramp (i) (len) (acc) =
+    if i >= len then acc
+    else ramp (i + 1) len (list-push acc (bit-and (i + 1) 255))
+
+  buf-bytes : TcpTransportState, Integer, Integer, List Integer -> List Integer
+  buf-bytes (ts) (i) (n) (acc) =
+    if i >= n then acc
+    else buf-bytes ts (i + 1) n (list-push acc (recv-buf-byte ts i))
+
+  same-bytes : List Integer, List Integer, Integer -> Boolean
+  same-bytes (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same-bytes a b (i + 1)
+
+  fed-by-list : List Integer -> List Integer
+  fed-by-list (data) =
+    let ts = fresh-transport 0
+    in let t2 = transport-feed-from ts (ts.session) data
+    in buf-bytes t2 0 (t2.recv-len) []
+
+  fed-by-range : List Integer, Integer, Integer -> List Integer
+  fed-by-range (buf) (off) (stop) =
+    let ts = fresh-transport 0
+    in let t2 = transport-feed-range ts (ts.session) buf off stop
+    in buf-bytes t2 0 (t2.recv-len) []
+
+  spin-feed-range : TcpTransportState, List Integer, Integer, Integer, Integer, Integer -> Integer
+  spin-feed-range (ts) (buf) (off) (stop) (n) (acc) =
+    if n <= 0 then acc
+    else let t2 = transport-feed-range ts (ts.session) buf off stop
+    in spin-feed-range ts buf off stop (n - 1) (acc + (if t2.recv-len > 0 then 1 else 0))
+
+  spin-feed-list : TcpTransportState, List Integer, Integer, Integer -> Integer
+  spin-feed-list (ts) (data) (n) (acc) =
+    if n <= 0 then acc
+    else let t2 = transport-feed-from ts (ts.session) data
+    in spin-feed-list ts data (n - 1) (acc + (if t2.recv-len > 0 then 1 else 0))
+
+  feed-range-cost : Integer, Integer -> Integer
+  feed-range-cost (len) (n) =
+    let ts = fresh-transport 0
+    in let src = ramp 0 len []
+    in let a = __heap-save
+    in let k = spin-feed-range ts src 0 len n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+  feed-list-cost : Integer, Integer -> Integer
+  feed-list-cost (len) (n) =
+    let ts = fresh-transport 0
+    in let src = ramp 0 len []
+    in let a = __heap-save
+    in let k = spin-feed-list ts src n 0
+    in let b = __heap-save
+    in if k < n then 0 - 1 else (b - a) / n
+
+ THE SEND PATH, which is the same repair as the receive path's first cut.
+ `tcp-with-checksum` concatenated the whole segment onto the pseudo-header to
+ sum it; it carries the pseudo-header's unfolded sum into a pass over the
+ segment in place instead.
+
+ ONE CALL, NOT A SPIN. `tcp-with-checksum` writes the checksum back into its
+ OWN argument with `list-set-at`, which mutates in place, so a second call
+ over the same segment sums the bytes the first call wrote and answers
+ something different. Every reading below builds its own segment.
+
+ THE ODD LENGTH IS THE ARM THAT MATTERS, because the pad the cut removed only
+ existed for it, and the negative control is beside it so the round-trip is
+ not an instrument that cannot fail.
+
+  send-seg : Integer -> List Integer
+  send-seg (payload-len) =
+    tcp-build-segment 50000 4000 1 1 tcp-flag-ack 8192 (zeros payload-len [])
+
+  send-cksum-cost : Integer -> Integer
+  send-cksum-cost (payload-len) =
+    let seg = send-seg payload-len
+    in let a = __heap-save
+    in let r = tcp-with-checksum seg [10, 0, 0, 1] [10, 0, 0, 2]
+    in let b = __heap-save
+    in (b - a) + (list-length r) - (list-length r)
+
+  send-round-trip : Integer -> Boolean
+  send-round-trip (payload-len) =
+    let seg = send-seg payload-len
+    in let ck = tcp-with-checksum seg [10, 0, 0, 1] [10, 0, 0, 2]
+    in tcp-checksum-valid ck [10, 0, 0, 1] [10, 0, 0, 2]
+
+  send-unsigned-refused : Integer -> Boolean
+  send-unsigned-refused (payload-len) =
+    tcp-checksum-valid (send-seg payload-len) [10, 0, 0, 1] [10, 0, 0, 2]
 
 Section: Entry
 
@@ -191,5 +570,32 @@ Section: Entry
       print-line-uni ("ONE transport record per frame: feeding builds exactly one: " & show (feed-from-stage-cost 100 == rebuild-stage-cost 100))
       print-line-uni ("both feeds build one record, so the saving was the CALLER's construction: " & show (feed-stage-cost 100 == feed-from-stage-cost 100))
       print-line-uni ("a frame the stack RECOGNISES costs more than one it drops: " & show (recognised-cost 100 > net-stage-cost small 100))
+      print-line-uni ("and the reading still grows with frame length on this fixture, which is NOT a copy in the stack because the IPv4 branch no longer makes one, and is unattributed: " & show (recognised-big 100 > recognised-cost 100))
+      print-line-uni ("eth-payload, which the IPv4 branch no longer calls, would alone have cost more than a whole refused frame now does: " & show (eth-payload-cost 100 > recognised-big 100))
+      print-line-uni ("reading each element with list-at costs the same as pushing a constant, so list-at is not the difference: " & show (copy-cost 1486 == frame-build-cost 1486))
+      print-line-uni ("and eth-payload still costs MORE than that same loop, so its cost is NOT in the loop: " & show (eth-payload-cost 100 > copy-cost 1486))
+      print-line-uni ("the SAME eth-payload over the same bytes costs more when the frame was built by concatenation: " & show (eth-payload-cost 100 > eth-payload-flat-cost 100))
+      print-line-uni ("the zeros fixture's IP stage costs LESS than one payload copy, so it cannot have copied the payload and its reading is a refusal: " & show (ip-stage-cost 100 < copy-cost 1480))
+      print-line-uni ("an ACCEPTED frame's IP stage still costs MORE than a refused one, which is the reach control now that no copy is left to make it dear: the pseudo-header is built only past ip-header-valid: " & show (accepted-ip-stage-cost 1460 100 > net-stage-cost small 100))
+      print-line-uni ("the IPv4 branch no longer copies the frame, so an accepted frame and the IP stage over the same bytes cost the SAME: " & show (accepted-cost 1460 100 == accepted-ip-stage-cost 1460 100))
+      print-line-uni ("and the two copies that were removed exceed the whole of what an accepted frame now costs: " & show (eth-payload-cost-of (tcp-frame 1460) 100 + ip-payload-term 1460 100 > accepted-cost 1460 100))
+      print-line-uni ("and a whole accepted frame now costs LESS than ONE copy of its payload, which is what the campaign was for: " & show (accepted-cost 1460 100 < copy-cost 1480))
+      print-line-uni ("that figure is the PARSED-AND-VALID path and NOT the delivery path: this fixture's connection is closed, so tcp-step answers ActNone and tcp-seg-payload is never called: " & show (seg-payload-term 1460 100 > accepted-cost 1460 100))
+      print-line-uni ("and tcp-seg-payload, which NOTHING on the receive path calls any more, is what that path would have cost: it still scales with the payload: " & show (seg-payload-term 1460 100 > seg-payload-term 100 100))
+      print-line-uni ("what remains of an accepted frame is the parse, the checksum's pseudo-header and one NetResult, with no residual: " & show (parse-term 1460 100 + cksum-term 1460 100 + net-stage-cost small 100 == accepted-ip-stage-cost 1460 100))
+      print-line-uni ("and the parse itself no longer scales with the payload, because the segment carries a RANGE rather than a list: " & show (parse-term 1460 100 == parse-term 100 100))
+      print-line-uni ("the two IP lists that harness builds per iteration are exactly the ip-src and ip-dst the stage builds, so the identity holds with the raw term: " & show (harness-null 1460 100 > 0))
+      print-line-uni ("tcp-checksum-valid no longer scales with the segment, because it carries the pseudo-header's sum instead of concatenating: " & show (cksum-term 1460 100 == cksum-term 100 100))
+      print-line-uni ("and the state machine below it does not: net-receive-segment is smaller than any one of the copies: " & show (recv-term 1460 100 < ip-payload-term 1460 100))
+      print-line-uni ("a concatenated copy is CHEAPER to build than a pushed copy of the same bytes, because & allocates the exact sum and list-push doubles: " & show (concat-copy-cost 1480 < copy-cost 1480))
+      print-line-uni ("the range feed and the list feed put the SAME bytes in the receive buffer: " & show (same-bytes (fed-by-range (ramp 0 1460 []) 0 1460) (fed-by-list (ramp 0 1460 [])) 0))
+      print-line-uni ("and the range feed honours its offset, which a whole-buffer comparison at 0 could not tell: " & show (same-bytes (fed-by-range (ramp 0 1460 []) 100 1460) (fed-by-list (copy-from-list (ramp 0 1460 []) 100 1460 [])) 0))
+      print-line-uni ("the ramp is not all zeros, so those comparisons could have failed: " & show (list-at (fed-by-range (ramp 0 1460 []) 0 1460) 7 /= 0))
+      print-line-uni ("and the comparator itself refuses two feeds that differ, so the two arms above are not an instrument that cannot fail: " & show (same-bytes (fed-by-range (ramp 0 1460 []) 0 1460) (fed-by-range (ramp 0 1460 []) 100 1460) 0 == False))
+      print-line-uni ("and the range feed allocates no more than the list feed does once the list exists, which is one record each: " & show (feed-range-cost 1460 100 == feed-list-cost 1460 100))
+      print-line-uni ("on the SEND path, tcp-with-checksum no longer scales with the segment, because it sums the pseudo-header instead of concatenating it: " & show (send-cksum-cost 1460 == send-cksum-cost 100))
+      print-line-uni ("and it costs the same on an ODD-length segment, which is the case the pad it dropped existed for: " & show (send-cksum-cost 1461 == send-cksum-cost 1460))
+      print-line-uni ("a segment it signs is accepted by the receiver, at even and at odd lengths: " & show (send-round-trip 1460 & send-round-trip 1461 & send-round-trip 101))
+      print-line-uni ("and an UNSIGNED segment is refused, so that round-trip is not an instrument that cannot fail: " & show (send-unsigned-refused 1460 == False & send-unsigned-refused 1461 == False))
     end
   end

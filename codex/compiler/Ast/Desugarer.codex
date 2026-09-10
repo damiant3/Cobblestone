@@ -692,16 +692,51 @@ Section: Document Desugaring
  is the author asking for equality, and dropping the helper under them would be
  a silent refusal rather than the diagnostic they get today.
 
+ A RECORD GETS ONE TOO, on the same terms as a sum. Until COMPILER-75 this
+ answered False for a record body, so a sum was structural by default and a
+ record was compared by POINTER unless its author wrote `deriving Eq`: two
+ identical records answered False, and no diagnostic said why. The asymmetry
+ was not a decision anybody recorded, and a record has no argument against a
+ helper that a sum does not also have, because a field naming the record's own
+ type reaches the same helper-call path that makes the recursive sum terminate.
+
   td-eq-safe : TypeDef -> Boolean
   td-eq-safe (td) =
    when td.body
     is VariantBody (ctors) -> ctors-eq-safe ctors 0 (list-length ctors)
+    is RecordBody (fields) -> record-fields-eq-safe fields
     is otherwise -> False
+
+ TWO type names make a field uncomparable, and the second is a bound in the
+ compiler rather than a property of the type. `Real` refuses `==` outright with
+ CDX2085. `Vector n T` ANSWERS `==`, with a `VectorMask n` rather than a
+ Boolean, and the fold that would turn a mask into a Boolean is declared at
+ arity 2 (`mask-all`, `mask-any`, `mask-none`, `VectorMaskTy 2` in
+ `Builtins.codex`) and the unifier compares vector arities exactly, so nothing
+ in the language can compare a vector wider than 2 today, by hand or here.
+ Without this guard the AND chain takes the mask and the unit fails with
+ CDX2001 on a span nobody wrote, whether or not anything compares the type:
+ measured 2026-09-09, `codex/test/type-name-existence` went red at head the day
+ record bodies were widened into this gate, and a variant carrying a vector
+ field had been red since sums were widened. A type refused here compares by
+ POINTER, which is what every record did before that widening. The wider gap is
+ COMPILER-77.
+
+  field-types-eq-safe : List TypeExpr -> Boolean
+  field-types-eq-safe (tys) =
+   if fields-name-type tys "Real" 0 (list-length tys) then False
+   else if fields-name-type tys "Vector" 0 (list-length tys) then False
+   else if fields-name-type tys "SizedVec" 0 (list-length tys) then False
+   else True
+
+  record-fields-eq-safe : List RecordFieldDef -> Boolean
+  record-fields-eq-safe (fs) =
+   field-types-eq-safe (for f in fs -> f.type-expr)
 
   ctors-eq-safe : List VariantCtorDef, Integer, Integer -> Boolean
   ctors-eq-safe (ctors) (i) (len) =
    if i >= len then True
-   else if fields-name-type ((list-at ctors i).fields) "Real" 0 (list-length ((list-at ctors i).fields)) then False
+   else if field-types-eq-safe ((list-at ctors i).fields) == False then False
    else ctors-eq-safe ctors (i + 1) len
 
   fields-name-type : List TypeExpr, Text, Integer, Integer -> Boolean

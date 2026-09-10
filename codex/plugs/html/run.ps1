@@ -4,11 +4,12 @@
 # is no external DCE step. The plug uses read-line-cce + read-file
 # (both CCE-native, null-terminated).
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out)
+param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Compiler = '')
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+if (-not $Compiler) { $Compiler = Join-Path $Repo 'seed\Codex.cdx' }
 $PlugCdx = Join-Path $PSScriptRoot 'build-output\html-plug.cdx'
 # Scratch is keyed to the run so two concurrent runs cannot cross
 # their IR and their log (plugs 2.26).
@@ -21,7 +22,7 @@ if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx")
 # real body is this plug's JS runtime function of the same name, so the inline
 # passes must not delete the call. See text-plug-ir-pipeline in Passes.codex.
 $IrFile = Join-Path $PSScriptRoot "build-output\last-run-$RunTag.ir"
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug'
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -Kernel $Compiler -IrCce -Passes 'text-plug'
 if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
 Write-Host "[html-run] IR: $((Get-Item $IrFile).Length) bytes (CCE)"
 

@@ -665,12 +665,42 @@ Section: Expression Lowering
   eq-op-for : Boolean -> BinaryOp
   eq-op-for (positive) = if positive then OpEq else OpNotEq
 
+ A LIST TAKES THE INSTANTIATED HELPER WITHOUT AN EXISTENCE PROBE. There is no
+ declared `List` for the desugarer to mint `__eq_List` from, so the probe below
+ can never find one and every list comparison fell through to `IrBinary OpEq`,
+ which for a heap value compares the two POINTERS: two structurally equal lists
+ answered False, and so did a sum or record holding one, with no diagnostic.
+ COMPILER-74. The element is concrete at the comparison site, so the name
+ carries it and each backend mints one helper per element type; a generic sum's
+ field is NOT concrete there, which is why that gap stands (`X86_64.codex`, the
+ note beside `eq-helper-field-eq`).
+
+  eq-ty-is-list : CodexType -> Boolean
+  eq-ty-is-list (ty) =
+   when ty
+    is ListTy (e) -> True
+    is otherwise -> False
+
   lower-eq-dispatch : CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan, Boolean -> IRExpr
   lower-eq-dispatch (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) (positive) =
    let resolved-left = deep-resolve (ctx.ust) left-ty
    in let tn = type-name-of resolved-left
    in let stripped = strip-unit-ty resolved-left
-   in let has-args = eq-type-has-args stripped
+   in if eq-ty-is-list stripped
+   then lower-eq-helper-call stripped (eq-helper-name-inst "List" (eq-site-actuals stripped)) left-ir right-ir s positive
+   else lower-eq-dispatch-named left-ty tn stripped left-ir right-ir ty ctx s positive
+
+  lower-eq-helper-call : CodexType, Text, IRExpr, IRExpr, SourceSpan, Boolean -> IRExpr
+  lower-eq-helper-call (opty) (hname) (left-ir) (right-ir) (s) (positive) =
+   let fty = deck-record (FunTy opty empty-row (deck-record (FunTy opty empty-row BooleanTy)))
+   in let inner = deck-record (IrApply (deck-record (IrName hname fty s)) left-ir (peel-fun-return fty) s)
+   in let call = deck-record (IrApply inner right-ir BooleanTy s)
+   in if positive then call
+      else deck-record (IrIf call (deck-record (IrBoolLit False s)) (deck-record (IrBoolLit True s)) BooleanTy s)
+
+  lower-eq-dispatch-named : CodexType, Text, CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan, Boolean -> IRExpr
+  lower-eq-dispatch-named (left-ty) (tn) (stripped) (left-ir) (right-ir) (ty) (ctx) (s) (positive) =
+   let has-args = eq-type-has-args stripped
    in let probe = if text-length tn == 0 then ErrorTy
     else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
    in when probe

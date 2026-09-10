@@ -140,6 +140,18 @@ foreach ($g in $GamesWasm) {
     if ($LASTEXITCODE -ne 0) { Write-Host "[landing] FAIL: $g wasm build"; exit 8 }
 }
 
+# The page is the other half of the arcade and nothing compiles it, so the
+# "grade it where its module is built" rule lands here instead: every module
+# the gallery can reach now exists, and `node --check` cannot see a name used
+# above its own `let` or a call to something undefined. page-verify starts the
+# script for real against a stub browser.
+if (Get-Command 'node' -ErrorAction SilentlyContinue) {
+    & node (Join-Path $Repo 'apps\games\page-verify.mjs')
+    if ($LASTEXITCODE -ne 0) { Write-Host '[landing] FAIL: the arcade page does not start'; exit 8 }
+} else {
+    Write-Host '[landing] node is not on the Path; page-verify skipped'
+}
+
 # --- 3b. c64/ : the emulator's module ---------------------------------
 # Same contract as the games above: web/c64/index.html is tracked source and
 # c64.wasm beside it is build output. The emulator is one module rather than a
@@ -433,9 +445,16 @@ if ((Get-Item $smWasm).LastWriteTime -lt (Get-Item (Join-Path $smSrc 'StarMapWas
 # starmap.dat is refused by the module at runtime with a numbered error, which
 # is correct behaviour and a blank page for a visitor, so the build refuses it
 # first. The deeper arms, delivering 3.79 MB into linear memory and asking the
-# module what it made of it, are apps/starmap/sm-verify.mjs, run by hand like
-# the other forty-four *-verify.mjs graders here, none of which any script
-# invokes.
+# module what it made of it, are apps/starmap/sm-verify.mjs, run by hand.
+# Re-counted 2026-09-09: there are 43 *-verify.mjs graders under apps/, and 42
+# are invoked by the build that writes the module they grade, which is the only
+# moment a red can be about the module rather than about a file nobody made.
+# Seven are invoked by name (c64, dw, fw, mb, sm, page, ar), and the 35
+# per-game graders are reached by the computed prefix in
+# apps/games/build-wasm.ps1, tictactoe's ttt_* exports being special-cased
+# there to wasm-verify. The one grader nothing reaches is
+# apps/gpushow/tools/live-verify.mjs, which drives Chrome. No GATE runs any of
+# the 43, because no gate builds a web or wasm bundle at all.
 if (-not (Get-Command 'wasmtime' -ErrorAction SilentlyContinue)) {
     Write-Host '[landing] FAIL: wasmtime is not on the Path; the starmap module cannot be graded'
     exit 12

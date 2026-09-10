@@ -1,192 +1,46 @@
 # IoT Protocol Stack: CoAP, MQTT, LwM2M
 
-**Created**: 2026-06-12 (reek)
-**Updated**: 2026-08-09 (blu) -- DTLS send-side fragmentation shipped;
-three stale "still open" claims corrected in place.
-**Status**: The DTLS 1.3 structural build (D0-D3) is **done**, and
-**peer authentication shipped 2026-07-13** (X.509 with Ed25519 certs,
-RFC 8410): two real endpoints complete an *authenticated* handshake in
-the battery, and an active man-in-the-middle who flips a `key_share` byte
-is defeated. **It is still not a secure channel**, and the reasons are
-now narrow and specific: no application traffic keys (the endpoint
-derives handshake secrets only) and the
-handshake flights travel as DTLSPlaintext. **So `coaps://` still does not
-exist and ETSI 5.5 / CRA 1(c) remain transport-gated**.
-Also still missing across the wider stack: the CoAP/MQTT/LwM2M binding
-layers in `codex/os/net`. (This line said **TCP retransmit** as well;
-that was wrong when written -- see the 2026-08-08 correction below.)
+**Status.** The DTLS 1.3 structural build (D0-D3) is done and peer
+authentication ships (X.509 with Ed25519 certs, RFC 8410): two endpoints
+complete an authenticated handshake in the battery, and an active
+man-in-the-middle who flips a `key_share` byte is defeated. Application
+traffic keys are derived and application data is sealed and opened at epoch
+3 (`codex/os/net/DtlsEndpoint.codex`: `dtls-ep-derive-app`,
+`dtls-ep-send-app`, `dtls-ep-recv-app`), and handshake flights after
+ServerHello travel protected at epoch 2. Fragmentation is closed in both
+directions. `coaps://` and `mqtts://` are composed and gated
+(`CoapsEndpoint`, `Lwm2mCoaps`, `MqttsEndpoint`). **What gates `coaps://`
+for compliance purposes is third-party interop, not any missing piece of
+the stack.**
 
-**CORRECTION, 2026-08-05: the tree has moved past the status above, and
-the body below reads stale in the done direction.** What the tree now
-shows, with evidence:
+**STANDING RULING (Damian): no TLS or DTLS version uplifting.** That covers
+the third-party DTLS 1.3 handshake oracle and the OpenSSL 3.5 requirement
+recorded below. The reason is priority, not doubt about the gap: there is
+no working web server and no working browser yet, and chasing a protocol
+version ahead of them is cart before horse. **Do not pick this up, and do
+not install a newer OpenSSL for it.** The finding is recorded so nobody
+re-derives it.
 
-- Application traffic keys ARE derived and app data is sealed/opened at
-  epoch 3 (`codex/os/net/DtlsEndpoint.codex`: `dtls-ep-derive-app`,
-  `dtls-ep-send-app`, `dtls-ep-recv-app`).
-- Handshake flights after ServerHello travel protected at epoch 2
-  (`DtlsEndpoint.codex:133-147`).
-- `CoapEndpoint` and `MqttEndpoint` exist (`codex/foreword/encode/`)
-  with wire halves `tools/coap-client.codex`, `tools/coap-server.codex`,
-  `tools/mqtt-client.codex`, plus `coap-loopback` and
-  `build/coap-interop-test.ps1`. (This line said a general LwM2M client is
-  still absent. It landed 2026-08-09 as `codex/os/net/Lwm2mClient.codex`;
-  see the 2026-08-09 entry above.)
-- RSA verification exists (`codex/foreword/core/Rsa.codex`:
-  `rsa-verify-pkcs1-sha256`, `rsa-verify-pss-sha256` over `CryptoBig`),
-  with `X509Chain`, `TlsEndpoint` and `TrustAnchors` in
-  `codex/foreword/encode/`.
-- `dtls-ep-random` now takes caller entropy via `dtls-ep-new`'s random
-  argument.
+**The LwM2M client** (`codex/os/net/Lwm2mClient.codex`) carries
+Registration, Update, Deregister and the Device Management interface (Read,
+Write, Execute) over a flat object tree, pure on DtlsEndpoint's precedent,
+gated by `codex/test/apps/lwm2m-client`. **Bootstrap, Observe/Notify and
+Access Control are NOT in it** and are each their own unit.
 
-**BACKLOGGED, Damian's ruling 2026-08-09: any TLS or DTLS version
-uplifting.** That covers the third-party DTLS 1.3 handshake oracle and the
-OpenSSL 3.5 requirement below. The reason is priority, not doubt about the
-gap: there is no working web server and no working browser yet, and
-chasing a protocol version ahead of them is cart before horse. **Do not
-pick this up, and do not install a newer OpenSSL for it.** The finding
-stays recorded below so nobody re-derives it; it is simply not next.
+**A CoAP path is one option per SEGMENT.** RFC 7252 section 6.4 step 7 and
+section 5.10.1 require one Uri-Path option per segment with no slash in the
+value, therefore `coap-uri-path-options` and `coap-uri-query-options` are
+the helpers to call; the singular `coap-uri-path-option` puts a whole path
+in ONE option. A single-segment path is the one case where the two
+spellings agree, which is why an interop harness asking only for
+"temperature", "actuator" or "codex" passes against a real server and
+proves nothing. An LwM2M path is `/3/0/1`. `coap-find-options` reads a
+repeated option as the ordered sequence it is, which `coap-find-option`
+cannot.
 
-Still recorded but NOT open work: the third-party DTLS handshake oracle,
-blocked on a tool version (below). **The general LwM2M client landed 2026-08-09**
-(`codex/os/net/Lwm2mClient.codex`): Registration, Update, Deregister and
-the Device Management interface (Read, Write, Execute) over a flat object
-tree, pure on DtlsEndpoint's precedent, gated by
-`codex/test/apps/lwm2m-client`. Bootstrap, Observe/Notify and Access
-Control are NOT in it and are each their own unit.
-
-**Building it found a defect in CoAP that had never been reachable.**
-`coap-uri-path-option` puts a whole path in ONE Uri-Path option, and RFC
-7252 section 6.4 step 7 requires one option per segment with no slash in
-the value (section 5.10.1). Every path this tree had ever asked for was a
-single segment -- "temperature", "actuator", and "codex" in
-`coap-interop-test.ps1` -- which is the one case where the two spellings
-agree, so the interop harness passed against a real server and proved
-nothing about multi-segment paths. An LwM2M path is `/3/0/1`.
-`coap-uri-path-options` and `coap-uri-query-options` split correctly;
-`coap-find-options` reads a repeated option as the ordered sequence it is,
-which `coap-find-option` cannot. Also added: `coap-opt-location-path` (8)
-and `coap-204-changed`. **`coap-204-deleted` is misnamed** -- it is
-`coap-response-code 2 2`, which is 2.02 Deleted; the value is right and the
-name is not, left alone rather than renamed under an unrelated change.
-
-**The RTT-derived retransmit interval landed 2026-08-09, and the reason it
-sat open was wrong.** It was recorded as needing a calibrated tick, since
-no caller drives `net-tick` at a known rate. The estimator never needed
-one. RFC 6298 is a ratio between a measured round trip and a retransmit
-interval, and a ratio is right at any steady tick rate; only a value
-expressed in seconds would need calibration, and nothing here is. The
-fixed 3 ticks it replaces was wrong in both directions at once, too eager
-on a slow link and too patient on a fast one. `net-rtt-update` carries
-`srtt` scaled by 8 and `rttvar` by 4 in the standard integer form, and
-**Karn's algorithm is honoured**: `rx-resent` is per segment, so an ack for
-anything retransmitted yields no sample. Pinned by `codex/test/tcp-reliability`:
-`rtt-rto=6` where a 2-tick round trip gives `srtt=16 rttvar=4`, against
-`karn-rto=3` where the same ack follows a retransmission and the estimator
-is correctly left untouched.
-
-**"Third-party DTLS interop" was one item and is now two, one of them
-done.** The fragmentation layer HAS a third-party oracle as of 2026-08-09:
-`codex/test/dtls-openssl-fragments` reassembles real OpenSSL records, and
-`build/dtls-fragment-interop.ps1` regenerates them. The full handshake does
-not, and **what blocks it is a tool version rather than a decision**:
-OpenSSL gained DTLS 1.3 in 3.5, and 3.2.4 is what is installed (measured
-2026-08-09 against both the mingw64 and usr/bin builds; Python's `ssl`
-exposes no DTLS at any version). This was previously recorded as needing a
-ruling on outside dependencies. That was wrong: six interop harnesses
-already shell out to OpenSSL and Python (`tls-interop-test.ps1` and five
-others), so the precedent was settled long ago and nobody needed to decide
-anything.
-
-**Fragmentation is closed in BOTH directions as of 2026-08-09.** Receive
-landed 2026-08-08; send landed the following day once the MTU question
-was decided rather than deferred, at 1200 bytes of UDP payload
-(`dtls-ep-mtu`) with a 1024-byte fragment body. See section D2b below,
-which carries the derivation of both numbers and the pre-authentication
-fault the receive wiring closed.
-
-**TCP retransmit is NOT one of them, and the "no RTO timer" claim below
-was already false when this correction was written** (measured
-2026-08-08 against `codex/os/net/NetworkStack.codex`). It is not in
-`tcp-step`, which is why a reader looking there found nothing: the timer
-lives one layer up in `NetSession`, which is the layer that owns frames
-and has somewhere to put one. `net-send` arms `rexmit-frame` with the
-built frame and `rexmit-ack` with the sequence number that would retire
-it, `net-tick` counts down and re-sends on expiry, and
-`net-receive-segment` disarms on a covering ACK.
-
-What 2026-08-08 added, gated by `codex/test/tcp-reliability`: the
-interval now doubles (3, 6, 12, 24, 48 ticks), the retry count is
-bounded at 5 and the connection is declared CLOSED rather than
-retransmitting forever, and `net-connect`/`net-close` arm the timer so a
-lost SYN or FIN is retried -- previously only data segments were, which
-left connection setup, the least reliable moment on a lossy link, with
-no retransmission at all.
-
-**What is still missing, stated so nobody reads the above as done:**
-
-- ~~**One segment deep.**~~ **FIXED.** `rexmit-queue` holds up to
-  `net-rexmit-capacity` = 8 `RexmitSeg` entries, one timer per
-  connection owned by the oldest unacked segment (RFC 6298 section 5).
-  An expiry retransmits the head only; a cumulative ACK retires every
-  entry it covers and restarts the timer at the base interval with the
-  retry count reset, because an ACK that retires anything is evidence
-  the path is alive.
-
-  **The bound is refused, not grown.** A send that would exceed the
-  capacity answers `send queue full` and does not send. There is no
-  collector, so an unbounded queue would let a peer that has stopped
-  acking choose our memory ceiling.
-
-  Measured against the pre-change chapter on the two-send case: the old
-  code retransmits sequence 5003, the SECOND send, because the second
-  `net-send` had overwritten `rexmit-frame` and segment 5001 was
-  unrecoverable. The new code retransmits 5001. `codex/test/tcp-reliability`
-  carries `qoldest` for exactly that, reading the sequence number back out
-  of the frame that reached the outbox rather than trusting the queue's own
-  bookkeeping.
-- **No RTT measurement.** The RTO is a tick count, not RFC 6298
-  SRTT/RTTVAR, and a tick is whatever period the caller drives the
-  session at. The backoff is real; the base interval is a constant
-  nobody derived from a measured path.
-- ~~**The ACK comparison does not handle sequence wraparound.**~~
-  **FIXED, and it was worse than this entry said.** There were two
-  defects, not one: the comparisons were ordinary integer compares, AND
-  the in-memory counters were never wrapped at all, so `send-next` grew
-  past 2^32 unbounded while everything arriving from the wire came back
-  truncated by `read-be32`. `Tcp.codex` now carries `tcp-seq-wrap`,
-  `tcp-seq-diff` and the three RFC 793 serial comparisons; the counters
-  wrap on store in `set-send-next`, `set-recv-next` and
-  `tcp-new-connection`, so the twelve sites that increment a sequence
-  number are each fixed once.
-
-  **Recorded because the interaction is the part worth knowing:** on its
-  own this produced spurious retransmits past 4 GB. Combined with the
-  bounded-retry give-up added the same day, it produced a *closed
-  connection* -- the wrapped ACK failed the compare, the retransmit was
-  never disarmed, and the retry ceiling then declared a healthy
-  connection dead. A safety bound placed over a wrong comparison converts
-  a performance bug into a correctness one. `codex/test/tcp-seqwrap`
-  pins it: the `wrapclose` arm answers CLOSED against the pre-change
-  chapters and ESTABLISHED now.
-
-**Ruling 2026-08-05 (Damian): RESURFACED as the base of the IoT chain.** The remainder is live work in the ProtocolStack -> OTAFirmwareUpdate -> ComplianceEvidence chain. The TCP segment queue is closed 2026-08-08, and DTLS fragmentation is closed in BOTH directions as of 2026-08-09: receive through `ep-reasm`, send at a 1200-byte MTU with a 1024-byte fragment body, derived in D2b below. **That list is now empty of open work.** The RTT-derived retransmit interval and the general LwM2M client both landed 2026-08-09, and the third-party DTLS handshake oracle was BACKLOGGED the same day (Damian: no TLS or DTLS version uplifting; there is no working web server or browser yet, so it is cart before horse).
-
-**2026-07-13: Open Question 1 is now answered, the answer moved the
-plan, and phase D0 has shipped.** The foreword `Tls` audit came back
-worse than a work estimate -- and so did the cipher suite underneath it.
-Two of the AEADs our compliance evidence attested to *did not exist* (no
-Poly1305 anywhere; GCM was AES-128 only), and the `Tls` chapter ships a
-broken key schedule under a correct-looking name. DTLS could not be
-built on that.
-
-**D0 is now done.** `Poly1305.codex` and `ChaCha20Poly1305.codex` are
-new, `AesGcm` dispatches on key size and does real AES-256-GCM, and all
-three are gated on the RFC 8439 / SP 800-38D published vectors rather
-than on agreeing with themselves. The evidence table has been
-reconciled: the crypto claims are now true, and the *transport* claims
-it could not keep are disclosed instead of asserted. **D1 (the record
-layer) is unblocked and is the next CL.** See **The Crypto Floor:
-Audited** and **DTLS: The Build Plan** below.
+**`coap-204-deleted` is misnamed.** It is `coap-response-code 2 2`, which
+is 2.02 Deleted. The value is right and the name is not; renaming it is its
+own change.
 
 **Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 3,
 references in `docs/Reference/IoT/Protocols/`
@@ -200,10 +54,8 @@ telemetry into AWS IoT Core / Azure IoT Hub / Mosquitto, and LwM2M
 v1.2 for the device-lifecycle management the CRA mandates
 (bootstrap, registration, firmware update -- Object 5).
 
-The codecs for all of these now exist and are battery-tested. What no
-device can yet do is *talk to anything*: there is no code that binds a
-codec to a socket, and there is no DTLS, so even a bound endpoint would
-be cleartext-only and out of compliance.
+The codecs for all of these exist and are battery-tested, the bindings to a
+socket exist, and DTLS 1.3 carries the secure form.
 
 ## What Exists (codex/foreword/encode)
 
@@ -220,67 +72,69 @@ The pure wire codecs shipped, each with tests in the battery:
 | `Lorawan.codex` | LoRaWAN |
 | `BleAtt.codex` | BLE ATT |
 
-This is more coverage than this document originally scoped -- Modbus,
-Zigbee, LoRaWAN, BLE and MQTT-SN were all written, and the "deliberately
-absent" list below is now historical rather than descriptive.
+Modbus, Zigbee, LoRaWAN, BLE ATT and MQTT-SN are codecs only: none has an
+endpoint machine or a binding.
 
-## The Three Real Gaps
+## The Bindings
 
-1. **DTLS: zero implementation.** Not a partial one -- searching the
-   tree for `dtls` returns prose in an app page and a TLS test chapter
-   name, and nothing else. LwM2M mandates DTLS; `coaps://` requires it;
-   the compliance story requires it. This is the largest single hole in
-   the IoT stack.
-2. ~~**TCP retransmission.**~~ **PARTLY CLOSED -- see the 2026-08-08
-   correction at the top, which has the measurement and the three
-   remaining holes.** `tcp-step` does indeed have no RTO timer and never
-   will: it is a pure state machine and the timer lives in `NetSession`.
-   The single-segment depth and the wraparound-unsafe compare are both
-   closed. **What survives of this gap is the absent RTT measurement, and
-   nothing else.** MQTT keepalive and QoS 1/2 assume a reliable stream;
-   they now have a bounded, multi-segment, oldest-first retransmit over a
-   correct sequence space, driven by a tick count nobody has calibrated
-   against a real path.
-3. **The binding gap is now LwM2M ALONE, measured 2026-08-18 (reek).**
-   This said `codex/os/net` had 32 modules and not one of them was a
-   `CoapEndpoint`, `MqttConnection` or `LwM2mClient`, and that the codecs
-   were pure functions nobody called over a socket. It has 39 modules,
-   `Lwm2mClient.codex` and `Lwm2mFirmware.codex` are two of them, and the
-   endpoints live in `codex/foreword/encode/` rather than here
-   (`CoapEndpoint.codex`, `MqttEndpoint.codex`).
+Every protocol in this design is bound to a socket. `tools/coap-client.codex`
+cites `Net chapter NetDriver`, `Encode chapter CoapEndpoint` and
+`Net chapter UdpIO`, which is the whole shape of a binding, and
+`tools/coap-server.codex`, `tools/mqtt-client.codex`,
+`tools/mqtts-client.codex` and `tools/lwm2m-client.codex` are the same.
 
-   What survives, and it is narrower and checkable: **CoAP and MQTT are
-   bound and LwM2M is not.** `tools/coap-client.codex` cites
-   `Net chapter NetDriver`, `Encode chapter CoapEndpoint` and
-   `Net chapter UdpIO`, which is the whole shape of a binding;
-   `tools/coap-server.codex`, `tools/mqtt-client.codex` and
-   `tools/mqtts-client.codex` are the same. **`Lwm2mClient` cites only
-   `Coap`, `Lwm2m` and `Maybe` -- no `UdpIO`, no `NetIO` -- and its only
-   citer in the whole tree is `codex/test/apps/lwm2m-client.codex`.** So
-   the LwM2M client really is a pure state machine nobody calls over a
-   socket, and the missing piece is a wire half in `tools/` shaped like
-   `coap-client.codex`.
+**The LwM2M wire half is REACHED but unanswered, and that is the honest
+limit.** Measured in the bed with `-nic`, the guest opens
+`guest:5902 -> 10.0.2.2:5683` and pushes the registration datagram, so the
+binding emits rather than merely compiling. There is no LwM2M server on this
+box, therefore `registered=False` is a true statement about the socket and
+no statement at all about the protocol. Pointed at Leshan it becomes an
+interop arm, in the shape `build/coap-interop-test.ps1` takes.
 
-   **CLOSED 2026-08-18 (reek): `tools/lwm2m-client.codex`.** Registration,
-   the management session, and deregistration over `UdpIO`, one socket and
-   one client carried through every round for the message-id reason
-   `coap-client` records. Measured in the bed with `-nic`: the guest opens
-   `guest:5902 -> 10.0.2.2:5683` and pushes the registration datagram, so
-   the binding is REACHED and emits rather than merely compiling. **Nothing
-   answered, and that is the honest limit**: there is no LwM2M server on
-   this box, so `registered=False` is a true statement about the socket and
-   no statement at all about the protocol. Pointed at Leshan it becomes an
-   interop arm; `build/coap-interop-test.ps1` is the shape that would take.
-
-## The Network Stack Underneath (codex/os/net, 32 modules)
+## The Network Stack Underneath (`codex/os/net`, 41 chapters 2026-09-08)
 
 - **UDP**: datagram build/parse, pure, working. CoAP's substrate.
 - **TCP**: 10-state machine, functional event/action stepping
   (`tcp-step`), TcpConnection records, and RFC 793 serial sequence
-  arithmetic (`tcp-seq-wrap`/`-diff`/`-lt`/`-le`/`-ge`). Retransmission is
-  in `NetSession` (`NetworkStack.codex`), not here: an 8-deep
-  oldest-first queue, exponential backoff, bounded at 5 retries, covering
-  SYN, data and FIN, refusing a send past the bound.
+  arithmetic (`tcp-seq-wrap`/`-diff`/`-lt`/`-le`/`-ge`). The counters wrap
+  on store in `set-send-next`, `set-recv-next` and `tcp-new-connection`,
+  therefore the twelve sites that increment a sequence number are each
+  fixed once. `codex/test/tcp-seqwrap` pins it.
+
+  **Retransmission is in `NetSession` (`NetworkStack.codex`), not in
+  `tcp-step`**, which is a pure state machine with nowhere to put a timer.
+  `net-send` arms `rexmit-frame` and `rexmit-ack`, `net-tick` counts down
+  and re-sends on expiry, and `net-receive-segment` disarms on a covering
+  ACK. `rexmit-queue` holds up to `net-rexmit-capacity` = 8 `RexmitSeg`
+  entries with one timer per connection owned by the oldest unacked segment
+  (RFC 6298 section 5): an expiry retransmits the head only, and a
+  cumulative ACK retires every entry it covers and restarts the timer at the
+  base interval with the retry count reset, because an ACK that retires
+  anything is evidence the path is alive. The interval doubles (3, 6, 12,
+  24, 48 ticks), the retry count is bounded at 5 and the connection is
+  declared CLOSED rather than retransmitting forever, and
+  `net-connect`/`net-close` arm the timer, therefore a lost SYN or FIN is
+  retried. **The bound is refused, not grown:** a send past the capacity
+  answers `send queue full` and does not send, because with no collector an
+  unbounded queue would let a peer that has stopped acking choose our memory
+  ceiling.
+
+  **The RTO is RFC 6298, and the estimator needs no calibrated tick.** RFC
+  6298 is a ratio between a measured round trip and a retransmit interval,
+  and a ratio is right at any steady tick rate; only a value expressed in
+  seconds would need calibration, and nothing here is. `net-rtt-update`
+  carries `srtt` scaled by 8 and `rttvar` by 4 in the standard integer form,
+  and **Karn's algorithm is honoured**: `rx-resent` is per segment,
+  therefore an ack for anything retransmitted yields no sample. Pinned by
+  `codex/test/tcp-reliability`: `rtt-rto=6` where a 2-tick round trip gives
+  `srtt=16 rttvar=4`, against `karn-rto=3` where the same ack follows a
+  retransmission and the estimator is correctly left untouched.
+
+  **A safety bound placed over a wrong comparison converts a performance bug
+  into a correctness one**, and the interaction is why the bound and the
+  serial arithmetic must be read together: an unwrapped ACK failing the
+  compare left the retransmit armed, and the retry ceiling then declared a
+  healthy connection dead. The `wrapclose` arm answers ESTABLISHED.
 - **Framing/TcpTransport**: length-prefixed LE32 message framing
   over TCP (used by plugs and TrustTransport).
 - **DNS, DHCP, NTP, HTTP**: working client implementations.
@@ -313,175 +167,144 @@ absent" list below is now historical rather than descriptive.
 
 ## Prerequisite Hardening (before/alongside, in os/net)
 
-### The receive-loop heap leak: the repair, and what it costs (blu, 2026-09-08)
+### The receive path's heap cost
 
-The leak itself is described under the receive loops above, with the exact
-lines. This section is the repair and its measurement.
+The path is measured by `codex/test/net-recv-heap`, and these are the figures
+at head.
 
-**MEASURED FIRST, because the obvious guess is wrong.** Bracketing 100 calls of
-`transport-process-frame` between two `__heap-save` marks, on the bed with the
-depot seed:
-
-| frame handed in | retained per frame |
+| 1,514-byte accepted TCP frame, parsed and checksum-valid | bytes |
 |---|---|
-| 60 bytes | 208 bytes |
-| 1514 bytes | 208 bytes |
+| `net-process-frame`, whole | **392** |
+| a frame the stack does not recognise | 40 |
 
-The retained amount does NOT vary with frame length, so what survives each
-iteration is the rebuilt result and session records, not a copy of the frame.
-A repair aimed only at the frame buffer would leave that 208 bytes untouched.
+392 is `tcp-parse`'s record 48, the checksum's 12-byte pseudo-header 304, and
+one `NetResult` 40. Measured on kernel `EC179CDE95FA59DB`, 100 iterations.
 
-**The frame is a SECOND and larger term, and the two need separate repairs.**
-`e1000-read-bytes` builds the frame with one `list-push` per byte
-(`E1000e.codex:1178`), and `list-push` advances the frontier by the whole of a
-doubled capacity (`CostModel.md` 5.1), so the cost is measured in the driver's
-own shape rather than reasoned about:
+**Nothing on the receive path copies the payload.** `TcpSegment` carries
+`payload-buf`, `payload-off` and `payload-stop` instead of a `payload` list;
+`ActData` and `ActDataAck` carry the same three; `NetResult` carries them
+beside `data`, which is the frame rather than a copy of part of it; and
+`transport-feed-range` writes the bytes from the frame into the receive
+buffer with `__buf-write-byte`, allocating nothing. The range REPLACED the
+list rather than joining it, because two representations of the same bytes
+are an invariant nothing enforces.
 
-| per poll | frame build | records retained | total |
-|---|---|---|---|
-| 60-byte ACK or ARP | 528 | 208 | **736** |
-| 1514-byte frame | 16,400 | 208 | **16,608** |
+Three properties hold that path down and each is a rule to keep:
 
-The bound is `net-io-max-polls`, which is
-`net-io-tick-interval * net-io-max-ticks`.
+- **`tcp-checksum-valid` does not concatenate.** `ip-sum` (`Ethernet.codex`)
+  is `ip-checksum` without the fold, so the pseudo-header's unfolded sum is
+  carried as the accumulator into a second pass over the segment IN PLACE.
+  There is no explicit odd-length `& [0]` pad, because `ip-checksum`'s own
+  odd-tail arm already adds a final byte as the high half of its word, which
+  `ip-checksum-odd` pins.
+- **The IPv4 branch parses at an OFFSET and copies nothing.** Every IP
+  accessor, `tcp-parse` and `tcp-checksum-valid` have an `-at` form which IS
+  the implementation, with the bare name a wrapper at offset 0, therefore the
+  two forms cannot drift. **The segment's END is `off + ip-total-length-at`,
+  not the end of the buffer**, which is the bound `ip-payload` applied and is
+  why a padded Ethernet frame does not feed its padding to TCP. The ARP
+  branch keeps its copy, because an ARP payload is 28 bytes.
+- **The send path is cut the same way.** `tcp-with-checksum` carries the
+  pseudo-header's unfolded sum into a pass over the segment in place and
+  costs **304 regardless of segment length** (measured at 120, 1,480 and
+  1,481 bytes). **One call, never a spin:** it writes the checksum back into
+  its OWN argument with `list-set-at`, therefore a second call over the same
+  segment sums the bytes the first wrote and answers something else.
 
-**The repair, in two parts, neither of which is a `__heap-restore`:**
+**The transport records cost 40 bytes each and there are three per frame**,
+120 in total: `net-process-frame`, `transport-feed-from` and
+`transport-try-recv`. `transport-feed-from` takes the session as an argument
+rather than reading it off a transport, both of its branches build exactly
+one record, and `transport-process-frame`, `net-io-send-drain` and
+`arm64-net-io-send-drain` all call it directly, therefore no caller builds a
+`TcpTransportState` purely to hand to another builder.
 
-1. **The frame.** `net-driver-recv-frame` fills a caller-owned buffer allocated
-   ONCE outside the loop instead of returning a fresh list per poll. That is a
-   contract change on the driver and reaches every caller.
-2. **The 208 bytes, now IDENTIFIED** (blu, 2026-09-08, `codex/test/net-recv-heap`,
-   100 iterations at a 60-byte frame, seed `75B414046BEE5208`, and the same
-   five figures on the seed before it). The four stages
-   of `transport-process-frame` account for the whole with NO residual:
+`TcpTransportState` has no `recv-buf` field, and the field was provably
+always the empty list: every write of it in the tree was `[]` or a copy of
+one, no `__record-set` or `list-push` touched it, and its only read was
+`transport-stats`, which is why every arm printing it printed `buf=0`.
+`transport-stats` reports `recv-len`, the number of buffered bytes it always
+claimed to be.
 
-   | stage | bytes per frame | what it builds |
+**`&` concatenation is 6.5x dearer to READ than a flat list** on the same
+bytes, and the mechanism is unmeasured; the finding is carried on
+`CostModel.md`. It bears on any measurement taken here, because a fixture
+built with `&` prices its own assembly rather than the stack: the same
+function over the same 1,514 bytes measured 107,435 on an `&`-built frame and
+16,400 on a flat one. **A real frame is flat.** `e1000-read-bytes`
+(`E1000e.codex:1179`) is `list-push acc (peek-byte base i)`, one push per
+byte.
+
+#### Still open on this path
+
+1. **The frame is still built as a `List Integer`, one `list-push` per
+   byte.** A frame byte costs 8 bytes as a list element and `list-push`
+   advances the frontier by a DOUBLED capacity, which takes 1,514 bytes to
+   16,400. Pre-sizing the list saves about a quarter and leaves the
+   8-bytes-a-byte; only dropping the list representation removes the 10x.
+   The bytes are ALREADY in a buffer the driver can address, therefore the
+   repair is `net-driver-recv-frame` filling a caller-owned buffer allocated
+   once outside the loop. That is a contract change on the driver and
+   reaches every caller.
+
+   **The DMA ring cannot be handed out as the span directly.**
+   `e1000-recycle-rx` returns the descriptor to the card immediately after
+   the read, therefore a consumer reading lazily would race the next frame.
+   The buffer the loop owns has to be a copy target, which is what makes it a
+   fixed reused buffer rather than a view.
+
+   **The conversion is three signatures, not fourteen.** Counting by "takes a
+   `List Integer`" conflates an address with a payload (L-ADJECTIVE: a number
+   standing in for a structure). Six of the fourteen carry a 4-byte IP or a
+   6-byte MAC and never a frame (`net-arp-solicit`, `net-arp-known`,
+   `arp-cache-lookup`, `arp-cache-search`, `arp-cache-index`,
+   `arp-cache-add`), and a seventh, `tcp-pseudo-header`, BUILDS twelve bytes
+   and receives no frame at all.
+
+   | group | signatures | what it carries |
    |---|---|---|
-   | `net-process-frame` | 40 | one `NetResult` |
-   | the rebuild inside `transport-process-frame` | 64 | one `TcpTransportState` |
-   | `transport-feed-raw` | 64 | ANOTHER `TcpTransportState` |
-   | `transport-try-recv` | 40 | one `TransportRecvResult` |
-   | total | **208** | equals the measured whole exactly |
+   | INBOUND, the receive loop's own path | `net-process-frame`, `net-process-ip`, `net-process-arp` | up to 1,514 bytes off the wire |
+   | OUTBOUND and validation | `wrap-tcp-in-ip-eth`, `tcp-with-checksum`, `tcp-checksum-valid`, `net-outbox-frame` | bytes this stack built, or an inbound segment being checked |
 
-   **WHICH FRAME THE FIGURES ARE MEASURED ON, and it is not every frame
-   (blu, 2026-09-08, self-caught while sizing the frame half).** The arm's
-   fixture is `zeros 60`, so its ethertype is 0 against `eth-type-ipv4` 2048
-   and `eth-type-arp` 2054: `net-process-frame` takes its `unknown ethertype`
-   branch, returns one `NetResult`, and NEVER calls `eth-payload`. So every
-   absolute figure in this section -- 208, 144, 120 -- is the cost of a frame
-   the stack does not recognise, which is exactly the no-message poll the
-   original arm was built to measure and is NOT the cost of a frame it
-   processes. A recognised frame additionally pays `eth-payload`, which builds
-   a fresh list of the payload one `list-push` at a time, and then `ip-payload`
-   below it: two more copies at 8 bytes a byte with doubling, unmeasured.
-   **The REDUCTIONS are unaffected and hold for every frame**, because both
-   removals are per-construction: the doubled `TcpTransportState` (64 bytes)
-   and the `recv-buf` field (24 bytes) come off any frame, recognised or not.
+   The slice helpers, the transmit path and `Arm64NetIO` are uncounted. A
+   partial conversion leaves the stack in two representations at once, and
+   this is the stack `b3` and the remaining hardware sitting depend on,
+   therefore the change wants a session of its own with an arm per converted
+   layer.
 
-   **THE RECOGNISED FRAME IS MEASURED, and it is 17x the dropped one: 699
-   bytes against 40** (blu, 2026-09-08, `recognised-cost` in
-   `codex/test/net-recv-heap`, 100 iterations, seed `82DC1A4CEEA20EFE`). The
-   two fixtures are the same 60 bytes and differ in exactly TWO: the ethertype.
-   So 659 of those bytes are what RECOGNITION costs, all of it inside
-   `net-process-frame`, and none of it appeared in any figure this document
-   published before today. On a 60-byte frame the stage table's 40 becomes 699
-   and the per-frame total becomes about 779 rather than 120.
+2. **The payload-free branch of two poll loops recurses without restoring the
+   heap.** `net-io-recv-wait` saves at `NetIO.codex:379`, restores on the
+   empty-frame branch at `:382`, and recurses at `:388` after processing a
+   frame WITHOUT a restore. `net-io-recv-raw-poll` is the same shape: save at
+   `:411`, restore at `:414`, recurse unrestored at `:420`. A bare ACK, an ARP
+   or a FIN takes that branch, therefore a long poll leaks until the guest
+   dies, and with no collector every byte of it is permanent.
 
-   That reprices the frame half rather than changing its direction. The
-   driver's `list-push` build (16,400 bytes for a 1,514-byte frame) was only
-   ever one of the copies: `eth-payload` builds a fresh list of the payload,
-   and `net-process-ip` calls `ip-payload` for another, so a recognised frame
-   is copied at least three times at 8 bytes a byte before anything reads it.
-   The 60-byte reading is a FLOOR for the same reason: these copies scale with
-   the payload, and 1,514 bytes was not measured.
+   **The diagnostic signature if it bites in the field: time-to-death scaling
+   with guest MEMORY is heap exhaustion, not a hang** (measured elsewhere at
+   265 s on 3 GB against 615 s on 6 GB), and codex-vm prints nothing when a
+   guest dies this way.
 
-   The arm's older line "the retention ignores frame length" is true of the
-   DROPPED path it is measured on and must not be read as a statement about a
-   recognised one.
+3. **The arm64 field-index tables have no runtime observer.**
+   `Arm64CodeGen3.codex` keeps two hand-written field-name-to-index tables
+   encoding record field order literally, therefore any field reorder is a
+   silent arm64 miscompile. Sabotaging one index to the wrong value,
+   rebuilding, and confirming the wrong value in the bundled source produced a
+   PASS, so no available arm observes these tables (L-VACUOUS). The x86-64
+   backend is not exposed: it computes the index from the record's own field
+   list (`find-record-field-index`). Registered as COMPILER-72.
 
-   **THE FIGURE ON THAT PATH IS NOW 120, and the transport record itself is 40
-   bytes** (blu, 2026-09-08). `recv-buf` was carried in every construction, copied in
-   every rebuild, and never held anything: the census over the tree finds every
-   write of it is `[]` or a copy of one, no `__record-set` or `list-push`
-   touches it, and its only read was `transport-stats`, which is why every arm
-   printing it printed `buf=0`. Removing the field takes the record from 64
-   bytes to 40 and the per-frame figure from 144 to 120, and the three
-   surviving stages now cost 40 each. `transport-stats` reports `recv-len`
-   instead, which is the number of buffered bytes it always claimed to be.
-   Confirmed independently: every figure in `codex/test/web-mux-heap` fell by
-   the same 24 bytes, because a `web-mux` accept builds one transport.
+4. **`codex/test/arm64-web-server` page-faults at `CR2=0x4010000000`** before
+   any network activity. It carries NO `.expected`, therefore nothing grades
+   it and no gate runs it; the address is an ARM64 virtio-mmio base being
+   dereferenced on the x86-64 bed (L-NOGATE).
 
-   **The arm64 half of that removal is UNPROVEN, and the gap is worth naming.**
-   `Arm64CodeGen3.codex` keeps two hand-written field-name-to-index tables that
-   encode `TcpTransportState`'s field order literally (`session` 0, `recv-buf`
-   1, `recv-base` 2 ...), so the removal shifts four entries and deletes one.
-   The tables were corrected, the arm64 plug rebuilt and `net-recv-heap` run
-   cross to arm64: PASS. That pass means nothing. Sabotaging one index to the
-   wrong value, rebuilding, and confirming the wrong value in the bundled
-   source produced a PASS as well, so no available arm observes these tables
-   (L-VACUOUS). Any future field reorder is a silent arm64 miscompile with
-   nothing to catch it. The x86-64 backend is not exposed to this: it computes
-   the index from the record's own field list (`find-record-field-index`).
-
-   **The step before it: the duplicate build removed, 208 to 144**
-   (blu, 2026-09-08). `transport-process-frame` was constructing a
-   `TcpTransportState` purely to hand it to `transport-feed-raw`, which
-   immediately constructed another from it. `transport-feed-from` takes the
-   session as an argument instead of reading it off a transport, both of its
-   branches build exactly one record, and `transport-process-frame` now calls
-   it directly: **208 to 144 per frame, 64 bytes and one whole record gone**,
-   with no representation change and no signature change outside
-   `TcpTransport`. The repaired path is `net-process-frame` 40 plus
-   `transport-feed-from` 64 plus `transport-try-recv` 40, and the arm asserts
-   that those three account for the whole with no residual.
-
-   Proven behaviourally rather than by inspection: all 15 arms citing
-   `TcpTransport` that carry an `.expected` produce byte-identical output
-   (`tcp-transport-test`, `tcp-transport-guard`, `net-io-clock`,
-   `web-send-short`, `http-send-short`, `net-send-capped`,
-   `explorer-server-test`, `edge-mesh-admit`, `arm64-send-refusal`,
-   `web-mux-heap`, `net-recv-heap`, and the four `trust-*` arms).
-   `arm64-web-server` carries no `.expected` and is not part of that proof.
-
-   **THE OTHER TWO SITES ARE DONE TOO** (blu, 2026-09-08): `net-io-send-drain`
-   in `NetIO.codex` and `arm64-net-io-send-drain` in `Arm64NetIO.codex` both
-   call `transport-feed-from` now, one record per frame instead of two on the
-   drain path, 64 bytes each by the stage costs above. The saving is the same
-   construction the table prices, not a new number, and it is not claimed as
-   one.
-
-   **What an end-to-end measurement of `net-io-send-drain` would take, since
-   "it needs a card" is too weak an answer (blu, 2026-09-08).** A card is
-   available: `-e1000-nat` is a codex-vm flag and two arms already take it
-   (`dhcp-acquire-e1000` and `net-poll-calibrated`), so frames really arrive
-   under an ordinary arm. What the drain path lacks is a TCP PEER. It runs
-   once per 1400-byte chunk of an established connection, and with no peer
-   every poll takes the empty-frame branch, which is the one branch that DOES
-   `__heap-restore`, so an arm without a peer measures the path that was never
-   leaking. DHCP does not substitute: it is the one exchange `-e1000-nat`
-   completes alone, and it is UDP. So the measurement is interop-shaped, a
-   host-side listener plus a guest, in the family of `build/*-interop-test.ps1`
-   rather than a `codex/test` arm, and it is worth its own unit only if the
-   per-frame figure on a live connection is wanted for its own sake: the
-   construction it would price is already priced above.
-
-   What blocked a shared helper was that those two carried `recv-buf` where
-   `transport-process-frame` blanked it, which differs in
-   `transport-feed-raw`'s overflow branch. **A census settles it: `recv-buf`
-   is provably always the empty list.** Every write of the field in the tree
-   is either `[]` or a copy of another transport's `recv-buf`, no
-   `__record-set` and no `list-push` touches it, and its only read is
-   `transport-stats`, which is why every arm printing it prints `buf=0`. So
-   the field is vestigial, blanking and preserving are the same act, and
-   **removing `recv-buf` from `TcpTransportState` would shrink every one of
-   these records** -- a follow-up worth pricing, since the record is 64 bytes
-   and this campaign is counting them.
-
-   The remaining 80 bytes are the two result records, which are the shape of
-   the interface rather than an accident. Reuse of the surviving `NetSession`
-   is the harder half, because it holds `arp`, `outbox` and `rexmit-queue`
-   (`NetworkStack.codex:61`), all heap structure the processed frame
-   legitimately updates.
+**The arm asserts SHAPE, not the byte counts**, because an expectation
+carrying the numbers would go red on any allocator or codegen change as well
+as on a repair, and the next reader would update the figure without learning
+why it moved. The counts live in the tables above with the date they were
+taken. The instrument needs no new primitive: `__heap-save` returns an
+Integer and the delta between two marks is the bytes allocated between them.
 
 **Why a `__heap-restore` before the recursion cannot be the repair**: the state
 that must survive is exactly that session, so the restore frees what the
@@ -507,87 +330,7 @@ allocates nothing, is possible and is NOT recommended without a full audit:
 that builtin stores into the argument and hands the same record back
 (L-ALIAS), so it would silently mutate a session any caller still holds.
 
-**THE FRAME HALF'S BLAST RADIUS, counted rather than called wide (blu,
-2026-09-08).** The 10x is the REPRESENTATION: a frame byte costs 8 bytes as a
-`List Integer` element, and `list-push`'s doubling takes 1,514 bytes to 16,400.
-Pre-sizing the list instead of doubling saves about a quarter and leaves the
-8-bytes-a-byte; only dropping the list representation removes the 10x. The
-bytes are ALREADY in a buffer the driver can address -- `e1000-take-frame`
-reads them with `peek-byte` off `rx-bufs + idx * e1000-buf-size` and copies
-them into a list purely to satisfy the consumer's type -- so the driver side is
-small and the consumer side is the work:
-
-**THE "14 SIGNATURES" FIGURE IS WRONG, and the campaign is smaller and
-differently shaped than it says (blu, 2026-09-08, every signature re-read at
-head).** All 14 named below still exist and all 14 still take `List Integer`,
-which is why the number survived re-checking. But `List Integer` is not the
-same claim as "carries a frame", and **six of the fourteen carry a 4-byte IP
-or a 6-byte MAC and never a frame**: `net-arp-solicit` and `net-arp-known`
-take a target IP, and `arp-cache-lookup`, `arp-cache-search`,
-`arp-cache-index` and `arp-cache-add` take an IP and a MAC. A seventh,
-`tcp-pseudo-header`, BUILDS twelve bytes and receives no frame at all.
-Converting those seven buys nothing: the 10x this campaign exists to remove is
-1,514 bytes at 8 bytes a byte plus `list-push` doubling, and none of it is in
-a four-byte address.
-
-What actually carries frame-sized bytes is seven, in two groups that want
-separate decisions:
-
-| group | signatures | what it carries |
-|---|---|---|
-| INBOUND, and the receive loop's own path | `net-process-frame` (the frame), `net-process-ip` (a slice of it), `net-process-arp` (a slice of it) | up to 1,514 bytes off the wire |
-| OUTBOUND and validation | `wrap-tcp-in-ip-eth`, `tcp-with-checksum`, `tcp-checksum-valid`, `net-outbox-frame` (which RETURNS a frame) | bytes this stack built, or an inbound segment being checked |
-
-**So the first unit is three signatures, not fourteen, and the inbound group
-is where the leak measured in this document lives.** The outbound group is a
-separate question with its own cost, because those bytes are constructed
-rather than received. Counting by "takes a `List Integer`" conflated an
-address with a payload, and the conflation made the campaign look four times
-its size (L-ADJECTIVE: a number standing in for a structure).
-
-The slice helpers, the transmit path and `Arm64NetIO` are still uncounted. A
-partial conversion leaves the stack in two representations at once, and this is
-the stack `b3` and the remaining hardware sitting depend on, so the change wants
-a session of its own with an arm per converted layer rather than a corner of
-one.
-
-The DMA ring cannot be handed out as the span directly: `e1000-recycle-rx`
-returns the descriptor to the card immediately after the read, so a consumer
-reading lazily would race the next frame. The buffer the loop owns has to be a
-copy target, which is what makes it a fixed reused buffer rather than a view.
-
-**The measurement is IN THE TREE as `codex/test/net-recv-heap`**, so the repair
-has a red/green target rather than a number in somebody's scratch directory. The
-arm reports the retention at both frame sizes and asserts that the two agree.
-
-**The arm asserts SHAPE, not the byte counts**, because an expectation carrying
-the numbers would go red on any allocator or codegen change as well as on the
-repair, and the next reader would update the figure without learning why it
-moved. The counts live in the tables above, with the date they were taken; the
-arm holds the seven statements a repair changes: a poll producing no message
-still retains, the retention ignores frame length, the frame build costs more
-than the records retain, the frame cost grows with frame length, the three
-stages of the path account for the whole with no residual, feeding builds
-exactly one transport record, and both feeds build one record so the saving
-was the caller's construction.
-
-**The arm GOES RED WHEN THE REPAIR LANDS, and that is deliberate.** A green arm
-here means the leak is still present.
-
-The instrument needs no new primitive: `__heap-save` returns an Integer and the
-delta between two marks is the bytes allocated between them.
-
-| Gap | Why it blocks | Work |
-|---|---|---|
-| TCP retransmission (RTT estimate only) | MQTT keepalive + QoS assume a reliable stream | Timer, backoff, bounded retry, an 8-deep oldest-first queue and serial sequence arithmetic all exist in `NetSession`; what is left is an RTT-derived interval, which needs a clock the session does not have |
-| TLS 1.3 client | MQTT to any cloud broker | Audit foreword Tls; complete: X25519 (DiffieHellman chapter) + HKDF + AES-GCM/ChaCha20 exist, so the work is handshake + record layer, not primitives |
-| DTLS 1.2/1.3 | CoAP security (coaps://), LwM2M mandates it | Record layer over UDP: retransmitting flights, cookie exchange, epoch/sequence in AEAD nonce; shares handshake core with TLS work |
-
-### The clock exists. One production caller drives it. (measured 2026-08-09, val)
-
-The row above says the retransmission gap needs "a clock the session does
-not have". Measured, the position is worse and more specific than that:
-**the clock exists and almost nothing turns it.**
+### The clock exists, and one production caller turns it
 
 `net-tick` (`NetworkStack.codex:459`) is what ages a connection: it fires
 the RTO, counts `rexmit-tries`, and at `net-rto-max-tries` declares the peer
@@ -625,44 +368,15 @@ measurement. Once the clock runs, `net-tick` already sets `TcpClosed` on
 give-up and the caller can read `(ts.session).conn.state`; no new record
 field and no 23-site construction sweep is needed.
 
-**DECIDED AND LANDED 2026-08-09 (blu): the I/O loops tick on a poll count,
-not on a wall clock.** `NetIO` now carries `net-io-tick-interval = 100000`
-and `net-io-max-polls = 50000000`, and `net-io-send-drain`,
-`net-io-recv-wait` and `net-io-recv-raw` each spend one `transport-tick`
-plus an outbox flush every `net-io-tick-interval` polls. All three also
-return as soon as the connection reads `TcpClosed`, which is what makes a
-RST end the loop instead of leaving it spinning on a full queue.
+**The I/O loops tick on a poll count, not on a wall clock.** `NetIO` carries
+`net-io-tick-interval = 100000` and `net-io-max-polls = 50000000`, and
+`net-io-send-drain`, `net-io-recv-wait` and `net-io-recv-raw` each spend one
+`transport-tick` plus an outbox flush every `net-io-tick-interval` polls. All
+three also return as soon as the connection reads `TcpClosed`, which is what
+makes a RST end the loop instead of leaving it spinning on a full queue.
 
-**OPEN, and it is in the same two loops: the payload-free branch recurses
-without restoring the heap.** `net-io-recv-raw` takes a `heap-save` before
-reading a frame, but on the branch where a frame arrives carrying NO payload
--- a bare ACK, an ARP, a FIN -- it recurses without the matching restore,
-because the transport state it has just updated has to survive the iteration.
-`net-io-recv-wait` has the identical shape. A polling read provokes exactly
-those frames, so a long poll leaks until the guest dies, and with no collector
-every byte of it is permanent. Recorded here rather than fixed because the
-repair is a real design question -- the state that must survive has to be
-lifted out of the reclaimed frame first, which is what the naive fix would
-throw away. The diagnostic signature if it bites in the field:
-**time-to-death scaling with guest MEMORY is heap exhaustion, not a hang**
-(measured elsewhere at 265 s on 3 GB against 615 s on 6 GB), and codex-vm
-prints nothing when a guest dies this way.
-
-**STILL OPEN at head, re-verified 2026-09-08 (blu), with the exact lines.**
-`net-io-recv-wait` saves at `NetIO.codex:379`, restores on the empty-frame
-branch at `:382`, and recurses at `:388` after processing a frame WITHOUT a
-restore. `net-io-recv-raw-poll` is the same shape: save at `:411`, restore at
-`:414`, recurse unrestored at `:420`.
-
-Why the naive repair is wrong, concretely: what must survive the reclaim is a
-`NetSession`, and that record holds `arp`, `outbox` and `rexmit-queue`
-(`NetworkStack.codex:61`), every one of them heap structure the just-processed
-frame updated. A `__heap-restore` before the recursion frees exactly the state
-the iteration exists to carry forward. A repair therefore needs the frame's
-storage reclaimed WITHOUT reclaiming the session: either a frame buffer
-allocated once outside the loop and reused, or a region discipline that
-separates frame scratch from session state. Both are design changes to the
-stack's memory model rather than an edit to these two functions.
+The unrestored recursion in two of those loops is open work and is item 2 of
+"Still open on this path" above, with the exact lines.
 
 Second-order and worth knowing before reading either signature: **the second
 argument of these loops is the try count to START AT, not a limit** (they give
@@ -687,9 +401,8 @@ polls against a 50,000,000 cap.
 **Measured end to end, not only by inspection** (2026-08-09, seed
 `B3C1BAA8F961D247`, codex-vm, no peer on the wire). A session with one
 unacked segment handed to `net-io-recv-raw` came back **CLOSED, queue
-empty, `now-ticks` 141** after 263 s: the full unmeasured ladder ran
-inside the poll loop and ended by give-up. The same program before this
-change returns ESTABLISHED with `now-ticks` 0. 141 ticks at 100000 polls
+empty, `now-ticks` 141** after 263 s: the full ladder ran inside the poll
+loop and ended by give-up. 141 ticks at 100000 polls
 is 14.1M polls in 263 s, so a poll cost about 18.6 us in that bed --
 **that is the emulated NIC's number and not a property of the design; a
 tick is a count and its duration is whatever the caller's poll loop
@@ -704,8 +417,8 @@ there advances `now-ticks` and allocates a session for it and buys
 nothing. This is the loop val measured at 180 s without reaching its cap;
 that measurement stands and is about the cap, not about the clock.
 
-**The stack now has TWO tick rates, and this change is what made that
-true.** `net-io-tick-interval` is 100000 polls; `web-sweep-interval`
+**The stack has TWO tick rates.** `net-io-tick-interval` is 100000 polls;
+`web-sweep-interval`
 (`WebServer.codex:263`) is 1000000, and it is what ages every connection
 in the concurrent mux, because `web-mux-loop` polls
 `net-driver-recv-frame` itself rather than going through a NetIO wait. The
@@ -726,7 +439,7 @@ number against. The clean repair is not to copy the constant across:
 reaper (`web-idle-max` counts sweeps), so unifying the rate means
 separating those two first.
 
-**Two parts of the census this did NOT close, both measured 2026-08-09.**
+**Two parts of the census that stay open.**
 
 - `net-io-wait-established` has a **10000**-poll cap, not fifty million, so
   it already terminates and no tick can fire inside it at any sane
@@ -734,29 +447,23 @@ separating those two first.
   `net-connect` queues it, `transport-connect` sends it once, and a connect
   that gets no SYN-ACK fails after 10000 polls. That is a capability gap,
   not a hang, and it is separate work.
-- **The ARM64 path is worse than untimed and it is the 14317 defect, still
-  live.** `arm64-net-io-send-chunk` (`Arm64NetIO.codex:102`) calls
-  `net-send` and advances by `arm64-net-mss` without reading the result's
-  refusal and without any `net-rexmit-full` check at all, so past
-  `net-rexmit-capacity * net-mss` = 11,200 bytes it silently drops
-  everything it thinks it sent. The x86 path was fixed at main 14317; this
-  copy never was. Its loops do not tick either. Not fixed here because
-  there is no ARM64 bed on this box to run the change against.
+- **The ARM64 send path silently drops past 11,200 bytes, and it is the
+  same defect the x86 path had.** `arm64-net-io-send-chunk`
+  (`Arm64NetIO.codex:102`) calls `net-send` and advances by `arm64-net-mss`
+  without reading the result's refusal and without any `net-rexmit-full`
+  check at all, therefore past `net-rexmit-capacity * net-mss` = 11,200
+  bytes it drops everything it believes it sent. Its loops do not tick
+  either. Unfixed because there is no ARM64 bed on this box to run the
+  change against.
 
-**Owner: blu** (`codex/os/net/**`). Raised by val out of C2, which is where
-the symptom surfaced; C2 does not own the fix.
-
-> **Superseded 2026-07-13.** This section used to end: *"The crypto floor
-> is already in place and constant-time (Sha256, Ed25519, AesGcm,
-> ChaCha20, Hkdf, DiffieHellman) -- the protocol work composes
-> primitives, it does not add any."* That was read as a fact and it is
-> not one. The protocol work **does** add primitives. See below.
+**Owner: blu** (`codex/os/net/**`).
 
 ## The Crypto Floor: Audited
 
-Read against the tree on 2026-07-13, function by function. This is what
-is actually there, so that nothing downstream is estimated against a
-chapter nobody opened.
+Read against the tree function by function (2026-07-13), so that nothing
+downstream is estimated against a chapter nobody opened. **The protocol work
+adds primitives rather than only composing them**, which is why this audit
+exists.
 
 ### Sound, and safe to build on
 
@@ -768,7 +475,7 @@ chapter nobody opened.
 | SHA-256, HMAC | `Sha256.codex`, `Hmac.codex` | Sound. Transcript hash and HKDF rest on these. |
 | X25519, Ed25519 | `DiffieHellman.codex`, `Ed25519.codex` | Sound. Key exchange and device identity. |
 
-### Was missing, shipped in D0 (2026-07-13)
+### Shipped in D0
 
 | Primitive | Chapter | Gate |
 |---|---|---|
@@ -790,18 +497,20 @@ battery buys you.
 
 ### Still missing, and load-bearing
 
-| Gap | Reality | Status |
-|---|---|---|
-| ~~A usable TLS key schedule~~ | **FIXED 2026-07-13.** The RFC 8446 §7.1 ladder now runs over the real foreword HKDF and is gated on the **RFC 8448 published trace** -- early, derived, handshake secret, both traffic secrets, server key and IV all match the IETF's bytes. Three defects died: the fake `tls-hkdf-expand` (deleted), a one-byte zero IKM where the RFC means Hash.length zeros, and every label encoded as **CCE instead of ASCII** (which also had SNI hostnames going out as CCE). **D2 is unblocked.** | §5.8 |
-| **The transport itself** | No TLS, no DTLS, no secure channel of any kind. The AEADs can now protect a payload; nothing forces a payload through them. | §5.3 |
+**The TLS key schedule is real.** The RFC 8446 §7.1 ladder runs over the
+foreword HKDF and is gated on the **RFC 8448 published trace**: early,
+derived, handshake secret, both traffic secrets, server key and IV all match
+the IETF's bytes. Three traps are closed and must not be reintroduced: a
+`tls-hkdf-expand` that does not counter-chain, a one-byte zero IKM where the
+RFC means Hash.length zeros, and **labels encoded as CCE instead of ASCII**,
+which also sent SNI hostnames out as CCE. Use `to-unicode` for any ASCII
+protocol constant, never bare `char-code`.
 
-`ComplianceEvidence.codex` has been reconciled to match. Its crypto rows
-are now true and say what they are tested against; its *transport* rows
-(CRA Annex I 1(e), ETSI 5.3-1, ETSI 5.3-6, IEC 62443 FR4) now disclose
-that no TLS/DTLS ships, and the two that claimed the toolchain supplies
-the channel were downgraded MECHANISM → DEPLOYMENT. The evidence
-generator is the one thing in this project that must never lie; it no
-longer does.
+`ComplianceEvidence.codex` is reconciled against this floor: its crypto rows
+say what they are tested against, and its transport rows (CRA Annex I 1(e),
+ETSI 5.3-1, ETSI 5.3-6, IEC 62443 FR4) carry what the transport actually
+supplies. The evidence generator is the one thing in this project that must
+never lie.
 
 ## DTLS: The Build Plan
 
@@ -825,7 +534,7 @@ phase and for a real interop target. Deciding it now would be guessing.
 Each phase is a CL and each is testable on the x86 battery as pure
 samples -- no network, no VM peer, per the standing constraint.
 
-**D0 -- Repair the floor. SHIPPED 2026-07-13 (fester).** Poly1305,
+**D0 -- Repair the floor. SHIPPED.** Poly1305,
 ChaCha20-Poly1305, and AES-256-GCM, each gated on the published vectors
 (RFC 8439 §2.5.2 and §2.8.2; OpenSSL for GCM), and the evidence table
 reconciled so its crypto claims are true and its transport claims are
@@ -834,7 +543,7 @@ out of this CL** -- it is a separate concern from the AEAD floor, D1 does
 not need it, and one thing at a time. It is the prerequisite for D2, not
 for D1.
 
-**D1 -- The record layer. SHIPPED 2026-07-13 (fester).**
+**D1 -- The record layer. SHIPPED.**
 `codex/foreword/encode/Dtls.codex`, pure, with `codex/test/dtls-record.codex`
 as its known-answer gate. Byte-identical to an independent implementation
 of the spec written over the .NET BCL's crypto, and every failure path
@@ -876,7 +585,7 @@ Original scope, for the record:
 - AAD is the record header exactly as it goes on the wire.
 - Anti-replay sliding window (§4.5.1), 64 entries, fixed capacity.
 
-**D2a -- The handshake machine. SHIPPED 2026-07-13 (fester).**
+**D2a -- The handshake machine. SHIPPED.**
 `codex/foreword/encode/DtlsHandshake.codex`. Pure `step : State, Event ->
 (State, List Action)`, the `tcp-step` contract, so a datagram handshake --
 whose whole difficulty is loss, reordering and duplication -- tests as an
@@ -902,7 +611,7 @@ action trace with no network, no peer and no clock
   hang, and a hang on a device nobody can reach is the failure this
   project exists to prevent. Retries stop at 10 and abort.
 
-**D2b -- The handshake message layer. SHIPPED 2026-07-13 (fester).**
+**D2b -- The handshake message layer. SHIPPED.**
 `codex/foreword/encode/DtlsMessage.codex`, gated by
 `codex/test/dtls-message.codex`.
 
@@ -930,8 +639,7 @@ Malformed input fails closed. A truncated header and a header whose
 rather than read out of bounds -- a datagram protocol is handed rubbish
 constantly, and trusting a length field is the attack.
 
-**Fragmentation: CLOSED IN BOTH DIRECTIONS.** Receive landed 2026-08-08,
-send 2026-08-09.
+**Fragmentation: CLOSED IN BOTH DIRECTIONS.**
 
   The endpoint reassembles a fragmented peer flight through `ep-reasm`
   and `dtls-ep-on-frag`, and it now cuts its own oversized messages
@@ -962,27 +670,16 @@ send 2026-08-09.
   process and no path is ever involved. A test without the size arm would
   have certified the broken build.
 
-  **Wiring the receive half fixed a REMOTELY TRIGGERABLE FAULT, and that
-  was not what the work set out to do.** Before it, a handshake fragment
-  with a non-zero `fragment_offset` went straight to the hello parser
-  carrying a body shorter than its own declared length, and the guest
-  died: `!EXC=06` at RIP 0x120a7b, CR2 0x1a00000, reproduced twice at the
-  same address on `DtlsEndpoint.codex#12`. Worse than the crash, the
-  fragment BEFORE it was answered: a partial ClientHello drew a full
-  HelloRetryRequest (`half-hrr` measured 1, now 0). Both are
-  pre-authentication, on a datagram anyone can send.
-
-  It was the CONTROL run that found it, not the feature work. The arms
-  were written to show reassembly working and the pre-change arm was
-  expected to answer 0; it faulted instead.
-
-  The class is closed rather than the instance: after the change the
-  parser only ever receives a body whose length equals its declared
-  length, either by the fast path (offset 0, fragment length equal to
-  length) or out of reassembly. A short but SELF-CONSISTENT hello is a
-  different input and is still reachable, so `runt-out` hands the server
-  a self-declared 8-byte ClientHello and pins that it neither faults nor
-  goes silent.
+  **The parser must only ever receive a body whose length equals its own
+  declared length**, either by the fast path (offset 0, fragment length
+  equal to length) or out of reassembly. Handing it a handshake fragment
+  with a non-zero `fragment_offset` and a short body is a remotely
+  triggerable fault on a pre-authentication datagram anyone can send, and it
+  also draws a full HelloRetryRequest for a partial ClientHello (`half-hrr`
+  is the census, and it reads 0). A short but SELF-CONSISTENT hello is a
+  different input and is still reachable, therefore `runt-out` hands the
+  server a self-declared 8-byte ClientHello and pins that it neither faults
+  nor goes silent.
 
   Send: `dtls-msg-fragments` splits at a caller-given body
   size, each fragment carrying the WHOLE message length with its own
@@ -1016,18 +713,15 @@ send 2026-08-09.
   with `build/dtls-fragment-interop.ps1 -Regenerate`, which mints a fresh
   chain, so a rerun confirms the property over different bytes rather than
   replaying the frozen ones.
-  **Peer authentication was listed here as open and is not.** It shipped
-  2026-07-13 and the header of this file has said so since; this bullet
-  simply outlived it. The observation it made is still true -- a Finished
-  that verifies proves the peer holds the same handshake secret and says
-  nothing about *who* the peer is -- but the answer exists:
-  `dtls-ep-with-anchors`, `x509-verify-peer` and `dtls-ep-authenticated`,
-  gated by `codex/test/apps/dtls-auth-loopback`, which pins
-  `client-authenticated=True` on the good path and False on all four bad
-  ones (no anchor, MITM key_share, anonymous downgrade, wrong expected
-  name). Corrected 2026-08-09 (blu).
+  **A Finished that verifies proves the peer holds the same handshake secret
+  and says nothing about *who* the peer is.** Peer authentication is what
+  answers that: `dtls-ep-with-anchors`, `x509-verify-peer` and
+  `dtls-ep-authenticated`, gated by `codex/test/apps/dtls-auth-loopback`,
+  which pins `client-authenticated=True` on the good path and False on all
+  four bad ones (no anchor, MITM key_share, anonymous downgrade, wrong
+  expected name).
 
-**D2c -- The hello bodies. SHIPPED 2026-07-13 (fester).**
+**D2c -- The hello bodies. SHIPPED.**
 `codex/foreword/encode/DtlsHello.codex`, gated by
 `codex/test/dtls-hello.codex`. ClientHello (with and without the cookie
 extension), ServerHello, HelloRetryRequest, and the parsers that pull the
@@ -1055,7 +749,7 @@ eavesdropper and it does **not** resist an active man-in-the-middle, who
 just runs two handshakes and sits in the middle. A connection built on
 this is not secure, and must not be described as such.
 
-**D3 -- The endpoint. SHIPPED 2026-07-13 (fester).**
+**D3 -- The endpoint. SHIPPED.**
 `codex/os/net/DtlsEndpoint.codex`, gated by
 `codex/test/apps/dtls-loopback.codex`. Pure -- datagram in, datagrams out,
 no socket and no clock -- on the `Udp` chapter's precedent, so a **full
@@ -1089,7 +783,7 @@ each -- a self-consistent implementation would have hidden all three:
 
 A forged-address cookie and a garbage datagram both produce nothing.
 
-**D-auth -- Peer authentication. SHIPPED 2026-07-13 (X.509, Ed25519).** It
+**D-auth -- Peer authentication. SHIPPED (X.509, Ed25519).** It
 is the whole difference between "transport works" and "DTLS works."
 Without it, everything above agrees an **anonymous** X25519 key: safe
 against a passive eavesdropper, defeated by an active man-in-the-middle
@@ -1098,17 +792,13 @@ now exist and the MITM is defeated in the battery -- see the A1-A5
 sections below. **The anonymous mode still exists beside the
 authenticated one, and it is still not secure.**
 
-**The three items this paragraph listed as open are all closed, and the
-sentence that followed them outlived its own heading.** It read "Until
-D-auth lands, `coaps://` does not exist" in a paragraph whose first line
-says D-auth SHIPPED. Corrected 2026-08-09 (blu): application traffic keys
-are derived and app data is sealed at epoch 3 (`dtls-ep-derive-app`,
-`dtls-ep-send-app`); the handshake flights after ServerHello travel
-protected at epoch 2, not as DTLSPlaintext; fragmentation is closed in
-both directions (D2b above). What still gates `coaps://` is third-party
-interop, not any of these.
+Application traffic keys are derived and app data is sealed at epoch 3
+(`dtls-ep-derive-app`, `dtls-ep-send-app`); the handshake flights after
+ServerHello travel protected at epoch 2, not as DTLSPlaintext; and
+fragmentation is closed in both directions (D2b above). **What gates
+`coaps://` is third-party interop, not any of these.**
 
-The credential model is **decided (Damian, 2026-07-13): X.509.** PSK and
+The credential model is **decided (Damian): X.509.** PSK and
 raw public key were rejected as not good enough. D0-D3 are
 authentication-agnostic by construction, so this slots in behind them
 without reworking any of them.
@@ -1148,7 +838,7 @@ Ed25519 says False. The vector tests the parser, not itself.
 
 #### Phases (each its own CL, each gated on a published vector)
 
-**A1 -- `Asn1.codex`, the DER decoder. SHIPPED 2026-07-13.** Decoder only;
+**A1 -- `Asn1.codex`, the DER decoder. SHIPPED.** Decoder only;
 it does not build certificates. Offset-based: nothing is copied until a
 caller asks, and `asn1-raw` returns a slice of the *original* bytes,
 because a re-encoded TBSCertificate is a different byte string and
@@ -1176,15 +866,13 @@ Gate: `codex/test/asn1-der.codex`. Parses the §10.2 certificate, slices
 the TBS, and verifies the real signature with the §10.1 key
 (`verify-published=True`); the six negatives above each decode to `None`.
 
-**A2 -- `X509.codex`. SHIPPED** (marker was absent; verified at head
-2026-09-08, blu: `codex/foreword/encode/X509.codex`, gated by
+**A2 -- `X509.codex`. SHIPPED** (`codex/foreword/encode/X509.codex`, gated by
 `codex/test/x509-parse`). Certificate and TBSCertificate parse; Ed25519
 SubjectPublicKeyInfo; issuer and subject retained as **raw DER** (comparing
 decoded names is how you get name-confusion bugs); validity; extensions.
 The TBS is kept as a byte slice, never re-encoded.
 
-**A3 -- Chain validation. SHIPPED** (marker was absent; verified at head
-2026-09-08, blu: `codex/foreword/encode/X509Chain.codex`, `x509-chain-verify`
+**A3 -- Chain validation. SHIPPED** (`codex/foreword/encode/X509Chain.codex`, `x509-chain-verify`
 and `x509-verify-peer`, gated by `codex/test/x509-chain`). Signature verify
 against the issuer's key,
 validity window against a caller-supplied `now` (this chapter has no
@@ -1192,8 +880,7 @@ clock), `basicConstraints` CA + pathlen, key usage, SAN matching, trust
 anchor set. Negatives: tampered body, expired, wrong issuer, a leaf
 presented as its own CA.
 
-**A4 -- The messages. SHIPPED** (marker was absent; verified at head
-2026-09-08, blu: `Certificate` and `CertificateVerify` are in
+**A4 -- The messages. SHIPPED** (`Certificate` and `CertificateVerify` are in
 `codex/foreword/encode/DtlsMessage.codex`, exercised end to end by
 `codex/test/apps/dtls-auth-loopback`). `Certificate` (RFC 8446 §4.4.2) and
 `CertificateVerify` (§4.4.3), including the signature context -- 64 `0x20`
@@ -1205,7 +892,7 @@ string is ASCII, so it goes through `to-unicode`, **not** bare `char-code`
 `codex/foreword/encode/DtlsHello.codex:89`, and the prose above that line
 records what its absence cost.
 
-**A5 -- Wired into `DtlsEndpoint`. SHIPPED 2026-07-13.** Opt-in and
+**A5 -- Wired into `DtlsEndpoint`. SHIPPED.** Opt-in and
 backward-compatible: `dtls-ep-with-cert` gives a server a chain and signing
 key, `dtls-ep-with-anchors` gives a client its trust anchors and a calendar
 time; an endpoint built by `dtls-ep-new` alone is still the anonymous
@@ -1228,16 +915,14 @@ signed, the signature fails, and the handshake does **not** complete
 server against an anchored client -- is refused the same way. A passing
 handshake proved nothing; this failing one is the proof.
 
-**The caller entropy is IN, and this section's earlier claim was stale**
-(verified at head 2026-09-08, blu). `dtls-ep-new` takes `random` as its third
-parameter and stores the value as `ep-random` (`DtlsEndpoint.codex:92`), and
-`dtls-ep-random` reads `ep.ep-random` (`:119`). The `Random` is the caller's,
-not the endpoint's public key.
+**The `Random` is the caller's entropy, not the endpoint's public key.**
+`dtls-ep-new` takes `random` as its third parameter and stores the value as
+`ep-random` (`DtlsEndpoint.codex:92`), and `dtls-ep-random` reads
+`ep.ep-random` (`:119`).
 
-**The entropy path is now EXERCISED, by `codex/test/dtls-random`.** Until that
-arm landed, `dtls-ep-new` had no caller anywhere in the tree, so the capability
-sat in the signature and nothing had ever shown the caller's bytes reaching the
-`Random` -- the state `ChainCore`'s hash was in until an arm ran it (L-UNHEARD).
+**The entropy path is EXERCISED, by `codex/test/dtls-random`**, and it has to
+be: a capability that sits in a signature with no caller has never been shown
+to work (L-UNHEARD).
 
 The arm builds two endpoints from ONE private key that differ only in the
 entropy handed in, because a single endpoint proves nothing here: an
@@ -1305,7 +990,7 @@ risk, and unchanged from the original assessment.
 
 ### Layering (uniform across all three protocols)
 
-The foreword half is built. The `codex.os.net` half is the gap.
+Both halves are built.
 
 ```
 foreword (pure, battery-tested)              -- BUILT
@@ -1317,7 +1002,7 @@ foreword (pure, battery-tested)              -- BUILT
   LwM2mModel     object/instance/resource tree as records; TLV +
                  SenML-CBOR codecs (Cbor chapter exists)
   LwM2mMachine   bootstrap/register/update lifecycles, Object 5 states
-codex.os.net (I/O binding)                   -- COAP AND MQTT BUILT, LWM2M NOT (2026-08-18)
+codex.os.net (I/O binding)                   -- BUILT
   CoapEndpoint   CoapMachine x UDP (later x DTLS record layer)
   MqttConnection MqttMachine x TCP/TLS; linear connection handle
   LwM2mClient    LwM2mMachine x CoapEndpoint
@@ -1406,19 +1091,16 @@ action trace.
   reg=0 upd=1 dereg=2`, exact values, the same property the handshake
   epoch's census pins after the flight-numbering repair. Equal numbers
   would be one AEAD key and one nonce across three management exchanges.
-- **The registration handle is echoed exactly, and two separate faults
-  had to be fixed to make that true** (2026-09-08, blu). OMA LwM2M treats
-  the location the server returns as opaque. `lc-location` is now a
-  `List (List Integer)` holding the Location-Path options as the server
-  sent them, and `lwm2m-loc-options` emits one Uri-Path option per stored
+- **The registration handle is echoed exactly, because OMA LwM2M treats the
+  location the server returns as opaque.** `lc-location` is a
+  `List (List Integer)` holding the Location-Path options as the server sent
+  them, and `lwm2m-loc-options` emits one Uri-Path option per stored
   segment, never joining them into a path and re-splitting it, because a
   handle containing a `/` would come back as two segments addressing
-  something else. Second, `lwm2m-client-deregister` cleared the location
-  BEFORE building the DELETE, so the DELETE carried no path at all. Both
-  are measured by `lwm2m-coaps-loopback`: `update to-rd` and `deregister
-  to-rd` are True after and were False before, each with the other half
-  of the repair in place, and `lwm2m-client` is unchanged and green
-  because it never inspected either path.
+  something else. `lwm2m-client-deregister` must not clear the location
+  before building the DELETE, or the DELETE carries no path at all. Both
+  properties are measured by `lwm2m-coaps-loopback`: `update to-rd` and
+  `deregister to-rd`.
 - Client only. Interfaces: Bootstrap, Registration, Device
   Management, Information Reporting -- each a lifecycle in
   LwM2mMachine.
@@ -1452,12 +1134,10 @@ monotonic, reject duplicates), DTLS/TLS implicit sequence numbers
 in AEAD nonce (monotonic, connection-scoped), CoAP message ID
 deduplication (§4.5, bounded cache within exchange lifetime).
 
-**The window is WIRED on the application-data path** (2026-09-08, blu).
-`Dtls.codex` implements RFC §4.5.1's 64-entry window as `dtls-replay-ok`
-and `dtls-replay-accept`, split so a record that fails to authenticate
-cannot advance it; until this change its only caller in the tree was
-`codex/test/dtls-record`, and a replayed application-data record was
-accepted. `DtlsEp` now carries `ep-app-window`, and `dtls-ep-recv-app`
+**The window is WIRED on the application-data path.** `Dtls.codex`
+implements RFC §4.5.1's 64-entry window as `dtls-replay-ok` and
+`dtls-replay-accept`, split so a record that fails to authenticate cannot
+advance it. `DtlsEp` carries `ep-app-window`, and `dtls-ep-recv-app`
 deprotects, then tests the window, then advances it. That order is
 forced: the sequence number travels encrypted (§4.2.3), so `dtls-open`
 is what makes it readable, and advancing before deprotection would let
@@ -1479,20 +1159,19 @@ handshake epoch is worse than wasteful: the transcript is a running hash
 of what was received, so a Certificate folded in twice yields a hash no
 peer computed and an honest CertificateVerify then fails against it.
 
-**Every record in the authenticated server flight now carries its own
-sequence number, and until 2026-09-08 none of them did.** Certificate,
-CertificateVerify and Finished were all sealed at record sequence 0,
-therefore all three travelled under one key with one AEAD nonce (§4.2.2
-derives the nonce from that number), which is the one thing AES-GCM has
-no margin for, and any conforming peer's replay window would have
-discarded the second and third. The cause was `list-push` extending its
-accumulator in place and returning the same list, so the flight's output
-names all aliased and `list-length o1 - list-length o0` was always zero
-(L-ALIAS). The count is now taken from the fragment lists themselves.
-`app hs-seq` is the census that pins it: `cert=0 replay=0 cv=1 fin=2`,
-exact values rather than a verdict, and all three read 0 before the
-repair. `dtls-fragmented-flight` covers the multi-fragment case, where
-the Certificate alone occupies two record numbers.
+**Every record in the authenticated server flight carries its own sequence
+number, and the census that pins it must be exact values rather than a
+verdict.** Certificate, CertificateVerify and Finished sealed at the same
+record sequence would travel under one key with one AEAD nonce (§4.2.2
+derives the nonce from that number), which is the one thing AES-GCM has no
+margin for, and any conforming peer's replay window would discard the second
+and third. **Do not count a flight by differencing accumulator lengths:**
+`list-push` extends its accumulator in place and returns the same list, so
+the flight's output names all alias and `list-length o1 - list-length o0` is
+always zero (L-ALIAS). The count comes from the fragment lists themselves.
+`app hs-seq` reads `cert=0 replay=0 cv=1 fin=2`.
+`dtls-fragmented-flight` covers the multi-fragment case, where the
+Certificate alone occupies two record numbers.
 Security-critical commands (device state mutation, actuation) must
 use CON messages over DTLS -- enforced by requiring both
 `[Network]` and `[Authenticated]` effects for mutating operations.
@@ -1523,10 +1202,6 @@ Matter/Thread (consumer smart-home; prospectus priority is
 IIoT/medical -- reference doc exists for later), and any broker/
 server-side MQTT implementation.
 
-(LoRaWAN and MQTT-SN were on this list when the design was written and
-were subsequently built as foreword codecs anyway -- see the chapter
-table above. They remain unbound, like everything else.)
-
 ## Test Strategy Hook
 
 Codecs and machines run in
@@ -1552,15 +1227,12 @@ heap-save/restore bracket.
 
 ## Open Questions
 
-1. ~~**Foreword Tls audit.**~~ **ANSWERED 2026-07-13 (fester)** -- and it
-   changed the plan. The chapter is a sketch with a broken key schedule,
-   and the cipher suite beneath it is half-fictional. See *The Crypto
-   Floor: Audited*. The old text of this question was right about one
-   thing: "until read, the TLS line above is a work estimate, not a
-   fact." It was read. It was not a fact.
-2. ~~**DTLS version.**~~ **ANSWERED: DTLS 1.3 (RFC 9147).** Reasoning in
-   *DTLS: The Build Plan*. 1.2 is not implemented and is not planned
-   unless a design partner's server forces it.
+1. **Foreword Tls audit: ANSWERED.** The chapter was a sketch with a broken
+   key schedule over a half-fictional cipher suite. See *The Crypto Floor:
+   Audited* for what is there now.
+2. **DTLS version: ANSWERED, DTLS 1.3 (RFC 9147).** Reasoning in *DTLS: The
+   Build Plan*. 1.2 is not implemented and is not planned unless a design
+   partner's server forces it.
 3. **STILL OPEN -- PSK vs raw-public-key vs certificates for DTLS.** Raw
    public key (RFC 7250) is the natural fit for Ed25519 device identity;
    cloud brokers often want X.509. Deliberately deferred to the D2
@@ -1570,11 +1242,8 @@ heap-save/restore bracket.
 4. **STILL OPEN -- where the Cbor/SenML codec lives** -- extend the
    existing Cbor foreword chapter or a new SenML chapter
    (recommendation: new chapter citing Cbor).
-5. ~~**What happens to `ComplianceEvidence.codex` in the meantime?**~~
-   **ANSWERED AND DONE 2026-07-13.** Damian's call: fix the code to make
-   the claim true where it can be, soften only where it cannot. Both
-   happened. The crypto claims were made true (D0). The transport claims
-   could not be -- that is the whole DTLS build -- so they were softened to
-   disclose the gap, and the two that credited the *toolchain* with
-   supplying a secure channel were downgraded MECHANISM → DEPLOYMENT.
-   No row now asserts anything the tree does not contain.
+5. **What `ComplianceEvidence.codex` may claim: ANSWERED.** Damian's call:
+   fix the code to make the claim true where it can be, soften only where it
+   cannot. **No row asserts anything the tree does not contain**, and a row
+   that credits the toolchain with supplying a secure channel it does not
+   supply is DEPLOYMENT, not MECHANISM.

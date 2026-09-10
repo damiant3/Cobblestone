@@ -1,0 +1,81 @@
+Chapter: FilesOpenCostTest
+  cites Works chapter GopDesk
+  cites Works chapter GopFiles
+  cites Works chapter GopFat16
+  cites Foreword chapter Fat16
+  cites Foreword chapter Console
+
+ What the Files pane's `-open` allocates, which is D.5's `want` for that pane.
+
+ `desk-files-open` mounts the ESP, lists the current directory and builds a
+ `FilesState` around the entries, and every one of those lands above the mark
+ the open pushed. This chapter measures that sequence, which is the durable
+ half of the open; the painting either side of it is the same on both readings
+ and cancels out of the comparison.
+
+ THE FIRST LINE IS THE CONTROL. `alloc-bytes 0` advances the bump allocator by
+ nothing and answers the frontier, so a difference across a call is what that
+ call made permanent. Two reads with nothing between must differ by zero, or
+ the instrument allocates and every number below is its own footprint
+ (L-FALSIF).
+
+ THE TWO DIRECTORIES ARE THE POINT, AND THEY ANSWER THE QUESTION THE WIRING
+ ACTUALLY ASKS. The 3D pane's want is a closed form in its content box, so its
+ hole can be sized before anything is allocated. This pane's cannot be, and one
+ reading would hide that: a listing's cost follows the DEPTH of the directory
+ and the FAT chain walked to reach it, not the entry count, so a hole sized
+ from a constant is right for one directory and wrong for the next. The second
+ reading is a subdirectory, which walks a chain the root does not.
+
+Section: Body
+
+  foc-yn : Boolean -> Text
+  foc-yn (v) = if v then "PASS" else "FAIL"
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    let c0 = alloc-bytes 0
+    in let c1 = alloc-bytes 0
+    in act
+      print-line-uni ("CONTROL, the probe allocates nothing: " & foc-yn (c1 - c0 == 0))
+      m <- gfat-mount-esp
+      if m.gm-ok == False then print-line-uni "mount FAILED"
+      else act
+        let a0 = alloc-bytes 0
+        in let flag = if gfat-is32 (m.gm-vol) then (m.gm-vol).vol-root-start else 0 - 1
+        in let clusters = [flag]
+        in act
+          ents <- gfl-list-cur (m.gm-vol) clusters
+          let st = FilesState { fs-vol = m.gm-vol, fs-entries = ents, fs-clusters = clusters, fs-names = [], fs-sel = 0, fs-top = 0, fs-ptr = 0, fs-mode = 0 }
+          in let a1 = alloc-bytes 0
+          in act
+            d <- gfat-resolve (m.gm-vol) "EFI"
+            when d
+              is None -> print-line-uni "EFI not found"
+              is Just (de) -> act
+                let b0 = alloc-bytes 0
+                in let cl2 = [flag, de.de-cluster]
+                in act
+                  e2 <- gfl-list-cur (m.gm-vol) cl2
+                  let st2 = FilesState { fs-vol = m.gm-vol, fs-entries = e2, fs-clusters = cl2, fs-names = [], fs-sel = 0, fs-top = 0, fs-ptr = 0, fs-mode = 0 }
+                  in let b1 = alloc-bytes 0
+                  in let burn = alloc-bytes 64
+                  in let b2 = alloc-bytes 0
+                  in act
+                    print-line-uni ("want at the root: " & integer-to-text (a1 - a0))
+                    print-line-uni ("want in a subdirectory: " & integer-to-text (b1 - b0))
+                    print-line-uni ("want is not a constant: " & foc-yn (b1 - b0 /= a1 - a0))
+                    print-line-uni ("the subdirectory costs MORE on fewer entries: " & foc-yn (list-length e2 < list-length ents & b1 - b0 > a1 - a0))
+                    print-line-uni ("root entries: " & integer-to-text (list-length ents) & "  subdirectory entries: " & integer-to-text (list-length e2))
+                    print-line-uni ("the state keeps its entries: " & foc-yn (list-length (st.fs-entries) == list-length ents & list-length (st2.fs-entries) == list-length e2))
+                    print-line-uni ("CONTROL, the probe can see 64: " & foc-yn (b2 - b1 >= 64))
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end

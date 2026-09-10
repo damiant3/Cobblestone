@@ -1,0 +1,129 @@
+Chapter: PipelineFanoutTest
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter Pipeline
+  cites Workflow chapter WorkflowTypes
+  cites Workflow chapter PipelineRun
+
+ THE FAN-OUT, DRIVEN AND OBSERVED. The subject is `bvt`'s own shape: a serial stage,
+ then s08, whose guest count comes from `-Jobs` and is therefore DRIVEN, then a stage
+ declaring a constant count, then a stage needing one guest.
+
+ The two spellings are both here on purpose. `PrDriven RkGuests` has no denominator
+ the declaration can name and `PrGuests 4` has one, and an arm carrying only the
+ first could not tell `expected=driver` from a denominator the code failed to read.
+
+ THE DISCRIMINATORS ARE s11 AND s01. A stage needing exactly ONE guest must not fan
+ out, and a stage needing none must not either, or the predicate is answering yes to
+ everything and the two fan-out rows below would pass without measuring anything.
+
+ s11 also carries `PrMemoryMb`, so a resource that is not a guest count is in front
+ of the predicate: the KIND is what keeps `PrDriven RkMemoryMb` and `PrPort` out,
+ and a predicate reading the constructor alone would fan out on a memory figure.
+
+Section: The subject
+
+  s01 : PipeStage = PipeStage {
+    ps-name = "preamble", ps-why = "refuse before any guest boots",
+    ps-in = [], ps-out = [], ps-needs = [],
+    ps-verdict = [PoExit 1 "no stage-0 kernel is on disk"],
+    ps-body = []
+  }
+
+  s08 : PipeStage = PipeStage {
+    ps-name = "parallel compile", ps-why = "one guest per subject, throttled by -Jobs",
+    ps-in = ["BvtTests", "Jobs"], ps-out = [], ps-needs = [PrDriven RkGuests (SeVar "Jobs"), PrKernel (SeVar "stage0")],
+    ps-verdict = [], ps-body = []
+  }
+
+  s09 : PipeStage = PipeStage {
+    ps-name = "parallel errors", ps-why = "a stage that names its own guest count",
+    ps-in = [], ps-out = [], ps-needs = [PrGuests 4],
+    ps-verdict = [], ps-body = []
+  }
+
+  s11 : PipeStage = PipeStage {
+    ps-name = "summary", ps-why = "one guest, so no fan-out",
+    ps-in = [], ps-out = [], ps-needs = [PrGuests 1, PrDriven RkMemoryMb (SeVar "MemMB")],
+    ps-verdict = [PoExit 1 "a subject failed"],
+    ps-body = []
+  }
+
+  subject : Pipeline = Pipeline {
+    pl-name = "bvt",
+    pl-doc = "The build verification test",
+    pl-params = [],
+    pl-stages = [PsStage s01, PsStage s08, PsStage s09, PsStage s11]
+  }
+
+Section: Entry
+
+ Two of the four stages fan out, so the step count is four plus a split and a join
+ each, and the run enters s08 at its SPLIT rather than at the stage.
+
+ Five branches land with four different fates, and one more is still in flight. The
+ join must count the four apart and must not count the sixth at all, which is what
+ an exit code summing them cannot do.
+
+ A FAILED BRANCH IS THE COMMON CASE for a build fan-out, and until `StepFailed`
+ existed it had no value to be reported as. A count that is always zero measures
+ nothing (L-VACUOUS), so the failed branch is here rather than the row being added
+ empty.
+
+  opening : [Console] Nothing =
+    let pd = pipeline-to-process subject
+    in let shape = "steps=" & show (list-length (pd.pd-steps)) & " edges=" & show (list-length (pd.pd-transitions)) & " start=" & (pd.pd-start-step)
+    in let predicates = "fans-out s08=" & pipe-yes-no (pipe-fans-out s08) & " s09=" & pipe-yes-no (pipe-fans-out s09) & " s11=" & pipe-yes-no (pipe-fans-out s11) & " s01=" & pipe-yes-no (pipe-fans-out s01)
+
+    in let a0 = pipe-start pd 10
+    in let a1 = pipe-passed pd a0 11
+    in let atSplit = "AFTER-PREAMBLE at=" & (a1.pi-current-step)
+
+    in let a2 = pipe-passed pd a1 12
+    in let inStage = "ENTERED at=" & (a2.pi-current-step)
+
+    in let b1 = pipe-branch a2 "parallel compile" 0 StepCompleted 13
+    in let b2 = pipe-branch b1 "parallel compile" 1 StepCompleted 14
+    in let b3 = pipe-branch b2 "parallel compile" 2 StepSkipped 15
+    in let b4 = pipe-branch b3 "parallel compile" 3 StepTimedOut 16
+    in let b5 = pipe-branch b4 "parallel compile" 4 StepFailed 17
+    in let fanLine = "DRIVEN " & pipe-fan-line (b5.pi-history) s08
+
+    in let joined = pipe-joined pd b5 "parallel compile" 18
+    in let joinLine = "JOINED at=" & (joined.pi-current-step) & " " & pipe-status-text (joined.pi-status)
+
+    in let inflight = pipe-branch b5 "parallel compile" 5 (StepInProgress "guest") 19
+    in let inflightLine = "IN-FLIGHT " & pipe-fan-line (inflight.pi-history) s08
+
+    in let declaredLine = "DECLARED " & pipe-fan-line (b5.pi-history) s09
+
+    in let refused = pipe-exited pd a2 9 19
+    in let refuseLine = "UNEXPLAINED-IN-FAN " & pipe-status-text (refused.pi-status)
+
+    in let c1 = pipe-passed pd joined 20
+    in let c2 = pipe-passed pd c1 21
+    in let c3 = pipe-joined pd c2 "parallel errors" 22
+    in let c4 = pipe-passed pd c3 23
+    in let atTail = "AT-TAIL at=" & (c4.pi-current-step)
+    in let c5 = pipe-exited pd c4 1 24
+    in let tailLine = "TAIL " & pipe-status-text (c5.pi-status)
+
+    in act
+      print-line-uni shape
+      print-line-uni predicates
+      print-line-uni atSplit
+      print-line-uni inStage
+      print-line-uni fanLine
+      print-line-uni joinLine
+      print-line-uni inflightLine
+      print-line-uni declaredLine
+      print-line-uni refuseLine
+      print-line-uni atTail
+      print-line-uni tailLine
+      print-line-uni "-- history --"
+      print-line-uni (pipe-log-text (joined.pi-history) 0 "")
+    end
+
+Page 1

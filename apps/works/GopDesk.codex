@@ -1509,10 +1509,27 @@ Section: Monitor
  entry is remarked, because `desk-marks-find` skips a dead one, and a dead
  entry's mark is what the cascade pops to.
 
+ THE ANSWER SAYS WHICH BRANCH RAN, because both refusals write nothing and a
+ caller cannot otherwise tell a refusal from a write: 1 wrote the mark, 0
+ found no live entry, -1 refused a mark that would break the order. Marks
+ ascend by construction, `desk-marks-extent` reading the next entry's mark as
+ this one's ceiling, so a mark at or above the next entry's collapses this
+ span to nothing or inverts it, and a mark below the previous entry's does
+ the same to that one. The reuse case is where such a mark comes from: an
+ entry a pane REUSED carries the span's base rather than an address that
+ pane chose, and `codex/test/desk-reuse` measures both the refusal and the
+ residue, which is that the refused entry keeps a mark its pane's state has
+ left (WORKS-59's failure, WORKS-67's open half).
+
   desk-marks-remark : Integer, Integer, Integer -> Integer
   desk-marks-remark (ms) (fid) (mark) =
-    let i = desk-marks-find ms fid (desk-marks-depth ms - 1)
-    in if i < 0 then 0 else poke-32 ms (8 * i + 12) mark
+    let d = desk-marks-depth ms
+    in let i = desk-marks-find ms fid (d - 1)
+    in if i < 0 then 0
+    else if i + 1 < d & mark >= desk-marks-mark ms (i + 1) then 0 - 1
+    else if i > 0 & mark < desk-marks-mark ms (i - 1) then 0 - 1
+    else let w = poke-32 ms (8 * i + 12) mark
+    in 1
 
   desk-marks-reclaim : Integer, Integer -> Integer
   desk-marks-reclaim (ms) (acc) =
@@ -1617,6 +1634,120 @@ Section: Monitor
     if desk-marks-id ms i /= desk-focus-none then False
     else if desk-span-holds-root ms i top r then False
     else True
+
+ WHICH hole, and FIRST FIT rather than best fit. The choice is deliberate and
+ it is not an optimisation: a best fit reads every span before it can answer,
+ and the answer changes when an unrelated pane opens, so two runs of the same
+ sequence would place a pane differently and the frontier delta D.5 is
+ measured by would move for a reason that is not the change. First fit is a
+ function of the stack below the candidate alone.
+
+ OWNERSHIP NEEDS NO NEW FIELD. A dead entry carries `desk-focus-none`, so
+ claiming a hole is writing the opening pane's focus id into the entry, which
+ is exactly what makes `desk-span-reusable` answer False for it afterwards.
+
+  desk-span-pick : Integer, Integer, Integer, Integer, Integer -> Integer
+  desk-span-pick (ms) (top) (r) (want) (i) =
+    if i >= desk-marks-depth ms then 0 - 1
+    else if desk-span-reusable ms i top r & desk-marks-extent ms i top >= want then i
+    else desk-span-pick ms top r want (i + 1)
+
+ ENTERING A HOLE, WHICH IS THE ONLY SAFE WAY TO ALLOCATE IN ONE. Outside an
+ extent R10 is the bivy frontier and lives ABOVE the reservation by
+ construction, so a ceiling armed on a hole's top would condemn every later
+ ordinary allocation: `PhaseAllocator.codex` records that measured as the
+ compiler failing to compile itself. Inside an extent R10 is the deck cursor
+ and the ceiling is a statement about it, which is the question a hole asks.
+
+ The three calls are the compiler's own and no chapter here cites it.
+ `__deck-set` points the cursor, `__deck-enter` copies it into R10 and arms the
+ ceiling from `deck-reservation-top-cell`, `__deck-exit` puts R10 back.
+ `codex/test/apps/deck-hole-enter` is the arm that says an ordinary program
+ may do this, with the control that allocations were not landing there anyway.
+
+ THE ENTRY'S ID IS THE OWNERSHIP RECORD. Claiming is writing the opening
+ pane's focus id over `desk-focus-none`, which is exactly what makes
+ `desk-span-reusable` refuse the span to the next pane.
+
+  desk-reservation-top-cell : Integer = 36344
+
+  desk-poke-q : Integer, Integer -> Integer
+  desk-poke-q (addr) (v) =
+    let b0 = poke-byte addr 0 (int-mod v 256)
+    in let b1 = poke-byte addr 1 (int-mod (v / 256) 256)
+    in let b2 = poke-byte addr 2 (int-mod (v / 65536) 256)
+    in let b3 = poke-byte addr 3 (int-mod (v / 16777216) 256)
+    in let b4 = poke-byte addr 4 (int-mod (v / 4294967296) 256)
+    in let b5 = poke-byte addr 5 (int-mod (v / 1099511627776) 256)
+    in let b6 = poke-byte addr 6 (int-mod (v / 281474976710656) 256)
+    in poke-byte addr 7 (int-mod (v / 72057594037927936) 256)
+
+  desk-hole-enter : Integer, Integer, Integer, Integer -> Integer
+  desk-hole-enter (ms) (top) (r) (want) =
+    let i = desk-span-pick ms top r want 0
+    in if i < 0 then 0 - 1
+    else let lo = desk-marks-mark ms i
+    in let hi = lo + desk-marks-extent ms i top
+    in let w = desk-poke-q desk-reservation-top-cell hi
+    in let s = __deck-set lo
+    in let en = __deck-enter
+    in i
+
+ The exit takes the index the enter answered, so a pane that was given no
+ hole passes -1 and this does nothing: `__deck-exit` on an extent never
+ entered would put the bivy frontier back from a cursor nobody set.
+
+  desk-hole-exit : Integer, Integer, Integer -> Integer
+  desk-hole-exit (ms) (i) (fid) =
+    if i < 0 then 0
+    else let ex = __deck-exit
+    in poke-32 ms (8 * i + 8) fid
+
+ THE CEILING A CALLER CHECKS ITSELF. The one `__deck-enter` arms is a trap:
+ an allocation past it raises `!EXC=06` and there is no branch a pane can
+ take. These three read the same bound as data before the allocation, so a
+ pane whose size is not a closed form asks first and takes the frontier
+ instead of faulting. `alloc-bytes 0` answers the cursor without advancing
+ it, and OUTSIDE an extent that cursor is the bivy frontier, which lives
+ above any hole by construction: a caller holding no hole therefore reads
+ zero room and is refused, which is the same branch as `-1`.
+
+  desk-hole-top : Integer, Integer, Integer -> Integer
+  desk-hole-top (ms) (i) (top) =
+    if i < 0 then 0
+    else desk-marks-mark ms i + desk-marks-extent ms i top
+
+  desk-hole-room : Integer, Integer, Integer -> Integer
+  desk-hole-room (ms) (i) (top) =
+    if i < 0 then 0
+    else let hi = desk-hole-top ms i top
+    in let cur = alloc-bytes 0
+    in if cur >= hi then 0 else hi - cur
+
+  desk-hole-fits : Integer, Integer, Integer, Integer -> Boolean
+  desk-hole-fits (ms) (i) (top) (want) =
+    if i < 0 then False
+    else desk-hole-room ms i top >= want
+
+ THE FIRST PANE TO ASK FOR A HOLE IS THE 3D PANE, BECAUSE ITS WANT IS A
+ CLOSED FORM. `gsc-new` allocates a colour buffer and a depth buffer of four
+ bytes a pixel each over the content box, then a `ScenePane`, an
+ `R3dTriState` and a `GpuView`. `codex/test/apps/scene-open-cost` measures
+ the whole of it at two sizes and answers `bw * bh * 8 + 200`: 512,200 bytes
+ at 320x200 and 768,200 at 320x300, differing by exactly the eight bytes a
+ pixel the two buffers cost. Files and the Browser are not the first
+ candidates however obvious they look, because their STEP stores durable
+ state and this rule sizes a hole for the OPEN alone.
+
+ THE SLACK IS A PAGE AND NOT THE MEASURED 200, and the reason is the failure
+ mode. Undersizing a hole is not a refusal: `__deck-enter` arms a ceiling and
+ an allocation past it TRAPS (`!EXC=06`, `PhaseAllocator.codex`), so a record
+ that later grows by one field would turn a working desk into a fault. A page
+ above the buffers is nothing against a hole of megabytes and removes that
+ edge, and the arm is what keeps the measured figure honest.
+
+  desk-scene-want : Integer, Integer -> Integer
+  desk-scene-want (bw) (bh) = bw * bh * 8 + 4096
 
  Cell 232, free until val took it 2026-08-28; announced in the contract. It is
  a pointer to `dk-prev-slots` downscaled snapshots, one per focus id, so it is
@@ -6216,7 +6347,7 @@ Section: The 3D panes
           in let st = dk-wnd-st blk
           in let pl = gsc-place sp base stride (dk-wnd-rx blk w st ds + s) (dk-wnd-ry blk w h st ds + bh) (dk-wnd-rw blk w st ds - 2 * s) (dk-wnd-rh blk w h st ds - bh - s)
           in act
-            r <- gsc-step base w h stride font kbd mouse cs build sp sc
+            r <- gsc-step base w h stride font kbd mouse cs build sp sc (dk-task-px ds w)
             if r == gsc-step-hide then desk-step-hide else r
           end
         end
@@ -6253,10 +6384,14 @@ Section: The 3D panes
     let ms = peek-32 ds desk-marks-cell
     in let ko = desk-marks-kill ms (desk-scene-sibling foc)
     in let ke = desk-browser-evict ds
-    in let mp = desk-marks-push ms foc __heap-save
+    in let bw = dk-cbox-w w ds
+    in let bh = dk-cbox-h w h ds
+    in let hole = desk-hole-enter ms __heap-save (peek-32 ds desk-root-cell) (desk-scene-want bw bh)
+    in let mp = if hole < 0 then desk-marks-push ms foc __heap-save else 0
     in act
-    sp <- gsc-new base stride cs (dk-gpu ds) sky (dk-cbox-w w ds) (dk-cbox-h w h ds)
-    let apps2 = DeskApps { da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
+    sp <- gsc-new base stride cs (dk-gpu ds) sky bw bh
+    let claimed = desk-hole-exit ms hole foc
+    in let apps2 = DeskApps { da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
     in let o = desk-wnd-open foc w h ds
     in act
       p0 <- desk-wall-paint base w h stride font tf ds

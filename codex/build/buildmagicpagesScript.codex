@@ -4,6 +4,7 @@ Chapter: BuildMagicPagesScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -14,19 +15,19 @@ Section: Parameters
 
 Section: S01 -- Paths
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "BundleScript" (SePathJoin (SeVar "Repo") (SeLit "build\\bundle-app.ps1")), ScAssign "HtmlRunScript" (SePathJoin (SeVar "Repo") (SeLit "codex\\plugs\\html\\run.ps1")), ScAssign "AppDir" (SePathJoin (SeVar "Repo") (SeLit "apps\\games\\codexmagic")), ScAssign "WebDir" (SePathJoin (SeVar "AppDir") (SeLit "web")), ScAssign "OutDir" (SePathJoin (SeVar "WebDir") (SeLit "build-output")), ScMkdir (SeVar "OutDir")]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "BundleScript" (SePathJoin (SeVar "Repo") (SeLit "build\\bundle-app.ps1")), ScAssign "HtmlRunScript" (SePathJoin (SeVar "Repo") (SeLit "codex\\plugs\\html\\run.ps1")), ScAssign "AppDir" (SePathJoin (SeVar "Repo") (SeLit "apps\\games\\codexmagic")), ScAssign "WebDir" (SePathJoin (SeVar "AppDir") (SeLit "web")), ScAssign "OutDir" (SePathJoin (SeVar "WebDir") (SeLit "build-output")), ScMkdir (SeVar "OutDir")]
 
 Section: S02 -- Default Page List
 
   discovered : ShellExpr = SePipe (SeListFiles (SeVar "AppDir") "*Page.codex" False) [StMap (SeProperty SeItem "BaseName")]
 
-  s02 : List ShellCmd = [ScIf (SeIntEq (SeProperty (SeVar "Pages") "Count") (SeInt 0)) [ScAssign "Pages" discovered] []]
+  s02-body : List ShellCmd = [ScBlank, ScIf (SeIntEq (SeProperty (SeVar "Pages") "Count") (SeInt 0)) [ScAssign "Pages" discovered] [], ScBlank]
 
 Section: S03 -- Per-page Paths
 
   html-name : ShellExpr = SeConcat (SeToLower (SeReplace (SeVar "page") "Page$" (SeLit ""))) (SeLit ".html")
 
-  page-paths : List ShellCmd = [ScAssign "src" (SePathJoin (SeVar "AppDir") (SeConcat (SeVar "page") (SeLit ".codex"))), ScAssign "bundled" (SePathJoin (SeVar "OutDir") (SeConcat (SeVar "page") (SeLit "-bundle.codex"))), ScAssign "htmlOut" (SePathJoin (SeVar "WebDir") html-name)]
+  s03-body : List ShellCmd = [ScAssign "src" (SePathJoin (SeVar "AppDir") (SeConcat (SeVar "page") (SeLit ".codex"))), ScAssign "bundled" (SePathJoin (SeVar "OutDir") (SeConcat (SeVar "page") (SeLit "-bundle.codex"))), ScAssign "htmlOut" (SePathJoin (SeVar "WebDir") html-name), ScBlank, ScIf (SeNot (SeFileExists (SeVar "src"))) [ScEchoStyled skip-message ClBrightYellow True, ScContinue] []]
 
 Section: S04 -- Bundle and Compile
 
@@ -42,7 +43,7 @@ Section: S04 -- Bundle and Compile
 
   html-failed : List ShellCmd = [ScEchoStyled (SeConcat tag (SeLit "FAIL: HTML generation")) ClBrightRed True, ScContinue]
 
-  s04 : List ShellCmd = [ScEchoStyled (SeConcat tag (SeLit "bundling...")) ClBrightCyan True, ScRunArgs (SeLit "pwsh") bundle-args, ScIf (SeNot (SeExitCodeEq 0)) bundle-failed [], ScBlank, ScEchoStyled (SeConcat tag (SeLit "compiling to HTML...")) ClBrightCyan True, ScRunArgs (SeLit "pwsh") html-args, ScIf (SeNot (SeExitCodeEq 0)) html-failed []]
+  s04-body : List ShellCmd = [ScEchoStyled (SeConcat tag (SeLit "bundling...")) ClBrightCyan True, ScRunArgs (SeLit "pwsh") bundle-args, ScIf (SeNot (SeExitCodeEq 0)) bundle-failed [], ScBlank, ScEchoStyled (SeConcat tag (SeLit "compiling to HTML...")) ClBrightCyan True, ScRunArgs (SeLit "pwsh") html-args, ScIf (SeNot (SeExitCodeEq 0)) html-failed []]
 
 Section: S05 -- Inject Shared Assets
 
@@ -64,18 +65,25 @@ Section: S05 -- Inject Shared Assets
 
   ok-message : ShellExpr = SeConcat (SeConcat tag (SeLit "OK: ")) (SeVar "htmlOut")
 
-  s05 : List ShellCmd = [ScDotNetCallAssign "html" "System.IO.File" "ReadAllText" [SeVar "htmlOut"], ScSequence build-inject, ScAssign "html" (SeReplace (SeVar "html") "</head>" head-repl), ScAssign "html" (SeReplace (SeVar "html") "</body>" body-repl), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "htmlOut", SeVar "html", utf8], ScEchoStyled ok-message ClBrightGreen True]
+  s05-body : List ShellCmd = [ScBlank, ScDotNetCallAssign "html" "System.IO.File" "ReadAllText" [SeVar "htmlOut"], ScSequence build-inject, ScAssign "html" (SeReplace (SeVar "html") "</head>" head-repl), ScAssign "html" (SeReplace (SeVar "html") "</body>" body-repl), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "htmlOut", SeVar "html", utf8], ScEchoStyled ok-message ClBrightGreen True]
 
 Section: Assembly
 
-  page-body : List ShellCmd = [ScSequence page-paths, ScIf (SeNot (SeFileExists (SeVar "src"))) [ScEchoStyled skip-message ClBrightYellow True, ScContinue] [], ScBlank, ScSequence s04, ScBlank, ScSequence s05]
 
-  magic-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScForEach "page" (SeVar "Pages") page-body]
+  s03 : PipeStage = PipeStage { ps-name = "the per-page paths", ps-why = "names the source, the bundle and the html output for ONE page, and skips the iteration when the source is absent", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
-  magic-script : ShellScript = sh-script "build-magic-pages" "Build CodexMagic web pages from .codex sources through the HTML plug" magic-params magic-body
+  s04 : PipeStage = PipeStage { ps-name = "bundle and compile one page", ps-why = "bundles the page with its cited chapters and drives the HTML plug over the bundle; either failure reports and continues to the next page rather than ending the run", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "inject the shared assets", ps-why = "splices the stylesheet, the two scripts and the account boot into the emitted html, because the plug emits a standalone page and the site's shared assets are not part of it", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
+
+  s01 : PipeStage = PipeStage { ps-name = "paths", ps-why = "resolve the repository root and the application, web and script directories", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
+
+  s02 : PipeStage = PipeStage { ps-name = "the default page list", ps-why = "with no -Pages given, every *Page.codex in the application directory is the subject list", ps-in = ["Pages"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+
+  magic-pipe : Pipeline = Pipeline { pl-name = "build-magic-pages", pl-doc = "Build CodexMagic web pages from .codex sources through the HTML plug", pl-params = magic-params, pl-stages = [PsStage s01, PsStage s02, PsGroup (Just (PrForEach "page" (SeVar "Pages"))) None None [PsStage s03, PsStage s04, PsStage s05]] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell magic-script)
+    print-line-uni (emit-powershell (pipeline-to-shell magic-pipe))
   end
 
 Page 1

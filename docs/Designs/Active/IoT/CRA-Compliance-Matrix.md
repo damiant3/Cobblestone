@@ -4,16 +4,17 @@ Maps each EU CRA Annex I essential cybersecurity requirement to the
 Codex mechanism that satisfies it, the evidence the compiler produces,
 and the manufacturer obligations beyond the toolchain.
 
-**A row here is a claim, and the check is a test that fails when the claim
-stops being true.** Nothing reads this document at session start, no gate
-checks it, and no test cites it, which is precisely the condition under
-which a claim rots. Every row was fired at the compiler or read at its
-source on 2026-07-27 against seed `A5758E05`; where a claim did not
-survive, it was **withdrawn and the measurement recorded**, never reworded
-to fit. The precedent is ETSI provision 5.5, which read "Satisfied" while
-nothing checked that a certificate belonged to the host the client had
-dialled; it was withdrawn and re-earned the same day by fixing the code.
-See `docs/KingsAndCourts.md`.
+**A row here is a claim, and no gate checks it.** Nothing reads this
+document at session start and no test cites it, which is the condition
+under which a claim rots. Every row was fired at the compiler or read at its
+source on 2026-07-27 against seed `A5758E05`. A claim that does not survive
+firing is **withdrawn with the measurement recorded** in the row's own
+`Withdrawn` field, never reworded to fit, and is re-earned by fixing the
+code. The precedent is ETSI provision 5.5 (`docs/KingsAndCourts.md`).
+
+**A `Withdrawn` field is a standing prohibition:** the text names a claim
+this document must not make and gives the measurement that refutes the
+claim.
 
 ## Evidence Classes
 
@@ -35,7 +36,7 @@ See `docs/KingsAndCourts.md`.
 | Class | BY-CONSTRUCTION |
 | Mechanism | Linear types eliminate use-after-free and double-free (CDX2061/CDX2063). Effect types prevent undeclared I/O (CDX2031/CDX2033) -- a compromised library cannot exfiltrate data. No OS, no libc, no POSIX surface: bare-metal execution removes the entire class of OS-level CVEs. **Overflow is prevented only where a bound is declared.** A `Integer between L and H` field rejects an out-of-range literal (CDX2050) and refuses a value whose range cannot be proven (CDX2051). Plain `Integer` arithmetic is unbounded 64-bit and **wraps silently**. |
 | Evidence | Compile log: zero CDX2061/CDX2063 diagnostics = no use-after-free possible. CDX4010 info messages = integer bounds statically proven, runtime checks elided. Binary fixed-point (stage 1 = stage 2) proves deterministic compilation. |
-| Withdrawn | **"Bounded integers prevent overflow" as a blanket statement.** Measured 2026-07-27: a chapter defining `i64-max = 9223372036854775807` and printing `i64-max + 1` compiles with zero diagnostics and prints `-9223372036854775808`. The guarantee is real but it is opt-in per declaration, and CDX4010 is an *info* recording that a check was **elided**, not a check performed. **"CDX4001 absence = every effect declared and granted."** CDX4001 (`check-opening-capabilities`, `Types/TypeChecker.codex`) inspects the effect row of the definition named `opening` alone, and asks only whether each name is one of the 24 in `Foreword chapter Capability`'s vocabulary. It examines no other function and it says nothing about whether any capability was granted. Its absence is not the evidence this row claimed. |
+| Withdrawn | **"Bounded integers prevent overflow" as a blanket statement.** Measured 2026-07-27: a chapter defining `i64-max = 9223372036854775807` and printing `i64-max + 1` compiles with zero diagnostics and prints `-9223372036854775808`. The guarantee is real but it is opt-in per declaration, and CDX4010 is an *info* recording that a check was **elided**, not a check performed. **"CDX4001 absence = every effect declared and granted."** CDX4001 (`check-opening-capabilities`, `Types/TypeChecker.codex`) inspects the effect row of the definition named `opening` alone, and asks only whether each name is one of the 24 in `Foreword chapter Capability`'s vocabulary. It examines no other function and it says nothing about whether any capability was granted. The absence of CDX4001 is not evidence that every effect is declared and granted. |
 | Manufacturer | Run the compiler. If it compiles without CDX2xxx/CDX4xxx errors, the structural guarantees hold. Perform threat modelling for logic bugs that lie outside the type system's scope. |
 | Cross-ref | ETSI EN 303 645 §5.1-1, NISTIR 8259A Capability 3, IEC 62443-4-1 SD-4 |
 
@@ -91,7 +92,7 @@ See `docs/KingsAndCourts.md`.
 | Mechanism | The FactStore provides an append-only event log, and append-only structurally: `DiskFacts` exposes no delete, truncate, erase or compact operation, so a written fact cannot be removed. Facts are content-addressed by `sdw-hash`. Capability lease grants and revocations are recorded as facts in the trust lattice with Ed25519 signatures. A function that writes such records over a channel must declare that channel's effect, so the *transport* is visible in the type signature even though the audit character of the write is not. |
 | Evidence | FactStore integrity: the absence of any removing operation in `DiskFacts`. Lease history queryable via the repository protocol. |
 | Withdrawn | **"CRC-framed" and "CRC verification on every read."** Measured 2026-07-28: there is no `crc` and no `checksum` anywhere in the fact-store chapters (`DiskFacts`, `FactLog`, `FactDisk`). CRC framing is an unshipped proposal in `Annotations.md` Addendum I and belongs to the ANNOTATION store, not this one. The read claim was false twice over, because `FactDisk`'s own prose says what it does **not** re-verify is the log entry's own content hash. Append-only survives on structure; the framing and the per-read verification do not exist. |
-| Withdrawn | **The effect-typed `[Audit]` channel.** There is no `Audit` capability and no `effect Audit where` declaration anywhere in the tree. The 24-name vocabulary is derived in `Foreword chapter Capability` and `Audit` is not among the 18 rows or the six dotted refinements. Measured 2026-07-27: `opening : [Audit] Nothing` gives `error CDX4001: Effect 'Audit' has no capability the manifest can carry`. **No program can declare this effect**, so the row described a mechanism that is not merely unused but inexpressible, and "presence of `[Audit]` effect" was evidence no compile log could ever show. What the mechanism would take is a row in the capability table, a bit, and an `effect Audit where` declaration with its operations; that is a language change and is not made here. Until it exists, audit-channel separation is a manufacturer obligation, not a compiler guarantee. |
+| Withdrawn | **The effect-typed `[Audit]` channel.** There is no `Audit` capability and no `effect Audit where` declaration anywhere in the tree. The 24-name vocabulary is derived in `Foreword chapter Capability` and `Audit` is not among the 18 rows or the six dotted refinements. Measured 2026-07-27: `opening : [Audit] Nothing` gives `error CDX4001: Effect 'Audit' has no capability the manifest can carry`. **No program can declare this effect**, therefore the mechanism is not merely unused but inexpressible, and "presence of `[Audit]` effect" is evidence no compile log can show. What the mechanism would take is a row in the capability table, a bit, and an `effect Audit where` declaration with its operations, which is a language change and is not made here. Until it exists, audit-channel separation is a manufacturer obligation, not a compiler guarantee. |
 | Manufacturer | **Separate the audit channel yourself; the compiler will not do it for you.** Route audit records to a tamper-evident sink (append-only storage or remote SIEM) over a channel whose effect you declare, and keep that channel distinct from ordinary output by convention, since no capability distinguishes them. Define retention policy. Monitor for gaps in the hash chain, which indicate truncation or tampering. |
 | Cross-ref | ETSI EN 303 645 §5.11-1, NISTIR 8259A Capability 2, IEC 62443-4-2 CR 6.1/CR 6.2 |
 
@@ -135,10 +136,9 @@ See `docs/KingsAndCourts.md`.
 | 2(a) | Component ID | MECHANISM | Content-addressed hashes, Ed25519 signing |
 | 2(b) | Vuln handling | ORGANIZATIONAL | OTA dual-gate, lease revocation, trust lattice |
 
-**What the summary above deliberately no longer says.** 1(d) claimed
-`punctual` WCET *proofs*: the instruction count is exact and the structural
-restrictions are hard errors, but an exceeded budget is a warning and no
-build fails for it, so the gate is `build/wcet-validate.ps1` and not the
-compiler. 1(f) claimed an `[Audit]` effect, which does not exist. 1(a)
-claimed overflow prevention in general, which holds only where a bound is
-declared. Each row above carries the measurement.
+**Three claims this matrix must not make**, each refuted in the row that
+owns it: `punctual` WCET *proofs* for 1(d), because an exceeded budget is a
+warning and the gate is `build/wcet-validate.ps1` rather than the compiler;
+an `[Audit]` effect for 1(f), because no such capability exists; and
+overflow prevention in general for 1(a), which holds only where a bound is
+declared.

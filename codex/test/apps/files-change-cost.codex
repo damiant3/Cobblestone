@@ -1,0 +1,76 @@
+Chapter: FilesChangeCostTest
+  cites Works chapter GopFiles
+  cites Works chapter GopFat16
+  cites Foreword chapter Fat16
+  cites Foreword chapter Console
+
+ What a Files directory change costs. The Monitor is the desk's only
+ heap instrument and only one pane is focused at a time, so the pane
+ cannot observe itself; `alloc-bytes 0` advances the allocator by
+ nothing and answers the frontier, which needs no pane at all.
+
+ The first line is the control. A probe that reads the frontier twice
+ with nothing between must answer a difference of zero; any other answer
+ means the instrument allocates and every reading below is its own
+ footprint (L-FALSIF).
+
+ The third line is the claim itself. A directory change builds a fresh
+ entry list and nothing reuses the previous one, so a second identical
+ listing costs what the first cost. Equality there IS the accumulation
+ a long session pays for, measured rather than argued, and a run where
+ the second listing were free would falsify it.
+
+ The last line is what the row could not have guessed. The cost is
+ neither a constant nor a function of the entry count: measured
+ 2026-09-08 on this fixture, the root's two entries cost 39,984 bytes
+ and a ONE entry subdirectory cost 67,376, because a subdirectory walks
+ a FAT chain that the root does not. So a bound on a long Files session
+ is a statement about the DEPTH and the chain, never about how many
+ files a person can see.
+
+Section: Body
+
+  fcc-yn : Boolean -> Text
+  fcc-yn (v) = if v then "PASS" else "FAIL"
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    let c0 = alloc-bytes 0
+    in let c1 = alloc-bytes 0
+    in act
+      print-line-uni ("the probe allocates nothing: " & fcc-yn (c1 - c0 == 0))
+      m <- gfat-mount-esp
+      if m.gm-ok == False then print-line-uni "mount FAILED"
+      else act
+        let a0 = alloc-bytes 0
+        in act
+          e1 <- gfl-list-cur (m.gm-vol) [0 - 1]
+          let a1 = alloc-bytes 0
+          in act
+            e2 <- gfl-list-cur (m.gm-vol) [0 - 1]
+            let a2 = alloc-bytes 0
+            in act
+              print-line-uni ("a listing allocates: " & fcc-yn (a1 - a0 > 0))
+              print-line-uni ("a second listing costs the same: " & fcc-yn (a2 - a1 == a1 - a0))
+              print-line-uni ("root entries: " & show (list-length e1))
+              d <- gfat-resolve (m.gm-vol) "EFI"
+              when d
+                is None -> print-line-uni "EFI not found"
+                is Just (de) -> act
+                  let b0 = alloc-bytes 0
+                  in act
+                    e3 <- gfl-list-cur (m.gm-vol) [0 - 1, de.de-cluster]
+                    let b1 = alloc-bytes 0
+                    in act
+                      print-line-uni ("the cost does not follow the entry count: " & fcc-yn (list-length e3 < list-length e1 & b1 - b0 > a1 - a0))
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end

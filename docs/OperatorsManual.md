@@ -336,6 +336,45 @@ and prints a review queue of chapters that need a machine but cite nothing
 machine-side, which is the case a cite graph cannot see (`hpet-interrupt`
 pins the HPET and the IOAPIC and cites only `Foreword chapter Board`).
 
+### Run the tests that cite YOUR change: `build/cite-gate.ps1`
+
+```powershell
+build/cite-gate.ps1                                  # changed set from p4 opened
+build/cite-gate.ps1 -Files a.codex,b.codex           # or name the files
+build/cite-gate.ps1 -FilesFile changed.txt           # or a file of paths
+build/cite-gate.ps1 -ListOnly                        # the selection, no guest
+build/cite-gate.ps1 -Jobs 1 -Kernel seed\Codex.cdx   # run them
+```
+
+**A battery and this ask different questions, so pick by the question.**
+`-Battery apps` is every chapter citing an apps chapter from anywhere in the
+tree, a fixed coverage set. `cite-gate` starts from the FILES YOU CHANGED and
+walks the cite graph backwards over who-cites-me edges, so its set changes with
+your edit. It is L-NOGATE's runner: it RUNS the chapters it selects rather than
+proving they compile, handing them to `bvt.ps1 -SubjectsFile`, which owns the
+grading, the sidecars and the batch arm.
+
+A cite of a MANIFEST quire (`Codex`, `Emit`, `Semantics`, all
+`build/compiler-order.txt`) expands to every file that manifest names, which is
+how a compiler change reaches the tests citing the compiler as a library.
+
+**Read the two counts it prints apart.** It reports how many selected chapters
+RUN against an `.expected` and how many are compile only; summing them claims a
+runtime gate over subjects that have no runtime arm (L-DENOM). An EMPTY
+selection is a statement about the cite graph and it says so: nothing citing
+your change is a corpus gap, not a pass. A test reaching your change through no
+cite is not selected either, and the compiler is assembled by glob, so
+`-Compiler` selects every compiler-citing test rather than pretending the walk
+found them.
+
+**What it costs, measured 2026-09-09** (seed `7925988B55B1B5B5`, `-Jobs 1`,
+free RAM 4.1 GiB so one guest): the graph is 3,985 chapters in about 1.6 s and
+starts no guest; 12 subjects compiled and run in 31.5 s, 24 in 72.7 s, so about
+2.6 to 3.0 s a subject, and those two points do not fit one line because
+subject cost varies more than the fixed setup does. The SELECTION is what
+decides the bill: `Foreword Fat16` selects 167 chapters, eight to ten minutes
+at `-Jobs 1`. Run `-ListOnly` first, then measure free memory (3 GiB a guest)
+and pick `-Jobs`. Re-measure rather than quoting these (L-COUNT).
 ### Two-Phase Architecture
 
 **Phase 1 -- Batch compile.** One VM per job slot, REPL loop reuse.
@@ -348,6 +387,17 @@ booted in its own VM. Serial output is captured and compared
 byte-for-byte against the expected output.
 
 ### Sidecars
+
+**A sidecar is read by the RUNNER, not by `compile.ps1`.** `compile.ps1` takes
+its flags from its own parameters (`-Decks`, `-RawFlags`, the switches) and
+looks at no file beside the source, so compiling a subject by hand gives it
+NONE of the sidecars below; `build/test-compile-batch.ps1` is what reads
+`foo.flags` and appends it to the mode line. So a hand compile that passes
+proves nothing about the subject as the battery runs it, and a hand compile
+that fails may only be missing a flag the runner would have supplied
+(L-SIDECAR). Measured 2026-09-08: `codex/test/apps/foreword-all-compile` was
+run by hand at `-Decks 64` and through the batch runner with its `decks=200`
+sidecar deleted, and only the second answers the question the battery asks.
 
 | File | Meaning |
 |------|---------|
@@ -1656,6 +1706,53 @@ protocol → compile-arm64/riscv.ps1 (ELF) → Renode (UART capture).
 - RISC-V: heap register must be S1/x9 (not t3/x28 which collides
   with temp allocator)
 
+### `compile-arm64.ps1` ASKS FOR 3 GiB A GUEST, AND A CORPUS RUN IS ONE GUEST PER SUBJECT
+
+**`compile-arm64.ps1` defaults to `-MemMB 3072`.** For a single compile that
+is invisible. For anything that walks a corpus it is the thing that kills the
+run: 559 subjects is 559 serial guests each REQUESTING 3 GiB.
+**`test-cross-batch.ps1` does not pass `MemMB` either**, so it inherits the
+same default, and any harness driving `compile-arm64.ps1` inherits it unless
+it says otherwise.
+
+**The floor is measured (2026-09-09, blu).** `aesgcm256` compiles at 3072 and
+at 1024 and **FAILS at 512 and at 384** (`IR compile step exited 4`).
+`net-recv-heap`, the largest subject the cross selector yields at 31,055
+bytes, compiles at 1024. **The control that makes the reduction safe is that
+both subjects give a BYTE-IDENTICAL emitted-ELF hash at 1024 and at the
+larger request**, so lowering the request does not change what is emitted.
+`build/a64-emit-corpus.ps1` defaults to 1024 and prints the request on its
+first line; pass one value for a whole pass, because two passes taken at
+different requests would differ for that reason if the identity above ever
+stopped holding.
+
+**THE KILL'S SIGNATURE IS A MID-RUN DEATH WITH NO DIAGNOSTIC, and that is all
+it is.** In the run measured here there was **no `WHv` text, no partition
+error and no allocation failure anywhere in the output**: the log ends in a
+bare kill after 85 of 559 subjects. A refusal at guest launch, with the
+hypervisor naming it, is the ceiling case and looks nothing like this.
+
+**A RISING FAILURE COUNT IS NOT THE TELL, and reading it as one is the trap
+this paragraph exists to close.** The 3072 run's compile failures climbed 3 at
+row 36, 7 at row 50 and 8 at row 75, which reads exactly like guests starting
+to fail under pressure. **Re-run at 1024 with no kill, the same corpus gives
+the same 8 failures within the same 75 rows.** They are genuine per-subject
+failures in corpus order and they carry no information about memory at all.
+The author published the pressure reading before running that comparison and
+had to retract it within the hour (L-CONTROL: a control that behaves
+correctly is evidence about the DIFFERENCE between the arms, and here the
+difference was zero).
+
+**So nothing observed here distinguishes a per-guest ceiling from
+consumption**, and the box bar's "ceiling not consumption" line is neither
+confirmed nor contradicted by this run. What is established is the floor and
+the control above.
+
+**Read the killer, not only the corpse.** The run above was stopped by the
+session's own low-memory supervisor rather than by codex-vm, so the message
+naming memory came from the harness and not from the hypervisor. Establish
+which process ended a run before attributing it to a VM limit.
+
 ### TAILING A LIVE VM LOG WITH `Get-Content` CAN KILL THE VM
 
 A harness that polls a running codex-vm's redirected stderr or stdout to
@@ -1731,6 +1828,17 @@ that the bed could not see a colour at all.
 is the only bounded way to run a payload that holds its colour by repainting.
 
 ### THE AD-HOC CHECK IS THE LEAST RELIABLE INSTRUMENT IN THE LOOP
+**A COMPILE LOG''S ERRORS ARE NOT ALL PREFIXED, so `Select-String ": error "`
+reads a red compile as clean.** A diagnostic with a source span prints as
+`file.codex:12:7: error CDX2001: ...`, and one with a SYNTHETIC span, which is
+every diagnostic raised over generated code, prints as a bare
+`error CDX2001: ...` with no prefix at all. Measured 2026-09-09 (fester): that
+grep reported `errors=0` for `codex/test/type-name-existence` while
+`compile.ps1` exited 4 and produced no binary, and it did so for every host
+control in an investigation, which sent a real regression looking like a
+host-versus-guest divergence for an hour. Grep for `error CDX` or read the exit
+code, which is the number the script actually publishes.
+
 
 The section above is one instance of a general rule, and the rest of the
 instances cost a session each. **When a check you wrote in the moment
@@ -1738,6 +1846,14 @@ disagrees with the product, distrust the check first**, and prefer the real
 harness to a reimplementation of it. Three false readings in one session were
 all the apparatus; the product was fine every time.
 
+- **A PowerShell function parameter NAMED `Args` binds nothing**, because
+  `$args` is automatic and shadows the parameter, therefore a splat of it
+  (`& pwsh @Args`) passes NO arguments and starts an INTERACTIVE pwsh that sits
+  at a prompt. Measured 2026-09-09 (fester) in `build/disk-runner-arm.ps1`: the
+  first step printed the pwsh banner and a prompt, the step's product never
+  appeared, and the arm reported the compile as failed, which reads as a
+  compiler defect rather than a shell one. Name such a parameter anything else
+  (`$ArgList`), and read a headless step's banner as the tell.
 - **A `Copy-Item` of a depot image CARRIES THE READ-ONLY BIT, and codex-vm
   then refuses every guest write while the guest believes it wrote.** Measured
   2026-09-08 investigating F12 at the desk: a hand-rolled working copy of

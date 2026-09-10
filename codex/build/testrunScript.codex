@@ -4,6 +4,7 @@ Chapter: TestRunScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -14,15 +15,15 @@ Section: Parameters
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "sample" (SeStaticCall "System.IO.Path" "GetFileNameWithoutExtension" [SeVar "Kernel"]), ScAssign "wallBudgetMs" (SeInt 60000), ScBlank, ScRaw "Write-SweepLog \"$sample run-start pcore=$PCore\""]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "sample" (SeStaticCall "System.IO.Path" "GetFileNameWithoutExtension" [SeVar "Kernel"]), ScAssign "wallBudgetMs" (SeInt 60000), ScBlank, ScRaw "Write-SweepLog \"$sample run-start pcore=$PCore\""]
 
 Section: S02 -- Temp files
 
-  s02 : List ShellCmd = [ScTempFile "outputFile", ScTempFile "stderrFile", ScAssign "inputFile" (SeRaw "$null"), ScAssign "diskWork" (SeRaw "$null"), ScAssign "disk2Work" (SeRaw "$null")]
+  s02-body : List ShellCmd = [ScBlank, ScTempFile "outputFile", ScTempFile "stderrFile", ScAssign "inputFile" (SeRaw "$null"), ScAssign "diskWork" (SeRaw "$null"), ScAssign "disk2Work" (SeRaw "$null"), ScBlank]
 
 Section: S03 -- VM args and optional input/disk
 
-  s03 : List ShellCmd =
+  s03-body : List ShellCmd =
     let stdin-copy = [ScDotNetCallAssign "inputFile" "System.IO.Path" "GetTempFileName" [], ScReadBytes "stdinBytes" (SeVar "StdinFile"), ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "inputFile", SeVar "stdinBytes"], ScRaw "$vmArgs += @('-input', $inputFile)"]
     in let keys-add = [ScComment "Read directly: codex-vm only reads this file, so the read-only", ScComment "attribute a depot sidecar carries after sync is no obstacle.", ScRaw "$vmArgs += @('-keys-file', $KeysFile)"]
     in let disk-add = [ScComment "Copy to a writable temp image: depot sidecars are read-only after", ScComment "sync (write tests would fail to open the disk), and codex-vm", ScComment "flushes writes durably (a writable sidecar would be mutated).", ScDotNetCallAssign "diskWork" "System.IO.Path" "GetTempFileName" [], ScRaw "[System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($DiskFile))", ScRaw "$vmArgs += @('-disk', $diskWork)"]
@@ -32,9 +33,9 @@ Section: S03 -- VM args and optional input/disk
 
 Section: S04 -- VM launch and wait
 
-  s04 : List ShellCmd =
+  s04-body : List ShellCmd =
     let timeout-fail = [ScRaw "Write-SweepLog \"$sample run-fail wall-budget-exceeded pid=$($proc.Id)\"", ScRaw "Stop-VmGraceful -ProcessId $proc.Id", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeLit "", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScExit (SeInt 1)]
-    in [ScRaw "$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScRaw "Write-SweepLog \"$sample vm-pid=$($proc.Id)\"", ScBlank, ScIf (SeNot (SeRaw "$proc.WaitForExit($wallBudgetMs)")) timeout-fail []]
+    in [ScBlank, ScRaw "$proc = Start-Process -FilePath $script:CodexVmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScRaw "Write-SweepLog \"$sample vm-pid=$($proc.Id)\"", ScBlank, ScIf (SeNot (SeRaw "$proc.WaitForExit($wallBudgetMs)")) timeout-fail []]
 
 Section: S04b -- Read the VM's stderr
 
@@ -51,9 +52,9 @@ Section: S04b -- Read the VM's stderr
  would miss exactly that case, which is why the test is on the text and not
  on the status.
 
-  s04b : List ShellCmd =
+  s04b-body : List ShellCmd =
     let dropped = [ScWriteError (SeLit "codex-vm dropped guest serial bytes: the captured output is SHORT and any comparison against it is meaningless"), ScWriteError (SeVar "vmErr"), ScExit (SeInt 1)]
-    in [ScIf (SeFileExists (SeVar "stderrFile")) [ScDotNetCallAssign "vmErr" "System.IO.File" "ReadAllText" [SeVar "stderrFile"], ScIf (SeMatch (SeVar "vmErr") "DROPPED") dropped []] []]
+    in [ScBlank, ScIf (SeFileExists (SeVar "stderrFile")) [ScDotNetCallAssign "vmErr" "System.IO.File" "ReadAllText" [SeVar "stderrFile"], ScIf (SeMatch (SeVar "vmErr") "DROPPED") dropped []] []]
 
 Section: S04c -- Refuse a host crash
 
@@ -73,34 +74,52 @@ Section: S04c -- Refuse a host crash
  literal is int -1, so the mask is a no-op, and the `[uint32]` cast then throws
  on the negative value, leaving the comparison reading a stale variable.
 
-  s04c : List ShellCmd = [ScRaw "    # codex-vm's exit code is the only signal for a host crash AFTER complete", ScRaw "    # output: its crash filter _exit(0xC0DE), and a heap death fast-fails past", ScRaw "    # that filter as 0xC0000374 printing nothing. Two codes BY NAME; a bare", ScRaw "    # nonzero test adds no case. The comparison is signed on purpose, because a", ScRaw "    # PowerShell hex literal parses signed and 0xC0000374 IS -1073740940. Do not", ScRaw "    # add a 0xFFFFFFFF mask: that literal is int -1 and the cast then throws.", ScRaw "    $rc = $proc.ExitCode",ScRaw "    if ((($rc -eq 0xC0DE) -or ($rc -eq 0xC0000374))) {", ScRaw "        $rcHex = '0x{0:X8}' -f $rc", ScRaw "        Write-SweepLog \"$sample run-fail host-crash rc=$rcHex\"", ScRaw "        [Console]::Error.WriteLine(\"HOST CRASH: codex-vm exited $rcHex. This is a defect in codex-vm itself, not in the guest, and the captured output cannot be trusted however complete it looks.\")", ScRaw "        if ((Test-Path -PathType Leaf $stderrFile)) {", ScRaw "            [Console]::Error.WriteLine([System.IO.File]::ReadAllText($stderrFile))", ScRaw "        }", ScRaw "        [System.IO.File]::WriteAllText($OutFile, '', [System.Text.UTF8Encoding]::new($false))", ScRaw "        exit 1", ScRaw "    }"]
+  s04c-body : List ShellCmd = [ScBlank, ScRaw "    # codex-vm's exit code is the only signal for a host crash AFTER complete", ScRaw "    # output: its crash filter _exit(0xC0DE), and a heap death fast-fails past", ScRaw "    # that filter as 0xC0000374 printing nothing. Two codes BY NAME; a bare", ScRaw "    # nonzero test adds no case. The comparison is signed on purpose, because a", ScRaw "    # PowerShell hex literal parses signed and 0xC0000374 IS -1073740940. Do not", ScRaw "    # add a 0xFFFFFFFF mask: that literal is int -1 and the cast then throws.", ScRaw "    $rc = $proc.ExitCode",ScRaw "    if ((($rc -eq 0xC0DE) -or ($rc -eq 0xC0000374))) {", ScRaw "        $rcHex = '0x{0:X8}' -f $rc", ScRaw "        Write-SweepLog \"$sample run-fail host-crash rc=$rcHex\"", ScRaw "        [Console]::Error.WriteLine(\"HOST CRASH: codex-vm exited $rcHex. This is a defect in codex-vm itself, not in the guest, and the captured output cannot be trusted however complete it looks.\")", ScRaw "        if ((Test-Path -PathType Leaf $stderrFile)) {", ScRaw "            [Console]::Error.WriteLine([System.IO.File]::ReadAllText($stderrFile))", ScRaw "        }", ScRaw "        [System.IO.File]::WriteAllText($OutFile, '', [System.Text.UTF8Encoding]::new($false))", ScRaw "        exit 1", ScRaw "    }"]
 
 Section: S05 -- Check output exists
 
-  s05 : List ShellCmd =
+  s05-body : List ShellCmd =
     let no-output = [ScRaw "Write-SweepLog \"$sample run-fail no-output\"", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeLit "", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScExit (SeInt 1)]
-    in [ScIf (SeOr (SeNot (SeFileExists (SeVar "outputFile"))) (SeRaw "(Get-Item $outputFile).Length -eq 0")) no-output []]
+    in [ScBlank, ScIf (SeOr (SeNot (SeFileExists (SeVar "outputFile"))) (SeRaw "(Get-Item $outputFile).Length -eq 0")) no-output []]
 
 Section: S06 -- Filter output
 
-  s06 : List ShellCmd = [ScRaw "$raw = [System.IO.File]::ReadAllText($outputFile) -replace \"`r\", '' -replace \"^\\x01\", ''", ScRaw "$allLines = $raw -split \"`n\"", ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" [], ScForEach "l" (SeVar "allLines") [ScIf (SeOr (SeOr (SeStartsWith (SeVar "l") (SeLit "HEAP:")) (SeStartsWith (SeVar "l") (SeLit "WD:"))) (SeStartsWith (SeVar "l") (SeLit "STACK:"))) [ScContinue] [ScRaw "[void]$lines.Add($l)"]]]
+  s06-body : List ShellCmd = [ScBlank, ScRaw "$raw = [System.IO.File]::ReadAllText($outputFile) -replace \"`r\", '' -replace \"^\\x01\", ''", ScRaw "$allLines = $raw -split \"`n\"", ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" [], ScForEach "l" (SeVar "allLines") [ScIf (SeOr (SeOr (SeStartsWith (SeVar "l") (SeLit "HEAP:")) (SeStartsWith (SeVar "l") (SeLit "WD:"))) (SeStartsWith (SeVar "l") (SeLit "STACK:"))) [ScContinue] [ScRaw "[void]$lines.Add($l)"]]]
 
 Section: S07 -- Trim trailing blanks and write
 
-  s07 : List ShellCmd = [ScRaw "while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') { $lines.RemoveAt($lines.Count - 1) }", ScRaw "$body = if ($lines.Count -gt 0) { ($lines -join \"`n\") + \"`n\" } else { '' }", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScRaw "Write-SweepLog \"$sample run-ok\"", ScExit (SeInt 0)]
+  s07-body : List ShellCmd = [ScBlank, ScRaw "while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') { $lines.RemoveAt($lines.Count - 1) }", ScRaw "$body = if ($lines.Count -gt 0) { ($lines -join \"`n\") + \"`n\" } else { '' }", ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "OutFile", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScRaw "Write-SweepLog \"$sample run-ok\"", ScExit (SeInt 0)]
 
 Section: S08 -- Cleanup
 
-  s08 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $outputFile, $stderrFile -ErrorAction SilentlyContinue", ScIf (SeVar "inputFile") [ScRaw "Remove-Item -Force $inputFile -ErrorAction SilentlyContinue"] [], ScComment "The writable disk copies go too. Measured 2026-08-22: 9,340 of them, 15.7 GB, in", ScComment "%TEMP% since 2026-06-15, one per disk test per battery and gate.", ScIf (SeVar "diskWork") [ScRaw "Remove-Item -Force $diskWork -ErrorAction SilentlyContinue"] [], ScIf (SeVar "disk2Work") [ScRaw "Remove-Item -Force $disk2Work -ErrorAction SilentlyContinue"] []]
+  s08-body : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $outputFile, $stderrFile -ErrorAction SilentlyContinue", ScIf (SeVar "inputFile") [ScRaw "Remove-Item -Force $inputFile -ErrorAction SilentlyContinue"] [], ScComment "The writable disk copies go too. Measured 2026-08-22: 9,340 of them, 15.7 GB, in", ScComment "%TEMP% since 2026-06-15, one per disk test per battery and gate.", ScIf (SeVar "diskWork") [ScRaw "Remove-Item -Force $diskWork -ErrorAction SilentlyContinue"] [], ScIf (SeVar "disk2Work") [ScRaw "Remove-Item -Force $disk2Work -ErrorAction SilentlyContinue"] []]
 
 Section: Assembly
 
-  testrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s04b, ScBlank, ScSequence s04c, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07] [] s08]
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode and the repository root", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
-  testrun-script : ShellScript = sh-script "test-run" "Boot a CDX kernel under codex-vm and capture filtered serial output" testrun-params testrun-body
+  s02 : PipeStage = PipeStage { ps-name = "the capture files", ps-why = "names the temporary files the guest's output and stderr are captured to, before anything that can fail, because the handler removes them", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "build the guest command line", ps-why = "assembles the codex-vm arguments, including the sidecars a caller passed explicitly; NOTHING here discovers a sidecar, so a test run by hand must pass its own", ps-in = ["Kernel"], ps-out = [], ps-needs = [PrKernel (SeVar "Kernel")], ps-verdict = [], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "run the guest", ps-why = "boots codex-vm under a timeout and captures both streams", ps-in = [], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [PoExit 1 "the guest outran its timeout and was stopped"], ps-body = s04-body }
+
+  s04b : PipeStage = PipeStage { ps-name = "the byte-loss census", ps-why = "reads the guest's own report of dropped output, because a truncated capture and a wrong answer are the same colour on a verdict line", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the guest reported dropped output, so the capture is not what the guest produced and must not be graded"], ps-body = s04b-body }
+
+  s04c : PipeStage = PipeStage { ps-name = "the host-crash codes", ps-why = "codex-vm's exit code is the only signal for a host crash AFTER complete output, and two codes are named rather than treated as a bare failure", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04c-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "the timeout path", ps-why = "a guest that outran its timeout is reported as a timeout rather than as a wrong answer", ps-in = ["TimeoutSec"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the guest produced no output at all"], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "read the capture", ps-why = "reads the captured output back for trimming", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
+
+  s07 : PipeStage = PipeStage { ps-name = "trim and write the output", ps-why = "drops the trailing blank lines the guest's console leaves and writes the result where the caller asked", ps-in = ["OutFile"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "the trimmed capture was written where the caller asked"], ps-body = s07-body }
+
+  s08 : PipeStage = PipeStage { ps-name = "cleanup", ps-why = "stops the guest and removes both captures HOWEVER the seven stages above ended, which is why it is the group's handler", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s08-body }
+
+  testrun-pipe : Pipeline = Pipeline { pl-name = "test-run", pl-doc = "Boot a CDX kernel under codex-vm and capture filtered serial output", pl-params = testrun-params, pl-stages = [PsStage s01, PsStage s02, PsGroup None None (Just s08) [PsStage s03, PsStage s04, PsStage s04b, PsStage s04c, PsStage s05, PsStage s06, PsStage s07]] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell testrun-script)
+    print-line-uni (emit-powershell (pipeline-to-shell testrun-pipe))
   end
 
 Page 1

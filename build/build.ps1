@@ -602,6 +602,23 @@ if ((Test-Path -PathType Leaf $chkShellRaw)) {
     }
 }
 
+# A verdict that states the WRONG exit code is worse than no verdict: a reader
+# trusts it and no run contradicts it. Two generators shipped PoExit 1 for
+# scripts that exit 2, 4, 5 and 6 and never 1. This reads the generator rather
+# than the emitted script, because a census of exit over PowerShell text is not
+# decidable: exit appears in prose and a real code can reach it through a
+# variable. An exit inside a raw payload is unreadable to the model and is
+# reported rather than failed, so the arm covers 31 of the 57 generators and
+# grows as check-shell-raw shrinks the payloads.
+$chkPipeVerdicts = (Join-Path $PSScriptRoot 'check-pipe-verdicts.ps1')
+if ((Test-Path -PathType Leaf $chkPipeVerdicts)) {
+    & pwsh -NoProfile -File $chkPipeVerdicts 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ((-not ($LASTEXITCODE -eq 0))) {
+        Write-Host "FAIL: a pipeline stage declares an exit code its script never exits, or exits one no stage declares."
+        exit 1
+    }
+}
+
 # A TOOL NOTHING COMPILES IS ALREADY BROKEN AND HAS NOT BEEN TOLD YET.
 # tools/ota-fetch.codex sat at head with two CDX2001 type errors because
 # Lwm2mFirmware's signatures moved under it, and no gate saw it because no
@@ -674,11 +691,11 @@ if (Test-Path $chkAlloc) {
 # plug and every arm in the tree still passed, which is COMPILER-72 and why
 # this is wired here rather than left to an arm. x86-64 and RISC-V both derive
 # the index and are not exposed. Text only, no guest, one second over the tree.
-$chkA64Fields = Join-Path $PSScriptRoot 'check-a64-field-index.ps1'
-if (Test-Path $chkA64Fields) {
+$chkA64Fields = (Join-Path $PSScriptRoot 'check-a64-field-index.ps1')
+if ((Test-Path -PathType Leaf $chkA64Fields)) {
     & pwsh -NoProfile -File $chkA64Fields -Quiet 2>&1 | ForEach-Object { Write-Host "  $_" }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host 'FAIL: an ARM64 hard-coded field index disagrees with the record it describes.'
+    if ((-not ($LASTEXITCODE -eq 0))) {
+        Write-Host "FAIL: an ARM64 hard-coded field index disagrees with the record it describes."
         exit 1
     }
 }
@@ -890,6 +907,29 @@ Measure-Phase 'cdx-fixedpoint' {
             Write-Host "  stage2: $((Get-Item $cdxStage2).Length) bytes  $ch2"
             exit 1
         }
+    }
+}
+
+# The warnings ratchet reads the STAGE-3 log, which is this candidate
+# compiling the compiler's own source; a stage-2 log is the SEED doing
+# that and grades no change in this tree (check-compiler-warnings.ps1's
+# own header). Nothing invoked the ratchet until here, so the CDX2064
+# that named a live miscompilation was reported on every build and
+# read by nobody, which is L-BODY.
+Measure-Phase 'compiler-warnings' {
+    if ($coreRuns) {
+        $warnLog = [System.IO.Path]::ChangeExtension($cdxStage1, '.diag.log')
+        $warnScript = Join-Path $PSScriptRoot 'check-compiler-warnings.ps1'
+        $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        & pwsh -NoProfile -File $warnScript -Log $warnLog 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $ErrorActionPreference = $prev
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host ''
+            Write-Host 'FAIL: compiler warnings -- the ratchet refused the stage-3 log'
+            exit 1
+        }
+    } else {
+        Write-Host '  compiler-warnings skipped: the core did not run, so stage1.diag.log belongs to an earlier build'
     }
 }
 

@@ -41,9 +41,32 @@
 #
 #   required = max( ceil(CHECK / perPoint), ceil((CHECK-RESOLVE - band) / perPoint) )
 #
+# EVERY REQUIREMENT MEASURED BEFORE 2026-09-01 IS SUPERSEDED, and the two
+# tables below are among them. The compiler memory campaign (main 21187 and
+# 21359, both 2026-09-01) made CHECK, SCOPE, PARSE, LEX and then LOWER reclaim
+# per definition, and it moved every binding phase by roughly an order of
+# magnitude: CHECK deck at check-metrics 240 to 26 MB, SCOPE deck 67 to 6 MB
+# (ArchitectsSketchbook, "Per-definition reclamation"), then LOWER deck 200 to
+# 21.5 MB kept and CHECK-RESOLVE 155 to 28 MB (21359's own description). So a
+# pre-campaign requirement and a post-campaign one are answers to different
+# questions and must not be differenced. That is the whole of what made
+# `foreword-all-compile` read 137 on 2026-08-09 and compile clean at -Decks 64
+# on 2026-09-08: the unit lost one cite of 419 in between (`UI chapter Window`,
+# WORKS-49 at main 19415), which cannot halve a requirement, and the compiler
+# did the rest. Re-measure rather than differencing across that date (L-COUNT).
+#
+# WHAT THE DERIVATION DOES TODAY, measured 2026-09-08 against seed
+# EC179CDE95FA59DB: the clamp binds nothing. `foreword-all-compile` compiles
+# byte-identically at -Decks 64 and at -Decks 100 (142,744 both), and the
+# compiler's own concatenated unit, 3,166,466 bytes, compiles clean at 64.
+# RULED 2026-09-08 by root: the CLAMP STAYS, and the -Decks flag carries any
+# unit that outgrows it, which is why `foreword-all-compile.flags` and its
+# decks=200 are deleted.
+#
 # HOW ACCURATE IT IS, against the expensive instrument rather than asserted.
 # Bisected by output equality 2026-08-09 against seed A66E54F57CBAEBFD, five
-# units, four CHECK-bound and one DESUGAR-bound:
+# units, four CHECK-bound and one DESUGAR-bound. PRE-CAMPAIGN, so these are a
+# calibration of the MODEL and not current requirements:
 #
 #   build/output/Codex.codex            DESUGAR   model 67   bisected 67
 #   codex/test/shell-build-keep         CHECK     model 30   bisected 30
@@ -64,7 +87,9 @@
 # THE OTHER LIMIT: -Measure runs no IR pipeline, so its LOWER is smaller than
 # the one that ships. BuildSettings.codex calls LOWER the tightest deck in the
 # compiler. A LOWER-bound row is understated and wants the expensive
-# instrument: on foreword-all-compile it reads 131 against a bisected 137.
+# instrument: on foreword-all-compile it read 131 against a bisected 137, both
+# pre-campaign (2026-08-09) and neither one a current requirement. The
+# UNDERSTATEMENT is the durable part; the two numbers are not.
 #
 # WHEN A UNIT LOOKS TIGHT, bisect it for real -- compile at descending -Decks
 # and compare the bytes against the derived default, which is what "requires"

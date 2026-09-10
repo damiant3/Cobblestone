@@ -122,14 +122,24 @@ Section: IPv4
  wrong checksum with no error. A trailing byte is summed as the HIGH half of
  its word, which is what the padding a caller would otherwise supply does.
 
+  ip-sum : List Integer, Integer, Integer, Integer -> Integer
+  ip-sum (buf) (i) (len) (sum) =
+    if i >= len then sum
+    else if i + 1 >= len then sum + bit-shl (list-at buf i) 8
+    else ip-sum buf (i + 2) len (sum + read-be16 buf i)
+
+ The unfolded sum is a separate function so a caller summing two ranges can
+ carry the accumulator across them rather than concatenating the ranges into
+ one list. The pseudo-header a TCP checksum covers is 12 bytes, an even count,
+ so a second range starting at index 0 keeps every 16-bit word on the same
+ boundary the concatenation gave it.
+
   ip-checksum : List Integer, Integer, Integer, Integer -> Integer
   ip-checksum (hdr) (i) (len) (sum) =
-    if i >= len then
-      let folded = bit-and sum 65535 + bit-shru sum 16
-      in let folded2 = bit-and folded 65535 + bit-shru folded 16
-      in bit-and (bit-xor folded2 65535) 65535
-    else if i + 1 >= len then ip-checksum hdr (i + 1) len (sum + bit-shl (list-at hdr i) 8)
-    else ip-checksum hdr (i + 2) len (sum + read-be16 hdr i)
+    let total = ip-sum hdr i len sum
+    in let folded = bit-and total 65535 + bit-shru total 16
+    in let folded2 = bit-and folded 65535 + bit-shru folded 16
+    in bit-and (bit-xor folded2 65535) 65535
 
  RFC 1071: the one's-complement sum of a range that INCLUDES the stored
  checksum folds to 0xFFFF, so the complement this returns is zero exactly when
@@ -149,16 +159,28 @@ Section: IPv4
  UNDER actual is the normal case rather than a fault, because Ethernet pads
  every frame to 60 bytes.
 
+ THE OFFSET FORMS ARE THE IMPLEMENTATION AND THE BARE NAMES ARE WRAPPERS AT 0,
+ so a caller holding the driver's whole flat frame reads the IP header where it
+ sits instead of copying the payload out to get an index base. Each copy
+ removed is 16,400 bytes on a 1,514-byte frame (`net-recv-heap`). One body per
+ accessor, so the two forms cannot drift.
+
+  ip-length-valid-at : List Integer, Integer -> Boolean
+  ip-length-valid-at (pkt) (off) =
+    if list-length pkt - off < ip-header-size then False
+    else if ip-total-length-at pkt off < ip-header-size then False
+    else ip-total-length-at pkt off <= list-length pkt - off
+
   ip-length-valid : List Integer -> Boolean
-  ip-length-valid (pkt) =
-    if list-length pkt < ip-header-size then False
-    else if ip-total-length pkt < ip-header-size then False
-    else ip-total-length pkt <= list-length pkt
+  ip-length-valid (pkt) = ip-length-valid-at pkt 0
+
+  ip-header-valid-at : List Integer, Integer -> Boolean
+  ip-header-valid-at (pkt) (off) =
+    if list-length pkt - off < ip-header-size then False
+    else ip-checksum pkt off (off + ip-header-size) 0 == 0
 
   ip-header-valid : List Integer -> Boolean
-  ip-header-valid (pkt) =
-    if list-length pkt < ip-header-size then False
-    else ip-checksum pkt 0 ip-header-size 0 == 0
+  ip-header-valid (pkt) = ip-header-valid-at pkt 0
 
   ip-build-packet : List Integer, List Integer, Integer, List Integer -> List Integer
   ip-build-packet (src-ip) (dst-ip) (proto) (payload) =
@@ -168,17 +190,29 @@ Section: IPv4
     in let hdr-final = ([ip-version-ihl, 0] & write-be16 total-len & [0, 0, 0, 0, 64, proto] & write-be16 cksum & src-ip & dst-ip)
     in hdr-final & payload
 
+  ip-src-at : List Integer, Integer -> List Integer
+  ip-src-at (pkt) (off) = [list-at pkt (off + 12), list-at pkt (off + 13), list-at pkt (off + 14), list-at pkt (off + 15)]
+
   ip-src : List Integer -> List Integer
-  ip-src (pkt) = [list-at pkt 12, list-at pkt 13, list-at pkt 14, list-at pkt 15]
+  ip-src (pkt) = ip-src-at pkt 0
+
+  ip-dst-at : List Integer, Integer -> List Integer
+  ip-dst-at (pkt) (off) = [list-at pkt (off + 16), list-at pkt (off + 17), list-at pkt (off + 18), list-at pkt (off + 19)]
 
   ip-dst : List Integer -> List Integer
-  ip-dst (pkt) = [list-at pkt 16, list-at pkt 17, list-at pkt 18, list-at pkt 19]
+  ip-dst (pkt) = ip-dst-at pkt 0
+
+  ip-proto-at : List Integer, Integer -> Integer
+  ip-proto-at (pkt) (off) = list-at pkt (off + 9)
 
   ip-proto : List Integer -> Integer
-  ip-proto (pkt) = list-at pkt 9
+  ip-proto (pkt) = ip-proto-at pkt 0
+
+  ip-total-length-at : List Integer, Integer -> Integer
+  ip-total-length-at (pkt) (off) = read-be16 pkt (off + 2)
 
   ip-total-length : List Integer -> Integer
-  ip-total-length (pkt) = read-be16 pkt 2
+  ip-total-length (pkt) = ip-total-length-at pkt 0
 
   ip-payload : List Integer -> List Integer
   ip-payload (pkt) = eth-payload-loop pkt ip-header-size (read-be16 pkt 2) []

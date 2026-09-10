@@ -2,422 +2,385 @@
 
 ## Goal
 
-The bootable IMG ships with source, compiler, editor, and shell. A
-developer can compile, test, and deploy Codex programs from bare metal
-without any host tooling. PowerShell remains as a thin VM orchestration
-layer on the host; all computation moves into Codex.
+The bootable IMG ships with source, compiler, editor, and shell. A developer
+can compile, test, and deploy Codex programs from bare metal without any host
+tooling. PowerShell remains as a thin VM orchestration layer on the host; all
+computation moves into Codex.
 
-## Current State (verified against the tree, 2026-07-19)
+## What exists in Codex
 
-The migration is roughly two-thirds done. Disk-compile mode works and now
-finds its volume from the disk's GPT rather than assuming LBA 2048. The
-FileSystem builtins are real. The on-device test runner and pingpong do
-not exist yet.
-
-### What exists in Codex
-
-| Component | Location | Status |
-|---|---|---|
-| Cite resolution (serial) | `codex/compiler/opening.codex` -- `load-cited-foreword` | **Live.** Called on the serial path. (An older revision of this doc called it dead code. It is not.) |
-| Cite resolution (disk) | `codex/compiler/opening.codex` -- `disk-resolve-forewords`, `disk-load-cite`, `disk-extract-cites` | **Live.** Resolves `cites` transitively from the FAT16 volume, deduplicating by a seen-set. |
-| DISK compile mode | `codex/compiler/opening.codex` -- `emit-from-disk`, dispatched at `if cmd == "DISK"` | **Shipped.** Reads a path from stdin, mounts the FAT16 volume found from the disk's GPT (`fat16-boot-volume`), reads the source, resolves cites from disk, compiles. |
-| Quire-to-path mapping | `codex/compiler/opening.codex` -- `quire-to-dir` | Works. |
-| FAT16 reader | `codex/foreword/core/Fat16.codex` | `fat16-init`, `fat16-read-file`, `fat16-file-exists`, `fat16-list-dir`, `fat16-read-text`. |
-| FAT32 | `codex/foreword/core/Fat32.codex` | Exists. |
-| GPT | `codex/foreword/core/Gpt.codex` | Exists. |
-| Block I/O | `codex/os/kernel/DiskFacts.codex` | `block-read-sector`, `block-write-sector` -- raw 512-byte sectors. |
-| Editor | `codex/foreword/ui/Editor.codex` | Exists. |
-| Shell | `codex/os/core/ShellCore.codex`, driven by `codex/test/apps/codex-shell.codex` | Exists. |
-| CDX signing | `codex/compiler/opening.codex` | Ed25519 sign via inline program. |
-| Container formats | `codex/plugs/{pe,elf,img}/` | PE, ELF, and GPT/FAT disk images are produced by **plug CDX binaries**, not by the compiler. The old `codex/Emit/PeWriter.codex` and `Fat32Writer.codex` no longer exist. |
-
-### The two stubs that lied: both gone (verified 2026-07-19)
-
-An earlier revision of this doc named `read-file` and `file-exists` as
-stubs that lie: `read-file` reading serial instead of disk, and
-`file-exists` emitting `li rd, 1` so it answered `True` for every path.
-Both are fixed, and the fix went further than this section asked for.
-
-| Name | Where it is now |
+| Component | Location |
 |---|---|
-| `file-exists` | A real FAT16 lookup in Foreword chapter `Fat16`. The emitter is deleted; `X86_64Builtins.codex` records why. |
-| `read-file` | The builtin is **deleted** (blu, CL 9092). It read serial and discarded its path argument. 25 transpiler emitters were retargeted to `read-text`. |
-| `list-files`, `list-directories` | Real, in `Fat16`. Gone from `builtin-names` and the type environment, so a chapter that does not cite `Fat16` gets CDX3002 rather than a lie. |
-| `write-file`, `write-binary-file` | Real, in `Fat16`. FAT16 is no longer read-only: it allocates a cluster, chains it, writes the bytes and commits a directory entry, in Codex over `block-write-sector`. |
+| Cite resolution (serial) | `codex/compiler/opening.codex` -- `load-cited-foreword` |
+| Cite resolution (disk) | `codex/compiler/opening.codex` -- `disk-resolve-forewords`, `disk-load-cite`, `disk-extract-cites`, transitive, deduplicated by a seen-set |
+| DISK compile mode | `codex/compiler/opening.codex` -- `emit-from-disk`, dispatched at `if cmd == "DISK"` |
+| Quire-to-path mapping | `codex/compiler/opening.codex` -- `quire-to-dir` |
+| FAT16 | `codex/foreword/core/Fat16.codex`, including subdirectories and a full VFAT long-name implementation |
+| FAT32, GPT | `codex/foreword/core/Fat32.codex`, `Gpt.codex` |
+| Block I/O | `codex/os/kernel/DiskFacts.codex` -- raw 512-byte sectors |
+| Editor, shell | `codex/foreword/ui/Editor.codex`, `codex/os/core/ShellCore.codex` |
+| CDX signing | `codex/compiler/opening.codex` -- Ed25519 via inline program |
+| Container formats | `codex/plugs/{pe,elf,img}/` -- plug CDX binaries, never the compiler |
 
-The general rule those changes settled: a name the compiler cannot keep
-does not belong in the emitter. `write-file` used to print its content to
-the console and report success, which is silent data loss.
+**A name the compiler cannot keep does not belong in the emitter.** `write-file`
+used to print its content to the console and report success, which is silent
+data loss. `file-exists`, `read-file`, `list-files` and `list-directories` were
+all removed from `builtin-names` and the type environment, so a chapter that
+does not cite `Fat16` now gets CDX3002 rather than a lie.
 
 ### What still exists only in PS1
 
-| Script | What it does | Migration path |
-|---|---|---|
-| `build/concat-codex-self.ps1` | Concatenate compiler source with quire prefixes | Superseded on the disk path by `disk-resolve-forewords`; still used by the serial path. |
-| `build/compile.ps1` | Boot VM, resolve cites, feed source over serial | Keep the VM orchestration; the cite resolution is already in the compiler. |
-| `build/test.ps1` | Parallel test runner | On-disk test runner (Phase 4 below -- not started). |
-| `build/build.ps1` | Fixed-point verification (text + CDX pingpong) | On-disk self-compile + byte-compare (Phase 5 below -- not started). |
-| `build/build-record.ps1` | Hash + JSON provenance | Sha256 + Json forewords exist. |
-| `build/gpu-dispatch` bridge | Serial-to-GPU dispatch | The polled serial bridge should become a virtqueue device. |
+| Script | Migration path |
+|---|---|
+| `build/concat-codex-self.ps1` | superseded on the disk path by `disk-resolve-forewords`; still used by the serial path |
+| `build/compile.ps1` | keep the VM orchestration; the cite resolution is already in the compiler |
+| `build/test.ps1` | the on-disk test runner, Phase B |
+| `build/build.ps1` | on-disk self-compile and byte-compare, Phase C |
+| `build/build-record.ps1` | Sha256 and Json forewords exist |
+| `build/gpu-dispatch` bridge | the polled serial bridge should become a virtqueue device |
 
 ### What stays as PS1 forever
 
-- `build/vm-config.ps1` -- VM process management, port allocation.
-- `build/clean-zombies.ps1` -- kill orphaned VM processes.
-- `build/build-gpu-dispatch.ps1` -- CUDA/nvcc invocation.
-
-These launch or kill host processes. They are the boundary, not the
-work.
+`build/vm-config.ps1`, `build/clean-zombies.ps1`, `build/build-gpu-dispatch.ps1`.
+These launch or kill host processes. They are the boundary, not the work.
 
 ## The Windows-dependency ledger (Damian's direction 2026-08-14)
 
-**The question is not which scripts have a generator. It is which ones have
-to survive when Windows becomes a dependency we drop.** Those are different
-questions with different answers, and the generator model answers neither:
-a `codex/build/*Script.codex` authors its logic in Codex and **emits
-PowerShell**, so the artifact that runs is still a `.ps1` and still needs a
-host. Generators are single-source-of-truth for the host-side build. They
-are not a path off the host.
+**The question is not which scripts have a generator. It is which ones have to
+survive when Windows becomes a dependency we drop.** A `codex/build/*Script.codex`
+authors its logic in Codex and **emits PowerShell**, so the artifact that runs is
+still a `.ps1` and still needs a host. Generators are single-source-of-truth for
+the host-side build. They are not a path off the host.
 
-Re-measured 2026-08-14 after seven lifts, over the 86 scripts under `build/`
-that no generator emits, by what each one actually touches (re-derive, never
-copy -- L-COUNT):
+The work sorts into four outcomes and only the first is a port.
 
-| Host dependency | Count | What it means when Windows goes |
-|---|---|---|
-| `codex-vm` and nothing else | 36 | The dependency EVAPORATES. Booting a VM to run a Codex program is exactly what Codex OS stops needing. |
-| touches `codex-vm` at all | 56 | The 36 above plus 20 that also touch something else. |
-| a foreign implementation (openssl, mosquitto, a browser, Roslyn, .NET Brotli) | 20 | Needs a foreign peer by definition. Not portable, and see the trap below. |
-| nothing at all (pure computation) | 11 | Nothing blocks a port -- but see what that class actually held, below. |
-| Perforce | 9 | Goes when the repository protocol replaces Perforce. |
-| Renode | 5 | Cross-arch emulation; a host tool for a host job. |
-| host sockets | 5 | Becomes our own stack once Track B lands. |
-| raw disk / USB through the Windows API | 3 | Blocked on Codex OS device drivers, not on a port. |
-
-The rows overlap: a script can touch several, and 36 of the 86 touch
-`codex-vm` alone. The classifier is
-`build/check-generated-scripts.ps1`'s inventory plus a grep for those
-markers; it is a starting point for judgement, not a verdict, because what
-a script IMPORTS is not always what it depends on.
-
-**So the work sorts into four outcomes, and only the first is a port.**
-
-1. **LIFT.** Real work that survives, with no witness role. It becomes a
-   Codex program that runs natively, not a generator that emits a script.
+1. **LIFT.** Real work that survives, with no witness role. It becomes a Codex
+   program that runs natively, not a generator that emits a script.
 2. **KEEP FOREIGN.** Being outside Codex is load-bearing.
-3. **EVAPORATES.** The script exists only to bridge something PowerShell
-   cannot do and Codex OS does natively. It is deleted, not ported.
+3. **EVAPORATES.** The script exists only to bridge something PowerShell cannot
+   do and Codex OS does natively. It is deleted, not ported.
 4. **DIES WITH WHAT IT DRIVES.** Perforce, Renode, USB flashing, VM launch.
+
+**Classify each script against the four BEFORE writing any Codex**, and quote
+its header if it claims independence.
 
 ### Outcome 2 is the trap, and it is the expensive one
 
 **A script whose value is INDEPENDENCE cannot be ported into Codex without
-destroying the thing it was for.** Porting it citing our own chapters turns
-a control into a tautology, and the port still passes, which is why this
-would not be caught by running it. Three of them say so in their own
-headers and were nearly lost to a mechanical sweep:
+destroying the thing it was for.** Porting it citing our own chapters turns a
+control into a tautology, and the port still passes, so running it would not
+catch this. The ones that say so in their own headers:
 
-- `make-fat16-subdir.ps1`: "written from the FAT16 spec rather than from
-  `Fat16.codex`. That independence is the whole point: a fixture built by
-  the code under test proves only that the code agrees with itself."
-- `oracle-cce.ps1`: "Every answer here is adjudicated by the HOST's Unicode
-  tables, never by another Codex answer." Same for `oracle-scalar.ps1` and
-  `oracle-vector.ps1`.
-- `fat16-walk.ps1`: the independent reader for returned-flight evidence. It
-  reads a FILE and never a device, because mounting a FAT volume lets
-  Windows write `System Volume Information` into it, which allocates
-  clusters, which is the exact evidence its third question asks about.
+- `make-fat16-subdir.ps1`, written from the FAT16 spec rather than from
+  `Fat16.codex`: a fixture built by the code under test proves only that the
+  code agrees with itself.
+- `oracle-cce.ps1`, `oracle-scalar.ps1`, `oracle-vector.ps1`: every answer is
+  adjudicated by the HOST's tables, never by another Codex answer.
+- `fat16-walk.ps1`, the independent reader for returned-flight evidence. It
+  reads a FILE and never a device, because mounting a FAT volume lets Windows
+  write `System Volume Information` into it, which allocates clusters, which is
+  the exact evidence its third question asks about.
+- `mint-factlog-fixture.ps1`, authored from the FactLog spec rather than by
+  running DiskFacts.
+- `brotli-tables-verify.ps1` and its five siblings, which check our tables
+  against RFC 7932's PUBLISHED bytes and their CRC-32s.
+- `qr-decode-test.ps1`, which turns a photograph back into bytes. Judging the
+  decoder with our own encoder is the same tautology.
+- `ddc-witness.ps1` one level up: the Roslyn arm IS the witness, and a Codex
+  reimplementation of it witnesses nothing.
 
-`ddc-witness.ps1` is the same class one level up: the Roslyn arm IS the
-witness, and a Codex reimplementation of it witnesses nothing.
-
-**When Windows goes, these do not become Codex programs. They need a
-different foreign host.** That is a real open question and it is not
-answered here; naming it is the point, because the alternative is
-discovering it by porting an oracle into its own subject.
+**When Windows goes, these do not become Codex programs. They need a different
+foreign host.** That is open and is not answered here; naming it is the point,
+because the alternative is discovering it by porting an oracle into its own
+subject.
 
 ### Outcome 3, which is easy to miss
 
 `cce-grep.ps1` exists because `Select-String` over a CCE file returns ZERO
 MATCHES rather than failing, which reads exactly like "the thing is not in
-there" -- it cost a false reading on 2026-08-06 against a 15.3 MB `-IrCce`
-artifact. On Codex OS, CCE is the native encoding and grep is grep. The
-tool is not ported. It ceases to have a reason to exist.
+there". On Codex OS, CCE is the native encoding and grep is grep. **Look for this
+shape before porting anything: a script that reimplements one of our own formats
+in PowerShell is usually outcome 3, not outcome 1.**
 
-Look for this shape before porting anything: a script that reimplements one
-of our own formats in PowerShell is usually outcome 3, not outcome 1.
+### The classifier is the artifact; the count is downstream of it
 
-### Order to take them in
+Three re-measurements of the same "pure computation" list disagreed with each
+other on both the count and the membership, because each tested a different
+marker set. Scripts that shell out to `compile.ps1`, launch a browser, or open
+an `HttpListener` fall through it and read as pure. **Read the script before
+believing the row**, and quote a number from here only with the marker set that
+produced it (L-COUNT).
 
-Outcome 1 first, and the pure-computation ones before the `codex-vm` ones,
-because the pure ones need no Codex OS capability that does not exist yet.
-**Classify each one against the four outcomes BEFORE writing any Codex**,
-and quote the header if it claims independence.
+**Outcome 1 is empty in the pure-computation class.** What is left there is
+outcome 2, outcome 3, a classifier miss, or the `plug-ports` decision:
+`build/plug-ports.ps1` is the port table itself, dot-sourced by its readers, and
+generating it moves the single source of truth into a `.codex`, which is a
+decision rather than a port. **The next lifting work is the `codex-vm` set, and
+every one of those needs Codex OS to have the capability the VM stands in for.**
 
-### What the pure-computation class actually held (measured 2026-08-14)
+**A lift is verified against the shipped script on a clean tree AND on a control
+tree firing every message path**, because two arms agreeing on a PASS is two
+instruments agreeing about nothing. Four of the nine lifts shipped a defect fix
+that A/B surfaced and reading had not, including a `-Score` report that had
+never printed its table: its two report lines are bare format expressions, so
+they went to the OUTPUT stream and the caller captured them, while the exit code
+still worked by accident because `-eq` on an array filters rather than compares.
 
-Nine were lifted: `check-sidecars`, `check-facts-guid`,
-`check-effect-vocab`, `check-plug-ports`, `check-xdiag-cells`,
-`check-plug-types`, `check-cdx-registry`, `check-doc-counts`,
-`ablate-doctrine`. Each was verified against the shipped script on a clean
-tree AND on a control tree firing every message path it has, because two
-arms agreeing on a PASS is two instruments agreeing about nothing.
+## Working on a generated script
 
-**Four of the nine shipped a defect fix the A/B surfaced**, and every one
-of the four was invisible while the script was passing:
-
-- `check-xdiag-cells` and `check-cdx-registry` walked hashtable keys in
-  bucket order, so their findings printed in a different order run to run.
-  Only visible once the check FAILS.
-- `check-facts-guid` returned a byte array behind a unary comma to defeat
-  PowerShell unrolling it; every caller only ever joined it, so the trap is
-  gone rather than re-expressed.
-- **`ablate-doctrine -Score` had never printed its table.** The two report
-  lines are bare format expressions, so they go to the OUTPUT stream, and
-  the caller does `$v = Invoke-Score ...` and captures them. The exit code
-  still worked by accident: `$v` was an array, and `-eq` on an array
-  filters rather than compares, so `'PASS'` being present read as true.
-
-**That is the argument for lifting a script you believe is fine.** Nothing
-here was found by reading. Each one was found by running the two versions
-side by side and looking at what came out.
-
-### A shipped script with a generator is edited THROUGH the generator, whatever lane you are in
-
-**Rule.** Before submitting any CL that touches a script a generator emits
-(`build/*.ps1`, `codex/plugs/common/plug-build-lib.ps1`, anything
+**A shipped script with a generator is edited THROUGH the generator, whatever
+lane you are in.** Before submitting any CL that touches a script a generator
+emits (`build/*.ps1`, `codex/plugs/common/plug-build-lib.ps1`, anything
 `check-generated-scripts.ps1` lists), run
-`build/check-generated-scripts.ps1 -Diff <name>` and land the generator
-change in the same CL. The lane does not matter: a plug CL, a docs CL, an
-apps CL. If the checker is red, the CL is not done.
+`build/check-generated-scripts.ps1 -Diff <name>` and land the generator change in
+the same CL. If the checker is red, the CL is not done. The case that earned it:
+a plugs CL edited `plug-build-lib.ps1` by hand, gated with the ARM64 cross bed
+only, and turned `plug-build-lib newly drifted` red for every lane. The cross bed
+was the right gate for what the CL did to the plug and the wrong gate for what it
+did to the script.
 
-**The case that earned it (main 15795, root, 2026-08-16).** A plugs CL added a
-`-CommonChapters` parameter and loop to `plug-build-lib.ps1` by hand, gated
-with the ARM64 cross bed only ("a plug is not seed-affecting"), and never
-invoked `check-generated-scripts` or `build.ps1`, so nothing observed that
-`codex/build/plugbuildlibScript.codex` still emitted the old script. The arm
-`plug-build-lib newly drifted` went red for every lane and a copy-up was held
-on it until main 15847 taught the generator the shipped lines. The cross bed
-was the right gate for what the CL did to the plug and the wrong gate for what
-it did to the script; the two are different questions and the second has its
-own runner, which is the same lesson as the section below in the other
-direction.
-### How to actually make the shipped script match, and the two things that bite
+**A generator chapter is a compiled unit.** `build.ps1` runs
+`deck-headroom.ps1 -Quire codex\build -WithSelf -MinMargin 1.25`, so every
+chapter in this quire is a unit the standing gate measures, seed or no seed. Two
+arms proving the OUTPUT is right say nothing about whether the chapter COMPILES
+within its deck.
 
-`check-generated-scripts.ps1` has no `-Write` and that omission is deliberate,
-which leaves the question of how the shipped script is supposed to catch up
-with a generator you just changed. **`-OutRoot <dir>` is the answer**: it writes
-the generator's emitted text to `<dir>/<Chapter>/emitted.txt`, and installing
-THAT over the shipped script makes the two agree by construction instead of by
-hand-transcription. `-Diff <name>` shows the delta; `-Update` records a drift
-rather than fixing it.
+**`-OutRoot <dir>` is how the shipped script catches up with a generator**, by
+writing the emitted text to `<dir>/<Chapter>/emitted.txt` for installation, so
+the two agree by construction rather than by hand-transcription. `-Diff <name>`
+shows the delta; `-Update` records a drift rather than fixing it. **There is
+deliberately no `-Write`**, because the shipped script is the maintained side.
 
-Two things bite when you do it, both measured 2026-09-02 (fester):
+**THE GENERAL TRAP: the `build/*.ps1` files are hand-maintained, and the drift
+runs the OTHER way from what "generated from" advertises.** On
+`lintunusedcitesScript.codex` the generator emits `[Parameter(Mandatory=$true)]`
+where the shipped script has none, so the shipped copy is the hand-FIXED one and
+regenerating hands back a script that prompts headless. **The instance that costs
+a boot: `cdxtopeScript.codex` S06 ends at the `stack-min-rsp-addr` store and
+never writes cell 4072**, which is the whole of the fix for the reboot loop under
+real UEFI, and S05 still allocates the heap at the fixed `0x1000000` edk2
+refuses. Regenerating that one hands back a stub that triple-faults, and no drift
+number distinguishes those lines from formatting. **Diff before regenerating.**
 
-- **The emitted text is LF and the shipped scripts are CRLF.** Copy it in
-  unconverted and `p4 diff` reports the whole file as changed, which buries a
-  five-line change and turns the next merge into a conflict (P-EOL). Convert on
-  the way in.
-- **The emitted text can differ from the shipped script in places you did not
-  touch**, and that is not always drift to fix. Every `Sc*` node, `ScComment`
-  included, pads with `ps-indent indent` (`PowerShellEmit.codex:122`, the
-  same as `ScAssign`/`ScEcho`/`ScRaw`); an entry sits at column 0 only because
-  it is at the TOP LEVEL of the phase list, indent 0. So a comment that the
-  shipped script keeps indented inside a scriptblock has to be emitted from
-  inside that scriptblock (as `ScRaw` with its own indent), not appended to
-  the phase list; four `plug-smoke` comments were the wrong way round until
-  main 21690. The checker tolerated it; a wholesale install does not, and
-  re-indenting afterwards is what keeps the CL to the change you meant
-  (P-UNRELATED).
+**`compile-arm64.ps1` and `compile-riscv.ps1` are the same shape**: generator
+abandoned, shipped script maintained. `build/vm-config.ps1` is the opposite and
+still matches. Check `-Only <name>` before editing either half of any generated
+script.
 
-**A Codex text literal cannot span lines.** `ScRaw "line one` + newline +
-`line two"` is `CDX0007: Unterminated text literal: hit end of line before
-closing '"'`, pointing at the column where the line ended. A multi-line emitted
-block is written as SEPARATE `ScRaw` entries, one per emitted line, which is
-what every existing block in `BuildScript.codex` already does. Worth naming
-beside the backslash trap below because the two look alike from the outside:
-both are the generator's own string rules leaking into what you thought was
-PowerShell.
+**A TEXT MATCH IS NOT VERIFICATION.** `compile-arm64` sat at 58 drift lines that
+all read as convention while its generator emitted load address 0x40000000 for
+0x40100000, heap reserve 0x1000000 for 0x0F000000, align 0x10000 for 0x1000, and
+a CCE name decoded one byte per character. **It exits 0 and writes a broken ELF.**
+Compile a real subject through the pipeline before and after installing, require
+the artifact to be byte-identical, then run the PRE-fix emission as a control and
+require it to diverge (L-FALSIF).
 
-### A generator chapter is a compiled unit. Run the gate.
+**Diff the DATA a generator carries, not just its code shape.** The `bvt`
+generator's test list held 16 of the 75 tests, so adopting it unread would have
+dropped 59 from the gate while the BVT went on printing PASS. Nothing in the
+drift number said so: 239 lines of drift looks like any other number.
 
-**Two of the nine went to main red and blu found them, not me.** I verified
-every lift with `check-generated-scripts` plus a control arm per script, and
-never ran `build/build.ps1`, on the reasoning that a `codex/build/*Script.codex`
-is not seed-affecting. That reasoning is true and irrelevant: `build.ps1` runs
-`deck-headroom.ps1 -Quire codex\build -WithSelf -MinMargin 1.25`, so **every
-chapter in this quire is a unit the standing gate measures**, seed or no seed.
-Main was red for the whole fleet and a docs-only CL was held behind it.
+**Count phases, not lines, before judging a generator a stub.** The DSL packs a
+phase into one line, so a 39-line generator against an 816-line script is not a
+placeholder.
 
-Two arms proving the OUTPUT is right say nothing about whether the chapter
-COMPILES within its deck. Those are different questions and the second one has
-its own runner.
+### What the drift check decides, and what the byte arm decides
 
-### What CHECK-RESOLVE is actually bound by, because it is not size
+**The drift comparison decides STATEMENTS, not bytes.** It trims every line and
+drops the empty ones on both sides, so an added blank line and a re-indented
+comment score zero: measured on its own logic, a script against itself plus one
+blank line is `delta 0` and one changed statement is `delta 2` (L-GAP).
+
+**The byte arm beside it compares the emitted text again with blanks and
+indentation included, EOL normalised.** Its record is
+`build/generated-scripts-bytes.txt`, one row per generator with its shipped and
+emitted line counts, its indent-differing line count and a derived cause. **No
+row is a content difference.** It fails on a generator not in the record, on a
+recorded difference whose numbers move, and on a recorded generator that has
+become byte-identical, so the residue shrinks as each is repaired.
+
+**`-UpdateBytes` writes only that residue.** `-Update` also rewrites the drift
+baseline and the hand-written inventory, and the inventory carries scripts other
+lanes have just added, so a lane repairing one byte difference with `-Update`
+records decisions that are not its to make.
+
+**`check-pipe-verdicts.ps1` holds a stage's declared `PoExit` codes against the
+`ScExit (SeInt N)` values its body spells**, and nothing checked them until two
+generators shipped a code their scripts never exit. It reads the GENERATOR, not
+the emitted script, because a text census of `exit N` over PowerShell is not
+decidable: `exit` occurs in prose and strings, and a real code can reach `exit`
+through a variable. An `exit` inside a `ScRaw` payload is unreadable to the
+model, so such a generator is exempt from the failing arm and reported instead;
+the arm grows as `check-shell-raw` shrinks the payloads. It reads text and boots
+nothing.
+
+**The parse class is closed and gated.** `check-generated-scripts.ps1` compiles
+every generator, dead target or not, and hard-fails on PowerShell parse errors
+with NO baseline. `build/generated-scripts-baseline.txt` is empty, so a drift of
+any size in any generator fails the gate and there is no residue for a new one to
+hide in.
+
+**THE BANNER'S PRESENCE IS AN INVARIANT, NOT DECORATION.** Every generated script
+opens with `generated-banner` from `ShellTypes`, ONE definition cited by all
+three emitters. **A file carrying the banner is exactly a file that currently
+matches its generator.** A script whose shipped copy is the maintained side must
+NOT be given the banner by hand: it would be a lie on the only copy anyone edits.
+
+### The inventory: the drift that runs the other way
+
+Everything above reads the tree GENERATOR-FIRST, so it is structurally blind to
+the commoner failure: **an agent writes a new `build/*.ps1` and never writes the
+`.codex` that emits it.** `check-generated-scripts.ps1` enumerates `build/*.ps1`,
+subtracts everything a generator claims, and compares the remainder against
+`build/handwritten-scripts.txt`. Only a name absent from that file prints, and
+the inventory NEVER changes the exit code.
+
+**Report-only is a decision, not an omission.** Most scripts under `build/` are
+meant to have no generator: probes, flight arms, interop harnesses, mint-fixture
+one-offs, and `check-generated-scripts.ps1` itself, which has to run when the
+generators are broken. "Every script needs a generator" is not the policy, so a
+gate here would be dozens of reds whose answer is always the expected one, which
+is the reader-training failure the drift baseline was built to avoid. Answer it
+by writing the `.codex`, or by recording the name with `-Update`.
+
+**A generator with no live target is compiled but never compared**, so a defect
+in it survives indefinitely and the parse check cannot reach it: two adopted
+generators emitted scripts that could only ever exit 2. Give a new generator its
+target in the same change. The gate now REFUSES an undeclared missing target;
+`$NoTargetByDesign` carries the single deliberate entry with its reason.
+
+### What CHECK-RESOLVE is bound by, because it is not size
 
 `checkdoccounts` at 101,042 bytes needed 52 of 64 where `vmconfigScript` at
-116,795 needs 46 -- unit length **anti**-correlates. CHECK-RESOLVE is the
-resolve tail (`resolved-env`, `sorted-all0`, `sorted-et0`) and it tracks the
-resolved ENVIRONMENT. Measured 2026-08-14 across the tightest units in the
-quire:
+116,795 needs 46: unit length **anti**-correlates. CHECK-RESOLVE is the resolve
+tail and it tracks the resolved ENVIRONMENT, so **the count of names bound at top
+level is what costs.** Measured over identical body text at four section
+granularities, required scale moved six points while unit length moved less than
+one per cent.
 
-| top-level defs | required |
-|---|---|
-| 96 | 56 (`ablatedoctrine`, before) |
-| 93 | 52 (`checkdoccounts`, before) |
-| 46 | 42 (`checkxdiagcells`) |
-| 45 | 41 (`checkplugtypes`) |
-| 32 | 39 (`checkconstants`) |
+Raising `deck-scale-min` is the wrong fix: it is a whole-corpus constant and
+would spend every unit's headroom to cover one author's style. **Restructuring a
+generator is safe to do aggressively**, because `match / 0 drift` after the
+change is proof the emitted script is unchanged.
 
-**Naming every sub-expression is what costs.** Both chapters carried roughly
-twice the binding count of anything else in the quire because that is how the
-port was written. Inlining the single-use bindings brought them to 25 and 52
-names, 45 required each, margin 1.42.
+There is a floor. Fully inlined, one chapter reached a single 25,800-character
+line; keeping one binding per section **costs** two points of deck and buys the
+file back. **Say which kind of chapter you have before copying either choice:** a
+hand-written chapter pays for readability, a DERIVED one (the workflow is to
+change the `.ps1` and re-run a transformer) does not, so line length costs less
+there.
 
-Raising `deck-scale-min` would have been the wrong fix: it is a whole-corpus
-constant, and it would spend every unit's headroom to cover one author's style.
+**A large derived generator is written by a transformer, not typed.**
+`cdx-to-pe.ps1` is 1121 lines of hand-assembled machine code and `build-img.ps1`
+527 lines of GPT and FAT structure; hand-copying either into Codex string
+literals is where a wrong nibble gets in and nothing downstream would catch it.
+Escaping is only `\` and `"`. **The arm that makes it safe is byte-identity of
+the ARTIFACT across every flag path, with the hashes required to differ from each
+other**, so the comparison distinguishes the paths rather than passing on
+everything.
 
-**Restructuring a generator is safe to do aggressively, and the proof is
-mechanical.** `check-generated-scripts` recompiles the generator and diffs the
-result against the shipped `.ps1`, so match / 0 drift after the change IS proof
-the emitted script is byte-identical. Inline freely, then check.
+### The emitter traps, which are one family
 
-There is a floor on how far to take it. Fully inlined, `ablatedoctrineScript`
-was 16 names and required 43 -- and a single 25,800-character line. Keeping one
-binding per section costs 2 points (45, margin 1.42) and brings the longest
-line to 6,173, which is `vmconfigScript`'s order. Take the two points.
+**The DSL will emit an expression into a position that needs grouping, and
+nothing complains until it runs.** Fix these at the CALL SITE, not in
+`emit-ps-expr`: parenthesising there would drift every matching generator at
+once.
 
-`check-doc-counts` was the interesting one, because a claim carried its
-measurement as a `scriptblock` and sixteen more were built with
-`[scriptblock]::Create` over an interpolated string. **The DSL has no
-scriptblock node and should not grow one for this.** A claim names its
-measurement by VERB now and one dispatcher resolves it, which is the same
-table-plus-reader shape the script already applies to the docs it checks.
-The dispatcher THROWS on an unknown verb: a silent `$null` compares as 0 or
--1 and lands in the report as a drift or a missing directory, which is a
-wrong answer wearing the costume of a real one.
+- `SeProperty` emits `obj.prop` unparenthesised, right for `SeVar` and wrong for
+  a raw command.
+- `ScSetContent` emits its path expression unparenthesised, so a compound path
+  produces `Set-Content -Path Join-Path $x '.y' -Value ...`, which does not run.
+- `ScCopy` and `ScMkdir` the same: `New-Item -ItemType Directory -Force
+  Split-Path $Stage0` is not a directory named `Split-Path`, it is a hard error,
+  and under `$ErrorActionPreference = 'Stop'` the script dies on its second
+  statement.
+- **`ScForEach` over a `SeRaw` command call binds the WHOLE returned array to the
+  loop variable.** A cmdlet streams; a function returning a collection does not.
+  Use `SeCallArgs`, which parenthesises.
+- `SeRaw` emits ONE paren pair where `SeOr` and its siblings add their own, so
+  `ScIf (SeRaw ...)` gives `if (...)` and `ScIf (SeOr ...)` gives `if ((...))`.
 
-**`ablate-doctrine -SelfTest` and `-Setup` refuse on main, and its own
-guard is why.** `check-doc-counts` gained README.md claims on 2026-07-31
-(repointed whole to `TechnicalDetails.md` on 2026-08-25, main 19447, when
-the measured claims moved there) and `ablate-doctrine`'s `$scoredDocs` was
-never extended, so
-`Assert-ScoredDocsCoverChecker` throws. That guard is doing exactly its
-job. **The fix is not one line:** adding `TechnicalDetails.md` means the scratch
-tree also needs `seed/`, `apps/` and `build/bvt.ps1` junctioned in, or
-every TechnicalDetails claim reports NOPATH and every arm scores FAIL for a reason
-that has nothing to do with the candidate -- which is the failure the
-guard's own comment predicts. It is a design decision about what the
-scratch tree carries, and it is open.
+Other node traps, each paid for once:
 
-**Then the class ran out, and the reason is worth keeping.** Re-measured
-after those nine, ten scripts still classify as pure computation, and
-**only `ablate-doctrine` was a lift**:
+- **`ScForLoop` cannot express an increment.** Its step is emitted verbatim, so
+  `SeAdd (SeVar "i") (SeInt 1)` produces `for (...; ...; ($i + 1))`, which
+  evaluates and discards: an infinite loop, not a wrong answer, so no arm returns
+  to report it. `SeRaw "$i++"` is the step that works.
+- **`ScWriteError` emits `[Console]::Error.WriteLine`, where `Write-Error` raises
+  a TERMINATING error under `Stop`**, so `Write-Error '...'; exit 2` never
+  reaches the `exit`. The two are not interchangeable and the DSL cannot express
+  `Write-Error` at all, which is why those sites are `ScRaw`.
+- **`ScEcho` emits `Write-Host`, not `Write-Output`.** Different destinations,
+  which matters when a script's output IS its result.
+- `ScEchoStyled` carries the colours. Two traps in one node: its Boolean is
+  "newline?", so `False` emits `-NoNewline`, and `ClRed` maps to `DarkRed`; the
+  bright console colours are `ClBrightRed` / `ClBrightGreen`.
+- **A Codex text literal cannot span lines.** A multi-line emitted block is
+  written as SEPARATE `ScRaw` entries, one per emitted line.
+- **A `let` binding's value must start on the SAME line.** A multi-line list
+  literal is fine for a top-level definition; `let name =` followed by a newline
+  raises CDX2000. Use a section-level definition.
+- **Codex reads `\` as an escape introducer.** A generator writing `'\.'` emits
+  `'.'`, a dot matching any character. The generator source needs `\\.`.
+- **A generator's column-2 prose is NOT emitted.** A comment the shipped script
+  needs must be emitted like any other line, and every `Sc*` node pads with
+  `ps-indent indent`, so an INDENTED comment comes out indented only if it is
+  emitted from inside the scriptblock that indents it (`ScRaw` at that level),
+  not appended to the top-level phase list.
+- **The emitted text is LF and the shipped scripts are CRLF.** Install without
+  converting and `p4 diff` reports the whole file as changed, which buries a
+  five-line change and turns the next merge into a conflict (P-EOL).
+- **`-Update` writes two records and either may be read-only under Perforce.** It
+  now writes only what changed and says so.
+- **CHECK `ShellTypes` BEFORE ADDING A NODE.** A prior plan asserted the DSL had
+  no `-ForegroundColor` node; `ScEchoStyled`, `ScEchoPartial` and `emit-ps-color`
+  already existed.
+- **Read the `sh-script "<name>"` line, not the filename**, before overwriting a
+  generator: `build-img` is emitted by `buildimgScript.codex`, not
+  `buildbootimgScript.codex`, and writing into the wrong one destroys a working
+  generator.
+- **A generator with no `$AltTarget` entry reads as having no target.** The
+  target name in `sh-script` is not the path; before calling any generator dead,
+  READ IT and look for the script it describes.
+- **A PowerShell hex literal parses SIGNED**, so `0xFFFFFFFF` is int -1, a mask
+  written to normalise a negative exit code is a no-op, the `[uint32]` cast
+  THROWS, and in a loop the failed assignment leaves the comparison reading a
+  STALE value. Compare the signed literal directly.
+- **A hashtable walked in bucket order prints differently run to run**, because
+  .NET randomises string hashing per process. The verdict never moves; the text
+  does, which is enough to make a failure nobody can diff, and a green run never
+  shows it. Sort any key loop that builds output.
+- **A `List` returned from a PowerShell function is UNROLLED by the caller**, so
+  `$x.Count` dies whenever the collection holds exactly one element. `@()` around
+  the call is the fix.
+- **`codex/test/shell-build-keep` is the test any Shell quire change touches.**
+  The wider net is `check-generated-scripts.ps1` with no `-Only`.
+- **The Shell quire is not in the seed unit.** `concat-codex-self.ps1` preloads
+  `codex\foreword\core` only, so a `codex\foreword\shell` change moves no seed
+  byte and takes no build token. Confirm it at the concat rather than reasoning
+  from the directory name.
+- **Losing a script's header comments is not automatically a loss, but check.**
+  Grep for the doctrine's other home BEFORE installing over it.
 
-| Script | Outcome | Why |
-|---|---|---|
-| `brotli-tables-verify` | 2 | Checks our three Brotli tables against RFC 7932's PUBLISHED bytes and their CRC-32s. The five sibling `brotli-*` scripts that recovered those tables from .NET now classify under the foreign row, which is where they belong; all six are the same class. |
-| `mint-factlog-fixture` | 2 | Authored from the FactLog spec rather than by running DiskFacts, for exactly the reason its own header gives. |
-| `make-fat16-subdir`, `fat16-walk` | 2 | Already named above. |
-| `cce-grep` | 3 | Already named above. |
-| `plug-ports` | -- | The port table itself, dot-sourced by its readers. Generating it moves the single source of truth into a `.codex`, which is a decision, not a port. |
-| `qr-decode-test` | 2 | Turns a photograph back into bytes through `tools/qr-read.ps1`. The decoder is the half a hardware sitting depends on, and judging it with our own encoder is the tautology this doc keeps warning about. |
-| `registry-probe`, `test-app-gui` | -- | Classifier misses, not pure at all: the first launches a VM (and is hardcoded to another agent's workspace by design, per its own header), the second drives a headless GUI battery. |
-| `ablate-doctrine` | 1 | Lifted 2026-08-14. A harness whose subject is an agent is not a reason to leave it behind: Codex OS still talks to agents (Damian's ruling), so the agent-facing half is a capability to build, not a blocker. |
+**Do not bulk-regenerate.** Read the drift with `-Diff <name>`, judge each
+shipped-only line as real behaviour or emitter convention, port only the former,
+then INSTALL the emitted script and accept the style change.
 
-**Outcome 1 is now empty in the pure-computation class.** Everything left
-there is outcome 2 or 3, the `plug-ports` decision, or a classifier miss.
-The next lifting work is the `codex-vm` 36, and every one of those needs
-Codex OS to have the capability the VM is standing in for.
+## What `gen-scripts` costs, and the fix that does not pay
 
-**Note what the two re-measurements of this same list disagreed about.**
-The first said 21 pure, the second 11, this one 10, and the membership
-changed under all three -- five `brotli-*` scripts moved out on a marker
-the earlier pass did not test for. **The classifier is the artifact; the
-count is downstream of it.** Quote a number from here only with the marker
-set that produced it, and re-derive rather than copy (L-COUNT).
+`check-generated-scripts.ps1` compiles the whole set in ONE batch VM boot and
+then RUNS them one VM boot at a time in a serial loop, which reads like the
+classic serial-harness win. It is not: measured, pre-running the loop at
+`-ThrottleLimit 8` saved 9.5 s, because the serial runs are about 0.2 s each and
+the batch compile of the generator chapters is the rest. That is genuine compile
+work and the only way down is fewer or smaller generators. The change was
+reverted; do not spend the afternoon on it again.
 
-**The "21 pure computation" figure in the table above was a classifier
-artifact and the classifier is the thing to distrust.** It matched a marker
-set; scripts that shell out to `compile.ps1`, launch a browser, or open an
-`HttpListener` fell through it and read as pure. `check-app-pages` needs
-Edge and a web server. `test-app-gui` drives a headless GUI battery.
-`registry-probe` launches a VM and is hardcoded to another agent's
-workspace. **Read the script before believing the row**, which the ledger
-already says about the classifier and which cost a second pass anyway.
-
-### Five things the lifts found in the scripts themselves
-
-**OPEN, unowned: TWO GENERATORS EMIT A SCRIPT THAT DOES NOT EXIST, so nothing
-grades them** (reek, 2026-09-08, found by the pipeline-model migration).
-`codex/build/testrunBashScript.codex` emits `build/test-run.sh` and
-`codex/build/cvmmbuildScript.codex` emits `build/cvmm-build.ps1`. Both target
-paths are absent at head, verified. `check-generated-scripts.ps1` lists them
-under "no target" and exits 0: a targetless generator is asked whether it
-COMPILES and never asked what it EMITS, so either could emit anything and the
-gate would stay green. Neither could be migrated onto the pipeline model for
-the same reason, since no migration of them can be proven byte-identical
-(L-NOGATE).
-
-Three ways out and the choice is the work: ship the two targets, which asks
-whether either script is wanted at all; DELETE the two generators if the
-scripts are not wanted, so the tree stops carrying code nothing grades; or make
-`check-generated-scripts.ps1` FAIL on a targetless generator rather than
-listing it, which forces one of the first two the moment anyone adds a third.
-The last is cheapest and is a small change to a file fester owns.
-
-**STILL OPEN AT HEAD, and re-stated because the row recording it did not
-survive a rewrite: `build/test-boards.ps1` GRADES WHATEVER COMPILER IS ALREADY
-IN `build-output`.** Verified at head 2026-09-08, lines 23 to 26: it copies the
-seed to `$Stage0` only `if ((-not (Test-Path -PathType Leaf $Stage0)))`, where
-`build/sweep-apps.ps1` copies unconditionally. So a `test-boards` run on a
-workspace where any earlier build left a binary there grades THAT binary, and
-its PASS is a statement about whichever compiler ran last. This is R-GATE's
-name-the-kernel trap arriving through a script's own default rather than a
-forgotten flag, which is worse: nothing on the command line is wrong and the
-printed board result carries no digest that would contradict it. Repairs
-priced: copy unconditionally, matching `sweep-apps`; or keep the guard and
-PRINT the digest of the `Stage0` actually used, so the reading is falsifiable.
-
-### Three things the lifts found in the scripts themselves
-
-**CLOSED (fester, 2026-09-08): `build/sweep-apps.ps1` no longer accepts `-Jobs`,
-and a caller passing one is now refused rather than ignored.** reek found the
-parameter accepted and used nowhere (the pipeline-model migration, 2026-09-08):
-`Jobs` appeared once, as the declaration, and the sweep loop waits on each
-compile before starting the next. **L-ACCEPTED**: an interface that ignores what
-it does not recognise makes a setting that does nothing look exactly like one
-that works. Same family as `plugs-backlog.md` 2.41, the 51 plug runners that
-hardcode `-MemMB 3072`.
-
-**Of the two repairs the row priced, deletion is the one that fits this script.**
-Nothing invokes `sweep-apps.ps1` at all: a census of `build/`, `apps/`, `codex/`,
-`docs/` and `.claude/` finds no caller and therefore no caller passing `-Jobs`,
-so deletion breaks nothing measurable. Honouring the parameter would have turned
-a serial hand tool into a fan-out, which every run then has to ask the commander
-for, and the parallel app sweep already exists as `sweep-app-classes.ps1 -Jobs`.
-Landed through the generator: `codex/build/sweepappsScript.codex` drops the
-`sh-param-default "Jobs"` entry and `build/sweep-apps.ps1` drops the emitted
-line, 86 lines to 85, `check-generated-scripts.ps1 -Only sweep-apps` at 0 drift
-before and after. Proven: `-Dir books` sweeps 1 file and compiles it, and
-`-Dir books -Jobs 8` now fails with "A parameter cannot be found that matches
-parameter name 'Jobs'", which is the whole point of the repair.
-
-**`ScForLoop` cannot express an increment.** Its step is emitted verbatim,
-so `SeAdd (SeVar "i") (SeInt 1)` produces `for (...; ...; ($i + 1))`, which
-evaluates and discards. That is an infinite loop, not a wrong answer, so no
-arm returns to report it. `SeRaw "$i++"` is the step that works. Caught by
-reading the emitted script; nothing else would have.
-
-**A hashtable walked in bucket order prints differently run to run.** .NET
-randomises string hashing per process, so `foreach ($k in $h.Keys)` over a
-findings map is stable within a run and not across runs.
-`check-xdiag-cells` flipped its two claimants on roughly one run in three
-and `check-cdx-registry` reordered five findings freely. The verdict never
-moves; the text does, which is enough to make a failure nobody can diff.
-Both sort their key loops now. **Look for this in any check that walks a
-hashtable to build its output**, and note that a green run never shows it:
-it is only visible once the check fails.
+**Do not call `test-run.ps1` with `&` inside `ForEach-Object -Parallel`.**
+Runspaces share one process, that script does `Set-Location` and sets
+`[Environment]::CurrentDirectory`, and eight of them fight over one working
+directory. The battery spawns `pwsh -NoProfile -File` per test and never sees it.
+Spawn the process; the race disappears.
 
 ## Architecture
 
@@ -431,7 +394,7 @@ it is only visible once the check fails.
 +--------------------------------------------------+
 |  Bare Metal (codex-vm or real hardware)           |
 |                                                   |
-|  Shell ──> Compiler ──> Test Runner (not built)   |
+|  Shell ──> Compiler ──> Test Runner               |
 |    |          |                                   |
 |    v          v                                   |
 |  Editor   FAT16 Reader                            |
@@ -441,1512 +404,197 @@ it is only visible once the check fails.
 +--------------------------------------------------+
 ```
 
-### Compilation modes
+Serial-feed mode: the host resolves cites and sends everything. Disk-compile
+mode, shipped: `DISK path.codex\n` over serial, the compiler reads the disk.
+On-device mode, the destination: the shell compiles from disk to disk.
 
-Serial-feed mode (the host resolves cites and sends everything):
+**Decision on record: dual-path FileSystem.** Serial-feed for VM compilation,
+disk for on-device, selected by the mode header or by detecting a disk.
 
-```
-PS1: concat source + forewords -> serial -> compiler -> binary -> serial -> PS1
-```
+## Phase A: the FileSystem builtins -- DONE
 
-Disk-compile mode -- **shipped**:
+**The volume start is resolved from the disk's own GPT, not hardcoded.** 2048 is
+only ever right for an image our own `GptWriter` laid down; a stick partitioned
+elsewhere, a vendor ESP, or a dual-boot install all put the volume somewhere
+else, and every read landed on the wrong sectors and parsed garbage as a boot
+record. **The partition is chosen by whether it PARSES, not by its type GUID**,
+because a dual-boot disk carries a FAT32 vendor ESP and a FAT16 Codex partition
+and both are "the boot partition" by some reading. 2048 survives as
+`fat16-fallback-partition-start` for a disk with no readable GPT.
 
-```
-PS1: send "DISK path.codex\n" -> serial -> compiler reads disk -> binary -> serial
-```
+`gpt-read-after-hdr` refuses a header whose entry size is zero or above 512,
+which used to fault the machine with `!EXC=00` through a divide by zero.
 
-On-device mode -- the destination, not yet reached:
+**Still hardcoded: `DevConsoleBoot`'s `uefi-partition-start`**, used by
+`DriveManager` for the SOURCE volume in a dual-boot copy. That is a different
+question and is not part of this phase.
 
-```
-Shell: compile path.codex -> compiler reads disk -> binary -> disk
-```
+## Phase B: on-disk test runner
 
-## Remaining Plan
+`apps/works/DiskTestRunner.codex` mounts the boot volume, walks the root and one
+level of subdirectories, and compiles each file it finds IN PROCESS, printing a
+verdict per file and a summary.
 
-### Phase A: Wire the FileSystem builtins to FAT16 -- DONE (2026-07-19)
+**One program compiles another with no second boot.** The runner cites
+`Codex chapter Opening` and `Codex chapter Diagnostic Bag` and calls
+`compile-frontend-cdx` and then `compile-to-cdx`, so a chapter whose frontend is
+clean and whose codegen is not is not indistinguishable from a clean one, and
+each subject reports the size of the CDX it produced. **The size is checked
+against the host**, which is what makes it evidence rather than a number: the
+same subjects compile to the same byte counts in process and through
+`build/compile.ps1`.
 
-The builtins are real (table above). The last piece was the partition
-offset, and it is closed.
+Every subject is compiled between `__heap-save` and its restore, because a
+bare-metal heap has no collector and without the restore the run length is
+bounded by memory rather than by the corpus. Only Integers cross the restore.
+**The heap arm has not fired and is recorded as not fired.**
 
-**The volume start was hardcoded 2048 in three places** -- the compiler's
-`disk-partition-start`, `Fat16`'s `fat16-boot-partition-start`, and
-`DevConsoleBoot`'s `uefi-partition-start`. That constant is only ever
-right for an image our own `GptWriter` laid down: it puts its single ESP
-at LBA 2048 and nothing else does. A stick partitioned elsewhere, a
-vendor ESP, or our own dual-boot install (`DriveManager` places its Codex
-partition after the last existing one, at a computed offset) all put the
-volume somewhere else, and every read landed on the wrong sectors and
-parsed garbage as a boot record.
+**The verdict can say no** (L-FALSIF): an error fixture reports
+`errors=1 ok=no first=CDX2003`, matching what its `.failing` sidecar records. A
+read that failed and a chapter that would not compile are kept apart, because a
+summary that merges them cannot say which happened.
 
-`fat16-boot-volume` now resolves it from the disk's own GPT. **The
-partition is chosen by whether it parses, not by its type GUID** -- a
-dual-boot disk carries a FAT32 vendor ESP and a FAT16 Codex partition and
-both are "the boot partition" by some reading, so the volume is asked
-rather than guessed. `fat16-init` is total and `fat16-vol-is-usable` is
-the existing judgement, so the walk takes the first partition that answers
-yes. It cannot pick a partition it then fails to read.
+**RULED (root, 2026-09-08): the runner runs tests in-process, over a citable
+compiler.** `codex/compiler/EntryPoint.codex` is the thin entry chapter;
+`Chapter: Opening` declares `codex-opening` and no `opening` at all, so it is
+citable by construction. The alternatives, for the record: load a compiled CDX
+and jump to its entry with a fresh stack and heap, which is the hard part; or let
+the host reboot the compiler once per test, which is `test.ps1` today and buys no
+capability.
 
-2048 survives as `fat16-fallback-partition-start`, for a disk with no
-readable GPT at all. Measured: with no disk, `gpt-read` answers `None`
-and the fallback gives exactly the old behaviour; with a disk, the real
-LBA. Our own images are unchanged, because their one ESP is at 2048 and
-it parses.
+**RULED (root, 2026-09-09): a quire is a DIRECTORY or a MANIFEST.**
+`build/quire-map.ps1` carries `$QuireManifests` beside `$QuireDirs`, with
+`Codex`, `Emit` and `Semantics` all registered as `build/compiler-order.txt`, so
+a cite of any chapter in a manifest quire resolves to the whole ordered unit that
+manifest names, once. No renames. Four things the bundler has to get right, each
+found by a failing run:
 
-**A divide-by-zero in `Gpt.codex` was found by wiring this up.**
-`gpt-read-entries` computes entries-per-sector as `512 / entry-size` with
-`entry-size` read straight off the disk. A header claiming zero faults
-the machine with `!EXC=00`; one claiming more than 512 makes that
-quotient zero and the next division faults the same way. `gpt-read-after-hdr`
-now refuses the header instead, which is the rule `fat16-parse-bpb`
-already applied to bytes-per-sector.
+- **The unit's own entry chapter is left out**, because a consumer supplies its
+  own `opening` and two in one unit collide (CDX3001).
+- **The unit's cites into other quires are walked, and walked FIRST**, or the
+  bundle is missing the Foreword and Math chapters the compiler cites.
+- **Chapters are marked visited under EVERY manifest quire name**, because the
+  compiler cites `Codex chapter Phase Allocator` while that file lives in
+  `Core\`. Keyed on the directory instead, the unit is pulled ten times over.
+- **No quire prefix inside the unit, and the `$present` check is honoured**, or a
+  re-resolve of an already bundled source adds the unit a second time, which is
+  what `compile.ps1` does to every bundle it is handed.
 
-Still hardcoded: `DevConsoleBoot`'s `uefi-partition-start`, used by
-`DriveManager` for the **source** volume in a dual-boot copy. That is a
-different question (which disk you are copying *from*) and is not part of
-this phase.
+**The compiler's concatenation order is EXPLICIT and no longer keyed on
+filenames.** `build/compiler-order.txt` carries every compiler file, one
+repo-relative row each, and `concat-codex-self.ps1` refuses any disagreement with
+the directory: a file with no row, or a row with no file. Both refusals were
+ablated and fire, each naming the offender. The proof is the INTERMEDIATE
+PRODUCT: the concatenated unit is byte-identical across the change, which is
+stronger than comparing the emitted CDX, because identical input to the compiler
+is what makes identical output necessary rather than observed.
 
-Decision on record: **dual-path FileSystem.** Serial-feed for VM
-compilation, disk for on-device, selected by the mode header or by
-detecting a disk. That decision stands and is now implemented on the disk
-side.
+**`Sort-ByDeps` in that script is defined and called by nothing** (L-UNCALLED).
+It is the cite-graph walk this ordering question would otherwise want, and it
+cannot serve: its seed is an ordinal name sort, and the order at issue is inside
+a single chapter where the cite graph has no edges. Left in place and unused,
+named here so the next reader does not mistake it for the mechanism.
 
-### Phase B: On-disk test runner -- STAGE 1 DONE (fester, 2026-09-08)
+**The image can carry the whole of `codex/test`.** The FAT16 root holds 509
+usable entries against 646 test chapters, and 60 8.3 names are claimed by more
+than one chapter, so a flat image can hold neither. `run.ps1 -Bucketed` places
+sources in `SRC0`, `SRC1`, ...: a source goes in the first directory with room
+whose 8.3 name it does not already claim, which separates the collisions rather
+than refusing them. **A name and a size cannot say which of two colliding files
+an entry holds** (L-BOTHARMS), so the arm that settles it is a verdict that
+differs: two chapters folding to the same 8.3 name in two directories, one
+compiling clean and one raising CDX2003.
 
-A Codex app that lists `codex/test/*.codex` from FAT16, compiles and
-runs each, reads the `.expected` / `.failing` / `.skip` sidecars, diffs,
-and prints a summary.
+**DISK mode honours the path it is given.** It used to read the path line and
+compile `disk-default-path` regardless, which is an interface accepting what it
+does not honour. `SOURCE.SRC` is now the fallback rather than the only answer and
+`build/test-disk-compile.ps1` takes `-DiskPath`, so the behaviour has an arm.
 
-**Stage 1, the directory half, is `apps/works/DiskTestRunner.codex` and is
-proven in the bed.** Booted as the kernel with a FAT16 image on `-DiskFile`,
-the runner mounts the boot volume, lists the root, looks up one entry BY NAME
-and reads the bytes back: `bps=512 ok=yes`, `entries: 5`, `names: EFI SEED
-SOURCE.SRC OUT.CDX OUT.TXT`, `subject: SOURCE.SRC present=yes`, `read: 628
-chars, first line: Chapter: FieldRangeProven`. **The control fires and it
-found a defect in the runner's first version:** booted with NO disk,
-`fat16-boot-volume` answers `bps=0` (the record comes back whatever the medium
-said, as `opening.codex` records above `emit-from-disk`), and the listing walk
-divided by it and took `!EXC=00`. The runner now tests the volume before it
-walks and prints `REFUSED: no usable FAT16 volume; nothing to list`.
+**The img plug takes any number of sources.** The wire header carries a source
+COUNT and a table of 8.3 name plus size per source, and the host refuses to
+exceed the 509-entry root rather than silently truncating.
 
-**What stage 1 deliberately does NOT do, and why.** Compiling the chosen test
-is not here: the open question below is unanswered, and a chapter carrying
-`opening` can be cited by nothing (CDX3001), so the runner cannot pull the
-compiler into its own unit and no other composition exists yet. The compiler's
-DISK mode already compiles ONE source off disk, under the fixed name
-`SOURCE.SRC`, which is also the only source name the img plug can write: the
-plug takes a single `-Source`, so **no image in the tree can hold `codex/test`
-at all**, and a multi-source image is stage 2's first blocker rather than a
-detail.
+### What Phase B still owes
 
-**The runner is compiled by the app sweep and run by nothing, which is the gap
-this file names elsewhere.** The mechanism for fixing that is a `.disk`
-sidecar in `codex/test/apps`, which the battery already uses fifty times, and
-the price is measured: a sidecar IS the image, 8 MB of binary in the depot per
-arm. Stage 2 pays that deliberately or finds a smaller image.
+**Execution, and cite resolution for a corpus that is not cite-free.** The runner
+compiles a FILE, not a UNIT: measured over twenty subjects, every entry carrying
+a `cites` line reports errors and every cite-free entry reports zero, 20 for 20
+with nothing on either diagonal. `bundle-app` resolves cites on the HOST before
+`test.ps1` compiles anything and the runner has no such step. The runner says so
+in its own output once per run, rather than leaving a reader to infer it from a
+column of failures.
 
-The open question is how one program runs another. Recommendation on
-record: in-process, with `heap-save` / `heap-restore` between tests --
-the compiler already uses exactly that pattern at phase boundaries.
+The two options, both priced:
 
-**RULED (root, 2026-09-08): (a), a thin `opening` over a citable compiler.** The
-runner runs tests in-process with `heap-save` / `heap-restore`, which needs the
-compiler to be citable, which needs its `opening` split into a thin entry
-chapter the way `DbBootMain` was split out of `DbBoot` the same day. The values
-decided it: the compiler as a library the environment calls is what the vision
-asks for, the split is proven in the small, and the alternative invents a loader
-with no prior art in this tree for exactly one consumer. The alternatives, for
-the record: (b) load a compiled CDX and jump to its entry with a fresh stack and
-heap, which this page already calls the hard part; (c) let the host reboot the
-compiler once per test, which is `test.ps1` today and buys no capability.
+- **Option A, resolution ON THE GUEST.** The image carries the test chapters and
+  the cited library chapters once each; the runner indexes chapters by name,
+  walks each test's cites, assembles a unit, and compiles it. Payload is about
+  5.5 MB, the library paid once. Cost is a second implementation of the host's
+  resolver, which must not drift from it.
+- **Option B, bundling ON THE HOST.** `bundle-app`'s output becomes the image's
+  entries and the runner needs no resolver at all. **Measured rather than
+  extrapolated over twenty subjects: a factor of 10.0**, so the corpus is about
+  15.5 MB of image. An earlier extrapolation from eight files said 6.5 and was
+  low by half, which is the difference between an extrapolation and a
+  measurement. All twenty compile clean on the guest, including the fourteen that
+  were red when read raw, and **the control is in the same run and fires**: two
+  error fixtures bundled the same way still report `errors=1 ok=no`.
 
-**The split is DONE, and was done before the ruling: `codex/compiler/EntryPoint.codex`,
-added 2026-09-02 in CL 21935.** `Chapter: Opening` declares `codex-opening` and no
-`opening` at all, so it is citable by construction, and the entry chapter is one line
-over it. Nothing here is seed-affecting and no token is owed.
+**Option B works end to end today with no guest code**, and a runner over a
+CHOSEN SUBSET is buildable now under either option.
 
-**The real blocker is the QUIRE REGISTRY, measured 2026-09-09 (fester).** A chapter
-citing `Codex chapter Opening` does not bundle: `bundle-app` answers `quire 'Codex' is
-not registered in build/quire-map.ps1`. The compiler's own unit never needed the
-registry, because `concat-codex-self.ps1` takes every `.codex` under `codex\compiler`
-wholesale and resolves only `Foreword` and `Math` through the map, so `Codex`, `Emit`
-and `Semantics` have never been registered anywhere. Registering them is not one line
-each: the map is ONE DIRECTORY PER QUIRE, and the `Codex` quire's chapters are spread
-over six of them (`codex\compiler` itself, `Ast`, `Core`, `IR`, `Syntax`, `Types`),
-while `Emit` and `Semantics` sit in single directories under that same root, so a
-recursive mapping of `Codex` would swallow both. Citability is therefore structurally
-true and has never once been exercised by a unit (L-UNCALLED), and stage 2 begins at
-the registry's shape rather than at the entry point.
-**Registering the quires is NECESSARY AND NOT SUFFICIENT, measured 2026-09-09.**
-The map resolves a cite by composing `<dir>\<chapter name>.codex`, and the compiler
-is the one place in the tree where that path does not exist. Two further obstacles,
-both counted:
+**The `.expected` diff needs execution; the `.failing` half does not.** A
+`.expected` sidecar holds the PROGRAM'S OUTPUT, so diffing it requires running
+what was compiled. A `.failing` sidecar holds a diagnostic CODE and the runner
+already has the bag, so a diagnostic-code diff is buildable now. **The pairing
+stays on the HOST deliberately**: the sidecars are not on the image, and putting
+them there is the same namespace question as the corpus itself.
 
-- **Filenames do not carry chapter names.** 43 of the compiler's 65 `.codex` files
-  have a base name different from their `Chapter:` line (`PhaseAllocator.codex` is
-  `Chapter: Phase Allocator`, `EntryPoint.codex` is `Chapter: Entry Point`). The
-  rest of the tree keeps the convention exactly: `codex\foreword\core` 133 chapters,
-  `apps\works` 122, `codex\os\net` 41, and ZERO filename disagreements in any of
-  them. The compiler is the sole exception because it is never resolved through the
-  map; `concat-codex-self.ps1` takes its directory wholesale.
-- **Four chapters span several files each**, which the one-file-per-chapter model
-  cannot express at all: `X86-64 Code Generator` is 14 files, `Parser` 3,
-  `Lowering` 2, `Type Checker` 2. `Opening` cites the 14-file one, so it is on
-  the transitive path and not an edge case to defer.
+**The CODEGEN-error branch is written and UNREACHED, and no fixture in the corpus
+can reach it** (L-VACUOUS). Both candidates raise through the FRONTEND bag,
+because `compile-frontend-cdx` already runs the phase that raises them. That is a
+gap in the fixtures rather than a property of the compiler, and the branch stays
+because a codegen error reported as `errors=0 ok=yes` would be a silent wrong
+answer.
 
-**So the choice is between two shapes, and it is not a lane's to make.** (a) Bring
-the compiler to the tree's convention: rename the 43 files and make each chapter one
-file, after which a directory-list registration needs no resolver change at all. That
-touches compiler file layout and is seed-affecting. (b) Change the resolver to index
-chapters by reading first lines within the registered directories instead of composing
-a path from the chapter name. That leaves the compiler alone and changes shared
-machinery every bundler, linter and plug build depends on.
+**STAGE 3, executing what was compiled, belongs to
+`docs/Designs/Active/OS/DeskBuildLoop.md` (RULED by root, 2026-09-09).** Nothing
+in this tree enters compiled bytes in process: `exec-run` in `ShellCore.codex`
+prints a grant and runs nothing, and `OsScheduler` dispatches tasks by NAME.
+That page's mechanism is a nested guest, and what is missing there is not code
+but a machine: no bed has VT-x, so metal is the first machine that can execute
+it. **Do not build a second execution path here.**
 
-
-**RULED (root, 2026-09-09): (a).** The convention holds everywhere else with zero
-disagreements, and (b) would add machinery to every bundler to keep one exception
-(L-LESS). The shape is 43 pure renames, each file of the four multi-file chapters
-becoming its own chapter with the cites it needs, then the directory-list
-registration with no resolver change.
-
-**A PRECONDITION the ruling did not know about, measured 2026-09-09 (fester): the
-renames are NOT pure, because the compiler's concatenation order is keyed on
-FILENAMES.** `concat-codex-self.ps1` sorts each directory's files ordinally and then
-hoists any file whose NAME matches `State|Encoder` to the front of that directory:
-
-```
-$subFiles = @($subFiles | Where-Object { $_.Name -match 'State|Encoder' }) + @($subFiles | Where-Object { $_.Name -notmatch 'State|Encoder' })
-```
-
-Two files ride that rule today, `Emit\X86_64Encoder.codex` and
-`Emit\X86_64State.codex`, and the rule carries no comment saying why it exists. Its
-existence is itself the evidence that order is load-bearing: a plain ordinal sort was
-not sufficient, or the hoist would not be there. So renaming 43 files reorders the
-unit the compiler is built from, which makes a rename a change to the BUILD rather
-than to layout alone.
-
-**Therefore the arc's first step is to make the order EXPLICIT** -- a manifest the
-concat reads, or an ordering derived from cites rather than from names -- after which
-the renames are genuinely pure and provable by a byte-identical CDX. Renaming first
-and proving afterwards inverts that: a changed digest would then carry two candidate
-causes, the reorder and the rename, with no arm separating them.
-
-**DONE (fester, 2026-09-09): the order is explicit.** `build/compiler-order.txt`
-carries all 65 compiler files, one repo-relative row each, in concatenation order,
-and `concat-codex-self.ps1` reads it and refuses any disagreement with the directory:
-a file with no row, or a row with no file. The filename-derived ordering is gone.
-
-Proof, and the intermediate product rather than the verdict: the concatenated unit is
-**byte-identical** across the change, 3,154,973 bytes, SHA-256 `D5DBE790...` before and
-after. That is stronger than comparing the emitted CDX, because identical input to the
-compiler is what makes identical output necessary rather than observed. Compiling the
-same bytes twice would agree whatever the truth, so it was not run (L-VACUOUS).
-
-Both refusals were ablated and fire, each naming the offender: a manifest with
-`Types\Unifier.codex` removed refuses and names that file; a manifest carrying
-`NoSuchFile.codex` refuses and names that row; restoring the manifest returns the
-byte-identical unit.
-
-**Correction to the paragraph above, which said the hoist carried no comment saying
-why.** The SHIPPED script carries none, because generation strips prose, but the
-generator always did: "THE `State|Encoder` REORDERING IS A DEPENDENCY FACT, not a
-preference: those chapters carry the types the rest of a subdirectory cites." That
-rationale reinforces the finding rather than softening it, since it says in the
-generator's own words that order is load-bearing. It is also stated in the wrong
-vocabulary: the hoisted files are in the SAME chapter as the files that need them, so
-what it moves is definitions within one chapter, not chapters within a quire, and no
-cite exists or could exist between them.
-
-**`Sort-ByDeps` in that script is defined and called by nothing** (L-UNCALLED). It is
-the cite-graph walk this ordering question would otherwise want, and it cannot serve:
-its seed is an ordinal name sort, and the order at issue is inside a single chapter
-where the cite graph has no edges. Left in place and unused, named here so the next
-reader does not mistake it for the mechanism.
-
-**RULED AGAIN AND DONE (root, 2026-09-09): (c), a quire is a DIRECTORY or a
-MANIFEST.** Neither (a) nor (b) survived the numbers: (a) was 24 renames rather
-than 43, and carried 75 live references outside `codex/compiler` (`build.ps1`,
-`cdx-to-pe.ps1`, `plug-build-lib.ps1`, `Diag.codex` and others, several
-generated) plus 198 prose citations that would rot; (b) put machinery in every
-bundler to keep one exception.
-
-`build/quire-map.ps1` now carries `$QuireManifests` beside `$QuireDirs`, with
-`Codex`, `Emit` and `Semantics` all registered as `build/compiler-order.txt`. A
-cite of any chapter in a manifest quire resolves to the whole ordered unit that
-manifest names, once. No renames, no cross-unit changes.
-
-Four things the branch has to get right, each found by a failing run rather than
-by reading:
-
-- **The unit's own entry chapter is left out.** A consumer supplies its own
-  `opening` and two in one unit collide (CDX3001). That is exactly what the
-  `EntryPoint.codex` split bought, and the branch spends it.
-- **The unit's cites into other quires are walked, and walked first**, so the
-  Foreword and Math chapters the compiler cites precede it. Without this the
-  bundle was missing `Foreword::MathLib` and `Math::Interval`.
-- **Chapters in the unit are marked visited under EVERY manifest quire name**,
-  because the compiler cites `Codex chapter Phase Allocator` while that file
-  lives in `Core\`. Keyed on the directory instead, the unit was pulled ten
-  times over and the bundle came to 31.8 MB.
-- **No quire prefix inside the unit, and the present check is honoured.**
-  `concat-codex-self` stamps `<dir>--<chapter>` because it merges quires; here
-  the 48 chapter names are already distinct, and a prefix makes the cite and the
-  chapter line disagree. Honouring `$present` is what stops a re-resolve of an
-  already bundled source adding the unit a second time, which is what
-  `compile.ps1` does to every bundle it is handed.
-
-Proof: the chapter that could not bundle now bundles AND compiles, exit 0,
-3,156,071 bytes, one `opening` and no `Chapter: Entry Point` in it. Six existing
-bundles across `apps\works`, `apps\games\classic`, `apps\spark`, `apps\notes`
-are byte-identical against the depot `quire-map.ps1`, which is the control for
-"this changed nothing else".
-
-**STAGE 2's CORE CAPABILITY IS PROVEN ON METAL-EQUIVALENT (fester, 2026-09-09):
-one program compiles another, in-process, with no second boot.**
-`apps/works/DiskTestRunner.codex` now cites `Codex chapter Opening` and
-`Codex chapter Diagnostic Bag`, and calls `compile-frontend` on the bytes it
-read off the FAT16 volume. `compile-frontend` is pure and Console-free, so the
-verdict costs no effects and needs no act block.
-
-Booted in codex-vm as the kernel with a FAT16 image on `-DiskFile`:
-
-```
-=== DISK test runner ===
-volume    : bps=512 ok=yes
-entries   : 3
-names     : EFI SEED SOURCE.SRC
-subject   : SOURCE.SRC present=yes
-read      : 628 chars, first line: Chapter: FieldRangeProven
-compile   : errors=0 ok=yes
-=== runner done ===
-```
-
-**The verdict can say no, which is the half that matters** (L-FALSIF): the same
-runner over `codex/test/errors/arith-on-text.codex`, whose sidecar expects
-CDX2003, reads `compile : errors=1 ok=no`. Both polarities agree with what
-`test.ps1` says about the same two subjects.
-
-**What is still open in stage 2.** The runner compiles ONE file under a fixed
-name and does not yet RUN what it compiled, diff a `.expected`, or walk a
-directory. The image can now hold `codex/test` (the img plug takes many
-sources), so the directory walk is next, and running the compiled output in
-process is the step after.
-
-**An observation, not a claim, banked here so it is not lost:** a 5-byte file
-carrying no `Chapter:` line at all compiled through `compile-frontend` with
-errors=0. Seen once, in passing, while feeding the runner the wrong file. If a
+**An observation, not a claim:** a 5-byte file carrying no `Chapter:` line at all
+compiled through `compile-frontend` with errors=0. Seen once in passing. If a
 unit with no chapter is genuinely accepted, that is a compiler question and
-belongs to the compiler register; it is recorded here only because the evidence
-was in hand.
+belongs to the compiler register.
 
-**THE DIRECTORY WALK LANDED THE SAME DAY (fester, 2026-09-09).** The runner no
-longer looks for one fixed name: it lists the root, skips `EFI` and `SEED` as
-the image writer's own, and compiles every remaining entry in process, printing
-a verdict per file and a summary. Three sources on one image, which the img
-plug's `-SourceList` now makes possible:
+## Phase C: self-hosted pingpong -- NOT STARTED
 
-```
-=== DISK test runner ===
-volume    : bps=512 ok=yes
-entries   : 5
-BAD1.SRC : errors=1 ok=no
-BAD2.SRC : errors=1 ok=no
-GOOD1.SRC : errors=0 ok=yes
-summary   : failed=2
-=== runner done ===
-```
+Read the compiler source from disk, compile to `stage1.cdx`, use `stage1` to
+compile the source again to `stage2.cdx`, byte-compare. Step 3 requires loading
+and executing a compiled CDX, which is the hard part above. A simpler
+intermediate is a TEXT round-trip twice, which proves the emitter is a fixed
+point but not the binary.
 
-`GOOD1` is `codex/test/field-range-proven.codex`; the two failures are error
-fixtures from `codex/test/errors`, and their verdicts agree with what
-`test.ps1` says about them.
+## Phase D: editor and shell on the boot image -- PARTIAL
 
-A read that failed and a chapter that would not compile are kept apart: an
-unreadable entry answers -1 and prints `READ FAILED` rather than joining the
-error counts, because a summary that merges them cannot say which happened.
-
-**What stage 2 still owes:** running what it compiled and diffing a `.expected`.
-The walk and the in-process compile are done; execution is not, and no arm here
-claims it.
-
-**CORRECTION, measured the same day: the runner compiles a FILE, not a UNIT,
-and the earlier claim that its verdicts agree with `test.ps1` holds only for
-CITE-FREE subjects.** Twenty `codex/test` chapters on one image, all of which
-`test.ps1` compiles green, came back 14 red. The correlation is exact and runs
-20 for 20: every entry carrying a `cites` line reports errors, every cite-free
-entry reports zero, and nothing sits on either diagonal.
-
-| | errors = 0 | errors > 0 |
-|---|---|---|
-| **has cites** | 0 | 14 |
-| **cite-free** | 6 | 0 |
-
-The cause is not a compiler disagreement. `bundle-app` resolves cites on the
-HOST before `test.ps1` compiles anything, and the runner has no such step: it
-hands `compile-frontend` one file's bytes, so every cited name is undefined.
-The three-subject proof above stands only because `field-range-proven` is
-cite-free, which is exactly the property this design's own Phase B notes require
-of the DISK-mode sample.
-
-The runner now says so in its own output, once per run, rather than leaving a
-reader to infer it from a column of failures:
-
-```
-note      : each entry is compiled ALONE, with no cite resolution, so a chapter
-            carrying cites reports every cited name undefined. Only a cite-free
-            chapter's verdict is comparable with test.ps1's.
-```
-
-**So stage 2 owes more than execution.** Running a corpus that is not
-cite-free needs cite resolution ON THE GUEST, which is `bundle-app`'s job moved
-across the wire: the image would have to carry the cited chapters and the runner
-would have to assemble a unit before compiling. That is a larger piece than the
-`.expected` diff and it should be scoped before either.
-
-**The heap arm did not fire, and is recorded as not fired.** Twenty compiles in
-one boot with no `heap-save` / `heap-restore` between entries completed without
-exhausting the heap, so the discipline the ruling names is still correct by the
-memory contract but has no observed failure behind it here.
-
-### Cite resolution for the disk runner: both options priced (fester, 2026-09-09)
-
-Measured on the corpus as it stands today: `codex/test` holds **646 chapters,
-1,543,828 bytes**. They cite **352 distinct chapters** at the first level, whose
-files come to **3,918,035 bytes** as a union (one unresolved cite, not chased).
-
-**Option A, resolution ON THE GUEST.** The image carries the test chapters and
-the cited library chapters once each; the runner indexes chapters by name,
-walks each test's cites, assembles a unit, and compiles it. Payload is
-1.5 MB + 3.9 MB = **about 5.5 MB**, the library paid once. Cost is a resolver
-in Codex on the guest: a chapter index, cite parsing, the transitive walk with
-cycle handling, and the ordering rule `Resolve-CiteOrder` already implements on
-the host. That is a second implementation of an existing thing, which is the
-argument against it, and it must not drift from the host's.
-
-**Option B, bundling ON THE HOST.** `bundle-app`'s output becomes the image's
-entries, so the runner compiles what it reads with no resolver at all. Measured
-over the first 8 cite-carrying tests: 22,641 raw bytes become 147,243 bundled,
-a factor of **6.5**, because every unit repeats its own closure. Extrapolated
-across 646 tests that is roughly **10 MB** against option A's 5.5, and the
-extrapolation is the weak part of this paragraph: 8 files is a small sample and
-the factor varies from 3.0 to 18.2 across them. The strength is that it needs
-NO new code on the guest.
-
-**NEITHER IS THE NEXT DECISION, because a third thing gates both.** The image's
-namespace cannot hold this corpus at all:
-
-- **The FAT16 root directory has 509 usable entries** (512 less EFI, SEED and
-  the volume label). 646 tests exceed it before a single library chapter is
-  added. Option A needs 646 + 352 entries, option B needs 646.
-- **106 of the 646 test names collide once folded to 8.3.** 540 distinct stems
-  for 646 files. `run.ps1` refuses a duplicate fold rather than letting one
-  entry shadow another, so the image cannot be built at all today, under either
-  option, without renaming tests or changing the namespace.
-
-So the ordered question is: **subdirectories or long file names on the image
-first, then A versus B.** Both of those are FAT16 features the writer does not
-have yet, and the choice between them is the real fork. Deciding A or B before
-that is deciding the cheaper half of a problem whose expensive half is unpriced.
-
-A smaller shape worth naming, because it needs none of the above: a runner over
-a CHOSEN SUBSET, tens of tests rather than 646, is buildable today under either
-option and would exercise the whole path end to end. Option B needs no guest
-code, so a subset under B is the cheapest thing that could work, and it would
-price the extrapolation above properly by measuring rather than multiplying.
-
-#### Option B measured rather than extrapolated (fester, 2026-09-09)
-
-Twenty tests chosen to include cite-carrying ones, 14 with cites and 6 without,
-bundled on the host and written to one image as the DISK entries:
-
-| | bytes |
-|---|---|
-| raw | 65,696 |
-| bundled | 658,197 |
-| **factor** | **10.02** |
-
-**My earlier extrapolation of 6.5 from eight files was low by half**, and the
-corpus figure it produced, about 10 MB, should read about **15.5 MB**. That is
-the difference between an extrapolation and a measurement, and it is why root
-asked for this one.
-
-**Every one of the 20 compiles clean on the guest**, including all 14 that carry
-cites and were red when the same runner read them raw. **The control is in the
-same run and it fires:** two error fixtures, bundled the same way, still report
-`errors=1 ok=no` and the summary reads `failed=2`. Bundling does not suppress
-errors, which is the thing an all-green column cannot tell you by itself.
-
-So option B works end to end today, with no guest code at all, at a cost of
-about ten times the corpus in image bytes.
-
-#### The .expected diff needs execution, and half of it does not
-
-A `.expected` sidecar holds the PROGRAM'S OUTPUT, so diffing it requires running
-what was compiled, which the runner cannot do. The `.failing` half is different:
-those sidecars hold a diagnostic CODE, and the runner already has the bag. A
-diagnostic-code diff is buildable now; an output diff is not, and no arm should
-claim the first is the second.
-
-#### The `.failing` half is checkable (fester, 2026-09-09)
-
-The runner reads the bag ONCE per entry and reports the first diagnostic code
-beside the count, which is the number a `.failing` sidecar records:
-
-```
-S21.SRC : errors=1 ok=no first=CDX2003
-S22.SRC : errors=1 ok=no first=CDX2005
-```
-
-`codex/test/errors/arith-on-text.failing` holds `2003` and `bad-field.failing`
-holds `2005`, so both match exactly.
-
-**The pairing stays on the HOST and that is deliberate**, not a shortfall left
-unsaid: the sidecars are not on the image, and putting them there is the same
-namespace question as the corpus itself (509 root entries, 8.3 collisions), not
-a runner question. The runner emits what a comparison needs; the comparison sits
-where the sidecars already are, which is where `test.ps1` does it too.
-
-#### The namespace fork, priced, and a correction to the paragraph above
-
-The paragraph above says subdirectories and long names are "FAT16 features the
-writer does not have yet". That is wrong about the READER and right only about
-the writer. `codex/foreword/core/Fat16.codex` already implements both:
-
-- **Subdirectories:** `fat16-list-dir`, `fat16-resolve-path`, `fat16-split-path`,
-  `fat16-walk-path`, `fat16-create-directory` and the `fat16-mkdir-*` family.
-- **Long names:** a full VFAT implementation, `fat16-lfn-*` with record
-  encoding, checksums, `fat16-needs-long`, alias generation and decode.
-
-The gap is in the WRITER alone: `codex/plugs/img/Fat16Writer.codex` lays root
-entries under 8.3 names. It already writes directory entries and their dot
-entries for `EFI`, `BOOT` and `SEED`, so the subdirectory mechanism is present
-there too and what is missing is placing FILES under one.
-
-**Root's ruling for subdirectories stands on its own reason** (LFN is a second
-on-disk format, and the plug already lays directory entries), and the cost basis
-is smaller than this page previously implied: neither option needs work in the
-reader, and subdirectories need no new on-disk structure in the writer either,
-only the placement of files into a directory the writer can already create.
-
-**DISK mode honours the path it is given (fester, 2026-09-08).**
-sends `DISK` and then a path, `emit-from-disk` read that line, and then compiled
-`disk-default-path` regardless: an interface that accepts what it does not
-honour, the same shape as `sweep-apps.ps1`'s `-Jobs` one section above.
-`SOURCE.SRC` is now the fallback rather than the only answer, and
-`build/test-disk-compile.ps1` takes `-DiskPath` so the behaviour has an arm.
-Three arms against the candidate `F34A1FBF0296A20B` and depot seed
-`D9CF240465C3D0BC`: candidate with the right name PASSES unchanged; candidate
-with `NOSUCH.SRC` prints `DISK-SOURCE resolving [NOSUCH.SRC]` and
-`DISK: file not found: NOSUCH.SRC`; **and the depot seed with `NOSUCH.SRC`
-compiles `SOURCE.SRC` anyway and reports PASS**, which is the defect stated as
-a measurement rather than as a reading.
-
-**The img plug half is DONE (fester, 2026-09-09).** The wire header carries a
-source COUNT and a table of 8.3 name plus size per source, the FAT16 writer
-lays down one directory entry and one FAT chain per source, and `run.ps1` takes
-any number of files by `-Source` or, for a directory of them, `-SourceList`.
-An image can hold `codex/test`, bounded by the FAT16 root directory at 509
-sources, which the host refuses to exceed rather than silently truncating.
-
-### Phase C: Self-hosted pingpong -- NOT STARTED
-
-Read the compiler source from disk, compile to `stage1.cdx`, use
-`stage1` to compile the source again to `stage2.cdx`, byte-compare.
-
-Step 3 requires loading and executing a compiled CDX -- a bare-metal
-binary -- which means jumping to its entry point with a fresh stack and
-heap. That is essentially a reboot into the new binary, and it is the
-hard part.
-
-Simpler intermediate: TEXT round-trip twice (string comparison, no
-binary loading). That proves the emitter is a fixed point but not the
-binary.
-
-### Phase D: Editor and shell on the boot image -- PARTIAL
-
-Both exist as chapters (`codex/foreword/ui/Editor.codex`,
-`codex/os/core/ShellCore.codex`). What is missing is their integration
-into the booted image as the default path: open a file, edit it, compile
-it, run it, without leaving the machine.
-
-## The Shell DSL generators (the `build/*.ps1` half of the migration)
-
-**THE CAMPAIGN IS CLOSED (Damian's ruling 2026-08-14) and what remains is
-ambient.** It was taken off `docs/PM/CurrentPlan.md` the same day; this
-section is now the only home for the method, and it is kept because the traps
-below are what a future generator change walks into, not because there is a
-queue.
-
-**The parse class is closed and gated.** `check-generated-scripts.ps1`
-compiles every generator, dead target or not, and hard-fails on PowerShell
-parse errors with NO baseline. **Re-measure the counts, never copy them**
-(L-COUNT): measured 2026-08-15 at seed `F3722EAC`, 55 generators checked,
-**0 drifted**, 0 broken, 1 dead target. **`build/generated-scripts-baseline.txt`
-is empty.** Every generator in the tree emits the script it ships beside, and
-every one of those scripts carries the banner.
-
-That is a stronger invariant than the file has ever held, and it is worth
-saying what it now buys: a drift of ANY size, in ANY generator, fails the gate.
-There is no residue for a new one to hide in. If you add a generator, its drift
-closes in the same change or the gate goes red.
-
-### All four backlogged stubs, closed 2026-08-15 (fester)
-
-Damian's direction, in order: "build and test are the two most important .ps1
-to have working in the backport... 100% fidelity", then "do those all". So
-`build`, `test`, `cdx-to-pe` and `build-img` closed in one session.
-
-### `build` and `test`
-
-**Neither was a stub, and the drift number said otherwise.** The shipped
-`build.ps1` ran 21 `Measure-Phase` blocks and the generator emitted 12; the
-nine missing were the whole second half of the gate, everything added since
-2026-08-06. Read by LINE COUNT the generator looked like a 39-line
-placeholder against an 816-line script, which is nonsense: the DSL packs a
-phase into one line, and 629 of the drift lines were the same phases in a
-different layout. **Count phases, not lines, before judging one of these.**
-
-What was genuinely absent from `build`, and is now ported: `Show-CompileFailure`
-(the shipped `Invoke-BuildCdx` calls it, the emitted one tailed the log, which
-is the one slice that says nothing); the stderr tail on an empty TEXT build;
-the seven pre-build guards (effect-vocab, p4-stale, sidecars, cdx-registry,
-facts-guid, doc-counts, plug-types) with the prose that says what each cost to
-learn; `jonquil`, `oracles`, `plug-binary`, `cross-smoke`, `plug-smoke`,
-`gen-scripts`, `vm-differential`, `deck-headroom`, `app-sweep`. Two defects
-went with it: the generator emitted `bvt.ps1 -Jobs 4` against the standing
-`-Jobs 8` ruling, and `ScCopy` emitted `Copy-Item -Force $SutCdx Join-Path
-$Repo '...'` with no parentheses, which PARSES and fails at runtime. Fixed at
-the call site (`SeRaw "(Join-Path ...)"`), not in the emitter, because
-`emit-ps-cmd-ext` passes `SeRaw` through verbatim and changing that would
-re-drift all 51 matching generators. Same class as the `test-boards`
-`Split-Path` bug.
-
-**That class has a runner now, and the sweep it replaces came back clean**
-(2026-08-15). Scanned across 345 scripts under `build/`, `codex/plugs/` and
-`apps/`: **0 occurrences**, so the two known instances were the only ones. But
-a sweep run once is an assertion with nothing behind it, and this class had
-already reached the tree twice, so `check-generated-scripts.ps1` gained a
-`BARE CMDLET ARG` leg that scans the EMITTED text -- before install, not after.
-It FAILS rather than warns, which is affordable precisely because the count is
-zero: a new one is a defect, never an expected answer.
-
-**It is a heuristic, and the honest statement of it is the span test.** A
-value-producing cmdlet (`Join-Path`, `Split-Path`, `Get-Content`, ...) counts
-only when it sits in the ARGUMENT LIST of a positional cmdlet
-(`Copy-Item`, `New-Item`, ...), with nothing between them that ends that list.
-Without the span test, `if (Test-Path $x) { Get-Content ... }` matches and the
-scan drowns in 29 correct lines, which is how the first version of it read.
-
-**Fired deliberately before it was trusted.** Reverting the `ScCopy` call site
-to the unparenthesised form made the leg report
-`build: BARE CMDLET ARG (1)` naming line 381 and the emitted text, exit 1;
-restoring it returned 55 generators, 0 drifted, 0 broken. Both arms, because a
-check nobody has watched fail is not evidence (L-FALSIF).
-
-`test` was the easier half despite the larger file: 744 executable lines on
-each side, **0 differing**. It had grown tiers, the `-ApprovedBy` refusal,
-kernel-provenance checking, `.diag` / `.disk-src` / `.disk2` / `.keys` /
-`.smp` / `.vmargs`, the rebatch rounds, the rollup and the run-over-run delta,
-and still carried a `-Fuzz` switch deleted from the script 2026-07-27.
-
-**Verification.** `build/build.ps1` GREEN end to end with the emitted script
-installed, 536.7 s, hard fixed point in one pass, `constants.hash` unchanged.
-For `test` the battery is not an agent's to run (R-GATE), so the arms were:
-0 differing executable lines, a clean `ParseFile`, and the refusal path
-executed both ways (no `-ApprovedBy`, and a wrong one) -- exit 1 each, with
-all 13 parameters binding in the shipped order.
-
-**The back-port put three chapters on the 1.25 deck floor at 51 of 64, and
-restructuring took the quire to 1.39 at 46. Closed 2026-08-15 (fester), the
-account is below.**
-
-**A correction, because the first version of this paragraph had the sign
-backwards.** It said a new section binding "buys 2 points". It costs them.
-`ProportionalDecks.md` and Update 42 both say it correctly -- "one binding per
-section costs 2 points of deck and buys THE FILE back", meaning it costs deck
-and buys readability -- and reading that as buying deck is how this paragraph
-came to advise the next author to do the thing that makes it worse.
-
-### `cdx-to-pe` and `build-img`
-
-**These two were transcription problems, not design problems, and they were
-derived mechanically rather than typed.** `cdx-to-pe.ps1` is 1121 lines of
-hand-assembled x86-64 machine code and `build-img.ps1` 527 lines of GPT and
-FAT structure; hand-copying either into Codex string literals is where a wrong
-nibble gets in and nothing downstream would catch it. A throwaway transformer
-read each shipped line and emitted `ScRaw "<escaped>"`, splitting at 55 lines
-per section for the deck. Escaping is only `\` and `"` -- both files are pure
-ASCII with no tabs and no trailing whitespace, and a backtick is literal in a
-Codex string.
-
-**The arm that makes this safe is byte-identity of the ARTIFACT, not a line
-diff.** For `cdx-to-pe`, six flag arms (plain, `-ExitBootServices`,
-`-EntryStart`, `-Stdin`, `-HeapAt 0x140000000`, `-HeapPages 131072`) built
-`.efi` files with the old script and the new one: **all six pairs identical**,
-and the six hashes differ from EACH OTHER, so the comparison distinguishes the
-flag paths rather than passing on everything. For `build-img`, five arms
-(plain, `-Source`, `-Seed`, `-TotalSectors 131072 -Fat32`, `-TotalSectors
-65536`): **all five identical, five distinct hashes.** Executable-line diffs
-were 590/592 and 364/366, the only difference being the two mandatory
-parameters split one-per-line by `emit-ps-params`.
-
-**Two hazards found doing it, both worth knowing.**
-
-- **`build-img` is emitted by `buildimgScript.codex`, NOT
-  `buildbootimgScript.codex`.** Those are different scripts with confusingly
-  similar names, and `build-boot-img` was matching cleanly. Writing the new
-  generator into the wrong one destroyed a working generator and the checker
-  reported `build-img DRIFTED` twice in one table, which is the tell. **Read
-  the `sh-script "<name>"` line, not the filename**, before overwriting a
-  generator.
-- **`cdx-to-pe.ps1` carried two parameter doc lines with a LITERAL `\n    # `
-  in the middle** (`-EntryStart`, `-Stdin`), an artefact of an earlier
-  generation whose doc text was never split. Regenerating through `sp-doc`
-  splits them into real comment lines. Its `# Usage:` header line was dropped
-  rather than relocated: it named 3 of the 7 parameters, and the `sp-doc`
-  blocks that now render above each one are the live documentation.
-  `build-img`'s header block was PRESERVED by moving it to the top of the body
-  -- it carries the GPT layout and the reason the second partition exists,
-  which nothing else records.
-
-### The deck floor under `codex/build`, closed 2026-08-15 (fester)
-
-Damian's assignment after the back-port put `BuildScript`, `testScript` and
-`cdxtopeScript` on the floor at 51 of 64, where OK and out of room are the same
-number. Route taken: shrink what those chapters need. Not `-MinMargin`, which
-silences a correct instrument, and not `deck-scale-min`, which is a
-whole-corpus constant at 6,710,886 bytes of reservation per point per unit and
-the wrong lever for three chapters' structure.
-
-**The lever is the count of names bound at top level, and it was measured
-rather than assumed.** `cdxtopeScript` was regenerated at four section
-granularities over IDENTICAL body text, so binding count is the only variable:
-
-| sections | top-level defs | required | margin | unit length | longest line |
-|---|---|---|---|---|---|
-| 20 | 24 | 51 | 1.25 | 145,555 | 4,700 |
-| 10 | 14 | 48 | 1.33 | 144,995 | 9,040 |
-| 4 | 8 | 46 | 1.39 | 144,659 | 21,209 |
-| 1 | 5 | 45 | 1.42 | 144,491 | 72,466 |
-
-**Six points of required scale across a unit length that moves by less than one
-per cent.** That is the anti-correlation `ProportionalDecks.md` describes,
-reproduced on a chapter 45 per cent larger than the ones it was found on.
-
-Landed: `BuildScript` 30 sections to 10 (33 defs to 12), `testScript` 16 to 6
-(21 to 10), `cdxtopeScript` 20 to 4 (24 to 8). **Quire tightest 1.25 to 1.39,
-51 of 64 to 46**, and the three are no longer the constraint on their own --
-they now tie `vmconfigScript`, which was already at 46 before any of this.
-
-**Why 4 sections was acceptable here when the design chose readability at 2
-points for `ablatedoctrineScript`:** that chapter is hand-written and a 25,800
-character line is a real cost to whoever edits it. These three are DERIVED --
-the workflow is to change the `.ps1` and re-run the transformer, not to hand-
-edit a `ScRaw`. Line length costs less against a chapter nobody edits by hand,
-so the trade lands differently. Say which kind of chapter you have before
-copying either choice.
-
-**The merge was scripted, not hand-done, and the script refused the first
-run.** Hand-merging thirty list literals is where a dropped element gets in,
-and a dropped element is a silently shorter `build.ps1` that still passes a
-parse check. The script asserts every section lands in exactly one group; it
-threw on `build-body`, which is a `List ShellCmd` too and is not a section.
-
-**Proof the restructure changed nothing.** Drift 0 on all three, which for a
-generator IS byte-identity of the output. Beyond that: `build.ps1` 759
-non-blank lines emitted against 759 shipped, 0 differing, all 21 phases;
-`test.ps1` 968 against 968, 0 differing; and `cdx-to-pe.ps1` re-proved on the
-ARTIFACT across the same six `.efi` flag arms, every one still byte-identical
-to what the PRE-back-port script produced.
-
-**One false positive in the checker fell out of this and is fixed.** The
-unhandled-node scan matched `<unknown-(?:cmd|expr)>` anywhere in the emitted
-text, and `build.ps1`'s own `gen-scripts` comment EXPLAINS what
-`# <unknown-cmd>` means. The moment that comment was generated rather than
-hand-written, the leg reported the build generator as broken: the check was
-describing itself. It now matches the stub FORMS -- a whole line for the
-command stub, quoted for the expression stub -- validated on six cases
-including an indented stub and the prose.
-
-### The inventory: the drift that runs the other way (added 2026-08-14)
-
-Everything above reads the tree GENERATOR-FIRST, so it is structurally blind
-to the commoner failure: **an agent writes a new `build/*.ps1` and never
-writes the `.codex` that emits it.** No amount of drift checking sees that,
-because there is no generator to check.
-
-`check-generated-scripts.ps1` now also enumerates `build/*.ps1`, subtracts
-everything a generator claims, and compares the remainder against
-`build/handwritten-scripts.txt`. Only a name absent from that file prints,
-and the inventory NEVER changes the exit code.
-
-**Report-only is a decision, not an omission.** Measured 2026-08-15: **85 of
-140 scripts under `build/` have no generator**, and most are meant not to --
-probes, flight arms, interop harnesses, mint-fixture one-offs, and
-`check-generated-scripts.ps1` itself, which has to run when the generators
-are broken. "Every script needs a generator" is not the policy and never
-was, so a gate here would be 85 reds whose answer is always the expected
-one, which is precisely the reader-training failure the drift baseline was
-built to avoid. Whether a new script wants a generator is a judgement, so
-the check surfaces it and stops; answer it by writing the `.codex`, or by
-recording the name with `-Update`.
-
-Both arms were fired before this was called done, because an instrument
-nobody has seen fire is not evidence. Planting `build/zzz-probe-arm.ps1`
-reports it and exits 0; deleting a name from the inventory reports it as
-newly hand-written; adding a name for a script that does not exist reports
-it as gone. A clean tree prints nothing.
-
-**`-Update` writes two records and either may be read-only under Perforce.**
-It used to `Set-Content` both unconditionally, so a run in a workspace where
-the drift baseline was not `p4 edit`ed wrote the inventory and then died on
-the baseline, leaving one record updated and the other not. It now writes
-only what changed and says so.
-
-`plug-build` and `plug-run` were adopted 2026-08-10 and ship as
-`build/plug-build.ps1` and `build/plug-run.ps1`. Both carried defects
-that survived because a generator with no live target is compiled but
-never compared against anything: `plug-build` resolved
-`$PSScriptRoot/../plugs`, which is `<repo>/plugs` and does not exist,
-and then tested that path with `-PathType Leaf`, which is false for a
-directory, so the emitted script could only ever exit 2. **Neither is
-reachable by the parse check** -- both emit text PowerShell parses
-happily. A live target is what turns a generator from compiled into
-checked, so give a new one its target in the same change. Only
-`testrunBashScript` sits in that blind spot now.
-
-38 standard TCP plugs delegate to `plug-run` from a shim that compiles to IR
-and passes `-PlugCdx`, `-MemMB` and the port literal; the literal stays so
-`check-plug-ports.ps1` still checks both halves. `run.ps1` across all 55
-plugs went 200,784 to 107,101 bytes. **The remaining 17 are deliberately
-untouched and are not a residue to close**: the file-I/O family (`wasm`,
-`wgsl`, `spirv`, `ptx`, `winforms`, `html`) does not speak TCP at all, and
-`arm64`/`riscv`/`elf`/`pe`/`img`/`csharp`/`maui`/`recheck`/`t3isa`/`wpf`/`javascript`
-carry extra phases. `plug-build` drives `Build-TranspilerPlug` without
-`-WithLir`, so it cannot build `arm64` or `riscv`; the 55 `build.ps1` were
-already ~330 bytes each over the shared
-`codex/plugs/common/plug-build-lib.ps1` and were left alone, since routing
-them through the driver would save nothing and add a process launch each.
-
-`test-run` was closed 2026-08-10 (fester) and is the worked example of the
-method below: its whole 63-line drift was comments and formatting, so
-nothing was ported and the emitted script was installed as-is. The two
-arms were the five sidecar branches (plain, `.disk`, `.keys`, `.smp`,
-`.vmargs`) byte-compared before and after the install, with a sabotaged
-harness as the control to show the comparison could fail at all. **No
-test in the tree carries a `.stdin` sidecar, so the `-StdinFile` branch
-is unexercised by anything and no arm could cover it.**
-
-`compile` was closed 2026-08-11 (fester) and is the worked example of the
-OTHER shape: 433 drift lines of which about twenty were real behaviour
-the generator had never had. `-Kernel` and its seed-drift NOTE, `-Text`,
-`-Measure`, `-Pet`, `-MemNoCap`, `-TimeoutSec`, `-Decks`, `-Passes`,
-`-RawFlags`, `-DiskFile`, `-Peer` / `-Registry`, the `map` flag, the
-`$implicitNames` guard on the unbundled warning, `Resolve-Name` against
-the kernel's embedded MAP1 instead of the drifting `.map` sidecar,
-`Remap-Diag`, `Format-CrashReport`, and the retry line that reports the
-memory it actually set. The old generator still emitted "retrying with
-3584MB" while setting 8192, which is the bug the shipped script had
-already fixed. Two arms of eleven cases (CDX with and without `-Kernel`,
-`-Text`, `-IrCce`, `-Measure`, `-Decks 100`, a failing compile, `-Break`
-found and not-found, a missing `-DiskFile`, a missing `-Kernel`)
-compared exit code, log text, stderr, and the content hash of every
-artifact: identical. Dropping the `map` flag was the control and it
-diverged. The NOTE branch needed its own run from a working directory
-whose `build-output` kernel differed from the seed, because on this box
-they were equal and the branch was silently dead in both arms.
-
-- **`ValidateRange` had no DSL node, and that alone would have blocked
-  the install** -- the emitted script would have accepted `-Decks 99999`.
-  `ShellParam` gained `sp-attrs : List Text` and `ShellBuild` a `sh-attrs`
-  wrapper alongside `sh-doc`; `emit-ps-params` emits each as its own
-  attribute line. One field, because the alternative was leaving a real
-  validation behind.
-`compare-codex-semantic` was closed 2026-08-11 (fester) and is the third
-shape: a drift where the GENERATOR was partly right and the shipped
-script was partly wrong, so neither side could just be installed over the
-other. Ported INTO the generator: `Canonicalize-TypeName` (without it a
-bare-style `HamtEntry a` reports as a dropped definition, an emitter
-information-loss claim where nothing was lost) and the `#HEX` to decimal
-normalization. Deleted FROM the generator: a `++` operator at precedence
-4 and a rewrite of every binary `&` into it. **There is no `PlusPlus`
-token** -- `codex/compiler/Syntax/Token.codex` does not declare one, so
-that was a fiction the shipped script had never had.
-
-- **The precedence table was wrong on BOTH sides, and the shipped side
-  was wrong in the dangerous direction.** The compiler
-  (`ParserCore.codex:522`) ranks Pipe 2, Ampersand 3, comparisons 4,
-  ColonColon 5. Shipped gave `&` and `|` the same rank, which makes
-  `Strip-RedundantParens` strip the load-bearing parens from
-  `(a | b) & c` and compare it EQUAL to `a | b & c`. A false PASS: the
-  leg exists to catch emitter information loss and would have waved
-  through a reassociation. The generator's `++` put `&` ABOVE
-  comparisons, wrong the other way. The table now carries the compiler's
-  own numbers. `AppPrec = 10` still sits above `^` (now 8) and below `.`
-  (20), so raising the scale by one does not disturb application.
-- **The VERDICT is unchanged on the real corpus. The NORMALIZATION is
-  not, and checking only the verdict said the wrong thing.** All arms
-  report the same 5237 matched, 0 dropped, 0 body mismatches, 331 extra,
-  41 sig mismatches over `build/output/Codex.codex` against
-  `stage1.codex`, and on that basis this entry first claimed the
-  precedence fix changed nothing. Dumping every normalized body and
-  diffing old table against new shows it changes **4 definitions of
-  5237**: `join-title-parts` and `scan-class-instance-defs`
-  (`Syntax/Parser.codex:1245`, `:1522`), `normalize-list-insert-at` and
-  `normalize-list-prim` (`Types/TypeChecker.codex:309`, `:250`). Each
-  mixes boolean `|` and `&` and is correctly parenthesized in the
-  source:
-
-  ```
-  if (list-prim-nil a | list-prim-cons a) & is-int-literal-text it
-  ```
-
-  The old table stripped those parens, leaving
-  `list-prim-nil a | list-prim-cons a & is-int-literal-text it`, which
-  under the real precedence means `a | (b & c)` and is a different
-  expression. **It stripped them from BOTH sides equally, so the two
-  still compared equal and the gate stayed green.** Nothing was ever
-  reported wrongly. What it means is narrower and worth stating exactly:
-  for those four definitions the leg was comparing a form whose grouping
-  had already been destroyed, so a reassociation of `|` against `&`
-  there could not have been detected. A blind spot, not a false answer.
-- **Compare the intermediate product, not just the answer.** A pass/fail
-  verdict is a lossy summary of the thing you changed. The verdict was
-  identical under all three tables and stayed identical; only dumping
-  the 10,474 normalized bodies showed the correction did anything at all
-  on real code. **Had the four definitions been the only evidence, the
-  verdict-level check would have reported "inert" about a fix that was
-  not.**
-- The three changes were ALSO proven on hand-built pairs, each with the
-  behaviour removed as its own control, because four accidental
-  instances in one corpus is not a test anyone chose.
-- **The script prints NOTHING on PASS, so a PASS/PASS comparison proves
-  nothing.** Compare instrumented copies that always print matched /
-  dropped / extra / body / sig counts, not exit codes.
-- **Two crashes fixed, one defect class: a `List` returned from a
-  PowerShell function is UNROLLED by the caller.** `$s1Defs.Count` died
-  whenever stage1 held exactly one definition, and the FAIL path's
-  `$s0Chapters.Values | ForEach-Object { $_.Count }` died whenever the
-  source held one chapter. Both are pre-existing and present in the
-  shipped script; the gate never meets them because its corpus has
-  thousands of defs, but anyone running the tool by hand on a small pair
-  meets them immediately and gets a bare type error instead of a report.
-  `@()` around the call is the fix. This is the same root cause as the
-  `foreach` trap below.
-- **`ScForEach` over a `SeRaw` command call is a trap.** The DSL emitted
-  `foreach ($l in Format-CiteChapters -Ordered $ordered)` with no
-  parentheses, and PowerShell bound the WHOLE returned array to `$l`. The
-  assembled compiler input came to 114 bytes instead of 3830 and every
-  compile failed. `Get-ChildItem` and `Get-Content` in the same shape are
-  fine, which is why the tree's other bare `foreach ... in <cmd>` lines
-  are not bugs: a cmdlet streams, a function returning a collection does
-  not. Use `SeCallArgs`, which parenthesises.
-- **A generator's column-2 prose is NOT emitted.** Writing a comment into
-  the shipped `.ps1` without a matching entry in the generator is instant
-  drift. `ScComment` pads like every other node (`PowerShellEmit.codex:122`);
-  an INDENTED comment comes out indented only if it is emitted from inside
-  the scriptblock that indents it, which in practice means `ScRaw` at that
-  level rather than an `ScComment` appended to the top-level list (the
-  mechanism is above, under "-OutRoot"). Prose is for the reader of the
-  generator; a comment the shipped script needs has to be emitted like any
-  other line (reek, 2026-09-02; mechanism corrected in the mindmeld).
-- **`SeRaw` emits ONE paren pair where `SeOr` and its siblings add their
-  own.** `ScIf (SeRaw "$a -ne $b")` emits `if ($a -ne $b) {`; `ScIf (SeOr ...)`
-  emits `if ((...)) {`. Hand-matching a shipped script to its generator fails
-  on exactly that one character pair, and it is the whole of the drift the
-  checker will report.
-- **A PowerShell hex literal parses SIGNED, so `0xFFFFFFFF` is int -1.** A
-  mask written to normalise a negative process exit code is therefore a no-op,
-  the `[uint32]` cast that follows THROWS, and in a loop the failed assignment
-  leaves the comparison reading a STALE value, which answers True for the
-  wrong reason. Compare the signed literal directly: `0xC0000374` IS
-  -1073740940 and equals `$proc.ExitCode` with no conversion. Test the
-  arithmetic against real values before trusting a check like this; the
-  careful-looking version is the broken one (reek, 2026-09-02, the test-run
-  host-crash refusal).
-
-`bvt` was closed 2026-08-11 (fester) and is the one that shows what this
-campaign is actually FOR. **The generator's test list held 16 of the 75
-tests.** Adopting it unread would have dropped 59 from the gate: every
-ECDSA, X.509, TLS and DTLS test, every induction and normalizer proof,
-every scope test, the whole repository-protocol set, and most error
-tripwires. The BVT would have gone on printing PASS while testing a
-quarter of what it claims. Nothing in the drift number says this: 239
-lines of drift looks like the same kind of number `clean-zombies` has.
-**Diff the DATA a generator carries, not just its code shape.**
-
-- The list was rebuilt from the shipped script MECHANICALLY, not by
-  hand, and the round trip is asserted: same 75 paths, same order, and
-  all 75 trailing notes byte-identical. Those notes are what each test
-  GUARDS and several say what breaks when the test is weakened; they are
-  the only record of why most of these exist, so losing them silently
-  was the second risk here. They live in the generator as
-  `bvt-entry "<path>" "<note>"` pairs with the group headers preserved
-  as `bvt-head`.
-- **The `.disk` sidecar handling was missing entirely.** The generator
-  called `test-run.ps1 -Kernel .. -OutFile ..` with no `-DiskFile`, so
-  every repository test would have run against no block device. Control:
-  removing the ported line makes 8 tests fail on output mismatch
-  (`repo-tombstone`, `repo-checkout`, `disk-facts-multi-load`,
-  `colophon-dogfood` and the rest), which is what the two-arm PASS/PASS
-  comparison needed to be worth anything.
-- `-Jobs` defaulted to 4 in the generator against 8 in the shipped
-  script. Damian's 2026-08-02 ruling is 8 for every parallel harness and
-  `CLAUDE.md` says not to copy a lower number out of an older doc; the
-  generator WAS the older doc. The gate passes `-Jobs 8` explicitly so
-  the default never bit, but a hand run would have taken it.
-- The failure paths lost their colour (`ScEcho` where the shipped script
-  uses `-ForegroundColor Red`). `ScEchoStyled` expresses it. Two traps
-  in one node: its Boolean is "newline?" so `False` emits `-NoNewline`,
-  and `ClRed` maps to `DarkRed` -- the bright console colours are
-  `ClBrightRed` / `ClBrightGreen`.
-
-`run-plug` was closed 2026-08-11 (fester). One real behaviour ported and
-it is the kind worth naming: the generator emitted a BARE `catch` where
-the shipped script catches `[System.IO.IOException]` only. A bare catch
-swallows everything, so a genuine fault inside the receive loop is
-treated as a normal end of stream and the script then reports
-`FAIL: plug produced no output` -- a diagnostic that points at the plug
-when the fault is in the harness. Measured by injecting a
-non-IO exception into the loop: typed catch exits 1 and the real error
-surfaces; bare catch exits 6 and says "no output". `ShellTypes` gained
-`ScTryCatch (body) (exc-type) (catch) (finally)` for it, because the
-existing `ScTry` has no exception type and the alternative was hand
-editing the output, which the banner now forbids. The `[byte]$Tag`
-parameter became `ValidateRange(0, 255)` on an `SptInt`, which refuses
-the same inputs at binding; there is no `SptByte`.
-
-`test-compile-batch` was closed 2026-08-11 (fester). 201 drift lines and
-**every one of them was real**, which makes it the counterexample to
-`test-run`, where the whole drift was convention. Four separate things,
-each of which had already been fixed once in the shipped script and would
-have been reintroduced by installing the generator's output:
-
-- **Both of the parser's documented performance disasters were back.**
-  `NextLine` walked bytes in a PowerShell loop instead of using the
-  Latin-1 shadow string, which is 17 to 23 minutes on a single crashed
-  batch; the per-test scan was a per-line walk instead of the memoized
-  marker search, which is 865 seconds of host CPU per crash. Both
-  regressions come with the measurement written beside them in the
-  shipped script, so the generator was not merely older, it predated the
-  fix and carried the slow version verbatim. `$rawStr`, `$markerList` /
-  `$markerMemo`, `Add-LogSpan` with its 2000-line cap, the anchored-at-
-  `$pos` marker check, `$vmDead` and the 64 KB `!EXC` dump capture are
-  all ported.
-- **`Resolve-Source` returned text only, so there were no diagnostic
-  regions and no `Convert-DiagLine` remap.** Every diagnostic in a
-  battery `build.log` would have carried its position in the ASSEMBLED
-  unit rather than in the source file, which is exactly what a
-  `.failing` position pin reads. This is the control, and it fires
-  loudly: dropping the remap changes 45 of 46 `build.log` files, turning
-  `.\codex\foreword\core\CCE.codex:24:3` into `704:3`.
-- **The mode line said `CDX repl`.** The shipped script says plain `CDX`
-  and explains why in the line above it: a per-request `repl` flag
-  embeds a REPL loop in the TEST binary and hangs every test that
-  consumes stdin. The generator would have put the flag back under its
-  own explanation of why it must not be there.
-- The `.src-bytes` census file and the three stopwatches (`resolvems`,
-  `vmms`, `parsems` in the sweep log) were absent, so the batch would
-  have gone silent on where its time goes.
-
-Two arms over all 46 generators in `codex/build/`, comparing every
-artifact and not the exit code: 184 files (`.exitcode`, `build.log`,
-`.src-bytes`, `<name>.cdx` for each) byte-identical, 46 of 46 at exit 0,
-317 log lines matched. **This generator compiles the generators**, so
-`check-generated-scripts.ps1` is both the consumer and a self-check of
-the install; the battery is the other caller.
-
-- **`ScSetContent` emits its path expression UNPARENTHESISED**, so
-  `ScSetContent (SeRaw "Join-Path $testOut '.exitcode'") ...` produces
-  `Set-Content -Path Join-Path $testOut '.exitcode' -Value ...`, which
-  does not run. This generator held the only compound-path use of the
-  node in the tree; the other seven all pass a bare `$var` and are
-  fine. Fixed at the call site, not in `emit-ps-expr`, for the reason
-  below. Same shape as the `SeProperty` and `ScForEach` traps: the DSL
-  will happily emit an expression into a position that needs grouping.
-
-`build-apps` was closed 2026-08-11 (fester). The 74 drift lines were
-convention with one exception: `ScWriteError` emits
-`[Console]::Error.WriteLine`, where the shipped script says `Write-Error`.
-Those are not the same thing under `$ErrorActionPreference = 'Stop'` --
-`Write-Error` raises a TERMINATING error, so `Write-Error '...'; exit 2`
-never reaches the `exit` and the process ends at 1. **The shipped
-script's documented exit codes 2 and 3 have therefore never occurred.**
-Left as shipped and recorded here rather than corrected: nothing reads
-those codes, and swapping the node would have smuggled an error-semantics
-change into a drift closure. The DSL cannot currently express
-`Write-Error` at all, which is why the two sites are `ScRaw`.
-
-- Two arms over every app: 56 artifacts (28 bundles + 28 renders)
-  byte-identical, 301 console lines identical, both at exit 0. Control:
-  removing the CRLF normalization changes the written page. The other
-  half of that control -- skipping the bundle step -- was a NO-OP and is
-  worth saying so, because the compiler resolves cites itself, which is
-  what `TheShimmeringPortal.md` already says the bundle step is not
-  required for.
-- **Running the tool is destructive right now, and that is how two
-  pre-existing defects surfaced.** Every one of the 28 apps rewrote its
-  page, and the rewrite is a DEGRADATION: `apps/weather/web/weather.html`
-  went from 303 lines to 26, the plug reporting `OK ... (1060 chars)`.
-  Reverted, never submitted. Nothing in the script is at fault and both
-  arms degrade identically, so the comparison still holds; but do not run
-  `build-apps.ps1` on a clean tree expecting it to be a no-op.
-- **46 of the 74 `apps/*/web/*.html` artifacts are orphans** with no Page
-  chapter to regenerate them, `apps/gpushow/` being 40 of them with no
-  `.codex` in the directory at all. The script warns and continues, so
-  the shortfall is invisible unless the printed count is compared against
-  the artifact count. Recorded in `docs/TheShimmeringPortal.md`, which
-  claimed 74 until this run.
-
-`test-disk-compile` was closed 2026-08-11 (fester), and the drift closure
-is the smallest part of what was wrong with it. Three real fixes:
-
-- **`Start-VmRun` sat INSIDE the try whose finally calls
-  `Close-Vm -Conn $run.Conn`.** So every failure above the assignment --
-  a missing `Codex.cdx`, a VM that would not start -- ran a finally that
-  dereferences an unassigned `$run` under `Set-StrictMode -Version
-  Latest`, replacing the real diagnostic with a strict-mode error.
-  `exit` inside a try still runs the finally, so the exit paths did not
-  escape it either. The try now opens after `$run` holds a VM, which is
-  where the shipped script put it. New section `S05b` exists only to mark
-  that boundary.
-- Five `Write-Host` colours were lost (the Cyan banner, three Red
-  failures, the Green PASS). `ScEchoStyled` restores them; the other
-  seven `Write-Host` lines are uncoloured in the shipped script too and
-  stay `ScEcho`.
-- **The default `-SampleSrc` pointed at
-  `codex\test\absorb-outer-lambda.codex`, deleted in change 1568.** The
-  script could not pass with no arguments and nothing in the tree calls
-  it, so nothing noticed. Repointed at `codex\test\field-range-proven.codex`,
-  which is cite-free and expects `12`, so the `-Expected` default is
-  unchanged. **The sample MUST be cite-free**: the image plug embeds it
-  raw as `SOURCE.SRC` and the compiler reads it off the disk inside the
-  VM, so nothing resolves a `cites` line on the way in.
-
-- **This one is NOT verified end to end, and the reason is a defect
-  outside it.** Steps 1a to 1c pass, then the IMG plug returns 1400 bytes
-  where a 16384-sector image is 8 MB. Its VM faults: a register and stack
-  dump on stderr and `VM exited (code=-1, exits=172327)`. Reproduced on
-  BOTH `-Fat16` and the default FAT32, so it is not the FAT16 branch.
-  **`codex/plugs/img/run.ps1` prints `OK: <file> (N bytes)` anyway** --
-  its receive loop is `while (read) {...} catch {}` with no completeness
-  check, so a crash mid-stream is indistinguishable from a clean EOF.
-  That is the same defect class as the bare `catch` fixed in `run-plug`
-  above, and it is why a crashing plug has been reporting success. The
-  generator adoption rests on the emitted-versus-shipped diff, a clean
-  `ParseFile`, and inspection of the three fixes; say so rather than
-  calling it green.
-
-The last five ordinary generators were closed together 2026-08-11
-(fester), leaving only the four backlogged stubs. Each is worth one line
-except where it is not:
-
-- **`test-boards` emitted `New-Item -ItemType Directory -Force Split-Path
-  $Stage0`**, missing the parentheses shipped code has. That is not a
-  directory named `Split-Path`, it is a HARD ERROR -- PowerShell reports
-  `A positional parameter cannot be found`, and with
-  `$ErrorActionPreference = 'Stop'` the script dies on its second
-  statement. Fixed at the call site (`ScMkdir (SeRaw "(Split-Path
-  $Stage0)")`). **This is the third node in this family**, after
-  `SeProperty` and `ScSetContent`: the DSL will emit an expression into a
-  position that needs grouping and nothing complains until it runs.
-- **`clean-zombies` would have gained `Set-StrictMode -Version Latest`
-  and `$ErrorActionPreference = 'Stop'`, which the shipped script omits
-  on purpose.** This is the tool reached for when the machine is already
-  wedged, and it has to run to the end on a box where things are failing.
-  Under `Stop`, `& wsl.exe --shutdown` becomes a terminating error on any
-  shell with `PSNativeCommandUseErrorActionPreference` enabled (7.6.3 on
-  this box reports it False, so the risk was latent rather than live).
-  `s01` now omits both, which is the only generator here that does, and
-  the reason is in the prose above it. Its `Write-Output` was also being
-  emitted as `Write-Host` by `ScEcho` -- different destinations, and this
-  script's two lines are its entire result, so they belong on the
-  pipeline.
-- `resolve-trace`: three `Write-Error` sites were becoming
-  `[Console]::Error.WriteLine`, the same node mismatch as `build-apps`
-  above, left as shipped for the same reason.
-- `run-plug-chain`: convention only. Its header's `-InFile`-not-`-Input`
-  trap already lives in `OperatorsManual.md`, so dropping it lost
-  nothing.
-- **`concat-codex-self` had ZERO code differences**, which is the good
-  news for the generator that assembles the compiler's own 2.77 MB unit.
-
-- **`Sort-ByDeps` in `concat-codex-self.ps1` is DEAD CODE, and the header
-  comment asserting what it does was false.** It is defined at line 97,
-  40 lines of topological sort, and nothing calls it -- emission at the
-  bottom of the script uses `[Array]::Sort($subFiles, $nameCmp)` with
-  `State|Encoder` files hoisted. So chapters are NOT "topologically
-  sorted so cited chapters appear before consumers", as the shipped
-  header claimed; they are alphabetical with a two-name exception. The
-  emitted script drops that claim, which is why installing it is an
-  improvement, but the dead function is still there and was left alone
-  rather than deleted inside a drift closure.
-- **This was found by a control that FAILED TO FIRE, and that is the
-  whole lesson.** Reversing `$sorted` in `Sort-ByDeps` produced a
-  byte-identical 2.77 MB unit, which should have been impossible if the
-  sort mattered. Reported as "verified" it would have been a lie by
-  accident. The real control -- removing the `State|Encoder` hoist --
-  changes the hash while keeping the byte count, and only then does
-  arm A equals arm B mean anything. Same shape as the `resolve-trace`
-  arm below.
-- **A control aimed at a branch the test data never reaches is not a
-  control.** The first `resolve-trace` arm fed a synthetic trace with the
-  fields reversed -- the format is `T:<size>:<rip>`, not `<rip>:<size>`
-  -- so every address fell outside the symbol map, `Resolve-Addr`
-  returned its hex fallback every time, and the `-le` to `-lt` sabotage
-  of its range check could not fire. With the fields the right way round
-  and one address placed EXACTLY on a segment start, the same sabotage
-  turns `beta-fn+0x0` into `0x100100`. Both arms then match over both
-  trace formats, text and binary, 12 lines each.
-
-Arms for the five: `concat-codex-self` 2,769,366 bytes byte-identical;
-`test-boards` 2 pass 0 fail with identical console; `resolve-trace` 12
-identical lines over both formats; `run-plug-chain` identical exit and
-output on the missing-input path and on a real plug run.
-**`clean-zombies` was NOT run and must not be**, by the doctrine now in
-`OperatorsManual.md`: it kills any VM on the box regardless of which
-agent started it, and another agent's gate was live. Verified by parse
-plus a comment-stripped comparison showing the executable lines
-identical modulo `@()` array literals and redundant parentheses.
-
-- **An unrelated observation, unresolved and not diagnosed.**
-  `build/run-plug.ps1` given a `-IrCce` file and `rust-plug.cdx` -- the
-  path `plug-oracle-test.ps1` uses -- faults the plug VM
-  (`VM exited (code=-1)`) and exits 6. Nothing in the gate covers it:
-  `plug-smoke` calls each plug's OWN `run.ps1` with a `.codex` source
-  instead, and passes. Whether the fault is the plug, the framing, or the
-  input is NOT established here. A separate earlier attempt through the
-  PE plug is not evidence either way -- `run-plug.ps1` sends tag 1 and
-  the PE plug wants tag 4 with a mode byte, so that one was invalid
-  input, not a defect.
-
-- **THE BANNER'S PRESENCE IS AN INVARIANT, NOT DECORATION.** Every
-  generated script opens with `generated-banner` from `ShellTypes`,
-  which says a hand edit here must not be submitted: change the
-  generator, regenerate, and submit both together. It is ONE definition
-  cited by all three emitters, because three copies of a warning are
-  three things that drift apart. The invariant is that **a file carrying
-  the banner is exactly a file that currently matches its generator.**
-  The four still in the baseline do NOT carry it and must not be
-  given it by hand: their shipped script is the maintained side, so
-  "do not edit by hand" would be a lie on the only copy anyone edits.
-  They get the banner when their drift closes, as part of the install.
-- **The emitted text is LF and the shipped scripts are CRLF.** Install
-  without converting and every line reads as changed. Nothing warns.
-- **Losing a script's header comments is not automatically a loss, but
-  check.** `test-run.ps1`'s header carried the StdinFile-versus-KeysFile
-  doctrine, which the emitter cannot express; it was safe to drop only
-  because `ExaminersAssay.md` and `OperatorsManual.md` both already own
-  it. Grep for the doctrine's other home BEFORE installing over it.
-
-**All four were closed 2026-08-15 (fester); there are no backlogged stubs
-left and the baseline is empty.** The account is in the section above.
-
-Method, for whoever resumes it:
-
-- Read the drift with `check-generated-scripts.ps1 -Diff <name>`, judge
-  each shipped-only line as real behaviour or emitter convention, port
-  only the former, then INSTALL the emitted script and accept the style
-  change. **Do not bulk-regenerate; there is deliberately no `-Write`
-  flag.**
-- **A TEXT MATCH IS NOT VERIFICATION.** `compile-arm64` sat at 58 drift
-  lines that all read as convention while its generator emitted load
-  address 0x40000000 for 0x40100000, heap reserve 0x1000000 for
-  0x0F000000, align 0x10000 for 0x1000, and a CCE name decoded one byte
-  per character. **It exits 0 and writes a broken ELF.** The two-arm run
-  is what caught it: compile a real test through the plug pipeline before
-  and after installing and require the artifact to be byte-identical,
-  then run the PRE-fix emission as a control and require it to diverge
-  (L-FALSIF).
-- **A GENERATOR WITH NO `$AltTarget` ENTRY READS AS HAVING NO TARGET, AND
-  NOTHING REPORTS THAT.** `cvmm-build` emits `apps\cvmm\build.ps1` and
-  sat in that blind spot since it was written: counted among the "no live
-  target" set, never compared, drift unknown. **Before calling any
-  generator dead, READ IT and look for the script it describes** -- the
-  target name in `sh-script` is not the path.
-- **The emitter is usually not the wrong side.** `SeProperty` emits
-  `obj.prop` unparenthesised, which is right for `SeVar` and wrong for a
-  raw command; the fix went in the three generator sites, not in
-  `emit-ps-expr`, because parenthesising there would drift every matching
-  generator at once.
-- **CHECK `ShellTypes` BEFORE ADDING A NODE.** A prior plan asserted the
-  DSL had no `-ForegroundColor` node and needed a new one. Wrong:
-  `ScEchoStyled` and `ScEchoPartial` already existed and `emit-ps-color`
-  already maps the sixteen `ShellColor` constructors onto PowerShell's
-  console names. No node was added.
-- **A `let` binding's value must start on the SAME line.** A multi-line
-  list literal is fine for a top-level definition but `let name =`
-  followed by a newline raises CDX2000 at the column after the `=`. The
-  fix is a section-level definition rather than a `let`.
-- `codex/test/shell-build-keep` cites `ShellTypes` and `ShellBuild`, so it
-  is the test any Shell quire change touches. Compile and run it through
-  the harness. The wider net for a Shell quire change is
-  `check-generated-scripts.ps1` with no `-Only`: it recompiles all 45 and
-  reports how many still match, so a field added to `ShellParam` shows up
-  as a generator that stopped matching. Adding `sp-attrs` left all 29
-  matches intact.
-- **The Shell quire is not in the seed unit.** `concat-codex-self.ps1`
-  preloads `codex\foreword\core` only, so a `codex\foreword\shell` change
-  cannot move a seed byte and takes no build token. Confirm it at the
-  concat rather than reasoning from the directory name.
-- `testrunBashScript` is the only `emit-bash` generator and is NOT one to
-  delete: until `test-run.sh` has a live target, "no unhandled nodes" is a
-  statement about PowerShell only. `PowerShellEmit` handles every
-  constructor `ShellTypes` declares; `BashEmit` and `KshEmit` are each
-  missing most of them. The count is recorded at the scan site in
-  `check-generated-scripts.ps1`; re-derive it, never copy it.
-- `build/vm-config.ps1` is generated and still matches: edit the generator
-  and regenerate. `compile-arm64.ps1` / `compile-riscv.ps1` are the
-  opposite -- generator abandoned, shipped script is the maintained side.
-  **Check `-Only <name>` before editing either half of any generated
-  script.**
-
-**The general trap, which is not limited to this lane: the `build/*.ps1`
-files are hand-maintained, and the drift runs the OTHER way from what
-"generated from" advertises.** Measured on `lintunusedcitesScript.codex`:
-the generator emits `[Parameter(Mandatory=$true)]` where the shipped
-script has none, so the shipped copy is the hand-FIXED one and the Codex
-is stale. Regenerating would hand back a script that prompts headless.
-Diff before regenerating one of these to fix a bug in it.
-
-**The instance that costs a boot, named 2026-08-15: `cdxtopeScript.codex`
-S06 ends at the `stack-min-rsp-addr` store and never writes cell 4072.**
-The shipped `cdx-to-pe.ps1` does, and that store is the whole of the fix
-for the reboot loop under real UEFI (`UsersHandbook.md`: 21 triple faults
-in 40 s before it, 0 after). S05 is stale the same way, still allocating
-the heap at the fixed `0x1000000` edk2 refuses. Regenerating this one
-hands back a stub that triple-faults instead of reporting, and no drift
-number distinguishes those lines from formatting.
-
-## What `gen-scripts` costs, and the fix that does not pay (2026-08-20)
-
-The gate's `gen-scripts` phase is the largest single item on the standing
-`-Internal` gate for anyone touching a build script: **118.5 s of a 238.4 s
-gate**, measured at head 18157. It was 61 s on 2026-08-06. Both halves of the
-growth are real and neither is a defect: the generator count went **42 to 57**,
-and the per-generator cost went **1.45 s to 2.08 s**.
-
-**The obvious fix was tried and is not worth taking.** `check-generated-scripts.ps1`
-compiles the whole set in ONE batch VM boot and then RUNS them one VM boot at a
-time in a serial loop, which reads like the classic serial-harness win. It is
-not. Measured standalone on the same tree and the same seed:
-
-| | s |
-|---|---|
-| depot version (serial run loop) | 101.6 |
-| with the run loop pre-run at `-ThrottleLimit 8` | 92.1 |
-
-**9.5 s.** The 57 serial runs are about 10 s in total, roughly 0.2 s each, and
-`test-compile-batch.ps1` compiling 57 generator chapters is the other ~90 s.
-That is genuine compile work and the only way down is fewer or smaller
-generators. The change was reverted; do not spend the afternoon on it again.
-
-One thing worth keeping from the attempt, because it will bite the next person
-who parallelises anything here. **Do not call `test-run.ps1` with `&` inside
-`ForEach-Object -Parallel`.** Runspaces share one process, that script does
-`Set-Location` and sets `[Environment]::CurrentDirectory`, and eight of them
-fight over one working directory: it fails out of its own stderr read with
-`the process cannot access the file ... because it is being used by another
-process`. The battery has run this same script eight ways for months without
-ever seeing it, because the battery spawns `pwsh -NoProfile -File` per test.
-Spawn the process; the race disappears.
+Both exist as chapters. What is missing is their integration into the booted
+image as the default path: open a file, edit it, compile it, run it, without
+leaving the machine.
 
 ## Priority Order
 
-1. ~~Wire the FileSystem builtins~~ -- done 2026-07-19, Phase A above.
-2. **On-disk test runner.**
-3. **Text pingpong on device.**
-4. **Editor and shell as the default on-image path.**
+1. On-disk test runner.
+2. Text pingpong on device.
+3. Editor and shell as the default on-image path.
 
-## The `-Internal` dependency map tracks a phase's SUBJECT, not its INSTRUMENT
+## The gate's trigger map
 
-Found 2026-08-24 by tripping it. `'vm-differential' = $tCompiler`, so the phase
-runs when `codex/compiler` changes. That is right about what it MEASURES: the
-map's own comment calls it the DDC witness for codegen. It is wrong about what
-it measures WITH. The phase compares two VM hosts, and which host runs is
-decided in `build/vm-config.ps1`, which is `$tBuild`.
-
-So a CL that changed VM host selection had the one phase that exercises both
-hosts skipped as "not implicated by this change". It was run by hand and passed
-(both hosts agree, E2EF5CBA5ED6B087), so nothing shipped wrong; the gap is that
-the gate could not have told anyone either way.
-
-Red ruled both halves on 2026-08-25: land the narrow fix, then audit the map
-once. Both are done and this is the audit.
-
-### The audit, one pass over every trigger
-
-The question per phase is whether its trigger covers the files that can change
-its ANSWER, not only the ones it is ABOUT. Frequencies are over the last 50
-changes on main: `$tBuild` without `$tCompiler` fires 11 times, `$tCompiler`
-without `$tBuild` fires once. Phase costs are the max across five gate runs on
-2026-08-24.
-
-| phase | trigger | what else decides its answer | done |
-|---|---|---|---|
-| `vm-differential` | `$tCompiler -or $tBuild` | host selection, `build/vm-config.ps1` | **widened**, 19236 |
-| `deck-headroom` | `$tBuild -or $tCompiler` | `used` is measured by RUNNING the compiler; the per-point divisor is `demand-check-floor` | **widened**, 31 s, ~1 in 50 |
-| `gen-scripts` | `$tBuild -or $tCompiler` | every generator is COMPILED by the current kernel and the emitted text diffed | **widened**, 63 s, ~1 in 50 |
-| `jonquil` | `$tCompiler` | `build/jonquil.ps1` | not widened, below |
-| `plug-binary` | `$tPlugs -or $tCompiler` | `build/test-cross-batch.ps1` | **graded set widened**, reek 2026-09-01 |
-| `cross-smoke` | `$tPlugs -or $tCompiler` | `build/check-cross-smoke.ps1` | not widened |
-| `plug-smoke` | `$tPlugs -or $tCompiler` | `build/plug-run.ps1`, `build/compile.ps1` | **graded set widened**, reek 2026-09-01; **scope repaired** reek 2026-09-02 (it invokes `run.ps1 -Src`, and a plug binding none exits 1 at parameter binding, so capability is read off the param block) |
-| `plug-selftest` | the changed plug ships a `test-*.ps1` | that harness, plus every `build*.ps1` the plug ships | **new**, reek 2026-09-02, red's clearance |
-| `app-sweep` | `$tApps -or $tCompiler` | `build/sweep-app-classes.ps1` | not widened |
-| `sem-equiv` | `$coreRuns` | `build/compare-codex-semantic.ps1` | **widened**, fester 2026-09-02, Damian's ruling; was `$tSemantic`, which left every compiler chapter outside the front end ungated (L-NOGATE). `text-stage1` moves with it, 34.5 s + 59.6 s measured |
-| `run-list` | `$tVm` | `tools/codex-vm.c`/`.exe`, `build/check-run-list.ps1` | **added**, 5.7 s, per-file |
-
-**The TRIGGER was never the gap for the plug phases; the GRADED SET was.**
-Both fire on `$tPlugs`, which is correct and always was. But `plug-binary`
-graded a hardcoded `@('riscv','arm64','t3isa','elf','pe','img')` and
-`plug-smoke` a hardcoded `@('typescript','python','rust','ptx')`, against
-**56 plugs that have a `build.ps1`**. So 46 plugs were in NEITHER list: change
-one and both phases ran, graded plugs it had not touched, and came back green.
-The audit above asks whether a trigger covers the files that can change a
-phase's ANSWER, and this is the same question one level in -- whether the
-phase's SUBJECTS cover the change that implicated it.
-
-Fixed 2026-09-01 (reek): `$changedPlugs` names the plug directories in the
-change and both lists append it, deduped. Safe to widen because all 56 plugs
-carry both `build.ps1` and `run.ps1`, and `plug-smoke` asserts only that
-`run.ps1` exits 0 with non-empty output, so no target toolchain is required and
-a widened plug cannot go red for a missing compiler. `common` and `test-input`
-are excluded, being the only two directories under `codex/plugs` with no
-`build.ps1`. Proven both directions before it was believed: a sabotaged `qt`
-(in neither list) turned the gate RED with `FAIL: binary plug build -- qt` and
-exit 1, and a change touching no plug deferred all three plug phases and
-finished green in 374.8 s.
-
-### `$tCompiler` fires on a PROSE file, and the register under it moves weekly
-
-`$tCompiler` is `^codex/compiler/`, which is a DIRECTORY and not a subject.
-Measured 2026-09-01: `codex/compiler` holds 64 `.codex` files and exactly ONE
-file that is not source, `compiler-backlog.md`. That register is edited by
-every lane that opens or closes a compiler item, and it moved in **8 of the
-last 50 changes on main** (21289..21440) -- the same order as the `$tBuild`
-frequency this document cites as the reason NOT to widen the six phases.
-
-So a docs-only CL that closes a backlog row pays the full compiler subject:
-`$tCompiler` switches on EIGHT phases (`jonquil`, `plug-binary`, `cross-smoke`,
-`plug-smoke`, `gen-scripts`, `vm-differential`, `deck-headroom`, `app-sweep`),
-and `-Internal` stops being the switch it exists to be. Of those, the four that
-ran in the 2026-09-01 control cost 90.8 s together (`gen-scripts` 46.8,
-`deck-headroom` 30.7, `app-sweep` 8.3, `vm-differential` 5.0); the four plug
-and jonquil phases are on top of that and rebuild six plug binaries.
-
-**It also voids a control, which is how it was found.** Proving that the plug
-phases DEFER needs a change that implicates neither, and an unrelated
-`compiler-backlog.md` arriving from main set `$tCompiler` and ran them. That
-cost three merge-downs and one discarded gate before a clean control existed,
-and the file had nothing to do with the change under test.
-
-The repair is the same question this audit already asks, pointed at the file
-rather than the phase: **can this file change the phase's ANSWER?** A prose
-register cannot. The discriminator is not the extension, though -- non-source
-files that DO decide an answer exist and must keep their trigger
-(`build/app-sweep-baseline.txt` is the standing example), so the fix scopes
-`$tCompiler` to compiler SOURCE rather than banning a suffix. **Done 2026-09-01 (reek):** `$tCompiler` is now
-`^codex/compiler/.*\.codex$`. The mutation ran first and needed no box, the
-subject being a predicate over a file list: `compiler-backlog.md` is the ONLY
-file that moves True to False, while `IR/Lowering.codex`, `opening.codex`,
-`Emit/X86_64.codex` and `Types/CodexTypeHelpers.codex` all still fire and
-`codex/plugs/**` and `build/**` are unmoved. The gate that landed it confirms
-the GUARD half on the real thing rather than the relax: an unrelated
-`Types/TypeCheckerInference.codex` was in the same diff, so `$tCompiler` was
-correctly true and all eight phases ran, green in 404.7 s.
-
-**The generator ATE THE BACKSLASH and the drift check is the only reason it did
-not ship.** Codex reads `\` as an escape introducer, so `'\.'` in the
-generator emitted `'.'` and the first attempt produced
-`^codex/compiler/.*.codex$` -- a dot matching ANY character, which also accepts
-`codex/compiler/fooXcodex`. It would have behaved correctly on every file in the
-tree today and misfired only on a name nobody has written yet. The generator
-source carries `\\.` and emits `\.`; the SHIPPED script was right throughout,
-which is the drift direction this document already warns about and the reason
-`check-generated-scripts` has no `-Write`.
-
-**`run-list` is the first phase to carry a per-file trigger, and it is the
-shape the six above could not afford.** Added 2026-08-25 (reek, on red's
-clearance) because the arms were half-gated: `bvt.ps1` drives every BVT test
-through `-run-list`, so the HAPPY path already turns the gate red, while the
-refusal and isolation arms -- a corrupt kernel not taking its neighbours, the
-wall budget stopping one line alone, drop attribution, a nested list refused --
-ran nowhere and could rot unseen (L-NOGATE). `$tVm` names two files and a
-binary rather than a directory, which is affordable precisely because the
-phase is 5.7 s: the objection to widening the six is that `$tBuild` fires 11
-times in 50 and costs them ~130 s each, and neither half of that applies here.
-No codegen trigger, because every arm compares two runs of the SAME kernels,
-so a compiler change moves both sides equally.
-
-**Both directions were fired before it was called done**, which is the whole
-point of an item about arms nothing runs. Positive: `p4 edit tools/codex-vm.c`
-alone put `run-list` in the gate's run list and all five arms came back green.
-Negative: one arm sabotaged in place turned the phase red, printed the FAIL
-line, and exited the gate 1. The `.exe` half of the trigger matters because a
-rebuilt VM lands as a change to the versioned binary; `tools/build-vm.ps1`
-needs no trigger of its own for the same reason.
-
-**The two widened are COMPILED answers and that is what separates them.**
-`deck-headroom` and `gen-scripts` do not read a file and report on it; they run
-the compiler and report what came back, so any codegen change can move the
-answer. The measured instance is this session's own: `demand-check-floor` went
-648 to 704 MB at reek 19178 and every build-quire unit moved, `cdxtope` from 52
-of 64 to 48. A CL touching only that constant is `$tCompiler` without
-`$tBuild`, and it would have skipped the phase that exists to see exactly that.
-At ~1 change in 50 the pair costs 94 s that rarely.
-
-**The six NOT widened share one shape and it is deliberately left open.** Each
-is a phase whose RUNNER lives under `build/`, so `$tBuild` is a true
-answer-dependency for all of them -- change `jonquil.ps1` and jonquil's answer
-can change. Blanket-widening them to `$tBuild` is the wrong fix anyway: it
-fires on 11 changes in 50 and would add roughly 130 s to each, which turns
-`-Internal` into the full gate for any build change and defeats the switch.
-The precise fix is a per-file trigger (jonquil runs when `build/jonquil.ps1`
-changes, not when any build file does), and that is machinery in the map to
-manage a modest risk the next full gate already catches -- L-LESS, and the
-reason it is recorded as a question rather than built. **Whoever edits one of
-those six harnesses should run its phase by hand and say so.**
-
-## A gate runs only the steps the change can affect (Damian, 2026-09-02)
-
-Ruled through root: an apps-only CL must not build the seed, run the compiler
-BVT, or stride an app sweep. `-Internal` already defers thirteen phases on a
-trigger map; what it never defers is the fixed-point core, and the core is most
-of the cost. Measured on this box today: an apps-and-docs CL with nothing
-implicated still paid **172.0 s**, of which `cdx-build` 18.8, `cdx-stage1` 17.2,
-`test-bvt` 30.9 and `check-errors` 26.1 are steps that cannot answer differently
-because nothing they read had moved.
-
-This section is the design and is deliberately written before the code, because
-the change REMOVES checks. A change that stops asking a question reports exactly
-what one that asks and agrees reports (L-CAPABILITY-LOST), so each removal below
-names the trigger that must cover it and the arm that must fail without it.
-
-### The hazard that decides whether this is safe at all
-
-**Every phase after the core is pointed at a kernel the core BUILT.**
-`$testKernel = $cdxStage1` drives `oracles`, `check-errors` and `test-compile`;
-`app-sweep` sweeps with `-Kernel $SutCdx`; `plug-binary` copies `$SutCdx` over
-`build-output/bare-metal/Codex.cdx`. Skipping the core leaves every one of those
-paths holding **whatever the last run left on disk**, which is the trap
-`CLAUDE.md` already names for `-Kernel`: it reported ~80 of 84 chapters
-compiling where the truth was ~55, because the default kernel was the previous
-compiler. Deferring the core without repointing them turns a saving into a
-silently stale grade, which is worse than the cost it saves.
-
-So the rule is not "skip the core" but **"skip the core AND grade with the seed
-of record"**, and the second half is what makes the first admissible:
-
-- when the core is skipped, `$testKernel` and `$SutCdx` both become
-  `seed/Codex.cdx`, so no phase can reach a stale build output;
-- the run PRINTS the kernel digest it graded with, the way `compile.ps1`
-  already prints `kernel: <path> [DIGEST]` on every compile;
-- and it REFUSES if the workspace seed differs from the DEPOT seed, because a
-  locally rebuilt seed is not the compiler of record and grading against one is
-  the same wrong answer wearing a different hat. One `p4 print` and one hash,
-  about two seconds, against the whole core it replaces.
-
-### The triggers
-
-Two new predicates, and one existing one reused:
+**A gate runs only the steps the change can affect (Damian, 2026-09-02).** An
+apps-only CL must not build the seed, run the compiler BVT, or stride an app
+sweep.
 
 ```
 $tForeword = ^codex/foreword/
@@ -1955,275 +603,197 @@ $tKernel   = $tCompiler -or $tForeword -or $tSeed -or $tBuild
 $tTest     = ^codex/test/
 ```
 
-`$tKernel` is Damian's "compiler, foreword, seed, build paths" verbatim. It is
-deliberately CONSERVATIVE on the foreword: measured 2026-09-02 against the
-concat, `Foreword--Fat32` is absent from the compiler unit and `Foreword--Fat16`
-is present, so a `Fat32.codex` change moves no seed and would fire `$tKernel`
-for nothing. Asking the concat which chapters are in the unit is a two-second
-answer and would make the trigger exact; it is not done here, because a trigger
-that is too wide costs time and a trigger that is too narrow ships a
-miscompile, and the two errors are not the same size.
+`$tKernel` is deliberately CONSERVATIVE on the foreword: `Foreword--Fat32` is
+absent from the compiler unit, so a `Fat32.codex` change moves no seed and fires
+for nothing. Asking the concat which chapters are in the unit would make the
+trigger exact; **a trigger that is too wide costs time and one that is too narrow
+ships a miscompile, and the two errors are not the same size.**
 
-### What each phase becomes, and what covers it
+**The hazard that decides whether this is safe at all: every phase after the core
+is pointed at a kernel the core BUILT.** Skipping the core leaves those paths
+holding whatever the last run left on disk, which is R-GATE's name-the-kernel
+trap arriving through a default. So the rule is not "skip the core" but **"skip
+the core AND grade with the seed of record"**: when the core is deferred,
+`$testKernel` and `$SutCdx` both become `seed/Codex.cdx`, the run PRINTS the
+kernel digest it graded with, and it REFUSES if the workspace seed differs from
+the DEPOT seed.
 
-| phase | today | proposed | what would be uncovered without the trigger |
+`test-bvt`, `oracles` and `check-errors` are `$tKernel -or $tTest`. **`$tTest` is
+wider than the BVT's own list on purpose**: reading that list from `build.ps1`
+couples the two.
+
+**The stale-kernel arm is the one this design exists for.** Skip the core with a
+deliberately wrong `build/output/stage1.cdx` on disk and the run must still grade
+correctly, because it must never have read that file. An arm that only checked
+the timing fall would pass with the stale kernel in place.
+
+**A green `-Internal` no longer means the fixed point was proven.** An apps-only
+gate does not run that comparison and cannot quote it. The line is not weakened;
+it is absent, and an absent line quoted from habit is a false claim.
+
+**The scope is `p4 opened` UNION `p4 diff2`, and the gate REFUSES when the stream
+is behind.** `diff2` reports a file that differs in EITHER DIRECTION, so a stream
+behind main reads another lane's landed files as its own change: measured with
+NOTHING opened, `changed here` named three unrelated files and the whole
+fixed-point core ran. Subtracting the incoming set is the wrong repair, because a
+file changed on both sides would be dropped along with the lane's own change.
+Merging down before a gate was already the rule with nothing enforcing it, which
+is L-BODY's shape; this gives it a runner.
+
+### The audit: a trigger must cover the files that can change a phase's ANSWER
+
+The question per phase is not what it is ABOUT but what decides its answer.
+
+| phase | trigger | what else decides its answer | state |
 |---|---|---|---|
-| `clean`, `source-concat`, `cdx-build`, `sign`, `canary`, `cdx-stage1`, `cdx-fixedpoint` | always | `$tKernel` | the fixed point itself. Nothing else asks whether the compiler is a fixed point of itself, so this trigger must never be narrower than the set of files that can move the compiler binary |
-| `test-bvt` | always | `$tKernel -or $tTest` | **the BVT's subjects ARE `codex/test/*.codex`.** Its list is hardcoded in `bvt.ps1` and every member is a test chapter, so a `codex/test/` CL that skipped the BVT would skip the phase that grades the file it changed. `$tTest` is wider than the BVT's own list on purpose: reading that list from `build.ps1` couples the two, and 30 s on a test-only CL is the right price for not having to keep them in step |
-| `oracles`, `check-errors` | always | `$tKernel -or $tTest` | `check-errors` grades `codex/test/errors/**`, which `$tTest` covers; both otherwise read only the kernel |
-| `test-compile` | always, cite-scoped | unchanged | already correct. It printed `subject: CITE-SCOPED, 0 chapter(s) of 1500` and `OK (nothing implicated)` on a docs CL today, which is the shape the rest of this section copies |
-| `app-sweep` | `$tApps -or $tCompiler`, **cite-scoped on an apps change, the 30-unit stride only when `$tCompiler`** (shipped; the selector's soundness is the section below) | as today | a compiler change can move any app, so it keeps the stride; an apps change can only move the apps that cite what changed |
+| `vm-differential` | `$tCompiler -or $tBuild` | host selection in `build/vm-config.ps1` | widened |
+| `deck-headroom` | `$tBuild -or $tCompiler` | `used` is measured by RUNNING the compiler; the divisor is `demand-check-floor` | widened |
+| `gen-scripts` | `$tBuild -or $tCompiler` | every generator is compiled by the current kernel | widened |
+| `plug-binary`, `plug-smoke` | `$tPlugs -or $tCompiler` | the graded SET, not the trigger | graded set widened |
+| `plug-selftest` | the changed plug ships a `test-*.ps1` | that harness, plus every `build*.ps1` the plug ships | added |
+| `sem-equiv`, `text-stage1` | `$coreRuns` | was `$tSemantic`, which left every compiler chapter outside the front end ungated (L-NOGATE) | widened |
+| `run-list` | `$tVm` | `tools/codex-vm.c`/`.exe`, `build/check-run-list.ps1` | added, per-file |
+| `app-sweep` | `$tApps -or $tCompiler` | cite-scoped on an apps change, the 30-unit stride only when `$tCompiler` | as today |
+| `jonquil`, `cross-smoke` | `$tCompiler`, `$tPlugs -or $tCompiler` | their runners under `build/` | **not widened, open** |
 
-### The controls, and neither is optional
+**The TRIGGER was never the gap for the plug phases; the GRADED SET was.** Both
+fired correctly on `$tPlugs` while grading hardcoded lists that between them
+omitted most of the plugs with a `build.ps1`, so changing one ran both phases,
+graded plugs it had not touched, and came back green. `$changedPlugs` now names
+the plug directories in the change and both lists append it, deduped. Safe to
+widen because `plug-smoke` asserts only that `run.ps1` exits 0 with non-empty
+output, so no target toolchain is required.
 
-The ruling itself names the positive one and it is the one that catches a
-trigger written too narrow:
+**`$tCompiler` is scoped to compiler SOURCE**, `^codex/compiler/.*\.codex$`. It
+used to be the whole directory, so a docs-only CL closing a `compiler-backlog.md`
+row switched on eight phases and rebuilt six plug binaries. It also VOIDED A
+CONTROL, which is how it was found: proving that the plug phases defer needs a
+change implicating neither, and an unrelated backlog file arriving from main ran
+them. **The discriminator is not the extension**: non-source files that DO decide
+an answer exist and keep their trigger, `build/app-sweep-baseline.txt` being the
+standing example.
 
-- **positive: a compiler CL still runs the core.** Open one `codex/compiler/*.codex`
-  file and the core, the BVT and the fixed point must all run and the log must
-  say so.
-- **negative: an apps-only CL runs neither.** The log must name `seed/Codex.cdx`
-  as the kernel with its digest, and the phases that do run must be graded by
-  it.
-- **the stale-kernel arm, which is the one this design exists for.** Skip the
-  core with a DELIBERATELY WRONG `build/output/stage1.cdx` on disk -- the
-  previous run's, or a corrupted copy -- and the run must still grade correctly,
-  because it must never have read that file. An arm that only checks the timing
-  fell would pass with the stale kernel in place, and that is precisely the
-  failure being designed against.
+**The six phases whose runners live under `build/` are NOT widened, deliberately
+and openly.** `$tBuild` is a true answer-dependency for all of them, but it fires
+often and blanket-widening turns `-Internal` into the full gate for any build
+change. The precise fix is a per-file trigger, which is machinery to manage a
+modest risk the next full gate already catches (L-LESS). **Whoever edits one of
+those harnesses runs its phase by hand and says so.**
 
-### What a green `-Internal` will no longer mean
+**`run-list` is the first per-file trigger and is the shape the six could not
+afford**, precisely because the phase is seconds rather than minutes. Its happy
+path was already gated by `bvt.ps1`; the refusal and isolation arms ran nowhere
+and could rot unseen (L-NOGATE).
 
-Every CL description in this project quotes `SUT === stage1 -- hard fixed point
-in one pass` as its evidence, and after this change an apps-only gate does not
-run that comparison and cannot quote it. The line is not weakened; it is absent,
-and an absent line quoted from habit is a false claim. Whoever lands this owes
-the fleet one sentence saying so, because the alternative is six agents pasting
-a proof their run never produced.
+### `app-sweep` cite-scoping
 
-### `plug-selftest`, and what the six harnesses cost (reek, 2026-09-02)
+The closure is transitive over a table keyed by CHAPTER NAME, so the table is
+only as sound as that key. **A name is not unique: 89 of 3,818 names under
+`apps/` and `codex/` are carried by more than one file, and 76 of those carry
+cite lists that DIFFER** (2026-09-08). Keeping the first file's list made the
+table depend on directory enumeration order and dropped every path through the
+losing file, so `$citeOf` takes the UNION over every file carrying the name.
+**Over-inclusive is the safe direction; under-inclusive is a green from a sweep
+that never looked.** Measured over all 1,152 apps chapters, the union removed
+three total blind spots and twenty-five partial misses and widened the mean pick
+from 4.1 entries to 4.5.
 
-The phase runs a plug's own `test-*.ps1` when THAT plug changes. The trigger is
-derived from the plug directory, not a list, so a plug gaining a harness is
-picked up without editing the phase. A CL touching no plug prints
-`not implicated` and costs nothing.
+`-ChangedIs` names the changed files instead of asking Perforce, which is what
+makes the scoping testable without staging an edit.
 
-**All six measured GREEN at head before the phase landed**, sequentially, with
-the free-memory floor sampled through each run (the floor is the box rule since
-main 21587, so a red has to be attributable to the harness and not to
-overcommit):
+### Kernel provenance: a class, not one script
 
-| harness | verdict | elapsed | floor |
-|---|---|---|---|
-| `evidence/test-evidence` | PASS | 21.7 s | 6.01 GiB |
-| `img/test-img` | PASS | **389.6 s** | 1.46 GiB |
-| `ptx/test-f64` | PASS | 3.1 s | 6.93 GiB |
-| `spirv/test-binary` | PASS | 3.1 s | 6.97 GiB |
-| `spirv/test-emit` | PASS | 3.1 s | 6.87 GiB |
-| `spirv/test-spirv` | PASS | 3.1 s | 6.85 GiB |
+**A harness that cannot be told which compiler to use compiles with whatever
+`build-output` last held.** Three instances, all fixed 2026-09-07:
+`test-self-verify.ps1`, `check-generated-scripts.ps1` and `test-cross.ps1` now
+take `-Kernel`, defaulting to the depot seed, print the kernel and its digest,
+and refuse a `build-output` kernel whose digest differs from the seed unless
+`-AllowStaleKernel` says so. Both refusals fire BEFORE any guest.
 
-**`img/test-img` is 390 s and it dominates everything else combined.** An img CL
-therefore pays about six and a half minutes it did not pay before. That is the
-number to argue with if the phase is ever felt to be too expensive; the other
-five total 34 s. `test-img` is the arm for plugs 1.25, where the plug
-page-faulted before it sent and the host wrote a 1,400-byte file under an OK
-line, so it is not a candidate for trimming without replacing what it catches.
+**`test-cross.ps1` was the one that destroyed a measurement rather than merely
+reporting a wrong provenance:** a candidate staged into `build-output` looked
+like it was in play while the run compiled with the depot seed, and an arm64
+result read as a refuted fix until the compile log was opened.
 
-**RULED (red, 2026-09-02): do NOT cap it.** Only an img CL pays it, and **a
-capped harness is a runner that passes by not running**, which is the failure
-this whole phase exists to end. If it ever grows past the gate's own core, the
-move is to SPLIT it: a fast arm stays in the gate, the long arm becomes an
-img-owned focused test. Shortening the assertion is not on the table.
+**`cross-smoke` and `plug-smoke` still read `build-output\bare-metal\Codex.cdx`
+implicitly**, and are correct only because `plug-binary` shares their trigger,
+runs first, and stages `$SutCdx` there. **The ordering is load-bearing and
+unstated**: move a phase or give `plug-smoke` its own trigger and the stale kernel
+returns silently. The repair is to stage the kernel once the SUT is settled
+rather than as a side effect of another phase. Unowned, latent, no live exposure.
 
-**`spirv/test-emit` failed on the first pass and was NOT a red.** It exits 2 with
-`MISSING plug; run build-bin.ps1`: spirv ships TWO build scripts and
-`plug-binary` only ever runs `build.ps1`, so `spirvbin-plug.cdx` is built by
-nothing in the gate. Built by hand it passes in 3.1 s. The phase therefore runs
-every `build*.ps1` a plug ships before its harnesses, or it would red a spirv CL
-for a missing prerequisite rather than for the plug, which is the worst kind of
-false red. Re-run ALONE with the prerequisite present: exit 0, floor 6.28 GiB.
-
-**Sabotage, calibrated before the phase was believed.** `Evidence.cdxe` is
-byte-stable by design (`run.ps1` carries no timestamp into the package, only
-into the fact record). Appending `[DateTimeOffset]::UtcNow.Ticks` to the written
-package made two runs of identical inputs differ: `stable` flipped to "the two
-runs differ", `self` caught the broken END framing, and the harness exited 1 in
-15.5 s. Restored by `p4 revert` and the restore VERIFIED by hash against the
-pre-sabotage state (053C6FC9), because after a control run the tree is in the
-CONTROL state and that is what ships if nobody checks.
-
-### Landed, and the controls that say it works (fester, 2026-09-02)
-
-`$tKernel` is `$tCompiler -or $tForeword -or $tSeed -or $tBuild`; `$coreRuns`
-is that or `$tVm`; `test-bvt`, `oracles` and `check-errors` are
-`$tKernel -or $tTest`. When the core is deferred, `$testKernel` and `$SutCdx`
-both become `seed/Codex.cdx`, the digest is printed, and the run refuses if the
-workspace seed is not the depot seed.
-
-| control | result |
-|---|---|
-| **nothing implicated** | `core SKIPPED; graded with depot seed BE8B04B5`, every phase deferred, exit 0. **Wall clock is NOT settled: 10.1 s on one sample and 225.2 s on another of the same shape on the same box** (fester, 2026-09-02). The idle components sum to about 10 s (diff2 2 s, sidecars 2 s, p4-stale 5 s, cdx-registry 1 s) and the slow sample's phase timings sum to 0.6 s, so about 224 s sat outside every phase, cause not isolated. Against the 172.0 s the same shape cost that morning the saving is real on the fast sample and NEGATIVE on the slow one; the unaccounted time is the same defect val measured at 311 s in a 615 s gate, and it is OPEN and unowned (L-COUNT, L-GREEN: quote the spread, not the sample) |
-| **the stale-kernel arm** | `build/output/stage1.cdx` replaced with 64 junk bytes before that run. It came out clean, so nothing read it. This is the arm the design exists for: a timing-only check would have passed with the stale kernel in place |
-| **a build change** | core runs, `SUT === stage1 -- hard fixed point in one pass`, and `changed here` names exactly the CL's own files |
-
-### The scope was wrong in a way that would have made all of it worthless
-
-`p4 diff2` reports a file that differs in EITHER DIRECTION, so a stream BEHIND
-main reads another lane's landed files as its own change. **Measured with
-NOTHING opened at all**: `changed here` named
-`.claude/skills/init/SKILL.md, build/merge-down-all.ps1,
-docs/Agents/PerforceProcess.md` and the whole fixed-point core ran, because one
-of them is under `build/`. val hit the same thing from the other end, an apps CL
-running `plug-binary`, `plug-smoke`, `vm-differential` and `run-list` off 22
-merged files. 21381's claim is accurate as written -- the scope IS `p4 opened`
-UNION `diff2` -- and the union is the defect, not drift from it. With it
-unfixed, `$tKernel` is true in almost every workspace almost always and the
-ruling buys nothing.
-
-**Subtracting the incoming set was the first repair and it is wrong** (root's
-reading, and it is the right one): a code arc gates ONCE at the end, so a stream
-CL is not gated at submit, and a file changed on both sides would be dropped
-along with the lane's own change. The gate REFUSES instead, naming the count and
-the first five files. Merging down before a gate was already the rule with
-nothing enforcing it, which is L-BODY's shape exactly; this gives it a runner,
-and after the merge `opened UNION diff2` is exact with no edge left to reason
-about. Proven: behind by 11 files, the gate exits 1 without building anything.
-
-### `app-sweep` cite-scoping, and what the selector is sound about
-
-`app-sweep` keeps `$tApps -or $tCompiler` and takes the CITE-SCOPED set on an
-apps change, the 30-unit stride on a compiler one (`build.ps1:1406`). The
-selector is `-CiteScoped` in `sweep-app-classes.ps1`, with `-ChangedIs` to name
-the changed files instead of asking Perforce, which is what makes the scoping
-testable without staging an edit.
-
-The closure is transitive and it walks a table keyed by CHAPTER NAME, so the
-table is only as sound as that key. **A name is not unique: 89 of 3,818 names
-under `apps/` and `codex/` are carried by more than one file, and 76 of those 89
-carry cite lists that DIFFER** (2026-09-08). Keeping the first file's list made
-the table depend on directory enumeration order and dropped every path through
-the losing file, so `$citeOf` takes the UNION over every file carrying the name.
-Over-inclusive is the direction `$changedNames` already takes; under-inclusive
-is a green from a sweep that never looked.
-
-Measured both ways over all 1,152 `apps/` chapters as the changed file, against
-293 entry chapters:
-
-| | shipped, first file wins | union |
-|---|---|---|
-| entries picked per changed file | mean 4.1, max 136 | mean 4.5, max 138 |
-| changed files that swept NOTHING while a sound closure sweeps something | 3 | 0 |
-| changed files that swept FEWER entries | 25 | 0 |
-
-The three total blind spots were `apps/games/codexmagic/ChainCore.codex`,
-`MintAuthority.codex` and `TransactionValidator.codex`, every one of them
-reached only through the LOSING `Bridge` (`apps/games/classic/Bridge.codex`
-cites `Rng`; `apps/games/codexmagic/Bridge.codex` cites those three). The worst
-partial miss was a chapter of the withheld solver, 2 entries of 74.
-
-Arms, run against the depot script and the changed one on the same inputs:
-`ChainCore` 0 then 2 and both units CLEAN; `apps/c64/C64Screen.codex` 0 then 0;
-`apps/diagram/Canvas.codex` 4 then 4, which is the control that matters, because
-`Canvas` is itself a duplicated name and the union does not widen its reach. A
-docs-only change prints `no .codex changed` and sweeps 0.
-
-**`cross-smoke` and `plug-smoke` read `build-output\bare-metal\Codex.cdx`
-implicitly, and are correct only because `plug-binary` shares their trigger,
-runs first, and stages `$SutCdx` there (`build.ps1:989`). Unowned, latent, no
-live exposure** (fester, 2026-09-07, root's call not to spend a generator
-drift run on it). Verified at head: on a skipped core every OTHER phase that
-can run takes an explicit `-Kernel` (`check-errors` and `bvt` get
-`$testKernel`, `app-sweep` gets `$SutCdx` at `build.ps1:1332`), and
-`gen-scripts`, `vm-differential`, `deck-headroom` and `jonquil` cannot run at
-all, because a skipped core forces `$tCompiler`, `$tForeword`, `$tSeed` and
-`$tBuild` all false. So the ordering is load-bearing and unstated: move a
-phase or give `plug-smoke` its own trigger and the stale kernel returns
-silently. The repair is to stage the kernel once the SUT is settled rather
-than as a side effect of `plug-binary`.
-
-**FIXED 2026-09-07 (fester): both scripts take `-Kernel`, defaulting to the depot seed, printing the kernel and its digest, and refusing a `build-output` kernel whose digest differs from the seed unless `-AllowStaleKernel` says so.** `test-self-verify` went through its generator (`codex/build/testselfverifyScript.codex`, drift green, the install diffing as 14 lines rather than a whole file); `check-generated-scripts` is hand-written by design and was edited directly. Both refusals fire BEFORE any guest, which is what makes them worth having on a check that costs 57 boots: aimed at `build-output\charseed\cand.cdx` each refuses with exit 2, naming kernel `06864D2649B76905` against seed `9E5C7780B7FBC69C`, which is the binary the accidental sweep that found this row had run against. `check-generated-scripts` no longer requires `build-output\bare-metal\Codex.cdx` to exist; its own MISSING message had said to stage the depot seed there, and it now uses the depot seed directly. `test-compile-batch.ps1` already accepted `-Kernel`, so the compile half was a passthrough. THE ORIGINAL FINDING, kept because it says what the defect was: **`test-self-verify.ps1` COULD NOT BE TOLD WHICH COMPILER TO USE, so the one step
-that certifies a seed before it lands compiles its own checker with whatever
-`build-output` last held.** Its parameters are `-Seed` and `-PCore` only, so
-`compile.ps1` takes its default kernel and the script prints the warning
-itself: `NOTE: this kernel is NOT seed\Codex.cdx [...]. It is whatever
-build.ps1 last left in build-output.` Verified at head 2026-09-07 while signing
-a candidate. The seed under test is still the one `-Seed` names and the four
-answers it prints are about that file, so this is not a wrong result; it is the
-trap `CLAUDE.md` names under R-GATE ("Name the kernel"), sitting in the script a
-lane is told to run, and a lane that reads the note has no flag to answer it
-with. `sign-seed.ps1` beside it takes the artifact explicitly and has no such
-gap. The repair is a `-Kernel` parameter passed through to `compile.ps1`,
-defaulting to the seed being verified; the script is generated, so the change
-is `codex/build/testselfverifyScript.codex` and the shipped file together.
-Unowned. Generated-script change, so it needs a drift run.
-
-**SECOND INSTANCE THE SAME DAY, so this is a class and not one script:
-`check-generated-scripts.ps1` has no `-Kernel` either.** Its parameters are
-`-Only`, `-Diff`, `-OutRoot` and `-Update`, so it compiles every generator with
-`compile.ps1`'s default kernel and prints the same `compiler:
-build-output\bare-metal\Codex.cdx` line, which is whichever compiler ran last.
-Measured 2026-09-07: it ran against an unsigned scratch candidate while the
-depot seed was a different binary, and the drift table it produced was
-therefore a statement about that candidate. Neither script is wrong about the
-FILES it compares; both are silent about the compiler doing the comparing.
-**THIRD INSTANCE, AND THE FIRST ONE THAT DESTROYED A MEASUREMENT: FIXED
-2026-09-07 (fester).** `test-cross.ps1` takes `-Kernel`, defaulting to the
-depot seed, and `-AllowStaleKernel`, and passes the kernel to
-`codex/plugs/<arch>/compile-<arch>.ps1`, which already accepted one. The check
-resolves BEFORE the Renode probe, so a wrong kernel is refused without touching
-the bed. The vestigial staging of the seed into
-`build-output\bare-metal\Codex.cdx` is gone: it created that path when missing
-and never passed it on, which is what made a staged candidate look like it was
-in play. THE ORIGINAL FINDING, kept because it says what the defect was: a
-COMPILER-44 candidate was staged there, the arm64 run came back byte-identical
-to the baseline, and it read as a refuted fix until the compile log was opened
-and named the depot seed. The other two scripts in this class report a wrong
-PROVENANCE; this one silently answered a different question from the one asked,
-which is worse.
+**`build/test-boards.ps1` GRADES WHATEVER COMPILER IS ALREADY IN
+`build-output`.** Verified at head 2026-09-08: it copies the seed to `$Stage0`
+only `if (-not (Test-Path -PathType Leaf $Stage0))`, where `build/sweep-apps.ps1`
+copies unconditionally. So a run on a workspace where any earlier build left a
+binary there grades THAT binary, and nothing on the command line is wrong and the
+printed board result carries no digest that would contradict it. Repairs priced:
+copy unconditionally, matching `sweep-apps`; or keep the guard and PRINT the
+digest of the `Stage0` actually used, so the reading is falsifiable. **Open.**
 
 **A LANE RUNNING `test-cross.ps1` ON THIS BOX BOOTS RENODE, AND NOTHING IN THE
-INVOCATION SAYS SO** (fester, 2026-09-07, the hard way). The script probes for
-Renode and SKIPs when it is absent, so it reads as inert on a machine without
-it; `C:\Renode\renode.exe` is installed on this box, so the same command
-compiles through the arm64 plug and boots the bed. Renode is out by standing
-rule until Damian lifts it, and the guard against running it is the operator
-remembering, which is L-BODY in the same shape this register just closed for
-the seed install. The repair is a refusal: `test-cross` should decline to boot
-unless told explicitly that Renode is granted, rather than booting because the
-binary happens to exist. Unowned, and it wants Damian's word on the flag before
-anyone writes it.
+INVOCATION SAYS SO.** The script probes for Renode and SKIPs when it is absent,
+so it reads as inert on a machine without it; `C:\Renode\renode.exe` is installed
+here. Renode is out by standing rule, and the guard against running it is the
+operator remembering, which is L-BODY. The repair is a refusal: decline to boot
+unless told explicitly that Renode is granted. **Unowned, and it wants Damian's
+word on the flag before anyone writes it.**
 
-**The same shape sits under the evidence for the `-Kernel` fix itself, which is
-why it is worth stating twice.** That guard was graded on four host arms, two
-passing and two refusing, none of which booted a guest. They are host-only
-because the riscv plug is UNBUILT in that workspace, so the run stops at the
-plug check; build the riscv plug and the two PASSING arms boot again. A
-verification that is cheap by an accident of workspace state silently stops
-being cheap, and nothing in the arms says which kind they are. Whoever
-re-grades this class states the plug's build state beside the result.
-## Quire tables that are copies or derivations, audited 2026-09-07 (fester)
+**A verification that is cheap by an accident of workspace state silently stops
+being cheap.** The `-Kernel` guard was graded on four host-only arms, host-only
+because the riscv plug was UNBUILT in that workspace; build the plug and two of
+them boot. Whoever re-grades this class states the plug's build state beside the
+result.
 
-`build/quire-map.ps1` is the authority. Two scripts had been found deriving the
-mapping instead of reading it and both answered a different question:
-`codex/plugs/common/plug-build-lib.ps1` (globbed four roots and capitalised
-directory names, so Wflow, Boards and Tracker did not exist for it) and
-`build/check-battery-coverage.ps1` (last directory segment with `core` meaning
-Foreword, so `codex/os/core` read as the Foreword and `Games`, which lives at
-`apps/games/classic`, resolved to nothing). Both now source the map.
+### Open, unowned
 
-**A GATE ON THIS SHAPE WAS PROPOSED AND MEASURED DOWN.** The obvious rule, that
-a script mentioning a quire must source the map, flags **77 of 95** scripts and
-would be a check nobody reads. The narrow rule, spelling **two or more quire
-names as quoted literals without sourcing the map**, flags **7**, and only
-three of those are tables at all: `check-doc-counts.ps1` (agrees with the
-authority everywhere, so a duplication risk and not a live defect, and it is
-generated so correcting it costs a drift guest), `apps/games/server.ps1` (one
-live divergence, filed on `apps/games/games-backlog.md`), and
-`apps/landing/build.ps1`. The rest spell one or two names for their own
-reasons. Seven candidates needing per-file judgement is an AUDIT, which this
-was, not a runner: a gate here would be four false alarms out of seven and
-would train its readers to wave it through.
+- **Release sampler identity and lifetime.** `build/box-sample.ps1` counts
+  VM-host processes, including `-run-list` supervisors that create no guest
+  partition (`tools/codex-vm.c`, the early supervisor dispatch). Its `guests`
+  column cannot establish actual guest count or working set per guest.
+  The header is written once into `build-output`, which `build.ps1` removes
+  during clean; later samples can recreate a headerless file. Use an output
+  outside cleaned directories and record per-process identity, role and
+  working set before changing RAM admission bars. Update 58's retained
+  samples are `docs/Agents/box-release-2026-09-10.csv`; the release note states
+  the process-count limitation rather than inferring a guest peak.
+- **The gate's unaccounted wall time.** With nothing implicated, one sample ran
+  10.1 s and another of the same shape on the same box ran 225.2 s. The idle
+  components sum to about 10 s and the slow sample's phase timings sum to 0.6 s,
+  so about 224 s sat outside every phase. Same defect val measured at 311 s in a
+  615 s gate. Cause not isolated (L-GREEN: quote the spread, not the sample).
+- **`build/run-plug.ps1` given a `-IrCce` file and `rust-plug.cdx` faults the
+  plug VM and exits 6.** Nothing in the gate covers it: `plug-smoke` calls each
+  plug's OWN `run.ps1` with a `.codex` source instead, and passes. Whether the
+  fault is the plug, the framing, or the input is NOT established.
+- **`ablate-doctrine -SelfTest` and `-Setup` refuse on main, and its own guard is
+  why.** `check-doc-counts` gained claims the harness's `$scoredDocs` was never
+  extended to cover, so `Assert-ScoredDocsCoverChecker` throws, which is the
+  guard doing its job. The fix is not one line: the scratch tree would also need
+  `seed/`, `apps/` and `build/bvt.ps1` junctioned in, or every claim reports
+  NOPATH and every arm scores FAIL for a reason unrelated to the candidate. It is
+  a design decision about what the scratch tree carries.
+- **`build-apps.ps1` is destructive on a clean tree**: every app rewrites its
+  page and the rewrite is a DEGRADATION. Both arms degrade identically so a
+  comparison still holds, but do not run it expecting a no-op. Separately, many
+  `apps/*/web/*.html` artifacts are orphans with no Page chapter to regenerate
+  them; the script warns and continues, so the shortfall is invisible unless the
+  printed count is compared against the artifact count.
+- **No test in the tree carries a `.stdin` sidecar**, so `test-run.ps1`'s
+  `-StdinFile` branch is exercised by nothing.
 
-**Re-run the audit rather than trusting this paragraph** (L-COUNT): the census
-is `$QuireDirs` from the map, quoted-literal matches per script, minus any
-script that sources the map.
+## Quire tables that are copies or derivations
+
+`build/quire-map.ps1` is the authority. Two scripts were found deriving the
+mapping instead of reading it and both answered a different question; both now
+source the map.
+
+**A GATE ON THIS SHAPE WAS PROPOSED AND MEASURED DOWN.** The obvious rule, that a
+script mentioning a quire must source the map, flags 77 of 95 scripts and would
+be a check nobody reads. The narrow rule, two or more quire names as quoted
+literals without sourcing the map, flags 7, and only three of those are tables at
+all. Seven candidates needing per-file judgement is an AUDIT, not a runner: a
+gate here would be four false alarms out of seven and would train its readers to
+wave it through. **Re-run the audit rather than trusting this paragraph**
+(L-COUNT): the census is `$QuireDirs` from the map, quoted-literal matches per
+script, minus any script that sources the map.

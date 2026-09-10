@@ -4,6 +4,7 @@ Chapter: PlugRunScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -14,14 +15,14 @@ Section: Parameters
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd =
+  s01-body : List ShellCmd =
     let no-ir = [ScWriteError (SeRaw "\"MISSING IR input: $IrInput\""), ScExit (SeInt 2)]
     in let no-plug = [ScWriteError (SeRaw "\"MISSING plug CDX: $PlugCdx\""), ScExit (SeInt 2)]
     in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScIf (SeNot (SeFileExists (SeVar "IrInput"))) no-ir [], ScIf (SeNot (SeVar "PlugCdx")) [ScAssign "PlugCdx" (SeRaw "Join-Path $PSScriptRoot 'build-output\\plug.cdx'")] [], ScIf (SeNot (SeFileExists (SeVar "PlugCdx"))) no-plug []]
 
 Section: S02 -- Read IR input
 
-  s02 : List ShellCmd = [ScReadBytes "irBytes" (SeVar "IrInput"), ScEcho (SeRaw "\"[plug-run] IR input: $($irBytes.Length) bytes\""), ScEcho (SeRaw "\"[plug-run] Plug: $PlugCdx\"")]
+  s02-body : List ShellCmd = [ScBlank, ScReadBytes "irBytes" (SeVar "IrInput"), ScEcho (SeRaw "\"[plug-run] IR input: $($irBytes.Length) bytes\""), ScEcho (SeRaw "\"[plug-run] Plug: $PlugCdx\""), ScBlank, ScBlank, ScComment "The finally block reads $proc, and under Set-StrictMode an unset name THROWS.", ScComment "It was always assigned before anything could fail until the host became a", ScComment "choice; a missing VM binary now makes Start-Process throw first, and the", ScComment "StrictMode error about $proc buried the real cause.", ScComment "$stderrFile, $consoleFile and $listener are the same class one throw earlier:", ScComment "a port still held from the previous subject makes $listener.Start() throw", ScComment "before any of the three is assigned, and the finally's reference then masks", ScComment "the port error as \"variable cannot be retrieved\" (gate, 2026-08-27, three", ScComment "plugs reported \"produced nothing\" on their second subject).", ScRaw "$proc = $null", ScRaw "$stderrFile = $null", ScRaw "$consoleFile = $null", ScRaw "$listener = $null"]
 
 Section: S03 -- Start TCP listener
 
@@ -38,49 +39,65 @@ Section: S03 -- Start TCP listener
  called. Making the port workspace-derived is a change to all 56 plug sources
  and their build, not to this script.
 
-  s03 : List ShellCmd = [ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "try { $listener.Start() } catch { [Console]::Error.WriteLine(\"FAIL: TCP $Port is already in use, so this plug cannot be run here now. The port is fixed per plug and shared across workspaces, so another agent running the same plug holds it (L-SHARED). Wait, or run a different plug.\"); exit 7 }", ScEcho (SeRaw "\"[plug-run] Listening on TCP $Port\"")]
+  s03-body : List ShellCmd = [ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "try { $listener.Start() } catch { [Console]::Error.WriteLine(\"FAIL: TCP $Port is already in use, so this plug cannot be run here now. The port is fixed per plug and shared across workspaces, so another agent running the same plug holds it (L-SHARED). Wait, or run a different plug.\"); exit 7 }", ScEcho (SeRaw "\"[plug-run] Listening on TCP $Port\"")]
 
 Section: S04 -- Boot VM
 
-  s04 : List ShellCmd = [ScTempFile "stderrFile", ScTempFile "consoleFile", ScComment "The host choice lives in Start-PlugVm (vm-config), not here: eighteen other", ScComment "runners need the same selection and a copy in each is a copy to drift.", ScRaw "$proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB", ScEcho (SeRaw "\"[plug-run] VM PID $($proc.Id)\"")]
+  s04-body : List ShellCmd = [ScBlank, ScTempFile "stderrFile", ScTempFile "consoleFile", ScComment "The host choice lives in Start-PlugVm (vm-config), not here: eighteen other", ScComment "runners need the same selection and a copy in each is a copy to drift.", ScRaw "$proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB", ScEcho (SeRaw "\"[plug-run] VM PID $($proc.Id)\"")]
 
 Section: S05 -- Wait for TCP connection
 
-  s05 : List ShellCmd =
+  s05-body : List ShellCmd =
     let vm-died = [ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScWriteError (SeRaw "\"FAIL: VM exited before connecting. stderr: $stderr\""), ScExit (SeInt 4)]
     in let timeout-hit = [ScWriteError (SeLit "FAIL: plug did not connect within 60s"), ScExit (SeInt 5)]
-    in [ScAssign "deadline" (SeRaw "[DateTime]::UtcNow.AddSeconds(60)"), ScLabeledWhile "wait_conn" (SeNot (SeRaw "$listener.Pending()")) [ScIf (SeProperty (SeVar "proc") "HasExited") vm-died [], ScIf (SeRaw "[DateTime]::UtcNow -gt $deadline") timeout-hit [], ScRaw "Start-Sleep -Milliseconds 100"], ScRaw "$client = $listener.AcceptTcpClient()", ScRaw "$stream = $client.GetStream()", ScRaw "$listener.Stop()", ScEcho (SeLit "[plug-run] Connected")]
+    in [ScBlank, ScAssign "deadline" (SeRaw "[DateTime]::UtcNow.AddSeconds(60)"), ScLabeledWhile "wait_conn" (SeNot (SeRaw "$listener.Pending()")) [ScIf (SeProperty (SeVar "proc") "HasExited") vm-died [], ScIf (SeRaw "[DateTime]::UtcNow -gt $deadline") timeout-hit [], ScRaw "Start-Sleep -Milliseconds 100"], ScRaw "$client = $listener.AcceptTcpClient()", ScRaw "$stream = $client.GetStream()", ScRaw "$listener.Stop()", ScEcho (SeLit "[plug-run] Connected")]
 
 Section: S06 -- Send IR
 
-  s06 : List ShellCmd = [ScRaw "$msgLen = $irBytes.Length + 1", ScRaw "$hdr = [BitConverter]::GetBytes([int]$msgLen)", ScRaw "$stream.Write($hdr, 0, 4)", ScRaw "$stream.WriteByte(1)", ScRaw "$chunkSize = 4096", ScRaw "$off = 0", ScLabeledWhile "send_loop" (SeRaw "$off -lt $irBytes.Length") [ScRaw "$n = [Math]::Min($chunkSize, $irBytes.Length - $off)", ScRaw "$stream.Write($irBytes, $off, $n)", ScRaw "$stream.Flush()", ScRaw "$off += $n", ScIf (SeRaw "$off -lt $irBytes.Length") [ScRaw "Start-Sleep -Milliseconds 20"] []], ScEcho (SeRaw "\"[plug-run] Sent $($irBytes.Length) bytes\"")]
+  s06-body : List ShellCmd = [ScBlank, ScRaw "$msgLen = $irBytes.Length + 1", ScRaw "$hdr = [BitConverter]::GetBytes([int]$msgLen)", ScRaw "$stream.Write($hdr, 0, 4)", ScRaw "$stream.WriteByte(1)", ScRaw "$chunkSize = 4096", ScRaw "$off = 0", ScLabeledWhile "send_loop" (SeRaw "$off -lt $irBytes.Length") [ScRaw "$n = [Math]::Min($chunkSize, $irBytes.Length - $off)", ScRaw "$stream.Write($irBytes, $off, $n)", ScRaw "$stream.Flush()", ScRaw "$off += $n", ScIf (SeRaw "$off -lt $irBytes.Length") [ScRaw "Start-Sleep -Milliseconds 20"] []], ScEcho (SeRaw "\"[plug-run] Sent $($irBytes.Length) bytes\"")]
 
 Section: S07 -- Receive output
 
-  s07 : List ShellCmd = [ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScComment "A per-byte accumulate here cost 116.77 s for a 16 MB image against", ScComment "0.02 s for the bulk write, measured 2026-08-18 over the shipped shape.", ScComment "The cost is the 16,777,216 interpreter iterations, not the transport.", ScRaw "$allBytes = [System.IO.MemoryStream]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScRaw "$recvAborted = $false", ScRaw "$recvError = ''", ScTry [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "$allBytes.Write($readBuf, 0, $n)"]] [ScComment "A read timeout and a connection reset are NOT a clean end of stream,", ScComment "and this catch used to say they were: the partial buffer was written", ScComment "out and the script reported OK. Record which path ended the loop so a", ScComment "caller can tell a complete transfer from a truncated one.", ScRaw "$recvAborted = $true", ScRaw "$recvError = $_.Exception.Message"] [], ScRaw "$client.Close()"]
+  s07-body : List ShellCmd = [ScBlank, ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScComment "A per-byte accumulate here cost 116.77 s for a 16 MB image against", ScComment "0.02 s for the bulk write, measured 2026-08-18 over the shipped shape.", ScComment "The cost is the 16,777,216 interpreter iterations, not the transport.", ScRaw "$allBytes = [System.IO.MemoryStream]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScRaw "$recvAborted = $false", ScRaw "$recvError = ''", ScTry [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "$allBytes.Write($readBuf, 0, $n)"]] [ScComment "A read timeout and a connection reset are NOT a clean end of stream,", ScComment "and this catch used to say they were: the partial buffer was written", ScComment "out and the script reported OK. Record which path ended the loop so a", ScComment "caller can tell a complete transfer from a truncated one.", ScRaw "$recvAborted = $true", ScRaw "$recvError = $_.Exception.Message"] [], ScRaw "$client.Close()"]
 
 Section: S08 -- Write output
 
-  s08 : List ShellCmd =
+  s08-body : List ShellCmd =
     let no-output = [ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(5000)"] [], ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScRaw "$console = if (Test-Path $consoleFile) { Get-Content $consoleFile -Raw } else { '' }", ScWriteError (SeRaw "\"FAIL: plug produced no output. stderr: $stderr guest console: $console\""), ScExit (SeInt 6)]
     in let truncated = [ScWriteError (SeRaw "\"FAIL: the plug could not send its whole output -- $($truncHit[0].Line.Trim())\""), ScExit (SeInt 7)]
     in let guest-died = [ScWriteError (SeRaw "\"FAIL: the plug guest died mid-run, so the output is a prefix and not an answer -- $($deathHit[0].Line.Trim()). Wrote $($allBytes.Length) bytes to $Out.\""), ScExit (SeInt 9)]
     in let serial-dropped = [ScWriteError (SeRaw "\"FAIL: codex-vm dropped guest serial bytes, so the captured console is SHORT and no verdict read from it can be trusted -- $($dropHit[0].Line.Trim())\""), ScExit (SeInt 10)]
     in let aborted = [ScWriteError (SeRaw "\"FAIL: the receive ended by exception, not by end of stream -- $recvError. Wrote $($allBytes.Length) bytes and cannot tell whether that is all of them.\""), ScExit (SeInt 8)]
-    in [ScIf (SeRaw "$allBytes.Length -eq 0") no-output [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$allBytes.ToArray()"], ScComment "codex-vm dumps its output ring to -output ON EXIT, so grepping before the", ScComment "VM has gone reads a file the guest console has not reached yet. Measured", ScComment "2026-08-17: 1 byte before the wait, the guest's line only after it.", ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(20000)"] [], ScComment "codex-vm reports a dropped serial byte on STDERR, not on the guest", ScComment "console it is dropping from. It runs first because a short console", ScComment "makes every check below it read clean for the wrong reason.", ScRaw "$dropHit = @()", ScRaw "if (Test-Path $stderrFile) { $dropHit = @(Select-String -Path $stderrFile -Pattern 'output buffer growth failed') }", ScIf (SeRaw "$dropHit.Count -gt 0") serial-dropped [], ScComment "A guest that dies mid-emission is never REFUSED, so it prints no", ScComment "TRUNCATED line and closes cleanly enough that recvAborted stays false.", ScComment "Its own death line is the only witness.", ScRaw "$deathHit = @()", ScRaw "if (Test-Path $consoleFile) { $deathHit = @(Select-String -Path $consoleFile -Pattern 'OUT OF MEMORY|!EXC=') }", ScIf (SeRaw "$deathHit.Count -gt 0") guest-died [], ScRaw "$truncHit = @()", ScRaw "if (Test-Path $consoleFile) { $truncHit = @(Select-String -Path $consoleFile -Pattern 'TRUNCATED sent=') }", ScIf (SeRaw "$truncHit.Count -gt 0") truncated [], ScIf (SeVar "recvAborted") aborted [], ScEcho (SeRaw "\"[plug-run] OK: $Out ($($allBytes.Length) bytes)\"")]
+    in [ScBlank, ScIf (SeRaw "$allBytes.Length -eq 0") no-output [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$allBytes.ToArray()"], ScComment "codex-vm dumps its output ring to -output ON EXIT, so grepping before the", ScComment "VM has gone reads a file the guest console has not reached yet. Measured", ScComment "2026-08-17: 1 byte before the wait, the guest's line only after it.", ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(20000)"] [], ScComment "codex-vm reports a dropped serial byte on STDERR, not on the guest", ScComment "console it is dropping from. It runs first because a short console", ScComment "makes every check below it read clean for the wrong reason.", ScRaw "$dropHit = @()", ScRaw "if (Test-Path $stderrFile) { $dropHit = @(Select-String -Path $stderrFile -Pattern 'output buffer growth failed') }", ScIf (SeRaw "$dropHit.Count -gt 0") serial-dropped [], ScComment "A guest that dies mid-emission is never REFUSED, so it prints no", ScComment "TRUNCATED line and closes cleanly enough that recvAborted stays false.", ScComment "Its own death line is the only witness.", ScRaw "$deathHit = @()", ScRaw "if (Test-Path $consoleFile) { $deathHit = @(Select-String -Path $consoleFile -Pattern 'OUT OF MEMORY|!EXC=') }", ScIf (SeRaw "$deathHit.Count -gt 0") guest-died [], ScRaw "$truncHit = @()", ScRaw "if (Test-Path $consoleFile) { $truncHit = @(Select-String -Path $consoleFile -Pattern 'TRUNCATED sent=') }", ScIf (SeRaw "$truncHit.Count -gt 0") truncated [], ScIf (SeVar "recvAborted") aborted [], ScEcho (SeRaw "\"[plug-run] OK: $Out ($($allBytes.Length) bytes)\"")]
 
 Section: S09 -- Cleanup
 
-  s09 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "if ($stderrFile) { Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue }", ScRaw "if ($consoleFile) { Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue }", ScRaw "try { if ($listener) { $listener.Stop() } } catch {}"]
+  s09-body : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "if ($stderrFile) { Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue }", ScRaw "if ($consoleFile) { Remove-Item -Force $consoleFile -ErrorAction SilentlyContinue }", ScRaw "try { if ($listener) { $listener.Stop() } } catch {}"]
 
 Section: Assembly
 
-  plugrun-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScComment "The finally block reads $proc, and under Set-StrictMode an unset name THROWS.", ScComment "It was always assigned before anything could fail until the host became a", ScComment "choice; a missing VM binary now makes Start-Process throw first, and the", ScComment "StrictMode error about $proc buried the real cause.", ScComment "$stderrFile, $consoleFile and $listener are the same class one throw earlier:", ScComment "a port still held from the previous subject makes $listener.Start() throw", ScComment "before any of the three is assigned, and the finally's reference then masks", ScComment "the port error as \"variable cannot be retrieved\" (gate, 2026-08-27, three", ScComment "plugs reported \"produced nothing\" on their second subject).", ScRaw "$proc = $null", ScRaw "$stderrFile = $null", ScRaw "$consoleFile = $null", ScRaw "$listener = $null", ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07, ScBlank, ScSequence s08] [] s09]
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository and refuse a missing plug or IR input before a guest is started", ps-in = ["PlugCdx", "IrInput"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 2 "the plug CDX or the IR input named on the command line is not on disk"], ps-body = s01-body }
 
-  plugrun-script : ShellScript = sh-script "plug-run" "Boot a plug CDX in a VM and send pre-compiled IR over TCP to produce output" plugrun-params plugrun-body
+  s02 : PipeStage = PipeStage { ps-name = "read the IR and pre-null the cleanup names", ps-why = "the handler reads $proc, $stderrFile, $consoleFile and $listener, and under StrictMode an unset name THROWS, which masks the real error one throw earlier; the four are therefore assigned before anything that can fail", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "open the listener", ps-why = "the guest dials the host, so the listener accepts before the guest boots", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "boot the guest", ps-why = "starts codex-vm on the plug CDX, capturing stderr and console to temporary files", ps-in = [], ps-out = [], ps-needs = [PrGuests 1, PrKernel (SeVar "PlugCdx")], ps-verdict = [], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "wait for the connection", ps-why = "distinguishes a guest that EXITED from one that never connected, because the two have different causes and the same symptom", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 4 "the guest DIED before it connected", PoExit 5 "the guest was still alive and had not connected when the wait ran out"], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "send the IR as one framed message", ps-why = "one frame with its length ahead of it, because the plug reads a length then that many bytes", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
+
+  s07 : PipeStage = PipeStage { ps-name = "receive the output", ps-why = "reads the reply under a timeout", ps-in = ["TimeoutSec"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s07-body }
+
+  s08 : PipeStage = PipeStage { ps-name = "unframe the reply and write it", ps-why = "an empty reply is a guest that produced nothing, reported as such rather than written as an empty output", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 6 "the guest connected and sent no output at all", PoExit 7 "the reply was TRUNCATED: fewer bytes arrived than its own frame length promised", PoExit 8 "the guest reported an abort rather than a result", PoExit 9 "the guest DIED during the exchange", PoExit 10 "the serial transport dropped bytes, so the reply cannot be trusted even though one arrived"], ps-body = s08-body }
+
+  s09 : PipeStage = PipeStage { ps-name = "cleanup", ps-why = "stops the guest, closes the listener and removes the captures HOWEVER the six stages above ended, which is why it is the group's handler", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s09-body }
+
+  plugrun-pipe : Pipeline = Pipeline { pl-name = "plug-run", pl-doc = "Boot a plug CDX in a VM and send pre-compiled IR over TCP to produce output", pl-params = plugrun-params, pl-stages = [PsStage s01, PsStage s02, PsGroup None None (Just s09) [PsStage s03, PsStage s04, PsStage s05, PsStage s06, PsStage s07, PsStage s08]] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell plugrun-script)
+    print-line-uni (emit-powershell (pipeline-to-shell plugrun-pipe))
   end
 
 Page 1

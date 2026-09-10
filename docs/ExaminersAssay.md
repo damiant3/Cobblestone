@@ -467,7 +467,7 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **209** expected-failure tests (measured
+`codex/test/errors/` holds **211** expected-failure tests (measured
 2026-09-07).
 
 ## What the standing gate does not cover
@@ -5162,7 +5162,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-209 tests in `codex/test/errors/` verify that the compiler rejects
+211 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -7260,3 +7260,91 @@ Both tools ask the OS for a free CDP port rather than pinning one. The
 single-file `validate.mjs` pinned 9223, which on a shared box lets a peer's
 browser answer your query (L-SHARED); the sweep additionally uses ONE Chrome
 for every shader instead of one launch per file.
+
+## The Cite Gate (`build/cite-gate.ps1`)
+
+The runner L-NOGATE asked for: it RUNS the `codex/test` chapters that cite what
+you changed, rather than proving they compile.
+
+It walks the cite graph BACKWARDS from the changed files, over "who cites me"
+edges, and takes every `codex/test` chapter it reaches; a changed test selects
+itself. One walk over the graph rather than one closure per test is what makes
+1,800 test chapters affordable: 3,985 chapters parsed and the graph built in
+about 1.6 s (2026-09-09). The changed set comes from `p4 opened` by default, or
+from `-Files` / `-FilesFile`. Selection alone is `-ListOnly`; otherwise the
+subjects go to `bvt.ps1 -SubjectsFile`, which owns the grading.
+
+A cite of a MANIFEST quire (`Codex`, `Emit`, `Semantics`, all
+`build/compiler-order.txt`) expands to every file the manifest names, which is
+how a compiler change reaches the tests that cite the compiler as a library.
+
+**Read the two counts apart.** The script reports how many selected chapters
+RUN against an `.expected` and how many are compile only, because summing them
+reports a runtime gate over subjects that have no runtime arm (L-DENOM).
+
+**What it cannot see, and a selection reads like a guarantee.** A test that
+reaches your change through no cite is not selected, and the compiler is
+assembled by GLOB (`concat-codex-self.ps1`), so a compiler chapter's callers
+need not cite it; `-Compiler` selects every compiler-citing test instead of
+pretending the walk found them. An EMPTY selection is a statement about the
+cite graph rather than an all-clear, and the script says so in those words.
+
+**What it costs**, measured over two batches rather than one subject times N
+(L-AMORTISED): 12 subjects compiled and run in 31.5 s, 24 in 72.7 s, both at
+`-Jobs 1` on seed `7925988B55B1B5B5`. About 2.6 to 3.0 s a subject, and the two
+points do not fit one line because subject cost varies more than the fixed
+setup does. A widely cited chapter selects a lot: `Foreword Fat16` selects 167
+chapters, roughly eight to ten minutes at `-Jobs 1`. Read the count before
+starting the run, and measure free memory first: 3 GiB a guest is the bar.
+
+**It found a defect in `bvt.ps1` on its first real run.** Phase 3 batched
+`$BvtTests[0]` and `[1]` whatever they were, and a subject carrying a
+`.failing` sidecar is EXPECTED not to compile, so the arm read its own choice
+of subjects as an early exit and failed. The baked BVT list never showed it
+because its first two compile; any `-SubjectsFile` caller can hand over
+anything. The arm now batches the first two subjects with no `.failing`
+sidecar, and SKIPS with the count when fewer than two exist.
+
+## The Disk Runner's Host Pairing (`build/test-disk-runner.ps1`)
+
+Build.md Phase B stage 2's last piece. The guest compiles every chapter it
+finds on a FAT16 volume and prints a verdict per chapter; this pairs those
+verdicts with the `.failing` sidecars, which stay on the HOST deliberately.
+Executing what was compiled is stage 3 and is `DeskBuildLoop.md`'s nested VT-x
+guest, so no `.expected` is diffed here and none is claimed to be.
+
+**The mapping from a verdict line back to a source comes from the image
+writer's own manifest** (`codex/plugs/img/run.ps1 -ManifestOut`, a TSV of
+directory, 8.3 name and path). Folding the names a second time on the reading
+side would agree with a shared mistake by construction (L-BOTHARMS).
+
+**What is comparable, measured 2026-09-09 over `codex/test`: 123 of 648.** The
+exclusions are printed rather than folded into the denominator (L-DENOM): 511
+chapters carry `cites` and the runner compiles each chapter ALONE with no cite
+resolution, 10 carry `.skip`, and 4 carry `.flags` whose compile flags the
+runner does not pass, which would measure the invocation rather than the
+subject (L-SIDECAR).
+
+**A fourth class is reported as NOT COMPARABLE rather than as a failure, and
+the guest's own message is what classifies it.** The desugarer writes names the
+author never cites (`for x in xs -> ...` becomes `map-list`, a tuple literal
+becomes `MkTup<N>`), so `build/quire-map.ps1` walks Foreword ListUtils and
+Tuple into every host unit; a guest compiling one chapter alone has neither.
+The script reads those two chapters for the names they define rather than
+carrying a list.
+
+**Result at head: 120 pass, 2 not comparable, 1 disagreement**, and the
+disagreement is registered as COMPILER-76: `type-name-existence` compiles clean
+on the host and raises CDX2001 `Type mismatch: VectorMask 4 vs Boolean` in the
+guest. Flags and the sugar chapters are both eliminated as causes.
+
+**It fails in both directions, ablated 2026-09-09**: a sidecar carrying a code
+the guest does not raise fails with the codes named, and a clean chapter given
+a `.failing` sidecar fails as an expected failure that did not happen. It also
+refuses a run whose guest never printed `runner done`, and refuses a run that
+graded nothing, because an incomplete run and a clean one otherwise read alike.
+
+**Cost, measured 2026-09-09:** two guests, one to build the image through the
+img plug and one to boot the runner, about 185 s for all 123 subjects at seed
+`EC179CDE95FA59DB`. `-ListOnly` prints the selection and its exclusions without
+starting a guest.

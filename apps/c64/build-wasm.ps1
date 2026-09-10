@@ -203,5 +203,16 @@ $wasmFile = Join-Path $OutDir 'c64.wasm'
 & wat2wasm --enable-tail-call $watFile -o $wasmFile
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: wat2wasm; WAT is at $watFile"; exit 7 }
 Write-Host "[c64-wasm] WASM: $wasmFile ($((Get-Item $wasmFile).Length) bytes)"
+# The grader runs HERE because the module has just been written: a grader
+# whose module nobody built reports a missing file, and ENOENT and a defect
+# are the same colour on a verdict line.
+if (Get-Command 'node' -ErrorAction SilentlyContinue) {
+    & node (Join-Path $Repo 'apps/c64/c64-verify.mjs')
+    if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: c64-verify rejected the module'; exit 8 }
+    Write-Host '[c64-wasm] graded'
+} else {
+    Write-Host '[c64-wasm] node is not on the Path; c64-verify skipped'
+}
+
 Write-Host '[c64-wasm] done'
 exit 0

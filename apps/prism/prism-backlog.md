@@ -183,8 +183,8 @@ and `wasm trap: unreachable`. The backtrace names the line --
 `pmap_self_test` -- and the instruction is
 `(unreachable (; wasm plug: __self-type-defs has no wasm form ;))`.
 `compile-frontend-cdx` runs `pmap-selftest-bag True` unconditionally
-(`opening.codex:898`), and `__self-type-defs` exists only for the x86 pointer-map
-machinery (`X86_64Compound.codex`, `X86_64.codex:2208`).
+(`opening.codex:914`), and `__self-type-defs` exists only for the x86 pointer-map
+machinery (`X86_64Compound.codex`, `X86_64.codex:2211`).
 
 So closing (a) is a COMPILER-side change, seed-affecting and wanting the token:
 either give `__self-type-defs` a wasm form, or let that self-test be off on a

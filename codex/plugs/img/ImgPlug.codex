@@ -12,12 +12,22 @@ Chapter: ImgPlug
    Bytes 5-8: PE size (LE)
    Bytes 9-12: CDX size (LE)
    Bytes 13-16: source COUNT (LE, 0 if none)
-   Bytes 17 on: the source table, 15 bytes per source, an 8.3 name padded to
-     11 bytes then that source's size (LE)
+   Bytes 17-20: directory COUNT (LE, 0 for a flat image)
+   Bytes 21 on: the directory table, 15 bytes per directory, an 8.3 name padded
+     to 11 bytes then that directory's file count (LE)
+   Then: the source table, 15 bytes per source, an 8.3 name padded to 11 bytes
+     then that source's size (LE)
    Then: PE bytes, CDX bytes, then every source's bytes in table order
+
+ The source table is grouped by directory: the first directory's file count of
+ sources belong to the first directory, and so on in table order. Any source
+ past the sum of the file counts is placed in the ROOT, therefore a directory
+ count of zero puts every source in the root.
 
  The count replaced a single size when the runner needed an image holding a
  DIRECTORY of tests rather than one file under a name the writer spelled out.
+ The directory table followed when the FAT16 root's 509 usable entries and its
+ 8.3 collisions both became a bound on how many tests one image could carry.
 
 Section: Network Config
 
@@ -86,7 +96,10 @@ Section: Body
      in let pe-size = img-read-i32 payload 5
      in let cdx-size = img-read-i32 payload 9
      in let src-count = img-read-i32 payload 13
-     in let hdr-len = 17 + src-count * 15
+     in let dir-count = img-read-i32 payload 17
+     in let dtbl-off = 21
+     in let tbl-off = dtbl-off + dir-count * 15
+     in let hdr-len = tbl-off + src-count * 15
      in let payload-buf = __heap-save
      in let pa = __heap-advance (list-length payload)
      in let pw = __buf-write-bytes payload-buf 0 payload
@@ -110,7 +123,7 @@ Section: Body
       end
      else
       let lay = fat16w-compute-layout total-sectors
-      in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes src-count payload-buf 17 (hdr-len + pe-size + cdx-size)
+      in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes src-count payload-buf tbl-off (hdr-len + pe-size + cdx-size) dir-count dtbl-off
       in let restored = __heap-restore hp1
       in act
        sent <- send-buf-loop (recv.transport) img-buf 0 img-bytes 0

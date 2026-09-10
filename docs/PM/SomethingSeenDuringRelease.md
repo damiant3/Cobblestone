@@ -29,6 +29,25 @@ count does.
 
 ## Done
 
+### Update 58 -- preserve sampler rows and name the counter accurately
+
+The release sampler's retained file began with a sample instead of a header.
+`build.ps1` cleans `build-output` after the sampler writes its one header;
+the sampler then appends rows. The published CSV restores the declared
+column header and preserves all 686 retained rows, from 06:39:10 to 07:49:12
+PDT on 2026-09-10. No missing early samples were reconstructed.
+
+The column named `guests` counts VM-host processes, including run-list
+supervisors. The Update 58 note therefore reports the measured process
+counts and working sets, and leaves actual peak guest count unclaimed.
+The instrument repair belongs to `docs/Designs/Active/Build/Build.md`,
+"Open, unowned". Future release sampling must write outside cleaned output
+directories. Check the first line before parsing a profile:
+
+```powershell
+Get-Content docs/Agents/box-release-2026-09-10.csv -TotalCount 1
+```
+
 ### Update 56 -- the reconcile hid every EXACT-PATH ignore rule, and offered the withheld specs back
 
 Found at the pre-push reconcile, 2026-09-08, before the push rather than

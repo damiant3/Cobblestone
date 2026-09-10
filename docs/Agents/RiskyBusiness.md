@@ -11,58 +11,32 @@ abandoned (it stays, solidly saved, for whoever revisits it).
 This is a child of a development stream -- a grandchild of `//Codex/main`.
 Every existing dev stream (`reek`, `blu`, `val`, ...) branches directly off
 `main`; a sub-branch of one of those is new ground, which is why this routine
-exists. It was first cut on 2026-07-15 for the LIR selector experiment
-(`//Codex/reek-lir`, change 8237).
-
-**That first cut got it wrong, and the corrected routine is below.** Read the
-next section before you copy anything from an older version of this document.
+exists.
 
 ---
 
 ## Populate first. Everything else follows from that.
 
-The 2026-07-15 routine created the sub-stream and then `p4 add`ed the changed
-files straight into it. It looked like it worked: the files landed, the
-submits were real, the work was durably saved. It was still wrong, and the
-damage was invisible for a day.
-
 `p4 add` creates a file with **no integration record**. The sub-stream's
-copy of `X86_64State.codex` and the parent's copy are, as far as the server is
+copy of a file and the parent's copy are, as far as the server is
 concerned, two unrelated files that happen to share a name. There is **no
 common ancestor**, so every later integration between them is a two-way diff
-with no base. Diagnose it with `p4 filelog`:
+with no base: `p4 resolve -am` reports
+`0 yours + 0 theirs + N both + N conflicting` on every file, and `p4 sync`
+serves only the added files, never the parent's tree. Diagnose it with
+`p4 filelog`:
 
 ```
-... #1 change 8237 add on 2026/07/15      <- broken: no lineage
-... #1 change 8410 branch from //Codex/reek/...   <- correct
+... #1 change NNNN add on ...                     <- broken: no lineage
+... #1 change NNNN branch from //Codex/<a>/...    <- correct
 ```
-
-What that costs, measured on `//Codex/reek-lir` 2026-07-16:
-
-- **Merge-down is unusable.** `p4 resolve -am` reported
-  `0 yours + 0 theirs + N both + N conflicting` on every file --
-  `IR/Lir.codex` 77 chunks, 76 conflicting; `X86_64Chapter.codex` 26 of 26.
-  Those are not real conflicts. With no base, the merge cannot tell which
-  side changed a line, so it calls everything a conflict. The true divergence
-  on eight of those files was **one line**.
-- **Copy-up would be just as bad**, in the direction that matters most.
-- **`p4 sync` serves only the added files**, never the parent's tree, so the
-  sub-workspace cannot build -- which is what the old "untracked overlay"
-  workaround existed to paper over. It is not needed. It was treating a
-  symptom.
 
 The fix is one command, in the right order: **`p4 populate` the sub-stream
 from its parent before you put any work in it.** Populate branches the
-parent's files into the child with real lineage. It creates **lazy copies** --
-the depot does not duplicate content, so branching the parent's whole tree
-costs metadata, not storage. The old fear of "copying 11k files into the
-sub-stream" was a fear of a number in a status message.
-
-The old trap 1 claimed `p4 populate` refuses a sub-stream outright. It does
-not. It refuses a target that **already has files** -- which is exactly what
-step 3 had just done by adding them. Add-then-populate fails; populate-then-
-edit works. Verified 2026-07-16 on a throwaway task stream off `//Codex/reek`:
-`5946 files branched`, and `p4 sync` then served the full tree.
+parent's files into the child with real lineage as **lazy copies**: the depot
+does not duplicate content, so branching the parent's whole tree costs
+metadata, not storage. `p4 populate` refuses a target that **already has
+files**, so add-then-populate fails and populate-then-edit works.
 
 ---
 
@@ -114,9 +88,6 @@ $c | p4 client -i
 ```
 
 ### 3. Populate it from the parent -- BEFORE any work goes in
-
-This is the step the first cut skipped, and the only one that matters for
-everything downstream.
 
 ```powershell
 p4 populate -n -S //Codex/<a>-<topic> -r -d "populate from <a>"   # preview
@@ -195,9 +166,8 @@ recoverable, for whoever picks the thread back up.
 
 ## Repairing a sub-stream whose files were added, not branched
 
-`//Codex/reek-lir` is in this state as of 2026-07-16. There is no way to
-retrofit lineage onto an added file; the stream has to be rebuilt. The work
-itself is never at risk -- it is immutable in history.
+There is no way to retrofit lineage onto an added file; the stream has to be
+rebuilt. The work itself is never at risk -- it is immutable in history.
 
 1. Snapshot the tracked files: `p4 print -o <dst> //Codex/<a>-<topic>/<path>@<CL>`
    for each. (History alone is sufficient, but snapshot anyway.)
@@ -217,14 +187,11 @@ itself is never at risk -- it is immutable in history.
 
 ---
 
-## Traps (hit live, 2026-07-15 and 2026-07-16)
+## Traps
 
 1. **`p4 populate` refuses a target that already has files, not the stream
-   itself.** The 2026-07-15 note recorded this as "populate refuses inherit
-   streams" and moved on; that conclusion was wrong and cost the lineage. If
-   populate says "Can't populate target path when files already exist", the
-   answer is that something was added too early -- not that populate is
-   unavailable. Verified working 2026-07-16: `5946 files branched`.
+   itself.** If populate says "Can't populate target path when files already
+   exist", something was added too early -- populate is not unavailable.
 
 2. **Reverting an `add` leaves a stray on disk.** `p4 revert` on an
    opened-for-add file removes it from the CL but does not delete the file --

@@ -497,95 +497,445 @@ Section: __text_to_int
 
 Section: __text_to_double
 
- Ten to the power k is exact as a double for k up to 22, so accumulating it
- by repeated multiplication and dividing once is correctly rounded over the
- whole range a literal can usefully name. Beyond 22 the divisor is itself
- inexact, but that is still one rounding against k of them.
+ Correctly rounded decimal-to-binary64, one rounding. value = N * 10^(-f) is
+ computed as N / 5^f scaled by 2^(-f), by binary long division of a fixed
+ 256-bit magnitude: den = 5^f (four 64-bit words, little-endian), R = N, then
+ normalise to den <= R < 2*den, take the leading 1, and pull 53 more bits,
+ rounding to nearest with ties to even from the last bit and a sticky remainder.
+ Four words hold 5^f for every f a Real literal can carry (the front end refuses
+ a fraction wider than 108 digits, and 5^108 < 2^256). The magic constants are
+ 2^54, 2^53, 2^52, and the IEEE bias 1075 = 52 + 1023.
 
- The numerator is a separate and untouched limit: `cvtsi2sd` of the digit
- integer is exact only below 2^53, so a literal carrying more than about
- sixteen significant digits loses precision before the scaling ever runs.
+ __ttd_shl1 (rdi = 4-word buffer): shift left by one bit across the words.
 
-  emit-text-to-double-setup : CodegenState -> HelpResult1
-  emit-text-to-double-setup (st) =
+  emit-ttd-shl1 : CodegenState -> CodegenState
+  emit-ttd-shl1 (st) =
+    let st0 = record-func-offset st "__ttd_shl1"
+   in let a0 = st-append-code st0 (mov-load reg-rax reg-rdi 0)
+   in let a1 = st-append-code a0 (mov-rr reg-rcx reg-rax)
+   in let a2 = st-append-code a1 (shr-ri reg-rcx 63)
+   in let a3 = st-append-code a2 (shl-ri reg-rax 1)
+   in let a4 = st-append-code a3 (mov-store reg-rdi reg-rax 0)
+   in let b0 = st-append-code a4 (mov-load reg-rax reg-rdi 8)
+   in let b1 = st-append-code b0 (mov-rr reg-rdx reg-rax)
+   in let b2 = st-append-code b1 (shr-ri reg-rdx 63)
+   in let b3 = st-append-code b2 (shl-ri reg-rax 1)
+   in let b4 = st-append-code b3 (or-rr reg-rax reg-rcx)
+   in let b5 = st-append-code b4 (mov-store reg-rdi reg-rax 8)
+   in let b6 = st-append-code b5 (mov-rr reg-rcx reg-rdx)
+   in let c0 = st-append-code b6 (mov-load reg-rax reg-rdi 16)
+   in let c1 = st-append-code c0 (mov-rr reg-rdx reg-rax)
+   in let c2 = st-append-code c1 (shr-ri reg-rdx 63)
+   in let c3 = st-append-code c2 (shl-ri reg-rax 1)
+   in let c4 = st-append-code c3 (or-rr reg-rax reg-rcx)
+   in let c5 = st-append-code c4 (mov-store reg-rdi reg-rax 16)
+   in let c6 = st-append-code c5 (mov-rr reg-rcx reg-rdx)
+   in let d0 = st-append-code c6 (mov-load reg-rax reg-rdi 24)
+   in let d1 = st-append-code d0 (shl-ri reg-rax 1)
+   in let d2 = st-append-code d1 (or-rr reg-rax reg-rcx)
+   in let d3 = st-append-code d2 (mov-store reg-rdi reg-rax 24)
+   in st-append-code d3 x86-ret
+
+ __ttd_cmp_ge (rdi = a, rsi = b): rax = 1 if a >= b else 0, unsigned, 4 words
+ from the most significant down.
+
+  emit-ttd-cmpge-word : CodegenState, Integer -> CmpWordResult
+  emit-ttd-cmpge-word (st) (off) =
+    let a0 = st-append-code st (mov-load reg-rax reg-rdi off)
+   in let a1 = st-append-code a0 (mov-load reg-rcx reg-rsi off)
+   in let a2 = st-append-code a1 (cmp-rr reg-rax reg-rcx)
+   in let ge-pos = a2.code-len
+   in let a3 = st-append-code a2 (jcc cc-a 0)
+   in let lt-pos = a3.code-len
+   in let a4 = st-append-code a3 (jcc cc-b 0)
+   in CmpWordResult { cg = a4, ge = ge-pos, lt = lt-pos }
+
+  emit-ttd-cmp-ge : CodegenState -> CodegenState
+  emit-ttd-cmp-ge (st) =
+    let st0 = record-func-offset st "__ttd_cmp_ge"
+   in let w3 = emit-ttd-cmpge-word st0 24
+   in let w2 = emit-ttd-cmpge-word (w3.cg) 16
+   in let w1 = emit-ttd-cmpge-word (w2.cg) 8
+   in let e0 = st-append-code (w1.cg) (mov-load reg-rax reg-rdi 0)
+   in let e1 = st-append-code e0 (mov-load reg-rcx reg-rsi 0)
+   in let e2 = st-append-code e1 (cmp-rr reg-rax reg-rcx)
+   in let lt0-pos = e2.code-len
+   in let e3 = st-append-code e2 (jcc cc-b 0)
+   in let ge-pos = e3.code-len
+   in let e4 = st-append-code e3 (li reg-rax 1)
+   in let e5 = st-append-code e4 x86-ret
+   in let lt-pos = e5.code-len
+   in let e6 = st-append-code e5 (li reg-rax 0)
+   in let e7 = st-append-code e6 x86-ret
+   in let p1 = patch-jcc-at e7 (w3.ge) ge-pos
+   in let p2 = patch-jcc-at p1 (w3.lt) lt-pos
+   in let p3 = patch-jcc-at p2 (w2.ge) ge-pos
+   in let p4 = patch-jcc-at p3 (w2.lt) lt-pos
+   in let p5 = patch-jcc-at p4 (w1.ge) ge-pos
+   in let p6 = patch-jcc-at p5 (w1.lt) lt-pos
+   in patch-jcc-at p6 lt0-pos lt-pos
+
+ __ttd_sub (rdi = a, rsi = b): a -= b, assuming a >= b. Borrow in rcx.
+
+  emit-ttd-sub-word : CodegenState, Integer, Boolean -> CodegenState
+  emit-ttd-sub-word (st) (off) (top) =
+    let a0 = st-append-code st (mov-load reg-rax reg-rdi off)
+   in let a1 = st-append-code a0 (mov-load reg-rdx reg-rsi off)
+   in let a2 = st-append-code a1 (sub-rr reg-rax reg-rdx)
+   in if top
+      then let t0 = st-append-code a2 (sub-rr reg-rax reg-rcx)
+        in st-append-code t0 (mov-store reg-rdi reg-rax off)
+      else let a3 = st-append-code a2 (li reg-r8 0)
+        in let a4 = st-append-code a3 (setcc cc-b reg-r8)
+        in let a5 = st-append-code a4 (sub-rr reg-rax reg-rcx)
+        in let a6 = st-append-code a5 (li reg-r9 0)
+        in let a7 = st-append-code a6 (setcc cc-b reg-r9)
+        in let a8 = st-append-code a7 (mov-store reg-rdi reg-rax off)
+        in let a9 = st-append-code a8 (mov-rr reg-rcx reg-r8)
+        in st-append-code a9 (add-rr reg-rcx reg-r9)
+
+  emit-ttd-sub : CodegenState -> CodegenState
+  emit-ttd-sub (st) =
+    let st0 = record-func-offset st "__ttd_sub"
+   in let s0 = st-append-code st0 (li reg-rcx 0)
+   in let s1 = emit-ttd-sub-word s0 0 False
+   in let s2 = emit-ttd-sub-word s1 8 False
+   in let s3 = emit-ttd-sub-word s2 16 False
+   in let s4 = emit-ttd-sub-word s3 24 True
+   in st-append-code s4 x86-ret
+
+ __ttd_mul5 (rdi = buffer): buffer *= 5. carry in r8; per word s = (x<<2)+x+carry,
+ high part accumulated from the top two bits of x plus the two add-carries.
+
+  emit-ttd-mul5-word : CodegenState, Integer -> CodegenState
+  emit-ttd-mul5-word (st) (off) =
+    let a0 = st-append-code st (mov-load reg-rax reg-rdi off)
+   in let a1 = st-append-code a0 (mov-rr reg-rdx reg-rax)
+   in let a2 = st-append-code a1 (shr-ri reg-rdx 62)
+   in let a3 = st-append-code a2 (mov-rr reg-r9 reg-rax)
+   in let a4 = st-append-code a3 (shl-ri reg-r9 2)
+   in let a5 = st-append-code a4 (add-rr reg-r9 reg-rax)
+   in let a6 = st-append-code a5 (li reg-r10 0)
+   in let a7 = st-append-code a6 (setcc cc-b reg-r10)
+   in let a8 = st-append-code a7 (add-rr reg-rdx reg-r10)
+   in let a9 = st-append-code a8 (add-rr reg-r9 reg-r8)
+   in let b0 = st-append-code a9 (li reg-r10 0)
+   in let b1 = st-append-code b0 (setcc cc-b reg-r10)
+   in let b2 = st-append-code b1 (add-rr reg-rdx reg-r10)
+   in let b3 = st-append-code b2 (mov-store reg-rdi reg-r9 off)
+   in st-append-code b3 (mov-rr reg-r8 reg-rdx)
+
+  emit-ttd-mul5 : CodegenState -> CodegenState
+  emit-ttd-mul5 (st) =
+    let st0 = record-func-offset st "__ttd_mul5"
+   in let m0 = st-append-code st0 (li reg-r8 0)
+   in let m1 = emit-ttd-mul5-word m0 0
+   in let m2 = emit-ttd-mul5-word m1 8
+   in let m3 = emit-ttd-mul5-word m2 16
+   in let m4 = emit-ttd-mul5-word m3 24
+   in st-append-code m4 x86-ret
+
+ The main entry. rdi = text object (length at [rdi], bytes at [rdi+8]); returns
+ the f64 bits in rax. rbx is the frame base (rbp is reserved by the runtime and
+ must not be touched, so this helper uses rbx like the other text helpers). R10
+ carries the heap frontier across the call and no caller saves it, so the
+ prologue pushes r10 and the epilogue restores it; the frame is 120 rather than
+ 112 to keep rsp 16-aligned across that sixth push. From
+ rbx: den at 0, R at 32, tmp at 64, neg at 96, the bit counter at 104. r12 = exp,
+ r13 = f, r14 = acc.
+
+  emit-ttd-prologue : CodegenState -> CodegenState
+  emit-ttd-prologue (st) =
     let st0 = record-func-offset st "__text_to_double"
-   in let st1 = st-append-code st0 (mov-load reg-rcx reg-rdi 0)
-   in let st2 = st-append-code st1 (lea reg-rdi reg-rdi 8)
-   in let st3 = st-append-code st2 (li reg-rax 0)
-   in let st4 = st-append-code st3 (li reg-r11 0)
-   in let st5 = st-append-code st4 (li reg-rsi 0)
-   in let st6 = st-append-code st5 (li reg-r8 0)
-   in let st7 = st-append-code st6 (li reg-r9 0)
-   in let st8 = st-append-code st7 (test-rr reg-rcx reg-rcx)
-   in let empty-pos = st8.code-len
-   in let st9 = st-append-code st8 (jcc cc-e 0)
-   in let st10 = st-append-code st9 (movzx-byte reg-rdx reg-rdi 0)
-   in let st11 = st-append-code st10 (cmp-ri reg-rdx 73)
-   in let not-minus-pos = st11.code-len
-   in let st12 = st-append-code st11 (jcc cc-ne 0)
-   in let st13 = st-append-code st12 (li reg-rsi 1)
-   in let st14 = st-append-code st13 (add-ri reg-r11 1)
-   in let st15 = patch-jcc-at st14 not-minus-pos (st14.code-len)
-   in HelpResult1 {
-    cg = st15,
-    p1 = empty-pos
-   }
+   in let a2 = st-append-code st0 (push-r reg-rbx)
+   in let a3 = st-append-code a2 (push-r reg-r12)
+   in let a4 = st-append-code a3 (push-r reg-r13)
+   in let a5 = st-append-code a4 (push-r reg-r14)
+   in let a6 = st-append-code a5 (push-r reg-r15)
+   in let a6b = st-append-code a6 (push-r reg-r10)
+   in let a7 = st-append-code a6b (sub-ri reg-rsp 120)
+   in st-append-code a7 (mov-rr reg-rbx reg-rsp)
 
-  emit-text-to-double-parse : CodegenState -> CodegenState
-  emit-text-to-double-parse (st) =
-    let parse-loop = st.code-len
-   in let st0 = st-append-code st (cmp-rr reg-r11 reg-rcx)
-   in let parse-done-pos = st0.code-len
-   in let st1 = st-append-code st0 (jcc cc-ge 0)
-   in let st2 = st-append-code st1 (mov-rr reg-rdx reg-rdi)
-   in let st3 = st-append-code st2 (add-rr reg-rdx reg-r11)
-   in let st4 = st-append-code st3 (movzx-byte reg-rdx reg-rdx 0)
-   in let st5 = st-append-code st4 (cmp-ri reg-rdx 65)
-   in let not-dot-pos = st5.code-len
-   in let st6 = st-append-code st5 (jcc cc-ne 0)
-   in let st7 = st-append-code st6 (li reg-r9 1)
-   in let st8 = st-append-code st7 (add-ri reg-r11 1)
-   in let st9 = st-append-code st8 (jmp (parse-loop - (st8.code-len + 5)))
-   in let st10 = patch-jcc-at st9 not-dot-pos (st9.code-len)
-   in let st11 = st-append-code st10 (sub-ri reg-rdx 3)
-   in let st12 = st-append-code st11 (push-r reg-rdx)
-   in let st13 = st-append-code st12 (mov-rr reg-rdx reg-rax)
-   in let st14 = st-append-code st13 (shl-ri reg-rax 3)
-   in let st15 = st-append-code st14 (add-rr reg-rax reg-rdx)
-   in let st16 = st-append-code st15 (add-rr reg-rax reg-rdx)
-   in let st17 = st-append-code st16 (pop-r reg-rdx)
-   in let st18 = st-append-code st17 (add-rr reg-rax reg-rdx)
-   in let st19 = st-append-code st18 (add-rr reg-r8 reg-r9)
-   in let st20 = st-append-code st19 (add-ri reg-r11 1)
-   in let st21 = st-append-code st20 (jmp (parse-loop - (st20.code-len + 5)))
-   in patch-jcc-at st21 parse-done-pos (st21.code-len)
+  emit-ttd-epilogue : CodegenState -> CodegenState
+  emit-ttd-epilogue (st) =
+    let a0 = st-append-code st (add-ri reg-rsp 120)
+   in let a0b = st-append-code a0 (pop-r reg-r10)
+   in let a1 = st-append-code a0b (pop-r reg-r15)
+   in let a2 = st-append-code a1 (pop-r reg-r14)
+   in let a3 = st-append-code a2 (pop-r reg-r13)
+   in let a4 = st-append-code a3 (pop-r reg-r12)
+   in let a5 = st-append-code a4 (pop-r reg-rbx)
+   in st-append-code a5 x86-ret
+
+ Parse: rax = N (unsigned), r13 = fraction count, r10 = negative flag.
+
+  emit-ttd-parse2 : CodegenState -> ParseResult2
+  emit-ttd-parse2 (st) =
+    let a0 = st-append-code st (mov-load reg-rcx reg-rdi 0)
+   in let a1 = st-append-code a0 (lea reg-rsi reg-rdi 8)
+   in let a2 = st-append-code a1 (li reg-rax 0)
+   in let a3 = st-append-code a2 (li reg-r13 0)
+   in let a4 = st-append-code a3 (li reg-r10 0)
+   in let a5 = st-append-code a4 (li reg-r9 0)
+   in let a6 = st-append-code a5 (li reg-r11 0)
+   in let a7 = st-append-code a6 (test-rr reg-rcx reg-rcx)
+   in let empty-pos = a7.code-len
+   in let a8 = st-append-code a7 (jcc cc-e 0)
+   in let a9 = st-append-code a8 (lea-rr reg-rdx reg-rsi reg-r11)
+   in let b0 = st-append-code a9 (movzx-byte reg-rdx reg-rdx 0)
+   in let b1 = st-append-code b0 (cmp-ri reg-rdx 73)
+   in let notminus-pos = b1.code-len
+   in let b2 = st-append-code b1 (jcc cc-ne 0)
+   in let b3 = st-append-code b2 (li reg-r10 1)
+   in let b4 = st-append-code b3 (add-ri reg-r11 1)
+   in let b5 = patch-jcc-at b4 notminus-pos (b4.code-len)
+   in let ploop = b5.code-len
+   in let c0 = st-append-code b5 (cmp-rr reg-r11 reg-rcx)
+   in let pdone-pos = c0.code-len
+   in let c1 = st-append-code c0 (jcc cc-ge 0)
+   in let c2 = st-append-code c1 (lea-rr reg-rdx reg-rsi reg-r11)
+   in let c3 = st-append-code c2 (movzx-byte reg-rdx reg-rdx 0)
+   in let c4 = st-append-code c3 (cmp-ri reg-rdx 65)
+   in let notdot-pos = c4.code-len
+   in let c5 = st-append-code c4 (jcc cc-ne 0)
+   in let c6 = st-append-code c5 (li reg-r9 1)
+   in let c7 = st-append-code c6 (add-ri reg-r11 1)
+   in let c8 = st-append-code c7 (jmp (ploop - (c7.code-len + 5)))
+   in let c9 = patch-jcc-at c8 notdot-pos (c8.code-len)
+   in let d0 = st-append-code c9 (sub-ri reg-rdx 3)
+   in let d1 = st-append-code d0 (imul-rri reg-rax reg-rax 10)
+   in let d2 = st-append-code d1 (add-rr reg-rax reg-rdx)
+   in let d3 = st-append-code d2 (add-rr reg-r13 reg-r9)
+   in let d4 = st-append-code d3 (add-ri reg-r11 1)
+   in let d5 = st-append-code d4 (jmp (ploop - (d4.code-len + 5)))
+   in let d6 = patch-jcc-at d5 pdone-pos (d5.code-len)
+   in ParseResult2 { cg = d6, empty = empty-pos }
+
+ Zero result: rax = 0, or the sign bit if negative (r10). Shared by the empty
+ string and the N == 0 case.
+
+  emit-ttd-zero-ret : CodegenState -> CodegenState
+  emit-ttd-zero-ret (st) =
+    let a0 = st-append-code st (li reg-rax 0)
+   in let a1 = st-append-code a0 (test-rr reg-r10 reg-r10)
+   in let pos-pos = a1.code-len
+   in let a2 = st-append-code a1 (jcc cc-e 0)
+   in let a3 = st-append-code a2 (li reg-r9 1)
+   in let a4 = st-append-code a3 (shl-ri reg-r9 63)
+   in let a5 = st-append-code a4 (or-rr reg-rax reg-r9)
+   in let a6 = patch-jcc-at a5 pos-pos (a5.code-len)
+   in emit-ttd-epilogue a6
+
+ Initialise den = {1,0,0,0} at rbx, R = {N,0,0,0} at rbx+32; neg at rbx+96.
+
+  emit-ttd-init-bufs : CodegenState -> CodegenState
+  emit-ttd-init-bufs (st) =
+    let a0 = st-append-code st (mov-store reg-rbx reg-r10 96)
+   in let a3 = st-append-code a0 (li reg-rcx 1)
+   in let a4 = st-append-code a3 (mov-store reg-rbx reg-rcx 0)
+   in let a5 = st-append-code a4 (li reg-rcx 0)
+   in let a6 = st-append-code a5 (mov-store reg-rbx reg-rcx 8)
+   in let a7 = st-append-code a6 (mov-store reg-rbx reg-rcx 16)
+   in let a8 = st-append-code a7 (mov-store reg-rbx reg-rcx 24)
+   in let a9 = st-append-code a8 (mov-store reg-rbx reg-rax 32)
+   in let b0 = st-append-code a9 (mov-store reg-rbx reg-rcx 40)
+   in let b1 = st-append-code b0 (mov-store reg-rbx reg-rcx 48)
+   in st-append-code b1 (mov-store reg-rbx reg-rcx 56)
+
+ den = 5^f, then exp = 0.
+
+  emit-ttd-pow5 : CodegenState -> CodegenState
+  emit-ttd-pow5 (st) =
+    let a0 = st-append-code st (mov-rr reg-r15 reg-r13)
+   in let ploop = a0.code-len
+   in let a1 = st-append-code a0 (test-rr reg-r15 reg-r15)
+   in let done-pos = a1.code-len
+   in let a2 = st-append-code a1 (jcc cc-e 0)
+   in let a3 = st-append-code a2 (lea reg-rdi reg-rbx 0)
+   in let a4 = emit-call-to a3 "__ttd_mul5"
+   in let a5 = st-append-code a4 (sub-ri reg-r15 1)
+   in let a6 = st-append-code a5 (jmp (ploop - (a5.code-len + 5)))
+   in let a7 = patch-jcc-at a6 done-pos (a6.code-len)
+   in st-append-code a7 (li reg-r12 0)
+
+ Copy den into tmp (rbp-32), for the 2*den test in the big-normalise loop.
+
+  emit-ttd-copy-den-tmp : CodegenState -> CodegenState
+  emit-ttd-copy-den-tmp (st) =
+    let a0 = st-append-code st (mov-load reg-rax reg-rbx 0)
+   in let a1 = st-append-code a0 (mov-store reg-rbx reg-rax 64)
+   in let a2 = st-append-code a1 (mov-load reg-rax reg-rbx 8)
+   in let a3 = st-append-code a2 (mov-store reg-rbx reg-rax 72)
+   in let a4 = st-append-code a3 (mov-load reg-rax reg-rbx 16)
+   in let a5 = st-append-code a4 (mov-store reg-rbx reg-rax 80)
+   in let a6 = st-append-code a5 (mov-load reg-rax reg-rbx 24)
+   in st-append-code a6 (mov-store reg-rbx reg-rax 88)
+
+  emit-ttd-copy-tmp-den : CodegenState -> CodegenState
+  emit-ttd-copy-tmp-den (st) =
+    let a0 = st-append-code st (mov-load reg-rax reg-rbx 64)
+   in let a1 = st-append-code a0 (mov-store reg-rbx reg-rax 0)
+   in let a2 = st-append-code a1 (mov-load reg-rax reg-rbx 72)
+   in let a3 = st-append-code a2 (mov-store reg-rbx reg-rax 8)
+   in let a4 = st-append-code a3 (mov-load reg-rax reg-rbx 80)
+   in let a5 = st-append-code a4 (mov-store reg-rbx reg-rax 16)
+   in let a6 = st-append-code a5 (mov-load reg-rax reg-rbx 88)
+   in st-append-code a6 (mov-store reg-rbx reg-rax 24)
+
+ Normalise so that den <= R < 2*den, tracking exp (r12).
+
+  emit-ttd-normalise2 : CodegenState -> CodegenState
+  emit-ttd-normalise2 (st) =
+    let a0 = st-append-code st (lea reg-rdi reg-rbx 32)
+   in let a1 = st-append-code a0 (lea reg-rsi reg-rbx 0)
+   in let a2 = emit-call-to a1 "__ttd_cmp_ge"
+   in let a3 = st-append-code a2 (test-rr reg-rax reg-rax)
+   in let small-pos = a3.code-len
+   in let a4 = st-append-code a3 (jcc cc-e 0)
+   in let bigloop = a4.code-len
+   in let b0 = emit-ttd-copy-den-tmp a4
+   in let b1 = st-append-code b0 (lea reg-rdi reg-rbx 64)
+   in let b2 = emit-call-to b1 "__ttd_shl1"
+   in let b3 = st-append-code b2 (lea reg-rdi reg-rbx 32)
+   in let b4 = st-append-code b3 (lea reg-rsi reg-rbx 64)
+   in let b5 = emit-call-to b4 "__ttd_cmp_ge"
+   in let b6 = st-append-code b5 (test-rr reg-rax reg-rax)
+   in let normdone-pos = b6.code-len
+   in let b7 = st-append-code b6 (jcc cc-e 0)
+   in let b8 = emit-ttd-copy-tmp-den b7
+   in let b9 = st-append-code b8 (add-ri reg-r12 1)
+   in let c0 = st-append-code b9 (jmp (bigloop - (b9.code-len + 5)))
+   in let smallloop = c0.code-len
+   in let c1 = st-append-code c0 (lea reg-rdi reg-rbx 32)
+   in let c2 = st-append-code c1 (lea reg-rsi reg-rbx 0)
+   in let c3 = emit-call-to c2 "__ttd_cmp_ge"
+   in let c4 = st-append-code c3 (test-rr reg-rax reg-rax)
+   in let smalldone-pos = c4.code-len
+   in let c5 = st-append-code c4 (jcc cc-ne 0)
+   in let c6 = st-append-code c5 (lea reg-rdi reg-rbx 32)
+   in let c7 = emit-call-to c6 "__ttd_shl1"
+   in let c8 = st-append-code c7 (sub-ri reg-r12 1)
+   in let c9 = st-append-code c8 (jmp (smallloop - (c8.code-len + 5)))
+   in let normdone = c9.code-len
+   in let p1 = patch-jcc-at c9 small-pos smallloop
+   in let p2 = patch-jcc-at p1 normdone-pos normdone
+   in patch-jcc-at p2 smalldone-pos normdone
+
+ The bit loop: acc = 1 (r14); R -= den; then pull 53 bits. Counter at rbx+104.
+
+  emit-ttd-bitloop : CodegenState -> CodegenState
+  emit-ttd-bitloop (st) =
+    let a0 = st-append-code st (li reg-r14 1)
+   in let a1 = st-append-code a0 (lea reg-rdi reg-rbx 32)
+   in let a2 = st-append-code a1 (lea reg-rsi reg-rbx 0)
+   in let a3 = emit-call-to a2 "__ttd_sub"
+   in let a4 = st-append-code a3 (li reg-rcx 53)
+   in let a5 = st-append-code a4 (mov-store reg-rbx reg-rcx 104)
+   in let bitloop = a5.code-len
+   in let b0 = st-append-code a5 (lea reg-rdi reg-rbx 32)
+   in let b1 = emit-call-to b0 "__ttd_shl1"
+   in let b2 = st-append-code b1 (lea reg-rdi reg-rbx 32)
+   in let b3 = st-append-code b2 (lea reg-rsi reg-rbx 0)
+   in let b4 = emit-call-to b3 "__ttd_cmp_ge"
+   in let b5 = st-append-code b4 (test-rr reg-rax reg-rax)
+   in let bit0-pos = b5.code-len
+   in let b6 = st-append-code b5 (jcc cc-e 0)
+   in let b7 = st-append-code b6 (lea reg-rdi reg-rbx 32)
+   in let b8 = st-append-code b7 (lea reg-rsi reg-rbx 0)
+   in let b9 = emit-call-to b8 "__ttd_sub"
+   in let c0 = st-append-code b9 (shl-ri reg-r14 1)
+   in let c1 = st-append-code c0 (or-ri reg-r14 1)
+   in let bitnext-pos = c1.code-len
+   in let c2 = st-append-code c1 (jmp 0)
+   in let bit0 = c2.code-len
+   in let c3 = patch-jcc-at c2 bit0-pos bit0
+   in let c4 = st-append-code c3 (shl-ri reg-r14 1)
+   in let bitnext = c4.code-len
+   in let c5 = st-append-code c4 (mov-load reg-rcx reg-rbx 104)
+   in let c6 = st-append-code c5 (sub-ri reg-rcx 1)
+   in let c7 = st-append-code c6 (mov-store reg-rbx reg-rcx 104)
+   in let c8 = st-append-code c7 (test-rr reg-rcx reg-rcx)
+   in let c9 = st-append-code c8 (jcc cc-ne (bitloop - (c8.code-len + 6)))
+   in let d0 = patch-jmp-at c9 bitnext-pos bitnext
+   in d0
+
+ Sticky (r8 nonzero if R != 0), round half-even, assemble the normal bits.
+
+  emit-ttd-finish : CodegenState -> CodegenState
+  emit-ttd-finish (st) =
+    let a0 = st-append-code st (mov-load reg-r8 reg-rbx 32)
+   in let a1 = st-append-code a0 (mov-load reg-rax reg-rbx 40)
+   in let a2 = st-append-code a1 (or-rr reg-r8 reg-rax)
+   in let a3 = st-append-code a2 (mov-load reg-rax reg-rbx 48)
+   in let a4 = st-append-code a3 (or-rr reg-r8 reg-rax)
+   in let a5 = st-append-code a4 (mov-load reg-rax reg-rbx 56)
+   in let a6 = st-append-code a5 (or-rr reg-r8 reg-rax)
+   in let a7 = st-append-code a6 (mov-rr reg-rcx reg-r14)
+   in let a8 = st-append-code a7 (and-ri reg-rcx 1)
+   in let a9 = st-append-code a8 (mov-rr reg-rax reg-r14)
+   in let b0 = st-append-code a9 (shr-ri reg-rax 1)
+   in let b1 = st-append-code b0 (mov-rr reg-rdx reg-r12)
+   in let b2 = st-append-code b1 (sub-ri reg-rdx 52)
+   in let b3 = st-append-code b2 (sub-rr reg-rdx reg-r13)
+   in let b4 = st-append-code b3 (test-rr reg-rcx reg-rcx)
+   in let noround-pos = b4.code-len
+   in let b5 = st-append-code b4 (jcc cc-e 0)
+   in let b6 = st-append-code b5 (test-rr reg-r8 reg-r8)
+   in let doround-pos = b6.code-len
+   in let b7 = st-append-code b6 (jcc cc-ne 0)
+   in let b8 = st-append-code b7 (test-ri reg-rax 1)
+   in let noround2-pos = b8.code-len
+   in let b9 = st-append-code b8 (jcc cc-e 0)
+   in let doround = b9.code-len
+   in let c0 = st-append-code b9 (add-ri reg-rax 1)
+   in let c1 = st-append-code c0 (li reg-r9 9007199254740992)
+   in let c2 = st-append-code c1 (cmp-rr reg-rax reg-r9)
+   in let nocarry-pos = c2.code-len
+   in let c3 = st-append-code c2 (jcc cc-ne 0)
+   in let c4 = st-append-code c3 (shr-ri reg-rax 1)
+   in let c5 = st-append-code c4 (add-ri reg-rdx 1)
+   in let noround = c5.code-len
+   in let d0 = st-append-code c5 (add-ri reg-rdx 1075)
+   in let d1 = st-append-code d0 (li reg-r9 4503599627370496)
+   in let d2 = st-append-code d1 (sub-rr reg-rax reg-r9)
+   in let d3 = st-append-code d2 (shl-ri reg-rdx 52)
+   in let d4 = st-append-code d3 (or-rr reg-rax reg-rdx)
+   in let d5 = st-append-code d4 (mov-load reg-r10 reg-rbx 96)
+   in let d6 = st-append-code d5 (test-rr reg-r10 reg-r10)
+   in let fin-pos = d6.code-len
+   in let d7 = st-append-code d6 (jcc cc-e 0)
+   in let d8 = st-append-code d7 (li reg-r9 1)
+   in let d9 = st-append-code d8 (shl-ri reg-r9 63)
+   in let e0 = st-append-code d9 (or-rr reg-rax reg-r9)
+   in let fin = e0.code-len
+   in let p1 = patch-jcc-at e0 noround-pos noround
+   in let p2 = patch-jcc-at p1 doround-pos doround
+   in let p3 = patch-jcc-at p2 noround2-pos noround
+   in let p4 = patch-jcc-at p3 nocarry-pos noround
+   in let p5 = patch-jcc-at p4 fin-pos fin
+   in emit-ttd-epilogue p5
 
   emit-text-to-double : CodegenState -> CodegenState
   emit-text-to-double (st) =
-    let setup = emit-text-to-double-setup st
-   in let st0 = emit-text-to-double-parse (setup.cg)
-   in let st1 = st-append-code st0 (test-rr reg-rsi reg-rsi)
-   in let no-neg-pos = st1.code-len
-   in let st2 = st-append-code st1 (jcc cc-e 0)
-   in let st3 = st-append-code st2 (neg-r reg-rax)
-   in let st4 = patch-jcc-at st3 no-neg-pos (st3.code-len)
-   in let st5 = st-append-code st4 (cvtsi2sd 0 reg-rax)
-   in let st6 = st-append-code st5 (test-rr reg-r8 reg-r8)
-   in let no-div-pos = st6.code-len
-   in let st7 = st-append-code st6 (jcc cc-e 0)
-   in let st8 = st-append-code st7 (li reg-rdx 4621819117588971520)
-   in let st9 = st-append-code st8 (movq-to-xmm 2 reg-rdx)
-   in let st9a = st-append-code st9 (li reg-rdx 4607182418800017408)
-   in let st9b = st-append-code st9a (movq-to-xmm 1 reg-rdx)
-   in let pow-loop = st9b.code-len
-   in let st10 = st-append-code st9b (mulsd-xmm 1 2)
-   in let st11 = st-append-code st10 (sub-ri reg-r8 1)
-   in let st12 = st-append-code st11 (jcc cc-ne (pow-loop - (st11.code-len + 6)))
-   in let st12a = st-append-code st12 (divsd-xmm 0 1)
-   in let st13 = patch-jcc-at st12a no-div-pos (st12a.code-len)
-   in let st14 = st-append-code st13 (movq-from-xmm reg-rax 0)
-   in let st15 = patch-jcc-at st14 (setup.p1) (st14.code-len)
-   in st-append-code st15 x86-ret
+    let s0 = emit-ttd-shl1 st
+   in let s1 = emit-ttd-cmp-ge s0
+   in let s2 = emit-ttd-sub s1
+   in let s3 = emit-ttd-mul5 s2
+   in let st0 = emit-ttd-prologue s3
+   in let pr = emit-ttd-parse2 st0
+   in let z0 = st-append-code (pr.cg) (test-rr reg-rax reg-rax)
+   in let nz-pos = z0.code-len
+   in let z1 = st-append-code z0 (jcc cc-ne 0)
+   in let zeroret-pos = z1.code-len
+   in let z2 = emit-ttd-zero-ret z1
+   in let nz = z2.code-len
+   in let m0 = emit-ttd-init-bufs z2
+   in let m1 = emit-ttd-pow5 m0
+   in let m2 = emit-ttd-normalise2 m1
+   in let m3 = emit-ttd-bitloop m2
+   in let m4 = emit-ttd-finish m3
+   in let p1 = patch-jcc-at m4 (pr.empty) zeroret-pos
+   in patch-jcc-at p1 nz-pos nz
 
 Section: __real_to_text
   emit-number-to-text-setup : CodegenState -> HelpResult2

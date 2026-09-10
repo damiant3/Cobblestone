@@ -77,6 +77,25 @@ Section: Arity Map
 
 Section: Expression Emission
 
+ A TYPE ASSERTION REQUIRES AN INTERFACE OPERAND, so `0.(int)` is not valid Go.
+ Every value in an emitted program is `interface{}` EXCEPT a literal, which is
+ emitted as an untyped constant and reaches an `int`, a `float64` or a
+ `string` parameter by Go's own conversion at the call. So an operand is
+ asserted only when it is not already concrete.
+
+  go-is-concrete : IRExpr -> Boolean
+  go-is-concrete (e) =
+   when e
+    is IrIntLit (n) (sp) -> True
+    is IrNumLit (n) (sp) -> True
+    is IrTextLit (s) (sp) -> True
+    is IrBoolLit (b) (sp) -> True
+    is IrCharLit (n) (sp) -> True
+    is otherwise -> False
+
+  go-operand : IRExpr, Text, Text -> Text
+  go-operand (e) (t) (goTy) = if go-is-concrete e then t else t & ".(" & goTy & ")"
+
   emit-go-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-go-expr (e) (arities) (indent) =
    when e
@@ -88,7 +107,7 @@ Section: Expression Emission
     is IrName (n) (ty) (sp) -> go-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-go-binary op l r ty arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-go-expr x arities indent & "))"
-    is IrIf (c) (t) (el) (ty) (sp) -> "func() interface{} { if " & emit-go-expr c arities indent & ".(bool) { return " & emit-go-expr t arities indent & " }; return " & emit-go-expr el arities indent & " }()"
+    is IrIf (c) (t) (el) (ty) (sp) -> "func() interface{} { if " & (go-operand c (emit-go-expr c arities indent) "bool") & " { return " & emit-go-expr t arities indent & " }; return " & emit-go-expr el arities indent & " }()"
     is IrLet (name) (ty) (val) (body) (sp) -> "func() interface{} { " & go-sanitize name & " := " & emit-go-expr val arities indent & "; return " & emit-go-expr body arities indent & " }()"
     is IrApply (f) (a) (ty) (sp) -> emit-go-apply e arities indent
     is IrLambda (params) (body) (ty) (sp) -> "func(" & emit-go-lambda-params params 0 & ") interface{} { return " & emit-go-expr body arities indent & " }"
@@ -107,9 +126,12 @@ Section: Expression Emission
 
 Section: Binary Operators
 
+ `go-vec-ewise` takes operands that are ALREADY asserted, because it is handed
+ emitted text and cannot see the node, so it cannot tell a literal from a name.
+
   go-vec-ewise : Text, Text, Text -> Text
   go-vec-ewise (lhs) (rhs) (opsym) =
-   "func() interface{} { _l := " & lhs & ".([]interface{}); _r := " & rhs & ".([]interface{}); _v := make([]interface{}, len(_l)); for _i := range _l { _v[_i] = _l[_i].(float64) " & opsym & " _r[_i].(float64) }; return _v }()"
+   "func() interface{} { _l := " & lhs & "; _r := " & rhs & "; _v := make([]interface{}, len(_l)); for _i := range _l { _v[_i] = _l[_i].(float64) " & opsym & " _r[_i].(float64) }; return _v }()"
 
   emit-go-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
   emit-go-binary (op) (l) (r) (ty) (arities) (indent) =
@@ -117,38 +139,38 @@ Section: Binary Operators
    in let rhs = emit-go-expr r arities indent
    in when op
     is IrAddInt ->
-     if int-ty-wraps ty then "(" & lhs & ".(int) + " & rhs & ".(int))"
-     else "_cx_add_trap(" & lhs & ".(int), " & rhs & ".(int))"
+     if int-ty-wraps ty then "(" & (go-operand l lhs "int") & " + " & (go-operand r rhs "int") & ")"
+     else "_cx_add_trap(" & (go-operand l lhs "int") & ", " & (go-operand r rhs "int") & ")"
     is IrSubInt ->
-     if int-ty-wraps ty then "(" & lhs & ".(int) - " & rhs & ".(int))"
-     else "_cx_sub_trap(" & lhs & ".(int), " & rhs & ".(int))"
+     if int-ty-wraps ty then "(" & (go-operand l lhs "int") & " - " & (go-operand r rhs "int") & ")"
+     else "_cx_sub_trap(" & (go-operand l lhs "int") & ", " & (go-operand r rhs "int") & ")"
     is IrMulInt ->
-     if int-ty-wraps ty then "(" & lhs & ".(int) * " & rhs & ".(int))"
-     else "_cx_mul_trap(" & lhs & ".(int), " & rhs & ".(int))"
-    is IrDivInt -> "(" & lhs & ".(int) / " & rhs & ".(int))"
-    is IrRemInt -> "(" & lhs & ".(int) % " & rhs & ".(int))"
-    is IrPowInt -> "_cx_ipow(" & lhs & ".(int), " & rhs & ".(int))"
-    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & ".(float64) + " & rhs & ".(float64))"
-    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & ".(float64) - " & rhs & ".(float64))"
-    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & ".(float64) * " & rhs & ".(float64))"
-    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & ".(float64) / " & rhs & ".(float64))"
-    is IrAddVec -> go-vec-ewise lhs rhs "+"
-    is IrSubVec -> go-vec-ewise lhs rhs "-"
-    is IrMulVec -> go-vec-ewise lhs rhs "*"
-    is IrDivVec -> go-vec-ewise lhs rhs "/"
+     if int-ty-wraps ty then "(" & (go-operand l lhs "int") & " * " & (go-operand r rhs "int") & ")"
+     else "_cx_mul_trap(" & (go-operand l lhs "int") & ", " & (go-operand r rhs "int") & ")"
+    is IrDivInt -> "(" & (go-operand l lhs "int") & " / " & (go-operand r rhs "int") & ")"
+    is IrRemInt -> "(" & (go-operand l lhs "int") & " % " & (go-operand r rhs "int") & ")"
+    is IrPowInt -> "_cx_ipow(" & (go-operand l lhs "int") & ", " & (go-operand r rhs "int") & ")"
+    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & (go-operand l lhs "float64") & " + " & (go-operand r rhs "float64") & ")"
+    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & (go-operand l lhs "float64") & " - " & (go-operand r rhs "float64") & ")"
+    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & (go-operand l lhs "float64") & " * " & (go-operand r rhs "float64") & ")"
+    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & (go-operand l lhs "float64") & " / " & (go-operand r rhs "float64") & ")"
+    is IrAddVec -> go-vec-ewise (go-operand l lhs "[]interface{}") (go-operand r rhs "[]interface{}") "+"
+    is IrSubVec -> go-vec-ewise (go-operand l lhs "[]interface{}") (go-operand r rhs "[]interface{}") "-"
+    is IrMulVec -> go-vec-ewise (go-operand l lhs "[]interface{}") (go-operand r rhs "[]interface{}") "*"
+    is IrDivVec -> go-vec-ewise (go-operand l lhs "[]interface{}") (go-operand r rhs "[]interface{}") "/"
     is IrEq -> "(" & lhs & " == " & rhs & ")"
     is IrNotEq -> "(" & lhs & " != " & rhs & ")"
-    is IrLt | IrLtVec -> "(" & lhs & ".(int) < " & rhs & ".(int))"
-    is IrGt | IrGtVec -> "(" & lhs & ".(int) > " & rhs & ".(int))"
-    is IrLtEq | IrLtEqVec -> "(" & lhs & ".(int) <= " & rhs & ".(int))"
-    is IrGtEq | IrGtEqVec -> "(" & lhs & ".(int) >= " & rhs & ".(int))"
+    is IrLt | IrLtVec -> "(" & (go-operand l lhs "int") & " < " & (go-operand r rhs "int") & ")"
+    is IrGt | IrGtVec -> "(" & (go-operand l lhs "int") & " > " & (go-operand r rhs "int") & ")"
+    is IrLtEq | IrLtEqVec -> "(" & (go-operand l lhs "int") & " <= " & (go-operand r rhs "int") & ")"
+    is IrGtEq | IrGtEqVec -> "(" & (go-operand l lhs "int") & " >= " & (go-operand r rhs "int") & ")"
     is IrApproxEq -> "(" & lhs & " == " & rhs & ")"
     is IrApproxEqExact -> "(" & lhs & " == " & rhs & ")"
-    is IrAnd -> "(" & lhs & ".(bool) && " & rhs & ".(bool))"
-    is IrOr -> "(" & lhs & ".(bool) || " & rhs & ".(bool))"
-    is IrAppendText -> "(" & lhs & ".(string) + " & rhs & ".(string))"
-    is IrAppendList -> "append(" & lhs & ".([]interface{}), " & rhs & ".([]interface{})...)"
-    is IrConsList -> "append([]interface{}{" & lhs & "}, " & rhs & ".([]interface{})...)"
+    is IrAnd -> "(" & (go-operand l lhs "bool") & " && " & (go-operand r rhs "bool") & ")"
+    is IrOr -> "(" & (go-operand l lhs "bool") & " || " & (go-operand r rhs "bool") & ")"
+    is IrAppendText -> "(" & (go-operand l lhs "string") & " + " & (go-operand r rhs "string") & ")"
+    is IrAppendList -> "append(" & (go-operand l lhs "[]interface{}") & ", " & (go-operand r rhs "[]interface{}") & "...)"
+    is IrConsList -> "append([]interface{}{" & lhs & "}, " & (go-operand r rhs "[]interface{}") & "...)"
 
 Section: Builtin Emitter
 
@@ -167,29 +189,29 @@ Section: Builtin Emitter
    [
     GoBuiltinEmitter { name = "__narrow", emit = \args arities indent -> emit-go-expr (list-at args 0) arities indent },
     GoBuiltinEmitter { name = "abs", emit = \args arities indent ->
-     "func() interface{} { _v := " & emit-go-expr (list-at args 0) arities indent & ".(int); if _v < 0 { return -_v }; return _v }()" },
+     "func() interface{} { _v := " & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "int") & "; if _v < 0 { return -_v }; return _v }()" },
     GoBuiltinEmitter { name = "char-at", emit = \args arities indent ->
-     "string(" & emit-go-expr (list-at args 0) arities indent & ".(string)[" & emit-go-expr (list-at args 1) arities indent & ".(int)])" },
+     "string(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & "[" & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "int") & "])" },
     GoBuiltinEmitter { name = "char-code-at", emit = \args arities indent ->
-     "int(" & emit-go-expr (list-at args 0) arities indent & ".(string)[" & emit-go-expr (list-at args 1) arities indent & ".(int)])" },
+     "int(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & "[" & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "int") & "])" },
     GoBuiltinEmitter { name = "file-exists", emit = \args arities indent ->
-     "func() interface{} { _, _e := os.Stat(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return _e == nil }()" },
+     "func() interface{} { _, _e := os.Stat(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & "); return _e == nil }()" },
     GoBuiltinEmitter { name = "int-mod", emit = \args arities indent ->
-     "func(_a int, _b int) int { _m := _b; if _m < 0 { _m = -_m }; _r := _a % _m; if _r < 0 { _r += _m }; return _r }(" & emit-go-expr (list-at args 0) arities indent & ".(int), " & emit-go-expr (list-at args 1) arities indent & ".(int))" },
+     "func(_a int, _b int) int { _m := _b; if _m < 0 { _m = -_m }; _r := _a % _m; if _r < 0 { _r += _m }; return _r }(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "int") & ", " & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "int") & ")" },
     GoBuiltinEmitter { name = "integer-to-text", emit = \args arities indent ->
      "fmt.Sprintf(\"%v\", " & emit-go-expr (list-at args 0) arities indent & ")" },
     GoBuiltinEmitter { name = "list-at", emit = \args arities indent ->
-     emit-go-expr (list-at args 0) arities indent & ".([]interface{})[" & emit-go-expr (list-at args 1) arities indent & ".(int)]" },
+     (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "[]interface{}") & "[" & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "int") & "]" },
     GoBuiltinEmitter { name = "list-length", emit = \args arities indent ->
-     "len(" & emit-go-expr (list-at args 0) arities indent & ".([]interface{}))" },
+     "len(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "[]interface{}") & ")" },
     GoBuiltinEmitter { name = "list-snoc", emit = \args arities indent ->
-     "append(" & emit-go-expr (list-at args 0) arities indent & ".([]interface{}), " & emit-go-expr (list-at args 1) arities indent & ")" },
+     "append(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "[]interface{}") & ", " & emit-go-expr (list-at args 1) arities indent & ")" },
     GoBuiltinEmitter { name = "list-push", emit = \args arities indent ->
-     "append(" & emit-go-expr (list-at args 0) arities indent & ".([]interface{}), " & emit-go-expr (list-at args 1) arities indent & ")" },
+     "append(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "[]interface{}") & ", " & emit-go-expr (list-at args 1) arities indent & ")" },
     GoBuiltinEmitter { name = "max", emit = \args arities indent ->
-     "func() interface{} { _a := " & emit-go-expr (list-at args 0) arities indent & ".(int); _b := " & emit-go-expr (list-at args 1) arities indent & ".(int); if _a > _b { return _a }; return _b }()" },
+     "func() interface{} { _a := " & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "int") & "; _b := " & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "int") & "; if _a > _b { return _a }; return _b }()" },
     GoBuiltinEmitter { name = "min", emit = \args arities indent ->
-     "func() interface{} { _a := " & emit-go-expr (list-at args 0) arities indent & ".(int); _b := " & emit-go-expr (list-at args 1) arities indent & ".(int); if _a < _b { return _a }; return _b }()" },
+     "func() interface{} { _a := " & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "int") & "; _b := " & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "int") & "; if _a < _b { return _a }; return _b }()" },
     GoBuiltinEmitter { name = "negate", emit = \args arities indent ->
      "(-((" & emit-go-expr (list-at args 0) arities indent & ").(int)))" },
     GoBuiltinEmitter { name = "print-error-uni", emit = \args arities indent ->
@@ -197,29 +219,29 @@ Section: Builtin Emitter
     GoBuiltinEmitter { name = "print-line-uni", emit = \args arities indent ->
      "func() interface{} { fmt.Println(" & emit-go-expr (list-at args 0) arities indent & "); return nil }()" },
     GoBuiltinEmitter { name = "read-text", emit = \args arities indent ->
-     "func() interface{} { _b, _ := os.ReadFile(" & emit-go-expr (list-at args 0) arities indent & ".(string)); return string(_b) }()" },
+     "func() interface{} { _b, _ := os.ReadFile(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & "); return string(_b) }()" },
     GoBuiltinEmitter { name = "read-line", emit = \args arities indent ->
      "func() interface{} { _r := bufio.NewReader(os.Stdin); _s, _ := _r.ReadString('\\n'); return strings.TrimRight(_s, \"\\n\") }()" },
     GoBuiltinEmitter { name = "show", emit = \args arities indent ->
      "fmt.Sprintf(\"%v\", " & emit-go-expr (list-at args 0) arities indent & ")" },
     GoBuiltinEmitter { name = "substring", emit = \args arities indent ->
-     "func() interface{} { _s := " & emit-go-expr (list-at args 0) arities indent & ".(string); _start := " & emit-go-expr (list-at args 1) arities indent & ".(int); _len := " & emit-go-expr (list-at args 2) arities indent & ".(int); return _s[_start:_start+_len] }()" },
+     "func() interface{} { _s := " & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & "; _start := " & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "int") & "; _len := " & (go-operand (list-at args 2) (emit-go-expr (list-at args 2) arities indent) "int") & "; return _s[_start:_start+_len] }()" },
     GoBuiltinEmitter { name = "text-compare", emit = \args arities indent ->
-     "strings.Compare(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+     "strings.Compare(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & ", " & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "string") & ")" },
     GoBuiltinEmitter { name = "text-contains", emit = \args arities indent ->
-     "strings.Contains(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+     "strings.Contains(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & ", " & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "string") & ")" },
     GoBuiltinEmitter { name = "text-length", emit = \args arities indent ->
-     "len(" & emit-go-expr (list-at args 0) arities indent & ".(string))" },
+     "len(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & ")" },
     GoBuiltinEmitter { name = "text-replace", emit = \args arities indent ->
-     "_cx_text_replace(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string), " & emit-go-expr (list-at args 2) arities indent & ".(string))" },
+     "_cx_text_replace(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & ", " & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "string") & ", " & (go-operand (list-at args 2) (emit-go-expr (list-at args 2) arities indent) "string") & ")" },
     GoBuiltinEmitter { name = "text-split", emit = \args arities indent ->
-     "_cx_text_split(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+     "_cx_text_split(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & ", " & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "string") & ")" },
     GoBuiltinEmitter { name = "text-starts-with", emit = \args arities indent ->
-     "strings.HasPrefix(" & emit-go-expr (list-at args 0) arities indent & ".(string), " & emit-go-expr (list-at args 1) arities indent & ".(string))" },
+     "strings.HasPrefix(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & ", " & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "string") & ")" },
     GoBuiltinEmitter { name = "text-to-integer", emit = \args arities indent ->
-     "_cx_text_to_integer(" & emit-go-expr (list-at args 0) arities indent & ".(string))" },
+     "_cx_text_to_integer(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & ")" },
     GoBuiltinEmitter { name = "write-file", emit = \args arities indent ->
-     "func() interface{} { os.WriteFile(" & emit-go-expr (list-at args 0) arities indent & ".(string), []byte(" & emit-go-expr (list-at args 1) arities indent & ".(string)), 0644); return nil }()" }
+     "func() interface{} { os.WriteFile(" & (go-operand (list-at args 0) (emit-go-expr (list-at args 0) arities indent) "string") & ", []byte(" & (go-operand (list-at args 1) (emit-go-expr (list-at args 1) arities indent) "string") & "), 0644); return nil }()" }
    ]
 
   lookup-go-builtin : Text, List IRExpr, List ArityEntry, Integer -> Text

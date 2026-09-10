@@ -93,5 +93,16 @@ if (-not (Get-Command 'wat2wasm' -ErrorAction SilentlyContinue)) {
 # on disk beside a fresh page, which is how fishtank shipped one four days stale.
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: wat2wasm; WAT is at $watFile"; exit 6 }
 Write-Host "[starmap-wasm] WASM: $wasmFile ($((Get-Item $wasmFile).Length) bytes)"
+# The grader runs HERE because the module has just been written: a grader
+# whose module nobody built reports a missing file, and ENOENT and a defect
+# are the same colour on a verdict line.
+if (Get-Command 'node' -ErrorAction SilentlyContinue) {
+    & node (Join-Path $Repo 'apps/starmap/sm-verify.mjs')
+    if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: sm-verify rejected the module'; exit 8 }
+    Write-Host '[starmap-wasm] graded'
+} else {
+    Write-Host '[starmap-wasm] node is not on the Path; sm-verify skipped'
+}
+
 Write-Host '[starmap-wasm] done'
 exit 0

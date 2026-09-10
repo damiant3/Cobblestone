@@ -85,21 +85,21 @@ Section: Assembly
 
   s00 : PipeStage = PipeStage { ps-name = "the pipeline, stated", ps-why = "source to IR to ARM64 codegen to a PE plug to a GPT disk to QEMU, which is five separate tools and the only place the whole chain is written down", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s00-body }
 
-  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode, a trap that names the failing line, and the check that the ARM64 plug was built at all", ps-in = ["Src"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode, a trap that names the failing line, and the check that the ARM64 plug was built at all", ps-in = ["Src"], ps-out = [], ps-needs = [], ps-verdict = [PoThrow "either plug is unbuilt: the ARM64 codegen plug or the PE plug, each naming the build script that makes it"], ps-body = s01-body }
 
-  s02 : PipeStage = PipeStage { ps-name = "phase 1, compile source to ir", ps-why = "the compiler emits the IR the plug reads", ps-in = ["Src"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+  s02 : PipeStage = PipeStage { ps-name = "phase 1, compile source to ir", ps-why = "the compiler emits the IR the plug reads", ps-in = ["Src"], ps-out = [], ps-needs = [], ps-verdict = [PoThrow "the IR compile failed, and the log is named with the code the compiler returned"], ps-body = s02-body }
 
-  s03 : PipeStage = PipeStage { ps-name = "phase 2, arm64 codegen", ps-why = "the plug turns IR into machine code and a function table", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
+  s03 : PipeStage = PipeStage { ps-name = "phase 2, arm64 codegen", ps-why = "the plug turns IR into machine code and a function table", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoThrow "ARM64 codegen failed"], ps-body = s03-body }
 
-  s04 : PipeStage = PipeStage { ps-name = "phase 3, the arm64 pe", ps-why = "the PE container comes from a plug in mode 2, not from the compiler; container formats are plug work", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04-body }
+  s04 : PipeStage = PipeStage { ps-name = "phase 3, the arm64 pe", ps-why = "the PE container comes from a plug in mode 2, not from the compiler; container formats are plug work", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoThrow "the PE plug did not connect within thirty seconds, or its output was too small to be a PE"], ps-body = s04-body }
 
-  s05 : PipeStage = PipeStage { ps-name = "phase 4, the gpt disk image", ps-why = "a bootable GPT image around the PE, which is what UEFI can actually be handed", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
+  s05 : PipeStage = PipeStage { ps-name = "phase 4, the gpt disk image", ps-why = "a bootable GPT image around the PE, which is what UEFI can actually be handed", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoThrow "the disk image could not be built"], ps-body = s05-body }
 
   s06 : PipeStage = PipeStage { ps-name = "the noboot exit", ps-why = "stop with the image built when the caller wanted the artifact rather than a boot", ps-in = ["NoBoot"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "-NoBoot: the image was built and nothing was booted; a success that says an artifact exists, not that the artifact runs"], ps-body = s06-body }
 
-  s07 : PipeStage = PipeStage { ps-name = "phase 5, boot in qemu", ps-why = "fly the image and read what the guest says", ps-in = ["MemMB"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s07-body }
+  s07 : PipeStage = PipeStage { ps-name = "phase 5, boot in qemu", ps-why = "fly the image and read what the guest says", ps-in = ["MemMB"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [PoThrow "the host-forward port this workspace uses is already listening, so a second boot would talk to the first one guest"], ps-body = s07-body }
 
-  boot-arm64-pipe : Pipeline = Pipeline { pl-name = "boot-arm64", pl-doc = "End-to-end ARM64 UEFI boot pipeline", pl-params = boot-arm64-params, pl-stages = [s00, s01, s02, s03, s04, s05, s06, s07] }
+  boot-arm64-pipe : Pipeline = Pipeline { pl-name = "boot-arm64", pl-doc = "End-to-end ARM64 UEFI boot pipeline", pl-params = boot-arm64-params, pl-stages = [PsStage s00, PsStage s01, PsStage s02, PsStage s03, PsStage s04, PsStage s05, PsStage s06, PsStage s07] }
 
   opening : [Console] Nothing = act
     print-line-uni (emit-powershell (pipeline-to-shell boot-arm64-pipe))

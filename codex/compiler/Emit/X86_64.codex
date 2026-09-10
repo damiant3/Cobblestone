@@ -2955,6 +2955,7 @@ Section: Expression Emission
   eq-site-actuals (ty) =
    when ty
     is ConstructedTy (cn) (ca) -> ca
+    is ListTy (e) -> [e]
     is otherwise -> eq-empty-type-args
 
   eq-subst-deep : List CodexType, List CodexType, Integer, CodexType -> CodexType
@@ -3222,6 +3223,14 @@ Section: Recursive Structural Equality Helpers
         eq-sum-ctors = cs
        })))
      else eq-site-ctors st cs 0 acc (fuel - 1) args actuals
+    is ListTy (e) ->
+     if eq-req-has acc (eq-helper-name-inst "List" [e]) 0 then acc
+     else eq-note-site st e (list-push acc (deck-record (EqHelperReq {
+        eq-sum-name = "List",
+        eq-sum-ty = resolved,
+        eq-sum-actuals = [e],
+        eq-sum-ctors = []
+       }))) (fuel - 1)
     is otherwise -> acc
 
   eq-site-ctors : CodegenState, List SumCtor, Integer, List EqHelperReq, Integer, List CodexType, List CodexType -> List EqHelperReq
@@ -3344,6 +3353,11 @@ Section: Recursive Structural Equality Helpers
    let resolved = strip-unit-ty (resolve-to-sum-with-defs st fty)
    in let plain = deck-record (IrBinary IrEq lhs rhs BooleanTy synthetic-span)
    in when resolved
+    is ListTy (e) ->
+     let hname = eq-helper-name-inst "List" [e]
+     in let hty = deck-record (FunTy resolved empty-row (deck-record (FunTy resolved empty-row BooleanTy)))
+     in let inner = deck-record (IrApply (deck-record (IrName hname hty synthetic-span)) lhs (peel-fun-return hty) synthetic-span)
+     in deck-record (IrApply inner rhs BooleanTy synthetic-span)
     is SumTy (sn) (args) (cs) ->
      if eq-needs-inst-helper st (sn.value) cs (eq-site-actuals fty)
      then let hname = eq-helper-name-inst (sn.value) (eq-site-actuals fty)
@@ -3386,6 +3400,124 @@ Section: Recursive Structural Equality Helpers
      alt-group = 0 - 1
     })))
 
+ A LIST REQ MINTS TWO DEFINITIONS, and the second is the reason a list cannot
+ reuse the sum shape: the comparison is a walk over an index, and a walk needs
+ a definition with the index in it. The entry compares the two lengths and
+ hands off; the loop compares one element pair and calls itself. Recursion
+ rather than bounded inlining is the same argument the sum helper makes, and
+ here it also keeps the cost linear: a version that dropped the head of each
+ list per step would allocate a whole list per element on a heap with no GC.
+
+ The element pair goes through `eq-helper-field-eq`, so the element decides how
+ it is compared exactly as a field does: a sum reaches its own instantiated
+ helper, a nested list reaches this same pair minted at the inner type, and
+ Text reaches the backend's own arm. That is why the element type is in the
+ NAME: one copy per element type, each with the right compare.
+
+  eq-list-elem-of : CodexType -> CodexType
+  eq-list-elem-of (ty) =
+   when strip-unit-ty ty
+    is ListTy (e) -> e
+    is otherwise -> ErrorTy
+
+  eq-req-is-list : EqHelperReq -> Boolean
+  eq-req-is-list (req) = req.eq-sum-name == "List"
+
+  eq-list-loop-name : EqHelperReq -> Text
+  eq-list-loop-name (req) = deck-record (eq-req-name req & "__loop")
+
+  eq-ir-name : Text, CodexType -> IRExpr
+  eq-ir-name (n) (ty) = deck-record (IrName n ty synthetic-span)
+
+  eq-fun1-ty : CodexType, CodexType -> CodexType
+  eq-fun1-ty (a) (r) = deck-record (FunTy a empty-row r)
+
+  eq-ir-call1 : Text, CodexType, CodexType, IRExpr -> IRExpr
+  eq-ir-call1 (n) (aty) (rty) (x) =
+   deck-record (IrApply (eq-ir-name n (eq-fun1-ty aty rty)) x rty synthetic-span)
+
+  eq-ir-call2 : Text, CodexType, CodexType, CodexType, IRExpr, IRExpr -> IRExpr
+  eq-ir-call2 (n) (aty) (bty) (rty) (x) (y) =
+   let rest = eq-fun1-ty bty rty
+   in let inner = deck-record (IrApply (eq-ir-name n (eq-fun1-ty aty rest)) x rest synthetic-span)
+   in deck-record (IrApply inner y rty synthetic-span)
+
+  eq-list-int-ty : CodexType
+  eq-list-int-ty = int-ty-default
+
+  eq-list-loop-call : EqHelperReq, IRExpr, IRExpr, IRExpr, IRExpr -> IRExpr
+  eq-list-loop-call (req) (xs) (ys) (i) (n) =
+   let lty = req.eq-sum-ty
+   in let t3 = eq-fun1-ty eq-list-int-ty (eq-fun1-ty eq-list-int-ty BooleanTy)
+   in let t2 = eq-fun1-ty lty t3
+   in let t1 = eq-fun1-ty lty t2
+   in let a1 = deck-record (IrApply (eq-ir-name (eq-list-loop-name req) t1) xs t2 synthetic-span)
+   in let a2 = deck-record (IrApply a1 ys t3 synthetic-span)
+   in let a3 = deck-record (IrApply a2 i (eq-fun1-ty eq-list-int-ty BooleanTy) synthetic-span)
+   in deck-record (IrApply a3 n BooleanTy synthetic-span)
+
+  eq-list-helper-def : CodegenState, EqHelperReq -> IRDef
+  eq-list-helper-def (st) (req) =
+   let lty = req.eq-sum-ty
+   in let lena = eq-ir-call1 "list-length" lty eq-list-int-ty (eq-ir-name "__eqa" lty)
+   in let lenb = eq-ir-call1 "list-length" lty eq-list-int-ty (eq-ir-name "__eqb" lty)
+   in let same-len = deck-record (IrBinary IrEq lena lenb BooleanTy synthetic-span)
+   in let zero = deck-record (IrIntLit 0 synthetic-span)
+   in let len-again = eq-ir-call1 "list-length" lty eq-list-int-ty (eq-ir-name "__eqa" lty)
+   in let walk = eq-list-loop-call req (eq-ir-name "__eqa" lty) (eq-ir-name "__eqb" lty) zero len-again
+   in let no = deck-record (IrBoolLit False synthetic-span)
+   in let entry-body = deck-record (IrIf same-len walk no BooleanTy synthetic-span)
+   in deck-record (IRDef {
+    name = eq-req-name req,
+    params = [
+      deck-record (IRParam { name = "__eqa", type-val = lty, span = synthetic-span }),
+      deck-record (IRParam { name = "__eqb", type-val = lty, span = synthetic-span })
+     ],
+    type-val = BooleanTy,
+    body = entry-body,
+    chapter-slug = "",
+    is-punctual = False,
+    wcet-budget = 0,
+    unique-params = [],
+    span = synthetic-span
+   })
+
+  eq-list-loop-def : CodegenState, EqHelperReq -> IRDef
+  eq-list-loop-def (st) (req) =
+   let lty = req.eq-sum-ty
+   in let ety = eq-list-elem-of lty
+   in let xs = eq-ir-name "__eqa" lty
+   in let ys = eq-ir-name "__eqb" lty
+   in let i = eq-ir-name "__eqi" eq-list-int-ty
+   in let n = eq-ir-name "__eqn" eq-list-int-ty
+   in let done = deck-record (IrBinary IrGtEq i n BooleanTy synthetic-span)
+   in let lhs = eq-ir-call2 "list-at" lty eq-list-int-ty ety xs i
+   in let rhs = eq-ir-call2 "list-at" lty eq-list-int-ty ety ys i
+   in let one = eq-helper-field-eq st ety lhs rhs
+   in let step = deck-record (IrIntLit 1 synthetic-span)
+   in let i-next = deck-record (IrBinary IrAddInt i step eq-list-int-ty synthetic-span)
+   in let next = eq-list-loop-call req xs ys i-next n
+   in let yes = deck-record (IrBoolLit True synthetic-span)
+   in let no = deck-record (IrBoolLit False synthetic-span)
+   in let inner-if = deck-record (IrIf one next no BooleanTy synthetic-span)
+   in let loop-body = deck-record (IrIf done yes inner-if BooleanTy synthetic-span)
+   in deck-record (IRDef {
+    name = eq-list-loop-name req,
+    params = [
+      deck-record (IRParam { name = "__eqa", type-val = lty, span = synthetic-span }),
+      deck-record (IRParam { name = "__eqb", type-val = lty, span = synthetic-span }),
+      deck-record (IRParam { name = "__eqi", type-val = eq-list-int-ty, span = synthetic-span }),
+      deck-record (IRParam { name = "__eqn", type-val = eq-list-int-ty, span = synthetic-span })
+     ],
+    type-val = BooleanTy,
+    body = loop-body,
+    chapter-slug = "",
+    is-punctual = False,
+    wcet-budget = 0,
+    unique-params = [],
+    span = synthetic-span
+   })
+
   eq-helper-def : CodegenState, EqHelperReq -> IRDef
   eq-helper-def (st) (req) =
    let sty = req.eq-sum-ty
@@ -3414,7 +3546,10 @@ Section: Recursive Structural Equality Helpers
   eq-helper-defs-acc : CodegenState, List EqHelperReq, Integer, List IRDef -> List IRDef
   eq-helper-defs-acc (st) (reqs) (i) (acc) =
    if i >= list-length reqs then acc
-   else eq-helper-defs-acc st reqs (i + 1) (list-push acc (eq-helper-def st (list-at reqs i)))
+   else let req = list-at reqs i
+   in if eq-req-is-list req
+   then eq-helper-defs-acc st reqs (i + 1) (list-push (list-push acc (eq-list-helper-def st req)) (eq-list-loop-def st req))
+   else eq-helper-defs-acc st reqs (i + 1) (list-push acc (eq-helper-def st req))
 
   eq-helper-defs : CodegenState, List IRDef -> List IRDef
   eq-helper-defs (st) (ds) =

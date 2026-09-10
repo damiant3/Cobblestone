@@ -14,10 +14,15 @@ file is the standing rules, not the open work.
 
 ## 0. Two kinds of pane
 
-**Every pane is a STEP. No pane owns a loop.** All fourteen: Monitor, Calendar,
-Appearance, Calculator, Clock, Programs, Diffusion, Issues, Console, Files,
-Browser, 3D View, Aquarium, Editor. Sections 1 to 7 below still hold and are
-written in terms of the loop the desk itself runs.
+**Every pane is a STEP. No pane owns a loop.** `desk-step-of` is the only
+function that knows which id means which app, so it is also the census, and
+counting it beats reading a list here: EIGHTEEN arms at 2026-09-08, being
+Monitor, Calendar, Diffusion, Tracker, Review, Console, Appearance,
+Calculator, Clock, Programs, the system menu, Files, Browser, 3D View,
+Aquarium, Editor, Web and Sheets. This paragraph said fourteen and named
+neither Sheets nor Web, which is what a list kept beside the thing it
+describes does (L-COUNT). Sections 1 to 7 below still hold and are written in
+terms of the loop the desk itself runs.
 
 This paragraph carried the transition's own leftovers until 2026-08-21, and
 they said both "no pane is a loop any more" and "every other pane is still a
@@ -96,6 +101,15 @@ it is measured:
   human-decision rate. Measured on Files: heap frontier and desk mark after ten
   directory changes are bit-identical to after none, because `desk-app-close`
   reclaims the lot; 100 changes in one session still render correctly.
+  **What one change costs is measured by `codex/test/apps/files-change-cost`,
+  and the answer is not the shape anyone assumed** (2026-09-08): the listing
+  a change retains is neither a constant nor a function of how many files the
+  directory holds. On that arm's fixture the root's TWO entries cost 39,984
+  bytes and a ONE entry subdirectory cost 67,376, because a subdirectory walks
+  a FAT chain the root does not. So the ceiling on a long session is a
+  statement about DEPTH, and a per-entry figure would be the wrong number to
+  reach for (L-PEROBJECT). The arm carries its own control: it reads the
+  frontier twice with nothing between and requires a difference of zero.
 - **A step that restores BELOW the desk's frame mark must answer negative, and
   this is the sharper edge of the same rule.** A pane with its own heap
   discipline, like the Browser releasing its memoized widget tree, restores to a

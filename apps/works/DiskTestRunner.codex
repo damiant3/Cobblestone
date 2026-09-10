@@ -34,14 +34,62 @@ Section: The Compile
 
   RunnerResult = record {
    rr-errors : Integer,
-   rr-code : Integer
+   rr-code : Integer,
+   rr-bytes : Integer,
+   rr-emit-errors : Integer,
+   rr-emit-code : Integer,
+   rr-message : Text,
+   rr-line : Integer,
+   rr-col : Integer
   }
+
+ The BACKEND runs here too, not the frontend alone. A chapter whose frontend is
+ clean and whose codegen is not looks identical to a clean one when only the
+ frontend runs, and that is the class no arm on the guest could observe.
+ `compile-to-cdx` answers the emitted bytes in memory, so the runner reports a
+ size without writing anything.
+
+  RunnerEmit = record {
+   re-bytes : Integer,
+   re-errors : Integer,
+   re-code : Integer
+  }
+
+  runner-emit-none : RunnerEmit
+  runner-emit-none = RunnerEmit { re-bytes = 0, re-errors = 0, re-code = 0 }
+
+  runner-emit : CompileFrontend -> RunnerEmit
+  runner-emit (fe) =
+   let r = compile-to-cdx fe
+   in let ees = bag-errors (r.bag)
+   in RunnerEmit {
+    re-bytes = list-length (r.header-bytes) + (r.content-len) + list-length (r.tail-bytes),
+    re-errors = list-length ees,
+    re-code = if list-length ees == 0 then 0 else (list-at ees 0).code
+   }
+
+ Every subject is compiled between a heap mark and its restore, which is the
+ shape the design ruled: a bare-metal heap has no collector, so without the
+ restore each subject's AST, IR and emitted buffer stay resident and the run
+ length is bounded by memory rather than by the corpus. Only Integers cross the
+ restore, and the record below is allocated after it.
 
   runner-run : Text -> RunnerResult
   runner-run (t) =
-   let fe = compile-frontend t "Program" (parse-mode-flags "" 0)
+   let hp = __heap-save
+   in let fe = compile-frontend-cdx t "Program" (parse-mode-flags "CDX" (text-length t))
    in let es = bag-errors (fe.bag)
-   in RunnerResult { rr-errors = list-length es, rr-code = if list-length es == 0 then 0 else (list-at es 0).code }
+   in let n = list-length es
+   in let code = if n == 0 then 0 else (list-at es 0).code
+   in let msg = if n == 0 then "" else (list-at es 0).message
+   in let ln = if n == 0 then 0 else ((list-at es 0).span.start.line)
+   in let cl = if n == 0 then 0 else ((list-at es 0).span.start.column)
+   in let em = if n == 0 then runner-emit fe else runner-emit-none
+   in let bytes = em.re-bytes
+   in let ecount = em.re-errors
+   in let ecode = em.re-code
+   in let restored = __heap-restore hp
+   in RunnerResult { rr-errors = n, rr-code = code, rr-bytes = bytes, rr-emit-errors = ecount, rr-emit-code = ecode, rr-message = msg, rr-line = ln, rr-col = cl }
 
  A read that failed and a chapter that would not compile are different answers
  and a summary must not merge them, so an unreadable entry is -1 rather than an
@@ -49,7 +97,7 @@ Section: The Compile
 
   runner-of : Maybe Text -> RunnerResult
   runner-of (src) =
-   if is-none src then RunnerResult { rr-errors = 0 - 1, rr-code = 0 }
+   if is-none src then RunnerResult { rr-errors = 0 - 1, rr-code = 0, rr-bytes = 0, rr-emit-errors = 0, rr-emit-code = 0, rr-message = "", rr-line = 0, rr-col = 0 }
    else runner-run (from-maybe src "")
 
  The FIRST diagnostic code is what a `.failing` sidecar records, so printing it
@@ -60,14 +108,20 @@ Section: The Compile
   runner-line : Text, RunnerResult -> Text
   runner-line (nm) (r) =
    if r.rr-errors < 0 then nm & " : READ FAILED"
-   else if r.rr-errors == 0 then nm & " : errors=0 ok=yes"
-   else nm & " : errors=" & show (r.rr-errors) & " ok=no first=CDX" & show (r.rr-code)
+   else if r.rr-errors > 0 then nm & " : errors=" & show (r.rr-errors) & " ok=no first=CDX" & show (r.rr-code) & " at " & show (r.rr-line) & ":" & show (r.rr-col) & " -- " & (r.rr-message)
+   else if r.rr-emit-errors > 0 then nm & " : frontend ok, CODEGEN errors=" & show (r.rr-emit-errors) & " first=CDX" & show (r.rr-emit-code)
+   else nm & " : errors=0 ok=yes cdx=" & show (r.rr-bytes)
 
  EFI and SEED are the image's own directories, written by the image writer
- rather than put there by a caller. Everything else on the root is a subject.
+ rather than put there by a caller. Everything else on the root is a subject,
+ and a subject is either a source or a directory of them.
 
   runner-skip : Text -> Boolean
-  runner-skip (n) = if n == "EFI" then True else n == "SEED"
+  runner-skip (n) =
+   if n == "EFI" then True
+   else if n == "SEED" then True
+   else if n == "." then True
+   else n == ".."
 
   runner-say : Text, RunnerResult -> [Console] Integer
   runner-say (nm) (r) = act
@@ -75,14 +129,40 @@ Section: The Compile
     r.rr-errors
    end
 
-  runner-walk : Fat16Volume, List Text, Integer, Integer, Integer -> [Console, Device.Block] Integer
-  runner-walk (vol) (names) (i) (n) (bad) =
+  runner-subject : Fat16Volume, Text -> [Console, Device.Block] Integer
+  runner-subject (vol) (path) = act
+    src <- fat16-read-source vol path
+    runner-say path (runner-of src)
+   end
+
+ The image writer places the sources in SRC0, SRC1 and so on when the caller
+ asks for it, because the FAT16 root holds 509 usable entries and cannot hold
+ two names that fold to one 8.3 spelling. One level is what the writer produces
+ and one level is what this walks.
+
+  runner-files : Fat16Volume, Text, List Fat16DirEntry, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  runner-files (vol) (dir) (es) (i) (n) (bad) =
    if i >= n then bad
-   else if runner-skip (list-at names i) then runner-walk vol names (i + 1) n bad
+   else let e = list-at es i
+   in if fat16-is-dir-entry e then runner-files vol dir es (i + 1) n bad
    else act
-    src <- fat16-read-source vol (list-at names i)
-    e <- runner-say (list-at names i) (runner-of src)
-    runner-walk vol names (i + 1) n (if e == 0 then bad else bad + 1)
+    err <- runner-subject vol (dir & "/" & (e.de-name))
+    runner-files vol dir es (i + 1) n (if err == 0 then bad else bad + 1)
+   end
+
+  runner-walk : Fat16Volume, List Fat16DirEntry, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  runner-walk (vol) (es) (i) (n) (bad) =
+   if i >= n then bad
+   else let e = list-at es i
+   in if runner-skip (e.de-name) then runner-walk vol es (i + 1) n bad
+   else if fat16-is-dir-entry e then act
+     sub <- fat16-list-dir vol (e.de-name)
+     deeper <- runner-files vol (e.de-name) sub 0 (list-length sub) bad
+     runner-walk vol es (i + 1) n deeper
+    end
+   else act
+    err <- runner-subject vol (e.de-name)
+    runner-walk vol es (i + 1) n (if err == 0 then bad else bad + 1)
    end
 
 Section: Body
@@ -96,10 +176,10 @@ Section: Body
       print-line-uni "=== runner done ==="
     end
     else act
-    names <- fat16-list-root vol
-    print-line-uni ("entries   : " & show (list-length names))
+    entries <- fat16-root-entries vol
+    print-line-uni ("entries   : " & show (list-length entries) & " on the root")
     print-line-uni "note      : each entry is compiled ALONE, with no cite resolution, so a chapter carrying cites reports every cited name undefined. Only a cite-free chapter's verdict is comparable with test.ps1's."
-    bad <- runner-walk vol names 0 (list-length names) 0
+    bad <- runner-walk vol entries 0 (list-length entries) 0
     print-line-uni ("summary   : failed=" & show bad)
     print-line-uni "=== runner done ==="
     end

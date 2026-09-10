@@ -4,6 +4,7 @@ Chapter: StressSweepScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -14,7 +15,7 @@ Section: Parameters
 
 Section: S01 -- Preamble
 
-  s01 : List ShellCmd = [ScSetStrictMode, ScSetErrorContinue, ScSetLocation (SePathJoin SeScriptRoot (SeLit ".."))]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorContinue, ScSetLocation (SePathJoin SeScriptRoot (SeLit ".."))]
 
 Section: S02 -- Setup
 
@@ -24,13 +25,13 @@ Section: S02 -- Setup
 
   start-banner : ShellExpr = SeConcat (SeConcat (SeLit "=== stress-sweep start jobs=") (SeVar "Jobs")) banner-tail
 
-  s02 : List ShellCmd = [ScAssign "sweepScript" (SePathJoin SeScriptRoot (SeLit "test.ps1")), ScMkdir (SePathParent (SeVar "LogPath")), ScSetContent (SeVar "LogPath") start-banner]
+  s02-body : List ShellCmd = [ScBlank, ScAssign "sweepScript" (SePathJoin SeScriptRoot (SeLit "test.ps1")), ScMkdir (SePathParent (SeVar "LogPath")), ScSetContent (SeVar "LogPath") start-banner, ScBlank, ScBlank, ScAssign "iter" (SeInt 0)]
 
 Section: S03 -- Iteration Start
 
   iter-label : ShellExpr = SeConcat (SeConcat (SeLit "[iter ") (SeVar "iter")) (SeLit "] ")
 
-  s03 : List ShellCmd = [ScIncrement "iter", ScAssign "start" SeNow, ScAddContent (SeVar "LogPath") (SeConcat iter-label (SeConcat (SeLit "start ") (SeFormatTime (SeVar "start") "HH:mm:ss")))]
+  s03-body : List ShellCmd = [ScIncrement "iter", ScAssign "start" SeNow, ScAddContent (SeVar "LogPath") (SeConcat iter-label (SeConcat (SeLit "start ") (SeFormatTime (SeVar "start") "HH:mm:ss")))]
 
 Section: S04 -- Run Test
 
@@ -43,7 +44,7 @@ Section: S04 -- Run Test
 
   s04-finally : List ShellCmd = [ScDelete (SeVar "tmp")]
 
-  s04 : List ShellCmd = [ScTempFile "tmp", ScTry s04-try-body s04-catch s04-finally]
+  s04-body : List ShellCmd = [ScBlank, ScTempFile "tmp", ScTry s04-try-body s04-catch s04-finally]
 
 Section: S05 -- Log Result
 
@@ -51,7 +52,7 @@ Section: S05 -- Log Result
 
   result-line : ShellExpr = SeConcat (SeConcat (SeLit "end exit=") (SeVar "exit")) dur-part
 
-  s05 : List ShellCmd = [ScAssign "dur" (SeElapsedSeconds (SeVar "start")), ScAddContent (SeVar "LogPath") (SeConcat iter-label result-line)]
+  s05-body : List ShellCmd = [ScBlank, ScAssign "dur" (SeElapsedSeconds (SeVar "start")), ScAddContent (SeVar "LogPath") (SeConcat iter-label result-line)]
 
 Section: S06 -- Check Failure
 
@@ -61,16 +62,26 @@ Section: S06 -- Check Failure
 
   s06-stop-branch : List ShellCmd = [ScAddContent (SeVar "LogPath") (SeConcat iter-label (SeConcat failed-prefix (SeLit " -- stopping"))), ScExit (SeInt 1)]
 
-  s06 : List ShellCmd = [ScIf (SeNot (SeIntEq (SeVar "exit") (SeInt 0))) [ScIf (SeVar "ContinueOnFailure") s06-continue-branch s06-stop-branch] []]
+  s06-body : List ShellCmd = [ScBlank, ScIf (SeNot (SeIntEq (SeVar "exit") (SeInt 0))) [ScIf (SeVar "ContinueOnFailure") s06-continue-branch s06-stop-branch] []]
 
 Section: Assembly
 
-  stress-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScAssign "iter" (SeInt 0), ScLabeledWhile "stress_loop" (SeBool True) [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06]]
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode, and the working directory the sweep is run from", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
-  stress-script : ShellScript = sh-script "stress-sweep" "Stress loop: re-run test.ps1 -Jobs N until killed or test fails" stress-params stress-body
+  s02 : PipeStage = PipeStage { ps-name = "the sweep target and the log", ps-why = "names test.ps1 as the thing being re-run and opens the log the loop appends to; the iteration counter is zeroed here because it must not be reset once per pass", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "start one iteration", ps-why = "counts the pass and stamps its start time into the log", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "run the sweep", ps-why = "runs test.ps1 with the requested job count and captures its output; its own try/finally is inside the stage because it guards one command rather than a span of stages", ps-in = ["Jobs"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "record the pass", ps-why = "writes the elapsed time and the exit code of that pass into the log", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "decide whether to continue", ps-why = "a failing pass stops the loop unless -ContinueOnFailure was given, which is the whole point of a stress loop: it runs until something breaks", ps-in = ["ContinueOnFailure"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "a pass failed and -ContinueOnFailure was not given, which is the loop finding what it was run to find"], ps-body = s06-body }
+
+  stress-pipe : Pipeline = Pipeline { pl-name = "stress-sweep", pl-doc = "Stress loop: re-run test.ps1 -Jobs N until killed or test fails", pl-params = stress-params, pl-stages = [PsStage s01, PsStage s02, PsGroup (Just (PrWhileLabeled "stress_loop" (SeBool True))) None None [PsStage s03, PsStage s04, PsStage s05, PsStage s06]] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell stress-script)
+    print-line-uni (emit-powershell (pipeline-to-shell stress-pipe))
   end
 
 Page 1

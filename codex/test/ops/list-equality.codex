@@ -1,0 +1,87 @@
+Chapter: ListEquality
+
+ `==` on a list compares contents. Before COMPILER-74 it compared the two
+ POINTERS, so every row below that builds its two sides separately answered
+ False, including `xs == xs` where the two mentions re-materialised the list.
+
+ Every row builds its two sides as SEPARATE allocations, which is the whole
+ point: two names bound to the same list would pass under a pointer compare
+ too, and prove nothing. `same-binding` is the control that did pass before
+ the fix, and it must keep passing.
+
+ The rows that matter most are the ones nobody would write by hand. A sum or a
+ record with a list field gets a synthesised equality whose field compare is
+ `==`, so before the fix two identical values compared unequal with no
+ diagnostic anywhere.
+
+ `Bag` says `deriving Eq` because a record gets a synthesised equality ONLY
+ when it asks: every SUM gets one, and `td-eq-safe` answers False for a record
+ body, so a record without the declaration is compared by pointer whatever it
+ holds. That is a separate gap from this chapter's subject and is registered as
+ COMPILER-75; the declaration here keeps these rows about the LIST.
+
+  Holder = | Held (List Integer) | Nothing-Held
+
+  Bag = record { bag-name : Text, bag-items : List Integer }  deriving Eq
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+  build : Integer, Integer, List Integer -> List Integer
+  build (i) (n) (acc) =
+   if i >= n then acc
+   else build (i + 1) n (list-push acc (i * 7))
+
+  a-plain : Text = "list equal=" & yn (build 0 5 [] == build 0 5 [])
+
+  a-different : Text = "list different=" & yn (build 0 5 [] == build 0 6 [])
+
+  a-shorter : Text = "list length-differs=" & yn ([1, 2] == [1, 2, 3])
+
+  a-empty : Text = "list empty=" & yn ([] == [])
+
+  a-self : Text = "list same-binding=" & yn (let x = build 0 4 [] in x == x)
+
+  a-neq : Text = "list not-equal-operator=" & yn (build 0 5 [] /= build 0 6 [])
+
+  a-text : Text =
+   "list of-text=" & yn ([integer-to-text 12, integer-to-text 34] == [integer-to-text 12, integer-to-text 34])
+
+  a-text-diff : Text =
+   "list of-text-differs=" & yn ([integer-to-text 12] == [integer-to-text 99])
+
+  a-nested : Text =
+   "list nested=" & yn ([build 0 3 [], build 0 2 []] == [build 0 3 [], build 0 2 []])
+
+  a-nested-diff : Text =
+   "list nested-differs=" & yn ([build 0 3 []] == [build 0 2 []])
+
+  a-sum : Text = "list in-sum=" & yn (Held (build 0 5 []) == Held (build 0 5 []))
+
+  a-sum-diff : Text = "list in-sum-differs=" & yn (Held (build 0 5 []) == Held (build 0 6 []))
+
+  a-sum-ctor : Text = "list in-sum-other-ctor=" & yn (Held (build 0 5 []) == Nothing-Held)
+
+  a-record : Text =
+   "list in-record=" & yn (Bag { bag-name = "b", bag-items = build 0 5 [] } == Bag { bag-name = "b", bag-items = build 0 5 [] })
+
+  a-record-diff : Text =
+   "list in-record-differs=" & yn (Bag { bag-name = "b", bag-items = build 0 5 [] } == Bag { bag-name = "b", bag-items = build 0 6 [] })
+
+  opening : [Console] Nothing = act
+   print-line-uni a-plain
+   print-line-uni a-different
+   print-line-uni a-shorter
+   print-line-uni a-empty
+   print-line-uni a-self
+   print-line-uni a-neq
+   print-line-uni a-text
+   print-line-uni a-text-diff
+   print-line-uni a-nested
+   print-line-uni a-nested-diff
+   print-line-uni a-sum
+   print-line-uni a-sum-diff
+   print-line-uni a-sum-ctor
+   print-line-uni a-record
+   print-line-uni a-record-diff
+  end
