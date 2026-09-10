@@ -1,12 +1,13 @@
 # Build Codex Designer: source -> concat -> IR-CCE -> WASM plug -> WAT -> HTML
 # Usage: pwsh codex/plugs/wasm/build-designer.ps1
 [CmdletBinding()]
-param([switch]$WatOnly)
+param([switch]$WatOnly, [string]$Compiler = '')
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo      = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+if (-not $Compiler) { $Compiler = Join-Path $Repo 'seed\Codex.cdx' }
 $PlugDir   = (Resolve-Path $PSScriptRoot).Path
 $OutDir    = Join-Path $PlugDir 'build-output'
 $PlugCdx   = Join-Path $OutDir 'wasm-plug.cdx'
@@ -51,7 +52,7 @@ $IrFile = Join-Path $OutDir 'designer.ir'
 # text-plug: this plug resolves a Codex call by its NAME, so the inline passes
 # must not substitute a body and delete the call. See text-plug-ir-pipeline in
 # codex/compiler/IR/Passes.codex, and run.ps1, which passes the same flag.
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundleSrc -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' -Survey "check-mul:400,lower-mul:300,headroom:120" -MemMB 2048
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundleSrc -Out $IrFile -Log $LogFile -Kernel $Compiler -IrCce -Passes 'text-plug' -Survey "check-mul:400,lower-mul:300,headroom:120" -MemMB 2048
 if ($LASTEXITCODE -ne 0) {
     Write-Error "FAIL: IR compile; see $LogFile"
     Get-Content $LogFile -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }

@@ -298,6 +298,7 @@ Section: CodexType
    else if head == "vector" then VectorTy (sexp-int (list-at xs 1)) (ir-parse-type (list-at xs 2))
    else if head == "unit" then UnitTy (make-name (sexp-str (list-at xs 1))) (ir-parse-type (list-at xs 2))
    else if head == "vector-mask" then VectorMaskTy (sexp-int (list-at xs 1))
+   else if head == "sized-vec" then SizedVecTy (sexp-int (list-at xs 1)) (ir-parse-type (list-at xs 2))
    else if head == "propeq" then PropEqTy (ir-parse-type (list-at xs 1)) (ir-parse-type (list-at xs 2))
    else if head == "tycon" then TypeCon (make-name (sexp-str (list-at xs 1)))
    else if head == "tyapply" then TypeApply (ir-parse-type (list-at xs 1)) (ir-parse-type (list-at xs 2))
@@ -435,6 +436,9 @@ Section: Type Def Resolution
      else if name.value == "Vector" then
       (if list-length args == 2 then VectorTy (atype-vector-len (list-at args 0)) (atype-to-codex-type (list-at args 1))
        else VectorTy 2 ErrorTy)
+     else if name.value == "SizedVec" then
+      (if list-length args == 2 then SizedVecTy (atype-vector-len (list-at args 0)) (atype-to-codex-type (list-at args 1))
+       else SizedVecTy 0 ErrorTy)
      else ConstructedTy name (atypes-to-codex-types args 0 [])
     is AAppType (inner-ctor) (inner-args) (s) -> atype-app-to-codex-type inner-ctor (inner-args & args)
     is otherwise -> atype-to-codex-type ctor
@@ -885,6 +889,24 @@ Section: IRDef + Chapter
   parse-unique (xs) (i) (acc) =
    if i >= list-length xs then acc
    else parse-unique xs (i + 1) (list-push acc (sexp-str (list-at xs i)))
+
+  ir-text-is-chapter : Text -> Boolean
+  ir-text-is-chapter (s) =
+   let len = text-length s
+   in ir-prefix-at s "(chapter" (ir-skip-space s 0 len) 0 len
+
+  ir-skip-space : Text, Integer, Integer -> Integer
+  ir-skip-space (s) (i) (len) =
+   if i >= len then i
+   else if is-sexp-space (char-code-at s i) then ir-skip-space s (i + 1) len
+   else i
+
+  ir-prefix-at : Text, Text, Integer, Integer, Integer -> Boolean
+  ir-prefix-at (s) (p) (i) (j) (len) =
+   if j >= text-length p then True
+   else if i + j >= len then False
+   else if char-code-at s (i + j) == char-code-at p j then ir-prefix-at s p i (j + 1) len
+   else False
 
   parse-ir-chapter : Text -> ParsedIR
   parse-ir-chapter (s) =

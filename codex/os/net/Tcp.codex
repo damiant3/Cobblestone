@@ -38,6 +38,16 @@ Section: TCP States
     is TcpTimeWait -> "TIME_WAIT"
 
 Section: TCP Segment
+ THE PAYLOAD IS A RANGE INTO A BUFFER AND NOT A LIST OF ITS OWN, so parsing a
+ segment out of a frame copies nothing: the field was 16,432 bytes on a
+ 1,514-byte frame (`net-recv-heap`). The range REPLACES the list rather than
+ sitting beside it, because two representations of the same bytes are an
+ invariant nothing enforces and they drift.
+
+ `tcp-segment-of` is how a caller with a payload list builds one, and it is
+ what every hand-written segment uses; the buffer is then the list itself and
+ the range spans the whole of it.
+
   TcpSegment = record {
     src-port : Integer between 0 and 65535,
     dst-port : Integer between 0 and 65535,
@@ -45,8 +55,24 @@ Section: TCP Segment
     ack-num : Integer,
     flags : Integer between 0 and 255,
     window : Integer between 0 and 65535,
-    payload : List Integer
+    payload-buf : List Integer,
+    payload-off : Integer,
+    payload-stop : Integer
   }
+
+  tcp-segment-of : Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> TcpSegment
+  tcp-segment-of (src-port) (dst-port) (seq) (ack) (flags) (window) (payload) =
+    TcpSegment {
+      src-port = __narrow src-port, dst-port = __narrow dst-port,
+      seq-num = seq, ack-num = ack, flags = __narrow flags, window = __narrow window,
+      payload-buf = payload, payload-off = 0, payload-stop = list-length payload
+    }
+
+  tcp-seg-payload-len : TcpSegment -> Integer
+  tcp-seg-payload-len (seg) = seg.payload-stop - seg.payload-off
+
+  tcp-seg-payload : TcpSegment -> List Integer
+  tcp-seg-payload (seg) = tcp-extract-payload (seg.payload-buf) (seg.payload-off) (seg.payload-stop)
 
   tcp-has-flag : TcpSegment, Integer -> Boolean
   tcp-has-flag (seg) (flag) = bit-and (seg.flags) flag > 0
@@ -71,24 +97,35 @@ Section: Segment Construction
     in bit-or b0 (bit-or b1 (bit-or b2 b3))
 
 Section: Segment Parsing
-  tcp-parse : List Integer -> TcpSegment
-  tcp-parse (data) =
-    if list-length data < 20 then TcpSegment {
+ THE OFFSET FORM IS THE IMPLEMENTATION AND THE BARE NAME IS A WRAPPER, so a
+ caller holding the driver's whole flat frame parses the segment where it sits
+ rather than copying it out first: that copy is 16,400 bytes on a 1,514-byte
+ frame (`net-recv-heap`). Nothing is copied here at all now: the segment's
+ payload is the range `off + hdr-len` to `stop` into the caller's own buffer.
+
+  tcp-parse-at : List Integer, Integer, Integer -> TcpSegment
+  tcp-parse-at (buf) (off) (stop) =
+    if stop - off < 20 then TcpSegment {
       src-port = 0, dst-port = 0, seq-num = 0, ack-num = 0,
-      flags = 0, window = 0, payload = []
+      flags = 0, window = 0, payload-buf = [], payload-off = 0, payload-stop = 0
     }
-    else let off-flags = read-be16 data 12
+    else let off-flags = read-be16 buf (off + 12)
     in let data-off = bit-and (bit-shru off-flags 12) 15
     in let hdr-len = data-off * 4
     in TcpSegment {
-      src-port = __narrow (read-be16 data 0),
-      dst-port = __narrow (read-be16 data 2),
-      seq-num = read-be32 data 4,
-      ack-num = read-be32 data 8,
+      src-port = __narrow (read-be16 buf off),
+      dst-port = __narrow (read-be16 buf (off + 2)),
+      seq-num = read-be32 buf (off + 4),
+      ack-num = read-be32 buf (off + 8),
       flags = __narrow (bit-and off-flags 63),
-      window = __narrow (read-be16 data 14),
-      payload = tcp-extract-payload data hdr-len (list-length data)
+      window = __narrow (read-be16 buf (off + 14)),
+      payload-buf = buf,
+      payload-off = off + hdr-len,
+      payload-stop = stop
     }
+
+  tcp-parse : List Integer -> TcpSegment
+  tcp-parse (data) = tcp-parse-at data 0 (list-length data)
 
   tcp-extract-payload : List Integer, Integer, Integer -> List Integer
   tcp-extract-payload (data) (off) (len) =
@@ -191,8 +228,8 @@ Section: State Machine Events
   TcpAction =
     | ActSend (List Integer)
     | ActEstablished
-    | ActData (List Integer)
-    | ActDataAck (List Integer) (List Integer)
+    | ActData (List Integer) (Integer) (Integer)
+    | ActDataAck (List Integer) (Integer) (Integer) (List Integer)
     | ActClosed
     | ActError (Text)
     | ActNone
@@ -283,10 +320,10 @@ Section: SYN_RECEIVED State
   tcp-step-syn-received (conn) (ev) = when ev
     is EvSegment (seg) ->
       if tcp-has-flag seg tcp-flag-ack then
-        if list-length (seg.payload) > 0 then
-          let c1 = set-recv-next (tcp-set-state conn TcpEstablished) (seg.seq-num + list-length (seg.payload))
+        if tcp-seg-payload-len seg > 0 then
+          let c1 = set-recv-next (tcp-set-state conn TcpEstablished) (seg.seq-num + tcp-seg-payload-len seg)
           in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (c1.recv-next) tcp-flag-ack (conn.send-window) []
-          in TcpStep { conn = c1, action = ActDataAck (seg.payload) ack }
+          in TcpStep { conn = c1, action = ActDataAck (seg.payload-buf) (seg.payload-off) (seg.payload-stop) ack }
         else TcpStep { conn = tcp-set-state conn TcpEstablished, action = ActEstablished }
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
@@ -305,10 +342,10 @@ Section: ESTABLISHED State
         let c1 = set-recv-next (tcp-set-state conn TcpCloseWait) (seg.seq-num + 1)
         in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (seg.seq-num + 1) tcp-flag-ack (conn.send-window) []
         in TcpStep { conn = c1, action = ActSend ack }
-      else if list-length (seg.payload) > 0 then
-        let c1 = set-recv-next conn (seg.seq-num + list-length (seg.payload))
+      else if tcp-seg-payload-len seg > 0 then
+        let c1 = set-recv-next conn (seg.seq-num + tcp-seg-payload-len seg)
         in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (c1.recv-next) tcp-flag-ack (conn.send-window) []
-        in TcpStep { conn = c1, action = ActDataAck (seg.payload) ack }
+        in TcpStep { conn = c1, action = ActDataAck (seg.payload-buf) (seg.payload-off) (seg.payload-stop) ack }
       else TcpStep { conn = conn, action = ActNone }
     is EvClose ->
       let fin = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (conn.recv-next) (bit-or tcp-flag-fin tcp-flag-ack) (conn.send-window) []

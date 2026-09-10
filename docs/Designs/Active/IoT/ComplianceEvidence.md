@@ -1,27 +1,24 @@
 # Compliance Evidence Architecture: Conformity as a Build Artifact
 
-**Created**: 2026-06-12 (reek)
-**Status**: Catalogs, report generator and **the evidence plug (2026-08-18,
-root; the "Built 2026-08-18" section below) shipped.** Built:
-`codex/foreword/core/ComplianceEvidence.codex` (requirement catalogs),
-`codex/foreword/core/ComplianceBuild.codex`,
-`codex/build/compliancereportScript.codex` (report generator), and the
-`compliance-evidence` / `compliance-report` tests, and `codex/plugs/evidence/`
+**Shipped**: the requirement catalogs
+(`codex/foreword/core/ComplianceEvidence.codex`),
+`codex/foreword/core/ComplianceBuild.codex`, the report generator
+(`codex/build/compliancereportScript.codex`), the `compliance-evidence` and
+`compliance-report` tests, and the evidence plug `codex/plugs/evidence/`
 (`EvidencePackage.codex`, `EvidencePlug.codex`, `build.ps1`, `run.ps1`,
-`test-evidence.ps1`). Not built: FactStore ingestion of the package, the
-per-board residual checklist and the threat-model cross-references (the
-section below lists them).
+`test-evidence.ps1`) including FactStore ingestion and the per-board
+residual appendix. **Open work is "Still to build" below.**
+
 **Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 4,
 `docs/Reference/IoT/Compliance/` (EU CRA, ETSI EN 303 645, NISTIR 8259,
 IEC 62443), prospectus Phase 3
 
 ## Note: This Doc Duplicates the Compliance Matrix
 
-The per-requirement tables below now exist in a second place:
-`docs/Designs/Active/IoT/CRA-Compliance-Matrix.md`. Two hand-maintained copies of
-the same requirement mapping is precisely the staleness problem this
-design was written to abolish, and the copies will diverge -- one of them
-already will have by the time this is read.
+The per-requirement tables below exist in a second place:
+`docs/Designs/Active/IoT/CRA-Compliance-Matrix.md`. Two hand-maintained
+copies of the same requirement mapping is precisely the staleness problem
+this design was written to abolish, and the two copies diverge.
 
 **Recommendation: merge.** `CRA-Compliance-Matrix.md` becomes the single
 requirement mapping (it is a Reference doc, which is what a requirement
@@ -246,7 +243,7 @@ seed yields this exact binary. That is a claim no mainstream
 toolchain can sign. It anchors the whole package: every other
 artifact hash hangs off a binary the reviewer can re-derive.
 
-## Built 2026-08-18 (root): the evidence plug
+## The evidence plug
 
 `codex/plugs/evidence/` is the plug the Design section describes, in the
 file-I/O plug shape (`html`): a bare-metal CDX (`build.ps1` bundles
@@ -294,7 +291,7 @@ unsigned and says nothing else. **Constraint 3 measured**: `no-log` and
 `not-cdx` arms show every claim whose artifact is absent is not-claimed with
 the reason, and `dirty-log` shows a red build cannot read as a clean one.
 
-**FactStore ingestion, added 2026-08-18.** `run.ps1 -FactImage <disk>` records
+**FactStore ingestion.** `run.ps1 -FactImage <disk>` records
 the package as a fact in the disk's Codex fact-store partition (the one
 `build/build-img.ps1` puts at the top of every image), through a second
 bare-metal program `FactIngest.codex` (kind 50, the AppPersist register):
@@ -305,13 +302,13 @@ run for an unchanged build finds the fact and does not append (`already
 present`), and `Evidence.fact.txt` records what landed. `FactIngest` declares
 `Device.Block` on `opening`, which a plug does not, because the runtime grant
 mask is derived from `opening`'s effect row and a block read with no grant
-answers zeros silently (DevelopersGuide pitfall, added the same day). It is a
-`CapabilityFact`-shaped record in the log rather than a new FactKind: kind 50
-is an AppPersist integer register, so no seed change was needed. The
-`fact-ingest` and `no-store` arms of `test-evidence.ps1` measure both the
+answers zeros silently (the DevelopersGuide carries that pitfall). The record
+is `CapabilityFact`-shaped in the log rather than a new FactKind, because
+kind 50 is an AppPersist integer register and therefore needs no seed change.
+The `fact-ingest` and `no-store` arms of `test-evidence.ps1` measure both the
 landing and the refusal on a partitioned disk with no fact partition.
 
-**Per-board residual, added 2026-08-18.** The package now carries a per-board
+**Per-board residual.** The package carries a per-board
 appendix keyed by the `-Board` string (`ev-board-posture`): four public SoC
 attributes (flash encryption, hardware crypto, secure boot, hardware RNG),
 each with the requirement sections it moves from the manufacturer's checklist
@@ -324,12 +321,15 @@ is identical across ESP32-C6 and STM32F4); only the `board.*` facts and the
 HTML appendix move. Boards named: ESP32-C6, nRF9160, nRF52840, STM32L4,
 STM32F4, RP2040, FE310, Pi4 (`codex/boards/` has a chapter for each).
 
-**Not built, in the order they matter.** (1) The catalog merge with
-`CRA-Compliance-Matrix.md` recommended above is still pending. (2) The
-ThreatModel cross-references (the R1-R10 residual-risk appendix) are not yet
-attached per claim. (3) A wiring into `build.ps1` or a device build so the
-package is emitted alongside every firmware CDX; today `run.ps1` is called by
-hand or by a lane's own script.
+## Still to build, in the order they matter
+
+1. The catalog merge with `CRA-Compliance-Matrix.md` recommended above.
+2. The ThreatModel cross-references (the R1-R10 residual-risk appendix),
+   attached per claim.
+3. A wiring into `build.ps1` or a device build, in order to emit the package
+   alongside every firmware CDX. Today `run.ps1` is called by hand or by a
+   lane's own script.
+
 ## Memory and Time-Complexity Risk
 
 The plug processes inputs linear in binary + log size, well under
@@ -353,10 +353,9 @@ must stream the log rather than `buf-read-bytes` it into lists.
    (BS2/BS3) the package includes by default.
 4. **PDF rendering.** HTML now (plug exists as a pattern); PDF via
    a future plug or print-from-HTML guidance. Not load-bearing.
-5. **Durable forensic persistence** (gap noted twice above) -- the
+5. **Durable forensic persistence** (the gap noted twice above): the
    audit-trail claims for CRA (2)(k) and 8259A state-awareness are
    capped at MECHANISM(partial) until the forensic chain persists
-   across power loss. **The evidence package's own persistence is now
-   the fact store** (`-FactImage`), which is that durable log; what stays
-   open is the forensic chain of runtime DECISIONS, not the build-time
-   evidence record.
+   across power loss. The evidence package's own persistence is the fact
+   store (`-FactImage`), which is that durable log. What stays open is the
+   forensic chain of runtime DECISIONS, not the build-time evidence record.

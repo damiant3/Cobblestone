@@ -248,19 +248,18 @@ Semantic equivalence of text mode, byte-identical text (pingpong), and
 byte-identical binary (hard fixed point), plus the BVT. **The standing
 gate `build/build.ps1 -Internal` is BANNED (Damian, 2026-09-02 15:52:
 "it shaln't be run"); the bare `build/build.ps1` is the release gate and
-is Damian's.** What a lane runs is below, under "THE BOX AND MAIN", and
-every run of it that starts a guest is asked of the commander first:
+is Damian's.** What a lane runs is below, under "THE BOX AND MAIN", each
+launched on the lane's own measurement of the box:
 
 ```powershell
 build/compile.ps1 -Src X -Out Y -Log Z -Kernel seed\Codex.cdx   # one .codex file; -Log is MANDATORY
                                                                 # (omitting it hangs headless), -Kernel names the compiler
-build/bvt.ps1 -CodexCdx <candidate> -Jobs 4                     # the BVT over a candidate compiler, one granted run
+build/bvt.ps1 -CodexCdx <candidate> -Jobs 4                     # the BVT over a candidate compiler, a fan-out
 ```
 
 A change is done when the tests it touches pass, compiled and run one at
 a time; a seed-affecting change adds the scratch fixed point, the BVT,
-and the signed, self-verified seed, each a granted run, then the token
-for ~90 seconds. If a proof is red, shelve, say so, and re-evaluate. To
+and the signed, self-verified seed, then the token for ~90 seconds. If a proof is red, shelve, say so, and re-evaluate. To
 check one thing, compile and run that one test, never a sweep. **Batch
 your CLs (Damian, 2026-09-01):** a many-CL arc proves once, at the end,
 and takes one token.
@@ -287,21 +286,23 @@ the BOX. the Fleet Commander is how you synchronize on the BOX").**
 - **Main:** the AgentGrid build token, requested only to land a
   seed-affecting CL that is ALREADY PROVEN, held for the head re-check,
   submit, copy-up and release, about 90 seconds. No gate runs under it.
-- **The box:** every run that starts a guest, a gate or a single compile
-  alike, is asked of the commander by ONE message naming the run, its
-  guest count and its length. The lane ends its turn with `status.json`
-  saying `WaitingForBox`; the commander grants FIFO by message; the lane
-  launches detached and ends its turn with the wait named; the commander
-  bumps on exit. A lane never decides a run by reading the sampler and
-  never waits in the foreground.
+- **The box is not gated per run (Damian, 2026-09-07 19:35).** A serial
+  single-guest run launches unasked above 1.5 GiB free; a fan-out
+  (`-Jobs N`, a bed, a battery) launches on the lane's own runtime
+  measurement against the per-guest bar in `CoordinationProtocol.md`
+  ("The token does not cover RAM": 1 GiB per run guest, 0.25 GiB per
+  compile guest, measured 2026-09-08). The lane launches detached, names
+  the run, its guest count, PID and log in `status.json`, and watches its
+  own run. The commander holds the box only for a release gate's compiler
+  stages and arbitrates a collision. Never wait in the foreground.
 - **`-Internal` is BANNED (Damian, 2026-09-02 15:52: "it shaln't be
   run").** A change is verified by compiling and running the tests it
   touches, one at a time; a seed-affecting change adds the scratch
   fixed point (stage 2 == stage 3 from the depot seed), the BVT
   (`build/bvt.ps1`) on that candidate, and then the seed path: the
   signer compiled and run over the candidate and `test-self-verify`
-  printing that the seed verifies itself, before it is installed; each
-  of those is a granted single-guest run. A seed lands signed and
+  printing that the seed verifies itself, before it is installed. A seed
+  lands signed and
   self-verified or not at all (root, 2026-09-02 16:15, red's and
   fester's first landings under this rule). The full gate belongs to
   releases.

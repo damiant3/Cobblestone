@@ -476,6 +476,9 @@ Section: Unify
     is VectorMaskTy (na) -> when b
      is VectorMaskTy (nb) -> na == nb
      is otherwise -> False
+    is SizedVecTy (na) (ta) -> when b
+     is SizedVecTy (nb) (tb) -> na == nb & types-equal ta tb
+     is otherwise -> False
     is TypeCon (na) -> when b
      is TypeCon (nb) -> na.value == nb.value
      is otherwise -> False
@@ -646,13 +649,19 @@ Section: Unify
      is otherwise -> unify-at st inner-a b span (depth + 1) inv
     is VectorTy (na) (ta) -> when b
      is VectorTy (nb) (tb) ->
-      if na == nb | na < 0 | nb < 0 then unify-at st ta tb span (depth + 1) True
+      if na == nb then unify-at st ta tb span (depth + 1) True
       else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
     is VectorMaskTy (na) -> when b
      is VectorMaskTy (nb) ->
       if na == nb then (True, st)
+      else unify-mismatch st a b span
+     is ErrorTy -> (True, st)
+     is otherwise -> unify-mismatch st a b span
+    is SizedVecTy (na) (ta) -> when b
+     is SizedVecTy (nb) (tb) ->
+      if na == nb | na < 0 | nb < 0 then unify-at st ta tb span (depth + 1) True
       else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
@@ -728,7 +737,34 @@ Section: Unify
   unify-mismatch : UnificationState, CodexType, CodexType, SourceSpan -> (Boolean, UnificationState)
   unify-mismatch (st) (a) (b) (span) =
    let base = "Type mismatch: " & type-desc a & " vs " & type-desc b
-   in (False, add-unify-error st cdx-type-mismatch (base & (ctor-as-type-hint a & ctor-as-type-hint b)) span)
+   in (False, add-unify-error st cdx-type-mismatch (base & (ctor-as-type-hint a & ctor-as-type-hint b) & vec-family-hint a b) span)
+
+  vec-family-hint : CodexType, CodexType -> Text
+  vec-family-hint (a) (b) =
+   when a
+    is VectorTy (na) (ta) ->
+     when b
+      is VectorTy (nb) (tb) -> if na == nb then "" else vec-width-note
+      is SizedVecTy (nb) (tb) -> vec-family-note
+      is otherwise -> ""
+    is VectorMaskTy (na) ->
+     when b
+      is VectorMaskTy (nb) -> if na == nb then "" else vec-mask-note
+      is otherwise -> ""
+    is SizedVecTy (na) (ta) ->
+     when b
+      is VectorTy (nb) (tb) -> vec-family-note
+      is otherwise -> ""
+    is otherwise -> ""
+
+  vec-width-note : Text
+  vec-width-note = " (note: the vec- builtins are declared over Vector 2 and emit two lanes, so a wider vector is refused here rather than read past its second lane at runtime. vec4-splat and vec4-extract are the only wider pair and only for Real approximate; widening the vec- family past two lanes is not built.)"
+
+  vec-mask-note : Text
+  vec-mask-note = " (note: mask-any, mask-all, mask-none, mask-count and vec-select take a VectorMask 2. Comparing wider vectors makes a wider mask and nothing consumes one.)"
+
+  vec-family-note : Text
+  vec-family-note = " (note: Vector is packed SIMD lanes and SizedVec is the growable list-shaped family. vec-empty, vec-singleton, vec-cons, vec-head and vec-length are SizedVec; every other vec- and mask- builtin is packed. The two have different layouts and are deliberately not interchangeable: see DevelopersGuide.md, 'SizedVec N T is the other one'.)"
 
   ctor-as-type-hint : CodexType -> Text
   ctor-as-type-hint (ty) =
@@ -787,6 +823,7 @@ Section: Unify
     is UnitTy (name) (inner) -> "Unit:" & name.value
     is VectorTy (vn) (vt) -> "Vector " & integer-to-text vn & " " & type-desc vt
     is VectorMaskTy (n) -> "VectorMask " & integer-to-text n
+    is SizedVecTy (vn) (vt) -> "SizedVec " & integer-to-text vn & " " & type-desc vt
     is TypeCon (name) -> "TCon:" & name.value
     is TypeApply (f) (a) -> "App[" & type-desc f & " " & type-desc a & "]"
     is LinearTy (inner) -> "linear " & type-desc inner
@@ -1473,6 +1510,7 @@ Section: Deep Type Copy
     is UnitTy (n) (inner) -> cons-mix (cons-mix 23 (address-of (mcopy-name n mc))) (address-of (mcopy-type inner (depth + 1) mc))
     is VectorTy (vn) (vt) -> cons-mix (cons-mix 24 vn) (address-of (mcopy-type vt (depth + 1) mc))
     is VectorMaskTy (mn) -> cons-mix 25 mn
+    is SizedVecTy (vn) (vt) -> cons-mix (cons-mix 30 vn) (address-of (mcopy-type vt (depth + 1) mc))
     is TypeCon (n) -> cons-mix 26 (address-of (mcopy-name n mc))
     is TypeApply (tf) (ta) -> cons-mix (cons-mix 27 (address-of (mcopy-type tf (depth + 1) mc))) (address-of (mcopy-type ta (depth + 1) mc))
     is ForAllEff (i) (b) -> cons-mix (cons-mix 28 i) (address-of (mcopy-type b (depth + 1) mc))
@@ -1504,6 +1542,7 @@ Section: Deep Type Copy
     is UnitTy (n) (inner) -> UnitTy (mcopy-name n mc) (mcopy-type inner (depth + 1) mc)
     is VectorTy (vn) (vt) -> VectorTy vn (mcopy-type vt (depth + 1) mc)
     is VectorMaskTy (mn) -> VectorMaskTy mn
+    is SizedVecTy (vn) (vt) -> SizedVecTy vn (mcopy-type vt (depth + 1) mc)
     is TypeCon (n) -> TypeCon (mcopy-name n mc)
     is TypeApply (tf) (ta) -> TypeApply (mcopy-type tf (depth + 1) mc) (mcopy-type ta (depth + 1) mc)
     is ForAllEff (i) (b) -> ForAllEff i (mcopy-type b (depth + 1) mc)

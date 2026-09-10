@@ -148,9 +148,41 @@ other 16 MB images sitting in the fleet's `build-output/` directories on
 entries say only "on blu's box", and that vagueness is half of what made
 `build-output/` look like a safe habit.
 
-## THE SITTING QUEUE: what is waiting on metal, in the order it should fly
+## THE SITTING QUEUE IS CLOSED (2026-09-09 02:40): THE LAST SITTING HAS FLOWN
 
-### THE LAST SITTING (Damian's ruling, 2026-09-07 21:20: ONE hardware sitting remains, for all time)
+Sitting 15 flew on 2026-09-09 and stopped at the ladder's first write to the
+part. No flight follows it, for all time (Damian's ruling of 2026-09-07,
+restated by him on 2026-09-09 after the result). Nothing below is a queue any
+more: no metal question is admitted, no flight is composed, no image is
+flashed to fly. A metal-gated item is answered in a bed or deleted as
+unanswerable; "rides the last sitting" is no longer a state any register may
+carry. The I219 medium-death hunt stays parked and does not revive on a flight.
+
+### SITTING 15, 2026-09-09: `diag-sitting15.img` 47F29D50, disk 2, the ASUS
+
+Flashed by root elevated, all 16,777,216 bytes and the four SpecFit sectors
+verified; peer `echo-peer.ps1` on `192.168.6.141:7`, firewall rule widened to
+every profile before the boot (the box sat on a Public profile and the rule
+allowed Private only, which no earlier flight could have passed either).
+
+| row | predicted | actual |
+|---|---|---|
+| 1-7 passive, `nicsit` | verdict rows | painted; `nicsit` ended on its poll line, `poll 1000000 empty=33152us tick100k=3315us hpet-hz=23999999` (bed 13034us / 1303us): the board's empty poll is 2.5x the bed's, HPET 24 MHz |
+| record channel | `record=peer opened` | never printed; the peer log holds zero connections, `echo-peer.record` was never created |
+| bank | `bank=ok` | never opened: the bank opens after `drec-open` |
+| `nicinit` and after | rows | never reached |
+
+The box stopped after `nicsit`'s last line, inside one of the three steps the
+ladder runs before it prints again: `usb-attach`, the ESP select and cfg read,
+or `net-driver-bring-up` in `drec-open` (the e1000 reset, where sitting 10 and
+flight 1 also stopped). The glass cannot tell the three apart: the record
+channel's bring-up, which runs first by root's `b3` EARLY ruling, carried no
+serial line before it, where `nicinit` carries one before every step. That is
+root's composition error and it is recorded here once; there is no flight to
+fix it on. Every question aboard (asde, NIC-4, NIC-6, WORKS-24, the WORKS-62
+flush, the record channel) has its one metal answer: not reached.
+
+### THE LAST SITTING (root's reading of Damian's 2026-09-07 21:10 turn, landed 21:13 as CL 23198 and ratified by him 2026-09-09 02:21: ONE hardware sitting remains, for all time). FLOWN 2026-09-09, above. The attribution is corrected by TheLostParadise.md, ROOT-F4 and RED-F11: the words "one sitting" and "for all time" are root's, not his.
 
 This queue no longer feeds sittings one question at a time. One flight is
 left and it is composed here, flown only when root has signed it off, and
@@ -902,7 +934,7 @@ readable only off a photograph.
 | 16 asde | a row | NO ROW. Glass stops at `-> RESET s2`, so the quiesce completed and the box stopped inside `e1000-reset`, with the medium alive |
 | 9 sink | `ok` | never ran, deferred behind asde |
 
-## PRE-FLIGHT CARD, 2026-09-08: `diag-sitting15.img` 47F29D50, blu's NIC/PHY sitting, rehearsed and ready to flash
+## PRE-FLIGHT CARD, 2026-09-08: `diag-sitting15.img` 47F29D50, blu's NIC/PHY sitting. FLOWN 2026-09-09; the result is under THE SITTING QUEUE IS CLOSED.
 
 Built by fester from `build/boot/diag-sitting15.cfg` on seed `EFE7A6AC`, `id`
 `eeb83621`. Rehearsed 50 of 50 arms as these exact bytes
@@ -4544,7 +4576,7 @@ volume mounts cleanly (`bps == 512` is the only thing the volume rung checks)
 and holds no `SOURCE.SRC`, which is exactly the metal picture: volume rung
 green, literal path unresolvable, scope clean.
 
-**The fix (CL 14694), three layers, each with a fallback to the old path:**
+**The fix (main 15041, 2026-08-14, reek 15039), three layers, each with a fallback to the old path:**
 the stub stashes the firmware's ImageHandle at cell 30712 beside the
 SystemTable; both UEFI block helpers bind
 `ImageHandle -> LoadedImage -> DeviceHandle -> Block I/O` (the device the
@@ -4577,7 +4609,7 @@ image carries 2.5 GB.
 
 **The flight card, one boot:**
 
-- Image: `build/boot/a5fix.img` (in the depot with CL 14694). Payload is the
+- Image: `build/boot/a5fix.img` (in the depot with main 15041). Payload is the
   compiler `-Uefi` on seed `CE8246EB`, no `-EntryStart`, `-HeapPages 655360`,
   `SOURCE.SRC` = the LF 2,800,253-byte concatenated compiler source.
 - Colours are the `a5noentry` table below, plus: MAGENTA with a growing WHITE

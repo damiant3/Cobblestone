@@ -1,0 +1,659 @@
+Chapter: PipelineRun
+
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+  cites Shell chapter Pipeline
+  cites Workflow chapter WorkflowTypes
+
+ A build pipeline executed as a process instance. The pipeline model says what a
+ build IS; this says what one RUN of it did, and it invents no vocabulary to do so:
+ a `Pipeline` becomes a `ProcessDef`, a `PipeStage` a `StepDef`, a run a
+ `ProcessInstance`, and `pi-history` is the build log with the MEANING of each exit
+ beside it rather than a number a reader has to look up.
+
+ THIS CHAPTER LIVES IN THE APP QUIRE AND NOT BESIDE `Pipeline.codex`, because
+ Library Rule 2 fixes the order codex.foreword -> codex -> codex.os -> apps and
+ forbids depending rightward. A foreword chapter cannot cite `WorkflowTypes`, so the
+ translation lives on the side that is allowed to see both.
+
+ IT DOES NOT CITE `WorkflowEngine`, and that is a cost decision rather than a
+ preference. The engine's `evaluate-transitions` and `eval-condition` do exactly
+ what is wanted, but that chapter cites the whole data-server stack, which would put
+ a database in the unit of every build tool that wants to read a pipeline. So the
+ edge selection here matches the two condition shapes THIS translation emits and
+ refuses anything else, rather than reimplementing `ConditionOp` in general.
+
+Section: Naming
+
+ A stage's id is its `ps-name`, because that is what a reader of the build log has
+ in front of them, and the terminal step is named once here so a transition and a
+ test agree on it.
+
+  pipe-end-step : Text
+  pipe-end-step = "END"
+
+  pipe-exit-key : Text
+  pipe-exit-key = "exit"
+
+  pipe-outcome-key : Text
+  pipe-outcome-key = "outcome"
+
+ THE ONWARD EDGE IS NOT `Always`, AND THE FIRST RUN OF THIS CHAPTER IS WHY. With
+ `always-transition` on the onward edge, a stage that exited with a code NO OUTCOME
+ EXPLAINS matched that edge and the run walked on reporting `active`: exit 9 on the
+ subject below was swallowed silently, which is the defect `check-pipe-verdicts`
+ exists to catch, reintroduced one layer up. The onward edge therefore tests for the
+ ABSENCE of an exit, and an unexplained code now finds no edge at all.
+
+  pipe-no-exit : Text
+  pipe-no-exit = "none"
+
+Section: Steps
+
+ A GROUP BECOMES ONE STEP OF TYPE `SubProcess` RATHER THAN BEING FLATTENED. A group
+ carries a repeat, a guard and a handler, which are three edges the first pass does
+ not build, and flattening its steps into the parent would emit a process that runs
+ them unconditionally once. That is a plausible wrong answer, so the group is named
+ as a subprocess and its interior is left for the pass that builds those edges.
+
+ `AssignToInitiator` and the rest are about people, so `Unassigned` is the honest
+ value here rather than an invented one, and `sd-form`, `sd-sla` and
+ `sd-required-docs` stay empty for the same reason.
+
+  pipe-step-of : PipeStage -> StepDef
+  pipe-step-of (s) = StepDef {
+    sd-id = s.ps-name,
+    sd-name = s.ps-name,
+    sd-type = AutomatedAction,
+    sd-description = s.ps-why,
+    sd-form = None,
+    sd-assignment = Unassigned,
+    sd-sla = None,
+    sd-actions = [],
+    sd-required-docs = [],
+    sd-x = 0,
+    sd-y = 0
+  }
+
+  pipe-group-step : Text -> StepDef
+  pipe-group-step (name) = StepDef {
+    sd-id = name,
+    sd-name = name,
+    sd-type = SubProcess name,
+    sd-description = "a group: its repeat, guard and handler are edges this pass does not build",
+    sd-form = None,
+    sd-assignment = Unassigned,
+    sd-sla = None,
+    sd-actions = [],
+    sd-required-docs = [],
+    sd-x = 0,
+    sd-y = 0
+  }
+
+  pipe-group-name : Integer -> Text
+  pipe-group-name (i) = "group-" & show i
+
+ A STAGE THAT FANS OUT NEEDS NO CONSTRUCTOR, because `ps-needs` already says so: a
+ stage that fans out is a stage that needs more than one guest. `PrDriven RkGuests`
+ is a count the run supplies and `PrGuests n` is one the stage names, and the KIND is
+ what keeps `PrDriven RkMemoryMb` and `PrDriven RkPort` out of this: they size a
+ guest, they do not multiply it.
+
+  pipe-kind-guests : PipeResourceKind -> Integer
+  pipe-kind-guests (k) =
+    when k
+      is RkGuests -> 0
+      is RkMemoryMb -> 1
+      is RkPort -> 1
+
+  pipe-guest-count : PipeResource -> Integer
+  pipe-guest-count (r) =
+    when r
+      is PrGuests (n) -> n
+      is PrMemoryMb (n) -> 1
+      is PrPort (n) -> 1
+      is PrKernel (e) -> 1
+      is PrDriven (k) (e) -> pipe-kind-guests k
+
+ Zero means DRIVEN, not none: the expression is resolved by the run and no honest
+ number can be read off the declaration (L-REQUEST).
+
+  pipe-needs-fan : List PipeResource, Integer -> Boolean
+  pipe-needs-fan (rs) (i) =
+    if i >= list-length rs then False
+    else let n = pipe-guest-count (list-at rs i)
+    in if n == 0 then True else (if n > 1 then True else pipe-needs-fan rs (i + 1))
+
+  pipe-fans-out : PipeStage -> Boolean
+  pipe-fans-out (s) = pipe-needs-fan (s.ps-needs) 0
+
+ What the join can be held to. A stage naming its own count has a denominator; a
+ driven one does not, and saying so is what stops a landed tally reading as a
+ fraction of a number nobody measured (L-DENOM).
+
+  pipe-declared-branches : List PipeResource, Integer -> Maybe Integer
+  pipe-declared-branches (rs) (i) =
+    if i >= list-length rs then None
+    else let n = pipe-guest-count (list-at rs i)
+    in if n > 1 then Just n else pipe-declared-branches rs (i + 1)
+
+  pipe-branches-expected : PipeStage -> Maybe Integer
+  pipe-branches-expected (s) = pipe-declared-branches (s.ps-needs) 0
+
+  pipe-split-name : Text -> Text
+  pipe-split-name (name) = name & "-split"
+
+  pipe-join-name : Text -> Text
+  pipe-join-name (name) = name & "-join"
+
+  pipe-branch-prefix : Text -> Text
+  pipe-branch-prefix (name) = name & "-branch-"
+
+  pipe-branch-name : Text, Integer -> Text
+  pipe-branch-name (name) (i) = pipe-branch-prefix name & show i
+
+  pipe-split-step : Text -> StepDef
+  pipe-split-step (name) = StepDef {
+    sd-id = pipe-split-name name,
+    sd-name = pipe-split-name name,
+    sd-type = ParallelSplit,
+    sd-description = "the stage needs more than one guest, so its branches begin here",
+    sd-form = None,
+    sd-assignment = Unassigned,
+    sd-sla = None,
+    sd-actions = [],
+    sd-required-docs = [],
+    sd-x = 0,
+    sd-y = 0
+  }
+
+  pipe-join-step : Text -> StepDef
+  pipe-join-step (name) = StepDef {
+    sd-id = pipe-join-name name,
+    sd-name = pipe-join-name name,
+    sd-type = ParallelJoin,
+    sd-description = "every branch has landed; the join counts what completed and what was skipped apart",
+    sd-form = None,
+    sd-assignment = Unassigned,
+    sd-sla = None,
+    sd-actions = [],
+    sd-required-docs = [],
+    sd-x = 0,
+    sd-y = 0
+  }
+
+ A GROUP'S INTERIOR IS EXPANDED, so its steps are real steps with their own status
+ and their own events. The group itself is still named, as a `SubProcess` step, but
+ the name is now a HEADER a reader can see in the graph rather than a stand-in for
+ the interior: the three edges below are what make the interior's control flow
+ explicit.
+
+  pipe-step-defs : List PipeStep, Integer, List StepDef -> List StepDef
+  pipe-step-defs (ss) (i) (acc) =
+    if i >= list-length ss then acc
+    else let next = when list-at ss i
+      is PsStage (s) ->
+        if pipe-fans-out s then list-push (list-push (list-push acc (pipe-split-step (s.ps-name))) (pipe-step-of s)) (pipe-join-step (s.ps-name))
+        else list-push acc (pipe-step-of s)
+      is PsGroup (rep) (guard) (handler) (inner) ->
+        let withHeader = list-push acc (pipe-group-step (pipe-group-name i))
+        in let withInner = pipe-step-defs inner 0 withHeader
+        in when handler
+          is Just (h) -> list-push withInner (pipe-step-of h)
+          is None -> withInner
+    in pipe-step-defs ss (i + 1) next
+
+ The name a run ENTERS for a step: a stage is itself, and a group is its HEADER.
+ The header is a routing node rather than a label, and it has to be, because the
+ guard is an edge OUT of it: pointing the previous stage straight at the interior
+ would make the guard unreachable and every guarded group would run unconditionally.
+
+  pipe-entry-name : List PipeStep, Integer, Text -> Text
+  pipe-entry-name (ss) (i) (onward) =
+    if i >= list-length ss then onward
+    else when list-at ss i
+      is PsStage (s) -> if pipe-fans-out s then pipe-split-name (s.ps-name) else s.ps-name
+      is PsGroup (rep) (guard) (handler) (inner) -> pipe-group-name i
+
+ The name a run LEAVES a step from: a stage is itself, and a group is its LAST
+ interior step, which is where the repeat edge goes back from.
+
+  pipe-last-name : List PipeStep, Integer, Text -> Text
+  pipe-last-name (ss) (i) (fallback) =
+    if list-length ss == 0 then fallback
+    else let lastIx = list-length ss - 1
+    in when list-at ss lastIx
+      is PsStage (s) -> if pipe-fans-out s then pipe-join-name (s.ps-name) else s.ps-name
+      is PsGroup (rep) (guard) (handler) (inner) -> pipe-last-name inner 0 fallback
+
+Section: Verdicts as transitions
+
+ A VERDICT IS AN OUTGOING EDGE, which is what makes the field executable rather
+ than documentary. Every outcome a stage declares becomes one `TransitionDef` to the
+ terminal step, carrying the outcome's own sentence as its label, and the stage then
+ gets one `Always` edge to the next stage for the case where it did not exit at all.
+
+ ORDER IS LOAD-BEARING: the outcome edges are emitted BEFORE the `Always` edge,
+ because a matcher walks the list and takes the first hit, so an `Always` placed
+ first would swallow every refusal.
+
+ An exit code is testable by equality. A passthrough, a computed code and a throw
+ are not, so each is emitted against the `outcome` key instead: a driver names the
+ kind it observed and the label still carries the meaning. That keeps all four
+ outcome kinds in the graph rather than silently dropping three of them.
+
+  pipe-outcome-edge : Text, PipeOutcome, Integer -> TransitionDef
+  pipe-outcome-edge (from) (o) (i) =
+    when o
+      is PoExit (n) (why) ->
+        transition (from & "-exit-" & show n) from pipe-end-step (Equals pipe-exit-key (show n)) why
+      is PoPassthrough (why) ->
+        transition (from & "-passthrough") from pipe-end-step (Equals pipe-outcome-key "passthrough") why
+      is PoComputed (why) ->
+        transition (from & "-computed") from pipe-end-step (Equals pipe-outcome-key "computed") why
+      is PoThrow (why) ->
+        transition (from & "-throw") from pipe-end-step (Equals pipe-outcome-key "throw") why
+
+  pipe-outcome-edges : Text, List PipeOutcome, Integer, List TransitionDef -> List TransitionDef
+  pipe-outcome-edges (from) (os) (i) (acc) =
+    if i >= list-length os then acc
+    else pipe-outcome-edges from os (i + 1) (list-push acc (pipe-outcome-edge from (list-at os i) i))
+
+  pipe-verdicts-of : PipeStep -> List PipeOutcome
+  pipe-verdicts-of (st) =
+    when st
+      is PsStage (s) -> s.ps-verdict
+      is PsGroup (rep) (guard) (handler) (inner) -> []
+
+ THE DRIVER NAMES WHAT IT OBSERVED, for a group exactly as for an outcome. A guard
+ is a `ShellExpr` and a repeat is a `PipeRepeat`, and neither is a `ConditionOp`: a
+ runner that pretended to evaluate a shell expression would be inventing an answer.
+ So each group edge tests a key the driver sets from the real run, and the KEY NAMES
+ THE GROUP, so two groups in one pipeline cannot be confused.
+
+  pipe-guard-key : Text -> Text
+  pipe-guard-key (g) = "guard-" & g
+
+  pipe-repeat-key : Text -> Text
+  pipe-repeat-key (g) = "repeat-" & g
+
+  pipe-handler-key : Text -> Text
+  pipe-handler-key (g) = "handler-" & g
+
+  pipe-join-key : Text -> Text
+  pipe-join-key (name) = "join-" & name
+
+ A HANDLER IS AN EDGE FROM EVERY STEP IN THE GROUP, which is what makes
+ `try`/`finally` expressible: the cleanup runs however the guarded steps end, so
+ there is no single place to hang it.
+
+  pipe-handler-edges : List PipeStep, Integer, Text, Text, List TransitionDef -> List TransitionDef
+  pipe-handler-edges (ss) (i) (g) (target) (acc) =
+    if i >= list-length ss then acc
+    else let here = pipe-entry-name ss i target
+    in let one = transition (here & "-to-" & target) here target (Equals (pipe-handler-key g) "true") "the group's handler runs however this step ended"
+    in pipe-handler-edges ss (i + 1) g target (list-push acc one)
+
+  pipe-edges : List PipeStep, Integer, Text, List TransitionDef -> List TransitionDef
+  pipe-edges (ss) (i) (onward) (acc) =
+    if i >= list-length ss then acc
+    else let after = if i + 1 >= list-length ss then onward else pipe-entry-name ss (i + 1) onward
+    in let next = when list-at ss i
+      is PsStage (s) ->
+        let from = s.ps-name
+        in let withOutcomes = pipe-outcome-edges from (s.ps-verdict) 0 acc
+        in if pipe-fans-out s then
+          (let splitIn = transition (from & "-split-in") (pipe-split-name from) from (Equals pipe-exit-key pipe-no-exit) "the branches begin"
+          in let joinIn = transition (from & "-join-in") from (pipe-join-name from) (Equals (pipe-join-key from) "true") "every branch has landed, so the fan-out joins"
+          in let joinOut = transition (from & "-next") (pipe-join-name from) after (Equals pipe-exit-key pipe-no-exit) "the join is done; the run continues"
+          in list-push (list-push (list-push withOutcomes splitIn) joinIn) joinOut)
+        else (let onwardEdge = transition (from & "-next") from after (Equals pipe-exit-key pipe-no-exit) "the stage did not exit; the run continues"
+          in list-push withOutcomes onwardEdge)
+      is PsGroup (rep) (guard) (handler) (inner) ->
+        let g = pipe-group-name i
+        in let entry = pipe-entry-name inner 0 after
+        in let leave = pipe-last-name inner 0 after
+        in let a1 = pipe-edges inner 0 after acc
+        in let guardIn = transition (g & "-guard-in") g entry (Equals (pipe-guard-key g) "true") "the group's guard held, so its steps run"
+        in let guardSkip = transition (g & "-guard-skip") g after (Equals (pipe-guard-key g) "false") "the group's guard did not hold, so its steps are SKIPPED rather than absent"
+        in let plainIn = transition (g & "-in") g entry (Equals pipe-exit-key pipe-no-exit) "the group is entered"
+        in let a2 = when guard
+          is Just (c) -> list-push (list-push a1 guardIn) guardSkip
+          is None -> list-push a1 plainIn
+        in let a3 = when rep
+          is Just (r) ->
+            let back = transition (g & "-repeat") leave entry (Equals (pipe-repeat-key g) "true") ("the group repeats: " & pipe-repeat-text r)
+            in list-push a2 back
+          is None -> a2
+        in when handler
+          is Just (h) -> pipe-handler-edges inner 0 g (h.ps-name) a3
+          is None -> a3
+    in pipe-edges ss (i + 1) onward next
+
+Section: The definition
+
+ `pd-sla-defaults` IS READ BY NOTHING HERE and the zeros say so. A build stage has
+ no service-level deadline, and the field is not a `Maybe`, so zero is the only
+ value that is not an invention. **A zero deadline would read as an immediate breach
+ to `check-sla`**, which this chapter never calls; a pass that does call it must
+ revisit this rather than inherit it.
+
+  pipe-no-sla : SlaDef
+  pipe-no-sla = SlaDef {
+    sla-warn-secs = 0,
+    sla-deadline-secs = 0,
+    sla-escalate-to = "",
+    sla-auto-action = SlaNotify
+  }
+
+  pipeline-to-process : Pipeline -> ProcessDef
+  pipeline-to-process (pl) = ProcessDef {
+    pd-id = pl.pl-name,
+    pd-name = pl.pl-name,
+    pd-version = 1,
+    pd-description = pl.pl-doc,
+    pd-category = "build",
+    pd-steps = pipe-step-defs (pl.pl-stages) 0 [],
+    pd-transitions = pipe-edges (pl.pl-stages) 0 pipe-end-step [],
+    pd-start-step = pipe-entry-name (pl.pl-stages) 0 pipe-end-step,
+    pd-roles = [],
+    pd-sla-defaults = pipe-no-sla,
+    pd-data-schema = [],
+    pd-active = True
+  }
+
+Section: Selecting the edge
+
+ The two shapes this translation emits, and nothing else. A condition it does not
+ recognise answers `None` rather than a default, so an unhandled shape stops the run
+ instead of silently taking a path.
+
+  pipe-cond-holds : ConditionOp, Text, Text -> Boolean
+  pipe-cond-holds (c) (key) (value) =
+    when c
+      is Equals (k) (v) -> if k == key then v == value else False
+      is Always -> True
+      is otherwise -> False
+
+  pipe-pick : List TransitionDef, Text, Text, Text, Integer -> Maybe TransitionDef
+  pipe-pick (ts) (from) (key) (value) (i) =
+    if i >= list-length ts then None
+    else let t = list-at ts i
+    in if (t.td-from-step) == from then
+      (if pipe-cond-holds (t.td-condition) key value then Just t else pipe-pick ts from key value (i + 1))
+    else pipe-pick ts from key value (i + 1)
+
+Section: A run
+
+ Entering and leaving a stage are `StepEvent`s, so `pi-history` IS the build log in
+ order. The completion event's `se-details` carries the label of the edge that was
+ taken, which is the outcome's own sentence: that is the join between the two
+ vocabularies and the only thing the runner adds.
+
+  pipe-event : Text, EventType, Integer, Text -> StepEvent
+  pipe-event (step) (ty) (ts) (detail) = StepEvent {
+    se-id = step & "-" & event-type-name ty,
+    se-step-id = step,
+    se-event-type = ty,
+    se-user-id = "build",
+    se-timestamp = ts,
+    se-details = detail,
+    se-data-snapshot = []
+  }
+
+ `list-push` EXTENDS IN PLACE, so appending to `pi.pi-history` writes through the
+ pointer the CALLER still holds and every instance forked from that one gains the
+ event (L-ALIAS). Two runs forked from one instance then report each other's steps,
+ which is a build log that says a stage ran when it did not. These two copy first,
+ so the list handed back belongs to the new instance alone.
+
+ The copy is what makes the append O(n), so a run's history costs O(n^2) in total.
+ That is paid deliberately: a shared log is a wrong answer, and a build's history is
+ tens of events rather than thousands.
+
+  pipe-append-event : List StepEvent, StepEvent, Integer, List StepEvent -> List StepEvent
+  pipe-append-event (es) (ev) (i) (acc) =
+    if i >= list-length es then list-push acc ev
+    else pipe-append-event es ev (i + 1) (list-push acc (list-at es i))
+
+  pipe-append-data : List DataEntry, DataEntry, Integer, List DataEntry -> List DataEntry
+  pipe-append-data (ds) (d) (i) (acc) =
+    if i >= list-length ds then list-push acc d
+    else pipe-append-data ds d (i + 1) (list-push acc (list-at ds i))
+
+  pipe-start : ProcessDef, Integer -> ProcessInstance
+  pipe-start (pd) (ts) = ProcessInstance {
+    pi-id = (pd.pd-id) & "-run",
+    pi-def-id = pd.pd-id,
+    pi-name = pd.pd-name,
+    pi-status = ProcActive,
+    pi-current-step = pd.pd-start-step,
+    pi-data = [],
+    pi-history = [pipe-event (pd.pd-start-step) EvStepEntered ts "the run begins"],
+    pi-documents = [],
+    pi-participants = [],
+    pi-priority = 0,
+    pi-created = ts,
+    pi-updated = ts,
+    pi-due-date = 0,
+    pi-completed-date = 0,
+    pi-parent-id = "",
+    pi-tags = ["build"]
+  }
+
+ A STAGE THAT EXITS WITH A CODE NO OUTCOME EXPLAINS ERRORS THE RUN, and that is the
+ whole point of holding the verdicts: the alternative is a run that reports success
+ because nothing matched. `ProcErrored` carries the code, so the report names what
+ could not be explained.
+
+ A REFUSAL AND A SUCCESS MUST NOT CARRY THE SAME STATUS, and the first run of this
+ chapter got that wrong: reaching the terminal step set `ProcCompleted` whichever
+ outcome took it there, so exit 2 and exit 0 were one value. That is the conflation
+ the workflow vocabulary was chosen to prevent, `test-cross` reporting six skips as
+ exit 0 being the case on record. Only an exit of ZERO completes; every other
+ outcome that reaches the end is `ProcErrored` carrying the verdict's own sentence.
+
+ ONLY AN OUTCOME CAN REFUSE, AND CONTROL FLOW IS NOT AN OUTCOME. The second run of
+ this chapter got THAT wrong: a guard that did not hold skipped the group to the end
+ of the pipeline and the run reported `ERRORED`, because any non-exit observation
+ reaching the terminal step was read as a refusal. A skipped group is not a failure.
+ The exit and outcome keys are the ones that can refuse; the guard, repeat and
+ handler keys are the run saying which way it went, and a guard-skip is recorded as
+ `EvStepSkipped` rather than as a completion, which is the state `StepStatus` already
+ spells and the reason this vocabulary was worth adopting.
+
+  pipe-observe : ProcessDef, ProcessInstance, Text, Text, Integer -> ProcessInstance
+  pipe-observe (pd) (pi) (key) (value) (ts) =
+    let here = pi.pi-current-step
+    in when pipe-pick (pd.pd-transitions) here key value 0
+      is Just (t) ->
+        let ended = (t.td-to-step) == pipe-end-step
+        in let isOutcome = if key == pipe-exit-key then (if value == pipe-no-exit then False else True) else (if key == pipe-outcome-key then True else False)
+        in let refused = if ended then (if isOutcome then (if value == "0" then False else True) else False) else False
+        in let skippedHere = if value == "false" then True else False
+        in let evType = if refused then EvStepFailed else (if skippedHere then EvStepSkipped else EvStepCompleted)
+        in let ev = pipe-event here evType ts (t.td-label)
+        in let h1 = pipe-append-event (pi.pi-history) ev 0 []
+        in let h2 = if ended then h1 else list-push h1 (pipe-event (t.td-to-step) EvStepEntered ts "entered")
+        in ProcessInstance {
+          pi-id = pi.pi-id, pi-def-id = pi.pi-def-id, pi-name = pi.pi-name,
+          pi-status = if refused then ProcErrored (t.td-label) else (if ended then ProcCompleted else ProcActive),
+          pi-current-step = t.td-to-step,
+          pi-data = pipe-append-data (pi.pi-data) (data-entry key value here "build" ts) 0 [],
+          pi-history = h2,
+          pi-documents = pi.pi-documents, pi-participants = pi.pi-participants,
+          pi-priority = pi.pi-priority, pi-created = pi.pi-created, pi-updated = ts,
+          pi-due-date = pi.pi-due-date,
+          pi-completed-date = if ended then ts else 0,
+          pi-parent-id = pi.pi-parent-id, pi-tags = pi.pi-tags
+        }
+      is None ->
+        ProcessInstance {
+          pi-id = pi.pi-id, pi-def-id = pi.pi-def-id, pi-name = pi.pi-name,
+          pi-status = ProcErrored (here & " ended with " & key & "=" & value & " and no outcome explains it"),
+          pi-current-step = here,
+          pi-data = pi.pi-data,
+          pi-history = pipe-append-event (pi.pi-history) (pipe-event here EvStepFailed ts ("UNEXPLAINED " & key & "=" & value)) 0 [],
+          pi-documents = pi.pi-documents, pi-participants = pi.pi-participants,
+          pi-priority = pi.pi-priority, pi-created = pi.pi-created, pi-updated = ts,
+          pi-due-date = pi.pi-due-date, pi-completed-date = 0,
+          pi-parent-id = pi.pi-parent-id, pi-tags = pi.pi-tags
+        }
+
+ The three ways a stage can end, named so a driver reads as the build reads.
+
+  pipe-exited : ProcessDef, ProcessInstance, Integer, Integer -> ProcessInstance
+  pipe-exited (pd) (pi) (code) (ts) = pipe-observe pd pi pipe-exit-key (show code) ts
+
+  pipe-threw : ProcessDef, ProcessInstance, Integer -> ProcessInstance
+  pipe-threw (pd) (pi) (ts) = pipe-observe pd pi pipe-outcome-key "throw" ts
+
+  pipe-passed : ProcessDef, ProcessInstance, Integer -> ProcessInstance
+  pipe-passed (pd) (pi) (ts) = pipe-observe pd pi pipe-exit-key pipe-no-exit ts
+
+Section: A group that did not run
+
+ `StepSkipped` RATHER THAN ABSENT is the design's phrase, and absence is what the
+ guard edge alone leaves: the interior steps are simply never entered, which is not a
+ lie but tells a reader nothing. These two put the skip in the history explicitly.
+
+ THE MEMBERSHIP COMES FROM THE CALLER, and that is the honest arrangement rather than
+ the convenient one. A `ProcessDef` has no field that means "these steps belong to
+ that group": `pd-data-schema` would take the list and `SubProcess` would take it as
+ delimited text, and both are a field filled with a plausible value, which is the
+ shape this tree names L-BEDTRUE. The caller holds the `Pipeline`, so the caller can
+ answer the question exactly; `pipe-group-members` is how it does.
+
+  pipe-names-of : List PipeStep, Integer, List Text -> List Text
+  pipe-names-of (ss) (i) (acc) =
+    if i >= list-length ss then acc
+    else let next = when list-at ss i
+      is PsStage (s) -> list-push acc (s.ps-name)
+      is PsGroup (rep) (guard) (handler) (inner) -> pipe-names-of inner 0 acc
+    in pipe-names-of ss (i + 1) next
+
+  pipe-group-members : List PipeStep, Integer -> List Text
+  pipe-group-members (ss) (i) =
+    if i >= list-length ss then []
+    else when list-at ss i
+      is PsStage (s) -> []
+      is PsGroup (rep) (guard) (handler) (inner) -> pipe-names-of inner 0 []
+
+  pipe-skip-members : ProcessInstance, List Text, Integer, Integer -> ProcessInstance
+  pipe-skip-members (pi) (names) (i) (ts) =
+    if i >= list-length names then pi
+    else let ev = pipe-event (list-at names i) EvStepSkipped ts "the group's guard did not hold, so this step never ran"
+    in let grown = ProcessInstance {
+      pi-id = pi.pi-id, pi-def-id = pi.pi-def-id, pi-name = pi.pi-name,
+      pi-status = pi.pi-status, pi-current-step = pi.pi-current-step,
+      pi-data = pi.pi-data,
+      pi-history = pipe-append-event (pi.pi-history) ev 0 [],
+      pi-documents = pi.pi-documents, pi-participants = pi.pi-participants,
+      pi-priority = pi.pi-priority, pi-created = pi.pi-created, pi-updated = ts,
+      pi-due-date = pi.pi-due-date, pi-completed-date = pi.pi-completed-date,
+      pi-parent-id = pi.pi-parent-id, pi-tags = pi.pi-tags
+    }
+    in pipe-skip-members grown names (i + 1) ts
+
+Section: Branches
+
+ A BRANCH CARRIES ITS OWN `StepStatus`, which is the whole return of the fan-out:
+ a batch that reports one exit code cannot say what RAN, and `test-cross` reporting
+ six skips as exit 0 is the case on record. The driver names each branch as it
+ lands, the same rule the guard, the repeat and the handler already follow, because
+ a runner that decided a branch's fate would be inventing an answer.
+
+ A status that is not terminal is recorded as started rather than as a landing, so
+ a branch still in flight is counted as neither completed nor skipped. The status
+ name goes in the detail, so the log says which non-terminal state it was.
+
+  pipe-branch-event : StepStatus -> EventType
+  pipe-branch-event (st) =
+    when st
+      is StepCompleted -> EvStepCompleted
+      is StepSkipped -> EvStepSkipped
+      is StepFailed -> EvStepFailed
+      is StepTimedOut -> EvStepTimedOut
+      is StepEscalated (to) -> EvStepEscalated
+      is otherwise -> EvStepStarted
+
+  pipe-branch : ProcessInstance, Text, Integer, StepStatus, Integer -> ProcessInstance
+  pipe-branch (pi) (stage) (ix) (st) (ts) =
+    let ev = pipe-event (pipe-branch-name stage ix) (pipe-branch-event st) ts (step-status-name st)
+    in ProcessInstance {
+      pi-id = pi.pi-id, pi-def-id = pi.pi-def-id, pi-name = pi.pi-name,
+      pi-status = pi.pi-status, pi-current-step = pi.pi-current-step,
+      pi-data = pi.pi-data,
+      pi-history = pipe-append-event (pi.pi-history) ev 0 [],
+      pi-documents = pi.pi-documents, pi-participants = pi.pi-participants,
+      pi-priority = pi.pi-priority, pi-created = pi.pi-created, pi-updated = ts,
+      pi-due-date = pi.pi-due-date, pi-completed-date = pi.pi-completed-date,
+      pi-parent-id = pi.pi-parent-id, pi-tags = pi.pi-tags
+    }
+
+ THE JOIN COUNTS THE TWO APART RATHER THAN SUMMING THEM, which is what an exit code
+ cannot do. The tally is DERIVED from the history rather than held in a field, so no
+ caller can report a branch that never landed.
+
+  pipe-same-event : EventType, EventType -> Boolean
+  pipe-same-event (a) (b) = event-type-name a == event-type-name b
+
+  pipe-tally : List StepEvent, Text, EventType, Integer, Integer -> Integer
+  pipe-tally (es) (stage) (ty) (i) (acc) =
+    if i >= list-length es then acc
+    else let e = list-at es i
+    in let hit = if text-starts-with (e.se-step-id) (pipe-branch-prefix stage) then pipe-same-event (e.se-event-type) ty else False
+    in pipe-tally es stage ty (i + 1) (if hit then acc + 1 else acc)
+
+  pipe-yes-no : Boolean -> Text
+  pipe-yes-no (b) = if b then "yes" else "no"
+
+  pipe-expected-text : Maybe Integer -> Text
+  pipe-expected-text (m) =
+    when m
+      is Just (n) -> show n
+      is None -> "driver"
+
+ The denominator is named rather than assumed: a landed count against "driver" is a
+ statement about the run, and against a number it is a statement about the stage.
+
+  pipe-fan-line : List StepEvent, PipeStage -> Text
+  pipe-fan-line (es) (s) =
+    let name = s.ps-name
+    in let done = pipe-tally es name EvStepCompleted 0 0
+    in let skipped = pipe-tally es name EvStepSkipped 0 0
+    in let failed = pipe-tally es name EvStepFailed 0 0
+    in let timed = pipe-tally es name EvStepTimedOut 0 0
+    in name & " | completed=" & show done & " skipped=" & show skipped & " failed=" & show failed & " timed-out=" & show timed & " landed=" & show (done + skipped + failed + timed) & " expected=" & pipe-expected-text (pipe-branches-expected s)
+
+  pipe-joined : ProcessDef, ProcessInstance, Text, Integer -> ProcessInstance
+  pipe-joined (pd) (pi) (name) (ts) = pipe-observe pd pi (pipe-join-key name) "true" ts
+
+Section: Reading a run back
+
+  pipe-status-text : ProcessStatus -> Text
+  pipe-status-text (s) =
+    when s
+      is ProcActive -> "active"
+      is ProcSuspended -> "suspended"
+      is ProcCompleted -> "completed"
+      is ProcCancelled -> "cancelled"
+      is ProcErrored (why) -> "ERRORED: " & why
+
+  pipe-log-line : StepEvent -> Text
+  pipe-log-line (e) =
+    (e.se-step-id) & " | " & event-type-name (e.se-event-type) & " | " & (e.se-details)
+
+  pipe-log : List StepEvent, Integer, List Text -> List Text
+  pipe-log (es) (i) (acc) =
+    if i >= list-length es then acc
+    else pipe-log es (i + 1) (list-push acc (pipe-log-line (list-at es i)))
+
+ The log as one Text, because `Console` exports one function and it takes one line.
+
+  pipe-log-text : List StepEvent, Integer, Text -> Text
+  pipe-log-text (es) (i) (acc) =
+    if i >= list-length es then acc
+    else pipe-log-text es (i + 1) (acc & (if acc == "" then "" else "\n") & pipe-log-line (list-at es i))
+
+Page 1

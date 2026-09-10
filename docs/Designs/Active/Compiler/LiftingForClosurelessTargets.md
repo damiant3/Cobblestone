@@ -12,45 +12,30 @@ other 41 subject plugs now apply an over-application one argument at a time
 and eta-wrap a partial application; these four cannot do either, because both
 repairs produce a function value and none of these targets has one.
 
-## What they did, and the interim repair that has now landed
+**What these four cannot express is a function VALUE arising from partial or
+over-application**, which is what plugs 1.59 measures and what the closure
+conversion below is for. No `IrLambda` node reaches any plug anywhere in the
+17-subject corpus: `lambda.codex` is the only subject containing a lambda
+literal, it contains two, and neither survives to the emitter.
+`make-adder (n) = \x -> x + n` arrives with the lambda merged into the
+definition's parameters, so every plug emits a two-parameter function (`def
+make_adder(n, x)`, `function Make_adder(N, X)`); `(\x -> x + 100) 5` arrives
+already lifted, so every plug emits `__lam_0(5)` and a definition of
+`__lam_0` beside it.
 
-| plug | `IrLambda` emitted | was |
-|---|---|---|
-| `t3isa` | `t3-refuse c "lambda"` | REFUSES. Correct. |
-| `babbage` | `. !UNSUPPORTED: lambda has no representation on the Analytical Engine` | marks it in the output |
-| `cobol` | `DISPLAY "COBOL: lambda not supported"` and `MOVE 0` | says so at RUN time, not in a form any harness read |
-| `ada` | the literal `"null"` | silently wrong |
-| `pascal` | `pas-h body ctx (depth + 1) n` | silently wrong, and the worst of them |
+## The interim guard, which is in place
 
-`pascal` is the one to look at twice. It emitted the lambda's BODY and
-discarded its parameters, so `make-adder (n) = \x -> x + n` emitted an
-expression naming `x`, which is bound nowhere. It did not merely fail to lift;
-it emitted a reference to a name that does not exist.
+All five closureless plugs emit the same `!UNSUPPORTED:` marker for an
+`IrLambda`, and `test-plugs.ps1` fails any emission containing one, on every
+subject. The reader is proven both ways: 6 markers in babbage's `overapply`
+emission, 0 in python's, javascript's and kotlin's, so babbage is caught on
+emission as well as on its exit code.
 
-**All five now carry the same `!UNSUPPORTED:` marker and `test-plugs.ps1`
-fails any emission containing one**, on every subject rather than just this
-one. The marker convention was already there in t3isa and babbage and nothing
-read it, which is why ada and pascal could stay wrong for as long as they
-existed.
-
-The two halves have very different evidence behind them and the difference
-matters more than the change does:
-
-- **The reader is proven, both ways.** It finds 6 markers in babbage's
-  existing `overapply` emission and 0 in python's, javascript's and kotlin's.
-  It therefore catches babbage on emission as well as on its exit code, which
-  is a second and independent catch.
-- **The emitter half is UNPROVEN and currently unreachable**, for the reason
-  in the section above: no `IrLambda` reaches a plug on this corpus. It
-  replaces a silently wrong emission with a named one on a path nothing
-  exercises. That is worth having and is not worth believing.
-
-**`DevelopersRulebook.md:260` names pascal among the plugs that already lift,
-and that is wrong.** The sentence is "arm64, riscv, zig, t3isa, pascal and
-python already do". Measured at the `IrLambda` site: zig converts closures,
-t3isa refuses, python emits a real Python lambda because Python has closures,
-and pascal does the above. Anyone taking the Rulebook's advice to "read one
-before writing a seventh" and picking pascal reads a defect as a pattern.
+**The emitter half of that guard sits on a path nothing in the corpus reaches
+(L-UNCALLED), so it has never fired and cannot be demonstrated with the
+inputs we have.** Demonstrating it needs a subject whose lambda survives to
+the plug, and whether one can be written at all is the first question, ahead
+of the marker's wording.
 
 ## What the wire requires
 
@@ -94,8 +79,8 @@ documents in detail.
 
 **pascal** has records and `case`. Its emitter already hoists statements
 (`PasHoist`) because Pascal declares temporaries up front, so lifted
-procedures have somewhere to go. The parameter-dropping defect above must be
-fixed as part of this, not before it.
+procedures have somewhere to go. `DevelopersRulebook.md:278` records that
+pascal does not lift and is not a pattern to copy.
 
 **cobol** is the hard one and should not be sized from the other three.
 There are no pointers, no recursion in the classic dialect, and no dynamic
@@ -108,45 +93,7 @@ that question should be answered before any code.
 refusing. The Analytical Engine has no indirect call and no addressable
 store in the sense the shape needs. Do not spend the ada work's budget here.
 
-## THE PREMISE IS NARROWER THAN THIS DOCUMENT FIRST SAID
-
-**No `IrLambda` node reaches any plug anywhere in the 17-subject corpus.**
-`lambda.codex` is the only subject containing a lambda literal, it contains
-two, and neither survives to the emitter:
-
-- `make-adder (n) = \x -> x + n` arrives with the lambda MERGED INTO THE
-  DEFINITION'S PARAMETERS. Every plug emits a two-parameter function, python
-  and ada alike: `def make_adder(n, x)`, `function Make_adder(N, X)`.
-- `(\x -> x + 100) 5` arrives ALREADY LIFTED to a top-level definition. Every
-  plug emits `__lam_0(5)` and a definition of `__lam_0` beside it.
-
-So these four targets do not currently fail on lambdas, and the framing this
-document opened with was wrong. **What they cannot express is a function
-VALUE arising from partial or over-application**, which is what plugs 1.59
-measures and what the closure conversion above is actually for. The lifting
-design stands; its motivation is the 1.59 subject, not `lambda.codex`.
-
-The consequence for the interim below is stated rather than smoothed over:
-the marker in ada, cobol and pascal sits on a path nothing in the corpus
-reaches (L-UNCALLED), so it is a correct guard that has never fired and
-cannot be demonstrated with the inputs we have. Demonstrating it needs a
-subject whose lambda survives to the plug, and finding whether one can even
-be written is the first question, not the marker's wording.
-
-## The interim step: DONE
-
-ada, cobol and pascal now refuse a lambda in band the way t3isa and babbage
-already did, and the harness reads the marker. That was L-BAILVALUE (a guard
-that answers instead of refusing, so no caller can tell it fired) followed by
-L-UNHEARD (two plugs already refused correctly and nothing consumed it).
-
-One correction to this document's own first version, which said cobol emits
-nothing for a lambda: it does not. It emits `DISPLAY "COBOL: lambda not
-supported"` and `MOVE 0`, a RUN-time message. The first reading came from a
-grep that stopped at the arrow of a multi-line arm. Cobol was the least wrong
-of the three, not the most.
-
-## The grader, and the part I cannot close
+## The grader, and the part that cannot be closed here
 
 The shape grader from 1.59 cannot settle this work. It matches a flat
 over-application positively and treats everything else as correct, precisely
@@ -156,9 +103,7 @@ whether or not it works.
 
 **The acceptance for lifting is running the emitted program**, because the
 subject has a known answer: `overapply.codex` prints 6, 6, 6, 7, 15. Nothing
-weaker distinguishes a correct dispatcher from a plausible one, and this
-whole row's history is plausible-and-wrong artifacts passing structural
-checks.
+weaker distinguishes a correct dispatcher from a plausible one.
 
 No toolchain for any of the four is on this box. So the first question for
 whoever takes this is not a code question: **which of GNAT, Free Pascal or

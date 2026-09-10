@@ -1,35 +1,36 @@
 # OTA Firmware Update: Signed CDX over LwM2M Object 5
 
-**Created**: 2026-06-12 (reek)
-**Status**: Partially shipped -- OtaUpdate foreword + ota-state-machine /
-ota-update tests live; the gates, anti-rollback, and manifest
-verification described below are all present. **The `Flash` blocker is
-gone (blu, 2026-07-16):** `Foreword chapter Board` now has the linear
-bank this design asked for -- `flash-open-bank` → `flash-write-page`* →
-`flash-seal-bank`, typed `[Flash, Device.Mmio]`, with `Flash` a
-capability in its own right (cap id 15) so the manifest can say which
-firmware may rewrite the boot image. See `HardwareAbstractionLayer.md`.
+**Status**: partially shipped. `Foreword chapter OtaUpdate` with the
+`ota-state-machine` and `ota-update` tests, the gates, anti-rollback and
+manifest verification are all present. Open work is "Still open, in the
+order it bites" below.
 
-**Steps 1-4 of The Flow are built (blu, 2026-07-16):** `Net chapter
-Lwm2mFirmware` is the binding layer. A Write of the Package URI starts a
-download; each CoAP response is parsed and its Block2 payload staged
-straight into the bank via `flash-write-page`; Gate A hashes the BANK
-with `sha256-buf` in constant heap, so what is verified is what landed
-rather than what the client believes it sent; Gate B's verdict is
-computed by the caller against the real verifier and handed in, because a
-firmware client that carried the trust lattice is a client that could be
-talked into changing it. `flash-seal-bank` returns the count of page
-writes whose busy-wait ran out of fuel, and a staging fault outranks the
-hash -- Result 2 (flash failed) and Result 5 (corrupt in transit) send an
-operator to different places.
+**The `Flash` capability exists.** `Foreword chapter Board` carries the
+linear bank this design asks for: `flash-open-bank` -> `flash-write-page`*
+-> `flash-seal-bank`, typed `[Flash, Device.Mmio]`, with `Flash` a
+capability in its own right (cap id 15), therefore the manifest can say
+which firmware is permitted to rewrite the boot image. See
+`HardwareAbstractionLayer.md`.
 
-Proven by `codex/test/apps/ota-lwm2m-loopback`: a real signed CDX,
-chunked into real CoAP Block2 responses, staged 254/254 bytes, approved
-by the real five-phase verifier, activated to the inactive slot -- and
-the Adversarial Scenario below (tampered image in transit) refused at
-Gate A with Result 5, still booting the old slot.
+**Steps 1-4 of The Flow are built.** `Net chapter Lwm2mFirmware` is the
+binding layer. A Write of the Package URI starts a download; each CoAP
+response is parsed and the Block2 payload staged straight into the bank via
+`flash-write-page`; Gate A hashes the BANK with `sha256-buf` in constant
+heap, therefore what is verified is what landed rather than what the client
+believes the client sent; Gate B's verdict is computed by the caller against
+the real verifier and handed in, because a firmware client carrying the
+trust lattice is a client that can be talked into changing the lattice.
+`flash-seal-bank` returns the count of page writes whose busy-wait ran out
+of fuel, and a staging fault outranks the hash: Result 2 (flash failed) and
+Result 5 (corrupt in transit) send an operator to different places.
 
-**Steps 5-7 are built (blu, 2026-07-16):** `Foreword chapter OtaBoot` is
+Proven by `codex/test/apps/ota-lwm2m-loopback`: a real signed CDX, chunked
+into real CoAP Block2 responses, staged 254/254 bytes, approved by the real
+five-phase verifier, activated to the inactive slot. The Adversarial
+Scenario below (tampered image in transit) is refused at Gate A with Result
+5, still booting the old slot.
+
+**Steps 5-7 are built.** `Foreword chapter OtaBoot` is
 the boot selector. The record lives in one flash page and the candidate
 flag is a single aligned word (`flash-write-word`), so the device wakes
 having either fully accepted the candidate or never heard of it; the
@@ -41,8 +42,7 @@ Past `boot-attempt-limit` the candidate is abandoned. The commit is
 explicit (`boot-commit`): nothing adopts an image on its behalf, because
 an image that boots and then wedges is exactly what the window catches.
 
-The Failure Matrix below is no longer a description of a machine that
-does not exist. `codex/test/apps/ota-boot-rollback` walks its rows
+`codex/test/apps/ota-boot-rollback` walks the Failure Matrix rows below
 against real flash, simulating a reboot by re-reading the record rather
 than threading state.
 
@@ -52,39 +52,35 @@ marked, and re-parsing a CDX header would put a parser in every boot
 path, which is what "the boot selector must be small" forbids. What the
 re-check catches is the bank changing after Gate B blessed it.
 
-**Pending, in the order it bites:**
+**The flow runs over a real socket.** `tools/ota-fetch.codex` drives the
+download over UDP, and `build/ota-fetch-test.ps1` runs the tool against
+aiocoap, which performs the RFC 7959 Block2 segmentation itself. Measured:
+**4096 bytes in four blocks, `state=2` (Downloaded), `result=0`**, with the
+expected digest computed on the host, therefore Gate A re-derives the digest
+against a number Codex never produced. The negative control (`-NoMagic`,
+firmware byte-identical but for the three CDX magic bytes) stages the same
+4096 bytes and Gate A refuses with `result=6`, which is what makes the green
+mean Gate A examined the image rather than waved the image through. Gate A's
+block hashing is pinned separately by `codex/test/ota-gate-block`.
 
-1. ~~**Driving the flow over the socket.**~~ **DONE 2026-08-18 (reek).**
-   `tools/ota-fetch.codex` drives the download over UDP and
-   `build/ota-fetch-test.ps1` runs it against aiocoap, which performs the
-   RFC 7959 Block2 segmentation itself. Measured: **4096 bytes in four
-   blocks, `state=2` (Downloaded), `result=0`**, with the expected digest
-   computed on the host so Gate A re-derives it against a number Codex
-   never produced. The negative control (`-NoMagic`, byte-identical
-   firmware but for the three CDX magic bytes) stages the same 4096 bytes
-   and Gate A refuses with `result=6`, which is what makes the green mean
-   Gate A examined the image rather than waved it through.
+**A CoAP path is one option per SEGMENT.** RFC 7252 section 5.10.1 makes
+each path segment its own Uri-Path option, therefore
+`coap-uri-path-options` (plural) is the helper to call and
+`coap-uri-path-option` (singular) sends `/fw/image.cdx` as one option
+holding the whole string, which a conformant server answers 4.04.
+`Coap.codex` carries the same note beside the plural helper. The loopback
+cannot catch this, because `serve-block` never reads the request.
 
-   **It found a live defect on the first real exchange, and the loopback
-   could never have seen it.** `fw-next-request` built its path with
-   `coap-uri-path-option`, the SINGULAR, so `/fw/image.cdx` travelled as
-   one Uri-Path option containing the whole string. RFC 7252 section 5.10.1
-   makes each segment its own option, and `Coap.codex` says so in its own
-   prose beside the plural helper -- that prose was written when the same
-   defect was fixed elsewhere, and this call site still had it. aiocoap
-   answered 4.04 Not Found and the client reported `written=0 result=4`.
-   Fixed to `coap-uri-path-options`, and **proven by ablation**: restoring
-   the singular returns the run to `written=0 result=4` while everything
-   else is held. `serve-block` in the loopback never reads the request at
-   all, which is why nothing caught it.
+**`written=0 result=4` is an ambiguous reading.** The same pair is what a
+wrong path produces, what a silent server produces, and what a manifest that
+never landed produces. The third is the easiest to cause:
+`ota-check-preconditions` refuses a manifest whose version is not newer than
+the context's current version, after which every request carries no Uri-Path
+at all.
 
-   **`written=0 result=4` is an ambiguous reading and worth knowing before
-   trusting one.** It is what a wrong path produces, what a silent server
-   produces, and what a manifest that never landed produces -- and the
-   third is easy to cause, because `ota-check-preconditions` refuses a
-   manifest whose version is not newer than the context's current version,
-   after which every request carries no Uri-Path at all.
-2. **Gate B costs a List.** `evaluate-load` takes `List Integer`, so the
+**Still open, in the order it bites:**
+
+1. **Gate B costs a List.** `evaluate-load` takes `List Integer`, so the
    caller reads the staged image back out of the bank -- the constraint 5
    memory limit this design names, unfixed. A buffer-taking verifier is
    the fix, and it is **not this design's to make**: the entry point is
@@ -94,15 +90,15 @@ re-check catches is the bank changing after Gate B blessed it.
    ruling, 2026-09-08). It is written up, with the call sites and the
    `OtaBoot.codex` precedent that already hashes from an address, as the
    first entry in `codex/os/os-backlog.md`. Unowned until dispatched.
-3. **The commit is SCHEDULED, and the schedule is the LwM2M registration**
-   (blu, 2026-09-08). `fw-confirm-boot` in `Lwm2mFirmware.codex` is
-   `boot-commit`'s production caller: it takes the registration verdict and
-   commits only on a completed re-registration, which is the health signal
-   this stack actually has, because OMA LwM2M has the device re-register
-   after an update and the server reads Update Result to learn how it went.
-   A caller with a stronger check of its own passes its own verdict in the
-   same place; what must not happen is committing on the mere fact of
-   running, which is what the attempt counter already knows.
+2. **The commit is SCHEDULED, and the schedule is the LwM2M registration.**
+   `fw-confirm-boot` in `Lwm2mFirmware.codex` is `boot-commit`'s production
+   caller: `fw-confirm-boot` takes the registration verdict and commits only
+   on a completed re-registration, which is the health signal this stack
+   has, because OMA LwM2M has the device re-register after an update and the
+   server reads Update Result to learn how the update went. A caller with a
+   stronger check of its own passes that caller's own verdict in the same
+   place. What must not happen is committing on the mere fact of running,
+   which is what the attempt counter already knows.
 
    Confirming and activating run on DIFFERENT FIRMWARES and are separate
    acts: `fw-activate` runs on the old image and says "boot the candidate
@@ -118,35 +114,19 @@ re-check catches is the bank changing after Gate B blessed it.
    for it, and a device that never confirms rolls back by attempt count,
    which is the safe direction.
 
-4. **`tools/ota-fetch.codex` compiles again** (repaired 2026-09-08, blu). It
-   had drifted out of type with the chapter it cites: `fw-feed-response`
-   gained a leading `linear Board` and returns a pair, and `fw-new` gained a
-   fifth parameter, so the tool passed an `Lwm2mFw` where a `Board` belonged
-   and left `fw-new` partially applied. `of-run` now threads the Board and
-   `of-capacity` states the 400 KB the round cap already described.
+3. **No gate runs `tools/ota-fetch.codex`.** `build/ota-fetch-test.ps1`
+   wants a real socket, therefore no gate runs the script, and the tool can
+   drift out of type with the chapter the tool cites without anything going
+   red (the L-NOGATE shape one level out). `build/check-tools.ps1` is the
+   text-only part that IS decidable without a guest: every `tools/*.codex`
+   must be named by some build script, and the script's header says plainly
+   that a green line means REFERENCED and not COMPILED, because that is the
+   reading that would mislead. One genuine gap stands today,
+   `tools/lwm2m-client.codex`, which no script names at all. Wire
+   `check-tools` into a gate once that gap is closed. The compile question
+   needs a sweep that compiles the tools, which is a guest apiece and
+   belongs to the battery.
 
-   **Why nothing saw it, and what does now.** `build/ota-fetch-test.ps1`
-   names the tool, so a coverage check would have called it covered; the
-   script wants a real socket and no gate runs it, which is the L-NOGATE
-   shape one level out. `build/check-tools.ps1` is the text-only part that
-   IS decidable without a guest: every `tools/*.codex` must be named by some
-   build script, and its header says plainly that a green line means
-   referenced and not compiled, because that is the reading that would
-   mislead. It finds one genuine gap today, `tools/lwm2m-client.codex`,
-   which no script names at all. Wire the check into a gate once that gap is
-   closed; the compile question needs a sweep that compiles the tools, which
-   is a guest apiece and belongs to the battery.
-
-One defect found while wiring this and **fixed** (2026-07-16):
-`OtaUpdate.gate-a-verify-block` hashed with `sha256` -- eight 32-bit
-WORDS -- and compared the result against a byte digest over 32 elements,
-so it read a word against a byte eight times and then walked twenty-four
-elements off the end of an eight-element list. It could not have passed
-for a real digest, and nothing called it, which is the only reason it
-never halted. It now converts with `hkdf-words-to-bytes` and
-`ota-hash-eq` measures both lists instead of trusting a caller's length.
-Pinned by `codex/test/ota-gate-block`, which fails on the old code at the
-first check.
 **Upstream**: `docs/Reference/IoT/AGENT-PROMPT.md` deliverable 5,
 `docs/Designs/Active/IoT/ProtocolStack.md` (LwM2M/CoAP Block),
 `docs/Designs/Active/IoT/HardwareAbstractionLayer.md` (Flash effect),
@@ -260,14 +240,12 @@ TOCTOU window between Gate B and the bank swap.
 
 ### The staging bound: the bank enforces, Size2 only refuses earlier
 
-**RULED by red, 2026-08-20, and BUILT the same day (reek).** This design
-guaranteed bounded RAM and said nothing about a bound on the staging bank, so
-`fw-write` wrote each block at `fw-stage + fw-written` and grew `fw-written`
-by the payload's length with nothing stopping it. `fw-stage-block` bounds the
-block ORDER, which is a different claim: a server sending blocks in order with
-payloads as large as it likes still walks off the end of the bank, and
-`flash-write-page` takes an ABSOLUTE address, so nothing underneath refuses
-it. A frame could drive an unbounded flash write.
+`fw-stage-block` bounds the block ORDER, which is a different claim from
+bounding the staging bank: a server sending blocks in order with payloads as
+large as the server likes walks off the end of the bank, and
+`flash-write-page` takes an ABSOLUTE address, therefore nothing underneath
+refuses the write. Without the bound below, a frame drives an unbounded
+flash write.
 
 The two mechanisms have strict and unequal roles:
 
@@ -417,28 +395,27 @@ not yet designed but is noted as a Phase B3 hardening item.
 ## Open Questions
 
 Every identifier this document names in backticks was checked against head
-on 2026-09-08 and all of them exist with a definition, with one deliberate
+on 2026-09-08 and each one exists with a definition, with one deliberate
 exception: `commit-update`, which appears only inside question 2 as the
-hypothetical API that question was asking about, and which turned out not to
-be needed. The check is worth repeating rather than trusting, because three
-of this file's claims were stale that same day.
+hypothetical API that question asked about, and which is not needed. **Repeat
+the check rather than trusting this paragraph**, because a claim here goes
+stale without anything going red.
 
 1. **Boot selector placement per board.** STM32 option-byte bank
    swap vs a tiny Codex first-stage; ESP32-C6 sits behind
    Espressif's ROM+bootloader (their secure boot verifies *their*
    format -- our selector runs inside the app slot); Pi tryboot.
    Per-board appendices needed during implementation.
-2. **Health-check definition -- ANSWERED, and the answer is the
-   proposal** (blu, 2026-09-08). `fw-confirm-boot` is the API,
-   and it takes the verdict rather than computing one: the
-   caller passes whether the device is healthy and the commit
-   happens only on True, so there is no implicit auto-commit.
-   Re-registration is what schedules it, because that is the
-   health signal this stack has; a product with a stronger probe
-   of its own passes its own verdict through the same parameter.
-   No `commit-update` builtin was needed and none exists: the
-   runtime already exposes `boot-commit`, and the question was
-   which caller may invoke it, not what to add.
+2. **Health-check definition: ANSWERED.** `fw-confirm-boot` is the API,
+   and the function takes the verdict rather than computing one: the
+   caller passes whether the device is healthy and the commit happens
+   only on True, therefore there is no implicit auto-commit.
+   Re-registration is what schedules the commit, because that is the
+   health signal this stack has; a product with a stronger probe of its
+   own passes that product's verdict through the same parameter. No
+   `commit-update` builtin exists or is needed: the runtime exposes
+   `boot-commit`, and the question was which caller is permitted to
+   invoke `boot-commit`, not what to add.
 3. **Sequence-number authority.** Per publisher key or per model
    line with multiple authorized publishers? Affects release-fact
    schema; defer to first design partner's key-management reality.

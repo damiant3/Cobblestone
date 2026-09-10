@@ -1,0 +1,82 @@
+Chapter: FilesPrepassCostTest
+  cites Works chapter GopFiles
+  cites Works chapter GopFat16
+  cites Foreword chapter Fat16
+  cites Foreword chapter Console
+
+ What a metadata PRE-PASS would cost, against the listing it is meant to size.
+
+ D.5 cannot size a hole for the Files pane, because `want` is what the
+ listing allocates and the listing is what produces the number. The ruling to
+ test is a pre-pass: read the directory's metadata first, compute `want` from
+ it, then enter the hole. **That is only worth building if reading the
+ metadata costs materially less than the listing it sizes**, and this chapter
+ measures the ratio rather than arguing it.
+
+ THE FIRST LINE IS THE CONTROL. `alloc-bytes 0` advances the bump allocator
+ by nothing and answers the frontier, so a difference across a call is what
+ that call made permanent. Two reads with nothing between must differ by
+ zero, or the instrument allocates and every number below is its own
+ footprint (L-FALSIF).
+
+ THE LAST LINE IS THE OTHER CONTROL, and without it a row of zeros reads as
+ a free pre-pass rather than as a probe that stopped working: a known 64
+ bytes is allocated and the same probe must see it.
+
+ `gfat-resolve` is the metadata walk the desk already has: it descends a
+ path and answers one entry, reading the same directory sectors a listing
+ reads and building no entry list. It is the closest thing in the tree to
+ the pre-pass a caller would write, so its cost is the honest estimate of
+ one, and its RATIO to the listing is the number the ruling turns on.
+
+ A PRE-PASS THAT COSTS WHAT THE LISTING COSTS BUYS NOTHING, because the hole
+ it sizes saves the pane's bytes ONCE, on a reopen after a buried close, while
+ the pre-pass spends its own on EVERY open including the ordinary first one.
+
+ THE "UNDER A TENTH" ROW IS A THRESHOLD THE MEASUREMENT DOES NOT MEET, and its
+ FAIL is the verdict rather than a broken arm: the walk costs about two thirds
+ of the listing. Worse for D.5 specifically, the walk's bytes are allocated
+ BEFORE the hole is entered, so they land at the frontier, which is the growth
+ D.5 exists to stop. The row is kept failing on purpose; softening it to a
+ threshold the number happens to meet would be an instrument describing
+ nothing (L-INSTRUMENT).
+
+Section: Body
+
+  fpc-yn : Boolean -> Text
+  fpc-yn (v) = if v then "PASS" else "FAIL"
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    let c0 = alloc-bytes 0
+    in let c1 = alloc-bytes 0
+    in act
+      print-line-uni ("CONTROL, the probe allocates nothing: " & fpc-yn (c1 - c0 == 0))
+      m <- gfat-mount-esp
+      if m.gm-ok == False then print-line-uni "mount FAILED"
+      else act
+        let flag = if gfat-is32 (m.gm-vol) then (m.gm-vol).vol-root-start else 0 - 1
+        in let p0 = alloc-bytes 0
+        in act
+          d <- gfat-resolve (m.gm-vol) "EFI"
+          let p1 = alloc-bytes 0
+          in act
+            e1 <- gfl-list-cur (m.gm-vol) [flag]
+            let p2 = alloc-bytes 0
+            in act
+              print-line-uni ("a metadata walk allocates: " & integer-to-text (p1 - p0))
+              print-line-uni ("the listing it would size allocates: " & integer-to-text (p2 - p1))
+              print-line-uni ("root entries: " & integer-to-text (list-length e1))
+              print-line-uni ("the walk is cheaper than the listing: " & fpc-yn (p1 - p0 < p2 - p1))
+              print-line-uni ("the walk is under a tenth of it: " & fpc-yn ((p1 - p0) * 10 < p2 - p1))
+              let b0 = alloc-bytes 0
+              in let burn = alloc-bytes 64
+              in let b1 = alloc-bytes 0
+              in print-line-uni ("CONTROL, the probe can see 64: " & fpc-yn (b1 - b0 >= 64))
+            end
+          end
+        end
+      end
+    end
+  end

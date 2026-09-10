@@ -237,6 +237,12 @@ $BvtTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     $cdxOut = Join-Path $outDir "$base.cdx"
     $logOut = Join-Path $outDir "$base.log"
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    # A binary from an EARLIER run is deleted before this one compiles.
+    # Phase 2 tested only that a .cdx EXISTED, so a subject whose compile
+    # failed today was booted from the last run's binary and reported a
+    # runtime PASS: measured 2026-09-09 on type-name-existence, red at head,
+    # passing its runtime arm off a two-day-old file (L-SAMEVER).
+    if (Test-Path $cdxOut) { Remove-Item -Force $cdxOut }
     $failFile = $t -replace '\.codex$', '.failing'
     $expectFail = Test-Path $failFile
     # The .flags sidecar rides along, exactly as test.ps1 does it. Without it a
@@ -498,23 +504,36 @@ foreach ($t in $runList) {
 
 Write-Host ''
 Write-Host '--- Phase 3: batch (2 members, one VM) ---'
-if ($BvtTests.Count -lt 2) {
-    Write-Host "  SKIP  batch/2-member -- the subject list holds $($BvtTests.Count), and one member cannot show an early exit" -ForegroundColor DarkGray
+# A subject carrying a .failing sidecar is EXPECTED not to compile, so it
+# returns no binary and this arm would read its own choice of subjects as an
+# early exit. The baked list never showed it because its first two compile; a
+# -SubjectsFile caller hands over whatever its selection held.
+$batchable = @($BvtTests | Where-Object { -not (Test-Path ($_ -replace '\.codex$', '.failing')) })
+if (($batchable.Count -lt 2)) {
+    Write-Host "  SKIP  batch/2-member -- $($batchable.Count) of $($BvtTests.Count) subject(s) are expected to compile, and one member cannot show an early exit" -ForegroundColor DarkGray
 } else {
-    $batchList = Join-Path $OutRoot '_batch2.txt'
-    $batchRoot = Join-Path $OutRoot '_batch2'
-    if (Test-Path $batchRoot) { Remove-Item -Recurse -Force $batchRoot }
-    @($BvtTests[0], $BvtTests[1]) | Set-Content -Path $batchList -Encoding utf8
-    $batchScript = Join-Path (Resolve-Path .).Path 'build\test-compile-batch.ps1'
+    $batchList = (Join-Path $OutRoot '_batch2.txt')
+    $batchRoot = (Join-Path $OutRoot '_batch2')
+    if ((Test-Path -PathType Container $batchRoot)) {
+        Remove-Item -Recurse -Force $batchRoot
+    }
+    Set-Content -Path $batchList -Value @($batchable[0], $batchable[1]) -Encoding UTF8
+    $batchScript = (Join-Path (Resolve-Path '.').Path 'build\test-compile-batch.ps1')
+    # *> drops EVERY stream and 2> drops only stderr, so ScRunArgsDropErr would
+    # let the batch script's own output into this run's. No constructor emits *>.
     & pwsh -NoProfile -File $batchScript -ListFile $batchList -OutRoot $batchRoot -Kernel $stage0 *> $null
+    # SeListFiles emits no -ErrorAction SilentlyContinue, and the directory is
+    # ABSENT exactly when the batch VM died, which is the case this arm exists to
+    # report: without the suppression the run throws instead of reporting.
     $batchCdx = @(Get-ChildItem -Path $batchRoot -Recurse -Filter '*.cdx' -File -ErrorAction SilentlyContinue)
-    if ($batchCdx.Count -lt 2) {
+    if (($batchCdx.Count -lt 2)) {
         $compileFails.Add("batch/2-member: $($batchCdx.Count) of 2 binaries returned; the batch VM ended early (COMPILER-68, P-REPL)")
         Write-Host "  FAIL  batch/2-member -- $($batchCdx.Count) of 2 binaries" -ForegroundColor Red
     } else {
         Write-Host '  PASS  batch/2-member'
     }
 }
+
 
 $sw.Stop()
 $totalPass = $compilePass.Count + $runPass.Count

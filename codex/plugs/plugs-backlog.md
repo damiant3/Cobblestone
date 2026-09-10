@@ -236,24 +236,34 @@ box. **A staleness guard belongs in `test-cross.ps1` itself**, which takes
 whatever plug it finds where `hosted-wasm-test.ps1` refuses one older than its
 source; that script is GENERATED, so it goes through `codex/build/`.
 
-**1.101 -- nine plug run drivers compile their subject with no `-Kernel`, so
-the subject is built by whatever is lying in `build-output/bare-metal/`.**
-`compile.ps1` falls back to that path, which holds whichever compiler ran last,
-and a run driver that takes the fallback grades its plug against an unknown
-compiler. Measured 2026-09-08 (fester) over every `compile.ps1` invocation
-under `codex/plugs`: 71 sites, 54 pass an explicit `-Kernel`, and nine do not
-and have none in scope. They are `csharp/run.ps1:58`, `html/run.ps1:24`,
-`javascript/run.ps1:46`, `maui/run.ps1:41`, `ptx/run.ps1:20`,
-`t3isa/run.ps1:25`, `wasm/build-designer.ps1:54`, `winforms/run.ps1:21` and
-`wpf/run.ps1:42`. Every one of those files DOES name `-Kernel` elsewhere, for
-`Invoke-PlugVmFileSerial`, which is the plug VM and not the compiler, so a
-grep for the flag says the file is fine when the compile is not; that is the
-tell to distrust here. The plug BUILD is already correct:
-`common/plug-build-lib.ps1:163` passes the depot seed, which is what
-`PlugDeepRecursion.md`'s retraction asked for. Not fixed here, because a run
-driver may want the SUT rather than the seed and which one each wants is a
-per-driver decision, not a sweep.
+**1.101 -- CLOSED (fester, 2026-09-09): every plug run driver names the
+compiler that builds its subject.** The nine that did not (`csharp/run.ps1`,
+`html/run.ps1`, `javascript/run.ps1`, `maui/run.ps1`, `ptx/run.ps1`,
+`t3isa/run.ps1`, `wasm/build-designer.ps1`, `winforms/run.ps1`,
+`wpf/run.ps1`) took whatever was lying in `build-output/bare-metal/`, which
+holds whichever compiler ran last, so they graded a plug against an unknown
+compiler. Each now takes `-Compiler`, defaulting to the depot seed, and passes
+it to `compile.ps1` as `-Kernel`; a lane grading a compiler change passes its
+own. Two further sites had the same defect and are fixed with them:
+`evidence/run.ps1:190`, which compiled the SIGNER, and `t3isa/gate.ps1:39`,
+which compiles the NATIVE side that is the gate's own oracle.
 
+**The parameter is `-Compiler` and not `-Kernel` on purpose.** In these files
+`-Kernel` already means the PLUG binary (`Invoke-PlugVmFileSerial -Kernel
+$PlugCdx`), which is what made a grep for the flag report a file as fine while
+its compile was not. Two names for two subjects is the repair; one name would
+have restored the ambiguity that hid this.
+
+Measured after the change: of every `compile.ps1` invocation under
+`codex/plugs`, the only lines without `-Kernel` on the invocation itself are
+`recheck/kill-rate.ps1:48` and `recheck/sweep.ps1:231`, both of which pass it
+on their continuation line. Ablated on the one driver whose plug CDX is on the
+box: `wasm/build-designer.ps1 -Compiler <a path that does not exist>` is
+REFUSED (`MISSING: ... - the -Kernel you asked for is not there`), and with the
+default it builds through to WAT and HTML naming `seed/Codex.cdx
+[77F6A5D09CFF6BD5]` on its own stderr. The other drivers exit before their
+compile step because their plug CDX is absent on this box, so they are verified
+by reading, by a parse, and by `Get-Command` reporting the parameter.
 **1.14 -- deep recursion is not free on a stack language.** The wasm half is
 CLOSED (`return_call`; the module self-compiles at a 0.5 MB worker stack and
 dies at 0.25 MB). What remains is every other runtime's class, established by
@@ -356,7 +366,7 @@ quoting its score:
 **1.72 -- the python plug's TCO matches a self-call by NAME and not by arity, so
 its argument loop and its parameter loop can disagree. LATENT: whether any
 well-typed program reaches it is UNESTABLISHED, and that is the weakest part of
-this row.** `is-self-call-root` (`PythonEmitter.codex:665`) compares the chain's
+this row.** `is-self-call-root` (`PythonEmitter.codex:706`) compares the chain's
 ROOT name to the definition's name and nothing compares argument count to
 parameter count; the jump evaluates one temporary per ARGUMENT and assigns one
 parameter per PARAMETER, so the loops agree only at exact arity. Fewer
@@ -450,7 +460,7 @@ of its eleven rows.
 eleven rows against seed `555791DA1F39A810` (COMPILER-24, main 20018).
 
 **The structural cause is read off the emitter, not inferred from the
-symptom.** `a64-emit-sum-eq` (`codex/plugs/arm64/Arm64CodeGen.codex:1164`)
+symptom.** `a64-emit-sum-eq` (`codex/plugs/arm64/Arm64CodeGen.codex:1242`)
 compares the tag with `arm64-cmp`, then loads each field with `arm64-ldr` at
 `+8` and `+16` and compares it with `arm64-cmp` as well. There is no dispatch
 on the FIELD's type anywhere in it: no `__str_eq` call for a Text field, no
@@ -559,7 +569,7 @@ being wrong.
 **(B) `a64-max-fields-for-type`'s `SumTy` arm never consults `defs`**
 (`Arm64CodeGen.codex:1156`): `is SumTy (n) (ta) (cs) -> a64-sum-max-fields cs 0
 0`, using the type's OWN carried ctors, where the `ConstructedTy` and `TypeCon`
-arms beside it both look the name up in `defs`. **`IRTextEmitter.codex:259`
+arms beside it both look the name up in `defs`. **`IRTextEmitter.codex:260`
 emits `(sum "Name" (args ...))` with no ctors**, and `ir-parse-type-sum` builds
 `SumTy name args []` when the third element is absent, so a sum arriving over IR
 TEXT always has an empty ctor list and this arm always answers 0. Measured with
@@ -600,7 +610,7 @@ against the four hand-unrolled arms it replaces.
 **THREE CLAIMS IN THIS ROW WERE FALSE and are corrected here.**
 
 - *"COMPILER-24 synthesises a per-sum helper inside the x86-64 emitter, so
-  arm64 and riscv never see it."* No: `Ast/Desugarer.codex:805` (`gen-eq-def`)
+  arm64 and riscv never see it."* No: `Ast/Desugarer.codex:869` (`gen-eq-def`)
   builds `__eq_<T>` in the DESUGARER, so it rides the IR to every backend.
   `recursive-eq`'s arm64 emission calls `__eq_Nest` seven times and
   `__eq_Chain` four. **The helper always reached arm64; defect (A) was stopping
@@ -736,7 +746,7 @@ lines and leave the third, while leaving f64 wrong in a way this test cannot
 see (L-GAP).
 
 **What the operators MEAN, read off the x86-64 emitters** (`emit-approx-eq`
-and `emit-approx-eq-exact`, `X86_64.codex:1724` and `:1749`): each operand is
+and `emit-approx-eq-exact`, `X86_64.codex:1749` and `:1749`): each operand is
 mapped to a MONOTONIC ORDINAL by `float-to-ordinal-sized` (width-aware, eight
 instructions), the two ordinals are subtracted, the absolute value taken, and
 compared -- `~` is True within **4 ULPs**, `~0` within **0**. The ordinal
@@ -1011,36 +1021,15 @@ subject, and `-Calibrate` corrupts one wire byte and requires every row to go
 red at it, so a green says the comparison fired. The three mechanics that each
 read exactly like a broken plug are in its header and are not repeated here.
 
-It does NOT assert a refusal on input that is not IR, because these two modules
-do not refuse; that gap is 2.06, and a runner asserting behaviour its subject
-lacks would be red from its first run and switched off.
+It asserts a refusal on input that is not IR, in two arms per module: the bad
+input plain, and the same input behind the `ELF` mode line, because the mode is
+stripped before the check.
 
 **The residue is cost, not coverage.** `PublicPush.md` 5b names it, so a push
 runs it; no automated gate runs it, which 5b states of all three graders. It is
 not free: `build-page-modules.ps1 -Only riscv,arm64` and each
 `codex/plugs/<plug>/build.ps1` must have produced the module and the
 `<plug>-plug.cdx` oracle, and the oracle arm boots a guest per row.
-
-
-## 2.06 -- the native backends answer a plausible wire on input that is not IR
-
-Handed `this is not an IR chapter`, `riscv-stdio.wasm` answers 46,886 bytes and
-`arm64-stdio.wasm` 15,737, both exit 0, where the real subject gives 50,184 and
-18,667. The output TRACKS the input, so the modules are reading it; what is
-absent is a refusal.
-
-This is L-BAILVALUE on a front door: a producer that answers rather than
-refusing leaves a caller unable to tell that anything went wrong, and the
-page's board target would hand somebody a downloadable binary built from
-whatever was in the box. The text lenses do refuse, which
-`page-lens-test.ps1 -Calibrate` asserts across all 45 of them; these two are the
-exception.
-
-The fix belongs with whoever owns `PlugIrBytes`: refuse an input with no
-`IR-BEGIN`, the way `compile-plain` refuses an unknown mode (L-ACCEPTED). The
-wire runner deliberately does NOT assert the refusal today, because a runner
-that asserted behaviour these modules do not have would be red from its first
-run and would be switched off.
 
 
 ## 2.07 -- PARTLY CLOSED (reek, 2026-09-08): `ElfWriter` takes a machine parameter now, and the mislabelling it guarded against turns out to be LATENT
@@ -1088,6 +1077,42 @@ registers, not `write(2)` and `mmap(2)`. It loads on Linux and stops at its
 first print. The hosted arms are PrismDevEnvironment stage 5a, compiler work
 and seed-affecting; the pill's own title says so.
 
+
+## 2.53 -- SizedVec coverage: Fortran and HTML type emitters refuse; C# runtime builtins remain missing
+
+`fortran` and `html` each carry an exhaustive `when` over `CodexType`
+in their type function and refuse with CDX2070 `Non-exhaustive match on
+'CodexType': missing SizedVecTy`, so no IR is emitted and the module already on
+disk keeps its old bytes and its old timestamp. A rebuild is what surfaces it:
+the shipped modules predate the constructor.
+
+Measured 2026-09-09 in their `plug-source-stdio.codex` bundles: `:2086`
+(fortran, `fort-type`) and `:2077` (html).
+
+C# `cs-type` now emits `List<T>` for `SizedVecTy` (main 25471). Its fresh
+plug build and the release DDC witness pass. The C# page module has not been
+rebuilt by that proof.
+
+The existing `codex/test/ops/vec-sized.codex` emitted `List<long>` for its
+zero-, one- and two-element declarations on 2026-09-10, but the C# still
+references undefined `vec_empty`, `vec_singleton`, `vec_cons`, `vec_head`
+and `vec_length`. Source inspection: `CSharpEmitterExpressions.codex`
+`builtin-emitters` has no `vec-*` entries, and `emit-apply` falls through to
+ordinary calls. The generated fixture at
+`D:/Projects/Cobblestone-val/build-output/ddc-fix/vec-sized.cs:129` shows
+`vs_one` calling `vec_singleton`; lines 131, 133 and 135 carry the other
+references, with no declarations elsewhere in that file. This is an emitted
+source limitation, not a measured Roslyn failure or a runtime pass. Add the
+five builtin mappings and run that existing fixture against its `.expected`.
+
+Whether the remaining plugs map a sized vector to a plausible wrong type
+through a fallback arm is unmeasured. A successful plug build does not answer
+that question.
+
+**What Fortran and HTML should emit is a per-language decision rather than a
+mechanical arm.** `fort-type`'s own prose has Fortran emit a reference to a type
+nothing declares, so that the target compiler names the unmappable type; copying
+a neighbouring arm would ship a plausible wrong type instead (L-BAILVALUE).
 
 ## 2.08 -- the board ELF carries no per-board link or flash address
 
@@ -1372,8 +1397,30 @@ once every shipped page module declares, **the allowlist is deleted**, because
 a list drawn from unrelated applications is a leak in one direction and a
 coincidence in the other. reek's.
 
-Not built. Verified at head 2026-09-07: `wasm-export-list` is still the
-allowlist at `WasmEmitter.codex:3904`.
+Not built. Verified at head 2026-09-09: `wasm-export-list` is still the
+allowlist at `WasmEmitter.codex:3905`.
+
+**THE CENSUS THE RULING NAMES IS ANSWERED, AND IT ANSWERS THE OTHER WAY.
+Measured 2026-09-09 over the emitted `.wat` of all 24 page modules present on
+disk: each exports exactly TWO names, `__heap_reset` and `_start`, and both
+come from the runtime header. The allowlist contributes ZERO exports to every
+shipped page module.** Its real consumers are the APP modules, measured in the
+same pass: `bridge` 24, `blackjack` 17, `backgammon` 16, `battleship` 11,
+`c64` 10. So "once every page module declares, the allowlist is deleted" cannot
+close it: no page module needs the allowlist, and deleting it takes the app
+modules' exports with it. The declaration work and the deletion are separate
+questions with separate subjects.
+
+**A DECLARATION MUST ALSO REACH THE COMPILER'S DCE ROOTS, so this is not a
+plug-only change.** The IR handed to a plug is pruned before it is emitted:
+`ir-prune-unreachable-roots` in `codex/compiler/Emit/IRTextEmitter.codex:667`,
+called from `codex/compiler/opening.codex:1808` and `:1834` with the hardcoded
+`ir-emit-roots` (`:1343`, six names). A chapter declaring an export it does not
+reach from `opening` therefore names a definition DCE has already deleted, and
+`wat-emit-exports` would emit an export naming nothing. The chapter HEADER
+survives pruning (type defs, ctors and effect-op names are untouched), so a
+declaration carried as an annotation reaches the plug; the FUNCTIONS it names
+do not, without a root.
 
 **Steve's remaining reports, HIS measurements on HIS corpus and not
 re-measured here** (L-COUNT: re-measure before quoting any of these): ~45
@@ -1424,7 +1471,7 @@ anything currently failing.
 
 ## 2.21 -- OPEN (red, from COMPILER-36): the wire states the integer overflow contract, and the remaining plugs wrap where it says trap
 
-THE CONTRACT (root, COMPILER-36). `add-int`, `sub-int` and `mul-int` on a plain Integer TRAP on signed overflow. The wrapping band is spelled `add-int-wrapping` / `sub-int-wrapping` / `mul-int-wrapping` and its node type reads `(int i64-min 9223372036854775807 ov-wrap)`. `codex/plugs/common/IRTextParser.codex` collapses both spellings to the plain op and `ir-parse-expr-binary` (`IRTextParser.codex:727`) parses the node TYPE, so every plug already holds the mode per node and keys on `int-ty-wraps ty` (`codex/compiler/Types/CodexType.codex:141`, a chapter every bundle carries). The gap is at the EMIT sites only; the parser needs nothing. The contract also reaches a plug's own PROGRAM, where `plug-selftest` is the only runner that sees it: a byte assembler is a shift, not a multiply.
+THE CONTRACT (root, COMPILER-36). `add-int`, `sub-int` and `mul-int` on a plain Integer TRAP on signed overflow. The wrapping band is spelled `add-int-wrapping` / `sub-int-wrapping` / `mul-int-wrapping` and its node type reads `(int i64-min 9223372036854775807 ov-wrap)`. `codex/plugs/common/IRTextParser.codex` collapses both spellings to the plain op and `ir-parse-expr-binary` (`IRTextParser.codex:729`) parses the node TYPE, so every plug already holds the mode per node and keys on `int-ty-wraps ty` (`codex/compiler/Types/CodexType.codex:142`, a chapter every bundle carries). The gap is at the EMIT sites only; the parser needs nothing. The contract also reaches a plug's own PROGRAM, where `plug-selftest` is the only runner that sees it: a byte assembler is a shift, not a multiply.
 
 DONE. x86-64 bare metal traps. wasm: `emit-wat-binary` keys on `int-ty-wraps` and calls `$cx_add_trap` / `$cx_sub_trap` / `$cx_mul_trap`, three preamble helpers ending in `unreachable`. Text family 1, zig / csharp / rust: zig emits `+` `-` `*` against `+%` `-%` `*%`, csharp `checked(...)` against the unchecked default, rust `checked_*(...).expect("integer overflow")` against `wrapping_*`. Text family 2, groovy / go: groovy's operators promote to BigInteger rather than wrapping, so the band narrows with an explicit `(long)` and a plain Integer takes `Math.addExact` / `subtractExact` / `multiplyExact` on coerced longs; go has no checked primitive and gets three hand-written helpers that panic, the mul check by quotient after answering a zero operand and the two `-1` cases.
 
@@ -1608,21 +1655,79 @@ assembly differs per emitter. Grade with `page-lens-test.ps1 -Only <lens>` for p
 with the compiler IR for the memory. The census script is one loop over `page-lenses.ps1`
 feeding `wasmtime` the IR; `page-lens-test` grades a 29-name subject and cannot see this.
 
-## 2.30 -- a plug build resolves its cites against a RELATIVE path
+## 2.30 -- CLOSED (reek, 2026-09-09): a plug build resolved its cites against a RELATIVE path
 
-The stale-kernel half is fixed in all 37 `run.ps1` (reek, 2026-09-07): each
+The stale-kernel half was fixed in all 37 `run.ps1` (reek, 2026-09-07): each
 takes `-Kernel`, resolves it absolutely, creates `build-output` so
 `compile.ps1` can write the log its own error names, and prints the `kernel:`
-digest. The second trap in the same place is NOT fixed. A plug `build.ps1`
-run from anywhere but the repo root fails with `error 3010: Unresolvable cite:
-Foreword chapter 'ListUtils' ... (expected .\codex\foreword\core\ListUtils.codex)`,
-naming a chapter that is present, correctly named and in the depot. It reads
-as a broken tree rather than a wrong working directory, and it took all six
-class-4 builds down at once. **A driver must pin the working directory;
-`Start-Process` without `-WorkingDirectory` inherits the launcher's.**
+digest.
+
+**THE SECOND TRAP WAS NOT IN A PLUG AT ALL. It was one argument in
+`compile.ps1`:** `Resolve-CiteOrder -RootLines $srcLines -Repo '.'`, so the
+repo was literally the CALLER'S working directory and every cite resolved
+against wherever the launcher happened to stand. A plug `build.ps1` run from
+anywhere but the repo root therefore failed with `error 3010: Unresolvable
+cite: Foreword chapter 'ListUtils' ... (expected
+.\codex\foreword\core\ListUtils.codex)`, naming a chapter that is present,
+correctly named and in the depot. The leading `.\` in that message is the whole
+diagnosis, and it reads as a broken tree rather than a wrong working directory.
+
+`-Repo` is now `(Split-Path $PSScriptRoot)`, which is how the same file already
+finds its seed and its `codex-vm.exe`, so the answer no longer depends on who
+called it. The row's own reading, that a DRIVER must pin the working directory,
+was the wrong repair aimed at the wrong file: pinning every caller would have
+left the next one to rediscover this.
+
+**Ablated, same command from the same foreign directory:** before, exit 8 with
+the 3010 above; after, exit 0 and a 120,723-byte artifact. `compile` is
+generated, so the change went through `codex/build/CompileScript.codex` and the
+shipped script together: `compile match 454 / 0 drift`, byte arm level with its
+record (455 456 22, unmoved).
+
+**One behaviour change worth naming:** `compile.ps1` run from repo A against a
+source in repo B now resolves cites against A, the script's own repo, rather
+than against the caller's directory.
 
 
-## 2.31 -- OPEN (unowned, measured by red 2026-09-07): the go plug asserts a type on literal operands, which is not valid Go
+## 2.31 -- CLOSED (reek, 2026-09-09; measured by red 2026-09-07): the go plug asserted a type on literal operands, which is not valid Go
+
+`go-operand` asserts an operand only when it is not already concrete, and
+`go-is-concrete` answers True for `IrIntLit`, `IrNumLit`, `IrTextLit`,
+`IrBoolLit` and `IrCharLit`. A literal is emitted as an untyped constant and
+reaches an `int`, a `float64` or a `string` parameter by Go's own conversion at
+the call, so it needs no assertion and cannot carry one.
+
+**27 sites in one class, not one:** 22 in `emit-go-binary`, 4 `go-vec-ewise`
+call sites, and `IrIf`'s condition. `go-vec-ewise` now takes operands ALREADY
+asserted, because it is handed emitted text and cannot see the node, so it
+cannot tell a literal from a name. The three assertions left in the file are
+correct and stay: `IrFieldAccess`, `IrFieldStore` and `IrAwait` take a receiver
+that can never be a literal.
+
+**ABLATED, both directions, on one probe reaching five shapes.** The probe's
+functions are all called from `opening`, because the emitter drops what nothing
+calls and an unreached function proves nothing.
+
+| shape | depot emitter | fixed |
+|---|---|---|
+| `x + 1` | `_cx_add_trap(x.(int), 1.(int))` | `_cx_add_trap(x.(int), 1)` |
+| `2 + 3` | `_cx_add_trap(2.(int), 3.(int))` | `_cx_add_trap(2, 3)` |
+| `x < 10` | `(x.(int) < 10.(int))` | `(x.(int) < 10)` |
+| `s & "tail"` | `(s.(string) + "tail".(string))` | `(s.(string) + "tail")` |
+| `if True` | `if true.(bool) {` | `if true {` |
+
+The variable operand keeps its assertion in every row, which is what says the
+fix narrowed the emission rather than removing it. Restoring the fixed emitter
+and rebuilding reproduced the fixed emission byte-identically.
+
+**Verified by READING, which is the standing rule for a target whose runtime is
+not on this box**, so no run has ever said this and none will until a go
+toolchain exists somewhere.
+
+**RESIDUE, not this row's and not repaired:** `IrCharLit` emits `rune(n)`, which
+is `int32`, so a char operand in an `int` position is a Go type error whether or
+not it is asserted. Removing the assertion is still right; the width mismatch is
+a separate defect.
 
 `emit-go-expr` emits a literal bare and every consumer appends `.(int)` / `.(string)`, so
 the emitted program carries `0.(int)`, `9223372036854775807.(int)` and
@@ -1634,7 +1739,32 @@ body is not. Pre-existing and independent of 2.21, which changed only which FORM
 operands are fed into. No go toolchain on this box, which is why no run has ever said so;
 the check costs one `go vet` wherever a toolchain exists.
 
-## 2.32 -- OPEN (reek, 2026-09-07): `build-page.ps1` ships a page with every language lens DARK instead of refusing
+## 2.32 -- CLOSED (reek, 2026-09-09): `build-page.ps1` refuses a page whose lenses have no module
+
+`build-page.ps1` takes `-AllowDarkLenses`, off by default. A lens in the
+`page-lenses.ps1` manifest whose module is absent now FAILS the page build,
+naming every missing one and its path, and pointing at
+`build-page-modules.ps1`; with the switch it prints `N of M lenses lit; K DARK,
+allowed` and carries on.
+
+**The denominator is the manifest, never a constant.** The check asks how many
+of the lenses that file knows about have a binary, so a lens added to the
+manifest tightens the check by construction and nothing has to be kept in step
+with a 53.
+
+**Ablated both directions in this workspace, which had 22 of 53 modules.**
+Without the switch: exit 1, all 31 missing modules named. With it: `22 of 53
+lenses lit; 31 DARK, allowed by -AllowDarkLenses`, and the build ran on through
+the library, template and example phases to exit 0. **The all-lit branch is NOT
+exercised here** and is stated rather than claimed: no workspace in this session
+had all 53.
+
+`apps/landing/build.ps1` inherits the refusal, which is the point, because that
+is the script that assembles what gets published.
+
+The account of the defect, kept because it says what the failure looked like:
+
+
 
 A target plug whose binary is absent is treated as an optional lens that "stays
 dark", so `build-page.ps1` exits 0 and emits a complete-looking `prism.html`
@@ -1795,7 +1925,7 @@ overriding a working parameter with a literal, and nothing new has to be built.
 ## 2.42 -- OPEN (reek, measured 2026-09-07): the compiler lifts every lambda before IR text, so no compiled subject can reach any plug's lambda arms; hand-authored IR is the only route
 
 The transport supports it at both ends and the plugs implement it, but nothing produces
-one. `IRTextEmitter` emits `(lambda (params ...) ...)` and `IRTextParser.codex:710` parses
+one. `IRTextEmitter` emits `(lambda (params ...) ...)` and `IRTextParser.codex:714` parses
 that atom, so the wire is capable. In fortran, `fort-collect-lams`, `fort-emit-lam-def`,
 `fort-dispatch-lams`, `fort-lam-key-of` and `fort-lam-name` all exist to serve it.
 
@@ -2155,7 +2285,7 @@ command allow-list did not carry 0x35.
 
 **The refusal.** `tools/codex-vm.c` failed every command outside
 `{0x00, 0x03, 0x12, 0x25, 0x28, 0x2A}` with CHECK CONDITION. The guest issues
-0x35: `GopUsbMsc.codex:33` sets `scsi-op-sync-cache = 53` and `msc-sync-cache`
+0x35: `GopUsbMsc.codex:513` sets `scsi-op-sync-cache = 53` and `msc-sync-cache`
 stamps it, `usb-sync-cache` answers -1 on refusal, and
 `DiagStage.codex:162,206` fails the bank on `fl < 0`. So under blu's flush the
 bed banks nothing and reports it as a bank failure, which is a bed artefact
@@ -2288,8 +2418,7 @@ another way.
 This is NOT the `[UNSUPPORTED]` refusal the plug gives for `char-encode`,
 `raw-bytes-to-text` and `vec-empty` (24 tests in the same battery, all of them
 honest and none of them this). A refusal names the builtin and exits cleanly; a
-fault hands back a register dump where a wire should be, which is what 2.06
-warns about from the other direction.
+fault hands back a register dump where a wire should be.
 
 **LANDED.** `rv-li-fits-32` tests the range against its two ends. Four of the
 five now compile and PASS on the bed: `int-min-literal`, `int-add-wrapping`,
@@ -2311,7 +2440,7 @@ with nine rows that fail in BOTH directions, so a pointer compare, a tag compare
 and a correct compare each answer differently, which is why the arm carries the
 finding rather than merely reporting a red.
 
-`rv-emit-sum-eq` (`RiscVCodeGen.codex:1096`) is the site, and 1.90's account of
+`rv-emit-sum-eq` (`RiscVCodeGen.codex:1186`) is the site, and 1.90's account of
 the arm64 defect is the map: the ctors come from `defs`, NOT from the type,
 because `IRTextEmitter` emits `(sum "Name" (args ...))` with no ctors, so every
 sum arriving over IR TEXT carries an empty ctor list. Reading the empty list is

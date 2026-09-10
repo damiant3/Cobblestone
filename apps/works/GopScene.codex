@@ -25,9 +25,6 @@ Chapter: GopScene
 
 Section: Geometry
 
-  gsc-topbar-h : Integer = 22
-  gsc-taskbar-h : Integer = 28
-
  Cordic answers on a scale of 1000 and takes milliradians, 6283 to the
  turn. The orbit radius is 5200 world units, so the scaled cosine is
  multiplied by 5.2 to land there.
@@ -196,16 +193,23 @@ Section: Loop
  The shot writes the live frame to the boot stick and paints the
  verdict into the taskbar band, which this loop never repaints, so the
  verdict survives the next frame. Colours are GopDesk's taskbar pair,
- hand-synced like the chrome sizes above.
+ hand-synced.
 
-  gsc-shot : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port] Integer
-  gsc-shot (scr-base) (w) (h) (stride) (font) = act
+ THE BAND IS TAKEN, NOT ASSUMED. This chapter cannot cite `GopDesk`, and
+ the 28 it used to hand-sync is the band's FLOOR rather than its height:
+ measured at 1600x900 the laid band is 88 device pixels where `28 * s`
+ is 56, so the strip sat 40 pixels below the band's top instead of 4,
+ and a band shorter than the assumption would have put it outside the
+ band entirely. The caller holds `ds` and passes `dk-task-px`.
+
+  gsc-shot : Integer, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port] Integer
+  gsc-shot (scr-base) (w) (h) (stride) (font) (band) = act
     let mark = __heap-save
     in act
       t <- shot-take scr-base w h stride
       let s = ui-scale w
-      in let bg = gop-fill-rect scr-base stride h (200 * s) (h - gsc-taskbar-h * s + 4 * s) (300 * s) (16 * s) #000E1C
-      in let tx = gop-draw-text scr-base stride h font (204 * s) (h - gsc-taskbar-h * s + 6 * s) t #69BE28 s 0
+      in let bg = gop-fill-rect scr-base stride h (200 * s) (h - band + 4 * s) (300 * s) (16 * s) #000E1C
+      in let tx = gop-draw-text scr-base stride h font (204 * s) (h - band + 6 * s) t #69BE28 s 0
       in let d = __heap-restore mark
       in 0
     end
@@ -442,15 +446,15 @@ Section: Step
     in let c = __record-set sp "sp-look" (if moved then 1 else sp.sp-look)
     in 0
 
-  gsc-step : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, (Integer -> Scene3DState), ScenePane, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
-  gsc-step (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (build) (sp) (sc0) = act
+  gsc-step : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, (Integer -> Scene3DState), ScenePane, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gsc-step (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (build) (sp) (sc0) (band) = act
     sc <- gsc-take kbd sc0
     if sc == 15 then act
       v <- (gs-viewport-release)
       gsc-step-hide
     end
     else if sc == 88 then act
-      s <- (gsc-shot base w h stride font)
+      s <- (gsc-shot base w h stride font band)
       1
     end
     else if sc == 31 then

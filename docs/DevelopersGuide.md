@@ -107,6 +107,7 @@ fit in the return type. It answers the letter unchanged rather than a wrong one.
 | Vector | `Vector 4 Real` |
 | Vector (bounded) | `Vector 16 (Integer between 0 and 255)` |
 | Vector mask | not writable; see "Vector Types (SIMD)" |
+| SizedVec | `SizedVec 2 Integer` |
 | Real (f64) | `Real` |
 | Real approx (f32) | `Real approximate` |
 | Real + safety | `Real trapping`, `Real saturating` |
@@ -1391,6 +1392,40 @@ and operate element-wise. Both operands must have matching `N` and `T`.
 ```
 
 Scalar broadcast is explicit via `vec-splat`, not implicit.
+
+### `SizedVec N T` is the other one, and mixing the two is refused
+
+`Vector N T` is packed SIMD lanes. **`SizedVec N T` is a growable sequence
+that carries its length in its type**, and the two are different types on
+purpose, because they have different runtime layouts: a packed vector is `N`
+eight-byte lanes with lane 0 at offset 0 and no header, while a `SizedVec` has
+a list's layout, the count at offset 0 and the elements from offset 8. The two
+are off by exactly one word.
+
+```
+  vs : SizedVec 2 Integer
+  vs = vec-cons 1 (vec-singleton 2)
+```
+
+`vec-empty`, `vec-singleton`, `vec-cons`, `vec-head` and `vec-length` are the
+`SizedVec` family; every other `vec-` and `mask-` builtin is packed. **Applying
+one family's builtin to the other's value is CDX2001**, and the arm is
+`codex/test/errors/vec-repr-mix`. They shared one type until 2026-09-09, and
+the mixture compiled clean and answered silently wrong: `vec-length (vec-splat
+7)` read lane 0 as a count and printed 7, where the length of a two-lane vector
+is 2.
+
+**Why the length is written in the type rather than inferred.** This language
+has no type-level naturals, so `vec-cons`'s result length cannot be expressed
+as `N + 1` in its signature. Instead its registry type carries a negative
+length as a marker meaning "compute this", and the checker's `refine-vec-op`
+derives the real length from the call: `vec-cons` adds one to its argument's
+length. That is why a declared length is checked (`SizedVec 99 Integer` for a
+two-element construction is CDX2001) even though the signature cannot state the
+arithmetic. The marker is why the two families could not simply share one type
+with an exact-arity rule: the sized family needs a length that unifies with
+anything until it is refined, and that same permissiveness is what let a packed
+value through.
 
 ### A mask cannot be written down
 

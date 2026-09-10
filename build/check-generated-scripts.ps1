@@ -17,8 +17,19 @@
 #   check-generated-scripts.ps1 -Only test      # one, by emitted name
 #   check-generated-scripts.ps1 -Diff test      # show the actual drift
 #   check-generated-scripts.ps1 -Update         # rewrite both records below
+#   check-generated-scripts.ps1 -UpdateBytes    # rewrite ONLY the byte residue
 #
-# It answers two questions, and only the first can fail the build.
+# It answers three questions now, and the third is the BYTE ARM: the drift
+# comparison trims every line and drops the empty ones, so it decides STATEMENTS,
+# and an added blank line or a re-indented comment is invisible to it. That gap
+# let 47 changelists and a design page claim "byte-identical" on an instrument
+# that cannot decide it (L-GAP). The arm compares the emitted text again with
+# blanks and indentation included, and its record is
+# build/generated-scripts-bytes.txt: 8 generators are statement-identical and not
+# byte-identical, NONE of them by a content difference, and it fails on a ninth,
+# on a recorded difference that moves, and on a repair the record still lists.
+#
+# The first two questions, and only the first can fail the build.
 #   1. Does each generator still emit the script shipped beside it?
 #      Record: build/generated-scripts-baseline.txt.
 #   2. Which scripts under build/ does no generator emit at all? That is the
@@ -46,7 +57,12 @@ param(
     # last: a drift table is a statement about the compiler that produced it.
     [string]$Kernel = '',
     [switch]$AllowStaleKernel,
-    [switch]$Update
+    [switch]$Update,
+    # Writes ONLY the byte residue. -Update rewrites the drift baseline and the
+    # hand-written inventory too, and the inventory currently carries other
+    # lanes' new scripts, so a lane repairing one byte difference would record
+    # decisions that are not its to make.
+    [switch]$UpdateBytes
 )
 
 Set-StrictMode -Version Latest
@@ -56,6 +72,31 @@ $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $Repo
 
 $BaseFile = Join-Path $Repo 'build\generated-scripts-baseline.txt'
+$BytesFile = Join-Path $Repo 'build\generated-scripts-bytes.txt'
+
+# The recorded residue of generators that are statement-identical but not
+# byte-identical, as <name> <shippedLines> <emittedLines> <indentDiffs>.
+function Read-BytesResidue([string]$path) {
+    $t = @{}
+    if (-not (Test-Path -PathType Leaf $path)) { return $t }
+    foreach ($line in Get-Content $path) {
+        $bare = ($line -split '#')[0]
+        if ($bare.Trim() -eq '') { continue }
+        $p = $bare -split '\s+' | Where-Object { $_ -ne '' }
+        if ($p.Count -ge 4) { $t[$p[0]] = @{ S = [int]$p[1]; E = [int]$p[2]; I = [int]$p[3] } }
+    }
+    return $t
+}
+
+# Derived, not typed by hand, so a new row cannot arrive with an empty reason.
+function Get-ByteCause($r) {
+    $blanks = $r.ByteS - $r.ByteE
+    $word = if ($blanks -lt 0) { 'more' } else { 'fewer' }
+    if ($r.ByteI -eq 0 -and $blanks -ne 0) { return "blank lines only, emitted $([Math]::Abs($blanks)) $word" }
+    if ($r.ByteI -eq 0) { return 'blank lines only, a blank moved' }
+    if ($blanks -eq 0) { return "indentation only, $($r.ByteI) line(s)" }
+    return "indentation on $($r.ByteI) line(s), and emitted $([Math]::Abs($blanks)) $word blank line(s)"
+}
 
 # -Update writes two records and either may be read-only under Perforce. Writing
 # only what changed means the common case (one record moved, the other did not)
@@ -130,6 +171,29 @@ foreach ($g in (Get-ChildItem (Join-Path $Repo 'codex\build') -Filter '*Script.c
     # silently and the gate would have gone on saying OK.
     $m = [regex]::Match($text, 'sh-script\s+"([^"]+)"')
     if (-not $m.Success) { $m = [regex]::Match($text, 'pl-name\s*=\s*"([^"]+)"') }
+    # A generator whose entry chapter is split from its pipeline (L-UNCITABLE: a
+    # chapter declaring `opening` can be cited by nothing, so the pipeline has to
+    # live beside it to be reachable by a test) names its script in NEITHER of
+    # the two forms above. Follow the entry's own cites into codex\build and look
+    # there, or the split generator drops out of this gate silently, which is the
+    # hazard the comment above describes.
+    if (-not $m.Success) {
+        foreach ($c in [regex]::Matches($text, '(?m)^\s*cites\s+Build\s+chapter\s+(\S+)')) {
+            $sib = Join-Path $g.DirectoryName ($c.Groups[1].Value + '.codex')
+            if (-not (Test-Path -PathType Leaf $sib)) {
+                # Fall back to the chapter LINE, since a file name need not match
+                # the chapter it declares.
+                $sib = (Get-ChildItem $g.DirectoryName -Filter '*.codex' -File |
+                    Where-Object { [regex]::IsMatch([System.IO.File]::ReadAllText($_.FullName), '(?m)^Chapter:\s+' + [regex]::Escape($c.Groups[1].Value) + '\s*$') } |
+                    Select-Object -First 1 -ExpandProperty FullName)
+            }
+            if ($sib -and (Test-Path -PathType Leaf $sib)) {
+                $sibText = [System.IO.File]::ReadAllText($sib)
+                $m = [regex]::Match($sibText, 'pl-name\s*=\s*"([^"]+)"')
+                if ($m.Success) { break }
+            }
+        }
+    }
     if (-not $m.Success) { continue }
     $name = $m.Groups[1].Value
     $ext = if ($text -match 'emit-bash') { 'sh' } else { 'ps1' }
@@ -343,11 +407,46 @@ foreach ($s in $specs) {
         exit ($(if ($delta -gt 0) { 1 } else { 0 }))
     }
 
+    # THE BYTE ARM. The comparison above decides STATEMENTS: it trims every line
+    # and drops the empty ones, so an added blank line and a re-indented comment
+    # are both invisible to it. Measured 2026-09-08 on its own logic: a script
+    # against itself plus one blank line scores delta 0, while one changed
+    # statement scores 2. Forty-seven CL descriptions and the campaign page had
+    # said "byte-identical" on the strength of it (L-GAP).
+    #
+    # So the emitted text is compared again, blanks included and indentation
+    # included, with only the EOL convention normalised: the emitter writes LF
+    # and the depot holds CRLF, and that difference is not a finding.
+    # ReadAllText and split rather than the ReadAllLines above, because
+    # ReadAllLines cannot see a trailing blank line and one of the eight
+    # differs by exactly that.
+    $shipTxt = [regex]::Split([System.IO.File]::ReadAllText((Join-Path $Repo $s.Target)), "`r?`n")
+    $madeTxt = [regex]::Split([System.IO.File]::ReadAllText($emitted), "`r?`n")
+    # I is the number of non-blank lines whose UNTRIMMED text differs, which is
+    # the indentation half of the difference, counted only where the two sides
+    # still line up.
+    $shipNB = @($shipTxt | Where-Object { $_.Trim() -ne '' })
+    $madeNB = @($madeTxt | Where-Object { $_.Trim() -ne '' })
+    $indentDiffs = 0
+    for ($k = 0; $k -lt [Math]::Min($shipNB.Count, $madeNB.Count); $k++) {
+        if ($shipNB[$k] -ne $madeNB[$k]) { $indentDiffs++ }
+    }
+    $byteSame = ($shipTxt.Count -eq $madeTxt.Count) -and ($indentDiffs -eq 0)
+    if ($byteSame) {
+        for ($k = 0; $k -lt $shipTxt.Count; $k++) {
+            if ($shipTxt[$k] -ne $madeTxt[$k]) { $byteSame = $false; break }
+        }
+    }
+
     $rows += [pscustomobject]@{
         Emits  = $s.Emits
         Status = if ($delta -eq 0) { 'match' } else { 'DRIFTED' }
         Lines  = $shipped.Count
         Drift  = $delta
+        ByteS  = $shipTxt.Count
+        ByteE  = $madeTxt.Count
+        ByteI  = $indentDiffs
+        ByteOk = $byteSame
     }
 }
 
@@ -457,7 +556,8 @@ if (-not $wanted) {
 $broken     = @($rows | Where-Object { $_.Status -ne 'match' -and $_.Status -ne 'DRIFTED' })
 $driftedNow = @($rows | Where-Object { $_.Status -eq 'DRIFTED' } | ForEach-Object { $_.Emits } | Sort-Object)
 
-if ($Update) {
+if ($Update -or $UpdateBytes) {
+  if ($Update) {
     $header = @(
         "# generated-scripts-baseline.txt -- generated by build/check-generated-scripts.ps1 -Update",
         "#",
@@ -479,6 +579,38 @@ if ($Update) {
     )
     Write-Host ""
     Write-Record $BaseFile ($header + $driftedNow) "baseline ($($driftedNow.Count) known drift(s))"
+  }
+
+    # The byte residue is written only by a FULL run: a -Only run knows nothing
+    # about the generators it did not emit, and writing from it would delete
+    # their rows and report the residue as repaired.
+    if (-not $wanted) {
+        $notByte = @($rows | Where-Object { -not $_.ByteOk } | Sort-Object Emits)
+        $bHeader = @(
+            "# generated-scripts-bytes.txt -- generated by build/check-generated-scripts.ps1 -Update",
+            "#",
+            "# Generators that are STATEMENT-identical to the script they ship beside and",
+            "# NOT byte-identical to it, as",
+            "#   <generator> <shipped-lines> <emitted-lines> <indent-diff-lines>  # cause",
+            "#",
+            "# The check above trims every line and drops the empty ones, so it decides",
+            "# statements; these are the differences it cannot see. NONE of them is a",
+            "# content difference: every row here is blank lines, indentation, or both,",
+            "# measured 2026-09-08 when the arm was written.",
+            "#",
+            "# The check FAILS on a generator that is not byte-identical and not listed",
+            "# here, on a listed generator whose numbers move, and on a listed generator",
+            "# that has become byte-identical -- that last one so the record shrinks as",
+            "# each is repaired rather than granting permission for the difference to",
+            "# come back. Lower it in the changelist that did the repair: -Update.",
+            ""
+        )
+        $bRows = foreach ($r in $notByte) {
+            '{0} {1} {2} {3}  # {4}' -f $r.Emits, $r.ByteS, $r.ByteE, $r.ByteI, (Get-ByteCause $r)
+        }
+        Write-Record $BytesFile ($bHeader + @($bRows)) "byte residue ($($notByte.Count) not byte-identical)"
+    }
+
     Remove-OwnRoot
     exit 0
 }
@@ -559,6 +691,47 @@ if ($newDrift.Count -gt 0) {
     exit 1
 }
 
+$residue = Read-BytesResidue $BytesFile
+$byteNew = New-Object System.Collections.Generic.List[string]
+$byteMoved = New-Object System.Collections.Generic.List[string]
+$byteFixed = New-Object System.Collections.Generic.List[string]
+foreach ($r in $rows) {
+    $known = $residue.ContainsKey($r.Emits)
+    if ($r.ByteOk) {
+        if ($known) { $byteFixed.Add("  $($r.Emits) is byte-identical now") }
+        continue
+    }
+    if (-not $known) {
+        $byteNew.Add(("  {0}: shipped {1} lines, emitted {2}, {3} indented differently -- {4}" -f $r.Emits, $r.ByteS, $r.ByteE, $r.ByteI, (Get-ByteCause $r)))
+        continue
+    }
+    $was = $residue[$r.Emits]
+    if ($was.S -ne $r.ByteS -or $was.E -ne $r.ByteE -or $was.I -ne $r.ByteI) {
+        $byteMoved.Add(("  {0}: recorded {1}/{2}/{3}, now {4}/{5}/{6} -- {7}" -f $r.Emits, $was.S, $was.E, $was.I, $r.ByteS, $r.ByteE, $r.ByteI, (Get-ByteCause $r)))
+    }
+}
+
+if ($byteNew.Count -gt 0 -or $byteMoved.Count -gt 0 -or $byteFixed.Count -gt 0) {
+    Write-Host ""
+    Write-Host "check-generated-scripts: FAIL -- the byte arm."
+    if ($byteNew.Count -gt 0) {
+        Write-Host "$($byteNew.Count) generator(s) are statement-identical and NOT byte-identical, and are not in the record:"
+        $byteNew | ForEach-Object { Write-Host $_ }
+    }
+    if ($byteMoved.Count -gt 0) {
+        Write-Host "$($byteMoved.Count) recorded generator(s) changed their difference:"
+        $byteMoved | ForEach-Object { Write-Host $_ }
+    }
+    if ($byteFixed.Count -gt 0) {
+        Write-Host "$($byteFixed.Count) recorded generator(s) are repaired and the record still lists them:"
+        $byteFixed | ForEach-Object { Write-Host $_ }
+        Write-Host "  Lower it in the same changelist: build/check-generated-scripts.ps1 -Update"
+    }
+    Write-Host "  The statement check trims lines and drops blanks, so it cannot see any of this."
+    Write-Host "  Record: build\generated-scripts-bytes.txt"
+    exit 1
+}
+
 if ($fixed.Count -gt 0) {
     Write-Host "check-generated-scripts: OK -- and $($fixed.Count) baselined generator(s) match again:"
     $fixed | ForEach-Object { Write-Host "  $_ (drop it from the baseline)" }
@@ -566,6 +739,6 @@ if ($fixed.Count -gt 0) {
     exit 0
 }
 
-Write-Host "check-generated-scripts: OK ($($driftedNow.Count) known drift(s))"
+Write-Host "check-generated-scripts: OK ($($driftedNow.Count) known drift(s)), byte arm level with its record"
 Remove-OwnRoot
 exit 0

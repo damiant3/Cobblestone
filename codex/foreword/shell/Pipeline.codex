@@ -43,11 +43,19 @@ Section: Artifacts
  it. The kind is what a non-shell target needs in order to lower the same model
  differently: a file is a path to a CI runner and a variable to a shell.
 
+ `PkFunction` IS A STAGE WHOSE OUTPUT IS A DEFINITION A LATER STAGE CALLS, not a
+ file or a value. Three stages are that shape and had to say so in prose until
+ 2026-09-08: `apply-annotations` defines Apply-File and the next stage calls it,
+ and `lint-unused-cites` and `check-cdx-registry` do the same. A function is the
+ one artifact a shell cannot reach through a variable, which is why it needs a
+ kind rather than a `PkValue` with a note.
+
   PipeKind =
     | PkFile
     | PkDir
     | PkValue
     | PkText
+    | PkFunction
 
  AN ARTIFACT HAS TWO EXPRESSIONS AND CONFLATING THEM IS THE SECOND THING THIS
  chapter got wrong. `Repo` is PRODUCED by `(Resolve-Path (Join-Path
@@ -83,11 +91,25 @@ Section: Resources
  because the box is the scarcest thing the fleet has and a stage that boots four
  guests should say so where a scheduler can see it rather than in a comment.
 
+ A RESOURCE DRIVEN BY A PARAMETER CANNOT BE SPELLED AS AN INTEGER, and writing
+ the default instead is the failure L-REQUEST names: a number that names a REQUEST
+ reads as a CONSUMPTION the moment it leaves its sentence. `bvt` boots one guest
+ per `-Jobs` slot, `run-plug` listens on `-Port`, and `compile` takes `-MemMB`, so
+ declaring `PrGuests 8` would publish the DEFAULT as the run. `PrDriven` carries
+ the expression instead, and the kind says which resource it sizes, so a scheduler
+ reads the same three quantities whether they are constant or given.
+
+  PipeResourceKind =
+    | RkGuests
+    | RkMemoryMb
+    | RkPort
+
   PipeResource =
     | PrGuests (Integer)
     | PrMemoryMb (Integer)
     | PrPort (Integer)
     | PrKernel (ShellExpr)
+    | PrDriven (PipeResourceKind) (ShellExpr)
 
 Section: Verdicts
 
@@ -101,9 +123,22 @@ Section: Verdicts
  script has no declaration at all, and a verdict list that omits the exit a
  reader most wants explained is worse than no verdict list.
 
+ `PoComputed` IS AN EXIT WHOSE CODE IS A COUNT, so no literal can name it.
+ `sweep-apps` and `test-boards` both exit with the number of subjects that failed,
+ which is a real verdict and was undeclarable: a reader asking what exit 3 means
+ gets "three of them failed", and that sentence is what the text carries.
+
+ `PoThrow` IS A REFUSAL THAT NEVER REACHES AN EXIT CODE. `boot-arm64` spells all
+ five of its failure paths as `throw`, so its verdict list carried only the
+ `-NoBoot` zero and said nothing about the five ways it actually refuses. A caller
+ sees a non-zero code from the host either way, and the MEANING is what a verdict
+ exists to record.
+
   PipeOutcome =
     | PoExit (Integer) (Text)
     | PoPassthrough (Text)
+    | PoComputed (Text)
+    | PoThrow (Text)
 
 Section: Stages
 
@@ -117,11 +152,36 @@ Section: Stages
     ps-body : List ShellCmd
   }
 
+ A STEP IS A STAGE OR A GROUP, and the group is what lets a script whose
+ numbered sections run inside control flow keep them as stages. Ruled 2026-09-08
+ (PipelineModel.md, the fourth burr): a flat list can hold `stress-sweep` as two
+ stages and one opaque body, or as six stages in an order the script does not
+ run, and neither is true.
+
+ THE REPEAT IS A VOCABULARY RATHER THAN A CONDITION, because two of the ten
+ scripts the group exists for repeat with `foreach`, which binds a name and
+ needs a collection: a bare condition can express `while` and cannot express
+ those two at all.
+
+  PipeRepeat =
+    | PrWhile (ShellExpr)
+    | PrWhileLabeled (Text) (ShellExpr)
+    | PrForEach (Text) (ShellExpr)
+
+ THE THREE OPTIONAL FIELDS NEST IN A FIXED ORDER, guard outermost, then repeat,
+ then handler around the body. So a guarded group that does not run costs no
+ pass of its loop, and the handler runs once per pass rather than once per group.
+ The order is not derivable from the fields, which is why it is written here.
+
+  PipeStep =
+    | PsStage (PipeStage)
+    | PsGroup (Maybe PipeRepeat) (Maybe ShellExpr) (Maybe PipeStage) (List PipeStep)
+
   Pipeline = record {
     pl-name : Text,
     pl-doc : Text,
     pl-params : List ShellParam,
-    pl-stages : List PipeStage
+    pl-stages : List PipeStep
   }
 
 Section: Resolving a name
@@ -199,10 +259,74 @@ Section: Lowering to the shell AST
  which is the drift check earning its place on a change that touched no
  statement.
 
-  pipe-stage-cmds : List PipeStage, Integer, List ShellCmd -> List ShellCmd
+ A FLAT PIPELINE MUST LOWER THROUGH THE TREE WALKER TO WHAT THE FLAT WALKER
+ EMITTED, which is the byte-identical obligation the tree landed under: a list of
+ `PsStage` reaches `ScSequence` of the stage body and nothing else.
+
+  pipe-group-repeat : PipeRepeat, List ShellCmd -> ShellCmd
+  pipe-group-repeat (r) (body) =
+    when r
+      is PrWhile (c) -> ScWhile c body
+      is PrWhileLabeled (lbl) (c) -> ScLabeledWhile lbl c body
+      is PrForEach (n) (items) -> ScForEach n items body
+
+ The handler is a FINALLY and the catch list is empty, which is what the five
+ `try` scripts are: the cleanup runs however the guarded sections end. An empty
+ catch beside a non-empty finally emits nothing of its own, so the text is
+ `try { ... } finally { ... }`.
+
+ AN UNGUARDED GROUP MUST NOT BE WRAPPED IN A SEQUENCE WHEN IT IS ALREADY ONE
+ COMMAND. `emit-ps-cmds` terminates every command it emits, so a sequence holding
+ one `ScTry` or one `ScForEach` ends in a newline and the enclosing list adds
+ another: one blank line after the group. It is invisible while the group is the
+ LAST step, because the extra newline lands at end of file, and
+ `test-exception-handler` is the first subject with a stage AFTER its group, which
+ is what exposed it.
+
+  pipe-one-or-seq : List ShellCmd -> ShellCmd
+  pipe-one-or-seq (cs) =
+    if list-length cs == 1 then list-at cs 0 else ScSequence cs
+
+  pipe-group-wrap : Maybe PipeRepeat, Maybe ShellExpr, Maybe PipeStage, List ShellCmd -> ShellCmd
+  pipe-group-wrap (rep) (guard) (handler) (body) =
+    let held = when handler
+      is Just (h) -> [ScTry body [] (h.ps-body)]
+      is None -> body
+    in let looped = when rep
+      is Just (r) -> [pipe-group-repeat r held]
+      is None -> held
+    in when guard
+      is Just (c) -> ScIf c looped []
+      is None -> pipe-one-or-seq looped
+
+ A GROUP OF ONE STAGE LOWERS THAT STAGE'S BODY FLAT, and the reason is what the
+ `ScSequence` is for: it marks a boundary BETWEEN stages, and one stage inside a
+ group has no boundary to mark. Wrapping it anyway adds a blank line before the
+ closing brace, which `apply-annotations` and `build-magic-pages` would both have
+ carried, because each spells its guarded and repeated section as a bare command
+ list rather than as a sequence per stage. The trimmed drift check cannot see a
+ blank line, so nothing but the byte arm would have said so.
+
+ A GROUP ALSO CARRIES NO SEPARATOR OF ITS OWN. A stage takes the blank line that
+ preceded it at the head of its body; a group has no body, so the stage BEFORE a
+ group takes that blank at its TAIL instead.
+
+  pipe-group-lone : List PipeStep, List ShellCmd -> List ShellCmd
+  pipe-group-lone (steps) (walked) =
+    if list-length steps >= 2 then walked
+    else if list-length steps == 0 then walked
+    else when list-at steps 0
+      is PsStage (s) -> s.ps-body
+      is PsGroup (r) (g) (h) (inner) -> walked
+
+  pipe-stage-cmds : List PipeStep, Integer, List ShellCmd -> List ShellCmd
   pipe-stage-cmds (ss) (i) (acc) =
     if i >= list-length ss then acc
-    else pipe-stage-cmds ss (i + 1) (list-push acc (ScSequence ((list-at ss i).ps-body)))
+    else let one = when list-at ss i
+      is PsStage (s) -> ScSequence (s.ps-body)
+      is PsGroup (rep) (guard) (handler) (inner) ->
+        pipe-group-wrap rep guard handler (pipe-group-lone inner (pipe-stage-cmds inner 0 []))
+    in pipe-stage-cmds ss (i + 1) (list-push acc one)
 
   pipeline-to-shell : Pipeline -> ShellScript
   pipeline-to-shell (pl) =
@@ -226,12 +350,31 @@ Section: Reading the model back
       is PkDir -> "dir"
       is PkValue -> "value"
       is PkText -> "text"
+      is PkFunction -> "function"
 
   pipe-arts-text : List PipeArtifact, Integer, Text -> Text
   pipe-arts-text (as) (i) (acc) =
     if i >= list-length as then acc
     else let a = list-at as i
     in pipe-arts-text as (i + 1) (acc & (if acc == "" then "" else ", ") & (a.pa-name) & ":" & pipe-kind-text (a.pa-kind))
+
+ A verdict rendered as one line, so the four kinds of outcome read the same way to
+ a reader asking what a stage can do.
+
+  pipe-outcome-text : PipeOutcome -> Text
+  pipe-outcome-text (o) =
+    when o
+      is PoExit (n) (why) -> "exit " & show n & ": " & why
+      is PoPassthrough (why) -> "exit of the child: " & why
+      is PoComputed (why) -> "a computed exit: " & why
+      is PoThrow (why) -> "throws: " & why
+
+  pipe-resource-kind-text : PipeResourceKind -> Text
+  pipe-resource-kind-text (k) =
+    when k
+      is RkGuests -> "guests"
+      is RkMemoryMb -> "memory-mb"
+      is RkPort -> "port"
 
   pipe-names-text : List Text, Integer, Text -> Text
   pipe-names-text (ns) (i) (acc) =
@@ -244,12 +387,41 @@ Section: Reading the model back
       & " | out: " & pipe-arts-text (s.ps-out) 0 ""
       & " | " & (s.ps-why)
 
-  pipe-doc-lines : List PipeStage, Integer, List Text -> List Text
-  pipe-doc-lines (ss) (i) (acc) =
+  pipe-repeat-text : PipeRepeat -> Text
+  pipe-repeat-text (r) =
+    when r
+      is PrWhile (c) -> "while"
+      is PrWhileLabeled (lbl) (c) -> "while :" & lbl
+      is PrForEach (n) (items) -> "foreach $" & n
+
+  pipe-rep-part : Maybe PipeRepeat -> Text
+  pipe-rep-part (m) =
+    when m
+      is Just (r) -> " | repeat: " & pipe-repeat-text r
+      is None -> ""
+
+  pipe-guard-part : Maybe ShellExpr -> Text
+  pipe-guard-part (m) =
+    when m
+      is Just (c) -> " | guarded"
+      is None -> ""
+
+  pipe-handler-part : Maybe PipeStage -> Text
+  pipe-handler-part (m) =
+    when m
+      is Just (h) -> " | handler: " & (h.ps-name)
+      is None -> ""
+
+  pipe-doc-lines : List PipeStep, Integer, Text, List Text -> List Text
+  pipe-doc-lines (ss) (i) (pad) (acc) =
     if i >= list-length ss then acc
-    else pipe-doc-lines ss (i + 1) (list-push acc (pipe-stage-line (list-at ss i)))
+    else when list-at ss i
+      is PsStage (s) -> pipe-doc-lines ss (i + 1) pad (list-push acc (pad & pipe-stage-line s))
+      is PsGroup (rep) (guard) (handler) (inner) ->
+        pipe-doc-lines ss (i + 1) pad (pipe-doc-lines inner 0 (pad & "  ")
+          (list-push acc (pad & "group" & pipe-rep-part rep & pipe-guard-part guard & pipe-handler-part handler)))
 
   pipeline-doc : Pipeline -> List Text
-  pipeline-doc (pl) = pipe-doc-lines (pl.pl-stages) 0 []
+  pipeline-doc (pl) = pipe-doc-lines (pl.pl-stages) 0 "" []
 
 Page 1

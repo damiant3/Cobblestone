@@ -1,12 +1,15 @@
 # Run the IMG plug: send PE + CDX bytes and receive a GPT disk image.
 #
 # Usage:
-#   plugs/img/run.ps1 -PeInput <file.efi> -CdxInput <file.cdx> -Out <file.img> [-Fat16] [-Source <file>...]
+#   plugs/img/run.ps1 -PeInput <file.efi> -CdxInput <file.cdx> -Out <file.img> [-Fat16] [-Source <file>...] [-Bucketed]
 #
 # Default is FAT32. Pass -Fat16 for FAT16 with optional source embedding.
 # -Source takes any number of files and each keeps its OWN name on the image,
 # 8.3-folded. It used to take one file and write it as SOURCE.SRC, a literal in
 # the writer, so no image in the tree could hold a directory of tests.
+# -Bucketed spreads the sources over SRC0, SRC1, ... subdirectories instead of
+# the root, which is what lifts the root's 509-entry bound and separates names
+# that fold to one 8.3 spelling.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)] [string]$PeInput,
@@ -22,6 +25,17 @@ param(
     # DIRECTORY of sources, which is the whole point of taking more than one,
     # reaches this script through -File.
     [string]$SourceList = '',
+    # Place the sources in subdirectories instead of the root. The FAT16 root
+    # holds 512 entries of which three are spoken for, and two names folding to
+    # the same 8.3 spelling cannot both live in one directory; both bounds are
+    # per-directory, so buckets lift both at once.
+    [switch]$Bucketed,
+    [int]$BucketSize = 256,
+    # Write the image's own name mapping: one TSV row per source, DIR, the 8.3
+    # name, and the path it came from. A caller reading verdicts back off the
+    # image needs that mapping, and DERIVING it a second time on the caller's
+    # side would agree with a shared mistake by construction (L-BOTHARMS).
+    [string]$ManifestOut = '',
     [int]$TotalSectors = 16384
 )
 
@@ -77,23 +91,71 @@ foreach ($s in $sourcePaths) {
         Bytes = [System.IO.File]::ReadAllBytes($s)
     }
 }
-if ($sources.Count -gt $maxSources) {
-    [Console]::Error.WriteLine("REFUSED: $($sources.Count) sources exceeds the FAT16 root directory's $maxSources usable entries.")
-    exit 3
-}
-# Two files folding to one 8.3 name would put two directory entries under the
-# same name and the reader would get whichever it found first. That is data
-# loss with no diagnostic, so it is named here.
-$dupes = @($sources | Group-Object Name | Where-Object { $_.Count -gt 1 })
-if ($dupes.Count -gt 0) {
-    foreach ($d in $dupes) {
-        [Console]::Error.WriteLine("REFUSED: 8.3 name '$($d.Name)' is claimed by $($d.Count) files: $(($d.Group.Path) -join ', ')")
+# $buckets is a list of directories, each an object with an 8.3 Name and the
+# indices into $sources it holds. A flat image has none of them.
+$buckets = @()
+if ($Bucketed) {
+    if ($BucketSize -lt 1) { [Console]::Error.WriteLine("REFUSED: -BucketSize must be at least 1."); exit 3 }
+    # First fit: a source goes in the first bucket with room whose 8.3 name it
+    # does not already claim, and a new bucket opens when no bucket takes it.
+    # Collisions are therefore separated rather than refused.
+    $bucketNames = @()   # index -> hashtable of 8.3 names held
+    $bucketIdx = @()     # index -> list of source indices
+    for ($i = 0; $i -lt $sources.Count; $i++) {
+        $placed = -1
+        for ($b = 0; $b -lt $bucketIdx.Count; $b++) {
+            if ($bucketIdx[$b].Count -ge $BucketSize) { continue }
+            if ($bucketNames[$b].ContainsKey($sources[$i].Name)) { continue }
+            $placed = $b
+            break
+        }
+        if ($placed -lt 0) {
+            $bucketNames += ,(@{})
+            $bucketIdx += ,([System.Collections.Generic.List[int]]::new())
+            $placed = $bucketIdx.Count - 1
+        }
+        $bucketNames[$placed][$sources[$i].Name] = $true
+        $bucketIdx[$placed].Add($i)
     }
-    exit 4
+    for ($b = 0; $b -lt $bucketIdx.Count; $b++) {
+        $buckets += [pscustomobject]@{
+            Name    = "SRC$b".PadRight(8) + '   '
+            Indices = $bucketIdx[$b]
+        }
+    }
+    if ($buckets.Count -gt $maxSources) {
+        [Console]::Error.WriteLine("REFUSED: $($buckets.Count) subdirectories exceeds the FAT16 root directory's $maxSources usable entries. Raise -BucketSize.")
+        exit 3
+    }
+} else {
+    if ($sources.Count -gt $maxSources) {
+        [Console]::Error.WriteLine("REFUSED: $($sources.Count) sources exceeds the FAT16 root directory's $maxSources usable entries. Pass -Bucketed to place them in subdirectories.")
+        exit 3
+    }
+    # Two files folding to one 8.3 name would put two directory entries under the
+    # same name and the reader would get whichever it found first. That is data
+    # loss with no diagnostic, so it is named here.
+    $dupes = @($sources | Group-Object Name | Where-Object { $_.Count -gt 1 })
+    if ($dupes.Count -gt 0) {
+        foreach ($d in $dupes) {
+            [Console]::Error.WriteLine("REFUSED: 8.3 name '$($d.Name)' is claimed by $($d.Count) files: $(($d.Group.Path) -join ', ')")
+        }
+        [Console]::Error.WriteLine("Pass -Bucketed to place colliding names in separate subdirectories.")
+        exit 4
+    }
+}
+
+# The wire wants the sources grouped by directory, in directory order, so the
+# order they are sent in is the bucket order rather than the caller's order.
+if ($buckets.Count -gt 0) {
+    $ordered = @()
+    foreach ($bk in $buckets) { foreach ($ix in $bk.Indices) { $ordered += $sources[$ix] } }
+    $sources = $ordered
 }
 
 # Build payload:
 #   [fs-type(1)] [total-sectors(4)] [pe-size(4)] [cdx-size(4)] [src-count(4)]
+#   [dir-count(4)] [ per directory: name83(11) file-count(4) ]
 #   [ per source: name83(11) size(4) ] ... [pe][cdx][ each source's bytes ]
 $ms = [System.IO.MemoryStream]::new()
 $bw = [System.IO.BinaryWriter]::new($ms)
@@ -102,6 +164,11 @@ $bw.Write([int]$TotalSectors)
 $bw.Write([int]$peBytes.Length)
 $bw.Write([int]$cdxBytes.Length)
 $bw.Write([int]$sources.Count)
+$bw.Write([int]$buckets.Count)
+foreach ($bk in $buckets) {
+    $bw.Write([System.Text.Encoding]::ASCII.GetBytes($bk.Name))
+    $bw.Write([int]$bk.Indices.Count)
+}
 foreach ($s in $sources) {
     $bw.Write([System.Text.Encoding]::ASCII.GetBytes($s.Name))
     $bw.Write([int]$s.Bytes.Length)
@@ -114,8 +181,29 @@ $inputBytes = $ms.ToArray()
 
 $srcTotal = 0
 foreach ($s in $sources) { $srcTotal += $s.Bytes.Length }
-Write-Host "[img-run] PE=$($peBytes.Length) CDX=$($cdxBytes.Length) sources=$($sources.Count) srcBytes=$srcTotal sectors=$TotalSectors fs=$(if ($Fat16) {'FAT16'} else {'FAT32'})"
-foreach ($s in $sources) { Write-Host "[img-run]   $($s.Name) <- $($s.Path) ($($s.Bytes.Length) bytes)" }
+Write-Host "[img-run] PE=$($peBytes.Length) CDX=$($cdxBytes.Length) sources=$($sources.Count) dirs=$($buckets.Count) srcBytes=$srcTotal sectors=$TotalSectors fs=$(if ($Fat16) {'FAT16'} else {'FAT32'})"
+foreach ($bk in $buckets) { Write-Host "[img-run]   dir $($bk.Name.Trim()) holds $($bk.Indices.Count)" }
+if ($ManifestOut) {
+    # Written from the SAME arrays the payload is built from, after the bucket
+    # reorder, so a row cannot disagree with what the image holds.
+    $rows = @()
+    if ($buckets.Count -gt 0) {
+        $ix = 0
+        foreach ($bk in $buckets) {
+            foreach ($void in $bk.Indices) {
+                $rows += ("{0}`t{1}`t{2}" -f $bk.Name.Trim(), $sources[$ix].Name, $sources[$ix].Path)
+                $ix++
+            }
+        }
+    } else {
+        foreach ($s in $sources) { $rows += ("{0}`t{1}`t{2}" -f '', $s.Name, $s.Path) }
+    }
+    [System.IO.File]::WriteAllLines($ManifestOut, [string[]]$rows)
+    Write-Host "[img-run] manifest: $ManifestOut ($($rows.Count) rows)"
+}
+if ($buckets.Count -eq 0) {
+    foreach ($s in $sources) { Write-Host "[img-run]   $($s.Name) <- $($s.Path) ($($s.Bytes.Length) bytes)" }
+}
 
 # -- Start TCP listener ----------------------------------------------
 $plugPort = 9118

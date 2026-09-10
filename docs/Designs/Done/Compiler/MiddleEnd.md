@@ -233,7 +233,7 @@ registry, an ordered pipeline as data, per-pass enable/options. Wire a
 fixed point required, no behavior change. Then the knobs. The memory pattern
 (correction 6) is decided and documented here, and `MEASURE` grows per-pass HWM.
 
-### Step 3 -- ablation harness -- **DONE** (`build/ablate.ps1`, log in `docs/Designs/Active/Compiler/AblationRuns.md`)
+### Step 3 -- ablation harness -- **DONE** (`build/ablate.ps1`, log in `docs/Designs/Done/Compiler/AblationRuns.md`)
 
 A script over the pass config that scores each configuration on seed size,
 bench static counts (`bench/compare.ps1` mechanism), and self-compile wall

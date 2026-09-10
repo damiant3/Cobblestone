@@ -1,8 +1,10 @@
 // Drive web/starmap.wasm with the same import object and the same catalogue the
 // page supplies, and grade what the module actually did.
 //
-// RUN BY HAND, like the other forty-four *-verify.mjs graders here: no build
-// script invokes any of them, and apps/landing/build.ps1 must not start node.
+// RUN BY HAND, and one of the six that still are. Counted 2026-09-08: 43
+// *-verify.mjs graders live under apps/ and 37 are invoked by the build that
+// writes the module they grade, which is the only moment a red can be about
+// the module rather than about a file nobody made.
 // Its own gate is `wasmtime starmap.wasm` plus a header read of the catalogue in
 // PowerShell; what that cannot do is deliver 3.79 MB into linear memory and ask
 // the module what it made of it, which is every arm below.

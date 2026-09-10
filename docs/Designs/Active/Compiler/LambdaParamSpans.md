@@ -28,7 +28,7 @@ against `boolean`. The control in the same file is `typeclass-smoke:8`
 `to-text (x) = show x`, whose parameter is already `int-default` and which the
 detector does not flag.
 
-## What is NOT needed, which is most of what the row's first reading assumed
+## What is NOT needed
 
 **The parser and the lexer do not change.** `LambdaExpr` is
 `(Token) (List Token) (Expr)` (`Syntax/SyntaxNodes.codex:23`), and
@@ -98,29 +98,23 @@ by construction, since it discriminates a tvar against a concrete type. And the
 detector has never been shown to fire on a def-path parameter, only on lambdas,
 so a regression on the def path would not be caught by this grade.
 
-## What the change as designed actually does, measured 2026-09-07
+## The change as designed does not reach the grade, measured 2026-09-07
 
-**It does not reach the grade, and it regresses a def.** Built twice off the
-depot seed (candidates `40D70FA13AD14646` and `83F52E4B2FB833B0`), both compile
-clean, and both read **2 sites over 1 program** where head reads 3 over 2.
+**Two candidates off the depot seed both compile clean and both read 2 sites
+over 1 program, against head's 3 over 2.** The lambda half works:
+`typeclass-smoke` goes entirely clean and both `__lam_2` sites go. The open
+residue is two sites.
 
-What it fixes: `typeclass-smoke` goes entirely clean and both `__lam_2` sites
-go. The lambda half of the design works.
+`typeclass-poly`'s `convert` DEF regresses. Its wire at head is
+`(param "x" int-default) (param "y" int-default)`, fully resolved; under the
+change `y` is `(tvar 312)` against a body of `int-default`. That is a
+disagreement on the def path, not a lambda one, and the lambda site left is
+`typeclass-poly` `__lam_0` `x` `(tvar 302)` against `int-default`.
 
-What it breaks: `typeclass-poly`'s `convert` DEF, whose wire at head is
-`(param "x" int-default) (param "y" int-default)`, fully resolved, and which
-under the change carries `y` as `(tvar 312)` against a body of `int-default`.
-That is a new disagreement on the def path, not a lambda one.
-
-**It is NOT the def parameters' spans.** `synth-bare-methods` and
+**The residue is not in the parameter spans.** `synth-bare-methods` and
 `synth-spec-methods` build the instance-method def params and
 `synth-instance-fields` builds the lambda params, all from the same `m.params`
-tokens, so the first reading was that a def parameter and a lambda parameter had
-come to share one span key. Returning the two def sites to `synthetic-span` and
-leaving only the lambda sites with real ones changed nothing: the second
-candidate reads the same 2 sites, the same names, the same type variables. So
-the residue is somewhere the parameter spans are not, and the next actor starts
-from that rather than from the shared-key theory.
-
-The remaining lambda site is `typeclass-poly` `__lam_0` `x` `(tvar 302)` against
-`int-default`.
+tokens. Returning the two def sites to `synthetic-span` and leaving only the
+lambda sites with real ones changes nothing: the same 2 sites, the same names,
+the same type variables. The next actor looks somewhere the parameter spans are
+not.

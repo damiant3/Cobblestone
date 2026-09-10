@@ -18,12 +18,6 @@ its own piece of work rather than as a submit-and-mirror tax on every
 in-flight fix. Do not report the drift as a defect; do not stop to
 mirror.
 
-What a reconciliation pass owes you: anything the fleet retired here has
-to actually leave the coordinator, not just this page. The merge-down
-rationale is the worked example -- it was corrected here on 2026-07-29,
-and AgentGrid went on typing the retired reason into terminals on every
-grant until 2026-08-02.
-
 ## The Problem
 
 A gate certifies the source it was run against, and a seed-affecting
@@ -40,8 +34,7 @@ never have to merge one down mid-run and start over.
 
 **That is the whole purpose and there is nothing else in it.** The token
 is not a lock on the shared build box, and it is not there because
-`p4 copy` refuses an unmerged stream. Both used to be written here as
-reasons and neither is one.
+`p4 copy` refuses an unmerged stream.
 
 **It follows that the token is keyed to what your change TOUCHES.**
 Seed-affecting work -- compiler source, the foreword, `seed/` itself --
@@ -58,13 +51,6 @@ not from the moment you started working, so whatever landed while you
 waited is still yours to take. Merge down, resolve, re-shelve, and only
 then run gates: your gate run is against the real head, not a memory of
 it, and from there the token keeps it that way.
-
-(AgentGrid used to decide this for you by comparing main's head when you
-asked against its head when you were granted. That measured the drift while
-you *waited in the queue*, not the drift you accumulated while *working* --
-and with an empty queue those two moments are milliseconds apart, so it
-almost never fired. Agents were routinely cleared to build on streams tens
-of changelists stale. The check is gone; the merge-down is now always.)
 
 ## Discovering Your Mailbox
 
@@ -108,49 +94,37 @@ decides whether you are free to take work.
 
 Valid states: `Idle`, `Working`, `Building`, `WaitingForBuild`, `Error`.
 
-**`context` is mandatory on every write** (Damian, 2026-09-07, after fester
-ran to 100% unnoticed): the lane's context used, as a whole-number percent
-read from the harness (the number `/handoff` reads), e.g. `"context": 62`.
-The commander reads it on every pulse and ORDERS `/handoff` at 70; a lane
-that reads 70 or more hands off on its own without waiting to be told. A
-lane whose `context` has not moved across two pulses while its state says
-`Working` is checked for exhaustion first, before its terminal or its run.
+**`context` is mandatory on every write** (Damian, 2026-09-07): the lane's
+context used, a whole-number percent, e.g. `"context": 62`. The commander
+reads it on every pulse and ORDERS `/handoff` at 70; a lane that reads 70 or
+more hands off on its own without waiting to be told. A lane whose `context`
+has not moved across two pulses while its state says `Working` is checked
+for exhaustion first, before its terminal or its run.
 
-**MEASURE IT, DO NOT ESTIMATE IT** (2026-09-07: two lanes admitted on the
-same day that every figure written since their last real measurement was a
-guess, and one such guess had the commander order a handoff at a real 37%).
-A feeling about how long the session has run is not this number. Run the
-formula in `.claude/skills/handoff/SKILL.md`, which is the copy a lane
-already executes at handoff. It is NOT restated here on purpose: it exists
-in two places already (that skill and `.claude/skills/commander-init`), they
-differ by an `isSidechain` guard, and a third copy is how two selectors for
-one question drift apart until the one that drifts short reports a green.
-
-The commander measures every lane independently on every pulse, so a guess
-here misleads whoever reads the dashboard rather than the pulse. It is still
-wrong. Write what you measured, and if you have not measured since your last
-write, measure before you write.
+**MEASURE IT, DO NOT ESTIMATE IT.** The one formula is
+`build/measure-context.ps1 -Lane <lane> -Percent`, read from the transcript
+files. A feeling about how long the session has run is not this number, and
+AgentGrid's display and a lane's own estimate are both wrong after a
+`/compact`. Write what you measured, and if you have not measured since your
+last write, measure before you write.
 
 ```json
 { "state": "Working", "task": "fixing lexer fuel cap", "claim": ["codex/compiler/Lexer"], "context": 62 }
 ```
 
-**The commander's pulse wakes a lane only on an EVENT** (the same day):
-a run of its exited, a grant it asked for, a ruling it waits on, a
-collision. "You are idle" is not an event. Every message to an idle lane
-after its cache has expired is a full re-read of its context, and a
-12-minute bump loop across five lanes spent that while Damian slept.
-Between events an idle lane costs nothing; leave it idle. The pulse itself
-runs no oftener than every 15 minutes, and every 30 when Damian is away.
+**The commander's pulse wakes a lane only on an EVENT**: a run of its
+exited, a grant it asked for, a ruling it waits on, a collision. "You are
+idle" is not an event. Every message to an idle lane after its cache has
+expired is a full re-read of its context. Between events an idle lane costs
+nothing; leave it idle. The pulse itself runs no oftener than every 15
+minutes, and every 30 when Damian is away.
 
 `claim` is the ground you are standing on: the paths, files or subsystems
 you are changing. One string or a list of them. It is what keeps two agents
 off the same code -- AgentGrid compares every live claim against every
 other, and when two overlap it tells BOTH of you so you can settle it
 between yourselves with a fleet message. Neither of you is stopped and
-neither is in the wrong; you are the two people who did not know. This is
-the channel for the failure that cost the fleet twice in one week, when val
-and blu built the same `fetch-tls` work an hour apart.
+neither is in the wrong; you are the two people who did not know.
 
 Three things make the claim worth writing:
 
@@ -179,13 +153,9 @@ Write `build-request` containing JSON:
   none of your shelved files sit under a path that can invalidate a gate,
   the request is answered NO TOKEN NEEDED and you are not queued. Nothing
   is lost: you were free to submit the moment you asked.
-- `note` -- one line, shown to the human. **Put the real duration in it when
-  you are asking for more than one gate pass.** A seed rebuild is three gate
-  passes by construction, and a pass measured 774 s on 2026-08-15, so the
-  cycle is roughly 40 minutes rather than the "about 12" that has been quoted
-  from a single pass. Re-measure rather than copying that number forward
-  (L-COUNT): samples on this box have ranged 8 to 13 minutes a pass. The
-  failure mode is under-quoting, which surprises the queue mid-hold.
+- `note` -- one line, shown to the human. Put the real duration in it when
+  you are asking for more than a 90-second hold; re-measure rather than copy
+  a number forward (L-COUNT).
 
 An empty `build-request` file is also accepted (legacy form): you get
 queued with no Perforce verification. Prefer the JSON form.
@@ -193,14 +163,6 @@ queued with no Perforce verification. Prefer the JSON form.
 Do not poll-spam: write the file once and wait. If you need to cancel,
 delete your `build-request` before it is granted, or write
 `build-complete` after it is granted.
-
-**This was broken and is fixed as of the stable build deployed 2026-08-16
-06:12 (AgentGrid CL 15661).** val measured it that morning: a `build-request`
-deleted at about 02:58 was granted anyway at 03:17:33, 19 minutes later, so
-it was not a poll race -- the queue held a COPY of the request and never
-looked at the file again. The coordinator now re-checks that the file still
-exists at the moment of the grant, drops the entry if it does not, tells you
-it did, and passes the token on. Deleting the file is a real cancel again.
 
 **Write `build-complete` anyway the moment an unwanted grant arrives.** That
 is still the only way out of a grant that has already landed, and it is worth
@@ -216,7 +178,7 @@ prompt. So the rule for waiting, for a token, for a reply, for Damian, is
 one rule: **waiting means your turn has ended and the terminal is at the
 prompt.** Set `status.json` to what you are waiting on, and stop.
 
-What that forbids, each of which has blocked a GO or a message this week:
+What that forbids:
 
 - **No foreground wait loops.** No `Start-Sleep` polling in a tool call,
   no `-Wait N` watcher run in the foreground. A tool call that sleeps
@@ -233,8 +195,7 @@ What that forbids, each of which has blocked a GO or a message this week:
 - **`state` tells the truth.** `WaitingForBuild` when queued,
   `Idle` when there is nothing to do, `Building` only while a background
   gate is actually running. `Working` while the terminal sits at a prompt
-  waiting for someone is a false report (rule stated 2026-08-16, restated
-  here because it is the same failure).
+  waiting for someone is a false report.
 
 The shape of a correct wait: request or send, write `status.json`, end
 the turn. The next thing that happens to you is a typed line or a
@@ -243,18 +204,18 @@ background completion, and either one starts a new turn cleanly.
 **A landed report does not end the lane (Damian, 2026-08-18).** Waiting is
 for a token, a reply you asked for, or a ruling only Damian can give. Landing
 an item is none of those: send the one-line landed message TO A PEER who is
-waiting on the work -- landed is not one of the commander's three events, so
-this line is not licence to send him one (see "When the addressee is the
-COMMANDER" below) -- take the next
-item named in your CurrentPlan row or your register in its order, and keep
-working. Do not end the turn to wait for the commander to say "go"; four
-lanes sat at the prompt for fifteen minutes on 2026-08-18 with their next
-item already written in the plan, and every one needed a nudge that cost
-a message. If the row is empty, that is a **question** event (one line to
-the commander: "lane empty, draw?"), and the wait after THAT is a real one.
+waiting on the work (landed is not one of the commander's three events; see
+"When the addressee is the COMMANDER" below), take the next item named in
+your CurrentPlan row or your register in its order, and keep working. If the
+row is empty, that is a **question** event (one line to the commander: "lane
+empty, draw?"), and the wait after THAT is a real one.
 
-
-**A mailbox file does not wake a session, and the commander learned it the expensive way (red, 2026-08-21).** Every lane sat idle at its prompt for hours while red wrote `build-request`-shaped notes into their inboxes and waited for replies; the messages were read only when each session next happened to run a tool. `SendMessage` to the session name is an interrupt and wakes the receiver now; `ListAgents` says busy or idle; a `status.json` age is a proxy that lies in both directions (fester read DARK for 91 minutes while busy). A commander that needs a lane to move reaches it through `SendMessage` and reads the depot for what landed; the mailbox is for the coordinator protocol, not for waking anyone.
+**A mailbox file does not wake a session.** `SendMessage` to the session
+name is an interrupt and wakes the receiver; `ListAgents` says busy or idle;
+a `status.json` age is a proxy that lies in both directions. A commander that
+needs a lane to move reaches it through `SendMessage` and reads the depot for
+what landed; the mailbox is for the coordinator protocol, not for waking
+anyone.
 
 ## What Happens Next
 
@@ -342,24 +303,18 @@ terminal and the Claude Code transcript. A crashed or wedged session goes on
 saying `Working` forever, so anyone assigning work off the self-report alone
 hands items to agents that are not there.
 
-**`atRest` is the field to assign off** (AgentGrid CL 16260). It is true when
-the agent's last turn ENDED, read from `stop_reason` on the last assistant
-record of its transcript: `tool_use` means Claude Code is still working the
-turn, anything else means it is sitting at its prompt. It needs no
-cooperation from the agent and no threshold, so an agent ten minutes into one
-gate run reads as working rather than tripping an inactivity timer. It is
-routinely the opposite of what the agent says -- when this landed, `fester`
-said `Working` and was at rest, and `reek` said `Idle` and was mid-turn.
+**`atRest` is the field to assign off.** It is true when the agent's last
+turn ENDED, read from `stop_reason` on the last assistant record of its
+transcript: `tool_use` means Claude Code is still working the turn, anything
+else means it is sitting at its prompt. It needs no cooperation from the
+agent and no threshold, so an agent ten minutes into one gate run reads as
+working rather than tripping an inactivity timer, and it is routinely the
+opposite of what the agent says.
 
 **It is also the answer to "will a typed line be read right now".** Under
 **How to wait** above, a typed line is only taken in at the prompt; `atRest`
 is exactly that condition, observed rather than promised. A message sent to
 an agent that is not at rest waits for its current turn to finish.
-
-Prefer it to the older reading of "idle", which was a self-reported `Idle` OR
-a `lastActivityUtc` that had not moved in a long time. That still works and
-is still honest, but it cannot tell a long tool call from an ended turn, and
-that is the distinction that decides whether you may interrupt.
 
 (`terminalRunning` is what the AgentGrid instance holding the coordinator
 lock can see. If the terminals were launched from a DIFFERENT instance, it
@@ -422,7 +377,7 @@ answers of five different ages.
    safe and it is not the same as reverting: deleting the shelf discards
    the depot *copy* of your work and does not touch your workspace files.
    The files you gated are the ones on disk, and they are the ones that
-   go in. (Found the hard way on the first run of this protocol.)
+   go in.
 8. **Submit or step aside.** The token buys ONE attempt at the gate
    dance and the submit. It is not a workspace lock and it is not a
    license to keep coding. The moment you learn your CL is not landing
@@ -444,20 +399,17 @@ answers of five different ages.
    token was never going to catch it. A claim costs one line in a file you
    are already writing.
 
-9. **Warm the caches BEFORE you request.** The hold is a mutex on the
+10. **Warm the caches BEFORE you request.** The hold is a mutex on the
    whole fleet, so a one-time cost paid inside it is paid by everyone
    in the queue. A workspace that has not gated recently has no cached
-   plug binaries (`build-output/` is p4-ignored), and the gate's
-   plug-smoke phase then BUILDS four plugs from source inside your
-   hold: measured 2026-08-06 on the CL 13708 hold, 1,045s of a
-   1,394s gate, on a hold Damian had to ping. Every second of it was
-   tokenless work. Before writing `build-request` on a cold workspace
-   (above all a copy-up client), pre-build the plug CDXs
-   (`pwsh codex\plugs\<p>\build.ps1` for typescript, python, rust,
-   ptx) and sync the workspace. The test extends rule 8's: work that
-   would run identically WITHOUT the token belongs before the
-   request, not inside the hold. (Damian's ruling, 2026-08-06: "the
-   problem isn't the time it took, it was the mutex it held.")
+   plug binaries (`build-output/` is p4-ignored), and a plug-smoke phase
+   then BUILDS plugs from source inside your hold. Before writing
+   `build-request` on a cold workspace (above all a copy-up client),
+   pre-build the plug CDXs (`pwsh codex\plugs\<p>\build.ps1`) and sync the
+   workspace. The test extends rule 8's: work that would run identically
+   WITHOUT the token belongs before the request, not inside the hold
+   (Damian, 2026-08-06: "the problem isn't the time it took, it was the
+   mutex it held.")
 
 ## Example Session (agent "blu")
 
@@ -533,33 +485,21 @@ So the shape of a seed-affecting landing is:
    self-verified seed.
 
    **The merge is not optional; RE-PROVING after it is, and the test is
-   whether the merge touched YOUR SUBJECT.** The coordinator's grant says to
-   merge down and then gate, and a lane reading that literally re-proves every
-   landing. What the proof certifies is the source you are submitting, so a
-   merge that carried no file your change is built on leaves it certifying
-   exactly what it did before. Read the merge's own file list (`p4 describe -s
-   <merge CL>`) and decide from that: a seed CL cares about `codex/compiler`,
-   `codex/foreword` and `seed`; an apps CL cares about what it compiles. If
-   your subject moved, release the token and re-prove outside the hold, which
-   is what step 4 already says. Measured 2026-09-07 (fester, main 22739): the
-   merge under the grant carried 52 plug `run.ps1` scripts, two app chapters
-   and seven docs and NOT one compiler file, so the fixed point taken before
-   the request still described the submitted source.
+   whether the merge touched YOUR SUBJECT.** What the proof certifies is the
+   source you are submitting, so a merge that carried no file your change is
+   built on leaves it certifying exactly what it did before. Read the merge's
+   own file list (`p4 describe -s <merge CL>`) and decide from that: a seed
+   CL cares about `codex/compiler`, `codex/foreword` and `seed`; an apps CL
+   cares about what it compiles. If your subject moved, release the token
+   and re-prove outside the hold (P-REMERGE).
 4. **Two reds under one grant end it.** Write `build-complete`, shelve,
-   and re-request BEHIND everyone already queued. Measured 2026-09-02: one
-   lane held the token about 75 minutes across four launches and landed
-   nothing while a green compiler CL waited 50 minutes behind it; three of
-   the four reds were coordination (a runner blind spot, a tree behind
-   main) and none of them needed the token to find.
+   and re-request BEHIND everyone already queued.
 
 - **Docs-only changes do not need the token.** Edit them directly on main and
   submit. No gates run, so there is no race to prevent. A workplan, a backlog
-  entry, a design note, a README -- just submit it. Rule 1 is about gates and
-  the code they gate, not about every `p4 submit` in the depot. **AgentGrid now
-  enforces this** rather than asking: it reads your shelved file list and
-  answers NO TOKEN NEEDED instead of queueing you. This paragraph and rule 1
-  both already said so in Damian's own words, and the queue kept filling with
-  docs anyway, which is why it is now mechanical.
+  entry, a design note, a README -- just submit it. AgentGrid enforces this:
+  it reads your shelved file list and answers NO TOKEN NEEDED instead of
+  queueing you.
 - **Code that runs gates needs the token**, including a copy-up, because a
   copy-up is a submit of gated code to main and that is exactly the race.
 - **Fixing broken code does not need the token -- and must not hold it.**
@@ -571,8 +511,7 @@ So the shape of a seed-affecting landing is:
   the reading and the commander's pulse watches it. A hold that long means
   the gate was started under the token instead of before the request, or a
   red gate is being fixed under it (rule 8): shelve, write `build-complete`,
-  do the work, re-request. The measured `-Internal` gate with nothing
-  implicated was 186 s on 2026-08-20, so a 20-minute hold is not a slow gate.
+  do the work, re-request.
 - **A grant can be CANCELLED while your run is still in flight** (blu,
   2026-09-02). The coordinator, or Damian through it, may clear
   `build-grant` and pass the token on without your run ending; the files
@@ -583,20 +522,17 @@ So the shape of a seed-affecting landing is:
   still a green on your stream) but not its landing: the copy-up waits for
   a new grant, taken the 4.4 way.
 
-## The token does not cover RAM: ask the fleet before a heavy run (Damian, 2026-09-01)
+## The token does not cover RAM (Damian, 2026-09-01)
 
-**The box is one DIMM down and stays that way: 16 GB is all there is**
-(one KSD516G72C34VTR at Controller1-DIMMB2, 15.8 GiB visible, measured
-2026-08-31 and again 2026-09-01 after the fleet resumed). The token
+**The box is one DIMM down and stays that way until the RMA lands: 16 GB
+is all there is** (15.8 GiB visible, measured 2026-09-01). The token
 serialises GATES on the same code; it says nothing about two lanes each
-booting 3072 MB guests at the same time, and on this box that overcommit is
-what kills guests with a plausible-looking codegen error (`OperatorsManual.md`,
+booting guests at the same time, and on this box that overcommit is what
+kills guests with a plausible-looking codegen error (`OperatorsManual.md`,
 "The compile batch asks for 12 GB").
 
-**THE BOX IS NOT GATED PER RUN ANY MORE (Damian, 2026-09-07 19:35: "the box
-is chronically under utilized" by lanes "waiting on a bump or permission",
-"we are burning daylight"). The standing rule is now:**
-
+**THE BOX IS NOT GATED PER RUN (Damian, 2026-09-07 19:35: "the box is
+chronically under utilized"). The standing rule:**
 - **A serial single-guest run is launched WITHOUT asking.** Measure free
   memory first (`(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory`);
   above 1.5 GiB, launch. Write the run, its PID and its log in `status.json`.
@@ -607,19 +543,25 @@ is chronically under utilized" by lanes "waiting on a bump or permission",
 - **A fan-out is launched on a RUNTIME MEASUREMENT, by the lane** (Damian,
   2026-09-08 15:50: "that can be easily measured at runtime by the agent to
   see if it fits, then go"). Measure free memory at the moment of launch and
-  count the guests the run will boot (`-Jobs N` is N guests of 3072 MB each,
-  and a batch compile is one guest): if free GiB is at least 3 per guest,
-  launch, and write the run, its guest count, its PID and its log in
-  `status.json`; if not, wait and say so in `status.json`, then re-measure.
+  count the guests the run will boot (`-Jobs N` is N guests, and a batch
+  compile is one guest). **The bar is the measured figure, ruled by Damian
+  2026-09-08 (`docs/Agents/box-release-2026-09-08.csv`, 573 samples over the
+  Update 57 release): 1 GiB per RUN guest (a test run or a BVT slot; four ran
+  at about 965 MB each, one lone battery guest peaked at 2.2 GiB) and 0.25 GiB
+  per COMPILE guest (18 ran at about 145 MB each).** If free GiB is at least
+  the sum for the guests the run boots, launch, and write the run, its guest
+  count, its PID and its log in `status.json`; if not, wait and say so in
+  `status.json`, then re-measure. The 3072 MB a runner passes as `-MemMB` is
+  a ceiling, not a consumption (L-REQUEST).
   Check `Get-Process msedge` first: Edge idles at about 1.7 GB and Damian
   kills it on request, so a fan-out that misses by that much is a message to
   root, not a wait. A gate's compiler stages take the box whole: no fan-out
   launches beside a running gate. The commander no longer grants fan-outs;
   root arbitrates a collision (two fan-outs measured against the same free
   memory in the same minute) and holds the box for a release gate's compiler
-  stages, which is where a hold still comes from. The 3 GiB per guest is the
-  bar until the diagnostic release of 2026-09-08 re-measures it
-  (`build/box-sample.ps1` writes the profile).
+  stages, which is where a hold still comes from. The per-guest figures above
+  are re-measured at each release (`build/box-sample.ps1` writes the profile)
+  and replaced here, dated (L-COUNT).
 - **A dead guest is reported, never retried.** The report names free memory
   at launch and what else was running; that is the measurement the next
   ruling on this section is made from.
@@ -633,151 +575,39 @@ is chronically under utilized" by lanes "waiting on a bump or permission",
   GiB, mem%, guest count and their owning workspaces, Renode and QEMU counts.
   The log is the evidence the threshold is tuned from; a hold with no row is
   a hold nobody can audit. The commander's own bar, until the log says
-  otherwise: a serial single guest is held only under 3 GiB free (one guest's
-  need) or beside a fan-out; a fan-out is held beside a rehearsal or under
+  otherwise: a serial single guest is held only under 2.5 GiB free (one run
+  guest's measured peak, 2.2 GiB, plus margin) or beside a fan-out; a fan-out is held beside a rehearsal or under
   its own guests' need. Memory percent alone never justifies a hold.
 
-What follows is the memory evidence the numbers above rest on, and the
-prior rule for the runs that are still asked for:
-
-- **Three guests at about 3 GB with 3.83 GiB free truncated one arm of a
-  serial run, silently** (red, 2026-09-07, the matched pair root ordered).
-  The 46-arm diag rehearsal ran serial, one guest of red's at a time, beside
-  fester's kernel battery and val's desk VM for Damian. It came back 45 of
-  46: `nic-nolink` reported `serial block did not reach END; last: asde
-  entering arm`, the last stage entered and never completed. There was **no
-  HOST CRASH, no TIMEOUT and no `SERIAL:` drop marker** -- nothing named the
-  cause, which is what makes this shape expensive. The same arm alone on a
-  quiet box, one guest and 6.97 GiB free, passed in 31 s. Both outcomes were
-  written down before the second run, so the reading is contention rather
-  than a stage-18 defect. It is a matched pair and not a proof: what it
-  establishes firmly is that this box truncates a guest's serial output
-  under that load WITHOUT setting any of the three signals a harness would
-  look for, so "no crash line" is not evidence a run was clean.
-
-- `-Jobs 8` is the default (Damian, 2026-09-01, on the measurement
-  below). **The one-at-a-time rule was LOOSENED the same evening to TWO
-  heavy runs at once (Damian: "loosen up on the concurrents, measure to be
-  sure").** The Update 54 memory campaign is the condition: self-compile
-  host peak 1,147 to 537 MB, gate drivers 812 to 183 MB. Measured by root
-  2026-09-01: one `-Internal` gate alone peaks 844 MB of guest working set
-  with a 5.0 GiB floor; two runs overlapping (a 0.54 GB codex-vm guest
-  plus a riscv Renode pair that peaks 2.0 GB per boot, drivers 1.4 GB)
-  floor at 3.86 GiB, and a heavier pair (a `-Jobs 4` module build's four
-  guests at 1.4 GB against the same Renode peak, drivers 2.3 GB) touched
-  2.45 GiB for one sample, and a compiler gate beside a Renode arm floored
-  at 3.08 GiB, after which that Renode arm died with no output (18:45,
-  cause unmeasured). Grants still come from the commander, who holds new
-  grants under 3 GiB free. **Renode arms run ALONE**; the two-run
-  allowance is for codex-vm shapes, and a THIRD concurrent run is not
-  allowed on those numbers (L-COUNT: re-measure before raising the count).
+- **`-Jobs 8` is the default** (Damian, 2026-09-01), conditioned on one
+  heavy run at a time: a gate whose change touches the compiler runs ALONE
+  on this box, nothing else booting; only a cite-scoped gate (apps, docs,
+  tests) may overlap a single-guest run. **Renode arms run ALONE.**
+  `WHvSetupPartition 0x800705aa` is the refusal signature. A run that dies
+  is re-run alone, and the death is reported with its time.
 - **`build/test.ps1 -All` and every full-battery run are PROHIBITED except
   for release builds (Damian, 2026-09-01; `CLAUDE.md` R-GATE), and
   `-Internal` is BANNED (Damian, 2026-09-02 15:52).** The fleet is on
-  focused test passes: the specific tests a change touches, one at a
-  time, and the BVT only on a seed candidate. There is no "ask first"
-  path for a battery; the ask below is for the runs that remain.
-- Before a FAN-OUT (a gate, a `-Jobs` above 1, a battery, a Renode/QEMU
-  bed, a release proof), ask the COMMANDER (root) for the box with the
-  honest size, one message within the budget, and wait for the go. A
-  serial single-guest run is not asked for; see the rule at the head of
-  this section. **The GO is a MESSAGE FROM ROOT. The AgentGrid coordinator's GO grants
-  the TOKEN and nothing else; three lanes on 2026-09-01 read it as the box and
-  launched compiler gates onto a box already granted twice, and one granted
-  run died under the overlap.** The commander keeps at most two such runs live and hands the box
-  on by done-message, never by an instantaneous guest count. **Every run
-  that starts a guest is asked, a single compile alike (Damian, 2026-09-02
-  15:55, `CLAUDE.md` R-GATE); the earlier single-guest exemption is
-  withdrawn.** Name the run and its guest count in `status.json` so the
-  dashboard can answer the question too.
-- `status.json` is the shared reading: name the run you are about to start
-  and its guest count, so the ask is answerable from the dashboard.
-- **Waiting for a slot is not idle time (Damian, 2026-09-01, the same
-  morning: "the agents are very idle, we need to keep the team working").**
-  A slot ask is non-blocking: keep working the next item in your lane
-  while the box is busy, and gate once per arc with the CLs batched, which
-  is the arc rule below applied under a RAM budget. A hosted binary that
-  starts no guest needs no ask; anything that boots a guest does.
-- **Overlap is decided by CONSUMPTION, not by ceiling (L-REQUEST), and the
-  gate's consumption is NOT one number.** A self-compile guest peaks near
-  1.1 GB, but the `-Internal` gate's test-compile phase at `subject: FULL`
-  (every compiler change implicates all ~1,488 test chapters) runs the
-  compile BATCH at four slots, and a batch guest scales with its slot:
-  ~2.1 GB at 416 chapters (`OperatorsManual.md`, "The compile batch asks for
-  12 GB"), so that phase is ~8 GB by itself. A Renode subject bounces to
-  ~1 GB at peak. **Measured 2026-09-01 07:29 (fester, then root): a
-  FULL-subject gate running ALONE, five codex-vm at 5.2 GB of working set,
-  took the box to 0.39 GiB free.** That is the whole box on one gate, with
-  the six agent sessions and the rest of the host holding the balance.
-  **Sampled every 3 s through a second FULL gate alone (red, 08:16-08:21,
-  five sessions after fester was killed): guest working set peaked at
-  5.89 GB over 5 guests, floor 0.86 GiB free, and the four
-  `test-compile-batch.ps1` DRIVERS held 400-900 MB EACH (2.5 GB) beside the
-  guests they feed**, because each reads its whole batch capture as a
-  `byte[]` and then a Latin-1 shadow `string` of it (`:135-137`, UTF-16, so
-  3x the capture in memory for the parse). The host half of a gate is not
-  free either; the reduction is CurrentPlan's item.
-- **`-Jobs 8` MEASURED on this box (blu, 2026-09-01 08:46-08:53, one FULL
-  gate alone, 103 samples at 3 s, with the driver byte-scan fix already
-  in): GREEN, `SUT === stage1` in one pass, no refusal line. Elapsed 412.4 s
-  against the 620.5 s baseline at 4 (test-compile 122.1 s against 180.0 s).
-  Floor 0.44 GiB free. Peak single guest 2,140 MB; peak total guest working
-  set 5,995 MB with only FOUR guests up at that moment, so the heavy-phase
-  guests are ~2.1 GB each, not the ~1.0 GB quoted earlier from a light
-  phase (withdrawn). Max concurrent 7 guests, phases overlap.** The 4-slot
-  baseline floor was 0.86 GiB with one more session alive and the old
-  drivers. So 8 buys 33 per cent of the gate with the whole headroom: a
-  floor of 0.44 GiB is one green sample, which is what CLAUDE.md's `-Jobs`
-  paragraph says an overcommit looks like until it kills a guest and reads
-  as codegen. The criterion set before the run (floor above 1 GiB) said
-  keep 4; **Damian overrode it with the numbers in front of him (09:04):
-  "-jobs 8 runs, is barely more memory now than -jobs 4 and we need that
-  speedup." 8 is the default**, conditioned on one heavy run at a time.
-  Levers that raise the floor: the driver reduction's second half
-  (streaming, not just the shadow string; CurrentPlan gate-RAM 1b), fewer
-  live sessions, and the second DIMM.
-- **RE-MEASURED WITH THE SMALL DRIVERS (blu, 2026-09-01 09:19-09:26, same
-  gate shape, FULL 1,490 chapters forced, alone, 102 samples at 3 s):
-  green, 412.1 s, floor 2.50 GiB free, peak guest 2,139 MB, 8 concurrent,
-  peak DRIVER 183 MB (was 812).** Same slots, same speed, 5.7x the headroom,
-  and the reason is named: `test-compile-batch.ps1` built the whole batch
-  input in a StringBuilder and wrote it with `ToString()` (the batch text
-  resident twice at the write, plus a 512 KB builder and a full copy per
-  chapter); it now streams the input through a StreamWriter and nothing
-  holds the batch. The capture bytes everyone looked at first were 41 MB of
-  it. So `-Jobs 8` clears the 1 GiB bar it failed at 08:53, by 2.5x, for a
-  reason rather than by luck; the one-heavy-run-at-a-time condition still
-  stands, because 2.5 GiB is not two gates. So:
-  a gate whose change touches the compiler runs ALONE on this box, nothing
-  else booting; only a cite-scoped gate (apps, docs,
-  tests) may overlap a single-guest run. `WHvSetupPartition 0x800705aa` is
-  the refusal signature. A run that dies is re-run alone, and the death is
-  reported with its time.
-- **A gate that dies at `subject: FULL` with no refusal line is a
-  TOOL-CALL CHILD dying, until proven otherwise (2026-09-01, blu; the
-  commander got this wrong first).** Two `-Internal` runs died at that
-  line the same morning, both launched as `run_in_background` tool-call
-  children; the first ran with nothing else booting, both gate logs were
-  byte-identical (3,672 bytes) and stopped 24 and 34 s BEFORE the harness
-  recorded `[killed]`, which appears in the task file and in neither log.
-  The commander published RAM as the cause (main 20927) from the
-  arithmetic above and retracted it within the hour on that evidence:
-  RAM pressure does not reproduce a log to the byte, and one of the two
-  runs had no neighbour to blame. This is `OperatorsManual.md`, "A gate run
-  as a tool-call child dies with the session, and it reads as host
-  trouble", measured 2026-08-28 and repeated here. **Launch every gate
-  DETACHED via `Start-Process`, keep the PID and the log path in
-  `status.json`, and before calling a died-mid-phase gate RAM or codegen,
-  ask whether its parent outlived it.**
+  focused test passes: the specific tests a change touches, one at a time,
+  and the BVT only on a seed candidate.
+- **Waiting for a slot is not idle time (Damian, 2026-09-01).** Keep working
+  the next item in your lane while the box is busy, and gate once per arc
+  with the CLs batched. A hosted binary that starts no guest needs no
+  measurement; anything that boots a guest does.
+- **Overlap is decided by CONSUMPTION, not by ceiling (L-REQUEST).** A
+  runner's `-MemMB` is a ceiling; the per-guest figures above are what a
+  guest uses. The evidence behind them is the release profile the figures
+  cite, and `ExaminersAssay.md` "The parallelism default" carries the
+  history of the default.
+- **A gate that dies mid-phase with no refusal line is a TOOL-CALL CHILD
+  dying, until proven otherwise.** Launch every gate DETACHED via
+  `Start-Process`, keep the PID and the log path in `status.json`, and
+  before calling a died-mid-phase gate RAM or codegen, ask whether its
+  parent outlived it (`OperatorsManual.md`, "A gate run as a tool-call child
+  dies with the session").
 
-This rule dies with its condition. When the second DIMM is back and
-`Win32_PhysicalMemory` shows two rows, re-measure and delete this section.
-**That is weeks away (Damian, 2026-09-01): the replacement is an RMA the
-manufacturer will contest, and the part that cost 100 now lists at 750. Plan
-on 16 GB for the rest of September.** So this section is not a stopgap: the
-serialization above is the working shape, and the host-side footprint
-reductions in CurrentPlan ("Gate RAM") are the lever that actually moves the
-floor. Do not schedule anything on the assumption the DIMM returns first.
+This section dies with its condition: when `Win32_PhysicalMemory` shows two
+rows, re-measure and rewrite it.
 
 ## Fleet Messages
 
@@ -821,23 +651,10 @@ at it.
 `SendMessage` tool, addressed by the name `ListAgents` shows (for example
 `cobblestone-reek-ea`).** It arrives in the recipient's conversation
 asynchronously, as a cyan `<cross-session-message>` notice, without touching
-the input buffer. Damian's preference, stated in those words, and the measured
-reason: the outbox route TYPES a `[fleet message from X]` line into the
-recipient's terminal, and on 2026-08-28 (nine messages) and 2026-08-31 (three
-of three) those lines stranded unsubmitted in the input buffer while every
-sender-side receipt said delivered (GRID-5; the live `stable` coordinator is
-the pre-fix build). The cross-session route delivered four of four the same
-day, each into a busy session, acknowledged inside a minute.
-
-**Measured again 2026-09-02 (fester), and the two channels behaved
-DIFFERENTLY for the same three messages.** The `SendMessage` originals all
-arrived on time, mid-turn or into an idle session, and were acted on within
-the turn. The coordinator's typed-line copies of the same three arrived 42,
-30 and 17 minutes late, BATCHED, in the one turn that Damian's next prompt
-opened; the recipient was idle at its prompt with no wait, shell or task
-outstanding. So a typed line reaches an IDLE lane only when something else
-opens a turn, which is the one case a bump exists for: never bump a quiet
-lane by the outbox alone (AgentGrid GRID-7).
+the input buffer. The outbox route TYPES a `[fleet message from X]` line into
+the recipient's terminal, and a typed line reaches an IDLE lane only when
+something else opens a turn, so it strands (GRID-5, GRID-7); never bump a
+quiet lane by the outbox alone.
 
 - **Resolve the name every time.** Session names change at rollover
   (`cobblestone-val-6c` became `-09` became `-0b` in three days); a cached
@@ -884,146 +701,64 @@ Set-Content "$mbox\outbox\fetch-tls.json" '{ "to": "red", "text": "fetch-tls lan
 
 **Writing straight into another agent's `inbox/` is not a shortcut for
 this, and it fails silently.** The file lands, it looks delivered, and no
-terminal line is ever typed -- so the addressee sees it at their next
-init instead of now. Measured 2026-08-14: two replies to an agent who was
-BLOCKED behind a red gate sat unread in their inbox for a quarter of an
-hour that way, while the sender believed they had answered. The routing
-is the whole value of the channel; going around it leaves you with a file
-drop that is slower than the depot it replaced.
+terminal line is ever typed, so the addressee sees it at their next init
+instead of now. The routing is the whole value of the channel.
 
-**RUN `build/check-mailbox.ps1`. It is the runner this section did not have.**
-Every rule below was already written down on 2026-08-20 and three agents lost
-messages that morning anyway: blu wrote four into red's `inbox/` (never
-delivered, red reported the lane as silent for hours), root had one sitting in
-`outbox/failed/` for two days, and val had one that was a `.TXT` rather than a
-`.json` and was never picked up at all. **All three look exactly like success
-from the sender's side** -- no error, no bounce, the file goes somewhere
-plausible. Prose cannot catch that; a script that looks can. Run it at init and
-after any send you care about. Exit 1 means something of yours never arrived.
+**RUN `build/check-mailbox.ps1`** at init and after any send you care about.
+Exit 1 means something of yours never arrived. A message lost this way looks
+exactly like success from the sender's side: no error, no bounce, the file
+goes somewhere plausible.
 
-**Your own `inbox/` is DELIVERED mail and is NOT evidence of loss** (val,
-2026-08-20, correcting a fleet broadcast that would have had people reporting a
-hundred phantom losses). Files accumulate there normally. A message written by
-hand into SOMEONE ELSE'S inbox is invisible from the receiving side, which is
-exactly why the only reliable check is sender-side on your own outbox.
 **The check that matters is SENDER-side: your own `outbox/sent/` is the
-receipt.** AgentGrid moves a message there when it routes it. If it is
-not there, you did not send it, and no wording of the file can make that
-false. Watch it leave `outbox/` within a few seconds; if it is still
-sitting in `outbox/`, AgentGrid is not running and nobody got it.
-
-**A message it could not deliver goes to `outbox/failed/` instead, and it
-types you the reason.** The two folders are the whole answer: `sent/` means
-it reached a mailbox, `failed/` means it did not and why. Until AgentGrid
-CL 16276 the archive happened BEFORE the parse and before delivery, so a
-message with a typo'd recipient landed in `sent/` and the one check this
-section tells you to trust said yes to a message nobody received -- the
-same sender-side false confidence the rule was written for. If you are
-reading an old `sent/` from before that build, it does not prove delivery.
-
-**Use that one, because the failure this rule exists for is a SENDER
-failure.** Both agents on 2026-08-14 believed they had answered. Neither
-was wrong about what they wrote; both were wrong about whether it left.
-A receiver-side check cannot catch that, because the sender is not the
-receiver.
-
-Receiver-side, to diagnose a message somebody else sent you, the tell is
-the SCHEMA: AgentGrid writes exactly `at`, `from`, `text` and nothing
-else, where a hand-dropped file carries whatever its author invented.
-Measured 2026-08-14 across seven messages in one inbox -- three routed
-with `at,from,text`, four hand-dropped with `body,from,subject`.
-**Treat it as evidence, not proof** (blu's point, and it is right): a
-hand-drop that happened to use those three field names would pass it.
-`outbox/sent` cannot be fooled that way; the schema can.
-
-**The filename is not a tell at all**, and it was recorded here as one
-for a few hours on 2026-08-14. Both agents that day hand-dropped, one
-mimicking the routed naming convention exactly, millisecond field and
-all, and the other not. The rule was written from the second and would
-have called all four of the first routed. A convention two authors
-follow differently decides nothing.
+receipt.** AgentGrid moves a message there when it routes it; a message it
+could not deliver goes to `outbox/failed/` with the reason typed to you. If
+a file is still sitting in `outbox/`, AgentGrid is not running and nobody got
+it. Your own `inbox/` is DELIVERED mail and is not evidence of loss.
+Receiver-side, the tell of a routed message is the SCHEMA (exactly `at`,
+`from`, `text`), evidence rather than proof; the filename is not a tell.
 
 ### Your REPORT to Damian is budgeted too, and rulings route through the commander (Damian, 2026-08-21)
 
 The budget below governs agent-to-agent messages. This governs the thing you
-write at the end of your turn, which Damian actually reads, and it is a
-separate rule because the fleet kept the first and ignored the second. His
-words, with four agents idle at the time: **"i can't read the walls of text
-they spew ... surface less details because I wont read it, its tokens spent
-for no purpose."**
+write at the end of your turn, which Damian actually reads. His words:
+**"i can't read the walls of text they spew ... surface less details because
+I wont read it, its tokens spent for no purpose."**
 
 **Cut it to the result and what changed.** No journey, no what-you-ruled-out,
 no restatement of a process that went as documented, no detail he would not
-act on. R-REPORT already says this; what is new is that it is now measured
-against a reader who has stopped reading. A report he skips is worth less
-than no report, because it cost his attention to skip.
-
-Anthropic's guide for the models the fleet runs names this as a default,
-not a lapse: Claude Opus 5's user-facing replies run longer than earlier
-models' and it narrates readily during tool use, and effort settings do
-not shorten either. The only lever is an explicit instruction, which
-`CLAUDE.md` R-REPORT carries as a cadence (one line before the first tool
-call, a line at a change of direction, outcome first at the end) and
-repeats at the end of that file. A lane reading this after a long report
-is being handed the instruction the model needs, not scolded.
+act on. R-REPORT carries the cadence; a report he skips is worth less than
+no report, because it cost his attention to skip.
 
 **A ruling request does NOT go to Damian. It goes to the commander, who
-decides whether it is genuinely his.** Most are not. His words: agents ask
-him to participate in "calls that are really not calls", which is
-**psychological-needs fulfilment wearing the costume of diligence** -- it
-makes the asker feel careful and spends the one attention budget the project
-cannot refill.
+decides whether it is genuinely his.** Most are not: agents ask him to
+participate in "calls that are really not calls", which is
+**psychological-needs fulfilment wearing the costume of diligence**. The
+test is `CurrentPlan.md`'s: **only a decision he alone can make** -- an
+outside relationship, an account, a spend, a product direction. **A technical
+trade-off with a defensible answer is the commander's call.** If you cannot
+name which of those four categories your question falls in, it is not his.
+The out clause in `CLAUDE.md` still stands for a genuine rule conflict, and
+a rule that already answers your question was never an excuse to ask.
 
-The test is already written in `CurrentPlan.md` and has not changed: **only a
-decision he alone can make** -- an outside relationship, an account, a spend,
-a product direction. **A technical trade-off with a defensible answer is the
-commander's call.** What is new is the ROUTE: you send it to the commander,
-the commander decides, and the commander carries it up if it survives. If you
-cannot name which of those four categories your question falls in, it is not
-his.
+**Two standing corrections (Damian, 2026-08-27):** an empty lane is one line
+to the commander in the same minute, not a wait; and a clear next step with
+no blocker is taken, not reported. "Not a wait" governs the moment BEFORE
+the line is sent; waiting for the answer to it is the real wait the
+empty-row clause above already allows.
 
-**Asking is no longer automatically free.** The out clause in `CLAUDE.md`
-still stands for a genuine rule conflict, and a rule that already answers your
-question was never an excuse to ask. Between those, route to the commander.
-
-**Two more standing corrections, broadcast at Damian's direction
-2026-08-27:** an empty lane is one line to the commander in the same
-minute, not a wait; and a clear next step with no blocker is taken, not
-reported. "Not a wait" governs the moment BEFORE the line is sent -- do not
-sit on an empty row. Waiting for the answer to it is the real wait the
-empty-row clause above already allows; the two say the same thing from
-opposite ends and have read as contradictory at speed.
-
-**THIS RULE DOES NOT TOUCH R-TRUE, AND CANNOT (val, 2026-08-21, within
-minutes of the rule being issued).** He declined the half of it that would
-have filtered what reaches Damian, and he was right to. **R-TRUE is tier 1:
-a red gate, a wrong byte shipped, a test you skipped, or a number you
-published and later found wrong goes to Damian IN FULL, every time, and
-nothing below it may be used as a reason to soften, delay, or omit it.** This
-section is about brevity and about routing REQUESTS FOR A DECISION. It is
-tier 3 and tier 4 material, so by the meta-rule it loses to R-TRUE outright
-and never gets to gate a failure report.
-
-The distinction, since the first wording blurred it and would have been read
-as a filter: **a ruling request is you asking Damian to spend attention
-deciding something. A failure report is you telling him something that is
-already true.** Route the first. Never route the second -- send it, in full,
-and tell the commander afterwards if it matters to the fleet.
-
-That the correction arrived from the fleet within minutes of the rule going
-out is the rule working, not failing. A commander who compresses what reaches
-the human is one bad sentence away from being the reason a red gate went
-unreported.
+**THIS RULE DOES NOT TOUCH R-TRUE, AND CANNOT.** R-TRUE is tier 1: a red
+gate, a wrong byte shipped, a test you skipped, or a number you published and
+later found wrong goes to Damian IN FULL, every time. A ruling request is you
+asking Damian to spend attention deciding something; a failure report is you
+telling him something that is already true. Route the first. Never route the
+second: send it, in full, and tell the commander afterwards if it matters to
+the fleet.
 
 ### The message budget (Damian, 2026-08-17)
 
-The pointer rule above was written 2026-08-16 and by the next morning
-messages had grown back into paragraphs, several addressed "for X and Y"
-and sent to the fleet, and progress narration was flowing to the
-commander after every step. Damian's words: *"every fleetwide message is
-a 6x token spend."* A message is typed into the recipient's context and
-read in full, mid-task; a broadcast is that cost times the fleet. So the
-rule now has numbers, and they are the rule.
+A message is typed into the recipient's context and read in full, mid-task;
+a broadcast is that cost times the fleet (*"every fleetwide message is a 6x
+token spend"*). The numbers below are the rule.
 
 **Size.** `text` is at most **300 characters** (two short sentences). If
 it needs more, the excess belongs in a CL description, the owning doc, a
@@ -1102,11 +837,8 @@ terminal was not running, the typed line is lost and the file is still
 there at next launch. **Read your `inbox/` at init.**
 
 **Delete an inbox message once you have absorbed it.** The deletion is
-the acknowledgement. It works here and did not work in the retired
-workplan outbox for one reason: your inbox is YOUR directory, so
-acknowledging costs you nothing. There, the addressee had to delete an
-entry from the author's file in the author's stream, and so nobody ever
-did.
+the acknowledgement; your inbox is YOUR directory, so acknowledging costs
+you nothing.
 
 ### What goes here, and where the record goes
 
@@ -1132,27 +864,20 @@ should be told instead, or a conversation. It is a notification channel,
 not chat -- if a message needs two rounds, the second round belongs in
 the doc that owns the subject.
 
-## Notes from the first run (val, 2026-07-13)
+## Holding the token
 
-- The protocol held up end to end: shelve, request, GO, gate dance, submit,
-  release. The only friction was rule 7 above.
-- **Hold the token for the gate and the submit -- not for the investigation.**
-  The first run held it across six builds while root-causing a bug, including
-  one build wasted on a workspace that had not been synced (75 stale files, a
-  false MISMATCH) and a question put to the human mid-hold. All of that is
-  work that belongs OUTSIDE the hold. Investigate, decide, prepare the CL,
-  *then* take the token, gate, submit, release. If you find yourself reading
-  code or forming a theory while holding it, you are hogging the commons.
-- Do the arc -- gates, submit to your stream, copy-up, resolve, submit to
-  main -- inside ONE hold. Do not release after the dev-stream submit and
-  re-request for the copy-up. (This holds only while every step stays
-  mechanical: the moment any step needs code written, rule 8 applies --
-  release, fix outside the hold, re-request.)
-- **Sync the copy-up workspace before you gate there.** A seed CL is gated on
-  the *target* workspace (`SEED === SUT`), and if that workspace is stale the
-  build silently uses old source and the gate fails for a reason that has
-  nothing to do with your change. `p4 -c <main-client> sync //Codex/main/...`
-  first, every time.
+- **Hold the token for the submit, not for the investigation.** Investigate,
+  decide, prepare the CL, *then* take the token, submit, release. If you find
+  yourself reading code or forming a theory while holding it, you are hogging
+  the commons.
+- Do the arc -- submit to your stream, copy-up, resolve, submit to main --
+  inside ONE hold. Do not release after the dev-stream submit and re-request
+  for the copy-up. The moment any step needs code written, rule 8 applies:
+  release, fix outside the hold, re-request.
+- **Sync the copy-up workspace before you gate there.** A stale target
+  workspace silently uses old source and the gate fails for a reason that
+  has nothing to do with your change: `p4 -c <main-client> sync
+  //Codex/main/...` first, every time.
 
 ## An internal seed land is a short hold now (Damian, 2026-08-16)
 
@@ -1182,21 +907,14 @@ seed. Do NOT copy any intermediate CL to main, and do NOT request the token
 until the batch is proven. The last push is then a normal seed-affecting
 copy-up: token, merge down, re-check head, one copy-up.
 
-**The batch gate SEES the batch (red, 2026-09-01; fixed main 21381). No lane
-runs this; the paragraph describes `build/build.ps1`, which is Damian's.**
-`-Internal` chooses its regression phases from a `changed` list that is
-`p4 opened` UNIONED with `p4 diff2 -q //Codex/main/... <your stream>/...`
-(`build/build.ps1`, the detect block; generator `codex/build/BuildScript.codex`),
-so a batch already submitted to your stream is seen and a COMPILER batch
-runs test-compile and the plug phases whether or not anything is opened.
-Nothing needs `p4 edit` before a gate any more. The union reads a stream
-that is BEHIND main as changed too, which over-triggers and never
-under-triggers, and the merge-down every grant requires removes it. Before
-the fix, a submitted batch gated as core, BVT and refusals only and came back
-green in 129 s having proved less than it said; red caught it on the first
-batch gated under this rule and released the token unlanded. Keeping the
-batch as ONE open CL, shelved after each verified step (val's way), is
-still a fine per-step record; it is no longer what makes the gate honest.
+**The batch gate SEES the batch.** `build/build.ps1` (Damian's) chooses its
+regression phases from a `changed` list that is `p4 opened` UNIONED with
+`p4 diff2 -q //Codex/main/... <your stream>/...`, so a batch already
+submitted to your stream is seen and a COMPILER batch runs test-compile and
+the plug phases whether or not anything is opened. Nothing needs `p4 edit`
+before a gate. A stream BEHIND main reads as changed too, which
+over-triggers and never under-triggers, and the merge-down every grant
+requires removes it.
 
 What counts as a batch: every item in your lane that is ready, whether or
 not the items are related; the gate proves the tree, not the item. A red
@@ -1212,33 +930,10 @@ cosmetic intermediate states, for a guarantee no intermediate state needs.
 
 ## Workplan Cross-Lane Protocol -- RETIRED 2026-08-08
 
-This section prescribed a `## Cross-lane` section in every workplan, with
-critical-path rows and a date-stamped findings outbox that the ADDRESSEE
-deleted once absorbed. **All of it is retired at Damian's direction and
-must not be restarted.** CLAUDE.md is the authority: the workplans were
-emptied, `docs/Agents/<agent>-workplan.md` is scratch for the current
-session's lane state only, and *"do not start a findings outbox anywhere."*
+Retired at Damian's direction and not to be restarted: there is no findings
+outbox anywhere, and `docs/Agents/<agent>-workplan.md` is scratch for the
+current session's lane state only (`CLAUDE.md`). The **notification** goes
+through Fleet Messages above; the **record** goes into the doc that owns
+the subject the moment it is verified, and cross-lane open work into
+`docs/PM/CurrentPlan.md`.
 
-The account of why is in CLAUDE.md and is worth reading before anyone
-proposes it again, because the idea is a good one that failed for two
-mechanical reasons. A durable fact parked in a status file is read once at
-init and then reasoned about from memory instead of re-read. And an entry
-was deleted by the ADDRESSEE from the AUTHOR's file in the author's stream,
-which is a cross-workspace write on somebody else's document, so it almost
-never happened: a true, unfixed finding about a switch that does not exist
-sat in one outbox for a day and reached nobody. An entry addressed "for the
-fleet" had no addressee at all and could never be cleared by anyone.
-
-What replaced it, and the split is the point:
-
-- The **notification** goes through Fleet Messages above -- instant, no
-  submit, no merge, no token.
-- The **record** goes into the doc that owns the subject, the moment it is
-  verified. Cross-lane open work goes in `docs/PM/CurrentPlan.md`, which is
-  the fleet's only cross-lane register; an item originating in one app or
-  quire goes to that register.
-
-The section is kept rather than deleted because it was live for twelve days
-and agents who learned the fleet under it will look for it. Finding a
-retirement notice is cheap; finding nothing and rebuilding the channel from
-memory is not.

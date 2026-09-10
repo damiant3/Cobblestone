@@ -4,6 +4,7 @@ Chapter: RunPlugScript
   cites Foreword chapter Maybe
   cites Shell chapter ShellTypes
   cites Shell chapter ShellBuild
+  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
  We say:
@@ -18,36 +19,36 @@ Section: S01 -- Preamble
     let derive = [ScIf (SeRaw "$Plug -match '[\\\\/]plugs[\\\\/]([^\\\\/]+)[\\\\/]'") [ScAssign "Port" (SeRaw "Get-PlugPort $Matches[1]")] [ScRaw "throw \"run-plug: cannot tell which plug '$Plug' is, so cannot derive its port. Pass -Port, or run it from codex/plugs/<name>/.\""]]
     in [ScIf (SeRaw "$Port -eq 0") derive [], ScRaw "Assert-PlugPortFree -Port $Port -Plug $Plug"]
 
-  s01 : List ShellCmd =
+  s01-body : List ShellCmd =
     let missing-plug = [ScRaw "[Console]::Error.WriteLine(\"MISSING plug: $Plug\")", ScExit (SeInt 2)]
     in let missing-input = [ScRaw "[Console]::Error.WriteLine(\"MISSING input: $InFile\")", ScExit (SeInt 2)]
     in [ScSetStrictMode, ScSetErrorStop, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'plug-ports.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScBlank, ScSequence s01-port, ScBlank, ScIf (SeNot (SeFileExists (SeVar "Plug"))) missing-plug [], ScIf (SeNot (SeFileExists (SeVar "InFile"))) missing-input []]
 
 Section: S02 -- Read input and start listener
 
-  s02 : List ShellCmd = [ScReadBytes "inputBytes" (SeVar "InFile"), ScEcho (SeRaw "\"[plug] Input: $($inputBytes.Length) bytes\""), ScEcho (SeRaw "\"[plug] Plug: $Plug\""), ScBlank, ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "$listener.Start()", ScEcho (SeRaw "\"[plug] Listening on TCP $Port\"")]
+  s02-body : List ShellCmd = [ScBlank, ScReadBytes "inputBytes" (SeVar "InFile"), ScEcho (SeRaw "\"[plug] Input: $($inputBytes.Length) bytes\""), ScEcho (SeRaw "\"[plug] Plug: $Plug\""), ScBlank, ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "$listener.Start()", ScEcho (SeRaw "\"[plug] Listening on TCP $Port\""), ScBlank]
 
 Section: S03 -- Boot VM
 
-  s03 : List ShellCmd = [ScAssign "vmBin" (SeRaw "Join-Path $Repo 'tools\\codex-vm.exe'"), ScTempFile "stderrFile", ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Plug", SeLit "-mem", SeRaw "\"$MemMB\"", SeLit "-headless"]), ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScEcho (SeRaw "\"[plug] VM PID $($proc.Id)\"")]
+  s03-body : List ShellCmd = [ScAssign "vmBin" (SeRaw "Join-Path $Repo 'tools\\codex-vm.exe'"), ScTempFile "stderrFile", ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Plug", SeLit "-mem", SeRaw "\"$MemMB\"", SeLit "-headless"]), ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScEcho (SeRaw "\"[plug] VM PID $($proc.Id)\"")]
 
 Section: S04 -- Wait for TCP connection
 
-  s04 : List ShellCmd =
+  s04-body : List ShellCmd =
     let vm-exited = [ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScRaw "[Console]::Error.WriteLine(\"FAIL: VM exited before connecting. stderr: $stderr\")", ScExit (SeInt 4)]
     in let timeout-hit = [ScRaw "[Console]::Error.WriteLine(\"FAIL: plug did not connect within 60s\")", ScExit (SeInt 5)]
-    in [ScAssign "deadline" (SeRaw "[DateTime]::UtcNow.AddSeconds(60)"), ScLabeledWhile "wait_conn" (SeNot (SeRaw "$listener.Pending()")) [ScIf (SeProperty (SeVar "proc") "HasExited") vm-exited [], ScIf (SeRaw "[DateTime]::UtcNow -gt $deadline") timeout-hit [], ScRaw "Start-Sleep -Milliseconds 100"], ScRaw "$client = $listener.AcceptTcpClient()", ScRaw "$stream = $client.GetStream()", ScRaw "$listener.Stop()", ScEcho (SeLit "[plug] Connected")]
+    in [ScBlank, ScAssign "deadline" (SeRaw "[DateTime]::UtcNow.AddSeconds(60)"), ScLabeledWhile "wait_conn" (SeNot (SeRaw "$listener.Pending()")) [ScIf (SeProperty (SeVar "proc") "HasExited") vm-exited [], ScIf (SeRaw "[DateTime]::UtcNow -gt $deadline") timeout-hit [], ScRaw "Start-Sleep -Milliseconds 100"], ScRaw "$client = $listener.AcceptTcpClient()", ScRaw "$stream = $client.GetStream()", ScRaw "$listener.Stop()", ScEcho (SeLit "[plug] Connected")]
 
 Section: S05 -- Send input as ONE FRAMED MESSAGE
 
  Frame format, matching frame-encode and build/work-wire.ps1:
      le32(1 + length of body) ++ [tag] ++ body
 
-  s05 : List ShellCmd = [ScRaw "$frame = [System.Collections.Generic.List[byte]]::new()", ScRaw "$flen = 1 + $inputBytes.Length", ScRaw "$frame.Add([byte]($flen -band 0xFF))", ScRaw "$frame.Add([byte](($flen -shr 8) -band 0xFF))", ScRaw "$frame.Add([byte](($flen -shr 16) -band 0xFF))", ScRaw "$frame.Add([byte](($flen -shr 24) -band 0xFF))", ScRaw "$frame.Add([byte]$Tag)", ScRaw "$frame.AddRange($inputBytes)", ScRaw "$frameBytes = $frame.ToArray()", ScRaw "$stream.Write($frameBytes, 0, $frameBytes.Length)", ScRaw "$stream.Flush()", ScEcho (SeRaw "\"[plug] Sent one frame of $($frameBytes.Length) bytes (tag $Tag), waiting for the reply...\"")]
+  s05-body : List ShellCmd = [ScBlank, ScRaw "$frame = [System.Collections.Generic.List[byte]]::new()", ScRaw "$flen = 1 + $inputBytes.Length", ScRaw "$frame.Add([byte]($flen -band 0xFF))", ScRaw "$frame.Add([byte](($flen -shr 8) -band 0xFF))", ScRaw "$frame.Add([byte](($flen -shr 16) -band 0xFF))", ScRaw "$frame.Add([byte](($flen -shr 24) -band 0xFF))", ScRaw "$frame.Add([byte]$Tag)", ScRaw "$frame.AddRange($inputBytes)", ScRaw "$frameBytes = $frame.ToArray()", ScRaw "$stream.Write($frameBytes, 0, $frameBytes.Length)", ScRaw "$stream.Flush()", ScEcho (SeRaw "\"[plug] Sent one frame of $($frameBytes.Length) bytes (tag $Tag), waiting for the reply...\"")]
 
 Section: S06 -- Receive output
 
-  s06 : List ShellCmd = [ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScComment "A per-byte accumulate here costs 58.33 s per 8 MB against 0.015 s for", ScComment "the bulk write. It is overlapped with the guest, so it buys a core and", ScComment "not a second: at -Jobs 8 that is contention, not a faster single run.", ScRaw "$allBytes = [System.IO.MemoryStream]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScTryCatch [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "$allBytes.Write($readBuf, 0, $n)"]] "System.IO.IOException" [ScComment "Read timeout or connection reset -- normal end"] [], ScRaw "$client.Close()"]
+  s06-body : List ShellCmd = [ScBlank, ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScComment "A per-byte accumulate here costs 58.33 s per 8 MB against 0.015 s for", ScComment "the bulk write. It is overlapped with the guest, so it buys a core and", ScComment "not a second: at -Jobs 8 that is contention, not a faster single run.", ScRaw "$allBytes = [System.IO.MemoryStream]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScTryCatch [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "$allBytes.Write($readBuf, 0, $n)"]] "System.IO.IOException" [ScComment "Read timeout or connection reset -- normal end"] [], ScRaw "$client.Close()"]
 
 Section: S07 -- Check output, unframe the reply, write
 
@@ -59,22 +60,36 @@ Section: S07 -- Check output, unframe the reply, write
     let strip = [ScRaw "$payload = [byte[]]::new($raw.Length - 5)", ScRaw "[Array]::Copy($raw, 5, $payload, 0, $payload.Length)", ScEcho (SeRaw "\"[plug] Reply was framed (tag $($raw[4]))\"")]
     in [ScRaw "$raw = $allBytes.ToArray()", ScAssign "payload" (SeVar "raw"), ScIf (SeRaw "$raw.Length -ge 5") [ScRaw "$bodyLen = ([int]$raw[0]) -bor (([int]$raw[1]) -shl 8) -bor (([int]$raw[2]) -shl 16) -bor (([int]$raw[3]) -shl 24)", ScIf (SeRaw "$bodyLen -eq ($raw.Length - 4)") strip []] []]
 
-  s07 : List ShellCmd =
+  s07-body : List ShellCmd =
     let no-output = [ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(5000)"] [], ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScRaw "[Console]::Error.WriteLine(\"FAIL: plug produced no output. stderr: $stderr\")", ScExit (SeInt 6)]
-    in [ScIf (SeRaw "$allBytes.Length -eq 0") no-output [], ScBlank, ScSequence s07-unframe, ScBlank, ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Output", SeVar "payload"], ScEcho (SeRaw "\"[plug] OK: $Output ($($payload.Length) bytes)\"")]
+    in [ScBlank, ScIf (SeRaw "$allBytes.Length -eq 0") no-output [], ScBlank, ScSequence s07-unframe, ScBlank, ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Output", SeVar "payload"], ScEcho (SeRaw "\"[plug] OK: $Output ($($payload.Length) bytes)\"")]
 
 Section: S08 -- Cleanup
 
-  s08 : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue", ScRaw "try { $listener.Stop() } catch {}"]
+  s08-body : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue", ScRaw "try { $listener.Stop() } catch {}"]
 
 Section: Assembly
 
-  plug-body : List ShellCmd = [ScSequence s01, ScBlank, ScSequence s02, ScBlank, ScTry [ScSequence s03, ScBlank, ScSequence s04, ScBlank, ScSequence s05, ScBlank, ScSequence s06, ScBlank, ScSequence s07] [] s08]
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository, refuse a missing plug or input before a guest is started", ps-in = ["Plug", "InFile"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 2 "the plug binary or the input file named on the command line is not on disk, refused before any guest boots"], ps-body = s01-body }
 
-  plug-script : ShellScript = sh-script "run-plug" "Boot a plug CDX in a VM with NE2K NIC and exchange data over TCP" plug-params plug-body
+  s02 : PipeStage = PipeStage { ps-name = "read the input and open the listener", ps-why = "the guest dials the host, so the listener has to be accepting before the VM is started. The port is declared with PrDriven rather than PrPort, because it comes from -Port and a literal would publish the DEFAULT as the run (L-REQUEST)", ps-in = ["Port"], ps-out = [], ps-needs = [PrDriven RkPort (SeVar "Port")], ps-verdict = [], ps-body = s02-body }
+
+  s03 : PipeStage = PipeStage { ps-name = "boot the guest", ps-why = "starts codex-vm on the plug CDX with a NE2K NIC, capturing stderr to a temporary file", ps-in = [], ps-out = [], ps-needs = [PrGuests 1, PrKernel (SeVar "Plug")], ps-verdict = [], ps-body = s03-body }
+
+  s04 : PipeStage = PipeStage { ps-name = "wait for the connection", ps-why = "waits sixty seconds for the guest to dial in, and distinguishes a guest that EXITED from one that never connected, because the two have different causes", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 4 "the guest EXITED before it connected, and its stderr is reported with the refusal", PoExit 5 "the guest was still alive and had not connected when the sixty-second wait ran out"], ps-body = s04-body }
+
+  s05 : PipeStage = PipeStage { ps-name = "send the input as one framed message", ps-why = "one frame with its length ahead of it, because the plug reads a length and then that many bytes", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s05-body }
+
+  s06 : PipeStage = PipeStage { ps-name = "receive the output", ps-why = "reads the reply under a timeout", ps-in = ["TimeoutSec"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
+
+  s07 : PipeStage = PipeStage { ps-name = "unframe the reply and write it", ps-why = "an empty reply is a guest that produced nothing and is reported as such rather than written as an empty output", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 6 "the guest connected and sent no output at all"], ps-body = s07-body }
+
+  s08 : PipeStage = PipeStage { ps-name = "cleanup", ps-why = "stops the guest and removes the stderr capture HOWEVER the seven stages above ended, which is why it is the group's handler and not a stage after it", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s08-body }
+
+  plug-pipe : Pipeline = Pipeline { pl-name = "run-plug", pl-doc = "Boot a plug CDX in a VM with NE2K NIC and exchange data over TCP", pl-params = plug-params, pl-stages = [PsStage s01, PsStage s02, PsGroup None None (Just s08) [PsStage s03, PsStage s04, PsStage s05, PsStage s06, PsStage s07]] }
 
   opening : [Console] Nothing = act
-    print-line-uni (emit-powershell plug-script)
+    print-line-uni (emit-powershell (pipeline-to-shell plug-pipe))
   end
 
 Page 1

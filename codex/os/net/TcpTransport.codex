@@ -115,10 +115,37 @@ Section: Feed Inbound Frame
     else let w = __buf-write-bytes (ts.recv-base) (ts.recv-len) data
     in TcpTransportState { session = sess, recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
 
+ FEEDING A RANGE INSTEAD OF A LIST. `transport-feed-from` takes a list, and on
+ the accepted path that list is a pure intermediate: `tcp-parse-at` builds it
+ out of the frame at 16,432 bytes for a 1,514-byte frame (`net-recv-heap`),
+ `__buf-write-bytes` copies it into `recv-base`, and it is then dropped. This
+ writes the same bytes straight out of the frame and allocates nothing.
+
+ `__buf-write-byte buf off b` returns the offset PAST what it wrote, which is
+ why it is not `poke-byte` (`WasmEmitter.codex`), so the cursor is the loop's
+ accumulator rather than a second counter.
+
+ `transport-process-frame` feeds through this, and `NetIO` and `Arm64NetIO`
+ do the same. `transport-feed-from` remains for the callers that hold a list
+ rather than a frame, and `net-recv-heap` compares the two byte for byte.
+
+  transport-write-range : Integer, Integer, List Integer, Integer, Integer -> Integer
+  transport-write-range (base) (dst) (buf) (i) (stop) =
+    if i >= stop then dst
+    else transport-write-range base (__buf-write-byte base dst (list-at buf i)) buf (i + 1) stop
+
+  transport-feed-range : TcpTransportState, NetSession, List Integer, Integer, Integer -> TcpTransportState
+  transport-feed-range (ts) (sess) (buf) (off) (stop) =
+    let n = stop - off
+    in if n <= 0 then transport-set-session ts sess
+    else if (ts.recv-len + n) > (ts.recv-cap) then transport-set-session ts sess
+    else let e = transport-write-range (ts.recv-base) (ts.recv-len) buf off stop
+    in TcpTransportState { session = sess, recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+
   transport-process-frame : TcpTransportState, List Integer -> TransportRecvResult
   transport-process-frame (ts) (frame) =
     let r = net-process-frame (ts.session) frame
-    in transport-try-recv (transport-feed-from ts (r.session) (r.data))
+    in transport-try-recv (transport-feed-range ts (r.session) (r.data) (r.data-off) (r.data-stop))
 
 Section: Connection Lifecycle
   transport-connect : TcpTransportState -> TcpTransportState

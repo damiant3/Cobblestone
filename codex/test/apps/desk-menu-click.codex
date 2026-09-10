@@ -1,0 +1,110 @@
+Chapter: DeskMenuClickTest
+  cites Works chapter GopDesk
+  cites Works chapter GopPrograms
+  cites Foreword chapter Console
+
+ A start-menu row answers its own pane, and this is the guard that says so.
+
+ It was written to chase a reported defect, that clicking System Info opened
+ the Program Runner. **That report was the harness's fault and not the
+ desk's**: the driving timeline moved the pointer 112 device pixels in ONE
+ mouse sample, that sample was not delivered on the failing boot, and the
+ pointer was still two rows down on the Program Runner when the click landed.
+ Splitting the move into four small samples opens the Monitor every time. The
+ arm is kept because the question it asks is worth a runner either way.
+
+ THE POINT COMES FROM THE LAID TREE, WHICH IS WHAT MAKES THIS AN ARM RATHER
+ THAN A RESTATEMENT. A capture can show the pointer on a row and the click
+ still open something else, and no screenshot can say which of the two is
+ wrong. Here the click point is READ OFF the same layout the paint uses:
+ `dk-menu-laid` answers the tree, `widget-find` answers the row's rectangle,
+ and the centre of that rectangle is the point handed to `dk-menu-hit`. So
+ the arm clicks exactly what it photographs, and a disagreement can only be
+ between the layout and the hit.
+
+ The bounds are LOGICAL and `dk-menu-hit` takes DEVICE, which it divides by
+ `ui-wscale` again. That round trip is deliberate: it is the one the desk
+ performs, so a scale fault shows here rather than being cancelled out.
+
+ THE EXPECTED ANSWER COMES FROM A DIFFERENT SOURCE THAN THE QUESTION. The
+ row is found by its id and the answer is compared against that entry's own
+ `ge-scan` from `gpr-entries`, so an arm that read both from the same place
+ could not fail. A heading is asked for too, because a heading must answer a
+ GROUP code and never a scancode, and the two namespaces sharing a prefix is
+ exactly how a row would answer a heading's question.
+
+Section: Body
+
+  dmc-yn : Boolean -> Text
+  dmc-yn (v) = if v then "PASS" else "FAIL"
+
+ The centre of a laid rectangle in device pixels.
+
+  dmc-cx : LayoutRect, Integer -> Integer
+  dmc-cx (b) (s) = (b.lr-x + b.lr-w / 2) * s
+
+  dmc-cy : LayoutRect, Integer -> Integer
+  dmc-cy (b) (s) = (b.lr-y + b.lr-h / 2) * s
+
+ One row: find it, click its centre, and say what answered.
+
+  dmc-row : Integer, Integer, Integer, Integer, Integer, GopFont, Integer -> Text
+  dmc-row (w) (h) (ps) (ds) (i) (tf) (s) =
+    let e = gpr-at i
+    in let laid = dk-menu-laid w h ps ds tf
+    in when widget-find laid ("gpr-" & e.ge-label)
+      is None -> "  " & e.ge-label & " : not laid"
+      is Just (n) ->
+        let b = n.wn-bounds
+        in let got = dk-menu-hit w h ps (dmc-cx b s) (dmc-cy b s) ds tf
+        in "  " & e.ge-label & " : wants " & integer-to-text (e.ge-scan) & " answered " & integer-to-text got & " " & dmc-yn (got == e.ge-scan)
+
+  dmc-rows : Integer, Integer, Integer, Integer, Integer, GopFont, Integer -> [Console] Integer
+  dmc-rows (w) (h) (ps) (ds) (i) (tf) (s) =
+    if i >= gpr-count then act 0 end
+    else act
+      print-line-uni (dmc-row w h ps ds i tf s)
+      dmc-rows w h ps ds (i + 1) tf s
+    end
+
+ THE SECOND PASS CARRIES A FACE, AND THAT IS THE DIFFERENCE THE FIRST ONE
+ CANNOT SEE. A faceless lay answers the tree unchanged out of `comp-fit-text`,
+ so the first pass grades arithmetic the shipping desk never runs: the desk
+ loads CMUNSS and every label is measured. A `GopFont` is a plain record and
+ `gf-ok` is what the fit consults, so a synthetic one with a fixed cell puts
+ the faced path under the same census without a volume, a glyph or a screen.
+ If the two passes disagree, the face is the fault; if they agree, the face is
+ exonerated and the fault is downstream of this function entirely.
+
+  dmc-gw : Integer = 9
+  dmc-gh : Integer = 18
+
+  dmc-font : Integer -> GopFont
+  dmc-font (b) =
+    GopFont { gf-ok = True, gf-base = b, gf-gw = dmc-gw, gf-gh = dmc-gh, gf-asc = dmc-gh, gf-cap = dmc-gh }
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let ds = alloc-zeroed 256 64
+    in let ps = alloc-zeroed 64 64
+    in let w = 1600
+    in let h = 900
+    in let s = ui-wscale w
+    in let tf = gfont-none
+    in let fb = alloc-zeroed (95 * dmc-gw * dmc-gh + 95 + 95) 64
+    in let ff = dmc-font fb
+    in let sel = gpr-set-sel ps 13
+    in let laid = dk-menu-laid w h ps ds tf
+    in let hd = when widget-find laid (gpr-group-prefix & "Settings")
+      is None -> 0 - 1
+      is Just (n) -> dk-menu-hit w h ps (dmc-cx (n.wn-bounds) s) (dmc-cy (n.wn-bounds) s) ds tf
+    in act
+      print-line-uni ("scale is " & integer-to-text s & ", selection is " & integer-to-text (gpr-sel ps))
+      print-line-uni "FACELESS, each visible row clicked at the centre of its own laid rectangle:"
+      r <- dmc-rows w h ps ds 0 tf s
+      print-line-uni "WITH A FACE, the same census through comp-fit-text:"
+      r2 <- dmc-rows w h ps ds 0 ff s
+      print-line-uni ("a heading answers a GROUP code and not a scancode: " & dmc-yn (hd >= dk-sc-group))
+      print-line-uni ("the heading answered " & integer-to-text hd)
+    end

@@ -21,7 +21,15 @@ param(
     # THREE until 2026-09-02 (reek), which is the sort of claim a reader prices a
     # build from: the other three costs the register attributes to a page edit
     # are still paid in full.
-    [switch]$Incremental
+    [switch]$Incremental,
+    # Build the page with a lens whose module is absent. OFF by default, and
+    # that default is the whole of plugs 2.32: a missing target plug used to
+    # leave its lens "dark" and exit 0, so a purified workspace emitted a
+    # complete-looking page carrying none of the target modules, smaller than
+    # the live one by exactly the count of missing lenses and calling itself
+    # green. The page is the artifact we PUBLISH, so it must refuse rather
+    # than answer (L-BAILVALUE).
+    [switch]$AllowDarkLenses
 )
 
 Set-StrictMode -Version Latest
@@ -150,18 +158,47 @@ Set-ItemProperty (Join-Path $OutDir 'prism.html') -Name IsReadOnly -Value $false
 
 # 3d. The target plugs, each a wasm module the page fetches. The list is the
 # one manifest (page-lenses.ps1, PRISM-7 stage 0), built by
-# build-page-modules.ps1; a missing one leaves its lens dark rather than
-# failing the page build, since the page fetches them on demand.
+# build-page-modules.ps1.
+#
+# A MISSING MODULE REFUSES THE BUILD. It used to leave its lens "dark" and go
+# on, which reads as a tolerable degradation and is not one: the page fetches
+# these on demand, so a page built without them is complete-looking, exits 0,
+# and every lens on it is dead. Measured 2026-09-07 on a workspace purified by
+# p4-purify.ps1: 53 lines shorter than the live page, nothing added, each
+# missing line one embedded module. It was caught by a human reading a git diff
+# before the publish, which is a guard made of attention (L-BODY), not a runner.
+#
+# The denominator is the manifest and never a constant: the question is how many
+# of the lenses THIS FILE knows about have a binary, so adding a lens tightens
+# the check by construction.
 . (Join-Path $PSScriptRoot 'page-lenses.ps1')
 $shippedModules = @($PageModules | Where-Object { -not ($_.ContainsKey('ship')) -or $_.ship })
+$darkLenses = @()
 foreach ($p in $shippedModules) {
     $from = Join-Path $Repo ("codex\plugs\{0}\build-output\{1}" -f $p.plug, $p.file)
     if (Test-Path -PathType Leaf $from) {
         Copy-Item $from (Join-Path $OutDir $p.file) -Force
         Write-Host ("[page] plug    : {0} ({1} bytes)" -f $p.file, (Get-Item $from).Length)
     } else {
-        Write-Host ("[page] plug    : {0} ABSENT; its lens stays dark" -f $p.file)
+        $darkLenses += $p
+        Write-Host ("[page] plug    : {0} ABSENT (plug {1})" -f $p.file, $p.plug)
     }
+}
+if ($darkLenses.Count -gt 0) {
+    $lit = $shippedModules.Count - $darkLenses.Count
+    if ($AllowDarkLenses) {
+        Write-Host ("[page] plug    : {0} of {1} lenses lit; {2} DARK, allowed by -AllowDarkLenses" -f $lit, $shippedModules.Count, $darkLenses.Count)
+    } else {
+        Write-Host ''
+        Write-Host ("FAIL: {0} of {1} lenses have no module, so the page would ship with them dead:" -f $darkLenses.Count, $shippedModules.Count)
+        foreach ($p in $darkLenses) { Write-Host ("  {0,-28} codex\plugs\{1}\build-output\{2}" -f $p.file, $p.plug, $p.file) }
+        Write-Host ''
+        Write-Host '  Build them:  codex\plugs\wasm\build-page-modules.ps1'
+        Write-Host '  Or say so:   -AllowDarkLenses, for a page deliberately built without them'
+        exit 1
+    }
+} else {
+    Write-Host ("[page] plug    : all {0} lenses lit" -f $shippedModules.Count)
 }
 
 # 3f. The library on board: the whole shipped tree as a FAT16 volume the

@@ -66,14 +66,27 @@ shells out to `openssl.exe` under Git for Windows. That is acceptable for
 checked-in test fixtures and is not a story for a running server, and it sits
 against the founding rule that what we did not build we do not trust.
 
-**Three steps, and the first is the one with a real oracle.**
+**Three steps, and the first is DONE.**
 
-1. **A DER encoder.** Length in short and long form, SEQUENCE and SET
-   builders, the primitives for INTEGER, OID, BIT STRING and the time types.
-   It is well conditioned because it has two independent oracles: a round trip
-   through our OWN parser, which already reads every shape we would emit, and
-   a byte comparison against `openssl` for the same input, which is an
-   independent implementation rather than a mirror of ours.
+1. **A DER encoder. LANDED** (red 2026-09-08), `codex/foreword/encode/Asn1Write.codex`:
+   length in short and both long forms, SEQUENCE, SET and the context tags,
+   INTEGER by value and by caller-supplied content, BOOLEAN, NULL, OCTET
+   STRING, BIT STRING, OID and the two time types. Graded by
+   `codex/test/asn1-der-write.codex`, 16 arms, from two directions that share
+   no code: a round trip through our own parser, and a byte comparison against
+   the certificate RFC 8410 section 10.2 publishes, whose encodings the IETF
+   produced. `openssl` was not needed for the byte oracle because that
+   published certificate carries all three length forms itself (5, 223 and
+   300), which is a third-party encoding of the exact question. **NOT
+   seed-affecting, proven by the binary:** the compiler built with the chapter
+   present matches the depot seed at every offset outside 40..135, because
+   nothing in the compiler's cite closure cites it (Rulebook rule 7).
+   **OPEN, and it is a gate gap: the test is in NO gate** (L-NOGATE). It
+   belongs in the BVT beside `x509-parse`, which is the write side of the same
+   trust story, and `build/bvt.ps1` is GENERATED, so the entry goes in
+   `codex/build/bvtScript.codex` and the emitted script lands in the same CL
+   (`Build.md`). That run re-measures the BVT test and check counts, which
+   `TechnicalDetails.md` publishes and `check-doc-counts` grades.
 2. **A self-signed server certificate**, minted from an Ed25519 key we already
    generate (`ed25519-public-key` over a `hardware-random` seed), carrying an
    explicit DEV-ONLY marker so a self-signed certificate can never be mistaken

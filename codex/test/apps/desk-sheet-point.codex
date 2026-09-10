@@ -6,21 +6,30 @@ Chapter: DeskSheetPointTest
   cites UI chapter Layout
   cites Foreword chapter CCE
 
- WHERE TO CLICK, LAID FACELESS, WHICH IS NOT WHERE THE DESK PUTS IT.
- This lays the chrome and the start menu at the capture geometry and
- prints widget centres in DEVICE pixels. It lays them with `gfont-none`,
- so every width here comes from the eight-pixels-a-character fallback,
- while a desk that finds a TTF face on its medium lays a NARROWER band.
- Measured 2026-09-08 at 1600x900: this arm answers `menu` centre 156,848,
- and the button on the glass occupies x 34..147, y 830..847, centre
- 90,838. A timeline written from this number clicks outside the widget
- and reads exactly like a bed that delivers no clicks. It cost six
- captures.
+ WHERE TO CLICK. This lays the chrome and the start menu at the capture
+ geometry and prints widget centres in DEVICE pixels.
 
- SO THESE ARE NOT CLICK COORDINATES until this arm loads the face the
- desk loads. Take the pill and the menu rows from the PIXELS of a
- capture; use these numbers only to say whether an id RESOLVES, which is
- what the zero-width check is for.
+ THE CAUSE WAS `desk-chrome-with`, NOT THE FACE, and the difference
+ matters because the obvious repair does not work. This arm answered
+ `menu` centre 156,848 at 1600x900 while the pill on the glass sits at
+ x 34..147, so every click written from it missed on x and read exactly
+ like a bed that delivers no clicks. It cost six captures. Handing the
+ face to `desk-menu-tree` changes NOTHING for that number, measured
+ 2026-09-08 with a real ESP attached: `desk-chrome-with` is
+ `desk-chrome-face content w ds gfont-none`, so the chrome the pill
+ lives in discards any face its caller holds. Laying through
+ `desk-chrome-face` with the face is what moved it.
+
+ AND THE NUMBERS NOW LAND. Measured on the glass at head, the pill
+ occupies x 34..147 and y 830..856, and the arm answers 90,848; the
+ Sheets row occupies x 58..229 and y 510..533, and the arm answers
+ 144,526. Both are inside their widget on both axes.
+
+ WITHOUT A MEDIUM THE CENTRES ARE WITHHELD. `desk-font` answers the
+ fallback when nothing carries `CMUNSS.TTF`, and a centre laid on the
+ fallback is not a click coordinate, so the arm prints the resolution
+ check and refuses the numbers rather than offering one a reader would
+ use. `build/desk.ps1` attaches such an ESP by default.
 
  The numbers are printed and asserted at once. A rect of zero width means
  `widget-find` did not find the id, which is the failure this would
@@ -37,14 +46,18 @@ Section: Body
       is Just (n) -> n.wn-bounds
       is None -> layout-rect 0 0 0 0
 
-  dsp-laid : Integer, Integer, Integer, Integer -> WidgetNode
-  dsp-laid (ds) (w) (h) (s) =
-    widget-layout (desk-chrome-with (desk-menu-tree (peek-32 ds desk-prog-cell) gfont-none s ds) w ds) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+  dsp-laid : Integer, Integer, Integer, Integer, GopFont -> WidgetNode
+  dsp-laid (ds) (w) (h) (s) (tf) =
+    widget-layout (desk-chrome-face (desk-menu-tree (peek-32 ds desk-prog-cell) tf s ds) w ds tf) (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
 
   dsp-at : WidgetNode, Text, Integer -> Text
   dsp-at (laid) (id) (s) =
     let r = dsp-box laid id
-    in id & " centre " & integer-to-text ((r.lr-x + r.lr-w / 2) * s) & "," & integer-to-text ((r.lr-y + r.lr-h / 2) * s) & "  found " & dsp-yn (r.lr-w > 0)
+    in id & " centre " & integer-to-text ((r.lr-x + r.lr-w / 2) * s) & "," & integer-to-text ((r.lr-y + r.lr-h / 2) * s)
+
+  dsp-found : WidgetNode, Text -> Text
+  dsp-found (laid) (id) =
+    id & " found " & dsp-yn ((dsp-box laid id).lr-w > 0)
 
 Section: Entry
 
@@ -56,12 +69,21 @@ Section: Entry
     in let pp = poke-32 ds desk-prog-cell ps
     in let e = gpr-ensure ps
     in let s = ui-wscale w
-    in let laid = dsp-laid ds w h s
     in act
-      print-line-uni ("laid with gfont-none, so these are NOT click coordinates")
-      print-line-uni ("scale " & integer-to-text s)
-      print-line-uni (dsp-at laid "menu" s)
-      print-line-uni (dsp-at laid "gpr-Sheets" s)
-      print-line-uni (dsp-at laid "gpr-Clock" s)
+      tf <- desk-font w
+      let laid = dsp-laid ds w h s tf
+      in act
+        print-line-uni ("scale " & integer-to-text s)
+        print-line-uni (dsp-found laid "menu")
+        print-line-uni (dsp-found laid "gpr-Sheets")
+        print-line-uni (dsp-found laid "gpr-Clock")
+        if tf.gf-ok == False then
+          print-line-uni ("no TrueType face on the medium, so the centres are withheld")
+        else act
+          print-line-uni (dsp-at laid "menu" s)
+          print-line-uni (dsp-at laid "gpr-Sheets" s)
+          print-line-uni (dsp-at laid "gpr-Clock" s)
+        end
+      end
     end
   end

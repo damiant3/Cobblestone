@@ -377,7 +377,7 @@ Section: Infer Binary
   infer-comparison : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-comparison (st) (lt) (rt) (span) =
    let (_, u-st) = unify st lt rt span
-   in when lt
+   in when deep-resolve u-st lt
     is VectorTy (n) (et) -> CheckResult {
      inferred-type = VectorMaskTy n,
      effect-row = empty-row,
@@ -925,21 +925,21 @@ Section: Infer Application
   refine-vec-result (st) (func) (arg-ty) (ret-ty) =
    let rr = deep-resolve st ret-ty
    in when rr
-    is VectorTy (rn) (rt) -> if rn >= 0 then ret-ty else refine-vec-op st func arg-ty rt ret-ty
+    is SizedVecTy (rn) (rt) -> if rn >= 0 then ret-ty else refine-vec-op st func arg-ty rt ret-ty
     is otherwise -> ret-ty
 
   refine-vec-op : UnificationState, AExpr, CodexType, CodexType, CodexType -> CodexType
   refine-vec-op (st) (func) (arg-ty) (elem-ty) (fallback) =
    let ra = deep-resolve st arg-ty
-   in let arg-len = when ra is VectorTy (an) (at) -> an is otherwise -> 0 - 1
+   in let arg-len = when ra is SizedVecTy (an) (at) -> an is otherwise -> 0 - 1
    in when func
     is ANameExpr (n) (s) ->
-     if n.value == "vec-tail" & arg-len > 0 then deck-record (VectorTy (arg-len - 1) elem-ty)
-     else if n.value == "vec-map" & arg-len >= 0 then deck-record (VectorTy arg-len elem-ty)
+     if n.value == "vec-tail" & arg-len > 0 then deck-record (SizedVecTy (arg-len - 1) elem-ty)
+     else if n.value == "vec-map" & arg-len >= 0 then deck-record (SizedVecTy arg-len elem-ty)
      else fallback
     is AApplyExpr (inner) (first-arg) (s) ->
      let inner-name = when inner is ANameExpr (n2) (s2) -> n2.value is otherwise -> ""
-     in if inner-name == "vec-cons" & arg-len >= 0 then deck-record (VectorTy (arg-len + 1) elem-ty)
+     in if inner-name == "vec-cons" & arg-len >= 0 then deck-record (SizedVecTy (arg-len + 1) elem-ty)
      else fallback
     is otherwise -> fallback
 

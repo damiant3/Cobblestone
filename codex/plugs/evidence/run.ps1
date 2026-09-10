@@ -22,6 +22,7 @@
 # appears there was passed in; the plug hashes only what it holds (the header).
 [CmdletBinding()]
 param(
+    [string]$Compiler = '',
     [Parameter(Mandatory=$true)][string]$Cdx,
     [string]$Log = '',
     # The bundled source the CDX was compiled from (build/bundle-app.ps1 output
@@ -47,6 +48,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+if (-not $Compiler) { $Compiler = Join-Path $Repo 'seed\Codex.cdx' }
 . (Join-Path $Repo 'build' 'vm-config.ps1')
 $PlugCdx = Join-Path $PSScriptRoot 'build-output\evidence-plug.cdx'
 if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx (run codex/plugs/evidence/build.ps1)"); exit 2 }
@@ -187,7 +189,7 @@ Section: Body
     $signCdx = Join-Path $OutDir 'evidence-sign.cdx'
     $signLog = Join-Path $OutDir 'evidence-sign.log'
     $signOut = Join-Path $OutDir 'evidence-sign.out'
-    & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $signSrc -Out $signCdx -Log $signLog 2>&1 | Out-Null
+    & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $signSrc -Out $signCdx -Log $signLog -Kernel $Compiler 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: signer compile; see $signLog"); exit 8 }
     & pwsh -NoProfile -File (Join-Path $Repo 'build\test-run.ps1') -Kernel $signCdx -OutFile $signOut 2>&1 | Out-Null
     $sigLines = @(Get-Content $signOut -ErrorAction SilentlyContinue)

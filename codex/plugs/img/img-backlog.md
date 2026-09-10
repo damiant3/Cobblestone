@@ -63,3 +63,13 @@ compiles from disk byte-identically to the host, measured 2026-08-08 while
 prepping A5. So this is a dead harness over a working mechanism. Whoever fixes
 1.1 should repoint it at a source that exists and decide whether it uses the
 plug or the PowerShell builder.
+
+1.3 - Neither the writer nor its host refuses a payload that does not FIT. The
+FAT16 writer allocates clusters by arithmetic and never compares the last one
+against the layout's usable cluster count, so a source set larger than the
+partition writes directory entries and file bytes past the end of the image
+buffer. Found 2026-09-09 while adding subdirectory placement, which raises the
+number of sources one image can carry from 509 to whatever the disk holds and
+therefore makes the unchecked bound reachable in ordinary use. The refusal
+belongs in the writer, where the layout is, rather than in `run.ps1`, which
+would have to restate the writer's arithmetic to compute it.

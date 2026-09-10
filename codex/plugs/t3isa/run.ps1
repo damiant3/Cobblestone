@@ -6,12 +6,14 @@
 # compiler's own output; see docs/Designs/Done/Compiler/T3IsaPlug.md.
 [CmdletBinding()]
 param(
+    [string]$Compiler = '',
   [Parameter(Mandatory=$true)][string]$Src,
   [Parameter(Mandatory=$true)][string]$Out
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+if (-not $Compiler) { $Compiler = Join-Path $Repo 'seed\Codex.cdx' }
 $PlugCdx = Join-Path $PSScriptRoot 'build-output\t3isa-plug.cdx'
 # Scratch is keyed to the run so two concurrent runs cannot cross
 # their IR and their log (plugs 2.26).
@@ -22,7 +24,7 @@ if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx. 
 
 # Phase 1: source -> IR in CCE
 $IrFile = Join-Path $PSScriptRoot "build-output\last-run-$RunTag.ir"
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -Kernel $Compiler -IrCce
 if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
 Write-Host "[t3isa-run] IR: $((Get-Item $IrFile).Length) bytes (CCE)"
 

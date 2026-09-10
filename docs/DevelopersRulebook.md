@@ -93,7 +93,7 @@ and never depended on the deleted set.
 | Huffman | **yes** | Frequency-built optimal prefix codes. Own format. |
 | Rle | **yes**, weakly | Run-length only. |
 
-### codex.foreword.encode (76 modules, measured 2026-09-08) -- Encoding and Codecs
+### codex.foreword.encode (77 modules, measured 2026-09-08) -- Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
@@ -106,7 +106,7 @@ Data formats, image codecs, audio codecs, video codecs, protocols.
 | 3D/Font | Gltf, TrueType, TrueTypeWriter, FontGen |
 | Web/mail | WebSocket, Smtp |
 | Transport security | Dtls (record layer), DtlsHandshake (flights, retransmission, cookie), DtlsMessage (framing, transcript, Finished, ACK), DtlsHello (hello bodies, cookie ext) - RFC 9147 |
-| Certificates | X509 (parse), X509Chain (path validation and peer identity), TlsEndpoint, TrustAnchors (the five roots Codex ships: DigiCert and Let's Encrypt) |
+| Certificates | Asn1 (DER decode), Asn1Write (DER encode), X509 (parse), X509Chain (path validation and peer identity), TlsEndpoint, TrustAnchors (the five roots Codex ships: DigiCert and Let's Encrypt) |
 | IoT / MQTT | Mqtt (encode **and decode**), MqttEndpoint (client session: CONNACK, SUBACK, QoS 1 with DUP retransmit, inbound delivery), MqttSn, Coap, CoapEndpoint (RFC 7252 client), Lwm2m, Sparkplug, Sntp |
 | Industrial bus | Modbus, Dnp3, Bacnet, Knx, J1939, Canopen, Mbus, OpcUa, Iec104, Enip, S7comm, Melsec, Fins, Goose, Hart |
 | Wireless / mesh | Lorawan, Zigbee, Ieee802154, Sixlowpan, BleAtt |

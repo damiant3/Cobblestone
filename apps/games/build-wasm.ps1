@@ -974,5 +974,40 @@ $wasmFile = Join-Path $OutDir "$Game.wasm"
 & wat2wasm --enable-tail-call $watFile -o $wasmFile
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: wat2wasm; WAT is at $watFile"; exit 7 }
 Write-Host "[games-wasm] WASM: $wasmFile ($((Get-Item $wasmFile).Length) bytes)"
+
+# -- Phase 4: grade what was just built -------------------------------
+# The graders under apps/ were run by hand because a grader whose module
+# nobody built reports a missing file, and ENOENT and a defect are the same
+# colour on a verdict line. Here the module has just been written to the
+# directory both graders read, so a red can only be about the module.
+#
+# The per-game grader is found from the table rather than from a new field:
+# a game's export names are prefixed with the same two or three letters its
+# grader is named for, so monopoly's mo_* pairs with mo-verify.mjs. Measured
+# 2026-09-08: that holds for 34 of the 35 games, and tictactoe is the one
+# exception, its ttt_* exports being graded by wasm-verify.mjs, which was
+# the first of these and was never renamed.
+#
+# ar-verify grades a different question and both are wanted: the per-game
+# grader asks whether the module behaves, ar-verify asks whether the
+# arcade DESCRIPTOR drives it, and a descriptor wired to the wrong accessor
+# renders the same board forever while every module arm stays green.
+if (Get-Command 'node' -ErrorAction SilentlyContinue) {
+    $prefix = if ($Game -eq 'tictactoe') { 'wasm' }
+              else { ($spec.Exports[0].Name -split '_')[0] }
+    $perGame = Join-Path $PSScriptRoot "$prefix-verify.mjs"
+    if (Test-Path $perGame) {
+        & node $perGame $wasmFile
+        if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: $prefix-verify rejected $Game"; exit 8 }
+    } else {
+        Write-Host "[games-wasm] no $prefix-verify.mjs for $Game; module grader skipped"
+    }
+    & node (Join-Path $PSScriptRoot 'ar-verify.mjs') $Game
+    if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: ar-verify rejected $Game"; exit 8 }
+    Write-Host "[games-wasm] graded $Game"
+} else {
+    Write-Host '[games-wasm] node is not on the Path; graders skipped'
+}
+
 Write-Host "[games-wasm] done"
 exit 0

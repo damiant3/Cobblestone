@@ -1496,6 +1496,44 @@ proposals), since the mutation log gives proposals a proper audit trail.
 It can land any time after H2 (annotation authoring), since that's when
 agents start writing annotations through the driver.
 
+## OPEN: a target that no longer exists is not detected
+
+An annotation names its subject by `function:<name>`, and nothing checks
+that the name still resolves. Measured 2026-09-08 (val), found while
+closing a backlog row whose function the Shell Refinement campaign had
+already deleted: **1,955 sidecar files carried 1,370 function targets, of
+which 18 named a function no chapter defines, across 13 files.** Five more
+sidecars have no source chapter at all (`apps/spark/SparkBridge`,
+`apps/spark/SparkHtmlGen`, `apps/works/WebServer`,
+`codex/foreword/ui/Window`, `codex/test/gop-text-clip`).
+
+**Ten of the eighteen are cleared and EIGHT remain, one per file** (val,
+2026-09-08, same day): everything under `apps/works` is done and the rest
+sit in other lanes' files, at `codex/compiler/Emit/X86_64Chapter`,
+`codex/foreword/core/Fat16`, `codex/foreword/core/Gpt`,
+`codex/foreword/gpu/DeviceMath`, `codex/os/net/DtlsEndpoint`,
+`codex/plugs/common/IRTextParser`, `codex/plugs/pe/PeWriter` and
+`tools/cdx-registry`. **The disposition is per entry and not a sweep**,
+which is the point: six were deleted because their subject and its
+mechanism are both gone and the surviving rule already lives in
+`works-desk-contract.md`, and four were RETARGETED at the successor that
+still does the thing described, `desk-files` to `desk-app-close-to`,
+`gpt-is-esp` to `gfat-is-esp-at`, `gfl-redraw` to `gfl-preview-paint`,
+`gsc-run` to `gsc-new`. A regex sweep would have deleted all ten and lost
+four rationales that are still true.
+
+The rot is the L-ROWROT shape: the annotation still reads as true and its
+subject is gone, so a reader takes a rationale for code that no longer
+exists. `annotations/apps/works/GopDesk.json` alone carries six, one of
+them the rationale for `dk-mon-x`, a constant removed when the sidebar
+width moved to `ui-wscale`.
+
+The measurement is one host-side pass and is the runner this wants:
+resolve each `function:<name>` against `^  <name>\s*[:(]` in the chapter
+the sidecar mirrors, and fail on a name with no definition. It has no
+gate slot yet, which is the same trigger gap the six unrun phases in
+`CurrentPlan` already carry, so a runner written today would run nowhere.
+
 ### Relationship to gap 6 (repository protocol replaces Perforce)
 
 The mutation log is a stepping stone toward source-as-facts. Once

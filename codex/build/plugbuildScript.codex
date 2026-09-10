@@ -1,69 +1,25 @@
 Chapter: PlugBuildScript
 
   cites Foreword chapter Console
-  cites Foreword chapter Maybe
-  cites Shell chapter ShellTypes
-  cites Shell chapter ShellBuild
-  cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
+  cites Build chapter PlugBuildPipeline
 
  We say:
 
- THE TWENTY-THIRD GENERATOR ON THE PIPELINE MODEL (PipelineModel.md), and the
- SMALLEST in the tree. The emitted script is byte-identical to the one that
- shipped before the migration.
+ THE ENTRY CHAPTER ONLY. Everything a reader or a test wants is in
+ `PlugBuildPipeline` beside this, because a chapter that declares `opening` can be
+ cited by nothing (CDX3001, L-UNCITABLE) and the pipeline of every generator was
+ therefore unreachable. This half is the thin entry over the citable rest, the
+ same repair `DbBootMain` and `EntryPoint.codex` made.
 
- `-Force` IS DECLARED AND USED NOWHERE, the second parameter of that shape
- after `sweep-apps`' `-Jobs`. Verified at head twice: `Force` appears exactly
- once in `build/plug-build.ps1`, on its parameter line, and the builder it
- calls has no such parameter to forward it to (the only `Force` in
- `codex/plugs/common/plug-build-lib.ps1` is an unrelated `New-Item -Force` at
- line 200). So a caller passing `-Force` expecting a rebuild gets an ordinary
- one, and no wiring exists that could ever carry the switch. Recorded rather
- than repaired here: deleting a parameter changes the emitted bytes and this
- migration's gate is byte-identity (L-ACCEPTED).
+ THE DRIFT GATE FOLLOWS THIS CHAPTER'S CITES to find the pipeline. It used to read
+ `sh-script` or `pl-name` out of the generator's own text, and a generator matching
+ neither is not reported as broken, it is not reported at all, so a split like this
+ one would have dropped out of the gate silently. That hazard is named in the
+ gate's own comment and is why the discovery had to change in the same changelist
+ as the split.
 
-Section: Parameters
-
-  plugbuild-params : List ShellParam = [sh-param "PlugName" SptString, sh-param "Chapters" SptStringArray, sh-param-optional "Force" SptSwitch]
-
-Section: The pipeline, declared before it is spelled
-
-  plug-dir-art : PipeArtifact = PipeArtifact { pa-name = "plugDir", pa-kind = PkDir, pa-expr = SeVar "plugDir", pa-from = Just (SeRaw "Join-Path $PSScriptRoot '..' 'codex' 'plugs' $PlugName") }
-
-  pb-arts : List PipeArtifact = [plug-dir-art]
-
-Section: S01 -- Script Header
-
-  s01-body : List ShellCmd = [ScComment "Build plugs/<PlugName>/build-output/<PlugName>-plug.cdx"]
-
-  s01 : PipeStage = PipeStage { ps-name = "header", ps-why = "name the artifact this script produces, which no later line states", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s01-body }
-
-Section: S02 -- Preamble
-
-  s02-body : List ShellCmd = [ScBlank, ScSetStrictMode, ScSetErrorStop]
-
-  s02 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "strict mode and stop on error", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
-
-Section: S03 -- Dot-source Library
-
-  s03-body : List ShellCmd = [ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot '..' 'codex' 'plugs' 'common' 'plug-build-lib.ps1')")]
-
-  s03 : PipeStage = PipeStage { ps-name = "load the plug library", ps-why = "Build-TranspilerPlug lives in the plugs' shared library, so every plug builds the same way", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
-
-Section: S04 -- Build Invocation
-
-  s04-body : List ShellCmd = [ScBlank, pipe-produce plug-dir-art, ScIf (SeNot (SeRaw "(Test-Path -PathType Container $plugDir)")) [ScWriteError (SeRaw "\"MISSING plug directory: $plugDir\""), ScExit (SeInt 2)] [], ScRaw "Build-TranspilerPlug -PlugDir $plugDir -PlugName $PlugName -Chapters $Chapters"]
-
- THE GUEST IS THE LIBRARY'S, NOT THIS SCRIPT'S: `Build-TranspilerPlug` compiles
- the chapters, so the resource is declared here because a caller of this script
- pays for it, even though no line below spells a boot.
-
-  s04 : PipeStage = PipeStage { ps-name = "build the plug", ps-why = "refuse a plug name that names no directory, then hand the chapters to the shared builder", ps-in = ["PlugName", "Chapters"], ps-out = [plug-dir-art], ps-needs = [PrGuests 1], ps-verdict = [PoExit 2 "the named plug has no directory under codex/plugs, so there is nothing to build"], ps-body = s04-body }
-
-Section: Assembly
-
-  pb-pipe : Pipeline = Pipeline { pl-name = "plug-build", pl-doc = "Build a transpiler plug CDX from name and chapter list", pl-params = plugbuild-params, pl-stages = [s01, s02, s03, s04] }
+Section: Entry
 
   opening : [Console] Nothing = act
     print-line-uni (emit-powershell (pipeline-to-shell pb-pipe))

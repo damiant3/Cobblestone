@@ -46,11 +46,12 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 Measured 2026-08-03, except where an item gives its own date.
 
-1. **The compiler is a hard fixed point of itself on bare metal.** Text
+1. **The compiler is a hard fixed point of itself on bare metal**
+   (measured 2026-09-10). Text
    round-trip (stage1 === stage2) and CDX fixed point (stage1.cdx ===
    stage2.cdx), byte-identical, with no OS and no libc beneath it. The
-   self-hosted compiler is **65 chapters, 60,272 lines** of Codex
-   and compiles itself in 22 seconds.
+   self-hosted compiler is **65 chapters, 60,873 lines** of Codex.
+   The release gate's CDX self-compile took 12.9 seconds.
 
 2. **Two independent implementations check the compiler, and they agree**
    (measured 2026-08-10). A fixed point proves the seed is *stable*, not
@@ -63,9 +64,9 @@ Measured 2026-08-03, except where an item gives its own date.
    **Diverse double-compiling.** The whole compiler is rendered to C# by a
    plug, built by Roslyn -- a toolchain with no ancestry in this project --
    and that compiler then compiles the Codex compiler's own source.
-   Measured 2026-08-26 against the seed shipped that day (`C3181693`,
-   2,917,073 bytes), its output was **2,917,073 bytes against that seed's
-   2,917,073, with 96 differing bytes, every one of them inside the
+   Measured 2026-09-10 against the release seed described below,
+   its output was **3,358,838 bytes against that seed's
+   3,358,838, with 96 differing bytes, every one of them inside the
    signature region at offsets 40..135 and none outside it.** The signature
    is stamped by the sign phase rather than emitted by the compiler. That is
    Wheeler's `stage2 == X`. The witness is a release gate and is re-run
@@ -163,7 +164,7 @@ Measured 2026-08-03, except where an item gives its own date.
               an accumulator is copied by & inside a self call, here or in
               something it calls
    ```
-6. **600 library modules across 22 quires** (438 foreword + 162 OS): data
+6. **601 library modules across 22 quires** (439 foreword + 162 OS): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
@@ -224,7 +225,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**71 applications, 1,157 modules**, all written in Codex and compiled by
+**71 applications, 1,158 modules**, all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -237,14 +238,14 @@ for 143 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,322,781 bytes, 2026-09-08, COMPILER-73: one dynamic over-application block per closure trampoline) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,358,838 bytes, 2026-09-10, deck reservation restored for unlifted IR emission) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `59007236FE5390AE` |
-| SHA-256 | `B63014D717B1A2F95376768B25B514D23A5E74345E8DAF9250660F0B4326F7ED` |
-| MD5 | `1FE79C297D3DECF1AB2B6761F0E4899B` |
+| Content hash prefix | `CB1B069B870F1DA6` |
+| SHA-256 | `F9165E313BE16815453272B356A8BAF19D3B61458C13EB5DC3844674588D1939` |
+| MD5 | `D7C63CE47BE183EA7DC873BBD4AFB714` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -255,7 +256,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `DD959678725F183315E4EDE06E74C8C4B91C186F5DB344A8E9ACE46D51AB04C3` |
+| SHA-256 | `821DC98DD55E55FB18F791ADB4AEC0E600DF847A57F7092E457330C5A9C232D9` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -279,7 +280,7 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `6F077EEBB065B4C498F3D80A9F3007398673C5CB8031F751ED0216F1BCF6852E` |
+| SHA-256 | `96D330A29FF703956A199D5C96B7729EE054887E50DFE16F60C3AA983196DE40` |
 
 The image is reproducible from its source and this seed -- `DIAG.RCP` inside
 it names both, and the hash carries no timestamp -- so a rebuild that
@@ -347,7 +348,7 @@ QEMU with WHPX.
 
 ```powershell
 build/build.ps1        # text round-trip + CDX fixed point + BVT. The gate.
-build/test.ps1 -Jobs 8 # full sample battery
+build/test.ps1 -Tier all -Jobs 4 -ApprovedBy damian # full release battery
 ```
 
 ### Try it without building
@@ -361,7 +362,7 @@ images) come from plug CDX binaries in `codex/plugs/`.
 New-Item -ItemType Directory -Force build-output/bare-metal
 Copy-Item seed/Codex.cdx build-output/bare-metal/Codex.cdx
 
-build/compile.ps1 -Src codex/test/arithmetic.codex -Out build-output/arith.cdx -Log build-output/arith.log
+build/compile.ps1 -Src codex/test/arithmetic.codex -Out build-output/arith.cdx -Log build-output/arith.log -Kernel seed/Codex.cdx
 build/test-run.ps1 -Kernel build-output/arith.cdx -OutFile build-output/arith.out
 Get-Content build-output/arith.out
 ```
@@ -552,7 +553,7 @@ is preserved regardless of Tier 1 and 2 support.
 ## Library Quires
 
 Code outside the compiler is organized into **22 quires** (library
-namespaces) holding **600 modules** (438 foreword, 162 OS). Quires cite
+namespaces) holding **601 modules** (439 foreword, 162 OS). Quires cite
 each other as `cites Game chapter AStar`; the quire name is the last
 segment of the directory name, capitalized. Full catalog:
 [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
@@ -560,7 +561,7 @@ segment of the directory name, capitalized. Full catalog:
 | Quire | Directory | Count |
 |---|---|---:|
 | Foreword | `codex/foreword/core/` | 133 |
-| Encode | `codex/foreword/encode/` | 76 |
+| Encode | `codex/foreword/encode/` | 77 |
 | UI | `codex/foreword/ui/` | 49 |
 | AI | `codex/foreword/ai/` | 43 |
 | Engine | `codex/foreword/engine/` | 43 |
@@ -583,13 +584,13 @@ segment of the directory name, capitalized. Full catalog:
 
 ```
 codex/
-  compiler/      Self-hosted compiler (65 files, 60,272 lines)
-  foreword/      438 library modules across 13 quires
+  compiler/      Self-hosted compiler (65 files, 60,873 lines)
+  foreword/      439 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (162 modules)
   plugs/         56 plugs, 195 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,795 files)
-apps/            71 applications, 1,157 modules
+  test/          Compiler samples + OS integration tests (1,813 files)
+apps/            71 applications, 1,158 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -602,55 +603,74 @@ old/             Retired C# reference compiler -- historical only
 
 ## Lines of code
 
-Measured 2026-08-21 from the Perforce file list, so nothing generated is
-counted. Codex is measured three ways because the language makes prose a
-first-class part of a chapter: **code** is everything that is not blank and
-not column-2 prose, and the two are reported separately rather than folded
-together.
+Measured 2026-09-10 from Perforce main at CL 25472 plus the release
+additions and edits. Lines use .NET `ReadAllLines`.
+Unopened files behind main were read from the depot. Untracked files and
+build intermediates are excluded; tracked generated scripts and templates are included.
 
-### Codex -- 3,683 files, 536,789 lines
+These are physical-line counts, not statement counts. For `.codex`, blank
+means whitespace-only; **prose** means exactly one leading ASCII space
+followed by a non-whitespace character. **Code** is every other non-blank
+line, including chapter headings and cites. Other languages report all
+non-blank lines, including comments and markup.
 
-| area | files | code | prose |
+### Codex -- 4,149 files, 598,654 non-blank lines
+
+| area | files | code | prose | blank |
+|---|---:|---:|---:|---:|
+| `apps/` | 1,158 | 210,502 | 13,774 | 38,878 |
+| `codex/foreword/` | 439 | 61,643 | 7,231 | 14,584 |
+| `codex/test/` | 1,813 | 68,000 | 10,381 | 16,575 |
+| `codex/plugs/` | 262 | 63,515 | 5,726 | 9,988 |
+| `codex/compiler/` | 65 | 45,246 | 6,145 | 9,482 |
+| `codex/os/` | 162 | 24,698 | 2,416 | 5,950 |
+| build tooling (`codex/build/`, `build/`) | 148 | 11,235 | 2,689 | 4,328 |
+| `tracker`, `workflow`, one withheld quire | 33 | 4,862 | 570 | 1,155 |
+| `codex/boards/` | 9 | 4,099 | 200 | 823 |
+| `tools/`, `shaders/`, `docs/`, `bench/` | 60 | 35,524 | 20,198 | 7,441 |
+| **total** | **4,149** | **529,324** | **69,330** | **109,204** |
+
+Including blanks, these files contain **707,858 physical lines**.
+
+### Other listed source languages -- 762 files, 162,035 non-blank lines
+
+| language | files | non-blank | blank |
 |---|---:|---:|---:|
-| `apps/` | 1,135 | 191,971 | 6,617 |
-| `codex/foreword/` | 438 | 60,399 | 6,546 |
-| `codex/test/` | 1,795 | 56,481 | 5,955 |
-| `codex/plugs/` | 172 | 55,275 | 3,414 |
-| `codex/compiler/` | 65 | 42,492 | 5,181 |
-| `codex/os/` | 162 | 24,415 | 1,982 |
-| build tooling (`codex/build/`, `build/`) | 102 | 9,120 | 1,836 |
-| `tracker`, `workflow`, one withheld quire | 33 | 4,862 | 570 |
-| `codex/boards/` | 9 | 4,087 | 194 |
-| `tools/`, `shaders/`, `docs/`, `bench/` | 53 | 35,281 | 20,111 |
-| **total** | **3,683** | **484,383** | **52,406** |
+| PowerShell | 451 | 66,855 | 6,056 |
+| HTML | 137 | 51,077 | 1,757 |
+| C | 11 | 16,308 | 1,019 |
+| WGSL | 44 | 6,411 | 0 |
+| JavaScript | 65 | 17,392 | 1,256 |
+| C# (apps, plug templates) | 12 | 1,621 | 227 |
+| CSS | 5 | 774 | 78 |
+| Python | 11 | 1,342 | 267 |
+| uiscript | 25 | 196 | 23 |
+| TypeScript | 1 | 59 | 10 |
+| **total** | **762** | **162,035** | **10,693** |
 
-A further 95,862 lines are blank.
+This table counts `.ps1`, `.html`, `.c`, `.h`, `.wgsl`, `.js`, `.mjs`,
+`.cjs`, `.cs`, `.css`, `.py`, `.uiscript` and `.ts`. JavaScript includes
+modules. Of the PowerShell files, 57 carry the generated-script header.
+Including blanks, the table contains **172,728 physical lines**.
 
-### Everything else -- 624 files, 108,078 lines
+**The listed source files total 760,689 non-blank lines**, including Codex
+prose, or **880,586 physical lines** across **4,911 files**. This is not a
+hand-written-only total.
 
-| language | files | lines |
-|---|---:|---:|
-| PowerShell | 384 | 49,570 |
-| HTML | 122 | 30,978 |
-| C (`codex-vm`) | 11 | 15,101 |
-| WGSL | 42 | 5,735 |
-| JavaScript | 11 | 3,107 |
-| C# (apps, plug templates) | 12 | 1,621 |
-| CSS | 6 | 872 |
-| Python | 10 | 839 |
-| uiscript | 25 | 196 |
-| TypeScript | 1 | 59 |
-
-**Hand-written code totals 644,867 lines.** Markdown documentation is a
-further 139,591 lines across 630 files, and annotation sidecars 54,568 lines
-of JSON; neither is counted above.
+Markdown documentation and instructions contain a further **175,280
+non-blank lines and 40,378 blank lines across 701 files**, including the
+next update report. JSON sidecars under `annotations/` contain
+**48,619 non-blank lines and 6 blank lines across 1,955 files**. Neither
+category is included in the source totals above.
 
 ### `old/` -- the retired C# reference compiler
 
-264 files, **66,195 non-blank lines** (144,365 including blanks), kept in the
+Historical measurement from **2026-08-21**, retained without re-reading
+`old/` for this census: 264 files, **66,195 non-blank lines** (144,365
+including blanks), kept in the
 depot as historical record only and built by nothing. It is what BS1 and BS1.1
 bootstrapped through before the cord was cut on 2026-04-24; the toolchain that
-compiles Codex today contains no C# anywhere.
+ordinarily builds Codex today does not run that retired compiler.
 
 | | files | non-blank |
 |---|---:|---:|
@@ -663,14 +683,15 @@ compiles Codex today contains no C# anywhere.
 
 ### Not counted, and why
 
-- **Build intermediates.** The gate leaves a whole-compiler concatenation of
-  about 2.9 MB per run under `build/output*`; counting those would roughly
-  double any Codex figure.
-- **107,801 lines of vendor specifications** extracted to text under
+- **Build intermediates:** every `build-output/` directory and
+  `build/output*`, including concatenated compiler source and proof outputs.
+- **107,802 non-blank lines of vendor specifications** extracted to text under
   `docs/Reference/` (USB 2.0, xHCI, two Intel datasheets, Brotli, HID). Not
   ours.
-- **35,799 lines of archived bootstrap-1 C# stage dumps** under
+- **35,799 non-blank lines of archived bootstrap-1 C# stage dumps** under
   `docs/Designs/Done/Test/`, which are artifacts of a build rather than source.
+- Source formats outside the listed extensions, project/configuration
+  files, expected-output fixtures and non-annotation JSON.
 - Binaries, images, audio, fonts and captured screenshots.
 ---
 

@@ -2,48 +2,43 @@
 
 ## Status
 
-**Ruling 2026-08-05 (Damian): Phase 2 rides A6.** The shadow-mapping /
-SIMD / terrain remainder begins with whoever takes CurrentPlan's A6 (3D
-on screen); this document is that owner's design.
+**Ruling 2026-08-05 (Damian): Phase 2 rides A6.** The remainder begins
+with whoever takes CurrentPlan's A6 (3D on screen); this document is
+that owner's design.
 
-**Phase 1 is complete, and the Phase 2 shadow-mapping deliverable is
-complete** (red, A6 arc, dev CLs 13644/13663/13676/13695): near-plane
-clipping (Sutherland-Hodgman in clip space), per-pixel lit shading
-(Gouraud and Phong paths, SpotLight3D both), frustum and backface
-culling wired into the render path, and shadow mapping
-(`r3d-render-shadowed`: ortho light frustum from the scene's world
-bounds, depth-only pass, per-vertex light-space coords interpolated per
-pixel; bias `r3d-shadow-bias = 3000`). Per-pixel code is integer-only
-and allocation-free, pinned by `engine-render-heap`; the calibrated
-tests are `engine-near-clip`, `engine-shading`, `engine-culling-cost`,
-`engine-shadow` (`engine-culling-cost` and `engine-texture-cost` were
-`engine-culling` and `engine-texture` until 2026-08-22, when the stems
-collided with the `forewords/` smoke tests of the same name in one
-`test-output` directory and the battery reported the wrong one).
+**Phase 1 is complete, and so is the Phase 2 shadow-mapping
+deliverable**: near-plane clipping (Sutherland-Hodgman in clip space),
+per-pixel lit shading (Gouraud and Phong paths, SpotLight3D both),
+frustum and backface culling wired into the render path, and shadow
+mapping (`r3d-render-shadowed`: ortho light frustum from the scene's
+world bounds, depth-only pass, per-vertex light-space coords
+interpolated per pixel; bias `r3d-shadow-bias = 3000`). Per-pixel code
+is integer-only and allocation-free, pinned by `engine-render-heap`.
+The calibrated tests are `engine-near-clip`, `engine-shading`,
+`engine-culling-cost`, `engine-shadow`. **Those last two carry `-cost`
+because a bare `engine-culling` and `engine-texture` collide with the
+`forewords/` smoke tests of the same name in one `test-output`
+directory, and the battery then reports the wrong one.**
 
-**The tree, measured 2026-08-06: 42 chapters, 7,916 lines in
-`codex/foreword/engine/`.** The 9+4 chapter inventory this section used
-to carry was two baselines stale; re-measure before quoting (L-COUNT).
+Also built and wired: `Texture.codex` is in the render path
+(`r3d-ctx-with-tex` puts `mat.emat-texture` in the shade context and
+`r3d-tex-px` samples it per pixel through `etx-get`); the mesh
+generators `mesh-sphere`, `mesh-cylinder`, `mesh-cone` and `mesh-torus`
+are in `Mesh.codex` beside cube, plane and pyramid; `GopScene` calls the
+shadowed entry on both paths, `r3d-render-shadowed` for software and
+`gs-render-shadowed` for the host rasterizer, chosen by the `S` toggle;
+and skeletal animation is `Skinning.codex`, cited by `SkinShader`,
+`AnimBlend`, `Cutscene`, `FacialAnim` and `Musculature`.
 
-**Remaining Phase 2 items, corrected 2026-08-18 (val): SIMD math and
-skeletal animation, and nothing else from the A6 arc.** This paragraph
-listed three more and **all three were already done**, checked against
-the source rather than against the list:
+**The remaining Phase 2 item is SIMD math, and it is the only one.** No
+chapter under `codex/foreword/engine/` names a `Vector 4` or a SIMD
+operation (measured 2026-09-09), and that work waits on SIMD.md.
 
-- `Texture.codex` **is** wired into the render path. `r3d-ctx-with-tex`
-  puts `mat.emat-texture` in the shade context and `r3d-tex-px` samples
-  it per pixel through `etx-get` (`Renderer3D.codex`), and the desk's 3D
-  pane renders a textured ground in every capture.
-- The mesh generators **exist**: `mesh-sphere`, `mesh-cylinder`,
-  `mesh-cone` and `mesh-torus` are all in `Mesh.codex`, beside cube,
-  plane and pyramid. `gsc-scene` builds its ball from `mesh-sphere 700
-  12 8` and its ring from `mesh-torus 650 220 12 8`.
-- GopScene **does** call the shadowed entry, on both paths:
-  `r3d-render-shadowed` for software and `gs-render-shadowed` for the
-  host rasterizer, chosen by the `S` toggle (`GopScene.codex`).
-
-The lesson is L-COUNT's, one level along: a stale ITEM list rots the
-same way a stale count does, and this one was three for three.
+**The tree, measured 2026-09-09: 44 chapters, 7,041 lines in
+`codex/foreword/engine/`.** Re-measure before quoting (L-COUNT), and
+check an ITEM list the same way: a stale list of what remains rots
+exactly as a stale count does, and this one had three closed items in it
+once already.
 
 ### First shadow-cost numbers, 2026-08-18 (val)
 
@@ -51,8 +46,8 @@ same way a stale count does, and this one was three for three.
 software render of a 624x88 region): plain **12 ms** over 20 frames,
 shadowed **24 ms** over 11.
 
-**"Shadows double the frame" was my sentence and a second geometry has
-already qualified it.** A 2026-08-19 sitting (red; banked at
+**Shadows do not simply double the frame, and a second geometry is what
+says so.** A 2026-08-19 sitting (red; banked at
 `stick-archive\diag2-20260819\DIAG.TXT`, kernel `800A7683`, same board, fb
 1920x1080) rendered **624x40** and read plain **5 ms** over 42 frames,
 shadowed **12 ms** over 21. That is 2.4x, not 2.0x, and the direction is the
@@ -145,8 +140,7 @@ harness rather than the kernel.
 
 **Eight taps of the nine are what the difference buys**, so one tap over the
 whole frame costs 253, 526 and 931 us at the three sizes, and the nine
-together are **61, 71 and 76 per cent of the shadow increment**. My
-prediction before the run was about 89 per cent, and it was too high.
+together are **61, 71 and 76 per cent of the shadow increment**.
 
 The residue after the taps is 1,430, 1,938 and 2,578 us, and it does NOT
 scale with area. **Fitting a fixed term plus a per-pixel term on the two
@@ -166,24 +160,20 @@ of 76,800, a third of a per cent of the frame, far too small to account for
 a 55 to 68 per cent fall.
 
 **What this opens.** With three quarters of the increment in the taps, a
-cheaper kernel is worth about what it removes. **That sentence used to put a
-number on it, "a four-tap kernel would take roughly 44 per cent off", and
-stage 3 below withdraws the number while keeping the direction:** it was an
-extrapolation on a per-tap rate that turns out not to be constant. Caching
-the map remains worth at most the 10 per cent fixed term on a static scene.
+cheaper kernel is worth about what it removes. **How much it removes must be
+measured and not extrapolated**, because the per-tap rate is not a constant
+(stage 3). Caching the map remains worth at most the 10 per cent fixed term
+on a static scene.
 
 ### Stage 3, 2026-08-20 (val): the per-tap rate is not a constant, and the knob only goes down
 
-Stage 2 got its per-tap figure by differencing nine taps against one. That is
-a rate only if cost is LINEAR in the tap count, and stage 2 ASSUMED that while
-carefully testing the equivalent assumption for area. Same trap, one level
-along, in the same note that named it. Stage 3 added a third point.
+A figure obtained by differencing nine taps against one is a RATE only if
+cost is linear in the tap count. Stage 3 added a third point and it is not.
 
-All three arms re-measured on the converged seed **A7EDB7C6**, because the
-seed change alters this unit's emitted bytes (175,062 to 175,329) and stage
-2's binaries are no longer what the compiler produces. **Stage 2's numbers
-were NOT carried forward** (L-COUNT); what follows replaces them. Three
-passes, interleaved, 640x480, 20 frames per arm.
+All three arms measured on seed **A7EDB7C6**, three passes, interleaved,
+640x480, 20 frames per arm. **A seed change alters this unit's emitted bytes,
+so arms built under an older seed are not comparable and are not carried
+forward** (L-COUNT).
 
 | taps | increment | marginal cost per tap |
 |---:|---:|---:|
@@ -191,16 +181,15 @@ passes, interleaved, 640x480, 20 frames per arm.
 | 9 | 10,520 us | 881 us over the 1-to-9 range |
 | 25 | 29,630 us | **1,194 us over the 9-to-25 range** |
 
-**The prediction written down first was 25,855 us and the answer came in at
-29,630, about 20 per cent above linear.** I had named the superlinear case as
-the least likely of three and bet on the opposite one. The marginal cost of a
-tap rises 36 per cent between the 3x3 and the 5x5 range, so **stage 2's 931 us
-per tap is a LOCAL rate at the shipping radius and not a property of a tap.**
+**The answer is about 20 per cent above linear**: 29,630 us against a linear
+prediction of 25,855. The marginal cost of a tap rises 36 per cent between the
+3x3 and the 5x5 range, so **stage 2's 931 us per tap is a LOCAL rate at the
+shipping radius and not a property of a tap.**
 
-Stage 2's headline survives this intact, and it is worth saying why: the 61,
-71 and 76 per cent figures were measured by differencing AT the shipping
-radius, so they never depended on linearity. Only the extrapolation to a
-cheaper kernel did, and that is the sentence withdrawn above.
+Stage 2's headline survives intact, and it is worth saying why: the 61, 71 and
+76 per cent figures were measured by differencing AT the shipping radius, so
+they never depended on linearity. Only an extrapolation to a cheaper kernel
+would.
 
 **The obvious cause was tested and ruled out.** A wider kernel widens the
 penumbra, and a partial pixel evaluates Phong and the blend where a fully
@@ -851,17 +840,15 @@ Scene3D, Renderer3D, Mesh, and AssetTable. Everything else is wiring.
 Deliverable: a spinning textured cube with Phong lighting, depth
 buffer, camera control (WASD + mouse look), running as a bootable CDX.
 
-### Phase 2: SIMD + Shadows + Skeletal Animation -- NEXT
+### Phase 2: SIMD + Shadows + Skeletal Animation -- IN PROGRESS
 
-- **Shadow mapping (directional light depth pass) -- the next item.**
-  Reuse the existing `DepthBuffer`: render depth from the light, then
-  compare in light-space during the main pass.
+Shadow mapping is done (see Status, and the three measurement stages
+above). Skeletal animation is done: `Engine/Skinning`. What is left:
+
 - SIMD math (Vector 4 Real approximate) for transforms -- waits on
   SIMD.md Phase 2
-- Skeletal animation (bone hierarchy, skinning) -- `Engine/Skinning`
-  already landed
-- Heightmap terrain from DiamondSquare → Mesh
 - SIMD-accelerated texture sampling and pixel blend
+- Heightmap terrain from DiamondSquare to Mesh
 
 ### Phase 3: GPU-Accelerated Rendering
 

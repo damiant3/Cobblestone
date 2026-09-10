@@ -112,7 +112,7 @@ try {
         }
     }
     try {
-        $ordered = Resolve-CiteOrder -RootLines $srcLines -Repo '.' -SeedSeen $seedSeen
+        $ordered = Resolve-CiteOrder -RootLines $srcLines -Repo (Split-Path $PSScriptRoot) -SeedSeen $seedSeen
     } catch {
         Set-Content -Path $Log -Value "error 3010: $($_.Exception.Message)" -Encoding UTF8
         exit 8

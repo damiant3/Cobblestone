@@ -37,13 +37,32 @@ $runScript = Join-Path $PSScriptRoot 'test-run.ps1'
 Write-Host '=== DISK compile test ===' -ForegroundColor Cyan
 
 
+function Read-Exact {
+    param($Stream, [byte[]]$Buffer, [int]$Offset, [int]$Length)
+    $n = 0
+    while ($n -lt $Length) {
+        $r = $Stream.Read($Buffer, ($Offset + $n), ($Length - $n))
+        if ($r -le 0) { break }
+        $n += $r
+    }
+    return $n
+}
+
+
 function Export-Fat16File {
     param([string]$Image, [string]$Name, [string]$Out)
-    $fs = [System.IO.File]::OpenRead($Image)
+    # Stop-VmGraceful's Stop-Process returns before the guest's handles are
+    # gone, so a plain OpenRead here loses a race that reads on the verdict
+    # line exactly like a DISK-mode failure. Retry, then say which it was.
+    $fs = $null
+    for ($try = 0; ($try -lt 40) -and ($null -eq $fs); $try++) {
+        try { $fs = [System.IO.File]::OpenRead($Image) } catch { Start-Sleep -Milliseconds 250 }
+    }
+    if ($null -eq $fs) { throw "FAT16: $Image was still held 10s after the VM closed; the guest did not release it" }
     try {
         $bpb = New-Object byte[] 512
         $fs.Seek((2048 * 512), 'Begin') | Out-Null
-        if ($fs.Read($bpb, 0, 512) -ne 512) { throw 'FAT16: cannot read the BPB at LBA 2048' }
+        if ((Read-Exact -Stream $fs -Buffer $bpb -Offset 0 -Length 512) -ne 512) { throw 'FAT16: cannot read the BPB at LBA 2048' }
         if (($bpb[510] -ne 85) -or ($bpb[511] -ne 170)) { throw 'FAT16: no boot signature at LBA 2048' }
         $bps = [BitConverter]::ToUInt16($bpb, 11)
         $spc = $bpb[13]
@@ -58,7 +77,7 @@ function Export-Fat16File {
         $dataSec = $rootSec + $rootSecs
         $rd = New-Object byte[] ($rootSecs * $bps)
         $fs.Seek(($rootSec * $bps), 'Begin') | Out-Null
-        $fs.Read($rd, 0, $rd.Length) | Out-Null
+        if ((Read-Exact -Stream $fs -Buffer $rd -Offset 0 -Length $rd.Length) -ne $rd.Length) { throw 'FAT16: short read of the root directory' }
         $clus = 0
         $size = 0
         for ($e = 0; $e -lt $rent; $e++) {
@@ -74,14 +93,14 @@ function Export-Fat16File {
         if ($clus -lt 2) { throw "FAT16: $Name is not in the root directory" }
         $fat = New-Object byte[] ($spf * $bps)
         $fs.Seek(($fatSec * $bps), 'Begin') | Out-Null
-        $fs.Read($fat, 0, $fat.Length) | Out-Null
+        if ((Read-Exact -Stream $fs -Buffer $fat -Offset 0 -Length $fat.Length) -ne $fat.Length) { throw 'FAT16: short read of the FAT' }
         $bytes = New-Object byte[] $size
         $got = 0
         $cl = $clus
         while ((($got -lt $size) -and ($cl -ge 2)) -and ($cl -lt 65528)) {
             $take = [Math]::Min(($spc * $bps), ($size - $got))
             $fs.Seek((($dataSec + ($cl - 2) * $spc) * $bps), 'Begin') | Out-Null
-            if ($fs.Read($bytes, $got, $take) -ne $take) { throw "FAT16: short read in $Name at cluster $cl" }
+            if ((Read-Exact -Stream $fs -Buffer $bytes -Offset $got -Length $take) -ne $take) { throw "FAT16: short read in $Name at cluster $cl" }
             $got += $take
             $cl = [BitConverter]::ToUInt16($fat, $cl * 2)
         }

@@ -243,838 +243,249 @@ the choice one implementation made on one machine. It is the green bed of
 L-FREEDOM: it tells you what happened, not what is guaranteed, and the
 unspecified freedom is still there afterwards.
 
-## 5. Open questions
-
-Damian has ruled on the shape: this sits with `punctual`, so it is a declared
-and enforced property rather than a document. What is still open:
-
-1. ~~**How much of the general problem does the check attempt?**~~ RULED
-   2026-08-16 (Damian, via red): **a class, never a function of the inputs.**
-   The declaration is a CEILING in a small lattice and the compiler infers each
-   function's class bottom-up from its body, the way effect sets are inferred:
-
-   ```
-     none    < fixed          < linear         < growing
-     no heap   fixed bytes/call  one walk over    accumulator copied
-     (punctual) regardless of    an input, no     inside a loop, or
-                input            copies of the    a walk nested in
-                                 accumulator      a walk
-   ```
-
-   Worst case over the code's STRUCTURE and blind to data on purpose: bubble
-   sort is honestly `fixed` in heap whatever the data does to its time, and a
-   walk nested in a walk is `growing` even when the data would keep it small.
-   Its quadratic TIME is a WCET question and stays with `punctual`'s budget
-   number. Refusal is transitive exactly as CDX6001: a declared ceiling breaks
-   at the caller, at compile time, when a callee's inferred class exceeds it.
-   No declaration means no check, as with `punctual`; the bottom rung is
-   `punctual` minus the WCET budget and the effect ban, which is why the two
-   felt like siblings. Abstain toward refusal; the false-refusal cost is paid
-   in the declaration you can choose not to write. The keyword-free inference
-   is what blu is building as step 2, and the corpus grades its `growing` rung.
-
-   **FIRST SLICE SHIPPED (blu, 2026-08-16): two rungs of the four.** `linear`
-   and `growing` are inferred and checked; `none` and `fixed` are named in the
-   lattice and NOT yet inferred, so a declaration naming one is refused
-   (CDX6103) rather than accepted unchecked. That is this ruling's own
-   abstain-toward-refusal applied to the declaration itself: an unchecked
-   promise reads exactly like a checked one, which is worse than no promise.
-   **The four-class lattice above remains the target**; what shipped is a
-   subset that refuses honestly where it cannot yet decide, and `punctual`
-   already enforces the no-heap case that `none` describes.
-
-   **THIRD RUNG SHIPPED (blu, 2026-08-19, main 17299): `none` is inferred.**
-   A definition's body is walked for allocation and the answer is closed
-   under calls the way `growing` already was, so `bounded none` is refused
-   with CDX6101 when the target allocates directly or through a callee. The
-   arms are `codex/test/errors/bounded-none-exceeded` (transitive: the
-   declared function's whole body is one call) and
-   `codex/test/apps/bounded-none-accepted` (the control, which a refuse-
-   everything check would fail).
-
-   **A name in call position that is neither a definition in this unit nor a
-   builtin measured at zero bytes is read as allocating.** That is this
-   ruling's abstain-toward-refusal at the only place it can be applied here,
-   and it is why the promise is narrow: the zero-byte set is what 3.1
-   measured (the text accessors) plus the accessors `punctual` already treats
-   as safe, so a body calling any unmeasured builtin cannot declare `none`
-   today. Widening the set is a measurement, not a rule change.
-
-   **A MEASURED OVER-REFUSAL IN THE SHIPPED `none` RUNG (blu, 2026-08-19),
-   found while building the arms for `budgeted` and NOT introduced by it.**
-   `cost-binop-allocates` is written to tell `&`'s two jobs apart by the
-   recorded type -- boolean AND allocates nothing, concatenation allocates a
-   new value -- and the chapter prose beside it says so. It does not: measured
-   against `Sut` 278AF7C4, `bounded none andy (a) (b) = a & b` over two
-   `Boolean` parameters is refused CDX6101. So `bounded none` currently
-   refuses any body that joins two conditions, which is a large and ordinary
-   class, and the `budgeted` arm had to be written without `&` to avoid
-   testing this instead of itself.
-
-   **FOUND AND FIXED the same day, and the cause was neither the type scan
-   nor the cost check.** `infer-and` recorded the expression type on its TEXT
-   arm and not on its boolean one, so a boolean `&` had no entry at all and
-   `expr-type-scan` answered `ErrorTy`; every reader of that table treats the
-   unknown as the worst case, which is correct of them. One line: the boolean
-   arm records too.
-
-   Two theories came first and both were wrong -- unresolved type variables,
-   then parameter resolution. What killed them was widening the probe:
-   `True & False`, two literal Booleans, is refused exactly as `a & b` is, and
-   three shapes failing together pointed at the recording site rather than at
-   any resolution. **The regression guard is all three shapes**, in
-   `codex/test/apps/bounded-none-accepted`.
-
-   **It was never only this rung.** `punctual` reads the same table through
-   `check-rt-no-alloc` and refused the same shape, so both checks were
-   charging a boolean AND for a heap allocation it never makes.
-
-   **THE LIST FAMILY IS MEASURED (blu, 2026-08-19).**
-   `codex/test/cost/builtin-alloc` classifies it, and the discriminator is
-   INPUT SIZE rather than iteration count: every arm makes one call, and the
-   two readings differ only in how large the argument is. That is the
-   question `fixed` actually asks and no existing instrument asked it.
-   Published in `DevelopersGuide.md`, "What List operations cost".
-
-   | | class | |
-   |---|---|---|
-   | `list-length`, `list-at`, `list-set-at` | none | 0 bytes at both sizes |
-   | `__list-tail` | **fixed** | 24 bytes, flat |
-   | `list-push`, `list-insert-at` | **input** | 4x with the input |
-
-   Three results change what can be built on top. **`list-set-at` allocates
-   nothing**, structurally rather than at two points -- `emit-list-set-at` is
-   a bounds check, an address, a store and a return of the same pointer --
-   so it can join the zero-byte set and widen what `bounded none` accepts.
-   **`__list-tail` is the first builtin measured `fixed`**, which is what
-   makes the rung a non-empty class rather than a slot in a diagram.
-   **`list-push` is input-proportional even on the extend-in-place path**,
-   because path 2 doubles the capacity and the frontier advances by the
-   whole of it; the aliasing rule in the guide tells you which path you get
-   and not what it costs, and only the copy path was ever assumed expensive.
-
-   The instrument reports all three classes in one run, and the arm that
-   makes that true was added after the first reading rather than designed in:
-   at length n + 1 the identical push takes the spare-capacity path and
-   retains 0. Before it, every arm sat on the doubling boundary because
-   `base` is a power of two, so the harness could only ever report the
-   expensive path -- which is asserting, not measuring.
-
-   **THE TEXT FAMILY RE-MEASURED WITH THE SIZE DISCRIMINATOR (blu,
-   2026-08-19), and it raises TWO QUESTIONS THAT NEED A RULING before more
-   rows can be filled in honestly.** Results in `DevelopersGuide.md`. Three
-   predicates (`text-contains`, `text-starts-with`, `text-compare`) allocate
-   nothing at any length and are safe `none`. `char-to-text` is a clean
-   `fixed`. The other two are the problem.
-
-   **1. `substring`'s class depends on its ARGUMENT, and `bs-alloc` is one
-   word per builtin.** Holding the output at four characters it is flat at 16
-   bytes whether the input is 64 or 256; letting the output grow with the
-   input it is 40 then 136. So it is `fixed` in the shape that dominates
-   parsing here -- a fixed-width field out of a line of any length -- and
-   `input` when the slice grows. A single scalar class has to take the worst
-   case and call it `input`, which refuses exactly the case `fixed` was
-   introduced to permit. Either the class becomes per-ARGUMENT, or the
-   over-refusal is accepted and written down as the price. ~~This is a design
-   question, not a measurement, and it is the first thing that needs deciding
-   before `fixed` can ship. It is CurrentPlan rulings queue 17.~~ **RULED
-   2026-08-19 (Damian): the class becomes PER-ARGUMENT. Shipped the same day;
-   the record is below.**
-
-   **2. `integer-to-text` is bounded but not constant, and the lattice has no
-   rung for that.** 16 bytes at 2 and 3 digits, 16 and 24 at 8 and 10: the
-   allocation follows the digit count in 8-byte steps. An `Integer` cannot
-   exceed twenty digits, so the call can never allocate more than about 32
-   bytes and cannot cause blow-up, which is what `fixed` exists to promise.
-   But "the same bytes every call" is false. Reading it strictly makes it
-   `input` and abstain-toward-refusal says take the stricter rung; reading it
-   by the rung's PURPOSE makes it `fixed`. ~~Its row stays `unknown` -- which
-   is read as allocating, the safe side -- until that is ruled on. It is CurrentPlan rulings queue 18.~~
-   **RULED 2026-08-19 (Damian): NEITHER. Between `fixed` and `input` there is
-   a bounded-or-budgeted class and `integer-to-text` is in it. Shipped the
-   same day; the record is below.**
-
-   The narrow arm is worth keeping in view: at 64 and 256 alone,
-   `integer-to-text` reads flat and would have been published `fixed`. That is
-   the same single-point error the 08-15 table made, caught here only because
-   the harness was rerun at a wider spread.
-
-   **THE `budgeted` RUNG SHIPPED (blu, 2026-08-19, main 17581), and it closes
-   17 and 18 together because they were one question.** Both readings above
-   describe the same gap: an allocation that is genuinely bounded by something
-   nobody wrote down. `substring line 0 4` is bounded by the literal it is
-   passed; `integer-to-text` is bounded by the twenty digits an `Integer` has.
-   Neither is `fixed`, because the bytes are not the same every call, and
-   calling either `linear` promises something about the input that is false.
-   So the lattice gained a rung between them rather than forcing either answer:
-
-   ```
-     none  <  fixed  <  budgeted  <  linear  <  growing
-   ```
-
-   `cost-class-rank` carries it at rank 2 (`TypeChecker.codex`), and the
-   registry says which builtins are in it: `integer-to-text`'s `bs-alloc` row
-   is a bare `budgeted`, `substring`'s is **`budgeted:3`** -- the per-argument
-   form question 1 asked for, naming the argument that supplies the bound. **A
-   `budgeted:N` call is accepted when argument N is a LITERAL and refused
-   otherwise**, which is blunt on purpose: it also refuses a computed length
-   that happens to be small, and that is this feature's abstain-toward-refusal
-   applied where the compiler cannot know.
-
-   The arms are `codex/test/apps/bounded-budgeted-accepted` (the control,
-   carrying both shapes the rung was ruled into existence for) and
-   `codex/test/errors/bounded-budgeted-exceeded` (the refusal, whose
-   declaration sits on `clip` while the offending `substring` is in its
-   UNDECLARED callee `half`, so the arm proves the refusal is transitive and
-   not merely local). **Re-measured 2026-08-20 against depot seed A6D49D19**
-   rather than taken from the CL: the control compiles at exit 0 and the
-   refusal answers CDX6101 at exit 4, naming `clip`.
-
-   `fixed` is still the rung that has not shipped, and the reason has not
-   changed: separating "the same bytes every call" from "one walk over an
-   input" needs the 264-entry registry measured, and `bs-alloc` reads
-   `unknown` on 80 of 265 (RE-MEASURED 2026-09-07 off `Builtins.codex` at
-   head: `none` 161, `unknown` 80, `fixed` 14, `input` 8, `budgeted` 1,
-   `budgeted:3` 1. The row count is 265, not 264. Re-measure before quoting;
-   this moved a long way while nobody was reading it). What HAS changed is that this no longer blocks
-   ordinary parsing code from declaring anything, because `budgeted` is the
-   rung that code actually sits on. `bounded fixed` is refused as unsupported
-   (CDX6103) rather than accepted unchecked, which is the same
-   abstain-toward-refusal one level up: an unchecked promise reads exactly
-   like a checked one.
-
-   **SETTLED 2026-09-07 (blu), because the paragraph above left it addressed
-   to nobody.** The rung is NOT blocked on the registry being complete, and
-   the sentence in CDX6103's message that says it is should be read as
-   naming the wrong thing.
-
-   `none` already ships on the rule that a name in call position which is not
-   a definition in this unit and not a measured row is read as allocating, so
-   an `unknown` row refuses ONE DECLARATION at ONE call site rather than
-   holding back the rung. `fixed` needs the same predicate one step up the
-   lattice: a callee reading `none` or `fixed` keeps the promise, `input`,
-   `linear` or `growing` breaks it, `budgeted:N` keeps it exactly when
-   argument N is a literal, which `cost-arg-literal` already decides and
-   `cost-head-overbudget` already calls. Nothing in that shape wants the
-   other 79 rows filled in.
-
-   **What IS blocking it is a different thing this section had folded into
-   the same sentence: whether the rows already reading `fixed` are right.**
-   There are 14 of them at head (2026-09-07, after `show` moved to `unknown`
-   and `__linked-list-empty` to `none`; re-measure before quoting). The
-   `alloc-bytes` account below is the
-   reason to doubt them: its first arm passed the literal 64, read `fixed` at
-   both sizes, and was measuring the arm rather than the builtin: the class
-   followed a parameter the arm held constant. A row wrongly reading `fixed`
-   is worse than a row reading `unknown`, because `unknown` refuses and
-   `fixed` accepts, and `bounded fixed` would then rest on it. **`bs-varies`
-   does not help here and must not be pressed into service**: it is consumed
-   by `const-name-invariant` for constant-expression invariance, not by the
-   cost model, so it says nothing about allocation.
-
-   **ALL 14 ROWS READING `fixed` ARE NOW ESTABLISHED (2026-09-07, blu): six
-   in the first pass and the remaining eight below. Two were wrong and were
-   corrected, `show` to `unknown` and `__linked-list-empty` to `none`; the
-   other twelve are right. The rung shipped on top of them (main 23058).**
-   What follows is how each was read, and the method was: take
-
-   **FIRST PASS OVER THE 16, 2026-09-07 (blu), and the first row checked is
-   wrong in the direction that matters.** `show` reads `fixed`.
-   `emit-show-builtin` (`Emit/X86_64.codex:1652`) dispatches on the
-   ARGUMENT'S TYPE, not on a value: `TextTy` emits the expression itself and
-   allocates nothing, `BooleanTy` goes to `emit-show-bool`, a real to
-   `__real_to_text`, an f32 to `emit-show-real-approx`, and everything else
-   to `__itoa`. **That last path is the same helper `integer-to-text` emits,
-   and `integer-to-text` reads `budgeted`.** Two rows describe one piece of
-   code and disagree, and the more permissive of the two is the one on the
-   polymorphic name.
-
-   **The general point, which is worth more than the row.** `bs-alloc` is
-   keyed by BUILTIN NAME, and `show`'s allocation is a property of the TYPE
-   it is instantiated at. One name, four emission paths, at least two
-   allocation behaviours, and `__real_to_text` measured by nobody: the
-   helpers are a level below the registry and have no rows at all. A
-   per-name class cannot describe a builtin like this, so the honest reading
-   is that `show` is not `fixed` on present evidence. **It reads `unknown` as
-   of 2026-09-07 (blu)**, and stays there until either the paths are measured
-   or the registry can key on instantiation.
-
-   **THE OTHER 15, same pass, with the confidence on each stated.** The
-   method was reading the emitter for a CONSTANT allocation, `heap-bump-imm
-   N` or `emit-bivy-alloc st N`, rather than an arm, because a constant in
-   the emitter settles "same bytes every call" without a run.
-
-   - **Correct at 16 bytes, established:** `char-to-text` and `char-encode`
-     (`emit-bivy-alloc st1 16`), `vec-splat`, `vec4-splat`, `vec-load-at`
-     (all `emit-bivy-alloc ... 16`), and `__linked-list-push`
-     (`heap-bump-imm st5 16`).
-   - **`__linked-list-empty` was OVER-TIGHT and reads `none` as of
-     2026-09-07 (blu).** Its emitter is `li (rd.reg) 0`: an empty linked list
-     is the null pointer and it allocates nothing at all. `fixed` was safe for
-     a `bounded fixed` promise, since `none < fixed`, but it FALSELY REFUSED a
-     `bounded none` whose body calls it.
-   - **THE REMAINING EIGHT ARE ESTABLISHED, 2026-09-07 (blu), by reading the
-     allocation site each one reaches rather than the emitter it names. All
-     eight are CORRECT as `fixed` and no row changed.** The amount is what
-     matters, not its value: every site takes an immediate, so the bytes are
-     the same every call.
-
-     | row | allocation site | bytes |
-     |---|---|---|
-     | `vec-add`, `vec-sub`, `vec-mul`, `vec-div` | `emit-vec-arith-core`, `emit-bivy-alloc st5 16` | 16 |
-     | `vec-select` | `emit-bivy-alloc st9 16` | 16 |
-     | `vec-empty` | `emit-list st []`, so `heap-bump-imm 8` + `(0+1)*8` | 16 |
-     | `vec-singleton` | `emit-list st args`, arity 1, so `heap-bump-imm 8` + `(1+1)*8` | 24 |
-     | `__list-tail` | `__list_tail` in `X86_64ListHelpers.codex:38`, `heap-bump-imm 8` then `heap-bump-imm 16` | 24 |
-
-     `emit-list`'s `(count + 1) * 8` is the one that could have followed an
-     input, and does not: `count` is `list-length elems` over the CALL'S
-     arguments, fixed by the builtin's arity at compile time. The elements'
-     own evaluation can allocate and is charged to the argument expressions,
-     which is how every other row is read too. `__list_tail` was the open
-     question because its helper has no registry row; it is a view-sharing
-     tail that writes a two-word header and shares the parent's storage, with
-     no loop and no dependence on the list's length. **The structural gap it
-     illustrates is real and is NOT closed by this measurement**: `bs-alloc`
-     is keyed by builtin NAME while the allocation happens a level below, so
-     these eight are correct today by inspection of code no registry row
-     covers.
-
-     **`build/check-builtin-alloc.ps1` is the runner for that gap
-     (2026-09-07, blu).** It carries the row-to-allocation-site table the
-     registry does not, and refuses two things: an allocation site in a
-     pinned body that does not take an immediate, and any edit to a pinned
-     body at all. The second exists because the first is only as wide as the
-     spellings it knows (L-CENSUS), and it was controlled by sabotaging a
-     site with an allocation call the first rule has never heard of: rule 1
-     stayed silent and rule 2 caught it alone. A row reading `fixed` with no
-     recorded site is refused by name rather than skipped. The table is
-     hand-written because crawling the emitters pins `emit-expr`, which all
-     of them call to evaluate arguments, and a check that reds on unrelated
-     codegen churn teaches people to re-pin without looking. **Nothing runs
-     it yet**, which is the same L-NOGATE shape it exists to answer; wiring
-     it into the gate means changing the generator under `codex/build/`.
-
-   **A NOTE ON THE METHOD, because it nearly produced a false all-clear.** A
-   first sweep grepped only for `heap-bump-imm` and returned NOTHING for
-   eight rows, which reads exactly like eight rows that allocate nothing. The
-   control passed and was insufficient: it proved the pattern found
-   `heap-bump-imm`, not that `heap-bump-imm` was the only spelling. There are
-   at least two, and `char-to-text` uses the other one. A negative from a
-   sweep is only as wide as its pattern (L-CENSUS), and the tell here was a
-   window that bled into the next function and reported `vec-singleton`
-   calling `chan-kern-create`.
-
-   **BLAST RADIUS, re-measured 2026-09-07 (blu) by counting DECLARATIONS
-   rather than the word: SIX files declare `bounded`, all under `codex/test`,
-   72 declarations.** `bounded-none-accepted` (63),
-   `bounded-budgeted-accepted` (4), `bounded-accepted` (2),
-   `bounded-none-exceeded`, `bounded-budgeted-exceeded` and
-   `bounded-exceeded` (1 each). **No production code in the tree declares
-   `bounded` at all**, so neither row can break a shipping unit.
-
-   The earlier count said four files and missed both `bounded-budgeted-*`
-   arms, which are the ONLY rung either change can move: `cost-head-overbudget`
-   is consulted at rank 2 (`budgeted`) alone. A count by the word `bounded`
-   and a count by the declaration are different claims, and the pattern that
-   answered four could not see the two files that mattered (L-CENSUS).
-
-   **Neither row moves any test's verdict, and the reason is worth more than
-   the rows.** `show` at `unknown` is refused by `cost-head-overbudget`
-   (it is not in `is-rt-safe-builtin`), but no `bounded budgeted` function in
-   the tree reaches `show`: `bounded-exceeded` calls `show i` inside
-   `grow-loop` under a rank-3 `bounded linear` declaration, which is decided
-   by the growth inference and never consults an allocation class.
-   `__linked-list-empty` at `none` widens what `bounded none` accepts through
-   `cost-builtin-nonalloc`, and no arm declares `bounded none` over it.
-   `codex/test/cost/builtin-alloc.codex` measures classes at runtime and has
-   no `.expected`, so it grades nothing either. **Both rows were therefore
-   correct and UNOBSERVED, which is the L-NOGATE shape, so the change carries
-   the two arms that observe them** and each was measured flipping across it:
-
-   | arm | seed `9E5C7780B7FBC69C` | candidate `FF940613EFCFAF48` |
-   |---|---|---|
-   | `codex/test/errors/bounded-budgeted-show` | compiles | refused CDX6101 |
-   | `codex/test/apps/bounded-none-linked-empty` | refused CDX6101 | compiles |
-
-   Each refusal names the row under test in its message (`'labels' declares
-   bounded budgeted but allocates past a named bound`; `'empty-is-free'
-   declares bounded none but allocates`), so neither arm is passing for a
-   reason beside the one it exists for (L-VACUOUS). `check-errors` runs the
-   first and `check-test-compile` the second, so both sit in a runner rather
-   than in this document. Neither has an `.expected`, which is the convention
-   the other three `bounded-*` arms in `codex/test/apps` already follow: for
-   these the assertion is the verdict, not the output.
-
-   The remaining 15 rows are unexamined.
-   each row reading `fixed` and re-run it with the argument that could carry
-   the class VARIED, the way `alloc-bytes` was caught. Rows with no such
-   argument (`char-to-text`, `char-encode`, the `vec-` family) are settled by
-   inspection. Only then is the rung's inference worth writing, and CDX6103's
-   message wants rewording at the same time.
-
-   **`fixed` SHIPPED 2026-09-07 (blu), and it was never blocked on the
-   registry.** `bounded fixed` is checked rather than refused: the overbudget
-   walk carries a `strict` flag, and the whole of the difference between the
-   two rungs is that a plain `budgeted` callee keeps a `budgeted` promise and
-   breaks a `fixed` one. `none`, `fixed` and `budgeted:N` with a literal
-   argument N keep it; `input`, `linear`, `growing` and `unknown` break it.
-   CDX6103 had exactly one producer and is gone with it, along with its code
-   and registry row.
-
-   Measured across seed `9E5C7780B7FBC69C` and candidate `FF940613EFCFAF48`
-   (rows) then the rung's own candidate:
-
-   | arm | seed | candidate |
-   |---|---|---|
-   | `bounded-fixed-accepted` (`substring line 0 4`) | refused CDX6103 | compiles |
-   | `bounded-fixed-exceeded` (`integer-to-text n`) | refused CDX6103 | refused CDX6101 |
-
-   **The refusal arm is a control rather than a self-check**: its body is the
-   one `bounded-budgeted-accepted` declares one rung up and is accepted, so
-   the pair isolates the `strict` flag and nothing else. The other eight arms
-   (`none`, `budgeted`, `linear`, accepted and refused, plus the two row arms)
-   were re-run against the same candidate and are unmoved, which is what says
-   threading the flag did not disturb the rungs that already shipped. Separating "fixed bytes per call" from "one walk over
-   an input" needs a per-builtin allocation class; 3.1 published the text
-   family and the list family is now measured too, and the registry is
-   **70 per cent read as of 2026-09-07, 80 rows still `unknown`**, which
-   refuses those builtins rather than the rung. The check cannot read a
-   class that lives only in a document. **`bs-alloc` on `BuiltinSpec` SHIPPED (blu, 2026-08-19, main
-   17450)** (`codex/compiler/Types/Builtins.codex`), which is where the class
-   belongs: it puts the answer beside the name and the type, and
-   `cost-builtin-nonalloc` reads `builtin-alloc-by-name` rather than the
-   hand-kept list it used to carry, so a measurement widens what `bounded
-   none` accepts by editing the row that names the builtin. The registry is
-   the mechanism now and the measurement is the remaining work. **Re-measured
-   2026-08-21 after a second family, the 264 rows read: `unknown` 219,
-   `none` 35, `input` 5, `fixed` 3, `budgeted` 1, `budgeted:3` 1.** The second
-   pass measured the character predicates, the small conversions and the raw
-   memory accessors: `is-letter`, `is-digit`, `is-whitespace`, `code-to-char`,
-   `text-to-integer`, `compare`, `peek-byte`, `peek-32`, `poke-byte` and
-   `poke-32` all read 0 at both sizes; `show` is `fixed` at 16 bytes;
-   `text-split` and `alloc-bytes` are `input`.
-
-   **`alloc-bytes` IS WHY AN ARM MUST VARY THE THING IT IS MEASURING.** Its
-   first arm passed the literal 64 and it duly read `fixed` at both sizes,
-   which is a true statement about the arm and says nothing about the builtin:
-   the only quantity that varies is the argument the caller chose. It is
-   `substring`'s shape -- the class follows a parameter -- and an arm holding
-   that parameter constant cannot see the class at all. Varying it, the same
-   builtin reads 64 against 256, exactly 4.0x, `input`. The earlier reading
-   was not wrong about what it measured; it measured the wrong thing.
-
-   **THIRD PASS, the buffer family: `unknown` 214, `none` 38, `input` 7,
-   `fixed` 3, `budgeted` 1, `budgeted:3` 1.** `__buf-write-byte`,
-   `__buf-write-bytes` and `__narrow` retain nothing; `__buf-read-bytes` and
-   `__list-with-capacity` are `input` at 528 bytes for 64 and 2,064 for 256.
-
-   **That pass also settled a number this project has been carrying unmeasured
-   in `CLAUDE.md` itself.** Rule 8 lists `buf-read-bytes` under red flags as an
-   "8x blowup", and four designs cite the figure as settled. It is 8x plus a
-   16-byte header -- 64 x 8 + 16 = 528, 256 x 8 + 16 = 2,064 -- so the rule is
-   RIGHT, and is now right by measurement rather than by repetition. A claim in
-   the file that loads every session, cited across a campaign, had never been
-   read off the machine; the outcome happened to be confirmation, and the value
-   of checking did not depend on that.
-
-   **FOURTH PASS, the proof terms and the pointer family: `unknown` 202,
-   `none` 48, `input` 7, `fixed` 5.** `tag-equal`, `variant-tag`, `address-of`
-   and `__memset` measured at zero; `__linked-list-empty` and
-   `__linked-list-push` are `fixed`, which is the contrast that makes a linked
-   list worth having against `list-push`'s `input` worst case.
-
-   **The six proof terms are `none` STRUCTURALLY and not by measurement**, and
-   the distinction is recorded rather than smoothed over: `Refl`, `assume`,
-   `sym`, `trans`, `cong` and `app-cong` all lower through
-   `emit-proof-builtin`, which is `emit-int-lit st 0`. There is no allocation
-   path to find. They are also the one family this instrument CANNOT arm, since
-   a proof term cannot close the `+ r - r` bracket that forces a result to be
-   used -- so an arm would be measuring dead-code elimination. Classifying them
-   from the emitter is the same footing `list-set-at` already stands on.
-
-   **PASSES FIVE TO TEN, all 2026-08-21, and the log stops accumulating here.**
-   Appending a paragraph per family was already the wrong shape at four; what
-   follows is the current measurement plus the one thing each pass established
-   that is NOT a count. **Re-measure before quoting any of it (L-COUNT):
-   `unknown` 86, `none` 156, `fixed` 13, `input` 7, `budgeted` 1,
-   `budgeted:3` 1, of 264.** The sequence of `unknown` readings was 232, 219,
-   214, 202, 186, 169, 163, 153, 143, 132 across 2026-08-21, then 125, 107 and 86 on
-   2026-08-25.
-
-   - **The process and channel family, twenty-one of twenty-two** (blu,
-     2026-08-25). Process memory does not come from the heap:
-     `__spawn_pool_carve` is shift-and-add into a statically reserved pool, the
-     three out-of-family targets are defined in `ProcessHelpers` and allocate
-     nothing, and `process-get-scope` returns a Text by loading a pointer
-     already in the process table rather than building one.
-     **THE TWENTY-SECOND IS WHY THE SCAN PATTERN IS NOW WRITTEN DOWN.**
-     `chan-text-recv` allocates: it rounds the received length up and does
-     `add r10, rax`, advancing the bump allocator INLINE, without ever calling
-     `__alloc` or `emit-bivy-alloc`. A scan for those two names -- which is
-     what classified the eighteen in the entry below, and what I ran first here
-     -- cannot see it, and would have published `none` on a builtin that
-     allocates in proportion to a message. **A false `none` is a false promise,
-     which is the dangerous direction; the too-narrow pattern found it in the
-     cheap direction only by luck of reading the body.** Any future emitter
-     classification must look for `reg-r10` advancement as well as the two
-     allocator names. `chan-text-recv` stays `unknown`: what it retains is
-     proportional to the MESSAGE, and the message size appears in no argument,
-     so no rung in this lattice describes it.
-     **AND `none` MEANS NO HEAP, NOT NO RESOURCE.** A spawn consumes a
-     fixed-pool slot; slot exhaustion is a bounded resource this lattice does
-     not describe, the same way quadratic TIME stays with `punctual`'s budget.
-   - **The VMX/MSR and UEFI console families, eighteen rows, classified from
-     the EMITTER** (blu, 2026-08-25). `builtin-alloc` cannot reach any of them:
-     `vmxon` and its family would fault the moment an arm executed one, and the
-     console calls need a firmware boot nothing in `codex/test` performs. So
-     they take the footing the six proof terms already stand on. Each is a
-     named runtime helper in `X86_64Helpers.codex`, and across the whole span
-     that holds all eighteen there is no `emit-bivy-alloc`, no call to
-     `__alloc`, and no `emit-call-to` at all, so none can allocate directly or
-     through a callee. `uefi-read-key-ex` reserves a stack frame
-     (`sub rsp, 0x58`); that is the stack, and this rung is about the heap.
-     **THE PART THAT IS NOT A COUNT: the cost check reads a builtin's class
-     only in CALL position.** Eleven of the eighteen are refused CDX6101 by the
-     preceding seed and accepted after; the other seven are NOT, and the split
-     is exactly nullary against argument-taking. A nullary builtin used as a
-     value never has its class consulted, so reclassifying those seven changes
-     nothing observable today, and an arm over one would pass under both
-     compilers while testing nothing. Seven such arms were written, measured as
-     vacuous, and REMOVED rather than kept as decoration -- the same
-     vacuous-control trap COMPILER-18 shipped and this file's own corpus exists
-     to forbid. Whether any nullary builtin allocates is NOT established: the
-     one candidate tried, `current-dir`, does not resolve on this target.
-   - **The print family, seven rows on four emitters** (blu, 2026-08-25). All
-     seven measure `none`, and the count is the least of it. `print-line`,
-     `print-line-uni`, `print-error` and `print-error-uni` all lower through
-     `emit-print-line-builtin`, so they CANNOT differ in class; measuring the
-     aliases anyway is what shows that rather than assuming it, and it is the
-     same footing the proof terms stand on one section up. **The ASCII probe
-     would not have earned the class.** `emit-print-text-loop` branches on the
-     code unit, so a text of `x` never enters the multi-byte arm at all; the
-     rows are therefore read four ways -- ASCII, a tier-0 accented unit, a
-     tier-0 Cyrillic unit and a tier-1 unit -- and all four retain zero at
-     n=64 and n=256 against a control that also reads zero. Reading one shape
-     and publishing the class is exactly the fixture-shape trap (L-CONSTRUCT)
-     that COMPILER-21 and COMPILER-22 were both found by, on the same surface,
-     the same day.
-
-   - **The real conversions, sixteen rows on eight arms** (main 18985). A Real
-     cannot close the `+ r - r` bracket, so every reading is a chain that
-     charges its arm for everything in it. Allocation cannot be negative, so a
-     chain reading EQUAL to a control containing a subset of it proves every
-     added member is zero at once. That LADDER is what buys sixteen rows for
-     eight arms, and the f32 rungs sit on the f64 ones because the only route
-     from an Integer to an f32 runs through a pair the rung below settled.
-   - **The SIMD family, seventeen rows** (main 19025 for the arm shape, 18995
-     for the rows). **Every vector this compiler produces is BOXED at 16
-     bytes**, and the split is clean along produce-versus-read: eight names
-     return a vector and each pays a box, nine read out of one and pay
-     nothing. So a chain of vector operations pays one box per step, and
-     `bounded none` cannot construct a vector at all -- only read one it was
-     handed, which is why those arms take theirs as parameters. Published in
-     `DevelopersGuide.md` with the table.
-   - **The atomics, six rows** (main 18999). `bs-varies` and `bs-alloc` come
-     apart here: all six read True for `bs-varies` because their ANSWER
-     depends on another core, and that decides nothing about what they retain.
-   - **The CPU reads and the rest of raw memory, ten rows** (main 19012).
-   - **The port and MMIO rows, ten rows** (main 19025), which needed a new arm
-     shape. See the effectful-arm note below.
-   - **The read-only process and identity rows, eleven rows** (main 19040).
-
-   **A NEW ARM SHAPE NEEDS ITS OWN CONTROL, and this is the general form of
-   the `alloc-bytes` lesson above.** An effectful builtin cannot be bound with
-   `let` (CDX2033), so its arm opens an `act` block and takes the answer with
-   `<-`. A different bracket is a different instrument until something says
-   otherwise, so the section opens with `act-control`: the same block, the same
-   two marks, nothing measured inside. It reads 0, and only then is anything
-   below it attributable. Without it, ten rows reading the same nonzero would
-   be indistinguishable from ten builtins that each allocate that much, and the
-   section would have published `fixed` on the strength of the bracket. The
-   same discipline one level down is why `vec-extract` and `vec4-extract` are
-   measured alone before any arm that contains them, and why the first mask arm
-   was wrong: it built its `VectorMask` inside the heap mark and read 16 bytes
-   for four builtins that return a Boolean or an Integer.
-
-   **THE REGISTRY IS NEVER CONSULTED FOR A NULLARY BUILTIN**, found by an arm
-   written on the opposite assumption. `cost-head-allocates` is reached from a
-   call HEAD, and a bare name is not a call, so `cpu-read-cr0`, `cpu-read-cr3`,
-   `flush-tlb` and the six process constants have rows because they were
-   measured and not because any consumer asks. The `machined` arm in
-   `codex/test/apps/bounded-none-accepted` is the control that established it:
-   the kill refused four of five and accepted that one with all three of its
-   rows still `unknown`. Measure them anyway -- "no consumer asks" is not "the
-   answer does not exist" -- but do not count them as widening the rung.
-
-   **WHAT IS DELIBERATELY STILL `unknown`, so the gap is named rather than
-   silent.** The GPU four (`gpu-in`, `gpu-out`, `gpu-mem-read`,
-   `gpu-mem-write`), the two 16-bit port block forms and `runtime-init`: an arm
-   for `gpu-mem-write` at offset 0 of the window writes over `DeviceBuffer`'s
-   allocation cursor, which is corrupting an allocator in order to measure one.
-   `process-get-scope` and `process-get-network-scope` return Text and both
-   answer the EMPTY string on this bed, so a zero length is a fact about a
-   process with no scope set rather than about the builtin; reading `none` off
-   the empty path is the corpus-shape failure exactly. And the five sized-vector
-   names are BROKEN rather than unmeasured -- `vec-empty` is CDX2040 unresolved,
-   `vec-singleton` answers wrong, `vec-cons` faults -- with the account under
-   the unowned registers in `docs/PM/CurrentPlan.md`.
-
-   The earliest passes read `unknown` 232, then 219, then 214; before them, 247. The registry grew by two rows and
-   fifteen were measured that day: the twelve integer and bit names, `negate`,
-   `real-from-int` and `real-to-int`, all at 0 bytes retained at both input
-   magnitudes (`codex/test/cost/builtin-alloc`, the account in
-   `DevelopersGuide.md`). **Twelve of the fifteen widen nothing**, because
-   `is-rt-safe-builtin` already carried them and `cost-builtin-nonalloc` reads
-   that set first; what they buy is a registry that agrees with a measurement
-   instead of a second hand-kept list. The three that DO widen the rung are
-   `negate` and the two real conversions, and the kill side was taken before
-   the rows moved: against depot `Sut` 96CB73CB the new section of
-   `codex/test/apps/bounded-none-accepted` is refused CDX6101 on both
-   declarations at exit 4, and it compiles once the rows read `none`. It was
-   2026-08-20's reading of
-   `unknown` 245 that this line carried, and the earlier one before it. `unknown` is the refusing side,
-   so every row still reading it is a builtin read as allocating without bound
-   -- 132 of them at the last measurement, and that count IS the block on the
-   rung. CDX6103 now names only `fixed` and says so. Do not infer it
-   from the code's shape alone: a single `&` allocates in proportion to its
-   operands, so a straight-line body with no loop in it is already not
-   `fixed`, and a shape-only rule would accept exactly the case the class
-   exists to exclude.
-2. ~~**What is the instrument that keeps it honest?**~~ **THE CORPUS IS BUILT
-   (blu, 2026-08-16), which answers the "before the check, not after" half.
-   What it grades is still open.** `codex/test/cost/accumulator-corpus` is ten
-   entries, five quadratic and five linear, and section 7 is its account. The
-   question that remains is not what the instrument is but what a check has to
-   score on it to be worth shipping, and that is a ruling rather than a
-   measurement. **RULED 2026-08-16 (red, under Damian's go-forward): 9 of 10
-   SHIPS.** The bar is all five quadratic entries caught, and it is met. The
-   single miss is an OVER-REFUSAL, not a miss in the dangerous direction:
-   `n-fixed-appends` is a linear entry that the check flags, linear because
-   its append runs exactly four times however large the input gets. That is
-   the abstain-toward-refusal trade of question 1, and it is paid in a
-   declaration an author can decline to write. **A future rule that lifts the
-   over-refusal must keep 5 of 5 on the quadratic half**; trading a caught
-   quadratic for a quieter linear is the one move this corpus exists to
-   forbid. Section 8 has the ablation and the argument.
-   **REOPENED the same day, before anything shipped:** the rule that produced
-   that score tests the append rather than the allocation between appends, and
-   `&` extends in place while the accumulator is topmost. The 9 of 10 is the
-   score of an over-strong rule; the ruling stands on the SHAPE of the trade
-   and the number is being re-taken. Section 8.
-3. ~~**What is it called?**~~ RULED 2026-08-16 (Damian): **`bounded`**, in the
-   same slot as `punctual`, followed by the class:
-
-   ```
-     bounded linear unpack-text : Bytes -> Text
-     unpack-text (bs) = unpack-go bs 0 ""
-
-     unpack-go (bs) (i) (acc) =
-       if i == list-length bs then acc
-       else unpack-go bs (i + 1) (acc & byte-to-text (list-at bs i))
-   ```
-
-   which today compiles and is quadratic, and under the declaration is refused
-   with the site named:
-
-   ```
-     CDX6101 unpack-text declares bounded linear but calls unpack-go, inferred
-             growing: argument acc is copied by & at Unpack.codex:14 inside a
-             self tail call
-   ```
-
-   The diagnostic number is illustrative; blu allocates the real codes in
-   `CdxCodes.codex`.
-4. ~~**Are 3.1 and 3.2 worth doing ahead of any of it?**~~ CLOSED 2026-08-15:
-   both taken. 3.1 paid for itself immediately by catching 3.5's own
-   misattribution, which is the argument for measuring before publishing
-   rather than publishing what a prior session recorded.
-
-## 8. The kill rate, measured (2026-08-16, blu)
-
-**This is the number question 2 asks for. The ruling it wants is whether it
-ships.** The `growing` inference of section 5 question 1 is built and scored
-against the corpus in section 7. It is compiler-side only: no declaration, no
-surface syntax, reached through a `cost-report` mode flag that is off for
-every ordinary compile, so the tree is unaffected either way (the standing
-gate is green with it in, 265 clean, 0 regressions).
-
-| rule set | positives caught | negatives left alone | total |
-|---|---|---|---|
-| rule 1 alone | 5 of 5 | 3 of 5 | 8 of 10 |
-| rule 1 + rule 2 | **5 of 5** | **4 of 5** | **9 of 10** |
-
-**This table is the 2026-08-16 measurement against the ten-entry corpus and it
-is superseded. Section 8b has the current one**, against eleven entries and a
-compiler that extends a Text accumulator in place; both the denominator and one
-entry's label changed underneath it, so the numbers here do not compare with
-the numbers there.
-
-- **Rule 1**: an argument in position *i* of a self call is that function's own
-  parameter *i* with `&` applied to it. **It fires on that shape AS SUCH and
-  does not ask whether anything allocates between the appends.**
-- **Rule 2**: an append whose right operand is an empty literal aliases rather
-  than copies, so it does not grow.
-
-**Rule 1 as stated is too strong, and the correction is pending (red and
-Damian, 2026-08-16).** `&` on Text is not an unconditional copy.
-`emit-str-concat-prologue` (`X86_64TextHelpers.codex:160-182`) computes
-`left_base + aligned(len(left))` and compares it against the allocation
-frontier in `r10`; when they meet, the left operand is the TOPMOST allocation
-and `emit-str-concat-fast-copy` rewrites its length in place and appends the
-bytes. Only otherwise does it branch to the copying slow path. That is the
-same three-path shape `__list_snoc` has and `DevelopersGuide.md` already
-documents for lists.
-
-So accumulating with `&` is linear while the accumulator stays topmost, and
-quadratic when something allocates BETWEEN the appends and pushes it off the
-frontier. `unpack-text` was quadratic for that second reason -- `byte-to-text`
-allocated between appends -- and not because `&` copies as such. **The rule
-that ships must test the intervening allocation, not the append.** Until it
-is re-scored the 9-of-10 above is the score of the over-strong rule and
-should not be quoted as the score of the check.
-
-**RESOLVED 2026-08-16, and the 9 of 10 stands as the score of what runs.**
-The in-place path is DEAD CODE and deliberately so. `emit-str-concat-prologue`
-ends `cmp-rr r13 r10` followed by `jmp 0` at
-`X86_64TextHelpers.codex:178` -- an UNCONDITIONAL jump, patched by
-`patch-jmp-at` (`:222`) to the slow path, where every real conditional in that
-file uses `jcc`. The comparison's result is discarded. `__str_concat` has
-fresh-allocated on every call since CL 2823 (2026-05-30, val, Bug 2), for
-aliasing safety. So `&` IS a copy today, three paths collapse to one, and the
-guide's Text sentence is right about what runs even though it is wrong about
-what the emitter contains.
-
-Two probes were built to get there and are kept as instruments rather than
-discarded: `codex/test/cost/literal-alloc` measures that a Text literal
-allocates NOTHING per evaluation (0 bytes at n and 4n) and that hoisting the
-literal out of the loop is byte-identical, which removes the obvious
-explanation; `codex/test/cost/str-concat-inplace` appends a fixed 64-character
-piece one, two and three times in a straight line and reads the deltas: 552
-then 616, climbing by exactly the piece length. In-place extension gives flat
-deltas. Growing deltas are copying, measured without a loop or a tail call to
-blame.
-
-**The consequence for the rule is a deferral, not a change.** Keying `growing`
-on an allocation BETWEEN the appends is the right shape for after COMPILER-8
-makes the linear-accumulator case in-place, and it is the wrong rule today:
-today `p-append-text` has nothing between its appends and is quadratic anyway,
-so a between-appends rule would score 4 of 5 on the quadratic half and breach
-the bar question 2 set. **The refinement therefore lands in the COMPILER-8 CL,
-with the semantics change that makes it true, and not before.** A rule and the
-optimisation it models have to move together or one of them is lying.
-
-### 8b. RULE 3, and the deferral above is now closed (2026-08-16, blu)
-
-COMPILER-8 landed at main 16039 and the deferral's own condition came true, so
-the refinement above is built. **Rule 3: a Text append with a non-allocating
-right operand does not grow; every List append does, and so does a Text append
-whose right operand allocates.** The type comes from `infer-and`, which records
-its append route at the binary span (the same record the CDX6002 fix
-installed), and the right operand is read as allocating unless it is a literal,
-a name, or a field access of one, which is question 1's abstain-toward-refusal
-pointed the only safe way.
-
-**The worry that caused the deferral did not survive contact.** It was that a
-between-appends rule would drop the quadratic half to 4 of 5. Measured on the
-eleven-entry corpus it does not: `p-append-show` is Text with an allocating
-right operand and is caught, so the quadratic half stays at 5 of 5.
-
-| rule set | positives caught | negatives left alone | total |
-|---|---|---|---|
-| rules 1 + 2 (what shipped) | 5 of 5 | 4 of 6 | 9 of 11 |
-| rules 1 + 2 + rule 3 | **5 of 5** | **5 of 6** | **10 of 11** |
-
-**Both rows are measured by ablation and neither is derived.** The shipped rule
-is not reconstructed on paper: the previous seed is still a compiler that
-carries it, so the ablation is that binary run over the SAME corpus in
-`cost-report` mode. It flags seven definitions to the refined rule's six, the
-difference is `p-append-text` alone, and nothing else moves. That is rule 3
-buying exactly the entry it was written to buy, on the same evidence standard
-rule 2 was measured to.
-
-**The surviving false positive is still `n-fixed-appends` and it is unchanged
-by any of this.** It is a List accumulator, so rule 3 never reaches it; the
-over-refusal COMPILER-7 asks to revisit is the same one, for the same reason,
-and this refinement neither helps nor hurts it.
-
-**Nothing outside the corpus was flagged**, six diagnostics in the whole
-compilation unit and all six in the corpus chapter, so the report is complete
-rather than truncated.
-
-Both numbers are measured by ablation, not derived. With rule 2 removed,
-`n-append-empty` joins the flagged set and nothing else moves, so rule 2 buys
-exactly the one entry the corpus put there to buy it.
-
-**The surviving false positive is `n-fixed-appends`, and it is the honest
-shape of the remaining cost.** It appends to a growing accumulator, in a self
-call, with the append operator, and is linear because the append runs exactly
-four times however large the input gets. Catching it needs a rule that decides
-whether the append count is bounded by a literal rather than by an input,
-which is real analysis and not a predicate. **Under "abstain toward refusal"
-(question 1's ruling) a false positive is the cheap direction**: it is paid in
-a declaration an author can choose not to write, whereas a missed `growing` is
-the defect this whole document exists for. On that reading 5 of 5 with one
-over-refusal is already the right side of the trade, and the third rule is a
-comfort improvement rather than a correctness one. That is the argument, not
-the decision.
-
-**Nothing outside the corpus was flagged.** Six diagnostics total across the
-whole compilation unit, all six in the corpus chapter, so the report is
-complete rather than truncated and no foreword chapter the corpus cites
-carries this shape.
-
-**Two things found while building it, and the second is a defect in shipped
-code.** First, `&` is `OpAnd` and not `OpAppend`: `desugar-bin-op` maps the
-token to `OpAnd` (`Desugarer.codex:249`), and `infer-and` then splits on the
-left operand's resolved type, sending `BooleanTy` to logical-and and
-everything else to concatenation. `OpAppend` reaches the AST only from the
-`show`-of-a-record desugaring. A rule matching `OpAppend` scores zero while
-reading as correct, which is what the first build did.
-
-Second, and it follows from the same fact: **`TypeChecker.codex:1401`'s
-punctual heap-allocation check matches `OpAppend` and cannot fire on a `&`
-written in source.** Its message says "uses text concatenation (&)". It can
-only ever see the synthetic nodes from `show`. So a `punctual` function doing
-text concatenation is not refused by CDX6002 today. That is reported here
-because this document owns the cost subject; the fix belongs with whoever owns
-`punctual`, and it wants a test either way (L-UNCALLED).
-
-**FIXED (blu, 2026-08-16).** `infer-and` already makes the only decision that
-separates the two jobs of `&`, so it now records the append route at the binary
-span through `record-expr-type`, and `check-rt-no-alloc` refuses an `OpAnd`
-carrying that record. Measured both directions on one file of three punctual
-concatenations: the depot seed compiles it clean at exit 0, the fixed compiler
-answers three CDX6002 at the three spans. The arm is
-`codex/test/errors/punctual-text-append` and the control is a punctual
-`is-imminent` in `codex/test/examples/missile-warning` folding two comparisons
-with a Boolean `&`, which must stay legal and is printed rather than merely
-compiled. The recorded type is the RESOLVED LEFT OPERAND, so the Text and List
-routes are now distinguishable to any later cost rule that needs to tell them
-apart.
-
-## 7. The kill-rate corpus (built 2026-08-16, blu)
+## 5. What ships: `bounded`, and the lattice
+
+**The declaration is a CLASS, never a function of the inputs** (Damian,
+2026-08-16). It is a CEILING in a small lattice, and the compiler infers each
+function's class bottom-up from its body, the way effect sets are inferred:
+
+```
+  none  <  fixed  <  budgeted  <  linear  <  growing
+```
+
+- `none` -- no heap.
+- `fixed` -- the same bytes every call, whatever the input.
+- `budgeted` -- bounded by something nobody wrote down: `substring line 0 4`
+  by the literal it is passed, `integer-to-text` by the twenty digits an
+  `Integer` has. Neither is `fixed`, because the bytes are not the same every
+  call, and calling either `linear` promises something about the input that is
+  false.
+- `linear` -- one walk over an input, no copies of the accumulator.
+- `growing` -- the accumulator copied inside a loop, or a walk nested in a
+  walk.
+
+The class is the worst case over the code's STRUCTURE and is blind to data on
+purpose: bubble sort is honestly `fixed` in heap whatever the data does to its
+time, and a walk nested in a walk is `growing` even when the data would keep
+it small. Quadratic TIME is a WCET question and stays with `punctual`'s budget
+number. Refusal is transitive exactly as CDX6001: a declared ceiling breaks at
+the caller, at compile time, when a callee's inferred class exceeds it. No
+declaration means no check, as with `punctual`; the bottom rung is `punctual`
+minus the WCET budget and the effect ban, which is why the two felt like
+siblings.
+
+**Abstain toward refusal.** The false-refusal cost is paid in a declaration
+the author can choose not to write; a missed `growing` is the defect this
+whole document exists for. An unchecked promise reads exactly like a checked
+one, which is worse than no promise.
+
+The syntax sits in the same slot as `punctual`, followed by the class:
+
+```
+  bounded linear unpack-text : Bytes -> Text
+  unpack-text (bs) = unpack-go bs 0 ""
+
+  unpack-go (bs) (i) (acc) =
+    if i == list-length bs then acc
+    else unpack-go bs (i + 1) (acc & byte-to-text (list-at bs i))
+```
+
+which is refused with the site named:
+
+```
+  CDX6101 unpack-text declares bounded linear but calls unpack-go, inferred
+          growing: argument acc is copied by & at Unpack.codex:14 inside a
+          self tail call
+```
+
+All five rungs are inferred and checked. `bounded fixed` is decided by a
+`strict` flag on the overbudget walk, and the whole of the difference between
+`fixed` and `budgeted` is that a plain `budgeted` callee keeps a `budgeted`
+promise and breaks a `fixed` one: `none`, `fixed` and `budgeted:N` with a
+literal argument N keep it; `input`, `linear`, `growing` and `unknown` break
+it.
+
+### 5.1 The rules the checker rests on
+
+- **A name in call position that is neither a definition in this unit nor a
+  measured row is read as ALLOCATING.** That is abstain-toward-refusal at the
+  only place it can be applied, and it is why an `unknown` registry row
+  refuses one declaration at one call site rather than holding back a rung.
+  Widening the zero-byte set is a MEASUREMENT, not a rule change.
+- **A `budgeted:N` call is accepted when argument N is a LITERAL and refused
+  otherwise.** Blunt on purpose: it also refuses a computed length that
+  happens to be small, which is where the compiler cannot know.
+- **`none` means NO HEAP, not no resource.** A spawn consumes a fixed-pool
+  slot; slot exhaustion is a bounded resource this lattice does not describe,
+  the same way quadratic TIME stays with `punctual`'s budget.
+- **The registry is never consulted for a NULLARY builtin.**
+  `cost-head-allocates` is reached from a call HEAD, and a bare name is not a
+  call. Measure such rows anyway, because "no consumer asks" is not "the
+  answer does not exist", but do not count them as widening a rung.
+- **Do not infer a class from the code's shape alone.** A single `&` allocates
+  in proportion to its operands, so a straight-line body with no loop is
+  already not `fixed`, and a shape-only rule would accept exactly the case the
+  class exists to exclude.
+
+### 5.2 The registry, and the structural gap under it
+
+`bs-alloc` on `BuiltinSpec` (`codex/compiler/Types/Builtins.codex`) carries
+the class beside the name and the type, and `cost-builtin-nonalloc` reads
+`builtin-alloc-by-name` rather than a hand-kept list, so a measurement widens
+what `bounded none` accepts by editing one row.
+
+**Measured 2026-09-07 off `Builtins.codex` at head, 265 rows: `none` 161,
+`unknown` 80, `fixed` 14, `input` 8, `budgeted` 1, `budgeted:3` 1.**
+Re-measure before quoting (L-COUNT); this moves a long way while nobody is
+reading it. `unknown` is the refusing side, so every row still reading it is a
+builtin read as allocating without bound.
+
+**`bs-alloc` is keyed by builtin NAME, and that is a structural gap the
+measurements do not close.** `show`'s allocation is a property of the TYPE it
+is instantiated at: `emit-show-builtin` dispatches on the argument's type to
+four emission paths with at least two allocation behaviours, and
+`__real_to_text` is measured by nobody. `__list-tail`'s allocation happens in
+`__list_tail` (`X86_64ListHelpers.codex:38`), a level below the registry,
+which has no row for it. A per-name class cannot describe either, so rows like
+these are correct today only by inspection of code no registry row covers.
+
+**`build/check-builtin-alloc.ps1` is the runner for that gap.** It carries the
+row-to-allocation-site table the registry does not, and refuses two things: an
+allocation site in a pinned body that does not take an immediate, and any edit
+to a pinned body at all. The second exists because the first is only as wide
+as the spellings it knows (L-CENSUS), and it was controlled by sabotaging a
+site with an allocation call the first rule has never heard of: rule 1 stayed
+silent and rule 2 caught it alone. A row reading `fixed` with no recorded site
+is refused by name rather than skipped. The table is hand-written because
+crawling the emitters pins `emit-expr`, which every builtin calls to evaluate
+arguments, and a check that reds on unrelated codegen churn teaches people to
+re-pin without looking. **Nothing runs it yet** (L-NOGATE); wiring it into the
+gate means changing the generator under `codex/build/`.
+
+**`bs-varies` must not be pressed into service here.** It is consumed by
+`const-name-invariant` for constant-expression invariance, not by the cost
+model, so it says nothing about allocation.
+
+### 5.3 How a row is measured, and the traps that have bitten
+
+- **AN ARM MUST VARY THE THING IT IS MEASURING.** `alloc-bytes`'s first arm
+  passed the literal 64, duly read `fixed` at both sizes, and was measuring
+  the arm: the only quantity that varied was the argument the caller chose.
+  Varying it, the same builtin reads 64 against 256, exactly 4.0x, `input`.
+- **The discriminator is INPUT SIZE, not iteration count.** Every arm makes
+  one call and the two readings differ only in how large the argument is,
+  which is the question `fixed` actually asks.
+- **A NEW ARM SHAPE NEEDS ITS OWN CONTROL.** An effectful builtin cannot be
+  bound with `let` (CDX2033), so its arm opens an `act` block and takes the
+  answer with `<-`. A different bracket is a different instrument until
+  something says otherwise, so the section opens with `act-control`: the same
+  block, the same two marks, nothing measured inside. It reads 0, and only
+  then is anything below it attributable.
+- **A SCAN FOR `__alloc` AND `emit-bivy-alloc` IS TOO NARROW.**
+  `chan-text-recv` rounds the received length up and does `add r10, rax`,
+  advancing the bump allocator INLINE without calling either, so a scan for
+  those two names would have published `none` on a builtin that allocates in
+  proportion to a message. Any emitter classification must look for `reg-r10`
+  advancement as well (L-CENSUS). A false `none` is a false promise, which is
+  the dangerous direction.
+- **Read the class four ways where the emitter branches on the value.**
+  `emit-print-text-loop` branches on the code unit, so an ASCII-only probe
+  never enters the multi-byte arm; the print rows are read ASCII, tier-0
+  accented, tier-0 Cyrillic and tier-1 (L-CONSTRUCT).
+- **A family that cannot be armed is classified from the EMITTER, and that is
+  recorded rather than smoothed over.** The six proof terms lower through
+  `emit-proof-builtin`, which is `emit-int-lit st 0`; the VMX/MSR and UEFI
+  console rows would fault or need a firmware boot no test performs. A proof
+  term also cannot close the `+ r - r` bracket that forces a result to be
+  used, so an arm would be measuring dead-code elimination.
+- **A ladder buys rows an arm at a time.** Allocation cannot be negative, so a
+  chain reading EQUAL to a control containing a subset of it proves every
+  added member is zero at once, which is how sixteen real-conversion rows came
+  off eight arms.
+
+### 5.4 What is deliberately still `unknown`, named rather than silent
+
+The GPU four (`gpu-in`, `gpu-out`, `gpu-mem-read`, `gpu-mem-write`): an arm
+for `gpu-mem-write` at offset 0 of the window writes over `DeviceBuffer`'s
+allocation cursor, which is corrupting an allocator in order to measure one.
+The two 16-bit port block forms and `runtime-init`. `chan-text-recv`, because
+what it retains is proportional to the MESSAGE and the message size appears in
+no argument, so no rung in this lattice describes it. `process-get-scope` and
+`process-get-network-scope` return Text and both answer the EMPTY string on
+this bed, so a zero length is a fact about a process with no scope set rather
+than about the builtin. And the five sized-vector names are BROKEN rather than
+unmeasured: `vec-empty` is CDX2040 unresolved, `vec-singleton` answers wrong,
+`vec-cons` faults, with the account under the unowned registers in
+`docs/PM/CurrentPlan.md`.
+
+### 5.5 Published results that changed what can be built
+
+- **The list family** (`codex/test/cost/builtin-alloc`, published in
+  `DevelopersGuide.md`, "What List operations cost"): `list-length`,
+  `list-at` and `list-set-at` are `none`, 0 bytes at both sizes;
+  `__list-tail` is `fixed` at 24 bytes; `list-push` and `list-insert-at` are
+  `input`, 4x with the input. `list-set-at` allocates nothing STRUCTURALLY --
+  `emit-list-set-at` is a bounds check, an address, a store and a return of
+  the same pointer -- so it widens what `bounded none` accepts, and
+  `__list-tail` is the first builtin measured `fixed`, which makes that rung a
+  non-empty class rather than a slot in a diagram.
+- **`list-push` is input-proportional even on the extend-in-place path**,
+  because path 2 doubles the capacity and the frontier advances by the whole
+  of it. The aliasing rule in the guide tells you which path you get and not
+  what it costs, and only the copy path was ever assumed expensive. The arm
+  that makes the instrument report all three classes was added after the first
+  reading: at length n + 1 the identical push takes the spare-capacity path
+  and retains 0, and before it every arm sat on the doubling boundary because
+  `base` is a power of two, so the harness could only ever report the
+  expensive path.
+- **`buf-read-bytes` is 8x plus a 16-byte header** -- 64 x 8 + 16 = 528,
+  256 x 8 + 16 = 2,064. `CLAUDE.md` rule 8 lists it under red flags as an "8x
+  blowup" and four designs cite the figure; it is now right by measurement
+  rather than by repetition.
+- **Every vector this compiler produces is BOXED at 16 bytes**, split cleanly
+  along produce-versus-read: eight names return a vector and each pays a box,
+  nine read out of one and pay nothing. So a chain of vector operations pays
+  one box per step, and `bounded none` cannot construct a vector at all, only
+  read one it was handed.
+- **`&` is `OpAnd`, not `OpAppend`.** `desugar-bin-op` maps the token to
+  `OpAnd` and `infer-and` splits on the left operand's resolved type, sending
+  `BooleanTy` to logical-and and everything else to concatenation. `OpAppend`
+  reaches the AST only from the `show`-of-a-record desugaring, so a rule
+  matching `OpAppend` scores zero while reading as correct. `infer-and`
+  records the append route at the binary span through `record-expr-type`, and
+  both `check-rt-no-alloc` and the cost check read that record; the recorded
+  type is the RESOLVED LEFT OPERAND, so the Text and List routes are
+  distinguishable to any later rule.
+
+### 5.6 A LIST BUILT BY `&` COSTS 6.5x MORE TO READ, and the mechanism is not measured
+
+Measured 2026-09-08 (`codex/test/net-recv-heap`, `eth-payload-cost` against
+`eth-payload-flat-cost`): the same function over the same 1,514 bytes measures
+**107,435** when the list was assembled as `zeros 12 [] & [8, 0] & zeros 1500
+[]` and **16,400** when assembled by one `list-push` per byte. Nothing else
+differs -- same loop, same count, same `list-at` reads -- and `list-at` itself
+is free, since a loop reading every element costs the same as one pushing a
+constant.
+
+**So the READ cost of a list depends on how it was BUILT, which no row in the
+table above expresses, and a cost stated per operation cannot capture it.**
+What the concatenated representation is, and whether the multiplier grows with
+the number of concatenations or with their sizes, is NOT measured. It has
+already bitten a real measurement: a per-frame figure published from a
+`&`-built fixture was 6.5x what the driver's own flat build costs
+(`ProtocolStack.md`).
+
+## 7. The kill-rate corpus
 
 `codex/test/cost/accumulator-corpus`. Eleven entries: five quadratic, which a
 check MUST catch, and six linear, which it MUST NOT flag.
 
-**Two of those rows moved after COMPILER-8 (main 16039) made a Text
-accumulator extend in place, and the corpus is the thing that noticed.**
-`p-append-text` was measured quadratic at x12.7 when the corpus was built and
-is measured linear at x3.6 now, on identical source: it changed sides because
-the compiler changed underneath it, which is what a measured corpus is for and
-what a hand-labelled one would have hidden. `p-append-show` was added in the
-same pass as its pair, appending `show i` rather than a literal, so the Text
-half now carries both directions instead of only the one COMPILER-8 turned
-green.
-
 **Every label is measured, not declared.** Each entry runs at n, 2n and 4n and
-reports bytes retained across the call from `__heap-save`. Quadratic allocation
-quadruples into roughly sixteen times the bytes, linear into roughly four, and
-`verdict` thresholds the n-to-4n ratio at eight. Hand-labelling would have made
-the corpus an assertion with no runner, and it would have been graded by the
-same judgement that wrote it, which is the defect `battery-reorg` and
-`gpu/DeviceMath` are named for.
+reports bytes retained across the call from `__heap-save`. Quadratic
+allocation quadruples into roughly sixteen times the bytes, linear into
+roughly four, and `verdict` thresholds the n-to-4n ratio at eight.
+Hand-labelling would have made the corpus an assertion with no runner, graded
+by the same judgement that wrote it.
 
 | entry | n=64 | 4n=256 | ratio | label |
 |---|---|---|---|---|
@@ -1090,76 +501,142 @@ same judgement that wrote it, which is the defect `battery-reorg` and
 | `n-fresh-not-acc` | 7,232 | 28,768 | x3.9 | linear |
 | `n-append-empty` | 3,088 | 12,304 | x3.9 | linear |
 
-**The populations do not touch.** Worst positive x13.7, best negative x3.9, and
-the threshold sits in the gap between them rather than just past one side. The
-ratio is printed and not only the verdict, so a later reader can see the margin
-and judge whether eight is still the right cut; a row that says "quadratic" and
-nothing else hides exactly that.
+**The populations do not touch.** Worst positive x13.7, best negative x3.9,
+and the threshold sits in the gap between them rather than just past one side.
+The ratio is printed and not only the verdict, so a later reader can see the
+margin and judge whether eight is still the right cut.
 
 **The negatives are the half that makes it an instrument.** A corpus of
 quadratic cases alone cannot separate a good check from one that refuses every
 append, and that check scores a perfect kill rate. Four negatives look like
 positives to any test that reads for the append operator. `p-append-text` is
-the one that was not written that way and became it: `acc & "x"` in a self tail
-call is the textbook quadratic shape and is linear on this compiler, so it is
-now the row that separates a rule reading the OPERATOR from one reading the
-ALLOCATION. The other three were built for the job:
-`n-fixed-appends` appends to a growing accumulator in a self-tail-call but a
-constant four times however large n gets (flat at 320 bytes, the strongest row
-in the table); `n-fresh-not-acc` appends per iteration to something that is not
-the accumulator; `n-append-empty` appends the accumulator to an always-empty
-list, so the result aliases and nothing is copied. A static filter over `acc &`
-flags all three, which is the shape of the 575-findings-none-real result
-recorded for the subset-cites filter.
+the one that was not written that way and became it -- `acc & "x"` in a self
+tail call is the textbook quadratic shape and is linear on this compiler after
+COMPILER-8 -- so it is now the row that separates a rule reading the OPERATOR
+from one reading the ALLOCATION. It moved from x12.7 to x3.6 on identical
+source, which is what a measured corpus is for and what a hand-labelled one
+would have hidden. The other three were built for the job: `n-fixed-appends`
+appends to a growing accumulator in a self tail call but a constant four times
+however large n gets; `n-fresh-not-acc` appends per iteration to something
+that is not the accumulator; `n-append-empty` appends the accumulator to an
+always-empty list, so the result aliases and nothing is copied. A static
+filter over `acc &` flags all three.
 
 **The corpus carries its own control.** Entries 4 and 7 are the same task in
-two implementations -- `pb-expand-blocks` as it was written and as it was
-fixed -- and they land on opposite verdicts from measurement alone, with no
-label doing the work. Entry 4 is also the one real instance with a published
-before and after: the chapter's prose records that at the default 4096 blocks
+two implementations, `pb-expand-blocks` as it was written and as it was fixed,
+and they land on opposite verdicts from measurement alone. Entry 4 is the one
+real instance with a published before and after: at the default 4096 blocks
 the append form needed two to three gigabytes and died silently with exit zero
-and truncated output. At n=256 it already retains 2.1 MB against the fixed
+and truncated output; at n=256 it already retains 2.1 MB against the fixed
 form's 16 KB.
 
-**Bytes RETAINED is the honest unit here and not an approximation.** Bare metal
-has no collector, so what a loop allocates and abandons is retained until the
-producing function returns. That is what makes a heap-pointer difference an
-exact measure rather than a sample.
+**Bytes RETAINED is the honest unit and not an approximation.** Bare metal has
+no collector, so what a loop allocates and abandons is retained until the
+producing function returns, which makes a heap-pointer difference an exact
+measure rather than a sample.
 
 **It is run by `build/cost-corpus.ps1`, on demand, and it is NOT in the
 battery.** `codex\test\cost` is deliberately absent from `build/test.ps1`'s
-`$allDirs` and must stay absent: Damian's 2026-07-27 ruling is that harnesses
-are built and not gated (`ExaminersAssay.md`, "Build the instrument; do not gate
-it"). The script is what stops that being the same defect the corpus exists to
-avoid, one level up. **A corpus with no runner is an assertion with no runner,
-and the first version of this work shipped exactly that** -- ten measured rows,
-a recorded answer key, and nothing anywhere that would ever run them again. It
-was caught by handing the task to an agent that had not seen this work, which is
-the only reading that could have caught it, since the author knows how to run it
-by hand and therefore cannot notice that nobody else does.
+`$allDirs` and must stay absent: harnesses are built and not gated (Damian,
+2026-07-27; `ExaminersAssay.md`, "Build the instrument; do not gate it"). The
+script is what stops that being the same defect the corpus exists to avoid one
+level up. **A corpus with no runner is an assertion with no runner, and the
+first version of this work shipped exactly that** -- ten measured rows, a
+recorded answer key, and nothing anywhere that would ever run them again. It
+was caught by handing the task to an agent that had not seen the work, which
+is the only reading that could have caught it, since the author knows how to
+run it by hand and therefore cannot notice that nobody else does.
 
 **The script checks the PROPERTIES, not the bytes.** Every `p-` entry must
 measure quadratic and every `n-` entry linear -- the name declares intent, the
 run measures it, and disagreement either way is the finding -- and the two
 populations must still not touch with 8 between them. A moved number is
-reported separately from a broken property, because an allocator change can move
-every figure in the table without invalidating anything. Ablated by declaring
-one linear entry quadratic, it fails twice, on the misdeclaration and on the
-collapsed separation.
+reported separately from a broken property, because an allocator change can
+move every figure in the table without invalidating anything. Ablated by
+declaring one linear entry quadratic, it fails twice, on the misdeclaration
+and on the collapsed separation.
 
-**What the corpus does not do.** It does not say what score a check must reach,
-which is a ruling. It does not cover the non-tail-recursive or mutually
-recursive forms; every entry is the accumulator-in-a-self-tail-call shape that
-question 1 names as the first and possibly only target, and `punctual` already
+### 7.1 The rules, and what they score
+
+The `growing` inference is compiler-side only: no declaration, no surface
+syntax, reached through a `cost-report` mode flag that is off for every
+ordinary compile.
+
+- **Rule 1**: an argument in position *i* of a self call is that function's
+  own parameter *i* with `&` applied to it.
+- **Rule 2**: an append whose right operand is an empty literal aliases rather
+  than copies, so it does not grow.
+- **Rule 3**: a Text append with a non-allocating right operand does not grow;
+  every List append does, and so does a Text append whose right operand
+  allocates. The right operand is read as allocating unless it is a literal, a
+  name, or a field access of one, which is abstain-toward-refusal pointed the
+  only safe way.
+
+| rule set | positives caught | negatives left alone | total |
+|---|---|---|---|
+| rules 1 + 2 | 5 of 5 | 4 of 6 | 9 of 11 |
+| rules 1 + 2 + rule 3 | **5 of 5** | **5 of 6** | **10 of 11** |
+
+**Both rows are measured by ablation and neither is derived.** The shipped
+rule is not reconstructed on paper: the previous seed is still a compiler that
+carries it, so the ablation is that binary run over the SAME corpus in
+`cost-report` mode. Rule 3 buys `p-append-text` alone and nothing else moves;
+with rule 2 removed, `n-append-empty` joins the flagged set and nothing else
+moves. Each rule buys exactly the entry the corpus put there to buy it.
+
+**The bar is all five quadratic entries caught** (ruled 2026-08-16, red under
+Damian's go-forward). **A future rule that lifts the over-refusal must keep 5
+of 5 on the quadratic half**; trading a caught quadratic for a quieter linear
+is the one move this corpus exists to forbid.
+
+**Nothing outside the corpus is flagged**: six diagnostics in the whole
+compilation unit, all six in the corpus chapter, so the report is complete
+rather than truncated.
+
+**`&` IS A COPY TODAY, and the emitter says otherwise.**
+`emit-str-concat-prologue` (`X86_64TextHelpers.codex:160-182`) computes
+`left_base + aligned(len(left))` and compares it against the allocation
+frontier in `r10`, which reads as an in-place fast path. That path is DEAD
+CODE: the prologue ends `cmp-rr r13 r10` followed by `jmp 0` at `:178`, an
+UNCONDITIONAL jump patched by `patch-jmp-at` (`:222`) to the slow path, while
+every real conditional in that file uses `jcc`, and the comparison's result is
+discarded. `__str_concat` has fresh-allocated on every call since CL 2823
+(2026-05-30, val, Bug 2), for aliasing safety. Two probes are kept as
+instruments rather than discarded: `codex/test/cost/literal-alloc` measures
+that a Text literal allocates nothing per evaluation and that hoisting it out
+of the loop is byte-identical; `codex/test/cost/str-concat-inplace` appends a
+fixed 64-character piece one, two and three times in a straight line and reads
+the deltas climbing by exactly the piece length, which is copying measured
+without a loop or a tail call to blame.
+
+### 7.2 What the corpus does not do
+
+It does not cover the non-tail-recursive or mutually recursive forms; every
+entry is the accumulator-in-a-self-tail-call shape, and `punctual` already
 needed a `punctual-mutual-recursion` refusal test, so that gap has bitten the
-sibling feature. **It tests no intermediate growth rate**: all ten entries sit
-at roughly x4 or x13-15, so nothing establishes where an n log n allocator
-lands, and the threshold of 8 is unvalidated against one. And it does not
-establish that the tree's **523** sites of `(acc & ` are mostly this shape --
-that count is the raw operator, unclassified, and classifying it is the next
-step rather than a claim made here. (This said 516 until 2026-08-16; the first
-figure came off a truncated grep and was carried into the document unchecked,
-which is L-COUNT committed in the same paragraph that calls the number raw.)
+sibling feature. **It tests no intermediate growth rate**: every entry sits at
+roughly x4 or x13-15, so nothing establishes where an n log n allocator lands,
+and the threshold of 8 is unvalidated against one. And it does not establish
+that the tree's **523** sites of `(acc & ` are mostly this shape -- that count
+is the raw operator, unclassified, and classifying it is a next step rather
+than a claim made here.
+
+## 5.7 What is open
+
+- **The `&`-built list read multiplier of 5.6**: the representation, and
+  whether the multiplier grows with the number of concatenations or their
+  sizes.
+- **`build/check-builtin-alloc.ps1` runs nowhere** (L-NOGATE), and wiring it
+  in means changing the generator under `codex/build/`.
+- **80 registry rows read `unknown`** (2026-09-07), each refusing one
+  declaration at one call site. 5.4 names the ones that are deliberate.
+- **The surviving false positive is `n-fixed-appends`**, a List accumulator
+  that rule 3 never reaches. Catching it needs a rule that decides whether the
+  append count is bounded by a literal rather than by an input, which is real
+  analysis and not a predicate. Under abstain-toward-refusal it is the cheap
+  direction, and COMPILER-7 asks to revisit it.
+- **`bs-alloc` cannot key on instantiation**, which is what `show` and
+  `__list_tail` need, and 5.2 is the account.
 
 ## 6. What this document is NOT
 
@@ -1167,7 +644,6 @@ which is L-COUNT committed in the same paragraph that calls the number raw.)
 - Not a benchmark suite. See section 4.
 - Not a claim that the three defects share a root cause in the code. They do
   not; they share a root cause in what the language promises.
-- Not scheduled, not started, and not a request for a ruling today.
 
 ## 3.5 Measured 2026-08-14: reading a character through `to-unicode` costs 1,040 bytes
 

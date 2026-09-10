@@ -3,11 +3,14 @@
 *A grid, a formula language, and a recalculation order that is derived rather
 than guessed.*
 
-**Status: DESIGN. Nothing built.** Opened 2026-08-26 (reek) at Damian's
-direction, alongside the landing page's ecosystem refresh. The app is listed
-on the landing page as of that date and does not exist in the tree; the
-section's "partially built" wording is what covers the gap. **Read everything
-below as intent, not as an inventory.**
+**Status: DISCHARGED, and this doc is the archive.** Opened 2026-08-26 (reek)
+at Damian's direction; the app was built and every contract, ruling and open
+item now lives in `apps/sheets/sheets-backlog.md`, which is the register to
+read. What this design still carried and the backlog did not is SHEET-14
+there. **Read everything below as the original intent, not as an inventory of
+what shipped**, because the built app answered several of its open questions
+differently: the cell store is `apps/sheets/CellStore.codex`, and positional
+`VLOOKUP` was refused in favour of a header-keyed `LOOKUP` (SHEET-6).
 
 ---
 

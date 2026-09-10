@@ -1,6 +1,7 @@
 # Run the WPF plug over a Codex source file via TCP.
 [CmdletBinding()]
 param(
+    [string]$Compiler = '',
     [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
     [string]$Ir,
@@ -13,6 +14,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 
 $Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+if (-not $Compiler) { $Compiler = Join-Path $Repo 'seed\Codex.cdx' }
 $PlugDir  = (Resolve-Path $PSScriptRoot).Path
 $PlugCdx  = Join-Path $PlugDir 'build-output\wpf-plug.cdx'
 $IrDir    = Join-Path $PlugDir 'build-output'
@@ -39,7 +41,7 @@ if ($Ir) {
 # text-plug: this plug resolves a Codex call by its NAME, so the inline passes
 # must not substitute a body and delete the call. See text-plug-ir-pipeline
 # in codex/compiler/IR/Passes.codex.
-    & pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' -MemMB $MemMB
+    & pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -Kernel $Compiler -IrCce -Passes 'text-plug' -MemMB $MemMB
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("FAIL: IR emit step exited $LASTEXITCODE; see $LogFile")
         exit 3

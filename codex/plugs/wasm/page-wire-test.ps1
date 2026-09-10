@@ -28,11 +28,15 @@
 #      wire is the middle. Comparing captures compares the tail too.
 #
 # -Calibrate is what makes a green mean anything, and it is a SABOTAGE rather
-# than a garbage-input arm. Feeding these modules non-IR does not make them
-# refuse -- they answer a plausible, shorter wire, which is a real gap recorded
-# in plugs-backlog 2.06 and not something this runner can assert on. What can
-# be asserted is that the COMPARISON fires: corrupt one byte of the module's
-# wire and the run must go red at exactly that byte.
+# than a garbage-input arm: corrupt one byte of the module's wire and the run
+# must go red at exactly that byte.
+#
+# THE REFUSAL ARM runs on every ordinary pass and is not optional. Handed input
+# that is not an IR chapter, and the same input behind the ELF mode line, each
+# module must print REFUSED and produce no wire. The ELF arm is separate
+# because the mode line is stripped before the check, so a refusal guarding
+# only the default path would leave the board target open. An arm that runs
+# only behind a switch is an arm nobody runs (L-NOGATE).
 [CmdletBinding()]
 param(
     [string]$Subject,
@@ -161,8 +165,45 @@ foreach ($W in $WIRES) {
                                 note = "code=$code data=$data funcs=$funcs, tail $($m.Length - $off - $w.Length) bytes" }
 }
 
+$refusalRows = @()
+if (-not $Calibrate) {
+    $enc = [Text.UTF8Encoding]::new($false)
+    $badPlain = Join-Path $work 'not-ir.txt'
+    $badElf = Join-Path $work 'not-ir.elf.txt'
+    [IO.File]::WriteAllText($badPlain, "this is not an IR chapter`nand it never was`n", $enc)
+    [IO.File]::WriteAllText($badElf, "ELF`nthis is not an IR chapter`n", $enc)
+    foreach ($W in $WIRES) {
+        $plug = $W.plug
+        $module = Join-Path $Repo "codex\plugs\$plug\build-output\$plug-stdio.wasm"
+        if (-not (Test-Path -PathType Leaf $module)) { continue }
+        foreach ($arm in @(@{ name = 'plain'; file = $badPlain }, @{ name = 'elf'; file = $badElf })) {
+            $out = Join-Path $work ("{0}.refuse.{1}.bin" -f $plug, $arm.name)
+            $p = Start-Process -FilePath 'wasmtime' `
+                -ArgumentList @('-W', 'max-wasm-stack=16777216', $module) -NoNewWindow -PassThru `
+                -RedirectStandardInput $arm.file -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+            $p.WaitForExit()
+            $bytes = if (Test-Path -PathType Leaf $out) { [IO.File]::ReadAllBytes($out) } else { @() }
+            $text = if ($bytes.Length -gt 0) { [Text.Encoding]::ASCII.GetString($bytes) } else { '' }
+            $label = "{0}/{1}" -f $plug, $arm.name
+            if ($p.ExitCode -ne 0) {
+                $refusalRows += [pscustomobject]@{ plug = $label; verdict = 'TRAP'; bytes = 0
+                                                   note = "wasmtime exit $($p.ExitCode)" }
+            } elseif ($text -match '(?m)^REFUSED') {
+                $refusalRows += [pscustomobject]@{ plug = $label; verdict = 'REFUSED'; bytes = $bytes.Length
+                                                   note = (@($text -split "`n" | Where-Object { $_ -match '^REFUSED' })[0]).Trim() }
+            } else {
+                $refusalRows += [pscustomobject]@{ plug = $label; verdict = 'ANSWERED'; bytes = $bytes.Length
+                                                   note = 'answered on input that is not an IR chapter' }
+            }
+        }
+    }
+}
+
 foreach ($r in $rows) {
     Write-Host ("  {0,-8} {1,-9} {2,9:N0}  {3}" -f $r.plug, $r.verdict, $r.bytes, $r.note)
+}
+foreach ($r in $refusalRows) {
+    Write-Host ("  {0,-14} {1,-9} {2,9:N0}  {3}" -f $r.plug, $r.verdict, $r.bytes, $r.note)
 }
 Write-Host ''
 
@@ -176,6 +217,9 @@ if ($Calibrate) {
     Write-Host "[wire] CALIBRATION PASSED: no row matched a corrupted wire ($($rows.Count) graded)."
     exit 0
 }
+$refused = @($refusalRows | Where-Object { $_.verdict -eq 'REFUSED' }).Count
+$notRefused = @($refusalRows).Count - $refused
 Write-Host ("[wire] {0} identical, {1} not, of {2} graded" -f $ok, $bad, $rows.Count)
-if ($bad -gt 0) { exit 1 }
+Write-Host ("[wire] refusal arm: {0} refused, {1} did not, of {2}" -f $refused, $notRefused, @($refusalRows).Count)
+if ($bad -gt 0 -or $notRefused -gt 0) { exit 1 }
 exit 0

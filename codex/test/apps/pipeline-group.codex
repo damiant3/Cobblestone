@@ -1,0 +1,105 @@
+Chapter: PipelineGroupTest
+
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Shell chapter ShellTypes
+  cites Shell chapter Pipeline
+  cites Workflow chapter WorkflowTypes
+  cites Workflow chapter PipelineRun
+
+ THE GROUP'S THREE EDGES, each driven and each observed. The subject is the shape
+ `run-plug` really has: two stages, then a group of two guarded stages with a handler,
+ then nothing. The verdicts are `run-plug`'s own, which `build/run-plug.ps1` spells as
+ exit 2, 4, 5 and 6.
+
+ A guard, a repeat and a handler are declared on ONE group here on purpose. Each is
+ optional and the emitter builds an edge per field, so a subject carrying all three at
+ once is what proves the fields do not interfere.
+
+Section: The subject
+
+  s01 : PipeStage = PipeStage {
+    ps-name = "preamble", ps-why = "refuse a missing plug before a guest boots",
+    ps-in = ["Plug"], ps-out = [], ps-needs = [],
+    ps-verdict = [PoExit 2 "the plug or the input is not on disk"],
+    ps-body = []
+  }
+
+  s02 : PipeStage = PipeStage {
+    ps-name = "listen", ps-why = "the listener accepts before the guest boots",
+    ps-in = [], ps-out = [], ps-needs = [],
+    ps-verdict = [], ps-body = []
+  }
+
+  g01 : PipeStage = PipeStage {
+    ps-name = "connect", ps-why = "wait for the guest to dial in",
+    ps-in = [], ps-out = [], ps-needs = [],
+    ps-verdict = [PoExit 4 "the guest exited before connecting", PoExit 5 "the guest never connected"],
+    ps-body = []
+  }
+
+  g02 : PipeStage = PipeStage {
+    ps-name = "exchange", ps-why = "send the input and read the reply",
+    ps-in = [], ps-out = [], ps-needs = [],
+    ps-verdict = [PoExit 6 "the guest sent nothing"],
+    ps-body = []
+  }
+
+  cleanup : PipeStage = PipeStage {
+    ps-name = "cleanup", ps-why = "stop the guest however the exchange ended",
+    ps-in = [], ps-out = [], ps-needs = [],
+    ps-verdict = [], ps-body = []
+  }
+
+  subject : Pipeline = Pipeline {
+    pl-name = "run-plug",
+    pl-doc = "Boot a plug CDX and exchange data over TCP",
+    pl-params = [],
+    pl-stages = [PsStage s01, PsStage s02,
+      PsGroup (Just (PrWhile (SeBool True))) (Just (SeVar "Ready")) (Just cleanup) [PsStage g01, PsStage g02]]
+  }
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let pd = pipeline-to-process subject
+    in let shape = "steps=" & show (list-length (pd.pd-steps)) & " edges=" & show (list-length (pd.pd-transitions)) & " start=" & (pd.pd-start-step)
+
+    in let a0 = pipe-start pd 10
+    in let a1 = pipe-passed pd a0 11
+    in let a2 = pipe-passed pd a1 12
+    in let guardHeld = pipe-observe pd a2 (pipe-guard-key "group-2") "true" 13
+    in let heldLine = "GUARD-HELD at=" & (guardHeld.pi-current-step)
+
+    in let b0 = pipe-start pd 20
+    in let b1 = pipe-passed pd b0 21
+    in let b2 = pipe-passed pd b1 22
+    in let skippedRaw = pipe-observe pd b2 (pipe-guard-key "group-2") "false" 23
+    in let members = pipe-group-members (subject.pl-stages) 2
+    in let skipped = pipe-skip-members skippedRaw members 0 23
+    in let skipLine = "GUARD-SKIPPED at=" & (skipped.pi-current-step) & " " & pipe-status-text (skipped.pi-status) & " members=" & show (list-length members)
+
+    in let c1 = pipe-passed pd guardHeld 14
+    in let c2 = pipe-observe pd c1 (pipe-repeat-key "group-2") "true" 15
+    in let repeatLine = "REPEATED back-to=" & (c2.pi-current-step)
+
+    in let d1 = pipe-observe pd guardHeld (pipe-handler-key "group-2") "true" 16
+    in let handlerLine = "HANDLER at=" & (d1.pi-current-step)
+
+    in let e1 = pipe-exited pd guardHeld 4 17
+    in let refuseLine = "REFUSED-IN-GROUP " & pipe-status-text (e1.pi-status)
+
+    in act
+      print-line-uni shape
+      print-line-uni heldLine
+      print-line-uni skipLine
+      print-line-uni repeatLine
+      print-line-uni handlerLine
+      print-line-uni refuseLine
+      print-line-uni "-- guard-held history --"
+      print-line-uni (pipe-log-text (guardHeld.pi-history) 0 "")
+      print-line-uni "-- guard-skipped history --"
+      print-line-uni (pipe-log-text (skipped.pi-history) 0 "")
+    end
+
+Page 1

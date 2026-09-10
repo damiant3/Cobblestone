@@ -140,5 +140,16 @@ $wasmFile = Join-Path $OutDir 'data.wasm'
 & wat2wasm --enable-tail-call $watFile -o $wasmFile
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: wat2wasm; WAT is at $watFile"; exit 7 }
 Write-Host "[data-wasm] WASM: $wasmFile ($((Get-Item $wasmFile).Length) bytes)"
+# The grader runs HERE because the module has just been written: a grader
+# whose module nobody built reports a missing file, and ENOENT and a defect
+# are the same colour on a verdict line.
+if (Get-Command 'node' -ErrorAction SilentlyContinue) {
+    & node (Join-Path $Repo 'apps/data/dw-verify.mjs') $wasmFile
+    if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: dw-verify rejected the module'; exit 8 }
+    Write-Host '[data-wasm] graded'
+} else {
+    Write-Host '[data-wasm] node is not on the Path; dw-verify skipped'
+}
+
 Write-Host '[data-wasm] done'
 exit 0

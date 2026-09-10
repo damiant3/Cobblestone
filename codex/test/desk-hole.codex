@@ -1,0 +1,78 @@
+Chapter: DeskHoleTest
+  cites Works chapter GopDesk
+  cites Foreword chapter Console
+
+ D.5's open path, end to end on real memory. `codex/test/desk-span` grades
+ the arithmetic with a hand-built stack of fake addresses; this one cannot,
+ because entering a span MOVES THE ALLOCATOR INTO IT, so every mark here is
+ the base of a block this chapter actually owns.
+
+ The shape is the one a pane's `-open` will take: ask for a hole big enough
+ for what is about to be allocated, allocate, leave, and claim the entry.
+ A pane given no hole gets -1 and the exit does nothing, which is the arm's
+ second scenario.
+
+ THE CONTROL IS THE FIRST LINE, and without it the third proves nothing: an
+ allocation taken before the hole is entered must NOT land in the hole, or
+ the hole is simply where allocations were going.
+
+ THE CEILING LINES GRADE A REFUSAL, and a refusal arm is worth nothing until
+ it is shown to have REACHED the condition it refuses on, so the room is
+ printed as a number beside the verdict rather than asserted about. The
+ probe is read twice with nothing between it, because a reading that moved
+ the cursor would make every room after the first one wrong in the direction
+ that looks correct.
+
+Section: Body
+
+  dh-yn : Boolean -> Text
+  dh-yn (v) = if v then "PASS" else "FAIL"
+
+Section: Main
+
+  opening : [Console] Nothing =
+    let ms = alloc-zeroed 128 64
+    in let block = alloc-zeroed 8192 64
+    in let top = block + 8192
+    in let push = desk-marks-push ms desk-focus-files block
+    in let kill = desk-marks-kill ms desk-focus-files
+    in let outside = alloc-bytes 64
+    in let f0 = alloc-bytes 0
+    in let no-room = desk-hole-room ms (0 - 1) top
+    in let no-fit = desk-hole-fits ms (0 - 1) top 1
+    in let i = desk-hole-enter ms top 0 1024
+    in let hi = desk-hole-top ms i top
+    in let room0 = desk-hole-room ms i top
+    in let room0b = desk-hole-room ms i top
+    in let fits-small = desk-hole-fits ms i top 1024
+    in let fits-huge = desk-hole-fits ms i top 999999
+    in let inside = alloc-bytes 64
+    in let room1 = desk-hole-room ms i top
+    in let claimed = desk-hole-exit ms i desk-focus-sheet
+    in let room-out = desk-hole-room ms i top
+    in let fits-out = desk-hole-fits ms i top 64
+    in let f1 = alloc-bytes 0
+    in let after = alloc-bytes 64
+    in let none = desk-hole-enter ms top 0 999999
+    in let nothing = desk-hole-exit ms none desk-focus-edit
+    in act
+    print-line-uni ("CONTROL, an allocation before the hole is outside it: " & dh-yn (outside < block | outside >= top))
+    print-line-uni ("a dead span is picked: " & show i)
+    print-line-uni ("the allocation comes from the hole: " & dh-yn (inside >= block & inside < top))
+    print-line-uni ("the frontier is unmoved: " & dh-yn (f1 == f0))
+    print-line-uni ("the entry is claimed: " & dh-yn (desk-marks-id ms 0 == desk-focus-sheet))
+    print-line-uni ("a claimed span is refused to the next pane: " & dh-yn (desk-span-reusable ms 0 top 0 == False))
+    print-line-uni ("a want nothing fits answers: " & show none)
+    print-line-uni ("the ceiling is the span's top: " & dh-yn (hi == top))
+    print-line-uni ("room on entry: " & show room0)
+    print-line-uni ("CONTROL, the probe does not move the cursor: " & dh-yn (room0b == room0))
+    print-line-uni ("room after allocating 64: " & show room1)
+    print-line-uni ("the allocation spent exactly its own bytes: " & dh-yn (room0 - room1 == 64))
+    print-line-uni ("a want under the room is granted: " & dh-yn fits-small)
+    print-line-uni ("a want over the room is REFUSED: " & dh-yn (fits-huge == False))
+    print-line-uni ("room outside the extent: " & show room-out)
+    print-line-uni ("outside the extent every want is refused: " & dh-yn (fits-out == False))
+    print-line-uni ("the refused pane's allocation lands outside the hole: " & dh-yn (after < block | after >= top))
+    print-line-uni ("no hole means no room: " & show no-room)
+    print-line-uni ("no hole refuses one byte: " & dh-yn (no-fit == False))
+  end

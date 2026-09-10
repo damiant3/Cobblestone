@@ -1,0 +1,63 @@
+Chapter: DeckHoleEnterTest
+  cites Foreword chapter Console
+
+ CAN AN APP ENTER A HOLE? D.5 wants a desk pane to allocate inside a dead
+ buried block instead of at the frontier, and the design says the way to do
+ that is to ENTER the block, because outside an extent R10 is the bivy
+ frontier and a ceiling armed on a hole would condemn every later
+ allocation. What that costs was the open question: whether entering needs
+ the compiler, or whether an ordinary program can do it.
+
+ It can, and this arm is the evidence. `__deck-set` points the deck cursor,
+ `__deck-enter` copies that cursor into R10 and arms the ceiling from
+ `deck-reservation-top-cell`, and `__deck-exit` puts R10 back. All three are
+ builtins, the cell is a fixed physical address, and nothing here cites the
+ compiler. `build` in `Core/PhaseAllocator.codex` is the RESERVATION
+ primitive and is not wanted: the block already exists.
+
+ The first line is the control and it is what makes the third mean
+ anything. An allocation taken before the extent must NOT land in the
+ block, or the block would be where allocations were going anyway and
+ entering would be proving nothing.
+
+Section: Body
+
+  dhe-yn : Boolean -> Text
+  dhe-yn (v) = if v then "PASS" else "FAIL"
+
+ Eight stores because poke-byte is the only poke primitive, the same shape
+ `poke-qword-cell` has in the allocator.
+
+  dhe-poke-q : Integer, Integer -> Integer
+  dhe-poke-q (addr) (v) =
+    let b0 = poke-byte addr 0 (int-mod v 256)
+    in let b1 = poke-byte addr 1 (int-mod (v / 256) 256)
+    in let b2 = poke-byte addr 2 (int-mod (v / 65536) 256)
+    in let b3 = poke-byte addr 3 (int-mod (v / 16777216) 256)
+    in let b4 = poke-byte addr 4 (int-mod (v / 4294967296) 256)
+    in let b5 = poke-byte addr 5 (int-mod (v / 1099511627776) 256)
+    in let b6 = poke-byte addr 6 (int-mod (v / 281474976710656) 256)
+    in poke-byte addr 7 (int-mod (v / 72057594037927936) 256)
+
+  dhe-reservation-top-cell : Integer = 36344
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let hole = alloc-bytes 4096
+    in let top = hole + 4096
+    in let outside = alloc-bytes 64
+    in let f0 = alloc-bytes 0
+    in let w = dhe-poke-q dhe-reservation-top-cell top
+    in let s = __deck-set hole
+    in let en = __deck-enter
+    in let inside = alloc-bytes 64
+    in let ex = __deck-exit
+    in let f1 = alloc-bytes 0
+    in act
+      print-line-uni ("CONTROL, an allocation before the extent is not in the block: " & dhe-yn (outside < hole | outside >= top))
+      print-line-uni ("an allocation inside the extent comes from the block: " & dhe-yn (inside >= hole & inside < top))
+      print-line-uni ("the frontier is unmoved by the extent: " & dhe-yn (f1 == f0))
+      print-line-uni ("the program survived the extent")
+    end
+  end

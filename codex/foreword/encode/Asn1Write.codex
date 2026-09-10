@@ -1,0 +1,129 @@
+Chapter: Asn1Write
+  cites Encode chapter Asn1
+
+ The write side of Distinguished Encoding Rules. `Asn1` is a decoder and
+ nothing else, and this chapter is its mirror: it takes values we chose and
+ produces the one byte string DER allows for them.
+
+ DER permits exactly one encoding per value, so a writer has no latitude and
+ every rule below is a rule the decoder enforces from the other side. Where
+ the two disagree, one of them is wrong, and a round trip through `Asn1` is
+ what says which.
+
+ A length is encoded in the fewest octets that carry it. 5 is written `05`,
+ never `81 05`, and a value under 128 never takes the long form at all. The
+ long form carries no leading zero octet. Both rules exist so that one
+ certificate cannot have two encodings, one of which was signed.
+
+ An INTEGER is written in the fewest content octets that carry its value,
+ with a leading zero octet added when the top bit of the first octet is set.
+ Without that octet the value would read as negative; with it added
+ unnecessarily the encoding is not minimal.
+
+ A BIT STRING's first content octet counts the unused trailing bits. For
+ every key and signature X.509 puts in one, that count is zero.
+
+ We say:
+
+Section: Length
+
+  der-len : Integer -> List Integer
+  der-len (n) =
+    if n < 128 then [n]
+    else if n < 256 then [#81, n]
+    else if n < 65536 then [#82, bit-shru n 8, bit-and n 255]
+    else if n < 16777216 then [#83, bit-shru n 16, bit-and (bit-shru n 8) 255, bit-and n 255]
+    else [#84, bit-shru n 24, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 8) 255, bit-and n 255]
+
+Section: The Tagged Value
+
+  der-tlv : Integer, List Integer -> List Integer
+  der-tlv (tag) (content) = [tag] & der-len (list-length content) & content
+
+Section: Typed Writers
+
+ The content of an INTEGER, big-endian and minimal. Zero is one octet, not
+ none: an INTEGER with empty content is not a legal encoding.
+
+  der-int-content : Integer between 0 and 2147483647 -> List Integer
+  der-int-content (v) =
+    if v == 0 then [0]
+    else der-int-pad (der-be-min v [])
+
+  der-be-min : Integer, List Integer -> List Integer
+  der-be-min (v) (acc) =
+    if v == 0 then acc
+    else der-be-min (bit-shru v 8) ([bit-and v 255] & acc)
+
+  der-int-pad : List Integer -> List Integer
+  der-int-pad (bs) =
+    if list-length bs < 1 then [0]
+    else if bit-and (list-at bs 0) #80 == #80 then [0] & bs
+    else bs
+
+  der-small-int : Integer between 0 and 2147483647 -> List Integer
+  der-small-int (v) = der-tlv asn1-integer (der-int-content v)
+
+ An INTEGER whose content the caller already holds, for the values too wide
+ to be an Integer: a serial number, a modulus. The content is written as
+ given, so a caller handing non-minimal bytes gets an encoding our own
+ decoder refuses, which is the round trip's job to catch.
+
+  der-int-bytes : List Integer -> List Integer
+  der-int-bytes (bs) = der-tlv asn1-integer bs
+
+ TRUE is #FF and not 1. BER allows any non-zero octet; DER allows one.
+
+  der-bool : Boolean -> List Integer
+  der-bool (b) = der-tlv asn1-boolean (if b then [#FF] else [#00])
+
+  der-null : List Integer = [asn1-null, 0]
+
+  der-octet-string : List Integer -> List Integer
+  der-octet-string (bs) = der-tlv asn1-octet-string bs
+
+  der-bit-string : List Integer -> List Integer
+  der-bit-string (bs) = der-tlv asn1-bit-string-tag ([0] & bs)
+
+ An OBJECT IDENTIFIER takes its content bytes as given, because that is how
+ `Asn1` compares one: the encoded form is canonical, so the bytes are the
+ identity and decoding to numbers to re-encode them would be a way to be
+ wrong for free.
+
+  der-oid : List Integer -> List Integer
+  der-oid (content) = der-tlv asn1-oid content
+
+  der-utf8-string : List Integer -> List Integer
+  der-utf8-string (bs) = der-tlv asn1-utf8-string bs
+
+  der-printable-string : List Integer -> List Integer
+  der-printable-string (bs) = der-tlv asn1-printable-string bs
+
+  der-ia5-string : List Integer -> List Integer
+  der-ia5-string (bs) = der-tlv asn1-ia5-string bs
+
+  der-utc-time : List Integer -> List Integer
+  der-utc-time (bs) = der-tlv asn1-utc-time bs
+
+  der-general-time : List Integer -> List Integer
+  der-general-time (bs) = der-tlv asn1-general-time bs
+
+Section: Constructed
+
+ A constructed value takes the concatenated encodings of its children as its
+ content, so a caller builds the children first and joins them.
+
+  der-sequence : List Integer -> List Integer
+  der-sequence (children) = der-tlv asn1-sequence children
+
+  der-set : List Integer -> List Integer
+  der-set (children) = der-tlv asn1-set children
+
+  der-ctx0 : List Integer -> List Integer
+  der-ctx0 (children) = der-tlv asn1-ctx0 children
+
+  der-ctx1 : List Integer -> List Integer
+  der-ctx1 (children) = der-tlv asn1-ctx1 children
+
+  der-ctx3 : List Integer -> List Integer
+  der-ctx3 (children) = der-tlv asn1-ctx3 children

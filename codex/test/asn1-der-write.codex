@@ -1,0 +1,187 @@
+Chapter: Asn1DerWriteTest
+  cites Encode chapter Asn1Write
+  cites Encode chapter Asn1
+  cites Foreword chapter Maybe
+
+ The DER writer, graded from two directions that share no code.
+
+ The first is our own decoder: every value written here is read back and its
+ content compared, so a writer that agrees with nothing else at least agrees
+ with the half that already reads other people's certificates.
+
+ The second is a third party. The byte strings below are lifted out of the
+ certificate RFC 8410 section 10.2 publishes, which the IETF encoded with an
+ implementation that has no relation to ours. Agreement with those bytes is
+ agreement with somebody else, which is the half a round trip cannot supply:
+ a writer and a reader that are wrong in the same direction round-trip
+ perfectly.
+
+ The three length forms are all present in that one certificate, which is why
+ they are graded against it rather than against a rule restated here: 5 is
+ written in one octet, 223 takes the #81 form, and 300 takes the #82 form.
+
+ We say:
+
+Section: Published Vectors
+
+  v-ed25519-oid : List Integer = [43, 101, 112]
+
+  v-ed25519-alg : List Integer = [48, 5, 6, 3, 43, 101, 112]
+
+  v-len-223 : List Integer = [129, 223]
+
+  v-len-300 : List Integer = [130, 1, 44]
+
+  v-serial : List Integer = [86, 1, 71, 74, 42, 141, 195, 48]
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+ Byte comparison is written out rather than spelled `==`, because `==` on a
+ List does not compare contents: two structurally identical lists answer
+ False, and so does `xs == xs` inside a function. Measured on seeds
+ F7A1343619F08614 and B63014D717B1A2F9, and registered as COMPILER-74.
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+    if list-length a /= list-length b then False
+    else bytes-eq-loop a b 0 (list-length a)
+
+  bytes-eq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) (n) =
+    if i >= n then True
+    else if list-at a i /= list-at b i then False
+    else bytes-eq-loop a b (i + 1) n
+
+  maybe-bytes-eq : Maybe (List Integer), List Integer -> Boolean
+  maybe-bytes-eq (m) (want) =
+    when m
+      is None -> False
+      is Just (bs) -> bytes-eq bs want
+
+  maybe-int-is : Maybe Integer, Integer -> Boolean
+  maybe-int-is (m) (want) =
+    when m
+      is None -> False
+      is Just (v) -> v == want
+
+  filler : Integer, List Integer -> List Integer
+  filler (n) (acc) =
+    if n <= 0 then acc
+    else filler (n - 1) (list-push acc 65)
+
+Section: Against The Published Bytes
+
+  a-alg : Text =
+    "der alg-matches-rfc8410=" & yn (bytes-eq (der-sequence (der-oid v-ed25519-oid)) v-ed25519-alg)
+
+  a-len-short : Text =
+    "der len-5-is-one-octet=" & yn (bytes-eq (der-len 5) [5])
+
+  a-len-223 : Text =
+    "der len-223-matches-rfc8410=" & yn (bytes-eq (der-len 223) v-len-223)
+
+  a-len-300 : Text =
+    "der len-300-matches-rfc8410=" & yn (bytes-eq (der-len 300) v-len-300)
+
+ The boundary between the forms. 127 is the last length the short form
+ carries and 128 is the first that cannot be, and a writer that puts 128 in
+ one octet writes a length the reader takes for a long form.
+
+  a-len-127 : Text =
+    "der len-127-is-one-octet=" & yn (bytes-eq (der-len 127) [127])
+
+  a-len-128 : Text =
+    "der len-128-takes-long-form=" & yn (bytes-eq (der-len 128) [129, 128])
+
+Section: Through Our Own Reader
+
+  t-small : List Integer = der-small-int 2
+
+  a-small : Text =
+    "der small-int-round-trip=" & yn (maybe-int-is (asn1-small-int t-small 0) 2)
+
+ 128 is the value whose first content octet has its top bit set, so it is the
+ one that needs the leading zero. Without the zero the reader answers a
+ different number, and with an unnecessary zero the reader refuses the
+ encoding as non-minimal, so this arm fails in both directions.
+
+  t-128 : List Integer = der-small-int 128
+
+  a-128-bytes : Text =
+    "der int-128-content=" & yn (bytes-eq t-128 [2, 2, 0, 128])
+
+  a-128-round : Text =
+    "der int-128-round-trip=" & yn (maybe-int-is (asn1-small-int t-128 0) 128)
+
+  t-zero : List Integer = der-small-int 0
+
+  a-zero : Text =
+    "der int-0-is-one-octet=" & yn (bytes-eq t-zero [2, 1, 0])
+
+  t-serial : List Integer = der-int-bytes v-serial
+
+  a-serial : Text =
+    "der wide-int-round-trip=" & yn (maybe-bytes-eq (asn1-int-bytes t-serial 0) v-serial)
+
+  t-bits : List Integer = der-bit-string [1, 2, 3]
+
+  a-bits : Text =
+    "der bit-string-round-trip=" & yn (maybe-bytes-eq (asn1-bit-string t-bits 0) [1, 2, 3])
+
+  t-oid : List Integer = der-oid v-ed25519-oid
+
+  a-oid : Text =
+    "der oid-round-trip=" & yn (when asn1-read t-oid 0
+      is None -> False
+      is Just (t) -> asn1-oid-is t-oid t v-ed25519-oid)
+
+ A sequence whose content is 300 octets, so the long form is exercised
+ through the writer rather than only through der-len, and read back by the
+ decoder that refuses a non-minimal one.
+
+  t-long : List Integer = der-sequence (filler 300 [])
+
+  a-long : Text =
+    "der long-sequence-round-trip=" & yn (when asn1-read t-long 0
+      is None -> False
+      is Just (t) -> t.tlv-len == 300 & t.tlv-tag == 48)
+
+Section: What The Writer Must Never Emit
+
+ The encoding the minimality rule exists to forbid: a length of 5 written in
+ the #81 form. Our reader refuses it, and our writer never produces it, so
+ this arm states the two agree about a byte string neither will accept.
+
+  t-nonminimal : List Integer = [48, 129, 5, 2, 1, 1, 5, 0]
+
+  a-nonminimal : Text =
+    "der reader-refuses-non-minimal=" & yn (when asn1-read t-nonminimal 0
+      is None -> True
+      is Just (t) -> False)
+
+  a-writer-avoids : Text =
+    "der writer-avoids-that-form=" & yn (bytes-eq (der-sequence [2, 1, 1, 5, 0]) [48, 5, 2, 1, 1, 5, 0])
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni a-alg
+    print-line-uni a-len-short
+    print-line-uni a-len-223
+    print-line-uni a-len-300
+    print-line-uni a-len-127
+    print-line-uni a-len-128
+    print-line-uni a-small
+    print-line-uni a-128-bytes
+    print-line-uni a-128-round
+    print-line-uni a-zero
+    print-line-uni a-serial
+    print-line-uni a-bits
+    print-line-uni a-oid
+    print-line-uni a-long
+    print-line-uni a-nonminimal
+    print-line-uni a-writer-avoids
+  end

@@ -1,0 +1,43 @@
+Chapter: RecordEqualityVector
+
+ The arm for the vector-field half of record and variant equality.
+
+ A `Vector n T` field answers `==` with a `VectorMask n`, and the fold that
+ turns a mask into a Boolean is declared at arity 2, so nothing in the language
+ compares a vector wider than 2 today, and ec-extract is bound the same way. The desugarer therefore synthesises NO
+ equality helper for a type carrying such a field, and this file pins the
+ consequence that matters: the unit COMPILES. Before that guard, a record with
+ a vector field failed with CDX2001 on a span nobody wrote, whether or not
+ anything ever compared it.
+
+ What this file deliberately does NOT pin is whether two structurally equal
+ values with vector fields answer True: they do not, because such a type falls
+ back to pointer comparison the way every record did before record bodies were
+ widened into the gate. That is COMPILER-77, and pinning today's answer here
+ would make its fix look like a regression.
+
+Section: Types
+
+  Later = record { n : Integer }
+
+  Holder = record { item : Later, vec : SizedVec 4 Integer }
+
+  Shape =
+    | Empty
+    | Lane (SizedVec 4 Integer)
+
+Section: Body
+
+  v4 : Integer -> SizedVec 4 Integer
+  v4 (n) = vec-cons 4 (vec-cons 3 (vec-cons 2 (vec-singleton n)))
+
+  opening : [Console] Nothing = act
+    let a = Holder { item = Later { n = 1 }, vec = v4 7 }
+    in let s = Lane (v4 7)
+    in act
+     print-line-uni ("record-self=" & show (a == a))
+     print-line-uni ("variant-self=" & show (s == s))
+    end
+  end
+
+Page 1

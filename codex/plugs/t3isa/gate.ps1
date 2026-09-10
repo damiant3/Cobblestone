@@ -15,6 +15,7 @@
 # the encoding was originally derived against; it is kept so a disagreement can
 # be pinned on the emulator rather than on us, and is selected with -Manitc.
 param(
+    [string]$Compiler = '',
   [string]$Src    = (Join-Path $PSScriptRoot 'test\gate.codex'),
   [string]$Manitc = 'D:\Toolchain-Ternary\target-v13\release\manitc.exe',
   [switch]$Sabotage
@@ -22,6 +23,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+if (-not $Compiler) { $Compiler = Join-Path $Repo 'seed\Codex.cdx' }
 $outDir = Join-Path $PSScriptRoot 'build-output'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 if (-not (Test-Path $Manitc)) { throw "the oracle is not built: $Manitc. See docs/Designs/Done/Compiler/T3IsaPlug.md." }
@@ -36,7 +38,7 @@ function Normalize([string]$s) { (($s -replace "`r", '') -split "`n" | Where-Obj
 # --- arm 1: the existing x86-64 path ---
 $nativeCdx = Join-Path $outDir 'gate.cdx'
 $nativeOut = Join-Path $outDir 'gate.native.txt'
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $nativeCdx -Log (Join-Path $outDir 'native.log') *> $null
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $nativeCdx -Log (Join-Path $outDir 'native.log') -Kernel $Compiler *> $null
 if (-not (Test-Path $nativeCdx)) { throw "native compile produced nothing; see $outDir\native.log" }
 & pwsh -NoProfile -File (Join-Path $Repo 'build\test-run.ps1') -Kernel $nativeCdx -OutFile $nativeOut *> $null
 $native = Normalize (Get-Content $nativeOut -Raw)
