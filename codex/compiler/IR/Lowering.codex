@@ -1460,7 +1460,8 @@ Section: Collections and Act
    in let actual-ty = when record-ty
       is ErrorTy | NoExpectTy -> ty
       is otherwise -> record-ty
-   in let lowered-fields = lower-record-fields-typed fields actual-ty ctx 0 (list-length fields)
+   in let applied-ty = prefer-applied-record-ty (expected-or-recorded-ty ty ctx sp) actual-ty (ctx.local-type-vars)
+   in let lowered-fields = lower-record-fields-typed fields actual-ty applied-ty ctx 0 (list-length fields)
    in let refined-actual = refine-record-ty-from-fields actual-ty lowered-fields ctx 0 (list-length lowered-fields)
    in let emit-ty = prefer-applied-record-ty ty refined-actual (ctx.local-type-vars)
    in deck-record (IrRecord (name.value) lowered-fields emit-ty sp)
@@ -1512,18 +1513,26 @@ Section: Collections and Act
    else if list-at xs i == target then True
    else list-contains-int-loop xs target (i + 1) len
 
-  lower-record-fields-typed : List AFieldExpr, CodexType, LowerCtx, Integer, Integer -> List IRFieldVal
-  lower-record-fields-typed (fields) (record-ty) (ctx) (i) (len) =
-   lower-record-fields-acc fields record-ty ctx i len []
+ A field's expectation is its declared type with the record's APPLIED
+ arguments substituted for the declaration's parameters. `record-ty` is the
+ constructor's own form, whose field types name the declaration's variables;
+ `applied-ty` is the same record at the arguments the context supplies, or
+ at the arguments the checker recorded for the literal when the context
+ supplies none. With no applied arguments the two are one type and the
+ substitution is the identity.
 
-  lower-record-fields-acc : List AFieldExpr, CodexType, LowerCtx, Integer, Integer, List IRFieldVal -> List IRFieldVal
-  lower-record-fields-acc (fields) (record-ty) (ctx) (i) (len) (acc) =
+  lower-record-fields-typed : List AFieldExpr, CodexType, CodexType, LowerCtx, Integer, Integer -> List IRFieldVal
+  lower-record-fields-typed (fields) (record-ty) (applied-ty) (ctx) (i) (len) =
+   lower-record-fields-acc fields record-ty applied-ty ctx i len []
+
+  lower-record-fields-acc : List AFieldExpr, CodexType, CodexType, LowerCtx, Integer, Integer, List IRFieldVal -> List IRFieldVal
+  lower-record-fields-acc (fields) (record-ty) (applied-ty) (ctx) (i) (len) (acc) =
    if i == len then acc
    else let f = list-at fields i
    in let field-expected = when record-ty
-       is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (f.name.value)
+       is RecordTy (rname) (rargs) (rfields) -> subst-type-vars-from-arg record-ty applied-ty (lookup-record-field rfields (f.name.value))
        is otherwise -> ErrorTy
-   in lower-record-fields-acc fields record-ty ctx (i + 1) len (list-push acc (deck-record (IRFieldVal {
+   in lower-record-fields-acc fields record-ty applied-ty ctx (i + 1) len (list-push acc (deck-record (IRFieldVal {
     name = f.name.value,
     value = lower-expr (f.value) field-expected ctx,
     span = f.span
