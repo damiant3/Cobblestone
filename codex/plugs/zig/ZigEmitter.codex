@@ -2115,7 +2115,7 @@ Section: Match Emission
    let mty = if text-length (zig-ll-elem-opt mty0 (ctx.scope-tvars)) > 0 then mty0
       else zig-arms-list-type branches 0 mty0 (ctx.scope-tvars)
    in let ex = zig-match-exhaustive ctx (zig-expr-type scrut) branches
-   in if zig-branches-guarded branches 0 then emit-zig-match-chain scrut branches ctx d mty
+   in if zig-branches-guarded branches 0 | zig-branches-nested branches 0 then emit-zig-match-chain scrut branches ctx d mty
    else zig-pin-lit-arms branches 0 ("switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex mty tl & " }")
 
  A zig `switch` prong refuses a value an earlier prong already names:
@@ -2330,11 +2330,12 @@ Section: Match Emission
   emit-zig-chain-arm : IRPat, IRExpr, IRExpr, ZigCtx, Integer, CodexType, Text -> Text
   emit-zig-chain-arm (pat) (guard) (body) (ctx) (d) (mty) (sv) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "if (" & sv & " == " & zig-lit-pat-text text ty & ") { " & emit-zig-chain-tail guard body ctx d mty & "} "
+    is IrLitPat (text) (ty) (sp) -> "if (" & zig-chain-lit-test sv text ty & ") { " & emit-zig-chain-tail guard body ctx d mty & "} "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
      in let test = "if (" & sv & " == ." & zig-sanitize name & ") { "
-     in if nsubs == 0 then test & emit-zig-chain-tail guard body ctx d mty & "} "
+     in if zig-subs-nested subs 0 then emit-zig-chain-nested pat sv guard body ctx d mty
+     else if nsubs == 0 then test & emit-zig-chain-tail guard body ctx d mty & "} "
      else if nsubs == 1 then
       let binder = zig-pat-binder (list-at subs 0) 0
       in if (binder == "_") | (zig-occurs-either body guard binder == False)
@@ -2349,6 +2350,105 @@ Section: Match Emission
      else "{ " & emit-zig-chain-tail guard body ctx d mty & "} "
     is IrWildPat (sp) -> "{ " & emit-zig-chain-tail guard body ctx d mty & "} "
     is IrVecPat (pats) (ty) (sp) -> "@compileError(\"zig plug: vector patterns not supported\"); "
+
+ A constructor pattern with a constructor or a literal INSIDE it is a
+ conjunction of tests, one per level, and only the chain form can express
+ it; a Text literal pattern at any level is a `cx_text_eq` test, which a
+ switch prong on a slice cannot spell, so it takes the chain form too: each inner test is an `if` inside the enclosing one, so a failed inner
+ test falls out of the arm to the next one, where a switch prong could not
+ fall through and two prongs on one constructor are a duplicate. The
+ sub-patterns are walked as a WORK LIST of (pattern, value) pairs: a
+ constructor sub-pattern replaces itself with its own sub-patterns at the
+ head of the list, each addressed through the constructor's payload (with
+ `.*` when the field's type is boxed), and the arm's tail is emitted once,
+ when the list is empty. A variable sub-pattern binds its value only if the
+ body or the guard reads it, because zig refuses an unused local; a Text
+ literal compares through `cx_text_eq`, because a slice has no `==`.
+
+  zig-pat-nested : IRPat -> Boolean
+  zig-pat-nested (p) =
+   when p
+    is IrCtorPat (name) (subs) (ty) (sp) -> zig-subs-nested subs 0
+    is IrLitPat (text) (ty) (sp) -> zig-is-text-ty ty
+    is otherwise -> False
+
+  zig-is-text-ty : CodexType -> Boolean
+  zig-is-text-ty (ty) =
+   when ty
+    is TextTy -> True
+    is otherwise -> False
+
+  zig-subs-nested : List IRPat, Integer -> Boolean
+  zig-subs-nested (subs) (i) =
+   if i >= list-length subs then False
+   else let nested = when list-at subs i
+     is IrCtorPat (name) (ss) (ty) (sp) -> True
+     is IrLitPat (text) (ty) (sp) -> True
+     is otherwise -> False
+   in nested | zig-subs-nested subs (i + 1)
+
+  zig-branches-nested : List IRBranch, Integer -> Boolean
+  zig-branches-nested (bs) (i) =
+   if i >= list-length bs then False
+   else zig-pat-nested ((list-at bs i).pattern) | zig-branches-nested bs (i + 1)
+
+  zig-chain-lit-test : Text, Text, CodexType -> Text
+  zig-chain-lit-test (sv) (text) (ty) =
+   when ty
+    is TextTy -> "cx_text_eq(" & sv & ", \"" & zig-escape-text text & "\")"
+    is otherwise -> sv & " == " & zig-lit-pat-text text ty
+
+  zig-deep-binders : IRPat, List Text -> List Text
+  zig-deep-binders (p) (acc) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> list-push acc name
+    is IrCtorPat (name) (subs) (ty) (sp) -> zig-deep-binders-list subs 0 acc
+    is otherwise -> acc
+
+  zig-deep-binders-list : List IRPat, Integer, List Text -> List Text
+  zig-deep-binders-list (subs) (i) (acc) =
+   if i >= list-length subs then acc
+   else zig-deep-binders-list subs (i + 1) (zig-deep-binders (list-at subs i) acc)
+
+  zig-push-bound-names : ZigCtx, List Text, Integer, Integer -> ZigCtx
+  zig-push-bound-names (ctx) (names) (i) (d) =
+   if i >= list-length names then ctx
+   else zig-push-bound-names (zig-bind-push ctx (list-at names i) d) names (i + 1) d
+
+  zig-sub-values : ZigCtx, List IRPat, Integer, Text, List Text -> List Text
+  zig-sub-values (ctx) (subs) (i) (payload) (acc) =
+   if i >= list-length subs then acc
+   else let raw = if list-length subs == 1 then payload else payload & "[" & integer-to-text i & "]"
+   in let sv = when list-at subs i
+     is IrCtorPat (name) (ss) (ty) (sp) -> raw & zig-match-deref ctx ty
+     is otherwise -> raw
+   in zig-sub-values ctx subs (i + 1) payload (list-push acc sv)
+
+  zig-list-from : List a, Integer, List a -> List a
+  zig-list-from (xs) (i) (acc) =
+   if i >= list-length xs then acc else zig-list-from xs (i + 1) (list-push acc (list-at xs i))
+
+  emit-zig-chain-nested : IRPat, Text, IRExpr, IRExpr, ZigCtx, Integer, CodexType -> Text
+  emit-zig-chain-nested (pat) (sv) (guard) (body) (ctx) (d) (mty) =
+   let tail-ctx = zig-push-bound-names ctx (zig-deep-binders pat []) 0 d
+   in emit-zig-chain-work [pat] [sv] 0 guard body ctx tail-ctx d mty
+
+  emit-zig-chain-work : List IRPat, List Text, Integer, IRExpr, IRExpr, ZigCtx, ZigCtx, Integer, CodexType -> Text
+  emit-zig-chain-work (pats) (svs) (i) (guard) (body) (ctx) (tail-ctx) (d) (mty) =
+   if i >= list-length pats then emit-zig-chain-tail guard body tail-ctx d mty
+   else let sv = list-at svs i
+   in when list-at pats i
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     let inner-pats = zig-list-from pats (i + 1) (zig-list-from subs 0 [])
+     in let inner-svs = zig-list-from svs (i + 1) (zig-sub-values ctx subs 0 (sv & "." & zig-sanitize name) [])
+     in "if (" & sv & " == ." & zig-sanitize name & ") { " & emit-zig-chain-work inner-pats inner-svs 0 guard body ctx tail-ctx d mty & "} "
+    is IrLitPat (text) (ty) (sp) ->
+     "if (" & zig-chain-lit-test sv text ty & ") { " & emit-zig-chain-work pats svs (i + 1) guard body ctx tail-ctx d mty & "} "
+    is IrVarPat (name) (ty) (sp) ->
+     let bind = if zig-occurs-either body guard name then "const " & zig-bind-name ctx name d & " = " & sv & "; " else ""
+     in bind & emit-zig-chain-work pats svs (i + 1) guard body ctx tail-ctx d mty
+    is IrWildPat (sp) -> emit-zig-chain-work pats svs (i + 1) guard body ctx tail-ctx d mty
+    is IrVecPat (ps) (ty) (sp) -> "@compileError(\"zig plug: vector patterns not supported\"); "
 
   zig-any-sub-occurs-g : List IRPat, Integer, IRExpr, IRExpr -> Boolean
   zig-any-sub-occurs-g (subs) (i) (body) (guard) =

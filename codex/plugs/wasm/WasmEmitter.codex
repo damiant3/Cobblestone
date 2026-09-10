@@ -1317,24 +1317,27 @@ Section: Expression Emission
   emit-wat-ctor-pat (ctx) (name) (subs) (guard) (body) (branches) (i) (depth) =
    let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
    in let bind-subs = emit-wat-bind-ctor-subs ctx subs 0
-   in if (i == list-length branches - 1) & wat-guard-trivial guard & (wat-ctor-has-lit-subs subs 0 == False) then
+   in if (i == list-length branches - 1) & wat-guard-trivial guard & (wat-ctor-has-test-subs subs 0 == False) then
     emit-wat-arm-block "" "(i32.const 1)" bind-subs (emit-wat-expr ctx body)
    else emit-wat-arm-block "" (wat-ctor-arm-cond ctx tag subs guard bind-subs) bind-subs (emit-wat-expr ctx body)
 
- A LITERAL inside a constructor pattern is a TEST, not a binding, and
- `emit-wat-bind-ctor-subs` had no arm for one: it bound a variable sub-pattern
- and sent everything else to `is otherwise`, so `BInt (0)` matched every `BInt`
- and every arm answered the first one's body. The tests fold onto the tag test
- rather than beside it, because a payload load on an object of the wrong tag can
- address past the object and trap, which is the reason the guard is already
- gated this way.
+ A sub-pattern of a constructor pattern is a binding (a variable), nothing
+ (a wildcard), or a TEST: a literal is an equality on the payload field, and
+ a constructor is an equality on the tag of the object the field points at,
+ followed by that constructor's own sub-patterns through that object. Every
+ test and every binding under a tag test sits INSIDE it, because a payload
+ load on an object of the wrong tag can address past the object and trap.
+ `wat-ctor-sub-tests-at` and `emit-wat-bind-ctor-subs-at` take the object's
+ address as an expression; the scrutinee's forms are the ones at
+ `(local.get scrut)`.
 
-  wat-ctor-has-lit-subs : List IRPat, Integer -> Boolean
-  wat-ctor-has-lit-subs (subs) (i) =
+  wat-ctor-has-test-subs : List IRPat, Integer -> Boolean
+  wat-ctor-has-test-subs (subs) (i) =
    if i >= list-length subs then False
    else when list-at subs i
     is IrLitPat (t) (ty) (sp) -> True
-    is otherwise -> wat-ctor-has-lit-subs subs (i + 1)
+    is IrCtorPat (n) (ss) (ty) (sp) -> True
+    is otherwise -> wat-ctor-has-test-subs subs (i + 1)
 
   wat-and-tests : Text, Text -> Text
   wat-and-tests (acc) (t) =
@@ -1342,15 +1345,28 @@ Section: Expression Emission
 
   wat-ctor-sub-tests : WasmCtx, List IRPat, Integer, Text -> Text
   wat-ctor-sub-tests (ctx) (subs) (i) (acc) =
+   wat-ctor-sub-tests-at ctx subs i acc ("(local.get " & wat-scrut ctx & ")")
+
+  wat-ctor-sub-tests-at : WasmCtx, List IRPat, Integer, Text, Text -> Text
+  wat-ctor-sub-tests-at (ctx) (subs) (i) (acc) (base) =
    if i >= list-length subs then acc
-   else let fld = "(i64.load (i32.add (i32.wrap_i64 (local.get " & wat-scrut ctx & ")) (i32.const " & integer-to-text (8 + i * 8) & ")))"
+   else let fld = "(i64.load (i32.add (i32.wrap_i64 " & base & ") (i32.const " & integer-to-text (8 + i * 8) & ")))"
    in when list-at subs i
+    is IrCtorPat (n) (ss) (ty) (sp) ->
+     let tag = find-ctor-in-typedefs (ctx.type-defs) n 0
+     in let tag-test = "(i64.eq (i64.load (i32.wrap_i64 " & fld & ")) (i64.const " & integer-to-text tag & "))"
+     in let binds = emit-wat-bind-ctor-subs-at ctx ss 0 fld
+     in let inner = wat-ctor-sub-tests-at ctx ss 0 "" fld
+     in let under = if text-length inner == 0 then "(i32.const 1)" else inner
+     in let whole = if (text-length inner == 0) & (text-length binds == 0) then tag-test
+        else "(if (result i32) " & tag-test & " (then " & binds & under & ") (else (i32.const 0)))"
+     in wat-ctor-sub-tests-at ctx subs (i + 1) (wat-and-tests acc whole) base
     is IrLitPat (t) (ty) (sp) ->
-     wat-ctor-sub-tests ctx subs (i + 1) (wat-and-tests acc
+     wat-ctor-sub-tests-at ctx subs (i + 1) (wat-and-tests acc
       (if wat-is-text-type ty
        then "(i32.wrap_i64 (call $text_eq " & fld & " " & wat-strtab-ref (ctx.strings) t & "))"
-       else "(i64.eq " & fld & " (i64.const " & wat-lit-pat-const t & "))"))
-    is otherwise -> wat-ctor-sub-tests ctx subs (i + 1) acc
+       else "(i64.eq " & fld & " (i64.const " & wat-lit-pat-const t & "))")) base
+    is otherwise -> wat-ctor-sub-tests-at ctx subs (i + 1) acc base
 
   wat-ctor-arm-cond : WasmCtx, Integer, List IRPat, IRExpr, Text -> Text
   wat-ctor-arm-cond (ctx) (tag) (subs) (guard) (bind-subs) =
@@ -1363,14 +1379,18 @@ Section: Expression Emission
 
   emit-wat-bind-ctor-subs : WasmCtx, List IRPat, Integer -> Text
   emit-wat-bind-ctor-subs (ctx) (subs) (i) =
+   emit-wat-bind-ctor-subs-at ctx subs i ("(local.get " & wat-scrut ctx & ")")
+
+  emit-wat-bind-ctor-subs-at : WasmCtx, List IRPat, Integer, Text -> Text
+  emit-wat-bind-ctor-subs-at (ctx) (subs) (i) (base) =
    if i >= list-length subs then ""
-   else let off = 8 + i * 8
+   else let fld = "(i64.load (i32.add (i32.wrap_i64 " & base & ") (i32.const " & integer-to-text (8 + i * 8) & ")))"
    in let sub = list-at subs i
    in (when sub
-    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (i64.load (i32.add (i32.wrap_i64 (local.get " & wat-scrut ctx & ")) (i32.const " & integer-to-text off & ")))) "
+    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " " & fld & ") "
     is IrWildPat (sp) -> ""
     is IrVecPat (pats) (ty) (sp) -> ""
-    is otherwise -> "") & emit-wat-bind-ctor-subs ctx subs (i + 1)
+    is otherwise -> "") & emit-wat-bind-ctor-subs-at ctx subs (i + 1) base
 
   emit-wat-act : WasmCtx, List IRActStmt -> Text
   emit-wat-act (ctx) (stmts) =
@@ -2150,7 +2170,7 @@ Section: Tail Call Optimization
   emit-wat-ctor-arm-tco (ctx) (name) (subs) (guard) (body) (bs) (i) =
    let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
    in let bind-subs = emit-wat-bind-ctor-subs ctx subs 0
-   in if (i == list-length bs - 1) & wat-guard-trivial guard & (wat-ctor-has-lit-subs subs 0 == False) then
+   in if (i == list-length bs - 1) & wat-guard-trivial guard & (wat-ctor-has-test-subs subs 0 == False) then
     emit-wat-arm-block "" "(i32.const 1)" bind-subs body
    else emit-wat-arm-block "" (wat-ctor-arm-cond ctx tag subs guard bind-subs) bind-subs body
 
