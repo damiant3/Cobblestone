@@ -47,12 +47,13 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 Measured 2026-08-03, except where an item gives its own date.
 
 1. **The compiler is a hard fixed point of itself on bare metal**
-   (measured 2026-09-10). Current seed `48EB5C6C43515592` was built from
-   depot seed `7574D00206D4069C`. Scratch CDX stages 2 and 3 are whole-file
-   byte-identical. BVT: 79 compile and 64 runtime passes, plus the batch
-   control. The signed seed verifies itself. Focused controls cover declared
-   wasm exports on both IR wires, dead-code pruning, invalid declarations
-   and fishtank fallback. The text round-trip remains a release check.
+   (measured 2026-09-12). Current seed `CF9EDD812EA7E78B` was built from
+   depot seed `6B2C7409AA197D37`, and the Update 60 release gate rebuilt it
+   from its own source in one pass, whole-file byte-identical, with the text
+   round-trip green in the same run. BVT: 79 compile and 64 runtime passes,
+   plus the batch control. The signed seed verifies itself. Focused controls
+   cover declared wasm exports on both IR wires and as native CDX roots,
+   dead-code pruning, invalid declarations and fishtank fallback.
 
 2. **Two independent implementations check the compiler, and they agree**
    (measured 2026-08-10). A fixed point proves the seed is *stable*, not
@@ -65,9 +66,9 @@ Measured 2026-08-03, except where an item gives its own date.
    **Diverse double-compiling.** The whole compiler is rendered to C# by a
    plug, built by Roslyn -- a toolchain with no ancestry in this project --
    and that compiler then compiles the Codex compiler's own source.
-   Measured 2026-09-10 against Update 58 seed `F9165E313BE16815`,
-   its output was **3,358,838 bytes against that seed's
-   3,358,838, with 96 differing bytes, every one of them inside the
+   Measured 2026-09-12 against Update 60 seed `CF9EDD812EA7E78B`,
+   its output was **3,394,819 bytes against that seed's
+   3,394,819, with 95 differing bytes, every one of them inside the
    signature region at offsets 40..135 and none outside it.** The signature
    is stamped by the sign phase rather than emitted by the compiler. That is
    Wheeler's `stage2 == X`. The witness is a release gate and is re-run
@@ -240,14 +241,14 @@ for 143 checks; its phase of the gate takes about 19s.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,374,965 bytes, 2026-09-12, PR 142 class/instance scan at line start, COMPILER-84) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,394,819 bytes, 2026-09-12, COMPILER-48 deck exit refuses a nonpositive counter) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `266E24344DE9D861` |
-| SHA-256 | `49070BAEB1E31085E2F2250BBA44AA88E042BED66FD436C1AF5825D02BBE6E03` |
-| MD5 | `6883F5CAAFEDED6363FF879181F44C13` |
+| Content hash prefix | `E4E14DD4FACE97CD` |
+| SHA-256 | `CF9EDD812EA7E78BCDBD7111E59C0552CA8D47AFD0813347A6F1E3C9D5253580` |
+| MD5 | `420DAE41831956172FF18BD9D1A3F381` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -258,7 +259,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `02EB3B12A0D22853C1EC77DAF43E4273E67624E1DFDE914371077227862D9A12` |
+| SHA-256 | `942C22593080C0C089046D1D08270D015679E784140FF360992C2A87D3CA8B7F` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -282,7 +283,7 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `884FD218348190808E8F0699A34C7320E78113E7634EE2565F53603009D0BF84` |
+| SHA-256 | `FE000229F03717A8ABB5BDA6DB9867FE73E2B20CF947B16066DD3568BE2ADD39` |
 
 The payload is reproducible from its source and this seed: `DIAG.RCP` inside
 the image names both and carries `payload-sha256`, `bundled-sha256` and
@@ -594,7 +595,7 @@ codex/
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (162 modules)
   plugs/         56 plugs, 195 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,823 files)
+  test/          Compiler samples + OS integration tests (1,826 files)
 apps/            71 applications, 1,158 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
@@ -625,7 +626,7 @@ non-blank lines, including comments and markup.
 |---|---:|---:|---:|---:|
 | `apps/` | 1,158 | 210,502 | 13,774 | 38,878 |
 | `codex/foreword/` | 439 | 61,643 | 7,231 | 14,584 |
-| `codex/test/` | 1,823 | 68,000 | 10,381 | 16,575 |
+| `codex/test/` | 1,826 | 68,000 | 10,381 | 16,575 |
 | `codex/plugs/` | 262 | 63,515 | 5,726 | 9,988 |
 | `codex/compiler/` | 65 | 45,246 | 6,145 | 9,482 |
 | `codex/os/` | 162 | 24,698 | 2,416 | 5,950 |
