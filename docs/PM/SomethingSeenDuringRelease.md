@@ -29,6 +29,39 @@ count does.
 
 ## Done
 
+### Update 60 -- the diag ladder's four network arms disagree under battery load and pass on an idle box
+
+Found at step 5, 2026-09-12 15:44. The 50-arm rehearsal run beside the
+battery, the DDC emit and a second lane's build read 46 of 50: `b3-pass`,
+`b3-record` and `b3-clockstuck` never reached END inside the arm's 30 s
+budget (last serial line after the NIC reset), and `nic-kills-msc` found no
+peer record. The image's payload, bundle and EFI were byte-identical to the
+image that had passed 50 of 50 two hours earlier. The same four arms with
+`-Only` on the idle box passed at once, and a second full pass answered 50
+of 50. The network arms are time-budgeted and lose to load, not to the
+image; run the ladder with the box to itself, or read a b3 disagreement as
+a load reading until an idle rerun says otherwise:
+
+```powershell
+build/boot/diag-arm.ps1 -Only 'b3-*'     # idle box; a full run is still what writes the record
+```
+
+### Update 60 -- two proof chains launched in one breath starved the battery to one slot, and the batch timed out
+
+Found at step 1, 2026-09-12 16:00. The battery chain and the DDC chain were
+started in the same second; by the time the battery measured admission the
+DDC plug build and red's diag build had taken their memory, so `[vm
+admission] ... admitting 1` put all 1,777 compiles on one batch, which hit
+the batch timeout at 34 minutes and the run died with a `ReadAllText`
+exception on its temp file. The Update 59 battery, launched alone, had two
+slots and finished its compile phase in 597 s. Read the admission line
+before launching anything beside a battery, and launch the DDC chain (whose
+emit runs ten minutes) only after that line reads its slots:
+
+```powershell
+Select-String -Path <battery.log> -Pattern 'vm admission|batch slots'   # admit the battery first, then the serial guests
+```
+
 ### Update 59 -- the diag image hash does not reproduce across workspaces, and the public text said it did
 
 Found at step 5, 2026-09-12: red built the stick in red-main (884FD218) and

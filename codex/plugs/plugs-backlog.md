@@ -2540,80 +2540,60 @@ The virt half of the same change (`stp`/`ldp x27, xzr`) is executed: Renode
 `int-add-wrapping` and `hamt-test` on the plug from main 25665, seed
 49070BAEB1E31085 (2026-09-12); `hamt-test` carries 7 of the changed pairs.
 
-## 2.55 -- OPEN: structurally invalid Zig around compile-time refusals
+## 2.56 -- OPEN: unused act bindings emit rejected Zig locals
 
-Issue126 prerequisite, measured by reek in shelf25632 and
-`D:/Projects/Cobblestone-reek/build-output/hosted-rtc/`. Direct hosted guards
-remove the reachable RTC refusal but leave unused malformed bodies. Splitting
-the port read into a helper still emits `return @compileError(...)`, rejected
-as unreachable code by Zig0.16. The frozen cumulative plug065EE99F reproduces
-the same failure; no faithful hosted driver or six-comparison grade exists.
+`ZigEmitter.codex:2468` and `:3463` emit every named `IrDoBind` as a `const`
+without checking later uses or adding a valid discard, so a valid native
+program that binds an act result and never reads it fails Zig with
+`unused local constant` (reek, 2026-09-10: four unused `bp-poke64` results,
+evidence `D:/Projects/Cobblestone-reek/build-output/zig-refusal/initial-core/`).
+Keep live and unused aliases both correct; no blanket discard of reused names.
 
-Reek owns a bounded refusal-emission derivative of cumulative shelf25601;
-original25601/25558 and all frozen artifacts remain preserved. A proper
-compile-time refusal must remain a refusal when invoked, without surrounding
-return/break/sequence forms making unused or compile-time-dead definitions
-structurally invalid. Do not turn every nested refusal into an unconditional
-function refusal: that would reject a valid compile-time-selected branch.
-Do not delete definitions, fake port values, replace refusal with runtime
-panic, or disable Zig checks. Grade dead/live/conditional/strict-sequencing
-controls, cumulative PR outputs and emission costs before promotion. Any
-remaining Core guard change needs its own native/hosted proof and ordered
-integration. Root retains critical compiler ownership.
+## 2.58 -- OPEN: a network plug retains about 1.1 KB of heap per byte it sends, so a large reply runs out of memory
 
-## 2.54 -- OPEN: Zig generic-type regressions remain red during PR 135 intake
+Measured 2026-09-12 (red) with the Zig network entry instrumented by `__heap-save`
+between stages, on a 1,293,964-byte IR whose reply is 593,420 bytes: receive
+29,043,912 bytes, parse 93,252,720, emit 118,352,608, **send 654,416,376**, about
+1,100 bytes of heap per byte sent. Root's 10,552,742-byte hosted-comparisons IR
+replies 2,386,839 bytes and died OUT OF MEMORY at 3072 MB with 1,202,600 bytes
+received by the host, which is inside the send.
 
-Measured 2026-09-10 with unchanged Zig plug E71F15A2 and PR135 candidate
-in root CL25558: `eq-generic-fields` refuses undeclared `a_` in generated
-`__eq_Pair_82Text` and `__eq_Holder_82Integer_66Text` signatures;
-`typeclass-smoke` refuses undeclared type variable T578, with pointless-discard
-diagnostics also reported. Both failures also occur using immutable Lowering
-candidate A842B1A4 (PR139/140). The larger suite is not green.
+The send path is the shared one, `net-io-send-text-checked` into
+`net-io-send-chunk-checked` (`codex/os/net/NetIO.codex`): every `net-mss` slice
+makes a `text-to-bytes-chunk` list and a `transport-slice` copy (8 bytes per
+byte), runs `net-io-send-drain`, builds the segment through `net-send` and
+`flush-transport-outbox`, and nothing is bracketed by a heap mark. Which of those
+dominates is not yet measured; bracket each with `__heap-save` before changing
+any. Every network plug that answers a large reply shares this path.
 
-RED holds PR135 copy-up under R-GATE. The boxing-specific address fixture,
-plain-sum equality and decimal rounding pass. Equality and instance declaration
-repairs are preserved in combined25599; root owns materialization and the
-combined final compiler proof. Cumulative Zig25601 and original25558 remain
-preserved. No gate waiver is authorized. CurrentPlan owns the
-file boundaries and seed order. Source/logs for both emitters and kernels are in
-`D:/Projects/Cobblestone-root/build-output/zig-intake/`, named
-`old-eq-generic-fields`, `pr135-eq-generic-fields`, `old-typeclass-smoke`,
-`pr135-typeclass-smoke` and `newlower-*`. Resolve the relevant red checks or
-obtain a source-grounded scope ruling before landing. These probes must
-eventually compile and reproduce their existing expected output.
+Emission is the secondary cost: `emit-zig-chapter` retains about 200 bytes per
+output character (85 to 150 on 22 to 27 KB replies, 199 at 593 KB) against
+`emit-zig-chapter-stream`'s near-constant 0.65 to 8.5 MB, because it emits every
+definition without a heap mark. The streaming stdio entry (`ZigStdio.codex`)
+emitted the 2.4 MB reply at 3072 MB. Probes: red's `build-output/z258/`.
 
-Combined shelf25599 contains the instance declaration repair, superclass
-application and adopted equality25597. Candidate-v2 matches full smoke,
-nested-signature, Integer/Boolean superclass and equality outputs through
-both frozen Zig plugs and native controls (2026-09-10). All 24 equality IR
-sites are concrete; the instance IR checker observes concrete dictionaries,
-methods and lifted bodies while generic variables remain generic. No seed
-landing or full combined gate is claimed.
+## 2.54 -- OPEN: `typeclass-smoke` is red through the Zig plug (undeclared type variable T578)
 
-Method-local polymorphism is still a design boundary. ConverterDict declares
-only parameter a but its method field references b. Lifting b to the whole
-dictionary would couple uses that must remain independent. Existing
-AForallType resolves to ProofTy, and frozen Zig field rendering does not
-introduce a local type binder. Two explicit local-dictionary controls fail
-before IR with CDX2001 Integer vs Text: one method used at Integer and Text,
-and two methods independently spelling b used at those different types.
-The current field lookup does not instantiate a fresh method-local scheme.
+`typeclass-smoke` reaches the Zig plug with an unresolved dictionary type where
+the call expects a concrete instance, and the plug refuses T578 as undeclared,
+with pointless-discard diagnostics beside it (root, 2026-09-10; source and logs
+`old-typeclass-smoke`, `pr135-typeclass-smoke` in
+`D:/Projects/Cobblestone-root/build-output/zig-intake/`). The cause is upstream
+of the plug. The instance-declaration repair and superclass application are on
+fester's combined shelf 25599 and root's shelf 25624; root owns
+MethodSpecialization.md's first tranche (closed-use schema materialization,
+checked IR template metadata, input-derived bounds, no body cloning). No gate
+waiver; the probe must compile through the plug and reproduce its expected
+output, and `typeclass-poly` and direct mixed-type method calls stay required.
 
-The already-accepted typeclass-poly and direct mixed-type method calls remain
-required critical-arc checks. The new explicit same-dictionary mixed-type
-probes are rejected by the current checker and belong to COMPILER-83; making
-those pass is additional capability, not preservation of a passing baseline.
-Root owns critical integration and MethodSpecialization.md's first production
-tranche: existing closed-use schema materialization, checked IR template
-metadata for zero demand, and input-derived resource bounds without body
-cloning. Preserve all donor shelves and the frozen plugins. Open/runtime
-dictionary families remain on their existing path; the first tranche does not
-implement COMPILER-83. No new field-local forall, defaulting, lost logical
-declarations or gate waiver is authorized.
-Source, full diagnostics and reviewer qualifications are in
+Method-local polymorphism is a design boundary, not part of this row:
+ConverterDict declares only `a` while its method field references `b`, and two
+local-dictionary controls fail before IR with CDX2001 Integer vs Text. Making
+those pass is COMPILER-83; see
 `D:/Projects/Cobblestone-fester/build-output/instance-typing/method-polymorphism-boundary.md`.
-The full hosted comparison probe also refuses `port-in-byte` through
-BootPaint's RTC path. Issue126 remains unverified at runtime and open;
-boxing's address-of repair alone is not evidence that hosted comparisons
-now carry Boolean types. Recovery details are in
-`D:/Projects/Cobblestone-root/build-output/zig-intake/handoff.md`.
+The hosted comparison probe's `port-in-byte` refusal is issue 126, COMPILER-56.
+
+The `eq-generic-fields` half is closed (2026-09-12): generated equality helpers
+carry the instantiated sum type on parameters, scrutinees and patterns; through
+the head Zig plug the previous seed's IR fails on undeclared `a_` and the new
+seed's builds and prints the exact 10 lines, with 24 of 24 concrete IR sites.

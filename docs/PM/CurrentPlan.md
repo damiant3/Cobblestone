@@ -17,9 +17,14 @@ a P- or L- pointer, an open item a register row, a finished design moves to
 
 ## FLEET COMMAND (Damian, 2026-09-12)
 
-ROOT commands the fleet again; red assists. The order of the day, in Damian's
-words: "review and ingest Steve's PRs, address any outstanding issues, and
-then do a release." The lane table is the current dispatch. The
+ROOT commands the fleet again; red assists. Update 59 shipped 2026-09-12. The
+order of the day after it, in Damian's words: "keep red occupied finishing up
+the big ticket items here that are scoped, and then try to get another
+release out while we have the opportunity." The scoped queue, in order: plugs
+2.55 / issue 126 (reek's 25646 then 25649), then COMPILER-48's deck-exit
+guard (reek's 25605); 25632 is a measurement shelf with no production repair
+and lands nothing. Then root runs Update 60 at that head. The lane table is
+the current dispatch. The
 MethodSpecialization shelf 25624 is WIP, unproven, and NOT on this release's
 path; it stays preserved. A red that is red on BOTH the old and the new plug
 and that the change does not touch is a register row, not a promotion block
@@ -35,31 +40,23 @@ Existing unverified shelves remain preserved and require their own proof
 before landing. All five coder sessions are running Astra; task-scoped workers
 do not acquire fleet seats or mailboxes.
 
-**Fleet resumed for GitHub intake (Damian, 2026-09-10).** Review Steve
-Howell's PRs 135-141 and issues 110, 115, 120, 125 and 126 against current
-main. Ingest useful work through PerforceProcess.md section 7, preserve
-depot-only fixes and credit Steve in each CL. RED owns public acknowledgments,
-plans and concerns. Keep issues and PRs open until corresponding Git publication;
-then cite the release, public commit and ingestion changes before closing.
+**Outside contributions (Damian, 2026-09-10).** A PR is ingested through
+PerforceProcess.md section 7 with the contributor credited in the CL; the PR
+and its issue stay open until Git publication, then close with the commit,
+the CL and the credit paragraph. No GitHub merge button. The Update 59 intake
+(PR 135 to 145) is closed; issues 110, 115 and 126 stay open with receipts.
 
 **Parallel shelf work is authorized (Damian, 2026-09-10).** Each lane owns
-one bounded unit below and may implement and run scratch proofs while another
-lane resolves a dependency. Preserve existing shelves and proof artifacts;
-use numbered shelves with explicit dependencies, not unproven main changes.
-Reek owns the bounded Zig refusal extension; root owns the critical compiler.
-The compiler file boundaries are in the lane rows;
-coordinate before widening beyond those files or changing shared interfaces.
-
-**Seed order:** first, the critical equality/instance/materialization arc
-integrated by root from the preserved shelves; then, val's native nested
-patterns; then, reek's CDX export retention. Root runs the combined final
-proof. Reconcile main and verify the proof's source before
-promotion; re-prove a changed subject outside the token. Reek's Zig-only
-derivative can land when its required target checks pass. Core guard changes
-need their separate ordered seed proof. The PR 135 hold remains.
-Review heap/time costs, calibrate the reported defect, run relevant target
-checks and complete R-GATE for seed work. Fixed points do not grade typed IR
-or hosted output. Preserve proof artifacts. No GitHub merge button.
+one bounded unit below and runs scratch proofs while another lane resolves a
+dependency; numbered shelves with explicit dependencies, not unproven main
+changes. Preserved shelves: 25624 (root, MethodSpecialization, unproven),
+25558 (root, original PR 135, rollback only), 25599 and 25630 (fester,
+method-template contract), 25632 (reek, RTC boundary measurement, lands
+nothing); 25605 (reek's COMPILER-48 guard) is red's to re-prove. Landed by
+red on 2026-09-12: 25595 (COMPILER-82), 25592 (COMPILER-39), 25597 (plugs
+2.54 eq-generic-fields), 25646 and 25649 (issue 126). Each
+requires its own proof on the head seed before landing; a fixed point does
+not grade typed IR or hosted output.
 
 Declared test exclusions are deliberate decisions (Damian, 2026-09-10).
 Preserve the runner's prescribed `-Tier all -Jobs 4` selection for normal
@@ -76,7 +73,7 @@ register** (`apps/<app>/<app>-backlog.md`,
 track. There is still no platform-wide register beyond this file; do not
 recreate `docs/PM/BACKLOG.md`.
 
-## THE FLEET DISPOSITION (RED commanding)
+## THE FLEET DISPOSITION (root commanding)
 
 Renode and the arm64 and riscv beds are IN (Damian, 2026-09-08 15:55; the
 2026-09-01 ban is lifted). Docs go straight to main; a code arc gates once per
@@ -117,14 +114,12 @@ touching `build-page.ps1` or `page-lenses.ps1`. The plug alone takes no token.
 
 ## MAIN AND PUBLIC RELEASE
 
-The public Update 58 seed has the measured decimal carry/borrow defect.
-Main contains the repaired seed and Zig/wasm decimal parsers. The token
-remains free outside seed landings.
+MAIN OPEN. The token remains free outside seed landings.
 
-Latest public release: **Update 58** (2026-09-10, commit `5b3e14a7` on
-GitHub master and GitLab main, seed #785 `F9165E313BE16815`);
-`GitHubUpdate58.md` is the account and `GitHubUpdate59.md` accumulates this
-cycle. Head seed on main: #789 `5A9416F1C661CDEE` (25547). Re-measure both at
+Latest public release: **Update 59** (2026-09-12, commit `3fefc985` on
+GitHub master and GitLab main, seed #791 `49070BAEB1E31085`);
+`GitHubUpdate59.md` is the account and `GitHubUpdate60.md` accumulates this
+cycle. Head seed on main: #795 `6B2C7409AA197D37` (25719, issue 126 BootPaint guards). Re-measure both at
 the release head, never carry them forward (L-COUNT).
 
 ## The brand boundary (Damian, 2026-08-29)
@@ -247,12 +242,12 @@ DeskScheduler is PARKED (Damian, 2026-08-26), not cancelled**:
 budget; skip or run late on a miss).
 | agent | now | then | standing |
 |---|---|---|---|
-| **blu** | **NOW:** No active unit. | **NEXT:** Await RED dispatch. | Preserve equality shelf25597 and immutable proof artifacts for root's combined critical landing. |
-| **val** | **NOW:** Preserve native-pattern shelf25595 and its proof artifacts. | **NEXT:** Await RED's next unit or native-pattern landing instruction after the critical compiler arc. Reconcile main and complete fresh R-GATE before seed promotion. | Damian's batch: WORKS-60, the virtual-desktop wording; FW-1's three fix options are Deferred (Damian, 2026-09-08 18:00). WORKS-50 is OFF this batch: it is DONE at head (one full name per pane, `desk-wnd-title` and `gpr-entries` agreeing on all four), and what it leaves is a simplification nobody has taken, dropping `dk-pill-icon`'s second table now that the join is sound. A start-menu group of seven pushes the laid menu past the taskbar band and nothing clips or scrolls: registered in `ShellRefinement.md`, and it is why the Sheets launcher row sits in Accessories. `ShellRefinement.md` "6.4: WHAT IS STILL OPEN"; `PreemptiveScheduler.md` stage 2; WORKS-47/41 |
+| **blu** | **NOW:** Offline since 2026-09-10; equality shelf 25597 reassigned to red on 2026-09-12 (plugs 2.54, the eq-generic-fields half). | **NEXT:** On relaunch, check in with root. | Edge-mesh and net items in `ProtocolStack.md`; ICMP parse production caller (ruled send-only). |
+| **val** | **NOW:** Offline since 2026-09-10; nothing shelved (25595 landed by red as main 25683, COMPILER-82 closed). | **NEXT:** On relaunch, check in with root; the desk and games items in the standing column are val's. | Damian's batch: WORKS-60, the virtual-desktop wording; FW-1's three fix options are Deferred (Damian, 2026-09-08 18:00). WORKS-50 is OFF this batch: it is DONE at head (one full name per pane, `desk-wnd-title` and `gpr-entries` agreeing on all four), and what it leaves is a simplification nobody has taken, dropping `dk-pill-icon`'s second table now that the join is sound. A start-menu group of seven pushes the laid menu past the taskbar band and nothing clips or scrolls: registered in `ShellRefinement.md`, and it is why the Sheets launcher row sits in Accessories. `ShellRefinement.md` "6.4: WHAT IS STILL OPEN"; `PreemptiveScheduler.md` stage 2; WORKS-47/41 |
 | **fester** | **NOW:** Build independent acceptance fixtures/checker for root's MethodSpecialization first tranche. Own only new `codex/test/method-template-contract-*` fixtures/scripts; agree the producer interface with root before wiring. Root owns all production compiler/common-parser changes and existing typeclass fixtures. | **NEXT:** Test source-derived declaration accounting, zero demand, omitted entries, scoped/forged binders, lookalike user dictionaries, ineligible runtime/escape cases, finite bounds and frozen-reader compatibility. Use immutable candidate provenance when root supplies it; no invented pass while producer is incomplete. Preserve combined25599/donor evidence; send result pointers to root and RED. | **COMPILER-59 and COMPILER-60 are PARKED and measured, not abandoned:** `ir-fidelity -Disagree` counts a def disagreeing with itself and reads 3 sites over 2 programs of 615; the lambda-parameter-span change moves 2 of the 3 and REGRESSES `typeclass-poly`'s `convert`, and the shared-span reading is refuted, both digests in `docs/Designs/Active/Compiler/LambdaParamSpans.md`. The name-the-kernel class is closed: `test-self-verify`, `check-generated-scripts` and `test-cross` all take `-Kernel` (2026-09-07). What the Build register still carries unowned is that `test-cross` BOOTS RENODE whenever the binary exists, guarded only by the operator remembering. A8 desk build loop when VT-x metal is available; Renode out; `deck-headroom`; WORKS-24 rides a sitting; ProductBuilder stage 6 on hold |
-| **reek** | **NOW:** Preserve export25592, guard25605, RTC boundary25632 and root's original25558/cumulative25601. Derive a new named Zig shelf from cumulative25601 for the issue126 structural-refusal blocker (plugs2.55). Own ZigEmitter refusal/control-flow emission for this unit; root must not independently edit/promote the old Zig arc. Core BootPaint changes require separate native/hosted proof. | **NEXT:** Calibrate unused/dead unsupported definitions, live unsupported calls, strict sequencing and conditional refusal. Emit structurally valid Zig while live unsupported calls still fail at compile time; no mere substring-based whole-body replacement, deleted definitions, runtime-panic/port-value substitutes or disabled checks. Preserve accepted output/evaluation order and all cumulative PR controls; review linear emission costs. No producer/common-parser edits or promotion while required reds remain. Then grade a faithful hosted driver, or report the remaining boundary. | Plugs close-out lane; WORKS-9 metal-gated; `ShellDslReadability.md` same campaign; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4; Registered: COMPILER-46/39/48 |
-| **red** | **NOW:** Update 59's diagnostic stick, in red-main at the release seed 49070BAEB1E31085 (main 25665+): `build/boot/build-diag.ps1` (no -Cfg), then `build/boot/diag-arm.ps1` with every arm and both beds, then `build/check-shipping-images.ps1`; report the image SHA-256 and the rehearsed line to root, who rebuilds the same bytes in root-main and ships them. One serial guest at a time, launched only on root's GO (the battery holds two slots). | **NEXT:** The publication comments on every PR and issue (drafts in red's build-output/publication) once root sends COMMIT and SEED; then the Update 60 cycle's first unit from `plugs-backlog.md`. | Releases, personally and end to end; `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
-| **root** | **NOW:** Command. Land the cumulative Zig shelf 25601 (PR 135, 138 and the Zig half of 141, proven on the head seed B1D05D72 per `build-output/zig-arc/proof.md`) after re-verifying the eight files against head; a plug CL, no token. | **NEXT:** Update 59, personally and end to end (Damian's assignment 2026-09-12), once red's PR 142 seed lands: full gate, proofs, `GitHubUpdate59.md`, the mirror push, then the PR and issue closures with the public commit. Shelves 25624 (MethodSpecialization) and 25558 (original PR 135) stay preserved and untouched. | `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` (released to red for the two stage lifts) |
+| **reek** | **NOW:** Offline since 2026-09-10. Shelves 25646 and 25649 (Zig refusal and BootPaint, issue 126, `plugs-backlog.md` 2.55) reassigned to red on 2026-09-12, after 25592 (landed as COMPILER-39). 25605 (guard) and 25632 (RTC boundary) stay reek's and preserved. | **NEXT:** Calibrate unused/dead unsupported definitions, live unsupported calls, strict sequencing and conditional refusal. Emit structurally valid Zig while live unsupported calls still fail at compile time; no mere substring-based whole-body replacement, deleted definitions, runtime-panic/port-value substitutes or disabled checks. Preserve accepted output/evaluation order and all cumulative PR controls; review linear emission costs. No producer/common-parser edits or promotion while required reds remain. Then grade a faithful hosted driver, or report the remaining boundary. | Plugs close-out lane; WORKS-9 metal-gated; `ShellDslReadability.md` same campaign; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4; Registered: COMPILER-46/39/48 |
+| **red** | **NOW:** plugs-backlog 2.58: a network plug retains about 1.1 KB of heap per byte it sends (654 MB on a 593 KB reply), so a large reply runs out of memory; the shared send path in `codex/os/net/NetIO.codex` is unbracketed. First bracket `text-to-bytes-chunk`, `transport-slice`, `net-io-send-drain`, `net-send` and `flush-transport-outbox` with `__heap-save` to find the dominant retention, then fix it so the hosted-comparisons IR (10.5 MB, 2.4 MB reply) emits through the network Zig plug at 3072 MB; the emitter's ~200 bytes per output character is the secondary cost. Not seed-affecting. | **NEXT:** The next Update 61 unit from `compiler-backlog.md` or `plugs-backlog.md`, verified at head. | Releases, personally and end to end; `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
+| **root** | **NOW:** Command. Update 59 is published (3fefc985); red posts the PR and issue receipts. | **NEXT:** Dispatch the Update 60 cycle as lanes come online: the two Zig-plug reds (eq-generic-fields, typeclass-smoke; `plugs-backlog.md` 2.54) and issue 126's structural refusal (2.55) are the open outside-facing items. Shelves 25624 (MethodSpecialization, unproven) and 25558 (original PR 135) stay preserved; 25624 is a design question before it is a landing. | `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` (released to red for the two stage lifts) |
 
 **Plugs are reek's close-out lane** (from val, Damian's direction
 2026-08-18): the register in order, one entry at a time, said in

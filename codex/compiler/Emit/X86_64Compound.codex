@@ -2181,11 +2181,15 @@ Section: Pattern Matching
 
   emit-pattern : CodegenState, Integer, IRPat, CodexType -> EmitPatternResult
   emit-pattern (st) (scrut-loc) (pat) (scrut-ty) =
+   emit-pattern-with-patches st scrut-loc pat scrut-ty []
+
+  emit-pattern-with-patches : CodegenState, Integer, IRPat, CodexType, List Integer -> EmitPatternResult
+  emit-pattern-with-patches (st) (scrut-loc) (pat) (scrut-ty) (patches) =
    when pat
     is IrWildPat (sp) -> EmitPatternResult {
      state = st,
      next-branch-patch = -1,
-     extra-patches = []
+     extra-patches = patches
     }
     is IrVarPat (name) (ty) (sp) ->
      let var-loc = alloc-local st
@@ -2194,7 +2198,7 @@ Section: Pattern Matching
      in EmitPatternResult {
       state = add-local st1 name (var-loc.reg),
       next-branch-patch = -1,
-      extra-patches = []
+      extra-patches = patches
      }
     is IrCtorPat (name) (sub-pats) (ty) (sp) ->
      let scrut-load = load-local st scrut-loc
@@ -2211,7 +2215,7 @@ Section: Pattern Matching
      in let jcc-pos = st2.code-len
      in let st3 = st-append-code st2 (jcc cc-ne 0)
      in let field-tys = ctor-field-types resolve-ty name
-     in let bf = bind-ctor-fields st3 scrut-loc sub-pats field-tys 0 []
+     in let bf = bind-ctor-fields st3 scrut-loc sub-pats field-tys 0 patches
      in EmitPatternResult {
       state = bf.state,
       next-branch-patch = jcc-pos,
@@ -2223,7 +2227,7 @@ Section: Pattern Matching
      in EmitPatternResult {
       state = lt.state,
       next-branch-patch = lt.patch,
-      extra-patches = []
+      extra-patches = patches
      }
     is IrVecPat (sub-pats) (ty) (sp) ->
      let result-loc = alloc-local st
@@ -2238,7 +2242,7 @@ Section: Pattern Matching
      in EmitPatternResult {
       state = st5,
       next-branch-patch = jcc-pos,
-      extra-patches = []
+      extra-patches = patches
      }
 
   emit-vec-lane-checks : CodegenState, Integer, List IRPat, Integer, Integer, Integer -> CodegenState
@@ -2290,8 +2294,18 @@ Section: Pattern Matching
       let scrut-load = load-local st scrut-loc
       in let field-val = alloc-temp (scrut-load.state)
       in let st1 = st-append-code (field-val.state) (emit-narrow-load fw fsigned (field-val.reg) (scrut-load.reg) foff)
-      in let lt = emit-pattern-lit-test st1 (field-val.reg) value fty
+      in let lt = emit-pattern-lit-test st1 (field-val.reg) value lty
       in bind-ctor-fields (lt.state) scrut-loc sub-pats tys (i + 1) (list-push patches (lt.patch))
+     is IrCtorPat (name) (subs) (ty) (sp) ->
+      let field-loc = alloc-local st
+      in let scrut-load = load-local (field-loc.state) scrut-loc
+      in let field-val = alloc-temp (scrut-load.state)
+      in let st1 = st-append-code (field-val.state) (emit-narrow-load fw fsigned (field-val.reg) (scrut-load.reg) foff)
+      in let st2 = store-local st1 (field-loc.reg) (field-val.reg)
+      in let nested = emit-pattern-with-patches st2 (field-loc.reg) sub fty patches
+      in let failures = if nested.next-branch-patch < 0 then nested.extra-patches
+                        else list-push (nested.extra-patches) (nested.next-branch-patch)
+      in bind-ctor-fields (nested.state) scrut-loc sub-pats tys (i + 1) failures
      is otherwise -> bind-ctor-fields st scrut-loc sub-pats tys (i + 1) patches
 
   patch-pattern-extras : CodegenState, List Integer, Integer -> CodegenState
