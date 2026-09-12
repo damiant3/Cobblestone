@@ -11,10 +11,6 @@
 #   build/disk-runner-arm.ps1
 #   build/disk-runner-arm.ps1 -Compiler <a kernel>   # grade a compiler change
 #
-# TWO ARMS AND THE SECOND IS THE CONTROL. With the volume attached the runner
-# must list it and read the subject back; with no disk at all it must REFUSE.
-# One arm alone cannot tell a runner that reads a volume from one that prints
-# a plausible line whatever it finds.
 [CmdletBinding()]
 param(
     [string]$Compiler = '',
@@ -67,8 +63,13 @@ function Get-Run {
     $out = Join-Path $work "$Name.actual"
     Remove-Item $out -Force -ErrorAction SilentlyContinue
     $a = @('-NoProfile', '-File', $testRun, '-Kernel', $runnerCdx, '-OutFile', $out) + $Extra
-    & pwsh @a *> $null
-    if (-not (Test-Path -PathType Leaf $out)) { return '' }
+    $runLog = Join-Path $work "$Name.run.log"
+    & pwsh @a *> $runLog
+    if ($LASTEXITCODE -ne 0) {
+        Get-Content $runLog | Write-Host
+        throw "${Name}: test-run failed; see $runLog"
+    }
+    if (-not (Test-Path -PathType Leaf $out)) { throw "${Name}: no capture at $out" }
     (Get-Content -Raw $out)
 }
 
@@ -96,11 +97,25 @@ if ($noDisk -notlike '*REFUSED*') { $fails += 'the control did not REFUSE with n
 if ($noDisk -notlike '*volume    : bps=0 ok=no*') { $fails += 'the control did not report an unusable volume' }
 if ($noDisk -match 'entries\s+:\s+\d+ on the root') { $fails += 'the control listed a volume that is not there' }
 if ($noDisk -like '*ok=yes cdx=*') { $fails += 'the control compiled something with no volume attached' }
+if ($noDisk -notmatch '(?m)^=== runner done ===\r?$') { $fails += 'the control did not finish' }
+
+Write-Host 'disk-runner-arm: arm 3, an entry the codegen refuses...'
+$badSrc = Join-Path $work 'nochap.codex'
+Set-Content -Path $badSrc -Value 'hello' -NoNewline -Encoding ASCII
+$badImg = Join-Path $work 'codegen-red.img'
+Invoke-Step 'codegen-red image' @('-NoProfile', '-File', (Join-Path $repo 'codex\plugs\img\run.ps1'), '-PeInput', $samplePe, '-CdxInput', $sampleCdx, '-Out', $badImg, '-Fat16', '-Source', $badSrc) $badImg
+$codegenRed = Get-Run 'codegen-red' @('-DiskFile', $badImg)
+Write-Host ($codegenRed.TrimEnd() -split "`r?`n" | ForEach-Object { "  $_" }) -Separator "`n"
+if ($codegenRed -notmatch '(?m)^NOCHAP\.COD : frontend ok, CODEGEN errors=[1-9]\d* first=CDX\d+\r?$') { $fails += 'arm 3 did not reach the CODEGEN branch at all' }
+if ($codegenRed -notmatch '(?m)^summary   : failed=1\r?$') {
+    $fails += 'arm 3: the summary did not count the entry the codegen refused'
+}
+if ($codegenRed -notmatch '(?m)^=== runner done ===\r?$') { $fails += 'arm 3 did not finish' }
 
 Write-Host ''
 if ($fails.Count -gt 0) {
     foreach ($f in $fails) { Write-Host "FAIL: $f" -ForegroundColor Red }
     exit 1
 }
-Write-Host 'disk-runner-arm: PASS -- the runner reads the volume, and refuses without one' -ForegroundColor Green
+Write-Host 'disk-runner-arm: PASS -- valid source compiled, missing volume refused, codegen rejection counted' -ForegroundColor Green
 exit 0

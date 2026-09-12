@@ -15,7 +15,8 @@ param(
     # that wants a secondary core: the conduit is HVC, which is undefined on
     # boards without PSCI (the committed Renode board), where it traps and
     # parks the guest before `opening` runs. See CL 8221.
-    [switch]$Smp
+    [switch]$Smp,
+    [switch]$Darwin
 )
 
 Set-StrictMode -Version Latest
@@ -42,7 +43,10 @@ Write-Host "[arm64-run] Input: $($irBytes.Length) bytes from $IrInput"
 # Build input: CCE mode header + CCE IR + null terminator
 $inputFile = [System.IO.Path]::GetTempFileName()
 $hdrList = [System.Collections.Generic.List[byte]]::new()
-$modeText = if ($Smp) { "IR-CCE smp" } else { "IR-CCE" }
+$modeParts = @('IR-CCE')
+if ($Smp) { $modeParts += 'smp' }
+if ($Darwin) { $modeParts += 'darwin' }
+$modeText = $modeParts -join ' '
 foreach ($ch in $modeText.ToCharArray()) {
     $u = [int]$ch
     if ($u -lt 256) { $hdrList.Add([byte]$script:UnicodeToCce[$u]) }

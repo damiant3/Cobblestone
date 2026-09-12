@@ -4,33 +4,12 @@ Chapter: DiskTestRunner
   cites Codex chapter Diagnostic Bag (bag-errors)
   cites Foreword chapter Maybe
 
- Build.md Phase B. The on-disk test runner: mount the boot volume, list what is
- on it, choose an entry by name, read the bytes back, and COMPILE them in this
- same program.
-
- The compiler arrives as a library. `Chapter: Opening` declares `codex-opening`
- and no `opening`, so it is citable, and `Codex` is a manifest quire: a cite of
- any of its chapters pulls the whole ordered unit `build/compiler-order.txt`
- names, minus that unit's own entry chapter. That is what lets one program
- compile another without a second boot.
-
- Every line prints a verdict of its own rather than one summary, because a
- bare-metal boot has no exit code to read: the serial log IS the result, and a
- stage that fails must say which stage.
-
 Section: Reporting
 
   yn : Boolean -> Text
   yn (b) = if b then "yes" else "no"
 
 Section: The Compile
-
- `compile-frontend` is pure and Console-free, so a verdict costs no effects and
- needs no act block. Errors are counted rather than printed: a bare-metal serial
- log is the only channel and a failing chapter can produce hundreds.
-
- The bag is read ONCE per entry and both numbers come out of that one read: a
- second call would compile the chapter again to learn what it already knew.
 
   RunnerResult = record {
    rr-errors : Integer,
@@ -42,12 +21,6 @@ Section: The Compile
    rr-line : Integer,
    rr-col : Integer
   }
-
- The BACKEND runs here too, not the frontend alone. A chapter whose frontend is
- clean and whose codegen is not looks identical to a clean one when only the
- frontend runs, and that is the class no arm on the guest could observe.
- `compile-to-cdx` answers the emitted bytes in memory, so the runner reports a
- size without writing anything.
 
   RunnerEmit = record {
    re-bytes : Integer,
@@ -68,12 +41,6 @@ Section: The Compile
     re-code = if list-length ees == 0 then 0 else (list-at ees 0).code
    }
 
- Every subject is compiled between a heap mark and its restore, which is the
- shape the design ruled: a bare-metal heap has no collector, so without the
- restore each subject's AST, IR and emitted buffer stay resident and the run
- length is bounded by memory rather than by the corpus. Only Integers cross the
- restore, and the record below is allocated after it.
-
   runner-run : Text -> RunnerResult
   runner-run (t) =
    let hp = __heap-save
@@ -91,19 +58,10 @@ Section: The Compile
    in let restored = __heap-restore hp
    in RunnerResult { rr-errors = n, rr-code = code, rr-bytes = bytes, rr-emit-errors = ecount, rr-emit-code = ecode, rr-message = msg, rr-line = ln, rr-col = cl }
 
- A read that failed and a chapter that would not compile are different answers
- and a summary must not merge them, so an unreadable entry is -1 rather than an
- error count of its own.
-
   runner-of : Maybe Text -> RunnerResult
   runner-of (src) =
    if is-none src then RunnerResult { rr-errors = 0 - 1, rr-code = 0, rr-bytes = 0, rr-emit-errors = 0, rr-emit-code = 0, rr-message = "", rr-line = 0, rr-col = 0 }
    else runner-run (from-maybe src "")
-
- The FIRST diagnostic code is what a `.failing` sidecar records, so printing it
- is what lets that half of the diff be made at all. The pairing itself stays on
- the host: the sidecars are not on the image, and putting them there is a
- namespace question rather than a runner one.
 
   runner-line : Text, RunnerResult -> Text
   runner-line (nm) (r) =
@@ -111,10 +69,6 @@ Section: The Compile
    else if r.rr-errors > 0 then nm & " : errors=" & show (r.rr-errors) & " ok=no first=CDX" & show (r.rr-code) & " at " & show (r.rr-line) & ":" & show (r.rr-col) & " -- " & (r.rr-message)
    else if r.rr-emit-errors > 0 then nm & " : frontend ok, CODEGEN errors=" & show (r.rr-emit-errors) & " first=CDX" & show (r.rr-emit-code)
    else nm & " : errors=0 ok=yes cdx=" & show (r.rr-bytes)
-
- EFI and SEED are the image's own directories, written by the image writer
- rather than put there by a caller. Everything else on the root is a subject,
- and a subject is either a source or a directory of them.
 
   runner-skip : Text -> Boolean
   runner-skip (n) =
@@ -126,7 +80,7 @@ Section: The Compile
   runner-say : Text, RunnerResult -> [Console] Integer
   runner-say (nm) (r) = act
     print-line-uni (runner-line nm r)
-    r.rr-errors
+    if r.rr-errors == 0 then r.rr-emit-errors else r.rr-errors
    end
 
   runner-subject : Fat16Volume, Text -> [Console, Device.Block] Integer
@@ -134,11 +88,6 @@ Section: The Compile
     src <- fat16-read-source vol path
     runner-say path (runner-of src)
    end
-
- The image writer places the sources in SRC0, SRC1 and so on when the caller
- asks for it, because the FAT16 root holds 509 usable entries and cannot hold
- two names that fold to one 8.3 spelling. One level is what the writer produces
- and one level is what this walks.
 
   runner-files : Fat16Volume, Text, List Fat16DirEntry, Integer, Integer, Integer -> [Console, Device.Block] Integer
   runner-files (vol) (dir) (es) (i) (n) (bad) =

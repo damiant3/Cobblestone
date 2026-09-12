@@ -2,6 +2,7 @@ Chapter: Zig Emitter
   cites Foreword chapter Sort
   cites Foreword chapter TextSearch
   cites Foreword chapter Shake
+  cites Foreword chapter StringBuilder
 
 Section: Keywords and Sanitization
 
@@ -128,7 +129,7 @@ Section: Keywords and Sanitization
    "cce_t1_code", "cce_t1_size", "cce_t1_uni", "cce_t2_size", "cce_t2_uni",
    "cce_table", "chunk", "code", "cp", "ctx", "cx_a", "cx_acc", "cx_ap",
    "cx_b", "cx_base", "cx_ch", "cx_e", "cx_i", "cx_j", "cx_l", "cx_out",
-   "cx_p", "cx_pa", "cx_pi", "cx_s", "cx_tail", "cx_tmp", "cx_used", "cx_v",
+   "cx_p", "cx_pa", "cx_pi", "cx_s", "cx_tail", "cx_tmp", "cx_used", "cx_v", "cx_frac",
    "d", "D", "dot", "e", "fd", "frac", "h", "i", "k", "l", "len", "m",
    "memory", "n", "neg", "new_len", "o", "off", "out", "p", "path",
    "path_cce", "r", "R", "ra", "raw", "rc", "s", "sep", "size", "start", "T",
@@ -1314,7 +1315,7 @@ Section: Name Mapping
    in if ci >= 0 then
     let c = list-at (ctx.ctors) ci
     in if c.enum-like then zig-sanitize (c.type-name) & "." & zig-sanitize n
-       else let boxed = zig-typedef-recursive ctx (c.type-name)
+       else let boxed = zig-typedef-boxed ctx (c.type-name)
        in let base = if boxed then zig-sanitize (c.type-name) & "S" else zig-sanitize (c.type-name) & zig-ctor-type-args ty (ctx.scope-tvars)
        in if boxed then "cx_new(" & base & "{ ." & zig-sanitize n & " = {} })"
           else base & "{ ." & zig-sanitize n & " = {} }"
@@ -1411,54 +1412,28 @@ Section: Type Definition Emission
     is AUnitTypeDef (name) (unitbase) (s) ->
      "const " & zig-sanitize (name.value) & " = " & emit-zig-atype unitbase & ";\n\n"
 
- All-nullary variants become plain enums so tag comparison and member
- references work directly; any payload forces union(enum), with a
- tuple struct for multi-field constructors.
+ Non-generic payload variants are pointers so address-of observes object
+ identity. Generic variants stay inline as function-returned types;
+ all-nullary variants remain enums.
 
- A variant whose constructor payload holds the variant itself has no finite
- size in zig, so such a type becomes a pointer alias -- the same shape the
- mutable records already use here. Only a direct payload counts: a List of
- the type is a pointer already and does not force boxing.
-
-  zig-atype-is-named : ATypeExpr, Text -> Boolean
-  zig-atype-is-named (te) (n) =
-   when te
-    is ANamedType (nm) (s) -> nm.value == n
-    is otherwise -> False
-
-  zig-ctor-fields-self-ref : List ATypeExpr, Integer, Text -> Boolean
-  zig-ctor-fields-self-ref (fs) (i) (n) =
-   if i >= list-length fs then False
-   else if zig-atype-is-named (list-at fs i) n then True
-   else zig-ctor-fields-self-ref fs (i + 1) n
-
-  zig-variant-self-recursive : Text, List AVariantCtorDef, Integer -> Boolean
-  zig-variant-self-recursive (n) (ctors) (i) =
-   if i >= list-length ctors then False
-   else if zig-ctor-fields-self-ref ((list-at ctors i).fields) 0 n then True
-   else zig-variant-self-recursive n ctors (i + 1)
-
-  zig-typedef-recursive-loop : List ATypeDef, Integer, Text -> Boolean
-  zig-typedef-recursive-loop (tds) (i) (n) =
+  zig-typedef-boxed-loop : List ATypeDef, Integer, Text -> Boolean
+  zig-typedef-boxed-loop (tds) (i) (n) =
    if i >= list-length tds then False
    else when (list-at tds i)
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     if name.value == n then zig-variant-self-recursive n ctors 0
-     else zig-typedef-recursive-loop tds (i + 1) n
-    is otherwise -> zig-typedef-recursive-loop tds (i + 1) n
+     if name.value == n
+     then if list-length tparams > 0 then False
+          else if variant-all-nullary ctors 0 then False
+          else True
+     else zig-typedef-boxed-loop tds (i + 1) n
+    is otherwise -> zig-typedef-boxed-loop tds (i + 1) n
 
-  zig-typedef-recursive : ZigCtx, Text -> Boolean
-  zig-typedef-recursive (ctx) (n) = zig-typedef-recursive-loop (ctx.typedefs) 0 n
-
- Whether a scrutinee needs `.*` is a question about the type's NAME, so it
- asks the same way the exhaustiveness check does. Matching SumTy alone
- answered "" for a ConstructedTy naming the very same self-recursive type,
- and the two readings disagreed silently: emit-opening-result-print
- switched on a CodexType-typed field and got a switch on the pointer.
+  zig-typedef-boxed : ZigCtx, Text -> Boolean
+  zig-typedef-boxed (ctx) (n) = zig-typedef-boxed-loop (ctx.typedefs) 0 n
 
   zig-match-deref : ZigCtx, CodexType -> Text
   zig-match-deref (ctx) (ty) =
-   if zig-typedef-recursive ctx (zig-type-name-of ty) then ".*" else ""
+   if zig-typedef-boxed ctx (zig-type-name-of ty) then ".*" else ""
 
   emit-zig-sum-type : Text, List AVariantCtorDef, List Name -> Text
   emit-zig-sum-type (name) (ctors) (tparams) =
@@ -1467,10 +1442,8 @@ Section: Type Definition Emission
       & emit-zig-union-ctors ctors 0 (list-length ctors) & "    };\n}\n\n"
    else if variant-all-nullary ctors 0
    then "const " & zig-sanitize name & " = enum {\n" & emit-zig-enum-ctors ctors 0 (list-length ctors) & "};\n\n"
-   else if zig-variant-self-recursive name ctors 0
-   then "const " & zig-sanitize name & "S = union(enum) {\n" & emit-zig-union-ctors ctors 0 (list-length ctors) & "};\n"
+   else "const " & zig-sanitize name & "S = union(enum) {\n" & emit-zig-union-ctors ctors 0 (list-length ctors) & "};\n"
       & "const " & zig-sanitize name & " = *" & zig-sanitize name & "S;\n\n"
-   else "const " & zig-sanitize name & " = union(enum) {\n" & emit-zig-union-ctors ctors 0 (list-length ctors) & "};\n\n"
 
   emit-zig-enum-ctors : List AVariantCtorDef, Integer, Integer -> Text
   emit-zig-enum-ctors (ctors) (i) (len) =
@@ -1657,7 +1630,7 @@ Section: Expression Emission
     is IrLet (name) (ty) (val) (body) (sp) ->
      if zig-is-seq-name name then zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
      else if zig-occurs body name then zig-label d & ": { const " & zig-bind-name ctx name d & zig-let-annot ty & " = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body (zig-bind-push ctx name d) (d + 1) & "; }"
-     else zig-label d & ": { _ = " & emit-zig-expr val ctx (d + 1) & "; break :" & zig-label d & " " & emit-zig-expr body ctx (d + 1) & "; }"
+     else zig-label d & ": { const " & zig-bind-name ctx name d & zig-let-annot ty & " = " & emit-zig-expr val ctx (d + 1) & "; _ = " & zig-bind-name ctx name d & "; break :" & zig-label d & " " & emit-zig-expr body (zig-bind-push ctx name d) (d + 1) & "; }"
     is IrApply (f) (a) (ty) (sp) -> emit-zig-apply e ctx d
     is IrLambda (params) (body) (ty) (sp) -> zig-lambda-closure params body ty ctx d
     is IrList (elems) (ty) (sp) -> emit-zig-list elems ty ctx d
@@ -2115,7 +2088,7 @@ Section: Match Emission
    let mty = if text-length (zig-ll-elem-opt mty0 (ctx.scope-tvars)) > 0 then mty0
       else zig-arms-list-type branches 0 mty0 (ctx.scope-tvars)
    in let ex = zig-match-exhaustive ctx (zig-expr-type scrut) branches
-   in if zig-branches-guarded branches 0 then emit-zig-match-chain scrut branches ctx d mty
+   in if zig-branches-guarded branches 0 | zig-branches-nested branches 0 then emit-zig-match-chain scrut branches ctx d mty tl
    else zig-pin-lit-arms branches 0 ("switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { " & emit-zig-match-arms branches 0 ctx d ex mty tl & " }")
 
  A zig `switch` prong refuses a value an earlier prong already names:
@@ -2306,49 +2279,149 @@ Section: Match Emission
    else if zig-is-num-lit ((list-at bs i).body) then "@as(f64, " & s & ")"
    else zig-pin-lit-arms bs (i + 1) s
 
-  emit-zig-match-chain : IRExpr, List IRBranch, ZigCtx, Integer, CodexType -> Text
-  emit-zig-match-chain (scrut) (branches) (ctx) (d) (mty) =
+  emit-zig-match-chain : IRExpr, List IRBranch, ZigCtx, Integer, CodexType, ZigTail -> Text
+  emit-zig-match-chain (scrut) (branches) (ctx) (d) (mty) (tl) =
    let sv = zig-chain-scrut d
    in let discard = if zig-chain-uses-scrut branches 0 then "" else "_ = " & sv & "; "
-   in zig-pin-lit-arms branches 0 (zig-label d & ": { const " & sv & " = " & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & "; " & discard
-      & emit-zig-chain-arms branches 0 (zig-expect ctx mty) d mty sv & "}")
+   in let block = "{ const " & sv & " = " & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & "; " & discard
+      & emit-zig-chain-arms branches 0 (zig-expect ctx mty) d mty sv tl & "}"
+   in if zig-tail-active tl then block else zig-pin-lit-arms branches 0 (zig-label d & ": " & block)
 
-  emit-zig-chain-arms : List IRBranch, Integer, ZigCtx, Integer, CodexType, Text -> Text
-  emit-zig-chain-arms (branches) (i) (ctx) (d) (mty) (sv) =
+  emit-zig-chain-arms : List IRBranch, Integer, ZigCtx, Integer, CodexType, Text, ZigTail -> Text
+  emit-zig-chain-arms (branches) (i) (ctx) (d) (mty) (sv) (tl) =
    if i >= list-length branches then "unreachable; "
    else let b = list-at branches i
-   in let arm = emit-zig-chain-arm (b.pattern) (b.guard) (b.body) ctx d mty sv
+   in let arm = emit-zig-chain-arm (b.pattern) (b.guard) (b.body) ctx d mty sv tl
    in if zig-pat-is-catch-all (b.pattern) & zig-guard-trivial (b.guard) then arm
-      else arm & emit-zig-chain-arms branches (i + 1) ctx d mty sv
+      else arm & emit-zig-chain-arms branches (i + 1) ctx d mty sv tl
 
-  emit-zig-chain-tail : IRExpr, IRExpr, ZigCtx, Integer, CodexType -> Text
-  emit-zig-chain-tail (guard) (body) (ctx) (d) (mty) =
-   let leave = "break :" & zig-label d & " " & emit-zig-arm-body body mty ctx d & "; "
+  emit-zig-chain-tail : IRExpr, IRExpr, ZigCtx, Integer, CodexType, ZigTail -> Text
+  emit-zig-chain-tail (guard) (body) (ctx) (d) (mty) (tl) =
+   let leave = if zig-tail-active tl then emit-zig-tail body ctx (d + 1) tl else "break :" & zig-label d & " " & emit-zig-arm-body body mty ctx d & "; "
    in if zig-guard-trivial guard then leave
-      else "if (" & emit-zig-expr guard ctx (d + 1) & ") " & leave
+      else "if (" & emit-zig-expr guard ctx (d + 1) & ") { " & leave & "} "
 
-  emit-zig-chain-arm : IRPat, IRExpr, IRExpr, ZigCtx, Integer, CodexType, Text -> Text
-  emit-zig-chain-arm (pat) (guard) (body) (ctx) (d) (mty) (sv) =
+  emit-zig-chain-arm : IRPat, IRExpr, IRExpr, ZigCtx, Integer, CodexType, Text, ZigTail -> Text
+  emit-zig-chain-arm (pat) (guard) (body) (ctx) (d) (mty) (sv) (tl) =
    when pat
-    is IrLitPat (text) (ty) (sp) -> "if (" & sv & " == " & zig-lit-pat-text text ty & ") { " & emit-zig-chain-tail guard body ctx d mty & "} "
+    is IrLitPat (text) (ty) (sp) -> "if (" & zig-chain-lit-test sv text ty & ") { " & emit-zig-chain-tail guard body ctx d mty tl & "} "
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let nsubs = list-length subs
      in let test = "if (" & sv & " == ." & zig-sanitize name & ") { "
-     in if nsubs == 0 then test & emit-zig-chain-tail guard body ctx d mty & "} "
+     in if zig-subs-nested subs 0 then emit-zig-chain-nested pat sv guard body ctx d mty tl
+     else if nsubs == 0 then test & emit-zig-chain-tail guard body ctx d mty tl & "} "
      else if nsubs == 1 then
       let binder = zig-pat-binder (list-at subs 0) 0
       in if (binder == "_") | (zig-occurs-either body guard binder == False)
-         then test & emit-zig-chain-tail guard body ctx d mty & "} "
-         else test & "const " & zig-bind-name ctx binder d & " = " & sv & "." & zig-sanitize name & "; " & emit-zig-chain-tail guard body (zig-bind-push ctx binder d) d mty & "} "
+         then test & emit-zig-chain-tail guard body ctx d mty tl & "} "
+         else test & "const " & zig-bind-name ctx binder d & " = " & sv & "." & zig-sanitize name & "; " & emit-zig-chain-tail guard body (zig-bind-push ctx binder d) d mty tl & "} "
      else if zig-any-sub-occurs-g subs 0 body guard == False
-     then test & emit-zig-chain-tail guard body ctx d mty & "} "
-     else test & "const _p" & integer-to-text d & " = " & sv & "." & zig-sanitize name & "; " & emit-zig-pat-unpack-g subs 0 d body guard ctx & emit-zig-chain-tail guard body (zig-push-bound-pats ctx subs 0 d) d mty & "} "
+     then test & emit-zig-chain-tail guard body ctx d mty tl & "} "
+     else test & "const _p" & integer-to-text d & " = " & sv & "." & zig-sanitize name & "; " & emit-zig-pat-unpack-g subs 0 d body guard ctx & emit-zig-chain-tail guard body (zig-push-bound-pats ctx subs 0 d) d mty tl & "} "
     is IrVarPat (name) (ty) (sp) ->
      if zig-occurs-either body guard name
-     then "{ const " & zig-bind-name ctx name d & " = " & sv & "; " & emit-zig-chain-tail guard body (zig-bind-push ctx name d) d mty & "} "
-     else "{ " & emit-zig-chain-tail guard body ctx d mty & "} "
-    is IrWildPat (sp) -> "{ " & emit-zig-chain-tail guard body ctx d mty & "} "
+     then "{ const " & zig-bind-name ctx name d & " = " & sv & "; " & emit-zig-chain-tail guard body (zig-bind-push ctx name d) d mty tl & "} "
+     else "{ " & emit-zig-chain-tail guard body ctx d mty tl & "} "
+    is IrWildPat (sp) -> "{ " & emit-zig-chain-tail guard body ctx d mty tl & "} "
     is IrVecPat (pats) (ty) (sp) -> "@compileError(\"zig plug: vector patterns not supported\"); "
+
+  zig-pat-nested : IRPat -> Boolean
+  zig-pat-nested (p) =
+   when p
+    is IrCtorPat (name) (subs) (ty) (sp) -> zig-subs-nested subs 0
+    is IrLitPat (text) (ty) (sp) -> when ty
+     is TextTy -> True
+     is otherwise -> False
+    is otherwise -> False
+
+  zig-subs-nested : List IRPat, Integer -> Boolean
+  zig-subs-nested (subs) (i) =
+   if i >= list-length subs then False
+   else when list-at subs i
+    is IrCtorPat (name) (ss) (ty) (sp) -> True
+    is IrLitPat (text) (ty) (sp) -> True
+    is IrVecPat (ps) (ty) (sp) -> True
+    is otherwise -> zig-subs-nested subs (i + 1)
+
+  zig-branches-nested : List IRBranch, Integer -> Boolean
+  zig-branches-nested (bs) (i) =
+   if i >= list-length bs then False
+   else if zig-pat-nested ((list-at bs i).pattern) then True
+   else zig-branches-nested bs (i + 1)
+
+  zig-chain-lit-test : Text, Text, CodexType -> Text
+  zig-chain-lit-test (sv) (text) (ty) =
+   when ty
+    is TextTy -> "cx_text_eq(" & sv & ", \"" & zig-escape-text text & "\")"
+    is otherwise -> sv & " == " & zig-lit-pat-text text ty
+
+  ZigPatEmit = record {
+   parts : List Text,
+   names : List Text,
+   closes : Integer
+  }
+
+  zig-nested-context : ZigCtx, List Text, Integer -> ZigCtx
+  zig-nested-context (ctx) (names) (d) =
+   ZigCtx {
+    arities = ctx.arities,
+    ctors = ctx.ctors,
+    typedefs = ctx.typedefs,
+    irdefs = ctx.irdefs,
+    renamed-from = (ctx.renamed-from) & names,
+    renamed-to = (ctx.renamed-to) & (for n in names -> zig-bind-name ctx n d),
+    tvar-ids = ctx.tvar-ids,
+    tvar-types = ctx.tvar-types,
+    expected = ctx.expected,
+    bound-names = (ctx.bound-names) & names,
+    scope-tvars = ctx.scope-tvars
+   }
+
+  emit-zig-chain-nested : IRPat, Text, IRExpr, IRExpr, ZigCtx, Integer, CodexType, ZigTail -> Text
+  emit-zig-chain-nested (pat) (sv) (guard) (body) (ctx) (d) (mty) (tl) =
+   let out = emit-zig-nested-pat pat sv guard body ctx d (ZigPatEmit { parts = [], names = [], closes = 0 })
+   in let tail-ctx = zig-nested-context ctx (out.names) d
+   in let parts = list-push (out.parts) (emit-zig-chain-tail guard body tail-ctx d mty tl)
+   in let finished = zig-nested-close parts (out.closes)
+   in sb-join-parts finished 0 (list-length finished)
+
+  zig-nested-close : List Text, Integer -> List Text
+  zig-nested-close (parts) (n) =
+   if n <= 0 then parts else zig-nested-close (list-push parts "} ") (n - 1)
+
+  emit-zig-nested-pat : IRPat, Text, IRExpr, IRExpr, ZigCtx, Integer, ZigPatEmit -> ZigPatEmit
+  emit-zig-nested-pat (pat) (sv) (guard) (body) (ctx) (d) (out) =
+   when pat
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     let payload = "_np" & integer-to-text d & "_" & integer-to-text (list-length (out.parts))
+     in let parts = list-push (out.parts) ("if (" & sv & " == ." & zig-sanitize name & ") { ")
+     in let needs = zig-subs-nested subs 0 | zig-any-sub-occurs-g subs 0 body guard
+     in let parts2 = if needs then list-push parts ("const " & payload & " = " & sv & "." & zig-sanitize name & "; ") else parts
+     in let out2 = ZigPatEmit { parts = parts2, names = out.names, closes = out.closes + 1 }
+     in if needs then emit-zig-nested-subs subs 0 payload guard body ctx d out2 else out2
+    is IrLitPat (text) (ty) (sp) ->
+     ZigPatEmit { parts = list-push (out.parts) ("if (" & zig-chain-lit-test sv text ty & ") { "), names = out.names, closes = out.closes + 1 }
+    is IrVarPat (name) (ty) (sp) ->
+     if zig-occurs-either body guard name
+     then ZigPatEmit {
+      parts = list-push (out.parts) ("const " & zig-bind-name ctx name d & " = " & sv & "; "),
+      names = list-push (out.names) name,
+      closes = out.closes
+     }
+     else out
+    is IrWildPat (sp) -> out
+    is IrVecPat (ps) (ty) (sp) ->
+     ZigPatEmit { parts = list-push (out.parts) "@compileError(\"zig plug: vector patterns not supported\"); ", names = out.names, closes = out.closes }
+
+  emit-zig-nested-subs : List IRPat, Integer, Text, IRExpr, IRExpr, ZigCtx, Integer, ZigPatEmit -> ZigPatEmit
+  emit-zig-nested-subs (subs) (i) (payload) (guard) (body) (ctx) (d) (out) =
+   if i >= list-length subs then out
+   else let pat = list-at subs i
+   in let raw = if list-length subs == 1 then payload else payload & "[" & integer-to-text i & "]"
+   in let sv = when pat
+     is IrCtorPat (name) (ss) (ty) (sp) -> raw & zig-match-deref ctx ty
+     is otherwise -> raw
+   in emit-zig-nested-subs subs (i + 1) payload guard body ctx d (emit-zig-nested-pat pat sv guard body ctx d out)
 
   zig-any-sub-occurs-g : List IRPat, Integer, IRExpr, IRExpr -> Boolean
   zig-any-sub-occurs-g (subs) (i) (body) (guard) =
@@ -2958,7 +3031,7 @@ Section: Apply Emission
   emit-zig-ctor-apply (c) (args) (ctx) (d) (cty) =
    let tname = zig-sanitize (c.type-name)
    in let cname = zig-sanitize (c.ctor-name)
-   in let boxed = zig-typedef-recursive ctx (c.type-name)
+   in let boxed = zig-typedef-boxed ctx (c.type-name)
    in let base = if boxed then tname & "S" else tname & zig-ctor-type-args cty (ctx.scope-tvars)
    in let open = if boxed then "cx_new(" else ""
    in let close = if boxed then ")" else ""
@@ -3350,9 +3423,11 @@ Section: Tail Call Loops
      else if zig-occurs body name
      then "const " & zig-bind-name ctx name d & zig-let-annot ty & " = " & emit-zig-expr val ctx (d + 1) & "; "
         & emit-zig-tail body (zig-bind-push ctx name d) (d + 1) tl
-     else "_ = " & emit-zig-expr val ctx (d + 1) & "; " & emit-zig-tail body ctx (d + 1) tl
+     else "const " & zig-bind-name ctx name d & zig-let-annot ty & " = " & emit-zig-expr val ctx (d + 1) & "; _ = " & zig-bind-name ctx name d & "; "
+        & emit-zig-tail body (zig-bind-push ctx name d) (d + 1) tl
     is IrMatch (scrut) (branches) (ty) (sp) ->
      if zig-branches-guarded branches 0 then zig-tail-return e ctx d
+     else if zig-branches-nested branches 0 then emit-zig-match scrut branches ctx d ty tl
      else "switch (" & emit-zig-expr scrut ctx (d + 1) & zig-match-deref ctx (zig-expr-type scrut) & ") { "
         & emit-zig-match-arms branches 0 ctx d (zig-match-exhaustive ctx (zig-expr-type scrut) branches) ty tl & " }"
     is IrAct (ss) (aty) (asp) ->
@@ -3613,7 +3688,7 @@ Section: Definition Emission
    else let body-text = emit-zig-expr (d.body) (zig-push-bound-params (zig-push-param-renames ctx (d.params) 0) (d.params) 0) 0
    in head
     & (if zig-body-refused body-text
-       then emit-zig-all-param-discards (d.params) 0
+       then emit-zig-all-param-discards (d.params) 0 ctx
        else emit-zig-param-discards (d.params) 0 (d.body))
     & "    return " & body-text & ";\n}\n\n"
 
@@ -3711,21 +3786,16 @@ Section: Definition Emission
  is never printed. Finding 51, measured on three Roc ports and the probe
  matrix.
 
- So a refused body discards EVERY parameter. Not the ones a name search
- says are dead: `_ = x;` beside a live use is legal zig, and a substring
- test on parameter names is the word-boundary collision this tree has
- already been bitten by. Discarding all of them cannot misfire, and the
- first thing zig has left to analyse is the message.
-
   zig-body-refused : Text -> Boolean
   zig-body-refused (t) =
    text-contains t "zig plug: "
 
-  emit-zig-all-param-discards : List IRParam, Integer -> Text
-  emit-zig-all-param-discards (params) (i) =
+  emit-zig-all-param-discards : List IRParam, Integer, ZigCtx -> Text
+  emit-zig-all-param-discards (params) (i) (ctx) =
    if i == list-length params then ""
    else let p = list-at params i
-   in "    _ = " & zig-sanitize (p.name) & ";\n" & emit-zig-all-param-discards params (i + 1)
+   in let alias = "_pd" & integer-to-text i
+   in "    const " & alias & " = " & zig-def-param-name ctx (p.name) & "; _ = " & alias & ";\n" & emit-zig-all-param-discards params (i + 1) ctx
 
   emit-zig-param-discards : List IRParam, Integer, IRExpr -> Text
   emit-zig-param-discards (params) (i) (body) =
@@ -3984,7 +4054,7 @@ Section: Chapter Emission
   zig-p-cx-text-compare = [ShakeLit "fn ", ShakeUse "cx_text_compare", ShakeLit "(a: []const u8, b: []const u8) i64 {\n    return switch (", ShakeUse "std", ShakeLit ".mem.order(u8, a, b)) { .lt => -1, .eq => 0, .gt => 1 };\n}\n"]
 
   zig-p-cx-text-to-double-bits : List ShakeFrag
-  zig-p-cx-text-to-double-bits = [ShakeLit "// Mirrors bare metal's __text_to_double, not a correctly-rounded parse:\n// accumulate the digits as one wrapping integer, count places after the\n// dot, cvtsi2sd once, divide once by 10^frac built by repeated\n// multiplication. The bits land in IrNumLit, so they must match the seed's\n// exactly; a parser that rounds better is a parser that diverges.\nfn ", ShakeUse "cx_text_to_double_bits", ShakeLit "(s: []const u8) i64 {\n    if (s.len == 0) return 0;\n    var i: usize = 0;\n    var neg = false;\n    if (s[0] == 73) {\n        neg = true;\n        i = 1;\n    }\n    var acc: i64 = 0;\n    var frac: i64 = 0;\n    var dot: i64 = 0;\n    while (i < s.len) : (i += 1) {\n        const b = s[i];\n        if (b == 65) {\n            dot = 1;\n            continue;\n        }\n        acc = acc *% 10 +% (@as(i64, b) -% 3);\n        frac += dot;\n    }\n    if (neg) acc = -%acc;\n    var v: f64 = @floatFromInt(acc);\n    if (frac != 0) {\n        var p: f64 = 1.0;\n        var k = frac;\n        while (k != 0) : (k -= 1) p *= 10.0;\n        v /= p;\n    }\n    return @bitCast(v);\n}\n"]
+  zig-p-cx-text-to-double-bits = [ShakeLit "fn ", ShakeUse "cx_text_to_double_bits", ShakeLit "(s: []const u8) i64 {\n    var i: usize = 0;\n    const neg = s.len != 0 and s[0] == 73;\n    if (neg) i = 1;\n    var acc: u64 = 0;\n    var frac: i64 = 0;\n    var dot: i64 = 0;\n    while (i < s.len) : (i += 1) {\n        const b = s[i];\n        if (b == 65) {\n            dot = 1;\n            continue;\n        }\n        acc = acc *% 10 +% (@as(u64, b) -% 3);\n        frac += dot;\n    }\n    const bits: u64 = if (neg) @as(u64, 1) << 63 else 0;\n    if (acc == 0) return @bitCast(bits);\n    if (frac > 108) @panic(\"text-to-double-bits: fraction exceeds 108 digits\");\n    var p: u256 = 1;\n    var k = frac;\n    while (k != 0) : (k -= 1) p *%= 5;\n    var r: u256 = acc;\n    var e: i64 = 0;\n    while (r >= p << 1) {\n        p <<= 1;\n        e += 1;\n    }\n    while (r < p) {\n        r <<= 1;\n        e -= 1;\n    }\n    acc = 1;\n    r -= p;\n    k = 53;\n    while (k != 0) : (k -= 1) {\n        r <<= 1;\n        acc <<= 1;\n        if (r >= p) {\n            r -= p;\n            acc |= 1;\n        }\n    }\n    const b = acc & 1;\n    acc >>= 1;\n    if (b != 0 and (r != 0 or acc & 1 != 0)) {\n        acc += 1;\n        if (acc == @as(u64, 1) << 53) {\n            acc >>= 1;\n            e += 1;\n        }\n    }\n    return @bitCast(bits | (@as(u64, @intCast(e - frac + 1023)) << 52) | (acc - (@as(u64, 1) << 52)));\n}\n"]
 
   zig-p-cx-bits-to-real-approx : List ShakeFrag
   zig-p-cx-bits-to-real-approx = [ShakeLit "// real-f32 on bare metal is f32 bits in a general register (a movd\n// round-trip, emit-bits-to-real-approx-builtin); Real is f64 here, and\n// widening the named f32 value is exact.\nfn ", ShakeUse "cx_bits_to_real_approx", ShakeLit "(bits: i64) f64 {\n    return @floatCast(@as(f32, @bitCast(@as(u32, @truncate(@as(u64, @bitCast(bits)))))));\n}\n"]
@@ -4041,7 +4111,7 @@ Section: Chapter Emission
  `.expected` in the tree spells it.
 
   zig-p-cx-real-to-text : List ShakeFrag
-  zig-p-cx-real-to-text = [ShakeLit "fn ", ShakeUse "cx_real_to_text", ShakeLit "(cx_v: f64) []const u8 {\n    var cx_tmp: [64]u8 = undefined;\n    var cx_i: usize = 0;\n    const cx_b = (@as(u64, @bitCast(cx_v)) >> 63) == 1;\n    const cx_e = @abs(cx_v);\n    const cx_acc = @trunc(cx_e);\n    var cx_a: [24]u8 = undefined;\n    const cx_s = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_a, \"{d}\", .{", ShakeUse "cx_real_to_int", ShakeLit "(cx_acc)}) catch unreachable;\n    if (cx_b) {\n        cx_tmp[cx_i] = 73;\n        cx_i += 1;\n    }\n    for (cx_s) |cx_ch| {\n        cx_tmp[cx_i] = 3 + (cx_ch - '0');\n        cx_i += 1;\n    }\n    cx_tmp[cx_i] = 65;\n    cx_i += 1;\n    const cx_p = cx_i;\n    var cx_l = cx_i;\n    var cx_new = cx_e - cx_acc;\n    var cx_j: usize = 0;\n    while (cx_j < 15) : (cx_j += 1) {\n        cx_new *= 10.0;\n        const cx_x: u8 = @intFromFloat(@trunc(cx_new));\n        cx_new -= @trunc(cx_new);\n        cx_tmp[cx_i] = 3 + cx_x;\n        cx_i += 1;\n        if (cx_x != 0) cx_l = cx_i;\n    }\n    const cx_out = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, if (cx_l > cx_p) cx_l else cx_p + 1) catch @panic(\"oom\");\n    @memcpy(cx_out, cx_tmp[0..cx_out.len]);\n    return cx_out;\n}\n"]
+  zig-p-cx-real-to-text = [ShakeLit "fn ", ShakeUse "cx_real_to_text", ShakeLit "(cx_v: f64) []const u8 {\n    var cx_tmp: [64]u8 = undefined;\n    var cx_i: usize = 0;\n    const cx_b = (@as(u64, @bitCast(cx_v)) >> 63) == 1;\n    const cx_e = @abs(cx_v);\n    const cx_acc = @trunc(cx_e);\n    var cx_a: [24]u8 = undefined;\n    const cx_s = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_a, \"{d}\", .{", ShakeUse "cx_real_to_int", ShakeLit "(cx_acc)}) catch unreachable;\n    if (cx_b) {\n        cx_tmp[cx_i] = 73;\n        cx_i += 1;\n    }\n    for (cx_s) |cx_ch| {\n        cx_tmp[cx_i] = 3 + (cx_ch - '0');\n        cx_i += 1;\n    }\n    cx_tmp[cx_i] = 65;\n    cx_i += 1;\n    const cx_p = cx_i;\n    var cx_l = cx_i;\n    var cx_frac = cx_e - cx_acc;\n    var cx_j: usize = 0;\n    while (cx_j < 15) : (cx_j += 1) {\n        cx_frac *= 10.0;\n        const cx_x: u8 = @intFromFloat(@trunc(cx_frac));\n        cx_frac -= @trunc(cx_frac);\n        cx_tmp[cx_i] = 3 + cx_x;\n        cx_i += 1;\n        if (cx_x != 0) cx_l = cx_i;\n    }\n    const cx_out = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, if (cx_l > cx_p) cx_l else cx_p + 1) catch @panic(\"oom\");\n    @memcpy(cx_out, cx_tmp[0..cx_out.len]);\n    return cx_out;\n}\n"]
 
   zig-p-cx-char-to-text : List ShakeFrag
   zig-p-cx-char-to-text = [ShakeLit "// A char is a CCE code and text is CCE, so making text from a char is\n// ONE raw byte, the way bare metal does: emit-char-to-text-builtin stores\n// the code with mov-store-byte, length 1, no framing, truncating silently\n// past 255. Byte-wise text rebuilds (ir-quote walks char-code-at /\n// code-to-char / char-to-text over every byte) rely on that identity to\n// pass CCE frame bytes through untouched; framing or converting here\n// corrupts the wire.\nfn ", ShakeUse "cx_char_to_text", ShakeLit "(c: i64) []const u8 {\n    const b = ", ShakeUse "cx_gpa", ShakeLit ".alloc(u8, 1) catch @panic(\"oom\");\n    b[0] = @truncate(@as(u64, @bitCast(c)));\n    return b;\n}\n"]

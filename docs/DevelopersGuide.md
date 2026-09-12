@@ -17,6 +17,20 @@ Section: SubName
 Chapters = modules. Sections = sub-modules. `cites` = imports.
 Entry point: `opening` (not `main`).
 
+After skipping spaces, the lexer selects prose handling when the current
+column is 2: normal mode skips the rest of the line; `-Prose` emits a
+`ProseText` token. Deeper indentation still reaches ordinary token scanning
+in both modes. A later parser step can discard an indented continuation,
+but cannot prevent an earlier lexer diagnostic.
+
+Outside column 2, an unclosed character literal raises CDX0008 unless the
+opening quote immediately follows a letter or digit. That exception admits
+internal apostrophes in headings, such as `Section: The Gate's Coverage`.
+Consequently, `can't` does not raise CDX0008, but `'rf_nearest'` following a
+space does. A valid character literal such as `'x'` closes after one
+character and raises no CDX0008. Absence of CDX0008 does not identify a line
+as prose or prove that the line parses successfully.
+
 **Prose does not reach the CDX.** Two sources differing only in a prose
 block compile to a byte-identical CDX, at chapter level and at section
 level; changing a printed string literal in the same file does change it,
@@ -1429,8 +1443,10 @@ value through.
 
 ### A mask cannot be written down
 
-A comparison of two vectors produces a `VectorMask N`, which is what
-`mask-any`, `mask-all`, `mask-none`, `mask-count` and `vec-select` take.
+A comparison of two N-lane vectors produces an inferred `VectorMask N`.
+`mask-any`, `mask-all`, `mask-none`, `mask-count` and `vec-select` accept
+two-lane masks. Four-lane masks use `mask4-any`, `mask4-all`, `mask4-none`,
+`mask4-count` and `vec4-select`.
 **That type has no surface syntax.** `resolve-applied-type` knows `List`,
 `LinkedList`, `Real` and `Vector`; anything else parses as an ordinary
 constructed type, so a signature naming `VectorMask 2` is CDX3008 undefined
@@ -1459,8 +1475,8 @@ it can only read one it was handed, which is why the arms in
 ### Construction and Access
 
 ```
-  vec-splat : a -> Vector N a           -- fill all lanes
-  vec-extract : Vector N a, Integer -> a  -- extract one lane
+    vec-splat : a -> Vector 2 a           -- fill both lanes
+    vec-extract : Vector 2 a, Integer -> a  -- extract one lane
   vec-load-at : Integer -> Vector 2 a     -- load 16 bytes at an address (movupd, unaligned OK)
   vec-store-at : Integer, Vector 2 a -> Integer  -- store 16 bytes at an address
 ```
@@ -1474,8 +1490,14 @@ returns the same array, like `list-set-at`.
 ### Reduction
 
 ```
-  vec-reduce-add : Vector N a -> a      -- horizontal sum
-```
+    vec-reduce-add : Vector 2 a -> a      -- horizontal sum
+  ```
+
+For `Vector 4 (Real approximate)`, use `vec4-select` and `vec4-reduce-add`.
+Reduction adds lanes left-to-right with f32
+rounding at each addition. These consumers are implemented on x86-64 and
+wasm; ARM64 and RISC-V explicitly refuse them. The unnumbered consumer names
+retain their two-lane contracts.
 
 ### Approximate Equality
 

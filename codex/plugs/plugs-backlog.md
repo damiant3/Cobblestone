@@ -1388,47 +1388,25 @@ stopped the assembler. A source grep for builtin names cannot answer this:
 `.codex` carries prose by design.
 
 
-## 2.18 -- the `wasm-exports` census is ruled and not built
+## 2.18 -- legacy wasm export migration
 
-**RULED 2026-09-01 (root), TAKEN as Steve Howell's PR 112 proposed:** a
-chapter declares its own exports and that declaration wins; the 484-name
-allowlist applies only where a chapter declares nothing. It carries a census:
-once every shipped page module declares, **the allowlist is deleted**, because
-a list drawn from unrelated applications is a leak in one direction and a
-coincidence in the other. reek's.
+A program can declare `wasm-exports : Text = "|name-a|name-b|"`.
+Declared definitions and the declaration survive IR-UNI and IR-CCE pruning.
+An empty literal selects no application exports; an absent declaration
+retains the legacy allowlist. Missing named definitions and nonliteral or
+parameterized declarations refuse WAT assembly. Runtime exports remain.
+`codex/plugs/wasm/exports-test.ps1` checks declaration selection, both IR
+wires, dead-code controls, refusals and fishtank fallback.
 
-Not built. Verified at head 2026-09-09: `wasm-export-list` is still the
-allowlist at `WasmEmitter.codex:3905`.
+The remaining work is migration of legacy app modules before deleting the
+allowlist. Page-module declarations alone cannot justify deletion: app
+modules also consume the fallback. The fishtank control preserves the full
+binary function-export set and checks `species_count` at runtime; other
+application exports need their own migration controls.
 
-**THE CENSUS THE RULING NAMES IS ANSWERED, AND IT ANSWERS THE OTHER WAY.
-Measured 2026-09-09 over the emitted `.wat` of all 24 page modules present on
-disk: each exports exactly TWO names, `__heap_reset` and `_start`, and both
-come from the runtime header. The allowlist contributes ZERO exports to every
-shipped page module.** Its real consumers are the APP modules, measured in the
-same pass: `bridge` 24, `blackjack` 17, `backgammon` 16, `battleship` 11,
-`c64` 10. So "once every page module declares, the allowlist is deleted" cannot
-close it: no page module needs the allowlist, and deleting it takes the app
-modules' exports with it. The declaration work and the deletion are separate
-questions with separate subjects.
-
-**A DECLARATION MUST ALSO REACH THE COMPILER'S DCE ROOTS, so this is not a
-plug-only change.** The IR handed to a plug is pruned before it is emitted:
-`ir-prune-unreachable-roots` in `codex/compiler/Emit/IRTextEmitter.codex:667`,
-called from `codex/compiler/opening.codex:1808` and `:1834` with the hardcoded
-`ir-emit-roots` (`:1343`, six names). A chapter declaring an export it does not
-reach from `opening` therefore names a definition DCE has already deleted, and
-`wat-emit-exports` would emit an export naming nothing. The chapter HEADER
-survives pruning (type defs, ctors and effect-op names are untouched), so a
-declaration carried as an annotation reaches the plug; the FUNCTIONS it names
-do not, without a root.
-
-**Steve's remaining reports, HIS measurements on HIS corpus and not
-re-measured here** (L-COUNT: re-measure before quoting any of these): ~45
-runtime helpers carry no prefix, so each is a name a program may not use; 6
-SIMD type mismatches; 26 of 526 corpus programs differ from their `.expected`.
-His `Text` literal PATTERN item is CLOSED at head: `wat-lit-pat-test` tests a
-Text pattern with `$text_eq` against the string table.
-
+Unverified reports from Steve Howell's PR 112 remain: unprefixed runtime
+helper names, SIMD type mismatches and corpus parity gaps. Reproduce each
+report before taking a repair.
 
 ## 2.15 -- the typescript plug SAYS it has no `read-line`; refusing the general case needs a scope it does not have
 
@@ -2545,3 +2523,97 @@ Neither is taken here.
 Found by the pipeline-model migration (`PipelineModel.md`): declaring what a
 stage consumes and what its verdict means is what made the silent branch
 visible.
+
+## 2.57 -- the arm64 Darwin Mach-O host wrap is the contributor's, outside the tree
+
+GitHub PR 144 (apoorvapendse, 2026-09-12) added `IR-CCE darwin` to the arm64
+plug: `svc #0x80` `mmap`/`write`/`exit`, a slab at 8 GiB, and `WIRE-END` after
+the wire. The tree carries that Codex half. Turning the wire into a signed
+Mach-O (`wrap_macho.py`, `compile-macho.py`, `ld -lSystem`, `codesign`) needs a
+macOS toolchain and stays in the contributor's repository: no dependency
+outside Windows + codex-vm enters the build. Nothing in the tree runs a
+Darwin binary, so every `darwin` byte is compile-checked only; the
+contributor's M5 run of eight-queens is the only execution on record.
+
+The virt half of the same change (`stp`/`ldp x27, xzr`) is executed: Renode
+`test-cross -Arch arm64` passes `factorial`, `arithmetic`, `typeclass-poly`,
+`int-add-wrapping` and `hamt-test` on the plug from main 25665, seed
+49070BAEB1E31085 (2026-09-12); `hamt-test` carries 7 of the changed pairs.
+
+## 2.55 -- OPEN: structurally invalid Zig around compile-time refusals
+
+Issue126 prerequisite, measured by reek in shelf25632 and
+`D:/Projects/Cobblestone-reek/build-output/hosted-rtc/`. Direct hosted guards
+remove the reachable RTC refusal but leave unused malformed bodies. Splitting
+the port read into a helper still emits `return @compileError(...)`, rejected
+as unreachable code by Zig0.16. The frozen cumulative plug065EE99F reproduces
+the same failure; no faithful hosted driver or six-comparison grade exists.
+
+Reek owns a bounded refusal-emission derivative of cumulative shelf25601;
+original25601/25558 and all frozen artifacts remain preserved. A proper
+compile-time refusal must remain a refusal when invoked, without surrounding
+return/break/sequence forms making unused or compile-time-dead definitions
+structurally invalid. Do not turn every nested refusal into an unconditional
+function refusal: that would reject a valid compile-time-selected branch.
+Do not delete definitions, fake port values, replace refusal with runtime
+panic, or disable Zig checks. Grade dead/live/conditional/strict-sequencing
+controls, cumulative PR outputs and emission costs before promotion. Any
+remaining Core guard change needs its own native/hosted proof and ordered
+integration. Root retains critical compiler ownership.
+
+## 2.54 -- OPEN: Zig generic-type regressions remain red during PR 135 intake
+
+Measured 2026-09-10 with unchanged Zig plug E71F15A2 and PR135 candidate
+in root CL25558: `eq-generic-fields` refuses undeclared `a_` in generated
+`__eq_Pair_82Text` and `__eq_Holder_82Integer_66Text` signatures;
+`typeclass-smoke` refuses undeclared type variable T578, with pointless-discard
+diagnostics also reported. Both failures also occur using immutable Lowering
+candidate A842B1A4 (PR139/140). The larger suite is not green.
+
+RED holds PR135 copy-up under R-GATE. The boxing-specific address fixture,
+plain-sum equality and decimal rounding pass. Equality and instance declaration
+repairs are preserved in combined25599; root owns materialization and the
+combined final compiler proof. Cumulative Zig25601 and original25558 remain
+preserved. No gate waiver is authorized. CurrentPlan owns the
+file boundaries and seed order. Source/logs for both emitters and kernels are in
+`D:/Projects/Cobblestone-root/build-output/zig-intake/`, named
+`old-eq-generic-fields`, `pr135-eq-generic-fields`, `old-typeclass-smoke`,
+`pr135-typeclass-smoke` and `newlower-*`. Resolve the relevant red checks or
+obtain a source-grounded scope ruling before landing. These probes must
+eventually compile and reproduce their existing expected output.
+
+Combined shelf25599 contains the instance declaration repair, superclass
+application and adopted equality25597. Candidate-v2 matches full smoke,
+nested-signature, Integer/Boolean superclass and equality outputs through
+both frozen Zig plugs and native controls (2026-09-10). All 24 equality IR
+sites are concrete; the instance IR checker observes concrete dictionaries,
+methods and lifted bodies while generic variables remain generic. No seed
+landing or full combined gate is claimed.
+
+Method-local polymorphism is still a design boundary. ConverterDict declares
+only parameter a but its method field references b. Lifting b to the whole
+dictionary would couple uses that must remain independent. Existing
+AForallType resolves to ProofTy, and frozen Zig field rendering does not
+introduce a local type binder. Two explicit local-dictionary controls fail
+before IR with CDX2001 Integer vs Text: one method used at Integer and Text,
+and two methods independently spelling b used at those different types.
+The current field lookup does not instantiate a fresh method-local scheme.
+
+The already-accepted typeclass-poly and direct mixed-type method calls remain
+required critical-arc checks. The new explicit same-dictionary mixed-type
+probes are rejected by the current checker and belong to COMPILER-83; making
+those pass is additional capability, not preservation of a passing baseline.
+Root owns critical integration and MethodSpecialization.md's first production
+tranche: existing closed-use schema materialization, checked IR template
+metadata for zero demand, and input-derived resource bounds without body
+cloning. Preserve all donor shelves and the frozen plugins. Open/runtime
+dictionary families remain on their existing path; the first tranche does not
+implement COMPILER-83. No new field-local forall, defaulting, lost logical
+declarations or gate waiver is authorized.
+Source, full diagnostics and reviewer qualifications are in
+`D:/Projects/Cobblestone-fester/build-output/instance-typing/method-polymorphism-boundary.md`.
+The full hosted comparison probe also refuses `port-in-byte` through
+BootPaint's RTC path. Issue126 remains unverified at runtime and open;
+boxing's address-of repair alone is not evidence that hosted comparisons
+now carry Boolean types. Recovery details are in
+`D:/Projects/Cobblestone-root/build-output/zig-intake/handoff.md`.

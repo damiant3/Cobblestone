@@ -37,21 +37,54 @@ Section: Expression Parsing
    in if prec < min-prec then ExprOk left st1
    else let op = current st1
    in let st2 = skip-newlines (advance st1)
+   in let warned = warn-binary-prose st1 st2
    in let next-min = if is-right-assoc (op.kind) then prec else prec + 1
-   in let right-result = parse-binary st2 next-min min-col
+   in let right-result = parse-binary warned next-min min-col
    in unwrap-expr-ok right-result (continue-binary left op min-prec min-col)
+
+  binary-previous-token : List Token, Integer -> Integer
+  binary-previous-token (tokens) (pos) =
+   if pos < 0 then pos
+   else when (list-at tokens pos).kind
+    is Newline | Indent | Dedent -> binary-previous-token tokens (pos - 1)
+    is otherwise -> pos
+
+  binary-prose-line : Text, Integer, Integer, Integer, Integer -> Integer
+  binary-prose-line (source) (start) (stop) (pos) (line) =
+   if pos < start then 0
+   else let c = char-code-at source pos
+   in if c == char-code '\n' then binary-prose-line source start stop (pos - 1) (line - 1)
+   else if c == char-code ' ' & pos + 1 < stop then
+    let line-start = if pos == 0 then True else char-code-at source (pos - 1) == char-code '\n'
+    in if line-start then
+     let next = char-code-at source (pos + 1)
+     in if next /= char-code ' ' & next /= char-code '\n' then line
+        else binary-prose-line source start stop (pos - 1) line
+    else binary-prose-line source start stop (pos - 1) line
+   else binary-prose-line source start stop (pos - 1) line
+
+  binary-gap-prose : Token, Token -> Integer
+  binary-gap-prose (before) (after) =
+   if before.file-id /= after.file-id | before.line >= after.line then 0
+   else let start = before.offset + before.length
+   in if start >= after.offset | after.offset > text-length (after.source) then 0
+   else binary-prose-line (after.source) start (after.offset) (after.offset - 1) (after.line)
+
+  warn-binary-prose : ParseState, ParseState -> ParseState
+  warn-binary-prose (op-state) (rhs-state) =
+   let op = current op-state
+   in let previous = binary-previous-token (op-state.tokens) (op-state.pos - 1)
+   in let left-line = if previous < 0 then 0 else binary-gap-prose (list-at (op-state.tokens) previous) op
+   in let prose-line = if left-line > 0 then left-line else binary-gap-prose op (current rhs-state)
+   in if prose-line <= 0 then rhs-state
+   else let distance = if prose-line < op.line then op.line - prose-line else prose-line - op.line
+   in let direction = if prose-line < op.line then " before" else " after"
+   in __record-set rhs-state "bag" (bag-add (rhs-state.bag) (make-warning cdx-binary-crosses-prose ("Binary expression crosses prose " & integer-to-text distance & " line(s)" & direction & " the operator. The operator remains part of the expression. Keep intended arithmetic together or indent every prose line at column 2.") (token-to-span op)))
 
   continue-binary : Expr, Token, Integer, Integer, Expr, ParseState -> ParseExprResult
   continue-binary (left) (op) (min-prec) (min-col) (right) (st) =
    parse-binary-loop (deck-record (BinExpr left op right)) st min-prec min-col
 
- `not` TAKES A WHOLE COMPARISON AND MINUS DOES NOT, and the difference is
- deliberate. `-x + y` is `(-x) + y`, because negation belongs to the value it
- sits on. `not a == b` is `not (a == b)`, because the other reading --
- `(not a) == b` -- is a sentence nobody means and it type-checks perfectly,
- which makes it the worst kind of surprise. So `not` parses its operand at
- comparison precedence: it swallows `==`, `<`, and everything tighter, and
- stops before `and`, `xor` and `or`, giving `not a and b` as `(not a) and b`.
 
   prec-comparison : Integer = 5
 
@@ -123,10 +156,6 @@ Section: Expression Parsing
   continue-app (app-col) (func) (arg) (st) =
    parse-app-loop app-col (deck-record (AppExpr func arg)) st
 
- A negated argument wraps ONE atom. Handing the minus to parse-unary would
- read a whole application after it, so `f a -b c` would come out as
- `f a (-(b c))` and quietly lose an argument. The negation binds exactly as
- tightly as the atom it abuts.
 
   continue-neg-app : Integer, Expr, Token, Expr, ParseState -> ParseExprResult
   continue-neg-app (app-col) (func) (op) (atom) (st) =
@@ -493,24 +522,7 @@ Section: Compound Expression Parsing
    in let tok = current st2
    in parse-match-branches s [] (tok.column) (tok.line) st2
 
- An arm continues the match when it starts on the same line as the arm
- before it, or at the column the arms are aligned on. `ln` therefore
- means THE LINE OF THE ARM WE ARE CONTINUING FROM, and every accepted arm
- becomes the new `ln` -- which is why `tok.line` is passed on below and
- not the `ln` we were called with.
 
- It used to pass `ln` straight through, so `ln` stayed pinned to the line
- the match STARTED on and `tok.line == ln` could never hold again once
- the arms moved to a second line. The result was not "one arm per line"
- as the entry had it: every arm on the FIRST line parsed (they all match
- that line), the first arm of the SECOND line parsed (it matches the
- column), and the second arm of the second line matched neither and
- SILENTLY ENDED THE MATCH -- taking every later line with it, including
- an `is otherwise`. Measured on a probe: `is 1 .. is 2 / is 3 .. is 4 /
- is 5 .. is 6 / is otherwise` kept 1, 2, 3 and dropped the rest with no
- diagnostic. Exhaustiveness is the only thing that ever caught it, and
- only on a closed variant; an `Integer` match, or one carrying the
- `is otherwise` that just got dropped, mis-dispatched at runtime forever.
 
   parse-match-branches : Expr, LinkedList MatchArm, Integer, Integer, ParseState -> ParseExprResult
   parse-match-branches (scrut) (acc) (col) (ln) (st) =
@@ -893,14 +905,6 @@ Section: Compound Expression Parsing
   finish-lambda (lam-tok) (params) (body) (st) =
    ExprOk (deck-record (LambdaExpr lam-tok params body)) st
 
- The failure arm CONSUMES the dot, and that is the whole point of it. It
- used to return the state it was handed, un-advanced, wearing an ExprOk:
- the caller believed a statement had been parsed, looped, met the same
- dot, and called back here forever. Every turn allocated an ErrExpr and a
- statement node, so the heap climbed while the stack sank, and the compile
- double-faulted with no diagnostic rather than reporting anything.
- Any arm that reports ExprOk without moving the position
- is that bug again -- a parser must consume a token or say why.
 
   parse-selector-expr : ParseState -> ParseExprResult
   parse-selector-expr (st) =

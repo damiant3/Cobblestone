@@ -1806,6 +1806,86 @@ Section: State Effect
    in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) bits-reg & shr-ri (rd.reg) 1 & and-ri bits-reg 1 & add-rr (rd.reg) bits-reg)
    in EmitResult { state = st2, reg = rd.reg }
 
+ MOVMSKPS extracts four packed-single sign bits; MOVMSKPD extracts two
+ packed-double sign bits.
+
+  emit-mask4-extract : CodegenState, List IRExpr -> (CodegenState, Integer)
+  emit-mask4-extract (st) (args) =
+   let mask = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc = alloc-local (mask.state)
+   in let st1 = store-local (loc.state) (loc.reg) (mask.reg)
+   in let mld = load-local st1 (loc.reg)
+   in let st2 = st-append-code (mld.state) (movups-load 0 (mld.reg) 0)
+   in let rd = alloc-temp st2
+   in let st3 = st-append-code (rd.state) (movmskps (rd.reg) 0)
+   in (st3, int-widen (rd.reg))
+
+  emit-mask4-any-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-mask4-any-builtin (st) (args) =
+   let (st1, bits-reg) = emit-mask4-extract st args
+   in let rd = alloc-temp st1
+   in let st2 = st-append-code (rd.state) (test-rr bits-reg bits-reg & setcc cc-ne (rd.reg) & movzx-byte-self (rd.reg))
+   in EmitResult { state = st2, reg = rd.reg }
+
+  emit-mask4-all-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-mask4-all-builtin (st) (args) =
+   let (st1, bits-reg) = emit-mask4-extract st args
+   in let rd = alloc-temp st1
+   in let st2 = st-append-code (rd.state) (cmp-ri bits-reg 15 & setcc cc-e (rd.reg) & movzx-byte-self (rd.reg))
+   in EmitResult { state = st2, reg = rd.reg }
+
+  emit-mask4-none-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-mask4-none-builtin (st) (args) =
+   let (st1, bits-reg) = emit-mask4-extract st args
+   in let rd = alloc-temp st1
+   in let st2 = st-append-code (rd.state) (test-rr bits-reg bits-reg & setcc cc-e (rd.reg) & movzx-byte-self (rd.reg))
+   in EmitResult { state = st2, reg = rd.reg }
+
+  emit-mask4-count-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-mask4-count-builtin (st) (args) =
+   let (st1, bits-reg) = emit-mask4-extract st args
+   in let rd = alloc-temp st1
+   in let acc = alloc-temp-avoiding (rd.state) bits-reg
+   in let st2 = st-append-code (acc.state) (
+    mov-rr (acc.reg) bits-reg
+    & and-ri (acc.reg) 1
+    & mov-rr (rd.reg) bits-reg
+    & shr-ri (rd.reg) 1
+    & and-ri (rd.reg) 1
+    & add-rr (acc.reg) (rd.reg)
+    & mov-rr (rd.reg) bits-reg
+    & shr-ri (rd.reg) 2
+    & and-ri (rd.reg) 1
+    & add-rr (acc.reg) (rd.reg)
+    & mov-rr (rd.reg) bits-reg
+    & shr-ri (rd.reg) 3
+    & and-ri (rd.reg) 1
+    & add-rr (acc.reg) (rd.reg)
+   )
+   in EmitResult { state = st2, reg = acc.reg }
+
+  emit-vec4-reduce-add-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-vec4-reduce-add-builtin (st) (args) =
+   let vec = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc = alloc-local (vec.state)
+   in let st1 = store-local (loc.state) (loc.reg) (vec.reg)
+   in let vld = load-local st1 (loc.reg)
+   in let rd = alloc-temp-avoiding (vld.state) (vld.reg)
+   in let st2 = st-append-code (rd.state) (
+    movups-load 0 (vld.reg) 0
+    & mov-load-u32 (rd.reg) (vld.reg) 4
+    & movd-to-xmm 1 (rd.reg)
+    & addss-xmm 0 1
+    & mov-load-u32 (rd.reg) (vld.reg) 8
+    & movd-to-xmm 1 (rd.reg)
+    & addss-xmm 0 1
+    & mov-load-u32 (rd.reg) (vld.reg) 12
+    & movd-to-xmm 1 (rd.reg)
+    & addss-xmm 0 1
+    & movd-from-xmm (rd.reg) 0
+   )
+   in EmitResult { state = st2, reg = rd.reg }
+
 Section: Builtin Registry
   BuiltinX86Emitter = record {
    name : Text,
