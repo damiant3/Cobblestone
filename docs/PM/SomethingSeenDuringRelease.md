@@ -29,6 +29,53 @@ count does.
 
 ## Done
 
+### Update 59 -- the diag image hash does not reproduce across workspaces, and the public text said it did
+
+Found at step 5, 2026-09-12: red built the stick in red-main (884FD218) and
+root built it in root-main (A4EF3A62) from the same source, seed and default
+cfg, ten minutes apart. `DIAG.RCP` inside each names identical
+`payload-sha256`, `bundled-sha256`, `efi-sha256`, `id` and `kernel`, and
+differs only in `image=`, `kernel-path=`, `cfg=` (workspace paths) and
+`built=` (a timestamp), all of which sit inside the image. So the image
+hash is per build, and `TechnicalDetails.md`'s "the hash carries no
+timestamp, so a different hash means something moved" was false; the
+sentence now points at the three payload digests. The image that ships is
+the one that was REHEARSED, by hash, and only that one. Re-measure at any
+release where two workspaces build the stick:
+
+```powershell
+Compare-Object (Get-Content <a>\build-output\diag-recipe.txt) (Get-Content <b>\build-output\diag-recipe.txt)   # only image=, kernel-path=, cfg=, built=, image-sha256= may differ
+```
+
+### Update 59 -- a registry row landed `fixed` with no allocation site, and only the release gate ran the checker
+
+Found at step 0b, 2026-09-12. `vec4-select` (blu, main 25547) reads `fixed`
+in `Builtins.codex` and `build/check-builtin-alloc.ps1` had no site for it,
+so the full gate refused (`vec4-select reads 'fixed' and no allocation site
+is recorded`). No lane gate runs that checker (CostModel.md 5.2 says so:
+L-NOGATE), so the row waited two days for a release. The emitter is the one
+`vec-select` already pins, `emit-bivy-alloc st9 16`, an immediate 16 bytes
+at either width; the site is recorded in main 25666. Re-measure at any CL
+that adds or edits a `bs-alloc = "fixed"` row:
+
+```powershell
+build/check-builtin-alloc.ps1    # must print OK; a row with no site is refused by name
+```
+
+### Update 59 -- an ir-fidelity case banked under the pipeline, and `-Grade` never runs the pipeline
+
+Found at step 0c, 2026-09-12. `inlined-return-type` (PR 139, main 25585)
+reads CARRIED only with the optimizer on, because the inlined literal exists
+in `opening` only after `inline-single-caller` ran; its own comment said so.
+`-Grade` invokes its children without `-Passes`, so the release grade read
+UNSUPPORTED (`>>>` row). Fixed in main 25670: a case says `passes = $true`
+in its `case.psd1` and is compiled through the pipeline whatever the run's
+mode. Re-measure at any new case whose subject an optimizer pass creates:
+
+```powershell
+build/ir-fidelity/ir-fidelity.ps1 -Grade    # the case must read its expectation with NO -Passes on the command line
+```
+
 ### Update 58 -- preserve sampler rows and name the counter accurately
 
 The release sampler's retained file began with a sample instead of a header.

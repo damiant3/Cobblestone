@@ -15,36 +15,60 @@ a P- or L- pointer, an open item a register row, a finished design moves to
 `ExaminersAssay`, `DevelopersGuide`, `ArchitectsSketchbook`,
 `HardwareSitting`, 1.35 MB together) is NOT ordered; Damian says when.
 
-## UPDATE 58 RELEASE (Damian, 2026-09-10)
+## FLEET COMMAND (Damian, 2026-09-12)
 
-RED commands the fleet, including agent root, for
-the release. The release assignment supersedes the previous suspension and
-the investigation-only assignment. Red owns proof coordination and public
-publication under Damian's release procedure, with proof recipes in
-`docs/OperatorsManual.md` and publishing in `docs/Agents/PublicPush.md`.
-Root owns the active
-full gate and the fixes required by that gate, and supplies the release
-head, candidate identity, proof logs and remaining failures to red.
+ROOT commands the fleet again; red assists. The order of the day, in Damian's
+words: "review and ingest Steve's PRs, address any outstanding issues, and
+then do a release." The lane table is the current dispatch. The
+MethodSpecialization shelf 25624 is WIP, unproven, and NOT on this release's
+path; it stays preserved. A red that is red on BOTH the old and the new plug
+and that the change does not touch is a register row, not a promotion block
+(root's ruling, 2026-09-12, on eq-generic-fields a_ and typeclass-smoke T578
+under the Zig plug).
+The fleet runs on the stable AgentGrid deployment. AgentGrid integration
+continues under Potato; outstanding
+acceptance gaps remain in D:/Projects/AgentGrid/agentgrid-backlog.md.
+These dispatches use current AGENTS.md R-GATE and runtime RAM admission,
+which override older blanket job-count and gate statements below. A changed
+build script alone does not establish seed reachability; inspect the inputs.
+Existing unverified shelves remain preserved and require their own proof
+before landing. All five coder sessions are running Astra; task-scoped workers
+do not acquire fleet seats or mailboxes.
 
-Non-essential seed landings are held until the public push. Existing
-shelves stay preserved. The other four coding lanes take only release
-units assigned by red. The gate's compiler stages hold the box; later
-proofs overlap only within the measured RAM budget. No red proof is waived.
+**Fleet resumed for GitHub intake (Damian, 2026-09-10).** Review Steve
+Howell's PRs 135-141 and issues 110, 115, 120, 125 and 126 against current
+main. Ingest useful work through PerforceProcess.md section 7, preserve
+depot-only fixes and credit Steve in each CL. RED owns public acknowledgments,
+plans and concerns. Keep issues and PRs open until corresponding Git publication;
+then cite the release, public commit and ingestion changes before closing.
 
-The blu, fester, val and reek sessions are unavailable. RED's task-scoped
-workers execute the normal and poison batteries in fester-main, the DDC
-in val-main and the app sweep in reek-main. Those workers hold no fleet
-seat or mailbox. Root continues the full gate in root; RED owns promotion
-and publication. The lane rows below name the proof contracts.
+**Parallel shelf work is authorized (Damian, 2026-09-10).** Each lane owns
+one bounded unit below and may implement and run scratch proofs while another
+lane resolves a dependency. Preserve existing shelves and proof artifacts;
+use numbered shelves with explicit dependencies, not unproven main changes.
+Reek owns the bounded Zig refusal extension; root owns the critical compiler.
+The compiler file boundaries are in the lane rows;
+coordinate before widening beyond those files or changing shared interfaces.
+
+**Seed order:** first, the critical equality/instance/materialization arc
+integrated by root from the preserved shelves; then, val's native nested
+patterns; then, reek's CDX export retention. Root runs the combined final
+proof. Reconcile main and verify the proof's source before
+promotion; re-prove a changed subject outside the token. Reek's Zig-only
+derivative can land when its required target checks pass. Core guard changes
+need their separate ordered seed proof. The PR 135 hold remains.
+Review heap/time costs, calibrate the reported defect, run relevant target
+checks and complete R-GATE for seed work. Fixed points do not grade typed IR
+or hosted output. Preserve proof artifacts. No GitHub merge button.
 
 Declared test exclusions are deliberate decisions (Damian, 2026-09-10).
-Preserve the runner's prescribed `-Tier all -Jobs 4` selection for both
-batteries. Report exclusions separately from unexpected failures; do not
+Preserve the runner's prescribed `-Tier all -Jobs 4` selection for normal
+and poison release batteries. Report exclusions separately from unexpected failures; do not
 remove sidecars or add flags to override those exclusions for the release.
 
 The investigation charter and part ownership remain in
 `docs/PM/Active/Stories/TheLostParadise.md`; remaining recommendations stay
-in that report's part 11 pending release completion and reassignment.
+in that report's part 11 pending reassignment.
 
 **Where an item ORIGINATES in one app or quire, it lives in that
 register** (`apps/<app>/<app>-backlog.md`,
@@ -52,7 +76,7 @@ register** (`apps/<app>/<app>-backlog.md`,
 track. There is still no platform-wide register beyond this file; do not
 recreate `docs/PM/BACKLOG.md`.
 
-## THE FLEET DISPOSITION (release command: RED)
+## THE FLEET DISPOSITION (RED commanding)
 
 Renode and the arm64 and riscv beds are IN (Damian, 2026-09-08 15:55; the
 2026-09-01 ban is lifted). Docs go straight to main; a code arc gates once per
@@ -91,12 +115,16 @@ Claims: `codex/plugs/wasm/**` is reek's; fester keeps
 `apps/landing/web/compile/**` and the Prism page; reek announces before
 touching `build-page.ps1` or `page-lenses.ps1`. The plug alone takes no token.
 
-## MAIN ACCEPTS RELEASE FIXES ONLY
+## MAIN AND PUBLIC RELEASE
 
-Latest public release: **Update 57** (2026-09-08 16:52, commit `49fa9f27` on
-GitHub master and GitLab main, seed #778 `B63014D717B1A2F9`);
-`GitHubUpdate57.md` is the account and `GitHubUpdate58.md` accumulates this
-cycle. Head seed on main: #783 `77F6A5D09CFF6BD5` (25061). Re-measure both at
+The public Update 58 seed has the measured decimal carry/borrow defect.
+Main contains the repaired seed and Zig/wasm decimal parsers. The token
+remains free outside seed landings.
+
+Latest public release: **Update 58** (2026-09-10, commit `5b3e14a7` on
+GitHub master and GitLab main, seed #785 `F9165E313BE16815`);
+`GitHubUpdate58.md` is the account and `GitHubUpdate59.md` accumulates this
+cycle. Head seed on main: #789 `5A9416F1C661CDEE` (25547). Re-measure both at
 the release head, never carry them forward (L-COUNT).
 
 ## The brand boundary (Damian, 2026-08-29)
@@ -219,12 +247,12 @@ DeskScheduler is PARKED (Damian, 2026-08-26), not cancelled**:
 budget; skip or run late on a miss).
 | agent | now | then | standing |
 |---|---|---|---|
-| **blu** | **NOW: Update 58 full normal battery, release skill step 1. RED's test worker owns the run and logs in fester-main, using the final landed release seed explicitly. Require -Tier all, zero unexpected failures and separately reported declared exclusions; record compiler hash and tally.** | **NEXT:** Prepare the runner and workspace now. No guest before RED announces the final seed and releases the gate's box hold. Measure RAM immediately before launch; report completion with log and seed identity. | `docs/PM/Active/Stories/TheLostParadise/03-sittings-ledger.md`, `A-sittings-table.md`, `04-the-nic.md` section 2 |
-| **val** | **NOW: Update 58 DDC witness, release skill step 4. Own the C# plug, Roslyn arm and witness logs in val's workspace, all derived from the final landed release seed. Require equal file length and zero differences outside offsets 40..135.** | **NEXT:** Prepare the runner and workspace now. No guest before RED announces the final seed and releases the gate's box hold. Use fresh IR, preserve both arm outputs and report exact seed identity and comparison results. | Damian's batch: WORKS-60, the virtual-desktop wording; FW-1's three fix options are Deferred (Damian, 2026-09-08 18:00). WORKS-50 is OFF this batch: it is DONE at head (one full name per pane, `desk-wnd-title` and `gpr-entries` agreeing on all four), and what it leaves is a simplification nobody has taken, dropping `dk-pill-icon`'s second table now that the join is sound. A start-menu group of seven pushes the laid menu past the taskbar band and nothing clips or scrolls: registered in `ShellRefinement.md`, and it is why the Sheets launcher row sits in Accessories. `ShellRefinement.md` "6.4: WHAT IS STILL OPEN"; `PreemptiveScheduler.md` stage 2; WORKS-47/41 |
-| **fester** | **NOW: Update 58 poison build and full poison battery, release skill step 3. Own the candidate, kernel backup/restore and logs in fester's workspace. Build from final release source with explicit kernel, -Repl and -Poison; require -Tier all and zero failures.** | **NEXT:** Prepare the runner and workspace now. No guest before RED announces the final seed and releases the gate's box hold. Preserve the normal kernel and verify restoration after the run; report the poison hash and proof tally. | **COMPILER-59 and COMPILER-60 are PARKED and measured, not abandoned:** `ir-fidelity -Disagree` counts a def disagreeing with itself and reads 3 sites over 2 programs of 615; the lambda-parameter-span change moves 2 of the 3 and REGRESSES `typeclass-poly`'s `convert`, and the shared-span reading is refuted, both digests in `docs/Designs/Active/Compiler/LambdaParamSpans.md`. The name-the-kernel class is closed: `test-self-verify`, `check-generated-scripts` and `test-cross` all take `-Kernel` (2026-09-07). What the Build register still carries unowned is that `test-cross` BOOTS RENODE whenever the binary exists, guarded only by the operator remembering. A8 desk build loop when VT-x metal is available; Renode out; `deck-headroom`; WORKS-24 rides a sitting; ProductBuilder stage 6 on hold |
-| **reek** | **NOW: Update 58 full app-class sweep, release skill step 2. Own the run and logs in reek's workspace on the final release source and seed. Require sweep-app-classes.ps1 -Check -Jobs 4 to exit 0 against the declared baseline.** | **NEXT:** Prepare the runner and workspace now. No guest before RED announces the final seed and releases the gate's box hold. Measure RAM immediately before launch and report the full tally, baseline exceptions and exact compiler hash. | Plugs close-out lane; WORKS-9 metal-gated; `ShellDslReadability.md` same campaign; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4; Registered: COMPILER-46/39/48 |
-| **red** | **NOW: RED commands the fleet for Update 58, assigned by Damian 2026-09-10.** Own release proof coordination, blocker assignment, promotion of root CL 25462 and the signed seed, artifact refresh and GitHub/GitLab publication. Preserve shelves 25451 and 25173, neither approved for landing. | **NEXT:** complete every release proof and publish only a green release. Resume unrelated work after MAIN OPEN. | Releases, personally and end to end; `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
-| **root** | **NOW: Update 58 full gate passed on root CL 25462; signed self-verification passed.** Gate log: root gate7.out, sampler PID 5384. RED owns candidate promotion. | **NEXT:** prepare the default diagnostic image and full rehearsal for release step 5, following `docs/Designs/Active/OS/DiagnosticStick.md` and the exact build/boot scripts. After RED announces the final seed and grants the rehearsal window, build with that seed, run every arm in both beds, and supply image SHA-256, recipe, rehearsal record and logs. No sitting configuration or physical flash. | `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` (released to red for the two stage lifts) |
+| **blu** | **NOW:** No active unit. | **NEXT:** Await RED dispatch. | Preserve equality shelf25597 and immutable proof artifacts for root's combined critical landing. |
+| **val** | **NOW:** Preserve native-pattern shelf25595 and its proof artifacts. | **NEXT:** Await RED's next unit or native-pattern landing instruction after the critical compiler arc. Reconcile main and complete fresh R-GATE before seed promotion. | Damian's batch: WORKS-60, the virtual-desktop wording; FW-1's three fix options are Deferred (Damian, 2026-09-08 18:00). WORKS-50 is OFF this batch: it is DONE at head (one full name per pane, `desk-wnd-title` and `gpr-entries` agreeing on all four), and what it leaves is a simplification nobody has taken, dropping `dk-pill-icon`'s second table now that the join is sound. A start-menu group of seven pushes the laid menu past the taskbar band and nothing clips or scrolls: registered in `ShellRefinement.md`, and it is why the Sheets launcher row sits in Accessories. `ShellRefinement.md` "6.4: WHAT IS STILL OPEN"; `PreemptiveScheduler.md` stage 2; WORKS-47/41 |
+| **fester** | **NOW:** Build independent acceptance fixtures/checker for root's MethodSpecialization first tranche. Own only new `codex/test/method-template-contract-*` fixtures/scripts; agree the producer interface with root before wiring. Root owns all production compiler/common-parser changes and existing typeclass fixtures. | **NEXT:** Test source-derived declaration accounting, zero demand, omitted entries, scoped/forged binders, lookalike user dictionaries, ineligible runtime/escape cases, finite bounds and frozen-reader compatibility. Use immutable candidate provenance when root supplies it; no invented pass while producer is incomplete. Preserve combined25599/donor evidence; send result pointers to root and RED. | **COMPILER-59 and COMPILER-60 are PARKED and measured, not abandoned:** `ir-fidelity -Disagree` counts a def disagreeing with itself and reads 3 sites over 2 programs of 615; the lambda-parameter-span change moves 2 of the 3 and REGRESSES `typeclass-poly`'s `convert`, and the shared-span reading is refuted, both digests in `docs/Designs/Active/Compiler/LambdaParamSpans.md`. The name-the-kernel class is closed: `test-self-verify`, `check-generated-scripts` and `test-cross` all take `-Kernel` (2026-09-07). What the Build register still carries unowned is that `test-cross` BOOTS RENODE whenever the binary exists, guarded only by the operator remembering. A8 desk build loop when VT-x metal is available; Renode out; `deck-headroom`; WORKS-24 rides a sitting; ProductBuilder stage 6 on hold |
+| **reek** | **NOW:** Preserve export25592, guard25605, RTC boundary25632 and root's original25558/cumulative25601. Derive a new named Zig shelf from cumulative25601 for the issue126 structural-refusal blocker (plugs2.55). Own ZigEmitter refusal/control-flow emission for this unit; root must not independently edit/promote the old Zig arc. Core BootPaint changes require separate native/hosted proof. | **NEXT:** Calibrate unused/dead unsupported definitions, live unsupported calls, strict sequencing and conditional refusal. Emit structurally valid Zig while live unsupported calls still fail at compile time; no mere substring-based whole-body replacement, deleted definitions, runtime-panic/port-value substitutes or disabled checks. Preserve accepted output/evaluation order and all cumulative PR controls; review linear emission costs. No producer/common-parser edits or promotion while required reds remain. Then grade a faithful hosted driver, or report the remaining boundary. | Plugs close-out lane; WORKS-9 metal-gated; `ShellDslReadability.md` same campaign; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4; Registered: COMPILER-46/39/48 |
+| **red** | **NOW:** Update 59's diagnostic stick, in red-main at the release seed 49070BAEB1E31085 (main 25665+): `build/boot/build-diag.ps1` (no -Cfg), then `build/boot/diag-arm.ps1` with every arm and both beds, then `build/check-shipping-images.ps1`; report the image SHA-256 and the rehearsed line to root, who rebuilds the same bytes in root-main and ships them. One serial guest at a time, launched only on root's GO (the battery holds two slots). | **NEXT:** The publication comments on every PR and issue (drafts in red's build-output/publication) once root sends COMMIT and SEED; then the Update 60 cycle's first unit from `plugs-backlog.md`. | Releases, personally and end to end; `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
+| **root** | **NOW:** Command. Land the cumulative Zig shelf 25601 (PR 135, 138 and the Zig half of 141, proven on the head seed B1D05D72 per `build-output/zig-arc/proof.md`) after re-verifying the eight files against head; a plug CL, no token. | **NEXT:** Update 59, personally and end to end (Damian's assignment 2026-09-12), once red's PR 142 seed lands: full gate, proofs, `GitHubUpdate59.md`, the mirror push, then the PR and issue closures with the public commit. Shelves 25624 (MethodSpecialization) and 25558 (original PR 135) stay preserved and untouched. | `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` (released to red for the two stage lifts) |
 
 **Plugs are reek's close-out lane** (from val, Damian's direction
 2026-08-18): the register in order, one entry at a time, said in
@@ -468,11 +496,9 @@ registers need no gate.
 onto main when it arrives. The reviewing lane judges it on one test: the result
 must be shaped for Codex and its own consumers, never for a transpile target. An
 ancillary subsystem with no fleet CL in flight may wait for a contributor; the
-entry chapter is not one. **UNOWNED, from Steve Howell's issue 115:** four
-deck-discipline dependencies are declared nowhere -- Lexer cites nothing and
-rewinds the bivy needing `deck-record` to be the real intrinsic, so in a subset
-bundle it compiles clean and page-faults, the fallback being a silent identity
-(L-BAILVALUE's shape). It belongs in `codex/compiler/compiler-backlog.md`.
+entry chapter is not one. Remaining subset/deck obligations from Steve
+Howell's issue 115 are tracked in `codex/compiler/compiler-backlog.md`,
+COMPILER-48.
 
 **DO NOT ADD A TEST TO THE GATE OR THE BATTERY ON YOUR OWN INITIATIVE; GET
 THE COMMANDER'S CLEARANCE (Damian, 2026-08-21: "haphazardly adding tests to the gates

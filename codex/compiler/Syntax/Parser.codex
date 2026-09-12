@@ -1569,13 +1569,20 @@ Section: Chapter Pagination
   empty-class-instance-scan : ClassDefsResult
   empty-class-instance-scan = ClassDefsResult { class-defs = [], instance-defs = [] }
 
-  scan-class-instance-defs : ParseState, LinkedList ClassDef, LinkedList InstanceDef -> ClassDefsResult
+  begins-line : ParseState -> Boolean
+  begins-line (st) =
+   if st.pos == 0 then True
+   else when (list-at (st.tokens) (st.pos - 1)).kind
+    is Newline -> True
+    is otherwise -> False
+
+  scan-class-instance-defs :ParseState, LinkedList ClassDef, LinkedList InstanceDef -> ClassDefsResult
   scan-class-instance-defs (st) (cacc) (iacc) =
    if is-done st then ClassDefsResult {
     class-defs = deck-record (__linked-list-to-list cacc),
     instance-defs = deck-record (__linked-list-to-list iacc)
    }
-   else if is-class-keyword (current-kind st) & (is-ident (peek-kind st 1) | is-type-ident (peek-kind st 1)) then let st1 = advance st
+   else if is-class-keyword (current-kind st) & begins-line st & (is-ident (peek-kind st 1) | is-type-ident (peek-kind st 1)) then let st1 = advance st
     in let name-tok = current st1
     in let st2 = advance st1
     in if is-ident (current-kind st2) & is-fat-arrow (peek-kind st2 1) then
@@ -1591,7 +1598,7 @@ Section: Chapter Pagination
     in let (ops-list, ops-st) = parse-effect-ops st3 []
     in let cd = deck-record (ClassDef { name = name-tok, methods = ops-list, superclass = "" })
     in scan-class-instance-defs (skip-newlines ops-st) (__linked-list-push cacc cd) iacc
-   else if is-instance-keyword (current-kind st) & is-type-ident (peek-kind st 1) then let st1 = advance st
+   else if is-instance-keyword (current-kind st) & begins-line st & is-type-ident (peek-kind st 1) then let st1 = advance st
     in let class-tok = current st1
     in let st2 = advance st1
     in let (it-head, it-st) = parse-instance-type-head st2

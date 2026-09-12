@@ -97,7 +97,7 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if (-not $OutDir) { $OutDir = Join-Path $repo 'build-output\zig-prelude-surface' }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-$names = $Subjects -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+$names = @($Subjects -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($names.Count -lt 1) { throw "need at least one subject" }
 
 $emitterSrc = Get-Content (Join-Path $repo 'codex\plugs\zig\ZigEmitter.codex') -Raw
@@ -109,6 +109,7 @@ foreach ($n in $names) {
     $src = Join-Path $repo "codex\test\$n.codex"
     if (-not (Test-Path $src)) { throw "no such subject: $src" }
     $zig = Join-Path $OutDir "$n.zig"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $zig) | Out-Null
     & pwsh -NoProfile -File (Join-Path $repo 'codex\plugs\zig\run.ps1') -Src $src -Out $zig | Out-Null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zig)) { throw "emit failed for $n" }
     $emitted += $zig

@@ -2920,10 +2920,118 @@ Section: Process Lifecycle
    in let st7 = a64-emit-process-yield st6
    in a64-emit-process-spawn st7
 
+Section: Darwin userspace (Mach-O)
+
+ SYS_write is 4, SYS_exit is 1, SYS_mmap is 197. The imm on svc is
+ 0x80, Darwin's unix syscall gate, not the Linux immediate.
+
+ MAP_PRIVATE|MAP_ANON|MAP_FIXED is 0x1012. PROT_READ|PROT_WRITE is 3.
+ The slab is 64 MiB at 8 GiB, above the 4 GiB PAGEZERO.
+
+  a64-darwin-sys-exit : Integer = 1
+  a64-darwin-sys-write : Integer = 4
+  a64-darwin-sys-mmap : Integer = 197
+  a64-darwin-svc-gate : Integer = 128
+  a64-darwin-slab-size : Integer = #4000000
+  a64-darwin-map-flags : Integer = #1012
+  a64-darwin-slab-addr : Integer = #200000000
+  a64-darwin-cce-uni-addr : Integer = #200001000
+  a64-darwin-cce-hi-addr : Integer = #200001100
+  a64-darwin-heap-addr : Integer = #200002000
+
+  a64-rt-darwin-write-byte : List Integer, Integer -> List Integer
+  a64-rt-darwin-write-byte (i) (src) =
+   let i = a64-rt-emit i (arm64-sub-imm 31 31 16)
+   in let i = a64-rt-emit i (arm64-strb src 31 0)
+   in let i = a64-rt-emit i (arm64-movz 0 1 0)
+   in let i = a64-rt-emit i (arm64-mov 1 31)
+   in let i = a64-rt-emit i (arm64-movz 2 1 0)
+   in let i = a64-rt-emit i (arm64-movz 16 a64-darwin-sys-write 0)
+   in let i = a64-rt-emit i (arm64-svc a64-darwin-svc-gate)
+   in a64-rt-emit i (arm64-add-imm 31 31 16)
+
+  a64-rt-print-line-uni-darwin : List Integer
+  a64-rt-print-line-uni-darwin =
+   let i = []
+   in let i = a64-rt-emit i (arm64-stp-pre 29 30 31 (0 - 96))
+   in let i = a64-rt-emit i (arm64-stp 19 20 31 16)
+   in let i = a64-rt-emit i (arm64-stp 21 22 31 32)
+   in let i = a64-rt-emit i (arm64-stp 23 24 31 48)
+   in let i = a64-rt-emit i (arm64-stp 25 26 31 64)
+   in let i = a64-rt-emit i (arm64-mov 19 0)
+   in let i = a64-rt-emit i (arm64-ldr 20 19 0)
+   in let i = i & arm64-li 24 a64-darwin-cce-uni-addr
+   in let i = i & arm64-li 25 a64-darwin-cce-hi-addr
+   in let i = a64-rt-emit i (arm64-movz 22 0 0)
+   in let loop = list-length i / 4
+   in let i = a64-rt-emit i (arm64-cmp 22 20)
+   in let exit = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-add 23 19 22)
+   in let i = a64-rt-emit i (arm64-ldrb 23 23 8)
+   in let i = a64-rt-emit i (arm64-add 11 24 23)
+   in let i = a64-rt-emit i (arm64-ldrb 11 11 0)
+   in let i = a64-rt-emit i (arm64-add 12 25 23)
+   in let i = a64-rt-emit i (arm64-ldrb 12 12 0)
+   in let i = i & arm64-lsl-imm 12 12 8
+   in let i = a64-rt-emit i (arm64-add 23 11 12)
+   in let i = a64-rt-emit i (arm64-cmp-imm 23 128)
+   in let one-byte = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-lsr-imm 26 23 6
+   in let i = a64-rt-emit i (arm64-add-imm 26 26 192)
+   in let i = a64-rt-darwin-write-byte i 26
+   in let i = i & arm64-li 11 63
+   in let i = a64-rt-emit i (arm64-and 26 23 11)
+   in let i = a64-rt-emit i (arm64-add-imm 26 26 128)
+   in let i = a64-rt-darwin-write-byte i 26
+   in let skip = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let one-byte-label = list-length i / 4
+   in let i = a64-rt-darwin-write-byte i 23
+   in let next-label = list-length i / 4
+   in let i = a64-rt-emit i (arm64-add-imm 22 22 1)
+   in let i = a64-rt-emit i (arm64-b ((loop - list-length i / 4) * 4))
+   in let exit-label = list-length i / 4
+   in let i = i & arm64-movz 9 10 0
+   in let i = a64-rt-darwin-write-byte i 9
+   in let i = a64-rt-emit i (arm64-ldp 25 26 31 64)
+   in let i = a64-rt-emit i (arm64-ldp 23 24 31 48)
+   in let i = a64-rt-emit i (arm64-ldp 21 22 31 32)
+   in let i = a64-rt-emit i (arm64-ldp 19 20 31 16)
+   in let i = a64-rt-emit i (arm64-ldp-post 29 30 31 96)
+   in let i = a64-rt-emit i arm64-ret
+   in let i = a64-patch-insn-raw i exit (arm64-b-cond arm64-cond-ge ((exit-label - exit) * 4))
+   in let i = a64-patch-insn-raw i one-byte (arm64-b-cond arm64-cond-lt ((one-byte-label - one-byte) * 4))
+   in a64-patch-insn-raw i skip (arm64-b ((next-label - skip) * 4))
+
+  a64-emit-darwin-head : A64State -> A64State
+  a64-emit-darwin-head (st) =
+   let st1 = a64-record-func st "__start"
+   in let st2 = a64-emit-li st1 0 a64-darwin-slab-addr
+   in let st3 = a64-emit-li st2 1 a64-darwin-slab-size
+   in let st4 = a64-emit-li st3 2 3
+   in let st5 = a64-emit-li st4 3 a64-darwin-map-flags
+   in let st6 = a64-emit-li st5 4 (0 - 1)
+   in let st7 = a64-emit-li st6 5 0
+   in let st8 = a64-emit-li st7 16 a64-darwin-sys-mmap
+   in let st9 = a64-emit st8 (arm64-svc a64-darwin-svc-gate)
+   in let st10 = a64-emit-li st9 19 a64-darwin-slab-addr
+   in let st11 = a64-write-table-loop st10 19 (a64-build-ascii-to-cce [] 0) 0
+   in let st12 = a64-emit-li st11 10 a64-darwin-cce-uni-addr
+   in let st14 = a64-write-table-loop st12 10 (a64-build-cce-to-unicode [] 0) 0
+   in let st15 = a64-emit-li st14 10 a64-darwin-cce-hi-addr
+   in let st17 = a64-write-table-loop st15 10 (a64-build-cce-to-unicode-hi [] 0) 0
+   in let st19 = a64-emit-li st17 28 a64-darwin-heap-addr
+   in let st20 = a64-emit-call-to st19 "opening"
+   in let st21 = a64-emit-li st20 0 0
+   in let st22 = a64-emit-li st21 16 a64-darwin-sys-exit
+   in a64-emit st22 (arm64-svc a64-darwin-svc-gate)
+
 Section: Emit All Runtime Helpers
 
-  a64-emit-runtime : A64State -> A64State
-  a64-emit-runtime (st) =
+  a64-emit-virt-head : A64State -> A64State
+  a64-emit-virt-head (st) =
    let vt = a64-rt-vector-table
    in let st0 = a64-emit-block st vt 0 (list-length vt)
    in let st1 = a64-record-func st0 "__start"
@@ -2959,10 +3067,14 @@ Section: Emit All Runtime Helpers
    in let st3d = a64-emit-boot-grant st3d1
    in let st3e = a64-patch-insn st3d cbnz-idx (arm64-cbnz 28 ((uefi-label - cbnz-idx) * 4))
    in let st3f = a64-emit-seed-fs-handlers st3e
-   in let st7f = if (st.extra).smp-boot then a64-emit-smp-boot st3f else a64-emit-uni-boot st3f
-   in let st8 = a64-record-func st7f "print-line-uni"
+   in if (st.extra).smp-boot then a64-emit-smp-boot st3f else a64-emit-uni-boot st3f
+
+  a64-emit-runtime : A64State -> A64State
+  a64-emit-runtime (st) =
+   let st-h = if (st.extra).darwin-boot then a64-emit-darwin-head st else a64-emit-virt-head st
+   in let st8 = a64-record-func st-h "print-line-uni"
    in let st8a = a64-record-func st8 "print-line"
-   in let plu = a64-rt-print-line-uni
+   in let plu = if (st.extra).darwin-boot then a64-rt-print-line-uni-darwin else a64-rt-print-line-uni
    in let st9 = a64-emit-block st8a plu 0 (list-length plu)
    in let st10 = a64-record-func st9 "__str_eq"
    in let seq = a64-rt-str-eq
@@ -3124,7 +3236,8 @@ Section: Emit All Runtime Helpers
    in let st149l = a64-emit-lifecycle-helpers st149n
    in let st149b = a64-emit-block-helpers st149l
    in let st149f = a64-emit-fs-servicers st149b
-   in let st150 = a64-emit st149f arm64-ret
+   in if (st.extra).darwin-boot then st149f
+   else let st150 = a64-emit st149f arm64-ret
    in let handler = st150.insn-count
    in let fh = a64-rt-fault-handler
    in let st151 = a64-emit-block st150 fh 0 (list-length fh)

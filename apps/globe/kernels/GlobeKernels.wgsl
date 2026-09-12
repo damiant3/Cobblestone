@@ -16,67 +16,67 @@ fn cordic_atan2(y : f32, x : f32) -> f32 {
   let ay = abs(y);
   let mn = min(ax, ay);
   let mx = max(ax, ay);
-  let a = select(bitcast<f32>(0u), (mn / mx), (mx > bitcast<f32>(0u)));
+  let a = select(0.0, (mn / mx), (mx > 0.0));
   let a2 = (a * a);
-  let numer = (bitcast<f32>(1121058816u) + (bitcast<f32>(1113325568u) * a2));
-  let denom = (bitcast<f32>(1121058816u) + (a2 * (bitcast<f32>(1119092736u) + (bitcast<f32>(1091567616u) * a2))));
+  let numer = (0x1.a40000p+6f + (0x1.b80000p+5f * a2));
+  let denom = (0x1.a40000p+6f + (a2 * (0x1.680000p+6f + (0x1.200000p+3f * a2))));
   let t = (a * numer);
   let base = (t / denom);
-  let r1 = select(base, (bitcast<f32>(1070141402u) - base), (ay > ax));
-  let r2 = select(r1, (bitcast<f32>(1078530010u) - r1), (x < bitcast<f32>(0u)));
-  if ((y < bitcast<f32>(0u))) {
-  return (bitcast<f32>(0u) - r2);
+  let r1 = select(base, (0x1.921fb4p+0f - base), (ay > ax));
+  let r2 = select(r1, (0x1.921fb4p+1f - r1), (x < 0.0));
+  if ((y < 0.0)) {
+  return (0.0 - r2);
   } else {
   return r2;
   }
 }
-fn earth_shade_pixel(framebuf : ptr<storage, array<i32>, read_write>, tex : ptr<storage, array<i32>, read_write>, gid : i32, ti : i32, hx : f32, hy : f32, hz : f32, sx : f32, sy : f32, sz : f32) -> i32 {
-  let tr = (*tex)[ti];
-  let tg = (*tex)[(ti + 1)];
-  let tb = (*tex)[(ti + 2)];
+fn earth_shade_pixel(gid : i32, ti : i32, hx : f32, hy : f32, hz : f32, sx : f32, sy : f32, sz : f32) -> i32 {
+  let tr = earth_pixel_tex_buf[ti];
+  let tg = earth_pixel_tex_buf[(ti + 1)];
+  let tb = earth_pixel_tex_buf[(ti + 2)];
   let dot = (((hx * sx) + (hy * sy)) + (hz * sz));
-  let sun = max(bitcast<f32>(0u), dot);
-  let diff = (bitcast<f32>(1039516303u) + (sun * bitcast<f32>(1067869798u)));
+  let sun = max(0.0, dot);
+  let diff = (0x1.eb851ep-4f + (sun * 0x1.4cccccp+0f));
   let rim = sqrt(((hx * hx) + (hy * hy)));
-  let atmo = (((rim * rim) * rim) * bitcast<f32>(1058642329u));
-  let cr = clamp_int(i32(((f32(f32(tr)) * diff) + (atmo * bitcast<f32>(1116471296u)))), 0, 255);
-  let cg = clamp_int(i32(((f32(f32(tg)) * diff) + (atmo * bitcast<f32>(1124204544u)))), 0, 255);
-  let cb = clamp_int(i32(((f32(f32(tb)) * diff) + (atmo * bitcast<f32>(1132396544u)))), 0, 255);
+  let atmo = (((rim * rim) * rim) * 0x1.333332p-1f);
+  let cr = clamp_int(i32(((f32(f32(tr)) * diff) + (atmo * 0x1.180000p+6f))), 0, 255);
+  let cg = clamp_int(i32(((f32(f32(tg)) * diff) + (atmo * 0x1.040000p+7f))), 0, 255);
+  let cb = clamp_int(i32(((f32(f32(tb)) * diff) + (atmo * 0x1.fe0000p+7f))), 0, 255);
   let pixel = ((((cr * 65536) + (cg * 256)) + cb) + bitcast<i32>(4278190080u));
-  (*framebuf)[gid] = pixel;
+  earth_pixel_framebuf_buf[gid] = pixel;
   return 0;
 }
-fn earth_sky_pixel(framebuf : ptr<storage, array<i32>, read_write>, gid : i32, miss : f32) -> i32 {
-  let glow = max(bitcast<f32>(0u), (bitcast<f32>(1065353216u) - (miss * bitcast<f32>(1094713344u))));
+fn earth_sky_pixel(gid : i32, miss : f32) -> i32 {
+  let glow = max(0.0, (0x1.000000p+0f - (miss * 0x1.800000p+3f)));
   let g2 = (glow * glow);
-  let cr = clamp_int(i32((g2 * bitcast<f32>(1103626240u))), 0, 255);
-  let cg = clamp_int(i32((g2 * bitcast<f32>(1112014848u))), 0, 255);
-  let cb = clamp_int(i32((g2 * bitcast<f32>(1126170624u))), 0, 255);
+  let cr = clamp_int(i32((g2 * 0x1.900000p+4f)), 0, 255);
+  let cg = clamp_int(i32((g2 * 0x1.900000p+5f)), 0, 255);
+  let cb = clamp_int(i32((g2 * 0x1.400000p+7f)), 0, 255);
   let pixel = ((((cr * 65536) + (cg * 256)) + cb) + bitcast<i32>(4278190080u));
-  (*framebuf)[gid] = pixel;
+  earth_pixel_framebuf_buf[gid] = pixel;
   return 0;
 }
 fn atan2_approx(y : f32, x : f32) -> f32 {
   return cordic_atan2(y, x);
 }
 fn gamma_byte(v : f32) -> i32 {
-  let clamped = max(bitcast<f32>(0u), v);
+  let clamped = max(0.0, v);
   let g = (sqrt(sqrt(clamped)) * sqrt(clamped));
-  return clamp_int(i32((g * bitcast<f32>(1132396544u))), 0, 255);
+  return clamp_int(i32((g * 0x1.fe0000p+7f)), 0, 255);
 }
-fn bh_write(framebuf : ptr<storage, array<i32>, read_write>, gid : i32, cr : f32, cg : f32, cb : f32, opacity : f32, vx : f32, vy : f32, vz : f32) -> i32 {
+fn bh_write(gid : i32, cr : f32, cg : f32, cb : f32, opacity : f32, vx : f32, vy : f32, vz : f32) -> i32 {
   let gr = gamma_byte(cr);
   let gg = gamma_byte(cg);
   let gb = gamma_byte(cb);
   let pixel = ((((gr * 65536) + (gg * 256)) + gb) + bitcast<i32>(4278190080u));
-  (*framebuf)[gid] = pixel;
+  bh_pixel_framebuf_buf[gid] = pixel;
   return 0;
 }
 fn asin_approx(x : f32) -> f32 {
-  let clamped = min(bitcast<f32>(1065336438u), max((bitcast<f32>(0u) - bitcast<f32>(1065336438u)), x));
-  return atan2_approx(clamped, sqrt((bitcast<f32>(1065353216u) - (clamped * clamped))));
+  let clamped = min(0x1.ff7cecp-1f, max((0.0 - 0x1.ff7cecp-1f), x));
+  return atan2_approx(clamped, sqrt((0x1.000000p+0f - (clamped * clamped))));
 }
-fn bh_march(framebuf : ptr<storage, array<i32>, read_write>, gid__a : i32, px__a : f32, py__a : f32, pz__a : f32, vx__a : f32, vy__a : f32, vz__a : f32, time__a : f32, step__a : i32, cr__a : f32, cg__a : f32, cb__a : f32, opacity__a : f32) -> i32 {
+fn bh_march(gid__a : i32, px__a : f32, py__a : f32, pz__a : f32, vx__a : f32, vy__a : f32, vz__a : f32, time__a : f32, step__a : i32, cr__a : f32, cg__a : f32, cb__a : f32, opacity__a : f32) -> i32 {
   var gid = gid__a;
   var px = px__a;
   var py = py__a;
@@ -92,25 +92,25 @@ fn bh_march(framebuf : ptr<storage, array<i32>, read_write>, gid__a : i32, px__a
   var opacity = opacity__a;
   loop {
     if ((step >= 250)) {
-    return bh_write(framebuf, gid, cr, cg, cb, opacity, vx, vy, vz);
+    return bh_write(gid, cr, cg, cb, opacity, vx, vy, vz);
     } else {
-    if ((opacity > bitcast<f32>(1065185443u))) {
-    return bh_write(framebuf, gid, cr, cg, cb, opacity, vx, vy, vz);
+    if ((opacity > 0x1.fae146p-1f)) {
+    return bh_write(gid, cr, cg, cb, opacity, vx, vy, vz);
     } else {
     let r = sqrt((((px * px) + (py * py)) + (pz * pz)));
-    if ((r < bitcast<f32>(1050924810u))) {
-    return bh_write(framebuf, gid, cr, cg, cb, bitcast<f32>(1065353216u), vx, vy, vz);
+    if ((r < 0x1.47ae14p-2f)) {
+    return bh_write(gid, cr, cg, cb, 0x1.000000p+0f, vx, vy, vz);
     } else {
-    if ((r > bitcast<f32>(1112014848u))) {
-    return bh_write(framebuf, gid, cr, cg, cb, opacity, vx, vy, vz);
+    if ((r > 0x1.900000p+5f)) {
+    return bh_write(gid, cr, cg, cb, opacity, vx, vy, vz);
     } else {
-    let dt = min(bitcast<f32>(1039516303u), max(bitcast<f32>(994352037u), (r * bitcast<f32>(1025758986u))));
+    let dt = min(0x1.eb851ep-4f, max(0x1.89374ap-9f, (r * 0x1.47ae14p-5f)));
     let hcx = ((py * vz) - (pz * vy));
     let hcy = ((pz * vx) - (px * vz));
     let hcz = ((px * vy) - (py * vx));
     let h2 = (((hcx * hcx) + (hcy * hcy)) + (hcz * hcz));
     let r5 = ((((r * r) * r) * r) * r);
-    let gm = (((bitcast<f32>(0u) - bitcast<f32>(1056293519u)) * h2) / r5);
+    let gm = (((0.0 - 0x1.eb851ep-2f) * h2) / r5);
     let gx = ((px / r) * gm);
     let gy = ((py / r) * gm);
     let gz = ((pz / r) * gm);
@@ -124,33 +124,33 @@ fn bh_march(framebuf : ptr<storage, array<i32>, read_write>, gid__a : i32, px__a
     let npx = (px + (nvx2 * dt));
     let npy = (py + (nvy2 * dt));
     let npz = (pz + (nvz2 * dt));
-    let crossed = select(bitcast<f32>(0u), bitcast<f32>(1065353216u), ((py * npy) < bitcast<f32>(0u)));
-    if ((crossed > bitcast<f32>(1056964608u))) {
+    let crossed = select(0.0, 0x1.000000p+0f, ((py * npy) < 0.0));
+    if ((crossed > 0x1.000000p-1f)) {
     let tc = (py / (py - npy));
     let cx = (px + ((npx - px) * tc));
     let cz = (pz + ((npz - pz) * tc));
     let disk_r = sqrt(((cx * cx) + (cz * cz)));
-    let inner_fade = min(bitcast<f32>(1065353216u), max(bitcast<f32>(0u), ((disk_r - bitcast<f32>(1060320051u)) / bitcast<f32>(1050253721u))));
-    let outer_fade = min(bitcast<f32>(1065353216u), max(bitcast<f32>(0u), ((bitcast<f32>(1074580684u) - disk_r) / bitcast<f32>(1053609164u))));
+    let inner_fade = min(0x1.000000p+0f, max(0.0, ((disk_r - 0x1.666666p-1f) / 0x1.333332p-2f)));
+    let outer_fade = min(0x1.000000p+0f, max(0.0, ((0x1.199998p+1f - disk_r) / 0x1.999998p-2f)));
     let in_ring = (inner_fade * outer_fade);
-    if ((in_ring > bitcast<f32>(1008981770u))) {
+    if ((in_ring > 0x1.47ae14p-7f)) {
     let angle = atan2_approx(cz, cx);
-    let orbit = (angle + ((time * bitcast<f32>(1069547520u)) / (disk_r * disk_r)));
-    let n1 = sin(((orbit * bitcast<f32>(1077936128u)) + (disk_r * bitcast<f32>(1073741824u))));
-    let n2 = sin((((orbit * bitcast<f32>(1088421888u)) + (disk_r * bitcast<f32>(1056964608u))) + bitcast<f32>(1067869798u)));
-    let turb = ((bitcast<f32>(1059481190u) + (n1 * bitcast<f32>(1048576000u))) + (n2 * bitcast<f32>(1036831948u)));
-    let density = ((in_ring * bitcast<f32>(1056964608u)) * turb);
-    let temp = max(bitcast<f32>(0u), (bitcast<f32>(1065353216u) - ((disk_r - bitcast<f32>(1056293519u)) / bitcast<f32>(1074748456u))));
-    let grav = sqrt(max(bitcast<f32>(0u), (bitcast<f32>(1065353216u) - (bitcast<f32>(1050924810u) / r))));
+    let orbit = (angle + ((time * 0x1.800000p+0f) / (disk_r * disk_r)));
+    let n1 = sin(((orbit * 0x1.800000p+1f) + (disk_r * 0x1.000000p+1f)));
+    let n2 = sin((((orbit * 0x1.c00000p+2f) + (disk_r * 0x1.000000p-1f)) + 0x1.4cccccp+0f));
+    let turb = ((0x1.4cccccp-1f + (n1 * 0x1.000000p-2f)) + (n2 * 0x1.999998p-4f));
+    let density = ((in_ring * 0x1.000000p-1f) * turb);
+    let temp = max(0.0, (0x1.000000p+0f - ((disk_r - 0x1.eb851ep-2f) / 0x1.1eb850p+1f)));
+    let grav = sqrt(max(0.0, (0x1.000000p+0f - (0x1.47ae14p-2f / r))));
     let side = sin(angle);
-    let doppler = select((bitcast<f32>(1053609164u) + ((bitcast<f32>(1065353216u) + side) * bitcast<f32>(1050253721u))), (bitcast<f32>(1067869798u) + (side * bitcast<f32>(1056964608u))), (side > bitcast<f32>(0u)));
+    let doppler = select((0x1.999998p-2f + ((0x1.000000p+0f + side) * 0x1.333332p-2f)), (0x1.4cccccp+0f + (side * 0x1.000000p-1f)), (side > 0.0));
     let bright = ((grav * doppler) * density);
     let t2 = (temp * temp);
-    let rem = (bitcast<f32>(1065353216u) - opacity);
-    let ncr = (cr + ((bright * (bitcast<f32>(1067030937u) + (t2 * bitcast<f32>(1058642329u)))) * rem));
-    let ncg = (cg + ((bright * (bitcast<f32>(1063675494u) + (temp * bitcast<f32>(1056964608u)))) * rem));
-    let ncb = (cb + ((bright * (bitcast<f32>(1056964608u) + (t2 * bitcast<f32>(1053609164u)))) * rem));
-    let nop = min((opacity + (density * bitcast<f32>(1056964608u))), bitcast<f32>(1065353216u));
+    let rem = (0x1.000000p+0f - opacity);
+    let ncr = (cr + ((bright * (0x1.333332p+0f + (t2 * 0x1.333332p-1f))) * rem));
+    let ncg = (cg + ((bright * (0x1.ccccccp-1f + (temp * 0x1.000000p-1f))) * rem));
+    let ncb = (cb + ((bright * (0x1.000000p-1f + (t2 * 0x1.999998p-2f))) * rem));
+    let nop = min((opacity + (density * 0x1.000000p-1f)), 0x1.000000p+0f);
     let _mv1 = gid;
     let _mv2 = npx;
     let _mv3 = npy;
@@ -241,6 +241,7 @@ fn bh_march(framebuf : ptr<storage, array<i32>, read_write>, gid__a : i32, px__a
     }
     }
   }
+  return 0;
 }
 @group(0) @binding(0) var<storage, read_write> earth_pixel_params_buf : array<i32>;
 @group(0) @binding(1) var<storage, read_write> earth_pixel_framebuf_buf : array<i32>;
@@ -269,33 +270,33 @@ fn earth_pixel_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let i_sun_z = earth_pixel_params_buf[7];
   let px = (gid - ((gid / w) * w));
   let py = (gid / w);
-  let aspect = (f32(f32(i_aspect)) / bitcast<f32>(1148846080u));
-  let zoom = (f32(f32(i_zoom)) / bitcast<f32>(1148846080u));
-  let cam_pitch = (f32(f32(i_cam_pitch)) / bitcast<f32>(1148846080u));
-  let earth_yaw = (f32(f32(i_earth_yaw)) / bitcast<f32>(1148846080u));
-  let earth_pitch = (f32(f32(i_earth_pitch)) / bitcast<f32>(1148846080u));
-  let sun_x = (f32(f32(i_sun_x)) / bitcast<f32>(1148846080u));
-  let sun_y = (f32(f32(i_sun_y)) / bitcast<f32>(1148846080u));
-  let sun_z = (f32(f32(i_sun_z)) / bitcast<f32>(1148846080u));
-  let ndx = ((((f32(f32(px)) / f32(f32(w))) - bitcast<f32>(1056964608u)) * bitcast<f32>(1073741824u)) * aspect);
-  let ndy = ((bitcast<f32>(1056964608u) - (f32(f32(py)) / f32(f32(h)))) * bitcast<f32>(1073741824u));
-  let rlen = sqrt((((ndx * ndx) + (ndy * ndy)) + bitcast<f32>(1065353216u)));
+  let aspect = (f32(f32(i_aspect)) / 0x1.f40000p+9f);
+  let zoom = (f32(f32(i_zoom)) / 0x1.f40000p+9f);
+  let cam_pitch = (f32(f32(i_cam_pitch)) / 0x1.f40000p+9f);
+  let earth_yaw = (f32(f32(i_earth_yaw)) / 0x1.f40000p+9f);
+  let earth_pitch = (f32(f32(i_earth_pitch)) / 0x1.f40000p+9f);
+  let sun_x = (f32(f32(i_sun_x)) / 0x1.f40000p+9f);
+  let sun_y = (f32(f32(i_sun_y)) / 0x1.f40000p+9f);
+  let sun_z = (f32(f32(i_sun_z)) / 0x1.f40000p+9f);
+  let ndx = ((((f32(f32(px)) / f32(f32(w))) - 0x1.000000p-1f) * 0x1.000000p+1f) * aspect);
+  let ndy = ((0x1.000000p-1f - (f32(f32(py)) / f32(f32(h)))) * 0x1.000000p+1f);
+  let rlen = sqrt((((ndx * ndx) + (ndy * ndy)) + 0x1.000000p+0f));
   let rdx = (ndx / rlen);
   let rdy = (ndy / rlen);
-  let rdz = (bitcast<f32>(1065353216u) / rlen);
+  let rdz = (0x1.000000p+0f / rlen);
   let cos_cp = cos(cam_pitch);
   let sin_cp = sin(cam_pitch);
   let dx = rdx;
   let dy = ((cos_cp * rdy) - (sin_cp * rdz));
   let dz = ((sin_cp * rdy) + (cos_cp * rdz));
-  let neg_zoom = (bitcast<f32>(0u) - zoom);
-  let oy = (bitcast<f32>(0u) - (sin_cp * neg_zoom));
+  let neg_zoom = (0.0 - zoom);
+  let oy = (0.0 - (sin_cp * neg_zoom));
   let oz = (cos_cp * neg_zoom);
-  let b = (bitcast<f32>(1073741824u) * ((oy * dy) + (oz * dz)));
-  let c = (((oy * oy) + (oz * oz)) - bitcast<f32>(1065353216u));
-  let disc = ((b * b) - (bitcast<f32>(1082130432u) * c));
-  let t = select(select((bitcast<f32>(0u) - bitcast<f32>(1065353216u)), (((bitcast<f32>(0u) - b) - sqrt(disc)) / bitcast<f32>(1073741824u)), ((((bitcast<f32>(0u) - b) - sqrt(disc)) / bitcast<f32>(1073741824u)) > bitcast<f32>(981668462u))), (bitcast<f32>(0u) - bitcast<f32>(1065353216u)), (disc < bitcast<f32>(0u)));
-  if ((t > bitcast<f32>(981668462u))) {
+  let b = (0x1.000000p+1f * ((oy * dy) + (oz * dz)));
+  let c = (((oy * oy) + (oz * oz)) - 0x1.000000p+0f);
+  let disc = ((b * b) - (0x1.000000p+2f * c));
+  let t = select(select((0.0 - 0x1.000000p+0f), (((0.0 - b) - sqrt(disc)) / 0x1.000000p+1f), ((((0.0 - b) - sqrt(disc)) / 0x1.000000p+1f) > 0x1.0624dcp-10f)), (0.0 - 0x1.000000p+0f), (disc < 0.0));
+  if ((t > 0x1.0624dcp-10f)) {
   let hx = (t * dx);
   let hy = (oy + (t * dy));
   let hz = (oz + (t * dz));
@@ -307,20 +308,20 @@ fn earth_pixel_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let rz = ((sin_ep * hy) + (cos_ep * hz));
   let gx = ((cos_ey * hx) + (sin_ey * rz));
   let gy = ry;
-  let gz = ((bitcast<f32>(0u) - (sin_ey * hx)) + (cos_ey * rz));
+  let gz = ((0.0 - (sin_ey * hx)) + (cos_ey * rz));
   let lat = asin_approx(gy);
   let lon = atan2_approx(gx, gz);
-  let pi = bitcast<f32>(1078530010u);
-  let u = (bitcast<f32>(1065353216u) - (((lon / pi) + bitcast<f32>(1065353216u)) * bitcast<f32>(1056964608u)));
-  let v = (bitcast<f32>(1056964608u) - (lat / pi));
+  let pi = 0x1.921fb4p+1f;
+  let u = (0x1.000000p+0f - (((lon / pi) + 0x1.000000p+0f) * 0x1.000000p-1f));
+  let v = (0x1.000000p-1f - (lat / pi));
   let tx_raw = i32((u * f32(f32(tw))));
   let tx_idx = (tx_raw - ((tx_raw / tw) * tw));
   let ty_idx = clamp_int(i32((v * f32(f32(th)))), 0, (th - 1));
   let ti = (((ty_idx * tw) + tx_idx) * 3);
-  _ = earth_shade_pixel(&earth_pixel_framebuf_buf, &earth_pixel_tex_buf, gid, ti, hx, hy, hz, sun_x, sun_y, sun_z);
+  _ = earth_shade_pixel(gid, ti, hx, hy, hz, sun_x, sun_y, sun_z);
   } else {
-  let miss = (sqrt(max(bitcast<f32>(0u), ((c + bitcast<f32>(1065353216u)) - ((b * b) / bitcast<f32>(1082130432u))))) - bitcast<f32>(1065353216u));
-  _ = earth_sky_pixel(&earth_pixel_framebuf_buf, gid, miss);
+  let miss = (sqrt(max(0.0, ((c + 0x1.000000p+0f) - ((b * b) / 0x1.000000p+2f)))) - 0x1.000000p+0f);
+  _ = earth_sky_pixel(gid, miss);
   }
 }
 @group(0) @binding(0) var<storage, read_write> bh_pixel_params_buf : array<i32>;
@@ -342,31 +343,31 @@ fn bh_pixel_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
   let i_bh_time = bh_pixel_params_buf[4];
   let px = (gid - ((gid / w) * w));
   let py = (gid / w);
-  let aspect = (f32(f32(i_aspect)) / bitcast<f32>(1148846080u));
-  let zoom = (f32(f32(i_zoom)) / bitcast<f32>(1148846080u));
-  let cp = (f32(f32(i_cam_pitch)) / bitcast<f32>(1148846080u));
-  let cy = (f32(f32(i_cam_yaw)) / bitcast<f32>(1148846080u));
-  let time = (f32(f32(i_bh_time)) / bitcast<f32>(1148846080u));
-  let ndx = ((((f32(f32(px)) / f32(f32(w))) - bitcast<f32>(1056964608u)) * bitcast<f32>(1073741824u)) * aspect);
-  let ndy = ((bitcast<f32>(1056964608u) - (f32(f32(py)) / f32(f32(h)))) * bitcast<f32>(1073741824u));
-  let rlen = sqrt((((ndx * ndx) + (ndy * ndy)) + bitcast<f32>(1085821419u)));
+  let aspect = (f32(f32(i_aspect)) / 0x1.f40000p+9f);
+  let zoom = (f32(f32(i_zoom)) / 0x1.f40000p+9f);
+  let cp = (f32(f32(i_cam_pitch)) / 0x1.f40000p+9f);
+  let cy = (f32(f32(i_cam_yaw)) / 0x1.f40000p+9f);
+  let time = (f32(f32(i_bh_time)) / 0x1.f40000p+9f);
+  let ndx = ((((f32(f32(px)) / f32(f32(w))) - 0x1.000000p-1f) * 0x1.000000p+1f) * aspect);
+  let ndy = ((0x1.000000p-1f - (f32(f32(py)) / f32(f32(h)))) * 0x1.000000p+1f);
+  let rlen = sqrt((((ndx * ndx) + (ndy * ndy)) + 0x1.70a3d6p+2f));
   let rdx = (ndx / rlen);
   let rdy = (ndy / rlen);
-  let rdz = (bitcast<f32>(1075419545u) / rlen);
+  let rdz = (0x1.333332p+1f / rlen);
   let cos_y = cos(cy);
   let sin_y = sin(cy);
   let cos_p = cos(cp);
   let sin_p = sin(cp);
   let d1x = ((cos_y * rdx) + (sin_y * rdz));
-  let d1z = ((bitcast<f32>(0u) - (sin_y * rdx)) + (cos_y * rdz));
+  let d1z = ((0.0 - (sin_y * rdx)) + (cos_y * rdz));
   let vx = d1x;
   let vy = ((cos_p * rdy) - (sin_p * d1z));
   let vz = ((sin_p * rdy) + (cos_p * d1z));
-  let neg_zoom = (bitcast<f32>(0u) - zoom);
+  let neg_zoom = (0.0 - zoom);
   let o1x = (sin_y * neg_zoom);
   let o1z = (cos_y * neg_zoom);
   let posX = o1x;
-  let posY = (bitcast<f32>(0u) - (sin_p * o1z));
+  let posY = (0.0 - (sin_p * o1z));
   let posZ = (cos_p * o1z);
-  _ = bh_march(&bh_pixel_framebuf_buf, gid, posX, posY, posZ, vx, vy, vz, time, 0, bitcast<f32>(0u), bitcast<f32>(0u), bitcast<f32>(0u), bitcast<f32>(0u));
+  _ = bh_march(gid, posX, posY, posZ, vx, vy, vz, time, 0, 0.0, 0.0, 0.0, 0.0);
 }

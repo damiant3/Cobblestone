@@ -1490,7 +1490,8 @@ Section: Collections and Act
    in let actual-ty = when record-ty
       is ErrorTy | NoExpectTy -> ty
       is otherwise -> record-ty
-   in let lowered-fields = lower-record-fields-typed fields actual-ty ctx 0 (list-length fields)
+   in let applied-ty = prefer-applied-record-ty (expected-or-recorded-ty ty ctx sp) actual-ty (ctx.local-type-vars)
+   in let lowered-fields = lower-record-fields-typed fields actual-ty applied-ty ctx 0 (list-length fields)
    in let refined-actual = refine-record-ty-from-fields actual-ty lowered-fields ctx 0 (list-length lowered-fields)
    in let emit-ty = prefer-applied-record-ty ty refined-actual (ctx.local-type-vars)
    in deck-record (IrRecord (name.value) lowered-fields emit-ty sp)
@@ -1542,18 +1543,18 @@ Section: Collections and Act
    else if list-at xs i == target then True
    else list-contains-int-loop xs target (i + 1) len
 
-  lower-record-fields-typed : List AFieldExpr, CodexType, LowerCtx, Integer, Integer -> List IRFieldVal
-  lower-record-fields-typed (fields) (record-ty) (ctx) (i) (len) =
-   lower-record-fields-acc fields record-ty ctx i len []
+  lower-record-fields-typed : List AFieldExpr, CodexType, CodexType, LowerCtx, Integer, Integer -> List IRFieldVal
+  lower-record-fields-typed (fields) (record-ty) (applied-ty) (ctx) (i) (len) =
+   lower-record-fields-acc fields record-ty applied-ty ctx i len []
 
-  lower-record-fields-acc : List AFieldExpr, CodexType, LowerCtx, Integer, Integer, List IRFieldVal -> List IRFieldVal
-  lower-record-fields-acc (fields) (record-ty) (ctx) (i) (len) (acc) =
+  lower-record-fields-acc : List AFieldExpr, CodexType, CodexType, LowerCtx, Integer, Integer, List IRFieldVal -> List IRFieldVal
+  lower-record-fields-acc (fields) (record-ty) (applied-ty) (ctx) (i) (len) (acc) =
    if i == len then acc
    else let f = list-at fields i
    in let field-expected = when record-ty
-       is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (f.name.value)
+       is RecordTy (rname) (rargs) (rfields) -> subst-type-vars-from-arg record-ty applied-ty (lookup-record-field rfields (f.name.value))
        is otherwise -> ErrorTy
-   in lower-record-fields-acc fields record-ty ctx (i + 1) len (list-push acc (deck-record (IRFieldVal {
+   in lower-record-fields-acc fields record-ty applied-ty ctx (i + 1) len (list-push acc (deck-record (IRFieldVal {
     name = f.name.value,
     value = lower-expr (f.value) field-expected ctx,
     span = f.span
@@ -2194,6 +2195,7 @@ Section: Leaf Inlining
    il-name : Text,
    il-params : List Text,
    il-ptys : List CodexType,
+   il-rty : CodexType,
    il-body : IRExpr
   }
 
@@ -2233,7 +2235,7 @@ Section: Leaf Inlining
       else if np >= 1 & np <= 3 then leaf-body-ok (d.body) pnames 12
       else 0 - 1
    in if ok >= 0
-      then collect-leaf-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-ptys = for p in (d.params) -> p.type-val, il-body = d.body })))
+      then collect-leaf-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-ptys = for p in (d.params) -> p.type-val, il-rty = peel-applied-return (d.type-val) (list-length (d.params)), il-body = d.body })))
    else collect-leaf-defs defs (i + 1) acc
 
  A function with a bounded parameter or return is enforced by
@@ -2764,7 +2766,7 @@ Section: Single-Caller Inlining
       else if np > 4 then False
       else once-binder-free (d.body)
    in if ok
-      then collect-once-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-ptys = for p in (d.params) -> p.type-val, il-body = d.body })))
+      then collect-once-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-ptys = for p in (d.params) -> p.type-val, il-rty = peel-applied-return (d.type-val) (list-length (d.params)), il-body = d.body })))
    else collect-once-defs defs (i + 1) acc
 
   keep-single-caller : List InlineLeaf, List Integer, Integer, List InlineLeaf -> List InlineLeaf
@@ -2785,8 +2787,12 @@ Section: Single-Caller Inlining
    in if list-length args /= list-length (cand.il-params) then e
    else if leaf-args-simple args 0 == False then e
    else if once-free-escapes (cand.il-body) (cand.il-params) bound then e
-   else if any-tyvar-param (cand.il-ptys) 0 == False then subst-once (cand.il-body) (cand.il-params) args [] []
-   else subst-once (cand.il-body) (cand.il-params) args (cand.il-ptys) (for a in args -> ir-expr-type a)
+   else if once-signature-generic cand == False then subst-once (cand.il-body) (cand.il-params) args [] []
+   else subst-once (cand.il-body) (cand.il-params) args (list-push (for p in (cand.il-ptys) -> p) (cand.il-rty)) (list-push (for a in args -> ir-expr-type a) (ir-expr-type e))
+
+  once-signature-generic : InlineLeaf -> Boolean
+  once-signature-generic (cand) =
+   if any-tyvar-param (cand.il-ptys) 0 then True else ty-has-typevars (cand.il-rty)
 
   any-tyvar-param : List CodexType, Integer -> Boolean
   any-tyvar-param (ps) (i) =
@@ -2928,7 +2934,7 @@ Section: Cost-Based Inlining
       else if ir-body-mentions (d.body) (d.name) then False
       else ir-cost-expr (d.body) <= inline-cost-ceiling
    in if ok
-      then collect-cost-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-ptys = for p in (d.params) -> p.type-val, il-body = d.body })))
+      then collect-cost-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf { il-name = d.name, il-params = pnames, il-ptys = for p in (d.params) -> p.type-val, il-rty = peel-applied-return (d.type-val) (list-length (d.params)), il-body = d.body })))
    else collect-cost-defs defs (i + 1) acc
 
   keep-multi-caller : List InlineLeaf, List Integer, Integer, List InlineLeaf -> List InlineLeaf

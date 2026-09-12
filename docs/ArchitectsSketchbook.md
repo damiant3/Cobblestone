@@ -258,6 +258,60 @@ When `__deck-exit` is called:
 Nesting is supported: inner `deck-record` calls increment/decrement
 the counter without swapping R10.
 
+### `check-chapter` caller contract
+
+The current bare-metal CHECK protocol requires entry depth exactly 1.
+`compile-type-check` is the production caller: `opening.codex:601-606`
+reserves KEEP, reserves CHECK, and wraps `check-chapter` in `deck-record`.
+`TypeChecker.codex:2398` exits one extent before the definition walk;
+`:2403` re-enters before the postchecks. Entry depth 1 makes the walk
+bivy-bound and publishes the CHECK cursor. Entry depth 0 decrements to -1
+without a cursor swap. Entry depth 2 leaves depth 1 and keeps R10 on CHECK.
+The latter also prevents the KEEP switch expected by `check-batch-close`
+at `TypeChecker.codex:2727-2728`. General support for nested `deck-record`
+does not establish support for nesting this phase caller.
+
+Allocator setup is separate from depth. Emitted entry zeros the counter;
+`init-phase-allocator` only sets the deck-position cell. Reserve distinct
+input, KEEP and CHECK storage before checking, and retain the real
+`init-phase-allocator` and `deck-record` definitions under their shared
+chapter identity so the emitter enables the wrapper intrinsic. A citation
+alone establishes neither initialization nor wrapper retention.
+
+Measured 2026-09-10 against main25637 with depot seed
+`B1D05D72A0C846CA`: one three-definition chapter containing integer, text,
+and integer-list bindings plus a nonsynthetic name-reference span. Each
+depth ran in a separate guest using the same probe binary. Raw serial
+checkpoints measured zero R10 growth across reporting.
+
+| Entry depth | Return to caller | Immediate binding checks | After 256 KiB bivy allocation | After 256 KiB deck allocation |
+|---|---|---|---|---|
+| 0, unwrapped | depth 0 | 0/3 | `!EXC=0d`, RDI contains the `A5` fill | Not reached |
+| 1, ordinary wrapper | depth 0 | 3/3 | 3/3 | 3/3 |
+| 2, additional wrapper | depth 0 | 0/3 | 0/3 | `!EXC=0d`, RDI contains the `5A` fill |
+
+The checks combine each binding's name and type shape. All three immediate
+results reported zero errors and nonempty environment/expression-type
+lists; those facts and a balanced return counter do not establish valid
+bindings. The passing depth-1 result also survived both allocations with
+those checks intact. No claim covers every reachable state field, depth
+above 2, hosted targets, or an omitted initialization path.
+
+The raw `ChapterResult` remains CHECK-owned. In the depth-1 control its
+address was `0x2E19FA0`, below the published CHECK frontier `0x2E1A030`.
+After the passing allocation checks, deliberately resetting CHECK to
+`0x2E01020` and filling 4 MiB changed the result's first word to
+`0x5A5A5A5A5A5A5A5A`. Ordinary allocation and intentional reclamation are
+different lifetime boundaries. The production caller consumes the raw
+result and materializes KEEP survivors at `opening.codex:667-712` before
+compacting at `:723`; callers must not retain the raw result through CHECK
+reclamation.
+
+The immutable probe, source bundle, compiler log, hashes and depth traces
+are in `D:/Projects/Cobblestone-val/build-output/check-chapter-25637`.
+The entry/lifetime audit changes no compiler allocation or time complexity.
+COMPILER-48 retains the wider subset, initialization and enforcement gaps.
+
 ## The runtime list header, and why hand-rolled builders corrupt silently
 
 Every runtime list is laid out `[capacity][count][slots...]`, and **the list
@@ -572,14 +626,11 @@ through 19.1 MB of writing. Guards in that position must read R10
 (`deck-bound-short-of`); guards outside one, or in a phase that writes through
 many small extents like SCOPE, read the cell (`deck-short-of`).
 
-Settled 2026-07-21 for every guard in the compiler. Inside their extents and
-reading R10: RESOLVE, LIFT, LOWER, and the PARSE-KEEP copy. Outside, reading the
-cell: SCOPE (many small extents) and CHECK. **CHECK is the one you cannot infer
-from the phase's shape** -- `check-chapter` issues a bare `__deck-exit` three
-lines before `check-all-defs` and a `__deck-enter` after it, so the walk between
-them is bivy-bound. Read the code for that pair before choosing a predicate.
-Guessing from the phase name is wrong for exactly that one, and wrong there is a
-compiler that type-checks one definition and emits nothing.
+Inside their extents, RESOLVE, LIFT, LOWER and the PARSE-KEEP copy read R10.
+SCOPE reads the cell across separate extents. CHECK reads the cell during
+its definition walk because the production caller enters `check-chapter`
+at depth 1 and the internal exit reaches zero. An exit/enter pair alone
+does not establish that state; see `check-chapter caller contract` above.
 
 **Every phase that reserves a deck now stops on the write path.** LEX, PARSE
 scratch, PARSE-KEEP, DESUGAR, the frontend keep copy, SCOPE, CHECK, LOWER,

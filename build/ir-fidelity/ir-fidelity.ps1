@@ -113,7 +113,7 @@ function Invoke-IrCompile {
     # Named splatting, not an array: compile.ps1 takes -Src/-Out/-Log
     # positionally too, and an array splat binds -Out's value to -PCore.
     $cargs = @{ Src = $Src; Out = $out; Log = $log; Kernel = $Kernel; IrUni = $true }
-    if (-not $Passes) { $cargs['Passes'] = 'none' }
+    if (-not $Passes -and -not $script:casePasses) { $cargs['Passes'] = 'none' }
 
     # compile.ps1 resolves some of its own paths against the working directory,
     # so pin it rather than requiring the caller to have cd'd to the root.
@@ -608,6 +608,12 @@ foreach ($cf in $cases) {
     $dir = $cf.Directory.FullName
     $name = $cf.Directory.Name
     $c = Import-PowerShellDataFile -LiteralPath $cf.FullName
+    # A case whose subject exists only after the optimizer ran (an inlined
+    # helper, a folded literal) says so with `passes = $true` and is compiled
+    # through the pipeline whatever the run's own mode; every other case keeps
+    # the run's mode. -Grade does not forward -Passes to its children, so this
+    # key is the only way such a case is graded at a release.
+    $script:casePasses = [bool]($c.ContainsKey('passes') -and $c.passes)
 
     $ra = Invoke-IrCompile -Src (Join-Path $dir $c.a) -Tag "$name-a"
     $rb = Invoke-IrCompile -Src (Join-Path $dir $c.b) -Tag "$name-b"

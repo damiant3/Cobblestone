@@ -1317,24 +1317,17 @@ Section: Expression Emission
   emit-wat-ctor-pat (ctx) (name) (subs) (guard) (body) (branches) (i) (depth) =
    let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
    in let bind-subs = emit-wat-bind-ctor-subs ctx subs 0
-   in if (i == list-length branches - 1) & wat-guard-trivial guard & (wat-ctor-has-lit-subs subs 0 == False) then
+   in if (i == list-length branches - 1) & wat-guard-trivial guard & (wat-ctor-has-test-subs subs 0 == False) then
     emit-wat-arm-block "" "(i32.const 1)" bind-subs (emit-wat-expr ctx body)
    else emit-wat-arm-block "" (wat-ctor-arm-cond ctx tag subs guard bind-subs) bind-subs (emit-wat-expr ctx body)
 
- A LITERAL inside a constructor pattern is a TEST, not a binding, and
- `emit-wat-bind-ctor-subs` had no arm for one: it bound a variable sub-pattern
- and sent everything else to `is otherwise`, so `BInt (0)` matched every `BInt`
- and every arm answered the first one's body. The tests fold onto the tag test
- rather than beside it, because a payload load on an object of the wrong tag can
- address past the object and trap, which is the reason the guard is already
- gated this way.
-
-  wat-ctor-has-lit-subs : List IRPat, Integer -> Boolean
-  wat-ctor-has-lit-subs (subs) (i) =
+  wat-ctor-has-test-subs : List IRPat, Integer -> Boolean
+  wat-ctor-has-test-subs (subs) (i) =
    if i >= list-length subs then False
    else when list-at subs i
     is IrLitPat (t) (ty) (sp) -> True
-    is otherwise -> wat-ctor-has-lit-subs subs (i + 1)
+    is IrCtorPat (n) (ss) (ty) (sp) -> True
+    is otherwise -> wat-ctor-has-test-subs subs (i + 1)
 
   wat-and-tests : Text, Text -> Text
   wat-and-tests (acc) (t) =
@@ -1342,35 +1335,53 @@ Section: Expression Emission
 
   wat-ctor-sub-tests : WasmCtx, List IRPat, Integer, Text -> Text
   wat-ctor-sub-tests (ctx) (subs) (i) (acc) =
+   wat-ctor-sub-tests-at ctx subs i acc ("(local.get " & wat-scrut ctx & ")")
+
+  wat-ctor-sub-tests-at : WasmCtx, List IRPat, Integer, Text, Text -> Text
+  wat-ctor-sub-tests-at (ctx) (subs) (i) (acc) (base) =
    if i >= list-length subs then acc
-   else let fld = "(i64.load (i32.add (i32.wrap_i64 (local.get " & wat-scrut ctx & ")) (i32.const " & integer-to-text (8 + i * 8) & ")))"
+   else let fld = "(i64.load (i32.add (i32.wrap_i64 " & base & ") (i32.const " & integer-to-text (8 + i * 8) & ")))"
    in when list-at subs i
+    is IrCtorPat (n) (ss) (ty) (sp) ->
+     let tag = find-ctor-in-typedefs (ctx.type-defs) n 0
+     in let tag-test = "(i64.eq (i64.load (i32.wrap_i64 " & fld & ")) (i64.const " & integer-to-text tag & "))"
+     in let binds = emit-wat-bind-ctor-subs-at ctx ss 0 fld
+     in let inner = wat-ctor-sub-tests-at ctx ss 0 "" fld
+     in let under = if text-length inner == 0 then "(i32.const 1)" else inner
+     in let whole = if (text-length inner == 0) & (text-length binds == 0) then tag-test
+        else "(if (result i32) " & tag-test & " (then " & binds & under & ") (else (i32.const 0)))"
+     in wat-ctor-sub-tests-at ctx subs (i + 1) (wat-and-tests acc whole) base
     is IrLitPat (t) (ty) (sp) ->
-     wat-ctor-sub-tests ctx subs (i + 1) (wat-and-tests acc
+     wat-ctor-sub-tests-at ctx subs (i + 1) (wat-and-tests acc
       (if wat-is-text-type ty
        then "(i32.wrap_i64 (call $text_eq " & fld & " " & wat-strtab-ref (ctx.strings) t & "))"
-       else "(i64.eq " & fld & " (i64.const " & wat-lit-pat-const t & "))"))
-    is otherwise -> wat-ctor-sub-tests ctx subs (i + 1) acc
+       else "(i64.eq " & fld & " (i64.const " & wat-lit-pat-const t & "))")) base
+    is otherwise -> wat-ctor-sub-tests-at ctx subs (i + 1) acc base
 
   wat-ctor-arm-cond : WasmCtx, Integer, List IRPat, IRExpr, Text -> Text
   wat-ctor-arm-cond (ctx) (tag) (subs) (guard) (bind-subs) =
    let tag-test = "(i64.eq (i64.load (i32.wrap_i64 (local.get " & wat-scrut ctx & "))) (i64.const " & integer-to-text tag & "))"
    in let subt = wat-ctor-sub-tests ctx subs 0 ""
    in let inner = if wat-guard-trivial guard then subt
-      else wat-and-tests subt (emit-wat-guard-test ctx guard)
+      else if text-length subt == 0 then emit-wat-guard-test ctx guard
+      else "(if (result i32) " & subt & " (then " & emit-wat-guard-test ctx guard & ") (else (i32.const 0)))"
    in if text-length inner == 0 then tag-test
       else "(if (result i32) " & tag-test & " (then " & bind-subs & inner & ") (else (i32.const 0)))"
 
   emit-wat-bind-ctor-subs : WasmCtx, List IRPat, Integer -> Text
   emit-wat-bind-ctor-subs (ctx) (subs) (i) =
+   emit-wat-bind-ctor-subs-at ctx subs i ("(local.get " & wat-scrut ctx & ")")
+
+  emit-wat-bind-ctor-subs-at : WasmCtx, List IRPat, Integer, Text -> Text
+  emit-wat-bind-ctor-subs-at (ctx) (subs) (i) (base) =
    if i >= list-length subs then ""
-   else let off = 8 + i * 8
+   else let fld = "(i64.load (i32.add (i32.wrap_i64 " & base & ") (i32.const " & integer-to-text (8 + i * 8) & ")))"
    in let sub = list-at subs i
    in (when sub
-    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " (i64.load (i32.add (i32.wrap_i64 (local.get " & wat-scrut ctx & ")) (i32.const " & integer-to-text off & ")))) "
+    is IrVarPat (name) (ty) (sp) -> "(local.set $" & wat-sanitize name & " " & fld & ") "
     is IrWildPat (sp) -> ""
     is IrVecPat (pats) (ty) (sp) -> ""
-    is otherwise -> "") & emit-wat-bind-ctor-subs ctx subs (i + 1)
+    is otherwise -> "") & emit-wat-bind-ctor-subs-at ctx subs (i + 1) base
 
   emit-wat-act : WasmCtx, List IRActStmt -> Text
   emit-wat-act (ctx) (stmts) =
@@ -1711,6 +1722,14 @@ Section: Apply Emission
       else if n == "mask-none" then "(i64.extend_i32_u (i32.eqz " & bits & "))"
       else "(call $cx_mask_count " & emit-wat-expr ctx m & ")"
 
+  wat-emit-mask4-query : WasmCtx, Text, IRExpr -> Text
+  wat-emit-mask4-query (ctx) (n) (m) =
+   let bits = "(call $cx_mask4_bits " & emit-wat-expr ctx m & ")"
+   in if n == "mask4-any" then "(i64.extend_i32_u (i32.ne " & bits & " (i32.const 0)))"
+      else if n == "mask4-all" then "(i64.extend_i32_u (i32.eq " & bits & " (i32.const 15)))"
+      else if n == "mask4-none" then "(i64.extend_i32_u (i32.eqz " & bits & "))"
+      else "(call $cx_mask4_count " & emit-wat-expr ctx m & ")"
+
   wat-emit-vec-select : WasmCtx, List IRExpr -> Text
   wat-emit-vec-select (ctx) (args) =
    "(call $cx_vec_box (v128.bitselect (v128.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 1) & ")) (v128.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 2) & ")) (v128.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & "))))"
@@ -1956,8 +1975,10 @@ Section: Apply Emission
    else if n == "vec-reduce-add" then wat-emit-vec-reduce ctx (list-at args 0)
    else if n == "vec-load-at" then "(call $cx_vec_box (v128.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")))"
    else if n == "vec-store-at" then "(call $cx_vec_store " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
-   else if n == "vec-select" then wat-emit-vec-select ctx args
+   else if n == "vec-select" | n == "vec4-select" then wat-emit-vec-select ctx args
    else if n == "mask-any" | n == "mask-all" | n == "mask-none" | n == "mask-count" then wat-emit-mask-query ctx n (list-at args 0)
+   else if n == "mask4-any" | n == "mask4-all" | n == "mask4-none" | n == "mask4-count" then wat-emit-mask4-query ctx n (list-at args 0)
+   else if n == "vec4-reduce-add" then wat-emit-vec-reduce ctx (list-at args 0)
    else if n == "real-approx-to-bits" then "(i64.extend_i32_u (i32.reinterpret_f32 (f32.demote_f64 " & wat-f64-in (emit-wat-expr ctx (list-at args 0)) & ")))"
    else if n == "bits-to-real-approx" then wat-f64-out ("(f64.promote_f32 (f32.reinterpret_i32 (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")))")
    else if n == "blit-framebuf" then "(call $blit_framebuf (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")) (i64.const 0)"
@@ -2150,7 +2171,7 @@ Section: Tail Call Optimization
   emit-wat-ctor-arm-tco (ctx) (name) (subs) (guard) (body) (bs) (i) =
    let tag = find-ctor-in-typedefs (ctx.type-defs) name 0
    in let bind-subs = emit-wat-bind-ctor-subs ctx subs 0
-   in if (i == list-length bs - 1) & wat-guard-trivial guard & (wat-ctor-has-lit-subs subs 0 == False) then
+   in if (i == list-length bs - 1) & wat-guard-trivial guard & (wat-ctor-has-test-subs subs 0 == False) then
     emit-wat-arm-block "" "(i32.const 1)" bind-subs body
    else emit-wat-arm-block "" (wat-ctor-arm-cond ctx tag subs guard bind-subs) bind-subs body
 
@@ -2696,6 +2717,12 @@ Section: WASI Runtime Helpers
    "    (local $b i32)\n" &
    "    (local.set $b (call $cx_mask_bits (local.get $m)))\n" &
    "    (i64.extend_i32_u (i32.add (i32.and (local.get $b) (i32.const 1)) (i32.shr_u (local.get $b) (i32.const 1)))))\n\n" &
+   "  (func $cx_mask4_bits (param $m i64) (result i32)\n" &
+   "    (i32x4.bitmask (v128.load (i32.wrap_i64 (local.get $m)))))\n\n" &
+   "  (func $cx_mask4_count (param $m i64) (result i64)\n" &
+   "    (local $b i32)\n" &
+   "    (local.set $b (call $cx_mask4_bits (local.get $m)))\n" &
+   "    (i64.extend_i32_u (i32.add (i32.add (i32.and (local.get $b) (i32.const 1)) (i32.and (i32.shr_u (local.get $b) (i32.const 1)) (i32.const 1))) (i32.add (i32.and (i32.shr_u (local.get $b) (i32.const 2)) (i32.const 1)) (i32.shr_u (local.get $b) (i32.const 3))))))\n\n" &
    "  (func $cx_vec_sum_f64x2 (param $v i64) (result i64)\n" &
    "    (local $p i32)\n" &
    "    (local.set $p (i32.wrap_i64 (local.get $v)))\n" &
@@ -2708,8 +2735,8 @@ Section: WASI Runtime Helpers
    "    (local $p i32)\n" &
    "    (local.set $p (i32.wrap_i64 (local.get $v)))\n" &
    "    (i64.reinterpret_f64 (f64.promote_f32 (f32.add\n" &
-   "      (f32.add (f32.load (local.get $p)) (f32.load offset=4 (local.get $p)))\n" &
-   "      (f32.add (f32.load offset=8 (local.get $p)) (f32.load offset=12 (local.get $p)))))))\n\n" &
+   "      (f32.add (f32.add (f32.load (local.get $p)) (f32.load offset=4 (local.get $p))) (f32.load offset=8 (local.get $p)))\n" &
+   "      (f32.load offset=12 (local.get $p))))))\n\n" &
    "  (func $cx_vec_sum_i32x4 (param $v i64) (result i64)\n" &
    "    (local $p i32)\n" &
    "    (local.set $p (i32.wrap_i64 (local.get $v)))\n" &
@@ -3672,21 +3699,19 @@ Section: WASI Runtime Helpers
   wat-rt-text-to-double : Text =
    "  (func $text_to_double (param $s i64) (result i64)\n" &
    "    (local $p i32) (local $len i32) (local $i i32) (local $ch i32)\n" &
-   "    (local $neg i32) (local $frac i32) (local $seen i32)\n" &
-   "    (local $acc i64) (local $v f64) (local $pow f64)\n" &
+   "    (local $neg i64) (local $frac i32) (local $seen i32) (local $exp i32)\n" &
+   "    (local $acc i64) (local $x i64) (local $hi i64) (local $carry i64) (local $borrow i64)\n" &
+   "    (local $d0 i64) (local $d1 i64) (local $d2 i64) (local $d3 i64)\n" &
+   "    (local $r0 i64) (local $r1 i64) (local $r2 i64) (local $r3 i64)\n" &
+   "    (local $t0 i64) (local $t1 i64) (local $t2 i64) (local $t3 i64)\n" &
    "    (local.set $p (i32.wrap_i64 (local.get $s)))\n" &
    "    (local.set $len (i32.load (local.get $p)))\n" &
    "    (if (i32.eqz (local.get $len)) (then (return (i64.const 0))))\n" &
    "    (local.set $p (i32.add (local.get $p) (i32.const 4)))\n" &
-   "    (local.set $i (i32.const 0))\n" &
-   "    (local.set $acc (i64.const 0))\n" &
-   "    (local.set $neg (i32.const 0))\n" &
-   "    (local.set $frac (i32.const 0))\n" &
-   "    (local.set $seen (i32.const 0))\n" &
    "    (if (i32.eq (i32.load8_u (local.get $p)) (i32.const " & integer-to-text cce-minus & "))\n" &
-   "      (then (local.set $neg (i32.const 1)) (local.set $i (i32.const 1))))\n" &
-   "    (block $ttd (loop $ttc\n" &
-   "      (br_if $ttd (i32.ge_s (local.get $i) (local.get $len)))\n" &
+   "      (then (local.set $neg (i64.const -9223372036854775808)) (local.set $i (i32.const 1))))\n" &
+   "    (block $parsed (loop $parse\n" &
+   "      (br_if $parsed (i32.ge_u (local.get $i) (local.get $len)))\n" &
    "      (local.set $ch (i32.load8_u (i32.add (local.get $p) (local.get $i))))\n" &
    "      (if (i32.eq (local.get $ch) (i32.const " & integer-to-text cce-dot & "))\n" &
    "        (then (local.set $seen (i32.const 1)))\n" &
@@ -3695,18 +3720,111 @@ Section: WASI Runtime Helpers
    "            (i64.extend_i32_s (i32.sub (local.get $ch) (i32.const " & integer-to-text cce-digit-zero & ")))))\n" &
    "          (local.set $frac (i32.add (local.get $frac) (local.get $seen)))))\n" &
    "      (local.set $i (i32.add (local.get $i) (i32.const 1)))\n" &
-   "      (br $ttc)))\n" &
-   "    (if (local.get $neg) (then (local.set $acc (i64.sub (i64.const 0) (local.get $acc)))))\n" &
-   "    (local.set $v (f64.convert_i64_s (local.get $acc)))\n" &
-   "    (if (local.get $frac) (then\n" &
-   "      (local.set $pow (f64.const 1))\n" &
-   "      (block $pwd (loop $pwc\n" &
-   "        (br_if $pwd (i32.eqz (local.get $frac)))\n" &
-   "        (local.set $pow (f64.mul (local.get $pow) (f64.const 10)))\n" &
-   "        (local.set $frac (i32.sub (local.get $frac) (i32.const 1)))\n" &
-   "        (br $pwc)))\n" &
-   "      (local.set $v (f64.div (local.get $v) (local.get $pow)))))\n" &
-   "    (i64.reinterpret_f64 (local.get $v)))\n\n"
+   "      (br $parse)))\n" &
+   "    (if (i64.eqz (local.get $acc)) (then (return (local.get $neg))))\n" &
+   "    (if (i32.gt_u (local.get $frac) (i32.const 108)) (then unreachable))\n" &
+   "    (local.set $r0 (local.get $acc))\n" &
+   "    (local.set $d0 (i64.const 1))\n" &
+   "    (local.set $i (local.get $frac))\n" &
+   "    (block $powered (loop $power\n" &
+   "      (br_if $powered (i32.eqz (local.get $i)))\n" &
+   "      (local.set $carry (i64.const 0))\n" &
+   "      (local.set $x (i64.add (i64.mul (i64.and (local.get $d0) (i64.const 4294967295)) (i64.const 5)) (local.get $carry)))\n" &
+   "      (local.set $hi (i64.add (i64.mul (i64.shr_u (local.get $d0) (i64.const 32)) (i64.const 5)) (i64.shr_u (local.get $x) (i64.const 32))))\n" &
+   "      (local.set $d0 (i64.or (i64.and (local.get $x) (i64.const 4294967295)) (i64.shl (local.get $hi) (i64.const 32))))\n" &
+   "      (local.set $carry (i64.shr_u (local.get $hi) (i64.const 32)))\n" &
+   "      (local.set $x (i64.add (i64.mul (i64.and (local.get $d1) (i64.const 4294967295)) (i64.const 5)) (local.get $carry)))\n" &
+   "      (local.set $hi (i64.add (i64.mul (i64.shr_u (local.get $d1) (i64.const 32)) (i64.const 5)) (i64.shr_u (local.get $x) (i64.const 32))))\n" &
+   "      (local.set $d1 (i64.or (i64.and (local.get $x) (i64.const 4294967295)) (i64.shl (local.get $hi) (i64.const 32))))\n" &
+   "      (local.set $carry (i64.shr_u (local.get $hi) (i64.const 32)))\n" &
+   "      (local.set $x (i64.add (i64.mul (i64.and (local.get $d2) (i64.const 4294967295)) (i64.const 5)) (local.get $carry)))\n" &
+   "      (local.set $hi (i64.add (i64.mul (i64.shr_u (local.get $d2) (i64.const 32)) (i64.const 5)) (i64.shr_u (local.get $x) (i64.const 32))))\n" &
+   "      (local.set $d2 (i64.or (i64.and (local.get $x) (i64.const 4294967295)) (i64.shl (local.get $hi) (i64.const 32))))\n" &
+   "      (local.set $carry (i64.shr_u (local.get $hi) (i64.const 32)))\n" &
+   "      (local.set $x (i64.add (i64.mul (i64.and (local.get $d3) (i64.const 4294967295)) (i64.const 5)) (local.get $carry)))\n" &
+   "      (local.set $hi (i64.add (i64.mul (i64.shr_u (local.get $d3) (i64.const 32)) (i64.const 5)) (i64.shr_u (local.get $x) (i64.const 32))))\n" &
+   "      (local.set $d3 (i64.or (i64.and (local.get $x) (i64.const 4294967295)) (i64.shl (local.get $hi) (i64.const 32))))\n" &
+   "      (local.set $carry (i64.shr_u (local.get $hi) (i64.const 32)))\n" &
+   "      (local.set $i (i32.sub (local.get $i) (i32.const 1)))\n" &
+   "      (br $power)))\n" &
+   "    (block $large_done (loop $large\n" &
+   "    (local.set $t3 (i64.or (i64.shl (local.get $d3) (i64.const 1)) (i64.shr_u (local.get $d2) (i64.const 63))))\n" &
+   "    (local.set $t2 (i64.or (i64.shl (local.get $d2) (i64.const 1)) (i64.shr_u (local.get $d1) (i64.const 63))))\n" &
+   "    (local.set $t1 (i64.or (i64.shl (local.get $d1) (i64.const 1)) (i64.shr_u (local.get $d0) (i64.const 63))))\n" &
+   "    (local.set $t0 (i64.shl (local.get $d0) (i64.const 1)))\n" &
+   "      (br_if $large_done (i32.eqz (i32.or (i64.gt_u (local.get $r3) (local.get $t3)) (i32.and (i64.eq (local.get $r3) (local.get $t3)) (i32.or (i64.gt_u (local.get $r2) (local.get $t2)) (i32.and (i64.eq (local.get $r2) (local.get $t2)) (i32.or (i64.gt_u (local.get $r1) (local.get $t1)) (i32.and (i64.eq (local.get $r1) (local.get $t1)) (i64.ge_u (local.get $r0) (local.get $t0))))))))))\n" &
+   "      (local.set $d0 (local.get $t0))\n" &
+   "      (local.set $d1 (local.get $t1))\n" &
+   "      (local.set $d2 (local.get $t2))\n" &
+   "      (local.set $d3 (local.get $t3))\n" &
+   "      (local.set $exp (i32.add (local.get $exp) (i32.const 1)))\n" &
+   "      (br $large)))\n" &
+   "    (block $small_done (loop $small\n" &
+   "      (br_if $small_done (i32.or (i64.gt_u (local.get $r3) (local.get $d3)) (i32.and (i64.eq (local.get $r3) (local.get $d3)) (i32.or (i64.gt_u (local.get $r2) (local.get $d2)) (i32.and (i64.eq (local.get $r2) (local.get $d2)) (i32.or (i64.gt_u (local.get $r1) (local.get $d1)) (i32.and (i64.eq (local.get $r1) (local.get $d1)) (i64.ge_u (local.get $r0) (local.get $d0)))))))))\n" &
+   "    (local.set $r3 (i64.or (i64.shl (local.get $r3) (i64.const 1)) (i64.shr_u (local.get $r2) (i64.const 63))))\n" &
+   "    (local.set $r2 (i64.or (i64.shl (local.get $r2) (i64.const 1)) (i64.shr_u (local.get $r1) (i64.const 63))))\n" &
+   "    (local.set $r1 (i64.or (i64.shl (local.get $r1) (i64.const 1)) (i64.shr_u (local.get $r0) (i64.const 63))))\n" &
+   "    (local.set $r0 (i64.shl (local.get $r0) (i64.const 1)))\n" &
+   "      (local.set $exp (i32.sub (local.get $exp) (i32.const 1)))\n" &
+   "      (br $small)))\n" &
+   "    (local.set $acc (i64.const 1))\n" &
+   "    (local.set $borrow (i64.const 0))\n" &
+   "    (local.set $x (i64.sub (local.get $r0) (local.get $d0)))\n" &
+   "    (local.set $carry (i64.extend_i32_u (i32.or (i64.lt_u (local.get $r0) (local.get $d0)) (i64.lt_u (local.get $x) (local.get $borrow)))))\n" &
+   "    (local.set $r0 (i64.sub (local.get $x) (local.get $borrow)))\n" &
+   "    (local.set $borrow (local.get $carry))\n" &
+   "    (local.set $x (i64.sub (local.get $r1) (local.get $d1)))\n" &
+   "    (local.set $carry (i64.extend_i32_u (i32.or (i64.lt_u (local.get $r1) (local.get $d1)) (i64.lt_u (local.get $x) (local.get $borrow)))))\n" &
+   "    (local.set $r1 (i64.sub (local.get $x) (local.get $borrow)))\n" &
+   "    (local.set $borrow (local.get $carry))\n" &
+   "    (local.set $x (i64.sub (local.get $r2) (local.get $d2)))\n" &
+   "    (local.set $carry (i64.extend_i32_u (i32.or (i64.lt_u (local.get $r2) (local.get $d2)) (i64.lt_u (local.get $x) (local.get $borrow)))))\n" &
+   "    (local.set $r2 (i64.sub (local.get $x) (local.get $borrow)))\n" &
+   "    (local.set $borrow (local.get $carry))\n" &
+   "    (local.set $x (i64.sub (local.get $r3) (local.get $d3)))\n" &
+   "    (local.set $carry (i64.extend_i32_u (i32.or (i64.lt_u (local.get $r3) (local.get $d3)) (i64.lt_u (local.get $x) (local.get $borrow)))))\n" &
+   "    (local.set $r3 (i64.sub (local.get $x) (local.get $borrow)))\n" &
+   "    (local.set $borrow (local.get $carry))\n" &
+   "    (local.set $i (i32.const 53))\n" &
+   "    (loop $bits\n" &
+   "    (local.set $r3 (i64.or (i64.shl (local.get $r3) (i64.const 1)) (i64.shr_u (local.get $r2) (i64.const 63))))\n" &
+   "    (local.set $r2 (i64.or (i64.shl (local.get $r2) (i64.const 1)) (i64.shr_u (local.get $r1) (i64.const 63))))\n" &
+   "    (local.set $r1 (i64.or (i64.shl (local.get $r1) (i64.const 1)) (i64.shr_u (local.get $r0) (i64.const 63))))\n" &
+   "    (local.set $r0 (i64.shl (local.get $r0) (i64.const 1)))\n" &
+   "      (local.set $acc (i64.shl (local.get $acc) (i64.const 1)))\n" &
+   "      (if (i32.or (i64.gt_u (local.get $r3) (local.get $d3)) (i32.and (i64.eq (local.get $r3) (local.get $d3)) (i32.or (i64.gt_u (local.get $r2) (local.get $d2)) (i32.and (i64.eq (local.get $r2) (local.get $d2)) (i32.or (i64.gt_u (local.get $r1) (local.get $d1)) (i32.and (i64.eq (local.get $r1) (local.get $d1)) (i64.ge_u (local.get $r0) (local.get $d0)))))))) (then\n" &
+   "    (local.set $borrow (i64.const 0))\n" &
+   "    (local.set $x (i64.sub (local.get $r0) (local.get $d0)))\n" &
+   "    (local.set $carry (i64.extend_i32_u (i32.or (i64.lt_u (local.get $r0) (local.get $d0)) (i64.lt_u (local.get $x) (local.get $borrow)))))\n" &
+   "    (local.set $r0 (i64.sub (local.get $x) (local.get $borrow)))\n" &
+   "    (local.set $borrow (local.get $carry))\n" &
+   "    (local.set $x (i64.sub (local.get $r1) (local.get $d1)))\n" &
+   "    (local.set $carry (i64.extend_i32_u (i32.or (i64.lt_u (local.get $r1) (local.get $d1)) (i64.lt_u (local.get $x) (local.get $borrow)))))\n" &
+   "    (local.set $r1 (i64.sub (local.get $x) (local.get $borrow)))\n" &
+   "    (local.set $borrow (local.get $carry))\n" &
+   "    (local.set $x (i64.sub (local.get $r2) (local.get $d2)))\n" &
+   "    (local.set $carry (i64.extend_i32_u (i32.or (i64.lt_u (local.get $r2) (local.get $d2)) (i64.lt_u (local.get $x) (local.get $borrow)))))\n" &
+   "    (local.set $r2 (i64.sub (local.get $x) (local.get $borrow)))\n" &
+   "    (local.set $borrow (local.get $carry))\n" &
+   "    (local.set $x (i64.sub (local.get $r3) (local.get $d3)))\n" &
+   "    (local.set $carry (i64.extend_i32_u (i32.or (i64.lt_u (local.get $r3) (local.get $d3)) (i64.lt_u (local.get $x) (local.get $borrow)))))\n" &
+   "    (local.set $r3 (i64.sub (local.get $x) (local.get $borrow)))\n" &
+   "    (local.set $borrow (local.get $carry))\n" &
+   "        (local.set $acc (i64.or (local.get $acc) (i64.const 1)))))\n" &
+   "      (local.set $i (i32.sub (local.get $i) (i32.const 1)))\n" &
+   "      (br_if $bits (local.get $i)))\n" &
+   "    (local.set $x (i64.shr_u (local.get $acc) (i64.const 1)))\n" &
+   "    (if (i32.and (i64.ne (i64.and (local.get $acc) (i64.const 1)) (i64.const 0))\n" &
+   "      (i64.ne (i64.or (i64.and (local.get $x) (i64.const 1))\n" &
+   "        (i64.or (i64.or (local.get $r0) (local.get $r1)) (i64.or (local.get $r2) (local.get $r3)))) (i64.const 0)))\n" &
+   "      (then\n" &
+   "        (local.set $x (i64.add (local.get $x) (i64.const 1)))\n" &
+   "        (if (i64.eq (local.get $x) (i64.const 9007199254740992)) (then\n" &
+   "          (local.set $x (i64.shr_u (local.get $x) (i64.const 1)))\n" &
+   "          (local.set $exp (i32.add (local.get $exp) (i32.const 1)))))))\n" &
+   "    (i64.or (local.get $neg)\n" &
+   "      (i64.or (i64.sub (local.get $x) (i64.const 4503599627370496))\n" &
+   "        (i64.shl (i64.extend_i32_s (i32.add (i32.sub (local.get $exp) (local.get $frac)) (i32.const 1023))) (i64.const 52)))))\n"
 
   wat-rt-extra : Text =
    "  (func $__approx_eq (param $a i64) (param $b i64) (param $tol i64) (result i64)\n" &
@@ -3907,6 +4025,16 @@ Section: Chapter Emission
 
   wat-emit-exports : List IRDef, Integer -> Text
   wat-emit-exports (defs) (i) =
+   let declared = wat-declared-exports defs 0 (list-length defs)
+   in if declared < 0 then wat-exports-allowed defs i
+      else let d = list-at defs declared
+      in if list-length (d.params) > 0 then "(wasm-exports-requires-text-literal)\n"
+         else when d.body
+          is IrTextLit (s) (sp) -> wat-exports-declared (wat-export-names s) 0
+          is otherwise -> "(wasm-exports-requires-text-literal)\n"
+
+  wat-exports-allowed : List IRDef, Integer -> Text
+  wat-exports-allowed (defs) (i) =
    if i >= list-length defs then ""
    else let d = list-at defs i
    in let sn = wat-sanitize (d.name)
@@ -3914,7 +4042,35 @@ Section: Chapter Emission
    in let ex = if text-contains wasm-export-list needle
                then "  (export \"" & sn & "\" (func $" & sn & "))\n"
                else ""
-   in ex & wat-emit-exports defs (i + 1)
+   in ex & wat-exports-allowed defs (i + 1)
+
+  wat-exports-declared : List Text, Integer -> Text
+  wat-exports-declared (names) (i) =
+   if i >= list-length names then ""
+   else let sn = wat-sanitize (list-at names i)
+   in "  (export \"" & sn & "\" (func $" & sn & "))\n" & wat-exports-declared names (i + 1)
+
+  wat-declared-exports : List IRDef, Integer, Integer -> Integer
+  wat-declared-exports (defs) (i) (n) =
+   if i == n then -1
+   else let d = list-at defs i
+   in if (d.name) == "wasm-exports" then i
+      else wat-declared-exports defs (i + 1) n
+
+  wat-export-names : Text -> List Text
+  wat-export-names (s) = wat-export-names-loop s 0 (text-length s) [] []
+
+  wat-export-names-loop : Text, Integer, Integer, List Text, List Text -> List Text
+  wat-export-names-loop (s) (i) (len) (cur) (acc) =
+   if i == len then wat-export-flush cur acc
+   else let c = char-code-at s i
+   in if c == char-code-at "|" 0
+      then wat-export-names-loop s (i + 1) len [] (wat-export-flush cur acc)
+      else wat-export-names-loop s (i + 1) len (list-push cur (char-to-text (code-to-char c))) acc
+
+  wat-export-flush : List Text, List Text -> List Text
+  wat-export-flush (cur) (acc) =
+   if list-length cur == 0 then acc else list-push acc (text-concat-list cur)
 
  An `opening` that answers a CONSTRUCTOR prints `Name field field`, one space
  before each field and a newline at the end, which is `emit-opening-print-sum`

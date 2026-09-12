@@ -356,7 +356,12 @@ to a pinned body at all. The second exists because the first is only as wide
 as the spellings it knows (L-CENSUS), and it was controlled by sabotaging a
 site with an allocation call the first rule has never heard of: rule 1 stayed
 silent and rule 2 caught it alone. A row reading `fixed` with no recorded site
-is refused by name rather than skipped. The table is hand-written because
+is refused by name rather than skipped (`vec4-select`, added 2026-09-10
+reading `fixed` with no site, was refused by the Update 59 gate on
+2026-09-12: it shares `emit-vec-select-builtin` with `vec-select`, whose one
+allocation is `emit-bivy-alloc st9 16`, an immediate 16 bytes per call at
+either width, because four f32 lanes and two f64 lanes are the same 16
+bytes). The table is hand-written because
 crawling the emitters pins `emit-expr`, which every builtin calls to evaluate
 arguments, and a check that reds on unrelated codegen churn teaches people to
 re-pin without looking. **Nothing runs it yet** (L-NOGATE); wiring it into the

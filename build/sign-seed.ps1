@@ -27,7 +27,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Cdx,
-    [string]$WorkDir = ''
+    [string]$WorkDir = '',
+    [string]$Kernel = ''
 )
 
 Set-StrictMode -Version Latest
@@ -39,6 +40,8 @@ New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
 if (-not (Test-Path -PathType Leaf $Cdx)) { Write-Host "FAIL: no such CDX: $Cdx"; exit 1 }
 $Cdx = (Resolve-Path $Cdx).Path
+if (-not $Kernel) { $Kernel = $Cdx }
+$Kernel = (Resolve-Path $Kernel).Path
 
 # One occurrence in the tree: build.ps1 declares it, this reads it.
 $buildPs1 = Join-Path $PSScriptRoot 'build.ps1'
@@ -90,7 +93,7 @@ $signCdx = Join-Path $WorkDir 'cdx-sign.cdx'
 $signLog = Join-Path $WorkDir 'cdx-sign.log'
 $signOut = Join-Path $WorkDir 'cdx-sign.out'
 $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-& pwsh -NoProfile -File $compileScript -Src $signSrc -Out $signCdx -Log $signLog 2>&1 | Out-Null
+& pwsh -NoProfile -File $compileScript -Src $signSrc -Out $signCdx -Log $signLog -Kernel $Kernel 2>&1 | Out-Null
 $ErrorActionPreference = $prev
 if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: sign tool compile failed'; Get-Content $signLog -TotalCount 10 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }; exit 1 }
 $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
