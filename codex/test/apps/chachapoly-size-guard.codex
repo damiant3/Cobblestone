@@ -3,35 +3,6 @@ Chapter: ChachaPolySizeGuard
   cites Foreword chapter Maybe
   cites Foreword chapter ChaCha20Poly1305
 
- Track D item 19, the ChaCha20Poly1305 leg. RFC 8439 fixes the key at 32 bytes
- and the nonce at 12, and nothing below this chapter checked either.
-
- Guarded because something runs it (red's ruling, extended to this leg
- 2026-08-16): codex/test/chacha20poly1305.codex is the RFC 8439 section 2.8.2
- vector and calls both entry points. There is no production caller.
-
- chacha-init-state builds the ChaCha20 state by CONCATENATION -- four
- constants, then the key words, then the counter, then the nonce words -- and
- chacha-words-from-bytes takes list-length / 4, so a wrong-sized input does not
- fail anywhere. It shifts which words of the state are which.
-
- Measured on the unguarded chapter before this arm was written:
-
- A nonce of 16 bytes gives four nonce words, a 17-word state, and the rounds
- and chacha-add-states both stop at 16, so the extra word is dropped and the
- keystream is EXACTLY the keystream of the 12-byte prefix. Two different
- nonces, one keystream. That is Poly1305 nonce reuse, which this chapter's own
- opening says destroys it.
-
- A key of 64 bytes gives sixteen key words, so words 0..15 are the four
- constants and the first twelve key words and the nonce never enters the state
- at all. Two different nonces then give byte-identical ciphertext.
-
- A nonce of 11 bytes gives two nonce words and a 15-word state, and
- chacha-qr state 3 7 11 15 reads index 15. The guest dies.
-
- Rows 1 and 2 are the instrument's control: two legitimate nonces must give
- different ciphertext, or rows 6 and 7 agreeing would prove nothing.
 
 Section: Vector
 
@@ -81,6 +52,12 @@ Section: Helpers
 
 Section: Body
 
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if n <= 0 then acc else zeros (n - 1) (list-push acc 0)
+
+  raw-row : Text, List Integer -> [Console] Nothing
+  raw-row (label) (result) = print-line-uni (label & " length=" & show (list-length result))
+
   opening : [Console] Nothing = act
     print-line-uni (enc-row "1-key32-nonce12" k32 n12)
     print-line-uni (enc-row "2-key32-nonce12b" k32 n12b)
@@ -91,6 +68,29 @@ Section: Body
     print-line-uni (enc-row "7-key64-nonce12b" k64 n12b)
     print-line-uni (enc-row "8-nonce11" k32 n11)
     print-line-uni (dec-row "9-decrypt-nonce11" k32 n11)
+    raw-row "raw-key31" (chacha20-encrypt (zeros 31 []) n12 plain 1)
+    raw-row "raw-key33" (chacha20-encrypt (k32 & [0]) n12 plain 1)
+    raw-row "raw-nonce11" (chacha20-encrypt k32 n11 plain 1)
+    raw-row "raw-nonce13" (chacha20-encrypt k32 (n12 & [0]) plain 1)
+    raw-row "raw-negative-counter" (chacha20-encrypt k32 n12 plain (0 - 1))
+    raw-row "raw-wide-counter" (chacha20-encrypt k32 n12 plain 4294967296)
+    raw-row "last-counter64" (chacha20-encrypt k32 n12 (zeros 64 []) 4294967295)
+    raw-row "last-counter65" (chacha20-encrypt k32 n12 (zeros 65 []) 4294967295)
+    raw-row "penultimate128" (chacha20-encrypt k32 n12 (zeros 128 []) 4294967294)
+    raw-row "penultimate129" (chacha20-encrypt k32 n12 (zeros 129 []) 4294967294)
+    raw-row "raw-wide-byte" (chacha20-encrypt k32 n12 [256] 1)
+    raw-row "raw-negative-byte" (chacha20-encrypt k32 n12 [0 - 1] 1)
+    raw-row "block-key31" (chacha-block (zeros 31 []) 0 n12)
+    raw-row "block-negative-counter" (chacha-block k32 (0 - 1) n12)
+    raw-row "keygen-key31" (chacha-poly-keygen (zeros 31 []) n12)
+    raw-row "poly-key31" (poly1305-mac (zeros 31 []) plain)
+    raw-row "poly-key33" (poly1305-mac (k32 & [0]) plain)
+    raw-row "poly-wide-byte" (poly1305-mac k32 [256])
+    raw-row "poly-negative-key" (poly1305-mac ([0 - 1] & zeros 31 []) plain)
+    print-line-uni ("poly-empty-tag=" & show-bool (poly1305-verify [] [] []))
+    print-line-uni ("aead-wide-plaintext=" & show-bool ((chacha20poly1305-encrypt k32 n12 [256] []).cp-valid))
+    print-line-uni ("aead-wide-aad=" & show-bool ((chacha20poly1305-encrypt k32 n12 [] [256]).cp-valid))
+    print-line-uni ("aead-negative-key=" & show-bool ((chacha20poly1305-encrypt ([0 - 1] & zeros 31 []) n12 plain []).cp-valid))
   end
 
 Page 1

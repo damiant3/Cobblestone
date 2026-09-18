@@ -119,13 +119,61 @@ Section: Verification
 
   rsa-verify-pkcs1-sha256 : List Integer, List Integer, List Integer, List Integer -> Boolean
   rsa-verify-pkcs1-sha256 (n-bytes) (e-bytes) (msg) (sig) =
-    if list-length sig /= list-length n-bytes then False
+    if rsa-inputs-valid n-bytes e-bytes sig == False then False
     else rsa-check (cb-mod-exp-bytes sig e-bytes n-bytes) (rsa-em-sha256 msg (list-length n-bytes))
 
   rsa-verify-pkcs1-sha384 : List Integer, List Integer, List Integer, List Integer -> Boolean
   rsa-verify-pkcs1-sha384 (n-bytes) (e-bytes) (msg) (sig) =
-    if list-length sig /= list-length n-bytes then False
+    if rsa-inputs-valid n-bytes e-bytes sig == False then False
     else rsa-check (cb-mod-exp-bytes sig e-bytes n-bytes) (rsa-em-sha384 msg (list-length n-bytes))
+
+ RFC 8017 sections 3.1 and 5.2.2 require 3 <= e < n and 0 <= s < n.
+ Oddness and octet checks reject invalid Montgomery inputs; factorization
+ and coprimality of the public key remain the key provider's responsibility.
+
+  rsa-inputs-valid : List Integer, List Integer, List Integer -> Boolean
+  rsa-inputs-valid (n) (e) (s) =
+    if list-length n == 0 then False
+    else if list-length e == 0 then False
+    else if list-length s /= list-length n then False
+    else if rsa-octets-valid n 0 == False then False
+    else if rsa-octets-valid e 0 == False then False
+    else if rsa-octets-valid s 0 == False then False
+    else if bit-and (list-at n (list-length n - 1)) 1 == 0 then False
+    else if bit-and (list-at e (list-length e - 1)) 1 == 0 then False
+    else if rsa-integer-less [1] e == False then False
+    else if rsa-integer-less e n == False then False
+    else rsa-integer-less s n
+
+  rsa-octets-valid : List Integer, Integer -> Boolean
+  rsa-octets-valid (bytes) (i) =
+    if i >= list-length bytes then True
+    else if list-at bytes i < 0 then False
+    else if list-at bytes i > 255 then False
+    else rsa-octets-valid bytes (i + 1)
+
+  rsa-skip-zero : List Integer, Integer -> Integer
+  rsa-skip-zero (bytes) (i) =
+    if i >= list-length bytes then i
+    else if list-at bytes i == 0 then rsa-skip-zero bytes (i + 1)
+    else i
+
+  rsa-integer-less : List Integer, List Integer -> Boolean
+  rsa-integer-less (a) (b) =
+    let ai = rsa-skip-zero a 0
+    in let bi = rsa-skip-zero b 0
+    in let alen = list-length a - ai
+    in let blen = list-length b - bi
+    in if alen < blen then True
+    else if alen > blen then False
+    else rsa-integer-less-loop a b ai bi
+
+  rsa-integer-less-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  rsa-integer-less-loop (a) (b) (ai) (bi) =
+    if ai >= list-length a then False
+    else if list-at a ai < list-at b bi then True
+    else if list-at a ai > list-at b bi then False
+    else rsa-integer-less-loop a b (ai + 1) (bi + 1)
 
   rsa-check : List Integer, List Integer -> Boolean
   rsa-check (got) (want) =
@@ -228,8 +276,7 @@ Section: EMSA-PSS-VERIFY
 
   rsa-verify-pss-sha256 : List Integer, List Integer, List Integer, List Integer -> Boolean
   rsa-verify-pss-sha256 (n-bytes) (e-bytes) (msg) (sig) =
-    if list-length sig /= list-length n-bytes then False
-    else if list-length n-bytes < 1 then False
+    if rsa-inputs-valid n-bytes e-bytes sig == False then False
     else rsa-pss-em msg (cb-mod-exp-bytes sig e-bytes n-bytes) (rsa-mod-bits n-bytes)
 
  emLen is ceil(emBits / 8), which is ceil((modBits - 1) / 8), which is

@@ -21,7 +21,8 @@ Section: S-Box
 
 Section: Key Expansion (AES-128)
   aes-expand-key-128 : List Integer -> List Integer
-  aes-expand-key-128 (key) = aes-key-exp key 4 44 1
+  aes-expand-key-128 (key) =
+    if list-length key /= 16 then [] else aes-key-exp key 4 44 1
 
   aes-key-exp : List Integer, Integer, Integer, Integer -> List Integer
   aes-key-exp (w) (i) (n) (rcon) =
@@ -46,10 +47,10 @@ Section: Key Expansion (AES-128)
 
   aes-sub-word : Integer, Integer -> Integer
   aes-sub-word (w) (rcon) =
-    let b0 = list-at aes-sbox (bit-and (bit-shru w 24) 255)
-    in let b1 = list-at aes-sbox (bit-and (bit-shru w 16) 255)
-    in let b2 = list-at aes-sbox (bit-and (bit-shru w 8) 255)
-    in let b3 = list-at aes-sbox (bit-and w 255)
+    let b0 = aes-sub-byte (bit-and (bit-shru w 24) 255)
+    in let b1 = aes-sub-byte (bit-and (bit-shru w 16) 255)
+    in let b2 = aes-sub-byte (bit-and (bit-shru w 8) 255)
+    in let b3 = aes-sub-byte (bit-and w 255)
     in bit-or (bit-shl (bit-xor b0 rcon) 24) (bit-or (bit-shl b1 16) (bit-or (bit-shl b2 8) b3))
 
   aes-xor-words : Integer, Integer -> Integer
@@ -61,7 +62,9 @@ Section: Key Expansion (AES-128)
 Section: Block Encryption
   aes-encrypt-block : List Integer, List Integer -> List Integer
   aes-encrypt-block (block) (expanded-key) =
-    let state = aes-add-round-key block expanded-key 0
+    if list-length block /= 16 then []
+    else if list-length expanded-key /= 176 then []
+    else let state = aes-add-round-key block expanded-key 0
     in let after-rounds = aes-enc-rounds state expanded-key 1 10
     in let sub = aes-sub-bytes after-rounds
     in let shifted = aes-shift-rows sub
@@ -77,13 +80,63 @@ Section: Block Encryption
     in aes-enc-rounds added key (round + 1) total
 
 Section: SubBytes
+
+ FIPS 197 sections 4.4 and 5.1.1: inversion followed by the affine map.
+ Fixed-operation field arithmetic avoids secret-indexed S-box loads.
+
+  aes-gf-mul : Integer, Integer -> Integer
+  aes-gf-mul (a) (b) = aes-gf-mul-loop a b 0 0
+
+  aes-gf-mul-loop : Integer, Integer, Integer, Integer -> Integer
+  aes-gf-mul-loop (a) (b) (p) (i) =
+    if i >= 8 then p
+    else let p2 = bit-xor p (bit-and a (0 - bit-and b 1))
+    in aes-gf-mul-loop (aes-gmul2 a) (bit-shru b 1) p2 (i + 1)
+
+  aes-gf-square : Integer -> Integer
+  aes-gf-square (a) =
+    let s0 = bit-and a 1
+    in let s1 = bit-and (0 - bit-and (bit-shru a 1) 1) 4
+    in let s2 = bit-and (0 - bit-and (bit-shru a 2) 1) 16
+    in let s3 = bit-and (0 - bit-and (bit-shru a 3) 1) 64
+    in let s4 = bit-and (0 - bit-and (bit-shru a 4) 1) 27
+    in let s5 = bit-and (0 - bit-and (bit-shru a 5) 1) 108
+    in let s6 = bit-and (0 - bit-and (bit-shru a 6) 1) 171
+    in let s7 = bit-and (0 - bit-and (bit-shru a 7) 1) 154
+    in bit-xor (bit-xor (bit-xor s0 s1) (bit-xor s2 s3)) (bit-xor (bit-xor s4 s5) (bit-xor s6 s7))
+
+  aes-gf-inverse : Integer -> Integer
+  aes-gf-inverse (a) =
+    let a2 = aes-gf-square a
+    in let a3 = aes-gf-mul a2 a
+    in let a6 = aes-gf-square a3
+    in let a12 = aes-gf-square a6
+    in let a15 = aes-gf-mul a12 a3
+    in let a30 = aes-gf-square a15
+    in let a60 = aes-gf-square a30
+    in let a120 = aes-gf-square a60
+    in let a240 = aes-gf-square a120
+    in aes-gf-mul (aes-gf-mul a240 a12) a2
+
+  aes-byte-rotl : Integer, Integer -> Integer
+  aes-byte-rotl (a) (n) = bit-and (bit-or (bit-shl a n) (bit-shru a (8 - n))) 255
+
+  aes-sub-byte : Integer -> Integer
+  aes-sub-byte (a) =
+    let x = aes-gf-inverse a
+    in bit-xor 99 (bit-xor x (bit-xor (aes-byte-rotl x 1) (bit-xor (aes-byte-rotl x 2) (bit-xor (aes-byte-rotl x 3) (aes-byte-rotl x 4)))))
+
+  aes-inv-sub-byte : Integer -> Integer
+  aes-inv-sub-byte (a) =
+    aes-gf-inverse (bit-xor 5 (bit-xor (aes-byte-rotl a 1) (bit-xor (aes-byte-rotl a 3) (aes-byte-rotl a 6))))
+
   aes-sub-bytes : List Integer -> List Integer
   aes-sub-bytes (state) = aes-sub-loop state 0 16 []
 
   aes-sub-loop : List Integer, Integer, Integer, List Integer -> List Integer
   aes-sub-loop (state) (i) (n) (acc) =
     if i >= n then acc
-    else aes-sub-loop state (i + 1) n (list-push acc (list-at aes-sbox (list-at state i)))
+    else aes-sub-loop state (i + 1) n (list-push acc (aes-sub-byte (list-at state i)))
 
 Section: ShiftRows
   aes-shift-rows : List Integer -> List Integer
@@ -104,7 +157,7 @@ Section: MixColumns
     in [bit-xor (aes-gmul2 a0) (bit-xor (aes-gmul3 a1) (bit-xor a2 a3)), bit-xor a0 (bit-xor (aes-gmul2 a1) (bit-xor (aes-gmul3 a2) a3)), bit-xor a0 (bit-xor a1 (bit-xor (aes-gmul2 a2) (aes-gmul3 a3))), bit-xor (aes-gmul3 a0) (bit-xor a1 (bit-xor a2 (aes-gmul2 a3)))]
 
   aes-gmul2 : Integer -> Integer
-  aes-gmul2 (a) = if a >= 128 then bit-xor (bit-and (bit-shl a 1) 255) 27 else bit-and (bit-shl a 1) 255
+  aes-gmul2 (a) = bit-xor (bit-and (bit-shl a 1) 255) (bit-and (0 - bit-and (bit-shru a 7) 1) 27)
 
   aes-gmul3 : Integer -> Integer
   aes-gmul3 (a) = bit-xor a (aes-gmul2 a)
@@ -121,8 +174,11 @@ Section: AddRoundKey
 Section: CBC Mode
   aes-cbc-encrypt : List Integer, List Integer, List Integer -> List Integer
   aes-cbc-encrypt (plaintext) (key) (iv) =
-    let expanded = aes-expand-key-128 key
-    in aes-cbc-enc-loop plaintext expanded iv 0 (list-length plaintext) []
+    if list-length key /= 16 then []
+    else if list-length iv /= 16 then []
+    else if bit-and (list-length plaintext) 15 /= 0 then []
+    else let expanded = aes-expand-key-128 key
+    in aes-cbc-enc-loop plaintext expanded iv 0 (list-length plaintext) (__list-with-capacity (list-length plaintext))
 
   aes-cbc-enc-loop : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
   aes-cbc-enc-loop (pt) (key) (prev) (i) (n) (acc) =
@@ -130,7 +186,12 @@ Section: CBC Mode
     else let block = aes-get-block pt i
     in let xored = aes-xor-blocks block prev
     in let encrypted = aes-encrypt-block xored key
-    in aes-cbc-enc-loop pt key encrypted (i + 16) n (acc & encrypted)
+    in aes-cbc-enc-loop pt key encrypted (i + 16) n (aes-append-block acc encrypted 0)
+
+  aes-append-block : List Integer, List Integer, Integer -> List Integer
+  aes-append-block (out) (block) (i) =
+    if i >= 16 then out
+    else aes-append-block (list-push out (list-at block i)) block (i + 1)
 
   aes-get-block : List Integer, Integer -> List Integer
   aes-get-block (data) (off) = aes-block-loop data off 0 []

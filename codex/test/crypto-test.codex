@@ -1,8 +1,61 @@
 Chapter: CryptoTest
   cites Foreword chapter Aes
+  cites Foreword chapter Aes256
+  cites Foreword chapter Cmac
   cites Foreword chapter ChaCha20
 
 Section: Body
+
+  sboxes-agree : List Integer, List Integer, Integer -> Boolean
+  sboxes-agree (forward) (inverse) (i) =
+    if i >= 256 then True
+    else if aes-sub-byte i /= list-at forward i then False
+    else if aes-inv-sub-byte i /= list-at inverse i then False
+    else sboxes-agree forward inverse (i + 1)
+
+  fill-bytes : Integer, Integer, List Integer -> List Integer
+  fill-bytes (n) (b) (out) =
+    if n <= 0 then out else fill-bytes (n - 1) b (list-push out b)
+
+  test-bytes-equal : List Integer, List Integer -> Boolean
+  test-bytes-equal (a) (b) =
+    if list-length a /= list-length b then False else test-bytes-loop a b 0
+
+  test-bytes-loop : List Integer, List Integer, Integer -> Boolean
+  test-bytes-loop (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else test-bytes-loop a b (i + 1)
+
+  aes-boundaries : [Console] Nothing = act
+    let k128 = fill-bytes 16 0 []
+    in let k256 = fill-bytes 32 0 []
+    in let iv = fill-bytes 16 0 []
+    in let original = fill-bytes 8 9 (__list-with-capacity 32)
+    in let padded = aes256-pkcs7-pad original
+    in act
+      print-line-uni ("sboxes-agree=" & show (sboxes-agree aes-sbox aes-inv-sbox 0))
+      print-line-uni ("aes-key-short=" & show (list-length (aes-expand-key-128 [])))
+      print-line-uni ("aes256-key-short=" & show (list-length (aes256-expand-key k128)))
+      print-line-uni ("aes-block-short=" & show (list-length (aes-encrypt-block [] (aes-expand-key-128 k128))))
+      print-line-uni ("aes-cbc-partial=" & show (list-length (aes-cbc-encrypt (fill-bytes 17 0 []) k128 iv)))
+      print-line-uni ("aes256-cbc-partial=" & show (list-length (aes256-cbc-decrypt (fill-bytes 17 0 []) k256 iv)))
+      print-line-uni ("aes-cbc-short-iv=" & show (list-length (aes-cbc-encrypt iv k128 [])))
+      print-line-uni ("cmac-short-key=" & show (list-length (aes-cmac [] [])))
+      print-line-uni ("padding-source-length=" & show (list-length original))
+      print-line-uni ("padding-length=" & show (list-length padded))
+      print-line-uni ("unpad-valid=" & show (list-length (aes256-pkcs7-unpad padded)))
+      print-line-uni ("unpad-mismatch=" & show (list-length (aes256-pkcs7-unpad ((fill-bytes 15 1 []) & [2]))))
+      print-line-uni ("unpad-zero=" & show (list-length (aes256-pkcs7-unpad iv)))
+      print-line-uni ("unpad-too-large=" & show (list-length (aes256-pkcs7-unpad (fill-bytes 16 17 []))))
+      print-line-uni ("unpad-partial=" & show (list-length (aes256-pkcs7-unpad [1, 1])))
+      print-line-uni ("padding-source-bytes=" & show (test-bytes-equal original (fill-bytes 8 9 [])))
+      print-line-uni ("padding-bytes=" & show (test-bytes-equal padded ((fill-bytes 8 9 []) & (fill-bytes 8 8 []))))
+      print-line-uni ("unpad-bytes=" & show (test-bytes-equal (aes256-pkcs7-unpad padded) (fill-bytes 8 9 [])))
+      print-line-uni ("padding-one=" & show (test-bytes-equal (aes256-pkcs7-pad (fill-bytes 15 9 [])) ((fill-bytes 15 9 []) & [1])))
+      print-line-uni ("padding-full=" & show (test-bytes-equal (aes256-pkcs7-pad iv) (iv & (fill-bytes 16 16 []))))
+    end
+  end
 
   test-aes-sbox : Text =
     "sbox[0]=" & show (list-at aes-sbox 0) & " sbox[255]=" & show (list-at aes-sbox 255)
@@ -20,6 +73,24 @@ Section: Body
     in let plaintext = [72, 101, 108, 108, 111, 32, 87, 111, 114, 108, 100, 33, 0, 0, 0, 0]
     in let cipher = aes-cbc-encrypt plaintext key iv
     in "aes-cbc: len=" & show (list-length cipher)
+
+  test-aes256 : [Console] Nothing = act
+    let key = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    in let block = [0, 17, 34, 51, 68, 85, 102, 119, 136, 153, 170, 187, 204, 221, 238, 255]
+    in let expanded = aes256-expand-key key
+    in let encrypted = aes256-encrypt-block block expanded
+    in let decrypted = aes256-decrypt-block encrypted expanded
+    in let iv = [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+    in let cbc-reference = [86, 25, 186, 66, 249, 179, 230, 118, 97, 86, 44, 45, 208, 165, 237, 220,
+      70, 34, 232, 254, 20, 128, 27, 23, 145, 159, 120, 142, 172, 67, 2, 5]
+    in act
+      print-line-uni ("aes256-enc=" & aes-format-block encrypted)
+      print-line-uni ("aes256-dec=" & aes-format-block decrypted)
+      print-line-uni ("aes256-cbc-enc=" & show (test-bytes-equal (aes256-cbc-encrypt (block & block) key iv) cbc-reference))
+      print-line-uni ("aes256-cbc-dec=" & show (test-bytes-equal (aes256-cbc-decrypt cbc-reference key iv) (block & block)))
+    end
+  end
 
   test-chacha : Text =
     let key = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
@@ -42,6 +113,8 @@ Section: Body
     print-line-uni test-aes-cbc
     print-line-uni test-chacha
     print-line-uni test-chacha-roundtrip
+    aes-boundaries
+    test-aes256
   end
 
 Page 1

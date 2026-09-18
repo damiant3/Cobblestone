@@ -226,8 +226,8 @@ Section: R Squared
  Montgomery form needs R^2 mod m, and computing it is the one place a
  division would otherwise be required. It is avoided by doubling: start
  at 1 and double 32n times modulo m, which is 2^(32n) = R^2. Each
- doubling is a shift and at most one subtraction, so the whole thing is
- linear in the modulus size and needs no reduction primitive.
+ doubling walks n limbs, so 32n doublings take O(n^2) time and O(n)
+ retained heap, with no general division primitive.
 
   cb-r-squared : List Integer, Integer -> List Integer
   cb-r-squared (m) (n) = cb-r2-loop (cb-one n) m n 0 (32 * n)
@@ -257,8 +257,11 @@ Section: R Squared
 
 Section: Modular Exponentiation
 
- base^exp mod m, every operand a big-endian byte string, the answer a
- byte string as wide as the modulus. Square and multiply over the
+ base^exp mod m, every operand a big-endian byte string. cb-mod-exp
+ returns limbs; cb-mod-exp-bytes returns modulus-width bytes.
+ The modulus must be odd and nonzero;
+ invalid octets or unsupported moduli return an empty list. Wide bases
+ are reduced before conversion to fixed-width limbs. Square and multiply over the
  exponent's bits, most significant first, in Montgomery form throughout.
 
  The exponent is NOT secret here and this is NOT constant time. That is
@@ -268,12 +271,42 @@ Section: Modular Exponentiation
 
   cb-mod-exp : List Integer, List Integer, List Integer -> List Integer
   cb-mod-exp (base-bytes) (exp-bytes) (mod-bytes) =
-    cb-exp-setup base-bytes exp-bytes mod-bytes ((list-length mod-bytes + 1) / 2)
+    if list-length mod-bytes == 0 then []
+    else if cb-octets-ok base-bytes 0 == False | cb-octets-ok exp-bytes 0 == False | cb-octets-ok mod-bytes 0 == False then []
+    else if bit-and (list-at mod-bytes (list-length mod-bytes - 1)) 1 == 0 then []
+    else cb-exp-setup base-bytes exp-bytes mod-bytes ((list-length mod-bytes + 1) / 2)
+
+  cb-octets-ok : List Integer, Integer -> Boolean
+  cb-octets-ok (bytes) (i) =
+    if i >= list-length bytes then True
+    else if list-at bytes i < 0 | list-at bytes i > 255 then False
+    else cb-octets-ok bytes (i + 1)
 
   cb-exp-setup : List Integer, List Integer, List Integer, Integer -> List Integer
   cb-exp-setup (base-bytes) (exp-bytes) (mod-bytes) (n) =
     let m = cb-from-bytes mod-bytes n
-    in cb-exp-go (cb-from-bytes base-bytes n) exp-bytes m n (cb-n0inv m) (cb-r-squared m n)
+    in if cb-cmp m (cb-one n) n == 0 then cb-zeros n
+    else let a = if list-length base-bytes <= n * 2 then cb-from-bytes base-bytes n else cb-reduce-base base-bytes m n (list-length base-bytes * 8 - 1) (cb-zeros n)
+    in cb-exp-go a exp-bytes m n (cb-n0inv m) (cb-r-squared m n)
+
+  cb-reduce-base : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  cb-reduce-base (bytes) (m) (n) (i) (acc) =
+    if i < 0 then acc
+    else let doubled = cb-dbl-mod acc m n
+    in let next = if cb-bit-at bytes i == 0 then doubled else cb-add-one-mod doubled m n
+    in cb-reduce-base bytes m n (i - 1) next
+
+  cb-add-one-mod : List Integer, List Integer, Integer -> List Integer
+  cb-add-one-mod (acc) (m) (n) =
+    let increased = cb-add-one acc n 0
+    in if cb-cmp increased m n >= 0 then cb-sub-into increased m n else increased
+
+  cb-add-one : List Integer, Integer, Integer -> List Integer
+  cb-add-one (acc) (n) (i) =
+    if i >= n then acc
+    else let value = list-at acc i + 1
+    in let updated = list-set-at acc i (bit-and value cb-mask)
+    in if value < cb-base then updated else cb-add-one updated n (i + 1)
 
   cb-exp-go : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
   cb-exp-go (a) (exp-bytes) (m) (n) (n0inv) (r2) =
@@ -318,6 +351,7 @@ Section: Modular Exponentiation
 
   cb-mod-exp-bytes : List Integer, List Integer, List Integer -> List Integer
   cb-mod-exp-bytes (base-bytes) (exp-bytes) (mod-bytes) =
-    cb-to-bytes (cb-mod-exp base-bytes exp-bytes mod-bytes) (list-length mod-bytes)
+    let result = cb-mod-exp base-bytes exp-bytes mod-bytes
+    in if list-length result == 0 then [] else cb-to-bytes result (list-length mod-bytes)
 
 Page 1

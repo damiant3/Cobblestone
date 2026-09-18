@@ -2,10 +2,6 @@ Chapter: Hkdf
   cites Foreword chapter Hmac
 
  HMAC-based Extract-and-Expand Key Derivation Function (RFC 5869).
- Used by TLS 1.3, Signal Protocol, and most modern key schedules.
- Derives one or more keys from input keying material using a two-
- step process: extract concentrates entropy into a pseudorandom
- key, expand stretches it into output keying material.
 
  We say:
 
@@ -26,17 +22,30 @@ Section: Extract
 
 Section: Expand
 
+ RFC 5869 section 2.3 requires a PRK of at least HashLen bytes and an
+ output of at most 255 * HashLen bytes. Invalid parameters return [].
+
   hkdf-expand : List Integer, List Integer, Integer -> List Integer
   hkdf-expand (prk) (info) (length) =
-    let n = (length + 31) / 32
-    in hkdf-expand-loop prk info length n 1 [] []
+    if length < 0 then []
+    else if length > 8160 then []
+    else if list-length prk < 32 then []
+    else let n = (length + 31) / 32
+    in hkdf-expand-loop prk info length n 1 [] (__list-with-capacity length)
 
   hkdf-expand-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer, List Integer -> List Integer
   hkdf-expand-loop (prk) (info) (length) (n) (i) (prev) (acc) =
-    if i > n then hkdf-take acc length
+    if i > n then acc
     else let input = prev & info & [i]
     in let block = hkdf-words-to-bytes (hmac-sha256 prk input)
-    in hkdf-expand-loop prk info length n (i + 1) block (acc & block)
+    in let remaining = length - list-length acc
+    in let take = if remaining < 32 then remaining else 32
+    in hkdf-expand-loop prk info length n (i + 1) block (hkdf-append-block acc block 0 take)
+
+  hkdf-append-block : List Integer, List Integer, Integer, Integer -> List Integer
+  hkdf-append-block (acc) (block) (i) (n) =
+    if i >= n then acc
+    else hkdf-append-block (list-push acc (list-at block i)) block (i + 1) n
 
   hkdf-take : List Integer, Integer -> List Integer
   hkdf-take (xs) (n) = hkdf-take-loop xs n 0 []

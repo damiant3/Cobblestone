@@ -4,9 +4,9 @@ Chapter: Raytracer
   cites Game chapter Color
   cites Game chapter Rasterizer
 
- Simple 3D raytracer. Renders spheres and planes with diffuse +
- specular (Phong) lighting. Outputs to a Framebuf. Real-valued
- geometry, 0-255 for color channels.
+ Real-valued geometry with unit normals; material weights, the ambient level and
+ the field of view in thousandths, the field of view being the image's
+ height at a forward distance of 1; 0-255 for color channels.
 
  We say:
 
@@ -92,15 +92,27 @@ Section: Ray-Object Intersection
     else rt-no-hit
 
 Section: Scene Tracing
-  rt-trace : Ray3, RtScene -> RtHit
-  rt-trace (ray) (scene) = rt-closest ray (scene.rt-objects) 0 (list-length (scene.rt-objects)) rt-no-hit
 
-  rt-closest : Ray3, List SceneObj, Integer, Integer, RtHit -> RtHit
-  rt-closest (ray) (objs) (i) (n) (best) =
+  rt-trace : Ray3, RtScene -> RtHit
+  rt-trace (ray) (scene) =
+    let objs = scene.rt-objects
+    in let i = rt-nearest ray objs 0 (list-length objs) (0 - 1) (rt-no-hit.rt-dist)
+    in if i < 0 then rt-no-hit else rt-intersect-obj ray (list-at objs i)
+
+  rt-nearest : Ray3, List SceneObj, Integer, Integer, Integer, Real -> Integer
+  rt-nearest (ray) (objs) (i) (n) (best) (best-dist) =
     if i >= n then best
-    else let hit = rt-intersect-obj ray (list-at objs i)
-    in let new-best = if hit.rt-did-hit then if hit.rt-dist < best.rt-dist then hit else best else best
-    in rt-closest ray objs (i + 1) n new-best
+    else let d = rt-obj-dist ray (list-at objs i)
+    in if d >= 0.0 & d < best-dist then rt-nearest ray objs (i + 1) n i d
+    else rt-nearest ray objs (i + 1) n best best-dist
+
+  rt-obj-dist : Ray3, SceneObj -> Real
+  rt-obj-dist (ray) (obj) = when obj
+    is ObjSphere (s) -> rt-hit-dist (ray3-sphere ray (s.rt-center) (s.rt-radius))
+    is ObjPlane (p) -> rt-hit-dist (ray3-plane ray (p.rt-point) (p.rt-normal))
+
+  rt-hit-dist : RayHit3 -> Real
+  rt-hit-dist (hit) = if hit.rh3-hit then hit.rh3-t else 0.0 - 1.0
 
 Section: Shading (Phong)
   rt-shade : RtHit, RtScene, Vec3 -> Rgb
@@ -115,8 +127,8 @@ Section: Shading (Phong)
       in let specular = rt-pow-real spec-raw (hit.rt-material.mat-shininess)
       in let mat = hit.rt-material
       in let amb = real-from-int (scene.rt-ambient)
-      in let diff-contrib = real-from-int (mat.mat-diffuse) * diffuse / 1000.0
-      in let spec-contrib = real-from-int (mat.mat-specular) * specular / 1000.0
+      in let diff-contrib = real-from-int (mat.mat-diffuse) * diffuse
+      in let spec-contrib = real-from-int (mat.mat-specular) * specular
       in let intensity = amb + diff-contrib + spec-contrib
       in let capped = if intensity > 1000.0 then 1000 else real-to-int intensity
       in rgb-scale (mat.mat-color) capped
@@ -139,7 +151,7 @@ Section: Camera and Rendering
   rt-pixel-ray : RtCamera, Integer, Integer, Integer, Integer -> Ray3
   rt-pixel-ray (cam) (px) (py) (width) (height) =
     let aspect = real-from-int width / real-from-int height
-    in let half-fov = real-from-int (cam.cam-fov) / 2.0
+    in let half-fov = real-from-int (cam.cam-fov) / 2000.0
     in let nx = (2.0 * real-from-int px - real-from-int width) * half-fov / real-from-int width
     in let ny = (real-from-int height - 2.0 * real-from-int py) * half-fov / real-from-int height
     in let dir = rt-normalize (vec3-new (nx * aspect) ny 1.0)

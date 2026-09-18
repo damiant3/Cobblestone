@@ -8,6 +8,7 @@ The rules are the standing ones: an entry says what is still missing and
 nothing else, a closed entry is DELETED rather than annotated, and a gap that
 is still real is never quietly dropped.
 
+
 ## The shared mixer
 
 `Foreword chapter Random` supplies `mix-bits` and `rand-in-range` (CL 10493),

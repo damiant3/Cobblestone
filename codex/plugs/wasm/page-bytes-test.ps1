@@ -113,7 +113,7 @@ else {
     if ($null -eq $peBytes) { $rows += [pscustomobject]@{ arm = 'img fat16'; verdict = 'SKIP'; note = 'no PE from the pe arm to build with' } }
     else {
         $sectors = 16384
-        $imgPayload = [byte[]](@([byte]0) + (Le32 $sectors) + (Le32 $peBytes.Length) + (Le32 $cdx.Length) + (Le32 0) + $peBytes + $cdx)
+        $imgPayload = [byte[]](@([byte]0) + (Le32 $sectors) + (Le32 $peBytes.Length) + (Le32 $cdx.Length) + (Le32 0) + (Le32 0) + $peBytes + $cdx)   # src-count 0, dir-count 0: the 21-byte header ImgStdio reads since main 24660
         $img = Invoke-BytesModule $imgWasm $imgPayload 'img-fat16'
         if ($null -eq $img) { $rows += [pscustomobject]@{ arm = 'img fat16'; verdict = 'TRAP'; note = 'no clean exit' } }
         elseif ($img.Length -eq ($sectors * 512) -and [Text.Encoding]::ASCII.GetString($img, 512, 8) -eq 'EFI PART') {

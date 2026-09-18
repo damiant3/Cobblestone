@@ -344,8 +344,7 @@ param(
     [string]$Only = '',
     [switch]$Keep,
     [switch]$SkipOvmf,
-    # codex-vm reaches END inside two seconds (measured 2026-08-18); the deadline
-    # is only the backstop for a wedged arm, since the payload holds forever.
+    # Minimum VM-arm wall budget; longer arm-specific budgets still apply.
     [int]$Seconds = 30,
     [int]$OvmfSeconds = 100
 )
@@ -675,7 +674,7 @@ function Invoke-Vm([string]$name, [string]$kernel, [string]$disk, [string[]]$ext
     # parameter named $seconds IS the script's $Seconds and the fallback
     # assigns it to itself. The deadline was zero and every arm read
     # "(no DIAG1 row on serial)" from a VM killed before it printed one.
-    if ($Budget -le 0) { $Budget = $Seconds }
+    if ($Budget -lt $Seconds) { $Budget = $Seconds }
     $out = Join-Path $Work "$name.out"
     $err = Join-Path $Work "$name.err"
     Remove-Item $out, $err -ErrorAction SilentlyContinue

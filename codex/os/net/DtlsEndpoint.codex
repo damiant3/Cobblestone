@@ -113,7 +113,8 @@ Section: Client
 
   dtls-ep-client : DtlsEp, Integer -> DtlsEpStep
   dtls-ep-client (ep) (now) =
-    let r = dtls-hs-step (ep.ep-hs) (EvStart now)
+    if dtls-ep-failed ep then dtls-ep-idle ep
+    else let r = dtls-hs-step (ep.ep-hs) (EvStart now)
     in let body = dtls-client-hello-body (dtls-ep-random ep) [] (ep.ep-pub) []
     in let tr = tls13-msg-transcript dtls-hs-client-hello body
     in let ep2 = __record-set (__record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr) "ep-ch1" tr
@@ -129,7 +130,8 @@ Section: Receive
 
   dtls-ep-recv : DtlsEp, List Integer, Integer -> DtlsEpStep
   dtls-ep-recv (ep) (dgram) (now) =
-    if list-length dgram < 1 then dtls-ep-idle ep
+    if dtls-ep-failed ep then dtls-ep-idle ep
+    else if list-length dgram < 1 then dtls-ep-idle ep
     else if ep.ep-done then dtls-ep-recv-done ep dgram
     else if dtls-is-record (list-at dgram 0) then dtls-ep-recv-hs-enc ep dgram now
     else dtls-ep-recv-plain ep dgram now
@@ -286,9 +288,11 @@ Section: Server
 
   dtls-ep-server-flight : DtlsEp, DtlsMsg, List Integer, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-flight (ep) (m) (peer) (cookie) (ch1-hash) =
-    let sh-body = dtls-server-hello-body (dtls-ep-random ep) [] (ep.ep-pub)
+    let shared = x25519-shared-secret (ep.ep-priv) peer
+    in if list-length shared /= 32 then dtls-ep-abort-key-share ep
+    else let sh-body = dtls-server-hello-body (dtls-ep-random ep) [] (ep.ep-pub)
     in let tr = dtls-ep-server-transcript ep m sh-body cookie ch1-hash
-    in let hs = tls13-handshake-secret (x25519-shared-secret (ep.ep-priv) peer)
+    in let hs = tls13-handshake-secret shared
     in let th = tls13-transcript-hash tr
     in let c-hs = tls13-client-hs-traffic hs th
     in let s-hs = tls13-server-hs-traffic hs th
@@ -385,8 +389,9 @@ Section: Client Receive
 
   dtls-ep-client-keys : DtlsEp, DtlsMsg, List Integer -> DtlsEpStep
   dtls-ep-client-keys (ep) (m) (peer) =
-    let tr = (ep.ep-transcript) & tls13-msg-transcript dtls-hs-server-hello (m.dm-body)
-    in let shared = x25519-shared-secret (ep.ep-priv) peer
+    let shared = x25519-shared-secret (ep.ep-priv) peer
+    in if list-length shared /= 32 then dtls-ep-abort-key-share ep
+    else let tr = (ep.ep-transcript) & tls13-msg-transcript dtls-hs-server-hello (m.dm-body)
     in let hs = tls13-handshake-secret shared
     in let th = tls13-transcript-hash tr
     in DtlsEpStep { es-ep = dtls-ep-with-keys ep peer hs tr (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th), es-out = [] }
@@ -522,7 +527,8 @@ Section: Application Data
 
   dtls-ep-send-app : DtlsEp, List Integer -> DtlsEpStep
   dtls-ep-send-app (ep) (data) =
-    let secret = if ep.ep-server then ep.ep-s-ap else ep.ep-c-ap
+    if ep.ep-done == False then dtls-ep-idle ep
+    else let secret = if ep.ep-server then ep.ep-s-ap else ep.ep-c-ap
     in let rec = dtls-seal (dtls-ep-keys secret) dtls-ep-app-epoch (ep.ep-app-write-seq) data dtls-ep-content-app
     in DtlsEpStep { es-ep = __record-set ep "ep-app-write-seq" (ep.ep-app-write-seq + 1), es-out = [rec] }
 
@@ -630,6 +636,19 @@ Section: Fragmentation
     else dtls-ep-seal-loop k fs base (i + 1) (list-push acc (dtls-ep-seal-hs k (base + i) (list-at fs i)))
 
 Section: Helpers
+
+  dtls-ep-failed : DtlsEp -> Boolean
+  dtls-ep-failed (ep) = when ep.ep-hs.hs-phase
+    is PhFailed -> True
+    is otherwise -> False
+
+  dtls-ep-abort-key-share : DtlsEp -> DtlsEpStep
+  dtls-ep-abort-key-share (ep) =
+    let hs = __record-set (ep.ep-hs) "hs-phase" PhFailed
+    in let e1 = __record-set (__record-set (__record-set ep "ep-hs" hs) "ep-done" False) "ep-auth-done" False
+    in let e2 = __record-set (__record-set (__record-set e1 "ep-hs-secret" []) "ep-c-hs" []) "ep-s-hs" []
+    in let e3 = __record-set (__record-set e2 "ep-c-ap" []) "ep-s-ap" []
+    in DtlsEpStep { es-ep = e3, es-out = [dtls-plain-encode 21 0 (ep.ep-send-seq) [2, 47]] }
 
   dtls-ep-with-keys : DtlsEp, List Integer, List Integer, List Integer, List Integer, List Integer -> DtlsEp
   dtls-ep-with-keys (ep) (peer) (hs) (tr) (c) (s) =

@@ -1,35 +1,21 @@
 # secrets -- backlog
 
-## 1. `pbkdf-iterations = 100000` is a PBKDF2 constant in an Argon2-shaped parameter
+## Team sharing does not derive a shared key
 
-`VaultCrypto.codex:57` sets `pbkdf-iterations = 100000` and `:76` passes it as
-`pb-time-cost`. Those are not the same quantity. `pb-time-cost` is a PASS count
-over the whole block array (`Pbkdf.codex:96` `pbkdf-fill-passes`), not a
-PBKDF2 iteration count, and the chapter's own default is 3 (`:38`). With
-`pb-block-count = 4096` the unlock does
+`VaultCrypto.codex:dh-shared-secret` hashes `private & public` with SHA-256.
+`create-team-share` and `decrypt-team-share` therefore derive different keys
+for the two participants. Reproduced on 2026-09-17 with two valid X25519
+keypairs: the primitive returned matching 32-byte secrets, the vault helper
+disagreed, and the recipient could not decrypt the share.
 
-    100000 passes * 4095 blocks = 409,500,000 block mixes
+Evidence: red's `build-output/crypto-audit-20260917/vault-sharing-final/`
+and `vault-sharing-probe.codex`; output is `x25519-control=True`,
+`vault-agreement=False`, `vault-decrypt=no`. The run is an observed failure,
+not an exact-output PASS. The app-level sharing workflow remains outside the
+completed primitive repair set.
 
-against 12,285 at the chapter default, a factor of 33,333. Each mix runs
-`pb-xor-blocks` and `pb-replace-block`, about 65 list operations, and
-`pb-xor-blocks` builds a FRESH 32-element list per block per pass, so the
-same figure is also roughly 409.5 million transient allocations on a heap
-with no collector. The prose at `Pbkdf.codex:72-80` records that this
-chapter already died once on transient copies at these block counts.
-
-**Reached, not latent.** `derive-master-key` is called from `Vault.codex:58`
-and `VaultCrypto.codex:93`, so this is every vault unlock.
-
-**No wall-clock number is recorded here on purpose** -- nobody has timed it,
-and the arithmetic above is inspection. Measure before choosing the fix.
-
-The likely fix is one constant, but it is a security parameter and picking it
-is a judgement call for whoever owns this app: `pb-time-cost` in the low
-single digits with `pb-block-count` carrying the work factor, which is how
-the Argon2-style construction in `Pbkdf.codex` is meant to be tuned.
-
-Found by blu 2026-08-16 while checking Track D row 19 cites; the verdict is
-blu's and confirmed against source by reek, who corrected the mechanism (the
-passes do no `sha256`; the hashing is the one-time `pb-expand-blocks`).
-Neither lane owns `apps/secrets`, which is why it is written down here
-rather than carried in a message.
+The repair must define the sharing key type, use actual key agreement,
+propagate low-order/invalid-key refusal and supply a fresh AEAD nonce.
+The current share nonce is derived solely from the recipient public key.
+Acceptance: independent participant derivation and authenticated decryption,
+wrong-recipient refusal, and distinct nonces for repeated shares under one key.
