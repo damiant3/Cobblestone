@@ -1,6 +1,7 @@
 Chapter: AesGcm
   cites Foreword chapter Aes
   cites Foreword chapter Aes256
+  cites Foreword chapter Maybe
 
  AES-GCM authenticated encryption (NIST SP 800-38D). Provides
  confidentiality via AES-CTR and authenticity via GHASH over the
@@ -33,21 +34,31 @@ Section: Key Size Dispatch
 
   gcm-expand : List Integer -> List Integer
   gcm-expand (key) =
-    if list-length key >= 32 then aes256-expand-key key
+    if list-length key == 32 then aes256-expand-key key
     else aes-expand-key-128 key
 
   gcm-block : List Integer, List Integer -> List Integer
   gcm-block (block) (ks) =
-    if list-length ks >= 240 then aes256-encrypt-block block ks
+    if list-length ks == 240 then aes256-encrypt-block block ks
     else aes-encrypt-block block ks
+
+  gcm-params-ok : List Integer, List Integer -> Boolean
+  gcm-params-ok (key) (nonce) =
+    if list-length nonce /= 12 then False
+    else if list-length key == 16 then True
+    else list-length key == 32
 
 Section: Encrypt
 
+ Successful GCM output always carries a 16-byte tag, including empty
+ plaintext. An empty tag and ciphertext signal invalid key or nonce sizes.
+
   aesgcm-encrypt : List Integer, List Integer, List Integer, List Integer -> AesGcmResult
   aesgcm-encrypt (key) (nonce) (plaintext) (aad) =
-    let ks = gcm-expand key
+    if gcm-params-ok key nonce == False then AesGcmResult { ciphertext = [], tag = [] }
+    else let ks = gcm-expand key
     in let h = gcm-block (gcm-zeros 16 0 []) ks
-    in let ct = gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) plaintext 0 (list-length plaintext) []
+    in let ct = gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) plaintext 0 (list-length plaintext) (__list-with-capacity (list-length plaintext))
     in let tag = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ct
     in AesGcmResult { ciphertext = ct, tag = tag }
 
@@ -55,22 +66,30 @@ Section: Decrypt
 
   aesgcm-decrypt : List Integer, List Integer, List Integer, List Integer, List Integer -> Maybe (List Integer)
   aesgcm-decrypt (key) (nonce) (ciphertext) (aad) (tag) =
-    let ks = gcm-expand key
+    if gcm-params-ok key nonce == False then None
+    else if list-length tag /= 16 then None
+    else let ks = gcm-expand key
     in let h = gcm-block (gcm-zeros 16 0 []) ks
     in let expected = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ciphertext
     in if gcm-tags-equal expected tag then
-      Just (gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) ciphertext 0 (list-length ciphertext) [])
+      Just (gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) ciphertext 0 (list-length ciphertext) (__list-with-capacity (list-length ciphertext)))
     else None
 
 Section: CTR Mode
 
+ The entry points reserve the entire output before the per-block heap mark.
+ The counter and output survive restoration; round state does not escape.
+
   gcm-ctr-encrypt : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
   gcm-ctr-encrypt (ks) (ctr) (input) (i) (len) (acc) =
     if i >= len then acc
-    else let block = gcm-block ctr ks
+    else let mark = __heap-save
+    in let block = gcm-block ctr ks
     in let chunk-len = if len - i < 16 then len - i else 16
-    in let xored = gcm-xor-chunk block input i chunk-len 0 []
-    in gcm-ctr-encrypt ks (gcm-inc32 ctr) input (i + chunk-len) len (acc & xored)
+    in let out = gcm-xor-chunk block input i chunk-len 0 acc
+    in let next = gcm-inc32 ctr
+    in let restored = __heap-restore mark
+    in gcm-ctr-encrypt ks next input (i + chunk-len) len out
 
   gcm-xor-chunk : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
   gcm-xor-chunk (keystream) (input) (offset) (len) (i) (acc) =
@@ -82,37 +101,56 @@ Section: GHASH
 
   gcm-compute-tag : List Integer, List Integer, List Integer, List Integer, List Integer -> List Integer
   gcm-compute-tag (ks) (h) (j0) (aad) (ct) =
-    let aad-padded = gcm-pad16 aad
-    in let ct-padded = gcm-pad16 ct
+    let aad-hash = gcm-ghash h aad 0 (list-length aad) (gcm-zeros 16 0 [])
+    in let ct-hash = gcm-ghash h ct 0 (list-length ct) aad-hash
     in let len-block = gcm-len-block (list-length aad) (list-length ct)
-    in let data = aad-padded & ct-padded & len-block
-    in let ghash = gcm-ghash h data 0 (list-length data) (gcm-zeros 16 0 [])
+    in let ghash = gcm-ghash h len-block 0 16 ct-hash
     in let e-j0 = gcm-block j0 ks
     in gcm-xor-blocks ghash e-j0
 
   gcm-ghash : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
   gcm-ghash (h) (data) (i) (len) (y) =
+    gcm-ghash-loop h data i len (gcm-slice y 0 16)
+
+  gcm-ghash-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  gcm-ghash-loop (h) (data) (i) (len) (y) =
     if i >= len then y
-    else let block = gcm-slice data i 16
+    else let mark = __heap-save
+    in let block = gcm-slice data i 16
     in let xored = gcm-xor-blocks y block
     in let product = gcm-gf-mult xored h
-    in gcm-ghash h data (i + 16) len product
+    in let copied = gcm-copy-block product y 0
+    in let restored = __heap-restore mark
+    in gcm-ghash-loop h data (i + 16) len copied
+
+  gcm-copy-block : List Integer, List Integer, Integer -> List Integer
+  gcm-copy-block (from) (out) (i) =
+    if i >= 16 then out
+    else gcm-copy-block from (list-set-at out i (list-at from i)) (i + 1)
 
   gcm-gf-mult : List Integer, List Integer -> List Integer
   gcm-gf-mult (x) (y) =
-    gcm-gf-mult-loop x y (gcm-zeros 16 0 []) 0
+    gcm-gf-words (gcm-read64 x 0 0 0) (gcm-read64 x 8 0 0) (gcm-read64 y 0 0 0) (gcm-read64 y 8 0 0) 0 0 0
 
-  gcm-gf-mult-loop : List Integer, List Integer, List Integer, Integer -> List Integer
-  gcm-gf-mult-loop (x) (y) (z) (i) =
-    if i >= 128 then z
-    else let byte-idx = i / 8
-    in let bit-idx = 7 - (i - (i / 8) * 8)
-    in let x-bit = bit-and (bit-shru (list-at x byte-idx) bit-idx) 1
-    in let z2 = if x-bit == 1 then gcm-xor-blocks z y else z
-    in let lsb = bit-and (list-at y 15) 1
-    in let y2 = gcm-shift-right y
-    in let y3 = if lsb == 1 then gcm-xor-byte y2 0 (bit-xor (list-at y2 0) 225) else y2
-    in gcm-gf-mult-loop x y3 z2 (i + 1)
+  gcm-read64 : List Integer, Integer, Integer, Integer -> Integer
+  gcm-read64 (bytes) (off) (i) (word) =
+    if i >= 8 then word
+    else gcm-read64 bytes off (i + 1) (bit-or (bit-shl word 8) (list-at bytes (off + i)))
+
+ NIST SP 800-38D algorithm 1, with two 64-bit halves and masked reduction.
+ The 128 iterations allocate no lists and branch only on the public index.
+
+  gcm-gf-words : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  gcm-gf-words (xh) (xl) (yh) (yl) (zh) (zl) (i) =
+    if i >= 128 then gcm-be64 zh & gcm-be64 zl
+    else let mask = 0 - bit-shru xh 63
+    in let zh2 = bit-xor zh (bit-and yh mask)
+    in let zl2 = bit-xor zl (bit-and yl mask)
+    in let reduction = bit-and (0 - bit-and yl 1) #E100000000000000
+    in let yh2 = bit-xor (bit-shru yh 1) reduction
+    in let yl2 = bit-or (bit-shru yl 1) (bit-shl yh 63)
+    in let xh2 = bit-or (bit-shl xh 1) (bit-shru xl 63)
+    in gcm-gf-words xh2 (bit-shl xl 1) yh2 yl2 zh2 zl2 (i + 1)
 
 Section: Block Operations
 

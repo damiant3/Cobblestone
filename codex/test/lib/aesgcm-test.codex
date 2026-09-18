@@ -34,6 +34,18 @@ Section: Helpers
 
 Section: Body
 
+  reject-params : Text, List Integer, List Integer -> [Console] Nothing
+  reject-params (label) (key) (nonce) = act
+    let encrypted = aesgcm-encrypt key nonce [1] []
+    in let decrypted = aesgcm-decrypt key nonce [] [] (gcm-zeros 16 0 [])
+    in print-line-uni (label & " ct=" & show (list-length (encrypted.ciphertext)) & " tag=" & show (list-length (encrypted.tag)) & " decrypt=" & (when decrypted is None -> "reject" is Just (p) -> "ACCEPT"))
+  end
+
+  reject-tag : Text, List Integer, List Integer, List Integer -> [Console] Nothing
+  reject-tag (label) (key) (nonce) (tag) = act
+    print-line-uni (label & "=" & (when aesgcm-decrypt key nonce [] [] tag is None -> "reject" is Just (p) -> "ACCEPT"))
+  end
+
   test-key : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
   test-nonce : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
   test-plaintext : List Integer = [72, 101, 108, 108, 111, 32, 87, 111, 114, 108, 100]
@@ -55,6 +67,22 @@ Section: Body
         is None -> print-line-uni "tamper-detect=pass"
       let empty-result = aesgcm-encrypt test-key test-nonce [] []
       in print-line-uni ("empty-ct=" & show (list-length (empty-result.ciphertext)))
+      reject-params "empty-key" [] test-nonce
+      reject-params "short-key" (gcm-zeros 15 0 []) test-nonce
+      reject-params "long-key" (gcm-zeros 17 0 []) test-nonce
+      reject-params "unsupported-key" (gcm-zeros 24 0 []) test-nonce
+      reject-params "oversized-key" (gcm-zeros 33 0 []) test-nonce
+      reject-params "empty-nonce" test-key []
+      reject-params "short-nonce" test-key (gcm-zeros 11 0 [])
+      reject-params "long-nonce" test-key (gcm-zeros 13 0 [])
+      reject-params "oversized-nonce" test-key (gcm-zeros 17 0 [])
+      print-line-uni ("empty-tag=" & bytes-to-hex (empty-result.tag))
+      reject-tag "long-key-genuine-tag" (test-key & [0]) test-nonce (empty-result.tag)
+      reject-tag "long-nonce-genuine-tag" test-key (test-nonce & [0]) (empty-result.tag)
+      reject-tag "empty-tag-refused" test-key test-nonce []
+      reject-tag "short-tag-refused" test-key test-nonce (gcm-slice (empty-result.tag) 0 15)
+      reject-tag "long-tag-refused" test-key test-nonce ((empty-result.tag) & [0])
+      reject-tag "last-tag-byte-refused" test-key test-nonce (list-set-at (for b in empty-result.tag -> b) 15 (bit-xor (list-at (empty-result.tag) 15) 1))
     end
   end
 

@@ -100,7 +100,7 @@ Section: Keywords and Sanitization
   zig-prelude-decls : List Text = ["std", "main", "cx_entry", "cx_heap_mem", "cx_heap_reserve",
    "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest",
    "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best",
-   "cx_deck_stride", "cx_deck_armed", "cx_deck_slack", "CxFn1", "CxFn2",
+   "cx_deck_stride", "cx_deck_armed", "cx_deck_slack", "cx_deck_fd", "cx_environ", "cx_init", "cx_env", "CxFn1", "CxFn2",
    "CxFn3", "CxFn4", "CxList", "cx_ll_empty", "cx_ll_push", "cx_ll_of",
    "cx_ll_concat", "cx_ll_copy", "cx_ll_cons", "cx_ll_insert_at",
    "cx_ll_with_capacity",
@@ -3867,11 +3867,7 @@ Section: Chapter Emission
  natives have their own recursion and are unmeasured, so what one input
  needs is known and what every input needs is not.
 
- 512 MB matches the C# default deliberately. What is NOT matched is its
- CODEX_STACK_MB override: zig 0.16's environment API is mid-refactor
- (std.posix.getenv is gone, std.process.Environ.Block differs by platform
- and has no global on POSIX), and a knob is not worth version-fragile code
- in every emitted program. Rebuild to change it.
+ 512 MB matches the C# default. Rebuild to change the stack reservation.
 
  Zig requires a thread entry to return `u8`, `noreturn`, `!noreturn`,
  `void` or `!void`, and `opening` is spawned directly. 40 corpus programs
@@ -3921,7 +3917,8 @@ Section: Chapter Emission
    "fn cx_entry() void {\n"
    & zig-entry-call (zig-sanitize entry) (zig-entry-return-type defs 0)
    & "}\n\n"
-   & "pub fn main() void {\n"
+   & "pub fn main(cx_init: std.process.Init.Minimal) void {\n"
+   & "    cx_environ = cx_init.environ;\n"
    & "    const stack_bytes: usize = 512 * 1024 * 1024;\n"
    & "    const t = std.Thread.spawn(.{ .stack_size = stack_bytes }, cx_entry, .{}) catch @panic(\"spawn\");\n"
    & "    t.join();\n}\n"
@@ -4227,8 +4224,14 @@ Section: Chapter Emission
   zig-p-cx-deck-slack : List ShakeFrag
   zig-p-cx-deck-slack = [ShakeLit "// Measurement-only headroom, added to the lift that follows __deck-set so\n// the deck can run PAST its reservation without meeting the main frontier.\n// Zero in every normal build, and it must stay zero in anything banked: it\n// changes __deck-pos, which the depot can observe. The point of it is that the\n// guard fires at the FIRST crossing, and a first crossing tells you only that\n// demand exceeded the reservation -- the deficit it reports is bounded by one\n// allocation and is therefore always about zero. Slack lets the program finish\n// so the TRUE peak is knowable.\nconst ", ShakeUse "cx_deck_slack", ShakeLit ": i64 = 0;\n"]
 
+  zig-p-cx-environ : List ShakeFrag
+  zig-p-cx-environ = [ShakeLit "var ", ShakeUse "cx_environ", ShakeLit ": ", ShakeUse "std", ShakeLit ".process.Environ = .empty;\n"]
+
+  zig-p-cx-deck-fd : List ShakeFrag
+  zig-p-cx-deck-fd = [ShakeLit "// Linux telemetry requires CODEX_DECK_REPORT=1 and an inherited open fd 3.\n// The first deck arming samples the setting once; -2 is unsampled, -1 disabled.\nvar ", ShakeUse "cx_deck_fd", ShakeLit ": i32 = -2;\n"]
+
   zig-p-cx-deck-report : List ShakeFrag
-  zig-p-cx-deck-report = [ShakeLit "// STDOUT, never stderr. stderr carries the program's output and every\n// comparison in the ladder diffs it, so a measurement written there would\n// corrupt the thing being measured. Raw write syscall rather than\n// std.Io.File, which in 0.16 wants an Io instance. Only on a new peak, so the\n// lines are few and the last one is the answer.\nfn ", ShakeUse "cx_deck_report", ShakeLit "() void {\n    if (@import(\"builtin\").os.tag != .linux) return;\n    if (", ShakeUse "cx_deck_base", ShakeLit " == 0 or ", ShakeUse "cx_deck_top", ShakeLit " == 0) return;\n    const cx_used = ", ShakeUse "cx_deck_hw", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit ";\n    if (cx_used - ", ShakeUse "cx_deck_stride", ShakeLit " < 1048576) return;\n    ", ShakeUse "cx_deck_stride", ShakeLit " = cx_used;\n    var cx_b: [224]u8 = undefined;\n    const cx_s = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_b, \"CX-DECK used={d} reserved={d} headroom={d} base={d} peak={d} best={d}\\n\", .{ cx_used, ", ShakeUse "cx_deck_top", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit ", ", ShakeUse "cx_deck_top", ShakeLit " - ", ShakeUse "cx_deck_hw", ShakeLit ", ", ShakeUse "cx_deck_base", ShakeLit ", ", ShakeUse "cx_deck_hw", ShakeLit ", ", ShakeUse "cx_deck_best", ShakeLit " }) catch return;\n    _ = ", ShakeUse "std", ShakeLit ".os.linux.write(1, cx_s.ptr, cx_s.len);\n}\n"]
+  zig-p-cx-deck-report = [ShakeLit "// To fd 3, and only when it was open at the first cx_deck_set (cx_deck_fd):\n// stdout carries the compilers' notices and stderr the program's output, and\n// readers compare both. Raw write syscall rather than std.Io.File, which in\n// 0.16 wants an Io instance. Only on a new peak, so the lines are few and the\n// last one is the answer.\nfn ", ShakeUse "cx_deck_report", ShakeLit "() void {\n    if (@import(\"builtin\").os.tag != .linux) return;\n    if (", ShakeUse "cx_deck_fd", ShakeLit " < 0) return;\n    if (", ShakeUse "cx_deck_base", ShakeLit " == 0 or ", ShakeUse "cx_deck_top", ShakeLit " == 0) return;\n    const cx_used = ", ShakeUse "cx_deck_hw", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit ";\n    if (cx_used - ", ShakeUse "cx_deck_stride", ShakeLit " < 1048576) return;\n    ", ShakeUse "cx_deck_stride", ShakeLit " = cx_used;\n    var cx_b: [224]u8 = undefined;\n    const cx_s = ", ShakeUse "std", ShakeLit ".fmt.bufPrint(&cx_b, \"CX-DECK used={d} reserved={d} headroom={d} base={d} peak={d} best={d}\\n\", .{ cx_used, ", ShakeUse "cx_deck_top", ShakeLit " - ", ShakeUse "cx_deck_base", ShakeLit ", ", ShakeUse "cx_deck_top", ShakeLit " - ", ShakeUse "cx_deck_hw", ShakeLit ", ", ShakeUse "cx_deck_base", ShakeLit ", ", ShakeUse "cx_deck_hw", ShakeLit ", ", ShakeUse "cx_deck_best", ShakeLit " }) catch return;\n    _ = ", ShakeUse "std", ShakeLit ".os.linux.write(", ShakeUse "cx_deck_fd", ShakeLit ", cx_s.ptr, cx_s.len);\n}\n"]
 
   zig-p-cx-deck-enter : List ShakeFrag
   zig-p-cx-deck-enter = [ShakeLit "fn ", ShakeUse "cx_deck_enter", ShakeLit "() void {\n    if (", ShakeUse "cx_nest", ShakeLit " == 0) {\n        ", ShakeUse "cx_bivy", ShakeLit " = ", ShakeUse "cx_hp", ShakeLit ";\n        ", ShakeUse "cx_hp", ShakeLit " = ", ShakeUse "cx_dptr", ShakeLit ";\n    }\n    ", ShakeUse "cx_nest", ShakeLit " += 1;\n}\n"]
@@ -4240,7 +4243,7 @@ Section: Chapter Emission
   zig-p-cx-deck-pos = [ShakeLit "fn ", ShakeUse "cx_deck_pos", ShakeLit "() i64 {\n    return ", ShakeUse "cx_dptr", ShakeLit ";\n}\n"]
 
   zig-p-cx-deck-set : List ShakeFrag
-  zig-p-cx-deck-set = [ShakeLit "fn ", ShakeUse "cx_deck_set", ShakeLit "(p: i64) void {\n    ", ShakeUse "cx_dptr", ShakeLit " = p;\n    ", ShakeUse "cx_deck_base", ShakeLit " = p;\n    ", ShakeUse "cx_deck_hw", ShakeLit " = p;\n    ", ShakeUse "cx_deck_top", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_stride", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_best", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_armed", ShakeLit " = true;\n}\n"]
+  zig-p-cx-deck-set = [ShakeLit "fn ", ShakeUse "cx_deck_set", ShakeLit "(p: i64) void {\n    if (", ShakeUse "cx_deck_fd", ShakeLit " == -2) {\n        ", ShakeUse "cx_deck_fd", ShakeLit " = -1;\n        if (@import(\"builtin\").os.tag == .linux) {\n            for (", ShakeUse "cx_environ", ShakeLit ".block.slice) |cx_env| {\n                if (!", ShakeUse "std", ShakeLit ".mem.eql(u8, ", ShakeUse "std", ShakeLit ".mem.span(cx_env orelse continue), \"CODEX_DECK_REPORT=1\")) continue;\n                if (@as(isize, @bitCast(", ShakeUse "std", ShakeLit ".os.linux.fcntl(3, ", ShakeUse "std", ShakeLit ".os.linux.F.GETFD, 0))) >= 0) ", ShakeUse "cx_deck_fd", ShakeLit " = 3;\n                break;\n            }\n        }\n    }\n    ", ShakeUse "cx_dptr", ShakeLit " = p;\n    ", ShakeUse "cx_deck_base", ShakeLit " = p;\n    ", ShakeUse "cx_deck_hw", ShakeLit " = p;\n    ", ShakeUse "cx_deck_top", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_stride", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_best", ShakeLit " = 0;\n    ", ShakeUse "cx_deck_armed", ShakeLit " = true;\n}\n"]
 
   zig-p-cx-utf8-to-cce : List ShakeFrag
   zig-p-cx-utf8-to-cce = [ShakeLit "// The I/O boundary. Codex text is CCE everywhere inside -- on bare metal\n// and here alike -- so these convert at the edge and nowhere else: bytes\n// arriving become CCE, bytes leaving are already what they are. std.fs in\n// 0.16 wants an Io the generated main has no reason to carry, so this uses\n// the raw syscalls.\nfn ", ShakeUse "cx_utf8_to_cce", ShakeLit "(bytes: []const u8) []const u8 {\n    var out: ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(u8) = .empty;\n    var i: usize = 0;\n    while (i < bytes.len) {\n        const n = ", ShakeUse "std", ShakeLit ".unicode.utf8ByteSequenceLength(bytes[i]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        const cp = ", ShakeUse "std", ShakeLit ".unicode.utf8Decode(bytes[i..][0..n]) catch @panic(\"cx_utf8_to_cce: bad utf8\");\n        ", ShakeUse "cx_cce_frame", ShakeLit "(", ShakeUse "cx_cp_to_cce", ShakeLit "(cp), &out);\n        i += n;\n    }\n    return out.items;\n}\n"]
@@ -4457,6 +4460,8 @@ Section: Chapter Emission
     ShakePart { name = "cx_deck_stride", frags = zig-p-cx-deck-stride },
     ShakePart { name = "cx_deck_armed", frags = zig-p-cx-deck-armed },
     ShakePart { name = "cx_deck_slack", frags = zig-p-cx-deck-slack },
+    ShakePart { name = "cx_environ", frags = zig-p-cx-environ },
+    ShakePart { name = "cx_deck_fd", frags = zig-p-cx-deck-fd },
     ShakePart { name = "cx_deck_report", frags = zig-p-cx-deck-report },
     ShakePart { name = "cx_deck_enter", frags = zig-p-cx-deck-enter },
     ShakePart { name = "cx_deck_exit", frags = zig-p-cx-deck-exit },
@@ -4557,7 +4562,7 @@ Section: Chapter Emission
   zig-prelude : Text = shake-text zig-prelude-parts zig-prelude-part-names
 
  Two i64 masks carry the shake answer across a __heap-restore, so the ceiling
- is 128 parts (100 today). The emitted cx_shl and cx_shr mask their shift, so
+ is 128 parts. The emitted cx_shl and cx_shr mask their shift, so
  past the ceiling index 128 would alias index 64 in silence; the check makes
  that a @compileError instead.
 

@@ -47,13 +47,11 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 Measured 2026-08-03, except where an item gives its own date.
 
 1. **The compiler is a hard fixed point of itself on bare metal**
-   (measured 2026-09-12). Current seed `CF9EDD812EA7E78B` was built from
-   depot seed `6B2C7409AA197D37`, and the Update 60 release gate rebuilt it
-   from its own source in one pass, whole-file byte-identical, with the text
+   (measured 2026-09-17). The Update 61 release gate rebuilt current seed
+   `7BCD5BC6BCE0AF41` from its own source in one pass, whole-file byte-identical, with the text
    round-trip green in the same run. BVT: 79 compile and 64 runtime passes,
-   plus the batch control. The signed seed verifies itself. Focused controls
-   cover declared wasm exports on both IR wires and as native CDX roots,
-   dead-code pruning, invalid declarations and fishtank fallback.
+   plus the batch control. The signed seed verifies itself. Normal and poison
+   release batteries each passed 1,780 tests with zero failures and 49 declared exclusions.
 
 2. **Two independent implementations check the compiler, and they agree**
    (measured 2026-08-10). A fixed point proves the seed is *stable*, not
@@ -66,15 +64,14 @@ Measured 2026-08-03, except where an item gives its own date.
    **Diverse double-compiling.** The whole compiler is rendered to C# by a
    plug, built by Roslyn -- a toolchain with no ancestry in this project --
    and that compiler then compiles the Codex compiler's own source.
-   Measured 2026-09-12 against Update 60 seed `CF9EDD812EA7E78B`,
-   its output was **3,394,819 bytes against that seed's
-   3,394,819, with 95 differing bytes, every one of them inside the
+   Measured 2026-09-17 against Update 61 seed `7BCD5BC6BCE0AF41`,
+   its output was **3,399,989 bytes against that seed's
+   3,399,989, with 96 differing bytes, every one of them inside the
    signature region at offsets 40..135 and none outside it.** The signature
    is stamped by the sign phase rather than emitted by the compiler. That is
    Wheeler's `stage2 == X`. The witness is a release gate and is re-run
    against whatever seed a release ships, so this figure names the run it
-   came from rather than standing in for any later one. The carry/borrow
-   repair has no new diverse-compilation proof. How many bytes
+   came from rather than standing in for any later one. How many bytes
    differ INSIDE the signature region is not a criterion: 96 is the width
    of the region, and two unrelated signatures agree at a given byte about
    one time in 256, so a run differing in 95 or 96 is equally ordinary.
@@ -232,23 +229,24 @@ Measured 2026-08-03, except where an item gives its own date.
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
-**Test battery: 1,454 tests, 1,427 pass, 0 fail, 27 skip** (measured
-2026-08-14 at seed `8D405FDF`). The BVT subset that `build/build.ps1`
+**Test battery: 1,829 tests, 1,780 pass, 0 fail, 49 declared exclusions**
+(normal and poison runs, 2026-09-17, release seed `7BCD5BC6BCE0AF41`).
+The BVT subset that `build/build.ps1`
 gates on is 79 tests, compiled and then run where an `.expected` exists,
-for 143 checks; its phase of the gate takes about 19s.
+for 143 checks; its phase of this release gate took 30.0 seconds.
 
 ---
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,394,819 bytes, 2026-09-12, COMPILER-48 deck exit refuses a nonpositive counter) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,399,989 bytes, 2026-09-17, Ed25519 signing validates seed/public-key binding and byte inputs) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `E4E14DD4FACE97CD` |
-| SHA-256 | `CF9EDD812EA7E78BCDBD7111E59C0552CA8D47AFD0813347A6F1E3C9D5253580` |
-| MD5 | `420DAE41831956172FF18BD9D1A3F381` |
+| Content hash prefix | `07BC918C52ECC729` |
+| SHA-256 | `7BCD5BC6BCE0AF41E126C1DA40E28090E7F161BAB3F6BA7AA114592509597C73` |
+| MD5 | `05BEC7623BF2FA084F30331338BCA9CA` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -259,7 +257,7 @@ first-boot ceremony.
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `942C22593080C0C089046D1D08270D015679E784140FF360992C2A87D3CA8B7F` |
+| SHA-256 | `2CFF7CC7DA59D1634EA3102ED2E36B21A366D8195FFCED1CA2A809AAAC4D4C4C` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -283,7 +281,12 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `FE000229F03717A8ABB5BDA6DB9867FE73E2B20CF947B16066DD3568BE2ADD39` |
+| SHA-256 | `A410476F7DFE01173C3B82650BAF65B038A9BDD05732CF7622AC83F234A83F79` |
+
+All 50 rehearsal arms passed on Codex VM and QEMU/OVMF on 2026-09-17,
+using a 180-second minimum VM-arm allowance. The shipping check confirmed
+the checked-in default configuration. The boot image contains the exact
+release seed, and all 5,742 text-map rows match its embedded MAP1.
 
 The payload is reproducible from its source and this seed: `DIAG.RCP` inside
 the image names both and carries `payload-sha256`, `bundled-sha256` and
@@ -595,7 +598,7 @@ codex/
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (162 modules)
   plugs/         56 plugs, 195 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,826 files)
+  test/          Compiler samples + OS integration tests (1,829 files)
 apps/            71 applications, 1,158 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
@@ -614,6 +617,9 @@ additions and edits. Lines use .NET `ReadAllLines`.
 Unopened files behind main were read from the depot. Untracked files and
 build intermediates are excluded; tracked generated scripts and templates are included.
 
+The `codex/test/` file count alone was refreshed on 2026-09-17 to 1,829;
+the line counts and aggregate heading retain the dated measurement above.
+
 These are physical-line counts, not statement counts. For `.codex`, blank
 means whitespace-only; **prose** means exactly one leading ASCII space
 followed by a non-whitespace character. **Code** is every other non-blank
@@ -626,7 +632,7 @@ non-blank lines, including comments and markup.
 |---|---:|---:|---:|---:|
 | `apps/` | 1,158 | 210,502 | 13,774 | 38,878 |
 | `codex/foreword/` | 439 | 61,643 | 7,231 | 14,584 |
-| `codex/test/` | 1,826 | 68,000 | 10,381 | 16,575 |
+| `codex/test/` | 1,829 | 68,000 | 10,381 | 16,575 |
 | `codex/plugs/` | 262 | 63,515 | 5,726 | 9,988 |
 | `codex/compiler/` | 65 | 45,246 | 6,145 | 9,482 |
 | `codex/os/` | 162 | 24,698 | 2,416 | 5,950 |

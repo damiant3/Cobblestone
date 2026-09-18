@@ -30,15 +30,20 @@ Section: Key Generation
 
   x25519-shared-secret : List Integer, List Integer -> List Integer
   x25519-shared-secret (my-private) (their-public) =
-    x25519-scalar-mult my-private their-public
+    let shared = x25519-scalar-mult my-private their-public
+    in if list-length shared /= 32 then []
+    else if fe-is-zero shared then [] else shared
 
 Section: Key Clamping
 
   x25519-clamp : List Integer -> List Integer
   x25519-clamp (key) =
-    let k0 = bit-and (list-at key 0) 248
+    if list-length key /= 32 then []
+    else if ed-octets-valid key 0 32 == False then []
+    else let copy = for b in key -> b
+    in let k0 = bit-and (list-at key 0) 248
     in let k31 = bit-or (bit-and (list-at key 31) 127) 64
-    in list-set-at (list-set-at key 0 k0) 31 k31
+    in list-set-at (list-set-at copy 0 k0) 31 k31
 
 Section: Montgomery Ladder
 
@@ -51,7 +56,9 @@ Section: Montgomery Ladder
 
   x25519-scalar-mult : List Integer, List Integer -> List Integer
   x25519-scalar-mult (scalar-bytes) (u-bytes) =
-    let scalar = x25519-clamp scalar-bytes
+    if list-length scalar-bytes /= 32 | list-length u-bytes /= 32 then []
+    else if ed-octets-valid scalar-bytes 0 32 == False | ed-octets-valid u-bytes 0 32 == False then []
+    else let scalar = x25519-clamp scalar-bytes
     in let x1 = fe-from-bytes u-bytes
     in let final = x25519-ladder scalar x1 (fe-copy fe-one) (fe-copy fe-zero) (fe-copy x1) (fe-copy fe-one) 254
     in let inv = fe-invert (fe-copy (final.z2))

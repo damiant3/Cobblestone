@@ -29,6 +29,23 @@ count does.
 
 ## Done
 
+### Update 61 -- explicit diagnostic arm budgets ignored the requested allowance
+
+The 2026-09-17 image rehearsal failed four network-related arms. The same
+image and assertions passed with longer allowances; clockstuck took156.6 seconds
+on a quiet box. Its hardcoded90-second budget ignored -Seconds180 until
+main25820 made Seconds a minimum for all VM arms. Larger arm budgets remain
+larger; default allowances and assertions are unchanged. Rehearse the complete
+image with the measured allowance, then require every arm and the shipping check:
+
+```powershell
+build/boot/diag-arm.ps1 -Seconds 180
+build/check-shipping-images.ps1
+```
+
+The full50-arm retry passed on both beds. A future timeout still requires
+reading the failed arm; the longer allowance does not turn a partial run into proof.
+
 ### Update 60 -- the diag ladder's four network arms disagree under battery load and pass on an idle box
 
 Found at step 5, 2026-09-12 15:44. The 50-arm rehearsal run beside the

@@ -6753,103 +6753,67 @@ green after the record grew a field.
 
 ## The Pbkdf Stored-Record Guards (`codex/test/apps/pbkdf-stored-guard`)
 
-Track D item 19, the `Pbkdf` leg, same ruling. `pbkdf-verify:157` walked both
-hashes to `list-length (result.pbr-hash)`, so the STORED record decided how far
-the read went while the rehash it was compared against was whatever length the
-parameters produced. A stored hash longer than the rehash indexes the rehash
-past its end. Ablated, row 3 dies `!EXC=06` with `R13=0x20` and `R14=0x40`
-against a 32-byte rehash, which is the walk arriving at index 32 of 32 bytes.
+`Pbkdf` implements PBKDF2-HMAC-SHA256 from RFC 8018 section 5.2.
+Parameters are a positive iteration count and output length, bounded by
+the RFC maximum of 32 * (2^32 - 1) bytes. Invalid parameters or non-octet
+password/salt values return an empty hash. Verification refuses invalid
+parameters, malformed stored lengths, non-octet tags and failed derivations.
+No legacy custom-KDF compatibility is promised; Damian confirmed on
+2026-09-17 that no real stored data depends on that algorithm.
 
-**The fault is the smaller half of what that guard is for.** A stored hash
-SHORTER than the rehash never faults; it compares a prefix and agrees. Ablated
-and with row 3 removed so the kill does not mask it, `4-truncated-hash` reports
-`verify=True`: a stored record cut to any prefix of a real hash verifies
-against the right password, and eight bytes is a forgery cost of 2^64 down
-from 2^256. The length equality is checked before the constant-time walk, which
-is the same shape `AesGcm:196` and `EcdsaP256:511` already use.
+The fixture covers right/wrong passwords, malformed lengths, invalid costs
+and octets, short and multi-block tags, and the old [0]/[1] collision pair.
+Sixteen full-output vectors come from .NET PBKDF2-SHA256, including empty
+and binary inputs, 63/64/65/129-byte passwords, 1/2/4096 iterations and
+output lengths through 65 bytes. These are finite controls, not a claim
+that every possible input is covered.
 
-**Row 7 is the discriminator.** A 16-byte tag is a legitimate `pb-hash-length`,
-so a guard that demanded 32 bytes would pass rows 3 and 4 and fail only here.
-The check is rehash-length against stored-length, not either against a constant.
+`vault-crypto-test` exercises the actual 100000-iteration master derivation
+against an independent result, correct/wrong passwords, malformed salts,
+empty records and the existing encryption/decryption controls.
+`VaultCrypto` carries derivation refusal into password verification.
 
-The second guard is `pbkdf-final-block:133`. `count` is `list-length blocks /
-32`, and a `pb-block-count` of zero or less leaves the array empty, so `last`
-is `(0 - 1) * 32` and `pb-slice` reads at -32. Ablated, row 5 dies with
-`R12 = RSI = 0xffffffffffffffe0`. Rows 1 through 4 do not move under it, and
-rows 5 and 6 do not move under the first guard.
-
-**What this does NOT prove, because the census has been wrong in this exact
-way before.** Nothing in production hands `pbkdf-verify` a record it did not
-just compute. `crypto-vectors:81` and `:84` call it, which is what qualifies
-the chapter under the ruling; `apps/secrets` reaches `pbkdf-hash` at
-`VaultCrypto:77` but builds `PbkdfParams` from literals and never rebuilds a
-`PbkdfResult` from a file. The hostile stored record is reachable the moment a
-vault format persists one, and not before. The existing test hashes and
-verifies in the same breath, so the only records the function had ever seen
-were ones it had just produced (L-GAP).
-
-Not seed-affecting: `Pbkdf` is absent from the compiler unit against the same
-`Foreword--Fat16` control, and `crypto-vectors` is byte-identical to its
-sidecar after the change.
-
-Left alone deliberately: `pb-time-cost` and `pb-block-count` are an unbounded
-cost rather than an unbounded read, and clamping either would silently change
-the key derived for any caller already above the clamp. `apps/secrets` is one
-(`pbkdf-iterations` is 100000 against a chapter default of 3), so a clamp there
-is a stored-data break and belongs to whoever owns that format, not to a bounds
-pass. It is recorded in `apps/secrets/secrets-backlog.md`.
+The 2026-09-17 focused proof used depot kernel prefix 6628BFC24E926940;
+main25794 carries the code and fixtures. The independent reader checked
+the diagnostic claims. Dependency hashes and run receipts live under red's
+`build-output/crypto-audit-20260917/pbkdf-final-*`.
+The cost probe observed 296 retained bytes for a 32-byte result at
+1, 4096 and 100000 iterations. The probe measures retained allocation,
+not peak heap. Source inspection gives O(output length) retained heap
+and linear iteration cost for fixed password, salt and output lengths.
+Pbkdf and Hmac are absent from the concatenated compiler unit; no seed
+replacement was required.
 
 ## The ChaCha20Poly1305 Size Guards (`codex/test/apps/chachapoly-size-guard`)
 
-Track D item 19, same leg. RFC 8439 fixes the key at 32 bytes and the nonce at
-12, and nothing below this chapter checked either. **The interesting part is
-that ChaCha20 does not fail on a wrong size. It reinterprets the state.**
+Raw ChaCha20 requires a 32-byte key, 12-byte nonce, octet values and a
+counter in 0..4294967295. A request cannot consume more than the remaining
+64-byte blocks. Invalid raw requests return an empty list. Poly1305
+requires a 32-byte octet key and octet message; malformed requests return
+an empty list and verification requires a 16-byte tag. AEAD validates
+payload/AAD and propagates refusal as cp-valid=False or None.
 
-`chacha-init-state:38` builds the state by CONCATENATION -- four constants, the
-key words, the counter, the nonce words -- and `chacha-words-from-bytes:88`
-takes `list-length bytes / 4`. So a wrong-sized input shifts which words of the
-state are which, and the rounds carry on over whatever lands at indices 0..15.
+The fixture retains valid-nonce separation and round-trip controls, and
+grades short/long raw inputs, malformed octets, helper refusals, empty tags,
+negative/oversized counters, final-counter lengths 64/65 and penultimate
+lengths 128/129. The extreme-counter cases assert lengths, not independently
+known extreme-counter ciphertext.
 
-Three consequences, all measured on the unguarded chapter BEFORE the guard was
-written, and all visible in one ablation run:
+The 2026-09-17 proof for main25798 passes four focused RFC/guard fixtures.
+Sixteen independently generated .NET AEAD cases, lengths 0 through 257,
+check full ciphertext/tag equality, foreign ciphertext decryption and
+changed-tag rejection. Evidence and source hashes are under red's
+`build-output/crypto-audit-20260917/`. An independent reader
+checked the claims. The AEAD counter-1 payload limit requires hundreds of
+gigabytes and was inspected, not executed. No broad adversarial-corpus
+or every-target constant-time claim follows.
 
-| input | what happens | row |
-|---|---|---|
-| 16-byte nonce | four nonce words, 17-word state; the rounds and `chacha-add-states` both stop at 16, so the fourth is dropped and the keystream is **exactly** that of the 12-byte prefix | 5 |
-| 64-byte key | sixteen key words, so indices 0..15 are the constants and the first twelve key words and **the nonce never enters the state at all**; two different nonces give byte-identical ciphertext | 6, 7 |
-| 11-byte nonce | two nonce words, 15-word state, `chacha-qr state 3 7 11 15` reads index 15 and the guest dies (`RDI=0x0f`) | 8, 9 |
-
-Only the third one crashes. The first two are silent, and they are the worse
-pair: a repeated keystream under Poly1305 is exactly what this chapter's own
-opening says destroys it, and the 64-byte-key case repeats the keystream for
-EVERY message under that key regardless of nonce.
-
-**Rows 1 and 2 are the instrument's control and the arm is worthless without
-them.** They are two legitimate nonces, and they must produce different
-ciphertext -- otherwise rows 6 and 7 agreeing would prove nothing about the
-nonce being ignored, only that the probe cannot tell nonces apart. Ablated,
-rows 1 and 2 still differ while 6 and 7 agree, which is the finding.
-
-The guard is one predicate, `cp-params-ok`, refused at both entry points:
-`chacha20poly1305-decrypt` answers `None`, which the chapter already treats as
-the security answer rather than an error path, and
-`chacha20poly1305-encrypt` gains `cp-valid` so a caller can tell a refusal from
-a short message (the same reasoning as `tls-rec-valid`; a refusal with no
-channel is a confident lie). Ablating the encrypt guard moves rows 5 through 8
-and nothing else; ablating the decrypt guard moves only row 9.
-
-Not guarded, and it did not need to be: `poly-tags-equal:221` already checks
-`list-length a /= list-length b` before the constant-time walk, so the tag
-comparison never had the defect `pbkdf-verify` had. Checked rather than assumed.
-
-`Pbkdf` and this chapter are the same shape from opposite ends: there the
-untrusted length decided how far a read went, here the untrusted length decided
-what the bytes MEANT.
-
-Not seed-affecting: absent from the compiler unit against a `Foreword--Fat16`
-control. `codex/test/chacha20poly1305`, the RFC 8439 section 2.8.2 vector, is
-byte-identical after the change, which is what says the guard did not move the
-cipher. No production caller; that vector test is what qualifies the chapter.
+Raw ChaCha20 reserves output and reclaims block scratch. Processing and
+retained output are O(n); a 4096-byte probe retained 1520048 bytes before
+and 33200 after. The probe excludes input construction and measures
+retention, not peak heap or isolated cipher timing. Poly1305 remains
+linear in message size. These chapters are absent from the compiler
+unit, with Foreword--Fat16 as the presence control; no seed changed.
 
 ## The Decimal Scale Guards (`codex/test/apps/decimal-scale-guard`)
 

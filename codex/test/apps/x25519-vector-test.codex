@@ -1,6 +1,8 @@
 Chapter: X25519 Vector Test
   cites Foreword chapter Console
   cites Foreword chapter DiffieHellman
+  cites Encode chapter TlsEndpoint
+  cites Net chapter DtlsEndpoint
 
  X25519 known-answer tests, RFC 7748. Section 5.2 vector 1 pins a
  single scalar multiplication on an arbitrary u-coordinate; section 6.1
@@ -22,18 +24,80 @@ Section: Section 6.1 Diffie-Hellman
 
 Section: Entry
 
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if n <= 0 then acc else zeros (n - 1) (list-push acc 0)
+
+  report : Text, Boolean -> [Console] Nothing
+  report (label) (ok) = print-line-uni (label & "=" & (if ok then "yes" else "no"))
+
+  empty-msg : DtlsMsg = DtlsMsg { dm-type = 2, dm-length = 0, dm-seq = 0, dm-frag-offset = 0, dm-frag-length = 0, dm-body = [] }
+
+  tls-refused : Boolean -> Boolean
+  tls-refused (server) =
+    let ep = if server then tls-ep-server-new alice-priv (zeros 32 []) [] [] [] else tls-ep-client-new alice-priv (zeros 32 []) [] [] []
+    in let result = if server then tep-server-flight ep [] (zeros 32 []) else tep-client-derive ep [] (zeros 32 [])
+    in let failed = result.tes-ep
+    in let alert = list-at (result.tes-out) 0
+    in let restarted = tls-ep-hello failed
+    in let sent = tls-ep-send-app failed [1]
+    in let body = if server then dtls-client-hello-body (zeros 32 []) [] (x25519-public-key bob-priv) [] else dtls-server-hello-body (zeros 32 []) [] (x25519-public-key bob-priv)
+    in let message-type = if server then 1 else 2
+    in let retry = tls-ep-recv failed (tls-encode-record 22 (tls13-msg-transcript message-type body))
+    in failed.tep-phase < 0 & failed.tep-done == False & list-length (failed.tep-hs-secret) == 0
+      & list-length (failed.tep-c-hs) == 0 & list-length (failed.tep-s-hs) == 0
+      & list-at alert 0 == 21 & list-at alert 5 == 2 & list-at alert 6 == 47
+      & list-length (sent.tes-out) == 0 & list-length (restarted.tes-out) == 0 & retry.tes-ep.tep-phase < 0
+      & list-length (retry.tes-out) == 0 & list-length (retry.tes-ep.tep-hs-secret) == 0
+
+  dtls-refused : Boolean -> Boolean
+  dtls-refused (server) =
+    let ep = dtls-ep-new server alice-priv (zeros 32 []) [] []
+    in let result = if server then dtls-ep-server-flight ep empty-msg (zeros 32 []) [] [] else dtls-ep-client-keys ep empty-msg (zeros 32 [])
+    in let failed = result.es-ep
+    in let alert = list-at (result.es-out) 0
+    in let restarted = dtls-ep-client failed 0
+    in let sent = dtls-ep-send-app failed [1]
+    in let body = if server then dtls-client-hello-body (zeros 32 []) [] (x25519-public-key bob-priv) [] else dtls-server-hello-body (zeros 32 []) [] (x25519-public-key bob-priv)
+    in let message-type = if server then 1 else 2
+    in let retry = dtls-ep-recv failed (dtls-plain-encode 22 0 0 (dtls-msg-encode message-type 0 body)) 0
+    in dtls-ep-failed failed & failed.ep-done == False & list-length (failed.ep-hs-secret) == 0
+      & list-length (failed.ep-c-hs) == 0 & list-length (failed.ep-s-hs) == 0
+      & list-at alert 0 == 21 & list-at alert 13 == 2 & list-at alert 14 == 47
+      & list-length (sent.es-out) == 0 & list-length (restarted.es-out) == 0 & dtls-ep-failed (retry.es-ep)
+      & list-length (retry.es-out) == 0 & list-length (retry.es-ep.ep-hs-secret) == 0
+
   opening : [Console] Nothing = act
     let v1 = x25519-shared-secret v1-scalar v1-u
     in let alice-pub = x25519-public-key alice-priv
     in let bob-pub = x25519-public-key bob-priv
     in let shared-a = x25519-shared-secret alice-priv bob-pub
     in let shared-b = x25519-shared-secret bob-priv alice-pub
+    in let scalar-copy = alice-priv
+    in let scalar-original = for b in scalar-copy -> b
+    in let derived = x25519-public-key scalar-copy
+    in let masked-u = list-set-at (for b in v1-u -> b) 31 (bit-or (list-at v1-u 31) 128)
     in act
       print-line-uni ("v1=" & dh-format-key v1)
       print-line-uni ("alice-pub=" & dh-format-key alice-pub)
       print-line-uni ("bob-pub=" & dh-format-key bob-pub)
       print-line-uni ("shared-a=" & dh-format-key shared-a)
       print-line-uni ("shared-b=" & dh-format-key shared-b)
+      report "scalar-preserved" (list-length derived == 32 & bytes-list-equal scalar-copy scalar-original 0 32)
+      report "short-scalar" (list-length (x25519-public-key (zeros 31 [])) == 0)
+      report "long-scalar" (list-length (x25519-public-key (alice-priv & [0])) == 0)
+      report "wide-scalar" (list-length (x25519-public-key ([256] & zeros 31 [])) == 0)
+      report "negative-scalar" (list-length (x25519-public-key ([0 - 1] & zeros 31 [])) == 0)
+      report "short-peer" (list-length (x25519-shared-secret alice-priv (zeros 31 [])) == 0)
+      report "long-peer" (list-length (x25519-shared-secret alice-priv (bob-pub & [0])) == 0)
+      report "wide-peer" (list-length (x25519-shared-secret alice-priv ([256] & zeros 31 [])) == 0)
+      report "zero-peer" (list-length (x25519-shared-secret alice-priv (zeros 32 [])) == 0)
+      report "one-peer" (list-length (x25519-shared-secret alice-priv ([1] & zeros 31 [])) == 0)
+      report "top-bit-masked" (bytes-list-equal (x25519-shared-secret v1-scalar masked-u) v1 0 32)
+      report "basic-refusal" ((tls-complete-handshake (tls-init-client alice-priv) (zeros 32 [])).tls-connected == False)
+      report "tls-client-abort" (tls-refused False)
+      report "tls-server-abort" (tls-refused True)
+      report "dtls-client-abort" (dtls-refused False)
+      report "dtls-server-abort" (dtls-refused True)
     end
   end
 

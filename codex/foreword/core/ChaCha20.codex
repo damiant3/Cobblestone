@@ -31,6 +31,11 @@ Section: Quarter Round
 Section: Block Function
   chacha-block : List Integer, Integer, List Integer -> List Integer
   chacha-block (key) (counter) (nonce) =
+    if chacha-params-ok key nonce counter == False then []
+    else chacha-block-valid key counter nonce
+
+  chacha-block-valid : List Integer, Integer, List Integer -> List Integer
+  chacha-block-valid (key) (counter) (nonce) =
     let worked = chacha-double-round (chacha-init-state key counter nonce) 0
     in chacha-add-states (chacha-init-state key counter nonce) worked
 
@@ -65,16 +70,37 @@ Section: Block Function
 Section: Encryption
   chacha20-encrypt : List Integer, List Integer, List Integer, Integer -> List Integer
   chacha20-encrypt (key-bytes) (nonce-bytes) (plaintext) (initial-counter) =
-    chacha-enc-loop key-bytes nonce-bytes plaintext initial-counter 0 (list-length plaintext) []
+    if chacha-input-ok key-bytes nonce-bytes plaintext initial-counter == False then []
+    else chacha-enc-loop key-bytes nonce-bytes plaintext initial-counter 0 (list-length plaintext) (__list-with-capacity (list-length plaintext))
+
+  chacha-params-ok : List Integer, List Integer, Integer -> Boolean
+  chacha-params-ok (key) (nonce) (counter) =
+    list-length key == 32 & list-length nonce == 12 & counter >= 0 & counter <= 4294967295
+      & chacha-octets-ok key 0 & chacha-octets-ok nonce 0
+
+  chacha-input-ok : List Integer, List Integer, List Integer, Integer -> Boolean
+  chacha-input-ok (key) (nonce) (input) (counter) =
+    if chacha-params-ok key nonce counter == False then False
+    else list-length input <= (4294967296 - counter) * 64 & chacha-octets-ok input 0
+
+  chacha-octets-ok : List Integer, Integer -> Boolean
+  chacha-octets-ok (bytes) (i) =
+    if i >= list-length bytes then True
+    else if list-at bytes i < 0 | list-at bytes i > 255 then False
+    else chacha-octets-ok bytes (i + 1)
+
+ The output capacity precedes each heap mark; per-block state does not escape.
 
   chacha-enc-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
   chacha-enc-loop (key) (nonce) (pt) (counter) (pos) (n) (acc) =
     if pos >= n then acc
-    else let block = chacha-block key counter nonce
+    else let mark = __heap-save
+    in let block = chacha-block-valid key counter nonce
     in let keystream = chacha-words-to-bytes block
     in let chunk-len = chacha-min (n - pos) 64
-    in let encrypted = chacha-xor-chunk pt keystream pos chunk-len 0 []
-    in chacha-enc-loop key nonce pt (counter + 1) (pos + 64) n (acc & encrypted)
+    in let encrypted = chacha-xor-chunk pt keystream pos chunk-len 0 acc
+    in let restored = __heap-restore mark
+    in chacha-enc-loop key nonce pt (counter + 1) (pos + chunk-len) n encrypted
 
   chacha-xor-chunk : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
   chacha-xor-chunk (pt) (ks) (pt-off) (len) (i) (acc) =

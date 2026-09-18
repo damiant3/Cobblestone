@@ -2116,6 +2116,25 @@ Get-ChildItem codex\plugs -Directory | ForEach-Object {
 }                                                # all of them, about 150 s
 ```
 
+### Zig deck telemetry
+
+Linux programs emitted by the Zig plug keep deck telemetry disabled by
+default. To request reports, set `CODEX_DECK_REPORT=1` and open file
+descriptor 3 before launching the program:
+
+```sh
+CODEX_DECK_REPORT=1 ./program 3>deck.log
+```
+
+The first deck arming samples the setting and checks descriptor 3 once.
+Only the exact value `1` enables reporting. A closed descriptor disables
+reporting; an inherited open descriptor without the setting receives no
+telemetry. Keep descriptor 3 assigned to the telemetry destination for the
+process lifetime. Windows emits no deck reports. A report requires at least
+1 MiB more tracked peak use than the previous report. Smaller workloads can
+leave the log empty. Reports retain the `used`, `reserved`, `headroom`, `base`,
+`peak`, and `best` fields; stdout and stderr retain program output.
+
 ### Does every plug have an arm for the builtins that reach it
 
 ```powershell

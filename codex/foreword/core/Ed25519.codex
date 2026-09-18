@@ -1,18 +1,13 @@
 Chapter: Ed25519
   cites Foreword chapter Sha512
 
- A Ge is a record containing x, y, z, and t coordinates in extended twisted Edwards form, each as a 16-limb field element. The t coordinate satisfies T = X*Y/Z.
-
- Ed25519 digital signatures operate over Curve25519 in twisted Edwards form.
- Field elements use a 16-limb signed representation in GF(2^255 - 19).
-
  Constant-time discipline: all secret-dependent paths use branchless selection
  (ct-select, fe-ct-select, ge-cswap). Scalar multiplication uses a Montgomery
  ladder. Comparisons and zero-checks accumulate over all bytes. Carry
  normalization uses bit-shr (SAR, arithmetic right shift -- no IDIV). Borrow
  and sign flags use bit-shru (SHR, logical right shift) to extract bit 63 as
  0 or 1. Codex Integer is a 64-bit machine word; add, sub, mul, and bitwise
- ops map to constant-time x86 instructions. Safe for network-facing signing.
+ ops map to constant-time x86 instructions.
 
  We say:
 
@@ -435,7 +430,9 @@ Section: Ed25519 Key Generation
 
   ed25519-public-key : List Integer -> List Integer
   ed25519-public-key (private-key) =
-    let h = sha512-words-to-byte-list (sha512 private-key)
+    if list-length private-key /= 32 then []
+    else if ed-octets-valid private-key 0 32 == False then []
+    else let h = sha512-words-to-byte-list (sha512 private-key)
     in let clamped = ed25519-clamp (ed-list-take h 32)
     in ge-to-bytes (ge-scalar-mul clamped ge-base)
 
@@ -535,9 +532,17 @@ Section: Ed25519 Signing
 
   ed25519-sign : List Integer, List Integer, List Integer -> List Integer
   ed25519-sign (private-key) (public-key) (msg) =
-    let h = sha512-words-to-byte-list (sha512 private-key)
+    if list-length private-key /= 32 | list-length public-key /= 32 then []
+    else if ed-octets-valid private-key 0 32 == False | ed-octets-valid public-key 0 32 == False then []
+    else if ed-octets-valid msg 0 (list-length msg) == False then []
+    else let h = sha512-words-to-byte-list (sha512 private-key)
     in let a = ed25519-clamp (ed-list-take h 32)
-    in let prefix = ed-list-drop h 32
+    in let mark = __heap-save
+    in let derived-public = ge-to-bytes (ge-scalar-mul a ge-base)
+    in let key-matches = bytes-list-equal derived-public public-key 0 32
+    in let restored = __heap-restore mark
+    in if key-matches == False then []
+    else let prefix = ed-list-drop h 32
     in let r-hash = sha512-words-to-byte-list (sha512 (prefix & msg))
     in let r = sc-reduce r-hash
     in let big-r = ge-to-bytes (ge-scalar-mul r ge-base)
@@ -561,13 +566,58 @@ Section: Ed25519 Verification
 
   ed25519-verify : List Integer, List Integer, List Integer -> Boolean
   ed25519-verify (public-key) (msg) (sig) =
-    let r-bytes = ed-list-take sig 32
+    if list-length public-key /= 32 then False
+    else if list-length sig /= 64 then False
+    else if ed-octets-valid public-key 0 32 == False then False
+    else if ed-octets-valid sig 0 64 == False then False
+    else if ed-octets-valid msg 0 (list-length msg) == False then False
+    else if ed-scalar-below-order sig ed-L 31 == False then False
+    else let r-bytes = ed-list-take sig 32
     in let s-bytes = ed-list-drop sig 32
     in let big-a = ge-from-bytes public-key
-    in let k-hash = sha512-words-to-byte-list (sha512 (r-bytes & public-key & msg))
+    in if ed-decoded-point-valid public-key big-a == False then False
+    else let r-pt = ge-from-bytes r-bytes
+    in if ed-decoded-point-valid r-bytes r-pt == False then False
+    else ed-verify-equation public-key msg r-bytes s-bytes big-a r-pt
+
+  ed-octets-valid : List Integer, Integer, Integer -> Boolean
+  ed-octets-valid (bytes) (i) (n) =
+    if i >= n then True
+    else let b = list-at bytes i
+    in if b < 0 then False
+    else if b > 255 then False
+    else ed-octets-valid bytes (i + 1) n
+
+  ed-scalar-below-order : List Integer, List Integer, Integer -> Boolean
+  ed-scalar-below-order (sig) (order) (i) =
+    if i < 0 then False
+    else let s = list-at sig (32 + i)
+    in let l = list-at order i
+    in if s < l then True
+    else if s > l then False
+    else ed-scalar-below-order sig order (i - 1)
+
+ RFC 8032 section 5.1.3: canonical y, a valid square root, and no sign bit
+ for x = 0. The decoded point has affine z = 1.
+
+  ed-decoded-point-valid : List Integer, Ge -> Boolean
+  ed-decoded-point-valid (encoded) (p) =
+    let x-bytes = fe-to-bytes (p.x)
+    in let y-bytes = fe-to-bytes (p.y)
+    in let sign = bit-shl (bit-and (list-at x-bytes 0) 1) 7
+    in let canonical = ed-list-set-at y-bytes 31 (bit-or (list-at y-bytes 31) sign)
+    in if bytes-list-equal encoded canonical 0 32 == False then False
+    else let x2 = fe-sq (p.x)
+    in let y2 = fe-sq (p.y)
+    in let rhs = fe-add (fe-mul fe-d (fe-mul x2 y2)) fe-one
+    in let lhs = fe-sub y2 x2
+    in fe-is-zero (fe-to-bytes (fe-sub lhs rhs))
+
+  ed-verify-equation : List Integer, List Integer, List Integer, List Integer, Ge, Ge -> Boolean
+  ed-verify-equation (public-key) (msg) (r-bytes) (s-bytes) (big-a) (r-pt) =
+    let k-hash = sha512-words-to-byte-list (sha512 (r-bytes & public-key & msg))
     in let k = sc-reduce k-hash
     in let sb = ge-scalar-mul s-bytes ge-base
-    in let r-pt = ge-from-bytes r-bytes
     in let ka = ge-scalar-mul k big-a
     in let rka = ge-add r-pt ka
     in let sb-bytes = ge-to-bytes sb

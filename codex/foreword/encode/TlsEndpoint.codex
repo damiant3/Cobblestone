@@ -125,11 +125,19 @@ Section: Record And Message Helpers
   tep-idle : TlsEp -> TlsEpStep
   tep-idle (ep) = TlsEpStep { tes-ep = ep, tes-out = [] }
 
+  tep-abort-key-share : TlsEp -> TlsEpStep
+  tep-abort-key-share (ep) =
+    let e1 = __record-set (__record-set (__record-set ep "tep-phase" (0 - 1)) "tep-done" False) "tep-auth-done" False
+    in let e2 = __record-set (__record-set (__record-set e1 "tep-hs-secret" []) "tep-c-hs" []) "tep-s-hs" []
+    in let e3 = __record-set (__record-set e2 "tep-c-ap" []) "tep-s-ap" []
+    in TlsEpStep { tes-ep = e3, tes-out = [tls-encode-record 21 [2, 47]] }
+
 Section: Client Hello
 
   tls-ep-hello : TlsEp -> TlsEpStep
   tls-ep-hello (ep) =
-    let body = dtls-client-hello-body (tep-rand32 ep) [] (ep.tep-pub) []
+    if ep.tep-phase < 0 then tep-idle ep
+    else let body = dtls-client-hello-body (tep-rand32 ep) [] (ep.tep-pub) []
     in let msg = tls13-msg-transcript dtls-hs-client-hello body
     in let ep2 = __record-set (__record-set ep "tep-transcript" ((ep.tep-transcript) & msg)) "tep-phase" 1
     in TlsEpStep { tes-ep = ep2, tes-out = [tls-encode-record tls-content-handshake msg] }
@@ -138,7 +146,8 @@ Section: Receive Dispatch
 
   tls-ep-recv : TlsEp, List Integer -> TlsEpStep
   tls-ep-recv (ep) (rec) =
-    if list-length rec < 5 then tep-idle ep
+    if ep.tep-phase < 0 then tep-idle ep
+    else if list-length rec < 5 then tep-idle ep
     else let ct = list-at rec 0
     in if ct == tls-content-change-cipher then tep-idle ep
     else if ep.tep-server then tep-server-recv ep rec ct
@@ -165,8 +174,10 @@ Section: Client Receive
 
   tep-client-derive : TlsEp, List Integer, List Integer -> TlsEpStep
   tep-client-derive (ep) (sh-body) (peer) =
-    let tr = (ep.tep-transcript) & tls13-msg-transcript dtls-hs-server-hello sh-body
-    in let hs = tls13-handshake-secret (x25519-shared-secret (ep.tep-priv) peer)
+    let shared = x25519-shared-secret (ep.tep-priv) peer
+    in if list-length shared /= 32 then tep-abort-key-share ep
+    else let tr = (ep.tep-transcript) & tls13-msg-transcript dtls-hs-server-hello sh-body
+    in let hs = tls13-handshake-secret shared
     in let th = tls13-transcript-hash tr
     in let ep2 = tep-store-hs ep tr hs (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th)
     in TlsEpStep { tes-ep = __record-set (__record-set ep2 "tep-phase" 2) "tep-read-seq" 0, tes-out = [] }
@@ -365,10 +376,12 @@ Section: Server Receive
 
   tep-server-flight : TlsEp, List Integer, List Integer -> TlsEpStep
   tep-server-flight (ep) (ch-body) (peer) =
-    let tr0 = (ep.tep-transcript) & tls13-msg-transcript dtls-hs-client-hello ch-body
+    let shared = x25519-shared-secret (ep.tep-priv) peer
+    in if list-length shared /= 32 then tep-abort-key-share ep
+    else let tr0 = (ep.tep-transcript) & tls13-msg-transcript dtls-hs-client-hello ch-body
     in let sh-body = dtls-server-hello-body (tep-rand32 ep) (dtls-ch-session-id ch-body) (ep.tep-pub)
     in let tr1 = tr0 & tls13-msg-transcript dtls-hs-server-hello sh-body
-    in let hs = tls13-handshake-secret (x25519-shared-secret (ep.tep-priv) peer)
+    in let hs = tls13-handshake-secret shared
     in let th1 = tls13-transcript-hash tr1
     in let c-hs = tls13-client-hs-traffic hs th1
     in let s-hs = tls13-server-hs-traffic hs th1
@@ -428,7 +441,8 @@ Section: Application Data
 
   tls-ep-send-app : TlsEp, List Integer -> TlsEpStep
   tls-ep-send-app (ep) (data) =
-    let sec = if ep.tep-server then ep.tep-s-ap else ep.tep-c-ap
+    if ep.tep-done == False then tep-idle ep
+    else let sec = if ep.tep-server then ep.tep-s-ap else ep.tep-c-ap
     in let rec = tep-enc sec (ep.tep-app-write-seq) tls-content-application data
     in TlsEpStep { tes-ep = __record-set ep "tep-app-write-seq" (ep.tep-app-write-seq + 1), tes-out = [rec] }
 

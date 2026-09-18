@@ -161,6 +161,24 @@ That is the form behind `Maybe`, `Result` and `List`. Use it as `Box
 Integer`, exactly as the table's `List Integer` and `Maybe Text` are uses
 of types that are already parametric.
 
+An empty list or a constructor without a payload can leave a use-site type
+argument unconstrained. After checking, final IR type resolution gives those
+lowered uses the ordinary `Integer` representation for unconstrained internal
+arguments. Generic type-declaration metadata remains unchanged. Variables
+present in the enclosing definition's signature and variables under an explicit
+`ForAllTy` binder remain generic. For example, `make-empty : Integer -> List a`
+remains polymorphic, but `list-length (make-empty 0)` can use `List Integer`
+when no surrounding constraint chooses an element type. An explicitly required
+`List Text` still chooses Text. The same rule closes the unused argument of a
+polymorphic nullary constructor. The choice belongs to the compiler; the Zig
+plug continues to refuse unbound variables. Type errors and declared-variable
+rigidity are checked before finalization.
+
+The regression fixtures are `unconstrained-empty-list`,
+`unconstrained-nullary-sum`, and `resolve-type-scope` under `codex/test/`;
+`errors/declared-var-body-decides` pins the rejection of a generic signature
+whose body chooses a concrete type.
+
 ### An uppercase type name must exist, and CDX3008 says so
 
 The lowercase rule above has a consequence at the other case. **An

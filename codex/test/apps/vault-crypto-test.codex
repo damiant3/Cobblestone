@@ -9,9 +9,6 @@ Chapter: VaultCryptoTest
 
 Section: Fixtures
 
- A master key built by hand rather than through derive-master-key,
- which runs 100000 PBKDF iterations and would dominate the test.
-
   test-key-bytes : List Integer
   test-key-bytes = hkdf-words-to-bytes (sha256 (text-to-bytes "vault-crypto-test-key"))
 
@@ -131,8 +128,20 @@ Section: Payload Round Trip
 
 Section: Entry
 
+  vct-master-derived : MasterKey
+  vct-master-derived = derive-master-key "" [1, 2, 3, 4, 5, 6, 7, 8]
+
+  vct-master-expected : List Integer
+  vct-master-expected = [72, 65, 1, 233, 114, 48, 100, 106, 181, 211, 131, 147, 135, 188, 55, 231, 24, 45, 144, 155, 71, 147, 225, 247, 111, 107, 46, 212, 229, 5, 197, 90]
+
   opening : [Console] Nothing = act
     print-line-uni "vault-crypto"
+    vct-report "master-pbkdf2-oracle" (bytes-equal (vct-master-derived.mk-key) vct-master-expected)
+    vct-report "master-right-password" (verify-master-password "" vct-master-derived)
+    vct-report "master-wrong-password" (verify-master-password "wrong" vct-master-derived == False)
+    vct-report "master-invalid-salt" (verify-master-password "wrong" (derive-master-key "right" [256]) == False)
+    vct-report "master-negative-salt" (verify-master-password "right" (derive-master-key "right" [0 - 1]) == False)
+    vct-report "master-empty-record" (verify-master-password "" (MasterKey { mk-key = [], mk-salt = [], mk-hash = [] }) == False)
     vct-report "derivation-matches-hkdf" vct-derivation-matches
     vct-report "secrets-separated" vct-secrets-are-separated
     vct-report "nonce-length" vct-nonce-length-right

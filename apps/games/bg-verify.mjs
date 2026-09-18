@@ -45,7 +45,11 @@ console.log(`bg-verify ${wasmPath}`);
 
 // -- The opening position -------------------------------------------------
 const start = e.bg_new();
-const OPEN = [2, 0, 0, 0, 0, -5, 0, -3, 0, 0, 0, 5, -5, 0, 0, 0, 3, 0, 5, 0, 0, 0, 0, -2];
+// White is positive and bears off below point 0, so White's 24-point is index
+// 23 (two checkers) and Black's mirror sits at index 0; this is the convention
+// Backgammon.codex documents beside bg-start-val, and the arm graded the old
+// inverted signs until 2026-09-12.
+const OPEN = [-2, 0, 0, 0, 0, 5, 0, 3, 0, 0, 0, -5, 5, 0, 0, 0, -3, 0, -5, 0, 0, 0, 0, 2];
 ok('the opening is the standard backgammon setup',
    JSON.stringify(points(start)) === JSON.stringify(OPEN), JSON.stringify(points(start)));
 ok('each side starts with fifteen checkers',

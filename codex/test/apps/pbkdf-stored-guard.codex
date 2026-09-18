@@ -1,86 +1,62 @@
 Chapter: PbkdfStoredGuard
   cites Foreword chapter Pbkdf
 
- Track D item 19, the Pbkdf leg. pbkdf-verify walked both hashes to the length
- of the STORED one, so a stored record is what decides how far the read goes.
+  report : Text, Boolean -> [Console] Nothing
+  report (label) (ok) = print-line-uni (label & "=" & (if ok then "yes" else "no"))
 
- Guarded because something runs it (red's ruling, extended to this leg
- 2026-08-16): crypto-vectors:81 and :84 call pbkdf-verify. Production does not
- today. apps/secrets reaches pbkdf-hash from VaultCrypto:77 but builds its
- parameters as literals and never rebuilds a PbkdfResult from a file, so the
- hostile record below is not reachable through the vault as it stands.
+  params : Integer, Integer -> PbkdfParams
+  params (iterations) (length) = PbkdfParams { pb-iterations = iterations, pb-hash-length = length }
 
- The existing test hashes a record and verifies it in the same breath, so the
- only records pbkdf-verify had ever seen were ones it had just produced itself
- (L-GAP).
+  password : List Integer = [112, 97, 115, 115, 119, 111, 114, 100]
+  salt : List Integer = [115, 97, 108, 116]
+  genuine : PbkdfResult = pbkdf-hash password salt (params 2 32)
 
- Row 4 is why the guard is not only about the fault. Eight bytes of a real
- hash compared to eight bytes of a real rehash agree, so a stored record
- truncated to any prefix verified TRUE against the right password.
+  refused : Integer, Integer -> Boolean
+  refused (iterations) (length) =
+    let stored = pbkdf-hash password salt (params iterations length)
+    in list-length (stored.pbr-hash) == 0 & pbkdf-verify password stored == False & pbkdf-verify [1] stored == False
 
- Row 7 is the discriminator. A 16-byte tag is a legitimate parameter choice,
- so a guard that demanded 32 bytes would show up there and nowhere else.
+  value-refused : List Integer, List Integer -> Boolean
+  value-refused (pw) (s) =
+    let stored = pbkdf-hash pw s (params 2 32)
+    in list-length (stored.pbr-hash) == 0 & pbkdf-verify pw stored == False
 
-Section: Helpers
-
-  show-bool : Boolean -> Text
-  show-bool (b) = if b then "True" else "False"
-
-  row : Text, List Integer, PbkdfResult -> Text
-  row (label) (password) (stored) =
-    label & " verify=" & show-bool (pbkdf-verify password stored) & " stored-len=" & show (list-length (stored.pbr-hash))
-
-Section: Parameters
-
- Eight blocks and one pass, not the 4096 and 3 of the defaults: this arm is
- about lengths and offsets, and the default parameters cost seconds per row.
-
-  cheap : PbkdfParams = PbkdfParams { pb-time-cost = 1, pb-block-count = 8, pb-hash-length = 32 }
-
-  short-tag : PbkdfParams = PbkdfParams { pb-time-cost = 1, pb-block-count = 8, pb-hash-length = 16 }
-
- A block count of zero leaves the block array empty, and the last block then
- sits at offset (0 - 1) * 32.
-
-  zero-blocks : PbkdfParams = PbkdfParams { pb-time-cost = 1, pb-block-count = 0, pb-hash-length = 32 }
-
-  negative-blocks : PbkdfParams = PbkdfParams { pb-time-cost = 1, pb-block-count = 0 - 1, pb-hash-length = 32 }
-
-Section: Records
-
-  pw : List Integer = [112, 97, 115, 115]
-
-  wrong : List Integer = [119, 114, 111, 110, 103]
-
-  salt : List Integer = [1, 2, 3, 4, 5, 6, 7, 8]
-
-  genuine : PbkdfResult = pbkdf-hash pw salt cheap
-
- Sixty-four bytes where the rehash gives thirty-two. Unguarded, the walk
- indexes the rehash at 32 and the guest dies.
-
-  doubled : PbkdfResult = PbkdfResult {
-    pbr-hash = (genuine.pbr-hash) & (genuine.pbr-hash),
-    pbr-salt = salt,
-    pbr-params = cheap
-  }
-
-  truncated : PbkdfResult = PbkdfResult {
-    pbr-hash = pb-take (genuine.pbr-hash) 8 0 [],
-    pbr-salt = salt,
-    pbr-params = cheap
-  }
-
-Section: Body
+  dump : List Integer, Integer, Text -> Text
+  dump (xs) (i) (acc) = if i >= list-length xs then acc else dump xs (i + 1) (acc & " " & show (list-at xs i))
 
   opening : [Console] Nothing = act
-    print-line-uni (row "1-right-password" pw genuine)
-    print-line-uni (row "2-wrong-password" wrong genuine)
-    print-line-uni (row "3-doubled-hash" pw doubled)
-    print-line-uni (row "4-truncated-hash" pw truncated)
-    print-line-uni (row "5-zero-blocks" pw (pbkdf-hash pw salt zero-blocks))
-    print-line-uni (row "6-negative-blocks" pw (pbkdf-hash pw salt negative-blocks))
-    print-line-uni (row "7-short-tag" pw (pbkdf-hash pw salt short-tag))
+    report "right-password" (pbkdf-verify password genuine)
+    report "wrong-password-refused" (pbkdf-verify [1] genuine == False)
+    report "doubled-refused" (pbkdf-verify password (PbkdfResult { pbr-hash = (genuine.pbr-hash) & (genuine.pbr-hash), pbr-salt = salt, pbr-params = params 2 32 }) == False)
+    report "truncated-refused" (pbkdf-verify password (PbkdfResult { pbr-hash = [1], pbr-salt = salt, pbr-params = params 2 32 }) == False)
+    report "zero-iterations" (refused 0 32)
+    report "negative-iterations" (refused (0 - 1) 32)
+    report "zero-length" (refused 2 0)
+    report "negative-length" (refused 2 (0 - 1))
+    report "over-rfc-length" (refused 2 137438953441)
+    report "short-tag" (pbkdf-verify password (pbkdf-hash password salt (params 2 16)))
+    report "long-tag" (pbkdf-verify password (pbkdf-hash password salt (params 2 65)))
+    report "negative-password-byte" (value-refused [0 - 1] salt)
+    report "wide-password-byte" (value-refused [256] salt)
+    report "negative-salt-byte" (value-refused password [0 - 1])
+    report "wide-salt-byte" (value-refused password [256])
+    report "old-collision-refused" (pbkdf-verify [1] (pbkdf-hash [0] [1, 2, 3, 4, 5, 6, 7, 8] (params 1 32)) == False)
+    print-line-uni ("case0=" & dump ((pbkdf-hash [] [] (PbkdfParams { pb-iterations = 1, pb-hash-length = 32 })).pbr-hash) 0 "")
+    print-line-uni ("case1=" & dump ((pbkdf-hash [112, 97, 115, 115, 119, 111, 114, 100] [115, 97, 108, 116] (PbkdfParams { pb-iterations = 1, pb-hash-length = 32 })).pbr-hash) 0 "")
+    print-line-uni ("case2=" & dump ((pbkdf-hash [112, 97, 115, 115, 119, 111, 114, 100] [115, 97, 108, 116] (PbkdfParams { pb-iterations = 2, pb-hash-length = 32 })).pbr-hash) 0 "")
+    print-line-uni ("case3=" & dump ((pbkdf-hash [112, 97, 115, 115, 119, 111, 114, 100] [115, 97, 108, 116] (PbkdfParams { pb-iterations = 4096, pb-hash-length = 32 })).pbr-hash) 0 "")
+    print-line-uni ("case4=" & dump ((pbkdf-hash [0, 1, 0, 255] [0, 255, 0] (PbkdfParams { pb-iterations = 3, pb-hash-length = 65 })).pbr-hash) 0 "")
+    print-line-uni ("case5=" & dump ((pbkdf-hash [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55] (PbkdfParams { pb-iterations = 2, pb-hash-length = 33 })).pbr-hash) 0 "")
+    print-line-uni ("case6=" & dump ((pbkdf-hash [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55] (PbkdfParams { pb-iterations = 2, pb-hash-length = 33 })).pbr-hash) 0 "")
+    print-line-uni ("case7=" & dump ((pbkdf-hash [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55] (PbkdfParams { pb-iterations = 2, pb-hash-length = 33 })).pbr-hash) 0 "")
+    print-line-uni ("case8=" & dump ((pbkdf-hash [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55] (PbkdfParams { pb-iterations = 2, pb-hash-length = 33 })).pbr-hash) 0 "")
+    print-line-uni ("case9=" & dump ((pbkdf-hash [0, 1, 2, 3] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] (PbkdfParams { pb-iterations = 3, pb-hash-length = 1 })).pbr-hash) 0 "")
+    print-line-uni ("case10=" & dump ((pbkdf-hash [0, 1, 2, 3] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] (PbkdfParams { pb-iterations = 3, pb-hash-length = 16 })).pbr-hash) 0 "")
+    print-line-uni ("case11=" & dump ((pbkdf-hash [0, 1, 2, 3] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] (PbkdfParams { pb-iterations = 3, pb-hash-length = 31 })).pbr-hash) 0 "")
+    print-line-uni ("case12=" & dump ((pbkdf-hash [0, 1, 2, 3] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] (PbkdfParams { pb-iterations = 3, pb-hash-length = 32 })).pbr-hash) 0 "")
+    print-line-uni ("case13=" & dump ((pbkdf-hash [0, 1, 2, 3] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] (PbkdfParams { pb-iterations = 3, pb-hash-length = 33 })).pbr-hash) 0 "")
+    print-line-uni ("case14=" & dump ((pbkdf-hash [0, 1, 2, 3] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] (PbkdfParams { pb-iterations = 3, pb-hash-length = 64 })).pbr-hash) 0 "")
+    print-line-uni ("case15=" & dump ((pbkdf-hash [0, 1, 2, 3] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64] (PbkdfParams { pb-iterations = 3, pb-hash-length = 65 })).pbr-hash) 0 "")
   end
 
 Page 1

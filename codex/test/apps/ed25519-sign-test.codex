@@ -20,6 +20,39 @@ Section: Vectors
 
 Section: Entry
 
+  reject : Text, List Integer, List Integer -> [Console] Nothing
+  reject (label) (key) (signature) = act
+    print-line-uni (label & "=" & (if ed25519-verify key [] signature then "fail" else "pass"))
+  end
+
+  prefix : List Integer, Integer -> List Integer
+  prefix (xs) (n) = prefix-loop xs n 0 []
+
+  prefix-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  prefix-loop (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else prefix-loop xs n (i + 1) (list-push acc (list-at xs i))
+
+  add-order : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  add-order (signature) (order) (i) (carry) (out) =
+    if i >= 32 then out
+    else let value = list-at signature (32 + i) + list-at order i + carry
+    in add-order signature order (i + 1) (value / 256) (list-set-at out (32 + i) (bit-and value 255))
+
+  noncanonical-one : List Integer = [238, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 127]
+
+  signed-zero : List Integer = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128]
+
+  not-on-curve : List Integer = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+ Wycheproof Ed25519 tc151 recomputes S for the signed-zero R encoding.
+
+  signed-zero-signature : List Integer = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 200, 3, 238, 31, 35, 66, 170, 150, 255, 105, 138, 57, 61, 26, 181, 230, 111, 62, 218, 16, 29, 109, 18, 11, 57, 76, 63, 211, 44, 17, 125, 10]
+
   opening : [Console] Nothing = act
     let pk1 = ed25519-public-key t1-sk
     in let sig1 = ed25519-sign t1-sk pk1 []
@@ -27,6 +60,7 @@ Section: Entry
     in let sig2 = ed25519-sign t2-sk pk2 [114]
     in let pk3 = ed25519-public-key t3-sk
     in let sig3 = ed25519-sign t3-sk pk3 [175, 130]
+    in let zero-sig = ed25519-sign t1-sk pk1 [0]
     in let v-good = if ed25519-verify pk1 [] sig1 then "verify-good=pass" else "verify-good=fail"
     in let v-wrong-msg = if ed25519-verify pk1 [114] sig1 then "verify-wrong-msg=fail" else "verify-wrong-msg=pass"
     in let v-wrong-key = if ed25519-verify pk2 [] sig1 then "verify-wrong-key=fail" else "verify-wrong-key=pass"
@@ -35,8 +69,42 @@ Section: Entry
       print-line-uni (bytes-to-hex sig2)
       print-line-uni (bytes-to-hex sig3)
       print-line-uni v-good
+      print-line-uni (if ed25519-verify pk2 [114] sig2 then "verify-good-2=pass" else "verify-good-2=fail")
+      print-line-uni (if ed25519-verify pk3 [175, 130] sig3 then "verify-good-3=pass" else "verify-good-3=fail")
       print-line-uni v-wrong-msg
       print-line-uni v-wrong-key
+      print-line-uni ("sign-mismatched-key=" & (if list-length (ed25519-sign t1-sk pk2 []) == 0 then "pass" else "fail"))
+      print-line-uni ("sign-empty-seed=" & (if list-length (ed25519-sign [] pk1 []) == 0 then "pass" else "fail"))
+      print-line-uni ("sign-short-seed=" & (if list-length (ed25519-sign (prefix t1-sk 31) pk1 []) == 0 then "pass" else "fail"))
+      print-line-uni ("sign-long-seed=" & (if list-length (ed25519-sign (t1-sk & [0]) pk1 []) == 0 then "pass" else "fail"))
+      print-line-uni ("sign-wide-seed=" & (if list-length (ed25519-sign (list-set-at (prefix t1-sk 32) 4 256) pk1 []) == 0 then "pass" else "fail"))
+      print-line-uni ("sign-short-public=" & (if list-length (ed25519-sign t1-sk (prefix pk1 31) []) == 0 then "pass" else "fail"))
+      print-line-uni ("sign-long-public=" & (if list-length (ed25519-sign t1-sk (pk1 & [0]) []) == 0 then "pass" else "fail"))
+      print-line-uni ("sign-wide-message=" & (if list-length (ed25519-sign t1-sk pk1 [256]) == 0 then "pass" else "fail"))
+      print-line-uni ("sign-negative-message=" & (if list-length (ed25519-sign t1-sk pk1 [0 - 1]) == 0 then "pass" else "fail"))
+      print-line-uni ("public-empty-seed=" & (if list-length (ed25519-public-key []) == 0 then "pass" else "fail"))
+      print-line-uni ("public-short-seed=" & (if list-length (ed25519-public-key (prefix t1-sk 31)) == 0 then "pass" else "fail"))
+      print-line-uni ("public-long-seed=" & (if list-length (ed25519-public-key (t1-sk & [0])) == 0 then "pass" else "fail"))
+      print-line-uni ("public-negative-seed=" & (if list-length (ed25519-public-key (list-set-at (prefix t1-sk 32) 31 (0 - 1))) == 0 then "pass" else "fail"))
+      print-line-uni (if ed25519-verify pk1 [0] zero-sig then "verify-zero-message=pass" else "verify-zero-message=fail")
+      print-line-uni (if ed25519-verify pk1 [256] zero-sig then "verify-wide-message=fail" else "verify-wide-message=pass")
+      reject "verify-s-plus-order" pk1 (add-order sig1 ed-L 0 0 (prefix sig1 64))
+      reject "verify-s-equals-order" pk1 ((prefix sig1 32) & ed-L)
+      reject "verify-empty-key" [] sig1
+      reject "verify-short-key" (prefix pk1 31) sig1
+      reject "verify-long-key" (pk1 & [0]) sig1
+      reject "verify-empty-signature" pk1 []
+      reject "verify-short-signature" pk1 (prefix sig1 63)
+      reject "verify-long-signature" pk1 (sig1 & [0])
+      reject "verify-negative-key-octet" (list-set-at (prefix pk1 32) 0 (0 - 1)) sig1
+      reject "verify-wide-signature-octet" pk1 (list-set-at (prefix sig1 64) 0 256)
+      reject "verify-noncanonical-key" noncanonical-one sig1
+      reject "verify-noncanonical-r" pk1 (noncanonical-one & (ed-list-drop sig1 32))
+      reject "verify-negative-zero-key" signed-zero sig1
+      reject "verify-negative-zero-r" pk1 (signed-zero & (ed-list-drop sig1 32))
+      reject "verify-off-curve-key" not-on-curve sig1
+      reject "verify-off-curve-r" pk1 (not-on-curve & (ed-list-drop sig1 32))
+      print-line-uni (if ed25519-verify pk1 [49, 50, 51, 52, 48, 48] signed-zero-signature then "verify-wycheproof-151=fail" else "verify-wycheproof-151=pass")
     end
   end
 
