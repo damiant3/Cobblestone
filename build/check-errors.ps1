@@ -113,6 +113,12 @@ $tests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     }
     if ($missing) {
         ($using:bad).Add("$base -- refused, but not with $missing (declared: $($codes -join ' '))")
+        return
+    }
+    $msgFile = $t -replace '\.codex$', '.message'
+    $lostNote = @(if (Test-Path -PathType Leaf $msgFile) { Get-Content $msgFile | Where-Object { $_.Trim() } | Where-Object { -not $logText.Contains($_.Trim()) } })
+    if ($lostNote.Count -gt 0) {
+        ($using:bad).Add("$base -- refused as declared, but the diagnostic lost its note: '$($lostNote[0].Trim())'")
     } else {
         ($using:passed).Add($base)
     }

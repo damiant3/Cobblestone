@@ -10,13 +10,34 @@ $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 $CacheDir = Join-Path $PSScriptRoot 'build-output' 'cache'
-$compileScript = Join-Path $Repo 'build' 'compile.ps1'
-
 # Start-PlugVm carries the codex-vm-or-QEMU host choice, and the sidecar pool
 # below boots plug VMs through it rather than shelling out to plug-run.ps1.
+# vm-config also carries ConvertTo-CceBytes; quire-map resolves cites exactly
+# as build/compile.ps1 does.
 . (Join-Path $Repo 'build' 'vm-config.ps1')
+. (Join-Path $Repo 'build' 'quire-map.ps1')
 
 if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Force $CacheDir | Out-Null }
+
+# ── The compiler: codex-compiler.wasm under wasmtime ─────────
+# Damian, 2026-09-23 (PRISM-1): no network in the seed. The server keeps the
+# network and runs the compiler as the wasm module apps/accp/build.ps1 builds
+# FROM THE DEPOT SEED, so no VM boots per request. apps/prism/wasm-equiv.ps1
+# measured its IR equal to the native seed's on every bench and page example,
+# both modes; a module built from any other seed is refused at startup.
+$CompilerWasm  = Join-Path $Repo 'apps' 'accp' 'build-output' 'codex-compiler.wasm'
+$CompilerCwasm = Join-Path $CacheDir 'codex-compiler.cwasm'
+$runtimeJson = Join-Path $Repo 'apps' 'accp' 'build-output' 'runtime.json'
+if (-not (Test-Path $CompilerWasm) -or -not (Test-Path $runtimeJson)) {
+    throw 'No wasm compiler. Build it first: pwsh apps/accp/build.ps1 -Kernel seed/Codex.cdx'
+}
+$depotSeed = (Get-FileHash (Join-Path $Repo 'seed' 'Codex.cdx')).Hash.ToLowerInvariant()
+$builtSeed = [string](Get-Content $runtimeJson -Raw | ConvertFrom-Json).seed
+if ($builtSeed -ne $depotSeed) {
+    throw "The wasm compiler was built from seed $($builtSeed.Substring(0, 16)), not the depot seed $($depotSeed.Substring(0, 16)). Rebuild: pwsh apps/accp/build.ps1 -Kernel seed/Codex.cdx"
+}
+& wasmtime compile -W epoch-interruption=y,max-wasm-stack=16777216 $CompilerWasm -o $CompilerCwasm
+if ($LASTEXITCODE -ne 0) { throw 'wasmtime could not precompile the compiler module' }
 
 # ── Source file catalog ──────────────────────────────────────
 $SourcePaths = @(
@@ -57,11 +78,11 @@ $SourcePaths = @(
 # them, so the answer arrives on the guest CONSOLE and its runner captures the
 # file. The pool reads the socket, which for that plug carries nothing.
 $PlugTargets = @(
-    @{name='python';     dir='codex/plugs/python';     port=9131; sidecar=$false}
-    @{name='javascript'; dir='codex/plugs/javascript'; port=9120; sidecar=$false}
-    @{name='rust';       dir='codex/plugs/rust';       port=9136; sidecar=$false}
-    @{name='haskell';    dir='codex/plugs/haskell';    port=9117; sidecar=$false}
-    @{name='go';         dir='codex/plugs/go';         port=9114; sidecar=$false}
+    @{name='python';     dir='codex/plugs/python';     port=9131; sidecar=$true}
+    @{name='javascript'; dir='codex/plugs/javascript'; port=9120; sidecar=$true}
+    @{name='rust';       dir='codex/plugs/rust';       port=9136; sidecar=$true}
+    @{name='haskell';    dir='codex/plugs/haskell';    port=9117; sidecar=$true}
+    @{name='go';         dir='codex/plugs/go';         port=9114; sidecar=$true}
     @{name='c#';         dir='codex/plugs/csharp';     port=9133; sidecar=$false}
 )
 
@@ -99,10 +120,41 @@ function Read-BodyMember([string]$Body, [string]$Name) {
     return [string]$v
 }
 
-# A compile is bounded. The compiler is a VM boot and a runaway one would hold
-# the single-threaded listener open forever, so the wall budget is the same 60 s
-# the test harness gives a kernel.
+# A compile is bounded. A runaway one would hold the single-threaded listener
+# open forever, so the wall budget is the same 60 s the test harness gives a
+# kernel.
 $CompileWallMs = 60000
+
+# The unit build/compile.ps1 would hand the compiler: every cited chapter, then
+# the source. Returns the unit and the regions that map its line numbers home.
+function New-CompileUnit([string]$SrcFile) {
+    $lines = [System.IO.File]::ReadAllLines($SrcFile)
+    $seen = @{}
+    foreach ($l in $lines) { if ($l -match '^Chapter:\s*(\w+)--(.+?)\s*$') { $seen["$($matches[1])::$($matches[2])"] = $true } }
+    $ordered = Resolve-CiteOrder -RootLines $lines -Repo $Repo -SeedSeen $seen
+    $sb = [System.Text.StringBuilder]::new()
+    foreach ($l in (Format-CiteChapters -Ordered $ordered)) { [void]$sb.Append($l).Append("`n") }
+    foreach ($l in $lines) { [void]$sb.Append($l).Append("`n") }
+    return @{ text = $sb.ToString(); regions = (Get-DiagRegions -Ordered $ordered -SrcPath $SrcFile) }
+}
+
+# One compile, climbing the deck ladder the page uses when a unit runs out of
+# deck space (CDX9002). Returns the compiler's whole stdout as text, or a
+# reason it produced none.
+function Invoke-WasmCompile([string]$UnitText, [string]$Mode, [string]$WorkDir) {
+    $in = Join-Path $WorkDir 'compile.in'; $out = Join-Path $WorkDir 'compile.out'; $err = Join-Path $WorkDir 'compile.err'
+    $text = ''
+    foreach ($d in 12, 48, 125) {
+        [System.IO.File]::WriteAllText($in, "$Mode decks=$d`n" + $UnitText + [char]4 + [char]0, [System.Text.UTF8Encoding]::new($false))
+        $p = Start-Process -FilePath 'wasmtime' -ArgumentList @('run', '--allow-precompiled', '-W', "epoch-interruption=y,timeout=${CompileWallMs}ms,max-wasm-stack=16777216,max-memory-size=1073741824", $CompilerCwasm) `
+            -RedirectStandardInput $in -RedirectStandardOutput $out -RedirectStandardError $err -NoNewWindow -PassThru
+        if (-not $p.WaitForExit($CompileWallMs + 5000)) { try { $p.Kill($true) } catch { }; return @{ why = "compile exceeded the $([int]($CompileWallMs / 1000)) s budget" } }
+        $text = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8)
+        if ($text -notmatch 'CDX9002') { break }
+    }
+    if (-not $text -and $p.ExitCode -ne 0) { return @{ why = 'the compiler trapped: ' + (Get-Content $err -TotalCount 1) } }
+    return @{ text = $text }
+}
 
 function Invoke-Bounded([string]$Script, [string[]]$ScriptArgs, [int]$WallMs) {
     $p = Start-Process -FilePath 'pwsh' `
@@ -125,20 +177,10 @@ function Compile-SourceToIr([string]$Source, [string]$WorkDir) {
     # in the first token.
     [System.IO.File]::WriteAllText($srcFile, $Source, [System.Text.UTF8Encoding]::new($false))
 
-    $irOut = Join-Path $WorkDir 'prog.cdx'
-    $irLog = Join-Path $WorkDir 'prog.log'
-    # `| Out-Null` and not just `2>$null`, matching Invoke-PlugOnSource below. The IR is
-    # read from the LOG, never from stdout, and an uncaptured child's stdout
-    # joins THIS function's output stream: compile.ps1 prints a `kernel:` line
-    # and a bare `True`, so the caller received an ARRAY whose first element was
-    # that noise, and `.StartsWith(...)` then member-enumerated to an array of
-    # booleans, which is truthy.
-    $finished = Invoke-Bounded $compileScript @('-Src', $srcFile, '-Out', $irOut, '-Log', $irLog, '-IrUni') $CompileWallMs
-    if (-not $finished) { return "COMPILE-ERROR:`ncompile exceeded the $([int]($CompileWallMs / 1000)) s budget" }
-
-    if (-not (Test-Path $irLog)) { return "COMPILE-ERROR:`nthe compiler produced no log" }
-
-    $lines = Get-Content $irLog
+    try { $unit = New-CompileUnit $srcFile } catch { return "COMPILE-ERROR:`nerror 3010: $($_.Exception.Message)" }
+    $r = Invoke-WasmCompile $unit.text 'IR-UNI' $WorkDir
+    if ($r.ContainsKey('why')) { return "COMPILE-ERROR:`n$($r.why)" }
+    $lines = @($r.text -split "`n" | ForEach-Object { Convert-DiagLine -Line $_.TrimEnd("`r") -Regions $unit.regions })
     $capturing = $false; $irLines = @()
     foreach ($l in $lines) {
         if ($l -eq 'IR-BEGIN') { $capturing = $true; continue }
@@ -180,10 +222,18 @@ function Compile-SourceToPlugIr([string]$Source, [string]$WorkDir) {
     $srcFile = Join-Path $WorkDir 'plug-in.codex'
     [System.IO.File]::WriteAllText($srcFile, $Source, [System.Text.UTF8Encoding]::new($false))
     $irOut = Join-Path $WorkDir 'plug-in.ir'
-    $irLog = Join-Path $WorkDir 'plug-in.log'
-    $finished = Invoke-Bounded $compileScript @('-Src', $srcFile, '-Out', $irOut, '-Log', $irLog, '-IrCce', '-Passes', 'text-plug') $CompileWallMs
-    if (-not $finished) { return $null }
-    if (-not (Test-Path $irOut)) { return $null }
+    try { $unit = New-CompileUnit $srcFile } catch { return $null }
+    $r = Invoke-WasmCompile $unit.text 'IR-CCE passes=text-plug' $WorkDir
+    if ($r.ContainsKey('why')) { return $null }
+    # The hosted compiler writes the IR as UTF-8 text where the native one writes
+    # CCE bytes, and diagnostics follow it; SIZE counts CCE bytes. The plugs
+    # read CCE, so encode, then take exactly SIZE bytes.
+    $m = [regex]::Match($r.text, '(?m)^SIZE:\s*(\d+)\r?\n')
+    if (-not $m.Success) { return $null }
+    $n = [int]$m.Groups[1].Value
+    $cce = [byte[]](ConvertTo-CceBytes $r.text.Substring($m.Index + $m.Length))
+    if ($cce.Length -lt $n) { return $null }
+    [System.IO.File]::WriteAllBytes($irOut, $cce[0..($n - 1)])
     return $irOut
 }
 
@@ -275,8 +325,11 @@ function Get-Sidecar([hashtable]$Plug) {
 
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, [int]$Plug.port)
     $listener.Start()
-    $console = Join-Path $CacheDir "sidecar-$($Plug.name)-console.txt"
-    $stderr  = Join-Path $CacheDir "sidecar-$($Plug.name)-stderr.txt"
+    # codex-vm writes each NAT line to stderr as the guest waits on it. A flushed
+    # write costs about 11 ms on D: against 0.45 on C: (2026-09-23), and on D:
+    # a python payload took 2.6 s where it takes 0.2 s, so both files live in TEMP.
+    $console = Join-Path ([System.IO.Path]::GetTempPath()) "prism-sidecar-$($Plug.name)-console.txt"
+    $stderr  = Join-Path ([System.IO.Path]::GetTempPath()) "prism-sidecar-$($Plug.name)-stderr.txt"
     $proc = Start-PlugVm -Kernel $plugCdx -ConsoleFile $console -StderrFile $stderr -MemMB 3072
     Register-SidecarPid $proc.Id
     Write-Host "[prism] $($Plug.name) sidecar up, VM pid $($proc.Id) on $($Plug.port)" -ForegroundColor DarkGray

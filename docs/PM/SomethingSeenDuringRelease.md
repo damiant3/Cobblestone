@@ -29,6 +29,111 @@ count does.
 
 ## Done
 
+### Update 62 -- a compiler change reddened three test chapters that only the full test-compile sees
+
+Found at step 0b, 2026-09-24: `test-compile` refused three chapters at head.
+`section-title-keywords` (CDX2087, main 25834, fixed main 27104) and
+`list-equality` (`[] == []` CDX2040, main 26013) broke on compiler changes;
+the lane's cite-scoped compile misses both because the compiler is assembled
+by glob and no test cites a compiler chapter. `gop-source-preview` broke on
+an app signature change (main 25898, fixed main 27101) and carries a `.skip`,
+so no battery compiled it either. Before any seed-affecting landing, and at
+the first step of a release, run the full sweep on the candidate:
+
+```powershell
+build/check-test-compile.ps1 -Full -Kernel <candidate.cdx> -Ways 4   # about 200 s
+```
+
+### Update 62 -- a one-slot battery batch exceeds codex-vm's 256 MB input and the guest waits forever
+
+Found at step 1, 2026-09-24: with 4.5 GiB free, admission gave the
+`-Tier all` battery one compile slot, so all 1,849 compiles went into one
+358 MB batch input. codex-vm refuses an input over `INPUT_BUF_MAX` (256 MB,
+`tools/codex-vm.c`), loads nothing, and the guest idles until the 30-minute
+batch cap: the same shape as Update 60's timeout. Read the admission line; at
+one slot, run the battery as tier groups whose union is `-Tier all`:
+
+```powershell
+build/test.ps1 -Tier lang -Jobs 4 -ApprovedBy damian
+build/test.ps1 -Tier lib,fw,oracles -Jobs 4 -ApprovedBy damian
+build/test.ps1 -Tier apps,hardware,traps,slow -Jobs 4 -ApprovedBy damian
+```
+
+### Update 62 -- a library signature change broke the diag stick, and only the release builds it
+
+Found at step 5, 2026-09-24: `build/boot/build-diag.ps1` refused the bundle
+(CDX2001 `TcpTransportState vs Fun`, three sites). main 26695 added two
+parameters to `net-io-wait-established-poll` and updated NetIO's own caller,
+not `DiagRecord` and `DiagB3` (fixed main 27200). No gate compiles the diag
+bundle. After a signature change in any chapter the stick cites, build it:
+
+```powershell
+build/boot/build-diag.ps1 -Out <scratch.img>    # compile only; the shipped image is rebuilt at release
+```
+
+### Update 62 -- a compiler chapter the C# plug could not express broke the DDC for a cycle
+
+Found at step 4, 2026-09-24: `(for x in xs -> x)` in
+`IR/MethodSpecialization.codex` (main 25834) lifted to a `dynamic` identity
+lambda, and Roslyn refused the emitted compiler (CS0411). The csharp plug
+renders an identity lifted lambda generically since main 27196. No lane runs
+the DDC, so a compiler chapter using a new construct should be emitted and
+built before it lands:
+
+```powershell
+codex/plugs/csharp/emit-compiler.ps1 -Kernel <candidate>; dotnet build <ddc-arm>\CodexCs.csproj -c Release
+```
+
+### Update 62 -- entry chapters assembled by their own runner never passed the app sweep
+
+Found at step 0b, 2026-09-24: the full app sweep refused three Valheim entry
+chapters (CDX3002) that had only ever been compiled as manifest- or
+runner-assembled units, never alone. Entry chapters must cite their siblings
+(main 27168 registered the Valheim quire and added the cites; WorldProbe is
+baselined with its runner named). Before landing a new app directory, sweep it:
+
+```powershell
+build/sweep-app-classes.ps1 -Check -Jobs 2 -Filter 'apps\<dir>'
+```
+
+### Update 62 -- cross-smoke read an empty capture under load as a wrong answer, and never retried it
+
+Found at step 0b, 2026-09-24, gate attempt 4: `check-cross-smoke` failed
+arm64/factorial with `output mismatch` and every line `(missing)` after an
+empty first line. The same Sut passed the phase in the previous gate and 3 of
+3 standalone. The script retries only a lane that wrote NO log; a log holding
+one empty line is a strict prefix of the expected output (L-SHORT) and is
+graded as a deterministic wrong answer. Before reading a cross-smoke red as
+codegen, rerun it alone on the same Sut:
+
+```powershell
+build/check-cross-smoke.ps1 -Kernel build\output\Sut.cdx   # a pass alone on the same Sut is load, not codegen
+```
+
+### Update 62 -- the tool catalog check read the depot head, so a frozen release tree went red on another lane's landing
+
+Found at step 0b, 2026-09-24: `gen-scripts` refused `build/check-annotation-targets.ps1`
+as uncatalogued. The tool landed on main (27135) during the gate, and
+`build/checks/tool-catalog.ps1` inventoried `p4 files` at HEAD against the
+workspace's catalog. It reads `#have` since main 27157. When a release gate
+refuses a path, check whether the workspace holds it before treating it as a
+defect in the tree:
+
+```powershell
+p4 have <path>; p4 files <path>    # absent from have and present at head: the instrument read head
+```
+
+### Update 62 -- a generator's raw-shell rise landed because no lane gate runs the ratchet
+
+Found at step 0b, 2026-09-24: `check-shell-raw` refused BuildScript at 906
+to 923 ScRaw, the `cdx-exports` phase added in main 27024 without moving its
+row (fixed main 27093). The ratchet runs only inside `build.ps1`, which lanes
+may not run. Run it after any `codex/build/*Script.codex` edit:
+
+```powershell
+build/check-shell-raw.ps1    # a rise names the row; -Update -Only <generator> after justifying it in the CL
+```
+
 ### Update 61 -- explicit diagnostic arm budgets ignored the requested allowance
 
 The 2026-09-17 image rehearsal failed four network-related arms. The same

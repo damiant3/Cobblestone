@@ -152,6 +152,8 @@ Section: Definitions
   AClassDef = record {
    name : Name,
    methods : List AEffectOpDef,
+   dict-schema : List ATypeDef,
+   method-binders : List (List Text),
    span : SourceSpan
   }
 
@@ -166,23 +168,16 @@ Section: Definitions
    class-name : Name,
    type-name : Name,
    methods : List AInstanceMethodDef,
+   head-type : ATypeExpr,
+   constructor-name : Text,
+   constructor-body : List AExpr,
+   constructor-type : List ATypeExpr,
+   method-targets : List (List Text),
    span : SourceSpan
   }
 
 Section: Implicit Type Parameters
 
- A width or mode qualifier on a Real is an application ARGUMENT in the surface
- syntax and is spelled exactly like a type variable: `Real approximate` parses
- the same way `List a` does, and the qualifier words are recognised only by
- `resolve-real-quals` in `Types/TypeChecker.codex`. Without this guard the
- inference below reads `approximate` as a free type variable and publishes it
- as a type parameter, which makes the whole declaration spuriously parametric
- -- and because the parameter belongs to the TYPE rather than the constructor,
- it poisons every constructor of that type, including the ones carrying no
- qualifier at all. The condition mirrors `resolve-real-quals`: the arguments
- are qualifiers only if EVERY one of them is a qualifier word, because one
- unrecognised word makes the checker treat the whole thing as a genuine
- application instead.
 
   ast-real-qual-word-p : Text -> Boolean
   ast-real-qual-word-p (w) =
@@ -464,7 +459,13 @@ Section: Deck Copies
   copy-as-effectdef (b) (d) = AEffectDef { name = copy-as-name b (d.name), ops = for o in (d.ops) -> copy-as-effectopdef b o, span = copy-sx-span b (d.span) }
 
   copy-as-classdef : Integer, AClassDef -> AClassDef
-  copy-as-classdef (b) (d) = AClassDef { name = copy-as-name b (d.name), methods = for m in (d.methods) -> copy-as-effectopdef b m, span = copy-sx-span b (d.span) }
+  copy-as-classdef (b) (d) = AClassDef {
+   name = copy-as-name b (d.name),
+   methods = for m in (d.methods) -> copy-as-effectopdef b m,
+   dict-schema = for t in (d.dict-schema) -> copy-as-typedef b t,
+   method-binders = for ns in (d.method-binders) -> for n in ns -> copy-sx-text b n,
+   span = copy-sx-span b (d.span)
+  }
 
   copy-as-instmethod : Integer, AInstanceMethodDef -> AInstanceMethodDef
   copy-as-instmethod (b) (m) = AInstanceMethodDef {
@@ -479,6 +480,11 @@ Section: Deck Copies
    class-name = copy-as-name b (d.class-name),
    type-name = copy-as-name b (d.type-name),
    methods = for m in (d.methods) -> copy-as-instmethod b m,
+   head-type = copy-as-typeexpr b (d.head-type),
+   constructor-name = copy-sx-text b (d.constructor-name),
+   constructor-body = for e in (d.constructor-body) -> copy-as-expr b e,
+   constructor-type = for t in (d.constructor-type) -> copy-as-typeexpr b t,
+   method-targets = for ns in (d.method-targets) -> for n in ns -> copy-sx-text b n,
    span = copy-sx-span b (d.span)
   }
 

@@ -1,0 +1,112 @@
+Chapter: AccpOde
+  cites Accp chapter AccpResults
+
+Section: Vector Steps
+
+  OdeState = | OdeStateValue (List Real) | OdeStateError (Text)
+  OdeRun = | OdeTrajectory (ExperimentData) | OdeRunError (Text)
+
+  ex-copy : List Real, Integer, List Real -> List Real
+  ex-copy (xs) (i) (acc) = if i >= list-length xs then acc else ex-copy xs (i + 1) (list-push acc (list-at xs i))
+
+  ex-eval : (Real, List Real -> List Real), Real, List Real -> OdeState
+  ex-eval (f) (t) (ys) =
+    if math-finite t == False | ex-real-list-valid ys 0 == False then OdeStateError "non-finite RK4 sample point"
+    else let values = f t (ex-copy ys 0 [])
+    in if list-length values /= list-length ys then OdeStateError "derivative vector length differs from state"
+    else if ex-real-list-valid values 0 == False then OdeStateError "non-finite derivative"
+    else OdeStateValue (ex-copy values 0 [])
+
+  ex-shift : List Real, List Real, Real, Integer, List Real -> List Real
+  ex-shift (ys) (ks) (h) (i) (acc) =
+    if i >= list-length ys then acc
+    else ex-shift ys ks h (i + 1) (list-push acc (list-at ys i + h * list-at ks i))
+
+  ex-combine : List Real, List Real, List Real, List Real, List Real, Real, Integer, List Real -> List Real
+  ex-combine (ys) (k1) (k2) (k3) (k4) (h) (i) (acc) =
+    if i >= list-length ys then acc
+    else let dy = h * (list-at k1 i / 6.0 + list-at k2 i / 3.0 + list-at k3 i / 3.0 + list-at k4 i / 6.0)
+    in ex-combine ys k1 k2 k3 k4 h (i + 1) (list-push acc (list-at ys i + dy))
+
+  ex-rk4 : (Real, List Real -> List Real), Real, List Real, Real -> OdeState
+  ex-rk4 (f) (t) (ys) (h) = when ex-eval f t ys
+    is OdeStateError (why) -> OdeStateError why
+    is OdeStateValue (k1) -> when ex-eval f (t + h * 0.5) (ex-shift ys k1 (h * 0.5) 0 [])
+      is OdeStateError (why) -> OdeStateError why
+      is OdeStateValue (k2) -> when ex-eval f (t + h * 0.5) (ex-shift ys k2 (h * 0.5) 0 [])
+        is OdeStateError (why) -> OdeStateError why
+        is OdeStateValue (k3) -> when ex-eval f (t + h) (ex-shift ys k3 h 0 [])
+          is OdeStateError (why) -> OdeStateError why
+          is OdeStateValue (k4) ->
+            let next = ex-combine ys k1 k2 k3 k4 h 0 []
+            in if ex-real-list-valid next 0 then OdeStateValue next else OdeStateError "non-finite integrated state"
+
+Section: Trajectory
+
+  ex-trajectory : (Real, List Real -> List Real), Real, List Real, Real, Integer, Integer -> OdeRun
+  ex-trajectory (f) (t0) (initial) (t1) (steps) (stride) =
+    let h = (t1 - t0) / real-from-int steps
+    in if math-finite h == False | t0 + h ~0 t0 then OdeRunError "integration step is not representable"
+    else let first = ex-copy initial 0 []
+    in ex-trajectory-loop f t0 first t1 steps stride h 0 [t0] [first]
+
+  ex-trajectory-loop : (Real, List Real -> List Real), Real, List Real, Real, Integer, Integer, Real, Integer, List Real, List (List Real) -> OdeRun
+  ex-trajectory-loop (f) (t0) (ys) (t1) (steps) (stride) (h) (i) (xs) (rows) =
+    if i >= steps then OdeTrajectory (ExperimentData { values = ys, coordinates = xs, samples = rows })
+    else let t = t0 + real-from-int i * h
+    in when ex-rk4 f t ys h
+      is OdeStateError (why) -> OdeRunError why
+      is OdeStateValue (next) ->
+        let j = i + 1
+        in let keep = int-rem j stride == 0
+        in let at = if j == steps then t1 else t0 + real-from-int j * h
+        in ex-trajectory-loop f t0 next t1 steps stride h j (if keep then list-push xs at else xs) (if keep then list-push rows next else rows)
+
+Section: Refinement
+
+  ex-positive : List Real, Integer -> Boolean
+  ex-positive (xs) (i) = if i >= list-length xs then True else list-at xs i > 0.0 & math-finite (list-at xs i) & ex-positive xs (i + 1)
+
+  ex-difference : List (List Real), List (List Real), Integer, Integer, Real -> Real
+  ex-difference (coarse) (fine) (component) (i) (largest) =
+    if i >= list-length coarse then largest
+    else let delta = real-abs (list-at (list-at coarse i) component - list-at (list-at fine i) component)
+    in ex-difference coarse fine component (i + 1) (real-max delta largest)
+
+  ex-differences : ExperimentData, ExperimentData, Integer, List Real -> List Real
+  ex-differences (coarse) (fine) (i) (acc) =
+    if i >= list-length coarse.values then acc
+    else ex-differences coarse fine (i + 1) (list-push acc (ex-difference coarse.samples fine.samples i 0 0.0))
+
+  ex-within : List Real, List Real, Integer -> Boolean
+  ex-within (ds) (tol) (i) = if i >= list-length ds then True else list-at ds i <= list-at tol i & ex-within ds tol (i + 1)
+
+  ex-refined-meta : ExperimentMeta, List Real, List Real, Text, Text -> ExperimentMeta
+  ex-refined-meta (m) (tol) (ds) (convergence) (settings) =
+    ExperimentMeta { method = m.method, labels = m.labels, units = m.units, tolerance = ex-copy tol 0 [], difference = ds, convergence = convergence, assumptions = m.assumptions, axis = m.axis, axis-unit = m.axis-unit, settings = settings }
+
+  experiment-ode : (Real, List Real -> List Real), Real, List Real, Real, Integer, Integer, List Text, List Text, List Real, List Text -> ExperimentResult
+  experiment-ode (f) (t0) (initial) (t1) (steps) (stride) (labels) (units) (tolerances) (assumptions) =
+    let meta = experiment-meta "classical RK4; paired step refinement" labels units "time" "s" assumptions
+    in let n = list-length initial
+    in let why = ex-metadata-error meta
+    in if why /= "" then ExperimentError why meta
+    else if n /= list-length units | ex-real-list-valid initial 0 == False | math-finite t0 == False | math-finite t1 == False then ExperimentError "invalid initial state or time interval" meta
+    else if steps < 1 | steps > 1024 | stride < 1 | stride > steps then ExperimentError "coarse steps must be in [1,1024] and stride in [1,steps]" meta
+    else if int-rem steps stride /= 0 then ExperimentError "sampling stride must divide coarse steps" meta
+    else if steps / stride + 1 > 256 | (steps / stride + 1) * n > 1024 then ExperimentError "trajectory exceeds sample or scalar-cell limit" meta
+    else if list-length tolerances /= n | ex-positive tolerances 0 == False then ExperimentError "one positive finite absolute tolerance is required per component" meta
+    else let settings = "{\"t0\":" & ex-number t0 & ",\"t1\":" & ex-number t1 & ",\"initial\":" & ex-reals initial & ",\"initial_binary64\":" & ex-bits initial & ",\"interval_binary64\":" & ex-bits [t0,t1] & ",\"coarse_steps\":" & show steps & ",\"fine_steps\":" & show (steps * 2) & ",\"coarse_stride\":" & show stride & ",\"published\":\"fine\"}"
+    in if t0 <= t1 & t0 >= t1 then
+      let copy = ex-copy initial 0 []
+      in ExperimentValue (ExperimentData { values = copy, coordinates = [t0], samples = [copy] }) (ex-refined-meta meta tolerances [] "not_applicable" settings)
+    else when ex-trajectory f t0 initial t1 steps stride
+      is OdeRunError (why) -> ExperimentError why meta
+      is OdeTrajectory (coarse) -> when ex-trajectory f t0 initial t1 (steps * 2) (stride * 2)
+        is OdeRunError (why) -> ExperimentError why meta
+        is OdeTrajectory (fine) ->
+          let differences = ex-differences coarse fine 0 []
+          in if ex-real-list-valid differences 0 == False then ExperimentError "non-finite refinement difference" meta
+          else ExperimentValue fine (ex-refined-meta meta tolerances differences (if ex-within differences tolerances 0 then "refinement_passed" else "not_converged") settings)
+
+Page 1

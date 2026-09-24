@@ -4,6 +4,7 @@ Chapter: HttpFetch
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
   cites Net chapter NetIO
+  cites Net chapter NetCompact
   cites Net chapter HttpClient
   cites Net chapter DnsResolver
   cites Net chapter Udp
@@ -227,23 +228,31 @@ Section: Receive
    else http-append (list-push acc (list-at chunk i)) chunk (i + 1) n
 
   http-recv : TcpTransportState, List Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] HttpRecv
-  http-recv (ts) (acc) (head-end) (want) (tries) =
+  http-recv (ts) (acc) (head-end) (want) (tries) = http-recv-rx ts acc head-end want tries [] 0
+
+  http-recv-rx : TcpTransportState, List Integer, Integer, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] HttpRecv
+  http-recv-rx (ts) (acc) (head-end) (want) (tries) (rx) (mark) =
    if tries > http-recv-budget then HttpRecv { transport = ts, data = acc }
    else if http-have-all acc head-end want then HttpRecv { transport = ts, data = acc }
    else if list-length acc >= http-max-response then HttpRecv { transport = ts, data = acc }
+   else if list-length rx == 0 & transport-stale ts then HttpRecv { transport = ts, data = acc }
+   else if list-length rx == 0 then let ta = transport-arenas ts
+     in let rx1 = net-io-rx rx
+     in let m = __heap-save
+     in http-recv-rx ta acc head-end want tries rx1 m
    else let hp = __heap-save
    in act
-    frame <- net-driver-recv-frame
-    if list-length frame == 0 then let restored = __heap-restore hp
-      in http-recv ts acc head-end want (tries + 1)
-    else let r = net-process-frame (ts.session) frame
+    n <- net-driver-recv-into rx
+    if n == 0 then let restored = __heap-restore hp
+      in http-recv-rx ts acc head-end want (tries + 1) rx mark
+    else let r = net-process-frame-within (ts.session) rx n
     in act
       ts1 <- flush-transport-outbox (transport-set-session ts (r.session))
       let acc2 = http-append acc (r.data) (r.data-off) (r.data-stop)
       in let he = if head-end < 0 then http-headers-end acc2 0 (list-length acc2) else head-end
       in let cl = if want < 0 then (if he < 0 then (-1) else http-content-length acc2 he) else want
       in when (ts1.session).conn.state
-       is TcpEstablished -> http-recv ts1 acc2 he cl (tries + 1)
+       is TcpEstablished -> http-recv-rx (transport-compact-past ts1 mark) acc2 he cl (tries + 1) rx mark
        is otherwise -> HttpRecv { transport = ts1, data = acc2 }
     end
    end
@@ -437,19 +446,27 @@ Section: HTTPS Over TLS 1.3
   }
 
   https-pull : TcpTransportState, Integer -> [Network.Read, Network.Write] HttpsPull
-  https-pull (ts) (tries) =
+  https-pull (ts) (tries) = https-pull-rx ts tries [] 0
+
+  https-pull-rx : TcpTransportState, Integer, List Integer, Integer -> [Network.Read, Network.Write] HttpsPull
+  https-pull-rx (ts) (tries) (rx) (mark) =
    if tries > http-recv-budget then HttpsPull { hp-ts = ts, hp-data = [] }
+   else if list-length rx == 0 & transport-stale ts then HttpsPull { hp-ts = ts, hp-data = [] }
+   else if list-length rx == 0 then let ta = transport-arenas ts
+     in let rx1 = net-io-rx rx
+     in let m = __heap-save
+     in https-pull-rx ta tries rx1 m
    else let hp = __heap-save
    in act
-    frame <- net-driver-recv-frame
-    if list-length frame == 0 then let restored = __heap-restore hp
-      in https-pull ts (tries + 1)
-    else let r = net-process-frame (ts.session) frame
+    n <- net-driver-recv-into rx
+    if n == 0 then let restored = __heap-restore hp
+      in https-pull-rx ts (tries + 1) rx mark
+    else let r = net-process-frame-within (ts.session) rx n
     in act
       ts1 <- flush-transport-outbox (transport-set-session ts (r.session))
-      if list-length (r.data) > 0 then HttpsPull { hp-ts = ts1, hp-data = r.data }
+      if (r.data-stop - r.data-off) > 0 then HttpsPull { hp-ts = ts1, hp-data = transport-slice (r.data) (r.data-off) (r.data-stop) }
       else when (ts1.session).conn.state
-       is TcpEstablished -> https-pull ts1 (tries + 1)
+       is TcpEstablished -> https-pull-rx (transport-compact-past ts1 mark) (tries + 1) rx mark
        is otherwise -> HttpsPull { hp-ts = ts1, hp-data = [] }
     end
    end

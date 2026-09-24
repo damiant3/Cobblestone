@@ -102,10 +102,7 @@ function Format-IrNode {
 }
 
 function Get-IrWireText {
-    # Pulls the IR text out of a compile.ps1 -Log file. In -IrUni / -IrCce mode
-    # compile.ps1 emits no SIZE: line, so it writes the whole guest output into
-    # -Log, never writes -Out, and always falls through to exit 4. The exit code
-    # carries no information in this mode; the IR-BEGIN/IR-END markers do.
+    # Pulls the IR text out of a compile.ps1 -IrUni -Log file.
     param([Parameter(Mandatory)][string]$LogPath)
 
     if (-not (Test-Path -PathType Leaf $LogPath)) { throw "ir-wire: no log at $LogPath" }

@@ -8,7 +8,8 @@
 param(
     [string]$Compiler = '',
   [Parameter(Mandatory=$true)][string]$Src,
-  [Parameter(Mandatory=$true)][string]$Out
+  [Parameter(Mandatory=$true)][string]$Out,
+  [int]$MemMB = 3072
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -47,7 +48,7 @@ $inputFile = [System.IO.Path]::GetTempFileName()
 # Phase 3: run the plug
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB $MemMB -TimeoutSec 300
 if (-not $vmOk) { [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
   $err = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { "" }
@@ -96,7 +97,7 @@ $asmBytes.CopyTo($buf, $hdr2.Count)
 $buf[$buf.Length - 1] = 0
 $in2 = [System.IO.Path]::GetTempFileName(); $out2 = [System.IO.Path]::GetTempFileName()
 [System.IO.File]::WriteAllBytes($in2, $buf)
-$vmOk2 = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $in2 -OutputFile $out2 -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+$vmOk2 = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $in2 -OutputFile $out2 -StderrFile $errFile -MemMB $MemMB -TimeoutSec 300
 if (-not $vmOk2) { [Console]::Error.WriteLine("FAIL: encoder timeout"); exit 7 }
 # The first output line carries the serial framing's control bytes; a reader
 # that does not strip them loses it, which reads as a dropped instruction.

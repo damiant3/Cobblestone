@@ -96,7 +96,7 @@ while ($queue.Count -gt 0) {
     # `cites <Quire> chapter <Name>` -- the header block, before any Section.
     foreach ($line in Get-Content $file.FullName -ErrorAction SilentlyContinue) {
         if ($line -match '^\s*Section:') { break }
-        if ($line -match '^\s*cites\s+\S+\s+chapter\s+(\S+)\s*$') { $queue.Enqueue($Matches[1]) }
+        if ($line -match '^\s*cites\s+\S+\s+chapter\s+([A-Za-z_][A-Za-z0-9_ -]*?)\s*(?:\(.*)?$') { $queue.Enqueue(($Matches[1] -replace '\s', '')) }
     }
 }
 # A chapter name the closure could not resolve to a file is a HOLE in this

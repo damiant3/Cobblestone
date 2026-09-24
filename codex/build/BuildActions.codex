@@ -1,0 +1,134 @@
+Chapter: BuildActions
+  cites Shell chapter Pipeline
+  cites Foreword chapter Maybe
+
+Section: Contracts
+
+  BuildArtifactKind =
+    | BaSource
+    | BaUnit
+    | BaCompiler
+    | BaExecutable
+    | BaOutput
+    | BaExpected
+    | BaRecord
+
+  BuildArtifactRef = record { bar-id : Text, bar-kind : BuildArtifactKind }
+
+  BuildResult =
+    | BuildPassed
+    | BuildFailed
+    | BuildSkipped
+    | BuildCrashed
+    | BuildTimedOut
+
+  BuildOperation =
+    | ResolveUnit (BuildArtifactRef) (BuildArtifactRef)
+    | Compile (BuildArtifactRef) (BuildArtifactRef) (BuildArtifactRef)
+    | RunArtifact (BuildArtifactRef) (BuildArtifactRef)
+    | GradeOutput (BuildArtifactRef) (BuildArtifactRef)
+    | CompareBytes (BuildArtifactRef) (BuildArtifactRef)
+    | WriteBuildRecord (BuildArtifactRef)
+    | HostOnly (Text)
+
+  BuildAction = record {
+    ba-name : Text,
+    ba-operation : BuildOperation,
+    ba-guests : Integer,
+    ba-memory-mb : Integer,
+    ba-timeout-ms : Integer
+  }
+
+  BuildActionPlan = record { bap-name : Text, bap-actions : List BuildAction }
+
+  ba-ref : Text, BuildArtifactKind -> BuildArtifactRef
+  ba-ref (name) (kind) = BuildArtifactRef { bar-id = name, bar-kind = kind }
+
+  ba-action : Text, BuildOperation, Integer, Integer -> BuildAction
+  ba-action (name) (op) (guests) (ms) = BuildAction {
+    ba-name = name, ba-operation = op, ba-guests = guests,
+    ba-memory-mb = if guests == 0 then 0 else 2048, ba-timeout-ms = ms
+  }
+
+Section: Plans
+
+  ba-compile-test : Integer -> BuildActionPlan
+  ba-compile-test (run-ms) = BuildActionPlan {
+    bap-name = "compile-test",
+    bap-actions = [
+      ba-action "resolve" (ResolveUnit (ba-ref "source" BaSource) (ba-ref "unit" BaUnit)) 0 10000,
+      ba-action "compile" (Compile (ba-ref "unit" BaUnit) (ba-ref "compiler" BaCompiler) (ba-ref "program" BaExecutable)) 1 600000,
+      ba-action "run" (RunArtifact (ba-ref "program" BaExecutable) (ba-ref "output" BaOutput)) 1 run-ms,
+      ba-action "grade" (GradeOutput (ba-ref "output" BaOutput) (ba-ref "expected" BaExpected)) 0 10000,
+      ba-action "record" (WriteBuildRecord (ba-ref "record" BaRecord)) 0 10000
+    ]
+  }
+
+  ba-reproduce : BuildActionPlan = BuildActionPlan {
+    bap-name = "compile-reproduce",
+    bap-actions = [
+      ba-action "resolve" (ResolveUnit (ba-ref "source" BaSource) (ba-ref "unit" BaUnit)) 0 10000,
+      ba-action "compile" (Compile (ba-ref "unit" BaUnit) (ba-ref "compiler" BaCompiler) (ba-ref "program" BaExecutable)) 1 600000,
+      ba-action "compile-again" (Compile (ba-ref "unit" BaUnit) (ba-ref "compiler" BaCompiler) (ba-ref "repeat" BaExecutable)) 1 600000,
+      ba-action "compare" (CompareBytes (ba-ref "program" BaExecutable) (ba-ref "repeat" BaExecutable)) 0 10000,
+      ba-action "record" (WriteBuildRecord (ba-ref "record" BaRecord)) 0 10000
+    ]
+  }
+
+  ba-unsupported : BuildActionPlan = BuildActionPlan {
+    bap-name = "unsupported-operation",
+    bap-actions = (ba-compile-test 60000).bap-actions & [ba-action "host-only" (HostOnly "unmigrated operation") 0 10000]
+  }
+
+Section: Pipeline Projection
+
+  ba-inputs : BuildOperation -> List BuildArtifactRef
+  ba-inputs (op) = when op
+    is ResolveUnit (source) (bundle) -> [source]
+    is Compile (bundle) (compiler) (output) -> [bundle, compiler]
+    is RunArtifact (program) (output) -> [program]
+    is GradeOutput (output) (expected) -> [output, expected]
+    is CompareBytes (left) (right) -> [left, right]
+    is otherwise -> []
+
+  ba-outputs : BuildOperation -> List BuildArtifactRef
+  ba-outputs (op) = when op
+    is ResolveUnit (source) (bundle) -> [bundle]
+    is Compile (bundle) (compiler) (output) -> [output]
+    is RunArtifact (program) (output) -> [output]
+    is WriteBuildRecord (output) -> [output]
+    is otherwise -> []
+
+  ba-names : List BuildArtifactRef, Integer -> List Text
+  ba-names (refs) (i) =
+    if i >= list-length refs then []
+    else [(list-at refs i).bar-id] & ba-names refs (i + 1)
+
+  ba-artifacts : List BuildArtifactRef, Integer -> List PipeArtifact
+  ba-artifacts (refs) (i) =
+    if i >= list-length refs then []
+    else let r = list-at refs i
+    in [PipeArtifact { pa-name = r.bar-id, pa-kind = PkFile, pa-expr = SeLit r.bar-id, pa-from = None }] & ba-artifacts refs (i + 1)
+
+  ba-stage : BuildAction -> PipeStage
+  ba-stage (a) = PipeStage {
+    ps-name = a.ba-name, ps-why = a.ba-name,
+    ps-in = ba-names (ba-inputs a.ba-operation) 0,
+    ps-out = ba-artifacts (ba-outputs a.ba-operation) 0,
+    ps-needs = if a.ba-guests == 0 then [] else [PrGuests a.ba-guests, PrMemoryMb a.ba-memory-mb],
+    ps-verdict = [PoExit 1 "failed", PoExit 2 "skipped", PoExit 3 "crashed", PoExit 4 "timed out"],
+    ps-body = []
+  }
+
+  ba-stages : List BuildAction, Integer -> List PipeStep
+  ba-stages (actions) (i) =
+    if i >= list-length actions then []
+    else [PsStage (ba-stage (list-at actions i))] & ba-stages actions (i + 1)
+
+  ba-pipeline : BuildActionPlan -> Pipeline
+  ba-pipeline (p) = Pipeline {
+    pl-name = p.bap-name, pl-doc = p.bap-name,
+    pl-params = [], pl-stages = ba-stages p.bap-actions 0
+  }
+
+Page 1

@@ -143,23 +143,45 @@ function Get-IntConst {
 $bs = Join-Path $root 'codex\compiler\Core\BuildSettings.codex'
 $op = Join-Path $root 'codex\compiler\opening.codex'
 $PHASE = [ordered]@{}
+$PhaseConsts = @()
 foreach ($p in @(
     @('LEX','demand-lex-floor','demand-lex-guard-band'),
     @('PARSE','demand-parse-scratch-floor','demand-parse-scratch-guard-band'),
     @('PARSE-KEEP','demand-parse-keep-floor','demand-parse-guard-band'),
-    @('DESUGAR','demand-desugar-floor','demand-desugar-guard-band'),
+    @('DESUGAR','demand-frontend-keep-floor','demand-frontend-keep-guard-band'),
     @('SCOPE','demand-scope-floor','demand-scope-guard-band'),
     @('CHECK','demand-check-floor','demand-check-guard-band'),
     @('LOWER','demand-lower-floor','demand-lower-guard-band'),
     @('RESOLVE','demand-resolve-floor','demand-resolve-guard-band'),
     @('LIFT','demand-lift-floor','demand-lift-guard-band'))) {
   $PHASE[$p[0]] = @((Get-IntConst $bs $p[1]), (Get-IntConst $bs $p[2]))
+  $PhaseConsts += @($p[1], $p[2])
 }
 # CHECK-RESOLVE is the CHECK deck at its true end, so it takes CHECK's floor
 # and band. It is the one phase whose guard compares against the ceiling rather
 # than a band short of it, so the band is room it may spend: BANDFREE.
 $PHASE['CHECK-RESOLVE'] = $PHASE['CHECK']
 $BANDFREE = @('CHECK-RESOLVE')
+# DESUGAR runs on the front-end keep deck (opening.codex, fk-height), and
+# Desugarer's deck-out-of-room stops a SECOND band short of that deck's ceiling,
+# so that band is charged to the phase as use it cannot have.
+$TAILBAND = @{ 'DESUGAR' = (Get-IntConst $bs 'demand-desugar-guard-band') }
+$PhaseConsts += @('demand-desugar-guard-band')
+# A constant this table grades against must be one the compiler sizes a deck
+# with: against a constant nothing reads, every margin for that phase is
+# fiction and reads exactly like a real one (L-UNCALLED).
+$compilerCode = @(Get-ChildItem (Join-Path $root 'codex\compiler') -Recurse -Filter '*.codex' -File |
+  Where-Object { $_.Name -ne 'BuildSettings.codex' } |
+  ForEach-Object { [System.IO.File]::ReadAllLines($_.FullName) } |
+  Where-Object { $_ -match '^\s{2,}\S' -and $_ -notmatch '^\s*cites ' })
+$unread = @($PhaseConsts | Select-Object -Unique | Where-Object {
+  $pat = '(?<![\w-])' + [regex]::Escape($_) + '(?![\w-])'
+  -not @($compilerCode | Where-Object { $_ -match $pat }).Count })
+if ($unread.Count -gt 0) {
+  Write-Host "FAIL: deck-headroom grades against constant(s) nothing in codex/compiler reads: $($unread -join ', ')"
+  Write-Host '      Map the phase to the constants its deck is actually sized with.'
+  exit 1
+}
 $MINWS  = Get-IntConst $op 'deck-min-workspace'
 $ANCHOR = Get-IntConst $op 'deck-scale-anchor'
 $MARGIN = Get-IntConst $op 'deck-scale-margin'
@@ -407,6 +429,7 @@ $rows = foreach ($it in $items) {
     if (-not $PHASE.Contains($p)) { continue }
     if ($p -eq 'CHECK-RESOLVE') { $sawResolve = $true; $u = $u - $PHASE[$p][1] }
     if ($u -le $MINWS) { continue }
+    if ($TAILBAND.Contains($p)) { $u = $u + $TAILBAND[$p] }
     $r = [int][math]::Ceiling($u / [math]::Floor(($PHASE[$p][0] - $PHASE[$p][1]) / 100))
     if ($r -gt $req) { $req = $r; $bind = $p; $worst = $u }
   }
@@ -512,6 +535,28 @@ if ($MinMargin -gt 0) {
     Write-Host "FAIL: $($under.Count) unit(s) below a margin of $MinMargin."
     $under | ForEach-Object { Write-Host ("  margin {0,5:0.00}  derived {1,4}  needs {2,4}  {3}  {4}" -f $_.M, $_.Row.Derived, $_.Row.Required, $_.Row.Binding, $_.Row.Unit) }
     exit 1
+  }
+  # -Measure runs the front end and the text emitter only, so it never reaches
+  # CHECK-KEEP, RESOLVE or LIFT, and those bind the compiler's own unit in CDX
+  # mode: measured 2026-09-23, -Measure said 44 and the lowest -Decks that
+  # compiles was 49 (48 refuses in LIFT, 45 in CHECK-KEEP). So the self unit is
+  # also compiled for real, the way the seed is built, at the scale the floor
+  # allows, and a refusal there fails naming the phase.
+  $selfRow = @($rows | Where-Object { $_.Unit -eq 'build\output\Codex.codex' })
+  if ($selfRow.Count -eq 1) {
+    $at = [int][math]::Floor($selfRow[0].Derived / $MinMargin)
+    $realLog = Join-Path $out 'self-real.log'; $realBin = Join-Path $out 'self-real.cdx'
+    Remove-Item $realBin, $realLog -ErrorAction SilentlyContinue
+    & pwsh -NoProfile -File $compile -Src $selfRow[0].Unit -Out $realBin -Log $realLog -Kernel $Kernel `
+      -Repl -MemMB 3072 -Decks $at -TimeoutSec $TimeoutSec *> ($realLog + '.console')
+    $realCode = $LASTEXITCODE
+    if ($realCode -ne 0 -or -not (Test-Path $realBin)) {
+      $ref = Select-String -Path $realLog -Pattern 'CDX9002: Deck overflow in ([A-Z-]+)' -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($ref) { Write-Host "FAIL: the compiler's own unit refuses in $($ref.Matches[0].Groups[1].Value) when compiled at -Decks $at, the scale a margin of $MinMargin allows." }
+      else { Write-Host "FAIL: the compiler's own unit did not compile at -Decks $at (exit $realCode) and named no deck; not a deck verdict. Log: $realLog" }
+      exit 1
+    }
+    Write-Host "  the compiler's own unit compiles for real at -Decks $at"
   }
   $worst = $scored | Sort-Object M | Select-Object -First 1
   Write-Host ("deck-headroom: OK, tightest margin {0:0.00} (needs {1} of {2}, {3}) over {4} units, floor {5} required" -f `

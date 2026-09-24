@@ -1,0 +1,88 @@
+Chapter: FontPackCheck
+  cites Works chapter GopFat16
+  cites Guios chapter FontLoad
+  cites Encode chapter TrueType
+  cites UI chapter GlyphRasterizer
+  cites Foreword chapter Console
+
+Section: Faces
+
+  pack-files : List Text = ["INTER.TTF", "INTERSB.TTF", "INTERBD.TTF", "SOURCE.TTF", "SOURCESB.TTF", "ATKIN.TTF", "ATKINSB.TTF", "PLEX.TTF", "PLEXSB.TTF", "PLEXMONO.TTF", "NOTOSANS.TTF", "NOTOSNSB.TTF"]
+
+Section: Coverage
+
+  pack-has-ink : List Integer, Integer -> Boolean
+  pack-has-ink (pixels) (i) =
+    if i >= list-length pixels then False
+    else if list-at pixels i > 0 then True else pack-has-ink pixels (i + 1)
+
+  pack-glyphs : Integer, TtfFont, Integer, Integer -> [Console] Integer
+  pack-glyphs (buf) (font) (cp) (failures) =
+    if cp > 126 then failures
+    else act
+      let mark = __heap-save
+      in let gid = ttf-cmap-lookup font.tf-cmap cp
+      in let glyph = ttf-resolve-glyph font gid 0 64
+      in let raster = fb-render-glyph buf font cp 16
+      in let good = gid > 0 & glyph.tr-ok & pack-has-ink raster.rg-pixels 0
+      in let used = __heap-save - mark
+      in let restored = __heap-restore mark
+      in act
+        if good then print-uni "" else print-line-uni ("FAIL glyph=" & show cp & " scratch=" & show used)
+        pack-glyphs buf font (cp + 1) (failures + if good then 0 else 1)
+      end
+    end
+
+  pack-face : Fat16Volume, Text -> [Console, Device.Port] Integer
+  pack-face (vol) (name) = act
+    size <- gfat-file-size vol name
+    if size <= 0 then act
+      print-line-uni ("FAIL missing " & name)
+      let failed = 1
+      in failed
+    end
+    else act
+      let buf = __heap-save
+      in let reserve = __heap-advance (size + 1024)
+      in act
+        loaded <- gfat-read-file-bulk vol name buf
+        if loaded /= size | fb-ttf-plausible buf size == False then act
+          print-line-uni ("FAIL invalid " & name)
+          let failed = 1
+          in failed
+        end
+        else let font = fb-parse-ttf buf size
+        in act
+          failures <- pack-glyphs buf font 33 0
+          print-line-uni ((if failures == 0 then "PASS " else "FAIL ") & name & " glyphs=94")
+          failures
+        end
+      end
+    end
+  end
+
+  pack-faces : Fat16Volume, List Text, Integer, Integer -> [Console, Device.Port] Integer
+  pack-faces (vol) (files) (i) (failures) =
+    if i >= list-length files then failures
+    else act
+      let mark = __heap-save
+      in act
+        result <- pack-face vol (list-at files i)
+        let restored = __heap-restore mark
+        in pack-faces vol files (i + 1) (failures + result)
+      end
+    end
+
+Section: Entry
+
+  opening : [Console, Device.Port] Integer = act
+    mounted <- gfat-mount-esp
+    if mounted.gm-ok == False then act
+      print-line-uni "FAIL no ESP"
+      let failed = 1
+      in failed
+    end
+    else pack-faces mounted.gm-vol pack-files 0 0
+  end
+
+Page 1

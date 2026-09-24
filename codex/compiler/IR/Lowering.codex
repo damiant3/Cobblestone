@@ -646,9 +646,21 @@ Section: Expression Lowering
    in let arg-tn = type-name-of (deep-resolve (ctx.ust) (ir-expr-type arg-ir))
    in let probe = if text-length arg-tn == 0 | is-primitive-type-name arg-tn then ErrorTy else lookup-type-split (ctx.overlay) (ctx.base) ("__show_" & arg-tn)
    in when probe
-    is ErrorTy | NoExpectTy -> lower-apply-dispatch func-ir arg-ir preferred-ret sp
+    is ErrorTy | NoExpectTy -> lower-apply-dispatch (show-name-typed func-ir arg-ir ctx) arg-ir preferred-ret sp
     is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
      in lower-apply-dispatch (deck-record (IrName ("__show_" & arg-tn) fty sp)) arg-ir (peel-fun-return fty) sp
+
+  show-name-typed : IRExpr, IRExpr, LowerCtx -> IRExpr
+  show-name-typed (func-ir) (arg-ir) (ctx) =
+   when func-ir
+    is IrName (n) (fty) (s) ->
+     when deep-resolve (ctx.ust) fty
+      is FunTy (p) (row) (r) ->
+       when deep-resolve (ctx.ust) p
+        is TypeVar (id) -> deck-record (IrName n (deck-record (FunTy (ir-expr-type arg-ir) row r)) s)
+        is otherwise -> func-ir
+      is otherwise -> func-ir
+    is otherwise -> func-ir
 
   lower-binary-maybe-eq : BinaryOp, CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-binary-maybe-eq (op) (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) =

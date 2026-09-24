@@ -1,0 +1,42 @@
+Chapter: WebSocket Frame Guard
+  cites Foreword chapter Console
+  cites Encode chapter WebSocket
+
+Section: Helpers
+
+  dec-list : List Integer -> Text
+  dec-list (bs) = dl bs 0 (list-length bs) ""
+
+  dl : List Integer, Integer, Integer, Text -> Text
+  dl (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else " "
+    in dl bs (i + 1) n (acc & sep & show (list-at bs i))
+
+  filled : Integer, List Integer -> List Integer
+  filled (n) (acc) =
+    if n <= 0 then acc else filled (n - 1) (list-push acc 7)
+
+  arm : Text, List Integer -> Text
+  arm (name) (bs) =
+    let f = ws-decode-frame bs
+    in let plen = list-length (f.ws-payload)
+    in let shown = if plen <= 8 then " payload=" & dec-list (f.ws-payload) else ""
+    in name & " size=" & show (ws-frame-size bs) & " ok=" & show (f.ws-ok) & " len=" & show (f.ws-length) & " plen=" & show plen & shown
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (arm "good-short" [129, 2, 72, 105])
+    print-line-uni (arm "good-masked" [129, 133, 55, 250, 33, 61, 127, 159, 77, 81, 88])
+    print-line-uni (arm "two-frames" [129, 1, 65, 129, 1, 66])
+    print-line-uni (arm "good-16" (ws-encode-binary (filled 200 [])))
+    print-line-uni (arm "good-64" (ws-encode-binary (filled 65536 [])))
+    print-line-uni (arm "cut-body" [129, 5, 72, 105])
+    print-line-uni (arm "high-len" [130, 127, 0, 0, 0, 1, 0, 0, 0, 2, 170, 187])
+    print-line-uni (arm "msb-len" [130, 127, 128, 0, 0, 0, 0, 0, 0, 1, 170])
+    print-line-uni (arm "runt" [129])
+    print-line-uni (arm "empty" [])
+    print-line-uni (arm "cut-16" [130, 126, 1])
+    print-line-uni (arm "cut-mask" [129, 133, 1, 2])
+  end

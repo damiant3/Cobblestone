@@ -12,21 +12,15 @@ Chapter: TestBoardsScript
  THE SEVENTEENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The
  emitted script is byte-identical to the one that shipped before the migration.
 
- THIS SCRIPT GRADES WHICHEVER COMPILER IS ALREADY IN `build-output`. The seed is
- copied to `Stage0` ONLY when `Stage0` is absent, so a stale binary left there
- by an earlier run is used instead, and the board result is then a statement
- about that binary rather than about the seed. `sweep-apps` stages the seed
- UNCONDITIONALLY on the line beside it. Both are shipped, both are on the same
- path, and they disagree. Recorded rather than repaired here, because changing
- the guard changes behaviour and this migration's gate is byte-identity.
-
  THE FINAL EXIT IS THE FAILURE COUNT, a computed code, which `PipeOutcome`
  cannot spell. That is the second generator to need it after `sweep-apps`, and
  the verdict below is empty rather than false.
 
 Section: Parameters
 
-  testboards-params : List ShellParam = [sh-param-choice-default "Arch" ["all", "arm64", "riscv64"] (SeLit "all")]
+  testboards-default-seed : ShellExpr = SePathJoin SeScriptRoot (SeLit "..\\seed\\Codex.cdx")
+
+  testboards-params : List ShellParam = [sh-param-choice-default "Arch" ["all", "arm64", "riscv64"] (SeLit "all"), sh-param-default "Kernel" SptString testboards-default-seed, sh-param-optional "AllowStaleKernel" SptSwitch]
 
 Section: The pipeline, declared before it is spelled
 
@@ -37,8 +31,6 @@ Section: The pipeline, declared before it is spelled
   out-dir-art : PipeArtifact = PipeArtifact { pa-name = "OutDir", pa-kind = PkDir, pa-expr = SeVar "OutDir", pa-from = Just (SeRaw "Join-Path $PSScriptRoot 'output\\boards'") }
 
   seed-cdx-art : PipeArtifact = PipeArtifact { pa-name = "SeedCdx", pa-kind = PkFile, pa-expr = SeVar "SeedCdx", pa-from = Just (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'") }
-
-  stage0-art : PipeArtifact = PipeArtifact { pa-name = "Stage0", pa-kind = PkFile, pa-expr = SeVar "Stage0", pa-from = Just (SeRaw "Join-Path $Repo 'build-output\\bare-metal\\Codex.cdx'") }
 
   hello-src-art : PipeArtifact = PipeArtifact { pa-name = "HelloSrc", pa-kind = PkFile, pa-expr = SeVar "HelloSrc", pa-from = Just (SeRaw "Join-Path $OutDir 'hello-board.codex'") }
 
@@ -53,15 +45,15 @@ Section: The pipeline, declared before it is spelled
 
   skip-art : PipeArtifact = PipeArtifact { pa-name = "skip", pa-kind = PkValue, pa-expr = SeVar "skip", pa-from = None }
 
-  tb-arts : List PipeArtifact = [repo-art, renode-exe-art, out-dir-art, seed-cdx-art, stage0-art, hello-src-art, boards-art, pass-art, fail-art, skip-art]
+  tb-arts : List PipeArtifact = [repo-art, renode-exe-art, out-dir-art, seed-cdx-art, hello-src-art, boards-art, pass-art, fail-art, skip-art]
 
 Section: S01 -- Preamble
 
   s01-body : List ShellCmd =
     let skip-renode = [ScRaw "Write-RenodeSkip", ScExit (SeInt 0)]
-    in [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), pipe-produce renode-exe-art, pipe-produce out-dir-art, ScMkdir (pipe-ref tb-arts testboards-params "OutDir"), ScBlank, pipe-produce seed-cdx-art, pipe-produce stage0-art, ScMkdir (SeRaw "(Split-Path $Stage0)"), ScIf (SeNot (SeFileExists (pipe-ref tb-arts testboards-params "Stage0"))) [ScCopy (pipe-ref tb-arts testboards-params "SeedCdx") (pipe-ref tb-arts testboards-params "Stage0")] [], ScBlank, ScIf (SeNot (pipe-ref tb-arts testboards-params "RenodeExe")) skip-renode []]
+    in [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), pipe-produce renode-exe-art, pipe-produce out-dir-art, ScMkdir (pipe-ref tb-arts testboards-params "OutDir"), ScBlank, pipe-produce seed-cdx-art, ScRaw "if (-not (Test-Path -PathType Leaf $Kernel)) { throw \"Kernel not found: $Kernel\" }", ScRaw "$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)", ScRaw "$seedDigest = (Get-FileHash -Algorithm SHA256 $SeedCdx).Hash.Substring(0, 16)", ScRaw "Write-Host \"Kernel: $Kernel [$kernelDigest]\"", ScRaw "if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {", ScRaw "    Write-Host 'REFUSED: the kernel is a build-output binary and is not the depot seed.'", ScRaw "    Write-Host \"         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last.\"", ScRaw "    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'", ScRaw "    exit 2", ScRaw "}", ScBlank, ScIf (SeNot (pipe-ref tb-arts testboards-params "RenodeExe")) skip-renode []]
 
-  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "find Renode, take the output directory, and stage the seed as the compiler ONLY IF build-output holds nothing", ps-in = [], ps-out = [repo-art, renode-exe-art, out-dir-art, seed-cdx-art, stage0-art], ps-needs = [], ps-verdict = [PoExit 0 "Renode is not installed, so every board arm is skipped and the run reports success"], ps-body = s01-body }
+  s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "find Renode, take the output directory, and name the kernel this run is a statement about", ps-in = ["Kernel", "AllowStaleKernel"], ps-out = [repo-art, renode-exe-art, out-dir-art, seed-cdx-art], ps-needs = [], ps-verdict = [PoExit 0 "Renode is not installed, so every board arm is skipped and the run reports success", PoExit 2 "the kernel is stale and -AllowStaleKernel was not given, so the run would grade whichever compiler happened to run last"], ps-body = s01-body }
 
 Section: S02 -- Hello Source
 
@@ -79,10 +71,10 @@ Section: S03 -- Board Definitions
 Section: S04 -- Board Loop
 
   s04-compile : List ShellCmd =
-    [ScAssign "elfOut" (SeRaw "Join-Path $OutDir \"hello-$($b.Name).elf\""), ScAssign "compileScript" (SeRaw "Join-Path $Repo \"codex\\plugs\\$($b.Plug)\\$($b.Compile)\""), ScBlank, ScRaw "Write-Host \"  $($b.Name): compiling...\" -NoNewline", ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& pwsh -NoProfile -File $compileScript -Src $HelloSrc -Out $elfOut 2>&1 | Out-Null", ScRaw "$ErrorActionPreference = $prev", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "elfOut")))) [ScRaw "Write-Host \" FAIL (compile)\" -ForegroundColor Red", ScRaw "$fail++; continue"] []]
+    [ScAssign "elfOut" (SeRaw "Join-Path $OutDir \"hello-$($b.Name).elf\""), ScAssign "compileScript" (SeRaw "Join-Path $Repo \"codex\\plugs\\$($b.Plug)\\$($b.Compile)\""), ScBlank, ScRaw "Write-Host \"  $($b.Name): compiling...\" -NoNewline", ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& pwsh -NoProfile -File $compileScript -Src $HelloSrc -Out $elfOut -Kernel $Kernel 2>&1 | Out-Null", ScRaw "$ErrorActionPreference = $prev", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "elfOut")))) [ScRaw "Write-Host \" FAIL (compile)\" -ForegroundColor Red", ScRaw "$fail++; continue"] []]
 
   s04-renode : List ShellCmd =
-    [ScAssign "uartLog" (SeRaw "Join-Path $OutDir \"uart-$($b.Name).log\""), ScIf (SeFileExists (SeVar "uartLog")) [ScDelete (SeVar "uartLog")] [], ScBlank, ScRaw "$elfPath = (Resolve-Path $elfOut).Path -replace '\\\\','/'", ScRaw "$boardPath = (Resolve-Path $boardRepl).Path -replace '\\\\','/'", ScRaw "$uartPath = $uartLog -replace '\\\\','/'", ScBlank, ScRaw "$rescLines = @(\n        'mach create \"codex\"'\n        \"machine LoadPlatformDescription @$boardPath\"\n        \"sysbus LoadELF @$elfPath\"\n        \"uart0 CreateFileBackend @$uartPath true\"\n        'start'\n        'sleep 3'\n        'quit'\n    )", ScAssign "rescFile" (SeRaw "Join-Path $OutDir \"test-$($b.Name).resc\""), ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "rescFile", SeVar "rescLines"], ScRaw "$rescPath = $rescFile -replace '\\\\','/'", ScBlank, ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& $RenodeExe --disable-xwt --console -e \"include @$rescPath\" 2>&1 | Out-Null", ScRaw "$ErrorActionPreference = $prev", ScRaw "Start-Sleep -Milliseconds 500"]
+    [ScAssign "uartLog" (SeRaw "Join-Path $OutDir \"uart-$($b.Name).log\""), ScIf (SeFileExists (SeVar "uartLog")) [ScDelete (SeVar "uartLog")] [], ScBlank, ScRaw "$elfPath = (Resolve-Path $elfOut).Path -replace '\\\\','/'", ScRaw "$boardPath = (Resolve-Path $boardRepl).Path -replace '\\\\','/'", ScRaw "$uartPath = $uartLog -replace '\\\\','/'", ScBlank, ScRaw "$rescLines = @(\n        'mach create \"codex\"'\n        \"machine LoadPlatformDescription @$boardPath\"\n        \"sysbus LoadELF @$elfPath\"\n        \"uart0 CreateFileBackend @$uartPath true\"\n        'start'\n        'sleep 3'\n        'quit'\n    )", ScAssign "rescFile" (SeRaw "Join-Path $OutDir \"test-$($b.Name).resc\""), ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "rescFile", SeVar "rescLines"], ScRaw "$rescPath = $rescFile -replace '\\\\','/'", ScBlank, ScRaw "$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "Start-Process -FilePath $RenodeExe -ArgumentList ('--disable-xwt --console -e \"include @' + $rescPath + '\"') -WindowStyle Hidden -Wait", ScRaw "$ErrorActionPreference = $prev", ScRaw "Start-Sleep -Milliseconds 500"]
 
   s04-verify : List ShellCmd =
     let pass-branch = [ScRaw "Write-Host \" PASS\" -ForegroundColor Green", ScRaw "$pass++"]

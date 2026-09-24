@@ -1,0 +1,39 @@
+Chapter: CalcLayoutFit
+  cites Works chapter GopDesk
+  cites Works chapter GopCalc
+  cites Foreword chapter Console
+
+  calc-fit-keys : List Text = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "+", "-", "*", "/", "="]
+
+  calc-fit-check : WidgetNode, LayoutRect, Integer, Integer, Integer, Integer, Integer -> Boolean
+  calc-fit-check (tree) (viewport) (w) (h) (state) (ds) (i) =
+    if i >= list-length calc-fit-keys then True
+    else let id = "gcalc-" & list-at calc-fit-keys i
+    in when widget-find tree id
+      is None -> False
+      is Just (key) ->
+        let b = key.wn-bounds
+        in let scale = ui-wscale w
+        in let inside = b.lr-x >= viewport.lr-x & b.lr-y >= viewport.lr-y & b.lr-x + b.lr-w <= viewport.lr-x + viewport.lr-w & b.lr-y + b.lr-h <= viewport.lr-y + viewport.lr-h
+        in let hit = dk-calc-hit w h state ((b.lr-x + b.lr-w / 2) * scale) ((b.lr-y + b.lr-h / 2) * scale) ds gfont-none
+        in inside & hit == gcalc-id-scan id & calc-fit-check tree viewport w h state ds (i + 1)
+
+  calc-fit-case : Integer, Integer -> [Console] Nothing
+  calc-fit-case (w) (h) = act
+    let mark = __heap-save
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let state = alloc-zeroed 128 64
+    in let store = poke-32 ds 24 state
+    in let scale = ui-wscale w
+    in let box = dk-wnd-content desk-focus-calc w h ds gfont-none scale
+    in let viewport = layout-rect (box.lr-x / scale) (box.lr-y / scale) (box.lr-w / scale) (box.lr-h / scale)
+    in let tree = widget-layout (gcalc-tree state) (dk-theme-ds ds) viewport
+    in let ok = calc-fit-check tree viewport w h state ds 0
+    in let restored = __heap-restore mark
+    in print-line-uni (show w & " all 15 keys fit and hit: " & if ok then "PASS" else "FAIL")
+  end
+
+  opening : [Console] Nothing = act
+    calc-fit-case 1280 800
+    calc-fit-case 1600 900
+  end

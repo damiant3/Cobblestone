@@ -1,0 +1,23 @@
+Chapter: Inspection Sender
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+
+Section: CCE Transport
+
+  inspection-bytes : Text, Integer, Integer, List Integer -> List Integer
+  inspection-bytes (s) (i) (stop) (acc) =
+   if i >= stop then acc else inspection-bytes s (i + 1) stop (list-push acc (char-code-at s i))
+
+  inspection-send : TcpTransportState, Text -> [Network.Read, Network.Write] NetSendResult
+  inspection-send (ts) (text) = inspection-send-loop ts text 0 (text-length text) 0
+
+  inspection-send-loop : TcpTransportState, Text, Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
+  inspection-send-loop (ts) (text) (off) (len) (sent) =
+   if off >= len then NetSendResult { ns-transport = ts, ns-sent = sent, ns-complete = True }
+   else let stop = if off + net-mss > len then len else off + net-mss
+   in let chunk = inspection-bytes text off stop []
+   in act
+    r <- net-io-send-chunk-checked ts chunk 0 (list-length chunk)
+    if r.ns-complete then inspection-send-loop (r.ns-transport) text stop len (sent + r.ns-sent)
+    else NetSendResult { ns-transport = r.ns-transport, ns-sent = sent + r.ns-sent, ns-complete = False }
+   end

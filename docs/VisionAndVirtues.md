@@ -122,8 +122,8 @@ reaching for it prematurely.
 ### 9. One Thing at a Time
 
 Each file does one thing. Each Chapter does one thing. Each CL does
-one thing. The compiler is ~60,451 lines across 65 files (measured
-2026-09-02; re-measure rather than quoting this). A wrong change in one
+one thing. The compiler is ~62,538 lines across 67 files (measured
+2026-09-24; re-measure rather than quoting this). A wrong change in one
 place surfaces as a silent corruption three pipeline stages later.
 
 ### 10. Read the Literature

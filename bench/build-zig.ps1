@@ -1,7 +1,8 @@
-# Compile all Zig benchmark files with zig at -O Debug and -O ReleaseFast,
-# producing assembly listings (-femit-asm) and executables for each.
+# Compile all Zig benchmark files with zig at each of -Modes (Debug and
+# ReleaseFast by default), producing assembly listings (-femit-asm) and
+# executables for each.
 #
-# Output: bench/build-output/<OutName>/<name>/{Debug,ReleaseFast}/{name}.exe, {name}.s
+# Output: bench/build-output/<OutName>/<name>/<mode>/{name}.exe, {name}.s
 # -SrcDir/-OutName let the same build run over the zig the ZIG PLUG emitted
 # from bench/codex (bench/transpile-zig.ps1 writes it): the two columns are
 # then built and counted by one script, so a difference between them is the
@@ -10,12 +11,14 @@
 param(
     [string]$Zig = 'D:\zig-0.16.0\zig.exe',
     [string]$SrcDir = '',
-    [string]$OutName = 'zig'
+    [string]$OutName = 'zig',
+    [string[]]$Modes = @('Debug', 'ReleaseFast')
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$Modes = @($Modes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $BenchDir = $PSScriptRoot
 if (-not $SrcDir) { $SrcDir = Join-Path $BenchDir 'zig' }
 $OutRoot  = Join-Path $BenchDir 'build-output' $OutName
@@ -35,7 +38,7 @@ New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
 
 foreach ($src in $sources) {
     $name = $src.BaseName
-    foreach ($opt in @('Debug', 'ReleaseFast')) {
+    foreach ($opt in $Modes) {
         $outDir = Join-Path $OutRoot $name $opt
         New-Item -ItemType Directory -Force -Path $outDir | Out-Null
         $exe = Join-Path $outDir "$name.exe"

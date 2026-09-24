@@ -1,6 +1,7 @@
 Chapter: GopWeb
   cites Net chapter WebServer
   cites Net chapter NetIO
+  cites Net chapter NetCompact
   cites Net chapter NetDriver
   cites Foreword chapter Capability
   cites Foreword chapter CCE
@@ -150,7 +151,7 @@ Section: The Service
   gopweb-service : Integer, Integer -> [Console, Network.Read, Network.Write] Integer
   gopweb-service (blk) (ignored) =
     let m0 = WebMux { listen = net-io-listen (fresh-listen-transport gopweb-port), conns = [], free = [], served = 0 }
-    in gopweb-pump blk m0 0
+    in gopweb-pump blk m0 0 [] 0 0
 
   gopweb-take-cmd : Integer -> Integer
   gopweb-take-cmd (blk) =
@@ -159,24 +160,28 @@ Section: The Service
     else let p = poke-32 blk gopweb-blk-paused (if cmd == gopweb-cmd-stop then 1 else 0)
     in poke-32 blk gopweb-blk-cmd 0
 
-  gopweb-pump : Integer, WebMux, Integer -> [Console, Network.Read, Network.Write] Integer
-  gopweb-pump (blk) (m) (since) =
-    let tc = gopweb-take-cmd blk
+  gopweb-pump : Integer, WebMux, Integer, List Integer, Integer, Integer -> [Console, Network.Read, Network.Write] Integer
+  gopweb-pump (blk) (m) (since) (rx) (set) (mark) =
+    if list-length rx == 0 then let s = nc-set-acquire (nc-pool-cell process-get-pid)
+      in let rx1 = net-io-rx rx
+      in let mk = __heap-save
+      in gopweb-pump blk m since rx1 s mk
+    else let tc = gopweb-take-cmd blk
     in if since >= web-sweep-interval then act
       m1 <- web-mux-sweep m 0
-      gopweb-pump blk m1 0
+      gopweb-pump blk (web-mux-compact m1 set mark) 0 rx set mark
     end
     else let hp = __heap-save
     in act
-      frame <- net-driver-recv-frame
-      if list-length frame == 0 | peek-32 blk gopweb-blk-paused /= 0 then
+      n <- net-driver-recv-into rx
+      if n == 0 | peek-32 blk gopweb-blk-paused /= 0 then
         let restored = __heap-restore hp
         in let y = process-yield
-        in gopweb-pump blk m (since + 1)
+        in gopweb-pump blk m (since + 1) rx set mark
       else act
-        m1 <- web-mux-feed gopweb-route (\line -> gopweb-log blk line) m frame gopweb-port
+        m1 <- web-mux-feed-within gopweb-route (\line -> gopweb-log blk line) m rx n gopweb-port
         let sv = poke-32 blk gopweb-blk-served (m1.served)
-        in gopweb-pump blk m1 (since + 1)
+        in gopweb-pump blk (web-mux-compact m1 set mark) (since + 1) rx set mark
       end
     end
 
@@ -185,8 +190,14 @@ Section: Starting It
  Answers the child's pid. The parent returns immediately: a service that
  had to be waited on would be a call with extra steps.
 
+ 8 MiB: the mux's arena set is 384 KiB and compaction lets 128 KiB of
+ garbage build before it runs, which leaves a plain spawn's 1 MiB heap
+ 512 KiB, eight 64 KiB receive buffers counting the listener's.
+
+  gopweb-heap-bytes : Integer = 8388608
+
   gopweb-start : Integer -> [Concurrent] Integer
-  gopweb-start (blk) = process-spawn (\x -> gopweb-service blk x)
+  gopweb-start (blk) = process-spawn-with-heap (\x -> gopweb-service blk x) gopweb-heap-bytes
 
 Section: Holding the Network
 

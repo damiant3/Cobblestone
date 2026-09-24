@@ -85,6 +85,28 @@ Section: Type Resolution
 
 Section: IR Rewrite
 
+ An instantiated equality helper's name carries its actuals, and lowering
+ spells them BEFORE this pass closes a leftover variable to `int-ty-default`:
+ `[] == []` was named `__eq_List@#N` while the backend minted the helper from
+ the closed argument type, `__eq_List@Integer`, and the call was CDX2040.
+ The actuals are respelled here from the resolved parameter type, which is the
+ type the backend's collector names the helper from.
+
+  eq-inst-rename : Text, CodexType -> Text
+  eq-inst-rename (n) (t) =
+   if text-starts-with n "__eq_" == False then n
+   else let at = eq-inst-at n 5 (text-length n)
+   in if at < 0 then n
+   else when t
+    is FunTy (p) (row) (r) -> eq-helper-name-inst (substring n 5 (at - 5)) (eq-site-actuals (strip-unit-ty p))
+    is otherwise -> n
+
+  eq-inst-at : Text, Integer, Integer -> Integer
+  eq-inst-at (n) (i) (len) =
+   if i >= len then 0 - 1
+   else if char-code (char-at n i) == char-code (char-at "@" 0) then i
+   else eq-inst-at n (i + 1) len
+
   rewrite-ir-pat : ResolveScope, IRPat -> IRPat
   rewrite-ir-pat (scope) (p) =
    when p
@@ -98,7 +120,7 @@ Section: IR Rewrite
   rewrite-ir-expr (scope) (e) =
    when e
     is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> e
-    is IrName (n) (t) (s) -> deck-record (IrName n (resolve-ty-deep scope t) s)
+    is IrName (n) (t) (s) -> let rt = resolve-ty-deep scope t in deck-record (IrName (eq-inst-rename n rt) rt s)
     is IrBinary (op) (l) (r) (t) (s) -> deck-record (IrBinary op (rewrite-ir-expr scope l) (rewrite-ir-expr scope r) (resolve-ty-deep scope t) s)
     is IrNegate (x) (t) (s) -> deck-record (IrNegate (rewrite-ir-expr scope x) (resolve-ty-deep scope t) s)
     is IrIf (c) (th) (el) (t) (s) -> deck-record (IrIf (rewrite-ir-expr scope c) (rewrite-ir-expr scope th) (rewrite-ir-expr scope el) (resolve-ty-deep scope t) s)

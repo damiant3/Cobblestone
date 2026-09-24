@@ -342,6 +342,10 @@ Section: CCE Output Tables
 
   cce-dot : Integer = from-unicode 46
 
+  cce-lower-e : Integer = from-unicode 101
+
+  cce-plus : Integer = from-unicode 43
+
   cce-newline : Integer = from-unicode 10
 
  The input boundary is the output boundary run backwards, and it needs the
@@ -2514,18 +2518,29 @@ Section: WASI Runtime Helpers
    "      (br $cpl)))\n" &
    "    (i64.extend_i32_u (local.get $result)))\n\n"
 
- The oracle is `__real_to_text`, `codex/compiler/Emit/X86_64TextHelpers.codex:590`,
+ The oracle is `__real_to_text` in `codex/compiler/Emit/X86_64TextHelpers.codex`,
  and the FORMAT is the part that has to match rather than the arithmetic: at most
  fifteen fractional digits, trailing zeros stripped down to one, always a dot and
- always a digit after it. The two diverge above 2^63, where `cvttsd2si` answers
- the integer indefinite and `i64.trunc_sat_f64_s` saturates; no `.expected` in the
- corpus spells a value that large.
+ always a digit after it. A biased exponent from 1086 (2^63) to 2046 goes to
+ `$__f64_big_to_text`, the exponent form every backend prints byte for byte, and
+ 2047 answers `inf`, `-inf` or `nan` as CCE bytes packed into one i32.
 
   wat-rt-f64-to-text : Text =
    "  (func $__f64_to_text (param $bits i64) (result i64)\n" &
    "    (local $neg i32) (local $mag i64) (local $x f64) (local $frac f64)\n" &
    "    (local $ip i64) (local $ibuf i32) (local $ic i32) (local $fbuf i32) (local $fc i32)\n" &
    "    (local $d i32) (local $result i32) (local $len i32) (local $w i32) (local $i i32)\n" &
+   "    (local.set $mag (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 2047)))\n" &
+   "    (if (i32.and (i64.ge_u (local.get $mag) (i64.const 1086)) (i64.le_u (local.get $mag) (i64.const 2046)))\n" &
+   "      (then (return (call $__f64_big_to_text (local.get $bits)))))\n" &
+   "    (if (i64.eq (local.get $mag) (i64.const 2047)) (then\n" &
+   "      (local.set $result (call $bump_alloc (i32.const 8)))\n" &
+   "      (if (i64.ne (i64.shl (local.get $bits) (i64.const 12)) (i64.const 0))\n" &
+   "        (then (i32.store (local.get $result) (i32.const 3)) (i32.store offset=4 (local.get $result) (i32.const 1183506)))\n" &
+   "        (else (if (i64.ne (i64.shr_u (local.get $bits) (i64.const 63)) (i64.const 0))\n" &
+   "          (then (i32.store (local.get $result) (i32.const 4)) (i32.store offset=4 (local.get $result) (i32.const 470946121)))\n" &
+   "          (else (i32.store (local.get $result) (i32.const 3)) (i32.store offset=4 (local.get $result) (i32.const 1839633))))))\n" &
+   "      (return (i64.extend_i32_u (local.get $result)))))\n" &
    "    (local.set $neg (i32.wrap_i64 (i64.shr_u (local.get $bits) (i64.const 63))))\n" &
    "    (local.set $mag (i64.shr_u (i64.shl (local.get $bits) (i64.const 1)) (i64.const 1)))\n" &
    "    (local.set $x (f64.reinterpret_i64 (local.get $mag)))\n" &
@@ -2591,6 +2606,116 @@ Section: WASI Runtime Helpers
    "      (local.set $w (i32.add (local.get $w) (i32.const 1)))\n" &
    "      (local.set $i (i32.add (local.get $i) (i32.const 1)))\n" &
    "      (br $fcloop)))\n" &
+   "    (i64.extend_i32_u (local.get $result)))\n\n"
+
+  wat-rt-f64-big-to-text : Text =
+   "  (func $__f64_big_pow10 (param $n i32) (result i64) (local $v i64)\n" &
+   "    (local.set $v (i64.const 1))\n" &
+   "    (block $d (loop $l (br_if $d (i32.eqz (local.get $n)))\n" &
+   "      (local.set $v (i64.mul (local.get $v) (i64.const 10)))\n" &
+   "      (local.set $n (i32.sub (local.get $n) (i32.const 1))) (br $l)))\n" &
+   "    (local.get $v))\n\n" &
+   "  (func $__f64_big_to_text (param $bits i64) (result i64)\n" &
+   "    (local $lb i32) (local $o i32) (local $i i32) (local $k i32) (local $b i64) (local $m i64)\n" &
+   "    (local $lo i64) (local $hi i64) (local $top i32) (local $rem i64) (local $cur i64) (local $q i64)\n" &
+   "    (local $a i64) (local $n1 i64) (local $n2 i64) (local $sticky i32) (local $count i32) (local $t i32)\n" &
+   "    (local $x i64) (local $y i64) (local $p i64) (local $j i32) (local $drop i32) (local $e i32)\n" &
+   "    (local $rest i64) (local $rlen i32) (local $elen i32) (local $len i32) (local $result i32)\n" &
+   "    (local.set $lb (call $bump_alloc (i32.const 132)))\n" &
+   "    (block $zd (loop $zl (br_if $zd (i32.ge_u (local.get $i) (i32.const 132)))\n" &
+   "      (i32.store (i32.add (local.get $lb) (local.get $i)) (i32.const 0))\n" &
+   "      (local.set $i (i32.add (local.get $i) (i32.const 4))) (br $zl)))\n" &
+   "    (local.set $m (i64.or (i64.and (local.get $bits) (i64.const 4503599627370495)) (i64.const 4503599627370496)))\n" &
+   "    (local.set $k (i32.sub (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 2047))) (i32.const 1075)))\n" &
+   "    (local.set $b (i64.extend_i32_u (i32.and (local.get $k) (i32.const 31))))\n" &
+   "    (local.set $lo (i64.and (local.get $m) (i64.const 4294967295)))\n" &
+   "    (local.set $hi (i64.shr_u (local.get $m) (i64.const 32)))\n" &
+   "    (local.set $top (i32.add (i32.shr_u (local.get $k) (i32.const 5)) (i32.const 2)))\n" &
+   "    (local.set $o (i32.add (local.get $lb) (i32.shl (i32.shr_u (local.get $k) (i32.const 5)) (i32.const 2))))\n" &
+   "    (i64.store32 (local.get $o) (i64.shl (local.get $lo) (local.get $b)))\n" &
+   "    (i64.store32 offset=4 (local.get $o) (i64.or (i64.shr_u (local.get $lo) (i64.sub (i64.const 32) (local.get $b))) (i64.shl (local.get $hi) (local.get $b))))\n" &
+   "    (i64.store32 offset=8 (local.get $o) (i64.shr_u (i64.shl (local.get $hi) (local.get $b)) (i64.const 32)))\n" &
+   "    (loop $cl\n" &
+   "      (local.set $rem (i64.const 0))\n" &
+   "      (local.set $i (local.get $top))\n" &
+   "      (block $ld (loop $ll\n" &
+   "        (local.set $o (i32.add (local.get $lb) (i32.shl (local.get $i) (i32.const 2))))\n" &
+   "        (local.set $cur (i64.or (i64.shl (local.get $rem) (i64.const 32)) (i64.load32_u (local.get $o))))\n" &
+   "        (local.set $q (i64.div_u (local.get $cur) (i64.const 1000000000)))\n" &
+   "        (local.set $rem (i64.sub (local.get $cur) (i64.mul (local.get $q) (i64.const 1000000000))))\n" &
+   "        (i64.store32 (local.get $o) (local.get $q))\n" &
+   "        (br_if $ld (i32.eqz (local.get $i)))\n" &
+   "        (local.set $i (i32.sub (local.get $i) (i32.const 1))) (br $ll)))\n" &
+   "      (block $td (loop $tl\n" &
+   "        (br_if $td (i32.eqz (local.get $top)))\n" &
+   "        (br_if $td (i32.ne (i32.load (i32.add (local.get $lb) (i32.shl (local.get $top) (i32.const 2)))) (i32.const 0)))\n" &
+   "        (local.set $top (i32.sub (local.get $top) (i32.const 1))) (br $tl)))\n" &
+   "      (if (i64.ne (local.get $n2) (i64.const 0)) (then (local.set $sticky (i32.const 1))))\n" &
+   "      (local.set $n2 (local.get $n1))\n" &
+   "      (local.set $n1 (local.get $a))\n" &
+   "      (local.set $a (local.get $rem))\n" &
+   "      (local.set $count (i32.add (local.get $count) (i32.const 1)))\n" &
+   "      (br_if $cl (i32.ne (local.get $top) (i32.const 0)))\n" &
+   "      (br_if $cl (i32.ne (i32.load (local.get $lb)) (i32.const 0))))\n" &
+   "    (local.set $t (i32.const 1))\n" &
+   "    (local.set $x (local.get $a))\n" &
+   "    (block $cd (loop $cc (br_if $cd (i64.lt_u (local.get $x) (i64.const 10)))\n" &
+   "      (local.set $x (i64.div_u (local.get $x) (i64.const 10)))\n" &
+   "      (local.set $t (i32.add (local.get $t) (i32.const 1))) (br $cc)))\n" &
+   "    (local.set $x (i64.add (i64.mul (local.get $a) (i64.const 1000000000)) (local.get $n1)))\n" &
+   "    (if (i32.ge_s (local.get $t) (i32.const 7))\n" &
+   "      (then\n" &
+   "        (local.set $y (local.get $x))\n" &
+   "        (if (i64.ne (local.get $n2) (i64.const 0)) (then (local.set $sticky (i32.const 1))))\n" &
+   "        (local.set $drop (i32.sub (local.get $t) (i32.const 6))))\n" &
+   "      (else\n" &
+   "        (local.set $j (i32.sub (i32.const 7) (local.get $t)))\n" &
+   "        (local.set $p (call $__f64_big_pow10 (i32.sub (i32.const 9) (local.get $j))))\n" &
+   "        (local.set $y (i64.add (i64.mul (local.get $x) (call $__f64_big_pow10 (local.get $j))) (i64.div_u (local.get $n2) (local.get $p))))\n" &
+   "        (if (i64.ne (i64.rem_u (local.get $n2) (local.get $p)) (i64.const 0)) (then (local.set $sticky (i32.const 1))))\n" &
+   "        (local.set $drop (i32.const 1))))\n" &
+   "    (local.set $p (call $__f64_big_pow10 (local.get $drop)))\n" &
+   "    (local.set $q (i64.div_u (local.get $y) (local.get $p)))\n" &
+   "    (local.set $rem (i64.rem_u (local.get $y) (local.get $p)))\n" &
+   "    (local.set $x (i64.shr_u (local.get $p) (i64.const 1)))\n" &
+   "    (if (i32.or (i64.gt_u (local.get $rem) (local.get $x))\n" &
+   "          (i32.and (i64.eq (local.get $rem) (local.get $x)) (i32.or (local.get $sticky) (i32.wrap_i64 (i64.and (local.get $q) (i64.const 1))))))\n" &
+   "      (then (local.set $q (i64.add (local.get $q) (i64.const 1)))))\n" &
+   "    (local.set $e (i32.sub (i32.add (local.get $t) (i32.mul (i32.const 9) (i32.sub (local.get $count) (i32.const 1)))) (i32.const 1)))\n" &
+   "    (if (i64.eq (local.get $q) (i64.const 1000000000000000))\n" &
+   "      (then (local.set $q (i64.const 100000000000000)) (local.set $e (i32.add (local.get $e) (i32.const 1)))))\n" &
+   "    (local.set $rest (i64.rem_u (local.get $q) (i64.const 100000000000000)))\n" &
+   "    (local.set $rlen (i32.const 14))\n" &
+   "    (if (i64.eqz (local.get $rest)) (then (local.set $rlen (i32.const 1)))\n" &
+   "      (else (block $sd (loop $sl (br_if $sd (i64.ne (i64.rem_u (local.get $rest) (i64.const 10)) (i64.const 0)))\n" &
+   "        (local.set $rest (i64.div_u (local.get $rest) (i64.const 10)))\n" &
+   "        (local.set $rlen (i32.sub (local.get $rlen) (i32.const 1))) (br $sl)))))\n" &
+   "    (local.set $elen (select (i32.const 3) (i32.const 2) (i32.ge_s (local.get $e) (i32.const 100))))\n" &
+   "    (local.set $len (i32.add (i32.add (i32.wrap_i64 (i64.shr_u (local.get $bits) (i64.const 63))) (local.get $rlen)) (i32.add (local.get $elen) (i32.const 4))))\n" &
+   "    (local.set $result (call $bump_alloc (i32.add (local.get $len) (i32.const 4))))\n" &
+   "    (i32.store (local.get $result) (local.get $len))\n" &
+   "    (local.set $o (i32.add (local.get $result) (i32.const 4)))\n" &
+   "    (if (i64.ne (i64.shr_u (local.get $bits) (i64.const 63)) (i64.const 0)) (then\n" &
+   "      (i32.store8 (local.get $o) (i32.const " & integer-to-text cce-minus & "))\n" &
+   "      (local.set $o (i32.add (local.get $o) (i32.const 1)))))\n" &
+   "    (i32.store8 (local.get $o) (i32.add (i32.wrap_i64 (i64.div_u (local.get $q) (i64.const 100000000000000))) (i32.const " & integer-to-text cce-digit-zero & ")))\n" &
+   "    (i32.store8 offset=1 (local.get $o) (i32.const " & integer-to-text cce-dot & "))\n" &
+   "    (local.set $o (i32.add (local.get $o) (i32.const 2)))\n" &
+   "    (local.set $i (local.get $rlen))\n" &
+   "    (block $rd (loop $rl (br_if $rd (i32.eqz (local.get $i)))\n" &
+   "      (local.set $i (i32.sub (local.get $i) (i32.const 1)))\n" &
+   "      (i32.store8 (i32.add (local.get $o) (local.get $i)) (i32.add (i32.wrap_i64 (i64.rem_u (local.get $rest) (i64.const 10))) (i32.const " & integer-to-text cce-digit-zero & ")))\n" &
+   "      (local.set $rest (i64.div_u (local.get $rest) (i64.const 10))) (br $rl)))\n" &
+   "    (local.set $o (i32.add (local.get $o) (local.get $rlen)))\n" &
+   "    (i32.store8 (local.get $o) (i32.const " & integer-to-text cce-lower-e & "))\n" &
+   "    (i32.store8 offset=1 (local.get $o) (i32.const " & integer-to-text cce-plus & "))\n" &
+   "    (local.set $o (i32.add (local.get $o) (i32.const 2)))\n" &
+   "    (local.set $i (local.get $elen))\n" &
+   "    (local.set $k (local.get $e))\n" &
+   "    (block $ed (loop $el (br_if $ed (i32.eqz (local.get $i)))\n" &
+   "      (local.set $i (i32.sub (local.get $i) (i32.const 1)))\n" &
+   "      (i32.store8 (i32.add (local.get $o) (local.get $i)) (i32.add (i32.rem_u (local.get $k) (i32.const 10)) (i32.const " & integer-to-text cce-digit-zero & ")))\n" &
+   "      (local.set $k (i32.div_u (local.get $k) (i32.const 10))) (br $el)))\n" &
    "    (i64.extend_i32_u (local.get $result)))\n\n"
 
   wat-rt-list-ops : Text =
@@ -3867,7 +3992,7 @@ Section: WASI Runtime Helpers
   wat-runtime-funcs : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
   wat-runtime-funcs (tab) (t2) (out) (arity-base) (max-arity) (rev-base) (in-base) =
    wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-disk & wat-rt-read-file rev-base & wat-rt-read-file-raw in-base &
-   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-f64-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-vec & wat-rt-real-modes & wat-rt-list-tail & wat-rt-char-class & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-write-binary & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
+   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-f64-to-text & wat-rt-f64-big-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-vec & wat-rt-real-modes & wat-rt-list-tail & wat-rt-char-class & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-write-binary & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
 
 Section: Chapter Emission
 

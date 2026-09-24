@@ -1,5 +1,235 @@
 # Build Tooling Migration: PS1 to Codex
 
+## Approved implementation slice
+
+Damian approved the 2026-09-19 scope. Root owns the first delivery: **a tool catalog plus one
+executable compile/test action pipeline, with directory moves limited to that
+slice**. The implementation contract below governs the first delivery;
+older measured counts and metal-dependent completion claims are not current
+acceptance evidence.
+
+The assessment and reproducible inventories are in
+`D:/Projects/Cobblestone-root/build-output/ps1-scope-20260919/`: `assessment.md`,
+`tracked-ps1-main25840.txt`, `generator-map.json`, and `root-path-coupling.json`.
+The assessment received an independent reader pass. Source inspection and the
+host-only raw-node check ran; no generator rebuild, VM proof or battery ran for
+the assessment. Re-measure before implementation because the fleet is active.
+
+Starting compiler at handoff, verified from the depot on 2026-09-19:
+`seed/Codex.cdx#800`, main25834, whole-file SHA-256
+`BD66718CBE24F589E8AD8E9D7AAC47289081B00A8824ECD22DBDE77321279541`.
+The completed proof is recorded in
+`docs/Designs/Done/Compiler/MethodSpecialization.md`. Recheck depot identity
+before new proofs; the public release's seed is a separate historical artifact.
+
+At main25840 the tracked census is 470 PS1 files: 190 directly under build/,
+10 in build subdirectories, 163 under codex/plugs, 14 under codex/test,
+64 under apps, 18 under tools, 10 under bench and one under docs. The 58
+generator entries identify 57 live PS1 targets, 53 in build/ and four elsewhere;
+the remaining Bash target is absent by design. The raw check passes its
+baseline at 7,391 ScRaw and 562 SeRaw sites in generator entries. All build
+chapters contain 7,392 and 566 respectively: five sites in the split
+plugbuildPipeline chapter are outside that check. Of the 190 root scripts,
+161 reference PSScriptRoot. These counts describe scope, not portability.
+
+### Catalog and executable entry
+
+`build/tool-catalog.json` owns tool IDs, implementation paths and generator
+targets. Discovery covers repository scripts (`ps1`, `py`, `sh`, `cmd`, `bat`),
+C/C#/JavaScript/TypeScript/executable tools under build/tools/bench, and Codex build chapters.
+Other tools can enter through explicit catalog entries. The first slice and
+all additions require owner, callers, inputs, outputs, capabilities and a
+replacement or retention contract. Legacy classification exceptions are pinned
+to files present on main25852, rather than granted to new files by directory.
+`build/checks/tool-catalog.ps1 -Repo <root>` rejects missing files, duplicate
+IDs, uncataloged tracked/open tools and new legacy-pending entries.
+The generator checker runs the catalog check before compiling generators and
+requires exactly one catalog target for every PowerShell generator.
+
+`codex/build/BuildActions.codex` defines typed artifact references, operations
+and plans. `apps/workflow/BuildActionRun.codex` executes those plans and feeds
+real outcomes to PipelineRun. The Windows adapter is
+`build/host/windows/run-actions.ps1`; all repository paths enter through
+explicit `-Repo` and artifact bindings. The adapter uses the existing ACCP
+Windows Job Object/process/framing implementation and the portable ACCP JSON
+parser. Neither dependency pulls WorkflowEngine or a database into the executor.
+
+Bootstrap the executor with the chosen depot compiler, then package the
+existing hosted-windows target. Supply absolute paths for the commands below:
+
+```powershell
+build/compile.ps1 -Src <root>/apps/workflow/BuildActionRun.codex -Out <out>/executor.cdx -Log <out>/executor.log -Kernel <depot-seed> -RawFlags hosted-windows -MemMB 2048
+codex/plugs/pe/cdx-to-pe-console.ps1 -CdxInput <out>/executor.cdx -Out <out>/executor.exe
+build/host/windows/run-actions.ps1 -Repo <root> -Executor <out>/executor.exe -Source <test.codex> -Expected <test.expected> -Kernel <depot-seed> -OutDir <new-run-directory>
+```
+
+The default `compile-test` plan resolves, compiles, runs, grades and records.
+`-Plan compile-reproduce` compiles twice and compares artifact bytes.
+`-Plan unsupported-operation` exercises whole-plan refusal of a HostOnly node.
+The first slice accepts plain CDX tests without disk, key, SMP or peer sidecars;
+advanced legacy entry options remain on the existing entry commands.
+
+The adapter retains byte artifacts in files. Codex interprets compiler framing,
+requires a complete SIZE payload, filters VM telemetry, normalizes trailing
+empty output lines and grades output. CRLF conversion belongs at the Windows
+text boundary. Expected output retains telemetry-shaped lines. Pass, fail,
+skip, crash and timeout remain distinct; a non-completed workflow cannot pass.
+The executor refuses unsupported operations and missing producer dependencies
+before actions. The adapter checks required input bindings before guest launch.
+
+VM actions admit one guest only above 1.5 GiB free RAM, carry a 2048 MiB guest
+ceiling and enforce the plan's wall timeout. `-CancelFile <path>` refuses a new
+guest or terminates an active guest when the file appears. Windows Job Objects
+terminate owned children when the adapter exits. The hosted executor reserves
+the existing 3 GiB runtime arena; the Job Object limit is 4 GiB, separate from
+measured working memory and the guest ceiling. Compile captures are capped at
+64 MiB, text grading at 64 KiB per input, and compiler header scans at 4096
+lines of at most 16 KiB. The first slice does not support arbitrary shell bodies.
+
+Every terminal result writes `record.json` with bindings, artifact and executor
+hashes, workflow events, adapter evidence and diagnostic/journal paths. Protocol
+failures write a crash record. A fresh output directory prevents stale artifacts
+from satisfying a later run. Per-action scratch is restored before workflow
+survivors are allocated; events record scratch use and the retained byte count.
+Artifact copying and comparison use 64 KiB buffers. Plan/history work is bounded
+by the fixed five-action plans; source resolution retains the existing host
+resolver's source/closure representation.
+
+`build/verify/build-actions.ps1` takes explicit `-Repo`, `-Kernel`, `-Executor`
+and a new `-OutDir`. The diagnostic checks two real compile/test subjects against
+legacy compile and run bytes, reproduction, failures, cancellation and following
+controls. `-CancellationOnly` selects the in-flight cancellation and following
+controls after a diagnostic correction; the option does not claim the full proof.
+
+The cite resolver implementation lives at `build/host/windows/quire-map.ps1`.
+The stable `build/quire-map.ps1` forwarding entry finds that implementation by
+catalog ID `build.resolve-unit.windows`. Remove the forwarding entry only after
+every legacy dot-source caller uses the catalog binding. The generator remains
+`codex/build/quiremapScript.codex`; parity checks follow the catalog target.
+The build/build.ps1, compile.ps1, test.ps1 and bvt.ps1 entry paths remain stable.
+
+Native cite-resolution parity, native process execution, signing/install plans,
+remaining legacy classifications and migration of additional families remain
+open. The first slice does not close the OS self-build campaign.
+
+First-slice validation, 2026-09-19, against depot seed #800
+`BD66718CBE24F589E8AD8E9D7AAC47289081B00A8824ECD22DBDE77321279541`:
+`build-output/build-actions/proof-final/` passed all 85 checks. Arithmetic and
+act-let-scope match legacy artifact and runtime-output bytes. Controls cover
+reproduction, missing input, compiler error with retained diagnostic, incorrect
+output, timeout, unsupported HostOnly operation, abnormal VM exit, cancellation
+admission, in-flight cancellation and three following successful runs. No owned
+guest remained. A malformed executor response independently produced exit 1 and
+a crash record containing the protocol error.
+Every measured action retained zero scratch bytes after restoration; maximum
+measured action scratch was 32,592 bytes. The relocated quire-map generator
+passed statement and byte parity: 0 drifted, 0 broken. Catalog missing-entry
+and new-unclassified controls both refused the altered catalog. Document counts
+passed all 61 claims after refreshing the affected module counts and stale
+compiler/error-test counts. The full battery and release gate were not run.
+
+The catalog records logical operation ID, owner, source/generator and target
+paths, callers, input/output contracts, host capabilities and disposition.
+Classify native build operations, replaceable host adapters, independent foreign
+witnesses, repository/agent tools and temporary investigations separately.
+Inventory maintained tools across languages. Every new tool needs a disposition;
+every PS1 does not need a Codex generator. Missing mappings and unclassified new
+tools must be detectable without treating approved foreign witnesses as failures.
+
+### ACCP packaging
+
+ACCP owns `apps/accp/build.ps1` and `apps/accp/build-runtime.ps1` under catalog
+IDs `accp.build` and `accp.build.runtime`. Build the MCP service with
+`pwsh -NoProfile -File apps/accp/build.ps1 -Kernel seed/Codex.cdx -Mcp`.
+The `Accp` quire owns the portable protocol and numerical libraries. The
+build-action executor cites `Accp.AccpJson`; the Windows action adapter loads
+`apps/accp/HostIo.cs`.
+
+The runtime builder assembles canonical compiler and WASM backend sources,
+builds a private hosted emitter, captures SIZE-framed IR-CCE from the depot
+seed, converts CCE at the Unicode stdio boundary, and assembles both WASM
+modules. Shared compiler, cite resolver and PE packaging tools remain inputs.
+Prism sources, page HTML, page manifests, page builds and prebuilt plug outputs
+are not inputs. Runtime intermediates belong to ACCP's selected output directory.
+`runtime.json` records the input and artifact identities; `manifest.json` covers
+the installable bundle. `-ReuseRuntime` verifies both inputs and module hashes.
+
+### Action model and first proof
+
+Reuse Pipeline and the existing workflow result vocabulary. Pipeline currently
+stores List ShellCmd stage bodies and ShellExpr artifact/resource expressions;
+PipelineRun records supplied outcomes rather than executing those bodies.
+Extend the model with explicit operations such as ResolveUnit, Compile,
+RunArtifact, GradeOutput, CompareBytes, SignArtifact and WriteBuildRecord,
+using typed artifact references and results. Keep the operation model separate
+from the large ShellExpr union. Portable plans contain no raw shell or .NET
+method names; explicit host-only escape nodes can identify unmigrated work.
+
+The first executor uses Windows adapters for processes, VM transport and file
+access. Codex owns build decisions, result grading and the plan. Real outcomes
+drive PipelineRun; resource declarations become enforced admission/cancellation
+behavior. Refuse unsupported operations before execution. Prove two representative
+compile/test plans against existing behavior, including missing input, compiler
+error, timeout, incorrect output and unsupported-operation controls. Preserve
+pass, fail, skip, crash and timeout as distinct results. Byte-identical script
+generation is a compatibility test, not an action-execution proof.
+
+### Directory contract
+
+Keep build/build.ps1, compile.ps1, test.ps1 and bvt.ps1 as stable thin entry
+commands during migration. Group implementations under build/host/windows,
+build/checks, build/verify, build/images, build/release and build/lib. Move
+Perforce/fleet/harness utilities toward tools/agents. Keep subject-specific
+tools with their app, plug or test family. Codex plans and operations belong
+under codex/build. A catalog entry, not a directory glob or filename convention,
+locates each implementation and generated target.
+
+Move one family with its callers, dot-sources, generator mappings, selectors,
+baselines and documentation. Resolve paths from an explicit repository root,
+not parent-directory depth. Forwarding entry points need a removal condition.
+The 56 plug build/run pairs are consolidation candidates with real exceptions:
+Zig is a thin shared-library call; PE assembles a different chapter set.
+Do not merge tools merely because names resemble each other: boards-test is
+the MMIO battery and test-boards is the Renode path.
+
+### Native closure and boundaries
+
+Reuse VmCompile, VmSweep, VmPingpong, the citable compiler, DiskTestRunner,
+FAT access and signing primitives. Native orchestration exists, but requires
+integration and current semantic parity. SourceConcat sorts compiler files and
+handles Foreword-only cites; the canonical host path uses compiler-order.txt
+and the wider quire/manifest contract. DiskTestRunner compiles files without
+cite resolution. CompilerDriver.self-compile-plan returns success=False.
+
+VmCompile replaces non-ASCII input with '?', accepts SIZE output without
+checking extracted length, fixes guest memory at 256 MiB, and uses its SIZE
+parser for TEXT even though the compiler streams TEXT without a SIZE frame.
+VmSweep grades output without inspecting run status. Add discriminating controls
+before adopting these chapters. VmPingpong already sequences compiler stages;
+no replacement orchestration algorithm is implied by this scope.
+
+The later native execution unit must resolve the VMX/test-bed conflict:
+DevHypervisor refuses without VMX, the documented bed exposes no nested VMX,
+and further physical sittings are prohibited. Existing admission or launch code
+does not prove execution. No new execution mechanism or physical run is
+authorized by the first slice. The later acceptance is a real isolated child
+executing newly compiled CDX, with bounded output/memory, cancellation, accurate
+status and a successful following control.
+
+The full closure sequence is catalog, executable actions, first family move,
+native compile-only parity, verified native execution, and OS-owned self-rebuild.
+The final OS loop must execute tests and successive compiler stages, compare
+stages 2 and 3, sign, self-verify and install with recovery, without PowerShell
+making semantic decisions. Independent foreign oracles and DDC retain their
+independence outside the minimal bootstrap dependency set.
+
+Heap/time acceptance: stream large artifacts and logs, retain references instead
+of duplicate byte lists, and reclaim per-action scratch after copying survivors.
+Audit SourceConcat's growing text accumulators, VmPingpong's retained compiler
+byte lists/text reconstruction and VmSweep's retained outputs. Prove bounded
+repeated runs; the 2 GiB compiler contract remains binding. No performance
+improvement or implementation duration follows from the assessment.
+
 ## Goal
 
 The bootable IMG ships with source, compiler, editor, and shell. A developer
@@ -39,10 +269,12 @@ does not cite `Fat16` now gets CDX3002 rather than a lie.
 | `build/build-record.ps1` | Sha256 and Json forewords exist |
 | `build/gpu-dispatch` bridge | the polled serial bridge should become a virtqueue device |
 
-### What stays as PS1 forever
+### Host adapter boundary
 
 `build/vm-config.ps1`, `build/clean-zombies.ps1`, `build/build-gpu-dispatch.ps1`.
-These launch or kill host processes. They are the boundary, not the work.
+These launch or kill Windows host processes. Their host responsibilities remain
+adapter work; their PowerShell implementation is not a required OS dependency.
+The approved action boundary above supersedes the former permanent-PS1 wording.
 
 ## The Windows-dependency ledger (Damian's direction 2026-08-14)
 
@@ -143,7 +375,12 @@ did to the script.
 `deck-headroom.ps1 -Quire codex\build -WithSelf -MinMargin 1.25`, so every
 chapter in this quire is a unit the standing gate measures, seed or no seed. Two
 arms proving the OUTPUT is right say nothing about whether the chapter COMPILES
-within its deck.
+within its deck. `-Measure` emits no LIFT or CHECK-KEEP deck record, so the
+table understates the compiler's own unit: 44 of 100 where the lowest scale
+that compiles is 49 (bisected 2026-09-23: `-Decks 48` refuses in LIFT, 45 in
+CHECK-KEEP). The script therefore also compiles that unit for real, `-Repl` at
+`floor(derived / MinMargin)`, and fails naming the refusing phase. Every other
+unit is graded by `-Measure` alone.
 
 **`-OutRoot <dir>` is how the shipped script catches up with a generator**, by
 writing the emitted text to `<dir>/<Chapter>/emitted.txt` for installation, so
@@ -570,13 +807,12 @@ compiled through `compile-frontend` with errors=0. Seen once in passing. If a
 unit with no chapter is genuinely accepted, that is a compiler question and
 belongs to the compiler register.
 
-## Phase C: self-hosted pingpong -- NOT STARTED
+## Phase C: self-hosted pingpong -- NOT PROVEN END TO END
 
-Read the compiler source from disk, compile to `stage1.cdx`, use `stage1` to
-compile the source again to `stage2.cdx`, byte-compare. Step 3 requires loading
-and executing a compiled CDX, which is the hard part above. A simpler
-intermediate is a TEXT round-trip twice, which proves the emitter is a fixed
-point but not the binary.
+VmPingpong already sequences CDX and TEXT compiler stages and compares their
+outputs. Adoption requires the resolver, framing, encoding, sizing and lifetime
+repairs named in the approved slice, plus a runnable execution bed. A TEXT
+round-trip establishes an emitter fixed point, not a binary fixed point.
 
 ## Phase D: editor and shell on the boot image -- PARTIAL
 
@@ -715,29 +951,11 @@ reporting a wrong provenance:** a candidate staged into `build-output` looked
 like it was in play while the run compiled with the depot seed, and an arm64
 result read as a refuted fix until the compile log was opened.
 
-**`cross-smoke` and `plug-smoke` still read `build-output\bare-metal\Codex.cdx`
-implicitly**, and are correct only because `plug-binary` shares their trigger,
-runs first, and stages `$SutCdx` there. **The ordering is load-bearing and
-unstated**: move a phase or give `plug-smoke` its own trigger and the stale kernel
-returns silently. The repair is to stage the kernel once the SUT is settled
-rather than as a side effect of another phase. Unowned, latent, no live exposure.
-
-**`build/test-boards.ps1` GRADES WHATEVER COMPILER IS ALREADY IN
-`build-output`.** Verified at head 2026-09-08: it copies the seed to `$Stage0`
-only `if (-not (Test-Path -PathType Leaf $Stage0))`, where `build/sweep-apps.ps1`
-copies unconditionally. So a run on a workspace where any earlier build left a
-binary there grades THAT binary, and nothing on the command line is wrong and the
-printed board result carries no digest that would contradict it. Repairs priced:
-copy unconditionally, matching `sweep-apps`; or keep the guard and PRINT the
-digest of the `Stage0` actually used, so the reading is falsifiable. **Open.**
-
-**A LANE RUNNING `test-cross.ps1` ON THIS BOX BOOTS RENODE, AND NOTHING IN THE
-INVOCATION SAYS SO.** The script probes for Renode and SKIPs when it is absent,
-so it reads as inert on a machine without it; `C:\Renode\renode.exe` is installed
-here. Renode is out by standing rule, and the guard against running it is the
-operator remembering, which is L-BODY. The repair is a refusal: decline to boot
-unless told explicitly that Renode is granted. **Unowned, and it wants Damian's
-word on the flag before anyone writes it.**
+**A `test-cross.ps1` run is a Renode guest, and nothing in the invocation says
+so.** The script SKIPs when Renode is absent and boots it whenever
+`C:\Renode\renode.exe` exists, which it does on this box. Count every run
+against the box as a run guest under `CoordinationProtocol.md`, "The token does
+not cover RAM", and a `test-cross-batch.ps1` Renode leg as `-Jobs` guests.
 
 **A verification that is cheap by an accident of workspace state silently stops
 being cheap.** The `-Kernel` guard was graded on four host-only arms, host-only
@@ -745,27 +963,68 @@ because the riscv plug was UNBUILT in that workspace; build the plug and two of
 them boot. Whoever re-grades this class states the plug's build state beside the
 result.
 
+### The arm64 cross bed: QEMU against Renode (measured 2026-09-24)
+
+One full `build/test-cross-batch.ps1 -Arch arm64` run on each emulator, same
+harness. Renode: reek's run at 04:50, 2 slots, on the seed before 9A323747.
+QEMU: blu at 05:10 (`-UseQemu -Jobs 2`, which then ran 8 slots), seed
+9A323747, arm64 plug built from source at 04:59, so both runs predate the
+`raw-bytes-to-text` arm (main 26774).
+
+| | Renode | QEMU |
+|---|---:|---:|
+| wall time | 57.6 min | 25.0 min |
+| run slots | 2 | 8 |
+| PASS_EXPECTED | 515 | 515 |
+| FAIL | 66 | 71 |
+| subjects | 746 | 751 |
+| run retries recovered | 9 of 22 | 59 of 72 |
+| peak working set, one run guest | 1,045 MB (factorial, 2026-09-23) | 316 MB |
+| peak working set, one compile guest | not sampled | 2,128 MB |
+| whole run, all guests at once | not sampled | 2,439 MB |
+
+The QEMU figures are sampled every 500 ms over the run's own processes; the
+box's free memory never fell below 3.81 GiB. The Renode run-guest figure is the
+one `test-cross-batch.ps1` sizes its admission by.
+
+**21 verdicts differ**, and they sort into five causes:
+
+- **QEMU faults where Renode answers (5), all arm64 codegen defects, fixed on
+  main** (reek, 2026-09-24; all five pass on both beds). QEMU raises the alignment fault (DFSC `0x21`) on a wrong pointer
+  that happens to be unaligned, so only one of the five was an alignment
+  defect: `truetype-render-test` (`alloc-bytes` left `x28` unaligned).
+  `closure-under-apply` and `saturated-call-returning-function` called a
+  closure without checking its arity and used an integer as a closure;
+  `record-equality-vector` passed a `vec-cons` element as the list pointer;
+  `engine-animation` (DFSC `0x00`) lost `x19` to a frameless callee whose `~`
+  allocated callee-saved locals. Renode answers each access (L-ARENA), which is
+  why it passed three of them. The residue is `plugs-backlog.md` 2.70.
+- **A designed fault went unreported in the 8-slot QEMU run (2), and does not
+  reproduce alone.** `char-at-negative` and `exc-div-zero` fault at EL3 on
+  Renode as `.cross-fatal` expects. Run one at a time under `-UseQemu`
+  (reek, 2026-09-24, harness unchanged since 2026-09-23) both fault at EL1,
+  print the fault line, and pass; what hid it in the parallel run is unknown.
+- **Faster, so no longer starved (6).** `ecdsa-cert`, `tls-cv-schemes`,
+  `x509-dev-cert`, `ttt-perfect` and `engine-render-heap` pass on QEMU where
+  Renode starved or was silent; `ecdsa-p384` goes silent to starved.
+- **The board (2).** `hal-flash-linear` answers `-2` and `fe310-drivers` takes
+  an external abort (DFSC `0x10`): QEMU `virt` models neither the Renode
+  board's flash nor its MMIO.
+- **The box (1).** `range-refine-if` is a HARNESS fault, "the paging file is
+  too small": eight QEMU guests each ask `-m 1024M` of commit, and commit ran
+  out while working sets were at 2.4 GB. A working-set bar does not see commit.
+- **The corpus moved (5).** Four subjects are newer than the Renode run
+  (`typeclass-method-local-*` pass; `web-mux-long-run` refuses on
+  `raw-bytes-to-text`), and `net-arena-pool` is x86-64 only; it, `net-ack-leak` and
+  `web-mux-long-run` carry a `.no-cross` from this measurement, because all
+  three acquire from a pool whose head is an x86-64 process-table address.
 ### Open, unowned
 
-- **Release sampler identity and lifetime.** `build/box-sample.ps1` counts
-  VM-host processes, including `-run-list` supervisors that create no guest
-  partition (`tools/codex-vm.c`, the early supervisor dispatch). Its `guests`
-  column cannot establish actual guest count or working set per guest.
-  The header is written once into `build-output`, which `build.ps1` removes
-  during clean; later samples can recreate a headerless file. Use an output
-  outside cleaned directories and record per-process identity, role and
-  working set before changing RAM admission bars. Update 58's retained
-  samples are `docs/Agents/box-release-2026-09-10.csv`; the release note states
-  the process-count limitation rather than inferring a guest peak.
 - **The gate's unaccounted wall time.** With nothing implicated, one sample ran
   10.1 s and another of the same shape on the same box ran 225.2 s. The idle
   components sum to about 10 s and the slow sample's phase timings sum to 0.6 s,
   so about 224 s sat outside every phase. Same defect val measured at 311 s in a
   615 s gate. Cause not isolated (L-GREEN: quote the spread, not the sample).
-- **`build/run-plug.ps1` given a `-IrCce` file and `rust-plug.cdx` faults the
-  plug VM and exits 6.** Nothing in the gate covers it: `plug-smoke` calls each
-  plug's OWN `run.ps1` with a `.codex` source instead, and passes. Whether the
-  fault is the plug, the framing, or the input is NOT established.
 - **`ablate-doctrine -SelfTest` and `-Setup` refuse on main, and its own guard is
   why.** `check-doc-counts` gained claims the harness's `$scoredDocs` was never
   extended to cover, so `Assert-ScoredDocsCoverChecker` throws, which is the
@@ -779,8 +1038,6 @@ result.
   `apps/*/web/*.html` artifacts are orphans with no Page chapter to regenerate
   them; the script warns and continues, so the shortfall is invisible unless the
   printed count is compared against the artifact count.
-- **No test in the tree carries a `.stdin` sidecar**, so `test-run.ps1`'s
-  `-StdinFile` branch is exercised by nothing.
 
 ## Quire tables that are copies or derivations
 

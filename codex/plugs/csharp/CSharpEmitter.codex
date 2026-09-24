@@ -503,10 +503,11 @@ Section: Definition Emission
   emit-def (d) (ctx) =
    if is-seam-override (d.name) then ""
    else let dctx0 = __record-set ctx "locals" (param-names (d.params) 0 [])
-   in let dctx = __record-set dctx0 "dyn-locals" (if is-lam-def (d.name) then tvar-param-names (d.params) 0 [] else [])
+   in let dyn-lam = if is-lam-def (d.name) then is-identity-lam d == False else False
+   in let dctx = __record-set dctx0 "dyn-locals" (if dyn-lam then tvar-param-names (d.params) 0 [] else [])
    in if should-tco d then emit-tco-def d dctx
    else let ret = get-return-type (d.type-val) (list-length (d.params))
-   in if is-lam-def (d.name) then "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
+   in if dyn-lam then "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
    else let gen = generic-suffix (d.type-val)
    in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
 
@@ -544,6 +545,17 @@ Section: Definition Emission
   is-lam-def : Text -> Boolean
   is-lam-def (n) =
    text-length n >= 6 & substring n 0 6 == "__lam_"
+
+ An identity lambda reads no field of its parameter, so it takes the
+ generic rendering: `dynamic` there would erase the element type of
+ `for x in xs -> x` and leave the enclosing call uninferable (CS0411).
+
+  is-identity-lam : IRDef -> Boolean
+  is-identity-lam (d) =
+   if list-length (d.params) /= 1 then False
+   else when d.body
+    is IrName (n) (nty) (sp) -> n == (list-at (d.params) 0).name
+    is otherwise -> False
 
   tvar-param-names : List IRParam, Integer, List Text -> List Text
   tvar-param-names (ps) (i) (acc) =

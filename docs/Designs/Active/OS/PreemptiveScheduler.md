@@ -5,8 +5,7 @@ admin app, the webserver is a system level concern right". Then: "yeah well we
 definitely need preemptive". Then, on the rulings: the desk is privileged and
 the quantum is 10 ms.*
 
-Stages 1, 2 and 3 are done. Stage 4, the quantum, is open and is the only work
-this page still asks for.
+Stages 1 to 4 are done: every core runs a 10 ms quantum (stage 4, below).
 
 ## What the kernel already provides, measured 2026-08-28 (re-measure, L-COUNT)
 
@@ -139,21 +138,55 @@ served and never logged (WORKS-48's residue).
 the Intel NIC. `GopBoot.codex` calls `gopweb-hold` before its flow, the way
 `DeskVm.codex` does, with the `boot-flow` row unchanged.
 
-## Stage 4 -- the quantum, and it is the only open stage
+## Stage 4 -- the quantum: every core is at 10 ms
 
-`lapic-timer-count` is `1000000`, an arbitrary literal rather than a duration:
-the period is `count * divisor / bus clock`, the divisor is 16, and the bus
-clock is unknown at compile time, so on a 100 MHz bus that literal is 160 ms.
-Boot must calibrate the LAPIC timer against the HPET, whose rate is already
-known and used (`hpet-ticks-per-second`). That needs the current-count register
-at 0x390, which is not declared, and it lands in
-`codex/compiler/Emit/X86_64Boot.codex`, so it is SEED-AFFECTING and takes the
-build token.
+`emit-lapic-calibrate` (`codex/compiler/Emit/X86_64Boot.codex`) runs on the boot
+processor before the start-up IPIs: it times 10 ms of HPET against its own LAPIC
+timer (masked, one-shot, divide-by-16) and leaves the count in cell 36352, which
+`emit-ap-timer-init` programs on every AP. With no HPET, a period outside the
+specification, or a frozen counter it keeps `lapic-timer-count`, the old
+1,000,000. `codex/test/smp-quantum` pins it: under codex-vm the count measures
+62,585 (10.01 ms at the modelled 100 MHz bus), and the depot compiler fails all
+three lines.
 
+**Core 0 is the PIT at count 11,932** (`pit-reload-count`, 10.0002 ms, 99.998 Hz).
+Vector 48 jumps over the tick increment, so cell 28672 is core 0's clock alone.
+The builtins `pit-input-hz` (1,193,182) and `pit-count` carry the exact rate to
+Codex code, and the compiler's own tick waits go through `pit-ms-ticks`:
+`with-timeout` and the watchdog windows (the pet window 1,098 ms, the progress
+window 302,088,000 ms, the 20 and 5,500,000 ticks they were at count 65,536).
+`codex/test/pit-rate` pins the count and the rounding (a day is 8,639,869 ticks,
+where a rounded 100 Hz gives 8,640,000).
+
+**codex-vm paces core 0 from the programmed reload**, in the main loop's tick
+tests, the SMP halt path and the kick thread, so an unprogrammed PIT still ticks
+at 54.9 ms. `smp-quantum`'s "the tick count is core 0's clock" reads 60 to 130 a
+second, and a codex-vm on a fixed 55 ms fails it at 18. The kick thread runs once
+per PIT period and teardown joins it before deleting the partition: without the
+join the 10 ms kick crashed codex-vm at exit in 2 of 11 runs, with it 0 of 8, and
+the 55 ms codex-vm 0 of 15 (2026-09-23, small samples).
+
+The readers of the tick count, by census of `28672` and `get-ticks` over `codex`
+and `apps`:
+
+- waits, from the builtins: `GopXhci` (164 and 54 ms), `IdeaServer`'s
+  `current-day`, `MicInput`'s settle (219 ms);
+- raw tick counts with no time meaning: the displays (the Monitor's
+  `dk-mon-tick-cell`, `IdtInspector`, `PerfMonitor`, `DiagnosticShell`),
+  `LoadTest`'s elapsed ticks, and entropy (`IdentityManager`, `GopText`,
+  `GopWizard`);
+- tests whose guard deadlines are tick counts, ended early by a kill or an exit:
+  `process-kill-test`, `starvation-prevent`, `supervisor-kill-restart`.
+
+The scheduler's own counts stay in ticks, the same unit on every core: a slice is
+3 ticks (30 ms) at normal priority, and `starve-threshold` is 100 ticks.
+
+**What the bed cannot show:** codex-vm answers an AP's HPET read with 0, so only
+the boot processor can time anything. No metal boot starts an AP: only codex-vm
+writes the core count (cell 4088, from GPA 0xFF8), so `emit-smp-init` finds 0 on
+hardware and the AP timer runs only under codex-vm's `-smp`.
 10 ms is not an ambitious number and that is the point (Damian: "windows does 17
-right, been that way since processors were like 60mhz"). The risk is not the
-number, it is that nothing has ever needed that timer to mean a time. Nothing in
-stages 1 to 3 depends on it.
+right, been that way since processors were like 60mhz").
 
 ## What it must not break
 

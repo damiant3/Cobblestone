@@ -1,0 +1,72 @@
+Chapter: ScrollViewport
+  cites UI chapter Layout
+  cites UI chapter Widget
+  cites UI chapter Event
+  cites UI chapter Scroll
+  cites UI chapter KeyInput
+  cites Works chapter GopComposite
+  cites Foreword chapter Console
+
+ A 10-pixel header, a 30-pixel gap, then a column viewport 100 tall holding
+ six rows of 30, so the content is 180 and the offset tops out at 80. The
+ gap is where the arm aims its hit: at offset 80 the second row lies wholly
+ in the gap, above the viewport, and a hit test that ignored the viewport's
+ box would answer that row rather than the root.
+
+  row : Integer -> WidgetNode
+  row (i) = widget-fixed (widget-stack ("r" & integer-to-text i) DirColumn 0 []) 80 30
+
+  tree : Integer -> WidgetNode
+  tree (off) = widget-stack "root" DirColumn 30 [
+    widget-fixed (widget-stack "head" DirColumn 0 []) 80 10,
+    widget-set-scroll (widget-scroll-view "sv" DirColumn 0 [row 0, row 1, row 2, row 3, row 4, row 5]) off
+  ]
+
+  lay : Integer -> WidgetNode
+  lay (off) = widget-layout (tree off) theme-terminal (layout-rect 0 0 80 140)
+
+  view : WidgetNode -> WidgetNode
+  view (laid) = list-at laid.wn-children 1
+
+  kid : WidgetNode, Integer -> LayoutRect
+  kid (laid) (i) = (list-at (view laid).wn-children i).wn-bounds
+
+  hit : WidgetNode, Integer, Integer -> Text
+  hit (laid) (x) (y) = when ev-hit-widget laid x y
+    is Just (w) -> w.wn-id
+    is None -> "none"
+
+  rect : LayoutRect -> Text
+  rect (r) = integer-to-text (r.lr-x) & "," & integer-to-text (r.lr-y) & " " & integer-to-text (r.lr-w) & "x" & integer-to-text (r.lr-h)
+
+  report : Text, Text, Boolean -> [Console] Nothing
+  report (name) (got) (ok) = print-line-uni (name & " " & got & ": " & if ok then "PASS" else "FAIL")
+
+  opening : [Console] Nothing = act
+    let top = lay 0
+    in let sv0 = view top
+    in let r5 = kid top 5
+    in let ext = widget-scroll-extent sv0 theme-terminal
+    in let end-off = scroll-view-handle-key sv0 theme-terminal key-end
+    in let bottom = lay end-off
+    in let sv1 = view bottom
+    in let s5 = kid bottom 5
+    in let s1 = kid bottom 1
+    in let wheel-off = scroll-view-handle-wheel sv1 theme-terminal (0 - 1)
+    in let up-off = scroll-view-handle-key sv1 theme-terminal key-up
+    in let down-off = scroll-view-handle-key sv0 theme-terminal key-down
+    in let over = view (lay 500)
+    in let clip = comp-kids-clip sv1 (layout-rect 0 0 160 280) 2
+    in act
+      report "viewport keeps its box" (rect (sv0.wn-bounds)) (sv0.wn-bounds.lr-y == 40 & sv0.wn-bounds.lr-h == 100)
+      report "content laid at its natural extent" (integer-to-text ext & ", last row at " & rect r5) (ext == 180 & r5.lr-y == 190 & r5.lr-h == 30)
+      report "end scrolls to the last row" (integer-to-text end-off) (end-off == 80 & widget-scroll-offset sv1 == 80)
+      report "last row inside the viewport" (rect s5) (s5.lr-y == 110 & s5.lr-y + s5.lr-h == sv1.wn-bounds.lr-y + sv1.wn-bounds.lr-h)
+      report "row 1 scrolled off the top covers the probe" (rect s1) (s1.lr-y + s1.lr-h <= 40 & rect-contains s1 10 15)
+      report "the probe answers the root, not row 1" (hit bottom (comp-hit-x 20 2) (comp-hit-y 30 2)) (hit bottom 10 15 == "root")
+      report "hit follows the translation" (hit top 10 55 & " then " & hit bottom 10 55) (hit top 10 55 == "r0" & hit bottom 10 55 == "r3")
+      report "an offset past the end is clamped" (integer-to-text (widget-scroll-offset over)) (widget-scroll-offset over == 80)
+      report "wheel and arrows step 24" (integer-to-text wheel-off & "/" & integer-to-text up-off & "/" & integer-to-text down-off) (wheel-off == 56 & up-off == 56 & down-off == 24)
+      report "children are clipped to the viewport" (rect clip) (clip.lr-y == 80 & clip.lr-h == 200)
+    end
+  end

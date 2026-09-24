@@ -1,0 +1,101 @@
+Chapter: Unity Stdio
+  cites Foreword chapter StringUtils
+
+Section: Library
+
+  unity-has-op : List SExp, Text, Integer -> Boolean
+  unity-has-op (ops) (name) (i) =
+   if i >= list-length ops then False
+   else if sexp-str (list-at ops i) == name then True
+   else unity-has-op ops name (i + 1)
+
+  unity-profile-header : Text = "UNITY windows-x64-mono-6000.0.75f1\n"
+
+  unity-entry : Text, CodexType, Boolean -> Text
+  unity-entry (class-name) (ret) (show-identity) = cst-member 0 (unity-entry-node class-name ret show-identity)
+
+  unity-opening-statement : Text, CodexType -> CstStmt
+  unity-opening-statement (class-name) (ret) =
+   let call = CstCall (CstMemberAccess (CstName class-name []) opening-entry-point []) []
+   in let output = when ret
+    is EffectfulTy (effs) (scope) (inner) -> call
+    is NothingTy -> call
+    is ProofTy -> call
+    is PropEqTy (left) (right) -> call
+    is VoidTy -> call
+    is TextTy -> unity-console-call (CstCall (CstMemberAccess (CstName "_Cce" []) "ToUnicode" []) [unity-argument call])
+    is otherwise -> unity-console-call call
+   in CstExpression output
+
+  unity-argument : CstExpr -> CstArgument
+  unity-argument (value) = CstArgument { ca-mode = [], ca-name = "", ca-value = value }
+
+  unity-console-call : CstExpr -> CstExpr
+  unity-console-call (value) = CstCall (CstMemberAccess (CstName "Console" []) "WriteLine" []) [unity-argument value]
+
+  plug-emit-ir-stream : Text -> [Console] Nothing
+  plug-emit-ir-stream (input) =
+   if text-starts-with input unity-profile-header == False then
+    print-line-uni "REFUSED unsupported Unity target profile"
+   else let t = text-drop input (text-length unity-profile-header)
+   in if ir-text-is-chapter t == False then print-line-uni "REFUSED invalid Unity IR"
+   else unity-emit-library t
+
+  unity-emit-library : Text -> [Console] Nothing
+  unity-emit-library (t) =
+   let len = text-length t
+   in let top = ips-skip t 0 len
+   in let chap = IrSpan { sp-lo = top, sp-hi = ips-form-end t (top + 1) len 1 }
+   in let kids = ips-kids t chap
+   in let nk = list-length kids
+   in let chap-name = sexp-str (ips-tree t (list-at kids 1))
+   in let type-defs = parse-atype-defs (sexp-list (ips-tree t (ips-named t kids 0 nk "type-defs")))
+   in let defs = ips-kids t (ips-named t kids 0 nk "defs")
+   in let n = list-length defs
+   in let arities = ips-arities t defs 1 n []
+   in let muts = ips-muts t defs 1 n []
+   in let ctx = CsCtx { arities = arities, type-defs = type-defs, locals = [], dyn-locals = [] }
+   in let class-name = "Codex_" & sanitize chap-name
+   in let ops = sexp-list (ips-tree t (ips-named t kids 0 nk "eff-ops"))
+   in let storage = unity-has-op ops "unity-storage-start" 1
+   in let meadows = unity-has-op ops "unity-meadows-spawns-start" 1
+   in let arc = unity-has-op ops "unity-circumhorizontal-arc-start" 1
+   in let has-mod = if storage then True else if meadows then True else arc
+   in if lookup-arity arities opening-entry-point < 0 then print-line-uni "REFUSED missing opening"
+   else act
+    print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
+    print-uni (cst-namespace-open "PrismGenerated")
+    print-uni (cst-member 0 (CstUsingAlias "Console" (CstAliasType "global" (CstNamedType "System.Console" []))))
+    let h = __heap-save
+    in let entry = unity-entry class-name (ips-opening-ret t defs 1 n) has-mod
+    in let tdefs = emit-type-defs type-defs 0 muts
+    in let mask = cs-cce-mask (entry & emit-buf-runtime & emit-state-runtime & tdefs)
+    in act
+     print-uni (cst-member 0 (unity-local-saves-node 0))
+     print-uni entry
+     print-uni emit-buf-runtime
+     print-uni emit-state-runtime
+     print-uni tdefs
+     if storage | meadows then unity-method-bridge-emit else print-uni ""
+     if storage then act
+      unity-valheim-storage-emit
+      unity-valheim-inventory-emit
+      unity-valheim-construction-emit
+     end else print-uni ""
+     if meadows then unity-meadows-spawns-emit else print-uni ""
+     if arc then unity-circumhorizontal-arc-emit else print-uni ""
+     if has-mod then unity-mod-identity-emit else print-uni ""
+     print-uni (emit-class-header chap-name)
+     if storage then let factory = list-at unity-effect-members 0
+      in print-uni (cst-member 1 (factory 0)) else print-uni ""
+     if meadows then print-uni (cst-member 1 (unity-meadows-spawns-effect 0)) else print-uni ""
+     if arc then print-uni (cst-member 1 (unity-circumhorizontal-arc-effect 0)) else print-uni ""
+     let restored = __heap-restore h
+     in act
+      ips-stream t defs ctx 1 n mask
+      print-uni cst-close-scope
+      print-uni (cst-member 0 (CstNamespace "System.Runtime.CompilerServices" [CstClass (CstClassHead { ch-modifiers = [CstInternal, CstStatic], ch-name = "IsExternalInit", ch-bases = [] }) []]))
+      unity-export-emit
+     end
+    end
+   end

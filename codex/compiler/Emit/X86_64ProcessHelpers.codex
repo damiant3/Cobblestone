@@ -368,7 +368,8 @@ Section: Process Scheduler Helpers
    in let st32 = st-append-code st31 (mov-store reg-r13 reg-rsi proc-saved-r14-offset)
    in let st33 = st-append-code st32 (mov-store reg-r13 reg-rsi proc-saved-r15-offset)
    in let st34 = st-append-code st33 (mov-store reg-r13 reg-rsi proc-saved-rax-offset)
-   in let st34b = st-append-code st34 (mov-store reg-r13 reg-rsi proc-exit-status-offset)
+   in let st34a = st-append-code st34 (mov-store reg-r13 reg-rsi proc-exit-status-offset)
+   in let st34b = st-append-code st34a (mov-store reg-r13 reg-rsi proc-net-pool-offset)
    in let st35 = st-append-code st34b (li reg-rsi proc-priority-normal)
    in let st36 = st-append-code st35 (mov-store reg-r13 reg-rsi proc-priority-offset)
    in let st37 = st-append-code st36 (li reg-rsi proc-slice-normal)
@@ -476,7 +477,8 @@ Section: Process Scheduler Helpers
    in let st38 = st-append-code st37 (mov-store reg-r13 reg-rsi proc-saved-r14-offset)
    in let st39 = st-append-code st38 (mov-store reg-r13 reg-rsi proc-saved-r15-offset)
    in let st40 = st-append-code st39 (mov-store reg-r13 reg-rsi proc-saved-rax-offset)
-   in let st40b = st-append-code st40 (mov-store reg-r13 reg-rsi proc-exit-status-offset)
+   in let st40a = st-append-code st40 (mov-store reg-r13 reg-rsi proc-exit-status-offset)
+   in let st40b = st-append-code st40a (mov-store reg-r13 reg-rsi proc-net-pool-offset)
    in let st41 = st-append-code st40b (mov-load reg-rsi reg-r13 proc-priority-offset)
    in let st42 = st-append-code st41 (shl-ri reg-rsi 3)
    in let st43 = st-append-code st42 (add-ri reg-rsi slice-table-addr)
@@ -612,6 +614,34 @@ Section: Process Scheduler Helpers
    in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
    in let st1 = st-append-code st0 (li reg-rax tick-count-addr)
    in let st2 = st-append-code st1 (mov-load reg-rax reg-rax 0)
+   in st-append-code st2 x86-ret
+
+  emit-constant-helper : CodegenState, Text, Integer -> CodegenState
+  emit-constant-helper (st) (name) (value) =
+   let fn-off = st.code-len
+   in let n = list-push (st.fo-names) name
+   in let o = list-push (st.fo-offsets) fn-off
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+   in let st1 = st-append-code st0 (li reg-rax value)
+   in st-append-code st1 x86-ret
+
+  emit-pit-rate-helper : CodegenState -> CodegenState
+  emit-pit-rate-helper (st) =
+   let st1 = emit-constant-helper st "pit-input-hz" pit-input-rate
+   in emit-constant-helper st1 "pit-count" pit-reload-count
+
+ `sti` takes effect after the NEXT instruction, so the `hlt` runs with IF=1
+ and the next interrupt resumes past it: under codex-vm, the LAPIC timer
+ every 55 ms. A `hlt` with IF=0 never resumes.
+
+  emit-cpu-park-helper : CodegenState -> CodegenState
+  emit-cpu-park-helper (st) =
+   let fn-off = st.code-len
+   in let n = list-push (st.fo-names) "cpu-park"
+   in let o = list-push (st.fo-offsets) fn-off
+   in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
+   in let st1 = st-append-code st0 [251, 244]
+   in let st2 = st-append-code st1 (xor-rr reg-rax reg-rax)
    in st-append-code st2 x86-ret
 
   emit-process-get-pid-helper : CodegenState -> CodegenState

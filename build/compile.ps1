@@ -409,6 +409,27 @@ try {
         if ($hitExc) {
             continue compile_loop
         }
+        if ($IrUni) {
+            $irFrom = -1; $irTo = -1
+            for ($i = 0; $i -lt $outLines.Count; $i++) {
+                $t = $outLines[$i].TrimEnd("`r")
+                if ($irFrom -lt 0) { if ($t -eq 'IR-BEGIN') { $irFrom = $i } } elseif ($t -eq 'IR-END') { $irTo = $i; break }
+            }
+            if ($irFrom -ge 0 -and $irTo -gt $irFrom) {
+                if ((Test-Path -PathType Leaf $stderrFile)) {
+                    $dropLines = @(Get-Content $stderrFile -ErrorAction SilentlyContinue | Where-Object { $_ -match ' guest serial byte\(s\) DROPPED' })
+                    if ($dropLines.Count -gt 0) {
+                        Add-Content -Path $Log -Value 'FAIL: codex-vm dropped guest serial bytes, so the IR between IR-BEGIN and IR-END is not the whole emission.' -Encoding UTF8
+                        foreach ($dl in $dropLines) { Add-Content -Path $Log -Value "  $dl" -Encoding UTF8 }
+                        exit 6
+                    }
+                }
+                $irText = [System.Text.StringBuilder]::new()
+                for ($i = $irFrom + 1; $i -lt $irTo; $i++) { [void]$irText.Append($outLines[$i].TrimEnd("`r")).Append("`n") }
+                [System.IO.File]::WriteAllText($Out, $irText.ToString(), [System.Text.UTF8Encoding]::new($false))
+                exit 0
+            }
+        }
         # Output, but nothing that ends the scan: no SIZE:, no CODEGEN-*, no
         # !EXC. The log above holds only what survived the WD: filter, so when
         # the VM died early it reads exactly like a SUCCESSFUL compile and the

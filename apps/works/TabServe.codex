@@ -1,0 +1,30 @@
+Chapter: TabServe
+  cites Works chapter Http
+  cites Works chapter WebRoute
+
+ One HTTP request served inside a browser tab, for Prism's in-tab server
+ demo. The page runs the module once per request: the raw request bytes are
+ stdin and the encoded response is stdout. The route function is the one an
+ app hands `web-serve` or `hosted-serve`, dispatched through the same
+ `web-dispatch`, so the standard endpoints answer here too.
+
+ WASM ONLY. `read-file-raw ""` reads stdin to end of input on that target,
+ and the `+ 4` is its Text layout, a four-byte length before the bytes, the
+ same reading `PlugBytes` makes.
+
+ We say:
+
+Section: Serve One Request
+
+  ts-buf-to-list : Integer, Integer, Integer, List Integer -> List Integer
+  ts-buf-to-list (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else ts-buf-to-list buf (i + 1) n (list-push acc (peek-byte buf i))
+
+  tab-serve-one : (HttpRequest -> HttpResponse) -> [Console, FileSystem] Nothing
+  tab-serve-one (route) = act
+    raw <- read-file-raw ""
+    let req = http-parse-request (ts-buf-to-list ((address-of raw) + 4) 0 (text-length raw) [])
+    in let resp = if req.valid then web-dispatch route web-observe-none web-new req else http-error "Bad request"
+    in write-binary (http-encode resp)
+  end

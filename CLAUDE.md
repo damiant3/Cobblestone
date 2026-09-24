@@ -110,46 +110,19 @@ bootable via codex-vm or QEMU multiboot. The CDX is the root of trust.
 `tools/build-vm.ps1`); its device list, CLI and multi-core flags are in
 `docs/OperatorsManual.md`.
 
-### Bootstrap History -- 2026-04-24: The cord is cut
-
-All four bootstraps green for the first time, 41 days from project start:
-
-| Bootstrap | Path | Result |
-|---|---|---|
-| BS1 | .NET → C# | Legacy -- locked |
-| BS1.1 | .NET → Codex | Legacy -- locked |
-| BS2 (pingpong) | bare-metal → CDX | CDX fixed point: stage 1 CDX = stage 2 CDX |
-| BS3 | bare-metal → CDX | CDX fixed point (standalone, from pingpong output) |
-
-BS1 and BS1.1 used the C# reference compiler to bootstrap the selfhost.
-The reference compiler is permanently retired: do not edit, invoke, or
+The C# reference compiler is permanently retired: do not edit, invoke, or
 rebuild it. The whole `old/` tree remains in the depot as historical
 record only.
 
-## How the fleet's models are steered (2026-09-02, from Anthropic's prompting guide)
+## How the fleet's model is steered
 
-The commander (root) runs Claude Fable 5.1; the lanes run Claude Opus 5.
-Both follow a brief, plainly stated instruction with its reason as
-reliably as a shouted one. Earlier models sometimes needed harsh language
-to break a habit; these do not, and the shouting overtriggers. So a rule
-here is stated once with the reason it exists, and emphasis is kept for
-the tier-1 rules. Three behaviours the guide names for these models bear
-on fleet work:
-
-- Opus 5's replies run long by default and it narrates readily during
-  tool use. R-REPORT carries the cadence and the length rule, and the
-  last lines of this file repeat it, because a long prompt is best
-  reminded near its end.
-- Opus 5 verifies and corrects its own work unprompted. Telling it to
-  double-check, re-verify or spend a subagent on its own output makes it
-  do that twice. R-NAIVE is the one sanctioned verification subagent, for
-  the case where a blind arbiter is needed.
-- Both can drift past the ask: fixing nearby code, extending behaviour
-  the task did not name, committing extra tests. "What Not To Do" is the
-  scope rule.
-
-Subagents: three at init, rarely otherwise. The harness does not call for
-them often and that is the right rate (Damian, 2026-09-02).
+Every seat, root included, runs Claude Opus 5.5, launched by AgentGrid. A
+rule here is stated once, with its reason, at normal volume; bold is kept
+for tier 1. R-REPORT sets cadence and length because Damian reads every
+report, and the end of this file repeats it. Do not add double-check or
+re-verify steps to prompts or briefs; R-NAIVE is the one sanctioned
+verification subagent. "What Not To Do" is the scope rule. Subagents:
+three at init, rarely otherwise (Damian, 2026-09-02).
 
 ## The Rules
 
@@ -246,9 +219,9 @@ the failure this paragraph exists to name.
 
 Semantic equivalence of text mode, byte-identical text (pingpong), and
 byte-identical binary (hard fixed point), plus the BVT. **The standing
-gate `build/build.ps1 -Internal` is BANNED (Damian, 2026-09-02 15:52:
+gate `build/build.ps1 -Internal` is banned (Damian, 2026-09-02 15:52:
 "it shaln't be run"); the bare `build/build.ps1` is the release gate and
-is Damian's.** What a lane runs is below, under "THE BOX AND MAIN", each
+is Damian's.** What a lane runs is below, under "The box and main", each
 launched on the lane's own measurement of the box:
 
 ```powershell
@@ -259,7 +232,8 @@ build/bvt.ps1 -CodexCdx <candidate> -Jobs 4                     # the BVT over a
 
 A change is done when the tests it touches pass, compiled and run one at
 a time; a seed-affecting change adds the scratch fixed point, the BVT,
-and the signed, self-verified seed, then the token for ~90 seconds. If a proof is red, shelve, say so, and re-evaluate. To
+`build/cite-gate.ps1 -Kernel <candidate>`, and the signed, self-verified
+seed, then the token for ~90 seconds. If a proof is red, shelve, say so, and re-evaluate. To
 check one thing, compile and run that one test, never a sweep. **Batch
 your CLs (Damian, 2026-09-01):** a many-CL arc proves once, at the end,
 and takes one token.
@@ -279,12 +253,12 @@ published number, and both bite before you know you are doing seed work:
   excludes the signature and cannot tell a signed seed from an unsigned
   candidate (`PerforceProcess.md` 4.3, P-SIGNED).
 
-**THE BOX AND MAIN ARE SYNCHRONIZED BY TWO DIFFERENT THINGS (Damian,
+**The box and main are synchronized by two different things (Damian,
 2026-09-02 15:55, in his words: "the token is for synchronizing MAIN not
 the BOX. the Fleet Commander is how you synchronize on the BOX").**
 
 - **Main:** the AgentGrid build token, requested only to land a
-  seed-affecting CL that is ALREADY PROVEN, held for the head re-check,
+  seed-affecting CL that is already proven, held for the head re-check,
   submit, copy-up and release, about 90 seconds. No gate runs under it.
 - **The box is not gated per run (Damian, 2026-09-07 19:35).** A serial
   single-guest run launches unasked above 1.5 GiB free; a fan-out
@@ -295,18 +269,21 @@ the BOX. the Fleet Commander is how you synchronize on the BOX").**
   the run, its guest count, PID and log in `status.json`, and watches its
   own run. The commander holds the box only for a release gate's compiler
   stages and arbitrates a collision. Never wait in the foreground.
-- **`-Internal` is BANNED (Damian, 2026-09-02 15:52: "it shaln't be
+- **`-Internal` is banned (Damian, 2026-09-02 15:52: "it shaln't be
   run").** A change is verified by compiling and running the tests it
   touches, one at a time; a seed-affecting change adds the scratch
   fixed point (stage 2 == stage 3 from the depot seed), the BVT
-  (`build/bvt.ps1`) on that candidate, and then the seed path: the
+  (`build/bvt.ps1`) on that candidate, `build/cite-gate.ps1 -Kernel
+  <candidate>` over the changed files (a `codex/compiler` change also
+  selects every test pinning heap byte counts, which no cite reaches),
+  and then the seed path: the
   signer compiled and run over the candidate and `test-self-verify`
   printing that the seed verifies itself, before it is installed. A seed
   lands signed and
   self-verified or not at all (root, 2026-09-02 16:15, red's and
   fester's first landings under this rule). The full gate belongs to
   releases.
-- **Before any big build, test or proof, ask IS THIS NECESSARY** (Damian,
+- **Before any big build, test or proof, ask: is this necessary?** (Damian,
   2026-09-02 16:00: "we have plenty of memory and cpu to run efficiently,
   if you think before you launch big builds, big tests, big proofs: IS
   THIS NECESSARY? RELEASE is always a fallback for regression testing.
@@ -316,12 +293,10 @@ the BOX. the Fleet Commander is how you synchronize on the BOX").**
   break. **And never run a build-process script (`.ps1`) you have not
   read and do not understand** (his words, same hour): the gate scripts
   fan out guests, refresh kernels and stage seeds in ways their names do
-  not say, and three lanes were bitten by exactly that today.
+  not say.
 - **The box is not the cause; the ripples are** (Damian, the same hour).
-  Every gate that died on 2026-09-02 had, beside it, a lane's own
-  leftover: a watcher loop polling a killed build's log, a second slot
-  waiter, a demo server left serving, an assembly launched on a
-  launch-time reading beside a gate about to fan out. A lane audits its
+  A lane's own leftovers (a watcher loop, a second slot waiter, a demo
+  server, an assembly launched beside a gate) kill other runs. A lane audits its
   own shells, background tasks, monitors, servers and guests at every
   handoff and after any run of its is killed, and kills what it left. The box is one DIMM down (15.8 GiB)
 until an RMA lands, and an overcommit kills guests with a different
@@ -339,8 +314,10 @@ compiled and run one at a time, and the BVT only on a seed candidate.
 If you believe a change warrants a battery, say exactly that in one
 sentence and stop; he runs it or hands you the command.
 
-**Zero failures before copy-up.** "Verified" means the standing gate is
-green and you compiled and ran the specific tests your change touches.
+**Zero failures before copy-up.** "Verified" means the tests your change
+touches pass, compiled and run, and for a seed-affecting change the
+scratch fixed point, the BVT, the cite-gate and the self-verified seed are
+green.
 "Pre-existing" is not an excuse for a red test you noticed: report it.
 Other agents inherit main through merge-down, and a failure you wave
 through becomes their debugging detour.
@@ -451,7 +428,11 @@ wants it. Before ending a turn, read your last paragraph: a plan, a list
 of next steps, or a promise ("I'll ...") about work you have not done is
 work to do now with tool calls, unless it is waiting on a ruling, a
 token, or the box, in which case the wait rule in
-`CoordinationProtocol.md` applies and the turn ends at the prompt.
+`CoordinationProtocol.md` applies and the turn ends at the prompt. A turn
+that ends on a status summary announcing the next step, an offer to
+continue unless told otherwise, or a list of decisions none of which
+blocks the work, or a landing report with no next tool call, is an early stop: put the status in the same message as
+the next tool call and keep going.
 
 **Written length.** Match a CL description, a design note, a register row
 or a memory file to what it needs: no filler sections, no restated
@@ -663,23 +644,3 @@ carries a decision he must make, a failure still failing, or a landing
 that changes what he does next. Nothing else: no commentary, no "worth
 your eye", no progress. Turn wrap-ups are one line or nothing; the record
 is the CL, the row or the doc. Text nobody reads is token burn.
-
-**tokens of init context saved so far: 13,754 per session in the SESSION's
-own context, plus about 8,190 in the init agent's** (`CurrentPlan.md`,
-89,082 to 56,323 bytes over three tranches, every open item, ruling and
-standing rule kept). The two are counted apart on purpose: this file and
-`LESSONS.md` are read straight into the session, while `CurrentPlan.md` is
-read by an init subagent that returns a summary, so its saving is real and
-is paid somewhere else (L-REQUEST: name which claim a number is). Counted as
-bytes deleted from files on the init read path divided by four, since
-2026-09-02 (main 21725: this file, 43,887 to 29,941 bytes; fester
-2026-09-07, `LESSONS.md` 62,115 to 21,097 -- re-measured, about 15,529
-tokens to about 5,274 -- cut to its own stated format over three
-tranches, all 73 ids kept and every account moved to a story or verified
-at the pointer the row names). This file is
-loaded into every session's context by the harness, so the per-session
-figure is paid by every one of the 251 sessions the six workspaces'
-transcripts hold since 2026-08-05 and every session after. A CL that
-deletes a war story from an init-path file adds its bytes/4 here and
-re-measures; the accounts it deletes stay reachable through the doc each
-rule now points at.

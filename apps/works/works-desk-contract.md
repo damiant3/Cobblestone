@@ -75,11 +75,24 @@ it is measured:
   after `desk-run` took the base mark and before `desk-loop` takes its
   per-iteration mark, so the value sits between the two: the per-iteration
   restore never reaches it and it survives every step the pane is open for.
+  **That restore is not the only one it must survive.** `desk-root-reclaim`
+  frees back to where the current root began unless a LIVE mark sits at or
+  above where that root ended, so a value built above the current root with no
+  mark of its own is freed at the next rebuild (a menu dismiss, a hide, a pill
+  restore) while the desk still carries it. A heavy pane's mark covers its
+  value; the close paths build their fresh record BEFORE the new root
+  (WORKS-60); `desk-sheet-open` pushes its own mark; `desk-rev-open` does neither
+  (WORKS-68).
   **It does NOT survive a close, deliberately** -- `desk-app-close` restores to
-  the base mark, which frees it along with the pane's entry paint, so both
+  the base mark, which frees it along with the pane's entry paint, so all
   close paths DROP the record they were handed and build an empty one AFTER the
   restore. Carrying the old one across would carry pointers into memory just
-  handed back. State that must outlive a close still belongs in a `ds` block
+  handed back. The shared `GopAppFont` is allocated in `desk-run` before the
+  base mark. `DeskApps.da-fonts` and `FilesState.fs-fonts` borrow that value;
+  UI and code atlases survive pane closes. Close paths capture `da-fonts`
+  before restoring the heap and place that surviving pointer in the fresh
+  `DeskApps`. Never read the discarded `DeskApps` after the restore to recover
+  its font field. Other state that must outlive a close belongs in a `ds` block
   allocated in `desk-run`, which is how the Calculator keeps its number.
   **`GopEdit`'s 9 MB must not move into this record**: its POINTER is parked
   in a cell and only Edit's typed values belong here. This bullet said the
@@ -548,8 +561,11 @@ first two cells of the second half.
 
 | 256 | `dk-sheet-cell` | pointer: the Sheets pane's block (val, 2026-09-08, SHEET-9). **Offset 0 is the pane's SHIFT STATE and the desk owns 44 up for the window slot**, the same split the console's block carries, because a scancode says which key moved rather than which character it means. The sheet it shows is a `SheetPane`, which no cell can hold: a Sheet is a store handle plus a `Program` whose formula table is a list. `gsh-tree` renders one it is handed (SHEET-10 step 1); the field on `DeskApps` that keeps one across repaints is step 2, and until then the desk builds a fresh pane per repaint |
 
+| 260, 264 | `dk-apps-lo-cell`, `dk-apps-hi-cell` | where the last close's `DeskApps` record region began and ended (val, 2026-09-24). Not pointers, so no allocation before the base mark. A close whose root reclaim leaves the frontier exactly at the recorded end restores to the recorded start, which frees the record the previous close stranded under the root; any other frontier means something else lies between, and nothing is freed |
+| 268 | `dk-restay-cell` | the top visible window at the last `desk-wnd-paint-all`, whose next chrome step answers `desk-wnd-ev-stay` once so the pane repaints its own content (val, 2026-09-24); `desk-focus-none` when nothing is pending. Not a pointer |
+
 **THE BLOCK IS 512 BYTES SINCE 2026-09-08 (val), AND EVERY CELL 0 THROUGH
-256 IS TAKEN; 260 THROUGH 508 ARE FREE.** It grew because focus id 18
+268 IS TAKEN; 272 THROUGH 508 ARE FREE (2026-09-24).** It grew because focus id 18
 needs a window slot and there was no cell left to point at one. Cells 0
 through 252 were verified taken from the DEFINITIONS rather than from
 this list, by enumerating every `*-cell` constant in `apps/works` and
@@ -1384,8 +1400,10 @@ that produced this section.
 A pane whose content is a list of equal-height rows scrolls with
 `scroll-slice`, which windows the list by row INDEX. A rendered page has no row
 height to give it -- labels, separators and links are all different heights --
-so the Browser needed the other shape, and this is what it is. Any pane in the
-same position should copy it rather than invent a third.
+so the Browser needed the other shape, and this is what it is. A new pane in
+the same position uses the typed viewport instead (`widget-scroll-view` with
+`widget-set-scroll`, ShellRefinement S4), which lays, clips and hit-tests the
+scroll without any of the three calls below.
 
 **Lay out, move the subtree, walk it again under a tighter clip.** Three calls,
 in this order, and each one exists for a reason that bites if it is skipped.

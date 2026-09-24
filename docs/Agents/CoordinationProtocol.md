@@ -185,9 +185,10 @@ What that forbids:
   holds the prompt shut for its whole duration and every typed line
   queues behind it.
 - **No long foreground commands while queued or waiting.** A gate, a
-  battery, a bed run or a VM boot goes through `run_in_background`, and
-  then the turn ENDS; the completion notification wakes you. If a
-  command must be foreground it is under two minutes.
+  battery, a bed run or a VM boot goes through `run_in_background` or the
+  Monitor tool with a bounded `Wait-Process`, so the harness wakes you at
+  exit; never a detached process that nothing watches. If a command must
+  be foreground it is under two minutes.
 - **No open dialog while waiting.** A permission prompt or a question
   left open eats the next typed line as its answer. If you need Damian,
   say so in one line and in `status.json`, and end the turn at the plain

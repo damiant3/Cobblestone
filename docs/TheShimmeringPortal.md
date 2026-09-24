@@ -165,7 +165,7 @@ WidgetKind =
   | WkCustom (tag)           -- extensible (div with data-custom)
 
 WidgetNode = record {
-  wn-kind, wn-state, wn-id,
+  wn-kind, wn-flags, wn-data, wn-id,
   wn-children, wn-child-count,
   wn-layout-dir, wn-gap, wn-flex,
   wn-min-w, wn-min-h, wn-bounds

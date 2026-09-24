@@ -1,67 +1,11 @@
-# Report drift between each codex/build/*Script.codex generator and the
-# script it claims to produce.
-#
-# Hand-written, deliberately, and it is the one script under build/ that
-# must stay that way: it has to run when the generators are broken, which
-# is exactly when a generated checker would be untrustworthy.
-#
-# There is NO -Write flag and that omission is load-bearing. Measured
-# 2026-08-03, 39 of the 40 generators with a live target had drifted and
-# in every case the SHIPPED script was the maintained side and the
-# generator was the abandoned one. A bulk regenerate would therefore
-# destroy the working scripts, including build.ps1 and test.ps1. Use
-# -Diff to read a drift and port it back into the generator by hand.
-#
-# Usage:
-#   check-generated-scripts.ps1                 # table for every generator
-#   check-generated-scripts.ps1 -Only test      # one, by emitted name
-#   check-generated-scripts.ps1 -Diff test      # show the actual drift
-#   check-generated-scripts.ps1 -Update         # rewrite both records below
-#   check-generated-scripts.ps1 -UpdateBytes    # rewrite ONLY the byte residue
-#
-# It answers three questions now, and the third is the BYTE ARM: the drift
-# comparison trims every line and drops the empty ones, so it decides STATEMENTS,
-# and an added blank line or a re-indented comment is invisible to it. That gap
-# let 47 changelists and a design page claim "byte-identical" on an instrument
-# that cannot decide it (L-GAP). The arm compares the emitted text again with
-# blanks and indentation included, and its record is
-# build/generated-scripts-bytes.txt: 8 generators are statement-identical and not
-# byte-identical, NONE of them by a content difference, and it fails on a ninth,
-# on a recorded difference that moves, and on a repair the record still lists.
-#
-# The first two questions, and only the first can fail the build.
-#   1. Does each generator still emit the script shipped beside it?
-#      Record: build/generated-scripts-baseline.txt.
-#   2. Which scripts under build/ does no generator emit at all? That is the
-#      commoner drift and nothing asked it until 2026-08-14. Record:
-#      build/handwritten-scripts.txt. REPORT ONLY -- see the block at the
-#      bottom for why a gate there would be wrong.
-#
-# Exit 1 on a generator that is BROKEN (compile failure, empty output, an
-# unhandled-node stub, or emitted text PowerShell cannot parse) or that has
-# NEWLY drifted; 0 otherwise. The drift
-# already in build/generated-scripts-baseline.txt does not fail the build:
-# 26 of 42 were already behind when this became a gate, and a red whose
-# answer is always the expected one trains its reader to accept reds.
-#
-# IT BOOTS A GUEST PER GENERATOR. One VM boot compiles them all, and then each
-# emitted script is run in its own guest to capture its output, so the bare form
-# is 57 boots and is a run to ask the box for. -Only <name> is one.
 [CmdletBinding()]
 param(
     [string]$Only = '',
     [string]$Diff = '',
     [string]$OutRoot = '',
-    # The compiler that builds the generators. Defaults to the DEPOT SEED, not
-    # to build-output\bare-metal\Codex.cdx, which is whichever compiler ran
-    # last: a drift table is a statement about the compiler that produced it.
     [string]$Kernel = '',
     [switch]$AllowStaleKernel,
     [switch]$Update,
-    # Writes ONLY the byte residue. -Update rewrites the drift baseline and the
-    # hand-written inventory too, and the inventory currently carries other
-    # lanes' new scripts, so a lane repairing one byte difference would record
-    # decisions that are not its to make.
     [switch]$UpdateBytes
 )
 
@@ -74,8 +18,6 @@ Set-Location $Repo
 $BaseFile = Join-Path $Repo 'build\generated-scripts-baseline.txt'
 $BytesFile = Join-Path $Repo 'build\generated-scripts-bytes.txt'
 
-# The recorded residue of generators that are statement-identical but not
-# byte-identical, as <name> <shippedLines> <emittedLines> <indentDiffs>.
 function Read-BytesResidue([string]$path) {
     $t = @{}
     if (-not (Test-Path -PathType Leaf $path)) { return $t }
@@ -88,7 +30,6 @@ function Read-BytesResidue([string]$path) {
     return $t
 }
 
-# Derived, not typed by hand, so a new row cannot arrive with an empty reason.
 function Get-ByteCause($r) {
     $blanks = $r.ByteS - $r.ByteE
     $word = if ($blanks -lt 0) { 'more' } else { 'fewer' }
@@ -98,9 +39,6 @@ function Get-ByteCause($r) {
     return "indentation on $($r.ByteI) line(s), and emitted $([Math]::Abs($blanks)) $word blank line(s)"
 }
 
-# -Update writes two records and either may be read-only under Perforce. Writing
-# only what changed means the common case (one record moved, the other did not)
-# no longer dies halfway through, leaving the first written and the second not.
 function Write-Record([string]$Path, [string[]]$Lines, [string]$What) {
     $new = ($Lines -join "`r`n") + "`r`n"
     if ((Test-Path -PathType Leaf $Path) -and ((Get-Content $Path -Raw) -eq $new)) {
@@ -111,17 +49,9 @@ function Write-Record([string]$Path, [string[]]$Lines, [string]$What) {
     catch { Write-Host "$What NOT written (read-only?): $Path"; Write-Host "  p4 edit it and re-run -Update" }
 }
 
-# The four generators whose target does not live under build/. A missing
-# entry here does not report as an error: the generator simply reads as
-# having no live target and is never compared. cvmm-build sat in that
-# blind spot from the day it was written until 2026-08-07, emitting a
-# script that ships as apps\cvmm\build.ps1.
-$AltTarget = @{
-    'compile-arm64'  = 'codex\plugs\arm64\compile-arm64.ps1'
-    'compile-riscv'  = 'codex\plugs\riscv\compile-riscv.ps1'
-    'plug-build-lib' = 'codex\plugs\common\plug-build-lib.ps1'
-    'cvmm-build'     = 'apps\cvmm\build.ps1'
-}
+& (Join-Path $Repo 'build/checks/tool-catalog.ps1') -Repo $Repo
+if ($LASTEXITCODE -ne 0) { exit 1 }
+$toolCatalog = Get-Content -LiteralPath (Join-Path $Repo 'build/tool-catalog.json') -Raw -Encoding utf8 | ConvertFrom-Json
 
 $DepotSeed = Join-Path $Repo 'seed\Codex.cdx'
 if (-not $Kernel) { $Kernel = $DepotSeed }
@@ -140,11 +70,6 @@ if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and $seedDig
 }
 Write-Host "compiler: $($Kernel.Replace($Repo + [System.IO.Path]::DirectorySeparatorChar, '')) [$digest]"
 
-# A tree we made is ours to remove; one the CALLER named is not, and neither
-# is one behind a failing exit, where it is the evidence. Measured 2026-09-01:
-# 1,058 of these had built up in %TEMP% holding 2.0 GB, one per run since
-# mid-August, because nothing ever removed them. Same shape as the writable
-# disk copies test-run.ps1 cleans up in its finally block.
 $ownRoot = -not $OutRoot
 if (-not $OutRoot) { $OutRoot = Join-Path ([System.IO.Path]::GetTempPath()) "genscripts-$PID" }
 New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
@@ -155,34 +80,16 @@ function Remove-OwnRoot {
     }
 }
 
-# What each generator claims to emit, and where that lands. $claimed is the
-# same information read the other way round, and it is built BEFORE -Only
-# filters $specs, because the inventory below asks about every script in the
-# tree and not about the one generator someone selected.
 $specs = @()
 $claimed = @{}
 foreach ($g in (Get-ChildItem (Join-Path $Repo 'codex\build') -Filter '*Script.codex' -File)) {
     $text = [System.IO.File]::ReadAllText($g.FullName)
-    # A generator names its script with sh-script, or, once migrated to the
-    # pipeline model, with the pipeline's pl-name (PipelineModel.md). Both are
-    # matched, and the reason is a hazard rather than tidiness: a generator this
-    # regex does not match is not reported as BROKEN, it is not reported at all,
-    # so the first migrated generator would have dropped out of the drift gate
-    # silently and the gate would have gone on saying OK.
     $m = [regex]::Match($text, 'sh-script\s+"([^"]+)"')
     if (-not $m.Success) { $m = [regex]::Match($text, 'pl-name\s*=\s*"([^"]+)"') }
-    # A generator whose entry chapter is split from its pipeline (L-UNCITABLE: a
-    # chapter declaring `opening` can be cited by nothing, so the pipeline has to
-    # live beside it to be reachable by a test) names its script in NEITHER of
-    # the two forms above. Follow the entry's own cites into codex\build and look
-    # there, or the split generator drops out of this gate silently, which is the
-    # hazard the comment above describes.
     if (-not $m.Success) {
         foreach ($c in [regex]::Matches($text, '(?m)^\s*cites\s+Build\s+chapter\s+(\S+)')) {
             $sib = Join-Path $g.DirectoryName ($c.Groups[1].Value + '.codex')
             if (-not (Test-Path -PathType Leaf $sib)) {
-                # Fall back to the chapter LINE, since a file name need not match
-                # the chapter it declares.
                 $sib = (Get-ChildItem $g.DirectoryName -Filter '*.codex' -File |
                     Where-Object { [regex]::IsMatch([System.IO.File]::ReadAllText($_.FullName), '(?m)^Chapter:\s+' + [regex]::Escape($c.Groups[1].Value) + '\s*$') } |
                     Select-Object -First 1 -ExpandProperty FullName)
@@ -197,7 +104,10 @@ foreach ($g in (Get-ChildItem (Join-Path $Repo 'codex\build') -Filter '*Script.c
     if (-not $m.Success) { continue }
     $name = $m.Groups[1].Value
     $ext = if ($text -match 'emit-bash') { 'sh' } else { 'ps1' }
-    $target = if ($ext -eq 'ps1' -and $AltTarget.ContainsKey($name)) { $AltTarget[$name] } else { "build\$name.$ext" }
+    $target = "build\$name.$ext"
+    $catalogTargets = @($toolCatalog.tools | Where-Object { $_.source -eq "codex/build/$($g.Name)" -and $_.path.EndsWith(".$ext") })
+    if ($ext -eq 'ps1' -and $catalogTargets.Count -ne 1) { throw "Catalog must identify exactly one target for $($g.Name)" }
+    if ($catalogTargets.Count -eq 1) { $target = $catalogTargets[0].path.Replace('/', '\') }
     $specs += [pscustomobject]@{
         Generator = $g
         Emits     = $name
@@ -213,14 +123,6 @@ if ($wanted) {
     if ($specs.Count -eq 0) { Write-Host "no generator emits '$wanted'"; Remove-OwnRoot; exit 2 }
 }
 
-# One VM boot compiles the whole set, INCLUDING the generators whose target
-# script does not exist. Those were filtered out before compilation until
-# 2026-08-06, which meant nothing in the tree had ever compiled them. Two of
-# the eleven sites in the parse-error campaign -- and one of its four causes
-# in its entirety -- were sitting in that set, and surfaced only because they
-# were compiled by hand outside this script. Drift is still asked only of a
-# generator with a live target, since there is nothing to compare a dead one
-# against, but broken is broken either way.
 if ($specs.Count -eq 0) { Write-Host "nothing to check"; Remove-OwnRoot; exit 0 }
 
 $listFile = Join-Path $OutRoot 'generators.txt'
@@ -241,19 +143,6 @@ foreach ($s in $specs) {
     $cdx = Get-ChildItem $dir -Filter '*.cdx' | Select-Object -First 1
     $emitted = Join-Path $dir 'emitted.txt'
 
-    # The run phase is intermittently empty-handed: a generator compiles
-    # clean (exit 0, a full .cdx) and still leaves a zero-byte emitted.txt,
-    # which used to fail the whole run. Seen twice on 2026-08-06
-    # (test-exception-handler, then boot-arm64), each a match on a re-run.
-    #
-    # Not reproduced on 2026-08-07 in 240 runs of the boot-arm64 kernel that
-    # had just failed -- 40 idle, then 40 against eight concurrent VM boots.
-    # So the cause is not this kernel and not VM contention at the depth
-    # this box reaches, and it is NOT test-run.ps1's own two empty-output
-    # paths either: both write the sweep log, which was silent throughout.
-    # Retry once and SAY SO rather than fail on it. A retry that succeeds is
-    # reported, never silent -- if this line starts appearing every run, the
-    # flake has become a defect and the retry is hiding it.
     $runExit = 0
     $firstExit = 0
     for ($attempt = 1; $attempt -le 2; $attempt++) {
@@ -270,33 +159,6 @@ foreach ($s in $specs) {
         continue
     }
 
-    # An emitter answers `# <unknown-cmd>` for a node it does not handle,
-    # rather than failing, so a node added to ShellTypes and forgotten in
-    # BashEmit or KshEmit produces a script that is silently wrong.
-    #
-    # Re-measured 2026-08-06, later the same day and against the constructor
-    # list rather than a carried number: ShellTypes declares 148, PowerShellEmit
-    # handles all 148, BashEmit is missing 80 and KshEmit 79. (This said 140
-    # and 73 that morning. The counts move; re-derive them, never copy them.)
-    # So the arm earns its keep mainly on the .ps1 side. It said here that it
-    # CANNOT FIRE for bash, because the one bash generator emits
-    # build/test-run.sh, which does not exist, so it was dropped before
-    # compilation. That is no longer how the loop runs: every generator is
-    # compiled now, target or no target, and testrunBashScript is scanned like
-    # the rest. It emits 65 lines and 0 stubs, so its script happens to use
-    # only handled constructors. The 80 unhandled arms are therefore still
-    # unmeasured here; a second bash generator is what would reach them.
-    # Fired deliberately 2026-08-06 by deleting the ScReadBytes arm from
-    # PowerShellEmit: the row moved to UNHANDLED NODES (1) and the check
-    # failed, so the scan is not decoration.
-    # Match the stub FORMS, not the token anywhere in the text. The command
-    # stub is a whole line (`pad & "# <unknown-cmd>"`, PowerShellEmit:245 and
-    # BashEmit:112) and the expression stub is quoted (`"<unknown-expr>"`,
-    # PowerShellEmit:416). A bare substring search also matched a generated
-    # script's own PROSE about the stub: build.ps1's gen-scripts comment
-    # explains what `# <unknown-cmd>` means, so the moment that comment was
-    # generated rather than hand-written, the leg reported the build generator
-    # as broken. The check was describing itself.
     $madeText = [System.IO.File]::ReadAllText($emitted)
     $stubs = @([regex]::Matches($madeText, '(?m)^[ \t]*# <unknown-cmd>[ \t]*$|"<unknown-expr>"')).Count
     if ($stubs -gt 0) {
@@ -304,14 +166,6 @@ foreach ($s in $specs) {
         continue
     }
 
-    # Is the emitted text valid PowerShell at all? Nothing asked until
-    # 2026-08-06 and the answer was no for 8 of 42: 59 syntax errors that
-    # every green run had passed over, because a generator can compile,
-    # emit, carry no stub, sit close to its shipped script, and still print
-    # text the parser refuses. ParseFile is the language's own front end, so
-    # the answer is mechanically decidable rather than a judgement, and it
-    # costs about 40 ms a file. Keyed off the target extension and not the
-    # generator name: bash parsed as PowerShell would measure nothing.
     if ($s.Target -like '*.ps1') {
         $perr = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile($emitted, [ref]$null, [ref]$perr)
@@ -322,34 +176,6 @@ foreach ($s in $specs) {
         }
     }
 
-    # The class that PARSES and fails at RUNTIME, which is the gap between the
-    # two scans above: a value-producing cmdlet emitted as a BARE positional
-    # argument to another cmdlet.
-    #
-    #   Copy-Item -Force $a Join-Path $b 'c'      Destination binds to the
-    #                                             STRING 'Join-Path', $b and
-    #                                             'c' become surplus positional
-    #                                             args, and it dies when run.
-    #   Copy-Item -Force $a (Join-Path $b 'c')    correct
-    #
-    # ParseFile is happy with the first form, so the scan above cannot see it,
-    # and the drift check cannot either while the shipped script carries the
-    # same bug. It has bitten twice: test-boards emitting `New-Item ... -Force
-    # Split-Path $Stage0` (fixed 2026-08-11 at the call site), and BuildScript's
-    # ScCopy emitting the exact Copy-Item line above (found 2026-08-15 while
-    # back-porting the gate, and live the moment the emitted script was
-    # installed over the hand-maintained one).
-    #
-    # Both fixes were at the CALL SITE rather than in the emitter: SeRaw is
-    # passed through verbatim by design, and parenthesising inside
-    # emit-ps-cmd-ext would re-drift every generator that currently matches.
-    # So the emitter cannot be made safe here and a scan is the only guard.
-    #
-    # Measured 2026-08-15 over 345 scripts under build/, codex/plugs/ and
-    # apps/: 0 occurrences. It FAILS rather than warns because it is at zero --
-    # a new one is a real defect, not a known residue. The span test is what
-    # keeps it honest: without it `if (Test-Path $x) { Get-Content ... }`
-    # matches and the scan drowns in 29 correct lines.
     if ($s.Target -like '*.ps1') {
         $bareInner = 'Join-Path|Split-Path|Resolve-Path|Get-Item|Get-Content|Get-ChildItem|Get-Date|Get-FileHash|New-Object'
         $bareOuter = 'Copy-Item|Move-Item|Rename-Item|New-Item|Remove-Item|Set-Content|Add-Content|Out-File|Test-Path'
@@ -365,8 +191,6 @@ foreach ($s in $specs) {
                 $oh = [regex]::Matches($pre, "\b($bareOuter)\b")
                 if ($oh.Count -eq 0) { continue }
                 $last = $oh[$oh.Count - 1]
-                # Anything that ends an argument list means this is a new
-                # statement, not an argument.
                 if ($pre.Substring($last.Index + $last.Length) -match '[{}|;)]') { continue }
                 $bare += "line ${ln}: $($m.Value) bare in: $t"
             }
@@ -378,21 +202,10 @@ foreach ($s in $specs) {
         }
     }
 
-    # A generator with no live target has now been asked every question that
-    # can be put to it. Drift is not one of them, so it leaves no row and the
-    # counts below read as they always did.
     if (-not $s.Present) { continue }
 
-    # ReadAllLines, not Get-Content: Get-Content decorates every line with
-    # PSObject note properties. Measured 2026-09-01 over these same 57 pairs
-    # (30,230 lines), separate process per arm: 10.0-11.5 MB against 4.7-5.6,
-    # identical drift. It is 6 MB, and it is named here so the next reader
-    # does not re-derive it expecting more.
     $shipped = [System.IO.File]::ReadAllLines((Join-Path $Repo $s.Target))
     $made = [System.IO.File]::ReadAllLines($emitted)
-    # Whitespace-only difference is not drift worth porting: the emitter's
-    # blank-line and indent conventions differ from the hand-maintained
-    # files across the board and would drown every real finding.
     $a = @($shipped | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     $b = @($made | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     $delta = @(Compare-Object $a $b).Count
@@ -407,24 +220,8 @@ foreach ($s in $specs) {
         exit ($(if ($delta -gt 0) { 1 } else { 0 }))
     }
 
-    # THE BYTE ARM. The comparison above decides STATEMENTS: it trims every line
-    # and drops the empty ones, so an added blank line and a re-indented comment
-    # are both invisible to it. Measured 2026-09-08 on its own logic: a script
-    # against itself plus one blank line scores delta 0, while one changed
-    # statement scores 2. Forty-seven CL descriptions and the campaign page had
-    # said "byte-identical" on the strength of it (L-GAP).
-    #
-    # So the emitted text is compared again, blanks included and indentation
-    # included, with only the EOL convention normalised: the emitter writes LF
-    # and the depot holds CRLF, and that difference is not a finding.
-    # ReadAllText and split rather than the ReadAllLines above, because
-    # ReadAllLines cannot see a trailing blank line and one of the eight
-    # differs by exactly that.
     $shipTxt = [regex]::Split([System.IO.File]::ReadAllText((Join-Path $Repo $s.Target)), "`r?`n")
     $madeTxt = [regex]::Split([System.IO.File]::ReadAllText($emitted), "`r?`n")
-    # I is the number of non-blank lines whose UNTRIMMED text differs, which is
-    # the indentation half of the difference, counted only where the two sides
-    # still line up.
     $shipNB = @($shipTxt | Where-Object { $_.Trim() -ne '' })
     $madeNB = @($madeTxt | Where-Object { $_.Trim() -ne '' })
     $indentDiffs = 0
@@ -452,21 +249,6 @@ foreach ($s in $specs) {
 
 $rows | Sort-Object Drift -Descending | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 
-# A generator with no target grades NOTHING, and until 2026-09-08 that was
-# reported here and then ignored: the run printed the count and still exited 0.
-# That is L-ACCEPTED's shape in this script's own lane -- an interface that
-# tolerates what it does not recognise -- and it is how a generator can sit
-# ungraded indefinitely while the table underneath says "0 drifted". An
-# undeclared missing target now FAILS.
-#
-# ONE target is absent by design. build/test-run.sh has never shipped;
-# testrunBashScript is kept and compiled anyway because it is the only bash
-# generator in the tree, so the unhandled-node scan below reaches BashEmit
-# through it and through nothing else. Retiring it would delete that coverage,
-# so it is declared here with its reason rather than deleted.
-#
-# cvmm-build is NOT in this map and must not be: its target moved to
-# apps\cvmm\build.ps1 and $AltTarget has said so since 2026-08-07. It grades.
 $NoTargetByDesign = @{
     'build\test-run.sh' = 'the only bash generator, kept so the unhandled-node scan reaches BashEmit; no .sh has ever shipped'
 }
@@ -486,23 +268,6 @@ if ($deadUndeclared.Count -gt 0) {
     foreach ($d in $deadUndeclared) { Write-Host "  $($d.Generator.Name) -> $($d.Target)" }
 }
 
-# The inventory: build/*.ps1 that NO generator claims. Everything above this
-# line reads the tree generator-first and cannot see a script that was never
-# generated at all, which is the commoner of the two ways this lane drifts --
-# an agent writes a new script and does not write the .codex that emits it.
-#
-# It REPORTS and never fails, deliberately. Measured 2026-08-14: 93 of 135
-# scripts under build/ have no generator, and most are meant not to have one
-# (probes, arms, interop harnesses, one-offs, and this file). A rule that
-# every script needs a generator is not the policy and never was, so a gate
-# here would be 93 reds whose answer is always "expected", which is the exact
-# failure the drift baseline exists to avoid.
-#
-# What IS worth a human's attention is a script that appeared since the last
-# reading. Same mechanism as the drift baseline: the known set lives in
-# build/handwritten-scripts.txt, and only a NEW name prints. Answer it by
-# writing the generator, or by recording the name with -Update -- both are
-# fine, and which one is right is a judgement no script can make.
 if (-not $wanted) {
     $invFile = Join-Path $Repo 'build\handwritten-scripts.txt'
     $onDisk = @(Get-ChildItem (Join-Path $Repo 'build') -Filter '*.ps1' -File |
@@ -548,11 +313,6 @@ if (-not $wanted) {
     }
 }
 
-# Five ways a generator can be wrong and only one of them is baselineable.
-# DRIFTED is a generator that has fallen behind the script it emits, which is
-# a campaign and not a defect of the day. The other four are a generator that
-# is broken NOW, and none of them is ever an expected answer, so no baseline
-# may quiet them.
 $broken     = @($rows | Where-Object { $_.Status -ne 'match' -and $_.Status -ne 'DRIFTED' })
 $driftedNow = @($rows | Where-Object { $_.Status -eq 'DRIFTED' } | ForEach-Object { $_.Emits } | Sort-Object)
 
@@ -581,9 +341,6 @@ if ($Update -or $UpdateBytes) {
     Write-Record $BaseFile ($header + $driftedNow) "baseline ($($driftedNow.Count) known drift(s))"
   }
 
-    # The byte residue is written only by a FULL run: a -Only run knows nothing
-    # about the generators it did not emit, and writing from it would delete
-    # their rows and report the residue as repaired.
     if (-not $wanted) {
         $notByte = @($rows | Where-Object { -not $_.ByteOk } | Sort-Object Emits)
         $bHeader = @(
@@ -624,7 +381,7 @@ if ($deadUndeclared.Count -gt 0) {
     foreach ($d in $deadUndeclared) { Write-Host "  $($d.Generator.Name) -> $($d.Target)" }
     Write-Host "  A generator with no target is compared against nothing, so it reports"
     Write-Host "  neither match nor drift and its output is unchecked by anything."
-    Write-Host "  Either the target moved, in which case add it to `$AltTarget above,"
+    Write-Host "  Either the target moved, in which case update build/tool-catalog.json,"
     Write-Host "  or it is gone and the generator should be deleted, or it is absent on"
     Write-Host "  purpose, in which case declare it in `$NoTargetByDesign with the reason."
     Remove-OwnRoot
@@ -675,8 +432,6 @@ $baseline = @(Get-Content $BaseFile |
     Where-Object { $_ -notmatch '^\s*#' -and $_ -match '\S' } |
     ForEach-Object { $_.Trim() })
 
-# Intersect with what was actually checked, so -Only does not report every
-# generator it did not look at as repaired.
 $checked  = @($rows | ForEach-Object { $_.Emits })
 $newDrift = @($driftedNow | Where-Object { $baseline -notcontains $_ })
 $fixed    = @($baseline | Where-Object { $checked -contains $_ -and $driftedNow -notcontains $_ })

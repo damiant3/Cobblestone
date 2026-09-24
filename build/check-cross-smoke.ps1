@@ -35,9 +35,14 @@
 # one, and that difference is the only thing that makes a returning flake
 # visible.
 #
-# Usage: check-cross-smoke.ps1 [-Tests a,b] [-TimeoutSec N]
+# Usage: check-cross-smoke.ps1 [-Kernel <cdx>] [-Tests a,b] [-TimeoutSec N]
+#
+# -Kernel names the compiler whose front end produces the IR. Without it
+# test-cross.ps1 uses the depot seed, so a gate that omits it grades the seed
+# rather than the compiler it just built.
 
 param(
+    [string]$Kernel = '',
     [string[]]$Tests = @('factorial'),
     [int]$TimeoutSec = 3
 )
@@ -54,6 +59,10 @@ if (-not (Test-Path $crossScript)) {
     exit 1
 }
 
+$kShown = if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed\Codex.cdx' }
+if (-not (Test-Path -PathType Leaf $kShown)) { Write-Host "check-cross-smoke: kernel not found: $kShown"; exit 1 }
+Write-Host "check-cross-smoke: kernel $kShown [$((Get-FileHash -Algorithm SHA256 $kShown).Hash.Substring(0, 16))]"
+
 $fail    = @()
 $ran     = 0
 $skipped = @()
@@ -63,7 +72,8 @@ $recovered = 0
 
 function Invoke-CrossTest([string]$arch, [string]$t) {
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    $out = & pwsh -NoProfile -File $script:crossScript -Arch $arch -Test $t -TimeoutSec $script:TimeoutSec 2>&1
+    $kArgs = if ($script:Kernel) { @('-Kernel', $script:Kernel, '-AllowStaleKernel') } else { @() }
+    $out = & pwsh -NoProfile -File $script:crossScript -Arch $arch -Test $t -TimeoutSec $script:TimeoutSec @kArgs 2>&1
     $code = $LASTEXITCODE
     $ErrorActionPreference = $prev
     return @{ Code = $code; Text = ($out | Out-String) }

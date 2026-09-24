@@ -42,52 +42,80 @@ Section: Decoding
     ben-ok : Boolean
   }
 
+ ben-decode takes one whole value: trailing text refuses it, as does anything
+ ben-decode-at refuses. ben-decode-at is the streaming entry and leaves what
+ follows to its caller.
+
+ ben-max-depth bounds the recursion: each list or dict level costs a fixed
+ handful of stack frames, and 256 levels is far past any real document.
+
+  ben-max-depth : Integer = 256
+
+  ben-fail : Integer -> BenDecodeResult
+  ben-fail (pos) = BenDecodeResult { ben-value = BenInt 0, ben-pos = pos, ben-ok = False }
+
   ben-decode : Text -> BenDecodeResult
-  ben-decode (s) = ben-decode-at s 0 (text-length s)
+  ben-decode (s) =
+    let r = ben-decode-at s 0 (text-length s)
+    in if r.ben-ok & r.ben-pos /= text-length s then ben-fail (r.ben-pos)
+    else r
 
   ben-decode-at : Text, Integer, Integer -> BenDecodeResult
-  ben-decode-at (s) (pos) (len) =
-    if pos >= len then BenDecodeResult { ben-value = BenInt 0, ben-pos = pos, ben-ok = False }
+  ben-decode-at (s) (pos) (len) = ben-decode-item s pos len 0
+
+  ben-decode-item : Text, Integer, Integer, Integer -> BenDecodeResult
+  ben-decode-item (s) (pos) (len) (depth) =
+    if depth > ben-max-depth then ben-fail pos
+    else if pos >= len then ben-fail pos
     else let ch = char-code (char-at s pos)
     in if ch == char-code (char-at "i" 0) then ben-decode-int s (pos + 1) len
-    else if ch == char-code (char-at "l" 0) then ben-decode-list s (pos + 1) len []
-    else if ch == char-code (char-at "d" 0) then ben-decode-dict s (pos + 1) len []
+    else if ch == char-code (char-at "l" 0) then ben-decode-list s (pos + 1) len [] (depth + 1)
+    else if ch == char-code (char-at "d" 0) then ben-decode-dict s (pos + 1) len [] (depth + 1)
     else ben-decode-str s pos len
+
+ BEP 3: an integer is "i", an optional minus, digits, "e", with no leading
+ zero and no "-0". A string is a decimal length with no sign or leading zero,
+ a colon, and exactly that many characters.
 
   ben-decode-int : Text, Integer, Integer -> BenDecodeResult
   ben-decode-int (s) (pos) (len) =
     let e-pos = ben-find-char s pos len (char-code (char-at "e" 0))
-    in if e-pos >= len then BenDecodeResult { ben-value = BenInt 0, ben-pos = pos, ben-ok = False }
-    else let num-text = substring s pos (e-pos - pos)
-    in BenDecodeResult { ben-value = BenInt (ben-parse-int-text num-text), ben-pos = e-pos + 1, ben-ok = True }
+    in if e-pos >= len then ben-fail pos
+    else let neg = pos < e-pos & char-code (char-at s pos) == char-code (char-at "-" 0)
+    in let start = if neg then pos + 1 else pos
+    in let n = ben-parse-digits s start e-pos
+    in if n < 0 then ben-fail pos
+    else if neg & n == 0 then ben-fail pos
+    else BenDecodeResult { ben-value = BenInt (if neg then 0 - n else n), ben-pos = e-pos + 1, ben-ok = True }
 
   ben-decode-str : Text, Integer, Integer -> BenDecodeResult
   ben-decode-str (s) (pos) (len) =
     let colon = ben-find-char s pos len (char-code (char-at ":" 0))
-    in if colon >= len then BenDecodeResult { ben-value = BenStr "", ben-pos = pos, ben-ok = False }
-    else let str-len = ben-parse-int-text (substring s pos (colon - pos))
+    in if colon >= len then ben-fail pos
+    else let str-len = ben-parse-digits s pos colon
     in let str-start = colon + 1
-    in let str-val = substring s str-start str-len
-    in BenDecodeResult { ben-value = BenStr str-val, ben-pos = str-start + str-len, ben-ok = True }
+    in if str-len < 0 then ben-fail pos
+    else if str-len > len - str-start then ben-fail pos
+    else BenDecodeResult { ben-value = BenStr (substring s str-start str-len), ben-pos = str-start + str-len, ben-ok = True }
 
-  ben-decode-list : Text, Integer, Integer, List BenValue -> BenDecodeResult
-  ben-decode-list (s) (pos) (len) (acc) =
-    if pos >= len then BenDecodeResult { ben-value = BenList acc, ben-pos = pos, ben-ok = False }
+  ben-decode-list : Text, Integer, Integer, List BenValue, Integer -> BenDecodeResult
+  ben-decode-list (s) (pos) (len) (acc) (depth) =
+    if pos >= len then ben-fail pos
     else if char-code (char-at s pos) == char-code (char-at "e" 0) then BenDecodeResult { ben-value = BenList acc, ben-pos = pos + 1, ben-ok = True }
-    else let item = ben-decode-at s pos len
-    in if item.ben-ok then ben-decode-list s (item.ben-pos) len (list-push acc (item.ben-value))
-    else BenDecodeResult { ben-value = BenList acc, ben-pos = pos, ben-ok = False }
+    else let item = ben-decode-item s pos len depth
+    in if item.ben-ok then ben-decode-list s (item.ben-pos) len (list-push acc (item.ben-value)) depth
+    else ben-fail pos
 
-  ben-decode-dict : Text, Integer, Integer, List BenPair -> BenDecodeResult
-  ben-decode-dict (s) (pos) (len) (acc) =
-    if pos >= len then BenDecodeResult { ben-value = BenDict acc, ben-pos = pos, ben-ok = False }
+  ben-decode-dict : Text, Integer, Integer, List BenPair, Integer -> BenDecodeResult
+  ben-decode-dict (s) (pos) (len) (acc) (depth) =
+    if pos >= len then ben-fail pos
     else if char-code (char-at s pos) == char-code (char-at "e" 0) then BenDecodeResult { ben-value = BenDict acc, ben-pos = pos + 1, ben-ok = True }
     else let key-result = ben-decode-str s pos len
-    in if key-result.ben-ok == False then BenDecodeResult { ben-value = BenDict acc, ben-pos = pos, ben-ok = False }
+    in if key-result.ben-ok == False then ben-fail pos
     else let key = when (key-result.ben-value) is BenStr (k) -> k is otherwise -> ""
-    in let val-result = ben-decode-at s (key-result.ben-pos) len
-    in if val-result.ben-ok then ben-decode-dict s (val-result.ben-pos) len (list-push acc (BenPair { ben-key = key, ben-val = val-result.ben-value }))
-    else BenDecodeResult { ben-value = BenDict acc, ben-pos = pos, ben-ok = False }
+    in let val-result = ben-decode-item s (key-result.ben-pos) len depth
+    in if val-result.ben-ok then ben-decode-dict s (val-result.ben-pos) len (list-push acc (BenPair { ben-key = key, ben-val = val-result.ben-value })) depth
+    else ben-fail pos
 
 Section: Helpers
   ben-find-char : Text, Integer, Integer, Integer -> Integer
@@ -96,17 +124,24 @@ Section: Helpers
     else if char-code (char-at s i) == target then i
     else ben-find-char s (i + 1) len target
 
-  ben-parse-int-text : Text -> Integer
-  ben-parse-int-text (s) = ben-parse-int-loop s 0 (text-length s) 0 False
+ The digits in [start, stop) as a non-negative Integer, or -1 when the span is
+ empty, holds a non-digit, has a leading zero, or would pass i64 max. The
+ overflow test runs before the multiply, which traps on overflow.
 
-  ben-parse-int-loop : Text, Integer, Integer, Integer, Boolean -> Integer
-  ben-parse-int-loop (s) (i) (len) (acc) (neg) =
-    if i >= len then if neg then -acc else acc
-    else let ch = char-code (char-at s i)
-    in if ch == char-code (char-at "-" 0) then ben-parse-int-loop s (i + 1) len acc True
-    else let d = ben-digit-value ch
-    in if d >= 0 then ben-parse-int-loop s (i + 1) len (acc * 10 + d) neg
-    else if neg then -acc else acc
+  ben-parse-digits : Text, Integer, Integer -> Integer
+  ben-parse-digits (s) (start) (stop) =
+    if start >= stop then 0 - 1
+    else if stop - start > 1 & ben-digit-value (char-code (char-at s start)) == 0 then 0 - 1
+    else ben-parse-digits-loop s start stop 0
+
+  ben-parse-digits-loop : Text, Integer, Integer, Integer -> Integer
+  ben-parse-digits-loop (s) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let d = ben-digit-value (char-code (char-at s i))
+    in if d < 0 then 0 - 1
+    else if acc > 922337203685477580 then 0 - 1
+    else if acc == 922337203685477580 & d > 7 then 0 - 1
+    else ben-parse-digits-loop s (i + 1) stop (acc * 10 + d)
 
   ben-digit-value : Integer -> Integer
   ben-digit-value (c) =
@@ -121,5 +156,4 @@ Section: Helpers
     else if c == char-code (char-at "8" 0) then 8
     else if c == char-code (char-at "9" 0) then 9
     else 0 - 1
-
 Page 1

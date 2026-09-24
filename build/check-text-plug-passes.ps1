@@ -59,7 +59,6 @@ Section: Probe
 $src = Join-Path $WorkDir 'TextPlugPasses.codex'
 [System.IO.File]::WriteAllText($src, $fixture)
 
-# -IrUni dumps the IR into the log; the .ir file itself is not written.
 function Get-ProbeIr($tag, $passes) {
     $log = Join-Path $WorkDir "TextPlugPasses-$tag.log"
     $out = Join-Path $WorkDir "TextPlugPasses-$tag.ir"

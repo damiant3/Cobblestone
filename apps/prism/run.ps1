@@ -32,7 +32,7 @@ $compileScript = Join-Path $Repo 'build\compile.ps1'
 
 # -- Compile Prism app to CDX -------------------------------------------
 Write-Host "[prism] Compiling Prism.codex..."
-& pwsh -File $compileScript -Src (Join-Path $AppDir 'Prism.codex') -Out $AppCdx -Log $LogFile
+& pwsh -File $compileScript -Src (Join-Path $AppDir 'Prism.codex') -Out $AppCdx -Log $LogFile -Kernel (Join-Path $Repo 'seed\Codex.cdx')
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("FAIL: compile exited $LASTEXITCODE; see $LogFile")
     Get-Content $LogFile | Select-Object -Last 20
@@ -44,4 +44,6 @@ Write-Host "[prism] Compiled OK ($([math]::Round((Get-Item $AppCdx).Length / 102
 Write-Host "[prism] Starting web server on http://localhost:$Port ..."
 Write-Host "[prism] Press Ctrl+C to stop."
 
-& $script:CodexVmBin -kernel $AppCdx -mem 2048 -headless -net -hostfwd "tcp::${Port}-:9200"
+# The guest LISTENS on 9200 (`web-serve-concurrent`) and codex-vm forwards the
+# host port to it. `-portfwd` is codex-vm's spelling; `-hostfwd` is QEMU's.
+& $script:CodexVmBin -kernel $AppCdx -mem 2048 -headless -portfwd "${Port}:9200"

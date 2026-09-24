@@ -1,4 +1,5 @@
 Chapter: Csv
+  cites Foreword chapter Maybe
 
  CSV parsing and generation (RFC 4180). Handles quoted fields with
  embedded commas and escaped quotes. Rows are List Text, tables
@@ -73,6 +74,40 @@ Section: Parsing
     else if ch == char-code (char-at "\n" 0) then CsvFieldResult { value = acc, end-pos = i }
     else csv-parse-unquoted input (i + 1) len (acc & char-to-text (char-at input i))
 
+Section: Well-Formedness
+
+ RFC 4180 section 2, as one pass over four states: 0 at the start of a field,
+ 1 inside an unquoted field, 2 inside a quoted one, 3 just after a closing
+ quote. A quote may open a field and nothing else may contain one; a doubled
+ quote inside quotes is one quote; a closing quote must be followed by a
+ comma, a newline or the end; the text may not end inside quotes. csv-parse
+ answers something for every input, so a caller taking text from outside asks
+ csv-parse-checked, which parses only what is well formed.
+
+  csv-parse-checked : Text -> Maybe (List (List Text))
+  csv-parse-checked (input) =
+    if csv-well-formed input then Just (csv-parse input) else None
+
+  csv-well-formed : Text -> Boolean
+  csv-well-formed (input) = csv-wf input 0 (text-length input) 0
+
+  csv-wf : Text, Integer, Integer, Integer -> Boolean
+  csv-wf (s) (i) (n) (state) =
+    if i >= n then state /= 2
+    else let ch = char-code (char-at s i)
+    in let quote = ch == char-code (char-at "\"" 0)
+    in let sep = ch == char-code (char-at "," 0) | ch == char-code (char-at "\n" 0)
+    in if state == 2 then
+      if quote then
+        if i + 1 < n & char-code (char-at s (i + 1)) == char-code (char-at "\"" 0) then csv-wf s (i + 2) n 2
+        else csv-wf s (i + 1) n 3
+      else csv-wf s (i + 1) n 2
+    else if state == 3 then
+      if sep then csv-wf s (i + 1) n 0 else False
+    else if quote then
+      if state == 0 then csv-wf s (i + 1) n 2 else False
+    else if sep then csv-wf s (i + 1) n 0
+    else csv-wf s (i + 1) n 1
 Section: Generation
   csv-emit-row : List Text -> Text
   csv-emit-row (fields) = csv-emit-fields fields 0 (list-length fields) ""

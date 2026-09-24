@@ -249,6 +249,12 @@ select option { background: #ffffff; color: #111111; }
   padding: 1em 1.2em; white-space: pre-wrap; border-top: 1px solid var(--border);
   background: rgba(0,0,0,.28); color: var(--green); max-height: 26vh; overflow: auto;
 }
+.stdin {
+  display: block; width: 100%; box-sizing: border-box; resize: vertical;
+  font-family: var(--mono); font-size: 0.8em; line-height: 1.6;
+  padding: .7em 1.2em; border: 0; border-top: 1px solid var(--border);
+  background: rgba(0,0,0,.18); color: var(--text);
+}
 .toggle {
   display: flex; align-items: flex-start; gap: .6em; cursor: pointer;
   color: var(--text); font-size: .82em; line-height: 1.6; opacity: .9;
@@ -465,6 +471,7 @@ body.cl-open { padding-right: 400px; }
         </span>
       </span>
       <span class="bar-right">
+        <span class="status" id="ep-status"></span>
         <span class="status" id="status"><span class="run">idle</span></span>
         <button class="go" id="go">Compile</button>
         <button class="go" id="run" disabled>Run</button>
@@ -473,6 +480,8 @@ body.cl-open { padding-right: 400px; }
              side read as the same thing twice (Damian, on first sight). This one
              manages the saved set; that one configures the lens in hand. -->
         <button class="go" id="configs" title="Every saved local toolchain, across all lenses">Toolchains</button>
+        <button class="go" id="targets" title="Versioned game and native CPU targets">Targets</button>
+        <button class="go" id="bench" title="Run every Bench example here and through each saved toolchain">Bench</button>
       </span>
     </div>
 
@@ -539,10 +548,13 @@ body.cl-open { padding-right: 400px; }
       <button class="pill" data-bin="img" title="A whole 8 MB disk: GPT partition table, an EFI partition, and the UEFI app inside it. This is the one to write to a USB stick or hand to a VM as a drive.">Bootable disk</button>
       <span class="pill-label">Boards</span>
       <button class="pill" data-bin="board" title="A RISC-V ELF64 built by the riscv backend's own writer, loaded at 0x80000000 -- the RAM base qemu-system-riscv64 -machine virt uses, and the SiFive one. Entry is the located `opening`, not offset zero. Per-board link and flash addresses for the named HAL boards are not in yet, so this is the generic RISC-V kernel.">RISC-V kernel</button>
-      <button class="pill" disabled title="No ARM64 ELF writer exists. The arm64 backend emits the same wire riscv does, and its PE writer lives in the pe plug, but there is no Arm64Elf chapter, so there is nothing to build an ARM64 kernel with yet.">ARM64 kernel</button>
+      <button class="pill" data-bin="board-arm64" title="An AArch64 ELF64 built by the arm64 backend's own writer, loaded at 0x40000000 -- the RAM base qemu-system-aarch64 -machine virt maps. Entry is `__start`. The header, machine, entry and load address are checked here; no kernel from this pill has been booted yet, so whether it boots is unverified. Generic virt, not a named board.">ARM64 kernel</button>
       <span class="pill-label">Runs on an OS</span>
       <button class="pill" data-bin="elf" data-elf="2" title="A static ELF64 that RUNS: no interpreter, no libc, three segments -- the runtime cells, the program, and a demand-zero arena. Printing goes through write(2) and it exits through exit_group(2). Measured on WSL2 (kernel 6.6.87.2) against the same expected-output files the bare-metal battery grades on; that it runs on any x86-64 Linux is an assertion, and its basis is that the artifact has no host surface to depend on.">Linux app</button>
       <button class="pill" data-bin="winexe" title="A Windows console program that RUNS: subsystem 3, a kernel32 import table, printing through WriteFile and exiting through ExitProcess. It asks the loader for its runtime cells at startup because they sit below any ImageBase Windows accepts. ASLR is off -- the code is patched for one address -- so a host that forces relocation will not run it. Tested on one machine.">Windows .exe</button>
+      <button class="pill" data-bin="mac" title="An Apple Silicon program: an arm64 Mach-O, ad-hoc signed the way a linker signs, built by the arm64 backend's Darwin mode and our own Mach-O writer. It links nothing at run time: printing is write(2) and exit is exit(2), both raw BSD system calls. Its structure and every page hash of its signature are checked against a zig-linked, signed reference. It has NOT been run on a Mac yet, so whether it runs is unverified.">Mac app</button>
+      <span class="pill-label">Runs in this tab</span>
+      <button class="pill" data-bin="serve" title="The program's web server, served inside this page. The route function its opening hands to web-serve or hosted-serve is compiled to WebAssembly with a one-request entry (Works chapter TabServe) in place of the opening, and every request the page below makes runs that module once. Links, forms and fetch inside the sandboxed frame come back here as messages; nothing listens on a port. State does not survive between requests.">Web server</button>
       <label class="toggle inline" style="margin-left:auto"><input type="checkbox" id="eu-toggle">
         Also produce the compliance evidence package, the CRA and ETSI style
         documents, from this build</label>
@@ -560,6 +572,7 @@ body.cl-open { padding-right: 400px; }
       <span class="bl-acts">
         <button class="act" id="copyout" disabled>Copy</button>
         <button class="act" id="saveout" disabled>Save</button>
+        <button class="act" id="savewasm" style="display:none" title="Assemble the WebAssembly text in this tab and save the binary">Save .wasm</button>
       </span>
     </div>
     <!-- How to run what was just built. The page NEVER flashes a stick and
@@ -569,6 +582,7 @@ body.cl-open { padding-right: 400px; }
     <!-- No inner scrollbar on the emitted code: a long emission grows the
          page and the page scrolls, which is how source wants reading. -->
     <div class="out" id="out" style="max-height:none">Press Compile.</div>
+    <textarea class="stdin" id="stdin" rows="3" spellcheck="false" style="display:none" placeholder="stdin for Run: these bytes, then end of input. A line is read once it ends with Enter; an unended last line is dropped, as on bare metal."></textarea>
     <div class="runout" id="runout" style="display:none"></div>
   </div>
 
@@ -720,11 +734,13 @@ const MAX_FILE = 8388608;
 const HL_PLAIN = 524288;
 const PAINT_MAX = 5000;
 // The binary targets, each a plug that reads bytes and answers bytes.
-const BYTES_FILE = { pe: 'pe-bytes.wasm', img: 'img-bytes.wasm', elf: 'elf-bytes.wasm', sign: 'sign-bytes.wasm' };
-const BIN_NAME = { pe: 'BOOTX64.EFI', img: 'codex.img', elf: 'codex.elf', board: 'kernel.elf', winexe: 'codex.exe' };
+const BYTES_FILE = { pe: 'pe-bytes.wasm', img: 'img-bytes.wasm', elf: 'elf-bytes.wasm', sign: 'sign-bytes.wasm', macho: 'macho-bytes.wasm' };
+const BIN_NAME = { pe: 'BOOTX64.EFI', img: 'codex.img', elf: 'codex.elf', board: 'kernel.elf', 'board-arm64': 'kernel-arm64.elf', winexe: 'codex.exe' };
 // The board backend is a lens-shaped module (IR in) that answers a FILE, so it
 // sits in neither BYTES_FILE nor PLUG_FILE.
 const BOARD_FILE = 'riscv-stdio.wasm';
+// The arm64 backend, IR in: its ELF mode for the ARM64 kernel, its Darwin wire for the Mac.
+const ARM64_FILE = 'arm64-stdio.wasm';
 const IMG_SECTORS = 16384;   // 8 MB, the default codex/plugs/img/run.ps1 uses
 
 const PLUG_FILE = {
@@ -756,6 +772,7 @@ const srcEl = document.getElementById('src');
 const hlEl = document.getElementById('hl');
 const outEl = document.getElementById('out');
 const runoutEl = document.getElementById('runout');
+const stdinEl = document.getElementById('stdin');
 const statusEl = document.getElementById('status');
 const srcStatusEl = document.getElementById('src-status');
 const examplesEl = document.getElementById('examples');
@@ -764,6 +781,7 @@ const buildlineEl = document.getElementById('buildline');
 const blMainEl = document.getElementById('bl-main');
 const copyOutBtn = document.getElementById('copyout');
 const saveOutBtn = document.getElementById('saveout');
+const saveWasmBtn = document.getElementById('savewasm');
 const saveBinBtn = document.getElementById('savebin');
 const outLogEl = document.getElementById('out-log');
 const outIrEl = document.getElementById('out-ir');
@@ -986,9 +1004,10 @@ async function persistFile(path) {
   setSaveState(ok ? 'saved' : 'not persisted (no storage granted)');
 }
 async function persistDelete(path) {
+  const boundDir = fsaDir;
   const d = await opfsProjectDir(false);
   if (d) { try { const { dir, leaf } = await dirForPath(d, path, false); await dir.removeEntry(leaf); } catch (e) {} }
-  if (fsaDir) { try { const { dir, leaf } = await dirForPath(fsaDir, path, false); await dir.removeEntry(leaf); } catch (e) {} }
+  if (boundDir) { try { const { dir, leaf } = await dirForPath(boundDir, path, false); await dir.removeEntry(leaf); } catch (e) {} }
 }
 async function loadPersisted() {
   const d = await opfsProjectDir(false);
@@ -1119,6 +1138,7 @@ const wasmCache = {};
 let examples = [];
 let emittedJs = null;
 let emittedHtml = null;
+let emittedWat = null;
 let binTarget = 'cdx';
 // 0 is the bootable image, 1 the user-mode ELF64. Only read when binTarget
 // is 'elf'; the switch beside the pill is hidden otherwise.
@@ -1173,7 +1193,430 @@ function updateOutActs() {
   saveOutBtn.disabled = !has;
   saveOutBtn.title = has ? 'Save as ' + outName() : 'Compile a text lens first';
   copyOutBtn.title = has ? 'Copy the emitted ' + lens.plug + ' to the clipboard' : 'Compile a text lens first';
+  saveWasmBtn.style.display = (has && lens.plug === 'wasm') ? '' : 'none';
 }
+
+/* WAT-ASSEMBLER BEGIN
+   WAT text to a WebAssembly binary, in the tab. It covers the folded form the
+   wasm lens emits and refuses anything else by name rather than guessing, so a
+   module it cannot assemble fails loudly instead of running as something else.
+   The binary layout follows the WebAssembly core specification (sections,
+   LEB128, opcodes); the choices the spec leaves free (type order, local
+   grouping, elem flags) follow wabt's wat2wasm so the output can be compared
+   byte for byte. */
+const WAT_OPS = (() => {
+  const t = {};
+  const seq = (start, names) => names.split(' ').forEach((n, i) => { t[n] = [start + i]; });
+  seq(0x45, 'i32.eqz i32.eq i32.ne i32.lt_s i32.lt_u i32.gt_s i32.gt_u i32.le_s i32.le_u i32.ge_s i32.ge_u ' +
+    'i64.eqz i64.eq i64.ne i64.lt_s i64.lt_u i64.gt_s i64.gt_u i64.le_s i64.le_u i64.ge_s i64.ge_u ' +
+    'f32.eq f32.ne f32.lt f32.gt f32.le f32.ge f64.eq f64.ne f64.lt f64.gt f64.le f64.ge ' +
+    'i32.clz i32.ctz i32.popcnt i32.add i32.sub i32.mul i32.div_s i32.div_u i32.rem_s i32.rem_u i32.and i32.or i32.xor i32.shl i32.shr_s i32.shr_u i32.rotl i32.rotr ' +
+    'i64.clz i64.ctz i64.popcnt i64.add i64.sub i64.mul i64.div_s i64.div_u i64.rem_s i64.rem_u i64.and i64.or i64.xor i64.shl i64.shr_s i64.shr_u i64.rotl i64.rotr ' +
+    'f32.abs f32.neg f32.ceil f32.floor f32.trunc f32.nearest f32.sqrt f32.add f32.sub f32.mul f32.div f32.min f32.max f32.copysign ' +
+    'f64.abs f64.neg f64.ceil f64.floor f64.trunc f64.nearest f64.sqrt f64.add f64.sub f64.mul f64.div f64.min f64.max f64.copysign ' +
+    'i32.wrap_i64 i32.trunc_f32_s i32.trunc_f32_u i32.trunc_f64_s i32.trunc_f64_u i64.extend_i32_s i64.extend_i32_u ' +
+    'i64.trunc_f32_s i64.trunc_f32_u i64.trunc_f64_s i64.trunc_f64_u f32.convert_i32_s f32.convert_i32_u f32.convert_i64_s ' +
+    'f32.convert_i64_u f32.demote_f64 f64.convert_i32_s f64.convert_i32_u f64.convert_i64_s f64.convert_i64_u f64.promote_f32 ' +
+    'i32.reinterpret_f32 i64.reinterpret_f64 f32.reinterpret_i32 f64.reinterpret_i64 ' +
+    'i32.extend8_s i32.extend16_s i64.extend8_s i64.extend16_s i64.extend32_s');
+  t['unreachable'] = [0x00]; t['nop'] = [0x01]; t['return'] = [0x0f]; t['drop'] = [0x1a]; t['select'] = [0x1b];
+  ['i32.trunc_sat_f32_s', 'i32.trunc_sat_f32_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u',
+   'i64.trunc_sat_f32_s', 'i64.trunc_sat_f32_u', 'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u'].forEach((n, i) => { t[n] = [0xfc, i]; });
+  // SIMD opcodes (0xfd prefix, LEB128 subopcode), from the SIMD specification.
+  Object.entries({ 'i8x16.splat': 15, 'i16x8.splat': 16, 'i32x4.splat': 17, 'i64x2.splat': 18, 'f32x4.splat': 19, 'f64x2.splat': 20,
+    'v128.not': 77, 'v128.and': 78, 'v128.andnot': 79, 'v128.or': 80, 'v128.xor': 81, 'v128.bitselect': 82, 'v128.any_true': 83,
+    'i8x16.bitmask': 100, 'i8x16.add': 110, 'i8x16.sub': 113,
+    'i16x8.bitmask': 132, 'i16x8.add': 142, 'i16x8.sub': 145, 'i16x8.mul': 149,
+    'i32x4.bitmask': 164, 'i32x4.add': 174, 'i32x4.sub': 177, 'i32x4.mul': 181,
+    'i64x2.bitmask': 196, 'i64x2.add': 206, 'i64x2.sub': 209, 'i64x2.mul': 213,
+    'f32x4.add': 228, 'f32x4.sub': 229, 'f32x4.mul': 230, 'f32x4.div': 231,
+    'f64x2.add': 240, 'f64x2.sub': 241, 'f64x2.mul': 242, 'f64x2.div': 243 }).forEach(([n, v]) => { t[n] = [0xfd, v]; });
+  return t;
+})();
+// name -> [opcode bytes, natural alignment log2]
+const WAT_MEM = {
+  'i32.load': [[0x28], 2], 'i64.load': [[0x29], 3], 'f32.load': [[0x2a], 2], 'f64.load': [[0x2b], 3],
+  'i32.load8_s': [[0x2c], 0], 'i32.load8_u': [[0x2d], 0], 'i32.load16_s': [[0x2e], 1], 'i32.load16_u': [[0x2f], 1],
+  'i64.load8_s': [[0x30], 0], 'i64.load8_u': [[0x31], 0], 'i64.load16_s': [[0x32], 1], 'i64.load16_u': [[0x33], 1],
+  'i64.load32_s': [[0x34], 2], 'i64.load32_u': [[0x35], 2], 'i32.store': [[0x36], 2], 'i64.store': [[0x37], 3],
+  'f32.store': [[0x38], 2], 'f64.store': [[0x39], 3], 'i32.store8': [[0x3a], 0], 'i32.store16': [[0x3b], 1],
+  'i64.store8': [[0x3c], 0], 'i64.store16': [[0x3d], 1], 'i64.store32': [[0x3e], 2],
+  'v128.load': [[0xfd, 0], 4], 'v128.store': [[0xfd, 11], 4]
+};
+const WAT_VAL = { i32: 0x7f, i64: 0x7e, f32: 0x7d, f64: 0x7c, v128: 0x7b, funcref: 0x70, externref: 0x6f };
+
+function watAssemble(src) {
+  const fail = (m) => { throw new Error('wat: ' + m); };
+  // ---- read: tokens, then nested lists; a string keeps its quotes.
+  const toks = [];
+  for (let i = 0; i < src.length;) {
+    const c = src[i];
+    if (c === ';' && src[i + 1] === ';') { while (i < src.length && src[i] !== '\n') i++; continue; }
+    if (c === '(' && src[i + 1] === ';') {
+      let d = 1; i += 2;
+      while (d > 0 && i < src.length) {
+        if (src[i] === '(' && src[i + 1] === ';') { d++; i += 2; } else if (src[i] === ';' && src[i + 1] === ')') { d--; i += 2; } else i++;
+      }
+      continue;
+    }
+    if (c === '(' || c === ')') { toks.push(c); i++; continue; }
+    if (c === ' ' || c === '\n' || c === '\r' || c === '\t') { i++; continue; }
+    if (c === '"') {
+      let j = i + 1;
+      while (j < src.length && src[j] !== '"') { if (src[j] === '\\') j++; j++; }
+      toks.push(src.slice(i, j + 1)); i = j + 1; continue;
+    }
+    let j = i;
+    while (j < src.length && !/[\s()";]/.test(src[j])) j++;
+    toks.push(src.slice(i, j)); i = j;
+  }
+  let p = 0;
+  const node = () => {
+    if (toks[p] === '(') { p++; const a = []; while (p < toks.length && toks[p] !== ')') a.push(node()); if (toks[p] !== ')') fail('unbalanced'); p++; return a; }
+    if (toks[p] === ')') fail('unexpected )');
+    return toks[p++];
+  };
+  const mod = node();
+  if (!Array.isArray(mod) || mod[0] !== 'module') fail('not a module');
+  const fields = mod.slice(1).filter(f => Array.isArray(f));
+  if (fields.length !== mod.length - 1) fail('a module field is not a list');
+
+  // ---- bytes
+  const uleb = (out, v) => { v = BigInt(v); do { let b = Number(v & 0x7fn); v >>= 7n; if (v !== 0n) b |= 0x80; out.push(b); } while (v !== 0n); };
+  const sleb = (out, v) => {
+    v = BigInt(v);
+    for (;;) {
+      const b = Number(v & 0x7fn); v >>= 7n;
+      if ((v === 0n && (b & 0x40) === 0) || (v === -1n && (b & 0x40) !== 0)) { out.push(b); return; }
+      out.push(b | 0x80);
+    }
+  };
+  const utf8 = (s) => Array.from(new TextEncoder().encode(s));
+  const str = (out, s) => { const b = utf8(s); uleb(out, b.length); out.push(...b); };
+  const unquote = (q) => {
+    if (typeof q !== 'string' || q[0] !== '"') fail('expected a string, got ' + q);
+    const out = [];
+    for (let i = 1; i < q.length - 1; i++) {
+      const c = q[i];
+      if (c !== '\\') { out.push(...utf8(c)); continue; }
+      const n = q[++i];
+      if (/[0-9a-fA-F]/.test(n)) { out.push(parseInt(q.substr(i, 2), 16)); i++; }
+      else if (n === 'n') out.push(10); else if (n === 't') out.push(9); else if (n === 'r') out.push(13);
+      else if (n === '\\' || n === '"' || n === "'") out.push(n.charCodeAt(0));
+      else if (n === 'u') { const e = q.indexOf('}', i); out.push(...utf8(String.fromCodePoint(parseInt(q.slice(i + 2, e), 16)))); i = e; }
+      else fail('bad string escape \\' + n);
+    }
+    return out;
+  };
+  const intOf = (s, bits) => {
+    if (!/^[+-]?(0x[0-9a-fA-F_]+|[0-9_]+)$/.test(s)) fail('bad integer ' + s);
+    const neg = s[0] === '-', body = s.replace(/^[+-]/, '').replace(/_/g, '');
+    let v = BigInt(body);
+    if (neg) v = -v;
+    return BigInt.asIntN(bits, v);
+  };
+  const f64Bytes = (s) => {
+    let v;
+    const t = s.replace(/_/g, '');
+    if (/^[+-]?inf$/.test(t)) v = t[0] === '-' ? -Infinity : Infinity;
+    else if (/^[+-]?nan$/.test(t)) v = t[0] === '-' ? -NaN : NaN;
+    else if (/^[+-]?0x/i.test(t)) fail('hex float ' + s + ' is not supported');
+    else { v = Number(t); if (Number.isNaN(v)) fail('bad float ' + s); }
+    const b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, v, true);
+    return Array.from(b);
+  };
+  const valType = (t) => { if (!(t in WAT_VAL)) fail('unknown type ' + t); return WAT_VAL[t]; };
+
+  // ---- index spaces
+  const types = [], typeNames = {};
+  const sigKey = (ps, rs) => ps.join(',') + '>' + rs.join(',');
+  const sigOf = (list) => {
+    const ps = [], rs = [], pnames = [];
+    for (const x of list) {
+      if (!Array.isArray(x)) continue;
+      if (x[0] === 'param') {
+        if (x[1] && x[1][0] === '$') { pnames.push(x[1]); ps.push(valType(x[2])); }
+        else x.slice(1).forEach(t => { pnames.push(null); ps.push(valType(t)); });
+      } else if (x[0] === 'result') x.slice(1).forEach(t => rs.push(valType(t)));
+    }
+    return { ps, rs, pnames };
+  };
+  const addType = (ps, rs) => {
+    const k = sigKey(ps, rs);
+    const at = types.findIndex(t => t.k === k);
+    if (at >= 0) return at;
+    types.push({ ps, rs, k }); return types.length - 1;
+  };
+  for (const f of fields) if (f[0] === 'type') {
+    const fn = f.find(x => Array.isArray(x) && x[0] === 'func');
+    const s = sigOf(fn.slice(1));
+    types.push({ ps: s.ps, rs: s.rs, k: sigKey(s.ps, s.rs) });
+    if (typeof f[1] === 'string' && f[1][0] === '$') typeNames[f[1]] = types.length - 1;
+  }
+  const funcs = [], funcNames = {}, imports = [], globals = [], globalNames = {}, tables = [], tableNames = {};
+  const typeUse = (list) => {
+    const tu = list.find(x => Array.isArray(x) && x[0] === 'type');
+    const s = sigOf(list);
+    if (tu) {
+      const ti = tu[1][0] === '$' ? typeNames[tu[1]] : Number(tu[1]);
+      if (ti === undefined) fail('unknown type ' + tu[1]);
+      return { ti, s };
+    }
+    return { ti: addType(s.ps, s.rs), s };
+  };
+  for (const f of fields) {
+    if (f[0] === 'import') {
+      const d = f[3];
+      if (!Array.isArray(d) || d[0] !== 'func') fail('only function imports are supported');
+      const named = typeof d[1] === 'string' && d[1][0] === '$';
+      const u = typeUse(d.slice(named ? 2 : 1));
+      if (named) funcNames[d[1]] = imports.length;
+      imports.push({ mod: unquote(f[1]), name: unquote(f[2]), ti: u.ti });
+    }
+  }
+  for (const f of fields) if (f[0] === 'func') {
+    const named = typeof f[1] === 'string' && f[1][0] === '$';
+    const u = typeUse(f.slice(named ? 2 : 1));
+    if (named) funcNames[f[1]] = imports.length + funcs.length;
+    funcs.push({ f, named, ti: u.ti, s: u.s });
+  }
+  for (const f of fields) if (f[0] === 'global') {
+    if (typeof f[1] === 'string' && f[1][0] === '$') globalNames[f[1]] = globals.length;
+    globals.push(f);
+  }
+  for (const f of fields) if (f[0] === 'table') {
+    if (typeof f[1] === 'string' && f[1][0] === '$') tableNames[f[1]] = tables.length;
+    tables.push(f);
+  }
+  const funcIdx = (v) => { const i = v[0] === '$' ? funcNames[v] : Number(v); if (i === undefined || Number.isNaN(i)) fail('unknown function ' + v); return i; };
+  const globalIdx = (v) => { const i = v[0] === '$' ? globalNames[v] : Number(v); if (i === undefined || Number.isNaN(i)) fail('unknown global ' + v); return i; };
+  const tableIdx = (v) => { const i = v[0] === '$' ? tableNames[v] : Number(v); if (i === undefined || Number.isNaN(i)) fail('unknown table ' + v); return i; };
+
+  // ---- instructions (folded and flat)
+  const constExpr = (e) => {
+    const out = [];
+    if (!Array.isArray(e)) fail('expected a constant expression');
+    if (e[0] === 'i32.const') { out.push(0x41); sleb(out, intOf(e[1], 32)); }
+    else if (e[0] === 'i64.const') { out.push(0x42); sleb(out, intOf(e[1], 64)); }
+    else if (e[0] === 'f64.const') { out.push(0x44, ...f64Bytes(e[1])); }
+    else if (e[0] === 'global.get') { out.push(0x23); uleb(out, globalIdx(e[1])); }
+    else fail('unsupported constant expression ' + e[0]);
+    out.push(0x0b);
+    return out;
+  };
+  const blockType = (list, i) => {
+    if (Array.isArray(list[i]) && list[i][0] === 'result') {
+      if (list[i].length !== 2) fail('multi-value block results are not supported');
+      return [valType(list[i][1]), i + 1];
+    }
+    return [0x40, i];
+  };
+  function body(fn, localNames) {
+    const out = [], labels = [];
+    const localIdx = (v) => { const i = v[0] === '$' ? localNames[v] : Number(v); if (i === undefined || Number.isNaN(i)) fail('unknown local ' + v); return i; };
+    const depth = (v) => {
+      if (v[0] !== '$') return Number(v);
+      for (let k = labels.length - 1; k >= 0; k--) if (labels[k] === v) return labels.length - 1 - k;
+      fail('unknown label ' + v);
+    };
+    // One instruction whose operands follow it as ATOMS (flat) starting at
+    // items[i]; returns the index after the immediates it consumed.
+    const plain = (op, items, i) => {
+      if (op in WAT_OPS) { out.push(...WAT_OPS[op]); if (WAT_OPS[op][0] === 0xfd) { const v = out.pop(); uleb(out, v); } else if (WAT_OPS[op][0] === 0xfc) { const v = out.pop(); uleb(out, v); } return i; }
+      if (op in WAT_MEM) {
+        const [code, nat] = WAT_MEM[op];
+        let offset = 0, align = nat;
+        while (typeof items[i] === 'string' && /^(offset|align)=/.test(items[i])) {
+          const [k, v] = items[i].split('=');
+          if (k === 'offset') offset = Number(v); else align = Math.log2(Number(v));
+          i++;
+        }
+        out.push(code[0]); if (code.length > 1) uleb(out, code[1]);
+        uleb(out, align); uleb(out, offset);
+        return i;
+      }
+      switch (op) {
+        case 'i32.const': out.push(0x41); sleb(out, intOf(items[i], 32)); return i + 1;
+        case 'i64.const': out.push(0x42); sleb(out, intOf(items[i], 64)); return i + 1;
+        case 'f64.const': out.push(0x44, ...f64Bytes(items[i])); return i + 1;
+        case 'local.get': out.push(0x20); uleb(out, localIdx(items[i])); return i + 1;
+        case 'local.set': out.push(0x21); uleb(out, localIdx(items[i])); return i + 1;
+        case 'local.tee': out.push(0x22); uleb(out, localIdx(items[i])); return i + 1;
+        case 'global.get': out.push(0x23); uleb(out, globalIdx(items[i])); return i + 1;
+        case 'global.set': out.push(0x24); uleb(out, globalIdx(items[i])); return i + 1;
+        case 'call': out.push(0x10); uleb(out, funcIdx(items[i])); return i + 1;
+        case 'return_call': out.push(0x12); uleb(out, funcIdx(items[i])); return i + 1;
+        case 'br': out.push(0x0c); uleb(out, depth(items[i])); return i + 1;
+        case 'br_if': out.push(0x0d); uleb(out, depth(items[i])); return i + 1;
+        case 'memory.size': out.push(0x3f, 0x00); return i;
+        case 'memory.grow': out.push(0x40, 0x00); return i;
+        case 'call_indirect': case 'return_call_indirect': {
+          let table = 0;
+          if (typeof items[i] === 'string' && (items[i][0] === '$' || /^\d+$/.test(items[i]))) { table = tableIdx(items[i]); i++; }
+          const u = typeUse(items.slice(i).filter(x => Array.isArray(x) && (x[0] === 'type' || x[0] === 'param' || x[0] === 'result')));
+          while (Array.isArray(items[i]) && (items[i][0] === 'type' || items[i][0] === 'param' || items[i][0] === 'result')) i++;
+          out.push(op === 'call_indirect' ? 0x11 : 0x13); uleb(out, u.ti); uleb(out, table);
+          return i;
+        }
+      }
+      fail('unsupported instruction ' + op);
+    };
+    const folded = (e) => {
+      const op = e[0];
+      if (op === 'block' || op === 'loop') {
+        let i = 1, label = null;
+        if (typeof e[1] === 'string' && e[1][0] === '$') { label = e[1]; i = 2; }
+        const [bt, j] = blockType(e, i);
+        out.push(op === 'block' ? 0x02 : 0x03, bt);
+        labels.push(label); seq(e, j); labels.pop();
+        out.push(0x0b); return;
+      }
+      if (op === 'if') {
+        let i = 1, label = null;
+        if (typeof e[1] === 'string' && e[1][0] === '$') { label = e[1]; i = 2; }
+        const [bt, j] = blockType(e, i);
+        let k = j;
+        while (k < e.length && !(Array.isArray(e[k]) && (e[k][0] === 'then' || e[k][0] === 'else'))) k++;
+        seq(e.slice(0, k), j);
+        out.push(0x04, bt);
+        labels.push(label);
+        const th = e.find(x => Array.isArray(x) && x[0] === 'then');
+        const el = e.find(x => Array.isArray(x) && x[0] === 'else');
+        if (th) seq(th, 1);
+        if (el) { out.push(0x05); seq(el, 1); }
+        labels.pop();
+        out.push(0x0b); return;
+      }
+      // Operands: the folded children, in order, then the instruction with its
+      // atom immediates (and, for call_indirect, its type use).
+      const imm = [];
+      let i = 1;
+      for (; i < e.length; i++) {
+        const x = e[i];
+        if (typeof x === 'string' || (Array.isArray(x) && (x[0] === 'type' || x[0] === 'param' || x[0] === 'result'))) imm.push(x);
+        else break;
+      }
+      seq(e, i);
+      const used = plain(op, imm, 0);
+      if (used !== imm.length) fail('extra immediates in (' + op + ' ...)');
+    };
+    function instr(x) {
+      if (Array.isArray(x)) folded(x); else fail('flat instruction ' + x + ' outside a sequence');
+    }
+    // A sequence mixes folded lists and flat instructions; a flat one takes
+    // the atoms after it as its immediates. Flat block structure (block ...
+    // end) is not something the lens emits, and it is refused.
+    function seq(list, from) {
+      for (let i = from; i < list.length;) {
+        const x = list[i];
+        if (Array.isArray(x)) { folded(x); i++; continue; }
+        if (['block', 'loop', 'if', 'else', 'end', 'then'].includes(x)) fail('flat ' + x + ' is not supported');
+        i = plain(x, list, i + 1);
+      }
+    }
+    // skip the signature, locals and inline exports
+    let i = 1;
+    if (typeof fn[1] === 'string' && fn[1][0] === '$') i = 2;
+    while (i < fn.length && Array.isArray(fn[i]) && ['export', 'import', 'type', 'param', 'result', 'local'].includes(fn[i][0])) i++;
+    seq(fn, i);
+    out.push(0x0b);
+    return out;
+  }
+
+  // ---- sections
+  const bin = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+  const section = (id, content) => { if (content === null) return; bin.push(id); uleb(bin, content.length); bin.push(...content); };
+  const vec = (items, each) => { if (!items.length) return null; const o = []; uleb(o, items.length); items.forEach(x => each(o, x)); return o; };
+
+  // Code first: function bodies can add types (call_indirect with an inline
+  // signature), and the type section is written from the final list.
+  const code = [];
+  for (const fnrec of funcs) {
+    const fn = fnrec.f, localNames = {}, locals = [];
+    fnrec.s.pnames.forEach((n, k) => { if (n) localNames[n] = k; });
+    let idx = fnrec.s.ps.length;
+    for (const x of fn) {
+      if (!Array.isArray(x) || x[0] !== 'local') continue;
+      if (x[1] && x[1][0] === '$') { localNames[x[1]] = idx++; locals.push(valType(x[2])); }
+      else x.slice(1).forEach(t => { idx++; locals.push(valType(t)); });
+    }
+    const groups = [];
+    for (const t of locals) { if (groups.length && groups[groups.length - 1][1] === t) groups[groups.length - 1][0]++; else groups.push([1, t]); }
+    const f = []; uleb(f, groups.length); groups.forEach(([n, t]) => { uleb(f, n); f.push(t); });
+    f.push(...body(fn, localNames));
+    code.push(f);
+  }
+
+  section(1, vec(types, (o, t) => { o.push(0x60); uleb(o, t.ps.length); o.push(...t.ps); uleb(o, t.rs.length); o.push(...t.rs); }));
+  section(2, vec(imports, (o, im) => { uleb(o, im.mod.length); o.push(...im.mod); uleb(o, im.name.length); o.push(...im.name); o.push(0x00); uleb(o, im.ti); }));
+  section(3, vec(funcs, (o, f) => uleb(o, f.ti)));
+  section(4, vec(tables, (o, t) => {
+    const rest = t.slice(typeof t[1] === 'string' && t[1][0] === '$' ? 2 : 1);
+    const nums = rest.filter(x => /^\d+$/.test(x)), rt = rest.find(x => x === 'funcref' || x === 'externref');
+    o.push(valType(rt)); if (nums.length > 1) { o.push(0x01); uleb(o, nums[0]); uleb(o, nums[1]); } else { o.push(0x00); uleb(o, nums[0]); }
+  }));
+  const mems = fields.filter(f => f[0] === 'memory');
+  section(5, vec(mems, (o, m) => {
+    const nums = m.filter(x => typeof x === 'string' && /^\d+$/.test(x));
+    if (nums.length > 1) { o.push(0x01); uleb(o, nums[0]); uleb(o, nums[1]); } else { o.push(0x00); uleb(o, nums[0]); }
+  }));
+  section(6, vec(globals, (o, g) => {
+    let i = typeof g[1] === 'string' && g[1][0] === '$' ? 2 : 1;
+    if (Array.isArray(g[i]) && g[i][0] === 'export') i++;
+    const t = g[i];
+    if (Array.isArray(t) && t[0] === 'mut') { o.push(valType(t[1]), 0x01); } else { o.push(valType(t), 0x00); }
+    o.push(...constExpr(g[i + 1]));
+  }));
+  const exports = [];
+  let memIndex = 0;
+  for (const f of fields) {
+    if (f[0] === 'export') {
+      const d = f[2];
+      const kind = { func: 0, table: 1, memory: 2, global: 3 }[d[0]];
+      const idx = d[0] === 'func' ? funcIdx(d[1]) : d[0] === 'global' ? globalIdx(d[1]) : d[0] === 'table' ? tableIdx(d[1]) : Number(d[1][0] === '$' ? 0 : d[1]);
+      exports.push([unquote(f[1]), kind, idx]);
+    } else if (f[0] === 'func' || f[0] === 'memory' || f[0] === 'global' || f[0] === 'table') {
+      for (const x of f) if (Array.isArray(x) && x[0] === 'export') {
+        const kind = { func: 0, table: 1, memory: 2, global: 3 }[f[0]];
+        const nm = typeof f[1] === 'string' && f[1][0] === '$' ? f[1] : null;
+        let idx;
+        if (f[0] === 'func') idx = nm ? funcIdx(nm) : imports.length + funcs.findIndex(r => r.f === f);
+        else if (f[0] === 'memory') idx = memIndex;
+        else if (f[0] === 'global') idx = nm ? globalIdx(nm) : globals.indexOf(f);
+        else idx = nm ? tableIdx(nm) : tables.indexOf(f);
+        exports.push([unquote(x[1]), kind, idx]);
+      }
+      if (f[0] === 'memory') memIndex++;
+    }
+  }
+  section(7, vec(exports, (o, [n, k, i]) => { uleb(o, n.length); o.push(...n, k); uleb(o, i); }));
+  const elems = fields.filter(f => f[0] === 'elem');
+  section(9, vec(elems, (o, e) => {
+    let i = 1, table = 0;
+    if (typeof e[1] === 'string' && (e[1][0] === '$' || /^\d+$/.test(e[1]))) { table = tableIdx(e[1]); i = 2; }
+    if (Array.isArray(e[i]) && e[i][0] === 'table') { table = tableIdx(e[i][1]); i++; }
+    const off = Array.isArray(e[i]) && e[i][0] === 'offset' ? e[i][1] : e[i];
+    i++;
+    if (e[i] === 'func') i++;
+    const fs = e.slice(i).map(funcIdx);
+    if (table === 0) { o.push(0x00); o.push(...constExpr(off)); }
+    else { o.push(0x02); uleb(o, table); o.push(...constExpr(off), 0x00); }
+    uleb(o, fs.length); fs.forEach(x => uleb(o, x));
+  }));
+  section(10, vec(code, (o, f) => { uleb(o, f.length); o.push(...f); }));
+  const datas = fields.filter(f => f[0] === 'data');
+  section(11, vec(datas, (o, d) => {
+    let i = 1;
+    if (typeof d[1] === 'string' && d[1][0] === '$') i = 2;
+    if (Array.isArray(d[i]) && d[i][0] === 'memory') i++;
+    const off = Array.isArray(d[i]) && d[i][0] === 'offset' ? d[i][1] : d[i];
+    i++;
+    const bytes = []; d.slice(i).forEach(s => bytes.push(...unquote(s)));
+    o.push(0x00, ...constExpr(off)); uleb(o, bytes.length); o.push(...bytes);
+  }));
+  return new Uint8Array(bin);
+}
+/* WAT-ASSEMBLER END */
 
 /* ---- Local build configs -------------------------------------------------
    A lens that emits source for a foreign toolchain cannot be run by a static
@@ -1331,9 +1774,114 @@ async function bridgeRun(cmd) {
   return await r.json();
 }
 
-function cfgResolve(tpl, plug) {
+/* ---- Dev-environment endpoints ---------------------------------------------
+   One bridge per dev environment, each with its own address, token and one
+   command. An endpoint set to auto receives every successful build here and
+   runs its command there, so a build in this page kicks the build on that box.
+   {file} is the artifact's name and {stem} the same without its extension. */
+function epAll() {
+  try { const a = JSON.parse(localStorage.getItem('prism.endpoints') || '[]'); return Array.isArray(a) ? a : []; }
+  catch (e) { return []; }
+}
+function epWriteAll(a) { try { localStorage.setItem('prism.endpoints', JSON.stringify(a)); } catch (e) {} }
+function b64Of(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+async function epPost(ep, path, body) {
+  const r = await fetch(ep.url.replace(/\/+$/, '') + path, {
+    method: 'POST', mode: 'cors',
+    headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': ep.token || '' },
+    body: JSON.stringify(body)
+  });
+  if (r.status === 403) return { ok: false, err: 'refused the token' };
+  return await r.json();
+}
+// An endpoint that fails is reported beside the status and never fails the
+// build: the artifact is already in the page, and the endpoint is another box.
+async function epKick(name, payload) {
+  const eps = epAll().filter(e => e.auto && e.url);
+  const el = document.getElementById('ep-status');
+  if (!eps.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<span class="run">endpoints&hellip;</span>';
+  const said = [];
+  for (const ep of eps) {
+    try {
+      const w = await epPost(ep, '/write', typeof payload === 'string' ? { name: name, text: payload } : { name: name, b64: b64Of(payload) });
+      if (!w.ok) { said.push([ep.name, false, 'write refused: ' + (w.err || 'no reason given')]); continue; }
+      if (!ep.cmd) { said.push([ep.name, true, 'written']); continue; }
+      const cmd = ep.cmd.replace(/\{file\}/g, name).replace(/\{stem\}/g, name.replace(/\.[^.]*$/, ''));
+      const r = await epPost(ep, '/run', { cmd: cmd });
+      said.push([ep.name, !!r.ok, r.ok ? 'built in ' + r.ms + ' ms'
+        : 'exit ' + r.code + ': ' + String(r.err || r.out || '').trim().split('\n').pop()]);
+    } catch (e) { said.push([ep.name, false, 'did not answer']); }
+  }
+  el.innerHTML = said.map(s => '<span class="' + (s[1] ? 'ok' : 'err') + '" title="' + esc(s[2]) + '">' +
+    esc(s[0]) + ': ' + esc(s[2]) + '</span>').join(' ');
+}
+function epRows() {
+  return '<div class="cfg-hint" style="margin-top:10px"><b>Endpoints</b>: one bridge per dev environment. ' +
+    'An endpoint set to auto receives every build from this page and runs its command there.</div>' +
+    epAll().map((e, i) => '<div class="cfg-list-row"><span class="lens">' + esc(e.name) + '</span>' +
+      '<span class="cmd">' + esc(e.url + (e.auto ? ' · auto' : ' · off') + (e.cmd ? ' · ' + e.cmd : '')) + '</span>' +
+      '<button class="go" data-epedit="' + i + '">Edit</button>' +
+      '<button class="go" data-epdrop="' + i + '">Delete</button></div>').join('') +
+    '<div class="cfg-acts"><button class="go" id="cfg-epadd">Add endpoint</button></div>';
+}
+function epWire() {
+  cfgBody.querySelector('#cfg-epadd').addEventListener('click', () => showEndpoint(-1));
+  cfgBody.querySelectorAll('[data-epedit]').forEach(b =>
+    b.addEventListener('click', () => showEndpoint(+b.dataset.epedit)));
+  cfgBody.querySelectorAll('[data-epdrop]').forEach(b =>
+    b.addEventListener('click', () => {
+      const a = epAll(); a.splice(+b.dataset.epdrop, 1); epWriteAll(a);
+      showConfigs(); cfgSay('endpoint deleted', 'err');
+    }));
+}
+function showEndpoint(i) {
+  const e = i >= 0 ? epAll()[i] : { name: '', url: BRIDGE_URL, token: '', cmd: '', auto: true };
+  cfgTitle.textContent = i >= 0 ? 'Endpoint' : 'New endpoint';
+  cfgPanel.style.display = '';
+  cfgSay('');
+  cfgBody.innerHTML =
+    '<div class="cfg-row"><label>Name</label><input type="text" id="ep-name" value="' + esc(e.name) + '" placeholder="the box, e.g. build-server"></div>' +
+    '<div class="cfg-row"><label>Address</label><input type="text" id="ep-url" value="' + esc(e.url) + '"></div>' +
+    '<div class="cfg-row"><label>Token</label><input type="text" id="ep-tok" value="' + esc(e.token) + '" placeholder="paste what that bridge printed"></div>' +
+    '<div class="cfg-row"><label>Command</label><input type="text" id="ep-cmd" value="' + esc(e.cmd) + '" placeholder="runs after each build, e.g. ./deploy.ps1 {file}"></div>' +
+    '<div class="cfg-row"><label>Auto</label><input type="checkbox" id="ep-auto"' + (e.auto ? ' checked' : '') + '></div>' +
+    '<div class="cfg-acts"><button class="go" id="ep-save">Save and probe</button><button class="go" id="ep-back">Back</button></div>' +
+    '<div class="cfg-hint">The endpoint is an <b>apps/prism/build-bridge.ps1</b> on that environment, reached at the address above. ' +
+    'Every build is written into the bridge\'s directory as {file}, then the command runs there. Empty command: write only.</div>';
+  cfgBody.querySelector('#ep-back').addEventListener('click', showConfigs);
+  cfgBody.querySelector('#ep-save').addEventListener('click', async () => {
+    const n = {
+      name: cfgBody.querySelector('#ep-name').value.trim(),
+      url: cfgBody.querySelector('#ep-url').value.trim().replace(/\/+$/, ''),
+      token: cfgBody.querySelector('#ep-tok').value.trim(),
+      cmd: cfgBody.querySelector('#ep-cmd').value.trim(),
+      auto: cfgBody.querySelector('#ep-auto').checked
+    };
+    if (!n.name) { cfgSay('an endpoint needs a name', 'err'); return; }
+    if (!/^https?:\/\/[^\s]+$/.test(n.url)) { cfgSay('the address must be an http:// or https:// URL', 'err'); return; }
+    const a = epAll();
+    if (a.some((x, j) => j !== i && x.name === n.name)) { cfgSay('another endpoint already has that name', 'err'); return; }
+    if (i >= 0) a[i] = n; else a.push(n);
+    epWriteAll(a);
+    i = a.indexOf(n);
+    cfgTitle.textContent = 'Endpoint';
+    cfgSay('saved, probing...', 'run');
+    try {
+      const r = await fetch(n.url + '/health', { mode: 'cors', headers: n.token ? { 'X-Bridge-Token': n.token } : {} });
+      const v = bridgeVerdict(await r.json());
+      cfgSay('saved; ' + v.text, v.cls || 'run');
+    } catch (err) { cfgSay('saved; no bridge answers at ' + n.url, 'err'); }
+  });
+}
+
+function cfgResolve(tpl, plug, name) {
   if (!tpl) return '';
-  const file = outName(), stem = file.replace(/\.[^.]*$/, '');
+  const file = name || outName(), stem = file.replace(/\.[^.]*$/, '');
   return tpl.replace(/\{file\}/g, file).replace(/\{stem\}/g, stem)
             .replace(/\{out\}/g, stem + (WIN ? '.exe' : ''));
 }
@@ -1356,6 +1904,9 @@ function updateRun() {
   } else if (lens.plug === 'html') {
     can = !!emittedHtml;
     why = can ? 'Render the emitted page in a sandboxed frame.' : 'Compile first.';
+  } else if (lens.plug === 'wasm') {
+    can = !!emittedWat;
+    why = can ? 'Assemble the WebAssembly here and run it, with the stdin box as its input.' : 'Compile first.';
   } else {
     // Every other lens emits source for a toolchain this page cannot exec, so
     // the button stops pretending and becomes Config. It is enabled with no
@@ -1366,6 +1917,7 @@ function updateRun() {
     why = c ? ('Local build config for ' + lens.plug + ' (' + (c.name || 'saved') + '). Click to edit.')
             : ('Name the local toolchain that builds ' + lens.plug + ' output.');
   }
+  stdinEl.style.display = (tab !== 'binary' && lens.plug === 'wasm') ? '' : 'none';
   runBtn.textContent = label;
   runBtn.dataset.cfg = isCfg ? '1' : '';
   runBtn.disabled = !can;
@@ -1381,6 +1933,151 @@ const cfgPanel = document.getElementById('cfg-panel');
 const cfgBody = document.getElementById('cfg-body');
 const cfgTitle = document.getElementById('cfg-title');
 const cfgStatus = document.getElementById('cfg-status');
+const TARGET_TYPES = {
+  unity: { label: 'Unity game extension', profile: 'windows-x64-mono-6000.0.75f1', module: 'unity-stdio.wasm',
+    fields: { gamePath: 'Game directory', testSavePath: 'Separate test save directory', msvcRoot: 'MSVC toolset directory', windowsSdkRoot: 'Windows SDK directory', windowsSdkVersion: 'Windows SDK version' },
+    note: 'Valheim on Windows x64, Mono, Unity 6000.0.75f1. Build extension packages one DLL. Test uses an isolated game copy. Solo play: linked resources support crafting, upgrades and construction; the storage demo keeps initial neck populations and applies a seven-to-fourteen-game-day cooldown after a zone is cleared and includes a distant midday cirrus arc.' },
+  darwin: { label: 'Apple Silicon / Darwin', profile: 'macos-arm64-darwin', module: 'arm64-stdio.wasm',
+    fields: { macToolchain: 'Mac packaging toolchain path', minimumOS: 'Minimum macOS version' },
+    note: 'Apoorva Pendse ARM64 backend (PR 144). Produces Darwin code/data wire. Mach-O wrapping, signing and execution require a separately configured Mac toolchain.' }
+};
+function targetDefaults(kind) {
+  return { version: 1, id: kind + '-local', kind, profile: TARGET_TYPES[kind].profile,
+    gamePath: '', testSavePath: '', macToolchain: '', minimumOS: '',
+    msvcRoot: '', windowsSdkRoot: '', windowsSdkVersion: '',
+    groupLimit: 4, workbenchLinks: true };
+}
+function targetValidate(p) {
+  if (!p || p.version !== 1 || !Object.prototype.hasOwnProperty.call(TARGET_TYPES, p.kind)) throw new Error('Unknown target schema or family');
+  p = Object.assign(targetDefaults(p.kind), p);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(p.id || '')) throw new Error('Profile name must use letters, digits, dots, underscores or hyphens');
+  if (p.profile !== TARGET_TYPES[p.kind].profile) throw new Error('Unsupported target version: ' + p.profile);
+  for (const k of Object.keys(TARGET_TYPES[p.kind].fields)) {
+    if (typeof p[k] !== 'string' || p[k].length > 1024 || /[\x00-\x1f]/.test(p[k])) throw new Error('Invalid ' + k);
+  }
+  if (p.kind === 'unity') {
+    delete p.chestRadius; delete p.stationRadius;
+    if (Number.isInteger(p.groupLimit) && p.groupLimit > 4 && p.groupLimit <= 128) p.groupLimit = 4;
+    for (const [k, lo, hi] of [['groupLimit', 1, 4]]) {
+      if (!Number.isFinite(p[k]) || p[k] < lo || p[k] > hi) throw new Error(k + ' must be between ' + lo + ' and ' + hi);
+    }
+    if (!Number.isInteger(p.groupLimit) || typeof p.workbenchLinks !== 'boolean') throw new Error('Invalid storage configuration');
+    if (p.gamePath && p.testSavePath && p.gamePath.replace(/[\\/]+$/, '').toLowerCase() === p.testSavePath.replace(/[\\/]+$/, '').toLowerCase()) throw new Error('Test saves need a separate directory');
+  }
+  return p;
+}
+function targetProfiles() {
+  try { const p = JSON.parse(localStorage.getItem('prism.targets') || '[]'); return Array.isArray(p) ? p : []; }
+  catch (_) { return []; }
+}
+function targetSave(p) {
+  p = targetValidate(p);
+  localStorage.setItem('prism.targets', JSON.stringify(targetProfiles().filter(x => x.id !== p.id).concat([p])));
+}
+function targetDownload(name, bytes) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+  const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function showTargets(profile) {
+  const p = profile || targetDefaults('unity');
+  const family = TARGET_TYPES[p.kind];
+  cfgTitle.textContent = 'Build targets'; cfgPanel.style.display = ''; cfgSay('');
+  cfgBody.innerHTML = '<div class="cfg-row"><label>Target</label><select id="target-kind">' +
+    Object.keys(TARGET_TYPES).map(k => '<option value="' + k + '"' + (p.kind === k ? ' selected' : '') + '>' + esc(TARGET_TYPES[k].label) + '</option>').join('') + '</select></div>' +
+    '<div class="cfg-row"><label>Saved profiles</label><select id="target-saved"><option value="">Choose a profile</option>' +
+    targetProfiles().map(x => '<option value="' + esc(x.id) + '">' + esc(x.id) + '</option>').join('') + '</select></div>' +
+    '<div class="cfg-row"><label>Profile name</label><input id="target-id" value="' + esc(p.id) + '"></div>' +
+    '<div class="cfg-row"><label>Version</label><input id="target-profile" readonly value="' + esc(p.profile) + '"></div>' +
+    Object.entries(family.fields).map(([k,v]) => '<div class="cfg-row"><label>' + esc(v) + '</label><input id="target-' + k + '" value="' + esc(p[k] || '') + '"></div>').join('') +
+    (p.kind === 'unity' ? [['groupLimit','Maximum linked chests per bench']].map(([k,v]) =>
+        '<div class="cfg-row"><label>' + v + '</label><input type="number" min="1" max="4" step="1" id="target-' + k + '" value="' + p[k] + '"></div>').join('') +
+      '<div class="cfg-row"><label>Workbench links</label><input type="checkbox" id="target-workbenchLinks"' + (p.workbenchLinks ? ' checked' : '') + '>Explicit links only, within the game\'s chopping block range</div>' : '') +
+    '<div class="cfg-hint">' + esc(family.note) + '</div>' +
+    '<div class="cfg-acts"><button class="go" id="target-save">Save profile</button><button class="go" id="target-export">Export profile</button>' +
+    '<button class="go" id="target-import">Import profile</button><input type="file" id="target-file" accept=".json" hidden>' +
+    '<button class="go" id="target-emit">' + (p.kind === 'unity' ? 'Emit Unity C#' : 'Build Darwin wire') + '</button>' +
+    (p.kind === 'unity' ? '<button class="go" id="target-inspect">Inspect game</button><button class="go" id="target-build">Build extension</button><button class="go" id="target-test" disabled>Test extension</button><button class="go" id="target-demo">Load storage demo</button>' : '') +
+    '</div><div class="runout" id="target-result" style="display:block"></div>' + cfgBridgeRow();
+  const read = () => {
+    const q = Object.assign({}, p, { id: cfgBody.querySelector('#target-id').value.trim() });
+    for (const k of Object.keys(family.fields)) q[k] = cfgBody.querySelector('#target-' + k).value.trim();
+    if (p.kind === 'unity') {
+      for (const k of ['groupLimit']) q[k] = Number(cfgBody.querySelector('#target-' + k).value);
+      q.workbenchLinks = cfgBody.querySelector('#target-workbenchLinks').checked;
+    }
+    return targetValidate(q);
+  };
+  const output = cfgBody.querySelector('#target-result');
+  const action = (id, fn) => cfgBody.querySelector(id).addEventListener('click', async ev => {
+    ev.target.disabled = true; output.textContent = '';
+    try { await fn(read()); } catch (e) { output.textContent = String(e.message || e); cfgSay('target action failed', 'err'); }
+    finally { ev.target.disabled = false; }
+  });
+  cfgBody.querySelector('#target-kind').addEventListener('change', e => showTargets(targetDefaults(e.target.value)));
+  cfgBody.querySelector('#target-saved').addEventListener('change', e => {
+    const q = targetProfiles().find(x => x.id === e.target.value); if (q) { try { showTargets(targetValidate(q)); } catch (err) { output.textContent = err.message; } }
+  });
+  action('#target-save', q => { targetSave(q); cfgSay('saved ' + q.id); });
+  action('#target-export', q => targetDownload(q.id + '.prism-target.json', JSON.stringify(q, null, 2)));
+  cfgBody.querySelector('#target-import').addEventListener('click', () => cfgBody.querySelector('#target-file').click());
+  cfgBody.querySelector('#target-file').addEventListener('change', async e => {
+    try { const f = e.target.files[0]; if (!f) return; if (f.size > 16384) throw new Error('Profile exceeds 16 KiB'); const q = targetValidate(JSON.parse(await f.text())); showTargets(q); }
+    catch (err) { output.textContent = err.message; }
+  });
+  action('#target-emit', async q => {
+    const a = await targetEmit(q); targetDownload(q.id + a.extension, a.bytes); output.textContent = a.note;
+  });
+  if (p.kind === 'unity') {
+    let artifact = null;
+    const host = async (q, operation, code, builtArtifact) => {
+      const r = await fetch(bridgeUrl() + '/target', { method: 'POST', mode: 'cors',
+        headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': bridgeToken() },
+        body: JSON.stringify({ operation, profile: q, code: code || '', artifact: builtArtifact || '' }) });
+      const result = await r.json(); output.textContent = JSON.stringify(result, null, 2);
+      if (!r.ok || !result.ok) throw new Error(result.err || result.out || 'Target action refused');
+      return result;
+    };
+    action('#target-inspect', q => host(q, 'inspect'));
+    action('#target-build', async q => { artifact = null; cfgBody.querySelector('#target-test').disabled = true; const a = await targetEmit(q); const built = await host(q, 'package', new TextDecoder().decode(a.bytes)); artifact = built.artifact; cfgBody.querySelector('#target-test').disabled = false; });
+    action('#target-test', async q => { if (!artifact) throw new Error('Build the extension first'); const a = await targetEmit(q); await host(q, 'test', new TextDecoder().decode(a.bytes), artifact); });
+    cfgBody.querySelector('#target-demo').addEventListener('click', () => {
+      if (!TEMPLATES || !TEMPLATES.ValheimLinkedStorage) { output.textContent = 'Storage demo sources are absent from this page build'; return; }
+      templatesEl.value = 'ValheimLinkedStorage'; templatesEl.dispatchEvent(new Event('change'));
+    });
+  }
+  cfgWireBridge();
+}
+async function targetEmit(profile) {
+  targetValidate(profile);
+  const af = activePath && fileByPath(activePath); if (af) af.text = srcEl.value;
+  const unit = await resolveUnit(assembleUnit());
+  if (unit.missing.length) throw new Error('Missing chapters: ' + unit.missing.join(', '));
+  const c = await runW(await moduleBytes('codex-compiler.wasm'), 'IR-UNI decks=' + DECKS[DECKS.length - 1] + '\n' + unit.text);
+  const lines = c.text.split('\n'), first = lines.indexOf('IR-BEGIN'), last = lines.indexOf('IR-END');
+  if (first < 0 || last <= first) throw new Error(c.text || 'Compiler produced no IR');
+  const ir = lines.slice(first + 1, last).join('\n');
+  const header = profile.kind === 'unity' ? 'UNITY ' + profile.profile + '\n' : 'DARWIN\n';
+  const emitted = await runW(await moduleBytes(TARGET_TYPES[profile.kind].module), header + ir);
+  if (/^(REFUSED|\[UNSUPPORTED\]|!EXC|OUT OF MEMORY)/m.test(emitted.text)) throw new Error(emitted.text);
+  if (profile.kind === 'unity') {
+    if (!emitted.text.includes('public static class PrismUnityEntry')) throw new Error('No Unity library entry emitted');
+    return { bytes: new TextEncoder().encode(emitted.text), extension: '.cs', note: 'Unity C# emitted. Build library compiles against the inspected game. No mod installed.' };
+  }
+  if (emitted.bytes.length < 12) throw new Error('No ARM64 wire emitted');
+  const wire = new DataView(emitted.bytes.buffer, emitted.bytes.byteOffset, emitted.bytes.byteLength);
+  let at = 12 + wire.getUint32(0, true) + wire.getUint32(4, true);
+  const functions = wire.getUint32(8, true);
+  if (at > emitted.bytes.length || functions > Math.floor((emitted.bytes.length - at) / 6)) throw new Error('Invalid ARM64 wire lengths');
+  for (let i = 0; i < functions; i++) {
+    if (at + 2 > emitted.bytes.length) throw new Error('Truncated ARM64 function table');
+    at += 2 + wire.getUint16(at, true) + 4;
+    if (at > emitted.bytes.length) throw new Error('Truncated ARM64 function entry');
+  }
+  if (at !== emitted.bytes.length) throw new Error('Unexpected data after ARM64 wire');
+  return { bytes: emitted.bytes, extension: '.arm64-wire', note: 'Darwin wire emitted. Mach-O packaging and Mac execution remain unverified.' };
+}
+document.getElementById('targets').addEventListener('click', () => showTargets());
 function cfgSay(msg, cls) {
   cfgStatus.innerHTML = msg ? '<span class="' + (cls || 'ok') + '">' + esc(msg) + '</span>' : '';
 }
@@ -1568,8 +2265,9 @@ function showConfigs() {
     '<button class="go" id="cfg-signkey">' + (signKeyGet() ? 'Edit' : 'Create') + '</button></div>';
   if (!keys.length) {
     cfgBody.innerHTML = signRow + '<div class="cfg-hint">No toolchain saved yet. Choose a lens that needs a toolchain ' +
-      'and press <b>Config</b>: the button beside Compile says Config for every lens this page cannot run itself.</div>';
+      'and press <b>Config</b>: the button beside Compile says Config for every lens this page cannot run itself.</div>' + epRows();
     cfgBody.querySelector('#cfg-signkey').addEventListener('click', showSigningKey);
+    epWire();
     return;
   }
   cfgBody.innerHTML = signRow + keys.map(k =>
@@ -1578,8 +2276,9 @@ function showConfigs() {
     '<button class="go" data-edit="' + esc(k) + '">Edit</button>' +
     '<button class="go" data-drop="' + esc(k) + '">Delete</button></div>').join('') +
     '<div class="cfg-hint">These live in this browser only. They are written into no project file, ' +
-    'no export and no built artifact.</div>';
+    'no export and no built artifact.</div>' + epRows();
   cfgBody.querySelector('#cfg-signkey').addEventListener('click', showSigningKey);
+  epWire();
   cfgBody.querySelectorAll('[data-edit]').forEach(b =>
     b.addEventListener('click', () => openConfig(b.dataset.edit)));
   cfgBody.querySelectorAll('[data-drop]').forEach(b =>
@@ -1589,6 +2288,113 @@ function showConfigs() {
     }));
 }
 document.getElementById('configs').addEventListener('click', showConfigs);
+
+/* ---- Bench -----------------------------------------------------------------
+   Every Bench example is compiled in this tab once, then run through each lane:
+   the javascript lens in this tab, and every saved toolchain with a run command
+   through the bridge. Each lane's printed output is checked against the in-tab
+   lane, because a fast lane that prints something else did not run the same
+   program. A native time is the run command alone, measured inside the
+   bridge's shell: the bridge's own ms also covers starting that shell, several
+   hundred ms, which would swamp a short program. */
+const BENCH_MARK = 'PRISM-BENCH-MS ';
+function benchLanes() {
+  const m = cfgAll();
+  return Object.keys(m).sort().filter(k => PLUG_FILE[k] && m[k].run && k !== 'javascript');
+}
+function benchNorm(s) { return String(s || '').replace(/\r\n/g, '\n').trim(); }
+function benchMs(ms) { return (ms < 10 ? ms.toFixed(1) : Math.round(ms).toLocaleString()) + ' ms'; }
+async function benchIr(ex) {
+  const pre = ex.prelude ? (ex.prelude.endsWith('\n') ? ex.prelude : ex.prelude + '\n') : '';
+  const unit = await resolveUnit({ text: pre + ex.source, regions: [] });
+  for (const d of DECKS) {
+    const r = await runW(await moduleBytes('codex-compiler.wasm'), 'IR-UNI decks=' + d + '\n' + unit.text);
+    if (r.text.indexOf('CDX9002') >= 0) continue;
+    const ls = r.text.split('\n'), b = ls.indexOf('IR-BEGIN'), e = ls.indexOf('IR-END');
+    return (b >= 0 && e > b) ? ls.slice(b + 1, e).join('\n') : null;
+  }
+  return null;
+}
+async function benchLens(plug, ir) {
+  const p = await runW(await moduleBytes(PLUG_FILE[plug]), ir);
+  return p.text.split('\n').filter(l => !l.startsWith('WD:') && !l.startsWith('PM:')).join('\n');
+}
+async function benchNative(cmd) {
+  const r = await bridgeRun('$__s = [Diagnostics.Stopwatch]::StartNew(); & { ' + cmd + ' }; $__e = $LASTEXITCODE; ' +
+    '[Console]::Error.WriteLine(\'' + BENCH_MARK + '\' + $__s.Elapsed.TotalMilliseconds); exit $__e');
+  const err = String(r.err || '');
+  const m = err.match(new RegExp(BENCH_MARK + '([0-9.]+)'));
+  const rest = err.split('\n').filter(l => l.indexOf(BENCH_MARK) < 0).join('\n');
+  // What a lane PRINTED is both streams: the zig lens writes its program's
+  // output to stderr, and comparing stdout alone marked every zig run as
+  // differing while it printed the right answer.
+  return { ok: r.ok, code: r.code, ms: m ? Number(m[1]) : null, err: rest,
+           out: [benchNorm(r.out), benchNorm(rest)].filter(s => s).join('\n') };
+}
+let benchStop = false;
+async function runBench() {
+  const exs = (examples || []).filter(e => e.cat === 'Bench');
+  await bridgeProbe(1500);
+  const lanes = bridgeUp ? benchLanes() : [];
+  const cols = ['in tab (javascript)'].concat(lanes);
+  const tbl = cfgBody.querySelector('#bench-table');
+  tbl.innerHTML = '<tr><th>program</th>' + cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr>';
+  benchStop = false;
+  cfgSay(exs.length + ' programs, ' + cols.length + ' lane' + (cols.length === 1 ? '' : 's') +
+         (bridgeUp ? '' : '; no bridge, so the tab only'), 'run');
+  for (const ex of exs) {
+    if (benchStop) break;
+    const tr = document.createElement('tr');
+    tr.dataset.bench = ex.name;
+    tr.innerHTML = '<td>' + esc(ex.name) + '</td>' + cols.map(() => '<td class="run">...</td>').join('');
+    tbl.appendChild(tr);
+    const cell = (i, text, cls, title) => { const td = tr.children[i + 1]; td.textContent = text; td.className = cls; td.title = title || ''; };
+    await new Promise(r => setTimeout(r, 0));
+    const ir = await benchIr(ex);
+    if (!ir) { cols.forEach((_, i) => cell(i, 'refused', 'err', 'the compiler refused this example')); continue; }
+    let out = '';
+    const jr = runJsInTab(await benchLens('javascript', ir), s => { out += s; });
+    const want = benchNorm(out);
+    cell(0, jr.err ? 'error' : benchMs(jr.ms), jr.err ? 'err' : 'ok', jr.err || want);
+    for (let li = 0; li < lanes.length && !benchStop; li++) {
+      const plug = lanes[li], c = cfgFor(plug);
+      const name = slugOf(ex.name) + '.' + (OUT_EXT[plug] || 'txt');
+      try {
+        const w = await bridgeWrite(name, await benchLens(plug, ir));
+        if (!w.ok) { cell(li + 1, 'write refused', 'err', w.err); continue; }
+        if (c.build) {
+          const b = await bridgeRun(cfgResolve(c.build, plug, name));
+          if (!b.ok) { cell(li + 1, 'build failed', 'err', benchNorm(b.err || b.out)); continue; }
+        }
+        const r = await benchNative(cfgResolve(c.run, plug, name));
+        if (!r.ok) { cell(li + 1, 'exit ' + r.code, 'err', benchNorm(r.err || r.out)); continue; }
+        const same = benchNorm(r.out) === want;
+        cell(li + 1, (r.ms === null ? 'untimed' : benchMs(r.ms)) + (same ? '' : ' (output differs)'),
+             same ? 'ok' : 'err', benchNorm(r.out));
+      } catch (e) { cell(li + 1, 'bridge did not answer', 'err', String(e && e.message || e)); }
+    }
+  }
+  cfgSay(benchStop ? 'stopped' : 'done', benchStop ? 'err' : 'ok');
+}
+function showBench() {
+  cfgTitle.textContent = 'Bench';
+  cfgPanel.style.display = '';
+  cfgSay('');
+  const lanes = benchLanes();
+  cfgBody.innerHTML = '<div class="cfg-hint">Runs every Bench example: compiled in this tab once, run here through the ' +
+    'javascript lens, and, with the bridge connected, through each saved toolchain that has a run command' +
+    (lanes.length ? ' (' + lanes.map(esc).join(', ') + ')' : ' (none saved yet: press Config on a lens)') +
+    '. A time is the program run alone; hover a cell for its output. A lane whose output differs from the in-tab run is marked.</div>' +
+    '<div class="cfg-acts"><button class="go" id="bench-go">Run bench</button><button class="go" id="bench-stop">Stop</button></div>' +
+    '<table class="bench" id="bench-table" style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px"></table>';
+  const go = cfgBody.querySelector('#bench-go');
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    try { await runBench(); } finally { go.disabled = false; }
+  });
+  cfgBody.querySelector('#bench-stop').addEventListener('click', () => { benchStop = true; });
+}
+document.getElementById('bench').addEventListener('click', showBench);
 
 /* ---- The signing key -------------------------------------------------------
    A 32-byte Ed25519 seed the user generates HERE, held in this browser only
@@ -2396,7 +3202,7 @@ goBtn.addEventListener('click', async () => {
   if (cannotFetch()) { fileOriginNotice(); return; }
   goBtn.disabled = true; runBtn.disabled = true;
   goBtn.classList.add('busy'); goBtn.textContent = 'Compiling';
-  emittedJs = null; emittedHtml = null;
+  emittedJs = null; emittedHtml = null; emittedWat = null;
   runoutEl.style.display = 'none'; runoutEl.textContent = '';
   // A new compile invalidates the previous artifact, so the lines telling
   // somebody how to run it go with it rather than outliving their subject.
@@ -2461,7 +3267,7 @@ goBtn.addEventListener('click', async () => {
       // the lenses take and hands it to that module -- no CDX, no pe plug, no
       // elf plug. It returns before the CDX compile below rather than paying
       // for an artifact nothing here consumes.
-      if (binTarget === 'board') {
+      if (binTarget === 'board' || binTarget === 'board-arm64') {
         const rIr = await runW(await moduleBytes('codex-compiler.wasm'),
                                'IR-UNI decks=' + DECKS[DECKS.length - 1] + '\n' + unit.text);
         const ls = rIr.text.split('\n');
@@ -2472,24 +3278,103 @@ goBtn.addEventListener('click', async () => {
           outEl.innerHTML = '<span class="diag">' + esc(ls.filter(l => classify(l) === 'diag').join('\n') || 'the compiler emitted no IR') + '</span>';
           endBusy(); return;
         }
-        const kr = await runW(await moduleBytes(BOARD_FILE), 'ELF\n' + ls.slice(b0 + 1, e0).join('\n'));
+        const kr = await runW(await moduleBytes(binTarget === 'board' ? BOARD_FILE : ARM64_FILE), 'ELF\n' + ls.slice(b0 + 1, e0).join('\n'));
         const kb = kr.bytes;
         // The plug REFUSES a unit with no `opening` in words, and words are not
         // a file. Same guard the other targets carry, for the same reason.
         const kHead = new TextDecoder('latin1').decode(kb.subarray(0, Math.min(kb.length, 64)));
         if (kHead.startsWith('REFUSED') || kb.length < 64) {
           setStatus('the board plug refused', 'err');
-          setBuildline('err', 'the riscv backend refused this unit');
+          setBuildline('err', 'the ' + (binTarget === 'board' ? 'riscv' : 'arm64') + ' backend refused this unit');
           outEl.innerHTML = '<span class="diag">' + esc(new TextDecoder().decode(kb)) + '</span>';
           endBusy(); return;
         }
-        emittedBin = { name: BIN_NAME.board, bytes: kb };
+        emittedBin = { name: BIN_NAME[binTarget], bytes: kb };
         saveBinBtn.disabled = false;
         setStatus('ok', 'ok');
-        setBuildline('ok', BIN_NAME.board + ' · ' + kb.length.toLocaleString() + ' bytes · ' +
+        setBuildline('ok', BIN_NAME[binTarget] + ' · ' + kb.length.toLocaleString() + ' bytes · ' +
                      (rIr.ms + kr.ms).toFixed(0) + ' ms · ' + Math.max(rIr.mb, kr.mb) + ' MB peak');
+        howToRun(binTarget, emittedBin.name);
         lastRun = { body: [] };
-        render(); endBusy(); return;
+        render(); epKick(emittedBin.name, emittedBin.bytes); endBusy(); return;
+      }
+      // The Mac target also comes off IR, not the CDX: the arm64 backend's
+      // Darwin mode answers a wire whose runtime makes raw BSD system calls,
+      // and the macho module wraps that wire in a signed Mach-O (mode 0).
+      if (binTarget === 'mac') {
+        const rIr = await runW(await moduleBytes('codex-compiler.wasm'),
+                               'IR-UNI decks=' + DECKS[DECKS.length - 1] + '\n' + unit.text);
+        const ls = rIr.text.split('\n');
+        const b0 = ls.indexOf('IR-BEGIN'), e0 = ls.indexOf('IR-END');
+        if (b0 < 0 || e0 < 0) {
+          setStatus('no IR: the compiler refused this source', 'err');
+          setBuildline('err', 'no IR to build a Mac app from');
+          outEl.innerHTML = '<span class="diag">' + esc(ls.filter(l => classify(l) === 'diag').join('\n') || 'the compiler emitted no IR') + '</span>';
+          endBusy(); return;
+        }
+        const wr = await runW(await moduleBytes(ARM64_FILE), 'DARWIN\n' + ls.slice(b0 + 1, e0).join('\n'));
+        const wHead = new TextDecoder('latin1').decode(wr.bytes.subarray(0, Math.min(wr.bytes.length, 64)));
+        let mr = null;
+        if (!wHead.startsWith('REFUSED') && wr.bytes.length >= 12) {
+          const payload = new Uint8Array(1 + wr.bytes.length); payload.set(wr.bytes, 1);
+          mr = await runW(await moduleBytes(BYTES_FILE.macho), payload);
+        }
+        const mb = mr ? mr.bytes : wr.bytes;
+        const mHead = new TextDecoder('latin1').decode(mb.subarray(0, Math.min(mb.length, 64)));
+        if (!mr || mHead.startsWith('REFUSED') || mb.length < 32) {
+          setStatus('the Mac build refused', 'err');
+          setBuildline('err', mr ? 'the macho plug refused the Darwin wire' : 'the arm64 backend refused this unit');
+          outEl.innerHTML = '<span class="diag">' + esc(new TextDecoder().decode(mb)) + '</span>';
+          endBusy(); return;
+        }
+        emittedBin = { name: (activePath || 'program').replace(/\.codex$/, '').replace(/[^A-Za-z0-9_-]+/g, '-'), bytes: mb };
+        saveBinBtn.disabled = false;
+        setStatus('ok', 'ok');
+        setBuildline('ok', emittedBin.name + ' · ' + mb.length.toLocaleString() + ' bytes · ' +
+                     (rIr.ms + wr.ms + mr.ms).toFixed(0) + ' ms · ' + Math.max(rIr.mb, wr.mb, mr.mb) + ' MB peak');
+        howToRun('mac', emittedBin.name);
+        lastRun = { body: [] };
+        render(); epKick(emittedBin.name, emittedBin.bytes); endBusy(); return;
+      }
+      // The in-tab server: the same program with its opening swapped for a
+      // one-request entry over the route it serves, compiled to WebAssembly.
+      if (binTarget === 'serve') {
+        const demo = serveDemoUnit(assembleUnit());
+        if (demo.err) {
+          setStatus('no route to serve', 'err');
+          setBuildline('err', demo.err);
+          outEl.innerHTML = '<span class="diag">' + esc(demo.err) + '</span>';
+          endBusy(); return;
+        }
+        const dUnit = await resolveUnit(demo);
+        const rIr = await runW(await moduleBytes('codex-compiler.wasm'),
+                               'IR-UNI decks=' + DECKS[DECKS.length - 1] + '\n' + dUnit.text);
+        const ls = rIr.text.split('\n');
+        const b0 = ls.indexOf('IR-BEGIN'), e0 = ls.indexOf('IR-END');
+        if (b0 < 0 || e0 < 0) {
+          setStatus('the server did not compile', 'err');
+          setBuildline('err', 'the one-request entry over ' + demo.route + ' did not compile');
+          outEl.innerHTML = '<span class="diag">' + esc(ls.filter(l => classify(l) === 'diag').join('\n') || 'the compiler emitted no IR') + '</span>';
+          endBusy(); return;
+        }
+        const wr = await runW(await moduleBytes(PLUG_FILE.wasm), ls.slice(b0 + 1, e0).join('\n'));
+        let mod;
+        try { mod = watAssemble(wr.text.split('\n').filter(l => !l.startsWith('WD:') && !l.startsWith('PM:')).join('\n')); }
+        catch (e) {
+          setStatus('the server did not assemble', 'err');
+          setBuildline('err', 'the WebAssembly assembler refused: ' + String(e && e.message || e));
+          endBusy(); return;
+        }
+        serveMod = mod;
+        emittedBin = { name: (activePath || 'program').replace(/\.codex$/, '').replace(/[^A-Za-z0-9_-]+/g, '-') + '-server.wasm', bytes: mod };
+        saveBinBtn.disabled = false;
+        setStatus('ok', 'ok');
+        setBuildline('ok', 'serving ' + demo.route + ' in this tab · ' + mod.length.toLocaleString() + '-byte module · ' +
+                     (rIr.ms + wr.ms).toFixed(0) + ' ms to build');
+        lastRun = { body: [] };
+        render();
+        await serveNavigate('/');
+        endBusy(); return;
       }
       // A hosted target is a DIFFERENT COMPILE, not a different wrapper. The
       // runtime cells move off the addresses an OS reserves, printing becomes
@@ -2596,6 +3481,7 @@ goBtn.addEventListener('click', async () => {
       howToRun(binTarget, emittedBin.name);
       lastRun = { body: [] };
       render();
+      epKick(emittedBin.name, emittedBin.bytes);
       // The evidence toggle lives on THIS tab's pill row, and this early
       // return is why it never fired for a binary build. Here the package is
       // built from the CDX itself, which is what the plug's cdx-binary and
@@ -2618,10 +3504,12 @@ goBtn.addEventListener('click', async () => {
     lastRun = { body };
     emittedJs = lens.plug === 'javascript' ? body.join('\n') : null;
     emittedHtml = lens.plug === 'html' ? body.join('\n') : null;
+    emittedWat = lens.plug === 'wasm' ? body.join('\n') : null;
     setStatus('ok', 'ok');
     setBuildline('ok', lens.plug + ' · ' + body.join('\n').length.toLocaleString() + ' chars · ' +
                  (r.ms + p.ms).toFixed(0) + ' ms · ' + Math.max(r.mb, p.mb) + ' MB peak · decks=' + used);
     render();
+    epKick(outName(), body.join('\n'));
 
     if (euToggle.checked) {
       euStatusEl.innerHTML = '<span class="run">building&hellip;</span>';
@@ -2650,10 +3538,18 @@ goBtn.addEventListener('click', async () => {
 runBtn.addEventListener('click', () => {
   if (runBtn.dataset.cfg) { openConfig(lens.plug); return; }
   if (emittedHtml) { renderEmittedHtml(); return; }
+  if (emittedWat) return runWatInTab();
   if (!emittedJs) return;
   runoutEl.style.display = ''; runoutEl.textContent = '';
+  const r = runJsInTab(emittedJs, (s) => { runoutEl.textContent += s; runoutEl.scrollTop = runoutEl.scrollHeight; });
+  if (!r.err && !runoutEl.textContent) runoutEl.textContent = '(the program printed nothing)';
+  if (r.err) runoutEl.textContent += '\n' + r.err;
+  runoutEl.textContent += '\n\nran in ' + (r.ms < 10 ? r.ms.toFixed(1) : Math.round(r.ms).toLocaleString()) + ' ms (in this tab)';
+});
+
+function runJsInTab(js, write) {
   const sink = {
-    write(s) { runoutEl.textContent += s; runoutEl.scrollTop = runoutEl.scrollHeight; },
+    write(s) { write(s); },
     log() { this.write([].slice.call(arguments).map(String).join(' ') + '\n'); }
   };
   sink.info = sink.log; sink.warn = sink.log; sink.error = sink.log; sink.debug = sink.log;
@@ -2674,14 +3570,108 @@ runBtn.addEventListener('click', () => {
   // bench asks for. It is wall time around the program only -- compiling and
   // emitting already happened and are reported separately.
   const t0 = performance.now();
+  let err = null;
   try {
-    new Function('console', 'require', '"use strict";\n' + emittedJs)(sink, req);
-    if (!runoutEl.textContent) runoutEl.textContent = '(the program printed nothing)';
+    new Function('console', 'require', '"use strict";\n' + js)(sink, req);
+  } catch (e) {
+    err = String(e && e.message || e);
+  }
+  return { ms: performance.now() - t0, err };
+}
+
+// The WebAssembly lens's text, assembled by watAssemble and run on the page's
+// own two imports. Stdin is the box's bytes with no terminator: a read past
+// them answers 0, which the program reads as end of input.
+async function runWatInTab() {
+  runoutEl.style.display = ''; runoutEl.textContent = '';
+  let bin;
+  try { bin = watAssemble(emittedWat); }
+  catch (e) { runoutEl.textContent = 'the assembler refused: ' + String(e && e.message || e); return; }
+  try {
+    const r = await runW(bin, new TextEncoder().encode(stdinEl.value || ''));
+    runoutEl.textContent = r.text || '(the program printed nothing)';
+    runoutEl.textContent += '\n\nran in ' + (r.ms < 10 ? r.ms.toFixed(1) : Math.round(r.ms).toLocaleString()) +
+                            ' ms (in this tab, a ' + bin.length.toLocaleString() + '-byte module)';
   } catch (e) {
     runoutEl.textContent += '\n' + String(e && e.message || e);
   }
-  const took = performance.now() - t0;
-  runoutEl.textContent += '\n\nran in ' + (took < 10 ? took.toFixed(1) : Math.round(took).toLocaleString()) + ' ms (in this tab)';
+}
+
+// ---- The in-tab server (PRISM-7 stage 6c) -----------------------------------
+// The program's opening is replaced by a one-request entry over the route it
+// hands web-serve or hosted-serve, and every request runs the module once:
+// the raw request is stdin, the encoded response is stdout. The page it serves
+// renders in a frame sandboxed to scripts only (an opaque origin, no access to
+// this page), and a bridge injected into every HTML response carries its
+// links, GET forms and fetch calls back here as messages. It works on file://
+// because nothing listens and no service worker registers.
+let serveMod = null, serveFrame = null;
+const SERVE_CALL = /\b(web-serve-concurrent|web-serve|hosted-serve-on|hosted-serve-n|hosted-serve)\s+\(?([a-z][A-Za-z0-9-]*)/;
+function serveDemoUnit(unit) {
+  const lines = unit.text.split('\n');
+  const at = lines.findIndex(l => /^  opening\s*:/.test(l));
+  if (at < 0) return { err: 'this program has no opening, so there is no server to find' };
+  let end = at + 1;
+  while (end < lines.length && (lines[end].trim() === '' || /^   /.test(lines[end]))) end++;
+  const m = SERVE_CALL.exec(lines.slice(at, end).join('\n'));
+  if (!m) return { err: 'the opening hands no route to web-serve or hosted-serve, so there is nothing to serve in this tab' };
+  const text = lines.slice(0, at).concat(lines.slice(end)).join('\n') +
+    '\n\nChapter: PrismTabServe\n  cites Works chapter TabServe\n\nSection: Entry\n\n' +
+    '  opening : [Console, FileSystem] Nothing = tab-serve-one ' + m[2] + '\n';
+  return { text, regions: unit.regions, route: m[2] };
+}
+async function serveRequest(method, path, body) {
+  const bodyBytes = new TextEncoder().encode(body || '');
+  const head = new TextEncoder().encode(method + ' ' + path + ' HTTP/1.0\r\nHost: prism-tab\r\nContent-Length: ' +
+                                        bodyBytes.length + '\r\n\r\n');
+  const req = new Uint8Array(head.length + bodyBytes.length); req.set(head); req.set(bodyBytes, head.length);
+  const t0 = performance.now();
+  const r = await runW(serveMod, req);
+  const text = new TextDecoder().decode(r.bytes);
+  const split = text.indexOf('\r\n\r\n');
+  const headers = split < 0 ? text : text.slice(0, split);
+  const status = Number((/^HTTP\/1\.[01] (\d{3})/.exec(headers) || [])[1] || 0);
+  const type = ((/\r\nContent-Type: ([^\r\n]*)/i.exec(headers) || [])[1] || 'text/plain').trim();
+  return { status, type, body: split < 0 ? '' : text.slice(split + 4), ms: performance.now() - t0 };
+}
+function serveBridge() {
+  // Split, because a whole opening tag in this script would be found by every
+  // tool that locates the page's script with lastIndexOf.
+  return '<scr' + 'ipt>(function(){var seq=0,wait={};' +
+    'addEventListener("message",function(e){var d=e.data;if(d&&d.prismServe&&wait[d.id]){wait[d.id](d);delete wait[d.id];}});' +
+    'function ask(m,p,b){return new Promise(function(res){var id=++seq;wait[id]=res;parent.postMessage({prismServe:1,id:id,method:m,path:p,body:b||""},"*");});}' +
+    'window.fetch=function(u,o){o=o||{};return ask(o.method||"GET",String(u),typeof o.body==="string"?o.body:"").then(function(d){' +
+    'return new Response(d.body,{status:d.status>=200&&d.status<600?d.status:500,headers:{"content-type":d.type}});});};' +
+    'function local(h){return h&&!/^[a-z][a-z0-9+.-]*:/i.test(h)&&h.charAt(0)!=="#";}' +
+    'document.addEventListener("click",function(e){var a=e.target&&e.target.closest?e.target.closest("a[href]"):null;' +
+    'if(!a||!local(a.getAttribute("href")))return;e.preventDefault();parent.postMessage({prismServe:1,navigate:a.getAttribute("href")},"*");});' +
+    'document.addEventListener("submit",function(e){var f=e.target,act=f.getAttribute("action")||location.pathname||"/";' +
+    'if(!local(act)||(f.method||"get").toLowerCase()!=="get")return;e.preventDefault();' +
+    'var q=new URLSearchParams(new FormData(f)).toString();parent.postMessage({prismServe:1,navigate:act+(q?"?"+q:"")},"*");});' +
+    '})();<\/script>';
+}
+async function serveNavigate(path) {
+  if (!serveMod) return;
+  const r = await serveRequest('GET', path);
+  runoutEl.style.display = ''; runoutEl.textContent = '';
+  const bar = document.createElement('div');
+  bar.textContent = 'GET ' + path + ' -> ' + r.status + ' ' + r.type + ' · ' +
+                    (r.ms < 10 ? r.ms.toFixed(1) : Math.round(r.ms)) + ' ms (one module run per request)';
+  runoutEl.appendChild(bar);
+  serveFrame = document.createElement('iframe');
+  serveFrame.setAttribute('sandbox', 'allow-scripts allow-forms');
+  serveFrame.style.cssText = 'width:100%;height:340px;border:0;background:#fff;border-radius:6px';
+  serveFrame.srcdoc = /html/i.test(r.type) ? serveBridge() + r.body
+    : '<pre style="white-space:pre-wrap;font:12px monospace">' + esc(r.body) + '</pre>';
+  runoutEl.appendChild(serveFrame);
+  return r;
+}
+if (typeof window !== 'undefined') window.addEventListener('message', async (e) => {
+  const d = e.data;
+  if (!d || !d.prismServe || !serveFrame || e.source !== serveFrame.contentWindow) return;
+  if (d.navigate) { await serveNavigate(d.navigate); return; }
+  const r = await serveRequest(d.method || 'GET', d.path, d.body);
+  serveFrame.contentWindow.postMessage({ prismServe: 1, id: d.id, status: r.status, type: r.type, body: r.body }, '*');
 });
 
 // The html plug emits a whole document, so the honest way to show it is to let
@@ -2731,6 +3721,11 @@ copyOutBtn.addEventListener('click', async () => {
   const was = copyOutBtn.textContent;
   copyOutBtn.textContent = 'Copied';
   setTimeout(() => { copyOutBtn.textContent = was; }, 1200);
+});
+saveWasmBtn.addEventListener('click', () => {
+  const t = outText(); if (!t) return;
+  try { download(outName().replace(/\.wat$/, '.wasm'), watAssemble(t), 'application/wasm'); }
+  catch (e) { setBuildline('err', String(e && e.message || e)); }
 });
 saveOutBtn.addEventListener('click', () => {
   const t = outText(); if (!t) return;
@@ -2808,7 +3803,7 @@ examplesEl.addEventListener('change', async () => {
   }
   openFile(mainPath);
   examplesEl.value = '';
-  lastRun = null; emittedJs = null; emittedHtml = null; euOut = null; updateRun();
+  lastRun = null; emittedJs = null; emittedHtml = null; emittedWat = null; euOut = null; updateRun();
   runoutEl.style.display = 'none'; buildlineEl.style.display = 'none';
   if (runpanelEl) runpanelEl.style.display = 'none';
   outEl.textContent = 'Press Compile.';
@@ -2841,8 +3836,19 @@ function howToRun(target, name) {
     rows.push(['To get a whole disk instead', 'build the "A whole 8 MB disk" target on this row; it makes the ESP for you']);
   } else if (target === 'cdx') {
     rows.push(['codex-vm', 'tools\\codex-vm.exe -kernel ' + name]);
-  } else if (target === 'elf' || target === 'winexe' || target === 'board') {
+  } else if (target === 'board') {
+    // Measured (plugs-backlog 2.09): prints byte-identical to factorial.expected.
+    rows.push(['QEMU, the generic RV64 virt board', 'qemu-system-riscv64 -machine virt -m 1G -nographic -bios none -kernel ' + name]);
+    rows.push(['Why -m 1G', '__start puts the stack at 0xBFFF0000, past the default 128 MiB of QEMU virt']);
+  } else if (target === 'elf' || target === 'winexe') {
     rows.push(['It is a user-mode program', 'save it and run it on the platform it targets; nothing boots']);
+  } else if (target === 'board-arm64') {
+    rows.push(['A generic virt kernel', 'qemu-system-aarch64 -machine virt -cpu cortex-a72 -nographic -kernel ' + name]);
+    rows.push(['Booting', 'NOT verified: no kernel from this pill has been booted yet']);
+  } else if (target === 'mac') {
+    rows.push(['On an Apple Silicon Mac', 'xattr -d com.apple.quarantine ' + name + '; chmod +x ' + name + '; ./' + name]);
+    rows.push(['Packaging', 'verified here: Mach-O structure and every SHA-256 page hash of the ad-hoc signature']);
+    rows.push(['Running', 'NOT verified: this target has not been run on a Mac yet']);
   }
   if (!rows.length) { runpanelEl.style.display = 'none'; return; }
   runpanelEl.innerHTML =
@@ -2876,17 +3882,22 @@ const TEMPLATES = (typeof window !== 'undefined' && window.__TEMPLATES) || null;
 templatesEl.addEventListener('change', () => {
   const name = templatesEl.value;
   if (!name || !TEMPLATES || !TEMPLATES[name]) return;
-  const t = TEMPLATES[name];
+  startProject(TEMPLATES[name]);
+});
+
+// A template or a composed mod: { title, files: { path: text }, main }.
+function startProject(t) {
   const count = Object.keys(t.files).length;
   // The same bargain the compiler preset strikes: a template is a whole program
   // and cannot share a workspace with another entry point, so it takes the
   // project, behind a confirm, and Cancel changes nothing.
   if (project.files.length &&
       !confirm('Start ' + t.title + '? It is ' + count + (count === 1 ? ' file' : ' files') +
-               ' and needs the project to itself, so the current files are removed here and from this page’s storage.')) {
+               '. The current browser workspace will be replaced. Files in opened folders stay on disk.')) {
     templatesEl.value = '';
     return;
   }
+  fsaDir = null;
   for (const f of project.files) persistDelete(f.path);
   project.files = []; openTabs = []; activePath = null;
   let main = null;
@@ -2896,12 +3907,42 @@ templatesEl.addEventListener('change', () => {
   }
   if (main) openFile(main);
   templatesEl.value = '';
-  lastRun = null; emittedJs = null; emittedHtml = null; euOut = null; updateRun();
+  lastRun = null; emittedJs = null; emittedHtml = null; emittedWat = null; euOut = null; updateRun();
   runoutEl.style.display = 'none'; buildlineEl.style.display = 'none';
   if (runpanelEl) runpanelEl.style.display = 'none';
   outEl.textContent = 'Press Compile.';
   setStatus(t.title + ': ' + count + ' file(s) here, the rest resolves off the library', 'run');
-});
+}
+
+/* ---- Game mods ---------------------------------------------------------------
+   mods.html links here as #mod=<game>:<feature>,<feature>. Each game's catalogue
+   (apps/prism/mods/<game>/features.json, embedded as __MODS) names every
+   feature's sources, its engine effect and its start call; the project is the
+   chosen features' sources plus an entry chapter declaring and starting only
+   those. The Unity lens emits a feature only when the entry starts it. */
+const MODS = (typeof window !== 'undefined' && window.__MODS) || null;
+function composeMod(game, ids) {
+  const g = MODS && MODS[game];
+  if (!g) throw new Error('no mod catalogue for ' + game);
+  const unknown = ids.filter(id => !g.features.some(f => f.id === id));
+  if (unknown.length) throw new Error(g.title + ' has no feature ' + unknown.join(', '));
+  const chosen = g.features.filter(f => ids.includes(f.id));
+  if (!chosen.length) throw new Error('choose at least one feature');
+  const files = {};
+  for (const f of chosen) for (const s of f.sources) files[s] = g.files[s];
+  files[g.entry] = 'Chapter: ' + g.entryChapter + '\n\nSection: Engine Entry\n\n  effect Process where\n' +
+    chosen.map(f => '    ' + f.effect).join('\n') + '\n\nSection: Entry\n\n  opening : [Process] Nothing = act\n' +
+    chosen.map(f => '    ' + f.start).join('\n') + '\n  end\n';
+  return { title: g.title + ' mod (' + chosen.map(f => f.title).join(', ') + ')', files, main: g.entry };
+}
+function modFromHash() {
+  const m = /^#mod=([a-z0-9-]+):([a-z0-9,-]+)$/.exec(location.hash);
+  if (!m) return;
+  try { startProject(composeMod(m[1], m[2].split(','))); }
+  catch (e) { setStatus(esc(String(e && e.message || e)), 'err'); }
+  history.replaceState(null, '', location.pathname + location.search);
+}
+window.addEventListener('hashchange', modFromHash);
 
 newFileBtn.addEventListener('click', () => {
   const name = prompt('New file (a .codex file joins the compile unit):', 'chapter.codex');
@@ -3400,6 +4441,7 @@ if (typeof window !== 'undefined' && window.__claude) {
   const first = project.files.find(f => isUnitFile(f.path)) || project.files[0];
   if (first) openFile(first.path);
   loadExamples();
+  modFromHash();
   if (cannotFetch()) fileOriginNotice();
 })();
 </script>

@@ -1453,7 +1453,7 @@ Section: Expression Emission
 
   emit-with-timeout : CodegenState, Integer, IRExpr -> EmitResult
   emit-with-timeout (st) (secs) (body) =
-   let expiry-ticks = secs * ticks-per-second
+   let expiry-ticks = pit-ms-ticks (secs * 1000)
    in let st1 = st-append-code st (li reg-rdi tick-count-addr)
    in let st2 = st-append-code st1 (mov-load reg-rdi reg-rdi 0)
    in let st3 = st-append-code st2 (add-ri reg-rdi expiry-ticks)
@@ -1588,6 +1588,19 @@ Section: Expression Emission
    in let st2 = st-append-code (fc-evict-reg st1 reg-rax) (mov-ri64 reg-rax 0)
    in let rf-p = list-push (st2.rf-poffsets) (fixup.patch-offset)
    in let rf-r = list-push (st2.rf-roffsets) (fixup.rodata-offset)
+   in let st3 = __record-set (__record-set st2 "rf-poffsets" rf-p) "rf-roffsets" rf-r
+   in let rd = alloc-temp st3
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-shared-const-ref : CodegenState, Integer -> EmitResult
+  emit-shared-const-ref (st) (roff) =
+   let patch = st.code-len + 2
+   in let st2 = st-append-code (fc-evict-reg st reg-rax) (mov-ri64 reg-rax 0)
+   in let rf-p = list-push (st2.rf-poffsets) patch
+   in let rf-r = list-push (st2.rf-roffsets) roff
    in let st3 = __record-set (__record-set st2 "rf-poffsets" rf-p) "rf-roffsets" rf-r
    in let rd = alloc-temp st3
    in EmitResult {
@@ -2213,6 +2226,8 @@ Section: Expression Emission
    else if name == "__deck-enter" then emit-deck-enter-builtin st
    else if name == "__deck-exit" then emit-deck-exit-builtin st
    else if name == "get-state" then emit-get-state-builtin st
+   else let shared = cs-find (st.shared-consts) name
+   in if shared >= 0 then emit-shared-const-ref st shared
    else let resolved = resolve-to-sum-with-defs st ty
    in when resolved
     is SumTy (sname) (args) (ctors) ->

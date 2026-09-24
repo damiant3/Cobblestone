@@ -327,6 +327,8 @@ esolve -at takes the delete over your add. | Copy up a restored file BEFORE any 
 | P-UNBRANCHED (L) | The other direction of P-RESURRECT, and it deletes a peer's work instead of restoring it. `p4 copy --from //Codex/<agent>` lists `//Codex/main/<file> - delete from //Codex/<agent>/<file>#none` for a file you never touched, and submitting that is a real delete on main. The stream is not behind: `p4 merge -n -S //Codex/<agent> -r` answers **`All revision(s) already integrated`** while the file is in neither the workspace nor `p4 have`, so Perforce has credited the branch without ever creating the file and no ordinary merge-down will fix it. | Revert the copy first (`p4 -c <main-client> revert //Codex/main/...`), then re-branch that one file: `p4 merge -Af --from main <path>` (a stream view refuses `p4 integrate -f`, and `merge -f` is not an option), `p4 resolve -at`, submit it alone, then copy up again and read the list. Confirm the file is on disk with a plausible size before submitting; the branch resolve says nothing about content. |
 | P-SHELFSUBMIT | `p4 submit` is refused while the CL still has a shelf ("has shelved files"). Bites on every CL where a gate follows a shelve, which is every CL that uses the build token. | `p4 shelve -d -c <CL>` first. |
 | P-REMERGE | Copy-up refused with `Stream //Codex/<agent> cannot 'copy' over outstanding 'merge' changes`. Another agent landed while your gate ran. | Merge down again, submit the merge, then copy up. Budget two merge-downs per token hold. Your token does not prevent this and is not meant to: what lands under you is non-seed traffic, which takes no token. |
+| P-XSHELF | Re-proving another lane's shelf: `p4 unshelve -s <CL> -S //Codex/<their-stream>` alone answers "No target file(s) in both client and branch view" and opens nothing. | `p4 unshelve -s <CL> -S //Codex/<their-stream> -P //Codex/<your-stream>`, then `p4 resolve -am` and read the diff before building. |
+| P-STREAMREV | A bisect by `p4 sync <dev-stream path>@<main CL>` reproduces nothing that CL changed: `@<change>` on a `//Codex/<agent>` path is that stream's state at that moment, which predates the stream's merge-down of the change, so "just before" and "at" the main CL are both the older dev state and the arms agree for the wrong reason. | Bisect main by printing main: `p4 print -o <scratch>/<rel> //Codex/main/<rel>@<CL>` for the files the subject reaches (plus that CL's `seed/Codex.cdx`, `tools/codex-vm.exe` and `build/`), then run `build/compile.ps1` from that scratch root. |
 | P-EOL | A five-line change reports as the entire file replaced, because an edit tool wrote the result back as bare LF over a CRLF file. It turns the merge-down of any contended document into a conflict and hides your real change from review. | If `p4 diff` shows far more lines than you touched, count the endings and repair at the BYTE level (section 4.2). Never through `Get-Content`/`Set-Content`, which also rewrites the encoding of a `unicode`-typed file. The same shape arrives from a whole-file rewrite, which the fleet's models reach for over an in-place edit on small changes; edit surgically, and a five-line change then diffs as five lines. |
 | P-SELECTSTRING | `Select-String` misreads p4 `unicode`-typed files, which is most `.codex` by typemap. | Use the Grep tool (ripgrep) for content searches over depot files. |
 | P-CRTRIGGER | A stray CR in a `.codex` (a `\r\r\n` line, or a CR at the end of a `Chapter:` header) survives every line-end translation as CONTENT, puts the CR in the chapter name (CDX3007, PR 133), and makes git publish the file CRLF throughout on the mirror. | The server refuses it: the `check-source-cr` change-content trigger fails the submit and names the file and line (4.8). Strip the byte; do not touch the terminators. |
@@ -473,8 +475,10 @@ R-GATE). `-Internal` is banned outright (Damian, 2026-09-02: "it shaln't be
 run") and the bare gate is the release gate and is Damian's. A lane proves a
 change by compiling and running the tests that change touches, one at a time;
 a seed-affecting change adds the scratch fixed point, `build/bvt.ps1` on the
-candidate, the signer and `test-self-verify`. Every run that starts a guest is
-asked of the commander first.
+candidate, `build/cite-gate.ps1 -Kernel <candidate>` over the changed files
+(a `codex/compiler` change also selects every allocation golden, the tests
+whose printed byte counts the compiler decides), the signer and
+`test-self-verify`.
 
 The rest of this section and 4.4 describe what the gate PRODUCES, because
 `install-seed.ps1` consumes it. They are not an instruction to run it.
@@ -505,7 +509,7 @@ The rest of this section and 4.4 describe what the gate PRODUCES, because
 
   **`build/install-seed.ps1` is the only sanctioned way to move the seed.** Every gate run writes `build/output/seed-verdict.txt` naming
   the outcome, the artifact that IS the fixed point, and that artifact's
-  whole-file SHA-256. The script refuses a two-pass or core-skipped verdict, a
+  whole-file SHA-256. The script refuses a `codex/plugs/recheck/RecheckBuiltins.codex` out of step with `Types/Builtins.codex` (run `gen-builtins.ps1`), a `seed/constants.hash` that does not match the source constants (`p4 edit` it, run `build/check-constants.ps1 -Update`, and put it in the CL), a two-pass or core-skipped verdict, a
   verdict older than the artifact it names, and a hash that does not match the
   bytes it is about to copy; then it installs, self-verifies, restores the
   previous seed if the self-verify fails, and refreshes the four

@@ -1,0 +1,86 @@
+Chapter: Linked Storage
+
+Section: Snapshot
+
+  StorageSlot = record {
+   ss-index : Integer,
+   ss-quantity : Integer,
+   ss-capacity : Integer,
+   ss-compatible : Boolean
+  }
+
+  StorageMove = record {
+   sm-index : Integer,
+   sm-expected : Integer,
+   sm-amount : Integer
+  }
+
+  StoragePlan = record {
+   sp-valid : Boolean,
+   sp-moves : List StorageMove,
+   sp-remainder : Integer
+  }
+
+Section: Validation
+
+  storage-slots-valid : List StorageSlot, Integer -> Boolean
+  storage-slots-valid (slots) (i) =
+   if i >= list-length slots then True
+   else let s = list-at slots i
+   in if s.ss-index /= i then False
+      else if s.ss-quantity < 0 | s.ss-capacity < 1 | s.ss-quantity > s.ss-capacity then False
+      else storage-slots-valid slots (i + 1)
+
+Section: Deposit
+
+  storage-plan-deposit : List StorageSlot, Integer -> StoragePlan
+  storage-plan-deposit (slots) (amount) =
+   if amount < 0 | storage-slots-valid slots 0 == False then
+    StoragePlan { sp-valid = False, sp-moves = [], sp-remainder = amount }
+   else let stacked = storage-deposit-pass slots 0 amount [] False
+   in storage-deposit-pass slots 0 (stacked.sp-remainder) (stacked.sp-moves) True
+
+  storage-deposit-pass : List StorageSlot, Integer, Integer, List StorageMove, Boolean -> StoragePlan
+  storage-deposit-pass (slots) (i) (remaining) (moves) (empty) =
+   if i >= list-length slots | remaining == 0 then
+    StoragePlan { sp-valid = True, sp-moves = moves, sp-remainder = remaining }
+   else let s = list-at slots i
+   in let eligible = if empty then s.ss-quantity == 0 else s.ss-quantity > 0 & s.ss-compatible
+   in let free = if eligible then s.ss-capacity - s.ss-quantity else 0
+   in let take = if free < remaining then free else remaining
+   in if take == 0 then storage-deposit-pass slots (i + 1) remaining moves empty
+      else let next = list-push moves (StorageMove { sm-index = s.ss-index, sm-expected = s.ss-quantity, sm-amount = take })
+      in storage-deposit-pass slots (i + 1) (remaining - take) next empty
+
+Section: Withdrawal
+
+  storage-plan-withdraw : List StorageSlot, Integer -> StoragePlan
+  storage-plan-withdraw (slots) (amount) =
+   if amount < 0 | storage-slots-valid slots 0 == False then
+    StoragePlan { sp-valid = False, sp-moves = [], sp-remainder = amount }
+   else let plan = storage-withdraw-pass slots 0 amount []
+   in if plan.sp-remainder > 0 then StoragePlan { sp-valid = False, sp-moves = [], sp-remainder = amount }
+      else plan
+
+  storage-withdraw-pass : List StorageSlot, Integer, Integer, List StorageMove -> StoragePlan
+  storage-withdraw-pass (slots) (i) (remaining) (moves) =
+   if i >= list-length slots | remaining == 0 then
+    StoragePlan { sp-valid = True, sp-moves = moves, sp-remainder = remaining }
+   else let s = list-at slots i
+   in let available = if s.ss-compatible then s.ss-quantity else 0
+   in let take = if available < remaining then available else remaining
+   in if take == 0 then storage-withdraw-pass slots (i + 1) remaining moves
+      else let next = list-push moves (StorageMove { sm-index = s.ss-index, sm-expected = s.ss-quantity, sm-amount = take })
+      in storage-withdraw-pass slots (i + 1) (remaining - take) next
+
+Section: Commit Guard
+
+  storage-plan-current : StoragePlan, List StorageSlot, Integer -> Boolean
+  storage-plan-current (plan) (slots) (i) =
+   if plan.sp-valid == False then False
+   else if i >= list-length (plan.sp-moves) then True
+   else let m = list-at (plan.sp-moves) i
+   in if m.sm-index < 0 | m.sm-index >= list-length slots then False
+      else let s = list-at slots (m.sm-index)
+      in if s.ss-index /= m.sm-index | s.ss-quantity /= m.sm-expected then False
+         else storage-plan-current plan slots (i + 1)

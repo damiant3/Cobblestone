@@ -1,0 +1,210 @@
+Chapter: AccpJson
+  cites Foreword chapter CCE
+
+Section: Scanning
+
+  AccpScan = record { next : Integer, ok : Boolean }
+  AccpField = record { key : Text, raw : Text }
+  AccpObject = record { fields : List AccpField, ok : Boolean }
+
+  aj-at : Text, Integer -> Integer
+  aj-at (s) (i) = char-code-at s i
+
+  aj-space : Integer -> Boolean
+  aj-space (c) = c == char-code-at " " 0 | c == char-code-at "\n" 0
+
+  aj-ws : Text, Integer -> Integer
+  aj-ws (s) (i) =
+    if i >= text-length s then i
+    else if aj-space (aj-at s i) then aj-ws s (i + 1) else i
+
+  aj-is : Text, Integer, Text -> Boolean
+  aj-is (s) (i) (t) = i < text-length s & aj-at s i == char-code-at t 0
+
+  aj-hex : Integer -> Integer
+  aj-hex (c) =
+    if c >= char-code-at "0" 0 & c <= char-code-at "9" 0 then c - char-code-at "0" 0
+    else if c == char-code-at "a" 0 | c == char-code-at "A" 0 then 10
+    else if c == char-code-at "b" 0 | c == char-code-at "B" 0 then 11
+    else if c == char-code-at "c" 0 | c == char-code-at "C" 0 then 12
+    else if c == char-code-at "d" 0 | c == char-code-at "D" 0 then 13
+    else if c == char-code-at "e" 0 | c == char-code-at "E" 0 then 14
+    else if c == char-code-at "f" 0 | c == char-code-at "F" 0 then 15 else -1
+
+  aj-quad : Text, Integer -> Integer
+  aj-quad (s) (i) =
+    if i + 4 > text-length s then -1
+    else let a = aj-hex (aj-at s i)
+    in let b = aj-hex (aj-at s (i + 1))
+    in let c = aj-hex (aj-at s (i + 2))
+    in let d = aj-hex (aj-at s (i + 3))
+    in if a < 0 | b < 0 | c < 0 | d < 0 then -1
+    else a * 4096 + b * 256 + c * 16 + d
+
+  aj-string : Text, Integer -> AccpScan
+  aj-string (s) (i) =
+    if aj-is s i "\"" then aj-string-loop s (i + 1)
+    else AccpScan { next = i, ok = False }
+
+  aj-string-loop : Text, Integer -> AccpScan
+  aj-string-loop (s) (i) =
+    if i >= text-length s then AccpScan { next = i, ok = False }
+    else if aj-is s i "\"" then AccpScan { next = i + 1, ok = True }
+    else if aj-is s i "\\" then
+      let e = aj-escape-end s (i + 1)
+      in if e.ok then aj-string-loop s e.next else e
+    else if aj-at s i <= char-code-at "\n" 0 then AccpScan { next = i, ok = False }
+    else aj-string-loop s (i + 1)
+
+  aj-escape-end : Text, Integer -> AccpScan
+  aj-escape-end (s) (i) =
+    if i >= text-length s then AccpScan { next = i, ok = False }
+    else if aj-is s i "u" then
+      let u = aj-quad s (i + 1)
+      in if u >= 55296 & u <= 56319 then
+        let v = aj-quad s (i + 7)
+        in AccpScan { next = i + 11, ok = aj-is s (i + 5) "\\" & aj-is s (i + 6) "u" & v >= 56320 & v <= 57343 }
+      else AccpScan { next = i + 5, ok = u >= 0 & (u < 56320 | u > 57343) }
+    else AccpScan { next = i + 1, ok = aj-is s i "\"" | aj-is s i "\\" | aj-is s i "/" | aj-is s i "b" | aj-is s i "f" | aj-is s i "n" | aj-is s i "r" | aj-is s i "t" }
+
+  aj-digit : Text, Integer -> Boolean
+  aj-digit (s) (i) =
+    if i >= text-length s then False
+    else let c = aj-at s i
+    in c >= char-code-at "0" 0 & c <= char-code-at "9" 0
+
+  aj-digits : Text, Integer -> Integer
+  aj-digits (s) (i) = if aj-digit s i then aj-digits s (i + 1) else i
+
+  aj-number : Text, Integer -> AccpScan
+  aj-number (s) (i) =
+    let p = if aj-is s i "-" then i + 1 else i
+    in let n = if aj-is s p "0" then p + 1 else aj-digits s p
+    in if n == p then AccpScan { next = i, ok = False }
+    else let f = if aj-is s n "." then aj-digits s (n + 1) else n
+    in if f == n + 1 then AccpScan { next = i, ok = False }
+    else if aj-is s f "e" | aj-is s f "E" then
+      let e = if aj-is s (f + 1) "+" | aj-is s (f + 1) "-" then f + 2 else f + 1
+      in let z = aj-digits s e
+      in AccpScan { next = z, ok = z > e }
+    else AccpScan { next = f, ok = True }
+
+  aj-value : Text, Integer, Integer -> AccpScan
+  aj-value (s) (at) (depth) =
+    let i = aj-ws s at
+    in if depth > 16 | i >= text-length s then AccpScan { next = i, ok = False }
+    else if aj-is s i "\"" then aj-string s i
+    else if aj-is s i "{" then aj-container s (i + 1) depth True True
+    else if aj-is s i "[" then aj-container s (i + 1) depth False True
+    else if i + 4 <= text-length s & substring s i 4 == "true" then AccpScan { next = i + 4, ok = True }
+    else if i + 4 <= text-length s & substring s i 4 == "null" then AccpScan { next = i + 4, ok = True }
+    else if i + 5 <= text-length s & substring s i 5 == "false" then AccpScan { next = i + 5, ok = True }
+    else aj-number s i
+
+  aj-container : Text, Integer, Integer, Boolean, Boolean -> AccpScan
+  aj-container (s) (at) (depth) (obj) (empty) =
+    let i = aj-ws s at
+    in let closer = if obj then "}" else "]"
+    in if empty & aj-is s i closer then AccpScan { next = i + 1, ok = True }
+    else let k = if obj then aj-string s i else AccpScan { next = i, ok = True }
+    in let c = aj-ws s k.next
+    in if k.ok == False | (obj & aj-is s c ":" == False) then AccpScan { next = i, ok = False }
+    else let v = aj-value s (if obj then c + 1 else c) (depth + 1)
+    in let z = aj-ws s v.next
+    in if v.ok == False then v
+    else if aj-is s z closer then AccpScan { next = z + 1, ok = True }
+    else if aj-is s z "," then aj-container s (z + 1) depth obj False
+    else AccpScan { next = z, ok = False }
+
+Section: Object Fields
+
+  aj-object : Text -> AccpObject
+  aj-object (s) =
+    let p = aj-ws s 0
+    in let v = aj-value s p 0
+    in if v.ok == False | aj-ws s v.next /= text-length s | aj-is s p "{" == False
+      then AccpObject { fields = [], ok = False }
+    else aj-fields s (p + 1) []
+
+  aj-fields : Text, Integer, List AccpField -> AccpObject
+  aj-fields (s) (at) (acc) =
+    let i = aj-ws s at
+    in if aj-is s i "}" then AccpObject { fields = acc, ok = True }
+    else if list-length acc >= 24 then AccpObject { fields = [], ok = False }
+    else let k = aj-string s i
+    in let key = aj-decode (substring s i (k.next - i))
+    in let start = aj-ws s (aj-ws s k.next + 1)
+    in let v = aj-value s start 1
+    in let z = aj-ws s v.next
+    in if aj-has acc key 0 then AccpObject { fields = [], ok = False }
+    else let next = list-push acc (AccpField { key = key, raw = substring s start (v.next - start) })
+    in if aj-is s z "}" then AccpObject { fields = next, ok = True }
+    else aj-fields s (z + 1) next
+
+  aj-has : List AccpField, Text, Integer -> Boolean
+  aj-has (fs) (key) (i) =
+    if i >= list-length fs then False
+    else if (list-at fs i).key == key then True else aj-has fs key (i + 1)
+
+  aj-get : AccpObject, Text -> Text
+  aj-get (o) (key) = aj-find o.fields key 0
+
+  aj-find : List AccpField, Text, Integer -> Text
+  aj-find (fs) (key) (i) =
+    if i >= list-length fs then ""
+    else let f = list-at fs i
+    in if f.key == key then f.raw else aj-find fs key (i + 1)
+
+  aj-text : AccpObject, Text -> Text
+  aj-text (o) (key) = aj-decode (aj-get o key)
+
+  aj-int : Text -> Integer
+  aj-int (s) =
+    if text-length s == 0 | text-length s > 9 | aj-digits s 0 /= text-length s then -1
+    else aj-int-loop s 0 0
+
+  aj-int-loop : Text, Integer, Integer -> Integer
+  aj-int-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else aj-int-loop s (i + 1) (acc * 10 + aj-at s i - char-code-at "0" 0)
+
+Section: Strings
+
+  aj-decode : Text -> Text
+  aj-decode (s) =
+    if text-length s < 2 | aj-is s 0 "\"" == False then ""
+    else aj-decode-loop s 1 1 []
+
+  aj-decode-loop : Text, Integer, Integer, List Text -> Text
+  aj-decode-loop (s) (i) (start) (parts) =
+    if i >= text-length s - 1 then text-concat-list (list-push parts (substring s start (i - start)))
+    else if aj-is s i "\\" then
+      let p = list-push parts (substring s start (i - start))
+      in let esc = aj-at s (i + 1)
+      in let u = if esc == char-code-at "u" 0 then aj-quad s (i + 2)
+        else if esc == char-code-at "n" 0 then 10
+        else if esc == char-code-at "r" 0 then 13
+        else if esc == char-code-at "t" 0 then 9
+        else if esc == char-code-at "b" 0 then 8
+        else if esc == char-code-at "f" 0 then 12
+        else to-unicode esc
+      in let pair = u >= 55296 & u <= 56319
+      in let cp = if pair then 65536 + (u - 55296) * 1024 + aj-quad s (i + 8) - 56320 else u
+      in let n = if pair then i + 12 else if esc == char-code-at "u" 0 then i + 6 else i + 2
+      in aj-decode-loop s n n (list-push p (char-encode (code-to-char (from-unicode cp))))
+    else aj-decode-loop s (i + 1) start parts
+
+  aj-quote : Text -> Text
+  aj-quote (s) = "\"" & aj-quote-loop s 0 0 [] & "\""
+
+  aj-quote-loop : Text, Integer, Integer, List Text -> Text
+  aj-quote-loop (s) (i) (start) (parts) =
+    if i >= text-length s then text-concat-list (list-push parts (substring s start (i - start)))
+    else let c = aj-at s i
+    in if c == char-code-at "\"" 0 | c == char-code-at "\\" 0 | c == char-code-at "\n" 0 then
+      let p = list-push parts (substring s start (i - start))
+      in let esc = if c == char-code-at "\n" 0 then "\\n" else "\\" & substring s i 1
+      in aj-quote-loop s (i + 1) (i + 1) (list-push p esc)
+    else aj-quote-loop s (i + 1) start parts
+
+Page 1

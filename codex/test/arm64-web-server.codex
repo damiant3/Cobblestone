@@ -54,27 +54,11 @@ Section: HTTP Route
 
 Section: Network Init
 
-  ws-find-or-fallback : Arm64PciScanResult, Maybe Arm64PciDevice -> Arm64PciDevice
-  ws-find-or-fallback (scan) (result) =
-    when result
-      is Just (d) -> d
-      is None -> list-at (scan.devices) 0
-
-  ws-find-virtio-net : Arm64PciScanResult -> Arm64PciDevice
+  ws-find-virtio-net : Arm64PciScanResult -> Maybe Arm64PciDevice
   ws-find-virtio-net (scan) =
     when arm64-pci-find-device scan #1AF4 #1041
-      is Just (d) -> d
-      is None -> ws-find-or-fallback scan (arm64-pci-find-device scan #1AF4 #1000)
-
-  ws-init-net : Integer -> Arm64NetIOState
-  ws-init-net (dummy) =
-    let scan = arm64-pci-scan-bus 0
-    in let dev = ws-find-virtio-net scan
-    in let enabled = arm64-pci-enable-device dev
-    in let vnet = virtio-net-init dev
-    in let sess = net-session-new ws-local-mac ws-local-ip ws-gateway-ip ws-port 0 ws-gateway-ip 1000
-    in let ts = transport-new sess
-    in Arm64NetIOState { vnet = vnet, transport = ts }
+      is Just (d) -> Just d
+      is None -> arm64-pci-find-device scan #1AF4 #1000
 
 Section: Serve Loop
 
@@ -160,11 +144,26 @@ Section: Serve Loop
 
 Section: Entry
 
-  opening : [Console] Integer = act
+  opening : [Console, Device.Mmio] Integer = act
     print-line-uni "Codex ARM64 web server starting..."
-    let scan = arm64-pci-scan-bus 0
-    in let dev = ws-find-virtio-net scan
-    in let bar4-check = ecam-read-32 (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 32
+    ws-start (arm64-pci-scan-bus 0)
+  end
+
+  ws-start : Arm64PciScanResult -> [Console, Device.Mmio] Integer
+  ws-start (scan) =
+    when ws-find-virtio-net scan
+      is Just (dev) -> ws-run scan dev
+      is None -> act
+        print-line-uni ("refused: no virtio-net device among " & show (scan.count) & " PCI functions")
+        ws-refused scan
+      end
+
+  ws-refused : Arm64PciScanResult -> Integer
+  ws-refused (scan) = 1
+
+  ws-run : Arm64PciScanResult, Arm64PciDevice -> [Console, Device.Mmio] Integer
+  ws-run (scan) (dev) = act
+    let bar4-check = ecam-read-32 (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 32
     in let bars = if bit-and bar4-check #FFFFFFF0 == 0 then arm64-pci-assign-bars dev arm64-pci-mmio-base else 0
     in let enabled = arm64-pci-enable-device dev
     in act

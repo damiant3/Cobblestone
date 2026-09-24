@@ -4,7 +4,8 @@ param(
     [string]$Compiler = '',
     [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
-    [string]$Ir
+    [string]$Ir,
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -66,7 +67,7 @@ Write-Host "[js-run] Listening on port $plugPort"
 # -- Phase 3: Boot plug CDX ------------------------------------------
 $stderrFile = [System.IO.Path]::GetTempFileName()
 $consoleFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB 3072
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB
 # Accept TCP connection from plug
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (-not $listener.Pending()) {

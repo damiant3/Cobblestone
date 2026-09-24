@@ -86,7 +86,7 @@ $candidates = @($all | Where-Object {
 
 function Get-ChapterName([string]$Path) {
     foreach ($l in [System.IO.File]::ReadAllLines($Path)) {
-        if ($l -match '^\s*Chapter:\s*(\S+)') { return $matches[1] }
+        if ($l -match '^\s*Chapter:\s*(.+?)\s*$') { return $matches[1] }
     }
     return ''
 }
@@ -129,7 +129,7 @@ if ($Only.Count -gt 0) {
         if ((Test-Path -PathType Leaf $fp) -and ($candidates.FullName -contains $fp)) { $subject += $fp }
     }
     if ($names.Count -gt 0) {
-        $pat = '^\s*cites\s+\w+\s+chapter\s+(' + (($names.Keys | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')\s*$'
+        $pat = '^\s*cites\s+\w+\s+chapter\s+(' + (($names.Keys | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')\s*(\(.*\))?\s*$'
         foreach ($u in $candidates) {
             if ($subject -contains $u.FullName) { continue }
             if (Select-String -Path $u.FullName -Pattern $pat -Quiet) { $subject += $u.FullName }

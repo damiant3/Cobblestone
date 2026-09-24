@@ -144,11 +144,17 @@ Section: Export and Import
     let fp = strip-prefix (list-at lines 1) "fingerprint: "
     in let priv-hex = strip-prefix (list-at lines 2) "private: "
     in let pub-hex = strip-prefix (list-at lines 3) "public: "
-    in Just (Keypair {
-      private-key = hex-decode priv-hex,
-      public-key = hex-decode pub-hex,
-      fingerprint = fp
-    })
+    in when hex-decode-checked priv-hex
+      is None -> None
+      is Just (priv) -> when hex-decode-checked pub-hex
+        is None -> None
+        is Just (pub) -> keypair-if-consistent priv pub fp
+
+  keypair-if-consistent : List Integer, List Integer, Text -> Maybe Keypair
+  keypair-if-consistent (priv) (pub) (fp) =
+    if ed25519-public-key priv /= pub then None
+    else if key-fingerprint pub /= fp then None
+    else Just (Keypair { private-key = priv, public-key = pub, fingerprint = fp })
 
   strip-prefix : Text, Text -> Text
   strip-prefix (s) (prefix) =

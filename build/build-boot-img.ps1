@@ -46,18 +46,11 @@ param(
     # than falling back, since a silent fallback is discovered at the machine
     # after a flash.
     [string]$Identity = '',
-    # The typeface written to the ESP root as CMUNSS.TTF. build-img.ps1 has
-    # taken -Font since the desk learned to read one, and THIS script never
-    # passed it, so every image it produced shipped without a typeface and
-    # every desk booting one fell back to the CBF bitmap face. The Monitor
-    # pane's `font` row says which won, and it said `CBF bitmap` truthfully
-    # rather than reporting a failure.
-    #
-    # Defaulted rather than opt-in: a shell with no typeface was nobody's
-    # choice, and the fallback exists for a stick built without one, not as
-    # the intended appearance. Pass '' to build the old way, which is what
-    # the fallback path's own arm needs.
+    # Fallback face stored as CMUNSS.TTF. An explicit -Font without -FontName
+    # selects the legacy single-font image; -Font '' selects bitmap fallback.
+    # Otherwise the image includes the open font pack, selected by -FontName.
     [string]$Font = 'fonts/cc0/cmunss.ttf',
+    [string]$FontName = 'inter',
     # GopBoot is an interactive poll loop that makes no heap progress, so the
     # watchdog has to be petted rather than inferred from progress. This is the
     # one compile-mode difference between the two payloads, and it follows the
@@ -66,6 +59,7 @@ param(
     [switch]$Pet,
     [switch]$Uefi
 )
+
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -177,10 +171,7 @@ if ((-not (Test-Path -PathType Leaf $SourceFile))) {
     }
 }
 
-# 32768 sectors (16 MB). The payload is now the PE plus a ~2.6 MB seed plus a
-# ~2.8 MB source, and build-img refuses a payload over 90 per cent of the
-# partition -- at the old 16384 it fitted with almost nothing to spare and
-# -Agent would not have fitted at all.
+# 65536 sectors (32 MiB) with the font pack; 32768 for legacy single-font images.
 $IdentityArgs = @()
 if ($Identity) {
     $IdentityArgs = @('-Identity', $Identity)
@@ -194,8 +185,16 @@ if ($Font) {
     if (-not (Test-Path -PathType Leaf $FontPath)) { Write-Host "FAIL: font $FontPath missing"; exit 1 }
     $FontArgs = @('-Font', $FontPath)
 }
+$FontPackArgs = @()
+$ImageSectors = 32768
+if (((-not $PSBoundParameters.ContainsKey('Font')) -or $PSBoundParameters.ContainsKey('FontName'))) {
+    . (Join-Path $Repo 'build/lib/font-pack.ps1')
+    $FontExtras = (New-FontImageExtras -Repo $Repo -OutDir (Join-Path $BuildOut 'font-pack') -FontName $FontName)
+    $FontPackArgs = @('-Extra', ($FontExtras -join ';'))
+    $ImageSectors = 65536
+}
 Write-Host '  Building GPT disk image...'
-& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\compiler') -TotalSectors 32768 @AgentArgs @IdentityArgs @FontArgs
+& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\compiler') -TotalSectors $ImageSectors @AgentArgs @IdentityArgs @FontArgs @FontPackArgs
 if (((-not ($LASTEXITCODE -eq 0)) -or (-not (Test-Path -PathType Leaf $ImgOut)))) {
     Write-Host 'FAIL: IMG build failed'
     exit 1

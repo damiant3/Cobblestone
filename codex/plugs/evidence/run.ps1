@@ -43,7 +43,8 @@ param(
     # The fact record's timestamp (seconds); the package itself carries none.
     # 0 means "now" from the host clock.
     [long]$Timestamp = 0,
-    [int]$TimeoutSec = 300
+    [int]$TimeoutSec = 300,
+    [int]$MemMB = 3072
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -118,7 +119,7 @@ $inputFile = [IO.Path]::GetTempFileName()
 # ---- run
 $outFile = [IO.Path]::GetTempFileName()
 $errFile = [IO.Path]::GetTempFileName()
-$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB $MemMB -TimeoutSec 300
 if (-not $vmOk) { [Console]::Error.WriteLine('FAIL: timeout'); exit 4 }
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
     $err = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
@@ -220,7 +221,7 @@ if ($FactImage) {
     $fin = [IO.Path]::GetTempFileName(); [IO.File]::WriteAllBytes($fin, $fbuf.ToArray())
     $fout = [IO.Path]::GetTempFileName(); $ferr = [IO.Path]::GetTempFileName()
     Set-ItemProperty $FactImage -Name IsReadOnly -Value $false
-    $fOk = Invoke-PlugVmFileSerial -Kernel $ingest -InputFile $fin -OutputFile $fout -StderrFile $ferr -MemMB 3072 -TimeoutSec $TimeoutSec -DiskFile (Resolve-Path $FactImage).Path
+    $fOk = Invoke-PlugVmFileSerial -Kernel $ingest -InputFile $fin -OutputFile $fout -StderrFile $ferr -MemMB $MemMB -TimeoutSec $TimeoutSec -DiskFile (Resolve-Path $FactImage).Path
     if (-not $fOk) { [Console]::Error.WriteLine('FAIL: ingest timeout'); exit 10 }
     $fres = @(if (Test-Path $fout) { Get-Content $fout | Where-Object { $_ -like 'FACT *' } | Select-Object -First 1 })
     foreach ($tmp in @($fin, $fout, $ferr)) { if (Test-Path $tmp) { [IO.File]::Delete($tmp) } }

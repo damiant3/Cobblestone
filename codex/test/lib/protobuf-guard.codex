@@ -1,0 +1,50 @@
+Chapter: Protobuf Guard
+  cites Foreword chapter Console
+  cites Encode chapter Protobuf
+
+Section: Helpers
+
+  dec-list : List Integer -> Text
+  dec-list (bs) = dl bs 0 (list-length bs) ""
+
+  dl : List Integer, Integer, Integer, Text -> Text
+  dl (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else " "
+    in dl bs (i + 1) n (acc & sep & show (list-at bs i))
+
+  arm-at : Text, List Integer, Integer -> Text
+  arm-at (name) (bs) (pos) =
+    let f = pb-decode-field bs pos
+    in name & " num=" & show (f.pbf-num) & " wire=" & show (f.pbf-wire) & " v=" & show (f.pbf-varint) & " bytes=" & dec-list (f.pbf-bytes) & " pos=" & show (f.pbf-pos) & " ok=" & show (f.pbf-ok)
+
+  arm : Text, List Integer -> Text
+  arm (name) (bs) = arm-at name bs 0
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("neg-wire " & dec-list (pb-encode-varint (0 - 1)))
+    print-line-uni (arm "rt-neg" (pb-encode-field-varint 1 (0 - 1)))
+    print-line-uni (arm "rt-min" (pb-encode-field-varint 1 -9223372036854775808))
+    print-line-uni (arm "rt-150" [8, 150, 1])
+    print-line-uni (arm "string" (pb-encode-field-string 2 "hé"))
+    print-line-uni ("string-text " & pb-bytes-to-text ((pb-decode-field (pb-encode-field-string 2 "hé") 0).pbf-bytes))
+    print-line-uni (arm "fixed64" [9, 1, 0, 0, 0, 0, 0, 0, 0])
+    print-line-uni (arm-at "after-fixed64" [9, 1, 0, 0, 0, 0, 0, 0, 0, 8, 150, 1] 9)
+    print-line-uni (arm "fixed32" [13, 1, 2, 3, 4])
+    print-line-uni (arm "fixed64-neg" [9, 255, 255, 255, 255, 255, 255, 255, 255])
+    print-line-uni (arm "max-field" (pb-encode-field-varint 536870911 7))
+    print-line-uni (arm "cut-varint" [8, 150])
+    print-line-uni (arm "len-overrun" [18, 5, 104, 105])
+    print-line-uni (arm "field-0" [0, 1])
+    print-line-uni (arm "cut-fixed32" [13, 1, 2])
+    print-line-uni (arm "cut-fixed64" [9, 1, 2, 3])
+    print-line-uni (arm "group-start" [11])
+    print-line-uni (arm "wire-7" [15, 0])
+    print-line-uni (arm "long-varint" [8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1])
+    print-line-uni (arm "tenth-byte-2" [8, 128, 128, 128, 128, 128, 128, 128, 128, 128, 2])
+    print-line-uni (arm "field-too-big" [128, 128, 128, 128, 16, 1])
+    print-line-uni (arm "neg-length" [18, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1, 7])
+    print-line-uni (arm "empty" [])
+  end

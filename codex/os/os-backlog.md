@@ -174,4 +174,3 @@ The block syscalls are NOT the difference: all four (10 read, 11 write,
 12 count, 13 select) go through the same `emit-block-elev-gate`, verified at
 head. The test stays under its `.skip` and its `.expected` records the
 post-fix trail. Unowned; blu's neighborhood.
-

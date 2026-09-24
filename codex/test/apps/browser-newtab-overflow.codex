@@ -4,11 +4,12 @@ Chapter: BrowserNewtabOverflowTest
   cites Browser chapter Display
   cites UI chapter Widget
   cites UI chapter Layout
+  cites Works chapter GopComposite
   cites Foreword chapter Maybe
   cites Foreword chapter Console
 
- WORKS-41 asks where the newtab page's content goes when the box it is given
- is shorter than the content. The question is decidable without a screen, a
+ Where the newtab page's content goes when the box it is given is shorter
+ than the content, and whether a reader can scroll to it. The question is decidable without a screen, a
  face or a pointer: it is `widget-layout` over the tree `browser-render`
  builds.
 
@@ -115,6 +116,30 @@ Section: Body
         end
       is Just (vp) -> bn-report w h vp
 
+ THE OVERFLOW IS REACHABLE, and this row is what says so. It scrolls the 400
+ row to its end the way the desk does, `browser-scroll-page` from a key and
+ `browser-scroll-fit` on the repaint that follows, and moves the page's
+ children by the offset exactly as `gbr-paint` does. Before the scroll five
+ nodes sit past the box; after it none may. An offset of zero here would mean
+ the scroll never engaged, and the row would pass for the wrong reason, so
+ the offset is printed beside the count.
+
+  bn-scrolled : Integer, Integer -> Text
+  bn-scrolled (w) (h) =
+    let st = browser-init w h browser-theme-default display-init-text-fallback
+    in let fit0 = browser-scroll-fit st w h
+    in let moved = browser-scroll-page fit0 100
+    in let fit = browser-scroll-fit moved w h
+    in let off = browser-scroll-offset fit
+    in let laid = widget-layout (browser-render fit) (fit.bs-theme) (layout-rect 0 0 w h)
+    in when browser-laid-viewport laid
+      is None -> "scrolled " & integer-to-text w & "x" & integer-to-text h & ": NO VIEWPORT"
+      is Just (vp) ->
+        let mv = comp-translate-kids (vp.wn-children) 0 (0 - off) 0
+        in "scrolled to the end at " & integer-to-text w & "x" & integer-to-text h
+           & ": offset " & integer-to-text off
+           & "  nodes past the box bottom: " & integer-to-text (bn-past-kids (vp.wn-children) (vp.wn-child-count) 0 h 0)
+
 Section: Opening
 
   opening : [Console] Nothing = act
@@ -122,4 +147,5 @@ Section: Opening
     bn-case 1024 400
     bn-case 1024 1600
     print-line-uni "the 1600 row is the control and must report zero"
+    print-line-uni (bn-scrolled 1024 400)
   end

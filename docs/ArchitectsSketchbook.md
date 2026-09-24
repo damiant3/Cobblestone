@@ -1361,22 +1361,25 @@ So the June 4 was a different measurement, not a better compiler; the C#
 replace them. The last
 column is Codex TRANSPILED through the zig plug (`codex/plugs/zig`, run as
 it is graded, `-Passes text-plug`) and built by the same zig at
-`-O ReleaseFast`, with the measured function `export`ed the way the
-hand-written files are; `bench/transpile-zig.ps1`. Full optimization
+`-O ReleaseSafe`, with the measured function `export`ed the way the
+hand-written files are; `bench/transpile-zig.ps1`, measured 2026-09-23 on
+seed `E4ACB3E19B245D1F`. ReleaseSafe because emitted Codex traps on Integer
+overflow through zig's safety checks, and the emitted file refuses
+ReleaseFast and ReleaseSmall at comptime. Full optimization
 history and per-CL breakdown:
 `docs/Designs/Done/Compiler/CodegenAnalysis.md`.
 
-| Bench    | Codex | C /Od | C /O2 | C# JIT | F# JIT | Zig Debug | Zig ReleaseFast | Codex via zig plug |
-|----------|------:|------:|------:|-------:|-------:|----------:|----------------:|-------------------:|
-| fib      | 22    | 19    | 20    | 21     | 21     | 53        | 23              | 22                 |
-| fact     | 13    | 16    | 15    | 16     | 16     | 42        | 58              | 58                 |
-| gcd      | 10    | 18    | 14    | 9      | 9      | 44        | 18              | 28                 |
-| sum      | 7     | 20    | 23    | 10     | 11     | 44        | 15              | 17                 |
-| ack      | 23    | 28    | 21    | 29     | 20     | 85        | 25              | 25                 |
-| tak      | 37    | 35    | 39    | 45     | 37     | 69        | 42              | 42                 |
-| collatz  | 18    | 28    | 18    | 16     | 16     | 63        | 17              | 17                 |
-| locals   | 18    | 47    | 73    | 20     | 20     | 132       | 35              | 33                 |
-| regright | 14    | 16    | 16    | 18     | 18     | 50        | 21              | 21                 |
+| Bench    | Codex | C /Od | C /O2 | C# JIT | F# JIT | Zig Debug | Zig ReleaseFast | Codex via zig plug (ReleaseSafe) |
+|----------|------:|------:|------:|-------:|-------:|----------:|----------------:|---------------------------------:|
+| fib      | 22    | 19    | 20    | 21     | 21     | 53        | 23              | 27                               |
+| fact     | 13    | 16    | 15    | 16     | 16     | 42        | 58              | 19                               |
+| gcd      | 10    | 18    | 14    | 9      | 9      | 44        | 18              | 40                               |
+| sum      | 7     | 20    | 23    | 10     | 11     | 44        | 15              | 19                               |
+| ack      | 23    | 28    | 21    | 29     | 20     | 85        | 25              | 35                               |
+| tak      | 37    | 35    | 39    | 45     | 37     | 69        | 42              | 47                               |
+| collatz  | 18    | 28    | 18    | 16     | 16     | 63        | 17              | 34                               |
+| locals   | 18    | 47    | 73    | 20     | 20     | 132       | 35              | 43                               |
+| regright | 14    | 16    | 16    | 18     | 18     | 50        | 21              | 24                               |
 
 **What a JIT count is, because the small ones read as if something must be
 hidden.** The RyuJIT listing is the native x86-64 the runtime emitted and
@@ -1396,15 +1399,17 @@ the JIT by a lot (locals 73 against 20) it is loop unrolling: more
 instructions, not slower ones. So read the columns as static code size for
 the same algorithm, which is what they measure, and nothing more.
 
-**Whether the zig plug produces hand-built quality: on the same LLVM at
-ReleaseFast it does, on seven of nine.** fib 22 against 23, fact 58/58, ack
-25/25, tak 42/42, collatz 17/17, regright 21/21, locals 33 against 35 (two
-ahead); sum is two behind (17 against 15: the Codex `sum-to` is an
-accumulator, not a for loop) and gcd ten behind (28 against 18: `my-gcd`
-goes through the Codex `math-mod` def, which the plug emits as a call the
-hand-written `@rem` does not make). Debug builds of the transpiled zig are
-larger than the hand-written ones (every value is `i64` and every helper is
-a call), which is the plug's shape, not a defect.
+**The zig-plug column and the hand-written ReleaseFast column are different
+programs.** The plug's code carries Codex's overflow traps (ReleaseSafe);
+the hand-written code has none, so the difference between them is the
+language's checks plus the plug's shape, not the plug's shape alone. fact is
+smaller (19 against 58) because LLVM does not unroll the checked recursion;
+gcd is the widest gap (40 against 18) because `my-gcd` goes through the
+Codex `math-mod` def, which the plug emits as a call the hand-written `@rem`
+does not make, and collatz doubles (34 against 17) on its checked
+arithmetic. Debug builds of the transpiled zig are larger than the
+hand-written ones (every value is `i64` and every helper is a call), which
+is the plug's shape, not a defect.
 
 `collatz` is 18 since the bounded-division fix (it was 13 before it, and
 this table said 13 with a re-measure warning until 2026-08-17). Its `n` is

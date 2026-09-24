@@ -191,6 +191,11 @@ function Build-TranspilerPlug {
         # (PlugManifest for the boot grant), so a second native lane picks
         # up the same derivation instead of a copy.
         [string[]]$CommonChapters = @(),
+        # Compiler chapters under codex/compiler bundled after the IR
+        # declarations, for a plug that runs a compiler analysis over its own
+        # IRDefs (the zig plug takes IR\ConstShare, COMPILER-86 stage 3). Each
+        # must cite nothing outside the declaration chapters above.
+        [string[]]$CompilerChapters = @(),
         [int]$Decks = 0
     )
     $outDir    = Join-Path $PlugDir 'build-output'
@@ -230,6 +235,9 @@ function Build-TranspilerPlug {
                            'codex\compiler\IR\LirTargets.codex')) {
             Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir')
         }
+    }
+    foreach ($cc in $CompilerChapters) {
+        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo "codex\compiler\$cc.codex") -Quire $plugQuire
     }
     Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\PlugTypes.codex') -Quire $plugQuire
     Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\plugs\common\IRTextParser.codex') -Quire $plugQuire

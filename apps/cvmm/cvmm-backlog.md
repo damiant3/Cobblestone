@@ -15,3 +15,4 @@ Design: `apps/cvmm/design/Active/`.
 | # | Capability | State of the gap |
 |---|---|---|
 | CVMM-1 | **Phase 2: the managers serve real state** | Every manager currently serves *mock* state. |
+| CVMM-2 | **`CvmmPersist` does not compile, and nothing cites it** | Measured 2026-09-24 with `build/compile.ps1 -Kernel seed\Codex.cdx` on seed DB67D635: five errors in its own body, CDX2006 (a record literal missing `gl-id`, `hp-material-count`, `mat-id`) at lines 612, 705 and 722, and CDX2001 (Integer vs Text) at 680 and 724. No chapter cites it, so no entry chapter compiles it and no gate has seen it (L-NOGATE); it is the only chapter that cites `Budget`, `Garden` and `TodoList`, which are therefore compiled by nothing either. |

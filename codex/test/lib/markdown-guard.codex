@@ -1,0 +1,94 @@
+Chapter: Markdown Guard
+  cites Foreword chapter Console
+  cites Foreword chapter StringUtils
+  cites UI chapter Markdown
+  cites UI chapter RichText
+
+Section: Helpers
+
+  rep : Text, Integer, Integer, Text -> Text
+  rep (s) (i) (n) (acc) =
+    if i >= n then acc
+    else rep s (i + 1) n (acc & s)
+
+  cost : Text -> Integer
+  cost (src) =
+    let b = __heap-save
+    in let d = ui-md-parse src
+    in let a = __heap-save
+    in (a - b) + d.md-block-count - d.md-block-count
+
+  scaling : Text, Text, Text, Text, Integer -> Text
+  scaling (name) (pre) (piece) (post) (k) =
+    let small = cost (pre & rep piece 0 k "" & post)
+    in let large = cost (pre & rep piece 0 (4 * k) "" & post)
+    in if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
+  run-tag : TextRun -> Text
+  run-tag (r) =
+    if text-length (r.tr-link) > 0 then "l(" & r.tr-text & ">" & r.tr-link & ")"
+    else if r.tr-style.ts-bold then "b(" & r.tr-text & ")"
+    else if r.tr-style.ts-italic then "i(" & r.tr-text & ")"
+    else if r.tr-style.ts-color > 0 then "c(" & r.tr-text & ")"
+    else "p(" & r.tr-text & ")"
+
+  runs-text : List TextRun, Integer, Integer, Text -> Text
+  runs-text (rs) (i) (n) (acc) =
+    if i >= n then acc
+    else runs-text rs (i + 1) n (acc & run-tag (list-at rs i))
+
+  rt-text : RichText -> Text
+  rt-text (rt) = runs-text (rt.rt-runs) 0 (rt.rt-run-count) ""
+
+  show-block : UiMdBlock -> Text
+  show-block (b) = when b
+    is UiMdParagraph (rt) -> "para " & rt-text rt
+    is UiMdHeading (level) (rt) -> "h" & show level & " " & rt-text rt
+    is UiMdCodeBlock (lang) (content) -> "code(" & lang & ")[" & content & "]"
+    is UiMdBlockquote (rt) -> "quote " & rt-text rt
+    is UiMdListItem (rt) -> "li " & rt-text rt
+    is UiMdOrderedItem (num) (rt) -> "ol " & show num & " " & rt-text rt
+    is UiMdHRule -> "hr"
+    is UiMdBlank -> "blank"
+
+  blocks-text : List UiMdBlock, Integer, Integer, Text -> Text
+  blocks-text (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else " | "
+    in blocks-text bs (i + 1) n (acc & sep & show-block (list-at bs i))
+
+  arm : Text, Text -> Text
+  arm (name) (src) =
+    let d = ui-md-parse src
+    in name & ": " & blocks-text (d.md-blocks) 0 (d.md-block-count) ""
+
+  count-arm : Text, Text -> Text
+  count-arm (name) (src) = name & " blocks=" & show (ui-md-parse src).md-block-count
+
+  runs-arm : Text, Text -> Text
+  runs-arm (name) (src) = name & " runs=" & show (md-parse-inline src).rt-run-count
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (arm "inline" "a **b** *c* `d` [e](f) g")
+    print-line-uni (arm "unclosed" "x **y *z `w [v](u")
+    print-line-uni (arm "brackets" "[[[x](y) [p")
+    print-line-uni (arm "blocks" "# h1\n###### h6\n> q\n- l\n* m\n---\n\nplain")
+    print-line-uni (arm "ordered" "1. a\n17. b\n123456789. c")
+    print-line-uni (arm "ordered-10" "1234567890. d")
+    print-line-uni (arm "ordered-21" "123456789012345678901. e")
+    print-line-uni (arm "code" "```py\nx = 1\ny\n```\nafter")
+    print-line-uni (arm "code-blank" "```\n\nz\n```")
+    print-line-uni (arm "code-open" "```\nleft open")
+    print-line-uni (scaling "plain-line" "" "abcd" "" 64)
+    print-line-uni (scaling "bracket-line" "" "[" "" 64)
+    print-line-uni (scaling "bracket-link-line" "" "[" "](x" 64)
+    print-line-uni (scaling "code-runs" "" "`a` " "" 64)
+    print-line-uni (scaling "code-block" "```\n" "abcdefgh\n" "```" 256)
+    print-line-uni (scaling "many-lines" "" "a\n" "" 256)
+    print-line-uni (count-arm "deep-lines" (rep "a\n" 0 200000 ""))
+    print-line-uni (runs-arm "deep-runs" (rep "`a`" 0 400000 ""))
+    print-line-uni (runs-arm "link-scan" (rep "[" 0 200000 "" & "](x"))
+  end

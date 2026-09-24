@@ -486,12 +486,17 @@ Section: Node Drawing
  The BITMAP path is unchanged. Its cell really is `comp-cell-w` wide, so
  `comp-cols` and `comp-fit` are correct for it and wrong only for the face.
 
-  comp-text : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, LayoutRect, Text, Integer, Integer -> Integer
-  comp-text (base) (stride) (rows) (clip) (font) (tf) (c) (t) (fg) (s) =
+  comp-text-top : GopFont, LayoutRect, Integer -> Integer
+  comp-text-top (tf) (c) (s) =
     let gh = if tf.gf-ok then tf.gf-gh else comp-glyph-h * s
     in let dy = if tf.gf-ok then (c.lr-h - tf.gf-cap) / 2 - (tf.gf-asc - tf.gf-cap)
       else if c.lr-h > gh then (c.lr-h - gh) / 2 else 0
-    in let ty = c.lr-y + dy
+    in c.lr-y + dy
+
+  comp-text : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, LayoutRect, Text, Integer, Integer -> Integer
+  comp-text (base) (stride) (rows) (clip) (font) (tf) (c) (t) (fg) (s) =
+    let gh = if tf.gf-ok then tf.gf-gh else comp-glyph-h * s
+    in let ty = comp-text-top tf c s
     in if ty < clip.lr-y then 0
     else if ty + gh > clip.lr-y + clip.lr-h then 0
     else if c.lr-x < clip.lr-x then 0
@@ -641,7 +646,7 @@ Section: Node Drawing
 
   comp-custom : Integer, Integer, Integer, LayoutRect, LayoutRect, LayoutRect, WidgetStyle, Text, Integer, Integer -> Integer
   comp-custom (base) (stride) (rows) (clip) (b) (c) (st) (tag) (fg) (s) =
-    if tag == wk-scroll-view-tag | tag == wk-spacer-tag then 0
+    if tag == wk-spacer-tag then 0
     else if tag == "event-dot"
     then comp-fill base stride rows clip (c.lr-x + c.lr-w / 2 - 3 * s) (c.lr-y + c.lr-h / 2 - 3 * s) (6 * s) (6 * s) fg
     else if tag == "status-dot" then comp-dot base stride rows clip (comp-mul-rect b s) fg (st.ws-bg) False
@@ -660,14 +665,54 @@ Section: Node Drawing
   comp-fg : Theme, WidgetNode, WidgetStyle -> Integer
   comp-fg (th) (node) (st) = theme-tone-fg th (node.wn-tone) (st.ws-fg)
 
+ A focus the resolved slot does not show, because a stronger state won it,
+ is a ring one device pixel per scale step wide on the border box, in the
+ palette's accent.
+
+  comp-focus-ring : Integer, Integer, Integer, LayoutRect, WidgetNode, Theme, Integer -> Integer
+  comp-focus-ring (base) (stride) (rows) (clip) (node) (th) (s) =
+    if flag-has (widget-flags node) flag-focused == False then 0
+    else if widget-state-of node == state-focused then 0
+    else let r = comp-mul-rect (comp-border-box (node.wn-bounds) (widget-resolve-style node th)) s
+    in let c = (th.th-palette).pal-accent
+    in let t = comp-fill base stride rows clip (r.lr-x) (r.lr-y) (r.lr-w) s c
+    in let b = comp-fill base stride rows clip (r.lr-x) (r.lr-y + r.lr-h - s) (r.lr-w) s c
+    in let l = comp-fill base stride rows clip (r.lr-x) (r.lr-y) s (r.lr-h) c
+    in comp-fill base stride rows clip (r.lr-x + r.lr-w - s) (r.lr-y) s (r.lr-h) c
+
   comp-draw-node : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer -> Integer
   comp-draw-node (base) (stride) (rows) (clip) (font) (tf) (node) (th) (s) =
+    let d = comp-draw-kind base stride rows clip font tf node th s
+    in let f = comp-focus-ring base stride rows clip node th s
+    in comp-state-marks base stride rows clip node th s
+
+ The three states no `StateStyles` slot shows, each in its own place on the
+ border box so that any combination reads: invalid is an edge two scale
+ steps high along the bottom in the palette's error colour, checked a square
+ of four in the top right corner in the style's own foreground (a button's
+ fill can be the primary, and the mark then vanished), busy a bar one step
+ high along the left third of the top in the warning colour.
+
+  comp-state-marks : Integer, Integer, Integer, LayoutRect, WidgetNode, Theme, Integer -> Integer
+  comp-state-marks (base) (stride) (rows) (clip) (node) (th) (s) =
+    let flags = widget-flags node
+    in if bit-and flags (flag-checked + flag-invalid + flag-busy) == 0 then 0
+    else let st = widget-resolve-style node th
+    in let r = comp-mul-rect (comp-border-box (node.wn-bounds) st) s
+    in let pal = th.th-palette
+    in let e = if flag-has flags flag-invalid then comp-fill base stride rows clip (r.lr-x) (r.lr-y + r.lr-h - 2 * s) (r.lr-w) (2 * s) (pal.pal-error) else 0
+    in let c = if flag-has flags flag-checked then comp-fill base stride rows clip (r.lr-x + r.lr-w - 6 * s) (r.lr-y + 2 * s) (4 * s) (4 * s) (st.ws-fg) else 0
+    in if flag-has flags flag-busy then comp-fill base stride rows clip (r.lr-x) (r.lr-y) (r.lr-w / 3) s (pal.pal-warning) else 0
+
+  comp-draw-kind : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer -> Integer
+  comp-draw-kind (base) (stride) (rows) (clip) (font) (tf) (node) (th) (s) =
     let st = widget-resolve-style node th
     in let b = node.wn-bounds
     in let c = comp-mul-rect (box-content-from-style b st) s
     in let fg = comp-fg th node st
     in when node.wn-kind
       is WkPanel -> comp-box base stride rows clip b st (st.ws-bg) s
+      is WkStack -> 0
       is WkSeparator -> comp-box base stride rows clip b st (st.ws-fg) s
       is WkLabel (t) -> comp-text base stride rows clip font tf c t fg s
       is WkButton (t) ->
@@ -719,12 +764,17 @@ Section: Tree Walk
  The clip does not narrow as the walk descends. A child painting outside its
  own parent is the defect this bounds, and narrowing per node would hide it
  rather than surface it: the tree still lays out wrong and the goldens would
- stop being able to say so. The bound is the box the render was given, once.
+ stop being able to say so. The bound is the box the render was given, once,
+ narrowed only at a scroll viewport, whose children lie outside it by design.
+
+  comp-kids-clip : WidgetNode, LayoutRect, Integer -> LayoutRect
+  comp-kids-clip (node) (clip) (s) =
+    if widget-is-scroll-view node then comp-clip clip (comp-mul-rect (node.wn-bounds) s) else clip
 
   comp-walk : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer -> Integer
   comp-walk (base) (stride) (rows) (clip) (font) (tf) (node) (th) (s) =
     let d = comp-draw-node base stride rows clip font tf node th s
-    in comp-walk-kids base stride rows clip font tf (node.wn-children) th 0 s
+    in comp-walk-kids base stride rows (comp-kids-clip node clip s) font tf (node.wn-children) th 0 s
 
   comp-walk-kids : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, List WidgetNode, Theme, Integer, Integer -> Integer
   comp-walk-kids (base) (stride) (rows) (clip) (font) (tf) (kids) (th) (i) (s) =
@@ -740,7 +790,7 @@ Section: Tree Walk
   comp-walk-except (base) (stride) (rows) (clip) (font) (tf) (node) (th) (s) (skip) =
     if node.wn-id == skip then 0
     else let d = comp-draw-node base stride rows clip font tf node th s
-    in comp-walk-except-kids base stride rows clip font tf (node.wn-children) th 0 s skip
+    in comp-walk-except-kids base stride rows (comp-kids-clip node clip s) font tf (node.wn-children) th 0 s skip
 
   comp-walk-except-kids : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, List WidgetNode, Theme, Integer, Integer, Text -> Integer
   comp-walk-except-kids (base) (stride) (rows) (clip) (font) (tf) (kids) (th) (i) (s) (skip) =
@@ -786,7 +836,7 @@ Section: Render
  lands in the same field as the eight pixel cell `widget-label` guessed. The
  taskbar carries the pinned case: the clock label is pinned to 220 over an
  EMPTY string, which a face-measured width would collapse to nothing. So a
- cell is replaced only while it still holds the guess.
+ cell is replaced only while `wn-fit-w` says it is still the guess.
 
  A pin is not a floor and must not be made one. Taking the LARGER of the pin
  and the measurement would keep the clock's 220 and would also keep every
@@ -802,16 +852,11 @@ Section: Render
  have added slack. It was removed rather than raised, so the fit answers on
  one path and the constructor's own guess on the other.
 
-  comp-fit-guess : WidgetNode, Integer -> Boolean
-  comp-fit-guess (n) (want) = n.wn-min-w == want
-
   comp-fit-node : WidgetNode, GopFont, Integer -> WidgetNode
   comp-fit-node (n) (tf) (s) =
     let fitted = when n.wn-kind
-      is WkLabel (t) -> if comp-fit-guess n (text-length t * 8)
-        then widget-set-min n (comp-fit-w tf s t) (n.wn-min-h) else n
-      is WkButton (t) -> if comp-fit-guess n (text-length t * 8 + 16)
-        then widget-set-min n (comp-fit-w tf s t + 16) (n.wn-min-h) else n
+      is WkLabel (t) -> if n.wn-fit-w then widget-fit-min-w n (comp-fit-w tf s t) else n
+      is WkButton (t) -> if n.wn-fit-w then widget-fit-min-w n (comp-fit-w tf s t + 16) else n
       is otherwise -> n
     in if fitted.wn-child-count == 0 then fitted
     else widget-set-children fitted (comp-fit-kids (fitted.wn-children) tf s 0 (fitted.wn-child-count) [])

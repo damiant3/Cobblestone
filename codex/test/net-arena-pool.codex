@@ -1,0 +1,77 @@
+Chapter: NetArenaPool
+  cites Net chapter NetCompact
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Foreword chapter Console
+
+Section: Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  fresh : Integer -> TcpTransportState
+  fresh (port) = transport-new-with-cap (net-session-new srv-mac srv-ip gw-ip port 0 cli-ip 5000) 64
+
+  my-head : Integer -> Integer
+  my-head (x) = peek-qword (nc-pool-cell process-get-pid) 0
+
+Section: Children
+
+  child-leave : Integer -> Integer
+  child-leave (x) =
+    let a = transport-arenas (fresh 81)
+    in let r = transport-release a
+    in if my-head x == a.arena-base & a.arena-base /= 0 then 1 else 0
+
+  child-look : Integer -> Integer
+  child-look (x) = if my-head x == 0 then 1 else 0
+
+Section: Entry
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  bit : Boolean, Integer -> Integer
+  bit (b) (w) = if b then w else 0
+
+  reuse : Integer -> [Concurrent] Integer
+  reuse (x) = act
+    p1 <- process-spawn (\y -> child-leave y)
+    let w1 = process-wait p1
+    in let left = peek-qword (nc-pool-cell p1) 0
+    in act
+      p2 <- process-spawn (\y -> child-look y)
+      let w2 = process-wait p2
+      in bit (w1 == 1 & left /= 0) 1 + bit (p2 == p1) 2 + bit (w2 == 1) 4
+    end
+  end
+
+  opening : [Console, Concurrent] Nothing = act
+    let empty0 = my-head 0 == 0
+    in let a = transport-arenas (fresh 80)
+    in let b = transport-arenas (fresh 81)
+    in let r1 = transport-release a
+    in let head1 = my-head 0
+    in let r2 = transport-release a
+    in let head2 = my-head 0
+    in let c = transport-arenas (fresh 82)
+    in let head3 = my-head 0
+    in act
+      print-line-uni ("proc 0 starts with an empty pool: " & yn empty0)
+      print-line-uni ("two live transports hold distinct sets: " & yn (a.arena-base /= 0 & b.arena-base /= 0 & a.arena-base /= b.arena-base))
+      print-line-uni ("a released set heads the pool: " & yn (head1 == a.arena-base))
+      print-line-uni ("the released state is off the arenas: " & yn (r1.arena-base == 0))
+      print-line-uni ("the owner's old state is stale: " & yn (transport-stale a))
+      print-line-uni ("a second release changes nothing: " & yn (head2 == head1 & r2.arena-base == a.arena-base))
+      print-line-uni ("the next acquire takes the released set: " & yn (c.arena-base == a.arena-base & head3 == 0))
+      print-line-uni ("its generation is above the old owner's: " & yn (c.gen > a.gen & transport-stale c == False))
+      print-line-uni ("the other set is untouched: " & yn (transport-stale b == False))
+      t <- reuse 0
+      print-line-uni ("the first child left a set in its pool: " & yn (bit-and t 1 /= 0))
+      print-line-uni ("the second child reused the slot: " & yn (bit-and t 2 /= 0))
+      print-line-uni ("the second child started with an empty pool: " & yn (bit-and t 4 /= 0))
+    end
+  end
+
+Page 1

@@ -1,0 +1,68 @@
+Chapter: AccpPlot
+  cites Accp chapter AccpResults
+
+Section: SVG Export
+
+  ExperimentPlot = | PlotSvg (Text) | PlotError (Text)
+  PlotRange = record { low : Real, high : Real }
+
+  ex-range : List Real, Integer, Real, Real -> PlotRange
+  ex-range (xs) (i) (lo) (hi) =
+    if i >= list-length xs then
+      if hi > lo then PlotRange { low = lo, high = hi }
+      else let pad = real-max 1.0 (real-abs lo * 0.05)
+      in PlotRange { low = lo - pad, high = hi + pad }
+    else ex-range xs (i + 1) (real-min lo (list-at xs i)) (real-max hi (list-at xs i))
+
+  ex-component : List (List Real), Integer, Integer, List Real -> List Real
+  ex-component (rows) (component) (i) (acc) =
+    if i >= list-length rows then acc
+    else ex-component rows component (i + 1) (list-push acc (list-at (list-at rows i) component))
+
+  ex-coordinate : Real, PlotRange, Real, Real -> Real
+  ex-coordinate (v) (r) (start) (span) =
+    let width = r.high - r.low
+    in let ratio = if math-finite width then (v - r.low) / width else (v * 0.5 - r.low * 0.5) / (r.high * 0.5 - r.low * 0.5)
+    in start + span * ratio
+
+  ex-points : List Real, List Real, PlotRange, PlotRange, Integer, List Text -> Text
+  ex-points (xs) (ys) (xr) (yr) (i) (parts) =
+    if i >= list-length xs then text-concat-list parts
+    else ex-points xs ys xr yr (i + 1) (list-push parts ((if i == 0 then "" else " ") & show (ex-coordinate (list-at xs i) xr 90.0 670.0) & "," & show (ex-coordinate (list-at ys i) yr 390.0 (-320.0))))
+
+  ex-xml : Text -> Text
+  ex-xml (s) = ex-escape s 0 True []
+
+  ex-tick : Real -> Text
+  ex-tick (v) =
+    if v <= 0.0 & v >= 0.0 then "0"
+    else if real-abs v >= 0.001 & real-abs v < 10000.0 then show (real-from-int (real-to-int (v * 1000.0)) / 1000.0)
+    else (if v < 0.0 then "-" else "") & ex-tick-scale (real-abs v) 0 400
+
+  ex-tick-scale : Real, Integer, Integer -> Text
+  ex-tick-scale (v) (power) (fuel) =
+    if fuel <= 0 then "unrepresentable"
+    else if v >= 10.0 then ex-tick-scale (v / 10.0) (power + 1) (fuel - 1)
+    else if v < 1.0 then ex-tick-scale (v * 10.0) (power - 1) (fuel - 1)
+    else show (real-from-int (real-to-int (v * 1000.0)) / 1000.0) & "e" & show power
+
+  experiment-svg : ExperimentResult, Integer -> ExperimentPlot
+  experiment-svg (result) (component) = when result
+    is ExperimentError (why) (meta) -> PlotError why
+    is ExperimentValue (data) (meta) ->
+      if ex-metadata-error meta /= "" | ex-data-valid data (list-length meta.units) == False then PlotError "invalid experiment data"
+      else if component < 0 | component >= list-length meta.units then PlotError "plot component is out of range"
+      else if list-length data.coordinates == 0 then PlotError "plot requires sampled data"
+      else let xs = data.coordinates
+      in let ys = ex-component data.samples component 0 []
+      in let xr = ex-range xs 1 (list-at xs 0) (list-at xs 0)
+      in let yr = ex-range ys 1 (list-at ys 0) (list-at ys 0)
+      in if math-finite xr.low == False | math-finite xr.high == False | math-finite yr.low == False | math-finite yr.high == False | xr.high <= xr.low | yr.high <= yr.low then PlotError "plot range cannot be represented"
+      else let points = ex-points xs ys xr yr 0 []
+      in let title = ex-xml (list-at meta.labels component & " - " & meta.convergence)
+      in let label = ex-xml (list-at meta.labels component & " (" & list-at meta.units component & ")")
+      in PlotSvg ("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"800\" height=\"480\" viewBox=\"0 0 800 480\" role=\"img\"><title>" & title & "</title><rect width=\"800\" height=\"480\" fill=\"#f8fafc\"/><g font-family=\"sans-serif\" font-size=\"14\" fill=\"#172033\"><text x=\"90\" y=\"28\" font-size=\"20\">" & title & "</text><text x=\"90\" y=\"51\">" & label & "</text><path d=\"M90 70V390H760\" fill=\"none\" stroke=\"#64748b\"/><polyline points=\"" & points & "\" fill=\"none\" stroke=\"#2563eb\" stroke-width=\"2\"/>"
+        & (if list-length xs == 1 then "<circle cx=\"" & show (ex-coordinate (list-at xs 0) xr 90.0 670.0) & "\" cy=\"" & show (ex-coordinate (list-at ys 0) yr 390.0 (-320.0)) & "\" r=\"3\" fill=\"#2563eb\"/>" else "")
+        & "<text x=\"90\" y=\"413\">" & ex-tick xr.low & "</text><text x=\"760\" y=\"413\" text-anchor=\"end\">" & ex-tick xr.high & "</text><text x=\"80\" y=\"76\" text-anchor=\"end\">" & ex-tick yr.high & "</text><text x=\"80\" y=\"390\" text-anchor=\"end\">" & ex-tick yr.low & "</text><text x=\"425\" y=\"449\" text-anchor=\"middle\">" & ex-xml (meta.axis & " (" & meta.axis-unit & ")") & "</text><text x=\"90\" y=\"473\" font-size=\"11\">" & ex-xml meta.method & "</text></g></svg>")
+
+Page 1

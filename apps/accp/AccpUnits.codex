@@ -1,0 +1,107 @@
+Chapter: AccpUnits
+  cites Accp chapter AccpMath
+
+Section: Quantities
+
+  Quantity = record { magnitude : Real, dimensions : List Integer }
+  QuantityResult = | QuantityValue (Quantity) | QuantityError (Text)
+
+  quantity-dims-valid : List Integer, Integer -> Boolean
+  quantity-dims-valid (ds) (i) =
+    if list-length ds /= 7 then False
+    else if i >= 7 then True
+    else let d = list-at ds i
+    in d >= -16 & d <= 16 & quantity-dims-valid ds (i + 1)
+
+  quantity-made : Real, List Integer -> QuantityResult
+  quantity-made (v) (ds) =
+    if math-finite v == False then QuantityError "non-finite quantity"
+    else if quantity-dims-valid ds 0 == False then QuantityError "dimension exponent outside [-16,16]"
+    else QuantityValue (Quantity { magnitude = v, dimensions = ds })
+
+  quantity-unit : Text -> QuantityResult
+  quantity-unit (u) =
+    if u == "1" then quantity-made 1.0 [0,0,0,0,0,0,0]
+    else if u == "rad" then quantity-made 1.0 [0,0,0,0,0,0,0]
+    else if u == "deg" then quantity-made (math-pi / 180.0) [0,0,0,0,0,0,0]
+    else if u == "m" then quantity-made 1.0 [1,0,0,0,0,0,0]
+    else if u == "cm" then quantity-made 0.01 [1,0,0,0,0,0,0]
+    else if u == "mm" then quantity-made 0.001 [1,0,0,0,0,0,0]
+    else if u == "km" then quantity-made 1000.0 [1,0,0,0,0,0,0]
+    else if u == "ft" then quantity-made 0.3048 [1,0,0,0,0,0,0]
+    else if u == "in" then quantity-made 0.0254 [1,0,0,0,0,0,0]
+    else if u == "mi" then quantity-made 1609.344 [1,0,0,0,0,0,0]
+    else if u == "kg" then quantity-made 1.0 [0,1,0,0,0,0,0]
+    else if u == "g" then quantity-made 0.001 [0,1,0,0,0,0,0]
+    else if u == "lb" then quantity-made 0.45359237 [0,1,0,0,0,0,0]
+    else if u == "s" then quantity-made 1.0 [0,0,1,0,0,0,0]
+    else if u == "min" then quantity-made 60.0 [0,0,1,0,0,0,0]
+    else if u == "h" then quantity-made 3600.0 [0,0,1,0,0,0,0]
+    else if u == "A" then quantity-made 1.0 [0,0,0,1,0,0,0]
+    else if u == "K" then quantity-made 1.0 [0,0,0,0,1,0,0]
+    else if u == "mol" then quantity-made 1.0 [0,0,0,0,0,1,0]
+    else if u == "cd" then quantity-made 1.0 [0,0,0,0,0,0,1]
+    else if u == "m/s" then quantity-made 1.0 [1,0,-1,0,0,0,0]
+    else if u == "km/h" then quantity-made (1000.0 / 3600.0) [1,0,-1,0,0,0,0]
+    else if u == "mph" then quantity-made (1609.344 / 3600.0) [1,0,-1,0,0,0,0]
+    else if u == "m/s^2" then quantity-made 1.0 [1,0,-2,0,0,0,0]
+    else if u == "N" then quantity-made 1.0 [1,1,-2,0,0,0,0]
+    else if u == "N/m" then quantity-made 1.0 [0,1,-2,0,0,0,0]
+    else if u == "m^2" then quantity-made 1.0 [2,0,0,0,0,0,0]
+    else if u == "m^3" then quantity-made 1.0 [3,0,0,0,0,0,0]
+    else if u == "J" then quantity-made 1.0 [2,1,-2,0,0,0,0]
+    else if u == "W" then quantity-made 1.0 [2,1,-3,0,0,0,0]
+    else if u == "Pa" then quantity-made 1.0 [-1,1,-2,0,0,0,0]
+    else if u == "Hz" then quantity-made 1.0 [0,0,-1,0,0,0,0]
+    else if u == "V" then quantity-made 1.0 [2,1,-3,-1,0,0,0]
+    else if u == "ohm" then quantity-made 1.0 [2,1,-3,-2,0,0,0]
+    else QuantityError ("unknown or nonlinear unit: " & u)
+
+  quantity : Real, Text -> QuantityResult
+  quantity (v) (u) = when quantity-unit u
+    is QuantityError (why) -> QuantityError why
+    is QuantityValue (q) -> quantity-made (v * q.magnitude) q.dimensions
+
+  quantity-same : List Integer, List Integer, Integer -> Boolean
+  quantity-same (a) (b) (i) =
+    if quantity-dims-valid a 0 == False | quantity-dims-valid b 0 == False then False
+    else if i >= 7 then True
+    else list-at a i == list-at b i & quantity-same a b (i + 1)
+
+  quantity-in : QuantityResult, Text -> MathResult
+  quantity-in (r) (u) = when r
+    is QuantityError (why) -> MathError why
+    is QuantityValue (q) -> when quantity-unit u
+      is QuantityError (why) -> MathError why
+      is QuantityValue (target) ->
+        if quantity-same q.dimensions target.dimensions 0 == False then MathError "incompatible unit dimensions"
+        else math-result (q.magnitude / target.magnitude)
+
+  quantity-dims-combine : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  quantity-dims-combine (a) (b) (sign) (i) (acc) =
+    if i >= 7 then acc
+    else quantity-dims-combine a b sign (i + 1) (list-push acc (list-at a i + sign * list-at b i))
+
+  quantity-binary : QuantityResult, QuantityResult, Integer -> QuantityResult
+  quantity-binary (left) (right) (op) = when left
+    is QuantityError (why) -> QuantityError why
+    is QuantityValue (a) -> when right
+      is QuantityError (why) -> QuantityError why
+      is QuantityValue (b) ->
+        if math-finite a.magnitude == False | math-finite b.magnitude == False | quantity-dims-valid a.dimensions 0 == False | quantity-dims-valid b.dimensions 0 == False then QuantityError "invalid quantity"
+        else if op <= 1 then
+          if quantity-same a.dimensions b.dimensions 0 == False then QuantityError "cannot add or subtract unlike dimensions"
+          else quantity-made (if op == 0 then a.magnitude + b.magnitude else a.magnitude - b.magnitude) (quantity-dims-combine a.dimensions [0,0,0,0,0,0,0] 1 0 [])
+        else if op == 3 & b.magnitude <= 0.0 & b.magnitude >= 0.0 then QuantityError "quantity division by zero"
+        else quantity-made (if op == 2 then a.magnitude * b.magnitude else a.magnitude / b.magnitude) (quantity-dims-combine a.dimensions b.dimensions (if op == 2 then 1 else -1) 0 [])
+
+  quantity-add : QuantityResult, QuantityResult -> QuantityResult
+  quantity-add (a) (b) = quantity-binary a b 0
+  quantity-sub : QuantityResult, QuantityResult -> QuantityResult
+  quantity-sub (a) (b) = quantity-binary a b 1
+  quantity-mul : QuantityResult, QuantityResult -> QuantityResult
+  quantity-mul (a) (b) = quantity-binary a b 2
+  quantity-div : QuantityResult, QuantityResult -> QuantityResult
+  quantity-div (a) (b) = quantity-binary a b 3
+
+Page 1

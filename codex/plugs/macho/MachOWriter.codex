@@ -1,0 +1,219 @@
+Chapter: MachOWriter
+  cites Common chapter ByteHelpers
+  cites Foreword chapter Sha256
+
+Section: Mach-O Constants
+
+ `mach-o/loader.h`: MH_MAGIC_64 #FEEDFACF, CPU_TYPE_ARM64 #0100000C,
+ MH_EXECUTE 2. The header flags are MH_NOUNDEFS 1, MH_DYLDLINK 4,
+ MH_TWOLEVEL #80 and MH_PIE #200000. Load commands: LC_SEGMENT_64 #19,
+ LC_SYMTAB 2, LC_DYSYMTAB #B, LC_LOAD_DYLIB #C, LC_LOAD_DYLINKER #E,
+ LC_CODE_SIGNATURE #1D, LC_BUILD_VERSION #32, and LC_MAIN #80000028
+ (LC_REQ_DYLD set).
+
+ __PAGEZERO is the 4 GiB unmapped guard every arm64 executable carries, so
+ __TEXT loads at #100000000 before the slide. Segments are aligned to the
+ 16 KiB page of Apple Silicon.
+
+  macho-magic : Integer = #FEEDFACF
+  macho-cpu-arm64 : Integer = #0100000C
+  macho-filetype-execute : Integer = 2
+  macho-header-flags : Integer = #200085
+  macho-lc-segment : Integer = #19
+  macho-lc-symtab : Integer = 2
+  macho-lc-dysymtab : Integer = #B
+  macho-lc-load-dylib : Integer = #C
+  macho-lc-load-dylinker : Integer = #E
+  macho-lc-code-signature : Integer = #1D
+  macho-lc-build-version : Integer = #32
+  macho-lc-main : Integer = #80000028
+  macho-text-base : Integer = #100000000
+  macho-page : Integer = 16384
+
+ LC_BUILD_VERSION: platform 1 is macOS; #B0000 is 11.0.0, the first release
+ on Apple Silicon. LC_LOAD_DYLIB carries libSystem's version the way ld64
+ records it, current 1356.0.0 (#54C0000) and compatibility 1.0.0.
+
+  macho-platform-macos : Integer = 1
+  macho-min-os : Integer = #B0000
+  macho-libsystem-current : Integer = #54C0000
+  macho-libsystem-compat : Integer = #10000
+
+Section: Code Signature Constants
+
+ `cs_blobs.h`, and every field of the signature is BIG-endian. The kernel
+ refuses an unsigned arm64 executable, so the file carries an ad-hoc
+ signature: an embedded-signature SuperBlob (#FADE0CC0) holding one
+ CodeDirectory (#FADE0C02) at slot 0. Version #20400 is the 88-byte layout
+ with the exec-segment fields. Flags #20002 are CS_ADHOC with
+ CS_LINKER_SIGNED, the pair a linker writes. Hash type 2 is SHA-256 with
+ 32-byte hashes, one per 16 KiB page (page-size field 14, the log2), over
+ every byte before the signature. Exec-segment flag 1 is
+ CS_EXECSEG_MAIN_BINARY, and the exec segment is __TEXT.
+
+  macho-cs-superblob : Integer = #FADE0CC0
+  macho-cs-codedirectory : Integer = #FADE0C02
+  macho-cs-version : Integer = #20400
+  macho-cs-flags : Integer = #20002
+  macho-cs-header-size : Integer = 88
+  macho-cs-hash-sha256 : Integer = 2
+  macho-cs-page-log2 : Integer = 14
+
+Section: Byte Writers
+
+  macho-be32 : Integer -> List Integer
+  macho-be32 (v) = [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  macho-be64 : Integer -> List Integer
+  macho-be64 (v) = macho-be32 (bit-shru v 32) & macho-be32 (bit-and v #FFFFFFFF)
+
+  macho-name16 : List Integer -> List Integer
+  macho-name16 (name) = name & pad-zeros (16 - list-length name)
+
+Section: Names
+
+  macho-seg-pagezero : List Integer = [95, 95, 80, 65, 71, 69, 90, 69, 82, 79]
+  macho-seg-text : List Integer = [95, 95, 84, 69, 88, 84]
+  macho-seg-linkedit : List Integer = [95, 95, 76, 73, 78, 75, 69, 68, 73, 84]
+  macho-sect-text : List Integer = [95, 95, 116, 101, 120, 116]
+  macho-sect-const : List Integer = [95, 95, 99, 111, 110, 115, 116]
+  macho-dyld-path : List Integer = [47, 117, 115, 114, 47, 108, 105, 98, 47, 100, 121, 108, 100]
+  macho-libsystem-path : List Integer = [47, 117, 115, 114, 47, 108, 105, 98, 47, 108, 105, 98, 83, 121, 115, 116, 101, 109, 46, 66, 46, 100, 121, 108, 105, 98]
+  macho-identifier : List Integer = [99, 111, 100, 101, 120, 0]
+
+Section: Load Commands
+
+  macho-header : Integer, Integer -> List Integer
+  macho-header (ncmds) (sizeofcmds) =
+   write-i32 macho-magic & write-i32 macho-cpu-arm64 & write-i32 0 & write-i32 macho-filetype-execute
+   & write-i32 ncmds & write-i32 sizeofcmds & write-i32 macho-header-flags & write-i32 0
+
+  macho-segment : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  macho-segment (name) (vmaddr) (vmsize) (fileoff) (filesize) (prot) (nsects) =
+   write-i32 macho-lc-segment & write-i32 (72 + 80 * nsects) & macho-name16 name
+   & write-i64 vmaddr & write-i64 vmsize & write-i64 fileoff & write-i64 filesize
+   & write-i32 prot & write-i32 prot & write-i32 nsects & write-i32 0
+
+  macho-section : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  macho-section (name) (addr) (size) (offset) (align-log2) (flags) =
+   macho-name16 name & macho-name16 macho-seg-text & write-i64 addr & write-i64 size
+   & write-i32 offset & write-i32 align-log2 & write-i32 0 & write-i32 0 & write-i32 flags
+   & write-i32 0 & write-i32 0 & write-i32 0
+
+  macho-symtab : Integer, Integer -> List Integer
+  macho-symtab (stroff) (strsize) =
+   write-i32 macho-lc-symtab & write-i32 24 & write-i32 0 & write-i32 0 & write-i32 stroff & write-i32 strsize
+
+  macho-dysymtab : List Integer
+  macho-dysymtab = write-i32 macho-lc-dysymtab & write-i32 80 & pad-zeros 72
+
+  macho-dylinker : List Integer
+  macho-dylinker = write-i32 macho-lc-load-dylinker & write-i32 32 & write-i32 12 & macho-dyld-path & pad-zeros 7
+
+  macho-main : Integer -> List Integer
+  macho-main (entryoff) = write-i32 macho-lc-main & write-i32 24 & write-i64 entryoff & write-i64 0
+
+  macho-build-version : List Integer
+  macho-build-version =
+   write-i32 macho-lc-build-version & write-i32 24 & write-i32 macho-platform-macos
+   & write-i32 macho-min-os & write-i32 macho-min-os & write-i32 0
+
+  macho-libsystem : List Integer
+  macho-libsystem =
+   write-i32 macho-lc-load-dylib & write-i32 56 & write-i32 24 & write-i32 2
+   & write-i32 macho-libsystem-current & write-i32 macho-libsystem-compat & macho-libsystem-path & pad-zeros 6
+
+  macho-code-signature : Integer, Integer -> List Integer
+  macho-code-signature (dataoff) (datasize) =
+   write-i32 macho-lc-code-signature & write-i32 16 & write-i32 dataoff & write-i32 datasize
+
+  macho-cmds-size : Integer -> Integer
+  macho-cmds-size (nsects) = 472 + 80 * nsects
+
+Section: Signature
+
+  macho-page-hashes : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  macho-page-hashes (buf) (limit) (i) (n) (acc) =
+   if i >= n then acc
+   else let off = i * macho-page
+   in let len = if limit - off < macho-page then limit - off else macho-page
+   in macho-page-hashes buf limit (i + 1) n (acc & sha256-digest-bytes (sha256-buf buf off len) 0 (__list-with-capacity 32))
+
+  macho-code-directory : Integer, Integer, Integer, List Integer -> List Integer
+  macho-code-directory (code-limit) (n-slots) (exec-limit) (hashes) =
+   let hash-offset = macho-cs-header-size + list-length macho-identifier
+   in macho-be32 macho-cs-codedirectory & macho-be32 (hash-offset + 32 * n-slots)
+   & macho-be32 macho-cs-version & macho-be32 macho-cs-flags
+   & macho-be32 hash-offset & macho-be32 macho-cs-header-size & macho-be32 0
+   & macho-be32 n-slots & macho-be32 code-limit
+   & [32, macho-cs-hash-sha256, 0, macho-cs-page-log2]
+   & macho-be32 0 & macho-be32 0 & macho-be32 0 & macho-be32 0
+   & macho-be64 0 & macho-be64 0 & macho-be64 exec-limit & macho-be64 1
+   & macho-identifier & hashes
+
+  macho-signature-length : Integer -> Integer
+  macho-signature-length (n-slots) = 20 + macho-cs-header-size + list-length macho-identifier + 32 * n-slots
+
+Section: Build
+
+ THE DATA SITS AT `align-up code-len 8` PAST THE FIRST INSTRUCTION, not at
+ `code-len`: the arm64 plug patches every rodata reference as an ADR relative
+ to that offset (`a64-patch-rodata`), and the wire packs data straight after
+ the code. A code length that is 4 mod 8 moves every string four bytes if the
+ gap is dropped.
+
+  macho-build-from-buf : Integer, Integer, Integer, Integer, Integer -> List Integer
+  macho-build-from-buf (buf) (code-off) (code-len) (data-len) (entry-offset) =
+   let data-rel = align-up code-len 8
+   in let nsects = if data-len > 0 then 2 else 1
+   in let sizeofcmds = macho-cmds-size nsects
+   in let code-fileoff = align-up (32 + sizeofcmds) 16
+   in let text-end = code-fileoff + data-rel + data-len
+   in let text-size = align-up text-end macho-page
+   in let str-off = text-size
+   in let sig-off = str-off + 16
+   in let n-slots = (sig-off + macho-page - 1) / macho-page
+   in let sig-size = align-up (macho-signature-length n-slots) 16
+   in let linkedit-size = sig-off + sig-size - text-size
+   in let const-sect = if data-len > 0 then macho-section macho-sect-const (macho-text-base + code-fileoff + data-rel) data-len (code-fileoff + data-rel) 3 0 else []
+   in let cmds = macho-segment macho-seg-pagezero 0 macho-text-base 0 0 0 0
+   & macho-segment macho-seg-text macho-text-base text-size 0 text-size 5 nsects
+   & macho-section macho-sect-text (macho-text-base + code-fileoff) code-len code-fileoff 2 #80000400
+   & const-sect
+   & macho-segment macho-seg-linkedit (macho-text-base + text-size) (align-up linkedit-size macho-page) text-size linkedit-size 1 0
+   & macho-symtab str-off 8
+   & macho-dysymtab
+   & macho-dylinker
+   & macho-main (code-fileoff + entry-offset)
+   & macho-build-version
+   & macho-libsystem
+   & macho-code-signature sig-off sig-size
+   in let body = macho-header 10 sizeofcmds & cmds & pad-zeros (code-fileoff - 32 - sizeofcmds)
+   & __buf-read-bytes buf code-off code-len & pad-zeros (data-rel - code-len)
+   & __buf-read-bytes buf (code-off + code-len) data-len & pad-zeros (text-size - text-end)
+   & [32] & pad-zeros 15
+   in let hbuf = __heap-save
+   in let hadv = __heap-advance sig-off
+   in let hcopy = __buf-write-bytes hbuf 0 body
+   in let hashes = macho-page-hashes hbuf sig-off 0 n-slots []
+   in let sig = macho-be32 macho-cs-superblob & macho-be32 (macho-signature-length n-slots) & macho-be32 1
+   & macho-be32 0 & macho-be32 20 & macho-code-directory sig-off n-slots text-size hashes
+   in body & sig & pad-zeros (sig-size - list-length sig)
+
+Section: Wire Entry
+
+ `__start` is found by NAME in the wire's function table, whose offsets are
+ bytes (`a64-build-func-table` scales the instruction index) and whose names
+ are CCE bytes, not ASCII, despite `text-to-ascii-bytes`: 85 85 19 14 15 21 14
+ is `__start`. Minus one when the table has no `__start`.
+
+  macho-find-start : Integer, Integer, Integer, Integer -> Integer
+  macho-find-start (buf) (off) (count) (i) =
+   if i >= count then 0 - 1
+   else let name-len = peek-byte buf off + peek-byte buf (off + 1) * 256
+   in let at = off + 2 + name-len
+   in if name-len == 7 & peek-byte buf (off + 2) == 85 & peek-byte buf (off + 3) == 85 & peek-byte buf (off + 4) == 19 & peek-byte buf (off + 5) == 14 & peek-byte buf (off + 6) == 15 & peek-byte buf (off + 7) == 21 & peek-byte buf (off + 8) == 14 then
+    peek-byte buf at + peek-byte buf (at + 1) * 256 + peek-byte buf (at + 2) * 65536 + peek-byte buf (at + 3) * 16777216
+   else macho-find-start buf (at + 4) count (i + 1)
+
+Page 1

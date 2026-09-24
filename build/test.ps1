@@ -795,6 +795,12 @@ foreach ($src in $toCompile) {
                 if ($logText -notmatch $pat) { $codesOk = $false; break }
             } elseif ($logText -notmatch "error (CDX)?0*$code\b") { $codesOk = $false; break }
         }
+        $messageFile = Join-Path $dir "$name.message"
+        if ($codesOk -and (Test-Path -PathType Leaf $messageFile)) {
+            foreach ($note in (Get-Content $messageFile)) {
+                if ($note.Trim() -and -not $logText.Contains($note.Trim())) { $codesOk = $false; break }
+            }
+        }
         if ($codesOk) {
             "PASS_FAILING`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
         } else {

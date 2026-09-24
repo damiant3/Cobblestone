@@ -367,12 +367,43 @@ foreach ($t in $templateRoots) {
     }
     Write-Host ("[page] template: {0,-16} {1} file(s) shipped, {2} chapter(s) served off the volume" -f $t.name, $files.Count, $served)
 }
-$tplJson = $tplOut | ConvertTo-Json -Depth 8 -Compress
+$modRoot = Join-Path $Repo 'apps/prism/mods/valheim'
+$mod = Get-Content -LiteralPath (Join-Path $modRoot 'linked-storage.json') -Raw | ConvertFrom-Json
+$modFiles = [ordered]@{}
+foreach ($name in $mod.sources) {
+    if ($name -notmatch '^[A-Za-z0-9_-]+\.codex$') { throw 'Invalid mod source name' }
+    $modFiles[$name] = [IO.File]::ReadAllText((Join-Path $modRoot $name)) -replace "`r`n", "`n"
+}
+if (-not $modFiles.Contains($mod.main)) { throw 'Mod entry is absent from its source list' }
+$tplOut['ValheimLinkedStorage'] = [ordered]@{title=$mod.title;blurb=$mod.scope;main=$mod.main;files=$modFiles}
+$tplJson = $tplOut | ConvertTo-Json -Depth 8 -Compress -EscapeHandling EscapeHtml
 # Laid down beside library.json rather than only pasted into the embed, so the
 # headless arm can drive the picker with the SAME bytes the page carries. Both
 # come from $tplJson here, so the file and the embed cannot drift.
 [IO.File]::WriteAllText((Join-Path $OutDir 'templates.json'), $tplJson, [Text.UTF8Encoding]::new($false))
 End-Phase ("{0} template(s)" -f $tplOut.Count)
+
+# 3h. The game-mods catalogue (PRISM-14): one features.json per game under
+# apps/prism/mods, each feature naming its sources, its engine effect and its
+# start call. Prism composes a chosen subset (#mod=) and mods.html lists them;
+# both read the same JSON built here.
+$modsOut = [ordered]@{}
+foreach ($fj in @(Get-ChildItem (Join-Path $Repo 'apps/prism/mods') -Filter 'features.json' -Recurse -File | Sort-Object FullName)) {
+    $cat = Get-Content -LiteralPath $fj.FullName -Raw | ConvertFrom-Json
+    $files = [ordered]@{}
+    foreach ($ft in $cat.features) {
+        if ($ft.id -notmatch '^[a-z0-9-]+$') { throw "Invalid mod feature id: $($ft.id)" }
+        foreach ($name in $ft.sources) {
+            if ($name -notmatch '^[A-Za-z0-9_-]+\.codex$') { throw 'Invalid mod source name' }
+            if (-not $files.Contains($name)) { $files[$name] = [IO.File]::ReadAllText((Join-Path $fj.DirectoryName $name)) -replace "`r`n", "`n" }
+        }
+    }
+    $modsOut[$cat.game] = [ordered]@{ title = $cat.title; target = $cat.target; entry = $cat.entry; entryChapter = $cat.entryChapter; features = @($cat.features); files = $files }
+}
+$modsJson = $modsOut | ConvertTo-Json -Depth 8 -Compress -EscapeHandling EscapeHtml
+$modsPage = ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'page\mods.html'))).Replace('<!--MODS-->', "<script>window.__MODS = $modsJson;</script>")
+[IO.File]::WriteAllText((Join-Path $OutDir 'mods.html'), $modsPage, [Text.UTF8Encoding]::new($false))
+Write-Host ("[page] mods    : {0} game(s), {1} feature(s)" -f $modsOut.Count, (@($modsOut.Values | ForEach-Object { $_.features.Count }) | Measure-Object -Sum).Sum)
 
 $embed = [System.Text.StringBuilder]::new()
 [void]$embed.AppendLine('<script>')
@@ -394,6 +425,7 @@ if (Test-Path -PathType Leaf $exJson) {
 }
 [void]$embed.AppendLine('window.__LIBRARY = ' + $libJson + ';')
 [void]$embed.AppendLine('window.__TEMPLATES = ' + $tplJson + ';')
+[void]$embed.AppendLine('window.__MODS = ' + $modsJson + ';')
 [void]$embed.AppendLine('</script>')
 $offline = ([IO.File]::ReadAllText($offlineSrc)).Replace('<!--EMBED-->', $embed.ToString())
 # The backdrop goes in too, or a downloaded prism.html is a working compiler

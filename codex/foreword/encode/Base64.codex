@@ -1,5 +1,6 @@
 Chapter: Base64
   cites Foreword chapter CCE
+  cites Foreword chapter Maybe
 
  We say:
 
@@ -73,13 +74,13 @@ Section: Decoding
       let c2 = b64-decode-char c2-raw
       in let b0 = bit-or (bit-shl c0 2) (bit-shru c1 4)
       in let b1 = bit-and (bit-or (bit-shl c1 4) (bit-shru c2 2)) 255
-      in acc & [b0, b1]
+      in list-push (list-push acc b0) b1
     else let c2 = b64-decode-char c2-raw
     in let c3 = b64-decode-char c3-raw
     in let b0 = bit-or (bit-shl c0 2) (bit-shru c1 4)
     in let b1 = bit-and (bit-or (bit-shl c1 4) (bit-shru c2 2)) 255
     in let b2 = bit-and (bit-or (bit-shl c2 6) c3) 255
-    in b64-decode-loop s (i + 4) len (acc & [b0, b1, b2])
+    in b64-decode-loop s (i + 4) len (list-push (list-push (list-push acc b0) b1) b2)
 
   b64-decode-tail : Text, Integer, Integer, List Integer -> List Integer
   b64-decode-tail (s) (i) (len) (acc) =
@@ -88,6 +89,38 @@ Section: Decoding
     in let c1 = b64-decode-char (to-unicode (char-code (char-at s (i + 1))))
     in list-push acc (bit-or (bit-shl c0 2) (bit-shru c1 4))
 
+Section: Validity
+
+ RFC 4648 section 4: the length is a multiple of four, every character is in
+ the alphabet, and "=" appears only as the last character or the last two.
+ base64-decode answers something for every input (a character outside the
+ alphabet reads as zero, and anything after the padding is ignored), so a
+ caller taking text from outside asks base64-decode-checked.
+
+  base64-decode-checked : Text -> Maybe (List Integer)
+  base64-decode-checked (s) =
+    if base64-valid s then Just (base64-decode s) else None
+
+  base64-valid : Text -> Boolean
+  base64-valid (s) =
+    let n = text-length s
+    in if n - n / 4 * 4 /= 0 then False
+    else b64-valid-loop s 0 n
+
+  b64-valid-loop : Text, Integer, Integer -> Boolean
+  b64-valid-loop (s) (i) (n) =
+    if i >= n then True
+    else let c = to-unicode (char-code (char-at s i))
+    in if c == 61 then
+      if i == n - 1 then True
+      else if i == n - 2 then to-unicode (char-code (char-at s (n - 1))) == 61
+      else False
+    else if b64-in-alphabet c then b64-valid-loop s (i + 1) n
+    else False
+
+  b64-in-alphabet : Integer -> Boolean
+  b64-in-alphabet (c) =
+    (c >= 65 & c <= 90) | (c >= 97 & c <= 122) | (c >= 48 & c <= 57) | c == 43 | c == 47
 Section: Text Helpers
   base64-encode-text : Text -> Text
   base64-encode-text (s) = base64-encode (b64-text-to-bytes s 0 (text-length s) [])

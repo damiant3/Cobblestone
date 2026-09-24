@@ -1,0 +1,65 @@
+Chapter: E1000RxReuse
+  cites Foreword chapter Maybe
+  cites Kernel chapter E1000e
+  cites Kernel chapter Pci
+  cites Net chapter NetDriver
+
+Section: Fixtures
+
+  half : Integer = 20
+
+  bring-up : PciScanResult -> E1000Device
+  bring-up (scan) =
+    when e1000-find scan
+      is Just (d) -> e1000-init d
+      is None -> e1000-absent
+
+  sum-bytes : List Integer, Integer, Integer, Integer -> Integer
+  sum-bytes (l) (i) (n) (acc) =
+    if i >= n then acc else sum-bytes l (i + 1) n (acc + list-at l i)
+
+Section: The Two Paths
+
+ Each drain answers count * 1000000 + byte sum, so it returns one Integer
+ and allocates nothing of its own; any heap it moves is the receive path's.
+
+  drain-list : E1000Device, Integer, Integer, Integer -> Integer
+  drain-list (d) (left) (count) (bytes) =
+    if left <= 0 then count * 1000000 + bytes
+    else let r = e1000-poll-frame d
+    in if (r.r-has-frame) == False then count * 1000000 + bytes
+       else drain-list d (left - 1) (count + 1) (bytes + sum-bytes (r.r-frame) 0 (list-length (r.r-frame)) 0)
+
+  drain-into : E1000Device, List Integer, Integer, Integer, Integer -> Integer
+  drain-into (d) (rx) (left) (count) (bytes) =
+    if left <= 0 then count * 1000000 + bytes
+    else let n = e1000-poll-into (d.e-mmio) (d.e-rx-ring) (d.e-rx-bufs) (d.e-ctrl-blk) rx
+    in if n == 0 then count * 1000000 + bytes
+       else drain-into d rx (left - 1) (count + 1) (bytes + sum-bytes rx 0 n 0)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let d = bring-up (pci-scan-bus 0)
+    in let h0 = __heap-save
+    in let old = drain-list d half 0 0
+    in let h1 = __heap-save
+    in let rx = net-driver-frame-buffer net-driver-frame-cap
+    in let h2 = __heap-save
+    in let new = drain-into d rx half 0 0
+    in let h3 = __heap-save
+    in let after = e1000-poll-into (d.e-mmio) (d.e-rx-ring) (d.e-rx-bufs) (d.e-ctrl-blk) rx
+    in act
+      print-line-uni ("present        : " & (if d.e-present then "yes" else "no"))
+      print-line-uni ("list frames    : " & show (old / 1000000))
+      print-line-uni ("list bytes     : " & show (old - (old / 1000000) * 1000000))
+      print-line-uni ("list heap grew : " & (if h1 - h0 > 0 then "yes" else "no"))
+      print-line-uni ("into frames    : " & show (new / 1000000))
+      print-line-uni ("into bytes     : " & show (new - (new / 1000000) * 1000000))
+      print-line-uni ("into heap      : " & show (h3 - h2))
+      print-line-uni ("buffer length  : " & show (list-length rx))
+      print-line-uni ("poll after     : " & show after)
+    end
+  end
+
+Page 1

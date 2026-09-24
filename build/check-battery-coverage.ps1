@@ -116,8 +116,8 @@ foreach ($t in $tests) {
             [void]$bats.Add($n)
         }
     } else {
-        foreach ($m in (Select-String -Path $t.FullName -Pattern '^\s*cites\s+(\w+)\s+chapter\s+(\S+)\s*$')) {
-            $key = "$($m.Matches[0].Groups[1].Value)/$($m.Matches[0].Groups[2].Value)".ToLower()
+        foreach ($m in (Select-String -Path $t.FullName -Pattern $StrictCitePat)) {
+            $key = "$($m.Matches[0].Groups[1].Value)/$(Get-CiteKey $m.Matches[0].Groups[2].Value)".ToLower()
             if ($index.ContainsKey($key)) {
                 $b = Get-BatteryForDir $index[$key]
                 if ($b) { [void]$bats.Add($b) }

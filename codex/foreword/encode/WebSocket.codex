@@ -34,7 +34,8 @@ Section: Types
     ws-opcode : Integer,
     ws-masked : Boolean,
     ws-payload : List Integer,
-    ws-length : Integer
+    ws-length : Integer,
+    ws-ok : Boolean
   }
 
 Section: Frame Encoding
@@ -84,7 +85,8 @@ Section: Frame Encoding
 Section: Frame Decoding
   ws-decode-frame : List Integer -> WsFrame
   ws-decode-frame (bytes) =
-    let byte0 = list-at bytes 0
+    if ws-frame-size bytes < 0 then WsFrame { ws-fin = False, ws-opcode = 0, ws-masked = False, ws-payload = [], ws-length = 0, ws-ok = False }
+    else let byte0 = list-at bytes 0
     in let byte1 = list-at bytes 1
     in let fin = bit-and byte0 128 > 0
     in let opcode = bit-and byte0 15
@@ -95,7 +97,25 @@ Section: Frame Decoding
     in let raw = ws-slice bytes header-end payload-len []
     in let key = ws-slice bytes (ws-header-size len-code False) 4 []
     in let payload = if masked then ws-apply-mask raw key 0 [] else raw
-    in WsFrame { ws-fin = fin, ws-opcode = opcode, ws-masked = masked, ws-payload = payload, ws-length = payload-len }
+    in WsFrame { ws-fin = fin, ws-opcode = opcode, ws-masked = masked, ws-payload = payload, ws-length = payload-len, ws-ok = True }
+
+ The bytes one frame occupies: -1 when the header or the payload is not all
+ present yet, -2 when the 64-bit length has its top bit set, which RFC 6455
+ section 5.2 forbids. The payload test subtracts, because a 63-bit length
+ added to the header size can wrap.
+
+  ws-frame-size : List Integer -> Integer
+  ws-frame-size (bytes) =
+    let n = list-length bytes
+    in if n < 2 then 0 - 1
+    else let byte1 = list-at bytes 1
+    in let len-code = bit-and byte1 127
+    in let header-end = ws-header-size len-code (bit-and byte1 128 > 0)
+    in if n < header-end then 0 - 1
+    else if len-code == 127 & list-at bytes 2 >= 128 then 0 - 2
+    else let payload-len = ws-read-length bytes len-code
+    in if payload-len > n - header-end then 0 - 1
+    else header-end + payload-len
 
  Masking is a repeating four-byte exclusive-or, so it is its own
  inverse and one function serves the encoder and the decoder both.
@@ -117,7 +137,12 @@ Section: Frame Decoding
   ws-read-length (bytes) (len-code) =
     if len-code < 126 then len-code
     else if len-code == 126 then bit-or (bit-shl (list-at bytes 2) 8) (list-at bytes 3)
-    else bit-or (bit-shl (list-at bytes 6) 24) (bit-or (bit-shl (list-at bytes 7) 16) (bit-or (bit-shl (list-at bytes 8) 8) (list-at bytes 9)))
+    else ws-read-be bytes 2 8 0
+
+  ws-read-be : List Integer, Integer, Integer, Integer -> Integer
+  ws-read-be (bytes) (at) (count) (acc) =
+    if count == 0 then acc
+    else ws-read-be bytes (at + 1) (count - 1) (bit-or (bit-shl acc 8) (list-at bytes at))
 
 Section: Handshake
 

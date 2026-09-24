@@ -236,6 +236,17 @@ Section: __real_to_text
    in let i = rv-rt-emit i (rv-addi rv-s1 rv-s1 8)
    in let i = rv-rt-emit i (rv-mv rv-s3 rv-s1)
    in let i = rv-rt-emit i (rv-addi rv-s1 rv-s1 64)
+   in let i = i & rv-srli rv-t0 rv-a0 52 & rv-li rv-t1 2047 & rv-and rv-t0 rv-t0 rv-t1 & rv-li rv-t1 1086
+   in let blt-small = list-length i / 4
+   in let i = i & rv-nop & rv-li rv-t1 2046
+   in let bgt-small = list-length i / 4
+   in let i = i & rv-nop
+   in let i = rv-rt-big i
+   in let special-label = list-length i / 4
+   in let i = rv-patch-insn-raw i bgt-small (rv-blt rv-t1 rv-t0 ((special-label - bgt-small) * 4))
+   in let i = rv-rt-special i
+   in let small-label = list-length i / 4
+   in let i = rv-patch-insn-raw i blt-small (rv-blt rv-t0 rv-t1 ((small-label - blt-small) * 4))
    in let i = rv-rt-emit i (rv-mv rv-s4 rv-zero)
    in let i = rv-rt-emit i (rv-li rv-t0 63)
    in let i = rv-rt-emit i (rv-srl rv-s5 rv-a0 rv-t0)
@@ -379,6 +390,184 @@ Section: __real_to_text
    in let i = rv-rt-emit i (rv-ld rv-ra rv-sp 56)
    in let i = rv-rt-emit i (rv-addi rv-sp rv-sp 64)
    in i & rv-ret
+
+Section: __real_to_text at or past 2^63
+
+ The same exponent form as the x86-64 emitter's (`Emit/X86_64TextHelpers`),
+ byte for byte: 33 32-bit limbs at `sp`, divided by 10^9 until empty. `lw`
+ sign-extends, so every limb read is zero-extended by hand. Registers: s2
+ sign, s4 top limb then the decimal exponent, s5 10^9, s6 top chunk.
+ Stack: 136 third chunk, 144 sticky, 152 chunk count, 160 second chunk,
+ 168 digits in the top chunk.
+
+  rv-big-pow10 : List Integer, Integer, Integer, Integer -> List Integer
+  rv-big-pow10 (i) (dst) (cnt) (ten) =
+   let i = i & rv-li dst 1
+   in let top = list-length i / 4
+   in let i = i & rv-nop & rv-mul dst dst ten & rv-addi cnt cnt (0 - 1)
+   in let i = i & rv-j ((top - list-length i / 4) * 4)
+   in rv-patch-insn-raw i top (rv-beq cnt rv-zero ((list-length i / 4 - top) * 4))
+
+  rv-big-digits : List Integer -> List Integer
+  rv-big-digits (i) =
+   let top = list-length i / 4
+   in let i = i & rv-nop & rv-addi rv-t5 rv-t5 (0 - 1) & rv-divu rv-t3 rv-t2 rv-t6 & rv-remu rv-s6 rv-t2 rv-t6 & rv-addi rv-s6 rv-s6 3 & rv-sb rv-t5 rv-s6 8 & rv-mv rv-t2 rv-t3 & rv-addi rv-t1 rv-t1 (0 - 1)
+   in let i = i & rv-j ((top - list-length i / 4) * 4)
+   in rv-patch-insn-raw i top (rv-beq rv-t1 rv-zero ((list-length i / 4 - top) * 4))
+
+  rv-big-limbs : List Integer -> List Integer
+  rv-big-limbs (i) =
+   let i = i & rv-addi rv-sp rv-sp (0 - 176) & rv-srli rv-s2 rv-a0 63 & rv-mv rv-t0 rv-sp & rv-li rv-t1 22
+   in let zero-loop = list-length i / 4
+   in let i = i & rv-sd rv-t0 rv-zero 0 & rv-addi rv-t0 rv-t0 8 & rv-addi rv-t1 rv-t1 (0 - 1)
+   in let i = i & rv-bne rv-t1 rv-zero ((zero-loop - list-length i / 4) * 4)
+   in let i = i & rv-li rv-t2 4503599627370495 & rv-and rv-t3 rv-a0 rv-t2 & rv-li rv-t2 4503599627370496 & rv-or rv-t3 rv-t3 rv-t2
+   in let i = i & rv-srli rv-t4 rv-a0 52 & rv-li rv-t2 2047 & rv-and rv-t4 rv-t4 rv-t2 & rv-addi rv-t4 rv-t4 (0 - 1075)
+   in let i = i & rv-srli rv-t5 rv-t4 5 & rv-andi rv-t6 rv-t4 31 & rv-li rv-t2 4294967295 & rv-and rv-t0 rv-t3 rv-t2 & rv-srli rv-t3 rv-t3 32
+   in let i = i & rv-addi rv-s4 rv-t5 2 & rv-slli rv-t1 rv-t5 2 & rv-add rv-t1 rv-t1 rv-sp
+   in let i = i & rv-sll rv-t4 rv-t0 rv-t6 & rv-and rv-t4 rv-t4 rv-t2 & rv-sw rv-t1 rv-t4 0
+   in let i = i & rv-li rv-t5 32 & rv-sub rv-t5 rv-t5 rv-t6 & rv-srl rv-t4 rv-t0 rv-t5 & rv-sll rv-t5 rv-t3 rv-t6 & rv-or rv-t4 rv-t4 rv-t5 & rv-and rv-t4 rv-t4 rv-t2 & rv-sw rv-t1 rv-t4 4
+   in i & rv-srli rv-t5 rv-t5 32 & rv-sw rv-t1 rv-t5 8 & rv-li rv-s5 1000000000 & rv-mv rv-s6 rv-zero
+
+  rv-big-chunks : List Integer -> List Integer
+  rv-big-chunks (i) =
+   let chunk-loop = list-length i / 4
+   in let i = i & rv-mv rv-t0 rv-zero & rv-mv rv-t1 rv-s4
+   in let limb-loop = list-length i / 4
+   in let i = i & rv-slli rv-t2 rv-t1 2 & rv-add rv-t2 rv-t2 rv-sp & rv-lw rv-t3 rv-t2 0 & rv-slli rv-t3 rv-t3 32 & rv-srli rv-t3 rv-t3 32 & rv-slli rv-t4 rv-t0 32 & rv-or rv-t4 rv-t4 rv-t3 & rv-divu rv-t3 rv-t4 rv-s5 & rv-remu rv-t0 rv-t4 rv-s5 & rv-sw rv-t2 rv-t3 0
+   in let limbs-done-at = list-length i / 4
+   in let i = i & rv-nop & rv-addi rv-t1 rv-t1 (0 - 1)
+   in let i = i & rv-j ((limb-loop - list-length i / 4) * 4)
+   in let trim-loop = list-length i / 4
+   in let i = rv-patch-insn-raw i limbs-done-at (rv-beq rv-t1 rv-zero ((trim-loop - limbs-done-at) * 4))
+   in let trim-bottom-at = list-length i / 4
+   in let i = i & rv-nop & rv-slli rv-t2 rv-s4 2 & rv-add rv-t2 rv-t2 rv-sp & rv-lw rv-t3 rv-t2 0
+   in let trim-live-at = list-length i / 4
+   in let i = i & rv-nop & rv-addi rv-s4 rv-s4 (0 - 1)
+   in let i = i & rv-j ((trim-loop - list-length i / 4) * 4)
+   in let trimmed = list-length i / 4
+   in let i = rv-patch-insn-raw i trim-bottom-at (rv-beq rv-s4 rv-zero ((trimmed - trim-bottom-at) * 4))
+   in let i = rv-patch-insn-raw i trim-live-at (rv-bne rv-t3 rv-zero ((trimmed - trim-live-at) * 4))
+   in let i = i & rv-ld rv-t3 rv-sp 136
+   in let clean-at = list-length i / 4
+   in let i = i & rv-nop & rv-li rv-t4 1 & rv-sd rv-sp rv-t4 144
+   in let i = rv-patch-insn-raw i clean-at (rv-beq rv-t3 rv-zero ((list-length i / 4 - clean-at) * 4))
+   in let i = i & rv-ld rv-t3 rv-sp 160 & rv-sd rv-sp rv-t3 136 & rv-sd rv-sp rv-s6 160 & rv-mv rv-s6 rv-t0 & rv-ld rv-t3 rv-sp 152 & rv-addi rv-t3 rv-t3 1 & rv-sd rv-sp rv-t3 152
+   in let i = i & rv-bne rv-s4 rv-zero ((chunk-loop - list-length i / 4) * 4)
+   in let i = i & rv-lw rv-t3 rv-sp 0
+   in i & rv-bne rv-t3 rv-zero ((chunk-loop - list-length i / 4) * 4)
+
+  rv-big-round : List Integer -> List Integer
+  rv-big-round (i) =
+   let i = i & rv-li rv-t1 1 & rv-mv rv-t2 rv-s6 & rv-li rv-t3 10
+   in let count-loop = list-length i / 4
+   in let i = i & rv-nop & rv-divu rv-t2 rv-t2 rv-t3 & rv-addi rv-t1 rv-t1 1
+   in let i = i & rv-j ((count-loop - list-length i / 4) * 4)
+   in let i = rv-patch-insn-raw i count-loop (rv-bltu rv-t2 rv-t3 ((list-length i / 4 - count-loop) * 4))
+   in let i = i & rv-sd rv-sp rv-t1 168 & rv-mul rv-t0 rv-s6 rv-s5 & rv-ld rv-t2 rv-sp 160 & rv-add rv-t0 rv-t0 rv-t2 & rv-ld rv-t5 rv-sp 136 & rv-li rv-t6 10 & rv-li rv-t2 7
+   in let short-at = list-length i / 4
+   in let i = i & rv-nop
+   in let long-clean-at = list-length i / 4
+   in let i = i & rv-nop & rv-li rv-t2 1 & rv-sd rv-sp rv-t2 144
+   in let i = rv-patch-insn-raw i long-clean-at (rv-beq rv-t5 rv-zero ((list-length i / 4 - long-clean-at) * 4))
+   in let i = i & rv-addi rv-t4 rv-t1 (0 - 6)
+   in let to-round-at = list-length i / 4
+   in let i = i & rv-nop
+   in let i = rv-patch-insn-raw i short-at (rv-blt rv-t1 rv-t2 ((list-length i / 4 - short-at) * 4))
+   in let i = i & rv-li rv-t4 7 & rv-sub rv-t4 rv-t4 rv-t1 & rv-mv rv-t2 rv-t4
+   in let i = rv-big-pow10 i rv-t3 rv-t2 rv-t6
+   in let i = i & rv-mul rv-t0 rv-t0 rv-t3 & rv-li rv-t2 9 & rv-sub rv-t2 rv-t2 rv-t4
+   in let i = rv-big-pow10 i rv-t3 rv-t2 rv-t6
+   in let i = i & rv-divu rv-t2 rv-t5 rv-t3 & rv-remu rv-t3 rv-t5 rv-t3 & rv-add rv-t0 rv-t0 rv-t2
+   in let short-clean-at = list-length i / 4
+   in let i = i & rv-nop & rv-li rv-t2 1 & rv-sd rv-sp rv-t2 144
+   in let i = rv-patch-insn-raw i short-clean-at (rv-beq rv-t3 rv-zero ((list-length i / 4 - short-clean-at) * 4))
+   in let i = i & rv-li rv-t4 1
+   in let i = rv-patch-insn-raw i to-round-at (rv-j ((list-length i / 4 - to-round-at) * 4))
+   in let i = i & rv-mv rv-t2 rv-t4
+   in let i = rv-big-pow10 i rv-t3 rv-t2 rv-t6
+   in let i = i & rv-divu rv-t2 rv-t0 rv-t3 & rv-remu rv-t4 rv-t0 rv-t3 & rv-srli rv-t5 rv-t3 1
+   in let above-at = list-length i / 4
+   in let i = i & rv-nop
+   in let below-at = list-length i / 4
+   in let i = i & rv-nop & rv-ld rv-t3 rv-sp 144
+   in let sticky-at = list-length i / 4
+   in let i = i & rv-nop & rv-andi rv-t3 rv-t2 1
+   in let even-at = list-length i / 4
+   in let i = i & rv-nop
+   in let round-up = list-length i / 4
+   in let i = i & rv-addi rv-t2 rv-t2 1
+   in let rounded = list-length i / 4
+   in let i = rv-patch-insn-raw i above-at (rv-bltu rv-t5 rv-t4 ((round-up - above-at) * 4))
+   in let i = rv-patch-insn-raw i below-at (rv-bltu rv-t4 rv-t5 ((rounded - below-at) * 4))
+   in let i = rv-patch-insn-raw i sticky-at (rv-bne rv-t3 rv-zero ((round-up - sticky-at) * 4))
+   in let i = rv-patch-insn-raw i even-at (rv-beq rv-t3 rv-zero ((rounded - even-at) * 4))
+   in let i = i & rv-ld rv-t3 rv-sp 152 & rv-addi rv-t3 rv-t3 (0 - 1) & rv-li rv-t4 9 & rv-mul rv-t3 rv-t3 rv-t4 & rv-ld rv-t4 rv-sp 168 & rv-add rv-t3 rv-t3 rv-t4 & rv-addi rv-s4 rv-t3 (0 - 1)
+   in let i = i & rv-li rv-t3 1000000000000000
+   in let no-carry-at = list-length i / 4
+   in let i = i & rv-nop & rv-li rv-t2 100000000000000 & rv-addi rv-s4 rv-s4 1
+   in rv-patch-insn-raw i no-carry-at (rv-bne rv-t2 rv-t3 ((list-length i / 4 - no-carry-at) * 4))
+
+  rv-big-strip : List Integer -> List Integer
+  rv-big-strip (i) =
+   let i = i & rv-li rv-t3 100000000000000 & rv-divu rv-t5 rv-t2 rv-t3 & rv-remu rv-t2 rv-t2 rv-t3 & rv-li rv-t1 14
+   in let nonzero-at = list-length i / 4
+   in let i = i & rv-nop & rv-li rv-t1 1
+   in let zero-done-at = list-length i / 4
+   in let i = i & rv-nop
+   in let i = rv-patch-insn-raw i nonzero-at (rv-bne rv-t2 rv-zero ((list-length i / 4 - nonzero-at) * 4))
+   in let i = i & rv-li rv-t3 10
+   in let strip-loop = list-length i / 4
+   in let i = i & rv-divu rv-t4 rv-t2 rv-t3 & rv-remu rv-t0 rv-t2 rv-t3
+   in let kept-at = list-length i / 4
+   in let i = i & rv-nop & rv-mv rv-t2 rv-t4 & rv-addi rv-t1 rv-t1 (0 - 1)
+   in let i = i & rv-j ((strip-loop - list-length i / 4) * 4)
+   in let stripped = list-length i / 4
+   in let i = rv-patch-insn-raw i kept-at (rv-bne rv-t0 rv-zero ((stripped - kept-at) * 4))
+   in rv-patch-insn-raw i zero-done-at (rv-j ((stripped - zero-done-at) * 4))
+
+  rv-big-write : List Integer -> List Integer
+  rv-big-write (i) =
+   let i = i & rv-li rv-t4 2 & rv-li rv-t3 100
+   in let two-at = list-length i / 4
+   in let i = i & rv-nop & rv-li rv-t4 3
+   in let i = rv-patch-insn-raw i two-at (rv-blt rv-s4 rv-t3 ((list-length i / 4 - two-at) * 4))
+   in let i = i & rv-mv rv-t0 rv-zero
+   in let unsigned-at = list-length i / 4
+   in let i = i & rv-nop & rv-li rv-t3 73 & rv-sb rv-s3 rv-t3 8 & rv-li rv-t0 1
+   in let i = rv-patch-insn-raw i unsigned-at (rv-beq rv-s2 rv-zero ((list-length i / 4 - unsigned-at) * 4))
+   in let i = i & rv-addi rv-t3 rv-t5 3 & rv-add rv-t5 rv-s3 rv-t0 & rv-sb rv-t5 rv-t3 8 & rv-addi rv-t0 rv-t0 1
+   in let i = i & rv-li rv-t3 65 & rv-add rv-t5 rv-s3 rv-t0 & rv-sb rv-t5 rv-t3 8 & rv-addi rv-t0 rv-t0 1
+   in let i = i & rv-add rv-t5 rv-s3 rv-t0 & rv-add rv-t5 rv-t5 rv-t1 & rv-add rv-t0 rv-t0 rv-t1 & rv-li rv-t6 10
+   in let i = rv-big-digits i
+   in let i = i & rv-li rv-t3 13 & rv-add rv-t5 rv-s3 rv-t0 & rv-sb rv-t5 rv-t3 8 & rv-addi rv-t0 rv-t0 1
+   in let i = i & rv-li rv-t3 76 & rv-add rv-t5 rv-s3 rv-t0 & rv-sb rv-t5 rv-t3 8 & rv-addi rv-t0 rv-t0 1
+   in let i = i & rv-mv rv-t2 rv-s4 & rv-mv rv-t1 rv-t4 & rv-add rv-t5 rv-s3 rv-t0 & rv-add rv-t5 rv-t5 rv-t1 & rv-add rv-t0 rv-t0 rv-t1
+   in let i = rv-big-digits i
+   in i & rv-sd rv-s3 rv-t0 0 & rv-mv rv-a0 rv-s3 & rv-addi rv-sp rv-sp 176 & rv-ld rv-s6 rv-sp 8 & rv-ld rv-s5 rv-sp 16 & rv-ld rv-s4 rv-sp 24 & rv-ld rv-s3 rv-sp 32 & rv-ld rv-s2 rv-sp 40 & rv-ld rv-s0 rv-sp 48 & rv-ld rv-ra rv-sp 56 & rv-addi rv-sp rv-sp 64 & rv-ret
+
+  rv-rt-special : List Integer -> List Integer
+  rv-rt-special (i) =
+   let i = i & rv-slli rv-t2 rv-a0 12
+   in let nan-at = list-length i / 4
+   in let i = i & rv-nop & rv-srli rv-t3 rv-a0 63
+   in let neg-at = list-length i / 4
+   in let i = i & rv-nop & rv-li rv-t4 3 & rv-li rv-t5 1839633
+   in let inf-done-at = list-length i / 4
+   in let i = i & rv-nop
+   in let i = rv-patch-insn-raw i neg-at (rv-bne rv-t3 rv-zero ((list-length i / 4 - neg-at) * 4))
+   in let i = i & rv-li rv-t4 4 & rv-li rv-t5 470946121
+   in let neg-done-at = list-length i / 4
+   in let i = i & rv-nop
+   in let i = rv-patch-insn-raw i nan-at (rv-bne rv-t2 rv-zero ((list-length i / 4 - nan-at) * 4))
+   in let i = i & rv-li rv-t4 3 & rv-li rv-t5 1183506
+   in let written = list-length i / 4
+   in let i = rv-patch-insn-raw i inf-done-at (rv-j ((written - inf-done-at) * 4))
+   in let i = rv-patch-insn-raw i neg-done-at (rv-j ((written - neg-done-at) * 4))
+   in i & rv-sd rv-s3 rv-t4 0 & rv-sd rv-s3 rv-t5 8 & rv-mv rv-a0 rv-s3 & rv-ld rv-s6 rv-sp 8 & rv-ld rv-s5 rv-sp 16 & rv-ld rv-s4 rv-sp 24 & rv-ld rv-s3 rv-sp 32 & rv-ld rv-s2 rv-sp 40 & rv-ld rv-s0 rv-sp 48 & rv-ld rv-ra rv-sp 56 & rv-addi rv-sp rv-sp 64 & rv-ret
+
+  rv-rt-big : List Integer -> List Integer
+  rv-rt-big (i) = rv-big-write (rv-big-strip (rv-big-round (rv-big-chunks (rv-big-limbs i))))
 
 Section: __text_to_double (a0=text -> f64 bits in a0)
 
@@ -688,7 +877,7 @@ Section: Address Remap Helpers
    in rv-rt-emit i rv-ret
 
  A halfword at an odd address may trap on a hart without misaligned-access
- support (the trap stub here has no dispatch, so it hangs); an even address
+ support; an even address
  takes the single lhu/sh a 16-bit device register needs, an odd one two byte
  accesses, little-endian, as the ARM64 twin does.
 
@@ -853,6 +1042,8 @@ Section: int-mod
   rv-rt-int-mod : List Integer
   rv-rt-int-mod =
    let i = []
+   in let i = i & rv-bne rv-a1 rv-zero 8
+   in let i = i & rv-ebreak
    in let i = i & rv-rem rv-a0 rv-a0 rv-a1
    in let i = i & rv-bge rv-a0 rv-zero 20
    in let i = i & rv-srai rv-t0 rv-a1 63
@@ -867,9 +1058,17 @@ Section: Builtin Helpers
   rv-rt-text-length =
    rv-ld rv-a0 rv-a0 0 & rv-ret
 
+  rv-rt-index-guard : List Integer
+  rv-rt-index-guard =
+   let i = []
+   in let i = rv-rt-emit i (rv-blt rv-a1 rv-zero 12)
+   in let i = rv-rt-emit i (rv-ld rv-t0 rv-a0 0)
+   in let i = rv-rt-emit i (rv-blt rv-a1 rv-t0 8)
+   in rv-rt-emit i rv-ebreak
+
   rv-rt-list-at : List Integer
   rv-rt-list-at =
-   let i = []
+   let i = rv-rt-index-guard
    in let i = rv-rt-emit i (rv-slli rv-t0 rv-a1 3)
    in let i = rv-rt-emit i (rv-add rv-t0 rv-a0 rv-t0)
    in let i = rv-rt-emit i (rv-ld rv-a0 rv-t0 8)
@@ -877,7 +1076,7 @@ Section: Builtin Helpers
 
   rv-rt-char-at : List Integer
   rv-rt-char-at =
-   let i = []
+   let i = rv-rt-index-guard
    in let i = rv-rt-emit i (rv-add rv-t0 rv-a0 rv-a1)
    in let i = rv-rt-emit i (rv-lb rv-a0 rv-t0 8)
    in rv-rt-emit i rv-ret
@@ -897,7 +1096,7 @@ Section: list-set-at (a0=list, a1=index, a2=value -> new list)
 
   rv-rt-list-set-at : List Integer
   rv-rt-list-set-at =
-   let i = []
+   let i = rv-rt-index-guard
    in let i = rv-rt-emit i (rv-addi rv-t0 rv-a1 1)
    in let i = rv-rt-emit i (rv-slli rv-t0 rv-t0 3)
    in let i = rv-rt-emit i (rv-add rv-t0 rv-a0 rv-t0)
@@ -972,6 +1171,12 @@ Section: substring (a0=text, a1=start, a2=length -> new text)
   rv-rt-substring : List Integer
   rv-rt-substring =
    let i = []
+   in let i = rv-rt-emit i (rv-blt rv-a1 rv-zero 20)
+   in let i = rv-rt-emit i (rv-blt rv-a2 rv-zero 16)
+   in let i = rv-rt-emit i (rv-ld rv-t0 rv-a0 0)
+   in let i = rv-rt-emit i (rv-sub rv-t0 rv-t0 rv-a1)
+   in let i = rv-rt-emit i (rv-bge rv-t0 rv-a2 8)
+   in let i = rv-rt-emit i rv-ebreak
    in let i = rv-rt-emit i (rv-mv rv-t0 rv-a0)
    in let i = rv-rt-emit i (rv-mv rv-t1 rv-a1)
    in let i = rv-rt-emit i (rv-mv rv-t2 rv-a2)
@@ -1205,9 +1410,56 @@ Section: Heap Management Helpers
 
 Section: Trap Handler
 
+ mcause bit 63 set is an interrupt (privileged spec 3.1.15); `mret` from an
+ exception returns to the faulting instruction, so an exception prints
+ `!EXC=<mcause> PC=<mepc> TVAL=<mtval>` and parks instead. That path touches
+ no stack, because a bad `sp` is one of the faults it reports; `t0` rides in
+ mscratch (CSR #340) so the interrupt path still sees it unchanged.
+
+  rv-rt-trap-putc : List Integer, Integer -> List Integer
+  rv-rt-trap-putc (i) (c) = rv-rt-emit (rv-rt-emit i (rv-addi rv-t2 rv-zero c)) (rv-sb rv-a1 rv-t2 0)
+
+  rv-rt-trap-ascii : List Integer, List Integer, Integer -> List Integer
+  rv-rt-trap-ascii (i) (cs) (k) =
+   if k >= list-length cs then i
+   else rv-rt-trap-ascii (rv-rt-trap-putc i (list-at cs k)) cs (k + 1)
+
+  rv-rt-trap-hex : List Integer, Integer -> List Integer
+  rv-rt-trap-hex (i) (v) =
+   let i = rv-rt-emit i (rv-addi rv-t1 rv-zero 60)
+   in let i = rv-rt-emit i (rv-srl rv-t2 v rv-t1)
+   in let i = rv-rt-emit i (rv-andi rv-t2 rv-t2 15)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t2 (0 - 10))
+   in let i = rv-rt-emit i (rv-blt rv-t3 rv-zero 12)
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-t2 55)
+   in let i = rv-rt-emit i (rv-j 8)
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-t2 48)
+   in let i = rv-rt-emit i (rv-sb rv-a1 rv-t2 0)
+   in let i = rv-rt-emit i (rv-addi rv-t1 rv-t1 (0 - 4))
+   in rv-rt-emit i (rv-bge rv-t1 rv-zero (0 - 36))
+
   rv-rt-trap-handler : List Integer
   rv-rt-trap-handler =
    let i = []
+   in let i = rv-rt-emit i (rv-csrrw rv-t0 #340 rv-t0)
+   in let i = rv-rt-emit i (rv-csrr rv-t0 #342)
+   in let blt-intr = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-csrr rv-a2 #341)
+   in let i = rv-rt-emit i (rv-csrr rv-a3 #343)
+   in let i = i & rv-li rv-a1 rv-rt-uart-base
+   in let i = rv-rt-trap-ascii i [33, 69, 88, 67, 61] 0
+   in let i = rv-rt-trap-hex i rv-t0
+   in let i = rv-rt-trap-ascii i [32, 80, 67, 61] 0
+   in let i = rv-rt-trap-hex i rv-a2
+   in let i = rv-rt-trap-ascii i [32, 84, 86, 65, 76, 61] 0
+   in let i = rv-rt-trap-hex i rv-a3
+   in let i = rv-rt-trap-putc i 10
+   in let i = rv-rt-emit i rv-wfi
+   in let i = rv-rt-emit i (rv-j (0 - 4))
+   in let intr-label = list-length i / 4
+   in let i = rv-patch-insn-raw i blt-intr (rv-blt rv-t0 rv-zero ((intr-label - blt-intr) * 4))
+   in let i = rv-rt-emit i (rv-csrrw rv-t0 #340 rv-t0)
    in let i = rv-rt-emit i (rv-addi rv-sp rv-sp (0 - 128))
    in let i = rv-rt-emit i (rv-sd rv-sp rv-ra 120)
    in let i = rv-rt-emit i (rv-sd rv-sp rv-t0 112)
@@ -2835,12 +3087,7 @@ Section: Emit All Runtime Helpers
    in let st169 = rv-emit st168 (rv-mv rv-a0 rv-s1)
    in let st170 = rv-emit st169 (rv-add rv-s1 rv-s1 rv-t0)
    in let st171 = rv-emit st170 rv-ret
-   in let st172 = rv-record-func st171 "__cce_to_unicode"
-   in let st173 = rv-emit-li st172 rv-t2 rv-cce-table-addr
-   in let st174 = rv-emit st173 (rv-add rv-t2 rv-t2 rv-a0)
-   in let st175 = rv-emit st174 (rv-lbu rv-a0 rv-t2 0)
-   in let st176 = rv-emit st175 rv-ret
-   in let st177 = rv-record-func st176 "__unicode_to_cce"
+   in let st177 = rv-record-func st171 "__unicode_to_cce"
    in let st178 = rv-emit-li st177 rv-t2 rv-ascii-to-cce-table-addr
    in let st179 = rv-emit st178 (rv-add rv-t2 rv-t2 rv-a0)
    in let st180 = rv-emit st179 (rv-lbu rv-a0 rv-t2 0)

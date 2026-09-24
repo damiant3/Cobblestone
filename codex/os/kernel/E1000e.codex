@@ -1167,6 +1167,26 @@ Section: Receive
    in let recycled = e1000-recycle-rx mmio ctrl-blk idx desc
    in E1000RecvResult { r-frame = frame, r-has-frame = whole }
 
+  e1000-poll-into : Integer, Integer, Integer, Integer, List Integer -> Integer
+  e1000-poll-into (mmio) (rx-ring) (rx-bufs) (ctrl-blk) (dst) =
+   if mmio == 0 then 0
+   else let idx = bit-and (peek-32 (ctrl-blk + e1000-cb-rx-next) 0) #FFFFFFFF
+   in let desc = rx-ring + idx * e1000-desc-size
+   in let status = peek-byte desc 12
+   in if bit-and status e1000-rx-status-dd == 0 then 0
+   else let len = bit-or (peek-byte desc 8) (bit-shl (peek-byte desc 9) 8)
+   in let cap = if list-length dst < e1000-max-frame then list-length dst else e1000-max-frame
+   in let capped = if len > cap then cap else len
+   in let n = if bit-and status e1000-rx-status-eop /= 0 then e1000-copy-into (rx-bufs + idx * e1000-buf-size) 0 capped dst else 0
+   in let recycled = e1000-recycle-rx mmio ctrl-blk idx desc
+   in n
+
+  e1000-copy-into : Integer, Integer, Integer, List Integer -> Integer
+  e1000-copy-into (base) (i) (len) (dst) =
+   if i >= len then len
+   else let s = list-set-at dst i (peek-byte base i)
+   in e1000-copy-into base (i + 1) len dst
+
   e1000-recycle-rx : Integer, Integer, Integer, Integer -> Integer
   e1000-recycle-rx (mmio) (ctrl-blk) (idx) (desc) =
    let cleared = poke-32 (desc + 8) 0 0

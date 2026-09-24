@@ -24,6 +24,8 @@
 #   withLir   bundle the compiler's LIR, as the native backends' network build
 #             does; absent means no
 #   common    one codex/plugs/common chapter bundled by name (PlugManifest)
+#   compiler  codex/compiler chapters bundled after the IR declarations
+#             (the zig lens runs IR\ConstShare over its own IRDefs)
 #   decks     reservation for the bundle's IR compile; absent means the default
 #   chapters  build-plug-wasm.ps1 -Chapters value; Name:Sec1|Sec2 drops
 #             sections (the transport half of a network entry chapter)
@@ -38,9 +40,10 @@ $PageModules = @(
     # -- text and UI lenses, IR transport -------------------------------------
     @{ plug = 'javascript'; file = 'javascript-stdio.wasm'; transport = 'ir'; chapters = 'JavaScriptEmitter,JavaScriptStdio' }
     @{ plug = 'csharp';     file = 'csharp-stdio.wasm';     transport = 'ir'; chapters = 'CsAst,CSharpEmitter,CSharpEmitterExpressions,CSharpPlug:Network Config|Drain|Body,CSharpStdio' }
+    @{ plug = 'unity';      file = 'unity-stdio.wasm';      transport = 'ir'; inputPrefix = "UNITY windows-x64-mono-6000.0.75f1`n"; chapters = '../csharp/CsAst,../csharp/CsSyntax,../csharp/CsSyntaxEmitter,../csharp/CSharpEmitter,../csharp/CSharpEmitterExpressions,../csharp/CSharpPlug:Network Config|Drain|Body,MethodBridge,ValheimBindings,ValheimInventory,ValheimConstruction,MeadowsSpawns,CircumhorizontalArc,ModIdentity,UnityLocalSaves,UnityEntry,UnityExport,UnityEffect,UnityStdio' }
     @{ plug = 'python';     file = 'python-stdio.wasm';     transport = 'ir'; chapters = 'PythonEmitter,PythonStdio' }
     @{ plug = 'typescript'; file = 'typescript-stdio.wasm'; transport = 'ir'; chapters = 'TypeScriptEmitter,TypeScriptStdio' }
-    @{ plug = 'zig';        file = 'zig-stdio.wasm';        transport = 'ir'; chapters = 'ZigEmitter,ZigStdio' }
+    @{ plug = 'zig';        file = 'zig-stdio.wasm';        transport = 'ir'; chapters = 'ZigEmitter,ZigStdio'; compiler = 'IR\ConstShare' }
     @{ plug = 'rust';       file = 'rust-stdio.wasm';       transport = 'ir'; chapters = 'RustEmitter,RustStdio' }
     @{ plug = 'go';         file = 'go-stdio.wasm';         transport = 'ir'; chapters = 'GoEmitter,GoStdio' }
     @{ plug = 'java';       file = 'java-stdio.wasm';       transport = 'ir'; chapters = 'JavaEmitter,JavaStdio' }
@@ -99,6 +102,9 @@ $PageModules = @(
     # phase writes them. Proven against the bare-metal Ed25519 byte for byte.
     @{ plug = 'sign'; file = 'sign-bytes.wasm'; transport = 'bytes'; chapters = 'SignStdio' }
     @{ plug = 'elf'; file = 'elf-bytes.wasm'; transport = 'bytes'; chapters = 'ByteHelpers,PlugChain,ElfWriter,DwarfWriter,ElfPlug:Network Config|Drain|Body,ElfStdio' }
+    # The Mac container (PRISM-13): a DARWIN wire in, an ad-hoc signed Apple
+    # Silicon executable out, graded by apps/prism/test-macho.mjs.
+    @{ plug = 'macho'; file = 'macho-bytes.wasm'; transport = 'bytes'; chapters = 'ByteHelpers,MachOWriter,MachOStdio' }
 
     # -- native backends, IR in and a binary WIRE out -------------------------
     # The board lanes -- riscv for boards, arm64 for boards AND phones. These

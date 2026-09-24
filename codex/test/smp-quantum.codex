@@ -1,0 +1,60 @@
+Chapter: SmpQuantum
+  cites Kernel chapter Hpet
+
+ codex-vm models the LAPIC bus at 100 MHz, so a 10 ms quantum at divide-by-16
+ is a count of 62,500; 56,250 to 68,750 is ten per cent either side. The bed
+ hands a compute-bound AP its tick only when its kick thread cancels the run,
+ once per core 0 PIT period. What it can show is that the APs program the
+ measured count: the 160 ms count the literal gave took a tick on every third
+ 55 ms kick, 18 a second, and 36 separates that from the calibrated count.
+ Cell 28672 is core 0's tick count, and codex-vm paces core 0 from the reload
+ the kernel programs, 11,932, about 100 a second; a codex-vm pacing at a fixed
+ 55 ms reads 18, and 60 to 130 separates them.
+ Cell 36216 counts every tick an AP takes while running a process, and
+ cell 36352 holds the count the boot processor measured. The spinners stop on
+ cell 36360, which nothing else in the tree or codex-vm uses, because codex-vm
+ answers an AP's HPET read with 0: only the boot processor can time the window.
+
+Section: Body
+
+  spin-until-stop : Integer -> Integer
+  spin-until-stop (acc) = if atomic-load 36360 /= 0 then acc else spin-until-stop (acc + 1)
+
+  wait-until : Integer -> Integer
+  wait-until (deadline) = if hpet-ticks >= deadline then 0 else wait-until deadline
+
+  opening : [Console, Concurrent] Nothing = act
+    let started = hpet-start
+    in let rate = hpet-ticks-per-second
+    in let t0 = hpet-ticks
+    in let go = atomic-store 36360 0
+    in act
+      a <- process-spawn (\x -> spin-until-stop x)
+      b <- process-spawn (\x -> spin-until-stop x)
+      c <- process-spawn (\x -> spin-until-stop x)
+      d <- process-spawn (\x -> spin-until-stop x)
+      e <- process-spawn (\x -> spin-until-stop x)
+      f <- process-spawn (\x -> spin-until-stop x)
+      let w1 = wait-until (t0 + rate)
+      in let c1 = atomic-load 36216
+      in let p1 = atomic-load 28672
+      in let w2 = wait-until (t0 + 2 * rate)
+      in let c2 = atomic-load 36216
+      in let p2 = atomic-load 28672
+      in let n = c2 - c1
+      in let k = atomic-load 36352
+      in let stop = atomic-store 36360 1
+      in act
+        wa <- process-wait a
+        wb <- process-wait b
+        wc <- process-wait c
+        wd <- process-wait d
+        we <- process-wait e
+        wf <- process-wait f
+        print-line-uni (if k > 0 & k /= 1000000 then "the count was calibrated" else "THE COUNT WAS NOT CALIBRATED: " & show k)
+        print-line-uni (if k >= 56250 & k <= 68750 then "the count is 10 ms at the modelled bus" else "THE COUNT IS " & show k)
+        print-line-uni (if n >= 36 then "ap ticks outpace the 160 ms count" else "AP TICKS " & show n & " IN ONE SECOND")
+        print-line-uni (if p2 - p1 >= 60 & p2 - p1 <= 130 then "the tick count is core 0's clock" else "TICK COUNT ADVANCED " & show (p2 - p1) & " IN ONE SECOND")
+      end
+    end
+  end

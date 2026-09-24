@@ -1,4 +1,4 @@
-# test-cross.ps1 -- Cross-architecture test harness -- compile to ARM64/RISC-V, boot on Renode, compare UART output
+# test-cross.ps1 -- Cross-architecture test harness -- compile to ARM64/RISC-V, boot on QEMU (Renode with -Renode), compare UART output
 # GENERATED FROM THE CODEX SHELL DSL. Do not edit by hand.
 # A hand edit here must NOT be submitted. Change the generator under
 # codex/build/, regenerate, and submit the generator and this file
@@ -13,7 +13,8 @@ param(
     [string]$Test,
     [int]$TimeoutSec = 10,
     [string]$Kernel = (Join-Path $PSScriptRoot '..\seed\Codex.cdx'),
-    [switch]$AllowStaleKernel
+    [switch]$AllowStaleKernel,
+    [switch]$Renode
 )
 
 # Usage:
@@ -45,7 +46,7 @@ if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernel
 
 . (Join-Path $PSScriptRoot 'renode-config.ps1')
 $RenodeExe = Get-RenodeExe -Repo $Repo
-if ((-not $RenodeExe)) {
+if (($Renode -and (-not $RenodeExe))) {
     Write-RenodeSkip
     exit 0
 }
@@ -60,7 +61,7 @@ if ((-not (Test-Path -PathType Leaf $plugCdx))) {
 }
 
 $boardRepl = Join-Path $Repo "tools\renode\codex\codex-${Arch}.repl"
-if ((-not (Test-Path -PathType Leaf $boardRepl))) {
+if (($Renode -and (-not (Test-Path -PathType Leaf $boardRepl)))) {
     Write-Host "SKIP: board definition missing ($boardRepl)" -ForegroundColor Yellow
     exit 0
 }
@@ -100,6 +101,9 @@ $noCrossFile = Join-Path $dir "$name.no-cross"
 # what keeps refusal-by-design a tested behavior: if the plug's
 # refusal arms are ever lost, the test compiles clean and this run goes red.
 $refusalFile = Join-Path $dir "$name.cross-refusal"
+# .renode: the subject needs a Renode board model QEMU virt lacks; it runs
+# only under -Renode, and the first line names the model.
+$renodeFile = Join-Path $dir "$name.renode"
 
 
 if ((Test-Path -PathType Leaf $smpFile)) {
@@ -114,6 +118,11 @@ if ((Test-Path -PathType Leaf $skipFile)) {
 if ((Test-Path -PathType Leaf $noCrossFile)) {
     $reason = (Get-Content -TotalCount 1 $noCrossFile)
     Write-Host "SKIPPED: $name (no-cross: $reason)" -ForegroundColor Yellow
+    exit 0
+}
+if (((-not $Renode) -and (Test-Path -PathType Leaf $renodeFile))) {
+    $reason = (Get-Content -TotalCount 1 $renodeFile)
+    Write-Host "SKIPPED: $name (Renode board, run with -Renode: $reason)" -ForegroundColor Yellow
     exit 0
 }
 if ((Test-Path -PathType Leaf $slowFile)) {
@@ -176,16 +185,17 @@ if ((-not (Test-Path -PathType Leaf $expectedFile))) {
 }
 
 
-# -- Boot on Renode --
+# -- Boot on QEMU, or on Renode with -Renode --
 Write-Host -NoNewline '  run ... '
-$elfPath = (Resolve-Path $elfOut).Path -replace '\\','/'
-$boardPath = (Resolve-Path $boardRepl).Path -replace '\\','/'
 $uartLog = (Join-Path $testOutDir 'uart.log') -replace '\\','/'
 if ((Test-Path -PathType Leaf $uartLog)) {
     Remove-Item -Force -ErrorAction SilentlyContinue $uartLog
 }
 
-$rescContent = @(
+if ($Renode) {
+    $elfPath = (Resolve-Path $elfOut).Path -replace '\\','/'
+    $boardPath = (Resolve-Path $boardRepl).Path -replace '\\','/'
+    $rescContent = @(
     'mach create "codex"'
     "machine LoadPlatformDescription @$boardPath"
     "sysbus LoadELF @$elfPath"
@@ -194,13 +204,25 @@ $rescContent = @(
     "sleep $TimeoutSec"
     'quit'
 ) -join "`n"
-$rescFile = Join-Path $testOutDir 'run.resc'
-[System.IO.File]::WriteAllText($rescFile, $rescContent)
-$rescPath = $rescFile -replace '\\','/'
+    $rescFile = Join-Path $testOutDir 'run.resc'
+    [System.IO.File]::WriteAllText($rescFile, $rescContent)
+    $rescPath = $rescFile -replace '\\','/'
 
-$prev2 = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-& $RenodeExe --disable-xwt --console -e "include @$rescPath" 2>&1 | Out-Null
-$ErrorActionPreference = $prev2
+    $prev2 = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    Start-Process -FilePath $RenodeExe -ArgumentList ('--disable-xwt --console -e "include @' + $rescPath + '"') -WindowStyle Hidden -Wait
+    $ErrorActionPreference = $prev2
+} else {
+    $qemuExe = if ($Arch -eq 'riscv64') { 'D:\Program Files\qemu\qemu-system-riscv64.exe' } else { 'D:\Program Files\qemu\qemu-system-aarch64.exe' }
+    if ((-not (Test-Path -PathType Leaf $qemuExe))) {
+        Write-Host "SKIP: QEMU not found ($qemuExe)" -ForegroundColor Yellow
+        exit 0
+    }
+    $uartWin = $uartLog -replace '/','\'
+    $binOut = [System.IO.Path]::ChangeExtension($elfOut, '.bin')
+    $machArgs = if ($Arch -eq 'riscv64') { @('-M','virt','-m','1024M','-display','none','-monitor','none','-bios','none','-device',"loader,file=$binOut,addr=0x80000000",'-serial',"file:$uartWin") } else { @('-M','virt','-cpu','cortex-a53','-m','1024M','-display','none','-monitor','none','-kernel',$elfOut,'-serial',"file:$uartWin") }
+    $qemu = Start-Process -FilePath $qemuExe -ArgumentList $machArgs -PassThru -WindowStyle Hidden
+    if (-not $qemu.WaitForExit($TimeoutSec * 1000)) { try { $qemu.Kill() } catch {}; $null = $qemu.WaitForExit(2000) }
+}
 Start-Sleep -Milliseconds 300
 
 

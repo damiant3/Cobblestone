@@ -5,8 +5,12 @@
 # run.ps1: -Passes text-plug, the seed as the kernel), and it must be built
 # first (codex/plugs/zig/build.ps1).
 #
+# Built at Debug and ReleaseSafe, never ReleaseFast: emitted Codex traps on
+# Integer overflow through zig's safety checks, and the emitted file refuses
+# ReleaseFast at comptime (plugs 2.60).
+#
 # Output: bench/build-output/zig-codex/src/<name>.zig
-#         bench/build-output/zig-codex/<name>/{Debug,ReleaseFast}/{name}.exe, {name}.s
+#         bench/build-output/zig-codex/<name>/{Debug,ReleaseSafe}/{name}.exe, {name}.s
 [CmdletBinding()]
 param(
     [string]$Zig = 'D:\zig-0.16.0\zig.exe'
@@ -58,5 +62,5 @@ foreach ($n in @('fib', 'fact', 'gcd', 'sum', 'ack', 'tak', 'collatz', 'locals',
 }
 if ($failed -gt 0) { Write-Host "$failed transpile(s) failed" }
 
-& pwsh -NoProfile -File (Join-Path $BenchDir 'build-zig.ps1') -Zig $Zig -SrcDir $ZigSrc -OutName 'zig-codex'
+& pwsh -NoProfile -File (Join-Path $BenchDir 'build-zig.ps1') -Zig $Zig -SrcDir $ZigSrc -OutName 'zig-codex' -Modes Debug,ReleaseSafe
 exit $LASTEXITCODE

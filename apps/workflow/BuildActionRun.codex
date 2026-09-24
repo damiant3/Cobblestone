@@ -1,0 +1,260 @@
+Chapter: BuildActionRun
+  cites Build chapter BuildActions
+  cites Workflow chapter PipelineRun
+  cites Workflow chapter WorkflowTypes
+  cites Accp chapter AccpJson
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+
+Section: Wire
+
+  bar-call : Text -> [Console] AccpObject
+  bar-call (request) = act
+    print-line-uni request
+    response <- read-line
+    when response
+      is Just (line) -> aj-object line
+      is None -> AccpObject { fields = [], ok = False }
+  end
+
+  bar-field : Text, Text -> Text
+  bar-field (key) (value) = aj-quote key & ":" & aj-quote value
+
+  bar-request : Text, Text -> Text
+  bar-request (op) (fields) = "{" & bar-field "op" op & fields & "}"
+
+  bar-pair : Text, BuildArtifactRef -> Text
+  bar-pair (key) (r) = "," & bar-field key r.bar-id
+
+  bar-code : AccpObject -> Integer
+  bar-code (r) =
+    if r.ok == False then 3
+    else let s = aj-text r "status"
+    in if s == "ok" then 0 else if s == "failed" then 1
+    else if s == "skipped" then 2 else if s == "timeout" then 4 else 3
+
+  bar-supported : BuildOperation -> Boolean
+  bar-supported (op) = when op
+    is HostOnly (name) -> False
+    is otherwise -> True
+
+  bar-kind : BuildArtifactKind -> Integer
+  bar-kind (k) = when k
+    is BaSource -> 0
+    is BaUnit -> 1
+    is BaCompiler -> 2
+    is BaExecutable -> 3
+    is BaOutput -> 4
+    is BaExpected -> 5
+    is BaRecord -> 6
+
+  bar-kinds : BuildOperation -> Boolean
+  bar-kinds (op) = when op
+    is ResolveUnit (s) (u) -> bar-kind s.bar-kind == 0 & bar-kind u.bar-kind == 1
+    is Compile (u) (c) (o) -> bar-kind u.bar-kind == 1 & bar-kind c.bar-kind == 2 & bar-kind o.bar-kind == 3
+    is RunArtifact (p) (o) -> bar-kind p.bar-kind == 3 & bar-kind o.bar-kind == 4
+    is GradeOutput (o) (e) -> bar-kind o.bar-kind == 4 & bar-kind e.bar-kind == 5
+    is CompareBytes (l) (r) -> bar-kind l.bar-kind == bar-kind r.bar-kind
+    is WriteBuildRecord (o) -> bar-kind o.bar-kind == 6
+    is HostOnly (name) -> False
+
+  bar-valid : List BuildAction, Integer -> Boolean
+  bar-valid (actions) (i) =
+    if i >= list-length actions then True
+    else let a = list-at actions i
+    in if bar-supported a.ba-operation == False | bar-kinds a.ba-operation == False | a.ba-guests < 0 | a.ba-guests > 1 | a.ba-timeout-ms <= 0 | a.ba-memory-mb > 2048 then False
+    else bar-valid actions (i + 1)
+
+  bar-known : List BuildArtifactRef, BuildArtifactRef, Integer -> Boolean
+  bar-known (refs) (r) (i) =
+    if i >= list-length refs then False
+    else let known = list-at refs i
+    in if known.bar-id == r.bar-id then bar-kind known.bar-kind == bar-kind r.bar-kind
+    else bar-known refs r (i + 1)
+
+  bar-inputs-ready : List BuildArtifactRef, List BuildArtifactRef, Integer -> Boolean
+  bar-inputs-ready (refs) (available) (i) =
+    if i >= list-length refs then True
+    else if bar-known available (list-at refs i) 0 then bar-inputs-ready refs available (i + 1) else False
+
+  bar-dependencies : List BuildAction, Integer, List BuildArtifactRef -> Boolean
+  bar-dependencies (actions) (i) (available) =
+    if i >= list-length actions then True
+    else let op = (list-at actions i).ba-operation
+    in if bar-inputs-ready (ba-inputs op) available 0 == False then False
+    else bar-dependencies actions (i + 1) (available & ba-outputs op)
+
+Section: Compile Protocol
+
+  bar-compile-header : Text, Integer, Integer -> [Console] Integer
+  bar-compile-header (output) (offset) (count) =
+    if count >= 4096 then 3
+    else act
+      let mark = __heap-save
+      in act
+        r <- bar-call (bar-request "read-compile-line" (",\"offset\":" & show offset))
+        let line = aj-text r "text"
+        in let next = aj-int (aj-get r "next")
+        in if bar-code r /= 0 | next <= offset then 3
+        else if text-starts-with line "SIZE:" then act
+          let size = aj-int (substring line 5 (text-length line - 5))
+          in if size <= 0 then 3
+          else act
+            copied <- bar-call (bar-request "copy-artifact" ("," & bar-field "output" output & ",\"offset\":" & show next & ",\"size\":" & show size))
+            bar-code copied
+          end
+        end
+        else if text-starts-with line "CODEGEN-HALTED" then 1
+        else if text-starts-with line "!EXC" then 3
+        else let restored = __heap-restore mark
+        in bar-compile-header output next (count + 1)
+      end
+    end
+
+Section: Operations
+
+  bar-lines : Text, Integer, Integer, Boolean, List Text -> List Text
+  bar-lines (s) (i) (start) (telemetry) (parts) =
+    if i >= text-length s then list-push parts (substring s start (i - start))
+    else if char-at s i == char-at "\n" 0 then
+      let line = substring s start (i - start)
+      in let skip = telemetry & (text-starts-with line "WD:" | text-starts-with line "HEAP:" | text-starts-with line "STACK:")
+      in bar-lines s (i + 1) (i + 1) telemetry (if skip then parts else list-push parts line)
+    else bar-lines s (i + 1) start telemetry parts
+
+  bar-last : List Text, Integer -> Integer
+  bar-last (lines) (i) =
+    if i < 0 then -1 else if list-at lines i == "" then bar-last lines (i - 1) else i
+
+  bar-join : List Text, Integer, Integer, List Text -> Text
+  bar-join (lines) (i) (last) (parts) =
+    if i > last then text-concat-list parts
+    else bar-join lines (i + 1) last (list-push parts (list-at lines i & "\n"))
+
+  bar-normalize : Text, Boolean -> Text
+  bar-normalize (s) (telemetry) =
+    let lines = bar-lines s 0 0 telemetry []
+    in bar-join lines 0 (bar-last lines (list-length lines - 1)) []
+
+  bar-perform : BuildAction -> [Console] Integer
+  bar-perform (a) =
+    let budget = ",\"guests\":" & show a.ba-guests & ",\"memory_mb\":" & show a.ba-memory-mb & ",\"timeout_ms\":" & show a.ba-timeout-ms
+    in when a.ba-operation
+      is ResolveUnit (source) (bundle) -> act
+        r <- bar-call (bar-request "resolve-unit" (bar-pair "source" source & bar-pair "output" bundle & budget))
+        bar-code r
+      end
+      is Compile (bundle) (compiler) (output) -> act
+        r <- bar-call (bar-request "compile" (bar-pair "unit" bundle & bar-pair "compiler" compiler & budget))
+        if bar-code r /= 0 then bar-code r
+        else bar-compile-header output.bar-id 0 0
+      end
+      is RunArtifact (program) (output) -> act
+        r <- bar-call (bar-request "run-artifact" (bar-pair "program" program & bar-pair "output" output & budget))
+        if bar-code r /= 0 then bar-code r
+        else if aj-text r "exit" /= "1" then 3 else 0
+      end
+      is GradeOutput (output) (expected) -> act
+        r <- bar-call (bar-request "read-output" (bar-pair "output" output & bar-pair "expected" expected))
+        if bar-code r /= 0 then bar-code r
+        else act
+          let actual = bar-normalize (aj-text r "actual") True
+          in let expectedText = bar-normalize (aj-text r "expected") False
+          in act
+            saved <- bar-call (bar-request "write-normalized" ("," & bar-field "text" actual))
+            if bar-code saved /= 0 then bar-code saved else if actual == expectedText then 0 else 1
+          end
+        end
+      end
+      is CompareBytes (left) (right) -> act
+        r <- bar-call (bar-request "compare-bytes" (bar-pair "left" left & bar-pair "right" right))
+        if bar-code r /= 0 then bar-code r
+        else if aj-get r "equal" == "true" then 0 else 1
+      end
+      is WriteBuildRecord (output) -> act
+        r <- bar-call (bar-request "write-record" (bar-pair "output" output))
+        bar-code r
+      end
+      is HostOnly (name) -> 2
+
+Section: Execution
+
+  bar-edges : List TransitionDef, Integer, List Text -> Text
+  bar-edges (ts) (i) (parts) =
+    if i >= list-length ts then text-concat-list parts
+    else let t = list-at ts i
+    in bar-edges ts (i + 1) (list-push parts (t.td-from-step & ">" & t.td-to-step & ";"))
+
+  bar-result : Integer -> BuildResult
+  bar-result (code) =
+    if code == 0 then BuildPassed else if code == 1 then BuildFailed
+    else if code == 2 then BuildSkipped else if code == 4 then BuildTimedOut else BuildCrashed
+
+  bar-result-code : BuildResult -> Integer
+  bar-result-code (result) = when result
+    is BuildPassed -> 0
+    is BuildFailed -> 1
+    is BuildSkipped -> 2
+    is BuildCrashed -> 3
+    is BuildTimedOut -> 4
+
+  bar-execute : BuildAction -> [Console] BuildResult
+  bar-execute (a) = act
+    code <- bar-perform a
+    bar-result code
+  end
+
+  bar-status : Integer -> StepStatus
+  bar-status (code) =
+    if code == 0 then StepCompleted else if code == 2 then StepSkipped
+    else if code == 4 then StepTimedOut else StepFailed
+
+  bar-verdict : Integer -> Text
+  bar-verdict (code) =
+    if code == 0 then "pass" else if code == 1 then "fail"
+    else if code == 2 then "skip" else if code == 4 then "timeout" else "crash"
+
+  bar-loop : BuildActionPlan, ProcessDef, ProcessInstance, Integer -> [Console] Nothing
+  bar-loop (plan) (pd) (pi) (i) =
+    if i >= list-length plan.bap-actions then
+      print-line-uni (bar-request "done" ("," & bar-field "verdict" (if pipe-status-text pi.pi-status == "completed" then "pass" else "crash") & "," & bar-field "workflow" (pipe-status-text pi.pi-status)))
+    else act
+      let mark = __heap-save
+      in act
+        result <- bar-execute (list-at plan.bap-actions i)
+        let code = bar-result-code result
+        in let scratch = __heap-save - mark
+        in let restored = __heap-restore mark
+        in let retained = __heap-save - mark
+        in let next = if code == 0 then pipe-passed pd pi (i + 1) else pipe-exited pd pi code (i + 1)
+        in act
+          acknowledged <- bar-call (bar-request "event" ("," & bar-field "stage" (list-at plan.bap-actions i).ba-name & "," & bar-field "verdict" (bar-verdict code) & "," & bar-field "step_status" (step-status-name (bar-status code)) & "," & bar-field "workflow" (pipe-status-text next.pi-status) & ",\"scratch_bytes\":" & show scratch & ",\"retained_scratch_bytes\":" & show retained))
+          if code == 0 & bar-code acknowledged == 0 then bar-loop plan pd next (i + 1)
+          else print-line-uni (bar-request "done" ("," & bar-field "verdict" (bar-verdict (if bar-code acknowledged == 0 then code else 3)) & "," & bar-field "workflow" (pipe-status-text next.pi-status)))
+        end
+      end
+    end
+
+  opening : [Console] Nothing = act
+    config <- read-line
+    when config
+      is None -> print-line-uni (bar-request "done" ("," & bar-field "verdict" "crash"))
+      is Just (line) -> act
+        let c = aj-object line
+        in let name = aj-text c "plan"
+        in let ms = aj-int (aj-get c "run_ms")
+        in let plan = if name == "compile-test" then ba-compile-test ms else if name == "unsupported-operation" then ba-unsupported else ba-reproduce
+        in let initial = [ba-ref "source" BaSource, ba-ref "compiler" BaCompiler, ba-ref "expected" BaExpected]
+        in if c.ok == False | (name /= "compile-test" & name /= "compile-reproduce" & name /= "unsupported-operation") | bar-valid plan.bap-actions 0 == False | bar-dependencies plan.bap-actions 0 initial == False then
+          print-line-uni (bar-request "done" ("," & bar-field "verdict" "skip"))
+        else let pd = pipeline-to-process (ba-pipeline plan)
+        in act
+          ready <- bar-call (bar-request "preflight" ("," & bar-field "plan" name & "," & bar-field "edges" (bar-edges pd.pd-transitions 0 [])))
+          if bar-code ready == 0 then bar-loop plan pd (pipe-start pd 0) 0
+          else print-line-uni (bar-request "done" ("," & bar-field "verdict" (bar-verdict (bar-code ready))))
+        end
+      end
+  end
+
+Page 1

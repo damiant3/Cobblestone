@@ -523,6 +523,139 @@ Section: Directory Listing
     else let root-sectors = ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
     in gfat-list-walk vol (vol.vol-root-start) root-sectors (-1) []
 
+Section: Windowed Listing
+
+ A window reads rows `from` to `from + n` of a directory and keeps only those.
+ Every sector before the window, and every FAT read between clusters, is read
+ inside a heap bracket that answers integers alone, so a listing allocates the
+ sectors that hold the window's rows and the rows themselves, whatever the
+ directory's length or depth. The cursor is allocated before any bracket and
+ written in place, which is how a bracketed walk hands its position out.
+
+ A slot is 0 at the end of the directory (first byte zero), 1 for a slot the
+ listing skips, 2 for a listed entry. First byte 46 is `.`, which starts only
+ the `.` and `..` entries, because an 8.3 name cannot begin with a dot.
+
+  GfatCursor = record {
+    gc-sector : Integer,
+    gc-remaining : Integer,
+    gc-cluster : Integer,
+    gc-index : Integer,
+    gc-done : Boolean
+  }
+
+  gfat-slot : Integer, Integer -> Integer
+  gfat-slot (buf) (off) =
+    if fat16-is-free-entry buf off then (if peek-byte buf off == 0 then 0 else 1)
+    else if fat16-is-lfn-entry buf off then 1
+    else if fat16-is-volume-label buf off then 1
+    else if peek-byte buf off == 46 then 1
+    else 2
+
+  gfat-slot-count : Integer, Integer, Integer, Integer -> Integer
+  gfat-slot-count (buf) (i) (per) (acc) =
+    if i >= per then acc
+    else let k = gfat-slot buf (i * 32)
+    in if k == 0 then acc
+    else gfat-slot-count buf (i + 1) per (if k == 2 then acc + 1 else acc)
+
+  gfat-slot-take : Fat16Volume, Integer, Integer, Integer, Integer, Integer, Integer, List Fat16DirEntry -> List Fat16DirEntry
+  gfat-slot-take (vol) (buf) (i) (per) (idx) (from) (upto) (acc) =
+    if i >= per then acc
+    else let off = i * 32
+    in let k = gfat-slot buf off
+    in if k == 0 then acc
+    else if k == 1 then gfat-slot-take vol buf (i + 1) per idx from upto acc
+    else if idx < from | idx >= upto then gfat-slot-take vol buf (i + 1) per (idx + 1) from upto acc
+    else let e = if gfat-is32 vol then gfat-read-entry32 buf off else fat16-read-dir-entry buf off
+    in gfat-slot-take vol buf (i + 1) per (idx + 1) from upto (list-push acc e)
+
+  gfat-cursor-at : Fat16Volume, Integer -> GfatCursor
+  gfat-cursor-at (vol) (cur) =
+    if cur < 0 then GfatCursor { gc-sector = vol.vol-root-start, gc-remaining = ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector), gc-cluster = 0 - 1, gc-index = 0, gc-done = False }
+    else if gfat-cluster-ok vol cur == False then GfatCursor { gc-sector = 0, gc-remaining = 0, gc-cluster = 0 - 1, gc-index = 0, gc-done = True }
+    else GfatCursor { gc-sector = fat16-cluster-sector vol cur, gc-remaining = vol.vol-sectors-per-cluster, gc-cluster = cur, gc-index = 0, gc-done = False }
+
+  gfat-cursor-done : GfatCursor -> Integer
+  gfat-cursor-done (c) =
+    let d = __record-set c "gc-done" True
+    in 0
+
+  gfat-cursor-hop : Fat16Volume, GfatCursor -> [Device.Port] Integer
+  gfat-cursor-hop (vol) (c) =
+    if c.gc-cluster < 0 then gfat-cursor-done c
+    else let mk = __heap-save
+    in act
+      nxt <- gfat-next-cluster vol (c.gc-cluster)
+      let r = __heap-restore mk
+      in if gfat-is-end vol nxt | gfat-cluster-ok vol nxt == False then gfat-cursor-done c
+      else let a = __record-set c "gc-cluster" nxt
+      in let b = __record-set c "gc-sector" (fat16-cluster-sector vol nxt)
+      in let d = __record-set c "gc-remaining" (vol.vol-sectors-per-cluster)
+      in 0
+    end
+
+  gfat-cursor-next : GfatCursor, Integer, Boolean -> Integer
+  gfat-cursor-next (c) (k) (ended) =
+    let a = __record-set c "gc-index" (c.gc-index + k)
+    in if ended then gfat-cursor-done c
+    else let b = __record-set c "gc-sector" (c.gc-sector + 1)
+    in let d = __record-set c "gc-remaining" (c.gc-remaining - 1)
+    in 0
+
+  gfat-seek : Fat16Volume, GfatCursor, Integer -> [Device.Port] Integer
+  gfat-seek (vol) (c) (from) = act
+    if c.gc-done then 0
+    else if c.gc-remaining <= 0 then act
+      h <- gfat-cursor-hop vol c
+      gfat-seek vol c from
+    end
+    else let mk = __heap-save
+    in act
+      b <- disk-read-sector (c.gc-sector)
+      let per = (vol.vol-bytes-per-sector) / 32
+      in let k = if b.dr-ok then gfat-slot-count (b.dr-buf) 0 per 0 else 0
+      in let ended = if b.dr-ok then gfat-sector-has-end (b.dr-buf) per else True
+      in let r = __heap-restore mk
+      in if c.gc-index + k > from then 0
+      else let n = gfat-cursor-next c k ended
+      in gfat-seek vol c from
+    end
+  end
+
+  gfat-take : Fat16Volume, GfatCursor, Integer, Integer, List Fat16DirEntry -> [Device.Port] List Fat16DirEntry
+  gfat-take (vol) (c) (from) (upto) (acc) = act
+    if c.gc-done | c.gc-index >= upto then acc
+    else if c.gc-remaining <= 0 then act
+      h <- gfat-cursor-hop vol c
+      gfat-take vol c from upto acc
+    end
+    else act
+      b <- disk-read-sector (c.gc-sector)
+      if b.dr-ok == False then acc
+      else let per = (vol.vol-bytes-per-sector) / 32
+      in let acc2 = gfat-slot-take vol (b.dr-buf) 0 per (c.gc-index) from upto acc
+      in let n = gfat-cursor-next c (gfat-slot-count (b.dr-buf) 0 per 0) (gfat-sector-has-end (b.dr-buf) per)
+      in gfat-take vol c from upto acc2
+    end
+  end
+
+  gfat-dir-count : Fat16Volume, Integer -> [Device.Port] Integer
+  gfat-dir-count (vol) (cur) =
+    let c = gfat-cursor-at vol cur
+    in act
+      s <- gfat-seek vol c 2147483647
+      c.gc-index
+    end
+
+  gfat-dir-window : Fat16Volume, Integer, Integer, Integer -> [Device.Port] List Fat16DirEntry
+  gfat-dir-window (vol) (cur) (from) (n) =
+    let c = gfat-cursor-at vol cur
+    in act
+      s <- gfat-seek vol c from
+      gfat-take vol c from (from + n) []
+    end
+
 Section: File Reading
 
   gfat-read-into : Fat16Volume, Integer, Integer, Integer -> [Device.Port] Integer

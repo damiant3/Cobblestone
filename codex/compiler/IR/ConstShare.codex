@@ -1,0 +1,396 @@
+Chapter: Const Share
+
+Section: Slots
+
+  CsEnv =
+   | CsNil
+   | CsCons (Text) (Integer) (CsEnv)
+
+  CsIndex = record {
+   name : Text,
+   pos : Integer
+  }
+
+  mutable CsCtx = record {
+   unsafe : List Boolean,
+   deps : List (List Integer),
+   consts : List CsIndex,
+   defs : List CsIndex,
+   bases : List Integer,
+   arities : List Integer,
+   ncands : Integer,
+   fields : List CsIndex,
+   fnames : List Text,
+   collect : Boolean
+  }
+
+  cs-sort-index : List CsIndex -> List CsIndex
+  cs-sort-index (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  cs-bsearch : List CsIndex, Text, Integer, Integer -> Integer
+  cs-bsearch (xs) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare ((list-at xs mid).name) name < 0 then cs-bsearch xs name (mid + 1) hi
+      else cs-bsearch xs name lo mid
+
+  cs-find : List CsIndex, Text -> Integer
+  cs-find (xs) (name) =
+   let n = list-length xs
+   in let p = cs-bsearch xs name 0 n
+   in if p >= n then 0 - 1
+      else if (list-at xs p).name == name then (list-at xs p).pos
+      else 0 - 1
+
+Section: Candidates
+
+  cs-int-lits : List IRExpr, Integer -> Boolean
+  cs-int-lits (es) (i) =
+   if i >= list-length es then True
+   else when list-at es i
+    is IrIntLit (v) (sp) -> cs-int-lits es (i + 1)
+    is otherwise -> False
+
+  cs-is-candidate : IRDef -> Boolean
+  cs-is-candidate (d) =
+   if list-length (d.params) > 0 then False
+   else when d.body
+    is IrList (es) (ty) (sp) -> list-length es > 0 & cs-int-lits es 0
+    is otherwise -> False
+
+  cs-collect-cands : List IRDef, Integer, List CsIndex -> List CsIndex
+  cs-collect-cands (defs) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in if cs-is-candidate d then cs-collect-cands defs (i + 1) (list-push acc (CsIndex { name = d.name, pos = list-length acc }))
+      else cs-collect-cands defs (i + 1) acc
+
+  cs-collect-defs : List IRDef, Integer, List CsIndex -> List CsIndex
+  cs-collect-defs (defs) (i) (acc) =
+   if i >= list-length defs then acc
+   else cs-collect-defs defs (i + 1) (list-push acc (CsIndex { name = (list-at defs i).name, pos = i }))
+
+  cs-bases : List IRDef, Integer, Integer, List Integer -> List Integer
+  cs-bases (defs) (i) (next) (acc) =
+   if i >= list-length defs then acc
+   else cs-bases defs (i + 1) (next + list-length ((list-at defs i).params)) (list-push acc next)
+
+  cs-arities : List IRDef, Integer, List Integer -> List Integer
+  cs-arities (defs) (i) (acc) =
+   if i >= list-length defs then acc
+   else cs-arities defs (i + 1) (list-push acc (list-length ((list-at defs i).params)))
+
+  cs-field-index : List Text, Integer, Integer, List CsIndex -> List CsIndex
+  cs-field-index (names) (i) (next) (acc) =
+   if i >= list-length names then acc
+   else let n = list-at names i
+   in if i > 0 & list-at names (i - 1) == n then cs-field-index names (i + 1) next acc
+      else cs-field-index names (i + 1) (next + 1) (list-push acc (CsIndex { name = n, pos = next }))
+
+  cs-fill-bools : Integer, List Boolean -> List Boolean
+  cs-fill-bools (n) (acc) =
+   if list-length acc >= n then acc else cs-fill-bools n (list-push acc False)
+
+  cs-fill-deps : Integer, List (List Integer) -> List (List Integer)
+  cs-fill-deps (n) (acc) =
+   if list-length acc >= n then acc else cs-fill-deps n (list-push acc [])
+
+Section: Marks
+
+  cs-mark-unsafe : CsCtx, Integer -> Integer
+  cs-mark-unsafe (ctx) (s) =
+   if s < 0 | ctx.collect then 0
+   else let u = list-set-at (ctx.unsafe) s True
+   in 0
+
+  cs-add-dep : CsCtx, Integer, Integer -> Integer
+  cs-add-dep (ctx) (s) (target) =
+   if s < 0 | ctx.collect then 0
+   else let d = list-set-at (ctx.deps) s (list-push (list-at (ctx.deps) s) target)
+   in 0
+
+  cs-local : CsEnv, Text -> Integer
+  cs-local (env) (name) =
+   when env
+    is CsNil -> 0 - 2
+    is CsCons (n) (s) (rest) -> if n == name then s else cs-local rest name
+
+  cs-slot : CsCtx, CsEnv, Text -> Integer
+  cs-slot (ctx) (env) (name) =
+   let l = cs-local env name
+   in if l /= 0 - 2 then l
+      else cs-find (ctx.consts) name
+
+  cs-name-slot : CsCtx, CsEnv, IRExpr -> Integer
+  cs-name-slot (ctx) (env) (e) =
+   when e
+    is IrName (n) (ty) (sp) -> cs-slot ctx env n
+    is IrFieldAccess (r) (f) (ty) (sp) -> cs-find (ctx.fields) (cs-field-key f)
+    is otherwise -> 0 - 1
+
+  cs-slash-pos : Text, Integer, Integer -> Integer
+  cs-slash-pos (s) (i) (len) =
+   if i >= len then 0 - 1
+   else if char-code-at s i == char-code '/' then i
+   else cs-slash-pos s (i + 1) len
+
+  cs-field-key : Text -> Text
+  cs-field-key (f) =
+   let p = cs-slash-pos f 0 (text-length f)
+   in if p < 0 then f else substring f 0 p
+
+  cs-note-field : CsCtx, Text, Integer, Boolean -> Integer
+  cs-note-field (ctx) (name) (s) (taint) =
+   if ctx.collect & s >= 0 & taint == False then let __seq = ctx.fnames = list-push (ctx.fnames) name in 0
+   else 0
+
+Section: Walk
+
+  cs-walk-base : CsCtx, IRExpr, CsEnv -> Integer
+  cs-walk-base (ctx) (e) (env) =
+   when e
+    is IrFieldAccess (r) (f) (ty) (sp) -> cs-walk ctx r env False
+    is otherwise -> 0
+
+  cs-walk-read : CsCtx, IRExpr, CsEnv -> Integer
+  cs-walk-read (ctx) (e) (env) =
+   if cs-name-slot ctx env e >= 0 then cs-walk-base ctx e env else cs-walk ctx e env False
+
+  cs-spine-head : IRExpr -> IRExpr
+  cs-spine-head (e) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> cs-spine-head f
+    is otherwise -> e
+
+  cs-spine-len : IRExpr, Integer -> Integer
+  cs-spine-len (e) (n) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> cs-spine-len f (n + 1)
+    is otherwise -> n
+
+  cs-spine-arg : IRExpr, Integer -> IRExpr
+  cs-spine-arg (e) (k) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> if k == 0 then a else cs-spine-arg f (k - 1)
+    is otherwise -> e
+
+  cs-arg : IRExpr, Integer, Integer -> IRExpr
+  cs-arg (e) (n) (j) = cs-spine-arg e (n - 1 - j)
+
+  cs-reader-arity : Text -> Integer
+  cs-reader-arity (n) = if n == "list-at" then 2 else if n == "list-length" then 1 else if n == "__buf-write-bytes" then 3 else 0 - 1
+
+  cs-is-append : IRBinaryOp -> Boolean
+  cs-is-append (op) =
+   when op
+    is IrAppendList -> True
+    is otherwise -> False
+
+  cs-reader-list-arg : Text -> Integer
+  cs-reader-list-arg (n) = if n == "__buf-write-bytes" then 2 else 0
+
+  cs-walk-spine : CsCtx, IRExpr, Integer, Integer, CsEnv -> Integer
+  cs-walk-spine (ctx) (e) (n) (j) (env) = cs-walk-spine-skip ctx e n j (0 - 1) env
+
+  cs-walk-spine-skip : CsCtx, IRExpr, Integer, Integer, Integer, CsEnv -> Integer
+  cs-walk-spine-skip (ctx) (e) (n) (j) (skip) (env) =
+   if j >= n then 0
+   else let w = if j == skip then 0 else cs-walk ctx (cs-arg e n j) env False
+   in cs-walk-spine-skip ctx e n (j + 1) skip env
+
+  cs-call-args : CsCtx, IRExpr, Integer, Integer, Integer, CsEnv -> Integer
+  cs-call-args (ctx) (e) (n) (base) (j) (env) =
+   if j >= n then 0
+   else let a = cs-arg e n j
+   in let s = cs-name-slot ctx env a
+   in let w = if s >= 0 then let d = cs-add-dep ctx s (base + j) in cs-walk-base ctx a env else cs-walk ctx a env False
+   in cs-call-args ctx e n base (j + 1) env
+
+  cs-walk-apply : CsCtx, IRExpr, CsEnv -> Integer
+  cs-walk-apply (ctx) (e) (env) =
+   let head = cs-spine-head e
+   in let n = cs-spine-len e 0
+   in when head
+    is IrName (hn) (hty) (hsp) ->
+     if cs-local env hn /= 0 - 2 | cs-find (ctx.consts) hn >= 0 then let m = cs-mark-unsafe ctx (cs-slot ctx env hn) in cs-walk-spine ctx e n 0 env
+     else let di = cs-find (ctx.defs) hn
+     in if di >= 0 & list-at (ctx.arities) di == n & n > 0
+        then cs-call-args ctx e n (ctx.ncands + list-at (ctx.bases) di) 0 env
+     else if di < 0 & cs-reader-arity hn == n & cs-name-slot ctx env (cs-arg e n (cs-reader-list-arg hn)) >= 0
+        then let b = cs-walk-base ctx (cs-arg e n (cs-reader-list-arg hn)) env in cs-walk-spine-skip ctx e n 0 (cs-reader-list-arg hn) env
+     else cs-walk-spine ctx e n 0 env
+    is otherwise -> let h = cs-walk ctx head env False in cs-walk-spine ctx e n 0 env
+
+  cs-mask : CsEnv, Text -> CsEnv
+  cs-mask (env) (n) = CsCons n (0 - 1) env
+
+  cs-mask-pat : IRPat, CsEnv -> CsEnv
+  cs-mask-pat (p) (env) =
+   when p
+    is IrVarPat (n) (ty) (sp) -> cs-mask env n
+    is IrCtorPat (c) (subs) (ty) (sp) -> cs-mask-pats subs 0 env
+    is IrVecPat (subs) (ty) (sp) -> cs-mask-pats subs 0 env
+    is otherwise -> env
+
+  cs-mask-pats : List IRPat, Integer, CsEnv -> CsEnv
+  cs-mask-pats (ps) (i) (env) =
+   if i >= list-length ps then env
+   else cs-mask-pats ps (i + 1) (cs-mask-pat (list-at ps i) env)
+
+  cs-mask-params : List IRParam, Integer, CsEnv -> CsEnv
+  cs-mask-params (ps) (i) (env) =
+   if i >= list-length ps then env
+   else cs-mask-params ps (i + 1) (cs-mask env ((list-at ps i).name))
+
+  cs-walk-list : CsCtx, List IRExpr, Integer, CsEnv, Boolean -> Integer
+  cs-walk-list (ctx) (es) (i) (env) (taint) =
+   if i >= list-length es then 0
+   else let w = cs-walk ctx (list-at es i) env taint
+   in cs-walk-list ctx es (i + 1) env taint
+
+  cs-walk-branches : CsCtx, List IRBranch, Integer, CsEnv, Boolean -> Integer
+  cs-walk-branches (ctx) (bs) (i) (env) (taint) =
+   if i >= list-length bs then 0
+   else let b = list-at bs i
+   in let benv = cs-mask-pat (b.pattern) env
+   in let w1 = cs-walk ctx (b.body) benv taint
+   in let w2 = cs-walk ctx (b.guard) benv taint
+   in cs-walk-branches ctx bs (i + 1) env taint
+
+  cs-walk-fields : CsCtx, List IRFieldVal, Integer, CsEnv, Boolean -> Integer
+  cs-walk-fields (ctx) (fs) (i) (env) (taint) =
+   if i >= list-length fs then 0
+   else let fv = list-at fs i
+   in let s = cs-name-slot ctx env (fv.value)
+   in let key = cs-field-key (fv.name)
+   in let fsl = cs-find (ctx.fields) key
+   in let w = if taint == False & s >= 0 & fsl >= 0 then let d = cs-add-dep ctx s fsl in cs-walk-base ctx (fv.value) env
+      else let r = cs-note-field ctx key s taint in cs-walk ctx (fv.value) env taint
+   in cs-walk-fields ctx fs (i + 1) env taint
+
+  cs-walk-stmts : CsCtx, List IRActStmt, Integer, CsEnv, Boolean -> Integer
+  cs-walk-stmts (ctx) (ss) (i) (env) (taint) =
+   if i >= list-length ss then 0
+   else when list-at ss i
+    is IrDoBind (n) (t) (v) (sp) -> let w = cs-walk ctx v env taint in cs-walk-stmts ctx ss (i + 1) (cs-mask env n) taint
+    is IrDoExec (v) (sp) -> let w = cs-walk ctx v env taint in cs-walk-stmts ctx ss (i + 1) env taint
+
+  cs-walk-clauses : CsCtx, List IRHandleClause, Integer, CsEnv -> Integer
+  cs-walk-clauses (ctx) (cs) (i) (env) =
+   if i >= list-length cs then 0
+   else let w = cs-walk ctx ((list-at cs i).body) env True
+   in cs-walk-clauses ctx cs (i + 1) env
+
+  cs-walk : CsCtx, IRExpr, CsEnv, Boolean -> Integer
+  cs-walk (ctx) (e) (env) (taint) =
+   when e
+    is IrName (n) (ty) (sp) -> cs-mark-unsafe ctx (cs-slot ctx env n)
+    is IrApply (f) (a) (ty) (sp) ->
+     if taint then let w = cs-walk ctx f env True in cs-walk ctx a env True
+     else cs-walk-apply ctx e env
+    is IrLet (n) (ty) (v) (b) (sp) ->
+     let s = cs-name-slot ctx env v
+     in if s >= 0 & taint == False then let w = cs-walk-base ctx v env in cs-walk ctx b (CsCons n s env) taint
+        else let w = cs-walk ctx v env taint
+        in cs-walk ctx b (cs-mask env n) taint
+    is IrLambda (ps) (b) (ty) (sp) -> cs-walk ctx b (cs-mask-params ps 0 env) True
+    is IrNegate (x) (ty) (sp) -> cs-walk ctx x env taint
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     if taint == False & cs-is-append op then let w = cs-walk-read ctx l env in cs-walk-read ctx r env
+     else let w = cs-walk ctx l env taint in cs-walk ctx r env taint
+    is IrIf (c) (t) (el) (ty) (sp) -> let w1 = cs-walk ctx c env taint in let w2 = cs-walk ctx t env taint in cs-walk ctx el env taint
+    is IrList (es) (ty) (sp) -> cs-walk-list ctx es 0 env taint
+    is IrMatch (s) (bs) (ty) (sp) -> let w = cs-walk ctx s env taint in cs-walk-branches ctx bs 0 env taint
+    is IrAct (ss) (ty) (sp) -> cs-walk-stmts ctx ss 0 env taint
+    is IrRecord (n) (fs) (ty) (sp) -> cs-walk-fields ctx fs 0 env taint
+    is IrFieldAccess (r) (f) (ty) (sp) -> let m = cs-mark-unsafe ctx (cs-find (ctx.fields) (cs-field-key f)) in cs-walk ctx r env taint
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> let w = cs-walk ctx r env taint in cs-walk ctx v env taint
+    is IrFork (x) (ty) (sp) -> cs-walk ctx x env True
+    is IrAwait (x) (ty) (sp) -> cs-walk ctx x env True
+    is IrWithTimeout (t) (effs) (scopes) (b) (ty) (sp) -> cs-walk ctx b env True
+    is IrHandle (eff) (b) (cls) (ty) (sp) -> let w = cs-walk ctx b env True in cs-walk-clauses ctx cls 0 env
+    is IrTry (n) (body) (fb) (fl) (ty) (sp) -> let w1 = cs-walk-stmts ctx body 0 env True in let w2 = cs-walk-stmts ctx fb 0 env True in cs-walk-stmts ctx fl 0 env True
+    is otherwise -> 0
+
+  cs-param-env : List IRParam, Integer, Integer, CsEnv -> CsEnv
+  cs-param-env (ps) (base) (i) (acc) =
+   if i >= list-length ps then acc
+   else cs-param-env ps base (i + 1) (CsCons ((list-at ps i).name) (base + i) acc)
+
+  cs-walk-defs : CsCtx, List IRDef, Integer -> Integer
+  cs-walk-defs (ctx) (defs) (i) =
+   if i >= list-length defs then 0
+   else let d = list-at defs i
+   in let env = cs-param-env (d.params) (ctx.ncands + list-at (ctx.bases) i) 0 CsNil
+   in let w = if cs-is-candidate d then 0 else cs-walk ctx (d.body) env False
+   in cs-walk-defs ctx defs (i + 1)
+
+Section: Fixpoint
+
+  cs-deps-unsafe : CsCtx, List Integer, Integer -> Boolean
+  cs-deps-unsafe (ctx) (ds) (i) =
+   if i >= list-length ds then False
+   else if list-at (ctx.unsafe) (list-at ds i) then True
+   else cs-deps-unsafe ctx ds (i + 1)
+
+  cs-pass : CsCtx, Integer, Integer, Boolean -> Boolean
+  cs-pass (ctx) (s) (n) (changed) =
+   if s >= n then changed
+   else if list-at (ctx.unsafe) s then cs-pass ctx (s + 1) n changed
+   else if cs-deps-unsafe ctx (list-at (ctx.deps) s) 0
+     then let m = cs-mark-unsafe ctx s in cs-pass ctx (s + 1) n True
+   else cs-pass ctx (s + 1) n changed
+
+  cs-fixpoint : CsCtx, Integer, Integer -> Boolean
+  cs-fixpoint (ctx) (n) (fuel) =
+   if fuel <= 0 then False
+   else if cs-pass ctx 0 n False then cs-fixpoint ctx n (fuel - 1)
+   else True
+
+  cs-safe-names : CsCtx, List CsIndex, Integer, List Text -> List Text
+  cs-safe-names (ctx) (cands) (i) (acc) =
+   if i >= list-length cands then acc
+   else let c = list-at cands i
+   in if list-at (ctx.unsafe) (c.pos) then cs-safe-names ctx cands (i + 1) acc
+      else cs-safe-names ctx cands (i + 1) (list-push acc (c.name))
+
+Section: Entry
+
+  shared-const-names : List IRDef -> List Text
+  shared-const-names (defs) =
+   let cands = cs-collect-cands defs 0 []
+   in if list-length cands == 0 then []
+   else let bases = cs-bases defs 0 0 []
+   in let nparams = if list-length defs == 0 then 0 else list-at bases (list-length defs - 1) + list-length ((list-at defs (list-length defs - 1)).params)
+   in let consts = cs-sort-index cands
+   in let didx = cs-sort-index (cs-collect-defs defs 0 [])
+   in let arities = cs-arities defs 0 []
+   in let pre = CsCtx {
+     unsafe = [],
+     deps = [],
+     consts = consts,
+     defs = didx,
+     bases = bases,
+     arities = arities,
+     ncands = list-length cands,
+     fields = [],
+     fnames = [],
+     collect = True
+    }
+   in let w0 = cs-walk-defs pre defs 0
+   in let fields = cs-field-index (sort-by (pre.fnames) (\a b -> text-compare a b)) 0 (list-length cands + nparams) []
+   in let nslots = list-length cands + nparams + list-length fields
+   in let ctx = CsCtx {
+     unsafe = cs-fill-bools nslots (__list-with-capacity nslots),
+     deps = cs-fill-deps nslots (__list-with-capacity nslots),
+     consts = consts,
+     defs = didx,
+     bases = bases,
+     arities = arities,
+     ncands = list-length cands,
+     fields = fields,
+     fnames = [],
+     collect = False
+    }
+   in let w = cs-walk-defs ctx defs 0
+   in if cs-fixpoint ctx nslots 64 then cs-safe-names ctx cands 0 [] else []

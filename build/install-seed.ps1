@@ -77,6 +77,33 @@ function Get-CdxContentField([string]$Path) {
     } finally { $fs.Dispose() }
 }
 
+# -- 0. the rechecker's builtin names must match the compiler about to become the seed
+#
+# A builtin reaches the language only through a seed, and this script is the
+# only way a seed moves, so this is where a stale codex/plugs/recheck list is
+# caught. The recheck plug's own build checks it too, and nothing builds that
+# plug unless the plug itself changed.
+
+$genBuiltins = Join-Path $Repo 'codex\plugs\recheck\gen-builtins.ps1'
+$gbOut = & pwsh -NoProfile -File $genBuiltins -Check 2>&1
+if ($LASTEXITCODE -ne 0) {
+    $gbOut | ForEach-Object { Write-Host "  $_" }
+    Deny 'codex/plugs/recheck/RecheckBuiltins.codex is stale against codex/compiler/Types/Builtins.codex. Run codex/plugs/recheck/gen-builtins.ps1 and put the result in this changelist.'
+}
+
+# -- 0b. seed/constants.hash must describe the source this seed is built from
+#
+# build.ps1 refreshes it at the end of a gate; a lane seed never passes through
+# that line, and a constant change landed with a stale hash twice on 2026-09-23/24
+# (before 26576, after 26691), each found later and refreshed by hand.
+
+$chkConst = Join-Path $Repo 'build\check-constants.ps1'
+$ccOut = & pwsh -NoProfile -File $chkConst 2>&1
+if ($LASTEXITCODE -ne 0) {
+    $ccOut | ForEach-Object { Write-Host "  $_" }
+    Deny 'seed/constants.hash does not match the constants in codex/compiler (Emit/X86_64Boot.codex, Core/BuildSettings.codex). Run p4 edit seed/constants.hash, then build/check-constants.ps1 -Update, and put it in this changelist.'
+}
+
 # -- 1L. lane mode: re-derive the fixed point rather than read a claim about it
 
 if ($Lane) {

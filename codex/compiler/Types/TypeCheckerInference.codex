@@ -1387,7 +1387,7 @@ Section: Infer List
      in CheckResult {
       inferred-type = fr-ty,
       effect-row = empty-row,
-      state = record-expr-type fr-st span fr-ty
+      state = record-empty-list (record-expr-type fr-st span fr-ty) span fr-ty
      }
     else let first = infer-expr-at st env (list-at elems 0) (depth + 1)
     in let (elems-row, st2) = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems) (first.effect-row) depth
@@ -1764,10 +1764,13 @@ Section: Infer Expression (dispatch)
      in when record-type
         is RecordTy (rname) (rargs) (rfields) ->
          let raw-ftype = lookup-record-field rfields (field.value)
-     in let ftype = apply-type-args-subst rargs cargs raw-ftype 0 (list-length rargs)
+     in let subst-ftype = apply-type-args-subst rargs cargs raw-ftype 0 (list-length rargs)
+     in let (ftype, fl-st) = if method-local-field-p env (cname.value) (field.value)
+            then freshen-method-local (r.state) (env-lookup env (cname.value)) rargs subst-ftype
+            else (subst-ftype, r.state)
      in let st2 = when raw-ftype
-            is ErrorTy -> add-unify-error (r.state) cdx-unknown-record-field ("Record type '" & cname.value & "' has no field '" & field.value & "'") s
-            is otherwise -> r.state
+            is ErrorTy -> add-unify-error fl-st cdx-unknown-record-field ("Record type '" & cname.value & "' has no field '" & field.value & "'") s
+            is otherwise -> fl-st
      in CheckResult {
           inferred-type = ftype,
           effect-row = r.effect-row,
@@ -1801,10 +1804,13 @@ Section: Infer Expression (dispatch)
      in let (fields-row, st2) = infer-and-unify-record-fields inst-st env fields result-type 0 (list-length fields) empty-row depth
      in let st3 = check-mutation-in-ctor-fields (record-expr-type st2 s result-type) fields 0 (list-length fields)
      in let st4 = check-record-complete st3 fields result-type s
+     in let st5 = if is-synthetic-span s == False & method-local-dict-p env (name.value)
+          then add-unify-error st4 cdx-class-dict-by-hand ("'" & name.value & "' is the dictionary of a class whose methods are generic in type variables of their own, and only an instance declaration builds one: a field written here is not checked to answer every choice of those variables. Declare an instance of the class instead") s
+          else st4
      in CheckResult {
       inferred-type = result-type,
       effect-row = fields-row,
-      state = st4
+      state = st5
      }
     is AHandleExpr (eff) (body) (clauses) (s) ->
      let body-r = infer-expr-at st env body (depth + 1)
@@ -2032,6 +2038,46 @@ Section: Infer Expression (dispatch)
   resolve-constructed-to-record (env) (name) =
    if env-has env name then strip-fun-args (env-lookup env name)
    else ErrorTy
+
+  method-local-dict-p : TypeEnv, Text -> Boolean
+  method-local-dict-p (env) (record-name) =
+   if env-has env "__method-local" == False then False
+   else when env-lookup env "__method-local"
+    is RecordTy (mn) (ma) (dicts) ->
+     when lookup-record-field dicts record-name
+      is RecordTy (dn) (da) (fields) -> True
+      is otherwise -> False
+    is otherwise -> False
+
+  method-local-field-p : TypeEnv, Text, Text -> Boolean
+  method-local-field-p (env) (record-name) (field-name) =
+   if env-has env "__method-local" == False then False
+   else when env-lookup env "__method-local"
+    is RecordTy (mn) (ma) (dicts) ->
+     when lookup-record-field dicts record-name
+      is RecordTy (dn) (da) (fields) ->
+       when lookup-record-field fields field-name
+        is ErrorTy -> False
+        is otherwise -> True
+      is otherwise -> False
+    is otherwise -> False
+
+  freshen-method-local : UnificationState, CodexType, List CodexType, CodexType -> (CodexType, UnificationState)
+  freshen-method-local (st) (ctor-ty) (rargs) (ftype) =
+   when ctor-ty
+    is ForAllTy (var-id) (body) ->
+     if type-list-has-var rargs var-id 0 then freshen-method-local st body rargs ftype
+     else let (fr-ty, fr-st) = fresh-and-advance st
+     in freshen-method-local fr-st body rargs (subst-type-var ftype var-id fr-ty)
+    is ForAllEff (row-id) (body) -> freshen-method-local st body rargs ftype
+    is otherwise -> (ftype, st)
+
+  type-list-has-var : List CodexType, Integer, Integer -> Boolean
+  type-list-has-var (tys) (var-id) (i) =
+   if i >= list-length tys then False
+   else when list-at tys i
+    is TypeVar (id) -> if id == var-id then True else type-list-has-var tys var-id (i + 1)
+    is otherwise -> type-list-has-var tys var-id (i + 1)
 
   apply-type-args-subst : List CodexType, List CodexType, CodexType, Integer, Integer -> CodexType
   apply-type-args-subst (generic) (concrete-args) (ty) (i) (len) =

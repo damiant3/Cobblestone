@@ -12,25 +12,78 @@ Section: Layout Item
     li-min-w : Integer,
     li-min-h : Integer,
     li-flex : Integer,
-    li-margin : Edges
+    li-margin : Edges,
+    li-max-w : Integer,
+    li-max-h : Integer,
+    li-pref-w : Integer,
+    li-pref-h : Integer,
+    li-align : Integer
   }
 
   LayoutResult = record {
     lrs : List LayoutRect,
-    lr-count : Integer
+    lr-count : Integer,
+    lr-used-w : Integer,
+    lr-used-h : Integer
   }
+
+  layout-overflow-w : LayoutResult, LayoutRect -> Integer
+  layout-overflow-w (result) (viewport) = box-clamp0 (result.lr-used-w - viewport.lr-w)
+
+  layout-overflow-h : LayoutResult, LayoutRect -> Integer
+  layout-overflow-h (result) (viewport) = box-clamp0 (result.lr-used-h - viewport.lr-h)
 
 Section: Construction
   layout-item : Integer, Integer, Integer -> LayoutItem
   layout-item (minw) (minh) (flex) =
-    LayoutItem { li-min-w = minw, li-min-h = minh, li-flex = flex, li-margin = edges-zero }
+    LayoutItem { li-min-w = minw, li-min-h = minh, li-flex = flex, li-margin = edges-zero, li-max-w = 0, li-max-h = 0, li-pref-w = 0, li-pref-h = 0, li-align = 0 }
 
   layout-item-m : Integer, Integer, Integer, Edges -> LayoutItem
   layout-item-m (minw) (minh) (flex) (margin) =
-    LayoutItem { li-min-w = minw, li-min-h = minh, li-flex = flex, li-margin = margin }
+    LayoutItem { li-min-w = minw, li-min-h = minh, li-flex = flex, li-margin = margin, li-max-w = 0, li-max-h = 0, li-pref-w = 0, li-pref-h = 0, li-align = 0 }
+
+ A maximum of 0 is unbounded, and a maximum below the minimum yields to it.
+
+  layout-item-mx : Integer, Integer, Integer, Edges, Integer, Integer -> LayoutItem
+  layout-item-mx (minw) (minh) (flex) (margin) (maxw) (maxh) =
+    LayoutItem { li-min-w = minw, li-min-h = minh, li-flex = flex, li-margin = margin, li-max-w = maxw, li-max-h = maxh, li-pref-w = 0, li-pref-h = 0, li-align = 0 }
+
+ A preferred size of 0 is none. A flex item's preferred size is its basis:
+ growth shares what is left above the bases, and a shortage shrinks the bases
+ toward the minimums in proportion to how far each sits above its minimum.
+
+  layout-item-full : Integer, Integer, Integer, Edges, Integer, Integer, Integer, Integer -> LayoutItem
+  layout-item-full (minw) (minh) (flex) (margin) (maxw) (maxh) (prefw) (prefh) =
+    LayoutItem { li-min-w = minw, li-min-h = minh, li-flex = flex, li-margin = margin, li-max-w = maxw, li-max-h = maxh, li-pref-w = prefw, li-pref-h = prefh, li-align = 0 }
+
+ An alignment places an item across the line. Stretch, the default, fills it
+ as every item always has; the others take the item's own cross size, its
+ minimum or preferred size under its maximum, and put it at the start, the
+ centre or the end. An item larger than its line starts at the line's start.
+
+  align-stretch : Integer = 0
+  align-start : Integer = 1
+  align-center : Integer = 2
+  align-end : Integer = 3
+
+  layout-item-align : LayoutItem, Integer -> LayoutItem
+  layout-item-align (item) (a) =
+    LayoutItem { li-min-w = item.li-min-w, li-min-h = item.li-min-h, li-flex = item.li-flex, li-margin = item.li-margin, li-max-w = item.li-max-w, li-max-h = item.li-max-h, li-pref-w = item.li-pref-w, li-pref-h = item.li-pref-h, li-align = a }
+
+  flex-cross-len : LayoutItem, Integer, Integer, Integer, Integer, Integer -> Integer
+  flex-cross-len (item) (lo) (hi) (pref) (margin) (extent) =
+    if item.li-align == align-stretch then flex-cross-size lo hi margin extent
+    else let own = box-max lo pref
+    in (if hi > 0 then box-min own (box-max hi lo) else own) + margin
+
+  flex-cross-off : LayoutItem, Integer, Integer -> Integer
+  flex-cross-off (item) (len) (extent) =
+    if item.li-align == align-center then box-clamp0 ((extent - len) / 2)
+    else if item.li-align == align-end then box-clamp0 (extent - len)
+    else 0
 
 Section: Flex Layout
-  flex-layout : LayoutRect, LayoutDir, Integer, List LayoutItem, Integer -> LayoutResult
+  flex-layout :LayoutRect, LayoutDir, Integer, List LayoutItem, Integer -> LayoutResult
   flex-layout (container) (dir) (gap) (items) (count) =
     when dir
       is DirRow -> flex-row container gap items count
@@ -40,68 +93,217 @@ Section: Row Layout
   flex-row : LayoutRect, Integer, List LayoutItem, Integer -> LayoutResult
   flex-row (container) (gap) (items) (count) =
     let total-gap = if count > 1 then gap * (count - 1) else 0
-    in let fixed = flex-sum-fixed-w items 0 count 0
-    in let total-flex = flex-sum-flex items 0 count 0
+    in let grow = flex-grow-items items count DirRow 0 []
+    in let fixed = flex-sum-fixed-w grow 0 count 0
+    in let total-flex = flex-sum-flex grow 0 count 0
     in let avail = box-clamp0 (container.lr-w - total-gap - fixed)
-    in flex-row-place container gap items count total-flex avail 0 container.lr-x []
+    in let plan = flex-plan items count DirRow avail
+    in let budget = flex-fit grow count DirRow plan.fp-excess total-flex plan.fp-excess total-flex (count + 1)
+    in flex-row-place container gap items grow count budget.fb-weight budget.fb-space plan 0 0 0 container.lr-x []
 
-  flex-row-place : LayoutRect, Integer, List LayoutItem, Integer, Integer, Integer, Integer, Integer, List LayoutRect -> LayoutResult
-  flex-row-place (container) (gap) (items) (count) (total-flex) (avail) (i) (cursor) (acc) =
-    if i >= count then LayoutResult { lrs = acc, lr-count = count }
+  flex-row-place : LayoutRect, Integer, List LayoutItem, List LayoutItem, Integer, Integer, Integer, FlexPlan, Integer, Integer, Integer, Integer, List LayoutRect -> LayoutResult
+  flex-row-place (container) (gap) (items) (grow) (count) (total-flex) (avail) (plan) (used) (cum) (i) (cursor) (acc) =
+    if i >= count then LayoutResult { lrs = acc, lr-count = count,
+      lr-used-w = if count > 0 then cursor - container.lr-x - gap else 0,
+      lr-used-h = if count > 0 then flex-cross items count DirRow 0 container.lr-h else 0 }
     else let item = list-at items i
-    in let mw = item.li-min-w + edges-h (item.li-margin)
-    in let w = if item.li-flex > 0 then
-        if total-flex > 0 then box-max mw (item.li-flex * avail / total-flex)
-        else mw
-      else mw
-    in let h = box-max (item.li-min-h + edges-v (item.li-margin)) (container.lr-h)
-    in let r = box-margin-rect (layout-rect cursor (container.lr-y) w h) (item.li-margin)
+    in let st = flex-step item (list-at grow i) DirRow (edges-h (item.li-margin)) avail total-flex plan used cum
+    in let w = st.fs-size
+    in let h = flex-cross-len item (item.li-min-h) (item.li-max-h) (item.li-pref-h) (edges-v (item.li-margin)) (container.lr-h)
+    in let r = box-margin-rect (layout-rect cursor (container.lr-y + flex-cross-off item h (container.lr-h)) w h) (item.li-margin)
     in let next = cursor + w + gap
-    in flex-row-place container gap items count total-flex avail (i + 1) next (list-push acc r)
+    in flex-row-place container gap items grow count total-flex avail plan (st.fs-used) (st.fs-cum) (i + 1) next (list-push acc r)
 
 Section: Column Layout
   flex-col : LayoutRect, Integer, List LayoutItem, Integer -> LayoutResult
   flex-col (container) (gap) (items) (count) =
     let total-gap = if count > 1 then gap * (count - 1) else 0
-    in let fixed = flex-sum-fixed-h items 0 count 0
-    in let total-flex = flex-sum-flex items 0 count 0
+    in let grow = flex-grow-items items count DirColumn 0 []
+    in let fixed = flex-sum-fixed-h grow 0 count 0
+    in let total-flex = flex-sum-flex grow 0 count 0
     in let avail = box-clamp0 (container.lr-h - total-gap - fixed)
-    in flex-col-place container gap items count total-flex avail 0 container.lr-y []
+    in let plan = flex-plan items count DirColumn avail
+    in let budget = flex-fit grow count DirColumn plan.fp-excess total-flex plan.fp-excess total-flex (count + 1)
+    in flex-col-place container gap items grow count budget.fb-weight budget.fb-space plan 0 0 0 container.lr-y []
 
-  flex-col-place : LayoutRect, Integer, List LayoutItem, Integer, Integer, Integer, Integer, Integer, List LayoutRect -> LayoutResult
-  flex-col-place (container) (gap) (items) (count) (total-flex) (avail) (i) (cursor) (acc) =
-    if i >= count then LayoutResult { lrs = acc, lr-count = count }
+  flex-col-place : LayoutRect, Integer, List LayoutItem, List LayoutItem, Integer, Integer, Integer, FlexPlan, Integer, Integer, Integer, Integer, List LayoutRect -> LayoutResult
+  flex-col-place (container) (gap) (items) (grow) (count) (total-flex) (avail) (plan) (used) (cum) (i) (cursor) (acc) =
+    if i >= count then LayoutResult { lrs = acc, lr-count = count,
+      lr-used-w = if count > 0 then flex-cross items count DirColumn 0 container.lr-w else 0,
+      lr-used-h = if count > 0 then cursor - container.lr-y - gap else 0 }
     else let item = list-at items i
-    in let mh = item.li-min-h + edges-v (item.li-margin)
-    in let h = if item.li-flex > 0 then
-        if total-flex > 0 then box-max mh (item.li-flex * avail / total-flex)
-        else mh
-      else mh
-    in let w = box-max (item.li-min-w + edges-h (item.li-margin)) (container.lr-w)
-    in let r = box-margin-rect (layout-rect (container.lr-x) cursor w h) (item.li-margin)
+    in let st = flex-step item (list-at grow i) DirColumn (edges-v (item.li-margin)) avail total-flex plan used cum
+    in let h = st.fs-size
+    in let w = flex-cross-len item (item.li-min-w) (item.li-max-w) (item.li-pref-w) (edges-h (item.li-margin)) (container.lr-w)
+    in let r = box-margin-rect (layout-rect (container.lr-x + flex-cross-off item w (container.lr-w)) cursor w h) (item.li-margin)
     in let next = cursor + h + gap
-    in flex-col-place container gap items count total-flex avail (i + 1) next (list-push acc r)
+    in flex-col-place container gap items grow count total-flex avail plan (st.fs-used) (st.fs-cum) (i + 1) next (list-push acc r)
+
+Section: Minimum-Constrained Flex
+
+ Each pass freezes at least one additional minimum or terminates. The scan
+ uses scalar accumulators and allocates one budget per pass, not per item.
+ Worst case is quadratic time and linear temporary storage in child count.
+ Cumulative shares assign every integer pixel without rounding gaps.
+
+  FlexBudget = record { fb-space : Integer, fb-weight : Integer }
+
+  flex-main-min : LayoutItem, LayoutDir -> Integer
+  flex-main-min (item) (dir) = when dir
+    is DirRow -> item.li-min-w
+    is DirColumn -> item.li-min-h
+
+  flex-main-max : LayoutItem, LayoutDir -> Integer
+  flex-main-max (item) (dir) =
+    let mx = when dir
+      is DirRow -> item.li-max-w
+      is DirColumn -> item.li-max-h
+    in if mx <= 0 then 0 else box-max mx (flex-main-min item dir)
+
+  flex-capped : LayoutItem, LayoutDir, Integer, Integer -> Boolean
+  flex-capped (item) (dir) (space) (weight) =
+    item.li-flex > 0 & weight > 0 & flex-main-max item dir > 0 & flex-main-max item dir * weight < space * item.li-flex
+
+  flex-active : LayoutItem, LayoutDir, Integer, Integer -> Boolean
+  flex-active (item) (dir) (space) (weight) =
+    item.li-flex > 0 & weight > 0 & flex-main-min item dir * weight <= space * item.li-flex & flex-capped item dir space weight == False
+
+  flex-locked : List LayoutItem, Integer, LayoutDir, Integer, Integer, Integer, Integer, Integer -> FlexBudget
+  flex-locked (items) (count) (dir) (space) (weight) (i) (taken) (frozen) =
+    if i >= count then FlexBudget { fb-space = taken, fb-weight = frozen }
+    else let item = list-at items i
+    in if item.li-flex > 0 & flex-active item dir space weight == False then
+      let size = if flex-capped item dir space weight then flex-main-max item dir else flex-main-min item dir
+      in flex-locked items count dir space weight (i + 1) (taken + size) (frozen + item.li-flex)
+    else flex-locked items count dir space weight (i + 1) taken frozen
+
+ A cap freed by one pass can lift a share over another item's minimum or cap
+ in the next, so the passes are fuelled at one per item rather than trusted to
+ converge.
+
+  flex-fit : List LayoutItem, Integer, LayoutDir, Integer, Integer, Integer, Integer, Integer -> FlexBudget
+  flex-fit (items) (count) (dir) (available) (total) (space) (weight) (fuel) =
+    if weight <= 0 then FlexBudget { fb-space = 0, fb-weight = 0 }
+    else if fuel <= 0 then FlexBudget { fb-space = space, fb-weight = weight }
+    else let locked = flex-locked items count dir space weight 0 0 0
+    in let next-weight = total - locked.fb-weight
+    in let next-space = box-clamp0 (available - locked.fb-space)
+    in if next-weight == weight then FlexBudget { fb-space = next-space, fb-weight = next-weight }
+    else flex-fit items count dir available total next-space next-weight (fuel - 1)
+
+  flex-cross-size : Integer, Integer, Integer, Integer -> Integer
+  flex-cross-size (lo) (hi) (margin) (extent) =
+    let s = box-max (lo + margin) extent
+    in if hi <= 0 then s else box-min s (box-max hi lo + margin)
+
+  flex-frozen-size : LayoutItem, LayoutDir, Integer, Integer, Integer -> Integer
+  flex-frozen-size (item) (dir) (space) (weight) (margin) =
+    if flex-capped item dir space weight then flex-main-max item dir + margin
+    else flex-main-min item dir + margin
+
+  flex-cross : List LayoutItem, Integer, LayoutDir, Integer, Integer -> Integer
+  flex-cross (items) (count) (dir) (i) (largest) =
+    if i >= count then largest
+    else let item = list-at items i
+    in let size = when dir
+      is DirRow -> item.li-min-h + edges-v (item.li-margin)
+      is DirColumn -> item.li-min-w + edges-h (item.li-margin)
+    in flex-cross items count dir (i + 1) (box-max largest size)
+
+Section: Preferred Sizes
+
+  FlexPlan = record { fp-excess : Integer, fp-d : Integer, fp-room : Integer }
+
+  FlexStep = record { fs-size : Integer, fs-used : Integer, fs-cum : Integer }
+
+  flex-pref-main : LayoutItem, LayoutDir -> Integer
+  flex-pref-main (item) (dir) = when dir
+    is DirRow -> item.li-pref-w
+    is DirColumn -> item.li-pref-h
+
+  flex-basis : LayoutItem, LayoutDir -> Integer
+  flex-basis (item) (dir) =
+    let p = flex-pref-main item dir
+    in if item.li-flex <= 0 | p <= 0 then 0
+    else let b = box-max p (flex-main-min item dir)
+    in let mx = flex-main-max item dir
+    in if mx > 0 then box-min b mx else b
+
+ The item growth sees: its basis is already placed, so its floor is 0 and its
+ cap is what remains of its maximum; a cap the basis already reaches stops
+ growth altogether.
+
+  flex-grow-item : LayoutItem, LayoutDir -> LayoutItem
+  flex-grow-item (item) (dir) =
+    let b = flex-basis item dir
+    in if b == 0 then item
+    else let mx = flex-main-max item dir
+    in let rest = if mx > 0 then mx - b else 0
+    in let fl = if mx > 0 & rest == 0 then 0 else item.li-flex
+    in when dir
+      is DirRow -> LayoutItem { li-min-w = 0, li-min-h = item.li-min-h, li-flex = fl, li-margin = item.li-margin, li-max-w = rest, li-max-h = item.li-max-h, li-pref-w = 0, li-pref-h = item.li-pref-h, li-align = item.li-align }
+      is DirColumn -> LayoutItem { li-min-w = item.li-min-w, li-min-h = 0, li-flex = fl, li-margin = item.li-margin, li-max-w = item.li-max-w, li-max-h = rest, li-pref-w = item.li-pref-w, li-pref-h = 0, li-align = item.li-align }
+
+  flex-grow-items : List LayoutItem, Integer, LayoutDir, Integer, List LayoutItem -> List LayoutItem
+  flex-grow-items (items) (count) (dir) (i) (acc) =
+    if i >= count then acc
+    else flex-grow-items items count dir (i + 1) (list-push acc (flex-grow-item (list-at items i) dir))
+
+  flex-plan-sums : List LayoutItem, Integer, LayoutDir, Integer, Integer, Integer, Integer, Integer -> FlexPlan
+  flex-plan-sums (items) (count) (dir) (avail) (i) (sum-b) (d) (mins) =
+    if i >= count then
+      let excess = avail - sum-b
+      in let shrink = excess < 0 & d > 0
+      in FlexPlan { fp-excess = box-clamp0 excess, fp-d = if shrink then d else 0, fp-room = if shrink then box-clamp0 (avail - mins) else 0 }
+    else let item = list-at items i
+    in let b = flex-basis item dir
+    in let lo = flex-main-min item dir
+    in let d2 = if b > 0 then d + (b - lo) else d
+    in let m2 = if item.li-flex > 0 then mins + lo else mins
+    in flex-plan-sums items count dir avail (i + 1) (sum-b + b) d2 m2
+
+  flex-plan : List LayoutItem, Integer, LayoutDir, Integer -> FlexPlan
+  flex-plan (items) (count) (dir) (avail) = flex-plan-sums items count dir avail 0 0 0 0
+
+ One item's main size. Under shortage (`fp-d` above 0) a preferred item takes
+ its minimum plus its cumulative share of the room left above every minimum,
+ and every other item its minimum; otherwise the item takes its basis plus
+ what the minimum-constrained fit gives it over the excess.
+
+  flex-step : LayoutItem, LayoutItem, LayoutDir, Integer, Integer, Integer, FlexPlan, Integer, Integer -> FlexStep
+  flex-step (item) (g) (dir) (margin) (avail) (weight) (plan) (used) (cum) =
+    let b = flex-basis item dir
+    in if plan.fp-d > 0 then
+      let lo = flex-main-min item dir
+      in if b == 0 then FlexStep { fs-size = lo + margin, fs-used = used, fs-cum = cum }
+      else let next = cum + (b - lo)
+      in FlexStep { fs-size = lo + next * plan.fp-room / plan.fp-d - cum * plan.fp-room / plan.fp-d + margin, fs-used = used, fs-cum = next }
+    else
+      let active = flex-active g dir avail weight
+      in let next-used = if active then used + g.li-flex else used
+      in let grown = if active then next-used * avail / weight - used * avail / weight + margin else flex-frozen-size g dir avail weight margin
+      in FlexStep { fs-size = grown + b, fs-used = next-used, fs-cum = cum }
 
 Section: Summation Helpers
   flex-sum-fixed-w : List LayoutItem, Integer, Integer, Integer -> Integer
   flex-sum-fixed-w (items) (i) (n) (acc) =
     if i >= n then acc
     else let item = list-at items i
-    in let add = if item.li-flex > 0 then 0 else item.li-min-w + edges-h (item.li-margin)
+    in let add = (if item.li-flex > 0 then 0 else item.li-min-w) + edges-h (item.li-margin)
     in flex-sum-fixed-w items (i + 1) n (acc + add)
 
   flex-sum-fixed-h : List LayoutItem, Integer, Integer, Integer -> Integer
   flex-sum-fixed-h (items) (i) (n) (acc) =
     if i >= n then acc
     else let item = list-at items i
-    in let add = if item.li-flex > 0 then 0 else item.li-min-h + edges-v (item.li-margin)
+    in let add = (if item.li-flex > 0 then 0 else item.li-min-h) + edges-v (item.li-margin)
     in flex-sum-fixed-h items (i + 1) n (acc + add)
 
   flex-sum-flex : List LayoutItem, Integer, Integer, Integer -> Integer
   flex-sum-flex (items) (i) (n) (acc) =
     if i >= n then acc
     else let item = list-at items i
-    in flex-sum-flex items (i + 1) n (acc + item.li-flex)
+    in flex-sum-flex items (i + 1) n (acc + box-clamp0 item.li-flex)
 
 Section: Grid Layout
 

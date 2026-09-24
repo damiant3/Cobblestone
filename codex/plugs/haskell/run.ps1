@@ -4,7 +4,8 @@ param(
     [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
     [string]$Ir,
-    [string]$Kernel = ''
+    [string]$Kernel = '',
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -57,5 +58,5 @@ if ($Ir) {
 & pwsh -NoProfile -File (Join-Path $Repo 'build\plug-run.ps1') `
     -IrInput $IrFile -Out $Out `
     -PlugCdx (Join-Path $OutDir 'haskell-plug.cdx') `
-    -MemMB 3072 -Port 9117
+    -MemMB $MemMB -Port 9117
 exit $LASTEXITCODE

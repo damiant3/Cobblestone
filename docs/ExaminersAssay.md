@@ -34,10 +34,13 @@ Each test `foo.codex` may have sidecars that control its behavior:
 |---------|--------|
 | `foo.expected` | Compile must succeed; runtime serial output must match. **Not byte-for-byte** -- see the section below the table |
 | `foo.failing` | Compile must fail with the listed CDX error codes |
+| `foo.message` | With `foo.failing`: each non-empty line must appear verbatim in the refusal's diagnostic output, so a note that carries a contract cannot be reworded away or dropped while the codes stay green. Graded by `check-errors` (codex/test/errors) and `test.ps1` |
 | `foo.diag` | Compile must succeed and emit each listed CDX code at any severity (warning/info/error). One code per line (bare number or `CDX`-prefixed). Combine with `foo.expected` to also check runtime output. This is how warnings and infos are regression-tested. |
 | `foo.skip` | Skipped entirely; first line is the reason |
 | `foo.slow` | Skipped unless `-Slow`; first line is the reason |
 | `foo.fatal` | Skipped unless `-Fatal`; kills the VM at runtime |
+| `foo.renode` | The cross subject needs a Renode board model QEMU `virt` lacks (first line names it); `build/test-cross-batch.ps1` skips it unless `-Renode` |
+| `foo.cross-fatal` | With `foo.fatal`: `build/test-cross-batch.ps1` runs the test anyway and passes it only when the guest reports a fault (`!EXC=` on riscv, `!A64FAULT` on arm64); a run that ends without one fails. Needs no `.expected` |
 | `foo.flags` | First line is appended to the test's **compile mode line**, so the test states its own compiler requirements. `prose` selects CPL; `passes=+name` adds an IR pass; `decks=N` scales every phase deck floor to N per cent, which is what a compilation unit larger than the floors were sized for needs (`codex/test/apps/foreword-all-compile` cites all 416 foreword chapters and carries `decks=200`, re-measured 2026-09-02 off the file and not carried forward; without it the compile is `CDX9002: Deck overflow in LOWER`, run both ways 2026-07-22). Read by `build/test-compile-batch.ps1` and, since 2026-09-02, by `build/bvt.ps1`, so it applies to the battery and the BVT but **not** to a hand-run `build/compile.ps1`, which takes the same settings as switches. **Until then the BVT could not have run a `.flags` subject at all**: it compiled every subject with bare switches, so a chapter needing `decks=200` failed COMPILE there while compiling fine in the battery, and the runner was measuring its own invocation rather than the test (L-SIDECAR). Nothing had noticed because no BVT subject carried a `.flags`; it surfaced the moment the gate's cited-test run phase pointed the same runner at `foreword-all-compile` |
 | `foo.stdin` | Pumped to VM serial after boot (runtime input) |
 | `foo.keys` | Scancode timeline (`t:scancode` per line, t = ms since boot, `#` comments) handed to codex-vm as `-keys-file`. **Not interchangeable with `.stdin`** -- see below |
@@ -467,8 +470,8 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **211** expected-failure tests (measured
-2026-09-07).
+`codex/test/errors/` holds **219** expected-failure tests (measured
+2026-09-24).
 
 ## What the standing gate does not cover
 
@@ -1008,8 +1011,8 @@ source.codex -> compile.ps1 (IR mode, x86-64 seed)
 
 ```powershell
 build/test-cross.ps1 -Arch arm64 -Test <name> -TimeoutSec 10   # single test
-build/test-cross-batch.ps1 -Arch arm64 -RenoTimeout 10         # full battery (Renode)
-build/test-cross-batch.ps1 -Arch arm64 -UseQemu                # full battery (QEMU)
+build/test-cross-batch.ps1 -Arch arm64 -Filter <name> -Jobs 1  # one subject on QEMU, the default bed
+build/test-cross-batch.ps1 -Arch arm64 -Renode                 # Renode, only for a board model QEMU lacks
 build/test-cross-smp.ps1 -Arch riscv64 -Test smp-riscv-boot    # one multi-core test (QEMU -smp N)
 build/test-cross-batch.ps1 -Arch arm64 -Filter lir-            # a subset by name
 build/test-cross-batch.ps1 -Arch arm64 -CompileTimeoutSec 2    # provoke the retry (see below)
@@ -1169,7 +1172,7 @@ code. Refusals carry an `[UNSUPPORTED]` line on the compile log.
 | capability | refused intrinsics | note |
 |---|---|---|
 | builtin-List pattern matching | `__list-len`, `__list-head`, `__list-tail` | a language feature absent on both lanes |
-| file read | `read-file`, `read-file-raw`, `read-file-uni`, `uefi-read-file` | `docs/Designs/Active/Compiler/CrossLaneFilesystem.md`, not started |
+| file read | `read-file`, `read-file-raw`, `read-file-uni` | `docs/Designs/Active/Compiler/CrossLaneFilesystem.md`, not started |
 
 **Sixteen further refusals are architectural, not gaps.** Port I/O
 (`port-in/out-byte/16/32`), the codex-vm GPU ports (`gpu-in`, `gpu-out`,
@@ -3332,6 +3335,331 @@ legitimate slow upload, while a client that believes a 20-digit
 wrapped or negative length reaches a slice. Do not "fix" either to match the
 other.
 
+## The WebSocket Frame Guard (`codex/test/apps/websocket-frame-guard`)
+
+Track D row 6 (`VerifiedFormatParsing.md` 10.1). `ws-decode-frame` is run by
+`websocket-vector-test`, so under the 2026-08-16 ruling it is guarded. Measured
+on seed 9A323747 BEFORE the change, three defects of three shapes: a frame of
+one byte TRAPPED (`!EXC=06`, `list-at bytes 1`); a frame claiming 5 payload
+bytes and carrying 2 decoded as length 5 with the 2 bytes, reported as a whole
+frame; and the 64-bit length read only its low four bytes, so a frame claiming
+2^32 + 2 bytes decoded as a complete 2-byte frame.
+
+`ws-frame-size` now answers the bytes one frame occupies, `-1` when the header
+or payload is not all present (keep buffering) and `-2` when the 64-bit length
+has its top bit set (RFC 6455 5.2: fail the connection). It compares by
+SUBTRACTION, `payload-len > n - header-end`, because a 63-bit length added to
+the header can wrap. `ws-decode-frame` answers `ws-ok = False` with an empty
+payload whenever the size is negative, and `ws-read-length` reads all eight
+bytes of the extended length.
+
+Twelve arms, every value predicted before the run. `good-short`,
+`good-masked` (the RFC's own masked "Hello"), `good-16` (200 bytes) and
+`good-64` (65,536 bytes) are the positive controls across all three length
+forms; `two-frames` is two frames back to back and must be ACCEPTED at the
+first frame's size, so a guard that demands the buffer end exactly at the frame
+fails there. `cut-body`, `high-len`, `msb-len`, `runt`, `empty`, `cut-16` and
+`cut-mask` are the refusals. Each guard was ablated alone and moved only its
+own arms: without the payload test `cut-body` and `high-len` are accepted;
+with the old four-byte read `high-len` is accepted as length 2; without the
+top-bit test `msb-len` is still refused but its size is a wrapped
+`-9223372036854775797` rather than `-2`.
+
+## The CBOR Guard (`codex/test/lib/cbor-guard`)
+
+Track D row 7 (`VerifiedFormatParsing.md` 10.1). `cbor-decode` is run by
+`cbor-test`. Measured on seed 9A323747 BEFORE the change, and every defect but
+the first ANSWERED rather than crashed: a text string cut short trapped
+(`!EXC=06`); an 8-byte argument (`ai` 27) was read as 4 bytes, so 2^32 + 5
+decoded as 1; a tag decoded as null without consuming its item; a half-float
+decoded as null; a trailing byte was accepted; the encoder wrote 4,294,967,301
+as `26 0 0 0 5`; and text went on the wire as CCE codes (`"hi"` as `98 20 17`)
+and came back from real UTF-8 as garbage. The round-trip test could see none of
+the last two, because both halves agreed (L-BOTHARMS).
+
+A failed item carries `cdr-offset -1` and every caller propagates it;
+`cbor-decode` answers `None` unless one item fills the buffer. Arguments of 1,
+2, 4 or 8 bytes are bounds-checked by subtraction; `ai` 28 to 31 (reserved,
+indefinite) and an 8-byte argument with its top bit set are refused. Tags decode
+their item. Floats and unassigned simple values are refused instead of answered
+as null. Depth is capped at `cbor-max-depth` (256). Text is UTF-8 both ways
+through `CCE`'s boundary, and bytes that do not survive the round trip are
+refused. The encoder writes `ai` 27 at 2^32 and above.
+
+Twenty-nine arms, every value predicted before the run: fifteen accepts
+(including the 64-bit boundary `nint -9223372036854775808`, `é` as two UTF-8
+bytes, and `deep-200` as the depth discriminator) and fourteen refusals. Seven
+guards ablated alone, each moving only its own arms: the two bounds checks back
+to the trap, the depth cap (`deep-300` accepted), the trailing check, simple
+values as null (`half-float`, `simple-0`), the UTF-8 round trip (`bad-utf8`
+accepted as empty text), and a 4-byte `ai` 27 (the three 64-bit arms, refused
+by the trailing check rather than answered wrong).
+
+## The MessagePack Guard (`codex/test/lib/msgpack-guard`)
+
+Track D row 7, run by `msgpack-test`. Measured on seed 9A323747 BEFORE the
+change: a cut string trapped (`!EXC=06`); `int 8` subtracted 256 whatever its
+sign, so 5 decoded as -251, and `int 32` had no sign at all, so -100000 decoded
+as 4294867296; every lead byte the decoder did not know (`uint 64`, `int 64`,
+`str 32`, `bin 32`, `map 32`, float, ext, 193) answered `MpNil`; a trailing byte
+was accepted; the encoder wrote 4294967301 as `206 0 0 0 5` and text as CCE
+codes (`"hi"` as `162 20 17`), and truncated str, bin and map lengths at 65536.
+
+The decoder is one dispatch over every lead byte the format defines; float,
+ext, fixext and 193 are refused rather than answered as nil. Widths are
+bounds-checked by subtraction, narrow signed widths subtract 2^(8 * width) when
+their top bit is set, and a `uint 64` with its top bit set is refused. Depth is
+capped at `mp-max-depth` (256), `msgpack-decode` needs one value to fill the
+buffer, and text is UTF-8 both ways with a round-trip check. The encoder covers
+every width up to 64 bits.
+
+Thirty-three arms predicted before the run: twenty accepts (every signed width
+in both signs, both 64-bit edges, the 32-bit str, bin, map and array forms,
+`deep-200`) and thirteen refusals. Eight guards ablated alone, each moving only
+its own arms: without the sign step `int8-neg`, `int16-neg` and `int32-neg` read
+251, 65534 and 4294867296; the two bounds checks back to the trap; the depth
+cap; the trailing check; the nil fallback (`unused-193 = nil`; the float and
+fixext arms stay refused because their payload is then a trailing byte); the
+UTF-8 round trip; and the `uint 64` top bit (`int -9223372036854775808`).
+
+## The Protobuf Guard (`codex/test/lib/protobuf-guard`)
+
+Track D row 7, run by `wave3-test`. Measured on seed 8E5C56F4 BEFORE the
+change: a varint cut short was answered as a complete value (`[8, 150]` read
+field 1 = 22); a length-delimited field claiming 5 bytes and carrying 2 was
+accepted with its position past the data; a `fixed64` field was not skipped, so
+every field after it was read from the wrong offset; field 0 was accepted; a
+cut `fixed32` trapped (`!EXC=06`); and the encoder wrote -1 as `1`, the
+magnitude, where protobuf writes the ten-byte two's complement, and trapped on
+i64-min negating it.
+
+`pb-decode-varint` answers position -1 for a varint that runs off the data,
+runs past ten bytes, or whose tenth byte sets more than bit 63, and joins the
+groups with `bit-or` so no addition can overflow. `PbField` carries `pbf-ok`.
+Field numbers outside 1 to 2^29 - 1 and wire types 3, 4, 6 and 7 are refused, a
+length is checked against the bytes present by subtraction and refused when
+negative, and `fixed32` and `fixed64` are both read and skipped. Strings are
+UTF-8 both ways.
+
+Twenty-two arms predicted before the run: ten accepts (`-1` and i64-min on
+the wire and back, both fixed widths, a field read after a `fixed64`, the
+largest field number, a UTF-8 string) and twelve refusals. Seven guards ablated
+alone, each moving only its own arms: the magnitude encoder (`neg-wire 1`, then
+the i64-min trap), the tenth-byte check, the length bound, the negative-length
+check, the fixed-width bound (the trap), the field range (`field-0` and
+`field-too-big` accepted), and `fixed64` support.
+
+## The Bencode Guard (`codex/test/lib/bencode-guard`)
+
+Track D row 7, run by `wave2-test`. Measured on seed 8E5C56F4 BEFORE the
+change: a string whose length ran past the text trapped (`!EXC=06`), and so
+would a 20-digit integer, because `acc * 10` traps on overflow; and BEP 3's
+grammar was not enforced, so `i12abce` read as 12, `ie` as 0, `i03e` as 3,
+`i-0e` as 0, `x:` as an empty string, and `i1ei2e` was accepted whole.
+
+Integers and string lengths go through one digit reader that refuses an empty
+span, a non-digit, a leading zero, and anything past i64 max, testing before the
+multiply. `-0` and a signed length refuse; a length is checked against the text
+left by subtraction; depth is capped at `ben-max-depth` (256); `ben-decode`
+refuses trailing text, while `ben-decode-at` leaves it to a streaming caller.
+
+Twenty-three arms predicted before the run: nine accepts (BEP 3's own list and
+dict examples, i64 max, `deep-200`) and fourteen refusals. Seven guards ablated
+alone, each moving only its own arms. **The first run of the overflow ablation
+moved NOTHING**, and that was the fixture, not the guard: the only overflow arm
+was i64 max + 1, which the equality clause catches, so removing the greater-than
+clause could not show. `huge-int` (twenty nines) was added, and now each clause
+traps on its own arm when removed (L-SABOTAGE).
+
+## The BMP Guard (`codex/test/apps/bmp-guard`)
+
+Track D row 11, run by `media-codec-test`. Measured on seed 8E5C56F4 BEFORE
+the change: a round trip came back VERTICALLY FLIPPED (the encoder writes rows
+bottom-up from a top-down pixel list and the decoder appended file rows in file
+order), which `media-codec-test` could not see because it asserts only the
+dimensions (L-BOTHARMS); and a top-down file (negative height) read its height
+as about four billion and trapped (`!EXC=06`), as did any file shorter than its
+header or its pixel data. Rows were also joined with `acc & row`, quadratic in
+the pixel count.
+
+`bmp-decode` now needs 54 bytes, "BM", 24 bits per pixel, compression 0, a
+width and height of at least 1, and a pixel offset in [54, n]; height is signed,
+and a negative one reads the rows top-down. The pixel bytes are checked against
+the data by DIVISION (`height > (n - offset) / padded-row`), because stride
+times a hostile height overflows. Pixels come back top row first, pushed onto
+one list. `BmpImage` carries `bmp-ok`.
+
+Thirteen arms predicted before the run. Six guards ablated alone, each moving
+only its own arms: bottom-up row order (`good-2x2` flips), the signed height
+(`top-down` refused), the pixel bound (the trap), the magic, the compression
+field, and the offset. **The offset ablation first moved nothing:** its only arm
+put the offset past the end, which the pixel bound already refuses because
+`n - offset` goes negative, so that half of the check is covered twice. The
+independent half is `offset < 54`, and `offset-in-header` now shows it: ablated,
+the header's own bytes decode as pixels (`70,77,66`, "BMF").
+
+## The QOI Guard (`codex/test/apps/qoi-guard`)
+
+Track D row 11, run by `media-codec-test`. The defects, each shown by its
+ablation on seed 8E5C56F4 rather than by a separate probe: a DIFF or LUMA
+chunk that wraps a channel (black to white by -1, which the specification
+requires) TRAPPED, because the unwrapped sum narrows into `Rgb`; `QOI_OP_RGBA`
+(255) was read as a run of 64; a cut RGB chunk read into the end marker
+(`cut-rgb` gave `10,0,0`); the pixel count was never compared with width times
+height; the end marker and the magic were never checked; and a header shorter
+than 14 bytes trapped.
+
+`qoi-decode` needs 22 bytes, "qoif", channels 3 or 4, colorspace 0 or 1, the
+end marker, and a width and height of at least 1; every chunk is bounded by the
+end marker; DIFF and LUMA wrap mod 256; RGBA is refused, because this decoder
+carries no alpha; and the pixel count must equal width times height, compared by
+division. `QoiImage` carries `qoi-ok`.
+
+Fifteen arms predicted before the run. Six guards ablated alone, each moving
+only its own arms. **The RGBA ablation first moved nothing:** read as a run, the
+RGBA chunk's 64 pixels plus its four payload bytes made a count the header did
+not claim, so the pixel-count check refused it and the RGBA check was never the
+reason (L-SABOTAGE). `rgba-68` claims exactly 68 by 1, and ablated it decodes as
+64 black pixels and four more.
+
+## The CSV Guard (`codex/test/apps/csv-guard`)
+
+Track D row 13, run by `csv-rfc4180-test`. `csv-parse` never faults and
+answers every input: an unterminated quoted field (`"abc`) reads as `abc`, text
+after a closing quote (`"ab"cd`) becomes a SECOND field, and a quote inside an
+unquoted field (`a"b`) is kept. Each is malformed under RFC 4180 section 2.
+
+`csv-well-formed` is one pass over four states (field start, unquoted, quoted,
+after a closing quote) and `csv-parse-checked` answers `None` unless it holds.
+`csv-parse` is unchanged, and the fixture prints what it answers beside the
+checked result (`raw=`), so the wrong answers stay visible.
+
+Nine arms predicted before the run: six well-formed (with `quote-then-comma` as
+the discriminator for `after-quote`) and three refusals. Each of the three rules
+ablated alone accepts exactly its own arm.
+
+## The Base64 Guard (`codex/test/apps/base64-guard`)
+
+Track D row 13, run by `base64-test` and reached in production through `Jwt`
+and `AccpWasm`. `base64-decode` never faults and answers every input: a
+character outside the alphabet reads as zero (`aG!s` gives `104 96 44`),
+anything after the first padding is ignored (`aGk=aGk=` gives `hi`), and a
+length that is not a multiple of four decodes its whole quartets and drops the
+rest. It also appended each quartet with `acc &`, quadratic in the input; it
+pushes now.
+
+`base64-valid` holds RFC 4648 section 4 (length a multiple of four, alphabet
+only, `=` only as the last one or two characters) and `base64-decode-checked`
+answers `None` unless it holds. The fixture prints the raw decode beside the
+checked one. Eight arms predicted before the run; each of the three rules
+ablated alone accepts exactly its own arms. `Jwt` still decodes through the
+lenient `base64-decode-text`; it signs the raw segment text, so a lenient decode
+cannot forge a token, but a malformed segment is not refused.
+
+## The Markdown Guard (`codex/test/lib/markdown-guard`)
+
+Track D row 13, `codex/foreword/ui/Markdown.codex` `ui-md-parse`, reached by
+every page that renders markdown. Markdown has no invalid input, so the guards
+are on cost and depth, not refusal. Measured on seed 8E5C56F4 before the change:
+a plain line retained 146,480 bytes at 256 characters and 2,157,872 at 1,024
+(`md-at` copied the rest of the line at every character), a line of `[`
+94,816 at 64 and 3,454,880 at 256 (each failed link rescanned to the end);
+200,000 lines double-faulted near line 53,430 (the line loop tail-called
+through a second function, one frame per line); and `123456789012345678901. x`
+trapped in `text-to-integer`.
+
+`md-at` compares characters in place; the inline scan is one self tail call
+that pushes runs onto a list and stops looking for a link close after one link
+fails (one failed search proves every later one fails, so the output does not
+change); code lines are joined once; a list marker is one to nine digits
+(CommonMark 5.2), so a longer one is a paragraph. A code block keeps its
+leading blank lines (`code-blank`).
+
+Nineteen arms predicted before the run; the nine the old code survives were run
+on it too and match except the two the fix changes (`ordered-10`, `code-blank`).
+Eight guards ablated alone, each moving only its own arms: `md-at` copying
+(four scaling arms, then out of memory), `link-ok` (the 60 s wall, against
+0.5 s green), per-line code re-join (`code-block`), the digit cap (`ordered-10`,
+then the trap), the line loop through a helper (`deep-lines`, `!EXC=08`), the
+code-span branch through a helper (`deep-runs`, which needed 400,000 runs:
+100,000 fit the stack), `md-flush-plain` through drop-then-take (`code-runs`),
+and runs joined with `&` (`code-runs`, then out of memory). A scaling arm prints
+`linear` when four times the input costs at most five times the heap, and the
+two byte counts otherwise.
+
+## The Hex Guard (`codex/test/apps/hex-guard`)
+
+Track D row 13, `codex/foreword/encode/Hex.codex`. `hex-decode` never faults
+and answers every input: a character that is not a hex digit reads as zero
+(`zz` gives `0`) and an odd final character is dropped (`abc` gives `171`).
+`hex-well-formed` requires an even length of hex digits and
+`hex-decode-checked` answers `None` unless it holds. The three encoders
+appended with `acc &` after allocating the piece, which copies: `hex-encode`
+retained 72,704 bytes for 256 input bytes and 1,077,248 for 1,024 on seed
+5C77FD03. They push pieces and join once now.
+
+`KeyManager` imported a keypair file of any shape: a 2-byte private key, or
+another key's public key, loaded and signed without error, and the signatures
+failed verification. `parse-keypair-fields` now decodes both keys checked and
+refuses unless the public key is the one the private key derives and the
+fingerprint is the public key's. There is no length check: a public key equal
+to the derived one is 32 bytes by construction.
+
+Nineteen arms predicted before the run. Nine guards ablated alone: the odd-length
+rule (`odd`, and `priv-extra`, a valid private key plus one trailing digit that
+the lenient decoder drops and imports as the real key), the digit rule
+(`bad-char`, `bad-low`), each encoder re-copying its list (its own scaling arm),
+the derivation check (`short-priv`, `other-pub`, `empty-priv`), the fingerprint
+check (`other-fp`), and the lenient decode in `KeyManager` (`priv-extra`).
+`other-pub` carries key B's fingerprint beside key B's public key, so only the
+derivation check can refuse it.
+
+## The TOML Guard (`codex/test/lib/toml-guard`)
+
+Track D row 13, `codex/foreword/encode/Toml.codex`, harness callers only.
+`toml-parse` returns `Maybe` and answered `Just` for every input on seed
+5C77FD03: a line with no `=` became a key, `[table]` headers were read and
+dropped so `[a] x` and `[b] x` became two top-level `x`, `"abc` read as `ab`,
+an array or float came back as a string, `8080 # note` read as 8080, and
+`123456789012345678901` answered `-5670419503621182411`. Trimming copied the
+line once per leading space (39,440 bytes at 256 spaces, 550,160 at 1,024).
+
+It reads a stated subset now (the chapter's prose) and answers `None` outside
+it; tables nest under their name; a key or table defined twice is refused, as
+TOML 1.0 requires, through a flat open-addressing set that allocates nothing
+per key. `Hamt` was measured for the job and retains 7.5 KB per insert at 1,000
+keys and 11.3 KB at 4,000, so 200,000 keys exhausted the 3 GB guest.
+
+Thirty-two arms predicted before the run: ten accepts, eighteen refusals, three
+scaling arms (trim, emit, parse) and 200,000 keys. Sixteen guards ablated
+alone, each moving only its own arms. Two answer with a trap rather than a
+value when ablated (the missing `=` and the unterminated string, both reaching
+`substring` with a negative length), and the `+` strip is load-bearing:
+without it `text-to-integer "+7"` answers 0.
+
+## The YAML Guard (`codex/test/lib/yaml-guard`)
+
+Track D row 13, `codex/foreword/encode/Yaml.codex`, harness callers only. On
+seed 8751852D `yaml-parse` answered `Just` for every input: a block stopped at
+the first line it did not expect and dropped the rest (`a: 1` then `- x` gave
+`{a: 1}`), `a:` over an indented block answered the scalar `a:`, `"abc` read
+as `ab`, `n: -` read as 0, `[1, 2]` as a string, duplicate keys were kept, and
+a 21-digit integer wrapped. Trim and the emitters were quadratic.
+
+It reads a stated subset now (the chapter's prose): one column-0 mapping or
+sequence of scalars, the YAML 1.2 core spellings of true, false and null,
+integers of at most 18 digits, unique keys through the same flat set the TOML
+guard uses. A numeric-looking scalar that is not such an integer (`1.5`,
+`0x1F`) is refused rather than answered as text, and so is every indicator
+the subset does not read (flow collections, anchors, aliases, tags, block
+scalars).
+
+Thirty-nine arms predicted before the run: ten accepts, twenty-four refusals,
+three scaling arms and 200,000 keys and items. Eighteen guards ablated alone,
+each moving only its own arms. Indentation has no guard of its own: an
+indented line is refused because its key starts with a space, so ablating the
+key-character check moves `nested` and `indented` beside `bad-key`.
+
 ## The TrueType Plausibility Guard (`codex/test/apps/ttf-plausible-guard`)
 
 Track D census item 5. The font the desk loads off the ESP (`CMUNSS.TTF`,
@@ -5162,7 +5490,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-211 tests in `codex/test/errors/` verify that the compiler rejects
+219 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -7250,8 +7578,12 @@ reports a runtime gate over subjects that have no runtime arm (L-DENOM).
 reaches your change through no cite is not selected, and the compiler is
 assembled by GLOB (`concat-codex-self.ps1`), so a compiler chapter's callers
 need not cite it; `-Compiler` selects every compiler-citing test instead of
-pretending the walk found them. An EMPTY selection is a statement about the
-cite graph rather than an all-clear, and the script says so in those words.
+pretending the walk found them. The one class selected without a cite is the
+allocation goldens: a `codex/compiler` change adds every `codex/test` chapter
+that reads the heap frontier (`alloc-bytes`, `__heap-save`), because the
+compiler decides the byte counts they print. An EMPTY selection is a statement
+about the cite graph rather than an all-clear, and the script says so in those
+words.
 
 **What it costs**, measured over two batches rather than one subject times N
 (L-AMORTISED): 12 subjects compiled and run in 31.5 s, 24 in 72.7 s, both at

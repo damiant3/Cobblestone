@@ -7,6 +7,8 @@ Chapter: Widget
 Section: Widget Kind
   WidgetKind =
     | WkPanel
+    | WkStack
+    | WkScroll (Integer)
     | WkLabel (Text)
     | WkButton (Text)
     | WkGauge (Integer) (Integer)
@@ -17,7 +19,6 @@ Section: Widget Kind
 Section: Widget Node
   WidgetNode = record {
     wn-kind : WidgetKind,
-    wn-state : Integer,
     wn-id : Text,
     wn-children : List WidgetNode,
     wn-child-count : Integer,
@@ -26,6 +27,14 @@ Section: Widget Node
     wn-flex : Integer between 0 and 1000,
     wn-min-w : Integer between 0 and 32767,
     wn-min-h : Integer between 0 and 32767,
+    wn-max-w : Integer between 0 and 32767,
+    wn-max-h : Integer between 0 and 32767,
+    wn-fit-w : Boolean,
+    wn-pref-w : Integer between 0 and 32767,
+    wn-pref-h : Integer between 0 and 32767,
+    wn-align : Integer between 0 and 3,
+    wn-flags : Integer between 0 and 127,
+    wn-data : Integer,
     wn-tone : Integer between 0 and 5,
     wn-bounds : LayoutRect
   }
@@ -35,7 +44,6 @@ Section: Construction
   widget-panel (id) (dir) (gap) (children) =
     WidgetNode {
       wn-kind = WkPanel,
-      wn-state = state-normal,
       wn-id = id,
       wn-children = children,
       wn-child-count = list-length children,
@@ -44,6 +52,38 @@ Section: Construction
       wn-flex = 1,
       wn-min-w = 0,
       wn-min-h = 0,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = False,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
+      wn-tone = tone-none,
+      wn-bounds = layout-rect-zero
+    }
+
+  widget-stack : Text, LayoutDir, Integer, List WidgetNode -> WidgetNode
+  widget-stack (id) (dir) (gap) (children) =
+    WidgetNode {
+      wn-kind = WkStack,
+      wn-id = id,
+      wn-children = children,
+      wn-child-count = list-length children,
+      wn-layout-dir = dir,
+      wn-gap = __narrow gap,
+      wn-flex = 1,
+      wn-min-w = 0,
+      wn-min-h = 0,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = False,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
       wn-tone = tone-none,
       wn-bounds = layout-rect-zero
     }
@@ -53,8 +93,7 @@ Section: Construction
   widget-scroll-view : Text, LayoutDir, Integer, List WidgetNode -> WidgetNode
   widget-scroll-view (id) (dir) (gap) (children) =
     WidgetNode {
-      wn-kind = WkCustom wk-scroll-view-tag,
-      wn-state = state-normal,
+      wn-kind = WkScroll 0,
       wn-id = id,
       wn-children = children,
       wn-child-count = list-length children,
@@ -63,6 +102,14 @@ Section: Construction
       wn-flex = 1,
       wn-min-w = 0,
       wn-min-h = 0,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = False,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
       wn-tone = tone-none,
       wn-bounds = layout-rect-zero
     }
@@ -73,7 +120,6 @@ Section: Construction
   widget-spacer (id) =
     WidgetNode {
       wn-kind = WkCustom wk-spacer-tag,
-      wn-state = state-normal,
       wn-id = id,
       wn-children = [],
       wn-child-count = 0,
@@ -82,20 +128,44 @@ Section: Construction
       wn-flex = 1,
       wn-min-w = 0,
       wn-min-h = 0,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = False,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
       wn-tone = tone-none,
       wn-bounds = layout-rect-zero
     }
 
   widget-is-scroll-view : WidgetNode -> Boolean
   widget-is-scroll-view (w) = when w.wn-kind
-    is WkCustom (tag) -> tag == wk-scroll-view-tag
+    is WkScroll (off) -> True
     is otherwise -> False
+
+  widget-scroll-offset : WidgetNode -> Integer
+  widget-scroll-offset (w) = when w.wn-kind
+    is WkScroll (off) -> off
+    is otherwise -> 0
+
+  widget-set-scroll : WidgetNode, Integer -> WidgetNode
+  widget-set-scroll (w) (off) =
+    if widget-is-scroll-view w == False then w
+    else WidgetNode {
+      wn-kind = WkScroll off, wn-id = w.wn-id,
+      wn-children = w.wn-children, wn-child-count = w.wn-child-count,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
+      wn-tone = w.wn-tone,
+      wn-bounds = w.wn-bounds
+    }
 
   widget-label : Text, Text -> WidgetNode
   widget-label (id) (txt) =
     WidgetNode {
       wn-kind = WkLabel txt,
-      wn-state = state-normal,
       wn-id = id,
       wn-children = [],
       wn-child-count = 0,
@@ -104,6 +174,14 @@ Section: Construction
       wn-flex = 0,
       wn-min-w = __narrow (text-length txt * 8),
       wn-min-h = 16,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = True,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
       wn-tone = tone-none,
       wn-bounds = layout-rect-zero
     }
@@ -112,7 +190,6 @@ Section: Construction
   widget-button (id) (txt) =
     WidgetNode {
       wn-kind = WkButton txt,
-      wn-state = state-normal,
       wn-id = id,
       wn-children = [],
       wn-child-count = 0,
@@ -121,6 +198,14 @@ Section: Construction
       wn-flex = 0,
       wn-min-w = __narrow (text-length txt * 8 + 16),
       wn-min-h = 24,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = True,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
       wn-tone = tone-none,
       wn-bounds = layout-rect-zero
     }
@@ -129,7 +214,6 @@ Section: Construction
   widget-gauge (id) (value) (max-val) =
     WidgetNode {
       wn-kind = WkGauge value max-val,
-      wn-state = state-normal,
       wn-id = id,
       wn-children = [],
       wn-child-count = 0,
@@ -138,6 +222,14 @@ Section: Construction
       wn-flex = 1,
       wn-min-w = 60,
       wn-min-h = 16,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = False,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
       wn-tone = tone-none,
       wn-bounds = layout-rect-zero
     }
@@ -146,7 +238,6 @@ Section: Construction
   widget-separator (id) =
     WidgetNode {
       wn-kind = WkSeparator,
-      wn-state = state-normal,
       wn-id = id,
       wn-children = [],
       wn-child-count = 0,
@@ -155,6 +246,14 @@ Section: Construction
       wn-flex = 0,
       wn-min-w = 0,
       wn-min-h = 2,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = False,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
       wn-tone = tone-none,
       wn-bounds = layout-rect-zero
     }
@@ -163,7 +262,6 @@ Section: Construction
   widget-input (id) (txt) (cursor) =
     WidgetNode {
       wn-kind = WkInput txt cursor,
-      wn-state = state-normal,
       wn-id = id,
       wn-children = [],
       wn-child-count = 0,
@@ -172,6 +270,14 @@ Section: Construction
       wn-flex = 1,
       wn-min-w = 80,
       wn-min-h = 24,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = False,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
       wn-tone = tone-none,
       wn-bounds = layout-rect-zero
     }
@@ -180,7 +286,6 @@ Section: Construction
   widget-custom (id) (tag) (w) (h) =
     WidgetNode {
       wn-kind = WkCustom tag,
-      wn-state = state-normal,
       wn-id = id,
       wn-children = [],
       wn-child-count = 0,
@@ -189,29 +294,26 @@ Section: Construction
       wn-flex = 0,
       wn-min-w = __narrow w,
       wn-min-h = __narrow h,
+      wn-max-w = 0,
+      wn-max-h = 0,
+      wn-fit-w = False,
+      wn-pref-w = 0,
+      wn-pref-h = 0,
+      wn-align = 0,
+      wn-flags = 0,
+      wn-data = 0,
       wn-tone = tone-none,
       wn-bounds = layout-rect-zero
     }
 
 Section: Modification
-  widget-set-state : WidgetNode, Integer -> WidgetNode
-  widget-set-state (w) (s) =
-    WidgetNode {
-      wn-kind = w.wn-kind, wn-state = s, wn-id = w.wn-id,
-      wn-children = w.wn-children, wn-child-count = w.wn-child-count,
-      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
-      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h,
-      wn-tone = w.wn-tone,
-      wn-bounds = w.wn-bounds
-    }
-
   widget-set-flex : WidgetNode, Integer -> WidgetNode
   widget-set-flex (w) (f) =
     WidgetNode {
-      wn-kind = w.wn-kind, wn-state = w.wn-state, wn-id = w.wn-id,
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
       wn-children = w.wn-children, wn-child-count = w.wn-child-count,
       wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
-      wn-flex = __narrow f, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h,
+      wn-flex = __narrow f, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
       wn-tone = w.wn-tone,
       wn-bounds = w.wn-bounds
     }
@@ -219,10 +321,106 @@ Section: Modification
   widget-set-min : WidgetNode, Integer, Integer -> WidgetNode
   widget-set-min (w) (minw) (minh) =
     WidgetNode {
-      wn-kind = w.wn-kind, wn-state = w.wn-state, wn-id = w.wn-id,
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
       wn-children = w.wn-children, wn-child-count = w.wn-child-count,
       wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
-      wn-flex = w.wn-flex, wn-min-w = __narrow minw, wn-min-h = __narrow minh,
+      wn-flex = w.wn-flex, wn-min-w = __narrow minw, wn-min-h = __narrow minh, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = False, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
+      wn-tone = w.wn-tone,
+      wn-bounds = w.wn-bounds
+    }
+
+ A maximum of 0 is unbounded, and one below the minimum yields to it.
+
+  widget-set-max : WidgetNode, Integer, Integer -> WidgetNode
+  widget-set-max (w) (maxw) (maxh) =
+    WidgetNode {
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
+      wn-children = w.wn-children, wn-child-count = w.wn-child-count,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = __narrow maxw, wn-max-h = __narrow maxh, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
+      wn-tone = w.wn-tone,
+      wn-bounds = w.wn-bounds
+    }
+
+ `wn-fit-w` says the minimum width is still the constructor's guess from the
+ character count, which a face measurement may replace. `widget-set-min`
+ makes the width the author's and clears it; `widget-set-min-h` sets only the
+ height and keeps it; `widget-fit-min-w` is the measurement's own write.
+
+  widget-set-min-h : WidgetNode, Integer -> WidgetNode
+  widget-set-min-h (w) (minh) =
+    WidgetNode {
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
+      wn-children = w.wn-children, wn-child-count = w.wn-child-count,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = __narrow minh, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
+      wn-tone = w.wn-tone,
+      wn-bounds = w.wn-bounds
+    }
+
+  widget-set-pref : WidgetNode, Integer, Integer -> WidgetNode
+  widget-set-pref (w) (prefw) (prefh) =
+    WidgetNode {
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
+      wn-children = w.wn-children, wn-child-count = w.wn-child-count,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = __narrow prefw, wn-pref-h = __narrow prefh, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
+      wn-tone = w.wn-tone,
+      wn-bounds = w.wn-bounds
+    }
+
+  widget-set-align : WidgetNode, Integer -> WidgetNode
+  widget-set-align (w) (a) =
+    WidgetNode {
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
+      wn-children = w.wn-children, wn-child-count = w.wn-child-count,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = __narrow a, wn-flags = w.wn-flags, wn-data = w.wn-data,
+      wn-tone = w.wn-tone,
+      wn-bounds = w.wn-bounds
+    }
+
+  widget-set-flags : WidgetNode, Integer -> WidgetNode
+  widget-set-flags (w) (f) =
+    WidgetNode {
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
+      wn-children = w.wn-children, wn-child-count = w.wn-child-count,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = __narrow f, wn-data = w.wn-data,
+      wn-tone = w.wn-tone,
+      wn-bounds = w.wn-bounds
+    }
+
+  widget-flags : WidgetNode -> Integer
+  widget-flags (w) = w.wn-flags
+
+ A custom widget's own Integer payload (a selected index, a seed), which the
+ HTML plug's custom widgets read back as data. It is not a style state.
+
+  widget-set-data : WidgetNode, Integer -> WidgetNode
+  widget-set-data (w) (d) =
+    WidgetNode {
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
+      wn-children = w.wn-children, wn-child-count = w.wn-child-count,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = d,
+      wn-tone = w.wn-tone,
+      wn-bounds = w.wn-bounds
+    }
+
+  widget-add-flag : WidgetNode, Integer -> WidgetNode
+  widget-add-flag (w) (f) = widget-set-flags w (bit-or (widget-flags w) f)
+
+  widget-state-of : WidgetNode -> Integer
+  widget-state-of (w) = theme-state-of-flags (widget-flags w)
+
+  widget-fit-min-w : WidgetNode, Integer -> WidgetNode
+  widget-fit-min-w (w) (minw) =
+    WidgetNode {
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
+      wn-children = w.wn-children, wn-child-count = w.wn-child-count,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex, wn-min-w = __narrow minw, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
       wn-tone = w.wn-tone,
       wn-bounds = w.wn-bounds
     }
@@ -245,10 +443,10 @@ Section: Modification
   widget-set-tone : WidgetNode, Integer -> WidgetNode
   widget-set-tone (w) (tone) =
     WidgetNode {
-      wn-kind = w.wn-kind, wn-state = w.wn-state, wn-id = w.wn-id,
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
       wn-children = w.wn-children, wn-child-count = w.wn-child-count,
       wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
-      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
       wn-tone = __narrow tone,
       wn-bounds = w.wn-bounds
     }
@@ -256,10 +454,10 @@ Section: Modification
   widget-set-bounds : WidgetNode, LayoutRect -> WidgetNode
   widget-set-bounds (w) (r) =
     WidgetNode {
-      wn-kind = w.wn-kind, wn-state = w.wn-state, wn-id = w.wn-id,
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
       wn-children = w.wn-children, wn-child-count = w.wn-child-count,
       wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
-      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
       wn-tone = w.wn-tone,
       wn-bounds = r
     }
@@ -267,10 +465,10 @@ Section: Modification
   widget-set-children : WidgetNode, List WidgetNode -> WidgetNode
   widget-set-children (w) (kids) =
     WidgetNode {
-      wn-kind = w.wn-kind, wn-state = w.wn-state, wn-id = w.wn-id,
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
       wn-children = kids, wn-child-count = list-length kids,
       wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
-      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h, wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
       wn-tone = w.wn-tone,
       wn-bounds = w.wn-bounds
     }
@@ -278,11 +476,11 @@ Section: Modification
   widget-add-child : WidgetNode, WidgetNode -> WidgetNode
   widget-add-child (parent) (child) =
     WidgetNode {
-      wn-kind = parent.wn-kind, wn-state = parent.wn-state, wn-id = parent.wn-id,
+      wn-kind = parent.wn-kind, wn-id = parent.wn-id,
       wn-children = list-push (parent.wn-children) child,
       wn-child-count = parent.wn-child-count + 1,
       wn-layout-dir = parent.wn-layout-dir, wn-gap = parent.wn-gap,
-      wn-flex = parent.wn-flex, wn-min-w = parent.wn-min-w, wn-min-h = parent.wn-min-h,
+      wn-flex = parent.wn-flex, wn-min-w = parent.wn-min-w, wn-min-h = parent.wn-min-h, wn-max-w = parent.wn-max-w, wn-max-h = parent.wn-max-h, wn-fit-w = parent.wn-fit-w, wn-pref-w = parent.wn-pref-w, wn-pref-h = parent.wn-pref-h, wn-align = parent.wn-align, wn-flags = parent.wn-flags, wn-data = parent.wn-data,
       wn-tone = parent.wn-tone,
       wn-bounds = parent.wn-bounds
     }
@@ -291,6 +489,8 @@ Section: Queries
   widget-kind-name : WidgetKind -> Text
   widget-kind-name (k) = when k
     is WkPanel -> "panel"
+    is WkStack -> "stack"
+    is WkScroll (off) -> wk-scroll-view-tag
     is WkLabel (t) -> "label"
     is WkButton (t) -> "button"
     is WkGauge (v) (m) -> "gauge"
@@ -336,12 +536,13 @@ Section: Intrinsic Size
       is DirRow -> widget-max-min-h kids th 0 n 0
       is DirColumn -> widget-sum-min-h kids th 0 n 0 + total-gap
     in WidgetNode {
-      wn-kind = w.wn-kind, wn-state = w.wn-state, wn-id = w.wn-id,
+      wn-kind = w.wn-kind, wn-id = w.wn-id,
       wn-children = kids, wn-child-count = n,
       wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
       wn-flex = w.wn-flex,
       wn-min-w = __narrow (box-min 32767 (if widget-is-scroll-view w then w.wn-min-w else box-max (w.wn-min-w) (inner-w + style-overhead-w style))),
       wn-min-h = __narrow (box-min 32767 (if widget-is-scroll-view w then w.wn-min-h else box-max (w.wn-min-h) (inner-h + style-overhead-h style))),
+      wn-max-w = w.wn-max-w, wn-max-h = w.wn-max-h, wn-fit-w = w.wn-fit-w, wn-pref-w = w.wn-pref-w, wn-pref-h = w.wn-pref-h, wn-align = w.wn-align, wn-flags = w.wn-flags, wn-data = w.wn-data,
       wn-tone = w.wn-tone,
       wn-bounds = w.wn-bounds
     }
@@ -397,23 +598,60 @@ Section: Tree Layout
     in let placed = widget-set-bounds w container
     in if placed.wn-child-count == 0 then placed
     else let items = widget-children-to-items (placed.wn-children) th 0 (placed.wn-child-count) []
-    in let result = flex-layout content (placed.wn-layout-dir) (placed.wn-gap) items (placed.wn-child-count)
+    in let box = widget-scroll-box placed content items
+    in let result = flex-layout box (placed.wn-layout-dir) (placed.wn-gap) items (placed.wn-child-count)
     in let laid-out = widget-arrange-children (placed.wn-children) th (result.lrs) 0 (placed.wn-child-count) []
     in WidgetNode {
-      wn-kind = placed.wn-kind, wn-state = placed.wn-state, wn-id = placed.wn-id,
+      wn-kind = widget-scroll-kind placed content box, wn-id = placed.wn-id,
       wn-children = laid-out, wn-child-count = placed.wn-child-count,
       wn-layout-dir = placed.wn-layout-dir, wn-gap = placed.wn-gap,
-      wn-flex = placed.wn-flex, wn-min-w = placed.wn-min-w, wn-min-h = placed.wn-min-h,
+      wn-flex = placed.wn-flex, wn-min-w = placed.wn-min-w, wn-min-h = placed.wn-min-h, wn-max-w = placed.wn-max-w, wn-max-h = placed.wn-max-h, wn-fit-w = placed.wn-fit-w, wn-pref-w = placed.wn-pref-w, wn-pref-h = placed.wn-pref-h, wn-align = placed.wn-align, wn-flags = placed.wn-flags, wn-data = placed.wn-data,
       wn-tone = w.wn-tone,
       wn-bounds = container
     }
+
+  widget-scroll-box : WidgetNode, LayoutRect, List LayoutItem -> LayoutRect
+  widget-scroll-box (w) (content) (items) =
+    if widget-is-scroll-view w == False then content
+    else let n = w.wn-child-count
+    in let gaps = if n > 1 then w.wn-gap * (n - 1) else 0
+    in let off = box-clamp0 (widget-scroll-offset w)
+    in when w.wn-layout-dir
+      is DirColumn ->
+        let ext = box-max (content.lr-h) (widget-natural-main items DirColumn 0 n gaps)
+        in layout-rect (content.lr-x) (content.lr-y - box-min off (ext - content.lr-h)) (content.lr-w) ext
+      is DirRow ->
+        let ext = box-max (content.lr-w) (widget-natural-main items DirRow 0 n gaps)
+        in layout-rect (content.lr-x - box-min off (ext - content.lr-w)) (content.lr-y) ext (content.lr-h)
+
+  widget-scroll-kind : WidgetNode, LayoutRect, LayoutRect -> WidgetKind
+  widget-scroll-kind (w) (content) (box) =
+    if widget-is-scroll-view w == False then w.wn-kind
+    else when w.wn-layout-dir
+      is DirColumn -> WkScroll (content.lr-y - box.lr-y)
+      is DirRow -> WkScroll (content.lr-x - box.lr-x)
+
+  widget-natural-main : List LayoutItem, LayoutDir, Integer, Integer, Integer -> Integer
+  widget-natural-main (items) (dir) (i) (n) (acc) =
+    if i >= n then acc
+    else let item = list-at items i
+    in let margin = when dir
+      is DirRow -> edges-h (item.li-margin)
+      is DirColumn -> edges-v (item.li-margin)
+    in widget-natural-main items dir (i + 1) n (acc + box-max (flex-main-min item dir) (flex-basis item dir) + margin)
+
+  widget-scroll-extent : WidgetNode, Theme -> Integer
+  widget-scroll-extent (w) (th) =
+    let n = w.wn-child-count
+    in let items = widget-children-to-items (w.wn-children) th 0 n []
+    in widget-natural-main items (w.wn-layout-dir) 0 n (if n > 1 then w.wn-gap * (n - 1) else 0)
 
   widget-children-to-items : List WidgetNode, Theme, Integer, Integer, List LayoutItem -> List LayoutItem
   widget-children-to-items (children) (th) (i) (n) (acc) =
     if i >= n then acc
     else let child = list-at children i
     in let style = widget-resolve-style child th
-    in let item = layout-item-m (box-max (child.wn-min-w) (style.ws-min-width)) (box-max (child.wn-min-h) (style.ws-min-height)) (child.wn-flex) (style.ws-margin)
+    in let item = layout-item-align (layout-item-full (box-max (child.wn-min-w) (style.ws-min-width)) (box-max (child.wn-min-h) (style.ws-min-height)) (child.wn-flex) (style.ws-margin) (child.wn-max-w) (child.wn-max-h) (child.wn-pref-w) (child.wn-pref-h)) (child.wn-align)
     in widget-children-to-items children th (i + 1) n (list-push acc item)
 
   widget-arrange-children : List WidgetNode, Theme, List LayoutRect, Integer, Integer, List WidgetNode -> List WidgetNode
@@ -427,13 +665,15 @@ Section: Tree Layout
 Section: Style Resolution
   widget-resolve-style : WidgetNode, Theme -> WidgetStyle
   widget-resolve-style (w) (th) = when w.wn-kind
-    is WkPanel -> theme-resolve-panel th (w.wn-state)
-    is WkLabel (t) -> theme-resolve-label th (w.wn-state)
-    is WkButton (t) -> theme-resolve-button th (w.wn-state)
-    is WkGauge (v) (m) -> theme-resolve-gauge th (w.wn-state)
-    is WkSeparator -> theme-resolve-separator th (w.wn-state)
-    is WkInput (t) (c) -> theme-resolve-input th (w.wn-state)
-    is WkCustom (tag) -> if tag == wk-scroll-view-tag | tag == wk-spacer-tag then widget-style-bare else theme-resolve-panel th (w.wn-state)
+    is WkPanel -> theme-resolve-panel th (widget-state-of w)
+    is WkStack -> widget-style-bare
+    is WkScroll (off) -> widget-style-bare
+    is WkLabel (t) -> theme-resolve-label th (widget-state-of w)
+    is WkButton (t) -> theme-resolve-button th (widget-state-of w)
+    is WkGauge (v) (m) -> theme-resolve-gauge th (widget-state-of w)
+    is WkSeparator -> theme-resolve-separator th (widget-state-of w)
+    is WkInput (t) (c) -> theme-resolve-input th (widget-state-of w)
+    is WkCustom (tag) -> if tag == wk-spacer-tag then widget-style-bare else theme-resolve-panel th (widget-state-of w)
 
 Section: Formatting
   format-widget : WidgetNode -> Text

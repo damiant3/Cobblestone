@@ -19,6 +19,8 @@ param(
     [int]$Width  = 1600,
     [int]$Height = 900,
     [int]$Mem    = 3072,
+    [string]$FontName = '',
+    [switch]$ListFonts,
     # Compile even when the CDX is newer than the source.
     [switch]$Force,
     # The compiler this is built with. Pinned to the depot seed by default:
@@ -74,6 +76,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $Repo 'build/lib/font-pack.ps1')
+if ($ListFonts) {
+    (Get-FontPack -Repo $Repo).faces | Select-Object id, family, weight | Format-Table -AutoSize
+    exit 0
+}
+if ($FontName) { [void](Get-FontFace -Pack (Get-FontPack -Repo $Repo) -Name $FontName) }
 $Src  = Join-Path $Repo 'apps/works/DeskVm.codex'
 $Out  = Join-Path $Repo 'build-output/desk.cdx'
 $Log  = Join-Path $Repo 'build-output/desk.log'
@@ -102,7 +110,7 @@ if ($stale) {
     Write-Host "[desk] compiling $([IO.Path]::GetFileName($Src)) against $Kernel"
     & (Join-Path $PSScriptRoot 'compile.ps1') -Src $Src -Out $Out -Log $Log -Kernel $Kernel *>$null
     # compile.ps1 prints True on a FAILED compile, so the log is the verdict.
-    if (Select-String -Path $Log -Pattern 'error CDX' -Quiet) {
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Out) -or (Select-String -Path $Log -Pattern 'error CDX' -Quiet)) {
         Select-String -Path $Log -Pattern 'error CDX' | Select-Object -First 12 |
             ForEach-Object { Write-Host $_.Line.Trim() }
         throw "desk compile failed; full log at $Log"
@@ -135,9 +143,14 @@ if ($Disk) {
     $diskCopy = Join-Path $outDir ('desk-' + [IO.Path]::GetFileName($diskSrc))
     Copy-Item $diskSrc $diskCopy -Force
     Set-ItemProperty $diskCopy -Name IsReadOnly -Value $false
+    if ($FontName) {
+        Set-FontImageChoice -Repo $Repo -Image $diskCopy -FontName $FontName
+        Write-Host "[desk] shared UI font: $FontName"
+    }
     Write-Host "[desk] disk $([IO.Path]::GetFileName($diskSrc)) (working copy, the original is untouched)"
     $vmArgs += @('-disk', $diskCopy)
 }
+elseif ($FontName) { throw '-FontName requires a font-pack disk image' }
 
 if ($Shot) {
     $shotPath = if ([IO.Path]::IsPathRooted($Shot)) { $Shot } else { Join-Path $Repo $Shot }
@@ -158,7 +171,7 @@ if ($Wait) {
 } else {
     # Several agents run VMs on this box, so hand back the PID: killing
     # codex-vm by NAME takes down everyone else's guest too.
-    $proc = Start-Process -FilePath $Vm -ArgumentList $vmArgs -PassThru
+    $proc = Start-Process -FilePath $Vm -ArgumentList $vmArgs -PassThru -WindowStyle Normal
     Start-Sleep -Milliseconds 500
     Write-Host ("[desk] codex-vm PID {0}" -f $proc.Id)
     Write-Host ("[desk] close with: Stop-Process -Id {0} -Force" -f $proc.Id)

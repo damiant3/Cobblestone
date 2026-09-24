@@ -1,0 +1,191 @@
+Chapter: AccpMcpProtocol
+  cites Accp chapter AccpProtocol
+  cites Accp chapter AccpMcpCard
+  cites Accp chapter AccpExperimentCard
+
+Section: Tool Discovery
+
+  mc-limits-schema : Text
+  mc-limits-schema = "{\"type\":\"object\",\"properties\":{\"ms\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":10000},\"stdout_bytes\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":65536}},\"additionalProperties\":false}"
+
+  mc-source-schema : Boolean -> Text
+  mc-source-schema (input) =
+    "{\"type\":\"object\",\"properties\":{\"source\":{\"type\":\"string\",\"maxLength\":65536,\"description\":\"Complete Codex compilation unit with opening, not Python or JavaScript.\"},\"limits\":" & mc-limits-schema
+      & ",\"library\":{\"type\":\"string\",\"enum\":[\"none\",\"math\",\"physics\",\"experiment\"],\"description\":\"Bundled library. Physics includes math; experiment adds checked quantities, structured results, coupled ODEs, sweeps and SVG. Read codex://accp/science or codex://accp/experiments.\"}"
+      & (if input then ",\"output\":{\"type\":\"string\",\"enum\":[\"text\",\"json\"],\"description\":\"json requires one object on stdout and exposes result. Result fields are program-reported, not independently certified.\"},\"input\":{\"type\":\"string\",\"maxLength\":65536,\"description\":\"Buffered program stdin.\"}" else "")
+      & "},\"required\":[\"source\"],\"additionalProperties\":false}"
+
+  mc-tool : Text, Text, Text -> Text
+  mc-tool (name) (description) (schema) =
+    "{\"name\":" & aj-quote name & ",\"description\":" & aj-quote description & ",\"inputSchema\":" & schema
+      & ",\"annotations\":{\"readOnlyHint\":true,\"destructiveHint\":false,\"openWorldHint\":false},\"outputSchema\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\"}},\"required\":[\"status\"],\"additionalProperties\":true}}"
+
+  mc-tools : Text
+  mc-tools = "{\"tools\":["
+    & mc-tool "codex_run" "Compute arithmetic, text counts, numerical math and physics from supplied inputs. Write and execute Codex source. Read codex://accp/language for syntax; read codex://accp/science before selecting library math or physics. Numerical Real answers are approximate. Check execution status and MathError results; repair diagnostics and report refusals, failures or nonconvergence explicitly." (mc-source-schema True)
+    & "," & mc-tool "codex_check" "Compile a complete Codex unit without executing it. Returns diagnostics or the opening effect row and effects outside ambient authority. Use diagnostics to repair source before retrying." (mc-source-schema False)
+    & "," & mc-tool "codex_lens" "Compile a complete Codex unit and return WebAssembly text. Only pure and buffered Console effects are admitted. This tool emits WAT; codex_run computes an answer." (mc-source-schema False)
+    & "," & mc-tool "codex_describe" "Identify the actual Codex compiler, conduit, host, ambient effects and resource ceilings. Artifact hashes identify bytes and do not claim parity or attestation." "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
+    & "]}"
+
+  mc-resources : Text
+  mc-resources = "{\"resources\":[{\"uri\":\"codex://accp/language\",\"name\":\"codex-language-card\",\"title\":\"Codex computation language card\",\"description\":\"Syntax, complete examples, effects and failure handling for codex_run.\",\"mimeType\":\"text/markdown\"},{\"uri\":\"codex://accp/science\",\"name\":\"codex-science-card\",\"title\":\"Numerical math and physics\",\"description\":\"Bundled library API, units, numerical limits, domain errors and complete examples.\",\"mimeType\":\"text/markdown\"},{\"uri\":\"codex://accp/experiments\",\"name\":\"codex-experiment-card\",\"title\":\"Structured experiments\",\"description\":\"Checked quantities, structured results, coupled ODEs, sweeps and SVG export.\",\"mimeType\":\"text/markdown\"}]}"
+
+Section: Responses
+
+  mc-result : Text, Text -> Text
+  mc-result (id) (body) = "{\"jsonrpc\":\"2.0\",\"id\":" & id & ",\"result\":" & body & "}"
+
+  mc-error : Text, Integer, Text -> Text
+  mc-error (id) (code) (message) = "{\"jsonrpc\":\"2.0\",\"id\":" & id & ",\"error\":{\"code\":" & show code & ",\"message\":" & aj-quote message & "}}"
+
+  mc-send : Text -> [Console] Nothing
+  mc-send (response) = act
+    ack <- ap-call ("{\"bridge\":\"mcp-response\",\"response\":" & (if response == "" then "null" else response) & "}")
+    print-uni ""
+  end
+
+  mc-id-valid : Text -> Boolean
+  mc-id-valid (id) =
+    if text-length id == 0 | text-length id > 1024 then False
+    else if aj-is id 0 "\"" then (aj-string id 0).ok
+    else let start = if aj-is id 0 "-" then 1 else 0
+    in aj-digits id start == text-length id & text-length id > start
+
+  mc-initialize : AccpObject, Text -> Text
+  mc-initialize (params) (id) =
+    let requested = aj-text params "protocolVersion"
+    in let chosen = if requested == "2024-11-05" | requested == "2025-06-18" then requested else "2025-11-25"
+    in mc-result id ("{\"protocolVersion\":" & aj-quote chosen & ",\"capabilities\":{\"tools\":{\"listChanged\":false},\"resources\":{\"subscribe\":false,\"listChanged\":false}},\"serverInfo\":{\"name\":\"cobblestone-accp\",\"version\":\"1.0.0\"},\"instructions\":" & aj-quote mc-instructions & "}")
+
+Section: Invocation
+
+  mc-tool-op : Text -> Text
+  mc-tool-op (name) =
+    if name == "codex_run" then "run"
+    else if name == "codex_check" then "check"
+    else if name == "codex_lens" then "lens"
+    else if name == "codex_describe" then "describe" else ""
+
+  mc-args-known : List AccpField, Text, Integer -> Boolean
+  mc-args-known (fs) (op) (i) =
+    if i >= list-length fs then True
+    else let k = (list-at fs i).key
+    in if op == "describe" then False
+    else if k == "source" | k == "limits" | k == "library" | ((k == "input" | k == "output") & op == "run") then mc-args-known fs op (i + 1)
+    else False
+
+  mc-tool-call : Text, Text, AccpObject, Text, Integer -> [Console] Text
+  mc-tool-call (meta) (header) (params) (id) (heap-base) = act
+    let op = mc-tool-op (aj-text params "name")
+    in let raw = aj-get params "arguments"
+    in let args = aj-object (if raw == "" then "{}" else raw)
+    in if op == "" then mc-error id -32602 "unknown tool"
+    else if args.ok == False | mc-args-known args.fields op 0 == False then mc-error id -32602 "invalid tool arguments"
+    else let fields = if raw == "" then "" else ap-fields raw
+    in let request = "{\"op\":" & aj-quote op & (if op == "lens" then ",\"plug\":\"wasm\"" else "") & (if fields == "" then "" else "," & fields) & "}"
+    in act
+      receipt <- ap-evaluate meta header request heap-base True
+      if receipt.ok == False | aj-text receipt "status" /= "ok" then mc-error id -32603 "execution receipt unavailable"
+      else let response = aj-decode (aj-get receipt "response")
+      in let parsed = aj-object response
+      in if parsed.ok == False then mc-error id -32603 "execution response is malformed"
+      else mc-result id ("{\"content\":[{\"type\":\"text\",\"text\":" & aj-quote response & "}],\"structuredContent\":" & response & ",\"isError\":" & (if aj-text parsed "status" == "ok" then "false" else "true") & ",\"_meta\":{\"accp_response_base64\":" & aj-get receipt "response_base64" & "}}")
+    end
+  end
+
+Section: Lifecycle
+
+  mc-notification : Text, Integer -> Integer
+  mc-notification (method-name) (state) = if method-name == "notifications/initialized" & state == 1 then 2 else state
+
+  mc-handle : Text, Text, Text, Integer, Integer -> [Console] Integer
+  mc-handle (meta) (header) (line) (state) (heap-base) = act
+    let scan = aj-value line 0 0
+    in let o = aj-object line
+    in let id = aj-get o "id"
+    in let method-name = aj-text o "method"
+    in let params-raw = aj-get o "params"
+    in let params = aj-object (if params-raw == "" then "{}" else params-raw)
+    in if scan.ok == False | aj-ws line scan.next /= text-length line then act
+      mc-send (mc-error "null" -32700 "invalid JSON")
+      state
+    end
+    else if o.ok == False | aj-text o "jsonrpc" /= "2.0" | method-name == "" | (id /= "" & mc-id-valid id == False) then act
+      mc-send (mc-error "null" -32600 "invalid JSON-RPC request")
+      state
+    end
+    else if id == "" then act
+      mc-send ""
+      mc-notification method-name state
+    end
+    else if params.ok == False then act
+      mc-send (mc-error id -32602 "params must be an object")
+      state
+    end
+    else if method-name == "ping" then act
+      mc-send (mc-result id "{}")
+      state
+    end
+    else if method-name == "initialize" then
+      if state /= 0 then act
+        mc-send (mc-error id -32600 "already initialized")
+        state
+      end
+      else if aj-text params "protocolVersion" == "" | (aj-object (aj-get params "clientInfo")).ok == False | (aj-object (aj-get params "capabilities")).ok == False then act
+        mc-send (mc-error id -32602 "initialize requires protocolVersion, clientInfo and capabilities")
+        state
+      end
+      else act
+        mc-send (mc-initialize params id)
+        let initialized-state = 1
+        in initialized-state
+      end
+    else if state /= 2 then act
+      mc-send (mc-error id -32002 "initialization is incomplete")
+      state
+    end
+    else act
+      response <- mc-dispatch meta header method-name params id heap-base
+      mc-send response
+      state
+    end
+  end
+
+  mc-dispatch : Text, Text, Text, AccpObject, Text, Integer -> [Console] Text
+  mc-dispatch (meta) (header) (method-name) (params) (id) (heap-base) = act
+    if method-name == "tools/list" then
+      if aj-get params "cursor" == "" then mc-result id mc-tools else mc-error id -32602 "cursor is unsupported"
+    else if method-name == "tools/call" then mc-tool-call meta header params id heap-base
+    else if method-name == "resources/list" then
+      if aj-get params "cursor" == "" then mc-result id mc-resources else mc-error id -32602 "cursor is unsupported"
+    else if method-name == "resources/templates/list" then mc-result id "{\"resourceTemplates\":[]}"
+    else if method-name == "resources/read" then
+      if aj-text params "uri" == "codex://accp/language" then mc-result id ("{\"contents\":[{\"uri\":\"codex://accp/language\",\"mimeType\":\"text/markdown\",\"text\":" & aj-quote mc-language-card & "}]}")
+      else if aj-text params "uri" == "codex://accp/science" then mc-result id ("{\"contents\":[{\"uri\":\"codex://accp/science\",\"mimeType\":\"text/markdown\",\"text\":" & aj-quote mc-science-card & "}]}")
+      else if aj-text params "uri" == "codex://accp/experiments" then mc-result id ("{\"contents\":[{\"uri\":\"codex://accp/experiments\",\"mimeType\":\"text/markdown\",\"text\":" & aj-quote mc-experiment-card & "}]}")
+      else mc-error id -32002 "resource not found"
+    else mc-error id -32601 "method not found"
+  end
+
+  mc-loop : Text, Integer -> [Console] Nothing
+  mc-loop (meta) (state) = act
+    let base = __heap-save
+    in act
+      header <- read-line
+      when header
+        is None -> print-uni ""
+        is Just (h) -> act
+          line <- read-line
+          when line
+            is None -> print-uni ""
+            is Just (s) -> act
+              next-state <- mc-handle meta h s state base
+              let restored = __heap-restore base
+              in mc-loop meta next-state
+            end
+        end
+    end
+  end
+
+Page 1

@@ -240,6 +240,21 @@ Section: __real_to_text
    in let i = a64-rt-emit i (arm64-mov 29 31)
    in let i = a64-rt-emit i (arm64-mov 20 28)
    in let i = a64-rt-emit i (arm64-add-imm 28 28 64)
+   in let i = a64-rt-emit i (arm64-lsr-imm 9 0 52)
+   in let i = a64-rt-emit i (arm64-li 10 2047)
+   in let i = a64-rt-emit i (arm64-and 9 9 10)
+   in let i = a64-rt-emit i (arm64-cmp-imm 9 1086)
+   in let blt-small = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-cmp-imm 9 2046)
+   in let bgt-small = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-big i
+   in let special-label = list-length i / 4
+   in let i = a64-patch-insn-raw i bgt-small (arm64-b-cond 12 ((special-label - bgt-small) * 4))
+   in let i = a64-rt-special i
+   in let small-label = list-length i / 4
+   in let i = a64-patch-insn-raw i blt-small (arm64-b-cond 11 ((small-label - blt-small) * 4))
    in let i = i & arm64-movz 21 0 0
    in let i = a64-rt-emit i (arm64-lsr-imm 22 0 63)
    in let i = a64-rt-emit i (arm64-lsl-imm 0 0 1)
@@ -379,6 +394,185 @@ Section: __real_to_text
    in let i = a64-rt-emit i (arm64-ldp 29 30 31 0)
    in let i = a64-rt-emit i (arm64-add-imm 31 31 96)
    in i & arm64-ret
+
+Section: __real_to_text at or past 2^63
+
+ The same exponent form as the x86-64 emitter's (`Emit/X86_64TextHelpers`),
+ byte for byte: 33 32-bit limbs at `sp`, divided by 10^9 until empty.
+ Registers: x19 second chunk, x21 sign, x22 top limb then the decimal
+ exponent, x23 10^9, x24 top chunk. Stack: 136 third chunk, 144 sticky,
+ 152 chunk count.
+
+  a64-big-pow10 : List Integer, Integer, Integer, Integer -> List Integer
+  a64-big-pow10 (i) (dst) (cnt) (ten) =
+   let i = i & arm64-movz dst 1 0
+   in let top = list-length i / 4
+   in let i = i & arm64-nop & arm64-mul dst dst ten & arm64-sub-imm cnt cnt 1
+   in let i = i & arm64-b ((top - list-length i / 4) * 4)
+   in a64-patch-insn-raw i top (arm64-cbz cnt ((list-length i / 4 - top) * 4))
+
+  a64-big-digits : List Integer -> List Integer
+  a64-big-digits (i) =
+   let top = list-length i / 4
+   in let i = i & arm64-nop & arm64-sub-imm 11 11 1 & arm64-udiv 12 14 15 & arm64-msub 24 12 15 14 & arm64-add-imm 24 24 3 & arm64-strb 24 11 8 & arm64-add-imm 14 12 0 & arm64-sub-imm 13 13 1
+   in let i = i & arm64-b ((top - list-length i / 4) * 4)
+   in a64-patch-insn-raw i top (arm64-cbz 13 ((list-length i / 4 - top) * 4))
+
+  a64-big-limbs : List Integer -> List Integer
+  a64-big-limbs (i) =
+   let i = i & arm64-sub-imm 31 31 176 & arm64-lsr-imm 21 0 63 & arm64-add-imm 9 31 0 & arm64-movz 10 22 0
+   in let zero-loop = list-length i / 4
+   in let i = i & arm64-str 31 9 0 & arm64-add-imm 9 9 8 & arm64-sub-imm 10 10 1
+   in let i = i & arm64-cbnz 10 ((zero-loop - list-length i / 4) * 4)
+   in let i = i & arm64-li 10 4503599627370495 & arm64-and 11 0 10 & arm64-li 10 4503599627370496 & arm64-or 11 11 10
+   in let i = i & arm64-lsr-imm 12 0 52 & arm64-li 10 2047 & arm64-and 12 12 10 & arm64-sub-imm 12 12 1075
+   in let i = i & arm64-lsr-imm 13 12 5 & arm64-li 10 31 & arm64-and 14 12 10 & arm64-li 10 4294967295 & arm64-and 15 11 10 & arm64-lsr-imm 11 11 32
+   in let i = i & arm64-add-imm 22 13 2 & arm64-lsl-imm 9 13 2 & arm64-add-imm 12 31 0 & arm64-add 9 12 9
+   in let i = i & arm64-lsl 12 15 14 & arm64-and 12 12 10 & arm64-str-w 12 9 0
+   in let i = i & arm64-movz 12 32 0 & arm64-sub 12 12 14 & arm64-lsr 12 15 12 & arm64-lsl 13 11 14 & arm64-or 12 12 13 & arm64-and 12 12 10 & arm64-str-w 12 9 4
+   in i & arm64-lsr-imm 13 13 32 & arm64-str-w 13 9 8 & arm64-li 23 1000000000 & arm64-movz 24 0 0 & arm64-movz 19 0 0
+
+  a64-big-chunks : List Integer -> List Integer
+  a64-big-chunks (i) =
+   let chunk-loop = list-length i / 4
+   in let i = i & arm64-movz 9 0 0 & arm64-add-imm 10 22 0 & arm64-add-imm 11 31 0
+   in let limb-loop = list-length i / 4
+   in let i = i & arm64-lsl-imm 12 10 2 & arm64-ldr-w-reg 13 11 12 & arm64-lsl-imm 14 9 32 & arm64-or 14 14 13 & arm64-udiv 13 14 23 & arm64-msub 9 13 23 14 & arm64-str-w-reg 13 11 12
+   in let limbs-done-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-sub-imm 10 10 1
+   in let i = i & arm64-b ((limb-loop - list-length i / 4) * 4)
+   in let trim-loop = list-length i / 4
+   in let i = a64-patch-insn-raw i limbs-done-at (arm64-cbz 10 ((trim-loop - limbs-done-at) * 4))
+   in let trim-bottom-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-lsl-imm 12 22 2 & arm64-ldr-w-reg 13 11 12
+   in let trim-live-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-sub-imm 22 22 1
+   in let i = i & arm64-b ((trim-loop - list-length i / 4) * 4)
+   in let trimmed = list-length i / 4
+   in let i = a64-patch-insn-raw i trim-bottom-at (arm64-cbz 22 ((trimmed - trim-bottom-at) * 4))
+   in let i = a64-patch-insn-raw i trim-live-at (arm64-cbnz 13 ((trimmed - trim-live-at) * 4))
+   in let i = i & arm64-ldr 12 31 136
+   in let clean-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-movz 13 1 0 & arm64-str 13 31 144
+   in let i = a64-patch-insn-raw i clean-at (arm64-cbz 12 ((list-length i / 4 - clean-at) * 4))
+   in let i = i & arm64-str 19 31 136 & arm64-add-imm 19 24 0 & arm64-add-imm 24 9 0 & arm64-ldr 12 31 152 & arm64-add-imm 12 12 1 & arm64-str 12 31 152
+   in let i = i & arm64-cbnz 22 ((chunk-loop - list-length i / 4) * 4)
+   in let i = i & arm64-ldr-w 12 11 0
+   in i & arm64-cbnz 12 ((chunk-loop - list-length i / 4) * 4)
+
+  a64-big-round : List Integer -> List Integer
+  a64-big-round (i) =
+   let i = i & arm64-movz 13 1 0 & arm64-add-imm 12 24 0 & arm64-li 14 10
+   in let count-loop = list-length i / 4
+   in let i = i & arm64-cmp-imm 12 10
+   in let counted-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-udiv 12 12 14 & arm64-add-imm 13 13 1
+   in let i = i & arm64-b ((count-loop - list-length i / 4) * 4)
+   in let i = a64-patch-insn-raw i counted-at (arm64-b-cond 3 ((list-length i / 4 - counted-at) * 4))
+   in let i = i & arm64-mul 9 24 23 & arm64-add 9 9 19 & arm64-ldr 15 31 136 & arm64-cmp-imm 13 7
+   in let short-at = list-length i / 4
+   in let i = i & arm64-nop
+   in let long-clean-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-movz 12 1 0 & arm64-str 12 31 144
+   in let i = a64-patch-insn-raw i long-clean-at (arm64-cbz 15 ((list-length i / 4 - long-clean-at) * 4))
+   in let i = i & arm64-sub-imm 10 13 6
+   in let to-round-at = list-length i / 4
+   in let i = i & arm64-nop
+   in let i = a64-patch-insn-raw i short-at (arm64-b-cond 11 ((list-length i / 4 - short-at) * 4))
+   in let i = i & arm64-movz 10 7 0 & arm64-sub 10 10 13 & arm64-li 14 10 & arm64-add-imm 11 10 0
+   in let i = a64-big-pow10 i 12 11 14
+   in let i = i & arm64-mul 9 9 12 & arm64-movz 11 9 0 & arm64-sub 11 11 10
+   in let i = a64-big-pow10 i 12 11 14
+   in let i = i & arm64-udiv 14 15 12 & arm64-msub 11 14 12 15 & arm64-add 9 9 14
+   in let short-clean-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-movz 12 1 0 & arm64-str 12 31 144
+   in let i = a64-patch-insn-raw i short-clean-at (arm64-cbz 11 ((list-length i / 4 - short-clean-at) * 4))
+   in let i = i & arm64-movz 10 1 0
+   in let i = a64-patch-insn-raw i to-round-at (arm64-b ((list-length i / 4 - to-round-at) * 4))
+   in let i = i & arm64-li 14 10 & arm64-add-imm 11 10 0
+   in let i = a64-big-pow10 i 12 11 14
+   in let i = i & arm64-udiv 14 9 12 & arm64-msub 11 14 12 9 & arm64-lsr-imm 15 12 1 & arm64-cmp 11 15
+   in let above-at = list-length i / 4
+   in let i = i & arm64-nop
+   in let below-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-ldr 12 31 144
+   in let sticky-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-movz 12 1 0 & arm64-tst 14 12
+   in let even-at = list-length i / 4
+   in let i = i & arm64-nop
+   in let round-up = list-length i / 4
+   in let i = i & arm64-add-imm 14 14 1
+   in let rounded = list-length i / 4
+   in let i = a64-patch-insn-raw i above-at (arm64-b-cond 8 ((round-up - above-at) * 4))
+   in let i = a64-patch-insn-raw i below-at (arm64-b-cond 3 ((rounded - below-at) * 4))
+   in let i = a64-patch-insn-raw i sticky-at (arm64-cbnz 12 ((round-up - sticky-at) * 4))
+   in let i = a64-patch-insn-raw i even-at (arm64-b-cond 0 ((rounded - even-at) * 4))
+   in let i = i & arm64-ldr 12 31 152 & arm64-sub-imm 12 12 1 & arm64-movz 11 9 0 & arm64-mul 12 12 11 & arm64-add 12 12 13 & arm64-sub-imm 22 12 1
+   in let i = i & arm64-li 11 1000000000000000 & arm64-cmp 14 11
+   in let no-carry-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-li 14 100000000000000 & arm64-add-imm 22 22 1
+   in a64-patch-insn-raw i no-carry-at (arm64-b-cond 1 ((list-length i / 4 - no-carry-at) * 4))
+
+  a64-big-strip : List Integer -> List Integer
+  a64-big-strip (i) =
+   let i = i & arm64-li 11 100000000000000 & arm64-udiv 15 14 11 & arm64-msub 14 15 11 14 & arm64-movz 13 14 0
+   in let nonzero-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-movz 13 1 0
+   in let zero-done-at = list-length i / 4
+   in let i = i & arm64-nop
+   in let i = a64-patch-insn-raw i nonzero-at (arm64-cbnz 14 ((list-length i / 4 - nonzero-at) * 4))
+   in let i = i & arm64-li 11 10
+   in let strip-loop = list-length i / 4
+   in let i = i & arm64-udiv 12 14 11 & arm64-msub 9 12 11 14
+   in let kept-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-add-imm 14 12 0 & arm64-sub-imm 13 13 1
+   in let i = i & arm64-b ((strip-loop - list-length i / 4) * 4)
+   in let stripped = list-length i / 4
+   in let i = a64-patch-insn-raw i kept-at (arm64-cbnz 9 ((stripped - kept-at) * 4))
+   in a64-patch-insn-raw i zero-done-at (arm64-b ((stripped - zero-done-at) * 4))
+
+  a64-big-write : List Integer -> List Integer
+  a64-big-write (i) =
+   let i = i & arm64-movz 10 2 0 & arm64-cmp-imm 22 100
+   in let two-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-movz 10 3 0
+   in let i = a64-patch-insn-raw i two-at (arm64-b-cond 11 ((list-length i / 4 - two-at) * 4))
+   in let i = i & arm64-movz 9 0 0
+   in let unsigned-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-movz 12 73 0 & arm64-strb 12 20 8 & arm64-movz 9 1 0
+   in let i = a64-patch-insn-raw i unsigned-at (arm64-cbz 21 ((list-length i / 4 - unsigned-at) * 4))
+   in let i = i & arm64-add-imm 12 15 3 & arm64-add 11 20 9 & arm64-strb 12 11 8 & arm64-add-imm 9 9 1
+   in let i = i & arm64-movz 12 65 0 & arm64-add 11 20 9 & arm64-strb 12 11 8 & arm64-add-imm 9 9 1
+   in let i = i & arm64-add 11 20 9 & arm64-add 11 11 13 & arm64-add 9 9 13 & arm64-li 15 10
+   in let i = a64-big-digits i
+   in let i = i & arm64-movz 12 13 0 & arm64-add 11 20 9 & arm64-strb 12 11 8 & arm64-add-imm 9 9 1
+   in let i = i & arm64-movz 12 76 0 & arm64-add 11 20 9 & arm64-strb 12 11 8 & arm64-add-imm 9 9 1
+   in let i = i & arm64-add-imm 14 22 0 & arm64-add-imm 13 10 0 & arm64-add 11 20 9 & arm64-add 11 11 13 & arm64-add 9 9 13
+   in let i = a64-big-digits i
+   in i & arm64-str 9 20 0 & arm64-add-imm 0 20 0 & arm64-add-imm 31 31 176 & arm64-ldp 23 24 31 48 & arm64-ldp 21 22 31 32 & arm64-ldp 19 20 31 16 & arm64-ldp 29 30 31 0 & arm64-add-imm 31 31 96 & arm64-ret
+
+  a64-rt-special : List Integer -> List Integer
+  a64-rt-special (i) =
+   let i = i & arm64-lsl-imm 10 0 12
+   in let nan-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-lsr-imm 11 0 63
+   in let neg-at = list-length i / 4
+   in let i = i & arm64-nop & arm64-movz 12 3 0 & arm64-li 13 1839633
+   in let inf-done-at = list-length i / 4
+   in let i = i & arm64-nop
+   in let i = a64-patch-insn-raw i neg-at (arm64-cbnz 11 ((list-length i / 4 - neg-at) * 4))
+   in let i = i & arm64-movz 12 4 0 & arm64-li 13 470946121
+   in let neg-done-at = list-length i / 4
+   in let i = i & arm64-nop
+   in let i = a64-patch-insn-raw i nan-at (arm64-cbnz 10 ((list-length i / 4 - nan-at) * 4))
+   in let i = i & arm64-movz 12 3 0 & arm64-li 13 1183506
+   in let written = list-length i / 4
+   in let i = a64-patch-insn-raw i inf-done-at (arm64-b ((written - inf-done-at) * 4))
+   in let i = a64-patch-insn-raw i neg-done-at (arm64-b ((written - neg-done-at) * 4))
+   in i & arm64-str 12 20 0 & arm64-str 13 20 8 & arm64-add-imm 0 20 0 & arm64-ldp 23 24 31 48 & arm64-ldp 21 22 31 32 & arm64-ldp 19 20 31 16 & arm64-ldp 29 30 31 0 & arm64-add-imm 31 31 96 & arm64-ret
+
+  a64-rt-big : List Integer -> List Integer
+  a64-rt-big (i) = a64-big-write (a64-big-strip (a64-big-round (a64-big-chunks (a64-big-limbs i))))
 
 Section: __list_cons
 
@@ -581,6 +775,8 @@ Section: int-mod
   a64-rt-int-mod : List Integer
   a64-rt-int-mod =
    let i = []
+   in let i = a64-rt-emit i (arm64-cbnz 1 8)
+   in let i = a64-rt-emit i (arm64-encode #D4200020)
    in let i = a64-rt-emit i (arm64-sdiv 9 0 1)
    in let i = a64-rt-emit i (arm64-msub 0 9 1 0)
    in let i = a64-rt-emit i (arm64-neg 9 1)
@@ -597,9 +793,19 @@ Section: Builtin Helpers
   a64-rt-text-length =
    arm64-ldr 0 0 0 & arm64-ret
 
+  a64-rt-index-guard : List Integer
+  a64-rt-index-guard =
+   let i = []
+   in let i = a64-rt-emit i (arm64-cmp-imm 1 0)
+   in let i = a64-rt-emit i (arm64-b-cond 11 16)
+   in let i = a64-rt-emit i (arm64-ldr 9 0 0)
+   in let i = a64-rt-emit i (arm64-cmp 1 9)
+   in let i = a64-rt-emit i (arm64-b-cond 11 8)
+   in a64-rt-emit i (arm64-encode #D4200020)
+
   a64-rt-list-at : List Integer
   a64-rt-list-at =
-   let i = []
+   let i = a64-rt-index-guard
    in let i = a64-rt-emit i (arm64-add 9 1 1)
    in let i = a64-rt-emit i (arm64-add 9 9 9)
    in let i = a64-rt-emit i (arm64-add 9 9 9)
@@ -609,7 +815,7 @@ Section: Builtin Helpers
 
   a64-rt-char-at : List Integer
   a64-rt-char-at =
-   let i = []
+   let i = a64-rt-index-guard
    in let i = a64-rt-emit i (arm64-add 9 0 1)
    in let i = a64-rt-emit i (arm64-ldrb 0 9 8)
    in a64-rt-emit i arm64-ret
@@ -1023,7 +1229,7 @@ Section: Heap Management Helpers
 
   a64-rt-alloc-bytes : List Integer
   a64-rt-alloc-bytes =
-   arm64-mov 9 0 & arm64-mov 0 28 & arm64-add 28 28 9 & arm64-ret
+   arm64-add-imm 28 28 7 & arm64-lsr-imm 28 28 3 & arm64-lsl-imm 28 28 3 & arm64-add-imm 9 0 7 & arm64-lsr-imm 9 9 3 & arm64-lsl-imm 9 9 3 & arm64-mov 0 28 & arm64-add 28 28 9 & arm64-ret
 
 Section: list-set-at (a0=list, a1=index, a2=value -> the same list)
 
@@ -1035,7 +1241,7 @@ Section: list-set-at (a0=list, a1=index, a2=value -> the same list)
 
   a64-rt-list-set-at : List Integer
   a64-rt-list-set-at =
-   let i = []
+   let i = a64-rt-index-guard
    in let i = i & arm64-lsl-imm 1 1 3
    in let i = a64-rt-emit i (arm64-add 1 0 1)
    in let i = a64-rt-emit i (arm64-str 2 1 8)
@@ -1102,6 +1308,15 @@ Section: substring (a0=text, a1=start, a2=length -> new text)
   a64-rt-substring : List Integer
   a64-rt-substring =
    let i = []
+   in let i = a64-rt-emit i (arm64-cmp-imm 1 0)
+   in let i = a64-rt-emit i (arm64-b-cond 11 28)
+   in let i = a64-rt-emit i (arm64-cmp-imm 2 0)
+   in let i = a64-rt-emit i (arm64-b-cond 11 20)
+   in let i = a64-rt-emit i (arm64-ldr 9 0 0)
+   in let i = a64-rt-emit i (arm64-sub 9 9 1)
+   in let i = a64-rt-emit i (arm64-cmp 2 9)
+   in let i = a64-rt-emit i (arm64-b-cond 13 8)
+   in let i = a64-rt-emit i (arm64-encode #D4200020)
    in let i = a64-rt-emit i (arm64-mov 9 0)
    in let i = a64-rt-emit i (arm64-mov 10 1)
    in let i = a64-rt-emit i (arm64-mov 11 2)
@@ -1420,6 +1635,137 @@ Section: Linked List to Flat List
    in let i = a64-rt-emit i (arm64-ldp 19 20 31 16)
    in let i = a64-rt-emit i (arm64-ldp-post 29 30 31 64)
    in a64-rt-emit i arm64-ret
+
+Section: Raw Bytes To Text
+
+  a64-rt-raw-bytes-to-text : List Integer
+  a64-rt-raw-bytes-to-text =
+   let i = []
+   in let i = a64-rt-emit i (arm64-add-imm 28 28 7)
+   in let i = i & arm64-lsr-imm 28 28 3
+   in let i = i & arm64-lsl-imm 28 28 3
+   in let i = a64-rt-emit i (arm64-ldr 9 0 0)
+   in let i = a64-rt-emit i (arm64-mov 10 28)
+   in let i = a64-rt-emit i (arm64-str 9 28 0)
+   in let i = a64-rt-emit i (arm64-add-imm 11 9 15)
+   in let i = i & arm64-lsr-imm 11 11 3
+   in let i = i & arm64-lsl-imm 11 11 3
+   in let i = a64-rt-emit i (arm64-add 28 28 11)
+   in let i = i & arm64-movz 12 0 0
+   in let rb-top = list-length i / 4
+   in let i = a64-rt-emit i (arm64-cmp 12 9)
+   in let rb-exit = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-lsl-imm 13 12 3
+   in let i = a64-rt-emit i (arm64-add 13 0 13)
+   in let i = a64-rt-emit i (arm64-ldr 13 13 8)
+   in let i = a64-rt-emit i (arm64-add 14 10 12)
+   in let i = a64-rt-emit i (arm64-strb 13 14 8)
+   in let i = a64-rt-emit i (arm64-add-imm 12 12 1)
+   in let i = a64-rt-emit i (arm64-b ((rb-top - list-length i / 4) * 4))
+   in let rb-exit-label = list-length i / 4
+   in let i = a64-patch-insn-raw i rb-exit (arm64-b-cond 10 ((rb-exit-label - rb-exit) * 4))
+   in let i = a64-rt-emit i (arm64-mov 0 10)
+   in a64-rt-emit i arm64-ret
+
+Section: Char Encode
+
+ 128, 2176 and 67712 are the CCE band boundaries and 192/224/240/128 the lead
+ and continuation masks; cce-encode in codex/foreword/core/CCE.codex is the
+ authority for all seven.
+
+  a64-rt-cce-byte : Integer, Boolean, Integer, Integer -> List Integer
+  a64-rt-cce-byte (shift) (keep6) (mask) (off) =
+   let i = if shift > 0 then arm64-lsr-imm 12 9 shift else arm64-mov 12 9
+   in let i = if keep6 then i & arm64-movz 13 63 0 & arm64-and 12 12 13 else i
+   in i & arm64-movz 13 mask 0 & arm64-or 12 12 13 & arm64-strb 12 10 off
+
+  a64-rt-char-encode : List Integer
+  a64-rt-char-encode =
+   let i = []
+   in let i = a64-rt-emit i (arm64-add-imm 28 28 7)
+   in let i = i & arm64-lsr-imm 28 28 3
+   in let i = i & arm64-lsl-imm 28 28 3
+   in let i = a64-rt-emit i (arm64-mov 10 28)
+   in let i = a64-rt-emit i (arm64-add-imm 28 28 16)
+   in let i = a64-rt-emit i (arm64-mov 9 0)
+   in let i = a64-rt-emit i (arm64-cmp-imm 9 128)
+   in let ce-b2 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-movz 11 1 0 & arm64-str 11 10 0 & arm64-strb 9 10 8
+   in let ce-e1 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let ce-l2 = list-length i / 4
+   in let i = a64-patch-insn-raw i ce-b2 (arm64-b-cond 10 ((ce-l2 - ce-b2) * 4))
+   in let i = a64-rt-emit i (arm64-cmp-imm 9 2176)
+   in let ce-b3 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-sub-imm 9 9 128 & arm64-movz 11 2 0 & arm64-str 11 10 0
+   in let i = i & a64-rt-cce-byte 6 False 192 8 & a64-rt-cce-byte 0 True 128 9
+   in let ce-e2 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let ce-l3 = list-length i / 4
+   in let i = a64-patch-insn-raw i ce-b3 (arm64-b-cond 10 ((ce-l3 - ce-b3) * 4))
+   in let i = i & arm64-movz 14 2176 0 & arm64-movk 14 1 16 & arm64-cmp 9 14
+   in let ce-b4 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-sub-imm 9 9 2176 & arm64-movz 11 3 0 & arm64-str 11 10 0
+   in let i = i & a64-rt-cce-byte 12 False 224 8 & a64-rt-cce-byte 6 True 128 9 & a64-rt-cce-byte 0 True 128 10
+   in let ce-e3 = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let ce-l4 = list-length i / 4
+   in let i = a64-patch-insn-raw i ce-b4 (arm64-b-cond 10 ((ce-l4 - ce-b4) * 4))
+   in let i = i & arm64-sub 9 9 14 & arm64-movz 11 4 0 & arm64-str 11 10 0
+   in let i = i & a64-rt-cce-byte 18 False 240 8 & a64-rt-cce-byte 12 True 128 9 & a64-rt-cce-byte 6 True 128 10 & a64-rt-cce-byte 0 True 128 11
+   in let ce-end = list-length i / 4
+   in let i = a64-patch-insn-raw i ce-e1 (arm64-b ((ce-end - ce-e1) * 4))
+   in let i = a64-patch-insn-raw i ce-e2 (arm64-b ((ce-end - ce-e2) * 4))
+   in let i = a64-patch-insn-raw i ce-e3 (arm64-b ((ce-end - ce-e3) * 4))
+   in let i = a64-rt-emit i (arm64-mov 0 10)
+   in a64-rt-emit i arm64-ret
+
+Section: Apply One
+
+  a64-rt-apply1 : List Integer
+  a64-rt-apply1 =
+   let i = []
+   in let i = a64-rt-emit i (arm64-ldr 10 0 8)
+   in let i = a64-rt-emit i (arm64-cmp-imm 10 1)
+   in let ap-bne = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-mov 11 0)
+   in let i = a64-rt-emit i (arm64-mov 0 1)
+   in let i = a64-rt-emit i (arm64-ldr 9 11 0)
+   in let i = a64-rt-emit i (arm64-br 9)
+   in let ap-pap = list-length i / 4
+   in let i = a64-patch-insn-raw i ap-bne (arm64-b-cond 1 ((ap-pap - ap-bne) * 4))
+   in let i = a64-rt-emit i (arm64-add-imm 28 28 7)
+   in let i = i & arm64-lsr-imm 28 28 3
+   in let i = i & arm64-lsl-imm 28 28 3
+   in let i = a64-rt-emit i (arm64-mov 12 28)
+   in let i = a64-rt-emit i (arm64-add-imm 28 28 32)
+   in let ap-adr = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-str 9 12 0)
+   in let i = a64-rt-emit i (arm64-sub-imm 10 10 1)
+   in let i = a64-rt-emit i (arm64-str 10 12 8)
+   in let i = a64-rt-emit i (arm64-str 0 12 16)
+   in let i = a64-rt-emit i (arm64-str 1 12 24)
+   in let i = a64-rt-emit i (arm64-mov 0 12)
+   in let i = a64-rt-emit i arm64-ret
+   in let ap-tramp = list-length i / 4
+   in let i = a64-patch-insn-raw i ap-adr (a64-encode-adr-signed 9 ((ap-tramp - ap-adr) * 4))
+   in let i = a64-rt-emit i (arm64-mov 7 6)
+   in let i = a64-rt-emit i (arm64-mov 6 5)
+   in let i = a64-rt-emit i (arm64-mov 5 4)
+   in let i = a64-rt-emit i (arm64-mov 4 3)
+   in let i = a64-rt-emit i (arm64-mov 3 2)
+   in let i = a64-rt-emit i (arm64-mov 2 1)
+   in let i = a64-rt-emit i (arm64-mov 1 0)
+   in let i = a64-rt-emit i (arm64-ldr 0 11 24)
+   in let i = a64-rt-emit i (arm64-ldr 11 11 16)
+   in let i = a64-rt-emit i (arm64-ldr 9 11 0)
+   in a64-rt-emit i (arm64-br 9)
 
 Section: Text Concat List
 
@@ -3231,7 +3577,13 @@ Section: Emit All Runtime Helpers
    in let f142 = a64-rt-text-split in let st143 = a64-emit-block st142 f142 0 (list-length f142)
    in let st144 = a64-record-func st143 "__text_to_double"
    in let f144 = a64-rt-text-to-double in let st145 = a64-emit-block st144 f144 0 (list-length f144)
-   in let st149p = a64-emit-proc-helpers st145
+   in let st146 = a64-record-func st145 "raw-bytes-to-text"
+   in let f146 = a64-rt-raw-bytes-to-text in let st147 = a64-emit-block st146 f146 0 (list-length f146)
+   in let st147c = a64-record-func st147 "char-encode"
+   in let f147c = a64-rt-char-encode in let st147d = a64-emit-block st147c f147c 0 (list-length f147c)
+   in let st148 = a64-record-func st147d "__a64_apply1"
+   in let f148 = a64-rt-apply1 in let st148b = a64-emit-block st148 f148 0 (list-length f148)
+   in let st149p = a64-emit-proc-helpers st148b
    in let st149n = a64-emit-net-helpers st149p
    in let st149l = a64-emit-lifecycle-helpers st149n
    in let st149b = a64-emit-block-helpers st149l

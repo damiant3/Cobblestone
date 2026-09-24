@@ -1,0 +1,237 @@
+Chapter: X509DevCertTest
+  cites Encode chapter X509Write
+  cites Encode chapter X509
+  cites Encode chapter X509Chain
+  cites Encode chapter TlsEndpoint
+  cites Foreword chapter Ed25519
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ The keys are RFC 8032 section 7.1, TEST 1 and TEST 2.
+
+ We say:
+
+Section: Fixtures
+
+  k1-priv : List Integer =
+    [#9D, #61, #B1, #9D, #EF, #FD, #5A, #60, #BA, #84, #4A, #F4, #92, #EC, #2C, #C4,
+     #44, #49, #C5, #69, #7B, #32, #69, #19, #70, #3B, #AC, #03, #1C, #AE, #7F, #60]
+
+  k1-pub : List Integer =
+    [#D7, #5A, #98, #01, #82, #B1, #0A, #B7, #D5, #4B, #FE, #D3, #C9, #64, #07, #3A,
+     #0E, #E1, #72, #F3, #DA, #A6, #23, #25, #AF, #02, #1A, #68, #F7, #07, #51, #1A]
+
+  k2-priv : List Integer =
+    [#4C, #CD, #08, #9B, #28, #FF, #96, #DA, #9D, #B6, #C3, #46, #EC, #11, #4E, #0F,
+     #5B, #8A, #31, #9F, #35, #AB, #A6, #24, #DA, #8C, #F6, #ED, #4F, #B8, #A6, #FB]
+
+  loopback : List Integer = [127, 0, 0, 1]
+
+  c-priv : List Integer =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+     17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  s-priv : List Integer =
+    [32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
+     16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+
+  c-random : List Integer =
+    [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
+     117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]
+
+  s-random : List Integer =
+    [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216,
+     217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232]
+
+Section: Helpers
+
+  ascii : Text -> List Integer
+  ascii (s) = ascii-loop s 0 (text-length s) []
+
+  ascii-loop : Text, Integer, Integer, List Integer -> List Integer
+  ascii-loop (s) (i) (n) (acc) =
+    if i >= n then acc
+    else ascii-loop s (i + 1) n (list-push acc (to-unicode (char-code (char-at s i))))
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+  bytes-eq : List Integer, List Integer -> Boolean
+  bytes-eq (a) (b) =
+    if list-length a /= list-length b then False
+    else bytes-eq-loop a b 0
+
+  bytes-eq-loop : List Integer, List Integer, Integer -> Boolean
+  bytes-eq-loop (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else bytes-eq-loop a b (i + 1)
+
+  contains-at : List Integer, List Integer, Integer, Integer -> Boolean
+  contains-at (hay) (needle) (i) (j) =
+    if j >= list-length needle then True
+    else if list-at hay (i + j) /= list-at needle j then False
+    else contains-at hay needle i (j + 1)
+
+  contains : List Integer, List Integer, Integer -> Boolean
+  contains (hay) (needle) (i) =
+    if i + list-length needle > list-length hay then False
+    else if contains-at hay needle i 0 then True
+    else contains hay needle (i + 1)
+
+  copy-bytes : List Integer, Integer, List Integer -> List Integer
+  copy-bytes (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else copy-bytes bs (i + 1) (list-push acc (list-at bs i))
+
+  flip-late : List Integer -> List Integer
+  flip-late (bs) =
+    list-set-at (copy-bytes bs 0 []) (list-length bs - 6) (bit-xor (list-at bs (list-length bs - 6)) 1)
+
+  or-empty : Maybe (List Integer) -> List Integer
+  or-empty (m) =
+    when m
+      is None -> []
+      is Just (x) -> x
+
+  vtext : X509Verdict -> Text
+  vtext (v) =
+    when v
+      is ChainOk -> "ok"
+      is ChainWrongIdentity -> "wrong-identity"
+      is ChainNotYetValid -> "not-yet-valid"
+      is ChainExpired -> "expired"
+      is ChainBadSignature -> "bad-signature"
+      is ChainNoAnchor -> "no-anchor"
+      is otherwise -> "other"
+
+  anchor-of : X509Cert -> X509Anchor
+  anchor-of (c) = X509Anchor { xa-subject = c.xc-subject, xa-key = c.xc-key }
+
+Section: Minting
+
+  mint : List Integer, Text, Text, List (List Integer), List (List Integer) -> Maybe (List Integer)
+  mint (priv) (cn) (not-after) (dns) (ips) =
+    x509-dev-cert-ed25519 priv [1] (ascii cn) (ascii "20250101000000") (ascii not-after) dns ips
+
+  mint-local : List Integer, Text -> Maybe (List Integer)
+  mint-local (priv) (not-after) = mint priv "codex-dev" not-after [ascii "localhost"] [loopback]
+
+Section: Fields
+
+  fields-line : List Integer -> Text
+  fields-line (cert) =
+    when x509-parse cert
+      is None -> "parse=fail"
+      is Just (c) -> fields-of c
+
+  fields-of : X509Cert -> Text
+  fields-of (c) =
+    let issued = " self-issued=" & yn (bytes-eq (c.xc-issuer) (c.xc-subject))
+    in let key = " key=" & yn (bytes-eq ((c.xc-key).xk-bytes) k1-pub)
+    in "parse=ok version=" & show (c.xc-version) & issued & " ca=" & yn (c.xc-is-ca) & key
+
+  names-line : List Integer -> Text
+  names-line (cert) =
+    when x509-parse cert
+      is None -> "names=unparsed"
+      is Just (c) -> names-of c
+
+  names-of : X509Cert -> Text
+  names-of (c) =
+    let dns = c.xc-dns-names
+    in let ips = c.xc-ip-addrs
+    in let d-ok = if list-length dns == 1 then bytes-eq (list-at dns 0) (ascii "localhost") else False
+    in let i-ok = if list-length ips == 1 then bytes-eq (list-at ips 0) loopback else False
+    in "dns=" & yn d-ok & " ip=" & yn i-ok & " dev-only=" & yn (contains (c.xc-subject) (ascii "DEV-ONLY") 0)
+
+  times-line : List Integer -> Text
+  times-line (cert) =
+    when x509-parse cert
+      is None -> "times=unparsed"
+      is Just (c) -> "not-before-len=" & show (list-length (c.xc-not-before)) & " not-after-len=" & show (list-length (c.xc-not-after))
+
+Section: Verification
+
+  verdict : List Integer, List Integer, Text, Text -> Text
+  verdict (cert) (pinned) (now) (host) =
+    when x509-parse cert
+      is None -> "unparsed"
+      is Just (c) -> verdict-pinned c pinned now host
+
+  verdict-pinned : X509Cert, List Integer, Text, Text -> Text
+  verdict-pinned (c) (pinned) (now) (host) =
+    when x509-parse pinned
+      is None -> "pin-unparsed"
+      is Just (a) -> vtext (x509-verify-peer [c] [anchor-of a] (ascii now) (ascii host))
+
+Section: Refusals
+
+  refusals-a : Text
+  refusals-a =
+    let short-key = is-none (x509-dev-cert-ed25519 [1, 2, 3] [1] (ascii "cn") (ascii "20250101000000") (ascii "20350101000000") [ascii "localhost"] [])
+    in let zero-serial = is-none (x509-dev-cert-ed25519 k1-priv [0, 0] (ascii "cn") (ascii "20250101000000") (ascii "20350101000000") [ascii "localhost"] [])
+    in let bad-time = is-none (x509-dev-cert-ed25519 k1-priv [1] (ascii "cn") (ascii "2025010100000") (ascii "20350101000000") [ascii "localhost"] [])
+    in "refuse short-key=" & yn short-key & " zero-serial=" & yn zero-serial & " bad-time=" & yn bad-time
+
+  refusals-b : Text
+  refusals-b =
+    let no-names = is-none (x509-dev-cert-ed25519 k1-priv [1] (ascii "cn") (ascii "20250101000000") (ascii "20350101000000") [] [])
+    in let short-ip = is-none (x509-dev-cert-ed25519 k1-priv [1] (ascii "cn") (ascii "20250101000000") (ascii "20350101000000") [] [[127, 0, 1]])
+    in let empty-cn = is-none (x509-dev-cert-ed25519 k1-priv [1] [] (ascii "20250101000000") (ascii "20350101000000") [ascii "localhost"] [])
+    in "refuse no-names=" & yn no-names & " short-ip=" & yn short-ip & " empty-cn=" & yn empty-cn
+
+Section: The Handshake
+
+  tls-line : List Integer, List Integer -> Text
+  tls-line (cert) (pinned) =
+    when x509-parse pinned
+      is None -> "tls pin-unparsed"
+      is Just (a) -> tls-run cert (anchor-of a)
+
+  tls-run : List Integer, X509Anchor -> Text
+  tls-run (cert) (anchor) =
+    let s0 = tls-ep-server-new s-priv s-random [cert] k1-priv (ed25519-public-key k1-priv)
+    in let c0 = tls-ep-client-new c-priv c-random [anchor] (ascii "20260923000000") (ascii "localhost")
+    in let st1 = tls-ep-hello c0
+    in let sv1 = tls-ep-recv s0 (list-at (st1.tes-out) 0)
+    in tls-client-side st1 sv1
+
+  tls-client-side : TlsEpStep, TlsEpStep -> Text
+  tls-client-side (st1) (sv1) =
+    let c1 = tls-ep-recv (st1.tes-ep) (list-at (sv1.tes-out) 0)
+    in let c2 = tls-ep-recv (c1.tes-ep) (list-at (sv1.tes-out) 1)
+    in let c3 = tls-ep-recv (c2.tes-ep) (list-at (sv1.tes-out) 2)
+    in let c4 = tls-ep-recv (c3.tes-ep) (list-at (sv1.tes-out) 3)
+    in let c5 = tls-ep-recv (c4.tes-ep) (list-at (sv1.tes-out) 4)
+    in let sent-fin = list-length (c5.tes-out) > 0
+    in let s-done = if sent-fin then tls-ep-done ((tls-ep-recv (sv1.tes-ep) (list-at (c5.tes-out) 0)).tes-ep) else False
+    in "tls client-done=" & yn (tls-ep-done (c5.tes-ep)) & " auth=" & yn (tls-ep-authenticated (c5.tes-ep)) & " server-done=" & yn s-done
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let cert = or-empty (mint-local k1-priv "20350101000000")
+    in let far = or-empty (mint-local k1-priv "20600101000000")
+    in let other = or-empty (mint-local k2-priv "20350101000000")
+    in act
+      print-line-uni ("fixture-pub=" & yn (bytes-eq (ed25519-public-key k1-priv) k1-pub))
+      print-line-uni ("minted=" & yn (list-length cert > 0) & " far=" & yn (list-length far > 0) & " other=" & yn (list-length other > 0))
+      print-line-uni (fields-line cert)
+      print-line-uni (names-line cert)
+      print-line-uni (times-line cert)
+      print-line-uni ("far " & times-line far)
+      print-line-uni ("pinned localhost=" & verdict cert cert "20260923000000" "localhost")
+      print-line-uni ("pinned ip=" & verdict cert cert "20260923000000" "127.0.0.1")
+      print-line-uni ("pinned far=" & verdict far far "20260923000000" "localhost")
+      print-line-uni ("wrong host=" & verdict cert cert "20260923000000" "evil.test")
+      print-line-uni ("too early=" & verdict cert cert "20240101000000" "localhost")
+      print-line-uni ("too late=" & verdict cert cert "20360101000000" "localhost")
+      print-line-uni ("tampered=" & verdict (flip-late cert) cert "20260923000000" "localhost")
+      print-line-uni ("other key=" & verdict cert other "20260923000000" "localhost")
+      print-line-uni refusals-a
+      print-line-uni refusals-b
+      print-line-uni (tls-line cert cert)
+      print-line-uni ("pinned-other " & tls-line cert other)
+    end
+  end

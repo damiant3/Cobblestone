@@ -10,7 +10,8 @@ param(
     [Parameter(Mandatory=$true)] [string]$CdxInput,
     [Parameter(Mandatory=$true)] [string]$Out,
     [switch]$App,
-    [int]$HeapPages = 512
+    [int]$HeapPages = 512,
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -54,7 +55,7 @@ Write-Host "[pe-run] Listening on port $plugPort"
 $stderrFile = [System.IO.Path]::GetTempFileName()
 $consoleFile = [System.IO.Path]::GetTempFileName()
 try {
-    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB 3072
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (-not $listener.Pending()) {
         if ([DateTime]::UtcNow -gt $deadline) {

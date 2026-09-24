@@ -91,7 +91,7 @@ box, therefore `registered=False` is a true statement about the socket and
 no statement at all about the protocol. Pointed at Leshan it becomes an
 interop arm, in the shape `build/coap-interop-test.ps1` takes.
 
-## The Network Stack Underneath (`codex/os/net`, 41 chapters 2026-09-08)
+## The Network Stack Underneath (`codex/os/net`, 42 chapters 2026-09-24)
 
 - **UDP**: datagram build/parse, pure, working. CoAP's substrate.
 - **TCP**: 10-state machine, functional event/action stepping
@@ -138,11 +138,12 @@ interop arm, in the shape `build/coap-interop-test.ps1` takes.
 - **Framing/TcpTransport**: length-prefixed LE32 message framing
   over TCP (used by plugs and TrustTransport).
 - **DNS, DHCP, NTP, HTTP**: working client implementations.
-- **TLS: none in os/net.** Cleartext only. (A foreword `Tls`
-  chapter exists in the catalog; its actual coverage must be
-  audited before anything below leans on it.)
+- **TLS 1.3 client**: the handshake and record layer are the foreword's
+  `TlsEndpoint`; `HttpFetch`'s https path drives it over NetIO, graded
+  against OpenSSL by `build/https-interop-test.ps1`.
 - Architecture pattern: pure protocol codecs + functional state
-  machines, I/O confined to a NetIO boundary; NE2K is the only NIC.
+  machines, I/O confined to a NetIO boundary; `NetDriver` binds the
+  NE2000 or the e1000 behind one seam.
 
 ## Constraints
 
@@ -212,12 +213,12 @@ Three properties hold that path down and each is a rule to keep:
   segment sums the bytes the first wrote and answers something else.
 
 **The transport records cost 40 bytes each and there are three per frame**,
-120 in total: `net-process-frame`, `transport-feed-from` and
-`transport-try-recv`. `transport-feed-from` takes the session as an argument
-rather than reading it off a transport, both of its branches build exactly
-one record, and `transport-process-frame`, `net-io-send-drain` and
-`arm64-net-io-send-drain` all call it directly, therefore no caller builds a
-`TcpTransportState` purely to hand to another builder.
+120 in total: `net-process-frame`, `transport-feed-range` and
+`transport-try-recv`. `transport-feed-range` takes the session as an argument
+rather than reading it off a transport, and `transport-process-frame-within`,
+`net-io-send-drain` and `arm64-net-io-send-drain` all call it directly,
+therefore no caller builds a `TcpTransportState` purely to hand to another
+builder.
 
 `TcpTransportState` has no `recv-buf` field, and the field was provably
 always the empty list: every write of it in the tree was `[]` or a copy of
@@ -232,20 +233,41 @@ bytes, and the mechanism is unmeasured; the finding is carried on
 built with `&` prices its own assembly rather than the stack: the same
 function over the same 1,514 bytes measured 107,435 on an `&`-built frame and
 16,400 on a flat one. **A real frame is flat.** `e1000-read-bytes`
-(`E1000e.codex:1179`) is `list-push acc (peek-byte base i)`, one push per
+(`codex/os/kernel/E1000e.codex:1198`) is `list-push acc (peek-byte base i)`, one push per
 byte.
 
 #### Still open on this path
 
-1. **The frame is still built as a `List Integer`, one `list-push` per
-   byte.** A frame byte costs 8 bytes as a list element and `list-push`
-   advances the frontier by a DOUBLED capacity, which takes 1,514 bytes to
-   16,400. Pre-sizing the list saves about a quarter and leaves the
-   8-bytes-a-byte; only dropping the list representation removes the 10x.
-   The bytes are ALREADY in a buffer the driver can address, therefore the
-   repair is `net-driver-recv-frame` filling a caller-owned buffer allocated
-   once outside the loop. That is a contract change on the driver and
-   reaches every caller.
+1. **Every x86 receive loop that keeps state across frames reuses one frame
+   list; `Arm64NetIO` still builds a `List Integer` per frame, one
+   `list-push` per byte** (1,514 bytes become 16,400). `Arm64NetIO` waits
+   for two reasons: no bed runs its virtio receive except a QEMU UEFI boot
+   (`build/boot-arm64.ps1`), and each of its polls also rebuilds three state
+   records (`VirtqueueState`, `VirtioNetState`, `Arm64NetIOState`), which is
+   item 2's problem and wants item 2's repair. The measurement is
+   `e1000-rx-reuse`'s shape: drain the same N frames through the per-frame
+   path and through a reused list and compare the two heap deltas; the arm64
+   arm runs in the QEMU cross battery (`build/test-cross-batch.ps1`, QEMU is
+   the default bed) with a `.qemudev` naming `virtio-net-pci`, and
+   `arm64-web-server` (item 3) is the end-to-end check. The reusing loops are
+   NetIO's seven, `web-mux-loop`, `gopweb-pump`, `http-recv` and
+   `https-pull`. In the NetIO loops `net-driver-recv-into`
+   copies the frame into a list allocated once per loop entry
+   (`net-driver-frame-buffer`, 1,522 elements, before the first heap mark),
+   and the parse reads it through `net-process-frame-within`, which bounds
+   every validator by the frame's length and not the list's, so the tail of
+   an earlier, longer frame cannot pass `ip-length-valid`
+   (`tcp-checksum-refuse`, the stale arm). `e1000-rx-reuse` receives 20
+   injected frames through the reused list at a heap delta of 0 beside 20
+   through the list path, whose delta grows. `udp-io-recv`, `http-dns-await`
+   and `net-io-poll-one` still take a fresh frame per poll and leak nothing:
+   each restores its mark on every frame it does not return.
+   `https-pull` hands TLS the range `data-off` to `data-stop` as a copy;
+   handing it `r.data` whole passed Ethernet, IP and TCP headers into the
+   record parser, and `build/https-interop-test.ps1` then completes no
+   handshake at all. That script's rogue arm refuses with the same text a
+   broken receive path produces, so the rogue arm alone cannot tell the two
+   apart; the ECDSA and RSA arms are the discriminating ones.
 
    **The DMA ring cannot be handed out as the span directly.**
    `e1000-recycle-rx` returns the descriptor to the card immediately after
@@ -263,42 +285,194 @@ byte.
 
    | group | signatures | what it carries |
    |---|---|---|
-   | INBOUND, the receive loop's own path | `net-process-frame`, `net-process-ip`, `net-process-arp` | up to 1,514 bytes off the wire |
+   | INBOUND, the receive loop's own path | `net-process-frame`, `net-process-ip`, `net-process-arp` (each with a `-within` form taking the frame's length) | up to 1,514 bytes off the wire |
    | OUTBOUND and validation | `wrap-tcp-in-ip-eth`, `tcp-with-checksum`, `tcp-checksum-valid`, `net-outbox-frame` | bytes this stack built, or an inbound segment being checked |
 
-   The slice helpers, the transmit path and `Arm64NetIO` are uncounted. A
-   partial conversion leaves the stack in two representations at once, and
-   this is the stack `b3` and the remaining hardware sitting depend on,
-   therefore the change wants a session of its own with an arm per converted
-   layer.
+   The slice helpers, the transmit path and `Arm64NetIO` are uncounted.
 
-2. **The payload-free branch of two poll loops recurses without restoring the
-   heap.** `net-io-recv-wait` saves at `NetIO.codex:379`, restores on the
-   empty-frame branch at `:382`, and recurses at `:388` after processing a
-   frame WITHOUT a restore. `net-io-recv-raw-poll` is the same shape: save at
-   `:411`, restore at `:414`, recurse unrestored at `:420`. A bare ACK, an ARP
-   or a FIN takes that branch, therefore a long poll leaks until the guest
-   dies, and with no collector every byte of it is permanent.
+2. **A poll loop's frame branch recurses without restoring the heap.** What
+   a bare ACK, an ARP or a FIN leaves behind is the session the parse and the
+   outbox flush rebuild, and with no collector every byte of it is permanent.
+   The repair is compaction, below (ruled a defect and taken, root,
+   2026-09-23). **NetIO's seven loops, `http-recv`, `https-pull`, `web-mux-loop` and
+   `gopweb-pump` compact; `Arm64NetIO` does not.** `http-recv`'s
+   accumulator is reserved by its caller before the loop's mark and never
+   pushed past that reservation, so compaction leaves it where it is.
+
+   **THE STORAGE SHAPE: compaction into arenas the transport owns.** The
+   session code stays functional; what changes is where the surviving state
+   lives. Rewriting each session update to store in place is refused: it is
+   `__record-set` across the whole stack, which writes through every caller's
+   pointer (L-ALIAS).
+
+   - `transport-arenas` (`NetCompact`) acquires a SET (a 16-byte header and
+     THREE arenas of `net-arena-bytes` each) from the process's pool the
+     first time a compacting loop is entered with a transport whose
+     `arena-base` is 0, and never again for that transport. Acquiring at
+     `transport-new` instead would cost 384 KiB for every transport, and a
+     web-mux connection that never enters a NetIO loop costs 66 KB in all
+     (`web-mux-heap`). The acquire happens BEFORE the loop takes its
+     entry mark, so a freshly reserved set sits below the mark, as must the reused frame list. `TcpTransportState` gains
+     `arena-base` and `gen`; all eight record literals in `TcpTransport`
+     name both (the compiler refuses a literal that omits a field,
+     CDX2006), and a transport built with `arena-base` 0 never compacts
+     rather than being refused.
+   - A poll loop compacts when `__heap-save` minus its entry mark passes
+     `net-compact-bytes`, and every allocation the loop made since the mark
+     counts, the tick branch's included. The copy runs TWICE, because the
+     x86 `__heap-restore` is one unguarded `mov r10` and a `list-push` at
+     the allocator frontier bumps without a bound, so a copy that overran
+     an arena would have written past it before any check afterwards could
+     look: first the live `TcpTransportState` is copied at the heap top and
+     the two `__heap-save` readings around it give its exact size; if that
+     exceeds `net-arena-bytes` the loop does not compact and says so; else
+     the allocator is pointed at the target arena's base, the same copy
+     runs again (same structure, same allocation sequence, same size), and
+     the allocator returns to the loop's entry mark. Every frame's leftovers
+     above the mark are gone and the loop continues on the arena copy.
+   - THREE arenas and not two. The header records the arena written LAST,
+     and that arena is never a target: every state derived since the last
+     compaction references only it, the plain heap, and memory below the
+     arenas, whatever arena it was entered from. The target is the next of
+     the other two in turn.
+   - The contract a caller takes on: a `TcpTransportState` passed to a poll
+     loop is superseded by the one the loop returns, and one older than the
+     last compaction can be overwritten by the next. That is the linear use
+     every NetIO caller makes (audited: `WebServer`, `HttpFetch`, `GopWeb`
+     and the plugs keep the state each call returns). It is GUARDED rather
+     than trusted: the header holds a generation each compaction bumps, each
+     state carries the generation it was copied at, and a loop entered with
+     a state whose `gen` is below the header's refuses (returns its timeout
+     result and says so) instead of reading an overwritten arena.
+   - Two things this does NOT change: `list-push` still writes in place into
+     spare capacity, so a caller's pre-call state can already see a loop's
+     pushes (L-ALIAS, true today); and garbage an OUTER loop builds across
+     requests (`WebServer`'s per-connection bookkeeping) is outside any poll
+     loop's mark.
+   - The copy is `nc-transport` in `codex/os/net/NetCompact.codex`. An
+     omitted field is refused at compile time (CDX2006); a field filled from
+     the wrong source is not, so `codex/test/net-compact-copy` fills every
+     field with a distinct value and compares field by field;
+     `TcpState` and the other nullary sums are copied through a `when`,
+     because nothing here says how a nullary constructor is represented.
+   - Sizing is measured, not assumed. The largest session this stack can
+     hold is 8 retransmit segments (`net-rexmit-capacity`) of up to 1,514
+     frame bytes as `List Integer` elements, 64 ARP entries
+     (`arp-cache-max`) and a flushed outbox: about 150 KB by arithmetic, and
+     up to about twice that where `list-push` doubled a list's capacity. The
+     arm measures a full session's copy with `__heap-save` and sets
+     `net-arena-bytes` with margin.
+   - Cost: two copies of the session per `net-compact-bytes` of garbage,
+     not per frame, and 3 arenas per transport, reserved once.
+
+   Built: `nc-transport`, `transport-compact` and the pool
+   (`codex/os/net/NetCompact.codex`, armed by `net-compact-copy`,
+   `net-compact-arena` and `net-arena-pool`; a full session copies to
+   106,584 bytes). `net-compact-bytes` is one arena, 128 KiB.
+
+   **WHO PAYS FOR THE ARENAS: a per-process POOL** (root, 2026-09-23). A
+   per-connection set that is never returned is still a leak, and one set
+   shared by the process breaks concurrent transports, therefore: a pool of
+   sets of three 128 KiB arenas each (the refusal path above bounds a copy
+   larger than one arena), owned by the process. A transport ACQUIRES a set
+   in `transport-arenas` and RETURNS it in `transport-release`, which
+   `net-io-close` calls, so memory scales with live connections.
+   `transport-release` copies the transport off the arenas onto the plain
+   heap first, because the next acquire hands the set to another transport
+   while the caller still holds the released state; it bumps the set's
+   generation, so every state of the previous owner reads stale and a
+   second release of the same set is refused rather than linked twice.
+   A state older than the last compaction is stale too, so releasing one
+   is refused and its set stays out of the pool: callers release the state
+   the last loop returned.
+
+   **The pool head is word 40 of the process's x86-64 process-table entry**
+   (`proc-net-pool-offset`, table base 20480, 256 bytes per entry),
+   indexed by `process-get-pid`, which IS the slot (`emit-load-current-proc`
+   derives it from RSP). Every spawn helper zeroes the word, because a
+   slot's region is reused by the next process spawned into it and a head
+   left by the previous owner points into memory it no longer holds;
+   `net-arena-pool` has a child leave a set in its pool, spawns a second
+   child into the same slot, and requires that child's pool to start empty.
+   **x86-64 only:** the address is not the arm64 runtime's process table and
+   nothing zeroes it there, so `net-arena-pool`, `net-ack-leak` and `web-mux-long-run` carry a `.no-cross`, and no
+   arm64 production path reaches the pool (`Arm64NetIO` does not compact).
+   A plain `process-spawn` gets a 1 MB heap (Spawn Regions), of which one
+   set is 384 KiB, so a server spawned that way holds two compacting
+   connections at most and wants `process-spawn-with-heap`.
+   `rebind-listen-transport` (`WebServer`) releases the transport it
+   rebinds, because a web-mux connection acquires a set the first time
+   `net-io-send-raw-checked` has to drain.
+
+   **The wiring.** Each NetIO loop, on its first poll, refuses a
+   `transport-stale` state, acquires the set, allocates its frame list and
+   takes its entry mark after both; after a processed frame and after a
+   tick it continues on `transport-compact-past` of its next state, which
+   compacts once `__heap-save` minus the mark passes `net-compact-bytes`.
+   Nothing a NetIO loop carries across iterations besides the transport,
+   integers and caller-owned lists allocated before entry lives above the
+   mark, and the branch that RETURNS a message does not compact, so the
+   message it returns above the mark survives. `net-io-send-drain` acquires only
+   when it actually has to drain.
+
+   Armed by `net-ack-leak`: over 100 and 1,000 bare ACKs driven through the
+   loop's own acquire, mark and `transport-compact-past`, the heap above the
+   mark stays within `net-compact-bytes` plus one frame, at least one
+   compaction fires, and the connection keeps its state; the uncompacted
+   control grows ten times over the same run. A `transport-compact-past`
+   that never compacts turns exactly the two compaction lines red. The
+   real loop is armed end to end by a transpiler plug: the python plug
+   receives 335,291 bytes of IR through `net-io-recv-loop` and emits the
+   same 147,560 bytes as a plug built from the unwired NetIO, and a plug
+   whose compaction zeroes `recv-len` produces no output, so compaction
+   fires inside the real receive loop.
+
+   **The mux leaks per request, measured** (`codex/test/web-mux-long-run`,
+   seed 11ACE35C): one keep-alive connection served 20 request-and-ACK
+   cycles and then 200 more through `web-mux-feed`, retaining 420,560 and
+   4,205,600 bytes, 21,028 per request and exactly linear, because
+   `web-mux-loop`'s frame branch restores nothing. **The repair is the
+   same pool shape with the WebMux as the unit** (root, 2026-09-24):
+   `web-mux-loop` acquires a set on its first poll and carries the set and
+   its entry mark as loop parameters, so `WebMux` and its literals do not
+   change; after a fed frame and after a sweep it deep-copies the whole
+   mux (`nc-webmux`: listener, every `WebConn` with its pending bytes, the
+   free list) into the next arena once `net-compact-bytes` has been spent,
+   with the same two-pass size check and three-arena rotation as
+   `transport-compact`; and it returns the set when the loop ends. A mux
+   whose copy exceeds one arena is not compacted. Measured on seed
+   11ACE35C: a mux copies to 1,472 bytes with one connection and 6,624 with
+   eight, 736 per connection that has only completed its SYN, so an arena
+   holds about 170 such connections; one connection holding a full
+   retransmit queue copies to about 106,584 bytes by itself.
+   `gopweb-pump` takes the same change, and the service is spawned with an
+   8 MiB heap. Armed by `web-mux-long-run`: the uncompacted control
+   still grows ten times over, and the same 220 requests with
+   `web-mux-compact` after every feed serve every request, copy the mux
+   at least twice, and keep the heap above the mark within one arena and
+   one request; a `web-mux-compact` that never compacts turns exactly
+   those two lines red.
 
    **The diagnostic signature if it bites in the field: time-to-death scaling
    with guest MEMORY is heap exhaustion, not a hang** (measured elsewhere at
    265 s on 3 GB against 615 s on 6 GB), and codex-vm prints nothing when a
    guest dies this way.
 
-3. **The arm64 field-index tables have no runtime observer.**
-   `Arm64CodeGen3.codex` keeps two hand-written field-name-to-index tables
-   encoding record field order literally, therefore any field reorder is a
-   silent arm64 miscompile. Sabotaging one index to the wrong value,
-   rebuilding, and confirming the wrong value in the bundled source produced a
-   PASS, so no available arm observes these tables (L-VACUOUS). The x86-64
-   backend is not exposed: it computes the index from the record's own field
-   list (`find-record-field-index`). Registered as COMPILER-72.
-
-4. **`codex/test/arm64-web-server` page-faults at `CR2=0x4010000000`** before
-   any network activity. It carries NO `.expected`, therefore nothing grades
-   it and no gate runs it; the address is an ARM64 virtio-mmio base being
-   dereferenced on the x86-64 bed (L-NOGATE).
-
+3. **`codex/test/arm64-web-server` serves under QEMU UEFI and is graded on no
+   bed.** `build/boot-arm64.ps1 -Src codex\test\arm64-web-server.codex
+   -TimeoutSec 120` boots it, the PCI scan finds the virtio-net card, and a
+   request to the printed `hostfwd` port answers HTTP 200 with the 948-byte
+   landing page (measured 2026-09-24, seed 9A323747). It carries no
+   `.expected`, so no gate runs it (L-NOGATE), deliberately: the run needs a
+   host peer. **A device read on arm64 needs `Device.Mmio` in the reader's
+   row**: the runtime answers -1 at any non-RAM address to a program without
+   the `Device` capability (`codex/plugs/arm64/Arm64Runtime.codex:1037`), so
+   an `opening` declaring only `[Console]` read an all-ones ECAM and found no
+   PCI function at all. With no virtio-net function the server refuses by
+   name (`refused: no virtio-net device among N PCI functions`, QEMU
+   `-nic none`) instead of indexing an empty list. Run on the x86-64 bed it
+   page-faults at `CR2=0x4010000000`, an ARM64 ECAM address, which says
+   nothing about the program.
 **The arm asserts SHAPE, not the byte counts**, because an expectation
 carrying the numbers would go red on any allocator or codegen change as well
 as on a repair, and the next reader would update the figure without learning
@@ -306,156 +480,54 @@ why it moved. The counts live in the tables above with the date they were
 taken. The instrument needs no new primitive: `__heap-save` returns an
 Integer and the delta between two marks is the bytes allocated between them.
 
-**Why a `__heap-restore` before the recursion cannot be the repair**: the state
-that must survive is exactly that session, so the restore frees what the
-iteration exists to carry forward.
+### The clock
 
-**AND WHY NO REORDERING RESCUES IT EITHER, which is the part worth writing
-down, because the obvious next idea is to move the mark.** The heap is a single
-bump pointer, so a restore frees everything allocated AFTER the mark and nothing
-before it. The frame must exist before the parse that reads it, therefore the
-frame is always older than the session update the parse produces. A mark placed
-before the frame frees both; a mark placed after the frame frees only the
-session update. There is no third position. Every cheap fix in this shape is
-ruled out by allocation ORDER alone, which is why both surviving options change
-where the bytes live rather than when they are freed:
+`net-tick` (`NetworkStack.codex:678`) ages a connection: it fires the RTO,
+counts `rexmit-tries`, and at `net-rto-max-tries` declares the peer dead,
+clearing the retransmit queue and setting `TcpClosed`. `transport-tick`
+(`TcpTransport.codex:170`) wraps it. Three places turn it: NetIO's waits
+(`net-io-wait-established`, `net-io-send-drain`, `net-io-recv-wait`,
+`net-io-recv-parked`, `net-io-recv-raw`) every `net-io-tick-interval` empty
+polls; `Arm64NetIO`'s receive and drain loops every
+`arm64-net-io-tick-interval`; and `web-mux-sweep`, which ages every mux
+connection once per `web-sweep-interval` (`WebServer.codex:286`, 1,000,000)
+polls. `net-io-accept` and `net-io-resolve` do not tick: a fresh listener has
+nothing queued. Every ticking loop returns as soon as the connection reads
+`TcpClosed`, which is what makes a RST end a drain on a full queue.
 
-1. the frame stops being heap-allocated per poll (the driver fills a buffer
-   owned by the caller and reused across polls), or
-2. the session's collections stop being rebuilt per frame (fixed-capacity
-   storage carried in the session, the way `recv-buf` already is).
+**The second argument of these loops is the try count to START AT, not a
+limit** (they give up at `net-io-max-polls`), so passing `0` asks for the
+longest possible wait; `mqtts-client.codex` starts high on purpose, so a read
+that will fail fails cheaply.
 
-A third idea, updating the session through `__record-set` so the rebuild
-allocates nothing, is possible and is NOT recommended without a full audit:
-that builtin stores into the argument and hands the same record back
-(L-ALIAS), so it would silently mutate a session any caller still holds.
+**A tick is a count of empty polls, not a duration.** `net-io-tick-interval`
+is `net-driver-poll-interval`, measured by the driver at bring-up (NetIO's
+chapter head). The constraint to preserve if any of these constants moves:
+give-up must land strictly inside the fuel cap, or a dead peer ends the loop
+by fuel, which returns what an ordinary timeout returns and reports nothing.
+Give-up takes at most 288 ticks against `net-io-max-ticks` 500
+(`codex/test/net-io-clock`, `codex/test/net-drain-budget`). HPET is read only
+by `net-io-recv-parked`, which falls back to the spinning wait when HPET
+reports no rate, because NetIO is also compiled into the transpiled plug
+lanes and an x86 MMIO read cannot be under all of them.
 
-### The clock exists, and one production caller turns it
+**The mux ages at two rates**: 1,000,000 polls a tick while a connection is
+idle and `net-io-tick-interval` while its retransmit queue is full
+(`web-mux-drain` -> `web-send-http` -> `net-io-send-raw-checked` ->
+`net-io-send-drain`), so an `srtt` sampled at the sweep's rate is spent as an
+RTO at the drain's, about ten times earlier in real time. Not fixed,
+deliberately: it needs 8 segments unacked, which only happens once the peer
+has stalled, when a fast timer is the harmless direction. Unifying the rate
+means first separating `web-sweep-interval`'s two jobs, aging the clock and
+pacing the idle reaper (`web-idle-max` counts sweeps).
 
-`net-tick` (`NetworkStack.codex:459`) is what ages a connection: it fires
-the RTO, counts `rexmit-tries`, and at `net-rto-max-tries` declares the peer
-dead, clearing the retransmit queue and setting `TcpClosed` (line 464).
-`transport-tick` (`TcpTransport.codex:115`) wraps it. **Census of every
-mention in the tree, excluding definitions: `WebServer.codex:270`, and two
-tests (`tcp-reliability.codex`, `tcp-seqwrap.codex`). That is the whole
-list.** L-UNCALLED.
-
-So in every program except `WebServer` -- all 60 language plugs, `HttpFetch`,
-`TrustTransport`, `Arm64NetIO`, the other servers -- **no retransmission is
-ever sent, the RTT estimator never runs, and a connection is never declared
-dead.** The RTT-derived interval added at 14272 is unreachable from those
-paths.
-
-**The failure this produces is a HANG, and it was previously recorded as a
-truncation.** `net-io-send-drain` (`NetIO.codex:113`) loops while
-`net-rexmit-full`, polling for a frame. Its only other exit is
-`tries > 50000000`. Nothing in that loop advances the clock, so a segment
-that is lost is never retransmitted and the ACK that would drain the queue
-can never be provoked. Two measurements pin it:
-
-- **The 50,000,000 cap is not reachable in practice.** The sibling loop
-  with the identical cap (`net-io-accept`) was still polling after **180
-  seconds** with no peer. So "the drain gives up at its fuel cap" is not an
-  outcome any caller sees.
-- **A peer that ANSWERS does not help either.** Nothing outside `net-tick`
-  clears `rexmit-queue` except `net-rexmit-prune` on an ACK, so a RST or FIN
-  closes the connection while leaving the queue full, and the drain keeps
-  spinning on a connection that is already dead.
-
-**What this is not.** It is not a missing failure channel on
-`TcpTransportState`, which is how it was carried in `CurrentPlan` until this
-measurement. Once the clock runs, `net-tick` already sets `TcpClosed` on
-give-up and the caller can read `(ts.session).conn.state`; no new record
-field and no 23-site construction sweep is needed.
-
-**The I/O loops tick on a poll count, not on a wall clock.** `NetIO` carries
-`net-io-tick-interval = 100000` and `net-io-max-polls = 50000000`, and
-`net-io-send-drain`, `net-io-recv-wait` and `net-io-recv-raw` each spend one
-`transport-tick` plus an outbox flush every `net-io-tick-interval` polls. All
-three also return as soon as the connection reads `TcpClosed`, which is what
-makes a RST end the loop instead of leaving it spinning on a full queue.
-
-The unrestored recursion in two of those loops is open work and is item 2 of
-"Still open on this path" above, with the exact lines.
-
-Second-order and worth knowing before reading either signature: **the second
-argument of these loops is the try count to START AT, not a limit** (they give
-up at `net-io-max-polls`), so passing `0` asks for the longest possible wait.
-`mqtts-client.codex` starts high on purpose, so a read that will fail fails
-cheaply.
-
-**Why a poll count and not HPET.** The only wall clock in the tree is
-`Hpet`, an x86 MMIO read at `#FED00000`, and `NetIO` is compiled into the
-transpiled plug lanes and the ARM64 path as well, so citing it would put an
-x86 device read under all of them. The estimator asks only that the rate be
-steady (the section above), which a poll count is.
-
-**Why 100000, and this is the constraint to preserve if either constant
-moves.** Give-up must be reachable strictly inside the fuel cap, or a dead
-peer ends the loop by fuel, which returns exactly what an ordinary timeout
-returns and reports nothing. Measured by `codex/test/net-io-clock`, which
-counts the ladder rather than asserting it: 141 ticks with no RTT sample,
-288 with the RTO clamped at `net-rto-max-ticks`. 288 * 100000 = 28,800,000
-polls against a 50,000,000 cap.
-
-**Measured end to end, not only by inspection** (2026-08-09, seed
-`B3C1BAA8F961D247`, codex-vm, no peer on the wire). A session with one
-unacked segment handed to `net-io-recv-raw` came back **CLOSED, queue
-empty, `now-ticks` 141** after 263 s: the full ladder ran inside the poll
-loop and ended by give-up. 141 ticks at 100000 polls
-is 14.1M polls in 263 s, so a poll cost about 18.6 us in that bed --
-**that is the emulated NIC's number and not a property of the design; a
-tick is a count and its duration is whatever the caller's poll loop
-costs.** The battery arm (`codex/test/net-io-clock`) pre-ages the session
-to one tick short of give-up so it proves the same chain in one interval
-and 2 s. Sabotaged by pushing `net-io-tick-interval` past the fuel cap, it
-fails.
-
-`net-io-accept` deliberately does NOT tick. It is entered on a fresh
-listening transport with nothing queued and no close timer, so a tick
-there advances `now-ticks` and allocates a session for it and buys
-nothing. This is the loop val measured at 180 s without reaching its cap;
-that measurement stands and is about the cap, not about the clock.
-
-**The stack has TWO tick rates.** `net-io-tick-interval` is 100000 polls;
-`web-sweep-interval`
-(`WebServer.codex:263`) is 1000000, and it is what ages every connection
-in the concurrent mux, because `web-mux-loop` polls
-`net-driver-recv-frame` itself rather than going through a NetIO wait. The
-two meet in one place, verified by reading the chain rather than assumed:
-`web-mux-drain` -> `web-send-http` -> `net-io-send-raw` ->
-`net-io-send-chunk` -> `net-io-send-drain`, so a mux connection is aged at
-1000000 while idle and at 100000 while its retransmit queue is full.
-
-The estimator's premise is that the rate is STEADY, and across that
-boundary it is not: an `srtt` sampled under the sweep's rate is spent as
-an RTO under the drain's, which makes the retransmit fire about ten times
-earlier in real time than the sample implied. **Not fixed, deliberately.**
-The condition needs 8 segments unacked, it only arises when the peer has
-already stalled, which is when a timer running fast is the harmless
-direction, and there is no web server in service to measure a better
-number against. The clean repair is not to copy the constant across:
-`web-sweep-interval` does two jobs, aging the clock and pacing the idle
-reaper (`web-idle-max` counts sweeps), so unifying the rate means
-separating those two first.
-
-**Two parts of the census that stay open.**
-
-- `net-io-wait-established` has a **10000**-poll cap, not fifty million, so
-  it already terminates and no tick can fire inside it at any sane
-  interval. The consequence is that a lost SYN is never retransmitted:
-  `net-connect` queues it, `transport-connect` sends it once, and a connect
-  that gets no SYN-ACK fails after 10000 polls. That is a capability gap,
-  not a hang, and it is separate work.
-- **The ARM64 send path silently drops past 11,200 bytes, and it is the
-  same defect the x86 path had.** `arm64-net-io-send-chunk`
-  (`Arm64NetIO.codex:102`) calls `net-send` and advances by `arm64-net-mss`
-  without reading the result's refusal and without any `net-rexmit-full`
-  check at all, therefore past `net-rexmit-capacity * net-mss` = 11,200
-  bytes it drops everything it believes it sent. Its loops do not tick
-  either. Unfixed because there is no ARM64 bed on this box to run the
-  change against.
-
+**The ARM64 send has a checked form**, `arm64-net-io-send-raw-checked`
+(`Arm64NetIO.codex`), with the x86 contract: the bytes sent, whether the send
+completed, and a stop at the first chunk `net-send` refuses (FIN_WAIT_1,
+FIN_WAIT_2, LAST_ACK: `Tcp.codex`). Armed on QEMU by
+`codex/test/arm64-send-checked`; removing the outbox check turns its refusal
+line red. `arm64-web-server` still sends through the unchecked
+`arm64-net-io-send-raw`.
 **Owner: blu** (`codex/os/net/**`).
 
 ## The Crypto Floor: Audited
@@ -523,11 +595,8 @@ DTLS 1.2 stays unimplemented unless a design partner's server forces it;
 that is a deployment discovery, not a design decision, and the record
 layer is where it would land.
 
-**Auth mode is deliberately NOT decided here.** The record layer is
-agnostic to it (this is the one claim in the original design that the
-audit confirmed), so PSK vs raw-public-key (RFC 7250, the natural fit
-for our Ed25519 device identity) vs X.509 can wait for the handshake
-phase and for a real interop target. Deciding it now would be guessing.
+**The record layer is agnostic to the auth mode**; the mode is X.509 with
+Ed25519 certificates (D-auth below, Damian's ruling).
 
 ### Phases
 
@@ -917,8 +986,8 @@ handshake proved nothing; this failing one is the proof.
 
 **The `Random` is the caller's entropy, not the endpoint's public key.**
 `dtls-ep-new` takes `random` as its third parameter and stores the value as
-`ep-random` (`DtlsEndpoint.codex:92`), and `dtls-ep-random` reads
-`ep.ep-random` (`:119`).
+`ep-random` (`DtlsEndpoint.codex:96`), and `dtls-ep-random` reads
+`ep.ep-random` (`:124`).
 
 **The entropy path is EXERCISED, by `codex/test/dtls-random`**, and it has to
 be: a capability that sits in a signature with no caller has never been shown
@@ -1227,22 +1296,10 @@ heap-save/restore bracket.
 
 ## Open Questions
 
-1. **Foreword Tls audit: ANSWERED.** The chapter was a sketch with a broken
-   key schedule over a half-fictional cipher suite. See *The Crypto Floor:
-   Audited* for what is there now.
-2. **DTLS version: ANSWERED, DTLS 1.3 (RFC 9147).** Reasoning in *DTLS: The
-   Build Plan*. 1.2 is not implemented and is not planned unless a design
-   partner's server forces it.
-3. **STILL OPEN -- PSK vs raw-public-key vs certificates for DTLS.** Raw
-   public key (RFC 7250) is the natural fit for Ed25519 device identity;
-   cloud brokers often want X.509. Deliberately deferred to the D2
-   handshake phase: the record layer is agnostic (the audit confirmed
-   this), and deciding it now, with no interop target in hand, would be
-   guessing. Decide per design partner.
-4. **STILL OPEN -- where the Cbor/SenML codec lives** -- extend the
-   existing Cbor foreword chapter or a new SenML chapter
-   (recommendation: new chapter citing Cbor).
-5. **What `ComplianceEvidence.codex` may claim: ANSWERED.** Damian's call:
+1. **Where the Cbor/SenML codec lives** -- extend the existing Cbor
+   foreword chapter or a new SenML chapter (recommendation: new chapter
+   citing Cbor).
+2. **What `ComplianceEvidence.codex` may claim** (Damian's ruling):
    fix the code to make the claim true where it can be, soften only where it
    cannot. **No row asserts anything the tree does not contain**, and a row
    that credits the toolchain with supplying a secure channel it does not

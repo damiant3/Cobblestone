@@ -37,10 +37,17 @@ Section: Expression Parsing
    in if prec < min-prec then ExprOk left st1
    else let op = current st1
    in let st2 = skip-newlines (advance st1)
-   in let warned = warn-binary-prose st1 st2
+   in let warned = warn-binary-prose st1 (refuse-plus-plus op st2)
    in let next-min = if is-right-assoc (op.kind) then prec else prec + 1
    in let right-result = parse-binary warned next-min min-col
    in unwrap-expr-ok right-result (continue-binary left op min-prec min-col)
+
+  refuse-plus-plus : Token, ParseState -> ParseState
+  refuse-plus-plus (op) (st) =
+   if op.kind /= Plus | is-done st then st
+   else let nxt = current st
+   in if nxt.kind /= Plus | nxt.offset /= op.offset + 1 then st
+   else advance (__record-set st "bag" (bag-add (st.bag) (make-error cdx-not-codex-operator "`++` is not Codex; text concatenation is `&`" (span-at (op.line) (op.column) (op.offset) 2 (op.file-id)))))
 
   binary-previous-token : List Token, Integer -> Integer
   binary-previous-token (tokens) (pos) =

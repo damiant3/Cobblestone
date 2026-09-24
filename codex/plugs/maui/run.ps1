@@ -7,7 +7,8 @@ param(
     [Parameter(Mandatory=$true)] [string]$Src,
     [string]$Out,
     [string]$ProjectDir,
-    [switch]$Build
+    [switch]$Build,
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -68,7 +69,7 @@ $combined[$combined.Length - 1] = 0  # null terminator for read-file
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
 $vmBin = $script:CodexVmBin
-$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB $MemMB -TimeoutSec 300
 if (-not $vmOk) { [Console]::Error.WriteLine("FAIL: timeout"); exit 5 }
 
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {

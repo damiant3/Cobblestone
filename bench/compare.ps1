@@ -184,7 +184,7 @@ foreach ($bench in $benchmarks) {
     $zigResultFile = Join-Path $OutRoot 'zig' $bench 'ReleaseFast' 'result.txt'
     if (Test-Path $zigResultFile) { $zigResult = (Get-Content $zigResultFile -Raw).Trim() }
     $zcResult = $null; $csResult = $null; $fsResult = $null
-    $zcResultFile = Join-Path $OutRoot 'zig-codex' $bench 'ReleaseFast' 'result.txt'
+    $zcResultFile = Join-Path $OutRoot 'zig-codex' $bench 'ReleaseSafe' 'result.txt'
     if (Test-Path $zcResultFile) { $zcResult = (Get-Content $zcResultFile -Raw).Trim() }
     $csResultFile = Join-Path $OutRoot 'dotnet' 'csharp' $bench 'result.txt'
     if (Test-Path $csResultFile) { $csResult = (Get-Content $csResultFile -Raw).Trim() }
@@ -202,13 +202,13 @@ foreach ($bench in $benchmarks) {
     $fsLines = Parse-Jit-Asm -JitFile $fsJit -MethodName $cfg.FsMethod
     $fsStats = Count-Instructions $fsLines
 
-    # Codex transpiled through the zig plug, built by zig at both modes; the
+    # Codex transpiled through the zig plug, built by zig at Debug and ReleaseSafe; the
     # plug names the function after the Codex def with `-` written `_`.
     $zcFunc = ($cfg.CodexFuncs[0] -replace '-', '_')
     $zcdAsm = Join-Path $OutRoot 'zig-codex' $bench 'Debug' "$bench.s"
     $zcdLines = Parse-Zig-Asm -AsmFile $zcdAsm -FileName $bench -FuncName $zcFunc
     $zcdStats = Count-Instructions $zcdLines
-    $zcfAsm = Join-Path $OutRoot 'zig-codex' $bench 'ReleaseFast' "$bench.s"
+    $zcfAsm = Join-Path $OutRoot 'zig-codex' $bench 'ReleaseSafe' "$bench.s"
     $zcfLines = Parse-Zig-Asm -AsmFile $zcfAsm -FileName $bench -FuncName $zcFunc
     $zcfStats = Count-Instructions $zcfLines
 
@@ -237,7 +237,7 @@ foreach ($bench in $benchmarks) {
 
     # Stats table
     $cols = @($odStats, $o2Stats, $csStats, $fsStats, $zdStats, $zfStats, $zcdStats, $zcfStats, $cdxStats)
-    [void]$out.Add("                   C /Od    C /O2    C# JIT   F# JIT   Zig Dbg  Zig Fast ZigCdxDbg ZigCdxFast Codex")
+    [void]$out.Add("                   C /Od    C /O2    C# JIT   F# JIT   Zig Dbg  Zig Fast ZigCdxDbg ZigCdxSafe Codex")
     foreach ($row in @(@('Instructions:', 'Total'), @('Branches:', 'Branches'), @('Memory ops:', 'MemOps'), @('Moves:', 'Moves'), @('Arithmetic:', 'Arithmetic'))) {
         $line = "  $('{0,-17}' -f $row[0])"
         for ($ci = 0; $ci -lt $cols.Count; $ci++) {
@@ -274,7 +274,7 @@ foreach ($bench in $benchmarks) {
         $instrDelta = $zcfStats.Total - $zfStats.Total
         $instrPct = [math]::Round(($instrDelta / $zfStats.Total) * 100, 1)
         $sign = if ($instrDelta -ge 0) { '+' } else { '' }
-        [void]$out.Add("  zig plug vs hand-written zig (ReleaseFast): ${sign}${instrDelta} instructions (${sign}${instrPct}%)")
+        [void]$out.Add("  zig plug (ReleaseSafe) vs hand-written zig (ReleaseFast): ${sign}${instrDelta} instructions (${sign}${instrPct}%)")
     }
     [void]$out.Add("")
 
@@ -307,7 +307,7 @@ foreach ($bench in $benchmarks) {
     foreach ($l in $zcdLines) { [void]$out.Add("  $l") }
     [void]$out.Add("")
 
-    [void]$out.Add("--- Codex through zig plug, -O ReleaseFast ($zcFunc) ---")
+    [void]$out.Add("--- Codex through zig plug, -O ReleaseSafe ($zcFunc) ---")
     foreach ($l in $zcfLines) { [void]$out.Add("  $l") }
     [void]$out.Add("")
 

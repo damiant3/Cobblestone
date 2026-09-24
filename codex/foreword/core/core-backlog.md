@@ -67,7 +67,7 @@ shells out to `openssl.exe` under Git for Windows. That is acceptable for
 checked-in test fixtures and is not a story for a running server, and it sits
 against the founding rule that what we did not build we do not trust.
 
-**Three steps, and the first is DONE.**
+**Three steps; the first two are DONE.**
 
 1. **A DER encoder. LANDED** (red 2026-09-08), `codex/foreword/encode/Asn1Write.codex`:
    length in short and both long forms, SEQUENCE, SET and the context tags,
@@ -88,11 +88,21 @@ against the founding rule that what we did not build we do not trust.
    `codex/build/bvtScript.codex` and the emitted script lands in the same CL
    (`Build.md`). That run re-measures the BVT test and check counts, which
    `TechnicalDetails.md` publishes and `check-doc-counts` grades.
-2. **A self-signed server certificate**, minted from an Ed25519 key we already
-   generate (`ed25519-public-key` over a `hardware-random` seed), carrying an
-   explicit DEV-ONLY marker so a self-signed certificate can never be mistaken
-   for an issued one. This is the stand-in that unblocks hosted HTTPS
-   (`apps/prism/prism-backlog.md` PRISM-11).
+2. **A self-signed server certificate. LANDED** (red 2026-09-23),
+   `x509-dev-cert-ed25519` in `codex/foreword/encode/X509Write.codex`: Ed25519
+   from a 32-byte private key, subject O=`Codex DEV-ONLY self-signed` equal to
+   the issuer, basicConstraints CA:FALSE critical, SAN dNSName and IPv4, times
+   chosen UTCTime or GeneralizedTime by RFC 5280's year rule, and every bad
+   input refused as None. Graded by `codex/test/x509-dev-cert.codex`, 18 lines:
+   our parser, the pinned-anchor verdicts (ok, wrong identity, not yet valid,
+   expired, tampered, other key) and a TLS 1.3 handshake authenticating against
+   the minted leaf, with a wrong-pin control. Graded once by hand from outside:
+   OpenSSL 3 (Git for Windows) prints every field as intended and `openssl
+   verify -partial_chain -check_ss_sig` answers OK, a flipped signature byte
+   answers error 7 and `-verify_hostname evil.test` error 62. The key comes
+   from the caller; `codex/test/hosted-https.codex` draws it from
+   `hardware-random` at start. **The test is in
+   NO gate** (L-NOGATE), the same gap as step 1's.
 3. **A CA of our own**, which is the larger commitment and not implied by the
    first two: issuance, a naming policy, validity windows, and revocation.
    **A self-signed certificate does not make a browser trust us**, so a public
@@ -103,6 +113,17 @@ The two attest different things and have opposite exposure profiles, a signing
 key being used rarely in one place and a server key sitting in a
 network-facing process on every host. A server key is generated per
 deployment.
+
+**CORE-10. The TLS 1.3 server takes the FIRST key_share entry as X25519 without
+reading its group.** `dtls-ch-key-share` (`codex/foreword/encode/DtlsHello.codex`)
+returns bytes 6..37 of the extension, which is the first entry's key whatever
+group it names, and `tep-server-ch` agrees on it. A client that leads with a
+GREASE entry (Chrome) or with X25519MLKEM768 (OpenSSL 3.5 and later by
+default) gets a wrong shared secret and a handshake that dies at the Finished;
+a client offering no X25519 share at all gets no HelloRetryRequest. OpenSSL
+3.2 and 3.0 lead with X25519, which is why `codex/plugs/elf/hosted-https-arm.ps1`
+passes (2026-09-23). The fix is a walk over the KeyShareEntry list for group
+0x001D; the DTLS server shares the parser. Unowned.
 
 **CORE-8. CCE cannot represent tab, carriage return, backspace or formfeed,
 and every caller that asks for one is silently handed the character y-diaeresis

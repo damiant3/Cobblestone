@@ -91,13 +91,19 @@ Section: Capability and Operational Registers
  about a tenth of a second before it is trustworthy; and a completed
  port reset owes the device a reset-recovery interval before it is
  addressed. These are wall-clock waits, so they ride the PIT tick
- counter (cell 28672, ~18 Hz) that runtime-init started, with a
+ counter (cell 28672) that runtime-init started, with a
  fuel-bounded busy fallback for the case where the tick never
- advances -- garbage timing must never hang the boot.
+ advances -- garbage timing must never hang the boot. The waits are
+ milliseconds rounded up to whole ticks of the PIT's exact rate: 164
+ and 54 are the 3 and 1 ticks this driver was measured with at
+ count 65,536, where 165 would be 4.
 
   xhci-tick-cell : Integer = 28672
-  xhci-settle-ticks : Integer = 3
-  xhci-recovery-ticks : Integer = 1
+  xhci-settle-ms : Integer = 164
+  xhci-recovery-ms : Integer = 54
+
+  xhci-ms-ticks : Integer -> Integer
+  xhci-ms-ticks (ms) = (ms * pit-input-hz + pit-count * 1000 - 1) / (pit-count * 1000)
   xhci-settle-fuel : Integer = 50000000
 
  On an Intel PCH of the era this arc targets, the USB2 root ports
@@ -984,7 +990,7 @@ Section: Ownership Handback
     in let g1 = xhci-wait-bit-clear op xh-op-usbsts xh-sts-hch xhci-fuel
     in let g17 = xdiag-put 17 g1
     in let pw = xhci-power-ports op 0 maxports
-    in let dl = xhci-delay-ticks xhci-settle-ticks
+    in let dl = xhci-delay-ticks (xhci-ms-ticks xhci-settle-ms)
     in let ps = xhci-diag-ports op 0 maxports 0
     in let gmg = xdiag-put 0 xhci-diag-magic
     in if g1 == 0 then xhci-no-host
@@ -1132,7 +1138,7 @@ Section: Ports
     in let ok = xhci-wait-ped xh port xhci-fuel
     in if ok == 0 then 0
     else let ack = poke-32 (xh.xh-op) reg (bit-or xh-portsc-pp (bit-or xh-portsc-csc xh-portsc-prc))
-    in let rec = xhci-delay-ticks xhci-recovery-ticks
+    in let rec = xhci-delay-ticks (xhci-ms-ticks xhci-recovery-ms)
     in xhci-port-speed xh port
 
   xhci-ep0-maxpkt : Integer -> Integer

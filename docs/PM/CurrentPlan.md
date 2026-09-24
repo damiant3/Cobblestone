@@ -20,8 +20,8 @@ a P- or L- pointer, an open item a register row, a finished design moves to
 ROOT commands the fleet; red assists. The lane table is the current
 dispatch. Root's active PR ingestion and release work is managed in root's
 session and is excluded from red's fleet workspace reconciliation.
-MethodSpecialization shelf 25624 is WIP and unproven; preserve the shelf
-until the owning design's acceptance and seed proof are complete.
+General recursive method specialization and field-local runtime polymorphism
+remain outside the approved scope; COMPILER-83 owns the language boundary.
 A red that is red on BOTH the old and the new plug
 and that the change does not touch is a register row, not a promotion block
 (root's ruling, 2026-09-12, on eq-generic-fields a_ and typeclass-smoke T578
@@ -29,12 +29,11 @@ under the Zig plug).
 The fleet runs on the stable AgentGrid deployment. AgentGrid integration
 continues under Potato; outstanding
 acceptance gaps remain in D:/Projects/AgentGrid/agentgrid-backlog.md.
-These dispatches use current AGENTS.md R-GATE and runtime RAM admission,
+These dispatches use CLAUDE.md R-GATE and runtime RAM admission,
 which override older blanket job-count and gate statements below. A changed
 build script alone does not establish seed reachability; inspect the inputs.
 Existing unverified shelves remain preserved and require their own proof
-before landing. All five coder sessions are running Astra; task-scoped workers
-do not acquire fleet seats or mailboxes.
+before landing. Task-scoped workers do not acquire fleet seats or mailboxes.
 
 **Outside contributions (Damian, 2026-09-10).** A PR is ingested through
 PerforceProcess.md section 7 with the contributor credited in the CL; the PR
@@ -45,16 +44,8 @@ the CL and the credit paragraph. No GitHub merge button. The Update 59 intake
 **Parallel shelf work is authorized (Damian, 2026-09-10).** Each lane owns
 one bounded unit below and runs scratch proofs while another lane resolves a
 dependency; numbered shelves with explicit dependencies, not unproven main
-changes. Preserved interrupted work: 25624 (root, MethodSpecialization,
-unproven), 25558 (root, original PR 135, rollback only), 25599 (fester,
-unfinished instance declarations and superclass typing), and 25630 (fester,
-independent method-template acceptance fixtures and checker). Shelf 25599's
-equality changes are already on main; restore only the remaining delta.
-Shelf 25630 contains the inspection runner and agreed v1 interface; actual
-producer acceptance and reservation/source-offset witnesses remain ungraded.
-Rebase retained work onto current main before fresh proof. A fixed point
-does not grade typed IR or hosted output. Root's active intake shelves are
-separate from this interrupted-work set.
+changes. Rebase retained work onto current main before fresh proof. A fixed point
+does not grade typed IR or hosted output.
 
 Declared test exclusions are deliberate decisions (Damian, 2026-09-10).
 Preserve the runner's prescribed `-Tier all -Jobs 4` selection for normal
@@ -85,9 +76,6 @@ census row, not a numbered pointer: L-ROWROT).
 - A card's tag reads "playable now" only while a visitor can play.
 - A game that fails on wasm is a PARITY finding for reek: one message naming
   the subject and the failing test, and no workaround in the game.
-- Chess (GAME-10) stays not built and its `games.json` row stays honest.
-  **OPEN:** GAME-10's sentence about the landing page is stale and is val's to
-  fix when that file is first touched.
 - Claims: `apps/games/**` and `apps/landing/**`, except `web/compile/**`, which
   is the Prism page and stays fester's.
 
@@ -112,41 +100,13 @@ touching `build-page.ps1` or `page-lenses.ps1`. The plug alone takes no token.
 
 ## MAIN AND PUBLIC RELEASE
 
-Release head held for Update61 proof. The token remains free; no gate runs under it.
+MAIN OPEN. The token remains free outside seed landings.
 
-Latest public release: **Update 60** (2026-09-12, commit `9fff850c` on
-GitHub master and GitLab main, seed #796 `CF9EDD812EA7E78B`);
-`GitHubUpdate60.md` is the account and `GitHubUpdate61.md` accumulates this
-cycle. Head seed on main: #799 `7BCD5BC6BCE0AF41` (25806, Ed25519 signing contracts). Re-measure both at
-the release head, never carry them forward (L-COUNT).
-
-### Update 61 release continuation (root, 2026-09-17)
-
-Damian authorized publication to both Git mirrors. All release proofs passed:
-full gate, IR fidelity, normal and poison batteries, separate app sweep, DDC,
-map validation, rebuilt boot images, all50 diagnostic arms and shipping check.
-Main25820 adds the proven host timeout override; the compiler source and
-seed799 remain the same bytes proved at main25816. Vault team sharing remains
-a documented app defect in apps/secrets/secrets-backlog.md.
-
-Main release artifact CL25821 is submitted
-in D:/Projects/Cobblestone-root-main, client BigWhite_Codex_root_main.
-The checkout and both public mirror tips were9fff850c before publication.
-Next: reconcile and stage eligible depot
-paths, commit Update61, push github master and gitlab master:main, verify both
-tips, then send contributor receipts and close PRs147-152 and issue146.
-Follow docs/Agents/PublicPush.md. No renewed publication approval is needed.
-
-Evidence: D:/Projects/ReleaseProofs/Update61-20260917-root/.
-The gate/breadth/DDC/images attempt pointers locate the receipts. Image
-retry-result.txt is PASS; original result.txt preserves the failed time-budget
-run. The full retry used unchanged image bytes and every assertion.
-All root-owned proof processes and samplers are stopped; no VM remains active.
-Preserve root shelves25558/25624. The compiler heap/time behavior is unchanged
-by the final documentation and host timeout change. Restore MAIN OPEN and
-remove this continuation after publication and contributor receipts.
-
-
+Latest public release: **Update 61** (2026-09-17, commit `3af67f99` on
+GitHub master and GitLab main, seed #799 `7BCD5BC6BCE0AF41`).
+`GitHubUpdate61.md` records the proofs and limits; `GitHubUpdate62.md`
+accumulates the new cycle. PRs147-152 and issue146 have public receipts and
+are closed. Re-measure the seed and mirror tips at the next release.
 ## The brand boundary (Damian, 2026-08-29)
 
 The public name is **the Cobblestone Project**: the OS and every brand
@@ -171,16 +131,11 @@ is open; the ruled boundary and the traps around brand strings are in
    that page from our own kernel is a separate later step (Damian); do not
    couple item 1 to it.**
 
-## Track A -- the stick is an OS. THE LAST SITTING HAS FLOWN (2026-09-09): there is no metal any more.
+## Track A -- the stick is an OS. SITTINGS ARE OPEN (Damian, 2026-09-23).
 
-Sitting 15 stopped at the ladder's first write to the part; the result is
-`HardwareSitting.md` "THE SITTING QUEUE IS CLOSED". No flight follows, for all
-time. "Metal-gated" and "rides the last sitting" are no longer states a
-register may carry: an item a bed can answer moves to the bed, and an item
-only metal could answer is DELETED as unanswerable by ruling. Each owner
-reclassifies its own rows in one docs CL: reek (WORKS-9), fester (A8's launch,
-WORKS-24), blu (every Track B question, WORKS-16), root (the composition,
-`DiagnosticStick.md`).
+The sitting rule is the standing rule below ("SITTINGS ARE OPEN"). An item a
+bed can answer is answered in the bed; an item only metal can answer is
+"metal-gated" and waits for the next sitting, which root composes.
 
 - **The I219 medium-death hunt is PARKED (Damian, 2026-08-24)** and does not
   revive on a flight; `I219IsNotAnE1000.md` is the record.
@@ -224,11 +179,11 @@ call IN the arm). Still open in 10.1, unowned unless named:
 - 18, `OtaBoot boot-load` (reek): LATENT, no production caller.
 - The latent corpus rows 6, 7, 11 and 13.
 
-## The Prism dev environment (multi-lane; FALLBACK ONLY)
+## The Prism dev environment (red's primary lane; fallback for the others)
 
-Damian, 2026-09-07: "we can go back to prism if we are running out of work."
-A lane takes a Prism stage only when nothing is live on its own register, and
-says so. Design and stage register:
+Damian, 2026-09-23: red goes on "full blown prism awesomeness build out"
+after the Valheim work (PRISM-12, `apps/prism/prism-backlog.md`). Every other lane takes a Prism stage only when nothing
+is live on its own register, and says so. Design and stage register:
 `apps/prism/design/Active/PrismDevEnvironment.md`; row:
 `apps/prism/prism-backlog.md` PRISM-7. Two traps bind every page deploy:
 rebuild from a seed at or after `7B6A4950`, and regenerate
@@ -236,17 +191,10 @@ rebuild from a seed at or after `7B6A4950`, and regenerate
 
 Open, in order:
 
-1. **Stage 3, templates and the build tab: RED'S**
-   (`PrismDevEnvironment.md:689`). Acceptance: a server template built
-   in-tab, carried to the host, booted in codex-vm and answering HTTP; the
-   page is `codex/plugs/wasm/page/prism.html` in reek's tree.
-2. **Stage 4, the Claude panel**: the code is on main and the arm green; the
+1. **Stage 4, the Claude panel**: the code is on main and the arm green; the
    acceptance needs a real key and a billed call. The request shape is pinned
    in the design and must not be written from memory. The key is Damian's and
    DEFERRED (2026-09-08).
-3. **PreemptiveScheduler stages 1+2** (`PreemptiveScheduler.md`): val's.
-4. **Stage 5c, sockets**: RED'S (`PrismDevEnvironment.md:896`), untouched.
-5. **The guios webserver app** (WORKS-48): val's.
 
 The one-command public `compile/` page refresh is Damian's. Rulings (Damian,
 2026-08-28): the stage-5a Linux bed is ALL of the options (WSL verification
@@ -267,12 +215,12 @@ DeskScheduler is PARKED (Damian, 2026-08-26), not cancelled**:
 budget; skip or run late on a miss).
 | agent | now | then | standing |
 |---|---|---|---|
-| **blu** | **NOW:** No pending work; await root's assignment. | **NEXT:** On relaunch, check in with root. | Edge-mesh and net items in `ProtocolStack.md`; ICMP parse production caller (ruled send-only). |
-| **val** | **NOW:** No pending work; await root's assignment. | **NEXT:** On relaunch, check in with root; the desk and games items in the standing column are val's. | Damian's batch: WORKS-60, the virtual-desktop wording; FW-1's three fix options are Deferred (Damian, 2026-09-08 18:00). WORKS-50 is OFF this batch: it is DONE at head (one full name per pane, `desk-wnd-title` and `gpr-entries` agreeing on all four), and what it leaves is a simplification nobody has taken, dropping `dk-pill-icon`'s second table now that the join is sound. A start-menu group of seven pushes the laid menu past the taskbar band and nothing clips or scrolls: registered in `ShellRefinement.md`, and it is why the Sheets launcher row sits in Accessories. `ShellRefinement.md` "6.4: WHAT IS STILL OPEN"; `PreemptiveScheduler.md` stage 2; WORKS-47/41 |
-| **fester** | **NOW:** Preserve unfinished instance-typing donor 25599 and independent MethodSpecialization acceptance shelf 25630. The latter carries the agreed v1 interface, inspection runner and fixture/checker work. Root owns production compiler/common-parser changes and existing typeclass fixtures. | **NEXT:** Rebase acceptance work onto current main when root supplies a fresh candidate. Complete actual-producer acceptance and reservation/source-offset witnesses; retain source-derived declaration accounting, zero demand, omitted entries, scoped/forged binders, lookalike dictionaries, runtime/escape cases, finite bounds and frozen-reader controls. No passing claim before the required controls pass. | **COMPILER-59 and COMPILER-60 are PARKED and measured, not abandoned:** `ir-fidelity -Disagree` counts a def disagreeing with itself and reads 3 sites over 2 programs of 615; the lambda-parameter-span change moves 2 of the 3 and REGRESSES `typeclass-poly`'s `convert`, and the shared-span reading is refuted, both digests in `docs/Designs/Active/Compiler/LambdaParamSpans.md`. The name-the-kernel class is closed: `test-self-verify`, `check-generated-scripts` and `test-cross` all take `-Kernel` (2026-09-07). What the Build register still carries unowned is that `test-cross` BOOTS RENODE whenever the binary exists, guarded only by the operator remembering. A8 desk build loop when VT-x metal is available; Renode out; `deck-headroom`; WORKS-24 rides a sitting; ProductBuilder stage 6 on hold |
-| **reek** | **NOW:** No pending work; await root's assignment. | **NEXT:** On relaunch, check in with root for the next open `plugs-backlog.md` unit. | Plugs close-out lane; WORKS-9 metal-gated; `ShellDslReadability.md` same campaign; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4; Registered: COMPILER-46/39/48 |
-| **red** | **NOW:** Scoped crypto primitive audit completed through main25810; no active crypto changes. Bounded account: `GitHubUpdate61.md`. App team-sharing gap: `apps/secrets/secrets-backlog.md`. | **NEXT:** Await root's dispatch; plugs-backlog 2.58, shared network-send heap retention, remains next in the lane's queue. | Releases, personally and end to end; `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
-| **root** | **NOW:** Update61 publication authorized. Full gate, IR fidelity, normal/poison batteries, app sweep and DDC pass at main25816. All50 image arms and shipping check pass; artifact CL25821 is landed and awaits publication. | **NEXT:** Resume from "Update 61 release continuation" above. Preserve shelves 25558/25624; finish the release landing and publication, publish both mirrors, and send contributor receipts. | `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` (released to red for the two stage lifts) |
+| **blu** | **NOW:** handed off 2026-09-24; `arm64-web-server` serves HTTP under QEMU UEFI (main 26970). | **NEXT:** `Arm64NetIO`'s receive loops (frame reuse, then compaction) measured on that bed; ProtocolStack.md "Still open" item 1. | Edge-mesh and net items in `ProtocolStack.md`; ICMP parse production caller (ruled send-only). |
+| **val** | **NOW:** HANDED OFF clean at main 27060: nothing opened, pending or shelved. works-backlog is audited at head (2026-09-24) and its open rows are sized in sessions: 64, 30, 66, 2 at 1; 17 and 71 at 1 to 2; 25, 70 and 37 at half; 5, 6, 7 at 2 or more; 3 at 3 or more; metal or sitting 9, 19, 24; latent 67, 68; deferred 61; 16 a watch. | **NEXT:** own pick from that list; the smallest desk-visible ones are WORKS-66 (the start menu answers no key) and WORKS-37 (F12's verdict lasts only until the pane next repaints). S4h and S6h wait on the first page that uses a scroll viewport or an alignment. | Damian's batch: the virtual-desktop wording; FW-1's three fix options are Deferred (Damian, 2026-09-08 18:00). `ShellRefinement.md` "6.4: WHAT IS STILL OPEN"; WORKS-70, WORKS-71 |
+| **fester** | **NOW:** No pending work; Track D (`VerifiedFormatParsing.md` 10.1) rows 6, 7 and 11 are closed, row 13 has Csv and Base64 guarded. | **NEXT:** Row 13 in the order its row gives (caller census 2026-09-24): `ui/Markdown.codex` `ui-md-parse`, then `Hex`, then the harness-only parsers. Each unit is the pattern in `ExaminersAssay.md` "The CBOR Guard" onward: probe the seed, fix, a fixture with every line predicted, ablate each guard alone (an ablation that moves nothing means the fixture cannot reach that guard, so add the arm), cite-gate over the change, docs, land. | **COMPILER-59 and COMPILER-60 are PARKED and measured, not abandoned:** `ir-fidelity -Disagree` counts a def disagreeing with itself and reads 3 sites over 2 programs of 615; the lambda-parameter-span change moves 2 of the 3 and REGRESSES `typeclass-poly`'s `convert`, and the shared-span reading is refuted, both digests in `docs/Designs/Active/Compiler/LambdaParamSpans.md`. The name-the-kernel class is closed: `test-self-verify`, `check-generated-scripts` and `test-cross` all take `-Kernel` (2026-09-07). A8 desk build loop when VT-x metal is available; `deck-headroom`; WORKS-24 rides a sitting; ProductBuilder stage 6 on hold |
+| **reek** | **NOW:** plugs 2.70: `__heap-advance` rounds the heap pointer to 8 on arm64 and riscv, graded by the new subject `codex/test/heap-advance-odd` (baseline on depot plugs, then the fix, on QEMU). After it, 2.71 (riscv spill/stack-argument overlap, latent, 19+ parameters) or the next row on reek's pick. | **NEXT:** At the next public release, close GitHub PRs 155 and 156 with credit and the public commit, and answer issue 157: items 2 and 3 fixed, item 1 is COMPILER-86 (`PerforceProcess.md` section 7, "Closing"). | Plugs close-out lane; WORKS-9 metal-gated; `ShellDslReadability.md` same campaign; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4; Registered: COMPILER-48 |
+| **red** | **NOW:** Update 62, the release, assigned by Damian (2026-09-24): run it end to end with `/release`. Close GitHub PRs 154-156 and answer issues 153 and 157 at publication (reek's and blu's rows name the text). | **NEXT:** root's dispatch. | Releases, personally and end to end; `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
+| **root** | **NOW:** Shared layout model landed main25904: typed layout-only stacks, minimum-constrained flex allocation, exact pixel distribution and direct overflow reports. Calculator's fifteen keys fit and hit at both desktop scales. Nineteen focused native cases, emitted HTML DOM checks, image/UEFI and document checks pass. Font/app uplift remains main25898. | **NEXT:** HTML record mutation parity is tracked in `codex/plugs/html/html-backlog.md` before adopting shared mutable controls. Unused plugs remain incomplete. Layout HTML review: `D:/Projects/Cobblestone-root/build-output/box-uplift/stack-gallery.html`; browser pixel inspection was unavailable. | Survey and scope in `docs/Designs/Active/OS/ShellRefinement.md`. Build-tooling first slice main25858; remaining closure in `Build.md`. `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` released to red for the two stage lifts. |
 
 **Plugs are reek's close-out lane** (from val, Damian's direction
 2026-08-18): the register in order, one entry at a time, said in
@@ -316,18 +264,8 @@ older than the last change to its subject is not evidence (L-COUNT).
   `gdb-watchpoint` is proven as a PATH and unproven as a debugging SESSION: a
   real one needs an address from the booted kernel's own map, not the
   compiler's, and probably more than 120 s under TCG.
-- **COMPILER-23 residue, UNOWNED**: the two UEFI print loops fixed under
-  COMPILER-21 stay ungated, because nothing in `codex/test` runs under `-uefi`
-  (L-NOGATE). The remaining CORE-8 residue is the `from-unicode` answering -1
+- **COMPILER-23 residue, UNOWNED**: the remaining CORE-8 residue is the `from-unicode` answering -1
   call-site policy, in `codex/foreword/core/core-backlog.md`.
-- **VM admission, UNOWNED.** `test-cross-batch.ps1:331` puts the Renode run
-  phase on the `-Jobs` default (8 since 21043) while its own comment refuses
-  eight slots; pass `-Jobs 4` explicitly on the Renode leg until somebody
-  rules on the default. The admission arithmetic is in `vm-config.ps1` beside
-  `Get-VmAdmittedSlots` (`-mem` is a ceiling, not a footprint, L-REQUEST). A
-  run launched as a background shell dies with a fleet session restart;
-  launch detached (`OperatorsManual.md`).
-
 ## Decisions
 
 **Numbers are stable ids, not an order.** A ruled item shrinks to one line
@@ -343,7 +281,6 @@ is the commander's call, not his.
 
 ### Pending -- only Damian can answer
 
-- The deskboot digest row (root).
 - **Deferred by Damian, not pending:** OCI account access for
   `OracleCloudArm64.md` phases 5b-5d; the Prism stage-4 API key; FW-1's three
   fix options.
@@ -452,14 +389,16 @@ descriptions are not bound. The reason, in his words: "there is a tendency
 to communicate with me using implicit bindings, and it is even harder for
 me to know what is implicit than it is for you."
 
-**THERE ARE NO HARDWARE SITTINGS (root's reading of Damian's 2026-09-07
-21:10 turn, landed as CL 23198 and ratified by him 2026-09-09 02:21: one
-remained, for all time; the flight flew 2026-09-09 and stopped at the first
-write to the part; `TheLostParadise.md` ROOT-F4 carries the attribution).**
-No lane asks for a sitting, composes a flight, or flashes an image to fly.
-A question is answered in the bed, by reading, or by a different design, or
-it is deleted as unanswerable. The record is `HardwareSitting.md` "THE SITTING
-QUEUE IS CLOSED".
+**Emulators (Damian, 2026-09-24): codex-vm is the default for x86-64, QEMU for every other architecture, and Renode is the last resort** (only an arm that needs a board model QEMU lacks). Measured basis: Build.md (blu 26811, reek 26821-26831): QEMU ran the arm64 battery in 25.0 min against Renode's 57.6, at 316 MB per guest against about 1,050, and caught five arm64 codegen faults Renode hid.
+
+**SITTINGS ARE OPEN (Damian, 2026-09-23, his words: "Sittings are open, but
+same rules as before: answer all open question in 1 sit, and don't waste my
+time or my back.").** A lane does not ask Damian for a sitting; it registers
+its metal-only question with root. Root composes ONE sitting that answers
+every open metal question, rehearsed in the bed as the exact bytes flashed
+(L-REHEARSE), with an output channel independent of the subsystem under test
+(L-CHANNEL), and asks Damian once. The queue and records are
+`HardwareSitting.md`.
 
 **MAIN AND THE BOX ARE SYNCHRONIZED BY DIFFERENT THINGS (Damian, 2026-09-02
 15:55).** The token lands an already-proven seed CL on main; the commander

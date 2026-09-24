@@ -93,7 +93,7 @@ and never depended on the deleted set.
 | Huffman | **yes** | Frequency-built optimal prefix codes. Own format. |
 | Rle | **yes**, weakly | Run-length only. |
 
-### codex.foreword.encode (77 modules, measured 2026-09-08) -- Encoding and Codecs
+### codex.foreword.encode (78 modules, measured 2026-09-24) -- Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
@@ -199,13 +199,13 @@ Emit chapters render that model to Bash, Ksh, or PowerShell.
 
 These are not auto-loaded. User code must `cites` them explicitly.
 
-### codex (65 modules) -- The Compiler
+### codex (67 modules) -- The Compiler
 
 The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading
 the code first and passing both gates (sample battery + pingpong).
 
-### codex.os (162 modules) -- Operating System
+### codex.os (163 modules) -- Operating System
 
 Split across sub-quires. Re-measured 2026-07-29, when adding one kernel
 chapter turned `check-doc-counts.ps1` red and showed the table had
@@ -219,7 +219,7 @@ internally inconsistent.
 | codex.os.core | 4 | Core OS abstractions |
 | codex.os.dev | 37 | Device management |
 | codex.os.kernel | 36 | Hardware drivers (PCI, xHCI, NE2K, e1000e, VGA, IDE, HDA, USB HID, and Hpet, the monotonic clock) |
-| codex.os.net | 41 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, CoapsEndpoint and Lwm2mCoaps, which carry CoAP and the LwM2M client as DTLS application data, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
+| codex.os.net | 42 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, CoapsEndpoint and Lwm2mCoaps, which carry CoAP and the LwM2M client as DTLS application data, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
 | codex.os.observe | 8 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
 | codex.os.sched | 10 | Scheduling |
@@ -245,7 +245,7 @@ chapters elsewhere compile against it. The layering rule above orders the
 QUIRES (`codex.foreword` -> `codex` -> `codex.os` -> apps) and says nothing
 about sub-quires, which is why these cites are legal.
 
-### codex.plugs (56 plugs, all building clean) -- Transpiler Plugs
+### codex.plugs (57 plugs, all building clean) -- Transpiler Plugs
 
 48 language and UI transpilers (Ada to Zig, 14 UI frameworks, GPU PTX +
 SPIR-V + WGSL), 6 native backends (ARM64, RISC-V, T3ISA, ELF, PE, IMG),

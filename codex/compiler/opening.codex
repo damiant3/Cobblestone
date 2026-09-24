@@ -11,7 +11,8 @@ Chapter: Opening
   cites Emit chapter IR Text Emitter (emit-ir-chapter, emit-ir-chapter-prefix, ir-defs-wire-size, ir-print-defs, ir-trace-def-sizes, ir-trace-dce-cost, ir-prune-unreachable, ir-prune-unreachable-roots, ir-roots-with-declared, ir-dropped-budgeted-punctuals)
   cites Emit chapter Emit Allocator (emit-build)
   cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs, keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, pmap-escape-reached, utf8-to-cce, lir-target-x86)
-  cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites, check-cites-resolve, count-typecheck-units)
+  cites Semantics chapter Name Resolution (resolve-chapter, count-typecheck-units)
+  cites Semantics chapter Chapter Scoper (check-entry-point-duplicate, check-duplicate-cites, check-cites-resolve)
   cites Codex chapter LirTargets (lir-target-a64-shape, lir-target-narrow-shape)
   cites Codex chapter BootPaint (disk-rung, disk-mark, disk-stop, bp-pass, bp-truth, bp-paint, bp-progress, bp-progress-height, bp-hold-band-if-armed, bp-rtc-seconds, bp-rtc-date-text, bp-hms-text, bp-poke64, bp-log-count-cell, bp-log-start-cell, bp-log-rows, bp-cyan, bp-yellow, bp-magenta, bp-orange, bp-blue, bp-white, bp-red)
   cites Foreword chapter CCE (to-unicode, from-unicode, cce-to-unicode-table)
@@ -196,6 +197,8 @@ Section: Frontend
   CompileFrontend = record {
    type-defs : List ATypeDef,
    text-meta : IRTextMeta,
+   method-inputs : MethodInputs,
+   method-height : Integer,
    ir : IRChapter,
    cdx-ir : IRChapter,
    sorted-type-defs : List TypeBinding,
@@ -257,7 +260,9 @@ Section: Frontend
       }
    in CompileFrontend {
     type-defs = [],
-    text-meta = IRTextMeta { chapter-title = "", prose = "", section-titles = [], ctor-names = [], prose-blocks = [], annotations = [], ground-effects = [] },
+    text-meta = IRTextMeta { chapter-title = "", prose = "", section-titles = [], ctor-names = [], prose-blocks = [], annotations = [], ground-effects = [], method-templates = "" },
+    method-inputs = empty-method-inputs,
+    method-height = 0,
     ir = blank-ir,
     cdx-ir = blank-ir,
     sorted-type-defs = [],
@@ -409,6 +414,7 @@ Section: Frontend
   pmap-selftest-result (r) =
    if r == 3 then bag-from-list []
    else if r == 0 - 2 then bag-from-list [make-warning cdx-escape-violation "pmap-walk self-test SKIPPED: this host has no self type table, so there is no pointer map to walk" synthetic-span]
+   else if r == 0 - 3 then bag-from-list [make-warning cdx-escape-violation "pmap-walk self-test FAILED: the walk allocated, so every escape walk writes onto the deck it measures" synthetic-span]
    else bag-from-list [make-warning cdx-escape-violation ("pmap-walk self-test FAILED: got " & show r & " (expect 3)") synthetic-span]
 
   compile-lex : Text, Integer, CompileFlags -> LexResult
@@ -563,9 +569,9 @@ Section: Frontend
    in let scope-sat = if deck-short-of scope-ceiling demand-scope-guard-band then 1 else 0
    in let scope-metrics = phase-measure scope-phase "SCOPE"
    in let scope-ov = check-deck-overflow (scope-end - scope-origin) scope-deck-height
-   in let scope-ov-bag = if scope-ov == 1 | scope-sat == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag
-   in let scope-esc-bag = escape-check-bag (flags.escape-check) scope-metrics "SCOPE"
-   in let scope-precise-bag = precise-escape-bag (flags.escape-check) (address-of scoped) "AChapter" scope-metrics "SCOPE"
+   in let scope-ov-bag = deck-record (if scope-ov == 1 | scope-sat == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag)
+   in let scope-esc-bag = deck-record (escape-check-bag (flags.escape-check) scope-metrics "SCOPE")
+   in let scope-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of scoped) "AChapter" scope-metrics "SCOPE")
    in let resolve-bag2 = deck-record (bag-merge-all [resolve-bag, scope-ov-bag, scope-esc-bag, scope-precise-bag])
    in let hm1 = deck-record (list-push heap-marks-d h5)
    in let scope-heap-marks = deck-record (list-push hm1 h6)
@@ -696,7 +702,8 @@ Section: Frontend
        effect-exempt = False,
        scope-grants = [],
        chapter-grounds = [],
-       dirty-slots = []
+       dirty-slots = [],
+       empty-lists = []
       })
       in let result0 = deck-record (CompileChecked {
        scoped = sr.scoped,
@@ -780,7 +787,8 @@ Section: Frontend
     ctor-names = checked.ctor-names,
     prose-blocks = checked.scoped.prose-blocks,
     annotations = checked.scoped.annotations,
-    ground-effects = checked.scoped.ground-effects
+    ground-effects = checked.scoped.ground-effects,
+    method-templates = ""
    })
    in let lower-end = __deck-pos
    in let lower-sat = if list-length (ir-raw.defs) < list-length (checked.scoped.defs) then 1 else 0
@@ -805,6 +813,8 @@ Section: Frontend
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
+    method-inputs = method-capture-inputs (checked.scoped) (checked.all-bindings) (checked.renames) (text-length source),
+    method-height = lower-deck-height,
      ir = ir-resolved,
     cdx-ir = blank-ir,
     sorted-type-defs = [],
@@ -872,7 +882,8 @@ Section: Frontend
     ctor-names = checked.ctor-names,
     prose-blocks = checked.scoped.prose-blocks,
     annotations = checked.scoped.annotations,
-    ground-effects = checked.scoped.ground-effects
+    ground-effects = checked.scoped.ground-effects,
+    method-templates = ""
    })
    in let blank-ir = IRChapter { name = ir.name, defs = [], effect-op-names = ir.effect-op-names, span = ir.span }
    in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
@@ -915,6 +926,8 @@ Section: Frontend
    in let result = deck-record (CompileFrontend {
     type-defs = checked.scoped.type-defs,
     text-meta = tm,
+    method-inputs = method-capture-inputs (checked.scoped) (checked.all-bindings) (checked.renames) (text-length source),
+    method-height = lift-deck-height,
     ir = blank-ir,
     cdx-ir = cdx-chapter,
     sorted-type-defs = stds,
@@ -1346,11 +1359,21 @@ Section: Binary Compilation
   compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, Integer between 0 and 2 -> EmitChapterResult
   compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) =
    if bag-has-errors (fe.bag) then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = fe.bag, symbol-map = [] }
-   else let all-defs = (fe.cdx-ir).defs
+   else let method-ceiling = if list-length (fe.method-inputs.classes) == 0 then 0
+      else let base = build (fe.method-height) in base + fe.method-height
+    in let all-defs = (fe.cdx-ir).defs
     in let proofs = keep-proof-defs [] all-defs 0
     in let pruned = ir-prune-unreachable-roots (fe.cdx-ir) (ir-roots-with-declared (fe.cdx-ir) cdx-emit-roots)
     in let dropped = ir-dropped-budgeted-punctuals all-defs (pruned.defs)
-    in let emit-result = x86-64-emit-cdx-with-exit-mode (ir-chapter-with-proofs pruned proofs) (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target
+    in let emit-input = ir-chapter-with-proofs pruned proofs
+    in let emit-result = if list-length (fe.method-inputs.classes) == 0
+      then x86-64-emit-cdx-with-exit-mode emit-input (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target
+      else let scan-copy = IRChapter { name = emit-input.name, defs = emit-input.defs, effect-op-names = emit-input.effect-op-names, span = emit-input.span }
+      in let scan-ir = deck-record (eq-attach-helpers scan-copy (fe.type-defs))
+      in let materialized = deck-record (method-materialize (fe.method-inputs) scan-ir (fe.type-defs) method-ceiling)
+      in if bag-has-errors (materialized.bag)
+         then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = materialized.bag, symbol-map = [] }
+         else x86-64-emit-cdx-with-exit-mode emit-input (method-runtime-bindings (fe.sorted-type-defs) materialized) exit-mode poison trace wd-mode dropped hosted-target
     in EmitChapterResult {
      header-bytes = emit-result.header-bytes,
      content-buf = emit-result.content-buf,
@@ -1755,37 +1778,6 @@ Section: Entry Point
     print-line-uni ((format-heap-marks-wd (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "WD:PHASE-"))
    end
 
- Both IR front doors emit the SAME IR, and this is the function that makes that
- true. From main 19558 until 20144 emit-ir-cce lifted and emit-ir-uni did not,
- so `-IrUni` and `-IrCce` carried different IR for the same program while
- `-IrUni` was the only readable one. COMPILER-29's cause was recorded wrong
- twice off an `-IrUni` dump for exactly that reason. Both call this now, so a
- future divergence has to be written down deliberately.
-
- `no-lift` is the deliberate exception and it has one caller, build/jonquil.ps1,
- which needs the SOURCE-shaped defs: lifting relocates a lambda body into
- __lam_N, and jonquil compares a def's string data against its OWN header, so a
- self-reproducing construction hidden inside a lambda would move out from under
- the comparison. Suppressing the lift there preserves exactly the arm that
- shipped before this change.
-
- The reservation is made on BOTH arms, and `build` sits outside the `if` for
- that reason. `eq-attach-helpers` runs on this function's result and allocates
- under `deck-record`, so it lands on whatever deck is current; the arm that
- returns `ir` unchanged still owes it one. When `no-lift` returned early past
- `build`, those allocations took the deck-pos cell left by the previous phase
- and marched back down over that phase's live type bindings, which is
- COMPILER-79. The lift arm reserves this height and then hosts the same
- `eq-attach-helpers` work inside it, so the no-lift arm allocates a strict
- subset of what this height already covers.
-
-  lift-ir-for-emit : IRChapter, CompileFlags -> IRChapter
-  lift-ir-for-emit (ir) (flags) =
-   let lift-deck-height = scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band
-   in let lift-base = build lift-deck-height
-   in let lift-ceiling = lift-base + lift-deck-height
-   in if flags.no-lift then ir
-      else deck-record (lift-lambdas ir lift-ceiling)
 
  COMPILER-44. The x86 path attaches the instantiated equality helpers at
  `X86_64Chapter`, and the plugs never went through it: they received a bare
@@ -1804,18 +1796,46 @@ Section: Entry Point
    in let eq-st = __record-set empty-codegen-state "type-defs" tmap
    in __record-set ir "defs" ((ir.defs) & eq-helper-defs eq-st (ir.defs))
 
+  MethodWirePreparation = record {
+   chapter : IRChapter,
+   raw-defs : List IRDef,
+   type-defs : List ATypeDef,
+   meta : IRTextMeta,
+   bag : DiagnosticBag
+  }
+
+  prepare-method-ir : CompileFrontend, CompileFlags -> MethodWirePreparation
+  prepare-method-ir (fe) (flags) =
+   if bag-has-errors (fe.bag) then MethodWirePreparation { chapter = fe.ir, raw-defs = fe.ir.defs, type-defs = fe.type-defs, meta = fe.text-meta, bag = fe.bag }
+   else let height = scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band
+   in let base = build height
+   in let ceiling = base + height
+   in let lifted = if flags.no-lift then fe.ir else deck-record (lift-lambdas (fe.ir) ceiling)
+   in let with-helpers = deck-record (eq-attach-helpers lifted (fe.type-defs))
+   in let raw-defs = with-helpers.defs
+   in let ir = ir-prune-unreachable-roots with-helpers (ir-roots-with-declared with-helpers ir-emit-roots)
+   in let result = deck-record (method-materialize (fe.method-inputs) ir (fe.type-defs) ceiling)
+   in let meta = __record-set (fe.text-meta) "method-templates" (result.wire)
+   in MethodWirePreparation {
+    chapter = ir,
+    raw-defs = raw-defs,
+    type-defs = result.type-defs,
+    meta = meta,
+    bag = bag-merge-all [fe.bag, result.bag]
+   }
+
   emit-ir-uni : Text, CompileFlags -> [Console] Nothing
   emit-ir-uni (source) (flags) =
    let fe = compile-frontend-ir source "Program" flags
    in let h-pre-emit = __heap-save
+   in let prepared = prepare-method-ir fe flags
    in act
-    print-codegen-error-header (bag-errors (fe.bag))
-    print-bag-notices (fe.bag)
-    if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
-    else let lifted-ir = eq-attach-helpers (lift-ir-for-emit (fe.ir) flags) (fe.type-defs)
-     in act
+    print-codegen-error-header (bag-errors (prepared.bag))
+    print-bag-notices (prepared.bag)
+    if bag-has-errors (prepared.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
+    else act
      print-line-uni "IR-BEGIN"
-     print-line-uni (emit-ir-chapter (ir-prune-unreachable-roots lifted-ir (ir-roots-with-declared lifted-ir ir-emit-roots)) (fe.text-meta) (fe.type-defs))
+     print-line-uni (emit-ir-chapter (prepared.chapter) (prepared.meta) (prepared.type-defs))
      print-line-uni "IR-END"
     end
     let h-post-emit = __heap-save
@@ -1833,19 +1853,19 @@ Section: Entry Point
   emit-ir-cce (source) (flags) =
    let fe = compile-frontend-ir source "Program" flags
    in let h-pre-emit = __heap-save
+   in let prepared = prepare-method-ir fe flags
    in act
     if flags.wire-trace then print-line-uni ("FE-DONE frontier " & integer-to-text h-pre-emit) else print-text ""
-    print-codegen-error-header (bag-errors (fe.bag))
-    if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
-    else let lifted-ir = eq-attach-helpers (lift-ir-for-emit (fe.ir) flags) (fe.type-defs)
-     in let raw-defs = lifted-ir.defs
+    print-codegen-error-header (bag-errors (prepared.bag))
+    if bag-has-errors (prepared.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
+    else let ir = prepared.chapter
+     in let raw-defs = prepared.raw-defs
      in act
       if flags.wire-trace then ir-trace-dce-cost raw-defs 0 (list-length raw-defs) else print-text ""
-      let ir = ir-prune-unreachable-roots lifted-ir (ir-roots-with-declared lifted-ir ir-emit-roots)
-      in let defs-len = list-length (ir.defs)
+      let defs-len = list-length (ir.defs)
       in act
        if flags.wire-trace then ir-trace-def-sizes (ir.defs) 0 defs-len else print-text ""
-       let prefix = emit-ir-chapter-prefix ir (fe.text-meta) (fe.type-defs)
+       let prefix = emit-ir-chapter-prefix ir (prepared.meta) (prepared.type-defs)
        in let total = text-length prefix + ir-defs-wire-size (ir.defs) 0 defs-len 0 + 3
        in act
         print-line-uni ("SIZE:" & show total)

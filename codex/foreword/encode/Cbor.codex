@@ -1,5 +1,6 @@
 Chapter: Cbor
   cites Foreword chapter Maybe
+  cites Foreword chapter CCE (text-to-utf8-bytes, utf8-bytes-to-text)
 
  Concise Binary Object Representation (RFC 8949). Schema-less
  binary serialization -- the binary cousin of JSON. Encodes
@@ -62,17 +63,18 @@ Section: Encoding
     in if n < 24 then [bit-or major n]
     else if n < 256 then [bit-or major 24, n]
     else if n < 65536 then [bit-or major 25, bit-shru n 8, bit-and n 255]
-    else [bit-or major 26, bit-and (bit-shru n 24) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 8) 255, bit-and n 255]
+    else if n < 4294967296 then [bit-or major 26, bit-and (bit-shru n 24) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 8) 255, bit-and n 255]
+    else [bit-or major 27] & cbor-be-bytes n 8 []
+
+  cbor-be-bytes : Integer, Integer, List Integer -> List Integer
+  cbor-be-bytes (n) (count) (acc) =
+    if count == 0 then acc
+    else cbor-be-bytes n (count - 1) (list-push acc (bit-and (bit-shru n ((count - 1) * 8)) 255))
 
   cbor-encode-text-value : Text -> List Integer
   cbor-encode-text-value (s) =
-    let bytes = cbor-text-to-bytes s 0 (text-length s) []
+    let bytes = text-to-utf8-bytes s
     in cbor-encode-head cbor-mt-text (list-length bytes) & bytes
-
-  cbor-text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
-  cbor-text-to-bytes (s) (i) (len) (acc) =
-    if i >= len then acc
-    else cbor-text-to-bytes s (i + 1) len (list-push acc (char-code (char-at s i)))
 
   cbor-encode-array : List CborValue, Integer, Integer, List Integer -> List Integer
   cbor-encode-array (items) (i) (len) (acc) =
@@ -100,88 +102,133 @@ Section: Convenience Encoders
 
 Section: Decoding
 
+ A decode that fails carries cdr-offset -1 and every caller passes it on, so
+ no partial value escapes. cbor-decode answers None unless exactly one item
+ fills the buffer.
+
+ cbor-max-depth bounds the recursion: each array, map or tag level costs a
+ fixed handful of stack frames, and 256 levels is far past any real document
+ while a hostile one of a million nested arrays is a million bytes of input.
+
+  cbor-max-depth : Integer = 256
+
+  cbor-fail : CborDecodeResult = CborDecodeResult { cdr-value = CborNull, cdr-offset = 0 - 1 }
+
   cbor-decode : List Integer -> Maybe CborValue
   cbor-decode (bs) =
     if list-length bs == 0 then None
     else let r = cbor-decode-at bs 0
-    in Just (r.cdr-value)
+    in if r.cdr-offset /= list-length bs then None
+    else Just (r.cdr-value)
 
   cbor-decode-at : List Integer, Integer -> CborDecodeResult
-  cbor-decode-at (bs) (off) =
-    let initial = list-at bs off
+  cbor-decode-at (bs) (off) = cbor-decode-item bs off 0
+
+  cbor-decode-item : List Integer, Integer, Integer -> CborDecodeResult
+  cbor-decode-item (bs) (off) (depth) =
+    if depth > cbor-max-depth then cbor-fail
+    else if off < 0 then cbor-fail
+    else if off >= list-length bs then cbor-fail
+    else let initial = list-at bs off
     in let mt = bit-shru initial 5
     in let ai = bit-and initial 31
     in let hr = cbor-read-arg bs (off + 1) ai
-    in cbor-dispatch mt (hr.arg) bs (hr.next)
+    in if hr.next < 0 then cbor-fail
+    else if mt == cbor-mt-simple then cbor-decode-simple ai (hr.next)
+    else cbor-dispatch mt (hr.arg) bs (hr.next) depth
 
   CborHeadResult = record {
     arg : Integer,
     next : Integer
   }
 
+ RFC 8949 section 3: ai 24 to 27 carry a 1, 2, 4 or 8 byte argument, 28 to 30
+ are reserved, and 31 is the indefinite-length form, which this decoder does
+ not accept. An 8-byte argument with its top bit set does not fit a signed
+ 64-bit Integer, so it is refused rather than read negative.
+
   cbor-read-arg : List Integer, Integer, Integer -> CborHeadResult
   cbor-read-arg (bs) (off) (ai) =
     if ai < 24 then CborHeadResult { arg = ai, next = off }
-    else if ai == 24 then CborHeadResult { arg = list-at bs off, next = off + 1 }
-    else if ai == 25 then CborHeadResult {
-      arg = bit-or (bit-shl (list-at bs off) 8) (list-at bs (off + 1)),
-      next = off + 2
-    }
-    else let hi = bit-or (bit-shl (list-at bs off) 24) (bit-shl (list-at bs (off + 1)) 16)
-    in let lo = bit-or (bit-shl (list-at bs (off + 2)) 8) (list-at bs (off + 3))
-    in CborHeadResult {
-      arg = bit-or hi lo,
-      next = off + 4
-    }
+    else if ai > 27 then CborHeadResult { arg = 0, next = 0 - 1 }
+    else let width = if ai == 24 then 1 else if ai == 25 then 2 else if ai == 26 then 4 else 8
+    in if width > list-length bs - off then CborHeadResult { arg = 0, next = 0 - 1 }
+    else if width == 8 & list-at bs off >= 128 then CborHeadResult { arg = 0, next = 0 - 1 }
+    else CborHeadResult { arg = cbor-read-be bs off width 0, next = off + width }
 
-  cbor-dispatch : Integer, Integer, List Integer, Integer -> CborDecodeResult
-  cbor-dispatch (mt) (arg) (bs) (off) =
+  cbor-read-be : List Integer, Integer, Integer, Integer -> Integer
+  cbor-read-be (bs) (off) (count) (acc) =
+    if count == 0 then acc
+    else cbor-read-be bs (off + 1) (count - 1) (bit-or (bit-shl acc 8) (list-at bs off))
+
+  cbor-dispatch : Integer, Integer, List Integer, Integer, Integer -> CborDecodeResult
+  cbor-dispatch (mt) (arg) (bs) (off) (depth) =
     if mt == cbor-mt-uint then CborDecodeResult { cdr-value = CborUint arg, cdr-offset = off }
     else if mt == cbor-mt-nint then CborDecodeResult { cdr-value = CborNint (0 - 1 - arg), cdr-offset = off }
     else if mt == cbor-mt-bytes then cbor-decode-bytes bs off arg
     else if mt == cbor-mt-text then cbor-decode-text bs off arg
-    else if mt == cbor-mt-array then cbor-decode-array bs off arg
-    else if mt == cbor-mt-map then cbor-decode-map-items bs off arg
-    else if mt == cbor-mt-simple then cbor-decode-simple arg off
-    else CborDecodeResult { cdr-value = CborNull, cdr-offset = off }
+    else if mt == cbor-mt-array then cbor-decode-array-loop bs off arg 0 [] (depth + 1)
+    else if mt == cbor-mt-map then cbor-decode-map-loop bs off arg 0 [] (depth + 1)
+    else if mt == cbor-mt-tag then cbor-decode-tag bs off arg (depth + 1)
+    else cbor-fail
 
   cbor-decode-bytes : List Integer, Integer, Integer -> CborDecodeResult
   cbor-decode-bytes (bs) (off) (len) =
-    let data = cbor-slice bs off len 0 []
-    in CborDecodeResult { cdr-value = CborBytes data, cdr-offset = off + len }
+    if len > list-length bs - off then cbor-fail
+    else CborDecodeResult { cdr-value = CborBytes (cbor-slice bs off len 0 []), cdr-offset = off + len }
+
+ Text is UTF-8 on the wire. Bytes that do not survive the round trip through
+ Text (malformed UTF-8, or a character CCE cannot hold) are refused rather
+ than dropped.
 
   cbor-decode-text : List Integer, Integer, Integer -> CborDecodeResult
   cbor-decode-text (bs) (off) (len) =
-    let bytes = cbor-slice bs off len 0 []
-    in let s = cbor-bytes-to-text bytes 0 (list-length bytes) ""
-    in CborDecodeResult { cdr-value = CborText s, cdr-offset = off + len }
+    if len > list-length bs - off then cbor-fail
+    else let bytes = cbor-slice bs off len 0 []
+    in let s = utf8-bytes-to-text bytes
+    in if cbor-same-bytes (text-to-utf8-bytes s) bytes 0 then CborDecodeResult { cdr-value = CborText s, cdr-offset = off + len }
+    else cbor-fail
 
-  cbor-decode-array : List Integer, Integer, Integer -> CborDecodeResult
-  cbor-decode-array (bs) (off) (count) =
-    cbor-decode-array-loop bs off count 0 []
+  cbor-same-bytes : List Integer, List Integer, Integer -> Boolean
+  cbor-same-bytes (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else cbor-same-bytes a b (i + 1)
 
-  cbor-decode-array-loop : List Integer, Integer, Integer, Integer, List CborValue -> CborDecodeResult
-  cbor-decode-array-loop (bs) (off) (count) (i) (acc) =
+  cbor-decode-tag : List Integer, Integer, Integer, Integer -> CborDecodeResult
+  cbor-decode-tag (bs) (off) (tag) (depth) =
+    let r = cbor-decode-item bs off depth
+    in if r.cdr-offset < 0 then cbor-fail
+    else CborDecodeResult { cdr-value = CborTag tag (r.cdr-value), cdr-offset = r.cdr-offset }
+
+  cbor-decode-array-loop : List Integer, Integer, Integer, Integer, List CborValue, Integer -> CborDecodeResult
+  cbor-decode-array-loop (bs) (off) (count) (i) (acc) (depth) =
     if i >= count then CborDecodeResult { cdr-value = CborArray acc, cdr-offset = off }
-    else let r = cbor-decode-at bs off
-    in cbor-decode-array-loop bs (r.cdr-offset) count (i + 1) (list-push acc (r.cdr-value))
+    else let r = cbor-decode-item bs off depth
+    in if r.cdr-offset < 0 then cbor-fail
+    else cbor-decode-array-loop bs (r.cdr-offset) count (i + 1) (list-push acc (r.cdr-value)) depth
 
-  cbor-decode-map-items : List Integer, Integer, Integer -> CborDecodeResult
-  cbor-decode-map-items (bs) (off) (count) =
-    cbor-decode-map-loop bs off count 0 []
-
-  cbor-decode-map-loop : List Integer, Integer, Integer, Integer, List CborMapEntry -> CborDecodeResult
-  cbor-decode-map-loop (bs) (off) (count) (i) (acc) =
+  cbor-decode-map-loop : List Integer, Integer, Integer, Integer, List CborMapEntry, Integer -> CborDecodeResult
+  cbor-decode-map-loop (bs) (off) (count) (i) (acc) (depth) =
     if i >= count then CborDecodeResult { cdr-value = CborMap acc, cdr-offset = off }
-    else let kr = cbor-decode-at bs off
-    in let vr = cbor-decode-at bs (kr.cdr-offset)
-    in cbor-decode-map-loop bs (vr.cdr-offset) count (i + 1) (list-push acc (CborMapEntry { cme-key = kr.cdr-value, cme-value = vr.cdr-value }))
+    else let kr = cbor-decode-item bs off depth
+    in if kr.cdr-offset < 0 then cbor-fail
+    else let vr = cbor-decode-item bs (kr.cdr-offset) depth
+    in if vr.cdr-offset < 0 then cbor-fail
+    else cbor-decode-map-loop bs (vr.cdr-offset) count (i + 1) (list-push acc (CborMapEntry { cme-key = kr.cdr-value, cme-value = vr.cdr-value })) depth
+
+ Major type 7 carries false (20), true (21), null (22) and undefined (23),
+ read here as null. Floats (ai 25 to 27) and every other simple value have no
+ CborValue to become, so they are refused rather than answered as null.
 
   cbor-decode-simple : Integer, Integer -> CborDecodeResult
-  cbor-decode-simple (val) (off) =
-    if val == 20 then CborDecodeResult { cdr-value = CborBool False, cdr-offset = off }
-    else if val == 21 then CborDecodeResult { cdr-value = CborBool True, cdr-offset = off }
-    else CborDecodeResult { cdr-value = CborNull, cdr-offset = off }
+  cbor-decode-simple (ai) (off) =
+    if ai == 20 then CborDecodeResult { cdr-value = CborBool False, cdr-offset = off }
+    else if ai == 21 then CborDecodeResult { cdr-value = CborBool True, cdr-offset = off }
+    else if ai == 22 then CborDecodeResult { cdr-value = CborNull, cdr-offset = off }
+    else if ai == 23 then CborDecodeResult { cdr-value = CborNull, cdr-offset = off }
+    else cbor-fail
 
 Section: Helpers
 
@@ -189,10 +236,4 @@ Section: Helpers
   cbor-slice (bs) (off) (len) (i) (acc) =
     if i >= len then acc
     else cbor-slice bs off len (i + 1) (list-push acc (list-at bs (off + i)))
-
-  cbor-bytes-to-text : List Integer, Integer, Integer, Text -> Text
-  cbor-bytes-to-text (bs) (i) (len) (acc) =
-    if i >= len then acc
-    else cbor-bytes-to-text bs (i + 1) len (acc & char-to-text (code-to-char (list-at bs i)))
-
 Page 1

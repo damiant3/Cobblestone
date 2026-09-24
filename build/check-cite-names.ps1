@@ -60,9 +60,10 @@ function Get-ChapterIndex {
     foreach ($f in (Get-ChildItem -Path $Repo -Recurse -Filter '*.codex' -File -ErrorAction SilentlyContinue)) {
         if (Test-Excluded -Path $f.FullName) { continue }
         foreach ($l in [System.IO.File]::ReadLines($f.FullName)) {
-            if ($l -match '^Chapter:\s*(\S+)') {
-                if (-not $idx.ContainsKey($matches[1])) { $idx[$matches[1]] = [System.Collections.Generic.List[string]]::new() }
-                $idx[$matches[1]].Add($f.FullName)
+            if ($l -match '^Chapter:\s*(.+?)\s*$') {
+                $key = Get-CiteKey $matches[1]
+                if (-not $idx.ContainsKey($key)) { $idx[$key] = [System.Collections.Generic.List[string]]::new() }
+                $idx[$key].Add($f.FullName)
                 break
             }
         }
@@ -70,12 +71,13 @@ function Get-ChapterIndex {
     return $idx
 }
 
-# build-output holds concatenated units the build wrote, and old/ is the retired
-# reference compiler. Neither is source, and both carry copies of cite lines
-# that would be counted twice.
+# build-output and build/output hold concatenated units the build wrote (the
+# gate writes build/output/Codex.codex before it runs this), old/ is the retired
+# reference compiler, and docs/ holds archived snapshots. None is source, and
+# each carries stale copies of cite lines.
 function Test-Excluded {
     param([string]$Path)
-    return ($Path -match '[\\/](build-output|old)[\\/]')
+    return ($Path -match '[\\/](build-output|build[\\/]output|old|docs)[\\/]')
 }
 
 function Get-DefinedNames {
@@ -91,7 +93,7 @@ function Get-DefinedNames {
     return $set
 }
 
-$citePat = '^\s*cites\s+([A-Za-z0-9]+)\s+chapter\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)'
+$citePat = '^\s*cites\s+([A-Za-z_][A-Za-z0-9_]*)\s+chapter\s+([A-Za-z_][A-Za-z0-9_ -]*?)\s*\(([^)]*)\)'
 
 $sources = if ($File) { @(Get-Item -LiteralPath $File) }
            else { @(Get-ChildItem -Path $Root -Recurse -Filter '*.codex' -File -ErrorAction SilentlyContinue |
@@ -102,6 +104,7 @@ $defCache = @{}
 $bad = [System.Collections.Generic.List[string]]::new()
 $lines = 0
 $names = 0
+$unresolvedLines = 0
 
 foreach ($src in $sources) {
     $n = 0
@@ -117,14 +120,16 @@ foreach ($src in $sources) {
         $candidates = [System.Collections.Generic.List[string]]::new()
         $dir = $QuireDirs[$quire]
         if ($dir) {
-            $p = Join-Path $Root (Join-Path $dir "$chapter.codex")
+            $p = Join-Path $Root (Join-Path $dir "$($chapter -replace '\s', '').codex")
             if (Test-Path -PathType Leaf $p) { $candidates.Add($p) }
         }
-        if ($candidates.Count -eq 0 -and $chapterIndex.ContainsKey($chapter)) {
-            foreach ($c in $chapterIndex[$chapter]) { $candidates.Add($c) }
+        $chapterKey = Get-CiteKey $chapter
+        if ($candidates.Count -eq 0 -and $chapterIndex.ContainsKey($chapterKey)) {
+            foreach ($c in $chapterIndex[$chapterKey]) { $candidates.Add($c) }
         }
-        # An unresolvable CHAPTER is quire-map's refusal, not this one (R-ONE).
-        if ($candidates.Count -eq 0) { continue }
+        # An unresolvable CHAPTER is quire-map's refusal, not this one (R-ONE),
+        # but its names go unchecked, so the summary counts it.
+        if ($candidates.Count -eq 0) { $unresolvedLines++; continue }
 
         foreach ($name in $cited) {
             $names++
@@ -176,5 +181,5 @@ if ($bad.Count -gt 0) {
     exit 1
 }
 
-Write-Output "check-cite-names: $lines cite line(s) with a name list, $names name(s), all defined."
+Write-Output "check-cite-names: $lines cite line(s) with a name list, $names name(s), all defined; $unresolvedLines line(s) name a chapter found nowhere and were not checked."
 exit 0

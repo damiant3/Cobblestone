@@ -17,7 +17,6 @@ parameter. Open work is in [works-backlog.md](works-backlog.md).
 - **DevConsole** -- Top-level state machine with 16 modes (browse, edit, compile, debug, agent, hypervisor, etc.)
 - **DevConsoleMenu** -- Generic keyboard-navigable menu system
 - **VgaShell** -- VGA-text fallback shell for non-UEFI environments
-- **FirstBoot** -- First-boot wizard: identity generation, agent acquisition, upstream config
 
 ### Source Navigation & Editing
 - **CodeBrowser** -- Prefix-trie definition index over all source chapters

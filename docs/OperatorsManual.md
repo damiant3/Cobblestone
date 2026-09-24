@@ -37,6 +37,13 @@ other than what it is:
   does not come out identical on a `.glb`, a `.wasm` and an `.elf`. Never
   distinguish a constant from a counter by case, and note that `-replace` is
   case-insensitive too, so renaming `$EM` also renames every `$em`.
+- **`$args`, `$input` and `$matches` are AUTOMATIC variables, and `if`
+  unwraps a one-element array.** `$args = if ($x) { @('-A','-B') } else {
+  @('-C') }` followed by `@args` passes the wrong arguments twice over: the
+  automatic `$args` is not the list you built, and the one-element branch is
+  a bare string, which does not splat as one argument. Measured 2026-09-23: a
+  probe's native `-IrUni` compile produced no file on every subject while the
+  same command by hand did. Name it `$cargs` and write `@(if ...)`.
 - **`Measure-Object -Line` counts only NON-BLANK lines**, and nothing at the
   call site says so. Measured 2026-07-28 it reported the compiler at 48,456
   lines against a true 57,440 from `ReadAllLines`, a 16 per cent undercount,
@@ -358,6 +365,12 @@ A cite of a MANIFEST quire (`Codex`, `Emit`, `Semantics`, all
 `build/compiler-order.txt`) expands to every file that manifest names, which is
 how a compiler change reaches the tests citing the compiler as a library.
 
+**A `codex/compiler` change also selects every allocation golden**: each
+`codex/test` chapter that reads the heap frontier (`alloc-bytes`,
+`__heap-save`), 114 of them on 2026-09-23. Their printed byte counts are
+decided by the compiler's codegen, and no cite leads from a compiler chapter to
+them.
+
 **Read the two counts it prints apart.** It reports how many selected chapters
 RUN against an `.expected` and how many are compile only; summing them claims a
 runtime gate over subjects that have no runtime arm (L-DENOM). An EMPTY
@@ -403,6 +416,7 @@ sidecar deleted, and only the second answers the question the battery asks.
 |------|---------|
 | `foo.expected` | Compile must succeed; runtime output must match |
 | `foo.failing` | Compile must fail with listed CDX error codes |
+| `foo.message` | With `foo.failing`: each non-empty line must appear verbatim in the refusal's diagnostic output, so a note that carries a contract cannot be reworded away or dropped while the codes stay green. Graded by `check-errors` (codex/test/errors) and `test.ps1` |
 | `foo.diag` | Compile must succeed and emit each listed CDX code at any severity (warning/info/error); one per line. Tests warnings/infos. |
 | `foo.skip` | Skipped entirely (first line = reason) |
 | `foo.slow` | Skipped unless `-Slow` (first line = reason) |
@@ -572,6 +586,7 @@ codex-vm -kernel file.cdx [options]
 | `-no-edid` | off (an EDID is offered) | With `-uefi`: LocateProtocol answers NOT_FOUND for the EDID protocols. The ladder's edid stage answers `absent`. |
 | `-edid-bad` | off | With `-uefi`: the offered EDID has a wrong checksum byte. The ladder's edid stage answers `bad-checksum`, which is what shows the checksum is read rather than assumed. |
 | `-uefi-conout-remode` | off | With `-uefi`: the first ConOut ClearScreen switches the GOP to 1024x768 stride 1024 and updates Mode->Info, modelling AMI Aptio V's GraphicsConsole activation. A stub that reads the GOP geometry BEFORE its first ConOut use hands its payload the splash mode's numbers for a scanout that has since changed, which is the ASUS display corruption of 2026-08-02 exactly. |
+| `-conout <file>` | off | With `-uefi`: write every ConOut OutputString code unit to `<file>` as UTF-8, CR and LF included, flushed per call. stderr and the VGA buffer print a code unit above 127 as `?`, so this is the only channel that shows which non-ASCII character a payload sent. `build/test-uefi-conout.ps1` compares it to a chapter's `.expected`. |
 | `-xhci-evt-flood <N>` | 0 | Post N extra Port Status Change events at the Run transition, on top of the per-port connect and reset-completion PSC events the model now always posts. The event ring is 64 TRBs: N at or above it marches the producer through the ring WRAP and into the FULL condition (drop + one stderr report, per real silicon), the two paths a 4-port bed can never reach and a 26-port Intel reaches before enumeration begins. Both paths measured PASS on the shipping driver at N=30/50/100. |
 | `-hid-nak` | off | The HID keyboard NAKs every interrupt IN forever: no DMA, no transfer event, the pending TD stays in progress and Stop Endpoint answers FSE code 26 (Stopped) with the residual. Reproduces the ASUS 2026-08-03 flight signature (EPINT=0, dq parked, est=1, f1=1a) on the desk; the arm every silent-keyboard hypothesis is tested against. |
 | `-hid-idle-quirk` | off | The HID keyboard NAKs every interrupt IN after the guest sends SET_IDLE duration 0 (the over-honored "report only on change", HID 1.11 7.2.4 against the F.3 every-poll default). A driver that skips SET_IDLE never triggers it; one that sends it goes silent -- the arm that separates the v15 fix from the v14 behavior. |
@@ -1560,7 +1575,7 @@ VM intercepts the HLT). Supported protocols:
 | Runtime Services | GetTime (host RTC) |
 | GOP | QueryMode, SetMode, Blt |
 | Block I/O | Reset, ReadBlocks, WriteBlocks, Flush |
-| Simple File System | OpenVolume, Open, Close, Read, GetInfo, SetPosition |
+| Simple File System | none: LocateProtocol answers NOT_FOUND (`codex-vm.c`, the `GUID_SFS` arm) |
 
 Auto-extracts PE from GPT images: scans for EFI System Partition,
 locates `EFI/BOOT/BOOTX64.EFI`, loads the PE into memory.
@@ -1662,6 +1677,18 @@ To drive requests at the guest, `docs/Probes/arm64-two-requests.ps1` is the
 caller: it banks guest serial, QEMU stderr and a per-request verdict, and
 refuses to report request results unless the guest announced it was listening.
 
+### The cross beds: QEMU first, Renode last
+
+**codex-vm runs x86-64, QEMU runs every other architecture, and Renode is the
+last resort** (Damian, 2026-09-24), for an arm that needs a board model QEMU
+`virt` lacks. `build/test-cross-batch.ps1` and `build/test-cross.ps1` run QEMU by default and
+Renode only with `-Renode`; a subject that needs the board carries a `.renode` sidecar and
+is skipped on QEMU. The run phase honours `-Jobs` through the same memory
+admission as every other fan-out, at 1,100 MB per guest (QEMU commits 1,024 MB
+each; its working set is about 316 MB). QEMU faults on the unaligned and wild
+accesses Renode answers, so a subject can pass on Renode and fault on QEMU; the
+QEMU verdict is the one a real core gives.
+
 ### Renode (cross-architecture board testing)
 
 Renode v1.16.1 provides cycle-accurate simulation for ARM64 and
@@ -1705,6 +1732,25 @@ protocol → compile-arm64/riscv.ps1 (ELF) → Renode (UART capture).
 - ARM64: all runtime helpers must use `a64-emit-block` (not `a64-emit`)
 - RISC-V: heap register must be S1/x9 (not t3/x28 which collides
   with temp allocator)
+
+**Reading a guest fault.** A riscv exception prints
+`!EXC=<mcause> PC=<mepc> TVAL=<mtval>`, an arm64 one
+`!A64FAULT V= EL= ESR= ELR= FAR=`, and both park. `test-cross-batch.ps1`
+ends the run at that line and files it FAIL_RUNTIME with the line as the
+reason; match the PC or ELR against the test's `.map` in
+`test-output-cross/<arch>/<test>/`. Renode answers an unmapped READ with 0
+and no fault. For more than the PC, drive Renode directly:
+
+```
+cpu CreateExecutionTracing "tracer" @<path> PC   # then RunFor, then Dispose
+sysbus.cpu PC ; sysbus.cpu GetRegister <n>       # at the trap
+sysbus ReadDoubleWord 0x<addr>                   # the instruction actually there
+riscv64-linux-gnu-objdump -D -b binary -m riscv:rv64 --adjust-vma=0x80000080 <bin>
+```
+
+The riscv flat `.bin` begins at the ENTRY, 0x80000080, not at 0x80000000; an
+`--adjust-vma=0x80000000` shifts every address by 0x80 and makes correct
+code read as misaligned.
 
 ### `compile-arm64.ps1` ASKS FOR 3 GiB A GUEST, AND A CORPUS RUN IS ONE GUEST PER SUBJECT
 
@@ -1752,6 +1798,17 @@ the control above.
 session's own low-memory supervisor rather than by codex-vm, so the message
 naming memory came from the harness and not from the hypervisor. Establish
 which process ended a run before attributing it to a VM limit.
+
+### A NETWORK GUEST'S STDERR ON D: COSTS SECONDS
+
+Redirect a network plug's codex-vm stderr to `%TEMP%` (C:), never to a path
+on D:. codex-vm writes each NAT and `rx_enqueue` line to stderr while the
+guest waits on it, and a flushed write costs about 11 ms on D: against 0.45
+ms on C: (2026-09-23). Measured on the python plug through `plug-run.ps1`'s
+own flow, only the stderr path changed: boot to connect 0.35 s on C: and
+1.6 s on D:, send to reply 0.17 s against 2.4 s. `plug-run.ps1`
+(`GetTempFileName`) and the Prism sidecar pool (`apps/prism/server.ps1`,
+`Get-Sidecar`) both keep the file in TEMP.
 
 ### TAILING A LIVE VM LOG WITH `Get-Content` CAN KILL THE VM
 
@@ -2235,45 +2292,27 @@ from an earlier run is still sitting there. Measured 2026-08-19: a refusal
 read as a pass off that `True`, and the wrong reading was published before the
 log was opened.
 
-**IN `-Text` AND `-IrUni`, EXIT 4 IS THE SUCCESS PATH AND THE EXIT CODE MEANS
-NOTHING. `-IrCce` IS NOT LIKE THEM.** The paragraph above holds for `CDX`,
-where a clean compile exits 0. The modes do NOT agree with each other, and
-assuming they do is how this entry got written wrong the first time. Measured
-2026-08-27 against seed `0634584EF849D297`, same source and same invocation
-shape:
+**The modes do not share an exit contract.** The paragraph above holds for
+`CDX`. The `-IrUni` row was measured 2026-09-23 against seed `92F81660D868E9F5`,
+the other two 2026-08-27 against seed `0634584EF849D297`:
 
-| mode | exit | `-Out` | `-Log` |
+| mode | clean compile | `-Out` | `-Log` |
 |---|---|---|---|
-| `-IrUni` | **4** | never written | the wire, bracketed by `IR-BEGIN` / `IR-END` |
+| `-IrUni` | **0** | the IR between the markers, exactly as the guest emitted it | the guest output, `IR-BEGIN` / `IR-END` bracketing the wire, blank lines dropped |
+| `-IrCce` | **0** | written | diagnostics only, no `IR-BEGIN` |
 | `-Text` | **4** | never written | the text, no `IR-BEGIN` |
-| `-IrCce` | **0** | **written** (1,109 bytes here) | diagnostics only, no `IR-BEGIN` |
 
-`-Text` and `-IrUni` emit no `SIZE:` line, so the scan that looks for one runs
-off the end of the output and the script falls through to the bare `exit 4` at
-the bottom of the compile loop, having written the whole guest output into
-`-Log`. In those two a clean emit, a crash and a codegen refusal all carry the
-SAME exit code, so the verdict is the `-Log` file: `IR-BEGIN` / `IR-END` bracket
-the wire and `error CDX....` lines carry the diagnostics. `-IrCce` takes the
-binary path instead and behaves like `CDX`, so there the exit code IS the
-verdict.
+In `-IrUni` a refusal (`CODEGEN-HALTED`), a crash (`!EXC`) and output with no
+marker pair all exit 4 with no `-Out` (the refusal measured, the rest read off
+`compile.ps1`), and a dropped serial byte exits 6, so
+the exit code is the verdict. `-Text` emits no `SIZE:` line and falls through
+to the bare `exit 4` at the bottom of the compile loop, so there a clean emit, a
+crash and a refusal carry the SAME exit code and the verdict is the `-Log`.
 
-**Two things that fail path does to the `-Log`, and a count over the whole file
-gets both wrong.** Every guest line is cut at 200 characters before it is
-written, so a long `(def ...)` cannot be compared body against body from the
-log; and after the output the script appends "last N output line(s)" and prints
-the tail AGAIN, so a definition near the end of the wire appears twice.
-Count and read inside the FIRST `IR-BEGIN` / `IR-END` pair only: measured
-2026-09-08 on seed `F7A1343619F08614`, one `(def "__eq_IntList" ...)` inside
-the block counted as two over the file.
-
-The first version of this entry said all three behaved alike, on a reading of
-`compile.ps1`'s control flow rather than a measurement of each mode, and a
-naive-reader probe caught it the same day. Reading one branch of a dispatch and
-generalising to its siblings is the same error as reading one tier and
-concluding about three. The half that was right is worth keeping: a harness
-gating on the exit code in `-IrUni` reports every run as a failure with the
-correct IR sitting in the log, which is L-ACCEPTED pointed at a RESULT rather
-than an argument.
+**That fail path does two things to the `-Log`.** It appends "last N output
+line(s)" and prints the tail AGAIN, cut at 200 characters a line, so a
+definition near the end of the output appears twice. Count and read inside the
+FIRST block only.
 
 ### `build/ir-fidelity` -- did the IR carry what the checker knew?
 
@@ -2305,6 +2344,29 @@ about 0.3 s per compile and three compiles per case. It is NOT wired into any
 gate; that is Damian's ruling. `codex/plugs/plugs-backlog.md` 1.96 carries the
 standing verdicts and what they mean.
 
+**`ir-apply-agree.ps1` grades every application on the wire against itself**
+(Steve Howell's rule, issue 153): in `(apply F A T)` the parameter of F's
+`fn` type must agree with A's type and its result with T, and every element
+of a `list-expr` must agree with the element type and carry no `error`. A
+`(tvar N)` agrees with anything. A clean run covers only the applications
+whose function type the reader can name; the rest are skipped silently, and
+the script's header says which.
+
+```powershell
+build\ir-fidelity\ir-apply-agree.ps1 -Grade                          # the rule on hand-written wires, then two seeds that shipped the defect
+build\ir-fidelity\ir-apply-agree.ps1 -ProgramsFile list.txt -Expect 0 # one path per line; refuses if the site count differs
+build\ir-fidelity\ir-apply-agree.ps1 -CorpusDir codex\test -Limit 50 # a capped corpus run says it was capped
+```
+
+`-Grade` fetches seeds `#800` and `#801` from the depot and requires each to be
+caught on the defect it shipped (`apply-cases/nested-empty`,
+`apply-cases/tuple-two-lists`) while the kernel under test is clean on both.
+It is an instrument and in no gate, like the rest of this directory. Measured
+2026-09-23 over all 675 `codex/test` programs at head: 0 sites (9 refusal tests
+and 2 skipped tests emit no wire). A `let`'s type slot on the wire is its
+BINDER's type, so the script types a `let` by its body; reading the slot as the
+expression's type reports `show` in `edalias` six times for a program whose
+wire is correct.
 ### Compile Modes
 
 | Mode | Output |
@@ -2958,6 +3020,15 @@ symbol in it is confident. Run
 Measured 2026-08-04 in a workspace whose last build was five days old: the
 checked-in `build/output/Codex.codex` was 3007248 bytes against 2993576
 from a fresh concatenation of the same tree.
+
+**`seed/Codex.map` is right at publication, not at every seed (Damian,
+2026-09-24).** The release refreshes it from the published seed; between
+releases it describes the last published seed and drifts as lane seeds land,
+and nothing refreshes it automatically. codex-vm reads it (never the CDX's
+embedded MAP1) for crash names and `-break`/`-hbreak`/`-wcet` whenever the
+kernel is `seed\Codex.cdx`, so a debugging task on the depot seed first writes
+a current map from the seed's MAP1 (`Get-Map1Symbols` in `vm-config.ps1`, two
+header lines, `0x{addr:X8} {size} {name}`, CRLF) or passes `-map` explicitly.
 
 Two things a fresh map is NOT. It is not a replacement for
 `seed/Codex.map`: that file must describe the binary that actually ships,
@@ -3675,9 +3746,8 @@ and re-measure before repeating one).
 
 **What still holds, and it is the half worth keeping:** `-IrUni` and `-IrCce`
 are still NOT interchangeable. They differ in ENCODING (CCE is not readable
-text), in OUTPUT ROUTING and in EXIT CODE -- see the `-IrUni` / `-Text` /
-`-IrCce` table above, where `-IrCce` writes `-Out` and exits 0 while `-IrUni`
-writes the wire into `-Log` and exits 4. Grepping an `-IrCce` artifact for an
+text) and in OUTPUT ROUTING -- see the `-IrUni` / `-Text` / `-IrCce` table
+above, where only `-IrUni` brackets the wire in `-Log`. Grepping an `-IrCce` artifact for an
 ASCII identifier finds nothing, and reading an empty `-Log` from an `-IrCce`
 run as "no IR emitted" is the live trap.
 
@@ -3742,12 +3812,6 @@ Turn the floors up for the one compile that needs it, build the seed
 that carries the higher default, then turn the knob back off. Without
 it, the only escape is a two-stage bootstrap through an intermediate
 seed.
-
-**`-EscapeCheck` on the selfhost needs `-Decks 200`** or it dies in a silent
-`#GP` in `copy-sx-pos`. The check allocates inside the walk, so it outgrows
-the stock floors on a unit the size of the compiler. Not new, and it
-reproduces on old seeds, so a fresh `#GP` there is not a regression you
-introduced.
 
 **Turning the knob DOWN is sharp.** An under-reserved floor does not
 raise `CDX9002` -- the parse keep-deck copy writes past the floor into

@@ -12,7 +12,9 @@ Section: Transport State
     recv-len : Integer,
     recv-cap : Integer,
     messages-sent : Integer between 0 and 4294967295,
-    messages-received : Integer between 0 and 4294967295
+    messages-received : Integer between 0 and 4294967295,
+    arena-base : Integer,
+    gen : Integer
   }
 
   transport-recv-buf-cap : Integer = 33554432
@@ -24,7 +26,7 @@ Section: Transport State
   transport-new-with-cap (sess) (cap) =
     let base = __heap-save
     in let adv = __heap-advance cap
-    in TcpTransportState { session = sess, recv-base = base, recv-len = 0, recv-cap = cap, messages-sent = 0, messages-received = 0 }
+    in TcpTransportState { session = sess, recv-base = base, recv-len = 0, recv-cap = cap, messages-sent = 0, messages-received = 0, arena-base = 0, gen = 0 }
 
 Section: Send Message
   TransportSendResult = record {
@@ -38,7 +40,7 @@ Section: Send Message
     let framed = frame-encode type-tag body
     in let r = net-send (ts.session) framed
     in TransportSendResult {
-      transport = TcpTransportState { session = r.session, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent + 1, messages-received = ts.messages-received },
+      transport = TcpTransportState { session = r.session, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent + 1, messages-received = ts.messages-received, arena-base = ts.arena-base, gen = ts.gen },
       success = True,
       output = r.output
     }
@@ -53,14 +55,14 @@ Section: Receive Processing
 
   transport-drop-recv : TcpTransportState -> TcpTransportState
   transport-drop-recv (ts) =
-    TcpTransportState { session = ts.session, recv-base = ts.recv-base, recv-len = 0, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+    TcpTransportState { session = ts.session, recv-base = ts.recv-base, recv-len = 0, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received, arena-base = ts.arena-base, gen = ts.gen }
 
   transport-feed-raw : TcpTransportState, List Integer -> TcpTransportState
   transport-feed-raw (ts) (data) =
     let n = list-length data
     in if (ts.recv-len + n) > (ts.recv-cap) then ts
     else let w = __buf-write-bytes (ts.recv-base) (ts.recv-len) data
-    in TcpTransportState { session = ts.session, recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+    in TcpTransportState { session = ts.session, recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received, arena-base = ts.arena-base, gen = ts.gen }
 
   transport-feed-data : TcpTransportState, List Integer -> TcpTransportState
   transport-feed-data (ts) (data) = transport-feed-raw ts data
@@ -87,7 +89,7 @@ Section: Receive Processing
     in let remaining = __buf-read-bytes (ts.recv-base) total remaining-len
     in let w = __buf-write-bytes (ts.recv-base) 0 remaining
     in let restored = __heap-restore hp
-    in let ts1 = TcpTransportState { session = ts.session, recv-base = ts.recv-base, recv-len = remaining-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received + 1 }
+    in let ts1 = TcpTransportState { session = ts.session, recv-base = ts.recv-base, recv-len = remaining-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received + 1, arena-base = ts.arena-base, gen = ts.gen }
     in TransportRecvResult { transport = ts1, tag = __narrow tag, body = body, has-message = True }
 
   transport-slice : List Integer, Integer, Integer -> List Integer
@@ -113,7 +115,7 @@ Section: Feed Inbound Frame
     in if (ts.recv-len + n) > (ts.recv-cap)
     then transport-set-session ts sess
     else let w = __buf-write-bytes (ts.recv-base) (ts.recv-len) data
-    in TcpTransportState { session = sess, recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+    in TcpTransportState { session = sess, recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received, arena-base = ts.arena-base, gen = ts.gen }
 
  FEEDING A RANGE INSTEAD OF A LIST. `transport-feed-from` takes a list, and on
  the accepted path that list is a pure intermediate: `tcp-parse-at` builds it
@@ -140,11 +142,14 @@ Section: Feed Inbound Frame
     in if n <= 0 then transport-set-session ts sess
     else if (ts.recv-len + n) > (ts.recv-cap) then transport-set-session ts sess
     else let e = transport-write-range (ts.recv-base) (ts.recv-len) buf off stop
-    in TcpTransportState { session = sess, recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+    in TcpTransportState { session = sess, recv-base = ts.recv-base, recv-len = ts.recv-len + n, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received, arena-base = ts.arena-base, gen = ts.gen }
 
   transport-process-frame : TcpTransportState, List Integer -> TransportRecvResult
-  transport-process-frame (ts) (frame) =
-    let r = net-process-frame (ts.session) frame
+  transport-process-frame (ts) (frame) = transport-process-frame-within ts frame (list-length frame)
+
+  transport-process-frame-within : TcpTransportState, List Integer, Integer -> TransportRecvResult
+  transport-process-frame-within (ts) (frame) (stop) =
+    let r = net-process-frame-within (ts.session) frame stop
     in transport-try-recv (transport-feed-range ts (r.session) (r.data) (r.data-off) (r.data-stop))
 
 Section: Connection Lifecycle
@@ -160,7 +165,7 @@ Section: Connection Lifecycle
 
   transport-set-session : TcpTransportState, NetSession -> TcpTransportState
   transport-set-session (ts) (sess) =
-    TcpTransportState { session = sess, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+    TcpTransportState { session = sess, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received, arena-base = ts.arena-base, gen = ts.gen }
 
   transport-tick : TcpTransportState -> TcpTransportState
   transport-tick (ts) = transport-set-session ts ((net-tick (ts.session)).session)

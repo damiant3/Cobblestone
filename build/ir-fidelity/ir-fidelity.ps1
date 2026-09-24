@@ -101,11 +101,6 @@ $script:compileCount = 0
 
 function Invoke-IrCompile {
     # Returns @{ Wire = <text or $null>; Diags = <string[]>; Seconds = <double> }
-    #
-    # compile.ps1 in -IrUni mode emits no SIZE: line, so it never writes -Out and
-    # always falls through to exit 4 with the whole guest output in -Log. The
-    # exit code carries no information here; IR-BEGIN/IR-END and the diagnostic
-    # lines do. Gating on the exit code would report every case as a failure.
     param([string]$Src, [string]$Tag)
 
     $log = Join-Path $work "$Tag.log"

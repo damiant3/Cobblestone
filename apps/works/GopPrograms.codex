@@ -117,14 +117,6 @@ Section: The Tree
     else if sc == 37 then "k"
     else "?"
 
- A ROW SETS ITS HEIGHT AND KEEPS THE CONSTRUCTOR'S WIDTH GUESS, and that is
- what lets the start menu size itself. It pinned the width to ZERO, so the
- whole menu measured 40 against the 520 it drew at and a constant sized it
- instead. A pin is not a floor: `comp-fit-node` replaces a width only while it
- still holds `text-length t * 8 + 16`, so a zero pin also defeated the face
- measurement and no amount of fitting could reach it. Passing the guess back
- unchanged keeps `comp-fit-guess` true, which is the whole trick.
-
  The KEY IS NO LONGER IN THE LABEL. It read `Files   (f)`, and there is no
  longer an `f` to press: Damian removed the app-launch hotkeys on 2026-08-26.
  `ge-scan` stays, because it is also the id a menu row ANSWERS with and the
@@ -134,7 +126,7 @@ Section: The Tree
   gpr-row (i) (sel) =
     let e = gpr-at i
     in let btn = widget-button ("gpr-" & e.ge-label) (gpr-mark i sel & gpr-gutter & e.ge-label)
-    in widget-set-min btn (btn.wn-min-w) 22
+    in widget-set-min-h btn 22
 
  Two columns, not one. Nothing clips a widget panel to its box, so a
  single column of sixteen rows drew straight through the help line and
@@ -144,14 +136,6 @@ Section: The Tree
 
  `gpr-split` is an ENTRY index and must land on a group boundary, or the
  group whose rows it cuts loses its heading in the second column.
-
- THE GROUP A NEW ENTRY JOINS IS A MENU DECISION, NOT A TASTE ONE. The start
- menu's height is the row count of the group holding the SELECTION, so an
- entry added to the largest group raises the worst case and an entry added
- to a smaller one does not. Sheets sits in Accessories beside the
- Calculator for that reason, measured: as a seventh Productivity entry it
- put the laid menu's bottom past the taskbar band at 1600 wide, and
- `desk-menu-groups` failed on it (val, 2026-09-08).
 
   gpr-split : Integer = 11
 
@@ -207,19 +191,62 @@ Section: The Menu Tree
   gpr-group-mark : Boolean -> Text
   gpr-group-mark (open) = if open then "- " else "+ "
 
-  gpr-group-row : Integer, Boolean -> WidgetNode
-  gpr-group-row (i) (open) =
-    let e = gpr-at i
-    in let btn = widget-button (gpr-group-prefix & e.ge-group) (gpr-group-mark open & e.ge-group)
-    in widget-set-min btn (btn.wn-min-w) 22
+ Six open rows is what the tightest glass fits: at 1600x900 the chrome lays
+ out in 800x450, where six rows measured a band at 406..442 and a seventh
+ pushed it to 454, off the glass. A larger group shows six at a time, the
+ window follows the selection, and the group's heading says which six.
 
-  gpr-menu-rows : Integer, Integer, Text, List WidgetNode -> List WidgetNode
-  gpr-menu-rows (i) (sel) (open) (acc) =
+  gpr-open-max : Integer = 6
+
+  GprWindow = record {
+    gw-lo : Integer,
+    gw-hi : Integer,
+    gw-note : Text
+  }
+
+ The table is bound once and scanned through the binding: every mention of
+ `gpr-entries`, and so every `gpr-at`, rebuilds all seventeen entries, 696
+ bytes (measured 2026-09-23), and a scan by `gpr-at` cost 19,512 a menu build.
+
+  gpr-group-first : List GprEntry, Text, Integer -> Integer
+  gpr-group-first (es) (grp) (i) =
+    if i >= list-length es then i
+    else if (list-at es i).ge-group == grp then i
+    else gpr-group-first es grp (i + 1)
+
+  gpr-group-end : List GprEntry, Text, Integer -> Integer
+  gpr-group-end (es) (grp) (i) =
+    if i >= list-length es then i
+    else if (list-at es i).ge-group == grp then gpr-group-end es grp (i + 1)
+    else i
+
+  gpr-window : Integer, Integer -> GprWindow
+  gpr-window (ps) (cap) =
+    let es = gpr-entries
+    in let sel = gpr-sel ps
+    in let grp = (list-at es sel).ge-group
+    in let g0 = gpr-group-first es grp 0
+    in let n = gpr-group-end es grp g0 - g0
+    in let raw = sel - g0 - cap + 1
+    in let first = if n <= cap then 0 else if raw < 0 then 0 else if raw > n - cap then n - cap else raw
+    in let shown = if n < cap then n else cap
+    in let note = if n <= cap then "" else "  " & integer-to-text (first + 1) & "-" & integer-to-text (first + shown) & " of " & integer-to-text n
+    in GprWindow { gw-lo = g0 + first, gw-hi = g0 + first + shown, gw-note = note }
+
+  gpr-group-row : Integer, Boolean, Text -> WidgetNode
+  gpr-group-row (i) (open) (note) =
+    let e = gpr-at i
+    in let btn = widget-button (gpr-group-prefix & e.ge-group) (gpr-group-mark open & e.ge-group & note)
+    in widget-set-min-h btn 22
+
+  gpr-menu-rows : Integer, Integer, Text, GprWindow, List WidgetNode -> List WidgetNode
+  gpr-menu-rows (i) (sel) (open) (win) (acc) =
     if i >= gpr-count then acc
     else let e = gpr-at i
-    in let acc1 = if gpr-heads i then list-push acc (gpr-group-row i (e.ge-group == open)) else acc
-    in let acc2 = if e.ge-group == open then list-push acc1 (gpr-row i sel) else acc1
-    in gpr-menu-rows (i + 1) sel open acc2
+    in let here = e.ge-group == open
+    in let acc1 = if gpr-heads i then list-push acc (gpr-group-row i here (if here then win.gw-note else "")) else acc
+    in let acc2 = if here & i >= win.gw-lo & i < win.gw-hi then list-push acc1 (gpr-row i sel) else acc1
+    in gpr-menu-rows (i + 1) sel open win acc2
 
  ACROSS, THE GROUPS ARE COLUMNS AND THE COLUMNS ARE THE ROW. Damian,
  2026-09-07, for a band docked left or right: "in left and right mode should
@@ -237,26 +264,30 @@ Section: The Menu Tree
 
   gpr-col-prefix : Text = "gprc-"
 
-  gpr-group-items : Text, Integer, Integer, List WidgetNode -> List WidgetNode
-  gpr-group-items (grp) (sel) (i) (acc) =
-    if i >= gpr-count then acc
-    else if (gpr-at i).ge-group == grp then gpr-group-items grp sel (i + 1) (list-push acc (gpr-row i sel))
-    else gpr-group-items grp sel (i + 1) acc
+  gpr-group-items : Integer, GprWindow, Integer, List WidgetNode -> List WidgetNode
+  gpr-group-items (sel) (win) (i) (acc) =
+    if i >= win.gw-hi then acc
+    else if i < win.gw-lo then gpr-group-items sel win (i + 1) acc
+    else gpr-group-items sel win (i + 1) (list-push acc (gpr-row i sel))
 
-  gpr-menu-cols : Integer, Integer, Text, List WidgetNode -> List WidgetNode
-  gpr-menu-cols (i) (sel) (open) (acc) =
+  gpr-menu-cols : Integer, Integer, Text, GprWindow, List WidgetNode -> List WidgetNode
+  gpr-menu-cols (i) (sel) (open) (win) (acc) =
     if i >= gpr-count then acc
-    else if gpr-heads i == False then gpr-menu-cols (i + 1) sel open acc
+    else if gpr-heads i == False then gpr-menu-cols (i + 1) sel open win acc
     else
       let g = (gpr-at i).ge-group
-      in let head = list-push [] (gpr-group-row i (g == open))
-      in let kids = if g == open then gpr-group-items g sel 0 head else head
-      in gpr-menu-cols (i + 1) sel open (list-push acc (widget-panel (gpr-col-prefix & g) DirColumn 2 kids))
+      in let head = list-push [] (gpr-group-row i (g == open) (if g == open then win.gw-note else ""))
+      in let kids = if g == open then gpr-group-items sel win 0 head else head
+      in gpr-menu-cols (i + 1) sel open win (list-push acc (widget-panel (gpr-col-prefix & g) DirColumn 2 kids))
+
+  gpr-menu-tree-cap : Integer, Boolean, Integer -> WidgetNode
+  gpr-menu-tree-cap (ps) (across) (cap) =
+    let win = gpr-window ps cap
+    in if across then widget-panel "gpr-menu" DirRow 8 (gpr-menu-cols 0 (gpr-sel ps) (gpr-open-group ps) win [])
+    else widget-panel "gpr-menu" DirColumn 2 (gpr-menu-rows 0 (gpr-sel ps) (gpr-open-group ps) win [])
 
   gpr-menu-tree : Integer, Boolean -> WidgetNode
-  gpr-menu-tree (ps) (across) =
-    if across then widget-panel "gpr-menu" DirRow 8 (gpr-menu-cols 0 (gpr-sel ps) (gpr-open-group ps) [])
-    else widget-panel "gpr-menu" DirColumn 2 (gpr-menu-rows 0 (gpr-sel ps) (gpr-open-group ps) [])
+  gpr-menu-tree (ps) (across) = gpr-menu-tree-cap ps across gpr-open-max
 
 Section: Keys
 

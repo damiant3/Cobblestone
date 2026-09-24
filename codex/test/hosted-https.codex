@@ -1,0 +1,74 @@
+Chapter: HostedHttps
+  cites Works chapter Http
+  cites Works chapter WebRoute
+  cites Works chapter HostedServe
+  cites Works chapter HostedServeTls
+  cites Encode chapter X509Write
+  cites Foreword chapter Maybe
+
+ A hosted target serving HTTPS. The harness is
+ `codex/plugs/elf/hosted-https-arm.ps1`; running the subject alone grades
+ nothing, because the subject answers a client.
+
+ The server key is drawn from `hardware-random` at start, as a deployment's
+ would be, and the certificate is printed so the harness can pin it.
+
+ The port derives from `hosted-kind` for the reason `hosted-http` gives.
+
+ The harness makes three connections: one pinned to the WRONG certificate,
+ which must fail and is served nothing, then two requests.
+
+ One TLS connection allocates about 19 MB on the server (38,116,920 bytes
+ for both ends of a loopback, measured 2026-09-23), so a server that kept
+ it would retain about 57 MB here; 1 MiB is far below that and far above
+ the 64 KiB receive buffer.
+
+Section: Route
+
+  https-port-base : Integer = 34580
+  https-connections : Integer = 3
+
+  route : HttpRequest -> HttpResponse
+  route (req) =
+    if req.path == "/hello" then http-json "{\"hello\":\"hosted-tls\"}"
+    else HttpResponse { status = http-404, content-type = "application/json", body = web-not-found (req.path) }
+
+Section: Certificate
+
+  or-empty : Maybe (List Integer) -> List Integer
+  or-empty (m) =
+    when m
+      is None -> []
+      is Just (x) -> x
+
+  dec : List Integer, Integer, Text -> Text
+  dec (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else dec bs (i + 1) (acc & " " & show (list-at bs i))
+
+  mint : List Integer -> List Integer
+  mint (priv) =
+    or-empty (x509-dev-cert-ed25519 priv [1] (http-text-to-ascii "codex-dev") (http-text-to-ascii "20250101000000") (http-text-to-ascii "20350101000000") [http-text-to-ascii "localhost"] [[127, 0, 0, 1]])
+
+Section: Entry
+
+  opening : [Console, Network.Write] Nothing = act
+    let priv = hst-random-bytes 4 []
+    in let cert = mint priv
+    in let tls = hosted-tls priv cert
+    in let port = https-port-base + hosted-kind
+    in act
+      print-line-uni ("cert" & dec cert 0 "")
+      fd <- hosted-listen port
+      print-line-uni (if fd >= 0 then "listen 0" else "listen " & integer-to-text fd)
+      let h0 = __heap-save
+      in act
+        served <- hosted-serve-tls-on route tls fd https-connections
+        let kept = __heap-save - h0
+        in act
+          print-line-uni ("served " & integer-to-text served)
+          print-line-uni ("retained under 1 MiB: " & (if kept < 1048576 then "True" else "False"))
+        end
+      end
+    end
+  end

@@ -757,9 +757,13 @@ Section: Function Emission
     is IrNegate (x) (nty) (s) -> a64-count-ir-locals x fname
     is IrBinary (op) (l) (r) (t) (s) ->
      let left-save = if a64-result-is-stable l then 0 else 1
+     in let hidden = when op
+      is IrApproxEq -> 10
+      is IrApproxEqExact -> 10
+      is otherwise -> 0
      in let use-imm = if a64-is-imm-eligible op then a64-small-imm r > 0 else False
-     in if use-imm then a64-count-ir-locals l fname
-     else left-save + a64-count-ir-locals l fname + a64-count-ir-locals r fname
+     in if use-imm then hidden + a64-count-ir-locals l fname
+     else hidden + left-save + a64-count-ir-locals l fname + a64-count-ir-locals r fname
     is IrIf (c) (th) (el) (t) (s) ->
      let tco-el = a64-has-tail-call el fname
      in let res-cost = if tco-el then 0 else 1
@@ -1023,6 +1027,7 @@ Section: Name Emission
    else if name == "__deck-pos" then a64-emit-deck-pos st
    else if name == "__deck-enter" then a64-emit-deck-enter st
    else if name == "__deck-exit" then a64-emit-deck-exit st
+   else if name == "vec-empty" then a64-emit-empty-list st
    else let eoa = a64-find-effect-op-addr ((st.extra).effect-op-addrs) name 0
    in let is-rl = if name == "read-line" then True else name == "read-line-cce"
    in let has-handler = if is-rl then a64-find-func-offset (st.func-names) (st.func-offsets) ("__handler_" & name) 0 else 0 - 1
@@ -1348,15 +1353,21 @@ Section: Binary Emission
    in let rd = rd-r.reg
    in a64-emit-binary-op st2 op rd left-reg right-reg left right ty
 
+ sdiv answers 0 for a zero divisor where x86-64's idiv raises #DE, so the
+ zero case is refused here with the same brk the other guards use.
+
+  a64-emit-div-guard : A64State, Integer -> A64State
+  a64-emit-div-guard (st) (divisor) = a64-emit (a64-emit st (arm64-cbnz divisor 8)) (arm64-encode #D4200020)
+
   a64-emit-binary-op : A64State, IRBinaryOp, Integer, Integer, Integer, IRExpr, IRExpr, CodexType -> A64EmitResult
   a64-emit-binary-op (st2) (op) (rd) (left-reg) (right-reg) (left) (right) (ty) =
    when op
     is IrAddInt -> A64EmitResult { state = a64-emit st2 (arm64-add rd left-reg right-reg), reg = rd }
     is IrSubInt -> A64EmitResult { state = a64-emit st2 (arm64-sub rd left-reg right-reg), reg = rd }
     is IrMulInt -> A64EmitResult { state = a64-emit st2 (arm64-mul rd left-reg right-reg), reg = rd }
-    is IrDivInt -> A64EmitResult { state = a64-emit st2 (arm64-sdiv rd left-reg right-reg), reg = rd }
+    is IrDivInt -> A64EmitResult { state = a64-emit (a64-emit-div-guard st2 right-reg) (arm64-sdiv rd left-reg right-reg), reg = rd }
     is IrRemInt ->
-     let st3 = a64-emit st2 (arm64-sdiv rd left-reg right-reg)
+     let st3 = a64-emit (a64-emit-div-guard st2 right-reg) (arm64-sdiv rd left-reg right-reg)
      in A64EmitResult { state = a64-emit st3 (arm64-msub rd rd right-reg left-reg), reg = rd }
     is IrPowInt ->
      let st3 = if right-reg == a64-x0 then
@@ -1426,14 +1437,14 @@ Section: Binary Emission
     is IrSubRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fsub-s
     is IrMulRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fmul-s
     is IrDivRealApprox -> a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-s
-    is IrAddRealTrapping -> if is-real-f32 ty then a64-emit-real-arith st2 left-reg right-reg arm64-fadd-s
-     else a64-emit-real-arith st2 left-reg right-reg arm64-fadd-d
-    is IrSubRealTrapping -> if is-real-f32 ty then a64-emit-real-arith st2 left-reg right-reg arm64-fsub-s
-     else a64-emit-real-arith st2 left-reg right-reg arm64-fsub-d
-    is IrMulRealTrapping -> if is-real-f32 ty then a64-emit-real-arith st2 left-reg right-reg arm64-fmul-s
-     else a64-emit-real-arith st2 left-reg right-reg arm64-fmul-d
-    is IrDivRealTrapping -> if is-real-f32 ty then a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-s
-     else a64-emit-real-arith st2 left-reg right-reg arm64-fdiv-d
+    is IrAddRealTrapping -> if is-real-f32 ty then a64-emit-real-trapping-arith st2 left-reg right-reg arm64-fadd-s True
+     else a64-emit-real-trapping-arith st2 left-reg right-reg arm64-fadd-d False
+    is IrSubRealTrapping -> if is-real-f32 ty then a64-emit-real-trapping-arith st2 left-reg right-reg arm64-fsub-s True
+     else a64-emit-real-trapping-arith st2 left-reg right-reg arm64-fsub-d False
+    is IrMulRealTrapping -> if is-real-f32 ty then a64-emit-real-trapping-arith st2 left-reg right-reg arm64-fmul-s True
+     else a64-emit-real-trapping-arith st2 left-reg right-reg arm64-fmul-d False
+    is IrDivRealTrapping -> if is-real-f32 ty then a64-emit-real-trapping-arith st2 left-reg right-reg arm64-fdiv-s True
+     else a64-emit-real-trapping-arith st2 left-reg right-reg arm64-fdiv-d False
     is IrAddRealSaturating -> if is-real-f32 ty then a64-emit-real-saturating-arith-f32 st2 left-reg right-reg arm64-fadd-s
      else a64-emit-real-saturating-arith st2 left-reg right-reg arm64-fadd-d
     is IrSubRealSaturating -> if is-real-f32 ty then a64-emit-real-saturating-arith-f32 st2 left-reg right-reg arm64-fsub-s
@@ -1513,6 +1524,19 @@ Section: Real Arithmetic
    in let st2 = a64-emit st1 (arm64-fmov-to-fp 1 r-reg)
    in let st3 = a64-emit st2 (fp-op 0 0 1)
    in A64EmitResult { state = a64-emit st3 (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
+
+ An all-ones exponent is an infinity or a NaN, the result x86-64's
+ emit-real-trapping-arith refuses: 11 bits for a double (shl 1, shr 53, 2047),
+ 8 for a single in the low word (shl 33, shr 56, 255).
+
+  a64-emit-real-trapping-arith : A64State, Integer, Integer, (Integer, Integer, Integer -> List Integer), Boolean -> A64EmitResult
+  a64-emit-real-trapping-arith (st) (l-reg) (r-reg) (fp-op) (f32) =
+   let r = a64-emit-real-arith st l-reg r-reg fp-op
+   in let st1 = a64-emit (r.state) (arm64-lsl-imm a64-x9 (r.reg) (if f32 then 33 else 1))
+   in let st2 = a64-emit st1 (arm64-lsr-imm a64-x9 a64-x9 (if f32 then 56 else 53))
+   in let st3 = a64-emit st2 (arm64-cmp-imm a64-x9 (if f32 then 255 else 2047))
+   in let st4 = a64-emit (a64-emit st3 (arm64-b-cond 1 8)) (arm64-encode #D4200020)
+   in A64EmitResult { state = st4, reg = r.reg }
 
  THE CLAMP IS BRANCHLESS AND THAT IS NOT A PERFORMANCE CHOICE. Both of
  these used to skip the clamp with a forward branch, which left the write to
@@ -1840,13 +1864,15 @@ Section: Real Arithmetic
    in let st4 = a64-emit st3 (arm64-str (t.reg) (aa.reg) 8)
    in A64EmitResult { state = st4, reg = aa.reg }
 
-  a64-emit-vec-extract : A64State, IRExpr, IRExpr -> A64EmitResult
-  a64-emit-vec-extract (st) (vec-expr) (idx-expr) =
+  a64-emit-vec-extract : A64State, IRExpr, IRExpr, Integer -> A64EmitResult
+  a64-emit-vec-extract (st) (vec-expr) (idx-expr) (lanes) =
    let vr = a64-emit-expr st vec-expr
    in let ir = a64-emit-expr (vr.state) idx-expr
    in let tr = a64-alloc-temp (ir.state)
    in let shift = a64-alloc-temp (tr.state)
-   in let st1 = a64-emit (shift.state) (arm64-lsl-imm (shift.reg) (ir.reg) 3)
+   in let st0 = a64-emit (shift.state) (arm64-cmp-imm (ir.reg) lanes)
+   in let st0a = a64-emit (a64-emit st0 (arm64-b-cond 3 8)) (arm64-encode #D4200020)
+   in let st1 = a64-emit st0a (arm64-lsl-imm (shift.reg) (ir.reg) 3)
    in let st2 = a64-emit st1 (arm64-add (tr.reg) (vr.reg) (shift.reg))
    in A64EmitResult { state = a64-emit st2 (arm64-ldr (tr.reg) (tr.reg) 0), reg = tr.reg }
 
@@ -1864,13 +1890,7 @@ Section: Real Arithmetic
    in A64EmitResult { state = a64-emit (rd.state) (arm64-fmov-from-fp (rd.reg) 0), reg = rd.reg }
 
   a64-emit-address-of : A64State, IRExpr -> A64EmitResult
-  a64-emit-address-of (st) (arg) =
-   let vr = a64-emit-expr st arg
-   in let tr = a64-alloc-temp (vr.state)
-   in let st1 = a64-emit (tr.state) (arm64-mov (tr.reg) a64-heap-reg)
-   in let st2 = a64-emit st1 (arm64-add-imm a64-heap-reg a64-heap-reg 8)
-   in let st3 = a64-emit st2 (arm64-str (vr.reg) (tr.reg) 0)
-   in A64EmitResult { state = st3, reg = tr.reg }
+  a64-emit-address-of (st) (arg) = a64-emit-expr st arg
 
   a64-emit-vec-select : A64State, IRExpr, IRExpr, IRExpr, CodexType -> A64EmitResult
   a64-emit-vec-select (st) (mask-expr) (a-expr) (b-expr) (ty) =
@@ -2206,7 +2226,7 @@ Section: Real Arithmetic
    in let rr = a64-emit-expr (saved.state) divisor
    in let ll = a64-reload-if-needed (rr.state) (saved.reg)
    in let rd = a64-alloc-temp (ll.state)
-   in let st1 = a64-emit (rd.state) (arm64-sdiv (rd.reg) (ll.reg) (rr.reg))
+   in let st1 = a64-emit (a64-emit-div-guard (rd.state) (rr.reg)) (arm64-sdiv (rd.reg) (ll.reg) (rr.reg))
    in let st2 = a64-emit st1 (arm64-msub (rd.reg) (rd.reg) (rr.reg) (ll.reg))
    in a64-emit-mod-correction st2 (rd.reg) (rr.reg)
 

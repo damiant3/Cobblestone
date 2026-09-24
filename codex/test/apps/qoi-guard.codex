@@ -1,0 +1,53 @@
+Chapter: Qoi Guard
+  cites Foreword chapter Console
+  cites Game chapter Color
+  cites Foreword chapter MathLib (int-widen)
+  cites Encode chapter Qoi
+
+Section: Helpers
+
+  px-text : Rgb -> Text
+  px-text (p) = show (int-widen (p.cr)) & "," & show (int-widen (p.cg)) & "," & show (int-widen (p.cb))
+
+  px-list : List Rgb, Integer, Text -> Text
+  px-list (ps) (i) (acc) =
+    if i >= list-length ps then acc
+    else px-list ps (i + 1) (acc & " " & px-text (list-at ps i))
+
+  be32 : Integer -> List Integer
+  be32 (v) = [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  hdr : Integer, Integer, Integer -> List Integer
+  hdr (w) (h) (ch) = [113, 111, 105, 102] & be32 w & be32 h & [ch, 0]
+
+  end-mark : List Integer = [0, 0, 0, 0, 0, 0, 0, 1]
+
+  take : List Integer, Integer, Integer, List Integer -> List Integer
+  take (bs) (n) (i) (acc) =
+    if i >= n then acc else take bs n (i + 1) (list-push acc (list-at bs i))
+
+  arm : Text, List Integer -> Text
+  arm (name) (bs) =
+    let img = qoi-decode bs
+    in if img.qoi-ok then name & " " & show (img.qoi-width) & "x" & show (img.qoi-height) & px-list (img.qoi-pixels) 0 ""
+    else name & " refused"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (arm "round-trip" (qoi-encode 3 1 [rgb 255 0 0, rgb 255 0 0, rgb 0 0 255]))
+    print-line-uni (arm "rgb-op" (hdr 1 1 3 & [254, 10, 20, 30] & end-mark))
+    print-line-uni (arm "diff-wrap" (hdr 1 1 3 & [85] & end-mark))
+    print-line-uni (arm "luma-wrap" (hdr 1 1 3 & [159, 136] & end-mark))
+    print-line-uni (arm "index-op" (hdr 2 1 3 & [254, 10, 20, 30, 9] & end-mark))
+    print-line-uni (arm "run-op" (hdr 3 1 4 & [254, 1, 2, 3, 193] & end-mark))
+    print-line-uni (arm "runt" (take (hdr 1 1 3) 10 0 []))
+    print-line-uni (arm "bad-magic" ([0, 111, 105, 102] & be32 1 & be32 1 & [3, 0, 254, 1, 2, 3] & end-mark))
+    print-line-uni (arm "rgba-op" (hdr 1 1 4 & [255, 10, 20, 30, 40] & end-mark))
+    print-line-uni (arm "rgba-68" (hdr 68 1 4 & [255, 10, 20, 30, 40] & end-mark))
+    print-line-uni (arm "cut-rgb" (hdr 1 1 3 & [254, 10] & end-mark))
+    print-line-uni (arm "short-count" (hdr 2 1 3 & [254, 1, 2, 3] & end-mark))
+    print-line-uni (arm "long-count" (hdr 1 1 3 & [254, 1, 2, 3, 193] & end-mark))
+    print-line-uni (arm "no-end" (hdr 1 1 3 & [254, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0]))
+    print-line-uni (arm "channels-5" (hdr 1 1 5 & [254, 1, 2, 3] & end-mark))
+  end

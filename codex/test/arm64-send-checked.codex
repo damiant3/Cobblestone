@@ -1,0 +1,61 @@
+Chapter: Arm64SendChecked
+  cites Kernel chapter Arm64Pci
+  cites Kernel chapter VirtioPci
+  cites Kernel chapter VirtioNet
+  cites Net chapter Arm64NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+Section: A Card Nothing Reaches
+
+  dead-pci : Arm64PciDevice = Arm64PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0, pci-vendor = 0, pci-device-id = 0, pci-class = 0, pci-subclass = 0, pci-header-type = 0 }
+  dead-dev : VirtioDevice = VirtioDevice { pci-dev = dead-pci, common-base = 0, notify-base = 0, notify-off-multiplier = 0, isr-base = 0, device-cfg-base = 0 }
+  dead-q : VirtqueueState = VirtqueueState { desc-base = 0, avail-base = 0, used-base = 0, queue-size = 0, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = 0 }
+  dead-vnet : VirtioNetState = VirtioNetState { device = dead-dev, rx-queue = dead-q, tx-queue = dead-q, mac = [82, 84, 0, 18, 52, 86] }
+
+Section: Sessions
+
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  seg0 : RexmitSeg = RexmitSeg { rx-frame = [], rx-ack = 0, rx-sent = 0, rx-resent = False }
+
+  fill-queue : Integer, List RexmitSeg -> List RexmitSeg
+  fill-queue (n) (acc) = if n <= 0 then acc else fill-queue (n - 1) (list-push acc seg0)
+
+  base-sess : NetSession = net-session-new cli-mac cli-ip gw-ip 50000 80 srv-ip 1000
+
+  stalled : NetSession =
+    let closed = set-conn base-sess (tcp-set-state (base-sess.conn) TcpClosed)
+    in set-rexmit closed (fill-queue net-rexmit-capacity []) 3 0
+
+  closing : NetSession = set-conn base-sess (tcp-set-state (base-sess.conn) TcpFinWait1)
+
+  mk-bytes : Integer, List Integer -> List Integer
+  mk-bytes (n) (acc) = if n <= 0 then acc else mk-bytes (n - 1) (list-push acc 65)
+
+  on : NetSession -> Arm64NetIOState
+  on (s) = Arm64NetIOState { vnet = dead-vnet, transport = transport-new-with-cap s 4096 }
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let data = mk-bytes 3000 []
+    in let full = arm64-net-io-send-raw-checked (on stalled) data
+    in let cw = arm64-net-io-send-raw-checked (on closing) data
+    in let none = arm64-net-io-send-raw-checked (on closing) []
+    in act
+      print-line-uni ("full queue: complete " & yn (full.as-complete) & ", sent " & show (full.as-sent))
+      print-line-uni ("fin-wait refusal: complete " & yn (cw.as-complete) & ", sent " & show (cw.as-sent) & ", frames " & show (net-outbox-count (((cw.as-state).transport).session)))
+      print-line-uni ("empty payload: complete " & yn (none.as-complete) & ", sent " & show (none.as-sent))
+    end
+  end
+
+Page 1

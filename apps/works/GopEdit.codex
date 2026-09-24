@@ -6,6 +6,7 @@ Chapter: GopEdit
   cites Works chapter GopFacts
   cites Trust chapter TrustLattice
   cites Works chapter GopDraw
+  cites Works chapter GopFont
   cites Works chapter GopFat16
   cites Works chapter GopFiles
   cites Works chapter GopShot
@@ -799,16 +800,16 @@ Section: The Annotation Bubble
   ged-bub-clip (t) (cols) =
     if text-length t <= cols then t else substring t 0 cols
 
-  ged-bub-rows : Integer, Integer, Integer, CbfFont, Integer, Palette, Integer, Integer, List Annotation, Integer, Integer, Integer -> Integer
+  ged-bub-rows : Integer, Integer, Integer, GopAppFont, Integer, Palette, Integer, Integer, List Annotation, Integer, Integer, Integer -> Integer
   ged-bub-rows (base) (stride) (rows) (font) (s) (pal) (x) (y) (anns) (i) (n) (cols) =
     if i >= n then 0
     else let a = list-at anns i
     in let head = "[" & annotation-kind-name (a.kind) & "] " & a.author
-    in let h1 = gop-draw-text base stride rows font x (y + i * 2 * gfl-row-h s) (ged-bub-clip head cols) (ged-annot pal) s 0
-    in let h2 = gop-draw-text base stride rows font x (y + (i * 2 + 1) * gfl-row-h s) (ged-bub-clip (a.body) cols) (gfl-bright pal) s 0
+    in let h1 = gapp-ui-text base stride rows font x (y + i * 2 * gfl-row-h s) (ged-bub-clip head cols) (ged-annot pal) s 0
+    in let h2 = gapp-ui-text base stride rows font x (y + (i * 2 + 1) * gfl-row-h s) (ged-bub-clip (a.body) cols) (gfl-bright pal) s 0
     in ged-bub-rows base stride rows font s pal x y anns (i + 1) n cols
 
-  ged-bubble-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Integer -> [Identity, Device.Port] Integer
+  ged-bubble-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, Integer -> [Identity, Device.Port] Integer
   ged-bubble-paint (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (line) = act
     anns <- ged-annots-for-line es line
     let hd = cursor-hide cs base stride
@@ -818,9 +819,9 @@ Section: The Annotation Bubble
     in let pw = box.lr-w - 40 * s
     in let ph = (n * 2 + 3) * gfl-row-h s
     in let bg = gop-fill-rect base stride h px py pw ph (ged-row-band pal)
-    in let ttl = gop-draw-text base stride h font (px + 8 * s) (py + 4 * s) ("annotations on line " & show (line + 1) & "  (" & show n & ")") (ged-gutter-col pal) s 0
-    in let rows = ged-bub-rows base stride h font s pal (px + 8 * s) (py + 4 * s + gfl-row-h s) anns 0 n ((pw - 16 * s) / ged-col-w s)
-    in let foot = gop-draw-text base stride h font (px + 8 * s) (py + ph - gfl-row-h s) "Esc back" (gfl-hint pal) s 0
+    in let ttl = gapp-ui-text base stride h font (px + 8 * s) (py + 4 * s) ("annotations on line " & show (line + 1) & "  (" & show n & ")") (ged-gutter-col pal) s 0
+    in let rows = ged-bub-rows base stride h font s pal (px + 8 * s) (py + 4 * s + gfl-row-h s) anns 0 n ((pw - 16 * s) / gapp-col-w font s)
+    in let foot = gapp-ui-text base stride h font (px + 8 * s) (py + ph - gfl-row-h s) "Esc back" (gfl-hint pal) s 0
     in if mouse.um-ok then cursor-update cs base stride h w h s (mouse-x mouse) (mouse-y mouse) else 0
   end
 
@@ -1157,18 +1158,18 @@ Section: Geometry
  The panel, its rows and its close box are GopFiles' measures, so the two
  panes are the same window and a change to one moves both.
 
-  ged-col-w : Integer -> Integer
-  ged-col-w (s) = 8 * s
+  ged-col-w : GopAppFont, Integer -> Integer
+  ged-col-w (font) (s) = gapp-col-w font s
 
-  ged-gutter : Integer -> Integer
-  ged-gutter (s) = 6 * ged-col-w s
+  ged-gutter : GopAppFont, Integer -> Integer
+  ged-gutter (font) (s) = 6 * gapp-col-w font s
 
-  ged-text-x : LayoutRect, Integer -> Integer
-  ged-text-x (box) (s) = box.lr-x + 10 * s + ged-gutter s
+  ged-text-x : LayoutRect, GopAppFont, Integer -> Integer
+  ged-text-x (box) (font) (s) = box.lr-x + 10 * s + ged-gutter font s
 
-  ged-cols : LayoutRect, Integer -> Integer
-  ged-cols (box) (s) =
-    let c = (box.lr-w - 20 * s - ged-gutter s) / ged-col-w s
+  ged-cols : LayoutRect, GopAppFont, Integer -> Integer
+  ged-cols (box) (font) (s) =
+    let c = (box.lr-w - 20 * s - ged-gutter font s) / gapp-col-w font s
     in if c < 8 then 8 else c
 
  WORKS-17. The editor's own pens, as roles rather than numbers, on the same
@@ -1214,7 +1215,7 @@ Section: Geometry
 
 Section: Drawing One Line
 
-  ged-draw-runs : Integer, Integer, Integer, CbfFont, Integer, Integer, Integer, Text, List SynRun, Integer, Integer -> Integer
+  ged-draw-runs : Integer, Integer, Integer, GopAppFont, Integer, Integer, Integer, Text, List SynRun, Integer, Integer -> Integer
   ged-draw-runs (base) (stride) (rows) (font) (s) (x0) (y) (line) (runs) (i) (cols) =
     if i >= list-length runs then 0
     else let r = list-at runs i
@@ -1223,23 +1224,23 @@ Section: Drawing One Line
     else let room = cols - st
     in let take = if r.sr-len > room then room else r.sr-len
     in let t = substring line st take
-    in let d = gop-draw-text base stride rows font (x0 + st * ged-col-w s) y t (syn-colour (r.sr-class)) s 0
+    in let d = gapp-code-text base stride rows font (x0 + st * gapp-col-w font s) y t (syn-colour (r.sr-class)) s 0
     in ged-draw-runs base stride rows font s x0 y line runs (i + 1) cols
 
-  ged-draw-row : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Integer, Integer, Integer -> Integer
+  ged-draw-row : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, Integer, Integer, Integer, Integer -> Integer
   ged-draw-row (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (es) (idx) (row) (cur) =
     let y = gfl-rows-y0 box s + row * gfl-row-h s
     in let hl = if idx == cur then gop-fill-rect base stride rows (box.lr-x) y (box.lr-w) (gfl-row-h s) (ged-row-band pal) else 0
-    in let gt = gop-draw-text base stride rows font (box.lr-x + 10 * s) (y + s) (ged-num (idx + 1) 5) (ged-gutter-col pal) s 0
-    in let an = if ged-mark-get es idx == 1 then gop-draw-text base stride rows font (box.lr-x + 10 * s + 5 * ged-col-w s) (y + s) "*" (ged-annot pal) s 0 else 0
-    in let cols = ged-cols box s
+    in let gt = gapp-code-text base stride rows font (box.lr-x + 10 * s) (y + s) (ged-num (idx + 1) 5) (ged-gutter-col pal) s 0
+    in let an = if ged-mark-get es idx == 1 then gapp-code-text base stride rows font (box.lr-x + 10 * s + 5 * gapp-col-w font s) (y + s) "*" (ged-annot pal) s 0 else 0
+    in let cols = ged-cols box font s
     in let line = ged-line-text es idx cols
-    in let runs = ged-draw-runs base stride rows font s (ged-text-x box s) (y + s) line (syn-line line) 0 cols
+    in let runs = ged-draw-runs base stride rows font s (ged-text-x box font s) (y + s) line (syn-line line) 0 cols
     in if ged-line-len es idx > cols
-      then gop-draw-text base stride rows font (ged-text-x box s + cols * ged-col-w s) (y + s) ">" (ged-more pal) s 0
+      then gapp-code-text base stride rows font (ged-text-x box font s + cols * gapp-col-w font s) (y + s) ">" (ged-more pal) s 0
       else 0
 
-  ged-draw-rows : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Integer, Integer, Integer -> Integer
+  ged-draw-rows : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, Integer, Integer, Integer, Integer -> Integer
   ged-draw-rows (base) (box) (w) (h) (stride) (s) (font) (pal) (es) (top) (cur) (row) =
     if row >= gfl-rows-vis box s then 0
     else if top + row >= ged-count es then 0
@@ -1248,14 +1249,14 @@ Section: Drawing One Line
 
 Section: Drawing The Pane
 
-  ged-caret : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Palette, Integer, Integer, Integer -> Integer
-  ged-caret (base) (box) (w) (h) (stride) (rows) (s) (pal) (top) (cur) (col) =
+  ged-caret : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, Integer, Integer, Integer -> Integer
+  ged-caret (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (top) (cur) (col) =
     let row = cur - top
-    in let cols = ged-cols box s
+    in let cols = ged-cols box font s
     in if row < 0 then 0
     else if row >= gfl-rows-vis box s then 0
     else if col > cols then 0
-    else gop-fill-rect base stride rows (ged-text-x box s + col * ged-col-w s) (gfl-rows-y0 box s + row * gfl-row-h s) s (gfl-row-h s) (ged-cursor pal)
+    else gop-fill-rect base stride rows (ged-text-x box font s + col * gapp-col-w font s) (gfl-rows-y0 box s + row * gfl-row-h s) s (gfl-row-h s) (ged-cursor pal)
 
   ged-status : Integer, Integer, Integer -> Text
   ged-status (es) (cur) (col) =
@@ -1264,17 +1265,17 @@ Section: Drawing The Pane
     in let tail = if said == "" then "" else "   " & said
     in "L" & show (cur + 1) & ":" & show (col + 1) & flag & "  " & show (ged-count es) & " lines  " & show (ged-size es) & " bytes" & tail
 
-  ged-draw : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, Integer, Text, Integer, Integer, Integer -> Integer
+  ged-draw : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, Integer, Text, Integer, Integer, Integer -> Integer
   ged-draw (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (es) (name) (top) (cur) (col) =
     let f = gfl-draw-frame base box stride rows s font pal (name)
     in let px = box.lr-x
     in let py = box.lr-y
-    in let hdr = gop-draw-text base stride rows font (px + 10 * s) (py + 26 * s) (ged-status es cur col) (gfl-bright pal) s 0
-    in let rows = ged-draw-rows base box w h stride s font pal es top cur 0
-    in let car = ged-caret base box w h stride rows s pal top cur col
-    in gop-draw-text base stride rows font (px + 10 * s) (py + box.lr-h - 18 * s) "Type to edit  Bksp/Del  F2 save  F3 .BAK  F4 undo  F6 notes  Esc back" (gfl-hint pal) s 0
+    in let hdr = gapp-ui-text base stride rows font (px + 10 * s) (py + 26 * s) (ged-status es cur col) (gfl-bright pal) s 0
+    in let drawn = ged-draw-rows base box w h stride s font pal es top cur 0
+    in let car = ged-caret base box w h stride rows s font pal top cur col
+    in gapp-ui-text base stride rows font (px + 10 * s) (py + box.lr-h - 18 * s) "Type to edit  Bksp/Del  F2 save  F3 .BAK  F4 undo  F6 notes  Esc back" (gfl-hint pal) s 0
 
-  ged-repaint : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  ged-repaint : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, Text, Integer, Integer, Integer -> Integer
   ged-repaint (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (name) (top) (cur) (col) =
     let hd = cursor-hide cs base stride
     in let d = ged-draw base box w h stride h s font pal es name top cur col
@@ -1316,14 +1317,14 @@ Section: Moving
 
 Section: The Shot
 
-  ged-shot : Integer, Integer, Integer, Integer, CbfFont -> [Device.Port] Integer
+  ged-shot : Integer, Integer, Integer, Integer, GopAppFont -> [Device.Port] Integer
   ged-shot (base) (w) (h) (stride) (font) = act
     let mark = __heap-save
     in act
       t <- shot-take base w h stride
       let s = ui-scale w
       in let bg = gop-fill-rect base stride h (200 * s) (h - 28 * s + 4 * s) (300 * s) (16 * s) #000E1C
-      in let tx = gop-draw-text base stride h font (204 * s) (h - 28 * s + 6 * s) t #69BE28 s 0
+      in let tx = gapp-ui-text base stride h font (204 * s) (h - 28 * s + 6 * s) t #69BE28 s 0
       in let d = __heap-restore mark
       in 0
     end
@@ -1347,28 +1348,33 @@ Section: Opening A File
 
 Section: The File List
 
-  ged-list-draw : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, List Fat16DirEntry, Integer, Integer, Integer -> Integer
-  ged-list-draw (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (entries) (sel) (top) (i) =
-    let n = list-length entries
-    in if top + i >= n then 0
+  ged-list-draw : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, List Fat16DirEntry, Integer, Integer, Integer -> Integer
+  ged-list-draw (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (win) (sel) (top) (i) =
+    if i >= list-length win then 0
     else if i >= gfl-rows-vis box s then 0
     else let idx = top + i
     in let y = gfl-rows-y0 box s + i * gfl-row-h s
     in let hl = if idx == sel then gop-fill-rect base stride rows (box.lr-x) y (box.lr-w) (gfl-row-h s) (gfl-sel pal) else 0
-    in let e = list-at entries idx
+    in let e = list-at win i
     in let fg = if idx == sel then gfl-on-sel pal else gfl-text pal
-    in let t = gop-draw-text base stride rows font (box.lr-x + 10 * s) (y + s) (gfl-row-text e) fg s 0
-    in ged-list-draw base box w h stride rows s font pal entries sel top (i + 1)
+    in let t = gfl-draw-columns base box stride rows s font (box.lr-x + 10 * s) (y + s) (e.de-name) (gfl-size-text e) fg
+    in ged-list-draw base box w h stride rows s font pal win sel top (i + 1)
 
-  ged-list-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
-  ged-list-paint (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (mouse) (cs) (entries) (sel) (top) (names) =
+  ged-list-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, List Fat16DirEntry, Integer, Integer, List Text -> Integer
+  ged-list-paint (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (mouse) (cs) (win) (sel) (top) (names) =
     let hd = cursor-hide cs base stride
     in let crumb = ged-prefix names 0 ""
     in let f = gfl-draw-frame base box stride rows s font pal (if text-length crumb == 0 then "choose a file" else crumb)
-    in let hdr = gop-draw-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + 26 * s) (gfl-pad "name" 16 & "size") (gfl-dim pal) s 0
-    in let rows = ged-list-draw base box w h stride rows s font pal entries sel top 0
-    in let hint = gop-draw-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Up/Down move   Enter open   F5 new file   Esc back" (gfl-hint pal) s 0
+    in let hdr = gfl-draw-columns base box stride rows s font (box.lr-x + 10 * s) (box.lr-y + 26 * s) "Name" "Size" (gfl-dim pal)
+    in let drawn = ged-list-draw base box w h stride rows s font pal win sel top 0
+    in let hint = gapp-ui-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Up/Down move   Enter open   F5 new file   Esc back" (gfl-hint pal) s 0
     in if mouse.um-ok then cursor-update cs base stride rows w h s (mouse-x mouse) (mouse-y mouse) else 0
+
+  ged-list-paint-cur : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Fat16Volume, List Integer, Integer, Integer, List Text -> [Device.Port] Integer
+  ged-list-paint-cur (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (mouse) (cs) (vol) (clusters) (sel) (top) (names) = act
+    win <- gfl-window-cur vol clusters top (gfl-rows-vis box s)
+    ged-list-paint base box w h stride rows s font pal mouse cs win sel top names
+  end
 
  Descending is GopFiles' two moves: push the cluster and the name, re-list,
  and pop on the way back. The names stack is what builds the path handed to
@@ -1419,7 +1425,7 @@ Section: Step
 
   EditState = record {
     ed-vol : Fat16Volume,
-    ed-entries : List Fat16DirEntry,
+    ed-count : Integer,
     ed-clusters : List Integer,
     ed-names : List Text,
     ed-path : Text,
@@ -1458,39 +1464,54 @@ Section: Step
   ged-moved : EditState, UsbMouse -> Boolean
   ged-moved (st) (mouse) = st.ed-ptr /= (mouse-x mouse) * 4096 + (mouse-y mouse)
 
-  ged-new : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer -> [Device.Port] EditState
-  ged-new (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) = act
-    m <- gfat-mount-esp
-    hd <- cursor-hide cs base stride
+ THE OPEN'S DURABLE PART, which is what a D.5 hole for this pane holds: the
+ mount, the blocks `ged-ensure` allocates and the state around a count.
+ `desk-edit-open` runs the GPT lookup at the frontier before it and paints
+ after leaving the hole.
+
+  ged-init-bytes : Integer =
+    ged-cap + ged-max-lines * 4 + ged-undo-cap * ged-undo-rec + ged-marks-bytes + (ged-chap-max + 1) * 4 + 5 * 64
+
+  ged-mount : Integer -> [Device.Port] GfatMount
+  ged-mount (start) =
+    if start == 0 then GfatMount { gm-ok = False, gm-vol = gfat-null-vol }
+    else gfat-mount-at start
+
+  ged-build : Integer, Integer -> [Device.Port] EditState
+  ged-build (start) (es) = act
+    m <- ged-mount start
     let a = ged-ensure es
-    in if m.gm-ok == False then act
+    in if m.gm-ok == False then EditState { ed-vol = m.gm-vol, ed-count = 0, ed-clusters = [0 - 1], ed-names = [], ed-path = "", ed-sel = 0, ed-top = 0, ed-mode = ged-mode-nofat, ed-etop = 0, ed-cur = 0, ed-col = 0, ed-mods = 0, ed-ptr = 0 }
+    else let vol = m.gm-vol
+    in let flag = if gfat-is32 vol then vol.vol-root-start else 0 - 1
+    in let clusters = [flag]
+    in act
+      n <- gfl-count-cur vol clusters
+      EditState { ed-vol = vol, ed-count = n, ed-clusters = clusters, ed-names = [], ed-path = "", ed-sel = 0, ed-top = 0, ed-mode = ged-mode-list, ed-etop = 0, ed-cur = 0, ed-col = 0, ed-mods = 0, ed-ptr = 0 }
+    end
+  end
+
+  ged-first-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, EditState -> [Device.Port] Integer
+  ged-first-paint (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) = act
+    hd <- cursor-hide cs base stride
+    if st.ed-mode == ged-mode-nofat then act
       f <- gfl-draw-frame base box stride h s font pal ""
-      t <- gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + 26 * s) "no FAT ESP on the boot medium" (gfl-dim pal) s 0
-      t2 <- gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint pal) s 0
-      cu <- if mouse.um-ok then cursor-update cs base stride h w h s (mouse-x mouse) (mouse-y mouse) else 0
-      EditState { ed-vol = m.gm-vol, ed-entries = [], ed-clusters = [0 - 1], ed-names = [], ed-path = "", ed-sel = 0, ed-top = 0, ed-mode = ged-mode-nofat, ed-etop = 0, ed-cur = 0, ed-col = 0, ed-mods = 0, ed-ptr = 0 }
+      t <- gapp-ui-text base stride h font (box.lr-x + 10 * s) (box.lr-y + 26 * s) "no FAT ESP on the boot medium" (gfl-dim pal) s 0
+      t2 <- gapp-ui-text base stride h font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint pal) s 0
+      if mouse.um-ok then cursor-update cs base stride h w h s (mouse-x mouse) (mouse-y mouse) else 0
     end
-    else act
-      let vol = m.gm-vol
-      in let flag = if gfat-is32 vol then vol.vol-root-start else 0 - 1
-      in let clusters = [flag]
-      in act
-        ents <- gfl-list-cur vol clusters
-        let p = ged-list-paint base box w h stride h s font pal mouse cs ents 0 0 []
-        in EditState { ed-vol = vol, ed-entries = ents, ed-clusters = clusters, ed-names = [], ed-path = "", ed-sel = 0, ed-top = 0, ed-mode = ged-mode-list, ed-etop = 0, ed-cur = 0, ed-col = 0, ed-mods = 0, ed-ptr = 0 }
-      end
-    end
+    else ged-list-paint-cur base box w h stride h s font pal mouse cs (st.ed-vol) (st.ed-clusters) 0 0 []
   end
 
   ged-step-hide : Integer = 2
 
-  ged-reenter : Integer, LayoutRect, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState -> Integer
+  ged-reenter : Integer, LayoutRect, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, EditState -> [Device.Port] Integer
   ged-reenter (base) (box) (w) (h) (stride) (font) (pal) (mouse) (cs) (es) (st) =
     let s = ui-scale w
     in if st.ed-mode == ged-mode-edit then ged-repaint base box w h stride s font pal mouse cs es (st.ed-path) (st.ed-etop) (st.ed-cur) (st.ed-col)
-    else ged-list-paint base box w h stride h s font pal mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
+    else ged-list-paint-cur base box w h stride h s font pal mouse cs (st.ed-vol) (st.ed-clusters) (st.ed-sel) (st.ed-top) (st.ed-names)
 
-  ged-step : Integer, LayoutRect, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
+  ged-step : Integer, LayoutRect, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
   ged-step (base) (box) (w) (h) (stride) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =
     let s = ui-scale w
     in if sc == 88 then act
@@ -1514,28 +1535,27 @@ Section: Step
       else 1)
     else ged-list-step base box w h stride s font pal mouse cs es st sc clicked
 
- Leaving the editor RE-READS the directory. The cached listing is what the
- pane was opened with, so a file just created is absent from it and a file
- just saved still shows its old size. That makes this the one place a new
- list is stored into the record, so it answers NEGATIVE.
+ Leaving the editor RE-COUNTS the directory, because a file just created
+ changes the count and a file just saved changes the size a row reads.
 
-  ged-to-list : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, EditState -> [Device.Port] Integer
+  ged-to-list : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, EditState -> [Device.Port] Integer
   ged-to-list (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) = act
-    ents <- gfl-list-cur (st.ed-vol) (st.ed-clusters)
-    let n = list-length ents
-    in let sel = if st.ed-sel >= n then (if n <= 0 then 0 else n - 1) else st.ed-sel
+    n <- gfl-count-cur (st.ed-vol) (st.ed-clusters)
+    let sel = if st.ed-sel >= n then (if n <= 0 then 0 else n - 1) else st.ed-sel
     in let top = gfl-clamp-top sel (st.ed-top) (gfl-rows-vis box s)
     in let a = __record-set st "ed-mode" ged-mode-list
-    in let b = __record-set st "ed-entries" ents
+    in let b = __record-set st "ed-count" n
     in let c = __record-set st "ed-sel" sel
     in let d = __record-set st "ed-top" top
-    in let p = ged-list-paint base box w h stride h s font pal mouse cs ents sel top (st.ed-names)
-    in 0 - 1
+    in act
+      p <- (ged-list-paint-cur base box w h stride h s font pal mouse cs (st.ed-vol) (st.ed-clusters) sel top (st.ed-names))
+      1
+    end
   end
 
-  ged-list-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
+  ged-list-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
   ged-list-step (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =
-    let n = list-length (st.ed-entries)
+    let n = st.ed-count
     in let mv = ged-moved st mouse
     in let hover = if mv | clicked then gfl-row-at box s (st.ed-top) n (mouse-x mouse) (mouse-y mouse) else 0 - 1
     in let pk = __record-set st "ed-ptr" ((mouse-x mouse) * 4096 + (mouse-y mouse))
@@ -1556,53 +1576,62 @@ Section: Step
     else if moved then
       let a = __record-set st "ed-sel" sel2
       in let b = __record-set st "ed-top" top2
-      in let p = ged-list-paint base box w h stride h s font pal mouse cs (st.ed-entries) sel2 top2 (st.ed-names)
-      in 1
+      in act
+        p <- (ged-list-paint-cur base box w h stride h s font pal mouse cs (st.ed-vol) (st.ed-clusters) sel2 top2 (st.ed-names))
+        1
+      end
     else 1
 
  Changing directory and opening a file both answer a NEGATIVE number, which
- tells `desk-loop` to keep the frame. A new listing is three fresh lists and an
- open file is a fresh path Text, all allocated inside the iteration, and the
+ tells `desk-loop` to keep the frame. A directory change is two fresh lists and
+ an open file is a fresh path Text, all allocated inside the iteration, and the
  restore at the end of it would free exactly what the record now points at.
- Everything else here stores integers, so it answers 1 and the bracket closes
- as usual.
+ The paint after a directory change is bracketed, so the kept frame holds the
+ lists and not a screenful of rows. Everything else here stores integers, so it
+ answers 1 and the bracket closes as usual.
 
-  ged-up : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, EditState -> [Device.Port] Integer
+  ged-up : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, EditState -> [Device.Port] Integer
   ged-up (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) = act
     let c2 = gfl-pop-int (st.ed-clusters)
     in let n2 = gfl-pop-text (st.ed-names)
     in act
-      ents <- gfl-list-cur (st.ed-vol) c2
-      ged-land base box w h stride s font pal mouse cs st ents c2 n2
+      n <- gfl-count-cur (st.ed-vol) c2
+      ged-land base box w h stride s font pal mouse cs st n c2 n2
     end
   end
 
-  ged-land : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, EditState, List Fat16DirEntry, List Integer, List Text -> Integer
-  ged-land (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) (ents) (c2) (n2) =
+  ged-land : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, EditState, Integer, List Integer, List Text -> [Device.Port] Integer
+  ged-land (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) (n) (c2) (n2) =
     let a = __record-set st "ed-clusters" c2
     in let b = __record-set st "ed-names" n2
-    in let c = __record-set st "ed-entries" ents
+    in let c = __record-set st "ed-count" n
     in let d = __record-set st "ed-sel" 0
     in let f = __record-set st "ed-top" 0
-    in let p = ged-list-paint base box w h stride h s font pal mouse cs ents 0 0 n2
-    in 0 - 1
+    in let mk = __heap-save
+    in act
+      p <- ged-list-paint-cur base box w h stride h s font pal mouse cs (st.ed-vol) c2 0 0 n2
+      let r = __heap-restore mk
+      in 0 - 1
+    end
 
-  ged-pick : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Integer -> [Identity, Device.Port] Integer
+  ged-pick : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Integer -> [Identity, Device.Port] Integer
   ged-pick (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sel) (top) = act
-    let e = list-at (st.ed-entries) sel
+    win <- gfl-window-cur (st.ed-vol) (st.ed-clusters) sel 1
+    if list-length win == 0 then 1
+    else let e = list-at win 0
     in if gfl-is-dir e then act
       let c2 = list-push (st.ed-clusters) (e.de-cluster)
       in let n2 = list-push (st.ed-names) (e.de-name)
       in act
-        ents <- gfl-list-cur (st.ed-vol) c2
-        ged-land base box w h stride s font pal mouse cs st ents c2 n2
+        n <- gfl-count-cur (st.ed-vol) c2
+        ged-land base box w h stride s font pal mouse cs st n c2 n2
       end
     end
     else if e.de-size > ged-cap then act
       hd <- cursor-hide cs base stride
       let f = gfl-draw-frame base box stride h s font pal (e.de-name)
-      in let m = gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + 26 * s) (show (e.de-size) & " bytes is past the " & show ged-cap & " byte buffer") (ged-more pal) s 0
-      in let t = gop-draw-text base stride h font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint pal) s 0
+      in let m = gapp-ui-text base stride h font (box.lr-x + 10 * s) (box.lr-y + 26 * s) (show (e.de-size) & " bytes is past the " & show ged-cap & " byte buffer") (ged-more pal) s 0
+      in let t = gapp-ui-text base stride h font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Esc back" (gfl-hint pal) s 0
       in let cu = if mouse.um-ok then cursor-update cs base stride h w h s (mouse-x mouse) (mouse-y mouse) else 0
       in let a = __record-set st "ed-sel" sel
       in let b = __record-set st "ed-top" top
@@ -1627,7 +1656,7 @@ Section: Step
     end
   end
 
-  ged-note-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, Integer -> Integer
+  ged-note-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, Integer -> Integer
   ged-note-paint (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (mouse) (cs) (es) (line) =
     let hd = cursor-hide cs base stride
     in let px = box.lr-x + 20 * s
@@ -1635,12 +1664,12 @@ Section: Step
     in let pw = box.lr-w - 40 * s
     in let ph = 5 * gfl-row-h s
     in let bg = gop-fill-rect base stride rows px py pw ph (ged-row-band pal)
-    in let ttl = gop-draw-text base stride rows font (px + 8 * s) (py + 4 * s) ("annotate " & ged-chap-name-of es line & "::" & ged-def-name-of es line) (ged-gutter-col pal) s 0
-    in let bd = gop-draw-text base stride rows font (px + 8 * s) (py + 4 * s + gfl-row-h s) (ged-draft-of es & "_") (gfl-bright pal) s 0
-    in let foot = gop-draw-text base stride rows font (px + 8 * s) (py + ph - gfl-row-h s) "Type a note  Enter save  Bksp erase  Esc back" (gfl-hint pal) s 0
+    in let ttl = gapp-ui-text base stride rows font (px + 8 * s) (py + 4 * s) ("annotate " & ged-chap-name-of es line & "::" & ged-def-name-of es line) (ged-gutter-col pal) s 0
+    in let bd = gapp-ui-text base stride rows font (px + 8 * s) (py + 4 * s + gfl-row-h s) (ged-draft-of es & "_") (gfl-bright pal) s 0
+    in let foot = gapp-ui-text base stride rows font (px + 8 * s) (py + ph - gfl-row-h s) "Type a note  Enter save  Bksp erase  Esc back" (gfl-hint pal) s 0
     in if mouse.um-ok then cursor-update cs base stride rows w h s (mouse-x mouse) (mouse-y mouse) else 0
 
-  ged-note-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
+  ged-note-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
   ged-note-step (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) = act
     let md = ged-shift-of (st.ed-mods) sc
     in let mk = __record-set st "ed-mods" md
@@ -1684,27 +1713,29 @@ Section: Step
     in rtc-decode hh bin * 3600 + rtc-decode mm bin * 60 + rtc-decode ss bin
   end
 
-  ged-name-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer -> Integer
+  ged-name-paint : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer -> Integer
   ged-name-paint (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (mouse) (cs) (es) =
     let hd = cursor-hide cs base stride
     in let f = gfl-draw-frame base box stride rows s font pal "new file"
-    in let p = gop-draw-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + 26 * s) "Name:" (gfl-dim pal) s 0
-    in let t = gop-draw-text base stride rows font (box.lr-x + 70 * s) (box.lr-y + 26 * s) (ged-name-of es & "_") (gfl-bright pal) s 0
-    in let k = gop-draw-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Type a name  Enter create  Bksp erase  Esc back" (gfl-hint pal) s 0
+    in let p = gapp-ui-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + 26 * s) "Name:" (gfl-dim pal) s 0
+    in let t = gapp-ui-text base stride rows font (box.lr-x + 70 * s) (box.lr-y + 26 * s) (ged-name-of es & "_") (gfl-bright pal) s 0
+    in let k = gapp-ui-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Type a name  Enter create  Bksp erase  Esc back" (gfl-hint pal) s 0
     in if mouse.um-ok then cursor-update cs base stride rows w h s (mouse-x mouse) (mouse-y mouse) else 0
 
  Enter builds the only Text this mode allocates, and it goes into the record,
  so this arm answers NEGATIVE and every other arm answers 1.
 
-  ged-name-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Device.Port] Integer
+  ged-name-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Device.Port] Integer
   ged-name-step (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =
     let md = ged-shift-of (st.ed-mods) sc
     in let mk = __record-set st "ed-mods" md
     in let ch = apply-mods (scancode-to-keycode sc) md
     in if sc == 1 then
       let a = __record-set st "ed-mode" ged-mode-list
-      in let p = ged-list-paint base box w h stride h s font pal mouse cs (st.ed-entries) (st.ed-sel) (st.ed-top) (st.ed-names)
-      in 1
+      in act
+        p <- (ged-list-paint-cur base box w h stride h s font pal mouse cs (st.ed-vol) (st.ed-clusters) (st.ed-sel) (st.ed-top) (st.ed-names))
+        1
+      end
     else if sc == 14 then
       let e = ged-name-pop es
       in let p = ged-name-paint base box w h stride h s font pal mouse cs es
@@ -1737,7 +1768,7 @@ Section: Step
     in let c = __record-set st "ed-col" col
     in 1
 
-  ged-edit-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, CbfFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
+  ged-edit-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Identity, Device.Port] Integer
   ged-edit-step (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =
     let n = ged-count es
     in let vis = gfl-rows-vis box s

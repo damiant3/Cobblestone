@@ -1,0 +1,53 @@
+Chapter: FlexMax
+  cites UI chapter Layout
+  cites UI chapter Widget
+  cites UI chapter Event
+  cites Foreword chapter Console
+
+ Every row prints the sizes it got, so a cap that bound in the wrong place
+ reads differently from one that never bound. The uncapped row is the control
+ for the capped one: the same two children at 50 and 50 are what an allocator
+ ignoring the cap produces. The cap under a minimum and the cap over the share
+ are the two cases where a maximum must NOT change the answer the minimum or
+ the share already gives, and the widget row is the only path through
+ `widget-layout`'s item mapping.
+
+  ws : LayoutResult, Integer -> Integer
+  ws (r) (i) = (list-at r.lrs i).lr-w
+
+  hs : LayoutResult, Integer -> Integer
+  hs (r) (i) = (list-at r.lrs i).lr-h
+
+  report : Text, Text, Boolean -> [Console] Nothing
+  report (name) (got) (ok) = print-line-uni (name & " " & got & ": " & if ok then "PASS" else "FAIL")
+
+  pair : Integer, Integer -> Text
+  pair (a) (b) = integer-to-text a & "/" & integer-to-text b
+
+  capped-stack : Text, Integer -> WidgetNode
+  capped-stack (id) (cap) = widget-set-max (widget-stack id DirRow 0 []) cap 0
+
+  opening : [Console] Nothing = act
+    let box = layout-rect 0 0 100 20
+    in let capped = flex-layout box DirRow 0 [layout-item-mx 0 0 1 edges-zero 20 0, layout-item 0 0 1] 2
+    in let plain = flex-layout box DirRow 0 [layout-item 0 0 1, layout-item 0 0 1] 2
+    in let under = flex-layout box DirRow 0 [layout-item-mx 30 0 1 edges-zero 10 0, layout-item 0 0 1] 2
+    in let over = flex-layout box DirRow 0 [layout-item-mx 0 0 1 edges-zero 60 0, layout-item 0 0 1] 2
+    in let caps2 = flex-layout box DirRow 0 [layout-item-mx 0 0 1 edges-zero 10 0, layout-item-mx 0 0 1 edges-zero 20 0, layout-item 0 0 1] 3
+    in let crossr = flex-layout box DirRow 0 [layout-item-mx 0 0 1 edges-zero 0 8, layout-item 0 0 1] 2
+    in let col = flex-layout (layout-rect 0 0 40 101) DirColumn 0 [layout-item-mx 0 0 1 edges-zero 0 25, layout-item 0 0 1] 2
+    in let tree = widget-stack "row" DirRow 0 [capped-stack "a" 30, widget-stack "b" DirRow 0 []]
+    in let laid = widget-layout tree theme-terminal (layout-rect 0 0 200 60)
+    in let wa = (list-at laid.wn-children 0).wn-bounds
+    in let wb = (list-at laid.wn-children 1).wn-bounds
+    in act
+      report "a capped child stops at its cap" (pair (ws capped 0) (ws capped 1)) (ws capped 0 == 20 & ws capped 1 == 80)
+      report "control, uncapped" (pair (ws plain 0) (ws plain 1)) (ws plain 0 == 50 & ws plain 1 == 50)
+      report "a cap under the minimum yields to it" (pair (ws under 0) (ws under 1)) (ws under 0 == 30 & ws under 1 == 70)
+      report "a cap over the share does not bind" (pair (ws over 0) (ws over 1)) (ws over 0 == 50 & ws over 1 == 50)
+      report "two caps free their excess" (pair (ws caps2 0) (ws caps2 1) & "/" & integer-to-text (ws caps2 2)) (ws caps2 0 == 10 & ws caps2 1 == 20 & ws caps2 2 == 70 & caps2.lr-used-w == 100)
+      report "cross-axis stretch stops at the cap" (pair (hs crossr 0) (hs crossr 1)) (hs crossr 0 == 8 & hs crossr 1 == 20)
+      report "a column caps its height" (pair (hs col 0) (hs col 1)) (hs col 0 == 25 & hs col 1 == 76)
+      report "widget-layout carries the cap" (pair (wa.lr-w) (wb.lr-w)) (wa.lr-w == 30 & wb.lr-w == 170)
+    end
+  end

@@ -54,38 +54,48 @@ Section: Decoding
   BmpImage = record {
     bmp-width : Integer,
     bmp-height : Integer,
-    bmp-pixels : List Rgb
+    bmp-pixels : List Rgb,
+    bmp-ok : Boolean
   }
+
+  bmp-fail : BmpImage = BmpImage { bmp-width = 0, bmp-height = 0, bmp-pixels = [], bmp-ok = False }
+
+ BITMAPINFOHEADER: magic "BM" at 0, pixel-data offset at 10, width at 18,
+ height at 22 (signed: negative means the rows run top-down), bits per pixel
+ at 28, compression at 30 (0 is uncompressed). Pixels come back top row
+ first. The pixel bytes are checked against the data by division, because
+ stride times a hostile height can overflow.
 
   bmp-decode : List Integer -> BmpImage
   bmp-decode (bytes) =
-    let width = bmp-read-le32 bytes 18
-    in let height = bmp-read-le32 bytes 22
-    in let bpp = bmp-read-le16 bytes 28
-    in let offset = bmp-read-le32 bytes 10
-    in if bpp /= 24 then BmpImage { bmp-width = 0, bmp-height = 0, bmp-pixels = [] }
+    let n = list-length bytes
+    in if n < 54 then bmp-fail
+    else if list-at bytes 0 /= 66 | list-at bytes 1 /= 77 then bmp-fail
+    else let offset = bmp-read-le32 bytes 10
+    in let width = bmp-read-le32 bytes 18
+    in let raw-height = bmp-read-le32 bytes 22
+    in let top-down = raw-height >= 2147483648
+    in let height = if top-down then 4294967296 - raw-height else raw-height
+    in if bmp-read-le16 bytes 28 /= 24 then bmp-fail
+    else if bmp-read-le32 bytes 30 /= 0 then bmp-fail
+    else if width < 1 | height < 1 then bmp-fail
+    else if offset < 54 | offset > n then bmp-fail
     else let row-bytes = width * 3
-    in let padding = (4 - row-bytes + row-bytes / 4 * 4) - (4 - row-bytes + row-bytes / 4 * 4) / 4 * 4
-    in let padded-row = row-bytes + padding
-    in let pixels = bmp-decode-rows bytes offset width height padded-row (height - 1) []
-    in BmpImage { bmp-width = width, bmp-height = height, bmp-pixels = pixels }
+    in let padded-row = row-bytes + bit-and (4 - bit-and row-bytes 3) 3
+    in if height > (n - offset) / padded-row then bmp-fail
+    else BmpImage { bmp-width = width, bmp-height = height, bmp-pixels = bmp-decode-rows bytes offset width height padded-row top-down 0 [], bmp-ok = True }
 
-  bmp-decode-rows : List Integer, Integer, Integer, Integer, Integer, Integer, List Rgb -> List Rgb
-  bmp-decode-rows (bytes) (offset) (width) (height) (stride) (y) (acc) =
-    if y < 0 then acc
-    else let row-off = offset + (height - 1 - y) * stride
-    in let row = bmp-decode-row bytes row-off width 0 []
-    in bmp-decode-rows bytes offset width height stride (y - 1) (acc & row)
+  bmp-decode-rows : List Integer, Integer, Integer, Integer, Integer, Boolean, Integer, List Rgb -> List Rgb
+  bmp-decode-rows (bytes) (offset) (width) (height) (stride) (top-down) (y) (acc) =
+    if y >= height then acc
+    else let file-row = if top-down then y else height - 1 - y
+    in bmp-decode-rows bytes offset width height stride top-down (y + 1) (bmp-decode-row bytes (offset + file-row * stride) width 0 acc)
 
   bmp-decode-row : List Integer, Integer, Integer, Integer, List Rgb -> List Rgb
   bmp-decode-row (bytes) (off) (width) (x) (acc) =
     if x >= width then acc
     else let i = off + x * 3
-    in let b = list-at bytes i
-    in let g = list-at bytes (i + 1)
-    in let r = list-at bytes (i + 2)
-    in bmp-decode-row bytes off width (x + 1) (list-push acc (rgb r g b))
-
+    in bmp-decode-row bytes off width (x + 1) (list-push acc (rgb (list-at bytes (i + 2)) (list-at bytes (i + 1)) (list-at bytes i)))
 Section: Helpers
   bmp-le16 : Integer -> List Integer
   bmp-le16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]

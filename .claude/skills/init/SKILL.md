@@ -9,17 +9,6 @@ shell: powershell
 You are initializing a new session. Follow every step below in order.
 Do not skip steps. Complete all steps before reporting status.
 
-## Why this file reads the way it does (2026-07-28, Damian's direction)
-
-Init keeps in DIRECT context only what changes behavior at session start
-(memory, the lesson index, three agent summaries, Perforce state);
-everything else is on-demand reading with an explicit trigger table. The
-stories doctrine -- lessons live in the middle of post-mortems, and
-summaries rot -- is preserved by a harder rule, not a longer read:
-**when a lesson id becomes load-bearing for your work, you read its
-story THEN, in full.** An unread story that never becomes load-bearing
-costs nothing.
-
 ## Step 1 -- Identify yourself
 
 Run `Get-Location`. Your agent name is everything to the RIGHT of the
@@ -34,7 +23,7 @@ Read your memory index (`MEMORY.md` at the path in your system context)
 and every memory file it lists. These carry handoff notes and project
 state from prior sessions.
 
-## Step 3 -- Launch THREE parallel agents (model: haiku)
+## Step 3 -- Launch three parallel agents (model: haiku)
 
 All three run concurrently. Their reports come back small; the files
 they read never enter your context.
@@ -49,10 +38,9 @@ A `*-merge-down-directive-*.json` in the inbox (Step 8) is the same order.
 **Read only YOUR row of the lane table, never the whole table.** The six
 rows measured 14,453 tokens on 2026-09-07 and five of them are not yours.
 
-**A compressed read of `CurrentPlan.md` flattens campaigns** (it merged
-two campaigns' stage lists into one and produced a wrong assignment
-within hours, red 2026-08-21). So: **a stage number carried out of this
-summary is not addressed until it names its CAMPAIGN.** Require Agent A
+**A compressed read of `CurrentPlan.md` flattens campaigns**, so **a
+stage number carried out of this summary is not addressed until it names
+its campaign.** Require Agent A
 to prefix every staged item with the campaign, and re-read the row in
 `CurrentPlan.md` before acting on any stage number.
 
@@ -71,13 +59,12 @@ to prefix every staged item with the campaign, and re-read the row in
 - Glob `docs/Agents/*-workplan.md` (forward slashes, relative to the
   workspace root) and read every match. **Return the list of files the
   glob matched before anything else**: a glob that matched nothing
-  reads exactly like five empty workplans, and on 2026-09-02 it did
-  (the agent answered "no files found" over five files on disk). These
-  are **EMPTY BY DESIGN since 2026-08-08** and hold only a session's
+  reads exactly like five empty workplans. These are **empty by design**
+  and hold only a session's
   in-flight lane state (what is shelved, what is mid-gate). Return
   anything actually in one, and say "all empty" when they are, which
   is the expected answer. **A workplan carrying work items, standing
-  facts or messages to other lanes is a DEFECT to report**: that
+  facts or messages to other lanes is a defect to report**: that
   content belongs in CurrentPlan, a backlog, or the doc that owns the
   subject, and somebody's handoff did not finish.
 
@@ -170,7 +157,7 @@ stale `build-grant` means you may still hold the token (write
 `build-request` you no longer intend. If `.agentgrid` does not exist,
 AgentGrid is not managing this workspace -- skip.
 
-**A `*-merge-down-directive-*.json` file in your inbox is an ORDER, and it
+**A `*-merge-down-directive-*.json` file in your inbox is an order, and it
 is the first thing you do after this step** (Damian, 2026-09-02):
 `build/merge-down-all.ps1` ran while you were down and could not bring
 your stream to main, so you are behind on rulings and registers by
@@ -186,8 +173,8 @@ Before Step 9, write `<coordinationDir>\status.json` with your live state:
 (the unit you are on and its current step, or what you are waiting on),
 `claim` (the files or subsystems you hold), and `context` (your context
 used, whole-number percent, measured by `build/measure-context.ps1 -Lane XXX -Percent`, the one formula;
-MANDATORY on every write since 2026-09-07, when a lane ran to 100% with
-nobody able to see it; at 70 you run `/handoff` yourself). Then rewrite
+required on every write, because a lane that runs to 100% unseen goes
+deaf; at 70 you run `/handoff` yourself). Then rewrite
 it at every change of state for the rest of the session: taken, gating,
 waiting on the box or the token, landed, handed off. A `status.json` still carrying
 the previous session's handoff text is what the fleet dashboard showed

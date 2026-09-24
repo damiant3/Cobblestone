@@ -2,10 +2,45 @@ Chapter: GopFont
   cites Works chapter GopFat16
   cites Guios chapter FontLoad
   cites Guios chapter GuiDisplay
+  cites Works chapter GopDraw
 
  We say:
 
 Section: Font Handle
+
+  GopAppFont = record { af-ui : GopFont, af-code : GopFont, af-bitmap : CbfFont }
+
+  gapp-fallback : CbfFont -> GopAppFont
+  gapp-fallback (bitmap) = GopAppFont { af-ui = gfont-none, af-code = gfont-none, af-bitmap = bitmap }
+
+  gapp-col-w : GopAppFont, Integer -> Integer
+  gapp-col-w (f) (scale) =
+    let width = if f.af-code.gf-ok then gfont-text-w (f.af-code) "M" else 0
+    in if width > 0 then width else 8 * scale
+
+  gapp-ui-w : GopAppFont, Text, Integer -> Integer
+  gapp-ui-w (f) (text) (scale) =
+    if f.af-ui.gf-ok then gfont-text-w (f.af-ui) text else text-length text * 8 * scale
+
+  gapp-ui-h : GopAppFont, Integer -> Integer
+  gapp-ui-h (f) (scale) = if f.af-ui.gf-ok then f.af-ui.gf-gh else 16 * scale
+
+  gapp-ui-text-fit : Integer, Integer, Integer, GopAppFont, Integer, Integer, Integer, Text, Integer, Integer -> Integer
+  gapp-ui-text-fit (base) (stride) (rows) (f) (x) (y) (right) (text) (fg) (scale) =
+    if right <= x then 0
+    else if f.af-ui.gf-ok then gfont-text-clip (f.af-ui) base stride rows right x y text fg
+    else let cols = (right - x) / (8 * scale)
+    in gop-draw-text base stride rows (f.af-bitmap) x y (if text-length text > cols then substring text 0 cols else text) fg scale 0
+
+  gapp-ui-text : Integer, Integer, Integer, GopAppFont, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  gapp-ui-text (base) (stride) (rows) (f) (x) (y) (text) (fg) (scale) (i) =
+    if f.af-ui.gf-ok then gfont-text-clip (f.af-ui) base stride rows stride x y (if i == 0 then text else substring text i (text-length text - i)) fg
+    else gop-draw-text base stride rows (f.af-bitmap) x y text fg scale i
+
+  gapp-code-text : Integer, Integer, Integer, GopAppFont, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  gapp-code-text (base) (stride) (rows) (f) (x) (y) (text) (fg) (scale) (i) =
+    if f.af-code.gf-ok then gfont-text-clip (f.af-code) base stride rows stride x y (if i == 0 then text else substring text i (text-length text - i)) fg
+    else gop-draw-text base stride rows (f.af-bitmap) x y text fg scale i
 
  `gf-gh` is the cell, and a cell is not a place to put text. Two more rows
  say where inside it the type actually sits: `gf-asc` is the distance from
@@ -29,6 +64,38 @@ Section: Font Handle
   gfont-none = GopFont { gf-ok = False, gf-base = 0, gf-gw = 0, gf-gh = 0, gf-asc = 0, gf-cap = 0 }
 
 Section: Load
+
+ UIFONT.CFG holds an ASCII FAT filename in a 16-byte, zero-padded record.
+ Bulk FAT reads transfer whole sectors, so the configuration read reserves
+ 1024 bytes even though the logical file is at most 16 bytes.
+
+  gfont-config-name : Integer, Integer, Integer, Text -> Text
+  gfont-config-name (buf) (i) (count) (acc) =
+    if i >= count then acc
+    else let u = peek-byte buf i
+    in if u == 0 | u == 10 | u == 13 | u == 32 then acc
+    else if (u >= 65 & u <= 90) | (u >= 48 & u <= 57) | u == 46 | u == 95 then
+      gfont-config-name buf (i + 1) count (acc & char-encode (code-to-char (from-unicode u)))
+    else ""
+
+  gfont-selected : Fat16Volume, Integer -> [Device.Port] GopFont
+  gfont-selected (vol) (ppem) = act
+    size <- gfat-file-size vol "UIFONT.CFG"
+    if size <= 0 | size > 16 then gfont-load vol "CMUNSS.TTF" ppem
+    else act
+      let buf = __heap-save
+      in let reserved = __heap-advance 1024
+      in act
+        read <- gfat-read-file-bulk vol "UIFONT.CFG" buf
+        let name = if read == size then gfont-config-name buf 0 size "" else ""
+        in if text-length name == 0 then gfont-load vol "CMUNSS.TTF" ppem
+        else act
+          selected <- gfont-load vol name ppem
+          if selected.gf-ok then selected else gfont-load vol "CMUNSS.TTF" ppem
+        end
+      end
+    end
+  end
 
  One flat read, then the guios pipeline verbatim. The glyph pixel
  lists and supersampling scratch this allocates live until the

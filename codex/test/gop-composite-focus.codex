@@ -1,0 +1,97 @@
+Chapter: GopCompositeFocus
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites Works chapter GopFont
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites Kernel chapter BitmapFont
+
+ Control-state flags. A button hovered AND focused resolves
+ to the hover slot, and its focus is a ring: every pixel that differs from
+ the same button hovered alone lies on the ring around its border box. The
+ precedence lines read `widget-state-of` for each combination.
+
+ THE CONTROLS: a button focused and nothing else resolves to the focused
+ slot, so it changes pixels off the ring where a ring alone would change
+ none; and a node with no flags resolves to normal.
+
+Section: Geometry
+
+  cf-w : Integer = 200
+  cf-h : Integer = 40
+  cf-cells : Integer = 8000
+  cf-bytes : Integer = 32000
+
+Section: Counting
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-32 b i 0 in zero-fill b (i + 4) n
+
+  changed-at : Integer, Integer, Integer -> Integer
+  changed-at (a) (b) (i) = if peek-32 a (i * 4) /= peek-32 b (i * 4) then 1 else 0
+
+  count-changed : Integer, Integer, Integer, Integer, Integer -> Integer
+  count-changed (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else count-changed a b (i + 1) n (acc + changed-at a b i)
+
+  on-ring : LayoutRect, Integer, Integer -> Boolean
+  on-ring (r) (x) (y) =
+    x >= r.lr-x & x < r.lr-x + r.lr-w & y >= r.lr-y & y < r.lr-y + r.lr-h
+    & (x == r.lr-x | x == r.lr-x + r.lr-w - 1 | y == r.lr-y | y == r.lr-y + r.lr-h - 1)
+
+  count-ring : Integer, Integer, LayoutRect, Integer, Integer -> Integer
+  count-ring (a) (b) (r) (i) (acc) =
+    if i >= cf-cells then acc
+    else let hit = if on-ring r (int-mod i cf-w) (i / cf-w) then changed-at a b i else 0
+    in count-ring a b r (i + 1) (acc + hit)
+
+  yn : Boolean -> Text
+  yn (v) = if v then "PASS" else "FAIL"
+
+Section: Trees
+
+  cf-btn : Integer -> WidgetNode
+  cf-btn (flags) = widget-panel "root" DirColumn 0 [widget-set-flags (widget-button "b" "OK") flags]
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let base = __heap-save
+    in let adv = __heap-advance (2 * cf-bytes + 256)
+    in let subj = base + cf-bytes
+    in act
+      let za = zero-fill base 0 cf-bytes
+      in let ra = comp-render base cf-w cf-h font gfont-none (cf-btn flag-hovered) th cf-w cf-h 1
+      in let zb = zero-fill subj 0 cf-bytes
+      in let rb = comp-render subj cf-w cf-h font gfont-none (cf-btn (flag-hovered + flag-focused)) th cf-w cf-h 1
+      in let kid = list-at (rb.wn-children) 0
+      in let ring = comp-border-box (kid.wn-bounds) (widget-resolve-style kid th)
+      in let all1 = count-changed base subj 0 cf-cells 0
+      in let in1 = count-ring base subj ring 0 0
+      in let zc = zero-fill base 0 cf-bytes
+      in let rc = comp-render base cf-w cf-h font gfont-none (cf-btn 0) th cf-w cf-h 1
+      in let zd = zero-fill subj 0 cf-bytes
+      in let rd = comp-render subj cf-w cf-h font gfont-none (cf-btn flag-focused) th cf-w cf-h 1
+      in let kid2 = list-at (rd.wn-children) 0
+      in let ring2 = comp-border-box (kid2.wn-bounds) (widget-resolve-style kid2 th)
+      in let all2 = count-changed base subj 0 cf-cells 0
+      in let in2 = count-ring base subj ring2 0 0
+      in let b = widget-button "b" "OK"
+      in act
+        print-line-uni ("focused and hovered draws a ring: " & show all1 & " pixels, all on it: " & yn (all1 > 0 & in1 == all1))
+        print-line-uni ("CONTROL, focused alone paints the focused slot, not a ring: " & yn (all2 > in2))
+        print-line-uni ("hovered and focused resolve to hover: " & yn (widget-state-of (widget-set-flags b (flag-hovered + flag-focused)) == state-hover))
+        print-line-uni ("disabled wins over pressed: " & yn (widget-state-of (widget-set-flags b (flag-disabled + flag-pressed)) == state-disabled))
+        print-line-uni ("pressed wins over hovered: " & yn (widget-state-of (widget-set-flags b (flag-pressed + flag-hovered)) == state-pressed))
+        print-line-uni ("checked alone is normal: " & yn (widget-state-of (widget-set-flags b flag-checked) == state-normal))
+        print-line-uni ("CONTROL, no flags resolves to normal: " & yn (widget-state-of b == state-normal & widget-flags b == 0))
+      end
+    end
+  end

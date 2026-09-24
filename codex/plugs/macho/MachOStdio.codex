@@ -1,0 +1,23 @@
+Chapter: MachOStdio
+
+Section: Body
+
+ The payload is a mode byte and then the arm64 plug's DARWIN wire:
+ `[4B code-len][4B data-len][4B func-count][code][data][func table]`. Mode 0
+ is the only container, an ad-hoc signed Apple Silicon executable; any other
+ mode is refused by name (L-ACCEPTED).
+
+  plug-emit-bytes : Integer, Integer -> [Console] Nothing
+  plug-emit-bytes (payload-buf) (payload-len) =
+   if payload-len < 13 then print-line-uni ("REFUSED short payload " & show payload-len)
+   else let mode = peek-byte payload-buf 0
+   in let code-len = peek-byte payload-buf 1 + peek-byte payload-buf 2 * 256 + peek-byte payload-buf 3 * 65536 + peek-byte payload-buf 4 * 16777216
+   in let data-len = peek-byte payload-buf 5 + peek-byte payload-buf 6 * 256 + peek-byte payload-buf 7 * 65536 + peek-byte payload-buf 8 * 16777216
+   in let func-count = peek-byte payload-buf 9 + peek-byte payload-buf 10 * 256 + peek-byte payload-buf 11 * 65536 + peek-byte payload-buf 12 * 16777216
+   in let func-off = 13 + code-len + data-len
+   in if mode /= 0 then print-line-uni ("REFUSED unknown mode " & show mode & ": 0 is an Apple Silicon executable, and nothing else is implemented")
+   else if func-off > payload-len then print-line-uni ("REFUSED payload " & show payload-len & " shorter than its own header claims " & show func-off)
+   else let entry = macho-find-start payload-buf func-off func-count 0
+   in if entry < 0 then print-line-uni "REFUSED the wire has no `__start`, so the executable would have no entry"
+   else if entry >= code-len then print-line-uni ("REFUSED `__start` at " & show entry & " lies past the code, " & show code-len & " bytes")
+   else write-binary (macho-build-from-buf payload-buf 13 code-len data-len entry)

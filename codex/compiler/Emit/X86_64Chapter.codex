@@ -789,7 +789,8 @@ Section: Finalize
    fresh-slots = [],
    stype-sites = __list-with-capacity accum-capacity,
    range-env = [],
-   hosted-target = 0
+   hosted-target = 0,
+   shared-consts = []
   }
 
   collect-direct-addr-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
@@ -1260,7 +1261,8 @@ Section: Binary Debug Map (MAP1)
    in let ret-ty = opening-bare-print-type defs-lifted
    in let st-ret = __record-set st-eo2 "opening-ret-type" ret-ty
    in let arities = build-x86-arities defs-lifted 0 (list-length defs-lifted) []
-   in let st-ar = __record-set st-ret "user-arities" arities
+   in let st-ar0 = __record-set st-ret "user-arities" arities
+   in let st-ar = emit-shared-consts st-ar0 defs-lifted
    in let pa-slug = def-chapter-slug defs-lifted "init-phase-allocator" 0 (list-length defs-lifted)
    in let dr-slug = def-chapter-slug defs-lifted "deck-record" 0 (list-length defs-lifted)
    in let st-dri = __record-set st-ar "deck-record-intrinsic" (pa-slug /= "" & pa-slug == dr-slug)
@@ -1277,6 +1279,37 @@ Section: Binary Debug Map (MAP1)
  initialized. The discriminator is the DEFINING chapter: the intrinsic is
  the one that lives beside init-phase-allocator, and a bundle that does not
  carry the Phase Allocator chapter gets the plain identity call it declared.
+
+  emit-shared-consts : CodegenState, List IRDef -> CodegenState
+  emit-shared-consts (st) (defs) =
+   let names = shared-const-names defs
+   in if list-length names == 0 then st
+   else shared-const-loop st defs (cs-sort-index (cs-collect-defs defs 0 [])) names 0 []
+
+  shared-const-elem-bytes : List IRExpr, Integer, List Integer -> List Integer
+  shared-const-elem-bytes (es) (i) (acc) =
+   if i >= list-length es then acc
+   else when list-at es i
+    is IrIntLit (v) (sp) -> shared-const-elem-bytes es (i + 1) (cce-push-bytes acc (write-i64 v) 0)
+    is otherwise -> shared-const-elem-bytes es (i + 1) (cce-push-bytes acc (write-i64 0) 0)
+
+  shared-const-loop : CodegenState, List IRDef, List CsIndex, List Text, Integer, List CsIndex -> CodegenState
+  shared-const-loop (st) (defs) (dindex) (names) (i) (acc) =
+   if i >= list-length names then __record-set st "shared-consts" (cs-sort-index acc)
+   else let name = list-at names i
+   in let d = list-at defs (cs-find dindex name)
+   in when d.body
+    is IrList (es) (ty) (sp) ->
+     let n = list-length es
+     in let rem = int-mod (st.data-len) 8
+     in let lead = if rem == 0 then 0 else 8 - rem
+     in let head = cce-push-bytes (cce-push-bytes (pad-zeros lead) (write-i64 n) 0) (write-i64 n) 0
+     in let bytes = shared-const-elem-bytes es 0 head
+     in if st.data-len + list-length bytes > st.workspace.data-capacity then shared-const-loop st defs dindex names (i + 1) acc
+        else let roff = st.data-len + lead + 8
+        in let new-len = __buf-write-bytes (st.workspace.data-buffer) (st.data-len) bytes
+        in shared-const-loop (__record-set st "data-len" new-len) defs dindex names (i + 1) (list-push acc (CsIndex { name = name, pos = roff }))
+    is otherwise -> shared-const-loop st defs dindex names (i + 1) acc
 
   def-chapter-slug : List IRDef, Text, Integer, Integer -> Text
   def-chapter-slug (ds) (name) (i) (n) =

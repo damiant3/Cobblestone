@@ -1,0 +1,208 @@
+Chapter: ConstShare
+  cites Foreword chapter Console
+
+Section: Shared
+
+  table : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64]
+
+  read-at : List Integer, Integer -> Integer
+  read-at (xs) (i) = list-at xs i
+
+  sum-direct : Integer, Integer, Integer -> Integer
+  sum-direct (n) (i) (acc) =
+   if i >= n then acc
+   else sum-direct n (i + 1) (acc + list-at table (bit-and i 63))
+
+  sum-helper : Integer, Integer, Integer -> Integer
+  sum-helper (n) (i) (acc) =
+   if i >= n then acc
+   else sum-helper n (i + 1) (acc + read-at table (bit-and i 63) + list-length table)
+
+  delta-direct : Integer -> Integer
+  delta-direct (n) =
+   let h0 = __heap-save
+   in let s = sum-direct n 0 0
+   in let h1 = __heap-save
+   in if s < 0 then 0 - 1 else h1 - h0
+
+  delta-helper : Integer -> Integer
+  delta-helper (n) =
+   let h0 = __heap-save
+   in let s = sum-helper n 0 0
+   in let h1 = __heap-save
+   in if s < 0 then 0 - 1 else h1 - h0
+
+Section: Read Through A Buffer
+
+  byte-table : List Integer = [10, 20, 30, 40, 50, 60, 70, 80]
+
+  buf-loop : Integer, Integer, Integer, Integer -> Integer
+  buf-loop (buf) (n) (i) (acc) =
+   if i >= n then acc
+   else buf-loop buf n (i + 1) (acc + __buf-write-bytes buf 0 byte-table)
+
+  delta-buf : Integer -> Integer
+  delta-buf (n) =
+   let buf = alloc-bytes 16
+   in let h0 = __heap-save
+   in let s = buf-loop buf n 0 0
+   in let h1 = __heap-save
+   in if s < 0 then 0 - 1 else h1 - h0
+
+  buf-byte : Integer
+  buf-byte =
+   let buf = alloc-bytes 16
+   in let p = __buf-write-bytes buf 0 byte-table
+   in peek-byte buf 3 + p * 1000
+Section: Written
+
+  w-direct : List Integer = [1, 2, 3, 4]
+
+  w-fn : List Integer = [1, 2, 3, 4]
+
+  w-alias : List Integer = [1, 2, 3, 4]
+
+  w-lambda : List Integer = [1, 2, 3, 4]
+
+  w-right : List Integer = [1, 2, 3, 4]
+
+  after-right : Integer
+  after-right =
+   let c = [] & w-right
+   in let a = list-set-at c 1 99
+   in list-at a 1 * 1000 + list-at w-right 1
+
+  w-left : List Integer = [1, 2, 3, 4]
+
+  after-left : Integer
+  after-left =
+   let c = w-left & []
+   in let a = list-set-at c 1 99
+   in list-at a 1 * 1000 + list-at w-left 1
+
+  l-table : List Integer = [3, 1, 4, 1, 5, 9, 2, 6]
+
+  left-len : Integer
+  left-len = list-length (l-table & [7])
+
+  sum-left : Integer, Integer, Integer -> Integer
+  sum-left (n) (i) (acc) =
+   if i >= n then acc
+   else sum-left n (i + 1) (acc + list-at l-table (bit-and i 7))
+
+  delta-left : Integer -> Integer
+  delta-left (n) =
+   let h0 = __heap-save
+   in let s = sum-left n 0 0
+   in let h1 = __heap-save
+   in if s < 0 then 0 - 1 else h1 - h0
+  poke : List Integer -> List Integer
+  poke (xs) = list-set-at xs 0 99
+
+  after-direct : Integer
+  after-direct =
+   let a = list-set-at w-direct 0 99
+   in list-at a 0 * 1000 + list-at w-direct 0
+
+  after-fn : Integer
+  after-fn =
+   let a = poke w-fn
+   in list-at a 0 * 1000 + list-at w-fn 0
+
+  after-alias : Integer
+  after-alias =
+   let t = w-alias
+   in let a = list-set-at t 0 99
+   in list-at a 0 * 1000 + list-at w-alias 0
+
+  after-lambda : Integer
+  after-lambda =
+   let f = \i -> list-set-at w-lambda i 99
+   in let a = f 0
+   in list-at a 0 * 1000 + list-at w-lambda 0
+
+Section: Record Fields
+
+  f-read : List Integer = [5, 6, 7, 8]
+
+  f-direct : List Integer = [1, 2, 3, 4]
+
+  f-fn : List Integer = [1, 2, 3, 4]
+
+  f-alias : List Integer = [1, 2, 3, 4]
+
+  Holder = record {
+   h-read : List Integer,
+   h-direct : List Integer,
+   h-fn : List Integer,
+   h-alias : List Integer
+  }
+
+  mk-holder : List Integer, List Integer -> Holder
+  mk-holder (r) (d) = Holder { h-read = r, h-direct = d, h-fn = f-fn, h-alias = f-alias }
+
+  holder : Holder
+  holder = mk-holder f-read f-direct
+
+  field-len : Holder -> Integer
+  field-len (h) =
+   let t = h.h-read
+   in list-length t
+
+  sum-field : Holder, Integer, Integer, Integer -> Integer
+  sum-field (h) (n) (i) (acc) =
+   if i >= n then acc
+   else sum-field h n (i + 1) (acc + list-at (h.h-read) (bit-and i 3) + read-at (h.h-read) 0 + list-at f-read 1 + field-len h)
+
+  delta-field : Integer -> Integer
+  delta-field (n) =
+   let h = holder
+   in let h0 = __heap-save
+   in let s = sum-field h n 0 0
+   in let h1 = __heap-save
+   in if s < 0 then 0 - 1 else h1 - h0
+
+  field-direct : Integer
+  field-direct =
+   let h = holder
+   in let a = list-set-at (h.h-direct) 0 99
+   in list-at a 0 * 1000 + list-at f-direct 0
+
+  field-fn : Integer
+  field-fn =
+   let h = holder
+   in let a = poke (h.h-fn)
+   in list-at a 0 * 1000 + list-at f-fn 0
+
+  field-alias : Integer
+  field-alias =
+   let h = holder
+   in let t = h.h-alias
+   in let a = list-set-at t 0 99
+   in list-at a 0 * 1000 + list-at f-alias 0
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("direct sum " & show (sum-direct 1000 0 0))
+    print-line-uni ("helper sum " & show (sum-helper 1000 0 0))
+    print-line-uni ("direct delta " & show (delta-direct 100000))
+    print-line-uni ("helper delta " & show (delta-helper 100000))
+    print-line-uni ("written direct " & show after-direct)
+    print-line-uni ("written fn " & show after-fn)
+    print-line-uni ("written alias " & show after-alias)
+    print-line-uni ("written lambda " & show after-lambda)
+    print-line-uni ("written right " & show after-right)
+    print-line-uni ("written left " & show after-left)
+    print-line-uni ("left len " & show left-len)
+    print-line-uni ("left sum " & show (sum-left 1000 0 0))
+    print-line-uni ("left delta " & show (delta-left 100000))
+    print-line-uni ("buffer byte " & show buf-byte)
+    print-line-uni ("buffer delta " & show (delta-buf 100000))
+    print-line-uni ("field sum " & show (sum-field holder 1000 0 0))
+    print-line-uni ("field delta " & show (delta-field 100000))
+    print-line-uni ("field direct " & show field-direct)
+    print-line-uni ("field fn " & show field-fn)
+    print-line-uni ("field alias " & show field-alias)
+  end

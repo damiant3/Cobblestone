@@ -4,11 +4,13 @@
 # is no external DCE step. The plug uses read-line-cce + read-file
 # (both CCE-native, null-terminated).
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Compiler = '')
+param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Compiler = '', [string]$FontName = 'inter', [int]$MemMB = 3072)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+. (Join-Path $Repo 'build/lib/font-pack.ps1')
+[void](Get-FontFace -Pack (Get-FontPack -Repo $Repo) -Name $FontName)
 if (-not $Compiler) { $Compiler = Join-Path $Repo 'seed\Codex.cdx' }
 $PlugCdx = Join-Path $PSScriptRoot 'build-output\html-plug.cdx'
 # Scratch is keyed to the run so two concurrent runs cannot cross
@@ -49,7 +51,7 @@ $combined[$combined.Length - 1] = 0  # null terminator for read-file
 # Phase 4: Run plug CDX
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB $MemMB -TimeoutSec 300
 if (-not $vmOk) { [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
 
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {
@@ -64,6 +66,7 @@ $html = ($lines -join "`n")
 # Strip any leading control bytes the plug emits before the document
 # (e.g. a stray CCE newline 0x01) -- they render as .notdef glyphs in browsers.
 $html = $html -replace '^[\x00-\x1f]+', ''
+$html = Add-WebFontPack -Repo $Repo -Html $html -FontName $FontName
 [System.IO.File]::WriteAllText($Out, $html, [System.Text.UTF8Encoding]::new($false))
 Write-Host "[html-plug] OK: $Out ($($html.Length) chars)"
 Remove-Item $inputFile,$outFile,$errFile -Force -ErrorAction SilentlyContinue

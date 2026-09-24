@@ -644,21 +644,6 @@ function Read-StreamLine {
     }
 }
 
-function Read-StreamBytes {
-    param([System.IO.Stream]$Stream, [int]$Count, [int]$TimeoutSec = 60)
-    $buf = New-Object byte[] $Count
-    $offset = 0
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ($offset -lt $Count) {
-        $remainMs = [int][math]::Max(100, ($deadline - (Get-Date)).TotalMilliseconds)
-        if ($Stream.CanTimeout) { $Stream.ReadTimeout = $remainMs }
-        try { $n = $Stream.Read($buf, $offset, $Count - $offset) } catch { return $null }
-        if ($n -le 0) { return $null }
-        $offset += $n
-    }
-    return $buf
-}
-
 
 function Read-VmReady {
     param($Conn, [int]$TimeoutSec = 60)

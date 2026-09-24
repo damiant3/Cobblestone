@@ -7,7 +7,9 @@
 [CmdletBinding()]
 param(
     [ValidateSet('all','arm64','riscv64')]
-    [string]$Arch = 'all'
+    [string]$Arch = 'all',
+    [string]$Kernel = (Join-Path $PSScriptRoot '..\seed\Codex.cdx'),
+    [switch]$AllowStaleKernel
 )
 
 Set-StrictMode -Version Latest
@@ -20,10 +22,15 @@ $OutDir = Join-Path $PSScriptRoot 'output\boards'
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 
 $SeedCdx = Join-Path $Repo 'seed\Codex.cdx'
-$Stage0 = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
-New-Item -ItemType Directory -Force (Split-Path $Stage0) | Out-Null
-if ((-not (Test-Path -PathType Leaf $Stage0))) {
-    Copy-Item -Force $SeedCdx $Stage0
+if (-not (Test-Path -PathType Leaf $Kernel)) { throw "Kernel not found: $Kernel" }
+$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)
+$seedDigest = (Get-FileHash -Algorithm SHA256 $SeedCdx).Hash.Substring(0, 16)
+Write-Host "Kernel: $Kernel [$kernelDigest]"
+if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {
+    Write-Host 'REFUSED: the kernel is a build-output binary and is not the depot seed.'
+    Write-Host "         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last."
+    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'
+    exit 2
 }
 
 if ((-not $RenodeExe)) {
@@ -73,7 +80,7 @@ foreach ($b in $boards) {
 
     Write-Host "  $($b.Name): compiling..." -NoNewline
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & pwsh -NoProfile -File $compileScript -Src $HelloSrc -Out $elfOut 2>&1 | Out-Null
+    & pwsh -NoProfile -File $compileScript -Src $HelloSrc -Out $elfOut -Kernel $Kernel 2>&1 | Out-Null
     $ErrorActionPreference = $prev
     if (((-not ($LASTEXITCODE -eq 0)) -or (-not (Test-Path -PathType Leaf $elfOut)))) {
         Write-Host " FAIL (compile)" -ForegroundColor Red
@@ -104,7 +111,7 @@ foreach ($b in $boards) {
     $rescPath = $rescFile -replace '\\','/'
 
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & $RenodeExe --disable-xwt --console -e "include @$rescPath" 2>&1 | Out-Null
+    Start-Process -FilePath $RenodeExe -ArgumentList ('--disable-xwt --console -e "include @' + $rescPath + '"') -WindowStyle Hidden -Wait
     $ErrorActionPreference = $prev
     Start-Sleep -Milliseconds 500
 

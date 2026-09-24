@@ -65,6 +65,7 @@ foreach ($m in $PageModules) {
         if ($m.ContainsKey('withLir') -and $m.withLir) { $extra += '-WithLir' }
         if ($m.ContainsKey('common')  -and $m.common)  { $extra += @('-CommonChapters', $m.common) }
         if ($m.ContainsKey('decks')   -and $m.decks)   { $extra += @('-Decks', $m.decks) }
+        if ($m.ContainsKey('compiler') -and $m.compiler) { $extra += @('-CompilerChapters', $m.compiler) }
         $rows += @{ plug = $m.plug; target = $target; script = $builder;
                     args = @('-Plug', $m.plug, '-Chapters', $m.chapters,
                              '-Transport', $m.transport, '-Kernel', $Kernel) + $extra }

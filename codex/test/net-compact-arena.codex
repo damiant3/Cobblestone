@@ -1,0 +1,106 @@
+Chapter: NetCompactArena
+  cites Net chapter NetCompact
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Foreword chapter Console
+
+Section: Wire Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  get-bytes : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 13, 10]
+
+  psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
+
+  mkc : Integer, Integer, Integer, List Integer -> List Integer
+  mkc (seq) (ack) (flags) (payload) =
+    let seg = tcp-with-checksum (tcp-build-segment 50000 80 seq ack flags 8192 payload) cli-ip srv-ip
+    in let ip = ip-build-packet cli-ip srv-ip ip-proto-tcp seg
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 cli-ip 5000
+
+  established : NetSession =
+    let s1 = (net-process-frame (net-listen srv0).session (mkc 1000 0 tcp-flag-syn [])).session
+    in set-outbox ((net-process-frame s1 (mkc 1001 5001 psh get-bytes)).session) []
+
+Section: Garbage
+
+  ack-run : TcpTransportState, List Integer, Integer -> TcpTransportState
+  ack-run (ts) (frame) (n) =
+    if n <= 0 then ts
+    else let r = transport-process-frame-within ts frame (list-length frame)
+    in ack-run (transport-set-session (r.transport) (set-outbox ((r.transport).session) [])) frame (n - 1)
+
+Section: The Largest Session
+
+  pushed : Integer, Integer, List Integer -> List Integer
+  pushed (i) (n) (acc) = if i >= n then acc else pushed (i + 1) n (list-push acc (bit-and i 255))
+
+  segs : Integer, List RexmitSeg -> List RexmitSeg
+  segs (i) (acc) =
+    if i >= net-rexmit-capacity then acc
+    else segs (i + 1) (list-push acc (RexmitSeg { rx-frame = pushed 0 1514 [], rx-ack = i, rx-sent = i, rx-resent = False }))
+
+  arps : Integer, List ArpEntry -> List ArpEntry
+  arps (i) (acc) =
+    if i >= arp-cache-max then acc
+    else arps (i + 1) (list-push acc (ArpEntry { ip = [10, 0, 3, i], mac = [2, 0, 0, 0, 0, i] }))
+
+  full : TcpTransportState -> TcpTransportState
+  full (ts) =
+    let s = ts.session
+    in transport-set-session ts (NetSession {
+      local-mac = s.local-mac, local-ip = s.local-ip, gateway-ip = s.gateway-ip, conn = s.conn,
+      arp = ArpCache { entries = arps 0 [], count = arp-cache-max },
+      outbox = [], rexmit-queue = segs 0 [],
+      rexmit-rto = s.rexmit-rto, rexmit-tries = s.rexmit-tries, close-timer = s.close-timer,
+      now-ticks = s.now-ticks, srtt = s.srtt, rttvar = s.rttvar
+    })
+
+  copy-bytes : TcpTransportState -> Integer
+  copy-bytes (ts) =
+    let h0 = __heap-save
+    in let c = nc-transport ts
+    in let h1 = __heap-save
+    in if c.recv-len < 0 then 0 else h1 - h0
+
+Section: Entry
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  opening : [Console] Nothing = act
+    let ack = mkc 1019 5001 tcp-flag-ack []
+    in let ts0 = transport-arenas (transport-new-with-cap established 65536)
+    in let base = ts0.arena-base
+    in let mark = __heap-save
+    in let t1 = ack-run ts0 ack 200
+    in let grew = __heap-save - mark
+    in let rn = ((t1.session).conn).recv-next
+    in let c1 = transport-compact t1 mark
+    in let at1 = __heap-save - mark
+    in let t2 = ack-run c1 ack 200
+    in let c2 = transport-compact t2 mark
+    in let at2 = __heap-save - mark
+    in let addr = address-of (c2.session)
+    in let in-arena = addr >= base + net-arena-header & addr < base + net-arena-header + 3 * net-arena-bytes
+    in let fb = copy-bytes (full c2)
+    in act
+      print-line-uni ("garbage before compaction: " & yn (grew > 0))
+      print-line-uni ("heap back at the mark after each compaction: " & yn (at1 == 0 & at2 == 0))
+      print-line-uni ("generation after two compactions: " & show (c2.gen))
+      print-line-uni ("state survives: " & tcp-state-name (((c2.session).conn).state) & " " & yn (((c2.session).conn).recv-next == rn))
+      print-line-uni ("the copy lives in an arena: " & yn in-arena)
+      print-line-uni ("the first copy is stale after the second: " & yn (transport-stale c1))
+      print-line-uni ("the second copy is not stale: " & yn (transport-stale c2 == False))
+      print-line-uni ("a full session copy fits an arena: " & yn (fb > 0 & fb <= net-arena-bytes))
+    end
+  end
+
+Page 1

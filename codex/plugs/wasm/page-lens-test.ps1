@@ -65,9 +65,10 @@ $irFile = Join-Path $work 'subject.ir'
 $logFile = Join-Path $work 'subject.log'
 & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') `
     -Src $Subject -Out (Join-Path $work 'subject.out') -Log $logFile -IrUni -Kernel $Kernel | Out-Null
+$compileRc = $LASTEXITCODE
 $log = [IO.File]::ReadAllText($logFile)
 $a = $log.IndexOf('IR-BEGIN'); $b = $log.IndexOf('IR-END')
-if ($a -lt 0 -or $b -lt $a) {
+if ($compileRc -ne 0 -or $a -lt 0 -or $b -lt $a) {
     Write-Host "REFUSE: the subject produced no IR, so there is nothing to hand a lens. See $logFile"
     exit 2
 }
@@ -141,9 +142,14 @@ foreach ($L in $LENSES) {
 
     $out = Join-Path $work ("{0}.out" -f $L.plug)
     $err = Join-Path $work ("{0}.err" -f $L.plug)
+    $lensInput = $inputFile
+    if ($L.ContainsKey('inputPrefix')) {
+        $lensInput = Join-Path $work ("{0}.input" -f $L.plug)
+        [IO.File]::WriteAllText($lensInput, $L.inputPrefix + [IO.File]::ReadAllText($inputFile), [Text.UTF8Encoding]::new($false))
+    }
     $p = Start-Process -FilePath 'wasmtime' `
          -ArgumentList @('-W', 'max-wasm-stack=16777216', $wasm) -NoNewWindow -PassThru `
-         -RedirectStandardInput $inputFile -RedirectStandardOutput $out -RedirectStandardError $err
+         -RedirectStandardInput $lensInput -RedirectStandardOutput $out -RedirectStandardError $err
     if (-not $p) {
         $rows += [pscustomobject]@{ plug = $L.plug; verdict = 'NOSTART'; bytes = 0; note = 'wasmtime did not start' }
         continue

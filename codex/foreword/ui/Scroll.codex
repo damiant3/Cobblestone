@@ -2,6 +2,7 @@ Chapter: Scroll
   cites UI chapter Theme
   cites UI chapter BoxModel
   cites UI chapter Widget
+  cites UI chapter KeyInput
 
 Section: Scroll State
   ScrollState = record {
@@ -266,6 +267,57 @@ Section: The Bar
     in let last = first + scroll-rows-visible s row-h
     in let hi = if last > total then total else last
     in "lines " & show (first + 1) & " to " & show hi & " of " & show total
+
+Section: The Viewport
+
+ One wheel notch or arrow press moves 24 logical pixels, the step the Browser
+ already scrolls a page by (`Browser.codex`, `delta * 24`), so the two agree.
+
+  scroll-line : Integer = 24
+
+  scroll-view-state : WidgetNode, Theme -> ScrollState
+  scroll-view-state (v) (th) =
+    let b = v.wn-bounds
+    in let ext = widget-scroll-extent v th
+    in let off = widget-scroll-offset v
+    in when v.wn-layout-dir
+      is DirColumn -> scroll-to (scroll-new (b.lr-w) (b.lr-h) (b.lr-w) ext) 0 off
+      is DirRow -> scroll-to (scroll-new (b.lr-w) (b.lr-h) ext (b.lr-h)) off 0
+
+  scroll-view-main : WidgetNode, ScrollState -> Integer
+  scroll-view-main (v) (s) = when v.wn-layout-dir
+    is DirColumn -> s.scr-offset-y
+    is DirRow -> s.scr-offset-x
+
+  scroll-view-by : WidgetNode, Theme, Integer -> Integer
+  scroll-view-by (v) (th) (delta) =
+    let s = scroll-view-state v th
+    in when v.wn-layout-dir
+      is DirColumn -> scroll-view-main v (scroll-by s 0 delta)
+      is DirRow -> scroll-view-main v (scroll-by s delta 0)
+
+  scroll-view-page : WidgetNode -> Integer
+  scroll-view-page (v) = when v.wn-layout-dir
+    is DirColumn -> (v.wn-bounds).lr-h
+    is DirRow -> (v.wn-bounds).lr-w
+
+  scroll-view-handle-key : WidgetNode, Theme, Integer -> Integer
+  scroll-view-handle-key (v) (th) (key) =
+    let column = when v.wn-layout-dir
+      is DirColumn -> True
+      is DirRow -> False
+    in let back = if column then key-up else key-left
+    in let fwd = if column then key-down else key-right
+    in if key == fwd then scroll-view-by v th scroll-line
+    else if key == back then scroll-view-by v th (0 - scroll-line)
+    else if key == key-pgdn then scroll-view-by v th (scroll-view-page v)
+    else if key == key-pgup then scroll-view-by v th (0 - scroll-view-page v)
+    else if key == key-home then 0
+    else if key == key-end then scroll-view-by v th (widget-scroll-extent v th)
+    else widget-scroll-offset v
+
+  scroll-view-handle-wheel : WidgetNode, Theme, Integer -> Integer
+  scroll-view-handle-wheel (v) (th) (notches) = scroll-view-by v th (notches * scroll-line)
 
 Section: Formatting
   format-scroll : ScrollState -> Text

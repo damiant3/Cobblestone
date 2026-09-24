@@ -49,14 +49,14 @@ foreach ($name in ($script:PlugPorts.Keys | Sort-Object)) {
         continue
     }
     foreach ($g in $guest) {
-        $hit = @((([System.IO.File]::ReadAllLines($g.FullName)) | Where-Object { ($_ -match 'net-session-new\s+\S+\s+\S+\s+\S+\s+\d+\s+(\d+)\s') } | Select-Object -First 1))
+        $hit = @((([System.IO.File]::ReadAllLines($g.FullName)) | Where-Object { ($_ -match 'net-session-new\s+\S+\s+\S+\s+\S+\s+(?:\d+|\([^)]*\))\s+(\d+)\s') } | Select-Object -First 1))
         if ((@($hit).Count -eq 0)) {
             Write-Host ('  {0,-12} {1}: no readable port' -f $name, $g.Name)
             $bad++
             continue
         }
         $line = $hit[0]
-        if (($line -match 'net-session-new\s+\S+\s+\S+\s+\S+\s+\d+\s+(\d+)\s')) {
+        if (($line -match 'net-session-new\s+\S+\s+\S+\s+\S+\s+(?:\d+|\([^)]*\))\s+(\d+)\s')) {
             $got = [int]$matches[1]
             if ((-not ($got -eq $want))) {
                 Write-Host ('  {0,-12} GUEST {1} dials {2}, table says {3}' -f $name, $g.Name, $got, $want)
@@ -91,6 +91,9 @@ foreach ($name in ($script:PlugPorts.Keys | Sort-Object)) {
                 $ok++
             }
         }
+    } else {
+        Write-Host ('  {0,-12} NO run.ps1: host half unchecked' -f $name)
+        $bad++
     }
 
 }

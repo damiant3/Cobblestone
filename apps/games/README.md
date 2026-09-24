@@ -1,16 +1,14 @@
 # Codex Games
 
-A two-part games platform: a suite of 33 classic board and card games with AI
-opponents, and CodexMagic, a full-featured collectible card game with economies,
-clans, dungeons, and a universal multiverse registry.
+A two-part games platform: a suite of 35 classic board and card games with AI
+opponents (2026-09-23), and CodexMagic, a full-featured collectible card game
+with economies, clans, dungeons, and a universal multiverse registry.
 
-Counts re-measured 2026-08-31 and they had been wrong. `games.json` holds 35
-rows, and two of them are not classic games with an engine behind them: `chess`
-is listed and NOT BUILT (GAME-10 in the backlog), and `magic` is the CodexMagic
-platform below rather than a board game. Thirty-three ids have both a
-`classic/<Name>.codex` engine and a `classic/web/<id>.html` shell, counted both
-ways with neither side carrying an orphan. This file said 35 and the landing
-page said 34; both were counting rows rather than games (L-COUNT).
+Counts measured 2026-09-23. `games.json` holds 36 rows: 35 games, every one
+with a `classic/<Name>.codex` engine and every one in the landing arcade
+(`apps/landing/web/games/arcade.js`), and `magic`, the CodexMagic platform
+below. Thirty-three games also have a `classic/web/<id>.html` shell; `chess`
+and `klondike` are played in the arcade only.
 
 ## Classic Games (34 games)
 
@@ -84,9 +82,8 @@ page said 34; both were counting rows rather than games (L-COUNT).
 
 ## Completeness
 
-Classic: 90% -- All 34 games are fully implemented with complete rule sets and
-AI, and each has a web HTML shell. Chess is listed in `games.json` and is not
-one of them (GAME-10).
+Classic: all 35 games have an engine and an AI opponent and play in the
+landing arcade; 33 of them also have a web HTML shell (2026-09-23).
 
 ## In the browser
 

@@ -47,6 +47,7 @@ if (-not (Test-Path -PathType Container $Root)) {
     Write-Host "REFUSE: -Root is not a directory: $Root"; exit 2
 }
 $Root = (Resolve-Path $Root).Path
+. (Join-Path $PSScriptRoot 'target-toolchain.ps1')
 
 # A token the caller cannot guess. New every run: a bridge you restarted is a
 # bridge whose old token stops working, which is the behaviour you want if you
@@ -148,6 +149,18 @@ try {
             continue
         }
 
+        if ($path -eq '/target' -and $req.HttpMethod -eq 'POST') {
+            if ($req.Headers['X-Bridge-Token'] -ne $token) { Write-Json $ctx 403 @{ ok = $false; err = 'bad or missing token' }; continue }
+            if ($req.ContentLength64 -lt 0 -or $req.ContentLength64 -gt 20000000) { Write-Json $ctx 413 @{ ok = $false; err = 'target request exceeds limit' }; continue }
+            try {
+                $reader = [IO.StreamReader]::new($req.InputStream, $req.ContentEncoding)
+                try { $sent = $reader.ReadToEnd() | ConvertFrom-Json -ErrorAction Stop } finally { $reader.Dispose() }
+                $result = Invoke-PrismTarget -Root $Root -Request $sent
+                Write-Json $ctx 200 $result
+            } catch { Write-Json $ctx 400 @{ ok = $false; err = $_.Exception.Message } }
+            continue
+        }
+
         if ($path -eq '/write' -and $req.HttpMethod -eq 'POST') {
             # A build command needs a file to build, and the page is holding the
             # only copy of what the lens emitted. Without this the whole feature
@@ -171,11 +184,23 @@ try {
                 Write-Json $ctx 400 @{ ok = $false; err = "not a plain filename: $name" }; continue
             }
             $text = if ($sent.PSObject.Properties.Name -contains 'text') { [string]$sent.text } else { '' }
+            # A binary artifact (a CDX, a boot image) travels as base64, because
+            # JSON carries text and a kernel is not text.
+            $bin = $null
+            if ($sent.PSObject.Properties.Name -contains 'b64') {
+                try { $bin = [Convert]::FromBase64String([string]$sent.b64) } catch { Write-Json $ctx 400 @{ ok = $false; err = 'b64 is not base64' }; continue }
+            }
             $dest = Join-Path $Root $leaf
             # Belt and braces: the resolved path must still be inside -Root.
             $full = [IO.Path]::GetFullPath($dest)
             if (-not $full.StartsWith(([IO.Path]::GetFullPath($Root) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) {
                 Write-Json $ctx 400 @{ ok = $false; err = 'refused: outside the bridge root' }; continue
+            }
+            if ($null -ne $bin) {
+                [IO.File]::WriteAllBytes($full, $bin)
+                Write-Host "  wrote: $leaf ($($bin.Length) bytes)"
+                Write-Json $ctx 200 @{ ok = $true; path = $full; bytes = $bin.Length }
+                continue
             }
             [IO.File]::WriteAllText($full, $text, [Text.UTF8Encoding]::new($false))
             Write-Host "  wrote: $leaf ($($text.Length) chars)"

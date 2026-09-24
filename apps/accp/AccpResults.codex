@@ -1,0 +1,133 @@
+Chapter: AccpResults
+  cites Accp chapter AccpUnits
+
+Section: Experiment Records
+
+  ExperimentMeta = record { method : Text, labels : List Text, units : List Text, tolerance : List Real, difference : List Real, convergence : Text, assumptions : List Text, axis : Text, axis-unit : Text, settings : Text }
+  ExperimentData = record { values : List Real, coordinates : List Real, samples : List (List Real) }
+  ExperimentResult = | ExperimentValue (ExperimentData) (ExperimentMeta) | ExperimentError (Text) (ExperimentMeta)
+
+  experiment-meta : Text, List Text, List Text, Text, Text, List Text -> ExperimentMeta
+  experiment-meta (method) (labels) (units) (axis) (axis-unit) (assumptions) =
+    ExperimentMeta { method = method, labels = labels, units = units, tolerance = [], difference = [], convergence = "not_checked", assumptions = assumptions, axis = axis, axis-unit = axis-unit, settings = "{}" }
+
+  ex-real-list-valid : List Real, Integer -> Boolean
+  ex-real-list-valid (xs) (i) =
+    if i >= list-length xs then True
+    else math-finite (list-at xs i) & ex-real-list-valid xs (i + 1)
+
+  ex-unit-list-valid : List Text, Integer -> Boolean
+  ex-unit-list-valid (xs) (i) =
+    if i >= list-length xs then True
+    else when quantity-unit (list-at xs i)
+      is QuantityError (why) -> False
+      is QuantityValue (q) -> ex-unit-list-valid xs (i + 1)
+
+  ex-metadata-error : ExperimentMeta -> Text
+  ex-metadata-error (m) =
+    if list-length m.labels < 1 | list-length m.labels > 8 | list-length m.labels /= list-length m.units then "labels and units must match one to eight components"
+    else if ex-unit-list-valid m.units 0 == False then "unsupported component unit"
+    else when quantity-unit m.axis-unit
+      is QuantityError (why) -> "unsupported axis unit"
+      is QuantityValue (q) -> ""
+
+  experiment-scalar : MathResult, Text, Text, List Text -> ExperimentResult
+  experiment-scalar (r) (symbol) (method) (assumptions) =
+    let meta = experiment-meta method ["value"] [symbol] "" "1" assumptions
+    in let why = ex-metadata-error meta
+    in if why /= "" then ExperimentError why meta
+    else when r
+      is MathError (reason) -> ExperimentError reason meta
+      is MathValue (v) -> if math-finite v == False then ExperimentError "non-finite scalar" meta
+        else ExperimentValue (ExperimentData { values = [v], coordinates = [], samples = [] }) meta
+
+  experiment-quantity : QuantityResult, Text, List Text -> ExperimentResult
+  experiment-quantity (q) (symbol) (assumptions) = experiment-scalar (quantity-in q symbol) symbol "dimension-checked quantity arithmetic" assumptions
+
+Section: JSON
+
+  ex-escape : Text, Integer, Boolean, List Text -> Text
+  ex-escape (s) (i) (xml) (parts) =
+    if i >= text-length s then text-concat-list parts
+    else let c = substring s i 1
+    in let escaped = if xml then
+      (if c == "&" then "&amp;" else if c == "<" then "&lt;" else if c == ">" then "&gt;" else if c == "\"" then "&quot;" else if c == "'" then "&apos;" else c)
+      else (if c == "\"" then "\\\"" else if c == "\\" then "\\\\" else if c == "\n" then "\\n" else if char-code-at c 0 == 0 then "\\u0000" else c)
+    in ex-escape s (i + 1) xml (list-push parts escaped)
+
+  ex-quote : Text -> Text
+  ex-quote (s) = "\"" & ex-escape s 0 False [] & "\""
+
+  ex-texts : List Text -> Text
+  ex-texts (xs) = "[" & text-concat-list (ex-text-parts xs 0 []) & "]"
+  ex-text-parts : List Text, Integer, List Text -> List Text
+  ex-text-parts (xs) (i) (parts) =
+    if i >= list-length xs then parts
+    else ex-text-parts xs (i + 1) (list-push parts ((if i == 0 then "" else ",") & ex-quote (list-at xs i)))
+
+  ex-reals : List Real -> Text
+  ex-reals (xs) = "[" & text-concat-list (ex-real-parts xs 0 []) & "]"
+  ex-number : Real -> Text
+  ex-number (x) =
+    if x <= 0.0 & x >= 0.0 then (if real-to-bits x < 0 then "-0.0" else "0.0")
+    else (if x < 0.0 then "-" else "") & ex-number-scale (real-abs x) 0 400
+  ex-number-scale : Real, Integer, Integer -> Text
+  ex-number-scale (x) (power) (fuel) =
+    if fuel <= 0 then "null"
+    else if x >= 10.0 then ex-number-scale (x / 10.0) (power + 1) (fuel - 1)
+    else if x < 1.0 then ex-number-scale (x * 10.0) (power - 1) (fuel - 1)
+    else if power == 308 & x > 1.797693134862315 then "1.797693134862315e308"
+    else show x & "e" & show power
+  ex-real-parts : List Real, Integer, List Text -> List Text
+  ex-real-parts (xs) (i) (parts) =
+    if i >= list-length xs then parts
+    else ex-real-parts xs (i + 1) (list-push parts ((if i == 0 then "" else ",") & ex-number (list-at xs i)))
+
+  ex-bits : List Real -> Text
+  ex-bits (xs) = "[" & text-concat-list (ex-bit-parts xs 0 []) & "]"
+  ex-bit-parts : List Real, Integer, List Text -> List Text
+  ex-bit-parts (xs) (i) (parts) =
+    if i >= list-length xs then parts
+    else ex-bit-parts xs (i + 1) (list-push parts ((if i == 0 then "" else ",") & ex-quote (show (real-to-bits (list-at xs i)))))
+  ex-bit-rows : List (List Real), Integer, List Text -> Text
+  ex-bit-rows (rows) (i) (parts) =
+    if i >= list-length rows then "[" & text-concat-list parts & "]"
+    else ex-bit-rows rows (i + 1) (list-push parts ((if i == 0 then "" else ",") & ex-bits (list-at rows i)))
+
+  ex-rows : List (List Real), Integer, List Text -> Text
+  ex-rows (rows) (i) (parts) =
+    if i >= list-length rows then "[" & text-concat-list parts & "]"
+    else ex-rows rows (i + 1) (list-push parts ((if i == 0 then "" else ",") & ex-reals (list-at rows i)))
+
+  ex-meta-json : ExperimentMeta -> Text
+  ex-meta-json (m) =
+    "\"schema\":\"accp-experiment-1\",\"metadata_authority\":\"program-reported\",\"method\":" & ex-quote m.method
+    & ",\"labels\":" & ex-texts m.labels & ",\"units\":" & ex-texts m.units
+    & ",\"tolerance\":" & (if list-length m.tolerance == 0 then "null" else ex-reals m.tolerance)
+    & ",\"refinement_difference\":" & (if list-length m.difference == 0 then "null" else ex-reals m.difference)
+    & ",\"convergence\":" & ex-quote m.convergence & ",\"assumptions\":" & ex-texts m.assumptions
+    & ",\"axis\":" & ex-quote m.axis & ",\"axis_unit\":" & ex-quote m.axis-unit & ",\"settings\":" & m.settings
+
+  ex-data-valid : ExperimentData, Integer -> Boolean
+  ex-data-valid (d) (n) =
+    list-length d.values == n & ex-real-list-valid d.values 0
+    & list-length d.coordinates == list-length d.samples & list-length d.samples <= 256
+    & list-length d.samples * n <= 1024 & ex-real-list-valid d.coordinates 0 & ex-rows-valid d.samples n 0
+  ex-rows-valid : List (List Real), Integer, Integer -> Boolean
+  ex-rows-valid (rows) (n) (i) =
+    if i >= list-length rows then True
+    else let row = list-at rows i
+    in list-length row == n & ex-real-list-valid row 0 & ex-rows-valid rows n (i + 1)
+
+  experiment-json : ExperimentResult -> Text
+  experiment-json (r) = when r
+    is ExperimentError (why) (m) -> "{" & ex-meta-json m & ",\"status\":\"error\",\"reason\":" & ex-quote why & ",\"value\":null,\"coordinates\":[],\"samples\":[]}"
+    is ExperimentValue (d) (m) ->
+      if ex-metadata-error m /= "" | ex-data-valid d (list-length m.units) == False | ex-real-list-valid m.tolerance 0 == False | ex-real-list-valid m.difference 0 == False then
+        "{\"schema\":\"accp-experiment-1\",\"status\":\"error\",\"reason\":\"invalid experiment result\",\"value\":null}"
+      else "{" & ex-meta-json m & ",\"status\":\"ok\",\"reason\":null,\"value\":" & ex-reals d.values
+        & ",\"coordinates\":" & ex-reals d.coordinates & ",\"samples\":" & ex-rows d.samples 0 []
+        & ",\"binary64\":{\"value\":" & ex-bits d.values & ",\"coordinates\":" & ex-bits d.coordinates & ",\"samples\":" & ex-bit-rows d.samples 0 []
+        & ",\"tolerance\":" & ex-bits m.tolerance & ",\"refinement_difference\":" & ex-bits m.difference & "}}"
+
+Page 1

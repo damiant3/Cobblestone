@@ -16,7 +16,8 @@ param(
     # boards without PSCI (the committed Renode board), where it traps and
     # parks the guest before `opening` runs. See CL 8221.
     [switch]$Smp,
-    [switch]$Darwin
+    [switch]$Darwin,
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -62,7 +63,7 @@ $combined[$combined.Length - 1] = 0  # null terminator for read-file
 # Run plug CDX via serial I/O
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB $MemMB -TimeoutSec 300
 
 if (-not $vmOk) {
     [Console]::Error.WriteLine("FAIL: plug timed out")

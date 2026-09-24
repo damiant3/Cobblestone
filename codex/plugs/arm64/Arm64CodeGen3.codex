@@ -18,11 +18,10 @@ Section: Records and Sum Types
    in if f.fname == name & f.ftype == type-name then f.findex
    else a64-lookup-field-learned fields type-name name (i + 1)
 
-  a64-lookup-field-learned-any : List A64LearnedField, Text, Integer -> Integer
-  a64-lookup-field-learned-any (fields) (name) (i) =
-   if i >= list-length fields then 0 - 1
-   else if (list-at fields i).fname == name then (list-at fields i).findex
-   else a64-lookup-field-learned-any fields name (i + 1)
+  a64-refuse-unresolved-field : A64State, CodexType, Text, Integer -> A64State
+  a64-refuse-unresolved-field (st) (ty) (name) (idx) =
+   if idx >= 0 then st
+   else a64-add-shadow-warning st ("[UNSUPPORTED] field " & name & " of " & a64-type-name ty & ": the arm64 plug cannot resolve its offset (refused rather than reading offset 0)")
 
   a64-emit-record : A64State, List IRFieldVal, CodexType -> A64EmitResult
   a64-emit-record (st) (fields) (ty) =
@@ -83,7 +82,7 @@ Section: Records and Sum Types
    in let trap-index = st6.insn-count
    in let st7 = a64-emit st6 (arm64-encode #D4200020)
    in let ok-target = st7.insn-count
-   in let st8 = a64-patch-insn st7 ok1-index (arm64-b-cond 13 ((ok-target - ok1-index) * 4))
+   in let st8 = a64-patch-insn st7 ok1-index (arm64-b-cond 12 ((trap-index - ok1-index) * 4))
    in a64-patch-insn st8 ok2-index (arm64-b-cond 10 ((ok-target - ok2-index) * 4))
 
   a64-emit-wrapping : A64State, Integer, Integer, Integer -> A64State
@@ -116,6 +115,48 @@ Section: Records and Sum Types
       is otherwise -> st
     is otherwise -> st
 
+  a64-guarded-bound : CodexType -> Boolean
+  a64-guarded-bound (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) ->
+     when mode
+      is OvError -> if lo <= (-4611686018427387904) then hi < 4611686018427387903 else True
+      is otherwise -> False
+    is otherwise -> False
+
+  a64-return-bound-of : CodexType, Integer -> CodexType
+  a64-return-bound-of (ty) (n) =
+   if n <= 0 then ty
+   else when ty
+    is FunTy (p) (row) (r) -> a64-return-bound-of r (n - 1)
+    is ForAllTy (id) (b) -> a64-return-bound-of b n
+    is ForAllEff (id) (b) -> a64-return-bound-of b n
+    is otherwise -> ty
+
+  a64-has-bounded-boundary : IRDef -> Boolean
+  a64-has-bounded-boundary (def) =
+   if a64-any-guarded-param (def.params) 0 then True
+   else a64-guarded-bound (a64-return-bound-of (def.type-val) (list-length (def.params)))
+
+  a64-any-guarded-param : List IRParam, Integer -> Boolean
+  a64-any-guarded-param (ps) (i) =
+   if i >= list-length ps then False
+   else if a64-guarded-bound ((list-at ps i).type-val) then True
+   else a64-any-guarded-param ps (i + 1)
+
+  a64-emit-param-guards : A64State, List IRParam, Integer -> A64State
+  a64-emit-param-guards (st) (params) (i) =
+   if i >= list-length params then st
+   else if i >= 8 then st
+   else let ty = (list-at params i).type-val
+   in let st1 = if a64-guarded-bound ty then a64-maybe-clamp st (a64-x0 + i) ty else st
+   in a64-emit-param-guards st1 params (i + 1)
+
+  a64-emit-return-guard : A64State, IRDef -> A64State
+  a64-emit-return-guard (st) (def) =
+   let ty = a64-return-bound-of (def.type-val) (list-length (def.params))
+   in if a64-guarded-bound ty then a64-maybe-clamp st a64-x0 ty else st
+
   a64-emit-record-fields-flat : A64State, List IRFieldVal, Integer, Integer, List CodexType -> A64State
   a64-emit-record-fields-flat (st) (fields) (ptr-local) (i) (field-types) =
    if i >= list-length fields then st
@@ -146,7 +187,7 @@ Section: Records and Sum Types
    let br = a64-emit-expr st rec-expr
    in let field-index = a64-find-field-index-st st (ir-expr-type rec-expr) field-name
    in let safe-index = if field-index >= 0 then field-index else 0
-   in let tr = a64-alloc-temp (br.state)
+   in let tr = a64-alloc-temp (a64-refuse-unresolved-field (br.state) (ir-expr-type rec-expr) field-name field-index)
    in A64EmitResult {
     state = a64-emit (tr.state) (arm64-ldr (tr.reg) (br.reg) (safe-index * 8)),
     reg = tr.reg
@@ -173,7 +214,7 @@ Section: Records and Sum Types
    in let lr = a64-load-local st1a (rl.reg)
    in let field-index = a64-find-field-index-st st (ir-expr-type rec-expr) field-name
    in let safe-index = if field-index >= 0 then field-index else 0
-   in let st2 = a64-emit (lr.state) (arm64-str (vr.reg) (lr.reg) (safe-index * 8))
+   in let st2 = a64-emit (a64-refuse-unresolved-field (lr.state) (ir-expr-type rec-expr) field-name field-index) (arm64-str (vr.reg) (lr.reg) (safe-index * 8))
    in A64EmitResult { state = st2, reg = lr.reg }
 
   a64-parse-embedded-index : Text -> Integer
@@ -220,15 +261,8 @@ Section: Records and Sum Types
     is ConstructedTy (tname) (args) ->
      let td = a64-find-field-in-type-defs ((st.extra).type-defs) (tname.value) clean-name 0
      in if td >= 0 then td
-     else let learned = a64-lookup-field-learned ((st.extra).learned-fields) (tname.value) clean-name 0
-     in if learned >= 0 then learned
-     else let any-learned = a64-lookup-field-learned-any ((st.extra).learned-fields) clean-name 0
-     in if any-learned >= 0 then any-learned
-     else 0
-    is otherwise ->
-     let learned = a64-lookup-field-learned-any ((st.extra).learned-fields) clean-name 0
-     in if learned >= 0 then learned
-     else 0
+     else a64-lookup-field-learned ((st.extra).learned-fields) (tname.value) clean-name 0
+    is otherwise -> 0 - 1
 
   a64-starts-with-arm64 : Text -> Boolean
   a64-starts-with-arm64 (s) =
@@ -1083,14 +1117,16 @@ Section: Module Emission
 
   a64-emit-function : A64State, IRDef -> A64State
   a64-emit-function (st) (def) =
-   let lt = a64-lir-emit-try st def
+   let guarded = a64-has-bounded-boundary def
+   in let lt = if guarded then a64-lir-not-handled st else a64-lir-emit-try st def
    in if lt.handled then lt.state
-   else if a64-can-be-frameless def & (a64-body-calls-shadowed-inline st (def.body)) == False then a64-emit-function-frameless st def
+   else if guarded == False & a64-can-be-frameless def & (a64-body-calls-shadowed-inline st (def.body)) == False then a64-emit-function-frameless st def
    else let body-locals = a64-count-ir-locals (def.body) (def.name)
    in let total-locals = list-length (def.params) + body-locals
    in let save-pairs = a64-compute-save-pairs total-locals
    in let st1 = a64-reset-func-state st (def.name) (list-length (def.params))
-   in let st2 = a64-emit-prologue st1 save-pairs
+   in let st2g = a64-emit-prologue st1 save-pairs
+   in let st2 = a64-emit-param-guards st2g (def.params) 0
    in let st3 = a64-bind-params st2 (def.params) 0
    in let stack-arg-base-idx = if list-length (def.params) > 8 then st3.insn-count else 0 - 1
    in let st3 = if list-length (def.params) > 8 then
@@ -1117,7 +1153,7 @@ Section: Module Emission
      effect-op-addrs = (st3a.tco).effect-op-addrs
     })
    else st3a
-   in let st5 = a64-emit-expr-to st4 actual-body a64-x0
+   in let st5 = a64-emit-return-guard (a64-emit-expr-to st4 actual-body a64-x0) def
    in let st5 = if def.name == "opening" then
     if a64-opening-returns-int (def.type-val) then
      let st5a = a64-emit-call-to st5 "integer-to-text"
@@ -1696,6 +1732,22 @@ Section: Stub Builtins
    in let st3 = a64-emit st2 (arm64-str a64-x9 a64-heap-reg 0)
    in let st4 = a64-emit st3 (arm64-add-imm a64-heap-reg a64-heap-reg 8)
    in A64EmitResult { state = st4, reg = r.reg }
+
+  a64-emit-list-with-capacity : A64State, IRExpr -> A64EmitResult
+  a64-emit-list-with-capacity (st) (n-expr) =
+   let er = a64-emit-expr st n-expr
+   in let r = a64-alloc-temp (er.state)
+   in let st1 = a64-emit (r.state) (arm64-add-imm a64-heap-reg a64-heap-reg 7)
+   in let st2 = a64-emit st1 (arm64-lsr-imm a64-heap-reg a64-heap-reg 3)
+   in let st3 = a64-emit st2 (arm64-lsl-imm a64-heap-reg a64-heap-reg 3)
+   in let st4 = a64-emit st3 (arm64-cmp-imm (er.reg) 0)
+   in let st5 = a64-emit st4 (arm64-csel a64-x10 (er.reg) a64-xzr arm64-cond-ge)
+   in let st6 = a64-emit st5 (arm64-str a64-x10 a64-heap-reg 0)
+   in let st7 = a64-emit st6 (arm64-add-imm (r.reg) a64-heap-reg 8)
+   in let st8 = a64-emit st7 (arm64-str a64-xzr (r.reg) 0)
+   in let st9 = a64-emit st8 (arm64-lsl-imm a64-x9 a64-x10 3)
+   in let st10 = a64-emit st9 (arm64-add-imm a64-x9 a64-x9 16)
+   in A64EmitResult { state = a64-emit st10 (arm64-add a64-heap-reg a64-heap-reg a64-x9), reg = r.reg }
 
   a64-emit-empty-text : A64State -> A64EmitResult
   a64-emit-empty-text (st) =

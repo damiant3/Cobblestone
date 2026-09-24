@@ -36,7 +36,8 @@ param(
     # image needs that mapping, and DERIVING it a second time on the caller's
     # side would agree with a shared mistake by construction (L-BOTHARMS).
     [string]$ManifestOut = '',
-    [int]$TotalSectors = 16384
+    [int]$TotalSectors = 16384,
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -214,7 +215,7 @@ $listener.Start()
 $stderrFile = [System.IO.Path]::GetTempFileName()
 $consoleFile = [System.IO.Path]::GetTempFileName()
 try {
-    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB 3072
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while (-not $listener.Pending()) {
         if ([DateTime]::UtcNow -gt $deadline) {

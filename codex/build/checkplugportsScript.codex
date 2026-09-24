@@ -83,7 +83,7 @@ Section: S04 -- The guest half
 
   cpp-no-guest : ShellExpr = SeFormat (SeLit "  {0,-12} NO GUEST SOURCE dialing a port") [SeVar "name"]
 
-  cpp-port-pat : Text = "net-session-new\\s+\\S+\\s+\\S+\\s+\\S+\\s+\\d+\\s+(\\d+)\\s"
+  cpp-port-pat : Text = "net-session-new\\s+\\S+\\s+\\S+\\s+\\S+\\s+(?:\\d+|\\([^)]*\\))\\s+(\\d+)\\s"
 
   cpp-unreadable : ShellExpr = SeFormat (SeLit "  {0,-12} {1}: no readable port") [SeVar "name", SeProperty (SeVar "g") "Name"]
 
@@ -117,17 +117,15 @@ Section: S05 -- The host half
 
   cpp-run-body : List ShellCmd = [ScAssign "hitSet" SeHashLiteral, ScForEach "mm" cpp-four-digit cpp-collect, ScAssign "hits" (SeAsArray (SePipe (SeProperty (SeVar "hitSet") "Keys") [StSort])), ScIf (SeIntEq (SeCount (SeVar "hits")) (SeInt 0)) [ScEcho cpp-no-port, ScIncrement "bad"] [ScIf cpp-host-wrong [ScEcho cpp-host-msg, ScIncrement "bad"] [ScIncrement "ok"]]]
 
-  cpp-host : List ShellCmd = [ScAssign "run" cpp-run, ScIf (SeFileExists (SeVar "run")) cpp-run-body []]
+  cpp-no-run : ShellExpr = SeFormat (SeLit "  {0,-12} NO run.ps1: host half unchecked") [SeVar "name"]
+
+  cpp-host : List ShellCmd = [ScAssign "run" cpp-run, ScIf (SeFileExists (SeVar "run")) cpp-run-body [ScEcho cpp-no-run, ScIncrement "bad"]]
 
 Section: S06 -- Every plug, in name order
 
   cpp-body-one : List ShellCmd = [ScSequence cpp-dup, ScSequence cpp-guest, ScSequence cpp-host]
 
   s06-body : List ShellCmd = [ScBlank, ScForEach "name" (SePipe (SeProperty cpp-table "Keys") [StSort]) cpp-body-one]
-
- THE HOST HALF IS CHECKED ONLY WHERE A `run.ps1` EXISTS, and its absence is
- silent: a plug with a guest source and no runner passes this stage. Said here
- because the stage's name promises both halves.
 
   s06 : PipeStage = PipeStage { ps-name = "check every plug", ps-why = "per plug in name order: no duplicate port, the guest source dials the table's port, and run.ps1 listens on it", ps-in = ["script:PlugPorts", "Repo", "seen"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
 
@@ -139,7 +137,7 @@ Section: S07 -- The verdict
 
   s07-body : List ShellCmd = [ScBlank, ScEcho (SeLit ""), ScIf (SeIntGt (pipe-ref cpp-arts cpp-params "bad") (SeInt 0)) [ScEcho cpp-bad-line, ScExit (SeInt 1)] [], ScEcho cpp-ok-line, ScExit (SeInt 0)]
 
-  s07 : PipeStage = PipeStage { ps-name = "verdict", ps-why = "refuse when any half disagrees with the table", ps-in = ["bad", "ok", "script:PlugPorts"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "at least one plug's guest source or run.ps1 names a port the table does not, or two plugs share one", PoExit 0 "every checked half agrees with build/plug-ports.ps1"], ps-body = s07-body }
+  s07 : PipeStage = PipeStage { ps-name = "verdict", ps-why = "refuse when any half disagrees with the table", ps-in = ["bad", "ok", "script:PlugPorts"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "at least one plug's guest source or run.ps1 names a port the table does not, a plug has no run.ps1, or two plugs share one", PoExit 0 "every checked half agrees with build/plug-ports.ps1"], ps-body = s07-body }
 
 Section: Assembly
 

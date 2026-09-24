@@ -1,0 +1,24 @@
+Chapter: AccpSweep
+  cites Accp chapter AccpOde
+
+Section: Parameter Sweep
+
+  experiment-sweep : (Real -> MathResult), List Real, Text, Text, List Text -> ExperimentResult
+  experiment-sweep (f) (parameters) (parameter-unit) (value-unit) (assumptions) =
+    let meta = experiment-meta "parameter sweep" ["value"] [value-unit] "parameter" parameter-unit assumptions
+    in let why = ex-metadata-error meta
+    in if why /= "" then ExperimentError why meta
+    else if list-length parameters < 1 | list-length parameters > 256 | ex-real-list-valid parameters 0 == False then ExperimentError "sweep requires one to 256 finite parameters" meta
+    else let xs = ex-copy parameters 0 []
+    in ex-sweep-loop f xs meta 0 []
+
+  ex-sweep-loop : (Real -> MathResult), List Real, ExperimentMeta, Integer, List (List Real) -> ExperimentResult
+  ex-sweep-loop (f) (xs) (meta) (i) (rows) =
+    if i >= list-length xs then ExperimentValue (ExperimentData { values = list-at rows (list-length rows - 1), coordinates = xs, samples = rows }) meta
+    else when f (list-at xs i)
+      is MathError (why) -> ExperimentError ("sweep point " & show i & ": " & why) meta
+      is MathValue (v) ->
+        if math-finite v == False then ExperimentError ("non-finite sweep point " & show i) meta
+        else ex-sweep-loop f xs meta (i + 1) (list-push rows [v])
+
+Page 1

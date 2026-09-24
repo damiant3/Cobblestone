@@ -1,4 +1,4 @@
-# Cross-architecture test battery with parallel Renode execution.
+# Cross-architecture test battery, run in parallel on QEMU (Renode with -Renode).
 # Supports ARM64 and RISC-V via -Arch parameter.
 [CmdletBinding()]
 param(
@@ -39,11 +39,15 @@ param(
     # behaviour the retry exists for and the only way to see it fire on demand.
     [int]$CompileTimeoutSec = 120,
     [string]$Filter = "",
-    [switch]$UseQemu
+    # QEMU is the bed (Damian, 2026-09-24): it faults on the unaligned and wild
+    # accesses Renode answers, and runs a guest in a third of the memory.
+    # Renode is the last resort, for an arm that needs a board model QEMU lacks.
+    [switch]$Renode
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$UseQemu = -not $Renode
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $Repo
@@ -53,6 +57,7 @@ $plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }
 $testDir = Join-Path $Repo 'codex\test'
 $compileScript = Join-Path $Repo "codex\plugs\$plugName\compile-$plugName.ps1"
 . (Join-Path $PSScriptRoot 'renode-config.ps1')
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
 $renodeExe = Get-RenodeExe -Repo $Repo
 if (-not $renodeExe -and -not $UseQemu) { Write-RenodeSkip; exit 0 }
 $boardRepl = Join-Path $Repo "tools\renode\codex\codex-${Arch}.repl"
@@ -82,11 +87,14 @@ foreach ($tf in $allTests) {
     if (Test-Path "$dir\$name.qemudev") { $skipReason = "QEMU device (build/test-cross-disk.ps1)" }
     elseif (Test-Path "$dir\$name.skip")    { $skipReason = (Get-Content -TotalCount 1 "$dir\$name.skip") }
     elseif (Test-Path "$dir\$name.slow")    { $skipReason = "slow" }
-    elseif (Test-Path "$dir\$name.fatal")   { $skipReason = "fatal" }
+    elseif ((Test-Path "$dir\$name.fatal") -and -not (Test-Path "$dir\$name.cross-fatal")) { $skipReason = "fatal" }
     elseif (Test-Path "$dir\$name.failing") { $skipReason = "error test" }
     elseif (Test-Path "$dir\$name.smp")     { $skipReason = "multi-core (build/test-cross-smp.ps1)" }
     elseif (Test-Path "$dir\$name.disk")    { $skipReason = "block device (build/test-cross-disk.ps1)" }
     elseif (Test-Path "$dir\$name.no-cross") { $skipReason = "no-cross: " + (Get-Content -TotalCount 1 "$dir\$name.no-cross") }
+    # .renode: the subject needs a Renode board model QEMU virt lacks; its
+    # first line names the model. It runs only under -Renode.
+    elseif ($UseQemu -and (Test-Path "$dir\$name.renode")) { $skipReason = "Renode board (-Renode): " + (Get-Content -TotalCount 1 "$dir\$name.renode") }
     else {
         # A machine-sidecar test names its own ineligibility: the fixture is
         # the x86 codex-vm (an attached CDX, VM flags, a scancode timeline),
@@ -184,7 +192,9 @@ $compileBlock = {
 
     $done.Add(1)
     $n = $done.Count
-    $hasExp = Test-Path -PathType Leaf (Join-Path ($t.Dir) "$name.expected")
+    # A .cross-fatal test has no .expected: its designed answer is a guest
+    # fault, graded in the run phase against the fault line.
+    $hasExp = (Test-Path -PathType Leaf (Join-Path ($t.Dir) "$name.expected")) -or (Test-Path -PathType Leaf (Join-Path ($t.Dir) "$name.cross-fatal"))
     # .cross-refusal inverts the compile expectation: this test's DESIGNED
     # behavior on a cross lane is a refusal -- one "[UNSUPPORTED] <builtin>"
     # report per named line, and no binary (port and GPU-port
@@ -314,12 +324,9 @@ Write-Host "Compile phase: $([math]::Round(($compileEnd - $compileStart).TotalSe
 
 # ---- Phase 2: Run (parallel) ----
 $emulatorLabel = if ($UseQemu) { "QEMU" } else { "Renode" }
-# The run phase stays at $Jobs under Renode. Eight slots was tried twice and
-# flakes both times -- a passing test comes back FAIL_RUNTIME with no uart
-# output after ~2s. The obvious suspect was the 240 MB memsz every ELF carries
-# ("Loading block of 251669168 bytes" in renode.log), so that was measured and
-# then dropped as a cause: the zero-fill is ~130 ms of a 12.6s test, and eight
-# slots flake with or without it.
+# The Renode run phase is admitted against free RAM rather than taken at
+# $Jobs: one Renode guest peaked at 1,045 MB working set on arm64 factorial
+# (measured 2026-09-23), so it is sized as a run guest at 1100 MB.
 #
 # This phase used to spend RenoTimeout in full on every test: 12.6s = a flat
 # 10s sleep + ~2.6s of Renode start and teardown, most of the phase's wall
@@ -328,16 +335,20 @@ $emulatorLabel = if ($UseQemu) { "QEMU" } else { "Renode" }
 # leg watches the uart, because the mechanism is different on each. The
 # expected line count is precomputed here, with the compare's own
 # normalization, so the runner knows what "complete" means for each test.
-$runJobs = if ($UseQemu) { [Math]::Max($Jobs, 8) } else { $Jobs }
+$runJobs = Get-VmAdmittedSlots -Slots $Jobs -GuestMB 1100 -What "$emulatorLabel run phase"
 Write-Host "`n--- Phase 2: Run via $emulatorLabel (${runJobs} parallel slots, exit on complete output, ceiling ${RenoTimeout}s) ---"
 $toRun = [System.Collections.Generic.List[hashtable]]::new()
 foreach ($kv in $compiled.GetEnumerator()) {
     $v = $kv.Value
     if ($v.Status -eq 'COMPILED' -and $v.HasExpected) {
-        $expText = [System.IO.File]::ReadAllText((Join-Path $v.Dir "$($kv.Key).expected")) -replace "`r",''
-        $expArr = @($expText -split "`n")
-        $expN = $expArr.Count
-        while ($expN -gt 0 -and $expArr[$expN - 1] -eq '') { $expN-- }
+        $isFatal = Test-Path -PathType Leaf (Join-Path $v.Dir "$($kv.Key).cross-fatal")
+        $expN = 0
+        if (-not $isFatal) {
+            $expText = [System.IO.File]::ReadAllText((Join-Path $v.Dir "$($kv.Key).expected")) -replace "`r",''
+            $expArr = @($expText -split "`n")
+            $expN = $expArr.Count
+            while ($expN -gt 0 -and $expArr[$expN - 1] -eq '') { $expN-- }
+        }
         # A .cross-budget sidecar raises THIS test's ceiling (first line,
         # seconds). The crypto cluster is correct under emulation and just
         # slow -- all six passed alone at a raised ceiling, 14-41s -- and the
@@ -350,7 +361,7 @@ foreach ($kv in $compiled.GetEnumerator()) {
             $bv = 0
             if ([int]::TryParse((Get-Content -TotalCount 1 $budgetFile).Trim(), [ref]$bv) -and $bv -gt 0) { $ceil = $bv }
         }
-        $toRun.Add(@{ Name = $kv.Key; Elf = $v.ElfPath; Dir = $v.Dir; Index = $toRun.Count; ExpLines = $expN; CeilSec = $ceil })
+        $toRun.Add(@{ Name = $kv.Key; Elf = $v.ElfPath; Dir = $v.Dir; Index = $toRun.Count; ExpLines = $expN; CeilSec = $ceil; Fatal = $isFatal })
     }
 }
 Write-Host "$($toRun.Count) tests to run"
@@ -381,6 +392,7 @@ $runBlock = {
     $rs = Get-Date
     $status = 'UNKNOWN'
     $reason = ''
+    $prog = @{ Lines = 0; Closed = $false; Bytes = 0; Trap = '' }
     # Declared here so the catch at the end of this block can read them
     # whatever point the fault came from. Set-StrictMode is Latest at line 43.
     $rt = 0
@@ -413,11 +425,13 @@ $runBlock = {
         $n = $ls.Count
         while ($n -gt 0 -and $ls[$n - 1] -eq '') { $n-- }
         $c = 0
+        $trap = ''
         for ($i = 0; $i -lt $n; $i++) {
             if ($ls[$i].StartsWith('HEAP:') -or $ls[$i].StartsWith('WD:') -or $ls[$i].StartsWith('STACK:')) { continue }
+            if (-not $trap -and ($ls[$i].StartsWith('!EXC=') -or $ls[$i].StartsWith('!A64FAULT')) -and $i -lt $ls.Count - 1) { $trap = $ls[$i] }
             $c++
         }
-        @{ Lines = $c; Closed = $tx.EndsWith("`n"); Bytes = $rawText.Length }
+        @{ Lines = $c; Closed = $tx.EndsWith("`n"); Bytes = $rawText.Length; Trap = $trap }
     }
 
     # The same share-tolerant read the compile block has, for the same reason
@@ -501,7 +515,7 @@ $runBlock = {
             # through a share-tolerant open (the directory entry's size is not
             # updated while QEMU holds the handle) and exits at completeness.
             $deadline = (Get-Date).AddSeconds($ceilingSec)
-            $prog = @{ Lines = 0; Closed = $false; Bytes = 0 }
+            $prog = @{ Lines = 0; Closed = $false; Bytes = 0; Trap = '' }
             $starved = $false
             while ($true) {
                 Start-Sleep -Milliseconds 250
@@ -515,6 +529,7 @@ $runBlock = {
                         } finally { $fs.Dispose() }
                     } catch {}
                 }
+                if ($prog.Trap) { break }
                 if ($expLinesN -gt 0 -and $prog.Lines -ge $expLinesN -and $prog.Closed) { break }
                 if ($proc.HasExited) { break }
                 if ((Get-Date) -ge $deadline) { $starved = ($prog.Bytes -gt 0); break }
@@ -528,6 +543,7 @@ $runBlock = {
                 $status = 'FAIL_STARVED'
                 $reason = "incomplete at ceiling (${ceilingSec}s: $($prog.Lines) of $expLinesN lines, $($prog.Bytes) bytes)"
             }
+            if ($prog.Trap) { $status = 'FAIL_RUNTIME'; $reason = "guest fault: $($prog.Trap)" }
         }
     } else {
         $renodeExe = $using:renodeExe
@@ -591,7 +607,7 @@ $runBlock = {
             $buf = [System.IO.MemoryStream]::new()
             $chunk = [byte[]]::new(65536)
             $deadline = (Get-Date).AddSeconds($ceilingSec)
-            $prog = @{ Lines = 0; Closed = $false; Bytes = 0 }
+            $prog = @{ Lines = 0; Closed = $false; Bytes = 0; Trap = '' }
             $starved = $false
             while ($true) {
                 $got = $false
@@ -604,6 +620,7 @@ $runBlock = {
                 if ($got) {
                     $prog = Get-UartProgress ([System.Text.Encoding]::ASCII.GetString($buf.ToArray()))
                 }
+                if ($prog.Trap) { break }
                 if ($expLinesN -gt 0 -and $prog.Lines -ge $expLinesN -and $prog.Closed) { break }
                 if ((Get-Date) -ge $deadline) { $starved = ($buf.Length -gt 0); break }
                 Start-Sleep -Milliseconds 100
@@ -628,11 +645,17 @@ $runBlock = {
                 $status = 'FAIL_STARVED'
                 $reason = "incomplete at ceiling (${ceilingSec}s: $($prog.Lines) of $expLinesN lines, $($buf.Length) bytes)"
             }
+            if ($prog.Trap) { $status = 'FAIL_RUNTIME'; $reason = "guest fault: $($prog.Trap)" }
         }
     }
 
     $re = Get-Date
     $rt = [math]::Round(($re - $rs).TotalSeconds, 1)
+
+    if ($t.Fatal) {
+        if ($prog.Trap) { $status = 'PASS_EXPECTED'; $reason = "faulted as designed: $($prog.Trap)" }
+        elseif (-not ($status -eq 'FAIL_RUNTIME' -and $reason -eq 'no uart output')) { $status = 'FAIL_RUNTIME'; $reason = 'designed to fault (.cross-fatal) and no fault line was reported' }
+    }
 
     # Only a run that ended with a COMPLETE answer gets compared: FAIL_STARVED
     # means the answer is not finished, and comparing a partial answer files a

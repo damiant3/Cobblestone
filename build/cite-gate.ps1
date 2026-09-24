@@ -18,6 +18,12 @@
 #     chapter's callers do not have to cite it and mostly do not. Pass
 #     -Compiler to select every compiler-citing test regardless, or use the
 #     BVT, which is what the seed chain already grades the compiler with.
+#   - EXCEPT the allocation goldens: a codex/test chapter that reads the heap
+#     frontier (alloc-bytes, __heap-save) prints numbers the COMPILER decides,
+#     so any change under codex/compiler selects every one of them. A test
+#     that prints a frontier value read inside a LIBRARY chapter is not; on
+#     2026-09-23 the two libraries that print one (PerfMonitor perf-heap,
+#     DiagnosticShell diag-run-heap) reached no .expected.
 #   - A subject with no .expected is COMPILED and not RUN. bvt.ps1 grades it
 #     as a compile, and this script reports the two counts apart rather than
 #     summing them, because "42 subjects" over 6 that can fail at runtime is
@@ -165,10 +171,15 @@ function Resolve-CiteTargets([string]$quire, [string]$name) {
 $citers = @{}
 $testFiles = [System.Collections.Generic.List[string]]::new()
 $compilerCiters = [System.Collections.Generic.List[string]]::new()
+$allocGoldens = [System.Collections.Generic.List[string]]::new()
 foreach ($f in $allChapters) {
     $full = $f.FullName.ToLowerInvariant()
-    if ($full -match '\\codex\\test\\') { [void]$testFiles.Add($full) }
+    $isTest = $full -match '\\codex\\test\\'
+    if ($isTest) { [void]$testFiles.Add($full) }
     foreach ($line in [System.IO.File]::ReadAllLines($f.FullName)) {
+        if ($isTest -and ($line.Contains('alloc-bytes') -or $line.Contains('__heap-save'))) {
+            [void]$allocGoldens.Add($full); $isTest = $false
+        }
         # The regex over every line of every chapter is the whole cost of this
         # walk: 3,985 files is about a million lines and the pattern is
         # anchored but backtracking. The literal test in front of it takes the
@@ -202,6 +213,12 @@ while ($queue.Count -gt 0) {
 $selected = @($testFiles | Where-Object { $seen.ContainsKey($_) })
 if ($Compiler) {
     $selected = @($selected + @($compilerCiters | Where-Object { $_ -match '\\codex\\test\\' }) | Sort-Object -Unique)
+}
+$compilerChanged = @($changedFull | Where-Object { $_ -like "$($Repo.ToLowerInvariant())\codex\compiler\*" }).Count -gt 0
+if ($compilerChanged) {
+    $before = $selected.Count
+    $selected = @($selected + $allocGoldens | Sort-Object -Unique)
+    Write-Host "[cite-gate] a codex/compiler change: $($selected.Count - $before) allocation golden(s) added, of $($allocGoldens.Count) test chapters reading the heap frontier"
 }
 
 # Relative paths, because that is what bvt.ps1 -SubjectsFile takes.

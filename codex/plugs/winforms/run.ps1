@@ -1,7 +1,7 @@
 # Run WinForms plug: source -> IR-CCE -> plug CDX -> C#
 # Serial I/O pipeline (same as HTML plug).
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Compiler = '')
+param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Compiler = '', [int]$MemMB = 3072)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
@@ -43,7 +43,7 @@ $combined[$combined.Length - 1] = 0  # null terminator for read-file
 # Phase 3: Run plug CDX
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB $MemMB -TimeoutSec 300
 if (-not $vmOk) { [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
 
 if (-not (Test-Path $outFile) -or (Get-Item $outFile).Length -eq 0) {

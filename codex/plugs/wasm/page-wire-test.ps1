@@ -82,9 +82,10 @@ if (-not (Test-Path -PathType Leaf $Subject)) { Write-Host "REFUSE: no subject a
 $uniLog = Join-Path $work 'uni.log'
 & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') `
     -Src $Subject -Out (Join-Path $work 'uni.out') -Log $uniLog -IrUni -Passes 'text-plug' -Kernel $Kernel | Out-Null
+$compileRc = $LASTEXITCODE
 $log = [IO.File]::ReadAllText($uniLog)
 $a = $log.IndexOf('IR-BEGIN'); $b = $log.IndexOf('IR-END')
-if ($a -lt 0 -or $b -lt $a) { Write-Host "REFUSE: the subject produced no IR-UNI. See $uniLog"; exit 2 }
+if ($compileRc -ne 0 -or $a -lt 0 -or $b -lt $a) { Write-Host "REFUSE: the subject produced no IR-UNI. See $uniLog"; exit 2 }
 $uniIr = Join-Path $work 'subject.uni.ir'
 [IO.File]::WriteAllText($uniIr, $log.Substring($a + 9, $b - ($a + 9)).Trim(), [Text.UTF8Encoding]::new($false))
 

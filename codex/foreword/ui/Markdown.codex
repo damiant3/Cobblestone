@@ -29,43 +29,44 @@ Section: Parsing
   ui-md-parse : Text -> UiMdDocument
   ui-md-parse (input) =
     let lines = text-split input "\n"
-    in let blocks = ui-md-parse-lines lines 0 (list-length lines) False "" "" []
+    in let blocks = ui-md-parse-lines lines 0 (list-length lines) False "" [] []
     in UiMdDocument { md-blocks = blocks, md-block-count = list-length blocks }
 
-  ui-md-parse-lines : List Text, Integer, Integer, Boolean, Text, Text, List UiMdBlock -> List UiMdBlock
+  ui-md-parse-lines : List Text, Integer, Integer, Boolean, Text, List Text, List UiMdBlock -> List UiMdBlock
   ui-md-parse-lines (lines) (i) (n) (in-code) (code-lang) (code-acc) (blocks) =
     if i >= n then
-      if in-code then list-push blocks (UiMdCodeBlock code-lang code-acc)
+      if in-code then list-push blocks (md-code-block code-lang code-acc)
       else blocks
     else let line = list-at lines i
-    in if in-code then md-parse-code-line lines i n line code-lang code-acc blocks
-    else md-parse-normal-line lines i n line blocks
+    in if in-code then
+      if text-starts-with line "```" then ui-md-parse-lines lines (i + 1) n False "" [] (list-push blocks (md-code-block code-lang code-acc))
+      else ui-md-parse-lines lines (i + 1) n True code-lang (md-code-add code-acc line) blocks
+    else if text-starts-with line "```" then ui-md-parse-lines lines (i + 1) n True (text-drop line 3) [] blocks
+    else ui-md-parse-lines lines (i + 1) n False "" [] (list-push blocks (md-line-block line))
 
-  md-parse-code-line : List Text, Integer, Integer, Text, Text, Text, List UiMdBlock -> List UiMdBlock
-  md-parse-code-line (lines) (i) (n) (line) (lang) (acc) (blocks) =
-    if text-starts-with line "```" then
-      ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (UiMdCodeBlock lang acc))
-    else let new-acc = if text-length acc == 0 then line else acc & "\n" & line
-    in ui-md-parse-lines lines (i + 1) n True lang new-acc blocks
+  md-code-add : List Text, Text -> List Text
+  md-code-add (acc) (line) =
+    if list-length acc == 0 then list-push acc line
+    else list-push (list-push acc "\n") line
 
-  md-parse-normal-line : List Text, Integer, Integer, Text, List UiMdBlock -> List UiMdBlock
-  md-parse-normal-line (lines) (i) (n) (line) (blocks) =
-    if text-length line == 0 then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks UiMdBlank)
-    else if text-starts-with line "```" then
-      let lang = text-drop line 3
-      in ui-md-parse-lines lines (i + 1) n True lang "" blocks
-    else if md-is-hrule line then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks UiMdHRule)
-    else if text-starts-with line "######" then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (md-heading 6 line))
-    else if text-starts-with line "#####" then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (md-heading 5 line))
-    else if text-starts-with line "####" then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (md-heading 4 line))
-    else if text-starts-with line "###" then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (md-heading 3 line))
-    else if text-starts-with line "##" then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (md-heading 2 line))
-    else if text-starts-with line "#" then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (md-heading 1 line))
-    else if text-starts-with line "> " then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (UiMdBlockquote (md-parse-inline (text-drop line 2))))
-    else if text-starts-with line "- " then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (UiMdListItem (md-parse-inline (text-drop line 2))))
-    else if text-starts-with line "* " then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (UiMdListItem (md-parse-inline (text-drop line 2))))
-    else if md-is-ordered line then ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (md-ordered-item line))
-    else ui-md-parse-lines lines (i + 1) n False "" "" (list-push blocks (UiMdParagraph (md-parse-inline line)))
+  md-code-block : Text, List Text -> UiMdBlock
+  md-code-block (lang) (acc) = UiMdCodeBlock lang (text-concat-list acc)
+
+  md-line-block : Text -> UiMdBlock
+  md-line-block (line) =
+    if text-length line == 0 then UiMdBlank
+    else if md-is-hrule line then UiMdHRule
+    else if text-starts-with line "######" then md-heading 6 line
+    else if text-starts-with line "#####" then md-heading 5 line
+    else if text-starts-with line "####" then md-heading 4 line
+    else if text-starts-with line "###" then md-heading 3 line
+    else if text-starts-with line "##" then md-heading 2 line
+    else if text-starts-with line "#" then md-heading 1 line
+    else if text-starts-with line "> " then UiMdBlockquote (md-parse-inline (text-drop line 2))
+    else if text-starts-with line "- " then UiMdListItem (md-parse-inline (text-drop line 2))
+    else if text-starts-with line "* " then UiMdListItem (md-parse-inline (text-drop line 2))
+    else if md-is-ordered line then md-ordered-item line
+    else UiMdParagraph (md-parse-inline line)
 
   md-heading : Integer, Text -> UiMdBlock
   md-heading (level) (line) =
@@ -85,6 +86,8 @@ Section: Parsing
     else if text-starts-with line "___" then True
     else False
 
+ CommonMark 5.2: an ordered list marker is one to nine digits.
+
   md-is-ordered : Text -> Boolean
   md-is-ordered (line) =
     if text-length line < 3 then False
@@ -94,6 +97,7 @@ Section: Parsing
   md-has-dot-space : Text, Integer, Integer -> Boolean
   md-has-dot-space (line) (i) (n) =
     if i >= n then False
+    else if i > 9 then False
     else let c = char-code-at line i
     in if c == 65 then
       if i + 1 < n then char-code-at line (i + 1) == 2
@@ -117,80 +121,64 @@ Section: Parsing
 Section: Inline Formatting
 
   md-parse-inline : Text -> RichText
-  md-parse-inline (text) = md-inline-scan text 0 (text-length text) 0 rich-text-empty
+  md-parse-inline (text) =
+    let runs = md-inline-scan text 0 (text-length text) 0 True []
+    in RichText { rt-runs = runs, rt-run-count = list-length runs }
 
-  md-inline-scan : Text, Integer, Integer, Integer, RichText -> RichText
-  md-inline-scan (text) (i) (n) (plain-start) (acc) =
-    if i >= n then md-flush-plain text plain-start n acc
-    else if md-at text i n "**" then md-parse-bold text i n plain-start acc
+  md-inline-scan : Text, Integer, Integer, Integer, Boolean, List TextRun -> List TextRun
+  md-inline-scan (text) (i) (n) (plain-start) (link-ok) (runs) =
+    if i >= n then md-flush-plain text plain-start n runs
+    else if md-at text i n "**" then
+      let flushed = md-flush-plain text plain-start i runs
+      in let close = md-find-marker text (i + 2) n "**"
+      in if close < 0 then md-inline-scan text (i + 2) n (i + 2) link-ok (md-push flushed (rich-text-plain "**"))
+      else md-inline-scan text (close + 2) n (close + 2) link-ok (md-push flushed (rich-text-bold (substring text (i + 2) (close - i - 2))))
     else if md-at text i n "*" then
-      if md-at text i n "**" then md-inline-scan text (i + 1) n plain-start acc
-      else md-parse-italic text i n plain-start acc
-    else if md-at text i n "`" then md-parse-code text i n plain-start acc
-    else if md-at text i n "[" then md-parse-link text i n plain-start acc
-    else md-inline-scan text (i + 1) n plain-start acc
+      let flushed = md-flush-plain text plain-start i runs
+      in let close = md-find-marker text (i + 1) n "*"
+      in if close < 0 then md-inline-scan text (i + 1) n (i + 1) link-ok (md-push flushed (rich-text-plain "*"))
+      else md-inline-scan text (close + 1) n (close + 1) link-ok (md-push flushed (rich-text-italic (substring text (i + 1) (close - i - 1))))
+    else if md-at text i n "`" then
+      let flushed = md-flush-plain text plain-start i runs
+      in let close = md-find-marker text (i + 1) n "`"
+      in if close < 0 then md-inline-scan text (i + 1) n (i + 1) link-ok (md-push flushed (rich-text-plain "`"))
+      else md-inline-scan text (close + 1) n (close + 1) link-ok (md-push flushed (rich-text-colored (substring text (i + 1) (close - i - 1)) #888888))
+    else if md-at text i n "[" then
+      if link-ok then
+        let close-bracket = md-find-marker text (i + 1) n "]("
+        in let close-paren = if close-bracket < 0 then -1 else md-find-marker text (close-bracket + 2) n ")"
+        in if close-paren < 0 then md-inline-scan text (i + 1) n plain-start False runs
+        else let label = substring text (i + 1) (close-bracket - i - 1)
+        in let url = substring text (close-bracket + 2) (close-paren - close-bracket - 2)
+        in md-inline-scan text (close-paren + 1) n (close-paren + 1) True (md-push (md-flush-plain text plain-start i runs) (rich-text-link label url))
+      else md-inline-scan text (i + 1) n plain-start False runs
+    else md-inline-scan text (i + 1) n plain-start link-ok runs
 
   md-at : Text, Integer, Integer, Text -> Boolean
   md-at (text) (i) (n) (marker) =
     let mlen = text-length marker
     in if i + mlen > n then False
-    else text-starts-with (text-drop text i) marker
+    else md-match text i marker 0 mlen
 
-  md-flush-plain : Text, Integer, Integer, RichText -> RichText
-  md-flush-plain (text) (start) (end-pos) (acc) =
-    if start >= end-pos then acc
-    else let plain = md-substr text start (end-pos - start)
-    in rich-text-concat acc (rich-text-plain plain)
+  md-match : Text, Integer, Text, Integer, Integer -> Boolean
+  md-match (text) (i) (marker) (j) (mlen) =
+    if j >= mlen then True
+    else if char-code-at text (i + j) == char-code-at marker j then md-match text i marker (j + 1) mlen
+    else False
 
-  md-parse-bold : Text, Integer, Integer, Integer, RichText -> RichText
-  md-parse-bold (text) (i) (n) (plain-start) (acc) =
-    let flushed = md-flush-plain text plain-start i acc
-    in let close = md-find-marker text (i + 2) n "**"
-    in if close < 0 then md-inline-scan text (i + 2) n (i + 2) (rich-text-concat flushed (rich-text-plain "**"))
-    else let content = md-substr text (i + 2) (close - i - 2)
-    in md-inline-scan text (close + 2) n (close + 2) (rich-text-concat flushed (rich-text-bold content))
+  md-push : List TextRun, RichText -> List TextRun
+  md-push (runs) (rt) = list-push runs (list-at (rt.rt-runs) 0)
 
-  md-parse-italic : Text, Integer, Integer, Integer, RichText -> RichText
-  md-parse-italic (text) (i) (n) (plain-start) (acc) =
-    let flushed = md-flush-plain text plain-start i acc
-    in let close = md-find-marker text (i + 1) n "*"
-    in if close < 0 then md-inline-scan text (i + 1) n (i + 1) (rich-text-concat flushed (rich-text-plain "*"))
-    else let content = md-substr text (i + 1) (close - i - 1)
-    in md-inline-scan text (close + 1) n (close + 1) (rich-text-concat flushed (rich-text-italic content))
-
-  md-parse-code : Text, Integer, Integer, Integer, RichText -> RichText
-  md-parse-code (text) (i) (n) (plain-start) (acc) =
-    let flushed = md-flush-plain text plain-start i acc
-    in let close = md-find-marker text (i + 1) n "`"
-    in if close < 0 then md-inline-scan text (i + 1) n (i + 1) (rich-text-concat flushed (rich-text-plain "`"))
-    else let content = md-substr text (i + 1) (close - i - 1)
-    in md-inline-scan text (close + 1) n (close + 1) (rich-text-concat flushed (rich-text-colored content #888888))
-
-  md-parse-link : Text, Integer, Integer, Integer, RichText -> RichText
-  md-parse-link (text) (i) (n) (plain-start) (acc) =
-    let flushed = md-flush-plain text plain-start i acc
-    in let close-bracket = md-find-marker text (i + 1) n "]("
-    in if close-bracket < 0 then md-inline-scan text (i + 1) n plain-start acc
-    else let close-paren = md-find-marker text (close-bracket + 2) n ")"
-    in if close-paren < 0 then md-inline-scan text (i + 1) n plain-start acc
-    else let label = md-substr text (i + 1) (close-bracket - i - 1)
-    in let url = md-substr text (close-bracket + 2) (close-paren - close-bracket - 2)
-    in md-inline-scan text (close-paren + 1) n (close-paren + 1) (rich-text-concat flushed (rich-text-link label url))
+  md-flush-plain : Text, Integer, Integer, List TextRun -> List TextRun
+  md-flush-plain (text) (start) (end-pos) (runs) =
+    if start >= end-pos then runs
+    else md-push runs (rich-text-plain (substring text start (end-pos - start)))
 
   md-find-marker : Text, Integer, Integer, Text -> Integer
   md-find-marker (text) (start) (n) (marker) =
-    let mlen = text-length marker
-    in md-find-marker-loop text start n marker mlen
-
-  md-find-marker-loop : Text, Integer, Integer, Text, Integer -> Integer
-  md-find-marker-loop (text) (i) (n) (marker) (mlen) =
-    if i + mlen > n then -1
-    else if text-starts-with (text-drop text i) marker then i
-    else md-find-marker-loop text (i + 1) n marker mlen
-
-  md-substr : Text, Integer, Integer -> Text
-  md-substr (text) (start) (len) =
-    text-take (text-drop text start) len
+    if start + text-length marker > n then -1
+    else if md-at text start n marker then start
+    else md-find-marker text (start + 1) n marker
 
 Section: Widget Building
 
@@ -226,17 +214,17 @@ Section: Widget Building
       else if level == 5 then "##### "
       else "###### "
     in let lbl = widget-label id (prefix & rich-text-to-plain rt)
-    in widget-set-tone (widget-set-state lbl state-focused) tone-primary
+    in widget-set-tone (widget-add-flag lbl flag-focused) tone-primary
 
   md-code-widget : Text, Text -> WidgetNode
   md-code-widget (id) (content) =
     let lbl = widget-label id content
-    in widget-set-tone (widget-set-state lbl state-hover) tone-muted
+    in widget-set-tone (widget-add-flag lbl flag-hovered) tone-muted
 
   md-quote-widget : Text, RichText -> WidgetNode
   md-quote-widget (id) (rt) =
     let lbl = widget-label id ("> " & rich-text-to-plain rt)
-    in widget-set-tone (widget-set-state lbl state-disabled) tone-muted
+    in widget-set-tone (widget-add-flag lbl flag-disabled) tone-muted
 
 Section: Rich Text Extraction
 

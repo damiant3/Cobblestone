@@ -24,14 +24,15 @@ Section: Body
   plug-emit-ir-bytes : Text -> [Console] Nothing
   plug-emit-ir-bytes (input) =
    let want-elf = text-starts-with input "ELF\n"
-   in let ir-text = if want-elf then text-drop input 4 else input
-   in if ir-text-is-chapter ir-text then a64-emit-ir-bytes-parsed ir-text want-elf
+   in let want-darwin = text-starts-with input "DARWIN\n"
+   in let ir-text = if want-elf then text-drop input (text-length "ELF\n") else if want-darwin then text-drop input (text-length "DARWIN\n") else input
+   in if ir-text-is-chapter ir-text then a64-emit-ir-bytes-parsed ir-text want-elf want-darwin
    else print-line-uni "REFUSED this input is not an IR chapter: it does not open with `(chapter`"
 
-  a64-emit-ir-bytes-parsed : Text, Boolean -> [Console] Nothing
-  a64-emit-ir-bytes-parsed (ir-text) (want-elf) =
+  a64-emit-ir-bytes-parsed : Text, Boolean, Boolean -> [Console] Nothing
+  a64-emit-ir-bytes-parsed (ir-text) (want-elf) (want-darwin) =
    let parsed = parse-ir-chapter ir-text
-   in let cg-state = a64-emit-module make-a64-state (parsed.chapter) (parsed.type-defs) (parsed.effect-op-names) False False
+   in let cg-state = a64-emit-module make-a64-state (parsed.chapter) (parsed.type-defs) (parsed.effect-op-names) False want-darwin
    in if want-elf then a64-emit-board-elf cg-state
    else write-binary (a64-build-wire-output cg-state)
 

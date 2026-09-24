@@ -1,0 +1,78 @@
+Chapter: MethodTemplateProducerGuards
+  cites Codex chapter Opening
+  cites Codex chapter Method Specialization
+
+Section: Real Producer
+
+  guard-source : Text = "Chapter: GuardInput\n\nclass GuardCarrier where\n  carry : a, b -> b\n\ninstance GuardCarrier Integer where\n  carry (x) (y) = y\n\nSection: Body\n  opening : Integer = carry 1 7\n"
+
+  guard-refused : MethodMaterialization, Text -> Boolean
+  guard-refused (result) (message) =
+   let errors = bag-errors (result.bag)
+   in if list-length errors /= 1 | text-length (result.wire) /= 0 then False
+      else (list-at errors 0).message == message
+
+  guard-nested-row : CodexType -> Boolean
+  guard-nested-row (ty) = when ty
+   is FunTy (p) (row) (r) -> when r
+    is FunTy (bp) (brow) (br) -> when bp
+     is FunTy (np) (nrow) (nr) -> nrow.tail-id == 77
+     is otherwise -> False
+    is otherwise -> False
+   is otherwise -> False
+
+  guard-report : Text, Boolean -> [Console] Nothing
+  guard-report (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  guard-copy-plan : MethodPlan -> MethodPlan
+  guard-copy-plan (p) = MethodPlan { source = p.source, instances = p.instances, state = p.state, reason = p.reason, slots = p.slots, uses = p.uses, byte-bound = p.byte-bound, fatal = p.fatal }
+
+  guard-copy-source : AClassDef -> AClassDef
+  guard-copy-source (c) = AClassDef { name = c.name, methods = c.methods, dict-schema = c.dict-schema, method-binders = c.method-binders, span = c.span }
+
+  guard-copy-slot : MethodSlot -> MethodSlot
+  guard-copy-slot (s) = MethodSlot { method-index = s.method-index, name = s.name, type-expr = s.type-expr, key = s.key, substitutions = s.substitutions }
+
+  opening : [Console] Nothing =
+   let init = init-phase-allocator
+   in let flags = __record-set (__record-set compile-flags-default "poison-compact" True) "pipeline" text-plug-ir-pipeline
+   in let fe = compile-frontend-ir guard-source "GuardInput" flags
+   in if bag-has-errors (fe.bag) then print-line-uni "FAIL frontend"
+   else let height = scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band
+   in let base = build height
+   in let ceiling = base + height
+   in let lifted = deck-record (lift-lambdas (fe.ir) ceiling)
+   in let ir = ir-prune-unreachable-roots (eq-attach-helpers lifted (fe.type-defs)) ir-emit-roots
+   in let good = deck-record (method-materialize (fe.method-inputs) ir (fe.type-defs) ceiling)
+   in if bag-has-errors (good.bag) | list-length (good.plans) /= 1 then print-line-uni "FAIL producer"
+   else let plan = list-at (good.plans) 0
+   in if plan.state /= "materialized" | list-length (plan.slots) /= 1 then print-line-uni "FAIL materialized-shape"
+   else let omitted = deck-record (method-publish (fe.method-inputs) [] (fe.type-defs) ceiling)
+   in let duplicate = deck-record (method-publish (fe.method-inputs) [plan, plan] (fe.type-defs) ceiling)
+   in let changed-source = __record-set (guard-copy-source (plan.source)) "method-binders" [[]]
+   in let bad-origin = deck-record (method-publish (fe.method-inputs) [__record-set (guard-copy-plan plan) "source" changed-source] (fe.type-defs) ceiling)
+   in let slot = list-at (plan.slots) 0
+   in let bad-slot = __record-set (guard-copy-slot slot) "type-expr" (named-aty "unboundGuardVariable")
+   in let bad-scope = deck-record (method-publish (fe.method-inputs) [__record-set (guard-copy-plan plan) "slots" [bad-slot]] (fe.type-defs) ceiling)
+   in let bad-count = deck-record (method-publish (fe.method-inputs) [__record-set (guard-copy-plan plan) "uses" 0] (fe.type-defs) ceiling)
+   in let bad-bound = deck-record (method-publish (fe.method-inputs) [__record-set (guard-copy-plan plan) "byte-bound" (0 - 1)] (fe.type-defs) ceiling)
+   in let bad-phase = deck-record (method-publish (fe.method-inputs) [plan] (fe.type-defs) __deck-pos)
+   in let formal = (list-at (plan.source.methods) 0).type-expr
+   in let nested-open = FunTy int-ty-default (row-var 77) int-ty-default
+   in let actual = FunTy int-ty-default (row-var 88) (FunTy nested-open (row-var 89) nested-open)
+   in let bad-use = method-declared-use-type formal actual 0
+   in let conflicting = FunTy int-ty-default (concrete-row "Console.Write") (FunTy int-ty-default empty-row int-ty-default)
+   in let bad-effects = method-declared-use-type formal conflicting 0
+   in act
+    guard-report "real-producer" (text-length (good.wire) > 0)
+    guard-report "omitted-origin" (guard-refused omitted "Method-template logical declaration accounting failed")
+    guard-report "duplicate-origin" (guard-refused duplicate "Method-template logical declaration accounting failed")
+    guard-report "forged-binder-scope" (guard-refused bad-origin "Method-template binder scope or slot accounting failed")
+    guard-report "unbound-slot-type" (guard-refused bad-scope "Method-template binder scope or slot accounting failed")
+    guard-report "slot-count" (guard-refused bad-count "Method-template binder scope or slot accounting failed")
+    guard-report "negative-bound" (guard-refused bad-bound "Method-template input byte bound could not be established")
+    guard-report "phase-reservation" (guard-refused bad-phase "Method-template byte bound exceeds the phase reservation")
+    guard-report "arithmetic-overflow" (method-budget-add 2147483647 1 < 0)
+    guard-report "function-substitution-stays-open" (guard-nested-row bad-use & (method-type-closed bad-use 0 == False))
+    guard-report "conflicting-effects" (method-type-closed bad-effects 0 == False)
+   end

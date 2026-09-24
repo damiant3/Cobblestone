@@ -39,14 +39,16 @@ the single source for those.
 ## Step 0a -- Start the box sampler, and publish what it recorded
 
 ```powershell
-Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-File','build/box-sample.ps1','-Out','build-output/box-release.csv','-Seconds','7200'
+Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-File','build/box-sample.ps1','-Out',"docs/Agents/box-release-$(Get-Date -Format yyyy-MM-dd).csv",'-Seconds','7200'
 ```
 
 Every proof below runs beside it, so the release leaves a memory profile in
 the tree instead of a number remembered from a terminal: per 5 s, free GiB,
 guest count and working set, Renode, pwsh, cpu. Damian's direction,
 2026-09-08 ("do a diagnostic release this time, and measure the actual
-memory situation"). The GitHubUpdate for the release carries four numbers
+memory situation"). A `-run-list` supervisor is counted apart from the
+guests, and `<csv>.procs.csv` beside it names every VM-host process per
+sample. The GitHubUpdate for the release carries four numbers
 from it: the free-memory floor, the phase that touched it, the peak guest
 count, and the working set per guest at that peak; those tune the
 per-guest bar in `CoordinationProtocol.md`, "The token does not cover RAM".

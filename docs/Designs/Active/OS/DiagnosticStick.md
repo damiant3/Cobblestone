@@ -2,12 +2,10 @@
 
 *Owner: root for the composition; the ladder's stages belong to the lanes named on them.*
 
-**THERE ARE NO SITTINGS (2026-09-09).** The last sitting flew on 2026-09-09
-and stopped at the ladder's first write to the part; the record is
-`docs/Hardware/HardwareSitting.md` "THE SITTING QUEUE IS CLOSED". This design
-no longer composes flights. Its one remaining reader is the stranger below;
-every stage is graded in the beds, and a stage only metal could grade is
-deleted rather than kept for a flight.
+**SITTINGS ARE OPEN (Damian, 2026-09-23): one sitting answers every open
+metal question, and wastes neither his time nor his back** (`CurrentPlan.md`,
+"SITTINGS ARE OPEN"). This design composes that sitting. Every stage is graded
+in the beds first; a stage only metal can grade rides the next sitting.
 
 ## What it is for
 

@@ -1,0 +1,161 @@
+Chapter: AccpMath
+  cites Gpu chapter DeviceMath
+
+Section: Results
+
+  MathResult = | MathValue (Real) | MathError (Text)
+
+  math-finite : Real -> Boolean
+  math-finite (x) = bit-and (bit-shru (real-to-bits x) 52) 2047 /= 2047
+
+  math-result : Real -> MathResult
+  math-result (x) = if math-finite x then MathValue x else MathError "non-finite result"
+
+  math-format : MathResult -> Text
+  math-format (r) = when r
+    is MathValue (x) -> show x
+    is MathError (why) -> "error: " & why
+
+Section: Elementary Functions
+
+  math-pi : Real = 3.141592653589793
+
+  math-sqrt : Real -> MathResult
+  math-sqrt (x) =
+    if math-finite x == False | x < 0.0 then MathError "sqrt requires a finite nonnegative argument"
+    else math-result (real-sqrt x)
+
+  math-sin : Real -> MathResult
+  math-sin (x) =
+    if math-finite x == False | real-abs x > 100.0 then MathError "sin requires radians in [-100,100]"
+    else math-result (real-sin x)
+
+  math-cos : Real -> MathResult
+  math-cos (x) =
+    if math-finite x == False | real-abs x > 100.0 then MathError "cos requires radians in [-100,100]"
+    else math-result (real-cos x)
+
+  math-atan2 : Real, Real -> MathResult
+  math-atan2 (y) (x) =
+    if math-finite x == False | math-finite y == False then MathError "atan2 requires finite coordinates"
+    else if x <= 0.0 & x >= 0.0 & y <= 0.0 & y >= 0.0 then MathError "atan2 is undefined at the origin"
+    else math-result (real-atan2 y x)
+
+  math-pow : Real, Integer -> MathResult
+  math-pow (x) (n) =
+    if math-finite x == False | n < -1000000 | n > 1000000 then MathError "pow requires a finite base and integer exponent in [-1000000,1000000]"
+    else if x <= 0.0 & x >= 0.0 & n <= 0 then MathError "zero to a nonpositive power is undefined"
+    else math-pow-loop (if n < 0 then 1.0 / x else x) (if n < 0 then -n else n) 1.0
+
+  math-pow-loop : Real, Integer, Real -> MathResult
+  math-pow-loop (x) (n) (acc) =
+    if math-finite x == False | math-finite acc == False then MathError "power overflow"
+    else if n == 0 then MathValue acc
+    else if n == 1 then math-result (acc * x)
+    else math-pow-loop (x * x) (n / 2) (if int-rem n 2 == 1 then acc * x else acc)
+
+  math-exp : Real -> MathResult
+  math-exp (x) =
+    if math-finite x == False | x < -700.0 | x > 700.0 then MathError "exp requires an argument in [-700,700]"
+    else let k = real-to-int (x / 0.6931471805599453)
+    in let r = x - real-from-int k * 0.6931471805599453
+    in let sum = math-exp-series r 1 1.0 1.0
+    in when math-pow 2.0 k
+      is MathError (why) -> MathError why
+      is MathValue (scale) -> math-result (sum * scale)
+
+  math-exp-series : Real, Integer, Real, Real -> Real
+  math-exp-series (r) (i) (term) (sum) =
+    if i > 20 then sum
+    else let next = term * r / real-from-int i
+    in math-exp-series r (i + 1) next (sum + next)
+
+  math-log : Real -> MathResult
+  math-log (x) =
+    if math-finite x == False | x <= 0.0 then MathError "log requires a finite positive argument"
+    else math-log-scale x 0 1100
+
+  math-log-scale : Real, Integer, Integer -> MathResult
+  math-log-scale (x) (k) (fuel) =
+    if fuel <= 0 then MathError "log range reduction exhausted"
+    else if x >= 2.0 then math-log-scale (x * 0.5) (k + 1) (fuel - 1)
+    else if x < 1.0 then math-log-scale (x * 2.0) (k - 1) (fuel - 1)
+    else let z = (x - 1.0) / (x + 1.0)
+    in math-result (2.0 * math-log-series (z * z) z 1 0.0 + real-from-int k * 0.6931471805599453)
+
+  math-log-series : Real, Real, Integer, Real -> Real
+  math-log-series (z2) (term) (n) (sum) =
+    if n > 61 then sum
+    else math-log-series z2 (term * z2) (n + 2) (sum + term / real-from-int n)
+
+Section: Numerical Calculus
+
+  math-derivative : (Real -> Real), Real, Real -> MathResult
+  math-derivative (f) (x) (h) =
+    if math-finite x == False | math-finite h == False | h <= 0.0 then MathError "derivative requires finite x and positive finite step"
+    else if math-finite (x + h) == False | math-finite (x - h) == False then MathError "derivative sample point overflow"
+    else if x + h <= x | x - h >= x then MathError "derivative step is below floating-point resolution"
+    else math-result ((f (x + h) - f (x - h)) / (2.0 * h))
+
+  math-integral : (Real -> Real), Real, Real, Integer -> MathResult
+  math-integral (f) (a) (b) (steps) =
+    if math-finite a == False | math-finite b == False then MathError "integral requires finite endpoints"
+    else if steps < 2 | steps > 10000 | int-rem steps 2 /= 0 then MathError "Simpson integration requires even steps in [2,10000]"
+    else if a >= b & a <= b then MathValue 0.0
+    else let h = (b - a) / real-from-int steps
+    in if math-finite h == False | a + h ~0 a then MathError "integration step is not representable"
+    else math-integral-loop f a h steps 1 (f a + f b)
+
+  math-integral-loop : (Real -> Real), Real, Real, Integer, Integer, Real -> MathResult
+  math-integral-loop (f) (a) (h) (steps) (i) (sum) =
+    if math-finite sum == False then MathError "non-finite integrand or sum"
+    else if i >= steps then math-result (sum * h / 3.0)
+    else let weight = if int-rem i 2 == 0 then 2.0 else 4.0
+    in math-integral-loop f a h steps (i + 1) (sum + weight * f (a + real-from-int i * h))
+
+  math-root : (Real -> Real), Real, Real, Real, Integer -> MathResult
+  math-root (f) (a) (b) (tolerance) (iterations) =
+    if math-finite a == False | math-finite b == False | a >= b then MathError "root requires finite ordered endpoints"
+    else if math-finite tolerance == False | tolerance <= 0.0 | iterations < 1 | iterations > 1000 then MathError "root requires positive tolerance and iterations in [1,1000]"
+    else let fa = f a
+    in let fb = f b
+    in if math-finite fa == False | math-finite fb == False then MathError "non-finite root function"
+    else if fa <= 0.0 & fa >= 0.0 then MathValue a
+    else if fb <= 0.0 & fb >= 0.0 then MathValue b
+    else if (fa < 0.0) == (fb < 0.0) then MathError "root endpoints do not bracket a sign change"
+    else math-root-loop f a b fa tolerance iterations
+
+  math-root-loop : (Real -> Real), Real, Real, Real, Real, Integer -> MathResult
+  math-root-loop (f) (a) (b) (fa) (tolerance) (fuel) =
+    let mid = a * 0.5 + b * 0.5
+    in let fm = f mid
+    in if math-finite fm == False then MathError "non-finite root function"
+    else if fm <= 0.0 & fm >= 0.0 then MathValue mid
+    else if b * 0.5 - a * 0.5 <= tolerance then MathValue mid
+    else if fuel <= 1 then MathError "root did not converge within iteration limit"
+    else if mid <= a | mid >= b then MathError "root tolerance is below floating-point resolution"
+    else if (fa < 0.0) /= (fm < 0.0) then math-root-loop f a mid fa tolerance (fuel - 1)
+    else math-root-loop f mid b fm tolerance (fuel - 1)
+
+  math-ode : (Real, Real -> Real), Real, Real, Real, Integer -> MathResult
+  math-ode (f) (t0) (y0) (t1) (steps) =
+    if math-finite t0 == False | math-finite t1 == False | math-finite y0 == False then MathError "ODE requires finite initial data"
+    else if steps < 1 | steps > 10000 then MathError "ODE requires steps in [1,10000]"
+    else if t0 >= t1 & t0 <= t1 then MathValue y0
+    else let h = (t1 - t0) / real-from-int steps
+    in if math-finite h == False | t0 + h ~0 t0 then MathError "ODE step is not representable"
+    else math-ode-loop f t0 y0 h 0 steps
+
+  math-ode-loop : (Real, Real -> Real), Real, Real, Real, Integer, Integer -> MathResult
+  math-ode-loop (f) (t0) (y) (h) (i) (steps) =
+    if math-finite y == False then MathError "non-finite ODE state"
+    else if i >= steps then MathValue y
+    else let t = t0 + real-from-int i * h
+    in let k1 = f t y
+    in let k2 = f (t + h * 0.5) (y + h * k1 * 0.5)
+    in let k3 = f (t + h * 0.5) (y + h * k2 * 0.5)
+    in let k4 = f (t + h) (y + h * k3)
+    in if math-finite k1 == False | math-finite k2 == False | math-finite k3 == False | math-finite k4 == False then MathError "non-finite ODE derivative"
+    else math-ode-loop f t0 (y + h * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0) h (i + 1) steps
+
+Page 1

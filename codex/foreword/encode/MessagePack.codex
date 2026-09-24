@@ -1,5 +1,6 @@
 Chapter: MessagePack
   cites Foreword chapter Maybe
+  cites Foreword chapter CCE (text-to-utf8-bytes, utf8-bytes-to-text)
 
  We say:
 
@@ -36,41 +37,50 @@ Section: Encoding
     is MpArray (items) -> mp-encode-array items
     is MpMap (entries) -> mp-encode-map entries
 
+  mp-be : Integer, Integer, List Integer -> List Integer
+  mp-be (n) (count) (acc) =
+    if count == 0 then acc
+    else mp-be n (count - 1) (list-push acc (bit-and (bit-shru n ((count - 1) * 8)) 255))
+
   mp-encode-int : Integer -> List Integer
   mp-encode-int (n) =
     if n >= 0 then mp-encode-uint n
     else if n >= (0 - 32) then [bit-and (n + 256) 255]
-    else if n >= (0 - 128) then [208, bit-and (n + 256) 255]
-    else if n >= (0 - 32768) then [209, bit-and (bit-shru (n + 65536) 8) 255, bit-and (n + 65536) 255]
-    else [210, bit-and (bit-shru n 24) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 8) 255, bit-and n 255]
+    else if n >= (0 - 128) then [208] & mp-be n 1 []
+    else if n >= (0 - 32768) then [209] & mp-be n 2 []
+    else if n >= (0 - 2147483648) then [210] & mp-be n 4 []
+    else [211] & mp-be n 8 []
 
   mp-encode-uint : Integer -> List Integer
   mp-encode-uint (n) =
     if n < 128 then [n]
     else if n < 256 then [204, n]
-    else if n < 65536 then [205, bit-shru n 8, bit-and n 255]
-    else [206, bit-and (bit-shru n 24) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 8) 255, bit-and n 255]
+    else if n < 65536 then [205] & mp-be n 2 []
+    else if n < 4294967296 then [206] & mp-be n 4 []
+    else [207] & mp-be n 8 []
 
   mp-encode-str : Text -> List Integer
   mp-encode-str (s) =
-    let bytes = mp-text-to-bytes s 0 (text-length s) []
+    let bytes = text-to-utf8-bytes s
     in let len = list-length bytes
     in if len < 32 then [bit-or 160 len] & bytes
     else if len < 256 then [217, len] & bytes
-    else [218, bit-shru len 8, bit-and len 255] & bytes
+    else if len < 65536 then [218] & mp-be len 2 [] & bytes
+    else [219] & mp-be len 4 [] & bytes
 
   mp-encode-bin : List Integer -> List Integer
   mp-encode-bin (bs) =
     let len = list-length bs
     in if len < 256 then [196, len] & bs
-    else [197, bit-shru len 8, bit-and len 255] & bs
+    else if len < 65536 then [197] & mp-be len 2 [] & bs
+    else [198] & mp-be len 4 [] & bs
 
   mp-encode-array : List MsgPackValue -> List Integer
   mp-encode-array (items) =
     let len = list-length items
     in let header = if len < 16 then [bit-or 144 len]
-      else if len < 65536 then [220, bit-shru len 8, bit-and len 255]
-      else [221, bit-and (bit-shru len 24) 255, bit-and (bit-shru len 16) 255, bit-and (bit-shru len 8) 255, bit-and len 255]
+      else if len < 65536 then [220] & mp-be len 2 []
+      else [221] & mp-be len 4 []
     in header & mp-encode-list items 0 len []
 
   mp-encode-list : List MsgPackValue, Integer, Integer, List Integer -> List Integer
@@ -82,7 +92,8 @@ Section: Encoding
   mp-encode-map (entries) =
     let len = list-length entries
     in let header = if len < 16 then [bit-or 128 len]
-      else [222, bit-shru len 8, bit-and len 255]
+      else if len < 65536 then [222] & mp-be len 2 []
+      else [223] & mp-be len 4 []
     in header & mp-encode-entries entries 0 len []
 
   mp-encode-entries : List MpMapEntry, Integer, Integer, List Integer -> List Integer
@@ -93,121 +104,151 @@ Section: Encoding
 
 Section: Decoding
 
+ A decode that fails carries mpr-offset -1 and every caller passes it on.
+ msgpack-decode answers None unless exactly one value fills the buffer.
+
+ mp-max-depth bounds the recursion: each array or map level costs a fixed
+ handful of stack frames, and 256 levels is far past any real document.
+
+  mp-max-depth : Integer = 256
+
+  mp-fail : MpDecodeResult = MpDecodeResult { mpr-value = MpNil, mpr-offset = 0 - 1 }
+
   msgpack-decode : List Integer -> Maybe MsgPackValue
   msgpack-decode (bs) =
     if list-length bs == 0 then None
     else let r = mp-decode-at bs 0
-    in Just (r.mpr-value)
+    in if r.mpr-offset /= list-length bs then None
+    else Just (r.mpr-value)
 
   mp-decode-at : List Integer, Integer -> MpDecodeResult
-  mp-decode-at (bs) (off) =
-    let b = list-at bs off
-    in if b == 192 then MpDecodeResult { mpr-value = MpNil, mpr-offset = off + 1 }
-    else if b == 194 then MpDecodeResult { mpr-value = MpBool False, mpr-offset = off + 1 }
-    else if b == 195 then MpDecodeResult { mpr-value = MpBool True, mpr-offset = off + 1 }
-    else if b < 128 then MpDecodeResult { mpr-value = MpInt b, mpr-offset = off + 1 }
-    else if b >= 224 then MpDecodeResult { mpr-value = MpInt (b - 256), mpr-offset = off + 1 }
-    else if b == 204 then MpDecodeResult { mpr-value = MpInt (list-at bs (off + 1)), mpr-offset = off + 2 }
-    else if b == 205 then MpDecodeResult { mpr-value = MpInt (bit-or (bit-shl (list-at bs (off + 1)) 8) (list-at bs (off + 2))), mpr-offset = off + 3 }
-    else if b == 206 then MpDecodeResult { mpr-value = MpInt (bit-or (bit-or (bit-shl (list-at bs (off + 1)) 24) (bit-shl (list-at bs (off + 2)) 16)) (bit-or (bit-shl (list-at bs (off + 3)) 8) (list-at bs (off + 4)))), mpr-offset = off + 5 }
-    else if b == 208 then MpDecodeResult { mpr-value = MpInt (list-at bs (off + 1) - 256), mpr-offset = off + 2 }
-    else if b == 209 then MpDecodeResult { mpr-value = MpInt (bit-or (bit-shl (list-at bs (off + 1)) 8) (list-at bs (off + 2)) - 65536), mpr-offset = off + 3 }
-    else if b == 210 then MpDecodeResult { mpr-value = MpInt (bit-or (bit-or (bit-shl (list-at bs (off + 1)) 24) (bit-shl (list-at bs (off + 2)) 16)) (bit-or (bit-shl (list-at bs (off + 3)) 8) (list-at bs (off + 4)))), mpr-offset = off + 5 }
-    else if b == 196 then mp-decode-bin8 bs off
-    else if b == 197 then mp-decode-bin16 bs off
-    else if bit-and b 224 == 160 then mp-decode-fixstr bs off (bit-and b 31)
-    else if b == 217 then mp-decode-str8 bs off
-    else if b == 218 then mp-decode-str16 bs off
-    else if bit-and b 240 == 144 then mp-decode-fixarray bs off (bit-and b 15)
-    else if b == 220 then mp-decode-array16 bs off
-    else if b == 221 then mp-decode-array32 bs off
-    else if bit-and b 240 == 128 then mp-decode-fixmap bs off (bit-and b 15)
-    else if b == 222 then mp-decode-map16 bs off
-    else MpDecodeResult { mpr-value = MpNil, mpr-offset = off + 1 }
+  mp-decode-at (bs) (off) = mp-decode-item bs off 0
 
-  mp-decode-fixstr : List Integer, Integer, Integer -> MpDecodeResult
-  mp-decode-fixstr (bs) (off) (len) =
-    let bytes = mp-slice bs (off + 1) len 0 []
-    in let s = mp-bytes-to-text bytes 0 len ""
-    in MpDecodeResult { mpr-value = MpStr s, mpr-offset = off + 1 + len }
+  mp-ok : MsgPackValue, Integer -> MpDecodeResult
+  mp-ok (v) (next) = MpDecodeResult { mpr-value = v, mpr-offset = next }
 
-  mp-decode-str8 : List Integer, Integer -> MpDecodeResult
-  mp-decode-str8 (bs) (off) =
-    let len = list-at bs (off + 1)
-    in let bytes = mp-slice bs (off + 2) len 0 []
-    in let s = mp-bytes-to-text bytes 0 len ""
-    in MpDecodeResult { mpr-value = MpStr s, mpr-offset = off + 2 + len }
+ The format's lead bytes (msgpack spec, "Formats"): positive and negative
+ fixint, fixmap, fixarray, fixstr, nil, booleans, bin 8/16/32, uint and int
+ 8/16/32/64, str 8/16/32, array 16/32 and map 16/32. 193 is never used; float,
+ ext and fixext have no MsgPackValue to become, so they are refused rather
+ than answered as nil.
 
-  mp-decode-fixarray : List Integer, Integer, Integer -> MpDecodeResult
-  mp-decode-fixarray (bs) (off) (count) =
-    mp-decode-array-loop bs (off + 1) count 0 []
+  mp-decode-item : List Integer, Integer, Integer -> MpDecodeResult
+  mp-decode-item (bs) (off) (depth) =
+    if depth > mp-max-depth then mp-fail
+    else if off < 0 then mp-fail
+    else if off >= list-length bs then mp-fail
+    else let b = list-at bs off
+    in let at = off + 1
+    in if b < 128 then mp-ok (MpInt b) at
+    else if b >= 224 then mp-ok (MpInt (b - 256)) at
+    else if b < 144 then mp-decode-map-loop bs at (b - 128) 0 [] (depth + 1)
+    else if b < 160 then mp-decode-array-loop bs at (b - 144) 0 [] (depth + 1)
+    else if b < 192 then mp-decode-str bs at (b - 160)
+    else if b == 192 then mp-ok MpNil at
+    else if b == 194 then mp-ok (MpBool False) at
+    else if b == 195 then mp-ok (MpBool True) at
+    else if b == 196 then mp-sized bs at 1 1 depth
+    else if b == 197 then mp-sized bs at 2 1 depth
+    else if b == 198 then mp-sized bs at 4 1 depth
+    else if b == 204 then mp-decode-uint bs at 1
+    else if b == 205 then mp-decode-uint bs at 2
+    else if b == 206 then mp-decode-uint bs at 4
+    else if b == 207 then mp-decode-uint bs at 8
+    else if b == 208 then mp-decode-int bs at 1
+    else if b == 209 then mp-decode-int bs at 2
+    else if b == 210 then mp-decode-int bs at 4
+    else if b == 211 then mp-decode-int bs at 8
+    else if b == 217 then mp-sized bs at 1 2 depth
+    else if b == 218 then mp-sized bs at 2 2 depth
+    else if b == 219 then mp-sized bs at 4 2 depth
+    else if b == 220 then mp-sized bs at 2 3 depth
+    else if b == 221 then mp-sized bs at 4 3 depth
+    else if b == 222 then mp-sized bs at 2 4 depth
+    else if b == 223 then mp-sized bs at 4 4 depth
+    else mp-fail
 
-  mp-decode-array16 : List Integer, Integer -> MpDecodeResult
-  mp-decode-array16 (bs) (off) =
-    let count = bit-or (bit-shl (list-at bs (off + 1)) 8) (list-at bs (off + 2))
-    in mp-decode-array-loop bs (off + 3) count 0 []
+  mp-read-be : List Integer, Integer, Integer, Integer -> Integer
+  mp-read-be (bs) (off) (count) (acc) =
+    if count == 0 then acc
+    else mp-read-be bs (off + 1) (count - 1) (bit-or (bit-shl acc 8) (list-at bs off))
 
-  mp-decode-array-loop : List Integer, Integer, Integer, Integer, List MsgPackValue -> MpDecodeResult
-  mp-decode-array-loop (bs) (off) (count) (i) (acc) =
-    if i >= count then MpDecodeResult { mpr-value = MpArray acc, mpr-offset = off }
-    else let r = mp-decode-at bs off
-    in mp-decode-array-loop bs (r.mpr-offset) count (i + 1) (list-push acc (r.mpr-value))
+ A width-prefixed length or count. kind 1 is bin, 2 str, 3 array, 4 map.
 
-  mp-decode-fixmap : List Integer, Integer, Integer -> MpDecodeResult
-  mp-decode-fixmap (bs) (off) (count) =
-    mp-decode-map-loop bs (off + 1) count 0 []
+  mp-sized : List Integer, Integer, Integer, Integer, Integer -> MpDecodeResult
+  mp-sized (bs) (off) (width) (kind) (depth) =
+    if width > list-length bs - off then mp-fail
+    else let n = mp-read-be bs off width 0
+    in let at = off + width
+    in if kind == 1 then mp-decode-bin bs at n
+    else if kind == 2 then mp-decode-str bs at n
+    else if kind == 3 then mp-decode-array-loop bs at n 0 [] (depth + 1)
+    else mp-decode-map-loop bs at n 0 [] (depth + 1)
 
-  mp-decode-map-loop : List Integer, Integer, Integer, Integer, List MpMapEntry -> MpDecodeResult
-  mp-decode-map-loop (bs) (off) (count) (i) (acc) =
-    if i >= count then MpDecodeResult { mpr-value = MpMap acc, mpr-offset = off }
-    else let kr = mp-decode-at bs off
-    in let vr = mp-decode-at bs (kr.mpr-offset)
-    in mp-decode-map-loop bs (vr.mpr-offset) count (i + 1) (list-push acc (MpMapEntry { mpe-key = kr.mpr-value, mpe-value = vr.mpr-value }))
+ A uint 64 with its top bit set does not fit a signed 64-bit Integer, so it
+ is refused rather than read negative.
 
-  mp-decode-bin8 : List Integer, Integer -> MpDecodeResult
-  mp-decode-bin8 (bs) (off) =
-    let len = list-at bs (off + 1)
-    in let data = mp-slice bs (off + 2) len 0 []
-    in MpDecodeResult { mpr-value = MpBin data, mpr-offset = off + 2 + len }
+  mp-decode-uint : List Integer, Integer, Integer -> MpDecodeResult
+  mp-decode-uint (bs) (off) (width) =
+    if width > list-length bs - off then mp-fail
+    else if width == 8 & list-at bs off >= 128 then mp-fail
+    else mp-ok (MpInt (mp-read-be bs off width 0)) (off + width)
 
-  mp-decode-bin16 : List Integer, Integer -> MpDecodeResult
-  mp-decode-bin16 (bs) (off) =
-    let len = bit-or (bit-shl (list-at bs (off + 1)) 8) (list-at bs (off + 2))
-    in let data = mp-slice bs (off + 3) len 0 []
-    in MpDecodeResult { mpr-value = MpBin data, mpr-offset = off + 3 + len }
+ Two's complement: an 8-byte read lands its sign in bit 63 on its own; a
+ narrower one subtracts 2^(8 * width) when its top bit is set.
 
-  mp-decode-str16 : List Integer, Integer -> MpDecodeResult
-  mp-decode-str16 (bs) (off) =
-    let len = bit-or (bit-shl (list-at bs (off + 1)) 8) (list-at bs (off + 2))
-    in let bytes = mp-slice bs (off + 3) len 0 []
-    in let s = mp-bytes-to-text bytes 0 len ""
-    in MpDecodeResult { mpr-value = MpStr s, mpr-offset = off + 3 + len }
+  mp-decode-int : List Integer, Integer, Integer -> MpDecodeResult
+  mp-decode-int (bs) (off) (width) =
+    if width > list-length bs - off then mp-fail
+    else let v = mp-read-be bs off width 0
+    in if width == 8 then mp-ok (MpInt v) (off + width)
+    else if list-at bs off >= 128 then mp-ok (MpInt (v - bit-shl 1 (width * 8))) (off + width)
+    else mp-ok (MpInt v) (off + width)
 
-  mp-decode-array32 : List Integer, Integer -> MpDecodeResult
-  mp-decode-array32 (bs) (off) =
-    let count = bit-or (bit-or (bit-shl (list-at bs (off + 1)) 24) (bit-shl (list-at bs (off + 2)) 16)) (bit-or (bit-shl (list-at bs (off + 3)) 8) (list-at bs (off + 4)))
-    in mp-decode-array-loop bs (off + 5) count 0 []
+  mp-decode-bin : List Integer, Integer, Integer -> MpDecodeResult
+  mp-decode-bin (bs) (off) (len) =
+    if len > list-length bs - off then mp-fail
+    else mp-ok (MpBin (mp-slice bs off len 0 [])) (off + len)
 
-  mp-decode-map16 : List Integer, Integer -> MpDecodeResult
-  mp-decode-map16 (bs) (off) =
-    let count = bit-or (bit-shl (list-at bs (off + 1)) 8) (list-at bs (off + 2))
-    in mp-decode-map-loop bs (off + 3) count 0 []
+ Text is UTF-8 on the wire. Bytes that do not survive the round trip through
+ Text (malformed UTF-8, or a character CCE cannot hold) are refused rather
+ than dropped.
+
+  mp-decode-str : List Integer, Integer, Integer -> MpDecodeResult
+  mp-decode-str (bs) (off) (len) =
+    if len > list-length bs - off then mp-fail
+    else let bytes = mp-slice bs off len 0 []
+    in let s = utf8-bytes-to-text bytes
+    in if mp-same-bytes (text-to-utf8-bytes s) bytes 0 then mp-ok (MpStr s) (off + len)
+    else mp-fail
+
+  mp-decode-array-loop : List Integer, Integer, Integer, Integer, List MsgPackValue, Integer -> MpDecodeResult
+  mp-decode-array-loop (bs) (off) (count) (i) (acc) (depth) =
+    if i >= count then mp-ok (MpArray acc) off
+    else let r = mp-decode-item bs off depth
+    in if r.mpr-offset < 0 then mp-fail
+    else mp-decode-array-loop bs (r.mpr-offset) count (i + 1) (list-push acc (r.mpr-value)) depth
+
+  mp-decode-map-loop : List Integer, Integer, Integer, Integer, List MpMapEntry, Integer -> MpDecodeResult
+  mp-decode-map-loop (bs) (off) (count) (i) (acc) (depth) =
+    if i >= count then mp-ok (MpMap acc) off
+    else let kr = mp-decode-item bs off depth
+    in if kr.mpr-offset < 0 then mp-fail
+    else let vr = mp-decode-item bs (kr.mpr-offset) depth
+    in if vr.mpr-offset < 0 then mp-fail
+    else mp-decode-map-loop bs (vr.mpr-offset) count (i + 1) (list-push acc (MpMapEntry { mpe-key = kr.mpr-value, mpe-value = vr.mpr-value })) depth
 
 Section: Helpers
 
-  mp-text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
-  mp-text-to-bytes (s) (i) (len) (acc) =
-    if i >= len then acc
-    else mp-text-to-bytes s (i + 1) len (list-push acc (char-code (char-at s i)))
-
-  mp-bytes-to-text : List Integer, Integer, Integer, Text -> Text
-  mp-bytes-to-text (bs) (i) (len) (acc) =
-    if i >= len then acc
-    else mp-bytes-to-text bs (i + 1) len (acc & char-to-text (code-to-char (list-at bs i)))
+  mp-same-bytes : List Integer, List Integer, Integer -> Boolean
+  mp-same-bytes (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else mp-same-bytes a b (i + 1)
 
   mp-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   mp-slice (bs) (off) (len) (i) (acc) =
     if i >= len then acc
     else mp-slice bs off len (i + 1) (list-push acc (list-at bs (off + i)))
-
 Page 1

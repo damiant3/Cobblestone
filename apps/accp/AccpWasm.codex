@@ -1,0 +1,128 @@
+Chapter: AccpWasm
+  cites Accp chapter AccpJson
+  cites Encode chapter Base64 (b64-decode-char)
+
+Section: Binary Reader
+
+  AccpBytes = record { ptr : Integer, len : Integer, ok : Boolean }
+  AccpLeb = record { value : Integer, next : Integer, ok : Boolean }
+
+  ab-byte : AccpBytes, Integer -> Integer
+  ab-byte (b) (i) = if i < 0 | i >= b.len then -1 else peek-byte b.ptr i
+
+  ab-uleb : AccpBytes, Integer -> AccpLeb
+  ab-uleb (b) (at) = ab-uleb-loop b at 0 0
+
+  ab-uleb-loop : AccpBytes, Integer, Integer, Integer -> AccpLeb
+  ab-uleb-loop (b) (at) (shift) (acc) =
+    let c = ab-byte b at
+    in if c < 0 | shift > 28 | (shift == 28 & c > 15) then AccpLeb { value = 0, next = at, ok = False }
+    else let n = acc + bit-shl (bit-and c 127) shift
+    in if c < 128 then AccpLeb { value = n, next = at + 1, ok = True }
+    else ab-uleb-loop b (at + 1) (shift + 7) n
+
+  ab-base64 : Text -> AccpBytes
+  ab-base64 (s) =
+    let n = text-length s
+    in if n < 4 | int-mod n 4 /= 0 | n > 22369624 then AccpBytes { ptr = 0, len = 0, ok = False }
+    else let buf = alloc-bytes (n / 4 * 3)
+    in ab-b64-loop s cce-to-unicode-table buf 0 0
+
+  ab-b64-code : List Integer, Text, Integer -> Integer
+  ab-b64-code (tbl) (s) (i) =
+    let c = to-unicode-with tbl (char-code-at s i)
+    in if (c >= 65 & c <= 90) | (c >= 97 & c <= 122) | (c >= 48 & c <= 57) | c == 43 | c == 47 then b64-decode-char c
+    else if c == 61 then -2 else -1
+
+  ab-b64-loop : Text, List Integer, Integer, Integer, Integer -> AccpBytes
+  ab-b64-loop (s) (tbl) (buf) (i) (n) =
+    if i >= text-length s then AccpBytes { ptr = buf, len = n, ok = True }
+    else let a = ab-b64-code tbl s i
+    in let b = ab-b64-code tbl s (i + 1)
+    in let c = ab-b64-code tbl s (i + 2)
+    in let d = ab-b64-code tbl s (i + 3)
+    in if a < 0 | b < 0 | c == -1 | d == -1 then AccpBytes { ptr = buf, len = n, ok = False }
+    else if (c == -2 | d == -2) & i + 4 /= text-length s then AccpBytes { ptr = buf, len = n, ok = False }
+    else if c == -2 & (d /= -2 | bit-and b 15 /= 0) then AccpBytes { ptr = buf, len = n, ok = False }
+    else if d == -2 & c >= 0 & bit-and c 3 /= 0 then AccpBytes { ptr = buf, len = n, ok = False }
+    else let w0 = poke-byte buf n (a * 4 + bit-shru b 4)
+    in if c == -2 then AccpBytes { ptr = buf, len = n + 1, ok = True }
+    else let w1 = poke-byte buf (n + 1) (bit-and (b * 16 + bit-shru c 2) 255)
+    in if d == -2 then AccpBytes { ptr = buf, len = n + 2, ok = True }
+    else let w2 = poke-byte buf (n + 2) (bit-and (c * 64 + d) 255)
+    in ab-b64-loop s tbl buf (i + 4) (n + 3)
+
+Section: Import Signatures
+
+  AccpTypes = record { signatures : List Boolean, ok : Boolean }
+
+  ab-i32s : AccpBytes, Integer, Integer -> Boolean
+  ab-i32s (b) (i) (n) =
+    if n == 0 then True
+    else if ab-byte b i /= 127 then False else ab-i32s b (i + 1) (n - 1)
+
+  ab-types : AccpBytes, Integer, Integer, Integer, List Boolean -> AccpTypes
+  ab-types (b) (at) (stop) (remaining) (acc) =
+    if remaining == 0 then AccpTypes { signatures = acc, ok = at == stop }
+    else if remaining > 65536 | ab-byte b at /= 96 then AccpTypes { signatures = [], ok = False }
+    else let p = ab-uleb b (at + 1)
+    in if p.ok == False | p.value > 1024 | p.next + p.value > stop then AccpTypes { signatures = [], ok = False }
+    else let r = ab-uleb b (p.next + p.value)
+    in if r.ok == False | r.value > 1024 | r.next + r.value > stop then AccpTypes { signatures = [], ok = False }
+    else let sig = p.value == 4 & r.value == 1 & ab-i32s b p.next p.value & ab-byte b r.next == 127
+    in ab-types b (r.next + r.value) stop (remaining - 1) (list-push acc sig)
+
+  ab-name-is : AccpBytes, Integer, Integer, Text -> Boolean
+  ab-name-is (b) (start) (len) (name) =
+    len == text-length name & ab-name-loop b start name cce-to-unicode-table 0
+
+  ab-name-loop : AccpBytes, Integer, Text, List Integer, Integer -> Boolean
+  ab-name-loop (b) (start) (name) (tbl) (i) =
+    if i >= text-length name then True
+    else if ab-byte b (start + i) /= to-unicode-with tbl (char-code-at name i) then False
+    else ab-name-loop b start name tbl (i + 1)
+
+  ab-imports : AccpBytes, Integer, Integer, Integer, List Boolean, Integer -> Boolean
+  ab-imports (b) (at) (stop) (remaining) (types) (seen) =
+    if remaining == 0 then at == stop
+    else if remaining > 2 then False
+    else let m = ab-uleb b at
+    in if m.ok == False | m.next + m.value >= stop then False
+    else let n = ab-uleb b (m.next + m.value)
+    in if n.ok == False | n.next + n.value >= stop then False
+    else let kind = ab-byte b (n.next + n.value)
+    in let t = ab-uleb b (n.next + n.value + 1)
+    in if kind /= 0 | t.ok == False | t.next > stop | t.value >= list-length types then False
+    else if list-at types t.value == False | ab-name-is b m.next m.value "wasi_snapshot_preview1" == False then False
+    else let bit = if ab-name-is b n.next n.value "fd_read" then 1 else if ab-name-is b n.next n.value "fd_write" then 2 else 0
+    in if bit == 0 | bit-and seen bit /= 0 then False
+    else ab-imports b t.next stop (remaining - 1) types (bit-or seen bit)
+
+  ab-sections : AccpBytes, Integer, List Boolean, Boolean, Boolean -> Boolean
+  ab-sections (b) (at) (types) (had-types) (had-imports) =
+    if at == b.len then True
+    else if at > b.len then False
+    else let id = ab-byte b at
+    in let n = ab-uleb b (at + 1)
+    in let stop = n.next + n.value
+    in if n.ok == False | stop > b.len | id > 12 then False
+    else if id == 1 then
+      let c = ab-uleb b n.next
+      in let ts = ab-types b c.next stop c.value []
+      in if had-types | c.ok == False | ts.ok == False then False
+      else ab-sections b stop ts.signatures True had-imports
+    else if id == 2 then
+      let c = ab-uleb b n.next
+      in if had-imports | c.ok == False | ab-imports b c.next stop c.value types 0 == False then False
+      else ab-sections b stop types had-types True
+    else ab-sections b stop types had-types had-imports
+
+  ab-admit : Text -> Boolean
+  ab-admit (base64) =
+    let b = ab-base64 base64
+    in if b.ok == False | b.len < 8 then False
+    else if ab-byte b 0 /= 0 | ab-byte b 1 /= 97 | ab-byte b 2 /= 115 | ab-byte b 3 /= 109 then False
+    else if ab-byte b 4 /= 1 | ab-byte b 5 /= 0 | ab-byte b 6 /= 0 | ab-byte b 7 /= 0 then False
+    else ab-sections b 8 [] False False
+
+Page 1

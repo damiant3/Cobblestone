@@ -4,6 +4,7 @@ Every application built on Codex, one row each.
 
 | App | Description | README |
 |-----|-------------|--------|
+| accp | Standalone agent computation service: exact arithmetic, numerical math, physics, experiments and MCP | [README](../apps/accp/README.md) |
 | assetforge | Local AI asset generation: 2D card art via diffusion, then 3D mesh reconstruction (PNG + GLB output) | -- |
 | books | E-book reader with library shelf and reading view | [README](apps/books/README.md) |
 | browser | Bare-metal web browser with content-addressed pages and capability tiers | [README](apps/browser/README.md) |

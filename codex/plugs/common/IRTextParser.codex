@@ -943,7 +943,8 @@ Section: IRDef + Chapter
        ctor-names = ctors,
        prose-blocks = pblocks,
        annotations = anns,
-       ground-effects = ground-tbl
+       ground-effects = ground-tbl,
+       method-templates = ir-method-template-section xs
       }
    in ParsedIR { chapter = chapter, meta = meta, type-defs = parsed-tdefs, effect-op-names = eff-ops }
 
@@ -951,6 +952,35 @@ Section: IRDef + Chapter
   walk-named-text (xs) (key) =
    let f = find-named-form xs key
    in if list-length f == 0 then "" else sexp-str (list-at f 1)
+
+  ir-method-template-section : List SExp -> Text
+  ir-method-template-section (xs) =
+   let section = find-named-form xs "method-templates"
+   in if list-length section == 0 then ""
+      else text-concat-list (ir-section-fragments (SList section) [])
+
+  ir-section-fragments : SExp, List Text -> List Text
+  ir-section-fragments (node) (acc) =
+   when node
+    is SAtom (s) -> list-push acc s
+    is SStr (s) -> list-push (ir-section-escape s 0 (list-push acc "\"")) "\""
+    is SList (xs) -> list-push (ir-section-items xs 0 (list-push acc "(")) ")"
+
+  ir-section-items : List SExp, Integer, List Text -> List Text
+  ir-section-items (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else let spaced = if i == 0 then acc else list-push acc " "
+   in ir-section-items xs (i + 1) (ir-section-fragments (list-at xs i) spaced)
+
+  ir-section-escape : Text, Integer, List Text -> List Text
+  ir-section-escape (s) (i) (acc) =
+   if i >= text-length s then acc
+   else let c = char-code-at s i
+   in let part = if c == char-code-at "\\" 0 then "\\\\"
+      else if c == char-code-at "\"" 0 then "\\\""
+      else if c == char-code-at "\n" 0 then "\\n"
+      else char-to-text (code-to-char c)
+   in ir-section-escape s (i + 1) (list-push acc part)
 
   walk-named-strs : List SExp, Text -> List Text
   walk-named-strs (xs) (key) =

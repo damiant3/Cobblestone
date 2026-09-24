@@ -316,6 +316,22 @@ Section: Match
    in let ex = rv-emit-deck-exit st1
    in rv-load-local (ex.state) (sl.reg)
 
+  rv-emit-list-with-capacity : RvState, IRExpr -> RvEmitResult
+  rv-emit-list-with-capacity (st) (n-expr) =
+   let er = rv-emit-expr (rv-set-result-dest st (0 - 1)) n-expr
+   in let nr = if er.reg >= rv-spill-base then rv-load-local (er.state) (er.reg) else er
+   in let r = rv-alloc-temp (nr.state)
+   in let st1 = rv-emit (r.state) (rv-srai rv-t1 (nr.reg) 63)
+   in let st2 = rv-emit st1 (rv-xori rv-t1 rv-t1 (0 - 1))
+   in let st3 = rv-emit st2 (rv-and rv-t0 (nr.reg) rv-t1)
+   in let st4 = rv-emit st3 (rv-sd rv-heap-reg rv-t0 0)
+   in let st5 = rv-emit st4 (rv-addi rv-heap-reg rv-heap-reg 8)
+   in let st6 = rv-emit st5 (rv-mv (r.reg) rv-heap-reg)
+   in let st7 = rv-emit st6 (rv-sd rv-heap-reg rv-zero 0)
+   in let st8 = rv-emit st7 (rv-slli rv-t0 rv-t0 3)
+   in let st9 = rv-emit st8 (rv-addi rv-t0 rv-t0 8)
+   in RvEmitResult { state = rv-emit st9 (rv-add rv-heap-reg rv-heap-reg rv-t0), reg = r.reg }
+
   rv-emit-empty-list : RvState -> RvEmitResult
   rv-emit-empty-list (st) =
    let r = rv-alloc-temp st
@@ -720,7 +736,7 @@ Section: Tail Call Optimization
    in let lr = rv-emit-frameless-arg st left
    in let rr = rv-emit-frameless-arg (rv-reserve-temp (lr.state) (lr.reg)) right
    in let rd = rv-alloc-temp (rv-reserve-temp (rr.state) (rr.reg))
-   in let st1 = rv-emit (rv-restore-reserved (rd.state) mask) (rv-rem (rd.reg) (lr.reg) (rr.reg))
+   in let st1 = rv-emit (rv-emit-div-guard (rv-restore-reserved (rd.state) mask) (rr.reg)) (rv-rem (rd.reg) (lr.reg) (rr.reg))
    in rv-emit-mod-correction st1 (rd.reg) (rr.reg)
 
   rv-emit-frameless-rem : RvState, IRExpr, IRExpr -> RvEmitResult
@@ -731,7 +747,7 @@ Section: Tail Call Optimization
    in let lr = rv-emit-frameless-arg st left
    in let rr = rv-emit-frameless-arg (rv-reserve-temp (lr.state) (lr.reg)) right
    in let rd = rv-alloc-temp (rv-restore-reserved (rr.state) mask)
-   in RvEmitResult { state = rv-emit (rd.state) (rv-rem (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
+   in RvEmitResult { state = rv-emit (rv-emit-div-guard (rd.state) (rr.reg)) (rv-rem (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
 
   rv-emit-frameless-binop-reg : RvState, IRBinaryOp, IRExpr, IRExpr -> RvEmitResult
   rv-emit-frameless-binop-reg (st) (op) (left) (right) =
@@ -743,8 +759,8 @@ Section: Tail Call Optimization
     is IrAddInt -> RvEmitResult { state = rv-emit (rd.state) (rv-add (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
     is IrSubInt -> RvEmitResult { state = rv-emit (rd.state) (rv-sub (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
     is IrMulInt -> RvEmitResult { state = rv-emit (rd.state) (rv-mul (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
-    is IrDivInt -> RvEmitResult { state = rv-emit (rd.state) (rv-div (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
-    is IrRemInt -> RvEmitResult { state = rv-emit (rd.state) (rv-rem (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
+    is IrDivInt -> RvEmitResult { state = rv-emit (rv-emit-div-guard (rd.state) (rr.reg)) (rv-div (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
+    is IrRemInt -> RvEmitResult { state = rv-emit (rv-emit-div-guard (rd.state) (rr.reg)) (rv-rem (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
     is IrAnd -> RvEmitResult { state = rv-emit (rd.state) (rv-and (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
     is IrOr -> RvEmitResult { state = rv-emit (rd.state) (rv-or (rd.reg) (lr.reg) (rr.reg)), reg = rd.reg }
     is otherwise -> RvEmitResult { state = rd.state, reg = rd.reg }
@@ -1271,7 +1287,8 @@ Section: Module Emission
 
   rv-emit-function : RvState, IRDef -> RvState
   rv-emit-function (st) (def) =
-   let lt = rv-lir-emit-try st def
+   if rv-has-bounded-boundary def then rv-emit-function-framed st def
+   else let lt = rv-lir-emit-try st def
    in if lt.handled then lt.state
    else if rv-is-frameless-tco def & rv-body-is-frameless (def.body) (def.name) then rv-emit-function-frameless st def
    else if rv-is-pure-leaf def then rv-emit-function-leaf st def
@@ -1375,8 +1392,9 @@ Section: Module Emission
     in let st1e = rv-patch-insn st1d beq-slot (rv-beq rv-t1 rv-zero ((body-start - beq-slot) * 4))
     in __record-set st1e "prologue-index" (st1e.insn-count)
    else st1
-   in let st2 = if use-compact then rv-emit-compact-prologue st1 save-regs
+   in let st2g = if use-compact then rv-emit-compact-prologue st1 save-regs
     else rv-emit-prologue st1 save-regs
+   in let st2 = rv-emit-param-guards st2g (def.params) 0
    in let bp = rv-bind-params st2 (def.params) 0
    in let st3 = bp.sbr-state
    in let spl-patches = bp.sbr-patches
@@ -1408,6 +1426,7 @@ Section: Module Emission
      let lr = rv-load-local (er.state) (er.reg)
      in rv-emit (lr.state) (rv-mv rv-a0 (lr.reg))
     else rv-emit (er.state) (rv-mv rv-a0 (er.reg))
+   in let st5 = rv-emit-return-guard st5 def
    in let st5 = if def.name == "opening" then
     if rv-opening-returns-int (def.type-val) then
      let st5a = rv-add-call-patch st5 "__itoa"

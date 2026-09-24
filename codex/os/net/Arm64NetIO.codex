@@ -211,6 +211,28 @@ Section: Send
    in let st2 = arm64-flush-transport-outbox st1
    in arm64-net-io-send-chunk st2 data (off + arm64-net-mss) total
 
+  Arm64SendResult = record {
+    as-state : Arm64NetIOState,
+    as-sent : Integer,
+    as-complete : Boolean
+  }
+
+  arm64-net-io-send-chunk-checked : Arm64NetIOState, List Integer, Integer, Integer -> Arm64SendResult
+  arm64-net-io-send-chunk-checked (st) (data) (off) (total) =
+   if off >= total then Arm64SendResult { as-state = st, as-sent = total, as-complete = True }
+   else let stop = if off + arm64-net-mss > total then total else off + arm64-net-mss
+   in let chunk = transport-slice data off stop
+   in let std = arm64-net-io-send-drain st 0 0
+   in if net-rexmit-full ((std.transport).session) then Arm64SendResult { as-state = std, as-sent = off, as-complete = False }
+   else if arm64-net-io-conn-closed std then Arm64SendResult { as-state = std, as-sent = off, as-complete = False }
+   else let r = net-send ((std.transport).session) chunk
+   in let st1 = Arm64NetIOState { vnet = std.vnet, transport = transport-set-session (std.transport) (r.session) }
+   in if net-outbox-count (r.session) == 0 then Arm64SendResult { as-state = st1, as-sent = off, as-complete = False }
+   else arm64-net-io-send-chunk-checked (arm64-flush-transport-outbox st1) data (off + arm64-net-mss) total
+
+  arm64-net-io-send-raw-checked : Arm64NetIOState, List Integer -> Arm64SendResult
+  arm64-net-io-send-raw-checked (st) (data) = arm64-net-io-send-chunk-checked st data 0 (list-length data)
+
   arm64-net-io-send-raw : Arm64NetIOState, List Integer -> Arm64NetIOState
   arm64-net-io-send-raw (st) (data) = arm64-net-io-send-chunk st data 0 (list-length data)
 

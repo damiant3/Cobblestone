@@ -71,8 +71,10 @@ static void whp_unlock(void) {
    never when run alone, which is the shape of a teardown race. Stop, cancel,
    join and delete the APs first; the whole of the fix is the order. */
 static void stop_ap_threads(void);
+static void stop_timer_kick(void);
 static void cleanup_whp(void) {
     if (!partition) return;
+    stop_timer_kick();
     stop_ap_threads();
     whp_lock();
     WHvDeleteVirtualProcessor(partition, 0);
@@ -526,6 +528,12 @@ static unsigned int pit_divisor(int ch) {
     return pit_reload[ch] ? (unsigned int)pit_reload[ch] : 65536u;
 }
 
+/* Core 0's tick period in seconds: channel 0's programmed divisor over the
+   input clock, 54.9 ms before the guest programs it. */
+static double pit0_period(void) {
+    return (double)pit_divisor(0) / PIT_HZ;
+}
+
 static double now_ms_for_timer(void);   /* defined with the LAPIC timer */
 
 /* Where the counter stands right now. Mode 3, the square-wave generator,
@@ -842,6 +850,8 @@ static int xhci_scratch_bufs = 0;
    1024x768/1024, modelling AMI Aptio V's GraphicsConsole activation. See the
    ClearScreen trap for the full account. */
 static int uefi_conout_remode = 0;
+/* -conout FILE: every OutputString code unit, CR included, as UTF-8. */
+static FILE *conout_fp = NULL;
 /* Firmware tables a diagnostic reads passively. Present by default because
    every real board carries them; the -no-* switches are the arms that show a
    reader can say "none offered", and -edid-bad breaks the EDID checksum so
@@ -6167,6 +6177,11 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             for (int i = 0; i < 8192; i += 2) {
                 unsigned short ch = str[i] | (str[i + 1] << 8);
                 if (ch == 0) break;
+                if (conout_fp) {
+                    if (ch < 0x80) fputc(ch, conout_fp);
+                    else if (ch < 0x800) { fputc(0xC0 | (ch >> 6), conout_fp); fputc(0x80 | (ch & 0x3F), conout_fp); }
+                    else { fputc(0xE0 | (ch >> 12), conout_fp); fputc(0x80 | ((ch >> 6) & 0x3F), conout_fp); fputc(0x80 | (ch & 0x3F), conout_fp); }
+                }
                 if (ch == '\n') {
                     uefi_cursor_col = 0;
                     uefi_cursor_row++;
@@ -6201,6 +6216,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 else if (ch != '\r') fputc((ch < 128) ? (int)ch : '?', stderr);
             }
             fflush(stderr);
+            if (conout_fp) fflush(conout_fp);
         }
         break;
     }
@@ -10004,11 +10020,12 @@ static int hprof_count = 0;
    timer interrupts. WHvRunVirtualProcessor only returns on exits; with
    no I/O and no HLT the main loop never regains control, so the tick
    check never runs. The cancel is benign (Canceled exits are handled)
-   and costs ~18 exits/second. */
+   and costs one exit per PIT period. */
 static DWORD WINAPI timer_kick_thread(LPVOID arg) {
     (void)arg;
     for (;;) {
-        Sleep(55);
+        DWORD period_ms = (DWORD)(pit0_period() * 1000.0);
+        Sleep(period_ms > 0 ? period_ms : 1);
         if (shutdown_requested) return 0;
         if (!partition) continue;
         WHvCancelRunVirtualProcessor(partition, 0, 0);
@@ -10022,6 +10039,17 @@ static DWORD WINAPI timer_kick_thread(LPVOID arg) {
             if (lapic_state.ap_running[i]) WHvCancelRunVirtualProcessor(partition, i, 0);
         }
     }
+}
+
+/* The kick thread cancels on the partition with no lock, so teardown joins it
+   before the partition is deleted, as it does the APs. */
+static HANDLE timer_kick_handle = NULL;
+static void stop_timer_kick(void) {
+    if (!timer_kick_handle) return;
+    shutdown_requested = 1;
+    WaitForSingleObject(timer_kick_handle, 1000);
+    CloseHandle(timer_kick_handle);
+    timer_kick_handle = NULL;
 }
 
 /* Last-resort crash reporter. Prints the fault to stderr (which the test
@@ -15532,6 +15560,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-xhci-csz")) xhci_csz64 = 1;
         else if (!strcmp(argv[i], "-xhci-scratch") && i+1 < argc) xhci_scratch_bufs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-uefi-conout-remode")) uefi_conout_remode = 1;
+        else if (!strcmp(argv[i], "-conout") && i+1 < argc) {
+            conout_fp = fopen(argv[++i], "wb");
+            if (!conout_fp) { fprintf(stderr, "codex-vm: -conout: cannot open %s\n", argv[i]); return 1; }
+        }
         else if (!strcmp(argv[i], "-no-hpet")) hpet_absent = 1;
         else if (!strcmp(argv[i], "-hpet-frozen")) hpet_allones = 1;
         else if (!strcmp(argv[i], "-no-smbios")) uefi_no_smbios = 1;
@@ -15873,7 +15905,7 @@ int main(int argc, char **argv) {
     } else {
         fprintf(stderr, "UEFI VM starting (mem=%dMB)...\n", mem_mb);
     }
-    if (!no_timer) CreateThread(NULL, 0, timer_kick_thread, NULL, 0, NULL);
+    if (!no_timer) timer_kick_handle = CreateThread(NULL, 0, timer_kick_thread, NULL, 0, NULL);
     vga_start();
 
     QueryPerformanceFrequency(&perf_freq);
@@ -16088,8 +16120,9 @@ int main(int argc, char **argv) {
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
             double elapsed = (double)(now.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
-            if (elapsed < 0.055) {
-                DWORD ms = (DWORD)((0.055 - elapsed) * 1000.0);
+            double period = pit0_period();
+            if (elapsed < period) {
+                DWORD ms = (DWORD)((period - elapsed) * 1000.0);
                 if (ms > 0 && ms <= 55) Sleep(ms);
             }
             QueryPerformanceCounter(&last_tick);
@@ -16643,7 +16676,7 @@ int main(int argc, char **argv) {
                 LARGE_INTEGER bnow;
                 QueryPerformanceCounter(&bnow);
                 double belapsed = (double)(bnow.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
-                if (!no_timer && belapsed >= 0.055) {
+                if (!no_timer && belapsed >= pit0_period()) {
                     QueryPerformanceCounter(&last_tick);
                     pending_irq = vec;  /* timer tick */
                 }
@@ -16652,7 +16685,8 @@ int main(int argc, char **argv) {
                 LARGE_INTEGER now;
                 QueryPerformanceCounter(&now);
                 double elapsed = (double)(now.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
-                if (!no_timer && elapsed >= 0.055) {
+                double period = pit0_period();
+                if (!no_timer && elapsed >= period) {
                     QueryPerformanceCounter(&last_tick);
                     if (smp_cores > 1) {
                         unsigned int *tc = (unsigned int *)((unsigned char *)guest_mem + 28672);
@@ -16667,12 +16701,12 @@ int main(int argc, char **argv) {
                         pending_irq = vec;  /* timer tick */
                     }
                 } else {
-                    DWORD ms = (DWORD)((0.055 - elapsed) * 1000.0);
+                    DWORD ms = (DWORD)((period - elapsed) * 1000.0);
                     if (ms > 50) ms = 50;
                     if (ms > 0) Sleep(ms);
                     QueryPerformanceCounter(&now);
                     elapsed = (double)(now.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
-                    if (!no_timer && elapsed >= 0.055) {
+                    if (!no_timer && elapsed >= period) {
                         QueryPerformanceCounter(&last_tick);
                         pending_irq = vec;
                     }

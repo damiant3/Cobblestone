@@ -513,12 +513,6 @@ Section: Field Index Resolution
 
 Section: IR Dead Code Elimination
 
- Reachability pruning of the chapter's def list. A def is kept when it
- is reachable, through referenced names, from the entry point. Operates
- on the structured IR -- no text, no Unicode. The collected name set is
- every atom the text emitter would quote, so the kept set matches a
- substring reachability over the emitted IR text. Type defs, ctors, and
- effect-op names live in the chapter header and are untouched.
 
   DceWork = record {
    visited : List Boolean,
@@ -530,27 +524,6 @@ Section: IR Dead Code Elimination
    if i == list-length xs then acc
    else ir-dce-append-list xs (i + 1) (list-push acc (list-at xs i))
 
- So the walk now collects REFERENCES only:
-
-   IrName            a use of a definition -- the reference
-   IrRecord          the constructor being applied
-   IrCtorPat         the constructor being matched
-   handler op-name   the effect operation a clause discharges
-   handler resume    the continuation the clause may invoke
-   IrHandle eff      the effect being handled
-   IrWithTimeout     the effects and scopes it names
-
- and ignores BINDING occurrences (a let name, a parameter, a pattern
- variable, a clause parameter) because a binding introduces a name rather
- than reaching one, FIELD names because a field is selected from a record
- rather than called, and TEXT (literals, literal patterns, error messages)
- because Codex has no dispatch from a runtime string: there is no
- call-by-name, so a definition cannot be reached by spelling it.
-
- The one place a name in a string does reach a definition is the emitter
- calling a worker through a hardcoded string of its own -- the fat16
- servicers. That is not something this walk can see from the IR, and it is
- handled where it belongs, as an explicit root (cdx-emit-roots, opening).
 
   ir-dce-collect-expr : IRExpr, List Text -> List Text
   ir-dce-collect-expr (e) (acc) =
@@ -941,6 +914,7 @@ Section: IRChapter Emission
     & "(ctors" & ir-emit-text-strs (meta.ctor-names) 0 & ")\n  "
     & "(eff-ops" & ir-emit-text-strs (m.effect-op-names) 0 & ")\n  "
     & "(grounds" & ir-emit-text-strs (meta.ground-effects) 0 & ")\n  "
+    & (if text-length (meta.method-templates) == 0 then "" else meta.method-templates & "\n  ")
     & "(type-defs" & ir-emit-atype-defs type-defs 0 & ")\n  "
     & "(defs"
 

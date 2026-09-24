@@ -200,7 +200,7 @@ New-Item -ItemType Directory -Force -Path $dst | Out-Null
 # prism.html resolves it as EMBED['library.img.gz'] ? b64ToBytes(...) : fetch(...)
 # and it DOES ride the embed, but a fetch fallback that 404s is a cliff rather
 # than a fallback, and it is a built artifact this bundle simply was not copying.
-foreach ($f in 'codex-compiler.wasm', 'Codex.codex', 'roundabout.jpg', 'prism.html', 'examples.json', 'library.img.gz') {
+foreach ($f in 'codex-compiler.wasm', 'Codex.codex', 'roundabout.jpg', 'prism.html', 'mods.html', 'examples.json', 'library.img.gz') {
     $from = Join-Path $pageSrc $f
     if (-not (Test-Path -PathType Leaf $from)) { Write-Host "[landing] FAIL: missing $f"; exit 5 }
     Copy-Item $from (Join-Path $dst $f) -Force

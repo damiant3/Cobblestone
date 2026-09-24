@@ -8,6 +8,494 @@ responsiveness, sound, a real settings system, fonts, backgrounds, icons,
 accessibility and parental controls, with the stated goal of matching what
 Windows, macOS and Android give a user on day one.
 
+## Layout stacks and constrained allocation
+
+`widget-stack` constructs a typed `WkStack`: a row or column that measures,
+arranges and contains children without a background, border, padding or margin
+of its own. Child styles still apply. `widget-panel` remains the decorated
+surface. Grouping controls no longer requires adding a styled surface.
+GopComposite, UI Render/GpuRender and the active HTML path implement stacks.
+Other native-widget exporters require an explicit mapping when adopted.
+
+Flex weights describe shares of available main-axis space. Children whose
+minimum exceeds that share freeze at the minimum; remaining children divide
+the remaining space. The allocator repeats until every flexible share satisfies
+its floor. Cumulative integer shares consume the full distributable extent,
+including remainders. Fixed children, margins and between-child gaps reserve
+space before distribution. Cross-axis stretch retains declared minima.
+
+Minimums remain hard floors. For direct `flex-layout` callers,
+`LayoutResult.lr-used-w` and `lr-used-h` report
+allocated extents including margins and gaps; `layout-overflow-w/h` report
+positive excess over a viewport. The report concerns layout allocation, not
+shadows or text ink. An undersized viewport needs reflow, more space or scrolling
+from its caller; overflow reporting does not supply scrolling automatically.
+`widget-layout` returns the arranged tree and does not retain those extent
+fields. A scroll viewport (`widget-scroll-view`, `WkScroll`, S4 below) stops
+child minima from enlarging the viewport and scrolls its content natively; the
+HTML adapter does not yet install scrolling (S4h).
+
+Calculator uses layout stacks for its display and keypad groups. The display
+keeps its measured height and the keypad receives the remaining space. Tests in
+`codex/test/ui/flex-minima.codex`, `codex/test/ui/layout-stack.codex` and
+`codex/test/apps/calc-layout-fit.codex` cover floor redistribution, shortage,
+rounding, undecorated containers and all fifteen keys at both desktop scales.
+
+HTML uses a bare flex container for WkStack and preserves standard widget nodes' declared
+minimum dimensions. Flexible nodes use a zero basis and weighted growth; fixed
+nodes retain their basis. Native browser intrinsic text sizing can exceed an
+explicit minimum. Browser pixel equality is not promised by the shared model.
+Custom widget adapters retain their own sizing rules and bypass the common
+typed-widget minimum/flex mapping.
+
+Cost: layout placement stays linear after fitting. Fitting takes at most one
+minimum-freezing pass per child, quadratic comparisons in the worst case and
+linear temporary budget records. Scans use scalar accumulators, not per-child
+temporary records. Stack construction allocates one node; the new result extent
+adds two integer fields per layout result. Existing frame reclamation applies.
+
+Remaining model work includes explicit intrinsic/preferred/maximum sizes,
+consistent margin/border-box measurement, alignment and text baselines,
+integrated overflow/scroll policy, semantic input states and theme reflow.
+The sizing and viewport half is staged below and is val's (from root,
+2026-09-23).
+
+## Sizing and viewports (val)
+
+Each stage lands alone, with the arm named for it. No stage takes the build
+token: `codex/foreword/ui` is not in the compiler's unit (the standing fact
+below, re-measured 2026-09-23: 22 `Foreword--` chapters and no `Ui--` one), so
+a UI stage is proved by its arm and the cite-gate over what it changed.
+
+**S1, maximum sizes.** `LayoutItem` and `WidgetNode` gain a maximum per axis,
+0 meaning unbounded. The allocator freezes an item at its maximum the way it
+freezes one at its minimum today (`flex-locked`, `flex-fit`) and hands the
+excess to the others. The cross-axis stretch, which `flex-row-place` and
+`flex-col-place` do by raising each child to the container (`box-max` of the
+minimum and the container extent), stops at the maximum. A maximum below the
+minimum yields to the minimum, which stays the hard floor. The arm,
+`codex/test/ui/flex-max`: a row of two flex children, one capped, where the
+capped child stops at its cap and the other takes the rest, and the same row
+with the cap removed as the control. S1 is native only.
+
+**S1h, the maximum in the HTML lowering.** `HtmlEmitter.codex`'s widget
+mount (beside `el.style.minWidth`) emits `max-width`/`max-height` for a
+nonzero `wn_max_w`/`wn_max_h`, never below the minimum. It is proved by
+rebuilding the html plug, regenerating one app page whose tree sets a maximum
+(`build/build-apps.ps1 -Only`), and loading it with
+`build/check-app-pages.ps1 -Only`; the regenerated page is the only artifact
+it moves.
+
+**S2, natural sizes are a separate fact from explicit ones.** A label or
+button's minimum is a guess (`text-length * 8`) that `comp-fit-node` replaces
+only while the node still holds the guessed number (`GopComposite.codex`
+`comp-fit-guess`), so an author's explicit width that happens to equal the
+guess is overwritten and a pinned zero defeats the fit. A node carries whether
+its minimum is measured-natural or author-set, and the fit replaces only the
+natural one. The arm, `codex/test/ui/natural-size`: an explicit width equal to
+the guess survives the fit, and a natural one is still replaced.
+
+**S3, preferred sizes.** A preferred size is a soft minimum: the allocator
+satisfies every minimum, then every preferred size while space allows, then
+distributes flex growth. Under shortage the preferred sizes shrink toward the
+minimums in proportion. The arm, `codex/test/ui/flex-preferred`: one row at
+three widths, above, between and below the preferred sum.
+
+**S4, a typed scroll viewport (landed).** `widget-scroll-view` builds
+`WkScroll (Integer)`, the offset along its layout direction (an Integer, not a
+`ScrollState`, because `Scroll.codex` cites `Widget`). A pane sets it with
+`widget-set-scroll` and reads it back with `widget-scroll-offset`.
+`widget-arrange` lays the children at their natural main extent (each item's
+minimum or flex basis plus margin, plus gaps, never less than the viewport)
+shifted back by the offset, and clamps the offset to that extent in the laid
+node. The laid bounds are therefore absolute, so `ev-hit-widget` follows the
+scroll unchanged and its `rect-contains` gate on the viewport keeps a
+scrolled-off child from answering. `comp-walk` and `comp-walk-except` narrow
+the clip to the viewport's box for its children (`comp-kids-clip`).
+`Scroll.codex` builds the `ScrollState` from a laid viewport
+(`scroll-view-state`) and answers the next offset for a key
+(`scroll-view-handle-key`: the main-axis arrows, page up and down, home, end)
+or a wheel delta (`scroll-view-handle-wheel`), at `scroll-line` 24 pixels per
+step. The Browser's hand-built pane (`gbr-paint`, `comp-translate-kids`) is
+not migrated. The HTML and MAUI plugs render `WkScroll` as they rendered the
+old `scroll-view` tag; the HTML lowering to `overflow: auto` is S4h, proved
+like S1h. The arm is `codex/test/ui/scroll-viewport`.
+
+**S5, a windowed Files listing, and this is what sizes the Files hole.**
+
+S5a (landed). The pane keeps the directory's COUNT (`fs-count`), not its
+entries. `gfat-dir-count` and `gfat-dir-window` (`GopFat16.codex`, "Windowed
+Listing") read every sector and FAT link outside the requested rows inside a
+heap bracket that answers integers into a cursor allocated before it, so a
+listing allocates the sectors holding the window's rows and the rows
+themselves. Every paint (`gfl-paint-cur`) reads the visible rows in its own
+frame; a pick reads the one row it opens. `files-open-cost` reads the open's
+`want` as 128 bytes at the root and 128 in the subdirectory, where the whole
+listing beside it still costs 2,520 and 2,864 (2026-09-23).
+`codex/test/apps/files-window` grades the windows against the whole listing
+across a sector, a cluster hop and the directory's end, and two four-row
+windows at the head and tail of a three-cluster directory at the same cost, on
+a fixture built host-side by `build/make-fat16-bigdir.ps1`.
+
+S5b (landed). `desk-files-open` asks `desk-hole-enter` for
+`desk-files-want` (8,192 bytes) and pushes a mark only when no hole is
+found, the way `desk-scene-open` is wired. The GPT lookup (`gpt-esp-start`)
+runs first in a bracket at the frontier, because it reads as many sectors as
+the medium's partition array holds (58,528 bytes on the fixture); inside the
+hole run only `desk-files-mount` and `desk-files-build`, 1,992 bytes
+(`files-open-cost`, 2026-09-23). `codex/test/apps/files-hole` runs that
+sequence in a real hole: the allocation lands inside with 6,200 bytes to
+spare, the frontier does not move, the entry is claimed for Files, and the
+listing reads back through the state. The step allocates at the frontier as
+before (D.5's first sizing rule), and a directory change keeps its two
+navigation lists there. The desk reading is in D.5, beside the 3D pane's. The generic widget list viewport
+(a row count and a row builder) is not built: no pane asks for it yet, and
+Files paints its rows directly. Edit's list mode does the same: `EditState`
+keeps `ed-count`, and `ged-list-paint-cur` reads a screenful of rows from
+`top` for each paint.
+
+**S4h waits on a consumer.** No app page's tree holds a scroll viewport
+(`apps/*/*Page.codex`, 2026-09-23): the Browser and Review build theirs on
+the native desk only. An `overflow: auto` lowering that no page exercises
+cannot be proved the way S1h was, so S4h is built with the first HTML page
+that adopts `widget-scroll-view`.
+
+**S6, cross-axis alignment (landed).** `LayoutItem.li-align` and
+`WidgetNode.wn-align` are an Integer (`align-stretch` 0, the default, then
+`align-start`, `align-center`, `align-end`), set with `layout-item-align` and
+`widget-set-align`. A stretch item fills its line as before; any other takes
+its own cross size (minimum or preferred, under its maximum) and is placed
+by `flex-cross-off`, never before the line's start. The arm is
+`codex/test/ui/flex-align`. Native only: the HTML lowering (`align-self`) is
+S6h and waits on a page that sets an alignment, as S4h does.
+
+**S7, text baselines (landed as a guard).** On the native desk a label and
+a button in one row already share a baseline under stretch and centre: the
+desk draws in one face, every edge of both theme families is symmetric top
+to bottom (`edges-uniform`, `edges-xy`), and `comp-text-top` centres the
+cap band in each content box. `codex/test/apps/desk-baseline` pins that
+through `comp-text-top` (which `comp-text` draws with) under the palette
+theme, face and bitmap, scales 1 and 2, with a start-aligned row as the
+control that differs. A baseline ALIGNMENT mode is not built: it is needed
+only once a second face size or an asymmetric edge exists, and that arm is
+what will go red when one does.
+
+**S8, independent control states (landed).** A node's control state is a
+flag field (`wn-flags`: focused, hovered, pressed, checked, disabled,
+invalid, busy), so a focused button can also show hover. The theme resolves
+flags to one `StateStyles` slot by a stated precedence (disabled, pressed,
+hovered, focused), and focus, checked, invalid and busy paint as overlays
+(ring, mark, error edge, indicator) on top of that slot, so every combination
+has a defined picture. A custom widget's Integer payload (a selected index, a
+seed) is `wn-data` (`widget-set-data`), never a style state.
+
+S8a: `wn-flags`, `widget-set-flags` and `widget-add-flag`; the `flag-*`
+constants and `theme-state-of-flags` in `Theme.codex`; `widget-state-of` is
+what `widget-resolve-style`, `Render` and `GpuRender` resolve by.
+`comp-focus-ring` (`GopComposite.codex`) draws the focus a stronger state
+hides. The arm is `codex/test/gop-composite-focus`, whose controls are a
+focused-alone button changing pixels off the ring (it resolves to the
+focused slot, not a ring) and a flagless node resolving to normal.
+`theme-flags-of-state` converts a chapter's own local state Integer to a
+flag, for the five writers that compute one (CommandPalette, FilterableList,
+SearchBar, cvmm Monitor and LogViewer).
+
+S8d: `comp-state-marks` draws invalid as a bottom edge two scale
+steps high in the error colour, checked as a four-step square in the top
+right in the style's foreground, busy as a one-step bar along the top's
+left third in the warning colour; `codex/test/gop-composite-marks` holds
+each mark to its own region and marks all three over hover and focus.
+
+S8h: the HTML plug's style state is `_wkStateOf(n)`, the precedence of
+`theme-state-of-flags` over `wn_flags` (converted with `Number`, because the
+field arrives as a BigInt); it styles the widget (`_wkSS`) and the button
+bar's primary button, and the custom widgets' payload reads (`opt`, `optc`,
+`_wkCustom`'s `st`) take `wn_data`. The MAUI plug resolves its style state
+from `wn-flags` by the same precedence. The checked-in pages under
+`apps/*/web/` are `build/build-apps.ps1` output from before S8a and still
+carry `wn_state` until their next regeneration.
+
+Cost: S1 and S3 add at most one more freezing pass per child to the existing
+fit, so time stays quadratic in the worst case and the budget records stay
+scalar. S4 adds one linear pass over a viewport's children per arrange, and
+the key and wheel handlers one list of layout items per call. S5a trades
+heap for disk reads: a Files paint re-reads the directory's sectors up to
+the last visible row, and an open or directory change reads all of them to
+count, each sector's buffer freed by its bracket. S5
+bounds a list pane's heap by its visible rows, which is the point.
+
+## Approved font preview delivery, 2026-09-19
+
+Damian authorized importing the shortlisted open fonts, adding the pack to
+the boot image, and applying fonts across the desktop and linked apps for
+visual approval. Inter is the initial default. Preview choices include Source
+Sans 3, Atkinson Hyperlegible Next, IBM Plex and Noto Sans; IBM Plex Mono supplies
+the code-text role. Regular/semibold faces and Inter Bold are included with
+their original OFL notices and pinned asset hashes.
+
+The first delivery covers the active GopDesk/GUI and HTML/CSS/JavaScript paths.
+Unused plugs remain incomplete until an actual project needs them. The widget
+transpiler and broader visual redesign follow font approval; the earlier survey's
+cross-platform roadmap is not permission to build every backend now.
+
+Font selection for the first preview happens before launch or image construction,
+preserving one shared face across a desktop session without reallocating live
+application state. `fonts/font-pack.json` owns the pack. `UIFONT.CFG` is a
+16-byte zero-padded ASCII FAT filename; legacy images without that record retain
+the CMUNSS.TTF fallback. The default image must carry all selected font assets
+and license notices. HTML exports must carry usable local/embedded fonts and
+their notices without requiring a network font service.
+
+Preview and image-build commands are in [the font pack guide](../../../../fonts/README.md).
+The pack contains twelve static TTF faces totaling 3,958,976 bytes. The native
+desktop shares one selected face across chrome and linked panes. HTML exports
+embed the selected family's weights and Plex Mono with OFL notices. The native
+desktop carries explicit UI and code font roles for custom-painted menu apps.
+Editor source, line numbers and file source/hex previews use Plex Mono with
+measured character advances. File listings use clipped name and size columns.
+The first-boot wizard retains its early bitmap font.
+
+The compound decoder bounds nesting at 16 levels and work at 64 glyph visits.
+Simple outlines are capped at 256 contours and 4096 points. Transform work and
+allocation scale with visited outline points and nesting; font parsing retains
+the existing full byte-list copy. Desktop font loading occurs once per session,
+before app heap marks. The coverage diagnostic restores scratch per glyph and
+per face. Web packaging costs linear font-byte work plus base64 expansion;
+image choice edits read and write one complete image on the host.
+
+At 16 ppem, the 2026-09-19 native measurement retained 13,780,997 bytes for
+Inter loading and 10,860,386 bytes for Plex Mono loading. Both costs occur once
+per desktop session. The shared font reference adds eight bytes to a FilesState;
+the existing root/subdirectory cost fixture measures 40,072 and 67,464 bytes.
+Plex Mono's measured cell advance is nine pixels at that size. Reopening the
+editor reuses the cached font set rather than loading another atlas.
+
+The native coverage check passed 94 visible ASCII glyphs for each of twelve
+faces. Coverage does not establish general OpenType conformance: hint bytecode,
+phantom-point attachment, variable/CFF/color fonts, complex shaping and Unicode
+layout remain outside the current renderer. Browser automation was unavailable
+for the Notes export; browser appearance awaits visual review.
+
+## 2026-09-19 UX and typography survey
+
+Assessment requested by Damian; implementation remains a separate commitment.
+GopDesk needs a shared semantic control and text contract before broader skinning.
+The existing box model, widget tree and compositor are useful foundations.
+Adding more palettes alone cannot repair clipping, missing glyphs, exclusive
+interaction states or backend-specific custom-widget behavior.
+
+### Evidence and limits
+
+Source reviewed at main25869, merged to root25872. A fresh DeskVm build used
+depot seed #800, SHA-256
+`BD66718CBE24F589E8AD8E9D7AAC47289081B00A8824ECD22DBDE77321279541`.
+DeskVm SHA-256:
+`40FD0E3C6D90F567B9D91875212E7BFA6FC5BCEF583B73B4706036914273B572`.
+Captures and the font audit are in
+`D:/Projects/Cobblestone-root/build-output/ux-survey-20260919/`.
+The eight BMPs cover CMU Sans at 1280x800 and 1600x900, the launcher,
+Calculator, Appearance, Chevy, Inter and Source Sans 3. Mouse/key timelines,
+compiler/VM logs, candidate fonts, licenses and `font-audit.json` are adjacent.
+
+The auxiliary FAT images carry the selected font as CMUNSS.TTF; GopDesk
+selects by that filename. The image's boot PE was not executed: DeskVm boots
+directly and mounts the image for font/settings access. Seed artifacts were
+not changed. The first capture used an insufficient 2048 MiB VM mapping and
+failed with `Unmapped MMIO GPA=0xbf000000 (WRITE)` before painting. The source
+requires the GOP address inside mapped RAM; subsequent captures used the
+desktop runner's 3072 MiB setting and completed. That failure is a capture
+configuration error, not a desktop rendering result.
+
+HTML, MAUI, SwiftUI, Compose and Flutter findings below are source inspection,
+not device conformance results. No physical run or full battery ran. The
+interactive `ux-directions.html` is a browser-rendered proposal, not GopDesk
+output. The exact diffusion-font entry point remains unidentified; the inspected
+font-generation paths are MLP-based.
+
+### Current rendering findings
+
+| Finding | Evidence and consequence |
+|---|---|
+| Compound glyphs become blank | `apps/guios/FontLoad.codex:503` returns empty contours for compound glyphs. Fresh Inter and Source Sans 3 captures visibly lose `i` and punctuation. The binary audit finds seven compound printable-ASCII glyphs in Inter and eight in Source Sans 3, including `i`, `j`, colon and semicolon in both; the captured welcome text does not exercise `j`. CMU Sans has no compound printable-ASCII glyphs. Font validity and font aesthetics cannot be judged through the current decoder alone. |
+| Typography is not a style contract | `GopFont.codex:55` builds one face; GopDesk loads the fixed CMUNSS.TTF filename and chooses 14 or 16 device ppem by display width. `Theme.codex:142-176` has no family/weight/size/line-height roles. The captured label reports a filename even when the font bytes are Inter. |
+| Measurement still begins with bitmap assumptions | `Widget.codex:94` sizes text as character count times eight. `GopComposite.codex:808` repairs selected label/button minima only when the numeric minimum matches that guessed value. Explicit sizing and natural sizing need separate types; numeric equality cannot express author intent. |
+| Overflow breaks real controls | The fresh Calculator capture shows rows 7/8/9, 4/5/6 and 1/2/3, but not the source's final 0/equals/plus row. `GopCalc.codex`, `gcalc-tree`, supplies that row. `Layout.codex:48-85` distributes available space then raises each share to a minimum, without redistributing shortage. Minimum sums can exceed the container. |
+| Theme shape information is lost | `GopStyleKit.codex:98` returns `border-none` when outline width is zero. `Theme`'s border-none has sharp corners. Chevy requests round corners and zero outline at `GopStyleKit.codex:189`; the fresh Chevy capture shows square controls despite Appearance reporting rounded corners on. Shape must exist independently of border ink. |
+| LCARS is still selected as a palette path | `GopDesk.codex:254-271,471` routes indices 4 and 5 through DesignLanguage, but index 2 through the palette theme. The existing `sk-lcars` language is not the selected desktop LCARS path. No LCARS runtime capture was taken for the survey. |
+| Theme changes need full layout invalidation | The Chevy capture clips taskbar labels to fragments after changing padding/style. The screenshot establishes clipping; the exact cache invalidation repair needs a targeted trace. Theme changes affecting metrics must remeasure layout, hit regions and text together. |
+| Presentation lacks hierarchy | Launcher entries and Appearance toggles are all large glossy action buttons. Appearance lacks distinct toggles/choices; Calculator labels remain small inside very wide buttons. The welcome page exposes runtime details as product copy. These are visual/interaction design findings, separate from the rendering defects above. |
+| The named golden-pane driver is stale | `build/desk-goldens.ps1:100` still uses scancodes to open named panes. `GopDesk.codex:6682` ignores non-F12 keys on an unfocused desktop; `build/desk.ps1:33` documents that constraint. Repair the driver and assert the expected pane before accepting its screenshot. The survey used mouse timelines instead. |
+
+The current UI directory has 49 chapters. The transitive GopDesk cite closure
+contains 26, including TextField, Selection, RichText, Surface and Overlay.
+Focus, Accessibility, Touch and Animation are absent from that closure.
+Reachability alone does not prove exercised behavior. The earlier campaign's
+50-chapter/14-direct-cite measurements below describe an older tree.
+
+### One UX model, explicit backend contracts
+
+`WidgetKind` currently has seven constructors: panel, label, button, gauge,
+separator, input and a string-tagged custom node (`Widget.codex:8`). Richer
+libraries compose those nodes. `WidgetNode` carries one integer state, minimum
+sizes and an arranged rectangle. A control cannot express focused-and-hovered,
+checked-and-disabled, invalid-and-focused or busy-and-selected as independent
+facts. `A11yInfo` exists separately; the common node does not carry a semantic
+role/name/value/state binding.
+
+| Backend | Present | Gap relevant to uplift |
+|---|---|---|
+| GopDesk software compositor | Theme/state resolution, rounded fills, gradients, bevels, shadows, text and explicit clipping; custom icons/status dots | Custom tags fall back to a styled box (`GopComposite.codex`, `comp-custom`). `comp-walk` forwards one clip to children; scroll clipping is a separate special walk. No shared integrated focus/accessibility/touch contract in the desk closure. |
+| HTML/CSS | Real button/input/progress elements, widget-to-DOM lowering, CSS state selectors and theme colors | `HtmlEmitter.codex:746-844` omits shadow/gradient/bevel fields in common style lowering, uses the top border as a uniform border, and guards zero colors by truthiness. Round corners depend on nonzero border width. Black is conflated with absent styling. Native HTML controls help, but custom tags still need semantic keyboard/accessibility contracts. |
+| MAUI phone/desktop | Real Button, Entry, ProgressBar and stack layouts; themed widget mounting and input callbacks (`MauiEmitter.codex:547-709`) | Common style lowering covers colors, margins, layout padding and minima, not the whole Theme surface contract. Custom tags have special cases and a label/stack fallback. AutomationId is present; a full mapping from common accessibility metadata is not shown. The mobile README's claim that the plug is absent is stale. |
+| SwiftUI / Compose / Flutter | Language emitters and application wrappers | The inspected wrappers display collected console output. Console wrappers do not establish WidgetNode control parity. Treat each as a separate lowering task until real control/interaction proofs exist. |
+
+Recommended model boundaries:
+
+1. **Semantic controls:** stable IDs, role, accessible name, value, commands,
+   enabled/read-only/checked/selected/invalid/busy state and focus policy.
+   Action semantics do not contain scancodes, CSS names or device dimensions.
+2. **Layout:** measure then arrange, with min/preferred/max constraints,
+   grow/shrink, alignment/baselines, wrapping, grids/tracks, padding/gaps,
+   explicit overflow and scroll viewports. Keep paint overflow separate from
+   layout size and hit size. Use start/end edges, direction and safe insets.
+3. **Presentation:** typography roles, semantic color tokens, component parts,
+   shapes, elevation/material, icon family, density and bounded motion.
+4. **Platform capabilities:** available space and scale; keyboard/IME, fine/coarse
+   pointer, hover, touch/pen; text shaping, alpha/clip/vector support; accessibility
+   bridge, audio and haptics. Lower to native controls or the software renderer.
+   Unsupported functionality returns an explicit capability result or a declared
+   equivalent interaction. A silently empty rectangle is not a fallback.
+
+Keep the semantic core compact. Add reusable control compositions and typed
+contracts rather than another growing collection of magic custom-tag strings
+or one giant platform-specific union. App window management belongs to the
+desktop shell. A list/detail application becomes two panes with space and a
+navigable single pane without space; a phone is not a scaled desktop window.
+Preserve selection, drafts and focus identity across layout transitions.
+
+The next shared interaction set needs buttons with quiet/primary/destructive
+variants, checkbox/toggle/radio, choice/select, range/stepper, tabs/navigation,
+list/tree/table, text editing, scrollbars, splitter, menus/popovers, dialogs,
+tooltips and status/progress. Each needs a behavior contract: Tab/Shift-Tab,
+arrows, Enter/Space, Escape, focus restoration/trapping, pointer capture/cancel,
+touch targets and text composition. Reuse existing UI chapters after validating
+real functions, rather than assuming a chapter's name proves the behavior.
+
+These boundaries agree with current platform guidance on
+[Windows focus navigation](https://learn.microsoft.com/en-us/windows/apps/develop/input/focus-navigation),
+[Apple's foundations](https://developer.apple.com/design/human-interface-guidelines/foundations),
+[Android adaptive layout](https://developer.android.com/design/ui/mobile/guides/layout-and-content/adapt-layout)
+and [WAI-ARIA interaction patterns](https://www.w3.org/WAI/ARIA/apg/about/introduction/).
+Platform conventions are inputs to the adapters, not identical pixel targets.
+
+### Theme families and customization
+
+Theme packages need more than palettes: role tokens, component-part recipes,
+typographic roles, icon/illustration assets and motion/sound preferences.
+Keep task meaning, accessibility state and focus/hit geometry independent of
+decoration. Metric changes trigger remeasurement; paint-only changes repaint.
+Package version and asset hashes belong in the theme identity, with a safe
+default and a preview/revert path. Corporate defaults and allowed overrides
+are policy; accessibility preferences take precedence over decorative choices.
+
+| Family | Visual language | Shared usability contract |
+|---|---|---|
+| Refined default | Quiet neutral surfaces, restrained accent, coherent spacing, visible focus, clear type hierarchy | Controls read as distinct controls; primary actions are scarce and obvious. |
+| Company standard | Brand palette/logo, chosen body/display families, density and icon set | Administrators distribute one package without forking app code. |
+| Dinosaurs | Warm ground, botanical colors, rounded shapes, fossil/footprint illustrations and optional sounds | Illustration frames content; reading text stays legible and controls stay predictable. |
+| LCARS | Asymmetric rounded frame parts, segmented bands, black ground, restrained orange/lavender hierarchy | Preserve labels, focus, keyboard access and sufficiently large targets. Do not rely on hover. |
+| 57 Chevy | Two-tone teal/cream lacquer, thin chrome rails, selective embossing and red accents | Keep reflective decoration on frames/selected controls; body text and data remain quiet. |
+
+A renderer can simplify a costly shadow to a border, or a material to a solid
+fill, without changing the control's role. A radial control needs an equivalent
+keyboard/value-entry path. Do not turn every primary action into a decorative
+gauge merely because the theme contains gauges.
+
+### Fonts: intake, renderer repair and custom design
+
+There are 14 TTF files in the current fonts tree. GopDesk exposes one fixed
+font path; the older GUI catalog has 13 entries. New files alone do not provide
+font selection, role fallback, weight selection or international text.
+
+The fresh candidate trial used official static TrueType releases:
+
+| Family | Intended role | Current GopDesk result |
+|---|---|---|
+| [Inter](https://rsms.me/inter/) | Neutral UI text and controls | Loads, but compound ASCII letters/punctuation disappear. Regular TTF SHA-256 `40D692FCE188E4471E2B3CBA937BE967878F631AD3EBBBDCD587687C7EBE0C82`, release 4.1. |
+| [Source Sans 3](https://github.com/adobe-fonts/source-sans) | Humanist UI/body alternative | Same compound-glyph defect. Regular TTF SHA-256 `4644C81B86EC9CAAA76B634889968ED3C4F4F52F054855933ACC7C2B21E53B0F`. |
+| [Atkinson Hyperlegible Next / Mono](https://www.brailleinstitute.org/freefont/) | Legibility-oriented option | Candidate only; no GopDesk trial in the survey. |
+| [IBM Plex](https://www.ibm.com/design/language/typography/typeface/) | Cohesive sans/serif/mono corporate family | Candidate only; no GopDesk trial in the survey. |
+| [Noto](https://github.com/notofonts/get-noto) | Script-specific fallback coverage | Candidate only; requires shaping, fallback and bounded lazy caches, not eager loading of every glyph. |
+
+Inter and Source Sans licenses were downloaded with the trial fonts. Both use
+OFL 1.1. Noto and IBM document OFL distribution. Preserve each exact package's
+license and modification/name terms in a font manifest. The existing `fonts/cc0`
+label is not accurate for every asset: the shipped CMU Sans name table explicitly
+declares OFL 1.1, matching the [CMU package listing](https://ctan.org/pkg/cm-unicode).
+Record license by asset rather than inferring permission from the directory.
+
+Repair order:
+
+1. Decode compound outlines, including nested components and transforms, with
+   depth/count/range limits. Distinguish missing glyphs from valid empty glyphs.
+   The active buffer reader and the general TrueType path need one conformance
+   corpus. Static glyf/loca TTF is the first supported intake format; CFF,
+   variable axes and color fonts need explicit support or build-time conversion.
+2. Give text runs real metrics: advances with fractional accumulation, bearings,
+   ascent/descent, cap/x-height and line gap. `fb-render-glyph` floors advances,
+   places from the font-wide bounding box and uses 4x coverage supersampling;
+   no TrueType instruction interpreter is visible on that path. Raster quality
+   and line placement must be evaluated separately from glyph design.
+3. Introduce font roles and family/weight/style fallback. The 95-entry printable
+   ASCII cache is not a Unicode shaping engine. Add coverage reporting,
+   grapheme-aware editing, combining marks, direction and shaping incrementally.
+4. Build an actual-GOP specimen gallery at 14/16/18/20/24 device ppem, both scale
+   regimes, light/dark grounds, regular/semibold, digits, `Il1 O0 rn m`, punctuation,
+   accents and selected non-Latin scripts. Compare outlines/metrics with an
+   independent mature engine; different antialiasing need not be byte-identical.
+
+Custom fonts are feasible, but a polished text family is a coordinated design
+system. Begin with shared stem widths, cap/x-height, overshoot, curves, counters,
+terminal shapes, sidebearings and word spacing; derive related glyphs from shared
+parts. Review words and paragraphs before expanding weights and coverage.
+[FontForge's metrics guidance](https://fontforge.org/docs/tutorial/editexample5.html)
+explains the separation between spacing and pair kerning. A display face for
+LCARS or retro headings is a smaller first target than replacing all body text.
+
+Use AI for controlled variations and repair proposals, with family-level
+constraints and specimen review. Per-glyph image plausibility alone does not
+enforce a baseline, consistent stems, spacing or interpolation across weights.
+The inspected `FontAi.codex` predicts contour rectangles; `FontAiTrainer.codex`
+predicts contour coordinates through an MLP. Those representations and older
+backlog gaps do not establish the behavior of Damian's unidentified diffusion
+model. Retraining or replacement requires evidence from the actual model.
+
+### Proposed implementation sequence and acceptance
+
+| Unit | Deliverable | Acceptance |
+|---|---|---|
+| U0: render/interaction gallery | One representative shared tree plus actual GopDesk, browser and MAUI runners; explicit support matrix | Displayed control count, labels, states and keyboard/pointer outcomes agree. Unknown controls cannot silently disappear. Native-phone execution remains required evidence. |
+| U1: text and font contract | Compound glyphs, usable font roles, metrics and licensed intake manifest | Inter and Source Sans render every printable ASCII glyph, baseline/advance controls pass, no regression in CMU, bounded cache/scratch use. |
+| U2: box and viewport contract | Measure/arrange, shortage handling, alignment and overflow; atomic theme reflow | Calculator's last row stays reachable; launcher and dialogs fit/scroll; paint/hit/focus agree across 1280/1600, resizes and larger text. |
+| U3: semantic control states | Shared focus/actions, editing, toggles/choices, menus/dialogs and accessible metadata | Keyboard-only task completion, focus restoration, cancellation, IME contracts and equivalent touch operation. |
+| U4: refined default and skin packages | Default, company, dinosaur, LCARS and Chevy recipes using the same gallery | Theme switching preserves application state and accessibility; no clipped labels or lost controls; documented cheaper-renderer fallbacks. |
+| U5: backend/device conformance | HTML/MAUI parity, then genuine SwiftUI/Compose/Flutter widget lowering as selected | Real target runtime proofs, adaptive list/detail transitions and device-input tests; console-wrapper output does not count as UI parity. |
+
+The recommended first implementation commitment is U0 plus a bounded U1
+compound-glyph/metrics slice, followed by U2. Develop the refined default in
+parallel as a design reference; ship broader decorative skins after those
+geometry and text contracts hold. The assessment supplies no duration estimate.
+
+Heap/time verdict: the survey changes no runtime code. New themes must preserve
+the existing no-allocation idle loop and frame/retained-state lifetime rules in
+`apps/works/works-desk-contract.md`. FontLoad currently materializes a byte List
+in `fb-parse-ttf` in addition to its raw buffer and builds 4x supersampling scratch.
+Avoid multiplying that cost by every font, weight and glyph. Use bounded glyph/run
+caches, byte buffers, per-glyph scratch reclamation, viewport virtualization,
+dirty-region painting and explicit budgets for blur/shadows. Measure theme
+switches, resize/reflow and repeated open/close cycles before claiming a cost
+improvement. Desktop screenshots do not establish worst-case frame time.
+
 ## The measurement this campaign starts from
 
 **The UI library is far ahead of the shell.** Measured 2026-08-20 over the
@@ -491,15 +979,12 @@ pane pays again without them.
   a window can take, and a smaller window renders the top-left of them.
   `gsc-blit-rows` takes the source stride. A target reallocated per resize
   strands about 4 MB above the pane's own heap mark until it closes.
-- **A pill's icon is a SECOND table keyed by focus id, not a join.** Joining a
-  pill's title against `gpr-entries` fails silently on four of fifteen,
-  because the window title and the launcher label diverge (`Edit`/`Editor`,
-  `Web`/`Browser`, `Monitor`/`System Info`, and `Programs` is not an entry),
-  and `gicon-named` answers the `file` icon for an unknown name rather than
-  refusing. **That divergence is FIXED (WORKS-50): there is one full name per
-  pane and `desk-wnd-title` and `gpr-entries` agree on all four.** So the join
-  is sound now and the second table is removable. **Nobody has taken that
-  simplification**, and it is the only thing left of this item.
+- **A pill's icon is a SECOND table keyed by focus id, not a join.** Every
+  window title is a launcher label, so a join against `gpr-entries` would
+  work, but each mention of that list rebuilds all its entries (696 bytes,
+  measured 2026-09-23) per pill per repaint, where the table costs nothing.
+  `codex/test/apps/desk-chrome-icons` holds the two to one answer: each pill's
+  icon must be the launcher's icon for the row of the same name.
 
 **UNMEASURED, and named rather than assumed: what the drag repaint RATE costs
 ON METAL.** A window move calls `desk-wnd-repaint`, the same full repaint the
@@ -518,28 +1003,22 @@ heavy panes, focus the second, force a repaint and photograph the first.
 **Do not report this as a defect before that run**: it is a prediction from
 reading, which is the thing L-MECHANISM says to distrust.
 
-### The start menu overflows the glass at seven, and nothing clips it
+### The start menu shows at most six rows of a group
 
-**A group of seven entries puts the laid start menu's bottom past the taskbar
-band, and no layer refuses.** The menu expands the group holding the
-selection, so its height is that group's row count; at 1600 wide a seventh
-Productivity entry measured menu 58..410 against a band at 418..454 of 450,
-where six had measured 74..398 against 406..442.
-`codex/test/apps/desk-menu-groups` is the arm that catches it.
+**The open group is a window of `gpr-open-max` (6) rows that follows the
+selection, and its heading says which rows (`- Productivity  3-6 of 7`).** Six
+is what the tightest glass fits: 1600x900 lays the chrome out in 800x450, where
+six rows put the band at 406..442 and a seventh pushed it to 454, off the glass.
+With the window, a seventh Productivity entry leaves the band at 406..442
+(measured 2026-09-23 with a temporary entry), so the group an app joins is a
+naming decision again. `codex/test/apps/desk-menu-groups` pins the window at a
+cap of four, at both ends of Productivity. A row outside the window is absent
+from the tree, so a count, an id lookup and the hit test agree that it cannot
+be clicked; up and down still reach it through the selection.
 
-**The workaround taken is not the fix.** Sheets went into Accessories, a
-group with room, which lowers no ceiling: the next app to join any six-entry
-group hits the same wall, and the group an app belongs in stops being a
-naming decision and becomes an arithmetic one. `GopPrograms`' `gpr-split`
-prose says so, which is a warning rather than a remedy.
-
-**What a fix has to do.** `flex-col-place` places a child past its container
-rather than refusing, so the menu needs one of: a scrolling column, a clip at
-the container that the hit test agrees with, or a menu that pages its groups.
-A refusal is worth more than a silent overflow either way, because a row
-drawn past the glass is reported reachable by every count and every id lookup
-in the tree. The scrolling column is WORKS-23's capability, and WORKS-41
-needs the same thing.
+What the window does not cover: the number of groups. Every heading is one
+row, so enough groups overflow the same glass, and `flex-col-place` still
+places a child past its container rather than refusing (the layout layer).
 
 **Two traps in this area, both paid for.** An empty flex-1 `widget-panel`
 PAINTS its own background, so an anchoring spacer must be a label or a
@@ -675,7 +1154,6 @@ dispatching a lane to build a gesture that had already shipped.
 | item | state |
 |---|---|
 | a virtual desktop space to move into (Damian, 2026-09-07) | **WAITS ON HIS WORDING.** Two readings, several virtual desktops with a switcher, or a desk larger than the screen. Root carries the question; neither is built until he answers |
-| the heavy-pane stranding | **RULED: option D, FIX THE ALLOCATOR. The 3D pane is wired and its acceptance is met**, D.5 below. What is left is the other four heavy panes, and Files needs its data-dependent `want` settled first |
 
 **The stranding ruling, Damian 2026-08-27 evening.** Buried heap marks become
 reclaimable and close-from-a-pill stops lying. The three cheaper options,
@@ -809,6 +1287,14 @@ when no hole is found, and claims the entry on the way out. Its `want` is
 sizes; the wiring asks for a page more than that, because undersizing traps
 rather than refusing.
 
+**EVERYTHING A PANE KEEPS FROM ITS OPEN IS BUILT BEFORE `desk-hole-exit`,
+its `DeskApps` record and the `Just` box in it included.** A reused entry sits
+BELOW the live panes' marks, so anything the open allocates after the exit
+lands at the frontier, above every mark, and the next close of a pane above
+restores under it: measured 2026-09-24 on the desk, a Files or Edit reopened
+into its hole vanished when the pane above it closed, until the three opens
+built the record inside the hole.
+
 **The first pane wanted a bounded `-open` and a step that does not grow
 durably**, and only a heavy pane has a mark to bury at all, which is what
 chose the 3D pane: `r3d-target-at` allocates its buffers ONCE at open and a
@@ -827,6 +1313,17 @@ reopen after it:
 | depot, unwired | `0x2aa4a8b` | `0x3283b9b` | **+8,253,712** | depth 3, dead `0@0x1362eb7` STRANDED under a fresh `12@0x28a23c3` |
 | wired | `0x2aab5a3` | `0x28f188b` | **-1,809,688** | depth 2, `12@0x1362eb7`, the dead entry REUSED at its own address |
 
+**Files and Edit, read the same way on 2026-09-24** (seed 11ACE35C, 1600x900, no `-rtc`, the Monitor opened LAST in every arm so its own open is common to R5 and R6). The subject pane is opened first, the other one above it, the subject closed while its mark is buried, and R6 reopens it. The control builds are GopDesk#180 for Files (before S5b) and CL 26741 for Edit (before the hole):
+
+| pane, build | R5 | R6 | R6-R5 | the mark stack at R6 |
+|---|---|---|---:|---|
+| Files, unwired | `0x2799665` | `0x27d37a5` | **+237,888** | depth 3, dead `0@0x1e17081` STRANDED under a fresh `10@0x277f565` |
+| Files, wired | `0x277d155` | `0x27800e5` | **+12,176** | depth 2, `10@0x1e17081`, the dead entry REUSED |
+| Edit, unwired | `0x2787415` | `0x30dc3e9` | **+9,785,300** | depth 3, dead `0@0x1e17081` STRANDED under a fresh `14@0x276d315` |
+| Edit, wired | `0x277d135` | `0x277f775` | **+9,792** | depth 2, `14@0x1e17081`, the dead entry REUSED |
+
+Both reopens push no mark, and the residual is attributed. Above the root, R6 is byte for byte the never-closed state: with Edit and Files alive and no close in the history, the frontier stands 141,600 bytes above the root, as it does after the close and reopen, so that part is the live pane's window and pill. Under the root, a close that restores nothing used to strand its `DeskApps` record, 120 bytes a close-and-reopen cycle; the next close now reclaims it (`desk-apps-reclaim`), and the root stays at one address over one, two and three cycles. The root of the never-closed control sits 137,072 bytes higher than the reopened one, which is the reuse.
+
 **R5 moved 27,416 bytes between the two builds**, which is the row this design
 predicted would stay put, and it did. **The mark stack is the part to read
 rather than the total**: a reopen that pushes NO NEW MARK is what the fix had
@@ -838,26 +1335,15 @@ is why R6 rather than R5 was made the acceptance row in the first place).
 root is not a hole. `codex/test/desk-hole` passes 0, which is the fixture's
 "no root in range"; a live caller passes `desk-root-cell`.
 
-**THE FILES PANE CANNOT BE WIRED UNDER THIS RULE, and that is measured
-rather than argued. UNOWNED.** `codex/test/apps/files-open-cost` answers
-40,064 bytes at the root of its fixture and **67,456 in a subdirectory of
-FEWER entries**, because a subdirectory walks a FAT chain the root does not:
-the cost follows DEPTH, and both readings sit exactly 80 bytes, one
-`FilesState`, above the listing figures `files-change-cost` records for the
-same volume. So this pane's `want` is DATA-DEPENDENT and cannot be computed
-before the listing that produces it, where the 3D pane's is a closed form in
-its content box. That matters because **an allocation past an armed ceiling
-TRAPS rather than refusing**, so a hole sized from a constant does not
-degrade on a large directory, it faults. **THE METADATA PRE-PASS IS MEASURED AND REFUSED**, so one of the two
-candidates is closed rather than open. `codex/test/apps/files-prepass-cost`
-answers 26,240 bytes for the metadata walk against 39,984 for the listing it
-would size: about TWO THIRDS, not the cheap peek the idea assumes. Two things
-follow and the second is disqualifying. The hole it sizes saves a pane's
-bytes ONCE, on a reopen after a buried close, while the pre-pass spends its
-own on EVERY open including the ordinary first one where no hole exists. And
-**the walk's bytes are allocated BEFORE the hole is entered, so they land at
-the frontier**, which is the growth D.5 exists to stop: it would add frontier
-growth to every Files open in order to remove it from a rare one.
+**THE FILES OPEN'S `want` IS A CONSTANT since S5a**: 128 bytes at the root
+and in a subdirectory (`codex/test/apps/files-open-cost`), because the pane
+keeps a count and the count walk is bracketed. **An allocation past an armed
+ceiling TRAPS rather than refusing**, so what Files' hole must also hold is
+its step's peak, which S5a bounds by one screenful of rows and not by the
+directory. `codex/test/apps/files-prepass-cost` measures an UNBRACKETED
+metadata walk (2,320 bytes against 2,544 for the listing), which is why a
+walk whose bytes stay at the frontier was refused as a sizing pre-pass; the
+bracketed count keeps none.
 
 **THE DESK-SIDE CEILING IS BUILT.** `desk-hole-top ms i top` answers span
 `i`'s ceiling, `desk-hole-room ms i top` the bytes between the cursor and
@@ -878,10 +1364,7 @@ in the direction that looks correct. Measured: room 8192 on entry to an
 8192-byte hole, 8128 after a 64-byte allocation, 0 once the extent is left,
 and the allocation a refused pane then takes lands outside the hole.
 
-**What this does NOT do is size a hole for Files.** The pane's `want` is
-still data-dependent and unknown before the listing; the ceiling makes the
-overrun survivable, and choosing what Files asks for in the first place is
-the open question.
+Files is sized and wired by S5b of "Sizing and viewports".
 
 **Making the guard SPILL instead of trap was proposed and is refused**, so
 that it is not re-proposed: the ceiling is the COMPILER's, armed after every
@@ -932,9 +1415,9 @@ is the Browser, the Browser is never given a hole, and its live entry is
 therefore always the top one, which is the shape `codex/test/desk-reuse`
 carries as its control.
 
-**A Files directory change retains 39,984 bytes for a 2-entry root and 67,376
-for a 1-entry subdirectory**, because a subdirectory walks a FAT chain: the
-cost follows DEPTH, not the entry count.
+**A Files directory change retains the two navigation lists and the entered
+name, not a listing** (S5a): the count walk is bracketed and the paint after
+it is bracketed.
 
 ### 6.4's frontier table: the acceptance arm
 
@@ -1047,8 +1530,8 @@ several boots to work out.
   guest pointer starts CENTRED, so a move is a run of samples whose numbers
   are a running total, not a destination. A single event naming the target
   moves 127 pixels and stops.
-- **14000 ms of screenshot delay captures and 16000 gave no BMP**, so fit the
-  timeline inside 14 s.
+- **A 32000 ms screenshot delay captures** (2026-09-23, seed
+  BD66718CBE24F589, 1600x900 with `-disk`); fit the timeline inside the delay.
 - **A pane cannot be opened by keystroke.** Click the Cobblestone pill, then
   the group, then the row.
 - **THE MENU IS BOTTOM-ANCHORED, WHICH MAKES EVERY ROW COMPUTABLE AND EVERY

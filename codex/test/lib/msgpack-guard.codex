@@ -1,0 +1,73 @@
+Chapter: MessagePack Guard
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Encode chapter MessagePack
+
+Section: Helpers
+
+  dec-list : List Integer -> Text
+  dec-list (bs) = dl bs 0 (list-length bs) ""
+
+  dl : List Integer, Integer, Integer, Text -> Text
+  dl (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else " "
+    in dl bs (i + 1) n (acc & sep & show (list-at bs i))
+
+  describe : MsgPackValue -> Text
+  describe (v) = when v
+    is MpNil -> "nil"
+    is MpBool (b) -> "bool " & show b
+    is MpInt (n) -> "int " & show n
+    is MpStr (s) -> "str " & s
+    is MpBin (bs) -> "bin " & dec-list bs
+    is MpArray (items) -> "array " & show (list-length items)
+    is MpMap (es) -> "map " & show (list-length es)
+
+  arm : Text, List Integer -> Text
+  arm (name) (bs) =
+    when msgpack-decode bs
+      is Just (v) -> name & " = " & describe v
+      is None -> name & " = refused"
+
+  nested : Integer, List Integer -> List Integer
+  nested (n) (acc) =
+    if n <= 0 then acc & [1] else nested (n - 1) (list-push acc 145)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("hi-wire " & dec-list (msgpack-encode (MpStr "hi")))
+    print-line-uni ("big-uint-wire " & dec-list (msgpack-encode (MpInt 4294967301)))
+    print-line-uni ("big-neg-wire " & dec-list (msgpack-encode (MpInt (0 - 4294967296))))
+    print-line-uni (arm "rt-big" (msgpack-encode (MpInt 4294967301)))
+    print-line-uni (arm "rt-big-neg" (msgpack-encode (MpInt (0 - 4294967296))))
+    print-line-uni (arm "int8-pos" [208, 5])
+    print-line-uni (arm "int8-neg" [208, 251])
+    print-line-uni (arm "int16-neg" [209, 255, 254])
+    print-line-uni (arm "int32-neg" [210, 255, 254, 121, 96])
+    print-line-uni (arm "int64-min" [211, 128, 0, 0, 0, 0, 0, 0, 0])
+    print-line-uni (arm "uint64-max" [207, 127, 255, 255, 255, 255, 255, 255, 255])
+    print-line-uni (arm "str8" [217, 2, 104, 105])
+    print-line-uni (arm "utf8-e-acute" [162, 195, 169])
+    print-line-uni (arm "bin16" [197, 0, 2, 7, 9])
+    print-line-uni (arm "map32" [223, 0, 0, 0, 1, 1, 2])
+    print-line-uni (arm "array16" [220, 0, 2, 1, 2])
+    print-line-uni (arm "deep-200" (nested 200 []))
+    print-line-uni (arm "neg-fixint" [255])
+    print-line-uni (arm "nil" [192])
+    print-line-uni (arm "true" [195])
+    print-line-uni (arm "trailing" [1, 2])
+    print-line-uni (arm "float32" [202, 63, 128, 0, 0])
+    print-line-uni (arm "unused-193" [193])
+    print-line-uni (arm "fixext" [212, 1, 1])
+    print-line-uni (arm "cut-str" [162, 104])
+    print-line-uni (arm "cut-uint16" [205, 1])
+    print-line-uni (arm "uint64-topbit" [207, 128, 0, 0, 0, 0, 0, 0, 0])
+    print-line-uni (arm "huge-array32" [221, 255, 255, 255, 255, 1])
+    print-line-uni (arm "deep-300" (nested 300 []))
+    print-line-uni (arm "bad-utf8" [162, 255, 255])
+    print-line-uni (arm "cut-map" [130, 1, 2, 3])
+    print-line-uni (arm "empty" [])
+    print-line-uni (arm "cut-bin32" [198, 0, 0, 0, 5, 1])
+  end

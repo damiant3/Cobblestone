@@ -71,7 +71,7 @@ $fixture = "$repo/codex/test/wasm-exports-root.codex"
 Compile-Ir 'declared' $fixture $Kernel
 Admit
 & pwsh -NoProfile -File "$repo/build/compile.ps1" -Src $fixture -Out "$WorkDir/declared-uni.unused" -Log "$WorkDir/declared-uni.log" -Kernel $Kernel -IrUni -Passes text-plug *> "$WorkDir/declared-uni.console"
-if ($LASTEXITCODE -ne 4) { throw 'Unexpected IR-UNI capture convention.' }
+if ($LASTEXITCODE -ne 0) { throw 'IR-UNI compile failed.' }
 $uniLog = [IO.File]::ReadAllText("$WorkDir/declared-uni.log").Replace("`r", '')
 $uni = [regex]::Match($uniLog, '(?s)IR-BEGIN\n(.*?)\nIR-END')
 $cceDecoded = ConvertFrom-CceBytes ([IO.File]::ReadAllBytes("$WorkDir/declared.ir"))

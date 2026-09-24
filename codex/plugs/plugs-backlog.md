@@ -132,15 +132,6 @@ blocked by it, and 1.59's four no-closure targets are in the same position.
 Do not open an item whose acceptance step is "install X, then run the
 subjects".
 
-**2.33 -- kotlin and scala emit `IrPowInt` as an infix operator that neither
-language has. CLOSED 2026-09-07 (red).** Neither language has a Long power
-operator, so both plugs now emit `_cx_ipow`, a square-and-multiply helper in
-the prelude beside `_cx_text_to_integer`, matching `__ipow` in
-`codex/compiler/Emit/X86_64TextHelpers.codex` including its wrapping product
-and its 0 for a negative exponent. `kt-bin-op-symbol`'s `"pow"` and
-`sc-bin-op-symbol`'s `"^"` are now unreachable, as csharp's already was.
-Graded by reading the emission, like every row under the toolchain rule.
-
 **2.34 -- CLOSED (reek, 2026-09-07): ten plugs repaired, qt reclassified to 2.43,
 cobol to 2.44. An integer power routed through a double is wrong above 2^53. Found
 2026-09-07 (red) while fixing 2.33.** `__ipow` (`codex/compiler/Emit/X86_64TextHelpers.codex`) is
@@ -947,15 +938,6 @@ digest of any program**, and the register carried the damage as three unrelated
 `real-*` rows. The plug that produced the after-run hashes identical to the plug
 built from the submitted source.
 
-**A riscv fault is SILENT, and that is why this row was undiagnosed.**
-`__trap_handler` loops on the faulting instruction with no output, so every
-riscv fault reaches the harness as FAIL_STARVED or FAIL_RUNTIME with nothing to
-read. The way to a diagnosis is Renode directly: `cpu CreateExecutionTracing`
-for the PC trace, `sysbus.cpu GetRegister N` at the trap, and `objdump -D -b
-binary -m riscv:rv64 --adjust-vma=0x80000080` over the `.bin` (the flat image
-starts at the ENTRY, 0x80000080, not at 0x80000000; getting that wrong shifts
-every address by 0x80 and makes correct code read as misaligned). Registered as
-2.48.
 
 
 ## 2.01 -- a single ptx/hello flap under contention, one occurrence
@@ -1127,10 +1109,10 @@ flash addresses for the nine named HAL boards are NOT in**, so the pill says
 a file whose load address was not derived from that board's memory map is the
 mislabelling this register keeps closing.
 
-Corrected at head 2026-09-07: `codex/plugs/arm64/Arm64Elf.codex` now EXISTS
-(4,927 bytes), so this row's earlier claim that no `Arm64Elf` chapter is
-anywhere in the tree is out of date. Whether the arm64 module reaches it, and
-whether that module ships, is 2.03's and the page manifest's question.
+`codex/plugs/arm64/Arm64Elf.codex` is reached from the page: the Binary tab's
+ARM64 kernel pill builds an AArch64 ELF64 at `0x40000000` through
+`arm64-stdio.wasm`, graded by `page-workspace-arm.js` arm 11c. No kernel from
+it has been booted.
 
 
 ## 2.09 -- the nine HAL boards cannot run what the board chain emits, and a design doc says they can
@@ -1275,7 +1257,7 @@ following the oracle's sign-bit test; no `.expected` in the tree spells it, so
 that one is a decision rather than a measurement.
 
 
-## 2.14 -- what the hosted corpus score does NOT mean, and three subjects nobody owns
+## 2.14 -- what the hosted corpus score does NOT mean
 
 *Cite this by subject, not by number: this file carries two entries numbered
 2.10 and two numbered 2.11.*
@@ -1292,17 +1274,6 @@ bare-metal machine facts no hosted target can run. A score read against an
 earlier run is comparing different sixties and nothing announces the change.
 **Quote a named slice or quote the eligible population; never read the default
 as a corpus score** (L-DENOM).
-
-**Three subjects fail on every arm and belong to no lane:**
-
-- `apps/classic-games-run`: wasm, linux and windows all print
-  `Backgammon: Black wins in 104 plies` where the oracle says 174. Three
-  independent targets agreeing with each other and disagreeing with bare metal
-  puts the question on the BARE-METAL side, not on any plug.
-- `apps/bp-symbolic-write`: 16 of 166 on wasm, exit 139 on linux, 0xC0000005 on
-  windows. Three manners of failing.
-- `apps/cam-capture`, `console-test`, `cpu-builtins`, `cpu-inspect`: machine-fact
-  subjects that all three arms refuse.
 
 **`hosted-kind` is hard-coded to 1 and no consumer can currently tell.**
 `WasmEmitter.codex:1009` answers 1, which in the compiler's own convention means
@@ -1398,6 +1369,11 @@ parameterized declarations refuse WAT assembly. Runtime exports remain.
 `codex/plugs/wasm/exports-test.ps1` checks declaration selection, both IR
 wires, dead-code controls, refusals and fishtank fallback.
 
+The IR and native CDX paths keep declared definitions for every consumer
+(`codex/test/cdx-export-check.ps1`, run by the bare gate's `cdx-exports`
+phase), but only `WasmEmitter` reads `wasm-exports`: no other plug states a
+preservation contract for declared names.
+
 The remaining work is migration of legacy app modules before deleting the
 allowlist. Page-module declarations alone cannot justify deletion: app
 modules also consume the fallback. The fishtank control preserves the full
@@ -1437,16 +1413,6 @@ reference.** Doing it properly is a bound-names context threaded through
 2.38 names for the other ~45 plugs.
 
 
-## 2.19 -- `Read-StreamBytes` discards how far a partial read got
-
-The img plug's spurious CCE conversion and the harness contract defect behind
-it are both fixed (reek 21526 and 21550); `test-disk-compile` passes end to
-end. What is left is small and separate: `Read-StreamBytes`
-(`build/vm-config.ps1:637`) returns `$null` on a partial read and discards the
-count, so a harness cannot say how many bytes arrived. Not the cause of
-anything currently failing.
-
-
 ## 2.21 -- OPEN (red, from COMPILER-36): the wire states the integer overflow contract, and the remaining plugs wrap where it says trap
 
 THE CONTRACT (root, COMPILER-36). `add-int`, `sub-int` and `mul-int` on a plain Integer TRAP on signed overflow. The wrapping band is spelled `add-int-wrapping` / `sub-int-wrapping` / `mul-int-wrapping` and its node type reads `(int i64-min 9223372036854775807 ov-wrap)`. `codex/plugs/common/IRTextParser.codex` collapses both spellings to the plain op and `ir-parse-expr-binary` (`IRTextParser.codex:729`) parses the node TYPE, so every plug already holds the mode per node and keys on `int-ty-wraps ty` (`codex/compiler/Types/CodexType.codex:142`, a chapter every bundle carries). The gap is at the EMIT sites only; the parser needs nothing. The contract also reaches a plug's own PROGRAM, where `plug-selftest` is the only runner that sees it: a byte assembler is a shift, not a multiply.
@@ -1479,26 +1445,6 @@ date, so the plug deck check measures the previous revision and says nothing.
 Widening the digest to the assembler's actual input list is the fix; it changes
 which plugs read stale, so it is its own change and its own rebuild, not a
 rider on the mtime one. Named rather than built on root's ruling, 2026-09-02.
-
-## 2.23 -- OPEN (reek, 2026-09-02, measured not investigated): two wasm-e2e subjects disagree with x86-64 on a non-ASCII character
-
-wasm-e2e.ps1 over all 31 fixtures after the 21960 plug rebuild: 29 passed,
-2 failed. cce-text-rt and 
-aw-bytes-rt both fail the same way, and only on
-the accented rows: where x86-64 prints the letter, the wasm arm prints the two
-bytes of its UTF-8 form, so the lines differ by exactly one character
-(cce-text-rt 151 against 149, 
-aw-bytes-rt 68 against 67). Every other row
-of both subjects agrees, including the numeric-code-unit and length rows, so
-this is the accented LITERAL path rather than Text generally.
-
-Those two subjects are the ones 1.61 and 1.60 added when the plug's Text was
-moved off end-to-end UTF-8 onto CCE, so this is either a regression of that
-work or the harness comparing a UTF-8 capture against a CCE one, and which of
-the two it is has NOT been established. Noticed while grading an unrelated
-change; not caused by it, and the check is mechanical: neither subject
-contains a # at all, so wat-lit-pat-const never sees a hex spelling in
-either. Unowned.
 
 ## 2.26 -- the shared scratch path is CLOSED; two runs of one plug still cannot coexist, for a different reason
 
@@ -1773,76 +1719,6 @@ all until the plug binaries and `build/output/Codex.codex` are regenerated.
 `apps/landing/build.ps1` fails at section 1 with `MISSING html-plug.cdx` and
 at section 4 with `REFUSE: no concatenated compiler source`, both of which are
 honest refusals. This one is not.
-## 2.36 -- `show` on a Real does not compile in the zig plug
-
-**The two conversion arms are DONE (reek, 2026-09-07), and the row understated
-the work: zig lacked `to-real-approx` as well as `real-approx-to-int`**, so the
-subject needed two arms rather than the one this row named.
-
-- **`to-real-approx` is `cvtsd2ss` on bare metal, so it NARROWS**, and the
-  precision loss is the whole content of the operation. A Real is f64 in this
-  plug and an approx Real is the exact f64 widening of an f32, which is the
-  convention `cx_bits_to_real_approx` already states, so the faithful form is
-  the round trip through f32. Returning the f64 unchanged would answer a number
-  bare metal never produces.
-- **`real-approx-to-int` needs no function of its own.** On metal it is
-  `cvtss2sd` then `cvttsd2si`; here the operand is ALREADY that widening and
-  f32 to f64 is exact, so `cx_real_to_int` is the right callee, guards
-  included.
-
-Measured: the emitted zig built with zig 0.16 and RUN answers all eight
-gradeable lines of `codex/test/ops/real-to-int-wide` identically to the
-battery's own `.expected`, `approx-wide 3000000000` among them. The control
-reproduced first: the depot plug carried eight `@compileError` refusals.
-
-**THE SUBJECT NOW BUILDS AND RUNS, all nine lines matching the battery's own
-`.expected`** (reek, 2026-09-07), `show-real 3000000000.5` included. It took
-three separate things, and only the first was the conversion this row named:
-the two arms above, then the typer arms that let an existing refusal fire at
-all, then `cx_real_to_text` itself (2.13).
-
-**The refusal was already written and could not fire, which is the part worth
-keeping.** `zig-show-arg` has tested `zig-is-real-type` since it was written;
-what failed is upstream of it. `zig-expr-type` had NO arm for `IrNumLit`, so a
-real literal fell to `is otherwise -> VoidTy` and every type-directed decision
-below asked its question of the wrong answer. `IrBoolLit`, `IrCharLit` and
-`IrNegate` had the same hole, the first two being literals whose node kind IS
-their type and the third carrying its type in the node. All four now answer,
-and a guard that exists but is unreachable is L-UNCALLED with the caller
-present.
-
-**Blast radius measured rather than argued, because this moves a type-directed
-decision:** three subjects emitted before and after, `plug-oracle-arith` and a
-`poke-32` subject BYTE-IDENTICAL, and `real-to-int-wide` moved by 31 bytes, all
-of it the one `show` call becoming the refusal. `plug-oracle-test -Only zig`
-PASS 57 of 57; `check-zig-prelude-surface` OK.
-
-**`check-zig-prelude-surface.ps1` was RED AT HEAD and is FIXED (reek,
-2026-09-07); the defect it named was real.** `cx_w` and `cx_x` are function
-LOCALS inside three prelude parts (`cx_poke_32` and `cx_poke_16` declare
-`const cx_w: u64 = @bitCast(v)`, `cx_memset` declares `const cx_x: u8`), which
-is why neither appears as a top-level name anywhere in the emitter. They were
-absent from `zig-prelude-decls`, so nothing renamed a user definition away from
-them.
-
-**Zig forbids a local shadowing a container declaration, so this refused whole
-programs.** Measured end to end on a subject whose definition is named `cx-w`
-and which reaches `poke-32`: without the reservation the user's definition
-emits as `fn cx_w` and zig refuses with `local constant shadows declaration of
-'cx_w'` **pointing at the PRELUDE's line**, the user's own line appearing only
-as a note. That is 2.34's shape exactly, and it means any program defining
-`cx-w` or `cx-x` and touching those three builtins could not be built, with an
-error naming code the author did not write. With the reservation the definition
-becomes `cx_w_`, zig builds clean and the program answers `cx-w-collide 42`.
-
-Both names are now in `zig-prelude-decls` (190 covering a surface of 188). The
-check is calibrated rather than merely green: removing one name puts it back to
-`MISSING (1): cx_w` and exit 1. `plug-oracle-test -Only zig` PASS, 57 of 57.
-**No subject was added, deliberately: the check IS the runner for this class**,
-deriving the surface from every part rather than from whichever ones a subject
-reaches, so the next prelude local added without a declaration fails it.
-
-
 ## 2.38 -- ~45 language plugs emit code no runner ever executes
 
 The three undefined typescript builtins are fixed (red, 2026-09-07). The
@@ -1855,50 +1731,6 @@ the program was dying before it reached the row under test. **An undefined
 callee is mechanically decidable from the emitted source**, which is the check
 worth writing.
 
-
-## 2.40 -- OPEN (unowned, found by reek and measured by red, 2026-09-07): five plugs answer 0 for an arity MISS, where a zero-parameter definition also answers 0
-
-`lookup-arity` returns a miss as 0 in go, html, java, qt and wpf, and as -1 in the
-other 39 emitters. In those five, `ar == 0` can no longer distinguish "a
-definition taking no parameters" from "not a definition at all".
-
-**Not live today, and the reason is the same in all five**: each tests `ar < 1`
-or `ar > 0`, which treats 0 and -1 alike. The six plugs that DO branch on
-`ar == 0` to emit `name()` -- angular, electron, react, svelte, typescript, vue
--- all return -1, so an unknown name correctly falls through to a bare
-reference. The hazard is a future reader copying one of the five arity maps into
-a plug of the second shape, where every unknown name would silently become a
-call.
-
-Two corrections to how this was first stated, both worth keeping because each
-was a plausible reading that measurement refused. It did NOT change recently:
-qt has answered 0 in every revision of its file on main, #1 through #18. And qt
-is not the odd one out; it is one of five. **The census that found "eleven"
-plugs was wrong for a reason that recurs**: `if pos >= len then 0` is a SUBSTRING
-of `if pos >= len then 0 - 1`, so a substring match counted six `-1` plugs as
-`0`. A miss has TWO branches (index past the end, and name mismatch at the
-index) and both have to be read; matching one spelling of one branch is
-L-CENSUS one level down.
-
-## 2.41 -- OPEN (reek, measured 2026-09-07): a plug `run.ps1` hardcodes its 3072 MB guest, so a granted memory cap cannot be honoured
-
-Measured over `codex/plugs/**/run.ps1`: 53 runners pass `-MemMB 3072` to
-`build/plug-run.ps1`. Exactly two, csharp and wpf, expose it as `[int]$MemMB =
-3072` that a caller can override. The other 51 write the number inline.
-
-The cost is coordination rather than memory. When the commander grants a run at a
-stated cap, a lane driving any of those 51 cannot comply: the only routes are to
-edit a shipped build script so it fits the grant, or to drop the arm that needs
-the guest. Both are worse than the extra gigabyte, the first because a grant does
-not get to reshape a script and the second because it buys an unverified claim.
-reek hit this on fortran and red on kotlin and scala, both 2026-09-07, and both
-had to stop and ask.
-
-The fix is the shape csharp and wpf already carry: a `[int]$MemMB = 3072`
-parameter threaded through to `build/plug-run.ps1`, so a cap is passed rather
-than negotiated. No default changes. The callee already supports it:
-`build/plug-run.ps1` declares `[int]$MemMB = 2048`, so the 51 runners are
-overriding a working parameter with a literal, and nothing new has to be built.
 
 ## 2.42 -- OPEN (reek, measured 2026-09-07): the compiler lifts every lambda before IR text, so no compiled subject can reach any plug's lambda arms; hand-authored IR is the only route
 
@@ -2328,30 +2160,29 @@ the flag row in `OperatorsManual.md`. `-usb-writeback` parses and an unknown
 flag is still refused (L-ACCEPTED, checked both ways).
 
 
-## 2.48 -- a riscv fault is SILENT, so every one of them reaches the bed as FAIL_STARVED or FAIL_RUNTIME
+## 2.70 -- OPEN (reek, 2026-09-24): arm64 heap-alignment residue
 
-`__trap_handler` re-executes the faulting instruction forever and prints
-nothing, so the harness sees an incomplete run or no uart at all and the cause
-is not in the output. Three of 1.100's four reds sat undiagnosed for a week
-behind this, and two of them were one-line fixes once the PC was in hand.
+Left after the five QEMU-only faults in blu's comparison
+(`docs/Designs/Active/Build/Build.md`, "The arm64 cross bed") were fixed.
 
-What it should do is print the cause and the address and stop: arm64's bed
-answers a fault the same silent way, so this is not riscv's alone, but riscv is
-where it has cost a week.
+- `__heap-advance` bumps `x28` by an exact, program-chosen count, and the
+  inline allocations (`a64-emit-empty-list`, records, closures) take `x28`
+  without aligning it, so a program that advances by an odd count and then
+  allocates inline faults on QEMU and on a real core.
 
-Until then, the recipe that got the diagnosis, in full:
+## 2.69 -- CLOSED (reek, 2026-09-24): a riscv direct call with more than eight simple arguments put arguments 9+ in `s2`, `s3`, ...
 
-```
-cpu CreateExecutionTracing "tracer" @<path> PC   # then RunFor, then Dispose
-sysbus.cpu PC ; sysbus.cpu GetRegister <n>       # at the trap
-sysbus ReadDoubleWord 0x<addr>                   # the instruction actually there
-riscv64-linux-gnu-objdump -D -b binary -m riscv:rv64 --adjust-vma=0x80000080 <bin>
-```
+`rv-emit-args-direct` (`RiscVCodeGen2.codex`) evaluated argument i into `a0 + i` for every i, so argument 8 landed in `x18` (`s2`) and onward: the callee read stale stack words for its stack parameters and the caller's saved locals were clobbered. `rv-emit-user-call-inner` now takes that path only for at most eight arguments; a longer call goes through `rv-move-args-to-regs`, which stores the stack arguments. Graded on QEMU by ablation: on depot source `gop-composite-kinds` faults, `-marks` is silent to the ceiling and `-clip` answers wrong; with the fix all eight `gop-composite` subjects and `if-let-join` pass.
 
-**The flat `.bin` begins at the ENTRY, 0x80000080, not at 0x80000000.** An
-`--adjust-vma=0x80000000` shifts every address by 0x80, and correct code then
-reads as misaligned and invents defects that are not there; that cost an hour
-and a wrong reading of two comparison emitters on this row.
+## 2.67 -- OPEN (reek, 2026-09-23): a bounded parameter past the eighth is not guarded on arm64 or riscv
+
+Both plugs guard a bounded `error` parameter at entry and a bounded return
+before the epilogue (`a64-emit-param-guards`, `rv-emit-param-guards`), but
+only on the eight argument registers; a ninth or later parameter arrives on
+the stack and is bound unchecked. x86-64 loads and checks those
+(`emit-one-param-guard`). No subject has a bounded parameter past the eighth,
+so nothing grades it; `codex/test/bounded-param-trap` and
+`bounded-return-trap` carry `.cross-fatal` and grade the register case.
 
 
 ## 2.49 -- CLOSED (reek, 2026-09-08): the riscv plug FAULTED on five integer tests, and it was the plug crashing, not a refusal
@@ -2492,38 +2323,6 @@ codex-vm, byte-identical to the expected file in both.
 len=7` was derived by hand from `rv-li-64` before any run, and the run agreed.
 
 
-## 2.52 -- LATENT (reek, 2026-09-08): `check-plug-ports` skips its host half in SILENCE when a plug has no `run.ps1`
-
-A plug's TCP port is one fact in two places, and `build/check-plug-ports.ps1`
-exists to hold them together. Its host half is guarded: `$run = (Join-Path $dir
-'run.ps1')` at line 73 of the shipped script, and everything after it sits
-inside `if (Test-Path $run)`. A plug whose `<Name>Plug.codex` dials a port and
-which ships NO `run.ps1` therefore passes a check whose own name promises both
-halves, with nothing printed and nothing counted. That is L-ACCEPTED: a check
-that checked half looks exactly like one that checked both.
-
-**MEASURED AT HEAD 2026-09-08 AND THE HOLE IS EMPTY: 45 plug directories under
-`codex/plugs` carry a `*Plug.codex` matching `net-session-new`, and 0 of the 45
-lack a `run.ps1`.** No plug in the tree takes the silent path today, therefore
-no verdict this check has published is wrong. Said plainly rather than left to
-be inferred from a green run, because a row that reads as a live hole gets
-chased, and this one is a guard against a future plug.
-
-The asymmetry is the part worth keeping in view: the GUEST half already refuses
-an absence, printing `NO GUEST SOURCE dialing a port` and incrementing `bad`,
-so one half of this check treats a missing file as a finding and the other
-treats it as nothing to do. However it is settled, the two halves should agree.
-
-Two repairs, and choosing between them is the work: count a missing `run.ps1`
-as `bad`, the way the guest half already counts a missing source, which is
-honest and fires the moment a plug arrives that is driven some other way; or
-print a SKIPPED line with a tally, so the check reports what it did not check.
-Neither is taken here.
-
-Found by the pipeline-model migration (`PipelineModel.md`): declaring what a
-stage consumes and what its verdict means is what made the silent branch
-visible.
-
 ## 2.57 -- the arm64 Darwin Mach-O host wrap is the contributor's, outside the tree
 
 GitHub PR 144 (apoorvapendse, 2026-09-12) added `IR-CCE darwin` to the arm64
@@ -2540,60 +2339,31 @@ The virt half of the same change (`stp`/`ldp x27, xzr`) is executed: Renode
 `int-add-wrapping` and `hamt-test` on the plug from main 25665, seed
 49070BAEB1E31085 (2026-09-12); `hamt-test` carries 7 of the changed pairs.
 
-## 2.56 -- OPEN: unused act bindings emit rejected Zig locals
+## 2.58 -- OPEN: the Zig network entry's `emit-zig-chapter` retains about 200 bytes of heap per output character
 
-`ZigEmitter.codex:2468` and `:3463` emit every named `IrDoBind` as a `const`
-without checking later uses or adding a valid discard, so a valid native
-program that binds an act result and never reads it fails Zig with
-`unused local constant` (reek, 2026-09-10: four unused `bp-poke64` results,
-evidence `D:/Projects/Cobblestone-reek/build-output/zig-refusal/initial-core/`).
-Keep live and unused aliases both correct; no blanket discard of reused names.
+The send half is closed by main 26048 (COMPILER-86 stage 1): the same probe
+source on the same 1,293,964-byte IR spends 654,416,376 bytes in the send on
+seed 26027 and 30,258,488 on seed 26048 (reek, 2026-09-23). The send path
+(`net-io-send-text-checked`, `codex/os/net/NetIO.codex`) now costs about 51
+bytes per byte sent; bracketed per stage on a 595,958-byte reply, 426 chunks:
+`text-to-bytes-chunk` 6,978,208, `transport-slice` 6,978,208,
+`net-io-send-drain` 749,056, `net-send` 15,594,744, `flush-transport-outbox`
+68,160 (2026-09-23).
 
-## 2.58 -- OPEN: a network plug retains about 1.1 KB of heap per byte it sends, so a large reply runs out of memory
-
-Measured 2026-09-12 (red) with the Zig network entry instrumented by `__heap-save`
-between stages, on a 1,293,964-byte IR whose reply is 593,420 bytes: receive
-29,043,912 bytes, parse 93,252,720, emit 118,352,608, **send 654,416,376**, about
-1,100 bytes of heap per byte sent. Root's 10,552,742-byte hosted-comparisons IR
-replies 2,386,839 bytes and died OUT OF MEMORY at 3072 MB with 1,202,600 bytes
-received by the host, which is inside the send.
-
-The send path is the shared one, `net-io-send-text-checked` into
-`net-io-send-chunk-checked` (`codex/os/net/NetIO.codex`): every `net-mss` slice
-makes a `text-to-bytes-chunk` list and a `transport-slice` copy (8 bytes per
-byte), runs `net-io-send-drain`, builds the segment through `net-send` and
-`flush-transport-outbox`, and nothing is bracketed by a heap mark. Which of those
-dominates is not yet measured; bracket each with `__heap-save` before changing
-any. Every network plug that answers a large reply shares this path.
-
-Emission is the secondary cost: `emit-zig-chapter` retains about 200 bytes per
-output character (85 to 150 on 22 to 27 KB replies, 199 at 593 KB) against
+What remains is emission: `emit-zig-chapter` retains about 200 bytes per output
+character (118,352,608 bytes for 593,420, unchanged by 26048) against
 `emit-zig-chapter-stream`'s near-constant 0.65 to 8.5 MB, because it emits every
-definition without a heap mark. The streaming stdio entry (`ZigStdio.codex`)
-emitted the 2.4 MB reply at 3072 MB. Probes: red's `build-output/z258/`.
+definition without a heap mark. The network entry needs the whole reply as one
+Text before `net-io-send-text-checked`, and the transport state a send produces
+is allocated after any per-definition mark, so streaming the network entry is a
+design change, not a mark. The out-of-memory symptom is gone at today's reply
+sizes: root's 10,537,408-byte hosted IR (`zig-intake/old-hosted.ir`) now answers
+2,395,322 bytes, `OK defs=3741`, at 3072 MB (2026-09-23); at 200 bytes per
+character a reply of about 12 MB is where emission alone would exhaust 3072 MB
+(arithmetic, not measured). Probes: reek's
+`build-output/z258r/` (`probe.codex` per stage, `probe2.codex` whole function).
 
-## 2.54 -- OPEN: `typeclass-smoke` is red through the Zig plug (undeclared type variable T578)
+## 2.66 -- BOUNDARY (COMPILER-83): a dictionary VALUE whose method is generic in its own type variable has no zig type
 
-`typeclass-smoke` reaches the Zig plug with an unresolved dictionary type where
-the call expects a concrete instance, and the plug refuses T578 as undeclared,
-with pointless-discard diagnostics beside it (root, 2026-09-10; source and logs
-`old-typeclass-smoke`, `pr135-typeclass-smoke` in
-`D:/Projects/Cobblestone-root/build-output/zig-intake/`). The cause is upstream
-of the plug. The instance-declaration repair and superclass application are on
-fester's combined shelf 25599 and root's shelf 25624; root owns
-MethodSpecialization.md's first tranche (closed-use schema materialization,
-checked IR template metadata, input-derived bounds, no body cloning). No gate
-waiver; the probe must compile through the plug and reproduce its expected
-output, and `typeclass-poly` and direct mixed-type method calls stay required.
+A class method generic in its own type variable (`runtime-value : a, b -> b`) gives the dictionary record a field still generic in `b`, and a zig struct field cannot hold a generic function outside a comptime-only struct. A projection of a generated dictionary, direct or through a `let`, is rewritten by the desugarer into a use of the instance's own method and reaches zig through MethodSpecialization slots (`method-template-contract-runtime`, `typeclass-method-local-two-types` and `-independent` are exact through both frozen readers). A dictionary that flows as a value (passed, returned, captured) keeps the by-name refusal in `emit-zig-record-fields`, shown by `method-template-contract-escape` and `typeclass-method-local-shadow`; lifting it needs a boxed generic field, which is not proposed (`docs/Designs/Done/Compiler/MethodLocalPolymorphism.md`, stage 3).
 
-Method-local polymorphism is a design boundary, not part of this row:
-ConverterDict declares only `a` while its method field references `b`, and two
-local-dictionary controls fail before IR with CDX2001 Integer vs Text. Making
-those pass is COMPILER-83; see
-`D:/Projects/Cobblestone-fester/build-output/instance-typing/method-polymorphism-boundary.md`.
-The hosted comparison probe's `port-in-byte` refusal is issue 126, COMPILER-56.
-
-The `eq-generic-fields` half is closed (2026-09-12): generated equality helpers
-carry the instantiated sum type on parameters, scrutinees and patterns; through
-the head Zig plug the previous seed's IR fails on undeclared `a_` and the new
-seed's builds and prints the exact 10 lines, with 24 of 24 concrete IR sites.

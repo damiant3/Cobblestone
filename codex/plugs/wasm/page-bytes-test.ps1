@@ -1,4 +1,4 @@
-# Grade the compile page's BYTES modules (pe, img, elf, sign): the plugs that take a
+# Grade the compile page's BYTES modules (pe, img, elf, sign, macho): the plugs that take a
 # compiled payload rather than IR text, which page-lens-test.ps1 therefore
 # cannot grade. One real payload arm per branch that has a live producer, and
 # a refusal arm per module, because a plug that answers bytes on garbage is a
@@ -224,6 +224,19 @@ else {
     $refTxt = if ($ref) { [Text.Encoding]::UTF8.GetString($ref) } else { '' }
     if ($refTxt -match 'REFUSED unknown mode') { $rows += [pscustomobject]@{ arm = 'sign refusal'; verdict = 'OK'; note = ($refTxt.Trim() -split "`n")[0] } }
     else { $rows += [pscustomobject]@{ arm = 'sign refusal'; verdict = 'BAD'; note = 'mode 7 was not refused by name' } }
+}
+
+# -- macho: delegated to apps/prism/test-macho.mjs --writer -------------------
+# Its payload is an arm64 DARWIN wire, not the CDX above, and the writer grade
+# (structure, every page hash, ADRs into __const on a subject that reaches the
+# align-8 gap, determinism, refusals) already lives there, so this row runs it
+# rather than restating it.
+$machoWasm = Get-Module 'macho'
+if (-not $machoWasm) { $rows += [pscustomobject]@{ arm = 'macho'; verdict = 'ABSENT'; note = 'no module' } }
+else {
+    $mOut = & node (Join-Path $Repo 'apps\prism\test-macho.mjs') --writer 2>&1
+    $mLast = (@($mOut) | Select-Object -Last 1)
+    $rows += [pscustomobject]@{ arm = 'macho'; verdict = $(if ($LASTEXITCODE -eq 0) { 'OK' } else { 'BAD' }); note = "$mLast" }
 }
 
 Write-Host ''

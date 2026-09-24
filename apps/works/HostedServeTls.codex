@@ -1,0 +1,228 @@
+Chapter: HostedServeTls
+  cites Works chapter Http
+  cites Works chapter WebRoute
+  cites Works chapter HostedServe
+  cites Encode chapter TlsEndpoint
+  cites Foreword chapter Ed25519
+
+ HTTPS on a hosted target: TLS 1.3 over the host's TCP.
+
+ RFC 8446 section 5.1: a record is a 5-byte header, type, version(2) and
+ length(2), then the fragment. A plaintext fragment is at most 2^14 bytes,
+ and a protected record's length is at most 2^14 + 256.
+
+ Every connection draws its X25519 key and its ServerHello random from
+ `hardware-random`, which is RDRAND. A key reused across connections is a
+ key an observer can correlate them by, and a lost one decrypts all of them.
+
+ We say:
+
+Section: Configuration
+
+  HostedTls = record {
+    ht-chain : List (List Integer),
+    ht-sign-priv : List Integer,
+    ht-sign-pub : List Integer
+  }
+
+  hosted-tls : List Integer, List Integer -> HostedTls
+  hosted-tls (sign-priv) (cert) =
+    HostedTls { ht-chain = [cert], ht-sign-priv = sign-priv, ht-sign-pub = ed25519-public-key sign-priv }
+
+  hst-max-plain : Integer = 16384
+  hst-max-record : Integer = 16640
+
+ Receives one connection may spend before it is dropped. A handshake and a
+ request take 2 to 4 receives; the bound keeps a silent client from holding
+ the single-threaded listener.
+
+  hst-recv-limit : Integer = 64
+
+Section: Entropy
+
+  hst-random-bytes : Integer, List Integer -> List Integer
+  hst-random-bytes (words) (acc) =
+    if words <= 0 then acc
+    else hst-random-bytes (words - 1) (hst-word-bytes hardware-random acc 0)
+
+  hst-word-bytes : Integer, List Integer, Integer -> List Integer
+  hst-word-bytes (w) (acc) (i) =
+    if i >= 8 then acc
+    else hst-word-bytes (bit-shru w 8) (list-push acc (bit-and w 255)) (i + 1)
+
+Section: Records
+
+  hst-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  hst-slice (bs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else hst-slice bs (i + 1) stop (list-push acc (list-at bs i))
+
+  hst-record-len : List Integer -> Integer
+  hst-record-len (buf) = list-at buf 3 * 256 + list-at buf 4
+
+  hst-record-ready : List Integer -> Boolean
+  hst-record-ready (buf) =
+    if list-length buf < 5 then False
+    else list-length buf >= 5 + hst-record-len buf
+
+  hst-send-records : Integer, Integer, List (List Integer), Integer -> [Network.Write] Boolean
+  hst-send-records (cfd) (buf) (recs) (i) = act
+    if i >= list-length recs then True
+    else let rec = list-at recs i
+    in let len = list-length rec
+    in let staged = hs-list-to-buf buf rec 0 len
+    in act
+      sent <- hs-send-all cfd buf 0 len
+      if sent < 0 then False
+      else hst-send-records cfd buf recs (i + 1)
+    end
+  end
+
+  HstPump = record { hp-ep : TlsEp, hp-rest : List Integer, hp-ok : Boolean }
+
+ Feed every complete record in `pending` to the endpoint and send what it
+ answers, in order. A declared length past the protocol's maximum ends the
+ connection rather than growing `pending` toward it.
+
+  hst-pump : Integer, Integer, TlsEp, List Integer -> [Network.Write] HstPump
+  hst-pump (cfd) (buf) (ep) (pending) = act
+    if list-length pending >= 5 then act
+      if hst-record-len pending > hst-max-record then HstPump { hp-ep = ep, hp-rest = [], hp-ok = False }
+      else hst-pump-ready cfd buf ep pending
+    end
+    else HstPump { hp-ep = ep, hp-rest = pending, hp-ok = True }
+  end
+
+  hst-pump-ready : Integer, Integer, TlsEp, List Integer -> [Network.Write] HstPump
+  hst-pump-ready (cfd) (buf) (ep) (pending) = act
+    if hst-record-ready pending == False then HstPump { hp-ep = ep, hp-rest = pending, hp-ok = True }
+    else let n = 5 + hst-record-len pending
+    in let step = tls-ep-recv ep (hst-slice pending 0 n [])
+    in let rest = hst-slice pending n (list-length pending) []
+    in act
+      ok <- hst-send-records cfd buf (step.tes-out) 0
+      if ok then hst-pump cfd buf (step.tes-ep) rest
+      else HstPump { hp-ep = step.tes-ep, hp-rest = rest, hp-ok = False }
+    end
+  end
+
+Section: Serving One Connection
+
+ The request is complete at the blank line ending its headers, the same
+ boundary the plaintext server's single receive stops at.
+ `http-find-blank-line` cannot answer this: it returns the offset past the
+ blank line, which is the length itself for a request that ends there, and
+ the length is also its not-found answer.
+
+  hst-has-blank-line : List Integer, Integer -> Boolean
+  hst-has-blank-line (a) (i) =
+    if i + 3 >= list-length a then False
+    else if list-at a i == 13 then
+      (if list-at a (i + 1) == 10 then
+        (if list-at a (i + 2) == 13 then
+          (if list-at a (i + 3) == 10 then True else hst-has-blank-line a (i + 1))
+        else hst-has-blank-line a (i + 1))
+      else hst-has-blank-line a (i + 1))
+    else hst-has-blank-line a (i + 1)
+
+  hst-request-ready : TlsEp -> Boolean
+  hst-request-ready (ep) =
+    if tls-ep-done ep == False then False
+    else hst-has-blank-line (tls-ep-app-in ep) 0
+
+  HstSent = record { hst-ep : TlsEp, hst-ok : Boolean }
+
+  hst-send-app : Integer, Integer, TlsEp, List Integer, Integer -> [Network.Write] HstSent
+  hst-send-app (cfd) (buf) (ep) (data) (off) = act
+    if off >= list-length data then HstSent { hst-ep = ep, hst-ok = True }
+    else let take = if list-length data - off > hst-max-plain then hst-max-plain else list-length data - off
+    in let step = tls-ep-send-app ep (hst-slice data off (off + take) [])
+    in act
+      ok <- hst-send-records cfd buf (step.tes-out) 0
+      if ok then hst-send-app cfd buf (step.tes-ep) data (off + take)
+      else HstSent { hst-ep = step.tes-ep, hst-ok = False }
+    end
+  end
+
+  hst-close : Integer, WebState, Boolean -> [Network.Write] HostedServed
+  hst-close (cfd) (st) (ok) = act
+    closed <- host-socket hs-op-close cfd 0 0
+    HostedServed { state = st, ok = ok }
+  end
+
+  hst-respond : (HttpRequest -> HttpResponse), WebState, Integer, Integer, TlsEp -> [Network.Write] HostedServed
+  hst-respond (route) (st) (cfd) (buf) (ep) =
+    let req = http-parse-request (tls-ep-app-in ep)
+    in let ns = WebState { request-count = (st.request-count) + 1 }
+    in let resp = if req.valid then web-dispatch route web-observe-none ns req else http-error "Bad request"
+    in act
+      sent <- hst-send-app cfd buf ep (http-encode resp) 0
+      let closing = tls-ep-close-notify (sent.hst-ep)
+      in act
+        notified <- hst-send-records cfd buf (closing.tes-out) 0
+        hst-close cfd ns (sent.hst-ok)
+      end
+    end
+
+  hst-conn : (HttpRequest -> HttpResponse), WebState, Integer, Integer, TlsEp, List Integer, Integer -> [Network.Write] HostedServed
+  hst-conn (route) (st) (cfd) (buf) (ep) (pending) (left) = act
+    n <- host-socket hs-op-recv cfd buf hs-buffer-bytes
+    if n <= 0 then hst-close cfd st False
+    else act
+      p <- hst-pump cfd buf ep (pending & hs-buf-to-list buf 0 n [])
+      if p.hp-ok == False then hst-close cfd st False
+      else if hst-request-ready (p.hp-ep) then hst-respond route st cfd buf (p.hp-ep)
+      else if left <= 1 then hst-close cfd st False
+      else hst-conn route st cfd buf (p.hp-ep) (p.hp-rest) (left - 1)
+    end
+  end
+
+ A connection allocates about 19 MB (the handshake's X25519, Ed25519 and key
+ schedule), measured 2026-09-23. Everything it allocates is reclaimed when it
+ closes; only the request count and the verdict, both Integers, cross the
+ restore. Safe because `host-socket` send is the host kernel copying the
+ bytes before it returns, so nothing below the mark is still referenced.
+ The contract this places on the route: it must not keep anything it
+ allocates across requests.
+
+  hst-new-ep : HostedTls -> TlsEp
+  hst-new-ep (tls) =
+    tls-ep-server-new (hst-random-bytes 4 []) (hst-random-bytes 4 []) (tls.ht-chain) (tls.ht-sign-priv) (tls.ht-sign-pub)
+
+  hst-serve-one : (HttpRequest -> HttpResponse), HostedTls, WebState, Integer, Integer -> [Network.Write] HostedServed
+  hst-serve-one (route) (tls) (st) (cfd) (buf) =
+    let mark = __heap-save
+    in act
+      served <- hst-conn route st cfd buf (hst-new-ep tls) [] hst-recv-limit
+      let count = (served.state).request-count
+      in let ok = served.ok
+      in let restored = __heap-restore mark
+      in HostedServed { state = WebState { request-count = count }, ok = ok }
+    end
+
+Section: The Accept Loop
+
+ The same contract as `hosted-serve-on`: a negative `count` serves until
+ accept refuses, and the answer is the number of requests served.
+
+  hst-loop : (HttpRequest -> HttpResponse), HostedTls, WebState, Integer, Integer, Integer -> [Network.Write] Integer
+  hst-loop (route) (tls) (st) (fd) (buf) (remaining) = act
+    if remaining == 0 then (st.request-count)
+    else act
+      cfd <- host-socket hs-op-accept fd 0 0
+      if cfd < 0 then (st.request-count)
+      else act
+        served <- hst-serve-one route tls st cfd buf
+        hst-loop route tls (served.state) fd buf (remaining - 1)
+      end
+    end
+  end
+
+  hosted-serve-tls-on : (HttpRequest -> HttpResponse), HostedTls, Integer, Integer -> [Network.Write] Integer
+  hosted-serve-tls-on (route) (tls) (fd) (count) =
+    let buf = alloc-bytes hs-buffer-bytes
+    in act
+      served <- hst-loop route tls web-new fd buf count
+      closed <- host-socket hs-op-close fd 0 0
+      served
+    end

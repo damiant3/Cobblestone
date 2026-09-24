@@ -148,15 +148,13 @@ other 16 MB images sitting in the fleet's `build-output/` directories on
 entries say only "on blu's box", and that vagueness is half of what made
 `build-output/` look like a safe habit.
 
-## THE SITTING QUEUE IS CLOSED (2026-09-09 02:40): THE LAST SITTING HAS FLOWN
+## THE SITTING QUEUE IS OPEN (Damian, 2026-09-23)
 
-Sitting 15 flew on 2026-09-09 and stopped at the ladder's first write to the
-part. No flight follows it, for all time (Damian's ruling of 2026-09-07,
-restated by him on 2026-09-09 after the result). Nothing below is a queue any
-more: no metal question is admitted, no flight is composed, no image is
-flashed to fly. A metal-gated item is answered in a bed or deleted as
-unanswerable; "rides the last sitting" is no longer a state any register may
-carry. The I219 medium-death hunt stays parked and does not revive on a flight.
+"Sittings are open, but same rules as before: answer all open question in 1
+sit, and don't waste my time or my back." Root composes the next sitting from
+every open metal question (`CurrentPlan.md`, "SITTINGS ARE OPEN"). The I219
+medium-death hunt stays parked (Damian, 2026-08-24). Sitting 15, below, is the
+last sitting flown.
 
 ### SITTING 15, 2026-09-09: `diag-sitting15.img` 47F29D50, disk 2, the ASUS
 

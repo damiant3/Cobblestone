@@ -1,0 +1,1440 @@
+Chapter: Method Specialization
+  cites Codex chapter Build Settings (max-recursion-depth)
+  cites Emit chapter IR Text Emitter (ir-quote, ir-cat, ir-emit-type, safe-int-text)
+
+Section: Checked Origins
+
+  method-stable-sort : List a, (a, a -> Integer) -> List a
+  method-stable-sort (xs) (cmp) =
+   if list-length xs < 2 then xs
+   else method-sort-passes xs (for x in xs -> x) cmp 1 (list-length xs)
+
+  method-sort-passes : List a, List a, (a, a -> Integer), Integer, Integer -> List a
+  method-sort-passes (src) (dst) (cmp) (width) (len) =
+   if width >= len then src
+   else let next = method-sort-runs src dst cmp width len 0
+   in method-sort-passes next src cmp (if width >= len - width then len else width + width) len
+
+  method-sort-runs : List a, List a, (a, a -> Integer), Integer, Integer, Integer -> List a
+  method-sort-runs (src) (dst) (cmp) (width) (len) (start) =
+   if start >= len then dst
+   else let mid = if start + width > len then len else start + width
+   in let stop = if mid + width > len then len else mid + width
+   in let next = method-sort-merge src dst cmp start mid mid stop start
+   in method-sort-runs src next cmp width len stop
+
+  method-sort-merge : List a, List a, (a, a -> Integer), Integer, Integer, Integer, Integer, Integer -> List a
+  method-sort-merge (src) (dst) (cmp) (left) (mid) (right) (stop) (out) =
+   if out >= stop then dst
+   else if left >= mid then method-sort-merge src (list-set-at dst out (list-at src right)) cmp left mid (right + 1) stop (out + 1)
+   else if right >= stop then method-sort-merge src (list-set-at dst out (list-at src left)) cmp (left + 1) mid right stop (out + 1)
+   else if cmp (list-at src left) (list-at src right) <= 0
+      then method-sort-merge src (list-set-at dst out (list-at src left)) cmp (left + 1) mid right stop (out + 1)
+      else method-sort-merge src (list-set-at dst out (list-at src right)) cmp left mid (right + 1) stop (out + 1)
+
+  MethodInputs = record {
+   classes : List AClassDef,
+   instances : List AInstanceDef,
+   checked-types : List TypeBinding,
+   renames : List RenameEntry,
+   source-bytes : Integer
+  }
+
+  empty-method-inputs : MethodInputs = MethodInputs { classes = [], instances = [], checked-types = [], renames = [], source-bytes = 0 }
+
+  method-has-name : List Text, Text, Integer -> Boolean
+  method-has-name (ns) (n) (i) =
+   if i >= list-length ns then False
+   else if list-at ns i == n then True else method-has-name ns n (i + 1)
+
+  method-td-name : ATypeDef -> Text
+  method-td-name (td) = when td
+   is ARecordTypeDef (n) (ps) (fs) (m) (s) -> n.value
+   is AVariantTypeDef (n) (ps) (cs) (s) -> n.value
+   is AUnitTypeDef (n) (b) (s) -> n.value
+
+  method-known-type : List ATypeDef, Text, Integer -> Boolean
+  method-known-type (tds) (n) (i) =
+   if i >= list-length tds then False
+   else if method-td-name (list-at tds i) == n then True else method-known-type tds n (i + 1)
+
+  method-free-name : Text, List ATypeDef, List Text, List Text -> List Text
+  method-free-name (n) (tds) (bound) (acc) =
+   if method-has-name bound n 0 | method-has-name acc n 0 then acc
+   else if ast-tparam-name-p n & (method-known-type tds n 0 == False) then list-push acc n else acc
+
+  method-free-vars : ATypeExpr, List ATypeDef, List Text, List Text -> List Text
+  method-free-vars (ty) (tds) (bound) (acc) =
+   when ty
+    is ANamedType (n) (s) -> method-free-name (n.value) tds bound acc
+    is AFunType (p) (r) (s) -> method-free-vars r tds bound (method-free-vars p tds bound acc)
+    is AAppType (h) (args) (s) ->
+     if ast-real-qual-app-p h args then acc
+     else method-free-vars-list args 0 tds bound (method-free-vars h tds bound acc)
+    is AEffectType (es) (ss) (tail) (r) (s) -> method-free-vars r tds bound acc
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> method-free-vars b tds bound acc
+    is APropEqType (l) (r) (s) -> method-free-vars r tds bound (method-free-vars l tds bound acc)
+    is AConstrainedType (cn) (cv) (b) (s) -> method-free-vars b tds bound (method-free-name (cv.value) tds bound acc)
+    is ALinearType (b) (s) -> method-free-vars b tds bound acc
+    is AForallType (v) (vt) (p) (s) -> method-free-vars p tds ([v.value] & bound) (method-free-vars vt tds bound acc)
+
+  method-free-vars-list : List ATypeExpr, Integer, List ATypeDef, List Text, List Text -> List Text
+  method-free-vars-list (ts) (i) (tds) (bound) (acc) =
+   if i >= list-length ts then acc
+   else method-free-vars-list ts (i + 1) tds bound (method-free-vars (list-at ts i) tds bound acc)
+
+  method-names-equal : List Text, List Text, Integer -> Boolean
+  method-names-equal (a) (b) (i) =
+   if list-length a /= list-length b then False
+   else if i >= list-length a then True
+   else if list-at a i /= list-at b i then False else method-names-equal a b (i + 1)
+
+  method-find-def : List ADef, Text, Integer -> List ADef
+  method-find-def (defs) (name) (i) =
+   if i >= list-length defs then []
+   else let d = list-at defs i
+   in if d.name.value == name then [d] else method-find-def defs name (i + 1)
+
+  method-class-valid : AClassDef, List ATypeDef -> Boolean
+  method-class-valid (cd) (tds) =
+   if list-length (cd.dict-schema) /= 1 then False
+   else if list-length (cd.method-binders) /= list-length (cd.methods) then False
+   else let schema = list-at (cd.dict-schema) 0
+   in if method-td-name schema /= (cd.name.value & "Dict") then False
+   else let actual = desugar-origin-schema tds (method-td-name schema) 0
+   in if list-length actual /= 1 then False
+   else if method-schema-wire schema /= method-schema-wire (list-at actual 0) then False
+   else when schema
+    is ARecordTypeDef (n) (ps) (fs) (mut) (sp) ->
+     if list-length ps /= 1 then False
+     else if (list-at ps 0).value /= "a" then False
+     else method-class-methods-valid cd tds 0 & method-schema-fields-valid (cd.methods) fs 0
+    is otherwise -> False
+
+  method-schema-fields-valid : List AEffectOpDef, List ARecordFieldDef, Integer -> Boolean
+  method-schema-fields-valid (methods) (fields) (i) =
+   if i >= list-length methods then True
+   else let m = list-at methods i
+   in let found = method-field-type fields (m.name.value & "-impl") 0
+   in if list-length found /= 1 then False
+   else if method-atype-wire (list-at found 0) /= method-atype-wire (m.type-expr) then False
+   else method-schema-fields-valid methods fields (i + 1)
+
+  method-field-type : List ARecordFieldDef, Text, Integer -> List ATypeExpr
+  method-field-type (fields) (name) (i) =
+   if i >= list-length fields then []
+   else let f = list-at fields i
+   in if f.name.value == name then [f.type-expr] else method-field-type fields name (i + 1)
+
+  method-class-methods-valid : AClassDef, List ATypeDef, Integer -> Boolean
+  method-class-methods-valid (cd) (tds) (i) =
+   if i >= list-length (cd.methods) then True
+   else let m = list-at (cd.methods) i
+   in let expected = method-free-vars (m.type-expr) tds ["a"] []
+   in if method-names-equal expected (list-at (cd.method-binders) i) 0 == False then False
+      else method-class-methods-valid cd tds (i + 1)
+
+  method-instance-valid : AInstanceDef, List ADef, List AClassDef -> Boolean
+  method-instance-valid (inst) (defs) (classes) =
+   if list-length (inst.constructor-body) /= 1 | list-length (inst.constructor-type) /= 1 then False
+   else if list-length (inst.method-targets) /= list-length (inst.methods) then False
+   else let found = method-find-def defs (inst.constructor-name) 0
+   in if list-length found /= 1 then False
+   else let d = list-at found 0
+   in if list-length (d.params) /= 0 | list-length (d.declared-type) /= 1 then False
+   else if method-atype-wire (list-at (d.declared-type) 0) /= method-atype-wire (list-at (inst.constructor-type) 0) then False
+   else if method-aexpr-wire (d.body) /= method-aexpr-wire (list-at (inst.constructor-body) 0) then False
+   else method-targets-valid (inst.method-targets) 0 defs & method-instance-contract-valid inst defs classes 0
+
+  method-instance-contract-valid : AInstanceDef, List ADef, List AClassDef, Integer -> Boolean
+  method-instance-contract-valid (inst) (defs) (classes) (i) =
+   if i >= list-length classes then False
+   else let cd = list-at classes i
+   in if cd.name.value /= inst.class-name.value then method-instance-contract-valid inst defs classes (i + 1)
+      else method-implementation-contracts inst cd defs 0
+
+  method-implementation-contracts : AInstanceDef, AClassDef, List ADef, Integer -> Boolean
+  method-implementation-contracts (inst) (cd) (defs) (i) =
+   if i >= list-length (inst.methods) then True
+   else let m = list-at (inst.methods) i
+   in let mi = method-method-index (cd.methods) (m.name.value) 0
+   in if mi < 0 then False
+   else let declared = instance-specialize-type ((list-at (cd.methods) mi).type-expr) (inst.head-type) 0
+   in if method-target-contracts (list-at (inst.method-targets) i) defs declared (m.params) 0 == False then False
+      else method-implementation-contracts inst cd defs (i + 1)
+
+  method-target-contracts : List Text, List ADef, ATypeExpr, List Name, Integer -> Boolean
+  method-target-contracts (ns) (defs) (declared) (params) (i) =
+   if i >= list-length ns then True
+   else let found = method-find-def defs (list-at ns i) 0
+   in if list-length found /= 1 then False
+   else let d = list-at found 0
+   in if list-length (d.declared-type) /= 1 | list-length (d.params) /= list-length params then False
+   else if method-atype-wire (list-at (d.declared-type) 0) /= method-atype-wire declared then False
+   else if method-names-equal (for p in (d.params) -> p.name.value) (for p in params -> p.value) 0 == False then False
+      else method-target-contracts ns defs declared params (i + 1)
+
+  method-targets-valid : List (List Text), Integer, List ADef -> Boolean
+  method-targets-valid (groups) (i) (defs) =
+   if i >= list-length groups then True
+   else if list-length (list-at groups i) == 0 then False
+   else if method-target-group-valid (list-at groups i) 0 defs == False then False
+   else method-targets-valid groups (i + 1) defs
+
+  method-target-group-valid : List Text, Integer, List ADef -> Boolean
+  method-target-group-valid (ns) (i) (defs) =
+   if i >= list-length ns then True
+   else if list-length (method-find-def defs (list-at ns i) 0) /= 1 then False
+   else method-target-group-valid ns (i + 1) defs
+
+  method-origin-bag : AChapter -> DiagnosticBag
+  method-origin-bag (m) =
+   bag-from-list (method-origin-instances (m.instance-defs) 0 (m.defs) (m.class-defs)
+    (method-origin-classes (m.class-defs) 0 (m.type-defs) []))
+
+  method-origin-classes : List AClassDef, Integer, List ATypeDef, List Diagnostic -> List Diagnostic
+  method-origin-classes (cds) (i) (tds) (acc) =
+   if i >= list-length cds then acc
+   else let cd = list-at cds i
+   in let out = if method-class-valid cd tds then acc
+      else list-push acc (make-error cdx-type-mismatch ("Invalid method-template class origin or binder scope: " & cd.name.value) (cd.span))
+   in method-origin-classes cds (i + 1) tds out
+
+  method-origin-instances : List AInstanceDef, Integer, List ADef, List AClassDef, List Diagnostic -> List Diagnostic
+  method-origin-instances (ids) (i) (defs) (classes) (acc) =
+   if i >= list-length ids then acc
+   else let inst = list-at ids i
+   in let out = if method-instance-valid inst defs classes then acc
+      else list-push acc (make-error cdx-type-mismatch ("Invalid method-template constructor origin: " & inst.constructor-name) (inst.span))
+   in method-origin-instances ids (i + 1) defs classes out
+
+  method-capture-inputs : AChapter, List TypeBinding, List RenameEntry, Integer -> MethodInputs
+  method-capture-inputs (m) (types) (renames) (bytes) =
+   if list-length (m.class-defs) == 0 then empty-method-inputs
+   else let names = method-input-names (m.instance-defs) 0 []
+   in MethodInputs {
+    classes = m.class-defs,
+    instances = m.instance-defs,
+    checked-types = sort-bindings (for n in names -> TypeBinding { name = rename-lookup renames n, bound-type = env-lookup-in types (rename-lookup renames n) }),
+    renames = renames,
+    source-bytes = bytes
+   }
+
+  method-input-names : List AInstanceDef, Integer, List Text -> List Text
+  method-input-names (ids) (i) (acc) =
+   if i >= list-length ids then acc
+   else let inst = list-at ids i
+   in method-input-names ids (i + 1) (method-input-groups (inst.method-targets) 0 (list-push acc (inst.constructor-name)))
+
+  method-input-groups : List (List Text), Integer, List Text -> List Text
+  method-input-groups (groups) (i) (acc) =
+   if i >= list-length groups then acc
+   else method-input-groups groups (i + 1) (method-input-group (list-at groups i) 0 acc)
+
+  method-input-group : List Text, Integer, List Text -> List Text
+  method-input-group (ns) (i) (acc) =
+   if i >= list-length ns then acc else method-input-group ns (i + 1) (list-push acc (list-at ns i))
+
+Section: Original Type Schemes
+
+  method-atype-wire : ATypeExpr -> Text
+  method-atype-wire (t) = text-concat-list (method-atype-parts t [])
+
+  method-atype-parts : ATypeExpr, List Text -> List Text
+  method-atype-parts (t) (acc) =
+   when t
+    is ANamedType (n) (s) -> list-push acc ("(a-named " & ir-quote (n.value) & ")")
+    is AFunType (p) (r) (s) -> list-push (method-atype-parts r (list-push (method-atype-parts p (list-push acc "(a-fun ")) " ")) ")"
+    is AAppType (h) (args) (s) -> list-push (method-atypes-parts args 0 (list-push (method-atype-parts h (list-push acc "(a-app ")) " (args")) "))"
+    is AEffectType (es) (ss) (tail) (r) (s) ->
+     let a = list-push acc ("(a-eff (effs" & method-names-wire es & ") (scopes" & method-texts-wire ss & ") (tail" & method-names-wire tail & ") ")
+     in list-push (method-atype-parts r a) ")"
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
+     list-push (method-atype-parts b (list-push acc "(a-bounded ")) (" " & safe-int-text lo & " " & safe-int-text hi & " " & integer-to-text (variant-tag mode) & ")")
+    is APropEqType (l) (r) (s) -> list-push (method-atype-parts r (list-push (method-atype-parts l (list-push acc "(a-propeq ")) " ")) ")"
+    is AConstrainedType (cn) (cv) (b) (s) -> list-push (method-atype-parts b (list-push acc ("(a-constrained " & ir-quote (cn.value) & " " & ir-quote (cv.value) & " "))) ")"
+    is ALinearType (b) (s) -> list-push (method-atype-parts b (list-push acc "(a-linear ")) ")"
+    is AForallType (v) (vt) (p) (s) -> list-push (method-atype-parts p (list-push (method-atype-parts vt (list-push acc ("(a-forall " & ir-quote (v.value) & " "))) " ")) ")"
+
+  method-atypes-parts : List ATypeExpr, Integer, List Text -> List Text
+  method-atypes-parts (ts) (i) (acc) =
+   if i >= list-length ts then acc else method-atypes-parts ts (i + 1) (method-atype-parts (list-at ts i) (list-push acc " "))
+
+  method-texts-wire : List Text -> Text
+  method-texts-wire (ns) = text-concat-list (for n in ns -> " " & ir-quote n)
+
+  method-names-wire : List Name -> Text
+  method-names-wire (ns) = text-concat-list (for n in ns -> " " & ir-quote (n.value))
+
+  method-schema-wire : ATypeDef -> Text
+  method-schema-wire (td) =
+   when td
+    is ARecordTypeDef (n) (ps) (fs) (mut) (sp) ->
+     "(rec-def " & ir-quote (n.value) & " (tparams" & method-names-wire ps & ") (fields"
+      & text-concat-list (for f in fs -> " (rec-field " & ir-quote (f.name.value) & " " & method-atype-wire (f.type-expr) & ")") & ") " & (if mut then "(mutable)" else "(immutable)") & ")"
+    is AVariantTypeDef (n) (ps) (cs) (sp) ->
+     "(var-def " & ir-quote (n.value) & " (tparams" & method-names-wire ps & ") (ctors"
+      & text-concat-list (for c in cs -> " (ctor " & ir-quote (c.name.value) & " (fields" & text-concat-list (method-atypes-parts (c.fields) 0 []) & ") (returns" & text-concat-list (method-atypes-parts (c.return-type) 0 []) & "))") & "))"
+    is AUnitTypeDef (n) (b) (s) -> "(unit-def " & ir-quote (n.value) & " " & method-atype-wire b & ")"
+
+Section: Checked Source Constructor Recipes
+
+  method-aexpr-wire : AExpr -> Text
+  method-aexpr-wire (e) = text-concat-list (method-aexpr-parts e [])
+
+  method-aexpr-parts : AExpr, List Text -> List Text
+  method-aexpr-parts (e) (acc) =
+   when e
+    is ALitExpr (t) (k) (s) -> list-push acc ("(lit " & integer-to-text (variant-tag k) & " " & ir-quote t & ")")
+    is ANameExpr (n) (s) -> list-push acc ("(name " & ir-quote (n.value) & ")")
+    is AApplyExpr (f) (a) (s) -> list-push (method-aexpr-parts a (list-push (method-aexpr-parts f (list-push acc "(apply ")) " ")) ")"
+    is ABinaryExpr (l) (op) (r) (s) -> list-push (method-aexpr-parts r (list-push (method-aexpr-parts l (list-push acc ("(binary " & integer-to-text (variant-tag op) & " "))) " ")) ")"
+    is AUnaryExpr (x) (s) -> list-push (method-aexpr-parts x (list-push acc "(negate ")) ")"
+    is AIfExpr (c) (t) (f) (s) -> list-push (method-aexpr-parts f (list-push (method-aexpr-parts t (list-push (method-aexpr-parts c (list-push acc "(if ")) " ")) " ")) ")"
+    is ALetExpr (bs) (b) (s) -> list-push (method-aexpr-parts b (list-push (method-alets-parts bs 0 (list-push acc "(let (binds")) ") ")) ")"
+    is ALambdaExpr (ps) (b) (s) -> list-push (method-aexpr-parts b (list-push acc ("(lambda (params" & method-names-wire ps & ") "))) ")"
+    is AMatchExpr (x) (arms) (s) -> list-push (method-aarms-parts arms 0 (list-push (method-aexpr-parts x (list-push acc "(match ")) " (arms")) "))"
+    is AListExpr (xs) (s) -> list-push (method-aexprs-parts xs 0 (list-push acc "(list")) ")"
+    is ARecordExpr (n) (fs) (s) -> list-push (method-afields-parts fs 0 (list-push acc ("(record " & ir-quote (n.value) & " (fields"))) "))"
+    is AFieldAccess (r) (n) (s) -> list-push (method-aexpr-parts r (list-push acc "(field ")) (" " & ir-quote (n.value) & ")")
+    is AActExpr (ss) (s) -> list-push (method-astmts-parts ss 0 (list-push acc "(act")) ")"
+    is AHandleExpr (n) (b) (cs) (s) -> list-push (method-aclauses-parts cs 0 (list-push (method-aexpr-parts b (list-push acc ("(handle " & ir-quote (n.value) & " "))) " (clauses")) "))"
+    is AWithTimeoutExpr (secs) (effs) (scopes) (b) (s) -> list-push (method-aexpr-parts b (list-push acc ("(timeout " & ir-quote secs & " (effects" & method-names-wire effs & ") (scopes" & method-texts-wire scopes & ") "))) ")"
+    is ATryExpr (n) (b) (f) (fin) (s) -> list-push (method-astmts-parts fin 0 (list-push (method-astmts-parts f 0 (list-push (method-astmts-parts b 0 (list-push acc ("(try " & safe-int-text n & " (body"))) ") (fallback")) ") (finally")) "))"
+    is AFieldAssignExpr (r) (n) (v) (s) -> list-push (method-aexpr-parts v (list-push (method-aexpr-parts r (list-push acc "(store ")) (" " & ir-quote (n.value) & " "))) ")"
+    is ALazyExpr (b) (s) -> list-push (method-aexpr-parts b (list-push acc "(lazy ")) ")"
+    is AErrorExpr (msg) (s) -> list-push acc ("(error " & ir-quote msg & ")")
+    is AInductionExpr (x) (arms) (s) -> list-push (method-aarms-parts arms 0 (list-push (method-aexpr-parts x (list-push acc "(induction ")) " (arms")) "))"
+
+  method-aexprs-parts : List AExpr, Integer, List Text -> List Text
+  method-aexprs-parts (xs) (i) (acc) =
+   if i >= list-length xs then acc else method-aexprs-parts xs (i + 1) (method-aexpr-parts (list-at xs i) (list-push acc " "))
+
+  method-alets-parts : List ALetBind, Integer, List Text -> List Text
+  method-alets-parts (bs) (i) (acc) =
+   if i >= list-length bs then acc
+   else let b = list-at bs i
+   in method-alets-parts bs (i + 1) (list-push (method-aexpr-parts (b.value) (list-push acc (" (bind " & ir-quote (b.name.value) & " "))) ")")
+
+  method-afields-parts : List AFieldExpr, Integer, List Text -> List Text
+  method-afields-parts (fs) (i) (acc) =
+   if i >= list-length fs then acc
+   else let f = list-at fs i
+   in method-afields-parts fs (i + 1) (list-push (method-aexpr-parts (f.value) (list-push acc (" (field " & ir-quote (f.name.value) & " "))) ")")
+
+  method-astmts-parts : List AActStmt, Integer, List Text -> List Text
+  method-astmts-parts (ss) (i) (acc) =
+   if i >= list-length ss then acc
+   else let parts = when list-at ss i
+     is AActBindStmt (n) (e) (s) -> list-push (method-aexpr-parts e (list-push acc (" (bind " & ir-quote (n.value) & " "))) ")"
+     is AActExprStmt (e) (s) -> list-push (method-aexpr-parts e (list-push acc " (exec ")) ")"
+   in method-astmts-parts ss (i + 1) parts
+
+  method-apat-parts : APat, List Text -> List Text
+  method-apat-parts (p) (acc) =
+   when p
+    is AVarPat (n) (s) -> list-push acc ("(var " & ir-quote (n.value) & ")")
+    is ALitPat (t) (k) (s) -> list-push acc ("(literal " & integer-to-text (variant-tag k) & " " & ir-quote t & ")")
+    is ACtorPat (n) (ps) (s) -> list-push (method-apats-parts ps 0 (list-push acc ("(constructor " & ir-quote (n.value)))) ")"
+    is AWildPat (s) -> list-push acc "(wild)"
+    is AVecPat (ps) (s) -> list-push (method-apats-parts ps 0 (list-push acc "(vector")) ")"
+
+  method-apats-parts : List APat, Integer, List Text -> List Text
+  method-apats-parts (ps) (i) (acc) =
+   if i >= list-length ps then acc else method-apats-parts ps (i + 1) (method-apat-parts (list-at ps i) (list-push acc " "))
+
+  method-aarms-parts : List AMatchArm, Integer, List Text -> List Text
+  method-aarms-parts (arms) (i) (acc) =
+   if i >= list-length arms then acc
+   else let a = list-at arms i
+   in let ps = method-apat-parts (a.pattern) (list-push acc (" (arm " & safe-int-text (a.alt-group) & " "))
+   in let gs = method-aexpr-parts (a.guard) (list-push ps " ")
+   in method-aarms-parts arms (i + 1) (list-push (method-aexpr-parts (a.body) (list-push gs " ")) ")")
+
+  method-aclauses-parts : List AHandleClause, Integer, List Text -> List Text
+  method-aclauses-parts (cs) (i) (acc) =
+   if i >= list-length cs then acc
+   else let c = list-at cs i
+   in let a = list-push acc (" (clause " & ir-quote (c.op-name.value) & " (params" & method-names-wire (c.params) & ") " & ir-quote (c.resume-name.value) & " ")
+   in method-aclauses-parts cs (i + 1) (list-push (method-aexpr-parts (c.body) a) ")")
+
+Section: Input-Derived Bounds
+
+  method-budget-add : Integer, Integer -> Integer
+  method-budget-add (a) (b) =
+   if a < 0 | b < 0 then 0 - 1
+   else if a > 2147483647 - b then 0 - 1 else a + b
+
+  method-text-cost : Text -> Integer
+  method-text-cost (s) =
+   if text-length s > 8388607 then 0 - 1 else 256 * text-length s
+
+  method-names-cost : List Name, Integer -> Integer
+  method-names-cost (ns) (i) =
+   if i >= list-length ns then 0
+   else method-budget-add (method-budget-add 2048 (method-text-cost ((list-at ns i).value))) (method-names-cost ns (i + 1))
+
+  method-texts-cost : List Text, Integer -> Integer
+  method-texts-cost (ns) (i) =
+   if i >= list-length ns then 0
+   else method-budget-add (method-budget-add 2048 (method-text-cost (list-at ns i))) (method-texts-cost ns (i + 1))
+
+  method-atype-cost : ATypeExpr, Integer -> Integer
+  method-atype-cost (t) (depth) =
+   if depth >= max-recursion-depth then 0 - 1
+   else method-budget-add 2048 (when t
+    is ANamedType (n) (s) -> method-text-cost (n.value)
+    is AFunType (p) (r) (s) -> method-budget-add (method-atype-cost p (depth + 1)) (method-atype-cost r (depth + 1))
+    is AAppType (h) (args) (s) -> method-budget-add (method-atype-cost h (depth + 1)) (method-atypes-cost args 0 (depth + 1))
+    is AEffectType (es) (ss) (tail) (r) (s) -> method-budget-add (method-atype-cost r (depth + 1)) (method-budget-add (method-names-cost es 0) (method-budget-add (method-texts-cost ss 0) (method-names-cost tail 0)))
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> method-atype-cost b (depth + 1)
+    is APropEqType (l) (r) (s) -> method-budget-add (method-atype-cost l (depth + 1)) (method-atype-cost r (depth + 1))
+    is AConstrainedType (cn) (cv) (b) (s) -> method-budget-add (method-atype-cost b (depth + 1)) (method-budget-add (method-text-cost (cn.value)) (method-text-cost (cv.value)))
+    is ALinearType (b) (s) -> method-atype-cost b (depth + 1)
+    is AForallType (v) (vt) (p) (s) -> method-budget-add (method-text-cost (v.value)) (method-budget-add (method-atype-cost vt (depth + 1)) (method-atype-cost p (depth + 1))))
+
+  method-atypes-cost : List ATypeExpr, Integer, Integer -> Integer
+  method-atypes-cost (ts) (i) (depth) =
+   if i >= list-length ts then 0 else method-budget-add (method-atype-cost (list-at ts i) depth) (method-atypes-cost ts (i + 1) depth)
+
+  method-aexpr-cost : AExpr, Integer -> Integer
+  method-aexpr-cost (e) (depth) =
+   if depth >= max-recursion-depth then 0 - 1
+   else method-budget-add 2048 (when e
+    is ALitExpr (t) (k) (s) -> method-text-cost t
+    is ANameExpr (n) (s) -> method-text-cost (n.value)
+    is AApplyExpr (f) (a) (s) -> method-budget-add (method-aexpr-cost f (depth + 1)) (method-aexpr-cost a (depth + 1))
+    is ABinaryExpr (l) (op) (r) (s) -> method-budget-add (method-aexpr-cost l (depth + 1)) (method-aexpr-cost r (depth + 1))
+    is AUnaryExpr (x) (s) -> method-aexpr-cost x (depth + 1)
+    is AIfExpr (c) (t) (f) (s) -> method-budget-add (method-aexpr-cost c (depth + 1)) (method-budget-add (method-aexpr-cost t (depth + 1)) (method-aexpr-cost f (depth + 1)))
+    is ALetExpr (bs) (b) (s) -> method-budget-add (method-alets-cost bs 0 (depth + 1)) (method-aexpr-cost b (depth + 1))
+    is ALambdaExpr (ps) (b) (s) -> method-budget-add (method-names-cost ps 0) (method-aexpr-cost b (depth + 1))
+    is AMatchExpr (x) (arms) (s) | AInductionExpr (x) (arms) (s) -> method-budget-add (method-aexpr-cost x (depth + 1)) (method-aarms-cost arms 0 (depth + 1))
+    is AListExpr (xs) (s) -> method-aexprs-cost xs 0 (depth + 1)
+    is ARecordExpr (n) (fs) (s) -> method-budget-add (method-text-cost (n.value)) (method-afields-cost fs 0 (depth + 1))
+    is AFieldAccess (r) (n) (s) -> method-budget-add (method-aexpr-cost r (depth + 1)) (method-text-cost (n.value))
+    is AActExpr (ss) (s) -> method-astmts-cost ss 0 (depth + 1)
+    is AHandleExpr (n) (b) (cs) (s) -> method-budget-add (method-text-cost (n.value)) (method-budget-add (method-aexpr-cost b (depth + 1)) (method-aclauses-cost cs 0 (depth + 1)))
+    is AWithTimeoutExpr (secs) (effs) (scopes) (b) (s) -> method-budget-add (method-text-cost secs) (method-budget-add (method-names-cost effs 0) (method-budget-add (method-texts-cost scopes 0) (method-aexpr-cost b (depth + 1))))
+    is ATryExpr (n) (b) (f) (fin) (s) -> method-budget-add (method-astmts-cost b 0 (depth + 1)) (method-budget-add (method-astmts-cost f 0 (depth + 1)) (method-astmts-cost fin 0 (depth + 1)))
+    is AFieldAssignExpr (r) (n) (v) (s) -> method-budget-add (method-text-cost (n.value)) (method-budget-add (method-aexpr-cost r (depth + 1)) (method-aexpr-cost v (depth + 1)))
+    is ALazyExpr (b) (s) -> method-aexpr-cost b (depth + 1)
+    is AErrorExpr (msg) (s) -> method-text-cost msg)
+
+  method-aexprs-cost : List AExpr, Integer, Integer -> Integer
+  method-aexprs-cost (xs) (i) (d) =
+   if i >= list-length xs then 0 else method-budget-add (method-aexpr-cost (list-at xs i) d) (method-aexprs-cost xs (i + 1) d)
+
+  method-alets-cost : List ALetBind, Integer, Integer -> Integer
+  method-alets-cost (xs) (i) (d) =
+   if i >= list-length xs then 0
+   else let b = list-at xs i
+   in method-budget-add (method-budget-add (method-text-cost (b.name.value)) (method-aexpr-cost (b.value) d)) (method-alets-cost xs (i + 1) d)
+
+  method-afields-cost : List AFieldExpr, Integer, Integer -> Integer
+  method-afields-cost (xs) (i) (d) =
+   if i >= list-length xs then 0
+   else let f = list-at xs i
+   in method-budget-add (method-budget-add (method-text-cost (f.name.value)) (method-aexpr-cost (f.value) d)) (method-afields-cost xs (i + 1) d)
+
+  method-astmts-cost : List AActStmt, Integer, Integer -> Integer
+  method-astmts-cost (xs) (i) (d) =
+   if i >= list-length xs then 0
+   else let cost = when list-at xs i
+     is AActBindStmt (n) (e) (s) -> method-budget-add (method-text-cost (n.value)) (method-aexpr-cost e d)
+     is AActExprStmt (e) (s) -> method-aexpr-cost e d
+   in method-budget-add cost (method-astmts-cost xs (i + 1) d)
+
+  method-apat-cost : APat, Integer -> Integer
+  method-apat-cost (p) (d) =
+   if d >= max-recursion-depth then 0 - 1
+   else method-budget-add 2048 (when p
+    is AVarPat (n) (s) -> method-text-cost (n.value)
+    is ALitPat (t) (k) (s) -> method-text-cost t
+    is ACtorPat (n) (ps) (s) -> method-budget-add (method-text-cost (n.value)) (method-apats-cost ps 0 (d + 1))
+    is AWildPat (s) -> 0
+    is AVecPat (ps) (s) -> method-apats-cost ps 0 (d + 1))
+
+  method-apats-cost : List APat, Integer, Integer -> Integer
+  method-apats-cost (ps) (i) (d) =
+   if i >= list-length ps then 0 else method-budget-add (method-apat-cost (list-at ps i) d) (method-apats-cost ps (i + 1) d)
+
+  method-aarms-cost : List AMatchArm, Integer, Integer -> Integer
+  method-aarms-cost (xs) (i) (d) =
+   if i >= list-length xs then 0
+   else let a = list-at xs i
+   in method-budget-add (method-budget-add (method-apat-cost (a.pattern) d) (method-budget-add (method-aexpr-cost (a.guard) d) (method-aexpr-cost (a.body) d))) (method-aarms-cost xs (i + 1) d)
+
+  method-aclauses-cost : List AHandleClause, Integer, Integer -> Integer
+  method-aclauses-cost (xs) (i) (d) =
+   if i >= list-length xs then 0
+   else let c = list-at xs i
+   in method-budget-add (method-budget-add (method-text-cost (c.op-name.value)) (method-budget-add (method-names-cost (c.params) 0) (method-budget-add (method-text-cost (c.resume-name.value)) (method-aexpr-cost (c.body) d)))) (method-aclauses-cost xs (i + 1) d)
+
+Section: Structural Closed Types
+
+  method-type-closed : CodexType, Integer -> Boolean
+  method-type-closed (t) (d) =
+   if d >= max-recursion-depth then False
+   else when t
+    is TypeVar (id) | ForAllTy (id) (body) | ForAllEff (id) (body) -> False
+    is ErrorTy | NoExpectTy -> False
+    is FunTy (p) (row) (r) ->
+     if row.tail-id >= 0 | text-length (row.tail-name) > 0 then False
+     else method-type-closed p (d + 1) & method-type-closed r (d + 1)
+    is ListTy (e) | LinkedListTy (e) | LinearTy (e) -> method-type-closed e (d + 1)
+    is ConstructedTy (n) (args) | SumTy (n) (args) (cs) | RecordTy (n) (args) (fs) -> method-types-closed args 0 (d + 1)
+    is EffectfulTy (es) (ss) (r) -> method-type-closed r (d + 1)
+    is UnitTy (n) (b) -> method-type-closed b (d + 1)
+    is PropEqTy (l) (r) | TypeApply (l) (r) -> method-type-closed l (d + 1) & method-type-closed r (d + 1)
+    is VectorTy (n) (e) | SizedVecTy (n) (e) -> method-type-closed e (d + 1)
+    is otherwise -> True
+
+  method-types-closed : List CodexType, Integer, Integer -> Boolean
+  method-types-closed (ts) (i) (d) =
+   if i >= list-length ts then True
+   else if method-type-closed (list-at ts i) d then method-types-closed ts (i + 1) d else False
+
+  method-type-cost : CodexType, Integer -> Integer
+  method-type-cost (t) (d) =
+   let budget = method-measure-type (MethodTypeBudget { used = 0, valid = True }) t d
+   in if budget.valid then budget.used else 0 - 1
+
+  MethodTypeBudget = record { used : Integer, valid : Boolean }
+
+  method-charge-type : MethodTypeBudget, Integer -> MethodTypeBudget
+  method-charge-type (b) (cost) =
+   if b.valid == False then b
+   else let total = method-budget-add (b.used) cost
+   in if total < 0 then __record-set b "valid" False else __record-set b "used" total
+
+  method-measure-type : MethodTypeBudget, CodexType, Integer -> MethodTypeBudget
+  method-measure-type (b0) (t) (d) =
+   if b0.valid == False then b0
+   else if d >= max-recursion-depth then __record-set b0 "valid" False
+   else let b = method-charge-type b0 2048
+   in when t
+    is FunTy (p) (row) (r) ->
+     let b1 = method-charge-type b (method-budget-add (method-text-cost (row.tail-name)) (method-row-cost (row.labels) 0))
+     in method-measure-type (method-measure-type b1 p (d + 1)) r (d + 1)
+    is ListTy (e) | LinkedListTy (e) | LinearTy (e) | ForAllTy (id) (e) | ForAllEff (id) (e) -> method-measure-type b e (d + 1)
+    is ConstructedTy (n) (args) | SumTy (n) (args) (cs) | RecordTy (n) (args) (fs) -> method-measure-types (method-charge-type b (method-text-cost (n.value))) args 0 (d + 1)
+    is EffectfulTy (es) (ss) (r) -> method-measure-type (method-charge-type b (method-budget-add (method-names-cost es 0) (method-texts-cost ss 0))) r (d + 1)
+    is UnitTy (n) (e) -> method-measure-type (method-charge-type b (method-text-cost (n.value))) e (d + 1)
+    is PropEqTy (l) (r) | TypeApply (l) (r) -> method-measure-type (method-measure-type b l (d + 1)) r (d + 1)
+    is VectorTy (n) (e) | SizedVecTy (n) (e) -> method-measure-type b e (d + 1)
+    is TypeCon (n) -> method-charge-type b (method-text-cost (n.value))
+    is otherwise -> b
+
+  method-measure-types : MethodTypeBudget, List CodexType, Integer, Integer -> MethodTypeBudget
+  method-measure-types (b) (ts) (i) (d) =
+   if i >= list-length ts | b.valid == False then b
+   else method-measure-types (method-measure-type b (list-at ts i) d) ts (i + 1) d
+
+  method-types-cost : List CodexType, Integer, Integer -> Integer
+  method-types-cost (ts) (i) (d) =
+   if i >= list-length ts then 0 else method-budget-add (method-type-cost (list-at ts i) d) (method-types-cost ts (i + 1) d)
+
+  method-row-cost : List EffectLabel, Integer -> Integer
+  method-row-cost (ls) (i) =
+   if i >= list-length ls then 0
+   else let l = list-at ls i
+   in method-budget-add (method-budget-add 2048 (method-budget-add (method-text-cost (l.name.value)) (method-text-cost (l.scope)))) (method-row-cost ls (i + 1))
+
+  method-type-key : CodexType -> Text
+  method-type-key (t) = text-concat-list (method-key-parts t [])
+
+  method-key-parts : CodexType, List Text -> List Text
+  method-key-parts (t) (acc) =
+   when t
+    is ConstructedTy (n) (args) | SumTy (n) (args) (cs) | RecordTy (n) (args) (fs) -> list-push (method-keys-parts args 0 (list-push acc ("(nominal " & ir-quote (n.value)))) ")"
+    is FunTy (p) (row) (r) ->
+     let parts = method-key-parts r (list-push (method-key-parts p (list-push acc "(function ")) " ")
+     in list-push parts (" (effects" & text-concat-list (for l in (row.labels) -> " (label " & ir-quote (l.name.value) & " " & ir-quote (l.scope) & ")") & "))")
+    is ListTy (e) -> list-push (method-key-parts e (list-push acc "(list ")) ")"
+    is LinkedListTy (e) -> list-push (method-key-parts e (list-push acc "(linked-list ")) ")"
+    is LinearTy (e) -> list-push (method-key-parts e (list-push acc "(linear ")) ")"
+    is UnitTy (n) (b) -> list-push (method-key-parts b (list-push acc ("(unit " & ir-quote (n.value) & " "))) ")"
+    is PropEqTy (l) (r) -> list-push (method-key-parts r (list-push (method-key-parts l (list-push acc "(propeq ")) " ")) ")"
+    is TypeApply (l) (r) -> list-push (method-key-parts r (list-push (method-key-parts l (list-push acc "(type-apply ")) " ")) ")"
+    is VectorTy (n) (e) -> list-push (method-key-parts e (list-push acc ("(vector " & safe-int-text n & " "))) ")"
+    is SizedVecTy (n) (e) -> list-push (method-key-parts e (list-push acc ("(sized-vec " & safe-int-text n & " "))) ")"
+    is otherwise -> list-push acc (ir-emit-type t)
+
+  method-keys-parts : List CodexType, Integer, List Text -> List Text
+  method-keys-parts (ts) (i) (acc) =
+   if i >= list-length ts then acc else method-keys-parts ts (i + 1) (method-key-parts (list-at ts i) (list-push acc " "))
+
+Section: Runtime Field Types
+
+
+  method-type-to-ast : CodexType -> List ATypeExpr
+  method-type-to-ast (t) =
+   when t
+    is IntegerTy (lo) (hi) (mode) -> [deck-record (ABoundedIntType (named-aty "Integer") lo hi mode synthetic-span)]
+    is RealTy (width) (mode) ->
+     let qs = if width == RwF32 then [named-aty "approximate"] else []
+     in let qs2 = when mode
+       is RmDefault -> qs
+       is RmTrapping -> list-push qs (named-aty "trapping")
+       is RmSaturating -> list-push qs (named-aty "saturating")
+     in if list-length qs2 == 0 then [named-aty "Real"] else [deck-record (AAppType (named-aty "Real") qs2 synthetic-span)]
+    is BooleanTy -> [named-aty "Boolean"]
+    is TextTy -> [named-aty "Text"]
+    is CharTy -> [named-aty "Char"]
+    is NothingTy | VoidTy -> [named-aty "Nothing"]
+    is ProofTy -> [named-aty "Proof"]
+    is ListTy (e) -> method-unary-ast "List" e
+    is LinkedListTy (e) -> method-unary-ast "LinkedList" e
+    is ConstructedTy (n) (args) | SumTy (n) (args) (cs) | RecordTy (n) (args) (fs) ->
+     let converted = method-types-to-ast args 0 []
+     in if list-length converted /= list-length args then []
+        else if list-length args == 0 then [deck-record (ANamedType n synthetic-span)]
+        else [deck-record (AAppType (deck-record (ANamedType n synthetic-span)) converted synthetic-span)]
+    is FunTy (p) (row) (r) ->
+     let ps = method-type-to-ast p
+     in let rs = method-type-to-ast r
+     in if list-length ps /= 1 | list-length rs /= 1 then []
+     else if row.tail-id >= 0 | text-length (row.tail-name) > 0 then []
+     else let ret = if list-length (row.labels) == 0 then list-at rs 0
+        else deck-record (AEffectType (for l in (row.labels) -> l.name) (for l in (row.labels) -> l.scope) [] (list-at rs 0) synthetic-span)
+     in [deck-record (AFunType (list-at ps 0) ret synthetic-span)]
+    is EffectfulTy (es) (ss) (r) ->
+     let rs = method-type-to-ast r
+     in if list-length rs /= 1 then [] else [deck-record (AEffectType es ss [] (list-at rs 0) synthetic-span)]
+    is LinearTy (b) ->
+     let bs = method-type-to-ast b
+     in if list-length bs /= 1 then [] else [deck-record (ALinearType (list-at bs 0) synthetic-span)]
+    is UnitTy (n) (b) -> [deck-record (ANamedType n synthetic-span)]
+    is VectorTy (n) (e) -> method-vector-ast "Vector" n e
+    is SizedVecTy (n) (e) -> method-vector-ast "SizedVec" n e
+    is PropEqTy (l) (r) ->
+     let ls = method-type-to-ast l
+     in let rs = method-type-to-ast r
+     in if list-length ls /= 1 | list-length rs /= 1 then []
+        else [deck-record (APropEqType (list-at ls 0) (list-at rs 0) synthetic-span)]
+    is TypeCon (n) -> [deck-record (ANamedType n synthetic-span)]
+    is TypeApply (h) (a) ->
+     let hs = method-type-to-ast h
+     in let xs = method-type-to-ast a
+     in if list-length hs /= 1 | list-length xs /= 1 then []
+        else [deck-record (AAppType (list-at hs 0) xs synthetic-span)]
+    is otherwise -> []
+
+  method-unary-ast : Text, CodexType -> List ATypeExpr
+  method-unary-ast (name) (e) =
+   let es = method-type-to-ast e
+   in if list-length es /= 1 then [] else [deck-record (AAppType (named-aty name) es synthetic-span)]
+
+  method-vector-ast : Text, Integer, CodexType -> List ATypeExpr
+  method-vector-ast (name) (n) (e) =
+   let es = method-type-to-ast e
+   in if list-length es /= 1 then []
+      else [deck-record (AAppType (named-aty name) [named-aty (safe-int-text n), list-at es 0] synthetic-span)]
+
+  method-types-to-ast : List CodexType, Integer, List ATypeExpr -> List ATypeExpr
+  method-types-to-ast (ts) (i) (acc) =
+   if i >= list-length ts then acc
+   else let converted = method-type-to-ast (list-at ts i)
+   in if list-length converted /= 1 then [] else method-types-to-ast ts (i + 1) (list-push acc (list-at converted 0))
+
+  MethodSubstitution = record {
+   names : List Text,
+   types : List CodexType,
+   valid : Boolean
+  }
+
+  method-bind-type : MethodSubstitution, Text, CodexType -> MethodSubstitution
+  method-bind-type (sub) (name) (t) = method-bind-type-at sub name t 0
+
+  method-bind-type-at : MethodSubstitution, Text, CodexType, Integer -> MethodSubstitution
+  method-bind-type-at (sub) (name) (t) (i) =
+   if i >= list-length (sub.names) then __record-set sub "valid" False
+   else if list-at (sub.names) i /= name then method-bind-type-at sub name t (i + 1)
+   else when list-at (sub.types) i
+    is NoExpectTy -> __record-set sub "types" (list-set-at (sub.types) i t)
+    is otherwise -> if method-type-key (list-at (sub.types) i) == method-type-key t then sub else __record-set sub "valid" False
+
+  method-match-type : ATypeExpr, CodexType, CodexType, List TypeBinding, MethodSubstitution -> MethodSubstitution
+  method-match-type (formal) (actual) (head) (tdm) (sub) =
+   if sub.valid == False then sub
+   else when formal
+    is ANamedType (n) (s) ->
+     if n.value == "a" then if method-type-key head == method-type-key actual then sub else __record-set sub "valid" False
+     else if method-has-name (sub.names) (n.value) 0 then method-bind-type sub (n.value) actual
+     else if method-type-key (resolve-type-expr tdm formal) == method-type-key actual then sub else __record-set sub "valid" False
+    is AFunType (p) (r) (s) -> when actual
+     is FunTy (ap) (row) (ar) ->
+      let sub2 = method-match-type p ap head tdm sub
+      in when r
+       is AEffectType (es) (ss) (tail) (ret) (rs) ->
+        if list-length tail > 0 then __record-set sub2 "valid" False
+        else if method-row-matches es ss row 0 == False then __record-set sub2 "valid" False
+        else method-match-type ret ar head tdm sub2
+       is otherwise -> if row-is-empty row then method-match-type r ar head tdm sub2 else __record-set sub2 "valid" False
+     is otherwise -> __record-set sub "valid" False
+    is AAppType (base) (args) (s) ->
+     if ast-real-qual-app-p base args then if method-type-key (resolve-type-expr tdm formal) == method-type-key actual then sub else __record-set sub "valid" False
+     else let bname = when base is ANamedType (n) (sp) -> n.value is otherwise -> ""
+     in let aname = type-name-of actual
+     in if bname /= aname then __record-set sub "valid" False
+     else method-match-args args (type-key-args actual) 0 head tdm sub
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
+     if method-type-key (resolve-type-expr tdm formal) == method-type-key actual then sub else __record-set sub "valid" False
+    is ALinearType (b) (s) -> when actual
+     is LinearTy (ab) -> method-match-type b ab head tdm sub
+     is otherwise -> __record-set sub "valid" False
+    is otherwise -> __record-set sub "valid" False
+
+  method-match-args : List ATypeExpr, List CodexType, Integer, CodexType, List TypeBinding, MethodSubstitution -> MethodSubstitution
+  method-match-args (fs) (as) (i) (head) (tdm) (sub) =
+   if list-length fs /= list-length as then __record-set sub "valid" False
+   else if i >= list-length fs then sub
+   else method-match-args fs as (i + 1) head tdm (method-match-type (list-at fs i) (list-at as i) head tdm sub)
+
+  method-row-matches : List Name, List Text, EffectRow, Integer -> Boolean
+  method-row-matches (es) (ss) (row) (i) =
+   if row.tail-id >= 0 | text-length (row.tail-name) > 0 then False
+   else if list-length es /= list-length (row.labels) then False
+   else if i >= list-length es then True
+   else let l = list-at (row.labels) i
+   in let scope = if i < list-length ss then list-at ss i else ""
+   in if (list-at es i).value /= l.name.value | scope /= l.scope then False else method-row-matches es ss row (i + 1)
+
+  method-substitute-ast : ATypeExpr, List Text, List ATypeExpr -> ATypeExpr
+  method-substitute-ast (t) (names) (types) =
+   when t
+    is ANamedType (n) (s) -> method-substitute-name t (n.value) names types 0
+    is AFunType (p) (r) (s) -> deck-record (AFunType (method-substitute-ast p names types) (method-substitute-ast r names types) s)
+    is AAppType (h) (args) (s) -> deck-record (AAppType (method-substitute-ast h names types) (for a in args -> method-substitute-ast a names types) s)
+    is AEffectType (es) (ss) (tail) (r) (s) -> deck-record (AEffectType es ss tail (method-substitute-ast r names types) s)
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> deck-record (ABoundedIntType (method-substitute-ast b names types) lo hi mode s)
+    is ALinearType (b) (s) -> deck-record (ALinearType (method-substitute-ast b names types) s)
+    is otherwise -> t
+
+  method-substitute-name : ATypeExpr, Text, List Text, List ATypeExpr, Integer -> ATypeExpr
+  method-substitute-name (original) (name) (names) (types) (i) =
+   if i >= list-length names then original
+   else if list-at names i == name then list-at types i else method-substitute-name original name names types (i + 1)
+
+Section: Finite Existing-Use Scan
+
+  MethodTarget = record { name : Text, method-index : Integer, declared : ATypeExpr }
+  MethodUse = record { method-index : Integer, actual-type : CodexType, key : Text }
+  MethodScan = record {
+   dict-name : Text,
+   targets : List MethodTarget,
+   shadows : List Integer,
+   uses : List MethodUse,
+   reason : Text,
+   fatal : Boolean,
+   use-count : Integer,
+   byte-bound : Integer,
+   ceiling : Integer
+  }
+
+  method-target-position : List MethodTarget, Text, Integer, Integer -> Integer
+  method-target-position (xs) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in if text-compare name ((list-at xs mid).name) <= 0 then method-target-position xs name lo mid
+      else method-target-position xs name (mid + 1) hi
+
+  method-target-index : List MethodTarget, Text -> Integer
+  method-target-index (xs) (name) =
+   let i = method-target-position xs name 0 (list-length xs)
+   in if i >= list-length xs then 0 - 1 else if (list-at xs i).name == name then i else 0 - 1
+
+  method-shadow : MethodScan, Text, Integer -> MethodScan
+  method-shadow (st) (name) (delta) =
+   let i = method-target-index (st.targets) name
+   in if i < 0 then st else __record-set st "shadows" (list-set-at (st.shadows) i ((list-at (st.shadows) i) + delta))
+
+  method-shadow-names : MethodScan, List Text, Integer, Integer -> MethodScan
+  method-shadow-names (st) (names) (i) (delta) =
+   if i >= list-length names then st else method-shadow-names (method-shadow st (list-at names i) delta) names (i + 1) delta
+
+  method-stop-scan : MethodScan, Text -> MethodScan
+  method-stop-scan (st) (why) = if text-length (st.reason) > 0 then st else __record-set st "reason" why
+
+  method-scan-type : MethodScan, CodexType, Integer -> MethodScan
+  method-scan-type (st) (t) (d) =
+   if text-length (st.reason) > 0 then st
+   else if deck-bound-short-of (st.ceiling) 8192 then __record-set (method-stop-scan st "phase-byte-bound") "fatal" True
+   else if d >= max-recursion-depth then method-stop-scan st "type-depth"
+   else when t
+    is ConstructedTy (n) (args) | SumTy (n) (args) (cs) | RecordTy (n) (args) (fs) ->
+     if n.value == st.dict-name then method-stop-scan st "runtime-type-use" else method-scan-types st args 0 (d + 1)
+    is FunTy (p) (row) (r) -> method-scan-type (method-scan-type st p (d + 1)) r (d + 1)
+    is ListTy (e) | LinkedListTy (e) | LinearTy (e) | ForAllTy (id) (e) | ForAllEff (id) (e) -> method-scan-type st e (d + 1)
+    is EffectfulTy (es) (ss) (r) -> method-scan-type st r (d + 1)
+    is UnitTy (n) (b) -> if n.value == st.dict-name then method-stop-scan st "runtime-type-use" else method-scan-type st b (d + 1)
+    is PropEqTy (l) (r) | TypeApply (l) (r) -> method-scan-type (method-scan-type st l (d + 1)) r (d + 1)
+    is VectorTy (n) (e) | SizedVecTy (n) (e) -> method-scan-type st e (d + 1)
+    is TypeCon (n) -> if n.value == st.dict-name then method-stop-scan st "runtime-type-use" else st
+    is otherwise -> st
+
+  method-scan-types : MethodScan, List CodexType, Integer, Integer -> MethodScan
+  method-scan-types (st) (ts) (i) (d) =
+   if i >= list-length ts | text-length (st.reason) > 0 then st
+   else method-scan-types (method-scan-type st (list-at ts i) d) ts (i + 1) d
+
+  method-observe-name : MethodScan, Text, CodexType -> MethodScan
+  method-observe-name (st) (name) (raw-ty) =
+   let i = method-target-index (st.targets) name
+   in if i < 0 then st
+   else if list-at (st.shadows) i > 0 then st
+   else let cost = method-type-cost raw-ty 0
+   in let next = method-budget-add (st.byte-bound) cost
+   in if next < 0 | deck-bound-short-of (st.ceiling) (method-budget-add cost 4096)
+      then __record-set (method-stop-scan st "input-byte-bound") "fatal" True
+   else let ty = method-declared-use-type ((list-at (st.targets) i).declared) raw-ty 0
+   in if method-type-closed ty 0 == False then method-stop-scan st ("open-method-use:" & name & ":" & method-open-type-detail ty)
+   else let use = deck-record (MethodUse { method-index = (list-at (st.targets) i).method-index, actual-type = ty, key = method-type-key ty })
+   in let st1 = __record-set st "byte-bound" next
+   in let st2 = __record-set st1 "use-count" (st1.use-count + 1)
+   in __record-set st2 "uses" (list-push (st2.uses) use)
+
+  method-open-type-detail : CodexType -> Text
+  method-open-type-detail (t) =
+   when t
+    is FunTy (p) (row) (r) -> "fn[" & show (row.tail-id) & "," & row.tail-name & "](" & method-open-type-detail p & "," & method-open-type-detail r & ")"
+    is otherwise -> ir-emit-type t
+
+  method-declared-use-type : ATypeExpr, CodexType, Integer -> CodexType
+  method-declared-use-type (formal) (actual) (d) =
+   if d >= max-recursion-depth then ErrorTy
+   else when formal
+    is AFunType (p) (r) (s) -> when actual
+     is FunTy (ap) (row) (ar) ->
+      if text-length (row.tail-name) > 0 then ErrorTy
+      else let cp = method-declared-use-type p ap (d + 1)
+      in when r
+       is AEffectType (es) (ss) (tail) (ret) (rs) ->
+        if list-length tail > 0 then ErrorTy
+        else let closed = make-row (row.labels) "" (0 - 1)
+        in if method-row-matches es ss closed 0 == False then ErrorTy
+           else deck-record (FunTy cp closed (method-declared-use-type ret ar (d + 1)))
+       is otherwise -> if list-length (row.labels) > 0 then ErrorTy
+          else deck-record (FunTy cp empty-row (method-declared-use-type r ar (d + 1)))
+     is otherwise -> ErrorTy
+    is otherwise -> actual
+
+  method-scan-expr : MethodScan, IRExpr, Integer -> MethodScan
+  method-scan-expr (st0) (e) (d) =
+   if text-length (st0.reason) > 0 then st0
+   else if deck-bound-short-of (st0.ceiling) 8192 then __record-set (method-stop-scan st0 "phase-byte-bound") "fatal" True
+   else if d >= max-recursion-depth then method-stop-scan st0 "expression-depth"
+   else let st = method-scan-type st0 (ir-expr-type e) 0
+   in if text-length (st.reason) > 0 then st
+   else when e
+    is IrName (n) (ty) (s) ->
+     if n == "__self-type-defs" then method-stop-scan st "runtime-type-reflection" else method-observe-name st n ty
+    is IrBinary (op) (l) (r) (ty) (s) -> method-scan-expr (method-scan-expr st l (d + 1)) r (d + 1)
+    is IrNegate (x) (ty) (s) -> method-scan-expr st x (d + 1)
+    is IrIf (c) (t) (f) (ty) (s) -> method-scan-expr (method-scan-expr (method-scan-expr st c (d + 1)) t (d + 1)) f (d + 1)
+    is IrLet (n) (ty) (v) (b) (s) ->
+     let st1 = method-scan-expr (method-scan-type st ty 0) v (d + 1)
+     in let st2 = method-shadow st1 n 1
+     in method-shadow (method-scan-expr st2 b (d + 1)) n (0 - 1)
+    is IrApply (f) (a) (ty) (s) -> method-scan-expr (method-scan-expr st f (d + 1)) a (d + 1)
+    is IrLambda (ps) (b) (ty) (s) ->
+     let st1 = method-scan-params st ps 0 1
+     in method-scan-params (method-scan-expr st1 b (d + 1)) ps 0 (0 - 1)
+    is IrList (xs) (ty) (s) -> method-scan-exprs st xs 0 (d + 1)
+    is IrMatch (x) (arms) (ty) (s) -> method-scan-arms (method-scan-expr st x (d + 1)) arms 0 (d + 1)
+    is IrAct (ss) (ty) (s) -> method-unshadow-stmts (method-scan-stmts st ss 0 (d + 1)) ss 0
+    is IrHandle (eff) (b) (cs) (ty) (s) -> method-scan-clauses (method-scan-expr st b (d + 1)) cs 0 (d + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (b) (ty) (s) -> method-scan-expr st b (d + 1)
+    is IrRecord (n) (fs) (ty) (s) ->
+     if n == st.dict-name then method-stop-scan st "runtime-construction" else method-scan-fields st fs 0 (d + 1)
+    is IrFieldAccess (r) (n) (ty) (s) -> method-scan-expr st r (d + 1)
+    is IrFieldStore (r) (n) (v) (ty) (s) -> method-scan-expr (method-scan-expr st r (d + 1)) v (d + 1)
+    is IrFork (b) (ty) (s) | IrAwait (b) (ty) (s) -> method-scan-expr st b (d + 1)
+    is IrTry (n) (b) (f) (fin) (ty) (s) ->
+     let st1 = method-unshadow-stmts (method-scan-stmts st b 0 (d + 1)) b 0
+     in let st2 = method-unshadow-stmts (method-scan-stmts st1 f 0 (d + 1)) f 0
+     in method-unshadow-stmts (method-scan-stmts st2 fin 0 (d + 1)) fin 0
+    is otherwise -> st
+
+  method-scan-params : MethodScan, List IRParam, Integer, Integer -> MethodScan
+  method-scan-params (st) (ps) (i) (delta) =
+   if i >= list-length ps then st
+   else let p = list-at ps i
+   in method-scan-params (method-shadow (method-scan-type st (p.type-val) 0) (p.name) delta) ps (i + 1) delta
+
+  method-scan-exprs : MethodScan, List IRExpr, Integer, Integer -> MethodScan
+  method-scan-exprs (st) (xs) (i) (d) =
+   if i >= list-length xs | text-length (st.reason) > 0 then st
+   else method-scan-exprs (method-scan-expr st (list-at xs i) d) xs (i + 1) d
+
+  method-scan-fields : MethodScan, List IRFieldVal, Integer, Integer -> MethodScan
+  method-scan-fields (st) (fs) (i) (d) =
+   if i >= list-length fs | text-length (st.reason) > 0 then st
+   else method-scan-fields (method-scan-expr st ((list-at fs i).value) d) fs (i + 1) d
+
+  method-scan-stmts : MethodScan, List IRActStmt, Integer, Integer -> MethodScan
+  method-scan-stmts (st) (ss) (i) (d) =
+   if i >= list-length ss then st
+   else let next = when list-at ss i
+     is IrDoBind (n) (ty) (v) (s) -> method-shadow (method-scan-expr (method-scan-type st ty 0) v d) n 1
+     is IrDoExec (v) (s) -> method-scan-expr st v d
+   in method-scan-stmts next ss (i + 1) d
+
+  method-unshadow-stmts : MethodScan, List IRActStmt, Integer -> MethodScan
+  method-unshadow-stmts (st) (ss) (i) =
+   if i >= list-length ss then st
+   else let next = when list-at ss i
+     is IrDoBind (n) (ty) (v) (s) -> method-shadow st n (0 - 1)
+     is otherwise -> st
+   in method-unshadow-stmts next ss (i + 1)
+
+  method-scan-pat : MethodScan, IRPat, Integer, Integer -> MethodScan
+  method-scan-pat (st) (p) (delta) (d) =
+   if d >= max-recursion-depth then method-stop-scan st "pattern-depth"
+   else when p
+    is IrVarPat (n) (ty) (s) -> method-shadow (method-scan-type st ty 0) n delta
+    is IrLitPat (text) (ty) (s) -> method-scan-type st ty 0
+    is IrCtorPat (n) (ps) (ty) (s) | IrVecPat (ps) (ty) (s) -> method-scan-pats (method-scan-type st ty 0) ps 0 delta (d + 1)
+    is otherwise -> st
+
+  method-scan-pats : MethodScan, List IRPat, Integer, Integer, Integer -> MethodScan
+  method-scan-pats (st) (ps) (i) (delta) (d) =
+   if i >= list-length ps then st else method-scan-pats (method-scan-pat st (list-at ps i) delta d) ps (i + 1) delta d
+
+  method-scan-arms : MethodScan, List IRBranch, Integer, Integer -> MethodScan
+  method-scan-arms (st) (arms) (i) (d) =
+   if i >= list-length arms | text-length (st.reason) > 0 then st
+   else let a = list-at arms i
+   in let st1 = method-scan-pat st (a.pattern) 1 d
+   in let st2 = method-scan-expr (method-scan-expr st1 (a.guard) d) (a.body) d
+   in method-scan-arms (method-scan-pat st2 (a.pattern) (0 - 1) d) arms (i + 1) d
+
+  method-scan-clauses : MethodScan, List IRHandleClause, Integer, Integer -> MethodScan
+  method-scan-clauses (st) (cs) (i) (d) =
+   if i >= list-length cs | text-length (st.reason) > 0 then st
+   else let c = list-at cs i
+   in let st1 = method-shadow (method-shadow-names st (c.params) 0 1) (c.resume-name) 1
+   in let st2 = method-scan-expr st1 (c.body) d
+   in let st3 = method-shadow (method-shadow-names st2 (c.params) 0 (0 - 1)) (c.resume-name) (0 - 1)
+   in method-scan-clauses st3 cs (i + 1) d
+
+  method-scan-defs : MethodScan, List IRDef, Integer -> MethodScan
+  method-scan-defs (st) (defs) (i) =
+   if i >= list-length defs | text-length (st.reason) > 0 then st
+   else let d = list-at defs i
+   in let st1 = method-scan-params (method-scan-type st (d.type-val) 0) (d.params) 0 1
+   in let st2 = method-scan-expr st1 (d.body) 0
+   in method-scan-defs (method-scan-params st2 (d.params) 0 (0 - 1)) defs (i + 1)
+
+Section: Template Plans
+
+  MethodSlot = record { method-index : Integer, name : Text, type-expr : ATypeExpr, key : Text, substitutions : List CodexType }
+  MethodPlan = record {
+   source : AClassDef,
+   instances : List AInstanceDef,
+   state : Text,
+   reason : Text,
+   slots : List MethodSlot,
+   uses : Integer,
+   byte-bound : Integer,
+   fatal : Boolean
+  }
+  MethodMaterialization = record {
+   type-defs : List ATypeDef,
+   wire : Text,
+   bag : DiagnosticBag,
+   plans : List MethodPlan,
+   byte-bound : Integer
+  }
+
+  method-class-instances : List AInstanceDef, Text, Integer, List AInstanceDef -> List AInstanceDef
+  method-class-instances (ids) (name) (i) (acc) =
+   if i >= list-length ids then acc
+   else let inst = list-at ids i
+   in method-class-instances ids name (i + 1) (if inst.class-name.value == name then list-push acc inst else acc)
+
+  method-has-local-vars : List (List Text), Integer -> Boolean
+  method-has-local-vars (bs) (i) =
+   if i >= list-length bs then False
+   else if list-length (list-at bs i) > 0 then True else method-has-local-vars bs (i + 1)
+
+  method-method-index : List AEffectOpDef, Text, Integer -> Integer
+  method-method-index (ms) (name) (i) =
+   if i >= list-length ms then 0 - 1
+   else if (list-at ms i).name.value == name then i else method-method-index ms name (i + 1)
+
+  method-make-targets : AClassDef, AInstanceDef, List RenameEntry, Integer, List MethodTarget -> List MethodTarget
+  method-make-targets (cd) (inst) (renames) (i) (acc) =
+   if i >= list-length (inst.methods) then method-stable-sort acc (\a b -> text-compare (a.name) (b.name))
+   else let m = list-at (inst.methods) i
+   in let mi = method-method-index (cd.methods) (m.name.value) 0
+   in if mi < 0 then method-make-targets cd inst renames (i + 1) acc
+   else if list-length (list-at (cd.method-binders) mi) == 0 then method-make-targets cd inst renames (i + 1) acc
+   else method-make-targets cd inst renames (i + 1) (method-target-group (list-at (inst.method-targets) i) mi ((list-at (cd.methods) mi).type-expr) renames 0 acc)
+
+  method-target-group : List Text, Integer, ATypeExpr, List RenameEntry, Integer, List MethodTarget -> List MethodTarget
+  method-target-group (names) (mi) (declared) (renames) (i) (acc) =
+   if i >= list-length names then acc
+   else method-target-group names mi declared renames (i + 1) (list-push acc (MethodTarget { name = rename-lookup renames (list-at names i), method-index = mi, declared = declared }))
+
+  method-targets-unique : List MethodTarget, Integer -> Boolean
+  method-targets-unique (xs) (i) =
+   if i >= list-length xs then True
+   else if (list-at xs i).name == (list-at xs (i - 1)).name then False else method-targets-unique xs (i + 1)
+
+  method-atype-refers : ATypeExpr, Text -> Boolean
+  method-atype-refers (t) (name) =
+   when t
+    is ANamedType (n) (s) -> n.value == name
+    is AFunType (p) (r) (s) -> method-atype-refers p name | method-atype-refers r name
+    is AAppType (h) (args) (s) -> method-atype-refers h name | method-atypes-refer args name 0
+    is AEffectType (es) (ss) (tail) (r) (s) | ABoundedIntType (r) (lo) (hi) (mode) (s) | ALinearType (r) (s) -> method-atype-refers r name
+    is APropEqType (l) (r) (s) -> method-atype-refers l name | method-atype-refers r name
+    is AConstrainedType (cn) (cv) (b) (s) -> method-atype-refers b name
+    is AForallType (v) (vt) (p) (s) -> method-atype-refers vt name | method-atype-refers p name
+
+  method-atypes-refer : List ATypeExpr, Text, Integer -> Boolean
+  method-atypes-refer (ts) (name) (i) =
+   if i >= list-length ts then False
+   else if method-atype-refers (list-at ts i) name then True else method-atypes-refer ts name (i + 1)
+
+  method-other-schema-use : List ATypeDef, Text, Integer -> Boolean
+  method-other-schema-use (tds) (name) (i) =
+   if i >= list-length tds then False
+   else let td = list-at tds i
+   in if method-td-name td == name then method-other-schema-use tds name (i + 1)
+   else let used = when td
+     is ARecordTypeDef (n) (ps) (fs) (m) (s) -> method-record-fields-refer fs name 0
+     is AVariantTypeDef (n) (ps) (cs) (s) -> method-variant-fields-refer cs name 0
+     is AUnitTypeDef (n) (b) (s) -> method-atype-refers b name
+   in if used then True else method-other-schema-use tds name (i + 1)
+
+  method-record-fields-refer : List ARecordFieldDef, Text, Integer -> Boolean
+  method-record-fields-refer (fs) (name) (i) =
+   if i >= list-length fs then False
+   else if method-atype-refers ((list-at fs i).type-expr) name then True else method-record-fields-refer fs name (i + 1)
+
+  method-variant-fields-refer : List AVariantCtorDef, Text, Integer -> Boolean
+  method-variant-fields-refer (cs) (name) (i) =
+   if i >= list-length cs then False
+   else let c = list-at cs i
+   in if method-atypes-refer (c.fields) name 0 | method-atypes-refer (c.return-type) name 0 then True
+      else method-variant-fields-refer cs name (i + 1)
+
+  method-origin-cost : AClassDef, List AInstanceDef, MethodInputs, Integer -> Integer
+  method-origin-cost (cd) (ids) (input) (ceiling) =
+   let base = method-budget-add 16384 (method-text-cost (cd.name.value))
+   in let schema-cost = when list-at (cd.dict-schema) 0
+     is ARecordTypeDef (n) (ps) (fs) (mut) (sp) -> method-record-schema-cost fs 0
+     is otherwise -> 0 - 1
+   in let source-cost = method-budget-add (method-budget-add base schema-cost) (method-instances-cost ids 0)
+   in if source-cost < 0 then source-cost
+   else if deck-bound-short-of ceiling (method-budget-add source-cost 8192) then 0 - 1
+   else method-instance-types-cost ids input 0 source-cost ceiling
+
+  method-instance-types-cost : List AInstanceDef, MethodInputs, Integer, Integer, Integer -> Integer
+  method-instance-types-cost (ids) (input) (i) (acc) (ceiling) =
+   if i >= list-length ids | acc < 0 then acc
+   else let inst = list-at ids i
+   in let cost = method-checked-name-cost (inst.constructor-name) input acc ceiling
+   in let total = method-checked-groups-cost (inst.method-targets) input 0 cost ceiling
+   in method-instance-types-cost ids input (i + 1) total ceiling
+
+  method-checked-name-cost : Text, MethodInputs, Integer, Integer -> Integer
+  method-checked-name-cost (name) (input) (acc) (ceiling) =
+   if acc < 0 then acc
+   else if deck-bound-short-of ceiling (method-budget-add acc 4096) then 0 - 1
+   else let ty = env-lookup-in (input.checked-types) (rename-lookup (input.renames) name)
+   in let total = method-budget-add acc (method-type-cost ty 0)
+   in if total < 0 then total
+      else if deck-bound-short-of ceiling (method-budget-add total 4096) then 0 - 1 else total
+
+  method-checked-groups-cost : List (List Text), MethodInputs, Integer, Integer, Integer -> Integer
+  method-checked-groups-cost (groups) (input) (i) (acc) (ceiling) =
+   if i >= list-length groups | acc < 0 then acc
+   else method-checked-groups-cost groups input (i + 1) (method-checked-names-cost (list-at groups i) input 0 acc ceiling) ceiling
+
+  method-checked-names-cost : List Text, MethodInputs, Integer, Integer, Integer -> Integer
+  method-checked-names-cost (names) (input) (i) (acc) (ceiling) =
+   if i >= list-length names | acc < 0 then acc
+   else method-checked-names-cost names input (i + 1) (method-checked-name-cost (list-at names i) input acc ceiling) ceiling
+
+  method-record-schema-cost : List ARecordFieldDef, Integer -> Integer
+  method-record-schema-cost (fs) (i) =
+   if i >= list-length fs then 0
+   else let f = list-at fs i
+   in method-budget-add (method-budget-add (method-text-cost (f.name.value)) (method-atype-cost (f.type-expr) 0)) (method-record-schema-cost fs (i + 1))
+
+  method-instances-cost : List AInstanceDef, Integer -> Integer
+  method-instances-cost (ids) (i) =
+   if i >= list-length ids then 0
+   else let inst = list-at ids i
+   in let body-cost = method-aexprs-cost (inst.constructor-body) 0 0
+   in let types-cost = method-budget-add (method-atypes-cost (inst.constructor-type) 0 0) (method-atype-cost (inst.head-type) 0)
+   in let names-cost = method-budget-add (method-text-cost (inst.constructor-name)) (method-impls-cost (inst.methods) (inst.method-targets) 0)
+   in method-budget-add (method-budget-add 16384 (method-budget-add body-cost (method-budget-add types-cost names-cost))) (method-instances-cost ids (i + 1))
+
+  method-impls-cost : List AInstanceMethodDef, List (List Text), Integer -> Integer
+  method-impls-cost (ms) (targets) (i) =
+   if i >= list-length ms then 0
+   else let m = list-at ms i
+   in let cost = method-budget-add 8192 (method-budget-add (method-text-cost (m.name.value)) (method-budget-add (method-names-cost (m.params) 0) (method-texts-cost (list-at targets i) 0)))
+   in method-budget-add cost (method-impls-cost ms targets (i + 1))
+
+  method-constructor-head : CodexType -> List CodexType
+  method-constructor-head (t) =
+   when t
+    is ForAllTy (id) (b) | ForAllEff (id) (b) -> method-constructor-head b
+    is ConstructedTy (n) (args) | RecordTy (n) (args) (fs) -> if list-length args == 1 then args else []
+    is otherwise -> []
+
+  method-plan : AClassDef, List AInstanceDef, MethodInputs, IRChapter, List ATypeDef, Integer -> MethodPlan
+  method-plan (cd) (ids) (input) (ir) (tds) (ceiling) =
+   let bound = method-origin-cost cd ids input ceiling
+   in let initial = MethodPlan { source = cd, instances = ids, state = "ineligible", reason = "", slots = [], uses = 0, byte-bound = bound, fatal = False }
+   in if bound < 0 then __record-set (__record-set initial "reason" "input-byte-bound") "fatal" True
+   else if deck-bound-short-of ceiling bound then __record-set (__record-set initial "reason" "phase-byte-bound") "fatal" True
+   else if method-has-local-vars (cd.method-binders) 0 == False then __record-set initial "reason" "monomorphic"
+   else if list-length ids /= 1 then __record-set initial "reason" "instance-count"
+   else let inst = list-at ids 0
+   in if list-length (inst.methods) /= list-length (cd.methods) then __record-set initial "reason" "incomplete-instance"
+   else let tdm = input.checked-types
+   in let heads = method-constructor-head (env-lookup-in tdm (rename-lookup (input.renames) (inst.constructor-name)))
+   in if list-length heads /= 1 then __record-set initial "reason" "unchecked-instance-head"
+   else let head = list-at heads 0
+   in if method-type-closed head 0 == False then __record-set initial "reason" "open-instance-head"
+   else let dict-name = method-td-name (list-at (cd.dict-schema) 0)
+   in if method-other-schema-use tds dict-name 0 then __record-set initial "reason" "other-type-declaration"
+   else let targets = method-make-targets cd inst (input.renames) 0 []
+   in if method-targets-unique targets 1 == False then __record-set initial "reason" "ambiguous-method-name"
+   else let scan0 = MethodScan { dict-name = dict-name, targets = targets, shadows = for t in targets -> 0, uses = [], reason = "", fatal = False, use-count = 0, byte-bound = bound, ceiling = ceiling }
+   in let scan = method-scan-defs scan0 (ir.defs) 0
+   in let p0 = __record-set (__record-set initial "uses" (scan.use-count)) "byte-bound" (scan.byte-bound)
+   in if scan.fatal then __record-set (__record-set p0 "reason" (scan.reason)) "fatal" True
+   else if text-length (scan.reason) > 0 then __record-set p0 "reason" (scan.reason)
+   else if list-length (scan.uses) == 0 then __record-set p0 "state" "zero-demand"
+   else let sorted = method-stable-sort (scan.uses) method-use-compare
+   in let unique = method-unique-uses sorted 0 []
+   in if list-length unique > scan.use-count then __record-set (__record-set p0 "reason" "use-accounting") "fatal" True
+   else if deck-bound-short-of ceiling (scan.byte-bound) then __record-set (__record-set p0 "reason" "phase-byte-bound") "fatal" True
+   else let slots = method-make-slots cd head tdm unique 0 []
+   in if list-length slots /= list-length unique then __record-set p0 "reason" "unrepresentable-or-mismatched-use"
+   else __record-set (__record-set p0 "slots" slots) "state" "materialized"
+
+  method-use-compare : MethodUse, MethodUse -> Integer
+  method-use-compare (a) (b) =
+   if a.method-index < b.method-index then 0 - 1
+   else if a.method-index > b.method-index then 1 else text-compare (a.key) (b.key)
+
+  method-unique-uses : List MethodUse, Integer, List MethodUse -> List MethodUse
+  method-unique-uses (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else let take = if i == 0 then True else method-use-compare (list-at xs (i - 1)) (list-at xs i) /= 0
+   in method-unique-uses xs (i + 1) (if take then list-push acc (list-at xs i) else acc)
+
+  method-make-slots : AClassDef, CodexType, List TypeBinding, List MethodUse, Integer, List MethodSlot -> List MethodSlot
+  method-make-slots (cd) (head) (tdm) (uses) (i) (acc) =
+   if i >= list-length uses then acc
+   else let use = list-at uses i
+   in let op = list-at (cd.methods) (use.method-index)
+   in let ns = list-at (cd.method-binders) (use.method-index)
+   in let sub = method-match-type (op.type-expr) (use.actual-type) head tdm (MethodSubstitution { names = ns, types = for n in ns -> NoExpectTy, valid = True })
+   in if sub.valid == False | method-types-closed (sub.types) 0 0 == False then []
+   else let asts = method-types-to-ast (sub.types) 0 []
+   in if list-length asts /= list-length ns then []
+   else let result = method-substitute-ast (op.type-expr) ns asts
+   in let slot = MethodSlot { method-index = use.method-index, name = op.name.value & "-impl-ms-" & integer-to-text i, type-expr = result, key = use.key, substitutions = sub.types }
+   in method-make-slots cd head tdm uses (i + 1) (list-push acc slot)
+
+Section: Logical Accounting and Publication
+
+  method-origin-id : Text, Text, SourceSpan -> Text
+  method-origin-id (kind) (name) (sp) =
+   kind & ":" & safe-int-text (sp.file-id) & ":" & safe-int-text (sp.start.offset) & ":" & name
+
+  method-class-id : AClassDef -> Text
+  method-class-id (cd) = method-origin-id "class" (cd.name.value) (cd.span)
+
+  method-declaration-id : AClassDef, AEffectOpDef -> Text
+  method-declaration-id (cd) (m) = method-origin-id "method" (cd.name.value & "/" & m.name.value) (m.span)
+
+  method-instance-id : AInstanceDef -> Text
+  method-instance-id (inst) = method-origin-id "instance" (inst.class-name.value & "/" & inst.type-name.value) (inst.span)
+
+  method-implementation-id : AInstanceDef, AInstanceMethodDef -> Text
+  method-implementation-id (inst) (m) = method-origin-id "implementation" (inst.class-name.value & "/" & inst.type-name.value & "/" & m.name.value) (m.span)
+
+  method-logical-ids : MethodInputs -> List Text
+  method-logical-ids (input) =
+   method-instance-ids (input.instances) 0 (method-class-ids (input.classes) 0 [])
+
+  method-class-ids : List AClassDef, Integer, List Text -> List Text
+  method-class-ids (cds) (i) (acc) =
+   if i >= list-length cds then acc
+   else let cd = list-at cds i
+   in method-class-ids cds (i + 1) (method-declaration-ids cd 0 (list-push acc (method-class-id cd)))
+
+  method-declaration-ids : AClassDef, Integer, List Text -> List Text
+  method-declaration-ids (cd) (i) (acc) =
+   if i >= list-length (cd.methods) then acc
+   else method-declaration-ids cd (i + 1) (list-push acc (method-declaration-id cd (list-at (cd.methods) i)))
+
+  method-instance-ids : List AInstanceDef, Integer, List Text -> List Text
+  method-instance-ids (ids) (i) (acc) =
+   if i >= list-length ids then acc
+   else let inst = list-at ids i
+   in method-instance-ids ids (i + 1) (method-implementation-ids inst 0 (list-push acc (method-instance-id inst)))
+
+  method-implementation-ids : AInstanceDef, Integer, List Text -> List Text
+  method-implementation-ids (inst) (i) (acc) =
+   if i >= list-length (inst.methods) then acc
+   else method-implementation-ids inst (i + 1) (list-push acc (method-implementation-id inst (list-at (inst.methods) i)))
+
+  method-plan-ids : List MethodPlan, Integer, List Text -> List Text
+  method-plan-ids (plans) (i) (acc) =
+   if i >= list-length plans then acc
+   else let p = list-at plans i
+   in let a = method-declaration-ids (p.source) 0 (list-push acc (method-class-id (p.source)))
+   in method-plan-ids plans (i + 1) (method-instance-ids (p.instances) 0 a)
+
+  method-ids-unique : List Text, Integer -> Boolean
+  method-ids-unique (ids) (i) =
+   if i >= list-length ids then True
+   else if list-at ids i == list-at ids (i - 1) then False else method-ids-unique ids (i + 1)
+
+  method-accounting-valid : MethodInputs, List MethodPlan -> Boolean
+  method-accounting-valid (input) (plans) =
+   let expected = method-stable-sort (method-logical-ids input) (\a b -> text-compare a b)
+   in let actual = method-stable-sort (method-plan-ids plans 0 []) (\a b -> text-compare a b)
+   in method-ids-unique expected 1 & method-ids-unique actual 1 & method-names-equal expected actual 0
+
+  method-source-span-wire : SourceSpan -> Text
+  method-source-span-wire (s) =
+   "(span " & safe-int-text (s.file-id) & " " & safe-int-text (s.start.offset) & " " & safe-int-text (s.end.offset) & ")"
+
+  method-row-binders : ATypeExpr, List Text -> List Text
+  method-row-binders (t) (acc) =
+   when t
+    is AFunType (p) (r) (s) -> method-row-binders r (method-row-binders p acc)
+    is AAppType (h) (args) (s) -> method-row-binders-list args 0 (method-row-binders h acc)
+    is AEffectType (es) (ss) (tail) (r) (s) -> method-row-binders r (method-row-names tail 0 acc)
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) | ALinearType (b) (s) | AConstrainedType (cn) (cv) (b) (s) -> method-row-binders b acc
+    is APropEqType (l) (r) (s) -> method-row-binders r (method-row-binders l acc)
+    is AForallType (v) (vt) (p) (s) -> method-row-binders p (method-row-binders vt acc)
+    is otherwise -> acc
+
+  method-row-binders-list : List ATypeExpr, Integer, List Text -> List Text
+  method-row-binders-list (ts) (i) (acc) =
+   if i >= list-length ts then acc else method-row-binders-list ts (i + 1) (method-row-binders (list-at ts i) acc)
+
+  method-row-names : List Name, Integer, List Text -> List Text
+  method-row-names (ns) (i) (acc) =
+   if i >= list-length ns then acc
+   else let n = (list-at ns i).value
+   in method-row-names ns (i + 1) (if method-has-name acc n 0 then acc else list-push acc n)
+
+  method-declarations-wire : AClassDef, Integer, List Text -> List Text
+  method-declarations-wire (cd) (i) (acc) =
+   if i >= list-length (cd.methods) then acc
+   else let m = list-at (cd.methods) i
+   in let item = " (method " & ir-quote (method-declaration-id cd m) & " " & ir-quote (m.name.value)
+     & " (binders" & method-texts-wire (list-at (cd.method-binders) i) & ") (row-binders" & method-texts-wire (method-row-binders (m.type-expr) [])
+     & ") (declared " & method-atype-wire (m.type-expr) & ") " & method-source-span-wire (m.span) & ")"
+   in method-declarations-wire cd (i + 1) (list-push acc item)
+
+  method-checked-targets-wire : List Text, MethodInputs, Integer, List Text -> List Text
+  method-checked-targets-wire (targets) (input) (i) (acc) =
+   if i >= list-length targets then acc
+   else let source = list-at targets i
+   in let runtime = rename-lookup (input.renames) source
+   in let t = env-lookup-in (input.checked-types) runtime
+   in method-checked-targets-wire targets input (i + 1) (list-push acc (" (target " & ir-quote source & " " & ir-quote runtime & " " & ir-emit-type t & ")"))
+
+  method-implementations-wire : AClassDef, AInstanceDef, MethodInputs, Integer, List Text -> List Text
+  method-implementations-wire (cd) (inst) (input) (i) (acc) =
+   if i >= list-length (inst.methods) then acc
+   else let m = list-at (inst.methods) i
+   in let mi = method-method-index (cd.methods) (m.name.value) 0
+   in let declaration = if mi < 0 then "" else method-declaration-id cd (list-at (cd.methods) mi)
+   in let signature = if mi < 0 then "(missing-declaration)" else method-atype-wire (instance-specialize-type ((list-at (cd.methods) mi).type-expr) (inst.head-type) 0)
+   in let item = " (implementation " & ir-quote (method-implementation-id inst m) & " (method " & ir-quote declaration & ") (params"
+      & method-names-wire (m.params) & ") (checked-signature " & signature & ") (recipe-field " & ir-quote (m.name.value & "-impl")
+      & ") (targets" & text-concat-list (method-checked-targets-wire (list-at (inst.method-targets) i) input 0 []) & ") " & method-source-span-wire (m.span) & ")"
+   in method-implementations-wire cd inst input (i + 1) (list-push acc item)
+
+  method-instances-wire : AClassDef, List AInstanceDef, MethodInputs, List ATypeDef, Integer, List Text -> List Text
+  method-instances-wire (cd) (ids) (input) (tds) (i) (acc) =
+   if i >= list-length ids then acc
+   else let inst = list-at ids i
+   in let ctor-type = text-concat-list (for t in (inst.constructor-type) -> " " & method-atype-wire t)
+   in let ctor-body = text-concat-list (for e in (inst.constructor-body) -> " " & method-aexpr-wire e)
+   in let item = " (instance " & ir-quote (method-instance-id inst) & " (head " & method-atype-wire (inst.head-type)
+      & ") (binders" & method-texts-wire (method-free-vars (inst.head-type) tds [] []) & ") (constructor " & ir-quote (inst.constructor-name)
+      & " (declared" & ctor-type & ") (recipe" & ctor-body & ")) (implementations"
+      & text-concat-list (method-implementations-wire cd inst input 0 []) & ") " & method-source-span-wire (inst.span) & ")"
+   in method-instances-wire cd ids input tds (i + 1) (list-push acc item)
+
+  method-slots-wire : MethodPlan, Integer, List Text -> List Text
+  method-slots-wire (plan) (i) (acc) =
+   if i >= list-length (plan.slots) then acc
+   else let slot = list-at (plan.slots) i
+   in let cd = plan.source
+   in let m = list-at (cd.methods) (slot.method-index)
+   in let item = " (slot " & ir-quote (slot.name) & " (method " & ir-quote (method-declaration-id cd m) & ") (key " & ir-quote (slot.key)
+      & ") (arguments" & text-concat-list (for t in (slot.substitutions) -> " " & ir-emit-type t) & ") (type " & method-atype-wire (slot.type-expr) & "))"
+   in method-slots-wire plan (i + 1) (list-push acc item)
+
+  method-plan-wire : MethodPlan, MethodInputs, List ATypeDef -> Text
+  method-plan-wire (plan) (input) (tds) =
+   let cd = plan.source
+   in " (template " & ir-quote (method-class-id cd) & " (name " & ir-quote (cd.name.value) & ") (class-binders \"a\") (schema "
+      & method-schema-wire (list-at (cd.dict-schema) 0) & ") (methods" & text-concat-list (method-declarations-wire cd 0 [])
+      & ") (instances" & text-concat-list (method-instances-wire cd (plan.instances) input tds 0 []) & ") (state "
+      & plan.state & " " & ir-quote (plan.reason) & ") (uses " & (if plan.state == "ineligible" then "ungraded" else safe-int-text (plan.uses))
+      & ") (cloned-bodies 0) (byte-bound " & safe-int-text (plan.byte-bound) & ") (slots" & text-concat-list (method-slots-wire plan 0 [])
+      & ") " & method-source-span-wire (cd.span) & ")"
+
+  method-plans-build : MethodInputs, IRChapter, List ATypeDef, Integer, Integer, List MethodPlan -> List MethodPlan
+  method-plans-build (input) (ir) (tds) (ceiling) (i) (acc) =
+   if i >= list-length (input.classes) then acc
+   else let cd = list-at (input.classes) i
+   in let ids = method-class-instances (input.instances) (cd.name.value) 0 []
+   in let plan = method-plan cd ids input ir tds ceiling
+   in let next = list-push acc plan
+   in if plan.fatal then next else method-plans-build input ir tds ceiling (i + 1) next
+
+  method-plans-bound : List MethodPlan, Integer, Integer -> Integer
+  method-plans-bound (plans) (i) (acc) =
+   if i >= list-length plans then acc
+   else method-plans-bound plans (i + 1) (method-budget-add acc ((list-at plans i).byte-bound))
+
+  method-plans-fatal : List MethodPlan, Integer -> Boolean
+  method-plans-fatal (plans) (i) =
+   if i >= list-length plans then False
+   else if (list-at plans i).fatal then True else method-plans-fatal plans (i + 1)
+
+  method-materialize : MethodInputs, IRChapter, List ATypeDef, Integer -> MethodMaterialization
+  method-materialize (input) (ir) (tds) (ceiling) =
+   if list-length (input.classes) == 0 then MethodMaterialization { type-defs = tds, wire = "", bag = empty-bag, plans = [], byte-bound = 0 }
+   else let start = __heap-save
+   in let plans = method-plans-build input ir tds ceiling 0 []
+   in method-publish-measured input plans tds ceiling start
+
+  method-publish : MethodInputs, List MethodPlan, List ATypeDef, Integer -> MethodMaterialization
+  method-publish (input) (plans) (tds) (ceiling) =
+   method-publish-measured input plans tds ceiling __heap-save
+
+  method-publish-measured : MethodInputs, List MethodPlan, List ATypeDef, Integer, Integer -> MethodMaterialization
+  method-publish-measured (input) (plans) (tds) (ceiling) (start) =
+   let bound = method-plans-bound plans 0 8192
+   in let publish-start = __heap-save
+   in if method-plans-fatal plans 0 | bound < 0 then method-publication-error tds plans "Method-template input byte bound could not be established" True
+   else if deck-bound-short-of ceiling bound then method-publication-error tds plans "Method-template byte bound exceeds the phase reservation" True
+   else if method-accounting-valid input plans == False then method-publication-error tds plans "Method-template logical declaration accounting failed" False
+   else if method-published-scopes-valid plans tds 0 == False then method-publication-error tds plans "Method-template binder scope or slot accounting failed" False
+   else let runtime = method-runtime-types tds plans 0 []
+   in let content = " (logical" & method-texts-wire (method-logical-ids input) & ") (templates"
+      & text-concat-list (for p in plans -> method-plan-wire p input tds) & ")"
+   in let content-end = __heap-save
+   in let resources = " (resources (source-bytes " & safe-int-text (input.source-bytes)
+      & ") (phase-capacity " & safe-int-text (ceiling - start) & ") (planning-bytes " & safe-int-text (publish-start - start)
+      & ") (content-bytes " & safe-int-text (content-end - publish-start)
+      & ") (byte-bound " & safe-int-text bound & "))"
+   in let wire = "(method-templates (version 1)" & resources & content & ")"
+   in if content-end < publish-start | content-end - publish-start > bound | text-length wire > bound then method-publication-error tds plans "Method-template serialization exceeded its input byte bound" True
+   else if deck-bound-short-of ceiling 8192 then method-publication-error tds plans "Method-template publication exceeded the phase reservation" True
+   else MethodMaterialization { type-defs = runtime, wire = wire, bag = empty-bag, plans = plans, byte-bound = bound }
+
+  method-publication-error : List ATypeDef, List MethodPlan, Text, Boolean -> MethodMaterialization
+  method-publication-error (tds) (plans) (message) (resource) =
+   MethodMaterialization { type-defs = tds, wire = "", bag = bag-from-list [make-error (if resource then cdx-deck-overflow else cdx-type-mismatch) message synthetic-span], plans = plans, byte-bound = 0 }
+
+  method-published-scopes-valid : List MethodPlan, List ATypeDef, Integer -> Boolean
+  method-published-scopes-valid (plans) (tds) (i) =
+   if i >= list-length plans then True
+   else let p = list-at plans i
+   in if method-class-valid (p.source) tds == False then False
+   else if p.state == "materialized" & (list-length (p.slots) > p.uses) then False
+   else if method-slot-scopes-valid (p.slots) tds 0 == False then False
+   else method-published-scopes-valid plans tds (i + 1)
+
+  method-slot-scopes-valid : List MethodSlot, List ATypeDef, Integer -> Boolean
+  method-slot-scopes-valid (slots) (tds) (i) =
+   if i >= list-length slots then True
+   else let s = list-at slots i
+   in if list-length (method-free-vars (s.type-expr) tds ["a"] []) > 0 then False
+   else method-slot-scopes-valid slots tds (i + 1)
+
+  method-runtime-types : List ATypeDef, List MethodPlan, Integer, List ATypeDef -> List ATypeDef
+  method-runtime-types (tds) (plans) (i) (acc) =
+   if i >= list-length tds then acc
+   else let td = list-at tds i
+   in let pi = method-plan-for-name plans (method-td-name td) 0
+   in if pi < 0 then method-runtime-types tds plans (i + 1) (list-push acc td)
+   else let plan = list-at plans pi
+   in if plan.state == "zero-demand" then method-runtime-types tds plans (i + 1) acc
+   else if plan.state == "materialized"
+    then method-runtime-types tds plans (i + 1) (list-push acc (method-runtime-schema td plan))
+    else method-runtime-types tds plans (i + 1) (list-push acc td)
+
+  method-plan-for-name : List MethodPlan, Text, Integer -> Integer
+  method-plan-for-name (plans) (name) (i) =
+   if i >= list-length plans then 0 - 1
+   else let p = list-at plans i
+   in if method-td-name (list-at (p.source.dict-schema) 0) == name then i else method-plan-for-name plans name (i + 1)
+
+  method-runtime-schema : ATypeDef, MethodPlan -> ATypeDef
+  method-runtime-schema (td) (plan) =
+   when td
+    is ARecordTypeDef (n) (ps) (fs) (mut) (sp) -> deck-record (ARecordTypeDef n ps (method-runtime-fields fs plan 0 []) mut sp)
+    is otherwise -> td
+
+  method-runtime-fields : List ARecordFieldDef, MethodPlan, Integer, List ARecordFieldDef -> List ARecordFieldDef
+  method-runtime-fields (fs) (plan) (i) (acc) =
+   if i >= list-length fs then acc
+   else let f = list-at fs i
+   in let mi = method-field-method (plan.source.methods) (f.name.value) 0
+   in if mi < 0 then method-runtime-fields fs plan (i + 1) (list-push acc f)
+   else if list-length (list-at (plan.source.method-binders) mi) == 0 then method-runtime-fields fs plan (i + 1) (list-push acc f)
+   else method-runtime-fields fs plan (i + 1) (method-add-slot-fields (plan.slots) mi 0 (f.span) acc)
+
+  method-field-method : List AEffectOpDef, Text, Integer -> Integer
+  method-field-method (ms) (name) (i) =
+   if i >= list-length ms then 0 - 1
+   else if ((list-at ms i).name.value & "-impl") == name then i else method-field-method ms name (i + 1)
+
+  method-add-slot-fields : List MethodSlot, Integer, Integer, SourceSpan, List ARecordFieldDef -> List ARecordFieldDef
+  method-add-slot-fields (slots) (mi) (i) (sp) (acc) =
+   if i >= list-length slots then acc
+   else let slot = list-at slots i
+   in let next = if slot.method-index == mi then list-push acc (deck-record (ARecordFieldDef { name = make-name (slot.name), type-expr = slot.type-expr, span = sp })) else acc
+   in method-add-slot-fields slots mi (i + 1) sp next
+
+  method-runtime-bindings : List TypeBinding, MethodMaterialization -> List TypeBinding
+  method-runtime-bindings (bindings) (result) =
+   if method-any-runtime-change (result.plans) 0 == False then bindings
+   else let kept = method-keep-bindings bindings (result.plans) 0 []
+   in let changed = method-changed-runtime-types (result.type-defs) (result.plans) 0 []
+   in sort-bindings (kept & build-type-def-map changed 0 (list-length changed) [])
+
+  method-any-runtime-change : List MethodPlan, Integer -> Boolean
+  method-any-runtime-change (plans) (i) =
+   if i >= list-length plans then False
+   else if (list-at plans i).state /= "ineligible" then True else method-any-runtime-change plans (i + 1)
+
+  method-keep-bindings : List TypeBinding, List MethodPlan, Integer, List TypeBinding -> List TypeBinding
+  method-keep-bindings (bs) (plans) (i) (acc) =
+   if i >= list-length bs then acc
+   else let b = list-at bs i
+   in let pi = method-plan-for-name plans (b.name) 0
+   in let keep = if pi < 0 then True else (list-at plans pi).state == "ineligible"
+   in method-keep-bindings bs plans (i + 1) (if keep then list-push acc b else acc)
+
+  method-changed-runtime-types : List ATypeDef, List MethodPlan, Integer, List ATypeDef -> List ATypeDef
+  method-changed-runtime-types (tds) (plans) (i) (acc) =
+   if i >= list-length tds then acc
+   else let td = list-at tds i
+   in let pi = method-plan-for-name plans (method-td-name td) 0
+   in let take = if pi < 0 then False else (list-at plans pi).state == "materialized"
+   in method-changed-runtime-types tds plans (i + 1) (if take then list-push acc td else acc)

@@ -19,76 +19,20 @@ reasons for this direction: making the serving unit contain the compiler
 is closed off host-side and seed-expensive compiler-side, while the
 compiler ALREADY runs inside a static page.
 
-## Where this starts from (surveyed 2026-08-28, file:line evidence)
+## The governing constraint
 
-The substrate is shipped and live. `codex/plugs/wasm/page/prism.html`
-(the source of truth; the deployed copy at
-`apps/landing/web/compile/prism.html` is byte-identical modulo the embed
-block) is a 6.3 MB self-contained static page that:
-
-- runs the compiler in-tab as a bare `WebAssembly.Instance` with exactly
-  two imports, `wasi_snapshot_preview1.fd_read`/`fd_write`
-  (`prism.html:586-606`); input is one stdin stream
-  `MODE-LINE \n prelude source \0`; output is buffered until `_start`
-  returns (harmless: ~99 per cent of a build is `compile-frontend`,
-  which prints nothing -- plugs-backlog 1.83a);
-- compiles in modes `IR-UNI` and `CDX` (`opening.codex:2144-2149`;
-  `TEXT` is used by the self-compile page only);
-- fans the IR across 45 text/UI lens plugs and chains
-  compiler -> pe -> img IN MEMORY (`prism.html:649,805-815`,
-  `Uint8Array` throughout, no TCP, no files) to a downloadable
-  `BOOTX64.EFI` and 8 MB GPT `codex.img`, both proven byte-identical
-  to the bare-metal network plugs' artifacts (prism-backlog PRISM-6);
-- carries an editor textarea with a hand-written Codex highlighter, a
-  57-preset menu, a JS lens runner, and a sandboxed HTML render iframe;
-- retries the deck ladder `[12, 48, 125]` upward on CDX9002 only
-  (`prism.html:384`).
-
-The full shipped module roster is 48: the 45 IR-transport lenses, the
-pe and img BYTES-transport modules, and the evidence module (raw-CCE
-stdin, its own builder `codex/plugs/evidence/build-wasm.ps1`); the page
-additionally embeds `codex-compiler.wasm`. elf-bytes builds and is
-deliberately not shipped while its lens is dark (`prism.html:309`).
-Line citations in this document are against the SOURCE copy,
-`codex/plugs/wasm/page/prism.html`; the deployed copy's numbering
-diverges past the embed block.
-
-The worker + main-thread-retry pattern exists in `page/index.html`
-(`:361-415`); `prism.html` itself still compiles ON the main thread.
-
-**Two facts that bound the design:**
-
-1. **The page's compilation unit is FLAT.** No cite resolution exists
-   in-tab; `cites Foreword chapter X` fails CDX3007 and every preset
-   carries its foreword prelude verbatim (`build-page.ps1:55-62`,
-   `examples.json`). A dev environment needs the library on board
-   (stage 2).
-2. **Today's "PE" and "ELF" are boot artifacts, not user-mode
-   executables.** The pe plug writes subsystem 10, EFI application
-   (`PeWriter.codex:7,57,105`); the elf plug writes a Xen-PVH 32-bit
-   bare-metal kernel image, single RWX `PT_LOAD` at 1 MiB
-   (`ElfWriter.codex:39`, `ElfPlug.codex:87-91`). "Output `.exe` and
-   Linux executables" is therefore a NEW BACKEND CAPABILITY -- a hosted
-   runtime -- not wiring (stage 5). The ELF lens is additionally dark
-   because the compiler has no ELF payload mode
-   (plugs-backlog 1.92 account; `prism.html:309`).
-
-**The governing constraint, inherited from
-`docs/Designs/Active/Marketing/Cobblestone.md:44-66`:** everything ships
+**Inherited from
+`docs/Designs/Done/Marketing/Cobblestone.md`:** everything ships
 static-file-servable. The self-contained page must keep working from a
 `file:` origin. Nothing here may depend on a host process. Local-machine
 capability (disk access, Claude API) enters through what a browser
 grants a static page: the File System Access API, OPFS, `localStorage`,
 and CORS-enabled `fetch`.
 
-**A recorded reproducibility gap this campaign owns closing first:**
-nothing in the tree builds the 48 lens modules. No
-`*-stdio.wasm`/`*-bytes.wasm` exists under any `codex/plugs/*/
-build-output/`; the shipped modules survive only as base64 inside the
-deployed page, and the per-lens chapter lists live only inside
-`codex/plugs/wasm/page-lens-test.ps1` (plugs-backlog: "no script calls
-`build-plug-wasm.ps1` at all"). Rebuilding the page today ships a page
-with almost every lens dark.
+Line citations in this document are against the source copy,
+`codex/plugs/wasm/page/prism.html`; the deployed copy at
+`apps/landing/web/compile/prism.html` carries the embed block, and its
+numbering diverges past it.
 
 ## The stages
 
@@ -543,16 +487,25 @@ over the existing Ed25519 chapters, `CdxBinary.codex`'s
 in the same module, the key held in the Config section and exportable
 to disk, and Save-signed beside the unsigned CDX save.
 
-### Stage 2d -- Dev-environment endpoints (red; "if possible" honored)
+### Stage 2d -- Dev-environment endpoints (red; LANDED)
 
-Config gains build endpoints: a URL per dev environment. After a lens
-or binary build, the page POSTs the artifact to the configured endpoint
-to auto-kick a build on that box. Ships with a small host listener
-(`apps/prism/dev-listener.ps1`) that answers CORS and runs the
-configured build command; a static page can POST to localhost, so this
-is possible without any server behind the page. Overlaps reek's
-native-build bridge probe; whichever lands first, the other reuses its
-transport.
+Toolchains -> Endpoints holds one entry per dev environment: a name, the
+address of an `apps/prism/build-bridge.ps1` there, that bridge's token, one
+command (`{file}`, `{stem}`) and an auto switch (`prism.endpoints`, this
+browser only). After every successful lens or binary build the page writes
+the artifact into each auto endpoint's bridge directory (`/write`; a binary
+travels as `b64`) and then runs that endpoint's command there (`/run`). The
+result per endpoint shows beside the status; a failed endpoint never fails
+the build. The bridge binds 127.0.0.1, so a remote environment is reached
+through a forwarded local port.
+
+Graded by `apps/prism/test-endpoints.mjs`, headless Chrome on the template
+against a live bridge (2026-09-23), 10 arms; run on the page before this
+stage it fails at the first arm. A CDX build arrived byte-exact and the
+endpoint's command hashed it there; a python lens build arrived as text; a
+wrong token, an absent endpoint and an endpoint set to off each reported or
+stayed silent as they must; with every endpoint off, a build wrote nothing.
+An 8 MiB binary write took 1.8 s.
 
 ### Stage 2e -- Boards as targets (Damian ruled 2026-08-28 evening; in-tab half is reek's)
 
@@ -588,19 +541,28 @@ existing CDX target; nRF52840, nRF9160, RP2040, STM32L4, Pi 4 and QEMU
 virt have no in-tab-producible chain (no Cortex-M/A codegen plug) and
 get no pill until one lands, re-surveyed then.
 
-### Stage 2f -- Bench in the environment (Damian ruled 2026-08-28 evening)
+### Stage 2f -- Bench in the environment (red; LANDED)
 
 Damian's definition (CurrentPlan ruling 3): **run our codegen
-benchmarks and comparison against any configured output build chains**
--- it CONSUMES the native-build configs feature (reek's) and queues
-behind it. `bench/` is the cross-language tree (c, codex, csharp,
-fsharp, zig). The codex bench sources join the library tree and
-compile in-tab like any preset (the js lens runs them in-tab for a
-same-machine relative timing); the native comparisons ride the configs
-bridge when it exists. The whole-tree browsing ask ("scan the tree of
-forwards, apps, codex, plugs, boards, bench, test") is stage 2's
-library-image scope; which subtrees embed versus bind via Open Folder
-is decided by the C5a size table above, re-measured per set.
+benchmarks and comparison against any configured output build chains.**
+The Bench button compiles every example in the Bench category in the tab
+once, runs it through the javascript lens in the tab, and, with the bridge
+connected, writes, builds and runs it through every saved toolchain that has
+a run command. A native time is the run command alone, timed inside the
+bridge's shell (the bridge's own ms includes starting that shell, several
+hundred ms). Each lane's printed output, stdout and stderr, is compared with
+the in-tab run and a lane that differs is marked.
+
+Graded by `apps/prism/test-bench.mjs` (2026-09-23), headless Chrome against a
+live bridge: all 12 Bench examples ran in the tab, through python and through
+zig (built per example) with output equal to the tab, and a rigged lane
+printing 42 was marked on all 12. The Bench category holds 12 of the 13
+`bench/codex` programs; `vecstride` is not in `examples.json`.
+
+The whole-tree browsing ask ("scan the tree of forwards, apps, codex, plugs,
+boards, bench, test") is stage 2's library-image scope; which subtrees embed
+versus bind via Open Folder is decided by the C5a size table above,
+re-measured per set.
 
 #### RULED: (B), the compiler's own resolution (root, 2026-08-28)
 
@@ -1180,21 +1142,23 @@ MOVED rather than being shared. `apps/prism` needed a quire registration to
 hold a second chapter (main 23526), which also taught the generator the
 `Sheets` line it never had.
 
-**Not in 5d:** TLS, keep-alive and concurrency. The responses carry
+**Not in 5d:** keep-alive and concurrency. The responses carry
 `Connection: close`.
 
-**TLS IS NOT BLOCKED BY THE HOSTED BOUNDARY, and an earlier reading of this
-design implied otherwise.** Corrected 2026-09-08 by reading: `Tls.codex` sits
-in `codex/foreword/core` and cites only CCE, the crypto chapters, `Maybe` and
-`ListUtils`; `TlsEndpoint.codex` cites only Encode and Foreword chapters.
-Neither names a Net chapter. The endpoint API is a BYTE PUMP:
-`tls-ep-recv : TlsEp, List Integer -> TlsEpStep` and
-`TlsEpStep = { tes-ep, tes-out : List (List Integer) }`, so a caller feeds the
-ciphertext it read from any byte stream and writes back what it is handed.
-`host-socket` supplies exactly that stream, and `DtlsEndpoint` and
-`CoapsEndpoint` already drive the same API over a non-TCP transport. **Hosted
-HTTPS is therefore a WIRING job between `host-socket` and the existing TLS 1.3
-stack, not a port and not new cryptography.** Registered PRISM-11.
+**HOSTED HTTPS is `apps/works/HostedServeTls.codex`.** `hosted-serve-tls-on`
+takes the same route function and a `hosted-tls` configuration (an Ed25519
+key and a certificate, `x509-dev-cert-ed25519` for a DEV-ONLY self-signed
+one), and pumps `TlsEndpoint` between `host-socket` and the HTTP codec. Each
+connection draws its X25519 key and random from `hardware-random` (RDRAND,
+present on both hosted targets) and its roughly 19 MB is reclaimed at close,
+so the route must not keep anything it allocates across requests. Arm:
+`codex/plugs/elf/hosted-https-arm.ps1` over `codex/test/hosted-https.codex`,
+both targets, OpenSSL `s_client` pinned to the certificate the subject
+prints, with a wrong-pin arm and `s_server` and dead-port controls. Open:
+`core-backlog.md` CORE-10 (the key share a GREASE-first client offers)
+and CORE-9 step 3 (a CA; no browser trusts a self-signed leaf). `hosted-listen`
+binds INADDR_ANY; `host-socket`'s bind takes the address as its third argument
+(network order, `#0100007F` for 127.0.0.1), so a caller can bind loopback.
 
 **`web-serve-concurrent` DOES NOT PORT, and that asymmetry is worth stating
 beside the TLS one.** `WebMux` holds `WebConn = record { transport :
@@ -1204,12 +1168,39 @@ because the host kernel already sequenced every accepted stream. Hosted
 concurrency is a DIFFERENT and smaller problem, a set of accepted descriptors,
 rather than a translation of `WebMux`.
 
-### Stage 6 -- Run-in-tab (later, optional)
+### Stage 6 -- Run-in-tab (red; 6a LANDED)
 
 Compile-to-wasm of user programs run directly in the page (the two
-imports plus a stdin panel); a service-worker route that serves a built
-webserver app's responses inside the tab as a demo. Nothing in earlier
-stages depends on this.
+imports plus a stdin panel), and a built webserver app's responses served
+inside the tab as a demo. Nothing in earlier stages depends on this.
+
+- **6a, LANDED: the WAT assembler in the tab.** `watAssemble` in the page
+  (between `WAT-ASSEMBLER BEGIN` and `END`) turns the WebAssembly lens's text
+  into a binary, and the lens offers Save .wasm. It covers the folded and flat
+  forms the lens emits and refuses any other instruction by name. Graded by
+  `apps/prism/test-wat-assembler.mjs`: every one of its 202 opcodes, and head's
+  wasm-plug output for all 13 `bench/codex` programs, byte-identical to
+  `wat2wasm --enable-tail-call`; one changed opcode is caught.
+- **6b, LANDED: Run for the WebAssembly lens.** `runWatInTab` assembles the
+  lens's text with `watAssemble` and runs it through `runW` on the page's two
+  imports, the stdin box's bytes as input with no terminator (a partial last
+  line is dropped, as on bare metal). Graded by `page-workspace-arm.js` arm
+  11d: the Run output equals the javascript lens's Run on the same program,
+  a `read-line` program reads the box, and the empty-box control answers None.
+- **6c, LANDED: the in-tab web server** (the Binary tab's "Web server" pill). A
+  service worker was ruled out (root, 2026-09-24): it cannot register on
+  `file://`, where Damian reviews Prism. `serveDemoUnit` swaps the program's
+  `opening` for `tab-serve-one` (`apps/works/TabServe.codex`) over the route the
+  opening hands `web-serve` or `hosted-serve`. The unit compiles to WebAssembly,
+  and every request runs the module once: raw request on stdin, `http-encode`d
+  response on stdout, so no state survives between requests. HTML renders in a
+  frame sandboxed to `allow-scripts allow-forms`, and an injected bridge carries
+  its links, GET forms and `fetch` back to the page by `postMessage`. Graded by
+  `page-workspace-arm.js` arm 11e (`/` rendered with the bridge, a second path,
+  `/api/health` and a 404 answered; a program with no serve call refused by
+  name). The bridge's behaviour inside a real browser is checked only by hand;
+  the arm's DOM is a stub. An opening that serves through another wrapper
+  (`auth-serve`) is refused rather than guessed at.
 
 ## Decisions this design asks of Damian
 

@@ -6,7 +6,7 @@
 # compile dies in __alloc at ~542 MB without one, exactly as its NETWORK build
 # does without the -Decks 160 that build passes. 0 means "say nothing", so every
 # existing caller of this shared service is unchanged.
-param([string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Ir, [string]$Kernel, [int]$Decks = 0)
+param([string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Ir, [string]$Kernel, [int]$Decks = 0, [int]$MemMB = 3072)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
@@ -77,7 +77,7 @@ $combined[$combined.Length - 1] = 0  # null terminator for read-file
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
 $swEmit = [Diagnostics.Stopwatch]::StartNew()
-$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB 3072 -TimeoutSec 300
+$vmOk = Invoke-PlugVmFileSerial -Kernel $PlugCdx -InputFile $inputFile -OutputFile $outFile -StderrFile $errFile -MemMB $MemMB -TimeoutSec 300
 $swEmit.Stop()
 if (-not $vmOk) { [Console]::Error.WriteLine("FAIL: timeout"); exit 4 }
 

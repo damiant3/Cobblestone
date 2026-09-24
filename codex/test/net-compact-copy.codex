@@ -1,0 +1,80 @@
+Chapter: NetCompactCopy
+  cites Net chapter NetCompact
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+ The compiler refuses a literal that omits a field (CDX2006) but not one
+ that fills a field from the wrong source, so the copy is checked field by
+ field against a state whose every field holds a distinct non-zero value.
+
+Section: Fixture
+
+  conn0 : TcpConnection = TcpConnection {
+    state = TcpFinWait2, local-port = 8080, remote-port = 50001,
+    local-ip = [10, 0, 2, 15], remote-ip = [10, 0, 2, 101],
+    send-next = 70001, recv-next = 90001, send-window = 4321
+  }
+
+  sess0 : NetSession = NetSession {
+    local-mac = [2, 4, 6, 8, 10, 12], local-ip = [10, 0, 2, 16], gateway-ip = [10, 0, 2, 3],
+    conn = conn0,
+    arp = ArpCache { entries = [ArpEntry { ip = [10, 0, 2, 3], mac = [1, 3, 5, 7, 9, 11] }, ArpEntry { ip = [10, 0, 2, 4], mac = [2, 3, 5, 7, 9, 11] }], count = 2 },
+    outbox = [[31, 32, 33], [41, 42]],
+    rexmit-queue = [RexmitSeg { rx-frame = [51, 52, 53, 54], rx-ack = 6001, rx-sent = 17, rx-resent = True }],
+    rexmit-rto = 23, rexmit-tries = 3, close-timer = 29, now-ticks = 31, srtt = 37, rttvar = 41
+  }
+
+  ts0 : TcpTransportState = TcpTransportState { session = sess0, recv-base = 43, recv-len = 47, recv-cap = 53, messages-sent = 59, messages-received = 61, arena-base = 67, gen = 71 }
+
+Section: Judges
+
+  same-ints : List Integer, List Integer -> Boolean
+  same-ints (a) (b) = list-length a == list-length b & same-ints-loop a b 0
+
+  same-ints-loop : List Integer, List Integer, Integer -> Boolean
+  same-ints-loop (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same-ints-loop a b (i + 1)
+
+  fresh : List Integer, List Integer -> Boolean
+  fresh (a) (b) = address-of a /= address-of b
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  copy-bytes : TcpTransportState -> Integer
+  copy-bytes (ts) =
+    let h0 = __heap-save
+    in let c = nc-transport ts
+    in let h1 = __heap-save
+    in if (c.recv-len) < 0 then 0 else h1 - h0
+
+Section: Entry
+  opening : [Console] Nothing = act
+    let o = ts0
+    in let os = o.session
+    in let t = nc-transport o
+    in let s = t.session
+    in let c = s.conn
+    in let a = s.arp
+    in let e1 = list-at (a.entries) 1
+    in let r = list-at (s.rexmit-queue) 0
+    in act
+      print-line-uni ("transport ints: " & yn (t.recv-base == 43 & t.recv-len == 47 & t.recv-cap == 53 & t.messages-sent == 59 & t.messages-received == 61 & t.arena-base == 67 & t.gen == 71))
+      print-line-uni ("session lists: " & yn (same-ints (s.local-mac) [2, 4, 6, 8, 10, 12] & same-ints (s.local-ip) [10, 0, 2, 16] & same-ints (s.gateway-ip) [10, 0, 2, 3]))
+      print-line-uni ("session ints: " & yn (s.rexmit-rto == 23 & s.rexmit-tries == 3 & s.close-timer == 29 & s.now-ticks == 31 & s.srtt == 37 & s.rttvar == 41))
+      print-line-uni ("conn state: " & tcp-state-name (c.state))
+      print-line-uni ("conn fields: " & yn (c.local-port == 8080 & c.remote-port == 50001 & same-ints (c.local-ip) [10, 0, 2, 15] & same-ints (c.remote-ip) [10, 0, 2, 101] & c.send-next == 70001 & c.recv-next == 90001 & c.send-window == 4321))
+      print-line-uni ("arp: " & yn (a.count == 2 & list-length (a.entries) == 2 & same-ints (e1.ip) [10, 0, 2, 4] & same-ints (e1.mac) [2, 3, 5, 7, 9, 11]))
+      print-line-uni ("outbox: " & yn (list-length (s.outbox) == 2 & same-ints (list-at (s.outbox) 0) [31, 32, 33] & same-ints (list-at (s.outbox) 1) [41, 42]))
+      print-line-uni ("rexmit: " & yn (list-length (s.rexmit-queue) == 1 & same-ints (r.rx-frame) [51, 52, 53, 54] & r.rx-ack == 6001 & r.rx-sent == 17 & r.rx-resent))
+      print-line-uni ("shares no list with the original: " & yn (fresh (s.local-mac) (os.local-mac) & fresh (c.remote-ip) ((os.conn).remote-ip) & fresh (e1.mac) ((list-at ((os.arp).entries) 1).mac) & fresh (r.rx-frame) ((list-at (os.rexmit-queue) 0).rx-frame) & fresh (list-at (s.outbox) 1) (list-at (os.outbox) 1)))
+      print-line-uni ("the aliasing judge can fail: " & yn (fresh (os.local-mac) (os.local-mac) == False))
+      print-line-uni ("two copies allocate the same bytes: " & yn (copy-bytes ts0 == copy-bytes ts0 & copy-bytes ts0 > 0))
+    end
+  end
+
+Page 1

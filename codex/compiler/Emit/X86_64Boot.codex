@@ -178,7 +178,8 @@ Section: Memory Address Map
 
  The sixteen bytes a `bind` argument is. `sockaddr_in` is sin_family (2 bytes,
  host order), sin_port (2 bytes, NETWORK order, which is why the port is
- byte-swapped into place), sin_addr (4 bytes, 0 for INADDR_ANY) and eight
+ byte-swapped into place), sin_addr (4 bytes, network order: the bind
+ operation's third argument, so 0 is INADDR_ANY and #0100007F is 127.0.0.1) and eight
  bytes of padding. The whole of it is two qwords, so it is built in a register
  and stored twice rather than assembled byte by byte.
 
@@ -592,8 +593,39 @@ Section: Memory Address Map
 
   lapic-timer-vector : Integer = 48
   lapic-timer-periodic : Integer = 131072
+  lapic-timer-masked : Integer = 65536
   lapic-timer-divide-16 : Integer = 3
   lapic-timer-count : Integer = 1000000
+  lapic-timer-ccr-reg : Integer = 912
+
+ THE QUANTUM IS 10 ms (Damian, 2026-08-28), and a LAPIC count is not a time:
+ the period is count * 16 / bus clock, and the bus clock is not known until
+ it is measured. The boot processor measures it once against the HPET before
+ it starts the application processors, and each AP programs the count it
+ left in `lapic-timer-count-addr` (36352, above `deck-reservation-top-addr`;
+ the band map at 36264 found 36352 only as the IDT gate type 0x8E00).
+ `lapic-timer-count` is the count kept when there is nothing to measure
+ against: a period of 0 or above the HPET specification's 100 ns bound says
+ no HPET answered.
+
+ 16,777,216 is the count the timer runs down during the measurement. It must
+ outlast 10 ms at the fastest bus a divide-by-16 can see (about 268 ms at
+ 1 GHz), and codex-vm clamps any period past 5 s and scales Current Count to
+ the clamped period, so a count whose period passes 5 s at its modelled
+ 100 MHz (0xFFFFFFFF does) measures a quantum 137 times too long. The fuel
+ bounds a frozen HPET (codex-vm's `-rtc`): each pass is one HPET read, about
+ 5.5 us under codex-vm, so a live HPET ends the wait after about 1,800 passes
+ and a frozen one costs the boot 1.1 s before the fallback count is kept.
+
+  lapic-timer-count-addr : Integer = 36352
+  lapic-cal-count : Integer = 16777216
+  lapic-cal-fuel : Integer = 200000
+  lapic-quantum-fs : Integer = 10000000000000
+  hpet-mmio-base : Integer = 4275044352
+  hpet-period-off : Integer = 4
+  hpet-config-off : Integer = 16
+  hpet-counter-lo-off : Integer = 240
+  hpet-max-period-fs : Integer = 100000000
 
  The interrupt command register values that start the application
  processors, per the Intel MP protocol: an INIT IPI, then two
@@ -627,11 +659,15 @@ Section: Size and Threshold Constants
   task-desc-size : Integer = 64
   fork-pool-reservation : Integer = 4194304
   starve-threshold : Integer = 100
-  ticks-per-second : Integer = 18
-  wd-tier1-threshold : Integer = 5500001
-  wd-tier2-threshold : Integer = 5500001
-  wd-stale-threshold-progress : Integer = 5500000
-  wd-stale-threshold-pet : Integer = 20
+
+ The watchdog's windows are wall time: 1,098 ms is the 20 ticks the pet
+ window was at count 65,536, and 302,088,000 ms the 5,500,000 of the progress
+ window, about 3.5 days. A tier threshold one past the panic never fires.
+
+  wd-tier1-threshold : Integer = wd-stale-threshold-progress + 1
+  wd-tier2-threshold : Integer = wd-stale-threshold-progress + 1
+  wd-stale-threshold-progress : Integer = pit-ms-ticks 302088000
+  wd-stale-threshold-pet : Integer = pit-ms-ticks 1098
   serial-ring-buf-size : Integer = 1048576
   serial-ring-buf-mask : Integer = 1048575
   proc-spawn-stack-size : Integer = 1048576
@@ -727,6 +763,13 @@ Section: Process Table Layout
  next free slot in the reserved gap [24, 56).
 
   proc-exit-status-offset : Integer = 32
+
+ The process's network arena pool head (codex/os/net/NetCompact), read and
+ written by address from Codex. Spawn zeroes it, because a slot's region is
+ reused by the next process spawned into it and a head left by the previous
+ owner points into memory that owner no longer holds.
+
+  proc-net-pool-offset : Integer = 40
   proc-cap-offset : Integer = 56
   proc-scope-offset : Integer = 64
   proc-saved-rsp-offset : Integer = 72
@@ -781,11 +824,24 @@ Section: Channel Table Layout
   chan-state-closed : Integer = 2
 
 Section: PIT and PIC Initialization
+
+ The 8254's input clock is 1,193,182 Hz on every PC, and channel 0 divides
+ it by the reload count; a count of 65,536 is written as zero. 11,932 is
+ 10.0002 ms, core 0's quantum. Consumers read both through `pit-input-hz` and
+ `pit-count`, never a rounded rate.
+
+  pit-input-rate : Integer = 1193182
+  pit-reload-count : Integer = 11932
+
+  pit-ms-ticks : Integer -> Integer
+  pit-ms-ticks (ms) = (ms * pit-input-rate + pit-reload-count * 1000 - 1) / (pit-reload-count * 1000)
+
   emit-pit-init : CodegenState -> CodegenState
   emit-pit-init (st) =
-   let st1 = emit-out-byte st 67 52
-   in let st2 = emit-out-byte st1 64 0
-   in emit-out-byte st2 64 0
+   let c = pit-reload-count - (pit-reload-count / 65536) * 65536
+   in let st1 = emit-out-byte st 67 52
+   in let st2 = emit-out-byte st1 64 (c - (c / 256) * 256)
+   in emit-out-byte st2 64 (c / 256)
 
   emit-pic-init : CodegenState -> CodegenState
   emit-pic-init (st) =
@@ -1439,10 +1495,10 @@ Section: Common Interrupt Handler
  pointer and claiming its replacement with a CMPXCHG -- and they differ only
  in which chip is told the interrupt is over. See emit-timer-eoi.
 
- The tick count is incremented with a LOCKED add, because it is no longer
- the boot processor alone that increments it. A plain load-add-store from
- several cores loses ticks: two cores read the same value and both write
- back one more than it, and the clock silently runs slow.
+ The tick count is core 0's PIT alone and vector 48 jumps over it: every
+ tick-based wait converts it with `pit-input-hz` and `pit-count`, and an AP's
+ tick is not a unit of that clock. The add stays LOCKED because codex-vm also advances the
+ cell from the host while core 0 is halted.
 
  A core with no work parks on its own idle stack in __idle_dispatch with
  its timer armed, so a tick can arrive while it is standing on no process.
@@ -1498,10 +1554,13 @@ Section: Common Interrupt Handler
    in let st6c = st-append-code st6b (cmp-ri reg-rax lapic-timer-vector)
    in let not-timer = st6c.code-len
    in let st7 = st-append-code st6c (jcc cc-ne 0)
-   in let st7t = patch-jcc-at st7 is-timer (st7.code-len)
+   in let ap-tick = st7.code-len
+   in let st7j = st-append-code st7 (jmp 0)
+   in let st7t = patch-jcc-at st7j is-timer (st7j.code-len)
    in let st8 = st-append-code st7t (li reg-rdi tick-count-addr)
    in let st9 = st-append-code st8 (li reg-rsi 1)
-   in let st11 = st-append-code st9 (lock-xadd-mem reg-rsi reg-rdi 0)
+   in let st10 = st-append-code st9 (lock-xadd-mem reg-rsi reg-rdi 0)
+   in let st11 = patch-jmp-at st10 ap-tick (st10.code-len)
    in let pr0 = st-append-code st11 (li reg-rdi prof-enabled-addr)
    in let pr1 = st-append-code pr0 (mov-load reg-rdi reg-rdi 0)
    in let pr2 = st-append-code pr1 (test-rr reg-rdi reg-rdi)
@@ -2336,8 +2395,69 @@ Section: SMP Initialization
    in let st2 = emit-lapic-write st1 lapic-sivr-reg lapic-sivr-enable
    in let st3 = emit-lapic-write st2 lapic-timer-div-reg lapic-timer-divide-16
    in let st4 = emit-lapic-write st3 lapic-lvt-timer-reg (lapic-timer-vector + lapic-timer-periodic)
-   in let st5 = emit-lapic-write st4 lapic-timer-init-reg lapic-timer-count
-   in st-append-code st5 sti
+   in let st5 = st-append-code st4 (li reg-rdi lapic-timer-count-addr)
+   in let st6 = st-append-code st5 (mov-load reg-rax reg-rdi 0)
+   in let st7 = st-append-code st6 (li reg-rdi (lapic-base + lapic-timer-init-reg))
+   in let st8 = st-append-code st7 (mov-store-32 reg-rdi reg-rax 0)
+   in st-append-code st8 sti
+
+  emit-lapic-calibrate : CodegenState -> CodegenState
+  emit-lapic-calibrate (st) =
+   let c0 = st-append-code st (li reg-rax lapic-timer-count)
+   in let c1 = st-append-code c0 (li reg-rdi lapic-timer-count-addr)
+   in let c2 = st-append-code c1 (mov-store reg-rdi reg-rax 0)
+   in let h0 = st-append-code c2 (li reg-rdi (hpet-mmio-base + hpet-config-off))
+   in let h1 = st-append-code h0 (mov-load-u32 reg-rax reg-rdi 0)
+   in let h2 = st-append-code h1 (or-ri reg-rax 1)
+   in let h3 = st-append-code h2 (mov-store-32 reg-rdi reg-rax 0)
+   in let p0 = st-append-code h3 (li reg-rdi (hpet-mmio-base + hpet-period-off))
+   in let p1 = st-append-code p0 (mov-load-u32 reg-rsi reg-rdi 0)
+   in let p2 = st-append-code p1 (test-rr reg-rsi reg-rsi)
+   in let none-pos = p2.code-len
+   in let p3 = st-append-code p2 (jcc cc-e 0)
+   in let p4 = st-append-code p3 (cmp-ri reg-rsi hpet-max-period-fs)
+   in let bad-pos = p4.code-len
+   in let p5 = st-append-code p4 (jcc cc-a 0)
+   in let d0 = st-append-code p5 (li reg-rax lapic-quantum-fs)
+   in let d1 = st-append-code d0 (li reg-rdx 0)
+   in let d2 = st-append-code d1 (div-r reg-rsi)
+   in let d3 = st-append-code d2 (mov-rr reg-rbx reg-rax)
+   in let t0 = emit-lapic-write d3 lapic-timer-div-reg lapic-timer-divide-16
+   in let t1 = emit-lapic-write t0 lapic-lvt-timer-reg (lapic-timer-vector + lapic-timer-masked)
+   in let t2 = emit-lapic-write t1 lapic-timer-init-reg lapic-cal-count
+   in let s0 = st-append-code t2 (li reg-rdi (hpet-mmio-base + hpet-counter-lo-off))
+   in let s1 = st-append-code s0 (mov-load-u32 reg-rsi reg-rdi 0)
+   in let s2 = st-append-code s1 (li reg-rcx lapic-cal-fuel)
+   in let top = s2.code-len
+   in let w0 = st-append-code s2 (mov-load-u32 reg-rax reg-rdi 0)
+   in let w1 = st-append-code w0 (sub-rr reg-rax reg-rsi)
+   in let nowrap-pos = w1.code-len
+   in let w2 = st-append-code w1 (jcc cc-ge 0)
+   in let w3 = st-append-code w2 (li reg-rdx 4294967296)
+   in let w4 = st-append-code w3 (add-rr reg-rax reg-rdx)
+   in let w5 = patch-jcc-at w4 nowrap-pos (w4.code-len)
+   in let w6 = st-append-code w5 (cmp-rr reg-rax reg-rbx)
+   in let done-pos = w6.code-len
+   in let w7 = st-append-code w6 (jcc cc-ae 0)
+   in let w8 = st-append-code w7 (sub-ri reg-rcx 1)
+   in let out-pos = w8.code-len
+   in let w9 = st-append-code w8 (jcc cc-e 0)
+   in let w10 = st-append-code w9 x86-pause
+   in let w11 = st-append-code w10 (jmp (top - (w10.code-len + 5)))
+   in let m0 = patch-jcc-at w11 done-pos (w11.code-len)
+   in let m1 = st-append-code m0 (li reg-rdi (lapic-base + lapic-timer-ccr-reg))
+   in let m2 = st-append-code m1 (mov-load-u32 reg-rax reg-rdi 0)
+   in let m3 = st-append-code m2 (li reg-rdx lapic-cal-count)
+   in let m4 = st-append-code m3 (sub-rr reg-rdx reg-rax)
+   in let keep-pos = m4.code-len
+   in let m5 = st-append-code m4 (jcc cc-le 0)
+   in let m6 = st-append-code m5 (li reg-rdi lapic-timer-count-addr)
+   in let m7 = st-append-code m6 (mov-store reg-rdi reg-rdx 0)
+   in let m8 = patch-jcc-at m7 keep-pos (m7.code-len)
+   in let m9 = patch-jcc-at m8 out-pos (m8.code-len)
+   in let x0 = emit-lapic-write m9 lapic-timer-init-reg 0
+   in let x1 = patch-jcc-at x0 none-pos (x0.code-len)
+   in patch-jcc-at x1 bad-pos (x1.code-len)
 
   emit-busy-wait-cycles : CodegenState, Integer -> CodegenState
   emit-busy-wait-cycles (st) (count) =
@@ -2559,7 +2679,8 @@ Section: SMP Initialization
    in let cp4 = st-append-code cp3 rep-movsb
    in let ipi0 = emit-lapic-enable cp4
    in let ipi1 = emit-lapic-write ipi0 lapic-sivr-reg lapic-sivr-enable
-   in let ipi2 = emit-lapic-write ipi1 lapic-icr-hi-reg 0
+   in let ipi1c = emit-lapic-calibrate ipi1
+   in let ipi2 = emit-lapic-write ipi1c lapic-icr-hi-reg 0
    in let ipi3 = emit-lapic-write ipi2 lapic-icr-lo-reg icr-init-all-but-self
    in let ipi4 = emit-busy-wait-cycles ipi3 smp-init-delay-cycles
    in let ipi5 = emit-lapic-write ipi4 lapic-icr-lo-reg icr-sipi-all-but-self
@@ -2693,10 +2814,8 @@ Section: Process Management
    in let st4 = st-append-code st3 (li reg-rdi (entry-addr + 16))
    in let st5 = st-append-code st4 (li reg-rax cr3-val)
    in let st6 = st-append-code st5 (mov-store reg-rdi reg-rax 0)
-   in let st7 = st-append-code st6 (li reg-rdi (entry-addr + 40))
-   in let st8 = st-append-code st7 (li reg-rax heap-base)
-   in let st9 = st-append-code st8 (mov-store reg-rdi reg-rax 0)
-   in let st10 = st-append-code st9 (li reg-rdi (entry-addr + 48))
+   in let st8 = st-append-code st6 (li reg-rax heap-base)
+   in let st10 = st-append-code st8 (li reg-rdi (entry-addr + 48))
    in st-append-code st10 (mov-store reg-rdi reg-rax 0)
 
  Proc 0 starts RUNNING, because it is running.

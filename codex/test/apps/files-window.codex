@@ -1,0 +1,85 @@
+Chapter: FilesWindowTest
+  cites Works chapter GopFiles
+  cites Works chapter GopFat16
+  cites Foreword chapter Fat16
+  cites Foreword chapter Console
+
+ The windowed listing against the whole one, on a fixture built host-side by
+ `build/make-fat16-bigdir.ps1`: a root of 22 entries over two sectors and an
+ `EFI` of 41 listed entries over the three clusters 2, 7 and 8, sixteen slots
+ a cluster, the first cluster's first two slots being `.` and `..`.
+
+ Each window is compared by name against the same slice of `gfl-list-cur`,
+ and each is placed to cross what it is testing: 14 to 18 crosses the root's
+ sector boundary, 10 to 22 crosses from cluster 2 into 7, 38 on runs off the
+ end of cluster 8.
+
+ The cost lines compare two windows of four rows at the head and at the tail
+ of `EFI`, whose names are all seven characters: the seek to the tail reads
+ two clusters inside a heap bracket, so the two must cost the same, and the
+ whole listing beside them is the control that the probe sees a directory.
+
+Section: Body
+
+  fw-yn : Boolean -> Text
+  fw-yn (v) = if v then "PASS" else "FAIL"
+
+  fw-names : List Fat16DirEntry, Integer, Integer, Text -> Text
+  fw-names (es) (i) (upto) (acc) =
+    if i >= upto | i >= list-length es then acc
+    else fw-names es (i + 1) upto (acc & (if acc == "" then "" else ",") & (list-at es i).de-name)
+
+  fw-slice : List Fat16DirEntry, Integer, Integer -> Text
+  fw-slice (es) (from) (n) = fw-names es from (from + n) ""
+
+  fw-all : List Fat16DirEntry -> Text
+  fw-all (es) = fw-names es 0 (list-length es) ""
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then print-line-uni "mount FAILED"
+    else act
+      let vol = m.gm-vol
+      in let root = [if gfat-is32 vol then vol.vol-root-start else 0 - 1]
+      in act
+        d <- gfat-resolve vol "EFI"
+        when d
+          is None -> print-line-uni "EFI not found"
+          is Just (de) -> act
+            let efi = [list-at root 0, de.de-cluster]
+            in act
+              ra <- gfl-list-cur vol root
+              ea <- gfl-list-cur vol efi
+              rn <- gfl-count-cur vol root
+              en <- gfl-count-cur vol efi
+              w1 <- gfl-window-cur vol root 14 5
+              w2 <- gfl-window-cur vol efi 10 12
+              w3 <- gfl-window-cur vol efi 38 10
+              let h0 = alloc-bytes 0
+              in act
+                hw <- gfl-window-cur vol efi 1 4
+                let h1 = alloc-bytes 0
+                in act
+                  tw <- gfl-window-cur vol efi 36 4
+                  let h2 = alloc-bytes 0
+                  in act
+                    whole <- gfl-list-cur vol efi
+                    let h3 = alloc-bytes 0
+                    in act
+                      print-line-uni ("counts " & integer-to-text rn & " and " & integer-to-text en & ": " & fw-yn (rn == 22 & en == 41 & rn == list-length ra & en == list-length ea))
+                      print-line-uni ("root 14 to 18 across a sector " & fw-all w1 & ": " & fw-yn (fw-all w1 == fw-slice ra 14 5 & list-length w1 == 5))
+                      print-line-uni ("EFI 10 to 21 across a cluster " & fw-all w2 & ": " & fw-yn (fw-all w2 == fw-slice ea 10 12 & list-length w2 == 12))
+                      print-line-uni ("EFI from 38 to the end " & fw-all w3 & ": " & fw-yn (fw-all w3 == fw-slice ea 38 10 & list-length w3 == 3))
+                      print-line-uni ("window at the head " & fw-all hw & " costs " & integer-to-text (h1 - h0) & ", at the tail " & fw-all tw & " costs " & integer-to-text (h2 - h1) & ": " & fw-yn (h2 - h1 == h1 - h0))
+                      print-line-uni ("CONTROL, the whole listing costs " & integer-to-text (h3 - h2) & ": " & fw-yn (h3 - h2 > h2 - h1))
+                    end
+                  end
+                end
+              end
+            end
+          end
+      end
+    end
+  end

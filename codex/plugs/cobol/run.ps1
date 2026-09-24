@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory=$true)] [string]$Src,
     [Parameter(Mandatory=$true)] [string]$Out,
-    [string]$Kernel = ''
+    [string]$Kernel = '',
+    [int]$MemMB = 3072
 )
 
 Set-StrictMode -Version Latest
@@ -41,7 +42,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IrFile)) {
 & pwsh -NoProfile -File (Join-Path $Repo 'build\plug-run.ps1') `
     -IrInput $IrFile -Out $Out `
     -PlugCdx (Join-Path $OutDir 'cobol-plug.cdx') `
-    -MemMB 3072 -Port 9105
+    -MemMB $MemMB -Port 9105
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # A refusal is a hard failure, the rule babbage's runner already applies. Every

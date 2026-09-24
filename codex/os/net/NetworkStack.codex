@@ -316,8 +316,9 @@ Section: Reliability Timers
 
   net-rexmit-arm : NetSession, List Integer, Integer -> NetSession
   net-rexmit-arm (s) (frame) (ack) =
-    let q = list-push (s.rexmit-queue) (RexmitSeg { rx-frame = frame, rx-ack = ack, rx-sent = s.now-ticks, rx-resent = False })
-    in if list-length (s.rexmit-queue) == 0 then set-rexmit s q (net-rto-base s) 0
+    let was-empty = list-length (s.rexmit-queue) == 0
+    in let q = list-push (s.rexmit-queue) (RexmitSeg { rx-frame = frame, rx-ack = ack, rx-sent = s.now-ticks, rx-resent = False })
+    in if was-empty then set-rexmit s q (net-rto-base s) 0
     else set-rexmit s q (s.rexmit-rto) (s.rexmit-tries)
 
   net-rexmit-prune : List RexmitSeg, Integer, Integer, List RexmitSeg -> List RexmitSeg
@@ -533,10 +534,14 @@ Section: Reliability Timers
 
 Section: Inbound Frame Processing
   net-process-frame : NetSession, List Integer -> NetResult
-  net-process-frame (sess) (frame) =
-    let et = eth-ethertype frame
-    in if et == eth-type-arp then net-process-arp sess (eth-payload frame)
-    else if et == eth-type-ipv4 then net-process-ip-at sess frame eth-header-size
+  net-process-frame (sess) (frame) = net-process-frame-within sess frame (list-length frame)
+
+  net-process-frame-within : NetSession, List Integer, Integer -> NetResult
+  net-process-frame-within (sess) (frame) (stop) =
+    let lim = if stop > list-length frame then list-length frame else stop
+    in let et = eth-ethertype-within frame lim
+    in if et == eth-type-arp then net-process-arp sess (eth-payload-loop frame eth-header-size lim [])
+    else if et == eth-type-ipv4 then net-process-ip-within sess frame eth-header-size lim
     else NetResult { session = sess, output = "unknown ethertype", data = [], data-off = 0, data-stop = 0 }
 
  THE IPv4 BRANCH DOES NOT COPY. `eth-payload` built a fresh list of the payload
@@ -645,9 +650,12 @@ Section: Inbound Frame Processing
   net-process-ip (sess) (ip-pkt) = net-process-ip-at sess ip-pkt 0
 
   net-process-ip-at : NetSession, List Integer, Integer -> NetResult
-  net-process-ip-at (sess) (pkt) (off) =
-    if ip-length-valid-at pkt off == False then NetResult { session = sess, output = "bad-ip-length", data = [], data-off = 0, data-stop = 0 }
-    else if ip-header-valid-at pkt off == False then NetResult { session = sess, output = "bad-ip-checksum", data = [], data-off = 0, data-stop = 0 }
+  net-process-ip-at (sess) (pkt) (off) = net-process-ip-within sess pkt off (list-length pkt)
+
+  net-process-ip-within : NetSession, List Integer, Integer, Integer -> NetResult
+  net-process-ip-within (sess) (pkt) (off) (stop) =
+    if ip-length-valid-within pkt off stop == False then NetResult { session = sess, output = "bad-ip-length", data = [], data-off = 0, data-stop = 0 }
+    else if ip-header-valid-within pkt off stop == False then NetResult { session = sess, output = "bad-ip-checksum", data = [], data-off = 0, data-stop = 0 }
     else let proto = ip-proto-at pkt off
     in if proto == ip-proto-tcp then
       let tcp-off = off + ip-header-size

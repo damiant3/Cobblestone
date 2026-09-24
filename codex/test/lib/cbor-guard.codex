@@ -1,0 +1,71 @@
+Chapter: Cbor Guard
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Encode chapter Cbor
+
+Section: Helpers
+
+  dec-list : List Integer -> Text
+  dec-list (bs) = dl bs 0 (list-length bs) ""
+
+  dl : List Integer, Integer, Integer, Text -> Text
+  dl (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else " "
+    in dl bs (i + 1) n (acc & sep & show (list-at bs i))
+
+  describe : CborValue -> Text
+  describe (v) = when v
+    is CborUint (n) -> "uint " & show n
+    is CborNint (n) -> "nint " & show n
+    is CborBytes (bs) -> "bytes " & dec-list bs
+    is CborText (t) -> "text " & t
+    is CborArray (items) -> "array " & show (list-length items)
+    is CborMap (es) -> "map " & show (list-length es)
+    is CborBool (b) -> "bool " & show b
+    is CborNull -> "null"
+    is CborTag (t) (inner) -> "tag " & show t & " " & describe inner
+
+  arm : Text, List Integer -> Text
+  arm (name) (bs) =
+    when cbor-decode bs
+      is Just (v) -> name & " = " & describe v
+      is None -> name & " = refused"
+
+  nested : Integer, List Integer -> List Integer
+  nested (n) (acc) =
+    if n <= 0 then acc & [1] else nested (n - 1) (list-push acc 129)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("hi-wire " & dec-list (cbor-encode-text "hi"))
+    print-line-uni ("big-uint-wire " & dec-list (cbor-encode (CborUint 4294967301)))
+    print-line-uni (arm "rt-big" (cbor-encode (CborUint 4294967301)))
+    print-line-uni (arm "ai27" [27, 0, 0, 0, 1, 0, 0, 0, 5])
+    print-line-uni (arm "nint-min" [59, 127, 255, 255, 255, 255, 255, 255, 255])
+    print-line-uni (arm "utf8-hi" [98, 104, 105])
+    print-line-uni (arm "utf8-e-acute" [98, 195, 169])
+    print-line-uni (arm "tag" [193, 1])
+    print-line-uni (arm "nested-pair" [130, 1, 130, 2, 3])
+    print-line-uni (arm "map" [161, 1, 2])
+    print-line-uni (arm "deep-200" (nested 200 []))
+    print-line-uni (arm "true" [245])
+    print-line-uni (arm "null" [246])
+    print-line-uni (arm "undefined" [247])
+    print-line-uni (arm "bytes" [66, 7, 9])
+    print-line-uni (arm "trailing" [1, 2])
+    print-line-uni (arm "half-float" [249, 60, 0])
+    print-line-uni (arm "cut-text" [98, 104])
+    print-line-uni (arm "cut-arg" [25, 1])
+    print-line-uni (arm "reserved-ai" [28])
+    print-line-uni (arm "indefinite" [159, 255])
+    print-line-uni (arm "ai27-topbit" [27, 128, 0, 0, 0, 0, 0, 0, 0])
+    print-line-uni (arm "huge-count" [155, 127, 255, 255, 255, 255, 255, 255, 255, 1])
+    print-line-uni (arm "deep-300" (nested 300 []))
+    print-line-uni (arm "bad-utf8" [98, 255, 255])
+    print-line-uni (arm "simple-0" [224])
+    print-line-uni (arm "empty" [])
+    print-line-uni (arm "cut-map" [162, 1, 2, 3])
+    print-line-uni (arm "cut-bytes" [67, 7, 9])
+  end

@@ -180,10 +180,6 @@ Section: Fast Font Read (sector-by-sector into alloc-bytes, then to List)
     else let d = poke-byte dst (dst-off + i) (peek-byte src i)
     in fl-copy-sector src dst dst-off count (i + 1)
 
-  fat32-cluster-sector : Fat32Volume, Integer -> Integer
-  fat32-cluster-sector (vol) (cluster) =
-    (vol.f32-data-start) + (cluster - 2) * (vol.f32-sectors-per-cluster)
-
 Section: Buffer-backed TTF Binary Helpers (O(1) access via peek-byte)
 
   fb-u8 : Integer, Integer -> Integer
@@ -230,6 +226,7 @@ Section: Buffer-backed TTF Plausibility
   fb-ttf-plausible : Integer, Integer -> Boolean
   fb-ttf-plausible (buf) (size) =
     if size < 12 then False
+    else if fb-u32 buf 0 /= 65536 & fb-u32 buf 0 /= #74727565 then False
     else let num-tables = fb-u16 buf 4
     in if num-tables < 7 then False
     else if 12 + num-tables * 16 > size then False
@@ -518,17 +515,7 @@ Section: Buffer-backed TTF Parse
     }
 
   fb-glyph-for-char : Integer, TtfFont, Integer -> TtfGlyph
-  fb-glyph-for-char (buf) (font) (codepoint) =
-    let glyph-idx = ttf-cmap-lookup (font.tf-cmap) codepoint
-    in if glyph-idx < 0 then fb-make-empty-glyph (ttf-get-hmetric (font.tf-hmetrics) 0)
-    else if glyph-idx + 1 >= list-length (font.tf-loca) then fb-make-empty-glyph (ttf-get-hmetric (font.tf-hmetrics) 0)
-    else let glyph-off = list-at (font.tf-loca) glyph-idx
-    in let next-off = list-at (font.tf-loca) (glyph-idx + 1)
-    in let hm = ttf-get-hmetric (font.tf-hmetrics) glyph-idx
-    in if glyph-off == next-off then fb-make-empty-glyph hm
-    else if next-off < glyph-off + 10 then fb-make-empty-glyph hm
-    else if (font.tf-glyf-off) + next-off > list-length (font.tf-buf) then fb-make-empty-glyph hm
-    else fb-read-glyph buf (font.tf-glyf-off) glyph-off (font.tf-hmetrics) glyph-idx
+  fb-glyph-for-char (buf) (font) (codepoint) = ttf-glyph-for-char font codepoint
 
 Section: Buffer-backed Glyph Rasterization
 

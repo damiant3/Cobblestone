@@ -81,21 +81,58 @@ Section: Encoding
     qoi-encode-pixels pixels (i + 1) n index px 0 (acc & [qoi-op-rgb, px.cr, px.cg, px.cb])
 
 Section: Decoding
-  QoiImage = record { qoi-width : Integer, qoi-height : Integer, qoi-pixels : List Rgb }
+  QoiImage = record { qoi-width : Integer, qoi-height : Integer, qoi-pixels : List Rgb, qoi-ok : Boolean }
+
+  QoiDecoded = record { qd-pixels : List Rgb, qd-ok : Boolean }
+
+  qoi-fail : QoiImage = QoiImage { qoi-width = 0, qoi-height = 0, qoi-pixels = [], qoi-ok = False }
+
+ The QOI specification: a 14-byte header ("qoif", width and height as
+ big-endian u32, channels 3 or 4, colorspace 0 or 1), the chunks, and an end
+ marker of seven zero bytes and a one. QOI_OP_RGB (254) and QOI_OP_RGBA (255)
+ take precedence over the 2-bit tags. DIFF and LUMA wrap each channel mod 256.
+ This decoder carries no alpha, so an RGBA chunk is refused rather than read
+ as a run. The pixel count must equal width times height, compared by division
+ so two hostile u32s cannot overflow a product.
 
   qoi-decode : List Integer -> QoiImage
   qoi-decode (bytes) =
-    let w = qoi-read-be32 bytes 4
+    let n = list-length bytes
+    in if n < 22 then qoi-fail
+    else if qoi-read-be32 bytes 0 /= 1903126886 then qoi-fail
+    else let w = qoi-read-be32 bytes 4
     in let h = qoi-read-be32 bytes 8
-    in let pixels = qoi-decode-pixels bytes 14 (list-length bytes - 8) (qoi-init-index) (rgb 0 0 0) []
-    in QoiImage { qoi-width = w, qoi-height = h, qoi-pixels = pixels }
+    in let channels = list-at bytes 12
+    in if channels /= 3 & channels /= 4 then qoi-fail
+    else if list-at bytes 13 > 1 then qoi-fail
+    else if qoi-end-marker bytes (n - 8) 0 == False then qoi-fail
+    else if w < 1 | h < 1 then qoi-fail
+    else let d = qoi-decode-pixels bytes 14 (n - 8) (qoi-init-index) (rgb 0 0 0) []
+    in let count = list-length (d.qd-pixels)
+    in if d.qd-ok == False then qoi-fail
+    else if count / w /= h | count - count / w * w /= 0 then qoi-fail
+    else QoiImage { qoi-width = w, qoi-height = h, qoi-pixels = d.qd-pixels, qoi-ok = True }
 
-  qoi-decode-pixels : List Integer, Integer, Integer, List Integer, Rgb, List Rgb -> List Rgb
+  qoi-end-marker : List Integer, Integer, Integer -> Boolean
+  qoi-end-marker (bytes) (at) (i) =
+    if i >= 8 then True
+    else if list-at bytes (at + i) /= (if i == 7 then 1 else 0) then False
+    else qoi-end-marker bytes at (i + 1)
+
+  qoi-bad : List Rgb -> QoiDecoded
+  qoi-bad (acc) = QoiDecoded { qd-pixels = acc, qd-ok = False }
+
+  qoi-wrap : Integer, Integer -> Integer
+  qoi-wrap (c) (d) = bit-and (c + d) 255
+
+  qoi-decode-pixels : List Integer, Integer, Integer, List Integer, Rgb, List Rgb -> QoiDecoded
   qoi-decode-pixels (bytes) (pos) (qlimit) (index) (prev) (acc) =
-    if pos >= qlimit then acc
+    if pos >= qlimit then QoiDecoded { qd-pixels = acc, qd-ok = True }
     else let b = list-at bytes pos
-    in if b == qoi-op-rgb then
-      let px = rgb (list-at bytes (pos + 1)) (list-at bytes (pos + 2)) (list-at bytes (pos + 3))
+    in if b == qoi-op-rgba then qoi-bad acc
+    else if b == qoi-op-rgb then
+      if pos + 3 >= qlimit then qoi-bad acc
+      else let px = rgb (list-at bytes (pos + 1)) (list-at bytes (pos + 2)) (list-at bytes (pos + 3))
       in let new-index = list-set-at index (qoi-hash px) (rgb-to-packed px)
       in qoi-decode-pixels bytes (pos + 4) qlimit new-index px (list-push acc px)
     else if bit-and b 192 == qoi-op-run then
@@ -111,17 +148,17 @@ Section: Decoding
       let dr = bit-and (bit-shru b 4) 3 - 2
       in let dg = bit-and (bit-shru b 2) 3 - 2
       in let db = bit-and b 3 - 2
-      in let px = rgb (prev.cr + dr) (prev.cg + dg) (prev.cb + db)
+      in let px = rgb (qoi-wrap (prev.cr) dr) (qoi-wrap (prev.cg) dg) (qoi-wrap (prev.cb) db)
       in let new-index = list-set-at index (qoi-hash px) (rgb-to-packed px)
       in qoi-decode-pixels bytes (pos + 1) qlimit new-index px (list-push acc px)
+    else if pos + 1 >= qlimit then qoi-bad acc
     else let dg = bit-and b 63 - 32
     in let b2 = list-at bytes (pos + 1)
     in let dr = dg + bit-and (bit-shru b2 4) 15 - 8
     in let db = dg + bit-and b2 15 - 8
-    in let px = rgb (prev.cr + dr) (prev.cg + dg) (prev.cb + db)
+    in let px = rgb (qoi-wrap (prev.cr) dr) (qoi-wrap (prev.cg) dg) (qoi-wrap (prev.cb) db)
     in let new-index = list-set-at index (qoi-hash px) (rgb-to-packed px)
     in qoi-decode-pixels bytes (pos + 2) qlimit new-index px (list-push acc px)
-
   qoi-expand-run : Rgb, Integer, List Rgb -> List Rgb
   qoi-expand-run (px) (n) (acc) =
     if n <= 0 then acc

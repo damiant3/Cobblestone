@@ -65,6 +65,8 @@ $BuildLog = Join-Path $OutDir 'build.log'
 #     affordable here: its subject is the -run-list supervisor in codex-vm and
 #     its instrument is that script, and no codegen change can move its answer
 #     because every arm compares two runs of the SAME kernels.
+#   uefi-conout                 <- codex/compiler, codex/test, or tools/codex-vm.c or .exe:
+#     its instrument is codex-vm's -conout capture.
 #   text-stage2 / text-fixedpoint <- the front end and the text printer
 #   text-stage1 / sem-equiv     <- WHENEVER THE CORE RUNS (Damian, 2026-09-02).
 #     The trigger was $tSemantic, and its residue was the rest of the compiler:
@@ -179,6 +181,7 @@ if ($Internal) {
         'deck-headroom'   = ($tBuild -or $tCompiler)
         'app-sweep'       = ($tApps -or $tCompiler)
         'run-list'        = $tVm
+        'uefi-conout'     = ($tCompiler -or $tTest -or $tVm)
         'text-stage1'     = $coreRuns
         'sem-equiv'       = $coreRuns
         'text-stage2'     = $tFrontEnd
@@ -914,6 +917,24 @@ Measure-Phase 'compiler-warnings' {
     }
 }
 
+Measure-Phase 'cdx-exports' {
+    if ($coreRuns) {
+        $exportDir = Join-Path $OutDir 'cdx-exports'
+        if (Test-Path $exportDir) { Remove-Item -Recurse -Force $exportDir }
+        $exportScript = Join-Path $Repo 'codex' 'test' 'cdx-export-check.ps1'
+        $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        & pwsh -NoProfile -File $exportScript -Kernel $cdxStage1 -WorkDir $exportDir 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $ErrorActionPreference = $prev
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host ''
+            Write-Host 'FAIL: declared exports -- cdx-export-check refused the stage-3 compiler'
+            exit 1
+        }
+    } else {
+        Write-Host '  cdx-exports skipped: the core did not run, so there is no stage-3 compiler to grade'
+    }
+}
+
 Write-Host 'Light seems to bend and distort around it, while the sound waves'
 Write-Host 'become so intense, they appear to become visible.'
 Write-Host ''
@@ -1148,7 +1169,7 @@ Measure-Phase 'plug-binary' {
 Measure-Phase 'cross-smoke' {
     $chkCross = Join-Path $PSScriptRoot 'check-cross-smoke.ps1'
     if (Test-Path $chkCross) {
-        & pwsh -NoProfile -File $chkCross 2>&1 | ForEach-Object { Write-Host "  $_" }
+        & pwsh -NoProfile -File $chkCross -Kernel $SutCdx 2>&1 | ForEach-Object { Write-Host "  $_" }
         if ($LASTEXITCODE -ne 0) {
             Write-Host 'FAIL: a cross-arch backend stopped executing correctly'
             exit 1
@@ -1187,7 +1208,13 @@ Measure-Phase 'plug-smoke' {
         $smokeDeps += Get-Item (Join-Path $Repo $decl)
     }
     $smokeFail = @()
+    $spKernelOf = @{}
     foreach ($sp in $smokePlugs) {
+        $spRun = Join-Path $Repo "codex\plugs\$sp\run.ps1"
+        $spAst = [System.Management.Automation.Language.Parser]::ParseFile($spRun, [ref]$null, [ref]$null)
+        $spParams = @(if ($spAst.ParamBlock) { $spAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath } })
+        $spKernel = if ($spParams -contains 'Kernel') { @('-Kernel', $SutCdx) } elseif ($spParams -contains 'Compiler') { @('-Compiler', $SutCdx) } else { @() }
+        $spKernelOf[$sp] = $spKernel
         $spBuild = Join-Path $Repo "codex\plugs\$sp\build.ps1"
         $spCdx   = Join-Path $Repo "codex\plugs\$sp\build-output\$sp-plug.cdx"
         $spLog   = Join-Path $smokeDir "$sp-smoke.log"
@@ -1199,7 +1226,7 @@ Measure-Phase 'plug-smoke' {
             $ok = $false
             foreach ($attempt in 1..2) {
                 Remove-Item -Force $spOut -ErrorAction SilentlyContinue
-                & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $spOut *>> $spLog
+                & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $spOut @spKernel *>> $spLog
                 if ($LASTEXITCODE -eq 0 -and (Test-Path $spOut) -and (Get-Item $spOut).Length -gt 0) { $ok = $true; break }
                 if ($attempt -eq 1) { & pwsh -NoProfile -File $spBuild *>> $spLog }
             }
@@ -1238,12 +1265,13 @@ Measure-Phase 'plug-smoke' {
         try {
             foreach ($sp in $smokePlugs) {
                 $spLog = Join-Path $smokeDir "$sp-smoke-qemu.log"
+                $qKernel = $spKernelOf[$sp]
                 foreach ($si in $smokeSrcs) {
                     $smokeSrc = Join-Path $Repo "codex\plugs\test-input\$si.codex"
                     $qOut = Join-Path $smokeDir "$sp-$si.qemu.out"
                     $cOut = Join-Path $smokeDir "$sp-$si.out"
                     Remove-Item -Force $qOut -ErrorAction SilentlyContinue
-                    & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $qOut *>> $spLog
+                    & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $qOut @qKernel *>> $spLog
                     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $qOut)) { $xFail += "$sp/$si(qemu produced nothing)"; continue }
                     if ((Get-FileHash $qOut -Algorithm SHA256).Hash -ne (Get-FileHash $cOut -Algorithm SHA256).Hash) { $xFail += "$sp/$si(hosts differ)" }
                 }
@@ -1357,6 +1385,17 @@ Measure-Phase 'vm-differential' {
             Write-Host '      Detail: pwsh build/check-vm-differential.ps1'
             exit 1
         }
+    }
+}
+
+# -- the UEFI print helpers. No sidecar can ask for -uefi, so __uefi_print and
+# __uefi_print_no_nl are graded here and nowhere else (COMPILER-22). 5s.
+Measure-Phase 'uefi-conout' {
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-uefi-conout.ps1') -Kernel $SutCdx 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: a UEFI ConOut print does not match its .expected'
+        Write-Host '      Detail: pwsh build/test-uefi-conout.ps1 -Kernel build\output\Sut.cdx'
+        exit 1
     }
 }
 

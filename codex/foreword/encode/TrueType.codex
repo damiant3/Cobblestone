@@ -276,14 +276,8 @@ Section: Glyf Table
     tg-x-max = 0, tg-y-max = 0, tg-advance = 0, tg-lsb = 0
   }
 
-  ttf-read-glyph : List Integer, Integer, Integer, List TtfHMetric, Integer -> TtfGlyph
-  ttf-read-glyph (buf) (glyf-off) (glyph-off) (hmetrics) (glyph-idx) =
-    let off = glyf-off + glyph-off
-    in let num-contours = ttf-i16 buf off
-    in let hm = ttf-get-hmetric hmetrics glyph-idx
-    in if num-contours < 0 then ttf-read-compound-glyph buf off hm
-    else if num-contours == 0 then __record-set (__record-set ttf-empty-glyph "tg-advance" hm.hm-advance) "tg-lsb" hm.hm-lsb
-    else ttf-read-simple-glyph buf off num-contours hm
+  ttf-read-glyph : TtfFont, Integer -> TtfGlyph
+  ttf-read-glyph (font) (glyph-idx) = (ttf-resolve-glyph font glyph-idx 0 64).tr-glyph
 
   ttf-get-hmetric : List TtfHMetric, Integer -> TtfHMetric
   ttf-get-hmetric (hmetrics) (idx) =
@@ -305,9 +299,9 @@ Section: Glyf Table
     in let flags-result = ttf-read-flags buf flags-off total-pts
     in let flags = ttf-fr-flags flags-result
     in let after-flags = ttf-fr-offset flags-result
-    in let xs-result = ttf-read-coords buf after-flags flags total-pts 1 2
+    in let xs-result = ttf-read-coords buf after-flags flags total-pts 1 4
     in let xs = ttf-cr-coords xs-result
-    in let ys-result = ttf-read-coords buf (ttf-cr-offset xs-result) flags total-pts 4 32
+    in let ys-result = ttf-read-coords buf (ttf-cr-offset xs-result) flags total-pts 2 5
     in let ys = ttf-cr-coords ys-result
     in let points = ttf-build-points flags xs ys total-pts 0 []
     in let contours = ttf-split-contours points end-pts num-contours 0 0 []
@@ -411,16 +405,124 @@ Section: Glyf Table
     else ttf-slice-points points (from + 1) to (list-push acc (list-at points from))
 
 Section: Compound Glyphs
-  ttf-read-compound-glyph : List Integer, Integer, TtfHMetric -> TtfGlyph
-  ttf-read-compound-glyph (buf) (off) (hm) =
-    TtfGlyph {
-      tg-contours = [],
-      tg-x-min = ttf-i16 buf (off + 2),
-      tg-y-min = ttf-i16 buf (off + 4),
-      tg-x-max = ttf-i16 buf (off + 6),
-      tg-y-max = ttf-i16 buf (off + 8),
-      tg-advance = hm.hm-advance, tg-lsb = hm.hm-lsb
+  TtfResolved = record { tr-glyph : TtfGlyph, tr-left : Integer, tr-ok : Boolean }
+
+  TtfTransform = record { tx-xx : Integer, tx-xy : Integer, tx-yx : Integer, tx-yy : Integer, tx-next : Integer }
+
+  TtfPointRef = record { tpr-point : TtfPoint, tpr-ok : Boolean }
+
+  ttf-refused : Integer -> TtfResolved
+  ttf-refused (left) = TtfResolved { tr-glyph = ttf-empty-glyph, tr-left = left, tr-ok = False }
+
+  ttf-header-glyph : List Integer, Integer, TtfHMetric -> TtfGlyph
+  ttf-header-glyph (buf) (off) (hm) = TtfGlyph {
+    tg-contours = [], tg-x-min = ttf-i16 buf (off + 2), tg-y-min = ttf-i16 buf (off + 4),
+    tg-x-max = ttf-i16 buf (off + 6), tg-y-max = ttf-i16 buf (off + 8),
+    tg-advance = hm.hm-advance, tg-lsb = hm.hm-lsb
+  }
+
+  ttf-resolve-glyph : TtfFont, Integer, Integer, Integer -> TtfResolved
+  ttf-resolve-glyph (font) (idx) (depth) (fuel) =
+    if depth > 16 | fuel <= 0 | idx < 0 | idx >= font.tf-num-glyphs | idx + 1 >= list-length font.tf-loca then ttf-refused fuel
+    else let first = list-at font.tf-loca idx
+    in let last = list-at font.tf-loca (idx + 1)
+    in let off = font.tf-glyf-off + first
+    in let stop = font.tf-glyf-off + last
+    in let hm = ttf-get-hmetric font.tf-hmetrics idx
+    in if first < 0 | last < first | font.tf-glyf-off < 0 | stop > list-length font.tf-buf then ttf-refused fuel
+    else if first == last then TtfResolved {
+      tr-glyph = TtfGlyph { tg-contours = [], tg-x-min = 0, tg-y-min = 0, tg-x-max = 0, tg-y-max = 0, tg-advance = hm.hm-advance, tg-lsb = hm.hm-lsb },
+      tr-left = fuel - 1, tr-ok = True
     }
+    else if stop - off < 10 then ttf-refused fuel
+    else let count = ttf-i16 font.tf-buf off
+    in let header = ttf-header-glyph font.tf-buf off hm
+    in if count < 0 then ttf-components font (off + 10) stop depth (fuel - 1) header 0
+    else if count == 0 then TtfResolved { tr-glyph = header, tr-left = fuel - 1, tr-ok = True }
+    else if count > 256 | off + 12 + count * 2 > stop then ttf-refused fuel
+    else let points = ttf-u16 font.tf-buf (off + 10 + (count - 1) * 2) + 1
+    in let instructions = ttf-u16 font.tf-buf (off + 10 + count * 2)
+    in if points > 4096 | off + 12 + count * 2 + instructions > stop then ttf-refused fuel
+    else TtfResolved { tr-glyph = ttf-read-simple-glyph font.tf-buf off count hm, tr-left = fuel - 1, tr-ok = True }
+
+  ttf-component-arg : List Integer, Integer, Boolean, Boolean -> Integer
+  ttf-component-arg (buf) (off) (word) (signed) =
+    if word then (if signed then ttf-i16 buf off else ttf-u16 buf off)
+    else let v = ttf-u8 buf off
+    in if signed & v >= 128 then v - 256 else v
+
+  ttf-component-transform : List Integer, Integer, Integer -> TtfTransform
+  ttf-component-transform (buf) (off) (flags) =
+    if bit-and flags 8 /= 0 then
+      let v = ttf-i16 buf off
+      in TtfTransform { tx-xx = v, tx-xy = 0, tx-yx = 0, tx-yy = v, tx-next = off + 2 }
+    else if bit-and flags 64 /= 0 then TtfTransform { tx-xx = ttf-i16 buf off, tx-xy = 0, tx-yx = 0, tx-yy = ttf-i16 buf (off + 2), tx-next = off + 4 }
+    else if bit-and flags 128 /= 0 then TtfTransform { tx-xx = ttf-i16 buf off, tx-xy = ttf-i16 buf (off + 4), tx-yx = ttf-i16 buf (off + 2), tx-yy = ttf-i16 buf (off + 6), tx-next = off + 8 }
+    else TtfTransform { tx-xx = 16384, tx-xy = 0, tx-yx = 0, tx-yy = 16384, tx-next = off }
+
+ F2DOT14 matrix order and the unscaled-offset default follow OpenType glyf.
+ The outline representation stores integer FUnits; hint instructions remain
+ outside the unhinted coverage rasterizer.
+
+  ttf-transform-point : TtfPoint, TtfTransform, Integer, Integer -> TtfPoint
+  ttf-transform-point (p) (tx) (dx) (dy) = TtfPoint {
+    tp-x = (tx.tx-xx * p.tp-x + tx.tx-xy * p.tp-y) / 16384 + dx,
+    tp-y = (tx.tx-yx * p.tp-x + tx.tx-yy * p.tp-y) / 16384 + dy,
+    tp-on-curve = p.tp-on-curve
+  }
+
+  ttf-transform-points : List TtfPoint, TtfTransform, Integer, Integer, Integer, List TtfPoint -> List TtfPoint
+  ttf-transform-points (ps) (tx) (dx) (dy) (i) (acc) =
+    if i >= list-length ps then acc
+    else ttf-transform-points ps tx dx dy (i + 1) (list-push acc (ttf-transform-point (list-at ps i) tx dx dy))
+
+  ttf-transform-contours : List TtfContour, TtfTransform, Integer, Integer, Integer, List TtfContour -> List TtfContour
+  ttf-transform-contours (cs) (tx) (dx) (dy) (i) (acc) =
+    if i >= list-length cs then acc
+    else let c = TtfContour { tc-points = ttf-transform-points (list-at cs i).tc-points tx dx dy 0 [] }
+    in ttf-transform-contours cs tx dx dy (i + 1) (list-push acc c)
+
+  ttf-outline-point : List TtfContour, Integer, Integer -> TtfPointRef
+  ttf-outline-point (cs) (index) (i) =
+    if i >= list-length cs | index < 0 then TtfPointRef { tpr-point = TtfPoint { tp-x = 0, tp-y = 0, tp-on-curve = 1 }, tpr-ok = False }
+    else let ps = (list-at cs i).tc-points
+    in if index < list-length ps then TtfPointRef { tpr-point = list-at ps index, tpr-ok = True }
+    else ttf-outline-point cs (index - list-length ps) (i + 1)
+
+  ttf-components : TtfFont, Integer, Integer, Integer, Integer, TtfGlyph, Integer -> TtfResolved
+  ttf-components (font) (off) (stop) (depth) (fuel) (parent) (components) =
+    if off + 6 > stop | components >= 64 | fuel <= 0 then ttf-refused fuel
+    else let flags = ttf-u16 font.tf-buf off
+    in let index = ttf-u16 font.tf-buf (off + 2)
+    in let word = bit-and flags 1 /= 0
+    in let xy = bit-and flags 2 /= 0
+    in let width = if word then 2 else 1
+    in let a = ttf-component-arg font.tf-buf (off + 4) word xy
+    in let b = ttf-component-arg font.tf-buf (off + 4 + width) word xy
+    in let tx = ttf-component-transform font.tf-buf (off + 4 + width * 2) flags
+    in let transforms = (if bit-and flags 8 /= 0 then 1 else 0) + (if bit-and flags 64 /= 0 then 1 else 0) + (if bit-and flags 128 /= 0 then 1 else 0)
+    in if tx.tx-next > stop | transforms > 1 then ttf-refused fuel
+    else let child = ttf-resolve-glyph font index (depth + 1) fuel
+    in if child.tr-ok == False then child
+    else let pp = ttf-outline-point parent.tg-contours a 0
+    in let cp = ttf-outline-point child.tr-glyph.tg-contours b 0
+    in let origin = ttf-transform-point cp.tpr-point tx 0 0
+    in let scaled = bit-and flags 2048 /= 0 & bit-and flags 4096 == 0
+    in let offset = ttf-transform-point (TtfPoint { tp-x = a, tp-y = b, tp-on-curve = 1 }) tx 0 0
+    in let dx = if xy then (if scaled then offset.tp-x else a) else pp.tpr-point.tp-x - origin.tp-x
+    in let dy = if xy then (if scaled then offset.tp-y else b) else pp.tpr-point.tp-y - origin.tp-y
+    in if xy == False & (pp.tpr-ok == False | cp.tpr-ok == False) then ttf-refused child.tr-left
+    else let contours = ttf-transform-contours child.tr-glyph.tg-contours tx dx dy 0 parent.tg-contours
+    in let metric = bit-and flags 512 /= 0
+    in let combined = TtfGlyph {
+      tg-contours = contours, tg-x-min = parent.tg-x-min, tg-y-min = parent.tg-y-min,
+      tg-x-max = parent.tg-x-max, tg-y-max = parent.tg-y-max,
+      tg-advance = if metric then child.tr-glyph.tg-advance else parent.tg-advance,
+      tg-lsb = if metric then child.tr-glyph.tg-lsb else parent.tg-lsb
+    }
+    in if bit-and flags 32 /= 0 then ttf-components font tx.tx-next stop depth child.tr-left combined (components + 1)
+    else if bit-and flags 256 /= 0 & (tx.tx-next + 2 > stop | tx.tx-next + 2 + ttf-u16 font.tf-buf tx.tx-next > stop) then ttf-refused child.tr-left
+    else TtfResolved { tr-glyph = combined, tr-left = child.tr-left, tr-ok = True }
 
 Section: Top-Level Font
   TtfFont = record {
@@ -489,10 +591,7 @@ Section: Top-Level Font
   ttf-glyph-for-char : TtfFont, Integer -> TtfGlyph
   ttf-glyph-for-char (font) (codepoint) =
     let glyph-idx = ttf-cmap-lookup (font.tf-cmap) codepoint
-    in let glyph-off = list-at (font.tf-loca) glyph-idx
-    in let next-off = list-at (font.tf-loca) (glyph-idx + 1)
-    in if glyph-off == next-off then __record-set (__record-set ttf-empty-glyph "tg-advance" (ttf-get-hmetric (font.tf-hmetrics) glyph-idx).hm-advance) "tg-lsb" (ttf-get-hmetric (font.tf-hmetrics) glyph-idx).hm-lsb
-    else ttf-read-glyph (font.tf-buf) (font.tf-glyf-off) glyph-off (font.tf-hmetrics) glyph-idx
+    in ttf-read-glyph font glyph-idx
 
 Section: Formatting
   format-ttf-font : TtfFont -> Text

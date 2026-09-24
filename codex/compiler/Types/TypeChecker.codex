@@ -842,8 +842,19 @@ Section: Parameterize Type
 Section: Check Definition
   check-def : UnificationState, TypeEnv, List ADef, List TypeBinding, ADef, List RenameEntry -> CheckResult
   check-def (st) (env) (defs) (tdm) (def) (renames) =
-   if def-is-induction def then check-induction-def st env defs tdm def
-   else check-def-normal st env def renames
+   let site0 = list-length (st.empty-lists)
+   in let r = if def-is-induction def then check-induction-def st env defs tdm def
+      else check-def-normal st env def renames
+   in __record-set r "state" (settle-empty-lists (r.state) site0)
+
+  settle-empty-lists : UnificationState, Integer -> UnificationState
+  settle-empty-lists (st) (i) =
+   if i >= list-length (st.empty-lists) then st
+   else let site = list-at (st.empty-lists) i
+   in let settled = when resolve-silent st (site.ty)
+      is LinkedListTy (e) -> st
+      is otherwise -> let (elem, fr-st) = fresh-and-advance st in let (_, u-st) = unify fr-st (deck-record (ListTy elem)) (site.ty) (site.span) in u-st
+   in settle-empty-lists settled (i + 1)
 
   check-def-normal : UnificationState, TypeEnv, ADef, List RenameEntry -> CheckResult
   check-def-normal (st) (env) (def) (renames) =
@@ -2210,26 +2221,6 @@ Section: Punctual Mutual Recursion
 
 Section: Proof Acyclicity
 
- A proof term cannot assume its own conclusion. Declared types are
- registered before any body is checked (as ordinary mutual recursion
- requires), so without this check a proof definition whose body
- mentions itself - directly, mutually, through a recursive
- proof-returning helper, or by citing the claim under proof as a
- lemma inside an induction arm - type-checks trivially and erasure
- hides the divergence forever. The check:
- a definition is proof-relevant when its deep-resolved checked type
- mentions ProofTy or PropEqTy anywhere (resolved, not declared, so
- an undeclared intermediary def whose inferred type unifies to a
- proposition is still in the graph). Edges are every body mention of
- a proof-relevant name, collected with the same exhaustive walk the
- punctual cycle check uses, with self passed as the empty name so
- direct self-mentions are edges too. Any proof-relevant definition
- that reaches itself is rejected with CDX4023. The recursion a proof
- legitimately needs is structural induction, which discharges
- subgoals through inductive-hypothesis bindings, never through a
- name cycle; sound lemma chains are DAGs and pass unchanged. The
- type walk is fuel-capped and answers proof-relevant on exhaustion,
- so a pathological type errs toward checking, never toward silence.
 
   type-mentions-proof : CodexType, Integer -> Boolean
   type-mentions-proof (ty) (fuel) =
@@ -2390,7 +2381,8 @@ Section: Proof Acyclicity
     effect-exempt = False,
     scope-grants = [],
     chapter-grounds = mod.ground-effects,
-    dirty-slots = []
+    dirty-slots = [],
+    empty-lists = []
    })
    in let acc0 = deck-record (__list-with-capacity def-count)
    in let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
@@ -2405,7 +2397,10 @@ Section: Proof Acyclicity
    in let bounded-st = check-bounded-decls cycle-st (mod.defs) (mod.annotations)
    in let proof-st = check-proof-cycles (mod.defs) (result.types) bounded-st
    in let grammar-st = check-proof-grammar (mod.defs) (result.types) proof-st
-   in __record-set result "state" (check-stale-reads (mod.defs) grammar-st)
+   in let final-st = check-stale-reads (mod.defs) grammar-st
+   in if list-length (mod.class-defs) == 0 & list-length (mod.instance-defs) == 0
+      then __record-set result "state" final-st
+      else __record-set result "state" (__record-set final-st "bag" (bag-merge-all [final-st.bag, method-origin-bag mod]))
 
   add-diagnostics-to-state : UnificationState, List Diagnostic, Integer, Integer -> UnificationState
   add-diagnostics-to-state (st) (diags) (i) (len) =
@@ -2475,13 +2470,37 @@ Section: Proof Acyclicity
 
   register-class-methods : UnificationState, TypeEnv, List TypeBinding, List AClassDef, List AInstanceDef -> LetBindResult
   register-class-methods (st) (env) (tdm) (cds) (ids) =
-   let bound = register-cm-bindings st env tdm cds ids 0 (list-length cds)
+   let bound = register-cm-bindings st (bind-method-local-dicts env cds) tdm cds ids 0 (list-length cds)
    in let mnames = collect-multi-method-names cds ids 0 (list-length cds) []
    in if list-length mnames == 0 then bound
       else LetBindResult {
        state = bound.state,
        env = env-bind (bound.env) "__classmethods" (deck-record (RecordTy (Name { value = "__classmethods" }) [] (for n in mnames -> deck-record (RecordField { name = Name { value = n }, type-val = int-ty-default }))))
       }
+
+  bind-method-local-dicts : TypeEnv, List AClassDef -> TypeEnv
+  bind-method-local-dicts (env) (cds) =
+   let dicts = method-local-dicts cds 0 []
+   in if list-length dicts == 0 then env
+      else env-bind env "__method-local" (deck-record (RecordTy (Name { value = "__method-local" }) [] dicts))
+
+  method-local-dicts : List AClassDef, Integer, List RecordField -> List RecordField
+  method-local-dicts (cds) (i) (acc) =
+   if i >= list-length cds then acc
+   else let cd = list-at cds i
+   in let fields = method-local-fields (cd.methods) (cd.method-binders) 0 []
+   in let next = if list-length fields == 0 | list-length (cd.dict-schema) == 0 then acc
+      else when list-at (cd.dict-schema) 0
+       is ARecordTypeDef (n) (ps) (fs) (m) (s) -> list-push acc (deck-record (RecordField { name = n, type-val = deck-record (RecordTy n [] fields) }))
+       is otherwise -> acc
+   in method-local-dicts cds (i + 1) next
+
+  method-local-fields : List AEffectOpDef, List (List Text), Integer, List RecordField -> List RecordField
+  method-local-fields (ms) (binders) (i) (acc) =
+   if i >= list-length ms | i >= list-length binders then acc
+   else let next = if list-length (list-at binders i) == 0 then acc
+      else list-push acc (deck-record (RecordField { name = Name { value = (list-at ms i).name.value & "-impl" }, type-val = int-ty-default }))
+   in method-local-fields ms binders (i + 1) next
 
   count-instances-for : List AInstanceDef, Text, Integer, Integer, Integer -> Integer
   count-instances-for (ids) (cname) (i) (len) (acc) =
@@ -2553,7 +2572,8 @@ Section: Proof Acyclicity
     effect-exempt = False,
     scope-grants = [],
     chapter-grounds = st.chapter-grounds,
-    dirty-slots = []
+    dirty-slots = [],
+    empty-lists = []
    })
    in deck-record (ChapterResult {
     types = acc,
@@ -2685,6 +2705,7 @@ Section: Check Batches
    in let __seq = cb.cb-acc-len0 = list-length acc
    in let __seq = cb.cb-bag0 = address-of (st.bag)
    in let __seq = st.dirty-slots = __list-with-capacity 4096
+   in let __seq = st.empty-lists = __list-with-capacity 64
    in 0
 
   check-batch-due : CheckBatch -> Boolean
@@ -3531,11 +3552,6 @@ Section: Linearity Checking
    else let st2 = check-linear-params def env (def.params) (list-at (def.declared-type) 0) 0 st
    in check-mints def env True (def.body) st2
 
- A range on a base that cannot carry one resolves to ErrorTy, and ErrorTy
- unifies with everything, so without this walk the declaration compiles and
- the bound is silently ignored. lint-narrowing-check cannot catch it either:
- it opens on IntegerTy and falls through for anything else, so an ErrorTy
- parameter is not merely unbounded, it is unchecked.
 
   check-bounded-bases-def : ADef, List TypeBinding, UnificationState -> UnificationState
   check-bounded-bases-def (def) (tdm) (st) =
@@ -4050,13 +4066,6 @@ Section: Stale Read After In-Place Update
    in let news = rhs-consumes summary rhs
    in cv-add-skip removed news bindname 0 (list-length news)
 
- Arguments to one call evaluate LEFT TO RIGHT, measured 2026-08-18 rather than
- assumed: `two (addn s 10) (s.n)` answers 1111 under left-to-right and 1101
- under right-to-left, and it answers 1111. So an argument that mutates has
- already run by the time an argument to its right is read, and a mutation does
- not have to be bound by a `let` to be visible. This walks the spine of the
- already-evaluated part of an application and collects what its arguments
- mutated.
 
   arg-mutations : List MutatorEntry, AExpr -> List ConsumedVar
   arg-mutations (summary) (e) =

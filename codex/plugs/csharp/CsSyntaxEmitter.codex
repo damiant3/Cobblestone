@@ -1,0 +1,328 @@
+Chapter: CSharp Syntax Emitter
+  cites Foreword chapter StringUtils
+
+Section: Text
+
+  cst-join : (a -> Text), List a, Text -> Text
+  cst-join (render) (items) (separator) =
+    text-concat-list (cst-parts render items separator 0 (list-length items) [])
+
+  cst-parts : (a -> Text), List a, Text, Integer, Integer, List Text -> List Text
+  cst-parts (render) (items) (separator) (i) (count) (parts) =
+    if i >= count then parts
+    else cst-parts render items separator (i + 1) count (list-push parts ((if i == 0 then "" else separator) & render (list-at items i)))
+
+  cst-indent : Integer -> Text
+  cst-indent (depth) = if depth <= 0 then "" else "    " & cst-indent (depth - 1)
+
+  cst-quote : Text -> Text
+  cst-quote (value) = "\"" & text-concat-list (cst-escape value 0 (text-length value) []) & "\""
+
+  cst-escape : Text, Integer, Integer, List Text -> List Text
+  cst-escape (value) (i) (count) (parts) =
+    if i >= count then parts
+    else let ch = char-to-text (char-at value i)
+    in let escaped = if ch == "\"" then "\\\"" else if ch == "\\" then "\\\\"
+      else if ch == "\n" then "\\n" else ch
+    in cst-escape value (i + 1) count (list-push parts escaped)
+
+  cst-type : CstType -> Text
+  cst-type (ty) = when ty
+    is CstNamedType (name) (args) -> name & cst-type-args args
+    is CstArrayType (element) (rank) -> cst-type element & "[" & cst-commas (rank - 1) & "]"
+    is CstNullableType (element) -> cst-type element & "?"
+    is CstAliasType (alias) (element) -> alias & "::" & cst-type element
+    is CstInferredType -> "var"
+
+  cst-commas : Integer -> Text
+  cst-commas (count) = if count <= 0 then "" else "," & cst-commas (count - 1)
+
+  cst-type-args : List CstType -> Text
+  cst-type-args (args) = if list-length args == 0 then "" else "<" & cst-join cst-type args ", " & ">"
+
+  cst-modifier : CstModifier -> Text
+  cst-modifier (modifier) = when modifier
+    is CstPublic -> "public"
+    is CstPrivate -> "private"
+    is CstInternal -> "internal"
+    is CstProtected -> "protected"
+    is CstStatic -> "static"
+    is CstReadonly -> "readonly"
+    is CstConst -> "const"
+    is CstSealed -> "sealed"
+    is CstPartial -> "partial"
+    is CstVirtual -> "virtual"
+    is CstOverride -> "override"
+    is CstAbstract -> "abstract"
+    is CstExtern -> "extern"
+    is CstUnsafe -> "unsafe"
+    is CstAsync -> "async"
+    is CstNew -> "new"
+    is CstRef -> "ref"
+    is CstOut -> "out"
+    is CstIn -> "in"
+    is CstParams -> "params"
+
+  cst-modifiers : List CstModifier -> Text
+  cst-modifiers (mods) = if list-length mods == 0 then "" else cst-join cst-modifier mods " " & " "
+
+  cst-number-suffix : CstNumberKind -> Text
+  cst-number-suffix (kind) = when kind
+    is CstInt -> ""
+    is CstUInt -> "U"
+    is CstLong -> "L"
+    is CstULong -> "UL"
+    is CstFloat -> "f"
+    is CstDouble -> "d"
+    is CstDecimal -> "m"
+
+Section: Expressions
+
+  cst-expr : CstExpr -> Text
+  cst-expr (expr) = when expr
+    is CstName (name) (args) -> name & cst-type-args args
+    is CstString (value) -> cst-quote value
+    is CstCharacter (value) -> "((char)" & integer-to-text value & ")"
+    is CstNumber (value) (kind) -> value & cst-number-suffix kind
+    is CstBoolean (value) -> if value then "true" else "false"
+    is CstNull -> "null"
+    is CstThis -> "this"
+    is CstBase -> "base"
+    is CstMemberAccess (target) (name) (args) -> cst-expr target & "." & name & cst-type-args args
+    is CstCall (target) (args) -> cst-expr target & "(" & cst-join cst-argument args ", " & ")"
+    is CstIndex (target) (args) -> cst-expr target & "[" & cst-join cst-argument args ", " & "]"
+    is CstObjectNew (ty) (args) (values) -> "new " & cst-type ty & "(" & cst-join cst-argument args ", " & ")" & cst-init-suffix values
+    is CstArrayNew (ty) (sizes) (values) (initialized) ->
+      "new " & cst-type ty & "[" & cst-join cst-expr sizes ", " & "]" & (if initialized then cst-initializer values else "")
+    is CstImplicitArray (values) -> "new [] " & cst-initializer values
+    is CstInitializer (values) -> cst-initializer values
+    is CstUnary (op) (value) -> cst-unary op value
+    is CstBinary (op) (left) (right) -> "(" & cst-expr left & " " & cst-binary-op op & " " & cst-expr right & ")"
+    is CstAssignment (op) (left) (right) -> cst-expr left & " " & cst-assign-op op & " " & cst-expr right
+    is CstConditional (condition) (yes) (no) -> "(" & cst-expr condition & " ? " & cst-expr yes & " : " & cst-expr no & ")"
+    is CstCast (ty) (value) -> "((" & cst-type ty & ")" & cst-expr value & ")"
+    is CstAs (value) (ty) -> "(" & cst-expr value & " as " & cst-type ty & ")"
+    is CstIs (value) (ty) -> "(" & cst-expr value & " is " & cst-type ty & ")"
+    is CstTypeOf (ty) -> "typeof(" & cst-type ty & ")"
+    is CstTypeReference (ty) -> cst-type ty
+    is CstDefault (ty) -> "default(" & cst-type ty & ")"
+    is CstChecked (check) (value) -> (if check then "checked(" else "unchecked(") & cst-expr value & ")"
+    is CstLambda (parameters) (body) -> "(" & cst-join cst-lambda-param parameters ", " & ") => " & cst-expr body
+    is CstLambdaBlock (parameters) (body) -> "(" & cst-join cst-lambda-param parameters ", " & ") => " & cst-stmt 0 body
+    is CstParenthesized (value) -> "(" & cst-expr value & ")"
+
+  cst-initializer : List CstExpr -> Text
+  cst-initializer (values) = " { " & cst-join cst-expr values ", " & " }"
+
+  cst-init-suffix : List CstExpr -> Text
+  cst-init-suffix (values) = if list-length values == 0 then "" else cst-initializer values
+
+  cst-argument : CstArgument -> Text
+  cst-argument (argument) = (if argument.ca-name == "" then "" else argument.ca-name & ": ")
+    & cst-modifiers (argument.ca-mode) & cst-expr (argument.ca-value)
+
+  cst-parameter : CstParameter -> Text
+  cst-parameter (parameter) = cst-modifiers (parameter.cp-modifiers) & cst-type (parameter.cp-type)
+    & " " & parameter.cp-name & cst-default-value (parameter.cp-default)
+
+  cst-lambda-param : CstParameter -> Text
+  cst-lambda-param (parameter) = when parameter.cp-type
+    is CstInferredType -> cst-modifiers (parameter.cp-modifiers) & parameter.cp-name
+    is otherwise -> cst-parameter parameter
+
+  cst-default-value : Maybe CstExpr -> Text
+  cst-default-value (value) = when value
+    is None -> ""
+    is Just (expr) -> " = " & cst-expr expr
+
+  cst-variable : CstVariable -> Text
+  cst-variable (variable) = variable.cv-name & cst-default-value (variable.cv-value)
+
+  cst-unary : CstUnaryOp, CstExpr -> Text
+  cst-unary (op) (value) = when op
+    is CstNot -> "!(" & cst-expr value & ")"
+    is CstNegate -> "-(" & cst-expr value & ")"
+    is CstPositive -> "+(" & cst-expr value & ")"
+    is CstComplement -> "~(" & cst-expr value & ")"
+    is CstPreIncrement -> "++" & cst-expr value
+    is CstPreDecrement -> "--" & cst-expr value
+    is CstPostIncrement -> cst-expr value & "++"
+    is CstPostDecrement -> cst-expr value & "--"
+
+  cst-binary-op : CstBinaryOp -> Text
+  cst-binary-op (op) = when op
+    is CstAdd -> "+"
+    is CstSubtract -> "-"
+    is CstMultiply -> "*"
+    is CstDivide -> "/"
+    is CstRemainder -> "%"
+    is CstEqual -> "=="
+    is CstNotEqual -> "!="
+    is CstLess -> "<"
+    is CstLessEqual -> "<="
+    is CstGreater -> ">"
+    is CstGreaterEqual -> ">="
+    is CstAnd -> "&&"
+    is CstOr -> "||"
+    is CstBitAnd -> "&"
+    is CstBitOr -> "|"
+    is CstBitXor -> "^"
+    is CstShiftLeft -> "<<"
+    is CstShiftRight -> ">>"
+    is CstCoalesce -> "??"
+
+  cst-assign-op : CstAssignOp -> Text
+  cst-assign-op (op) = when op
+    is CstAssign -> "="
+    is CstAddAssign -> "+="
+    is CstSubtractAssign -> "-="
+    is CstMultiplyAssign -> "*="
+    is CstDivideAssign -> "/="
+    is CstAndAssign -> "&="
+    is CstOrAssign -> "|="
+    is CstXorAssign -> "^="
+
+Section: Statements
+
+  cst-stmt : Integer, CstStmt -> Text
+  cst-stmt (depth) (statement) =
+    let indent = cst-indent depth
+    in when statement
+      is CstBlock (statements) -> indent & "{\n" & cst-join (cst-stmt (depth + 1)) statements "" & indent & "}\n"
+      is CstExpression (value) -> indent & cst-expr value & ";\n"
+      is CstVariables (mods) (ty) (variables) -> indent & cst-modifiers mods & cst-type ty & " " & cst-join cst-variable variables ", " & ";\n"
+      is CstReturn (value) -> indent & "return" & cst-optional-expr value & ";\n"
+      is CstThrow (value) -> indent & "throw" & cst-optional-expr value & ";\n"
+      is CstIf (condition) (yes) (no) -> indent & "if (" & cst-expr condition & ")\n" & cst-controlled depth yes & cst-else depth no
+      is CstFor (init) (condition) (updates) (body) -> indent & "for (" & cst-inline-stmt init & ";" & cst-optional-expr condition & "; " & cst-join cst-expr updates ", " & ")\n" & cst-controlled depth body
+      is CstForEach (ty) (name) (values) (body) -> indent & "foreach (" & cst-type ty & " " & name & " in " & cst-expr values & ")\n" & cst-controlled depth body
+      is CstWhile (condition) (body) -> indent & "while (" & cst-expr condition & ")\n" & cst-controlled depth body
+      is CstDo (body) (condition) -> indent & "do\n" & cst-controlled depth body & indent & "while (" & cst-expr condition & ");\n"
+      is CstUsing (resource) (body) -> indent & "using (" & cst-inline-stmt resource & ")\n" & cst-controlled depth body
+      is CstTry (body) (catches) (final) -> indent & "try\n" & cst-stmt depth body & cst-join (cst-catch depth) catches "" & cst-finally depth final
+      is CstSwitch (value) (sections) -> indent & "switch (" & cst-expr value & ")\n" & indent & "{\n" & cst-join (cst-switch-section (depth + 1)) sections "" & indent & "}\n"
+      is CstBreak -> indent & "break;\n"
+      is CstContinue -> indent & "continue;\n"
+      is CstEmpty -> indent & ";\n"
+
+  cst-controlled : Integer, CstStmt -> Text
+  cst-controlled (depth) (body) = when body
+    is CstBlock (statements) -> cst-stmt depth body
+    is otherwise -> cst-stmt depth (CstBlock [body])
+
+  cst-inline-stmt : CstStmt -> Text
+  cst-inline-stmt (statement) = when statement
+    is CstVariables (mods) (ty) (variables) -> cst-modifiers mods & cst-type ty & " " & cst-join cst-variable variables ", "
+    is CstExpression (value) -> cst-expr value
+    is CstEmpty -> ""
+    is otherwise -> "__invalid_control_initializer__"
+
+  cst-optional-expr : Maybe CstExpr -> Text
+  cst-optional-expr (value) = when value
+    is None -> ""
+    is Just (expr) -> " " & cst-expr expr
+
+  cst-else : Integer, Maybe CstStmt -> Text
+  cst-else (depth) (body) = when body
+    is None -> ""
+    is Just (statement) -> cst-indent depth & "else\n" & cst-controlled depth statement
+
+  cst-finally : Integer, Maybe CstStmt -> Text
+  cst-finally (depth) (body) = when body
+    is None -> ""
+    is Just (statement) -> cst-indent depth & "finally\n" & cst-stmt depth statement
+
+  cst-catch : Integer, CstCatch -> Text
+  cst-catch (depth) (clause) =
+    let declaration = when clause.cc-type
+      is None -> ""
+      is Just (ty) -> " (" & cst-type ty & (if clause.cc-name == "" then "" else " " & clause.cc-name) & ")"
+    in let filter = when clause.cc-filter
+      is None -> ""
+      is Just (expr) -> " when (" & cst-expr expr & ")"
+    in cst-indent depth & "catch" & declaration & filter & "\n" & cst-stmt depth (clause.cc-body)
+
+  cst-switch-section : Integer, CstSwitchSection -> Text
+  cst-switch-section (depth) (section) = cst-join (cst-case depth) (section.cs-labels) "" & cst-join (cst-stmt (depth + 1)) (section.cs-body) ""
+
+  cst-case : Integer, Maybe CstExpr -> Text
+  cst-case (depth) (label) = cst-indent depth & (when label
+    is None -> "default:\n"
+    is Just (value) -> "case " & cst-expr value & ":\n")
+
+Section: Members
+
+  cst-attribute : CstAttribute -> Text
+  cst-attribute (attribute) = "[" & cst-type (attribute.cat-type) & "(" & cst-join cst-expr (attribute.cat-args) ", " & ")]\n"
+
+  cst-attributes : Integer, List CstAttribute -> Text
+  cst-attributes (depth) (attributes) = cst-join (cst-indented-attribute depth) attributes ""
+
+  cst-indented-attribute : Integer, CstAttribute -> Text
+  cst-indented-attribute (depth) (attribute) = cst-indent depth & cst-attribute attribute
+
+  cst-type-param-name : CstTypeParameter -> Text
+  cst-type-param-name (parameter) = parameter.ctp-name
+
+  cst-constraint : CstConstraint -> Text
+  cst-constraint (constraint) = when constraint
+    is CstClassConstraint -> "class"
+    is CstStructConstraint -> "struct"
+    is CstNewConstraint -> "new()"
+    is CstTypeConstraint (ty) -> cst-type ty
+
+  cst-constraints : CstTypeParameter -> Text
+  cst-constraints (parameter) = if list-length (parameter.ctp-constraints) == 0 then ""
+    else " where " & parameter.ctp-name & " : " & cst-join cst-constraint (parameter.ctp-constraints) ", "
+
+  cst-method-signature : CstMethodSpec -> Text
+  cst-method-signature (method) = cst-type (method.cm-result) & " " & method.cm-name
+    & (if list-length (method.cm-type-params) == 0 then "" else "<" & cst-join cst-type-param-name (method.cm-type-params) ", " & ">")
+    & "(" & cst-join cst-parameter (method.cm-params) ", " & ")"
+    & cst-join cst-constraints (method.cm-type-params) ""
+
+  cst-class-open : Integer, CstClassHead -> Text
+  cst-class-open (depth) (head) = cst-indent depth & cst-modifiers (head.ch-modifiers) & "class " & head.ch-name
+    & (if list-length (head.ch-bases) == 0 then "" else " : " & cst-join cst-type (head.ch-bases) ", ")
+    & "\n" & cst-indent depth & "{\n"
+
+  cst-member : Integer, CstMember -> Text
+  cst-member (depth) (member) =
+    let indent = cst-indent depth
+    in when member
+      is CstField (attributes) (mods) (ty) (variables) -> cst-attributes depth attributes & cst-stmt depth (CstVariables mods ty variables)
+      is CstMethod (method) -> cst-attributes depth (method.cm-attributes) & indent & cst-modifiers (method.cm-modifiers) & cst-method-signature method & (when method.cm-body
+        is None -> ";\n"
+        is Just (body) -> "\n" & cst-stmt depth body)
+      is CstConstructor (constructor) -> indent & cst-modifiers (constructor.cctor-modifiers) & constructor.cctor-name & "(" & cst-join cst-parameter (constructor.cctor-params) ", " & ")\n" & cst-stmt depth (constructor.cctor-body)
+      is CstDelegate (method) -> cst-attributes depth (method.cm-attributes) & indent & cst-modifiers (method.cm-modifiers) & "delegate " & cst-method-signature method & ";\n"
+      is CstClass (head) (members) -> cst-class-open depth head & cst-join (cst-member (depth + 1)) members "" & indent & "}\n"
+      is CstNamespace (name) (members) -> indent & "namespace " & name & "\n" & indent & "{\n" & cst-join (cst-member (depth + 1)) members "" & indent & "}\n"
+      is CstUsingNamespace (name) -> indent & "using " & name & ";\n"
+      is CstUsingAlias (name) (ty) -> indent & "using " & name & " = " & cst-type ty & ";\n"
+
+Section: Streaming
+
+  cst-namespace-open : Text -> Text
+  cst-namespace-open (name) = "namespace " & name & " {\n"
+
+  cst-close-scope : Text = "}\n"
+
+  cst-stream-class : CstClassHead, List (Integer -> CstMember), Integer -> [Console] Nothing
+  cst-stream-class (head) (factories) (depth) = act
+    print-uni (cst-class-open depth head)
+    cst-stream-members factories (list-length factories) 0 (depth + 1)
+    print-uni (cst-indent depth & "}\n")
+  end
+
+  cst-stream-members : List (Integer -> CstMember), Integer, Integer, Integer -> [Console] Nothing
+  cst-stream-members (factories) (count) (i) (depth) =
+    if i >= count then print-uni ""
+    else let mark = __heap-save
+    in let factory = list-at factories i
+    in let rendered = cst-member depth (factory 0)
+    in act
+      print-uni rendered
+      let restored = __heap-restore mark
+      in cst-stream-members factories count (i + 1) depth
+    end

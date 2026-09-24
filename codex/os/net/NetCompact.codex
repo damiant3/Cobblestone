@@ -1,0 +1,208 @@
+Chapter: NetCompact
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+
+Section: Deep Copy
+
+  nc-ints : List Integer -> List Integer
+  nc-ints (xs) = nc-ints-loop xs 0 (list-length xs) (__list-with-capacity (list-length xs))
+
+  nc-ints-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  nc-ints-loop (xs) (i) (n) (acc) =
+    if i >= n then acc else nc-ints-loop xs (i + 1) n (list-push acc (list-at xs i))
+
+  nc-frames : List (List Integer) -> List (List Integer)
+  nc-frames (fs) = nc-frames-loop fs 0 (list-length fs) (__list-with-capacity (list-length fs))
+
+  nc-frames-loop : List (List Integer), Integer, Integer, List (List Integer) -> List (List Integer)
+  nc-frames-loop (fs) (i) (n) (acc) =
+    if i >= n then acc else nc-frames-loop fs (i + 1) n (list-push acc (nc-ints (list-at fs i)))
+
+  nc-state : TcpState -> TcpState
+  nc-state (s) = when s
+    is TcpClosed -> TcpClosed
+    is TcpListening -> TcpListening
+    is TcpSynSent -> TcpSynSent
+    is TcpSynReceived -> TcpSynReceived
+    is TcpEstablished -> TcpEstablished
+    is TcpFinWait1 -> TcpFinWait1
+    is TcpFinWait2 -> TcpFinWait2
+    is TcpCloseWait -> TcpCloseWait
+    is TcpLastAck -> TcpLastAck
+    is TcpTimeWait -> TcpTimeWait
+
+  nc-conn : TcpConnection -> TcpConnection
+  nc-conn (c) = TcpConnection {
+    state = nc-state (c.state),
+    local-port = c.local-port,
+    remote-port = c.remote-port,
+    local-ip = nc-ints (c.local-ip),
+    remote-ip = nc-ints (c.remote-ip),
+    send-next = c.send-next,
+    recv-next = c.recv-next,
+    send-window = c.send-window
+  }
+
+  nc-arp-entries : List ArpEntry, Integer, Integer, List ArpEntry -> List ArpEntry
+  nc-arp-entries (es) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at es i
+    in nc-arp-entries es (i + 1) n (list-push acc (ArpEntry { ip = nc-ints (e.ip), mac = nc-ints (e.mac) }))
+
+  nc-arp : ArpCache -> ArpCache
+  nc-arp (a) = ArpCache {
+    entries = nc-arp-entries (a.entries) 0 (list-length (a.entries)) (__list-with-capacity (list-length (a.entries))),
+    count = a.count
+  }
+
+  nc-rexmit : List RexmitSeg, Integer, Integer, List RexmitSeg -> List RexmitSeg
+  nc-rexmit (q) (i) (n) (acc) =
+    if i >= n then acc
+    else let r = list-at q i
+    in nc-rexmit q (i + 1) n (list-push acc (RexmitSeg { rx-frame = nc-ints (r.rx-frame), rx-ack = r.rx-ack, rx-sent = r.rx-sent, rx-resent = r.rx-resent }))
+
+  nc-session : NetSession -> NetSession
+  nc-session (s) = NetSession {
+    local-mac = nc-ints (s.local-mac),
+    local-ip = nc-ints (s.local-ip),
+    gateway-ip = nc-ints (s.gateway-ip),
+    conn = nc-conn (s.conn),
+    arp = nc-arp (s.arp),
+    outbox = nc-frames (s.outbox),
+    rexmit-queue = nc-rexmit (s.rexmit-queue) 0 (list-length (s.rexmit-queue)) (__list-with-capacity (list-length (s.rexmit-queue))),
+    rexmit-rto = s.rexmit-rto,
+    rexmit-tries = s.rexmit-tries,
+    close-timer = s.close-timer,
+    now-ticks = s.now-ticks,
+    srtt = s.srtt,
+    rttvar = s.rttvar
+  }
+
+  nc-transport : TcpTransportState -> TcpTransportState
+  nc-transport (ts) = nc-transport-gen ts (ts.gen)
+
+  nc-transport-gen : TcpTransportState, Integer -> TcpTransportState
+  nc-transport-gen (ts) (g) = TcpTransportState {
+    session = nc-session (ts.session),
+    recv-base = ts.recv-base,
+    recv-len = ts.recv-len,
+    recv-cap = ts.recv-cap,
+    messages-sent = ts.messages-sent,
+    messages-received = ts.messages-received,
+    arena-base = ts.arena-base,
+    gen = g
+  }
+
+Section: Arenas
+
+ A set's header is 16 bytes at arena-base: the generation (32 bits at 0),
+ the index of the arena written last (32 bits at 4, 3 = none yet), and the
+ next free set (64 bits at 8). 128 KiB per arena is 1.2 times the copy of
+ the largest session this stack can hold, 8 retransmit frames of 1,514
+ bytes and 64 ARP entries, measured at 106,584 bytes on 2026-09-23 by the
+ `full` fixture in `net-compact-arena`; a larger copy is refused by
+ transport-compact, not overrun.
+
+  net-arena-bytes : Integer = 131072
+
+  net-arena-header : Integer = 16
+
+  net-arena-none : Integer = 3
+
+  nc-arena-at : Integer, Integer -> Integer
+  nc-arena-at (base) (i) = base + net-arena-header + i * net-arena-bytes
+
+Section: The Pool
+
+ The free list head is the x86-64 process-table word at offset 40
+ (`proc-net-pool-offset`, table base 20480, 256 bytes per entry, in
+ `codex/compiler/Emit/X86_64Boot.codex`), which spawn zeroes.
+
+  net-proc-table : Integer = 20480
+
+  net-proc-entry-bytes : Integer = 256
+
+  net-proc-pool-offset : Integer = 40
+
+  nc-pool-cell : Integer -> Integer
+  nc-pool-cell (pid) = net-proc-table + pid * net-proc-entry-bytes + net-proc-pool-offset
+
+  nc-set-acquire : Integer -> Integer
+  nc-set-acquire (cell) =
+    let head = peek-qword cell 0
+    in if head /= 0 then
+      let unlinked = poke-qword cell 0 (peek-qword head 8)
+      in let l = poke-32 head 4 net-arena-none
+      in let z = poke-qword head 8 0
+      in head
+    else let base = __heap-save
+      in let adv = __heap-advance (net-arena-header + 3 * net-arena-bytes)
+      in let g = poke-32 base 0 0
+      in let l = poke-32 base 4 net-arena-none
+      in let z = poke-qword base 8 0
+      in base
+
+  nc-set-release : Integer -> Integer
+  nc-set-release (base) =
+    let cell = nc-pool-cell process-get-pid
+    in let g = poke-32 base 0 (peek-32 base 0 + 1)
+    in let linked = poke-qword base 8 (peek-qword cell 0)
+    in poke-qword cell 0 base
+
+  nc-set-target : Integer -> Integer
+  nc-set-target (base) =
+    let last = peek-32 base 4
+    in if last == net-arena-none then 0 else int-mod (last + 1) 3
+
+  nc-set-commit : Integer, Integer -> Integer
+  nc-set-commit (base) (target) =
+    let g = poke-32 base 0 (peek-32 base 0 + 1)
+    in poke-32 base 4 target
+
+  transport-arenas : TcpTransportState -> TcpTransportState
+  transport-arenas (ts) =
+    if ts.arena-base /= 0 then ts
+    else let base = nc-set-acquire (nc-pool-cell process-get-pid)
+    in TcpTransportState { session = ts.session, recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent, messages-received = ts.messages-received, arena-base = base, gen = peek-32 base 0 }
+
+  transport-release : TcpTransportState -> TcpTransportState
+  transport-release (ts) =
+    if ts.arena-base == 0 then ts
+    else if transport-stale ts then ts
+    else let out = nc-transport ts
+    in let released = nc-set-release (ts.arena-base)
+    in TcpTransportState { session = out.session, recv-base = out.recv-base, recv-len = out.recv-len, recv-cap = out.recv-cap, messages-sent = out.messages-sent, messages-received = out.messages-received, arena-base = 0, gen = 0 }
+
+ A loop compacts once this much has been allocated above its entry mark:
+ one arena, so the garbage a loop carries stays under one arena plus the
+ cost of the frame that crossed it.
+
+  net-compact-bytes : Integer = 131072
+
+  transport-compact-past : TcpTransportState, Integer -> TcpTransportState
+  transport-compact-past (ts) (mark) =
+    if __heap-save - mark > net-compact-bytes then transport-compact ts mark else ts
+
+  transport-stale : TcpTransportState -> Boolean
+  transport-stale (ts) = ts.arena-base /= 0 & ts.gen < peek-32 (ts.arena-base) 0
+
+  transport-compact : TcpTransportState, Integer -> TcpTransportState
+  transport-compact (ts) (mark) =
+    if ts.arena-base == 0 then ts
+    else let h0 = __heap-save
+    in let probe = nc-transport ts
+    in let size = __heap-save - h0
+    in if size > net-arena-bytes then let dropped = __heap-restore h0 in ts
+    else let base = ts.arena-base
+    in let g = peek-32 base 0 + 1
+    in let last = peek-32 base 4
+    in let target = if last == net-arena-none then 0 else int-mod (last + 1) 3
+    in let into = __heap-restore (nc-arena-at base target)
+    in let copy = nc-transport-gen ts g
+    in let back = __heap-restore mark
+    in let wg = poke-32 base 0 g
+    in let wl = poke-32 base 4 target
+    in copy
+
+Page 1

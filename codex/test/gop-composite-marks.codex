@@ -1,0 +1,95 @@
+Chapter: GopCompositeMarks
+  cites Foreword chapter Console
+  cites Works chapter GopDraw
+  cites Works chapter GopComposite
+  cites Works chapter GopFont
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites Kernel chapter BitmapFont
+
+ The checked, invalid and busy marks against a plain button. Each flag alone
+ changes pixels, and every pixel it changes lies in its own region of the
+ border box: invalid the bottom two rows, checked the four by four square
+ inset in the top right, busy the top row's left third. All three together
+ with focus and hover change each region, so the combination has a picture.
+
+ THE REGION CHECK IS THE CONTROL: a mark drawn anywhere else, or a flag that
+ also moved the style slot, changes pixels outside its region and fails.
+
+Section: Geometry
+
+  cm-w : Integer = 200
+  cm-h : Integer = 40
+  cm-cells : Integer = 8000
+  cm-bytes : Integer = 32000
+
+Section: Counting
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-32 b i 0 in zero-fill b (i + 4) n
+
+  changed-at : Integer, Integer, Integer -> Integer
+  changed-at (a) (b) (i) = if peek-32 a (i * 4) /= peek-32 b (i * 4) then 1 else 0
+
+  count-changed : Integer, Integer, Integer, Integer, Integer -> Integer
+  count-changed (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else count-changed a b (i + 1) n (acc + changed-at a b i)
+
+  inside : LayoutRect, Integer, Integer -> Boolean
+  inside (r) (x) (y) = x >= r.lr-x & x < r.lr-x + r.lr-w & y >= r.lr-y & y < r.lr-y + r.lr-h
+
+  count-in : Integer, Integer, LayoutRect, Integer, Integer -> Integer
+  count-in (a) (b) (r) (i) (acc) =
+    if i >= cm-cells then acc
+    else let hit = if inside r (int-mod i cm-w) (i / cm-w) then changed-at a b i else 0
+    in count-in a b r (i + 1) (acc + hit)
+
+  yn : Boolean -> Text
+  yn (v) = if v then "PASS" else "FAIL"
+
+Section: Trees
+
+  cm-btn : Integer -> WidgetNode
+  cm-btn (flags) = widget-panel "root" DirColumn 0 [widget-set-flags (widget-button "b" "OK") flags]
+
+  cm-paint : Integer, CbfFont, Theme, Integer -> WidgetNode
+  cm-paint (buf) (font) (th) (flags) =
+    let z = zero-fill buf 0 cm-bytes
+    in comp-render buf cm-w cm-h font gfont-none (cm-btn flags) th cm-w cm-h 1
+
+  cm-report : Text, Integer, Integer, LayoutRect -> [Console] Nothing
+  cm-report (name) (a) (b) (region) =
+    let all = count-changed a b 0 cm-cells 0
+    in let own = count-in a b region 0 0
+    in print-line-uni (name & " changes " & show all & ", all in its region: " & yn (all > 0 & own == all))
+
+Section: Main
+
+  opening : [Console] Nothing = act
+    let font = cbf-init
+    in let th = theme-terminal
+    in let base = __heap-save
+    in let adv = __heap-advance (2 * cm-bytes + 256)
+    in let subj = base + cm-bytes
+    in let plain = cm-paint base font th 0
+    in let kid = list-at (plain.wn-children) 0
+    in let r = comp-border-box (kid.wn-bounds) (widget-resolve-style kid th)
+    in let low = layout-rect (r.lr-x) (r.lr-y + r.lr-h - 2) (r.lr-w) 2
+    in let mark = layout-rect (r.lr-x + r.lr-w - 6) (r.lr-y + 2) 4 4
+    in let bar = layout-rect (r.lr-x) (r.lr-y) (r.lr-w / 3) 1
+    in act
+      let p1 = cm-paint subj font th flag-invalid
+      in cm-report "invalid" base subj low
+      let p2 = cm-paint subj font th flag-checked
+      in cm-report "checked" base subj mark
+      let p3 = cm-paint subj font th flag-busy
+      in cm-report "busy" base subj bar
+      let p4 = cm-paint base font th flag-hovered
+      in let p5 = cm-paint subj font th (flag-hovered + flag-focused + flag-checked + flag-invalid + flag-busy)
+      in print-line-uni ("all together over hover marks each region: " & yn (count-in base subj low 0 0 > 0 & count-in base subj mark 0 0 > 0 & count-in base subj bar 0 0 > 0))
+    end
+  end

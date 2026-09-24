@@ -38,64 +38,26 @@ Gather, with tools (do not answer from memory):
    so instead of printing the pre-compaction number.
 
    The window is **1,000,000** for every model the fleet runs except
-   haiku, which is 200,000. Getting the window wrong is its own trap:
-   reading a model suffix wrong once put an agent 532K deep at "266
-   per cent".
+   haiku, which is 200,000.
 
    AgentGrid shows the same number in its UI and its source is the
    authority if the transcript format ever moves:
    `D:\Projects\AgentGrid\AgentGrid\Services\ContextService.cs`.
 
-   **THE HARNESS SHOWS A SECOND NUMBER AND IT IS NOT THIS ONE.** The
-   session carries a `total_tokens` figure that counts DOWN from a
-   number in the millions. That is a CUMULATIVE BUDGET for the whole
-   session, not the context window, and the two are unrelated: work
-   already summarised out of context still spends the budget. Reading
-   it as context understates by roughly the number of turns you have
-   taken. Measured 2026-09-02 (fester): the budget said ~13.99M of 15M
-   left and the agent reported "context 6%" to the commander twice,
-   while the transcript said 697,660 of 1,000,000 -- **69.8 per cent
-   used, and one lane-hour from Damian's 75 per cent handoff
-   trigger**. The command above is the only number to quote, and it
-   errs in neither direction because it is not an estimate at all.
-
-   **Why this replaced the old rule.** On 2026-07-28 an agent measured
-   33.9 per cent used, 660k free, having spent the whole session
-   telling the human it was "nearly out of context" and "critically
-   low", and having declined a unit of work partly on that basis. A
-   length-based guess is not evidence, and it errs toward wrapping
-   early, which is the expensive direction: it spends a human's
-   attention on a handoff that was not needed.
+   **The harness shows a second number, and it is not this one.** The
+   session carries a `total_tokens` figure that counts down from a
+   number in the millions. That is a cumulative budget for the whole
+   session, not the context window: work already summarised out of
+   context still spends the budget, so reading it as context understates
+   badly. The command above is the only number to quote.
 
 ## Step 2 -- Decide
 
-Size the NEXT natural unit of work (one campaign stage, one CL, one
-investigation -- not the whole remaining scope). Estimate its context need
-including gates and their outputs, then apply the rule:
-
-    continue only if: (estimated need x 1.5) + 40k wrap reserve < free
-
-The 1.5 covers debugging surprises; the 40k reserve guarantees the
-handoff itself is never squeezed. If the next unit does not fit,
-WRAP. Do not start work you cannot both finish and hand off.
-
-**Below 70 per cent MEASURED, the answer is CONTINUE (Damian, 2026-09-08:
+**Below 70 per cent measured, the answer is continue (Damian, 2026-09-08:
 "58% is not enough action on the context we load at init; agent estimates
-of token spend are almost always very much over").** Your estimate of the
-next unit is the number that runs high, so under 70 the formula above is
-not consulted: pick a unit that fits 300k free (every unit landed on
-2026-09-08 did) and work. A wrap you start under 70 is cancelled by root
+of token spend are almost always very much over").** Pick a unit that
+fits 300k free and work. A wrap you start under 70 is cancelled by root
 and the session resumed. At 70 measured, or when root orders it, wrap.
-
-Calibration warning (2026-07-08): a session wrapped at 55% used --
-449k free -- on a length-based guess. The multipliers above already
-carry the safety margin; do not stack a conservative context
-estimate on top of them. With the measured number in hand, trust the
-formula: a typical campaign leg (reads + edits + two gate builds +
-battery) fits in 100-150k, so wrapping is only justified under
-~250k free. Both recorded failures ran the same way -- 55 per cent
-used with 449k free, and 33.9 per cent used with 660k free -- so the
-error has never once been in the direction of continuing too long.
 
 State the decision and the reasoning in one short paragraph to the
 user. If continuing, also state the wrap trigger ("after X submits I
@@ -120,13 +82,13 @@ Order matters; shelve before anything else touches the tree.
 3. **Verify seeds.** If any seed was installed or submitted this
    session, print the DEPOT digest (`p4 print -q -o tmp <seed path>`
    then hash) and record it. Workspace hashes do not count.
-4. **Update the campaign memory file** (or create one): a RESTING
-   STATE section at the top with -- state of the world in two
-   sentences; CL numbers submitted/shelved with one-line contents;
-   seed digests; battery baseline; the exact next action with its
-   resume recipe (unshelve which CL, run which command first); every
-   trap hit this session worth not rediscovering. Update the
-   MEMORY.md index hook if the description changed.
+4. **Write the resting state where the next session reads it, not in
+   memory.** Your CurrentPlan row (NOW and NEXT, replaced) and
+   `status.json` carry the state of the world, the CLs shelved with their
+   contents, and the exact next action with its resume recipe. A memory
+   file carries conduct only (how to work), never lane state, CL numbers
+   or seed digests (R-HISTORY). Every trap hit this session goes to a
+   `LESSONS.md` row or the doc that owns it.
 5. **Move everything out of `docs/Agents/<agent>-workplan.md` and leave
    it EMPTY.** That file is scratch for the session that is ending, so
    nothing may survive in it. Each thing goes to exactly one home:
@@ -152,8 +114,9 @@ Order matters; shelve before anything else touches the tree.
 
 - The handoff is complete only when a fresh session could resume
   from MEMORY.md + CurrentPlan + your (empty) workplan alone, with
-  zero conversation context. Test your writeup against that standard
-  before finishing. If resuming would need something only your
+  zero conversation context. Test it by R-NAIVE: give a fresh subagent
+  only the task "resume this lane", not the writeup, and act on where it
+  gets stuck. If resuming would need something only your
   workplan held, that thing was never moved to its owning doc and the
   handoff is not done.
 - Wrapping with work shelved and documented is success, not failure.

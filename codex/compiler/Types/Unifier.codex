@@ -23,6 +23,11 @@ Section: State
    ty : CodexType
   }
 
+  EmptyListSite = record {
+   ty : CodexType,
+   span : SourceSpan
+  }
+
   mutable UnificationState = record {
    substitutions : List CodexType,
    row-substitutions : List EffectRow,
@@ -33,7 +38,8 @@ Section: State
    effect-exempt : Boolean,
    scope-grants : List EffectLabel,
    chapter-grounds : List Text,
-   dirty-slots : List Integer
+   dirty-slots : List Integer,
+   empty-lists : List EmptyListSite
   }
 
 Section: Construction
@@ -49,7 +55,8 @@ Section: Construction
     effect-exempt = False,
     scope-grants = [],
     chapter-grounds = [],
-    dirty-slots = []
+    dirty-slots = [],
+    empty-lists = []
    }
 
 Section: Fresh Variables
@@ -130,12 +137,20 @@ Section: Expr Types
  merge-sorted once at the check-lower boundary via sort-expr-types
  (O(N log N)). Lookup after sort is O(log N) via binary search.
  Populated only from narrow inference sites (ANameExpr, ARecordExpr).
+ A copy index sits at 2^44 (17592186044416), above offset * 2^16 for any
+ offset below 2^28 (268435456), so the fields cannot overlap there; past that
+ bound a copy keys like its original.
 
   expr-type-key : SourceSpan -> Integer
   expr-type-key (sp) =
    let len = sp.end.offset - sp.start.offset
    in let capped = if len > 65535 then 65535 else if len < 0 then 0 else len
-   in sp.file-id * 281474976710656 + sp.start.offset * 65536 + capped
+   in let copy = when sp.provenance
+        is ProvInstanceCopy1 -> 1
+        is ProvInstanceCopy2 -> 2
+        is otherwise -> 0
+   in let copy-bits = if copy > 0 & sp.start.offset < 268435456 then copy * 17592186044416 else 0
+   in sp.file-id * 281474976710656 + copy-bits + sp.start.offset * 65536 + capped
 
   bsearch-expr-type-pos : List ExprTypeEntry, Integer, Integer, Integer -> Integer
   bsearch-expr-type-pos (entries) (k) (lo) (hi) =
@@ -150,6 +165,11 @@ Section: Expr Types
    if is-synthetic-span sp then st
    else let k = expr-type-key sp
    in let __seq = st.expr-types = list-push (st.expr-types) (deck-record (ExprTypeEntry { key = k, ty = ty }))
+   in st
+
+  record-empty-list : UnificationState, SourceSpan, CodexType -> UnificationState
+  record-empty-list (st) (sp) (ty) =
+   let __seq = st.empty-lists = list-push (st.empty-lists) (deck-record (EmptyListSite { ty = ty, span = sp }))
    in st
 
   expr-type-recorded-unsorted : UnificationState, SourceSpan -> Boolean

@@ -1,20 +1,16 @@
 Chapter: Hex
-
- Hexadecimal encoding and decoding. Converts between List Integer
- (byte arrays) and hex text strings. Uses show for decimal digit
- values to avoid CCE/Unicode hex-char issues on bare metal.
+  cites Foreword chapter Maybe
 
  We say:
 
 Section: Encoding
   hex-encode : List Integer -> Text
-  hex-encode (bs) = hex-encode-loop bs 0 (list-length bs) ""
+  hex-encode (bs) = text-concat-list (hex-encode-loop bs 0 (list-length bs) [])
 
-  hex-encode-loop : List Integer, Integer, Integer, Text -> Text
+  hex-encode-loop : List Integer, Integer, Integer, List Text -> List Text
   hex-encode-loop (bs) (i) (len) (acc) =
     if i >= len then acc
-    else let b = list-at bs i
-    in hex-encode-loop bs (i + 1) len (acc & hex-byte b)
+    else hex-encode-loop bs (i + 1) len (list-push acc (hex-byte (list-at bs i)))
 
   hex-byte : Integer -> Text
   hex-byte (b) = hex-nibble (bit-shru b 4) & hex-nibble (bit-and b 15)
@@ -38,23 +34,44 @@ Section: Encoding
     else "F"
 
   hex-encode-upper : List Integer -> Text
-  hex-encode-upper (bs) = hex-encode-upper-loop bs 0 (list-length bs) ""
+  hex-encode-upper (bs) = text-concat-list (hex-encode-upper-loop bs 0 (list-length bs) [])
 
-  hex-encode-upper-loop : List Integer, Integer, Integer, Text -> Text
+  hex-encode-upper-loop : List Integer, Integer, Integer, List Text -> List Text
   hex-encode-upper-loop (bs) (i) (len) (acc) =
     if i >= len then acc
     else let b = list-at bs i
-    in hex-encode-upper-loop bs (i + 1) len (acc & hex-nibble-upper (bit-shru b 4) & hex-nibble-upper (bit-and b 15))
+    in hex-encode-upper-loop bs (i + 1) len (list-push (list-push acc (hex-nibble-upper (bit-shru b 4))) (hex-nibble-upper (bit-and b 15)))
 
 Section: Decoding
+
+ hex-decode answers something for every input: a character that is not a hex
+ digit reads as zero and an odd final character is dropped. A caller taking
+ text from outside asks hex-decode-checked, which answers None unless the
+ length is even and every character is a hex digit.
+
+  hex-decode-checked : Text -> Maybe (List Integer)
+  hex-decode-checked (s) =
+    if hex-well-formed s then Just (hex-decode s) else None
+
+  hex-well-formed : Text -> Boolean
+  hex-well-formed (s) =
+    if bit-and (text-length s) 1 == 1 then False
+    else hex-digits-ok s 0 (text-length s)
+
+  hex-digits-ok : Text, Integer, Integer -> Boolean
+  hex-digits-ok (s) (i) (len) =
+    if i >= len then True
+    else if hex-char-value (char-code (char-at s i)) < 0 then False
+    else hex-digits-ok s (i + 1) len
+
   hex-decode : Text -> List Integer
   hex-decode (s) = hex-decode-loop s 0 (text-length s) []
 
   hex-decode-loop : Text, Integer, Integer, List Integer -> List Integer
   hex-decode-loop (s) (i) (len) (acc) =
     if i + 1 >= len then acc
-    else let hi = hex-char-value (char-code (char-at s i))
-    in let lo = hex-char-value (char-code (char-at s (i + 1)))
+    else let hi = max 0 (hex-char-value (char-code (char-at s i)))
+    in let lo = max 0 (hex-char-value (char-code (char-at s (i + 1))))
     in hex-decode-loop s (i + 2) len (list-push acc (bit-or (bit-shl hi 4) lo))
 
   hex-char-value : Integer -> Integer
@@ -81,17 +98,17 @@ Section: Decoding
     else if c == char-code (char-at "D" 0) then 13
     else if c == char-code (char-at "E" 0) then 14
     else if c == char-code (char-at "F" 0) then 15
-    else 0
+    else -1
 
 Section: Formatting
   hex-dump : List Integer, Integer -> Text
-  hex-dump (bs) (bytes-per-line) = hex-dump-loop bs 0 (list-length bs) bytes-per-line ""
+  hex-dump (bs) (bytes-per-line) = text-concat-list (hex-dump-loop bs 0 (list-length bs) bytes-per-line [])
 
-  hex-dump-loop : List Integer, Integer, Integer, Integer, Text -> Text
+  hex-dump-loop : List Integer, Integer, Integer, Integer, List Text -> List Text
   hex-dump-loop (bs) (i) (len) (per-line) (acc) =
     if i >= len then acc
     else let sep = if i > 0 then (if i / per-line * per-line == i then "\n" else " ") else ""
-    in hex-dump-loop bs (i + 1) len per-line (acc & sep & hex-byte (list-at bs i))
+    in hex-dump-loop bs (i + 1) len per-line (list-push (list-push acc sep) (hex-byte (list-at bs i)))
 
   hex-int32 : Integer -> Text
   hex-int32 (v) =

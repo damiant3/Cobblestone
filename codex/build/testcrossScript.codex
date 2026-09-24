@@ -13,7 +13,7 @@ Section: Parameters
 
   tcross-default-seed : ShellExpr = SePathJoin SeScriptRoot (SeLit "..\\seed\\Codex.cdx")
 
-tcross-params : List ShellParam = [sh-param-choice "Arch" ["arm64", "riscv64"], sh-param "Test" SptString, sh-param-default "TimeoutSec" SptInt (SeInt 10), sh-param-default "Kernel" SptString tcross-default-seed, sh-param-optional "AllowStaleKernel" SptSwitch]
+tcross-params : List ShellParam = [sh-param-choice "Arch" ["arm64", "riscv64"], sh-param "Test" SptString, sh-param-default "TimeoutSec" SptInt (SeInt 10), sh-param-default "Kernel" SptString tcross-default-seed, sh-param-optional "AllowStaleKernel" SptSwitch, sh-param-optional "Renode" SptSwitch]
 
 Section: S00 -- Usage
 
@@ -30,14 +30,14 @@ Section: S01 -- Preamble
 
   s01-body : List ShellCmd =
     let skip-renode = [ScRaw "Write-RenodeSkip", ScExit (SeInt 0)]
-    in [ScBlank, ScSetStrictMode, ScSetErrorStop, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScBlank, ScAssign "Repo" (SeRaw "(Get-Location).Path"), ScAssign "SeedCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScRaw "if (-not (Test-Path -PathType Leaf $Kernel)) { throw \"Kernel not found: $Kernel\" }", ScRaw "$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)", ScRaw "$seedDigest = (Get-FileHash -Algorithm SHA256 $SeedCdx).Hash.Substring(0, 16)", ScRaw "Write-Host \"Kernel: $Kernel [$kernelDigest]\"", ScRaw "if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {", ScRaw "    Write-Host 'REFUSED: the kernel is a build-output binary and is not the depot seed.'", ScRaw "    Write-Host \"         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last.\"", ScRaw "    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'", ScRaw "    exit 2", ScRaw "}", ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), ScAssign "RenodeExe" (SeRaw "Get-RenodeExe -Repo $Repo"), ScIf (SeNot (SeVar "RenodeExe")) skip-renode []]
+    in [ScBlank, ScSetStrictMode, ScSetErrorStop, ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScBlank, ScAssign "Repo" (SeRaw "(Get-Location).Path"), ScAssign "SeedCdx" (SeRaw "Join-Path $Repo 'seed\\Codex.cdx'"), ScRaw "if (-not (Test-Path -PathType Leaf $Kernel)) { throw \"Kernel not found: $Kernel\" }", ScRaw "$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)", ScRaw "$seedDigest = (Get-FileHash -Algorithm SHA256 $SeedCdx).Hash.Substring(0, 16)", ScRaw "Write-Host \"Kernel: $Kernel [$kernelDigest]\"", ScRaw "if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {", ScRaw "    Write-Host 'REFUSED: the kernel is a build-output binary and is not the depot seed.'", ScRaw "    Write-Host \"         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last.\"", ScRaw "    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'", ScRaw "    exit 2", ScRaw "}", ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'renode-config.ps1')"), ScAssign "RenodeExe" (SeRaw "Get-RenodeExe -Repo $Repo"), ScIf (SeAnd (SeVar "Renode") (SeNot (SeVar "RenodeExe"))) skip-renode []]
 
 Section: S02 -- Seed and Plug Setup
 
   s02-body : List ShellCmd =
     let skip-plug = [ScEchoStyled (SeRaw "\"SKIP: plug not built ($plugCdx)\"") ClBrightYellow True, ScEcho (SeRaw "\"  Build with: codex\\plugs\\$plugName\\build.ps1\""), ScExit (SeInt 0)]
     in let skip-board = [ScEchoStyled (SeRaw "\"SKIP: board definition missing ($boardRepl)\"") ClBrightYellow True, ScExit (SeInt 0)]
-    in [ScBlank, ScRaw "$plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }", ScAssign "plugCdx" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\build-output\\$plugName-plug.cdx\""), ScIf (SeNot (SeFileExists (SeVar "plugCdx"))) skip-plug [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\codex-${Arch}.repl\""), ScIf (SeNot (SeFileExists (SeVar "boardRepl"))) skip-board [], ScAssign "compileScript" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\compile-$plugName.ps1\"")]
+    in [ScBlank, ScRaw "$plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }", ScAssign "plugCdx" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\build-output\\$plugName-plug.cdx\""), ScIf (SeNot (SeFileExists (SeVar "plugCdx"))) skip-plug [], ScBlank, ScAssign "boardRepl" (SeRaw "Join-Path $Repo \"tools\\renode\\codex\\codex-${Arch}.repl\""), ScIf (SeAnd (SeVar "Renode") (SeNot (SeFileExists (SeVar "boardRepl")))) skip-board [], ScAssign "compileScript" (SeRaw "Join-Path $Repo \"codex\\plugs\\$plugName\\compile-$plugName.ps1\"")]
 
 Section: S03 -- Locate Test
 
@@ -68,12 +68,16 @@ Section: S04 -- Skip Logic
        ScComment "report must appear in the compile log, and the compile must fail. This is",
        ScComment "what keeps refusal-by-design a tested behavior: if the plug's",
        ScComment "refusal arms are ever lost, the test compiles clean and this run goes red.",
-       ScAssign "refusalFile" (SeRaw "Join-Path $dir \"$name.cross-refusal\"")]
+       ScAssign "refusalFile" (SeRaw "Join-Path $dir \"$name.cross-refusal\""),
+       ScComment ".renode: the subject needs a Renode board model QEMU virt lacks; it runs",
+       ScComment "only under -Renode, and the first line names the model.",
+       ScAssign "renodeFile" (SeRaw "Join-Path $dir \"$name.renode\"")]
 
   s04-skips : List ShellCmd =
       [ScIf (SeFileExists (SeVar "smpFile")) [ScEchoStyled (SeRaw "\"SKIPPED: $name (multi-core -- run build/test-cross-smp.ps1)\"") ClBrightYellow True, ScExit (SeInt 0)] [],
        ScIf (SeFileExists (SeVar "skipFile")) [ScRaw "$reason = (Get-Content -TotalCount 1 $skipFile)", ScEchoStyled (SeRaw "\"SKIPPED: $name ($reason)\"") ClBrightYellow True, ScExit (SeInt 0)] [],
        ScIf (SeFileExists (SeVar "noCrossFile")) [ScRaw "$reason = (Get-Content -TotalCount 1 $noCrossFile)", ScEchoStyled (SeRaw "\"SKIPPED: $name (no-cross: $reason)\"") ClBrightYellow True, ScExit (SeInt 0)] [],
+       ScIf (SeAnd (SeNot (SeVar "Renode")) (SeFileExists (SeVar "renodeFile"))) [ScRaw "$reason = (Get-Content -TotalCount 1 $renodeFile)", ScEchoStyled (SeRaw "\"SKIPPED: $name (Renode board, run with -Renode: $reason)\"") ClBrightYellow True, ScExit (SeInt 0)] [],
        ScIf (SeFileExists (SeVar "slowFile")) [ScEchoStyled (SeRaw "\"SKIPPED: $name (slow)\"") ClBrightYellow True, ScExit (SeInt 0)] [],
        ScIf (SeFileExists (SeVar "fatalFile")) [ScEchoStyled (SeRaw "\"SKIPPED: $name (fatal)\"") ClBrightYellow True, ScExit (SeInt 0)] [],
        ScIf (SeFileExists (SeVar "failingFile")) [ScEchoStyled (SeRaw "\"SKIPPED: $name (error test -- frontend only)\"") ClBrightYellow True, ScExit (SeInt 0)] []]
@@ -105,8 +109,20 @@ Section: S06 -- Check Expected
 
 Section: S07 -- Boot on Renode
 
+  s07-qemu : List ShellCmd =
+    [ScRaw "$qemuExe = if ($Arch -eq 'riscv64') { 'D:\\Program Files\\qemu\\qemu-system-riscv64.exe' } else { 'D:\\Program Files\\qemu\\qemu-system-aarch64.exe' }",
+     ScIf (SeNot (SeFileExists (SeVar "qemuExe"))) [ScEchoStyled (SeRaw "\"SKIP: QEMU not found ($qemuExe)\"") ClBrightYellow True, ScExit (SeInt 0)] [],
+     ScRaw "$uartWin = $uartLog -replace '/','\\'",
+     ScRaw "$binOut = [System.IO.Path]::ChangeExtension($elfOut, '.bin')",
+     ScRaw "$machArgs = if ($Arch -eq 'riscv64') { @('-M','virt','-m','1024M','-display','none','-monitor','none','-bios','none','-device',\"loader,file=$binOut,addr=0x80000000\",'-serial',\"file:$uartWin\") } else { @('-M','virt','-cpu','cortex-a53','-m','1024M','-display','none','-monitor','none','-kernel',$elfOut,'-serial',\"file:$uartWin\") }",
+     ScRaw "$qemu = Start-Process -FilePath $qemuExe -ArgumentList $machArgs -PassThru -WindowStyle Hidden",
+     ScRaw "if (-not $qemu.WaitForExit($TimeoutSec * 1000)) { try { $qemu.Kill() } catch {}; $null = $qemu.WaitForExit(2000) }"]
+
   s07-body : List ShellCmd =
-    [ScBlank, ScComment "-- Boot on Renode --", ScRaw "Write-Host -NoNewline '  run ... '", ScRaw "$elfPath = (Resolve-Path $elfOut).Path -replace '\\\\','/'", ScRaw "$boardPath = (Resolve-Path $boardRepl).Path -replace '\\\\','/'", ScAssign "uartLog" (SeRaw "(Join-Path $testOutDir 'uart.log') -replace '\\\\','/'"), ScIf (SeFileExists (SeVar "uartLog")) [ScDelete (SeVar "uartLog")] [], ScBlank, ScRaw "$rescContent = @(\n    'mach create \"codex\"'\n    \"machine LoadPlatformDescription @$boardPath\"\n    \"sysbus LoadELF @$elfPath\"\n    \"uart0 CreateFileBackend @$uartLog true\"\n    'start'\n    \"sleep $TimeoutSec\"\n    'quit'\n) -join \"`n\"", ScAssign "rescFile" (SeRaw "Join-Path $testOutDir 'run.resc'"), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "rescFile", SeVar "rescContent"], ScRaw "$rescPath = $rescFile -replace '\\\\','/'", ScBlank, ScRaw "$prev2 = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "& $RenodeExe --disable-xwt --console -e \"include @$rescPath\" 2>&1 | Out-Null", ScRaw "$ErrorActionPreference = $prev2", ScRaw "Start-Sleep -Milliseconds 300"]
+    [ScBlank, ScComment "-- Boot on QEMU, or on Renode with -Renode --", ScRaw "Write-Host -NoNewline '  run ... '", ScAssign "uartLog" (SeRaw "(Join-Path $testOutDir 'uart.log') -replace '\\\\','/'"), ScIf (SeFileExists (SeVar "uartLog")) [ScDelete (SeVar "uartLog")] [], ScBlank, ScIf (SeVar "Renode") s07-renode s07-qemu, ScRaw "Start-Sleep -Milliseconds 300"]
+
+  s07-renode : List ShellCmd =
+    [ScRaw "$elfPath = (Resolve-Path $elfOut).Path -replace '\\\\','/'", ScRaw "$boardPath = (Resolve-Path $boardRepl).Path -replace '\\\\','/'", ScRaw "$rescContent = @(\n    'mach create \"codex\"'\n    \"machine LoadPlatformDescription @$boardPath\"\n    \"sysbus LoadELF @$elfPath\"\n    \"uart0 CreateFileBackend @$uartLog true\"\n    'start'\n    \"sleep $TimeoutSec\"\n    'quit'\n) -join \"`n\"", ScAssign "rescFile" (SeRaw "Join-Path $testOutDir 'run.resc'"), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "rescFile", SeVar "rescContent"], ScRaw "$rescPath = $rescFile -replace '\\\\','/'", ScBlank, ScRaw "$prev2 = $ErrorActionPreference; $ErrorActionPreference = 'Continue'", ScRaw "Start-Process -FilePath $RenodeExe -ArgumentList ('--disable-xwt --console -e \"include @' + $rescPath + '\"') -WindowStyle Hidden -Wait", ScRaw "$ErrorActionPreference = $prev2"]
 
 Section: S08 -- Capture and Compare
 
@@ -130,19 +146,19 @@ Section: Assembly
 
   s03 : PipeStage = PipeStage { ps-name = "locate the test", ps-why = "resolve the subject name to a file under codex/test", ps-in = ["Test"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the named subject does not exist, which is a caller error rather than a result about the compiler"], ps-body = s03-body }
 
-  s04 : PipeStage = PipeStage { ps-name = "skip logic", ps-why = "SIX recorded reasons a subject is not run, each printing its own line", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "SKIPPED, multi-core: the subject belongs to test-cross-smp", PoExit 0 "SKIPPED, a .skip sidecar, whose first line is the reason", PoExit 0 "SKIPPED, a .no-cross sidecar, whose first line is the reason", PoExit 0 "SKIPPED, slow", PoExit 0 "SKIPPED, fatal", PoExit 0 "SKIPPED, an error test, which the frontend alone can judge"], ps-body = s04-body }
+  s04 : PipeStage = PipeStage { ps-name = "skip logic", ps-why = "SEVEN recorded reasons a subject is not run, each printing its own line", ps-in = ["Renode"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "SKIPPED, multi-core: the subject belongs to test-cross-smp", PoExit 0 "SKIPPED, a .skip sidecar, whose first line is the reason", PoExit 0 "SKIPPED, a .no-cross sidecar, whose first line is the reason", PoExit 0 "SKIPPED, a .renode sidecar on QEMU: the subject needs a Renode board model and runs only under -Renode", PoExit 0 "SKIPPED, slow", PoExit 0 "SKIPPED, fatal", PoExit 0 "SKIPPED, an error test, which the frontend alone can judge"], ps-body = s04-body }
 
   s05 : PipeStage = PipeStage { ps-name = "compile", ps-why = "compile the subject for the target architecture, and judge a REFUSAL against what the subject's tags say should happen", ps-in = ["Arch"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the subject compiled clean where its tags said an [UNSUPPORTED] refusal was expected", PoExit 0 "the subject was refused by design, and the refusal names the tags that predicted it", PoExit 1 "the compile failed WITHOUT the refusal tags that would have made the failure expected", PoExit 1 "the compile failed, or produced no ELF"], ps-body = s05-body }
 
   s06 : PipeStage = PipeStage { ps-name = "check for .expected", ps-why = "a subject with no .expected has nothing to compare against", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 0 "the subject has no .expected sidecar, so compiling was the whole claim and nothing was run"], ps-body = s06-body }
 
-  s07 : PipeStage = PipeStage { ps-name = "boot on renode", ps-why = "fly the ELF on the emulated board and capture its UART", ps-in = [], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s07-body }
+  s07 : PipeStage = PipeStage { ps-name = "boot", ps-why = "fly the image on QEMU virt, or on the Renode board under -Renode, and capture its UART", ps-in = ["Renode", "TimeoutSec"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [PoExit 0 "QEMU is not installed, so the subject was SKIPPED and nothing was run"], ps-body = s07-body }
 
   s08 : PipeStage = PipeStage { ps-name = "capture and compare", ps-why = "read the UART log back", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the board produced NO uart output, which is a different failure from producing the wrong output and is not a mismatch"], ps-body = s08-body }
 
   s09 : PipeStage = PipeStage { ps-name = "expected comparison", ps-why = "the captured output against the .expected, normalised for line endings", ps-in = [], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the output differs from .expected, and the diff is written beside the log", PoExit 0 "the output matches .expected"], ps-body = s09-body }
 
-  tcross-pipe : Pipeline = Pipeline { pl-name = "test-cross", pl-doc = "Cross-architecture test harness -- compile to ARM64/RISC-V, boot on Renode, compare UART output", pl-params = tcross-params, pl-stages = [PsStage s00, PsStage s01, PsStage s02, PsStage s03, PsStage s04, PsStage s05, PsStage s06, PsStage s07, PsStage s08, PsStage s09] }
+  tcross-pipe : Pipeline = Pipeline { pl-name = "test-cross", pl-doc = "Cross-architecture test harness -- compile to ARM64/RISC-V, boot on QEMU (Renode with -Renode), compare UART output", pl-params = tcross-params, pl-stages = [PsStage s00, PsStage s01, PsStage s02, PsStage s03, PsStage s04, PsStage s05, PsStage s06, PsStage s07, PsStage s08, PsStage s09] }
 
   opening : [Console] Nothing = act
     print-line-uni (emit-powershell (pipeline-to-shell tcross-pipe))

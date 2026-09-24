@@ -40,6 +40,9 @@ param(
     # because a name resolves here by being present in the one bundled unit.
     [switch]$WithLir,
     [string[]]$CommonChapters = @(),
+    # Compiler chapters bundled after the IR declarations, as Build-TranspilerPlug's
+    # -CompilerChapters does (the zig lens takes IR\ConstShare).
+    [string[]]$CompilerChapters = @(),
     # Passed through to wasm/run.ps1 -> compile.ps1 for a bundle whose IR compile
     # needs a bigger reservation than the default; the native backends do.
     [int]$Decks = 0,
@@ -106,7 +109,10 @@ if ($Transport -ne 'bytes') {
             Add-PlugChapter -Lines $lines -Path (Join-Path $Repo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir')
         }
     }
-    Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugTypes.codex')   -Quire $plugQuire
+    foreach ($cc in @($CompilerChapters | ForEach-Object { $_ -split ',' } | Where-Object { $_ })) {
+    Add-PlugChapter -Lines $lines -Path (Join-Path $Repo "codex\compiler\$cc.codex") -Quire $plugQuire
+}
+Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugTypes.codex')   -Quire $plugQuire
     Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\IRTextParser.codex') -Quire $plugQuire
     foreach ($cc in $CommonChapters) {
         Add-PlugChapter -Lines $lines -Path (Join-Path $Repo "codex\plugs\common\$cc.codex") -Quire $plugQuire

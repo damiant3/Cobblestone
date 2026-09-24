@@ -45,7 +45,7 @@ const sandbox = {
   },
   location: { protocol: 'https:' },
   navigator: {},
-  window: {},
+  window: { addEventListener() {} },
   prompt() { return null; }, confirm() { return false; }, alert() {},
   atob(s) { return Buffer.from(s, 'base64').toString('binary'); },
   fetch(u) {
@@ -78,7 +78,7 @@ sandbox.window.__EMBED = { 'Codex.codex': compilerSrc.toString('base64') };
 // arm 1, so a workspace that had never run build-page.ps1 refused the whole
 // suite with a readFileSync stack instead of a finding. Absence is recorded and
 // reported by the arm that reaches for it.
-for (const m of ['codex-compiler.wasm', 'pe-bytes.wasm', 'evidence-stdio.wasm', 'javascript-stdio.wasm', 'elf-bytes.wasm', 'riscv-stdio.wasm', 'arm64-stdio.wasm', 'sign-bytes.wasm']) {
+for (const m of ['codex-compiler.wasm', 'pe-bytes.wasm', 'evidence-stdio.wasm', 'javascript-stdio.wasm', 'elf-bytes.wasm', 'riscv-stdio.wasm', 'arm64-stdio.wasm', 'sign-bytes.wasm', 'macho-bytes.wasm', 'wasm-stdio.wasm']) {
   const p = path.join(repo, 'codex\\plugs\\wasm\\build-output\\page', m);
   if (fs.existsSync(p)) sandbox.window.__EMBED[m] = fs.readFileSync(p).toString('base64');
   else absentModules.push(m);
@@ -87,6 +87,9 @@ if (absentModules.length) {
   console.log('NOTE: not in build-output/page, the arms that need them will say so: ' + absentModules.join(', '));
 }
 sandbox.__compilerSrcText = compilerSrc.toString('utf8');
+// The Mac arm grades with the same function apps/prism/test-macho.mjs grades
+// the zig-linked reference with.
+sandbox.__gradeMacho = require(path.join(repo, 'apps', 'prism', 'test-macho.mjs')).gradeMacho;
 // The DISK arm's image is a build asset this file does not lay down, and it is
 // read from inside generated code. Absent, that surfaces as an ENOENT stack
 // naming drive.js and a line number in a string, which says nothing about what
@@ -275,6 +278,104 @@ const drive = `
   const cb = emittedBin.bytes;
   if (!(cb[0] === 0x43 && cb[1] === 0x44 && cb[2] === 0x58 && cb[3] === 0x31))
     return 'FAIL: cdx target does not start CDX1';
+
+  // Arm 11b: the Mac target, through the page's own Compile handler: IR, the
+  // arm64 Darwin wire, the macho module. Graded by test-macho.mjs's gradeMacho
+  // (structure and every page hash); a wire handed back unwrapped fails it.
+  tab = 'binary'; binTarget = 'mac'; emittedBin = null;
+  await document.getElementById('go').handlers['click']();
+  if (!emittedBin || emittedBin.name !== 'evd')
+    return 'FAIL: mac target produced ' + (emittedBin ? emittedBin.name : 'no artifact') + '; status: ' + document.getElementById('status').innerHTML;
+  const macErrs = __gradeMacho(Buffer.from(emittedBin.bytes));
+  if (macErrs.length) return 'FAIL: the mac target is not a signed arm64 Mach-O: ' + macErrs.join('; ');
+  const macNote = 'Mac app ' + emittedBin.bytes.length.toLocaleString() + ' bytes, graded signed arm64 Mach-O';
+
+  // Arm 11c: the ARM64 kernel pill, through the same handler. Machine 183 and
+  // the 0x40000000 text base are what separate it from the RISC-V pill's ELF,
+  // which the handler shares a branch with.
+  tab = 'binary'; binTarget = 'board-arm64'; emittedBin = null;
+  await document.getElementById('go').handlers['click']();
+  if (!emittedBin || emittedBin.name !== 'kernel-arm64.elf')
+    return 'FAIL: arm64 kernel pill produced ' + (emittedBin ? emittedBin.name : 'no artifact') + '; status: ' + document.getElementById('status').innerHTML;
+  const kab = emittedBin.bytes, kdv = new DataView(kab.buffer, kab.byteOffset, kab.byteLength);
+  const kPh = Number(kdv.getBigUint64(32, true));
+  if (!(kab[0] === 0x7F && kab[1] === 0x45 && kab[4] === 2 && kdv.getUint16(18, true) === 183 && Number(kdv.getBigUint64(kPh + 16, true)) === 0x40000000))
+    return 'FAIL: the arm64 kernel pill is not an AArch64 ELF64 at 0x40000000; machine ' + kdv.getUint16(18, true);
+  if (document.getElementById('runpanel').innerHTML.indexOf('qemu-system-aarch64') < 0)
+    return 'FAIL: the arm64 kernel run panel does not give the qemu-system-aarch64 line';
+  // The RISC-V pill shares the branch; its run panel must name its own QEMU
+  // and the measured -m 1G, not the other architecture's line.
+  tab = 'binary'; binTarget = 'board'; emittedBin = null;
+  await document.getElementById('go').handlers['click']();
+  const rvPanel = document.getElementById('runpanel').innerHTML;
+  if (!emittedBin || rvPanel.indexOf('qemu-system-riscv64 -machine virt -m 1G') < 0 || rvPanel.indexOf('aarch64') >= 0)
+    return 'FAIL: the RISC-V kernel run panel is wrong: ' + rvPanel.slice(0, 300);
+  const kNote = 'ARM64 kernel pill ' + kab.length.toLocaleString() + ' bytes, EM_AARCH64 at 0x40000000; both kernel run panels name their own QEMU';
+
+  // Arm 11d: Run for the WebAssembly lens (PRISM-7 stage 6b). The same program
+  // through the javascript lens's Run is the oracle: the two emitters share no
+  // code. A second program reads a line of stdin, and its control runs with the
+  // box empty and must answer the None arm, so the box is load-bearing.
+  const runOut = () => runoutEl.textContent.split('\\n\\nran in ')[0];
+  project.files = [{ path: 'wrun.codex', text: 'Chapter: WasmRun\\n\\nSection: Main\\n\\n  opening : [Console] Nothing = act\\n   print-line-uni "wasm run"\\n   print-line-uni (show (6 * 7 - 100))\\n  end\\n' }];
+  openFile('wrun.codex');
+  tab = 'scripts'; lens = { plug: 'wasm' };
+  await document.getElementById('go').handlers['click']();
+  if (!emittedWat) return 'FAIL: the wasm lens emitted no WAT; status: ' + document.getElementById('status').innerHTML;
+  stdinEl.value = '';
+  await document.getElementById('run').handlers['click']();
+  const wasmOut = runOut();
+  lens = { plug: 'javascript' };
+  await document.getElementById('go').handlers['click']();
+  document.getElementById('run').handlers['click']();
+  const jsOut = runOut();
+  if (wasmOut !== jsOut || wasmOut.indexOf('-58') < 0)
+    return 'FAIL: wasm Run answered ' + JSON.stringify(wasmOut) + ' where the javascript lens answered ' + JSON.stringify(jsOut);
+  project.files = [{ path: 'wread.codex', text: 'Chapter: WasmRead\\n  cites Foreword chapter Maybe\\n\\nSection: Main\\n\\n  opening : [Console] Nothing = act\\n   r <- read-line\\n   when r\\n    is Just (s) -> print-line-uni ("stdin " & s)\\n    is None -> print-line-uni "no stdin"\\n  end\\n' }];
+  openFile('wread.codex');
+  lens = { plug: 'wasm' };
+  await document.getElementById('go').handlers['click']();
+  if (!emittedWat) return 'FAIL: the stdin program emitted no WAT; status: ' + document.getElementById('status').innerHTML;
+  stdinEl.value = 'abc\\n';
+  await document.getElementById('run').handlers['click']();
+  const readOut = runOut();
+  stdinEl.value = '';
+  await document.getElementById('run').handlers['click']();
+  const emptyOut = runOut();
+  if (readOut.trim() !== 'stdin abc' || emptyOut.trim() !== 'no stdin')
+    return 'FAIL: stdin did not reach the program: with "abc" ' + JSON.stringify(readOut) + ', empty ' + JSON.stringify(emptyOut);
+  const wrunNote = 'wasm Run equals the javascript lens (' + JSON.stringify(wasmOut.trim()) + '); stdin "abc" read, empty control answered None';
+
+  // Arm 11e: the in-tab web server (PRISM-7 stage 6c). A program that hands
+  // its route to web-serve is served here: GET / renders with the bridge, a
+  // second path and the standard /api/health endpoint answer through the same
+  // module. The control has no serve call and must be refused by name.
+  project.files = [{ path: 'tabsrv.codex', text: 'Chapter: TabSrv\\n  cites Net chapter WebServer\\n\\nSection: Routes\\n\\n' +
+    '  srv-route : HttpRequest -> HttpResponse\\n  srv-route (req) =\\n' +
+    '    if req.path == "/" then http-html "<h1>hello tab</h1><a href=/two>two</a>"\\n' +
+    '    else if req.path == "/two" then http-html "<p>second page</p>"\\n' +
+    '    else http-not-found\\n\\nSection: Entry\\n\\n' +
+    '  opening : [Console, Network.Read, Network.Write] Nothing = act\\n    n <- web-serve srv-route web-observe-none\\n    print-line-uni "done"\\n  end\\n' }];
+  openFile('tabsrv.codex');
+  tab = 'binary'; binTarget = 'serve'; emittedBin = null; serveMod = null;
+  await document.getElementById('go').handlers['click']();
+  if (!emittedBin || emittedBin.name !== 'tabsrv-server.wasm' || !serveMod)
+    return 'FAIL: serve target produced ' + (emittedBin ? emittedBin.name : 'no module') + '; status: ' + document.getElementById('status').innerHTML +
+           '; buildline: ' + document.getElementById('bl-main').innerHTML + '; out: ' + document.getElementById('out').innerHTML.slice(0, 400);
+  if (!serveFrame || serveFrame.srcdoc.indexOf('<h1>hello tab</h1>') < 0 || serveFrame.srcdoc.indexOf('prismServe') < 0)
+    return 'FAIL: GET / did not render with the bridge; frame: ' + (serveFrame ? serveFrame.srcdoc.slice(0, 200) : 'none');
+  const two = await serveRequest('GET', '/two');
+  const health = await serveRequest('GET', '/api/health');
+  const miss = await serveRequest('GET', '/nope');
+  if (two.status !== 200 || two.body !== '<p>second page</p>' || health.body !== '{"status":"ok"}' || miss.status !== 404)
+    return 'FAIL: in-tab requests answered /two ' + two.status + ' ' + JSON.stringify(two.body) + ', /api/health ' + JSON.stringify(health.body) + ', /nope ' + miss.status;
+  project.files = [{ path: 'nosrv.codex', text: 'Chapter: NoSrv\\n\\nSection: Main\\n\\n  opening : [Console] Nothing = act\\n   print-line-uni "no server"\\n  end\\n' }];
+  openFile('nosrv.codex');
+  emittedBin = null;
+  await document.getElementById('go').handlers['click']();
+  if (emittedBin || document.getElementById('bl-main').innerHTML.indexOf('hands no route') < 0)
+    return 'FAIL: a program with no serve call was not refused by name; buildline: ' + document.getElementById('bl-main').innerHTML;
+  const serveNote = 'in-tab server: / rendered with the bridge, /two and /api/health answered, /nope 404; no-server control refused';
 
   // Arm 12: DISK mode end to end on the LINEAR-MEMORY disk (the Device.Block
   // grounding this CL adds). disk_reserve is called before _start, the image
@@ -762,6 +863,10 @@ const drive = `
          '; binary evidence claims the CDX, text control does not' +
          '; DISK round trip in linear memory: OUT.CDX off the mutated image byte-identical to stdin (' + outCdx.length + ' bytes), no-disk control refused' +
          '; ELF ' + elfNote +
+         '; ' + macNote +
+         '; ' + kNote +
+         '; ' + wrunNote +
+         '; ' + serveNote +
          '; sign ' + signNote +
          '; board ' + boardNote +
          '; ' + libNote +

@@ -936,6 +936,7 @@ Section: Name Emission
    else if name == "__deck-pos" then rv-emit-deck-pos st
    else if name == "__deck-enter" then rv-emit-deck-enter st
    else if name == "__deck-exit" then rv-emit-deck-exit st
+   else if name == "vec-empty" then rv-emit-empty-list st
    else let eoa = rv-find-effect-op-addr (st.effect-op-addrs) name 0
    in let is-rl = if name == "read-line" then True else name == "read-line-cce"
    in let runtime-known = rv-find-func-offset (st.func-names) (st.func-offsets) name 0
@@ -1308,8 +1309,8 @@ Section: Binary Emission
     is IrAddInt -> RvEmitResult { state = rv-emit st2 (rv-add rd left-reg right-reg), reg = rd }
     is IrSubInt -> RvEmitResult { state = rv-emit st2 (rv-sub rd left-reg right-reg), reg = rd }
     is IrMulInt -> RvEmitResult { state = rv-emit st2 (rv-mul rd left-reg right-reg), reg = rd }
-    is IrDivInt -> RvEmitResult { state = rv-emit st2 (rv-div rd left-reg right-reg), reg = rd }
-    is IrRemInt -> RvEmitResult { state = rv-emit st2 (rv-rem rd left-reg right-reg), reg = rd }
+    is IrDivInt -> RvEmitResult { state = rv-emit (rv-emit-div-guard st2 right-reg) (rv-div rd left-reg right-reg), reg = rd }
+    is IrRemInt -> RvEmitResult { state = rv-emit (rv-emit-div-guard st2 right-reg) (rv-rem rd left-reg right-reg), reg = rd }
     is IrEq ->
      if rv-is-text-type (ir-expr-type left) then
       let st3 = if right-reg == rv-a0 then
@@ -1368,14 +1369,14 @@ Section: Binary Emission
     is IrSubRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fsub-s
     is IrMulRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fmul-s
     is IrDivRealApprox -> rv-emit-real-approx-arith st2 left-reg right-reg rv-fdiv-s
-    is IrAddRealTrapping -> if is-real-f32 ty then rv-emit-real-approx-arith st2 left-reg right-reg rv-fadd-s
-     else rv-emit-real-arith st2 left-reg right-reg rv-fadd-d
-    is IrSubRealTrapping -> if is-real-f32 ty then rv-emit-real-approx-arith st2 left-reg right-reg rv-fsub-s
-     else rv-emit-real-arith st2 left-reg right-reg rv-fsub-d
-    is IrMulRealTrapping -> if is-real-f32 ty then rv-emit-real-approx-arith st2 left-reg right-reg rv-fmul-s
-     else rv-emit-real-arith st2 left-reg right-reg rv-fmul-d
-    is IrDivRealTrapping -> if is-real-f32 ty then rv-emit-real-approx-arith st2 left-reg right-reg rv-fdiv-s
-     else rv-emit-real-arith st2 left-reg right-reg rv-fdiv-d
+    is IrAddRealTrapping -> if is-real-f32 ty then rv-emit-real-trap-check (rv-emit-real-approx-arith st2 left-reg right-reg rv-fadd-s) True
+     else rv-emit-real-trap-check (rv-emit-real-arith st2 left-reg right-reg rv-fadd-d) False
+    is IrSubRealTrapping -> if is-real-f32 ty then rv-emit-real-trap-check (rv-emit-real-approx-arith st2 left-reg right-reg rv-fsub-s) True
+     else rv-emit-real-trap-check (rv-emit-real-arith st2 left-reg right-reg rv-fsub-d) False
+    is IrMulRealTrapping -> if is-real-f32 ty then rv-emit-real-trap-check (rv-emit-real-approx-arith st2 left-reg right-reg rv-fmul-s) True
+     else rv-emit-real-trap-check (rv-emit-real-arith st2 left-reg right-reg rv-fmul-d) False
+    is IrDivRealTrapping -> if is-real-f32 ty then rv-emit-real-trap-check (rv-emit-real-approx-arith st2 left-reg right-reg rv-fdiv-s) True
+     else rv-emit-real-trap-check (rv-emit-real-arith st2 left-reg right-reg rv-fdiv-d) False
     is IrAddRealSaturating -> if is-real-f32 ty then rv-emit-real-saturating-arith-f32 st2 left-reg right-reg rv-fadd-s
      else rv-emit-real-saturating-arith st2 left-reg right-reg rv-fadd-d
     is IrSubRealSaturating -> if is-real-f32 ty then rv-emit-real-saturating-arith-f32 st2 left-reg right-reg rv-fsub-s
@@ -1455,6 +1456,18 @@ Section: Real Arithmetic
    in let st2 = rv-emit st1 (rv-fmv-w-x rv-ft1 r-reg)
    in let st3 = rv-emit st2 (fp-op rv-ft0 rv-ft0 rv-ft1)
    in RvEmitResult { state = rv-emit st3 (rv-fmv-x-w (rd.reg) rv-ft0), reg = rd.reg }
+
+ An all-ones exponent is an infinity or a NaN, the result x86-64's
+ emit-real-trapping-arith refuses: 11 bits for a double (shl 1, shr 53, 2047),
+ 8 for a single, whose sign-extended upper word the shl 33 discards.
+
+  rv-emit-real-trap-check : RvEmitResult, Boolean -> RvEmitResult
+  rv-emit-real-trap-check (r) (f32) =
+   let st1 = rv-emit (r.state) (rv-slli rv-t0 (r.reg) (if f32 then 33 else 1))
+   in let st2 = rv-emit st1 (rv-srli rv-t0 rv-t0 (if f32 then 56 else 53))
+   in let st3 = rv-emit st2 (rv-addi rv-t0 rv-t0 (if f32 then 0 - 255 else 0 - 2047))
+   in let st4 = rv-emit (rv-emit st3 (rv-bne rv-t0 rv-zero 8)) rv-ebreak
+   in RvEmitResult { state = st4, reg = r.reg }
 
   rv-emit-real-saturating-arith : RvState, Integer, Integer, (Integer, Integer, Integer -> List Integer) -> RvEmitResult
   rv-emit-real-saturating-arith (st) (l-reg) (r-reg) (fp-op) =
@@ -1906,13 +1919,15 @@ Section: Real Arithmetic
    in let st4 = rv-emit st3 (rv-sd (aa.reg) (t.reg) 8)
    in RvEmitResult { state = st4, reg = aa.reg }
 
-  rv-emit-vec-extract : RvState, IRExpr, IRExpr -> RvEmitResult
-  rv-emit-vec-extract (st) (vec-expr) (idx-expr) =
+  rv-emit-vec-extract : RvState, IRExpr, IRExpr, Integer -> RvEmitResult
+  rv-emit-vec-extract (st) (vec-expr) (idx-expr) (lanes) =
    let vr = rv-emit-expr st vec-expr
    in let ir = rv-emit-expr (vr.state) idx-expr
    in let tr = rv-alloc-temp (ir.state)
    in let shift = rv-alloc-temp (tr.state)
-   in let st1 = rv-emit (shift.state) (rv-slli (shift.reg) (ir.reg) 3)
+   in let st0 = rv-emit (shift.state) (rv-addi (tr.reg) rv-zero lanes)
+   in let st0a = rv-emit (rv-emit st0 (rv-bltu (ir.reg) (tr.reg) 8)) rv-ebreak
+   in let st1 = rv-emit st0a (rv-slli (shift.reg) (ir.reg) 3)
    in let st2 = rv-emit st1 (rv-add (tr.reg) (vr.reg) (shift.reg))
    in RvEmitResult { state = rv-emit st2 (rv-ld (tr.reg) (tr.reg) 0), reg = tr.reg }
 
@@ -1992,13 +2007,7 @@ Section: Real Arithmetic
    in RvEmitResult { state = st4, reg = tr.reg }
 
   rv-emit-address-of : RvState, IRExpr -> RvEmitResult
-  rv-emit-address-of (st) (arg) =
-   let vr = rv-emit-expr st arg
-   in let tr = rv-alloc-temp (vr.state)
-   in let st1 = rv-emit (tr.state) (rv-mv (tr.reg) rv-heap-reg)
-   in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg 8)
-   in let st3 = rv-emit st2 (rv-sd (tr.reg) (vr.reg) 0)
-   in RvEmitResult { state = st3, reg = tr.reg }
+  rv-emit-address-of (st) (arg) = rv-emit-expr st arg
 
   rv-emit-fork : RvState, IRExpr -> RvEmitResult
   rv-emit-fork (st) (body) =
@@ -2060,8 +2069,15 @@ Section: Real Arithmetic
    in let rr = rv-emit-expr (rv-set-result-dest (saved.state) (0 - 1)) right
    in let ll = rv-reload-if-needed (rr.state) (saved.reg)
    in let rd = rv-alloc-temp (ll.state)
-   in let st1 = rv-emit (rd.state) (rv-rem (rd.reg) (ll.reg) (rr.reg))
+   in let st1 = rv-emit (rv-emit-div-guard (rd.state) (rr.reg)) (rv-rem (rd.reg) (ll.reg) (rr.reg))
    in rv-emit-mod-correction st1 (rd.reg) (rr.reg)
+
+ div and rem answer -1 and the dividend for a zero divisor where x86-64's
+ idiv raises #DE, so the zero case is refused with the ebreak the other
+ guards use.
+
+  rv-emit-div-guard : RvState, Integer -> RvState
+  rv-emit-div-guard (st) (divisor) = rv-emit (rv-emit st (rv-bne divisor rv-zero 8)) rv-ebreak
 
  A bitwise builtin against a literal takes the I-type form and never
  materialises the literal into a register at all.
