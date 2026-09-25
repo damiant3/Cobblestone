@@ -11,17 +11,6 @@ Chapter: GopConsole
 
 Section: Shape
 
- A line is stored as the bytes the medium and the keyboard both speak, not
- as CCE, for the reason GopEdit's buffer is: they arrive through
- apply-mods and leave through from-unicode, and reading them as CCE
- directly renders every letter as the wrong glyph.
-
- The row count is what FITS, not what is wanted. Nothing clips a widget
- panel to its box: at sixteen rows an `ls SRC` drew its last three lines
- outside the frame and over the prompt. The depth is therefore chosen for
- the shortest pane rather than the tallest, and a taller one simply shows
- the same twelve with slack under them.
-
   gcon-cols : Integer = 96
   gcon-rows : Integer = 12
 
@@ -57,7 +46,7 @@ Section: Bytes And Text
   gcon-chars (buf) (i) (stop) (acc) =
     if i >= stop then acc
     else let b = peek-byte buf i
-    in let ch = if b < 32 then " " else char-encode (code-to-char (from-unicode b))
+    in let ch = if b < 32 | b == 127 then " " else char-encode (code-to-char (from-unicode b))
     in gcon-chars buf (i + 1) stop (acc & ch)
 
   gcon-put : Integer, Integer, Text, Integer, Integer -> Integer
@@ -83,22 +72,12 @@ Section: Bytes And Text
 
 Section: Scrollback
 
- Full means shift, not wrap. A ring would spare the copy and cost the
- caller an origin to reason about on every read; sixteen rows of ninety-six
- bytes is 1,440 bytes moved on a line nobody can type faster than.
-
   gcon-shift : Integer, Integer, Integer -> Integer
   gcon-shift (buf) (i) (n) =
     if i >= n then n
     else let b = peek-byte buf (i + gcon-cols)
     in let w = poke-byte buf i b
     in gcon-shift buf (i + 1) n
-
- Wrapped at a width the NARROWEST pane can show, not at gcon-cols. The
- first long line this pane ever printed was the VT-x diagnostic, and it ran
- off the right edge with the half naming the fix outside the panel. A
- diagnostic that is cut where it stops being obvious is worse than a short
- one, so a long push becomes as many rows as it needs.
 
   gcon-wrap : Integer = 62
 
@@ -125,13 +104,6 @@ Section: Scrollback
     in poke-32 ns 12 (if room then c + 1 else c)
 
 Section: Commands
-
- The command table is the pane's own and is deliberately small. The shell
- the rest of this app already has (ShellDispatch) parses a line to a Command
- and answers a DispatchResult with no Console effect anywhere in it, so it
- plugs in here without change -- but it cites thirteen chapters across Trust,
- Verify, OS and Observe, and pulling that cone into GopDesk is a dependency
- decision rather than a wiring one.
 
   gcon-word : Text, Integer, Integer -> Text
   gcon-word (t) (i) (n) =
@@ -218,23 +190,12 @@ Section: Commands
     end
   end
 
- The seed and the source are both held as `List Integer` at once, so the
- command's peak is a little over nine times `CODEX.CDX` on top of whatever
- the pane already holds. `seed` pays the larger half of that already and
- prints what it cost.
-
   gcon-cdx-diff : List Integer, Integer, Integer, Integer, Integer -> Integer
   gcon-cdx-diff (produced) (buf) (i) (np) (nk) =
     if i >= np then (if np == nk then 0 - 1 else i)
     else if i >= nk then i
     else if list-at produced i == peek-byte buf i then gcon-cdx-diff produced buf (i + 1) np nk
     else i
-
- THE VERDICT CARRIES BOTH LENGTHS AND THE OFFSET, never a bare yes or no. A
- truncated artifact and a wrong artifact are the same colour on a verdict line
- (L-SHORT), and the desk has no serial port to go back and ask: a reader who
- sees only DIFFERS cannot tell a guest that halted early from one that emitted
- the wrong bytes, and those send a person to opposite places.
 
   gcon-cdx-verdict : List Integer, Integer, Integer -> Text
   gcon-cdx-verdict (produced) (buf) (nk) =
@@ -244,20 +205,6 @@ Section: Commands
     else "DIFFERS from CODEX.CDX at byte " & show d & ", produced " & show np & " bytes, on volume " & show nk & " bytes"
 
   gcon-compile : Integer, Text -> [Device.Port] Integer
- THE VT-x REFUSAL FIRES WHERE VT-x IS NEEDED, which is at the launch and not at
- the verb. It used to be the second test in this function, above the mount and
- both reads, and the cost of that position was not a wrong answer but an
- unreachable path: codex-vm is itself a hypervisor and its guest sees no VT-x,
- so every bed run took the refusal and the mount, the two reads and the
- conversion below could not be exercised anywhere. They do not need VT-x. They
- were waiting on metal for no reason other than the order of this check, and
- "it waits for metal" is the kind of stated blocker that stops anyone looking
- (L-UNCALLED: the read path shipped in every image and had never run).
-
- Moving it down also makes the refusal on a real board say more: the byte
- counts are already pushed, so a reader learns the file was found and how big
- it is BEFORE learning that VT-x is off, which on a board with no serial port
- is most of the diagnosis.
 
   gcon-compile (ns) (arg) = act
     if text-length arg == 0 then gcon-push ns "compile <path>"

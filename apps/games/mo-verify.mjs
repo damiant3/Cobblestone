@@ -41,6 +41,7 @@ const ok = (name, cond, detail) => {
 };
 
 const owners = h => [...Array(e.mo_props(h))].map((_, i) => e.mo_owner(h, i));
+const settle = (h, r) => (e.mo_twant(h) >= 0 ? e.mo_resume(e.mo_decline(h), r) : h);
 const cashes = h => [...Array(e.mo_players(h))].map((_, p) => e.mo_cash(h, p));
 const ownedBy = (h, p) => [...Array(e.mo_owned(h, p))].map((_, k) => e.mo_ownedat(h, p, k));
 
@@ -75,7 +76,7 @@ function playGame(seed, players) {
   let turns = 0;
   while (e.mo_done(h) === 0 && turns < 800) {
     turns++;
-    h = e.mo_step(h, seed * 7919 + turns);
+    h = settle(e.mo_step(h, seed * 7919 + turns), seed * 7919 + turns);
     const np = e.mo_players(h);
     const o = owners(h);
     // Every owner is a real seat or nobody.
@@ -134,17 +135,16 @@ function playGame(seed, players) {
      `${everBought} owned across the finished games`);
   ok('control: the games ran long enough', totalTurns > 200, totalTurns);
   // NOT "every game ends". Bankruptcy is the only ending this engine has in
-  // the STATE, and it is rare because nothing assembles a colour group
-  // deliberately (games-backlog GAME-8: no trading). `mono-loop` resolves an
-  // undecided game by capping the turns and awarding it to the richest, so a
-  // page stepping the state does the same with `mo_cap` and `mo_richest`.
-  // What must hold is that an unfinished game is genuinely undecided: every
-  // seat still solvent, and a richest player nameable.
+  // the STATE; `mono-loop` resolves an undecided game by capping the turns
+  // and awarding it to the richest, so a page stepping the state does the
+  // same with `mo_cap` and `mo_richest`. What must hold is that an unfinished
+  // game is genuinely undecided: every seat still solvent, and a richest
+  // player nameable.
   const undecided = [];
   for (let seed = 1; seed <= 12; seed++) {
     const players = 2 + (seed % 3);
     let h = e.mo_new(seed, players), n = 0;
-    while (e.mo_done(h) === 0 && n++ < 800) h = e.mo_step(h, seed * 7919 + n);
+    while (e.mo_done(h) === 0 && n++ < 800) h = settle(e.mo_step(h, seed * 7919 + n), seed * 7919 + n);
     if (e.mo_done(h) !== 1) {
       const rich = e.mo_richest(h);
       if (rich < 0 || rich >= e.mo_players(h)) undecided.push(`seed ${seed}: richest ${rich}`);
@@ -165,7 +165,7 @@ function playGame(seed, players) {
   const bad = [];
   for (let seed = 1; seed <= 12; seed++) {
     let h = e.mo_new(seed, 3), n = 0;
-    while (e.mo_done(h) === 0 && n++ < 800) h = e.mo_step(h, seed * 31 + n);
+    while (e.mo_done(h) === 0 && n++ < 800) h = settle(e.mo_step(h, seed * 31 + n), seed * 31 + n);
     if (e.mo_done(h) === 1) {
       const w = e.mo_winner(h);
       if (w < 0 || w >= e.mo_players(h)) bad.push(`seed ${seed}: winner ${w}`);
@@ -184,10 +184,10 @@ ok('a property off the board is refused',
 ok('an owned-list index off the end is refused', e.mo_ownedat(s0, 0, 0) === -1);
 ok('a finished game refuses another turn', (() => {
   // Find a seed that actually ends in bankruptcy rather than assuming one
-  // does: with no trading, most games do not (GAME-8).
+  // does.
   for (let seed = 1; seed <= 40; seed++) {
     let h = e.mo_new(seed, 2), n = 0;
-    while (e.mo_done(h) === 0 && n++ < 800) h = e.mo_step(h, seed * 101 + n);
+    while (e.mo_done(h) === 0 && n++ < 800) h = settle(e.mo_step(h, seed * 101 + n), seed * 101 + n);
     if (e.mo_done(h) === 1) return e.mo_step(h, 1) === h;
   }
   return false;   // no bankruptcy in forty games would itself be a finding
@@ -200,7 +200,7 @@ ok('control: the board has the colours a Monopoly board has',
    new Set([...Array(e.mo_props(s0))].map((_, i) => e.mo_color(s0, i))).size + ' colours');
 ok('control: the ledger reader can see an owner change', (() => {
   let h = e.mo_new(3, 2), n = 0;
-  while (e.mo_done(h) === 0 && n++ < 200 && owners(h).every(o => o === -1)) h = e.mo_step(h, n);
+  while (e.mo_done(h) === 0 && n++ < 200 && owners(h).every(o => o === -1)) h = settle(e.mo_step(h, n), n);
   return owners(h).some(o => o !== -1);
 })());
 
@@ -219,7 +219,7 @@ ok('control: the ledger reader can see an owner change', (() => {
     const who = e.mo_cur(h);
     order.push(who);
     seen.set(who, (seen.get(who) || 0) + 1);
-    h = e.mo_step(h, 1000 + i);
+    h = settle(e.mo_step(h, 1000 + i), 1000 + i);
   }
   const counts = [0, 1, 2, 3].map(p => seen.get(p) || 0);
   ok('every seat comes round, and in order', counts.every(c => c >= 9),
@@ -293,24 +293,169 @@ ok('control: the ledger reader can see an owner change', (() => {
 }
 
 // -- ONE MODEL, NOT TWO ---------------------------------------------------
-// The watch-only runner is a POLICY over the same turn: roll, and take what
-// you were offered if you can afford it. If that stops being true the page
-// and the self-playing game have drifted apart, which is the failure the
-// whole split risks and no other arm here would notice.
+// The watch-only runner is a POLICY over the same turn: trade, roll, and take
+// what you were offered if you can afford it. Each game is walked forward to
+// a position where the seat to move trades, alternating with the position
+// before it, because at the opening nobody owns a deed and a trade cannot
+// fire.
 {
   const bad = [];
+  let tradedTurns = 0;
   for (let seed = 1; seed <= 60; seed++) {
-    const base = e.mo_new(seed, 4);
-    const byStep = e.mo_step(base, seed);
-    const rolled = e.mo_roll(base, seed);
+    let base = e.mo_new(seed, 4), prev = base;
+    for (let n = 0; n < 400 && e.mo_done(base) === 0; n++) {
+      if (owners(e.mo_trade(base)).join(',') !== owners(base).join(',')) break;
+      prev = base;
+      base = settle(e.mo_step(base, seed * 13 + n), seed * 13 + n);
+    }
+    if (seed % 2 === 0) base = prev;
+    if (e.mo_done(base) === 1) continue;
+    const traded = e.mo_trade(base);
+    if (owners(traded).join(',') !== owners(base).join(',')) tradedTurns++;
+    const byStep = settle(e.mo_step(base, seed), seed);
+    const rolled = e.mo_roll(traded, seed);
     const byHand = e.mo_phase(rolled) === 1 ? e.mo_take(rolled) : rolled;
     const shape = h => [e.mo_cur(h), e.mo_turn(h), ...cashes(h), ...owners(h)].join(',');
     if (shape(byStep) !== shape(byHand)) {
-      bad.push(`seed ${seed}: step and roll-then-take disagree`);
+      bad.push(`seed ${seed}: step and trade-roll-take disagree`);
     }
   }
   ok('the self-playing turn is the same turn a person takes',
-     bad.length === 0, bad.length ? bad.slice(0, 2).join('; ') : '60 turns');
+     bad.length === 0, bad.length ? bad.slice(0, 2).join('; ') : `60 positions, ${tradedTurns} with a trade`);
+  ok('control: a trade fired in at least one of those positions', tradedTurns > 0, tradedTurns);
+}
+
+// -- TRADING (GAME-8) -----------------------------------------------------
+// A trade moves deeds and cash between two seats and nothing else: the bank
+// takes no part, so the table's cash is conserved across `mo_trade`. A cash
+// buy costs exactly twice the printed price, every trade completes a colour
+// group for the seat that asked, and seat 0, the page's person, is never
+// made to sell.
+{
+  const bad = [];
+  let swaps = 0, buys = 0, seatZeroAsked = 0;
+  const groupWhole = (h, p, c) => {
+    let held = 0, size = 0;
+    for (let i = 0; i < e.mo_props(h); i++) {
+      if (e.mo_color(h, i) !== c) continue;
+      size++;
+      if (e.mo_owner(h, i) === p) held++;
+    }
+    return held === size;
+  };
+  for (let seed = 1; seed <= 40; seed++) {
+    const players = 2 + (seed % 3);
+    let h = e.mo_new(seed, players), n = 0;
+    while (e.mo_done(h) === 0 && n++ < 601) {
+      const who = e.mo_cur(h);
+      const t = e.mo_trade(h);
+      const o0 = owners(h), o1 = owners(t);
+      const moved = o0.map((o, i) => [i, o, o1[i]]).filter(([, a, b]) => a !== b);
+      if (moved.length > 0) {
+        const c0 = cashes(h), c1 = cashes(t);
+        const sum = a => a.reduce((x, y) => x + y, 0);
+        if (sum(c0) !== sum(c1)) bad.push(`seed ${seed} turn ${n}: a trade changed the table's cash`);
+        for (const [i, a] of moved) {
+          if (a === 0 && who !== 0) bad.push(`seed ${seed} turn ${n}: seat 0 was made to sell deed ${i}`);
+        }
+        const bought = moved.filter(([, , b]) => b === who);
+        if (bought.length !== 1) bad.push(`seed ${seed} turn ${n}: the asking seat gained ${bought.length} deeds`);
+        else if (!groupWhole(t, who, e.mo_color(t, bought[0][0]))) {
+          bad.push(`seed ${seed} turn ${n}: a trade that completed no group`);
+        }
+        if (moved.length === 2) swaps++;
+        else if (moved.length === 1) {
+          buys++;
+          const paid = c0[who] - c1[who];
+          if (paid !== 2 * e.mo_cost(h, moved[0][0])) {
+            bad.push(`seed ${seed} turn ${n}: paid ${paid} for a ${e.mo_cost(h, moved[0][0])} deed`);
+          }
+        } else bad.push(`seed ${seed} turn ${n}: ${moved.length} deeds moved in one trade`);
+      }
+      // Never ask the protected seat: count the positions where only seat 0
+      // held the deed someone wanted, so the refusal is seen to be reached.
+      if (who !== 0 && moved.length === 0) {
+        for (let c = 0; c < 8; c++) {
+          let mine = 0, size = 0, other = -1;
+          for (let i = 0; i < e.mo_props(h); i++) {
+            if (e.mo_color(h, i) !== c) continue;
+            size++;
+            if (e.mo_owner(h, i) === who) mine++; else other = e.mo_owner(h, i);
+          }
+          if (mine === size - 1 && other === 0) seatZeroAsked++;
+        }
+      }
+      h = settle(e.mo_step(h, seed * 7919 + n), seed * 7919 + n);
+    }
+  }
+  ok('a trade conserves cash, costs twice the price, completes a group, and never takes seat 0\'s deed',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : `${swaps} swaps, ${buys} buys over 40 games`);
+  ok('control: both kinds of trade happened', swaps > 0 && buys > 0, `${swaps} swaps, ${buys} buys`);
+  ok('control: seat 0 held a deed somebody wanted, and was not asked', seatZeroAsked > 0, seatZeroAsked);
+}
+
+// -- A TRADE OFFERED TO SEAT 0 (GAME-8) -----------------------------------
+// A seat that wants the one deed of a colour seat 0 holds OFFERS it: the
+// turn stops with the offer until it is answered. The offer names seat 0's
+// deed, and the asking seat holds the rest of that colour. An accepted offer
+// moves the deed to the asking seat and moves a deed back for a swap or twice
+// the printed price for a buy, and no other deed or cash moves; a declined
+// one changes nothing. Both answers, and both kinds, must happen.
+{
+  const bad = [];
+  let accepted = 0, declined = 0, swapOffers = 0, buyOffers = 0;
+  for (let seed = 1; seed <= 60; seed++) {
+    const players = 2 + (seed % 3);
+    let h = e.mo_new(seed, players), n = 0;
+    while (e.mo_done(h) === 0 && n++ < 601) {
+      h = e.mo_step(h, seed * 104729 + n);
+      if (e.mo_twant(h) < 0) continue;
+      const who = e.mo_cur(h), want = e.mo_twant(h), give = e.mo_tgive(h), price = e.mo_tprice(h);
+      if (who === 0) bad.push(`seed ${seed} turn ${n}: seat 0 offered to itself`);
+      if (e.mo_owner(h, want) !== 0) bad.push(`seed ${seed} turn ${n}: the wanted deed is not seat 0's`);
+      let held = 0, size = 0;
+      for (let i = 0; i < e.mo_props(h); i++) {
+        if (e.mo_color(h, i) !== e.mo_color(h, want)) continue;
+        size++;
+        if (e.mo_owner(h, i) === who) held++;
+      }
+      if (held !== size - 1) bad.push(`seed ${seed} turn ${n}: the asking seat holds ${held} of ${size}`);
+      if (give >= 0) {
+        swapOffers++;
+        if (price !== 0 || e.mo_owner(h, give) !== who) bad.push(`seed ${seed} turn ${n}: a swap priced ${price}, giving a deed owned by ${e.mo_owner(h, give)}`);
+      } else {
+        buyOffers++;
+        if (price !== 2 * e.mo_cost(h, want)) bad.push(`seed ${seed} turn ${n}: priced ${price} for a ${e.mo_cost(h, want)} deed`);
+      }
+      const o0 = owners(h), c0 = cashes(h);
+      const yes = ((seed + n) % 2) === 0;
+      const t = yes ? e.mo_accept(h) : e.mo_decline(h);
+      const o1 = owners(t), c1 = cashes(t);
+      if (e.mo_twant(t) >= 0) bad.push(`seed ${seed} turn ${n}: the offer outlived its answer`);
+      const moved = o0.map((o, i) => [i, o, o1[i]]).filter(([, a, b]) => a !== b);
+      const sum = a => a.reduce((x, y) => x + y, 0);
+      if (sum(c0) !== sum(c1)) bad.push(`seed ${seed} turn ${n}: an answer changed the table's cash`);
+      if (!yes) {
+        declined++;
+        if (moved.length !== 0 || c0.some((c, p) => c !== c1[p])) bad.push(`seed ${seed} turn ${n}: a decline moved something`);
+      } else {
+        accepted++;
+        const expect = give >= 0 ? [[want, 0, who], [give, who, 0]] : [[want, 0, who]];
+        const same = moved.length === expect.length
+          && expect.every(([i, a, b]) => moved.some(m => m[0] === i && m[1] === a && m[2] === b));
+        if (!same) bad.push(`seed ${seed} turn ${n}: accepting moved ${JSON.stringify(moved)}`);
+        if (c0[who] - c1[who] !== price || c1[0] - c0[0] !== price) {
+          bad.push(`seed ${seed} turn ${n}: paid ${c0[who] - c1[who]}, received ${c1[0] - c0[0]}, price ${price}`);
+        }
+      }
+      h = e.mo_resume(t, seed * 104729 + n);
+    }
+  }
+  ok('an offer to seat 0 names its deed, prices a swap at 0 and a buy at twice, and its answer moves exactly that',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : `${accepted} accepted, ${declined} declined`);
+  ok('control: offers were accepted and declined, and both kinds were offered',
+     accepted > 0 && declined > 0 && swapOffers > 0 && buyOffers > 0,
+     `${accepted} accepted, ${declined} declined, ${swapOffers} swaps, ${buyOffers} buys offered`);
 }
 
 console.log(fail === 0

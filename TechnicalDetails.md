@@ -47,11 +47,13 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 Measured 2026-08-03, except where an item gives its own date.
 
 1. **The compiler is a hard fixed point of itself on bare metal**
-   (measured 2026-09-17). The Update 61 release gate rebuilt current seed
-   `7BCD5BC6BCE0AF41` from its own source in one pass, whole-file byte-identical, with the text
-   round-trip green in the same run. BVT: 79 compile and 64 runtime passes,
-   plus the batch control. The signed seed verifies itself. Normal and poison
-   release batteries each passed 1,780 tests with zero failures and 49 declared exclusions.
+   (measured 2026-09-25). The Update 63 release gate rebuilt its compiler from
+   its own source in one pass, whole-file byte-identical, with the text
+   round-trip green in the same run; the release seed `C74F10419BA0DB66` was
+   rebuilt from the final source with stages 2, 3 and 4 byte-identical. BVT:
+   81 compile and 66 runtime passes. The signed seed verifies itself. The
+   poison battery passed 2,085 of 2,142 tests with zero failures and 57
+   declared exclusions.
 
 2. **Two independent implementations check the compiler, and they agree**
    (measured 2026-08-10). A fixed point proves the seed is *stable*, not
@@ -164,7 +166,7 @@ Measured 2026-08-03, except where an item gives its own date.
               an accumulator is copied by & inside a self call, here or in
               something it calls
    ```
-6. **603 library modules across 22 quires** (440 foreword + 163 OS): data
+6. **606 library modules across 22 quires** (441 foreword + 165 OS): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
@@ -225,28 +227,29 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**72 applications, 1,186 modules**, all written in Codex and compiled by
+**72 applications, 1,190 modules**, all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
-**Test battery: 1,829 tests, 1,780 pass, 0 fail, 49 declared exclusions**
-(normal and poison runs, 2026-09-17, release seed `7BCD5BC6BCE0AF41`).
+**Test battery: 2,142 tests, 2,085 pass, 0 fail, 57 declared exclusions**
+(poison run of the release source, 2026-09-25, release seed
+`C74F10419BA0DB66`).
 The BVT subset that `build/build.ps1`
-gates on is 79 tests, compiled and then run where an `.expected` exists,
-for 143 checks; its phase of this release gate took 30.0 seconds.
+gates on is 81 tests, compiled and then run where an `.expected` exists,
+for 147 checks; it took 38.3 seconds on the release seed.
 
 ---
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,626,873 bytes, 2026-09-24, an equality helper's name is respelled after type closure, so `[] == []` links) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,760,588 bytes, 2026-09-25, the Update 63 release seed) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `B30BE4021FB44BEB` |
-| SHA-256 | `CC7DD4559232C558C3ADB762521C9A6C7A7C9B04C2787E40C792FE95361B9523` |
-| MD5 | `56F76FC37375EB67983DE8D19445E6D2` |
+| Content hash prefix | `B5674034F877DDA0` |
+| SHA-256 | `C74F10419BA0DB66DF3337C0FDDC2366FBB705FE3FDA8F2D501423AFC0BEAD32` |
+| MD5 | `21667BF49F0DE8CE85562F46328E6CC4` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -282,12 +285,12 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `A507BE3B845E66DDE88D39BF6A125FAB576CB89679FCBA1AA32B08E7ADBC23A8` |
+| SHA-256 | `FD3FA5D717E309CA8D075E70AE585ED8A727BC856B1F8244897D70818A961785` |
 
-All 50 rehearsal arms passed on Codex VM and QEMU/OVMF on 2026-09-24,
+All 57 rehearsal arms passed on Codex VM and QEMU/OVMF on 2026-09-25,
 using a 180-second minimum VM-arm allowance. The shipping check confirmed
 the checked-in default configuration. The boot image contains the exact
-release seed, and all 6,081 text-map rows match its embedded MAP1.
+release seed, and all 6,305 text-map rows match its embedded MAP1.
 
 The payload is reproducible from its source and this seed: `DIAG.RCP` inside
 the image names both and carries `payload-sha256`, `bundled-sha256` and
@@ -563,14 +566,14 @@ is preserved regardless of Tier 1 and 2 support.
 ## Library Quires
 
 Code outside the compiler is organized into **22 quires** (library
-namespaces) holding **603 modules** (440 foreword, 163 OS). Quires cite
+namespaces) holding **606 modules** (441 foreword, 165 OS). Quires cite
 each other as `cites Game chapter AStar`; the quire name is the last
 segment of the directory name, capitalized. Full catalog:
 [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
 
 | Quire | Directory | Count |
 |---|---|---:|
-| Foreword | `codex/foreword/core/` | 133 |
+| Foreword | `codex/foreword/core/` | 134 |
 | Encode | `codex/foreword/encode/` | 78 |
 | UI | `codex/foreword/ui/` | 49 |
 | AI | `codex/foreword/ai/` | 43 |
@@ -585,7 +588,7 @@ segment of the directory name, capitalized. Full catalog:
 | Shell | `codex/foreword/shell/` | 6 |
 | Boards | `codex/boards/` | 9 |
 | OS (excl. net, kernel) | `codex/os/*/` | 85 |
-| Net | `codex/os/net/` | 42 |
+| Net | `codex/os/net/` | 43 |
 | Kernel | `codex/os/kernel/` | 36 |
 
 ---
@@ -594,13 +597,13 @@ segment of the directory name, capitalized. Full catalog:
 
 ```
 codex/
-  compiler/      Self-hosted compiler (67 files, 62,538 lines)
-  foreword/      440 library modules across 13 quires
+  compiler/      Self-hosted compiler (68 files, 65,428 lines)
+  foreword/      441 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
-  os/            Kernel, net, trust, verify, sched, dev, observe (163 modules)
+  os/            Kernel, net, trust, verify, sched, dev, observe (165 modules)
   plugs/         57 plugs, 209 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (1,899 files)
-apps/            72 applications, 1,186 modules
+  test/          Compiler samples + OS integration tests (2,028 files)
+apps/            72 applications, 1,190 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -618,8 +621,8 @@ additions and edits. Lines use .NET `ReadAllLines`.
 Unopened files behind main were read from the depot. Untracked files and
 build intermediates are excluded; tracked generated scripts and templates are included.
 
-The `codex/test/` and `codex/compiler/` file counts were refreshed on
-2026-09-19 to 1,848 and 66. The table's line counts and aggregate heading
+The `codex/test/` and `codex/compiler/` file counts were re-measured on
+2026-09-25. The table's line counts and aggregate heading
 retain the dated measurement above.
 
 These are physical-line counts, not statement counts. For `.codex`, blank
@@ -634,9 +637,9 @@ non-blank lines, including comments and markup.
 |---|---:|---:|---:|---:|
 | `apps/` | 1,158 | 210,502 | 13,774 | 38,878 |
 | `codex/foreword/` | 439 | 61,643 | 7,231 | 14,584 |
-| `codex/test/` | 1,899 | 68,000 | 10,381 | 16,575 |
+| `codex/test/` | 2,028 | 68,000 | 10,381 | 16,575 |
 | `codex/plugs/` | 262 | 63,515 | 5,726 | 9,988 |
-| `codex/compiler/` | 66 | 45,246 | 6,145 | 9,482 |
+| `codex/compiler/` | 68 | 45,246 | 6,145 | 9,482 |
 | `codex/os/` | 162 | 24,698 | 2,416 | 5,950 |
 | build tooling (`codex/build/`, `build/`) | 148 | 11,235 | 2,689 | 4,328 |
 | `tracker`, `workflow`, one withheld quire | 33 | 4,862 | 570 | 1,155 |

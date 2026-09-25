@@ -54,12 +54,6 @@ Section: Bind
 
 Section: Bring-up
 
- The SHAPE here is card-independent and the finder behind it is not. If
- the sitting reports a part that is not Intel, `e1000-find` and
- `e1000-init` are what change and this function does not. That is the
- reason it holds no device knowledge of its own: no device-ID table, no
- quirk, no register.
-
   net-driver-bring-up : [Network.Read] Integer
   net-driver-bring-up =
    let card = when e1000-find pci-scan-all
@@ -79,14 +73,6 @@ Section: The Poll Clock
  descriptor the card already wrote into RAM. Measured 2026-08-14 under
  codex-vm, one million empty polls: 15.52 s on the NE2000, 0.029 s on the
  e1000. 540 to one, and the real I219-V is a RAM read like the e1000.
-
- Every bound in NetworkStack is denominated in ticks, and the ratio between
- a measured round trip and a retransmit interval does hold at any steady
- rate, which is what that chapter's own argument rests on. What does not
- hold is anything pinned at a FIXED count of ticks: the initial RTO before
- a sample exists, the floor, the 48-tick clamp and the 141-tick give-up are
- wall-clock quantities in tick clothing. At 100000 polls a tick the e1000
- retransmits a SYN after 8.6 ms and abandons a live peer after 405 ms.
 
  So the interval is measured here, once, against the only clock this quire
  has. A guest that never calls net-driver-bring-up never pays for it and
@@ -126,11 +112,6 @@ Section: The Poll Clock
     net-driver-cal-loop deadline (n + net-driver-cal-batch) (fuel - 1)
    end
 
- Calibration runs before any session exists, so a frame it polls up and
- drops is a frame that had no owner. Doing this lazily on the first connect
- or accept would not have that property: there the frame it dropped could
- be the SYN.
-
   net-driver-calibrate : [Network.Read] Integer
   net-driver-calibrate =
    let started = hpet-start
@@ -153,15 +134,7 @@ Section: The Poll Clock
  Answering the fallback rather than the ceiling is the point. A value larger
  than calibration can produce is not a measurement at all, and clamping it to
  the maximum legitimate measurement would report garbage AS a measurement --
- a plausible number in place of an honest one, which is the failure this tree
- has paid for twice this month. The low side has answered the fallback since
- it was written and this is the same answer at the other end.
-
- WHAT IT WAS COSTING (root, 2026-08-21): `net-io-max-polls` is this value
- times `net-io-max-ticks`, so an unclamped read multiplies straight into the
- ceiling of every NetIO wait. A stale cell of three billion makes that
- ceiling 1.5 trillion polls, and `net-io-send-drain` is entered once per
- CHUNK, so a stalled peer pays it per 1400 bytes rather than once per send.
+ a plausible number in place of an honest one.
 
   net-driver-cal-max : Integer = net-driver-cal-fuel * net-driver-cal-batch
 

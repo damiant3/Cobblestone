@@ -678,17 +678,27 @@ Section: Context Modelling
   brctx2-load (ignored) = brctx2-fill (brdict-b64-table 0) 0 []
 
   BrLCtx = record {
-    bc2-mode : Integer,
-    bc2-lut : List Integer
+    lc-blk : BrBlk,
+    lc-modes : List Integer,
+    lc-lut : List Integer
   }
 
-  brotli-lctx-none : Integer -> BrLCtx
-  brotli-lctx-none (ignored) = BrLCtx { bc2-mode = 0, bc2-lut = [] }
+ RFC 7932 7.1: mode 0 LSB6, 1 MSB6, 2 UTF8 through Lut0 and Lut1, 3 Signed
+ through Lut2. Lut2 is a step function of the byte and is computed rather than
+ stored: 0 for 0, then 1 to 15, 16 to 63, 64 to 127, 128 to 191, 192 to 239,
+ 240 to 254 and 255 take 1 to 7.
 
-  brotli-ctx-of : Integer, Integer, BrLCtx -> Integer
-  brotli-ctx-of (p1) (p2) (lc) =
-    if lc.bc2-mode == 0 then bit-and p1 63
-    else bit-or (list-at (lc.bc2-lut) p1) (list-at (lc.bc2-lut) (256 + p2))
+  brotli-lut2 : Integer -> Integer
+  brotli-lut2 (b) =
+    if b == 0 then 0 else if b < 16 then 1 else if b < 64 then 2 else if b < 128 then 3
+    else if b < 192 then 4 else if b < 240 then 5 else if b < 255 then 6 else 7
+
+  brotli-lit-ctx : Integer, List Integer, Integer, Integer -> Integer
+  brotli-lit-ctx (mode) (lut) (p1) (p2) =
+    if mode == 0 then bit-and p1 63
+    else if mode == 1 then bit-shru p1 2
+    else if mode == 2 then bit-or (list-at lut p1) (list-at lut (256 + p2))
+    else bit-or (bit-shl (brotli-lut2 p1) 3) (brotli-lut2 p2)
 
  A tree count is not a plain integer. One zero bit means one tree; otherwise a one
  bit, three bits naming N, and N more bits, for (1 << N) + 1 + extra. Two is
@@ -1885,12 +1895,8 @@ Section: Decompression
  boundary is the entire point of the block a flush emits, so the skip to it applies
  with zero metadata bytes exactly as with a thousand.
 
- THE NON-EMPTY CASE IS REFUSED RATHER THAN GUESSED. An empty metadata block is
- two bits saying so, and that is the one a flush writes and the one measured here.
- A block that actually carries metadata bytes needs a skip length whose exact
- encoding no stream available here exercises, and a wrong skip does not error --
- it resumes mid-stream and decodes to plausible garbage, which is the failure this
- whole chapter exists to have stopped making. So it answers empty.
+ RFC 7932 9.2: after the reserved bit, MSKIPBYTES (2 bits) bytes of MSKIPLEN - 1,
+ then the byte boundary, then MSKIPLEN bytes that are not output.
 
   brotli-meta : BitReader, List Integer, Boolean, List Integer, BrXf, Integer, List Integer -> List Integer
   brotli-meta (r) (acc) (islast) (dict) (xf) (window) (cache) =
@@ -1909,8 +1915,9 @@ Section: Decompression
     in if rsv /= 0 then []
     else let skb = br-bits (br-advance r 1) 2
     in let r1 = br-advance r 3
-    in if skb == 0 then brotli-blocks (br-align r1) acc dict xf window cache
-    else []
+    in let skip = if skb == 0 then 0 else br-bits r1 (skb * 8) + 1
+    in let ra = br-align (br-advance r1 (skb * 8))
+    in brotli-blocks (br-advance ra (skip * 8)) acc dict xf window cache
 
   brotli-meta-kind : BitReader, List Integer, Integer, List Integer, BrXf, Integer, List Integer -> List Integer
   brotli-meta-kind (r) (acc) (mlen) (dict) (xf) (window) (cache) =
@@ -2010,7 +2017,10 @@ Section: Decompression
 
   BrNLits = record {
     bn-out : List Integer,
-    bn-r : BitReader
+    bn-r : BitReader,
+    bn-t : Integer,
+    bn-prev : Integer,
+    bn-len : Integer
   }
 
  A literal is read with the tree its context names. The context is the low six
@@ -2018,15 +2028,22 @@ Section: Decompression
  being read once it has produced one and the tail of everything written so far
  before that, so a literal following a copy takes the copy's last byte.
 
-  brotli-take-n : BitReader, List BrDec, List Integer, Integer, Integer, Integer, BrLCtx, List Integer -> BrNLits
-  brotli-take-n (r) (lks) (map) (prev) (prev2) (count) (lc) (acc) =
-    if count <= 0 then BrNLits { bn-out = acc, bn-r = r }
-    else let na = list-length acc
+  brotli-take-n : BitReader, List BrDec, List Integer, Integer, Integer, Integer, BrLCtx, Integer, Integer, Integer, List Integer -> BrNLits
+  brotli-take-n (r) (lks) (map) (prev) (prev2) (count) (lc) (lt) (lp) (ll) (acc) =
+    if count <= 0 then BrNLits { bn-out = acc, bn-r = r, bn-t = lt, bn-prev = lp, bn-len = ll }
+    else if ll > 0 then brotli-take-one r lks map prev prev2 count lc lt lp (ll - 1) acc
+    else let sw = brotli-read-switch r (lc.lc-blk) lt lp
+    in brotli-take-one (sw.by-r) lks map prev prev2 count lc (sw.by-t) (sw.by-prev) (sw.by-len - 1) acc
+
+  brotli-take-one : BitReader, List BrDec, List Integer, Integer, Integer, Integer, BrLCtx, Integer, Integer, Integer, List Integer -> BrNLits
+  brotli-take-one (r) (lks) (map) (prev) (prev2) (count) (lc) (lt) (lp) (ll) (acc) =
+    let na = list-length acc
     in let p = if na == 0 then prev else list-at acc (na - 1)
     in let q = if na == 0 then prev2 else if na == 1 then prev else list-at acc (na - 2)
-    in let j = if list-length map == 0 then 0 else list-at map (brotli-ctx-of p q lc)
+    in let cx = brotli-lit-ctx (list-at (lc.lc-modes) lt) (lc.lc-lut) p q
+    in let j = if list-length map == 0 then 0 else list-at map ((bit-shl lt 6) + cx)
     in let s = brotli-get-sym r (list-at lks j)
-    in brotli-take-n (s.dr-reader) lks map prev prev2 (count - 1) lc (list-push acc (s.dr-sym))
+    in brotli-take-n (s.dr-reader) lks map prev prev2 (count - 1) lc lt lp ll (list-push acc (s.dr-sym))
 
   BrMap = record {
     bm-map : List Integer,
@@ -2197,7 +2214,10 @@ Section: Decompression
     bs2-len : Integer,
     bs2-ks : List BrDec,
     bs2-map : List Integer,
-    bs2-cache : List Integer
+    bs2-cache : List Integer,
+    bs2-lt : Integer,
+    bs2-lp : Integer,
+    bs2-ll : Integer
   }
 
  SYMBOL ZERO NAMES THE SECOND-TO-LAST BLOCK TYPE and answering it with the current
@@ -2233,32 +2253,39 @@ Section: Decompression
       by-r = br-advance (cs.dr-reader) ne
     }
 
- THE POSTFIX AND DIRECT FIELDS ARE READ, NOT SKIPPED, and the context mode is
- read once per literal block type rather than once per meta-block. The six bits
- that used to be stepped over carry NPOSTFIX and NDIRECT, and NDIRECT is scaled
- by NPOSTFIX -- the four-bit field is a count of postfix-sized steps, not a count
- of distances. Getting that scaling wrong is worth one hundred and twenty against
- fifteen on the cyclic stream, which is every distance in it.
+ RFC 7932 9.2: the four-bit NDIRECT field is scaled by NPOSTFIX, and a context
+ mode follows for EACH literal block type.
+
+  brotli-read-modes : BitReader, Integer, Integer, List Integer -> List Integer
+  brotli-read-modes (r) (n) (i) (acc) =
+    if i >= n then acc
+    else brotli-read-modes r n (i + 1) (list-push acc (br-bits (br-advance r (2 * i)) 2))
+
+  brotli-has-mode : List Integer, Integer, Integer -> Boolean
+  brotli-has-mode (modes) (m) (i) =
+    if i >= list-length modes then False
+    else if list-at modes i == m then True
+    else brotli-has-mode modes m (i + 1)
 
   brotli-compressed : BitReader, List Integer, Integer, Boolean, List Integer, BrXf, Integer, List Integer -> List Integer
   brotli-compressed (r) (acc) (mlen) (islast) (dict) (xf) (window) (cache) =
-    let nbl = brotli-varlen-read r
-    in let bi = brotli-read-split (nbl.bv-r)
+    let bl = brotli-read-split r
+    in let bi = brotli-read-split (bl.bz-r)
     in let bd = brotli-read-split (bi.bz-r)
     in let npostfix = br-bits (bd.bz-r) 2
     in let ndirect = bit-shl (br-bits (br-advance (bd.bz-r) 2) 4) npostfix
-    in let cmode = br-bits (br-advance (bd.bz-r) 6) 2
-    in let nl = brotli-varlen-read (br-advance (bd.bz-r) (6 + 2 * (nbl.bv-v)))
-    in let mp = brotli-read-cmap (nl.bv-r) (nl.bv-v) (brotli-ctx-count * (nbl.bv-v))
+    in let modes = brotli-read-modes (br-advance (bd.bz-r) 6) (bl.bz-n) 0 []
+    in let nl = brotli-varlen-read (br-advance (bd.bz-r) (6 + 2 * (bl.bz-n)))
+    in let mp = brotli-read-cmap (nl.bv-r) (nl.bv-v) (brotli-ctx-count * (bl.bz-n))
     in let nd = brotli-varlen-read (mp.bm-r)
     in let dmp = brotli-read-cmap (nd.bv-r) (nd.bv-v) (bd.bz-n * 4)
     in let ts = brotli-read-decs (dmp.bm-r) (nl.bv-v) 256 8 0 []
     in let iks = brotli-read-decs (ts.bs-r) (bi.bz-n) brotli-ic-alpha 10 0 []
     in let dalpha = brotli-dist-alpha-of npostfix ndirect
     in let dks = brotli-read-decs (iks.bs-r) (nd.bv-v) dalpha (brotli-abits-of dalpha) 0 []
-    in let lc = if cmode == 2 then BrLCtx { bc2-mode = 2, bc2-lut = brctx2-load 0 } else brotli-lctx-none 0
+    in let lc = BrLCtx { lc-blk = bl, lc-modes = modes, lc-lut = if brotli-has-mode modes 2 0 then brctx2-load 0 else [] }
     in let cfg = BrCfg { bg-window = window, bg-npostfix = npostfix, bg-ndirect = ndirect }
-    in let ds = BrDSt { bs2-blk = bd, bs2-t = 0, bs2-prev = 1, bs2-len = bd.bz-blen, bs2-ks = dks.bs-list, bs2-map = dmp.bm-map, bs2-cache = cache }
+    in let ds = BrDSt { bs2-blk = bd, bs2-t = 0, bs2-prev = 1, bs2-len = bd.bz-blen, bs2-ks = dks.bs-list, bs2-map = dmp.bm-map, bs2-cache = cache, bs2-lt = 0, bs2-lp = 1, bs2-ll = bl.bz-blen }
     in brotli-cmd-loop (dks.bs-r) acc mlen islast (ts.bs-list) (mp.bm-map) (iks.bs-list) bi 0 1 (bi.bz-blen) ds dict xf lc cfg
 
  The order inside a command is the encoder's exactly: the insert-and-copy symbol,
@@ -2271,14 +2298,6 @@ Section: Decompression
  been produced -- brotli-max-dist, the same function the encoder builds the
  distance with. The two ranges abut and cannot overlap, because a copy from the
  output can never reach further back than the output goes.
-
- THIS READER ONLY READS STREAMS THIS CHAPTER WROTE, and the gap is wider than it
- looks. It accepts one window size, one literal block type, no postfix or direct
- distance codes, and a distance context map only in the simple form. Every real
- encoder uses more than that: build/brotli-read-test.ps1 hands it four streams
- from .NET at quality eleven and it produces NOTHING for all four, refusing them
- at the very first bit because the window field is not the single zero it writes
- itself. That is a defect, not a note.
 
  RFC 7932's case transform is defined on UTF-8 BYTES, not on characters, and the
  corpus carries 23059 non-ASCII ones. Below 0xC0 flip bit 5 of an ASCII lower
@@ -2376,10 +2395,10 @@ Section: Decompression
     let la = list-length acc
     in let prev = if la == 0 then 0 else list-at acc (la - 1)
     in let prev2 = if la <= 1 then 0 else list-at acc (la - 2)
-    in let lits = brotli-take-n r lks map prev prev2 ins lc []
+    in let lits = brotli-take-n r lks map prev prev2 ins lc (ds.bs2-lt) (ds.bs2-lp) (ds.bs2-ll) []
     in let acc2 = acc & (lits.bn-out)
     in if need - ins <= 0 then (if islast then acc2 else brotli-blocks (lits.bn-r) acc2 dict xf (cfg.bg-window) (ds.bs2-cache))
-    else brotli-cmd-dist (lits.bn-r) acc2 need islast lks map iks blk bt bp bl ds dict xf lc cfg ins cpy imp
+    else brotli-cmd-dist lits acc2 need islast lks map iks blk bt bp bl ds dict xf lc cfg ins cpy imp
 
  AN IMPLICIT-DISTANCE COMMAND TOUCHES NOTHING ON THE DISTANCE SIDE. It reads no
  distance code, so it also takes no distance block switch and does not count against
@@ -2387,9 +2406,10 @@ Section: Decompression
  command that reads none must leave it exactly where it was. Getting only half of
  that right desynchronises a stream that mixes the two forms, which prose does.
 
-  brotli-cmd-dist : BitReader, List Integer, Integer, Boolean, List BrDec, List Integer, List BrDec, BrBlk, Integer, Integer, Integer, BrDSt, List Integer, BrXf, BrLCtx, BrCfg, Integer, Integer, Boolean -> List Integer
-  brotli-cmd-dist (r) (acc2) (need) (islast) (lks) (map) (iks) (blk) (bt) (bp) (bl) (ds) (dict) (xf) (lc) (cfg) (ins) (cpy) (imp) =
-    let dsw = if imp then BrSw { by-t = ds.bs2-t, by-prev = ds.bs2-prev, by-len = ds.bs2-len, by-r = r }
+  brotli-cmd-dist : BrNLits, List Integer, Integer, Boolean, List BrDec, List Integer, List BrDec, BrBlk, Integer, Integer, Integer, BrDSt, List Integer, BrXf, BrLCtx, BrCfg, Integer, Integer, Boolean -> List Integer
+  brotli-cmd-dist (lits) (acc2) (need) (islast) (lks) (map) (iks) (blk) (bt) (bp) (bl) (ds) (dict) (xf) (lc) (cfg) (ins) (cpy) (imp) =
+    let r = lits.bn-r
+    in let dsw = if imp then BrSw { by-t = ds.bs2-t, by-prev = ds.bs2-prev, by-len = ds.bs2-len, by-r = r }
        else if ds.bs2-len > 0 then BrSw { by-t = ds.bs2-t, by-prev = ds.bs2-prev, by-len = ds.bs2-len, by-r = r }
        else brotli-read-switch r (ds.bs2-blk) (ds.bs2-t) (ds.bs2-prev)
     in let dt = dsw.by-t
@@ -2408,14 +2428,24 @@ Section: Decompression
        else deflate-copy acc2 (la2 - dist) cpy
     in if list-length out - la2 > need - ins then []
     else if list-length out - la2 + ins <= 0 then []
-    else let ds2 = BrDSt { bs2-blk = ds.bs2-blk, bs2-t = dt, bs2-prev = dsw.by-prev, bs2-len = if imp then dsw.by-len else (dsw.by-len) - 1, bs2-ks = ds.bs2-ks, bs2-map = ds.bs2-map, bs2-cache = if isdict then ds.bs2-cache else dv.bq-cache }
+    else let ds2 = BrDSt { bs2-blk = ds.bs2-blk, bs2-t = dt, bs2-prev = dsw.by-prev, bs2-len = if imp then dsw.by-len else (dsw.by-len) - 1, bs2-ks = ds.bs2-ks, bs2-map = ds.bs2-map, bs2-cache = if isdict then ds.bs2-cache else dv.bq-cache, bs2-lt = lits.bn-t, bs2-lp = lits.bn-prev, bs2-ll = lits.bn-len }
     in brotli-cmd-loop (dv.bq-r) out (need - ins - (list-length out - la2)) islast lks map iks blk bt bp (bl - 1) ds2 dict2 xf lc cfg
 
   brotli-read-complex : BitReader, Integer, Integer -> BrLens
   brotli-read-complex (r) (n) (hskip) =
     let cl = brotli-read-clcl r (dh-zeros 18 0 []) hskip 0
-    in let tbl = dh-table-of (cl.bl-lens) 18
-    in brotli-read-lens (cl.bl-r) tbl (dh-zeros n 0 []) n 0 0 8 0 (0 - 1)
+    in let k = BrDec { bd-single = brotli-sole-sym (cl.bl-lens) 0 (0 - 1), bd-tbl = dh-table-of (cl.bl-lens) 18, bd-r = cl.bl-r }
+    in brotli-read-lens (cl.bl-r) k (dh-zeros n 0 []) n 0 0 8 0 (0 - 1)
+
+ RFC 7932 3.5: when exactly one code-length symbol has a non-zero length, its
+ code has zero length and is returned without reading a bit.
+
+  brotli-sole-sym : List Integer, Integer, Integer -> Integer
+  brotli-sole-sym (lens) (i) (found) =
+    if i >= list-length lens then found
+    else if list-at lens i == 0 then brotli-sole-sym lens (i + 1) found
+    else if found >= 0 then 0 - 1
+    else brotli-sole-sym lens (i + 1) i
 
   brotli-read-clcl : BitReader, List Integer, Integer, Integer -> BrLens
   brotli-read-clcl (r) (acc) (i) (space) =
@@ -2476,11 +2506,11 @@ Section: Decompression
     if rep <= 0 then 3 + extra
     else (bit-shl (rep - 2) extra-bits) + 3 + extra
 
-  brotli-read-lens : BitReader, DhTable, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> BrLens
+  brotli-read-lens : BitReader, BrDec, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> BrLens
   brotli-read-lens (r) (tbl) (acc) (n) (i) (space) (prev) (rep) (lastc) =
     if i >= n then BrLens { bl-lens = acc, bl-r = r }
     else if space >= 32768 then BrLens { bl-lens = acc, bl-r = r }
-    else let s = dh-decode-sym r tbl
+    else let s = brotli-get-sym r tbl
     in let l = s.dr-sym
     in if l < 16 then
          (let add = if l > 0 then bit-shru 32768 l else 0

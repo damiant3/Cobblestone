@@ -1,0 +1,54 @@
+Chapter: AiTextCost
+  cites AI chapter Gguf
+  cites AI chapter SafeTensors
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Fixtures
+
+  le64 : Integer -> List Integer
+  le64 (n) = [bit-and n 255, bit-and (bit-shru n 8) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 24) 255, 0, 0, 0, 0]
+
+  string-of : Integer -> List Integer
+  string-of (n) = le64 n & fill n 0 (__list-with-capacity (n + 1))
+
+  fill : Integer, Integer, List Integer -> List Integer
+  fill (n) (i) (acc) =
+    if i >= n then acc
+    else fill n (i + 1) (list-push acc 97)
+
+Section: Measurement
+
+  gguf-retained : List Integer -> Integer
+  gguf-retained (bs) =
+    let b = __heap-save
+    in let len = text-length ((gguf-read-string bs 0).gs-text)
+    in let a = __heap-save
+    in (a - b) + len - len
+
+  st-retained : List Integer -> Integer
+  st-retained (bs) =
+    let b = __heap-save
+    in let len = text-length (st-extract-text bs 8 (list-length bs - 8) "")
+    in let a = __heap-save
+    in (a - b) + len - len
+
+  verdict : Integer, Integer -> Text
+  verdict (at-n) (at-4n) =
+    if at-n <= 0 then "unmeasured"
+    else if at-4n < at-n * 8 then "linear" else "quadratic"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let small = string-of 1024
+    in let large = string-of 4096
+    in let big = string-of 1048576
+    in act
+      print-line-uni ("gguf=" & (gguf-read-string [3, 0, 0, 0, 0, 0, 0, 0, 104, 9, 105] 0).gs-text & " st=" & st-extract-text [0, 104, 105, 33] 1 9 "pre")
+      print-line-uni ("gguf-growth=" & verdict (gguf-retained small) (gguf-retained large))
+      print-line-uni ("st-growth=" & verdict (st-retained small) (st-retained large))
+      print-line-uni ("big-gguf=" & show (text-length ((gguf-read-string big 0).gs-text)) & " big-st=" & show (text-length (st-extract-text big 8 1048576 "")))
+    end
+  end

@@ -63,22 +63,22 @@ Section: Response Parsing
 
   http-parse-response : List Integer -> HttpClientResponse
   http-parse-response (bs) =
-    let status-line = read-line-from-bytes bs 0 (list-length bs) ""
+    let status-line = text-concat-list (read-line-from-bytes bs 0 (list-length bs) (__list-with-capacity 64))
     in let parts = split-on-space status-line
     in if list-length parts < 2 then HttpClientResponse { status-code = 0, status-text = "", body = "", content-length = 0, valid = False }
     else let code = parse-status-code (list-at parts 1)
     in let body-start = find-body-start bs 0 (list-length bs)
     in let body = if body-start >= list-length bs then ""
-      else read-body-from-bytes bs body-start (list-length bs) ""
+      else text-concat-list (read-body-from-bytes bs body-start (list-length bs) (__list-with-capacity (list-length bs - body-start + 1)))
     in HttpClientResponse { status-code = code, status-text = list-at parts 1, body = body, content-length = text-length body, valid = code >= 0 }
 
-  read-line-from-bytes : List Integer, Integer, Integer, Text -> Text
+  read-line-from-bytes : List Integer, Integer, Integer, List Text -> List Text
   read-line-from-bytes (bs) (i) (len) (acc) =
     if i >= len then acc
     else let b = list-at bs i
     in if b == 13 then acc
     else if b == 10 then acc
-    else read-line-from-bytes bs (i + 1) len (acc & char-encode (code-to-char (from-unicode b)))
+    else read-line-from-bytes bs (i + 1) len (list-push acc (cce-foreign-byte-text b))
 
   find-body-start : List Integer, Integer, Integer -> Integer
   find-body-start (bs) (i) (len) =
@@ -86,10 +86,10 @@ Section: Response Parsing
     else if list-at bs i == 13 then if list-at bs (i + 1) == 10 then if list-at bs (i + 2) == 13 then if list-at bs (i + 3) == 10 then i + 4 else find-body-start bs (i + 1) len else find-body-start bs (i + 1) len else find-body-start bs (i + 1) len
     else find-body-start bs (i + 1) len
 
-  read-body-from-bytes : List Integer, Integer, Integer, Text -> Text
+  read-body-from-bytes : List Integer, Integer, Integer, List Text -> List Text
   read-body-from-bytes (bs) (i) (len) (acc) =
     if i >= len then acc
-    else read-body-from-bytes bs (i + 1) len (acc & char-encode (code-to-char (from-unicode (list-at bs i))))
+    else read-body-from-bytes bs (i + 1) len (list-push acc (cce-foreign-byte-text (list-at bs i)))
 
   split-on-space : Text -> List Text
   split-on-space (s) = split-space-loop s 0 (text-length s) "" []

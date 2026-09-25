@@ -1,0 +1,104 @@
+Chapter: DevConsoleStickTest
+  cites Works chapter DevConsole
+  cites Works chapter DevConsoleBoot
+  cites Works chapter DevConsoleMenu
+  cites Works chapter UefiConsole
+  cites Works chapter KeyManager
+  cites Works chapter StickSource
+  cites Works chapter GopFat16
+  cites Works chapter CodeBrowser
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+
+ The .disk is `build/build-img.ps1 -TotalSectors 16384` over a 512-byte
+ dummy PE and a 354-byte SOURCE.SRC of 23 lines: chapter Alpha at line 0
+ (section First at 5, fn alpha-one at 7, value alpha-limit at 10), chapter
+ Beta at 12 (section Second at 14, fn beta-two at 16), chapter Gamma at 19
+ (fn gamma-alpha-bridge at 21).
+
+ We say:
+
+Section: Fixtures
+
+  bare-console : UefiConsoleState
+  bare-console = UefiConsoleState {
+    sys-table = 0,
+    con-out = 0,
+    con-in = 0,
+    rows = 25,
+    cols = 80,
+    cursor-row = 0,
+    cursor-col = 0
+  }
+
+  bare-disk : DiskFactStore
+  bare-disk = DiskFactStore { superblock = empty-superblock, mem = fact-store-empty, base = 0, limit = 0 }
+
+  bare-keys : Keypair
+  bare-keys = generate-keypair (sha256 (text-to-bytes "codex-dev-console-stick-test"))
+
+Section: Reporting
+
+  report : Text, DevConsoleState -> [Console] Nothing
+  report (label) (s) = act
+    print-line-uni (label & ": " & s.status)
+  end
+
+  labels : List MenuItem, Integer, Integer, Text -> Text
+  labels (items) (i) (n) (acc) =
+    if i >= n then acc
+    else labels items (i + 1) n (acc & (if i == 0 then "" else ",") & (list-at items i).label)
+
+  results : DevConsoleState -> Text
+  results (s) = format-search-results (s.search-results)
+
+Section: Body
+
+  drive : DevConsoleState -> [Console, Device.Port, Device.Block] Nothing
+  drive (s0) =
+    let b = dispatch-main-menu "browse" s0
+    in act
+      report "browse" b
+      print-line-uni ("chapters: " & labels (b.menu.items) 0 (list-length (b.menu.items)) "")
+      v <- handle-console-input b "Beta"
+      report "open Beta" v
+      print-line-uni ("scroll at " & show (v.view-scroll) & ", chapter " & show (v.view-chapter-idx))
+      let d = viewer-scroll-down v 1
+      in act
+        print-line-uni ("down one: " & show (d.view-scroll))
+        let n = viewer-next-chapter d
+        in act
+          report "next chapter" n
+          print-line-uni ("scroll at " & show (n.view-scroll) & ", down six stops at " & show ((viewer-scroll-down n 6).view-scroll))
+        end
+      end
+      q <- handle-console-input (dispatch-main-menu "search" s0) "alpha"
+      report "search alpha" q
+      print-line-uni (results q)
+      r <- handle-console-input (dispatch-main-menu "search" s0) "bridge"
+      report "search bridge" r
+      print-line-uni (results r)
+      z <- handle-console-input (dispatch-main-menu "search" s0) "zzz"
+      report "search zzz" z
+      y0 <- handle-console-input (dispatch-main-menu "debug" s0) "sym"
+      y1 <- handle-console-input y0 "beta"
+      report "sym beta" y1
+    end
+
+  opening : [Console, Device.Port, Device.Block] Nothing = act
+    let raw = dev-console-init bare-console bare-disk bare-keys
+    in let ctl = dispatch-main-menu "browse" (__record-set raw "source-index" index-full-dev-surface)
+    in act
+      report "CONTROL, the built-in index" ctl
+      m <- gfat-mount-esp
+      if m.gm-ok == False then print-line-uni "mount FAILED"
+      else act
+        blk <- ss-open (m.gm-vol)
+        if ss-verdict blk /= ss-v-ok then print-line-uni ("index verdict " & show (ss-verdict blk))
+        else let s1 = __record-set raw "stick" blk
+        in let s2 = __record-set s1 "stick-vol" (m.gm-vol)
+        in drive s2
+      end
+    end
+  end

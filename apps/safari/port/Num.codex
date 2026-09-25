@@ -2,18 +2,9 @@ Chapter: Num
 
  The Real primitives Codex's foreword does not have.
 
- `Gpu chapter DeviceMath` is the only Real chapter in the foreword and its whole
- surface is min, max, abs, sqrt, sin and cos. There is no rounding, no floor and
- no modulo, and the foreword's other numeric chapters -- Cordic, Easing, Color,
- GameCamera, Numeric -- are all INTEGER milli-units, so they answer a different
- question. Everything here is a gap upstream rather than a hole in the zig plug,
- and unlike `Safari chapter Trig` none of it is a stand-in for something that
- already exists.
-
- EVERY FUNCTION HERE NEEDS real-to-int, so none of it could have been written
- before 2026-08-29 -- see PORTING_NOTES A1 and plugs-backlog row 2.03. That is
- the honest reason this chapter did not exist earlier: the port had no way to
- reach the integers at all.
+ `Gpu chapter DeviceMath` is the foreword's only Real chapter: min, max, abs,
+ sqrt, sin and cos, with no rounding, floor or modulo. The other numeric chapters
+ are INTEGER milli-units. Every function here needs real-to-int.
 
  We say:
 
@@ -25,15 +16,11 @@ Section: Rounding
  of half or more in either direction is precisely the away-from-zero tie. One rule
  covers both signs, which is why there is no sign branch here any more.
 
- ADDING THE HALF FIRST IS THE VERSION THAT WAS WRONG, and NumCheck is what found
- it. `real-to-int (x + 0.5)` answers 1 for x = 0.49999999999999994 -- the largest
- double below a half -- because x + 0.5 is not representable and rounds UP to
- exactly 1.0, and the mirrored form answered -1 at -0.49999999999999994 where zig
- answers -0. Every caller in the game rounds a 0..255 colour channel, a stride
- count, a step count or a whole number of degrees, so not one of them could see
- it; a round that is wrong on a value none of today's callers produces is a trap
- for the next caller, and that is the whole reason this chapter is graded on a
- domain wider than its callers'.
+ ADDING THE HALF FIRST IS WRONG: `real-to-int (x + 0.5)` answers 1 for
+ x = 0.49999999999999994, the largest double below a half, because x + 0.5 is not
+ representable and rounds UP to exactly 1.0; the mirrored form answers -1 at
+ -0.49999999999999994 where zig answers -0. This chapter is graded on a domain
+ wider than its callers' for that reason.
 
   round-real : Real -> Real
   round-real (x) =
@@ -69,10 +56,8 @@ Section: Modulo
  whenever r was negative. So the double form is semantics-agnostic by
  construction.
 
- MEASURED, not reasoned about after the fact: replacing this with the truncated
- remainder leaves TowerCheck entirely green, including its negative-phase case.
- An earlier draft of this note claimed tower.zig "relies on" the floored form and
- that the two "disagree there". Both were wrong, and the red test said so.
+ MEASURED: replacing this with the truncated remainder leaves TowerCheck
+ entirely green, including its negative-phase case.
 
  Floored stays because it is what @mod means and the next caller may not wrap its
  argument twice. But nothing in this port grades the choice today.
@@ -87,18 +72,13 @@ Section: The Exponential
  reduction: take k as the nearest integer to x / ln 2, so the remainder r is
  within half a ln 2 of zero, sum the series there, and scale by 2^k.
 
- THIS NEEDS real-to-int TWICE OVER -- once to round k, once to count the doublings
- -- so like everything else here it could not have been written before the
- conversion emitters landed.
-
   ln2 : Real
   ln2 = 0.6931471805599453
 
- TWELVE TERMS OVER |r| <= 0.347 LEAVE A REMAINDER OF 1.7e-16, NOT THE 1e-17 THIS
- NOTE CLAIMED BEFORE IT WAS MEASURED. r^13/13! at r = ln2/2 is 1.671e-16, which is
- an arithmetic fact nobody had worked out. NumCheck now measures the whole chapter
- end to end against zig's @exp over eighteen arguments: the worst RELATIVE error is
- 8.5e-16, at x = 20, and the gate is 1e-15 because the stream reddens at 8e-16.
+ TWELVE TERMS OVER |r| <= 0.347 LEAVE A REMAINDER OF 1.7e-16: r^13/13! at
+ r = ln2/2 is 1.671e-16. NumCheck measures the whole chapter against zig's @exp
+ over eighteen arguments: the worst RELATIVE error is 8.5e-16, at x = 20, and the
+ gate is 1e-15 because the stream reddens at 8e-16.
 
  AND IT IS THE REDUCTION, NOT THE SERIES, THAT SETS THAT NUMBER. The three
  arguments small enough to need no reduction at all -- -0.05, 0 and 0.05 -- come
@@ -107,12 +87,6 @@ Section: The Exponential
  pair for exactly this reason. Splitting it is the fix if it ever matters:
  rider.zig consumes the answer in f32, where 8.5e-16 is nine orders below the last
  bit it can hold, so today it does not.
-
- WRITING A BOUND NOBODY CHECKED IS THE DEFECT THIS PORT IS SENDING UPSTREAM.
- FINDINGS.md item 2 is `Math chapter Cordic` claiming ~0.1% and delivering 0.45%,
- with a test that never calls a Cordic function. The claim above was 17x out for
- the same reason -- it was reasoned about rather than run -- and it is corrected
- here rather than left standing while we mail someone else's.
 
   exp-poly : Real -> Real
   exp-poly (r) =

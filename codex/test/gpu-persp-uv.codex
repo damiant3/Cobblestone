@@ -1,0 +1,82 @@
+Chapter: GpuPerspUv
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter GpuScene
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Engine chapter Texture
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+ The host rasterizer's half of engine-persp-uv: the same two-triangle floor,
+ checker and camera, drawn through GpuScene and read back from the
+ framebuffer. The frame goes through a viewport because a full-screen host
+ frame gets the glow post-process, which moves colours near every edge. The
+ ambient is 1000 because GpuScene shades an unlit material like any other,
+ so a white albedo reaches the modulate as 255.
+
+  rw : Integer = 320
+  rh : Integer = 240
+
+  fb-base : Integer = #BF000000
+
+  half : Integer = 2000
+
+  tex : EngineTexture
+  tex = etx-checkerboard 8 8 1 #F0F0F0 #202020
+
+  floor-scene : Scene3DState
+  floor-scene =
+    let cam = camera3d-new (vec3-new 0.0 1200.0 4200.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let node = sn3-with-mesh "floor" (mesh-plane half half) (emat-set-texture (emat-unlit (rgb 255 255 255)) tex)
+    in scene3d-set-ambient (scene3d-add (scene3d-new cam) node) 1000
+
+Section: Instrument
+
+ GpuScene rounds a projected coordinate where r3d-project-clip truncates, so
+ a centre can sit one pixel from where this projection puts it; a cell is
+ several pixels across everywhere it is sampled, which is what the two-pixel
+ screen margin also leaves room for.
+
+  cell-pv : Mat4, Integer, Integer -> ProjVert
+  cell-pv (vp) (i) (j) =
+    r3d-project-clip (r3d-clip-vertex (vertex (0 - 1750 + 500 * i) 0 (0 - 1750 + 500 * j) 0 1000 0 0 0 #FFFFFF) vp mat4-identity) (rw / 2) (rh / 2)
+
+  on-screen : ProjVert -> Boolean
+  on-screen (p) = p.pv-sx >= 2 & p.pv-sy >= 2 & p.pv-sx < rw - 2 & p.pv-sy < rh - 2
+
+  Tally = record {
+    ty-seen : Integer,
+    ty-right : Integer
+  }
+
+  fb-px : Integer, Integer -> Integer
+  fb-px (x) (y) = bit-and (peek-32 fb-base ((y * rw + x) * 4)) #FFFFFF
+
+  tally : Mat4, Integer, Tally -> Tally
+  tally (vp) (k) (acc) =
+    if k >= 64 then acc
+    else let i = k - (k / 8) * 8
+    in let j = k / 8
+    in let p = cell-pv vp i j
+    in if on-screen p then tally vp (k + 1) (Tally { ty-seen = acc.ty-seen + 1, ty-right = acc.ty-right + (if fb-px (p.pv-sx) (p.pv-sy) == etx-get tex i j then 1 else 0) })
+    else tally vp (k + 1) acc
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing = act
+    up <- gs-tex-upload tex
+    drawn <- gs-render-in floor-scene (gv-new 0 0 rw rh) #000000
+    let t = tally (camera3d-vp (floor-scene.s3-camera)) 0 (Tally { ty-seen = 0, ty-right = 0 })
+    in act
+      print-line-uni ("cell centres on screen   : " & show (t.ty-seen))
+      print-line-uni ("cell centres right texel : " & show (t.ty-right))
+      print-line-uni ("every centre right       : " & yn (t.ty-right == t.ty-seen & t.ty-seen > 0))
+    end
+  end
+
+Page 1

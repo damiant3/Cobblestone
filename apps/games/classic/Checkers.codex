@@ -4,9 +4,7 @@ Chapter: Checkers
  English draughts on an 8x8 board. 12 pieces per side. Pieces move
  diagonally forward; kings move in all four diagonal directions.
  Jumps are mandatory and multi-jump chains are followed. Reaching
- the opposite back rank promotes a piece to king. Alpha-beta
- minimax AI with piece-count, king bonus, and center-control
- evaluation.
+ the opposite back rank promotes a piece to king.
 
  Board encoding (List Integer, 64 cells):
    0 = empty, 1 = south man, 2 = south king,
@@ -20,7 +18,8 @@ Section: Types
     cells   : List Integer,
     turn    : Integer,
     over    : Boolean,
-    winner  : Integer
+    winner  : Integer,
+    quiet   : Integer
   }
 
   CheckerMove = record {
@@ -41,7 +40,7 @@ Section: Construction
   checkers-new : Integer -> CheckerBoard
   checkers-new (seed) =
     let cells = initial-board 0 []
-    in CheckerBoard { cells = cells, turn = 0, over = False, winner = -1 }
+    in CheckerBoard { cells = cells, turn = 0, over = False, winner = -1, quiet = 0 }
 
   initial-board : Integer, List Integer -> List Integer
   initial-board (i) (acc) =
@@ -189,13 +188,21 @@ Section: Apply Move
       else piece
     in let cells3 = list-set-at cells2 (m.to-sq) promoted
     in let next-turn = 1 - b.turn
-    in let game-over = check-game-over cells3 next-turn
-    in let win = if game-over then b.turn else -1
-    in CheckerBoard { cells = cells3, turn = next-turn, over = game-over, winner = win }
+    in let q = if m.captured >= 0 | promoted /= piece then 0 else b.quiet + 1
+    in let moved = CheckerBoard { cells = cells3, turn = next-turn, over = False, winner = -1, quiet = q }
+    in if check-game-over moved then CheckerBoard { cells = cells3, turn = next-turn, over = True, winner = b.turn, quiet = q }
+    else if q >= ck-quiet-limit then CheckerBoard { cells = cells3, turn = next-turn, over = True, winner = -1, quiet = q }
+    else moved
 
-  check-game-over : List Integer, Integer -> Boolean
-  check-game-over (cells) (next-turn) =
-    has-no-pieces cells next-turn
+ Forty moves by each side, eighty plies, with no capture and no crowning is
+ a draw: the English draughts rule for a position neither side can force.
+
+  ck-quiet-limit : Integer = 80
+
+  check-game-over : CheckerBoard -> Boolean
+  check-game-over (b) =
+    if has-no-pieces (b.cells) (b.turn) then True
+    else list-length (generate-moves b) == 0
 
   has-no-pieces : List Integer, Integer -> Boolean
   has-no-pieces (cells) (player) =

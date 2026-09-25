@@ -70,7 +70,7 @@ $ErrorActionPreference = 'Stop'
 # reassuring thing it can say. Measured 2026-08-15.
 $script:SourceExtensions = @(
     '.codex', '.ps1', '.md', '.expected', '.failing',
-    '.disk', '.cross-refusal', '.cross-fatal', '.no-cross', '.vmargs'
+    '.disk', '.disk-mint', '.disk2-mint', '.cross-refusal', '.cross-fatal', '.no-cross', '.vmargs'
 )
 
 # Returns the count of untracked files carrying a tracked source extension.

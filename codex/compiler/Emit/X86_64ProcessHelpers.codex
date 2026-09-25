@@ -5,7 +5,10 @@ Section: Process Scheduler Helpers
   emit-process-resume-helper : CodegenState -> CodegenState
   emit-process-resume-helper (st) =
    let st0 = record-func-offset st "__process_resume"
-   in let st1 = st-append-code st0 (mov-load reg-rsp reg-rsi proc-saved-rsp-offset)
+   in let fx0 = st-append-code st0 (mov-rr reg-rax reg-rsi & sub-ri reg-rax proc-table-base & shr-ri reg-rax 8)
+   in let fx1 = st-append-code fx0 (shl-ri reg-rax spawn-slot-region-shift & add-ri reg-rax fx-area-offset & mov-rr reg-rcx reg-rax)
+   in let fx2 = emit-vec-state-op fx1 xrstor64-rcx fxrstor64-rcx False
+   in let st1 = st-append-code fx2 (mov-load reg-rsp reg-rsi proc-saved-rsp-offset)
    in let st2 = st-append-code st1 (sub-ri reg-rsp 40)
    in let st3 = st-append-code st2 (xor-rr reg-rax reg-rax)
    in let st4 = st-append-code st3 (mov-store reg-rsp reg-rax 32)
@@ -52,7 +55,8 @@ Section: Process Scheduler Helpers
    in let st2 = emit-load-current-proc st0 reg-rax
    in let st3 = st-append-code st2 (mov-rr reg-rcx reg-rax)
    in let st4 = st-append-code st3 (shl-ri reg-rcx 8)
-   in let st5 = st-append-code st4 (add-ri reg-rcx proc-table-base)
+   in let st5a = st-append-code st4 (add-ri reg-rcx proc-table-base)
+   in let st5 = emit-call-to st5a "__fx_save"
    in let st6 = st-append-code st5 (mov-load reg-rsi reg-rsp 0)
    in let st7 = st-append-code st6 (mov-store reg-rcx reg-rsi proc-saved-rip-offset)
    in let st8 = st-append-code st7 (mov-rr reg-rsi reg-rsp)
@@ -277,6 +281,46 @@ Section: Process Scheduler Helpers
  spawn-slot-region-size at the call site - a request that cannot fit
  the slot is refused with -1, never silently overlapped.
 
+  emit-fx-save-helper : CodegenState -> CodegenState
+  emit-fx-save-helper (st) =
+   let st0 = record-func-offset st "__fx_save"
+   in let st1 = st-append-code st0 (push-r reg-rax & push-r reg-rdx & push-r reg-rcx & mov-rr reg-rax reg-rcx)
+   in let st2 = st-append-code st1 (sub-ri reg-rax proc-table-base & shr-ri reg-rax 8)
+   in let st3 = st-append-code st2 (shl-ri reg-rax spawn-slot-region-shift & add-ri reg-rax fx-area-offset & mov-rr reg-rcx reg-rax)
+   in let st4 = emit-vec-state-op st3 xsave64-rcx fxsave64-rcx True
+   in st-append-code st4 (pop-r reg-rcx & pop-r reg-rdx & pop-r reg-rax & x86-ret)
+
+  emit-fx-init-helper : CodegenState -> CodegenState
+  emit-fx-init-helper (st) =
+   let st0 = record-func-offset st "__fx_init"
+   in let st1 = st-append-code st0 (push-r reg-rax & push-r reg-rdx & push-r reg-rcx & mov-rr reg-rax reg-r12)
+   in let st2 = st-append-code st1 (shl-ri reg-rax spawn-slot-region-shift & add-ri reg-rax fx-area-offset & mov-rr reg-rcx reg-rax)
+   in let st3 = emit-vec-state-op st2 xsave64-rcx fxsave64-rcx True
+   in st-append-code st3 (pop-r reg-rcx & pop-r reg-rdx & pop-r reg-rax & x86-ret)
+
+ The area address is in RCX; RAX and RDX are clobbered, because XSAVE and
+ XRSTOR take the feature mask in EDX:EAX (7: x87, SSE, AVX). XRSTOR faults
+ on a nonzero XCOMP_BV or reserved header byte (bytes 520..575 of the area,
+ SDM 13.4.2), and the area's page is whatever its slot last held, so a save
+ zeroes them first.
+
+  emit-vec-state-op : CodegenState, List Integer, List Integer, Boolean -> CodegenState
+  emit-vec-state-op (st) (xs) (fx) (zero-header) =
+   let s0 = st-append-code st (li reg-rdx avx-admitted-addr & mov-load reg-rdx reg-rdx 0 & cmp-ri reg-rdx 0)
+   in let fx-pos = s0.code-len
+   in let s1 = st-append-code s0 (jcc cc-e 0)
+   in let s2 = if zero-header then st-append-code s1 (xor-rr reg-rax reg-rax & emit-zero-xsave-header 520) else s1
+   in let s3 = st-append-code s2 (li reg-rax 7 & xor-rr reg-rdx reg-rdx & xs)
+   in let done-pos = s3.code-len
+   in let s4 = st-append-code s3 (jmp 0)
+   in let s5 = patch-jcc-at s4 fx-pos (s4.code-len)
+   in let s6 = st-append-code s5 fx
+   in patch-jmp-at s6 done-pos (s6.code-len)
+
+  emit-zero-xsave-header : Integer -> List Integer
+  emit-zero-xsave-header (off) =
+   if off >= 576 then [] else mov-store reg-rcx reg-rax off & emit-zero-xsave-header (off + 8)
+
   emit-spawn-pool-carve-helper : CodegenState -> CodegenState
   emit-spawn-pool-carve-helper (st) =
    let st0 = record-func-offset st "__spawn_pool_carve"
@@ -322,7 +366,8 @@ Section: Process Scheduler Helpers
    in let st15 = st-append-code st14 (mov-rr reg-r12 reg-rcx)
    in let st16 = st-append-code st15 (mov-rr reg-r13 reg-rdx)
    in let st17 = st-append-code st16 (li reg-rdx (proc-spawn-heap-size + proc-spawn-stack-size))
-   in let st19b = emit-call-to st17 "__spawn_pool_carve"
+   in let st19a = emit-call-to st17 "__spawn_pool_carve"
+   in let st19b = emit-call-to st19a "__fx_init"
    in let st19c = emit-spawn-stack-pretouch st19b
    in let st20 = emit-load-func-addr st19c reg-rax "__proc_entry"
    in let st21 = st-append-code st20 (mov-store reg-r13 reg-rax proc-saved-rip-offset)
@@ -429,7 +474,8 @@ Section: Process Scheduler Helpers
    in let st17 = st-append-code st16 (mov-rr reg-r12 reg-rcx)
    in let st18 = st-append-code st17 (mov-rr reg-r13 reg-rdx)
    in let st19 = st-append-code st18 (li reg-rdx (proc-spawn-heap-size + proc-spawn-stack-size))
-   in let st23 = emit-call-to st19 "__spawn_pool_carve"
+   in let st23a = emit-call-to st19 "__spawn_pool_carve"
+   in let st23 = emit-call-to st23a "__fx_init"
    in let st23c = emit-spawn-stack-pretouch st23
    in let st24 = emit-load-func-addr st23c reg-rax "__proc_entry"
    in let st25 = st-append-code st24 (mov-store reg-r13 reg-rax proc-saved-rip-offset)
@@ -556,7 +602,8 @@ Section: Process Scheduler Helpers
    in let st4 = emit-load-current-proc ck14 reg-rax
    in let st5 = st-append-code st4 (mov-rr reg-rcx reg-rax)
    in let st6 = st-append-code st5 (shl-ri reg-rcx 8)
-   in let st7 = st-append-code st6 (add-ri reg-rcx proc-table-base)
+   in let st7a = st-append-code st6 (add-ri reg-rcx proc-table-base)
+   in let st7 = emit-call-to st7a "__fx_save"
    in let st8 = st-append-code st7 (mov-load reg-rsi reg-rsp 8)
    in let st9 = st-append-code st8 (mov-store reg-rcx reg-rsi proc-saved-rip-offset)
    in let st10 = st-append-code st9 (mov-rr reg-rsi reg-rsp)

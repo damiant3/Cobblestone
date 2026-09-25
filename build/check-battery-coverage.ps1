@@ -74,7 +74,7 @@ $knownBatteries = @('foreword', 'kernel', 'board', 'apps', 'compiler', 'plugs')
 # machine sidecar, so every one of them starts a machine. Leaving it here put
 # all 13 back in the review queue the ruling exists to empty.
 $softwareOnly = @('foreword', 'apps', 'plugs')
-$machineSidecars = @('.smp', '.vmargs', '.disk', '.disk2', '.disk-src', '.keys')
+$machineSidecars = @('.smp', '.vmargs', '.disk', '.disk2', '.disk-mint', '.disk2-mint', '.disk-src', '.keys')
 
 # --- the (quire, chapter) index, keyed the way a cite is written ---
 # A quire's chapters are the .codex files directly in its directory: the map is

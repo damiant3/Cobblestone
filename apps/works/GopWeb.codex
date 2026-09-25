@@ -8,23 +8,6 @@ Chapter: GopWeb
   cites UI chapter Widget
   cites Works chapter GopAhci
 
- The webserver as a SYSTEM SERVICE rather than something the desk runs
- (Damian, 2026-08-28: "the desktop is merely the admin app, the webserver is
- a system level concern"). The design is
- `docs/Designs/Active/OS/PreemptiveScheduler.md`.
-
- This chapter exists because nothing outside `codex/test` had ever called
- `process-spawn`. The kernel has had preemptive SMP processes, per-process
- page tables and per-process capabilities the whole time; the desk owned the
- CPU because nobody had ever spawned anything beside it. This is the first
- shipped caller.
-
- The service runs in a process of its own, so `Network.Read` and
- `Network.Write` are granted to THAT process and the desk's own capability
- row never gains them. That is the whole point of spawning rather than
- calling: a desk that served pages itself would have to carry the network
- capabilities for as long as it was running.
-
  We say:
 
 Section: The Service's Routes
@@ -50,11 +33,6 @@ Section: The Service's Routes
       HttpResponse { status = http-404, content-type = "text/plain", body = "Not found" }
 
 Section: The Block the Desk and the Service Share
-
- Bytes 0 to 63 are the desk's: the window registry keeps a window's slot at
- cells 44 through 60 of whatever block `desk-wnd-blk` answers, so the
- service's cells start at 64. A slot is 64 bytes, one length byte and up to
- 63 of text; sixteen slots is what a pane body shows without scrolling.
 
   gopweb-blk-pid : Integer = 64
   gopweb-blk-count : Integer = 72
@@ -108,10 +86,6 @@ Section: The Block the Desk and the Service Share
   gopweb-log-first : Integer -> Integer
   gopweb-log-first (c) = if c > gopweb-ring-slots then c - gopweb-ring-slots else 0
 
- The log is written by the server's observer rather than from inside the
- route, because `web-standard` answers `/api/health` and `/api/status`
- before the route is consulted and a route-side log records neither.
-
 Section: The Pane's Tree
 
   gopweb-log-rows : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
@@ -143,15 +117,10 @@ Section: The Pane's Tree
 
 Section: The Service
 
- The body a spawned process runs. `process-spawn` hands its child one
- Integer and takes the effect row with it, so the service's own
- `[Console, Network.Read, Network.Write]` travels into the child rather
- than having to be declared by whoever spawns it.
-
   gopweb-service : Integer, Integer -> [Console, Network.Read, Network.Write] Integer
   gopweb-service (blk) (ignored) =
-    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport gopweb-port), conns = [], free = [], served = 0 }
-    in gopweb-pump blk m0 0 [] 0 0
+    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport gopweb-port), conns = [], served = 0 }
+    in gopweb-pump blk m0 0 0 [] 0 0
 
   gopweb-take-cmd : Integer -> Integer
   gopweb-take-cmd (blk) =
@@ -160,16 +129,16 @@ Section: The Service
     else let p = poke-32 blk gopweb-blk-paused (if cmd == gopweb-cmd-stop then 1 else 0)
     in poke-32 blk gopweb-blk-cmd 0
 
-  gopweb-pump : Integer, WebMux, Integer, List Integer, Integer, Integer -> [Console, Network.Read, Network.Write] Integer
-  gopweb-pump (blk) (m) (since) (rx) (set) (mark) =
+  gopweb-pump : Integer, WebMux, Integer, Integer, List Integer, Integer, Integer -> [Console, Network.Read, Network.Write] Integer
+  gopweb-pump (blk) (m) (since) (empties) (rx) (set) (mark) =
     if list-length rx == 0 then let s = nc-set-acquire (nc-pool-cell process-get-pid)
       in let rx1 = net-io-rx rx
       in let mk = __heap-save
-      in gopweb-pump blk m since rx1 s mk
+      in gopweb-pump blk m since empties rx1 s mk
     else let tc = gopweb-take-cmd blk
     in if since >= web-sweep-interval then act
       m1 <- web-mux-sweep m 0
-      gopweb-pump blk (web-mux-compact m1 set mark) 0 rx set mark
+      gopweb-pump blk (web-mux-compact m1 set mark) 0 empties rx set mark
     end
     else let hp = __heap-save
     in act
@@ -177,22 +146,16 @@ Section: The Service
       if n == 0 | peek-32 blk gopweb-blk-paused /= 0 then
         let restored = __heap-restore hp
         in let y = process-yield
-        in gopweb-pump blk m (since + 1) rx set mark
+        in let w = web-idle-wait empties
+        in gopweb-pump blk m (since + 1 + w) (empties + 1) rx set mark
       else act
         m1 <- web-mux-feed-within gopweb-route (\line -> gopweb-log blk line) m rx n gopweb-port
         let sv = poke-32 blk gopweb-blk-served (m1.served)
-        in gopweb-pump blk (web-mux-compact m1 set mark) (since + 1) rx set mark
+        in gopweb-pump blk (web-mux-compact m1 set mark) (since + 1) 0 rx set mark
       end
     end
 
 Section: Starting It
-
- Answers the child's pid. The parent returns immediately: a service that
- had to be waited on would be a call with extra steps.
-
- 8 MiB: the mux's arena set is 384 KiB and compaction lets 128 KiB of
- garbage build before it runs, which leaves a plain spawn's 1 MiB heap
- 512 KiB, eight 64 KiB receive buffers counting the listener's.
 
   gopweb-heap-bytes : Integer = 8388608
 
@@ -200,8 +163,6 @@ Section: Starting It
   gopweb-start (blk) = process-spawn-with-heap (\x -> gopweb-service blk x) gopweb-heap-bytes
 
 Section: Holding the Network
-
- Answers the shared block, with the service's pid at `gopweb-blk-pid`.
 
   gopweb-hold : [Concurrent, Capability, Network.Read, Network.Write] Integer
   gopweb-hold =

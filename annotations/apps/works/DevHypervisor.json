@@ -78,5 +78,37 @@
     "date": "2026-08-06",
     "body": "The VMCS operations are meaningless outside VMX operation -- `vmclear` and `vmptrld` raise #UD when the processor never entered it -- so this refuses for the same reason and by the same test rather than running them and returning OK regardless.",
     "thread": null
+  },
+  {
+    "target": "function:vmx-read-revision-id",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "IA32_VMX_BASIC EXISTS ONLY ON A PROCESSOR IN WHICH VMX IS ENABLED, and reading it anywhere else is a #GP, not a zero. Measured: this faulted with `!EXC=0d RIP=... RDI=0000000000000480` under codex-vm -- 0x480 being the MSR index -- before any of the availability checks below could run, because a caller naturally asks for the revision id first and hands it to `vmx-enable`.",
+    "thread": null
+  },
+  {
+    "target": "function:vmx-feature-control-msr",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "**Measured here rather than assumed** (2026-07-27, under codex-vm): the MSR reads **1** -- lock set, VMX-outside-SMX clear -- which is exactly the encoding of a machine whose firmware has VT-x turned off. It is not zero, which is what the \"an MSR outside codex-vm's list reads zero\" note would have predicted, and the difference is worth having measured: the conclusion is the same and the reason for it is not.",
+    "thread": null
+  },
+  {
+    "target": "function:ept-perm-rwx",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Intel's encoding, not ours (SDM Vol 3C, 29.3.2 and 29.4.2). In an EPT entry that maps a 2 MB page, bits 2:0 are read, write and execute, bits 5:3 carry the EPT memory type, and bit 7 marks the entry as a leaf rather than a pointer to the next table; the frame occupies bits 51:21. A non-leaf entry carries the permission bits and the next table's address and nothing else. The EPT pointer holds the memory type in bits 2:0 and the page-walk length MINUS ONE in bits 5:3, so a four-level walk is written as three.",
+    "thread": null
+  },
+  {
+    "target": "function:guest-low-init-bytes",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "A raw CDX guest enters at `__start`, which loads RSP from `ram-size-addr` and then stores its heap position to `deck-pos-addr`, both absolute addresses inside the first 64 KB. Under EPT those are guest-physical, so they land in this freshly allocated region rather than in the host's low memory, and the region is handed over unzeroed: zeroing the whole guest would be one store per dword across the entire allocation. Only the low window is initialised, and the RAM size the guest will adopt as its stack top is written there.",
+    "thread": null
   }
 ]

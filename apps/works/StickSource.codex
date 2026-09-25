@@ -1,0 +1,496 @@
+Chapter: StickSource
+  cites Works chapter GopFat16
+  cites Works chapter GopDisk
+  cites Foreword chapter Fat16
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ We say:
+
+Section: Capacity
+
+ Sized against the SOURCE.SRC that build-boot-img.ps1 writes (2026-09-24):
+ 66,445 lines, 6,610 entries (88 chapters, 632 sections, 5,890 signatures),
+ 110,793 name bytes, 1,090 bytes on the longest line and 63 in the longest
+ name. Each cap is about twice its measurement. The index is about 1.3 MB,
+ inside the Dev Console's 8 MB spawn slot, and it holds no line as Text.
+
+  ss-file-name : Text = "SOURCE.SRC"
+
+  ss-max-lines : Integer = 131072
+  ss-max-entries : Integer = 16384
+  ss-entry-rec : Integer = 12
+  ss-pool-cap : Integer = 262144
+  ss-max-clusters : Integer = 65536
+  ss-max-chapters : Integer = 1024
+  ss-scratch-sectors : Integer = 128
+  ss-carry-cap : Integer = 128
+  ss-line-cap : Integer = 1024
+  ss-header : Integer = 96
+
+  ss-block-bytes : Integer =
+    ss-header + 64 + ss-max-lines * 4 + 64 + ss-max-entries * ss-entry-rec + 64
+    + ss-pool-cap + 64 + ss-max-clusters * 4 + 64 + ss-scratch-sectors * 512 + 64
+    + ss-carry-cap + 64 + 512 + 64 + 512 + 64 + ss-max-chapters * 4 + 64 + ss-line-cap + 64
+
+Section: The Block
+
+  ss-c-lines : Integer = 0
+  ss-c-ents : Integer = 4
+  ss-c-pool : Integer = 8
+  ss-c-clus : Integer = 12
+  ss-c-scratch : Integer = 16
+  ss-c-carry : Integer = 20
+  ss-c-fat : Integer = 24
+  ss-c-sec : Integer = 28
+  ss-c-chaps : Integer = 32
+  ss-c-linebuf : Integer = 36
+  ss-c-nlines : Integer = 40
+  ss-c-nents : Integer = 44
+  ss-c-npool : Integer = 48
+  ss-c-nclus : Integer = 52
+  ss-c-nchaps : Integer = 56
+  ss-c-size : Integer = 60
+  ss-c-carry-len : Integer = 64
+  ss-c-arrow : Integer = 68
+  ss-c-fat-sec : Integer = 72
+  ss-c-verdict : Integer = 76
+  ss-c-trunc : Integer = 80
+  ss-c-next : Integer = 84
+  ss-c-scanned : Integer = 88
+
+  ss-v-ok : Integer = 1
+  ss-v-read : Integer = 3
+  ss-v-chain : Integer = 4
+
+  ss-t-lines : Integer = 1
+  ss-t-entries : Integer = 2
+  ss-t-pool : Integer = 4
+  ss-t-clusters : Integer = 8
+  ss-t-chapters : Integer = 16
+
+  ss-kind-chapter : Integer = 1
+  ss-kind-section : Integer = 2
+  ss-kind-fn : Integer = 3
+  ss-kind-value : Integer = 4
+
+  ss-kind-label : Integer -> Text
+  ss-kind-label (k) =
+    if k == ss-kind-chapter then "chapter"
+    else if k == ss-kind-section then "section"
+    else if k == ss-kind-fn then "fn"
+    else if k == ss-kind-value then "value"
+    else "?"
+
+  ss-new : Integer -> Integer
+  ss-new (u) =
+    let blk = alloc-zeroed ss-header 64
+    in let a = poke-32 blk ss-c-lines (alloc-zeroed (ss-max-lines * 4) 64)
+    in let b = poke-32 blk ss-c-ents (alloc-zeroed (ss-max-entries * ss-entry-rec) 64)
+    in let c = poke-32 blk ss-c-pool (alloc-zeroed ss-pool-cap 64)
+    in let d = poke-32 blk ss-c-clus (alloc-zeroed (ss-max-clusters * 4) 64)
+    in let e = poke-32 blk ss-c-scratch (alloc-zeroed (ss-scratch-sectors * 512) 64)
+    in let f = poke-32 blk ss-c-carry (alloc-zeroed ss-carry-cap 64)
+    in let g = poke-32 blk ss-c-fat (alloc-zeroed 512 64)
+    in let h = poke-32 blk ss-c-sec (alloc-zeroed 512 64)
+    in let i = poke-32 blk ss-c-chaps (alloc-zeroed (ss-max-chapters * 4) 64)
+    in let j = poke-32 blk ss-c-linebuf (alloc-zeroed ss-line-cap 64)
+    in let k = poke-32 blk ss-c-fat-sec (0 - 1)
+    in blk
+
+  ss-flag : Integer, Integer -> Integer
+  ss-flag (blk) (bit) = poke-32 blk ss-c-trunc (bit-or (peek-32 blk ss-c-trunc) bit)
+
+  ss-flagged : Integer, Integer -> Boolean
+  ss-flagged (blk) (bit) = bit-and (peek-32 blk ss-c-trunc) bit /= 0
+
+  ss-verdict : Integer -> Integer
+  ss-verdict (blk) = if blk == 0 then 0 else peek-32 blk ss-c-verdict
+
+  ss-truncated : Integer -> Integer
+  ss-truncated (blk) = peek-32 blk ss-c-trunc
+
+  ss-size : Integer -> Integer
+  ss-size (blk) = peek-32 blk ss-c-scanned
+
+  ss-line-count : Integer -> Integer
+  ss-line-count (blk) = peek-32 blk ss-c-nlines
+
+  ss-entry-count : Integer -> Integer
+  ss-entry-count (blk) = peek-32 blk ss-c-nents
+
+  ss-chapter-count : Integer -> Integer
+  ss-chapter-count (blk) = peek-32 blk ss-c-nchaps
+
+Section: Recording
+
+  ss-add-line : Integer, Integer -> Integer
+  ss-add-line (blk) (off) =
+    let n = peek-32 blk ss-c-nlines
+    in if n >= ss-max-lines then ss-flag blk ss-t-lines
+    else let w = poke-32 (peek-32 blk ss-c-lines) (n * 4) off
+    in poke-32 blk ss-c-nlines (n + 1)
+
+  ss-copy : Integer, Integer, Integer, Integer, Integer -> Integer
+  ss-copy (src) (so) (dst) (dof) (n) =
+    if n <= 0 then 0
+    else let w = poke-byte dst dof (peek-byte src so)
+    in ss-copy src (so + 1) dst (dof + 1) (n - 1)
+
+  ss-add-chapter : Integer, Integer -> Integer
+  ss-add-chapter (blk) (e) =
+    let n = peek-32 blk ss-c-nchaps
+    in if n >= ss-max-chapters then ss-flag blk ss-t-chapters
+    else let w = poke-32 (peek-32 blk ss-c-chaps) (n * 4) e
+    in poke-32 blk ss-c-nchaps (n + 1)
+
+  ss-add-entry : Integer, Integer, Integer, Integer, Integer -> Integer
+  ss-add-entry (blk) (line) (kind) (off) (len) =
+    let e = peek-32 blk ss-c-nents
+    in let p = peek-32 blk ss-c-npool
+    in if e >= ss-max-entries then ss-flag blk ss-t-entries
+    else if p + len > ss-pool-cap then ss-flag blk ss-t-pool
+    else let c = ss-copy (peek-32 blk ss-c-carry) off (peek-32 blk ss-c-pool) p len
+    in let rec = peek-32 blk ss-c-ents + e * ss-entry-rec
+    in let a = poke-32 rec 0 line
+    in let b = poke-32 rec 4 p
+    in let k = poke-32 rec 8 (len + kind * 65536)
+    in let q = poke-32 blk ss-c-npool (p + len)
+    in let r = poke-32 blk ss-c-nents (e + 1)
+    in if kind == ss-kind-chapter then ss-add-chapter blk e else 0
+
+Section: Classifying A Line
+
+ The byte runs are ASCII `Chapter: ` and `Section: `; 32, 58, 45 and 62 are
+ space, colon, hyphen and `>`.
+
+  ss-is-chapter : Integer, Integer -> Boolean
+  ss-is-chapter (c) (n) =
+    n >= 9 & peek-byte c 0 == 67 & peek-byte c 1 == 104 & peek-byte c 2 == 97
+    & peek-byte c 3 == 112 & peek-byte c 4 == 116 & peek-byte c 5 == 101
+    & peek-byte c 6 == 114 & peek-byte c 7 == 58 & peek-byte c 8 == 32
+
+  ss-is-section : Integer, Integer -> Boolean
+  ss-is-section (c) (n) =
+    n >= 9 & peek-byte c 0 == 83 & peek-byte c 1 == 101 & peek-byte c 2 == 99
+    & peek-byte c 3 == 116 & peek-byte c 4 == 105 & peek-byte c 5 == 111
+    & peek-byte c 6 == 110 & peek-byte c 7 == 58 & peek-byte c 8 == 32
+
+  ss-word-len : Integer, Integer, Integer, Integer -> Integer
+  ss-word-len (c) (st) (i) (n) =
+    if st + i >= n then i
+    else if peek-byte c (st + i) == 32 then i
+    else ss-word-len c st (i + 1) n
+
+  ss-classify-sig : Integer, Integer, Integer -> Integer
+  ss-classify-sig (blk) (line) (n) =
+    let c = peek-32 blk ss-c-carry
+    in if n < 6 then 0
+    else if peek-byte c 0 /= 32 | peek-byte c 1 /= 32 | peek-byte c 2 == 32 then 0
+    else let k = ss-word-len c 2 0 n
+    in if 2 + k + 3 > n then 0
+    else if peek-byte c (2 + k) /= 32 | peek-byte c (3 + k) /= 58 | peek-byte c (4 + k) /= 32 then 0
+    else ss-add-entry blk line (if peek-32 blk ss-c-arrow == 4 then ss-kind-fn else ss-kind-value) 2 k
+
+  ss-classify : Integer, Integer -> Integer
+  ss-classify (blk) (line) =
+    let c = peek-32 blk ss-c-carry
+    in let n = peek-32 blk ss-c-carry-len
+    in if ss-is-chapter c n then ss-add-entry blk line ss-kind-chapter 9 (n - 9)
+    else if ss-is-section c n then ss-add-entry blk line ss-kind-section 9 (n - 9)
+    else ss-classify-sig blk line n
+
+  ss-arrow-step : Integer, Integer -> Integer
+  ss-arrow-step (st) (b) =
+    if st == 4 then 4
+    else if st == 3 then (if b == 32 then 4 else 0)
+    else if st == 2 then (if b == 62 then 3 else if b == 32 then 1 else 0)
+    else if st == 1 then (if b == 45 then 2 else if b == 32 then 1 else 0)
+    else if b == 32 then 1 else 0
+
+  ss-carry-push : Integer, Integer -> Integer
+  ss-carry-push (blk) (b) =
+    let n = peek-32 blk ss-c-carry-len
+    in if n >= ss-carry-cap then 0
+    else let w = poke-byte (peek-32 blk ss-c-carry) n b
+    in poke-32 blk ss-c-carry-len (n + 1)
+
+  ss-end-line : Integer -> Integer
+  ss-end-line (blk) =
+    let c = if ss-flagged blk ss-t-lines then 0 else ss-classify blk (peek-32 blk ss-c-nlines - 1)
+    in let a = poke-32 blk ss-c-carry-len 0
+    in poke-32 blk ss-c-arrow 0
+
+  ss-byte : Integer, Integer, Integer -> Integer
+  ss-byte (blk) (b) (off) =
+    if b == 10 then
+      let e = ss-end-line blk
+      in ss-add-line blk (off + 1)
+    else if b == 13 then 0
+    else let a = poke-32 blk ss-c-arrow (ss-arrow-step (peek-32 blk ss-c-arrow) b)
+    in ss-carry-push blk b
+
+  ss-scan-bytes : Integer, Integer, Integer, Integer, Integer -> Integer
+  ss-scan-bytes (blk) (buf) (i) (stop) (base) =
+    if i >= stop then 0
+    else let s = ss-byte blk (peek-byte buf i) (base + i)
+    in ss-scan-bytes blk buf (i + 1) stop base
+
+Section: Walking The Chain
+
+ The FAT sector last read is kept, so a chain walk reads one FAT sector per
+ 256 (FAT16) or 128 (FAT32) clusters rather than one per cluster. A run of
+ consecutive clusters is read in one command of up to ss-scratch-sectors.
+
+  ss-fat-value : Fat16Volume, Integer, Integer -> Integer
+  ss-fat-value (vol) (cache) (off) =
+    if gfat-is32 vol then bit-and (fat16-read-u32 cache off) 268435455
+    else fat16-read-u16 cache off
+
+  ss-fat-next : Fat16Volume, Integer, Integer -> [Device.Port] Integer
+  ss-fat-next (vol) (blk) (c) = act
+    let width = if gfat-is32 vol then 4 else 2
+    in let sec = (c * width) / 512
+    in let off = int-mod (c * width) 512
+    in let cache = peek-32 blk ss-c-fat
+    in if peek-32 blk ss-c-fat-sec == sec then ss-fat-value vol cache off
+    else let inv = poke-32 blk ss-c-fat-sec (0 - 1)
+    in act
+      ok <- disk-read-into ((vol.vol-fat-start) + sec) 1 cache
+      if ok == False then gfat-eoc vol
+      else let p = poke-32 blk ss-c-fat-sec sec in ss-fat-value vol cache off
+    end
+  end
+
+  ss-gather : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  ss-gather (vol) (blk) (c) (n) (cap) = act
+    let k = peek-32 blk ss-c-nclus
+    in if k >= ss-max-clusters then
+      let f = ss-flag blk ss-t-clusters
+      in let x = poke-32 blk ss-c-next (gfat-eoc vol)
+      in n
+    else let w = poke-32 (peek-32 blk ss-c-clus) (k * 4) c
+    in let w2 = poke-32 blk ss-c-nclus (k + 1)
+    in act
+      nxt <- ss-fat-next vol blk c
+      if n + 1 < cap & nxt == c + 1 then ss-gather vol blk nxt (n + 1) cap
+      else let x = poke-32 blk ss-c-next nxt in n + 1
+    end
+  end
+
+  ss-scan-loop : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  ss-scan-loop (vol) (blk) (c) (remaining) (base) = act
+    let sc = poke-32 blk ss-c-scanned base
+    in if remaining <= 0 then poke-32 blk ss-c-verdict ss-v-ok
+    else if gfat-is-end vol c | gfat-cluster-ok vol c == False then poke-32 blk ss-c-verdict ss-v-chain
+    else let spc = vol.vol-sectors-per-cluster
+    in let left = (remaining + spc * 512 - 1) / (spc * 512)
+    in let room = ss-scratch-sectors / spc
+    in let cap = if room < left then room else left
+    in act
+      n <- ss-gather vol blk c 0 cap
+      if n <= 0 then poke-32 blk ss-c-verdict ss-v-ok
+      else let want = (remaining + 511) / 512
+      in let sectors = if n * spc < want then n * spc else want
+      in let scratch = peek-32 blk ss-c-scratch
+      in act
+        ok <- disk-read-into (fat16-cluster-sector vol c) sectors scratch
+        if ok == False then poke-32 blk ss-c-verdict ss-v-read
+        else let bytes = if sectors * 512 < remaining then sectors * 512 else remaining
+        in let s = ss-scan-bytes blk scratch 0 bytes base
+        in if ss-flagged blk ss-t-clusters then
+          let t = poke-32 blk ss-c-scanned (base + bytes)
+          in poke-32 blk ss-c-verdict ss-v-ok
+        else ss-scan-loop vol blk (peek-32 blk ss-c-next) (remaining - bytes) (base + bytes)
+      end
+    end
+  end
+
+  ss-finish : Integer -> Integer
+  ss-finish (blk) =
+    let tail = if peek-32 blk ss-c-carry-len > 0 then ss-end-line blk else 0
+    in let n = peek-32 blk ss-c-nlines
+    in if n > 0 & ss-line-start blk (n - 1) == ss-size blk then poke-32 blk ss-c-nlines (n - 1)
+    else 0
+
+  ss-open : Fat16Volume -> [Device.Port] Integer
+  ss-open (vol) = act
+    e <- gfat-resolve vol ss-file-name
+    when e
+      is None -> 0
+      is Just (entry) -> act
+        let blk = ss-new 0
+        in let a = ss-add-line blk 0
+        in let z = poke-32 blk ss-c-size (entry.de-size)
+        in act
+          s <- ss-scan-loop vol blk (entry.de-cluster) (entry.de-size) 0
+          let f = ss-finish blk
+          in blk
+        end
+      end
+    end
+  end
+
+Section: Reading Back
+
+  ss-line-start : Integer, Integer -> Integer
+  ss-line-start (blk) (i) = peek-32 (peek-32 blk ss-c-lines) (i * 4)
+
+  ss-line-stop : Integer, Integer -> Integer
+  ss-line-stop (blk) (i) =
+    if i + 1 < ss-line-count blk then ss-line-start blk (i + 1) - 1
+    else ss-size blk
+
+  ss-chars : Integer, Integer, Integer, Text -> Text
+  ss-chars (buf) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let b = peek-byte buf i
+    in if b == 10 | b == 13 then ss-chars buf (i + 1) stop acc
+    else let ch = if b < 32 | b == 127 then " " else char-encode (code-to-char (from-unicode b))
+    in ss-chars buf (i + 1) stop (acc & ch)
+
+  ss-read-into : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Port] Integer
+  ss-read-into (vol) (blk) (off) (n) (dest) (done) = act
+    if done >= n then done
+    else let fo = off + done
+    in let cb = (vol.vol-sectors-per-cluster) * 512
+    in let ci = fo / cb
+    in if ci >= peek-32 blk ss-c-nclus then done
+    else let cl = peek-32 (peek-32 blk ss-c-clus) (ci * 4)
+    in let lba = fat16-cluster-sector vol cl + (int-mod fo cb) / 512
+    in let within = int-mod fo 512
+    in let take = if 512 - within < n - done then 512 - within else n - done
+    in let sec = peek-32 blk ss-c-sec
+    in act
+      ok <- disk-read-into lba 1 sec
+      if ok == False then done
+      else let c = ss-copy sec within dest done take
+      in ss-read-into vol blk off n dest (done + take)
+    end
+  end
+
+  ss-line-text : Fat16Volume, Integer, Integer, Integer -> [Device.Port] Text
+  ss-line-text (vol) (blk) (i) (cols) =
+    if i < 0 | i >= ss-line-count blk then ""
+    else let st = ss-line-start blk i
+    in let len = ss-line-stop blk i - st
+    in let cap = if cols > ss-line-cap then ss-line-cap else cols
+    in let n = if len > cap then cap else len
+    in let buf = peek-32 blk ss-c-linebuf
+    in act
+      got <- ss-read-into vol blk st n buf 0
+      ss-chars buf 0 got ""
+    end
+
+  ss-entry-at : Integer, Integer -> Integer
+  ss-entry-at (blk) (e) = peek-32 blk ss-c-ents + e * ss-entry-rec
+
+  ss-entry-line : Integer, Integer -> Integer
+  ss-entry-line (blk) (e) = peek-32 (ss-entry-at blk e) 0
+
+  ss-entry-kind : Integer, Integer -> Integer
+  ss-entry-kind (blk) (e) = peek-32 (ss-entry-at blk e) 8 / 65536
+
+  ss-entry-len : Integer, Integer -> Integer
+  ss-entry-len (blk) (e) = bit-and (peek-32 (ss-entry-at blk e) 8) 65535
+
+  ss-entry-name : Integer, Integer -> Text
+  ss-entry-name (blk) (e) =
+    let off = peek-32 (ss-entry-at blk e) 4
+    in ss-chars (peek-32 blk ss-c-pool) off (off + ss-entry-len blk e) ""
+
+  ss-chapter-entry : Integer, Integer -> Integer
+  ss-chapter-entry (blk) (i) = peek-32 (peek-32 blk ss-c-chaps) (i * 4)
+
+Section: Finding A Name
+
+  ss-text-bytes : Text, Integer, Integer, Integer -> Integer
+  ss-text-bytes (t) (dst) (i) (n) =
+    if i >= n then n
+    else let w = poke-byte dst i (to-unicode (char-code-at t i))
+    in ss-text-bytes t dst (i + 1) n
+
+  ss-bytes-eq : Integer, Integer, Integer, Integer, Integer -> Boolean
+  ss-bytes-eq (a) (ao) (b) (bo) (n) =
+    if n <= 0 then True
+    else if peek-byte a ao /= peek-byte b bo then False
+    else ss-bytes-eq a (ao + 1) b (bo + 1) (n - 1)
+
+  ss-find-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  ss-find-loop (blk) (pat) (n) (e) (total) =
+    if e >= total then 0 - 1
+    else if ss-entry-len blk e == n & ss-bytes-eq (peek-32 blk ss-c-pool) (peek-32 (ss-entry-at blk e) 4) pat 0 n then e
+    else ss-find-loop blk pat n (e + 1) total
+
+  ss-find-name : Integer, Text -> Integer
+  ss-find-name (blk) (name) =
+    let n = text-length name
+    in if n > ss-line-cap then 0 - 1
+    else let pat = peek-32 blk ss-c-linebuf
+    in let w = ss-text-bytes name pat 0 n
+    in ss-find-loop blk pat n 0 (ss-entry-count blk)
+
+  ss-name-has-at : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  ss-name-has-at (pool) (off) (len) (pat) (n) (p) =
+    if p + n > len then False
+    else if ss-bytes-eq pool (off + p) pat 0 n then True
+    else ss-name-has-at pool off len pat n (p + 1)
+
+  ss-entry-matches : Integer, Integer, Integer, Integer, Boolean -> Boolean
+  ss-entry-matches (blk) (e) (pat) (n) (anywhere) =
+    let off = peek-32 (ss-entry-at blk e) 4
+    in let len = ss-entry-len blk e
+    in if anywhere then ss-name-has-at (peek-32 blk ss-c-pool) off len pat n 0
+    else len >= n & ss-bytes-eq (peek-32 blk ss-c-pool) off pat 0 n
+
+  ss-search-loop : Integer, Integer, Integer, Boolean, Integer, Integer, Integer, List Integer -> List Integer
+  ss-search-loop (blk) (pat) (n) (anywhere) (e) (total) (cap) (acc) =
+    if e >= total then acc
+    else if list-length acc >= cap then acc
+    else if ss-entry-matches blk e pat n anywhere then ss-search-loop blk pat n anywhere (e + 1) total cap (list-push acc e)
+    else ss-search-loop blk pat n anywhere (e + 1) total cap acc
+
+  ss-search : Integer, Text, Integer -> List Integer
+  ss-search (blk) (query) (cap) =
+    let n = text-length query
+    in if n == 0 | n > ss-line-cap then []
+    else let pat = peek-32 blk ss-c-linebuf
+    in let w = ss-text-bytes query pat 0 n
+    in let pre = ss-search-loop blk pat n False 0 (ss-entry-count blk) cap []
+    in if list-length pre > 0 then pre
+    else ss-search-loop blk pat n True 0 (ss-entry-count blk) cap []
+
+Section: Chapters
+
+  ss-chapter-line : Integer, Integer -> Integer
+  ss-chapter-line (blk) (i) = ss-entry-line blk (ss-chapter-entry blk i)
+
+  ss-chapter-name : Integer, Integer -> Text
+  ss-chapter-name (blk) (i) = ss-entry-name blk (ss-chapter-entry blk i)
+
+  ss-chapter-end : Integer, Integer -> Integer
+  ss-chapter-end (blk) (i) =
+    if i + 1 < ss-chapter-count blk then ss-chapter-line blk (i + 1)
+    else ss-line-count blk
+
+  ss-chapter-search : Integer, Integer, Integer, Integer -> Integer
+  ss-chapter-search (blk) (line) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = (lo + hi + 1) / 2
+    in if ss-chapter-line blk mid <= line then ss-chapter-search blk line mid hi
+    else ss-chapter-search blk line lo (mid - 1)
+
+  ss-chapter-of-line : Integer, Integer -> Integer
+  ss-chapter-of-line (blk) (line) =
+    let n = ss-chapter-count blk
+    in if n <= 0 then 0 - 1
+    else if line < ss-chapter-line blk 0 then 0 - 1
+    else ss-chapter-search blk line 0 (n - 1)
+
+  ss-chapter-names-loop : Integer, Integer, Integer, List Text -> List Text
+  ss-chapter-names-loop (blk) (i) (n) (acc) =
+    if i >= n then acc
+    else ss-chapter-names-loop blk (i + 1) n (list-push acc (ss-chapter-name blk i))
+
+  ss-chapter-names : Integer -> List Text
+  ss-chapter-names (blk) = ss-chapter-names-loop blk 0 (ss-chapter-count blk) []

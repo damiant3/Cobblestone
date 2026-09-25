@@ -1,6 +1,11 @@
 Chapter: Opening
   grounds Device.Port, Device.Block
   cites Codex chapter Phase Allocator (phase-start, phase-measure, phase-took, phase-compact, phase-compact-poison, PhaseStart, PhaseMetrics, deck-short-of)
+  cites Codex chapter Collections (copy-list-with-headroom)
+  cites Codex chapter Passes (default-ir-pipeline, text-plug-ir-pipeline)
+  cites Codex chapter IR Fidelity (ir-fidelity-bag)
+  cites Codex chapter LambdaLifting (lift-lambdas)
+  cites Codex chapter Resolve Types (rewrite-ir-defs)
   cites Foreword chapter Maybe
   cites Foreword chapter Wrap64
   cites Foreword chapter Fat16
@@ -28,11 +33,12 @@ Section: Compile Flags
    wire-trace : Boolean,
    cost-report : Boolean,
    no-lift : Boolean,
+   fidelity : Boolean,
    pipeline : List Text
   }
 
   compile-flags-default : CompileFlags
-  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, wire-trace = False, cost-report = False, no-lift = False, pipeline = default-ir-pipeline }
+  compile-flags-default = CompileFlags { prose = False, escape-check = False, poison-compact = False, deck-scale = 100, phase-trace = False, wire-trace = False, cost-report = False, no-lift = False, fidelity = False, pipeline = default-ir-pipeline }
 
  A floor is a guard band plus a workspace, and only the workspace scales. The
  band is what the phase's write-path check reserves to stop short in, so a
@@ -205,7 +211,8 @@ Section: Frontend
    renames : List RenameEntry,
    bag : DiagnosticBag,
    heap-marks : List Integer,
-   phase-metrics : List PhaseMetrics
+   phase-metrics : List PhaseMetrics,
+   fid-types : List ExprTypeEntry
   }
 
   LexResult = record {
@@ -269,7 +276,8 @@ Section: Frontend
     renames = [],
     bag = bag,
     heap-marks = marks,
-    phase-metrics = []
+    phase-metrics = [],
+    fid-types = []
    }
 
   halted-checked : DiagnosticBag, List Integer -> CompileChecked
@@ -609,7 +617,7 @@ Section: Frontend
    in let check-ceiling = check-base + check-deck-height
    in let check-origin = __deck-pos
    in let check-phase = phase-start
-   in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments) check-ceiling check-base keep-base (keep-base + keep-height - 4194304) (if flags.poison-compact then poison-check else 0))
+   in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments) check-ceiling check-base keep-base (keep-base + keep-height - 4194304) (if flags.poison-compact then poison-check else 0) (flags.fidelity))
    in let batch-bag = if flags.phase-trace then deck-record (bag-from-list [make-warning cdx-escape-violation (check-result.batch-note) synthetic-span]) else no-overflow-bag
    in let h8 = __heap-save
    in let cap-diags = deck-record (check-opening-capabilities (check-result.types))
@@ -628,8 +636,9 @@ Section: Frontend
       then halted-checked check-bag check-heap-marks
       else let pre-sorted = deck-record (sort-bindings (check-result.types & check-result.env.bindings))
       in let pre-et = deck-record (sort-expr-types (check-result.state.expr-types))
+      in let pre-fid = if flags.fidelity then deck-record (sort-expr-types (check-result.state.fid-types)) else []
       in let post-ov-bag = if __deck-pos > check-ceiling then deck-overflow-bag "CHECK" else no-overflow-bag
-      in let memo-pop0 = list-length pre-et / 4 + list-length pre-sorted + 65536
+      in let memo-pop0 = (list-length pre-et + list-length pre-fid) / 4 + list-length pre-sorted + 65536
       in let memo-graph = (check-metrics.deck-end - check-metrics.deck-origin) / 64
       in let memo-pop = if memo-graph > memo-pop0 then memo-graph else memo-pop0
       in let memo-slots = memo-pow2-at-least (memo-pop * 2) 4096
@@ -677,6 +686,8 @@ Section: Frontend
       in let (sorted-all, kc-all) = tail-resolve-bindings (check-result.state) pre-sorted 0 (list-length pre-sorted) acc-all mc tail-scratch tail-bivy __deck-pos
       in let acc-et = deck-record (__list-with-capacity (list-length pre-et))
       in let (sorted-et, kc-et) = tail-resolve-expr-types (check-result.state) pre-et 0 (list-length pre-et) acc-et mc tail-scratch tail-bivy __deck-pos
+      in let acc-fid = if flags.fidelity then deck-record (__list-with-capacity (list-length pre-fid)) else []
+      in let (sorted-fid, kc-fid) = if flags.fidelity then tail-resolve-expr-types (check-result.state) pre-fid 0 (list-length pre-fid) acc-fid mc tail-scratch tail-bivy __deck-pos else ([], __deck-pos)
       in let tail-rewind = __heap-restore tail-bivy
       in let tail-memo-z = __memset (mc.mc-table) 0 (mc.mc-slots * 8)
       in let tail-bag = if flags.phase-trace then deck-record (bag-from-list [make-warning cdx-escape-violation ("CHECK-TAIL binds=" & show (list-length sorted-all) & " et=" & show (list-length sorted-et) & " keep-used=" & show (kc-et - check-result.keep-end)) synthetic-span]) else no-overflow-bag
@@ -703,7 +714,10 @@ Section: Frontend
        scope-grants = [],
        chapter-grounds = [],
        dirty-slots = [],
-       empty-lists = []
+       empty-lists = [],
+       eq-sites = [],
+       fidelity = flags.fidelity,
+       fid-types = sorted-fid
       })
       in let result0 = deck-record (CompileChecked {
        scoped = sr.scoped,
@@ -821,7 +835,8 @@ Section: Frontend
     renames = checked.renames,
     bag = fe-bag,
     heap-marks = checked.heap-marks,
-    phase-metrics = pm1
+    phase-metrics = pm1,
+    fid-types = checked.ust.fid-types
    })
    in let sealed = compact-phase flags poison-frontend
    in result
@@ -934,7 +949,8 @@ Section: Frontend
     renames = checked.renames,
     bag = fe-bag,
     heap-marks = checked.heap-marks,
-    phase-metrics = pm3
+    phase-metrics = pm3,
+    fid-types = []
    })
    in let sealed = compact-phase flags poison-frontend
    in result
@@ -1330,7 +1346,7 @@ Section: Text Compilation
 Section: Binary Compilation
 
   compile-to-cdx : CompileFrontend -> EmitChapterResult
-  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress 0
+  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress 0 False
 
   cdx-emit-roots : List Text
   cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write"]
@@ -1356,8 +1372,8 @@ Section: Binary Compilation
   ir-emit-roots : List Text
   ir-emit-roots = ["opening", "vb-capacity-auto", "vb-read-auto", "vb-write-auto", "fat16-servicer-read", "fat16-servicer-write"]
 
-  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, Integer between 0 and 2 -> EmitChapterResult
-  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) =
+  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, Integer between 0 and 2, Boolean -> EmitChapterResult
+  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) (avx-local) =
    if bag-has-errors (fe.bag) then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = fe.bag, symbol-map = [] }
    else let method-ceiling = if list-length (fe.method-inputs.classes) == 0 then 0
       else let base = build (fe.method-height) in base + fe.method-height
@@ -1367,13 +1383,13 @@ Section: Binary Compilation
     in let dropped = ir-dropped-budgeted-punctuals all-defs (pruned.defs)
     in let emit-input = ir-chapter-with-proofs pruned proofs
     in let emit-result = if list-length (fe.method-inputs.classes) == 0
-      then x86-64-emit-cdx-with-exit-mode emit-input (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target
+      then x86-64-emit-cdx-with-exit-mode emit-input (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target avx-local
       else let scan-copy = IRChapter { name = emit-input.name, defs = emit-input.defs, effect-op-names = emit-input.effect-op-names, span = emit-input.span }
       in let scan-ir = deck-record (eq-attach-helpers scan-copy (fe.type-defs))
       in let materialized = deck-record (method-materialize (fe.method-inputs) scan-ir (fe.type-defs) method-ceiling)
       in if bag-has-errors (materialized.bag)
          then EmitChapterResult { header-bytes = [], content-buf = 0, content-len = 0, tail-bytes = [], bag = materialized.bag, symbol-map = [] }
-         else x86-64-emit-cdx-with-exit-mode emit-input (method-runtime-bindings (fe.sorted-type-defs) materialized) exit-mode poison trace wd-mode dropped hosted-target
+         else x86-64-emit-cdx-with-exit-mode emit-input (method-runtime-bindings (fe.sorted-type-defs) materialized) exit-mode poison trace wd-mode dropped hosted-target avx-local
     in EmitChapterResult {
      header-bytes = emit-result.header-bytes,
      content-buf = emit-result.content-buf,
@@ -1613,7 +1629,7 @@ Section: Entry Point
       dbg-print-def-names (fe.cdx-ir.defs) 0 (list-length (fe.cdx-ir.defs))
      end
      else print-line-uni ""
-     let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode hosted-target
+     let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode hosted-target (has-mode-flag mode "avx-local")
      in act
       if prof then print-line-uni ("PROF-END: " & show (prof-dump 0))
       else print-line-uni ""
@@ -1828,7 +1844,8 @@ Section: Entry Point
   emit-ir-uni (source) (flags) =
    let fe = compile-frontend-ir source "Program" flags
    in let h-pre-emit = __heap-save
-   in let prepared = prepare-method-ir fe flags
+   in let prepared0 = prepare-method-ir fe flags
+   in let prepared = if flags.fidelity then __record-set prepared0 "bag" (bag-merge-all [prepared0.bag, ir-fidelity-bag (fe.fid-types) (prepared0.chapter)]) else prepared0
    in act
     print-codegen-error-header (bag-errors (prepared.bag))
     print-bag-notices (prepared.bag)
@@ -1885,7 +1902,10 @@ Section: Entry Point
    in let h-pre-emit = __heap-save
    in let text = compile-text fe CtCodexText
    in let h-post-emit = __heap-save
-   in print-line-uni ((format-heap-marks (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "PHASE-") & format-phase-decks (fe.phase-metrics) 0 (list-length (fe.phase-metrics)) "" & "EMIT-BYTES:" & integer-to-text (text-length text) & "\n")
+   in act
+    if bag-has-errors (fe.bag) then print-codegen-error-header (bag-errors (fe.bag)) else print-text ""
+    print-line-uni ((format-heap-marks (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "PHASE-") & format-phase-decks (fe.phase-metrics) 0 (list-length (fe.phase-metrics)) "" & "EMIT-BYTES:" & integer-to-text (text-length text) & "\n")
+   end
 
   format-phase-decks : List PhaseMetrics, Integer, Integer, Text -> Text
   format-phase-decks (ms) (i) (len) (acc) =
@@ -1948,7 +1968,7 @@ Section: Entry Point
 
   parse-mode-flags : Text, Integer -> CompileFlags
   parse-mode-flags (mode) (unit-len) =
-   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = effective-deck-scale mode unit-len, phase-trace = has-mode-flag mode "debug", wire-trace = has-mode-flag mode "wsz", cost-report = has-mode-flag mode "cost-report", no-lift = has-mode-flag mode "no-lift", pipeline = pipeline-of mode }
+   CompileFlags { prose = has-mode-flag mode "prose", escape-check = has-mode-flag mode "escape-check", poison-compact = has-mode-flag mode "poison-compact", deck-scale = effective-deck-scale mode unit-len, phase-trace = has-mode-flag mode "debug", wire-trace = has-mode-flag mode "wsz", cost-report = has-mode-flag mode "cost-report", no-lift = has-mode-flag mode "no-lift", fidelity = has-mode-flag mode "fidelity", pipeline = pipeline-of mode }
 
  The volume is resolved from the disk's own GPT rather than assumed to
  start at LBA 2048. That constant is only right for an image our own

@@ -1,0 +1,66 @@
+Chapter: DiagCad
+  cites Works chapter GopUsbKbd
+  cites Diag chapter DiagStage
+
+ A USB HID boot keyboard report (HID 1.11 appendix B) is eight bytes: byte 0
+ the modifier bits (bit 0 left Ctrl, 2 left Alt, 4 right Ctrl, 6 right Alt),
+ byte 1 reserved, bytes 2 to 7 the usages held down. Usage 0x4C (76) is
+ Delete and 0x63 (99) keypad Delete (HID Usage Tables, page 07).
+
+ 0xCF9 (3321) is the chipset reset control register: writing 2 then 6 sets
+ SYS_RST and then RST_CPU, a hard reset. Port 0x64 (100) command 0xFE (254)
+ pulses the 8042's reset line on boards that still carry one; a controller
+ that is absent reads 0xFF (255) and is not written.
+
+ We say:
+
+Section: The Chord
+
+  dcad-ctrl : Integer = 17
+  dcad-alt : Integer = 68
+
+  dcad-has-del : Integer, Integer -> Boolean
+  dcad-has-del (rep) (i) =
+    if i >= 8 then False
+    else let u = peek-byte rep i
+    in if u == 76 | u == 99 then True
+    else dcad-has-del rep (i + 1)
+
+  dcad-hit : UsbKbd -> Boolean
+  dcad-hit (k) =
+    if k.uk-ok == False then False
+    else let m = peek-byte (k.uk-report) 0
+    in if bit-and m dcad-ctrl == 0 then False
+    else if bit-and m dcad-alt == 0 then False
+    else dcad-has-del (k.uk-report) 2
+
+Section: The Reset
+
+  dcad-spin : Integer -> Integer
+  dcad-spin (n) = dcad-spin (n + 1)
+
+  dcad-reset : Integer -> [Device.Port] Integer
+  dcad-reset (n) = act
+    a <- port-out-byte 3321 2
+    b <- port-out-byte 3321 6
+    s <- port-in-byte 100
+    p <- if s /= 255 then port-out-byte 100 254 else 0
+    dcad-spin 0
+  end
+
+Section: The Poll
+
+ Four pumps per poll: `kbd-pump-one` advances one phase (arm, check, drain),
+ so one poll can arm the endpoint, take the report and test it.
+
+  dcad-pumps : UsbKbd, Integer -> Boolean
+  dcad-pumps (k) (n) =
+    if n <= 0 then False
+    else let p = kbd-pump-one k
+    in if dcad-hit k then True
+    else dcad-pumps k (n - 1)
+
+  dcad-poll : DiagCtx -> [Device.Port] Integer
+  dcad-poll (c) = act
+    if dcad-pumps (c.dc-kbd) 4 then dcad-reset 0 else 0
+  end

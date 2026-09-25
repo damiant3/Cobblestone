@@ -238,20 +238,18 @@ byte.
 
 #### Still open on this path
 
-1. **Every x86 receive loop that keeps state across frames reuses one frame
-   list; `Arm64NetIO` still builds a `List Integer` per frame, one
-   `list-push` per byte** (1,514 bytes become 16,400). `Arm64NetIO` waits
-   for two reasons: no bed runs its virtio receive except a QEMU UEFI boot
-   (`build/boot-arm64.ps1`), and each of its polls also rebuilds three state
-   records (`VirtqueueState`, `VirtioNetState`, `Arm64NetIOState`), which is
-   item 2's problem and wants item 2's repair. The measurement is
-   `e1000-rx-reuse`'s shape: drain the same N frames through the per-frame
-   path and through a reused list and compare the two heap deltas; the arm64
-   arm runs in the QEMU cross battery (`build/test-cross-batch.ps1`, QEMU is
-   the default bed) with a `.qemudev` naming `virtio-net-pci`, and
-   `arm64-web-server` (item 3) is the end-to-end check. The reusing loops are
-   NetIO's seven, `web-mux-loop`, `gopweb-pump`, `http-recv` and
-   `https-pull`. In the NetIO loops `net-driver-recv-into`
+1. **Every receive loop that keeps state across frames reuses one frame
+   list.** `Arm64NetIO`'s four loops copy through `virtio-net-poll-into` into
+   `Arm64NetIOState.rx`, a 1,522-element list allocated once by
+   `arm64-net-io-new` and carried by every rebuilt state, rather than once per
+   loop entry as NetIO does: the arm64 web server's outer loop never
+   reclaims, and a per-entry buffer costs more than the list path does on a
+   60-byte SYN. `codex/test/arm64-rx-reuse` drains the same 20 hand-written
+   ring entries through both paths on arm64: 1,276 bytes per 64-byte frame
+   through `virtio-net-poll-frame`, 202 through the reused list (measured
+   2026-09-24, seed CC7DD455). The 202 are the per-poll state records, which
+   item 2's compaction reclaims. The reusing loops on x86 are NetIO's seven, `web-mux-loop`,
+   `gopweb-pump`, `http-recv` and `https-pull`. In the NetIO loops `net-driver-recv-into`
    copies the frame into a list allocated once per loop entry
    (`net-driver-frame-buffer`, 1,522 elements, before the first heap mark),
    and the parse reads it through `net-process-frame-within`, which bounds
@@ -294,10 +292,22 @@ byte.
    a bare ACK, an ARP or a FIN leaves behind is the session the parse and the
    outbox flush rebuild, and with no collector every byte of it is permanent.
    The repair is compaction, below (ruled a defect and taken, root,
-   2026-09-23). **NetIO's seven loops, `http-recv`, `https-pull`, `web-mux-loop` and
-   `gopweb-pump` compact; `Arm64NetIO` does not.** `http-recv`'s
+   2026-09-23). **NetIO's seven loops, `http-recv`, `https-pull`, `web-mux-loop`,
+   `gopweb-pump` and `Arm64NetIO`'s four compact.** `http-recv`'s
    accumulator is reserved by its caller before the loop's mark and never
    pushed past that reservation, so compaction leaves it where it is.
+   **`Arm64NetIO` carries a second record above the mark,** `VirtioNetState`,
+   rebuilt per frame by `virtio-net-poll-into`. Its `device` and `mac`
+   pointers and the loop's `rx` list are allocated before the mark, therefore
+   `arm64-net-io-compact` reads all sixteen integers of the two queue records
+   BEFORE `transport-compact` returns the allocator to the mark, and rebuilds
+   both records after it. Armed by `codex/test/arm64-net-compact`, which drives
+   the real `arm64-net-io-recv-raw` over a hand-written 2,048-entry ring: 40
+   bare ACKs and a data segment do not compact, 1,500 compact 17 times and end
+   within one arena and four frames of the entry mark, at 1,675 bytes per
+   frame uncompacted (arm64, seed 0291C387, 2026-09-24). A compact-past that
+   never compacts turns exactly the two compaction lines red; a rebuild that
+   moves `avail-idx` by one turns exactly the counter line red.
 
    **THE STORAGE SHAPE: compaction into arenas the transport owns.** The
    session code stays functional; what changes is where the surviving state
@@ -394,9 +404,11 @@ byte.
    left by the previous owner points into memory it no longer holds;
    `net-arena-pool` has a child leave a set in its pool, spawns a second
    child into the same slot, and requires that child's pool to start empty.
-   **x86-64 only:** the address is not the arm64 runtime's process table and
-   nothing zeroes it there, so `net-arena-pool`, `net-ack-leak` and `web-mux-long-run` carry a `.no-cross`, and no
-   arm64 production path reaches the pool (`Arm64NetIO` does not compact).
+   **The same cell serves arm64:** the address 20480 reaches the arm64
+   process table at #40005000 through the runtime's low-address remap
+   (`Arm64Runtime.codex`, "Process Table"), the table is zeroed at boot, and
+   the arm64 spawn zeroes word 40 with the other per-process cells.
+   `net-arena-pool` and `net-ack-leak` run on both targets.
    A plain `process-spawn` gets a 1 MB heap (Spawn Regions), of which one
    set is 384 KiB, so a server spawned that way holds two compacting
    connections at most and wants `process-spawn-with-heap`.
@@ -464,7 +476,33 @@ byte.
    request to the printed `hostfwd` port answers HTTP 200 with the 948-byte
    landing page (measured 2026-09-24, seed 9A323747). It carries no
    `.expected`, so no gate runs it (L-NOGATE), deliberately: the run needs a
-   host peer. **A device read on arm64 needs `Device.Mmio` in the reader's
+   host peer. `boot-arm64.ps1` passes no `-Kernel`, so its IR compile runs
+   whatever `build-output\bare-metal\Codex.cdx` holds: copy the seed there
+   first. **It serves sequential requests indefinitely**: 45 of 45 across
+   the 256-entry avail ring's wrap (seed 0291C387), and 20 of 20 with the
+   heap top 33.8 MB under `vnet-dma-floor` on every loop (seed 5B2EA35E,
+   2026-09-24). **The arm64 stub grants the heap and the stack ONE 32 MB
+   region, stack growing down from `stack-top`, with the DMA floor at
+   `stack-top` rounded up to 2 MB, and every non-leaf prologue compares SP with the heap pointer x28 and prints `OUT OF MEMORY` on a collision, as x86-64 compares RSP with R10 (`a64-emit-stack-guard`, armed by `codex/test/arm64-stack-heap`).** `transport-new`'s default 32 MB receive buffer filled
+   the whole region, so the heap ran past `stack-top` with the stack's pages
+   inside the buffer; the server now takes WebServer's 64 KB. A serve loop that reclaimed nothing grew about
+   66 KB per request and at request 6 overwrote the rx descriptor table at
+   floor + #20000, after which QEMU popped an rx descriptor without WRITE
+   (`-trace virtqueue_pop`: `in_num 0 out_num 1`), marked the device broken
+   and delivered no further frame. The server therefore returns the heap to
+   one mark after every connection: `arm64-net-io-rebase` releases the
+   arena set, restores the mark and rebuilds the state from the six queue
+   counters that change, and the server builds a FRESH session after it,
+   because `list-push` extended the base session's lists in place (L-ALIAS)
+   and a rebase onto them ends in a `BRK` at the second request. The one
+   arena set is acquired and pooled before the mark; acquired above it, the
+   pool links reclaimed memory. `virtio-net-poll-into` and
+   `virtio-net-poll-frame` re-post the completed descriptor
+   (`virtio-repost-desc`), because descriptor i must hold buffer i for the
+   read address `id * vnet-max-frame` to be right; armed by
+   `codex/test/arm64-rx-recycle` (an in-test device over a 256-entry queue,
+   which reads 32 of 100 frames intact when the re-post goes to
+   `free-head`). **A device read on arm64 needs `Device.Mmio` in the reader's
    row**: the runtime answers -1 at any non-RAM address to a program without
    the `Device` capability (`codex/plugs/arm64/Arm64Runtime.codex:1037`), so
    an `opening` declaring only `[Console]` read an all-ones ECAM and found no
@@ -489,7 +527,7 @@ clearing the retransmit queue and setting `TcpClosed`. `transport-tick`
 (`net-io-wait-established`, `net-io-send-drain`, `net-io-recv-wait`,
 `net-io-recv-parked`, `net-io-recv-raw`) every `net-io-tick-interval` empty
 polls; `Arm64NetIO`'s receive and drain loops every
-`arm64-net-io-tick-interval`; and `web-mux-sweep`, which ages every mux
+`poll-interval` empty polls of their state, which `Arm64NetCalibrate` measures CNTVCT_EL0 at bring-up; and `web-mux-sweep`, which ages every mux
 connection once per `web-sweep-interval` (`WebServer.codex:286`, 1,000,000)
 polls. `net-io-accept` and `net-io-resolve` do not tick: a fresh listener has
 nothing queued. Every ticking loop returns as soon as the connection reads
@@ -526,8 +564,8 @@ pacing the idle reaper (`web-idle-max` counts sweeps).
 completed, and a stop at the first chunk `net-send` refuses (FIN_WAIT_1,
 FIN_WAIT_2, LAST_ACK: `Tcp.codex`). Armed on QEMU by
 `codex/test/arm64-send-checked`; removing the outbox check turns its refusal
-line red. `arm64-web-server` still sends through the unchecked
-`arm64-net-io-send-raw`.
+line red. `arm64-web-server` sends through it and reports `short:` with the
+bytes sent when a send does not complete.
 **Owner: blu** (`codex/os/net/**`).
 
 ## The Crypto Floor: Audited

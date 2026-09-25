@@ -3,8 +3,17 @@ Chapter: Uri
   cites Foreword chapter CCE
   cites Foreword chapter StringUtils
 
- URI parsing and construction (RFC 3986 subset). Breaks a URI
- string into scheme, host, port, path, and query components.
+ The RFC 3986 subset read here; outside it uri-parse answers valid = False
+ rather than components it did not read. A hierarchical URI is
+ scheme "://" authority path ["?" query] ["#" fragment], where the scheme is
+ ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) (section 3.1), the authority ends
+ at the first "/", "?" or "#" (section 3.2), and the authority is a reg-name
+ host of unreserved characters and pct-encoded octets with an optional port of
+ at most 65535. Userinfo and IP literals are outside the subset: splitting
+ "a:b@c" at the first colon names host "a" where the RFC names "c", which is
+ the shape of every URL-confusion attack. A relative reference whose first
+ segment holds a colon is refused, as section 4.2 requires, and so is a
+ non-hierarchical URI such as mailto:. A space is never part of a URI.
 
  We say:
 
@@ -15,6 +24,7 @@ Section: Components
     port : Integer,
     path : Text,
     query : Text,
+    fragment : Text,
     valid : Boolean
   }
 
@@ -22,35 +32,99 @@ Section: Parsing
   uri-parse : Text -> UriComponents
   uri-parse (s) =
     let len = text-length s
-    in let scheme-end = uri-find-char s 0 len (char-code (char-at ":" 0))
-    in if scheme-end >= len then uri-parse-relative s len
-    else if scheme-end + 2 < len then
-      if char-code (char-at s (scheme-end + 1)) == char-code (char-at "/" 0) then
-        if char-code (char-at s (scheme-end + 2)) == char-code (char-at "/" 0) then
-          let scheme = substring s 0 scheme-end
-          in uri-parse-authority s (scheme-end + 3) len scheme
-        else uri-parse-relative s len
-      else uri-parse-relative s len
-    else uri-parse-relative s len
+    in if text-contains s " " then uri-invalid
+    else let delim = min (uri-find-char s 0 len (char-code-at "/" 0)) (min (uri-find-char s 0 len (char-code-at "?" 0)) (uri-find-char s 0 len (char-code-at "#" 0)))
+    in let colon = uri-find-char s 0 delim (char-code-at ":" 0)
+    in if colon >= delim then uri-parse-relative s len
+    else if uri-slash-slash s (colon + 1) len then
+      if uri-scheme-ok s 0 colon then uri-parse-authority s (colon + 3) len (substring s 0 colon)
+      else uri-invalid
+    else uri-invalid
+
+  uri-invalid : UriComponents
+  uri-invalid = UriComponents { scheme = "", host = "", port = 0, path = "", query = "", fragment = "", valid = False }
+
+  uri-slash-slash : Text, Integer, Integer -> Boolean
+  uri-slash-slash (s) (i) (len) =
+    if i + 1 >= len then False
+    else if char-code-at s i == char-code-at "/" 0 then char-code-at s (i + 1) == char-code-at "/" 0
+    else False
 
   uri-parse-relative : Text, Integer -> UriComponents
   uri-parse-relative (s) (len) =
-    let query-start = uri-find-char s 0 len (char-code (char-at "?" 0))
-    in let path = substring s 0 query-start
-    in let query = if query-start < len then substring s (query-start + 1) (len - query-start - 1) else ""
-    in UriComponents { scheme = "", host = "", port = 0, path = path, query = query, valid = True }
+    let hash = uri-find-char s 0 len (char-code-at "#" 0)
+    in let qm = uri-find-char s 0 hash (char-code-at "?" 0)
+    in UriComponents {
+      scheme = "", host = "", port = 0,
+      path = substring s 0 qm,
+      query = if qm < hash then substring s (qm + 1) (hash - qm - 1) else "",
+      fragment = if hash < len then substring s (hash + 1) (len - hash - 1) else "",
+      valid = True
+    }
 
   uri-parse-authority : Text, Integer, Integer, Text -> UriComponents
   uri-parse-authority (s) (start) (len) (scheme) =
-    let path-start = uri-find-char s start len (char-code (char-at "/" 0))
+    let hash = uri-find-char s start len (char-code-at "#" 0)
+    in let qm = uri-find-char s start hash (char-code-at "?" 0)
+    in let path-start = uri-find-char s start qm (char-code-at "/" 0)
     in let authority = substring s start (path-start - start)
-    in let colon-pos = uri-find-char-in authority 0 (text-length authority) (char-code (char-at ":" 0))
-    in let host = if colon-pos < text-length authority then substring authority 0 colon-pos else authority
-    in let port = if colon-pos < text-length authority then uri-parse-int authority (colon-pos + 1) (text-length authority) 0 else uri-default-port scheme
-    in let query-start = uri-find-char s path-start len (char-code (char-at "?" 0))
-    in let path = if path-start < len then substring s path-start (query-start - path-start) else "/"
-    in let query = if query-start < len then substring s (query-start + 1) (len - query-start - 1) else ""
-    in UriComponents { scheme = scheme, host = host, port = port, path = path, query = query, valid = True }
+    in let alen = text-length authority
+    in let colon = uri-find-char authority 0 alen (char-code-at ":" 0)
+    in let host = substring authority 0 colon
+    in let port = if colon + 1 >= alen then uri-default-port scheme else uri-port authority (colon + 1) alen 0
+    in if uri-host-ok host scheme then
+      if port < 0 then uri-invalid
+      else UriComponents {
+        scheme = scheme, host = host, port = port,
+        path = if path-start < qm then substring s path-start (qm - path-start) else "/",
+        query = if qm < hash then substring s (qm + 1) (hash - qm - 1) else "",
+        fragment = if hash < len then substring s (hash + 1) (len - hash - 1) else "",
+        valid = True
+      }
+    else uri-invalid
+
+  uri-port : Text, Integer, Integer, Integer -> Integer
+  uri-port (a) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = uri-digit-value (char-code-at a i)
+    in if d < 0 then 0 - 1
+    else if acc * 10 + d > 65535 then 0 - 1
+    else uri-port a (i + 1) n (acc * 10 + d)
+
+  uri-scheme-ok : Text, Integer, Integer -> Boolean
+  uri-scheme-ok (s) (i) (n) =
+    if n == 0 then False
+    else if is-letter (char-at s 0) then uri-scheme-rest s 1 n
+    else False
+
+  uri-scheme-rest : Text, Integer, Integer -> Boolean
+  uri-scheme-rest (s) (i) (n) =
+    if i >= n then True
+    else let c = char-code-at s i
+    in if is-letter (char-at s i) then uri-scheme-rest s (i + 1) n
+    else if is-digit (char-at s i) then uri-scheme-rest s (i + 1) n
+    else if c == char-code-at "+" 0 then uri-scheme-rest s (i + 1) n
+    else if c == char-code-at "-" 0 then uri-scheme-rest s (i + 1) n
+    else if c == char-code-at "." 0 then uri-scheme-rest s (i + 1) n
+    else False
+
+  uri-host-ok : Text, Text -> Boolean
+  uri-host-ok (h) (scheme) =
+    if text-length h == 0 then scheme == "file"
+    else uri-host-chars h 0 (text-length h)
+
+  uri-host-chars : Text, Integer, Integer -> Boolean
+  uri-host-chars (h) (i) (n) =
+    if i >= n then True
+    else let c = char-code-at h i
+    in if is-letter (char-at h i) then uri-host-chars h (i + 1) n
+    else if is-digit (char-at h i) then uri-host-chars h (i + 1) n
+    else if c == char-code-at "-" 0 then uri-host-chars h (i + 1) n
+    else if c == char-code-at "." 0 then uri-host-chars h (i + 1) n
+    else if c == char-code-at "_" 0 then uri-host-chars h (i + 1) n
+    else if c == char-code-at "~" 0 then uri-host-chars h (i + 1) n
+    else if c == char-code-at "%" 0 then uri-host-chars h (i + 1) n
+    else False
 
   uri-default-port : Text -> Integer
   uri-default-port (scheme) =
@@ -65,16 +139,6 @@ Section: String Helpers
     if i >= len then len
     else if char-code (char-at s i) == target then i
     else uri-find-char s (i + 1) len target
-
-  uri-find-char-in : Text, Integer, Integer, Integer -> Integer
-  uri-find-char-in (s) (i) (len) (target) = uri-find-char s i len target
-
-  uri-parse-int : Text, Integer, Integer, Integer -> Integer
-  uri-parse-int (s) (i) (len) (acc) =
-    if i >= len then acc
-    else let d = uri-digit-value (char-code (char-at s i))
-    in if d < 0 then acc
-    else uri-parse-int s (i + 1) len (acc * 10 + d)
 
   uri-digit-value : Integer -> Integer
   uri-digit-value (c) =
@@ -105,22 +169,20 @@ Section: Query String Parsing
   }
 
   uri-parse-query : Text -> List QueryParam
-  uri-parse-query (q) = uri-parse-query-loop q 0 (text-length q) [] "" ""  True
+  uri-parse-query (q) =
+    let parts = text-split q "&"
+    in uri-query-parts parts 0 (list-length parts) []
 
-  uri-parse-query-loop : Text, Integer, Integer, List QueryParam, Text, Text, Boolean -> List QueryParam
-  uri-parse-query-loop (q) (i) (len) (acc) (key) (val) (in-key) =
-    if i >= len then
-      if text-length key > 0 then list-push acc (QueryParam { param-key = key, param-value = val })
-      else acc
-    else let c = char-code (char-at q i)
-    in if c == char-code (char-at "&" 0) then
-      let acc2 = if text-length key > 0 then list-push acc (QueryParam { param-key = key, param-value = val }) else acc
-      in uri-parse-query-loop q (i + 1) len acc2 "" "" True
-    else if c == char-code (char-at "=" 0) then
-      if in-key then uri-parse-query-loop q (i + 1) len acc key "" False
-      else uri-parse-query-loop q (i + 1) len acc key (val & char-to-text (char-at q i)) False
-    else if in-key then uri-parse-query-loop q (i + 1) len acc (key & char-to-text (char-at q i)) val True
-    else uri-parse-query-loop q (i + 1) len acc key (val & char-to-text (char-at q i)) False
+  uri-query-parts : List Text, Integer, Integer, List QueryParam -> List QueryParam
+  uri-query-parts (parts) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in let plen = text-length p
+    in let eq = uri-find-char p 0 plen (char-code-at "=" 0)
+    in if eq == 0 then uri-query-parts parts (i + 1) n acc
+    else if plen == 0 then uri-query-parts parts (i + 1) n acc
+    else let val = if eq < plen then substring p (eq + 1) (plen - eq - 1) else ""
+    in uri-query-parts parts (i + 1) n (list-push acc (QueryParam { param-key = substring p 0 eq, param-value = val }))
 
 Section: Percent Encoding
 
@@ -160,12 +222,12 @@ Section: Percent Encoding
   uri-encode : Text -> Text
   uri-encode (s) =
     let bs = text-to-unicode-bytes s
-    in uri-enc-loop bs 0 (list-length bs) ""
+    in text-concat-list (uri-enc-loop bs 0 (list-length bs) [])
 
-  uri-enc-loop : List Integer, Integer, Integer, Text -> Text
+  uri-enc-loop : List Integer, Integer, Integer, List Text -> List Text
   uri-enc-loop (cs) (i) (n) (acc) =
     if i >= n then acc
-    else uri-enc-loop cs (i + 1) n (acc & uri-enc-cp (list-at cs i))
+    else uri-enc-loop cs (i + 1) n (list-push acc (uri-enc-cp (list-at cs i)))
 
   uri-enc-cp : Integer -> Text
   uri-enc-cp (c) =
@@ -201,7 +263,8 @@ Section: Percent Encoding
 Section: Formatting
   format-uri : UriComponents -> Text
   format-uri (u) =
-    if text-length (u.scheme) > 0 then uri-build (u.scheme) (u.host) (u.port) (u.path) & (if text-length (u.query) > 0 then "?" & u.query else "")
-    else u.path & (if text-length (u.query) > 0 then "?" & u.query else "")
+    let tail = (if text-length (u.query) > 0 then "?" & u.query else "") & (if text-length (u.fragment) > 0 then "#" & u.fragment else "")
+    in if text-length (u.scheme) > 0 then uri-build (u.scheme) (u.host) (u.port) (u.path) & tail
+    else u.path & tail
 
 Page 1

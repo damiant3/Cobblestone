@@ -155,7 +155,7 @@ if ($unnamed.Count -gt 0) {
 }
 Write-Host "[diag] cfg names all $($mustName.Count) non-passive stages: $(Split-Path $Cfg -Leaf)"
 
-$src     = Join-Path $repo 'build/boot/diag/Diag.codex'
+$src     = Join-Path $repo 'build/boot/diag/DiagMain.codex'
 $bundled = Join-Path $bo 'diag-bundled.codex'
 $cdxOut  = Join-Path $bo 'diag.cdx'
 $log     = Join-Path $bo 'diag-compile.log'
@@ -175,7 +175,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $bundled)) { throw "bundle failed" }
 if (-not (Test-Path $Kernel)) { throw "-Kernel not found: $Kernel" }
 $kernelAbs = (Resolve-Path $Kernel).Path
 Write-Host "[diag] compiling with $kernelAbs"
-$compileOut = & pwsh -NoProfile -File (Join-Path $repo 'build/compile.ps1') -Src $bundled -Out $cdxOut -Log $log -Pet -Kernel $kernelAbs 2>&1
+$compileOut = & pwsh -NoProfile -File (Join-Path $repo 'build/compile.ps1') -Src $bundled -Out $cdxOut -Log $log -Pet -RawFlags 'avx-local' -Kernel $kernelAbs 2>&1
 $compileOut | ForEach-Object { Write-Host "  $_" }
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $cdxOut)) {
     Get-Content $log -ErrorAction SilentlyContinue | Select-String 'error CDX' | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
@@ -186,6 +186,18 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $cdxOut)) {
 # recomputed here by a second method that could disagree.
 $kline = ($compileOut | Where-Object { "$_" -match '^kernel: .*\[([0-9A-Fa-f]+)\]' } | Select-Object -First 1)
 $kernelDigest = if ($kline -and ("$kline" -match '\[([0-9A-Fa-f]+)\]')) { $Matches[1] } else { 'unknown' }
+
+# The vmx stage's guest (DiagVmx.codex), laid on the ESP as GUEST.CDX. It is a
+# separate program because the stage launches it inside a VMX guest.
+$guestSrc = Join-Path $repo 'build/boot/diag/DiagVmxGuest.codex'
+$guestOut = Join-Path $bo 'GUEST.CDX'
+$guestLog = Join-Path $bo 'diag-guest.log'
+if (Test-Path $guestOut) { Remove-Item $guestOut -Force }
+& pwsh -NoProfile -File (Join-Path $repo 'build/compile.ps1') -Src $guestSrc -Out $guestOut -Log $guestLog -Kernel $kernelAbs 2>&1 | Out-Null
+if (-not (Test-Path $guestOut)) {
+    Get-Content $guestLog -ErrorAction SilentlyContinue | Select-String 'error CDX' | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
+    throw "guest compile failed"
+}
 
 $id = (Get-FileHash $cdxOut -Algorithm SHA256).Hash.Substring(0, 16).ToLower()
 $stdin = "id $id`nkernel $kernelDigest`n"
@@ -233,6 +245,7 @@ $rcpLines = @(
     # build/boot/diag alone cannot see any of those chapters move.
     "bundled-sha256=$((Get-FileHash $bundled -Algorithm SHA256).Hash)",
     "efi-sha256=$((Get-FileHash $peOut -Algorithm SHA256).Hash)",
+    "guest-sha256=$((Get-FileHash $guestOut -Algorithm SHA256).Hash)",
     "alloc-pages=$AllocPages",
     "total-sectors=$TotalSectors",
     "stdin=$($stdin -replace "`n", '|')",
@@ -240,7 +253,7 @@ $rcpLines = @(
     "diag-src-cl=$srcCl"
 )
 [IO.File]::WriteAllText($rcpFile, ($rcpLines -join "`n") + "`n", [Text.ASCIIEncoding]::new())
-$extra = @("DIAG.ID=$idFile", "DIAG.RCP=$rcpFile")
+$extra = @("DIAG.ID=$idFile", "DIAG.RCP=$rcpFile", "GUEST.CDX=$guestOut")
 if ($Cfg) {
     if (-not (Test-Path -PathType Leaf $Cfg)) { throw "-Cfg not found: $Cfg" }
     $extra += "DIAG.CFG=$((Resolve-Path $Cfg).Path)"

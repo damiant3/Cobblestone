@@ -1,0 +1,61 @@
+Chapter: HwWatch
+
+ A hardware write watch on debug register 0. x86-64 bare metal only.
+
+ The #DB handler (`X86_64Boot.codex`, `emit-debug-trap-handler`) keeps
+ three cells, listed in `ArchitectsSketchbook.md`: the hit count at 36360,
+ DR6 at 36368 and the interrupted RIP at 36376.
+
+ DR7 for slot 0 (Intel SDM vol. 3B 18.2.4): L0 is bit 0, RW0 = 01 (break
+ on data writes) sits at bits 16-17, LEN0 = 10 (eight bytes) at bits
+ 18-19, so 1 + 65536 + 524288 = 589825. An eight-byte watch must be
+ eight-byte aligned, which is why the address is rounded down.
+
+ We say:
+
+Section: Cells
+
+  hw-hit-count-addr : Integer = 36360
+  hw-last-dr6-addr : Integer = 36368
+  hw-last-rip-addr : Integer = 36376
+  hw-dr7-write-8 : Integer = 589825
+
+Section: Arming
+
+  hw-watch-arm : Integer -> Integer
+  hw-watch-arm (addr) =
+    let aligned = addr - (bit-and addr 7)
+    in let off = cpu-write-dr7 0
+    in let z0 = poke-32 hw-hit-count-addr 0 0
+    in let z1 = poke-32 hw-hit-count-addr 4 0
+    in let a = cpu-write-dr0 aligned
+    in let c = cpu-write-dr6 0
+    in let on = cpu-write-dr7 hw-dr7-write-8
+    in aligned
+
+  hw-watch-clear : Integer
+  hw-watch-clear = cpu-write-dr7 0
+
+Section: Reading
+
+  HwHits = record {
+    hh-armed : Boolean,
+    hh-addr : Integer,
+    hh-count : Integer,
+    hh-dr6 : Integer,
+    hh-rip : Integer
+  }
+
+  hw-watch-hits : HwHits
+  hw-watch-hits =
+    let dr7 = cpu-read-dr7
+    in let addr = cpu-read-dr0
+    in HwHits {
+      hh-armed = bit-and dr7 1 == 1,
+      hh-addr = addr,
+      hh-count = peek-32 hw-hit-count-addr 0,
+      hh-dr6 = peek-32 hw-last-dr6-addr 0,
+      hh-rip = peek-32 hw-last-rip-addr 0
+    }
+
+Page 1

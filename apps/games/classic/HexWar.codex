@@ -97,12 +97,12 @@ Section: Terrain System
        2) 2) 2)
        3) 99) 99)
        1) 2) 1)
-       99) 99) 99)
+       99) 99) 99
 
   terrain-defense-bonus : List Integer
   terrain-defense-bonus =
     list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
-    [] 0) 1) 1) 2) 0) 0) 2) 1) 0) 99)
+    [] 0) 1) 1) 2) 0) 0) 2) 1) 0) 99
 
   get-move-cost : Integer, Integer -> Integer
   get-move-cost (terrain) (unit-cat) =
@@ -170,7 +170,7 @@ Section: Unit System
        5) 4) 4) 1) 4) 1)
        3) 5) 4) 1) 4) 1)
        3) 3) 4) 1) 4) 0)
-       1) 1) 4) 1) 2) 2)
+       1) 1) 4) 1) 2) 2
 
   unit-stat : Integer, Integer -> Integer
   unit-stat (type-id) (stat) =
@@ -224,7 +224,7 @@ Section: Combat Resolution
        1) 1) 2) 3) 4) 4)
        1) 2) 3) 3) 4) 4)
        2) 2) 3) 4) 4) 4)
-       2) 3) 3) 4) 4) 4)
+       2) 3) 3) 4) 4) 4
 
   crt-lookup : Integer, Integer -> Integer
   crt-lookup (die) (col) =
@@ -328,23 +328,20 @@ Section: Supply System
     if owner == 0 then q == 0
     else q == map-width - 1
 
- Supply is one flood per side per turn rather than a trace per unit. The
- trace this replaces searched outward from each unit six ways to a depth of
- eight and kept no record of where it had been, so a unit with no path
- explored on the order of a million hexes, each of them rescanning the whole
- roster for zones of control. Flooding inward from the map edge instead
- visits each hex once and answers for every unit at the same time.
+ Supply is one flood per side per turn, inward from the map edge, visiting
+ each hex once; a per-unit trace explored on the order of a million hexes.
 
  A hex on the owner's supply edge is supplied whatever sits next to it.
- Any other hex is supplied when it is free of enemy zones of control and
- touches a supplied hex, which is the same path the old trace walked, taken
- in the other direction.
+ Any other hex is supplied when it touches a supplied hex and is either free
+ of enemy zones of control or held by a friendly unit: the usual wargame
+ rule, under which a line in contact stays supplied through its own hexes
+ and only a unit whose every path crosses an empty enemy zone is cut off.
 
   zoc-map : List Unit, Integer, Integer, Integer, Integer, List Integer -> List Integer
   zoc-map (units) (owner) (width) (height) (i) (acc) =
     if i >= width * height then acc
     else let h = hex-from-index i width
-    in let v = if in-enemy-zoc h units owner then 1 else 0
+    in let v = if in-enemy-zoc h units owner & ai-hex-held-by units owner i width == False then 1 else 0
     in zoc-map units owner width height (i + 1) (list-push acc v)
 
   supply-seed : Integer, Integer, Integer, Integer, List Integer -> List Integer
@@ -443,12 +440,6 @@ Section: Turn Structure
     else let next-player = rng-mod (t.active-player + 1) num-players
     in let next-num = if next-player == 0 then t.number + 1 else t.number
     in Turn { number = next-num, phase = 0, active-player = next-player }
-
- A turn restores the movement of the side taking it and leaves the other
- side's alone. Restoring both was inert while a turn was one call, because
- movement is only ever read for the side to move; it stops being inert once
- a turn can be opened before it is taken, since opening one side's turn
- would then reach into the other's.
 
   reset-units-for-turn : List Unit, Integer -> List Unit
   reset-units-for-turn (units) (owner) =
@@ -1164,10 +1155,6 @@ Section: Game Runner
     let units1 = hw-begin-turn units active-player width height
     in run-opened-hexwar-turn units1 terrain-data active-player width height stack-limit r
 
- A turn whose bookkeeping has already been done, which is what a side
- played by hand hands back when it ends its turn. Splitting it here rather
- than beginning the turn twice is what keeps the two callers on one model.
-
   run-opened-hexwar-turn : List Unit, List TerrainHex, Integer, Integer, Integer, Integer, Rng -> List Unit
   run-opened-hexwar-turn (units) (terrain-data) (active-player) (width) (height) (stack-limit) (r) =
     let units2 = ai-advance-units units terrain-data active-player width height stack-limit 0
@@ -1289,15 +1276,10 @@ Section: Game Runner
 Section: Taking A Turn Yourself
 
  A turn is the bookkeeping, then any number of one-hex steps while movement
- lasts, then at most one attack. `run-hexwar-turn` above is a POLICY over
- these same steps rather than a second copy of them, so a side played by
- hand and a side played by the runner obey one set of rules.
+ lasts, then at most one attack.
 
- An attack names the DEFENDER and not an attacker, because that is the
- model the combat already has: `ai-count-attack-strength` sums every
- adjacent friendly unit and `artillery-support` adds the guns behind them,
- so a hex is assaulted by everything that can reach it. Choosing a single
- attacker would be a second combat model.
+ An attack names the defender: every adjacent friendly unit and the
+ artillery behind them assault it.
 
   hw-begin-turn : List Unit, Integer, Integer, Integer -> List Unit
   hw-begin-turn (units) (owner) (width) (height) =
@@ -1326,9 +1308,6 @@ Section: Taking A Turn Yourself
     in let u2 = spend-movement u tq tr td units width
     in list-set-at units idx u2
 
- The predicate `ai-find-target` filters on, so a side played by hand can
- assault exactly what the runner could have chosen.
-
   hw-can-attack : List Unit, Integer, Integer -> Boolean
   hw-can-attack (units) (owner) (target) =
     if target < 0 then False
@@ -1350,9 +1329,6 @@ Section: Taking A Turn Yourself
     in let die = rng-range r2 1 6
     in let result = combat-result total-atk def-str def-bonus die
     in apply-combat-result units target result owner r2
-
- Whether a unit of yours has anywhere to go, and whether a hex of theirs
- can be assaulted at all, which is what a page rings.
 
   hw-unit-has-move : List Unit, Integer, Integer, List TerrainHex, Integer, Integer, Integer, Integer -> Boolean
   hw-unit-has-move (units) (owner) (idx) (td) (width) (height) (stack-limit) (dir) =

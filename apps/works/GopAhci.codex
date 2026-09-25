@@ -2,28 +2,6 @@ Chapter: GopAhci
   cites Kernel chapter Pci
   cites Foreword chapter Maybe
 
- Post-ExitBootServices AHCI sector reads (B3.1b). Modern boards -- q35,
- and both machines in our matrix -- expose no legacy IDE at 0x1F0, so
- the payload must speak AHCI to reach its own boot medium once firmware
- is gone.
-
- The controller is found by PCI class 0x01 subclass 0x06; BAR5 is the
- HBA register block (ABAR). We enable memory space AND bus master (the
- HBA is a DMA master: it writes the sector into our buffer itself), set
- GHC.AE, pick the first port with a SATA drive present, stop that port,
- point it at a command list, FIS receive area, and command table we
- allocate and zero ourselves, restart it, then issue one READ DMA EXT
- through a single PRDT entry and poll the command-issue bit.
-
- The firmware left the controller running, so stopping the port before
- repointing its registers is not optional -- an HBA reading a stale
- command list would DMA into memory that is now ours.
-
- All register access is 32-bit: `peek-32`/`poke-32` are plain 32-bit
- moves, and an AHCI register must never be touched at another width.
- Every poll is fuel-bounded, so a wedged or absent controller returns a
- failure rather than hanging the boot.
-
  We say:
 
 Section: HBA Registers
@@ -183,13 +161,6 @@ Section: Command Construction
   ahci-write-header : Integer, Integer -> Integer
   ahci-write-header (clb) (ctba) = ahci-write-header-w clb ctba False
 
- A register host-to-device FIS carrying an ATA DMA-EXT command (`cmd`,
- 0x25 read / 0x35 write) for `count` sectors at `lba`, LBA48 addressing
- (device register 0x40). Dword 0 is FIS type 0x27 | C bit 0x8000 with the
- command in byte 2 (0x27 | 0x8000 = 32807). The count occupies bytes
- 12-13; a count of 0 means 65536 sectors to the drive, so callers must
- pass 1 or more.
-
   ahci-write-fis-cmd : Integer, Integer, Integer, Integer -> Integer
   ahci-write-fis-cmd (ctba) (lba) (count) (cmd) =
     let d0 = poke-32 ctba 0 (bit-or 32807 (bit-shl (bit-and cmd 255) 16))
@@ -203,11 +174,6 @@ Section: Command Construction
 
   ahci-write-fis : Integer, Integer -> Integer
   ahci-write-fis (ctba) (lba) = ahci-write-fis-n ctba lba 1
-
- One PRDT entry at command-table offset 128: the destination buffer and
- a byte count held as count-minus-one, with the interrupt-on-completion
- bit set. A single PRD covers up to 4 MB, so one entry carries the whole
- transfer -- the entire seed arrives in one command.
 
   ahci-write-prdt-n : Integer, Integer, Integer -> Integer
   ahci-write-prdt-n (ctba) (buf) (bytes) =
@@ -232,26 +198,6 @@ Section: Sector Read
     else if bit-and (peek-32 p px-is) px-is-tfes /= 0 then 0
     else if fuel <= 0 then 0
     else ahci-wait-ci p slot-mask (fuel - 1)
-
- Read `count` sectors at `lba` into `dest` with one command. Returns 1 on
- success. `dest` must hold count*512 bytes and lie below 4 GB -- the PRD
- base is programmed as a 32-bit address with a zero upper half, which is
- where the boot heap lives.
-
- Issue one DMA-EXT command -- read or write -- of `count` sectors at
- `lba` against the buffer `mem`. Read fills `mem` from disk; write sends
- `mem` to disk. The only differences are the command byte and the
- header's write bit, so both share this path. `mem` must lie below 4 GB
- (the PRD upper half is zero), which is where the boot heap lives.
-
- The port is quiesced again before EVERY return. The CLB, FB, and
- command table are per-call heap scratch: a port left running with FRE
- set retains DMA rights over them after the heap reclaims the
- addresses, and a late or asynchronous FIS -- or a fueled-out command a
- real drive completes seconds later -- then lands in whatever lives
- there next. Observed on real hardware (ASUS, live SATA drive) as a
- death mid welcome-fill at a depth that varied build to build; the Dell
- (internal drive disabled) and emulated AHCI never reproduce it.
 
   ahci-quiesce : Integer, Integer -> Integer
   ahci-quiesce (p) (result) =
@@ -285,12 +231,6 @@ Section: Sector Read
   ahci-read-into-on : AhciHba, Integer, Integer, Integer -> Integer
   ahci-read-into-on (hba) (lba) (count) (dest) =
     ahci-issue-on hba lba count dest ahci-cmd-read False
-
- IDENTIFY DEVICE (0xEC) is PIO data-in, but to the HBA it is one more
- command with a 512-byte data phase: the same FIS slot and the same
- single-PRD table carry it. The LBA and count fields of the FIS are
- not-applicable to the command and the device ignores them; count 1
- sizes the PRD at the 512 bytes the device will send.
 
   ahci-identify-on : AhciHba, Integer -> Integer
   ahci-identify-on (hba) (buf) =

@@ -2,9 +2,6 @@ Chapter: Tftp
   cites Net chapter Ethernet
   cites Foreword chapter CCE
 
- TFTP client (RFC 1350). Read/write files over UDP in 512-byte blocks.
- Pure logic -- no I/O. Packets are UDP payloads on port 69.
-
  We say:
 
 Section: Constants
@@ -63,62 +60,135 @@ Section: Request Construction
     else tftp-encode-loop s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
 
 Section: Packet Parsing
+
+ RFC 1350 section 5: DATA carries at most 512 bytes after its 4-byte header,
+ ACK is exactly 4 bytes, ERROR is a code and one NUL-terminated string, and a
+ request is a NUL-terminated filename then a NUL-terminated mode, netascii,
+ octet or mail in any case. Error codes run 0 to 7, and RFC 2347 adds 8. The
+ strings are netascii, so a byte above 127 is refused, as are RFC 2347 options
+ after the mode.
+
   tftp-parse : List Integer -> TftpPacket
   tftp-parse (data) =
     let dlen = list-length data
     in if dlen < 4 then TftpInvalid
     else let op = read-be16 data 0
     in if op == tftp-op-data then
-      let block = read-be16 data 2
-      in TftpData block (tftp-extract-bytes data 4 dlen [])
-    else if op == tftp-op-ack then TftpAck (read-be16 data 2)
+      if dlen - 4 > tftp-block-size then TftpInvalid
+      else TftpData (read-be16 data 2) (tftp-extract-bytes data 4 dlen [])
+    else if op == tftp-op-ack then
+      if dlen == 4 then TftpAck (read-be16 data 2) else TftpInvalid
     else if op == tftp-op-error then
       let code = read-be16 data 2
-      in let msg = tftp-decode-string data 4 dlen ""
-      in TftpError code msg
-    else if op == tftp-op-rrq then TftpRrq (tftp-decode-string data 2 dlen "")
-    else if op == tftp-op-wrq then TftpWrq (tftp-decode-string data 2 dlen "")
+      in let nul = tftp-find-nul data 4 dlen
+      in if code > 8 then TftpInvalid
+      else if nul /= dlen - 1 then TftpInvalid
+      else if tftp-netascii data 4 nul then TftpError code (tftp-decode-string data 4 nul)
+      else TftpInvalid
+    else if op == tftp-op-rrq then tftp-parse-request data dlen True
+    else if op == tftp-op-wrq then tftp-parse-request data dlen False
     else TftpInvalid
+
+  tftp-parse-request : List Integer, Integer, Boolean -> TftpPacket
+  tftp-parse-request (data) (dlen) (read) =
+    let name-end = tftp-find-nul data 2 dlen
+    in let mode-end = if name-end < 0 then 0 - 1 else tftp-find-nul data (name-end + 1) dlen
+    in if name-end <= 2 then TftpInvalid
+    else if mode-end /= dlen - 1 then TftpInvalid
+    else if tftp-netascii data 2 name-end == False then TftpInvalid
+    else if tftp-mode-ok (utf8-bytes-to-text (tftp-lower-bytes data (name-end + 1) mode-end [])) == False then TftpInvalid
+    else if read then TftpRrq (tftp-decode-string data 2 name-end)
+    else TftpWrq (tftp-decode-string data 2 name-end)
+
+  tftp-mode-ok : Text -> Boolean
+  tftp-mode-ok (m) =
+    if m == "octet" then True
+    else if m == "netascii" then True
+    else m == "mail"
+
+  tftp-lower-bytes : List Integer, Integer, Integer, List Integer -> List Integer
+  tftp-lower-bytes (data) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let b = list-at data i
+    in tftp-lower-bytes data (i + 1) stop (list-push acc (if b >= 65 then (if b <= 90 then b + 32 else b) else b))
+
+  tftp-find-nul : List Integer, Integer, Integer -> Integer
+  tftp-find-nul (data) (i) (dlen) =
+    if i >= dlen then 0 - 1
+    else if list-at data i == 0 then i
+    else tftp-find-nul data (i + 1) dlen
+
+  tftp-netascii : List Integer, Integer, Integer -> Boolean
+  tftp-netascii (data) (i) (stop) =
+    if i >= stop then True
+    else if list-at data i < 1 then False
+    else if list-at data i > 127 then False
+    else tftp-netascii data (i + 1) stop
 
   tftp-extract-bytes : List Integer, Integer, Integer, List Integer -> List Integer
   tftp-extract-bytes (data) (i) (dlen) (acc) =
     if i >= dlen then acc
     else tftp-extract-bytes data (i + 1) dlen (list-push acc (list-at data i))
 
-  tftp-decode-string : List Integer, Integer, Integer, Text -> Text
-  tftp-decode-string (data) (i) (dlen) (acc) =
-    if i >= dlen then acc
-    else let b = list-at data i
-    in if b == 0 then acc
-    else tftp-decode-string data (i + 1) dlen (acc & char-encode (code-to-char (from-unicode b)))
+  tftp-decode-string : List Integer, Integer, Integer -> Text
+  tftp-decode-string (data) (i) (stop) = utf8-bytes-to-text (tftp-extract-bytes data i stop [])
 
 Section: Transfer State
+
+ RFC 1350 section 2: the receiver ACKs block n and accepts only block n + 1
+ next. A retransmitted block n is ACKed again and not written, and nothing
+ follows the short block that ends the file. Block numbers are 16 bits and
+ RFC 1350 does not wrap them, so a file of 65,535 full blocks cannot end.
+
+  TftpBlocks =
+    | TftpNoBlocks
+    | TftpBlock (List Integer) (TftpBlocks)
+
   TftpTransfer = record {
     filename : Text,
     server-port : Integer between 0 and 65535,
     block-num : Integer between 0 and 65535,
-    data : List Integer,
+    blocks : TftpBlocks,
+    size : Integer,
     complete : Boolean,
     error-msg : Text
   }
 
   tftp-transfer-new : Text -> TftpTransfer
-  tftp-transfer-new (filename) = TftpTransfer { filename = filename, server-port = 0, block-num = 0, data = [], complete = False, error-msg = "" }
+  tftp-transfer-new (filename) = TftpTransfer { filename = filename, server-port = 0, block-num = 0, blocks = TftpNoBlocks, size = 0, complete = False, error-msg = "" }
 
   tftp-receive-data : TftpTransfer, Integer, List Integer -> TftpTransfer
   tftp-receive-data (t) (block) (block-data) =
-    let is-last = list-length block-data < tftp-block-size
-    in TftpTransfer { filename = t.filename, server-port = t.server-port, block-num = __narrow block, data = t.data & block-data, complete = is-last, error-msg = "" }
+    if t.complete then t
+    else if block /= t.block-num + 1 then t
+    else let n = list-length block-data
+    in TftpTransfer { filename = t.filename, server-port = t.server-port, block-num = __narrow block, blocks = TftpBlock (tftp-extract-bytes block-data 0 n []) t.blocks, size = t.size + n, complete = n < tftp-block-size, error-msg = "" }
 
   tftp-receive-error : TftpTransfer, Text -> TftpTransfer
-  tftp-receive-error (t) (msg) = TftpTransfer { filename = t.filename, server-port = t.server-port, block-num = t.block-num, data = t.data, complete = True, error-msg = msg }
+  tftp-receive-error (t) (msg) = TftpTransfer { filename = t.filename, server-port = t.server-port, block-num = t.block-num, blocks = t.blocks, size = t.size, complete = True, error-msg = msg }
 
 Section: Queries
   tftp-is-last-block : List Integer -> Boolean
   tftp-is-last-block (block-data) = list-length block-data < tftp-block-size
 
   tftp-transfer-size : TftpTransfer -> Integer
-  tftp-transfer-size (t) = list-length (t.data)
+  tftp-transfer-size (t) = t.size
+
+  tftp-transfer-data : TftpTransfer -> List Integer
+  tftp-transfer-data (t) =
+    let newest-first = tftp-block-list t.blocks []
+    in tftp-join newest-first (list-length newest-first - 1) []
+
+  tftp-block-list : TftpBlocks, List (List Integer) -> List (List Integer)
+  tftp-block-list (b) (acc) = when b
+    is TftpNoBlocks -> acc
+    is TftpBlock (d) (rest) -> tftp-block-list rest (list-push acc d)
+
+  tftp-join : List (List Integer), Integer, List Integer -> List Integer
+  tftp-join (blocks) (i) (acc) =
+    if i < 0 then acc
+    else let d = list-at blocks i
+    in tftp-join blocks (i - 1) (tftp-extract-bytes d 0 (list-length d) acc)
 
 Section: Formatting
   format-tftp-packet : TftpPacket -> Text

@@ -1,0 +1,44 @@
+Chapter: XmmPreempt
+
+ Four children pinned to one application processor each loop over vector
+ arithmetic with their own value and count wrong results. Without a saved
+ XMM state per process a tick inside an operation hands one child another's
+ operand; measured 2026-09-25, 1 to 4 wrong results in every one of five
+ runs, against 0 for one child doing the same total work. The tick count
+ says the children were preempted, or the zero proves nothing.
+
+Section: Body
+
+  one : Integer, Integer -> Integer
+  one (tag) (i) =
+    let base = tag * 100000 + (i - (i / 1000) * 1000)
+    in let v = vec-splat (real-from-int base)
+    in let w = vec-splat 2.0
+    in let r = v * w + v
+    in let want = base * 3
+    in let lo = real-to-int (vec-extract r 0)
+    in let hi = real-to-int (vec-extract r 1)
+    in if lo == want then (if hi == want then 0 else 1) else 1
+
+  check : Integer, Integer, Integer, Integer -> Integer
+  check (tag) (i) (n) (bad) =
+    if i >= n then bad
+    else let mark = __heap-save
+    in let miss = one tag i
+    in let d = __heap-restore mark
+    in check tag (i + 1) n (bad + miss)
+
+  opening : [Console, Concurrent] Nothing = act
+    t0 <- get-ticks
+    a <- process-spawn-on-core (\x -> check 1 0 3000000 0) 1
+    b <- process-spawn-on-core (\x -> check 3 0 3000000 0) 1
+    c <- process-spawn-on-core (\x -> check 5 0 3000000 0) 1
+    d <- process-spawn-on-core (\x -> check 7 0 3000000 0) 1
+    wa <- process-wait a
+    wb <- process-wait b
+    wc <- process-wait c
+    wd <- process-wait d
+    t1 <- get-ticks
+    print-line-uni ("mismatches=" & show (wa + wb + wc + wd))
+    print-line-uni (if t1 - t0 > 5 then "preempted" else "NOT PREEMPTED")
+  end

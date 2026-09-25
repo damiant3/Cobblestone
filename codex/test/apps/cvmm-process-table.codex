@@ -1,0 +1,52 @@
+Chapter: CvmmProcessTable
+  cites Cvmm chapter ProcessManager
+  cites Cvmm chapter CvmmTypes
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+Section: The Child
+
+ Cell 28000 is the release flag the parent sets once it has read the table
+ with the child alive; the fuel only bounds a parent that never sets it.
+
+  wait-release : Integer -> Integer
+  wait-release (n) =
+    if peek-byte 28000 0 == 1 then 0
+    else if n <= 0 then 0
+    else let y = process-yield in wait-release (n - 1)
+
+  has-pid : List ProcessEntry, Integer, Integer -> Boolean
+  has-pid (ps) (pid) (i) =
+    if i >= list-length ps then False
+    else if (list-at ps i).proc-pid == pid then True
+    else has-pid ps pid (i + 1)
+
+  state-of : List ProcessEntry, Integer, Integer -> Text
+  state-of (ps) (pid) (i) =
+    if i >= list-length ps then "absent"
+    else if (list-at ps i).proc-pid == pid then proc-state-label ((list-at ps i).proc-state)
+    else state-of ps pid (i + 1)
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Concurrent, Console] Nothing =
+    let z = poke-byte 28000 0 0
+    in let before = pm-read-kernel-table
+    in act
+      pid <- process-spawn (\x -> wait-release 20000)
+      let during = pm-read-kernel-table
+      in let r = poke-byte 28000 0 1
+      in let w = process-wait pid
+      in let after = pm-read-kernel-table
+      in act
+        print-line-uni ("before " & show (list-length before) & " kernel " & yn (has-pid before 0 0))
+        print-line-uni ("during " & show (list-length during) & " child " & yn (has-pid during pid 0) & " " & state-of during pid 0)
+        print-line-uni ("after " & show (list-length after) & " child " & yn (has-pid after pid 0))
+        print-line-uni ("live " & show (pm-live.pm-count))
+      end
+    end
+
+Page 1

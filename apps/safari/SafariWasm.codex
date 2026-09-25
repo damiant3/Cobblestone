@@ -70,6 +70,8 @@ Section: The Buffer
  off the end of its buffer corrupts whatever is above it and still answers a
  plausible length.
 
+  wasm-exports : Text = ""
+
   sfw-buf : Integer = #C00000
 
   sfw-cap : Integer = 3145728
@@ -230,44 +232,6 @@ Section: The Frame
  the grass colour and the gradient stops are the page's. The roll is here for the
  same reason: the whole frame banks into a turn, and the page rotates the canvas
  rather than the geometry.
-
-   0  sky colour        u32
-   4  horizon colour    u32
-   8  sun visible       u32
-  12  (pad)             u32
-  16  sun x             f64
-  24  sun y             f64
-  32  sun scale         f64
-  40  camera roll       f64
-  48  the commands
-
- THE HEADER IS WRITTEN AS A LIST AND EVERY FIELD IS AN f64, and both halves of
- that are a bug fix rather than a taste.
-
- The first version wrote the fields one at a time through `sfw-w-u32` at
- constant offsets, and NOTHING LANDED. `sfw-w-u32` binds the poke to a `let` it
- does not use and answers `off + 4`; with every offset a constant the whole
- chain folds to 48 and the pokes, whose results nothing reads, go with it. The
- command path survives the same shape only because its offsets are
- data-dependent. The tell was two builds producing byte-identical buffers when
- the source between them had changed (L-SUSPECT), with `used` still exactly 48
- bytes longer than the headerless build: the arithmetic ran and the writes did
- not. `apps/c64/C64Wasm.codex` avoids this by SUMMING its poke results
- (`c64w-cpu-save` answers `d0 + d1 + ...`), which is what keeps them alive.
-
- Writing the header through `sfw-w-reals` puts it on the recursive path the
- commands already prove lands. Making every field an f64 is what lets it: the
- two colours go out through `real-from-int` and the page reads them back with a
- rounding conversion. Uniform width also means no alignment question.
-
-   0  sky colour        f64 (an integer value)
-   8  horizon colour    f64 (an integer value)
-  16  sun visible       f64 (1.0 or 0.0)
-  24  sun x             f64
-  32  sun y             f64
-  40  sun scale         f64
-  48  camera roll       f64
-  56  the commands
 
  THE COLOURS STAY INTEGERS AND ONLY RECORD-FIELD REALS CROSS AS f64, and that
  division is forced by a defect in our wasm plug rather than chosen.

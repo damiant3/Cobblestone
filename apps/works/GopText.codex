@@ -45,12 +45,6 @@ Section: Drawing
 
 Section: Editing
 
- Extended keys arrive as an 0xE0 prefix (ignored as a break code by
- the layout) followed by a plain make code that collides with the
- numpad: an arrow key would otherwise type a digit. A single-line
- field has no cursor movement, so every navigation make code is
- simply ignored.
-
   gt-nav-key : Integer -> Boolean
   gt-nav-key (sc) =
     sc == 71 | sc == 72 | sc == 73 | sc == 75 | sc == 77 | sc == 79 | sc == 80 | sc == 81 | sc == 82 | sc == 83
@@ -78,39 +72,12 @@ Section: Editing
 
 Section: Input Loop
 
- The loop must be constant-stack and quiet-heap: it tail-calls ITSELF
- (the compiler's TCO handles direct self-recursion in act tails), and
- the idle path -- no byte waiting -- allocates nothing and touches no
- MMIO. Key events allocate one KbEvent, and printable keys one Text;
- both are bounded by keystrokes, not by polling. Enter (make code 28)
- returns the line. Programs hosting this loop compile with the pet
- flag, like every interactive poll loop on the boot path.
-
- Each key event also samples the HPET main counter (0xFED00000 + 0xF0,
- megahertz-rate) and the timer tick cell, folding them into an entropy
- accumulator the caller receives beside the text -- keystroke timing
- the machine cannot predict. On hardware without an HPET at the
- standard base the read degrades to a constant and the accumulator
- still carries the tick cell and scancode sequence.
-
   GtLine = record {
     gl-text : Text,
     gl-entropy : Integer between -9223372036854775808 and 9223372036854775807 wrapping
   }
 
   hpet-base : Integer = 4275044352
-
- A field that stops accepting keys used to leave a blank screen: the
- wizard paints its vitals from the WAIT loop, and this is not that loop,
- so the one screen where input can die silently was the one screen with
- no instrument. These two blocks are that instrument, and they are drawn
- rather than printed so nothing allocates on a poll that never returns.
-
- Left block alternates every gt-beat-mask polls. Blinking means this loop
- is still turning and the keyboard is delivering nothing; frozen means the
- loop itself stopped. Right block is red once the controller has been
- handed back to firmware, which on a machine with no legacy emulation is
- a one-way door and means no key can ever arrive again.
 
   gt-beat-mask : Integer = 65535
 

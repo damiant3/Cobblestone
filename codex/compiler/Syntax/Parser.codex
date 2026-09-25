@@ -2,6 +2,16 @@ Chapter: Parser
 
   cites Foreword chapter Maybe
   cites Foreword chapter Tuple
+  cites Codex chapter CdxCodes (cdx-expected-token-kind)
+  cites Codex chapter Phase Allocator (deck-record)
+  cites Codex chapter Tokens (token-text, lit-text-to-integer)
+  cites Codex chapter Diagnostic Bag (bag-add)
+  cites Codex chapter Diagnostics (make-error)
+  cites Codex chapter Source Text (span-at)
+  cites Codex chapter CodexType Helpers (bounds-are-hw-width)
+  cites Codex chapter Codex Types (i64-min, i64-max)
+  cites Codex chapter Syntax Nodes (copy-sx-classdef, copy-sx-instancedef, copy-sx-diag, decl-cite, decl-quote, decl-trust, decl-trust-key, decl-grounds)
+  cites Codex chapter Lexer (is-letter-code, is-digit-code)
 
 Section: Type Parsing
   is-forall-start : ParseState -> Boolean
@@ -593,7 +603,7 @@ Section: Definition Parsing
       })])
       in let st2 = advance st
       in let st3 = skip-newlines st2
-      in let body-result = parse-def-body-seq st3 (first-name.column)
+      in let body-result = parse-def-body st3 (first-name.column)
       in unwrap-def-body body-result ann first-name []
      else
       let name-tok = deck-record (Token {
@@ -640,7 +650,7 @@ Section: Definition Parsing
    if is-equals (current-kind st) then
     let st2 = advance st
     in let st3 = skip-newlines st2
-    in let body-result = parse-def-body-seq st3 (name-tok.column)
+    in let body-result = parse-def-body st3 (name-tok.column)
     in unwrap-def-body body-result ann name-tok params
    else let tok = current st
     in let err-st = expect Equals st
@@ -872,7 +882,9 @@ Section: Type Definition Parsing
 
   parse-ctor-fields : Token, LinkedList TypeExpr, ParseState, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
   parse-ctor-fields (ctor-name) (fields) (st) (name-tok) (tparams) (acc) =
-   if is-left-paren (current-kind st) then let field-result = parse-type (advance st)
+   if is-left-paren (current-kind st) then let st-in = advance st
+     in let st-checked = if classify-paren-type st-in 0 False False == 2 then __record-set st-in "bag" (bag-add (st-in.bag) (make-error cdx-ctor-field-comma "A constructor field written (A, B) has no arrow: write two fields as (A) (B), or one tuple field as ((A, B))" (token-to-span (current st)))) else st-in
+     in let field-result = parse-type st-checked
      in unwrap-ctor-field field-result ctor-name fields name-tok tparams acc
     else let st2 = skip-newlines st
     in if is-colon (current-kind st2) then let ret-result = parse-type (advance st2) in unwrap-ctor-return ret-result ctor-name fields name-tok tparams acc else let ctor = deck-record (VariantCtorDef { name = ctor-name, fields = deck-record (__linked-list-to-list fields), return-type = [] }) in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) st2
@@ -1699,9 +1711,20 @@ Section: Chapter Pagination
      in let back = __heap-restore mark
      in TopItem { ti-defs = defs2, ti-type-defs = type-defs, ti-state = st3 }
     is None ->
-     let st3 = deck-record (parse-state-keep floor (skip-newlines (advance st2)))
+     let reported = if st2.bag.error-count > st.bag.error-count | drops-silently (current-kind st) then st2 else refuse-dropped-token st2 (current st)
+     in let st3 = deck-record (parse-state-keep floor (skip-newlines (advance reported)))
      in let back = __heap-restore mark
      in TopItem { ti-defs = defs, ti-type-defs = type-defs, ti-state = st3 }
+
+  drops-silently : TokenKind -> Boolean
+  drops-silently (k) =
+   when k
+    is Newline | Indent | Dedent | EndOfFile | EndKeyword | QedKeyword -> True
+    is otherwise -> False
+
+  refuse-dropped-token : ParseState, Token -> ParseState
+  refuse-dropped-token (st) (tok) =
+   __record-set st "bag" (bag-add (st.bag) (make-error cdx-top-level-token-dropped ("`" & token-text tok & "` at column " & integer-to-text (tok.column) & " begins no definition, so it would be dropped; indent a continuation past column 3") (token-to-span tok)))
 
  A type definition is tried first and the definition parse re-reads from
  the SAME state when it is not one -- st, not the type parser's returned

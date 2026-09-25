@@ -8,21 +8,6 @@ Chapter: GopFat16
   cites Encode chapter Crc32
   cites Foreword chapter Maybe
 
- The same mount also speaks FAT32 -- the format every vendor stick
- and every volume past two gigabytes actually carries. The volume
- record is shared: a FAT32 volume is recognized structurally (a zero
- 16-bit FAT size names the 32-bit layout, the same key Linux turns),
- its root-entry count is zero by construction (which is exactly how
- the rest of this chapter tells the two apart), vol-root-start holds
- the root directory's CLUSTER rather than a sector, and vol-fat-sectors
- comes from the 32-bit field. Three rules follow the width everywhere:
- FAT entries are four bytes whose top nibble is reserved (masked on
- read, PRESERVED on write); end-of-chain is a 28-bit compare, never
- the 16-bit sentinel -- on a large volume a perfectly valid cluster
- number exceeds 65528 and truncating it to the FAT16 test silently
- ends every long chain; and a directory entry's starting cluster
- carries a high word at offset 20 that the 16-bit decoder never reads.
-
  We say:
 
 Section: GPT
@@ -32,25 +17,6 @@ Section: GPT
     peek-byte buf 0 == 69 & peek-byte buf 1 == 70 & peek-byte buf 2 == 73
     & peek-byte buf 3 == 32 & peek-byte buf 4 == 80 & peek-byte buf 5 == 65
     & peek-byte buf 6 == 82 & peek-byte buf 7 == 84
-
- The signature says the sector is a GPT header and nothing more. Both CRC32
- fields the format carries were read by nobody until 2026-08-15, so a tampered
- or half-written table parsed exactly like a good one, and the ESP start LBA
- it hands out becomes the partition base every later read is relative to. A
- garbage LBA is caught downstream by the geometry guard, because the volume it
- lands on will not parse as FAT; an LBA moved to a DIFFERENT well-formed FAT is
- not, and that is the case the array CRC exists to stop.
-
- The table is threaded as a parameter for the reason the GUID list is: a list
- constant is rebuilt at every mention, and crc32-table is 256 entries against
- the GUID's sixteen. Naming it inside the byte loop would rematerialise the
- whole table per byte over 16 KB.
-
- The CRC is streamed a sector at a time and never held: the entry array is
- NumberOfPartitionEntries * SizeOfPartitionEntry, 16 KB at our own 128 x 128,
- and accumulating it into a buffer or a list would cost that much arena on a
- path with no GC. A read failure answers -1, which no CRC can be, so a short
- medium refuses rather than comparing against a fabricated zero.
 
   gfat-crc32-buf : List Integer, Integer, Integer, Integer, Integer -> Integer
   gfat-crc32-buf (tbl) (crc) (buf) (i) (len) =
@@ -62,9 +28,6 @@ Section: GPT
     if n <= 0 then crc
     else gfat-crc32-zeros tbl (bit-xor (list-at tbl (bit-and crc 255)) (bit-shru crc 8)) (n - 1)
 
- UEFI computes the header CRC with the CRC field itself read as four zero
- bytes, over HeaderSize bytes and not over the whole sector.
-
   gpt-header-crc-ok : Integer -> Boolean
   gpt-header-crc-ok (buf) =
     let hsize = fat16-read-u32 buf 12
@@ -75,12 +38,6 @@ Section: GPT
     in let c1 = gfat-crc32-zeros tbl c0 4
     in let c2 = gfat-crc32-buf tbl c1 buf 20 hsize
     in bit-xor c2 4294967295 == fat16-read-u32 buf 16
-
- NumberOfPartitionEntries and SizeOfPartitionEntry are the array CRC's OWN
- EXTENT, so they are geometry and must be checked BEFORE the CRC that depends
- on them: a corrupt count moves the window and a reader then computes a
- perfectly valid CRC over the wrong bytes. The array must also fit between its
- own LBA and FirstUsableLBA, which is where the table is required to live.
 
   gpt-array-geom-ok : Integer -> Boolean
   gpt-array-geom-ok (buf) =
@@ -131,16 +88,6 @@ Section: GPT
     end
   end
 
- A partition entry's type GUID is all sixteen bytes; matching the first
- four accepts any type whose GUID happens to open with the ESP's first
- dword. The value is the foreword's `gpt-esp-type-guid` rather than a
- second copy here -- a GUID spelled twice is a GUID that can disagree
- with itself.
-
- The list is bound ONCE and threaded as a parameter. A list constant is
- rebuilt at every mention, so reading it inside the loop would
- rematerialise sixteen elements per byte compared.
-
   gfat-is-esp-at : Integer, Integer -> Boolean
   gfat-is-esp-at (buf) (off) =
     let want = gpt-esp-type-guid
@@ -161,9 +108,6 @@ Section: GPT
 
 Section: Mount
 
- Cell 80 of the xHCI diagnostic block (map and growth ceiling in
- GopXhci). Zero is NOT ASKED, per that block's sentinel discipline.
-
   gfat-cell-stage : Integer = 80
 
   gfat-stage-hdr : Integer = 1
@@ -181,35 +125,15 @@ Section: Mount
   gfat-note-stage : Integer -> Integer
   gfat-note-stage (s) = xdiag-put gfat-cell-stage s
 
- Cell 83 is the WRITE stage, and it is a separate cell because 80 is the
- mount stage: a write that fails on a mounted volume leaves 80 reading 7
- (ok) and names nothing. 83 is the next free index in that block and is
- under the 96-dword wipe ceiling, so it is cleared on metal rather than
- reading firmware residue.
-
   gfat-cell-write : Integer = 83
 
   gfat-note-write : Integer -> Integer
   gfat-note-write (s) = xdiag-put gfat-cell-write s
 
- Cell 88 is how many sectors the data run actually wrote. `gfat-w-data`
- says only that the run stopped short, and the metal reading of 2026-08-19
- could not tell a medium that refuses the first sector of a long transfer
- from one that stops near the end.
-
   gfat-cell-written : Integer = 88
 
   gfat-note-written : Integer -> Integer
   gfat-note-written (n) = xdiag-put gfat-cell-written n
-
- 89 and 90 are the bank's truth, and they exist because a write's RETURN was
- believed over the file. The third grouped sitting (2026-08-19, `diag.img`
- C46DE4DD) came back with `DIAG.TXT` truncated at 4,577 bytes and the SUMMARY
- painting `bank=ok`: every append after the sink refusal was refused, the
- caller discarded the answer, and nothing downstream asked the medium what
- was actually there. 89 holds the size read back from the directory entry
- after the last write, and 90 holds the stage index plus one of the FIRST
- append that did not land, or zero while every one has.
 
   gfat-cell-lastsize : Integer = 89
 
@@ -265,14 +189,6 @@ Section: Mount
       vol-cluster-count = clusters
     }
 
- The BPB fields are volume GEOMETRY: they decide WHERE every later read lands,
- not how much is read, so a bogus one is REFUSED, never clamped. Clamping a
- wrong geometry does not read less, it reads the wrong sectors and hands the
- caller confident garbage, and the desk reads the compiler's own source off
- this volume. The bounds are FAT invariants (external spec): sectors-per-cluster
- is a power of two through 128, at least one reserved sector, one or two FATs, a
- non-empty FAT, and fat-start / data-start landing inside the declared volume.
-
   gfat-pow2-ok : Integer -> Boolean
   gfat-pow2-ok (n) = n > 0 & bit-and n (n - 1) == 0
 
@@ -311,23 +227,9 @@ Section: Mount
 
 Section: FAT Chain
 
- End-of-chain follows the volume's width: the 16-bit sentinel test on
- a FAT32 volume would silently end every chain at the first cluster
- number past 65528, which a large volume reaches in ordinary use. A
- failed FAT read answers end-of-chain in the right width, so a bad
- sector truncates a file instead of spinning the walk.
-
   gfat-is-end : Fat16Volume, Integer -> Boolean
   gfat-is-end (vol) (cluster) =
     if gfat-is32 vol then fat32-is-end cluster else fat16-is-end cluster
-
- A cluster number arrives from a directory entry or a FAT slot, both of
- which are volume data we did not produce. `fat16-cluster-sector` turns
- it into an LBA by arithmetic alone, so a number above the volume's own
- limit addresses sectors past the medium. The sentinel test above cannot
- catch it: on FAT16 every value over 65528 already reads as end-of-chain,
- but on FAT32 the whole band from the cluster count to 268435447 is
- neither a sentinel nor addressable.
 
   gfat-cluster-ok : Fat16Volume, Integer -> Boolean
   gfat-cluster-ok (vol) (cluster) =
@@ -346,14 +248,6 @@ Section: FAT Chain
   end
 
 Section: Directory Search
-
- On FAT32 a directory entry's starting cluster has a high word at
- offset 20 that the 16-bit decoder never reads; a file placed past
- cluster 65535 on a big volume would otherwise resolve to the wrong
- low-word cluster and read someone else's bytes. The 32-bit scanner
- mirrors the foreword's walk exactly -- free entry ends the
- directory, long-name and label entries are skipped -- and fixes the
- decoded entry's cluster.
 
   gfat-read-entry32 : Integer, Integer -> Fat16DirEntry
   gfat-read-entry32 (buf) (off) =
@@ -451,19 +345,6 @@ Section: Path Resolution
 
 Section: Directory Listing
 
- The file manager wants every entry, not a name match: the same
- sector walk as the search, collecting decoded entries instead of
- comparing them. Per the spec a free entry whose first byte is zero
- ends the directory globally, not per sector -- the collector stops
- within its sector and the walk re-scans the same in-memory buffer
- for the terminal byte before fetching another sector, so stale
- garbage past the terminal on a dirty volume is never presented as
- files. Dot entries are dropped: the caller navigates upward itself,
- and "." is noise in every view. One walk serves both widths: the
- fixed FAT16 root passes a negative cluster and simply runs out of
- sectors; a chained directory follows the FAT when its cluster's
- sectors are exhausted.
-
   gfat-dot-entry : Text -> Boolean
   gfat-dot-entry (name) = if name == "." then True else name == ".."
 
@@ -524,17 +405,6 @@ Section: Directory Listing
     in gfat-list-walk vol (vol.vol-root-start) root-sectors (-1) []
 
 Section: Windowed Listing
-
- A window reads rows `from` to `from + n` of a directory and keeps only those.
- Every sector before the window, and every FAT read between clusters, is read
- inside a heap bracket that answers integers alone, so a listing allocates the
- sectors that hold the window's rows and the rows themselves, whatever the
- directory's length or depth. The cursor is allocated before any bracket and
- written in place, which is how a bracketed walk hands its position out.
-
- A slot is 0 at the end of the directory (first byte zero), 1 for a slot the
- listing skips, 2 for a listed entry. First byte 46 is `.`, which starts only
- the `.` and `..` entries, because an 8.3 name cannot begin with a dot.
 
   GfatCursor = record {
     gc-sector : Integer,
@@ -710,9 +580,6 @@ Section: File Reading
       end
   end
 
- Disk bytes are ASCII; `code-to-char` wants a CCE code, so the byte goes
- through `from-unicode` first.
-
 Section: Bulk File Reading
 
   GfatFat = record {
@@ -802,12 +669,6 @@ Section: Bulk File Reading
 
 Section: Writing
 
- Write-stage codes for cell 83. The small-file path reports 1-7, the
- multi-cluster path 11-17, and 20 is a completed write. A code with 100
- added is the same failure PLUS a failed rollback, which is the one
- outcome that leaves the volume dirty: the chain is allocated on disk
- with no directory entry behind it.
-
   gfat-w-oversize : Integer = 1
   gfat-w-s-fatload : Integer = 2
   gfat-w-s-nospace : Integer = 3
@@ -838,14 +699,6 @@ Section: Writing
     let a = gfat-put-u16 buf off (bit-and v 65535)
     in gfat-put-u16 buf (off + 2) (bit-and (bit-shru v 16) 65535)
 
- The FAT is allocated in whole sectors, so it always holds MORE entries
- than the volume has clusters. Per the spec data clusters number from 2
- and the highest valid one is `vol-cluster-count + 1`
- (`fat16-last-cluster`); every entry above that is padding with no
- backing sectors behind it. The scan bound is therefore the volume's
- limit, and the FAT's own capacity only when a malformed BPB puts the
- capacity lower.
-
   gfat-max-cluster : Fat16Volume -> Integer
   gfat-max-cluster (vol) =
     let width = if gfat-is32 vol then 4 else 2
@@ -853,30 +706,16 @@ Section: Writing
     in let limit = fat16-last-cluster vol + 1
     in if limit < cap then limit else cap
 
- Scan the loaded FAT for the first free entry at cluster 2 or above.
- Free means the entry's CLUSTER bits are zero: FAT32's top nibble is
- reserved and may be dirty on a volume other tools have touched, so
- the read masks it off. Returns 0 when the volume is full.
-
   gfat-find-free : Fat16Volume, Integer, Integer, Integer -> Integer
   gfat-find-free (vol) (fat) (cluster) (max-cluster) =
     if cluster >= max-cluster then 0
     else if gfat-fat-next vol fat cluster == 0 then cluster
     else gfat-find-free vol fat (cluster + 1) max-cluster
 
- The same scan counting instead of stopping, for a caller that has been
- refused and wants to say by how much. It walks the whole FAT, so it
- belongs on a refusal path and not beside a write.
-
   gfat-count-free : Fat16Volume, Integer, Integer, Integer, Integer -> Integer
   gfat-count-free (vol) (fat) (cluster) (max-cluster) (acc) =
     if cluster >= max-cluster then acc
     else gfat-count-free vol fat (cluster + 1) max-cluster (if gfat-fat-next vol fat cluster == 0 then acc + 1 else acc)
-
- Set one FAT entry in BOTH copies. Each copy is edited by reading the
- sector holding the entry, poking the bytes, and writing it back --
- a FAT with two disagreeing copies is a corrupt volume. On FAT32 the
- entry's reserved top nibble is preserved, as the spec demands.
 
   gfat-set-fat-entry : Fat16Volume, Integer, Integer, Integer -> [Device.Port] Boolean
   gfat-set-fat-entry (vol) (cluster) (value) (copy) = act
@@ -909,11 +748,6 @@ Section: Writing
   gfat-mark-eoc : Fat16Volume, Integer -> [Device.Port] Boolean
   gfat-mark-eoc (vol) (cluster) = gfat-mark-both vol cluster (gfat-eoc vol)
 
- Find a root directory slot for `name`: reuse an existing entry with the
- same name (so a re-save overwrites rather than duplicates), else the
- first free slot. Returns the (sector, offset) as sector*4096+offset, or
- -1 if the root directory is full.
-
   gfat-root-slot : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Port] Integer
   gfat-root-slot (vol) (name-buf) (sector) (remaining) (checked) = act
     if remaining <= 0 then -1
@@ -926,11 +760,6 @@ Section: Writing
       else gfat-root-slot vol name-buf (sector + 1) (remaining - 1) (checked + ((vol.vol-bytes-per-sector) / 32))
     end
   end
-
- The FAT32 root has no fixed region; the slot search walks its cluster
- chain and answers in the same sector*4096+offset encoding. A full
- last cluster answers -1 rather than allocating an extension -- the
- identity re-save that motivates this writer reuses its own slot.
 
   gfat-dir-slot32 : Fat16Volume, Integer, Integer -> [Device.Port] Integer
   gfat-dir-slot32 (vol) (name-buf) (cluster) = act
@@ -976,11 +805,6 @@ Section: Writing
     else if peek-byte buf (off + i) /= peek-byte name-buf i then False
     else gfat-name-eq-loop buf off name-buf (i + 1)
 
- Write a directory entry into the located root slot: the 11-byte name,
- attribute 0x20 (archive), the starting cluster, and the size. The rest
- of the 32-byte entry is zeroed. The cluster's high word always lands
- at offset 20 -- zero on FAT16, load-bearing on FAT32.
-
   gfat-write-dir-entry : Integer, Integer, Integer, Integer, Integer -> [Device.Port] Boolean
   gfat-write-dir-entry (name-buf) (slot) (cluster) (size) (bytes-per-sector) = act
     let lba = slot / 4096
@@ -1004,20 +828,6 @@ Section: Writing
     if n <= 0 then 0
     else let w = poke-byte buf off 0
     in gfat-zero-range buf (off + 1) (n - 1)
-
- Write `size` bytes from `src` as a one-cluster file named `name-buf`
- (11 bytes, space-padded). Returns True only if the free cluster, both
- FAT copies, the cluster data, and the directory entry all wrote. The
- FSInfo sector's free-count hint is left untouched -- it is advisory
- by spec, and a stale hint costs a later allocator a scan, not
- correctness.
-
- The FAT reaches the disk LAST, after the data and the directory slot
- are both secured. A cluster marked used with nothing pointing at it is
- leaked storage no later mount can reclaim; a cluster holding data while
- the FAT still calls it free is invisible, and the next allocator
- overwrites it. Only the second is recoverable, so the order takes that
- risk and not the other one.
 
   gfat-write-small-file : Fat16Volume, Integer, Integer, Integer -> [Device.Port] Boolean
   gfat-write-small-file (vol) (name-buf) (src) (size) = gfat-write-small-file-in vol name-buf src size (-1)
@@ -1064,12 +874,6 @@ Section: Writing
   gfat-find-slot : Fat16Volume, Integer -> [Device.Port] Integer
   gfat-find-slot (vol) (name-buf) = gfat-find-slot-in vol name-buf (-1)
 
- A directory below root is a cluster chain on both FAT16 and FAT32, which is
- what gfat-dir-slot32 already walks; only the ROOT differs between them, and
- only on FAT16, where it is a fixed sector run. So a dir under 2 means root
- and takes the split, and anything else takes the chain walk on either
- format. The name reads FAT32 and the function is not.
-
   gfat-find-slot-in : Fat16Volume, Integer, Integer -> [Device.Port] Integer
   gfat-find-slot-in (vol) (name-buf) (dir) = act
     if dir >= 2 then gfat-dir-slot32 vol name-buf dir
@@ -1094,18 +898,6 @@ Section: Multi-Cluster Writing
     else let l = if prev == 0 then 0 else gfat-fat-put vol fat prev free
     in let m = gfat-fat-put vol fat free (gfat-eoc vol)
     in gfat-chain-alloc vol fat (need - 1) (free + 1) (if first == 0 then free else first) free
-
- A long write reports how far it has got, because the caller is blocked
- inside it and cannot paint for itself. The report is a plain top-level
- function plus a context word rather than a closure: this language has no
- lambda literal, so `lambda (x) -> ...` does not parse, and a named function
- passed as a value does.
-
- Measured 2026-08-19 on a 2,896,050-byte file, 5,657 sectors: the whole
- write is 57 s of a 59 s save, and the chunk size is not what decides it --
- one call, 64-sector chunks and 8-sector chunks came out 56, 59 and 58 s.
- At about 306 VM exits a sector the transfer is one exit per 16-bit PIO
- word, so reporting per chunk costs nothing next to it.
 
   gfat-no-report : Integer, Integer -> Integer
   gfat-no-report (ctx) (done) = 0
@@ -1134,9 +926,6 @@ Section: Multi-Cluster Writing
     else gfat-write-sectors ((vol.vol-fat-start) + (vol.vol-fat-sectors)) (vol.vol-fat-sectors) fat
   end
 
- The successor is read before the entry is cleared, or the walk loses
- the rest of the chain.
-
   gfat-chain-release : Fat16Volume, Integer, Integer, Integer -> Integer
   gfat-chain-release (vol) (fat) (cluster) (fuel) =
     if fuel <= 0 then 0
@@ -1152,23 +941,6 @@ Section: Multi-Cluster Writing
     in gfat-flush-fat vol fat
   end
 
- A cluster the FAT reports free can still be claimed by a live directory
- entry on a volume another tool has corrupted, and the allocator cannot
- see that from the FAT alone. This marks every cluster reachable from the
- root directory and refuses a new chain that lands in one.
-
- The walk descends into subdirectories, because the file whose loss stops
- an ESP booting is `EFI/BOOT/BOOTX64.EFI` and it is two levels down: a
- root-only walk marks the `EFI` directory's own cluster and nothing
- inside it.
-
- It marks only what it can reach, so a chain it cannot walk -- a
- directory that will not read, a tree deeper than the cap, a walk that
- runs out of fuel -- leaves its clusters unmarked, and a walk that runs
- out of fuel on the candidate answers "no collision". Both directions are
- deliberate: under-marking can miss a collision and can never invent one,
- which is the property that keeps a guard from refusing a correct write.
-
   gfat-bit-set : Integer, Integer -> Integer
   gfat-bit-set (bm) (i) =
     poke-byte bm (i / 8) (bit-or (peek-byte bm (i / 8)) (bit-shl 1 (int-mod i 8)))
@@ -1176,12 +948,6 @@ Section: Multi-Cluster Writing
   gfat-bit-get : Integer, Integer -> Boolean
   gfat-bit-get (bm) (i) =
     bit-and (peek-byte bm (i / 8)) (bit-shl 1 (int-mod i 8)) /= 0
-
- The fuel is ONE budget spent across every entry, not a fresh allowance
- per entry: the live chains of a sound volume sum to at most the cluster
- count, so a budget of that size marks all of them, and a per-entry
- allowance would instead cost entries times clusters on a volume whose
- chains loop. Each returns what it has left.
 
   gfat-mark-chain : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> Integer
   gfat-mark-chain (vol) (fat) (bm) (cluster) (limit) (fuel) =
@@ -1191,14 +957,6 @@ Section: Multi-Cluster Writing
     else if gfat-is-end vol cluster then fuel
     else let m = gfat-bit-set bm cluster
     in gfat-mark-chain vol fat bm (gfat-fat-next vol fat cluster) limit (fuel - 1)
-
- Every directory occupies at least one cluster and marking it spends at
- least one fuel, so the shared budget bounds how many directories the
- descent can visit as well as how far each chain is walked. The depth cap
- is the second bound, against a volume whose `..` has been made to point
- downward. Each listing is bracketed: the entry list is dead once its
- chains are marked, and the bitmap was allocated before the mark, so only
- one listing per level is live at a time.
 
   gfat-mark-depth : Integer = 8
 
@@ -1277,12 +1035,6 @@ Section: Multi-Cluster Writing
       end
     end
   end
-
- The caller's buffer must be readable to the size rounded up to a whole
- sector -- the tail of the last sector goes to the disk as it lies.
- gfat-load-fat allocates by raw heap bump, so a caller that wants the
- FAT buffer and the file buffer reclaimed brackets the whole write with
- __heap-save / __heap-restore.
 
   gfat-write-file : Fat16Volume, Integer, Integer, Integer -> [Device.Port] Boolean
   gfat-write-file (vol) (name-buf) (src) (size) = gfat-write-file-in vol name-buf src size (-1)

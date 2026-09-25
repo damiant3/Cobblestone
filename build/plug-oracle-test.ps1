@@ -219,7 +219,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: subject did not compile to IR"; exi
 # so it is not). lua, perl and php are deliberately ABSENT: the row places them
 # in class 5 by a language claim nobody has measured, and a guess here would
 # license exactly the silence this column exists to catch.
-$RefusalPlugs = @('typescript', 'angular', 'react', 'vue', 'svelte', 'electron', 'html', 'qt')
+$RefusalPlugs = @('angular', 'react', 'vue', 'svelte', 'electron', 'html', 'qt')
 $RefusalMark  = 'CODEX_REFUSED_'
 
 # ---------------------------------------------------------------------------

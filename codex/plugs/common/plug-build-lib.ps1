@@ -29,6 +29,8 @@ $script:PlugBuildRepo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).
 . (Join-Path $script:PlugBuildRepo 'build' 'quire-map.ps1')
 $script:QuireDirs = $QuireDirs
 $script:CitePat = $StrictCitePat
+# Every file the assembler reads, so Bundle-PlugSource can record them.
+$script:PlugInputs = [System.Collections.Generic.List[string]]::new()
 
 
 function Add-PlugChapter {
@@ -50,6 +52,7 @@ function Add-PlugChapter {
     # Mirrors Resolve-PlugForewords' prefixing.
     $renamed = $false
     $dropping = $false
+    $script:PlugInputs.Add($Path)
     foreach ($l in [System.IO.File]::ReadAllLines($Path)) {
         if ($l -match '^Section:\s*(.+?)\s*$') {
             $dropping = $DropSections -contains $matches[1]
@@ -112,6 +115,7 @@ function Resolve-PlugForewords {
     }
     $preLines = [System.Collections.Generic.List[string]]::new()
     foreach ($entry in $ordered) {
+        $script:PlugInputs.Add($entry.Path)
         $renamed = $false
         foreach ($l in [System.IO.File]::ReadAllLines($entry.Path)) {
             if ((-not $renamed) -and $l -match '^Chapter:\s*(.+?)\s*$') {
@@ -134,11 +138,12 @@ function Bundle-PlugSource {
     )
     $body = (($PreLines + $Lines) -join "`n") + "`n"
     [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))
-    # The digest of the sources this bundle was assembled from. deck-headroom
-    # compares it to tell a stale bundle from a restamped one; mtime cannot,
+    # The manifest of every source this bundle was assembled from. deck-headroom
+    # re-hashes it to tell a stale bundle from a restamped one; mtime cannot,
     # because p4 sync -f touches every tracked file.
     $plugDir = Split-Path (Split-Path $BundleSrc -Parent) -Parent
-    [System.IO.File]::WriteAllText((Get-PlugSourceDigestPath $BundleSrc), (Get-PlugSourceDigest $plugDir), [System.Text.UTF8Encoding]::new($false))
+    Write-PlugSourceManifest -BundleSrc $BundleSrc -PlugDir $plugDir -Inputs $script:PlugInputs.ToArray()
+    $script:PlugInputs.Clear()
     Write-Host "[$PlugName] bundled $($PreLines.Count + $Lines.Count) lines, $($body.Length) bytes"
 }
 
@@ -220,20 +225,27 @@ function Build-TranspilerPlug {
                         'codex\compiler\Ast\AstNodes.codex',
                         'codex\compiler\IR\IRChapter.codex')) {
         $drop = if ($decl -like '*AstNodes.codex') { @('Deck Copies') } else { @() }
-        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $decl) -Quire $plugQuire -DropSections $drop
+        # Plug Types supplies the deck-record these chapters cite Phase Allocator
+        # for, and Deck Copies is the only section of AST Nodes that uses Syntax
+        # Nodes. The cite lines leave the bundle, or compile.ps1's re-resolve
+        # pulls the whole compiler in for them.
+        $strip = @('Phase Allocator')
+        if ($decl -like '*AstNodes.codex') { $strip += 'Syntax Nodes' }
+        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $decl) -Quire $plugQuire -DropSections $drop -StripCites $strip
     }
 
     if ($WithLir) {
         # CodexTypeHelpers owns hw-width-bytes / -signed / bounds-to-hw-width and
         # Token owns pat-lit-to-integer; the lowering calls all four. Both cite
-        # nothing, which is what makes Route A affordable -- they come in as
-        # leaves rather than dragging the Types or Syntax quire behind them.
+        # nothing beyond the declaration chapters, which is what makes Route A
+        # affordable -- they come in as leaves rather than dragging the Types or
+        # Syntax quire behind them.
         foreach ($lir in @('codex\compiler\Core\BuildSettings.codex',
                            'codex\compiler\Types\CodexTypeHelpers.codex',
                            'codex\compiler\Syntax\Token.codex',
                            'codex\compiler\IR\Lir.codex',
                            'codex\compiler\IR\LirTargets.codex')) {
-            Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir')
+            Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir', 'Phase Allocator')
         }
     }
     foreach ($cc in $CompilerChapters) {

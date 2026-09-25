@@ -42,7 +42,7 @@ if ($IatSlots.Count -eq 0) { throw "X86_64Boot.codex declares no hosted-win-iat-
 # every kernel32 slot above moved when ws2_32 arrived, and why this file and
 # X86_64Boot.codex are one change or neither.
 $Imports = @(
-    @{ Dll = 'kernel32.dll'; Funcs = @('GetStdHandle','WriteFile','ExitProcess','VirtualAlloc','ReadFile') },
+    @{ Dll = 'kernel32.dll'; Funcs = @('GetStdHandle','WriteFile','ExitProcess','VirtualAlloc','ReadFile','AddVectoredExceptionHandler') },
     @{ Dll = 'ws2_32.dll';   Funcs = @('WSAStartup','socket','bind','listen','accept','closesocket','recv','send','setsockopt') }
 )
 

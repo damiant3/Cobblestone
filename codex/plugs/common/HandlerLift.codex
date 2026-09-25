@@ -1,0 +1,379 @@
+Chapter: Handler Lift
+
+Section: Handler Lift
+
+  WhOp = record {
+   op : Text,
+   arity : Integer
+  }
+
+  WhRes = record {
+   e : IRExpr,
+   defs : List IRDef,
+   ops : List WhOp
+  }
+
+  WhClauses = record {
+   cs : List IRHandleClause,
+   defs : List IRDef,
+   ops : List WhOp
+  }
+
+  WhExprs = record {
+   es : List IRExpr,
+   defs : List IRDef,
+   ops : List WhOp
+  }
+
+  WhStmts = record {
+   ss : List IRActStmt,
+   defs : List IRDef,
+   ops : List WhOp
+  }
+
+  wh-op-arity : List WhOp, Text, Integer -> Integer
+  wh-op-arity (ops) (n) (i) =
+   if i >= list-length ops then 0 - 1
+   else if (list-at ops i).op == n then (list-at ops i).arity
+   else wh-op-arity ops n (i + 1)
+
+  wh-add-op : List WhOp, Text, Integer -> List WhOp
+  wh-add-op (ops) (n) (ar) =
+   if wh-op-arity ops n 0 >= 0 then ops else ops & [WhOp { op = n, arity = ar }]
+
+  wh-has-handle : IRExpr -> Boolean
+  wh-has-handle (e) =
+   when e
+    is IrHandle (eff) (b) (cs) (ty) (sp) -> True
+    is IrBinary (op) (l) (r) (ty) (sp) -> wh-has-handle l | wh-has-handle r
+    is IrNegate (x) (ty) (sp) -> wh-has-handle x
+    is IrIf (c) (t) (el) (ty) (sp) -> wh-has-handle c | wh-has-handle t | wh-has-handle el
+    is IrLet (n) (ty) (v) (b) (sp) -> wh-has-handle v | wh-has-handle b
+    is IrApply (f) (a) (ty) (sp) -> wh-has-handle f | wh-has-handle a
+    is IrLambda (ps) (b) (ty) (sp) -> wh-has-handle b
+    is IrList (es) (ty) (sp) -> wh-has-handle-list es 0
+    is IrMatch (s) (bs) (ty) (sp) -> wh-has-handle s | wh-has-handle-branches bs 0
+    is IrAct (stmts) (ty) (sp) -> wh-has-handle-stmts stmts 0
+    is IrWithTimeout (secs) (effs) (scopes) (b) (ty) (sp) -> wh-has-handle b
+    is IrRecord (n) (fs) (ty) (sp) -> wh-has-handle-fields fs 0
+    is IrFieldAccess (r) (f) (ty) (sp) -> wh-has-handle r
+    is IrFork (b) (ty) (sp) -> wh-has-handle b
+    is IrAwait (b) (ty) (sp) -> wh-has-handle b
+    is IrTry (mx) (b) (fb) (fl) (ty) (sp) -> wh-has-handle-stmts b 0 | wh-has-handle-stmts fb 0 | wh-has-handle-stmts fl 0
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> wh-has-handle r | wh-has-handle v
+    is otherwise -> False
+
+  wh-has-handle-list : List IRExpr, Integer -> Boolean
+  wh-has-handle-list (es) (i) =
+   if i >= list-length es then False
+   else if wh-has-handle (list-at es i) then True
+   else wh-has-handle-list es (i + 1)
+
+  wh-has-handle-branches : List IRBranch, Integer -> Boolean
+  wh-has-handle-branches (bs) (i) =
+   if i >= list-length bs then False
+   else if wh-has-handle ((list-at bs i).guard) | wh-has-handle ((list-at bs i).body) then True
+   else wh-has-handle-branches bs (i + 1)
+
+  wh-has-handle-stmts : List IRActStmt, Integer -> Boolean
+  wh-has-handle-stmts (ss) (i) =
+   if i >= list-length ss then False
+   else if wh-has-handle (ir-act-stmt-expr (list-at ss i)) then True
+   else wh-has-handle-stmts ss (i + 1)
+
+  wh-has-handle-fields : List IRFieldVal, Integer -> Boolean
+  wh-has-handle-fields (fs) (i) =
+   if i >= list-length fs then False
+   else if wh-has-handle ((list-at fs i).value) then True
+   else wh-has-handle-fields fs (i + 1)
+
+  WhCtx = record {
+   tmpl : IRDef,
+   binders : List Text
+  }
+
+  wh-def-binders : IRDef -> List Text
+  wh-def-binders (d) = wh-binders (d.body) (for p in (d.params) -> p.name)
+
+  wh-binders : IRExpr, List Text -> List Text
+  wh-binders (e) (acc) =
+   when e
+    is IrLet (n) (ty) (v) (b) (sp) -> wh-binders b (wh-binders v (list-push acc n))
+    is IrLambda (ps) (b) (ty) (sp) -> wh-binders b (acc & (for p in ps -> p.name))
+    is IrMatch (s) (bs) (ty) (sp) -> wh-binders-branches bs 0 (wh-binders s acc)
+    is IrAct (ss) (ty) (sp) -> wh-binders-stmts ss 0 acc
+    is IrBinary (op) (l) (r) (ty) (sp) -> wh-binders r (wh-binders l acc)
+    is IrNegate (x) (ty) (sp) -> wh-binders x acc
+    is IrIf (c) (t) (el) (ty) (sp) -> wh-binders el (wh-binders t (wh-binders c acc))
+    is IrApply (f) (a) (ty) (sp) -> wh-binders a (wh-binders f acc)
+    is IrList (es) (ty) (sp) -> wh-binders-list es 0 acc
+    is IrHandle (eff) (b) (cs) (ty) (sp) -> wh-binders b acc
+    is IrWithTimeout (secs) (effs) (scopes) (b) (ty) (sp) -> wh-binders b acc
+    is IrFieldAccess (r) (f) (ty) (sp) -> wh-binders r acc
+    is IrFork (b) (ty) (sp) -> wh-binders b acc
+    is IrAwait (b) (ty) (sp) -> wh-binders b acc
+    is IrTry (mx) (b) (fb) (fl) (ty) (sp) -> wh-binders-stmts fl 0 (wh-binders-stmts fb 0 (wh-binders-stmts b 0 acc))
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> wh-binders v (wh-binders r acc)
+    is otherwise -> acc
+
+  wh-binders-list : List IRExpr, Integer, List Text -> List Text
+  wh-binders-list (es) (i) (acc) =
+   if i >= list-length es then acc else wh-binders-list es (i + 1) (wh-binders (list-at es i) acc)
+
+  wh-binders-stmts : List IRActStmt, Integer, List Text -> List Text
+  wh-binders-stmts (ss) (i) (acc) =
+   if i >= list-length ss then acc
+   else let s = list-at ss i
+   in let acc1 = (when s
+     is IrDoBind (n) (t) (v) (sp) -> list-push (wh-binders v acc) n
+     is IrDoExec (v) (sp) -> wh-binders v acc)
+   in wh-binders-stmts ss (i + 1) acc1
+
+  wh-binders-branches : List IRBranch, Integer, List Text -> List Text
+  wh-binders-branches (bs) (i) (acc) =
+   if i >= list-length bs then acc
+   else let b = list-at bs i
+   in wh-binders-branches bs (i + 1) (wh-binders (b.body) (wh-binders (b.guard) (wh-pat-binders (b.pattern) acc)))
+
+  wh-pat-binders : IRPat, List Text -> List Text
+  wh-pat-binders (p) (acc) =
+   when p
+    is IrVarPat (n) (ty) (sp) -> list-push acc n
+    is IrCtorPat (c) (subs) (ty) (sp) -> wh-pats-binders subs 0 acc
+    is IrVecPat (subs) (ty) (sp) -> wh-pats-binders subs 0 acc
+    is otherwise -> acc
+
+  wh-pats-binders : List IRPat, Integer, List Text -> List Text
+  wh-pats-binders (ps) (i) (acc) =
+   if i >= list-length ps then acc else wh-pats-binders ps (i + 1) (wh-pat-binders (list-at ps i) acc)
+
+  wh-caps : List Text, IRExpr, Text, Integer, List Text -> List Text
+  wh-caps (bs) (body) (rn) (i) (acc) =
+   if i >= list-length bs then acc
+   else let b = list-at bs i
+   in if b == rn | wip-listed acc b 0 | wip-mentions body b == False then wh-caps bs body rn (i + 1) acc
+   else wh-caps bs body rn (i + 1) (list-push acc b)
+
+  wh-resume-id : Text = "__resume_id"
+
+  wh-apply-params : IRExpr, List Text, Integer, SourceSpan -> IRExpr
+  wh-apply-params (f) (ps) (i) (sp) =
+   if i >= list-length ps then f
+   else wh-apply-params (IrApply f (IrName (list-at ps i) NothingTy sp) NothingTy sp) ps (i + 1) sp
+
+  wh-clause-body : IRHandleClause -> IRExpr
+  wh-clause-body (c) =
+   let called = if list-length (c.params) > 0 & text-starts-with (wh-apply-head (c.body)) "__lam_"
+     then wh-apply-params (c.body) (c.params) 0 (c.span)
+     else c.body
+   in IrLet (c.resume-name) NothingTy (IrName wh-resume-id NothingTy (c.span)) called (c.span)
+
+  wh-apply-head : IRExpr -> Text
+  wh-apply-head (e) =
+   when e
+    is IrApply (f) (a) (t) (s) -> wh-apply-head f
+    is IrName (n) (t) (s) -> n
+    is otherwise -> ""
+  wh-params : List Text, SourceSpan, Integer, List IRParam -> List IRParam
+  wh-params (ps) (sp) (i) (acc) =
+   if i >= list-length ps then acc
+   else wh-params ps sp (i + 1) (list-push acc (IRParam { name = list-at ps i, type-val = NothingTy, span = sp }))
+
+  wh-lift-clauses : List IRHandleClause, WhCtx, Integer, List IRHandleClause, List IRDef, List WhOp -> WhClauses
+  wh-lift-clauses (cs) (d) (i) (acc) (defs) (ops) =
+   if i >= list-length cs then WhClauses { cs = acc, defs = defs, ops = ops }
+   else let c = list-at cs i
+   in let inner = wh-lift (c.body) d defs ops
+   in let c1 = IRHandleClause { op-name = c.op-name, params = c.params, resume-name = c.resume-name, body = inner.e, span = c.span }
+   in let nm = "__h_" & integer-to-text (list-length (inner.defs))
+   in let caps = wh-caps (d.binders) (c.body) (c.resume-name) 0 []
+   in let tail-unit = if list-length (c.params) == 0 then ["_u"] else []
+   in let hd = IRDef { name = nm, params = wh-params (caps & c.params & tail-unit) (c.span) 0 [], type-val = NothingTy, body = wh-clause-body c1, chapter-slug = (d.tmpl).chapter-slug, is-punctual = False, wcet-budget = 0, unique-params = [], span = (d.tmpl).span }
+   in let marked = IRHandleClause { op-name = c.op-name, params = c.params, resume-name = c.resume-name, body = wh-apply-params (IrName nm NothingTy (c.span)) caps 0 (c.span), span = c.span }
+   in wh-lift-clauses cs d (i + 1) (list-push acc marked) ((inner.defs) & [hd]) (wh-add-op (inner.ops) (c.op-name) (list-length (c.params)))
+
+  wh-lift-list : List IRExpr, WhCtx, Integer, List IRExpr, List IRDef, List WhOp -> WhExprs
+  wh-lift-list (es) (d) (i) (acc) (defs) (ops) =
+   if i >= list-length es then WhExprs { es = acc, defs = defs, ops = ops }
+   else let r = wh-lift (list-at es i) d defs ops
+   in wh-lift-list es d (i + 1) (list-push acc (r.e)) (r.defs) (r.ops)
+
+  wh-lift-stmts : List IRActStmt, WhCtx, Integer, List IRActStmt, List IRDef, List WhOp -> WhStmts
+  wh-lift-stmts (ss) (d) (i) (acc) (defs) (ops) =
+   if i >= list-length ss then WhStmts { ss = acc, defs = defs, ops = ops }
+   else let s = list-at ss i
+   in let r = wh-lift (ir-act-stmt-expr s) d defs ops
+   in let s1 = (when s
+     is IrDoBind (n) (t) (v) (sp) -> IrDoBind n t (r.e) sp
+     is IrDoExec (v) (sp) -> IrDoExec (r.e) sp)
+   in wh-lift-stmts ss d (i + 1) (list-push acc s1) (r.defs) (r.ops)
+
+  wh-lift-branches : List IRBranch, WhCtx, Integer, List IRBranch, List IRDef, List WhOp -> WhBranches
+  wh-lift-branches (bs) (d) (i) (acc) (defs) (ops) =
+   if i >= list-length bs then WhBranches { bs = acc, defs = defs, ops = ops }
+   else let b = list-at bs i
+   in let g = wh-lift (b.guard) d defs ops
+   in let y = wh-lift (b.body) d (g.defs) (g.ops)
+   in wh-lift-branches bs d (i + 1) (list-push acc (IRBranch { pattern = b.pattern, body = y.e, guard = g.e, span = b.span, alt-group = b.alt-group })) (y.defs) (y.ops)
+
+  WhBranches = record {
+   bs : List IRBranch,
+   defs : List IRDef,
+   ops : List WhOp
+  }
+
+  WhFields = record {
+   fs : List IRFieldVal,
+   defs : List IRDef,
+   ops : List WhOp
+  }
+
+  wh-lift-fields : List IRFieldVal, WhCtx, Integer, List IRFieldVal, List IRDef, List WhOp -> WhFields
+  wh-lift-fields (fs) (d) (i) (acc) (defs) (ops) =
+   if i >= list-length fs then WhFields { fs = acc, defs = defs, ops = ops }
+   else let f = list-at fs i
+   in let r = wh-lift (f.value) d defs ops
+   in wh-lift-fields fs d (i + 1) (list-push acc (IRFieldVal { name = f.name, value = r.e, span = f.span })) (r.defs) (r.ops)
+
+  wh-one : IRExpr, WhCtx, List IRDef, List WhOp -> WhRes
+  wh-one (e) (d) (defs) (ops) = WhRes { e = e, defs = defs, ops = ops }
+
+  wh-lift : IRExpr, WhCtx, List IRDef, List WhOp -> WhRes
+  wh-lift (e) (d) (defs) (ops) =
+   if wh-has-handle e == False then wh-one e d defs ops
+   else when e
+    is IrHandle (eff) (b) (cs) (ty) (sp) ->
+     let rb = wh-lift b d defs ops
+     in let rc = wh-lift-clauses cs d 0 [] (rb.defs) (rb.ops)
+     in wh-one (IrHandle eff (rb.e) (rc.cs) ty sp) d (rc.defs) (rc.ops)
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     let a = wh-lift l d defs ops in let b = wh-lift r d (a.defs) (a.ops)
+     in wh-one (IrBinary op (a.e) (b.e) ty sp) d (b.defs) (b.ops)
+    is IrNegate (x) (ty) (sp) -> let a = wh-lift x d defs ops in wh-one (IrNegate (a.e) ty sp) d (a.defs) (a.ops)
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     let a = wh-lift c d defs ops in let b = wh-lift t d (a.defs) (a.ops) in let z = wh-lift el d (b.defs) (b.ops)
+     in wh-one (IrIf (a.e) (b.e) (z.e) ty sp) d (z.defs) (z.ops)
+    is IrLet (n) (ty) (v) (bd) (sp) ->
+     let a = wh-lift v d defs ops in let b = wh-lift bd d (a.defs) (a.ops)
+     in wh-one (IrLet n ty (a.e) (b.e) sp) d (b.defs) (b.ops)
+    is IrApply (f) (x) (ty) (sp) ->
+     let a = wh-lift f d defs ops in let b = wh-lift x d (a.defs) (a.ops)
+     in wh-one (IrApply (a.e) (b.e) ty sp) d (b.defs) (b.ops)
+    is IrLambda (ps) (bd) (ty) (sp) -> let a = wh-lift bd d defs ops in wh-one (IrLambda ps (a.e) ty sp) d (a.defs) (a.ops)
+    is IrList (es) (ty) (sp) -> let a = wh-lift-list es d 0 [] defs ops in wh-one (IrList (a.es) ty sp) d (a.defs) (a.ops)
+    is IrMatch (s) (bs) (ty) (sp) ->
+     let a = wh-lift s d defs ops in let b = wh-lift-branches bs d 0 [] (a.defs) (a.ops)
+     in wh-one (IrMatch (a.e) (b.bs) ty sp) d (b.defs) (b.ops)
+    is IrAct (ss) (ty) (sp) -> let a = wh-lift-stmts ss d 0 [] defs ops in wh-one (IrAct (a.ss) ty sp) d (a.defs) (a.ops)
+    is IrWithTimeout (secs) (effs) (scopes) (bd) (ty) (sp) ->
+     let a = wh-lift bd d defs ops in wh-one (IrWithTimeout secs effs scopes (a.e) ty sp) d (a.defs) (a.ops)
+    is IrRecord (n) (fs) (ty) (sp) -> let a = wh-lift-fields fs d 0 [] defs ops in wh-one (IrRecord n (a.fs) ty sp) d (a.defs) (a.ops)
+    is IrFieldAccess (r) (f) (ty) (sp) -> let a = wh-lift r d defs ops in wh-one (IrFieldAccess (a.e) f ty sp) d (a.defs) (a.ops)
+    is IrFork (bd) (ty) (sp) -> let a = wh-lift bd d defs ops in wh-one (IrFork (a.e) ty sp) d (a.defs) (a.ops)
+    is IrAwait (bd) (ty) (sp) -> let a = wh-lift bd d defs ops in wh-one (IrAwait (a.e) ty sp) d (a.defs) (a.ops)
+    is IrTry (mx) (bd) (fb) (fl) (ty) (sp) ->
+     let a = wh-lift-stmts bd d 0 [] defs ops in let b = wh-lift-stmts fb d 0 [] (a.defs) (a.ops) in let z = wh-lift-stmts fl d 0 [] (b.defs) (b.ops)
+     in wh-one (IrTry mx (a.ss) (b.ss) (z.ss) ty sp) d (z.defs) (z.ops)
+    is IrFieldStore (r) (f) (v) (ty) (sp) ->
+     let a = wh-lift r d defs ops in let b = wh-lift v d (a.defs) (a.ops)
+     in wh-one (IrFieldStore (a.e) f (b.e) ty sp) d (b.defs) (b.ops)
+    is otherwise -> wh-one e d defs ops
+
+ The lifted defs are appended after every def of the module, so the counter
+ in `__h_<n>` is the number of lifted defs so far and no name repeats.
+
+  wh-lift-defs : List IRDef, Integer, List IRDef, List IRDef, List WhOp -> WhModule
+  wh-lift-defs (ds) (i) (acc) (lifted) (ops) =
+   if i >= list-length ds then WhModule { defs = acc & lifted & wh-id-defs ops ds, ops = ops }
+   else let d = list-at ds i
+   in if wh-has-handle (d.body) == False then wh-lift-defs ds (i + 1) (list-push acc d) lifted ops
+   else let r = wh-lift (d.body) (WhCtx { tmpl = d, binders = wh-def-binders d }) lifted ops
+   in let d1 = IRDef { name = d.name, params = d.params, type-val = d.type-val, body = r.e, chapter-slug = d.chapter-slug, is-punctual = d.is-punctual, wcet-budget = d.wcet-budget, unique-params = d.unique-params, span = d.span }
+   in wh-lift-defs ds (i + 1) (list-push acc d1) (r.defs) (r.ops)
+
+  wh-id-defs : List WhOp, List IRDef -> List IRDef
+  wh-id-defs (ops) (ds) =
+   if list-length ops == 0 | list-length ds == 0 then []
+   else let d = list-at ds 0
+   in [IRDef { name = wh-resume-id, params = [IRParam { name = "v", type-val = NothingTy, span = d.span }], type-val = NothingTy, body = IrName "v" NothingTy (d.span), chapter-slug = d.chapter-slug, is-punctual = False, wcet-budget = 0, unique-params = [], span = d.span }]
+
+  WhModule = record {
+   defs : List IRDef,
+   ops : List WhOp
+  }
+
+Section: Mentions
+
+  wip-listed : List Text, Text, Integer -> Boolean
+  wip-listed (names) (n) (i) =
+   if i >= list-length names then False
+   else if list-at names i == n then True
+   else wip-listed names n (i + 1)
+
+  wip-mentions : IRExpr, Text -> Boolean
+  wip-mentions (e) (nm) =
+   when e
+    is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) -> False
+    is IrTextLit (t) (sp) -> False
+    is IrError (m) (ty) (sp) -> False
+    is IrName (n) (ty) (sp) -> n == nm
+    is IrNegate (x) (ty) (sp) -> wip-mentions x nm
+    is IrBinary (op) (l) (r) (ty) (sp) -> wip-mentions l nm | wip-mentions r nm
+    is IrIf (c) (t) (el) (ty) (sp) -> wip-mentions c nm | wip-mentions t nm | wip-mentions el nm
+    is IrLet (n) (ty) (v) (b) (sp) -> n == nm | wip-mentions v nm | wip-mentions b nm
+    is IrApply (f) (a) (ty) (sp) -> wip-mentions f nm | wip-mentions a nm
+    is IrLambda (ps) (b) (ty) (sp) -> wip-params-bind ps nm 0 | wip-mentions b nm
+    is IrList (es) (ty) (sp) -> wip-mentions-list es nm 0
+    is IrMatch (s) (bs) (ty) (sp) -> wip-mentions s nm | wip-mentions-branches bs nm 0
+    is IrAct (stmts) (ty) (sp) -> wip-mentions-stmts stmts nm 0
+    is IrRecord (n) (fs) (ty) (sp) -> wip-mentions-fields fs nm 0
+    is IrFieldAccess (r) (f) (ty) (sp) -> wip-mentions r nm
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> wip-mentions r nm | wip-mentions v nm
+    is otherwise -> True
+
+  wip-params-bind : List IRParam, Text, Integer -> Boolean
+  wip-params-bind (ps) (nm) (i) =
+   if i >= list-length ps then False
+   else if (list-at ps i).name == nm then True
+   else wip-params-bind ps nm (i + 1)
+
+  wip-mentions-list : List IRExpr, Text, Integer -> Boolean
+  wip-mentions-list (es) (nm) (i) =
+   if i >= list-length es then False
+   else if wip-mentions (list-at es i) nm then True
+   else wip-mentions-list es nm (i + 1)
+
+  wip-mentions-fields : List IRFieldVal, Text, Integer -> Boolean
+  wip-mentions-fields (fs) (nm) (i) =
+   if i >= list-length fs then False
+   else if wip-mentions ((list-at fs i).value) nm then True
+   else wip-mentions-fields fs nm (i + 1)
+
+  wip-mentions-stmts : List IRActStmt, Text, Integer -> Boolean
+  wip-mentions-stmts (stmts) (nm) (i) =
+   if i >= list-length stmts then False
+   else let hit = (when list-at stmts i
+     is IrDoBind (n) (t) (v) (sp) -> n == nm | wip-mentions v nm
+     is IrDoExec (v) (sp) -> wip-mentions v nm)
+   in if hit then True else wip-mentions-stmts stmts nm (i + 1)
+
+  wip-pat-binds : IRPat, Text -> Boolean
+  wip-pat-binds (p) (nm) =
+   when p
+    is IrVarPat (n) (ty) (sp) -> n == nm
+    is IrCtorPat (c) (subs) (ty) (sp) -> wip-pats-bind subs nm 0
+    is IrVecPat (subs) (ty) (sp) -> wip-pats-bind subs nm 0
+    is otherwise -> False
+
+  wip-pats-bind : List IRPat, Text, Integer -> Boolean
+  wip-pats-bind (ps) (nm) (i) =
+   if i >= list-length ps then False
+   else if wip-pat-binds (list-at ps i) nm then True
+   else wip-pats-bind ps nm (i + 1)
+
+  wip-mentions-branches : List IRBranch, Text, Integer -> Boolean
+  wip-mentions-branches (bs) (nm) (i) =
+   if i >= list-length bs then False
+   else let b = list-at bs i
+   in if wip-pat-binds (b.pattern) nm | wip-mentions (b.guard) nm | wip-mentions (b.body) nm then True
+   else wip-mentions-branches bs nm (i + 1)

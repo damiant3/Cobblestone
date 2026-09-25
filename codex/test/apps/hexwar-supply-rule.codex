@@ -1,0 +1,48 @@
+Chapter: HexwarSupplyRule
+  cites Games chapter HexWar
+
+ A 10 by 6 map; side 0 draws supply from column 0. The LINE is side 0 at
+ (1,2), (2,2) and (3,2) with an enemy at (4,2), so the front unit stands in
+ the enemy's zone. The POCKET is side 0 at (7,4) with an enemy on each of its
+ six neighbours. Each case is built from units of its own (L-ALIAS).
+
+Section: Setup
+
+  hsr-unit : Integer, Integer, Integer, Integer -> Unit
+  hsr-unit (id) (owner) (q) (r) =
+    Unit { id = id, type-id = 0, owner = owner, q = q, r = r, strength = 4, max-strength = 4,
+           movement = 3, max-movement = 3, attack = 4, defense = 4, range = 1, experience = 0,
+           disrupted = False, eliminated = False, has-moved = False, has-attacked = False }
+
+  hsr-line : List Unit
+  hsr-line = [hsr-unit 0 0 1 2, hsr-unit 1 0 2 2, hsr-unit 2 0 3 2, hsr-unit 3 1 4 2]
+
+  hsr-ring : Integer, List Unit -> List Unit
+  hsr-ring (dir) (acc) =
+    if dir >= 6 then acc
+    else hsr-ring (dir + 1) (list-push acc (hsr-unit (10 + dir) 1 (hex-neighbor-q dir 7) (hex-neighbor-r dir 4)))
+
+  hsr-pocket : List Unit
+  hsr-pocket = hsr-ring 0 [hsr-unit 9 0 7 4]
+
+  hsr-yn : Boolean -> Text
+  hsr-yn (b) = if b then "PASS" else "FAIL"
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening =
+    let line = hsr-line
+    in let front = list-at line 2
+    in let sup = supply-map line 0 10 6
+    in let after = apply-supply-attrition hsr-line 0 10 6
+    in let pocket = hsr-pocket
+    in let psup = supply-map pocket 0 10 6
+    in let pafter = apply-supply-attrition hsr-pocket 0 10 6
+    in act
+      print-line-uni ("CONTROL, the line's front unit stands in the enemy zone: " & hsr-yn (in-enemy-zoc (HexCoord { q = 3, r = 2 }) line 0))
+      print-line-uni ("a line in contact is supplied through its own hexes: " & hsr-yn (unit-in-supply front sup 10))
+      print-line-uni ("and loses nothing to attrition: strength " & show ((list-at after 2).strength))
+      print-line-uni ("an encircled unit is cut off: " & hsr-yn (unit-in-supply (list-at pocket 0) psup 10 == False))
+      print-line-uni ("and loses a point: strength " & show ((list-at pafter 0).strength))
+    end

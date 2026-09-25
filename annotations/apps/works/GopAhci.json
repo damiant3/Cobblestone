@@ -46,5 +46,61 @@
     "date": "2026-08-06",
     "body": "Wait for the command-issue bit to clear. A task-file error (IS.TFES) aborts the wait: the command failed and the buffer is meaningless.",
     "thread": null
+  },
+  {
+    "target": "chapter:GopAhci",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The controller is found by PCI class 0x01 subclass 0x06; BAR5 is the HBA register block (ABAR). We enable memory space AND bus master (the HBA is a DMA master: it writes the sector into our buffer itself), set GHC.AE, pick the first port with a SATA drive present, stop that port, point it at a command list, FIS receive area, and command table we allocate and zero ourselves, restart it, then issue one READ DMA EXT through a single PRDT entry and poll the command-issue bit.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopAhci",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The firmware left the controller running, so stopping the port before repointing its registers is not optional -- an HBA reading a stale command list would DMA into memory that is now ours.",
+    "thread": null
+  },
+  {
+    "target": "chapter:GopAhci",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "All register access is 32-bit: `peek-32`/`poke-32` are plain 32-bit moves, and an AHCI register must never be touched at another width. Every poll is fuel-bounded, so a wedged or absent controller returns a failure rather than hanging the boot.",
+    "thread": null
+  },
+  {
+    "target": "function:ahci-write-fis-cmd",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "A register host-to-device FIS carrying an ATA DMA-EXT command (`cmd`, 0x25 read / 0x35 write) for `count` sectors at `lba`, LBA48 addressing (device register 0x40). Dword 0 is FIS type 0x27 | C bit 0x8000 with the command in byte 2 (0x27 | 0x8000 = 32807). The count occupies bytes 12-13; a count of 0 means 65536 sectors to the drive, so callers must pass 1 or more.",
+    "thread": null
+  },
+  {
+    "target": "function:ahci-write-prdt-n",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "One PRDT entry at command-table offset 128: the destination buffer and a byte count held as count-minus-one, with the interrupt-on-completion bit set. A single PRD covers up to 4 MB, so one entry carries the whole transfer -- the entire seed arrives in one command.",
+    "thread": null
+  },
+  {
+    "target": "function:ahci-quiesce",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The port is quiesced again before EVERY return. The CLB, FB, and command table are per-call heap scratch: a port left running with FRE set retains DMA rights over them after the heap reclaims the addresses, and a late or asynchronous FIS -- or a fueled-out command a real drive completes seconds later -- then lands in whatever lives there next. Observed on real hardware (ASUS, live SATA drive) as a death mid welcome-fill at a depth that varied build to build; the Dell (internal drive disabled) and emulated AHCI never reproduce it.",
+    "thread": null
+  },
+  {
+    "target": "function:ahci-identify-on",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "IDENTIFY DEVICE (0xEC) is PIO data-in, but to the HBA it is one more command with a 512-byte data phase: the same FIS slot and the same single-PRD table carry it. The LBA and count fields of the FIS are not-applicable to the command and the device ignores them; count 1 sizes the PRD at the 512 bytes the device will send.",
+    "thread": null
   }
 ]

@@ -52,7 +52,7 @@ course, not after Perforce refuses one.
 p4 shelve -f -c <CL>                    # EVERY CL with open files; -f, or a re-shelve does nothing
 p4 revert //Codex/<stream>/...          # no -c: revert them ALL, see below
 p4 merge -S //Codex/<agent> -r
-p4 resolve -at                # nothing of yours is in the way, so this is safe
+p4 resolve -am                # -at only if your stream holds no submitted change main lacks (P-BULKAT)
 p4 submit -d "Merge down from main."
 p4 unshelve -s <CL> -c <CL>   # your edits come back on top of current main
 ```
@@ -347,6 +347,8 @@ esolve -at takes the delete over your add. | Copy up a restored file BEFORE any 
 | P-CLEANCOUNT (L) | A doc's COUNT merges cleanly and is still wrong: when another lane moved the same counter, the merge keeps a value that is correct for neither tree. A clean merge on a count is not a correct count. | Re-run `build/check-doc-counts.ps1` after EVERY merge-down that touches a doc carrying a number, before gating. It is seconds and it caught both. |
 | P-DOCADD | Your CL adds or deletes `.codex` chapters and the gate REDS at `check-doc-counts` before it compiles anything, because `TechnicalDetails.md` states the module and application counts TWICE and both copies are checked. Adding a file under `codex/foreword/` moves seven claims (section 5). | Fix the count INSIDE the same CL. This is the one case where "docs go straight to main" does NOT apply: the count has to move in lockstep with the source or main goes red the moment the CL lands. Run `build/check-doc-counts.ps1` alone BEFORE the gate on any CL that adds or deletes chapters; it prints the per-claim table in seconds and saves a whole gate cycle. |
 | P-BISECTSEED | You bisect the seed with `p4 sync //Codex/<agent>/seed/Codex.cdx@<CL>` using MAIN's changelist numbers, and two different CLs give you the same binary, so you attribute a regression to the wrong change. A dev stream receives main only at merge-down, so many main CLs collapse onto one dev-stream revision; two probes returning an IDENTICAL seed hash is the tell. | Bisect against MAIN and hash first: `p4 print -q -o <file> //Codex/main/seed/Codex.cdx@<CL>` for each candidate, then `Get-FileHash`. Distinct CLs must give distinct hashes before any of them is worth a guest run. The probe itself is cheap and needs no plug rebuild: `build/test-cross.ps1 -Arch arm64 -Test <name>`, about 40 s. |
+| P-ADDREVERT | The shelve-first merge-down loses a NEW file: after `p4 revert -c <CL>` the add is "abandoned" and the file stays on disk, and the later `p4 unshelve` of that add is skipped because the file is already there, so the CL comes back without it and nothing says so (blu 2026-09-24). | Before the unshelve, move every added file out of the way (or delete it); after it, compare `p4 opened -c <CL>` against `p4 describe -S -s <CL>` and re-`p4 add` anything missing, checking the on-disk copy against `p4 print <file>@=<CL>`. |
+| P-SHELFSTALE | `p4 shelve -f -c <CL>` REPLACES the shelved copies of the files open in the CL and KEEPS every other file already in that shelf. Revert a file out of the CL (a seed you must re-prove, a doc you dropped), re-shelve, and the next unshelve brings the old version back and resolves it against head (blu 2026-09-25: a superseded seed returned as a conflict). | After reverting a file out of a shelved CL, delete it from the shelf too: `p4 shelve -d -c <CL> <depot path>`. Then `p4 describe -S -s <CL>` must list exactly the files you mean to carry. |
 
 ---
 

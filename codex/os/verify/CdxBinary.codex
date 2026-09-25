@@ -159,10 +159,13 @@ Section: Binary Builder
 
   cdx-verify-signature : List Integer -> Boolean
   cdx-verify-signature (bytes) =
-    let pub-key = list-slice bytes 40 72
+    let mark = __heap-save
+    in let pub-key = list-slice bytes 40 72
     in let sig = list-slice bytes 72 136
     in let content-hash = cdx-read-content-hash bytes
-    in ed25519-verify pub-key content-hash sig
+    in let ok = ed25519-verify pub-key content-hash sig
+    in let r = __heap-restore mark
+    in ok
 
 Section: Capability Encoding
 
@@ -211,12 +214,15 @@ Section: Effect Encoding
     in decode-effects-loop binary (off + 2 + name-len) count (i + 1) (list-push acc name)
 
   bytes-to-cap-text : List Integer, Integer, Integer -> Text
-  bytes-to-cap-text (bs) (off) (len) = b2ct-loop bs off len 0 ""
+  bytes-to-cap-text (bs) (off) (len) =
+    let have = list-length bs - off
+    in let cap = if have < 0 then 0 else if len < have then len else have
+    in raw-bytes-to-text (b2ct-loop bs off len 0 (__list-with-capacity (cap + 1)))
 
-  b2ct-loop : List Integer, Integer, Integer, Integer, Text -> Text
+  b2ct-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   b2ct-loop (bs) (off) (len) (i) (acc) =
     if i >= len then acc
-    else b2ct-loop bs off len (i + 1) (acc & char-to-text (code-to-char (list-at bs (off + i))))
+    else b2ct-loop bs off len (i + 1) (list-push acc (list-at bs (off + i)))
 
   cdx-read-le16 : List Integer, Integer -> Integer
   cdx-read-le16 (bs) (off) =
@@ -274,16 +280,29 @@ Section: Verification
     if i >= stop then acc
     else list-slice-loop xs (i + 1) stop (list-push acc (list-at xs i))
 
+  cdx-section-fits : List Integer, Integer -> Boolean
+  cdx-section-fits (bytes) (at) =
+    let off = read-le64 bytes at
+    in let sz = read-le64 bytes (at + 8)
+    in if off < 0 | sz < 0 then False
+    else sz <= list-length bytes - off
+
   cdx-verify-content-hash : List Integer -> Boolean
   cdx-verify-content-hash (bytes) =
-    let stored-hash = cdx-read-content-hash bytes
+    if list-length bytes < cdx-header-fixed-size then False
+    else if cdx-section-fits bytes 136 == False then False
+    else if cdx-section-fits bytes 152 == False then False
+    else if cdx-section-fits bytes 168 == False then False
+    else if cdx-section-fits bytes 184 == False then False
+    else let stored-hash = cdx-read-content-hash bytes
     in let cap-end = read-le64 bytes 136 + read-le64 bytes 144
     in let eff-end = read-le64 bytes 152 + read-le64 bytes 160
     in let text-end = read-le64 bytes 168 + read-le64 bytes 176
     in let ro-end = read-le64 bytes 184 + read-le64 bytes 192
     in let e1 = if cap-end > eff-end then cap-end else eff-end
     in let e2 = if text-end > ro-end then text-end else ro-end
-    in let content-end = if e1 > e2 then e1 else e2
+    in let section-end = if e1 > e2 then e1 else e2
+    in let content-end = if bit-and (cdx-read-le16 bytes 6) cdx-flag-has-proofs == 0 then section-end else list-length bytes
     in let content = list-slice bytes cdx-header-fixed-size content-end
     in let computed = sha256 content
     in let computed-bytes = cdxb-hash-words-to-bytes computed

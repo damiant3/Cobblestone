@@ -62,5 +62,61 @@
     "date": "2026-08-06",
     "body": "Try the selected medium, else AHCI, then legacy IDE, then USB mass storage. `dr-via` names the controller that answered so the caller can say which path reached the disk -- on a boot screen that distinction is the difference between \"we read the stick\" and \"we read something\".",
     "thread": null
+  },
+  {
+    "target": "chapter:GopDisk",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "LBA28 READ SECTORS (command 0x20): select the drive with the top LBA nibble, program the count and 24-bit LBA, issue the command, then for each sector poll the status port until BSY clears and DRQ sets and read 256 16-bit words from the data port. Every poll loop is fuel- bounded so a missing or wedged disk fails to a status code instead of hanging; a program hosting this compiles with the pet flag anyway, like every boot-path loop.",
+    "thread": null
+  },
+  {
+    "target": "function:ide-read-words",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "One sector is 256 words of the data port, and ATA delivers them little-endian in the order the disk lays them out, which is what the string form moves them as.",
+    "thread": null
+  },
+  {
+    "target": "function:ide-max-chunk",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "One command per sector costs a command per sector: a 2 MB seed is ~4200 of them, and on IDE PIO each sector is 256 port reads. Both controllers take a sector count, so a bulk read asks once. AHCI carries the whole transfer in a single PRD (up to 4 MB); IDE is capped at 256 sectors per command by its 8-bit count register, so it walks the request in chunks.",
+    "thread": null
+  },
+  {
+    "target": "function:ide-absent",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "A machine with no legacy IDE controller floats the bus: every status read answers 0xFF, which fakes BSY, DRQ, and ERR all at once. The fuel-bounded waits then time out holding 0xFF, the DRQ test passes, and the drain loop \"reads\" sectors of all-ones and reports success -- a phantom disk full of garbage that outranks the real one in the dispatch. All-ones is the same floating-bus signature the i8042 and LAPIC probes retire on; one status read up front retires the whole controller.",
+    "thread": null
+  },
+  {
+    "target": "function:ide-write-words",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Writing mirrors reading: program the LBA and count once, then push each sector's 256 words to the data port, waiting for DRQ before each. After the last sector a FLUSH CACHE forces the drive to commit -- without it a write can sit in a volatile cache and a power loss loses the identity we just saved.",
+    "thread": null
+  },
+  {
+    "target": "function:disk-sync-cache",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "A write is not committed until the medium says so, and only the USB path has a flush primitive today. The answer is three-state on purpose: a medium we CANNOT flush must not be indistinguishable from one we did (L-BAILVALUE). 1 is flushed, 0 is no flush primitive for this medium, -1 is a flush that was issued and failed.",
+    "thread": null
+  },
+  {
+    "target": "function:ide-cmd-identify",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "IDENTIFY DEVICE (0xEC) answers one 512-byte sector describing the drive: the model string sits at words 27-46 and the sector counts at words 60-61 (LBA28) and 100-103 (LBA48). No LBA registers to program; select the drive, issue, drain one sector. Behind the same floating-bus gate as every other IDE entry, and a DRQ that never arrives (no device on a present controller) returns zero instead of a garbage page.",
+    "thread": null
   }
 ]

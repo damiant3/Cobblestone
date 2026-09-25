@@ -92,17 +92,18 @@ Section: The Stage
     ds-cc : Integer,
     ds-lba : Integer,
     ds-rty : Integer,
-    ds-ph : Integer
+    ds-ph : Integer,
+    ds-fuel : Integer
   }
 
   dsk-snap : Integer -> DskSnap
   dsk-snap (dummy) =
-    DskSnap { ds-wr = xdiag-get gfat-cell-written, ds-cc = xdiag-get msc-cell-lastcc, ds-lba = xdiag-get msc-cell-fail-lba, ds-rty = xdiag-get msc-cell-retry, ds-ph = xdiag-get msc-cell-phase }
+    DskSnap { ds-wr = xdiag-get gfat-cell-written, ds-cc = xdiag-get msc-cell-lastcc, ds-lba = xdiag-get msc-cell-fail-lba, ds-rty = xdiag-get msc-cell-retry, ds-ph = xdiag-get msc-cell-phase, ds-fuel = xdiag-get msc-cell-fuel-lo }
 
   dsk-lines : Integer, Integer, Integer, Integer, Integer, DskSnap, Integer -> List Text
   dsk-lines (size) (got) (bad) (shift) (wstage) (s) (after) =
     ["size=" & show size & " read=" & show got & " bad=" & show bad & " shift=" & show shift & " wstage=" & show wstage,
-     "wr=" & show (s.ds-wr) & " cc=" & show (s.ds-cc) & " lba=" & show (s.ds-lba) & " rty=" & show (s.ds-rty) & " ph=" & show (s.ds-ph) & " after=" & show after & " chunk=" & show (msc-chunk-now 0)]
+     "wr=" & show (s.ds-wr) & " cc=" & show (s.ds-cc) & " lba=" & show (s.ds-lba) & " rty=" & show (s.ds-rty) & " ph=" & show (s.ds-ph) & " after=" & show after & " chunk=" & show (msc-chunk-now 0) & " fuel=" & show (s.ds-fuel)]
 
  A refused write and a dead target are different events on the wire and were
  one state until now. A refusal COMPLETES: the transfer event arrives and
@@ -298,7 +299,7 @@ Section: The Rung Ladder
   dsk-ladder-lines : Integer, Integer, Integer, DskSnap, Integer -> List Text
   dsk-ladder-lines (done) (rung) (note) (s) (after) =
     ["ladder done=" & show done & " rung-sectors=" & dsk-rung-word rung & " rung-bytes=" & dsk-rung-word (rung * 512) & " payload-bytes=" & show dsk-rung-size & " note=" & show note,
-     "wr=" & show (s.ds-wr) & " cc=" & show (s.ds-cc) & " lba=" & show (s.ds-lba) & " rty=" & show (s.ds-rty) & " ph=" & show (s.ds-ph) & " after=" & show after & " chunk=" & show (msc-chunk-now 0)]
+     "wr=" & show (s.ds-wr) & " cc=" & show (s.ds-cc) & " lba=" & show (s.ds-lba) & " rty=" & show (s.ds-rty) & " ph=" & show (s.ds-ph) & " after=" & show after & " chunk=" & show (msc-chunk-now 0) & " fuel=" & show (s.ds-fuel)]
 
   dsk-ladder-stop : Fat16Volume, Integer, Integer, Integer -> [Device.Port] DiagResult
   dsk-ladder-stop (vol) (done) (rung) (note) =
@@ -331,6 +332,7 @@ Section: Entry
   dsk-run (c) = act
     if c.dc-bank == False then dsk-finish "no-medium" diag-col-dim dsk-size 0 0 (dsk-shift c) 0
     else let ch = xdiag-put msc-cell-chunk (dsk-msc-chunk c)
+    in let fl = xdiag-put msc-cell-fuel-lo xhci-fuel
     in act
       m <- gfat-mount-esp
       if m.gm-ok == False then dsk-finish "mount-fail" diag-col-bad dsk-size 0 0 (dsk-shift c) (xdiag-get gfat-cell-stage)

@@ -3,24 +3,9 @@ Chapter: SinkLadderProbe
   cites Foreword chapter Fat16
   cites Foreword chapter Maybe
 
- The compiler's metal output sink, at CDX scale, reporting as a colour.
-
- BlockLadderProbe proved ONE block-write-sector on the ASUS. The sink calls
- fat16-write-segments, which allocates a chain, rewrites both FAT copies and
- walks 5364 clusters on top of that primitive, and none of that has ever run
- on the board. codex/test/apps/fat-sink-big.codex asks exactly this question
- and answers it over print-line-uni, which is the channel that has never
- rendered a character there -- the same defect that spent two A5 flights.
-
- The write and the streaming oracle are fat-sink-big's, unchanged in
- substance. What is new is the reporting: paint precedes print on every rung,
- so a rung that dies inside a firmware call still leaves its colour standing.
-
  We say:
 
 Section: Cells
-
- uefi-systab-addr, the cell cdx-to-pe.ps1 primes before it jumps.
 
   sl-systab-cell : Integer = 30704
 
@@ -30,14 +15,7 @@ Section: Cells
 
 Section: Payload
 
- The current seed CDX size. This is the number that matters: a smaller write
- would not exercise the chain length the real artifact needs.
-
   sl-size : Integer = 2745998
-
- The calibration. At 0 the verify is the real one; at 1 every byte must be
- reported bad and the ladder must stop at BLUE. An oracle that cannot report
- bad is not evidence (L-FALSIF).
 
   sl-shift : Integer = 0
 
@@ -49,14 +27,6 @@ Section: Payload
     if i >= n then 0
     else let w = poke-byte buf i (sl-pat i)
     in sl-fill buf (i + 1) n
-
- The fill is chunked so it can report. 2.7 MB poked one byte at a time is
- minutes on the medium's own timescale and the ladder said nothing during it,
- which is half of why the flight was unreadable. The bar is BLUE because blue
- is the rung this stage is working toward: a bar advancing under an orange
- field is progress toward `wrote`, and a bar frozen part way is where it died.
- A chunk boundary rather than a modulo test per byte keeps the cost off the
- inner loop.
 
   sl-chunk : Integer = 65536
 
@@ -81,10 +51,6 @@ Section: Rungs
 
   sl-truth : Boolean -> Integer
   sl-truth (b) = if b then 1 else 0
-
- The read rung tests the CONTENT, not the pointer: a payload built without
- UEFI mode reads down the bare-metal path, gets 512 zero bytes, and passes a
- pointer test every time.
 
   sl-read-ok : Integer -> Integer
   sl-read-ok (buf) =
@@ -171,12 +137,6 @@ Section: Reporting
     is Just (e) -> e.de-cluster
     is None -> 0
 
- The write rung demands the recorded size AND the chain length, not just the
- writer's own True. A writer that returns ok having linked nothing leaves a
- first cluster below 2, which sl-walk answers 0 for -- indistinguishable from
- a clean verify. Requiring the chain the size implies is what stops a vacuous
- run painting WHITE.
-
   sl-want-chain : Fat16Volume -> Integer
   sl-want-chain (vol) =
     let bpc = fat16-bytes-per-cluster vol
@@ -200,16 +160,6 @@ Section: Entry
     d <- sl-step "bpb" (sl-truth (v0.vol-bytes-per-sector == 512)) ladder-orange ladder-magenta
     sl-write-and-verify v0
   end
-
- The write is BRACKETED rather than instrumented from inside. `fat16-write-
- segments` is one call that creates the file and writes the whole chain, so
- there is no segment boundary out here to report on; what the bracket does
- separate is the two phases the flight could not tell apart. An empty blue bar
- under an orange field means the fill finished and the write did not return,
- which is where the returned stick put the fault -- no directory entry at all.
- A full bar means the write returned and the `wrote` rung is the next word.
- Reporting from INSIDE the chain walk needs a hook in `GopFat16`, which is a
- different file and, as of 2026-08-15, a different lane's.
 
   sl-write-and-verify : Fat16Volume -> [Console, Device.Block] Integer
   sl-write-and-verify (v0) =

@@ -26,24 +26,11 @@ Section: S02 -- Read IR input
 
 Section: S03 -- Start TCP listener
 
- The port is FIXED per plug and shared across every workspace on the box, so
- the second agent to run the same plug binds a port the first is holding.
- Bare, that surfaces as .NET's "Only one usage of each socket address is
- normally permitted", which names neither the plug nor the neighbour and reads
- like a fault in this run. L-SHARED asks a fleet tool to refuse rather than
- report someone else's screen, and this is that refusal.
-
- It cannot be repaired by deriving the port here. The guest DIALS a port that
- is a literal in each plug's own chapter and compiled into its CDX, and
- nothing carries a port to the VM, so a host that moved would simply never be
- called. Making the port workspace-derived is a change to all 56 plug sources
- and their build, not to this script.
-
-  s03-body : List ShellCmd = [ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "try { $listener.Start() } catch { [Console]::Error.WriteLine(\"FAIL: TCP $Port is already in use, so this plug cannot be run here now. The port is fixed per plug and shared across workspaces, so another agent running the same plug holds it (L-SHARED). Wait, or run a different plug.\"); exit 7 }", ScEcho (SeRaw "\"[plug-run] Listening on TCP $Port\"")]
+  s03-body : List ShellCmd = [ScRaw "$hostPort = $Port", ScRaw "for ($pa = 0; $pa -lt 8; $pa++) {", ScRaw "    $tryPort = if ($script:UseCodexVm) { Get-VmPort -Attempt $pa } else { $Port }", ScRaw "    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $tryPort)", ScRaw "    try { $listener.Start(); $hostPort = $tryPort; break } catch { $listener = $null; if (-not $script:UseCodexVm) { break } }", ScRaw "}", ScRaw "if (-not $listener) { [Console]::Error.WriteLine(\"FAIL: no host port for this plug run. Under codex-vm eight Get-VmPort ports were taken; under QEMU the plug's own port $Port is fixed and another run holds it (L-SHARED).\"); exit 7 }", ScEcho (SeRaw "\"[plug-run] Listening on TCP $hostPort (the guest dials $Port)\"")]
 
 Section: S04 -- Boot VM
 
-  s04-body : List ShellCmd = [ScBlank, ScTempFile "stderrFile", ScTempFile "consoleFile", ScComment "The host choice lives in Start-PlugVm (vm-config), not here: eighteen other", ScComment "runners need the same selection and a copy in each is a copy to drift.", ScRaw "$proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB", ScEcho (SeRaw "\"[plug-run] VM PID $($proc.Id)\"")]
+  s04-body : List ShellCmd = [ScBlank, ScTempFile "stderrFile", ScTempFile "consoleFile", ScComment "The host choice lives in Start-PlugVm (vm-config), not here: eighteen other", ScComment "runners need the same selection and a copy in each is a copy to drift.", ScRaw "$proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB -GuestPort $Port -HostPort $hostPort", ScEcho (SeRaw "\"[plug-run] VM PID $($proc.Id)\"")]
 
 Section: S05 -- Wait for TCP connection
 

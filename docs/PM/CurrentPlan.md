@@ -85,22 +85,20 @@ Parity with the hosted x86-64 lift is closed (wasm 53 = hosted linux 53,
 2026-09-01); wat2wasm stays on the PATH as the assembler (Damian, 2026-09-02).
 Open:
 
-- Want 3 of the `build-page-modules` row below: why `wat2wasm` never started
-  on `riscv-stdio` (`plugs-backlog.md` line 74 carries the npm-shim candidate;
-  unconfirmed).
-- **No gate builds a web or wasm bundle.** `app-sweep` compiles the bare-metal
-  side and nothing in `build/` invokes `codex/plugs/wasm/build-spark.ps1` or
-  `apps/gpushow/tools/validate-all.mjs` (needs a browser). A lane touching a
-  browser app inherits a blind spot no gate can see; the per-app gaps are in
-  `spark-backlog` SPARK-4, `gpushow-backlog` and `starmap-backlog`.
-
+- The release gate's `wasm-bundles` phase builds the wasm plug and all nine
+  `apps/*/build-wasm.ps1` modules with the compiler the run built (85 s,
+  2026-09-24); games builds its default game only, and `wasm-run` then RUNS the
+  first 60 hosted subjects under wasmtime (plugs 2.16). Still outside every gate:
+  `apps/gpushow/tools/validate-all.mjs` (needs a browser; GPUSHOW-1), and the
+  tracked `apps/fishtank/web/fishtank.wasm` the site ships (33,678 bytes) is not
+  what head builds (35,729) and nothing grades either one.
 Claims: `codex/plugs/wasm/**` is reek's; fester keeps
 `apps/landing/web/compile/**` and the Prism page; reek announces before
 touching `build-page.ps1` or `page-lenses.ps1`. The plug alone takes no token.
 
 ## MAIN AND PUBLIC RELEASE
 
-MAIN OPEN. The token remains free outside seed landings.
+MAIN OPEN (Update 62 pushed 2026-09-24, commit `3eac1674`). The token is granted for proven seed CLs only.
 
 Latest public release: **Update 61** (2026-09-17, commit `3af67f99` on
 GitHub master and GitLab main, seed #799 `7BCD5BC6BCE0AF41`).
@@ -122,10 +120,10 @@ is open; the ruled boundary and the traps around brand strings are in
    `apps/works/WebServer.codex` (a socketless router). **RULED (Damian,
    2026-08-28): the desktop never gains `Network.*`; the webserver becomes the
    first system SERVICE under a preemptive scheduler and the pane is its admin
-   console.** Design: `PreemptiveScheduler.md` (val); register:
-   `apps/works/works-backlog.md` WORKS-48 (pane half unblocked, serving half
-   is stage 5). The bed is the instrument, via codex-vm NAT port-forward;
-   there is no metal (2026-09-09).
+   console.** The service and its admin pane shipped (`PreemptiveScheduler.md`,
+   "The shape that shipped"; WORKS-48).
+   The bed is the instrument, via codex-vm NAT port-forward; there is no metal
+   (2026-09-09).
 2. **The compiler in WASM building itself in a static page** (fester) is
    shipped (`codex/plugs/wasm/page/index.html`, `build-page.ps1`). **Hosting
    that page from our own kernel is a separate later step (Damian); do not
@@ -139,9 +137,6 @@ bed can answer is answered in the bed; an item only metal can answer is
 
 - **The I219 medium-death hunt is PARKED (Damian, 2026-08-24)** and does not
   revive on a flight; `I219IsNotAnE1000.md` is the record.
-- **A8 the desk build loop (fester)**: `DeskBuildLoop.md`. `compile <path>`
-  wired and gated. The launch (`vm-compile-cdx` and below) has no bed
-  (codex-vm's guest sees no VT-x) and no metal: fester closes or re-scopes it.
 - **Identity, RULED 2026-08-18: the identity file stays on the ESP;
   auto-unlock is bed-only.** Rotation stays with `Designs/Done/OS/Identity.md`.
 
@@ -210,17 +205,18 @@ assignment, not a suggestion; re-read it on every merge-down. An item here is
 a pointer; the register named beside it holds the detail. The compiler-bug
 order is whatever `codex/compiler/compiler-backlog.md` shows open. fester is
 otherwise held in reserve for the hardest problems (Damian, 2026-08-26). **The
-DeskScheduler is PARKED (Damian, 2026-08-26), not cancelled**:
-`DeskScheduler.md` carries two questions only Damian can rule on (rate or
-budget; skip or run late on a miss).
+DeskScheduler is PARKED (Damian, 2026-08-26), not cancelled**; its two
+questions are ruled (Damian, 2026-09-24): support all of them, each pane
+declares a rate or a budget and skip or run late on a miss
+(`DeskScheduler.md`).
 | agent | now | then | standing |
 |---|---|---|---|
-| **blu** | **NOW:** handed off 2026-09-24; `arm64-web-server` serves HTTP under QEMU UEFI (main 26970). | **NEXT:** `Arm64NetIO`'s receive loops (frame reuse, then compaction) measured on that bed; ProtocolStack.md "Still open" item 1. | Edge-mesh and net items in `ProtocolStack.md`; ICMP parse production caller (ruled send-only). |
-| **val** | **NOW:** HANDED OFF clean at main 27060: nothing opened, pending or shelved. works-backlog is audited at head (2026-09-24) and its open rows are sized in sessions: 64, 30, 66, 2 at 1; 17 and 71 at 1 to 2; 25, 70 and 37 at half; 5, 6, 7 at 2 or more; 3 at 3 or more; metal or sitting 9, 19, 24; latent 67, 68; deferred 61; 16 a watch. | **NEXT:** own pick from that list; the smallest desk-visible ones are WORKS-66 (the start menu answers no key) and WORKS-37 (F12's verdict lasts only until the pane next repaints). S4h and S6h wait on the first page that uses a scroll viewport or an alignment. | Damian's batch: the virtual-desktop wording; FW-1's three fix options are Deferred (Damian, 2026-09-08 18:00). `ShellRefinement.md` "6.4: WHAT IS STILL OPEN"; WORKS-70, WORKS-71 |
-| **fester** | **NOW:** No pending work; Track D (`VerifiedFormatParsing.md` 10.1) rows 6, 7 and 11 are closed, row 13 has Csv and Base64 guarded. | **NEXT:** Row 13 in the order its row gives (caller census 2026-09-24): `ui/Markdown.codex` `ui-md-parse`, then `Hex`, then the harness-only parsers. Each unit is the pattern in `ExaminersAssay.md` "The CBOR Guard" onward: probe the seed, fix, a fixture with every line predicted, ablate each guard alone (an ablation that moves nothing means the fixture cannot reach that guard, so add the arm), cite-gate over the change, docs, land. | **COMPILER-59 and COMPILER-60 are PARKED and measured, not abandoned:** `ir-fidelity -Disagree` counts a def disagreeing with itself and reads 3 sites over 2 programs of 615; the lambda-parameter-span change moves 2 of the 3 and REGRESSES `typeclass-poly`'s `convert`, and the shared-span reading is refuted, both digests in `docs/Designs/Active/Compiler/LambdaParamSpans.md`. The name-the-kernel class is closed: `test-self-verify`, `check-generated-scripts` and `test-cross` all take `-Kernel` (2026-09-07). A8 desk build loop when VT-x metal is available; `deck-headroom`; WORKS-24 rides a sitting; ProductBuilder stage 6 on hold |
-| **reek** | **NOW:** plugs 2.70: `__heap-advance` rounds the heap pointer to 8 on arm64 and riscv, graded by the new subject `codex/test/heap-advance-odd` (baseline on depot plugs, then the fix, on QEMU). After it, 2.71 (riscv spill/stack-argument overlap, latent, 19+ parameters) or the next row on reek's pick. | **NEXT:** At the next public release, close GitHub PRs 155 and 156 with credit and the public commit, and answer issue 157: items 2 and 3 fixed, item 1 is COMPILER-86 (`PerforceProcess.md` section 7, "Closing"). | Plugs close-out lane; WORKS-9 metal-gated; `ShellDslReadability.md` same campaign; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4; Registered: COMPILER-48 |
-| **red** | **NOW:** Update 62, the release, assigned by Damian (2026-09-24): run it end to end with `/release`. Close GitHub PRs 154-156 and answer issues 153 and 157 at publication (reek's and blu's rows name the text). | **NEXT:** root's dispatch. | Releases, personally and end to end; `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**`; the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
-| **root** | **NOW:** Shared layout model landed main25904: typed layout-only stacks, minimum-constrained flex allocation, exact pixel distribution and direct overflow reports. Calculator's fifteen keys fit and hit at both desktop scales. Nineteen focused native cases, emitted HTML DOM checks, image/UEFI and document checks pass. Font/app uplift remains main25898. | **NEXT:** HTML record mutation parity is tracked in `codex/plugs/html/html-backlog.md` before adopting shared mutable controls. Unused plugs remain incomplete. Layout HTML review: `D:/Projects/Cobblestone-root/build-output/box-uplift/stack-gallery.html`; browser pixel inspection was unavailable. | Survey and scope in `docs/Designs/Active/OS/ShellRefinement.md`. Build-tooling first slice main25858; remaining closure in `Build.md`. `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` released to red for the two stage lifts. |
+| **blu** | **NOW:** idle, awaiting dispatch. | **NEXT:** from root. | `ProtocolStack.md` holds no open edge-mesh row (checked 2026-09-24). |
+| **val** | **NOW:** HANDED OFF 2026-09-25 during the Update 63 release (Damian): nothing opened, no run in flight, stream equal to main. SHELF 29042 holds `GenericEquality.md` (`Eq a =>` by dictionary passing) built on main 29048: candidate 05C5DCC6A6402D00 passed the scratch fixed point from seed 02DFFDE29917811B, BVT 147/147, cite-gate 307/307 (167 chapters) and `generic-eq` on arm64 and riscv64; NOT re-proved on any later main. GopBoot is val's. | **NEXT:** after Update 63 lands, land 29042: `p4 unshelve -s 29042 -c 29042`, `p4 sync`, `p4 resolve -am` (P-UNSHELVE), read the diff, then concat the compiler and re-run the scratch fixed point with `-Repl` (P-REPL), BVT, `cite-gate.ps1 -Kernel <candidate>`, `test-cross.ps1 -Arch arm64|riscv64 -Test generic-eq`, then the token, the signer and `test-self-verify`, install, submit, copy-up. Main changed the plugs (JS, TS, Python, Zig emitters) and `X86_64Boot.codex` since 29048, so the re-proof is not a formality. | Damian's batch: the virtual-desktop wording; FW-1's three fix options are Deferred (Damian, 2026-09-08 18:00). `ShellRefinement.md` "6.4: WHAT IS STILL OPEN" |
+| **fester** | **NOW:** nothing open. Shelf 28166 holds C64-1, UNVERIFIED (opening drops its six duplicate constants, Cpu6502 cites Memory; the checks it still needs are in its description), parked because apps wait. | **NEXT:** fester flies the next sitting (root's order, 2026-09-25): one image, one boot. On main: the diag `avx` stage runs ten 256-bit lanes when admitted (29025), Option A admission (28945), the card draft. When reek lands Ctrl-Alt-Del (fester's shelf 28969 handed over), rebuild `diag-sitting16.img` on the depot seed, run every arm in both beds (`diag-arm.ps1`, no `-Only`), record the hash on the sitting 16 card, and ask root to sign off. Then plugs 2.73: read the arm64 empty-list emitter (arm64 `[]` is capacity 4, 48 bytes against 16). | The name-the-kernel class is closed: `test-self-verify`, `check-generated-scripts` and `test-cross` all take `-Kernel` (2026-09-07). `deck-headroom`; WORKS-24 rides a sitting; ProductBuilder stage 6 on hold |
+| **reek** | **NOW:** nothing open. Ctrl-Alt-Del landed at main 29077 (seed 046F0733): PS/2 in the kernel IRQ1 handler, USB HID in the diag image; bed-rehearsed only (codex-vm USB and PS/2, OVMF USB via `ovmf-cad`), with no real-hardware reading until sitting 16; under OVMF a PS/2 key never reaches IRQ1 on any seed (COMPILER-104, unowned; `diag-arm.ps1 -Only ovmf-cad-ps2`). `build/boot/diag.img` is not rebuilt: sitting 16 flies fester's `diag-sitting16.img`. **`tools/codex-vm.exe` changed at main 27464 and no lane rebuilds it**: the depot binary arrives with merge-down; a lane running a LOCALLY built codex-vm from pre-27464 source must rebuild (`tools/build-vm.ps1`), because that binary reads the new `GpuScene` count word (bit 0x20000000) as an oversized count and draws no frame. | **NEXT:** from root. Latent: Latent rows, each taken on its trigger (checked 2026-09-24, none fired): 2.07 (ELF machine field; trigger: the first non-x86 caller of the ELF plug) and 2.70 (8-byte-aligned __heap-advance on x86-64 and riscv together, one seed CL, per root's ruling; trigger: a riscv bed that traps misaligned access). 1.73 QEMU per-run port PARKED (root 2026-09-25). At the next public release, answer GitHub issue 157 from the released tree and close it: stage 2 (computed tables) is not built by design and stage 3 covers zig, arm64, riscv and wasm (`ConstantSharing.md`); the public tree at Update 62 still says stage 2 is parked, which the 2026-09-24 answer already reports. | Plugs close-out lane; WORKS-9 metal-gated; `ShellDslReadability.md` same campaign; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4 |
+| **red** | **NOW:** HANDED OFF 2026-09-25 at 67% for a clean release session; nothing opened, pending or shelved. Public mirrors are already rewritten (phone project and Commodore ROM bytes purged, old images and disks untracked): Cobblestone github/gitlab tip `9ee0a57e`, CobblestoneWeb `deead038`, and `D:\Projects\Cobblestone-red-main\.git` is rebased onto `9ee0a57e`, so the Update 63 push is a plain fast-forward, NO force. | **NEXT:** Update 63, run personally by the release skill when root says the compiler register is clear (Damian, 2026-09-25). `GitHubUpdate63.md` holds a draft built from main 27095 onward (main copy-up numbers): the release verifies each bullet against its CL and classifies the "Unplaced" list. val's `c64-verify.mjs`, `build-rom-data.ps1` and `apps/landing/web/c64/index.html` (main 29034) ride the Update 63 commit. | Releases, personally and end to end; `GopWizard.codex`, `apps/guios/**` (`apps/works/GopBoot.codex` released to val for WORKS-5, root 2026-09-24); the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
+| **root** | **NOW:** the fleet is wound down for a Windows reboot (2026-09-25): every lane handed off clean, no guest runs, main head 28809. After the reboot the lanes resume from their rows: val COMPILER-77 stages 4 and 5, then fester composes the next sitting, then the Update 63 release. | **NEXT:** the next hardware sitting is sitting 16's five WORKS questions plus the COMPILER-77 stage 5 AVX arm, flown once after stages 3 to 5 land (Damian, 2026-09-25); root manages it with Damian. Update 63 is released once the compiler register is clear; red runs the release. Open for Damian: the Prism human-gated items (PRISM-12 play, 13c Mac, stage 4 key) and composing the next sitting. | Survey and scope in `docs/Designs/Active/OS/ShellRefinement.md`. Build-tooling first slice main25858; remaining closure in `Build.md`. `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` released to red for the two stage lifts. |
 
 **Plugs are reek's close-out lane** (from val, Damian's direction
 2026-08-18): the register in order, one entry at a time, said in
@@ -264,8 +260,6 @@ older than the last change to its subject is not evidence (L-COUNT).
   `gdb-watchpoint` is proven as a PATH and unproven as a debugging SESSION: a
   real one needs an address from the booted kernel's own map, not the
   compiler's, and probably more than 120 s under TCG.
-- **COMPILER-23 residue, UNOWNED**: the remaining CORE-8 residue is the `from-unicode` answering -1
-  call-site policy, in `codex/foreword/core/core-backlog.md`.
 ## Decisions
 
 **Numbers are stable ids, not an order.** A ruled item shrinks to one line
@@ -325,9 +319,9 @@ pending decisions and not drawable until he opens the build-out.
   (L-CAPABILITY-LOST); the abstentions are the price. (Track C, val.)
 - **`p4-stale-check`'s dropped-add scan FAILS on tracked source extensions**
   (`.codex`, `.ps1`, `.md`, `.expected`, `.failing`, `.disk`,
-  `.cross-refusal`, `.no-cross`, `.vmargs`) and warns on everything else.
-  (red; ruled, STILL NOT BUILT at 2026-09-07: `p4-stale-check.ps1:56` says
-  "Reported as a warning, not a failure" and `Show-Untracked` fails nothing.)
+  `.cross-refusal`, `.cross-fatal`, `.no-cross`, `.vmargs`) and warns on
+  everything else. (red; built, `p4-stale-check.ps1` prints FAIL on a dropped
+  add, verified 2026-09-25.)
 - **zig 0.16.0 is installed at `D:\zig-0.16.0`** (verified present
   2026-09-07).
 
@@ -340,9 +334,9 @@ pending decisions and not drawable until he opens the build-out.
 | `codex/os/kernel/{VirtioNet,VirtioBlk}.codex`, `codex/plugs/pe/Arm64PeWriter.codex`, `build/build-arm64-img.ps1` and its generator | FREE -- announce |
 | `tools/codex-vm.c` | reek, 2026-08-24, for the dead-harness row (red's grant); the row is the shape, not this line. Announce to blu before touching the NAT paths |
 | `build/test-cross-batch.ps1` | FREE -- announce |
-| `apps/works/GopBoot.codex`, `GopWizard.codex`, `apps/guios/**` | red |
+| `GopWizard.codex`, `apps/guios/**` (`apps/works/GopBoot.codex` released to val for WORKS-5, root 2026-09-24) | red |
 | `build/boot/diag/**` (`Diag.codex`, `diag-arm.ps1`, `diag.img`, the lifted probes) | root, 2026-08-18, `DiagnosticStick.md`. Step-2 lifts by the lane that flew the probe, coordinated with root |
-| `apps/works/GopDesk.codex`, `GopComposite.codex`, `GopFiles.codex`, `GopIcon.codex`, `GopSettings.codex`, `codex/foreword/ui/**` | val, 2026-08-20, the Shell Refinement campaign (`ShellRefinement.md`). Announce-before-you-start stands, and so does checking which `ds` cells are spoken for. `comp-text` stays fester's |
+| `apps/works/GopDesk.codex`, `GopComposite.codex`, `GopFiles.codex`, `GopIcon.codex`, `GopSettings.codex`, `GopBoot.codex`, `UefiConsole.codex`, `StickSource.codex`, `DevConsoleBoot.codex`, `DevConsole.codex`, `DevDebugger.codex`, `codex/foreword/ui/**` | val, 2026-08-20 (the Dev Console four 2026-09-24, WORKS-5), the Shell Refinement campaign (`ShellRefinement.md`). Announce-before-you-start stands, and so does checking which `ds` cells are spoken for. `comp-text` stays fester's |
 | `apps/works/GopEdit.codex` | FREE -- announce; the Editor's standing rules are `works-desk-contract.md` 0.6 |
 | `apps/works/RepoProtocol.codex`, `RepoProtocolPersist.codex` | FREE -- announce |
 | `apps/works/AgentBundle.codex`, `codex/test/apps/agent-bundle-*` | FREE -- announce |
@@ -352,7 +346,7 @@ pending decisions and not drawable until he opens the build-out.
 | `apps/works/GopWeb.codex` and `ds` cell 248 | val, WORKS-48 DONE 2026-09-08: 248 points at the block the desk shares with the web service (`dk-web-cell`). 244 is the pinned-pill mask (`dk-pinned-cell`) and 252 the hover bubble's save block (`dk-bub-cell`); the `ds` block is FULL |
 | `codex/os/kernel/E1000e.codex`, `codex/os/net/**` | blu |
 | `codex/os/sched/**` and the preemptive scheduler work | val, 2026-08-28, `PreemptiveScheduler.md`. blu keeps `codex/os/net/**`; the scheduler reads that side and does not change it |
-| `codex/test/cost/**` and `CostModel.md` | blu; what is left of it is COMPILER-7 |
+| `codex/test/cost/**` and `CostModel.md` | FREE -- announce |
 | the integer-literal lexer and text emitter; `codex/plugs/csharp/**` and the `build/` DDC harness; `codex/plugs/recheck/**` | val, lane ownerships rather than open work |
 | `codex/plugs/**` and `codex/plugs/plugs-backlog.md` | reek, the close-out lane (from val, 2026-08-18). Includes `codex/plugs/zig/**` (ordinary fleet code, Damian 2026-08-18); excludes the entries other lanes hold (named in the lanes table). **`codex/plugs/wasm/**` is reek's for the parity campaign (2026-08-31, Damian); fester keeps `apps/landing/web/compile/**`; `build-page.ps1` and `page-lenses.ps1` are RELEASED to reek without announce (fester's row, 2026-09-01, on that lane being parked)** |
 | `apps/games/**`, `apps/landing/**` except `web/compile/**` | val, 2026-08-31, the games campaign (Damian; the disposition section). `web/compile/**` is the Prism page and stays fester's |
@@ -441,9 +435,9 @@ contract on the compiler, not a scheduling policy: a self-compile needing more
 is a DEFECT to fix, never a reason to grow the guests. Measured: CDX ~1.09 GB,
 text 1,170,074,911 bytes (1116 MB), two independent modes agreeing within 3 per
 cent; `text-stage1` refuses above 2 GB and was shown to fail before it was
-believed (fester, 2026-09-01). **Open:** whether the contract wants a trigger of
-its own, since the arm does not fire on most work, and the CDX-mode half has no
-arm at all because those phases keep no telemetry artifact to read.
+believed (fester, 2026-09-01). **No trigger of its own (Damian, 2026-09-24):**
+the release gate's check is enough, and CDX mode needs no arm because text
+mode is the memory hog.
 
 **BATCH YOUR GATES (Damian, 2026-08-28).** Small CLs land on your dev stream
 with targeted tests only; a gate runs once per work ARC, never per one-line CL,
@@ -455,9 +449,9 @@ registers need no gate.
 onto main when it arrives. The reviewing lane judges it on one test: the result
 must be shaped for Codex and its own consumers, never for a transpile target. An
 ancillary subsystem with no fleet CL in flight may wait for a contributor; the
-entry chapter is not one. Remaining subset/deck obligations from Steve
-Howell's issue 115 are tracked in `codex/compiler/compiler-backlog.md`,
-COMPILER-48.
+entry chapter is not one. Steve Howell's issue 115 is closed: every compiler
+chapter compiles with only what it cites (main 28693), and the allocator
+initialization it asked about is measured in `docs/ArchitectsSketchbook.md`.
 
 **DO NOT ADD A TEST TO THE GATE OR THE BATTERY ON YOUR OWN INITIATIVE; GET
 THE COMMANDER'S CLEARANCE (Damian, 2026-08-21: "haphazardly adding tests to the gates
@@ -502,4 +496,3 @@ Declined is not deferred. Do not re-propose one of these, do not build a
 smaller version of it, and do not open a design that assumes it. If you
 think a ruling has been overtaken by events, that is one sentence to Damian,
 once.
-

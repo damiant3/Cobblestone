@@ -221,6 +221,15 @@ if ($compilerChanged) {
     Write-Host "[cite-gate] a codex/compiler change: $($selected.Count - $before) allocation golden(s) added, of $($allocGoldens.Count) test chapters reading the heap frontier"
 }
 
+# A selected chapter that declares no `opening` and is not an error test (no
+# .failing sidecar) is a library a harness splices in; compiled alone it is
+# CDX2040 by construction. It is named here, and its citers were walked above.
+$library = @($selected | Where-Object {
+    -not (Test-Path -PathType Leaf ($_ -replace '\.codex$', '.failing')) -and
+    -not (Select-String -Path $_ -Pattern '^\s+opening\s*:' -Quiet) })
+$selected = @($selected | Where-Object { $library -notcontains $_ })
+foreach ($l in $library) { Write-Host "[cite-gate] library, not compiled (no opening): $($l.Substring($Repo.Length + 1))" }
+
 # Relative paths, because that is what bvt.ps1 -SubjectsFile takes.
 $rel = @($selected | ForEach-Object { $_.Substring($Repo.Length + 1) } | Sort-Object -Unique)
 $runnable = @($rel | Where-Object { Test-Path (Join-Path $Repo ($_ -replace '\.codex$', '.expected')) })

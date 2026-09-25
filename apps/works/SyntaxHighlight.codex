@@ -1,18 +1,6 @@
 Chapter: SyntaxHighlight
   cites Foreword chapter CCE
-
- THE INDENT DECIDES EVERYTHING, and it decides it before any character
- is looked at. `scan-token` in the compiler's lexer branches on
- `s.column == 2`: a line whose text begins one space in is PROSE and its
- contents are never tokenized, and one more space makes the same line
- code. So this classifier counts leading spaces first and only then asks
- what the characters are. Getting that order wrong produces a highlighter
- that colours the word `cites` inside an English sentence, which is the
- same confusion the compiler itself raises CDX3010 for.
-
-   zero spaces   a Chapter: or Section: header
-   one space     prose, whole line, no tokens inside it
-   two or more   code
+  cites UI chapter Theme
 
  We say:
 
@@ -81,10 +69,6 @@ Section: Indent
    else i
 
 Section: Keywords
-
- The reserved word list, as `docs/DevelopersGuide.md` states it. `as` is
- deliberately absent: it is not reserved, it is the idiomatic name for a
- list, and colouring it as a keyword would be wrong in most of the tree.
 
   syn-directives : List Text
   syn-directives = ["cites", "quotes", "grounds", "trusting"]
@@ -204,3 +188,37 @@ Section: Colours
     is SynNumber -> #E8916A
     is SynString -> #C0D86A
     is SynOperator -> #9AA0A8
+
+Section: Ink On A Ground
+
+ 96 is three quarters of 128, the smallest luma gap the far pole (black on a
+ ground brighter than 127, white otherwise) guarantees on any ground; therefore
+ the floor is always reachable, and a sixteenth-step mix toward that pole keeps
+ the hue.
+
+  syn-ink-floor : Integer = 96
+
+  syn-ink : Integer, SynClass -> Integer
+  syn-ink (ground) (k) = syn-ink-mix (theme-luma ground) (syn-colour k) 0
+
+  syn-ink-mix : Integer, Integer, Integer -> Integer
+  syn-ink-mix (g) (c) (step) =
+    let m = if g > 127 then syn-ink-darken c step else syn-ink-lighten c step
+    in let d = theme-luma m - g
+    in if step >= 16 then m
+    else if d >= syn-ink-floor | 0 - d >= syn-ink-floor then m
+    else syn-ink-mix g c (step + 1)
+
+  syn-ink-darken : Integer, Integer -> Integer
+  syn-ink-darken (c) (step) =
+    let r = bit-and (bit-shru c 16) 255 * (16 - step) / 16
+    in let gr = bit-and (bit-shru c 8) 255 * (16 - step) / 16
+    in let b = bit-and c 255 * (16 - step) / 16
+    in r * 65536 + gr * 256 + b
+
+  syn-ink-lighten : Integer, Integer -> Integer
+  syn-ink-lighten (c) (step) =
+    let r = bit-and (bit-shru c 16) 255
+    in let gr = bit-and (bit-shru c 8) 255
+    in let b = bit-and c 255
+    in (r + (255 - r) * step / 16) * 65536 + (gr + (255 - gr) * step / 16) * 256 + (b + (255 - b) * step / 16)

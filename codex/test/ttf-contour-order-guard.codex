@@ -1,0 +1,56 @@
+Chapter: TtfContourOrderGuard
+  cites Encode chapter TrueType
+  cites Foreword chapter Console
+
+ A simple glyph's point count is its LAST contour end-point plus one, and
+ `ttf-split-contours` slices every contour up to its own end-point. OpenType
+ requires `endPtsOfContours` in increasing order, and nothing checked it, so an
+ earlier end-point larger than the last one sliced past the points that exist.
+
+ Every glyph below has two contours over four points, the same flags and
+ coordinates, and differs only in its two end-points:
+
+ Row 1, [1, 3]: the control, two contours of two points each.
+ Row 2, [1, 1]: equal end-points, legal, and the second contour is empty.
+ Row 3, [3, 1]: two points exist and the first contour asks for four.
+
+Section: Fixture
+
+  glyph-bytes : Integer, Integer -> List Integer
+  glyph-bytes (e0) (e1) = [
+    0, 2, 0, 0, 0, 0, 0, 100, 0, 100, 0, e0, 0, e1, 0, 0,
+    1, 1, 1, 1,
+    0, 0, 0, 100, 0, 0, 255, 156,
+    0, 0, 0, 0, 0, 100, 0, 0
+  ]
+
+  font-of : List Integer -> TtfFont
+  font-of (bytes) = TtfFont {
+    tf-buf = bytes,
+    tf-dir = TtfDir { td-num-tables = 0, td-tables = [] },
+    tf-head = TtfHead { th-units-per-em = 1000, th-index-to-loc = 1, th-x-min = 0, th-y-min = 0, th-x-max = 100, th-y-max = 100 },
+    tf-num-glyphs = 1, tf-num-hmetrics = 1,
+    tf-hmetrics = [TtfHMetric { hm-advance = 100, hm-lsb = 0 }],
+    tf-cmap = TtfCmap { cm-seg-count = 0, cm-end-codes = [], cm-start-codes = [], cm-id-deltas = [], cm-id-range-offsets = [], cm-glyph-ids = [], cm-range-off-base = 0 },
+    tf-loca = [0, list-length bytes], tf-glyf-off = 0
+  }
+
+Section: Checks
+
+  point-total : List TtfContour, Integer, Integer -> Integer
+  point-total (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else point-total cs (i + 1) (acc + list-length (list-at cs i).tc-points)
+
+  row : Text, Integer, Integer -> Text
+  row (label) (e0) (e1) =
+    let r = ttf-resolve-glyph (font-of (glyph-bytes e0 e1)) 0 0 64
+    in label & " ok=" & show r.tr-ok & " contours=" & show (list-length r.tr-glyph.tg-contours) & " points=" & show (point-total r.tr-glyph.tg-contours 0 0)
+
+  opening : [Console] Nothing = act
+    print-line-uni (row "1-rising" 1 3)
+    print-line-uni (row "2-equal" 1 1)
+    print-line-uni (row "3-falling" 3 1)
+  end
+
+Page 1

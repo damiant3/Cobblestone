@@ -23,7 +23,12 @@ param(
     [string]$WorkDir = '',
     [int]$Jobs = 4,
     # Mangle each subject's entry so a subject that cannot fail is visible.
-    [switch]$Calibrate
+    [switch]$Calibrate,
+    # Known wasm reds, one per line: subject, plugs-backlog row, reason. A red
+    # listed here does not fail the run; a listed subject that PASSES does
+    # (a stale entry), and so does an entry citing no row that exists.
+    [string]$Baseline = '',
+    [switch]$NoBaseline
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -56,10 +61,25 @@ if (-not (Test-Path -PathType Leaf $Kernel)) { Write-Host "REFUSE: kernel not fo
 # answer in either direction: nothing here runs the .codex, every step runs the
 # .cdx beside it (L-SAMEVER).
 $plugAge = (Get-Item $PlugCdx).LastWriteTime
-foreach ($src in @((Join-Path $PSScriptRoot 'WasmEmitter.codex'), (Join-Path $PSScriptRoot 'WasmPlug.codex'), $Kernel)) {
+foreach ($src in @((Join-Path $PSScriptRoot 'WasmEmitter.codex'), (Join-Path $PSScriptRoot '..\common\HandlerLift.codex'), (Join-Path $PSScriptRoot 'WasmPlug.codex'), $Kernel)) {
     if ((Get-Item $src).LastWriteTime -gt $plugAge) {
         Write-Host "REFUSE: $PlugCdx is older than $src. Run codex/plugs/wasm/build.ps1 first."
         exit 2
+    }
+}
+
+if (-not $Baseline) { $Baseline = Join-Path $PSScriptRoot 'wasm-run-baseline.txt' }
+$known = @{}
+if (-not $NoBaseline -and -not $Calibrate -and (Test-Path -PathType Leaf $Baseline)) {
+    $backlog = [System.IO.File]::ReadAllText((Join-Path $Repo 'codex\plugs\plugs-backlog.md'))
+    foreach ($line in (Get-Content $Baseline)) {
+        $t = $line.Trim()
+        if (-not $t -or $t.StartsWith('#')) { continue }
+        $f = @($t -split '\s+', 3)
+        if ($f.Count -lt 3) { Write-Host "REFUSE: baseline line needs subject, row and reason: $t"; exit 2 }
+        if (-not (Test-Path (Join-Path $TestDir "$($f[0]).expected"))) { Write-Host "REFUSE: baseline names no subject: $($f[0])"; exit 2 }
+        if ($backlog -notmatch ('(?m)^## ' + [regex]::Escape($f[1]) + ' ')) { Write-Host "REFUSE: baseline entry $($f[0]) cites plugs-backlog row $($f[1]), which does not exist"; exit 2 }
+        $known[$f[0]] = $f[1]
     }
 }
 
@@ -82,23 +102,36 @@ if ($Subject.Count -gt 0 -and -not $hasPattern) {
     }
     $drawnFrom = "$($subjects.Count) matching $($Subject -join ',') of $($eligible.Count) eligible"
 } else {
-    # Ask for the WHOLE eligible set and cap it here, so this arm knows the
-    # population it drew from and can say so. Asking the owner for a capped
-    # list hands back a number that cannot be told from a corpus (L-DENOM).
-    # -Max 0: ask for the WHOLE eligible set and cap it here. Asking the owner
-    # for a capped list hands back a number whose two halves are the same cap,
-    # which is the L-DENOM defect this harness exists downstream of.
+    # Two questions to the owner: the WHOLE eligible set, so the score line names
+    # the population (L-DENOM), and the capped selection, whose rule (a
+    # stratified sample) is the owner's and is not restated here.
     $eligible = @(& pwsh -NoProfile -File $ElfTest -ListSubjects -Max 0)
     if ($LASTEXITCODE -ne 0 -or $eligible.Count -eq 0) {
         Write-Host "REFUSE: $ElfTest -ListSubjects returned no corpus."
         exit 2
     }
-    $subjects = if ($Max -gt 0) { @($eligible | Select-Object -First $Max) } else { $eligible }
+    $subjects = @(& pwsh -NoProfile -File $ElfTest -ListSubjects -Max $Max)
+    if ($LASTEXITCODE -ne 0 -or $subjects.Count -eq 0) {
+        Write-Host "REFUSE: $ElfTest -ListSubjects -Max $Max returned no selection."
+        exit 2
+    }
     $drawnFrom = "$($subjects.Count) selected of $($eligible.Count) eligible"
 }
 
+# `<name>.arch-only` lists the architectures a subject runs on and every runner
+# skips it elsewhere (ExaminersAssay; build/test.ps1 reads it the same way).
+# This arm's name there is `wasm`. A skip is named, never folded into the score.
+$archSkipped = @($subjects | Where-Object {
+    $ao = Join-Path $TestDir "$_.arch-only"
+    (Test-Path -PathType Leaf $ao) -and -not (@(Get-Content $ao | ForEach-Object { $_.Trim() }) -contains 'wasm')
+})
+if ($archSkipped.Count -gt 0) {
+    $subjects = @($subjects | Where-Object { $archSkipped -notcontains $_ })
+    $drawnFrom += ", $($archSkipped.Count) skipped by .arch-only ($($archSkipped -join ', '))"
+}
+
 New-Item -ItemType Directory -Force $WorkDir | Out-Null
-$mode = if ($Calibrate) { 'CALIBRATE' } else { 'GRADE' }
+$mode =if ($Calibrate) { 'CALIBRATE' } else { 'GRADE' }
 Write-Host "[hosted-wasm] $mode over $drawnFrom, kernel $(Split-Path -Leaf $Kernel), -Jobs $Jobs"
 
 $results = $subjects | ForEach-Object -ThrottleLimit $Jobs -Parallel {
@@ -212,13 +245,17 @@ $results = $subjects | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     return [pscustomobject]@{ Name = $s; Ok = $false; Note = $shape }
 }
 
-$pass = @($results | Where-Object { $_.Ok }).Count
-$fail = @($results | Where-Object { -not $_.Ok }).Count
+$pass = @($results | Where-Object { $_.Ok -and -not $known.ContainsKey($_.Name) }).Count
+$fail = @($results | Where-Object { -not $_.Ok -and -not $known.ContainsKey($_.Name) }).Count
+$knownRed = @($results | Where-Object { -not $_.Ok -and $known.ContainsKey($_.Name) })
+$stale = @($results | Where-Object { $_.Ok -and $known.ContainsKey($_.Name) })
 Write-Host ""
-Write-Host "hosted-wasm [$mode]: $pass pass, $fail fail, $drawnFrom"
-foreach ($r in ($results | Where-Object { -not $_.Ok } | Sort-Object Name)) {
+Write-Host "hosted-wasm [$mode]: $pass pass, $fail fail, $($knownRed.Count) known red, $($stale.Count) stale baseline, $drawnFrom"
+foreach ($r in ($results | Where-Object { -not $_.Ok -and -not $known.ContainsKey($_.Name) } | Sort-Object Name)) {
     Write-Host "  $($r.Name)  $($r.Note)"
 }
+foreach ($r in ($knownRed | Sort-Object Name)) { Write-Host "  known red ($($known[$r.Name])): $($r.Name)  $($r.Note)" }
+foreach ($r in ($stale | Sort-Object Name)) { Write-Host "  STALE: $($r.Name) passes; delete its line from $Baseline and close plugs-backlog $($known[$r.Name]) if nothing else holds it" }
 Write-Host "workdir: $WorkDir"
-if ($fail -gt 0) { exit 1 }
+if ($fail -gt 0 -or $stale.Count -gt 0) { exit 1 }
 exit 0

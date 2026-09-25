@@ -75,26 +75,27 @@ Section: Revocation Serialization
   parse-rev-line (line) =
     let parts = text-split line "|"
     in if list-length parts < 7 then None
-    else let type-int = parse-decimal-full (list-at parts 0)
-    in let rtype = int-to-rev-type type-int
-    in let scope = parse-rev-scope (list-at parts 1)
-    in let auth = hex-decode (list-at parts 2)
-    in let timestamp = parse-decimal-full (list-at parts 3)
-    in let effective = parse-decimal-full (list-at parts 4)
-    in let reason = list-at parts 5
-    in let sig = hex-decode (list-at parts 6)
-    in let rec = RevocationRecord {
-      rr-id = sha256 (text-to-bytes line),
-      rr-type = rtype,
-      rr-scope = scope,
-      rr-authority = auth,
-      rr-timestamp = timestamp,
-      rr-effective = effective,
-      rr-reason = reason,
-      rr-signature = sig,
-      rr-supersedes = None
-    }
-    in Just rec
+    else parse-rev-fields line parts (parse-rev-scope (list-at parts 1)) (hex-decode-checked (list-at parts 2)) (hex-decode-checked (list-at parts 6))
+
+  parse-rev-fields : Text, List Text, Maybe RevocationScope, Maybe (List Integer), Maybe (List Integer) -> Maybe RevocationRecord
+  parse-rev-fields (line) (parts) (scope) (auth) (sig) =
+    when scope
+      is None -> None
+      is Just (sc) -> when auth
+        is None -> None
+        is Just (au) -> when sig
+          is None -> None
+          is Just (sg) -> Just (RevocationRecord {
+            rr-id = sha256 (text-to-bytes line),
+            rr-type = int-to-rev-type (parse-decimal-full (list-at parts 0)),
+            rr-scope = sc,
+            rr-authority = au,
+            rr-timestamp = parse-decimal-full (list-at parts 3),
+            rr-effective = parse-decimal-full (list-at parts 4),
+            rr-reason = list-at parts 5,
+            rr-signature = sg,
+            rr-supersedes = None
+          })
 
   int-to-rev-type : Integer -> RevocationType
   int-to-rev-type (n) =
@@ -105,13 +106,19 @@ Section: Revocation Serialization
     else if n == 5 then RevokeTeamMember
     else RevokeAllCapabilities
 
-  parse-rev-scope : Text -> RevocationScope
+  parse-rev-scope : Text -> Maybe RevocationScope
   parse-rev-scope (txt) =
-    if starts-with txt "id:" then ScopeIdentity (hex-decode (substring txt 3 (text-length txt - 3)))
-    else if starts-with txt "hash:" then ScopeContentHash (hex-decode (substring txt 5 (text-length txt - 5)))
-    else if starts-with txt "cap:" then ScopeCapability (substring txt 4 (text-length txt - 4))
-    else if starts-with txt "vault:" then ScopeVaultAccess (substring txt 6 (text-length txt - 6))
-    else ScopeCapability txt
+    if starts-with txt "id:" then rev-scope-bytes True (hex-decode-checked (substring txt 3 (text-length txt - 3)))
+    else if starts-with txt "hash:" then rev-scope-bytes False (hex-decode-checked (substring txt 5 (text-length txt - 5)))
+    else if starts-with txt "cap:" then Just (ScopeCapability (substring txt 4 (text-length txt - 4)))
+    else if starts-with txt "vault:" then Just (ScopeVaultAccess (substring txt 6 (text-length txt - 6)))
+    else Just (ScopeCapability txt)
+
+  rev-scope-bytes : Boolean, Maybe (List Integer) -> Maybe RevocationScope
+  rev-scope-bytes (identity) (bytes) =
+    when bytes
+      is None -> None
+      is Just (bs) -> if identity then Just (ScopeIdentity bs) else Just (ScopeContentHash bs)
 
 Section: Save and Load
 

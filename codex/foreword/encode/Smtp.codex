@@ -2,9 +2,13 @@ Chapter: Smtp
   cites Foreword chapter CCE
   cites Foreword chapter Maybe
 
- SMTP client protocol (RFC 5321). Builds SMTP command sequences
- for sending email. Produces byte streams for wire transmission
- over TCP. Supports EHLO, MAIL FROM, RCPT TO, DATA, QUIT.
+ RFC 5321. A reply is three digits, the first 2 to 5 and the second 0 to 5
+ (section 4.2), then a space, a "-" when more lines of the same reply follow,
+ or the end of the line; anything else is not a reply. Inside DATA a line
+ that is exactly "." ends the message, so a body line starting with "." is
+ sent with one more "." (section 4.5.2). A line break inside an address,
+ domain, subject or header starts a new command or header on the wire, which
+ is why smtp-session-checked refuses one.
 
  We say:
 
@@ -46,6 +50,36 @@ Section: Command Encoding
     is SmtpRaw (text) -> text & "\n"
 
 Section: Full Session
+  smtp-session-checked : Text, SmtpEmail -> Maybe (List Text)
+  smtp-session-checked (domain) (email) =
+    if smtp-field-ok domain == False then None
+    else if smtp-address-ok (email.smtp-from) == False then None
+    else if smtp-all-addresses-ok (email.smtp-to) 0 (list-length (email.smtp-to)) == False then None
+    else if smtp-field-ok (email.smtp-subject) == False then None
+    else if smtp-all-fields-ok (email.smtp-headers) 0 (list-length (email.smtp-headers)) == False then None
+    else Just (smtp-build-session domain email)
+
+  smtp-field-ok : Text -> Boolean
+  smtp-field-ok (s) = text-contains s "\n" == False
+
+  smtp-address-ok : Text -> Boolean
+  smtp-address-ok (s) =
+    if smtp-field-ok s == False then False
+    else if text-contains s "<" then False
+    else text-contains s ">" == False
+
+  smtp-all-addresses-ok : List Text, Integer, Integer -> Boolean
+  smtp-all-addresses-ok (xs) (i) (n) =
+    if i >= n then True
+    else if smtp-address-ok (list-at xs i) then smtp-all-addresses-ok xs (i + 1) n
+    else False
+
+  smtp-all-fields-ok : List Text, Integer, Integer -> Boolean
+  smtp-all-fields-ok (xs) (i) (n) =
+    if i >= n then True
+    else if smtp-field-ok (list-at xs i) then smtp-all-fields-ok xs (i + 1) n
+    else False
+
   smtp-build-session : Text, SmtpEmail -> List Text
   smtp-build-session (domain) (email) =
     let ehlo = [smtp-encode-cmd (SmtpEhlo domain)]
@@ -67,41 +101,71 @@ Section: Message Formatting (RFC 5322)
     "From: " & email.smtp-from & "\n" &
     smtp-format-to (email.smtp-to) &
     "Subject: " & email.smtp-subject & "\n" &
-    smtp-format-extra-headers (email.smtp-headers) 0 (list-length (email.smtp-headers)) "" &
+    text-concat-list (smtp-header-lines (email.smtp-headers) 0 (list-length (email.smtp-headers)) []) &
     "\n" &
-    email.smtp-body & "\n" &
+    smtp-dot-stuff (email.smtp-body) & "\n" &
     ".\n"
 
   smtp-format-to : List Text -> Text
-  smtp-format-to (recipients) = smtp-to-loop recipients 0 (list-length recipients) ""
+  smtp-format-to (recipients) = "To: " & text-concat-list (smtp-to-loop recipients 0 (list-length recipients) []) & "\n"
 
-  smtp-to-loop : List Text, Integer, Integer, Text -> Text
+  smtp-to-loop : List Text, Integer, Integer, List Text -> List Text
   smtp-to-loop (recipients) (i) (n) (acc) =
     if i >= n then acc
     else let sep = if i == 0 then "" else ", "
-    in smtp-to-loop recipients (i + 1) n (acc & sep & list-at recipients i)
+    in smtp-to-loop recipients (i + 1) n (list-push (list-push acc sep) (list-at recipients i))
 
-  smtp-format-extra-headers : List Text, Integer, Integer, Text -> Text
-  smtp-format-extra-headers (headers) (i) (n) (acc) =
+  smtp-header-lines : List Text, Integer, Integer, List Text -> List Text
+  smtp-header-lines (headers) (i) (n) (acc) =
     if i >= n then acc
-    else smtp-format-extra-headers headers (i + 1) n (acc & list-at headers i & "\n")
+    else smtp-header-lines headers (i + 1) n (list-push (list-push acc (list-at headers i)) "\n")
+
+  smtp-dot-stuff : Text -> Text
+  smtp-dot-stuff (body) =
+    let lines = text-split body "\n"
+    in text-concat-list (smtp-stuff-lines lines 0 (list-length lines) [])
+
+  smtp-stuff-lines : List Text, Integer, Integer, List Text -> List Text
+  smtp-stuff-lines (lines) (i) (n) (acc) =
+    if i >= n then acc
+    else let line = list-at lines i
+    in let sep = if i == 0 then "" else "\n"
+    in let out = if text-starts-with line "." then "." & line else line
+    in smtp-stuff-lines lines (i + 1) n (list-push (list-push acc sep) out)
 
 Section: Response Parsing
-  SmtpResponse = record { smtp-code : Integer, smtp-message : Text }
+  SmtpResponse = record { smtp-code : Integer, smtp-message : Text, smtp-more : Boolean }
 
   smtp-parse-response : Text -> SmtpResponse
   smtp-parse-response (line) =
-    let code = smtp-parse-code line
-    in let msg = smtp-response-msg line
-    in SmtpResponse { smtp-code = code, smtp-message = msg }
+    if smtp-reply-shape line then
+      SmtpResponse { smtp-code = smtp-parse-code line, smtp-message = smtp-response-msg line, smtp-more = smtp-continues line }
+    else SmtpResponse { smtp-code = 0, smtp-message = "", smtp-more = False }
+
+  smtp-reply-shape : Text -> Boolean
+  smtp-reply-shape (line) =
+    if text-length line < 3 then False
+    else if smtp-digit-in (char-at line 0) 2 5 == False then False
+    else if smtp-digit-in (char-at line 1) 0 5 == False then False
+    else if smtp-digit-in (char-at line 2) 0 9 == False then False
+    else if text-length line == 3 then True
+    else if char-code-at line 3 == char-code-at " " 0 then True
+    else char-code-at line 3 == char-code-at "-" 0
+
+  smtp-continues : Text -> Boolean
+  smtp-continues (line) =
+    if text-length line < 4 then False
+    else char-code-at line 3 == char-code-at "-" 0
+
+  smtp-digit-in : Char, Integer, Integer -> Boolean
+  smtp-digit-in (c) (lo) (hi) =
+    if is-digit c then
+      if digit-value c < lo then False else digit-value c <= hi
+    else False
 
   smtp-parse-code : Text -> Integer
   smtp-parse-code (line) =
-    if text-length line < 3 then 0
-    else smtp-digit-val (char-at line 0) * 100 + smtp-digit-val (char-at line 1) * 10 + smtp-digit-val (char-at line 2)
-
-  smtp-digit-val : Char -> Integer
-  smtp-digit-val (c) = if is-digit c then digit-value c else 0
+    digit-value (char-at line 0) * 100 + digit-value (char-at line 1) * 10 + digit-value (char-at line 2)
 
   smtp-response-msg : Text -> Text
   smtp-response-msg (line) =

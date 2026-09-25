@@ -1,0 +1,439 @@
+Chapter: IR Fidelity
+  cites Codex chapter Build Settings (max-recursion-depth)
+  cites Codex chapter Diagnostic Bag (bag-from-list)
+  cites Codex chapter Diagnostics (make-warning)
+  cites Codex chapter Source Text (is-synthetic-span, synthetic-span)
+  cites Codex chapter Unification (bsearch-expr-type-pos, fid-key)
+  cites Codex chapter IR Chapter (ir-expr-span)
+  cites Codex chapter IRCheck (cdx-ir-check-violation)
+  cites Emit chapter IR Text Emitter (ir-emit-type)
+
+Section: State
+
+ Class codes, ranked so that the larger code wins when a node's children
+ disagree: 0 match, 1 upstream (the checker's own answer is undecided),
+ 2 width (a bounded integer or unit type on one side where the other holds
+ the plain integer), 3 disagree, 4 dropped (the checker's answer is ground
+ where the node holds error, noexpect or a type variable), 5 emitted (a type
+ that is not ErrorTy prints as error through the wire printer's fallback arm).
+
+  mutable FidState = record {
+   entries : List ExprTypeEntry,
+   def-name : Text,
+   walked : Integer,
+   synthetic : Integer,
+   inserted : Integer,
+   unrecorded : Integer,
+   matched : Integer,
+   upstream : Integer,
+   width : Integer,
+   disagree : Integer,
+   dropped : Integer,
+   emitted : Integer,
+   unwalked : Integer,
+   findings : List Diagnostic
+  }
+
+Section: Entry Point
+
+  ir-fidelity-bag : List ExprTypeEntry, IRChapter -> DiagnosticBag
+  ir-fidelity-bag (entries) (ch) =
+   let fs = FidState {
+    entries = entries,
+    def-name = "",
+    walked = 0,
+    synthetic = 0,
+    inserted = 0,
+    unrecorded = 0,
+    matched = 0,
+    upstream = 0,
+    width = 0,
+    disagree = 0,
+    dropped = 0,
+    emitted = 0,
+    unwalked = 0,
+    findings = __list-with-capacity 16
+   }
+   in let w = fid-defs fs (ch.defs) 0 (list-length (ch.defs))
+   in let summary = make-warning cdx-ir-check-violation ("FIDELITY walked=" & integer-to-text (fs.walked) & " synthetic=" & integer-to-text (fs.synthetic) & " inserted=" & integer-to-text (fs.inserted) & " unrecorded=" & integer-to-text (fs.unrecorded) & " match=" & integer-to-text (fs.matched) & " upstream=" & integer-to-text (fs.upstream) & " width=" & integer-to-text (fs.width) & " disagree=" & integer-to-text (fs.disagree) & " dropped=" & integer-to-text (fs.dropped) & " emitted=" & integer-to-text (fs.emitted) & " unwalked=" & integer-to-text (fs.unwalked) & " recorded=" & integer-to-text (list-length (fs.entries))) synthetic-span
+   in bag-from-list (list-push (fs.findings) summary)
+
+Section: Lookup
+
+  fid-lookup-pos : List ExprTypeEntry, Integer -> Integer
+  fid-lookup-pos (entries) (k) =
+   let len = list-length entries
+   in let pos = bsearch-expr-type-pos entries k 0 len
+   in if pos < len & (list-at entries pos).key == k then pos else 0 - 1
+
+  fid-best : List ExprTypeEntry, Integer, Integer, CodexType, Integer -> Integer
+  fid-best (entries) (pos) (k) (n) (best) =
+   if pos >= list-length entries then best
+   else if (list-at entries pos).key /= k then best
+   else let c = fid-top ((list-at entries pos).ty) n
+   in fid-best entries (pos + 1) k n (if c < best then c else best)
+
+  fid-best-param : List ExprTypeEntry, Integer, Integer, Integer, CodexType, Integer -> Integer
+  fid-best-param (entries) (pos) (k) (i) (n) (best) =
+   if pos >= list-length entries then best
+   else if (list-at entries pos).key /= k then best
+   else let a = fid-fun-arg ((list-at entries pos).ty) i
+   in let c = when a
+        is NoExpectTy -> best
+        is otherwise -> fid-top a n
+   in fid-best-param entries (pos + 1) k i n (if c < best then c else best)
+
+Section: Classification
+
+  fid-is-hole : CodexType -> Boolean
+  fid-is-hole (t) =
+   when t
+    is ErrorTy -> True
+    is NoExpectTy -> True
+    is TypeVar (i) -> True
+    is otherwise -> False
+
+  fid-is-error : CodexType -> Boolean
+  fid-is-error (t) =
+   when t
+    is ErrorTy -> True
+    is otherwise -> False
+
+  fid-max : Integer, Integer -> Integer
+  fid-max (a) (b) = if a > b then a else b
+
+  fid-class : CodexType, CodexType, Integer -> Integer
+  fid-class (c) (n) (depth) =
+   if depth >= 64 then 0
+   else if fid-is-hole n then (if fid-is-hole c then 1 else 4)
+   else if fid-is-hole c then 1
+   else fid-same (fid-unwrap-eff c) (fid-unwrap-eff n) depth
+
+  fid-unwrap-eff : CodexType -> CodexType
+  fid-unwrap-eff (t) =
+   when t
+    is EffectfulTy (effs) (scopes) (inner) -> inner
+    is otherwise -> t
+
+  fid-same : CodexType, CodexType, Integer -> Integer
+  fid-same (c) (n) (depth) =
+   when c
+    is FunTy (a) (r) (b) ->
+     when n
+      is FunTy (a2) (r2) (b2) -> fid-max (fid-class a a2 (depth + 1)) (fid-class b b2 (depth + 1))
+      is otherwise -> fid-text c n
+    is ListTy (a) ->
+     when n
+      is ListTy (a2) -> fid-class a a2 (depth + 1)
+      is otherwise -> fid-text c n
+    is LinkedListTy (a) ->
+     when n
+      is LinkedListTy (a2) -> fid-class a a2 (depth + 1)
+      is otherwise -> fid-text c n
+    is TypeApply (a) (b) ->
+     when n
+      is TypeApply (a2) (b2) -> fid-max (fid-class a a2 (depth + 1)) (fid-class b b2 (depth + 1))
+      is otherwise -> fid-text c n
+    is ConstructedTy (nm) (args) ->
+     when n
+      is ConstructedTy (nm2) (args2) -> if nm.value == nm2.value then fid-list args args2 depth 0 0 else 3
+      is SumTy (nm2) (args2) (cs2) -> if nm.value == nm2.value then fid-list args args2 depth 0 0 else 3
+      is RecordTy (nm2) (args2) (fs2) -> if nm.value == nm2.value then fid-list args args2 depth 0 0 else 3
+      is otherwise -> fid-text c n
+    is SumTy (nm) (args) (cs) ->
+     when n
+      is SumTy (nm2) (args2) (cs2) -> if nm.value == nm2.value then fid-list args args2 depth 0 0 else 3
+      is ConstructedTy (nm2) (args2) -> if nm.value == nm2.value then fid-list args args2 depth 0 0 else 3
+      is otherwise -> fid-text c n
+    is RecordTy (nm) (args) (fs) ->
+     when n
+      is RecordTy (nm2) (args2) (fs2) -> if nm.value == nm2.value then fid-list args args2 depth 0 0 else 3
+      is ConstructedTy (nm2) (args2) -> if nm.value == nm2.value then fid-list args args2 depth 0 0 else 3
+      is otherwise -> fid-text c n
+    is otherwise -> fid-text c n
+
+  fid-list : List CodexType, List CodexType, Integer, Integer, Integer -> Integer
+  fid-list (cs) (ns) (depth) (i) (acc) =
+   if list-length cs /= list-length ns then 3
+   else if i >= list-length cs then acc
+   else fid-list cs ns depth (i + 1) (fid-max acc (fid-class (list-at cs i) (list-at ns i) (depth + 1)))
+
+  fid-text : CodexType, CodexType -> Integer
+  fid-text (c) (n) =
+   let tc = ir-emit-type c
+   in let tn = ir-emit-type n
+   in if (tn == "error" & (fid-is-error n == False)) | (tc == "error" & (fid-is-error c == False)) then 5
+   else if tc == tn then 0
+   else if fid-is-narrowed c & fid-is-int n then 2
+   else if fid-is-unit-over-int n & fid-is-int c then 2
+   else 3
+
+  fid-is-unit-over-int : CodexType -> Boolean
+  fid-is-unit-over-int (t) =
+   when t
+    is UnitTy (nm) (inner) -> fid-is-int inner
+    is otherwise -> False
+
+  fid-is-narrowed : CodexType -> Boolean
+  fid-is-narrowed (t) =
+   when t
+    is IntegerTy (lo) (hi) (m) -> True
+    is UnitTy (nm) (inner) -> True
+    is otherwise -> False
+
+  fid-is-int : CodexType -> Boolean
+  fid-is-int (t) =
+   when t
+    is IntegerTy (lo) (hi) (m) -> True
+    is otherwise -> False
+
+  fid-top : CodexType, CodexType -> Integer
+  fid-top (c) (n) =
+   let tc = ir-emit-type c
+   in let tn = ir-emit-type n
+   in if tc == tn & (text-contains tc "error" == False) then 0
+   else fid-class c n 0
+
+Section: Grading
+
+  fid-bump-synthetic : FidState -> Integer
+  fid-bump-synthetic (fs) =
+   let __seq = fs.synthetic = fs.synthetic + 1
+   in 0
+
+  fid-bump-unrecorded : FidState -> Integer
+  fid-bump-unrecorded (fs) =
+   let __seq = fs.unrecorded = fs.unrecorded + 1
+   in 0
+
+  fid-bump-inserted : FidState -> Integer
+  fid-bump-inserted (fs) =
+   let __seq = fs.walked = fs.walked + 1
+   in let __seq = fs.inserted = fs.inserted + 1
+   in 0
+
+  fid-bump-unwalked : FidState -> Integer
+  fid-bump-unwalked (fs) =
+   let __seq = fs.unwalked = fs.unwalked + 1
+   in 0
+
+  fid-grade : FidState, CodexType, SourceSpan, Integer, Text -> Integer
+  fid-grade (fs) (n) (sp) (group) (kind) =
+   let __seq = fs.walked = fs.walked + 1
+   in if is-synthetic-span sp then fid-bump-synthetic fs
+   else let k = fid-key sp group
+   in let pos = fid-lookup-pos (fs.entries) k
+   in if pos < 0 then fid-bump-unrecorded fs
+   else fid-tally fs (fid-best (fs.entries) pos k n 9) ((list-at (fs.entries) pos).ty) n sp kind
+
+  fid-tally : FidState, Integer, CodexType, CodexType, SourceSpan, Text -> Integer
+  fid-tally (fs) (k) (c) (n) (sp) (kind) =
+   let __seq = fs.matched = fs.matched + (if k == 0 then 1 else 0)
+   in let __seq = fs.upstream = fs.upstream + (if k == 1 then 1 else 0)
+   in let __seq = fs.width = fs.width + (if k == 2 then 1 else 0)
+   in let __seq = fs.disagree = fs.disagree + (if k == 3 then 1 else 0)
+   in let __seq = fs.dropped = fs.dropped + (if k == 4 then 1 else 0)
+   in let __seq = fs.emitted = fs.emitted + (if k == 5 then 1 else 0)
+   in if k < 3 then k
+   else let label = if k == 4 then "DROPPED" else if k == 5 then "EMITTED" else "DISAGREE"
+   in let __seq = fs.findings = list-push (fs.findings) (make-warning cdx-ir-check-violation ("FIDELITY " & label & " " & (fs.def-name) & " " & kind & ": checker " & ir-emit-type c & " wire " & ir-emit-type n) sp)
+   in k
+
+  fid-fun-arg : CodexType, Integer -> CodexType
+  fid-fun-arg (t) (i) =
+   when t
+    is FunTy (a) (r) (b) -> if i == 0 then a else fid-fun-arg b (i - 1)
+    is otherwise -> NoExpectTy
+
+  fid-grade-params : FidState, List IRParam, SourceSpan, Integer, Integer, Integer -> Integer
+  fid-grade-params (fs) (ps) (sp) (i) (j) (len) =
+   if i >= len then 0
+   else if is-synthetic-span sp then 0
+   else let pos = fid-lookup-pos (fs.entries) (fid-key sp 0)
+   in if pos < 0 then 0
+   else let p = list-at ps i
+   in if is-synthetic-span (p.span) then fid-grade-params fs ps sp (i + 1) j len
+   else let __seq = fs.walked = fs.walked + 1
+   in let k = fid-best-param (fs.entries) pos (fid-key sp 0) j (p.type-val) 9
+   in let g = if k == 9 then fid-bump-unrecorded fs else fid-tally fs k (fid-fun-arg ((list-at (fs.entries) pos).ty) j) (p.type-val) (p.span) ("param '" & p.name & "'")
+   in fid-grade-params fs ps sp (i + 1) (j + 1) len
+
+  fid-grade-binding : FidState, CodexType, IRExpr, Text -> Integer
+  fid-grade-binding (fs) (t) (v) (kind) = fid-grade fs t (ir-expr-span v) (ir-fid-group v) kind
+
+  ir-fid-group : IRExpr -> Integer
+  ir-fid-group (e) =
+   when e
+    is IrName (n) (t) (s) -> 1
+    is IrApply (f) (a) (t) (s) -> 2
+    is IrIf (c) (th) (el) (t) (s) -> 3
+    is IrBinary (op) (l) (r) (t) (s) -> 4
+    is IrNegate (x) (t) (s) -> 4
+    is IrMatch (sc) (bs) (t) (s) -> 5
+    is IrAct (ss) (t) (s) -> 6
+    is IrFieldAccess (r) (f) (t) (s) -> 7
+    is otherwise -> 0
+
+Section: Definitions
+
+  fid-defs : FidState, List IRDef, Integer, Integer -> Integer
+  fid-defs (fs) (defs) (i) (len) =
+   if i >= len then 0
+   else let d = list-at defs i
+   in let __seq = fs.def-name = d.name
+   in let p = fid-grade-params fs (d.params) (d.span) 0 0 (list-length (d.params))
+   in let w = fid-expr fs (d.body) 0 (0 - 1)
+   in fid-defs fs defs (i + 1) len
+
+Section: Expressions
+
+  fid-grade-at : FidState, CodexType, SourceSpan, Integer, Text, Integer -> Integer
+  fid-grade-at (fs) (n) (sp) (group) (kind) (pk) =
+   if is-synthetic-span sp == False & fid-key sp group == pk then fid-bump-inserted fs
+   else fid-grade fs n sp group kind
+
+  fid-own : SourceSpan, Integer, Integer -> Integer
+  fid-own (sp) (group) (pk) =
+   if is-synthetic-span sp then pk
+   else if group == 0 then 0 - 1
+   else fid-key sp group
+
+  fid-expr : FidState, IRExpr, Integer, Integer -> Integer
+  fid-expr (fs) (e) (depth) (pk) =
+   if depth >= max-recursion-depth then fid-bump-unwalked fs
+   else when e
+    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> 0
+    is IrName (n) (t) (s) -> if text-starts-with n "__" then fid-bump-inserted fs else fid-grade-at fs t s 1 ("name '" & n & "'") pk
+    is IrNegate (x) (t) (s) ->
+     let g = fid-grade-at fs t s 4 "negate" pk
+     in fid-expr fs x (depth + 1) (fid-own s 4 pk)
+    is IrBinary (op) (l) (r) (t) (s) ->
+     let g = fid-grade-at fs t s 4 "binary" pk
+     in let a = fid-expr fs l (depth + 1) (fid-own s 4 pk)
+     in fid-expr fs r (depth + 1) (fid-own s 4 pk)
+    is IrIf (c) (th) (el) (t) (s) ->
+     let g = fid-grade-at fs t s 3 "if" pk
+     in let a = fid-expr fs c (depth + 1) (fid-own s 3 pk)
+     in let b = fid-expr fs th (depth + 1) (fid-own s 3 pk)
+     in fid-expr fs el (depth + 1) (fid-own s 3 pk)
+    is IrLet (n) (t) (v) (b) (s) ->
+     let g = if text-starts-with n "__" then fid-bump-inserted fs else fid-grade-binding fs t v ("let '" & n & "'")
+     in let a = fid-expr fs v (depth + 1) (fid-own s 0 pk)
+     in fid-expr fs b (depth + 1) (fid-own s 0 pk)
+    is IrApply (f) (a) (t) (s) ->
+     let g = fid-grade-at fs t s 2 "apply" pk
+     in let x = fid-apply-head fs f (expr-type-key s) (depth + 1) (fid-own s 2 pk)
+     in fid-arg fs a (fid-arg-key s) (depth + 1) (fid-own s 2 pk)
+    is IrLambda (ps) (b) (t) (s) ->
+     let g = fid-grade-at fs t s 0 "lambda" pk
+     in let p = fid-grade-params fs ps s 0 0 (list-length ps)
+     in fid-expr fs b (depth + 1) (fid-own s 0 pk)
+    is IrList (es) (t) (s) ->
+     let g = fid-grade-at fs (ListTy t) s 0 "list" pk
+     in fid-exprs fs es (depth + 1) 0 (list-length es) (fid-own s 0 pk)
+    is IrMatch (sc) (bs) (t) (s) ->
+     let g = fid-grade-at fs t s 5 "match" pk
+     in let a = fid-expr fs sc (depth + 1) (fid-own s 5 pk)
+     in fid-branches fs bs (depth + 1) 0 (list-length bs) (fid-own s 5 pk)
+    is IrAct (ss) (t) (s) ->
+     let g = fid-grade-at fs t s 6 "act" pk
+     in fid-stmts fs ss (depth + 1) 0 (list-length ss) (fid-own s 6 pk)
+    is IrHandle (eff) (h) (cs) (t) (s) ->
+     let g = fid-grade-at fs t s 0 "handle" pk
+     in let a = fid-expr fs h (depth + 1) (fid-own s 0 pk)
+     in fid-clauses fs cs (depth + 1) 0 (list-length cs) (fid-own s 0 pk)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) ->
+     let g = fid-grade-at fs t s 0 "with-timeout" pk
+     in fid-expr fs body (depth + 1) (fid-own s 0 pk)
+    is IrRecord (n) (flds) (t) (s) ->
+     let g = fid-grade-at fs t s 0 ("record '" & n & "'") pk
+     in fid-fields fs flds (depth + 1) 0 (list-length flds) (fid-own s 0 pk)
+    is IrFieldAccess (r) (f) (t) (s) ->
+     let g = fid-grade-at fs t s 7 ("field '" & f & "'") pk
+     in fid-expr fs r (depth + 1) (fid-own s 7 pk)
+    is IrFork (b) (t) (s) ->
+     let g = fid-grade-at fs t s 0 "fork" pk
+     in fid-expr fs b (depth + 1) (fid-own s 0 pk)
+    is IrAwait (tk) (t) (s) ->
+     let g = fid-grade-at fs t s 0 "await" pk
+     in fid-expr fs tk (depth + 1) (fid-own s 0 pk)
+    is IrTry (mx) (body) (fb) (fail) (t) (s) ->
+     let g = fid-grade-at fs t s 0 "try" pk
+     in let a = fid-stmts fs body (depth + 1) 0 (list-length body) (fid-own s 0 pk)
+     in let b = fid-stmts fs fb (depth + 1) 0 (list-length fb) (fid-own s 0 pk)
+     in fid-stmts fs fail (depth + 1) 0 (list-length fail) (fid-own s 0 pk)
+    is IrFieldStore (r) (f) (v) (t) (s) ->
+     let g = fid-grade-at fs t s 0 ("field-store '" & f & "'") pk
+     in let a = fid-expr fs r (depth + 1) (fid-own s 0 pk)
+     in fid-expr fs v (depth + 1) (fid-own s 0 pk)
+    is IrError (m) (t) (s) -> fid-grade-at fs t s 0 "error-node" pk
+
+  fid-arg-key : SourceSpan -> Integer
+  fid-arg-key (s) = if is-synthetic-span s then 0 - 1 else expr-type-key s
+
+  fid-arg : FidState, IRExpr, Integer, Integer, Integer -> Integer
+  fid-arg (fs) (a) (k) (depth) (pk) =
+   let sp = ir-expr-span a
+   in if is-synthetic-span sp == False & expr-type-key sp == k then fid-inserted fs a k depth pk
+   else fid-expr fs a depth pk
+
+  fid-inserted : FidState, IRExpr, Integer, Integer, Integer -> Integer
+  fid-inserted (fs) (e) (k) (depth) (pk) =
+   if depth >= max-recursion-depth then fid-bump-unwalked fs
+   else when e
+    is IrApply (f) (a) (t) (s) ->
+     let g = fid-bump-inserted fs
+     in let x = fid-arg fs f k (depth + 1) pk
+     in fid-arg fs a k (depth + 1) pk
+    is IrName (n) (t) (s) -> fid-bump-inserted fs
+    is otherwise -> fid-expr fs e depth pk
+
+  fid-apply-head : FidState, IRExpr, Integer, Integer, Integer -> Integer
+  fid-apply-head (fs) (f) (k) (depth) (pk) =
+   when f
+    is IrApply (f2) (a2) (t2) (s2) ->
+     if is-synthetic-span s2 == False & expr-type-key s2 == k
+     then fid-apply-inner fs f2 a2 k depth pk
+     else fid-expr fs f depth pk
+    is otherwise -> fid-expr fs f depth pk
+
+  fid-apply-inner : FidState, IRExpr, IRExpr, Integer, Integer, Integer -> Integer
+  fid-apply-inner (fs) (f2) (a2) (k) (depth) (pk) =
+   let x = fid-apply-head fs f2 k (depth + 1) pk
+   in fid-arg fs a2 k (depth + 1) pk
+
+  fid-exprs : FidState, List IRExpr, Integer, Integer, Integer, Integer -> Integer
+  fid-exprs (fs) (es) (depth) (i) (len) (pk) =
+   if i >= len then 0
+   else let w = fid-expr fs (list-at es i) depth pk
+   in fid-exprs fs es depth (i + 1) len pk
+
+  fid-fields : FidState, List IRFieldVal, Integer, Integer, Integer, Integer -> Integer
+  fid-fields (fs) (flds) (depth) (i) (len) (pk) =
+   if i >= len then 0
+   else let w = fid-expr fs ((list-at flds i).value) depth pk
+   in fid-fields fs flds depth (i + 1) len pk
+
+  fid-stmts : FidState, List IRActStmt, Integer, Integer, Integer, Integer -> Integer
+  fid-stmts (fs) (ss) (depth) (i) (len) (pk) =
+   if i >= len then 0
+   else let w = when (list-at ss i)
+        is IrDoBind (n) (t) (v) (sp) ->
+         let g = fid-grade-binding fs t v ("bind '" & n & "'")
+         in fid-expr fs v depth pk
+        is IrDoExec (v) (sp) -> fid-expr fs v depth pk
+   in fid-stmts fs ss depth (i + 1) len pk
+
+  fid-branches : FidState, List IRBranch, Integer, Integer, Integer, Integer -> Integer
+  fid-branches (fs) (bs) (depth) (i) (len) (pk) =
+   if i >= len then 0
+   else let b = list-at bs i
+   in let g = fid-expr fs (b.guard) depth pk
+   in let w = fid-expr fs (b.body) depth pk
+   in fid-branches fs bs depth (i + 1) len pk
+
+  fid-clauses : FidState, List IRHandleClause, Integer, Integer, Integer, Integer -> Integer
+  fid-clauses (fs) (cs) (depth) (i) (len) (pk) =
+   if i >= len then 0
+   else let w = fid-expr fs ((list-at cs i).body) depth pk
+   in fid-clauses fs cs depth (i + 1) len pk

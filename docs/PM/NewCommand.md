@@ -102,7 +102,6 @@ Open issues:
 | issue | our row |
 |---|---|
 | 125, Real literals not correctly rounded | COMPILER-57. **Left open deliberately** until the plug mirrors agree; a comment on the issue says so. |
-| 126, hosted compiler types every comparison `ErrorTy` | COMPILER-56, open, unowned, not verified on metal |
 | 120, a prose continuation at three columns lexed as code | COMPILER-55, open, unowned, verified statically at head |
 | 115, four things depend on the deck discipline without declaring it | open, unowned |
 | 110, `inline-single-caller` erases a definition silently | open, unowned |

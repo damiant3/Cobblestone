@@ -18,7 +18,7 @@ cluster against the belief this sentence encouraged. When
 you relocate a foreword definition, budget a `cites` line for each
 caller of the old chapter.
 
-### codex.foreword (133 modules, measured 2026-09-02) -- Core
+### codex.foreword (134 modules, measured 2026-09-25) -- Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -199,13 +199,13 @@ Emit chapters render that model to Bash, Ksh, or PowerShell.
 
 These are not auto-loaded. User code must `cites` them explicitly.
 
-### codex (67 modules) -- The Compiler
+### codex (68 modules) -- The Compiler
 
 The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading
 the code first and passing both gates (sample battery + pingpong).
 
-### codex.os (163 modules) -- Operating System
+### codex.os (165 modules) -- Operating System
 
 Split across sub-quires. Re-measured 2026-07-29, when adding one kernel
 chapter turned `check-doc-counts.ps1` red and showed the table had
@@ -217,9 +217,9 @@ internally inconsistent.
 | Sub-quire | Modules | Purpose |
 |-----------|---------|---------|
 | codex.os.core | 4 | Core OS abstractions |
-| codex.os.dev | 37 | Device management |
+| codex.os.dev | 38 | Device management |
 | codex.os.kernel | 36 | Hardware drivers (PCI, xHCI, NE2K, e1000e, VGA, IDE, HDA, USB HID, and Hpet, the monotonic clock) |
-| codex.os.net | 42 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, CoapsEndpoint and Lwm2mCoaps, which carry CoAP and the LwM2M client as DTLS application data, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
+| codex.os.net | 43 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, CoapsEndpoint and Lwm2mCoaps, which carry CoAP and the LwM2M client as DTLS application data, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
 | codex.os.observe | 8 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
 | codex.os.sched | 10 | Scheduling |
@@ -262,23 +262,19 @@ together rather than fixing only the one that moved.
 **What the wire carries, for anyone writing a plug (declared 2026-08-17,
 compiler-backlog COMPILER-12; it was undocumented and PR 66 paid for it).**
 The IR a plug receives is the LOWER phase plus the named passes
-(`text-plug` for the text plugs) and nothing after: it is NOT resolved and
-NOT lambda-lifted. RESOLVE and LIFT are phases of the CDX path only
-(`compile-frontend-cdx`, `opening.codex`), so:
+(`text-plug` for the text plugs) and nothing after, plus lambda lifting: it is
+NOT resolved, and it IS lambda-lifted (`prepare-method-ir`, `opening.codex`;
+the `no-lift` mode flag turns lifting off and only `build/jonquil.ps1`
+passes it). RESOLVE is a phase of the CDX path only, so:
 
-- A `lambda` node's body may name a local of the ENCLOSING definition
-  with no marker of any kind (`(lambda (params (param "x" ...)) (... (name
-  "n" ...)))` for `\x -> x + n`). A target with first-class closures emits
-  it as one; a target without them (native lanes, COBOL, Fortran, Pascal,
-  GPU targets) must lift or capture itself. **Read `zig` before writing
-  another**: `zig-lambda-closure` (`ZigEmitter.codex:1893`) is closure
-  conversion, captures computed from the body and a `call(ctx, params)` beside
-  them. `arm64` and `riscv` lift, and `python` needs neither because Python has
-  closures. `t3isa` REFUSES a lambda, which is the right interim answer.
-  **`pascal` does NOT lift and is not a pattern to copy**: its `IrLambda` arm
-  emits the body and discards the parameters, so `\x -> x + n` emits an
-  expression naming an unbound `x` (measured at the emitter, reek 2026-09-07;
-  `docs/Designs/Active/Compiler/LiftingForClosurelessTargets.md`).
+- No `lambda` node reaches a plug. A lambda is lifted to a top-level
+  `__lam_N` def whose leading parameters are the locals it captured, and its
+  value on the wire is that def partially applied to them: `pick (n) = \y ->
+  y + n` arrives as `(apply (name "__lam_1") (name "n"))` (text-plug IR, val
+  2026-09-25). A target without first-class functions therefore meets a
+  closure only as a partial application of a named def, and every `IrLambda`
+  arm in a plug (zig's `zig-lambda-closure`, pascal's, the closureless plugs'
+  refusal markers) is on a path nothing reaches (L-UNCALLED).
 - Application is curried on the wire: `(make-adder 10) 32` arrives as
   `(apply (apply (name "make-adder") 10) 32)`, and a plug must emit
   `f(a)(b)`, never `f(a, b)`, unless it KNOWS the callee's arity: a def it

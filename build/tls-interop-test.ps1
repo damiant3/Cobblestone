@@ -119,6 +119,50 @@ print(json.dumps(res))
 $clientPy = Join-Path $Out 'client.py'
 Set-Content -Path $clientPy -Value $client -Encoding utf8
 
+# A client that sends a real ClientHello and walks away, by FIN or by RST
+# (SO_LINGER 0), then a real client one second later. The server serves one
+# connection at a time, so the second client completes only if the first
+# connection was released.
+$abandon = @'
+import socket, ssl, sys, json, time, struct
+port, mode, cafile = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+ctx0 = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx0.check_hostname = False
+ctx0.verify_mode = ssl.CERT_NONE
+inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
+obj = ctx0.wrap_bio(inc, out)
+try:
+    obj.do_handshake()
+except ssl.SSLWantReadError:
+    pass
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
+s.sendall(out.read())
+if mode == "rst":
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+s.close()
+time.sleep(1)
+res = {"mode": mode}
+t0 = time.time()
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_REQUIRED
+ctx.load_verify_locations(cafile)
+try:
+    with socket.create_connection(("127.0.0.1", port), timeout=60) as c:
+        with ctx.wrap_socket(c) as sc:
+            sc.sendall(b"GET")
+            res["echo"] = sc.recv(64).decode("latin1")
+            res["ok"] = True
+except Exception as e:
+    res["ok"] = False
+    res["error"] = "%s: %s" % (type(e).__name__, e)
+res["seconds"] = round(time.time() - t0, 1)
+print(json.dumps(res))
+'@
+$abandonPy = Join-Path $Out 'abandon.py'
+Set-Content -Path $abandonPy -Value $abandon -Encoding utf8
+
 # ---------------------------------------------------------------------------
 # Boot the guest and ask it a question.
 # ---------------------------------------------------------------------------
@@ -137,12 +181,10 @@ function Invoke-Case {
         #
         #  - codex-vm's port forward accepts the host connection long before
         #    the guest is behind it, so a successful connect proves nothing.
-        #  - This server handles one connection at a time and a connection
-        #    carrying no data parks it inside net-io-recv-raw for that
-        #    function's whole fuel budget. A probe that connects and closes
-        #    therefore wedges the server for far longer than the client is
-        #    willing to wait. Making the server LOOP did not fix this; the
-        #    loop only helps once the current connection finishes.
+        #  - This server handles one connection at a time, and a connection
+        #    that stays open carrying no data parks it inside net-io-recv-raw
+        #    for that function's whole fuel budget. A connection that CLOSES
+        #    is released at once (case 6 grades that).
         #
         # So: wait for the boot, then let the real client be the probe.
         Start-Sleep -Seconds $BootSeconds
@@ -158,6 +200,76 @@ function Invoke-Case {
     }
 }
 
+function Invoke-Abandon {
+    param([string]$Mode)
+
+    $vmOut = Join-Path $Out "abandon-$Mode.out"
+    if (Test-Path $vmOut) { Remove-Item $vmOut -Force }
+    $args = @('-kernel', $Kernel, '-headless', '-mem', '3072',
+              '-output', $vmOut, '-portfwd', "$($Port):9443")
+    $proc = Start-Process -FilePath $Vm -ArgumentList $args -PassThru -WindowStyle Hidden
+    try {
+        Start-Sleep -Seconds $BootSeconds
+        if ($proc.HasExited) { return @{ ok = $false; error = 'guest exited during boot' } }
+        $raw = & $Python $abandonPy $Port $Mode $caPem 2>&1
+        try { return ($raw | Select-Object -Last 1 | ConvertFrom-Json) }
+        catch { return @{ ok = $false; error = "abandon client produced no JSON: $raw" } }
+    }
+    finally {
+        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
+# s_client offers a key share for the FIRST group in -groups only, so
+# P-256:X25519 is a client leading with a group we do not speak: the server
+# must answer with a HelloRetryRequest (RFC 8446 4.1.4). -msg prints every
+# handshake message, and two ClientHellos is the proof the retry happened.
+function Invoke-SClient {
+    param([string]$Label, [string]$Groups, [int]$Seconds = 60, [string]$Sigalgs = '')
+
+    $vmOut = Join-Path $Out "$Label.out"
+    if (Test-Path $vmOut) { Remove-Item $vmOut -Force }
+    $args = @('-kernel', $Kernel, '-headless', '-mem', '3072',
+              '-output', $vmOut, '-portfwd', "$($Port):9443")
+    $proc = Start-Process -FilePath $Vm -ArgumentList $args -PassThru -WindowStyle Hidden
+    try {
+        Start-Sleep -Seconds $BootSeconds
+        if ($proc.HasExited) { return @{ ok = $false; error = 'guest exited during boot'; hellos = 0 } }
+
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $OpenSsl
+        $psi.Arguments = "s_client -connect 127.0.0.1:$Port -tls1_3 -groups $Groups -CAfile `"$caPem`" -verify_return_error -ign_eof -msg" + $(if ($Sigalgs) { " -sigalgs $Sigalgs" } else { '' })
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $sc = [System.Diagnostics.Process]::Start($psi)
+        $stdout = $sc.StandardOutput.ReadToEndAsync()
+        $stderr = $sc.StandardError.ReadToEndAsync()
+        $sc.StandardInput.Write("GET")
+        $sc.StandardInput.Close()
+        $timedOut = -not $sc.WaitForExit($Seconds * 1000)
+        if ($timedOut) { $sc.Kill() }
+        $text = $stdout.Result + $stderr.Result
+        Set-Content -Path (Join-Path $Out "$Label.sclient.txt") -Value $text -Encoding utf8
+        $hellos = ([regex]::Matches($text, '>>> TLS 1\.3, Handshake \[length [0-9a-f]+\], ClientHello')).Count
+        return @{
+            ok = (-not $timedOut) -and ($text -match 'Verify return code: 0 \(ok\)') -and ($text -match 'New, TLSv1\.3, Cipher is')
+            timedOut = $timedOut
+            hellos = $hellos
+            echo = ($text -match '(?m)^GET')
+            peerAlert = [regex]::Match($text, '<<< TLS 1\.\d, Alert \[length [0-9a-f]+\], fatal (\w+)').Groups[1].Value
+            peerSig = [regex]::Match($text, 'Peer signature type: (\S+)').Groups[1].Value
+            error = if ($timedOut) { "s_client timed out after $Seconds s" } else { ($text -split "`n" | Select-String -Pattern 'error|alert' | Select-Object -First 1) -as [string] }
+        }
+    }
+    finally {
+        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
 Write-Host "tls-interop: case 1 -- python/OpenSSL client, fixture CA (must succeed)"
 $good = Invoke-Case -Label 'good' -CaFile $caPem -Expect 'ok'
 $good | ConvertTo-Json -Compress | Write-Host
@@ -165,6 +277,26 @@ $good | ConvertTo-Json -Compress | Write-Host
 Write-Host "tls-interop: case 2 -- same server, unrelated CA (must FAIL)"
 $bad = Invoke-Case -Label 'bad' -CaFile $badPem -Expect 'fail'
 $bad | ConvertTo-Json -Compress | Write-Host
+
+Write-Host "tls-interop: case 3 -- openssl s_client leading with P-256, X25519 second (must retry and succeed)"
+$hrr = Invoke-SClient -Label 'hrr' -Groups 'P-256:X25519'
+$hrr | ConvertTo-Json -Compress | Write-Host
+
+Write-Host "tls-interop: case 4 -- openssl s_client offering P-256 only (must FAIL)"
+$p256 = Invoke-SClient -Label 'p256' -Groups 'P-256' -Seconds 30
+$p256 | ConvertTo-Json -Compress | Write-Host
+
+# A client offering no Ed25519 signature scheme: tls-serve answers with its
+# P-256 leaf, and OpenSSL verifies our ECDSA CertificateVerify and the chain.
+Write-Host "tls-interop: case 5 -- openssl s_client offering only ecdsa_secp256r1_sha256 (must succeed on the P-256 leaf)"
+$ecdsa = Invoke-SClient -Label 'ecdsa' -Groups 'X25519' -Sigalgs 'ecdsa_secp256r1_sha256'
+$ecdsa | ConvertTo-Json -Compress | Write-Host
+
+Write-Host "tls-interop: case 6 -- a client abandons mid-handshake by FIN, then by RST; the next client must be served"
+$abFin = Invoke-Abandon -Mode 'fin'
+$abFin | ConvertTo-Json -Compress | Write-Host
+$abRst = Invoke-Abandon -Mode 'rst'
+$abRst | ConvertTo-Json -Compress | Write-Host
 
 # ---------------------------------------------------------------------------
 # Verdict.
@@ -181,6 +313,19 @@ elseif ($bad.error -notmatch 'certificate|CERTIFICATE|verify') {
     $problems += "control failed for the wrong reason: $($bad.error)"
 }
 
+if (-not $hrr.ok)            { $problems += "P-256:X25519 client did not complete: $($hrr.error)" }
+elseif ($hrr.hellos -ne 2)   { $problems += "P-256:X25519 client sent $($hrr.hellos) ClientHello(s), expected 2: no HelloRetryRequest happened" }
+elseif (-not $hrr.echo)      { $problems += "P-256:X25519 client got no 'GET' echo" }
+if ($p256.ok)                { $problems += "a P-256-only client COMPLETED a handshake with an X25519-only server" }
+elseif ($p256.peerAlert -ne 'handshake_failure') { $problems += "P-256-only control failed for the wrong reason: alert '$($p256.peerAlert)', $($p256.error)" }
+if (-not $ecdsa.ok)             { $problems += "ecdsa-only client did not complete: $($ecdsa.error)" }
+elseif ($ecdsa.peerSig -ne 'ECDSA') { $problems += "ecdsa-only client saw peer signature type '$($ecdsa.peerSig)', expected ECDSA" }
+elseif (-not $ecdsa.echo)       { $problems += "ecdsa-only client got no 'GET' echo" }
+foreach ($ab in @($abFin, $abRst)) {
+    if (-not $ab.ok)            { $problems += "after a client abandoned by $($ab.mode), the next client was not served: $($ab.error)" }
+    elseif ($ab.echo -ne 'GET') { $problems += "after a client abandoned by $($ab.mode), the next client's echo was '$($ab.echo)'" }
+}
+
 if (-not $KeepArtifacts) { Remove-Item $caDer, $badKey -Force -ErrorAction SilentlyContinue }
 
 if ($problems.Count -gt 0) {
@@ -195,4 +340,8 @@ Write-Host "  $($good.version) / $($good.cipher) against $($good.openssl)"
 Write-Host "  server certificate accepted: $($good.peercert_bytes) bytes, chain walked to the fixture CA"
 Write-Host "  application data echoed: '$($good.echo)'"
 Write-Host "  control refused an unrelated CA: $($bad.error)"
+Write-Host "  P-256:X25519 client retried ($($hrr.hellos) ClientHellos) and got its echo"
+Write-Host "  P-256-only control refused with alert $($p256.peerAlert)"
+Write-Host "  ecdsa-only client verified a $($ecdsa.peerSig) CertificateVerify and the chain, and got its echo"
+Write-Host "  after an abandon by FIN the next client was served in $($abFin.seconds) s, after one by RST in $($abRst.seconds) s"
 exit 0

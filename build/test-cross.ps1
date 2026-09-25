@@ -95,6 +95,7 @@ $smpFile = Join-Path $dir "$name.smp"
 # answer for a test that fails because the TARGET cannot do something: that
 # is a gap, and a gap is written down where it stays visible.
 $noCrossFile = Join-Path $dir "$name.no-cross"
+$archOnlyFile = Join-Path $dir "$name.arch-only"
 # .cross-refusal: the test's DESIGNED behavior on a cross lane is a compile
 # refusal. Each non-comment line names a builtin whose "[UNSUPPORTED] <name>"
 # report must appear in the compile log, and the compile must fail. This is
@@ -119,6 +120,13 @@ if ((Test-Path -PathType Leaf $noCrossFile)) {
     $reason = (Get-Content -TotalCount 1 $noCrossFile)
     Write-Host "SKIPPED: $name (no-cross: $reason)" -ForegroundColor Yellow
     exit 0
+}
+if ((Test-Path -PathType Leaf $archOnlyFile)) {
+    $archList = @(Get-Content $archOnlyFile | ForEach-Object { $_.Trim() })
+    if ((-not ($archList -contains $Arch))) {
+        Write-Host "SKIPPED: $name (arch-only: $($archList -join ' '))" -ForegroundColor Yellow
+        exit 0
+    }
 }
 if (((-not $Renode) -and (Test-Path -PathType Leaf $renodeFile))) {
     $reason = (Get-Content -TotalCount 1 $renodeFile)
@@ -179,6 +187,10 @@ Write-Host 'OK'
 
 # -- Check for .expected --
 $expectedFile = Join-Path $dir "$name.expected"
+$archExpectedFile = Join-Path $dir "$name.expected-$Arch"
+if ((Test-Path -PathType Leaf $archExpectedFile)) {
+    $expectedFile = $archExpectedFile
+}
 if ((-not (Test-Path -PathType Leaf $expectedFile))) {
     Write-Host '  PASS (compile only)' -ForegroundColor DarkGreen
     exit 0

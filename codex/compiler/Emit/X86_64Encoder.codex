@@ -489,6 +489,15 @@ Section: System
 Section: Atomic Instructions
   mfence : List Integer = [15, 174, 240]
 
+  fxsave64-rcx : List Integer = [72, 15, 174, 1]
+  fxrstor64-rcx : List Integer = [72, 15, 174, 9]
+  xsave64-rcx : List Integer = [72, 15, 174, 33]
+  xrstor64-rcx : List Integer = [72, 15, 174, 41]
+  xsetbv : List Integer = [15, 1, 209]
+  cpuid : List Integer = [15, 162]
+  mov-rax-cr4 : List Integer = [15, 32, 224]
+  mov-cr4-rax : List Integer = [15, 34, 224]
+
   lock-cmpxchg-mem : Integer, Integer, Integer -> List Integer
   lock-cmpxchg-mem (rs) (base) (offset) =
    [240, rex-w rs base, 15, 177] & emit-mem-operand rs base offset
@@ -712,6 +721,88 @@ Section: SSE2 Instructions
   unpcklpd-xmm : Integer, Integer -> List Integer
   unpcklpd-xmm (dst) (src) =
    [102, 15, 20, modrm 3 dst src]
+
+ VEX (SDM 2.3.5). The three-byte form is C4, then R X B inverted over
+ mmmmm (1 = 0F, 2 = 0F38, 3 = 0F3A), then W, vvvv inverted, L, pp
+ (0 none, 1 = 66, 2 = F3, 3 = F2). The two-byte form C5 carries only R,
+ vvvv, L and pp, and implies X = B = 0, map 0F and W = 0. The X bit is always
+ clear here because emit-mem-operand never encodes an index register. An
+ instruction with no second source takes vvvv = 0, which encodes as 1111.
+
+  vex : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  vex (l) (pp) (map) (w) (reg) (vvvv) (rm) =
+   let r-inv = if reg >= 8 then 0 else 128
+   in let b-inv = if rm >= 8 then 0 else 32
+   in let low = (15 - int-mod vvvv 16) * 8 + l * 4 + pp
+   in if rm < 8 & map == 1 & w == 0 then [197, r-inv + low]
+   else [196, r-inv + 64 + b-inv + map, w * 128 + low]
+
+  vex-rrr : Integer, Integer, Integer, Integer, Integer -> List Integer
+  vex-rrr (pp) (op) (dst) (src1) (src2) =
+   vex 1 pp 1 0 dst src1 src2 & [op, modrm 3 dst src2]
+
+  vmovupd-load-y : Integer, Integer, Integer -> List Integer
+  vmovupd-load-y (ymm) (base) (offset) =
+   vex 1 1 1 0 ymm 0 base & [16] & emit-mem-operand ymm base offset
+
+  vmovupd-store-y : Integer, Integer, Integer -> List Integer
+  vmovupd-store-y (base) (offset) (ymm) =
+   vex 1 1 1 0 ymm 0 base & [17] & emit-mem-operand ymm base offset
+
+  vaddpd-y : Integer, Integer, Integer -> List Integer
+  vaddpd-y (dst) (src1) (src2) = vex-rrr 1 88 dst src1 src2
+
+  vsubpd-y : Integer, Integer, Integer -> List Integer
+  vsubpd-y (dst) (src1) (src2) = vex-rrr 1 92 dst src1 src2
+
+  vmulpd-y : Integer, Integer, Integer -> List Integer
+  vmulpd-y (dst) (src1) (src2) = vex-rrr 1 89 dst src1 src2
+
+  vdivpd-y : Integer, Integer, Integer -> List Integer
+  vdivpd-y (dst) (src1) (src2) = vex-rrr 1 94 dst src1 src2
+
+  vaddps-y : Integer, Integer, Integer -> List Integer
+  vaddps-y (dst) (src1) (src2) = vex-rrr 0 88 dst src1 src2
+
+  vsubps-y : Integer, Integer, Integer -> List Integer
+  vsubps-y (dst) (src1) (src2) = vex-rrr 0 92 dst src1 src2
+
+  vmulps-y : Integer, Integer, Integer -> List Integer
+  vmulps-y (dst) (src1) (src2) = vex-rrr 0 89 dst src1 src2
+
+  vdivps-y : Integer, Integer, Integer -> List Integer
+  vdivps-y (dst) (src1) (src2) = vex-rrr 0 94 dst src1 src2
+
+  vandpd-y : Integer, Integer, Integer -> List Integer
+  vandpd-y (dst) (src1) (src2) = vex-rrr 1 84 dst src1 src2
+
+  vandnpd-y : Integer, Integer, Integer -> List Integer
+  vandnpd-y (dst) (src1) (src2) = vex-rrr 1 85 dst src1 src2
+
+  vorpd-y : Integer, Integer, Integer -> List Integer
+  vorpd-y (dst) (src1) (src2) = vex-rrr 1 86 dst src1 src2
+
+  vcmppd-y : Integer, Integer, Integer, Integer -> List Integer
+  vcmppd-y (dst) (src1) (src2) (imm) = vex-rrr 1 194 dst src1 src2 & [imm]
+
+  vcmpps-y : Integer, Integer, Integer, Integer -> List Integer
+  vcmpps-y (dst) (src1) (src2) (imm) = vex-rrr 0 194 dst src1 src2 & [imm]
+
+ VMOVMSKPD and VMOVMSKPS put the GPR in ModRM.reg, as the legacy forms do,
+ and take four and eight sign bits from a YMM register.
+
+  vmovmskpd-y : Integer, Integer -> List Integer
+  vmovmskpd-y (gpr) (ymm) = vex 1 1 1 0 gpr 0 ymm & [80, modrm 3 gpr ymm]
+
+  vmovmskps-y : Integer, Integer -> List Integer
+  vmovmskps-y (gpr) (ymm) = vex 1 0 1 0 gpr 0 ymm & [80, modrm 3 gpr ymm]
+
+ VZEROUPPER clears bits 255:128 of every YMM register. Legacy SSE code that
+ follows a dirty upper half pays a state-transition penalty on processors
+ that track the upper state, and the scalar Real code around every 256-bit
+ operation is legacy SSE.
+
+  vzeroupper : List Integer = [197, 248, 119]
 
 Page 6 of 14
 

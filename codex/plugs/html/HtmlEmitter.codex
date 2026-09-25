@@ -4,7 +4,7 @@ Section: Keywords and Sanitization
 
   html-sanitize : Text -> Text
   html-sanitize (name) =
-   js-reserve-guard (text-replace (text-replace name "-" "_") "'" "")
+   js-reserve-guard (text-replace (text-replace (text-replace name "-" "_") "'" "") "@" "_at_")
 
   js-reserve-guard : Text -> Text
   js-reserve-guard (n) =
@@ -127,6 +127,34 @@ Section: Arity Map
       else let e = list-at entries pos
       in if e.name == name then e.arity else 0 - 1
 
+  arity-hide : List ArityEntry, Text -> List ArityEntry
+  arity-hide (es) (n) =
+   if lookup-arity es n == 0 then arity-hide-copy es n 0 (list-length es) [] else es
+
+  arity-hide-copy : List ArityEntry, Text, Integer, Integer, List ArityEntry -> List ArityEntry
+  arity-hide-copy (es) (n) (i) (len) (acc) =
+   if i >= len then acc
+   else let e = list-at es i
+   in if e.name == n then arity-hide-copy es n (i + 1) len acc
+   else arity-hide-copy es n (i + 1) len (list-push acc e)
+
+  arity-hide-params : List ArityEntry, List IRParam, Integer -> List ArityEntry
+  arity-hide-params (es) (ps) (i) =
+   if i >= list-length ps then es
+   else arity-hide-params (arity-hide es (list-at ps i).name) ps (i + 1)
+
+  arity-hide-pat : List ArityEntry, IRPat -> List ArityEntry
+  arity-hide-pat (es) (p) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> arity-hide es name
+    is IrCtorPat (name) (subs) (ty) (sp) -> arity-hide-pats es subs 0
+    is otherwise -> es
+
+  arity-hide-pats : List ArityEntry, List IRPat, Integer -> List ArityEntry
+  arity-hide-pats (es) (ps) (i) =
+   if i >= list-length ps then es
+   else arity-hide-pats (arity-hide-pat es (list-at ps i)) ps (i + 1)
+
 Section: Type Emission
 
   emit-html-type : CodexType -> Text
@@ -156,7 +184,7 @@ Section: Type Emission
     is ConstructedTy (name) (args) -> name.value
     is TypeCon (name) -> name.value
     is VectorTy (vn) (vt) -> "Array"
-    is VectorMaskTy (vn) -> "Array"
+    is VectorMaskTy (vn) (ve) -> "Array"
     is SizedVecTy (sn) (st) -> "Array"
     is EffectfulTy (effs) (sc) (ret) -> emit-html-type ret
 
@@ -170,7 +198,7 @@ Section: JavaScript Expression Emission
     is IrTextLit (s) (sp) -> "\"" & js-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
-    is IrName (n) (ty) (sp) -> html-sanitize n
+    is IrName (n) (ty) (sp) -> if lookup-arity arities n == 0 then html-sanitize n & "()" else html-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-js-binary op l r arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-js-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-js-expr c arities indent & " ? " & emit-js-expr t arities indent & " : " & emit-js-expr el arities indent & ")"
@@ -240,12 +268,12 @@ Section: Let Bindings
 
   emit-js-let : Text, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-js-let (name) (val) (body) (arities) (indent) =
-   "(() => {\n" & html-indent (indent + 1) & "const " & html-sanitize name & " = " & emit-js-expr val arities (indent + 1) & ";\n" & emit-js-let-tail body arities (indent + 1) & html-indent indent & "})()"
+   "(() => {\n" & html-indent (indent + 1) & "const " & html-sanitize name & " = " & emit-js-expr val arities (indent + 1) & ";\n" & emit-js-let-tail body (arity-hide arities name) (indent + 1) & html-indent indent & "})()"
 
   emit-js-let-tail : IRExpr, List ArityEntry, Integer -> Text
   emit-js-let-tail (body) (arities) (indent) =
    when body
-    is IrLet (name) (ty) (val) (inner) (sp) -> html-indent indent & "const " & html-sanitize name & " = " & emit-js-expr val arities indent & ";\n" & emit-js-let-tail inner arities indent
+    is IrLet (name) (ty) (val) (inner) (sp) -> html-indent indent & "const " & html-sanitize name & " = " & emit-js-expr val arities indent & ";\n" & emit-js-let-tail inner (arity-hide arities name) indent
     is otherwise -> html-indent indent & "return " & emit-js-expr body arities indent & ";\n"
 
 Section: Apply
@@ -308,7 +336,7 @@ Section: Lambda
 
   emit-js-lambda : List IRParam, IRExpr, List ArityEntry, Integer -> Text
   emit-js-lambda (params) (body) (arities) (indent) =
-   "(" & emit-js-param-names params 0 & ") => " & emit-js-expr body arities indent
+   "(" & emit-js-param-names params 0 & ") => " & emit-js-expr body (arity-hide-params arities params 0) indent
 
   emit-js-param-names : List IRParam, Integer -> Text
   emit-js-param-names (params) (i) =
@@ -337,10 +365,11 @@ Section: Match
    else let b = list-at branches i
    in let cond = emit-js-pattern-cond (b.pattern) "_s"
    in let binds = emit-js-pattern-binds (b.pattern) "_s" indent
-   in let body = emit-js-expr (b.body) arities indent
+   in let scope = arity-hide-pat arities (b.pattern)
+   in let body = emit-js-expr (b.body) scope indent
    in let ret = if html-guard-trivial (b.guard)
                 then html-indent (indent + 1) & "return " & body & ";\n"
-                else html-indent (indent + 1) & "if (" & emit-js-expr (b.guard) arities indent & ") { return " & body & "; }\n"
+                else html-indent (indent + 1) & "if (" & emit-js-expr (b.guard) scope indent & ") { return " & body & "; }\n"
    in html-indent indent & "if (" & cond & ") {\n" & binds & ret & html-indent indent & "}\n" & emit-js-branches branches arities indent (i + 1)
 
  A guarded arm must not chain with else-if: the guard needs the pattern
@@ -389,7 +418,10 @@ Section: Act Blocks
   emit-js-act-stmts (stmts) (arities) (indent) (i) =
    if i == list-length stmts then ""
    else let s = list-at stmts i
-   in emit-js-act-stmt s arities indent (i == list-length stmts - 1) & emit-js-act-stmts stmts arities indent (i + 1)
+   in let rest = when s
+     is IrDoBind (name) (ty) (val) (sp) -> arity-hide arities name
+     is otherwise -> arities
+   in emit-js-act-stmt s arities indent (i == list-length stmts - 1) & emit-js-act-stmts stmts rest indent (i + 1)
 
   emit-js-act-stmt : IRActStmt, List ArityEntry, Integer, Boolean -> Text
   emit-js-act-stmt (s) (arities) (indent) (is-last) =
@@ -416,12 +448,15 @@ Section: Records
    if i == count then ""
    else "(_p" & integer-to-text i & "_) => " & html-partial-wrappers (i + 1) count
 
+ `__record-set` writes through its target and returns that same record, as
+ native Codex does (L-ALIAS); a copy loses the write when the result is discarded.
+
   emit-js-record-set : List IRExpr, List ArityEntry, Integer -> Text
   emit-js-record-set (args) (arities) (indent) =
    let field-name = when (list-at args 1)
     is IrTextLit (s) (sp) -> s
     is otherwise -> ""
-   in "{ ..." & emit-js-expr (list-at args 0) arities indent & ", " & html-sanitize field-name & ": " & emit-js-expr (list-at args 2) arities indent & " }"
+   in "((_r) => { _r." & html-sanitize field-name & " = " & emit-js-expr (list-at args 2) arities indent & "; return _r; })(" & emit-js-expr (list-at args 0) arities indent & ")"
 
   emit-js-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
   emit-js-record-fields (fields) (arities) (indent) (i) =
@@ -492,6 +527,12 @@ Section: Definition Emission
    else if n == "int-to-css-color" then True
    else if n == "mount-widget-themed" then True
    else if n == "mount-widget-into" then True
+   else if n == "mount-overlays" then True
+   else if n == "mount-svg" then True
+   else if n == "svg-draw-cmds" then True
+   else if n == "svg-label" then True
+   else if n == "svg-fill-path" then True
+   else if n == "svg-stroke-path" then True
    else if n == "register-handlers" then True
    else if n == "register-input-handler" then True
    else if n == "play-tone" then True
@@ -532,9 +573,7 @@ Section: Definition Emission
    if text-length (d.name) == 0 then ""
    else if is-html-builtin (d.name) then ""
    else let sname = html-sanitize (d.name)
-   in if list-length (d.params) == 0
-      then "const " & sname & " = " & emit-js-expr (d.body) arities 0 & ";\n\n"
-      else "function " & sname & "(" & emit-js-param-names (d.params) 0 & ") {\n  return " & emit-js-expr (d.body) arities 1 & ";\n}\n\n"
+   in "function " & sname & "(" & emit-js-param-names (d.params) 0 & ") {\n  return " & emit-js-expr (d.body) (arity-hide-params arities (d.params) 0) 1 & ";\n}\n\n"
 
   emit-js-defs : List IRDef, Integer, List ArityEntry -> Text
   emit-js-defs (defs) (i) (arities) =
@@ -572,41 +611,89 @@ Section: Chapter Emission
   emit-html-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
-   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(start, start + len); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return s.charCodeAt(i); }\nfunction int_mod(a, b) { return a % b; }\nfunction list_snoc(xs, x) { return [...xs, x]; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(c.charCodeAt ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (a^b);}\nfunction bit_and(a,b){return (a&b);}\nfunction bit_or(a,b){return (a|b);}\nfunction bit_shl(a,n){return BigInt.asIntN(64, a<<n);}\nfunction bit_shr(a,n){return (a>>n);}\nfunction bit_shru(a,n){return BigInt.asIntN(64, BigInt.asUintN(64, a)>>n);}\nfunction bit_not(a){return (~a);}\nfunction __narrow(n) { return n; }\n\n"
+   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction print_line_raw(s) { print_line_uni(s); }\nfunction show(n) { return typeof n === 'boolean' ? (n ? 'True' : 'False') : String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(Number(start), Number(start) + Number(len)); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return BigInt(s.charCodeAt(Number(i))); }\nfunction int_mod(a, b) { return a % b; }\nfunction list_snoc(xs, x) { return [...xs, x]; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(c.charCodeAt ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (a^b);}\nfunction bit_and(a,b){return (a&b);}\nfunction bit_or(a,b){return (a|b);}\nfunction bit_shl(a,n){return BigInt.asIntN(64, a<<n);}\nfunction bit_shr(a,n){return (a>>n);}\nfunction bit_shru(a,n){return BigInt.asIntN(64, BigInt.asUintN(64, a)>>n);}\nfunction bit_not(a){return (~a);}\nfunction __narrow(n) { return n; }\n\n"
    in let types-text = emit-js-type-defs type-defs 0
    in let defs-text = emit-js-defs (m.defs) 0 arities
-   in let arity = lookup-arity arities "opening"
-   in let entry = if arity > 0 then "// Entry\ntry { opening(); } catch(e) { console.error(e); }\n" else "// Entry: opening evaluated as const\n"
+   in let entry = if lookup-arity arities "opening" >= 0 then "// Entry\ntry { opening(); } catch(e) { console.error(e); }\n" else "// Entry: this chapter declares no opening\n"
    in let dom-bi = emit-dom-builtins
-   in let js = builtins & dom-bi & types-text & defs-text & entry
+   in let wraps = "function __int(v) { return typeof v === 'number' ? BigInt(Math.trunc(v)) : v; }\n" & html-int-wraps (m.defs) 0 ""
+   in let js = builtins & dom-bi & wraps & types-text & defs-text & entry
    in emit-html-page title (emit-default-css) js
+
+  html-result-type : CodexType, Integer -> CodexType
+  html-result-type (t) (n) =
+   when t
+    is ForAllTy (id) (body) -> html-result-type body n
+    is ForAllEff (id) (body) -> html-result-type body n
+    is EffectfulTy (effs) (sc) (ret) -> html-result-type ret n
+    is FunTy (p) (row) (r) -> if n <= 0 then t else html-result-type r (n - 1)
+    is otherwise -> t
+
+  html-is-int-ty : CodexType -> Boolean
+  html-is-int-ty (t) =
+   when t
+    is IntegerTy (lo) (hi) (mode) -> True
+    is otherwise -> False
+
+  html-int-wraps : List IRDef, Integer, Text -> Text
+  html-int-wraps (defs) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in let n = list-length (d.params)
+   in if n > 0 & is-html-builtin (d.name) & html-is-int-ty (html-result-type (d.type-val) n)
+      then let s = html-sanitize (d.name)
+      in html-int-wraps defs (i + 1) (acc & "if (typeof " & s & " === 'function') { " & s & " = ((f) => (...a) => __int(f(...a)))(" & s & "); }\n")
+      else html-int-wraps defs (i + 1) acc
 
   emit-dom-builtins : Text
   emit-dom-builtins =
-   emit-dom-core & emit-dom-ajax & emit-dom-state & emit-dom-events & emit-dom-reactive & emit-dom-dialog & emit-dom-a11y & emit-dom-anim & emit-dom-persist & emit-dom-sd & emit-dom-theme & emit-dom-widget
+   emit-dom-core & emit-dom-ajax & emit-dom-state & emit-dom-events & emit-dom-reactive & emit-dom-dialog & emit-dom-a11y & emit-dom-anim & emit-dom-persist & emit-dom-sd & emit-dom-theme & emit-dom-widget & emit-dom-svg
+
+  emit-dom-svg : Text
+  emit-dom-svg =
+   "function _svgEl(t,o){var e=document.createElementNS('http://www.w3.org/2000/svg',t);for(var k in o)e.setAttribute(k,String(o[k]));return e}\n"
+   & "function _svgOf(id){var a=document.getElementById(id);return a?a.querySelector('svg'):null}\n"
+   & "function mount_svg(id,w,h){var a=document.getElementById(id);if(!a)return 0;a.innerHTML='';a.appendChild(_svgEl('svg',{width:w,height:h,viewBox:'0 0 '+w+' '+h,role:'img'}));return 0}\n"
+   & "function svg_label(id,t){var s=_svgOf(id);if(s&&t)s.setAttribute('aria-label',t);return 0}\n"
+   & "function svg_draw_cmds(id,cs){var s=_svgOf(id);if(!s)return 0;for(var i=0;i<cs.length;i++){var c=cs[i],t=c._tag,e=null;"
+   & "if(t==='DrawLine')e=_svgEl('line',{x1:c._0,y1:c._1,x2:c._2,y2:c._3,stroke:_c(c._4)});"
+   & "else if(t==='DrawRect')e=_svgEl('rect',{x:c._0,y:c._1,width:c._2,height:c._3,fill:c._5?_c(c._4):'none',stroke:c._5?'none':_c(c._4)});"
+   & "else if(t==='DrawText'){e=_svgEl('text',{x:c._0,y:c._1,fill:_c(c._3),'dominant-baseline':'hanging'});e.textContent=c._2}"
+   & "else if(t==='DrawCircle')e=_svgEl('circle',{cx:c._0,cy:c._1,r:c._2,fill:_c(c._3)});"
+   & "if(e)s.appendChild(e)}return 0}\n"
+   & "function _vecD(p){var cs=p.vp_commands||[],n=Math.min(Number(p.vp_count),cs.length),d=[],x=0,y=0,sx=0,sy=0;"
+   & "for(var i=0;i<n;i++){var c=cs[i],t=c._tag;"
+   & "if(t==='PcMoveTo'){x=Number(c._0);y=Number(c._1);sx=x;sy=y;d.push('M'+x+' '+y)}"
+   & "else if(t==='PcLineTo'){x=Number(c._0);y=Number(c._1);d.push('L'+x+' '+y)}"
+   & "else if(t==='PcBezierTo'){x=Number(c._4);y=Number(c._5);d.push('C'+c._0+' '+c._1+' '+c._2+' '+c._3+' '+x+' '+y)}"
+   & "else if(t==='PcArcTo'){var cx=Number(c._0),cy=Number(c._1),rx=Number(c._2),ry=Number(c._3),a=Number(c._4)/1000,a0=Math.atan2(y-cy,x-cx),k=Math.max(1,Math.ceil(Math.abs(a)/Math.PI));"
+   & "for(var j=1;j<=k;j++){x=cx+rx*Math.cos(a0+a*j/k);y=cy+ry*Math.sin(a0+a*j/k);d.push('A'+rx+' '+ry+' 0 0 '+(a>0?1:0)+' '+x+' '+y)}}"
+   & "else if(t==='PcClose'){x=sx;y=sy;d.push('Z')}}return d.join(' ')}\n"
+   & "function svg_fill_path(id,p,col){var s=_svgOf(id);if(!s)return 0;s.appendChild(_svgEl('path',{d:_vecD(p),fill:_c(col),'fill-rule':'evenodd',stroke:'none'}));return 0}\n"
+   & "function svg_stroke_path(id,p,w,col){var s=_svgOf(id);if(!s)return 0;s.appendChild(_svgEl('path',{d:_vecD(p),fill:'none',stroke:_c(col),'stroke-width':w,'stroke-linecap':'square','stroke-linejoin':'miter'}));return 0}\n"
 
   emit-dom-core : Text
   emit-dom-core =
    "function dom_get(id){return document.getElementById(id);}\n"
    & "function dom_create(tag){return document.createElement(tag);}\n"
-   & "function dom_set_attr(el,k,v){el.setAttribute(k,v);return el;}\n"
-   & "function dom_set_text(el,s){el.textContent=s;return el;}\n"
-   & "function dom_set_html(el,s){el.innerHTML=s;return el;}\n"
-   & "function dom_get_value(el){return el.value||'';}\n"
-   & "function dom_set_value(el,v){el.value=v;return el;}\n"
-   & "function dom_append(p,c){p.appendChild(c);return p;}\n"
-   & "function dom_prepend(p,c){p.prepend(c);return p;}\n"
-   & "function dom_remove(el){if(el.parentNode)el.parentNode.removeChild(el);return el;}\n"
-   & "function dom_add_class(el,c){el.classList.add(c);return el;}\n"
-   & "function dom_remove_class(el,c){el.classList.remove(c);return el;}\n"
-   & "function dom_set_style(el,k,v){el.style[k]=v;return el;}\n"
-   & "function dom_on(el,ev,fn){el.addEventListener(ev,fn);return el;}\n"
+   & "function dom_set_attr(el,k,v){if(!el)return el;el.setAttribute(k,v);return el;}\n"
+   & "function dom_set_text(el,s){if(!el)return el;el.textContent=s;return el;}\n"
+   & "function dom_set_html(el,s){if(!el)return el;el.innerHTML=s;return el;}\n"
+   & "function dom_get_value(el){return el?el.value||'':'';}\n"
+   & "function dom_set_value(el,v){if(!el)return el;el.value=v;return el;}\n"
+   & "function dom_append(p,c){if(!p||!c)return p;p.appendChild(c);return p;}\n"
+   & "function dom_prepend(p,c){if(!p||!c)return p;p.prepend(c);return p;}\n"
+   & "function dom_remove(el){if(el&&el.parentNode)el.parentNode.removeChild(el);return el;}\n"
+   & "function dom_add_class(el,c){if(!el)return el;el.classList.add(c);return el;}\n"
+   & "function dom_remove_class(el,c){if(!el)return el;el.classList.remove(c);return el;}\n"
+   & "function dom_set_style(el,k,v){if(!el)return el;el.style[k]=v;return el;}\n"
+   & "function dom_on(el,ev,fn){if(!el)return el;el.addEventListener(ev,fn);return el;}\n"
    & "function dom_query(sel){return document.querySelector(sel);}\n"
    & "function dom_body(){return document.body;}\n"
-   & "function random_int(lo,hi){return lo+Math.floor(Math.random()*(hi-lo+1));}\n"
-   & "function set_timeout(fn,ms){return setTimeout(fn,ms);}\n"
+   & "function random_int(lo,hi){lo=Number(lo);return lo+Math.floor(Math.random()*(Number(hi)-lo+1));}\n"
+   & "function set_timeout(fn,ms){return setTimeout(fn,Number(ms));}\n"
    & "var _actx=null;function _audioctx(){if(!_actx){try{_actx=new (window.AudioContext||window.webkitAudioContext)()}catch(e){return null}}if(_actx.state==='suspended'){try{_actx.resume()}catch(e){}}return _actx}\n"
-   & "function play_tone(freq,ms,wave){try{var c=_audioctx();if(!c)return 0;var o=c.createOscillator();var g=c.createGain();o.type=wave===1?'triangle':wave===2?'square':wave===3?'sawtooth':'sine';o.frequency.value=freq;o.connect(g);g.connect(c.destination);var t=c.currentTime;var d=ms/1000;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.25,t+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t+d);o.start(t);o.stop(t+d+0.02)}catch(e){}return 0}\n"
+   & "function play_tone(freq,ms,wave){freq=Number(freq);ms=Number(ms);wave=Number(wave);try{var c=_audioctx();if(!c)return 0;var o=c.createOscillator();var g=c.createGain();o.type=wave===1?'triangle':wave===2?'square':wave===3?'sawtooth':'sine';o.frequency.value=freq;o.connect(g);g.connect(c.destination);var t=c.currentTime;var d=ms/1000;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.25,t+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t+d);o.start(t);o.stop(t+d+0.02)}catch(e){}return 0}\n"
    & "function local_storage_get(k){try{return localStorage.getItem(k)||'';}catch(e){return'';}}\n"
    & "function local_storage_set(k,v){try{localStorage.setItem(k,v);}catch(e){}return 0;}\n"
    & "var _cc=0;function next_card_id(x){_cc++;return 'c'+_cc;}\n"
@@ -632,9 +719,9 @@ Section: Chapter Emission
 
   emit-dom-events : Text
   emit-dom-events =
-   "function dom_on_click(el,cb){el.addEventListener('click',function(){cb(el.id||'')});return el}\n"
-   & "function dom_on_input(el,cb){el.addEventListener('input',function(){cb(el.value||'')});return el}\n"
-   & "function dom_on_key(el,cb){el.addEventListener('keydown',function(e){cb(e.key)});return el}\n"
+   "function dom_on_click(el,cb){if(!el)return el;el.addEventListener('click',function(){cb(el.id||'')});return el}\n"
+   & "function dom_on_input(el,cb){if(!el)return el;el.addEventListener('input',function(){cb(el.value||'')});return el}\n"
+   & "function dom_on_key(el,cb){if(!el)return el;el.addEventListener('keydown',function(e){cb(e.key)});return el}\n"
 
   emit-dom-reactive : Text
   emit-dom-reactive =
@@ -689,8 +776,17 @@ Section: Chapter Emission
 
   emit-dom-a11y : Text
   emit-dom-a11y =
-   "function dom_set_aria(el,k,v){el.setAttribute('aria-'+k,v);return el}\n"
-   & "function dom_set_role(el,r){el.setAttribute('role',r);return el}\n"
+   "function dom_set_aria(el,k,v){if(!el)return el;el.setAttribute('aria-'+k,v);return el}\n"
+   & "function dom_set_role(el,r){if(!el)return el;el.setAttribute('role',r);return el}\n"
+   & "function dom_apply_a11y(id,a){var e=document.getElementById(id);if(!e)return 0;var r=a.ai_role||{},t=r._tag;"
+   & "var rn={RoleButton:'button',RoleTextbox:'textbox',RoleCheckbox:'checkbox',RoleRadio:'radio',RoleSlider:'slider',RoleMenu:'menu',RoleMenuItem:'menuitem',RoleDialog:'dialog',RoleAlert:'alert',RoleStatus:'status',RoleHeading:'heading',RoleList:'list',RoleListItem:'listitem',RoleLink:'link',RoleImage:'img'}[t];"
+   & "if(rn)e.setAttribute('role',rn);if(t==='RoleHeading')e.setAttribute('aria-level',String(r._0));"
+   & "if(a.ai_label)e.setAttribute('aria-label',a.ai_label);if(a.ai_description)e.setAttribute('aria-description',a.ai_description);"
+   & "var lv=a.ai_live&&a.ai_live._tag;if(lv==='LivePolite')e.setAttribute('aria-live','polite');if(lv==='LiveAssertive')e.setAttribute('aria-live','assertive');"
+   & "if(Number(a.ai_tab_index)>0)e.setAttribute('tabindex',String(a.ai_tab_index));if(a.ai_hidden)e.setAttribute('aria-hidden','true');"
+   & "var x=a.ai_expanded;if(x&&x._tag==='Just')e.setAttribute('aria-expanded',x._0?'true':'false');"
+   & "var c=a.ai_checked;if(c&&c._tag==='Just')e.setAttribute('aria-checked',c._0?'true':'false');"
+   & "if(t==='RoleSlider'){e.setAttribute('aria-valuenow',String(a.ai_value_now));e.setAttribute('aria-valuemin',String(a.ai_value_min));e.setAttribute('aria-valuemax',String(a.ai_value_max))}return 0}\n"
 
   emit-dom-anim : Text
   emit-dom-anim = emit-dom-anim-setup & emit-dom-anim-fns
@@ -747,6 +843,9 @@ Section: Chapter Emission
   emit-dom-theme =
    "function _c(n){n=Number(n);var r=(n>>16)&255,g=(n>>8)&255,b=n&255;return'#'+((1<<24)|(r<<16)|(g<<8)|b).toString(16).slice(1);}\n"
    & "function int_to_css_color(n){return _c(n);}\n"
+   & "function _wsx(ws){var bs=[],bg='';var sh=ws.ws_shadow;if(sh&&sh.sh_enabled)bs.push(sh.sh_offset_x+'px '+sh.sh_offset_y+'px '+sh.sh_blur+'px '+_c(sh.sh_color));\n"
+   & "var ab=ws.ws_accent_border;if(ab&&ab.ab_enabled&&ab.ab_width>0){var w=ab.ab_width,d=[[0,w],[-w,0],[0,-w]][Number(ab.ab_side)]||[w,0];bs.push('inset '+d[0]+'px '+d[1]+'px 0 0 '+_c(ab.ab_color));}\n"
+   & "var gr=ws.ws_gradient;if(gr&&gr.gr_enabled)bg='linear-gradient('+(gr.gr_vertical?'to bottom':'to right')+','+_c(gr.gr_start_color)+','+_c(gr.gr_end_color)+')';return{bs:bs.join(','),bg:bg};}\n"
    & "function _ws(ws,sel){var s=sel+'{';if(ws.ws_bg)s+='background:'+_c(ws.ws_bg)+';';\n"
    & "if(ws.ws_fg)s+='color:'+_c(ws.ws_fg)+';';\n"
    & "var p=ws.ws_padding;if(p)s+='padding:'+p.edge_top+'px '+p.edge_right+'px '+p.edge_bottom+'px '+p.edge_left+'px;';\n"
@@ -756,7 +855,7 @@ Section: Chapter Emission
    & "if(b.bdr_corner){if(b.bdr_corner._tag==='CornerRound')s+='border-radius:'+b.bdr_corner._0+'px;';\n"
    & "if(b.bdr_corner._tag==='CornerBevel')s+='border-radius:0;';}}\n"
    & "if(ws.ws_min_width>0)s+='min-width:'+ws.ws_min_width+'px;';\n"
-   & "if(ws.ws_min_height>0)s+='min-height:'+ws.ws_min_height+'px;';return s+'}';}\n"
+   & "if(ws.ws_min_height>0)s+='min-height:'+ws.ws_min_height+'px;';var x=_wsx(ws);if(x.bg)s+='background:'+x.bg+';';if(x.bs)s+='box-shadow:'+x.bs+';';return s+'}';}\n"
    & "function _ss(ss,base){var s=_ws(ss.ss_normal,base);\n"
    & "s+=_ws(ss.ss_hover,base+':hover');s+=_ws(ss.ss_pressed,base+':active');\n"
    & "s+=_ws(ss.ss_disabled,base+':disabled');s+=_ws(ss.ss_focused,base+':focus');return s;}\n"
@@ -798,7 +897,7 @@ Section: Chapter Emission
    & "function register_handlers(p,c){_wkOnPick=p;_wkOnClick=c;return 0}\n"
    & "function register_input_handler(f){_wkOnInput=f;return 0}\n"
    & "function _wkStyle(ws,el){if(!ws)return;"
-   & "if(ws.ws_bg)el.style.background=_c(ws.ws_bg);"
+   & "if(ws.ws_bg)el.style.background=_c(ws.ws_bg);var x=_wsx(ws);if(x.bg)el.style.background=x.bg;if(x.bs)el.style.boxShadow=x.bs;"
    & "if(ws.ws_fg)el.style.color=_c(ws.ws_fg);"
    & "var p=ws.ws_padding;if(p&&(p.edge_top||p.edge_right||p.edge_bottom||p.edge_left))"
    & "el.style.padding=p.edge_top+'px '+p.edge_right+'px '+p.edge_bottom+'px '+p.edge_left+'px';"
@@ -813,7 +912,7 @@ Section: Chapter Emission
    & "var ss=tag==='WkPanel'?_wkTheme.th_panel:tag==='WkLabel'?_wkTheme.th_label:"
    & "tag==='WkButton'?_wkTheme.th_button:tag==='WkInput'?_wkTheme.th_input:"
    & "tag==='WkGauge'?_wkTheme.th_gauge:tag==='WkSeparator'?_wkTheme.th_separator:_wkTheme.th_panel;"
-   & "if(!ss)return null;"
+   & "if(!ss||tag==='WkScroll')return null;"
    & "return state===1?ss.ss_hover:state===2?ss.ss_pressed:"
    & "state===3?ss.ss_disabled:state===4?ss.ss_focused:ss.ss_normal}\n"
    & "function _wkStateOf(n){var f=Number(n.wn_flags||0);return f&16?3:f&4?2:f&2?1:f&1?4:0}\n"
@@ -822,18 +921,17 @@ Section: Chapter Emission
   emit-dom-widget-create =
    "function _wk(n){var k=n.wn_kind,el;"
    & "if(k._tag==='WkCustom')return _wkCustom(n,k._0||'');"
-   & "if(k._tag==='WkScroll')return _wkCustom(n,'scroll-view');"
-   & "if(k._tag==='WkPanel'||k._tag==='WkStack')el=document.createElement('div');"
+   & "if(k._tag==='WkPanel'||k._tag==='WkStack'||k._tag==='WkScroll')el=document.createElement('div');"
    & "else if(k._tag==='WkLabel'){el=document.createElement('span');if(k._0&&k._0.indexOf('&')>=0)el.innerHTML=k._0;else el.textContent=k._0}"
    & "else if(k._tag==='WkButton'){el=document.createElement('button');if(k._0&&k._0.indexOf('&')>=0)el.innerHTML=k._0;else el.textContent=k._0}"
    & "else if(k._tag==='WkInput'){el=document.createElement('input');el.value=k._0}"
-   & "else if(k._tag==='WkGauge'){el=document.createElement('progress');el.value=k._0;el.max=k._1}"
+   & "else if(k._tag==='WkGauge'){el=document.createElement('progress');el.value=Number(k._0);el.max=Number(k._1)}"
    & "else if(k._tag==='WkSeparator')el=document.createElement('hr');"
    & "else{el=document.createElement('div');el.dataset.custom=k._0||''}"
    & "if(n.wn_id)el.id=n.wn_id;"
    & "if(k._tag==='WkButton')el.addEventListener('click',function(e){e.stopPropagation();if(_wkOnClick)_wkOnClick(n.wn_id||'')});"
    & "if(k._tag==='WkInput')el.addEventListener('input',function(){if(_wkOnInput)_wkOnInput(n.wn_id||'',el.value)});"
-   & "var t=k._tag;el.classList.add('wk-'+(t==='WkStack'?'stack':t==='WkPanel'?'panel':t==='WkLabel'?'label':"
+   & "var t=k._tag;el.classList.add('wk-'+(t==='WkStack'?'stack':t==='WkScroll'?'scroll':t==='WkPanel'?'panel':t==='WkLabel'?'label':"
    & "t==='WkButton'?'btn':t==='WkInput'?'input':t==='WkGauge'?'gauge':t==='WkSeparator'?'sep':'panel'));"
    & "var d=n.wn_layout_dir;if(d){if(d._tag==='DirRow')el.classList.add('wk-row');"
    & "if(d._tag==='DirColumn')el.classList.add('wk-col')}"
@@ -845,9 +943,13 @@ Section: Chapter Emission
    & "el.style.boxSizing='border-box';"
    & "el.style.minWidth=Math.max(Number(n.wn_min_w||0),Number(ws&&ws.ws_min_width||0))+'px';"
    & "el.style.minHeight=Math.max(Number(n.wn_min_h||0),Number(ws&&ws.ws_min_height||0))+'px';"
+   & "if(n.wn_max_w>0)el.style.maxWidth=n.wn_max_w+'px';if(n.wn_max_h>0)el.style.maxHeight=n.wn_max_h+'px';"
    & "var ch=n.wn_children||[];"
-   & "for(var i=0;i<ch.length;i++)el.appendChild(_wk(ch[i]));"
+   & "for(var i=0;i<ch.length;i++){var ce=el.appendChild(_wk(ch[i]));if(t==='WkScroll')ce.style.flexShrink='0'}"
+   & "if(t==='WkScroll'){el.style.overflow='hidden';el.dataset.wkScroll=String(k._0||0)}"
    & "return el}\n"
+   & "function _wkScrollFix(r){var vs=r.querySelectorAll('[data-wk-scroll]');for(var i=0;i<vs.length;i++){var v=vs[i],o=Number(v.dataset.wkScroll);"
+   & "if(v.classList.contains('wk-row'))v.scrollLeft=o;else v.scrollTop=o}return 0}\n"
 
   emit-dom-widget-custom : Text
   emit-dom-widget-custom =
@@ -961,9 +1063,18 @@ Section: Chapter Emission
 
   emit-dom-widget-mount : Text
   emit-dom-widget-mount =
-   "function mount_widget(n){var a=document.getElementById('app');a.innerHTML='';a.appendChild(_wk(n));return 0}\n"
+   "function mount_widget(n){var a=document.getElementById('app');a.innerHTML='';a.appendChild(_wk(n));return _wkScrollFix(a)}\n"
    & "function mount_widget_themed(th,n){_wkTheme=th;return mount_widget(n)}\n"
-   & "function mount_widget_into(id,n){var a=document.getElementById(id);if(!a)return 0;a.innerHTML='';var ch=n.wn_children||[];for(var i=0;i<ch.length;i++)a.appendChild(_wk(ch[i]));return 0}\n"
+   & "function mount_widget_into(id,n){var a=document.getElementById(id);if(!a)return 0;a.innerHTML='';var ch=n.wn_children||[];for(var i=0;i<ch.length;i++)a.appendChild(_wk(ch[i]));return _wkScrollFix(a)}\n"
+   & "function mount_overlays(th,os){_wkTheme=th;var l=document.getElementById('wk-ov');"
+   & "if(!l){l=document.createElement('div');l.id='wk-ov';l.style.cssText='position:absolute;left:0;top:0;z-index:10000';document.body.appendChild(l)}"
+   & "l.innerHTML='';var o=os.os_overlays||[],n=Math.min(Number(os.os_count),o.length);"
+   & "for(var i=0;i<n;i++){var v=o[i];if(!v.ov_visible)continue;var d=document.createElement('div');var k=(v.ov_kind&&v.ov_kind._tag)||'';"
+   & "d.className='wk-ov wk-ov-'+k.slice(2).toLowerCase();if(v.ov_id)d.dataset.ov=v.ov_id;"
+   & "var rl={OvTooltip:'tooltip',OvContextMenu:'menu',OvNotification:'status',OvModal:'dialog'}[k];if(rl)d.setAttribute('role',rl);"
+   & "if(v.ov_modal)d.setAttribute('aria-modal','true');if(k==='OvNotification')d.setAttribute('aria-live','polite');"
+   & "d.style.cssText='position:absolute;box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;left:'+v.ov_x+'px;top:'+v.ov_y+'px;width:'+v.ov_width+'px;height:'+v.ov_height+'px;background:'+_c(th.th_palette.pal_bg);"
+   & "var w=_wk(v.ov_widget);w.style.flex='1 1 auto';d.appendChild(w);l.appendChild(d)}return _wkScrollFix(l)}\n"
 
   is-builtin-type : Text -> Boolean
   is-builtin-type (n) =

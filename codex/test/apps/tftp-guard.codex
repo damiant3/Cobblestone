@@ -1,0 +1,117 @@
+Chapter: Tftp Guard
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+  cites Net chapter Tftp
+
+Section: Helpers
+
+  ascii : Text -> List Integer
+  ascii (s) = text-to-unicode-bytes s
+
+  zeros : Integer, Integer, List Integer -> List Integer
+  zeros (i) (n) (acc) = if i >= n then acc else zeros (i + 1) n (list-push acc 120)
+
+  arm : Text, List Integer -> Text
+  arm (name) (bs) = name & " " & format-tftp-packet (tftp-parse bs)
+
+  cost : Integer -> Integer
+  cost (n) =
+    let bs = [0, 5, 0, 1] & zeros 0 n [] & [0]
+    in let b = __heap-save
+    in let t = format-tftp-packet (tftp-parse bs)
+    in let a = __heap-save
+    in (a - b) + text-length t - text-length t
+
+  fill : Integer, Integer, List Integer -> List Integer
+  fill (v) (n) (acc) = if list-length acc >= n then acc else fill v n (list-push acc v)
+
+  shape : List Integer -> Text
+  shape (d) =
+    let n = list-length d
+    in if n == 0 then "len=0"
+    else "len=" & show n & " first=" & show (list-at d 0) & " last=" & show (list-at d (n - 1))
+
+  xfer : TftpTransfer -> Text
+  xfer (t) = format-tftp-transfer t & " " & shape (tftp-transfer-data t)
+
+  recv-dup : Integer -> Text
+  recv-dup (n) =
+    let t1 = tftp-receive-data (tftp-transfer-new "dup") 1 (fill 65 512 [])
+    in let t2 = tftp-receive-data t1 1 (fill 66 512 [])
+    in let t3 = tftp-receive-data t2 2 (fill 67 n [])
+    in xfer t3 & " at512=" & show (list-at (tftp-transfer-data t3) 512)
+
+  recv-skip : Integer -> Text
+  recv-skip (n) =
+    let t1 = tftp-receive-data (tftp-transfer-new "skip") 1 (fill 65 512 [])
+    in xfer (tftp-receive-data t1 3 (fill 67 n []))
+
+  recv-after-last : Integer -> Text
+  recv-after-last (n) =
+    let t1 = tftp-receive-data (tftp-transfer-new "after-last") 1 (fill 65 n [])
+    in xfer (tftp-receive-data t1 2 (fill 66 n []))
+
+  recv-block-0 : Integer -> Text
+  recv-block-0 (n) = xfer (tftp-receive-data (tftp-transfer-new "block-0") 0 (fill 65 n []))
+
+  recv-empty-last : Integer -> Text
+  recv-empty-last (n) =
+    let t1 = tftp-receive-data (tftp-transfer-new "empty-last") 1 (fill 65 n [])
+    in xfer (tftp-receive-data t1 2 [])
+
+  recv-reused : Integer -> Text
+  recv-reused (n) =
+    let buf = fill 65 n []
+    in let t1 = tftp-receive-data (tftp-transfer-new "reused") 1 buf
+    in let t2 = tftp-receive-data t1 2 (list-set-at (list-set-at buf 0 66) 1 66)
+    in xfer t2 & " byte0=" & show (list-at (tftp-transfer-data t2) 0)
+
+  feed : TftpTransfer, Integer, Integer, List Integer -> TftpTransfer
+  feed (t) (i) (n) (blk) = if i > n then t else feed (tftp-receive-data t i blk) (i + 1) n blk
+
+  cost-xfer : Integer -> Integer
+  cost-xfer (n) =
+    let blk = fill 1 512 []
+    in let b = __heap-save
+    in let d = tftp-transfer-data (feed (tftp-transfer-new "x") 1 n blk)
+    in let a = __heap-save
+    in (a - b) + list-length d - list-length d
+
+  scaling : Text, Integer, Integer -> Text
+  scaling (name) (small) (large) =
+    if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (arm "rrq" ([0, 1] & ascii "boot.cdx" & [0] & ascii "octet" & [0]))
+    print-line-uni (arm "wrq-netascii" ([0, 2] & ascii "a.txt" & [0] & ascii "netascii" & [0]))
+    print-line-uni (arm "rrq-upper-mode" ([0, 1] & ascii "boot.cdx" & [0] & ascii "OCTET" & [0]))
+    print-line-uni (arm "data-512" ([0, 3, 0, 1] & zeros 0 512 []))
+    print-line-uni (arm "data-empty" [0, 3, 0, 7])
+    print-line-uni (arm "ack" [0, 4, 0, 3])
+    print-line-uni (arm "error" ([0, 5, 0, 1] & ascii "missing" & [0]))
+    print-line-uni (arm "data-513" ([0, 3, 0, 1] & zeros 0 513 []))
+    print-line-uni (arm "ack-trailing" [0, 4, 0, 3, 9])
+    print-line-uni (arm "error-no-nul" ([0, 5, 0, 1] & ascii "missing"))
+    print-line-uni (arm "error-code-9" ([0, 5, 0, 9] & ascii "x" & [0]))
+    print-line-uni (arm "error-after-nul" ([0, 5, 0, 1] & ascii "a" & [0] & ascii "b"))
+    print-line-uni (arm "error-high-byte" [0, 5, 0, 1, 200, 0])
+    print-line-uni (arm "rrq-options" ([0, 1] & ascii "boot.cdx" & [0] & ascii "octet" & [0] & ascii "blksize" & [0] & ascii "1024" & [0]))
+    print-line-uni (arm "rrq-no-mode" ([0, 1] & ascii "boot.cdx" & [0]))
+    print-line-uni (arm "rrq-no-nul" ([0, 1] & ascii "boot.cdx"))
+    print-line-uni (arm "rrq-bad-mode" ([0, 1] & ascii "boot.cdx" & [0] & ascii "binary" & [0]))
+    print-line-uni (arm "rrq-empty-name" ([0, 1, 0] & ascii "octet" & [0]))
+    print-line-uni (arm "rrq-high-byte" ([0, 1, 200, 0] & ascii "octet" & [0]))
+    print-line-uni (arm "short" [0, 4, 0])
+    print-line-uni (arm "opcode-9" [0, 9, 0, 0])
+    print-line-uni (scaling "error-msg" (cost 256) (cost 1024))
+    print-line-uni (recv-dup 3)
+    print-line-uni (recv-skip 3)
+    print-line-uni (recv-after-last 3)
+    print-line-uni (recv-block-0 3)
+    print-line-uni (recv-empty-last 512)
+    print-line-uni (recv-reused 512)
+    print-line-uni (scaling "transfer" (cost-xfer 16) (cost-xfer 64))
+  end

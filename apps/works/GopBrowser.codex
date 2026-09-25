@@ -14,28 +14,6 @@ Chapter: GopBrowser
   cites UI chapter KeyInput
   cites Kernel chapter BitmapFont
 
- The browser as a desk pane. The browser is otherwise a standalone program
- that owns the machine, and three of its assumptions have to be answered
- here rather than changed there.
-
- It normally sets its own video mode. `display-init-text-fallback` hands it
- a DisplayState with `ds-active` False, which makes `display-present` a
- no-op, so the browser never touches the Bochs VBE ports and never writes
- 0xBF000000. The desk's framebuffer, from the handoff cells, stays the only
- scanout. Nothing about the browser's rendering is lost by this: the pane
- paints the same `browser-render` tree through `comp-render`, which walks it
- straight to `base`/`stride` and skips the intermediate 786,432-element
- Framebuf the standalone path builds.
-
- The two keyboards are different alphabets, not different encodings.
- `kbd-take` answers raw Set-1 scancodes; the browser's `map-key-event`
- compares against `key-*` constants and `char-code` values, which is what
- `poll-key` produces. `poll-key-decode` is the existing converter between
- them and is what makes the chords work.
-
- Modifiers are tracked here because a Set-1 stream carries them as their own
- make and break codes, and the browser wants them as a mask on the event.
-
 Section: Modifier Tracking
 
   gbr-mod-shift : Integer = 1
@@ -60,47 +38,6 @@ Section: Modifier Tracking
 
 Section: Pane
 
- The cursor is drawn INTO the framebuffer over a saved copy of what it
- covers, so a repaint underneath it would leave the save buffer describing
- pixels that no longer exist and the next move would stamp them back. The
- order here is the same one `desk-loop` uses and it is not interchangeable:
- hide (which restores the background), repaint, then update (which saves the
- NEW background and draws).
-
- The frame mark used to sit inside that bracket and the tree died with it,
- which is why a page link was not clickable: the only tree with real bounds
- on it was the one being thrown away. The tree is kept now, and the mark is
- kept with it in `bs-laid-mark`, so the pane can release exactly this frame's
- allocations later. The mark is taken before `browser-render`, so the raw
- tree is inside the released span too and only the laid-out one is reachable
- afterwards.
-
- The scroll is fitted BEFORE the frame mark and the paint is done by hand
- instead of through `comp-render`, and both are forced by the same thing. The
- fitted `ScrollState` has to outlive the frame, because every later event
- restores to `bs-laid-mark` and a state allocated above it would be freed while
- the tab still pointed at it. And the page cannot be painted in the same pass as
- the chrome once it moves: shifted up by the offset it would paint over the
- address bar, which the pane clip cannot stop because the address bar is inside
- the pane.
-
- So the chrome is walked with the viewport subtree skipped, the viewport's own
- box is drawn where the layout put it, and its children are moved by the offset
- and walked again under a clip that is the viewport box narrowed to the pane.
- The narrowing is not decoration: since WORKS-45 the viewport node is taller
- than the space it was given, so its own bounds are not the visible region.
-
- THE ORIGIN IS THE PANE'S AND THE SIZE IS THE FIT'S. `x` and `y` are DEVICE
- pixels, the top-left of the box this pane was granted, and they move both the
- layout rect and the clip. A windowed browser needs no origin of its own on
- the hit side, because a tree laid out at an absolute rect comes back with
- absolute bounds and `browser-click-code` compares against those
- (`codex/test/apps/desk-window-origin` is where that was settled).
-
- `browser-scroll-fit` still takes the SIZE alone. Where the box is has nothing
- to do with how much of the page fits in it, and handing it an origin would be
- an argument it could only ignore.
-
   gbr-repaint : Integer, Integer, Integer, Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserState -> BrowserState
   gbr-repaint (base) (x) (y) (w) (h) (stride) (rows) (font) (tf) (mouse) (cs) (s) (st) =
     let hd = cursor-hide cs base stride
@@ -113,53 +50,31 @@ Section: Pane
     in let cu = if mouse.um-ok then cursor-update cs base stride rows w h s (mouse-x mouse) (mouse-y mouse) else 0
     in memo
 
- The tree handed back is the SHIFTED one, which is what makes a hit test follow
- the scroll: `comp-translate-kids` stores into the nodes rather than copying
- them, so `bs-laid` and the painted geometry are the same records.
-
   gbr-paint : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer, Integer -> Integer
   gbr-paint (base) (stride) (rows) (pane) (font) (tf) (laid) (th) (s) (off) =
+    let mv = when browser-laid-viewport laid
+      is None -> 0
+      is Just (vp) -> comp-translate-kids (vp.wn-children) 0 (0 - off) 0
+    in gbr-walk base stride rows pane font tf laid th s
+
+  gbr-walk : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer -> Integer
+  gbr-walk (base) (stride) (rows) (pane) (font) (tf) (laid) (th) (s) =
     when browser-laid-viewport laid
       is None -> comp-walk base stride rows pane font tf laid th s
       is Just (vp) ->
         let vclip = comp-clip pane (comp-mul-rect (vp.wn-bounds) s)
         in let d1 = comp-walk-except base stride rows pane font tf laid th s (vp.wn-id)
         in let d2 = comp-draw-node base stride rows vclip font tf vp th s
-        in let mv = comp-translate-kids (vp.wn-children) 0 (0 - off) 0
         in comp-walk-kids base stride rows vclip font tf (vp.wn-children) th 0 s
 
- An event releases the memoized tree BEFORE it dispatches, never after. The
- new state a dispatch builds is allocated above the frontier, so a release
- that came second would have to free memory underneath state that must
- survive, which a bump allocator cannot do. That ordering is the whole reason
- `browser-click-code` answers an Integer: the hit has to be read out of the
- tree while it is still alive and still be meaningful once it is gone.
-
- The idle branches restore `mark` instead, which is ABOVE the tree, so the
- memo survives a poll that found nothing. Steady state is exactly one tree.
+  gbr-show : Integer, Integer, Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, BrowserPane -> Integer
+  gbr-show (base) (x) (y) (w) (h) (stride) (font) (tf) (s) (bp) =
+    let st = bp.bp-st
+    in when st.bs-laid
+      is None -> 0
+      is Just (laid) -> gbr-walk base stride h (layout-rect x y w h) font tf laid (st.bs-theme) s
 
 Section: Step
-
- The loop moved to `GopDesk` on 2026-08-18 and this is what replaced it. The
- desk owns the poll and calls `gbr-step` with one event, so the taskbar clock
- keeps time while a page is up. The branch structure is the old loop's,
- unchanged, because its heap discipline is the delicate part: release the
- memoized tree BEFORE dispatching, never after, since the state a dispatch
- builds is allocated above the frontier and a release that came second would
- have to free memory underneath state that must survive.
-
- `BrowserPane` exists so the pane's two carried values have somewhere to live
- that the desk's per-iteration restore cannot reach.
-
- **Opening is two calls and that is the whole reason.** `gbr-repaint` takes
- `bs-laid-mark`, and every later event restores to it, so ANYTHING allocated
- after the first paint dies on the pane's first keystroke -- including the
- desk's own `DeskApps` record, which is built by the caller and holds the only
- pointer to this pane. Written as one call it crashed the guest on the third
- scancode, measured, because the desk went on reading a record the browser had
- handed back. So `gbr-new` builds the state and the record, the caller wraps
- them in whatever it keeps them in, and only then does `gbr-first-paint` take
- the mark.
 
   BrowserPane = record {
     bp-st : BrowserState,
@@ -176,16 +91,6 @@ Section: Step
     let shown = gbr-repaint base x y w h stride h font tf mouse cs s (bp.bp-st)
     in let k = __record-set bp "bp-st" shown
     in 0
-
- An event answers a negative number, which tells `desk-loop` to keep the frame.
- It has to: the restore above went BELOW the desk's own frame mark, so the desk
- restoring to that mark afterwards would push the frontier back up over memory
- this pane is now using. The idle and modifier branches allocate nothing below
- it and answer 1 as usual.
-
- The frontier still does not run away, because the release-then-rebuild is the
- old loop's and steady state is one state and one tree. What it creeps by is
- one `BrowserState` per event, which the loop did too.
 
   gbr-step : Integer, Integer, Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer, BrowserPane, Integer, Boolean -> [Device.Port] Integer
   gbr-step (base) (x) (y) (w) (h) (stride) (font) (tf) (mouse) (cs) (s) (bp) (sc) (clicked) =

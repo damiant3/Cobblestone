@@ -17,18 +17,9 @@ Chapter: GopScene
   cites Math chapter Cordic
   cites Game chapter Color
 
- The chrome sizes here are GopDesk's, and `dk-bar-h` and `dk-task-h` have to
- agree by hand because GopDesk cites this one and the dependency cannot run
- the other way. Both are scaled by `ui-scale`, which steps at a different
- width from the `ui-wscale` a widget minimum takes.
-
  We say:
 
 Section: Geometry
-
- Cordic answers on a scale of 1000 and takes milliradians, 6283 to the
- turn. The orbit radius is 5200 world units, so the scaled cosine is
- multiplied by 5.2 to land there.
 
   gsc-radius : Real = 5.2
   gsc-eye-height : Real = 2200.0
@@ -43,31 +34,11 @@ Section: Scene
     in let c = camera3d-new (vec3-new (ca * gsc-radius) gsc-eye-height (sa * gsc-radius)) (vec3-new 0.0 300.0 0.0) 0.785
     in __record-set c "c3-aspect" aspect
 
- `camera3d-new` takes no aspect and its constructor answers the literal 1.333
- (`Scene3D.codex:64`), which `mat4-perspective` divides X by. Every caller in
- the tree accepted that, so the scene was correct only where the viewport
- happened to be 4:3 and stretched everywhere else in proportion. The aspect
- belongs to the VIEWPORT, so it is supplied here rather than defaulted there;
- setting the field leaves the other eighteen callers and their goldens alone.
-
   gsc-aspect : Integer, Integer -> Real
   gsc-aspect (w) (h) = if h <= 0 then 1.333 else real-from-int w / real-from-int h
 
- The ground texture is named rather than inlined because two places have to
- agree on it exactly: the scene the software path samples, and the single
- upload gsc-run hands the rasterizer.
-
   gsc-ground-tex : EngineTexture
   gsc-ground-tex = etx-checkerboard 8 8 1 (etx-pack-rgb 170 150 120) (etx-pack-rgb 110 95 75)
-
- Every primitive here takes a HALF-extent, so a placement is the centre and the
- body reaches half the size in each direction. The cube sits at 900 rather than
- 450 for that reason: mesh-cube 900 is 1800 across, and at 450 it stood 450
- units THROUGH the floor. The ball and the ring are pushed out along z far
- enough to clear the cube's 1800-unit box, the ball by 300 and the ring by 700,
- which are the smallest moves that separate them. All three had intersected
- since the scene was written; a flat untextured ground and a broken shadow pass
- are what kept it from being visible.
 
   gsc-scene : Integer -> Scene3DState
   gsc-scene (dummy) =
@@ -90,36 +61,15 @@ Section: Loop
     else let d = poke-32 dst ((doff + x) * 4) (peek-32 src ((soff + x) * 4))
     in gsc-blit-span dst doff src soff w (x + 1)
 
- THE SOURCE HAS A STRIDE OF ITS OWN, and it is what lets a window resize
- without allocating. The colour buffer is allocated once at the content box
- and a smaller window renders the top-left `w` by `h` of it, so the source
- row pitch is the BUFFER's width and not the copy's. It was `y * w` and that
- was correct only while every render filled the whole buffer.
-
   gsc-blit-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   gsc-blit-rows (dst) (stride) (src) (sstride) (w) (h) (y) =
     if y >= h then 0
     else let d = gsc-blit-span dst (y * stride) src (y * sstride) w 0
     in gsc-blit-rows dst stride src sstride w h (y + 1)
 
- The shadow map target is rebuilt by r3d-render-shadowed every frame,
- inside the loop's bracket, so its half megabyte is reclaimed with the
- rest of the frame.
-
   gsc-shadow-map : Integer = 256
 
- The host rasterizer fills its map in C, so it can afford a far finer one
- than the software pass, which builds its 256 in Codex a triangle at a time.
- The map covers the whole scene bounds, and the ground is 3000 units across,
- so at 256 a single texel lands on many screen pixels and every shadow edge
- arrives as texel-shaped teeth.
-
   gsc-shadow-map-gpu : Integer = 1024
-
- Which path starts is the caller's to say, and the desk says the host
- rasterizer when the machine has one and software when it does not. Either
- stays reachable through G on a box with the rasterizer, which is what makes
- a parity comparison possible at all.
 
   gsc-label-sw : Text = "3D: software pipeline. Drag to turn. S toggles shadows, G the GPU. F12 shoots."
 
@@ -144,64 +94,11 @@ Section: Loop
         in gapp-ui-text-fit base stride ch font (gv.gv-x + 8) (ch - gapp-ui-h font 1) (gv.gv-x + gv.gv-w - 8) gsc-label-sw 65280 1
   end
 
- THE CHECK RUNS BEFORE `posed` AND NOT INSIDE THE SOFTWARE BRANCH, because
- `gsc-aspect` divides by `r3t-h` on that path: a target corrupt enough to
- carry a zero height would trap in the camera before a guard placed after the
- binding could fire. The GPU path takes its aspect from `gv` and never clears,
- so it is excluded from the check rather than guarded by it.
-
- WORKS-60 PART 2. The renderer refuses a fill through a base below the address
- the kernel loads at, so a bad target no longer kills the machine; what it did
- instead was draw nothing, which on the glass is indistinguishable from a pane
- that is merely idle. This paints the offending numbers where the frame would
- have been, because the pane is the only place in this desk that both knows
- them and has somewhere to put them: `GopDesk` does not cite `Renderer3D`, and
- the desk carries no `Console` to print on.
-
- The fill takes its width from `gv-w` rather than `tgt.r3t-w`, since a target
- that failed the check has no field worth trusting.
-
   gsc-tgt-ok : R3dTriState -> Boolean
   gsc-tgt-ok (tgt) = r3d-base-ok (tgt.r3t-base) & r3d-base-ok (tgt.r3t-depth)
 
   gsc-bad-target : R3dTriState -> Text
   gsc-bad-target (tgt) = "3D TARGET REFUSED base " & integer-to-text (tgt.r3t-base) & " depth " & integer-to-text (tgt.r3t-depth) & " w " & integer-to-text (tgt.r3t-w) & " h " & integer-to-text (tgt.r3t-h)
-
- The frame is bracketed because there is no collector and this loop has
- no bound: left open, an unbracketed frame's heap is gone for good, and
- the shadow pass adds a half-megabyte map rebuild to every frame on top
- of the geometry temporaries. Everything the bracket drops is built
- inside the frame -- the posed camera, the Cordic reals, the shadow map,
- the render's temporaries. The target and the scene are built once in
- gsc-run, below the mark, so the restore cannot reach them, and the
- angle comes from the RTC rather than an accumulator, so no iteration
- reads what the last one built. The RTC and not the PIT tick cell,
- because the ASUS kills its timer interrupt about 54 seconds after
- boot and never restarts it -- the board fact that froze the desk
- clock on 2026-08-04 froze this orbit on the first A6 flight.
-
- The mark sits ABOVE the keyboard poll rather than below it, so the
- bracket covers the whole iteration and not just the render. GopUsbKbd
- argues its idle path allocates nothing, and reading it that is true
- today; but on a board with a USB keyboard the pump runs a three-phase
- state machine on every frame, and the cost of this loop should not
- depend on a claim about another chapter that nothing re-checks. Only
- the scancode has to cross the restore, and an Integer is not heap.
- What the pump writes survives it either way: the ring, the report and
- the phase cell are fields built before the loop, and the mailbox at
- gk-cell is a fixed address.
-
- The shot writes the live frame to the boot stick and paints the
- verdict into the taskbar band, which this loop never repaints, so the
- verdict survives the next frame. Colours are GopDesk's taskbar pair,
- hand-synced.
-
- THE BAND IS TAKEN, NOT ASSUMED. This chapter cannot cite `GopDesk`, and
- the 28 it used to hand-sync is the band's FLOOR rather than its height:
- measured at 1600x900 the laid band is 88 device pixels where `28 * s`
- is 56, so the strip sat 40 pixels below the band's top instead of 4,
- and a band shorter than the assumption would have put it outside the
- band entirely. The caller holds `ds` and passes `dk-task-px`.
 
   gsc-shot : Integer, Integer, Integer, Integer, GopAppFont, Integer -> [Device.Port] Integer
   gsc-shot (scr-base) (w) (h) (stride) (font) (band) = act
@@ -215,16 +112,6 @@ Section: Loop
       in 0
     end
   end
-
- `kbd-pump-one` advances a THREE-phase state machine (arm, check, drain)
- by one step per call and `kbd-take` calls it once, so a loop gets one
- step per iteration. Every other pane iterates far faster than its
- keyboard and never notices. This one costs about a second a frame on
- metal, which made one poll per frame a report every three seconds, and
- only if the key was still held when the sample landed. Measured on the
- ASUS 2026-08-08: keys were swallowed unless held down and Esc would not
- close the pane. Polling until the machine yields costs microseconds
- against a second-long frame.
 
   gsc-poll-steps : Integer = 12
 
@@ -241,63 +128,7 @@ Section: Loop
   gsc-angle : Integer, Integer -> Integer
   gsc-angle (now) (mins) = int-mod (((if now < 0 then 0 else now) + (gsc-bcd mins) * 60) * 105) gsc-turn
 
- `n` counts frames RENDERED, not iterations: the shot arm recurses without
- touching it, so a run spent pressing keys does not inflate the rate. It also
- advances when the picture does not, which is the whole reason it is a
- separate reading from anything the frame draws -- under a pinned clock the
- orbit angle is constant and every frame is identical, and the counter is then
- the only thing on the glass that moves.
-
- The S and G arms RESET it, because each changes what a frame costs. Left
- running, a measurement taken after a toggle is an average over both settings
- weighted by how long the run sat in each, which is a number about the
- operator rather than about the renderer.
-
 Section: Step
-
- The loop moved to `GopDesk` on 2026-08-18. Both 3D panes shared it, so one
- step serves both: the scene BUILDER stays a parameter, as it was on the loop,
- and the desk passes `gsc-scene` or `gf-scene` according to which pane has
- focus. It cannot become a field on the record instead, because `GopFish` cites
- this chapter and a discriminator resolved here would have to call back into it.
-
- `ScenePane` is everything the loop carried that is not derivable: the render
- target, the viewport, the two toggles and the frame counter's pair. The
- toggles and the counter are integers stored in place, so the desk's
- per-iteration restore is harmless to them and this pane never has to keep a
- frame. The target is built once in `gsc-new`, below that mark, exactly as it
- was built below the loop's.
-
- **Mouse-look, since 2026-08-19, and the reason it is a TAKEOVER rather than an
- addition.** The camera angle came from `gsc-orbit`, which is driven by the HPET
- and never stops. Adding a mouse offset to a moving angle gives a view that
- drifts out from under the hand, so the first pointer movement latches
- `sp-look` and the orbit stops being consulted from then on: the scene turns
- itself until you touch it, and after that you turn it. There is no way back to
- the orbit short of closing the pane, which is the honest cost of one bit.
-
- `sp-ptr` is the last pointer position this pane acted on, packed as
- `x * 4096 + y`, and ZERO means never sampled: without that the first frame
- reads a delta against an origin the pointer was never at and the view snaps.
- The three fields are integers stored in place, so the desk's per-iteration
- restore is harmless to them, which is the same reason the toggles are.
-
- THE TWO BUFFERS ARE THE PANE'S AND THE TARGET IS THE FRAME'S. `sp-px` and
- `sp-dp` are allocated once, at the size of the content box AS IT STANDS AT
- THAT MOMENT, which is not the largest rectangle a window on this desk can
- take: the box grows when the task band moves to a vertical edge. `sp-tgt` is
- rebuilt from them whenever the window moves or resizes, with `r3t-w` and
- `r3t-h` the window's CLAMPED to `sp-bw` and `sp-bh`, and `r3t-stride` the
- buffer's. **That is what makes maximise and
- restore cost nothing and strand nothing**: a target reallocated per resize
- would leave the old one above the pane's own heap mark until the pane
- closed, which is the LIFO tail 6.4 measured, and about 4 MB of a 128 MB
- arena each time somebody pressed the button.
-
- The depth buffer is indexed `y * r3t-w + x` rather than by the stride, so a
- smaller window packs it differently from a larger one. Nothing carries
- across a frame: `r3d-target-clear` rewrites every word of it before the
- render, so the packing is the frame's own business.
 
   ScenePane = record {
     sp-tgt : R3dTriState,
@@ -318,22 +149,11 @@ Section: Step
     sp-ptr : Integer
   }
 
- The gain is milliradians of yaw per device pixel, and `gsc-turn` is 6283, so a
- full turn is 785 pixels of travel at 8. The delta is clamped before it is used
- rather than after: an unclamped jump plus one `gsc-turn` can still land
- negative, and `int-mod` of a negative is not the wrap this wants.
-
   gsc-look-gain : Integer = 8
   gsc-look-max : Integer = 64
 
   gsc-look-clamp : Integer -> Integer
   gsc-look-clamp (d) = if d > gsc-look-max then gsc-look-max else if d < 0 - gsc-look-max then 0 - gsc-look-max else d
-
- IT TAKES THE BOX AND NOT THE SCREEN. The caller decides where this pane
- lives, because a window can be anywhere and the chrome constants this
- chapter used to derive it from (`gsc-topbar-h`, `gsc-taskbar-h`, and a
- sidebar edge) were a hand-synced copy of the desk's own. `gsc-place` is
- what puts it somewhere; `gsc-new` only says how big the buffers are.
 
   gsc-new : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] ScenePane
   gsc-new (base) (stride) (cs) (gpu) (sky) (bw) (bh) = act
@@ -364,36 +184,6 @@ Section: Step
     end
   end
 
- The step drains the keyboard itself and that is not redundant with the desk's
- own take. `kbd-pump-one` advances a THREE-phase state machine by one step per
- call, so one take per frame is one PHASE per frame, and a frame here costs
- about a second on metal. Measured on the ASUS 2026-08-08, before `gsc-poll`
- existed: keys were swallowed unless held down and Esc would not close the
- pane. `desk-loop` takes once per iteration and an iteration is a frame, so
- without this the defect comes straight back. The desk's scancode is used when
- it found one and the poll runs only when it did not.
-
- WHERE THE PANE IS, SET BEFORE EVERY FRAME RATHER THAN ONCE. All four fields
- are stored in place, so the desk's per-iteration heap restore is harmless to
- them for the same reason the toggles are, and a window that moved between
- two frames is simply drawn at its new place by the next one.
-
- `y` is the top of the pane's CONTENT, under the titlebar. `sp-fb` carries
- the row offset and `sp-gv`'s x carries the column, because that is the split
- `gsc-frame` and `gsc-hud` already read: the blit destination is
- `sp-fb + gv-x * 4` and the label band is measured down from `sp-fb` by
- `sp-ch`.
-
- THE TARGET IS CLAMPED TO THE BUFFER BECAUSE THE CONTENT BOX IS NOT A
- CONSTANT. `gsc-new` sizes the buffers from the box at the moment the pane
- opens; the box is the screen less a strip on each of the four edges, and
- which edges carry one is a setting the user changes while the pane is up.
- Measured 2026-09-07 at 1600x900 (`desk-cbox-drift`): moving the task band
- from a horizontal edge to a vertical one grows the box from 1,280,000 to
- 1,321,664 words, so a pane born under the band writes 41,664 words, 166 KB,
- past the end of BOTH buffers on every frame. `r3d-base-ok` cannot see this:
- the base is a real address and it is the EXTENT that is wrong.
-
   gsc-fit : Integer, Integer -> Integer
   gsc-fit (want) (cap) = if want < 0 then 0 else if want > cap then cap else want
 
@@ -411,30 +201,7 @@ Section: Step
     else gsc-poll kbd (gsc-poll-steps - 1)
   end
 
- The cursor is hidden before each frame rather than once on entry. `desk-loop`
- draws it at the pointer before any step runs, and a frame that blitted over it
- would leave the save buffer describing pixels that no longer exist, so the
- next pointer move would stamp them back into the scene. Hide and blit in that
- order is the same rule section 5 of the desk contract states; the effect is
- that this pane shows no cursor, which is what it did before.
-
   gsc-step-hide : Integer = 2
-
- IT TURNS ON A DRAG, NOT ON A PASSING POINTER. Damian, 2026-08-26: rotate with
- mouse drag on the scene, not just mouse move. It used to turn whenever the
- pointer moved at all, so crossing the pane on the way to something else span
- the camera and there was no way to put the mouse down near the scene without
- steering it.
-
- THE POINTER IS STILL TRACKED WHILE THE BUTTON IS UP, and that is the part
- worth keeping: `sp-ptr` is updated on every call whatever the button says, so
- the first held sample carries the delta since the LAST sample rather than
- since the button went down. Gating the tracking as well would make the first
- sample of every drag a jump of however far the pointer had travelled since
- the last one.
-
- The auto-orbit falls out of it. `sp-look` flips to manual only on a real
- drag, so a scene nobody has grabbed keeps orbiting on the HPET.
 
   gsc-look : ScenePane, UsbMouse -> Integer
   gsc-look (sp) (mouse) =
@@ -473,15 +240,6 @@ Section: Step
       mins <- rtc-read 2
       let lk = gsc-look sp mouse
       in let ang = if sp.sp-look == 1 then sp.sp-yaw else gsc-orbit now mins
- THE FRAME HIDES THE CURSOR AND MUST PUT IT BACK. It hid and never restored,
- so the pointer vanished the moment a scene pane took focus and only reappeared
- when `desk-loop` next moved it -- which, with a pane rendering a full frame per
- iteration, is 60 times a second against 20,000 elsewhere. Aiming at a resize
- band you cannot see is what Damian reported as not being able to grab a 3D
- window's edge at all (2026-08-26).
-
- It is the rule `works-desk-contract.md` states for every repainting path and
- this was the path that did not keep it.
 
       in let hd = cursor-hide cs base stride
       in act
@@ -494,12 +252,26 @@ Section: Step
     end
   end
 
- Milliseconds per frame rather than frames per second, because it is an
- integer at every rate this renderer reaches and needs no formatting: a
- second a frame reads 1000, sixty a second reads 16. `hpet-ticks` is a
- counter, never waited on, so a board with no HPET and a bed with a pinned
- clock both answer a zero span; that arm prints the count alone rather than
- dividing by it.
+  gsc-show : Integer, GopAppFont, (Integer -> Scene3DState), ScenePane -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  gsc-show (stride) (font) (build) (sp) = act
+    let tgt = sp.sp-tgt
+    in let gv = sp.sp-gv
+    in if sp.sp-gpu /= 1 & gsc-tgt-ok tgt then
+      let b = gsc-blit-rows (sp.sp-fb + gv.gv-x * 4) stride (tgt.r3t-base) (tgt.r3t-stride) (tgt.r3t-w) (tgt.r3t-h) 0
+      in gapp-ui-text-fit (sp.sp-fb) stride (sp.sp-ch) font (gv.gv-x + 8) (sp.sp-ch - gapp-ui-h font 1) (gv.gv-x + gv.gv-w - 8) gsc-label-sw 65280 1
+    else
+      let mark = __heap-save
+      in act
+        now <- rtc-seconds 0
+        mins <- rtc-read 2
+        let ang = if sp.sp-look == 1 then sp.sp-yaw else gsc-orbit now mins
+        in act
+          f <- gsc-frame tgt (build now) ang (sp.sp-sky) (sp.sp-fb) stride font (sp.sp-ch) (sp.sp-sh) (sp.sp-gpu) gv
+          let d = __heap-restore mark
+          in f
+        end
+      end
+  end
 
   gsc-hud : Integer, Integer, Integer, GopAppFont, Integer, GpuView, Integer, Integer -> Integer
   gsc-hud (base) (stride) (rows) (font) (ch) (gv) (n) (t0) =
@@ -512,25 +284,6 @@ Section: Step
   gsc-bcd : Integer -> Integer
   gsc-bcd (n) = (n / 16) * 10 + int-mod n 16
 
- The orbit runs off the HPET counter, not the RTC seconds register. Both give
- 105 milliradians a second and a turn in just under a minute, but the RTC has a
- one-second granularity, so the pane rendered 43 identical frames and then
- jumped six degrees: measured, 17,945 pixels of a 250x170 patch changed between
- one RTC second and the next. That reads as an animation running at a frame a
- second no matter how fast the renderer is.
-
- The HPET counter is read, never waited on, so the ASUS killing its timer
- INTERRUPT about 54 seconds after boot does not reach this. A board with no
- HPET answers a zero period, and a halted counter answers zero ticks; the RTC
- expression is still there for both.
-
- `hpet-start` is called here rather than once at entry because the counter is
- HALTED until something sets the enable bit, and a halted counter reads a
- constant -- which does not look like a missing clock, it looks like an
- animation that has stopped. E1000e starts it at the point of use for the same
- reason. It answers the existing config when the bit is already set, so the
- repeat costs two MMIO reads.
-
   gsc-orbit : Integer, Integer -> Integer
   gsc-orbit (now) (mins) =
     let started = hpet-start
@@ -540,24 +293,7 @@ Section: Step
     else if ticks <= 0 then gsc-angle now mins
     else int-mod (ticks * 105 / tps) gsc-turn
 
- The viewport is released on the way out rather than left armed. Nothing
- else on the desk reaches the rasterizer today, so a stale rect would not
- be visible until something did, which is the kind of debt that surfaces
- as somebody else's bug.
-
- The view stops short of the label row. The host rasterizer clears its
- whole viewport and draws a frame far faster than the glass is sampled,
- so a label inside the rect reads as absent about as often as present.
- The software path does not have the problem because a frame there costs
- about a second.
-
   gsc-label-band : Integer = 20
-
- The texture uploads ONCE here, not in the frame. It is the same checker every
- iteration, and the commit costs a host-side allocation, a copy out of guest RAM
- and a line of host diagnostic output per call: driven from gsc-frame it fired
- 301 times in a nine-second capture, which is invisible headless and turns the
- interactive pane into about a frame a second with a visible flicker.
 
   gsc-sky : Integer = rgb-to-packed (rgb 20 20 30)
 

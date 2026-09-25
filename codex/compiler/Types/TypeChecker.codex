@@ -4,6 +4,17 @@ Chapter: Type Checker
   cites Foreword chapter Tuple
   cites Foreword chapter Capability (capability-names)
   cites Foreword chapter CCE (is-upper)
+  cites Codex chapter Tokens (lit-text-to-integer)
+  cites Codex chapter Unification (sort-labels-canonical, name-list-has)
+  cites Codex chapter Codex Types (empty-row, real-f64, int-ty-default)
+  cites Codex chapter Name (make-name)
+  cites Codex chapter Source Text (synthetic-span)
+  cites Codex chapter AST Nodes (aexpr-span)
+  cites Codex chapter Type Environment (env-lookup, env-has, env-bind-local, bsearch-text-pos)
+  cites Codex chapter CodexType Helpers (strip-forall-ty, strip-linear-ty)
+  cites Codex chapter Desugarer (aexpr-uses-name)
+  cites Codex chapter Chapter Scoper (resolve-def-name)
+  cites Codex chapter Collections (copy-list-with-headroom)
 
 Section: Resolve Type Expression
 
@@ -859,6 +870,7 @@ Section: Check Definition
   check-def-normal : UnificationState, TypeEnv, ADef, List RenameEntry -> CheckResult
   check-def-normal (st) (env) (def) (renames) =
    let grounded = def-grounded-names st def
+   in let eq0 = list-length (st.eq-sites)
    in let st0 = __record-set st "effect-exempt" (list-length grounded > 0)
    in let rn = resolve-def-name renames (def.name.value) (def.chapter-slug)
    in let declared = resolve-declared-type st0 env def renames
@@ -875,7 +887,7 @@ Section: Check Definition
    in let (_, u-st) = unify (body-r.state) remaining-inner (body-r.inferred-type) (aexpr-span (def.body))
    in let ret-checked = lint-return-narrowing u-st (env2.env) (def.body) (body-r.inferred-type) remaining-inner (aexpr-span (def.body))
    in let effect-checked = check-effect-row-subset ret-checked (declared-performing-row (declared.expected-type) (list-length (def.params))) (body-r.effect-row) grounded (aexpr-span (def.body))
-   in let rigid-checked = check-declared-rigidity effect-checked (declared.declared-vars) 0 (list-length (declared.declared-vars)) (def.name.value) (def.span)
+   in let rigid-checked = check-eq-on-declared-vars (check-declared-rigidity effect-checked (declared.declared-vars) 0 (list-length (declared.declared-vars)) (def.name.value) (def.span)) (if text-starts-with (def.name.value) "__eq_" then [] else declared.declared-vars) eq0
    in let env-type = env-lookup env rn
    in let tied-state = when env-type
         is ForAllTy (id) (body) -> let (_, tied-u) = unify rigid-checked (declared.expected-type) (strip-forall-ty env-type) (def.span) in tied-u
@@ -903,12 +915,44 @@ Section: Check Definition
         else add-unify-error st cdx-body-fixes-declared-var ("the body of '" & name & "' decides a type its own signature leaves to the caller: a declared type variable is fixed by the body to " & type-desc settled & ". A signature variable is the caller's to choose, so the body must answer every choice; if the body only ever answers " & type-desc settled & ", declare that.") span
    in check-declared-rigidity st2 ids (i + 1) len name span
 
+  check-eq-on-declared-vars : UnificationState, List Integer, Integer -> UnificationState
+  check-eq-on-declared-vars (st) (ids) (i) =
+   if list-length ids == 0 then st
+   else if i >= list-length (st.eq-sites) then st
+   else let site = list-at (st.eq-sites) i
+   in let st2 = if type-mentions-var-in (deep-resolve st (site.ty)) ids
+        then add-unify-error st cdx-eq-on-type-variable eq-on-type-variable-refusal (site.span)
+        else st
+   in check-eq-on-declared-vars st2 ids (i + 1)
+
+  type-mentions-var-in : CodexType, List Integer -> Boolean
+  type-mentions-var-in (ty) (ids) =
+   when ty
+    is TypeVar (id) -> int-in-list ids id 0
+    is otherwise -> codex-type-fold-children (\c found -> if found then True else type-mentions-var-in c ids) ty False
+
+  int-in-list : List Integer, Integer, Integer -> Boolean
+  int-in-list (xs) (x) (i) =
+   if i >= list-length xs then False
+   else if list-at xs i == x then True
+   else int-in-list xs x (i + 1)
+
+  eq-on-type-variable-refusal : Text
+  eq-on-type-variable-refusal = "== and /= are refused on a value whose type is a type variable of this definition's signature (or holds one): the body cannot see the type, so the comparison would compare the two values' words, which for Text, a list, a vector or a record are their addresses. Take the comparison as a parameter (an `a, a -> Boolean` argument), or declare the concrete type."
+
   lint-return-narrowing : UnificationState, TypeEnv, AExpr, CodexType, CodexType, SourceSpan -> UnificationState
   lint-return-narrowing (st) (env) (body) (body-ty) (ret-ty) (span) =
-   when deep-resolve st ret-ty
+   let resolved = deep-resolve st ret-ty
+   in when resolved
     is IntegerTy (lo) (hi) (mode) ->
      if lo <= i64-min & hi >= i64-max then st
      else lint-narrowing-check st env body body-ty (deck-record (IntegerTy lo hi mode)) span "bounded return"
+    is UnitTy (u) (inner) ->
+     when strip-unit-ty inner
+      is IntegerTy (lo) (hi) (mode) ->
+       if lo <= i64-min & hi >= i64-max then st
+       else lint-narrowing-check st env body body-ty resolved span "bounded return"
+      is otherwise -> st
     is otherwise -> st
 
   last-arrow-row : CodexType -> EffectRow
@@ -974,15 +1018,6 @@ Section: Check Definition
    if i == len then 0 - 1
    else if char-code (char-at s i) == char-code (char-at "." 0) then i
    else find-dot s (i + 1) len
-
-  name-list-has : List Name, Text -> Boolean
-  name-list-has (names) (target) = name-list-has-loop names target 0 (list-length names)
-
-  name-list-has-loop : List Name, Text, Integer, Integer -> Boolean
-  name-list-has-loop (names) (target) (i) (len) =
-   if i == len then False
-   else if (list-at names i).value == target then True
-   else name-list-has-loop names target (i + 1) len
 
 Section: Capability Scope
 
@@ -1591,10 +1626,8 @@ Section: Cost Model 3.3 -- the growing rung
  the declaration, the other three rungs and the refusal codes are not here.
 
  It is reached only through the `cost-report` mode flag, which is off for
- every ordinary compile, because nothing declares anything yet. Measured
- against the corpus: 5 of 5 quadratic entries inferred growing, 4 of 5 linear
- entries left alone, `n-fixed-appends` the one false positive. Section 7 of
- `docs/Designs/Active/Features/CostModel.md` carries the table.
+ every ordinary compile, because nothing declares anything yet. Section 7 of
+ `docs/Designs/Active/Features/CostModel.md` carries the corpus score.
 
  It raises an error rather than an info because nothing prints a bag's
  non-error diagnostics on a compile that succeeds: `bag-diagnostics` is
@@ -1681,72 +1714,148 @@ Section: Cost Model 3.3 -- the growing rung
     is ANameExpr (n) (s) -> n.value == pname
     is otherwise -> False
 
-  cost-call-grows : UnificationState, List AExpr, List AParam, Integer, Integer, Integer -> Boolean
-  cost-call-grows (st) (args) (params) (i) (nargs) (nparams) =
-   if i >= nargs then False
-   else if i >= nparams then False
-   else if cost-arg-is-self-append st (list-at args (nargs - 1 - i)) ((list-at params i).name.value) then True
-   else cost-call-grows st args params (i + 1) nargs nparams
+ RULE 4. A branch reached only while a counter parameter `p` is below an
+ integer literal K runs its self calls at most K minus `p`'s entry value
+ times, because every self call advances `p` by a positive literal. That is
+ `n-fixed-appends`. With `cw-probe` set to `p` the same walk answers whether
+ any self call fails to advance `p`: a partial or bare self reference and a
+ self call under a lambda count as failing, since either can re-enter below
+ K an input-dependent number of times.
 
-  cost-expr-grows : UnificationState, AExpr, Text, List AParam -> Boolean
-  cost-expr-grows (st) (e) (self) (params) = when e
-    is AApplyExpr (f) (a) (s) ->
-      if cost-apply-head e == self
-       then let args = cost-apply-args e []
-            in cost-call-grows st args params 0 (list-length args) (list-length params)
-              | cost-expr-grows st f self params | cost-expr-grows st a self params
-      else cost-expr-grows st f self params | cost-expr-grows st a self params
-    is AIfExpr (c) (t) (el) (s) -> cost-expr-grows st c self params | cost-expr-grows st t self params | cost-expr-grows st el self params
-    is ALetExpr (bs) (b) (s) -> cost-binds-grow st bs self params 0 (list-length bs) | cost-expr-grows st b self params
-    is ABinaryExpr (l) (op) (r) (s) -> cost-expr-grows st l self params | cost-expr-grows st r self params
-    is AUnaryExpr (x) (s) -> cost-expr-grows st x self params
-    is AMatchExpr (sc) (arms) (s) -> cost-expr-grows st sc self params | cost-arms-grow st arms self params 0 (list-length arms)
-    is ALambdaExpr (ps) (b) (s) -> cost-expr-grows st b self params
-    is AListExpr (elems) (s) -> cost-elems-grow st elems self params 0 (list-length elems)
-    is ARecordExpr (n) (fields) (s) -> cost-fields-grow st fields self params 0 (list-length fields)
-    is AFieldAccess (obj) (f) (s) -> cost-expr-grows st obj self params
-    is AActExpr (stmts) (s) -> cost-stmts-grow st stmts self params 0 (list-length stmts)
-    is ATryExpr (mx) (b) (fb) (fl) (s) -> cost-stmts-grow st b self params 0 (list-length b) | cost-stmts-grow st fb self params 0 (list-length fb) | cost-stmts-grow st fl self params 0 (list-length fl)
-    is AHandleExpr (eff) (b) (cls) (s) -> cost-expr-grows st b self params
-    is AWithTimeoutExpr (t) (effs) (scopes) (b) (s) -> cost-expr-grows st b self params
-    is AFieldAssignExpr (rec) (f) (val) (s) -> cost-expr-grows st rec self params | cost-expr-grows st val self params
-    is ALazyExpr (inner) (s) -> cost-expr-grows st inner self params
+  CostWalk = record { cw-fn : Text, cw-params : List AParam, cw-body : AExpr, cw-probe : Text }
+
+  cost-lit-int : AExpr -> Boolean
+  cost-lit-int (e) = when e
+    is ALitExpr (t) (k) (s) -> when k
+      is IntLit -> True
+      is otherwise -> False
     is otherwise -> False
 
-  cost-binds-grow : UnificationState, List ALetBind, Text, List AParam, Integer, Integer -> Boolean
-  cost-binds-grow (st) (bs) (self) (params) (i) (len) =
-   if i >= len then False
-   else if cost-expr-grows st ((list-at bs i).value) self params then True
-   else cost-binds-grow st bs self params (i + 1) len
+  cost-lit-positive : AExpr -> Boolean
+  cost-lit-positive (e) = when e
+    is ALitExpr (t) (k) (s) -> when k
+      is IntLit -> lit-text-to-integer t > 0
+      is otherwise -> False
+    is otherwise -> False
 
-  cost-arms-grow : UnificationState, List AMatchArm, Text, List AParam, Integer, Integer -> Boolean
-  cost-arms-grow (st) (arms) (self) (params) (i) (len) =
+  cost-name-of : AExpr -> Text
+  cost-name-of (e) = when e
+    is ANameExpr (n) (s) -> n.value
+    is otherwise -> ""
+
+  cost-arg-advances : AExpr, Text -> Boolean
+  cost-arg-advances (arg) (pname) = when arg
+    is ABinaryExpr (l) (op) (r) (s) -> when op
+      is OpAdd -> cost-arg-is-name l pname & cost-lit-positive r
+      is otherwise -> False
+    is otherwise -> False
+
+  cost-is-param : List AParam, Text, Integer, Integer -> Boolean
+  cost-is-param (params) (p) (i) (len) =
+   if i >= len then False
+   else if (list-at params i).name.value == p then True
+   else cost-is-param params p (i + 1) len
+
+ 1 when the bounded branch is `then`, 2 when it is `else`, 0 when neither.
+
+  cost-guard-side : BinaryOp -> Integer
+  cost-guard-side (op) = when op
+    is OpLt -> 1
+    is OpLtEq -> 1
+    is OpGt -> 2
+    is OpGtEq -> 2
+    is otherwise -> 0
+
+  cost-bounded-branch : UnificationState, CostWalk, AExpr -> Integer
+  cost-bounded-branch (st) (w) (c) =
+   if w.cw-probe /= "" then 0
+   else when c
+    is ABinaryExpr (l) (op) (r) (s) ->
+      let p = cost-name-of l
+      in let side = cost-guard-side op
+      in if side == 0 then 0
+      else if p == "" then 0
+      else if cost-lit-int r == False then 0
+      else if cost-is-param (w.cw-params) p 0 (list-length (w.cw-params)) == False then 0
+      else if cost-expr-grows st (CostWalk { cw-fn = w.cw-fn, cw-params = w.cw-params, cw-body = w.cw-body, cw-probe = p }) (w.cw-body) then 0
+      else side
+    is otherwise -> 0
+
+  cost-arg-flags : UnificationState, CostWalk, AExpr, Text -> Boolean
+  cost-arg-flags (st) (w) (arg) (pname) =
+   if w.cw-probe == "" then cost-arg-is-self-append st arg pname
+   else if pname == w.cw-probe then cost-arg-advances arg pname == False
+   else False
+
+  cost-call-grows : UnificationState, CostWalk, List AExpr, Integer, Integer, Integer -> Boolean
+  cost-call-grows (st) (w) (args) (i) (nargs) (nparams) =
+   if i >= nparams then False
+   else if i >= nargs then w.cw-probe /= ""
+   else if cost-arg-flags st w (list-at args (nargs - 1 - i)) ((list-at (w.cw-params) i).name.value) then True
+   else cost-call-grows st w args (i + 1) nargs nparams
+
+  cost-expr-grows : UnificationState, CostWalk, AExpr -> Boolean
+  cost-expr-grows (st) (w) (e) = when e
+    is ANameExpr (n) (s) -> w.cw-probe /= "" & n.value == w.cw-fn
+    is AApplyExpr (f) (a) (s) ->
+      if cost-apply-head e == w.cw-fn
+       then let args = cost-apply-args e []
+            in cost-call-grows st w args 0 (list-length args) (list-length (w.cw-params))
+              | cost-elems-grow st w args 0 (list-length args)
+      else cost-expr-grows st w f | cost-expr-grows st w a
+    is AIfExpr (c) (t) (el) (s) ->
+      let side = cost-bounded-branch st w c
+      in cost-expr-grows st w c | (side /= 1 & cost-expr-grows st w t) | (side /= 2 & cost-expr-grows st w el)
+    is ALetExpr (bs) (b) (s) -> cost-binds-grow st w bs 0 (list-length bs) | cost-expr-grows st w b
+    is ABinaryExpr (l) (op) (r) (s) -> cost-expr-grows st w l | cost-expr-grows st w r
+    is AUnaryExpr (x) (s) -> cost-expr-grows st w x
+    is AMatchExpr (sc) (arms) (s) -> cost-expr-grows st w sc | cost-arms-grow st w arms 0 (list-length arms)
+    is ALambdaExpr (ps) (b) (s) -> (w.cw-probe /= "" & has-self-call b (w.cw-fn)) | cost-expr-grows st w b
+    is AListExpr (elems) (s) -> cost-elems-grow st w elems 0 (list-length elems)
+    is ARecordExpr (n) (fields) (s) -> cost-fields-grow st w fields 0 (list-length fields)
+    is AFieldAccess (obj) (f) (s) -> cost-expr-grows st w obj
+    is AActExpr (stmts) (s) -> cost-stmts-grow st w stmts 0 (list-length stmts)
+    is ATryExpr (mx) (b) (fb) (fl) (s) -> cost-stmts-grow st w b 0 (list-length b) | cost-stmts-grow st w fb 0 (list-length fb) | cost-stmts-grow st w fl 0 (list-length fl)
+    is AHandleExpr (eff) (b) (cls) (s) -> cost-expr-grows st w b
+    is AWithTimeoutExpr (t) (effs) (scopes) (b) (s) -> cost-expr-grows st w b
+    is AFieldAssignExpr (rec) (f) (val) (s) -> cost-expr-grows st w rec | cost-expr-grows st w val
+    is ALazyExpr (inner) (s) -> cost-expr-grows st w inner
+    is otherwise -> False
+
+  cost-binds-grow : UnificationState, CostWalk, List ALetBind, Integer, Integer -> Boolean
+  cost-binds-grow (st) (w) (bs) (i) (len) =
+   if i >= len then False
+   else if cost-expr-grows st w ((list-at bs i).value) then True
+   else cost-binds-grow st w bs (i + 1) len
+
+  cost-arms-grow : UnificationState, CostWalk, List AMatchArm, Integer, Integer -> Boolean
+  cost-arms-grow (st) (w) (arms) (i) (len) =
    if i >= len then False
    else let arm = list-at arms i
-   in if cost-expr-grows st (arm.guard) self params | cost-expr-grows st (arm.body) self params then True
-   else cost-arms-grow st arms self params (i + 1) len
+   in if cost-expr-grows st w (arm.guard) | cost-expr-grows st w (arm.body) then True
+   else cost-arms-grow st w arms (i + 1) len
 
-  cost-elems-grow : UnificationState, List AExpr, Text, List AParam, Integer, Integer -> Boolean
-  cost-elems-grow (st) (elems) (self) (params) (i) (len) =
+  cost-elems-grow : UnificationState, CostWalk, List AExpr, Integer, Integer -> Boolean
+  cost-elems-grow (st) (w) (elems) (i) (len) =
    if i >= len then False
-   else if cost-expr-grows st (list-at elems i) self params then True
-   else cost-elems-grow st elems self params (i + 1) len
+   else if cost-expr-grows st w (list-at elems i) then True
+   else cost-elems-grow st w elems (i + 1) len
 
-  cost-fields-grow : UnificationState, List AFieldExpr, Text, List AParam, Integer, Integer -> Boolean
-  cost-fields-grow (st) (fields) (self) (params) (i) (len) =
+  cost-fields-grow : UnificationState, CostWalk, List AFieldExpr, Integer, Integer -> Boolean
+  cost-fields-grow (st) (w) (fields) (i) (len) =
    if i >= len then False
-   else if cost-expr-grows st ((list-at fields i).value) self params then True
-   else cost-fields-grow st fields self params (i + 1) len
+   else if cost-expr-grows st w ((list-at fields i).value) then True
+   else cost-fields-grow st w fields (i + 1) len
 
-  cost-stmts-grow : UnificationState, List AActStmt, Text, List AParam, Integer, Integer -> Boolean
-  cost-stmts-grow (st) (stmts) (self) (params) (i) (len) =
+  cost-stmts-grow : UnificationState, CostWalk, List AActStmt, Integer, Integer -> Boolean
+  cost-stmts-grow (st) (w) (stmts) (i) (len) =
    if i >= len then False
    else when (list-at stmts i)
-    is AActExprStmt (e) (s) -> if cost-expr-grows st e self params then True else cost-stmts-grow st stmts self params (i + 1) len
-    is AActBindStmt (n) (e) (s) -> if cost-expr-grows st e self params then True else cost-stmts-grow st stmts self params (i + 1) len
+    is AActExprStmt (e) (s) -> if cost-expr-grows st w e then True else cost-stmts-grow st w stmts (i + 1) len
+    is AActBindStmt (n) (e) (s) -> if cost-expr-grows st w e then True else cost-stmts-grow st w stmts (i + 1) len
 
   cost-def-grows : UnificationState, ADef -> Boolean
-  cost-def-grows (st) (def) = cost-expr-grows st (def.body) (def.name.value) (def.params)
+  cost-def-grows (st) (def) = cost-expr-grows st (CostWalk { cw-fn = def.name.value, cw-params = def.params, cw-body = def.body, cw-probe = "" }) (def.body)
 
 
   cost-growth-bag : Boolean, List ADef, UnificationState -> DiagnosticBag
@@ -2352,8 +2461,8 @@ Section: Proof Acyclicity
        in check-proof-grammar-loop sorted-st defs names (i + 1) len (add-diagnostics-to-state st errs 0 (list-length errs))
       else check-proof-grammar-loop sorted-st defs names (i + 1) len st
 
-  check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment, Integer, Integer, Integer, Integer, Integer -> ChapterResult
-  check-chapter (mod) (renames) (colliding) (assignments) (ceiling) (check-base) (keep-base) (keep-ceiling) (poison) =
+  check-chapter : AChapter, List RenameEntry, SkipListText, List ChapterAssignment, Integer, Integer, Integer, Integer, Integer, Boolean -> ChapterResult
+  check-chapter (mod) (renames) (colliding) (assignments) (ceiling) (check-base) (keep-base) (keep-ceiling) (poison) (fidelity) =
    let p0 = __heap-save
    in let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
    in let p1 = __heap-save
@@ -2382,7 +2491,10 @@ Section: Proof Acyclicity
     scope-grants = [],
     chapter-grounds = mod.ground-effects,
     dirty-slots = [],
-    empty-lists = []
+    empty-lists = [],
+    eq-sites = [],
+    fidelity = fidelity,
+    fid-types = if fidelity then __list-with-capacity (def-count * 56) else []
    })
    in let acc0 = deck-record (__list-with-capacity def-count)
    in let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
@@ -2573,7 +2685,10 @@ Section: Proof Acyclicity
     scope-grants = [],
     chapter-grounds = st.chapter-grounds,
     dirty-slots = [],
-    empty-lists = []
+    empty-lists = [],
+    eq-sites = [],
+    fidelity = st.fidelity,
+    fid-types = if st.fidelity then copy-list-with-headroom (st.fid-types) 0 else []
    })
    in deck-record (ChapterResult {
     types = acc,
@@ -2616,6 +2731,8 @@ Section: Check Batches
    cb-rows0 : Integer,
    cb-et0 : Integer,
    cb-et-len0 : Integer,
+   cb-fid0 : Integer,
+   cb-fid-len0 : Integer,
    cb-acc-len0 : Integer,
    cb-bag0 : Integer,
    cb-batches : Integer,
@@ -2682,6 +2799,8 @@ Section: Check Batches
     cb-rows0 = 0,
     cb-et0 = 0,
     cb-et-len0 = 0,
+    cb-fid0 = 0,
+    cb-fid-len0 = 0,
     cb-acc-len0 = 0,
     cb-bag0 = 0,
     cb-batches = 0,
@@ -2702,10 +2821,13 @@ Section: Check Batches
    in let __seq = cb.cb-rows0 = address-of (st.row-substitutions)
    in let __seq = cb.cb-et0 = address-of (st.expr-types)
    in let __seq = cb.cb-et-len0 = list-length (st.expr-types)
+   in let __seq = cb.cb-fid0 = address-of (st.fid-types)
+   in let __seq = cb.cb-fid-len0 = list-length (st.fid-types)
    in let __seq = cb.cb-acc-len0 = list-length acc
    in let __seq = cb.cb-bag0 = address-of (st.bag)
    in let __seq = st.dirty-slots = __list-with-capacity 4096
    in let __seq = st.empty-lists = __list-with-capacity 64
+   in let __seq = st.eq-sites = __list-with-capacity 64
    in 0
 
   check-batch-due : CheckBatch -> Boolean
@@ -2774,11 +2896,15 @@ Section: Check Batches
    in let et1 = st.expr-types
    in let et = if address-of et1 == cb.cb-et0 then et1 else copy-list-with-headroom et1 (list-length et1 / 2 + 4096)
    in let __seq = st.expr-types = et
+   in let fid1 = st.fid-types
+   in let fid = if st.fidelity then (if address-of fid1 == cb.cb-fid0 then fid1 else copy-list-with-headroom fid1 (list-length fid1 / 2 + 4096)) else fid1
+   in let __seq = st.fid-types = fid
    in let d = check-batch-rewrite-slots subs (st.dirty-slots) 0 (list-length (st.dirty-slots)) mc
    in let n = check-batch-rewrite-range subs (cb.cb-subs-len0) (list-length subs) mc
    in let r = check-batch-rewrite-rows rows 0 (list-length rows) mc
    in let e = check-batch-rewrite-et et (cb.cb-et-len0) (list-length et) mc
-   in let a = check-batch-rewrite-acc acc (cb.cb-acc-len0) (list-length acc) mc
+   in let f = if st.fidelity then check-batch-rewrite-et fid (cb.cb-fid-len0) (list-length fid) mc else 0
+   in let a =check-batch-rewrite-acc acc (cb.cb-acc-len0) (list-length acc) mc
    in let b = if address-of (st.bag) == cb.cb-bag0 then 0 else check-batch-copy-bag st (mc.mc-floor)
    in 0
 

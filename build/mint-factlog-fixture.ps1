@@ -27,12 +27,28 @@
 # Only the HEADER's length word is moved; entry 2's record text is left
 # well-formed, so the refusal being tested is the sector-span bound and not
 # the wire decoder's (that one is source-def-wire-guard, which needs no disk).
+#
+# -Big mints the fixture for fd-max-content-len (FactDisk.codex, 4 MB), which
+# only a store over 4 MB can reach: on anything smaller the medium ceiling
+# refuses the entry first. It is minted at test time into build-output rather
+# than kept in the depot, because the image is about 8.4 MB.
+#
+#   entry 1  kind 30, record exactly 4,194,304 bytes: AT the cap, admitted
+#   entry 2  kind 30, a WELL-FORMED record of 4,194,305 bytes: one PAST the
+#            cap, refused by fd-max-content-len and not by the medium. It must
+#            decode, or sdw-decode refuses it too and the arm cannot tell the
+#            cap from the decoder (L-VACUOUS).
+#   entry 3  kind 30 signed, small: the positive control, must still arrive
 param(
   [string]$Out = "codex/test/apps/factdisk-read.disk",
-  [switch]$Hostile
+  [switch]$Hostile,
+  [switch]$Big
 )
 if ($Hostile -and $Out -eq "codex/test/apps/factdisk-read.disk") {
   $Out = "codex/test/apps/factdisk-hostile-head.disk"
+}
+if ($Big -and $Out -eq "codex/test/apps/factdisk-read.disk") {
+  $Out = "build-output/factdisk-cap.disk"
 }
 
 $ErrorActionPreference = 'Stop'
@@ -64,7 +80,7 @@ $OFFLEN = 74          # fl-off-content-len
 $LOGSTART = 2         # fl-fact-log-start
 $KINDDEF  = 30        # fl-kind-definition
 
-$img = New-Object byte[] 1048576
+$CAP = 4194304       # fd-max-content-len
 
 # Entry 1 is NOT a source definition. It must be STRIDDEN PAST rather than
 # decoded, and it is first so that a walk which stops at the first non-30
@@ -81,6 +97,31 @@ $entries = @(
   @{ kind = $KINDDEF; ts = 33; text = "def456|src|Foreword|Signed|fp01|aabb|val|88|11|signed body" }
 )
 
+function New-SizedRecord([string]$prefix, [int]$total) {
+  # The ninth field is the content's own length, so the record length solves
+  # prefix + digits(n) + 1 + n = total for n.
+  $n = $total - $prefix.Length - 1
+  while ($prefix.Length + "$n".Length + 1 + $n -gt $total) { $n-- }
+  $head = Get-CceBytes ($prefix + "$n|")
+  $rec = New-Object byte[] ($head.Length + $n)
+  $head.CopyTo($rec, 0)
+  for ($k = $head.Length; $k -lt $rec.Length; $k++) { $rec[$k] = [byte]$cce[[char]'x'] }
+  if ($rec.Length -ne $total) { throw "record is $($rec.Length) bytes, wanted $total" }
+  return ,$rec
+}
+
+if ($Big) {
+  $entries = @(
+    @{ kind = $KINDDEF; ts = 11; raw = (New-SizedRecord "cap000|src|Foreword|AtCap|||val|77|" $CAP) },
+    @{ kind = $KINDDEF; ts = 22; raw = (New-SizedRecord "pst001|src|Foreword|PastCap|||val|78|" ($CAP + 1)) },
+    @{ kind = $KINDDEF; ts = 33; text = "fed789|src|Foreword|Tail|fp01|aabb|val|88|4|tail" }
+  )
+}
+
+$sectors = $LOGSTART
+foreach ($e in $entries) { $len = if ($e.ContainsKey('raw')) { $e.raw.Length } else { $e.text.Length }; $sectors += [int][Math]::Ceiling(($HDR + $len) / $SECTOR) }
+$img = New-Object byte[] ([Math]::Max(1048576, ($sectors + 1) * $SECTOR))
+
 $LIE_LEN  = 4000000000    # u32, near the maximum: 7,812,501 sectors at 512
 $LIE_HEAD = 8000000       # a head large enough to admit that span
 
@@ -88,7 +129,7 @@ $s = $LOGSTART
 $i = 0
 foreach ($e in $entries) {
   $base  = $s * $SECTOR
-  $bytes = Get-CceBytes $e.text
+  $bytes = if ($e.ContainsKey('raw')) { $e.raw } else { Get-CceBytes $e.text }
   # The stride stays TRUE to the real content even when the stored length
   # lies, so entry 3 lands where it always did and stays a positive control.
   $stored = if ($Hostile -and $i -eq 1) { $LIE_LEN } else { $bytes.Length }
@@ -108,5 +149,7 @@ $logHead = if ($Hostile) { $LIE_HEAD } else { $s }
 [BitConverter]::GetBytes([int64]$logHead).CopyTo($img, 8)    # fl-off-sb-log-head
 [BitConverter]::GetBytes([int64]2).CopyTo($img, 24)          # fl-off-sb-index-gen
 
-[System.IO.File]::WriteAllBytes((Join-Path (Get-Location) $Out), $img)
-"wrote $Out : log-head=$logHead, entries at sectors 2 (kind 0), 3 (kind 30 unsigned), 4 (kind 30 signed)"
+$outPath = if ([IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path (Get-Location) $Out }
+[System.IO.File]::WriteAllBytes($outPath, $img)
+if ($Big) { "wrote $Out : $($img.Length) bytes, log-head=$logHead, entries: at-cap $CAP, past-cap $($CAP + 1), tail" }
+else { "wrote $Out : log-head=$logHead, entries at sectors 2 (kind 0), 3 (kind 30 unsigned), 4 (kind 30 signed)" }

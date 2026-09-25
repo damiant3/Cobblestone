@@ -52,12 +52,11 @@ UART driver already occupies, and the distinction is the entire point of the
 capability.
 
 **`I2c`, `Adc` and `Power` sit on the table's previously unassigned bits 1,
-2 and 13, and that placement is deliberate.** The next free high bits were
-30, 31 and 32, and the boot grant is emitted as a sign-extended imm32
-(`compiler-backlog` COMPILER-17): bit 31 would grant every bit from 31 up
-and bit 32 would never be granted. Using the low free bits changed no
-emitter. **COMPILER-17 is still latent and bites whatever capability is
-added next above bit 30.**
+2 and 13.** The x86-64 boot grant and revoke emitters carry bit 31 and above
+exactly (`codex/test/ops/cap-grant-emit`); the arm64 and riscv boot grants
+refuse a capability at bit 31 or above (`compiler-backlog` COMPILER-17), so
+the next capability placed there compiles for x86-64 only until those two
+are measured.
 
 **The read side.** `gpio-read : linear Pin -> (linear Pin, Boolean)`
 (IDR +0x10), `uart-recv : linear UartPort, Integer -> (linear UartPort, List
@@ -442,8 +441,7 @@ same, the handle discipline is unchanged, and the caller still cannot be
 handed a software generator by mistake. `VirtioRng.codex` reuses
 `VirtioBlk`'s transport by name, `QemuVirtBoard` threads the linear Board
 through `qemu-rng-open/read/close`, `[Rng]` is `cs-id` 24 at bit 30 (bits
-0 to 29 were all taken; COMPILER-17's imm32 hazard sits at 31 and is still
-latent), and the two arms are `codex/test/qemu-rng` and `qemu-rng-absent`,
+0 to 29 were all taken), and the two arms are `codex/test/qemu-rng` and `qemu-rng-absent`,
 the same program routed to the arm64 bed by a `.qemudev` sidecar, one
 attaching `virtio-rng-device` and the other attaching nothing. The x86
 battery skips both by `.skip`, which names the runner that does run them.

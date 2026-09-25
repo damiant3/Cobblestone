@@ -36,9 +36,9 @@ Claude; our additions are the regression fixtures and the release proof.
 A literal Integer table that nothing writes is now emitted once into the
 image instead of being rebuilt at each reference. Issue 157's reproducer went
 from 528 bytes per read and an out-of-memory stop to zero bytes per read
-(main 26048). The compiler shares 32 of its own 41 such tables (main 26071),
-the Zig plug shares literal constant tables too (main 26148), and record
-fields and a left `&` operand are covered (main 26370). The three tables
+(main 26048). With record fields and a left `&` operand covered (main 26370),
+the compiler shares 38 of its own 41 such tables (measured 2026-09-23), and
+the Zig plug shares literal constant tables too (main 26148). The three tables
 still unshared are named in `docs/Designs/Active/Compiler/ConstantSharing.md`.
 
 ## Checked method templates

@@ -2,25 +2,15 @@ Chapter: CheckersWasm
   cites Games chapter Checkers
   cites Foreword chapter List
 
- The browser interface for Checkers, on the handle contract in
- games-backlog.md GAME-11. Sixty-four cells plus the turn and the verdict
- are past what an i32 could carry, so the page holds the board's address.
-
- `apply-move` writes the from square, the captured square and the to square
- through `list-set-at`, which mutates in place, so `ck-wasm-apply` copies
- first. The move GENERATOR does not need the copy: `generate-moves` builds
- its list by pushing onto an accumulator and `ck-score-move` reads the
- move's own fields rather than applying it, which is why asking this engine
- for a move does not corrupt the board it is asked about (GAME-13). The
- grader measures that rather than trusting this paragraph.
-
- A move is offered to the page as an INDEX into the generated list, with
- its from, to and captured squares readable, so the page can draw the legal
- destinations without knowing a rule of checkers.
+ `apply-move` writes three squares through `list-set-at`, in place, so
+ `ck-wasm-apply` copies first. `generate-moves` and `ck-score-move` never
+ apply a move, so the generator needs no copy.
 
  We say:
 
 Section: Copying
+
+  wasm-exports : Text = ""
 
   ck-copy-cells : List Integer, Integer, List Integer -> List Integer
   ck-copy-cells (src) (i) (acc) =
@@ -33,7 +23,8 @@ Section: Copying
       cells = ck-copy-cells (b.cells) 0 [],
       turn = b.turn,
       over = b.over,
-      winner = b.winner
+      winner = b.winner,
+      quiet = b.quiet
     }
 
 Section: The Browser Interface
@@ -87,6 +78,20 @@ Section: The Browser Interface
     else if i < 0 then b
     else if i >= list-length ms then b
     else apply-move (ck-copy-board b) (list-at ms i)
+
+  ck-wasm-blank : CheckerBoard
+  ck-wasm-blank = CheckerBoard { cells = ck-zeroes 0 [], turn = 0, over = False, winner = -1, quiet = 0 }
+
+  ck-zeroes : Integer, List Integer -> List Integer
+  ck-zeroes (i) (acc) =
+    if i >= 64 then acc
+    else ck-zeroes (i + 1) (list-push acc 0)
+
+  ck-wasm-put : CheckerBoard, Integer, Integer -> CheckerBoard
+  ck-wasm-put (b) (sq) (v) =
+    if sq < 0 | sq >= 64 | v < 0 | v > 4 then b
+    else let c = ck-copy-board b
+    in CheckerBoard { cells = list-set-at (c.cells) sq v, turn = c.turn, over = c.over, winner = c.winner, quiet = c.quiet }
 
   ck-wasm-ai : CheckerBoard -> Integer
   ck-wasm-ai (b) =

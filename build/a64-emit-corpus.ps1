@@ -88,7 +88,7 @@ foreach ($tf in $allTests) {
     elseif (Test-Path "$dir\$name.fatal")   { $skipReason = "fatal" }
     elseif (Test-Path "$dir\$name.failing") { $skipReason = "error test" }
     elseif (Test-Path "$dir\$name.smp")     { $skipReason = "multi-core" }
-    elseif (Test-Path "$dir\$name.disk")    { $skipReason = "block device" }
+    elseif ((Test-Path "$dir\$name.disk") -or (Test-Path "$dir\$name.disk-mint")) { $skipReason = "block device" }
     elseif (Test-Path "$dir\$name.no-cross") { $skipReason = "no-cross" }
     else {
         foreach ($mc in 'disk2','disk-src','vmargs','keys') {

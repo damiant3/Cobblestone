@@ -1,0 +1,90 @@
+Chapter: Jwt Guard
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+  cites Encode chapter Base64
+  cites Encode chapter Jwt
+
+ RFC 7519 section 3.1's example token: its JSON carries CR LF, and its
+ signature carries both characters that only base64url has.
+
+Section: Helpers
+
+  map-pieces : Text, Integer, Integer, Boolean, List Text -> List Text
+  map-pieces (s) (i) (n) (to-url) (acc) =
+    if i >= n then acc
+    else let c = char-to-text (char-at s i)
+    in let m = if to-url then (if c == "+" then "-" else if c == "/" then "_" else if c == "=" then "" else c)
+      else (if c == "-" then "+" else if c == "_" then "/" else c)
+    in map-pieces s (i + 1) n to-url (list-push acc m)
+
+  url : Text -> Text
+  url (s) = text-concat-list (map-pieces s 0 (text-length s) True [])
+
+  std : Text -> Text
+  std (s) = text-concat-list (map-pieces s 0 (text-length s) False [])
+
+  seg-bytes : List Integer -> Text
+  seg-bytes (bs) = url (base64-encode bs)
+
+  seg : Text -> Text
+  seg (json) = seg-bytes (text-to-utf8-bytes json)
+
+  sub-bytes : List Integer -> Text
+  sub-bytes (bs) = seg-bytes (text-to-utf8-bytes "{\"sub\":\"" & bs & text-to-utf8-bytes "\"}")
+
+  hdr : Text
+  hdr = seg "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
+
+  tok : Text, Text, Text -> Text
+  tok (h) (p) (s) = h & "." & p & "." & s
+
+  report : JwtError -> Text
+  report (d) =
+    when d
+      is JwtOk (t) ->
+        let h = t.jt-header
+        in let p = t.jt-payload
+        in "ok alg=" & h.jh-alg & " typ=" & h.jh-typ & " iss=" & p.jp-iss & " sub=" & p.jp-sub & " name=" & p.jp-name & " name-len=" & show (text-length p.jp-name) & " exp=" & show (p.jp-exp)
+      is JwtMalformed (m) -> "malformed: " & m
+
+  arm : Text, Text -> Text
+  arm (name) (raw) = name & " " & report (jwt-decode raw)
+
+  xs : Integer, List Text -> Text
+  xs (n) (acc) = if list-length acc >= n then text-concat-list acc else xs n (list-push acc "x")
+
+  cost : Integer -> Integer
+  cost (n) =
+    let s = seg ("{\"name\":\"" & xs n [] & "\"}")
+    in let b = __heap-save
+    in let r = b64url-decode-utf8 s
+    in let a = __heap-save
+    in (a - b) + (when r
+      is None -> 0 - 1000000000
+      is Just (d) -> text-length d - text-length d)
+
+  scaling : Text, Integer, Integer -> Text
+  scaling (name) (small) (large) =
+    if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (arm "rfc7519" "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+    print-line-uni (arm "plain" (tok hdr (seg "{\"sub\":\"u\"}") "c2ln"))
+    print-line-uni (arm "unsecured" (tok (seg "{\"alg\":\"none\"}") (seg "{\"sub\":\"u\"}") ""))
+    print-line-uni (arm "utf8-name" (tok hdr (seg-bytes (text-to-utf8-bytes "{\"sub\":\"u\",\"name\":\"Jos" & [195, 169] & text-to-utf8-bytes "\"}")) "c2ln"))
+    print-line-uni (arm "bad-utf8" (tok hdr (seg-bytes (text-to-utf8-bytes "{\"sub\":\"" & [255] & text-to-utf8-bytes "\"}")) "c2ln"))
+    print-line-uni (arm "overlong" (tok hdr (sub-bytes [193, 129]) "c2ln"))
+    print-line-uni (arm "surrogate" (tok hdr (sub-bytes [237, 160, 128]) "c2ln"))
+    print-line-uni (arm "above-max" (tok hdr (sub-bytes [244, 144, 128, 128]) "c2ln"))
+    print-line-uni (arm "emoji" (tok hdr (sub-bytes [97, 240, 159, 152, 128]) "c2ln"))
+    print-line-uni (arm "control" (tok hdr (sub-bytes [97, 127, 98]) "c2ln"))
+    print-line-uni (arm "std-alphabet" (tok hdr (std (seg "{\"n\":\"~~~\",\"sub\":\"u\"}")) "c2ln"))
+    print-line-uni (arm "padded" (tok hdr (seg "{\"sub\":\"u\"}" & "=") "c2ln"))
+    print-line-uni (arm "len-mod-1" (tok (hdr & "A") (seg "{\"sub\":\"u\"}") "c2ln"))
+    print-line-uni (arm "bad-char" (tok hdr (seg "{\"sub\":\"u\"}") "c2l*"))
+    print-line-uni ("std-alphabet-reached " & (if std (seg "{\"n\":\"~~~\",\"sub\":\"u\"}") == seg "{\"n\":\"~~~\",\"sub\":\"u\"}" then "no" else "yes"))
+    print-line-uni (scaling "segment" (cost 256) (cost 1024))
+  end

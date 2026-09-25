@@ -1,0 +1,101 @@
+Chapter: Arm64NetPeerFinFramed
+  cites Kernel chapter Arm64Pci
+  cites Kernel chapter VirtioPci
+  cites Kernel chapter VirtioNet
+  cites Net chapter Arm64NetIO
+  cites Net chapter NetCompact
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+Section: Wire Fixtures
+
+ No device, the rings in RAM as in `arm64-net-compact`. The receive ring
+ holds two frames: the client's FIN, then a bare ACK. A framed receive at
+ end of stream returns once the FIN is taken and leaves the ACK in the ring;
+ a receive that waits for TcpClosed alone consumes the ACK and then polls an
+ empty ring for its whole fuel, which outlives the runner's timeout.
+
+  floor : Integer = #48000000
+  ring : Integer = #48100000
+  tx-ring : Integer = #48180000
+  ring-size : Integer = 64
+
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  get-bytes : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 13, 10]
+
+  psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
+  fin-ack : Integer = bit-or tcp-flag-fin tcp-flag-ack
+
+  mkc : Integer, Integer, Integer, List Integer -> List Integer
+  mkc (seq) (ack) (flags) (body) =
+    let seg = tcp-with-checksum (tcp-build-segment 50000 80 seq ack flags 8192 body) cli-ip srv-ip
+    in let ip = ip-build-packet cli-ip srv-ip ip-proto-tcp seg
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 cli-ip 5000
+
+  established : NetSession =
+    let s1 = (net-process-frame (net-listen srv0).session (mkc 1000 0 tcp-flag-syn [])).session
+    in set-outbox ((net-process-frame s1 (mkc 1001 5001 psh get-bytes)).session) []
+
+  put-bytes : Integer, List Integer, Integer, Integer -> Integer
+  put-bytes (base) (bs) (i) (n) =
+    if i >= n then n
+    else let w = poke-byte base (vnet-hdr-size + i) (list-at bs i)
+    in put-bytes base bs (i + 1) n
+
+  put-frame : Integer, List Integer -> Integer
+  put-frame (id) (frame) =
+    let buf = floor + id * vnet-max-frame
+    in let h = virtio-zero-mem buf vnet-hdr-size
+    in put-bytes buf frame 0 (list-length frame)
+
+  put-used : Integer, Integer, Integer -> Integer
+  put-used (i) (id) (len) =
+    let e0 = poke-32 (ring + 4 + i * 8) 0 id
+    in poke-32 (ring + 4 + i * 8) 4 (vnet-hdr-size + len)
+
+  dead-pci : Arm64PciDevice = Arm64PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0, pci-vendor = 0, pci-device-id = 0, pci-class = 0, pci-subclass = 0, pci-header-type = 0 }
+  dead-dev : VirtioDevice = VirtioDevice { pci-dev = dead-pci, common-base = 0, notify-base = 0, notify-off-multiplier = 0, isr-base = 0, device-cfg-base = 0 }
+
+  vnet-on : VirtioNetState
+  vnet-on =
+   let rq = VirtqueueState { desc-base = ring + #10000, avail-base = ring + #20000, used-base = ring, queue-size = ring-size, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = ring + #30000 }
+   in let tq = VirtqueueState { desc-base = tx-ring + #1000, avail-base = tx-ring + #2000, used-base = tx-ring, queue-size = 32, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = tx-ring + #3000 }
+   in VirtioNetState { device = dead-dev, rx-queue = rq, tx-queue = tq, mac = srv-mac }
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console, Device.Mmio] Nothing = act
+    let f = poke-32 vnet-dma-floor-cell 0 floor
+    in let fin = mkc 1019 5001 fin-ack []
+    in let ack = mkc 1020 5001 tcp-flag-ack []
+    in let p0 = put-frame 0 fin
+    in let p1 = put-frame 1 ack
+    in let zr = virtio-zero-mem ring (4 + ring-size * 8)
+    in let zt = virtio-zero-mem tx-ring 4096
+    in let tu = poke-16 tx-ring 2 60000
+    in let u0 = put-used 0 0 (list-length fin)
+    in let u1 = put-used 1 1 (list-length ack)
+    in let ui = poke-16 ring 2 2
+    in let st = arm64-net-io-new vnet-on (transport-arenas (transport-new-with-cap established 65536))
+    in let r = arm64-net-io-recv-loop st 0
+    in let conn = ((r.state).transport).session.conn
+    in act
+      print-line-uni ("the peer's FIN took the connection to " & tcp-state-name (conn.state))
+      print-line-uni ("no message at end of stream: " & yn (r.has-message == False))
+      print-line-uni ("the receive returned at the FIN, the ACK behind it left in the ring: " & yn ((r.state).vnet.rx-queue.last-used-idx == 1))
+    end
+  end
+
+Page 1

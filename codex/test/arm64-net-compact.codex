@@ -1,0 +1,142 @@
+Chapter: Arm64NetCompact
+  cites Kernel chapter Arm64Pci
+  cites Kernel chapter VirtioPci
+  cites Kernel chapter VirtioNet
+  cites Net chapter Arm64NetIO
+  cites Net chapter NetCompact
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+Section: Wire Fixtures
+
+ No device: both receive rings, the transmit ring and the two frame buffers
+ are written in RAM at #48000000, 128 MB above the RAM base, clear of the ELF
+ and heap at #40100000. The transmit ring's used index is preset far ahead,
+ therefore every send completes at once. A receive ring holds 2048 entries,
+ therefore 1,501 frames never reuse a slot.
+
+  floor : Integer = #48000000
+  ring-a : Integer = #48100000
+  ring-b : Integer = #48140000
+  tx-ring : Integer = #48180000
+  ring-size : Integer = 2048
+  few : Integer = 40
+  lots : Integer = 1500
+
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  get-bytes : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 13, 10]
+  payload : List Integer = [104, 101, 108, 108, 111, 32, 97, 114, 109, 54, 52]
+
+  psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
+
+  mkc : Integer, Integer, Integer, List Integer -> List Integer
+  mkc (seq) (ack) (flags) (body) =
+    let seg = tcp-with-checksum (tcp-build-segment 50000 80 seq ack flags 8192 body) cli-ip srv-ip
+    in let ip = ip-build-packet cli-ip srv-ip ip-proto-tcp seg
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 cli-ip 5000
+
+  established : NetSession =
+    let s1 = (net-process-frame (net-listen srv0).session (mkc 1000 0 tcp-flag-syn [])).session
+    in set-outbox ((net-process-frame s1 (mkc 1001 5001 psh get-bytes)).session) []
+
+  put-bytes : Integer, List Integer, Integer, Integer -> Integer
+  put-bytes (base) (bs) (i) (n) =
+    if i >= n then n
+    else let w = poke-byte base (vnet-hdr-size + i) (list-at bs i)
+    in put-bytes base bs (i + 1) n
+
+  put-frame : Integer, List Integer -> Integer
+  put-frame (id) (frame) =
+    let buf = floor + id * vnet-max-frame
+    in let h = virtio-zero-mem buf vnet-hdr-size
+    in put-bytes buf frame 0 (list-length frame)
+
+  fill-used : Integer, Integer, Integer, Integer, Integer -> Integer
+  fill-used (ring) (i) (acks) (ack-len) (data-len) =
+    if i > acks then poke-16 ring 2 (acks + 1)
+    else let id = if i == acks then 1 else 0
+    in let len = if i == acks then data-len else ack-len
+    in let e0 = poke-32 (ring + 4 + i * 8) 0 id
+    in let e1 = poke-32 (ring + 4 + i * 8) 4 (vnet-hdr-size + len)
+    in fill-used ring (i + 1) acks ack-len data-len
+
+  dead-pci : Arm64PciDevice = Arm64PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0, pci-vendor = 0, pci-device-id = 0, pci-class = 0, pci-subclass = 0, pci-header-type = 0 }
+  dead-dev : VirtioDevice = VirtioDevice { pci-dev = dead-pci, common-base = 0, notify-base = 0, notify-off-multiplier = 0, isr-base = 0, device-cfg-base = 0 }
+
+  vnet-on : Integer -> VirtioNetState
+  vnet-on (ring) =
+   let rq = VirtqueueState { desc-base = ring + #10000, avail-base = ring + #20000, used-base = ring, queue-size = ring-size, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = ring + #30000 }
+   in let tq = VirtqueueState { desc-base = tx-ring + #1000, avail-base = tx-ring + #2000, used-base = tx-ring, queue-size = 32, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = tx-ring + #3000 }
+   in VirtioNetState { device = dead-dev, rx-queue = rq, tx-queue = tq, mac = srv-mac }
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  same : List Integer, List Integer, Integer -> Boolean
+  same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same a b (i + 1)
+
+Section: One Run
+
+  Run = record { used : Integer, got : Arm64RawRecvResult }
+
+  run-on : Integer -> Run
+  run-on (ring) =
+   let st = arm64-net-io-new (vnet-on ring) (transport-arenas (transport-new-with-cap established 65536))
+   in let h0 = __heap-save
+   in let r = arm64-net-io-recv-raw st 0
+   in Run { used = __heap-save - h0, got = r }
+
+  rx-q : Run -> VirtqueueState
+  rx-q (r) = ((r.got).state).vnet.rx-queue
+
+  tx-q : Run -> VirtqueueState
+  tx-q (r) = ((r.got).state).vnet.tx-queue
+
+  ts-of : Run -> TcpTransportState
+  ts-of (r) = ((r.got).state).transport
+
+Section: Entry
+
+  opening : [Console, Device.Mmio] Nothing = act
+    let f = poke-32 vnet-dma-floor-cell 0 floor
+    in let ack = mkc 1019 5001 tcp-flag-ack []
+    in let data = mkc 1019 5001 psh payload
+    in let a0 = put-frame 0 ack
+    in let d1 = put-frame 1 data
+    in let za = virtio-zero-mem ring-a (4 + ring-size * 8)
+    in let zb = virtio-zero-mem ring-b (4 + ring-size * 8)
+    in let zt = virtio-zero-mem tx-ring 4096
+    in let tu = poke-16 tx-ring 2 60000
+    in let fa = fill-used ring-a 0 few (list-length ack) (list-length data)
+    in let fb = fill-used ring-b 0 lots (list-length ack) (list-length data)
+    in let a = run-on ring-a
+    in let b = run-on ring-b
+    in let per = a.used / (few + 1)
+    in let bound = net-compact-bytes + 4 * per + 4096
+    in act
+      print-line-uni ("few: data delivered intact: " & yn ((a.got).has-data & same ((a.got).data) payload 0))
+      print-line-uni ("few: compacted: " & yn ((ts-of a).gen > 0))
+      print-line-uni ("lots: data delivered intact: " & yn ((b.got).has-data & same ((b.got).data) payload 0))
+      print-line-uni ("lots: compacted at least once: " & yn ((ts-of b).gen > 0))
+      print-line-uni ("lots: heap within one arena and four frames: " & yn (b.used <= bound))
+      print-line-uni ("lots uncompacted at the few rate would pass that bound twice over: " & yn (per * (lots + 1) > 2 * bound))
+      print-line-uni ("lots: every frame consumed and resubmitted: " & yn ((rx-q b).last-used-idx == lots + 1 & (rx-q b).avail-idx == lots + 1))
+      print-line-uni ("lots: every send completed: " & yn ((tx-q b).last-used-idx == (tx-q b).avail-idx))
+      print-line-uni ("lots: still established, recv-next past the payload: " & yn (arm64-net-io-conn-closed ((b.got).state) == False & ((ts-of b).session).conn.recv-next == 1019 + list-length payload))
+    end
+  end
+
+Page 1

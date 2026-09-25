@@ -2,20 +2,14 @@ Chapter: LiarsDiceWasm
   cites Games chapter LiarsDice
   cites Foreword chapter List
 
- The browser interface for Liar's Dice, on the handle contract in
- games-backlog.md GAME-11. The dice pools, the per-player counts and the
- alive flags are several lists, so the page holds the state's address.
-
- `ld-lose-die` and the roll write through `list-set-at`, which mutates in
- place, so `ld-wasm-step` copies the three lists before taking a turn.
-
- A bid is one integer carrying both halves, quantity and face, which is why
- the interface exposes `ld-wasm-bid-qty` and `ld-wasm-bid-face` rather than
- asking the page to know how they are packed.
+ `ld-lose-die` and the roll write through `list-set-at`, in place, so a
+ turn copies all three lists first.
 
  We say:
 
 Section: Copying
+
+  wasm-exports : Text = ""
 
   ld-copy-list : List Integer, Integer, Integer, List Integer -> List Integer
   ld-copy-list (src) (i) (n) (acc) =
@@ -48,18 +42,10 @@ Section: The Browser Interface
 
 Section: Playing By Hand
 
- `ld-do-turn` decides for itself whether to raise or to call, and what to
- raise to, so a person cannot take a turn. A turn here is exactly one of two
- things: bid higher, or call the last bid a lie.
-
- WHAT COUNTS AS A RAISE IS STATED HERE BECAUSE THE ENGINE NEVER SAYS IT.
- `ld-ai-bid` only ever CONSTRUCTS raises, so the rule lives in that
- function's arithmetic and nowhere as a test: more dice than the standing
- bid, or the same number of a higher face. Reached from a browser that is
- not enough, because a page can offer any pair of numbers it likes, so the
- rule is written out. A bid is `qty * 10 + face` and 0 means no bid yet,
- which is why the first bid of a round is any legal pair rather than a
- raise over nothing.
+ A turn is a raise or a challenge. A raise is more dice than the standing
+ bid, or the same number of a higher face; the engine only constructs
+ raises and never tests one. A bid is `qty * 10 + face`, and 0 is no bid,
+ so the first bid of a round is any legal pair.
 
   ld-wasm-can-bid : LDState, Integer, Integer -> Integer
   ld-wasm-can-bid (s) (qty) (face) =
@@ -74,9 +60,6 @@ Section: Playing By Hand
     in if qty > cq then 1
     else if qty == cq then (if face > cf then 1 else 0)
     else 0
-
- Named `make-bid` rather than `bid`: `ld-wasm-bid` is already taken by the
- READER of the standing bid, and the two would be a duplicate definition.
 
   ld-wasm-make-bid : LDState, Integer, Integer -> LDState
   ld-wasm-make-bid (s) (qty) (face) =
@@ -95,10 +78,8 @@ Section: Playing By Hand
          rng          = c.rng
        }
 
- Calling the bid a lie. The loser is whoever was wrong: if the dice really
- are there the CHALLENGER loses one, otherwise the last bidder does. Every
- die is then rerolled and the bidding starts again from nothing, which is
- what `ld-do-turn` does on the same branch.
+ If the bid dice are on the table the challenger loses a die, otherwise the
+ last bidder does. Every die is then rerolled and the bidding restarts.
 
   ld-wasm-can-challenge : LDState -> Integer
   ld-wasm-can-challenge (s) =
@@ -133,9 +114,7 @@ Section: Playing By Hand
          rng          = s3.rng
        }
 
- How many of a face are REALLY on the table. This is the answer a challenge
- turns on, and the page shows it only after the call has been made, because
- before that it is exactly the thing nobody is allowed to know.
+ The true count of the bid face is hidden information until a challenge.
 
   ld-wasm-actual : LDState -> Integer
   ld-wasm-actual (s) =

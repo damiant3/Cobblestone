@@ -1,0 +1,51 @@
+Chapter: CdxSectionGuard
+  cites Foreword chapter Console
+  cites Verify chapter CdxBinary
+
+ `cdx-verify-content-hash` sizes the hashed region from the header's section
+ table: four (offset, size) pairs of le64 at bytes 136 to 199. The header
+ itself is outside the hash, so every field in that table is the file's to
+ choose without disturbing a stored hash that matches.
+
+ Row 1 is the positive control, a binary we encoded ourselves.
+ Row 2 declares the text section at 9223372036854775792 with size 32. The
+ offset-plus-size sum overflows, and plain Integer addition traps on overflow,
+ therefore the unguarded check killed the guest (`!EXC=06`) on a header naming
+ a section 9.2e18 bytes into a file of a few hundred.
+ Row 3 declares a negative text offset.
+ Row 4 is a 30-byte file, shorter than the stored hash it reads.
+ Row 5 declares a text size of 1000000 over the same file, which drives the
+ slice past the end.
+
+Section: Helpers
+
+  patch-le64 : List Integer, Integer, Integer -> List Integer
+  patch-le64 (bs) (at) (v) = list-slice bs 0 at & le64 v & list-slice bs (at + 8) (list-length bs)
+
+  parts : CdxBinaryParts = CdxBinaryParts {
+    flags = 1, capabilities = [], effects = [], text-bytes = [1, 2, 3],
+    rodata-bytes = [], entry-offset = 0, stack-size = 4096, heap-size = 4096,
+    trust-threshold = 0
+  }
+
+  seed : List Integer = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+
+  row : Text, List Integer -> Text
+  row (label) (bs) = label & " hash-ok=" & show (cdx-verify-content-hash bs)
+
+Section: Body
+
+  opening : [Console] Nothing =
+    let good = cdx-encode-signed parts seed
+    in let wrapped = patch-le64 good 168 9223372036854775792
+    in let wrapped2 = patch-le64 wrapped 176 32
+    in act
+      print-line-uni (row "1-control" good)
+      print-line-uni (row "2-wrapped-text" wrapped2)
+      print-line-uni (row "3-negative-offset" (patch-le64 good 168 (0 - 5)))
+      print-line-uni (row "4-short-file" (list-slice good 0 30))
+      print-line-uni (row "5-size-past-end" (patch-le64 good 176 1000000))
+    end
+
+Page 1

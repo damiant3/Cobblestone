@@ -1,17 +1,10 @@
 Chapter: Monopoly
   cites Games chapter Rng
 
- Simplified Monopoly: 40 board spaces, 2-4 players, color groups 0-7
- matching the standard color sets. mono-prop-rent carries the real
- board's UNDEVELOPED rents, 2 through 50, and there are no houses or
- hotels here. A group held whole therefore charges base-rent * 25,
- which is where the real board's hotel rents sit relative to base
- (Boardwalk 50 against 2000, Mediterranean 2 against 250).
-
- That multiplier is what makes the game finish. Passing Go pays every
- player 200 from the bank while rent only moves money between them, so
- at the undeveloped 2x every player gained about 3500 over 601 turns
- and the stated end condition, bankruptcy, could never be reached.
+ A colour group held whole charges base-rent * 25, the real board's hotel
+ ratio (Boardwalk 50 against 2000, Mediterranean 2 against 250). At the
+ undeveloped 2x every player gained about 3500 over 601 turns and
+ bankruptcy was never reached.
 
  We say:
 
@@ -31,16 +24,6 @@ Section: Types
     base-rent  : Integer,
     color      : Integer
   }
-
- `phase` is 0 when the player to move has yet to roll and 1 when they have
- landed on a property nobody owns and can afford it, which is the ONE
- decision this engine contains: there is no trading here (GAME-8), so a
- colour group is only ever assembled by the luck of the dice, and buying or
- passing is the whole of what a person does. `pending` is the property that
- decision is about, and -1 the rest of the time.
-
- `last-roll` is kept because a page has to show the dice that moved you.
- Nothing reads it back.
 
   MonopolyState = record {
     players        : List MonopolyPlayer,
@@ -367,11 +350,6 @@ Section: Landing Actions
 
 Section: The One Decision
 
- Landing on a property nobody owns that you can afford does not buy it any
- more; it OFFERS it. Everything else about a turn is forced, so this is the
- only point at which a person and the engine can differ, and putting the
- offer in the record is what makes the turn something a page can interrupt.
-
   mono-offer : MonopolyState, Integer -> MonopolyState
   mono-offer (s) (pi) =
     MonopolyState {
@@ -401,9 +379,6 @@ Section: The One Decision
     else if s.phase /= 1 then False
     else if s.current-player /= player then False
     else s.pending >= 0
-
- Buying and passing both end the turn, which is why they share a tail: the
- difference between them is one call, and everything after it is the same.
 
   mono-take : MonopolyState, Integer -> MonopolyState
   mono-take (s) (player) =
@@ -455,11 +430,146 @@ Section: Bankruptcy Check
     in if p.cash > best-cash then mono-richest-loop s bankrupt (i + 1) p.cash i
     else mono-richest-loop s bankrupt (i + 1) best-cash best-player
 
-Section: Turn
+Section: Trading
 
- Rolling and moving, which is everything a turn does before the decision.
- It ends the turn itself when the landing asks nothing, and stops at phase 1
- when it does.
+ A trade buys the last deed of a colour for twice its printed price, and the
+ buyer keeps 150 back.
+
+  mono-trade-price : Integer -> Integer
+  mono-trade-price (pi) = 2 * mono-prop-cost pi
+
+  mono-trade-reserve : Integer
+  mono-trade-reserve = 150
+
+  mono-trade : MonopolyState, Integer -> MonopolyState
+  mono-trade (s) (protected) =
+    if s.game-over then s
+    else if s.phase /= 0 then s
+    else mono-trade-colour s (s.current-player) protected False 0
+
+  mono-trade-offer : MonopolyState, Integer -> MonopolyState
+  mono-trade-offer (s) (person) =
+    if s.game-over then s
+    else if s.phase /= 0 then s
+    else mono-trade-colour s (s.current-player) person True 0
+
+  mono-trade-colour : MonopolyState, Integer, Integer, Boolean, Integer -> MonopolyState
+  mono-trade-colour (s) (player) (protected) (offer) (c) =
+    if c >= 8 then s
+    else let want = mono-missing-deed s player c
+    in if want < 0 then mono-trade-colour s player protected offer (c + 1)
+    else let seller = (mono-get-prop s want).owner
+    in if seller == protected then (if offer & mono-trade-possible s want seller player c then mono-set-phase s mono-phase-trade-offer want else mono-trade-colour s player protected offer (c + 1))
+    else let give = mono-swap-deed s seller player c 0
+    in if give >= 0 then mono-transfer (mono-transfer s want seller player) give player seller
+    else let price = mono-trade-price want
+    in if (mono-get-player s player).cash >= price + mono-trade-reserve
+      then mono-pay (mono-transfer s want seller player) player seller price
+    else mono-trade-colour s player protected offer (c + 1)
+
+  mono-phase-trade-offer : Integer
+  mono-phase-trade-offer = 2
+
+  mono-trade-possible : MonopolyState, Integer, Integer, Integer, Integer -> Boolean
+  mono-trade-possible (s) (want) (seller) (player) (c) =
+    if mono-swap-deed s seller player c 0 >= 0 then True
+    else (mono-get-player s player).cash >= mono-trade-price want + mono-trade-reserve
+
+  mono-accept-offer : MonopolyState -> MonopolyState
+  mono-accept-offer (s) =
+    if s.phase /= mono-phase-trade-offer then s
+    else let want = s.pending
+    in let player = s.current-player
+    in let seller = (mono-get-prop s want).owner
+    in let c = (mono-get-prop s want).color
+    in let give = mono-swap-deed s seller player c 0
+    in let price = mono-trade-price want
+    in let cleared = mono-set-phase s 0 (-1)
+    in if give >= 0 then mono-transfer (mono-transfer cleared want seller player) give player seller
+    else if (mono-get-player s player).cash >= price + mono-trade-reserve then mono-pay (mono-transfer cleared want seller player) player seller price
+    else cleared
+
+  mono-decline-offer : MonopolyState -> MonopolyState
+  mono-decline-offer (s) =
+    if s.phase /= mono-phase-trade-offer then s else mono-set-phase s 0 (-1)
+
+  mono-set-phase : MonopolyState, Integer, Integer -> MonopolyState
+  mono-set-phase (s) (ph) (pend) =
+    MonopolyState {
+      players = s.players,
+      properties = s.properties,
+      current-player = s.current-player,
+      turn-number = s.turn-number,
+      game-over = s.game-over,
+      winner = s.winner,
+      num-players = s.num-players,
+      phase = ph,
+      pending = pend,
+      last-roll = s.last-roll
+    }
+
+  mono-missing-deed : MonopolyState, Integer, Integer -> Integer
+  mono-missing-deed (s) (player) (c) =
+    if mono-player-owns-color s player c /= mono-color-group-size c - 1 then (-1)
+    else mono-other-deed s player c 0
+
+  mono-other-deed : MonopolyState, Integer, Integer, Integer -> Integer
+  mono-other-deed (s) (player) (c) (pi) =
+    if pi >= 22 then (-1)
+    else let ps = mono-get-prop s pi
+    in if ps.color /= c then mono-other-deed s player c (pi + 1)
+    else if ps.owner == player then mono-other-deed s player c (pi + 1)
+    else if ps.owner >= 0 then pi
+    else (-1)
+
+  mono-swap-deed : MonopolyState, Integer, Integer, Integer, Integer -> Integer
+  mono-swap-deed (s) (seller) (player) (skip) (c) =
+    if c >= 8 then (-1)
+    else if c == skip then mono-swap-deed s seller player skip (c + 1)
+    else let d = mono-missing-deed s seller c
+    in if d < 0 then mono-swap-deed s seller player skip (c + 1)
+    else if (mono-get-prop s d).owner == player then d
+    else mono-swap-deed s seller player skip (c + 1)
+
+ Both owned-property lists are rebuilt rather than pushed to, because
+ `list-push` extends the caller's list in place (L-ALIAS).
+
+  mono-transfer : MonopolyState, Integer, Integer, Integer -> MonopolyState
+  mono-transfer (s) (pi) (from) (to) =
+    let ps = mono-get-prop s pi
+    in let new-ps = PropertyState {
+           owner = to,
+           cost = ps.cost,
+           base-rent = ps.base-rent,
+           color = ps.color
+         }
+    in let f = mono-get-player s from
+    in let new-f = MonopolyPlayer {
+           position = f.position,
+           cash = f.cash,
+           owned-properties = mono-list-without (f.owned-properties) pi 0 [],
+           in-jail = f.in-jail,
+           jail-turns = f.jail-turns
+         }
+    in let s2 = mono-set-player (mono-set-prop s pi new-ps) from new-f
+    in let t = mono-get-player s2 to
+    in let new-t = MonopolyPlayer {
+           position = t.position,
+           cash = t.cash,
+           owned-properties = list-push (mono-list-without (t.owned-properties) (-1) 0 []) pi,
+           in-jail = t.in-jail,
+           jail-turns = t.jail-turns
+         }
+    in mono-set-player s2 to new-t
+
+  mono-list-without : List Integer, Integer, Integer, List Integer -> List Integer
+  mono-list-without (xs) (drop) (i) (acc) =
+    if i >= list-length xs then acc
+    else let x = list-at xs i
+    in if x == drop then mono-list-without xs drop (i + 1) acc
+    else mono-list-without xs drop (i + 1) (list-push acc x)
+
+Section: Turn
 
   mono-roll : MonopolyState, Rng -> MonopolyState
   mono-roll (s) (r) =
@@ -502,14 +612,12 @@ Section: Turn
     in let s3 = mono-land s2 player new-pos
     in if s3.phase == 1 then s3 else mono-end-turn s3
 
- The watch-only runner is now a POLICY over the same turn rather than a
- second copy of it: roll, and take whatever was offered if you can afford
- it, which is exactly what landing used to do on its own. One model, so a
- page and a self-playing game cannot drift apart.
-
   mono-do-turn : MonopolyState, Rng -> MonopolyState
-  mono-do-turn (s) (r) =
-    let rolled = mono-roll s r
+  mono-do-turn (s) (r) = mono-play-turn s r (-1)
+
+  mono-play-turn : MonopolyState, Rng, Integer -> MonopolyState
+  mono-play-turn (s) (r) (protected) =
+    let rolled = mono-roll (mono-trade s protected) r
     in if rolled.phase == 1 then mono-take rolled (rolled.current-player)
     else rolled
 

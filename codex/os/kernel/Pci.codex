@@ -2,11 +2,6 @@ Chapter: Pci
   cites Foreword chapter Maybe
   grounds Device.Port
 
- PCI Configuration Space access via I/O ports 0xCF8/0xCFC (CAM).
- Enumerates devices on bus 0, reads vendor/device IDs, class codes,
- BARs. Pure logic for address calculation; I/O port access uses
- builtins port-out-32 and port-in-32.
-
  We say:
 
 Section: Constants
@@ -41,26 +36,6 @@ Section: Device Info
   }
 
 Section: Device Scanning
- `truncated` is the answer to a question no caller could ask before: is this
- the whole tree, or as much of it as the depth cap allowed? `pci-collect` used
- to return its accumulator at the cap and say nothing, so a walk that gave up
- was indistinguishable from one that finished. Measured 2026-08-21 against
- `-pci-bridge-levels 4`: eleven devices exist and the scan reported ten. The
- endpoint was not missing from the machine, it was missing from the ANSWER,
- which is the same failure this walk exists to fix one level further down --
- scanning bus 0 alone also returns something that looks complete and is empty.
-
- A single-bus scan is never truncated, so `pci-scan-bus` answers False and
- only `pci-scan-all` can answer True.
-
- IT MEANS THE DEPTH CAP STOPPED THE WALK, AND NOT "the answer is complete".
- A bridge whose secondary bus is at or below its own is refused by
- `pci-bridge-one` and leaves whatever sits behind it unfound, and this flag
- stays False for that: the walk was not cut short, it was pointed nowhere it
- could follow. Measured, `-pci-bridge-levels 2 -pci-bridge-backward` answers
- `truncated=no` with bus 2 empty. Conflating the two would make the flag mean
- "something somewhere may be missing", which no caller can act on.
-
   PciScanResult = record {
     devices : List PciDevice,
     count : Integer,
@@ -90,14 +65,9 @@ Section: Device Scanning
 
 Section: The Whole Bus Tree
 
- `pci-scan-bus` answers ONE bus. A chipset-integrated part sits on bus 0
- and is found by it; a discrete part sits behind a PCI-to-PCI bridge, on a
- bus number only that bridge knows, and is not. Measured by fester under
- OVMF and recorded in `build/boot/diag/README.md`: with the only NIC behind
- a `pcie-root-port` the part is at `01:00.0` and bus 0 holds nothing but
- the bridge itself at `1b36:000c`. Scanning bus 0 alone returns an answer
- that looks complete and is empty, so anything asking "is there a NIC"
- must ask this instead.
+ A chipset-integrated part sits on bus 0; a discrete part sits behind a
+ PCI-to-PCI bridge, on a bus number only that bridge knows, so bus 0 alone
+ can look complete and be empty.
 
  A header type of 1 is a bridge, and byte 24 bits 8..15 of its config
  space is the secondary bus it forwards to.
@@ -107,10 +77,6 @@ Section: The Whole Bus Tree
   pci-sec-bus : PciDevice -> Integer
   pci-sec-bus (d) =
    bit-and (bit-shru (pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 24) 8) 255
-
- The walk carries the cut flag with the devices rather than returning a bare
- list, because a refusal happens at the deepest point and has to survive back
- out through every sibling bridge above it.
 
   PciWalk = record {
     pw-devs : List PciDevice,
@@ -157,9 +123,8 @@ Section: Config Space Reads
 
  Sizing a BAR is a write of all ones followed by a read: the device answers
  with its address bits held high and everything below its window clear, so
- the length is the complement of that mask plus one. The base must be
- written back afterwards, because sizing is a question and not a move.
- (pci-write-config is defined below, under PCI Config Write.)
+ the length is the complement of that mask plus one. The base is written
+ back afterwards.
 
   pci-bar-size : Integer, Integer, Integer, Integer -> Integer
   pci-bar-size (bus) (dev) (func) (bar-offset) =
@@ -261,12 +226,9 @@ Section: PCI Config Write
     in let w = port-out-32 pci-config-addr addr
     in w + port-out-32 pci-config-data value
 
- Bringing a device up is three bits in the command register and not one:
- I/O space (1), memory space (2), and BUS MASTER (4). The third is what
- lets the device read and write host memory on its own initiative, which
- is how every card worth driving moves data -- a descriptor-ring NIC
- fetches its own descriptors and DMAs frame bodies, and with bus master
- clear it is enabled, addressable, silent, and gives no indication why.
+ Bringing a device up sets three command-register bits: I/O space (1),
+ memory space (2) and bus master (4). Without bus master a DMA device is
+ enabled, addressable and silent.
 
   pci-enable-device : PciDevice -> Integer
   pci-enable-device (d) =

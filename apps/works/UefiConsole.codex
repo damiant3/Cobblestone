@@ -2,17 +2,9 @@ Chapter: UefiConsole
   cites Foreword chapter Maybe
   cites UI chapter Event
   cites UI chapter KeyInput
-
- Abstraction over UEFI Simple Text Output and Simple Text Input
- protocols. The dev console targets UefiConsole, not VGA or
- serial. On UEFI, the SystemTable provides ConOut and ConIn;
- UefiConsole wraps ConOut and ConIn as typed Codex operations.
-
- ConOut protocol: Reset at 0, OutputString at 8, TestString at 16,
- QueryMode at 24, SetMode at 32, SetAttribute at 40, ClearScreen at 48,
- SetCursorPosition at 56, EnableCursor at 64.
- ConIn protocol: Reset at 0, ReadKeyStroke at 8.
- SystemTable: ConIn at offset 48, ConOut at offset 64.
+  cites Works chapter GopDraw
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter MathLib
 
  We say:
 
@@ -84,40 +76,13 @@ Section: Text Attributes
 
 Section: Scan Codes
 
- The UEFI scan-code table that stood here is deleted. It was a third copy
- of the DOM key numbering (up 38, right 39, delete 127, F12 123), nothing
- in this chapter is fed a UEFI scan code, and every comparison against it
- was dead. `UI chapter KeyInput` owns the named keys.
-
 Section: Key Input
-
- **This chapter is named for UEFI and has not read a UEFI key in a long
- time.** After ExitBootServices there is no system table, so every one of
- the three constructors below fills a UefiKey from `poll-key`, which speaks
- the keyboard contract in `UI chapter KeyInput`. The predicates, however,
- were still written against UEFI's own encoding: its scan-code numbering
- for the navigation keys, and its shift-state bit layout for the
- modifiers. Neither has ever matched what poll-key hands over, so this
- whole block was dead code that reads exactly like working code.
-
- The modifiers were worse than dead. All three constructors set
- `shift-state = 0`, so `uefi-key-shift-valid` was always False, which made
- `uefi-key-is-ctrl-alt-del` return False unconditionally: **Ctrl+Alt+Del
- in the dev console has never once fired.** The Ctrl chords below it
- compared `char-code` against ASCII control codes (Ctrl+C as 3), which
- poll-key does not produce and never did -- it answers the letter and sets
- a ctrl bit in `poll-mods`.
 
   UefiKey = record {
     scan-code : Integer,
     char-code : Integer,
     shift-state : Integer
   }
-
- A character is anything that is not a named key. The old test was
- `32 <= c <= 126`, which was an ASCII printable-range check on a value
- that is no longer ASCII: in CCE that range is a slice through the middle
- of the punctuation and accented blocks and excludes every letter.
 
   uefi-key-is-char : UefiKey -> Boolean
   uefi-key-is-char (k) =
@@ -162,11 +127,6 @@ Section: Shift State
   uefi-any-logo : Integer = 192
 
 Section: Modifier Predicates
-
- These read `poll-mods` bits (shift 1, ctrl 2, alt 4), not UEFI's
- left/right pairs. The `uefi-any-*` masks above describe a shift-state
- word this chapter is not given and are kept only for `uefi-key-has-logo`,
- which has no poll-key equivalent and is honestly always False.
 
   uefi-key-has-shift : UefiKey -> Boolean
   uefi-key-has-shift (k) = bit-and (k.shift-state) mod-shift > 0
@@ -321,41 +281,161 @@ Section: Network
     ethertype : Integer
   }
 
+Section: The GOP Console
+
+ After ExitBootServices the firmware console is gone, and the boot payload
+ draws the same 80 by 25 cell grid into the GOP framebuffer instead. The
+ block lives at 0x1E000, inside the free hole between the xHCI diagnostic
+ block and the GOP handoff block that `GopXhci` maps, and metal does not
+ clear that hole; therefore the grid is on only when offset 0 holds the
+ magic "GTC1". Offsets 4 and 8 are the framebuffer base as two 32-bit
+ halves, 12 the width, 16 the height, 20 the stride in pixels. The sixteen
+ colours are the EFI text attribute colours the UEFI specification numbers
+ 0 to 15. Offsets 24 and 28 are the key ring's read and write counts, 32 the
+ keys a full ring dropped, and 64 up the 32 slots: one writer advances 28
+ after the slot is stored, one reader advances 24. Offset 56 counts the
+ reader's yields: on one core the boot process that feeds the ring runs only
+ when the reader yields.
+
+  ugc-block : Integer = 122880
+  ugc-magic : Integer = #47544331
+  ugc-cols : Integer = 80
+  ugc-rows : Integer = 25
+
+  ugc-on : Integer -> Boolean
+  ugc-on (dummy) = peek-32 ugc-block 0 == ugc-magic
+
+  ugc-enable : Integer, Integer, Integer, Integer -> Integer
+  ugc-enable (base) (w) (h) (stride) =
+    let a = poke-32 ugc-block 4 (bit-and base 4294967295)
+    in let b = poke-32 ugc-block 8 (bit-shru base 32)
+    in let c = poke-32 ugc-block 12 w
+    in let d = poke-32 ugc-block 16 h
+    in let e = poke-32 ugc-block 20 stride
+    in let rh = poke-32 ugc-block 24 0
+    in let rt = poke-32 ugc-block 28 0
+    in let rd = poke-32 ugc-block 32 0
+    in let ry = poke-32 ugc-block 56 0
+    in let m = poke-32 ugc-block 0 ugc-magic
+    in ugc-clear 0
+
+  ugc-disable : Integer -> Integer
+  ugc-disable (dummy) = poke-32 ugc-block 0 0
+
+  ugc-ring-n : Integer = 32
+
+  ugc-drops : Integer -> Integer
+  ugc-drops (dummy) = peek-32 ugc-block 32
+
+  ugc-key-push : Integer -> Integer
+  ugc-key-push (k) =
+    let head = peek-32 ugc-block 24
+    in let tail = peek-32 ugc-block 28
+    in if tail - head >= ugc-ring-n then poke-32 ugc-block 32 (peek-32 ugc-block 32 + 1)
+    else let s = poke-32 ugc-block (64 + 4 * int-mod tail ugc-ring-n) k
+    in poke-32 ugc-block 28 (tail + 1)
+
+  ugc-key-pop : Integer -> Integer
+  ugc-key-pop (dummy) =
+    let head = peek-32 ugc-block 24
+    in if head == peek-32 ugc-block 28 then 0
+    else let k = peek-32 ugc-block (64 + 4 * int-mod head ugc-ring-n)
+    in let a = poke-32 ugc-block 24 (head + 1)
+    in k
+
+  ugc-yield : [Concurrent] Integer
+  ugc-yield =
+    if ugc-on 0 then
+      let n = poke-32 ugc-block 56 (peek-32 ugc-block 56 + 1)
+      in process-yield
+    else 0
+
+  ugc-yields : Integer -> Integer
+  ugc-yields (dummy) = peek-32 ugc-block 56
+
+  ugc-key-feed : Integer -> Integer
+  ugc-key-feed (sc) =
+    let k = poll-key-decode sc (atomic-load kbd-mod-addr)
+    in if k == 0 then 0 else ugc-key-push k
+
+  ugc-base : Integer -> Integer
+  ugc-base (dummy) = peek-32 ugc-block 4 + peek-32 ugc-block 8 * 4294967296
+
+  ugc-w : Integer -> Integer
+  ugc-w (dummy) = peek-32 ugc-block 12
+
+  ugc-h : Integer -> Integer
+  ugc-h (dummy) = peek-32 ugc-block 16
+
+  ugc-stride : Integer -> Integer
+  ugc-stride (dummy) = peek-32 ugc-block 20
+
+  ugc-scale : Integer -> Integer
+  ugc-scale (dummy) = ui-scale (ugc-w 0)
+
+  ugc-rgb : Integer -> Integer
+  ugc-rgb (c) =
+    if c == 0 then #000000 else if c == 1 then #0000AA else if c == 2 then #00AA00
+    else if c == 3 then #00AAAA else if c == 4 then #AA0000 else if c == 5 then #AA00AA
+    else if c == 6 then #AA5500 else if c == 7 then #AAAAAA else if c == 8 then #555555
+    else if c == 9 then #5555FF else if c == 10 then #55FF55 else if c == 11 then #55FFFF
+    else if c == 12 then #FF5555 else if c == 13 then #FF55FF else if c == 14 then #FFFF55
+    else #FFFFFF
+
+  ugc-fill : Integer, Integer, Integer, Integer -> Integer
+  ugc-fill (row) (col) (n) (bg) =
+    let s = ugc-scale 0
+    in gop-fill-rect (ugc-base 0) (ugc-stride 0) (ugc-h 0) (col * 8 * s) (row * 16 * s) (n * 8 * s) (16 * s) (ugc-rgb bg)
+
+  ugc-put : Integer, Integer, Text, Integer, Integer -> Integer
+  ugc-put (row) (col) (txt) (fg) (bg) =
+    let mark = __heap-save
+    in let s = ugc-scale 0
+    in let n = math-min (text-length txt) (ugc-cols - col)
+    in let f = ugc-fill row col n bg
+    in let t = if n <= 0 then 0 else gop-draw-text (ugc-base 0) (ugc-stride 0) (ugc-h 0) cbf-init (col * 8 * s) (row * 16 * s) (substring txt 0 n) (ugc-rgb fg) s 0
+    in let r = __heap-restore mark
+    in t
+
+  ugc-clear : Integer -> Integer
+  ugc-clear (dummy) = gop-fill-rect (ugc-base 0) (ugc-stride 0) (ugc-h 0) 0 0 (ugc-w 0) (ugc-h 0) (ugc-rgb 0)
+
 Section: Console Operations
 
   uefi-con-set-attr : Integer, Integer -> Integer
-  uefi-con-set-attr (fg) (bg) = uefi-set-attr (bit-or fg (bit-shl bg 4))
+  uefi-con-set-attr (fg) (bg) = if ugc-on 0 then 0 else uefi-set-attr (bit-or fg (bit-shl bg 4))
 
   uefi-con-clear : Integer
-  uefi-con-clear = uefi-clear-screen
+  uefi-con-clear = if ugc-on 0 then ugc-clear 0 else uefi-clear-screen
 
   uefi-con-move : Integer, Integer -> Integer
-  uefi-con-move (col) (row) = uefi-set-cursor col row
+  uefi-con-move (col) (row) = if ugc-on 0 then 0 else uefi-set-cursor col row
 
   uefi-con-hide-cursor : Integer
-  uefi-con-hide-cursor = uefi-enable-cursor 0
+  uefi-con-hide-cursor = if ugc-on 0 then 0 else uefi-enable-cursor 0
 
   uefi-con-show-cursor : Integer
-  uefi-con-show-cursor = uefi-enable-cursor 1
+  uefi-con-show-cursor = if ugc-on 0 then 0 else uefi-enable-cursor 1
 
   uefi-con-put-text : Integer, Integer, Text, Integer, Integer -> [Console] Nothing
   uefi-con-put-text (row) (col) (txt) (fg) (bg) =
-    let w0 = uefi-con-set-attr fg bg
+    if ugc-on 0 then act
+      let d = ugc-put row col txt fg bg
+      in print-uni ""
+    end
+    else let w0 = uefi-con-set-attr fg bg
     in let w1 = uefi-con-move col row
     in print-uni txt
 
   uefi-con-fill-row : Integer, Integer, Integer -> [Console] Nothing
   uefi-con-fill-row (row) (fg) (bg) =
-    let w0 = uefi-con-set-attr fg bg
+    if ugc-on 0 then act
+      let d = ugc-fill row 0 ugc-cols bg
+      in print-uni ""
+    end
+    else let w0 = uefi-con-set-attr fg bg
     in let w1 = uefi-con-move 0 row
     in print-uni "                                                                               "
-
- uefi-key-of is the one place a UefiKey is built, so the modifier state is
- captured with the key rather than left at zero. poll-mods must be read in
- the same breath as the key: it is a latch, and a second read later would
- answer whatever is held by then rather than what was held when the key
- arrived. uefi-shift-valid marks that the state is real, which is the bit
- uefi-key-is-ctrl-alt-del gates on and which no constructor ever set.
 
   uefi-key-of : Integer -> UefiKey
   uefi-key-of (raw) =
@@ -367,7 +447,7 @@ Section: Console Operations
 
   uefi-con-wait-key-spin : Integer -> UefiKey
   uefi-con-wait-key-spin (n) =
-    let raw = poll-key
+    let raw = if ugc-on 0 then ugc-key-pop 0 else poll-key
     in if raw == 0 then uefi-con-wait-key-spin (n + 1)
     else uefi-key-of raw
 
@@ -376,7 +456,7 @@ Section: Console Operations
 
   uefi-con-wait-key-ex-spin : Integer -> UefiKey
   uefi-con-wait-key-ex-spin (n) =
-    let raw = poll-key
+    let raw = if ugc-on 0 then ugc-key-pop 0 else poll-key
     in if raw == 0 then uefi-con-wait-key-ex-spin (n + 1)
     else uefi-key-of raw
 
@@ -385,7 +465,7 @@ Section: Console Operations
 
   uefi-con-poll-key : Maybe UefiKey
   uefi-con-poll-key =
-    let raw = poll-key
+    let raw = if ugc-on 0 then ugc-key-pop 0 else poll-key
     in if raw == 0 then None
     else Just (uefi-key-of raw)
 

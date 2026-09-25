@@ -93,11 +93,15 @@ try {
   const one = await emitFor();
   ok('the link composes the arc source and an entry', JSON.stringify(one.files) === JSON.stringify(['CircumhorizontalArc.codex', 'ValheimMod.codex']), one.files.join(','));
   ok('the arc-only mod emits the arc and nothing else', one.arc && !one.storage && !one.meadows, JSON.stringify(one));
+  const sel1 = await cdp.eval(`JSON.stringify(project.mod)`);
+  ok('the composed project carries its selection for a Targets request', sel1 === JSON.stringify({ game: 'valheim', features: ['arc'] }), sel1);
 
   await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/prism.html#mod=valheim:storage,meadows` });
   await sleep(4000);
   const two = await emitFor();
   ok('storage and meadows emit those two and not the arc', two.storage && two.meadows && !two.arc, JSON.stringify(two));
+  const sel2 = await cdp.eval(`JSON.stringify(project.mod)`);
+  ok('a second composition replaces the selection', sel2 === JSON.stringify({ game: 'valheim', features: ['storage', 'meadows'] }), sel2);
 
   await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/prism.html#mod=valheim:nosuch` });
   await sleep(3000);

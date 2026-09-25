@@ -31,31 +31,6 @@ consumer of this quire, uses **Lz4**. Encoders are optional; decoders are not,
 because you do not get to choose the format someone else's data arrived in.
 That asymmetry is the entire value here and it is banked.
 
-## COMPRESS-1: a decoder conformance pass against RFC 7932
-
-The only defensible remaining item, and it is a decoder item. The oracle can
-only exercise streams .NET happens to emit, which is exactly why the metadata
-meta-block hid until a `Flush()` forced one. Section by section against the
-RFC, not against what an oracle chooses to produce.
-
-Two bugs found the day a multi-meta-block stream first existed, and the first
-hid the second:
-
-- **`MNIBBLES == 3` is a metadata meta-block, not a length.** A flush emits an
-  empty one to reach a byte boundary; the reader read the following 28 bits as
-  MLEN. It also **aligns even when empty** -- handling the block but resuming on
-  the next bit decoded 2023 bytes of 6000.
-- **The distance ring buffer is per STREAM, not per meta-block.** With metadata
-  fixed, a per-meta-block reset decoded exactly 6000 bytes, **all of them
-  wrong** (hash 896524521 against 589799522). Right length, wrong content, no
-  error. That is why the harness compares a hash.
-
-Neither was reachable before: our own encoder emits no metadata blocks and
-declines the shorthand at each meta-block start, so **our own multi-meta-block
-output reads back perfectly** and proved nothing. `multimeta` in
-`build/brotli-read-test.ps1` is the case that reaches both, and it asserts the
-stream really is split before it trusts a pass.
-
 ## COMPRESS-2: the encoder declines the shorthand at each meta-block start
 
 A missed ratio opportunity, not a gap. `last` restarts per region, so the first

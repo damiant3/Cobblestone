@@ -13,6 +13,12 @@ plug) used to duplicate per app:
   ws, ss-flat) and `inject-app-style theme css`.
 - `WebWidgets` -- `wk-attach`, `widget-box`, `widget-box-click`,
   multi-digit `id-num`, `no-pick`.
+- `WebOverlay` -- `mount-overlays theme stack`, kept apart from
+  `WebRuntime` so only a page with overlays cites `UI chapter Overlay`.
+- `WebGraphics` -- `mount-svg`, `svg-draw-cmds`, `svg-fill-path`,
+  `svg-stroke-path` and `mount-chart`, apart for the same reason
+  (`UI chapter Charts`, `UI chapter Vector`).
+- `WebA11y` -- `dom-apply-a11y id info` (`UI chapter Accessibility`).
 
 An app keeps only: its palette/Theme, its CSS text, its widget tree,
 its data helpers, and its click/input handlers.

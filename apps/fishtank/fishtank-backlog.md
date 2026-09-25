@@ -95,22 +95,15 @@ it under codex-vm yields CCE bytes rather than UTF-8, and the captured
 checked-in page exists at all. Either the emitter should print through the
 Unicode path, or the build step that captures it must decode CCE.
 
-## 1.4 -- Verify red 15322 on screen, then copy it up
+## 1.4 -- The wasm page's atlas still clamps each axis separately
 
-Submitted to `//Codex/red` only, deliberately: `node --check` passes on the
-emitted JS but the after-shot was never captured, for the reasons in 1.2.
-Three changes, all in `FishTankBridge.codex` with `web/fishtank.js` kept in
-step:
-
-1. **The atlas destroyed aspect ratio.** It clamped each axis independently
-   (`Math.min(img.width,512)`, `Math.min(img.height,512)`), so every 576x768
-   and 768x576 foreground sprite was packed into 512x512 and drawn about a
-   third wrong in one axis. Now scaled by the longer side. This one is a real
-   bug and it affects the GOOD sprites too, so it is worth keeping whatever
-   is decided about the dead assets.
-2. The two dead `fg-coral-left` placements removed.
-3. The dead shrimp school no longer spawned. Shrimp is species index 7, the
-   last entry, so no other index shifts.
+The JavaScript page's atlas scales a sprite by its longer side (`FishTankBridge.codex:766`,
+`web/fishtank.js`), so a 576x768 foreground keeps its shape there. The wasm
+page's copy does not: `FishTankWasmBridge.codex:148-149` still clamps width and
+height to 512 separately, which packs every 576x768 and 768x576 sprite into
+512x512 and draws it about a third wrong in one axis. Neither page's fix has been
+checked on screen (1.2 has no headed-render route), and this is plausibly part
+of 1.5.
 
 ## 1.5 -- OPEN (Damian, 2026-09-02): the wasm page RUNS and still looks bad
 

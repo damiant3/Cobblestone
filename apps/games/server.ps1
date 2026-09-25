@@ -60,7 +60,10 @@ function Get-ModuleCounts {
         @{N='Trust';     P='codex\os\trust'}
         @{N='Verify';    P='codex\os\verify'}
         @{N='Works';     P='apps\works'}
-        @{N='Games';     P='apps\games'}
+        @{N='Games';     P='apps\games\classic'}
+        @{N='Magic';     P='apps\games\magic'}
+        @{N='CodexMagic'; P='apps\games\codexmagic'}
+        @{N='MobileApp'; P='apps\codexmagic-mobile'}
     )
     $total = 0
     $rows = foreach ($q in $quires) {

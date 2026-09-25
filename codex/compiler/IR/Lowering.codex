@@ -4,6 +4,7 @@ Chapter: Lowering
   cites Codex chapter Unification (MemoCtx, mcopy-type, mcopy-text, mcopy-texts, memo-pow2-at-least, memo-shift-for)
   cites Codex chapter Syntax Nodes (copy-sx-span)
   cites Foreword chapter Tuple
+  cites Codex chapter Type Checker (lookup-record-field)
 
 Section: Lower Context
   BinderRename =
@@ -32,9 +33,13 @@ Section: Expression Lowering
     is ANameExpr (name) (s) -> lower-name (name.value) ty ctx s
     is AApplyExpr (f) (a) (s) -> lower-apply f a ty ctx s
     is ABinaryExpr (l) (op) (r) (s) ->
-     let left-ir = lower-expr-at l ty ctx (depth + 1)
+     let operand-ty = if binary-op-compares op then NoExpectTy else ty
+     in let left-expect = when op
+        is OpCons -> cons-head-expect (deep-resolve (ctx.ust) ty)
+        is otherwise -> operand-ty
+     in let left-ir = lower-expr-at l left-expect ctx (depth + 1)
      in let left-ty = ir-expr-type left-ir
-     in let right-ir = lower-expr-at r ty ctx (depth + 1)
+     in let right-ir = lower-expr-at r operand-ty ctx (depth + 1)
      in lower-binary-maybe-eq op left-ty left-ir right-ir ty ctx s
     is AUnaryExpr (operand) (s) ->
      let inner = lower-expr-at operand int-ty-default ctx (depth + 1)
@@ -89,9 +94,11 @@ Section: Expression Lowering
           is RecordTy (irn) (ira) (irf) -> fa-apply-subst (fa-pair-args ira icargs 0 (list-length ira) []) field-ty
           is otherwise -> field-ty)
         is otherwise -> field-ty
-     in let actual-field-ty = when inst-field-ty
-        is ErrorTy | NoExpectTy -> ty
-        is otherwise -> inst-field-ty
+     in let recorded-field-ty = deep-resolve (ctx.ust) (lookup-field-access-type (ctx.ust) s)
+     in let actual-field-ty = if ty-ground recorded-field-ty 0 then recorded-field-ty
+        else when inst-field-ty
+         is ErrorTy | NoExpectTy -> ty
+         is otherwise -> inst-field-ty
      in let node-rec-ty = instantiate-receiver-ty refined-rec-ty resolved-rec-ty
      in let fixed-rec = when rec-ty
         is RecordTy (rn) (ra) (rf) -> rec-ir
@@ -163,7 +170,10 @@ Section: Expression Lowering
    in let else-body = deck-record (IrFieldAccess cell-name "__lz-val" val-ty s)
    in let if-expr = deck-record (IrIf done-check then-body else-body val-ty s)
    in let param = deck-record (IRParam { name = unit-n, type-val = int-ty-default, span = s })
-   in let lam = deck-record (IrLambda (list-push [] param) if-expr ty s)
+   in let lam-ty = when ty
+      is ErrorTy | NoExpectTy -> deck-record (FunTy int-ty-default empty-row val-ty)
+      is otherwise -> ty
+   in let lam = deck-record (IrLambda (list-push [] param) if-expr lam-ty s)
    in deck-record (IrLet cell-n cty cell-ir lam s)
 
   fa-pair-args : List CodexType, List CodexType, Integer, Integer, List TypeBinding -> List TypeBinding
@@ -296,6 +306,30 @@ Section: Expression Lowering
    when ty
     is EffectfulTy (effs) (sc) (ret) -> peel-effectful-ty ret
     is otherwise -> ty
+
+  ty-ground : CodexType, Integer -> Boolean
+  ty-ground (t) (depth) =
+   if depth >= 64 then False
+   else when t
+    is ErrorTy | NoExpectTy -> False
+    is TypeVar (id) -> False
+    is FunTy (a) (r) (b) -> if ty-ground a (depth + 1) then ty-ground b (depth + 1) else False
+    is ListTy (e) -> ty-ground e (depth + 1)
+    is LinkedListTy (e) -> ty-ground e (depth + 1)
+    is TypeApply (a) (b) -> if ty-ground a (depth + 1) then ty-ground b (depth + 1) else False
+    is EffectfulTy (effs) (scopes) (inner) -> ty-ground inner (depth + 1)
+    is ConstructedTy (nm) (args) -> ty-list-ground args (depth + 1) 0
+    is SumTy (nm) (args) (cs) -> ty-list-ground args (depth + 1) 0
+    is RecordTy (nm) (args) (fs) -> ty-list-ground args (depth + 1) 0
+    is ForAllTy (id) (body) -> False
+    is ForAllEff (id) (body) -> False
+    is otherwise -> True
+
+  ty-list-ground : List CodexType, Integer, Integer -> Boolean
+  ty-list-ground (ts) (depth) (i) =
+   if i >= list-length ts then True
+   else if ty-ground (list-at ts i) depth then ty-list-ground ts depth (i + 1)
+   else False
 
   ty-has-error : CodexType -> Boolean
   ty-has-error (t) =
@@ -662,9 +696,15 @@ Section: Expression Lowering
       is otherwise -> func-ir
     is otherwise -> func-ir
 
+  lower-vec-cmp : Text, CodexType, IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
+  lower-vec-cmp (name) (vty) (left-ir) (right-ir) (mty) (s) =
+   deck-record (IrApply (deck-record (IrApply (deck-record (IrName name (FunTy vty empty-row (FunTy vty empty-row mty)) s)) left-ir (FunTy vty empty-row mty) s)) right-ir mty s)
+
   lower-binary-maybe-eq : BinaryOp, CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-binary-maybe-eq (op) (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) =
-   when op
+   let vname = vec-cmp-builtin op (deep-resolve (ctx.ust) left-ty)
+   in if text-length vname > 0 then lower-vec-cmp vname (deep-resolve (ctx.ust) left-ty) left-ir right-ir (binary-result-type op (deep-resolve (ctx.ust) left-ty) ty) s
+   else when op
     is OpEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s True
     is OpNotEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s False
     is otherwise -> let lt = deep-resolve (ctx.ust) left-ty
@@ -673,6 +713,26 @@ Section: Expression Lowering
      else if arith-op-unclassified op lt
      then deck-record (IrError "arithmetic operand is neither a number nor an integer" (binary-result-type op left-ty ty) s)
      else deck-record (IrBinary (lower-bin-op op left-ty) left-ir right-ir (binary-result-type op left-ty ty) s)
+
+  cons-head-expect : CodexType -> CodexType
+  cons-head-expect (t) =
+   when t
+    is ListTy (e) -> e
+    is LinkedListTy (e) -> e
+    is otherwise -> NoExpectTy
+
+  binary-op-compares : BinaryOp -> Boolean
+  binary-op-compares (op) =
+   when op
+    is OpEq -> True
+    is OpNotEq -> True
+    is OpLt -> True
+    is OpGt -> True
+    is OpLtEq -> True
+    is OpGtEq -> True
+    is OpApproxEq -> True
+    is OpApproxEqExact -> True
+    is otherwise -> False
 
   eq-op-for : Boolean -> BinaryOp
   eq-op-for (positive) = if positive then OpEq else OpNotEq
@@ -1596,7 +1656,7 @@ Section: Collections and Act
    else let s = list-at stmts i
    in when s
      is AActBindStmt (name) (val) (sp) ->
-      let val-ir = lower-expr val ty ctx
+      let val-ir = lower-expr val NoExpectTy ctx
    in let val-ty = peel-effectful-ty (ir-expr-type val-ir)
    in let ctx2 = bind-local ctx (name.value) val-ty
    in lower-act-stmts-acc stmts ty ctx2 (i + 1) len (list-push acc (deck-record (IrDoBind (bound-name ctx2 (name.value)) val-ty val-ir sp)))
@@ -1605,7 +1665,7 @@ Section: Collections and Act
        is ALetExpr (binds) (lbody) (ls) ->
         list-push acc (deck-record (IrDoExec (lower-act-let binds 0 lbody stmts ty ctx i len ls) sp))
        is otherwise ->
-        lower-act-stmts-acc stmts ty ctx (i + 1) len (list-push acc (deck-record (IrDoExec (lower-expr e ty ctx) sp)))
+        lower-act-stmts-acc stmts ty ctx (i + 1) len (list-push acc (deck-record (IrDoExec (lower-expr e (if i == len - 1 then ty else NoExpectTy) ctx) sp)))
 
  A `let` statement in an act block is do-notation: it scopes over the
  REST of the block, not merely over its own `in` body. Lowering it as a

@@ -1,6 +1,7 @@
 Chapter: InputSource
   cites UI chapter Event
   cites UI chapter BoxModel
+  cites UI chapter KeyInput
 
  Bare-metal input polling. Produces Event records that the
  Orchestrator can dispatch. The keyboard arrives in the kernel
@@ -140,9 +141,20 @@ Section: Event Generation
   ri-key-events (ri) (ts) (acc) =
     let sc = ri.ri-key
     in if sc == 0 then acc
-    else if sc >= 128 then list-push acc (event-key-up (sc - 128) mod-none ts)
-    else if ri.ri-prev-key == 0 then list-push acc (event-key-down sc mod-none ts)
+    else if sc >= 128 then ri-key-up-event acc sc ts
+    else if ri.ri-prev-key == 0 then ri-key-down-event acc sc ts
     else acc
+
+  ri-key-down-event : List Event, Integer, Integer -> List Event
+  ri-key-down-event (acc) (sc) (ts) =
+    let k = poll-key-decode sc (atomic-load kbd-mod-addr)
+    in if k == 0 then acc else list-push acc (event-key-down k poll-mods ts)
+
+  ri-key-up-event : List Event, Integer, Integer -> List Event
+  ri-key-up-event (acc) (sc) (ts) =
+    let latched = poll-key-decode sc (atomic-load kbd-mod-addr)
+    in let k = key-emit (apply-mods (scancode-to-keycode (sc - 128)) (atomic-load kbd-mod-addr))
+    in if k == 0 then acc else list-push acc (event-key-up k poll-mods ts)
 
 Section: Helpers
 

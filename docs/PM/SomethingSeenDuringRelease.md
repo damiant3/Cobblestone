@@ -29,6 +29,48 @@ count does.
 
 ## Done
 
+### Update 63 -- four text guards were red at head, and only the full gate runs them
+
+Found at step 0b, 2026-09-25, one guard per gate attempt: `check-backlog-ids`
+threw on a one-line register (fixed main 29135); `check-annotation-targets`
+named `identity-admin-row`, moved to `Types/Builtins.codex` by main 28693;
+`check-builtin-alloc` found four 256-bit `fixed` rows with no recorded site
+(main 28961); `check-shell-raw` found four generators risen by this cycle's
+landings (all three fixed main 29142). Every one is text-only and runs in
+seconds, but `build.ps1` is the only caller. Before the release gate, and
+after any change to a register, an annotation sidecar, a `fixed` builtin row
+or a `codex/build/*Script.codex`, run all of them at once:
+
+The third attempt's compiler stage then refused two CDX3006 warnings:
+`text-in-list` was defined in both the Desugarer (main 28784) and the Type
+Checker, and the stage-3 warnings ratchet also runs only in `build.ps1`
+(renamed, seed at main 29144). A compiler landing reads its own stage-3 log:
+
+```powershell
+build/check-compiler-warnings.ps1 -Log <stage3.log>    # the ratchet the full gate applies
+```
+
+Later phases found four more, each only in `build.ps1`: three arm64-only
+chapters with no test-compile baseline and a fourth with no `.arch-only`
+(main 29146, 29148); an uncatalogued tool (main 29150); and an app whose
+stray `)` CDX1078 now refuses (main 29152). A new test subject that cannot
+run on x86-64, a new `*.ps1`, or a parser rule that refuses more gets:
+
+```powershell
+build/check-test-compile.ps1 -Full -Kernel <candidate.cdx> -Ways 4
+pwsh build/checks/tool-catalog.ps1 -Repo (Get-Location).Path
+build/sweep-app-classes.ps1 -Check -Jobs 4 -Kernel <candidate.cdx>
+```
+
+The battery then found `-Prose` mode silently skipping the CDX1101 prose
+check since main 28606, an L-ALIAS in the parser (fixed main 29154). The only
+`-Prose` subject in any battery is `prose-anchor`; a parser change that
+touches prose runs it by hand under its `.flags`.
+
+```powershell
+foreach ($c in 'check-effect-vocab','check-sidecars','check-cdx-registry','check-facts-guid','check-backlog-ids','check-annotation-targets','check-shell-raw','check-pipe-verdicts','check-tools','check-cite-names','check-builtin-alloc','check-plug-types') { pwsh -NoProfile -File "build\$c.ps1" *> $null; "{0,-26} exit={1}" -f $c, $LASTEXITCODE }
+```
+
 ### Update 62 -- a compiler change reddened three test chapters that only the full test-compile sees
 
 Found at step 0b, 2026-09-24: `test-compile` refused three chapters at head.

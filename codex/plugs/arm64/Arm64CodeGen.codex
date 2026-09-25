@@ -109,6 +109,7 @@ Section: Codegen State
   A64Extra = record {
    effect-op-addrs : List A64EffectOpAddr,
    handler-table-base : Integer,
+   handled-ops : List WhOp,
    type-defs : List ATypeDef,
    learned-fields : List A64LearnedField,
    wcet-reports : List Text,
@@ -220,6 +221,7 @@ Section: State Constructors
     extra = A64Extra {
      effect-op-addrs = [],
      handler-table-base = 0,
+     handled-ops = [],
      type-defs = [],
      learned-fields = [],
      wcet-reports = [],
@@ -790,7 +792,7 @@ Section: Function Emission
     is IrLambda (params) (body) (t) (s) -> 2
     is IrMatch (scrut) (branches) (t) (s) -> 2 + a64-count-ir-locals scrut fname + a64-count-branch-locals branches fname 0
     is IrAct (stmts) (t) (s) -> list-length stmts + 1 + a64-count-act-locals stmts fname 0
-    is IrHandle (eff) (body) (clauses) (ty) (s) -> 4 + a64-count-ir-locals body fname
+    is IrHandle (eff) (body) (clauses) (ty) (s) -> 2 + 3 * list-length clauses + a64-count-ir-locals body fname
     is IrTry (max) (body) (fb) (fail) (ty) (s) -> 4 + a64-count-act-locals body fname 0
     is IrFork (body) (ty) (s) -> 2 + a64-count-ir-locals body fname
     is otherwise -> 1
@@ -809,9 +811,20 @@ Section: Function Emission
   a64-count-branch-locals (branches) (fname) (i) =
    if i >= list-length branches then 0
    else let b = list-at branches i
-   in let body-cost = a64-count-ir-locals (b.body) fname
+   in let nested = when b.pattern
+    is IrCtorPat (c) (subs) (t) (s) -> a64-count-nested-ctor-pats subs 0
+    is otherwise -> 0
+   in let body-cost = nested + a64-count-ir-locals (b.body) fname
    in let rest = a64-count-branch-locals branches fname (i + 1)
    in if body-cost > rest then body-cost else rest
+
+  a64-count-nested-ctor-pats : List IRPat, Integer -> Integer
+  a64-count-nested-ctor-pats (ps) (i) =
+   if i >= list-length ps then 0
+   else let here = when list-at ps i
+    is IrCtorPat (c) (subs) (t) (s) -> 1 + a64-count-nested-ctor-pats subs 0
+    is otherwise -> 0
+   in here + a64-count-nested-ctor-pats ps (i + 1)
 
   a64-count-act-locals : List IRActStmt, Text, Integer -> Integer
   a64-count-act-locals (stmts) (fname) (i) =
@@ -849,7 +862,19 @@ Section: Function Emission
    in let st3 = a64-emit st2 (arm64-stp a64-x21 a64-x22 a64-sp 32)
    in let st4 = a64-emit st3 (arm64-stp a64-x23 a64-x24 a64-sp 48)
    in let st5 = a64-emit st4 (arm64-stp a64-x25 a64-x26 a64-sp 64)
-   in a64-emit st5 (arm64-stp a64-x27 a64-xzr a64-sp 80)
+   in a64-emit-stack-guard (a64-emit st5 (arm64-stp a64-x27 a64-xzr a64-sp 80))
+
+ Valid only where the heap lies below the stack, which holds for the virt and
+ UEFI boots and the spawn pool and not for a Darwin boot. x16 carries nothing
+ into a function.
+
+  a64-emit-stack-guard : A64State -> A64State
+  a64-emit-stack-guard (st) =
+   if (st.extra).darwin-boot then st
+   else let st1 = a64-emit st (arm64-mov 16 a64-sp)
+   in let st2 = a64-emit st1 (arm64-cmp 16 a64-heap-reg)
+   in let st3 = a64-emit st2 (arm64-b-cond 2 8)
+   in a64-emit (a64-add-call-patch st3 "__out_of_memory") (arm64-bl 0)
 
   a64-nop-unused-saves : A64State, Integer, Integer -> A64State
   a64-nop-unused-saves (st) (prologue-start) (actual-pairs) =
@@ -947,17 +972,13 @@ Section: Expression Emission
     reg = tr.reg
    }
 
-  a64-next-data-offset : List A64StringEntry -> Integer
-  a64-next-data-offset (entries) =
-   a64-last-string-end entries 0 0
-
   a64-emit-text-lit : A64State, Text -> A64EmitResult
   a64-emit-text-lit (st) (value) =
    let existing = a64-find-string (st.string-offsets) value 0
    in let rodata-offset = if existing >= 0 then existing
-    else a64-next-data-offset (st.string-offsets)
+    else list-length (st.data)
    in let st1 = if existing >= 0 then st
-    else let off = a64-next-data-offset (st.string-offsets)
+    else let off = list-length (st.data)
     in let len-bytes = write-i64-le (text-length value)
     in let text-bytes = text-to-ascii-bytes value
     in let padded = a64-pad-to-8 (len-bytes & text-bytes)
@@ -1010,15 +1031,10 @@ Section: Expression Emission
 
 Section: Name Emission
 
- A zero-argument effect operation goes through the handler table ONLY
- when a handler was installed. The table's slots sit below the load
- segment and an unwritten one reads zero, so routing an unhandled op
- through it is a `blr 0` -- `console-readline-cite` died there before
- its first print, 2026-07-23. The argument path (`a64-emit-expr`'s
- apply arm) has always carried this `__handler_` guard; this is the
- same guard on the bare-name path. An unhandled `read-line` answers
- the None cell, which is what x86-64's `__read_line` answers at EOF
- and the honest answer on a lane with no stdin pump.
+ An unwritten table slot reads zero, so an unhandled `read-line` must
+ not be routed through it (`console-readline-cite` died on that call
+ before its first print, 2026-07-23). An unhandled `read-line` answers
+ the None cell, which is what x86-64's `__read_line` answers at EOF.
 
   a64-emit-name : A64State, Text, CodexType -> A64EmitResult
   a64-emit-name (st) (name) (ty) =
@@ -1028,11 +1044,11 @@ Section: Name Emission
    else if name == "__deck-enter" then a64-emit-deck-enter st
    else if name == "__deck-exit" then a64-emit-deck-exit st
    else if name == "vec-empty" then a64-emit-empty-list st
+   else if name == wh-resume-id & list-length ((st.extra).handled-ops) > 0 then a64-emit-load-resume st
    else let eoa = a64-find-effect-op-addr ((st.extra).effect-op-addrs) name 0
    in let is-rl = if name == "read-line" then True else name == "read-line-cce"
-   in let has-handler = if is-rl then a64-find-func-offset (st.func-names) (st.func-offsets) ("__handler_" & name) 0 else 0 - 1
    in if eoa >= 0 & (is-rl == False) then a64-emit-effect-op-call st eoa []
-   else if eoa >= 0 & has-handler >= 0 then a64-emit-effect-op-call st eoa []
+   else if eoa >= 0 & a64-op-handled st name then a64-emit-effect-op-call st eoa []
    else if is-rl then a64-emit-maybe-none st
    else when ty
     is SumTy (sname) (targs) (ctors) ->
@@ -1810,14 +1826,14 @@ Section: Real Arithmetic
   a64-is-vec-type (ty) =
    when ty
     is VectorTy (n) (et) -> True
-    is VectorMaskTy (n) -> True
+    is VectorMaskTy (n) (me) -> True
     is otherwise -> False
 
   a64-vec-lane-count : CodexType -> Integer
   a64-vec-lane-count (ty) =
    when ty
     is VectorTy (n) (et) -> n
-    is VectorMaskTy (n) -> n
+    is VectorMaskTy (n) (me) -> n
     is otherwise -> 2
 
   a64-type-arity : CodexType -> Integer

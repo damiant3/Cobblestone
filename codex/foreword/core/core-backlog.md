@@ -81,13 +81,8 @@ against the founding rule that what we did not build we do not trust.
    300), which is a third-party encoding of the exact question. **NOT
    seed-affecting, proven by the binary:** the compiler built with the chapter
    present matches the depot seed at every offset outside 40..135, because
-   nothing in the compiler's cite closure cites it (Rulebook rule 7).
-   **OPEN, and it is a gate gap: the test is in NO gate** (L-NOGATE). It
-   belongs in the BVT beside `x509-parse`, which is the write side of the same
-   trust story, and `build/bvt.ps1` is GENERATED, so the entry goes in
-   `codex/build/bvtScript.codex` and the emitted script lands in the same CL
-   (`Build.md`). That run re-measures the BVT test and check counts, which
-   `TechnicalDetails.md` publishes and `check-doc-counts` grades.
+   nothing in the compiler's cite closure cites it (Rulebook rule 7). In the
+   BVT beside `x509-parse`.
 2. **A self-signed server certificate. LANDED** (red 2026-09-23),
    `x509-dev-cert-ed25519` in `codex/foreword/encode/X509Write.codex`: Ed25519
    from a 32-byte private key, subject O=`Codex DEV-ONLY self-signed` equal to
@@ -101,8 +96,7 @@ against the founding rule that what we did not build we do not trust.
    verify -partial_chain -check_ss_sig` answers OK, a flipped signature byte
    answers error 7 and `-verify_hostname evil.test` error 62. The key comes
    from the caller; `codex/test/hosted-https.codex` draws it from
-   `hardware-random` at start. **The test is in
-   NO gate** (L-NOGATE), the same gap as step 1's.
+   `hardware-random` at start. In the BVT beside `x509-parse`.
 3. **A CA of our own**, which is the larger commitment and not implied by the
    first two: issuance, a naming policy, validity windows, and revocation.
    **A self-signed certificate does not make a browser trust us**, so a public
@@ -113,17 +107,6 @@ The two attest different things and have opposite exposure profiles, a signing
 key being used rarely in one place and a server key sitting in a
 network-facing process on every host. A server key is generated per
 deployment.
-
-**CORE-10. The TLS 1.3 server takes the FIRST key_share entry as X25519 without
-reading its group.** `dtls-ch-key-share` (`codex/foreword/encode/DtlsHello.codex`)
-returns bytes 6..37 of the extension, which is the first entry's key whatever
-group it names, and `tep-server-ch` agrees on it. A client that leads with a
-GREASE entry (Chrome) or with X25519MLKEM768 (OpenSSL 3.5 and later by
-default) gets a wrong shared secret and a handshake that dies at the Finished;
-a client offering no X25519 share at all gets no HelloRetryRequest. OpenSSL
-3.2 and 3.0 lead with X25519, which is why `codex/plugs/elf/hosted-https-arm.ps1`
-passes (2026-09-23). The fix is a walk over the KeyShareEntry list for group
-0x001D; the DTLS server shares the parser. Unowned.
 
 **CORE-8. CCE cannot represent tab, carriage return, backspace or formfeed,
 and every caller that asks for one is silently handed the character y-diaeresis
@@ -215,37 +198,24 @@ diagnostic.
 **AND THE OBVIOUS REPAIR IS RULED OUT, WHICH IS WHY THIS IS NOT A ONE-LINE
 FIX.** Refusing -1 inside `char-encode` traps `HttpClient` on any response body
 containing a carriage return, which is most of them, so **the policy belongs at
-the CALL SITES rather than in the encoder**. Measured 2026-08-26 over a real
-recursive walk of `codex/` and `apps/` (3,650 `.codex` files, `build-output`
-excluded): **36 sites** spell `code-to-char (from-unicode ...)` and are the
-candidate set. `codex/os/net/HttpClient.codex` is first, and its live witness
-is `http-response-guard`'s high-body arm. A compile-time backstop in the
-declared domain is now POSSIBLE where it was not before: COMPILER-28 is fixed
-and CDX2054 makes a range on a non-integer base a refusal instead of
-decoration, so re-read that row before concluding a bounded domain cannot be
-declared. Owner: blu, 2026-08-26.
+the CALL SITES rather than in the encoder**.
 
+**The census at head (reek, seed `CC7DD4559232C558`, 2026-09-24).**
+`from-unicode` answers -1 for exactly 31 values in 0..255: 1-9, 11-31 and 127.
+NUL, LF and all of 128..255 map. So a site hands -1 to the encoder only by
+letting a control byte or DEL through, or by passing a value above 255. The 37
+source sites spelling `code-to-char (from-unicode ...)` (generated copies under
+`build-output` and `apps/landing/web` excluded):
 
-## Reading a directory entry name re-materialises the CCE table per character
+| class | sites |
+|---|---|
+| safe by construction | `Fat16.codex:1420`, `Uri.codex:241`, `Base64.codex:56`, `GopFiles.codex:103`, `GopFont.codex:65`, `ParentalUI.codex:280`, two test constants (233); `compiler/opening.codex:1708` (unpacks phase labels, all thirteen literal uppercase ASCII passed to `phase-measure`); `Fat16.codex:1254` (`fat16-lfn-take` refuses the name unless `fat16-lfn-units-decodable` maps every unit) |
+| desk bytes, CLOSED: DEL shown as a control | `GopConsole.codex:49`, `GopEdit.codex:123`, `GopFiles.codex:233`, `GopReview.codex:82` |
+| foreign bytes, CLOSED: each goes through `cce-foreign-byte-text` (`CCE.codex`), tab to space and every other unmapped byte dropped, pinned by `codex/test/cce-foreign-byte` | `Gguf.codex:87`, `PngMetadata.codex:133` and `:152`, `SafeTensors.codex:174`, `Fat16.codex:1128`, `Base64.codex:139`, `HttpClient.codex:81` and `:92`, `ExplorerStore.codex:55`, `AgentBundle.codex:45`, `GopEdit.codex:532`, `GopEdit.codex:692`, `Accounts.codex:176`, `SpirvBinary.codex:566`, `codex/test/apps/usb-bot.codex:39`; the percent-decoders `ExplorerServer.codex:61` and `IdeaEngine.codex:31` likewise, pinned by `codex/test/apps/core8-content-sites` |
+| JSON escapes, CLOSED: `AccpJson.codex` `aj-decode` takes `Json.codex`'s ruling, `\t` a space, `\b \f \r` dropped, an unmappable `\u` refusing the whole string (`""`, its failure value), pinned by `codex/test/apps/core8-content-sites` | `AccpJson.codex:194` |
+| key handlers, CLOSED: an `EvKeyDown` key is what `poll-key` answers, a character as its CCE code and Enter, Backspace, Escape and the rest as named keys at `key-named-base` (R-CCE); each handler tests `key-enter`, `key-escape`, `key-backspace` and `key-is-char` (`KeyInput.codex`) and encodes the code directly, pinned by `codex/test/apps/key-contract` | `Diagram.codex:319`, `helm/opening.codex:157`, `SecretsApp.codex:100`, `Browser.codex:839`, `collab/opening.codex:223`. Before, Enter arrived as `key-enter`, never equalled 13 and inserted unit 255, and a lowercase letter was dropped; the Secrets lock screen commits a passphrase only on Enter, so no vault was ever keyed from the keyboard. `efi-key-decode` answered raw Unicode until main 27603; `poll-key` is CCE on both paths |
+| InputSource, CLOSED: key-down goes through `poll-key-decode` (the same modifier latch as `poll-key`) and key-up through `apply-mods` and `key-emit`, so a key reports one CCE identity on both edges, pinned by `codex/test/input-metal` (scan code 35 reads CCE 20, `h`) | `InputSource.codex` `ri-key-events` |
 
-`fat16-extract-chars` (`Fat16.codex`) calls `from-unicode` once per byte, and
-`from-unicode` names `cce-to-unicode-table`. A nullary definition is a recipe
-rather than a cell, so every one of those mentions rebuilds all 128 elements:
-1,040 bytes a character, about **eleven kilobytes to read one 8.3 name**.
-
-That is most of what a directory walk spends. Measured 2026-08-28 against the
-depot chapter, ten lookups of a name one component deep retained 641,600 bytes
-and ten of a name two deep retained 1,816,160, on a directory holding three
-files.
-
-**The repair is already written twice in the same chapter and was not applied
-here.** `fat16-byte-to-cce` and `fat16-bytes-to-chars` thread the table as a
-parameter for exactly this reason, and `from-unicode`'s own prose in
-`CCE.codex` says why. `fat16-extract-chars` and `fat16-extract-name` need the
-same parameter, and every caller of `fat16-read-dir-entry` has to pass it
-down, which is why this is not a one-line change and is not being folded into
-the long-name work that measured it.
-
-Nothing is wrong with the answers. This is cost alone, and it is paid on every
-path that resolves a path on disk, which includes the compiler's own cite
-resolution.
+A compile-time backstop in the declared domain is possible: COMPILER-28 is
+fixed and CDX2054 makes a range on a non-integer base a refusal instead of
+decoration. Owner: blu, 2026-08-26.

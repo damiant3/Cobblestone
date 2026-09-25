@@ -19,11 +19,9 @@ shape they share is the shape this project already says it exists to remove.
   to exist before the check. The check then landed against it -- `bounded` with
   a transitive refusal at main 16020, rule 3 of the `growing` inference at
   16118, and `none`/`fixed` refused with CDX6103 rather than taken on trust.
-  The `growing` inference scores 10 of 11 on
-  `codex/test/cost/accumulator-corpus`, 5 of 5 on the quadratic half, table in
-  section 8b. What remains open is COMPILER-7: whether the one over-refusal
-  (`n-fixed-appends`, linear but shaped quadratic) is worth lifting, revisited
-  only once real chapters carry `bounded` declarations.
+  The `growing` inference scores 13 of 13 on
+  `codex/test/cost/accumulator-corpus` (2026-09-25), 6 of 6 on the quadratic
+  half, table in section 7.1.
 
 Opened 2026-08-14 (blu) at Damian's direction, adjacent to `CPL.md` in `Done/`.
 
@@ -356,16 +354,17 @@ to a pinned body at all. The second exists because the first is only as wide
 as the spellings it knows (L-CENSUS), and it was controlled by sabotaging a
 site with an allocation call the first rule has never heard of: rule 1 stayed
 silent and rule 2 caught it alone. A row reading `fixed` with no recorded site
-is refused by name rather than skipped (`vec4-select`, added 2026-09-10
-reading `fixed` with no site, was refused by the Update 59 gate on
-2026-09-12: it shares `emit-vec-select-builtin` with `vec-select`, whose one
-allocation is `emit-bivy-alloc st9 16`, an immediate 16 bytes per call at
-either width, because four f32 lanes and two f64 lanes are the same 16
-bytes). The table is hand-written because
-crawling the emitters pins `emit-expr`, which every builtin calls to evaluate
-arguments, and a check that reds on unrelated codegen churn teaches people to
-re-pin without looking. **Nothing runs it yet** (L-NOGATE); wiring it into the
-gate means changing the generator under `codex/build/`.
+is refused by name rather than skipped. A vector splat or select allocates
+one vector per call as an immediate: 16 bytes at 128 bits (`vec-select` and
+`vec4-select` share `emit-vec-select-builtin`, `emit-bivy-alloc st9 16`,
+because four f32 lanes and two f64 lanes are the same 16 bytes), and 32 bytes
+at 256 bits (`vec8-` and `vec4d-` splat through `emit-wide-splat`, select
+through `emit-wide-select-builtin`, each `emit-bivy-alloc ... 32`). The table
+is hand-written because crawling the emitters pins `emit-expr`, which every
+builtin calls to evaluate arguments, and a check that reds on unrelated
+codegen churn teaches people to re-pin without looking. Only the full gate
+(`build/build.ps1`) runs it, so a `fixed` row landed between releases is
+first graded at the release (L-NOGATE).
 
 **`bs-varies` must not be pressed into service here.** It is consumed by
 `const-name-invariant` for constant-expression invariance, not by the cost
@@ -499,10 +498,12 @@ by the same judgement that wrote it.
 | `p-append-chunk` | 71,696 | 1,073,168 | x14.9 | quadratic |
 | `p-expand-blocks-old` | 140,304 | 2,134,032 | x15.2 | quadratic |
 | `p-syslog-body` | 20,240 | 277,520 | x13.7 | quadratic |
+| `p-guard-stuck` | 20,240 | 277,520 | x13.7 | quadratic |
 | `p-append-text` | 72 | 264 | x3.6 | linear |
 | `n-push-one` | 528 | 2,064 | x3.9 | linear |
 | `n-push-block` | 4,112 | 16,400 | x3.9 | linear |
 | `n-fixed-appends` | 320 | 320 | x1.0 | linear |
+| `n-fixed-appends-lt` | 320 | 320 | x1.0 | linear |
 | `n-fresh-not-acc` | 7,232 | 28,768 | x3.9 | linear |
 | `n-append-empty` | 3,088 | 12,304 | x3.9 | linear |
 
@@ -576,11 +577,24 @@ ordinary compile.
   allocates. The right operand is read as allocating unless it is a literal, a
   name, or a field access of one, which is abstain-toward-refusal pointed the
   only safe way.
+- **Rule 4**: a branch reached only while a parameter `p` is below an integer
+  literal K (the `then` arm of `p < K` or `p <= K`, the `else` arm of
+  `p >= K` or `p > K`) does not grow, provided every self call in the
+  definition passes `p + c` with `c` a positive literal. Its appends then run
+  at most K minus `p`'s entry value times. A partial or bare self reference,
+  or a self call under a lambda, fails the proviso.
 
 | rule set | positives caught | negatives left alone | total |
 |---|---|---|---|
 | rules 1 + 2 | 5 of 5 | 4 of 6 | 9 of 11 |
-| rules 1 + 2 + rule 3 | **5 of 5** | **5 of 6** | **10 of 11** |
+| rules 1 + 2 + rule 3 | 5 of 5 | 5 of 6 | 10 of 11 |
+| rules 1 to 4, over the 13-entry corpus | **6 of 6** | **7 of 7** | **13 of 13** |
+| rules 1 to 4 without the proviso | 5 of 6 | 7 of 7 | 12 of 13 |
+
+`p-guard-stuck` and `n-fixed-appends-lt` were added with rule 4: the first is
+a literal guard on a counter no self call advances (the proviso's control,
+and the entry the ablated row loses), the second the `then`-arm form. The
+self-compile's CHECK deck is byte-identical with and without rule 4.
 
 **Both rows are measured by ablation and neither is derived.** The shipped
 rule is not reconstructed on paper: the previous seed is still a compiler that
@@ -635,11 +649,6 @@ than a claim made here.
   in means changing the generator under `codex/build/`.
 - **80 registry rows read `unknown`** (2026-09-07), each refusing one
   declaration at one call site. 5.4 names the ones that are deliberate.
-- **The surviving false positive is `n-fixed-appends`**, a List accumulator
-  that rule 3 never reaches. Catching it needs a rule that decides whether the
-  append count is bounded by a literal rather than by an input, which is real
-  analysis and not a predicate. Under abstain-toward-refusal it is the cheap
-  direction, and COMPILER-7 asks to revisit it.
 - **`bs-alloc` cannot key on instantiation**, which is what `show` and
   `__list_tail` need, and 5.2 is the account.
 

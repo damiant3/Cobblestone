@@ -80,8 +80,8 @@ it is measured:
   above where that root ended, so a value built above the current root with no
   mark of its own is freed at the next rebuild (a menu dismiss, a hide, a pill
   restore) while the desk still carries it. A heavy pane's mark covers its
-  value; the close paths build their fresh record BEFORE the new root
-  (WORKS-60); `desk-sheet-open` pushes its own mark; `desk-rev-open` does neither
+  value; the close paths build their fresh record BEFORE the new root;
+  `desk-sheet-open` pushes its own mark; `desk-rev-open` does neither
   (WORKS-68).
   **It does NOT survive a close, deliberately** -- `desk-app-close` restores to
   the base mark, which frees it along with the pane's entry paint, so all
@@ -476,8 +476,8 @@ Two consequences, and both have cost something:
 - **A pane visit also stacks a FRAME, and nothing reclaims that.** The idle
   path is self-recursive and safe; the visit path is `desk-loop` ->
   `desk-dispatch` -> pane -> `desk-loop`, which is MUTUAL recursion and
-  therefore not a tail call. The prose at `GopDesk.codex:1309-1315` records the
-  pathological version measured from the other direction: routing the IDLE
+  therefore not a tail call. The pathological version was measured from the
+  other direction: routing the IDLE
   iteration through the dispatch as well makes every poll stack a frame and the
   desk double-faults (`!EXC=08`, CR2 beside RSP) within seconds of boot. Once
   per visit is survivable and once per poll is not, which is why only a real
@@ -563,9 +563,10 @@ first two cells of the second half.
 
 | 260, 264 | `dk-apps-lo-cell`, `dk-apps-hi-cell` | where the last close's `DeskApps` record region began and ended (val, 2026-09-24). Not pointers, so no allocation before the base mark. A close whose root reclaim leaves the frontier exactly at the recorded end restores to the recorded start, which frees the record the previous close stranded under the root; any other frontier means something else lies between, and nothing is freed |
 | 268 | `dk-restay-cell` | the top visible window at the last `desk-wnd-paint-all`, whose next chrome step answers `desk-wnd-ev-stay` once so the pane repaints its own content (val, 2026-09-24); `desk-focus-none` when nothing is pending. Not a pointer |
+| 272 | `dk-notice-cell` | pointer: the taskbar notice, allocated by `dk-notice-init` from `desk-run` before the base mark. Offset 0 the seconds left, 4 the length, 8 the last RTC second counted, 12 up one character code per 32-bit cell, `dk-notice-cols` of them. `dk-notice-set` writes it and invalidates cell 8; `desk-clock` paints it in the clock cell in place of the time until `dk-notice-secs` distinct seconds have passed, which is the one home a transient notice has, because the band is the only surface that repaints every second (val, 2026-09-24, WORKS-37) |
 
 **THE BLOCK IS 512 BYTES SINCE 2026-09-08 (val), AND EVERY CELL 0 THROUGH
-268 IS TAKEN; 272 THROUGH 508 ARE FREE (2026-09-24).** It grew because focus id 18
+272 IS TAKEN; 276 THROUGH 508 ARE FREE (2026-09-24).** It grew because focus id 18
 needs a window slot and there was no cell left to point at one. Cells 0
 through 252 were verified taken from the DEFINITIONS rather than from
 this list, by enumerating every `*-cell` constant in `apps/works` and
@@ -1123,6 +1124,13 @@ pane-local bracket left the frontier at `0x64c500`, indistinguishable from no
 bracket at all, while the base mark left it at `0x6376e0` and flat in the
 number of visits.
 
+### A pane that runs as its own process
+
+A pane spawned with `process-spawn-with-heap` gets one slot region of 32 MB,
+heap plus a 1 MB stack, and a larger heap request answers pid -1 with nothing
+spawned (`ArchitectsSketchbook.md`, Spawn Regions). The boot menu's Dev Console
+asked for 64 MB and was refused under OVMF; it spawns at 8 MB. Check the pid.
+
 ### The one pane this does not fit, and why
 
 `ged-init` allocates 8 MB plus 1 MB on first use and parks both pointers in cell
@@ -1219,7 +1227,7 @@ settle is a leak in time, which is how the 3,594 B/s above was found.
 ## 4. Adding a pane
 
 The desk owns the loop and the chrome; the pane chapter owns the state and what
-a key means (`GopDesk.codex:657-659`). `GopPrograms` is the smallest complete
+a key means. `GopPrograms` is the smallest complete
 model of the split.
 
 - **Wire it into `desk-dispatch` and nowhere else.** One `let` in the hit block
@@ -1452,9 +1460,9 @@ above, and nothing in the taskbar band at 828 and below.
 
 `GopDesk` cites `GopEdit`, so `GopEdit` reading `dk-pal ds` would be a citation
 cycle. Any pane that needs the colour scheme takes it as an argument from the
-desk. **Done for `GopFiles` and `GopEdit` 2026-08-19 (WORKS-17):** both take a
-`Palette` and paint through named role accessors (`gfl-bg`, `ged-cursor` and
-their neighbours) instead of the fixed `gfl-col-*` and `ged-col-*` ramps.
+desk. `GopFiles` and `GopEdit` both take a `Palette` and paint through named
+role accessors (`gfl-bg`, `ged-cursor` and their neighbours); their syntax runs
+take `syn-ink` of the ground each row is painted on.
 
 **The cycle is about where `dk-pal` LIVES, and a `Palette` parameter is the
 answer for a second reason that outlives it.** The accessor could be moved

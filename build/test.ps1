@@ -187,7 +187,7 @@ $runSlow  = $Slow.IsPresent  -or $tiers.Contains('slow')
 # that silently widens to everything is worse than one that selects nothing.
 if ($tiers.Count -eq 0 -and $Battery.Count -eq 0) { [void]$tiers.Add('lang') }
 
-$machineSidecars = @('.smp', '.vmargs', '.disk', '.disk2', '.keys')
+$machineSidecars = @('.smp', '.vmargs', '.disk', '.disk2', '.disk-mint', '.disk2-mint', '.keys')
 function Test-MachineSidecar {
     param([string]$Src)
     $dir = [System.IO.Path]::GetDirectoryName($Src)
@@ -196,6 +196,15 @@ function Test-MachineSidecar {
         if (Test-Path -PathType Leaf (Join-Path $dir "$name$ext")) { return $true }
     }
     return $false
+}
+# A .disk-mint or .disk2-mint recipe names how build/mint-test-disk.ps1 builds
+# the image into build-output; the depot carries no image for such a test.
+function Resolve-MintedDisk {
+    param([string]$Path)
+    if ((Test-Path -PathType Leaf $Path) -or -not (Test-Path -PathType Leaf "$Path-mint")) { return @{ Path = $Path; Refused = '' } }
+    $minted = @(& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'mint-test-disk.ps1') -Recipe "$Path-mint")
+    if ($LASTEXITCODE -eq 0) { return @{ Path = $minted[-1]; Refused = '' } }
+    return @{ Path = $Path; Refused = "$($minted[-1])" }
 }
 
 $allDirs = @('codex\test', 'codex\test\ops', 'codex\test\errors', 'codex\test\apps', 'codex\test\forewords', 'codex\test\lib', 'codex\test\cost', 'codex\test\ui', 'codex\test\examples')
@@ -300,7 +309,6 @@ foreach ($pair in @(@{ Tier = 'traps'; Ext = '.fatal' }, @{ Tier = 'slow'; Ext =
     }
 }
 
-
 # Ask the SELECTOR for its set, never the directory: a count is not a corpus,
 # and a selector that quietly widens or narrows cannot be caught by reading
 # the total (L-DENOM). This exits before any guest, so the selection is
@@ -311,6 +319,7 @@ if ($ListSubjects) {
     $tests | Sort-Object | ForEach-Object { Write-Output $_.Substring((Get-Location).Path.Length + 1) }
     exit 0
 }
+
 
 # --- Which compiler is on trial, and is it the one you think? ---------------
 # 
@@ -411,6 +420,9 @@ foreach ($src in $tests) {
         $reason = (Get-Content -TotalCount 1 $skipFile)
         $resultFile = Join-Path $ResultsDir $name
         "SKIPPED`t$name`t$reason" | Set-Content -Path $resultFile -Encoding UTF8
+    } elseif ((Test-Path -PathType Leaf (Join-Path $dir "$name.arch-only")) -and -not (@(Get-Content (Join-Path $dir "$name.arch-only") | ForEach-Object { $_.Trim() }) -contains 'x86-64')) {
+        $resultFile = Join-Path $ResultsDir $name
+        "SKIPPED`t$name`t(arch-only) $((Get-Content (Join-Path $dir "$name.arch-only")) -join ' ')" | Set-Content -Path $resultFile -Encoding UTF8
     } elseif (-not $runSlow -and (Test-Path -PathType Leaf $slowFile)) {
         $reason = (Get-Content -TotalCount 1 $slowFile)
         $resultFile = Join-Path $ResultsDir $name
@@ -813,6 +825,15 @@ foreach ($src in $toCompile) {
         "FAIL_COMPILE`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
         continue
     }
+
+    $mintMaster = Resolve-MintedDisk $diskFile
+    $mintSlave = Resolve-MintedDisk $disk2File
+    if ($mintMaster.Refused -or $mintSlave.Refused) {
+        "FAIL_DISK_SOURCE`t$name`t$($mintMaster.Refused)$($mintSlave.Refused)" | Set-Content -Path $resultFile -Encoding UTF8
+        continue
+    }
+    $diskFile = $mintMaster.Path
+    $disk2File = $mintSlave.Path
 
     $diagFile = Join-Path $dir "$name.diag"
     if (Test-Path -PathType Leaf $diagFile) {

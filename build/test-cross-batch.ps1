@@ -47,6 +47,13 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# <name>.expected-<arch> replaces <name>.expected on that architecture (plugs 2.74).
+function Get-ExpectedFile([string]$Dir, [string]$Name) {
+    $archFile = Join-Path $Dir "$Name.expected-$Arch"
+    if (Test-Path -PathType Leaf $archFile) { return $archFile }
+    return (Join-Path $Dir "$Name.expected")
+}
 $UseQemu = -not $Renode
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -90,8 +97,9 @@ foreach ($tf in $allTests) {
     elseif ((Test-Path "$dir\$name.fatal") -and -not (Test-Path "$dir\$name.cross-fatal")) { $skipReason = "fatal" }
     elseif (Test-Path "$dir\$name.failing") { $skipReason = "error test" }
     elseif (Test-Path "$dir\$name.smp")     { $skipReason = "multi-core (build/test-cross-smp.ps1)" }
-    elseif (Test-Path "$dir\$name.disk")    { $skipReason = "block device (build/test-cross-disk.ps1)" }
+    elseif ((Test-Path "$dir\$name.disk") -or (Test-Path "$dir\$name.disk-mint")) { $skipReason = "block device (build/test-cross-disk.ps1)" }
     elseif (Test-Path "$dir\$name.no-cross") { $skipReason = "no-cross: " + (Get-Content -TotalCount 1 "$dir\$name.no-cross") }
+    elseif ((Test-Path "$dir\$name.arch-only") -and -not (@(Get-Content "$dir\$name.arch-only" | ForEach-Object { $_.Trim() }) -contains $Arch)) { $skipReason = "arch-only: " + ((Get-Content "$dir\$name.arch-only") -join ' ') }
     # .renode: the subject needs a Renode board model QEMU virt lacks; its
     # first line names the model. It runs only under -Renode.
     elseif ($UseQemu -and (Test-Path "$dir\$name.renode")) { $skipReason = "Renode board (-Renode): " + (Get-Content -TotalCount 1 "$dir\$name.renode") }
@@ -106,7 +114,7 @@ foreach ($tf in $allTests) {
         # virtio-mmio block device, so it is ROUTED above rather than
         # ineligible. .disk2 and .disk-src stay here -- a second image and a
         # compile-this-test-onto-the-disk fixture are still codex-vm's.
-        foreach ($mc in 'disk2','disk-src','vmargs','keys') {
+        foreach ($mc in 'disk2','disk2-mint','disk-src','vmargs','keys') {
             if (Test-Path "$dir\$name.$mc") { $skipReason = "machine sidecar (.$mc)"; break }
         }
     }
@@ -194,7 +202,8 @@ $compileBlock = {
     $n = $done.Count
     # A .cross-fatal test has no .expected: its designed answer is a guest
     # fault, graded in the run phase against the fault line.
-    $hasExp = (Test-Path -PathType Leaf (Join-Path ($t.Dir) "$name.expected")) -or (Test-Path -PathType Leaf (Join-Path ($t.Dir) "$name.cross-fatal"))
+    $archName = $using:Arch
+    $hasExp = (Test-Path -PathType Leaf (Join-Path ($t.Dir) "$name.expected")) -or (Test-Path -PathType Leaf (Join-Path ($t.Dir) "$name.expected-$archName")) -or (Test-Path -PathType Leaf (Join-Path ($t.Dir) "$name.cross-fatal"))
     # .cross-refusal inverts the compile expectation: this test's DESIGNED
     # behavior on a cross lane is a refusal -- one "[UNSUPPORTED] <builtin>"
     # report per named line, and no binary (port and GPU-port
@@ -344,7 +353,7 @@ foreach ($kv in $compiled.GetEnumerator()) {
         $isFatal = Test-Path -PathType Leaf (Join-Path $v.Dir "$($kv.Key).cross-fatal")
         $expN = 0
         if (-not $isFatal) {
-            $expText = [System.IO.File]::ReadAllText((Join-Path $v.Dir "$($kv.Key).expected")) -replace "`r",''
+            $expText = [System.IO.File]::ReadAllText((Get-ExpectedFile $v.Dir $kv.Key)) -replace "`r",''
             $expArr = @($expText -split "`n")
             $expN = $expArr.Count
             while ($expN -gt 0 -and $expArr[$expN - 1] -eq '') { $expN-- }
@@ -679,7 +688,9 @@ $runBlock = {
                 $lines.RemoveAt($lines.Count - 1)
             }
 
-            $expectedFile = Join-Path ($t.Dir) "$name.expected"
+            $archName = $using:Arch
+            $expectedFile = Join-Path ($t.Dir) "$name.expected-$archName"
+            if (-not (Test-Path -PathType Leaf $expectedFile)) { $expectedFile = Join-Path ($t.Dir) "$name.expected" }
             $expectedText = [System.IO.File]::ReadAllText($expectedFile) -replace "`r",''
             $expAllLines = @($expectedText -split "`n")
             while ($expAllLines.Count -gt 0 -and $expAllLines[$expAllLines.Count - 1] -eq '') {

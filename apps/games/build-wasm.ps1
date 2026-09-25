@@ -48,6 +48,12 @@ $Games = @{
         Exports = @(
             @{ Name = 'mo_new';     Fn = 'mo_wasm_new';        Arity = 2 }
             @{ Name = 'mo_step';    Fn = 'mo_wasm_step';       Arity = 2 }
+            @{ Name = 'mo_resume';  Fn = 'mo_wasm_resume';     Arity = 2 }
+            @{ Name = 'mo_accept';  Fn = 'mo_wasm_accept';     Arity = 1 }
+            @{ Name = 'mo_decline'; Fn = 'mo_wasm_decline';    Arity = 1 }
+            @{ Name = 'mo_twant';   Fn = 'mo_wasm_trade_want'; Arity = 1 }
+            @{ Name = 'mo_tgive';   Fn = 'mo_wasm_trade_give'; Arity = 1 }
+            @{ Name = 'mo_tprice';  Fn = 'mo_wasm_trade_price'; Arity = 1 }
             @{ Name = 'mo_players'; Fn = 'mo_wasm_players';    Arity = 1 }
             @{ Name = 'mo_cash';    Fn = 'mo_wasm_cash';       Arity = 2 }
             @{ Name = 'mo_pos';     Fn = 'mo_wasm_position';   Arity = 2 }
@@ -77,6 +83,7 @@ $Games = @{
             @{ Name = 'mo_offerrent'; Fn = 'mo_wasm_offer_rent'; Arity = 1 }
             @{ Name = 'mo_propat';  Fn = 'mo_wasm_prop_at';      Arity = 1 }
             @{ Name = 'mo_offerspace'; Fn = 'mo_wasm_offer_space'; Arity = 1 }
+            @{ Name = 'mo_trade';   Fn = 'mo_wasm_trade';        Arity = 1 }
         )
     }
     'minesweeper' = @{
@@ -307,6 +314,7 @@ $Games = @{
             @{ Name = 'pv_cardat';  Fn = 'pvw_wasm_card_at';    Arity = 2 }
             @{ Name = 'pv_wild';    Fn = 'pvw_wasm_wild_rank';  Arity = 6 }
             @{ Name = 'pv_wildn';   Fn = 'pvw_wasm_wild_count'; Arity = 6 }
+            @{ Name = 'pv_wild7';   Fn = 'pvw_wasm_wild7';      Arity = 8 }
             @{ Name = 'pv_eval5';   Fn = 'pvw_wasm_eval5';      Arity = 5 }
             @{ Name = 'pv_cmp';     Fn = 'pvw_wasm_cmp';        Arity = 2 }
             @{ Name = 'pv_rank';    Fn = 'pvw_wasm_rank';       Arity = 1 }
@@ -681,6 +689,8 @@ $Games = @{
             @{ Name = 'ck_move_cap';  Fn = 'ck_wasm_move_cap';  Arity = 2 }
             @{ Name = 'ck_apply';     Fn = 'ck_wasm_apply';     Arity = 2 }
             @{ Name = 'ck_ai';        Fn = 'ck_wasm_ai';        Arity = 1 }
+            @{ Name = 'ck_blank';     Fn = 'ck_wasm_blank';     Arity = 0 }
+            @{ Name = 'ck_put';       Fn = 'ck_wasm_put';       Arity = 3 }
         )
     }
     'chess' = @{

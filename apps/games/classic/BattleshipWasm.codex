@@ -3,29 +3,19 @@ Chapter: BattleshipWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- The browser interface for Battleship, on the handle contract in
- games-backlog.md GAME-11. Four ten by ten grids plus the counters and the
- generator are nowhere near an i32, so the page holds the state's address.
+ `bs-shoot` writes into the tracking grid through `list-set-at`, in place,
+ so every shot copies the tracking grid first. The ships grids are only read,
+ so a state shares them with its successor; copying them would allocate two
+ hundred cells a round.
 
- A round is both sides shooting, which is how `bs-loop` runs it, and
- `bs-wasm-step` is one turn of that loop rather than the whole game so a
- watching page can show the shots land one at a time.
-
- The copy covers the TRACKING grids and nothing else, deliberately.
- `bs-shoot` writes the shot into the tracking grid through `bs-set`, which
- goes to `list-set-at` and mutates in place, so a step without the copy
- would write the shot into the caller's own state. The SHIPS grids are only
- ever read, by `bs-shoot` deciding hit or miss, so they are shared between
- a state and its successor on purpose: copying them each turn would allocate
- two hundred cells a round to no end.
-
- `bs-empty-grid` is a nullary definition, so it is a recipe rather than a
- cell and the two fresh tracking grids below are genuinely distinct. If it
- were a shared value both players would be shooting into one grid.
+ `bs-empty-grid` is a nullary definition, a recipe rather than a cell, so the
+ two fresh tracking grids are distinct.
 
  We say:
 
 Section: Copying
+
+  wasm-exports : Text = ""
 
   bs-copy-cells : List Integer, Integer, List Integer -> List Integer
   bs-copy-cells (src) (i) (acc) =
@@ -78,15 +68,8 @@ Section: The Browser Interface
 
 Section: Playing By Hand
 
- `bs-wasm-step` fires for BOTH fleets in one call, choosing both shots, so a
- person cannot take one. `bs-wasm-fire` is the same turn with player one's
- shot GIVEN: your salvo lands, then the opponent answers, and both shot
- counts move exactly as they do in the automatic turn.
-
- A tracking grid holds 0 unknown, 1 miss, 2 hit, so a square you have
- already fired at is any non-zero, and firing there again would spend a turn
- on nothing and let the opponent shoot for free. That is refused rather than
- absorbed.
+ A tracking cell is 0 unknown, 1 miss, 2 hit. A shot at a non-zero cell is
+ refused.
 
   bs-wasm-can-fire : BsState, Integer, Integer -> Integer
   bs-wasm-can-fire (st) (row) (col) =

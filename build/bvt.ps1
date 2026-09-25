@@ -59,6 +59,8 @@ $BvtTests = @(
     'codex\test\ecdsa-p384.codex'  # P-384 curve arithmetic, the second curve
     'codex\test\ecdsa-sha384.codex'  # the CURVE and the DIGEST are independent choices. This asserts a signature must VERIFY, and requires the wrong-digest entry point to FAIL -- without that second half the file passes unchanged if both entry points quietly hash SHA-256, which is how the FIPS 186-4 defect it found (z is the leftmost min(N,outlen) bits, not the digest reduced mod n) stayed invisible
     'codex\test\x509-parse.codex'  # the certificate parser, including the key-algorithm arms whose catch-all silently absorbed KeyEcdsaP384 and stopped every P-384 certificate parsing three stages downstream
+    'codex\test\asn1-der-write.codex'  # the DER WRITER, the other half of x509-parse: every length form checked two ways that share no code, a round trip through our own reader and a byte comparison against the certificate RFC 8410 section 10.2 publishes, which carries all three length forms (5, 223 and 300) in encodings the IETF produced
+    'codex\test\x509-dev-cert.codex'  # the self-signed certificate we MINT, graded by our parser, by the pinned-anchor verdicts (wrong identity, not yet valid, expired, tampered and other key must each refuse), and by a TLS 1.3 handshake authenticating against the minted leaf with a wrong-pin control. A minter whose output only our own parser reads can agree with itself and nobody else
     'codex\test\ecdsa-cert.codex'  # the REAL github.com chain, verified through its P-384 root. A fixture chain proves the arithmetic; a chain somebody else issued proves the parser agrees with the world
     'codex\test\real-cert.codex'  # RFC 6125 hostname matching, with no commonName fallback
     'codex\test\tls-cv-schemes.codex'  # CertificateVerify under every scheme the ClientHello offers, signed by OpenSSL and checked here. Also the only thing making the offered set and the accepted set agree: they are written in two places and nothing else compares them
@@ -193,6 +195,11 @@ $BvtTests = @($BvtTests | Where-Object {
             return $false
         }
     }
+    $ao = ($_ -replace '\.codex$', '.arch-only')
+    if ((Test-Path -PathType Leaf $ao) -and -not (@(Get-Content $ao | ForEach-Object { $_.Trim() }) -contains 'x86-64')) {
+        $bvtSkipped.Add("$b (arch-only) $((Get-Content $ao) -join ' ')")
+        return $false
+    }
     $true
 })
 foreach ($sk in $bvtSkipped) { Write-Host "  SKIP  $sk" -ForegroundColor DarkGray }
@@ -321,12 +328,28 @@ for ($s = 0; $s -lt $Jobs; $s++) { $slotLines[$s] = [System.Collections.Generic.
 $tempDisks = [System.Collections.Generic.List[string]]::new()
 $rawOf = @{}
 $lineKey = @{}
+# A .disk-mint or .disk2-mint recipe names how build/mint-test-disk.ps1 builds
+# the image into build-output; the depot carries no image for such a test.
+function Resolve-MintedDisk {
+    param([string]$Path)
+    if ((Test-Path -PathType Leaf $Path) -or -not (Test-Path -PathType Leaf "$Path-mint")) { return @{ Path = $Path; Refused = '' } }
+    $minted = @(& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'mint-test-disk.ps1') -Recipe "$Path-mint")
+    if ($LASTEXITCODE -eq 0) { return @{ Path = $minted[-1]; Refused = '' } }
+    return @{ Path = $Path; Refused = "$($minted[-1])" }
+}
 for ($i = 0; $i -lt $runList.Count; $i++) {
     $t = $runList[$i]
     $base = [System.IO.Path]::GetFileNameWithoutExtension($t)
     $outDir = Join-Path $OutRoot $base
     $cdxOut = Join-Path $outDir "$base.cdx"
     if (-not (Test-Path $cdxOut)) { continue }
+    $mintMaster = Resolve-MintedDisk ($t -replace '\.codex$', '.disk')
+    $mintSlave = Resolve-MintedDisk ($t -replace '\.codex$', '.disk2')
+    if ($mintMaster.Refused -or $mintSlave.Refused) {
+        $runFails.Add("$base (disk mint refused: $($mintMaster.Refused)$($mintSlave.Refused))")
+        Write-Host "  FAIL  $base (disk mint refused)" -ForegroundColor Red
+        continue
+    }
     $raw = Join-Path $outDir "$base.raw"
     if (Test-Path $raw) { Remove-Item -Force $raw }
     $rawOf[$base] = $raw
@@ -348,7 +371,7 @@ for ($i = 0; $i -lt $runList.Count; $i++) {
     # sidecar carries after sync is no obstacle.
     $keysFile = $t -replace '\.codex$', '.keys'
     if (Test-Path -PathType Leaf $keysFile) { $tokens += @('-keys-file', $keysFile) }
-    $diskFile = $t -replace '\.codex$', '.disk'
+    $diskFile = $mintMaster.Path
     if (Test-Path -PathType Leaf $diskFile) {
         $diskWork = [System.IO.Path]::GetTempFileName()
         $tempDisks.Add($diskWork)
@@ -371,7 +394,7 @@ for ($i = 0; $i -lt $runList.Count; $i++) {
     }
     # The primary channel's slave, and it matters more than the master here: the
     # case it exists for is one drive writing to another.
-    $disk2File = $t -replace '\.codex$', '.disk2'
+    $disk2File = $mintSlave.Path
     if (Test-Path -PathType Leaf $disk2File) {
         $disk2Work = [System.IO.Path]::GetTempFileName()
         $tempDisks.Add($disk2Work)

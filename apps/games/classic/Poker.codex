@@ -27,20 +27,8 @@ Section: Types
     hands-played  : Integer
   }
 
- A hand of five card draw between two players, which is what a person sits
- down to. `run-poker-session` below deals two hands and compares them; it
- models no betting and no draw, so there is nothing in it to take a turn
- at. This record is the game.
-
- `pos` is the next UNDEALT card. Replacements come from it and it only ever
- moves forward, which is what stops a draw handing somebody a card that is
- already in a hand.
-
  `stage` is 0 for the first betting round, 1 for the draw, 2 for the second
- betting round and 3 when the hand is over. `acted` counts the actions
- taken in the current betting round, because a round ends when both players
- have acted AND the two stakes are equal: checking that the stakes agree
- alone would end the round before either had spoken.
+ betting round and 3 when the hand is over.
 
   PokerTable = record {
     deck   : List Integer,
@@ -305,9 +293,7 @@ Section: Game Runner
 
 Section: A Table You Can Sit At
 
- The stakes are fixed rather than no-limit: an ante of five, a bet of ten,
- and two hundred to start with. A fixed limit is a smaller game than real
- poker and it is a WHOLE game, where a half-built no-limit raise is not.
+ Fixed limit: an ante of five, a bet of ten, two hundred to start with.
 
   pk-ante : Integer
   pk-ante = 5
@@ -318,10 +304,8 @@ Section: A Table You Can Sit At
   pk-start-chips : Integer
   pk-start-chips = 200
 
- The five marks are kept as one integer rather than a list of flags,
- because a list would have to be rebuilt on every click to keep a handle a
- page is holding from moving under it. There are no bitwise operators here,
- so the bit is reached by dividing it down and taking the remainder.
+ The five discard marks are one integer, bit i for card i, reached by
+ division: a list would be rebuilt on every click.
 
   pk-pow2 : Integer -> Integer
   pk-pow2 (i) = if i <= 0 then 1 else 2 * pk-pow2 (i - 1)
@@ -377,10 +361,6 @@ Section: Dealing From A Position
   pk-chips-of : PokerTable, Integer -> Integer
   pk-chips-of (t) (who) = if who == 0 then t.chips0 else t.chips1
 
- What it costs the player to stay in: the difference between the two
- stakes. Zero means checking is free, which is a different offer from
- calling and the page has to be able to tell them apart.
-
   pk-to-call : PokerTable, Integer -> Integer
   pk-to-call (t) (who) =
     let mine = pk-bet-of t who
@@ -389,10 +369,7 @@ Section: Dealing From A Position
 
 Section: The Moves
 
- Three things a player may do, and each answers whether it is allowed
- rather than being refused silently: fold, match what is in front of them
- (a check when that is nothing), and raise. A raise is capped so a round
- cannot go round for ever, which is what a fixed limit is for.
+ A raise is capped, which is what a fixed limit is.
 
   pk-max-raises : Integer
   pk-max-raises = 4
@@ -419,9 +396,8 @@ Section: The Moves
     if t.acted >= pk-max-raises then False
     else pk-to-call t who + pk-bet-size <= pk-chips-of t who
 
- A betting round is over when both have spoken and the stakes agree. The
- two halves are both load-bearing: stakes alone are equal before anybody
- has acted, and actions alone are equal when one player has just raised.
+ A betting round is over when both have acted AND the stakes agree: stakes
+ alone agree before anybody acts, actions alone after a raise.
 
   pk-round-over : PokerTable -> Boolean
   pk-round-over (t) =
@@ -457,8 +433,7 @@ Section: The Moves
       last = what, done = t.done
     }
 
- Folding ends the hand there and the pot goes to whoever is left, which is
- the one way to win without showing a hand.
+ A fold ends the hand and the pot goes to the player left.
 
   pk-fold : PokerTable, Integer -> PokerTable
   pk-fold (t) (who) =
@@ -496,8 +471,7 @@ Section: The Moves
     in let paid = pk-put-in t who (owed + pk-bet-size)
     in pk-advance (pk-note paid 3)
 
- When the round is over the stage moves on, the stakes are cleared and the
- player who did not open the previous round speaks first.
+ The player who did not open the previous round speaks first.
 
   pk-advance : PokerTable -> PokerTable
   pk-advance (t) =
@@ -520,12 +494,6 @@ Section: The Moves
 
 Section: The Draw
 
- `draw-count` says HOW MANY a hand should throw away and nothing about
- WHICH, and a count is not a choice: throwing away the last three cards of
- a hand whose pair happens to sit at positions three and four breaks the
- pair the count was protecting. So the discard is a MASK over the five
- positions, and `draw-count` is what it is checked against.
-
   pk-discard-mask : List Integer -> Integer
   pk-discard-mask (cards) =
     if hand-is-flush cards then 0
@@ -541,12 +509,8 @@ Section: The Draw
     else let bit = if card-rank (list-at cards i) == keep then 0 else pk-pow2 i
     in pk-mask-not-of-rank cards keep (i + 1) (m + bit)
 
- Two pair throws the odd card and keeps both pairs. One pair keeps the pair
- AND ITS BEST KICKER and throws two, which is not the commonest way to play
- a pair and is what `draw-count` has always said: this function decides
- WHICH cards go, never how many, so where the two could disagree it is this
- one that is wrong. `second-pair-rank` is what tells the two cases apart,
- and it is the engine's own.
+ Two pair throws the odd card; one pair keeps the pair and its best kicker
+ and throws two.
 
   pk-mask-two : List Integer -> Integer
   pk-mask-two (cards) =
@@ -584,10 +548,6 @@ Section: The Draw
     in let bit = if r == a then 0 else if r == b then 0 else pk-pow2 i
     in pk-mask-not-either cards a b (i + 1) (m + bit)
 
- Nothing to build on, so the three lowest go. Marking the two HIGHEST and
- discarding the rest is the same statement and it is the one that cannot
- discard four cards when two share a rank.
-
   pk-mask-low-three : List Integer -> Integer
   pk-mask-low-three (cards) =
     let a = pk-highest-index cards 0 (-1) (-1)
@@ -608,9 +568,6 @@ Section: The Draw
     if i >= 5 then m
     else let bit = if i == a then 0 else if i == b then 0 else pk-pow2 i
     in pk-mask-except cards a b (i + 1) (m + bit)
-
- Replacing the marked cards. Every new card comes from `pos`, which moves
- forward, so a card that has been dealt is never dealt again.
 
   pk-replace : List Integer, Integer, List Integer, Integer, Integer, List Integer -> List Integer
   pk-replace (cards) (mask) (deck) (from) (i) (acc) =
@@ -641,9 +598,6 @@ Section: The Draw
     if t.done then False
     else if t.stage /= 1 then False
     else t.turn == who
-
- A click marks or unmarks one of your own cards, and it is refused
- anywhere but the draw and on anybody else's card.
 
   pk-mark : PokerTable, Integer -> PokerTable
   pk-mark (t) (i) =
@@ -695,8 +649,7 @@ Section: The Showdown
     in let w = if c == 1 then 0 else if c == 2 then 1 else (-1)
     in pk-award t w
 
- A tie splits the pot, and the split is what says the two chip stacks and
- the pot are one quantity: nothing is created here and nothing is lost.
+ A tie splits the pot.
 
   pk-share : Integer, Integer, Integer -> Integer
   pk-share (pot) (w) (who) =
@@ -721,15 +674,6 @@ Section: The Showdown
 
 Section: The Opponent
 
- It plays its own cards by the same rules the page offers you, through the
- same three functions, so there is one set of moves in this chapter rather
- than one for the person and one for the engine.
-
- It plays for WHOEVER is on the go, not only for the opponent. A step that
- refused to act on your turn would leave a page with nobody to move it when
- it is watching itself, which is the one thing every game here has to be
- able to do: the person is an override on this, not a precondition for it.
-
   pk-ai-move : PokerTable -> PokerTable
   pk-ai-move (t) =
     if t.done then t
@@ -741,8 +685,8 @@ Section: The Opponent
   pk-ai-draw (t) (who) =
     pk-after-draw (pk-draw-for t who (pk-discard-mask (pk-hand-of t who)))
 
- Raise on two pair or better, stay for nothing, call a bet holding at least
- a pair, and let a hand with nothing go.
+ Raise on two pair or better, call a bet holding at least a pair, and fold
+ a hand with nothing.
 
   pk-ai-bet : PokerTable, Integer -> PokerTable
   pk-ai-bet (t) (who) =

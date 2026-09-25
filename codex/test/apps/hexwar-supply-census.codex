@@ -1,0 +1,70 @@
+Chapter: HexwarSupplyCensus
+  cites Games chapter HexWar
+  cites Games chapter Rng
+
+ Where the AI's supply losses come from, over 130 games (13 scenarios,
+ seeds 1 to 10). A unit of the side to move that is out of supply at the
+ start of its turn is counted as STRANDED when no enemy is adjacent and as
+ CONTACT when one is: supply-map never supplies a hex in an enemy zone of
+ control, so contact alone cuts a unit off. Each game runs on a copied
+ roster, because a turn writes the unit list in place (L-ALIAS).
+
+Section: Counting
+
+  hsp-cut : List Unit, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  hsp-cut (units) (sup) (owner) (width) (want-contact) (i) (acc) =
+    if i >= list-length units then acc
+    else let u = list-at units i
+    in if u.owner /= owner | u.eliminated then hsp-cut units sup owner width want-contact (i + 1) acc
+    else if unit-in-supply u sup width then hsp-cut units sup owner width want-contact (i + 1) acc
+    else let contact = if ai-nearest-enemy units owner u.q u.r 0 (-1) 999 < 0 then False else hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = (list-at units (ai-nearest-enemy units owner u.q u.r 0 (-1) 999)).q, r = (list-at units (ai-nearest-enemy units owner u.q u.r 0 (-1) 999)).r }) <= 1
+    in let hit = if want-contact == 1 then contact else contact == False
+    in hsp-cut units sup owner width want-contact (i + 1) (if hit then acc + 1 else acc)
+
+  HspTally = record { stranded : Integer, contact : Integer }
+
+  hsp-loop : WargameConfig, Rng, List Unit, Integer, Integer, Integer, Integer -> HspTally
+  hsp-loop (cfg) (r) (units) (turn) (active) (st) (ct) =
+    if turn >= cfg.turn-limit | count-alive units 0 == 0 | count-alive units 1 == 0 then HspTally { stranded = st, contact = ct }
+    else let sup = supply-map units active cfg.map-width cfg.map-height
+    in let s1 = hsp-cut units sup active cfg.map-width 0 0 0
+    in let c1 = hsp-cut units sup active cfg.map-width 1 0 0
+    in let r2 = rng-next r
+    in let units2 = run-hexwar-turn units cfg.terrain-data active cfg.map-width cfg.map-height cfg.stacking-limit r2
+    in let nxt = rng-mod (active + 1) cfg.num-players
+    in hsp-loop cfg r2 units2 (if nxt == 0 then turn + 1 else turn) nxt (st + s1) (ct + c1)
+
+  hsp-seeds : WargameConfig, Integer, Integer, HspTally -> HspTally
+  hsp-seeds (cfg) (seed) (last) (acc) =
+    if seed > last then acc
+    else let t = hsp-loop cfg (rng-new seed) (hsp-fresh cfg.unit-roster 0 []) 0 0 0 0
+    in hsp-seeds cfg (seed + 1) last (HspTally { stranded = acc.stranded + t.stranded, contact = acc.contact + t.contact })
+
+  hsp-fresh : List Unit, Integer, List Unit -> List Unit
+  hsp-fresh (src) (i) (acc) =
+    if i >= list-length src then acc
+    else let u = list-at src i
+    in hsp-fresh src (i + 1) (list-push acc (Unit { id = u.id, type-id = u.type-id, owner = u.owner, q = u.q, r = u.r, strength = u.strength, max-strength = u.max-strength, movement = u.movement, max-movement = u.max-movement, attack = u.attack, defense = u.defense, range = u.range, experience = u.experience, disrupted = u.disrupted, eliminated = u.eliminated, has-moved = u.has-moved, has-attacked = u.has-attacked }))
+
+  hsp-line : Text, WargameConfig -> Text
+  hsp-line (name) (cfg) =
+    let t = hsp-seeds cfg 1 10 (HspTally { stranded = 0, contact = 0 })
+    in name & " seeds 1-10: stranded=" & show t.stranded & " contact=" & show t.contact
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+   print-line-uni (hsp-line "stalingrad" scenario-stalingrad)
+   print-line-uni (hsp-line "normandy" scenario-normandy)
+   print-line-uni (hsp-line "bulge" scenario-bulge)
+   print-line-uni (hsp-line "panzerblitz" scenario-panzerblitz)
+   print-line-uni (hsp-line "gettysburg" scenario-gettysburg)
+   print-line-uni (hsp-line "afrika" scenario-afrika-korps)
+   print-line-uni (hsp-line "waterloo" scenario-waterloo)
+   print-line-uni (hsp-line "midway" scenario-midway)
+   print-line-uni (hsp-line "kursk" scenario-kursk)
+   print-line-uni (hsp-line "market-garden" scenario-market-garden)
+   print-line-uni (hsp-line "guadalcanal" scenario-guadalcanal)
+   print-line-uni (hsp-line "austerlitz" scenario-austerlitz)
+   print-line-uni (hsp-line "blitzkrieg" scenario-blitzkrieg)
+  end

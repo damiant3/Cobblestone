@@ -6,82 +6,6 @@ Chapter: AgentBundle
   cites Foreword chapter CCE
   cites Foreword chapter Maybe
 
- Verification is a chain of three links and every one of them can fail on its
- own. First, the manifest's Ed25519 signature is checked over every byte of the
- manifest that precedes the signature line, which includes the public key line,
- so the key a reader trusts is itself covered by the signature it is checking.
- Second, the model file is read and its SHA-256 recomputed and compared against
- the digest the signed manifest claims. Third, the model is parsed as GGUF far
- enough to reach its tensor table, because a file that hashes correctly and is
- not a model is still not an agent.
-
- **Neither the digest nor the parse holds the model.** This chapter used to
- answer both links with one `fat16-read-bytes`, which returns the whole file as
- a `List Integer` -- a boxed element per byte, so eight bytes of heap for every
- byte of model. On the 642-byte demo bundle that is invisible, which is why it
- was never felt; on the models this app is for it is fatal. `AgentAcquisition`'s
- own sizing guide budgets TinyLlama Q4 at 600 MB and CodeLlama 7B Q4 at 3800 MB,
- there is no garbage collector, and the list would live until the verifying
- function returned. The Agent Manager put that one menu item away from a
- multi-gigabyte allocation.
-
- The digest is streamed instead: one sector at a time, each compressed into the
- hash words in place, with the heap rewound to a mark taken before the scan on
- every iteration, so the sector buffer, the message schedule and the FAT lookups
- all die where they were made. The hash list is allocated below that mark and
- `sha256-compress` writes into it rather than replacing it, which is what lets
- the rewind be safe. Heap cost is then constant in the size of the model.
-
- The parse still needs bytes, but only the ones ahead of the tensor table: the
- header, the key-value block, and the first tensor's entry. That prefix is read
- in its own bounded window, and the window grows only when the walk says it was
- too short, with the failed attempt's bytes rewound before the next one is read.
- A real llama.cpp model puts roughly 750 KB there, and the largest measured on
- this box, a 3.2 GB gemma3, puts 15.7 MB. So the common case pays a megabyte and
- the body is never held at all.
-
- `build/gguf-foreign-test.ps1` is the reverse test. Against a real llama.cpp
- model the reader agrees with an independent host parse on every field:
- version, tensor count, key-value count, architecture (`nomic-bert`), the byte
- offset where the tensor table begins, and the first tensor's name
- (`token_embd_norm.bias`). The offset is the load-bearing one. Reaching it
- means the metadata walk stepped correctly over a key-value block of roughly
- 750 KB whose bulk is a tokenizer vocabulary of tens of thousands of strings,
- which is a shape no generated fixture has. A walk wrong by one byte lands the
- tensor table on garbage and cannot produce a llama.cpp tensor name.
-
- The larger models now agree too, up to a 3.2 GB gemma3 whose key-value block
- alone runs to 15.7 MB, and getting there cost a defect in the emulator rather
- than one in this chapter. It is recorded because the symptom pointed nowhere
- near the cause. Those models produced no output at all: **codex-vm.exe itself
- died** while the guest was still reading, a Windows access violation with no
- diagnostic from the emulator and none from the guest. There was no `!EXC`, so
- nothing in the guest had faulted, and the heap never approached the stack.
-
- Three controls put it beyond the parser before anyone looked at the emulator.
- A probe that read the file and printed only its length, parsing nothing, died
- the same way. Four megabytes of ZEROS, which is not a GGUF at all, died the
- same way. And a model that passed still passed when its payload was placed on
- an image the size of a failing one, so the image was not the variable either.
- Neither half of the remaining suspicion survived: six thousand sector reads
- with no list finish cleanly, and a list of 1300000 elements with no disk
- finishes in a fifth of a second, as does one grown with an allocation
- interleaved between every push to force `__list_snoc` down its copy path.
- Only reading sectors WHILE accumulating them into one list failed.
-
- That pairing is the whole of it. `block-read-sector` takes its 512-byte
- buffer from the top of the bump heap, and the emulator serviced the `rep
- insw` that fills it by storing into guest memory from the host side. Guest
- memory is committed lazily on a guest fault, and a store the guest never
- performs raises no fault, so a buffer landing in a page the guest had not yet
- touched was written into reserved address space and took the process down. A
- read whose result is discarded never shows it, because the heap top resets
- when the function returns and every buffer reuses the same committed page;
- only a RETAINED result marches the heap into fresh pages. codex-vm now
- commits the destination before any host-side store into guest RAM, and
- `codex/test/sector-read-list-growth` is that pair reduced to twenty-five lines
- with no FAT16 and no GGUF, kept as the regression.
-
  We say:
 
 Section: Verdict
@@ -107,13 +31,6 @@ Section: Verdict
 
 Section: The ASCII Boundary
 
- The manifest on disk is ASCII and Codex Text is CCE, so every byte of parsing
- below happens on the byte list and never on Text. char-code answers a CCE code
- point, not the ASCII one, and a manifest parser that forgot that would compare
- the letter n against 16 rather than 110 and never match a key. Conversion
- happens twice, at the two edges: a key literal on the way in, and a value on
- the way out for display.
-
   ab-text-to-ascii : Text -> List Integer
   ab-text-to-ascii (s) = ab-tta-loop s 0 (text-length s) []
 
@@ -125,7 +42,7 @@ Section: The ASCII Boundary
   ab-ascii-to-text : List Integer, Integer, Integer, Text -> Text
   ab-ascii-to-text (bs) (i) (n) (acc) =
     if i >= n then acc
-    else ab-ascii-to-text bs (i + 1) n (acc & char-encode (code-to-char (from-unicode (list-at bs i))))
+    else ab-ascii-to-text bs (i + 1) n (acc & cce-foreign-byte-text (list-at bs i))
 
 Section: Manifest Scanning
 
@@ -275,11 +192,6 @@ Section: The Chain
 
 Section: The Parse Window
 
- The heap mark is what makes growing cheap. A window that did not reach the
- tensor table is rewound before the next one is read, so at most one window is
- ever resident, and a bundle whose metadata is a megabyte never pays for the
- sixty-four megabyte window it does not need.
-
   ab-window-sizes : List Integer = [1048576, 8388608, 67108864]
 
   ab-parse-window : Fat16Volume, List Integer, Text, Fat16DirEntry, Integer -> [Device.Block] AgentBundleVerdict
@@ -288,9 +200,15 @@ Section: The Parse Window
     in let win = if want > (entry.de-size) then (entry.de-size) else want
     in let mark = __heap-save
     in act
-      pre <- fat16-read-cluster-bytes vol (entry.de-cluster) win 0 []
-      ab-window-step vol mb model-name entry i mark pre
+      pre <- fat16-read-cluster-bytes vol (entry.de-cluster) win 0 [] (entry.de-cluster) 1 0
+      ab-window-read vol mb model-name entry i mark pre
     end
+
+  ab-window-read : Fat16Volume, List Integer, Text, Fat16DirEntry, Integer, Integer, Maybe (List Integer) -> [Device.Block] AgentBundleVerdict
+  ab-window-read (vol) (mb) (model-name) (entry) (i) (mark) (read) =
+    when read
+      is None -> BundleRefused "model file's cluster chain ends, leaves the volume or cycles before its size"
+      is Just (pre) -> ab-window-step vol mb model-name entry i mark pre
 
   ab-window-step : Fat16Volume, List Integer, Text, Fat16DirEntry, Integer, Integer, List Integer -> [Device.Block] AgentBundleVerdict
   ab-window-step (vol) (mb) (model-name) (entry) (i) (mark) (pre) =

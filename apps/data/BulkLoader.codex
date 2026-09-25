@@ -98,13 +98,23 @@ Section: Text Import (CSV-like)
   parse-field-value : Text, ColumnType -> ColumnValue
   parse-field-value (field) (ct) =
     when ct
-      is ColInteger -> ValInteger (text-to-int field 0 (text-length field) 0)
+      is ColInteger -> if bl-int-fits field 0 (text-length field) 0 then ValInteger (text-to-int field 0 (text-length field) 0) else ValNull
       is ColText -> ValText field
       is ColBoolean -> ValBoolean (field == "True" | field == "true" | field == "1")
 
  Same conversion, same reason: CCE digits are 3..12 and CCE minus is 73,
  so the ASCII ranges below only mean what they say once the character has
- been converted. Untested, this read every integer field as zero.
+ been converted.
+
+  bl-int-fits : Text, Integer, Integer, Integer -> Boolean
+  bl-int-fits (t) (i) (len) (acc) =
+    if i >= len then True
+    else let ch = to-unicode (text-char-at t i)
+    in if ch >= 48 & ch <= 57 then
+      (if acc > (9223372036854775807 - (ch - 48)) / 10 then False
+       else bl-int-fits t (i + 1) len (acc * 10 + ch - 48))
+    else if ch == 45 & i == 0 then bl-int-fits t 1 len 0
+    else True
 
   text-to-int : Text, Integer, Integer, Integer -> Integer
   text-to-int (t) (i) (len) (acc) =
@@ -161,8 +171,8 @@ Section: Export to Text
     in export-rows rows config (i + 1) len (list-push acc line)
 
  The mirror of the import conversion: text-from-char takes a CCE code, so
- the delimiter has to be converted on the way out too. Handing it the raw
- ASCII 44 emitted CCE 44, which is a letter, not a comma.
+ the delimiter has to be converted on the way out too: CCE 44 is a letter,
+ not a comma.
 
   export-row-vals : List ColumnValue, Integer, Text, Integer, Integer, Text -> Text
   export-row-vals (vals) (delim) (null-marker) (i) (len) (acc) =

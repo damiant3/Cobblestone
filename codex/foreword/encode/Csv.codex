@@ -1,10 +1,6 @@
 Chapter: Csv
   cites Foreword chapter Maybe
 
- CSV parsing and generation (RFC 4180). Handles quoted fields with
- embedded commas and escaped quotes. Rows are List Text, tables
- are List (List Text).
-
  We say:
 
 Section: Parsing
@@ -37,12 +33,12 @@ Section: Parsing
     else let ch = char-code (char-at input i)
     in if ch == char-code (char-at "\n" 0) then CsvRowResult { fields = csv-close-row fields after-sep, next-pos = i + 1 }
     else if ch == char-code (char-at "\"" 0) then
-      let qr = csv-parse-quoted input (i + 1) len ""
+      let qr = csv-parse-quoted input (i + 1) (i + 1) len []
       in let fields2 = list-push fields (qr.value)
       in let saw-comma = csv-at-comma input (qr.end-pos) len
       in let next = if saw-comma then qr.end-pos + 1 else qr.end-pos
       in csv-parse-row input next len fields2 saw-comma
-    else let ur = csv-parse-unquoted input i len ""
+    else let ur = csv-parse-unquoted input i i len
     in let fields2 = list-push fields (ur.value)
     in let saw-comma = csv-at-comma input (ur.end-pos) len
     in let next = if saw-comma then ur.end-pos + 1 else ur.end-pos
@@ -55,24 +51,20 @@ Section: Parsing
 
   CsvFieldResult = record { value : Text, end-pos : Integer }
 
-  csv-parse-quoted : Text, Integer, Integer, Text -> CsvFieldResult
-  csv-parse-quoted (input) (i) (len) (acc) =
-    if i >= len then CsvFieldResult { value = acc, end-pos = len }
-    else let ch = char-code (char-at input i)
-    in if ch == char-code (char-at "\"" 0) then
-      if i + 1 < len then
-        if char-code (char-at input (i + 1)) == char-code (char-at "\"" 0) then csv-parse-quoted input (i + 2) len (acc & "\"")
-        else CsvFieldResult { value = acc, end-pos = i + 1 }
-      else CsvFieldResult { value = acc, end-pos = i + 1 }
-    else csv-parse-quoted input (i + 1) len (acc & char-to-text (char-at input i))
+  csv-parse-quoted : Text, Integer, Integer, Integer, List Text -> CsvFieldResult
+  csv-parse-quoted (input) (start) (i) (len) (runs) =
+    if i >= len then CsvFieldResult { value = text-concat-list (list-push runs (substring input start (len - start))), end-pos = len }
+    else if char-code (char-at input i) /= char-code (char-at "\"" 0) then csv-parse-quoted input start (i + 1) len runs
+    else if i + 1 < len & char-code (char-at input (i + 1)) == char-code (char-at "\"" 0) then
+      csv-parse-quoted input (i + 2) (i + 2) len (list-push runs (substring input start (i + 1 - start)))
+    else CsvFieldResult { value = text-concat-list (list-push runs (substring input start (i - start))), end-pos = i + 1 }
 
-  csv-parse-unquoted : Text, Integer, Integer, Text -> CsvFieldResult
-  csv-parse-unquoted (input) (i) (len) (acc) =
-    if i >= len then CsvFieldResult { value = acc, end-pos = len }
+  csv-parse-unquoted : Text, Integer, Integer, Integer -> CsvFieldResult
+  csv-parse-unquoted (input) (start) (i) (len) =
+    if i >= len then CsvFieldResult { value = substring input start (len - start), end-pos = len }
     else let ch = char-code (char-at input i)
-    in if ch == char-code (char-at "," 0) then CsvFieldResult { value = acc, end-pos = i }
-    else if ch == char-code (char-at "\n" 0) then CsvFieldResult { value = acc, end-pos = i }
-    else csv-parse-unquoted input (i + 1) len (acc & char-to-text (char-at input i))
+    in if ch == char-code (char-at "," 0) | ch == char-code (char-at "\n" 0) then CsvFieldResult { value = substring input start (i - start), end-pos = i }
+    else csv-parse-unquoted input start (i + 1) len
 
 Section: Well-Formedness
 
@@ -110,15 +102,15 @@ Section: Well-Formedness
     else csv-wf s (i + 1) n 1
 Section: Generation
   csv-emit-row : List Text -> Text
-  csv-emit-row (fields) = csv-emit-fields fields 0 (list-length fields) ""
+  csv-emit-row (fields) = text-concat-list (csv-emit-fields fields 0 (list-length fields) [])
 
-  csv-emit-fields : List Text, Integer, Integer, Text -> Text
+  csv-emit-fields : List Text, Integer, Integer, List Text -> List Text
   csv-emit-fields (fields) (i) (len) (acc) =
     if i >= len then acc
-    else let sep = if i == 0 then "" else ","
-    in let field = list-at fields i
-    in let escaped = if csv-needs-quote field then "\"" & csv-escape-quotes field 0 (text-length field) "" & "\"" else field
-    in csv-emit-fields fields (i + 1) len (acc & sep & escaped)
+    else let field = list-at fields i
+    in let with-sep = if i == 0 then acc else list-push acc ","
+    in let pieces = if csv-needs-quote field then list-push (csv-escape-quotes field 0 0 (text-length field) (list-push with-sep "\"")) "\"" else list-push with-sep field
+    in csv-emit-fields fields (i + 1) len pieces
 
   csv-needs-quote : Text -> Boolean
   csv-needs-quote (s) = csv-needs-quote-loop s 0 (text-length s)
@@ -132,19 +124,19 @@ Section: Generation
     else if ch == char-code (char-at "\n" 0) then True
     else csv-needs-quote-loop s (i + 1) len
 
-  csv-escape-quotes : Text, Integer, Integer, Text -> Text
-  csv-escape-quotes (s) (i) (len) (acc) =
-    if i >= len then acc
-    else let ch = char-code (char-at s i)
-    in if ch == char-code (char-at "\"" 0) then csv-escape-quotes s (i + 1) len (acc & "\"\"")
-    else csv-escape-quotes s (i + 1) len (acc & char-to-text (char-at s i))
+  csv-escape-quotes : Text, Integer, Integer, Integer, List Text -> List Text
+  csv-escape-quotes (s) (start) (i) (len) (acc) =
+    if i >= len then list-push acc (substring s start (len - start))
+    else if char-code (char-at s i) == char-code (char-at "\"" 0) then
+      csv-escape-quotes s (i + 1) (i + 1) len (list-push (list-push acc (substring s start (i - start))) "\"\"")
+    else csv-escape-quotes s start (i + 1) len acc
 
   csv-emit-table : List (List Text) -> Text
-  csv-emit-table (rows) = csv-emit-table-loop rows 0 (list-length rows) ""
+  csv-emit-table (rows) = text-concat-list (csv-emit-table-loop rows 0 (list-length rows) [])
 
-  csv-emit-table-loop : List (List Text), Integer, Integer, Text -> Text
+  csv-emit-table-loop : List (List Text), Integer, Integer, List Text -> List Text
   csv-emit-table-loop (rows) (i) (len) (acc) =
     if i >= len then acc
-    else csv-emit-table-loop rows (i + 1) len (acc & csv-emit-row (list-at rows i) & "\n")
+    else csv-emit-table-loop rows (i + 1) len (list-push (csv-emit-fields (list-at rows i) 0 (list-length (list-at rows i)) acc) "\n")
 
 Page 1

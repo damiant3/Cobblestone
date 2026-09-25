@@ -60,6 +60,11 @@ $name = $testFile.BaseName
 $dir = $testFile.DirectoryName
 
 $diskFile = Join-Path $dir "$name.disk"
+if (-not (Test-Path -PathType Leaf $diskFile) -and (Test-Path -PathType Leaf "$diskFile-mint")) {
+    $minted = @(& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'mint-test-disk.ps1') -Recipe "$diskFile-mint")
+    if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: $($minted[-1])" -ForegroundColor Red; exit 1 }
+    $diskFile = $minted[-1]
+}
 $devFile = Join-Path $dir "$name.qemudev"
 $hasDisk = Test-Path -PathType Leaf $diskFile
 $hasDev = Test-Path -PathType Leaf $devFile

@@ -301,22 +301,6 @@ Section: Fingerprint
 
 Section: Console I/O Helpers
 
- `idm-rlb-loop` reads through `poll-key`, not `uefi-read-key`. The raw
- call returns a PS/2 Set-1 make code, and this loop tests its result
- against ASCII: Enter's make code is 28, never 13, so a loop over the raw
- call cannot terminate and every byte it collects is a scancode. That is
- the bug the skip reason "blocks waiting for keyboard input" was
- describing.
-
- **These bytes are CCE code points now, and that is the second migration of
- this loop.** A passphrase is whatever `poll-key` hands over, so the day
- `poll-key` stopped answering ASCII and started answering CCE, every stored
- identity stopped unlocking: `a` used to arrive as 97 and now arrives as 15.
- That is the same cost the shift migration paid and it was accepted for the
- same reason, which is that the alternative is a keyboard that lies about
- what was typed. There is no compatibility path worth having here; a
- passphrase is a hash of bytes and the bytes changed.
-
   idm-show-lines : List Text -> [Console] Integer
   idm-show-lines (lines) = idm-show-loop lines 0 (list-length lines)
 
@@ -381,13 +365,6 @@ Section: Byte Utilities
     if i >= list-length xs then 0
     else let w = list-set-at xs i 0
     in idm-zero-list xs (i + 1)
-
- hkdf returns BYTES. hkdf-expand converts every hmac block with
- hkdf-words-to-bytes and then takes `length` of them, so `hkdf ... 32` is
- 32 bytes, and codex/test/apps/hkdf-vector-test pins exactly that against
- RFC 5869. Expanding them again turned each byte b into [0,0,0,b]: a
- 128-element key, 97 of them zero, of which AES-256 takes the first 32 --
- eight bytes of real entropy in a 256-bit key.
 
   idm-derive-key : List Integer, List Integer -> List Integer
   idm-derive-key (salt) (pp-bytes) = hkdf salt pp-bytes idm-hkdf-info 32

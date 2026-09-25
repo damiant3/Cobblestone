@@ -95,6 +95,8 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 
 | in the archive | SHA-256 | what it is |
 |---|---|---|
+| `diag16-returned-20260925.img` | `76B16D85 94E97E00 E832720F 9C23E2F1 5DA0078D 5C9EAFD5 7C09B271 C093D84B` | SITTING 16 as it came back 2026-09-25, image 9017134229B9: `DIAG.TXT` 6,663 bytes whole, ending `END` after `avx`; FAT copies identical, no overlaps, 170 clusters (1734-1903) allocated to nothing. Extracted as `diag16-20260925-DIAG.TXT`. |
+| `before-diag16-20260925.img` | `03D03888 D8B0F35A 14B1C94A C3708178 CB5533F0 6839232A 332251FA F3AE2C86` | disk 2 read off by root 2026-09-25 before sitting 16 went over it. |
 | `diag14-returned-20260907.img` | `D4B6D858 C3A2A57E 2CCB80FA 39B1F885 157C8809 BBB0C1DC C5216418 6F746C1A` | SITTING 14 as it came back 2026-09-07, image AFC6AD65 (flush-less, sitting-13 cfg): THE MEDIUM KEPT ONE WRITE AND NOT ITS DIRECTORY ENTRY. No `DIAG.TXT` in the root directory, which is byte-identical to the flashed image; `dg-open`'s probe write (stages 1-6, 4,312 bytes) sits orphaned at clusters 1283-1291 with its chain in both FATs, extracted as `diag14-20260907\DIAG-orphan-cluster1283.TXT`. Nothing after it, not even `block`'s scratch sector at LBA 30000. `DIAG.CFG` and `DIAG.RCP` read back as built. Flash transcript in root's session scratchpad; dump log `diag14-returned-20260907.dump.log`. No before-flash dump was taken (root's omission); the stick had held sitting 13's returned image. |
 | `diag12-returned-20260824.img` | `72FD5556 65A1E2E6 DABDEE70 1590ABBD 49CFFC21 69C3CB4B 08FA7ECD 29CCCADD` | SITTING 12 as it came back 2026-08-24, image 8CDF3617: THE FLIGHT THAT ELIMINATED BOTH NAMED CANDIDATES. `DIAG.TXT` 7,177 bytes, stages 1-8 plus pch, nicsit, nicinit, nicring, then b3's trail of THREE step notes (`clock`, `reset-imc`, `reset-ctrl-read`) and `END`. The medium stopped taking writes at b3's FOURTH note, `reset-rst-write`, which the glass row confirms independently as `bank-lost-note=4`, so it died before `swflag` and before the `CTRL|SLU` write and neither can be its cause. `DIAG.CFG` read back off the stick is byte-identical to the one built. Extracted beside it in `diag12-20260824\`. Flash transcript `build-output/flash.log`. |
 | `before-diag12-20260824.img` | `5E20BA45 F310FA5C 24EBA086 4EF1BBAD 6D1819B1 CE62154E 6C9806BB 103C3310` | disk 2 read off by blu 2026-08-24 before sitting 12 (image 8CDF3617) went over it. **Byte-identical to `diag11-returned-20260821.img`**: nothing touched the stick between sitting 11 coming back and this flash. |
@@ -155,6 +157,65 @@ sit, and don't waste my time or my back." Root composes the next sitting from
 every open metal question (`CurrentPlan.md`, "SITTINGS ARE OPEN"). The I219
 medium-death hunt stays parked (Damian, 2026-08-24). Sitting 15, below, is the
 last sitting flown.
+
+### SITTING 16, 2026-09-25: `diag-sitting16.img` 9017134229B9, disk 2, the ASUS
+
+Flashed by root elevated (dump first, rehearsal record and `-ExpectHash` both
+matched, all 16,777,216 bytes and the SpecFit sectors verified). The ASUS is a
+SABERTOOTH Z170 MARK 1, BIOS 0901 (2015-08-31), i7-6700K, 4 x 8 GB DDR4. The
+run stopped in `vmx` with the row reading `running`; no summary band and no
+QR. `DIAG.TXT` on the returned stick is whole and ends `END` after `avx`.
+
+| question | row | answer |
+|---|---|---|
+| COMPILER-77 | `avx admitted xsave=1 avx=1 avx2=1 osxsave=1 admitted=1`, `xcr0-supported=0000001f area=832 area-max=1088`, `lanes=10 match=10` | **proven on metal**: the Option A boot admitted AVX on real silicon and all ten 256-bit lanes answered right; `area-max=1088` and `xcr0-supported` exactly as predicted |
+| WORKS-24 | `rtcw accepted b=2 binary=n before=11 wrote=41 back=41 restored=11` | the Clock accessory's SET-window write works on this silicon |
+| WORKS-19 | `edit` big `bytes=2896050 shift-us=13664 reindex-us=16666`, small `2` and `2` | one keystroke at the top of a 2.9 MB SOURCE.SRC costs 30.3 ms on this box (bed 11.0 ms); the small control is 4 us, so the cost tracks file size |
+| WORKS-62 | `bank=ok`, `DIAG.TXT` whole on the stick | flushed writes survived power-off |
+| WORKS-76 | `vmx running`, no `vmx` line in `DIAG.TXT` | VMX entry wedges on this board with `vmx=on hypervisor=n`: VT-x is enabled and our VMXON/VMLAUNCH path hangs before its first note |
+| WORKS-9 | `sink` | not reached (runs after `vmx`) |
+### PRE-FLIGHT CARD, SITTING 16: `diag-sitting16.img`, the ASUS, five WORKS questions and the COMPILER-77 AVX arm, 9017134229B9, FLOWN 2026-09-25 (above)
+
+**One flight, two campaigns (Damian, 2026-09-25).** The five WORKS questions below fly with the COMPILER-77 stage 5 metal arm (`docs/Designs/Done/Compiler/VectorWidening.md`). One image, one boot: the `avx` stage (compiled `avx-local`) runs ten 256-bit lane rows when it reads `admitted`, after the Option A admission (main 28945). Ctrl-Alt-Del (reek, main 29077) is in the image.
+
+**The bytes.** `D:\Projects\Cobblestone-fester\build-output\diag-sitting16.img`,
+SHA-256 `9017134229B9EEC1C040FB2E14DCDDC8DA3863FCA704FB483262A39DDA376177`,
+built by `build/boot/build-diag.ps1 -Cfg build/boot/diag-sitting16.cfg -Out build-output/diag-sitting16.img`
+on seed `046F0733ED474F41` from main 29083, rehearsed in both beds with every
+arm answering (`build/boot/diag.rehearsed`, `arms=52`, 2026-09-25: 51 in one full
+run and `b3-banklost` re-aimed and run alone, the image unchanged). Any other
+hash is unrehearsed and `flash-usb.ps1` refuses it.
+
+**Ctrl-Alt-Del reboots the box** (reek, main 29077), from the USB keyboard,
+read at every stage boundary and on the summary screen. Rehearsed in the beds
+only (codex-vm and OVMF over USB); the ASUS reading is this sitting's. During a
+long stage the chord takes effect when the stage returns, and a stage that
+wedges (`vmx` can) needs the power button.
+
+**The flash and the boot.** Dump the stick first and confirm its disk number, as for every flight (the rule at the top of this file). Then `build/flash-usb.ps1 -Image <the path above>
+-DiskNumber N -SpecFit`, then boot the ASUS from the stick. No peer and no cable are needed, and the USB keyboard only for Ctrl-Alt-Del: every network stage is off, so the stick is the
+only record. Wait for the summary band (every stage has a clock budget),
+photograph the whole screen including the QR, and bring the stick back.
+
+**Order, because one stage can end the run.** The ladder runs the passive
+stages, opens the bank, runs `rtcw`, `edit`, `avx`, then `vmx`, banks a
+`before-deferred` summary, and runs `sink` last (it can kill the medium). A
+wedge in `vmx` leaves its row reading `running` on the glass, which is itself
+the answer to WORKS-76, and costs only the sink row; everything before it is
+already on the stick.
+
+| question | row | bed reading | what each ASUS reading means |
+|---|---|---|---|
+| WORKS-9 | `sink` second line, `... chunk=N fuel=F` | `fuel=1000000` (the bed completes a transfer before the guest spins) | `fuel` near 1000000 on a failed write: the budget was innocent and the device stopped answering. A small `fuel`: the spin budget was marginal on this box. `state=ok` with a small `fuel`: it passed with little margin |
+| WORKS-19 | `edit`, `big ... shift-us=S reindex-us=R` beside `small ...` | big S=4433 R=6561, small 1 and 1 | S plus R, added, is the cost of one keystroke at the top of SOURCE.SRC on this box; the small row is the control, so a cost that tracks file size shows as big far above small |
+| WORKS-24 | `rtcw` | `ignored` (codex-vm drops CMOS writes) | `accepted`: the Clock accessory's SET-window write works on real silicon. `ignored`: the part dropped it, and setting the clock does not work. `unreadable`: the RTC never left update-in-progress, so nothing was written. `other`: the read-back is neither value; send DIAG.TXT |
+| WORKS-62 | the bank: `bank=ok` on the glass, and `DIAG.TXT` on the returned stick | bank=ok, the file whole | the file on the stick ends in `END` with every stage: flushed writes survived power-off. The glass says ok and the file is short or absent: the device acknowledged and lost the write despite SYNCHRONIZE CACHE |
+| COMPILER-77 | `avx`, `xsave= avx= avx2= osxsave= admitted=` and `xcr0-supported= area= area-max=` | `admitted`, area=832 area-max=832 (codex-vm under an AVX host; `-no-avx` reads `not-offered`) | `admitted` with `avx2=1`, `xcr0-supported=0000001F` and `area-max=1088` is the prediction for the i7-6700K (it also reports MPX, so its maximum area exceeds the bed's): the boot admitted AVX on real silicon. `not-admitted`: the part offers AVX and our boot did not admit it, the fix is ours. `cr4-clear`, `area-wrong`, `admitted-unoffered`: the admission and the part disagree, send DIAG.TXT. A different `area-max` with `admitted` is a wrong prediction about MPX, not a fault. The second glass line reads `lanes=10 match=10`; `lanes-wrong` means a 256-bit lane answered wrong on this silicon, and the lanes are in DIAG.TXT |
+| WORKS-76 | `vmx`, `guest=N fc=F ...` | `vmx-off` (codex-vm reads IA32_FEATURE_CONTROL as 1) | `answered echo=ok`: VMXON, VMLAUNCH and the guest's serial port both ways work here. `refused`, `crashed`, `no-answer`, `wrong` each carry their reason in DIAG.TXT. `vmx-off`: VT-x is off in this firmware's setup. The guest is 32 MB where the desk asks 256, so the desk's guest sizing is not exercised |
+
+**The page is full.** 23 stages at scale 1 put the QR's bottom edge past row
+1068 of a 1080-line panel (measured at 22; 23 adds two rows, re-measure on the rebuild); if the QR is cut, the photograph of the rows and the
+stick's file carry everything the QR would.
 
 ### SITTING 15, 2026-09-09: `diag-sitting15.img` 47F29D50, disk 2, the ASUS
 

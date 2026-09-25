@@ -5,16 +5,12 @@ Chapter: FactArchive
   cites Foreword chapter FactStore
   cites Foreword chapter ImportGate
   cites Foreword chapter FactLog
+  cites Encode chapter Hex
   cites Compress chapter Lz4
   cites Kernel chapter DiskFacts
   cites Kernel chapter AppPersist
   cites Works chapter KeyManager
   cites Works chapter RepoProtocolPersist
-
- What is archived is a RANGE OF THE LOG'S OWN SECTORS, copied out verbatim. So
- the artifact decompresses to a fact log: not a format resembling one, a copy of
- one, byte for byte, which the existing reader walks unchanged. A reader in 2626
- needs one log format and one decompressor, and both are in this tree.
 
  We say:
 
@@ -76,8 +72,10 @@ Section: Wire Form
   base-from-text : Text -> Maybe BaseRecord
   base-from-text (line) =
     let parts = text-split line "|"
-    in if list-length parts >= 10
-      then Just (BaseRecord {
+    in if list-length parts < 10 then None
+    else when hex-decode-checked (list-at parts 7)
+      is None -> None
+      is Just (sig) -> Just (BaseRecord {
         br-artifact-hash = list-at parts 0,
         br-plain-hash = list-at parts 1,
         br-codec = list-at parts 2,
@@ -85,11 +83,10 @@ Section: Wire Form
         br-covers-to = parse-decimal-full (list-at parts 4),
         br-prev-base = list-at parts 5,
         br-signer = list-at parts 6,
-        br-signature = hex-decode (list-at parts 7),
+        br-signature = sig,
         br-author = list-at parts 8,
         br-timestamp = parse-decimal-full (list-at parts 9)
       })
-      else None
 
 Section: Reading The Log's Own Bytes
 
@@ -179,30 +176,6 @@ Section: Opening An Archive
 
 Section: Which Facts May Leave
 
- Age is not the question, and assuming it was would destroy a repository. A file
- written once in 2026 and never touched since is ancient AND current; the tree
- still points at it. The question is whether a fact is the one currently
- DECIDING something, and only the index can answer that.
-
- So the rule, per fact:
-
-   A definition may leave when it is not the current edition of its path. If
-   wi-current points at its hash, it is the tree and it stays. If the path is
-   not in the tree at all -- retired by a tombstone -- then no edition of it is
-   current and every edition may leave.
-
-   A tombstone may leave when its path IS in the tree, which means a later
-   definition re-added the path and this tombstone lost. If the path is absent,
-   this tombstone may be the one deciding that absence, so it stays. Several
-   tombstones for one absent path are all kept: telling which one decides costs
-   more than keeping them, and keeping is the safe direction.
-
-   Everything else stays. A base record and an index snapshot are the lineage
-   and the checkpoint. And every OTHER kind in the log -- 20 is browser history,
-   24 is secret entries, 25 is FileShare manifests -- has no notion of currency
-   that this chapter is entitled to invent. A compactor that cannot prove a fact
-   is redundant must keep it, and so must an archiver.
-
   def-archivable : WorkIndex, Text -> Boolean
   def-archivable (ix) (txt) =
     when source-def-from-text txt
@@ -231,10 +204,6 @@ Section: Walking The Log
     le-kind : Integer,
     le-text : Text
   }
-
- The sector buffer is allocated once and threaded through, not allocated per
- sector. There is no GC here: a fresh buffer per iteration would leave one
- 512-byte block per sector of the log alive until the walk returned.
 
   fa-scan-log : Integer, Integer, Integer, Integer, List LogEntry -> List LogEntry
   fa-scan-log (base) (buf) (sector) (end-sec) (acc) =
@@ -345,10 +314,6 @@ Section: Reading A Work That May Have Left
         is None -> WorkUnknown
 
 Section: Reading A Work Out Of The Base
-
- The cost is one buffer the size of the base. An archival is a tool a human runs
- and a base is read when a quotation misses, so neither is a hot path; a store
- that wanted this often would keep an index of the base instead of scanning it.
 
   fa-to-buf : List Integer -> Integer
   fa-to-buf (bs) = fa-poke (alloc-bytes (list-length bs)) bs 0 (list-length bs)

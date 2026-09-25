@@ -191,6 +191,7 @@ Section: Numbers And References
   fx-acc-digits : List Integer, Integer, Integer, Integer -> Integer
   fx-acc-digits (bs) (i) (e) (a) =
     if i >= e then a
+    else if a > (9223372036854775807 - (list-at bs i - fx-zero)) / 10 then -1
     else fx-acc-digits bs (i + 1) e (a * 10 + (list-at bs i - fx-zero))
 
  A column is base 26 with no zero digit: A is 1, Z is 26, AA is 27, and
@@ -208,7 +209,8 @@ Section: Numbers And References
     in if de == ae then fx-bad i "a cell reference needs a row number after its column letters"
     else let col = fx-acc-col bs i ae 0
     in let row = fx-acc-digits bs ae de 0
-    in if row == 0 then fx-bad i "row numbers start at 1"
+    in if row < 0 then fx-bad ae "row number too large"
+    else if row == 0 then fx-bad i "row numbers start at 1"
     else fx-ok (ExRef (CellRef { cr-row = row - 1, cr-col = col - 1, cr-name = fx-text-of bs i de })) de
 
   fx-ref-part : FxParse -> CellRef
@@ -291,7 +293,9 @@ Section: Primary
   fx-number : List Integer, Integer, Integer -> FxParse
   fx-number (bs) (i) (n) =
     let e = fx-span-digits bs i n
-    in fx-ok (ExNum (fx-acc-digits bs i e 0)) e
+    in let v = fx-acc-digits bs i e 0
+    in if v < 0 then fx-bad i "number too large"
+    else fx-ok (ExNum v) e
 
   fx-primary : List Integer, Integer, Integer -> FxParse
   fx-primary (bs) (i) (n) =

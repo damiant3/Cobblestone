@@ -4,44 +4,14 @@ Chapter: GopWorld
   cites Works chapter GopZones
   cites Works chapter GopLocale
 
- The world, coarsely, and the 24 bands drawn over it.
-
- Stage 4 of `docs/Designs/Active/Apps/ClockAndZone.md`.
-
- THIS IS A PICTURE AND NOT A PROJECTION ENGINE. Nothing here computes a
- Mercator from coordinates. The landmasses are 72 rows of 144 columns, hand
- traced, and the only geometry is that column x is longitude and row y is
- latitude on the same linear scale a Mercator uses for longitude. A click
- picks a STRIPE by its column, never a country by its shape, which is the
- whole reason a coarse picture is enough.
-
- THE ROWS SPAN 80 DEGREES NORTH TO 60 SOUTH, which is where a real Mercator
- stops being usable: the projection sends the poles to infinity, so every
- published one is cropped and this one is cropped in the same place. It costs
- nothing, because nobody picks a timezone by clicking Antarctica.
-
 Section: The Grid
 
   wld-cols : Integer = 144
   wld-rows : Integer = 72
 
- Each row is 144 bits as nine 16-bit words, most significant bit first, which
- is the shape that fits an Integer literal per word and stays readable as a
- map when the words are laid out in a column. Sea is 0 and land is 1.
-
   wld-words : Integer = 9
 
   wld-cells : Integer = 648
-
- THE TABLE IS COPIED INTO A BLOCK ONCE AND INDEXED AFTER THAT. `wld-bit-at` is
- a chain of 367 comparisons, which is the shape a generated table takes in a
- language with no array literal. Read per pixel it would cost about four
- million comparisons to draw one map, and the pane redraws every second. Built
- into 648 words at open and read with `peek-32`, it costs one load.
-
- The caller owns the block and passes it back in, the way every other pane on
- this desk owns its state: allocated once above the desk's base mark, pointer
- kept in a cell, never rebuilt inside a frame bracket.
 
   wld-fill : Integer, Integer -> Integer
   wld-fill (b) (i) =
@@ -69,16 +39,6 @@ Section: The Grid
 
 Section: Stripes
 
- THE BAND IS THE COLUMN AND THE COLUMN IS THE LONGITUDE. 144 columns over 360
- degrees is six columns per hour, and the map is centred so that column 72 is
- the prime meridian: stripe s spans columns `72 + s * 6` to `72 + s * 6 + 6`.
-
- Stripes run -12 to +11 across the picture, which is 24 bands and covers the
- world once. The table has zones at +12, +13 and +14, which are east of the
- date line and are drawn in the SAME columns as -12, -11 and -10. That is not
- a bug in the picture, it is what the date line is, and the list beside the
- map is what separates them.
-
   wld-stripe-cols : Integer = 6
 
   wld-stripe-x0 : Integer -> Integer
@@ -90,11 +50,6 @@ Section: Stripes
     in if x < 72 & int-mod (x - 72) wld-stripe-cols /= 0 then c - 1 else c
 
 Section: Drawing
-
- The map is drawn at an integer SCALE so that a column is a whole number of
- device pixels and the bands line up with the land. A fractional scale would
- put a band edge inside a pixel and the stripe under the pointer would not be
- the stripe that was drawn there.
 
   wld-scale-for : Integer -> Integer
   wld-scale-for (w) = let s = w / wld-cols in if s < 1 then 1 else s
@@ -123,18 +78,8 @@ Section: Drawing
       let one = wld-row-at base stride rows clip blob ox oy sc y 0 sea land sel
       in wld-rows-at base stride rows clip blob ox oy sc (y + 1) sea land sel
 
- The selected band is a WASH over both sea and land rather than a frame around
- them, because a frame six columns wide is two vertical lines and reads as two
- lines rather than as a band. The land inside it stays distinguishable from
- the sea inside it, which is what makes the selection legible instead of a
- solid bar across the picture.
-
   wld-sel-sea : Integer = 3372975
   wld-sel-land : Integer = 6750105
-
- GRID LINES EVERY THREE HOURS, so a reader can count bands without tracing
- each one. Every third stripe boundary gets a line, which puts one on the
- prime meridian and one on the date line, the two a reader looks for first.
 
   wld-grid-at : Integer, Integer, Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   wld-grid-at (base) (stride) (rows) (clip) (ox) (oy) (sc) (s) (hi) (col) =
@@ -151,11 +96,6 @@ Section: Drawing
 
 Section: Hitting
 
- The inverse of the drawing, and it takes the same origin and scale so the two
- cannot drift. A point outside the picture answers a stripe of -99 rather than
- clamping to an edge: a click past the map is not a click on its last band,
- and treating it as one puts somebody in Kiritimati for missing.
-
   wld-none : Integer = 0 - 99
 
   wld-hit-stripe : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
@@ -169,13 +109,6 @@ Section: Hitting
     else wld-col-stripe x
 
 Section: The Table
-
- GENERATED, and the generator is not in the depot because its OUTPUT is the
- artifact: 367 non-empty words rasterised from about twenty coastline polygons
- in latitude and longitude. Editing a coastline here means editing these
- numbers, which is the honest cost of a picture in a language with no array
- literal, and the picture is checked by looking at it rather than by reading
- them.
 
   wld-bit-at : Integer -> Integer
   wld-bit-at (i) =

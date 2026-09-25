@@ -88,6 +88,7 @@ Section: Codegen State
    current-func : Text,
    effect-op-addrs : List RvEffectOpAddr,
    handler-table-base : Integer,
+   handled-ops : List WhOp,
    tco : RvTcoState,
    string-offsets : List RvStringEntry,
    type-defs : List ATypeDef,
@@ -182,6 +183,7 @@ Section: State Constructors
    current-func = "",
    effect-op-addrs = [],
    handler-table-base = 0,
+   handled-ops = [],
    tco = default-rv-tco,
    string-offsets = [],
    type-defs = [],
@@ -937,16 +939,16 @@ Section: Name Emission
    else if name == "__deck-enter" then rv-emit-deck-enter st
    else if name == "__deck-exit" then rv-emit-deck-exit st
    else if name == "vec-empty" then rv-emit-empty-list st
+   else if name == wh-resume-id & list-length (st.handled-ops) > 0 then rv-emit-load-slot st (rv-resume-slot st)
    else let eoa = rv-find-effect-op-addr (st.effect-op-addrs) name 0
    in let is-rl = if name == "read-line" then True else name == "read-line-cce"
    in let runtime-known = rv-find-func-offset (st.func-names) (st.func-offsets) name 0
-   in let has-handler = if is-rl then rv-find-func-offset (st.func-names) (st.func-offsets) ("__handler_" & name) 0 else 0 - 1
    in if eoa >= 0 & runtime-known >= 0 then
     let tr = rv-alloc-temp st
     in let st1 = rv-emit-call-to (tr.state) name
     in RvEmitResult { state = rv-emit st1 (rv-mv (tr.reg) rv-a0), reg = tr.reg }
-   else if eoa >= 0 & (is-rl == False) then rv-emit-load-handler st eoa
-   else if eoa >= 0 & has-handler >= 0 then rv-emit-load-handler st eoa
+   else if eoa >= 0 & (is-rl == False) then rv-emit-effect-op-call st eoa []
+   else if eoa >= 0 & rv-op-handled st name then rv-emit-effect-op-call st eoa []
    else if is-rl then rv-emit-maybe-none st
    else when ty
     is SumTy (sname) (targs) (ctors) ->
@@ -1700,7 +1702,7 @@ Section: Real Arithmetic
   rv-vec-lane-count (ty) =
    when ty
     is VectorTy (n) (et) -> n
-    is VectorMaskTy (n) -> n
+    is VectorMaskTy (n) (me) -> n
     is otherwise -> 2
 
   rv-is-vec-real : CodexType -> Boolean

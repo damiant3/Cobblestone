@@ -1,0 +1,94 @@
+Chapter: UefiGopKeysYieldTest
+  cites Works chapter UefiConsole
+  cites Works chapter GopAhci
+  cites UI chapter KeyInput
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The Dev Console's idle pass yields through ugc-yield, because on metal the
+ boot process that feeds the key ring runs only when the console yields. The
+ child here polls the way the console's idle pass does and yields on every
+ empty poll; the five keys must arrive in order and the yield count must be
+ above zero. The last row is the control: with the grid off, ugc-yield must
+ neither yield nor count.
+
+Section: Cells
+
+  got-cell : Integer = 124928
+
+  seen-at : Integer -> Integer
+  seen-at (i) = 124932 + 4 * i
+
+Section: Child
+
+  child : Integer -> [Concurrent] Integer
+  child (x) =
+    let mark = __heap-save
+    in let k = when uefi-con-poll-key
+      is None -> 0
+      is Just (key) -> key.char-code
+    in let r = __heap-restore mark
+    in if k == 0 then child-idle x
+    else let n = peek-32 got-cell 0
+    in let w = poke-32 (seen-at n) 0 k
+    in let c = poke-32 got-cell 0 (n + 1)
+    in child x
+
+  child-idle : Integer -> [Concurrent] Integer
+  child-idle (x) = act
+    y <- ugc-yield
+    child x
+  end
+
+Section: Parent
+
+  codes : List Integer = [30, 48, 46, 32, 18]
+
+  feed : List Integer, Integer -> [Concurrent] Integer
+  feed (xs) (i) = act
+    if i >= list-length xs then 0
+    else act
+      let f = ugc-key-feed (list-at xs i)
+      in let b = ugc-key-feed (list-at xs i + 128)
+      in act
+        y <- process-yield
+        feed xs (i + 1)
+      end
+    end
+  end
+
+  settle : Integer -> [Concurrent] Integer
+  settle (until) = act
+    if peek-32 got-cell 0 >= 5 then 1
+    else if peek-32 28672 0 >= until then 0
+    else act
+      y <- process-yield
+      settle until
+    end
+  end
+
+  seen : Integer, Text -> Text
+  seen (i) (acc) =
+    if i >= peek-32 got-cell 0 then acc
+    else seen (i + 1) (acc & char-encode (code-to-char (peek-32 (seen-at i) 0)))
+
+Section: Entry
+
+  opening : [Console, Concurrent] Nothing
+  opening = act
+    let fb = alloc-zeroed (640 * 400 * 4) 64
+    in let e = ugc-enable fb 640 400 640
+    in let z = poke-32 got-cell 0 0
+    in act
+      pid <- process-spawn (\x -> child x)
+      f <- feed codes 0
+      done <- settle (peek-32 28672 0 + 200)
+      print-line-uni ("child read " & show (peek-32 got-cell 0) & " keys: " & seen 0 "" & ", in time " & (if done == 1 then "yes" else "NO") & ", drops " & show (ugc-drops 0) & ", child yielded " & (if ugc-yields 0 > 0 then "yes" else "NO"))
+      let off = ugc-disable 0
+      in let before = ugc-yields 0
+      in act
+        y <- ugc-yield
+        print-line-uni ("grid off: yield counted " & show (ugc-yields 0 - before))
+      end
+    end
+  end

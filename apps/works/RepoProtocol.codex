@@ -11,11 +11,6 @@ Chapter: RepoProtocol
   cites Foreword chapter Maybe
   cites Foreword chapter Hamt
 
- The Codex repository protocol. Facts, proposals, verdicts, and
- discussions -- all content-addressed and signed. This is the
- implementation of Part Three of the Codex book: the repository
- that replaces Git.
-
  We say:
 
 Section: Proposal
@@ -221,12 +216,6 @@ Section: Repository Operations
 
 Section: Outbound Proposal
 
- publish-proposal is the H7 entry point. It registers the
- SignedAnnotation in the local AnnotationStore (so the local
- Reader sees it immediately) and queues a ProposalPayload on
- the outbox for outbound delivery. The transport adapter
- (a separate effect handler) consumes the outbox.
-
   publish-proposal : RepoState, SignedAnnotation, Text, Integer -> RepoState
   publish-proposal (repo) (sa) (code-suggestion) (ts) =
     let target-chapter = (sa.annotation.target).chapter
@@ -247,11 +236,6 @@ Section: Outbound Proposal
     else Just (list-at (repo.outbox) 0)
 
 Section: Verdict Publishing
-
- H9: when the user accepts/rejects/amends an inbound proposal,
- a Verdict is created, registered locally via repo-submit-verdict,
- and queued on verdict-outbox for outbound delivery. The
- transport adapter drains the outbox into TrustTransport frames.
 
   publish-verdict : RepoState, Keypair, Text, VerdictKind, Text, Integer -> RepoState
   publish-verdict (repo) (kp) (proposal-id) (kind) (reason) (ts) =
@@ -276,14 +260,6 @@ Section: Verdict Publishing
 
 Section: Wire Codec
 
- The OS-layer AgentProtocol carries Annotate and Verdict messages
- with opaque payload bytes; this section is where those bytes get
- their meaning. encode-proposal-payload and encode-verdict produce
- byte sequences that decode-proposal-payload and decode-verdict
- read back into records. The Works layer owns this encoding so
- Trust does not have to learn about ProposalPayload, Annotation,
- SignedAnnotation, or VerdictKind.
-
   encode-annotation-kind : AnnotationKind -> Integer
   encode-annotation-kind (k) = when k
     is Rationale -> 0
@@ -304,26 +280,6 @@ Section: Wire Codec
 
   encode-target : AnnotationTarget -> List Integer
   encode-target (t) = frame-encode-text (t.chapter) & frame-encode-text (t.path)
-
- `frame-fits` answers for a LENGTH-PREFIXED field. Two reads in this chapter are
- raw spans instead -- the annotation's single kind byte, and the eight bytes of
- a timestamp -- and they step past an offset that has already been clamped to
- the end of the buffer, so they read zeros and say nothing. This is the
- predicate for those, and it lives here rather than in `MessageFraming` because
- the shape is this chapter's, not the framing's.
-
- The comparison SUBTRACTS rather than adding, and that is the whole of why it
- is written this way. `off + n <= list-length bs` overflows: measured
- 2026-08-16, a 19-digit length field parses to i64 max and `46 + i64max` wraps
- to a negative, so the sum is under any length and the guard admits what it
- exists to refuse. blu found that shape in `sdw-decode` and it was a live guest
- kill there.
-
- Here every call site passes a CONSTANT n of 1 or 8, so no reachable input
- overflows this one and no live path was demonstrated. It is subtractive
- anyway: the additive form is only safe as long as nobody adds a call site with
- a length off the wire, and proving that again at every future call site is a
- worse deal than never needing to.
 
   repo-has : List Integer, Integer, Integer -> Boolean
   repo-has (bs) (off) (n) =
@@ -419,12 +375,6 @@ Section: Wire Codec
     & frame-encode-text (pp.target-chapter)
     & frame-le64 (pp.timestamp)
 
- The payload decoders keep their signatures, so no caller is broken, and the
- walk happens ONCE: the checked form is the real one and the bare form reads a
- field off it. Two walks that had to agree about validity would be two sources
- of truth about the same bytes, which is the shape this whole channel exists to
- remove.
-
   ProposalPayloadDecodeResult = record {
     payload : ProposalPayload,
     valid : Boolean
@@ -461,12 +411,6 @@ Section: Wire Codec
     next-offset : Integer between 0 and 4294967295,
     valid : Boolean
   }
-
- The tag byte is the one that matters here. Past the end `frame-byte-at`
- answers 0, which is `Accept` -- a truncated verdict decoding as an ACCEPTED
- one, silently, and it is the worst default in this chapter. The value does not
- change, because refusing is the caller's decision and not this function's, but
- `valid` now says the byte was never there.
 
   decode-verdict-kind : List Integer, Integer -> VerdictKindDecodeResult
   decode-verdict-kind (bs) (off) =
@@ -522,20 +466,6 @@ Section: Wire Codec
 
 Section: Supersession
 
- The map below is state a running process holds. A `Supersession` is the FACT
- that puts the same relation on a medium, so that a proposal chain survives a
- reboot and travels with the store. It names proposals by id, not annotations
- by hash: those are different chains over different kinds, and conflating them
- is what made "the supersession view" unbuildable for a day (rulings queue 20,
- ruled (a) 2026-08-20).
-
- It carries the relation in its OWN fact rather than as a field on the
- proposal it supersedes, and that is a compatibility choice: a field added to
- kind 36 would make every record already on a stick read as "field missing"
- where the truth is "no supersession", which is two claims wearing one shape.
- A medium with no kind-40 facts renders an empty chain, and for that medium
- the empty chain is true.
-
   Supersession = record {
     sup-old : Text,
     sup-new : Text,
@@ -579,10 +509,6 @@ Section: Proposal Resolution
       is otherwise -> False
 
 Section: Import by Hash
-
- Resolution is local-store-only. Peer query and registry discovery are
- further reaches of the same protocol; refusing a fact does not depend
- on where the fact came from, so the refusal is complete without them.
 
   repo-publish-fact : RepoState, SignedFact -> RepoState
   repo-publish-fact (repo) (sf) =

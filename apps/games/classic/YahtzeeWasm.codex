@@ -3,20 +3,14 @@ Chapter: YahtzeeWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- The browser interface for Yahtzee, on the handle contract in
- games-backlog.md GAME-11. Two thirteen-entry cards and five dice are past
- an i32, so the page holds the state's address.
-
- `yh-do-turn` writes the scorecard with `list-set-at`, which mutates in
- place, so `yh-wasm-turn` copies first.
-
- Scoring is exposed on five loose dice rather than on the state, because
- the whole scoring table is decidable over the 7,776 dice combinations and
- a grader wants to ask about all of them, not about the ones a game rolled.
+ `yh-do-turn` writes the scorecard with `list-set-at`, in place, so every
+ change copies the state first.
 
  We say:
 
 Section: Copying
+
+  wasm-exports : Text = ""
 
   yh-copy-13 : List Integer, Integer, List Integer -> List Integer
   yh-copy-13 (src) (i) (acc) =
@@ -84,19 +78,10 @@ Section: The Browser Interface
 
 Section: Playing By Hand
 
- `yh-do-turn` rolls three times, picks its own keeps and chooses its own
- category, all in one call, so a person cannot get inside it. These are the
- same steps taken one at a time.
+ The rolls left in a turn are not kept in the state; the caller counts
+ them.
 
- HOW MANY ROLLS ARE LEFT IS NOT KEPT HERE. It is a fact about the turn in
- progress, not about the game, and `YahtzeeState` has no room for it without
- a new field on a record built in five places. The page counts the rolls, the
- same way it holds which square you have picked up in every other game.
-
- The keep mask arrives as five BITS rather than a list, because a browser
- hands over one integer: bit i set means die i is held and does not roll
- again. The engine's own `yh-reroll-some` reads a list where 1 means keep,
- so `yh-keep-list` is the only translation.
+ The keep mask is five bits: bit i set holds die i.
 
   yh-keep-list : Integer, Integer, List Integer -> List Integer
   yh-keep-list (bits) (i) (acc) =
@@ -120,10 +105,8 @@ Section: Playing By Hand
     in YahtzeeState { scorecard = st.scorecard, scored = st.scored,
                       dice = yh-reroll-some (st.dice) mask r, rng = r }
 
- Scoring the dice you are holding into a category you have not used. A
- category already spent is refused rather than overwritten: in Yahtzee a
- filled box is filled for the rest of the game, and a caller that ignores
- the refusal would otherwise silently rewrite a score.
+ A filled category stays filled for the rest of the game, so taking one
+ again is refused.
 
   yh-wasm-take : YahtzeeState, Integer -> YahtzeeState
   yh-wasm-take (s) (cat) =
@@ -135,10 +118,6 @@ Section: Playing By Hand
     in YahtzeeState { scorecard = list-set-at (st.scorecard) cat sc,
                       scored = list-set-at (st.scored) cat 1,
                       dice = st.dice, rng = st.rng }
-
- What a category WOULD score with the dice on the table. Yahtzee is a game
- of choosing where to spend a roll, and choosing without this is guesswork
- rather than play.
 
   yh-wasm-preview : YahtzeeState, Integer -> Integer
   yh-wasm-preview (s) (cat) =

@@ -20,7 +20,8 @@
 # a store that had the shipping arithmetic hardcoded.
 
 param(
-    [string]$OutDir = "codex/test/apps"
+    [string]$OutDir = "codex/test/apps",
+    [string]$LoadDisk = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -141,3 +142,25 @@ for ($i = 0; $i -lt 512; $i++) { $mbr[512 + $i] = 0xA5 }
 $mbrOut = Join-Path $OutDir 'disk-facts-mbr-guard.disk'
 [System.IO.File]::WriteAllBytes((Join-Path (Get-Location) $mbrOut), $mbr)
 Write-Host "wrote $mbrOut ($($mbr.Length) bytes)"
+
+# ---------------------------------------------------------------- wide superblock fields
+#
+# disk-facts-load.disk with ONE superblock field set to 2^63-1. Each field is
+# u64 on the medium and has 1 or nsec added to it after load, so an unbounded
+# one trapped the guest at the add. The store must be refused, and refused as
+# UNUSABLE: an empty store on a usable base writes over the log that is there.
+
+$srcDisk = if ($LoadDisk) { $LoadDisk } else { Join-Path (Get-Location) (Join-Path $OutDir 'disk-facts-load.disk') }
+if (-not (Test-Path -PathType Leaf $srcDisk) -and (Test-Path -PathType Leaf "$srcDisk-mint")) {
+    $minted = @(& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'mint-test-disk.ps1') -Recipe "$srcDisk-mint")
+    if ($LASTEXITCODE -ne 0) { throw "cannot mint ${srcDisk}: $($minted[-1])" }
+    $srcDisk = $minted[-1]
+}
+$wide = [BitConverter]::GetBytes([uint64]9223372036854775807)
+foreach ($pair in @(@('disk-facts-head-wide', 8), @('disk-facts-count-wide', 16), @('disk-facts-gen-wide', 24))) {
+    $d = [System.IO.File]::ReadAllBytes($srcDisk)
+    $wide.CopyTo($d, $pair[1])
+    $out = Join-Path $OutDir "$($pair[0]).disk"
+    [System.IO.File]::WriteAllBytes((Join-Path (Get-Location) $out), $d)
+    Write-Host "wrote $out (superblock offset $($pair[1]) = 2^63-1)"
+}

@@ -5,6 +5,8 @@ Chapter: DevConsoleBoot
   cites Works chapter AnnotationPersistDriver
   cites Works chapter AnnotationShellCommands
   cites Works chapter KeyManager
+  cites Works chapter StickSource
+  cites Works chapter GopFat16
   cites Foreword chapter Maybe
   cites Foreword chapter TextSearch
   cites Foreword chapter Sha256
@@ -18,20 +20,9 @@ Chapter: DevConsoleBoot
   cites Dev chapter CpuInspector
   cites Dev chapter SerialBridge
   cites Dev chapter PortTrace
-
- Boot-time entry point for the UEFI dev console. The UEFI stub
- checks for a held key (Escape or F12) during the first second
- of boot. If detected, enters the dev console. Otherwise proceeds
- to normal Codex boot (compiler REPL on serial).
+  cites Dev chapter HwWatch
 
  We say:
-
- Boot sequence:
-   1. UEFI loads BOOTX64.EFI
-   2. PE stub prints "Codex UEFI Boot"
-   3. Check ConIn for held key (500ms poll)
-   4. Key held -> index source tree, enter dev console
-   5. No key -> jump to __start (bare-metal compiler)
 
 Section: Boot Key Detection
 
@@ -326,18 +317,34 @@ Section: Boot Flow
 
 Section: Dev Console Entry
 
-  enter-dev-console : UefiConsoleState -> [Console, Device.Port, Device.Block, FileSystem] Nothing
-  enter-dev-console (con) =
+  enter-dev-console : UefiConsoleState -> [Console, Device.Port, Device.Block, FileSystem, Concurrent] Nothing
+  enter-dev-console (con) = dev-console-start con 0 gfat-null-vol
+
+  enter-dev-console-stick : UefiConsoleState -> [Console, Device.Port, Device.Block, FileSystem, Concurrent] Nothing
+  enter-dev-console-stick (con) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then dev-console-start con 0 gfat-null-vol
+    else act
+      blk <- ss-open (m.gm-vol)
+      dev-console-start con (if ss-verdict blk == ss-v-ok then blk else 0) (m.gm-vol)
+    end
+  end
+
+  dev-console-start : UefiConsoleState, Integer, Fat16Volume -> [Console, Device.Port, Device.Block, FileSystem, Concurrent] Nothing
+  dev-console-start (con) (blk) (vol) =
     let disk = disk-load
     in let kp = generate-keypair (sha256 (text-to-bytes "codex-dev-console"))
-    in let idx = index-full-dev-surface
+    in let idx = if blk == 0 then index-full-dev-surface else empty-source-index
     in let state = dev-console-init con disk kp
-    in let state2 = __record-set state "source-index" idx
+    in let s1 = __record-set state "source-index" idx
+    in let s2 = __record-set s1 "stick" blk
+    in let s3 = __record-set s2 "stick-vol" vol
     in let ann-count = disk-fact-count disk
-    in let state3 = __record-set state2 "status" ("Indexed " & show (idx.total-defs) & " defs, " & show ann-count & " facts on disk")
+    in let what = if blk == 0 then show (idx.total-defs) & " built-in definitions" else show (ss-entry-count blk) & " definitions from SOURCE.SRC (" & show (ss-line-count blk) & " lines)"
+    in let state3 = __record-set s3 "status" ("Indexed " & what & ", " & show ann-count & " facts on disk")
     in act
       print-line-uni "Cobblestone Dev Console"
-      print-line-uni ("Indexed " & show (idx.total-defs) & " definitions, " & show ann-count & " disk facts")
+      print-line-uni ("Indexed " & what & ", " & show ann-count & " disk facts")
       dev-console-loop state3
     end
 
@@ -355,26 +362,31 @@ Section: Dev Console Entry
     | StepRepaint (DevConsoleState)
     | StepLeave
 
-  dev-console-loop : DevConsoleState -> [Console, Device.Port, Device.Block, FileSystem] Nothing
+  dev-console-loop : DevConsoleState -> [Console, Device.Port, Device.Block, FileSystem, Concurrent] Nothing
   dev-console-loop (state) = dev-console-run state 0 True
 
-  dev-console-run : DevConsoleState, Integer, Boolean -> [Console, Device.Port, Device.Block, FileSystem] Nothing
+  dev-console-run : DevConsoleState, Integer, Boolean -> [Console, Device.Port, Device.Block, FileSystem, Concurrent] Nothing
   dev-console-run (state) (last-sec) (repaint) =
     if state.running == False then act print-line-uni "Booting Cobblestone..." end
-    else if repaint then act
+    else if repaint then let mark = __heap-save
+    in act
       uefi-con-set-attr 7 0
       uefi-con-clear
       uefi-con-hide-cursor
       draw-console-screen state
       sec <- rtc-read-reg 0
-      dev-console-run state sec False
+      let restored = __heap-restore mark
+      in dev-console-run state sec False
     end
     else let mark = __heap-save
     in act
       step <- dev-console-step state last-sec
       when step
-        is StepIdle (sec) -> let restored = __heap-restore mark
+        is StepIdle (sec) -> act
+          y <- ugc-yield
+          let restored = __heap-restore mark
           in dev-console-run state sec False
+        end
         is StepPoll (s) (sec) -> dev-console-run s sec False
         is StepRepaint (s) -> dev-console-run s last-sec True
         is StepLeave -> print-line-uni ""
@@ -470,7 +482,7 @@ Section: Dev Console Entry
   handle-viewer-key : DevConsoleState, UefiKey -> DevConsoleState
   handle-viewer-key (state) (key) =
     if uefi-key-is-escape key then
-      let bm = browse-menu (state.source-index.chapter-names)
+      let bm = browse-menu (dc-chapter-names state)
       in let s = __record-set state "mode" ModeBrowse
       in __record-set s "menu" bm
     else if uefi-key-is-arrow-down key then viewer-scroll-down state 1
@@ -478,7 +490,7 @@ Section: Dev Console Entry
     else if uefi-key-is-page-down key then viewer-scroll-down state 20
     else if uefi-key-is-page-up key then viewer-scroll-up state 20
     else if uefi-key-is-home key then
-      let start = chapter-start-line (state.source-index) (state.view-chapter-idx)
+      let start = dc-chapter-start state (state.view-chapter-idx)
       in __record-set state "view-scroll" start
     else if key.char-code == char-code 'n' then viewer-next-chapter state
     else if key.char-code == char-code 'p' then viewer-prev-chapter state
@@ -486,14 +498,14 @@ Section: Dev Console Entry
 
   viewer-scroll-down : DevConsoleState, Integer -> DevConsoleState
   viewer-scroll-down (state) (n) =
-    let end-line = chapter-end-line (state.source-index) (state.view-chapter-idx)
+    let end-line = dc-chapter-end state (state.view-chapter-idx)
     in let new-scroll = state.view-scroll + n
     in if new-scroll >= end-line then state
     else __record-set state "view-scroll" new-scroll
 
   viewer-scroll-up : DevConsoleState, Integer -> DevConsoleState
   viewer-scroll-up (state) (n) =
-    let start = chapter-start-line (state.source-index) (state.view-chapter-idx)
+    let start = dc-chapter-start state (state.view-chapter-idx)
     in let new-scroll = state.view-scroll - n
     in if new-scroll < start then __record-set state "view-scroll" start
     else __record-set state "view-scroll" new-scroll
@@ -501,7 +513,7 @@ Section: Dev Console Entry
   viewer-next-chapter : DevConsoleState -> DevConsoleState
   viewer-next-chapter (state) =
     let next = state.view-chapter-idx + 1
-    in if next >= list-length (state.source-index.chapter-names) then state
+    in if next >= dc-chapter-count state then state
     else enter-source-viewer state next
 
   viewer-prev-chapter : DevConsoleState -> DevConsoleState
@@ -592,10 +604,26 @@ Section: Dev Console Entry
     draw-console-body state
   end
 
-  draw-source-lines : DevConsoleState, Integer -> [Console] Nothing
+  draw-source-lines : DevConsoleState, Integer -> [Console, Device.Port] Nothing
   draw-source-lines (state) (start-row) =
-    let end-line = chapter-end-line (state.source-index) (state.view-chapter-idx)
-    in act draw-source-loop (state.source-index.source-lines) (state.view-scroll) end-line start-row (start-row + viewer-visible-rows) end
+    let end-line = dc-chapter-end state (state.view-chapter-idx)
+    in if state.stick /= 0 then draw-stick-loop (state.stick-vol) (state.stick) (state.view-scroll) end-line start-row (start-row + viewer-visible-rows)
+    else act draw-source-loop (state.source-index.source-lines) (state.view-scroll) end-line start-row (start-row + viewer-visible-rows) end
+
+  viewer-cols : Integer = 72
+
+  draw-stick-loop : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Port] Nothing
+  draw-stick-loop (vol) (blk) (line-idx) (end-line) (row) (max-row) =
+    if row >= max-row then act print-uni "" end
+    else if line-idx >= end-line then act
+      uefi-con-put-text row 0 "~" 8 0
+      draw-stick-loop vol blk (line-idx + 1) end-line (row + 1) max-row
+    end
+    else act
+      t <- ss-line-text vol blk line-idx viewer-cols
+      uefi-con-put-text row 0 (show (line-idx + 1) & " " & t) 7 0
+      draw-stick-loop vol blk (line-idx + 1) end-line (row + 1) max-row
+    end
 
   source-line-display : List Text, Integer -> Text
   source-line-display (lines) (line-idx) =
@@ -619,9 +647,9 @@ Section: Dev Console Entry
 
   draw-viewer-footer : DevConsoleState, Integer -> [Console] Nothing
   draw-viewer-footer (state) (row) =
-    let end-line = chapter-end-line (state.source-index) (state.view-chapter-idx)
-    in let start = chapter-start-line (state.source-index) (state.view-chapter-idx)
-    in let pos = show (state.view-scroll - start + 1) & "/" & show (end-line - start)
+    let end-line = dc-chapter-end state (state.view-chapter-idx)
+    in let start = dc-chapter-start state (state.view-chapter-idx)
+    in let pos =show (state.view-scroll - start + 1) & "/" & show (end-line - start)
     in draw-viewer-footer-render row pos
 
   draw-viewer-footer-render : Integer, Text -> [Console] Nothing
@@ -682,9 +710,9 @@ Section: Dev Console Entry
 
   enter-source-viewer : DevConsoleState, Integer -> DevConsoleState
   enter-source-viewer (state) (ci) =
-    let name = list-at (state.source-index.chapter-names) ci
-    in let start = chapter-start-line (state.source-index) ci
-    in let end-line = chapter-end-line (state.source-index) ci
+    let name = dc-chapter-name state ci
+    in let start = dc-chapter-start state ci
+    in let end-line = dc-chapter-end state ci
     in let s1 = __record-set state "mode" ModeViewSource
     in let s2 = __record-set s1 "view-scroll" start
     in let s3 = __record-set s2 "view-chapter-idx" ci
@@ -722,7 +750,8 @@ Section: Dev Console Entry
       let trimmed = text-trim line
       in dispatch-main-menu trimmed state
     is ModeBrowse ->
-      let ci = find-chapter-index (state.source-index.chapter-names) line 0 (list-length (state.source-index.chapter-names))
+      let names = dc-chapter-names state
+      in let ci = find-chapter-index names line 0 (list-length names)
       in if ci >= 0 then enter-source-viewer state ci
       else state
     is ModeSearch ->
@@ -888,6 +917,7 @@ Section: Debug Menu Dispatch
     else if key == "watch.check" then debug-watch-check state
     else if key == "watch.clear" then
       let dbg = __record-set (state.debugger) "dev" (dev-watch-clear (state.debugger.dev))
+      in let off = hw-watch-clear
       in __record-set (__record-set state "debugger" dbg) "status" "watches cleared"
     else if key == "back" then
       let s = __record-set state "mode" ModeMainMenu
@@ -928,11 +958,6 @@ Section: Debug Menu Dispatch
   debug-addr-here (state) =
     let dbg = state.debugger
     in __record-set state "status" ("0x" & hex-i64 (dbg.last-address) & " is " & resolve-addr dbg (dbg.last-address))
-
- The two lines are read differently, which is why the pending flag is a
- variant. A search pattern is TEXT -- hex digit pairs, parsed here -- and
- a compare address is an EXPRESSION, so `heap-base + 0x40` works for the
- second region exactly as it does for the cursor.
 
   debug-search-arm : DevConsoleState -> DevConsoleState
   debug-search-arm (state) =
@@ -1132,16 +1157,6 @@ Section: The Disk Commands
       is ExprErr (m) -> __record-set s "status" ("IDT entry cancelled -- expr: " & m)
       is ExprOk (v) -> debug-idt-show s v
 
- TWO SETTERS AND NOT ONE, AND THE FIELD NAME IS A LITERAL IN BOTH. The
- obvious version of this takes the field name as a parameter, since the
- four commands differ only in which flag and which word. It compiles, and
- it does nothing: `__record-set` resolves its field at COMPILE time, so a
- name arriving as a runtime `Text` matches no field and the write is
- silently dropped. Measured 2026-07-28 -- the status line, set with a
- literal in the same function, updated correctly while the flag beside it
- stayed False, which is why the console reported `serial mirror ON` and
- mirrored nothing.
-
   debug-serial-mirror : DevConsoleState, Boolean, Text -> DevConsoleState
   debug-serial-mirror (state) (on) (msg) =
     let dbg = __record-set (state.debugger) "serial-mirror" on
@@ -1277,7 +1292,7 @@ Section: The Disk Commands
   debug-take-sym-name (key) (state) =
     let dbg = __record-set (state.debugger) "pending" PendingNone
     in let s = __record-set state "debugger" dbg
-    in __record-set s "status" (debug-sym-lookup (s.source-index) key)
+    in __record-set s "status" (dc-sym-lookup s key)
 
   debug-take-bp-name : Text, DevConsoleState -> DevConsoleState
   debug-take-bp-name (key) (state) =
@@ -1293,32 +1308,26 @@ Section: The Disk Commands
       is ExprOk (v) -> __record-set s "status" (debug-mem-write-at (dbg.last-address) v)
       is ExprErr (m) -> __record-set s "status" ("write cancelled -- expr: " & m)
 
- Anything that is not a menu key is an ADDRESS EXPRESSION. That is what
- the debugger design has promised since it was written -- every command
- in it takes arguments like `heap-base + 0x100` and `$` for the last
- result -- and until `Dev chapter ExprEval` landed there was nothing to
- evaluate them with, so this arm was `else state`: it swallowed the line
- without a word, which is the worst of the three things it could do.
-
- `watch` arms at the CURSOR rather than taking an address of its own, and
- that is what makes the expression evaluator worth having here: you type
- `heap-base + 0x100`, the cursor moves there, and `watch` watches it. The
- design writes the command as `dbg watch <addr> [len]`; this console
- dispatches single words, so the address arrives the way every other
- address in it does.
-
   debug-watch-here : DevConsoleState -> DevConsoleState
   debug-watch-here (state) =
     let dbg = state.debugger
     in let r = dev-watch-add (dbg.dev) ("0x" & hex-i64 (dbg.last-address)) (dbg.last-address) (dbg.dump-length)
     in let dbg2 = __record-set dbg "dev" (r.wa-state)
-    in __record-set (__record-set state "debugger" dbg2) "status" (r.wa-message)
+    in let hw = if r.wa-ok then " | hardware write watch on 0x" & hex-i64 (hw-watch-arm (dbg.last-address)) else ""
+    in __record-set (__record-set state "debugger" dbg2) "status" (r.wa-message & hw)
 
   debug-watch-check : DevConsoleState -> DevConsoleState
   debug-watch-check (state) =
     let c = dev-watch-check (state.debugger.dev)
     in let dbg = __record-set (state.debugger) "dev" (c.wc-state)
-    in __record-set (__record-set state "debugger" dbg) "status" (show (c.wc-changed) & " changed: " & c.wc-report)
+    in __record-set (__record-set state "debugger" dbg) "status" (show (c.wc-changed) & " changed: " & c.wc-report & debug-hw-watch-line)
+
+  debug-hw-watch-line : Text
+  debug-hw-watch-line =
+    let h = hw-watch-hits
+    in if h.hh-armed == False then ""
+    else if h.hh-count == 0 then " | 0x" & hex-i64 (h.hh-addr) & ": no writes"
+    else " | 0x" & hex-i64 (h.hh-addr) & ": " & show (h.hh-count) & " writes, last from 0x" & hex-i64 (h.hh-rip)
 
   debug-eval-expr : Text, DevConsoleState -> DevConsoleState
   debug-eval-expr (key) (state) =

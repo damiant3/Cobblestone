@@ -230,8 +230,9 @@ model sees it, is the whole question. If codex-vm's xHCI does not already
 observe a port or endpoint reset on the BOT path, the flag has nothing to hang
 off and that is the first finding, not a detail.
 
-**2. Per-controller device attachment. Owner none, and WORKS-25's ARM is parked
-behind it.** `-xhci-two` gives a second controller with NOTHING on it: measured
+**2. Per-controller device attachment. Owner none, and WORKS-25's keyboard and
+camera arms are parked behind it** (the mass-storage walk is graded by
+`codex/test/apps/usb-walk-past` and `usb-walk-stop`). `-xhci-two` gives a second controller with NOTHING on it: measured
 2026-08-21, `ctl1` reports `kbd=n mouse=n disk=n`, `-usb-disk-port` selects a
 root PORT rather than a controller, and every device model (`hid_*`,
 `usb_bot_*`, `xhci_no_disk`) is a global singleton, so the second controller is

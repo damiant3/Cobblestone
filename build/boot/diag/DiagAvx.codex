@@ -1,0 +1,128 @@
+Chapter: DiagAvx
+  cites Diag chapter DiagStage
+
+ CPUID (Intel SDM vol. 2A). Leaf 1 ecx: bit 26 XSAVE, bit 27 OSXSAVE (CR4.OSXSAVE
+ of the asking processor), bit 28 AVX. Leaf 7 sub 0 ebx bit 5 AVX2. Leaf 0Dh sub 0:
+ eax the XCR0 bits the part supports (low half), ebx the save-area size for the
+ bits XCR0 enables now, ecx the size for every supported bit. XCR0 = 7 (x87, SSE,
+ AVX) sizes to 832 bytes: 512 legacy, 64 header, 256 YMM upper halves.
+
+ 36384 is `avx-admitted-addr` (`codex/compiler/Emit/X86_64Boot.codex`), the cell
+ the boot processor sets to 1 after it writes CR4.OSXSAVE and XSETBV 7, and
+ leaves 0 when leaf 1 lacks XSAVE or AVX. Only the boot processor is read here.
+
+ We say:
+
+Section: States
+
+  dav-states : List Text = ["admitted", "not-offered", "not-admitted", "cr4-clear", "area-wrong", "no-leaf-d", "admitted-unoffered", "lanes-wrong"]
+
+Section: The Probe
+
+  dav-cell : Integer = 36384
+  dav-area : Integer = 832
+
+  dav-bit : Integer, Integer -> Integer
+  dav-bit (v) (b) = bit-and (bit-shru v b) 1
+
+  dav-state : Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  dav-state (xsave) (avx) (os) (cell) (maxb) (area) =
+    let offered = xsave == 1 & avx == 1
+    in if offered == False then (if cell /= 0 | os == 1 then "admitted-unoffered" else "not-offered")
+    else if maxb < 13 then "no-leaf-d"
+    else if cell == 0 then "not-admitted"
+    else if os == 0 then "cr4-clear"
+    else if area /= dav-area then "area-wrong"
+    else "admitted"
+
+  dav-colour : Text -> Integer
+  dav-colour (s) =
+    if s == "admitted" then diag-col-good
+    else if s == "not-offered" then diag-col-warn
+    else diag-col-bad
+
+Section: The Lanes
+
+ The chapter is compiled `avx-local` (`build-diag.ps1`), so the program does
+ not refuse at start-up; these rows run only on the `admitted` branch. The
+ values and their expected text are `codex/test/vector-wide`'s.
+
+  dav-poke-f64 : Integer, Integer, Real -> Integer
+  dav-poke-f64 (p) (off) (x) =
+   let bits = real-to-bits x
+   in let lo = poke-32 p off (bit-and bits 4294967295)
+   in poke-32 p (off + 4) (bit-shru bits 32)
+
+  dav-make4d : Real, Real, Real, Real -> Vector 4 Real
+  dav-make4d (a) (b) (c) (d) =
+   let v = vec4d-splat 0.0
+   in let p = address-of v
+   in let w0 = dav-poke-f64 p 0 a
+   in let w1 = dav-poke-f64 p 8 b
+   in let w2 = dav-poke-f64 p 16 c
+   in let w3 = dav-poke-f64 p 24 d
+   in v
+
+  dav-lanes4 : Vector 4 Real -> Text
+  dav-lanes4 (v) = show (vec4d-extract v 0) & " " & show (vec4d-extract v 1) & " " & show (vec4d-extract v 2) & " " & show (vec4d-extract v 3)
+
+  dav-make8 : Real, Real, Real, Real, Real, Real, Real, Real -> Vector 8 (Real approximate)
+  dav-make8 (a) (b) (c) (d) (e) (f) (g) (h) =
+   let v = vec8-splat (to-real-approx 0.0)
+   in let p = address-of v
+   in let w0 = poke-32 p 0 (real-approx-to-bits (to-real-approx a))
+   in let w1 = poke-32 p 4 (real-approx-to-bits (to-real-approx b))
+   in let w2 = poke-32 p 8 (real-approx-to-bits (to-real-approx c))
+   in let w3 = poke-32 p 12 (real-approx-to-bits (to-real-approx d))
+   in let w4 = poke-32 p 16 (real-approx-to-bits (to-real-approx e))
+   in let w5 = poke-32 p 20 (real-approx-to-bits (to-real-approx f))
+   in let w6 = poke-32 p 24 (real-approx-to-bits (to-real-approx g))
+   in let w7 = poke-32 p 28 (real-approx-to-bits (to-real-approx h))
+   in v
+
+  dav-lane8 : Vector 8 (Real approximate), Integer -> Text
+  dav-lane8 (v) (i) = show (from-real-approx (vec8-extract v i))
+
+  dav-lanes8 : Vector 8 (Real approximate) -> Text
+  dav-lanes8 (v) = dav-lane8 v 0 & " " & dav-lane8 v 1 & " " & dav-lane8 v 2 & " " & dav-lane8 v 3 & " " & dav-lane8 v 4 & " " & dav-lane8 v 5 & " " & dav-lane8 v 6 & " " & dav-lane8 v 7
+
+  dav-lane-rows : Integer -> List Text
+  dav-lane-rows (u) =
+   let a = dav-make4d 1.0 -2.0 3.0 6.0
+   in let b = dav-make4d 0.25 4.0 -1.5 2.0
+   in let a8 = dav-make8 1.0 -2.0 3.0 4.0 5.0 6.0 7.0 8.0
+   in let b8 = dav-make8 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0
+   in let d8 = dav-make8 2.0 4.0 8.0 16.0 32.0 64.0 128.0 256.0
+   in ["add4: " & dav-lanes4 (a + b), "mul4: " & dav-lanes4 (a * b), "div4: " & dav-lanes4 (a / b), "select4: " & dav-lanes4 (vec4d-select (a < b) a b), "reduce4: " & show (vec4d-reduce-add a), "add8: " & dav-lanes8 (a8 + b8), "div8: " & dav-lanes8 (a8 / d8), "gt8: " & show (mask8-count (a8 > b8)), "select8: " & dav-lanes8 (vec8-select (a8 < b8) a8 b8), "reduce8: " & show (from-real-approx (vec8-reduce-add a8))]
+
+  dav-lane-want : List Text = ["add4: 1.25 2.0 1.5 8.0", "mul4: 0.25 -8.0 -4.5 12.0", "div4: 4.0 -0.5 -2.0 3.0", "select4: 0.25 -2.0 -1.5 2.0", "reduce4: 8.0", "add8: 1.5 -1.0 4.5 6.0 7.5 9.0 10.5 12.0", "div8: 0.5 -0.5 0.375 0.25 0.15625 0.09375 0.0546875 0.03125", "gt8: 7", "select8: 0.5 -2.0 1.5 2.0 2.5 3.0 3.5 4.0", "reduce8: 32.0"]
+
+  dav-matches : List Text, List Text, Integer, Integer -> Integer
+  dav-matches (got) (want) (i) (acc) =
+   if i >= list-length want then acc
+   else if i >= list-length got then acc
+   else dav-matches got want (i + 1) (if list-at got i == list-at want i then acc + 1 else acc)
+
+Section: The Stage
+
+  dav-run : DiagCtx -> DiagResult
+  dav-run (c) =
+    let maxb = bit-and (cpu-cpuid-eax 0) 4294967295
+    in let ecx1 = bit-and (cpu-cpuid-ecx 1) 4294967295
+    in let ebx7 = if maxb >= 7 then bit-and (cpu-cpuid-ebx 7) 4294967295 else 0
+    in let da = if maxb >= 13 then bit-and (cpu-cpuid-eax 13) 4294967295 else 0
+    in let db = if maxb >= 13 then bit-and (cpu-cpuid-ebx 13) 4294967295 else 0
+    in let dc = if maxb >= 13 then bit-and (cpu-cpuid-ecx 13) 4294967295 else 0
+    in let cell = peek-qword dav-cell 0
+    in let xsave = dav-bit ecx1 26
+    in let os = dav-bit ecx1 27
+    in let avx = dav-bit ecx1 28
+    in let state = dav-state xsave avx os cell maxb db
+    in let g1 = "xsave=" & show xsave & " avx=" & show avx & " avx2=" & show (dav-bit ebx7 5) & " osxsave=" & show os & " admitted=" & show cell
+    in let g2 = "max-leaf=" & show maxb & " xcr0-supported=" & diag-hex8 da & " area=" & show db & " area-max=" & show dc
+    in let raw = "avx cpuid 1.ecx=" & diag-hex8 ecx1 & " 7.ebx=" & diag-hex8 ebx7 & " d=" & diag-hex8 da & "," & diag-hex8 db & "," & diag-hex8 dc
+    in let rows = if state == "admitted" then dav-lane-rows 0 else []
+    in let hits = dav-matches rows dav-lane-want 0 0
+    in let final = if state == "admitted" & hits /= list-length dav-lane-want then "lanes-wrong" else state
+    in let g3 = if state == "admitted" then "lanes=" & show (list-length dav-lane-want) & " match=" & show hits else "lanes not run: not admitted"
+    in diag-result final (dav-colour final) [g1, g3] ([g1, g2, g3, raw] & rows)

@@ -47,6 +47,19 @@ real processes is a decision for whoever next needs it, and nothing here waits
 on it. `DeskScheduler.md` (cooperative pane rates, PARKED) is a different
 subject and is not superseded by this page.
 
+## Each process keeps its own XMM state
+
+Every context save (the timer handler, `process-yield`, the two blocking IPC
+waits, and the process-wait block) calls `__fx_save`, and `__process_resume`
+FXRSTORs the incoming process, so a switch preserves XMM0-XMM15 and MXCSR. The
+512-byte area of slot N is the top page of its spawn region (`fx-area-offset`
+in `X86_64Boot.codex`); a spawn seeds it with the spawner's state through
+`__fx_init`, so the first restore never loads a zero MXCSR. The arm is
+`codex/test/xmm-preempt` (`-smp 2`): four children on one core and 12,000,000
+vector passes, 1 to 4 wrong results a run before the fix, 0 after. A probe of
+this kind needs `__heap-save`/`__heap-restore` around each pass: a spawned child
+has a 1 MB heap and a vector pass keeps 64 bytes.
+
 ## Damian's two rulings
 
 **THE DESK IS PRIVILEGED -- implemented.** Proc 0 is pinned to the boot
@@ -107,11 +120,16 @@ not reach the spawner; widening that row still compiles and deletes the evidence
 silently, which is why the file says not to.
 
 **Where the service runs.** It lands wherever the scheduler puts it. The desk
-yields once per `desk-loop` iteration and `web-mux-loop` on every empty poll,
-which is what lets a child on the boot processor run at all. `web-mux-loop`
-returns after fifty million consecutive empty polls, about five seconds on an
-application processor, so `gopweb-service` re-enters `web-serve-concurrent` with
-the heap restored between rounds and lives until it is killed.
+yields once per `desk-loop` iteration and `gopweb-pump` on every empty poll,
+which is what lets a child on the boot processor run at all. `gopweb-pump`
+has no round bound: it compacts its heap in place (`web-mux-compact`) and
+lives until it is killed.
+
+**An idle loop waits for the tick.** After `web-idle-polls` empty polls in a
+row, `gopweb-pump` and `web-mux-run` wait for `get-ticks` to advance before the
+next NIC read (`web-idle-wait`, `codex/os/net/WebServer.codex`), because each
+empty poll is a VM exit; a frame that arrives during the wait is answered at
+the next poll, at most one tick late.
 
 **Acceptance, green** (val, 2026-09-08, smp 4, headless with `-portfwd
 9100:9100`): a host `GET /` answers 200 in 0.2 s and again at 47 s, and the 60 s
@@ -187,6 +205,10 @@ writes the core count (cell 4088, from GPA 0xFF8), so `emit-smp-init` finds 0 on
 hardware and the AP timer runs only under codex-vm's `-smp`.
 10 ms is not an ambitious number and that is the point (Damian: "windows does 17
 right, been that way since processors were like 60mhz").
+
+## On one core the boot process is never preempted
+
+A spawned process is preempted on core 0 and the boot process is not: under single-core codex-vm (seed 0291C387, 2026-09-24) a boot process spinning with no yield left a spawned counter at 0 after 100 ticks, and the same boot process yielding let the counter reach 619,258,781 while the counter, which never yields, still gave the core back. **The two beds then disagree about the yielding parent.** codex-vm reschedules a boot process that yielded while its child spins; under OVMF (	est-ovmf.ps1) the boot process that fed the Dev Console's key ring ran ONE pass after its first yield and never again until the console yielded too. So work the boot process must keep doing while a spawned process runs needs the spawned process to yield: the Dev Console's idle pass calls `ugc-yield` (`UefiConsole`) for exactly this reason. Arms: `codex/test/apps/uefi-gop-keys-proc` and `uefi-gop-keys-yield`; the OVMF reading is `works-backlog.md` WORKS-5.
 
 ## What it must not break
 

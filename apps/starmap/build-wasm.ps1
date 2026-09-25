@@ -27,8 +27,8 @@ Write-Host '[starmap-wasm] source -> WAT via the wasm plug ...'
     -Src (Join-Path $PSScriptRoot 'StarMapWasm.codex') -Out $watFile -Kernel $Kernel
 if ($LASTEXITCODE -ne 0) { Write-Host '[starmap-wasm] FAIL: plug run'; exit 3 }
 
-# The plug exports only what its own baked wasm-export-list names, and none of
-# these are in it, so the page's entry points are declared here the way spark
+# StarMapWasm declares no application exports (wasm-exports is empty), so the
+# page's entry points are declared here the way spark
 # declares its one. Codex functions take and answer i64; the shims narrow.
 $api = @(
     @{ n = 'sm_load';                   a = 1 },

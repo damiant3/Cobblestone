@@ -15,6 +15,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <WinHvPlatform.h>
+static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp);
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <stdio.h>
@@ -4040,6 +4041,9 @@ static void ap_thread_func(void *arg) {
                 handle_io(&ctx, (UINT32)cpu_id);
             }
             break;
+        case WHvRunVpExitReasonX64Cpuid:
+            handle_cpuid(&ctx, (UINT32)cpu_id);
+            break;
         case WHvRunVpExitReasonCanceled:
             break;
         default:
@@ -5757,6 +5761,8 @@ static unsigned long long uefi_image_base = 0; /* where load_kernel placed the P
 static unsigned long long uefi_image_size = 0; /* loaded PE size (BootServicesCode) */
 static int cmos_index = 0;        /* CMOS register selected via port 0x70 */
 static int rtc_lenient = 0;       /* -rtc-lenient: the old always-valid RTC */
+static int no_avx = 0;            /* -no-avx: present a machine without XSAVE/AVX */
+static int vm_avx = 0;            /* XSAVE and AVX enabled on the partition */
 static unsigned int rtc_noise = 0x1234567u;
 /* -rtc <stamp>: the clock stands still. Declared up beside the HPET, which
    stops with it. */
@@ -6502,8 +6508,19 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         #undef MMAP_ENT
         unsigned long long desc_size = 48;
         unsigned long long map_size = (unsigned long long)num_entries * desc_size;
+        /* UEFI 2.x GetMemoryMap: a MapSize smaller than the map gets the
+           needed size written back and EFI_BUFFER_TOO_SMALL, and no map. */
+        unsigned long long in_size = 0;
+        if (rcx > 0 && rcx + 8 <= guest_mem_size)
+            memcpy(&in_size, (unsigned char *)guest_mem + rcx, 8);
         if (rcx > 0 && rcx + 8 <= guest_mem_size)
             memcpy((unsigned char *)guest_mem + rcx, &map_size, 8);
+        if (in_size < map_size) {
+            if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
+                memcpy((unsigned char *)guest_mem + arg_vals[3].Reg64, &desc_size, 8);
+            rax_result = 0x8000000000000005ULL; /* EFI_BUFFER_TOO_SMALL */
+            break;
+        }
         if (r8 > 0 && r8 + 8 <= guest_mem_size) {
             unsigned long long map_key = UEFI_MAP_KEY;
             memcpy((unsigned char *)guest_mem + r8, &map_key, 8);
@@ -6916,6 +6933,15 @@ static int gpu_shadow_pending = 0;
 /* Set in the count word at port 0x400 to mean "rasterize into the shadow map
    instead of the screen". Counts never approach this. */
 #define GPU_SHADOW_FLAG 0x40000000u
+/* Set in the main-pass count word to mean "the 1/w array at GPU_PERSP_ADDR is
+   valid": three ints per triangle, 1e9 / w per vertex (r3d-inv-w in
+   Renderer3D.codex). UV and the light-space position are then interpolated
+   perspective-correct; without the bit they stay affine, which is what every
+   other client of this port gets. The array runs from the end of the command
+   buffer's capacity to GPU_LIGHT_ADDR. */
+#define GPU_PERSP_FLAG 0x20000000u
+#define GPU_PERSP_ADDR 0xBE480000ULL
+static int gpu_persp_pending = 0;
 /* r3d-shadow-bias and r3d-shadow-slope in Renderer3D.codex. Matched so the two
    renderers put the acne threshold in the same place. The base covers depth
    quantisation on a surface square to the light; the slope term covers one seen
@@ -6928,10 +6954,9 @@ static int gpu_shadow_pending = 0;
    same way. 6 (the old value) left 350 acne pixels on the sphere; 16 is where
    they reach zero, and it costs 596 of 132,287 ground-shadow pixels, under half
    a per cent. 24 and 40 also read zero acne and take more of the shadow, so 16
-   is the knee rather than the largest value that works. The old 6 was swept on
-   a CUBE FACE, where flat geometry hides what a curved surface shows: the
-   software renderer reads zero acne here at any setting, so this was the host
-   path alone being off parity. */
+   is the knee rather than the largest value that works. r3d-shadow-slope
+   reaches the same knee on engine-shadow's lit cube face (87 acne pixels at 6,
+   0 at 16), so the two renderers share the value. */
 #define GPU_SHADOW_SLOPE 16
 /* Per-triangle light-space data for the shadow compare, parallel to the
    command buffer rather than inside it: the 72-byte triangle record is
@@ -10995,6 +11020,26 @@ static void create_vm(size_t mem_mb) {
         prop.ExtendedVmExits.ExceptionExit = 1;
     WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeExtendedVmExits, &prop, sizeof(prop));
 
+    /* XSAVE and AVX go to the guest when the host has both and -no-avx is
+       absent. WHP refuses a hand-picked subset of the host's XSAVE features
+       at WHvSetupPartition (0xC0350005, measured 2026-09-25), so the
+       partition takes the host's whole set and CPUID advertises XCR0 = 7
+       only. Under -no-avx the property is left unset, as before this flag. */
+    if (!no_avx) {
+        WHV_CAPABILITY cap;
+        UINT32 cap_size = 0;
+        memset(&cap, 0, sizeof(cap));
+        int host_avx = SUCCEEDED(WHvGetCapability(WHvCapabilityCodeProcessorXsaveFeatures, &cap, sizeof(cap), &cap_size))
+                       && cap.ProcessorXsaveFeatures.XsaveSupport && cap.ProcessorXsaveFeatures.AvxSupport;
+        if (host_avx) {
+            memset(&prop, 0, sizeof(prop));
+            prop.ProcessorXsaveFeatures = cap.ProcessorXsaveFeatures;
+            hr = WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeProcessorXsaveFeatures, &prop, sizeof(prop.ProcessorXsaveFeatures));
+            vm_avx = SUCCEEDED(hr);
+            if (FAILED(hr)) fprintf(stderr, "WARNING: ProcessorXsaveFeatures failed: 0x%lx (guest sees no AVX)\n", hr);
+        }
+    }
+
     hr = WHvSetupPartition(partition);
     if (FAILED(hr)) { fprintf(stderr, "WHvSetupPartition: 0x%lx\n", hr); exit(1); }
 
@@ -13162,7 +13207,9 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
             if ((unsigned int)val & GPU_SHADOW_FLAG) {
                 gpu_shadow_render((int)((unsigned int)val & ~GPU_SHADOW_FLAG));
             } else {
-                gpu_rasterize_triangles(val);
+                gpu_persp_pending = ((unsigned int)val & GPU_PERSP_FLAG) != 0;
+                gpu_rasterize_triangles((int)((unsigned int)val & ~GPU_PERSP_FLAG));
+                gpu_persp_pending = 0;
                 /* The glow is a fullscreen post-process that reads fb[0] as the
                    background colour and blooms every edge against it. Inside a
                    viewport that background is the desktop, not the scene, so it
@@ -13800,17 +13847,44 @@ static void handle_io(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
     }
 }
 
-static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
+static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
     unsigned long long leaf = ctx->CpuidAccess.Rax;
+    unsigned long long subleaf = ctx->CpuidAccess.Rcx & 0xFFFFFFFFULL;
     WHV_REGISTER_NAME names[] = { WHvX64RegisterRax, WHvX64RegisterRbx, WHvX64RegisterRcx, WHvX64RegisterRdx, WHvX64RegisterRip };
     WHV_REGISTER_VALUE vals[5];
     memset(vals, 0, sizeof(vals));
-    if (leaf == 0) { vals[0].Reg64 = 1; vals[1].Reg64 = 0x756E6547; vals[2].Reg64 = 0x6C65746E; vals[3].Reg64 = 0x49656E69; }
+    WHV_REGISTER_NAME state_names[] = { WHvX64RegisterCr4, WHvX64RegisterXCr0 };
+    WHV_REGISTER_VALUE state[2];
+    memset(state, 0, sizeof(state));
+    if (vm_avx) WHvGetVirtualProcessorRegisters(partition, vp, state_names, 2, state);
+    if (leaf == 0) { vals[0].Reg64 = vm_avx ? 0xD : 1; vals[1].Reg64 = 0x756E6547; vals[2].Reg64 = 0x6C65746E; vals[3].Reg64 = 0x49656E69; }
     /* Leaf 1 ecx bit 31 is the hypervisor-present bit (Intel SDM 3.1.2.1,
        reserved for that use); a guest asking is told the truth. Leaves
        8000_0002h..04h carry a brand string so a diagnostic names the part it
-       is running on rather than reporting one absent (2026-08-18). */
-    else if (leaf == 1) { vals[0].Reg64 = 0x000306C3; vals[2].Reg64 = 0x80000000ULL; vals[3].Reg64 = 0x078BFBFF; }
+       is running on rather than reporting one absent (2026-08-18).
+       With AVX exposed, ecx also carries XSAVE (26), AVX (28) and OSXSAVE
+       (27), the last mirroring this processor's CR4.OSXSAVE (bit 18). */
+    else if (leaf == 1) {
+        unsigned long long ecx = 0x80000000ULL;
+        if (vm_avx) {
+            ecx |= (1ULL << 26) | (1ULL << 28);
+            if (state[0].Reg64 & (1ULL << 18)) ecx |= (1ULL << 27);
+        }
+        vals[0].Reg64 = 0x000306C3; vals[2].Reg64 = ecx; vals[3].Reg64 = 0x078BFBFF;
+    }
+    /* Leaf 0Dh for XCR0 = 7 (x87, SSE, AVX): the legacy region is 512 bytes
+       and the XSAVE header 64, so x87+SSE need 576; the AVX state is 256
+       bytes at offset 576, so all three need 832 (SDM 13.4, 13.5). */
+    else if (leaf == 0xD && vm_avx) {
+        if (subleaf == 0) {
+            vals[0].Reg64 = 7;
+            vals[1].Reg64 = (state[1].Reg64 & 4) ? 832 : 576;
+            vals[2].Reg64 = 832;
+        } else if (subleaf == 2) {
+            vals[0].Reg64 = 256;
+            vals[1].Reg64 = 576;
+        }
+    }
     else if (leaf == 0x80000000) { vals[0].Reg64 = 0x80000004; }
     else if (leaf == 0x80000001) { vals[3].Reg64 = (1 << 29) | (1 << 20); } /* LM + NX */
     else if (leaf >= 0x80000002 && leaf <= 0x80000004) {
@@ -13820,7 +13894,7 @@ static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         memcpy(&vals[2].Reg64, b + 8, 4); memcpy(&vals[3].Reg64, b + 12, 4);
     }
     vals[4].Reg64 = ctx->VpContext.Rip + ctx->VpContext.InstructionLength;
-    WHvSetVirtualProcessorRegisters(partition, 0, names, 5, vals);
+    WHvSetVirtualProcessorRegisters(partition, vp, names, 5, vals);
 }
 
 static void handle_msr(WHV_RUN_VP_EXIT_CONTEXT *ctx, int is_write) {
@@ -13931,6 +14005,7 @@ static int try_inject_serial_interrupt(void) {
  * Port 0x403 OUT: viewport origin (x0 << 16) | y0
  * Port 0x40F OUT: viewport extent, inclusive (x1 << 16) | y1; 0 disarms
  * Port 0x400 OUT with GPU_SHADOW_FLAG: depth-only pass into the shadow map
+ * Port 0x400 OUT with GPU_PERSP_FLAG: main pass, 1/w array at GPU_PERSP_ADDR valid
  */
 #define GPU_CMD_ADDR   0xBE000000ULL
 /* Command-buffer capacity. The rasterizer used to stop dead at 16384
@@ -14536,6 +14611,11 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
         int lx0 = 0, ly0 = 0, lsd0 = 0, lx1 = 0, ly1 = 0, lsd1 = 0, lx2 = 0, ly2 = 0, lsd2 = 0, shadow_color = 0;
         long long shadow_bias = GPU_SHADOW_BIAS;
         int use_shadow = gpu_shadow_pending && gpu_shadow_buf && gpu_shadow_size > 0;
+        double iw0 = 1.0, iw1 = 1.0, iw2 = 1.0;
+        if (gpu_persp_pending) {
+            int *pw = (int *)((unsigned char *)guest_mem + GPU_PERSP_ADDR + (size_t)t * 12);
+            if (pw[0] > 0 && pw[1] > 0 && pw[2] > 0) { iw0 = pw[0]; iw1 = pw[1]; iw2 = pw[2]; }
+        }
         if (use_shadow) {
             int *lt = (int *)((unsigned char *)guest_mem + GPU_LIGHT_ADDR + (size_t)t * GPU_LIGHT_STRIDE);
             lx0 = lt[0]; ly0 = lt[1]; lsd0 = lt[2];
@@ -14605,9 +14685,15 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
                         unsigned int pixel;
                         unsigned int probe_tex = 0;
                         int probe_u = -1, probe_v = -1;
+                        /* Perspective-correct weights for the attributes that
+                           are linear in world space. Colour and depth stay on
+                           the screen-space weights, as in r3d-cover-sh. */
+                        double f0 = (double)bw0 * iw0, f1 = (double)bw1 * iw1, f2 = (double)bw2 * iw2;
+                        double fs = f0 + f1 + f2;
+                        if (fs <= 0) { f0 = (double)bw0; f1 = (double)bw1; f2 = (double)bw2; fs = (double)abs_area; }
                         if (use_texture) {
-                            int u_interp = (int)(((long long)u0 * bw0 + (long long)u1 * bw1 + (long long)u2 * bw2) / abs_area);
-                            int v_interp = (int)(((long long)v0t * bw0 + (long long)v1t * bw1 + (long long)v2t * bw2) / abs_area);
+                            int u_interp = (int)((u0 * f0 + u1 * f1 + u2 * f2) / fs);
+                            int v_interp = (int)((v0t * f0 + v1t * f1 + v2t * f2) / fs);
                             probe_u = u_interp; probe_v = v_interp;
                             if (gpu_tex_mode == 1) {
                                 /* The rule r3d-tex-px makes: modulate the shaded
@@ -14652,10 +14738,10 @@ static void gpu_rasterize_band(unsigned int *fb, unsigned int *db, unsigned char
                            counts as lit, so geometry beyond the light's
                            extent does not darken at the border. */
                         if (use_shadow) {
-                            long long tx = ((long long)lx0 * bw0 + (long long)lx1 * bw1 + (long long)lx2 * bw2) / abs_area / 1000;
-                            long long ty = ((long long)ly0 * bw0 + (long long)ly1 * bw1 + (long long)ly2 * bw2) / abs_area / 1000;
+                            long long tx = (long long)((lx0 * f0 + lx1 * f1 + lx2 * f2) / fs) / 1000;
+                            long long ty = (long long)((ly0 * f0 + ly1 * f1 + ly2 * f2) / fs) / 1000;
                             if (tx >= 0 && ty >= 0 && tx < gpu_shadow_size && ty < gpu_shadow_size) {
-                                long long fl = ((long long)lsd0 * bw0 + (long long)lsd1 * bw1 + (long long)lsd2 * bw2) / abs_area;
+                                long long fl = (long long)((lsd0 * f0 + lsd1 * f1 + lsd2 * f2) / fs);
                                 int lit = 0;
                                 for (int oy = -1; oy <= 1; oy++) {
                                     for (int ox = -1; ox <= 1; ox++) {
@@ -14738,6 +14824,9 @@ static void gpu_rasterize_triangles(int count) {
     if (gpu_shadow_pending &&
         GPU_LIGHT_ADDR + (unsigned long long)count * GPU_LIGHT_STRIDE > guest_mem_size)
         gpu_shadow_pending = 0;
+    if (gpu_persp_pending &&
+        GPU_PERSP_ADDR + (unsigned long long)count * 12 > GPU_LIGHT_ADDR)
+        gpu_persp_pending = 0;
     unsigned int *fb = gpu_target_fb();
     unsigned int *db = (unsigned int *)((unsigned char *)guest_mem + GPU_DEPTH_ADDR);
     int w = gop_width, h = gop_height;
@@ -15397,6 +15486,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-map") && i+1 < argc) map_file_path = argv[++i];
         else if (!strcmp(argv[i], "-headless")) vga_headless = 1;
         else if (!strcmp(argv[i], "-rtc-lenient")) rtc_lenient = 1;
+        else if (!strcmp(argv[i], "-no-avx")) no_avx = 1;
         else if (!strcmp(argv[i], "-rtc") && i+1 < argc) {
             if (!rtc_parse_fixed(argv[++i])) {
                 fprintf(stderr, "-rtc: expected YYYY-MM-DDTHH:MM:SS, got '%s'\n", argv[i]);
@@ -16176,7 +16266,7 @@ int main(int argc, char **argv) {
             if (debug_exit_code >= 0) goto done;
             break;
         case WHvRunVpExitReasonX64Cpuid:
-            handle_cpuid(&ctx);
+            handle_cpuid(&ctx, 0);
             break;
         case WHvRunVpExitReasonX64MsrAccess:
             handle_msr(&ctx, ctx.MsrAccess.AccessInfo.IsWrite);

@@ -12,14 +12,17 @@ Chapter: GopFish
 
 Section: Dimensions
 
- Engine units, at the scale GopScene's own scene works at: roughly
- thousands per metre, with the floor plane sized to the tank interior.
-
   gf-tank-w : Integer = 4200
   gf-tank-d : Integer = 3000
   gf-eye : Real = 900.0
   gf-orbit : Real = 4.6
   gf-turn : Integer = 6283
+
+ 8 cells a side keeps the affine UV error of both rasterizers near a tenth of
+ a checker cell at the orbit's nearest floor edge, where two triangles over
+ the whole floor err by 2.5 cells.
+
+  gf-floor-cells : Integer = 8
 
 Section: Palette
 
@@ -41,14 +44,7 @@ Section: Camera
 
 Section: Fish
 
- Scaling a sphere rather than building a hull mesh keeps a fish at the
- triangle count mesh-sphere already costs, which is what lets the shoal
- stay in the software pipeline's budget as well as the GPU's.
-
   gf-eye-dark : Rgb = rgb 18 18 24
-
- Heading is milliradians: cordic works in them and gf-turn is 2 pi at that
- scale, so the same number serves the quaternion after a divide.
 
   gf-yaw : Integer -> Quat
   gf-yaw (head) =
@@ -59,10 +55,6 @@ Section: Fish
 
   gf-dir-z : Integer -> Real
   gf-dir-z (head) = real-from-int (cordic-sin (int-mod head gf-turn)) / 1000.0
-
- The tail is a cone tipped a quarter turn about Z so its axis lies along
- the body rather than up, then flattened in Z so it reads as a fin and
- not a spike.
 
   gf-add-fish : Scene3DState, Text, Rgb, Real, Real, Real, Integer, Integer -> Scene3DState
   gf-add-fish (s) (name) (colour) (x) (y) (z) (head) (size) =
@@ -115,7 +107,7 @@ Section: The Scene
   gf-scene (tick) =
     let sand = etx-checkerboard 8 8 1 (etx-pack-rgb 214 198 158) (etx-pack-rgb 176 158 120)
     in let floor-mat = emat-set-texture (emat-flat gf-sand) sand
-    in let floor = sn3-with-mesh "floor" (mesh-plane gf-tank-w gf-tank-d) floor-mat
+    in let floor = sn3-with-mesh "floor" (mesh-plane-grid gf-tank-w gf-tank-d gf-floor-cells) floor-mat
     in let rock-a = gf-stone "rock-a" (-1500.0) (-700.0) 320
     in let rock-b = gf-stone "rock-b" 1300.0 600.0 260
     in let coral-a = gf-coral-fan "coral-a" 900.0 (-900.0) 240
@@ -140,10 +132,6 @@ Section: The Scene
     in scene3d-set-ambient (scene3d-add-light s10 key) 330
 
 Section: Run
-
- Everything but the scene and the water colour is `GopScene`'s. `gsc-step`
- takes the builder as a parameter, exactly as `gsc-loop` did, so the fishtank
- is this constant and `gf-scene` and nothing else.
 
   gf-sky : Integer = rgb-to-packed (rgb 12 38 64)
 

@@ -3,17 +3,6 @@ Chapter: GopQr
   cites Works chapter GopAhci
   cites Foreword chapter CCE
 
- One fixed shape, no tables: version 5, byte mode, error level L --
- a 37x37 module matrix carrying up to 106 bytes in a single
- Reed-Solomon block of (134, 108). Fixed version means fixed
- alignment pattern, fixed format layout, no version-info block
- (that starts at version 7), and a single code path that a battery
- test can pin. Payloads beyond 106 bytes split across several codes,
- each chunk prefixed "i/n;" so the decoder can reassemble from one
- photograph. Mask pattern 0 is applied unconditionally: mask CHOICE
- is a readability optimization in the spec, not a correctness
- requirement, and a fixed mask keeps the encoder deterministic.
-
  We say:
 
 Section: Shape
@@ -25,10 +14,6 @@ Section: Shape
   qr-cap : Integer = 106
 
 Section: The Field
-
- GF(256) with the QR polynomial 285. One buffer holds both tables:
- exp at offset 0 (exp of 0..254; index 255 wraps to 1 harmlessly),
- log at offset 256.
 
   qr-gf-new : Integer
   qr-gf-new =
@@ -117,14 +102,6 @@ Section: Bits
     else let p2 = qr-put-bits buf pos (to-unicode (char-code (char-at s i))) 8
     in qr-put-slice-bits buf p2 s (i + 1) stop
 
- Byte mode: indicator 0100, an 8-bit count (versions 1-9), the
- bytes, a 4-bit terminator, zero-pad to the byte boundary (already
- zero in a fresh buffer), then the spec's alternating pad bytes
- 236 and 17 out to the 108 data codewords. The slice form encodes a
- prefix (a chunk tag like "2/4;") followed by a character range of a
- larger text, so a long payload can spread across several codes
- without a substring ever being built.
-
   qr-make-data2 : Text, Text, Integer, Integer -> Integer
   qr-make-data2 (prefix) (s) (from) (len) =
     let buf = alloc-zeroed 144 64
@@ -147,10 +124,6 @@ Section: Bits
 
 Section: Format Information
 
- Fifteen bits: two bits of error level (L = 01), three of mask id,
- ten of BCH remainder (generator 1335), the whole thing XORed with
- the spec constant 21522 so it is never all-zero.
-
   qr-bch : Integer, Integer -> Integer
   qr-bch (r) (i) =
     if i < 10 then r
@@ -164,11 +137,6 @@ Section: Format Information
     in bit-xor (bit-or (bit-shl d 10) r) 21522
 
 Section: Matrix
-
- Two parallel 37x37 byte planes: m holds the modules (1 dark), fn
- marks function modules the data placement must step around. The
- reserved rectangles overlap the timing lines at two corners; the
- flag is idempotent so the overlap is harmless.
 
   qr-at : Integer, Integer -> Integer
   qr-at (r) (c) = r * qr-size + c
@@ -224,13 +192,6 @@ Section: Matrix
 
 Section: Data Placement
 
- The standard zigzag: two-module columns from the right edge, up
- then down, hopping over the timing column between the pairs (8,7)
- and (5,4). Data bits stream MSB-first out of the 134 codewords;
- the seven remainder bits past the end are zero. Mask 0 flips a
- module when row + column is even, applied only to data modules --
- which is every module this walk touches.
-
   qr-data-bit : Integer, Integer -> Integer
   qr-data-bit (cw) (idx) =
     if idx >= qr-total-cw * 8 then 0
@@ -263,10 +224,6 @@ Section: Data Placement
     in bit + 1
 
 Section: Format Placement
-
- Both copies, most significant bit first, exactly where the spec
- puts them. The second copy runs up the left edge of the bottom-left
- finder and across the bottom of the top-right one.
 
   qr-fmt-bit : Integer, Integer -> Integer
   qr-fmt-bit (fmt) (k) = bit-and (bit-shru fmt k) 1
@@ -336,11 +293,6 @@ Section: Text Dump
     else qr-row-text m r (c + 1) (acc & (if peek-byte m (qr-at r c) == 0 then "0" else "1"))
 
 Section: Rendering
-
- White quiet zone of four modules on every side -- the spec minimum,
- and the thing screens are usually worst at giving a camera. Dark
- modules are true black on true white for the full contrast the
- sensor can get.
 
   qr-draw : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   qr-draw (base) (stride) (rows) (x) (y) (scale) (m) =

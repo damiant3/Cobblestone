@@ -1,0 +1,90 @@
+Chapter: Smtp Guard
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Encode chapter Smtp
+
+Section: Helpers
+
+  rep : Text, Integer, Integer, Text -> Text
+  rep (s) (i) (n) (acc) = if i >= n then acc else rep s (i + 1) n (acc & s)
+
+  resp : Text, Text -> Text
+  resp (name) (line) =
+    let r = smtp-parse-response line
+    in name & " code=" & show (r.smtp-code) & " ok=" & show (smtp-is-success r) & " more=" & show (r.smtp-more) & " msg=" & r.smtp-message
+
+  count-exact : List Text, Integer, Integer, Text, Integer -> Integer
+  count-exact (xs) (i) (n) (want) (acc) =
+    if i >= n then acc
+    else count-exact xs (i + 1) n want (if list-at xs i == want then acc + 1 else acc)
+
+  has-line : List Text, Integer, Integer, Text -> Boolean
+  has-line (xs) (i) (n) (want) =
+    if i >= n then False
+    else if list-at xs i == want then True
+    else has-line xs (i + 1) n want
+
+  message-lines : SmtpEmail -> List Text
+  message-lines (e) = text-split (smtp-format-message e) "\n"
+
+  checked : Text, SmtpEmail -> Text
+  checked (name) (e) = when smtp-session-checked "d" e
+    is Just (cmds) -> name & " ok cmds=" & show (list-length cmds)
+    is None -> name & " refused"
+
+  recipients : Integer, Integer, SmtpEmail -> SmtpEmail
+  recipients (i) (n) (e) = if i >= n then e else recipients (i + 1) n (email-add-recipient e ("r" & show i & "@y"))
+
+  fmt-cost : Integer -> Integer
+  fmt-cost (n) =
+    let e = recipients 0 n (email-new "a@x" "b@y" "s" "body")
+    in let b = __heap-save
+    in let t = smtp-format-message e
+    in let a = __heap-save
+    in (a - b) + text-length t - text-length t
+
+  stuff-cost : Integer -> Integer
+  stuff-cost (n) =
+    let e = email-new "a@x" "b@y" "s" (rep ".line\n" 0 n "")
+    in let b = __heap-save
+    in let t = smtp-format-message e
+    in let a = __heap-save
+    in (a - b) + text-length t - text-length t
+
+  scaling : Text, Integer, Integer -> Text
+  scaling (name) (small) (large) =
+    if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let good = email-new "a@x" "b@y" "hi" "hello"
+    in let dotted = email-new "a@x" "b@y" "hi" "line one\n.\nRCPT TO:<evil@z>"
+    in let two = email-add-recipient good "c@z"
+    in let dl = message-lines dotted
+    in act
+      print-line-uni (resp "reply" "250 OK")
+      print-line-uni (resp "continued" "250-SIZE 100")
+      print-line-uni (resp "bare" "354")
+      print-line-uni (resp "garbled" "2x0 OK")
+      print-line-uni (resp "short" "25")
+      print-line-uni (resp "first-6" "650 odd")
+      print-line-uni (resp "second-6" "260 odd")
+      print-line-uni (resp "no-separator" "250OK")
+      print-line-uni (resp "third-x" "25x OK")
+      print-line-uni (resp "first-1" "150 x")
+      print-line-uni (resp "empty" "")
+      print-line-uni ("dot-body terminators=" & show (count-exact dl 0 (list-length dl) "." 0) & " stuffed=" & show (has-line dl 0 (list-length dl) ".."))
+      print-line-uni ("to-header " & show (has-line (message-lines good) 0 (list-length (message-lines good)) "To: b@y"))
+      print-line-uni ("to-two " & show (has-line (message-lines two) 0 (list-length (message-lines two)) "To: b@y, c@z"))
+      print-line-uni (checked "good" good)
+      print-line-uni (checked "inject-from" (email-new "a@x>\nRCPT TO:<evil@z" "b@y" "hi" "body"))
+      print-line-uni (checked "inject-rcpt" (email-new "a@x" "b@y>" "hi" "body"))
+      print-line-uni (checked "inject-subject" (email-new "a@x" "b@y" "hi\nBcc: evil@z" "body"))
+      print-line-uni (checked "inject-header" (email-add-header good "X-A: 1\nBcc: evil@z"))
+      print-line-uni ("inject-domain " & (when smtp-session-checked "d\nRCPT TO:<evil@z>" good is Just (c) -> "ok" is None -> "refused"))
+      print-line-uni (scaling "recipients" (fmt-cost 256) (fmt-cost 1024))
+      print-line-uni (scaling "dot-stuff" (stuff-cost 256) (stuff-cost 1024))
+    end

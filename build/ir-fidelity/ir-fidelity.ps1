@@ -11,7 +11,8 @@ param(
     [int]$Limit = 0   # -Census: 0 is the whole corpus; a cap is REPORTED, never silent
     ,[switch]$Disagree   # census defs where one NAME carries two types, one of them a tvar
     ,[string[]]$Programs = @()   # -Disagree: run these named programs instead of the corpus
-    ,[int]$Expect = -1   # -Disagree: refuse if the site count is not this. -1 reports only
+    ,[int]$Expect = -1   # -Disagree / -Property: refuse if the count is not this. -1 reports only
+    ,[switch]$Property   # COMPILER-30: grade every typed wire node against the checker's answer (mode flag fidelity)
 )
 
 # Does the IR carry what the checker knew?
@@ -109,6 +110,7 @@ function Invoke-IrCompile {
     # positionally too, and an array splat binds -Out's value to -PCore.
     $cargs = @{ Src = $Src; Out = $out; Log = $log; Kernel = $Kernel; IrUni = $true }
     if (-not $Passes -and -not $script:casePasses) { $cargs['Passes'] = 'none' }
+    if ($Property) { $cargs['RawFlags'] = 'fidelity' }
 
     # compile.ps1 resolves some of its own paths against the working directory,
     # so pin it rather than requiring the caller to have cd'd to the root.
@@ -123,10 +125,12 @@ function Invoke-IrCompile {
     $wire = $null
     try { $wire = Get-IrWireText -LogPath $log } catch { $wire = $null }
     $diags = @()
+    $fid = @()
     if (Test-Path $log) {
         $diags = @(Get-Content $log | Where-Object { $_ -match 'error CDX\d+' })
+        $fid = @(Get-Content $log -Encoding utf8 | Where-Object { $_ -match 'FIDELITY ' } | ForEach-Object { $_.Substring($_.IndexOf('FIDELITY ')) })
     }
-    return @{ Wire = $wire; Diags = $diags; Seconds = $sw.Elapsed.TotalSeconds }
+    return @{ Wire = $wire; Diags = $diags; Seconds = $sw.Elapsed.TotalSeconds; Fidelity = $fid }
 }
 
 function Get-Cell {
@@ -358,6 +362,61 @@ if ($Disagree) {
         exit 1
     }
     try { [System.IO.Directory]::Delete($work, $true) } catch { }
+    exit 0
+}
+
+if ($Property) {
+    # The compiler grades its own wire (IR/IRFidelity.codex): every typed node
+    # against the type the checker filed for the same span and node kind. It
+    # prints one summary line per program and one line per finding; this mode
+    # totals the summaries and lists the findings. A clean total is evidence
+    # only beside its denominators (walked, synthetic, unrecorded), and only
+    # after the three calibration arms in docs/OperatorsManual.md (the
+    # -Property paragraph) have been seen to fire on the kernel's source.
+    if (-not $CorpusDir) { $CorpusDir = Join-Path $repo 'codex\test' }
+    $all = @(Get-ChildItem $CorpusDir -Filter '*.codex' | Sort-Object Name)
+    $corpus = $all
+    if ($Programs.Count -gt 0) {
+        $corpus = @($all | Where-Object { $Programs -contains $_.BaseName })
+        $missing = @($Programs | Where-Object { $n = $_; -not ($all | Where-Object { $_.BaseName -eq $n }) })
+        if ($missing.Count) { Write-Output ('NOT IN CORPUS: ' + ($missing -join ', ')); exit 2 }
+    }
+    if ($Limit -gt 0 -and $Limit -lt $all.Count) {
+        $step = [Math]::Ceiling($all.Count / $Limit)
+        $corpus = @(for ($i = 0; $i -lt $all.Count; $i += $step) { $all[$i] })
+        Write-Output "corpus: $($corpus.Count) of $($all.Count), every ${step}th by name. CAPPED by -Limit $Limit."
+    }
+    $work = Join-Path ([IO.Path]::GetTempPath()) ("irfid-pr-" + [Guid]::NewGuid().ToString('N').Substring(0,8))
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    $script:WorkDir = $work
+    $keys = @('walked','synthetic','inserted','unrecorded','match','upstream','width','disagree','dropped','emitted','unwalked')
+    $tot = @{}; foreach ($k in $keys) { $tot[$k] = 0 }
+    $clean = 0; $refused = 0; $silent = 0
+    $findings = @()
+    foreach ($file in $corpus) {
+        $r = Invoke-IrCompile -Src $file.FullName -Tag ("pr-" + $file.BaseName)
+        if (-not $r.Wire) { $refused++; continue }
+        $clean++
+        $sum = @($r.Fidelity | Where-Object { $_ -match '^FIDELITY walked=' })
+        if ($sum.Count -ne 1) { $silent++; continue }
+        foreach ($k in $keys) { if ($sum[0] -match (" ?" + $k + "=(\d+)")) { $tot[$k] += [int]$Matches[1] } }
+        foreach ($x in @($r.Fidelity | Where-Object { $_ -notmatch '^FIDELITY walked=' })) { $findings += "$($file.BaseName): $x" }
+    }
+    Write-Output ""
+    Write-Output "compiled clean: $clean    refused, no IR, not in the denominator: $refused    clean but no FIDELITY summary: $silent"
+    Write-Output (($keys | ForEach-Object { "$_=$($tot[$_])" }) -join ' ')
+    Write-Output ""
+    foreach ($cls in 'DROPPED','EMITTED','DISAGREE') {
+        $these = @($findings | Where-Object { $_ -match "FIDELITY $cls " })
+        Write-Output "${cls}: $($these.Count)"
+        foreach ($x in $these) { Write-Output ('  ' + $x) }
+    }
+    try { [System.IO.Directory]::Delete($work, $true) } catch { }
+    if ($silent -gt 0) { Write-Output "REFUSED: $silent clean compile(s) printed no FIDELITY summary; the kernel does not carry the mode." ; exit 1 }
+    if ($Expect -ge 0 -and $findings.Count -ne $Expect) {
+        Write-Output "REFUSED: expected $Expect finding(s), found $($findings.Count). Name the change or fix it."
+        exit 1
+    }
     exit 0
 }
 

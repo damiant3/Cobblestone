@@ -3,17 +3,6 @@ Chapter: GopPrograms
   cites UI chapter Layout
   cites UI chapter Theme
 
- The launcher. The sidebar was a flat column of one button per app, so
- every app cost a row of the only column there is, and at 1024x768 it was
- full at thirteen. Groups here rather than rows there is what makes the
- fourteenth app free.
-
- An entry answers the SCANCODE its key would have produced. `desk-loop`
- already turns a scancode into a pane, so the launcher adds no second
- dispatch table -- the one nobody presses is the one that rots, which is
- the reason `GopCalc` does the same with its keypad. Adding an app here
- means adding it to `gpr-entries` and nothing else.
-
  We say:
 
 Section: Geometry
@@ -21,11 +10,6 @@ Section: Geometry
   gpr-sel-cell : Integer = 0
 
 Section: The Programs
-
- Each entry is a group name, a label, and the scancode the desk already
- answers for that pane. A row whose group repeats the row above it is
- drawn without a heading, so the group column is the sort order and the
- heading at once.
 
   GprEntry = record {
     ge-group : Text,
@@ -74,9 +58,6 @@ Section: State
 
 Section: The Tree
 
- A heading is drawn only when the group changes, so the first row of each
- group carries it and the rest do not.
-
   gpr-heads : Integer -> Boolean
   gpr-heads (i) =
     if i <= 0 then True
@@ -84,14 +65,6 @@ Section: The Tree
 
   gpr-mark : Integer, Integer -> Text
   gpr-mark (i) (sel) = if i == sel then "> " else "  "
-
- The row's icon is painted after the layout by `desk-gpr-icons`, which has
- the laid rectangle this does not. What the row owes it is the SPACE: the
- icon lands at `gpr-mark-cells` and is `gpr-icon-cells` wide, and the
- gutter is one cell WIDER than the icon so the label does not sit flush
- against it. Measured on the glass 2026-08-20 with a two-cell gutter: every
- label touched its icon. These numbers live here rather than in the desk
- because the label they carve up is written here.
 
   gpr-mark-cells : Integer = 2
 
@@ -117,25 +90,11 @@ Section: The Tree
     else if sc == 37 then "k"
     else "?"
 
- The KEY IS NO LONGER IN THE LABEL. It read `Files   (f)`, and there is no
- longer an `f` to press: Damian removed the app-launch hotkeys on 2026-08-26.
- `ge-scan` stays, because it is also the id a menu row ANSWERS with and the
- desk's open path is keyed on it; what went is the promise to the reader.
-
   gpr-row : Integer, Integer -> WidgetNode
   gpr-row (i) (sel) =
     let e = gpr-at i
     in let btn = widget-button ("gpr-" & e.ge-label) (gpr-mark i sel & gpr-gutter & e.ge-label)
     in widget-set-min-h btn 22
-
- Two columns, not one. Nothing clips a widget panel to its box, so a
- single column of sixteen rows drew straight through the help line and
- the taskbar below it -- measured on the glass, not feared. Splitting the
- groups across columns is also what a program manager looks like, so the
- shape that fits is the shape that was wanted.
-
- `gpr-split` is an ENTRY index and must land on a group boundary, or the
- group whose rows it cuts loses its heading in the second column.
 
   gpr-split : Integer = 11
 
@@ -156,31 +115,10 @@ Section: The Tree
 
 Section: The Menu Tree
 
- THE SAME MODEL, COLLAPSED. The window above shows every entry at once
- because it is given the whole content region; the start menu is a box above
- the taskbar pill and has about 400 logical pixels of room at 1600x900, which
- the flat list does not fit -- measured on the glass, where the Shutdown row
- landed past the bottom of the screen and the taskbar disappeared behind it.
-
- So the menu shows the GROUPS, and the group holding the selection is the one
- that shows its apps. That is not a second model: the rows are `gpr-row`, the
- ids are the same ids, `gpr-id-scan` resolves them the same way, and the open
- group is a FUNCTION of `gpr-sel` rather than state of its own -- so a row
- chosen in either presentation is the row chosen in both, and up and down
- walking off the end of a group opens the next one with no code to do it.
-
- A heading is a button here where it is a label in the window, because here
- it can be clicked. Its id is prefixed so `gpr-id-scan` cannot match it: a
- heading must not answer a scancode, and the two namespaces sharing a prefix
- is how it would.
-
   gpr-group-prefix : Text = "gprg-"
 
   gpr-open-group : Integer -> Text
   gpr-open-group (ps) = (gpr-at (gpr-sel ps)).ge-group
-
- The index of the group's FIRST entry, offset by one so that zero can mean
- "not a heading". The caller sets the selection to it, which opens the group.
 
   gpr-group-scan : Text, Integer -> Integer
   gpr-group-scan (id) (i) =
@@ -191,11 +129,6 @@ Section: The Menu Tree
   gpr-group-mark : Boolean -> Text
   gpr-group-mark (open) = if open then "- " else "+ "
 
- Six open rows is what the tightest glass fits: at 1600x900 the chrome lays
- out in 800x450, where six rows measured a band at 406..442 and a seventh
- pushed it to 454, off the glass. A larger group shows six at a time, the
- window follows the selection, and the group's heading says which six.
-
   gpr-open-max : Integer = 6
 
   GprWindow = record {
@@ -203,10 +136,6 @@ Section: The Menu Tree
     gw-hi : Integer,
     gw-note : Text
   }
-
- The table is bound once and scanned through the binding: every mention of
- `gpr-entries`, and so every `gpr-at`, rebuilds all seventeen entries, 696
- bytes (measured 2026-09-23), and a scan by `gpr-at` cost 19,512 a menu build.
 
   gpr-group-first : List GprEntry, Text, Integer -> Integer
   gpr-group-first (es) (grp) (i) =
@@ -248,20 +177,6 @@ Section: The Menu Tree
     in let acc2 = if here & i >= win.gw-lo & i < win.gw-hi then list-push acc1 (gpr-row i sel) else acc1
     in gpr-menu-rows (i + 1) sel open win acc2
 
- ACROSS, THE GROUPS ARE COLUMNS AND THE COLUMNS ARE THE ROW. Damian,
- 2026-09-07, for a band docked left or right: "in left and right mode should
- layout the cobblestone menu horizontally instead of vertically". Flowing the
- rows above straight into a `DirRow` is the wrong reading of that: the open
- group's entries would sit inline BETWEEN the next two headings, so the list
- would say which group it belongs to only by position. A heading with its own
- entries beneath it says it structurally, and a closed group is then a column
- of one.
-
- The column ids take their own prefix. `gpr-id-scan` and `gpr-group-scan` both
- match on a prefix, so a third kind of node sharing either one would answer a
- click meant for a row or a heading; this is the same collision the heading
- prefix exists to avoid, one level up.
-
   gpr-col-prefix : Text = "gprc-"
 
   gpr-group-items : Integer, GprWindow, Integer, List WidgetNode -> List WidgetNode
@@ -291,18 +206,12 @@ Section: The Menu Tree
 
 Section: Keys
 
- The answer is a scancode the desk already dispatches, or 0 for "nothing
- happened". Escape is the caller's business and is not handled here.
-
   gpr-key : Integer, Integer -> Integer
   gpr-key (ps) (sc) =
     if sc == 72 then let d = gpr-set-sel ps (gpr-sel ps - 1) in 0
     else if sc == 80 then let d = gpr-set-sel ps (gpr-sel ps + 1) in 0
     else if sc == 28 then (gpr-at (gpr-sel ps)).ge-scan
     else 0
-
- A clicked row answers the same scancode its Enter would have, and the id
- carries the label because that is what the widget was built with.
 
   gpr-id-scan : Text, Integer -> Integer
   gpr-id-scan (id) (i) =

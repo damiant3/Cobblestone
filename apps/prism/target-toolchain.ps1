@@ -61,6 +61,25 @@ function Invoke-PrismTarget {
         $receipt.ok=$child.code -eq 0; $receipt.code=$child.code; $receipt.out=$child.out; $receipt.err=$child.err; $receipt.testReceipt=Join-Path $testOut 'run.json'
         return $receipt
     }
+    $featureFile = Join-Path $PSScriptRoot ('mods/' + $target.game + '/features.json')
+    $receipt.features = @()
+    if (Test-Path -LiteralPath $featureFile -PathType Leaf) {
+        $declared = @((Get-Content -LiteralPath $featureFile -Raw | ConvertFrom-Json).features)
+        $present = @($declared | Where-Object { $code.Contains('class ' + $_.marker) })
+        if ($Request.PSObject.Properties['features'] -and $null -ne $Request.features) {
+            $asked = (@($Request.features | ForEach-Object { [string]$_ }) | Sort-Object) -join ', '
+            $found = (@($present | ForEach-Object { $_.id }) | Sort-Object) -join ', '
+            if ($asked -cne $found) { throw "Selected features ($asked) differ from the features in the source ($found)" }
+        }
+        $receipt.features = @(foreach ($f in $present) {
+            [ordered]@{
+                id = $f.id
+                sources = @(foreach ($s in $f.sources) { [ordered]@{ path = 'apps/prism/mods/' + $target.game + '/' + $s; sha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot ('mods/' + $target.game + '/' + $s))).Hash } })
+                gameAssembly = $receipt.gameAssembly
+                unityPlayer = $receipt.unityPlayer
+            }
+        })
+    }
     $code = $code.Replace('"__PRISM_GAME_HASH__"', ('"' + $receipt.gameAssembly + '"'))
     $code = $code.Replace('"__PRISM_UNITY_HASH__"', ('"' + $receipt.unityPlayer + '"'))
     $receipt.buildNumber = [DateTime]::UtcNow.ToString('yyyyMMdd.HHmmss', [Globalization.CultureInfo]::InvariantCulture)

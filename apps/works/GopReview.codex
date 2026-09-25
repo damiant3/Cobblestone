@@ -31,16 +31,6 @@ Section: State
   grv-mode-reason : Integer = 2
   grv-mode-pick : Integer = 3
 
- A reason is stored as the bytes the keyboard speaks rather than as CCE, for
- the reason the console's line is: they arrive through `apply-mods` and leave
- through `from-unicode`, and reading them as CCE renders every letter as the
- wrong glyph.
-
- The buffer is allocated here, and `desk-run` calls this before it takes the
- base heap mark. A pane exit restores that mark, so a buffer allocated on
- first use would leave this cell pointing into reclaimed heap (the desk
- contract, section 2, and the two ways it has already gone wrong).
-
   grv-reason-cols : Integer = 72
 
   grv-init : Integer -> Integer
@@ -60,10 +50,6 @@ Section: State
 
   grv-set-scroll : Integer, Integer -> Integer
   grv-set-scroll (rs) (y) = poke-32 rs grv-scroll-cell (if y < 0 then 0 else y)
-
- The view is written by the paint that measured it and read by the key that
- pages. A page key cannot compute it: the room depends on the theme's padding,
- which only the layout engine knows.
 
   grv-view-rows : Integer -> Integer
   grv-view-rows (rs) = let v = peek-32 rs grv-view-cell in if v < 1 then 1 else v
@@ -93,7 +79,7 @@ Section: The Reason Buffer
   grv-reason-chars (buf) (i) (stop) (acc) =
     if i >= stop then acc
     else let b = peek-byte buf i
-    in let ch = if b < 32 then " " else char-encode (code-to-char (from-unicode b))
+    in let ch = if b < 32 | b == 127 then " " else char-encode (code-to-char (from-unicode b))
     in grv-reason-chars buf (i + 1) stop (acc & ch)
 
   grv-reason-text : Integer -> Text
@@ -187,13 +173,6 @@ Section: Verdict Tallies
 
 Section: The Chain
 
- A proposal chain, walked over kind-42 facts. `Historian` is not reached for
- it and that is the ruling's point rather than an omission: its chain is over
- ANNOTATION hashes and calls `annotation-get`, and these are proposals, a
- different kind with no hash chain. What is borrowed is its shape, the cycle
- guard and the depth cap, because a store is bytes off a medium and two facts
- can point at each other.
-
   grv-chain-cap : Integer = 64
 
   grv-sup-of : List Supersession, Text, Integer -> Text
@@ -207,10 +186,6 @@ Section: The Chain
     if i >= list-length ps then 0 - 1
     else if (list-at ps i).id == id then i
     else grv-proposal-by-id ps id (i + 1)
-
- A step is one line of the view. `ch-index` is where the proposal sits in the
- list, or negative when the medium does not carry it, which is the orphan the
- ruling requires be SAID rather than dropped.
 
   ChainStep = record {
     ch-id : Text,
@@ -232,11 +207,6 @@ Section: The Chain
     if i >= list-length xs then False
     else if list-at xs i == id then True
     else grv-seen xs id (i + 1)
-
- The chain is walked from the SELECTED proposal forward. A proposal that
- supersedes an earlier one shows a chain of one until the reader opens the one
- it replaced, which is the honest reading of a forward link and the reason the
- first line names the proposal you are looking at.
 
   grv-chain-lines : GrvData, List ChainStep, Integer, List Text -> List Text
   grv-chain-lines (d) (steps) (i) (acc) =
@@ -267,17 +237,8 @@ Section: Names
 
 Section: Wrapping
 
- The glyph width is asked of the widget library rather than written down, the
- way `dt-elide` asks it, since a wrap that disagreed with `widget-label`'s own
- arithmetic would break at the wrong column.
-
   grv-glyph-w : Integer
   grv-glyph-w = (widget-label "" "M").wn-min-w
-
- The gutter is `dt-elide`'s and it is there for the same reason: a label's own
- padding comes off again inside the rect the column layout already stripped it
- from, so wrapping against the full width leaves the last glyph half outside
- the box.
 
   grv-wrap-gutter : Integer = 4
 
@@ -287,17 +248,8 @@ Section: Wrapping
   grv-is-space : Integer -> Boolean
   grv-is-space (cc) = if cc >= 1 then cc <= 2 else False
 
- The comma is asked of the encoding rather than written down: CCE is not ASCII,
- so a literal code point here would name a different character.
-
   grv-comma : Integer
   grv-comma = char-code (char-at "," 0)
-
- `last` is where the NEXT line would start if the break were taken here, which
- is why a space breaks at its own index (the space is dropped) and a comma
- breaks after itself (the comma is kept). A run with neither, which is what a
- joined list of definition names is, has no opportunity at all and breaks hard
- at the column.
 
   grv-break-at : Text, Integer, Integer, Integer, Integer, Integer -> Integer
   grv-break-at (s) (cpl) (i) (col) (start) (last) =
@@ -317,11 +269,6 @@ Section: Wrapping
     in let skip = if cut >= text-length s then cut else if grv-is-space (char-code (char-at s cut)) then cut + 1 else cut
     in let next = if skip <= start then start + 1 else skip
     in grv-wrap-lines s cpl next (list-push acc line)
-
- The marker rides the last line KEPT rather than taking a line of its own. A
- line of its own costs the row it is marking, so at a budget of one the field
- renders as three dots and the text it stands for is gone: less than the single
- unwrapped line this pane drew before it wrapped anything.
 
   grv-cap-lines : List Text, Integer, Integer -> List Text
   grv-cap-lines (ls) (n) (cpl) =
@@ -346,12 +293,6 @@ Section: Wrapping
   grv-field-lines : Text, Integer -> List Text
   grv-field-lines (t) (cpl) = if text-length t == 0 then [""] else grv-wrap-lines t cpl 0 []
 
- The three fields become ONE list of equal-height rows, separated by blank
- lines rather than by separators, because the scroll model counts rows and a
- separator is a different height. This is the whole reason the body scrolls as
- one region instead of three: a window onto three independently sized regions
- has no single row to be at.
-
   grv-wrap-all : List Text, Integer, Integer, List Text -> List Text
   grv-wrap-all (src) (cpl) (i) (acc) =
     if i >= list-length src then acc
@@ -367,10 +308,6 @@ Section: Wrapping
       & grv-field-lines (p.description) cpl
       & [""]
       & grv-field-lines (p.justification) cpl
-
- A label's own minimum plus the root panel's gap, which is what one more
- wrapped line costs the column. Both numbers are this chapter's own and are
- written a few lines below in `grv-line-labels` and `grv-detail-tree`.
 
   grv-row-h : Integer = 24
 
@@ -399,20 +336,6 @@ Section: The List
         p.description
       ]
     in grv-rows d sel (i + 1) (list-push acc tr)
-
- Paging is `DataTable`'s already: `data-table-fit` sizes a page from the height
- it is given, `data-table-widget` renders only `data-table-visible-rows`, and
- the footer says which page. All this pane had to do was hand over a height and
- say which page the selection is on.
-
- **The page is DERIVED from the selection rather than stored.** A page cell
- would be a second piece of state that can disagree with the first, and the
- launcher and the system menu already settled that shape on this desk: one
- model, two views. Selection moves, the page follows, and they cannot drift.
-
- The height arrives as a PARAMETER for the reason the palette does (the desk
- contract, section 6): `GopDesk` cites this chapter, so reading the desk's band
- constants from here would be a citation cycle.
 
   grv-table : GrvData, Integer, Integer -> DataTableState
   grv-table (d) (sel) (content-h) =
@@ -447,20 +370,6 @@ Section: The Detail
     in let head = if list-length one == 0 then "" else list-at one 0
     in let lbl = widget-set-min (widget-label ("grv-v-" & show i) head) 0 18
     in grv-verdict-rows vs cpl (i + 1) (list-push acc lbl)
-
- Wrapping traded a line that ran off the right edge for lines that ran off the
- bottom, and the second was worse: what left the box was the verdict list and
- the line saying whether this boot can cast at all. Bounding the body fixed
- that and could not fix the rest, because the fixed fields take fourteen of the
- sixteen rows this pane has at 1600x900, so no way of dividing the remainder
- lets a reader READ a long proposal. The body is a scroll viewport now.
-
- `view-rows` is how many rows the body may show, and it arrives from the
- measuring pass rather than being computed here (that pass renders exactly ONE
- body row, so the room it reports as slack is rows-beyond-the-first). A
- `view-rows` of zero IS the measuring pass: the body renders its single probe
- row, the bar renders as a plain gap of the same width so both passes measure
- the same text column, and nothing is written back.
 
   grv-detail-tree : GrvData, Integer, Integer, Maybe Text, Integer, Integer, Text -> WidgetNode
   grv-detail-tree (d) (sel) (rs) (signer) (wrap-w) (view-rows) (prompt) =
@@ -507,10 +416,6 @@ Section: The Detail
     if grv-mode rs == grv-mode-reason then verdict-kind-name (grv-kind-of (peek-32 rs grv-kind-cell)) & ":  " & grv-reason-text rs & "_"
     else ""
 
- The pick prompt names the REPLACEMENT rather than the proposal being read,
- because that is the thing the reader is choosing and the thing they will get
- wrong if the pane shows the other one.
-
   grv-pick-text : GrvData, Integer -> Text
   grv-pick-text (d) (rs) =
     if grv-mode rs /= grv-mode-pick then ""
@@ -535,11 +440,6 @@ Section: Keys
     else if sc == 28 then (if n > 0 then let z = grv-set-scroll rs 0 in let d = grv-set-mode rs grv-mode-detail in 1 else 0)
     else 0
 
- `can` is whether an identity is loaded. Without one nothing can be signed, so
- a verdict key opens no prompt at all: entering one and refusing at the end
- would ask the reader to type a reason for a verdict this boot was never going
- to cast, and the pane already says so on its own line.
-
   grv-key-detail : Integer, Integer, Integer -> Integer
   grv-key-detail (rs) (sc) (can) =
     if sc == 1 then let d = grv-set-mode rs grv-mode-list in 1
@@ -561,14 +461,6 @@ Section: Keys
     in let c = poke-32 rs grv-rlen-cell 0
     in let m = grv-set-mode rs grv-mode-reason
     in 1
-
- Enter answers the KIND, which is what `desk-rev-step` already treats as a
- cast, and puts the pane back in the detail first so the repaint that follows
- the cast shows the verdict that was just written.
-
- Recording a supersession needs no identity and is not gated on one: the fact
- carries no signature, because the authority for the link is the new proposal,
- which is signed already. That is why this sits ABOVE the `can` test.
 
   grv-begin-pick : Integer -> Integer
   grv-begin-pick (rs) =
@@ -609,10 +501,6 @@ Section: Casting
 
   grv-kind-of : Integer -> VerdictKind
   grv-kind-of (r) = if r == 3 then Accept else if r == 4 then Reject else Abstain
-
- The production caller for kind 42. A proposal cannot supersede itself, and a
- link to a proposal that is not on this medium cannot be MADE here even though
- one can be read here: the pick is an index into what this store carries.
 
   grv-supersede : GrvData, Integer, Integer -> [Device.Port] Integer
   grv-supersede (d) (rs) (ts) = act

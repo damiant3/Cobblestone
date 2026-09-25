@@ -1,0 +1,70 @@
+Chapter: Fat16ReadGuard
+
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+Section: Helpers
+
+  pat : Integer, List Integer -> List Integer
+  pat (n) (acc) = if list-length acc >= n then acc else pat n (list-push acc (int-mod (list-length acc * 7 + 3) 251))
+
+  sum-of : List Integer, Integer, Integer -> Integer
+  sum-of (bs) (i) (acc) = if i >= list-length bs then acc else sum-of bs (i + 1) (int-mod (acc + list-at bs i * (i + 1)) 65521)
+
+  first-of : Maybe Fat16DirEntry -> Integer
+  first-of (m) = when m
+    is Just (e) -> e.de-cluster
+    is None -> 0
+
+  judge : Text, Maybe (List Integer), Integer -> Text
+  judge (name) (m) (n) = when m
+    is None -> name & " refused"
+    is Just (bs) -> name & " ok len-match=" & (if list-length bs == n then "yes" else "no") & " sum-match=" & (if sum-of bs 0 0 == sum-of (pat n []) 0 0 then "yes" else "no")
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    vol <- fat16-init 2048
+    print-line-uni ("clusters-ok " & (if fat16-last-cluster vol > 1000 then "yes" else "no"))
+
+    w1 <- fat16-write-binary-file "GOOD.TXT" (pat ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 2 + 100) [])
+    g <- fat16-read-bytes vol "GOOD.TXT"
+    print-line-uni (judge "good" g ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 2 + 100))
+
+    w2 <- fat16-write-binary-file "EMPTY.TXT" []
+    e <- fat16-read-bytes vol "EMPTY.TXT"
+    print-line-uni (judge "empty" e 0)
+
+    w3 <- fat16-write-binary-file "CYCLE.TXT" (pat ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 3 + 10) [])
+    c1r <- fat16-resolve-path vol "CYCLE.TXT"
+    c2 <- fat16-next-cluster vol (first-of c1r)
+    c3 <- fat16-next-cluster vol c2
+    s1 <- fat16-write-fat-entry vol c3 (first-of c1r)
+    cy <- fat16-read-bytes vol "CYCLE.TXT"
+    print-line-uni (judge "cycle-3-of-4" cy ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 3 + 10))
+
+    w6 <- fat16-write-binary-file "LOOP.TXT" (pat ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 12 + 10) [])
+    lr <- fat16-resolve-path vol "LOOP.TXT"
+    l2 <- fat16-next-cluster vol (first-of lr)
+    l3 <- fat16-next-cluster vol l2
+    s4 <- fat16-write-fat-entry vol l3 (first-of lr)
+    lp <- fat16-read-bytes vol "LOOP.TXT"
+    print-line-uni (judge "cycle-3-of-13" lp ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 12 + 10))
+
+    w4 <- fat16-write-binary-file "SHORT.TXT" (pat ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 3 + 10) [])
+    sr <- fat16-resolve-path vol "SHORT.TXT"
+    s2 <- fat16-write-fat-entry vol (first-of sr) 65535
+    sh <- fat16-read-bytes vol "SHORT.TXT"
+    print-line-uni (judge "short" sh ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 3 + 10))
+
+    w5 <- fat16-write-binary-file "EXACT.TXT" (pat ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 2) [])
+    xr <- fat16-resolve-path vol "EXACT.TXT"
+    x2 <- fat16-next-cluster vol (first-of xr)
+    s3 <- fat16-write-fat-entry vol x2 x2
+    ex <- fat16-read-bytes vol "EXACT.TXT"
+    print-line-uni (judge "cycle-after-end" ex ((vol.vol-sectors-per-cluster) * (vol.vol-bytes-per-sector) * 2))
+
+    bad <- fat16-read-cluster-bytes vol 65000 100 0 [] 65000 1 0
+    print-line-uni (judge "bad-first" bad 100)
+  end

@@ -1,7 +1,7 @@
 # Constant Sharing (COMPILER-86)
 
-Status: stage 1 built with record fields (blu, 2026-09-23); stage 3 built for the zig plug
-(reek, 2026-09-23); stage 2 is parked.
+Status: stage 1 built with record fields (blu, 2026-09-23); stage 3 built for the zig,
+arm64, riscv and wasm plugs (reek, 2026-09-23 and 2026-09-24); stage 2 is not built, by design (L-LESS).
 
 ## The problem
 
@@ -128,14 +128,11 @@ twelfth is `sha256-h0`, a real writer.
 
 ## Later stages, not built
 
-- Stage 2, PARKED (root, 2026-09-23, L-LESS): a shared constant with a
-  computed body, built once. Its memory must survive every
-  `__heap-restore`, `phase-compact` and REPL reset, must not sit in a
-  spawned child's slot region, and its first build can race on SMP and
-  nest. That is an arena, a nesting-tolerant lock and a hosted fallback,
-  for a measured yield (2026-09-23) of 4 constants on the compiler unit,
-  2 on `real-cert`, 1 on `crypto-vectors`, 2 on `cryptobig` and 0 on
-  `tls-test`.
+- Stage 2, a shared constant with a computed body, is NOT BUILT, by design
+  (L-LESS). Built once at run time it would need an arena that survives
+  every `__heap-restore`, `phase-compact` and REPL reset, a nesting-tolerant
+  lock for its first build on SMP, and a hosted fallback, and every computed
+  table measured is referenced once or twice per program.
 
 ## Stage 1 proof
 
@@ -148,14 +145,17 @@ and nothing per application, plus at most 64 passes over the slots; the
 data segment grows by the shared tables' size once. The
 compiler's self-compile went from 8.2 s to 7.6 s wall (2026-09-23).
 
-## Stage 3: a plug runs the analysis itself (built for zig)
+## Stage 3: a plug runs the analysis itself (built for zig, arm64, riscv and wasm)
 
 `shared-const-names` is a function of the `IRDef` list, and every plug
 already parses its IR into that list, so a plug bundles `IR/ConstShare`
 and asks the same question over its own definitions. Nothing crosses the
 IR wire and the seed does not change. `Build-TranspilerPlug` and
 `build-plug-wasm.ps1` take `-CompilerChapters` for this, and the page
-manifest carries it as the zig row's `compiler` field.
+manifest carries it as a row's `compiler` field. `ConstShare` calls
+`sort-by` without citing `Sort`, so the plug chapter that calls
+`shared-const-names` must cite `Foreword chapter Sort`, or the bundle fails
+with CDX3002 on `sort-by`.
 
 The zig plug emits a shared table as a function-local static with
 `capacity = length`, and every reference returns its address:
@@ -182,4 +182,54 @@ candidate turns the written arms red (99099 against 99001). Rule 5's
 arms match through the zig plug too, and a field key that keeps the
 `/index` suffix turns its three written arms red there. In the x25519
 test `sha256-k` is shared and `sha256-h0` is not. The 10,000,000-read
-reproducer runs in 0.12 s. Every other plug keeps its per-reference build.
+reproducer runs in 0.12 s.
+
+The arm64 plug places a shared table in the wire's data block beside the
+text literals as `[capacity = length][length][e0]...`, the layout
+`list-empty` gives a heap list, and the def becomes `adr x0, <length word>;
+ret`. Data offsets are `list-length` of the data block, so text literals
+after a table land after it. Rules 1 and 4 re-proved against the arm64
+runtime: `a64-rt-list-at` and `a64-rt-text-length` (which `list-length`
+uses) only load; `a64-rt-buf-write-bytes` loads the list through `x2` and
+stores only at `x0 + x1`; every list `&` calls `a64-rt-list-append`, which
+allocates at `x28` and only loads both operands. The LIR path reaches lists
+only through calls to those helpers. `list-push` on a table sees capacity ==
+length and copies.
+
+Proof (seed `F4A63F088E61A9F1`, QEMU): `codex/test/const-share` matches its
+`.expected`; the depot plug reports 107,200,000 (direct) and 214,400,000
+(helper) bytes over 100,000 reads, and a plug that shares every candidate
+turns exactly the seven written-through arms to 99099 while `[] & t` and
+`t & []` stay 99002. `ecdsa-p256` and `ecdsa-p256-sign` pass, with
+`sha256-k` and the seven `ec-*` byte tables emitted as 8-byte stubs and
+`sha256-h0` unshared.
+
+The riscv plug does the same with `auipc a0; addi a0` and `ret`; its data
+offsets were already `list-length` of the data block. Rules 1 and 4 hold on
+its runtime: `rv-rt-list-at` and `rv-rt-text-length` only load;
+`rv-rt-buf-write-bytes` loads the list through `a2` and stores bytes only at
+`a0 + a1`; `__list_append` allocates at `s1` and only loads both operands;
+`list-push` grows by copying when length reaches capacity. A shared table
+never reaches the riscv memo, which stays scalar-only. Proof (same seed,
+QEMU): `const-share` matches; the depot plug reports 108,800,000 and
+217,600,000 bytes; share-everything moves the same seven arms to 99099.
+`ecdsa-p256` passes with `sha256-k` and the `ec-*` byte tables as 12-byte
+stubs and `sha256-h0` unshared; `ecdsa-p256-sign` starves at the default
+ceiling on both plugs and passes at 120 s (`plugs-backlog.md` 2.72).
+
+The wasm plug's list is `[i32 length][i32 capacity][e0]...` with the pointer
+at the header. A shared table is a `data` segment placed 8-aligned after the
+function-arity bytes, `heap_start` moves past the last table (and does not
+move when no table is shared, so a table-free module is unchanged), and the
+def becomes `(func $t (result i64) (i64.const <offset>))`. Rules 1 and 4 hold
+on its runtime: `$list_length`, `$list_at` and `$buf_write_bytes` only load
+the list; `$list_append` allocates with `$bump_alloc` and only loads both
+operands; `$list_push` stores in place only when length < capacity; and
+`$cx_list_base` answers the pointer itself because a table's capacity is not
+the view marker -1. Proof (same seed, wasmtime through
+`hosted-wasm-test.ps1`): `const-share` passes; the depot plug reports
+52,000,000 and 104,000,000 bytes; share-everything moves the same seven arms
+to 99099. `ecdsa-p256` passes with `sha256-k` and the `ec-*` tables as
+constants and `sha256-h0` unshared. spark, fireworks and starmap, which write
+at fixed linear-memory addresses from 131072 up, share no table, so their
+`heap_start` stays near 71.5 KB.

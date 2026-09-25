@@ -1,0 +1,103 @@
+Chapter: StickSourceIndexTest
+  cites Works chapter StickSource
+  cites Works chapter GopFat16
+  cites Works chapter GopDisk
+  cites Foreword chapter Fat16
+  cites Foreword chapter Gpt
+  cites Foreword chapter Maybe
+
+ The .disk is `build/build-img.ps1 -TotalSectors 16384` over a 512-byte
+ dummy PE and the 3,122,644-byte `build-output/Codex.codex` of 2026-09-07, as
+ SOURCE.SRC from cluster 5 at one sector per cluster. Clusters 3005 and 3006
+ are then swapped on the medium and relinked 3004 -> 3006 -> 3005 -> 3007 in
+ both FATs, so the file reads back whole only through its chain. Line 33374
+ (bytes 1536489 to 1536543) crosses from the first of the swapped clusters
+ into the second. Every expected value was counted from the original file by
+ a PowerShell census, not by this chapter.
+
+ The index runs in an 8 MB spawned process, the Dev Console's slot.
+
+Section: Body
+
+  ssi-yn : Boolean -> Text
+  ssi-yn (v) = if v then "PASS" else "FAIL"
+
+  ssi-count-kind : Integer, Integer, Integer, Integer, Integer -> Integer
+  ssi-count-kind (blk) (kind) (e) (n) (acc) =
+    if e >= n then acc
+    else ssi-count-kind blk kind (e + 1) n (if ss-entry-kind blk e == kind then acc + 1 else acc)
+
+  ssi-entry : Integer, Integer -> Text
+  ssi-entry (blk) (e) =
+    "entry " & show e & ": " & ss-kind-label (ss-entry-kind blk e) & " " & ss-entry-name blk e & " at line " & show (ss-entry-line blk e)
+
+  ssi-flat-line : Fat16Volume, Integer, Integer, Integer -> [Device.Port] Text
+  ssi-flat-line (vol) (first) (st) (n) =
+    let buf = alloc-zeroed 2048 64
+    in let lba = fat16-cluster-sector vol first + st / 512
+    in act
+      ok <- disk-read-into lba 2 buf
+      if ok == False then "read failed"
+      else ss-chars buf (int-mod st 512) (int-mod st 512 + n) ""
+    end
+
+  ssi-report : Fat16Volume, Integer, Integer -> [Console, Device.Port] Integer
+  ssi-report (vol) (blk) (cost) =
+    let n = ss-entry-count blk
+    in act
+      print-line-uni ("verdict=" & show (ss-verdict blk) & " truncated=" & show (ss-truncated blk))
+      print-line-uni ("size=" & show (ss-size blk) & " lines=" & show (ss-line-count blk))
+      print-line-uni ("entries=" & show n & " chapters=" & show (ssi-count-kind blk ss-kind-chapter 0 n 0) & " sections=" & show (ssi-count-kind blk ss-kind-section 0 n 0) & " fns=" & show (ssi-count-kind blk ss-kind-fn 0 n 0) & " values=" & show (ssi-count-kind blk ss-kind-value 0 n 0) & " chapter-table=" & show (ss-chapter-count blk))
+      print-line-uni (ssi-entry blk 0)
+      print-line-uni (ssi-entry blk 1)
+      print-line-uni (ssi-entry blk 2)
+      print-line-uni (ssi-entry blk (n - 1))
+      print-line-uni ("last chapter: " & ss-entry-name blk (ss-chapter-entry blk (ss-chapter-count blk - 1)))
+      a <- ss-line-text vol blk 33374 200
+      print-line-uni ("line 33374 [" & a & "]")
+      b <- ss-line-text vol blk 66444 200
+      print-line-uni ("line 66444 [" & b & "]")
+      c <- ss-line-text vol blk 13 12
+      print-line-uni ("line 13 cut at 12 [" & c & "]")
+      let e = ss-find-name blk "restore-substitutions"
+      in act
+        d <- ss-line-text vol blk (ss-entry-line blk e) 200
+        print-line-uni ("find restore-substitutions: line " & show (ss-entry-line blk e) & " [" & d & "]")
+      end
+      print-line-uni ("find a name nobody declares: " & show (ss-find-name blk "no-such-name-here"))
+      f <- ssi-flat-line vol (peek-32 (peek-32 blk ss-c-clus) 0) (ss-line-start blk 33374) 55
+      print-line-uni ("CONTROL, a reader that ignores the chain reads line 33374 differently: " & ssi-yn (f /= a))
+      print-line-uni ("the scan allocates its block and under 64 KB beside it: " & ssi-yn (cost >= ss-block-bytes & cost - ss-block-bytes < 65536))
+      let z = 0 in z
+    end
+
+  ssi-child : Integer -> [Console, Device.Port] Integer
+  ssi-child (x) =
+    let c0 = alloc-bytes 0
+    in let c1 = alloc-bytes 0
+    in act
+      print-line-uni ("CONTROL, the probe allocates nothing: " & ssi-yn (c1 - c0 == 0))
+      m <- gfat-mount-esp
+      if m.gm-ok == False then act
+        print-line-uni "mount FAILED"
+        let z = 0 in z
+      end
+      else let a0 = alloc-bytes 0
+      in act
+        blk <- ss-open (m.gm-vol)
+        let a1 = alloc-bytes 0
+        in if blk == 0 then act
+          print-line-uni "no SOURCE.SRC"
+          let z = 0 in z
+        end
+        else ssi-report (m.gm-vol) blk (a1 - a0)
+      end
+    end
+
+Section: Entry
+
+  opening : [Console, Device.Port, Concurrent] Nothing = act
+    pid <- process-spawn-with-heap (\x -> ssi-child x) 8388608
+    let w = process-wait pid
+    in print-line-uni ("spawned pid ok: " & ssi-yn (pid > 0))
+  end

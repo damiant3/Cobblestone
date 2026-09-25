@@ -4,7 +4,7 @@
 //
 // "It assembled" is not "it computes", so the oracle here is not a pixel and
 // not a checksum: it is the KERNAL's own boot screen. Reaching
-// "COMMODORE 64 BASIC V2" and "READY." from the reset vector means the 6502
+// "OPEN ROMS GENERIC BUILD" and "READY." from the reset vector means the 6502
 // executed some millions of real ROM instructions, the processor port banked
 // BASIC and the KERNAL in at the right moments, the zero page and stack
 // behaved, and the screen editor wrote where the VIC says it is looking. No
@@ -101,7 +101,7 @@ check('framebuffer is inside linear memory',
       `fb=0x${FB.toString(16)} memory=${x.memory.buffer.byteLength} bytes`);
 
 // -- the arm: the KERNAL boots -------------------------------------------
-const BANNER = ['COMMODORE 64 BASIC', 'READY.'];
+const BANNER = ['OPEN ROMS GENERIC BUILD', 'READY.'];
 const bootFrame = runUntilBanner(x, BANNER);
 check('the KERNAL reaches its banner and READY.', bootFrame > 0,
       bootFrame > 0 ? `frame ${bootFrame}` : `not within ${MAX_FRAMES} frames`);

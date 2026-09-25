@@ -1214,19 +1214,53 @@ $bw.Write([byte[]]@(0xF3, 0xA4))                                # rep movsb
 
 if ($ExitBootServices) {
     # GetMemoryMap + ExitBootServices, with the one stale-key retry the spec
-    # anticipates (an allocation between the map read and the call invalidates
-    # the key exactly once here, since nothing allocates in between -- the
-    # retry covers firmware-internal churn). Slot layout keeps everything
-    # ABOVE the 32-byte shadow space the callee owns: [rsp+0x28] MapSize,
-    # [rsp+0x30] MapKey, [rsp+0x38] DescSize, [rsp+0x40] DescVersion,
-    # buffer at [rsp+0x50], 128 KB. RSP here is the top of our own heap
-    # allocation (4 KB aligned), so the sub keeps 16-byte call alignment.
-    $ebsFrame = 0x20050
+    # anticipates (the retry covers firmware-internal churn). The map buffer
+    # is SIZED BY THE FIRMWARE, not by us: a first GetMemoryMap with MapSize 0
+    # answers EFI_BUFFER_TOO_SMALL and the size it needs, AllocatePool gets
+    # that plus two pages (the pool allocation itself, and the churn the
+    # retry answers, each add descriptors), and both real calls use that
+    # buffer. A fixed allowance was a machine-specific ceiling: a map bigger
+    # than it halted at 'M' before the payload ran. Slot layout
+    # keeps everything ABOVE the 32-byte shadow space the callee owns:
+    # [rsp+0x28] MapSize, [rsp+0x30] MapKey, [rsp+0x38] DescSize,
+    # [rsp+0x40] DescVersion, [rsp+0x48] the buffer, [rsp+0x50] its capacity.
+    # RSP here is the top of our own heap allocation (4 KB aligned), so the
+    # sub keeps 16-byte call alignment. 'S' halts when the size query answers
+    # anything but EFI_BUFFER_TOO_SMALL, 'P' when AllocatePool refuses.
+    $ebsFrame = 0x60
+    function SizeAndPoolChunk() {
+        return [byte[]]@(
+            0x48, 0xC7, 0x44, 0x24, 0x28, 0x00, 0x00, 0x00, 0x00,  # mov qword [rsp+0x28], 0
+            0x48, 0x8D, 0x4C, 0x24, 0x28,                          # lea rcx, [rsp+0x28]
+            0x31, 0xD2,                                            # xor edx, edx (no buffer)
+            0x4C, 0x8D, 0x44, 0x24, 0x30,                          # lea r8,  [rsp+0x30]
+            0x4C, 0x8D, 0x4C, 0x24, 0x38,                          # lea r9,  [rsp+0x38]
+            0x48, 0x8D, 0x44, 0x24, 0x40,                          # lea rax, [rsp+0x40]
+            0x48, 0x89, 0x44, 0x24, 0x20,                          # mov [rsp+0x20], rax (5th arg)
+            0x49, 0x8B, 0x47, 0x60,                                # mov rax, [r15+0x60]
+            0xFF, 0x90, 0x38, 0x00, 0x00, 0x00,                    # call [rax+0x38] GetMemoryMap
+            0x48, 0xBA, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,  # mov rdx, EFI_BUFFER_TOO_SMALL
+            0x48, 0x39, 0xD0,                                      # cmp rax, rdx
+            0x74, 0x10,                                            # je over the halt
+            0xB0, [byte][int][char]'S',                            # mov al, 'S'
+            0x66, 0xBA, 0xF8, 0x03, 0xEE,                          # out 0x3F8
+            0x66, 0xBA, 0xF8, 0x02, 0xEE,                          # out 0x2F8
+            0xFA, 0xF4, 0xEB, 0xFD,                                # cli; hlt; jmp back to the hlt
+            0x48, 0x8B, 0x54, 0x24, 0x28,                          # mov rdx, [rsp+0x28] (size needed)
+            0x48, 0x81, 0xC2, 0x00, 0x20, 0x00, 0x00,              # add rdx, 0x2000
+            0x48, 0x89, 0x54, 0x24, 0x50,                          # mov [rsp+0x50], rdx (capacity)
+            0xB9, 0x02, 0x00, 0x00, 0x00,                          # mov ecx, 2 (EfiLoaderData)
+            0x4C, 0x8D, 0x44, 0x24, 0x48,                          # lea r8, [rsp+0x48]
+            0x49, 0x8B, 0x47, 0x60,                                # mov rax, [r15+0x60]
+            0xFF, 0x90, 0x40, 0x00, 0x00, 0x00                     # call [rax+0x40] AllocatePool
+        )
+    }
     function GmmChunk() {
         return [byte[]]@(
-            0x48, 0xC7, 0x44, 0x24, 0x28, 0x80, 0xFF, 0x01, 0x00,  # mov qword [rsp+0x28], 0x1FF80
+            0x48, 0x8B, 0x44, 0x24, 0x50,                          # mov rax, [rsp+0x50]
+            0x48, 0x89, 0x44, 0x24, 0x28,                          # mov [rsp+0x28], rax (MapSize = capacity)
             0x48, 0x8D, 0x4C, 0x24, 0x28,                          # lea rcx, [rsp+0x28]
-            0x48, 0x8D, 0x54, 0x24, 0x50,                          # lea rdx, [rsp+0x50]
+            0x48, 0x8B, 0x54, 0x24, 0x48,                          # mov rdx, [rsp+0x48] (the pool buffer)
             0x4C, 0x8D, 0x44, 0x24, 0x30,                          # lea r8,  [rsp+0x30]
             0x4C, 0x8D, 0x4C, 0x24, 0x38,                          # lea r9,  [rsp+0x38]
             0x48, 0x8D, 0x44, 0x24, 0x40,                          # lea rax, [rsp+0x40]
@@ -1244,14 +1278,19 @@ if ($ExitBootServices) {
             0xFF, 0x90, 0xE8, 0x00, 0x00, 0x00                     # call [rax+0xE8] ExitBootServices
         )
     }
-    # Panic block bytes, matching AllocPanic: test/jz+13/mark-and-halt.
+    # Panic block bytes, matching AllocPanic: test/jz+16/mark, cli, hlt, jmp
+    # back to the hlt. Boot services are alive here, so a bare hlt RESUMES on
+    # the next firmware timer tick and falls into the next call (measured
+    # under OVMF: a forced 'M' went on to ExitBootServices and the payload).
     function PanicBytes([char]$c) {
-        return [byte[]]@(0x48, 0x85, 0xC0, 0x74, 0x0D,
+        return [byte[]]@(0x48, 0x85, 0xC0, 0x74, 0x10,
                          0xB0, [byte][int]$c, 0x66, 0xBA, 0xF8, 0x03, 0xEE,
-                         0x66, 0xBA, 0xF8, 0x02, 0xEE, 0xF4)
+                         0x66, 0xBA, 0xF8, 0x02, 0xEE, 0xFA, 0xF4, 0xEB, 0xFD)
     }
     $bw.Write([byte[]]@(0x48, 0x81, 0xEC))                         # sub rsp, ebsFrame
     $bw.Write([BitConverter]::GetBytes([int]$ebsFrame))
+    $bw.Write([byte[]](SizeAndPoolChunk))
+    $bw.Write([byte[]](PanicBytes 'P'))
     $attempt2 = [System.Collections.Generic.List[byte]]::new()
     $attempt2.AddRange([byte[]](GmmChunk))
     $attempt2.AddRange([byte[]](PanicBytes 'M'))

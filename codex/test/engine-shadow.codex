@@ -46,6 +46,17 @@ Section: Instrument
   px : List Integer, Integer, Integer -> Integer
   px (p) (x) (y) = list-at p (y * rw + x)
 
+ The cube's screen region must be the same shadowed as plain: its lit faces
+ carry no acne and the kernel does not reach the caster. Measured 2026-09-24:
+ 0 changed pixels at radius 1, 27 at radius 2, where the kernel bleeds onto
+ the caster, and 87 at radius 1 with the old slope factor of 6.
+
+  region-diff : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  region-diff (s) (p) (x) (y) (x0) (x1) (y1) (acc) =
+    if y > y1 then acc
+    else if x > x1 then region-diff s p x0 (y + 1) x0 x1 y1 acc
+    else region-diff s p (x + 1) y x0 x1 y1 (if list-at s (y * rw + x) == list-at p (y * rw + x) then acc else acc + 1)
+
   count-amb : List Integer, Integer, Integer, Integer -> Integer
   count-amb (p) (i) (n) (acc) =
     if i >= n then acc
@@ -68,12 +79,11 @@ Section: Entry
   opening : [Console] Nothing = act
     let fb-sh = r3d-render-scene-shadowed test-scene rw rh 256
     in let fb-pl = r3d-render-scene test-scene rw rh
-    in let sh-in = px (fb-sh.fb-pixels) 180 170
-    in let pl-in = px (fb-pl.fb-pixels) 180 170
+    in let sh-in = px (fb-sh.fb-pixels) 201 120
+    in let pl-in = px (fb-pl.fb-pixels) 201 120
     in let sh-lit = px (fb-sh.fb-pixels) 60 190
     in let pl-lit = px (fb-pl.fb-pixels) 60 190
-    in let sh-cube = px (fb-sh.fb-pixels) 140 110
-    in let pl-cube = px (fb-pl.fb-pixels) 140 110
+    in let cube-changed = region-diff (fb-sh.fb-pixels) (fb-pl.fb-pixels) 130 100 130 170 150 0
     in let amb-count = count-amb (fb-sh.fb-pixels) 0 (rw * rh) 0
     in let cost-small = render-cost test-scene 320 240
     in let cost-large = render-cost test-scene 640 480
@@ -81,13 +91,14 @@ Section: Entry
       print-line-uni ("shadow edge is a blend   : " & yn (sh-in > amb-packed & sh-in < pl-in))
       print-line-uni ("same pixel lit in plain  : " & yn (pl-in /= amb-packed & pl-in /= sky))
       print-line-uni ("lit plane pixel unchanged: " & yn (sh-lit == pl-lit))
-      print-line-uni ("cube pixel unchanged     : " & yn (sh-cube == pl-cube))
+      print-line-uni ("cube unshadowed by itself: " & yn (cube-changed == 0))
       print-line-uni ("shadow area is real      : " & yn (amb-count > 200 & amb-count < 20000))
       print-line-uni ("shadow cost pixel-free   : " & yn (cost-small == cost-large))
       print-line-uni ("shadowed sample          : " & show sh-in)
       print-line-uni ("plain sample             : " & show pl-in)
       print-line-uni ("ambient constant         : " & show amb-packed)
       print-line-uni ("shadow pixel count       : " & show amb-count)
+      print-line-uni ("cube pixels changed      : " & show cube-changed)
     end
   end
 

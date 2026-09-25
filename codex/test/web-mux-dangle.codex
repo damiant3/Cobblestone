@@ -1,0 +1,59 @@
+Chapter: WebMuxDangle
+  cites Net chapter WebServer
+  cites Net chapter TcpTransport
+  cites Net chapter NetCompact
+  cites Foreword chapter Console
+
+ `web-mux-run` takes its compaction mark once, and `web-mux-compact` restores
+ the heap to it. A connection accepted inside the loop must not hold memory
+ above that mark. The arm writes 77 into an accepted connection's receive
+ buffer, compacts, zeroes a fresh 64 KiB allocation and reads the byte back:
+ 77 if the buffer survived, 0 if the allocation landed on it. The control is
+ a transport minted before the mark, which must read 77 whatever the mux does.
+
+Section: Probe
+
+  filler : Integer, List Integer -> List Integer
+  filler (n) (acc) = if n <= 0 then acc else filler (n - 1) (list-push acc n)
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  after-compact : Integer -> Text
+  after-compact (in-loop) =
+    let set = nc-set-acquire (nc-pool-cell process-get-pid)
+    in let m0 = WebMux { listen = fresh-listen-transport 8080, conns = [], served = 0 }
+    in let early = web-mux-next-listen m0 8080
+    in let mark = __heap-save
+    in let t = if in-loop == 1 then web-mux-next-listen m0 8080 else early
+    in let w = poke-byte (t.recv-base) 0 77
+    in let m = WebMux { listen = m0.listen, conns = [WebConn { transport = t, server = web-new, pending = [], idle = 0 }], served = 0 }
+    in let pad = filler 40000 []
+    in let c = web-mux-compact m set mark
+    in let base = ((list-at (c.conns) 0).transport).recv-base
+    in let compacted = __heap-save < mark + 65536
+    in let later = alloc-bytes 65536
+    in let z = __memset later 0 65536
+    in "compacted " & yn compacted & ", buffer below mark " & yn (base < mark) & ", byte " & show (recv-buf-byte ((list-at (c.conns) 0).transport) 0)
+
+ Bytes the send's drain feeds into the shared buffer belong to the
+ connection's next request: `web-mux-fed` hands them over and
+ `web-mux-settle` empties the buffer for the next send.
+
+  fed-arm : Integer -> Text
+  fed-arm (u) =
+    let m0 = WebMux { listen = fresh-listen-transport 8080, conns = [], served = 0 }
+    in let t = transport-feed-raw (web-mux-next-listen m0 8080) [71, 69, 84]
+    in let got = web-mux-fed t
+    in let s = web-mux-settle t
+    in "fed " & show (list-length got) & " bytes, first " & show (list-at got 0) & ", after settle " & show (s.recv-len)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("accepted in loop: " & after-compact 1)
+    print-line-uni ("control, minted before mark: " & after-compact 0)
+    print-line-uni (fed-arm 0)
+  end
+
+Page 1

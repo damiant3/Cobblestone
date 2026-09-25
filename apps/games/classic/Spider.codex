@@ -2,18 +2,8 @@ Chapter: Spider
   cites Games chapter Rng
   cites Foreword chapter Random
 
- Spider Solitaire, 2-suit variant. 104 cards, rank = card mod 13.
- The deck is eight thirteen-card blocks and the suit is the block index
- modulo two, so each suit holds four complete runs, which is what the
- two-suit deck is. Cols 0-3 get 6 cards, cols 4-9 get 5, stock holds
- the remaining 50 and deals 10 at a time.
-
- The solver is greedy over the full legal move set and halts because it
- never enters a position it has already been in. Nothing weaker works: a
- move's only effect on same-suit adjacency is the join it makes at its
- destination, so a rank-join onto a different suit leaves adjacency
- unchanged and is therefore always reversible. Refusing only the
- immediate reversal just moves the oscillation into a longer cycle.
+ Two-suit Spider: 104 cards; columns 0-3 get 6, columns 4-9 get 5, and the
+ stock holds 50, dealt 10 at a time.
 
  We say:
 
@@ -49,26 +39,13 @@ Section: Types
 
 Section: Card Helpers
 
- A card id carries its rank as `id mod 13`, and that encoding belongs to the
- PAGE: index 0 is the deuce and index 12 is the ace, because every other card
- game in the arcade wants an ace-high deck and they all read the same ids.
- Spider wants the opposite. Here the ace is the LOWEST card -- a run is a
- king down to an ace, and an ace is laid on a deuce -- so 12 folds to 0 and
- every other rank shifts up one. Without the fold a run reads ace down to
- deuce, the ace sits one above the king, and the move test asks whether
- 12 == 0 - 1, so an ace can be laid on nothing at all.
+ Card ids are ace-high for every arcade game (index 12 is the ace). Spider's
+ ace is the lowest card, so 12 folds to 0 and every other rank shifts up one.
 
   sp-rank : Integer -> Integer
   sp-rank (c) =
     let r = rng-mod c 13
     in if r == 12 then 0 else r + 1
-
- THE SUIT COUNT LIVES IN THE DECK, not in this function. `sp-suit` is a pure
- function of a card id and is called from list-level helpers that hold no
- state, so threading a suit count through them would have reached into the
- sequence walk, both move tests and the AI's scoring. Instead the deck is
- built with the suit already in the id: the block a card falls in IS its
- suit, and `sp-fill-deck` decides how many blocks there are.
 
   sp-suit : Integer -> Integer
   sp-suit (c) = c / 13
@@ -81,11 +58,8 @@ Section: Deck Building
     in let deck = sp-fill-deck n 0 []
     in sp-shuffle deck seed 103
 
- A hundred and four cards either way: eight blocks of thirteen ranks. What
- the suit count changes is how many DISTINCT blocks those are. Card i takes
- rank `i mod 13` and suit `(i / 13) mod suits`, so one suit gives eight
- copies of each rank, two gives four, four gives two. Duplicate card ids are
- correct and always were: a Spider deck holds repeats.
+ A Spider deck holds repeated cards: one suit is eight copies of each rank,
+ two suits four.
 
   sp-fill-deck : Integer, Integer, List Integer -> List Integer
   sp-fill-deck (suits) (i) (acc) =
@@ -94,11 +68,13 @@ Section: Deck Building
     in let rank = rng-mod i 13
     in sp-fill-deck suits (i + 1) (list-push acc (suit * 13 + rank))
 
+  sp-draw : Integer, Integer -> Integer
+  sp-draw (seed) (i) = rand-in-range seed i 0 i
+
   sp-shuffle : List Integer, Integer, Integer -> List Integer
   sp-shuffle (deck) (seed) (i) =
     if i <= 0 then deck
-    else let rng = rng-new (seed * 7 + i)
-    in let j = rng-mod (rng-value (rng-next rng)) (i + 1)
+    else let j = sp-draw seed i
     in let vi = list-at deck i
     in let vj = list-at deck j
     in let d2 = list-set-at deck i vj
@@ -242,7 +218,7 @@ Section: Move Execution
     in let seq-count = from-n - m.seq-start
     in let moved = sp-take-from-end from-col m.seq-start seq-count
     in let trimmed = sp-drop-from-end from-col seq-count
-    in let new-to = sp-append-cols to-col moved 0 (list-length moved)
+    in let new-to = sp-append-cols (sp-take-loop to-col 0 (list-length to-col) 0 []) moved 0 (list-length moved)
     in let st2 = sp-set-col st (m.from-col) trimmed
     in let st3 = sp-set-col st2 (m.to-col) new-to
     in let st4 = SpiderState { col0 = st3.col0, col1 = st3.col1, col2 = st3.col2, col3 = st3.col3,
@@ -259,6 +235,9 @@ Section: Move Execution
   sp-drop-from-end (col) (count) =
     let n = list-length col
     in sp-take-loop col 0 (n - count) 0 []
+
+ `list-push` extends its argument in place (L-ALIAS), so the column a move
+ or a deal grows is copied first: the search returns to the parent state.
 
   sp-append-cols : List Integer, List Integer, Integer, Integer -> List Integer
   sp-append-cols (base) (extra) (i) (n) =
@@ -285,10 +264,7 @@ Section: Complete Suite Check
 
 Section: Stock Deal
 
- A deal puts one card on EVERY column, so Spider forbids it while any column
- stands empty: it would bury a space that the game is largely about winning
- and keeping. The engine dealt regardless, which made an empty column worth
- less than the rules say it is.
+ Spider forbids a deal while any column stands empty.
 
   sp-any-empty : SpiderState, Integer -> Boolean
   sp-any-empty (st) (i) =
@@ -323,20 +299,14 @@ Section: Stock Deal
     in if stock-idx >= sn then st
     else let card = list-at (st.stock) (sn - 1 - stock-idx)
     in let col = sp-get-col st col-idx
-    in let col2 = list-push col card
+    in let col2 = list-push (sp-take-loop col 0 (list-length col) 0 []) card
     in sp-set-col st col-idx col2
 
 Section: Position Hashing
 
- A column's hash folds its cards left to right from a seed carrying the
- column index, so two columns holding the same cards hash differently and
- order within a column matters. The ten are combined with bit-xor, which
- makes a move's effect local: only the source and the destination change,
- so the position AFTER a candidate move is the current hash with those two
- columns' old hashes taken out and their new ones put in. That is what lets
- the solver test a candidate without building the state it would produce.
- Building it would allocate ten columns per candidate against a heap with
- no collector.
+ The ten column hashes are combined with bit-xor, so a candidate move's
+ position hash is computed without building its state, which would
+ allocate ten columns per candidate.
 
   sp-col-hash : Integer, List Integer, Integer, Integer, Integer -> Integer
   sp-col-hash (c) (col) (i) (n) (h) =
@@ -379,11 +349,6 @@ Section: AI -- Greedy Solver
     in if suit-move >= 0 then suit-move
     else sp-find-fresh-move st h seen 0
 
- For a caller that steps one move at a time and keeps no history of its
- own, such as the /api/spider/step endpoint. It gets the best-scoring
- legal move and no cycle protection, which is what an interactive caller
- wants: the person clicking is the one deciding when to stop.
-
   sp-suggest-move : SpiderState -> Integer
   sp-suggest-move (st) = sp-find-best-move st (sp-hash st) []
 
@@ -393,9 +358,7 @@ Section: AI -- Greedy Solver
     in if best == 0 then (-1)
     else rng-mod best 1000000 - 1
 
- A candidate is packed score-above-move so that one integer comparison
- orders them, which is why the move code is offset by one: zero has to
- mean no candidate at all rather than the move from column 0 to column 0.
+ The move code is offset by one so that zero means no candidate.
 
   sp-best-fresh : SpiderState, Integer, List Integer, Integer, Integer -> Integer
   sp-best-fresh (st) (h) (seen) (from-c) (best) =
@@ -491,29 +454,160 @@ Section: AI -- Greedy Solver
     in let to-c = rng-mod rem 10
     in SpiderMove { from-col = from-c, seq-start = seq-start, to-col = to-c }
 
+Section: Search
+
+ A branch is undone with a heap restore, so a result passes up as one
+ packed Integer (nodes * 65536 + moves * 16 + best suits), which survives
+ the restore where a record would not. The visited table is built before the
+ search and written with `list-set-at`, which allocates nothing.
+
+ 262144 slots at 8 bytes is 2 MB, and a budget of 100000 nodes keeps the
+ table under half full. A depth of 1000 bounds the stack.
+
+  sp-table-size : Integer
+  sp-table-size = 262144
+
+  sp-node-budget : Integer
+  sp-node-budget = 100000
+
+  sp-max-depth : Integer
+  sp-max-depth = 1000
+
+  sp-table-new : Integer, List Integer -> List Integer
+  sp-table-new (n) (acc) =
+    if n <= 0 then acc
+    else sp-table-new (n - 1) (list-push acc 0)
+
+  sp-table-add : List Integer, Integer -> Boolean
+  sp-table-add (table) (h) =
+    let key = if h == 0 then 1 else h
+    in sp-table-probe table key (rng-mod (bit-shru key 1) sp-table-size) 0
+
+  sp-table-probe : List Integer, Integer, Integer, Integer -> Boolean
+  sp-table-probe (table) (key) (i) (tries) =
+    if tries >= sp-table-size then False
+    else let e = list-at table i
+    in if e == key then False
+    else if e == 0 then (let t2 = list-set-at table i key in True)
+    else sp-table-probe table key (rng-mod (i + 1) sp-table-size) (tries + 1)
+
+  sp-pack : Integer, Integer, Integer -> Integer
+  sp-pack (nodes) (moves) (best) =
+    nodes * 65536 + (if moves > 4095 then 4095 else moves) * 16 + best
+
+  sp-pack-nodes : Integer -> Integer
+  sp-pack-nodes (p) = p / 65536
+
+  sp-pack-moves : Integer -> Integer
+  sp-pack-moves (p) = rng-mod p 65536 / 16
+
+  sp-pack-best : Integer -> Integer
+  sp-pack-best (p) = rng-mod p 16
+
+ The score is offset by 10000 so that every candidate packs positive and 0
+ can mark one already tried.
+
+  sp-candidates : SpiderState, Integer, List Integer -> List Integer
+  sp-candidates (st) (from-c) (acc) =
+    if from-c >= 10 then acc
+    else let col = sp-get-col st from-c
+    in let n = list-length col
+    in if n == 0 then sp-candidates st (from-c + 1) acc
+    else let seq-start = sp-seq-start col (n - 1)
+    in sp-candidates st (from-c + 1) (sp-cand-start st from-c seq-start n acc)
+
+  sp-cand-start : SpiderState, Integer, Integer, Integer, List Integer -> List Integer
+  sp-cand-start (st) (from-c) (s) (n) (acc) =
+    if s >= n then acc
+    else sp-cand-start st from-c (s + 1) n (sp-cand-target st from-c s 0 acc)
+
+  sp-cand-target : SpiderState, Integer, Integer, Integer, List Integer -> List Integer
+  sp-cand-target (st) (from-c) (seq-start) (to-c) (acc) =
+    if to-c >= 10 then acc
+    else if to-c == from-c then sp-cand-target st from-c seq-start (to-c + 1) acc
+    else let from-col = sp-get-col st from-c
+    in let to-col = sp-get-col st to-c
+    in if list-length to-col == 0 & seq-start <= 0 then sp-cand-target st from-c seq-start (to-c + 1) acc
+    else if sp-can-move from-col to-col seq-start == False then sp-cand-target st from-c seq-start (to-c + 1) acc
+    else if sp-off-suit-split st from-c seq-start to-c then sp-cand-target st from-c seq-start (to-c + 1) acc
+    else let pack = (sp-rank-move st from-c seq-start to-c + 10000) * 1000000 + from-c * 10000 + seq-start * 10 + to-c + 1
+    in sp-cand-target st from-c seq-start (to-c + 1) (list-push acc pack)
+
+ Splitting a run onto a card of another suit uncovers nothing and joins
+ nothing, and the search spends its budget reordering such moves.
+
+  sp-off-suit-split : SpiderState, Integer, Integer, Integer -> Boolean
+  sp-off-suit-split (st) (from-c) (seq-start) (to-c) =
+    let from-col = sp-get-col st from-c
+    in let to-col = sp-get-col st to-c
+    in let tn = list-length to-col
+    in if seq-start <= sp-seq-start from-col (list-length from-col - 1) then False
+    else if tn == 0 then True
+    else sp-suit (list-at from-col seq-start) /= sp-suit (list-at to-col (tn - 1))
+
+  sp-max-index : List Integer, Integer, Integer, Integer -> Integer
+  sp-max-index (xs) (i) (best-i) (best) =
+    if i >= list-length xs then best-i
+    else let x = list-at xs i
+    in if x > best then sp-max-index xs (i + 1) i x
+    else sp-max-index xs (i + 1) best-i best
+
+  sp-dfs : SpiderState, List Integer, Integer, Integer -> Integer
+  sp-dfs (st) (table) (budget) (depth) =
+    if st.completed-suits >= 8 then sp-pack 1 (st.moves) 8
+    else if budget <= 1 then sp-pack 1 (st.moves) (st.completed-suits)
+    else if depth >= sp-max-depth then sp-pack 1 (st.moves) (st.completed-suits)
+    else let cands = sp-candidates st 0 []
+    in sp-children st table cands False budget depth 1 (st.moves) (st.completed-suits)
+
+  sp-children : SpiderState, List Integer, List Integer, Boolean, Integer, Integer, Integer, Integer, Integer -> Integer
+  sp-children (st) (table) (cands) (dealt) (budget) (depth) (used) (best-moves) (best) =
+    if used >= budget then sp-pack used best-moves best
+    else let i = sp-max-index cands 0 (-1) 0
+    in if i < 0 then
+      (if dealt then sp-pack used best-moves best
+       else if sp-any-empty st 0 then sp-pack used best-moves best
+       else if list-length (st.stock) < 10 then sp-pack used best-moves best
+       else let mark = __heap-save
+       in let r = sp-child st table (sp-deal-stock st) (budget - used) depth
+       in let back = __heap-restore mark
+       in sp-after-child st table cands True budget depth used best-moves best r)
+    else let code = rng-mod (list-at cands i) 1000000 - 1
+    in let t = list-set-at cands i 0
+    in let mark = __heap-save
+    in let r = sp-child-of-move st table code (budget - used) depth
+    in let back = __heap-restore mark
+    in sp-after-child st table cands dealt budget depth used best-moves best r
+
+  sp-child-of-move : SpiderState, List Integer, Integer, Integer, Integer -> Integer
+  sp-child-of-move (st) (table) (code) (left) (depth) =
+    sp-child st table (sp-apply-move st (sp-decode-move code)) left depth
+
+  sp-child : SpiderState, List Integer, SpiderState, Integer, Integer -> Integer
+  sp-child (st) (table) (st2) (left) (depth) =
+    if sp-table-add table (sp-hash st2) then sp-dfs st2 table left (depth + 1)
+    else 0
+
+  sp-after-child : SpiderState, List Integer, List Integer, Boolean, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sp-after-child (st) (table) (cands) (dealt) (budget) (depth) (used) (best-moves) (best) (r) =
+    let used2 = used + sp-pack-nodes r
+    in let rb = sp-pack-best r
+    in if rb >= 8 then sp-pack used2 (sp-pack-moves r) 8
+    else if rb > best then sp-children st table cands dealt budget depth used2 (sp-pack-moves r) rb
+    else sp-children st table cands dealt budget depth used2 best-moves best
+
 Section: Game Runner
 
   run-spider-game : Integer -> SpiderResult
   run-spider-game (seed) =
-    let st = spider-new seed 2
-    in spider-loop st 0 (list-push [] (sp-hash st))
-
-  spider-loop : SpiderState, Integer, List Integer -> SpiderResult
-  spider-loop (st) (deals-used) (seen) =
-    if st.completed-suits >= 8 then
-      SpiderResult { completed-suits = st.completed-suits, moves = st.moves, won = True }
-    else if st.moves > 500 then
-      SpiderResult { completed-suits = st.completed-suits, moves = st.moves, won = False }
-    else let h = sp-hash st
-    in let move-code = sp-find-best-move st h seen
-    in if move-code >= 0 then
-      let m = sp-decode-move move-code
-      in let st2 = sp-apply-move st m
-      in spider-loop st2 deals-used (list-push seen (sp-hash st2))
-    else if deals-used < 5 & list-length (st.stock) >= 10 then
-      let st2 = sp-deal-stock st
-      in spider-loop st2 (deals-used + 1) (list-push seen (sp-hash st2))
-    else SpiderResult { completed-suits = st.completed-suits, moves = st.moves, won = False }
+    let mark = __heap-save
+    in let st = spider-new seed 2
+    in let table = sp-table-new sp-table-size []
+    in let added = sp-table-add table (sp-hash st)
+    in let p = sp-dfs st table sp-node-budget 0
+    in let back = __heap-restore mark
+    in let best = sp-pack-best p
+    in SpiderResult { completed-suits = best, moves = sp-pack-moves p, won = best >= 8 }
 
 Section: Formatting
 

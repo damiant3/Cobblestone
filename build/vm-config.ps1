@@ -1021,11 +1021,14 @@ function Start-PlugVm {
         [Parameter(Mandatory=$true)][string]$Kernel,
         [Parameter(Mandatory=$true)][string]$ConsoleFile,
         [Parameter(Mandatory=$true)][string]$StderrFile,
-        [int]$MemMB = 3072
+        [int]$MemMB = 3072,
+        [int]$GuestPort = 0,
+        [int]$HostPort = 0
     )
     if ($script:UseCodexVm) {
         $bin = $script:CodexVmBin
         $vmArgs = @('-kernel', $Kernel, '-mem', "$MemMB", '-headless', '-output', $ConsoleFile)
+        if ($HostPort -gt 0 -and $HostPort -ne $GuestPort) { $vmArgs += @('-natmap', "${GuestPort}:$HostPort") }
     } else {
         $bin = $script:FallbackVmBin
         $ramBytes = [long]$MemMB * 1048576

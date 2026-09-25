@@ -7,27 +7,8 @@ Chapter: Klondike
  face up, a stock of twenty-four turned one or three at a time, and four
  foundations built ace upward in suit.
 
- It is the opposite game to Spider in the one way that matters to the code:
- Spider builds DOWN in suit and sends a finished run away by itself, while
- Klondike builds down in ALTERNATING COLOUR in the tableau and up in suit on
- the foundations, so the foundations are real piles a card is placed on and
- not a counter. That is why this chapter has `founds` and Spider has
- `completed-suits`.
-
- THE ACE IS LOW, and the fold that makes it so is the same one Spider needs
- and for the same reason: a card id carries its rank as `id mod 13` and that
- encoding is the page's, where 12 is the ace because every other card game in
- the arcade wants an ace-high deck. Here the ace is the bottom of a
- foundation and the bottom of a tableau run, so 12 folds to 0 and every other
- rank shifts up one. Without the fold the ace ranks above the king, no
- foundation can start, and no ace can be laid on a deuce.
-
- Face-down cards are counted, not marked. `downs` holds, per column, how many
- of the cards at the HEAD of that column are face down; a card at index below
- that count has not been seen by the player. Removing the last face-up card
- of a column turns the next one over, which is the flip, and the flip is the
- whole engine of the game: it is the only way hidden information becomes
- known.
+ The ace is low: card ids are ace-high for every arcade game (index 12 is the
+ ace), so 12 folds to 0 and every other rank shifts up one.
 
  We say:
 
@@ -74,9 +55,7 @@ Section: Card Helpers
   kd-suit : Integer -> Integer
   kd-suit (c) = c / 13
 
- Suits 1 and 2 are hearts and diamonds, which is the page's `SUIT` order.
- The tableau cares only whether two cards differ in colour, never which
- colour either one is.
+ Suits 1 and 2 are hearts and diamonds, the page's `SUIT` order.
 
   kd-red : Integer -> Boolean
   kd-red (c) =
@@ -200,9 +179,6 @@ Section: State Access
                          waste = st.waste, draw = st.draw, sterile = st.sterile,
                          moves = st.moves }
 
- Everything that is not a column changes through one place, so a new field
- is added to this record in two spots rather than nine.
-
   kd-set-rest : KlondikeState, List Integer, List Integer, List Integer, List Integer, Integer, Integer -> KlondikeState
   kd-set-rest (st) (downs) (founds) (stock) (waste) (sterile) (moves) =
     KlondikeState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
@@ -246,9 +222,8 @@ Section: Construction
 
 Section: Reading The Board
 
- A face-down card is not readable. The engine holds the truth and answers
- -1 for anything the player has not turned over, so a page cannot show a
- card the game has not dealt face up.
+ A face-down card answers -1, so a page cannot read a card the game has not
+ turned over.
 
   kd-visible-card : KlondikeState, Integer, Integer -> Integer
   kd-visible-card (st) (c) (i) =
@@ -273,11 +248,8 @@ Section: Reading The Board
 
 Section: Sequence Logic
 
- A run that may be lifted off the tableau is face up, descends by one rank a
- card, and alternates colour. `kd-run-len` measures forward from an index to
- the end of the column and answers how many cards form such a run; a lift is
- legal only when that run reaches the END of the column, which is what stops
- a page carrying off an arbitrary handful.
+ A lifted run is face up, descends by one rank a card, alternates colour, and
+ reaches the end of its column.
 
   kd-run-len : List Integer, Integer -> Integer
   kd-run-len (col) (from-idx) =
@@ -307,9 +279,6 @@ Section: Legality
     if from == 7 then kd-waste-top st
     else if from >= 8 then kd-found-card st (from - 8)
     else kd-visible-card st from start
-
- A foundation's top card is its suit and its recorded rank, rebuilt into a
- card id. Rank 0 is the ace, whose id ends in 12, which is the fold again.
 
   kd-found-card : KlondikeState, Integer -> Integer
   kd-found-card (st) (s) =
@@ -343,11 +312,8 @@ Section: Legality
     else let r = kd-found-at st s
     in if kd-rank card == r + 1 then True else False
 
- A tableau column may not be its own destination. `from` and `to` do NOT
- share a numbering -- 7 is the waste as a source and the spade foundation as
- a destination -- so this compares them only where both mean a column.
- Comparing them everywhere refuses the waste-to-spades move, which is one of
- the commonest moves in the game.
+ `from` and `to` do not share a numbering: 7 is the waste as a source and the
+ spade foundation as a destination.
 
   kd-can-move : KlondikeState, Integer, Integer, Integer -> Boolean
   kd-can-move (st) (from) (start) (to) =
@@ -362,8 +328,6 @@ Section: Legality
        else kd-can-from-tableau st from start to head)
     else kd-can-single st from to head
 
- Lifting off a column: the cards from `start` to the end must be face up and
- must themselves be a run, or a page could carry off any handful it liked.
  More than one card may never go to a foundation.
 
   kd-can-from-tableau : KlondikeState, Integer, Integer, Integer, Integer -> Boolean
@@ -419,12 +383,6 @@ Section: Move Execution
     let f2 = list-set-at (kd-copy-of (st.founds)) s (kd-rank card)
     in kd-set-rest st (st.downs) f2 (st.stock) (st.waste) (st.sterile) (st.moves)
 
- The flip. A column whose face-down count has reached its length has just
- had its last face-up card taken, so the next one turns over. This is the
- only place hidden information becomes known, which is why it also resets
- the sterile counter: a flip is progress even when nothing reached a
- foundation.
-
   kd-after-move : KlondikeState, Integer, Integer -> KlondikeState
   kd-after-move (st) (from) (gained) =
     let flipped = if from < 7 then kd-flip-needed st from else False
@@ -476,13 +434,8 @@ Section: The Stock
 
 Section: The Opponent
 
- There is no opponent in solitaire, so this is the player the page runs when
- you ask to watch. It is a priority order, not a search, and it is honest
- about the one judgement that separates a decent Klondike player from a bad
- one: a card sent to a foundation cannot come back cheaply, so only aces and
- twos go up unconditionally. Anything higher waits until BOTH foundations of
- the other colour have reached the rank below it, which is the standard safe
- rule and the reason this player does not bury the card it needed.
+ The safe rule: aces and twos go up unconditionally; a higher card waits until
+ both foundations of the other colour have reached the rank below it.
 
   kd-safe-to-found : KlondikeState, Integer -> Boolean
   kd-safe-to-found (st) (card) =
@@ -521,12 +474,6 @@ Section: The Opponent
     in if c >= 0 then c
     else kd-find-foundation-any st 0
 
- The safe rule above holds a card back so it is still there for the tableau.
- When there is nothing else left to do at all, holding it back stops the
- game instead of protecting it, so the last tier sends anything up that will
- go. It cannot loop: this player never takes a card OFF a foundation, so
- every move this tier makes is one the game cannot undo.
-
   kd-find-foundation-any : KlondikeState, Integer -> Integer
   kd-find-foundation-any (st) (i) =
     if i >= 8 then (-1)
@@ -537,8 +484,6 @@ Section: The Opponent
     else let s = kd-suit head
     in if kd-can-move st from start (s + 7) then kd-encode from start (s + 7)
     else kd-find-foundation-any st (i + 1)
-
- Anything that can safely go up, from the waste first and then the tableau.
 
   kd-find-foundation : KlondikeState, Integer -> Integer
   kd-find-foundation (st) (i) =
@@ -556,9 +501,6 @@ Section: The Opponent
   kd-top-index (st) (from) =
     if from >= 7 then 0
     else list-length (kd-get-col st from) - 1
-
- A tableau move that turns a card over. The run must start exactly where the
- face-down cards end, or the move leaves something still covering them.
 
   kd-find-flip : KlondikeState, Integer -> Integer
   kd-find-flip (st) (c) =
@@ -583,17 +525,12 @@ Section: The Opponent
     else if kd-can-move st 7 0 to then kd-encode 7 0 to
     else kd-find-from-waste st (to + 1)
 
- There is deliberately no "move a king to a space" rule here beyond what the
- three above already reach. A king that sits on face-down cards is moved by
- the flip rule, and one that comes off the waste is moved by the waste rule;
- what is left is shuffling a king between two empty spaces, which changes
- nothing and is the cheapest infinite loop in this game.
+ No king-to-space rule beyond these three: shuffling a king between two empty
+ spaces is an infinite loop.
 
- What the page's watch mode asks for: a move code, or -2 meaning turn the
- stock, -3 meaning gather the waste back up, or -1 meaning there is nothing
- left worth doing. The sterile count is what makes -1 reachable: it counts
- moves since anything was turned over or reached a foundation, and a player
- who has been round the whole pack twice without either has finished.
+ Watch mode answers a move code, -2 to turn the stock, -3 to gather the waste,
+ or -1 when nothing is left: two passes of the pack with no flip and no
+ foundation card end the game.
 
   kd-ai : KlondikeState -> Integer
   kd-ai (st) =

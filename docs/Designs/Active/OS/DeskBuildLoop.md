@@ -6,7 +6,7 @@ a stick that carries its own source, its own compiler, and the proof the two
 agree, where a person can change the source and watch the proof move.
 
 **What is left is the LAUNCH, and metal is the first machine that can run
-it.** The edit half, the console pane, the `vmx` probe, EPT and the sizing
+it** (WORKS-76; the VT-x section below says why no bed can). The edit half, the console pane, the `vmx` probe, EPT and the sizing
 refusal, device-path launch, the arena, `compile <path>` and the verdict are
 all in the depot. Road B is closed. Read "How the guest is provisioned"
 before planning any of this.
@@ -58,10 +58,15 @@ and the VMX-outside-SMX bit in `IA32_FEATURE_CONTROL` (MSR 58).
 2026-08-13: lock set, VMX-outside-SMX set, VMX revision id 4, so Road A is
 open and 4 is what stamps the VMCS. Under codex-vm the same MSR reads 1,
 which is the encoding of firmware with VT-x switched off, so **a guest
-compile cannot start in the bed at all and never will.** codex-vm is itself a
-WHP hypervisor and its guest sees no VT-x. Two codex-vm measurements on two
-different days agreed with each other and were both irrelevant to the
-question (L-OPTIONAL).
+compile cannot start in the bed as codex-vm is configured today.**
+
+**No codex-vm configuration gets VT-x into the guest on this host.** The 1 is
+WHP's own answer: codex-vm does not intercept MSR 58. Setting
+`WHvPartitionPropertyCodeNestedVirtualization` (0x00000004, SDK 10.0.26100) is
+accepted with HRESULT 0 and then `WHvSetupPartition` fails with 0xC0350005,
+with the extended CPUID and MSR exits on or off (measured 2026-09-24 on the
+i7-12700KF box with a private codex-vm build). The launch is metal-only and
+rides a sitting as WORKS-76.
 
 ## Road A: the hypervisor. THIS IS THE ROAD.
 

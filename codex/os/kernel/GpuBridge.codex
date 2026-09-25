@@ -5,28 +5,16 @@ Chapter: GpuBridge
   cites Foreword chapter CCE
   grounds Device.Port
 
- Guest-side GPU compute bridge. A command is built in guest memory and
- the host is told where it is; the host computes and writes the reply
- back into guest memory. Fixed-point scale 1000.
-
  We say:
 
 Section: Buffers
 
  One slab below the rasterizer's own command buffer (#BE000000), inside
  the band above the heap and below the stack that is present from boot.
- Fixed rather than allocated because there is no buffer-allocator
- builtin, and fixed HERE because this region already belongs to the
- graphics path and so cannot collide with the bump allocator.
 
  The command region is 6 MB (#BD000000 to #BD600000) and the reply region
- is the 10 MB below the rasterizer buffer (#BD600000 to #BE000000). Both
- are sized for the largest matmul the host's operand cap admits, a 512x512
- square: its two operands are 2 MB and its result is 1 MB. The reply used
- to sit only 256 KB above the command, which held a square matmul to
- 90x90 -- too small for a device dispatch to ever pay back its one-time
- context and JIT cost, which is why that cost is the whole of the
- question.
+ is the 10 MB below the rasterizer buffer (#BD600000 to #BE000000), sized
+ for a 512x512 matmul: two 2 MB operands and a 1 MB result.
 
   gpu-cmd-buf : Integer = #BD000000
   gpu-reply-buf : Integer = #BD600000
@@ -179,22 +167,12 @@ Section: The Rest of the Operations
   gpu-bridge-upsample2x (bridge) (t) (channels) (h) (w) =
     gpu-run1 gpu-op-upsample2x channels h w t (channels * h * 2) (w * 2)
 
- Conv1d is the valid 1D cross-correlation an ML layer computes: the
- kernel is not flipped, and there is no padding, so a caller wanting a
- padded convolution pads the input itself. The input length, the kernel
- length and the stride are the three dimension fields; the input and the
- kernel are the two operands. The output length is (L - K) / stride + 1.
-
   gpu-bridge-conv1d : GpuBridge, Tensor, Tensor, Integer -> Maybe Tensor
   gpu-bridge-conv1d (bridge) (input) (kernel) (stride) =
     let el = list-length (input.data)
     in let k = list-length (kernel.data)
     in let out = (el - k) / stride + 1
     in gpu-run2 gpu-op-conv1d el k stride input kernel 1 out
-
- Max-pool is the valid 1D pooling that matches: the length, the window
- and the stride are the three dimension fields, and the output length is
- the same (L - window) / stride + 1.
 
   gpu-bridge-max-pool : GpuBridge, Tensor, Integer, Integer -> Maybe Tensor
   gpu-bridge-max-pool (bridge) (t) (window) (stride) =
@@ -206,15 +184,6 @@ Section: The Rest of the Operations
   gpu-bridge-clamp (bridge) (t) (lo) (hi) =
     let bounds = Tensor { data = [lo, hi], rows = 1, cols = 2 }
     in gpu-run2 gpu-op-clamp (t.rows) (t.cols) 0 t bounds (t.rows) (t.cols)
-
- Conv2d needs eight shape fields, not the three the shape header carries:
- input and output channels, spatial height and width, kernel height and
- width, stride and padding. So it brings a header of its own the way the
- PTX launch does -- ten u32 rather than five -- and the host routes it to
- its own servicer. It is the valid (zero-padded) 2D cross-correlation, no
- kernel flip, matching conv1d above. The input is cin x h x w and the
- kernel cout x cin x kh x kw, both flat; the output is cout rows of
- oh x ow, where oh is (h + 2*pad - kh) / stride + 1 and ow likewise.
 
   gpu-conv2d-header : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   gpu-conv2d-header (cin) (h) (w) (cout) (kh) (kw) (stride) (pad) =
@@ -245,22 +214,8 @@ Section: The Rest of the Operations
 
 Section: A Kernel On The Actual Device
 
- THE KERNEL ABI IS FIXED AND IT IS WRITTEN DOWN IN BOTH HALVES, because a
- calling convention cannot be recovered by looking at an answer. A kernel
- takes exactly three parameters in this order: a pointer to the operand
- floats, a pointer to the result floats, and a u32 giving the number of
- RESULTS. The grid covers the results, so a kernel guards on that count
- and writes one element per thread. A general argument scheme would need
- a descriptor nobody has designed, which is the same wall the four
- operations above stand behind; one stated convention is worth more here
- than a flexible one that has to be guessed at.
-
- THE PTX GOES OUT AS ASCII AND THAT IS NOT AUTOMATIC. Codex text is CCE
- internally, so `char-code` answers a CCE code point and not the byte any
- assembler means; the module would arrive as plausible bytes that the
- driver rejects. `to-unicode` at the boundary is what makes it PTX. This
- is the same conversion a wire protocol needs and the same one a TLS
- hostname went out without.
+ PTX is ASCII and Codex text is CCE, so the module crosses the boundary
+ through `to-unicode`.
 
   gpu-put-text : Integer, Integer, Text, Integer, Integer -> Integer
   gpu-put-text (base) (off) (s) (i) (n) =

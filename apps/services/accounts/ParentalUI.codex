@@ -99,8 +99,7 @@ Section: Rendering
   render-guardian-panel (state) =
     let title = widget-label "guardian-title" "Parental Controls"
     in let managed = managed-accounts state.pu-store
-    in let account-list = widget-panel "managed-list" DirColumn 4
-          (list-map render-managed-summary managed)
+    in let account-list = widget-panel "managed-list" DirColumn 4 (list-map render-managed-summary managed)
     in let add-btn = widget-button "add-account" "+ Add Account"
     in let lock-btn = widget-button "lock-device" "Lock Device"
     in let status = widget-label "status" state.pu-status
@@ -117,12 +116,9 @@ Section: Rendering
   render-managed-summary (a) =
     let name = widget-label ("name-" & show a.acc-id) (format-account a)
     in let limits = a.acc-policy.ap-time-limits
-    in let time-info = widget-label ("time-" & show a.acc-id)
-          (if limits.tl-enabled
-            then show limits.tl-used-today & "/" & show limits.tl-daily-minutes & " min"
-            else "No limit")
-    in let safe = widget-label ("safe-" & show a.acc-id)
-          (if a.acc-policy.ap-content-filter.cf-safe-mode then "Safe" else "")
+    in let time-text = if limits.tl-enabled then show limits.tl-used-today & "/" & show limits.tl-daily-minutes & " min" else "No limit"
+    in let time-info = widget-label ("time-" & show a.acc-id) time-text
+    in let safe = widget-label ("safe-" & show a.acc-id) (if a.acc-policy.ap-content-filter.cf-safe-mode then "Safe" else "")
     in let edit-btn = widget-button ("edit-" & show a.acc-id) "Edit"
     in let activity-btn = widget-button ("activity-" & show a.acc-id) "Activity"
     in widget-panel ("row-" & show a.acc-id) DirRow 8 [
@@ -221,8 +217,7 @@ Section: Rendering
     in let status = widget-label "time-status" (format-time-check check)
     in let limits = policy.ap-time-limits
     in let used = widget-progress "time-used" limits.tl-used-today limits.tl-daily-minutes
-    in let detail = widget-label "time-detail"
-          (show limits.tl-used-today & " of " & show limits.tl-daily-minutes & " minutes used today")
+    in let detail = widget-label "time-detail" (show limits.tl-used-today & " of " & show limits.tl-daily-minutes & " minutes used today")
     in widget-panel "time-remaining" DirColumn 12 [
       title, status, used, detail
     ]
@@ -247,9 +242,8 @@ Section: Event Handling
           then let acc = list-at state.pu-store.as-accounts idx
             in if list-length acc.acc-pin-hash > 0
               then __record-set state "pu-view" (ViewPinEntry acc.acc-id)
-              else __record-set (__record-set state
-                "pu-store" (account-login state.pu-store acc.acc-id "" 0))
-                "pu-view" (if acc.acc-type == GuardianAccount then ViewGuardianPanel else ViewManagedLauncher)
+              else let logged = __record-set state "pu-store" (account-login state.pu-store acc.acc-id "" 0)
+                in __record-set logged "pu-view" (if acc.acc-type == GuardianAccount then ViewGuardianPanel else ViewManagedLauncher)
           else state
         else state
       else state
@@ -265,16 +259,15 @@ Section: Event Handling
                   is GuardianAccount -> ViewGuardianPanel
                   is ManagedAccount -> ViewManagedLauncher
                 is None -> ViewAccountSelect
-          in __record-set (__record-set (__record-set state
-            "pu-store" logged-in)
-            "pu-view" view)
-            "pu-pin-input" ""
+          in let s1 = __record-set state "pu-store" logged-in
+          in let s2 = __record-set s1 "pu-view" view
+          in __record-set s2 "pu-pin-input" ""
         else __record-set state "pu-status" "Wrong PIN"
     else if k == 27
     then __record-set (__record-set state "pu-view" ViewAccountSelect) "pu-pin-input" ""
     else if k == 8
     then if text-length state.pu-pin-input > 0
-      then __record-set state "pu-pin-input" (text-take state.pu-pin-input (text-length state.pu-pin-input - 1))
+      then __record-set state "pu-pin-input" (substring state.pu-pin-input 0 (text-length state.pu-pin-input - 1))
       else state
     else if k >= 48 then if k <= 57
       then __record-set state "pu-pin-input" (state.pu-pin-input & char-encode (code-to-char (from-unicode k)))
@@ -290,9 +283,7 @@ Section: Event Handling
 
   handle-launcher-event : ParentalUIState, Integer -> ParentalUIState
   handle-launcher-event (state) (k) =
-    if k == 27 then __record-set (__record-set state
-          "pu-store" (account-logout state.pu-store))
-          "pu-view" ViewAccountSelect
+    if k == 27 then __record-set (__record-set state "pu-store" (account-logout state.pu-store)) "pu-view" ViewAccountSelect
     else if k == 84 then __record-set state "pu-view" ViewTimeRemaining
     else state
 
@@ -302,10 +293,10 @@ Section: Event Handling
     else if k == 13
     then if text-length state.pu-new-name > 0
       then let updated = create-managed-account state.pu-store state.pu-new-name state.pu-new-age state.pu-new-pin [] now
-        in __record-set (__record-set (__record-set (__record-set state
-          "pu-store" updated)
-          "pu-view" ViewGuardianPanel)
-          "pu-new-name" "")
-          "pu-status" ("Created: " & state.pu-new-name)
+        in let created = state.pu-new-name
+        in let s1 = __record-set state "pu-store" updated
+        in let s2 = __record-set s1 "pu-view" ViewGuardianPanel
+        in let s3 = __record-set s2 "pu-new-name" ""
+        in __record-set s3 "pu-status" ("Created: " & created)
       else state
     else state

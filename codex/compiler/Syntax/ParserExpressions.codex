@@ -30,17 +30,26 @@ Section: Expression Parsing
   parse-binary-loop (left) (st) (min-prec) (min-col) =
    if parse-fuel-exhausted st then ExprOk left (emit-parse-fuel-error st "parse-binary-loop")
    else let st-fueled = consume-parse-fuel st
-   in let st1 = skip-newlines st-fueled
+   in let st1n = skip-newlines st-fueled
+   in let st1 = if current-kind st1n == ProseText then binary-prose-continuation st1n min-prec min-col else st1n
    in if is-done st1 then ExprOk left st1
       else if min-col > 0 & (current st1).column > 0 & (current st1).column <= min-col then ExprOk left st1
    else let prec = operator-precedence (current-kind st1)
    in if prec < min-prec then ExprOk left st1
    else let op = current st1
-   in let st2 = skip-newlines (advance st1)
+   in let st2 = skip-newlines-prose (advance st1)
    in let warned = warn-binary-prose st1 (refuse-plus-plus op st2)
    in let next-min = if is-right-assoc (op.kind) then prec else prec + 1
    in let right-result = parse-binary warned next-min min-col
    in unwrap-expr-ok right-result (continue-binary left op min-prec min-col)
+
+  binary-prose-continuation : ParseState, Integer, Integer -> ParseState
+  binary-prose-continuation (st) (min-prec) (min-col) =
+   let nxt = list-at (st.tokens) (skip-newlines-prose-pos (st.tokens) (st.pos) (list-length (st.tokens)))
+   in if nxt.kind == EndOfFile then st
+   else if min-col > 0 & nxt.column > 0 & nxt.column <= min-col then st
+   else if operator-precedence (nxt.kind) < min-prec then st
+   else skip-newlines-prose st
 
   refuse-plus-plus : Token, ParseState -> ParseState
   refuse-plus-plus (op) (st) =
@@ -53,7 +62,7 @@ Section: Expression Parsing
   binary-previous-token (tokens) (pos) =
    if pos < 0 then pos
    else when (list-at tokens pos).kind
-    is Newline | Indent | Dedent -> binary-previous-token tokens (pos - 1)
+    is Newline | Indent | Dedent | ProseText -> binary-previous-token tokens (pos - 1)
     is otherwise -> pos
 
   binary-prose-line : Text, Integer, Integer, Integer, Integer -> Integer
@@ -137,6 +146,12 @@ Section: Expression Parsing
    else let st2 = check-multiline-app app-col func st1
    in parse-field-access func st2
 
+  line-start-column : List Token, Integer, Integer -> Integer
+  line-start-column (toks) (p) (line) =
+   if p <= 0 then (list-at toks 0).column
+   else if (list-at toks (p - 1)).line /= line then (list-at toks p).column
+   else line-start-column toks (p - 1) line
+
   is-applied : Expr -> Boolean
   is-applied (e) = when e
    is AppExpr (f) (a) -> True
@@ -153,9 +168,9 @@ Section: Expression Parsing
    else let next-tok = list-at (st.tokens) peek-pos
    in let last-tok = list-at (st.tokens) (st.pos - 1)
    in if is-left-paren (next-tok.kind) | is-left-bracket (next-tok.kind) | is-literal (next-tok.kind)
-      then if next-tok.line > last-tok.line
+      then if next-tok.line > last-tok.line & next-tok.column > line-start-column (st.tokens) (st.pos - 1) (last-tok.line)
            then let span = span-at (next-tok.line) (next-tok.column) (next-tok.offset) (next-tok.length) (next-tok.file-id)
-                in __record-set st "bag" (bag-add (st.bag) (make-error cdx-multiline-application ("Application ended at newline; '" & token-text next-tok & "' on line " & integer-to-text (next-tok.line) & " is not parsed as an argument (column " & integer-to-text (next-tok.column) & ", application started at column " & integer-to-text app-col & "). Place all arguments on one line, wrap the application in parentheses, or bind the value with a let.") span))
+                in __record-set st "bag" (bag-add (st.bag) (make-error cdx-multiline-application ("Application ended at newline; '" & token-text next-tok & "' is not parsed as an argument (column " & integer-to-text (next-tok.column) & ", application started at column " & integer-to-text app-col & "): a newline ends an application. Place all arguments on one line, or bind the value with a let.") span))
            else st
       else st
 
@@ -432,6 +447,26 @@ Section: Compound Expression Parsing
   make-stmt-seq (stmt) (rest) (st) =
    ExprOk (deck-record (SeqExpr stmt rest)) st
 
+  parse-def-body : ParseState, Integer -> ParseExprResult
+  parse-def-body (st) (min-col) =
+   let r = parse-def-body-seq st min-col
+   in unwrap-expr-ok r (check-body-tokens-left min-col)
+
+  check-body-tokens-left : Integer, Expr, ParseState -> ParseExprResult
+  check-body-tokens-left (min-col) (b) (st) =
+   let st1 = skip-newlines st
+   in if is-done st1 then ExprOk b st
+   else let tok = current st1
+   in if tok.column <= min-col then ExprOk b st
+   else ExprOk b (__record-set st "bag" (bag-add (st.bag) (body-tokens-left-error b tok)))
+
+  body-tokens-left-error : Expr, Token -> Diagnostic
+  body-tokens-left-error (b) (tok) =
+   let left = make-error cdx-body-tokens-left ("The definition's expression has ended, and '" & token-text tok & "' is left inside its body, so it is not part of the definition. A newline ends an application; prose belongs at column 2.") (token-to-span tok)
+   in when b
+    is NameExpr (n) -> if token-text n == "do" then make-error cdx-not-codex-operator "`do` is not Codex; use act ... end" (token-to-span n) else left
+    is otherwise -> left
+
   parse-def-body-seq : ParseState, Integer -> ParseExprResult
   parse-def-body-seq (st) (min-col) =
    let r = parse-expr-col st min-col
@@ -671,9 +706,23 @@ Section: Compound Expression Parsing
    else if is-end-keyword (current-kind st) then let acc-list = deck-record (__linked-list-to-list acc)
         in if list-length acc-list == 0
         then ExprOk (deck-record (ActExpr acc-list)) (advance (__record-set st "bag" (bag-add (st.bag) (make-error cdx-empty-act "Empty act block: 'act end' must contain at least one statement" (token-to-span (current st))))))
-        else ExprOk (deck-record (ActExpr acc-list)) (advance st)
+        else ExprOk (deck-record (ActExpr acc-list)) (advance (check-discarded-literals acc-list 0 (list-length acc-list - 1) st))
      else if is-act-bind st then parse-act-bind-stmt acc st
       else parse-act-expr-stmt acc st
+
+  check-discarded-literals : List ActStmt, Integer, Integer, ParseState -> ParseState
+  check-discarded-literals (ss) (i) (last) (st) =
+   if i >= last then st
+   else let st2 = when list-at ss i
+        is ActExprStmt (e) -> discarded-literal-error e st
+        is otherwise -> st
+   in check-discarded-literals ss (i + 1) last st2
+
+  discarded-literal-error : Expr, ParseState -> ParseState
+  discarded-literal-error (e) (st) =
+   when e
+    is LitExpr (tok) -> __record-set st "bag" (bag-add (st.bag) (make-error cdx-discarded-literal-statement ("'" & token-text tok & "' is a bare literal before the last statement of an act block, so its value is discarded and the line does nothing. A literal line is valid only as the block's final value.") (token-to-span tok)))
+    is otherwise -> st
 
   parse-act-bind-stmt : LinkedList ActStmt, ParseState -> ParseExprResult
   parse-act-bind-stmt (acc) (st) =

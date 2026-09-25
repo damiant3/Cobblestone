@@ -114,8 +114,27 @@ Section: Frame
   gs-flush (sky) (tri-count) = act
     w1 <- gpu-out #401 sky
     w2 <- gpu-out #402 0
-    gpu-out #400 tri-count
+    gpu-out #400 (tri-count + gs-persp-flag)
   end
+
+Section: Perspective
+
+ The rasterizer interpolates UV and the light-space position with 1/w per
+ vertex, which the 72-byte record has no room for either. Three ints per
+ triangle go in a parallel array at 0xBE480000, the end of the command
+ buffer's 65536-record capacity, on the r3d-inv-w scale (1e9 / w). The
+ region runs to the light array at 0xBE500000, 43690 triangles. The count
+ word at 0x400 carries this bit to say the array is valid for this pass; a
+ guest that does not set it keeps affine interpolation.
+
+  gs-persp-addr : Integer = #BE480000
+
+  gs-persp-flag : Integer = 536870912
+
+  gs-write-persp : Integer, GsProj, GsProj, GsProj -> [Gpu.Memory] Integer
+  gs-write-persp (idx) (a) (b) (c) =
+    let off = idx * 12
+    in gpu-mem-write gs-persp-addr off (a.gp-iw) + gpu-mem-write gs-persp-addr (off + 4) (b.gp-iw) + gpu-mem-write gs-persp-addr (off + 8) (c.gp-iw)
 
 Section: Shadowed Frame
 
@@ -287,7 +306,7 @@ Section: Command Build
     in let tu2 = if textured then v2.vu else 0
     in let tv2 = if textured then v2.vv else 0
     in let offset = tri-idx * 72
-    in gs-mesh-next (gpu-mem-write gs-cmd offset (p0.gp-sx) + gpu-mem-write gs-cmd (offset + 4) (p0.gp-sy) + gpu-mem-write gs-cmd (offset + 8) (p1.gp-sx) + gpu-mem-write gs-cmd (offset + 12) (p1.gp-sy) + gpu-mem-write gs-cmd (offset + 16) (p2.gp-sx) + gpu-mem-write gs-cmd (offset + 20) (p2.gp-sy) + gpu-mem-write gs-cmd (offset + 24) c0 + gpu-mem-write gs-cmd (offset + 28) c1 + gpu-mem-write gs-cmd (offset + 32) c2 + gpu-mem-write gs-cmd (offset + 36) (p0.gp-depth) + gpu-mem-write gs-cmd (offset + 40) (p1.gp-depth) + gpu-mem-write gs-cmd (offset + 44) (p2.gp-depth) + gpu-mem-write gs-cmd (offset + 48) tu0 + gpu-mem-write gs-cmd (offset + 52) tv0 + gpu-mem-write gs-cmd (offset + 56) tu1 + gpu-mem-write gs-cmd (offset + 60) tv1 + gpu-mem-write gs-cmd (offset + 64) tu2 + gpu-mem-write gs-cmd (offset + 68) tv2 + (if sh.gsh-on == 1 then gs-write-light tri-idx (gs-lproj v0 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v1 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v2 (sh.gsh-lm) (sh.gsh-size)) (gs-ambient-color mat ambient) else 0)) mesh model mvp gv sh mat lights eye ambient tri-idx i n
+    in gs-mesh-next (gpu-mem-write gs-cmd offset (p0.gp-sx) + gpu-mem-write gs-cmd (offset + 4) (p0.gp-sy) + gpu-mem-write gs-cmd (offset + 8) (p1.gp-sx) + gpu-mem-write gs-cmd (offset + 12) (p1.gp-sy) + gpu-mem-write gs-cmd (offset + 16) (p2.gp-sx) + gpu-mem-write gs-cmd (offset + 20) (p2.gp-sy) + gpu-mem-write gs-cmd (offset + 24) c0 + gpu-mem-write gs-cmd (offset + 28) c1 + gpu-mem-write gs-cmd (offset + 32) c2 + gpu-mem-write gs-cmd (offset + 36) (p0.gp-depth) + gpu-mem-write gs-cmd (offset + 40) (p1.gp-depth) + gpu-mem-write gs-cmd (offset + 44) (p2.gp-depth) + gpu-mem-write gs-cmd (offset + 48) tu0 + gpu-mem-write gs-cmd (offset + 52) tv0 + gpu-mem-write gs-cmd (offset + 56) tu1 + gpu-mem-write gs-cmd (offset + 60) tv1 + gpu-mem-write gs-cmd (offset + 64) tu2 + gpu-mem-write gs-cmd (offset + 68) tv2 + (if depth-only then 0 else gs-write-persp tri-idx p0 p1 p2) + (if sh.gsh-on == 1 then gs-write-light tri-idx (gs-lproj v0 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v1 (sh.gsh-lm) (sh.gsh-size)) (gs-lproj v2 (sh.gsh-lm) (sh.gsh-size)) (gs-ambient-color mat ambient) else 0)) mesh model mvp gv sh mat lights eye ambient tri-idx i n
 
   gs-mesh-next : Integer, Mesh, Mat4, Mat4, GpuView, GsShadow, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
   gs-mesh-next (w) (mesh) (model) (mvp) (gv) (sh) (mat) (lights) (eye) (ambient) (tri-idx) (i) (n) =
@@ -312,19 +331,20 @@ Section: Projection
     gp-sx : Integer,
     gp-sy : Integer,
     gp-depth : Integer,
-    gp-behind : Integer
+    gp-behind : Integer,
+    gp-iw : Integer
   }
 
   gs-proj : Vertex, Mat4, GpuView -> GsProj
   gs-proj (v) (mvp) (gv) =
     let clip = mat4-transform-vec4 mvp (Vec4 { v4x = real-from-int (v.vp-x), v4y = real-from-int (v.vp-y), v4z = real-from-int (v.vp-z), v4w = 1.0 })
-    in if clip.v4w <= 0.0 then GsProj { gp-sx = 0 - 9999, gp-sy = 0 - 9999, gp-depth = 999999, gp-behind = 1 }
+    in if clip.v4w <= 0.0 then GsProj { gp-sx = 0 - 9999, gp-sy = 0 - 9999, gp-depth = 999999, gp-behind = 1, gp-iw = 0 }
     else let ndc-x = clip.v4x / clip.v4w
     in let ndc-y = clip.v4y / clip.v4w
     in let ndc-z = clip.v4z / clip.v4w
     in let half-w = real-from-int (gv.gv-w / 2)
     in let half-h = real-from-int (gv.gv-h / 2)
-    in GsProj { gp-sx = gv.gv-x + real-to-int (half-w + ndc-x * half-w), gp-sy = gv.gv-y + real-to-int (half-h - ndc-y * half-h), gp-depth = real-to-int ((ndc-z + 1.0) * 500000.0), gp-behind = 0 }
+    in GsProj { gp-sx = gv.gv-x + real-to-int (half-w + ndc-x * half-w), gp-sy = gv.gv-y + real-to-int (half-h - ndc-y * half-h), gp-depth = real-to-int ((ndc-z + 1.0) * 500000.0), gp-behind = 0, gp-iw = r3d-inv-w (clip.v4w) }
 
   gs-face-normal : Vertex, Vertex, Vertex -> Vec3
   gs-face-normal (v0) (v1) (v2) =

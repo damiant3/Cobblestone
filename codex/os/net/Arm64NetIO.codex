@@ -3,13 +3,92 @@ Chapter: Arm64NetIO
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
   cites Net chapter MessageFraming
+  cites Net chapter NetCompact
 
 Section: State
 
   Arm64NetIOState = record {
     vnet : VirtioNetState,
-    transport : TcpTransportState
+    transport : TcpTransportState,
+    rx : List Integer,
+    poll-interval : Integer
   }
+
+ 1522 is `net-driver-frame-cap`, the x86 buffer's length; `vnet-max-frame`
+ leaves at most 1,514 frame bytes after the virtio-net header.
+
+  arm64-net-io-frame-cap : Integer = 1522
+
+  arm64-net-io-frame-buffer : List Integer -> List Integer
+  arm64-net-io-frame-buffer (xs) =
+   if list-length xs >= arm64-net-io-frame-cap then xs else arm64-net-io-frame-buffer (list-push xs 0)
+
+  arm64-net-io-new : VirtioNetState, TcpTransportState -> Arm64NetIOState
+  arm64-net-io-new (vnet) (ts) = Arm64NetIOState { vnet = vnet, transport = ts, rx = arm64-net-io-frame-buffer (__list-with-capacity arm64-net-io-frame-cap), poll-interval = arm64-net-io-poll-fallback }
+
+  arm64-net-io-with-rx : Arm64NetIOState -> Arm64NetIOState
+  arm64-net-io-with-rx (st) =
+   if list-length (st.rx) > 0 then st
+   else Arm64NetIOState { vnet = st.vnet, transport = st.transport, rx = arm64-net-io-frame-buffer (__list-with-capacity arm64-net-io-frame-cap), poll-interval = st.poll-interval }
+
+  arm64-st : Arm64NetIOState, VirtioNetState, TcpTransportState -> Arm64NetIOState
+  arm64-st (st) (vnet) (ts) = Arm64NetIOState { vnet = vnet, transport = ts, rx = st.rx, poll-interval = st.poll-interval }
+
+  arm64-net-io-enter : Arm64NetIOState -> Arm64NetIOState
+  arm64-net-io-enter (st) = arm64-net-io-with-rx (arm64-st st (st.vnet) (transport-arenas (st.transport)))
+
+  arm64-net-io-stale : Arm64NetIOState -> Boolean
+  arm64-net-io-stale (st) = transport-stale (st.transport)
+
+Section: Compaction
+
+  arm64-net-io-compact-past : Arm64NetIOState, Integer -> Arm64NetIOState
+  arm64-net-io-compact-past (st) (mark) =
+   if __heap-save - mark > net-compact-bytes then arm64-net-io-compact st mark else st
+
+  arm64-net-io-compact : Arm64NetIOState, Integer -> Arm64NetIOState
+  arm64-net-io-compact (st) (mark) =
+   let rx = st.rx
+   in let dev = (st.vnet).device
+   in let mac = (st.vnet).mac
+   in let rq = (st.vnet).rx-queue
+   in let r-desc = rq.desc-base
+   in let r-avail = rq.avail-base
+   in let r-used = rq.used-base
+   in let r-size = rq.queue-size
+   in let r-free = rq.free-head
+   in let r-aidx = rq.avail-idx
+   in let r-last = rq.last-used-idx
+   in let r-notify = rq.notify-addr
+   in let tq = (st.vnet).tx-queue
+   in let t-desc = tq.desc-base
+   in let t-avail = tq.avail-base
+   in let t-used = tq.used-base
+   in let t-size = tq.queue-size
+   in let t-free = tq.free-head
+   in let t-aidx = tq.avail-idx
+   in let t-last = tq.last-used-idx
+   in let t-notify = tq.notify-addr
+   in let ts = transport-compact (st.transport) mark
+   in let rq1 = VirtqueueState { desc-base = r-desc, avail-base = r-avail, used-base = r-used, queue-size = r-size, free-head = r-free, avail-idx = r-aidx, last-used-idx = r-last, notify-addr = r-notify }
+   in let tq1 = VirtqueueState { desc-base = t-desc, avail-base = t-avail, used-base = t-used, queue-size = t-size, free-head = t-free, avail-idx = t-aidx, last-used-idx = t-last, notify-addr = t-notify }
+   in Arm64NetIOState { vnet = VirtioNetState { device = dev, rx-queue = rq1, tx-queue = tq1, mac = mac }, transport = ts, rx = rx, poll-interval = st.poll-interval }
+
+  arm64-net-io-rebase : Arm64NetIOState, Arm64NetIOState, Integer -> Arm64NetIOState
+  arm64-net-io-rebase (st) (base) (mark) =
+   let released = transport-release (st.transport)
+   in let r-free = ((st.vnet).rx-queue).free-head
+   in let r-aidx = ((st.vnet).rx-queue).avail-idx
+   in let r-last = ((st.vnet).rx-queue).last-used-idx
+   in let t-free = ((st.vnet).tx-queue).free-head
+   in let t-aidx = ((st.vnet).tx-queue).avail-idx
+   in let t-last = ((st.vnet).tx-queue).last-used-idx
+   in let back = __heap-restore mark
+   in let bq = (base.vnet).rx-queue
+   in let bt = (base.vnet).tx-queue
+   in let rq1 = VirtqueueState { desc-base = bq.desc-base, avail-base = bq.avail-base, used-base = bq.used-base, queue-size = bq.queue-size, free-head = r-free, avail-idx = r-aidx, last-used-idx = r-last, notify-addr = bq.notify-addr }
+   in let tq1 = VirtqueueState { desc-base = bt.desc-base, avail-base = bt.avail-base, used-base = bt.used-base, queue-size = bt.queue-size, free-head = t-free, avail-idx = t-aidx, last-used-idx = t-last, notify-addr = bt.notify-addr }
+   in Arm64NetIOState { vnet = VirtioNetState { device = (base.vnet).device, rx-queue = rq1, tx-queue = tq1, mac = (base.vnet).mac }, transport = base.transport, rx = base.rx, poll-interval = st.poll-interval }
 
 Section: Flush Outbox
 
@@ -25,102 +104,92 @@ Section: Flush Outbox
    let count = net-outbox-count ((st.transport).session)
    in let vnet1 = arm64-flush-outbox-loop (st.vnet) ((st.transport).session) 0 count
    in let cleared = set-outbox ((st.transport).session) []
-   in Arm64NetIOState { vnet = vnet1, transport = transport-set-session (st.transport) (cleared) }
+   in arm64-st st vnet1 (transport-set-session (st.transport) (cleared))
 
 Section: The Poll Clock
 
- These two came across from NetIO when this chapter was written and they
- carry NetIO's problem with them. A tick is a count of empty polls, every
- retransmit bound in NetworkStack is a count of ticks, and so the interval
- is a wall-clock quantity written as a count. Measured on the x86 side
- 2026-08-14: one million empty polls cost 15.52 s against an NE2000, whose
- poll is a port IN and therefore a VM exit, and 0.029 s against an e1000,
- whose poll reads a descriptor already in RAM. Same 100000, and it meant
- giving up on a peer after 219 s on one card and after 405 ms on the other.
+ A tick is a count of empty polls and every retransmit bound in
+ NetworkStack is a count of ticks, so the interval is a wall-clock quantity
+ written as a count, and the cost of one poll is a property of the card: on
+ the x86 side (2026-08-14) one million empty polls cost 15.52 s against an
+ NE2000 and 0.029 s against an e1000. Each state therefore carries its own
+ interval. `arm64-net-io-new` gives it the fallback, the constant NetIO
+ shipped, and `Arm64NetCalibrate` replaces it with polls counted against
+ CNTVCT_EL0 at bring-up. The floor and the cap are NetDriver's: the cap is
+ the most one calibration can count (batch times fuel), so a value outside
+ them is not a measurement and answers the fallback.
 
- A virtio descriptor read is the second kind. So this interval is very
- probably on the 405 ms side, and it is NOT measured: the only ARM64 bed
- here is Renode, which is an interpreting simulator, so the ratio between a
- RAM read and an MMIO read under it is not physical and a number taken there
- would not justify a constant.
+  arm64-net-io-poll-fallback : Integer = 100000
 
- NetDriver solved this on x86 by measuring the rate once at bring-up against
- HPET (`net-driver-calibrate`, cell 36328). THE SAME FIX BELONGS HERE AND
- THIS CHAPTER CANNOT REACH IT YET, because nothing on this lane reads a
- counter: `Arm64Timer` has `read-cntfrq-el0`, which gives the frequency, and
- there is no `read-cntvct-el0` to give the count. The whole of what is
- missing, for whoever takes it:
+  arm64-net-io-poll-floor : Integer = 1000
 
-   1. `sysreg-cntvct-el0 : Integer = #5F02` in
-      `codex/foreword/core/Arm64Encoder.codex`, beside the three CNT
-      registers already there. **That file is the foreword, so this half is
-      seed-affecting and wants the build token.** The value is derived, not
-      guessed: the encoding those three use is
-      `((op0-2) << 14) | (op1 << 11) | (CRn << 7) | (CRm << 3) | op2`, which
-      reproduces `sysreg-cntfrq-el0` #5F00, `sysreg-cntp-tval-el0` #5F10 and
-      `sysreg-cntp-ctl-el0` #5F11 exactly, and CNTVCT_EL0 is op0 3, op1 3,
-      CRn 14, CRm 0, op2 2.
-   2. `a64-rt-read-cntvct-el0 = arm64-mrs 0 sysreg-cntvct-el0 & arm64-ret`
-      in `codex/plugs/arm64/Arm64Runtime.codex`, recorded and emitted the
-      way `read-cntfrq-el0` is. The emit chain there is numbered
-      sequentially, so inserting into it renumbers what follows.
-   3. Then this section calibrates exactly as NetDriver does: poll in
-      batches, read the counter once per batch and not once per poll, and
-      keep a floor so a dead counter cannot produce a zero interval.
+  arm64-net-io-poll-max : Integer = 200000000
 
- Until that lands, the interval below is the uncalibrated constant and is
- known to be wrong rather than believed to be right.
-
-  arm64-net-io-tick-interval : Integer = 100000
+  arm64-net-io-with-poll : Arm64NetIOState, Integer -> Arm64NetIOState
+  arm64-net-io-with-poll (st) (v) =
+   let p = if v < arm64-net-io-poll-floor then arm64-net-io-poll-fallback
+     else if v > arm64-net-io-poll-max then arm64-net-io-poll-fallback
+     else v
+   in Arm64NetIOState { vnet = st.vnet, transport = st.transport, rx = st.rx, poll-interval = p }
 
  The cap is expressed in ticks rather than as a second literal, which is
  what keeps it above the give-up ladder whatever the interval becomes.
  net-rto-max-tries is 5 and every backoff is clamped at net-rto-max-ticks
  48, so give-up takes at most 288 ticks; a cap below that ends the loop by
  FUEL, which returns exactly what an ordinary timeout returns, instead of by
- give-up, which sets TcpClosed and says so. At the interval above it is
- 50000000, the literal this line carried before.
+ give-up, which sets TcpClosed and says so.
 
   arm64-net-io-max-ticks : Integer = 500
 
-  arm64-net-io-max-polls : Integer
-  arm64-net-io-max-polls = arm64-net-io-tick-interval * arm64-net-io-max-ticks
+  arm64-net-io-max-polls : Arm64NetIOState -> Integer
+  arm64-net-io-max-polls (st) = st.poll-interval * arm64-net-io-max-ticks
 
   arm64-net-io-conn-closed : Arm64NetIOState -> Boolean
   arm64-net-io-conn-closed (st) = when ((((st.transport).session).conn).state)
     is TcpClosed -> True
     is otherwise -> False
 
+ The peer has sent its FIN (RFC 9293 section 3.10.7.4), so no more data can
+ arrive and a receive is at end of stream. A send may still proceed.
+
+  arm64-net-io-peer-finished : Arm64NetIOState -> Boolean
+  arm64-net-io-peer-finished (st) = when ((((st.transport).session).conn).state)
+    is TcpCloseWait -> True
+    is TcpLastAck -> True
+    is TcpTimeWait -> True
+    is TcpClosed -> True
+    is otherwise -> False
+
   arm64-net-io-tick : Arm64NetIOState -> Arm64NetIOState
   arm64-net-io-tick (st) =
-   arm64-flush-transport-outbox (Arm64NetIOState { vnet = st.vnet, transport = transport-tick (st.transport) })
+   arm64-flush-transport-outbox (arm64-st st (st.vnet) (transport-tick (st.transport)))
 
 Section: Listen and Accept
 
   arm64-net-io-listen : Arm64NetIOState -> Arm64NetIOState
   arm64-net-io-listen (st) =
    let r = net-listen ((st.transport).session)
-   in Arm64NetIOState { vnet = st.vnet, transport = transport-set-session (st.transport) (r.session) }
-
- Accept spelled its cap as a bare 50000000 until 2026-08-14 while the named
- constant sat six lines above holding the same value. Latent rather than
- live, which is the point: changing the constant moved every other loop in
- this chapter and left this one behind, and nothing would have said so.
+   in arm64-st st (st.vnet) (transport-set-session (st.transport) (r.session))
 
   arm64-net-io-accept : Arm64NetIOState, Integer -> Arm64NetIOState
   arm64-net-io-accept (st) (tries) =
-   if tries > arm64-net-io-max-polls then st
+   if arm64-net-io-stale st then st
+   else let se = arm64-net-io-enter st
+   in let mark = __heap-save
+   in arm64-net-io-accept-poll se tries mark
+
+  arm64-net-io-accept-poll : Arm64NetIOState, Integer, Integer -> Arm64NetIOState
+  arm64-net-io-accept-poll (st) (tries) (mark) =
+   if tries > arm64-net-io-max-polls st then st
    else let hp = __heap-save
-   in let recv = virtio-net-poll-frame (st.vnet)
-   in if recv.has-frame == False then let restored = __heap-restore hp
-     in arm64-net-io-accept st (tries + 1)
-   else let st1 = Arm64NetIOState { vnet = recv.state, transport = st.transport }
-   in let r = transport-process-frame (st1.transport) (recv.frame)
-   in let st2 = Arm64NetIOState { vnet = st1.vnet, transport = r.transport }
-   in let st3 = arm64-flush-transport-outbox st2
+   in let recv = virtio-net-poll-into (st.vnet) (st.rx)
+   in if recv.vi-has == False then let restored = __heap-restore hp
+     in arm64-net-io-accept-poll st (tries + 1) mark
+   else let r = transport-process-frame-within (st.transport) (st.rx) (recv.vi-len)
+   in let st3 = arm64-flush-transport-outbox (arm64-st st (recv.vi-state) (r.transport))
    in when ((st3.transport).session).conn.state
     is TcpEstablished -> st3
-    is otherwise -> arm64-net-io-accept st3 (tries + 1)
+    is otherwise -> arm64-net-io-accept-poll (arm64-net-io-compact-past st3 mark) (tries + 1) mark
 
 Section: Receive
 
@@ -132,23 +201,25 @@ Section: Receive
   }
 
   arm64-net-io-recv-loop : Arm64NetIOState, Integer -> Arm64RecvResult
-  arm64-net-io-recv-loop (st) (tries) = arm64-net-io-recv-poll st tries 0
+  arm64-net-io-recv-loop (st) (tries) =
+   if arm64-net-io-stale st then Arm64RecvResult { state = st, tag = 0, body = [], has-message = False }
+   else let se = arm64-net-io-enter st
+   in let mark = __heap-save
+   in arm64-net-io-recv-poll se tries 0 mark
 
-  arm64-net-io-recv-poll : Arm64NetIOState, Integer, Integer -> Arm64RecvResult
-  arm64-net-io-recv-poll (st) (tries) (since) =
-   if tries > arm64-net-io-max-polls then Arm64RecvResult { state = st, tag = 0, body = [], has-message = False }
-   else if arm64-net-io-conn-closed st then Arm64RecvResult { state = st, tag = 0, body = [], has-message = False }
-   else if since >= arm64-net-io-tick-interval then arm64-net-io-recv-poll (arm64-net-io-tick st) (tries + 1) 0
+  arm64-net-io-recv-poll : Arm64NetIOState, Integer, Integer, Integer -> Arm64RecvResult
+  arm64-net-io-recv-poll (st) (tries) (since) (mark) =
+   if tries > arm64-net-io-max-polls st then Arm64RecvResult { state = st, tag = 0, body = [], has-message = False }
+   else if arm64-net-io-peer-finished st then Arm64RecvResult { state = st, tag = 0, body = [], has-message = False }
+   else if since >= st.poll-interval then arm64-net-io-recv-poll (arm64-net-io-compact-past (arm64-net-io-tick st) mark) (tries + 1) 0 mark
    else let hp = __heap-save
-   in let recv = virtio-net-poll-frame (st.vnet)
-   in if recv.has-frame == False then let restored = __heap-restore hp
-     in arm64-net-io-recv-poll st (tries + 1) (since + 1)
-   else let st1 = Arm64NetIOState { vnet = recv.state, transport = st.transport }
-   in let r = transport-process-frame (st1.transport) (recv.frame)
-   in let st2 = Arm64NetIOState { vnet = st1.vnet, transport = r.transport }
-   in let st3 = arm64-flush-transport-outbox st2
+   in let recv = virtio-net-poll-into (st.vnet) (st.rx)
+   in if recv.vi-has == False then let restored = __heap-restore hp
+     in arm64-net-io-recv-poll st (tries + 1) (since + 1) mark
+   else let r = transport-process-frame-within (st.transport) (st.rx) (recv.vi-len)
+   in let st3 = arm64-flush-transport-outbox (arm64-st st (recv.vi-state) (r.transport))
    in if r.has-message then Arm64RecvResult { state = st3, tag = r.tag, body = r.body, has-message = True }
-   else arm64-net-io-recv-poll st3 (tries + 1) (since + 1)
+   else arm64-net-io-recv-poll (arm64-net-io-compact-past st3 mark) (tries + 1) (since + 1) mark
 
 Section: Receive Raw (no framing)
 
@@ -159,24 +230,25 @@ Section: Receive Raw (no framing)
   }
 
   arm64-net-io-recv-raw : Arm64NetIOState, Integer -> Arm64RawRecvResult
-  arm64-net-io-recv-raw (st) (tries) = arm64-net-io-recv-raw-poll st tries 0
+  arm64-net-io-recv-raw (st) (tries) =
+   if arm64-net-io-stale st then Arm64RawRecvResult { state = st, data = [], has-data = False }
+   else let se = arm64-net-io-enter st
+   in let mark = __heap-save
+   in arm64-net-io-recv-raw-poll se tries 0 mark
 
-  arm64-net-io-recv-raw-poll : Arm64NetIOState, Integer, Integer -> Arm64RawRecvResult
-  arm64-net-io-recv-raw-poll (st) (tries) (since) =
-   if tries > arm64-net-io-max-polls then Arm64RawRecvResult { state = st, data = [], has-data = False }
-   else if arm64-net-io-conn-closed st then Arm64RawRecvResult { state = st, data = [], has-data = False }
-   else if since >= arm64-net-io-tick-interval then arm64-net-io-recv-raw-poll (arm64-net-io-tick st) (tries + 1) 0
+  arm64-net-io-recv-raw-poll : Arm64NetIOState, Integer, Integer, Integer -> Arm64RawRecvResult
+  arm64-net-io-recv-raw-poll (st) (tries) (since) (mark) =
+   if tries > arm64-net-io-max-polls st then Arm64RawRecvResult { state = st, data = [], has-data = False }
+   else if arm64-net-io-peer-finished st then Arm64RawRecvResult { state = st, data = [], has-data = False }
+   else if since >= st.poll-interval then arm64-net-io-recv-raw-poll (arm64-net-io-compact-past (arm64-net-io-tick st) mark) (tries + 1) 0 mark
    else let hp = __heap-save
-   in let recv = virtio-net-poll-frame (st.vnet)
-   in if recv.has-frame == False then let restored = __heap-restore hp
-     in arm64-net-io-recv-raw-poll st (tries + 1) (since + 1)
-   else let st1 = Arm64NetIOState { vnet = recv.state, transport = st.transport }
-   in let r = net-process-frame ((st1.transport).session) (recv.frame)
-   in let ts1 = transport-set-session (st1.transport) (r.session)
-   in let st2 = Arm64NetIOState { vnet = st1.vnet, transport = ts1 }
-   in let st3 = arm64-flush-transport-outbox st2
+   in let recv = virtio-net-poll-into (st.vnet) (st.rx)
+   in if recv.vi-has == False then let restored = __heap-restore hp
+     in arm64-net-io-recv-raw-poll st (tries + 1) (since + 1) mark
+   else let r = net-process-frame-within ((st.transport).session) (st.rx) (recv.vi-len)
+   in let st3 = arm64-flush-transport-outbox (arm64-st st (recv.vi-state) (transport-set-session (st.transport) (r.session)))
    in if (r.data-stop - r.data-off) > 0 then Arm64RawRecvResult { state = st3, data = transport-slice (r.data) (r.data-off) (r.data-stop), has-data = True }
-   else arm64-net-io-recv-raw-poll st3 (tries + 1) (since + 1)
+   else arm64-net-io-recv-raw-poll (arm64-net-io-compact-past st3 mark) (tries + 1) (since + 1) mark
 
 Section: Send
 
@@ -184,19 +256,25 @@ Section: Send
 
   arm64-net-io-send-drain : Arm64NetIOState, Integer, Integer -> Arm64NetIOState
   arm64-net-io-send-drain (st) (tries) (since) =
-   if tries > arm64-net-io-max-polls then st
+   if net-rexmit-full ((st.transport).session) == False | arm64-net-io-conn-closed st then st
+   else if arm64-net-io-stale st then st
+   else let se = arm64-net-io-enter st
+   in let mark = __heap-save
+   in arm64-net-io-send-drain-poll se tries since mark
+
+  arm64-net-io-send-drain-poll : Arm64NetIOState, Integer, Integer, Integer -> Arm64NetIOState
+  arm64-net-io-send-drain-poll (st) (tries) (since) (mark) =
+   if tries > arm64-net-io-max-polls st then st
    else if net-rexmit-full ((st.transport).session) == False then st
    else if arm64-net-io-conn-closed st then st
-   else if since >= arm64-net-io-tick-interval then arm64-net-io-send-drain (arm64-net-io-tick st) (tries + 1) 0
+   else if since >= st.poll-interval then arm64-net-io-send-drain-poll (arm64-net-io-compact-past (arm64-net-io-tick st) mark) (tries + 1) 0 mark
    else let hp = __heap-save
-   in let recv = virtio-net-poll-frame (st.vnet)
-   in if recv.has-frame == False then let restored = __heap-restore hp
-     in arm64-net-io-send-drain st (tries + 1) (since + 1)
-   else let st1 = Arm64NetIOState { vnet = recv.state, transport = st.transport }
-   in let r = net-process-frame ((st1.transport).session) (recv.frame)
-   in let fed = transport-feed-range (st1.transport) (r.session) (r.data) (r.data-off) (r.data-stop)
-   in let st2 = Arm64NetIOState { vnet = st1.vnet, transport = fed }
-   in arm64-net-io-send-drain (arm64-flush-transport-outbox st2) (tries + 1) (since + 1)
+   in let recv = virtio-net-poll-into (st.vnet) (st.rx)
+   in if recv.vi-has == False then let restored = __heap-restore hp
+     in arm64-net-io-send-drain-poll st (tries + 1) (since + 1) mark
+   else let r = net-process-frame-within ((st.transport).session) (st.rx) (recv.vi-len)
+   in let fed = transport-feed-range (st.transport) (r.session) (r.data) (r.data-off) (r.data-stop)
+   in arm64-net-io-send-drain-poll (arm64-net-io-compact-past (arm64-flush-transport-outbox (arm64-st st (recv.vi-state) fed)) mark) (tries + 1) (since + 1) mark
 
   arm64-net-io-send-chunk : Arm64NetIOState, List Integer, Integer, Integer -> Arm64NetIOState
   arm64-net-io-send-chunk (st) (data) (off) (total) =
@@ -207,7 +285,7 @@ Section: Send
    in if net-rexmit-full ((std.transport).session) then std
    else if arm64-net-io-conn-closed std then std
    else let r = net-send ((std.transport).session) chunk
-   in let st1 = Arm64NetIOState { vnet = std.vnet, transport = transport-set-session (std.transport) (r.session) }
+   in let st1 = arm64-st std (std.vnet) (transport-set-session (std.transport) (r.session))
    in let st2 = arm64-flush-transport-outbox st1
    in arm64-net-io-send-chunk st2 data (off + arm64-net-mss) total
 
@@ -226,7 +304,7 @@ Section: Send
    in if net-rexmit-full ((std.transport).session) then Arm64SendResult { as-state = std, as-sent = off, as-complete = False }
    else if arm64-net-io-conn-closed std then Arm64SendResult { as-state = std, as-sent = off, as-complete = False }
    else let r = net-send ((std.transport).session) chunk
-   in let st1 = Arm64NetIOState { vnet = std.vnet, transport = transport-set-session (std.transport) (r.session) }
+   in let st1 = arm64-st std (std.vnet) (transport-set-session (std.transport) (r.session))
    in if net-outbox-count (r.session) == 0 then Arm64SendResult { as-state = st1, as-sent = off, as-complete = False }
    else arm64-net-io-send-chunk-checked (arm64-flush-transport-outbox st1) data (off + arm64-net-mss) total
 
@@ -241,7 +319,7 @@ Section: Close
   arm64-net-io-close : Arm64NetIOState -> Arm64NetIOState
   arm64-net-io-close (st) =
    let ts1 = transport-close (st.transport)
-   in let st1 = Arm64NetIOState { vnet = st.vnet, transport = ts1 }
-   in arm64-flush-transport-outbox st1
+   in let st2 = arm64-flush-transport-outbox (arm64-st st (st.vnet) ts1)
+   in arm64-st st2 (st2.vnet) (transport-release (st2.transport))
 
 Page 1

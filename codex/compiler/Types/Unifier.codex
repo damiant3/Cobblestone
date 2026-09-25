@@ -3,6 +3,16 @@ Chapter: Unification
   cites Codex chapter Build Settings (max-recursion-depth)
   cites Foreword chapter Tuple
   cites Foreword chapter MathLib (int-widen)
+  cites Codex chapter CdxCodes (cdx-resource-exhausted)
+  cites Codex chapter Phase Allocator (deck-record)
+  cites Codex chapter Diagnostic Bag (empty-bag, bag-add)
+  cites Codex chapter Diagnostics (make-error)
+  cites Codex chapter Source Text (is-synthetic-span)
+  cites Codex chapter Codex Types (row-var, row-is-empty, real-width-eq, real-mode-eq, i64-min, i64-max, empty-row)
+  cites Codex chapter CodexType Helpers (strip-linear-ty)
+  cites Codex chapter CodexType Tree (codex-type-fold-children, codex-type-map-children)
+  cites Codex chapter Collections (copy-list-with-headroom)
+  cites Codex chapter Type Environment (TypeBinding)
 
  Row variables have their own id space and their own substitution
  table: rows are not CodexTypes, so a type position can never resolve
@@ -18,6 +28,16 @@ Chapter: Unification
  reads as unbound.
 
 Section: State
+
+  name-list-has : List Name, Text -> Boolean
+  name-list-has (names) (target) = name-list-has-loop names target 0 (list-length names)
+
+  name-list-has-loop : List Name, Text, Integer, Integer -> Boolean
+  name-list-has-loop (names) (target) (i) (len) =
+   if i == len then False
+   else if (list-at names i).value == target then True
+   else name-list-has-loop names target (i + 1) len
+
   ExprTypeEntry = record {
    key : Integer,
    ty : CodexType
@@ -39,7 +59,10 @@ Section: State
    scope-grants : List EffectLabel,
    chapter-grounds : List Text,
    dirty-slots : List Integer,
-   empty-lists : List EmptyListSite
+   empty-lists : List EmptyListSite,
+   eq-sites : List EmptyListSite,
+   fidelity : Boolean,
+   fid-types : List ExprTypeEntry
   }
 
 Section: Construction
@@ -56,7 +79,10 @@ Section: Construction
     scope-grants = [],
     chapter-grounds = [],
     dirty-slots = [],
-    empty-lists = []
+    empty-lists = [],
+    eq-sites = [],
+    fidelity = False,
+    fid-types = []
    }
 
 Section: Fresh Variables
@@ -167,9 +193,47 @@ Section: Expr Types
    in let __seq = st.expr-types = list-push (st.expr-types) (deck-record (ExprTypeEntry { key = k, ty = ty }))
    in st
 
+  fid-key : SourceSpan, Integer -> Integer
+  fid-key (sp) (group) =
+   let k = expr-type-key sp
+   in if k >= 1152921504606846976 then k else k + group * 1152921504606846976
+
+  record-fid-type : UnificationState, SourceSpan, Integer, CodexType -> UnificationState
+  record-fid-type (st) (sp) (group) (ty) =
+   if is-synthetic-span sp then st
+   else let __seq = st.fid-types = list-push (st.fid-types) (deck-record (ExprTypeEntry { key = fid-key sp group, ty = ty }))
+   in st
+
+  field-access-type-key : SourceSpan -> Integer
+  field-access-type-key (sp) =
+   if is-synthetic-span sp then 0 - 1
+   else if expr-type-key sp >= 1152921504606846976 then 0 - 1
+   else fid-key sp 7
+
+  record-field-access-type : UnificationState, SourceSpan, CodexType -> UnificationState
+  record-field-access-type (st) (sp) (ty) =
+   let k = field-access-type-key sp
+   in if k < 0 then st
+   else let __seq = st.expr-types = list-push (st.expr-types) (deck-record (ExprTypeEntry { key = k, ty = ty }))
+   in st
+
+  lookup-field-access-type : UnificationState, SourceSpan -> CodexType
+  lookup-field-access-type (st) (sp) =
+   let k = field-access-type-key sp
+   in if k < 0 then ErrorTy
+   else let entries = st.expr-types
+   in let len = list-length entries
+   in let pos = bsearch-expr-type-pos entries k 0 len
+   in if pos < len & (list-at entries pos).key == k then (list-at entries pos).ty else ErrorTy
+
   record-empty-list : UnificationState, SourceSpan, CodexType -> UnificationState
   record-empty-list (st) (sp) (ty) =
    let __seq = st.empty-lists = list-push (st.empty-lists) (deck-record (EmptyListSite { ty = ty, span = sp }))
+   in st
+
+  record-eq-site : UnificationState, SourceSpan, CodexType -> UnificationState
+  record-eq-site (st) (sp) (ty) =
+   let __seq = st.eq-sites = list-push (st.eq-sites) (deck-record (EmptyListSite { ty = ty, span = sp }))
    in st
 
   expr-type-recorded-unsorted : UnificationState, SourceSpan -> Boolean
@@ -493,8 +557,8 @@ Section: Unify
     is VectorTy (na) (ta) -> when b
      is VectorTy (nb) (tb) -> na == nb & types-equal ta tb
      is otherwise -> False
-    is VectorMaskTy (na) -> when b
-     is VectorMaskTy (nb) -> na == nb
+    is VectorMaskTy (na) (ea) -> when b
+     is VectorMaskTy (nb) (eb) -> na == nb & types-equal ea eb
      is otherwise -> False
     is SizedVecTy (na) (ta) -> when b
      is SizedVecTy (nb) (tb) -> na == nb & types-equal ta tb
@@ -673,9 +737,9 @@ Section: Unify
       else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
-    is VectorMaskTy (na) -> when b
-     is VectorMaskTy (nb) ->
-      if na == nb then (True, st)
+    is VectorMaskTy (na) (ea) -> when b
+     is VectorMaskTy (nb) (eb) ->
+      if na == nb then (let (ok, st1) = unify-at st ea eb span (depth + 1) True in if ok then (ok, st1) else unify-mismatch st1 a b span)
       else unify-mismatch st a b span
      is ErrorTy -> (True, st)
      is otherwise -> unify-mismatch st a b span
@@ -767,9 +831,9 @@ Section: Unify
       is VectorTy (nb) (tb) -> if na == nb then "" else vec-width-note
       is SizedVecTy (nb) (tb) -> vec-family-note
       is otherwise -> ""
-    is VectorMaskTy (na) ->
+    is VectorMaskTy (na) (ea) ->
      when b
-      is VectorMaskTy (nb) -> if na == nb then "" else vec-mask-note
+      is VectorMaskTy (nb) (eb) -> if na == nb & types-equal ea eb then "" else vec-mask-note
       is otherwise -> ""
     is SizedVecTy (na) (ta) ->
      when b
@@ -778,10 +842,10 @@ Section: Unify
     is otherwise -> ""
 
   vec-width-note : Text
-  vec-width-note = " (note: the vec- builtins are declared over Vector 2 and emit two lanes, so a wider vector is refused here rather than read past its second lane at runtime. The four-lane family, all of it Real approximate, is vec4-splat, vec4-extract, vec4-select and vec4-reduce-add; arithmetic and comparison at four lanes are the ordinary operators.)"
+  vec-width-note = " (note: the vec- builtins are declared over Vector 2 and emit two lanes, so a wider vector is refused here rather than read past its second lane at runtime. The four-lane family, all of it Real approximate, is vec4-splat, vec4-extract, vec4-select and vec4-reduce-add; arithmetic and comparison at four lanes are the ordinary operators. The 256-bit families are vec8- over Vector 8 (Real approximate) and vec4d- over Vector 4 Real.)"
 
   vec-mask-note : Text
-  vec-mask-note = " (note: mask-any, mask-all, mask-none, mask-count and vec-select take a VectorMask 2. A comparison of two Vector 4 (Real approximate) makes a VectorMask 4, and its consumers are the four-lane names: mask4-any, mask4-all, mask4-none, mask4-count and vec4-select.)"
+  vec-mask-note = " (note: mask-any, mask-all, mask-none, mask-count and vec-select take a VectorMask 2. A comparison of two Vector 4 (Real approximate) makes a VectorMask 4 of Real approximate lanes, and its consumers are the four-lane names: mask4-any, mask4-all, mask4-none, mask4-count and vec4-select. A mask of four Real lanes is consumed by the mask4d- names and vec4d-select, and a mask of eight Real approximate lanes by the mask8- names and vec8-select.)"
 
   vec-family-note : Text
   vec-family-note = " (note: Vector is packed SIMD lanes and SizedVec is the growable list-shaped family. vec-empty, vec-singleton, vec-cons, vec-head and vec-length are SizedVec; every other vec- and mask- builtin is packed. The two have different layouts and are deliberately not interchangeable: see DevelopersGuide.md, 'SizedVec N T is the other one'.)"
@@ -842,7 +906,7 @@ Section: Unify
                                        else "Sum:" & name.value & "[" & type-desc-args args 0 & "]"
     is UnitTy (name) (inner) -> "Unit:" & name.value
     is VectorTy (vn) (vt) -> "Vector " & integer-to-text vn & " " & type-desc vt
-    is VectorMaskTy (n) -> "VectorMask " & integer-to-text n
+    is VectorMaskTy (n) (me) -> "VectorMask " & integer-to-text n & " " & type-desc me
     is SizedVecTy (vn) (vt) -> "SizedVec " & integer-to-text vn & " " & type-desc vt
     is TypeCon (name) -> "TCon:" & name.value
     is TypeApply (f) (a) -> "App[" & type-desc f & " " & type-desc a & "]"
@@ -1529,7 +1593,7 @@ Section: Deep Type Copy
     is PropEqTy (pa) (pb) -> cons-mix (cons-mix 22 (address-of (mcopy-type pa (depth + 1) mc))) (address-of (mcopy-type pb (depth + 1) mc))
     is UnitTy (n) (inner) -> cons-mix (cons-mix 23 (address-of (mcopy-name n mc))) (address-of (mcopy-type inner (depth + 1) mc))
     is VectorTy (vn) (vt) -> cons-mix (cons-mix 24 vn) (address-of (mcopy-type vt (depth + 1) mc))
-    is VectorMaskTy (mn) -> cons-mix 25 mn
+    is VectorMaskTy (mn) (me) -> cons-mix (cons-mix 25 mn) (address-of (mcopy-type me (depth + 1) mc))
     is SizedVecTy (vn) (vt) -> cons-mix (cons-mix 30 vn) (address-of (mcopy-type vt (depth + 1) mc))
     is TypeCon (n) -> cons-mix 26 (address-of (mcopy-name n mc))
     is TypeApply (tf) (ta) -> cons-mix (cons-mix 27 (address-of (mcopy-type tf (depth + 1) mc))) (address-of (mcopy-type ta (depth + 1) mc))
@@ -1561,7 +1625,7 @@ Section: Deep Type Copy
     is PropEqTy (a) (b) -> PropEqTy (mcopy-type a (depth + 1) mc) (mcopy-type b (depth + 1) mc)
     is UnitTy (n) (inner) -> UnitTy (mcopy-name n mc) (mcopy-type inner (depth + 1) mc)
     is VectorTy (vn) (vt) -> VectorTy vn (mcopy-type vt (depth + 1) mc)
-    is VectorMaskTy (mn) -> VectorMaskTy mn
+    is VectorMaskTy (mn) (me) -> VectorMaskTy mn (mcopy-type me (depth + 1) mc)
     is SizedVecTy (vn) (vt) -> SizedVecTy vn (mcopy-type vt (depth + 1) mc)
     is TypeCon (n) -> TypeCon (mcopy-name n mc)
     is TypeApply (tf) (ta) -> TypeApply (mcopy-type tf (depth + 1) mc) (mcopy-type ta (depth + 1) mc)
@@ -1579,17 +1643,6 @@ Section: Deep Type Copy
    else for e in es -> ExprTypeEntry { key = e.key, ty = mcopy-type (e.ty) 0 mc }
 
 Section: List Pre-Allocation
-
-  copy-list-with-headroom : List a, Integer -> List a
-  copy-list-with-headroom (src) (extra-cap) =
-   let len = list-length src
-   in let dst = __list-with-capacity (len + extra-cap)
-   in copy-list-loop src dst 0 len
-
-  copy-list-loop : List a, List a, Integer, Integer -> List a
-  copy-list-loop (src) (dst) (i) (len) =
-   if i == len then dst
-   else copy-list-loop src (list-push dst (list-at src i)) (i + 1) len
 
 Section: GADT Snapshot
 

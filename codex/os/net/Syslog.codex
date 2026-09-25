@@ -3,10 +3,6 @@ Chapter: Syslog
   cites Net chapter Ethernet
   cites Foreword chapter CCE
 
- BSD syslog client (RFC 5424 / RFC 3164). Builds syslog messages as
- UDP payloads on port 514. Severity levels, facility codes, and
- structured message formatting. Pure logic -- no I/O.
-
  We say:
 
 Section: Constants
@@ -51,12 +47,20 @@ Section: Message Construction
     in syslog-text-to-bytes body
 
   syslog-text-to-bytes : Text -> List Integer
-  syslog-text-to-bytes (s) = syslog-encode-loop s 0 (text-length s) []
+  syslog-text-to-bytes (s) =
+    let cps = text-to-unicode-bytes s
+    in syslog-encode-loop cps 0 (list-length cps) []
 
-  syslog-encode-loop : Text, Integer, Integer, List Integer -> List Integer
-  syslog-encode-loop (s) (i) (len) (acc) =
+  syslog-encode-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  syslog-encode-loop (cps) (i) (len) (acc) =
     if i >= len then acc
-    else syslog-encode-loop s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+    else let bs = utf8-encode-cp (list-at cps i)
+    in syslog-encode-loop cps (i + 1) len (syslog-push-all acc bs 0 (list-length bs))
+
+  syslog-push-all : List Integer, List Integer, Integer, Integer -> List Integer
+  syslog-push-all (acc) (bs) (i) (n) =
+    if i >= n then acc
+    else syslog-push-all (list-push acc (list-at bs i)) bs (i + 1) n
 
 Section: Convenience Builders
   syslog-emergency : Text, Text, Text -> SyslogMessage
@@ -98,16 +102,46 @@ Section: Parsing
     valid : Boolean
   }
 
+ RFC 5424 section 6.2.1 (and RFC 3164 4.1.1): the PRI is "<", one to three
+ digits with no leading zero, then ">", so ">" sits at byte 4 at the latest,
+ and the value is facility * 8 + severity, at most 23 * 8 + 7 = 191. The MSG
+ is UTF-8.
+
+  syslog-invalid : SyslogParsed
+  syslog-invalid = SyslogParsed { priority = 0, body = "", valid = False }
+
   syslog-parse : List Integer -> SyslogParsed
   syslog-parse (data) =
     let dlen = list-length data
-    in if dlen < 3 then SyslogParsed { priority = 0, body = "", valid = False }
-    else if list-at data 0 /= 60 then SyslogParsed { priority = 0, body = "", valid = False }
-    else let pri-end = syslog-find-gt data 1 dlen
-    in if pri-end >= dlen then SyslogParsed { priority = 0, body = "", valid = False }
-    else let pri = syslog-parse-digits data 1 pri-end 0
-    in let body = syslog-decode-bytes data (pri-end + 1) dlen ""
-    in SyslogParsed { priority = pri, body = body, valid = True }
+    in if dlen < 3 then syslog-invalid
+    else if list-at data 0 /= 60 then syslog-invalid
+    else let limit = min dlen 5
+    in let pri-end = syslog-find-gt data 1 limit
+    in if pri-end >= limit then syslog-invalid
+    else if syslog-pri-ok data 1 pri-end then
+      let pri = syslog-parse-digits data 1 pri-end 0
+      in if pri > 191 then syslog-invalid
+      else SyslogParsed { priority = pri, body = utf8-bytes-to-text (syslog-slice data (pri-end + 1) dlen []), valid = True }
+    else syslog-invalid
+
+  syslog-pri-ok : List Integer, Integer, Integer -> Boolean
+  syslog-pri-ok (data) (start) (stop) =
+    if stop - start < 1 then False
+    else if stop - start > 1 then
+      if list-at data start == 48 then False else syslog-all-digits data start stop
+    else syslog-all-digits data start stop
+
+  syslog-all-digits : List Integer, Integer, Integer -> Boolean
+  syslog-all-digits (data) (i) (stop) =
+    if i >= stop then True
+    else if list-at data i < 48 then False
+    else if list-at data i > 57 then False
+    else syslog-all-digits data (i + 1) stop
+
+  syslog-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  syslog-slice (data) (i) (n) (acc) =
+    if i >= n then acc
+    else syslog-slice data (i + 1) n (list-push acc (list-at data i))
 
   syslog-find-gt : List Integer, Integer, Integer -> Integer
   syslog-find-gt (data) (i) (dlen) =
@@ -120,11 +154,6 @@ Section: Parsing
     if i >= stop then acc
     else let d = list-at data i - 48
     in syslog-parse-digits data (i + 1) stop (acc * 10 + d)
-
-  syslog-decode-bytes : List Integer, Integer, Integer, Text -> Text
-  syslog-decode-bytes (data) (i) (dlen) (acc) =
-    if i >= dlen then acc
-    else syslog-decode-bytes data (i + 1) dlen (acc & char-encode (code-to-char (from-unicode (list-at data i))))
 
 Section: Formatting
   format-syslog : SyslogMessage -> Text

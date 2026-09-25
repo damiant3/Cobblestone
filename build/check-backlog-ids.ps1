@@ -66,7 +66,7 @@ $scanned = 0
 foreach ($f in $files) {
     $scanned++
     $seen = @{}
-    $lines = Get-Content -LiteralPath $f.FullName
+    $lines = @(Get-Content -LiteralPath $f.FullName)
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $id = $null
         if ($lines[$i] -match $numeric) { $id = $Matches[1] }

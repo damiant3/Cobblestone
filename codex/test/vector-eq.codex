@@ -1,0 +1,97 @@
+Chapter: VectorEq
+  cites Foreword chapter Console
+
+Section: Lanes
+
+  make2i : Integer, Integer -> Vector 2 Integer
+  make2i (a) (b) =
+   let v = vec-splat 0
+   in let p = address-of v
+   in let w0 = poke-qword p 0 a
+   in let w1 = poke-qword p 8 b
+   in v
+
+  make2r : Integer, Integer -> Vector 2 Real
+  make2r (a) (b) =
+   let v = vec-splat 0.0
+   in let p = address-of v
+   in let w0 = poke-qword p 0 a
+   in let w1 = poke-qword p 8 b
+   in v
+
+  make4 : Integer, Integer, Integer, Integer -> Vector 4 (Real approximate)
+  make4 (a) (b) (c) (d) =
+   let v = vec4-splat (to-real-approx 0.0)
+   in let p = address-of v
+   in let w0 = poke-32 p 0 a
+   in let w1 = poke-32 p 4 b
+   in let w2 = poke-32 p 8 c
+   in let w3 = poke-32 p 12 d
+   in v
+
+  dbits : Real, Integer -> Integer
+  dbits (x) (k) = real-to-bits x + k
+
+  fbits : Real, Integer -> Integer
+  fbits (x) (k) = real-approx-to-bits (to-real-approx x) + k
+
+  neg-zero-bits : Integer
+  neg-zero-bits = (0 - 9223372036854775807) - 1
+
+  bit : Boolean -> Integer
+  bit (b) = if b then 1 else 0
+
+  dsc : Integer, Integer, Boolean -> Integer
+  dsc (x) (y) (exact) = if exact then bit (bits-to-real x ~0 bits-to-real y) else bit (bits-to-real x ~ bits-to-real y)
+
+  fsc : Integer, Integer, Boolean -> Integer
+  fsc (x) (y) (exact) = if exact then bit (bits-to-real-approx x ~0 bits-to-real-approx y) else bit (bits-to-real-approx x ~ bits-to-real-approx y)
+
+  f4lane : Vector 4 (Real approximate), Integer -> Integer
+  f4lane (v) (i) = real-to-int (from-real-approx (vec4-extract v i))
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let ia = make2i 5 (-7)
+    in let ib = make2i 5 9
+    in let ieq = vec-select (ia == ib) (vec-splat 1) (vec-splat 0)
+    in let ine = vec-select (ia /= ib) (vec-splat 1) (vec-splat 0)
+    in let ic = make2i (-7) 5
+    in let id = make2i 9 5
+    in let isw = vec-select (ic == id) (vec-splat 1) (vec-splat 0)
+    in let d0 = dbits 1.0 0
+    in let d1 = dbits (-2.0) 0
+    in let e0 = dbits 1.0 4
+    in let e1 = dbits (-2.0) 5
+    in let rap = vec-select (make2r d0 d1 ~ make2r e0 e1) (vec-splat 1) (vec-splat 0)
+    in let z0 = dbits 0.0 0
+    in let z1 = dbits 1.0 0
+    in let y1 = dbits 1.0 1
+    in let rex = vec-select (make2r z0 z1 ~0 make2r neg-zero-bits y1) (vec-splat 1) (vec-splat 0)
+    in let f0 = fbits 1.0 0
+    in let f1 = fbits (-2.0) 0
+    in let f2 = fbits 3.0 0
+    in let f3 = fbits 0.0 0
+    in let g0 = fbits 1.0 3
+    in let g1 = fbits (-2.0) 4
+    in let g2 = fbits 3.0 5
+    in let g3 = 2147483648
+    in let one4 = vec4-splat (to-real-approx 1.0)
+    in let zero4 = vec4-splat (to-real-approx 0.0)
+    in let fa = make4 f0 f1 f2 f3
+    in let fb = make4 g0 g1 g2 g3
+    in let fap = vec4-select (fa ~ fb) one4 zero4
+    in let fex = vec4-select (fa ~0 fb) one4 zero4
+    in act
+      print-line-uni ("int == lanes " & show (vec-extract ieq 0) & show (vec-extract ieq 1) & " scalar " & show (bit (5 == 5)) & show (bit (-7 == 9)))
+      print-line-uni ("int /= lanes " & show (vec-extract ine 0) & show (vec-extract ine 1) & " scalar " & show (bit (5 /= 5)) & show (bit (-7 /= 9)))
+      print-line-uni ("int == swapped lanes " & show (vec-extract isw 0) & show (vec-extract isw 1) & " scalar " & show (bit (-7 == 9)) & show (bit (5 == 5)))
+      print-line-uni ("f64 ~ lanes " & show (vec-extract rap 0) & show (vec-extract rap 1) & " scalar " & show (dsc d0 e0 False) & show (dsc d1 e1 False))
+      print-line-uni ("f64 ~0 lanes " & show (vec-extract rex 0) & show (vec-extract rex 1) & " scalar " & show (dsc z0 neg-zero-bits True) & show (dsc z1 y1 True))
+      print-line-uni ("f32 ~ lanes " & show (f4lane fap 0) & show (f4lane fap 1) & show (f4lane fap 2) & show (f4lane fap 3) & " scalar " & show (fsc f0 g0 False) & show (fsc f1 g1 False) & show (fsc f2 g2 False) & show (fsc f3 g3 False))
+      print-line-uni ("f32 ~0 lanes " & show (f4lane fex 0) & show (f4lane fex 1) & show (f4lane fex 2) & show (f4lane fex 3) & " scalar " & show (fsc f0 g0 True) & show (fsc f1 g1 True) & show (fsc f2 g2 True) & show (fsc f3 g3 True))
+    end
+  end
+
+Page 1

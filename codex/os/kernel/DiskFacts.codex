@@ -170,30 +170,6 @@ Section: Buffer Utilities
  so the intermediates grow as the square of the length and on a machine with
  no GC every one of them is live until the caller returns.
 
- Measured 2026-08-14 through cdx-serve, which reads a stored work through
- this function: 48 KB served in 23 s and 64 KB died with OUT OF MEMORY. That
- message is the STACK guard firing on a stack/heap collision and reads as
- heap exhaustion to everyone who meets it, so it was checked rather than
- assumed: the faulting RSP was 712 bytes below the stack base, so nothing had
- recursed, and the watchdog's last RIP was inside __str_concat. After this
- change the same server returns 190 KB in 41 s, and 64 KB in 19 s, which is
- less than the 48 KB took before.
-
- **64 KB is where it died THERE and is not where this function fails.** In
- isolation the old body reaches 64 KB comfortably; it broke inside cdx-serve
- because that heap was already carrying the work index and the transport's
- receive buffer, and the accumulator only had to supply the last of the arena.
- Measured alone it dies at 256 KB, which is what codex/test/diskfacts-unpack-large
- is sized to, because an arm built from the 64 KB symptom passes against the
- defect it was written for.
-
- It mattered because 39 of the 874 chapters in this tree are over 50 KB,
- TypeChecker at 186,205 bytes among them, so the repository could not serve
- the compiler's own largest sources.
-
- fat16-bytes-to-text had the identical shape and was changed to this idiom at
- main 14371. This is the same fix in the second place it was needed.
-
   unpack-text-chars : Integer, Integer, Integer, Integer, List Text -> List Text
 
   unpack-text-chars (buf) (off) (len) (i) (acc) =
@@ -418,15 +394,8 @@ Section: Fact Log Entries
 
 Section: Where The Store Lives On The Disk
 
- Every sector number in this chapter is RELATIVE to the store's base LBA.
- The superblock is at relative 0 and 1, the log runs from relative 2, and
- the base is added exactly once, in fact-read-at and fact-write-at. On a
- raw disk the base is 0 and every address is what it always was.
-
- So the store gets its own partition, type C0DE1A11-FAC7-4C0D-9E75-
- C0DEC0DE5EED, and addresses inside it. The installer creates it; the
- store finds it by its type GUID; a disk that carries a partition table
- and no such partition is refused rather than eaten.
+ The store's partition type GUID is C0DE1A11-FAC7-4C0D-9E75-C0DEC0DE5EED;
+ a disk that carries a partition table and no such partition is refused.
 
 Section: Resolving The Base
 
@@ -434,17 +403,8 @@ Section: Resolving The Base
 
   fact-base-refuse : Integer = 0 - 1
 
- The GPT signature is compared as RAW BYTES and not through Text.
- "EFI PART" is written by whatever partitioned the disk, so it is ASCII on
- the medium, while this chapter's own magic goes through pack-text and is
- therefore CCE. Reading those eight bytes as Text and comparing them
- against a literal is the CCE boundary bug this project has shipped more
- than once; it would answer False on every real GPT and the guard would
- never fire at all.
-
- Our own superblock cannot trip the MBR test. pack-superblock zeroes the
- sector and writes a magic and three counters into its first 32 bytes, so
- bytes 510 and 511 of a store's own sector 0 are zero.
+ The GPT signature "EFI PART" is ASCII on the medium, so it is compared as
+ raw bytes rather than as CCE Text.
 
   gpt-signature : List Integer
 
@@ -542,11 +502,8 @@ Section: Relative Sector Access
 
 Section: Disk Operations
 
- A store carries the region it was opened against. It is captured once, at
- disk-init or disk-load, rather than resolved per access: resolving means
- reading the GPT, which is three sector reads and a list of partition
- records, and a log walk touches thousands of sectors. Per access it would
- be the heap blow-up this project has a review rule about.
+ A store carries its region, captured once at open: resolving it per access
+ would re-read the GPT for every sector a log walk touches.
 
   DiskFactStore = record {
 
@@ -791,6 +748,34 @@ Section: Disk Load (Boot-Time Recovery)
 
     }
 
+ The superblock's three fields are u64 on the medium and each has 1 or nsec
+ added to it later. 2^48 is ATA-8's 48-bit LBA space, the widest sector index a
+ SATA disk presents, and it bounds the two counters as well. A superblock that
+ fails this refuses the store rather than emptying it: an empty store on a
+ usable base writes its first fact over whatever log is there.
+
+  fact-sb-ceiling : Integer = 281474976710656
+
+  disk-sb-credible : Superblock, Integer -> Boolean
+
+  disk-sb-credible (sb) (limit) =
+
+    if sb.log-head < fact-log-start then False
+
+    else if sb.log-head >= fact-sb-ceiling then False
+
+    else if (if limit > 0 then sb.log-head > limit else False) then False
+
+    else if sb.fact-count < 0 | sb.fact-count >= fact-sb-ceiling then False
+
+    else if sb.index-gen < 0 | sb.index-gen >= fact-sb-ceiling then False
+
+    else True
+
+  disk-refused-in : DiskRegion -> DiskFactStore
+
+  disk-refused-in (region) = disk-empty-in (DiskRegion { dr-base = fact-base-refuse, dr-limit = 0 })
+
   disk-load : DiskFactStore
 
   disk-load =
@@ -801,7 +786,7 @@ Section: Disk Load (Boot-Time Recovery)
 
     else when read-superblock (region.dr-base)
 
-      is Just (sb) -> disk-load-with-sb region sb
+      is Just (sb) -> if disk-sb-credible sb (region.dr-limit) then disk-load-with-sb region sb else disk-refused-in region
 
       is None -> disk-empty-in region
 
@@ -848,11 +833,12 @@ Section: Boot Config Serialization
   sysdb-unpack-boot-config (buf) =
     let mode = unpack-u8 buf 0
     in let part = unpack-u8 buf 1
-    in let serial = sysdb-unpack-cstr buf 2
-    in Just (SysBootConfig {
+    in let stop = sysdb-cstr-end buf 2 sector-size
+    in if stop < 0 then None
+    else Just (SysBootConfig {
       sbc-boot-mode = mode,
       sbc-boot-partition = part,
-      sbc-boot-drive-serial = serial
+      sbc-boot-drive-serial = raw-bytes-to-text (sysdb-unpack-bytes buf 2 (stop - 2))
     })
 
 Section: System DB Byte Helpers
@@ -874,14 +860,11 @@ Section: System DB Byte Helpers
     if i >= len then acc
     else sysdb-unpack-bytes-loop buf off len (i + 1) (list-push acc (peek-byte buf (off + i)))
 
-  sysdb-unpack-cstr : Integer, Integer -> Text
-  sysdb-unpack-cstr (buf) (off) = sysdb-cstr-loop buf off ""
-
-  sysdb-cstr-loop : Integer, Integer, Text -> Text
-  sysdb-cstr-loop (buf) (off) (acc) =
-    let b = peek-byte buf off
-    in if b == 0 then acc
-    else sysdb-cstr-loop buf (off + 1) (acc & char-to-text (code-to-char b))
+  sysdb-cstr-end : Integer, Integer, Integer -> Integer
+  sysdb-cstr-end (buf) (off) (limit) =
+    if off >= limit then (-1)
+    else if peek-byte buf off == 0 then off
+    else sysdb-cstr-end buf (off + 1) limit
 
 Section: System DB Disk Operations
 
@@ -921,12 +904,16 @@ Section: System DB Disk Operations
     if sector >= store.superblock.log-head then None
     else let buf = fact-read-at (store.base) sector
     in let kind-int = unpack-u16-le buf 32
-    in if kind-int == target-kind then
-      let content-len = unpack-u32-le buf 74
-      in let content-buf = alloc-bytes sector-size
-      in let w = sysdb-copy-content buf 78 content-buf 0 content-len
-      in sysdb-unpack-boot-config content-buf
+    in if kind-int == target-kind then sysdb-config-from-sector buf
     else sysdb-scan-config store target-kind (sector + 1)
+
+  sysdb-config-from-sector : Integer -> Maybe SysBootConfig
+  sysdb-config-from-sector (buf) =
+    let content-len = unpack-u32-le buf 74
+    in if content-len > sector-size - 78 then None
+    else let content-buf = alloc-bytes sector-size
+    in let w = sysdb-copy-content buf 78 content-buf 0 content-len
+    in sysdb-unpack-boot-config content-buf
 
   sysdb-copy-content : Integer, Integer, Integer, Integer, Integer -> Integer
   sysdb-copy-content (src) (src-off) (dst) (dst-off) (len) =

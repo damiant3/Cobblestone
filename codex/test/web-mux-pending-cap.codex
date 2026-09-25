@@ -1,0 +1,74 @@
+Chapter: WebMuxPendingCap
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Works chapter Http
+  cites Foreword chapter Console
+
+ Two connections hold partial requests. Connection A holds 5,600 bytes. In
+ the refused arm B adds 2,800, taking the total past `web-mux-pending-budget`
+ (8,192), and B is closed. In the control B adds 1,400 and is kept. A then
+ completes its request, which must be served in both arms.
+
+Section: Wire Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  a-ip : List Integer = [10, 0, 2, 100]
+  b-ip : List Integer = [10, 0, 2, 101]
+
+  psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
+
+  mk : Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  mk (src-port) (src-ip) (seq) (flags) (payload) =
+    let seg = tcp-with-checksum (tcp-build-segment src-port 80 seq 5000 flags 8192 payload) src-ip srv-ip
+    in let ip = ip-build-packet src-ip srv-ip ip-proto-tcp seg
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  filler : Integer, List Integer -> List Integer
+  filler (n) (acc) = if n <= 0 then acc else filler (n - 1) (list-push acc 97)
+
+  head-bytes : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 88, 58, 32]
+
+  chunk : Integer -> List Integer
+  chunk (i) = if i == 0 then head-bytes & filler (1400 - list-length head-bytes) [] else filler 1400 []
+
+  end-bytes : List Integer = [13, 10, 13, 10]
+
+Section: Route
+  test-route : HttpRequest -> HttpResponse
+  test-route (req) = http-json "{\"ok\":true}"
+
+Section: Drive
+
+  feed-chunks : WebMux, Integer, List Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] WebMux
+  feed-chunks (m) (port) (ip) (seq0) (i) (n) =
+    if i >= n then m
+    else act
+      m1 <- web-mux-feed test-route (\line -> 0) m (mk port ip (seq0 + 1 + i * 1400) psh (chunk i)) 80
+      feed-chunks m1 port ip seq0 (i + 1) n
+    end
+
+  run-arm : Integer -> [Network.Read, Network.Write] Text
+  run-arm (b-chunks) =
+    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport 80), conns = [], served = 0 }
+    in act
+      m1 <- web-mux-feed test-route (\line -> 0) m0 (mk 50000 a-ip 1000 tcp-flag-syn []) 80
+      m2 <- feed-chunks m1 50000 a-ip 1000 0 4
+      m3 <- web-mux-feed test-route (\line -> 0) m2 (mk 50001 b-ip 20000 tcp-flag-syn []) 80
+      m4 <- feed-chunks m3 50001 b-ip 20000 0 b-chunks
+      m5 <- web-mux-feed test-route (\line -> 0) m4 (mk 50000 a-ip (1001 + 4 * 1400) psh end-bytes) 80
+      "conns after b " & show (list-length (m4.conns)) & ", served after a completes " & show (m5.served)
+    end
+
+Section: Entry
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    refused <- run-arm 2
+    print-line-uni ("refused arm: " & refused)
+    control <- run-arm 1
+    print-line-uni ("control arm: " & control)
+  end
+
+Page 1

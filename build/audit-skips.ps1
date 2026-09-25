@@ -131,6 +131,11 @@ foreach ($s in $skips) {
         $f = Join-Path $dir "$name.$($p.E)"
         if (Test-Path -PathType Leaf $f) { $runArgs += @($p.A, $f) }
     }
+    $mintRecipe = Join-Path $dir "$name.disk-mint"
+    if (-not (Test-Path -PathType Leaf (Join-Path $dir "$name.disk")) -and (Test-Path -PathType Leaf $mintRecipe)) {
+        $minted = @(& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'mint-test-disk.ps1') -Recipe $mintRecipe)
+        if ($LASTEXITCODE -eq 0) { $runArgs += @('-DiskFile', $minted[-1]) }
+    }
     $smpFile = Join-Path $dir "$name.smp"
     if (Test-Path -PathType Leaf $smpFile) {
         $runArgs += @('-Smp', [int]((Get-Content -TotalCount 1 $smpFile).Trim()))

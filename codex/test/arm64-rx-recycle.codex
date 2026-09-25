@@ -1,0 +1,92 @@
+Chapter: Arm64RxRecycle
+  cites Kernel chapter Arm64Pci
+  cites Kernel chapter VirtioPci
+  cites Kernel chapter VirtioNet
+
+Section: A Device Written In The Test
+
+ No card: the queue lives in RAM and the test plays the device, taking each
+ buffer the driver posted from the avail ring, writing a distinct 64-byte
+ frame into the address its descriptor holds, and completing it through the
+ used ring. 256 is QEMU virtio-net's queue size, eight times the 32 buffers
+ the driver posts, therefore 100 frames walk past the first 32.
+
+  floor : Integer = #48000000
+  qa : Integer = #48100000
+  qb : Integer = #48200000
+  qsize : Integer = 256
+  frames : Integer = 100
+  frame-len : Integer = 64
+
+  dead-pci : Arm64PciDevice = Arm64PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0, pci-vendor = 0, pci-device-id = 0, pci-class = 0, pci-subclass = 0, pci-header-type = 0 }
+  dead-dev : VirtioDevice = VirtioDevice { pci-dev = dead-pci, common-base = 0, notify-base = 0, notify-off-multiplier = 0, isr-base = 0, device-cfg-base = 0 }
+
+  fresh : Integer -> VirtioNetState
+  fresh (q) =
+   let z = virtio-zero-mem q #4000
+   in let c = virtio-init-desc-chain q 0 qsize
+   in let rq = VirtqueueState { desc-base = q, avail-base = q + #1000, used-base = q + #2000, queue-size = qsize, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = q + #3000 }
+   in let filled = virtio-net-fill-rx rq 0
+   in VirtioNetState { device = dead-dev, rx-queue = filled, tx-queue = filled, mac = [82, 84, 0, 18, 52, 86] }
+
+  wb : Integer, Integer, Integer -> Integer
+  wb (buf) (n) (j) =
+   if j >= frame-len then 0
+   else let w = poke-byte buf (vnet-hdr-size + j) (bit-and (n * 7 + j) 255)
+   in wb buf n (j + 1)
+
+  device-step : Integer, Integer -> Boolean
+  device-step (q) (n) =
+   if bit-and (peek-16 (q + #1000) 2) #FFFF <= n then False
+   else let id = bit-and (peek-16 (q + #1000) (4 + bit-and n (qsize - 1) * 2)) #FFFF
+   in let buf = peek-qword (q + id * 16) 0
+   in let w = wb buf n 0
+   in let e0 = poke-32 (q + #2000) (4 + bit-and n (qsize - 1) * 8) id
+   in let e1 = poke-32 (q + #2000) (8 + bit-and n (qsize - 1) * 8) (vnet-hdr-size + frame-len)
+   in let u = poke-16 (q + #2000) 2 (n + 1)
+   in True
+
+  matches : List Integer, Integer, Integer, Integer -> Boolean
+  matches (xs) (n) (j) (len) =
+   if len /= frame-len then False
+   else if j >= frame-len then True
+   else if list-at xs j /= bit-and (n * 7 + j) 255 then False
+   else matches xs n (j + 1) len
+
+  Tally = record { good : Integer, posted : Integer }
+
+  run-into : Integer, VirtioNetState, List Integer, Integer, Integer, Integer -> Tally
+  run-into (q) (v) (rx) (n) (good) (posted) =
+   if n >= frames then Tally { good = good, posted = posted }
+   else let had = device-step q n
+   in let r = virtio-net-poll-into v rx
+   in let ok = r.vi-has & matches rx n 0 (r.vi-len)
+   in run-into q (r.vi-state) rx (n + 1) (if ok then good + 1 else good) (if had then posted + 1 else posted)
+
+  run-list : Integer, VirtioNetState, Integer, Integer, Integer -> Tally
+  run-list (q) (v) (n) (good) (posted) =
+   if n >= frames then Tally { good = good, posted = posted }
+   else let had = device-step q n
+   in let r = virtio-net-poll-frame v
+   in let ok = r.has-frame & matches (r.frame) n 0 (list-length (r.frame))
+   in run-list q (r.state) (n + 1) (if ok then good + 1 else good) (if had then posted + 1 else posted)
+
+  frame-buffer : List Integer, Integer -> List Integer
+  frame-buffer (xs) (n) = if list-length xs >= n then xs else frame-buffer (list-push xs 0) n
+
+Section: Entry
+
+  opening : [Console, Device.Mmio] Nothing = act
+    let f = poke-32 vnet-dma-floor-cell 0 floor
+    in let rx = frame-buffer (__list-with-capacity 1522) 1522
+    in let a = run-into qa (fresh qa) rx 0 0 0
+    in let b = run-list qb (fresh qb) 0 0 0
+    in act
+      print-line-uni ("into: device found a posted buffer " & show (a.posted) & " of " & show frames)
+      print-line-uni ("into: frames read as the device wrote them " & show (a.good) & " of " & show frames)
+      print-line-uni ("list: device found a posted buffer " & show (b.posted) & " of " & show frames)
+      print-line-uni ("list: frames read as the device wrote them " & show (b.good) & " of " & show frames)
+    end
+  end
+
+Page 1

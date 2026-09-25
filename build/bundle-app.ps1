@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$Src,
     [Parameter(Mandatory=$true)]
-    [string]$Out
+    [string]$Out,
+    [string]$InputsOut = ''
 )
 
 Set-StrictMode -Version Latest
@@ -42,3 +43,8 @@ $lines.Add('')
 $body = ([string]($lines -join "`n") + "`n")
 [System.IO.File]::WriteAllText($Out, $body, ([System.Text.UTF8Encoding]::new($false)))
 Write-Host ([string]([string]([string]([string]'[bundle-app] ' + $ordered.Count) + ' dependencies + root -> ') + $Out) + ([string]([string]' (' + $body.Length) + ' bytes)'))
+
+
+if ($InputsOut) {
+    [System.IO.File]::WriteAllLines($InputsOut, [string[]]@($ordered.Path))
+}

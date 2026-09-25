@@ -456,13 +456,16 @@ All scripts use `build/vm-config.ps1` for shared VM setup.
 Platform (WHP). Build with `tools/build-vm.ps1`.
 
 **A guest CAN detect codex-vm through the HYPERVISOR bit since 2026-08-18.**
-CPUID leaf 1 ECX carries bit 31 (the conventional "am I virtualised" answer)
-and nothing else; leaves 8000_0002h..04h answer the brand string
+CPUID leaf 1 ECX carries bit 31 (the conventional "am I virtualised" answer);
+leaves 8000_0002h..04h answer the brand string
 `codex-vm virtual CPU (WHP)`. Until 2026-08-18 leaf 1 ECX read ZERO and the
 brand leaves were absent, so a guest was told it was on bare silicon with no
-name. Otherwise unchanged: the vendor string is `GenuineIntel`, the maximum
-basic leaf is 1, and leaf 1 EDX carries a real feature set (FPU TSC MSR PAE
-APIC CMOV MMX FXSR SSE SSE2). The corollary for anything decoding CPUID: a
+name. The vendor string is `GenuineIntel` and leaf 1 EDX carries a real feature
+set (FPU TSC MSR PAE APIC CMOV MMX FXSR SSE SSE2). On a host with XSAVE and
+AVX the maximum basic leaf is 0Dh, leaf 1 ECX adds XSAVE, AVX and OSXSAVE (the
+last mirroring the asking processor's CR4), and leaf 0Dh answers XCR0 = 7;
+under `-no-avx` the maximum basic leaf is 1. An AP's CPUID is answered on that
+AP. The corollary for anything decoding CPUID: a
 feature line with nothing but the hypervisor bit on this host is the host,
 not a broken decode. The diagnostic ladder's cpu stage reads `hypervisor`
 here by design.
@@ -600,7 +603,8 @@ codex-vm -kernel file.cdx [options]
 | `-gop-width <N>` | 640 | GOP framebuffer width (implies `-gop`) |
 | `-gop-height <N>` | 480 | GOP framebuffer height (implies `-gop`) |
 | `-gop-max-mode <N>` | -- | Cap the GOP mode table's `MaxMode`. The UEFI GOP enumerates modes 0..2 (640x480, 800x600, 1024x768) plus, as mode 3, the `-gop-width x -gop-height` you set when it matches none of them, so a bed at 1600x900 is a firmware whose largest mode is what the display supports; `Mode->Mode` names the current one. `-gop-max-mode 1` is a firmware with nothing to enumerate, the fallback arm for a stub that picks the largest mode (`build/gop-mode-arm.ps1`). `QueryMode` answers into a scratch info block, not the current mode's; a mode past `MaxMode` is `EFI_INVALID_PARAMETER`; `SetMode` commits the framebuffer before it clears it (a runtime mode set from a headless boot faulted the HOST until it did). |
-| `-smp [N]` | 1 | Enable multi-core: N virtual processors (1-16, default 4 if N omitted). Creates WHP VPs, LAPIC, MADT with per-core entries. Core count written to GPA 0xFF8; boot code reads it to decide whether to send INIT/SIPI. |
+| `-smp [N]` | 1 | Enable multi-core: N virtual processors (1-16, default 4 if N omitted). Creates WHP VPs, LAPIC, MADT with per-core entries. Core count written to GPA 0xFF8; boot code reads it to decide whether to send INIT/SIPI. At exit it prints `IO BY VP: vp=N port-exits=N io-lock-wait-ms=N` per processor; quote that for port-I/O contention, not the global `exits` count, which does not count an AP's work. |
+| `-no-avx` | off | A machine without XSAVE or AVX: CPUID leaf 0 stops at 1, leaf 1 ECX carries neither bit, and the partition's XSAVE property stays at WHP's default. Without it, on a host with both, the partition takes the host's XSAVE features and CPUID reports XSAVE, AVX and leaf 0Dh for XCR0 = 7 (`codex/test/cpuid-avx`, `cpuid-no-avx`). |
 | `-portfwd [udp:]<host:guest>` | -- | Port forwarding from host to guest NIC (repeatable, max 8). TCP by default; `udp:` forwards datagrams instead, giving each host client a synthetic gateway source port so the guest's replies route back. Examples: `-portfwd 8080:80`, `-portfwd udp:15683:5683` |
 | `-natmap <guestdest:hostport>` | -- | Remap an OUTBOUND destination port (repeatable, max 16, TCP only). The opposite direction to `-portfwd`: when the guest dials `guestdest`, the NAT connects to the host on `hostport` instead of the port the guest asked for. Exists because a plug's port is compiled into it from `build/plug-ports.ps1`, so N copies of one plug all needed the same host listener and could not run at once. With this, each worker owns a private host port while running the same unmodified plug binary -- which is what lets `codex/plugs/recheck/sweep-all.ps1` go N-wide. Unmapped ports are untouched, so every existing invocation means what it always did. Example: `-natmap 9134:9250` |
 | `-debug` | off | Interactive debugger shell on breakpoints and single-step |
@@ -940,8 +944,8 @@ setting. Re-swept measuring acne as the sphere's difference from the same frame
 with shadows off, against the ground shadow measured the same way: 6 gives 350
 acne pixels and 132,287 of shadow, 16 gives 0 and 131,691, 24 gives 0 and
 131,200, 40 gives 0 and 130,137. 16 is the knee rather than the largest value
-that works. The software renderer reads 0 acne at every setting, so this was the
-host path alone off parity.
+that works. The software renderer's `r3d-shadow-slope` is 16 as well: at 6 it
+left 87 acne pixels on `engine-shadow`'s lit cube face and 0 at 16 (2026-09-24).
 
 **Single-pixel rasterizer probe.** Set `CODEX_GPU_PROBE=x,y` and codex-vm prints
 one line per triangle that covers that screen pixel, whether it wins or loses the
@@ -1091,10 +1095,12 @@ duration. The RAM-polling ones, which are the class above, are:
   while the frame went out anyway. Now bounded by HPET at 20 ms with the spin
   as the no-clock fallback; `codex/test/e1000-tx-deadline` pins it with the
   old path as its own control, in a band that cannot overlap.
-- **`arm64-net-io-tick-interval` (`Arm64NetIO.codex`) is one and is NOT fixed**,
-  because this lane has no counter read. What is missing is written out in
-  that chapter's own Poll Clock section, including the derived
-  `sysreg-cntvct-el0` value and the warning that half of it is seed-affecting.
+- **The ARM64 poll interval (`Arm64NetIO.codex`) WAS one and is FIXED.** Each
+  `Arm64NetIOState` carries `poll-interval`, measured at bring-up by
+  `Arm64NetCalibrate` against CNTVCT_EL0 over 100 ms, with NetDriver's floor,
+  cap and fallback. At a QEMU TCG virtio-net bring-up it measured 731,000 polls
+  per tick against the old constant's 100,000 (2026-09-24); the arm is
+  `codex/test/arm64-net-calibrate`, arm64-only and graded on QEMU.
 - **`nvme-fuel` (`GopNvme.codex`)** polls a completion-queue phase bit, which
   is DMAd memory. Not measured, not mine, named here because it is the same
   shape.
@@ -1452,7 +1458,7 @@ and interrupt generation.
 PIT channel 0 at port 0x40 (host-driven periodic tick). CMOS RTC at
 port 0x70/0x71 (real host time). PC speaker via Windows Beep().
 
-**PS/2 Keyboard.** Port 0x60/0x64 with a scan code queue.
+**PS/2 Keyboard.** Port 0x60/0x64 with a scan code queue. **A guest does not see port 0x60 once interrupts are on:** the kernel's IRQ1 handler (`X86_64Boot.codex`, `emit-kbd-init` sets command byte 0x65, translation and IRQ1) moves each scancode into ONE cell, `key-buffer-addr` (28680), that `uefi-read-key` exchanges with zero, so a direct 0x64/0x60 poll reads an empty buffer and a slow reader of the cell sees only the last scancode.
 
 Scripted input (`-mouse`, `-mouse-file`, `-keys-file`) writes the same guest
 state the window proc writes -- press latch included -- so a guest cannot
@@ -1651,6 +1657,12 @@ build/boot-arm64.ps1 -Src codex\test\arm64-web-server.codex                  # i
 build/boot-arm64.ps1 -Src codex\test\arm64-web-server.codex -NoBoot          # build only
 build/boot-arm64.ps1 -Src codex\test\arm64-web-server.codex -TimeoutSec 45   # as an arm
 ```
+
+**It takes no `-Kernel`: the IR compile runs whatever
+`build-output\bare-metal\Codex.cdx` holds** (measured 2026-09-24: a compiler
+several seeds stale, flagged only by `compile.ps1`'s `NOTE: this kernel is NOT
+seed\Codex.cdx` line). Copy `seed\Codex.cdx` there first and check the
+`kernel:` digest the run prints.
 
 **`-TimeoutSec` defaults to 0, which is the interactive console: foreground
 `-nographic`, no deadline, Ctrl+C to stop.** Any positive value launches QEMU
@@ -1895,6 +1907,8 @@ grep reported `errors=0` for `codex/test/type-name-existence` while
 control in an investigation, which sent a real regression looking like a
 host-versus-guest divergence for an hour. Grep for `error CDX` or read the exit
 code, which is the number the script actually publishes.
+
+**A one-letter helper can be a built-in alias.** `function R` in a session script loses to `R`, which is `Invoke-History`, so every call fails with "A positional parameter cannot be found" and a file written back afterwards is written UNCHANGED while the script reports nothing applied. Name helpers with a verb and a noun.
 
 
 The section above is one instance of a general rule, and the rest of the
@@ -2367,6 +2381,49 @@ and 2 skipped tests emit no wire). A `let`'s type slot on the wire is its
 BINDER's type, so the script types a `let` by its body; reading the slot as the
 expression's type reports `show` in `edalias` six times for a program whose
 wire is correct.
+
+**`-Property` grades every typed node on the wire against the type the checker
+filed for the same span and node kind** (compile flag `fidelity`, which only
+`-IrUni` output reads; `codex/compiler/IR/IRFidelity.codex`). DROPPED: the
+checker holds a ground type where the node holds `error`, `noexpect` or a type
+variable. DISAGREE: both are ground and differ. EMITTED: a type that is not
+`error` prints as `error` on the wire. `upstream` (the checker's own answer is a
+variable) and `width` (a bounded integer or a unit on one side, the plain
+integer on the other) are counted, not listed. A span is a HEAD token: an
+application carries its function's span, a binary or an `if` its operator's.
+A node the compiler inserts therefore sits on the key of the node it serves,
+and two shapes count as `inserted` and go ungraded: an argument on its
+application's key (a class dictionary, a unit conversion) and a node on its
+parent's key and kind (the `IrIf` that `/=` lowers to). A defect inside an
+inserted node is invisible to the property.
+
+```powershell
+build\ir-fidelity\ir-fidelity.ps1 -Property -Kernel <candidate>     # all of codex/test, one compile guest, 6 minutes (2026-09-25)
+build\ir-fidelity\ir-fidelity.ps1 -Property -Programs recursive-eq,unit-smoke
+build\ir-fidelity\ir-fidelity.ps1 -Property -Expect 0               # refuses on any finding
+```
+
+`-Expect N` counts the three classes together, so any nonzero N passes a
+different split of the same total: read the class lines. `-Property` is in no gate, like
+the rest of this directory. The property grades the wire against the
+checker, never the checker against the program, so a wrong answer the checker
+gives consistently reads as a match.
+
+Calibration is by sabotage and is not scripted: concatenate the compiler
+(`build/concat-codex-self.ps1`), change the one line named below in the unit,
+compile that unit with `-Kernel seed\Codex.cdx`, then compile the subject with
+the sabotaged kernel and with the unsabotaged one, both with
+`-IrUni -Passes none -RawFlags fidelity`, and read the `FIDELITY` lines of
+each log. Each arm seen to fire and its control seen clean on 2026-09-25:
+`expected-or-recorded-ty` (`IR/Lowering.codex`) answering the bare expected
+type instead of the recorded one reads DROPPED at `__lam_0` param `x`
+on `build/ir-fidelity/cases/lambda-param-type/a.codex`;
+`empty-list-element-source` answering `ErrorTy` reads DROPPED twice on
+`roc-fold-empty`; the `IrNegate` built in the `AUnaryExpr` arm of
+`lower-expr-at` given `TextTy` reads DISAGREE at `abs` on `arithmetic`.
+Measured 2026-09-25 over 712 clean programs (11 refused): walked 1,014,968,
+synthetic 1,394, inserted 4,718, unrecorded 376, upstream 310, width 526,
+DISAGREE 0, DROPPED 0, EMITTED 0.
 ### Compile Modes
 
 | Mode | Output |

@@ -75,8 +75,8 @@ Section: Emitter
     is JsonInt (n) -> show n
     is JsonNum (n) -> json-emit-num n
     is JsonStr (s) -> json-quote s
-    is JsonArray (items) -> "[" & json-emit-array items 0 (list-length items) "" & "]"
-    is JsonObject (pairs) -> "{" & json-emit-object pairs 0 (list-length pairs) "" & "}"
+    is JsonArray (items) -> text-concat-list (list-push (json-emit-array items 0 (list-length items) (list-push [] "[")) "]")
+    is JsonObject (pairs) -> text-concat-list (list-push (json-emit-object pairs 0 (list-length pairs) (list-push [] "{")) "}")
 
   json-emit-num : JsonNumber -> Text
   json-emit-num (n) =
@@ -95,30 +95,27 @@ Section: Emitter
     else json-zero-pad ("0" & t) width
 
   json-quote : Text -> Text
-  json-quote (s) = "\"" & json-escape s 0 (text-length s) "" & "\""
+  json-quote (s) = text-concat-list (list-push (json-escape-into s 0 (text-length s) (list-push [] "\"")) "\"")
 
-  json-escape : Text, Integer, Integer, Text -> Text
-  json-escape (s) (i) (len) (acc) =
+  json-escape-into : Text, Integer, Integer, List Text -> List Text
+  json-escape-into (s) (i) (len) (acc) =
     if i >= len then acc
-    else let c = char-code (char-at s i)
-    in let u = to-unicode c
-    in if u == 34 then json-escape s (i + 1) len (acc & "\\\"")
-    else if u == 92 then json-escape s (i + 1) len (acc & "\\\\")
-    else if u == 10 then json-escape s (i + 1) len (acc & "\\n")
-    else json-escape s (i + 1) len (acc & char-to-text (char-at s i))
+    else let u = to-unicode (char-code (char-at s i))
+    in let piece = if u == 34 then "\\\"" else if u == 92 then "\\\\" else if u == 10 then "\\n" else char-to-text (char-at s i)
+    in json-escape-into s (i + 1) len (list-push acc piece)
 
-  json-emit-array : List JsonValue, Integer, Integer, Text -> Text
+  json-emit-array : List JsonValue, Integer, Integer, List Text -> List Text
   json-emit-array (items) (i) (len) (acc) =
     if i >= len then acc
-    else let sep = if i == 0 then "" else ","
-    in json-emit-array items (i + 1) len (acc & sep & json-emit (list-at items i))
+    else let with-sep = if i == 0 then acc else list-push acc ","
+    in json-emit-array items (i + 1) len (list-push with-sep (json-emit (list-at items i)))
 
-  json-emit-object : List JsonPair, Integer, Integer, Text -> Text
+  json-emit-object : List JsonPair, Integer, Integer, List Text -> List Text
   json-emit-object (pairs) (i) (len) (acc) =
     if i >= len then acc
-    else let sep = if i == 0 then "" else ","
+    else let with-sep = if i == 0 then acc else list-push acc ","
     in let p = list-at pairs i
-    in json-emit-object pairs (i + 1) len (acc & sep & json-quote (p.key) & ":" & json-emit (p.value))
+    in json-emit-object pairs (i + 1) len (list-push (list-push (list-push with-sep (json-quote (p.key))) ":") (json-emit (p.value)))
 
 Section: Object Access
   json-get : JsonValue, Text -> Maybe JsonValue
@@ -406,7 +403,7 @@ Section: Strings
 
   json-parse-string-value : Text, Integer, Integer -> JsonParseResult
   json-parse-string-value (s) (i) (len) =
-    let r = read-string-body s (i + 1) len ""
+    let r = read-string-body s (i + 1) len []
     in if r.ok then parse-ok (JsonStr (r.value-text)) (r.next)
     else parse-fail i
 
@@ -419,21 +416,21 @@ Section: Strings
   string-fail : Integer -> StringReadResult
   string-fail (at) = StringReadResult { value-text = "", next = at, ok = False }
 
-  string-ok : Text, Integer -> StringReadResult
-  string-ok (t) (n) = StringReadResult { value-text = t, next = n, ok = True }
+  string-ok : List Text, Integer -> StringReadResult
+  string-ok (pieces) (n) = StringReadResult { value-text = text-concat-list pieces, next = n, ok = True }
 
-  read-string-body : Text, Integer, Integer, Text -> StringReadResult
+  read-string-body : Text, Integer, Integer, List Text -> StringReadResult
   read-string-body (s) (i) (len) (acc) =
     if i >= len then string-fail i
     else read-string-step s i len acc (cp-at s i)
 
-  read-string-step : Text, Integer, Integer, Text, Integer -> StringReadResult
+  read-string-step : Text, Integer, Integer, List Text, Integer -> StringReadResult
   read-string-step (s) (i) (len) (acc) (cp) =
     if cp == 34 then string-ok acc (i + 1)
     else if cp == 92 then read-string-escape s (i + 1) len acc
-    else read-string-body s (i + 1) len (acc & char-to-text (char-at s i))
+    else read-string-body s (i + 1) len (list-push acc (char-to-text (char-at s i)))
 
-  read-string-escape : Text, Integer, Integer, Text -> StringReadResult
+  read-string-escape : Text, Integer, Integer, List Text -> StringReadResult
   read-string-escape (s) (i) (len) (acc) =
     if i >= len then string-fail i
     else apply-escape s i len acc (cp-at s i)
@@ -461,27 +458,27 @@ Section: Strings
  silently losing what an author wrote is the failure this whole block exists
  to remove. CCE has no replacement character to substitute either --
  from-unicode 65533 is also -1.
-  apply-escape : Text, Integer, Integer, Text, Integer -> StringReadResult
+  apply-escape : Text, Integer, Integer, List Text, Integer -> StringReadResult
   apply-escape (s) (i) (len) (acc) (cp) =
-    if cp == 34 then read-string-body s (i + 1) len (acc & "\"")
-    else if cp == 92 then read-string-body s (i + 1) len (acc & "\\")
-    else if cp == 47 then read-string-body s (i + 1) len (acc & "/")
+    if cp == 34 then read-string-body s (i + 1) len (list-push acc "\"")
+    else if cp == 92 then read-string-body s (i + 1) len (list-push acc "\\")
+    else if cp == 47 then read-string-body s (i + 1) len (list-push acc "/")
     else if cp == 98 then read-string-body s (i + 1) len acc
     else if cp == 102 then read-string-body s (i + 1) len acc
-    else if cp == 110 then read-string-body s (i + 1) len (acc & "\n")
+    else if cp == 110 then read-string-body s (i + 1) len (list-push acc "\n")
     else if cp == 114 then read-string-body s (i + 1) len acc
-    else if cp == 116 then read-string-body s (i + 1) len (acc & " ")
+    else if cp == 116 then read-string-body s (i + 1) len (list-push acc " ")
     else if cp == 117 then read-unicode-escape s (i + 1) len acc
     else string-fail i
 
-  read-unicode-escape : Text, Integer, Integer, Text -> StringReadResult
+  read-unicode-escape : Text, Integer, Integer, List Text -> StringReadResult
   read-unicode-escape (s) (i) (len) (acc) =
     if i + 4 > len then string-fail i
     else if four-hex-digits s i then
       let cp = unicode-from-hex-quad s i
       in let cce = from-unicode cp
       in if cce < 0 then string-fail i
-      else read-string-body s (i + 4) len (acc & char-encode (code-to-char cce))
+      else read-string-body s (i + 4) len (list-push acc (char-encode (code-to-char cce)))
     else string-fail i
 
   four-hex-digits : Text, Integer -> Boolean
@@ -538,7 +535,7 @@ Section: Objects
 
   read-object-key-value : Text, Integer, Integer, List JsonPair -> JsonParseResult
   read-object-key-value (s) (i) (len) (acc) =
-    let kr = read-string-body s (i + 1) len ""
+    let kr = read-string-body s (i + 1) len []
     in if kr.ok == False then parse-fail i
     else expect-colon-then-value s (skip-ws s (kr.next) len) len acc (kr.value-text)
 

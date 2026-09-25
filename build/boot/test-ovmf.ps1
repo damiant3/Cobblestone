@@ -38,6 +38,9 @@ param(
     # modern machine, where firmware keyboard emulation dies at EBS and the
     # USB HID path is the ONLY input. Combine with -UsbKbd.
     [switch]$NoPs2,
+    # -NoReboot passes QEMU -no-reboot: a guest reset (0xCF9, the 8042 pulse)
+    # ends QEMU instead of restarting the firmware, and the run says so.
+    [switch]$NoReboot,
     # -UsbMouse attaches a USB HID boot-protocol mouse to the same xHCI
     # controller -- the verdict bed for GopUsbMouse. Drive it with
     # -MouseCmds: semicolon-separated QEMU monitor lines sent AFTER the
@@ -184,6 +187,7 @@ $qargs += @(
 if ($Keys) {
     # send scancodes via QMP later; simpler: use sendkey through monitor after boot
 }
+if ($NoReboot) { $qargs += '-no-reboot' }
 
 Write-Host "[ovmf] booting $imgAbs ..."
 $proc = Start-Process -FilePath $qemu -ArgumentList $qargs -PassThru -WindowStyle Hidden -RedirectStandardError $errLog
@@ -240,7 +244,7 @@ if ($MonCmds) {
     $reply = Send-Mon ($MonCmds -split ';') 400 -Echo
     ($reply -split "`r?`n") | ForEach-Object { Write-Host "  $_" }
 }
-Send-Mon @("screendump $ppm")
+if ($proc.HasExited) { Write-Host '[ovmf] QEMU exited: the guest reset (-no-reboot)' } else { Send-Mon @("screendump $ppm") }
 Start-Sleep -Milliseconds 800
 try { if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force } } catch {}
 

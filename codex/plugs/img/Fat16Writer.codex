@@ -203,6 +203,22 @@ Section: Filesystem Assembly
  out of the previous iteration. Carrying would want two returns from one
  recursion, and an accumulator list is the alias trap (L-ALIAS).
 
+ Clusters 2, 3 and 4 are the EFI, SEED and BOOT directories; the root holds
+ those three entries' worth of slots (EFI, SEED, the volume label) before the
+ first subdirectory or source.
+
+  fat16w-clusters-used : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fat16w-clusters-used (spc) (efi-size) (cdx-size) (src-count) (src-buf) (tbl-off) (dir-count) (dtbl-off) =
+   3 + fat16w-clusters-needed cdx-size spc + fat16w-clusters-needed efi-size spc + fat16w-sum-dir-clusters src-buf dtbl-off spc dir-count 0 + fat16w-sum-src-clusters src-buf tbl-off spc src-count 0
+
+  fat16w-refusal : Fat16Layout, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  fat16w-refusal (lay) (efi-size) (cdx-size) (src-count) (src-buf) (tbl-off) (dir-count) (dtbl-off) =
+   let used = fat16w-clusters-used (lay.sectors-per-cluster) efi-size cdx-size src-count src-buf tbl-off dir-count dtbl-off
+   in let root-used = 3 + dir-count + (src-count - fat16w-sum-dir-files src-buf dtbl-off dir-count 0)
+   in if used > lay.total-clusters then "needs " & show used & " data clusters, the partition holds " & show (lay.total-clusters)
+   else if root-used > fat16w-root-entry-count then "needs " & show root-used & " root entries, the root holds " & show fat16w-root-entry-count
+   else ""
+
   fat16w-write-dirs : Integer, Fat16Layout, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   fat16w-write-dirs (buf) (lay) (fat1) (root-off) (src-buf) (dtbl-off) (tbl-off) (data-off) (dir-start) (files-start) (n) (d) =
    if d >= n then 0

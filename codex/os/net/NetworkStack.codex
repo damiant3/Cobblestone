@@ -28,14 +28,6 @@ Section: ARP Cache
     in if ip-equal (e.ip) ip then e.mac
     else arp-cache-search entries ip (i + 1) len
 
- THE COUNT IS BANDED 0 TO 255 AND THIS APPENDED UNCONDITIONALLY, so the 256th
- ARP frame wrote 256 into that band and the bounded-integer check refused it at
- the function boundary: measured 2026-08-15, !EXC=06 with RSI holding 0x100.
- net-process-arp learns from every frame that arrives, so any host on the
- segment reached it, and re-sending the SAME ten senders took the count from 10
- to 20 -- it never needed 256 distinct hosts, and gratuitous ARP on a busy
- segment gets there by itself.
-
  Refuse at capacity rather than evict. Eviction would let a flood push the
  GATEWAY entry out, which is the one mapping this stack cannot work without and
  is learned first, so refusing keeps what was already learned and drops only
@@ -117,15 +109,6 @@ Section: Frame Wrapping
  left in place: it is part of the sum, which is what makes a valid segment fold
  to zero.
 
- THE SEGMENT IS NOT COPIED. Concatenating it onto the pseudo-header cost 12,272
- bytes on a 1,514-byte frame, 27% of the whole IP stage (`net-recv-heap`,
- 2026-09-08), and bought only a sum starting at index 0. The pseudo-header's
- unfolded sum is carried into a second pass over the segment in place instead.
- The odd-length pad goes with the copy: `ip-checksum`'s own odd-tail arm adds a
- final byte as the HIGH half of its word, which is exactly what a trailing zero
- did. `tcp-with-checksum` above still builds the concatenation, on the SEND
- path, and is the same repair.
-
   tcp-checksum-valid-at : List Integer, Integer, Integer, List Integer, List Integer -> Boolean
   tcp-checksum-valid-at (buf) (off) (stop) (src-ip) (dst-ip) =
     let tcp-len = stop - off
@@ -195,24 +178,9 @@ Section: Reliability Timers
  both directions at once -- far too eager on a slow link, far too patient on
  a fast one -- and no calibration was ever required to fix that.
 
- That argument is sound and it was read as covering more than it does. It
- governs the ESTIMATOR, where srtt is measured in the same ticks the RTO is
- spent in, so the ratio survives any steady rate. It does not govern any
- bound pinned at a FIXED COUNT of ticks, and this chapter has four: the
- initial interval above before a sample exists, net-rto-min-ticks,
- net-rto-max-ticks, and the give-up ladder those two produce. Each is a
- wall-clock quantity written as a tick count, and each is only as sane as
- the rate happens to be.
-
- Measured 2026-08-14, that rate was not a property of this chapter at all.
- NetIO counted a tick as 100000 empty receive polls, and one million empty
- polls cost 15.52 s on the NE2000 model against 0.029 s on the e1000, which
- reads its descriptor out of RAM where the NE2000 takes a VM exit. So the
- same four constants meant 219 s to give up on one card and 405 ms on the
- other, and a SYN retransmitted after 8.6 ms. NetDriver now measures the
- poll rate at bring-up so a tick is about 100 ms on either card; nothing
- here changed, and nothing here should. The lesson is that the fixed counts
- below inherit their meaning from a layer this one cannot see.
+ That holds for the ESTIMATOR only. The initial interval, net-rto-min-ticks,
+ net-rto-max-ticks and the give-up ladder are wall-clock quantities written as
+ tick counts, and mean what the caller's tick rate makes them mean.
 
  srtt is carried scaled by 8 and rttvar by 4, the standard integer form.
  The 1/8 and 1/4 gains are then shifts, and a divide-then-store does not
@@ -328,62 +296,19 @@ Section: Reliability Timers
     in if tcp-seq-le (e.rx-ack) ack then net-rexmit-prune q ack (i + 1) acc
     else net-rexmit-prune q ack (i + 1) (list-push acc e)
 
- An ACK that retires anything is evidence the path is alive, so the backoff
- earned by the retired segment does not carry over to the one behind it: the
- timer restarts at the base interval with the retry count reset. Carrying the
- count forward would let one slow segment spend the whole retry budget of
- every segment queued behind it.
-
   net-rexmit-retire : NetSession, List RexmitSeg -> NetSession
   net-rexmit-retire (s) (q) =
     if list-length q == 0 then set-rexmit s q 0 0
     else set-rexmit s q (net-rto-base s) 0
 
- A LISTENER IS CONSTRUCTED, NOT TRANSITIONED, and until 2026-08-17 this
- stepped the existing connection instead. A server closing from ESTABLISHED
- is in FIN_WAIT_1, RFC 793 has no arc from there to LISTEN, so the step was
- a no-op and the socket that had served one caller could never take another:
- accept never saw ESTABLISHED again and every later request reported
- no-conn.
+ A listener is constructed, not stepped: RFC 793 has no arc from FIN_WAIT_1 to
+ LISTEN. The wait for the peer's FIN-ACK is abandoned, a deliberate deviation
+ from RFC 793 section 3.5, because this stack serves one connection at a time.
 
- What is given up is the tail of the close, and only that. The response and
- the FIN are already on the wire when this runs -- net-close puts the FIN in
- the outbox and the caller flushes it before looping -- so the peer has
- everything it was owed. The wait for its FIN-ACK is ABANDONED rather than
- completed, which is a deliberate deviation from RFC 793 section 3.5: this
- stack serves one connection at a time, and holding the socket in FIN_WAIT_2
- to be polite costs it every subsequent caller.
-
- Retiring the rexmit queue is part of that abandonment and not tidying.
- net-close arms retransmission for the FIN and `set-conn` alone would leave
- it queued against a connection that no longer exists, where two things
- follow: `net-rexmit-full` can refuse the next response's send, and the
- give-up ladder ends in TcpClosed, which would kill the listener this
- function just built.
-
- RE-LISTENING OVER A HALF-OPEN HANDSHAKE THROWS THE CALLER AWAY. Accept polls
- on a budget and returns whatever it has, so a serve loop that calls this
- between requests can call it while a SYN has been answered and the client's
- ACK is still in flight. Resetting there forgets the peer, and the ACK that
- arrives a moment later is not a SYN: `tcp-step-listening` drops it and
- answers `ActNone`, so the client believes it is established, the server is
- listening, and neither side says anything until the client gives up. That is
- the per-boot connection ceiling in `OracleCloudArm64.md`, one lost caller at
- a time.
-
- SYN_RECEIVED is therefore the one state this does not reset, and it is
- BOUNDED rather than held. A held half-open would be the worse defect: one
- caller that sends a SYN and vanishes would pin the single socket and refuse
- everyone after it, where the old behaviour merely lost that one caller.
-
- The bound is counted in re-listens rather than in ticks, because it has to
- fire in the loop that actually causes this. `net-tick` would be the natural
- home and `arm64-net-io-accept` never calls it, so a tick-budget here would
- be a guard that cannot fire in the one caller it is for. Re-listens are the
- serve loop's own cadence, so the budget is spent exactly when the loop is
- spinning without the handshake completing. `close-timer` carries the count:
- it is unused in SYN_RECEIVED, and if something DOES tick, `net-tick` retires
- the half-open to CLOSED, which is the same ending by the other road.
+ SYN_RECEIVED is not reset, because the client's ACK may still be in flight;
+ it is BOUNDED rather than held, so a caller that sends a SYN and vanishes
+ cannot pin the single socket. The bound counts re-listens rather than ticks
+ because `arm64-net-io-accept` never calls `net-tick`.
 
   net-halfopen-relisten-budget : Integer = 8
 
@@ -544,31 +469,10 @@ Section: Inbound Frame Processing
     else if et == eth-type-ipv4 then net-process-ip-within sess frame eth-header-size lim
     else NetResult { session = sess, output = "unknown ethertype", data = [], data-off = 0, data-stop = 0 }
 
- THE IPv4 BRANCH DOES NOT COPY. `eth-payload` built a fresh list of the payload
- for no reason but to give the IP layer an index base of 0, and that copy is
- 16,400 bytes on a 1,514-byte frame (`net-recv-heap`). The ARP branch keeps its
- copy: an ARP payload is 28 bytes and the offset forms would buy nothing.
-
- WE LEARN ONLY FROM A REPLY ADDRESSED TO US. Damian ruled it 2026-08-19
- (CurrentPlan Decisions 2): learning from any frame on the wire is cache
- poisoning by construction. Until 2026-08-20 this added the sender of EVERY
- arriving ARP frame, so any host on the segment could put an entry in, and a
- request aimed at somebody else entirely still taught us -- `arp-reply-test`
- pinned that case and read `arp-learned` for it.
-
- WHAT IT COSTS IS NOTHING, and that is measurable rather than argued.
- `resolve-dst-mac` is the only consumer of this cache in the tree and it looks
- up ONE address, `sess.gateway-ip`. Every other entry the old code learned was
- never read by anything; the flood arm's 64 survivors were pure liability.
-
- A REQUEST AIMED AT US STILL GETS ITS REPLY and still does not teach us. The
- reply is addressed to `pkt.sender-mac` out of the frame we just parsed, so
- answering never needed the cache, and RFC 826's licence to record the sender
- there is exactly the licence a forged request would use.
-
- The third arm is `arp-ignored`: not ours to answer and not ours to learn from.
- It is a distinct word rather than a silent pass because a stack that says
- nothing about a frame it dropped cannot be told from one that never saw it.
+ We learn only from an ARP reply addressed to us: learning from any frame on
+ the wire is cache poisoning by construction, and RFC 826's licence to record
+ the sender of a request is exactly the licence a forged request would use. A
+ request aimed at us is answered from `pkt.sender-mac` and teaches nothing.
 
   net-process-arp : NetSession, List Integer -> NetResult
   net-process-arp (sess) (payload) =
@@ -580,23 +484,12 @@ Section: Inbound Frame Processing
     then NetResult { session = set-arp sess (arp-cache-add (sess.arp) (pkt.sender-ip) (pkt.sender-mac)), output = "arp-learned", data = [], data-off = 0, data-stop = 0 }
     else NetResult { session = sess, output = "arp-ignored", data = [], data-off = 0, data-stop = 0 }
 
- The other half of the ruling, and without it "solicited" is a word with no
- referent: this stack had no way to ASK. `resolve-dst-mac` broadcast until
- something happened to teach it, which is why the old learn-from-anything was
- load-bearing for `cdx-serve`. Queue the request and the reply that comes back
- is one we solicited.
-
   net-arp-solicit : NetSession, List Integer -> NetSession
   net-arp-solicit (sess) (target) =
     set-outbox sess ((sess.outbox) & [arp-build-request (sess.local-mac) (sess.local-ip) target])
 
   net-arp-known : NetSession, List Integer -> Boolean
   net-arp-known (sess) (target) = list-length (arp-cache-lookup (sess.arp) target) == 6
-
- THIS CHECK WAS ABSENT UNTIL 2026-07-20 AND ITS ABSENCE WAS INVISIBLE, because
- nothing in the tree had ever run two connections at once. `net-receive-segment`
- fed every TCP frame straight into `tcp-step` on whatever session was looping,
- so a session processed traffic addressed to a port it does not own.
 
   net-session-owns-segment : NetSession, TcpSegment -> Boolean
   net-session-owns-segment (sess) (seg) =
@@ -637,14 +530,6 @@ Section: Inbound Frame Processing
  are drawn from the bytes just found untrustworthy. The peer's retransmit
  timer is what recovers it. The named output exists so a caller can see the
  refusal happen, the way not-for-this-port already can.
-
- THE SEGMENT IS NOT COPIED OUT EITHER. `ip-payload` built a second fresh list,
- 16,400 bytes on a 1,514-byte frame, so the checksum and the parse could index
- from 0; both take the offset instead and read the segment where it sits. The
- END is `off + ip-total-length-at`, not the end of the buffer, which is the
- bound `ip-payload` applied and is why a padded Ethernet frame does not feed
- its padding to TCP. The bare `net-process-ip` is the wrapper at 0, for the
- callers that hold an IP packet rather than a frame.
 
   net-process-ip : NetSession, List Integer -> NetResult
   net-process-ip (sess) (ip-pkt) = net-process-ip-at sess ip-pkt 0

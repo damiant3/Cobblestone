@@ -1,27 +1,7 @@
 Chapter: GopZones
   cites Works chapter GopLocale
 
- The zone table: which places this machine can be, what each one is offset by,
- and which summer time rule it follows. It cites the calendar and nothing
- else, so a caller that wants to know what time it is somewhere does not drag
- a filesystem in with it.
-
- THIS IS NOT A TZDATA PORT AND MUST NOT GROW INTO ONE. It is a few dozen
- zones, hand written, carrying the rule each follows AS OF 2026-09-07. A
- government that moves a date makes one row here wrong, and the fix is a one
- line edit and a re-measure rather than a database. The design says this in
- the same words: `docs/Designs/Active/Apps/ClockAndZone.md`.
-
- The offsets are MINUTES because a sixth of the world does not live on a whole
- hour. India is +05:30, Nepal +05:45, Chatham +12:45, and a design that cannot
- say those cannot say where those people are.
-
 Section: The Row
-
- `zr-stripe` is which of the 24 map bands the zone is drawn in, and it is the
- STANDARD offset rounded to an hour, never the summer one. A stripe that moved
- twice a year would make the map lie for half of it, and the map is the thing
- somebody uses to find their zone before they know its name.
 
   ZoneRow = record {
     zr-name : Text,
@@ -35,10 +15,6 @@ Section: The Row
   zrow (n) (c) (b) (r) (s) = ZoneRow { zr-name = n, zr-city = c, zr-base = b, zr-rule = r, zr-stripe = s }
 
 Section: The Table
-
- Ordered west to east, because that is the order the map is in and the list
- sits beside the map. Within a stripe the ordering is by population, so the
- first row of a stripe is the one most people picking that stripe want.
 
   zone-rows : List ZoneRow = [
     zrow "Etc/GMT+12" "International Date Line West" (0 - 720) loc-dst-none (0 - 12),
@@ -109,10 +85,6 @@ Section: The Table
 
 Section: Asking
 
- THE ID IS THE INDEX PLUS ONE, so that zero can mean "no zone chosen, just an
- offset". A stored zero is what a machine that only ever had a `CTZ1` record
- has, and it must not read as Midway.
-
   zone-id-of : Integer -> Integer
   zone-id-of (i) = i + 1
 
@@ -122,18 +94,6 @@ Section: Asking
   zone-row-of : Integer -> ZoneRow
   zone-row-of (id) = zone-at (if zone-valid id then id - 1 else 0)
 
- AN ID IS POSITIONAL AND A NAME IS NOT, which is why anything that names a
- particular zone must come in through here. Inserting one row into the table
- shifts every id after it, and a caller holding a literal id then reads a
- different city while continuing to look correct: it happened the first time a
- row was added, to a test that had pinned London, Sydney and Kolkata by number
- and afterwards measured three other places while still reporting three of its
- four verdicts as passes.
-
- The stored record keeps the id and not the name, because a byte is a byte and
- the table is the only thing that turns one into the other. What must never
- hold a literal id is SOURCE.
-
   zone-find-at : Text, Integer, Integer -> Integer
   zone-find-at (nm) (i) (n) =
     if i >= n then 0
@@ -142,10 +102,6 @@ Section: Asking
 
   zone-find : Text -> Integer
   zone-find (nm) = zone-find-at nm 0 zone-count
-
- The offset a zone is at ON A GIVEN DATE, which is the only question worth
- asking of it. The date is the machine's civil date and the hour is its hour,
- which is what makes this answerable without knowing the answer first.
 
   zone-offset-on : Integer, Integer, Integer, Integer, Integer -> Integer
   zone-offset-on (id) (y) (m) (d) (hh) =
@@ -160,22 +116,12 @@ Section: Asking
     else let r = zone-row-of id
     in loc-dst-on (r.zr-rule) y m d hh
 
- A zone's label carries the offset it is at NOW rather than its standard one,
- because a list that says London is UTC+00:00 in July is telling somebody in
- London that the list is wrong.
-
   zone-label : Integer, Integer, Integer, Integer, Integer -> Text
   zone-label (id) (y) (m) (d) (hh) =
     if zone-valid id == False then "no zone"
     else (zone-row-of id).zr-city & "   " & loc-utc-text (zone-offset-on id y m d hh)
 
 Section: Stripes
-
- THE MAP IS 24 BANDS AND THE TABLE IS NOT SORTED INTO THEM. Two zones an hour
- apart can share a stripe (Kathmandu at +05:45 rounds to 6) and a stripe can
- hold none. The walk is linear over the table rather than an index into it,
- because an index would have to be kept in step with the table by hand and the
- table is the thing most likely to be edited.
 
   zone-stripe-min : Integer = 0 - 12
   zone-stripe-max : Integer = 14
@@ -191,10 +137,6 @@ Section: Stripes
 
   zone-stripe-count : Integer -> Integer
   zone-stripe-count (s) = list-length (zone-stripe-ids s)
-
- The first zone of a stripe is what a click on the map selects, which is why
- the table is ordered by population within a stripe: the answer to "I clicked
- the band over western Europe" should be Paris and not the Azores.
 
   zone-stripe-first : Integer -> Integer
   zone-stripe-first (s) =

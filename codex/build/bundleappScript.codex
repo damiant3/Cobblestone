@@ -26,7 +26,7 @@ Chapter: BundleAppScript
 
 Section: Parameters
 
-  bundle-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString]
+  bundle-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param-default "InputsOut" SptString (SeLit "")]
 
 Section: The pipeline, declared before it is spelled
 
@@ -94,6 +94,14 @@ Section: S05 -- Write Output
 
   s05 : PipeStage = PipeStage { ps-name = "write output", ps-why = "join the lines and write the bundle, then report its size", ps-in = ["lines", "ordered", "Out"], ps-out = [body-art], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
+Section: S06 -- Report Inputs
+
+  inputs-list : ShellExpr = SeCast "string[]" (SeAsArray (SeProperty (pipe-ref bundle-arts bundle-params "ordered") "Path"))
+
+  s06-body : List ShellCmd = [ScBlank, ScIf (pipe-ref bundle-arts bundle-params "InputsOut") [ScDotNetCall "System.IO.File" "WriteAllLines" [pipe-ref bundle-arts bundle-params "InputsOut", inputs-list]] []]
+
+  s06 : PipeStage = PipeStage { ps-name = "report inputs", ps-why = "list every cited chapter the bundle read, for a caller's staleness manifest", ps-in = ["ordered", "InputsOut"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
+
 Section: Assembly
 
  The stage list is the script. Ordering is still list order here rather than a
@@ -101,7 +109,7 @@ Section: Assembly
  linear script and a sort that reorders nothing is a claim this migration
  cannot test.
 
-  bundle-pipe : Pipeline = Pipeline { pl-name = "bundle-app", pl-doc = "Bundle a Codex application source file with all its transitive cited dependencies into a single .codex file", pl-params = bundle-params, pl-stages = [PsStage s01, PsStage s02, PsStage s03, PsStage s04, PsStage s05] }
+  bundle-pipe : Pipeline = Pipeline { pl-name = "bundle-app", pl-doc = "Bundle a Codex application source file with all its transitive cited dependencies into a single .codex file", pl-params = bundle-params, pl-stages = [PsStage s01, PsStage s02, PsStage s03, PsStage s04, PsStage s05, PsStage s06] }
 
   opening : [Console] Nothing = act
     print-line-uni (emit-powershell (pipeline-to-shell bundle-pipe))

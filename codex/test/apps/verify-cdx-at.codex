@@ -1,0 +1,182 @@
+Chapter: VerifyCdxAt
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+  cites Foreword chapter CCE
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  fill-bytes : Integer, Integer, List Integer -> List Integer
+  fill-bytes (i) (n) (acc) =
+    if i >= n then acc
+    else fill-bytes (i + 1) n (list-push acc (bit-and (i * 7 + 3) 255))
+
+  to-buf : Integer, List Integer, Integer, Integer -> Integer
+  to-buf (buf) (xs) (i) (n) =
+    if i >= n then buf
+    else let z = poke-byte buf i (list-at xs i)
+    in to-buf buf xs (i + 1) n
+
+  copy-to-buf : List Integer -> Integer
+  copy-to-buf (xs) = to-buf (alloc-bytes (list-length xs)) xs 0 (list-length xs)
+
+  flip-at : List Integer, Integer -> List Integer
+  flip-at (xs) (k) = flip-loop xs k 1 0 (list-length xs) []
+
+  flip-bits : List Integer, Integer, Integer -> List Integer
+  flip-bits (xs) (k) (mask) = flip-loop xs k mask 0 (list-length xs) []
+
+  flip-loop : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  flip-loop (xs) (k) (mask) (i) (n) (acc) =
+    if i >= n then acc
+    else flip-loop xs k mask (i + 1) n (list-push acc (if i == k then bit-xor (list-at xs i) mask else list-at xs i))
+
+  set-byte : List Integer, Integer, Integer -> List Integer
+  set-byte (xs) (k) (v) = flip-loop xs k (bit-xor (list-at xs k) v) 0 (list-length xs) []
+
+  set-le16 : List Integer, Integer, Integer -> List Integer
+  set-le16 (xs) (k) (v) = set-byte (set-byte xs k (bit-and v 255)) (k + 1) (bit-and (bit-shr v 8) 255)
+
+  set-le32 : List Integer, Integer, Integer -> List Integer
+  set-le32 (xs) (k) (v) = set-le16 (set-le16 xs k (bit-and v 65535)) (k + 2) (bit-and (bit-shr v 16) 65535)
+
+  resign : List Integer -> List Integer
+  resign (bin) =
+    let hash-bytes = cdxb-hash-words-to-bytes (sha256 (list-slice bin cdx-header-fixed-size (list-length bin)))
+    in let sig = ed25519-sign test-sk (ed25519-public-key test-sk) hash-bytes
+    in list-slice bin 0 8 & hash-bytes & list-slice bin 40 72 & sig & list-slice bin 136 (list-length bin)
+
+  image : Integer, Integer -> List Integer
+  image (text-len) (flags) = cdx-encode-signed (CdxBinaryParts {
+      flags = __narrow flags,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 },
+        CdxCapability { cap-id = cdx-cap-network, direction = cdx-dir-read, scope = "10.0.0.1:80", max-duration = 0 },
+        CdxCapability { cap-id = cdx-cap-filesystem, direction = cdx-dir-read, scope = "/data/", max-duration = 0 }
+      ],
+      effects = ["Console", "Network", "FileSystem"],
+      text-bytes = fill-bytes 0 text-len [],
+      rodata-bytes = [1, 2, 3],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+
+  proof-image : Integer, CdxProofEntry -> List Integer
+  proof-image (text-len) (entry) = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = __narrow (cdx-flag-bare-metal + cdx-flag-has-proofs),
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = fill-bytes 0 text-len [],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk [entry]
+
+  both-paths : Text, List Integer, Integer, TrustLattice, Policy -> Text
+  both-paths (name) (bin) (len) (lat) (policy) = both-paths-in name bin len lat policy fact-store-empty
+
+  both-paths-in : Text, List Integer, Integer, TrustLattice, Policy, BareFactStore -> Text
+  both-paths-in (name) (bin) (len) (lat) (policy) (store) =
+    let a = verify-cdx-full bin lat policy 0 store 100
+    in let b = verify-cdx-full-at (copy-to-buf bin) len lat policy 0 store 100
+    in name & " list=" & show-bool (a.accepted) & ":" & a.reason & " at=" & show-bool (b.accepted) & ":" & b.reason & " agree=" & show-bool ((a.accepted == b.accepted) & (a.reason == b.reason))
+
+  at-heap : List Integer, TrustLattice, Policy -> Integer
+  at-heap (bin) (lat) (policy) =
+    let buf = copy-to-buf bin
+    in let h0 = __heap-save
+    in let r = verify-cdx-full-at buf (list-length bin) lat policy 0 fact-store-empty 100
+    in let h1 = __heap-save
+    in if r.accepted then h1 - h0 else 0 - 1
+
+  list-heap : List Integer, TrustLattice, Policy -> Integer
+  list-heap (bin) (lat) (policy) =
+    let h0 = __heap-save
+    in let r = verify-cdx-full bin lat policy 0 fact-store-empty 100
+    in let h1 = __heap-save
+    in if r.accepted then h1 - h0 else 0 - 1
+
+  text-to-hash-bytes : Text -> List Integer
+  text-to-hash-bytes (hex) = hex-to-bytes-loop hex 0 64 []
+
+  hex-to-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  hex-to-bytes-loop (hex) (i) (len) (acc) =
+    if i >= len then acc
+    else if i + 1 >= text-length hex then list-push acc 0
+    else let hi = hex-nibble (to-unicode (char-code (char-at hex i)))
+    in let lo = hex-nibble (to-unicode (char-code (char-at hex (i + 1))))
+    in hex-to-bytes-loop hex (i + 2) len (list-push acc (hi * 16 + lo))
+
+  hex-nibble : Integer -> Integer
+  hex-nibble (c) =
+    if c >= 48 & c <= 57 then c - 48
+    else if c >= 97 & c <= 102 then c - 87
+    else if c >= 65 & c <= 70 then c - 55
+    else 0
+
+  net-scope-of : LoadDecision -> Text
+  net-scope-of (d) = when d
+    is LoadApproved (g) -> g.net-scope
+    is LoadDenied (r) -> ""
+
+Section: Body
+  opening : [Console] Nothing =
+    let good = image 4096 cdx-flag-bare-metal
+    in let n = list-length good
+    in let lat = lattice-add-direct lattice-empty (read-author-key good) 8000
+    in let low = lattice-add-direct lattice-empty (read-author-key good) 10
+    in let allow = policy-add-rule (policy-empty "test") (rule-allow "allow-all" AlwaysTrue)
+    in let deny = policy-add-rule (policy-empty "test") (rule-deny "deny-all" AlwaysTrue "refused")
+    in let big = image 8192 cdx-flag-bare-metal
+    in let proofs = proof-image 64 (CdxProofEntry { kind = __narrow cdx-proof-termination, hash-bytes = cdx-zero-bytes 32 })
+    in let pf = fact-create ProofFact "termination-proof" "author" 0
+    in let pstore = fact-store fact-store-empty pf
+    in let proven = proof-image 64 (CdxProofEntry { kind = __narrow cdx-proof-termination, hash-bytes = text-to-hash-bytes (pf.hash) })
+    in let pn = list-length proven
+    in let d1 = evaluate-load good lat allow 0 fact-store-empty 100
+    in let d2 = evaluate-load-at (copy-to-buf good) n lat allow 0 fact-store-empty 100
+    in let a4 = at-heap good lat allow
+    in let a8 = at-heap big lat allow
+    in let l4 = list-heap good lat allow
+    in let l8 = list-heap big lat allow
+    in act
+      print-line-uni (both-paths "valid" good n lat allow)
+      print-line-uni (both-paths "text-flip" (flip-at good 1000) n lat allow)
+      print-line-uni (both-paths "sig-flip" (flip-at good 100) n lat allow)
+      print-line-uni (both-paths "key-flip" (flip-at good 50) n lat allow)
+      print-line-uni (both-paths "magic" (flip-at good 0) n lat allow)
+      print-line-uni (both-paths "short" (list-slice good 0 100) 100 lat allow)
+      print-line-uni (both-paths "untrusted" good n low allow)
+      print-line-uni (both-paths "denied" good n lat deny)
+      print-line-uni (both-paths "proofs" proofs (list-length proofs) lat allow)
+      print-line-uni (both-paths-in "proven" proven pn lat allow pstore)
+      print-line-uni (both-paths-in "proof-flip" (flip-at proven (pn - 1)) pn lat allow pstore)
+      print-line-uni (both-paths-in "flag-clear" (flip-bits proven 6 cdx-flag-has-proofs) pn lat allow pstore)
+      print-line-uni (both-paths "flag-set" (flip-bits good 6 cdx-flag-has-proofs) n lat allow)
+      print-line-uni (both-paths "resigned" (resign good) n lat allow)
+      print-line-uni (both-paths "cap-overrun" (resign (set-le32 good (read-le64 good 136 + 4) 60000)) n lat allow)
+      print-line-uni (both-paths "eff-overrun" (resign (set-le16 good (read-le64 good 152 + 2) 60000)) n lat allow)
+      print-line-uni ("load list=" & show (load-bitmask d1) & " at=" & show (load-bitmask d2) & " scope=" & load-scope d2 & " net=" & net-scope-of d2 & " agree=" & show-bool ((load-bitmask d1 == load-bitmask d2) & (load-scope d1 == load-scope d2) & (net-scope-of d1 == net-scope-of d2)))
+      print-line-uni ("at-heap accepted=" & show-bool ((a4 >= 0) & (a8 >= 0)) & " flat=" & show-bool (a8 == a4) & " under-64k=" & show-bool (a4 < 65536))
+      print-line-uni ("list-heap grows=" & show-bool (l8 > l4) & " faster-than-at=" & show-bool ((l8 - l4) > (a8 - a4)) & " at-below-list=" & show-bool (a8 < l8))
+    end
+
+Page 1

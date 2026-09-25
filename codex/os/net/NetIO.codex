@@ -6,15 +6,6 @@ Chapter: NetIO
   cites Net chapter MessageFraming
   cites Foreword chapter CCE
 
- This is the layer where the frames stop being data and start being
- traffic, so this is the layer that declares Network.Read and
- Network.Write. Everything below it (NetworkStack, TcpTransport,
- MessageFraming) only builds and parses bytes and stays pure;
- everything above it inherits these rows and must declare them, which
- is what earns a program cap-network-read and cap-network-write at
- boot. Until 2026-07-13 the NIC intrinsics were typed pure and gated
- by nothing, so this whole file was effect-free and said so.
-
  The __heap-save / __heap-restore pairs are load-bearing and are why
  the effectful binds sit INSIDE an act while the save stays a pure let
  OUTSIDE it. Each of these loops polls up to fifty million times. The
@@ -26,22 +17,14 @@ Chapter: NetIO
 
 Section: The Poll Clock
 
- A tick here is a count of empty polls and not a duration, because this
- layer has no clock. How many polls that count should be is a question
- about the DRIVER underneath, so NetDriver answers it: it measures the rate
- once at bring-up and NetIO reads the answer. A guest that never brings the
- driver up reads NetDriver's fallback, which is the 100000 this line held
- until 2026-08-14, so nothing that was tuned against the NE2000 moves.
-
- Both numbers were wall-clock constants wearing tick clothing, and both had
- to move together. Give up takes at most 288 ticks: net-rto-max-tries is 5
+ A tick is a count of empty polls whose rate NetDriver measures at bring-up.
+ Give up takes at most 288 ticks: net-rto-max-tries is 5
  and every backoff interval is clamped at net-rto-max-ticks 48, so 48 for
  the first interval and 48 for each of the five retries. The fuel cap has
  to sit above that ladder or a loop waiting on a peer that has gone away
  ends by FUEL, which returns exactly what an ordinary timeout returns,
  instead of by give-up, which sets TcpClosed and says so. Expressing the
- cap in ticks is what keeps that true at any measured rate; at the fallback
- interval it is 50,000,000, the literal this line carried before.
+ cap in ticks is what keeps that true at any measured rate.
 
   net-io-max-ticks : Integer = 500
 
@@ -51,21 +34,12 @@ Section: The Poll Clock
   net-io-max-polls : Integer
   net-io-max-polls = net-io-tick-interval * net-io-max-ticks
 
- THE DRAIN IS THE ONE WAIT THAT MUST SIT BELOW THE LADDER, and it is the
- opposite of the rule above it. A loop waiting for a peer to appear should
- end by give-up, so its cap sits ABOVE 288 and 500 is right. The drain is
- not waiting for the connection, it is waiting for room in a retransmit
- queue, and it is entered ONCE PER 1400-BYTE CHUNK: at 288 ticks a stalled
- peer costs 28.8 s per chunk and a stage that sends a few kilobytes ends the
- run. Damian ruled the trade on 2026-08-21 -- "tcp correctness is a working
- nic, not adherence to a standard I can't use because the nic is broke" --
- so the drain gives up early and the CALLER decides, which is what
- `net-io-send-raw-checked` exists to let it do.
-
- 96 is two clamped RTO intervals (`net-rto-max-ticks` 48), so a merely slow
- peer still gets two full retransmit cycles before the drain stops, and it
- cannot reach the 288 the ladder needs. Both numbers are read by
- `codex/test/net-drain-budget`, which fails if either crosses the ladder.
+ The drain is entered once per 1400-byte chunk and waits for room in the
+ retransmit queue, not for the peer, so its cap sits BELOW the 288-tick
+ give-up ladder: at 288 a stalled peer costs 28.8 s per chunk. 96 is two
+ clamped RTO intervals (`net-rto-max-ticks` 48), so a slow peer still gets two
+ retransmit cycles; `codex/test/net-drain-budget` fails if either number
+ crosses the ladder.
 
   net-io-drain-ticks : Integer = 96
 
@@ -74,6 +48,17 @@ Section: The Poll Clock
 
   net-io-conn-closed : TcpTransportState -> Boolean
   net-io-conn-closed (ts) = when ((ts.session).conn).state
+    is TcpClosed -> True
+    is otherwise -> False
+
+ The peer has sent its FIN (RFC 9293 section 3.10.7.4), so no more data can
+ arrive and a receive is at end of stream. A send may still proceed.
+
+  net-io-peer-finished : TcpTransportState -> Boolean
+  net-io-peer-finished (ts) = when ((ts.session).conn).state
+    is TcpCloseWait -> True
+    is TcpLastAck -> True
+    is TcpTimeWait -> True
     is TcpClosed -> True
     is otherwise -> False
 
@@ -134,25 +119,6 @@ Section: Listen and Accept
    end
 
 Section: Resolve The Next Hop
-
- `net-process-arp` learns only from a reply addressed to us (NetworkStack,
- Damian's ruling of 2026-08-19), so something has to ASK. This is that
- something: it queues an ARP request for the address `resolve-dst-mac` will
- look up, flushes it, and polls until the cache holds the answer or the fuel
- runs out. A caller that skips it is not broken -- `resolve-dst-mac` falls back
- to broadcast, which a switch delivers -- it is merely shouting.
-
- THE LOOP IS ONE SELF TAIL CALL and the re-solicit is a branch inside it
- rather than a second function, for the reason the chapter head gives: a
- mutually recursive pair here would leave frames on a stack with no guard
- page. The request goes out once per tick and not once per poll, because a
- poll is nanoseconds and a broadcast is a frame every host on the segment has
- to look at.
-
- It answers the transport unchanged when the fuel runs out. That is
- deliberate: an unresolved hop is not a failure to connect, it is a caller
- that will broadcast, and the caller finds out from `net-arp-known` if it
- cares.
 
   net-io-resolve : TcpTransportState, List Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-resolve (ts) (target) = net-io-resolve-hop ts target 0 net-io-tick-interval [] 0
@@ -224,17 +190,6 @@ Section: Connect and Wait
 
 Section: Send
 
- net-io-send-chunk rebuilds the transport around the new session, and
- until 2026-07-14 it rebuilt it without recv-base, recv-len or
- recv-cap. A record field that is not named is not written, and __alloc
- zero-fills, so those three came back as zero -- which meant that after
- any send, the receive buffer's base address was 0. The next inbound
- frame fed through transport-feed-raw, which writes with
- __buf-write-bytes (ts.recv-base) ..., so the bytes off the wire landed
- at physical address 0: the IDT and the kernel metadata cells. Send,
- then receive, is the ordinary shape of a request, so the trust
- transport and the DTLS endpoint drove it.
-
   net-mss : Integer = 1400
 
   net-io-send-drain : TcpTransportState, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
@@ -293,15 +248,6 @@ Section: Send
   net-io-send-raw (ts) (data) = net-io-send-chunk ts data 0 (list-length data)
 
 Section: Send, Checked
-
- Testing the two refusal predicates is NOT enough and the first version of
- this section did only that. `net-send` answers `ActError` and produces no
- frame whenever the state machine declines the write, and in FIN_WAIT_1,
- FIN_WAIT_2 and LAST_ACK (`Tcp.codex`) neither `net-rexmit-full` nor
- `net-io-conn-closed` is true, so a send after our own close passed both
- guards and dropped its bytes while
- reporting complete. The predicate that holds for every such case is the
- outbox: a non-empty chunk that produced no frame did not go.
 
  The stop at a refused chunk is not the defect and must not be removed:
  stopping costs one slice where walking the rest of the buffer cost 593,152
@@ -365,13 +311,6 @@ Section: Sending Text
   net-io-send-text : TcpTransportState, Text -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-text (ts) (t) = net-io-send-text-loop ts t 0 (text-length t)
 
- `net-io-send-text-loop` advances its offset to `stop` whether or not the
- chunk went out, so a refusal partway through does not end the walk. The
- consequence is worse than the shortfall it was found as: `net-io-send-chunk`
- drains before each chunk, so a queue that frees again resumes sending, and
- the far end is then handed the bytes either side of the refusal with the
- refused ones missing from the middle. The checked loop stops instead.
-
   net-io-send-text-loop-checked : TcpTransportState, Text, Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
   net-io-send-text-loop-checked (ts) (t) (off) (len) (sent) =
    if off >= len then NetSendResult { ns-transport = ts, ns-sent = sent, ns-complete = True }
@@ -407,7 +346,7 @@ Section: Receive
      in let m = __heap-save
      in net-io-recv-wait ta tries since rx1 m
    else if tries > net-io-max-polls then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else if net-io-conn-closed ts then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+   else if net-io-peer-finished ts then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
    else if since >= net-io-tick-interval then act
      ticked <- flush-transport-outbox (transport-tick ts)
      net-io-recv-wait (transport-compact-past ticked mark) (tries + 1) 0 rx mark
@@ -452,7 +391,7 @@ Section: Receive Parked
      in net-io-recv-parked ta per-tick ticks tries mark rx1 m
    else if ticks > net-io-max-ticks then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
    else if tries > net-io-max-polls then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else if net-io-conn-closed ts then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+   else if net-io-peer-finished ts then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
    else if hpet-ticks - mark >= per-tick then act
      ticked <- flush-transport-outbox (transport-tick ts)
      net-io-recv-parked (transport-compact-past ticked hmark) per-tick (ticks + 1) (tries + 1) (mark + per-tick) rx hmark
@@ -490,7 +429,7 @@ Section: Receive Raw (no framing)
      in let m = __heap-save
      in net-io-recv-raw-poll ta tries since rx1 m
    else if tries > net-io-max-polls then RawRecvResult { transport = ts, data = [], has-data = False }
-   else if net-io-conn-closed ts then RawRecvResult { transport = ts, data = [], has-data = False }
+   else if net-io-peer-finished ts then RawRecvResult { transport = ts, data = [], has-data = False }
    else if since >= net-io-tick-interval then act
      ticked <- flush-transport-outbox (transport-tick ts)
      net-io-recv-raw-poll (transport-compact-past ticked mark) (tries + 1) 0 rx mark

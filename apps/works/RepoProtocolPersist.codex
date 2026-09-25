@@ -13,10 +13,6 @@ Chapter: RepoProtocolPersist
   cites Works chapter Annotation
   cites Works chapter Discussion
 
- Persistent storage for the Codex repository protocol. Nine
- fact kinds (30-38) are serialized as text and stored via DiskFacts,
- following the ServicesPersist pattern.
-
 Section: Kind Constants
 
   persist-kind-definition : Integer = 30
@@ -31,20 +27,9 @@ Section: Kind Constants
   persist-kind-tombstone : Integer = 39
   persist-kind-index-snapshot : Integer = 40
 
- Ruling 20 said "a new fact kind 40" and 40 was already this snapshot, with 41
- taken by `FactArchive`'s base record. The ruling's substance is the shape (a
- new kind, additive, carrying the relation in its own fact) and not the
- number, so this takes the first free one ABOVE the block rather than filling
- the 28/29 gap, whose reason is not written down anywhere and which a reader
- would have to assume was free.
-
   persist-kind-supersession : Integer = 42
 
 Section: Record Types
-
- New record types for fact kinds that lack existing application
- types. Kinds 35-38 serialize existing types from Annotation,
- RepoProtocol, and Discussion.
 
   SourceDefinition = record {
     sd-hash : Text,
@@ -135,13 +120,6 @@ Section: Helpers
 
 Section: Definition Persistence (Kind 30)
 
- The wire format itself -- the nine fields, the ninth-pipe rule, the
- length-prefixed content, the signature's hex -- lives in Foreword chapter
- SourceDefWire, so that the compiler's reader (FactDisk) and this writer
- decode one format and not two. This chapter maps its own SourceDefinition
- to and from that wire record; the legacy pointer-shaped records, which are
- this store's history and not the wire format, stay here.
-
   def-to-wire : SourceDefinition -> SourceDefWire
   def-to-wire (d) =
     SourceDefWire {
@@ -174,8 +152,14 @@ Section: Definition Persistence (Kind 30)
     let parts = text-split line "|"
     in if list-length parts < 4 then None
     else let signer = if list-length parts >= 6 then list-at parts 4 else ""
-    in let sig = if list-length parts >= 6 then hex-decode (list-at parts 5) else []
-    in Just (SourceDefinition {
+    in let sig = if list-length parts >= 6 then hex-decode-checked (list-at parts 5) else Just []
+    in when sig
+      is None -> None
+      is Just (sg) -> source-def-of-legacy parts signer sg
+
+  source-def-of-legacy : List Text, Text, List Integer -> Maybe SourceDefinition
+  source-def-of-legacy (parts) (signer) (sig) =
+    Just (SourceDefinition {
       sd-hash = list-at parts 0,
       sd-path = list-at parts 1,
       sd-quire = list-at parts 2,
@@ -225,14 +209,6 @@ Section: A Definition Is A Signed Fact
     bundle-from-definitions (repo-persist-load-all-definitions store)
 
 Section: An Index Of Works
-
- So the index is built by walking the definitions in LOG ORDER and letting
- later writes overwrite earlier ones. Two things fall out, and they are the two
- halves of what a repository is:
-
-   wi-current maps a path to the hash of its current content. That is the tree.
-   wi-works maps a hash to the work. That is the history, and it is complete,
-   because a content-addressed store cannot lose an edition it was given.
 
   WorkIndex = record {
     wi-current : HamtMap Text,
@@ -470,16 +446,6 @@ Section: Persisting The Index
 
 Section: Authenticated Removal
 
- Second, it resolves each path by the SIGNED TIMESTAMP, not by log position.
- This is what closes REPLAY. A tombstone or a definition is signed together
- with its timestamp, so an attacker who can append to the log can copy an old
- assertion forward but cannot forge a newer one. The tree records, per path,
- the timestamp of the assertion currently deciding it, and an assertion changes
- a path only when its timestamp strictly exceeds that -- so a replayed old
- tombstone cannot retire a path a newer definition has re-added, and a replayed
- old definition cannot resurrect a path a newer tombstone has retired. Log
- order decides nothing an attacker could exploit; only the signatures do.
-
   Tombstone = record {
     tomb-path : Text,
     tomb-signer : Text,
@@ -514,7 +480,7 @@ Section: Authenticated Removal
       then Tombstone {
         tomb-path = list-at parts 0,
         tomb-signer = list-at parts 1,
-        tomb-signature = hex-decode (list-at parts 2),
+        tomb-signature = hex-or-empty (hex-decode-checked (list-at parts 2)),
         tomb-author = list-at parts 3,
         tomb-timestamp = parse-decimal-full (list-at parts 4)
       }
@@ -522,6 +488,12 @@ Section: Authenticated Removal
         tomb-path = line, tomb-signer = "", tomb-signature = [],
         tomb-author = "", tomb-timestamp = 0
       }
+
+  hex-or-empty : Maybe (List Integer) -> List Integer
+  hex-or-empty (m) =
+    when m
+      is Just (bs) -> bs
+      is None -> []
 
   tombstone-path : Text -> Text
   tombstone-path (line) = (tombstone-from-text line).tomb-path
@@ -547,13 +519,6 @@ Section: Authenticated Removal
         then verify-fact-signature (tk.public-key) (source-def-signed d)
         else False
     else False
-
- The authenticated build carries, beside the index, a stamp per path: the
- timestamp of the assertion currently deciding that path. An assertion -- a
- definition or a tombstone -- moves a path only when its own timestamp strictly
- exceeds the stamp, so nothing an attacker replays out of the log can override
- a newer signature. A path with no stamp yet is decided by the first verified
- assertion to name it.
 
   VerifiedAcc = record {
     va-index : WorkIndex,
@@ -907,7 +872,13 @@ Section: Proposal Persistence (Kind 36)
   proposal-from-persist-text (line) =
     let parts = text-split line "|"
     in if list-length parts < 10 then None
-    else let target = AnnotationTarget {
+    else when hex-decode-checked (list-at parts 6)
+      is None -> None
+      is Just (sig) -> proposal-of-persist-parts parts sig
+
+  proposal-of-persist-parts : List Text, List Integer -> Maybe Proposal
+  proposal-of-persist-parts (parts) (sig) =
+    let target = AnnotationTarget {
       chapter = list-at parts 2,
       path = list-at parts 3
     }
@@ -918,7 +889,7 @@ Section: Proposal Persistence (Kind 36)
       description = list-at parts 8,
       justification = list-at parts 9,
       changed-definitions = split-comma (list-at parts 7),
-      signature = hex-decode (list-at parts 6),
+      signature = sig,
       timestamp = parse-decimal-full (list-at parts 4),
       status = int-to-proposal-status (parse-decimal-full (list-at parts 5))
     }
@@ -949,18 +920,6 @@ Section: Proposal Persistence (Kind 36)
       is None -> parse-proposal-list texts (i + 1) len acc
 
 Section: Supersession Persistence (Kind 40)
-
- Three fields and no signature, deliberately. A verdict is an assertion about a
- proposal and is signed so a reader can tell who made it; a supersession is a
- LINK, and the authority for it is the new proposal, which is signed already.
- Signing the link too would answer a question nobody asks and put a second
- fingerprint on the chain for a reader to reconcile with the first.
-
- The ids are opaque here: this chapter does not check that either end exists,
- because a store is scanned in the order it was written and the new proposal
- may not have been read yet. Whether a link points at something is the
- reader's question, and the pane must SAY when it does not rather than drop
- the row (ruling 20's orphan requirement).
 
   supersession-to-persist-text : Supersession -> Text
   supersession-to-persist-text (s) =
@@ -1010,7 +969,13 @@ Section: Verdict Persistence (Kind 37)
   verdict-from-persist-text (line) =
     let parts = text-split line "|"
     in if list-length parts < 8 then None
-    else let kind-int = parse-decimal-full (list-at parts 3)
+    else when hex-decode-checked (list-at parts 5)
+      is None -> None
+      is Just (sig) -> verdict-of-persist-parts parts sig
+
+  verdict-of-persist-parts : List Text, List Integer -> Maybe Verdict
+  verdict-of-persist-parts (parts) (sig) =
+    let kind-int = parse-decimal-full (list-at parts 3)
     in let kind = if kind-int == 0 then Accept
       else if kind-int == 1 then Reject
       else if kind-int == 2 then Amend (list-at parts 4)
@@ -1021,7 +986,7 @@ Section: Verdict Persistence (Kind 37)
       author-fingerprint = list-at parts 2,
       kind = kind,
       reason = list-at parts 7,
-      signature = hex-decode (list-at parts 5),
+      signature = sig,
       timestamp = parse-decimal-full (list-at parts 6)
     }
     in Just verd

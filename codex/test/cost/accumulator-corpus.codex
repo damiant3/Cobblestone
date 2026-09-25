@@ -59,7 +59,7 @@ Section: Positives -- the check MUST catch these
     else p-append-one n (i + 1) (acc & [i])
 
  2. The same shape over Text rather than List, because the cost model's 3.1
-    table is about Text and the append operator is the same one.
+ table is about Text and the append operator is the same one.
 
   p-append-text : Integer, Integer, Text -> Text
   p-append-text (n) (i) (acc) =
@@ -67,13 +67,13 @@ Section: Positives -- the check MUST catch these
     else p-append-text n (i + 1) (acc & "x")
 
  2b. The pair for entry 2, and the one that makes the Text half mean
-    something. Same accumulator, same operator, same self tail call; the only
-    difference is that the right operand ALLOCATES. Since COMPILER-8 (main
-    16039) a Text accumulator extends in place while it stays topmost, so
-    entry 2 is linear and this one is not: `show` allocates between the
-    appends and pushes the accumulator off the frontier, and the copy comes
-    back. This is the shape `unpack-text` had, which is the defect the whole
-    cost model was opened for.
+ something. Same accumulator, same operator, same self tail call; the only
+ difference is that the right operand ALLOCATES. Since COMPILER-8 (main
+ 16039) a Text accumulator extends in place while it stays topmost, so
+ entry 2 is linear and this one is not: `show` allocates between the
+ appends and pushes the accumulator off the frontier, and the copy comes
+ back. This is the shape `unpack-text` had, which is the defect the whole
+ cost model was opened for.
 
   p-append-show : Integer, Integer, Text -> Text
   p-append-show (n) (i) (acc) =
@@ -81,7 +81,7 @@ Section: Positives -- the check MUST catch these
     else p-append-show n (i + 1) (acc & show i)
 
  3. Appending a constant-size LIST rather than a single element. Same class, and
-    it is the form that reads most like ordinary concatenation.
+ it is the form that reads most like ordinary concatenation.
 
   p-append-chunk : Integer, Integer, List Integer -> List Integer
   p-append-chunk (n) (i) (acc) =
@@ -89,25 +89,29 @@ Section: Positives -- the check MUST catch these
     else p-append-chunk n (i + 1) (acc & [i, i, i, i])
 
  4. `pb-expand-blocks` as it was written before it was fixed. This is the one
-    REAL measured instance in the corpus with a published before and after:
-    the chapter's own prose records that at the default 4096 blocks this form
-    needed between two and three gigabytes and died silently below that, with
-    exit zero and truncated output, and that `list-push` fixed it. Entry 7 is
-    the fixed form, so the pair is a control on the corpus itself.
+ REAL measured instance in the corpus with a published before and after:
+ the chapter's own prose records that at the default 4096 blocks this form
+ needed between two and three gigabytes and died silently below that, with
+ exit zero and truncated output, and that `list-push` fixed it. Entry 7 is
+ the fixed form, so the pair is a control on the corpus itself.
 
   p-expand-blocks-old : Integer, Integer, List Integer -> List Integer
   p-expand-blocks-old (n) (i) (acc) =
     if i >= n then acc
     else p-expand-blocks-old n (i + 1) (acc & [i, 0, 0, 0, 0, 0, 0, 0])
 
- 5. The shape of `syslog-decode-bytes`, which the format census records as a
-    latent instance: a body accumulated with `acc &` under a wire-supplied
-    length. Latent because `syslog-parse` has no production caller.
+ 5. A wire body accumulated with `acc &` under a wire-supplied length.
 
   p-syslog-body : Integer, Integer, List Integer -> List Integer
   p-syslog-body (n) (i) (acc) =
     if i >= n then acc
     else p-syslog-body n (i + 1) (acc & [i - (i / 256) * 256])
+
+  p-guard-stuck : Integer, Integer, Integer, List Integer -> List Integer
+  p-guard-stuck (n) (i) (k) (acc) =
+    if i >= n then acc
+    else if k >= 4 then acc
+    else p-guard-stuck n (i + 1) k (acc & [i])
 
 Section: Negatives -- the check MUST NOT flag these
 
@@ -132,9 +136,9 @@ Section: Negatives -- the check MUST NOT flag these
     else n-push-eight (list-push acc v) v (k + 1)
 
  8. HARD NEGATIVE. The accumulator is appended to, in a self-tail-call, with
-    the append operator, and the cost is linear in n because the append runs a
-    fixed FOUR times however large n gets. Any test that reads for the operator
-    flags this.
+ the append operator, and the cost is linear in n because the append runs a
+ fixed FOUR times however large n gets. Any test that reads for the operator
+ flags this.
 
   n-fixed-appends : Integer, Integer, List Integer -> List Integer
   n-fixed-appends (n) (i) (acc) =
@@ -142,9 +146,15 @@ Section: Negatives -- the check MUST NOT flag these
     else if i >= 4 then n-fixed-appends n (i + 1) acc
     else n-fixed-appends n (i + 1) (acc & [i])
 
+  n-fixed-appends-lt : Integer, Integer, List Integer -> List Integer
+  n-fixed-appends-lt (n) (i) (acc) =
+    if i >= n then acc
+    else if i < 4 then n-fixed-appends-lt n (i + 1) (acc & [i])
+    else n-fixed-appends-lt n (i + 1) acc
+
  9. HARD NEGATIVE. An append per iteration, to something that is NOT the
-    accumulator: the appended-to value is rebuilt small every time, so nothing
-    grows across iterations.
+ accumulator: the appended-to value is rebuilt small every time, so nothing
+ grows across iterations.
 
   n-fresh-not-acc : Integer, Integer, List Integer -> List Integer
   n-fresh-not-acc (n) (i) (acc) =
@@ -153,10 +163,10 @@ Section: Negatives -- the check MUST NOT flag these
     in n-fresh-not-acc n (i + 1) (list-push acc (list-at fresh 0))
 
  10. HARD NEGATIVE, and the narrowest of the three. The accumulator IS the
-     appended-to value and the append IS per-iteration, but the right operand
-     is always empty, so the result aliases and nothing is copied. It is a
-     silly function; it is here because it is the case a syntactic rule gets
-     wrong while an allocation-aware one does not.
+ appended-to value and the append IS per-iteration, but the right operand
+ is always empty, so the result aliases and nothing is copied. It is a
+ silly function; it is here because it is the case a syntactic rule gets
+ wrong while an allocation-aware one does not.
 
   n-append-empty : Integer, Integer, List Integer -> List Integer
   n-append-empty (n) (i) (acc) =
@@ -204,6 +214,20 @@ Section: Measurement
   m-p-syslog-body (n) =
     let b = __heap-save
     in let r = keep (p-syslog-body n 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-p-guard-stuck : Integer -> Integer
+  m-p-guard-stuck (n) =
+    let b = __heap-save
+    in let r = keep (p-guard-stuck n 0 0 [])
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-n-fixed-appends-lt : Integer -> Integer
+  m-n-fixed-appends-lt (n) =
+    let b = __heap-save
+    in let r = keep (n-fixed-appends-lt n 0 [])
     in let a = __heap-save
     in (a - b) + r - r
 
@@ -275,9 +299,11 @@ Section: Entry
     print-line-uni (row "p-append-chunk     " (m-p-append-chunk base) (m-p-append-chunk (base * 2)) (m-p-append-chunk (base * 4)))
     print-line-uni (row "p-expand-blocks-old" (m-p-expand-blocks-old base) (m-p-expand-blocks-old (base * 2)) (m-p-expand-blocks-old (base * 4)))
     print-line-uni (row "p-syslog-body      " (m-p-syslog-body base) (m-p-syslog-body (base * 2)) (m-p-syslog-body (base * 4)))
+    print-line-uni (row "p-guard-stuck      " (m-p-guard-stuck base) (m-p-guard-stuck (base * 2)) (m-p-guard-stuck (base * 4)))
     print-line-uni (row "n-push-one         " (m-n-push-one base) (m-n-push-one (base * 2)) (m-n-push-one (base * 4)))
     print-line-uni (row "n-push-block       " (m-n-push-block base) (m-n-push-block (base * 2)) (m-n-push-block (base * 4)))
     print-line-uni (row "n-fixed-appends    " (m-n-fixed-appends base) (m-n-fixed-appends (base * 2)) (m-n-fixed-appends (base * 4)))
+    print-line-uni (row "n-fixed-appends-lt " (m-n-fixed-appends-lt base) (m-n-fixed-appends-lt (base * 2)) (m-n-fixed-appends-lt (base * 4)))
     print-line-uni (row "n-fresh-not-acc    " (m-n-fresh-not-acc base) (m-n-fresh-not-acc (base * 2)) (m-n-fresh-not-acc (base * 4)))
     print-line-uni (row "n-append-empty     " (m-n-append-empty base) (m-n-append-empty (base * 2)) (m-n-append-empty (base * 4)))
   end

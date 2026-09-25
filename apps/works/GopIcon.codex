@@ -3,24 +3,9 @@ Chapter: GopIcon
   cites UI chapter Vector
   cites Works chapter GopDraw
 
- Icons on the GOP framebuffer. `UI chapter Icon` already carries the
- artwork and the lookup; what it does not carry is a blit this path can
- afford. `icon-blit` paints into a `Framebuf`, whose `fb-set` returns a
- record per pixel at 24 bytes each, so a single 1024x768 pass costs 18.9 MB
- that nothing reclaims. The desk's buffer is linear XRGB behind `gop-put`
- at 0 bytes per pixel, and that is what these draw into.
-
  We say:
 
 Section: The Kit
-
- Every icon in `UI chapter Icon` is a module-level definition holding a
- `List Integer`, and a module-level binding is a recipe rather than a cell:
- each mention re-materialises the whole bitmap, 64 Integers for an 8x8.
- Mentioning `icon-set-standard` inside a paint would rebuild all 63 of
- them. So the icons a surface needs are built ONCE into a kit and threaded
- as a parameter, which is the hoist the Guide prescribes for a table read
- in a loop, and no function below this section mentions an icon by name.
 
   IconKit = record {
     ik-dir : Icon,
@@ -50,15 +35,6 @@ Section: The Kit
 
 Section: Blit
 
- The framebuffer is linear and `gop-put` is one `poke-32` at
- `(y * stride + x) * 4`, so a column past the end of a row lands on the
- NEXT row rather than off the screen. The bound against `stride` is the
- one `gop-draw-text` carries, for that reason and no other.
-
- An icon is a 1-bit mask: an on pixel takes the caller's colour and an off
- pixel is left alone, so an icon over a highlighted row keeps the row's
- fill behind it.
-
   gicon-cols : Integer, Integer, Integer, Icon, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   gicon-cols (base) (stride) (rows) (ico) (px) (py) (scale) (color) (row) (col) =
     if col >= ico.ico-width then 0
@@ -78,24 +54,10 @@ Section: Blit
     if scale <= 0 then 0
     else gicon-rows base stride rows ico px py scale color 0
 
- The drawn size is the artwork's width times the scale it is given, and a
- caller laying a row out needs it before it draws.
-
   gicon-size : Icon, Integer -> Integer
   gicon-size (ico) (scale) = ico.ico-width * scale
 
 Section: Drawn Icons
-
- The artwork above is a 1-bit mask eight pixels across, and `comp-icon` shows
- it at `d / 8`, so the desk's icons are eight-pixel drawings magnified three
- or four times. That is a resolution problem before it is a colour one, and
- no amount of blending fixes a shape that only has sixty-four samples in it.
-
- A path has no size, so it is rasterized at whatever the surface asks for.
- `vec-coverage` answers a byte of coverage per pixel; this stores that in an
- `alloc-bytes` blob rather than keeping the `List Integer`, for the reason
- the kit above exists: a module-level list is a recipe and re-materialises at
- every mention, so the artwork has to be rendered once and addressed after.
 
   gicon-render : VecPath, Integer -> Integer
   gicon-render (p) (n) =
@@ -131,19 +93,7 @@ Section: Drawn Icons
     if n <= 0 then 0
     else gicon-cov-rows base stride rows blob n px py color 0
 
- Artwork is authored in a box of `gicon-em` units and rasterized to whatever
- size a surface asks for, so one drawing serves the sidebar's gutter and the
- launcher's row without a second set.
-
   gicon-em : Integer = 32
-
- A `vec-move-to` inside a path starts a new subpath rather than a new path,
- so a drawing is as many contours as it needs. The fill pairs its scanline
- crossings, which is the even-odd rule, and that is what makes a ring out of
- two circles and a frame out of two rectangles without a second primitive:
- a contour inside another one cuts a hole. A shape meant to be solid must
- therefore not be drawn inside another one, which is why the power stem sits
- within the ring's hole rather than across its band.
 
   gicon-box : VecPath, Integer, Integer, Integer, Integer -> VecPath
   gicon-box (p) (x) (y) (w) (h) =
@@ -198,12 +148,6 @@ Section: Drawn Icons
   gicon-vec-power : VecPath
   gicon-vec-power =
     gicon-box (gicon-ring vec-path-new 16 18 12 8) 14 4 4 13
-
- Two contours that OVERLAP cancel where they cross, because the fill pairs
- its crossings: two rectangles sharing a band leave that band empty. Nested is
- fine and is how a ring and a cut-out glyph are drawn; overlapping is not, so
- a cloud is one silhouette rather than three discs and a gear's teeth sit
- clear of its rim.
 
   gicon-vec-clock : VecPath
   gicon-vec-clock =
@@ -346,17 +290,6 @@ Section: Drawn Icons
     else if name == "win-max" then gicon-vec-win-max
     else gicon-vec-file
 
- A name with no drawing falls back to the eight pixel mask rather than to
- nothing, so the set can grow one drawing at a time and every surface keeps
- working while it does.
-
- THE CLOSE MARK IS ONE CONTOUR AND NOT TWO CROSSED BARS. Two bars overlap at
- the centre, and the fill pairs its scanline crossings, so the overlap would
- CANCEL and an X would come out with a hole exactly where the two strokes
- meet. Traced as a single twelve-vertex outline it never crosses itself. The
- maximise frame is the opposite case and is allowed: a box inside a box is
- NESTED, and that is how the same rule makes a ring.
-
   gicon-vec-win-close : VecPath
   gicon-vec-win-close =
     let a = vec-move-to vec-path-new 6 9
@@ -406,11 +339,6 @@ Section: Drawn Icons
     else if i == 21 then "win-max"
     else "file"
 
- Every name has a drawing now, and `gicon-drawn` still exists rather than
- being retired: the eight pixel masks are what a surface falls back to when a
- size disagrees with the one settled at boot, and a name added to the launcher
- tomorrow with no path of its own has to land somewhere.
-
   gicon-drawn-slot : Text, Integer -> Integer
   gicon-drawn-slot (name) (i) =
     if i >= gicon-drawn-count then 0 - 1
@@ -440,16 +368,6 @@ Section: Drawn Icons
     in vec-close p3
 
 Section: By Name
-
- A surface with one icon per row cannot hold a kit: the launcher's fourteen
- entries would need fourteen fields. This answers ONE icon, so a caller pays
- for the one it draws and not for the set, and `icon-set-find` over
- `icon-set-standard` is never the road because the set mention rebuilds all
- 63 bitmaps before the search starts.
-
- An unknown name answers the file icon rather than refusing. A missing glyph
- on a launcher row is a worse outcome than a generic one, and the caller has
- no repair to make at that point in a paint.
 
   gicon-named : Text -> Icon
   gicon-named (name) =

@@ -102,31 +102,15 @@ Section: The Download Loop
     when r
      is (brd1, c2) -> run-download brd1 c2 image (num + 1)
     end
-   end
 
 Section: Gate B -- the real verifier
 
-  read-staged : Integer, Integer -> List Integer
-  read-staged (addr) (len) = read-staged-loop addr len 0 []
-
-  read-staged-loop : Integer, Integer, Integer, List Integer -> List Integer
-  read-staged-loop (addr) (len) (i) (acc) =
-   if i >= len then acc
-   else read-staged-loop addr len (i + 1) (list-push acc (peek-byte addr i))
-
- The staged image is read back out of the bank for Gate B, because
- evaluate-load takes a List Integer. That is the memory gap the OTA
- design names: a 192 KB-SRAM device cannot hold a multi-hundred-KB image
- as a List, and a buffer-taking verifier is the fix. Gate A above does
- not pay it -- sha256-buf hashes the address directly.
-
   gate-b-verdict : Lwm2mFw -> GateBResult
   gate-b-verdict (c) =
-   let staged = read-staged stage-addr (list-length firmware-image)
-   in let author = read-author-key staged
+   let author = read-author-key (cdx-at-read stage-addr 0 cdx-header-fixed-size [])
    in let lat = lattice-add-direct lattice-empty author 8000
    in let policy = policy-add-rule (policy-empty "ota") (rule-allow "allow-all" AlwaysTrue)
-   in let decision = evaluate-load staged lat policy 0 fact-store-empty 100
+   in let decision = evaluate-load-at stage-addr (list-length firmware-image) lat policy 0 fact-store-empty 100
    in if load-approved decision then GateBPass
       else GateBFailAuthor (load-reason decision)
 
@@ -199,7 +183,6 @@ Section: The bank bound and the Size2 hint
     when r
      is (brd1, c2) -> run-s2 brd1 c2 image (num + 1) declared
     end
-   end
 
   bound-arm : Integer, Integer -> [Flash, Device.Mmio] Lwm2mFw
   bound-arm (capacity) (declared) = act

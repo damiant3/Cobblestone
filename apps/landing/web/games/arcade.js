@@ -1454,8 +1454,14 @@ export const GAMES = [
     status: (e, h) => {
       if (e.ce_done(h) === 1) {
         const w = e.ce_winner(h);
-        return `${w === 0 ? 'You go out' : `${named(w, PLAYERS, 'nobody')} goes out`}`
-          + ` · you were left with ${e.ce_size(h, 0)}`;
+        if (w >= 0 && e.ce_size(h, w) === 0) {
+          return `${w === 0 ? 'You go out' : `${named(w, PLAYERS, 'nobody')} goes out`}`
+            + ` · you were left with ${e.ce_size(h, 0)}`;
+        }
+        return `Blocked: nobody can play and the pile is empty · `
+          + (w < 0 ? 'a tie for fewest cards, a draw'
+                   : `${w === 0 ? 'you win' : `${named(w, PLAYERS, '?')} wins`} with the fewest cards`)
+          + ` · you hold ${e.ce_size(h, 0)}`;
       }
       const pen = e.ce_penalty(h);
       return `pile ${card(e.ce_pile(h))}`
@@ -2099,20 +2105,23 @@ export const GAMES = [
     boot: (e, s) => e.mo_new(s, 4),
     step: (e, h, r) => e.mo_step(h, r()),
     done: (e, h) => e.mo_done(h) === 1,
-    // You are player one. There is exactly one decision in this engine
-    // (games-backlog GAME-8: no trading), so a turn is a roll and then, on
-    // an unowned square you can afford, buy or pass.
+    // You are player one: a turn is a roll and then, on an unowned square
+    // you can afford, buy or pass. A seat that wants a deed you hold offers
+    // a swap or a price, and the turn waits for your answer.
     human: 0,
-    turn: (e, h) => e.mo_cur(h),
-    // The engine ends on bankruptcy, which is rare without trading, so most
-    // sessions stop at the page's step bound rather than at mo_cap. Saying
-    // "of 601" invented an ending.
+    turn: (e, h) => (e.mo_twant(h) >= 0 ? 0 : e.mo_cur(h)),
+    // Saying "of 601" invented an ending: the engine ends on bankruptcy.
     status: (e, h) => {
       const money = seq(e.mo_players(h)).map(p =>
         `${PLAYERS[p]} $${e.mo_cash(h, p)}`).join(' ');
       if (e.mo_done(h) === 1) {
         return `turn ${e.mo_turn(h)} · ${money}`
           + ` · ${named(e.mo_winner(h), PLAYERS, 'nobody')} bankrupts the rest`;
+      }
+      if (e.mo_twant(h) >= 0) {
+        const price = e.mo_tprice(h);
+        return `turn ${e.mo_turn(h)} · ${money} · ${PLAYERS[e.mo_cur(h)]} wants one of your deeds`
+          + (price > 0 ? ` for $${price}` : ' in a swap') + ' · accept or decline';
       }
       const offer = e.mo_offered(h);
       return `turn ${e.mo_turn(h)} · ${money}`
@@ -2159,6 +2168,16 @@ export const GAMES = [
         label: 'Leave it',
         run: (e, h) => ({ handle: e.mo_leave(h) }),
         enabled: (e, h) => e.mo_candecide(h, e.mo_cur(h)) === 1,
+      },
+      {
+        label: 'Accept trade',
+        run: (e, h, rand) => ({ handle: e.mo_resume(e.mo_accept(h), rand()) }),
+        enabled: (e, h) => e.mo_twant(h) >= 0,
+      },
+      {
+        label: 'Decline trade',
+        run: (e, h, rand) => ({ handle: e.mo_resume(e.mo_decline(h), rand()) }),
+        enabled: (e, h) => e.mo_twant(h) >= 0,
       },
     ],
     actionsInStage: true,

@@ -1,0 +1,56 @@
+Chapter: DeskIconBoxTest
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Works chapter GopIcon
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites Foreword chapter Console
+
+ `desk-icon-in` must keep a chrome icon inside the content box it is given,
+ on both axes. With the fallback face a three-cell gutter measures 24 device
+ pixels, so a scale taken from the gutter alone draws a 24-row icon, and the
+ short arm's content box is 12 rows: that scale overhangs by 12 rows, and a
+ scale bounded by the box height draws 8. The tall arm's box is 40 rows, where
+ both scales agree on 24; it is the control that the icon still grows to its
+ gutter when the box allows it. Every row prints the lit pixels inside the
+ box beside the ones below it, because a paint that drew nothing also has
+ none below.
+
+Section: Fixtures
+
+  dib-w : Integer = 128
+
+  dib-h : Integer = 96
+
+  dib-gutter : Text = "   "
+
+  dib-node : Integer -> WidgetNode
+  dib-node (h) = __record-set (widget-label "icon" "") "wn-bounds" (layout-rect 10 10 100 h)
+
+  dib-lit : Integer, Integer, Integer, Integer, Integer -> Integer
+  dib-lit (fb) (y) (y1) (x) (acc) =
+    if y >= y1 then acc
+    else if x >= dib-w then dib-lit fb (y + 1) y1 0 acc
+    else dib-lit fb y y1 (x + 1) (if peek-32 fb ((y * dib-w + x) * 4) == 0 then acc else acc + 1)
+
+Section: Reporting
+
+  report : Text, Integer -> [Console] Nothing
+  report (name) (h) = act
+    let fb = alloc-zeroed (dib-w * dib-h * 4) 64
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let n = dib-node h
+    in let c = box-content-from-style (n.wn-bounds) (widget-resolve-style n theme-terminal)
+    in let d = desk-icon-in fb dib-w dib-h n theme-terminal 1 gfont-none "" dib-gutter "folder" ds
+    in let bottom = c.lr-y + c.lr-h
+    in print-line-uni (name & ": content rows " & show (c.lr-h) & ", lit inside " & show (dib-lit fb 0 bottom 0 0) & ", lit below " & show (dib-lit fb bottom dib-h 0 0))
+  end
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    report "short box" 16
+    report "tall box" 44
+  end

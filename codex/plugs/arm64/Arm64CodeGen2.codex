@@ -1020,10 +1020,7 @@ Section: Apply
         else a64-emit-partial-application st-nt name args (list-length args + 1 + a64-type-arity rt)
        is otherwise ->
         let eoa = a64-find-effect-op-addr ((st-nt.extra).effect-op-addrs) name 0
-        in let handler-name = "__handler_" & name
-        in let has-handler = a64-find-func-offset (st-nt.func-names) (st-nt.func-offsets) handler-name 0
-        in if eoa >= 0 & (has-handler >= 0 | a64-op-has-default-handler name) then a64-emit-effect-op-call st-nt eoa args
-        else if has-handler >= 0 then a64-emit-direct-call st-nt handler-name args
+        in if eoa >= 0 & (a64-op-handled st-nt name | a64-op-has-default-handler name) then a64-emit-effect-op-call st-nt eoa args
         else a64-emit-direct-call st-nt name args
     is otherwise ->
      let fr = a64-emit-expr (a64-set-tail-pos st False) func
@@ -1039,9 +1036,11 @@ Section: Apply
     is otherwise -> ""
    in let field-index = a64-find-field-index-st st (ir-expr-type (list-at args 0)) field-name
    in let safe-index = if field-index >= 0 then field-index else 0
+   in let slot = a64-access-slot st (ir-expr-type (list-at args 0)) field-name safe-index
    in let vr = a64-emit-expr st1 (list-at args 2)
-   in let lr = a64-load-local (vr.state) (rl.reg)
-   in let st2 = a64-emit (a64-refuse-unresolved-field (lr.state) (ir-expr-type (list-at args 0)) field-name field-index) (arm64-str (vr.reg) (lr.reg) (safe-index * 8))
+   in let st1a = a64-maybe-clamp (vr.state) (vr.reg) (slot.ty)
+   in let lr = a64-load-local st1a (rl.reg)
+   in let st2 = a64-emit-slot-store (a64-refuse-unresolved-field (lr.state) (ir-expr-type (list-at args 0)) field-name (if slot.offset < 0 then 0 - 1 else field-index)) (vr.reg) (lr.reg) slot
    in A64EmitResult { state = st2, reg = lr.reg }
 
   a64-collect-ir-names : IRExpr, List Text -> List Text
@@ -1270,7 +1269,7 @@ Section: Apply
 
   a64-emit-unsupported-cpu : A64State, Text -> A64EmitResult
   a64-emit-unsupported-cpu (st) (name) =
-   let msg = "[UNSUPPORTED] " & name & ": x86 control registers and CPUID do not exist on this target (refused by design)"
+   let msg = "[UNSUPPORTED] " & name & ": x86 control and debug registers and CPUID do not exist on this target (refused by design)"
    in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
 
  Before this arm they fell through the dispatch tail to a plain call to
@@ -1509,7 +1508,7 @@ Section: Apply
    else if name == "bit-xor" & list-length args == 2 then a64-emit-bit-binop st args 2
    else if name == "bit-shr" & list-length args == 2 then a64-emit-bit-shift st args True
    else if name == "print-line-raw" & list-length args == 1 then a64-emit-single-arg-call st "print-line-uni" (list-at args 0)
-   else if name == "print-uni" & list-length args == 1 then a64-emit-single-arg-call st "print-line-uni" (list-at args 0)
+   else if name == "print-uni" & list-length args == 1 then a64-emit-single-arg-call st "print-uni" (list-at args 0)
    else if name == "print-error" & list-length args == 1 then a64-emit-single-arg-call st "print-line-uni" (list-at args 0)
    else if name == "print-error-uni" & list-length args == 1 then a64-emit-single-arg-call st "print-line-uni" (list-at args 0)
    else if name == "char-code-at" & list-length args == 2 then a64-emit-direct-call st "char-at" args
@@ -1600,9 +1599,16 @@ Section: Apply
    else if name == "port-in-32" then a64-emit-unsupported-port st "port-in-32"
    else if name == "port-out-32" then a64-emit-unsupported-port st "port-out-32"
    else if name == "hosted-kind" then a64-emit-int-lit st 0
+   else if name == "__heap-base" then a64-emit-int-lit st 1073741824
    else if name == "host-socket" then a64-emit-unsupported-socket st "host-socket"
    else if name == "cpu-read-cr0" then a64-emit-unsupported-cpu st "cpu-read-cr0"
    else if name == "cpu-read-cr3" then a64-emit-unsupported-cpu st "cpu-read-cr3"
+   else if name == "cpu-write-dr0" then a64-emit-unsupported-cpu st "cpu-write-dr0"
+   else if name == "cpu-write-dr1" then a64-emit-unsupported-cpu st "cpu-write-dr1"
+   else if name == "cpu-write-dr2" then a64-emit-unsupported-cpu st "cpu-write-dr2"
+   else if name == "cpu-write-dr3" then a64-emit-unsupported-cpu st "cpu-write-dr3"
+   else if name == "cpu-write-dr6" then a64-emit-unsupported-cpu st "cpu-write-dr6"
+   else if name == "cpu-write-dr7" then a64-emit-unsupported-cpu st "cpu-write-dr7"
    else if name == "cpu-cpuid-eax" then a64-emit-unsupported-cpu st "cpu-cpuid-eax"
    else if name == "cpu-cpuid-ebx" then a64-emit-unsupported-cpu st "cpu-cpuid-ebx"
    else if name == "cpu-cpuid-ecx" then a64-emit-unsupported-cpu st "cpu-cpuid-ecx"
@@ -1909,119 +1915,106 @@ Section: Partial Application
 
 Section: Field Layout
 
-  a64-field-byte-width : CodexType -> Integer
-  a64-field-byte-width (ty) =
-   when ty
-    is IntegerTy (lo) (hi) (mode) ->
-     if lo >= 0 then
-      if hi <= 255 then 1
-      else if hi <= 65535 then 2
-      else if hi <= 4294967295 then 4
-      else 8
-     else
-      if lo >= (0 - 128) & hi <= 127 then 1
-      else if lo >= (0 - 32768) & hi <= 32767 then 2
-      else if lo >= (0 - 2147483648) & hi <= 2147483647 then 4
-      else 8
-    is BooleanTy -> 1
-    is UnitTy (n) (inner) -> a64-field-byte-width inner
-    is otherwise -> 8
+ The A64 unsigned-offset load and store scale their 12-bit offset by the
+ access size, so they reach a field only at its natural alignment.
 
-  a64-field-byte-signed : CodexType -> Boolean
-  a64-field-byte-signed (ty) =
-   when ty
-    is IntegerTy (lo) (hi) (mode) -> lo < 0
-    is UnitTy (n) (inner) -> a64-field-byte-signed inner
-    is otherwise -> False
+  a64-ldrh : Integer, Integer, Integer -> List Integer
+  a64-ldrh (rt) (rn) (offset) = arm64-encode (bit-or (bit-or (bit-or #79400000 (bit-shl (bit-and (offset / 2) #FFF) 10)) (bit-shl rn 5)) rt)
 
-  a64-width-prefix : Integer -> Text
-  a64-width-prefix (w) =
-   if w == 8 then "1-"
-   else if w == 4 then "2-"
-   else if w == 2 then "3-"
-   else "4-"
+  a64-strh : Integer, Integer, Integer -> List Integer
+  a64-strh (rt) (rn) (offset) = arm64-encode (bit-or (bit-or (bit-or #79000000 (bit-shl (bit-and (offset / 2) #FFF) 10)) (bit-shl rn 5)) rt)
 
-  a64-field-sort-key : RecordField -> Text
-  a64-field-sort-key (f) =
-   a64-width-prefix (a64-field-byte-width (f.type-val)) & (f.name.value)
+  a64-ldrsb-x : Integer, Integer, Integer -> List Integer
+  a64-ldrsb-x (rt) (rn) (offset) = arm64-encode (bit-or (bit-or (bit-or #39800000 (bit-shl (bit-and offset #FFF) 10)) (bit-shl rn 5)) rt)
 
-  a64-find-target-type : List RecordField, Text, Integer -> CodexType
-  a64-find-target-type (fields) (target) (i) =
-   if i == list-length fields then ErrorTy
-   else let f = list-at fields i
-   in if f.name.value == target then f.type-val
-   else a64-find-target-type fields target (i + 1)
+  a64-ldrsh-x : Integer, Integer, Integer -> List Integer
+  a64-ldrsh-x (rt) (rn) (offset) = arm64-encode (bit-or (bit-or (bit-or #79800000 (bit-shl (bit-and (offset / 2) #FFF) 10)) (bit-shl rn 5)) rt)
 
-  a64-accumulate-offset-width-sort : List RecordField, Text, Integer, Integer, Integer -> Integer
-  a64-accumulate-offset-width-sort (fields) (target-name) (target-w) (i) (acc) =
-   if i == list-length fields then acc
-   else let f = list-at fields i
-   in let f-w = a64-field-byte-width (f.type-val)
-   in if f-w > target-w
-      then a64-accumulate-offset-width-sort fields target-name target-w (i + 1) (acc + f-w)
-      else if f-w == target-w & text-compare (f.name.value) target-name < 0
-      then a64-accumulate-offset-width-sort fields target-name target-w (i + 1) (acc + f-w)
-      else a64-accumulate-offset-width-sort fields target-name target-w (i + 1) acc
+  a64-ldrsw : Integer, Integer, Integer -> List Integer
+  a64-ldrsw (rt) (rn) (offset) = arm64-encode (bit-or (bit-or (bit-or #B9800000 (bit-shl (bit-and (offset / 4) #FFF) 10)) (bit-shl rn 5)) rt)
 
-  A64FieldOffset = record {
+  A64Slot = record {
    offset : Integer,
    width : Integer,
-   signed : Boolean
+   signed : Boolean,
+   ty : CodexType
   }
 
-  a64-cce-byte-offset : List RecordField, Text -> A64FieldOffset
-  a64-cce-byte-offset (fields) (target) =
-   let target-ty = a64-find-target-type fields target 0
-   in let target-w = a64-field-byte-width target-ty
-   in let offset = a64-accumulate-offset-width-sort fields target target-w 0 0
-   in A64FieldOffset { offset = offset, width = target-w, signed = a64-field-byte-signed target-ty }
+  a64-flat-slot : Integer -> A64Slot
+  a64-flat-slot (s) = A64Slot { offset = s * 8, width = 8, signed = False, ty = int-ty-default }
 
-  a64-record-byte-size : List RecordField, Integer, Integer -> Integer
-  a64-record-byte-size (fields) (i) (acc) =
-   if i >= list-length fields then (acc + 7) / 8 * 8
-   else a64-record-byte-size fields (i + 1) (acc + a64-field-byte-width ((list-at fields i).type-val))
-
-  a64-emit-narrow-store : A64State, Integer, Integer, Integer, Integer -> A64State
-  a64-emit-narrow-store (st) (val-reg) (ptr-reg) (offset) (width) =
-   if width == 1 then a64-emit st (arm64-strb val-reg ptr-reg offset)
-   else if width == 2 then a64-emit st (arm64-str-w val-reg ptr-reg offset)
-   else if width == 4 then a64-emit st (arm64-str-w val-reg ptr-reg offset)
-   else a64-emit st (arm64-str val-reg ptr-reg offset)
-
-  a64-emit-narrow-load : A64State, Integer, Integer, Integer, Integer, Boolean -> A64EmitResult
-  a64-emit-narrow-load (st) (dst-reg) (ptr-reg) (offset) (width) (signed) =
-   if width == 1 then A64EmitResult { state = a64-emit st (arm64-ldrb dst-reg ptr-reg offset), reg = dst-reg }
-   else if width == 2 then A64EmitResult { state = a64-emit st (arm64-ldr-w dst-reg ptr-reg offset), reg = dst-reg }
-   else if width == 4 then A64EmitResult { state = a64-emit st (arm64-ldr-w dst-reg ptr-reg offset), reg = dst-reg }
-   else A64EmitResult { state = a64-emit st (arm64-ldr dst-reg ptr-reg offset), reg = dst-reg }
-
-  a64-resolve-record-fields : A64State, CodexType -> List RecordField
-  a64-resolve-record-fields (st) (ty) =
+  a64-record-slot-types : A64State, CodexType -> List CodexType
+  a64-record-slot-types (st) (ty) =
    when ty
     is RecordTy (rn) (tvars) (fields) ->
-     if list-length fields > 0 then fields
-     else a64-find-record-fields-in-defs ((st.extra).type-defs) (rn.value) 0
-    is ConstructedTy (tname) (args) -> a64-find-record-fields-in-defs ((st.extra).type-defs) (tname.value) 0
-    is TypeCon (tname) -> a64-find-record-fields-in-defs ((st.extra).type-defs) (tname.value) 0
+     if list-length fields > 0 then a64-rfield-types fields 0 []
+     else a64-def-slot-types st (rn.value)
+    is ConstructedTy (tname) (args) -> a64-def-slot-types st (tname.value)
+    is TypeCon (tname) -> a64-def-slot-types st (tname.value)
     is otherwise -> []
 
-  a64-find-record-fields-in-defs : List ATypeDef, Text, Integer -> List RecordField
-  a64-find-record-fields-in-defs (defs) (name) (i) =
-   if i >= list-length defs then []
+  a64-def-slot-types : A64State, Text -> List CodexType
+  a64-def-slot-types (st) (name) = a64-rfield-types (record-fields-by-name ((st.extra).type-defs) name 0) 0 []
+
+  a64-rfield-types : List RecordField, Integer, List CodexType -> List CodexType
+  a64-rfield-types (fields) (i) (acc) =
+   if i >= list-length fields then acc
+   else a64-rfield-types fields (i + 1) (list-push acc ((list-at fields i).type-val))
+
+  a64-slot-of : List CodexType, Integer -> A64Slot
+  a64-slot-of (tys) (s) =
+   if s >= list-length tys then a64-flat-slot s
+   else let t = list-at tys s
+   in let w = lir-field-width t
+   in A64Slot { offset = lir-fields-before tys w s 0 0, width = w, signed = lir-field-signed t, ty = t }
+
+  a64-record-size : List CodexType, Integer -> Integer
+  a64-record-size (tys) (slots) =
+   if list-length tys == 0 then slots * 8
+   else (a64-width-sum tys 0 0 + 7) / 8 * 8
+
+  a64-width-sum : List CodexType, Integer, Integer -> Integer
+  a64-width-sum (tys) (i) (acc) =
+   if i >= list-length tys then acc
+   else a64-width-sum tys (i + 1) (acc + lir-field-width (list-at tys i))
+
+  a64-access-slot : A64State, CodexType, Text, Integer -> A64Slot
+  a64-access-slot (st) (ty) (name) (idx) =
+   let tys = a64-record-slot-types st ty
+   in if list-length tys > 0 then a64-slot-of tys idx
+   else a64-slot-scan-defs st ((st.extra).type-defs) (a64-strip-field-name name) idx 0 (a64-flat-slot idx) False
+
+  a64-slot-scan-defs : A64State, List ATypeDef, Text, Integer, Integer, A64Slot, Boolean -> A64Slot
+  a64-slot-scan-defs (st) (defs) (name) (idx) (i) (found) (seen) =
+   if i >= list-length defs then found
    else when list-at defs i
     is ARecordTypeDef (dn) (tparams) (afields) (recmut) (sp) ->
-     if dn.value == name then a64-afields-to-rfields afields 0
-     else a64-find-record-fields-in-defs defs name (i + 1)
-    is otherwise -> a64-find-record-fields-in-defs defs name (i + 1)
+     if a64-find-rec-field-index afields name 0 == idx
+     then let cand = a64-slot-of (a64-def-slot-types st (dn.value)) idx
+       in if seen
+          then (if a64-slot-same cand found then a64-slot-scan-defs st defs name idx (i + 1) found True else A64Slot { offset = 0 - 1, width = 8, signed = False, ty = int-ty-default })
+          else a64-slot-scan-defs st defs name idx (i + 1) cand True
+     else a64-slot-scan-defs st defs name idx (i + 1) found seen
+    is otherwise -> a64-slot-scan-defs st defs name idx (i + 1) found seen
 
-  a64-afields-to-rfields : List ARecordFieldDef, Integer -> List RecordField
-  a64-afields-to-rfields (afields) (i) =
-   if i >= list-length afields then []
-   else let af = list-at afields i
-   in let rty = a64-atype-to-codex-type (af.type-expr)
-   in list-push (a64-afields-to-rfields afields (i + 1)) (RecordField { name = af.name, type-val = rty })
+  a64-slot-same : A64Slot, A64Slot -> Boolean
+  a64-slot-same (a) (b) =
+   if a.offset == b.offset then (if a.width == b.width then a.signed == b.signed else False) else False
 
-  a64-atype-to-codex-type : ATypeExpr -> CodexType
-  a64-atype-to-codex-type (at) = atype-to-codex-type at
+  a64-emit-slot-load : A64State, Integer, Integer, A64Slot -> A64State
+  a64-emit-slot-load (st) (rd) (base) (slot) =
+   let o = if slot.offset < 0 then 0 else slot.offset
+   in if slot.width == 1 then a64-emit st (if slot.signed then a64-ldrsb-x rd base o else arm64-ldrb rd base o)
+   else if slot.width == 2 then a64-emit st (if slot.signed then a64-ldrsh-x rd base o else a64-ldrh rd base o)
+   else if slot.width == 4 then a64-emit st (if slot.signed then a64-ldrsw rd base o else arm64-ldr-w rd base o)
+   else a64-emit st (arm64-ldr rd base o)
+
+  a64-emit-slot-store : A64State, Integer, Integer, A64Slot -> A64State
+  a64-emit-slot-store (st) (val) (base) (slot) =
+   let o = if slot.offset < 0 then 0 else slot.offset
+   in if slot.width == 1 then a64-emit st (arm64-strb val base o)
+   else if slot.width == 2 then a64-emit st (a64-strh val base o)
+   else if slot.width == 4 then a64-emit st (arm64-str-w val base o)
+   else a64-emit st (arm64-str val base o)
 
 Page 2 of 3

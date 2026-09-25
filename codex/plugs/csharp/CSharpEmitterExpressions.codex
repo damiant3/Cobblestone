@@ -78,7 +78,7 @@ Section: Identifier Helpers
                                      else if list-length args == 0 then sanitize (name.value)
                                      else sanitize (name.value) & "<" & emit-cs-type-args args 0 & ">"
     is VectorTy (vn) (vt) -> "List<" & cs-type vt & ">"
-    is VectorMaskTy (vn) -> "List<bool>"
+    is VectorMaskTy (vn) (ve) -> "List<bool>"
     is SizedVecTy (vn) (vt) -> "List<" & cs-type vt & ">"
     is TypeCon (name) -> sanitize (name.value)
     is EffectfulTy (effects) (sc) (ret) -> cs-type ret
@@ -266,6 +266,7 @@ Section: Raw Reference Builtins
    RawBuiltin { name = "lens-http-reply-html", emission = "new Func<long, Func<string, long>>(_p => _b => _LensHttp.reply_html(_p, _Cce.ToUnicode(_b)))" },
    RawBuiltin { name = "process-get-pid", emission = "((long)Environment.ProcessId)" },
    RawBuiltin { name = "hosted-kind", emission = "1L" },
+   RawBuiltin { name = "__heap-base", emission = "6291456L" },
    RawBuiltin { name = "block-sector-count", emission = "0L" },
    RawBuiltin { name = "print-text", emission = "new Func<string, object>(_t => { Console.Write(_Cce.ToUnicode(_t)); return null; })" },
    RawBuiltin { name = "raw-bytes-to-text", emission = "new Func<object, string>(_bs => _Cce.RawBytesToText(_bs))" },
@@ -370,6 +371,10 @@ Section: Apply Chain
    BuiltinEmitter { name = "char-to-text", emit = \args -> \ctx -> \ty -> "((char)" & emit-expr (list-at args 0) ctx & ").ToString()" },
    BuiltinEmitter { name = "char-encode", emit = \args -> \ctx -> \ty -> "_CxText.CharEncode(" & emit-expr (list-at args 0) ctx & ")" },
    BuiltinEmitter { name = "list-length", emit = \args -> \ctx -> \ty -> "((long)" & emit-expr (list-at args 0) ctx & ".Count)" },
+   BuiltinEmitter { name = "vec-length", emit = \args -> \ctx -> \ty -> "((long)" & emit-expr (list-at args 0) ctx & ".Count)" },
+   BuiltinEmitter { name = "vec-head", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx & "[0]" },
+   BuiltinEmitter { name = "vec-singleton", emit = \args -> \ctx -> \ty -> "new List<" & cs-type (cs-vec-elem ty) & "> { " & emit-expr (list-at args 0) ctx & " }" },
+   BuiltinEmitter { name = "vec-cons", emit = \args -> \ctx -> \ty -> "_Buf.lpush<" & cs-type (cs-vec-elem ty) & ">(" & emit-expr (list-at args 1) ctx & ", " & emit-expr (list-at args 0) ctx & ")" },
    BuiltinEmitter { name = "char-at", emit = \args -> \ctx -> \ty -> emit-builtin-char-at args ctx },
    BuiltinEmitter { name = "substring", emit = \args -> \ctx -> \ty -> emit-builtin-substring args ctx },
    BuiltinEmitter { name = "list-at", emit = \args -> \ctx -> \ty -> emit-builtin-list-at args ctx },
@@ -443,6 +448,7 @@ Section: Apply Chain
    BuiltinEmitter { name = "peek-byte", emit = \args -> \ctx -> \ty -> emit-buf-call-2 "peek-byte" args ctx },
    BuiltinEmitter { name = "peek-qword", emit = \args -> \ctx -> \ty -> emit-buf-call-2 "peek-qword" args ctx },
    BuiltinEmitter { name = "hosted-kind", emit = \args -> \ctx -> \ty -> "1L" },
+   BuiltinEmitter { name = "__heap-base", emit = \args -> \ctx -> \ty -> "6291456L" },
    BuiltinEmitter { name = "block-read-sector", emit = \args -> \ctx -> \ty -> "0L" },
    BuiltinEmitter { name = "block-write-sector", emit = \args -> \ctx -> \ty -> "0L" },
    BuiltinEmitter { name = "address-of", emit = \args -> \ctx -> \ty -> "0L" },
@@ -474,7 +480,7 @@ Section: Apply Chain
    BuiltinEmitter { name = "prof-start", emit = \args -> \ctx -> \ty -> "((Func<long, long>)(_n => 0L))(" & emit-expr (list-at args 0) ctx & ")" },
    BuiltinEmitter { name = "prof-dump", emit = \args -> \ctx -> \ty -> "((Func<long, long>)(_n => 0L))(" & emit-expr (list-at args 0) ctx & ")" }
 
-  ])
+  ]
 
   emit-int-mod : List IRExpr, CsCtx -> Text
   emit-int-mod (args) (ctx) =
@@ -666,6 +672,13 @@ Section: Apply Chain
    in let a1 = emit-expr (list-at args 1) ctx
    in let a2 = emit-expr (list-at args 2) ctx
    in "((Func<List<" & ty & ">>)(() => { List<" & ty & "> _l = " & a0 & "; _l[(int)" & a1 & "] = " & a2 & "; return _l; }))()"
+
+  cs-vec-elem : CodexType -> CodexType
+  cs-vec-elem (ty) =
+   when ty
+    is SizedVecTy (n) (et) -> et
+    is ListTy (et) -> et
+    is otherwise -> ErrorTy
 
   emit-builtin-list-snoc : List IRExpr, CsCtx -> Text
   emit-builtin-list-snoc (args) (ctx) =
@@ -917,7 +930,7 @@ Section: Expression Emission
     is IrTextLit (s) (sp) -> "\"" & escape-text s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
-    is IrName (n) (ty) (sp) -> if name-in-list (ctx.locals) n 0 then sanitize n else let raw = lookup-raw-builtin n in if text-length raw > 0 then raw else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n ty "" else let ar = lookup-arity (ctx.arities) n in if ar == 0 then sanitize n & (if lookup-generic-count (ctx.arities) n > 0 then extract-fn-type-args ty else "") & "()" else if ar >= 2 then (if ty-is-concrete-value ty then sanitize n else emit-partial-wrappers 0 ar & sanitize n & "(" & emit-partial-params 0 ar & ")") else if is-lam-name n then (if ty-has-tvar ty then "(_da0 => " & sanitize n & "(_da0))" else "((" & cs-type ty & ")(_da0 => " & sanitize n & "(_da0)))") else sanitize n
+    is IrName (n) (ty) (sp) -> if name-in-list (ctx.locals) n 0 then sanitize n else if n == "vec-empty" then "new List<" & (if ty-has-tvar (cs-vec-elem ty) then "object" else cs-type (cs-vec-elem ty)) & ">()" else let raw = lookup-raw-builtin n in if text-length raw > 0 then raw else if text-length n > 0 & is-upper-letter (char-at n 0) then emit-ctor-upcast n ty "" else let ar = lookup-arity (ctx.arities) n in if ar == 0 then sanitize n & (if lookup-generic-count (ctx.arities) n > 0 then extract-fn-type-args ty else "") & "()" else if ar >= 2 then (if ty-is-concrete-value ty then sanitize n else emit-partial-wrappers 0 ar & sanitize n & "(" & emit-partial-params 0 ar & ")") else if is-lam-name n then (if ty-has-tvar ty then "(_da0 => " & sanitize n & "(_da0))" else "((" & cs-type ty & ")(_da0 => " & sanitize n & "(_da0)))") else sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) -> emit-binary op l r ty ctx
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-expr-at operand ctx (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-expr-at c ctx (depth + 1) & " ? " & emit-expr-at t ctx (depth + 1) & " : " & emit-expr-at el ctx (depth + 1) & ")"

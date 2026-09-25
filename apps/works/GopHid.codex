@@ -1,36 +1,10 @@
 Chapter: GopHid
 
- The whole chapter is pure. It reads and writes two 8-byte buffers and
- calls nothing effectful, so the decode is battery-tested against report
- sequences taken from the HID specification, with no controller and no
- keyboard. codex/test/hid-decode does exactly that.
-
- Boot report layout (HID 1.11, Appendix B.1): byte 0 is a modifier
- bitmap, byte 1 is reserved, and bytes 2 through 7 carry up to six
- usage IDs of keys currently held. It is a set, not a queue: nothing in
- the report says which key changed. Usage 0x01 in any slot is
- ErrorRollOver -- more keys are down than the keyboard can report, and
- the whole report is meaningless.
-
  We say:
 
 Section: One Event At A Time
 
- A single report transition can imply several events at once: pressing
- Shift and H together yields a Shift make and an H make. The consumers
- above take one scancode at a time from a one-byte mailbox, so this
- chapter hands back one event per call and advances prev one step
- toward cur. No queue, no allocation: prev converges on cur after as
- many calls as there were changes, and a caller that stops early simply
- sees the rest of the events on its next visit.
-
 Section: Usage Tables
-
- An independent transcription of the HID Usage Tables, Keyboard/Keypad
- page (0x07), into IBM PC/AT Set-1 make codes. A break code is the make
- code with bit 7 set. Zero means a usage this table does not name; the
- decoder consumes such a key (so prev still converges) and reports no
- scancode for it.
 
   hid-letter-sc : Integer -> Integer
   hid-letter-sc (u) =
@@ -69,10 +43,6 @@ Section: Usage Tables
     else if u == 68 then 87 else if u == 69 then 88
     else 0
 
- The navigation keys a real PS/2 keyboard sends with an 0xE0 prefix.
- Our consumers drop the prefix byte and act on the second byte, so the
- bare make code is exactly what they expect to see.
-
   hid-nav-sc : Integer -> Integer
   hid-nav-sc (u) =
     if u == 79 then 77 else if u == 80 then 75 else if u == 81 then 80
@@ -91,12 +61,6 @@ Section: Usage Tables
     else let d = hid-fn-sc u
     in if d /= 0 then d
     else hid-nav-sc u
-
- Modifier bits, in the order the report packs them: LCtrl, LShift,
- LAlt, LGui, RCtrl, RShift, RAlt, RGui. Only the four that Set-1 names
- without an 0xE2 prefix are mapped. The Gui keys and the right-hand
- Ctrl and Alt are extended keys; reporting nothing for them is honest,
- where reporting their left-hand twin would be a lie.
 
   hid-mod-sc : Integer -> Integer
   hid-mod-sc (b) =

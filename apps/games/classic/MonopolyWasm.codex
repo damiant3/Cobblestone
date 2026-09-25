@@ -3,20 +3,15 @@ Chapter: MonopolyWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- The browser interface for Monopoly, on the handle contract in
- games-backlog.md GAME-11. Four players and twenty-eight properties, each a
- record of its own, are far past an i32.
-
- `mono-set-player` and `mono-set-prop` write with `list-set-at`, which
- mutates in place, so a turn writes through to the caller's lists. Both
- lists hold RECORDS, and the records are rebuilt rather than mutated in
- these two functions, so copying the lists is enough here; the deeper copy
- Hex War needs is not required, and the grader measures that rather than
- assuming it.
+ `mono-set-player` and `mono-set-prop` write with `list-set-at`, in place,
+ so a turn writes through to the caller's lists; the records are rebuilt, so
+ copying the lists is enough.
 
  We say:
 
 Section: Copying
+
+  wasm-exports : Text = ""
 
   mo-copy-players : List MonopolyPlayer, Integer, Integer, List MonopolyPlayer -> List MonopolyPlayer
   mo-copy-players (src) (i) (n) (acc) =
@@ -48,23 +43,46 @@ Section: The Browser Interface
   mo-wasm-new : Integer, Integer -> MonopolyState
   mo-wasm-new (seed) (players) = mono-init seed players
 
- `mono-do-turn` ENDS a turn, advancing to the next player itself. This
- wrapper used to call `mono-advance-turn` on top of it, so every step of
- the page advanced twice and half the table never took a turn: with four
- players, two of them sat still for a whole game while the counters kept
- reading as a game being played. Nothing that counts turns, cash or
- properties can see a player being skipped.
+ `mono-do-turn` already advances to the next player; advancing again skips
+ every other seat.
 
   mo-wasm-step : MonopolyState, Integer -> MonopolyState
   mo-wasm-step (s) (seed) =
     if s.game-over then s
-    else mono-do-turn (mo-copy-state s) (rng-new seed)
+    else let t = mono-trade-offer (mo-copy-state s) 0
+    in if t.phase == mono-phase-trade-offer then t
+    else let rolled = mono-roll t (rng-new seed)
+    in if rolled.phase == 1 then mono-take rolled (rolled.current-player) else rolled
+
+  mo-wasm-resume : MonopolyState, Integer -> MonopolyState
+  mo-wasm-resume (s) (seed) =
+    if s.game-over then s
+    else mono-play-turn (mo-copy-state s) (rng-new seed) 0
+
+  mo-wasm-accept : MonopolyState -> MonopolyState
+  mo-wasm-accept (s) = mono-accept-offer (mo-copy-state s)
+
+  mo-wasm-decline : MonopolyState -> MonopolyState
+  mo-wasm-decline (s) = mono-decline-offer (mo-copy-state s)
+
+  mo-wasm-trade-want : MonopolyState -> Integer
+  mo-wasm-trade-want (s) = if s.phase == mono-phase-trade-offer then s.pending else (-1)
+
+  mo-wasm-trade-give : MonopolyState -> Integer
+  mo-wasm-trade-give (s) =
+    if s.phase /= mono-phase-trade-offer then (-1)
+    else mono-swap-deed s 0 (s.current-player) ((mono-get-prop s (s.pending)).color) 0
+
+  mo-wasm-trade-price : MonopolyState -> Integer
+  mo-wasm-trade-price (s) =
+    if s.phase /= mono-phase-trade-offer then (-1)
+    else if mo-wasm-trade-give s >= 0 then 0
+    else mono-trade-price (s.pending)
+
+  mo-wasm-trade : MonopolyState -> MonopolyState
+  mo-wasm-trade (s) = mono-trade (mo-copy-state s) 0
 
 Section: Taking A Turn Yourself
-
- A turn is a roll and then, when the square is worth deciding about, a
- choice. `mo-wasm-roll` stops at the offer; `mo-wasm-take` and
- `mo-wasm-leave` are the two ways past it, and both end the turn.
 
   mo-wasm-roll : MonopolyState, Integer -> MonopolyState
   mo-wasm-roll (s) (seed) =
@@ -94,10 +112,6 @@ Section: Taking A Turn Yourself
   mo-wasm-can-decide (s) (player) =
     if mono-can-decide s player then 1 else 0
 
- What the offer would cost you, and what you would still be holding after
- it. A page that showed the price without the balance would be asking for a
- decision it had not given you the numbers for.
-
   mo-wasm-offer-cost : MonopolyState -> Integer
   mo-wasm-offer-cost (s) =
     if s.phase /= 1 then (-1)
@@ -110,12 +124,8 @@ Section: Taking A Turn Yourself
     else if s.pending < 0 then (-1)
     else (list-at (s.properties) (s.pending)).color
 
- A BOARD SPACE and a PROPERTY INDEX are different numbers, and both are
- different again from a player. Forty spaces hold twenty-two properties, so
- `mo_owner` takes 0..21 and a page drawing the board has 0..39 in its hand.
- Without this export a page has to guess, and the arcade's did: it read the
- board space as a property index AND as a player, so the board has never
- coloured a single owned square in.
+ A board space (0..39) and a property index (0..21) are different numbers,
+ and both differ from a player.
 
   mo-wasm-prop-at : Integer -> Integer
   mo-wasm-prop-at (space) =
@@ -211,12 +221,8 @@ Section: Taking A Turn Yourself
   mo-wasm-winner : MonopolyState -> Integer
   mo-wasm-winner (s) = s.winner
 
- Bankruptcy is rare in this engine (games-backlog GAME-8: no trading, so a
- colour group is only ever assembled by luck of the dice), and `mono-loop`
- resolves an undecided game by capping the turn count and awarding it to the
- richest player. A page stepping the state itself has to do the same, so the
- richest player is exported rather than left for the page to work out from
- cash and property.
+ A game nobody went bankrupt in ends at the turn cap on the richest player,
+ and a page stepping the state does the same.
 
   mo-wasm-richest : MonopolyState -> Integer
   mo-wasm-richest (s) = mono-richest s (s.num-players)

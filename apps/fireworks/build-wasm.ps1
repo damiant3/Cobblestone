@@ -5,13 +5,14 @@
 # Same three phases apps/fishtank/build-wasm.ps1 uses, and the same reasons
 # behind each of them, minus that script's page-assembly phase.
 [CmdletBinding()]
-param([switch]$WatOnly)
+param([switch]$WatOnly, [string]$Kernel = '')
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo    = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 $PlugCdx = Join-Path $Repo 'codex\plugs\wasm\build-output\wasm-plug.cdx'
+if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
 $OutDir  = Join-Path $PSScriptRoot 'web'
 $BuildDir = Join-Path $OutDir 'build-output'
 $LogFile = Join-Path $BuildDir 'build-wasm.log'
@@ -66,7 +67,7 @@ Write-Host "[fireworks-wasm] bundled $($pre.Count + $lines.Count) lines ($($body
 # -- Phase 1: source -> IR-CCE. -Kernel names the compiler; without it
 # -- compile.ps1 takes whatever build.ps1 last staged.
 $ir = Join-Path $BuildDir 'fireworks-show.ir'
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundle -Out $ir -Log $LogFile -IrCce -Kernel (Join-Path $Repo 'seed\Codex.cdx')
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundle -Out $ir -Log $LogFile -IrCce -Kernel $Kernel
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("FAIL: IR compile; see $LogFile")
     Get-Content $LogFile -EA SilentlyContinue | Where-Object { $_ -match 'error' } | Select-Object -First 12 | ForEach-Object { [Console]::Error.WriteLine("  $_") }

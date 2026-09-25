@@ -1,5 +1,6 @@
 Chapter: ZigPlug
   cites Net chapter NetIO
+  cites Net chapter NetCompact
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
   cites Kernel chapter Ne2k
@@ -23,6 +24,54 @@ Section: Drain
     else 0
    end
 
+Section: Send
+
+  zig-send-result : NetSendResult, Integer -> NetSendResult
+  zig-send-result (r) (before) = NetSendResult { ns-transport = r.ns-transport, ns-sent = before + r.ns-sent, ns-complete = r.ns-complete }
+
+  zig-send-chapter : TcpTransportState, IRChapter, List ATypeDef -> [Network.Read, Network.Write] NetSendResult
+  zig-send-chapter (ts) (m) (type-defs) =
+   let ctx = zig-chapter-ctx m type-defs
+   in let ns = zig-prelude-part-names
+   in let shared = shared-const-names (m.defs)
+   in let types-text = emit-zig-type-defs type-defs 0
+   in let main-text = zig-main opening-entry-point (m.defs)
+   in let m1 = bit-or (zig-mask-lo ns types-text) (zig-mask-lo ns main-text)
+   in let m2 = bit-or (zig-mask-hi ns types-text) (zig-mask-hi ns main-text)
+   in act
+    r <- net-io-send-text-checked (transport-arenas ts) (zig-mask-ceiling-check ns & types-text)
+    if r.ns-complete then zig-send-defs (r.ns-transport) ctx (m.defs) shared 0 main-text ns m1 m2 (r.ns-sent) __heap-save [] 0
+    else r
+   end
+
+ A send per definition cost 40 per cent more wall time than one send of the
+ whole reply (28 s against 20 s, 672,807 bytes, 2026-09-24), because most
+ definitions are shorter than one 1,400-byte segment; 16 KB is about twelve
+ full segments per send.
+
+  zig-send-batch : Integer = 16384
+
+  zig-send-defs : TcpTransportState, ZigCtx, List IRDef, List Text, Integer, Text, List Text, Integer, Integer, Integer, Integer, List Text, Integer -> [Network.Read, Network.Write] NetSendResult
+  zig-send-defs (ts) (ctx) (defs) (shared) (i) (main-text) (ns) (m1) (m2) (sent) (mark) (pending) (plen) =
+   if i >= list-length defs then act
+    r <- net-io-send-text-checked ts (text-concat-list pending & main-text & zig-postlude-banner & shake-text zig-prelude-parts (zig-roots-of-masks ns m1 m2))
+    zig-send-result r sent
+   end
+   else let text = emit-zig-def-or-shared (list-at defs i) ctx shared
+   in let n1 = bit-or m1 (zig-mask-lo ns text)
+   in let n2 = bit-or m2 (zig-mask-hi ns text)
+   in let held = list-push pending text
+   in let hlen = plen + text-length text
+   in if hlen < zig-send-batch then zig-send-defs ts ctx defs shared (i + 1) main-text ns n1 n2 sent mark held hlen
+   else act
+    r <- net-io-send-text-checked ts (text-concat-list held)
+    if r.ns-complete then
+     let total = sent + r.ns-sent
+     in let kept = transport-compact-past (r.ns-transport) mark
+     in zig-send-defs kept ctx defs shared (i + 1) main-text ns n1 n2 total mark [] 0
+    else zig-send-result r sent
+   end
+
 Section: Body
 
   opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
@@ -34,13 +83,12 @@ Section: Body
     if recv.has-message then
      let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body))
      in let parsed = parse-ir-chapter ir-text
-     in let output = emit-zig-chapter (parsed.chapter) (parsed.type-defs)
      in act
-      sent <- net-io-send-text-checked (recv.transport) output
+      sent <- zig-send-chapter (recv.transport) (parsed.chapter) (parsed.type-defs)
       ts3 <- net-io-close (sent.ns-transport)
       drained <- drain-wait ts3 0
       if sent.ns-complete then print-line-uni ("OK defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
-      else print-line-uni ("TRUNCATED sent=" & show (sent.ns-sent) & " of " & show (text-length output) & " defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
+      else print-line-uni ("TRUNCATED sent=" & show (sent.ns-sent) & " defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
      end
     else print-line-uni "FAIL"
    end

@@ -1,0 +1,46 @@
+Chapter: FrameDecodeCost
+  cites Net chapter MessageFraming
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Fixtures
+
+  frame-of : Integer -> List Integer
+  frame-of (n) = frame-le32 n & fill n 0 (__list-with-capacity (n + 1))
+
+  fill : Integer, Integer, List Integer -> List Integer
+  fill (n) (i) (acc) =
+    if i >= n then acc
+    else fill n (i + 1) (list-push acc 15)
+
+Section: Measurement
+
+  retained : List Integer -> Integer
+  retained (bs) =
+    let b = __heap-save
+    in let len = text-length ((frame-decode-text bs 0).value)
+    in let a = __heap-save
+    in (a - b) + len - len
+
+ A retained cost that grows x4 when the frame grows x4 is linear, x16 is
+ quadratic; 8 is the cut accumulator-corpus uses.
+
+  verdict : Integer, Integer -> Text
+  verdict (at-n) (at-4n) =
+    if at-n <= 0 then "unmeasured"
+    else if at-4n < at-n * 8 then "linear" else "quadratic"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let small = frame-of 1024
+    in let large = frame-of 4096
+    in let big = frame-of 262144
+    in let w = frame-decode-text [3, 0, 0, 0, 15, 13, 15] 0
+    in act
+      print-line-uni ("text=" & w.value & " next=" & show (w.next-offset) & " valid=" & show (w.valid))
+      print-line-uni ("growth=" & verdict (retained small) (retained large))
+      print-line-uni ("big-len=" & show (text-length ((frame-decode-text big 0).value)))
+    end
+  end

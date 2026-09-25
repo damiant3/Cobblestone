@@ -1,13 +1,7 @@
 Chapter: Jwt
   cites Foreword chapter Maybe
-  cites Encode chapter Base64
+  cites Foreword chapter CCE
   cites Encode chapter Json
-
- JSON Web Token decoder (RFC 7519). Splits a JWT into its three
- dot-separated segments, base64url-decodes header and payload,
- and parses claims from the JSON. V1 validates structure, expiry,
- issuer, and audience. Cryptographic signature verification against
- provider JWKS is deferred to V2.
 
 Section: Types
 
@@ -45,9 +39,20 @@ Section: Decoding
   jwt-decode (raw) =
     let parts = text-split raw "."
     in if list-length parts /= 3 then JwtMalformed "expected 3 dot-separated segments"
-    else let header-json = b64url-decode-text (list-at parts 0)
-    in let payload-json = b64url-decode-text (list-at parts 1)
-    in jwt-assemble raw (list-at parts 2) (json-parse header-json) (json-parse payload-json)
+    else if b64url-valid (list-at parts 2) == False then JwtMalformed "signature segment is not base64url"
+    else jwt-segments raw (list-at parts 2) (b64url-decode-utf8 (list-at parts 0)) (b64url-decode-utf8 (list-at parts 1))
+
+  jwt-segments : Text, Text, Maybe Text, Maybe Text -> JwtError
+  jwt-segments (raw) (sig) (h) (p) =
+    when h
+      is None -> JwtMalformed "header segment is not base64url UTF-8"
+      is Just (hj) -> jwt-segment-payload raw sig hj p
+
+  jwt-segment-payload : Text, Text, Text, Maybe Text -> JwtError
+  jwt-segment-payload (raw) (sig) (hj) (p) =
+    when p
+      is None -> JwtMalformed "payload segment is not base64url UTF-8"
+      is Just (pj) -> jwt-assemble raw sig (json-parse hj) (json-parse pj)
 
   jwt-assemble : Text, Text, Maybe JsonValue, Maybe JsonValue -> JwtError
   jwt-assemble (raw) (sig) (hp) (pp) =
@@ -128,34 +133,67 @@ Section: Claim Accessors
 
 Section: Base64url
 
-  b64url-decode-text : Text -> Text
-  b64url-decode-text (s) = base64-decode-text (b64url-pad (b64url-to-std s))
+ RFC 7515 section 2 and appendix C: a segment is base64url (RFC 4648
+ section 5, "-" and "_" for 62 and 63) with the padding omitted, so "=" is
+ refused and a length of 1 modulo 4 cannot occur. RFC 7519 section 7.2: the
+ header and payload are UTF-8, and RFC 3629 section 3 forbids overlong
+ forms. A character CCE cannot hold is refused rather than dropped, which
+ covers surrogates and code points above U+10FFFF, except JSON whitespace
+ (RFC 8259 section 2: tab, LF, CR, space), which carries no value outside a
+ string.
 
- The four numbers below are CCE code points and not ASCII, and they
- are right: 73 is the hyphen, 76 the plus, 85 the underscore, 81 the
- solidus. They read like a transposition of the ASCII values and were
- suspected on that basis; measuring them cleared the substitution and
- left the boundary conversion above as the only defect here.
+  b64url-decode-utf8 : Text -> Maybe Text
+  b64url-decode-utf8 (s) =
+    if b64url-valid s == False then None
+    else let bytes = b64url-loop s 0 (text-length s) []
+    in if jwt-utf8-ok bytes 0 (list-length bytes) then Just (utf8-bytes-to-text bytes) else None
 
-  b64url-to-std : Text -> Text
-  b64url-to-std (s) = b64url-replace s 0 (text-length s) ""
+  jwt-utf8-ok : List Integer, Integer, Integer -> Boolean
+  jwt-utf8-ok (bytes) (i) (n) =
+    if i >= n then True
+    else let len = utf8-decode-length (list-at bytes i)
+    in let u = utf8-code-point-at bytes i
+    in if len == 0 | u < 0 then False
+    else if len == 2 & u < 128 then False
+    else if len == 3 & u < 2048 then False
+    else if len == 4 & u < 65536 then False
+    else if from-unicode u < 0 & u /= 9 & u /= 10 & u /= 13 & u /= 32 then False
+    else jwt-utf8-ok bytes (i + len) n
 
-  b64url-replace : Text, Integer, Integer, Text -> Text
-  b64url-replace (s) (i) (n) (acc) =
+  b64url-valid : Text -> Boolean
+  b64url-valid (s) =
+    let n = text-length s
+    in if n - n / 4 * 4 == 1 then False
+    else b64url-valid-loop s 0 n
+
+  b64url-valid-loop : Text, Integer, Integer -> Boolean
+  b64url-valid-loop (s) (i) (n) =
+    if i >= n then True
+    else if b64url-value (to-unicode (char-code (char-at s i))) < 0 then False
+    else b64url-valid-loop s (i + 1) n
+
+  b64url-value : Integer -> Integer
+  b64url-value (c) =
+    if c >= 65 & c <= 90 then c - 65
+    else if c >= 97 & c <= 122 then c - 71
+    else if c >= 48 & c <= 57 then c + 4
+    else if c == 45 then 62
+    else if c == 95 then 63
+    else 0 - 1
+
+  b64url-at : Text, Integer -> Integer
+  b64url-at (s) (i) = b64url-value (to-unicode (char-code (char-at s i)))
+
+  b64url-loop : Text, Integer, Integer, List Integer -> List Integer
+  b64url-loop (s) (i) (n) (acc) =
     if i >= n then acc
-    else let c = char-code-at s i
-    in let replaced = if c == 73 then char-to-text (code-to-char 76)
-      else if c == 85 then char-to-text (code-to-char 81)
-      else char-to-text (code-to-char c)
-    in b64url-replace s (i + 1) n (acc & replaced)
-
-  b64url-pad : Text -> Text
-  b64url-pad (s) =
-    let rem = text-length s - (text-length s / 4) * 4
-    in if rem == 0 then s
-    else if rem == 2 then s & "=="
-    else if rem == 3 then s & "="
-    else s
+    else let v1 = b64url-at s (i + 1)
+    in let a1 = list-push acc (bit-and (bit-or (bit-shl (b64url-at s i) 2) (bit-shru v1 4)) 255)
+    in if i + 2 >= n then a1
+    else let v2 = b64url-at s (i + 2)
+    in let a2 = list-push a1 (bit-and (bit-or (bit-shl v1 4) (bit-shru v2 2)) 255)
+    in if i + 3 >= n then a2
+    else b64url-loop s (i + 4) n (list-push a2 (bit-and (bit-or (bit-shl v2 6) (b64url-at s (i + 3))) 255))
 
 Section: Formatting
 

@@ -13,13 +13,6 @@ Chapter: GopShot
 
 Section: BMP Encoding
 
- BITMAPFILEHEADER (14 bytes) then BITMAPINFOHEADER (40): magic "BM",
- file size, pixel offset 54; header size 40, width, height POSITIVE for
- bottom-up rows, one plane, 24 bits per pixel, no compression, image
- size, 2835 pixels-per-metre both axes. Rows pad to four bytes. The
- framebuffer's 32-bit pixels are B,G,R,X in memory order and BMP wants
- B,G,R, so the copy takes the low three bytes of each pixel as they lie.
-
   shot-row-bytes : Integer -> Integer
   shot-row-bytes (w) = bit-and (w * 3 + 3) (-4)
 
@@ -82,34 +75,6 @@ Section: Naming
 
 Section: Capture
 
- The caller brackets this with __heap-save / __heap-restore AFTER using
- the returned Text: the frame buffer copy and the FAT image both live on
- the heap and a desktop that leaks megabytes per keystroke halts in
- minutes. The answer Text names the file on success and the failing
- stage otherwise, ready to paint.
-
- A failed mount means the screen is the only readout the flight gets,
- so the failure text carries the diag cells: s is the mount stage
- (GopFat16, 1 hdr-read 2 gpt-sig 3 ents-read 4 no-esp-guid 5 bpb-read
- 6 bad-bps 7 ok), m the selected medium kind (GopDisk, 0 none 1 AHCI
- 2 IDE 3 USB 4 NVMe), c the last MSC bulk completion code (256 no
- event, 6 stall), p the BOT phase it landed in (1 CBW 2 data 3 CSW).
-
- w is the WRITE stage (GopFat16 cell 83), and it is the one that names
- a write failure: s answers 7 on every one of them because it reports
- the mount. 1-7 are the small-file path, 11-17 the multi-cluster path,
- 20 a completed write, and anything above 100 is that failure plus a
- failed rollback, which means the stick was left with an allocated
- chain no directory entry names.
-
- f is the smallest xhci-fuel any COMPLETED transfer left behind, out of
- 1000000. It is on this line because c alone cannot separate a budget that
- was nearly spent on the transfers that worked from a device that stopped
- answering: a small f says the fuel is marginal, an f near 1000000 says it
- is innocent and c256 is the device. l is the LBA of a failed chunk and r
- its retry: 0 none, 1 recovery failed, 2 retried and failed, 3 retried and
- succeeded.
-
   shot-diag-text : Text -> Text
   shot-diag-text (what) =
     what & " s" & show (xdiag-get gfat-cell-stage)
@@ -120,13 +85,6 @@ Section: Capture
     & " f" & show (xdiag-get msc-cell-fuel-lo)
     & " l" & show (xdiag-get msc-cell-fail-lba)
     & " r" & show (xdiag-get msc-cell-retry)
-
- A REFUSAL FOR WANT OF ROOM IS NOT A FAILED WRITE, and the diag strip
- could not tell a person which had happened: `w12` is `gfat-w-nospace`
- and every other stage is a real fault. A 1600x900 BMP is 4,320,054
- bytes and the shipped ESP carries about 2.4 MB free, so at that
- geometry the shot is refused by arithmetic and no device write is ever
- issued. The count walks the whole FAT and runs only here.
 
   shot-no-room : Fat16Volume, Integer -> [Device.Port] Text
   shot-no-room (vol) (size) = act

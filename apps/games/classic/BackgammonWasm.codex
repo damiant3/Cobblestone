@@ -3,27 +3,17 @@ Chapter: BackgammonWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- The browser interface for Backgammon, on the handle contract in
- games-backlog.md GAME-11. Twenty-four signed points plus two bars and two
- trays is far past what the export wrapper's signed i32 could carry, so the
- page holds the board's address.
+ `bg-move-piece` and `bg-enter-from-bar` write through `list-set-at`, so
+ every apply copies the board first.
 
- The copy here guards the apply path only. Unlike Connect Four, this engine's
- move search does not need one: `bg-pick-loop` scores a candidate by reading
- `list-at`, `pt-blocked` and `all-in-home`, and never applies a move to find
- out what it does, so it cannot corrupt the board it is searching (GAME-13).
- `bg-move-piece` and `bg-enter-from-bar` do write through `list-set-at`, so
- `bg-wasm-step` copies before it applies.
-
- A turn is dice, not a move. The engine applies ONE die at a time and does
- not change hands, so the page drives a turn the way `bg-game-loop` does:
- step for each die, four times on a double, then end the turn. Splitting it
- that way is what lets a watching page show the checkers move one at a time
- rather than jumping a whole turn at once.
+ The engine applies one die at a time and does not change hands: a turn is
+ one step per die, four on a double, then the end of the turn.
 
  We say:
 
 Section: Copying
+
+  wasm-exports : Text = ""
 
   bg-copy-points : List Integer, Integer, List Integer -> List Integer
   bg-copy-points (src) (i) (acc) =
@@ -70,12 +60,9 @@ Section: The Browser Interface
 
 Section: One Move At A Time
 
- `bg-apply-die` picks its own point, which is all a watching page needs and
- nothing a playing one can use. These name the point instead, so a person can
- say which checker moves. The legality test is the same one `bg-pick-loop`
- applies when it searches: `all-in-home` gates bearing off, `pt-blocked` gates
- a landing, and a player with a checker on the bar may do nothing else until
- it is entered.
+ Bearing off needs every checker home, a point held by two or more of the
+ other side is blocked, and a player with a checker on the bar moves nothing
+ else until that checker is entered.
 
   bg-wasm-can : BackgammonBoard, Integer, Integer -> Integer
   bg-wasm-can (b) (from) (die) =
@@ -118,8 +105,7 @@ Section: One Move At A Time
     if bg-wasm-can-enter b die == 0 then b
     else bg-enter-from-bar (bg-copy-board b) die
 
- A die with no legal move anywhere is forfeit rather than a stuck turn, and
- the page needs to know which case it is in before it offers a click.
+ A die with no legal move anywhere is forfeit.
 
   bg-wasm-any : BackgammonBoard, Integer -> Integer
   bg-wasm-any (b) (die) =

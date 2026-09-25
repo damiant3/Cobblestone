@@ -1,0 +1,65 @@
+Chapter: Syslog Guard
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+  cites Net chapter Syslog
+
+Section: Helpers
+
+  ascii : Text -> List Integer
+  ascii (s) = text-to-unicode-bytes s
+
+  arm : Text, List Integer -> Text
+  arm (name) (bs) =
+    let p = syslog-parse bs
+    in if p.valid then name & " ok pri=" & show p.priority & " body=" & p.body
+    else name & " refused"
+
+  fill : Integer, Integer, List Integer -> List Integer
+  fill (i) (n) (acc) = if i >= n then acc else fill (i + 1) n (list-push acc 97)
+
+  cost : Integer -> Integer
+  cost (n) =
+    let bs = ascii "<13>" & fill 0 n []
+    in let b = __heap-save
+    in let p = syslog-parse bs
+    in let a = __heap-save
+    in (a - b) + text-length p.body - text-length p.body
+
+  scaling : Text, Integer, Integer -> Text
+  scaling (name) (small) (large) =
+    if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
+  tail2 : List Integer -> Text
+  tail2 (bs) =
+    let n = list-length bs
+    in show (list-at bs (n - 2)) & " " & show (list-at bs (n - 1))
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let e-acute = char-encode (code-to-char (from-unicode 233))
+    in let m = syslog-info "h" "a" ("caf" & e-acute)
+    in let wire = syslog-build-message m
+    in act
+      print-line-uni (arm "plain" (ascii "<13>hello"))
+      print-line-uni (arm "pri-0" (ascii "<0>x"))
+      print-line-uni (arm "pri-191" (ascii "<191>x"))
+      print-line-uni (arm "utf8" [60, 49, 51, 62, 195, 169])
+      print-line-uni (arm "empty-body" (ascii "<13>"))
+      print-line-uni (arm "letter-pri" (ascii "<a>hi"))
+      print-line-uni (arm "empty-pri" (ascii "<>hi"))
+      print-line-uni (arm "slash-pri" (ascii "<1/>hi"))
+      print-line-uni (arm "pri-192" (ascii "<192>hi"))
+      print-line-uni (arm "leading-zero" (ascii "<007>hi"))
+      print-line-uni (arm "four-digits" (ascii "<1234>hi"))
+      print-line-uni (arm "no-open" (ascii "13>hi"))
+      print-line-uni (arm "no-close" (ascii "<13hi"))
+      print-line-uni (arm "short" (ascii "<1"))
+      print-line-uni (arm "no-close-short" (ascii "<13"))
+      print-line-uni (arm "empty" [])
+      print-line-uni (arm "pri-huge" (ascii "<99999999999999999999>hi"))
+      print-line-uni ("encode-utf8 " & tail2 wire)
+      print-line-uni ("round-trip " & (syslog-parse wire).body)
+      print-line-uni (scaling "parse" (cost 256) (cost 1024))
+    end

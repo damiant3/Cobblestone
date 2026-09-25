@@ -40,10 +40,9 @@ Section: Parsing
   md-parse-heading : Text, Integer -> MdBlock
   md-parse-heading (line) (len) =
     let level = md-count-prefix line 83 0 len
-    in if level >= 1 then if level <= 6 then
-      let text = md-trim-start line (level + 1) len
-      in MdHeading level text
-    else MdParagraph line
+    in if level > 6 then MdParagraph line
+    else if level == len then MdHeading level ""
+    else if char-code (char-at line level) == 2 then MdHeading level (md-trim-start line (level + 1) len)
     else MdParagraph line
 
   md-parse-maybe-hr : Text, Integer -> MdBlock
@@ -56,9 +55,9 @@ Section: Parsing
 
   md-parse-maybe-blockquote : Text, Integer -> MdBlock
   md-parse-maybe-blockquote (line) (len) =
-    if len >= 2 then let text = md-trim-start line 2 len
-      in MdBlockquote text
-    else MdParagraph line
+    if len == 1 then MdBlockquote ""
+    else if char-code (char-at line 1) == 2 then MdBlockquote (md-trim-start line 2 len)
+    else MdBlockquote (md-trim-start line 1 len)
 
   md-parse-maybe-list : Text, Integer -> MdBlock
   md-parse-maybe-list (line) (len) =
@@ -88,13 +87,13 @@ Section: Helpers
 
 Section: Rendering (back to plain text with structure markers)
   md-render : List MdBlock -> Text
-  md-render (blocks) = md-render-loop blocks 0 (list-length blocks) ""
+  md-render (blocks) = text-concat-list (md-render-loop blocks 0 (list-length blocks) [])
 
-  md-render-loop : List MdBlock, Integer, Integer, Text -> Text
+  md-render-loop : List MdBlock, Integer, Integer, List Text -> List Text
   md-render-loop (blocks) (i) (n) (acc) =
     if i >= n then acc
     else let sep = if i == 0 then "" else "\n"
-    in md-render-loop blocks (i + 1) n (acc & sep & md-render-block (list-at blocks i))
+    in md-render-loop blocks (i + 1) n (list-push (list-push acc sep) (md-render-block (list-at blocks i)))
 
   md-render-block : MdBlock -> Text
   md-render-block (block) = when block

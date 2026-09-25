@@ -12,6 +12,7 @@ Chapter: DriveManager
   cites UI chapter SettingsPanel
   cites UI chapter Validation
   cites Foreword chapter Maybe
+  cites Foreword chapter Gpt
 
 Section: Disk Types
 
@@ -249,5 +250,64 @@ Section: JSON
     & ",\"used\":" & show (p.pt-used).bs-bytes
     & ",\"mountPoint\":\"" & p.pt-mount-point
     & "\",\"mounted\":" & (if p.pt-mounted then "true" else "false") & "}"
+
+Section: Block Devices
+
+ The IDE channel has a master and a slave, `block-select` 0 and 1; a drive
+ that is absent answers a sector count of 0. Sectors are 512 bytes. The
+ partitions are the drive's GPT entries; the filesystem inside each and
+ whether it is mounted are not read here, so they stay unknown.
+
+  dm-gpt-parts : List GptPartition, Text, Integer, List Partition -> List Partition
+  dm-gpt-parts (ps) (disk-id) (i) (acc) =
+    if i >= list-length ps then acc
+    else let g = list-at ps i
+    in let part = Partition {
+      pt-id = disk-id & "p" & show i,
+      pt-disk-id = disk-id,
+      pt-index = i,
+      pt-label = g.gp-name,
+      pt-fs-type = FsUnknown,
+      pt-capacity = bytes ((g.gp-end-lba - g.gp-start-lba + 1) * 512),
+      pt-used = bytes 0,
+      pt-mount-point = "",
+      pt-mounted = False,
+      pt-bootable = False
+    }
+    in dm-gpt-parts ps disk-id (i + 1) (acc & [part])
+
+  dm-add-parts : DriveManagerState, List Partition, Integer -> DriveManagerState
+  dm-add-parts (st) (parts) (i) =
+    if i >= list-length parts then st
+    else dm-add-parts (dm-add-partition st (list-at parts i)) parts (i + 1)
+
+  dm-disk-with : Integer, Integer, Integer -> PhysicalDisk
+  dm-disk-with (d) (sectors) (nparts) =
+    __record-set (physical-disk-new ("disk" & show d) "IDE drive" BusIde (sectors * 512)) "pd-partition-count" nparts
+
+  dm-parts-of : Maybe GptDisk, Text -> List Partition
+  dm-parts-of (g) (disk-id) = when g
+    is Just (gd) -> dm-gpt-parts (gd.gd-partitions) disk-id 0 []
+    is None -> []
+
+  dm-read-drive : DriveManagerState, Integer -> [Device.Block] DriveManagerState
+  dm-read-drive (st) (d) = act
+    s <- block-select d
+    n <- block-sector-count
+    if n <= 0 then st
+    else act
+      g <- gpt-read
+      let parts = dm-parts-of g ("disk" & show d)
+      in dm-add-parts (dm-add-disk st (dm-disk-with d n (list-length parts))) parts 0
+    end
+  end
+
+  dm-read-block-devices : [Device.Block] DriveManagerState
+  dm-read-block-devices = act
+    a <- dm-read-drive drive-manager-new 0
+    b <- dm-read-drive a 1
+    r <- block-select 0
+    b
+  end
 
 Page 1

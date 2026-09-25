@@ -392,9 +392,13 @@ Section: Bare-Metal Start
 
   emit-hosted-win-alloc : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-hosted-win-alloc (st) (base) (span) (fail-code) =
+   emit-hosted-win-alloc-as st base span hosted-win-mem-commit-reserve fail-code
+
+  emit-hosted-win-alloc-as : CodegenState, Integer, Integer, Integer, Integer -> CodegenState
+  emit-hosted-win-alloc-as (st) (base) (span) (kind) (fail-code) =
    let a0 = st-append-code st (li reg-rcx base)
    in let a1 = st-append-code a0 (li reg-rdx span)
-   in let a2 = st-append-code a1 (li reg-r8 hosted-win-mem-commit-reserve)
+   in let a2 = st-append-code a1 (li reg-r8 kind)
    in let a3 = st-append-code a2 (li reg-r9 hosted-win-page-readwrite)
    in let a4 = st-append-code a3 (call-abs-ind hosted-win-iat-virtualalloc)
    in let a5 = st-append-code a4 (test-rr reg-rax reg-rax)
@@ -418,9 +422,61 @@ Section: Bare-Metal Start
    let a0 = st-append-code st (and-ri reg-rsp (0 - 16))
    in let a1 = st-append-code a0 (emit-sub-rsp-imm32 32)
    in let a2 = emit-hosted-win-alloc a1 hosted-win-cell-base hosted-cell-span hosted-win-cells-failed-code
-   in let a3 = emit-hosted-win-alloc a2 0 hosted-win-heap-span hosted-win-arena-failed-code
-   in let a4 = st-append-code a3 (mov-rr reg-r10 reg-rax)
-   in st-append-code a4 (add-ri reg-rsp 32)
+   in let a3 = emit-hosted-win-alloc-as a2 0 hosted-win-heap-span hosted-win-mem-reserve hosted-win-arena-failed-code
+   in let a4 = st-append-code a3 (li reg-rdi hosted-win-reserve-base-addr & mov-store reg-rdi reg-rax 0)
+   in let a5 = emit-hosted-win-commit-first a4
+   in let a6 = emit-hosted-win-register-veh a5
+   in let a7 = st-append-code a6 (li reg-rdi hosted-win-reserve-base-addr & mov-load reg-r10 reg-rdi 0)
+   in st-append-code a7 (add-ri reg-rsp 32)
+
+ The arena is reserved and committed in 64 MiB chunks by a vectored exception
+ handler, because a committed arena charges the host's commit limit for pages
+ never touched. The handler runs on the OS thread stack, outside the arena.
+ Windows' contract: ExceptionInformation[1], the faulting address, is at offset
+ 40 of the EXCEPTION_RECORD; 0xC0000005 is STATUS_ACCESS_VIOLATION; a handler
+ returns -1 for EXCEPTION_CONTINUE_EXECUTION and 0 for EXCEPTION_CONTINUE_SEARCH.
+
+  emit-hosted-win-commit-first : CodegenState -> CodegenState
+  emit-hosted-win-commit-first (st) =
+   let a0 = st-append-code st (li reg-rdi hosted-win-reserve-base-addr & mov-load reg-rcx reg-rdi 0)
+   in let a1 = st-append-code a0 (li reg-rdx hosted-win-commit-chunk & li reg-r8 hosted-win-mem-commit & li reg-r9 hosted-win-page-readwrite)
+   in let a2 = st-append-code a1 (call-abs-ind hosted-win-iat-virtualalloc & test-rr reg-rax reg-rax)
+   in let ok-pos = a2.code-len
+   in let a3 = st-append-code a2 (jcc cc-ne 0)
+   in let a4 = st-append-code a3 (li reg-rcx hosted-win-arena-failed-code & call-abs-ind hosted-win-iat-exitprocess)
+   in patch-jcc-at a4 ok-pos (a4.code-len)
+
+  emit-hosted-win-register-veh : CodegenState -> CodegenState
+  emit-hosted-win-register-veh (st) =
+   let call-pos = st.code-len
+   in let a0 = st-append-code st (x86-call 0)
+   in let a1 = emit-hosted-win-veh-handler a0
+   in let a2 = patch-call-at a1 call-pos (a1.code-len)
+   in let a3 = st-append-code a2 (pop-r reg-rdx & li reg-rcx 1 & call-abs-ind hosted-win-iat-addvectoredexceptionhandler & test-rr reg-rax reg-rax)
+   in let ok-pos = a3.code-len
+   in let a4 = st-append-code a3 (jcc cc-ne 0)
+   in let a5 = st-append-code a4 (li reg-rcx hosted-win-veh-failed-code & call-abs-ind hosted-win-iat-exitprocess)
+   in patch-jcc-at a5 ok-pos (a5.code-len)
+
+  emit-hosted-win-veh-handler : CodegenState -> CodegenState
+  emit-hosted-win-veh-handler (st) =
+   let h0 = st-append-code st (mov-load reg-rax reg-rcx 0 & mov-load reg-r11 reg-rax 0 & li reg-r9 4294967295 & and-rr reg-r11 reg-r9 & li reg-r9 3221225477 & cmp-rr reg-r11 reg-r9)
+   in let j1 = h0.code-len
+   in let h1 = st-append-code h0 (jcc cc-ne 0)
+   in let h2 = st-append-code h1 (mov-load reg-rdx reg-rax 40 & li reg-r11 hosted-win-reserve-base-addr & mov-load reg-r8 reg-r11 0 & cmp-rr reg-rdx reg-r8)
+   in let j2 = h2.code-len
+   in let h3 = st-append-code h2 (jcc cc-b 0)
+   in let h4 = st-append-code h3 (mov-rr reg-r9 reg-rdx & sub-rr reg-r9 reg-r8 & li reg-r11 hosted-win-heap-span & cmp-rr reg-r9 reg-r11)
+   in let j3 = h4.code-len
+   in let h5 = st-append-code h4 (jcc cc-ae 0)
+   in let h6 = st-append-code h5 (li reg-r11 (0 - hosted-win-commit-chunk) & and-rr reg-r9 reg-r11 & add-rr reg-r9 reg-r8 & mov-rr reg-rcx reg-r9 & emit-sub-rsp-imm32 40)
+   in let h7 = st-append-code h6 (li reg-rdx hosted-win-commit-chunk & li reg-r8 hosted-win-mem-commit & li reg-r9 hosted-win-page-readwrite & call-abs-ind hosted-win-iat-virtualalloc & add-ri reg-rsp 40 & test-rr reg-rax reg-rax)
+   in let j4 = h7.code-len
+   in let h8 = st-append-code h7 (jcc cc-e 0)
+   in let h9 = st-append-code h8 (li reg-rax (0 - 1) & x86-ret)
+   in let search = h9.code-len
+   in let h10 = st-append-code h9 (li reg-rax 0 & x86-ret)
+   in patch-jcc-at (patch-jcc-at (patch-jcc-at (patch-jcc-at h10 j1 search) j2 search) j3 search) j4 search
 
  The 64 in the frame patch is the callee-saved margin `emit-function-standard`
  reserves as `unused * 8`, taken at its maximum because the entry pushes no
@@ -463,9 +519,28 @@ Section: Bare-Metal Start
      in let st25 = st-append-code st24 (li reg-rdi 0)
      in st-append-code st25 x86-syscall
 
+  avx-refusal-text : List Integer = [82, 69, 70, 85, 83, 69, 68, 58, 32, 50, 53, 54, 45, 98, 105, 116, 32, 118, 101, 99, 116, 111, 114, 115, 32, 110, 101, 101, 100, 32, 65, 86, 88, 44, 32, 119, 104, 105, 99, 104, 32, 116, 104, 105, 115, 32, 112, 114, 111, 99, 101, 115, 115, 111, 114, 32, 100, 111, 101, 115, 32, 110, 111, 116, 32, 112, 114, 111, 118, 105, 100, 101, 10]
+
+  emit-avx-required-check : CodegenState -> CodegenState
+  emit-avx-required-check (st) =
+   let s0 = st-append-code st (li reg-rdx avx-admitted-addr & mov-load reg-rdx reg-rdx 0 & cmp-ri reg-rdx 0)
+   in let ok-pos = s0.code-len
+   in let s1 = st-append-code s0 (jcc cc-ne 0)
+   in let s2 = emit-serial-drain-delay (emit-oom-string s1 avx-refusal-text 0)
+   in let s3 = st-append-code s2 (li reg-rax 1 & li reg-rdx 244 & out-dx-al & cli)
+   in let halt-pos = s3.code-len
+   in let s4 = st-append-code s3 hlt
+   in let s5 = st-append-code s4 (jmp (halt-pos - (s4.code-len + 5)))
+   in patch-jcc-at s5 ok-pos (s5.code-len)
+
+  hosted-avx-refused : CodegenState -> CodegenState
+  hosted-avx-refused (st) =
+   if st.avx-used then st-add-error st cdx-emit-not-implemented "256-bit vectors are not implemented for a hosted target: the hosted start has no AVX admission check" synthetic-span
+   else st
+
   emit-start : CodegenState, Integer, Integer, List Text, Text, Text -> CodegenState
   emit-start (st) (first-stub-vaddr) (syscall-handler-offset) (manifest-effs) (fs-scope) (net-scope) =
-   if st-hosted st then emit-hosted-start st
+   if st-hosted st then emit-hosted-start (hosted-avx-refused st)
    else
    let st0 = record-func-offset st "__start"
    in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & emit-sub-rsp-imm32 0)
@@ -533,7 +608,9 @@ Section: Bare-Metal Start
    in let st35 = st-append-code st34 (mov-store reg-rdi reg-rax 0)
    in let st35p = emit-blit-probe st35
    in let st35a = emit-control-string st35p [66, 79, 79, 84, 58, 83, 48, 45, 72, 87, 10]
-   in let st36 = emit-interrupt-setup st35a
+   in let st35v = emit-avx-admit st35a True
+   in let st35w = if st-avx-refuses st then emit-avx-required-check st35v else st35v
+   in let st36 = emit-interrupt-setup st35w
    in let st36-d = emit-vga-progress st36 9 54
    in let st36a = emit-wait-for-tick st36-d
    in let st36a-d = emit-vga-progress st36a 10 55
@@ -790,7 +867,9 @@ Section: Finalize
    stype-sites = __list-with-capacity accum-capacity,
    range-env = [],
    hosted-target = 0,
-   shared-consts = []
+   shared-consts = [],
+   avx-used = False,
+   avx-local = False
   }
 
   collect-direct-addr-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
@@ -1225,7 +1304,7 @@ Section: Binary Debug Map (MAP1)
    in build-map-entries offsets names str-offsets code-len (i + 1) count (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push acc (bit-and off 255)) (bit-and (bit-shr off 8) 255)) (bit-and (bit-shr off 16) 255)) (bit-and (bit-shr off 24) 255)) (bit-and size 255)) (bit-and (bit-shr size 8) 255)) (bit-and (bit-shr size 16) 255)) (bit-and (bit-shr size 24) 255)) (bit-and str-off 255)) (bit-and (bit-shr str-off 8) 255)) (bit-and (bit-shr str-off 16) 255)) (bit-and (bit-shr str-off 24) 255))
 
   x86-64-emit-cdx : IRChapter, List TypeBinding -> EmitChapterResult
-  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress [] 0
+  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress [] 0 False
 
  The emit deck's flat term is 28 MB. Bare metal spends 23.65 MB of it on a
  three-definition subject and 23.71 MB on sixty-one, so the per-definition
@@ -1244,8 +1323,8 @@ Section: Binary Debug Map (MAP1)
  guard page from its kernel, so the check is switched off for hosted rather
  than taught a second ordering.
 
-  x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, List IRDef, Integer between 0 and 2 -> EmitChapterResult
-  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) (unchecked) (hosted-target) =
+  x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, List IRDef, Integer between 0 and 2, Boolean -> EmitChapterResult
+  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) (unchecked) (hosted-target) (avx-local) =
    let emit-deck = emit-build (list-length (m.defs) * 65536 + 29360128)
    in let de = __deck-enter
    in let tramp = bare-metal-trampoline
@@ -1255,7 +1334,8 @@ Section: Binary Debug Map (MAP1)
    in let st-mode = __record-set st-mode1 "stack-guard" (hosted-target == 0)
    in let st-poison = __record-set st-mode "poison-alloc" poison
    in let st-trace = __record-set st-poison "trace-alloc" trace
-   in let st-wd = __record-set st-trace "watchdog-mode" wd-mode
+   in let st-wd0 = __record-set st-trace "watchdog-mode" wd-mode
+   in let st-wd = __record-set st-wd0 "avx-local" avx-local
    in let st-eo2 = __record-set st-wd "effect-op-addrs" (assign-effect-op-addrs (m.effect-op-names) 0 (list-length (m.effect-op-names)) [])
    in let defs-lifted = (m.defs) & eq-helper-defs st-eo2 (m.defs)
    in let ret-ty = opening-bare-print-type defs-lifted
@@ -1269,7 +1349,8 @@ Section: Binary Debug Map (MAP1)
    in let st-wc = emit-wcet-unchecked st-dri unchecked 0
    in let st0a = emit-runtime-helpers st-wc
    in let dx = __deck-exit
-   in let st1 = emit-all-defs st0a defs-lifted 0
+   in let st1d = emit-all-defs st0a defs-lifted 0
+   in let st1 = emit-vec-cmp-helpers-if-called st1d
    in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos) (manifest-opening-effects tdefs) (manifest-opening-fs-scope tdefs) (manifest-opening-net-scope tdefs)
 
  `deck-record` is a name, not a keyword, and PlugTypes ships its own

@@ -5,23 +5,11 @@ Chapter: PipelineRun
   cites Shell chapter Pipeline
   cites Workflow chapter WorkflowTypes
 
- A build pipeline executed as a process instance. The pipeline model says what a
- build IS; this says what one RUN of it did, and it invents no vocabulary to do so:
- a `Pipeline` becomes a `ProcessDef`, a `PipeStage` a `StepDef`, a run a
- `ProcessInstance`, and `pi-history` is the build log with the MEANING of each exit
- beside it rather than a number a reader has to look up.
+ A `Pipeline` becomes a `ProcessDef`, a `PipeStage` a `StepDef`, a run a
+ `ProcessInstance`, and `pi-history` is the build log.
 
- THIS CHAPTER LIVES IN THE APP QUIRE AND NOT BESIDE `Pipeline.codex`, because
- Library Rule 2 fixes the order codex.foreword -> codex -> codex.os -> apps and
- forbids depending rightward. A foreword chapter cannot cite `WorkflowTypes`, so the
- translation lives on the side that is allowed to see both.
-
- IT DOES NOT CITE `WorkflowEngine`, and that is a cost decision rather than a
- preference. The engine's `evaluate-transitions` and `eval-condition` do exactly
- what is wanted, but that chapter cites the whole data-server stack, which would put
- a database in the unit of every build tool that wants to read a pipeline. So the
- edge selection here matches the two condition shapes THIS translation emits and
- refuses anything else, rather than reimplementing `ConditionOp` in general.
+ This chapter does not cite `WorkflowEngine`: that chapter cites the whole
+ data-server stack, which would put a database in every build tool's unit.
 
 Section: Naming
 
@@ -38,27 +26,19 @@ Section: Naming
   pipe-outcome-key : Text
   pipe-outcome-key = "outcome"
 
- THE ONWARD EDGE IS NOT `Always`, AND THE FIRST RUN OF THIS CHAPTER IS WHY. With
- `always-transition` on the onward edge, a stage that exited with a code NO OUTCOME
- EXPLAINS matched that edge and the run walked on reporting `active`: exit 9 on the
- subject below was swallowed silently, which is the defect `check-pipe-verdicts`
- exists to catch, reintroduced one layer up. The onward edge therefore tests for the
- ABSENCE of an exit, and an unexplained code now finds no edge at all.
+ The onward edge tests for the ABSENCE of an exit, not `Always`: an `Always` edge
+ would take an exit code no outcome explains and walk on reporting `active`.
 
   pipe-no-exit : Text
   pipe-no-exit = "none"
 
 Section: Steps
 
- A GROUP BECOMES ONE STEP OF TYPE `SubProcess` RATHER THAN BEING FLATTENED. A group
- carries a repeat, a guard and a handler, which are three edges the first pass does
- not build, and flattening its steps into the parent would emit a process that runs
- them unconditionally once. That is a plausible wrong answer, so the group is named
- as a subprocess and its interior is left for the pass that builds those edges.
+ A group is one `SubProcess` step, not flattened: flattening would run its steps
+ unconditionally once, dropping its repeat, guard and handler.
 
- `AssignToInitiator` and the rest are about people, so `Unassigned` is the honest
- value here rather than an invented one, and `sd-form`, `sd-sla` and
- `sd-required-docs` stay empty for the same reason.
+ Assignment is `Unassigned` and `sd-form`, `sd-sla` and `sd-required-docs` stay
+ empty: those fields are about people.
 
   pipe-step-of : PipeStage -> StepDef
   pipe-step-of (s) = StepDef {
@@ -93,11 +73,9 @@ Section: Steps
   pipe-group-name : Integer -> Text
   pipe-group-name (i) = "group-" & show i
 
- A STAGE THAT FANS OUT NEEDS NO CONSTRUCTOR, because `ps-needs` already says so: a
- stage that fans out is a stage that needs more than one guest. `PrDriven RkGuests`
- is a count the run supplies and `PrGuests n` is one the stage names, and the KIND is
- what keeps `PrDriven RkMemoryMb` and `PrDriven RkPort` out of this: they size a
- guest, they do not multiply it.
+ A stage fans out when `ps-needs` asks for more than one guest: `PrGuests n` above
+ one, or `PrDriven RkGuests`. `RkMemoryMb` and `RkPort` size a guest and do not
+ multiply it.
 
   pipe-kind-guests : PipeResourceKind -> Integer
   pipe-kind-guests (k) =
@@ -182,11 +160,8 @@ Section: Steps
     sd-y = 0
   }
 
- A GROUP'S INTERIOR IS EXPANDED, so its steps are real steps with their own status
- and their own events. The group itself is still named, as a `SubProcess` step, but
- the name is now a HEADER a reader can see in the graph rather than a stand-in for
- the interior: the three edges below are what make the interior's control flow
- explicit.
+ A group's interior steps are real steps with their own status and events; the
+ `SubProcess` step is the group's header.
 
   pipe-step-defs : List PipeStep, Integer, List StepDef -> List StepDef
   pipe-step-defs (ss) (i) (acc) =
@@ -228,10 +203,9 @@ Section: Steps
 
 Section: Verdicts as transitions
 
- A VERDICT IS AN OUTGOING EDGE, which is what makes the field executable rather
- than documentary. Every outcome a stage declares becomes one `TransitionDef` to the
- terminal step, carrying the outcome's own sentence as its label, and the stage then
- gets one `Always` edge to the next stage for the case where it did not exit at all.
+ Every outcome a stage declares becomes one `TransitionDef` to the terminal step,
+ labelled with the outcome's sentence, and the stage then gets one edge to the next
+ stage for the case where it did not exit at all.
 
  ORDER IS LOAD-BEARING: the outcome edges are emitted BEFORE the `Always` edge,
  because a matcher walks the list and takes the first hit, so an `Always` placed
@@ -239,8 +213,7 @@ Section: Verdicts as transitions
 
  An exit code is testable by equality. A passthrough, a computed code and a throw
  are not, so each is emitted against the `outcome` key instead: a driver names the
- kind it observed and the label still carries the meaning. That keeps all four
- outcome kinds in the graph rather than silently dropping three of them.
+ kind it observed and the label still carries the meaning.
 
   pipe-outcome-edge : Text, PipeOutcome, Integer -> TransitionDef
   pipe-outcome-edge (from) (o) (i) =
@@ -265,11 +238,9 @@ Section: Verdicts as transitions
       is PsStage (s) -> s.ps-verdict
       is PsGroup (rep) (guard) (handler) (inner) -> []
 
- THE DRIVER NAMES WHAT IT OBSERVED, for a group exactly as for an outcome. A guard
- is a `ShellExpr` and a repeat is a `PipeRepeat`, and neither is a `ConditionOp`: a
- runner that pretended to evaluate a shell expression would be inventing an answer.
- So each group edge tests a key the driver sets from the real run, and the KEY NAMES
- THE GROUP, so two groups in one pipeline cannot be confused.
+ A guard is a `ShellExpr` and a repeat a `PipeRepeat`, neither a `ConditionOp`, so
+ each group edge tests a key the driver sets from the real run. The key names the
+ group, so two groups in one pipeline cannot be confused.
 
   pipe-guard-key : Text -> Text
   pipe-guard-key (g) = "guard-" & g
@@ -441,26 +412,15 @@ Section: A run
     pi-tags = ["build"]
   }
 
- A STAGE THAT EXITS WITH A CODE NO OUTCOME EXPLAINS ERRORS THE RUN, and that is the
- whole point of holding the verdicts: the alternative is a run that reports success
- because nothing matched. `ProcErrored` carries the code, so the report names what
- could not be explained.
+ A stage that exits with a code no outcome explains errors the run, and
+ `ProcErrored` carries the code.
 
- A REFUSAL AND A SUCCESS MUST NOT CARRY THE SAME STATUS, and the first run of this
- chapter got that wrong: reaching the terminal step set `ProcCompleted` whichever
- outcome took it there, so exit 2 and exit 0 were one value. That is the conflation
- the workflow vocabulary was chosen to prevent, `test-cross` reporting six skips as
- exit 0 being the case on record. Only an exit of ZERO completes; every other
- outcome that reaches the end is `ProcErrored` carrying the verdict's own sentence.
+ A refusal and a success never carry the same status: only an exit of ZERO
+ completes, and every other outcome that reaches the end is `ProcErrored` carrying
+ the verdict's sentence.
 
- ONLY AN OUTCOME CAN REFUSE, AND CONTROL FLOW IS NOT AN OUTCOME. The second run of
- this chapter got THAT wrong: a guard that did not hold skipped the group to the end
- of the pipeline and the run reported `ERRORED`, because any non-exit observation
- reaching the terminal step was read as a refusal. A skipped group is not a failure.
- The exit and outcome keys are the ones that can refuse; the guard, repeat and
- handler keys are the run saying which way it went, and a guard-skip is recorded as
- `EvStepSkipped` rather than as a completion, which is the state `StepStatus` already
- spells and the reason this vocabulary was worth adopting.
+ Only an outcome can refuse. The guard, repeat and handler keys say which way the
+ run went; a guard-skip is recorded as `EvStepSkipped`, not as a failure.
 
   pipe-observe : ProcessDef, ProcessInstance, Text, Text, Integer -> ProcessInstance
   pipe-observe (pd) (pi) (key) (value) (ts) =
@@ -513,16 +473,9 @@ Section: A run
 
 Section: A group that did not run
 
- `StepSkipped` RATHER THAN ABSENT is the design's phrase, and absence is what the
- guard edge alone leaves: the interior steps are simply never entered, which is not a
- lie but tells a reader nothing. These two put the skip in the history explicitly.
-
- THE MEMBERSHIP COMES FROM THE CALLER, and that is the honest arrangement rather than
- the convenient one. A `ProcessDef` has no field that means "these steps belong to
- that group": `pd-data-schema` would take the list and `SubProcess` would take it as
- delimited text, and both are a field filled with a plausible value, which is the
- shape this tree names L-BEDTRUE. The caller holds the `Pipeline`, so the caller can
- answer the question exactly; `pipe-group-members` is how it does.
+ A skipped group's interior steps are recorded as `StepSkipped`, not left absent.
+ The membership comes from the caller (`pipe-group-members`): a `ProcessDef` has no
+ field that means "these steps belong to that group" (L-BEDTRUE).
 
   pipe-names-of : List PipeStep, Integer, List Text -> List Text
   pipe-names-of (ss) (i) (acc) =
@@ -557,11 +510,7 @@ Section: A group that did not run
 
 Section: Branches
 
- A BRANCH CARRIES ITS OWN `StepStatus`, which is the whole return of the fan-out:
- a batch that reports one exit code cannot say what RAN, and `test-cross` reporting
- six skips as exit 0 is the case on record. The driver names each branch as it
- lands, the same rule the guard, the repeat and the handler already follow, because
- a runner that decided a branch's fate would be inventing an answer.
+ A branch carries its own `StepStatus`, named by the driver as it lands.
 
  A status that is not terminal is recorded as started rather than as a landing, so
  a branch still in flight is counted as neither completed nor skipped. The status
@@ -591,8 +540,7 @@ Section: Branches
       pi-parent-id = pi.pi-parent-id, pi-tags = pi.pi-tags
     }
 
- THE JOIN COUNTS THE TWO APART RATHER THAN SUMMING THEM, which is what an exit code
- cannot do. The tally is DERIVED from the history rather than held in a field, so no
+ The join counts each status apart. The tally is derived from the history, so no
  caller can report a branch that never landed.
 
   pipe-same-event : EventType, EventType -> Boolean

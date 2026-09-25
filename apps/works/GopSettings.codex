@@ -1,40 +1,6 @@
 Chapter: GopSettings
   cites Works chapter GopFat16
 
- Where a setting lives between one boot and the next.
-
- A setting is declared, not invented at the call site: every key names its
- own default and its own range, and a value outside that range is REFUSED
- rather than quietly moved to the nearest legal one. Clamping is the older
- habit in this tree and `zone-clamp` is still doing it, which is why a
- timezone typed as 40 becomes 14 and nothing tells anyone. A refusal is a
- verdict the caller can show; a clamp is a value nobody chose.
-
- The same refusal runs on the way IN. A file holding a value this build no
- longer admits leaves the default standing, so narrowing a range in a later
- version cannot resurrect a value the range was narrowed to exclude.
-
- The file is on the ESP root and its layout is fixed, so a reader that is
- not this code can still tell what it found:
-
-   0..3    magic 'C' 'S' 'T' '1'
-   4..5    record count, u16 little-endian
-   6..7    zero
-   8..     records of eight bytes each:
-             +0..3  key id, u32 little-endian
-             +4..7  value plus 2147483648, u32 little-endian
-
- The value is stored biased for the reason the timezone byte is: a number
- read back out of a buffer is unsigned, so an unbiased -1 returns as
- 4294967295 and the range check then refuses a value that was legal when it
- was written.
-
- Values are held in a list parallel to the schema rather than in
- `Observe chapter ConfigStore`, which was surveyed for this and is the
- wrong shape: its keys are dynamic and hashed, and a schema fixed at
- declaration already gives every key an index. It also cannot express a
- range, which is the half that was missing.
-
  We say:
 
 Section: Kinds
@@ -131,9 +97,6 @@ Section: Writing
 
 Section: Restoring A Default
 
- Restoring is an explicit act on a key. It is deliberately not "delete the
- file and reboot", which cannot express one key and cannot be undone.
-
   gst-reset : SettingsStore, Integer -> SetResult
   gst-reset (s) (id) =
     let idx = gst-index-of s id 0
@@ -209,14 +172,6 @@ Section: Saving
   end
 
 Section: Loading
-
- A machine with no settings file answers the declared defaults, which is
- the only thing it can honestly answer: the absence of a file says nothing
- about what anyone wanted.
-
- A file whose header claims more records than its length can hold is
- refused whole rather than read as far as it goes, because a truncated
- file and a short one are the same colour at the call site.
 
   gst-apply-rec : SettingsStore, Integer, Integer -> SettingsStore
   gst-apply-rec (s) (buf) (off) =

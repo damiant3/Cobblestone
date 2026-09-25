@@ -298,13 +298,6 @@ Section: The Network Scope Gate
 
 Section: The Request
 
- Every way this can fail is a distinct Err, and none of them is an
- empty string. The first cut returned Text, so a host that would not
- resolve, a host that would not answer, and a server that returned an
- empty body were all "" and the caller could not tell them apart. A
- silently wrong answer is the thing this project least tolerates, and
- an error channel is the cheapest possible way not to give one.
-
   http-request : Text, Text, Text -> [Network.Read, Network.Write] Result Text Text
   http-request (method) (url) (body) =
    if net-scope-admits url == False then Err ("network: " & net-request-authority url & " is outside this program's grant")
@@ -327,12 +320,6 @@ Section: The Request
     end
    end
 
- A TRUNCATED REQUEST IS NOT A REQUEST, and the bare sender could not say it
- had produced one. `net-io-send-raw` hands back a transport and no count, so a
- request that stopped part way went on to wait for a response to something the
- server never received, and the wait then reported "no response" -- which names
- the far end for our own short write.
-
   http-exchange : TcpTransportState, List Integer -> [Network.Read, Network.Write] Result Text Text
   http-exchange (ts) (bytes) = act
     s <- net-io-send-raw-checked ts bytes
@@ -350,39 +337,14 @@ Section: The Request
 
 Section: The Refusal
 
- What a refusal must not do is misdescribe itself, and this one did for
- as long as it said "TLS is not implemented here". TLS IS implemented
- here: `fetch-tls`, in the section below, runs a real TLS 1.3 handshake
- with Ed25519 X.509 authentication over this same transport. What
- `fetch` lacks is not the transport. It is the two things a caller has
- to supply and this chapter must never invent -- entropy (an ephemeral
- X25519 private key and a 32-byte handshake random) and a security
- policy (trust anchors, and the calendar time to check a certificate
- against). A one-argument `fetch` has nowhere to carry either, so it
- cannot authenticate anybody, and an anonymous connection under the
- https scheme is exactly the false promise this project does not ship.
+ `fetch` refuses https: a one-argument call has nowhere to carry entropy or
+ a trust policy, so it cannot authenticate anybody. `fetch-tls` is the
+ authenticated path.
 
   https-refusal : Text -> Text
   https-refusal (url) = "https: refusing to fetch " & url & " in the clear. fetch carries no trust anchors and no entropy, so it cannot authenticate a server; use fetch-tls, which takes both"
 
 Section: HTTPS Over TLS 1.3
-
- The authenticated https path. This is what makes `https` mean https rather
- than a refusal: it runs a real TLS 1.3 handshake over the same TCP
- transport the cleartext path uses, then carries the HTTP request and
- response as application data under the negotiated keys. The TLS itself --
- the handshake, the record protection, the Ed25519 X.509 authentication,
- the man-in-the-middle defence -- is `Encode chapter TlsEndpoint`, proven end
- to end by `codex/test/apps/tls-fetch-loopback`.
-
- The live exchange cannot run in the headless battery -- it starts no TLS
- server -- so in the battery this is compile-verified and rests on the
- loopback, the same standing as the cleartext live half.
- `build/https-interop-test.ps1` is the other half and it is the one that
- matters: three OpenSSL servers, an ECDSA P-256 chain and an RSA-2048
- chain that must both authenticate and deliver the served file byte for
- byte, and an unanchored self-signed leaf that must be refused. Until it
- existed this path had only ever been driven by code that agreed with it.
 
   https-port : Text -> Integer
   https-port (url) =

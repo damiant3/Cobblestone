@@ -15,6 +15,9 @@ Chapter: GopBoot
   cites Works chapter GopWeb
   cites Works chapter GopWake
   cites Works chapter GopWizard
+  cites Works chapter UefiConsole
+  cites Works chapter DevConsole
+  cites Works chapter DevConsoleBoot
   cites Verify chapter WakeCeremony
   cites Kernel chapter BitmapFont
   cites Foreword chapter Fat16
@@ -43,27 +46,30 @@ Section: Framebuffer Handoff
 
 Section: Menu Model
 
-  menu-count : Integer = 3
+  menu-count : Integer = 4
 
   menu-label : Integer -> Text
   menu-label (i) =
     if i == 0 then "Graphical UI"
-    else if i == 1 then "Restart"
+    else if i == 1 then "Dev Console"
+    else if i == 2 then "Restart"
     else "Power Off"
 
   menu-desktop : Integer = 0
 
-  menu-restart : Integer = 1
+  menu-devcon : Integer = 1
 
-  menu-power-off : Integer = 2
+  menu-restart : Integer = 2
+
+  menu-power-off : Integer = 3
 
 Section: Layout
 
  The stub reports the panel's real mode through the handoff cells;
  every position derives from it. The menu block (title, three rows, a
  status line) is centered on the panel, and glyphs double on panels
- 1024 pixels wide or wider (ui-scale, in GopDraw). The block is 168
- base units tall: title row 16, gap 32, three rows of 28, gap 20,
+ 1024 pixels wide or wider (ui-scale, in GopDraw). The block is 196
+ base units tall: title row 16, gap 32, four rows of 28, gap 20,
  status row 16.
 
   menu-box-w : Integer -> Integer
@@ -73,13 +79,13 @@ Section: Layout
   menu-left (w) (scale) = (w - menu-box-w scale) / 2
 
   menu-top : Integer, Integer -> Integer
-  menu-top (h) (scale) = (h - 168 * scale) / 2
+  menu-top (h) (scale) = (h - 196 * scale) / 2
 
   items-top : Integer, Integer -> Integer
   items-top (h) (scale) = menu-top h scale + 48 * scale
 
   msg-y : Integer, Integer -> Integer
-  msg-y (h) (scale) = items-top h scale + 104 * scale
+  msg-y (h) (scale) = items-top h scale + 132 * scale
 
 Section: Rendering
 
@@ -189,7 +195,7 @@ Section: Loop
     in let cu = if mv == 1 then cursor-update cs base stride h w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
     in s2
 
-  menu-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  menu-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
  THE HOVER IS UNGATED BECAUSE THE CLICK IS A LATCH. Both used to be read only
  on an iteration that consumed a report (`mv == 1`). `mouse-take-click` answers
  a press that was latched on an EARLIER report, so leaving `hover` gated would
@@ -209,6 +215,7 @@ Section: Loop
     in if fire & tgt == menu-power-off then power-off base w h stride font kbd mouse cs web
     else if fire & tgt == menu-restart then do-restart base w h stride font kbd
     else if fire & tgt == menu-desktop then menu-desk base w h stride font kbd mouse cs web
+    else if fire & tgt == menu-devcon then menu-dev base w h stride font kbd mouse cs web
     else menu-loop base w h stride font kbd mouse cs (menu-step base w h stride font mouse cs sel sc mv hover clicked) web
   end
 
@@ -217,12 +224,65 @@ Section: Loop
  taking one here would hold a second service on the same port on the
  second visit. `boot-flow` already has the one `opening` created.
 
-  menu-desk : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  menu-desk : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
   menu-desk (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) = act
     dk <- desk-run base w h stride font kbd mouse web
     d2 <- draw-menu base w h stride font menu-desktop
     let iv = poke-32 cs 0 0
     in menu-loop base w h stride font kbd mouse cs menu-desktop web
+  end
+
+ The Dev Console runs as a spawned process because on one core the boot
+ process is never preempted and a spawned one is. The console gets 8 MB of
+ heap: a spawn slot is 32 MB, heap plus a 1 MB stack, and a larger request
+ answers pid -1 (64 MB did, under OVMF); 8 MB indexes the console's surface. Offsets 36 to 52 of the grid block are the dispatcher's
+ telemetry, read with the QEMU monitor: 36 the pid, 40 the status just after
+ the spawn, 44 the child's progress (1 entered, 2 returned), 48 the pump
+ passes, 52 the scancodes fed.
+
+  dev-heap-bytes : Integer = 8388608
+
+  dev-child : Integer -> [Console, Device.Port, Device.Block, FileSystem, Concurrent] Integer
+  dev-child (x) = act
+    let m = poke-32 ugc-block 44 1
+    in act
+      d <- enter-dev-console-stick (uefi-console-init 0)
+      let m2 = poke-32 ugc-block 44 2
+      in m2
+    end
+  end
+
+  menu-dev : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
+  menu-dev (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) = act
+    let e = ugc-enable base w h stride
+    in act
+      pid <- process-spawn-with-heap (\x -> dev-child x) dev-heap-bytes
+      let a = poke-32 ugc-block 36 pid
+      in let b = poke-32 ugc-block 40 (process-status pid)
+      in dev-pump base w h stride font kbd mouse cs web pid
+    end
+  end
+
+  dev-pump : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
+  dev-pump (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) (pid) = act
+    let mark = __heap-save
+    in let sc = kbd-take kbd
+    in let f = if sc > 0 then ugc-key-feed sc else 0
+    in let pc = poke-32 ugc-block 48 (peek-32 ugc-block 48 + 1)
+    in let sn = if sc > 0 then poke-32 ugc-block 52 (peek-32 ugc-block 52 + 1) else 0
+    in let r = __heap-restore mark
+    in if process-status pid > 0 then act
+      y <- process-yield
+      dev-pump base w h stride font kbd mouse cs web pid
+    end
+    else act
+      let off = ugc-disable 0
+      in act
+        d <- draw-menu base w h stride font menu-devcon
+        let iv = poke-32 cs 0 0
+        in menu-loop base w h stride font kbd mouse cs menu-devcon web
+      end
+    end
   end
 
  If the firmware published no usable _S5_ the request is refused, and
@@ -245,7 +305,7 @@ Section: Loop
     end
   end
 
-  power-off : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  power-off : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
   power-off (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) = act
     let scale = ui-scale w
     in let a = acpi-boot 0
@@ -512,7 +572,7 @@ Section: xHCI Truth
 
 Section: Entry
 
-  run-menu : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  run-menu : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
   run-menu (base) (w) (h) (stride) (font) (kbd) (mouse) (web) = act
     let cs = alloc-zeroed 2048 64
     in let wp = mouse-warp mouse (w / 2) (h / 2)
@@ -543,7 +603,7 @@ Section: Entry
     in let bg = gop-fill-rect base stride h 8 y 400 12 0
     in gop-draw-text base stride h font 8 y t #00FF00 1 0
 
-  boot-flow : Integer, Integer, Integer, Integer, CbfFont, Integer -> [Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  boot-flow : Integer, Integer, Integer, Integer, CbfFont, Integer -> [Console, Device.Port, Device.Block, FileSystem, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
   boot-flow (base) (w) (h) (stride) (font) (web) = act
     let dg = boot-diag base w h stride font
     in let sp = boot-spin 150000000
@@ -565,7 +625,7 @@ Section: Entry
     end
   end
 
-  boot-screens : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  boot-screens : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Console, Device.Port, Device.Block, FileSystem, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
   boot-screens (base) (w) (h) (stride) (font) (kbd) (mouse) (web) =
     let ctx = WzCtx {
       wz-base = base,
@@ -585,7 +645,7 @@ Section: Entry
       run-menu base w h stride font kbd mouse web
     end
 
-  opening : [Device.Port, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent, Capability, Network.Read, Network.Write] Integer
+  opening : [Console, Device.Port, Device.Block, FileSystem, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent, Capability, Network.Read, Network.Write] Integer
   opening =
     let font = cbf-init
     in act

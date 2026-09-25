@@ -55,16 +55,21 @@ $consoleFile = $null
 $listener = $null
 
 try {
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
-    try { $listener.Start() } catch { [Console]::Error.WriteLine("FAIL: TCP $Port is already in use, so this plug cannot be run here now. The port is fixed per plug and shared across workspaces, so another agent running the same plug holds it (L-SHARED). Wait, or run a different plug."); exit 7 }
-    Write-Host "[plug-run] Listening on TCP $Port"
+    $hostPort = $Port
+    for ($pa = 0; $pa -lt 8; $pa++) {
+        $tryPort = if ($script:UseCodexVm) { Get-VmPort -Attempt $pa } else { $Port }
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $tryPort)
+        try { $listener.Start(); $hostPort = $tryPort; break } catch { $listener = $null; if (-not $script:UseCodexVm) { break } }
+    }
+    if (-not $listener) { [Console]::Error.WriteLine("FAIL: no host port for this plug run. Under codex-vm eight Get-VmPort ports were taken; under QEMU the plug's own port $Port is fixed and another run holds it (L-SHARED)."); exit 7 }
+    Write-Host "[plug-run] Listening on TCP $hostPort (the guest dials $Port)"
 
 
     $stderrFile = [System.IO.Path]::GetTempFileName()
     $consoleFile = [System.IO.Path]::GetTempFileName()
     # The host choice lives in Start-PlugVm (vm-config), not here: eighteen other
     # runners need the same selection and a copy in each is a copy to drift.
-    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB
+    $proc = Start-PlugVm -Kernel $PlugCdx -ConsoleFile $consoleFile -StderrFile $stderrFile -MemMB $MemMB -GuestPort $Port -HostPort $hostPort
     Write-Host "[plug-run] VM PID $($proc.Id)"
 
 

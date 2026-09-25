@@ -237,18 +237,17 @@ if ($Plugs) {
     if (-not (Test-Path $plugBuild)) { continue }
     $bundle = Join-Path $d.FullName 'build-output\plug-source.codex'
     if (-not (Test-Path $bundle)) { $missing += $d.Name; continue }
-    $digestFile = Get-PlugSourceDigestPath $bundle
-    $recorded = if (Test-Path $digestFile) { ([System.IO.File]::ReadAllText($digestFile)).Trim() } else { '' }
+    $why = Test-PlugSourceManifest $bundle $d.FullName
     # NO DIGEST is reported apart from a MISMATCH, and the difference is not
     # cosmetic: a mismatch clears when the plug is rebuilt, and no digest means
     # this plug's build never writes one, so it leaves the corpus permanently
     # while reading as the kind that clears. evidence bundles through
     # bundle-app.ps1 rather than the plug library and was exactly that.
-    if ($recorded -eq '') {
+    if ($why -eq 'none') {
       $nodigest += $d.Name
       if (-not $TrustBundles) { continue }
-    } elseif ($recorded -ne (Get-PlugSourceDigest $d.FullName)) {
-      $stale += $d.Name
+    } elseif ($null -ne $why) {
+      $stale += "$($d.Name) ($why)"
       if (-not $TrustBundles) { continue }
     }
     $rel = $bundle.Substring($root.Length + 1)

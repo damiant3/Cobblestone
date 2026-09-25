@@ -4,6 +4,7 @@ Chapter: Browser
   cites UI chapter Render
   cites UI chapter Surface
   cites UI chapter Event
+  cites UI chapter KeyInput
   cites UI chapter Scroll
   cites UI chapter RichText
   cites UI chapter TextField
@@ -69,7 +70,7 @@ Section: Initialization
 
  The state is built around the UNLOADED tab and the page is loaded into it
  afterwards, because the page has to be built for a height only a layout can
- answer and a layout needs a state to lay out (BROWSER-5). `__record-set`
+ answer and a layout needs a state to lay out. `__record-set`
  stores in place and hands back the same record, which is what makes the
  second step a store rather than a second state.
 
@@ -109,9 +110,8 @@ Section: Initialization
 
  The last argument is the viewport's MEASURED height, not the window's.
  `browser-viewport-h` lays the chrome out with an empty viewport and reads
- what the layout gives it (BROWSER-5); subtracting `chrome-height` here
- instead was 26 short at 1024x768, and the page painted the difference over
- whatever was below the pane.
+ what the layout gives it; `chrome-height` subtracted from the window is 26
+ short at 1024x768.
 
   load-new-tab-content : Tab, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer -> Tab
   load-new-tab-content (t) (sandbox) (trust) (cache) (vw) (vp-h) =
@@ -132,12 +132,11 @@ Section: Initialization
 
 Section: Chrome Layout
 
- Both bars hold widgets that declare 24, and since WORKS-45 a panel is at
- least as tall as what it contains, so the laid-out bars come out 42 each
- whatever these numbers say. `browser-apply-click` routes by y against them,
- so a number smaller than the bar it names sends clicks in the difference to
- the wrong handler: at 28 the bottom 14 rows of the address bar reached the
- page. `codex/test/apps/browser-chrome-layout` prints the laid-out heights.
+ Both bars hold widgets that declare 24, and a panel is at least as tall as
+ what it contains, so the laid-out bars come out 42 each whatever these numbers
+ say. `browser-apply-click` routes by y against them, so a number smaller than
+ the bar it names sends clicks in the difference to the wrong handler.
+ `codex/test/apps/browser-chrome-layout` prints the laid-out heights.
 
   chrome-tab-bar-height : Integer
   chrome-tab-bar-height = 42
@@ -149,8 +148,7 @@ Section: Chrome Layout
   chrome-height = chrome-tab-bar-height + chrome-address-bar-height
 
  This is the box the layout actually gives the page, not `chrome-height`
- subtracted from the window. The media player is sized by it, so the old
- arithmetic sized a video 26 rows taller than the space it had.
+ subtracted from the window. The media player is sized by it.
 
   page-viewport-rect : BrowserState -> LayoutRect
   page-viewport-rect (state) = browser-viewport-box state
@@ -193,20 +191,14 @@ Section: Rendering
         in widget-panel "root" DirColumn 0 [chrome, overlay]
       else chrome
 
- BROWSER-5. The page has to be built for a height, and `vh - chrome-height`
- is not that height. `chrome-height` is the sum of the two bars, where what
- stands above the viewport is the root panel's own inset and the margins
- between the bars as well: measured at 1024x768, the page was built for 684
- and the layout gave it 658. Nothing clips a widget panel to its box, so the
- surplus painted over whatever sat below the pane, which on the desk is the
- taskbar.
+ `vh - chrome-height` is not the page's height: the root panel's inset and
+ the margins between the bars also stand above the viewport (684 against 658
+ at 1024x768), and nothing clips a widget panel to its box.
 
  So the height is MEASURED, from a layout of this same chrome with an EMPTY
- viewport. Empty is not an optimisation, it is the whole point: since
- WORKS-45 a panel is at least as tall as what it holds, so a chrome measured
- with the real page reports the height that page DEMANDS rather than the
- height it is going to be given. That is the same circularity the tracker hit
- on the width axis in WORKS-47, and it is avoided the same way.
+ viewport. A panel is at least as tall as what it holds, so a chrome measured
+ with the real page would report the height the page DEMANDS rather than the
+ height it is given.
 
   browser-viewport-probe : Text = "viewport-probe"
 
@@ -365,11 +357,9 @@ Section: Tab Management
         in __record-set s2 "bs-address-bar" (address-bar-set-text state.bs-address-bar addr)
 
  Switching to the tab already active is a no-op and answers the state it was
- given, for the reason `browser-focus-page` below is written the same way:
- clicking the tab you are on is an ordinary thing to do, `tab-find-by-id`
- and three `__record-set` calls are not free, and on a bump allocator in a
- loop that never returns they are permanent. Measured through
- `browser-click-heap`: 16 bytes a click before the guard, none after.
+ given: `tab-find-by-id` and three `__record-set` calls cost 16 bytes a click
+ (`browser-click-heap`), permanent on a bump allocator in a loop that never
+ returns.
 
   browser-switch-tab : BrowserState, Integer -> BrowserState
   browser-switch-tab (state) (id) =
@@ -532,10 +522,8 @@ Section: Mouse Hit Testing
  The band is read off the tree the browser painted, not derived from the
  chrome's heights. Those are heights and the question is POSITION: the root
  panel is inset by its own margin, border and padding before anything is
- placed, so the tab bar starts at y 9 and every boundary derived from a
- height alone sat 9 rows above the bar it named. Ten rows of a 108-row
- column reached the wrong handler, and no pair of constants closes that,
- because the inset is the theme's and the widths are the caller's
+ placed, so the tab bar starts at y 9, and no pair of constants accounts for
+ that: the inset is the theme's and the widths are the caller's
  (`codex/test/apps/browser-chrome-click`).
 
  The heights are still the answer before the first paint, when there is no
@@ -553,13 +541,10 @@ Section: Mouse Hit Testing
         else if browser-point-in tree "address-bar" mx my then browser-band-address-bar
         else browser-band-page
 
- This walks the tree itself rather than calling `widget-find`, and the reason
- is the same one the focus guard below is written for. `widget-find` answers
- a `Maybe WidgetNode`, so it ALLOCATES a `Just` on every hit, and this runs
- on every click: measured through `browser-click-heap`, routing through it
- cost 96 bytes a cycle where the loop had been costing nothing, and on a bump
- allocator inside a loop that never returns those are permanent. Answering a
- Boolean allocates nothing.
+ This walks the tree itself rather than calling `widget-find`, which answers
+ a `Maybe WidgetNode` and so allocates a `Just` on every hit: 96 bytes a click
+ (`browser-click-heap`), permanent on a bump allocator in a loop that never
+ returns. Answering a Boolean allocates nothing.
 
   browser-point-in : WidgetNode, Text, Integer, Integer -> Boolean
   browser-point-in (w) (id) (mx) (my) =
@@ -583,12 +568,8 @@ Section: Mouse Hit Testing
     then browser-handle-trust-click state mx my
     else browser-apply-page-code state code
 
- BROWSER-7, and it is BROWSER-6's defect one axis over. Dividing x by 120
- assumes the tabs start at x 0 and are all 120 wide. They start at x 9, for
- the root panel's inset, and `render-tab-button` sizes each one to its own
- TITLE, so no two are the same width and none of them is 120. It read
- correct only because one tab plus the "+" column means almost any x answers
- the intended index.
+ Tabs start at x 9, for the root panel's inset, and `render-tab-button` sizes
+ each one to its own TITLE, so dividing x by a tab width cannot find a tab.
 
  The tree is asked instead, by the id each button already carries. The width
  arithmetic is kept for the `bs-laid = None` case, which is before the first
@@ -605,9 +586,8 @@ Section: Mouse Hit Testing
         in if id < 0 then state else browser-switch-tab state id
 
  A tab is found by its POSITION among the bar's children rather than by
- building its id. `"tab-" & show id` per tab per click measured 48 bytes a
- cycle through `browser-click-heap`, and on a bump allocator in a loop that
- never returns those are permanent. `browser-render-tab-bar` pushes the tabs
+ building its id: `"tab-" & show id` per tab per click costs 48 bytes a
+ click (`browser-click-heap`). `browser-render-tab-bar` pushes the tabs
  first and then `new-tab` and `close-tab`, so child i is tab i, and both
  buttons are tested by literal id before this runs and cannot reach it.
 
@@ -648,10 +628,8 @@ Section: Mouse Hit Testing
       then browser-new-tab state
       else state
 
- The same defect as the tab bar and fixed the same way, because leaving it
- would be the identical bug next door: three 28-wide slots from x 0, where
- the buttons start at x 9 and a `<` button is `text-length * 8 + 16` wide,
- which is 24. `address-bar-render` already names all three.
+ The buttons start at x 9 and a `<` button is `text-length * 8 + 16` wide,
+ which is 24, so they are found by the ids `address-bar-render` gives them.
 
   browser-handle-address-bar-click : BrowserState, Integer, Integer -> BrowserState
   browser-handle-address-bar-click (state) (mx) (my) =
@@ -717,10 +695,8 @@ Section: Mouse Hit Testing
           is Just (widget-id) -> widget-id-code widget-id
 
  A click that lands on nothing is the common case -- it is every click on
- page background -- so it is the one that must not allocate. Writing the
- focus unconditionally costs 8 bytes each time, measured, and on a bump
- allocator inside a loop that never returns those become permanent. The
- guard makes the miss free.
+ page background -- so it must not allocate: writing the focus
+ unconditionally costs 8 bytes a click, measured.
 
   browser-focus-page : BrowserState -> BrowserState
   browser-focus-page (state) =
@@ -820,15 +796,15 @@ Section: Address Bar Key Handling
 
   browser-handle-address-key : BrowserState, Integer -> BrowserState
   browser-handle-address-key (state) (k) =
-    if k == 13
+    if k == key-enter
       then let address = address-bar-submit state.bs-address-bar
         in __record-set (browser-navigate state address) "bs-focus" FocusPageContent
-      else if k == 27
+      else if k == key-escape
       then __record-set state "bs-focus" FocusPageContent
-      else if k == 8
+      else if k == key-backspace
       then let s1 = __record-set state "bs-address-bar" (address-bar-backspace state.bs-address-bar)
         in __record-set s1 "bs-dirty" True
-      else if k >= 32
+      else if key-is-char k
       then let ch = char-from-code k
         in let s1 = __record-set state "bs-address-bar" (address-bar-insert-char state.bs-address-bar ch)
         in __record-set s1 "bs-dirty" True
@@ -836,7 +812,7 @@ Section: Address Bar Key Handling
 
   char-from-code : Integer -> Text
   char-from-code (k) =
-    char-encode (code-to-char (from-unicode k))
+    char-encode (code-to-char k)
 
 Section: Page Key Handling
 
@@ -923,12 +899,10 @@ Section: Page Scroll Handling
 
  A tab is built by `tab-new` with a viewport of 0 by 0 and a content of 800 by
  600, which are placeholders: the tab exists before any layout has said how big
- either is. Until this ran, `scroll-by` clamped against those placeholders, so
- the offset it produced had nothing to do with the page on the glass.
+ either is, and `scroll-by` must not clamp against them.
 
  The height that matters is the VISIBLE one, `lh - vy`, not the viewport node's
- own `lr-h`. Those differ here and the difference is BROWSER-5's other half: a
- flex child is not shrunk below the minimum its content declares, so the node
+ own `lr-h`: a flex child is not shrunk below the minimum its content declares, so the node
  laid into the pane is taller than the pane and its own bounds cannot say how
  much of it a reader can see.
 

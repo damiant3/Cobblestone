@@ -1,0 +1,92 @@
+Chapter: Persist Hex Guard
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Browser chapter BrowserPersist
+  cites Services chapter Revocation
+  cites Services chapter ServicesPersist
+  cites Works chapter FactArchive
+  cites Works chapter RepoProtocolPersist
+
+Section: Helpers
+
+  dec-loop : List Integer, Integer, List Text -> List Text
+  dec-loop (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else dec-loop bs (i + 1) (list-push acc ((if i > 0 then " " else "") & show (list-at bs i)))
+
+  dec : List Integer -> Text
+  dec (bs) = "[" & text-concat-list (dec-loop bs 0 []) & "]"
+
+  scope-text : RevocationScope -> Text
+  scope-text (s) =
+    when s
+      is ScopeIdentity (bs) -> "id" & dec bs
+      is ScopeContentHash (bs) -> "hash" & dec bs
+      is ScopeCapability (t) -> "cap:" & t
+      is ScopeVaultAccess (t) -> "vault:" & t
+
+  trust : Text, Text -> Text
+  trust (name) (line) =
+    when parse-trust-decision line
+      is None -> name & " refused"
+      is Just (d) -> name & " " & dec d.td-publisher
+
+  rev : Text, Text -> Text
+  rev (name) (line) =
+    when parse-rev-line line
+      is None -> name & " refused"
+      is Just (r) -> name & " scope=" & scope-text r.rr-scope & " auth=" & dec r.rr-authority & " sig=" & dec r.rr-signature
+
+  base : Text, Text -> Text
+  base (name) (line) =
+    when base-from-text line
+      is None -> name & " refused"
+      is Just (b) -> name & " " & dec b.br-signature
+
+  legacy : Text, Text -> Text
+  legacy (name) (line) =
+    when source-def-from-legacy line
+      is None -> name & " refused"
+      is Just (d) -> name & " " & dec d.sd-signature
+
+  tomb : Text, Text -> Text
+  tomb (name) (line) =
+    let t = tombstone-from-text line
+    in name & " path=" & t.tomb-path & " sig=" & dec t.tomb-signature
+
+  proposal : Text, Text -> Text
+  proposal (name) (line) =
+    when proposal-from-persist-text line
+      is None -> name & " refused"
+      is Just (p) -> name & " " & dec p.signature
+
+  verdict : Text, Text -> Text
+  verdict (name) (line) =
+    when verdict-from-persist-text line
+      is None -> name & " refused"
+      is Just (v) -> name & " " & dec v.signature
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (trust "trust-good" "0a0b|1|100|-1")
+    print-line-uni (trust "trust-bad" "0g0b|1|100|-1")
+    print-line-uni (trust "trust-odd" "0a0|1|100|-1")
+    print-line-uni (rev "rev-good" "1|id:0a0b|0c0d|5|6|why|0e0f")
+    print-line-uni (rev "rev-cap" "1|cap:net|0c0d|5|6|why|0e0f")
+    print-line-uni (rev "rev-bad-id" "1|id:0a0z|0c0d|5|6|why|0e0f")
+    print-line-uni (rev "rev-bad-hash" "1|hash:0|0c0d|5|6|why|0e0f")
+    print-line-uni (rev "rev-bad-auth" "1|id:0a0b|0c0x|5|6|why|0e0f")
+    print-line-uni (rev "rev-bad-sig" "1|id:0a0b|0c0d|5|6|why|0e0")
+    print-line-uni (base "base-good" "a|b|c|1|2|p|s|0a0b|au|9")
+    print-line-uni (base "base-bad" "a|b|c|1|2|p|s|0a0k|au|9")
+    print-line-uni (legacy "legacy-good" "h|p|q|c|signer|0a0b")
+    print-line-uni (legacy "legacy-unsigned" "h|p|q|c")
+    print-line-uni (legacy "legacy-bad" "h|p|q|c|signer|0a0t")
+    print-line-uni (tomb "tomb-good" "p|s|0a0b|a|5")
+    print-line-uni (tomb "tomb-bad" "p|s|0a0q|a|5")
+    print-line-uni (proposal "proposal-good" "id|fp|ch|pa|5|0|0a0b|d1,d2|desc|just")
+    print-line-uni (proposal "proposal-bad" "id|fp|ch|pa|5|0|0a0bz|d1,d2|desc|just")
+    print-line-uni (verdict "verdict-good" "id|pid|fp|0|note|0A0B|5|why")
+    print-line-uni (verdict "verdict-bad" "id|pid|fp|0|note|0A0G|5|why")
+  end

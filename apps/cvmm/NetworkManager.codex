@@ -12,6 +12,7 @@ Chapter: NetworkManager
   cites UI chapter SettingsPanel
   cites UI chapter Validation
   cites Foreword chapter Maybe
+  cites Net chapter NetDriver
 
 Section: NIC Types
 
@@ -361,5 +362,31 @@ Section: JSON
     & ",\"status\":\"" & status-label (n.nic-status)
     & "\",\"rxBytes\":" & show (n.nic-rx-bytes).bs-bytes
     & ",\"txBytes\":" & show (n.nic-tx-bytes).bs-bytes & "}"
+
+Section: The Bound Driver
+
+ NetDriver's control block names the card the stack is using (0, the
+ NE2000, until a bring-up binds an e1000) and reads the station address
+ live. The driver keeps no IP configuration, link speed or counters, so
+ those stay unread.
+
+  nm-hex-digit : Integer -> Text
+  nm-hex-digit (v) = char-to-text (char-at "0123456789abcdef" v)
+
+  nm-mac-text : List Integer, Integer, Text -> Text
+  nm-mac-text (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else let b = list-at bs i
+    in let pair = nm-hex-digit (b / 16) & nm-hex-digit (bit-and b 15)
+    in nm-mac-text bs (i + 1) (if i == 0 then pair else acc & ":" & pair)
+
+  nm-live-nic : Nic
+  nm-live-nic =
+    let name = net-driver-card-name net-driver-active
+    in let n = nic-new "eth0" name NicEthernet (nm-mac-text net-driver-mac 0 "")
+    in __record-set (__record-set n "nic-driver" name) "nic-speed-mbps" 0
+
+  nm-live : NetworkManagerState
+  nm-live = nm-add-nic net-manager-new nm-live-nic
 
 Page 1

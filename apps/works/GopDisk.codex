@@ -3,22 +3,6 @@ Chapter: GopDisk
   cites Works chapter GopNvme
   cites Works chapter GopUsbMsc
 
- Post-ExitBootServices disk reads. Once the boot stub calls
- ExitBootServices the firmware's Block I/O protocol is gone, so the
- payload must drive a controller itself. Two paths, tried in that order
- by `disk-read-sector`:
-
- Legacy IDE PIO (this chapter, B3.1a) -- codex-vm's `-disk`, QEMU
- '-machine pc', old boards. Primary channel, ports 0x1F0-0x1F7.
-
- LBA28 READ SECTORS (command 0x20): select the drive with the top LBA
- nibble, program the count and 24-bit LBA, issue the command, then for
- each sector poll the status port until BSY clears and DRQ sets and
- read 256 16-bit words from the data port. Every poll loop is fuel-
- bounded so a missing or wedged disk fails to a status code instead of
- hanging; a program hosting this compiles with the pet flag anyway,
- like every boot-path loop.
-
  We say:
 
 Section: Ports
@@ -65,10 +49,6 @@ Section: Status Polling
 
 Section: Word Transfer
 
- One sector is 256 words of the data port, and ATA delivers them
- little-endian in the order the disk lays them out, which is what the
- string form moves them as.
-
   ide-read-words : Integer, Integer -> [Device.Port] Integer
   ide-read-words (addr) (i) = act
     r <- (port-in-16-block (addr + i * 2) (256 - i) ide-data)
@@ -77,23 +57,12 @@ Section: Word Transfer
 
 Section: Sector Read
 
- Read one LBA28 sector into a freshly-allocated 512-byte heap buffer.
- Returns the buffer address on success, or 0 on error (no disk, LBA out
- of range, or a poll timeout). The buffer is bump-allocated with
- __heap-advance; the caller owns it until its function returns.
-
   IdeRead = record {
     ir-ok : Boolean,
     ir-buf : Integer
   }
 
 Section: Multi-Sector Read
-
- One command per sector costs a command per sector: a 2 MB seed is ~4200
- of them, and on IDE PIO each sector is 256 port reads. Both controllers
- take a sector count, so a bulk read asks once. AHCI carries the whole
- transfer in a single PRD (up to 4 MB); IDE is capped at 256 sectors per
- command by its 8-bit count register, so it walks the request in chunks.
 
   ide-max-chunk : Integer = 64
 
@@ -121,15 +90,6 @@ Section: Multi-Sector Read
       end
     end
   end
-
- A machine with no legacy IDE controller floats the bus: every status
- read answers 0xFF, which fakes BSY, DRQ, and ERR all at once. The
- fuel-bounded waits then time out holding 0xFF, the DRQ test passes,
- and the drain loop "reads" sectors of all-ones and reports success --
- a phantom disk full of garbage that outranks the real one in the
- dispatch. All-ones is the same floating-bus signature the i8042 and
- LAPIC probes retire on; one status read up front retires the whole
- controller.
 
   ide-absent : [Device.Port] Boolean
   ide-absent = act
@@ -228,12 +188,6 @@ Section: Medium Selection
   end
 
 Section: Multi-Sector Write
-
- Writing mirrors reading: program the LBA and count once, then push each
- sector's 256 words to the data port, waiting for DRQ before each. After
- the last sector a FLUSH CACHE forces the drive to commit -- without it a
- write can sit in a volatile cache and a power loss loses the identity we
- just saved.
 
   ide-write-words : Integer, Integer -> [Device.Port] Integer
   ide-write-words (addr) (i) = act
@@ -363,12 +317,6 @@ Section: Dispatch
     end
   end
 
- A write is not committed until the medium says so, and only the USB path
- has a flush primitive today. The answer is three-state on purpose: a
- medium we CANNOT flush must not be indistinguishable from one we did
- (L-BAILVALUE). 1 is flushed, 0 is no flush primitive for this medium,
- -1 is a flush that was issued and failed.
-
   disk-sync-cache : [Device.Port] Integer
   disk-sync-cache = act
     let sel = med-selected
@@ -438,13 +386,6 @@ Section: IDE Sector Read
   end
 
 Section: Identify
-
- IDENTIFY DEVICE (0xEC) answers one 512-byte sector describing the
- drive: the model string sits at words 27-46 and the sector counts at
- words 60-61 (LBA28) and 100-103 (LBA48). No LBA registers to program;
- select the drive, issue, drain one sector. Behind the same floating-bus
- gate as every other IDE entry, and a DRQ that never arrives (no device
- on a present controller) returns zero instead of a garbage page.
 
   ide-cmd-identify : Integer = 236
 

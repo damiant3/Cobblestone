@@ -1,0 +1,73 @@
+Chapter: Arm64NetCalibrateTest
+  cites Kernel chapter Arm64Pci
+  cites Kernel chapter VirtioPci
+  cites Kernel chapter VirtioNet
+  cites Net chapter Arm64NetIO
+  cites Net chapter Arm64NetCalibrate
+  cites Net chapter NetCompact
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+
+Section: Wire Fixtures
+
+ No device: the rings are RAM at #48000000, as in arm64-net-compact.
+
+  floor : Integer = #48000000
+  ring-empty : Integer = #48100000
+  ring-three : Integer = #48140000
+  tx-ring : Integer = #48180000
+  ring-size : Integer = 256
+
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  cli-ip : List Integer = [10, 0, 2, 100]
+  gw-ip : List Integer = [10, 0, 2, 2]
+
+  srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 cli-ip 5000
+
+  dead-pci : Arm64PciDevice = Arm64PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0, pci-vendor = 0, pci-device-id = 0, pci-class = 0, pci-subclass = 0, pci-header-type = 0 }
+  dead-dev : VirtioDevice = VirtioDevice { pci-dev = dead-pci, common-base = 0, notify-base = 0, notify-off-multiplier = 0, isr-base = 0, device-cfg-base = 0 }
+
+  vnet-on : Integer -> VirtioNetState
+  vnet-on (ring) =
+   let rq = VirtqueueState { desc-base = ring + #10000, avail-base = ring + #20000, used-base = ring, queue-size = ring-size, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = ring + #30000 }
+   in let tq = VirtqueueState { desc-base = tx-ring + #1000, avail-base = tx-ring + #2000, used-base = tx-ring, queue-size = 32, free-head = 0, avail-idx = 0, last-used-idx = 0, notify-addr = tx-ring + #3000 }
+   in VirtioNetState { device = dead-dev, rx-queue = rq, tx-queue = tq, mac = srv-mac }
+
+  fill-used : Integer, Integer, Integer -> Integer
+  fill-used (ring) (i) (n) =
+    if i >= n then poke-16 ring 2 n
+    else let e0 = poke-32 (ring + 4 + i * 8) 0 0
+    in let e1 = poke-32 (ring + 4 + i * 8) 4 (vnet-hdr-size + 60)
+    in fill-used ring (i + 1) n
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  fresh : Integer -> Arm64NetIOState
+  fresh (ring) = arm64-net-io-new (vnet-on ring) (transport-new-with-cap srv0 4096)
+
+  last-used : Arm64NetIOState -> Integer
+  last-used (st) = ((st.vnet).rx-queue).last-used-idx
+
+Section: Entry
+
+  opening : [Console, Device.Mmio] Nothing =
+    let z = poke-16 ring-empty 2 0
+    in let three = fill-used ring-three 0 3
+    in let st = fresh ring-empty
+    in let cal = arm64-net-io-calibrate st
+    in let cal3 = arm64-net-io-calibrate (fresh ring-three)
+    in act
+      print-line-uni ("fallback " & show (st.poll-interval))
+      print-line-uni ("calibrated above-floor " & yn (cal.poll-interval >= arm64-net-io-poll-floor))
+      print-line-uni ("calibrated not-fallback " & yn (cal.poll-interval /= arm64-net-io-poll-fallback))
+      print-line-uni ("empty ring untouched " & yn (last-used cal == 0))
+      print-line-uni ("three frames consumed " & show (last-used cal3))
+      print-line-uni ("survives enter " & yn ((arm64-net-io-enter cal).poll-interval == cal.poll-interval))
+      print-line-uni ("clamp low " & show ((arm64-net-io-with-poll st 5).poll-interval))
+      print-line-uni ("clamp high " & show ((arm64-net-io-with-poll st (arm64-net-io-poll-max + 1)).poll-interval))
+      print-line-uni ("keep " & show ((arm64-net-io-with-poll st 5000).poll-interval))
+    end
+
+Page 1

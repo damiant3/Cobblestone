@@ -1,8 +1,11 @@
-# disk-runner-arm.ps1 -- the arm for apps/works/DiskTestRunner (WORKS-63).
+# disk-runner-arm.ps1 -- the arm for apps/works/DiskTestRunner.
 #
 # The runner mounts the boot volume, lists the root and COMPILES each entry
 # alone, with no cite resolution, printing a verdict per entry and a failure
 # count. The app sweep compiled the runner and nothing ran it.
+#
+# IT IS IN NO GATE (commander, 2026-09-09): whoever changes the disk path runs
+# it and says so. About 85 seconds, one guest at a time.
 #
 # THE FIXTURE IS BUILT HERE, NOT CHECKED IN (root's ruling, 2026-09-09: no
 # 8 MB image per arm in the depot; the depot holds the recipe). Everything this

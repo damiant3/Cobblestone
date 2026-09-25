@@ -5,16 +5,6 @@ Chapter: HostedServeTls
   cites Encode chapter TlsEndpoint
   cites Foreword chapter Ed25519
 
- HTTPS on a hosted target: TLS 1.3 over the host's TCP.
-
- RFC 8446 section 5.1: a record is a 5-byte header, type, version(2) and
- length(2), then the fragment. A plaintext fragment is at most 2^14 bytes,
- and a protected record's length is at most 2^14 + 256.
-
- Every connection draws its X25519 key and its ServerHello random from
- `hardware-random`, which is RDRAND. A key reused across connections is a
- key an observer can correlate them by, and a lost one decrypts all of them.
-
  We say:
 
 Section: Configuration
@@ -31,10 +21,6 @@ Section: Configuration
 
   hst-max-plain : Integer = 16384
   hst-max-record : Integer = 16640
-
- Receives one connection may spend before it is dropped. A handshake and a
- request take 2 to 4 receives; the bound keeps a silent client from holding
- the single-threaded listener.
 
   hst-recv-limit : Integer = 64
 
@@ -80,10 +66,6 @@ Section: Records
 
   HstPump = record { hp-ep : TlsEp, hp-rest : List Integer, hp-ok : Boolean }
 
- Feed every complete record in `pending` to the endpoint and send what it
- answers, in order. A declared length past the protocol's maximum ends the
- connection rather than growing `pending` toward it.
-
   hst-pump : Integer, Integer, TlsEp, List Integer -> [Network.Write] HstPump
   hst-pump (cfd) (buf) (ep) (pending) = act
     if list-length pending >= 5 then act
@@ -107,12 +89,6 @@ Section: Records
   end
 
 Section: Serving One Connection
-
- The request is complete at the blank line ending its headers, the same
- boundary the plaintext server's single receive stops at.
- `http-find-blank-line` cannot answer this: it returns the offset past the
- blank line, which is the length itself for a request that ends there, and
- the length is also its not-found answer.
 
   hst-has-blank-line : List Integer, Integer -> Boolean
   hst-has-blank-line (a) (i) =
@@ -177,14 +153,6 @@ Section: Serving One Connection
     end
   end
 
- A connection allocates about 19 MB (the handshake's X25519, Ed25519 and key
- schedule), measured 2026-09-23. Everything it allocates is reclaimed when it
- closes; only the request count and the verdict, both Integers, cross the
- restore. Safe because `host-socket` send is the host kernel copying the
- bytes before it returns, so nothing below the mark is still referenced.
- The contract this places on the route: it must not keep anything it
- allocates across requests.
-
   hst-new-ep : HostedTls -> TlsEp
   hst-new-ep (tls) =
     tls-ep-server-new (hst-random-bytes 4 []) (hst-random-bytes 4 []) (tls.ht-chain) (tls.ht-sign-priv) (tls.ht-sign-pub)
@@ -201,9 +169,6 @@ Section: Serving One Connection
     end
 
 Section: The Accept Loop
-
- The same contract as `hosted-serve-on`: a negative `count` serves until
- accept refuses, and the answer is the number of requests served.
 
   hst-loop : (HttpRequest -> HttpResponse), HostedTls, WebState, Integer, Integer, Integer -> [Network.Write] Integer
   hst-loop (route) (tls) (st) (fd) (buf) (remaining) = act

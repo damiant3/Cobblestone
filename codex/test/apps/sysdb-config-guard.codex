@@ -1,0 +1,58 @@
+Chapter: SysdbConfigGuard
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter SystemDb
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Fixtures
+
+  put-u32 : Integer, Integer, Integer -> Integer
+  put-u32 (buf) (off) (v) =
+    let a = poke-byte buf off (bit-and v 255)
+    in let b = poke-byte buf (off + 1) (bit-and (bit-shru v 8) 255)
+    in let c = poke-byte buf (off + 2) (bit-and (bit-shru v 16) 255)
+    in poke-byte buf (off + 3) (bit-and (bit-shru v 24) 255)
+
+  fill : Integer, Integer, Integer, Integer -> Integer
+  fill (buf) (i) (stop) (v) =
+    if i >= stop then 0
+    else let w = poke-byte buf i v
+    in fill buf (i + 1) stop v
+
+ A fact sector whose content is mode 1, partition 2, serial "ae", terminator.
+
+  sector-with-len : Integer -> Integer
+  sector-with-len (len) =
+    let buf = alloc-bytes 512
+    in let z = fill buf 0 512 0
+    in let l = put-u32 buf 74 len
+    in let m = poke-byte buf 78 1
+    in let p = poke-byte buf 79 2
+    in let s1 = poke-byte buf 80 15
+    in let s2 = poke-byte buf 81 13
+    in let t = poke-byte buf 82 0
+    in buf
+
+  unterminated : Integer
+  unterminated =
+    let buf = alloc-bytes 512
+    in let w = fill buf 0 512 15
+    in buf
+
+  show-config : Maybe SysBootConfig -> Text
+  show-config (m) =
+    when m
+     is None -> "refused"
+     is Just (c) -> show (c.sbc-boot-mode) & "/" & show (c.sbc-boot-partition) & "/" & c.sbc-boot-drive-serial
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("good=" & show-config (sysdb-config-from-sector (sector-with-len 5)))
+    print-line-uni ("at-limit=" & show-config (sysdb-config-from-sector (sector-with-len 434)))
+    print-line-uni ("past-limit=" & show-config (sysdb-config-from-sector (sector-with-len 435)))
+    print-line-uni ("lying=" & show-config (sysdb-config-from-sector (sector-with-len 4000000000)))
+    print-line-uni ("unterminated=" & show-config (sysdb-unpack-boot-config unterminated))
+  end

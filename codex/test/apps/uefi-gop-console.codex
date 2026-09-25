@@ -1,0 +1,45 @@
+Chapter: UefiGopConsoleTest
+  cites Works chapter UefiConsole
+  cites Works chapter GopAhci
+  cites Foreword chapter Console
+
+ The console calls the Dev Console makes must reach the GOP grid once the
+ block is on. "AB" at row 1 column 2 in white on blue must light only the two
+ cells it names, and fill-row 3 in red must cover exactly one 640 by 16 band.
+ The residue row is the control: any word but the magic leaves the grid off.
+
+Section: Counting
+
+  gw : Integer = 640
+
+  gh : Integer = 400
+
+  count : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count (fb) (x0) (y0) (x1) (y1) (rgb) (y) (acc) =
+    if y >= y1 then acc
+    else count fb x0 y0 x1 y1 rgb (y + 1) (acc + count-row fb x0 x1 rgb y x0 0)
+
+  count-row : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  count-row (fb) (x0) (x1) (rgb) (y) (x) (acc) =
+    if x >= x1 then acc
+    else count-row fb x0 x1 rgb y (x + 1) (if bit-and (peek-32 fb ((y * gw + x) * 4)) 16777215 == rgb then acc + 1 else acc)
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let fb = alloc-zeroed (gw * gh * 4) 64
+    in let r0 = poke-32 ugc-block 0 12345
+    in let off = ugc-on 0
+    in let e = ugc-enable fb gw gh gw
+    in act
+      print-line-uni ("residue word leaves the grid off: " & (if off then "NO" else "yes") & ", magic turns it on: " & (if ugc-on 0 then "yes" else "NO") & ", scale " & show (ugc-scale 0))
+      uefi-con-put-text 1 2 "AB" 15 1
+      uefi-con-fill-row 3 7 4
+      print-line-uni ("cells of AB: white " & show (count fb 16 16 32 32 #FFFFFF 16 0) & ", blue " & show (count fb 16 16 32 32 #0000AA 16 0) & " of 256")
+      print-line-uni ("outside AB on rows 0 to 2: white " & show (count fb 32 0 640 48 #FFFFFF 0 0 + count fb 0 0 16 48 #FFFFFF 0 0) & ", blue " & show (count fb 32 0 640 48 #0000AA 0 0 + count fb 0 0 16 48 #0000AA 0 0))
+      print-line-uni ("row 3 red " & show (count fb 0 48 640 64 #AA0000 48 0) & " of 10240, row 4 red " & show (count fb 0 64 640 80 #AA0000 64 0))
+      let z = ugc-disable 0
+      in print-line-uni ("disabled: " & (if ugc-on 0 then "still on" else "off"))
+    end
+  end

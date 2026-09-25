@@ -69,7 +69,7 @@ $cells | Where-Object { $doc -notcontains $_ }      # must be empty
 |---------|------|-------|---------|
 | 28672 | tick-count-addr | 8 | Timer tick counter |
 | 28680 | key-buffer-addr | 8 | Keyboard input buffer |
-| 28688 | current-proc-addr | 8 | **No x86-64 definition, measured 2026-08-20.** Only the ARM64 and RISC-V lanes define a `current-proc-addr` and both put it elsewhere (`Arm64Boot.codex` `#80010`, `Arm64Runtime` `#40006000`, `RiscVRuntime` `#80006000`). The cell is FREE on x86-64; the row is kept saying so rather than deleted, because a reader who finds it in an older revision needs to know why it looked taken |
+| 28688 | kbd-mods-addr | 8 | Ctrl (bit 0) and Alt (bit 1) held, tracked by the IRQ1 handler for Ctrl-Alt-Del (`emit-kbd-chord`); zeroed in `emit-interrupt-setup` |
 | 28696 | arena-base-addr | 8 | Phase allocator mountain base |
 | 28704 | serial-write-pos-addr | 8 | Serial output ring write position |
 | 28712 | serial-read-pos-addr | 8 | Serial input ring read position |
@@ -130,6 +130,13 @@ $cells | Where-Object { $doc -notcontains $_ }      # must be empty
 | 36264 | **net-driver-cb** | 56 | Which NIC the network seam is bound to, and its six addresses: card selector at +0 (0 = NE2000, 1 = e1000), then mmio, rx-ring, rx-bufs, ctrl-blk, tx-ring, tx-bufs at +8 through +48. Written once by `net-driver-bind-e1000` (`codex/os/net/NetDriver.codex`) with the selector LAST, so a half-written block is never live. Zero until something binds, which is why a guest that never probes PCI keeps serving off the NE2000. The seam takes no device argument, and a module-level record binding is a recipe rather than a cell that allocates again on every reference, so this is the only place the bound card can live |
 | 36320 | **guard-page-base-addr** | 8 | The demand-paging guard page, published rather than recomputed: `emit-demand-unmap` (`codex/compiler/Emit/X86_64Boot.codex`) derives it once from the reported RAM size and stores it here, and `build` (`Core/PhaseAllocator.codex`) reads it to decide whether a deck reservation would leap the page. Two places deriving the same geometry is how they drift apart. **This row was missing from this table until 2026-08-14**, which is exactly the failure the warning below describes: the chapter that claims the cell says in its own prose that 36320 is the next free scalar above `net-driver-cb`, so a reader who trusted this table alone would have taken a cell the compiler already owns |
 | 36328 | **net-driver-poll-cell** | 8 | Empty receive polls per NetIO tick, measured once by `net-driver-calibrate` (`codex/os/net/NetDriver.codex`) at bring-up and read by `net-io-tick-interval`. Zero until something brings a driver up, and a value below the floor reads as the 100000 fallback NetIO shipped until 2026-08-14, so a guest that never probes keeps the numbers it was tuned with. It exists because the cost of one poll belongs to the DRIVER: one million empty polls cost 15.52 s on the NE2000 model and 0.029 s on the e1000, which reads a descriptor from RAM where the NE2000 takes a VM exit, and every retransmit bound in `NetworkStack` is a count of ticks |
+| 36336 | deck-ceiling-addr | 8 | Deck allocator ceiling (`X86_64Boot.codex`) |
+| 36344 | deck-reservation-top-addr | 8 | Top of the current deck reservation |
+| 36352 | lapic-timer-count-addr | 8 | The LAPIC count for a 10 ms quantum, measured by the boot processor against the HPET |
+| 36360 | dbg-hit-count-addr | 8 | Debug-register hits taken by the #DB handler, which records and resumes |
+| 36368 | dbg-last-dr6-addr | 8 | DR6 at the most recent hit: B0-B3 name the breakpoint that fired |
+| 36376 | dbg-last-rip-addr | 8 | The interrupted RIP at the most recent hit. Read with 36360 and 36368 by `codex/test/apps/cpu-debug-watch.codex` |
+| 36384 | **avx-admitted-addr** | 8 | 1 once the boot processor has set CR4.OSXSAVE and XCR0 = 7 (CPUID leaf 1 reports XSAVE and AVX), else 0; zeroed by the boot processor before interrupt setup. `__fx_save`, `__fx_init` and `__process_resume` use XSAVE/XRSTOR while it reads 1 (COMPILER-77 stage 3). Read by `codex/test/cpuid-avx` and `cpuid-no-avx` |
 
 **Do not claim a cell in this band without grepping `tools/codex-vm.c` AND
 `apps/works/**` AND `codex/compiler/Emit/**` AND `codex/foreword/**` first,
@@ -310,7 +317,7 @@ reclamation.
 The immutable probe, source bundle, compiler log, hashes and depth traces
 are in `D:/Projects/Cobblestone-val/build-output/check-chapter-25637`.
 The entry/lifetime audit changes no compiler allocation or time complexity.
-COMPILER-48 retains the wider subset, initialization and enforcement gaps.
+Every compiler chapter now compiles with only what it cites (main 28693); what an uninitialized deck does is measured under "A deck entered without a reservation" below.
 
 ## The runtime list header, and why hand-rolled builders corrupt silently
 
@@ -631,6 +638,15 @@ SCOPE reads the cell across separate extents. CHECK reads the cell during
 its definition walk because the production caller enters `check-chapter`
 at depth 1 and the internal exit reaches zero. An exit/enter pair alone
 does not establish that state; see `check-chapter caller contract` above.
+
+**A deck entered without a reservation is unguarded, not wrong.** Measured
+2026-09-25 on seed 313568327A6BF0AE: a program that calls `__deck-enter` with no
+`init-phase-allocator` and no `build` or `emit-build` answers correctly after
+about 4 MB of allocation and nothing stops it; with `emit-build` reserving 1 MiB
+the same program faults on the UD2 once it passes the reservation. `deck-record`,
+`build` and `emit-build` each answer correctly without `init-phase-allocator`.
+The guard belongs to the reservation, so a subset caller that wants an overflow
+caught must reserve before it enters.
 
 **Every phase that reserves a deck now stops on the write path.** LEX, PARSE
 scratch, PARSE-KEEP, DESUGAR, the frontend keep copy, SCOPE, CHECK, LOWER,

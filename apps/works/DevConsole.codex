@@ -13,14 +13,12 @@ Chapter: DevConsole
   cites Works chapter RepoProtocolPersist
   cites Works chapter KeyManager
   cites Works chapter MutationLog
+  cites Works chapter StickSource
+  cites Works chapter GopFat16
+  cites Foreword chapter Fat16
   cites Foreword chapter Maybe
   cites Foreword chapter Trie
   cites Kernel chapter DiskFacts
-
- UEFI dev console. Hold a key during boot to enter. Menu-driven
- interface with code browser, editor, compiler, test runner,
- debugger, agent manager, hypervisor, and UI launcher. Runs on
- UEFI console I/O (ConOut/ConIn).
 
  We say:
 
@@ -63,7 +61,9 @@ Section: Console State
     running : Boolean,
     ann-persist : AnnotationPersistState,
     disk-store : DiskFactStore,
-    agents : AgentRegistry
+    agents : AgentRegistry,
+    stick : Integer,
+    stick-vol : Fat16Volume
   }
 
   dev-console-init : UefiConsoleState, DiskFactStore, Keypair -> DevConsoleState
@@ -86,8 +86,71 @@ Section: Console State
       running = True,
       ann-persist = ann-st,
       disk-store = disk,
-      agents = agent-registry-empty
+      agents = agent-registry-empty,
+      stick = 0,
+      stick-vol = gfat-null-vol
     }
+
+Section: The Source Index
+
+  dc-chapter-names : DevConsoleState -> List Text
+  dc-chapter-names (state) =
+    if state.stick /= 0 then ss-chapter-names (state.stick)
+    else state.source-index.chapter-names
+
+  dc-chapter-count : DevConsoleState -> Integer
+  dc-chapter-count (state) =
+    if state.stick /= 0 then ss-chapter-count (state.stick)
+    else list-length (state.source-index.chapter-names)
+
+  dc-chapter-name : DevConsoleState, Integer -> Text
+  dc-chapter-name (state) (ci) =
+    if state.stick /= 0 then ss-chapter-name (state.stick) ci
+    else chapter-name-at (state.source-index) ci
+
+  dc-chapter-start : DevConsoleState, Integer -> Integer
+  dc-chapter-start (state) (ci) =
+    if state.stick /= 0 then
+      (if ci < 0 | ci >= ss-chapter-count (state.stick) then 0 else ss-chapter-line (state.stick) ci)
+    else chapter-start-line (state.source-index) ci
+
+  dc-chapter-end : DevConsoleState, Integer -> Integer
+  dc-chapter-end (state) (ci) =
+    if state.stick /= 0 then
+      (if ci < 0 | ci >= ss-chapter-count (state.stick) then 0 else ss-chapter-end (state.stick) ci)
+    else chapter-end-line (state.source-index) ci
+
+  dc-def-kind : Integer -> DefKind
+  dc-def-kind (k) =
+    if k == ss-kind-fn then DefFunction
+    else if k == ss-kind-value then DefType
+    else DefSection
+
+  dc-stick-result : Integer, Integer -> SearchResult
+  dc-stick-result (blk) (e) =
+    let line = ss-entry-line blk e
+    in let name = ss-entry-name blk e
+    in let ci = ss-chapter-of-line blk line
+    in let chapter = if ci < 0 then "" else ss-chapter-name blk ci
+    in SearchResult { location = DefLocation { chapter = chapter, name = name, line = line + 1, kind = dc-def-kind (ss-entry-kind blk e) }, context = name }
+
+  dc-search-cap : Integer = 64
+
+  dc-search : DevConsoleState, Text -> List SearchResult
+  dc-search (state) (query) =
+    if state.stick /= 0 then
+      for e in ss-search (state.stick) query dc-search-cap -> dc-stick-result (state.stick) e
+    else
+      let prefix-results = search-by-prefix (state.source-index) query
+      in if list-length prefix-results > 0 then prefix-results
+      else search-by-substring (state.source-index) query
+
+  dc-sym-lookup : DevConsoleState, Text -> Text
+  dc-sym-lookup (state) (query) =
+    if state.stick == 0 then debug-sym-lookup (state.source-index) query
+    else let results = dc-search state query
+    in if list-length results == 0 then "No symbols matching '" & query & "'"
+    else format-search-results results
 
 Section: Main Menu
 
@@ -194,8 +257,8 @@ Section: Menu Dispatch
   dispatch-main-menu : Text, DevConsoleState -> DevConsoleState
   dispatch-main-menu (key) (state) =
     if key == "browse" then
-      let bm = browse-menu (state.source-index.chapter-names)
-      in __record-set (__record-set (__record-set state "mode" ModeBrowse) "menu" bm) "status" ("Source: " & show (list-length (state.source-index.chapter-names)) & " chapters")
+      let bm = browse-menu (dc-chapter-names state)
+      in __record-set (__record-set (__record-set state "mode" ModeBrowse) "menu" bm) "status" ("Source: " & show (dc-chapter-count state) & " chapters")
     else if key == "search" then __record-set (__record-set state "mode" ModeSearch) "status" "Enter search query:"
     else if key == "edit" then __record-set (__record-set state "mode" ModeEdit) "status" "Enter file path:"
     else if key == "compile" then __record-set (__record-set (__record-set state "mode" ModeCompile) "menu" compile-menu) "status" "Select compile target"
@@ -286,10 +349,6 @@ Section: Sweep Dispatch
 
 Section: Agent Dispatch
 
- The registry lives in the console state rather than in a global, so
- registering an agent is a state transition like any other and the whole
- dispatch stays a function from state to state.
-
   dispatch-agent-menu : Text, DevConsoleState -> [Device.Block] DevConsoleState
   dispatch-agent-menu (key) (state) =
     if state.menu.title == role-switch-title then dispatch-role-key key state
@@ -300,13 +359,6 @@ Section: Agent Dispatch
     else if key == "gpu" then __record-set state "status" (agent-gpu-probe gpu-bridge-init)
     else if key == "back" then __record-set (__record-set (__record-set state "mode" ModeMainMenu) "menu" main-menu) "status" "Cobblestone Dev Console"
     else state
-
- Loading is the bundled path and only the bundled path. It asks
- `verify-bundled-agent`, which is the signature-then-digest-then-format
- chain in `Works chapter AgentBundle`, and registers nothing when that
- chain refuses. The refusal is reported with the reason the chain gave,
- because "could not load agent" would hide which link broke, and which
- link broke is the whole content of the answer.
 
   agent-do-load : DevConsoleState -> [Device.Block] DevConsoleState
   agent-do-load (state) = act
@@ -374,9 +426,7 @@ Section: Search Interface
 
   dev-console-search : DevConsoleState, Text -> DevConsoleState
   dev-console-search (state) (query) =
-    let prefix-results = search-by-prefix (state.source-index) query
-    in let sub-results = if list-length prefix-results > 0 then prefix-results
-      else search-by-substring (state.source-index) query
+    let sub-results = dc-search state query
     in let result-count = list-length sub-results
     in __record-set (__record-set (__record-set state "search-query" query) "search-results" sub-results) "status" (show result-count & " results for '" & query & "'")
 

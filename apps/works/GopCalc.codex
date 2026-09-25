@@ -13,20 +13,6 @@ Section: Operators
 
 Section: State
 
- THE CELLS HOLD SIGNED VALUES AND `peek-32` ZERO-EXTENDS. `poke-32`
- stores the low 32 bits, so -4 goes in as 0xFFFFFFFC and comes back out
- as 4294967292 unless the sign is put back. That is not only a display
- fault: `gcalc-eval` reads the accumulator through this same accessor, so
- a calculation chained onto a negative result was computing with the huge
- positive as well. Both are fixed by sign-extending here rather than at
- either use.
-
- The desk relies on the opposite behaviour one cell over -- `GopDesk`
- keeps heap ADDRESSES in `ds` cells precisely because `peek-32`
- zero-extends and an address must not come back negative. Same builtin,
- opposite requirement, which is why the correction belongs to whoever
- knows what the cell means.
-
   gcalc-sign32 : Integer -> Integer
   gcalc-sign32 (v) = if v >= 2147483648 then v - 4294967296 else v
 
@@ -48,13 +34,6 @@ Section: Operations
     let cur = gcalc-cur ks
     in if cur > gcalc-digit-cap then 0
     else poke-32 ks 8 (cur * 10 + d)
-
- With no operator pending there is nothing to evaluate, and the answer is
- whichever of the two the person is actually working on. Taking `cur`
- unconditionally is what made an operator pressed straight after `=`
- throw the result away: `=` clears the operator and zeroes `cur`, so the
- next operator evaluated "nothing" and stored that zero over the
- accumulator -- 5 - 9 = + 1 = answered 1 instead of -3.
 
   gcalc-eval : Integer -> Integer
   gcalc-eval (ks) =
@@ -106,15 +85,6 @@ Section: Scancode Dispatch
     else if sc == 55 then let d = gcalc-set-op ks op-mul in 1
     else if sc == 46 then let d = gcalc-clear ks in 1
     else 0
-
- A clicked button answers the SCANCODE its label would have produced, so
- `gcalc-key` above stays the only table that says what a key does. Mapping
- the id straight to an action instead would give the calculator two dispatch
- tables that have to agree, and the one nobody presses is the one that rots.
-
- The id is what the widget carries (`gcalc-btn` builds `"gcalc-" & label`),
- and an Integer is what comes back, which is what lets the caller hit-test
- inside a heap bracket and drop the tree before acting on the answer.
 
   gcalc-id-scan : Text -> Integer
   gcalc-id-scan (id) =

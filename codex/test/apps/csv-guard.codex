@@ -22,6 +22,37 @@ Section: Helpers
       is Just (rows) -> name & " ok [" & rows-text rows 0 "" & "] " & raw
       is None -> name & " refused " & raw
 
+  reps : Text, Integer, List Text -> Text
+  reps (piece) (n) (acc) = if list-length acc >= n then text-concat-list acc else reps piece n (list-push acc piece)
+
+  many : Text, Integer, List Text -> List Text
+  many (v) (n) (acc) = if list-length acc >= n then acc else many v n (list-push acc v)
+
+  many-rows : Integer, List (List Text) -> List (List Text)
+  many-rows (n) (acc) = if list-length acc >= n then acc else many-rows n (list-push acc ["ab", "c\"d"])
+
+  cost-parse : Text, Integer -> Integer
+  cost-parse (piece) (n) =
+    let s = if piece == "q" then "\"" & reps "x\"\"" n [] & "\"" else reps "x" n []
+    in let b = __heap-save
+    in let r = csv-parse s
+    in let a = __heap-save
+    in (a - b) + list-length r - list-length r
+
+  cost-emit : Text, Integer -> Integer
+  cost-emit (kind) (n) =
+    let fields = if kind == "escape" then [reps "x\"" n []] else many "ab" n []
+    in let rows = many-rows n []
+    in let b = __heap-save
+    in let t = if kind == "table" then csv-emit-table rows else csv-emit-row fields
+    in let a = __heap-save
+    in (a - b) + text-length t - text-length t
+
+  scaling : Text, Integer, Integer -> Text
+  scaling (name) (small) (large) =
+    if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
 Section: Entry
 
   opening : [Console] Nothing = act
@@ -34,4 +65,13 @@ Section: Entry
     print-line-uni (arm "unterminated" "\"abc")
     print-line-uni (arm "after-quote" "\"ab\"cd")
     print-line-uni (arm "quote-in-field" "a\"b")
+    print-line-uni (arm "multibyte" "\"é,ü\",ñ")
+    print-line-uni ("two-byte " & (if list-at (list-at (csv-parse "ß,\"ßx\"\"ß\"") 0) 0 == "ß" & list-at (list-at (csv-parse "ß,\"ßx\"\"ß\"") 0) 1 == "ßx\"ß" then "same" else "changed"))
+    print-line-uni ("emit-row " & csv-emit-row ["a", "b,c", "d\"e", "", "é"])
+    print-line-uni ("emit-table " & csv-emit-table [["a", "b"], ["c"]] & "|")
+    print-line-uni (scaling "parse-field" (cost-parse "u" 256) (cost-parse "u" 1024))
+    print-line-uni (scaling "parse-quoted" (cost-parse "q" 256) (cost-parse "q" 1024))
+    print-line-uni (scaling "escape" (cost-emit "escape" 256) (cost-emit "escape" 1024))
+    print-line-uni (scaling "emit-fields" (cost-emit "fields" 256) (cost-emit "fields" 1024))
+    print-line-uni (scaling "emit-table" (cost-emit "table" 256) (cost-emit "table" 1024))
   end

@@ -333,4 +333,56 @@ Section: JSON
     & ",\"priority\":\"" & proc-priority-label (p.proc-priority)
     & "\",\"user\":\"" & p.proc-user & "\"}"
 
+Section: Kernel Process Table
+
+ The kernel's table (`X86_64Boot.codex`): base 20480, 256-byte entries, one
+ per spawn slot of the 512 MiB pool's 32 MiB regions, so 16; the state word
+ is at 0 (0 free, 1 ready, 2 running, 3 blocked, 4 zombie) and the affinity
+ mask at 16. The slot is the pid. The table holds no name, memory or cpu
+ figure, so those stay unmeasured rather than invented.
+
+  pm-proc-table-base : Integer = 20480
+
+  pm-proc-entry-size : Integer = 256
+
+  pm-proc-slots : Integer = 16
+
+  pm-kernel-state : Integer -> ProcessState
+  pm-kernel-state (w) =
+    if w == 1 | w == 2 then ProcRunning
+    else if w == 3 then ProcBlocked
+    else if w == 4 then ProcZombie
+    else ProcStopped
+
+  pm-kernel-entry : Integer, Integer -> ProcessEntry
+  pm-kernel-entry (slot) (w) =
+    let base = pm-proc-table-base + slot * pm-proc-entry-size
+    in ProcessEntry {
+      proc-pid = slot,
+      proc-name = if slot == 0 then "kernel" else "proc " & show slot,
+      proc-state = pm-kernel-state w,
+      proc-cpu-percent = 0,
+      proc-mem-bytes = bytes 0,
+      proc-threads = 1,
+      proc-priority = PrioNormal,
+      proc-parent-pid = 0,
+      proc-user = "system",
+      proc-uptime = 0,
+      proc-open-files = 0,
+      proc-affinity = peek-qword base 16
+    }
+
+  pm-read-slots : Integer, List ProcessEntry -> List ProcessEntry
+  pm-read-slots (i) (acc) =
+    if i >= pm-proc-slots then acc
+    else let w = peek-qword (pm-proc-table-base + i * pm-proc-entry-size) 0
+    in if w == 0 then pm-read-slots (i + 1) acc
+    else pm-read-slots (i + 1) (acc & [pm-kernel-entry i w])
+
+  pm-read-kernel-table : List ProcessEntry
+  pm-read-kernel-table = pm-read-slots 0 []
+
+  pm-live : ProcessManagerState
+  pm-live = pm-update-processes proc-manager-new pm-read-kernel-table
+
 Page 1

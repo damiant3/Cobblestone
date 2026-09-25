@@ -1,0 +1,55 @@
+Chapter: Json Cost Guard
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Encode chapter Json
+
+Section: Helpers
+
+  reps : Text, Integer, List Text -> Text
+  reps (piece) (n) (acc) = if list-length acc >= n then text-concat-list acc else reps piece n (list-push acc piece)
+
+  ints : Integer, List JsonValue -> List JsonValue
+  ints (n) (acc) = if list-length acc >= n then acc else ints n (list-push acc (JsonInt (list-length acc)))
+
+  pairs : Integer, List JsonPair -> List JsonPair
+  pairs (n) (acc) = if list-length acc >= n then acc else pairs n (list-push acc (JsonPair { key = "k", value = JsonStr "v\"" }))
+
+  parsed : Text -> Text
+  parsed (s) =
+    when json-parse s
+      is None -> "refused"
+      is Just (v) -> json-emit v
+
+  cost-parse : Integer -> Integer
+  cost-parse (n) =
+    let s = "\"" & reps "ab\\n\\\"" n [] & "\""
+    in let b = __heap-save
+    in let r = parsed s
+    in let a = __heap-save
+    in (a - b) + text-length r - text-length r
+
+  cost-emit : Text, Integer -> Integer
+  cost-emit (kind) (n) =
+    let v = if kind == "string" then JsonStr (reps "a\"" n []) else if kind == "array" then JsonArray (ints n []) else JsonObject (pairs n [])
+    in let b = __heap-save
+    in let t = json-emit v
+    in let a = __heap-save
+    in (a - b) + text-length t - text-length t
+
+  scaling : Text, Integer, Integer -> Text
+  scaling (name) (small) (large) =
+    if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("nested " & parsed "{\"a\":[1,\"x\\\"y\",{\"b\":null}],\"c\":true}")
+    print-line-uni ("escapes " & parsed "\"q\\\"b\\\\s\\/n\\nt\\tr\\ru\\u0041\"")
+    print-line-uni ("empty " & parsed "[{},[],\"\"]")
+    print-line-uni ("bad-escape " & parsed "\"a\\qb\"")
+    print-line-uni (scaling "parse-string" (cost-parse 64) (cost-parse 256))
+    print-line-uni (scaling "emit-string" (cost-emit "string" 256) (cost-emit "string" 1024))
+    print-line-uni (scaling "emit-array" (cost-emit "array" 256) (cost-emit "array" 1024))
+    print-line-uni (scaling "emit-object" (cost-emit "object" 256) (cost-emit "object" 1024))
+  end

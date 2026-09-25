@@ -32,7 +32,9 @@ Section: S01 -- Preamble and registry
      ScRaw "# that is registered and present.",
      ScRaw ". (Join-Path $script:PlugBuildRepo 'build' 'quire-map.ps1')",
      ScRaw "$script:QuireDirs = $QuireDirs",
-     ScRaw "$script:CitePat = $StrictCitePat"]
+     ScRaw "$script:CitePat = $StrictCitePat",
+     ScRaw "# Every file the assembler reads, so Bundle-PlugSource can record them.",
+     ScRaw "$script:PlugInputs = [System.Collections.Generic.List[string]]::new()"]
 
 Section: S02 -- Add-PlugChapter
 
@@ -56,6 +58,7 @@ Section: S02 -- Add-PlugChapter
      ScRaw "    # Mirrors Resolve-PlugForewords' prefixing.",
      ScRaw "    $renamed = $false",
      ScRaw "    $dropping = $false",
+     ScRaw "    $script:PlugInputs.Add($Path)",
      ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($Path)) {",
      ScRaw "        if ($l -match '^Section:\\s*(.+?)\\s*$') {",
      ScRaw "            $dropping = $DropSections -contains $matches[1]",
@@ -121,6 +124,7 @@ Section: S03 -- Resolve-PlugForewords
      ScRaw "    }",
      ScRaw "    $preLines = [System.Collections.Generic.List[string]]::new()",
      ScRaw "    foreach ($entry in $ordered) {",
+     ScRaw "        $script:PlugInputs.Add($entry.Path)",
      ScRaw "        $renamed = $false",
      ScRaw "        foreach ($l in [System.IO.File]::ReadAllLines($entry.Path)) {",
      ScRaw "            if ((-not $renamed) -and $l -match '^Chapter:\\s*(.+?)\\s*$') {",
@@ -136,7 +140,7 @@ Section: S03 -- Resolve-PlugForewords
 Section: S04 -- Bundle-PlugSource
 
   s04-body : List ShellCmd =
-    [ScBlank, ScRaw "function Bundle-PlugSource {", ScRaw "    param(", ScRaw "        [System.Collections.Generic.List[string]]$PreLines,", ScRaw "        [System.Collections.Generic.List[string]]$Lines,", ScRaw "        [string]$BundleSrc,", ScRaw "        [string]$PlugName", ScRaw "    )", ScRaw "    $body = (($PreLines + $Lines) -join \"`n\") + \"`n\"", ScRaw "    [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))", ScRaw "    # The digest of the sources this bundle was assembled from. deck-headroom", ScRaw "    # compares it to tell a stale bundle from a restamped one; mtime cannot,", ScRaw "    # because p4 sync -f touches every tracked file.", ScRaw "    $plugDir = Split-Path (Split-Path $BundleSrc -Parent) -Parent", ScRaw "    [System.IO.File]::WriteAllText((Get-PlugSourceDigestPath $BundleSrc), (Get-PlugSourceDigest $plugDir), [System.Text.UTF8Encoding]::new($false))", ScRaw "    Write-Host \"[$PlugName] bundled $($PreLines.Count + $Lines.Count) lines, $($body.Length) bytes\"", ScRaw "}"]
+    [ScBlank, ScRaw "function Bundle-PlugSource {", ScRaw "    param(", ScRaw "        [System.Collections.Generic.List[string]]$PreLines,", ScRaw "        [System.Collections.Generic.List[string]]$Lines,", ScRaw "        [string]$BundleSrc,", ScRaw "        [string]$PlugName", ScRaw "    )", ScRaw "    $body = (($PreLines + $Lines) -join \"`n\") + \"`n\"", ScRaw "    [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))", ScRaw "    # The manifest of every source this bundle was assembled from. deck-headroom", ScRaw "    # re-hashes it to tell a stale bundle from a restamped one; mtime cannot,", ScRaw "    # because p4 sync -f touches every tracked file.", ScRaw "    $plugDir = Split-Path (Split-Path $BundleSrc -Parent) -Parent", ScRaw "    Write-PlugSourceManifest -BundleSrc $BundleSrc -PlugDir $plugDir -Inputs $script:PlugInputs.ToArray()", ScRaw "    $script:PlugInputs.Clear()", ScRaw "    Write-Host \"[$PlugName] bundled $($PreLines.Count + $Lines.Count) lines, $($body.Length) bytes\"", ScRaw "}"]
 
 Section: S05 -- Build-PlugCdx
 
@@ -220,21 +224,28 @@ Section: S06 -- Build-TranspilerPlug
      ScRaw "                        'codex\\compiler\\Ast\\AstNodes.codex',",
      ScRaw "                        'codex\\compiler\\IR\\IRChapter.codex')) {",
      ScRaw "        $drop = if ($decl -like '*AstNodes.codex') { @('Deck Copies') } else { @() }",
-     ScRaw "        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $decl) -Quire $plugQuire -DropSections $drop",
+     ScRaw "        # Plug Types supplies the deck-record these chapters cite Phase Allocator",
+     ScRaw "        # for, and Deck Copies is the only section of AST Nodes that uses Syntax",
+     ScRaw "        # Nodes. The cite lines leave the bundle, or compile.ps1's re-resolve",
+     ScRaw "        # pulls the whole compiler in for them.",
+     ScRaw "        $strip = @('Phase Allocator')",
+     ScRaw "        if ($decl -like '*AstNodes.codex') { $strip += 'Syntax Nodes' }",
+     ScRaw "        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $decl) -Quire $plugQuire -DropSections $drop -StripCites $strip",
      ScRaw "    }"]
 
   s06b-body : List ShellCmd =
     [ScRaw "    if ($WithLir) {",
      ScRaw "        # CodexTypeHelpers owns hw-width-bytes / -signed / bounds-to-hw-width and",
      ScRaw "        # Token owns pat-lit-to-integer; the lowering calls all four. Both cite",
-     ScRaw "        # nothing, which is what makes Route A affordable -- they come in as",
-     ScRaw "        # leaves rather than dragging the Types or Syntax quire behind them.",
+     ScRaw "        # nothing beyond the declaration chapters, which is what makes Route A",
+     ScRaw "        # affordable -- they come in as leaves rather than dragging the Types or",
+     ScRaw "        # Syntax quire behind them.",
      ScRaw "        foreach ($lir in @('codex\\compiler\\Core\\BuildSettings.codex',",
      ScRaw "                           'codex\\compiler\\Types\\CodexTypeHelpers.codex',",
      ScRaw "                           'codex\\compiler\\Syntax\\Token.codex',",
      ScRaw "                           'codex\\compiler\\IR\\Lir.codex',",
      ScRaw "                           'codex\\compiler\\IR\\LirTargets.codex')) {",
-     ScRaw "            Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir')",
+     ScRaw "            Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir', 'Phase Allocator')",
      ScRaw "        }",
      ScRaw "    }",
      ScRaw "    foreach ($cc in $CompilerChapters) {",

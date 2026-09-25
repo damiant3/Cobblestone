@@ -392,12 +392,9 @@ deliberately no `-Write`**, because the shipped script is the maintained side.
 runs the OTHER way from what "generated from" advertises.** On
 `lintunusedcitesScript.codex` the generator emits `[Parameter(Mandatory=$true)]`
 where the shipped script has none, so the shipped copy is the hand-FIXED one and
-regenerating hands back a script that prompts headless. **The instance that costs
-a boot: `cdxtopeScript.codex` S06 ends at the `stack-min-rsp-addr` store and
-never writes cell 4072**, which is the whole of the fix for the reboot loop under
-real UEFI, and S05 still allocates the heap at the fixed `0x1000000` edk2
-refuses. Regenerating that one hands back a stub that triple-faults, and no drift
-number distinguishes those lines from formatting. **Diff before regenerating.**
+regenerating hands back a script that prompts headless. **Diff before
+regenerating.** `cdxtopeScript.codex` is byte-identical with `cdx-to-pe.ps1`
+(2026-09-24), so a `cdx-to-pe` change lands through both halves in one CL.
 
 **`compile-arm64.ps1` and `compile-riscv.ps1` are the same shape**: generator
 abandoned, shipped script maintained. `build/vm-config.ps1` is the opposite and
@@ -890,6 +887,8 @@ The question per phase is not what it is ABOUT but what decides its answer.
 | `sem-equiv`, `text-stage1` | `$coreRuns` | was `$tSemantic`, which left every compiler chapter outside the front end ungated (L-NOGATE) | widened |
 | `run-list` | `$tVm` | `tools/codex-vm.c`/`.exe`, `build/check-run-list.ps1` | added, per-file |
 | `app-sweep` | `$tApps -or $tCompiler` | cite-scoped on an apps change, the 30-unit stride only when `$tCompiler` | as today |
+| `wasm-bundles` | `$tApps -or $tPlugs -or $tCompiler` | the wasm plug and the nine `apps/*/build-wasm.ps1`, each built with `$SutCdx`; games builds its default game only | added |
+| `wasm-run` | `wasm` in `$changedPlugs` `-or $tCompiler` | `codex/plugs/wasm/hosted-wasm-test.ps1 -Kernel $SutCdx`: the harness default 60 of the hosted corpus RUN under wasmtime against `.expected` (plugs 2.16) | added |
 | `jonquil`, `cross-smoke` | `$tCompiler`, `$tPlugs -or $tCompiler` | their runners under `build/` | **not widened, open** |
 
 **The TRIGGER was never the gap for the plug phases; the GRADED SET was.** Both

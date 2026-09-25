@@ -387,8 +387,9 @@ Section: Type Mapping
     is UnitTy (n) (inner) -> emit-zig-type inner scope
     is ListTy (elem) -> "*CxList(" & emit-zig-type elem scope & ")"
     is LinkedListTy (elem) -> "*CxList(" & emit-zig-type elem scope & ")"
+    is SizedVecTy (sn) (elem) -> "*CxList(" & emit-zig-type elem scope & ")"
     is VectorTy (vn) (vt) -> "@Vector(" & show vn & ", " & emit-zig-type vt scope & ")"
-    is VectorMaskTy (vn) -> "@Vector(" & show vn & ", bool)"
+    is VectorMaskTy (vn) (ve) -> "@Vector(" & show vn & ", bool)"
     is FunTy (p) (fnrow) (r) -> emit-zig-fn-type ty scope
     is EffectfulTy (effs) (scopes) (inner) -> emit-zig-type inner scope
     is ForAllTy (fid) (inner) -> emit-zig-type inner scope
@@ -424,6 +425,7 @@ Section: Type Mapping
     is FunTy (p) (fnrow) (r) -> zig-tvar-ids r (zig-tvar-ids p acc)
     is ListTy (elem) -> zig-tvar-ids elem acc
     is LinkedListTy (elem) -> zig-tvar-ids elem acc
+    is SizedVecTy (sn) (elem) -> zig-tvar-ids elem acc
     is EffectfulTy (effs) (scopes) (inner) -> zig-tvar-ids inner acc
     is ForAllTy (fid) (inner) -> zig-tvar-ids inner acc
     is ForAllEff (c) (inner) -> zig-tvar-ids inner acc
@@ -915,6 +917,7 @@ Section: Constructor Map
      in when pty
       is ListTy (elem) -> emit-zig-type elem (ctx.scope-tvars)
       is LinkedListTy (elem) -> emit-zig-type elem (ctx.scope-tvars)
+      is SizedVecTy (sn) (elem) -> emit-zig-type elem (ctx.scope-tvars)
       is otherwise -> "")
    else zig-param-ll-scan defs (i + 1) fname argi ctx
 
@@ -1000,6 +1003,7 @@ Section: Builtin Emitter
    when ty
     is ListTy (elem) -> emit-zig-type elem scope
     is LinkedListTy (elem) -> emit-zig-type elem scope
+    is SizedVecTy (sn) (elem) -> emit-zig-type elem scope
     is EffectfulTy (effs) (scopes) (inner) -> zig-ll-elem-opt inner scope
     is otherwise -> ""
 
@@ -1109,6 +1113,10 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__list-head", emit = \args ctx d ty -> "cx_list_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", 0)" },
     ZigBuiltinEmitter { name = "__list-tail", emit = \args ctx d ty -> "cx_ll_tail(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-length", emit = \args ctx d ty -> "cx_list_len(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+   ZigBuiltinEmitter { name = "vec-length", emit = \args ctx d ty -> "cx_list_len(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+   ZigBuiltinEmitter { name = "vec-head", emit = \args ctx d ty -> "cx_list_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", 0)" },
+   ZigBuiltinEmitter { name = "vec-cons", emit = \args ctx d ty -> "cx_ll_push(" & zig-list-arg-text args 1 0 ctx d & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
+   ZigBuiltinEmitter { name = "vec-singleton", emit = \args ctx d ty -> let et = emit-zig-type (zig-expr-type (list-at args 0)) (ctx.scope-tvars) in "cx_ll_of(" & et & ", &[_]" & et & "{ " & emit-zig-expr (list-at args 0) ctx (d + 1) & " })" },
     ZigBuiltinEmitter { name = "list-at", emit = \args ctx d ty -> "cx_list_at(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-push", emit = \args ctx d ty -> "cx_ll_push(" & zig-list-arg-text args 0 1 ctx d & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "list-snoc", emit = \args ctx d ty -> "cx_ll_push(" & zig-list-arg-text args 0 1 ctx d & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
@@ -1135,6 +1143,7 @@ Section: Builtin Emitter
     ZigBuiltinEmitter { name = "__heap-restore", emit = \args ctx d ty -> "cx_heap_restore(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "peek-qword", emit = \args ctx d ty -> "cx_peek_qword(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "hosted-kind", emit = \args ctx d ty -> "@as(i64, 1)" },
+   ZigBuiltinEmitter { name = "__heap-base", emit = \args ctx d ty -> "@as(i64, 6291456)" },
     ZigBuiltinEmitter { name = "address-of", emit = \args ctx d ty -> "cx_address_of(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "variant-tag", emit = \args ctx d ty -> "cx_vtag(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
     ZigBuiltinEmitter { name = "read-file-uni", emit = \args ctx d ty -> "cx_read_file_uni(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")" },
@@ -1245,6 +1254,7 @@ Section: Name Mapping
     ZigNameEntry { codex-name = "__deck-pos", zig-name = "cx_deck_pos()" },
     ZigNameEntry { codex-name = "__self-type-defs", zig-name = "cx_ll_empty(TypeBinding)" },
     ZigNameEntry { codex-name = "hosted-kind", zig-name = "@as(i64, 1)" },
+   ZigNameEntry { codex-name = "__heap-base", zig-name = "@as(i64, 6291456)" },
     ZigNameEntry { codex-name = "process-get-pid", zig-name = "@as(i64, 0)" },
     ZigNameEntry { codex-name = "__heap-save", zig-name = "cx_heap_save()" },
     ZigNameEntry { codex-name = "__deck-enter", zig-name = "cx_deck_enter()" },
@@ -1309,7 +1319,8 @@ Section: Name Mapping
 
   emit-zig-name : Text, CodexType, ZigCtx, Integer -> Text
   emit-zig-name (n) (ty) (ctx) (d) =
-   let renamed = zig-renamed ctx n
+   if n == "vec-empty" then zig-vec-empty (zig-ll-elem-opt ty (ctx.scope-tvars))
+   else let renamed = zig-renamed ctx n
    in if text-length renamed > 0 then renamed
    else let mapped = zig-lookup-name zig-name-map n 0
    in if text-length mapped > 0 then mapped
@@ -2588,6 +2599,7 @@ Section: Apply Emission
     is TypeVar (vid) -> if vid == id then with-ty else ty
     is ListTy (elem) -> ListTy (zig-subst-tvar elem id with-ty)
     is LinkedListTy (elem) -> LinkedListTy (zig-subst-tvar elem id with-ty)
+    is SizedVecTy (sn) (elem) -> SizedVecTy sn (zig-subst-tvar elem id with-ty)
     is FunTy (p) (fnrow) (r) -> FunTy (zig-subst-tvar p id with-ty) fnrow (zig-subst-tvar r id with-ty)
     is EffectfulTy (e) (s) (inner) -> EffectfulTy e s (zig-subst-tvar inner id with-ty)
     is ForAllTy (fid) (inner) -> ForAllTy fid (zig-subst-tvar inner id with-ty)
@@ -2672,6 +2684,7 @@ Section: Apply Emission
     is ForAllEff (c) (inner) -> zig-tvar-in-type id inner actual
     is ListTy (elem) -> zig-tvar-in-elem-type id elem actual
     is LinkedListTy (elem) -> zig-tvar-in-elem-type id elem actual
+    is SizedVecTy (sn) (elem) -> zig-tvar-in-elem-type id elem actual
     is FunTy (p) (fnrow) (r) -> zig-tvar-in-fun-type id p r actual
     is ConstructedTy (n) (a) -> zig-tvar-in-args id a (zig-type-arg-list actual) 0
     is SumTy (n) (a) (c) -> zig-tvar-in-args id a (zig-type-arg-list actual) 0
@@ -2720,6 +2733,7 @@ Section: Apply Emission
    when actual
     is ListTy (ae) -> zig-tvar-in-type id elem ae
     is LinkedListTy (ae) -> zig-tvar-in-type id elem ae
+    is SizedVecTy (sn) (ae) -> zig-tvar-in-type id elem ae
     is EffectfulTy (e) (s) (inner) -> zig-tvar-in-elem-type id elem inner
     is otherwise -> VoidTy
 
@@ -3627,6 +3641,12 @@ Section: Definition Emission
  is not something to guess at -- VoidTy was the guess and it was wrong --
  but "emit-zig-type could not map it" is exactly what the marker records.
 
+  zig-vec-empty : Text -> Text
+  zig-vec-empty (e) =
+   if text-length e == 0 then "cx_ll_empty(void)"
+   else if zig-is-unmapped e then "cx_ll_empty(void)"
+   else "cx_ll_empty(" & e & ")"
+
   zig-is-unmapped : Text -> Boolean
   zig-is-unmapped (t) =
    if text-length t < 13 then False else substring t 0 13 == "@compileError"
@@ -3646,8 +3666,8 @@ Section: Definition Emission
  parameters had, one scope out, so it takes the same answer -- rename the
  parameter and carry the rename into the body.
 
- The collision is with definitions, which is what emit-zig-defs writes at
- the top level. Constructors and type names live there too, and a param
+ The collision is with definitions, which the emitter writes at the top
+ level. Constructors and type names live there too, and a param
  colliding with one of those would need the same treatment; nothing has
  hit it yet, and the marker would not catch it because it is a name error
  rather than a type error.
@@ -3864,15 +3884,6 @@ Section: Definition Emission
  the cost is the output size times the number of definitions rather than
  the output size. Collect and join once.
 
-  emit-zig-defs : List IRDef, Integer, ZigCtx, List Text -> Text
-  emit-zig-defs (defs) (i) (ctx) (shared) =
-   text-concat-list (emit-zig-defs-loop defs i ctx shared [])
-
-  emit-zig-defs-loop : List IRDef, Integer, ZigCtx, List Text, List Text -> List Text
-  emit-zig-defs-loop (defs) (i) (ctx) (shared) (acc) =
-   if i == list-length defs then acc
-   else emit-zig-defs-loop defs (i + 1) ctx shared (list-push acc (emit-zig-def-or-shared (list-at defs i) ctx shared))
-
   zig-name-member : List Text, Text, Integer -> Boolean
   zig-name-member (ns) (n) (i) =
    if i >= list-length ns then False
@@ -4026,11 +4037,6 @@ Section: Chapter Emission
   zig-entry-refusal : Text
   zig-entry-refusal =
    "@compileError(\"zig plug: opening returns a type this plug cannot print at the entry\")"
-
- The banner between the program and the prelude. It lives here rather than
- inside zig-prelude because placement is emit-zig-chapter's concern, and
- because build/check-zig-prelude-surface.ps1 derives the reserved-name list
- from zig-prelude and should not have to read past a comment to do it.
 
   zig-postlude-banner : Text =
    "\n"
@@ -4638,20 +4644,6 @@ Section: Chapter Emission
    if i >= list-length ps then acc
    else zig-prelude-names-loop ps (i + 1) (acc & [(list-at ps i).name])
 
-  zig-prelude-roots : Text -> List Text
-  zig-prelude-roots (prog) = zig-roots-loop prog zig-prelude-part-names 0 []
-
-  zig-roots-loop : Text, List Text, Integer, List Text -> List Text
-  zig-roots-loop (prog) (ns) (i) (acc) =
-   if i >= list-length ns then acc
-   else let n = list-at ns i
-   in when index-of prog n
-    is Just (at) -> zig-roots-loop prog ns (i + 1) (acc & [n])
-    is None -> zig-roots-loop prog ns (i + 1) acc
-
-  zig-prelude-for : Text -> Text
-  zig-prelude-for (prog) = shake-text zig-prelude-parts (zig-prelude-roots prog)
-
  The unshaken whole, kept for the identity gate: shaking with every name as a
  root must reproduce what the hand-written chunk list produced.
 
@@ -4701,9 +4693,8 @@ Section: Chapter Emission
    in zig-roots-mask-loop ns s m1 m2 (i + 1) (if bit == 1 then list-push acc (list-at ns i) else acc)
 
 
-  emit-zig-chapter : IRChapter, List ATypeDef -> Text
-  emit-zig-chapter (m) (type-defs) =
-   let ctx = ZigCtx {
+  zig-chapter-ctx : IRChapter, List ATypeDef -> ZigCtx
+  zig-chapter-ctx (m) (type-defs) = ZigCtx {
     arities = build-arity-map (m.defs) 0 [],
     ctors = build-ctor-map type-defs 0 [],
     typedefs = type-defs,
@@ -4716,30 +4707,10 @@ Section: Chapter Emission
     bound-names = [],
     scope-tvars = []
    }
-   in let types-text = emit-zig-type-defs type-defs 0
-   in let defs-text = emit-zig-defs (m.defs) 0 ctx (shared-const-names (m.defs))
-   in let zig-prog = types-text & defs-text & zig-main opening-entry-point (m.defs)
-   in zig-prog & zig-postlude-banner & zig-prelude-for zig-prog
-
- Only a scalar crosses the restore: ctx, ns, main-text and defs are allocated
- before the first mark and dereferenced after it; the per-definition text is
- not, and must not be referenced past its bracket.
 
   emit-zig-chapter-stream : IRChapter, List ATypeDef -> [Console] Nothing
   emit-zig-chapter-stream (m) (type-defs) =
-   let ctx = ZigCtx {
-    arities = build-arity-map (m.defs) 0 [],
-    ctors = build-ctor-map type-defs 0 [],
-    typedefs = type-defs,
-    irdefs = m.defs,
-    renamed-from = [],
-    renamed-to = [],
-    tvar-ids = [],
-    tvar-types = [],
-    expected = VoidTy,
-    bound-names = [],
-    scope-tvars = []
-   }
+   let ctx = zig-chapter-ctx m type-defs
    in let ns = zig-prelude-part-names
    in let shared = shared-const-names (m.defs)
    in let types-text = emit-zig-type-defs type-defs 0

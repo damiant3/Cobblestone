@@ -275,29 +275,43 @@ Section: Path Resolution
 
 Section: File Reading
 
-  fat32-read-cluster-bytes : Fat32Volume, Integer, Integer, Integer, List Integer -> [Device.Block] List Integer
-  fat32-read-cluster-bytes (vol) (cluster) (remaining) (sector-off) (acc) =
-    if remaining <= 0 then acc
-    else if fat32-is-end cluster then acc
-    else if cluster < 2 then acc
+ A file's size is a directory field and its chain is FAT slots, both bytes on
+ a medium we did not produce, and the read answers None unless the chain
+ carries the whole size: a cluster outside the volume or an end-of-chain
+ before the size is spent is a short chain, and a chain that returns to a
+ cluster it has visited is Brent's cycle, as in the walkers above.
+
+  fat32-read-cluster-bytes : Fat32Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer -> [Device.Block] Maybe (List Integer)
+  fat32-read-cluster-bytes (vol) (cluster) (remaining) (sector-off) (acc) (saved) (power) (steps) =
+    if remaining <= 0 then Just acc
+    else if fat32-cluster-ok vol cluster == False then None
     else act
       buf <- block-read-sector (fat32-cluster-sector vol cluster + sector-off)
-      fat32-read-cluster-step vol cluster remaining sector-off acc buf
+      fat32-read-cluster-step vol cluster remaining sector-off acc buf saved power steps
     end
 
-  fat32-read-cluster-step : Fat32Volume, Integer, Integer, Integer, List Integer, Integer -> [Device.Block] List Integer
-  fat32-read-cluster-step (vol) (cluster) (remaining) (sector-off) (acc) (buf) =
+  fat32-read-cluster-step : Fat32Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer -> [Device.Block] Maybe (List Integer)
+  fat32-read-cluster-step (vol) (cluster) (remaining) (sector-off) (acc) (buf) (saved) (power) (steps) =
     let bytes-this = if remaining < 512 then remaining else 512
     in let acc2 = fat16-copy-bytes buf 0 bytes-this acc
     in let next-off = sector-off + 1
-    in if next-off >= (vol.f32-sectors-per-cluster)
-      then fat32-read-cluster-bytes vol (fat32-next-cluster vol cluster) (remaining - bytes-this) 0 acc2
-      else fat32-read-cluster-bytes vol cluster (remaining - bytes-this) next-off acc2
+    in if remaining - bytes-this <= 0 then Just acc2
+    else if next-off >= (vol.f32-sectors-per-cluster)
+      then fat32-read-next-cluster vol cluster (remaining - bytes-this) acc2 saved power steps
+      else fat32-read-cluster-bytes vol cluster (remaining - bytes-this) next-off acc2 saved power steps
+
+  fat32-read-next-cluster : Fat32Volume, Integer, Integer, List Integer, Integer, Integer, Integer -> [Device.Block] Maybe (List Integer)
+  fat32-read-next-cluster (vol) (cluster) (remaining) (acc) (saved) (power) (steps) = act
+    nxt <- fat32-next-cluster vol cluster
+    if nxt == saved then None
+    else if steps + 1 == power then fat32-read-cluster-bytes vol nxt remaining 0 acc nxt (power * 2) 0
+    else fat32-read-cluster-bytes vol nxt remaining 0 acc saved power (steps + 1)
+  end
 
   fat32-read-bytes : Fat32Volume, Text -> [Device.Block] Maybe (List Integer)
   fat32-read-bytes (vol) (path) =
     when fat32-resolve-path vol path
-      is Just (entry) -> Just (fat32-read-cluster-bytes vol (entry.de-cluster) (entry.de-size) 0 [])
+      is Just (entry) -> fat32-read-cluster-bytes vol (entry.de-cluster) (entry.de-size) 0 [] (entry.de-cluster) 1 0
       is None -> None
 
   fat32-read-text : Fat32Volume, Text -> [Device.Block] Maybe Text

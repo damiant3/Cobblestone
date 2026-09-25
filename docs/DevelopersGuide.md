@@ -442,6 +442,11 @@ you want the fields named, that is what a record is for -- give the constructor
 one as its payload (`| Circle (CircleDims)`), or name the variables at each
 `when`. Records are where names live.
 
+**`Rect (Integer, Integer)` does not compile either** -- it is CDX1076. Each
+field takes its own parentheses, `Rect (Integer) (Integer)`; one tuple field
+is `((Integer, Integer))`; and a comma followed by an arrow is a single
+function-typed field, `(Integer, Integer -> Text)`.
+
 ## Pattern Matching
 
 ```
@@ -1461,10 +1466,9 @@ value through.
 
 ### A mask cannot be written down
 
-A comparison of two N-lane vectors produces an inferred `VectorMask N`.
-`mask-any`, `mask-all`, `mask-none`, `mask-count` and `vec-select` accept
-two-lane masks. Four-lane masks use `mask4-any`, `mask4-all`, `mask4-none`,
-`mask4-count` and `vec4-select`.
+A comparison of two N-lane vectors produces an inferred `VectorMask N T`, T the lane type, so four `Real` lanes and four `Real approximate` lanes masks that do not unify. `mask-any`, `mask-all`, `mask-none`,
+`mask-count` and `vec-select` accept two-lane masks. Four `Real approximate` use `mask4-any`, `mask4-all`, `mask4-none`, `mask4-count` and
+`vec4-select`; four `Real` lanes use the `mask4d-` names and `vec4d-select`; `Real approximate` lanes use the `mask8-` names and `vec8-select`.
 **That type has no surface syntax.** `resolve-applied-type` knows `List`,
 `LinkedList`, `Real` and `Vector`; anything else parses as an ordinary
 constructed type, so a signature naming `VectorMask 2` is CDX3008 undefined
@@ -1526,8 +1530,14 @@ retain their two-lane contracts.
   x ~0 y       -- bitwise exact (zero tolerance)
 ```
 
-The `~` operator works on both scalar Real and `Vector N Real` values.
-On vectors it produces a `VectorMask N`.
+On packed vectors the four are lane-wise and produce a mask: `==` and `/=` on
+`Vector 2 Integer`, `~` and `~0` on `Vector 2 Real` and `Vector 4 (Real
+approximate)`, each lane answering as the scalar operator would. `==` on Real
+lanes is CDX2085; every other combination, a 256-bit vector included, is
+CDX2099. They lower to `vec-eq`, `vec-ne`, `vec-approx-eq`, `vec-approx-exact`,
+`vec4-approx-eq` and `vec4-approx-exact`, served on x86-64 only: ARM64 and
+RISC-V refuse the names at compile time (`codex/test/vec-eq-cross-refused`),
+and the wasm plug emits `unreachable` for them.
 
 ### Real Type
 
@@ -1810,6 +1820,15 @@ producing function returns.
 | `a & b` | **a new text of length(a) + length(b)** | see below |
 | `text-concat-list xs` | one text | one allocation for the whole list |
 | `to-unicode cp` | **about a kilobyte** | **1,040 bytes per call** |
+
+**A Text built from foreign bytes: push the bytes onto a list sized by the bytes
+PRESENT, never by a declared length, then call `raw-bytes-to-text` once**
+(`FactLog.fl-text`). `acc & <one-character text>` over a length read off a disk or
+the wire copies the accumulator whenever anything is allocated between appends,
+so its cost is quadratic in the length: a 256 KB frame exhausted a 3 GB guest
+(`codex/test/frame-decode-cost`). Census the shape, not one spelling (L-CENSUS):
+the pieces are `char-to-text`, `cce-foreign-byte-text` and `code-to-text`, over
+`peek-byte` and `list-at` alike.
 
 **`&` extends in place when the accumulator is linearly consumed, and
 copies both sides otherwise.** Since 2026-08-16 (COMPILER-8, root, main
@@ -2200,8 +2219,15 @@ record's, so the record type has to come from the receiver expression.
 is rejected with CDX1071. Keep field access on the
 receiver's line (`r.field`), or bind the receiver with a `let`.
 
-**Multi-line function application needs parens.** Outside `act` blocks,
-newlines are whitespace. A bare multi-line application can misparse.
+**A newline ends an application.** Only inside `(` or `[` does an
+application continue onto the next line. A next line indented deeper than
+the application's line that begins with a literal, `(` or `[` is CDX1070;
+put the arguments on one line or bind the value with a `let`. Any token
+left inside a definition's body after its expression ends is CDX1078, and
+that includes prose indented past column 2: prose lines, tables in prose
+included, start at column 2. In an `act` block, a bare literal statement
+other than the last is CDX1079; a literal line is valid only as the
+block's final value.
 
 **A bound expression must START on its binding line.** `let x =` followed
 by a newline and then `if ...` is CDX1023. A multi-line `if` is fine as

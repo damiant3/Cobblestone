@@ -1,0 +1,31 @@
+Chapter: TcpRstTest
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+ A reset closes ESTABLISHED and CLOSE_WAIT only at the exact expected
+ sequence number (RFC 9293 3.10.7.4, RFC 5961 3.2). codex-vm's port forward
+ delivers a host reset as a FIN, so no bed arm can reach this path; the
+ state machine is driven directly.
+
+Section: Arms
+
+  est : TcpConnection = tcp-set-state (set-recv-next (tcp-new-connection 9443 [10, 0, 2, 15] 50000 [10, 0, 2, 2] 1000) 7000) TcpEstablished
+
+  rst-at : Integer -> TcpSegment
+  rst-at (seq) = tcp-segment-of 50000 9443 seq 1001 tcp-flag-rst 0 []
+
+  exact : TcpStep = tcp-step est (EvSegment (rst-at 7000))
+  off-by-one : TcpStep = tcp-step est (EvSegment (rst-at 7001))
+  far : TcpStep = tcp-step est (EvSegment (rst-at 90000))
+  fin : TcpStep = tcp-step est (EvSegment (tcp-segment-of 50000 9443 7000 1001 (bit-or tcp-flag-fin tcp-flag-ack) 0 []))
+  cw-exact : TcpStep = tcp-step (fin.conn) (EvSegment (rst-at 7001))
+  cw-wrong : TcpStep = tcp-step (fin.conn) (EvSegment (rst-at 7000))
+
+  opening : [Console] Nothing = act
+    print-line-uni ("established, rst at recv-next = " & tcp-state-name (exact.conn.state))
+    print-line-uni ("established, rst one past = " & tcp-state-name (off-by-one.conn.state))
+    print-line-uni ("established, rst far off = " & tcp-state-name (far.conn.state))
+    print-line-uni ("established, fin = " & tcp-state-name (fin.conn.state))
+    print-line-uni ("close-wait, rst at recv-next = " & tcp-state-name (cw-exact.conn.state))
+    print-line-uni ("close-wait, rst before recv-next = " & tcp-state-name (cw-wrong.conn.state))
+  end

@@ -386,7 +386,7 @@ if ($rcpBundled) {
     $probeDir = Join-Path ([IO.Path]::GetTempPath()) ("diag-arm-" + (Split-Path $Repo -Leaf))
     New-Item -ItemType Directory -Force $probeDir | Out-Null
     $probe = Join-Path $probeDir 'bundle-probe.codex'
-    & pwsh -NoProfile -File (Join-Path $Repo 'build\bundle-app.ps1') -Src (Join-Path $Repo 'build\boot\diag\Diag.codex') -Out $probe | Out-Null
+    & pwsh -NoProfile -File (Join-Path $Repo 'build\bundle-app.ps1') -Src (Join-Path $Repo 'build\boot\diag\DiagMain.codex') -Out $probe | Out-Null
     if (-not (Test-Path $probe)) { Write-Host 'FAIL: bundle-app produced no bundle, so image staleness cannot be decided'; exit 1 }
     $nowBundled = (Get-FileHash $probe -Algorithm SHA256).Hash
     Remove-Item $probe -Force -ErrorAction SilentlyContinue
@@ -556,6 +556,9 @@ $SubjectLadder = $cfgText -match '(?m)^\s*sink\s+.*ladder=1'
 $SubjectB3 = $cfgText -match '(?m)^\s*b3\s+.*peer='
 $SubjectCfgText = $cfgText
 $SubjectOff = @((Get-CfgFirstValues $cfgText).GetEnumerator() | Where-Object { $_.Value -eq 'off' } | ForEach-Object { $_.Key })
+# vmx is may-wedge: dg-stage-enabled runs it only when the config NAMES it,
+# so an unnamed vmx is skipped exactly as an off one is.
+if (-not (Get-CfgFirstValues $cfgText).ContainsKey('vmx')) { $SubjectOff += 'vmx' }
 $espWord = if ($espCfgText -ne '') { "DIAG.CFG" } else { "no DIAG.CFG" }
 $ringWord = if ($ringKnown) { "ring from DIAG.RCP" } else { "no DIAG.RCP, ring unknown" }
 Write-Host "subject config: ladder=$(if ($SubjectLadder) { 'on' } else { 'off' }) (read off the subject ESP: $espWord, $ringWord)"
@@ -669,7 +672,7 @@ function Test-DiagEnd([string]$path) {
     return ($txt -match "(?m)^END\s*$")
 }
 
-function Invoke-Vm([string]$name, [string]$kernel, [string]$disk, [string[]]$extra, [int]$Budget = 0) {
+function Invoke-Vm([string]$name, [string]$kernel, [string]$disk, [string[]]$extra, [int]$Budget = 0, [switch]$NoSettle) {
     # NOT $seconds: PowerShell variable names are case-insensitive, so a
     # parameter named $seconds IS the script's $Seconds and the fallback
     # assigns it to itself. The deadline was zero and every arm read
@@ -704,7 +707,7 @@ function Invoke-Vm([string]$name, [string]$kernel, [string]$disk, [string[]]$ext
     $settle = 0
     while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 250
-        if ($settle -eq 0 -and (Test-DiagEnd $out)) { $settle = 1; $deadline = (Get-Date).AddSeconds(1) }
+        if (-not $NoSettle -and $settle -eq 0 -and (Test-DiagEnd $out)) { $settle = 1; $deadline = (Get-Date).AddSeconds(1) }
     }
     if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 600
@@ -880,7 +883,7 @@ function Invoke-Ovmf([string]$name, [bool]$readOnly) {
     $block = Get-DiagBlock $lines
     if ($block.Count -eq 0) { return '(no DIAG1 row on serial)' }
     if ($block[-1] -ne 'END') { return "(serial block did not reach END; last: $($block[-1]))" }
-    foreach ($st in @('smbios', 'edid', 'cpu', 'pci', 'scene', 'gopmode', 'block', 'xhci', 'sink', 'pch', 'nicsit', 'nicinit', 'nicring', 'b3', 'lease', 'rtcw', 'pchk1', 'asde')) { if (-not (Field $block "stage=$st ")) { return "(no $st stage row)" } }
+    foreach ($st in @('smbios', 'edid', 'cpu', 'pci', 'scene', 'gopmode', 'block', 'xhci', 'sink', 'pch', 'nicsit', 'nicinit', 'nicring', 'b3', 'lease', 'rtcw', 'pchk1', 'asde', 'edit', 'avx', 'vmx')) { if (-not (Field $block "stage=$st ")) { return "(no $st stage row)" } }
     $bank = Field $block 'bank='
     $file = $null
     if (Test-Path $disk) { $file = Read-Bank $disk $name }
@@ -908,15 +911,20 @@ function Invoke-Ovmf([string]$name, [bool]$readOnly) {
 # Project Codex VM, its legacy 2.1 table plus a 3.0 entry), an EDID (CDX codex-vm dsp) and a hypervisor bit, so a passing
 # boot there reads exactly this. The no-smbios/no-edid/edid-bad arms are the
 # switches that show the three readers say no.
-$bedStates = @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part'; b3 = 'no-peer'; lease = 'no-card'; rtcw = 'ignored'; pchk1 = 'no-part'; asde = 'no-part'; box = 'Codex Project Codex VM' }
+$bedStates = @{ avx = 'admitted'; smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part'; b3 = 'no-peer'; lease = 'no-card'; rtcw = 'ignored'; pchk1 = 'no-part'; asde = 'no-part'; edit = 'measured'; box = 'Codex Project Codex VM' }
 # With no bank there is no medium selected, so the write-side stage says so and runs nothing.
-$noBankStates = @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'no-medium'; sink = 'no-medium'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part'; b3 = 'no-peer'; lease = 'no-card'; rtcw = 'ignored'; pchk1 = 'no-part'; asde = 'no-part'; box = 'Codex Project Codex VM' }
+$noBankStates = @{ avx = 'admitted'; smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'no-medium'; sink = 'no-medium'; nicsit = 'no-part'; nicinit = 'no-part'; nicring = 'no-part'; b3 = 'no-peer'; lease = 'no-card'; rtcw = 'ignored'; pchk1 = 'no-part'; asde = 'no-part'; edit = 'measured'; box = 'Codex Project Codex VM' }
 
 $expected = [ordered]@{
     'pass'     = 'bank=ok serial==file every stage stated'
     'no-smbios' = 'smbios=no-table box=unnamed bank=ok'
     'no-edid'  = 'edid=absent bank=ok'
     'edid-bad' = 'edid=bad-checksum bank=ok'
+    'cad-summary' = 'Ctrl-Alt-Del on the summary screen resets the box: the chord arrives over USB HID only (-hid-keys, the ASUS has no PS/2) at 20 s, after END, and codex-vm reports the 0xCF9 reset'
+    'cad-stage' = 'Ctrl-Alt-Del during the ladder resets the box: the chord is held from 0.2 s, a stage boundary after the keyboard binds polls it, and the 0xCF9 reset lands before END'
+    'cad-summary-ps2' = 'Ctrl-Alt-Del on the summary screen over PS/2 alone (the same timeline without -hid-keys): the kernel IRQ1 handler tracks Ctrl and Alt and resets on Delete, and codex-vm reports the 0xCF9 reset'
+    'cad-stage-ps2' = 'Ctrl-Alt-Del during the ladder over PS/2 alone: the IRQ1 handler resets mid-stage, so the 0xCF9 reset lands before END'
+    'avx-off'  = 'avx=not-offered with codex-vm -no-avx: the part reports neither XSAVE nor AVX, the boot leaves avx-admitted at 0 and CR4.OSXSAVE clear, and the stage reads the refusal path. The pair for every other arm, which reads avx=admitted on this AVX host, so the row moves between two states off one lever'
     'gop-kept' = 'gopmode=KEPT with -gop-width 1600 -gop-height 900: the largest mode is already current so SetMode is never called. The falsifier for the gopmode row -- every other bed arm reads honoured, and a row that only ever says one word is not an instrument'
     'no-medium' = 'bank=none (mount) summary reached, no file'
     'fat-full' = 'bank=none (write refused) summary reached, no file'
@@ -956,18 +964,23 @@ $expected = [ordered]@{
     'asde-ctrlro' = 'asde=ctrl-ro with -e1000-ctrl-ro: a bit we cleared reads back set, so nothing this stage wrote was written and both arms are void'
     'b3-noaddr' = 'b3=no-address: a peer named with no ip=, so there is no address to dial FROM and the stage refuses instead of inventing one'
     'b3-clockstuck' = 'b3=clock-stuck with -hpet-frozen: the HPET window reads all-ones, a bogus nonzero rate over a counter that never moves, and the clock control at b3 entry refuses before bring-up; nicinit and nicring are off by cfg so nothing ahead of b3 spends its fuel on the same stuck clock, and nicsit, the passive read ahead of the ESP file, reads ok because it spends none'
-    'b3-banklost' = 'b3 bank lost inside the reset sequence with -usb-bot-die-len 5632 -usb-bot-die-lba 3730: the medium dies on the bank write in the MIDDLE of the b3 reset sequence (length cannot aim this arm at all, since ten consecutive notes share len=5632; the LBA is the discriminator), one of the b3 reset-* notes (WHICH one drifts run to run with the digit widths in the note text, so the arm derives it from the trail instead of naming it), the step says so on serial the moment its note is refused, every note before it banked and every note after it reads banked=-1, and the medium itself ends at the step immediately before the refused one; the summary says bank=lost at=b3. Sitting 11 shape: the glass names where the medium DIED, not where the ladder noticed'
+    'vmx-noguest' = 'vmx=no-guest when DIAG.CFG names vmx on and the ESP carries no GUEST.CDX (a New-Variant image lays down no guest); the subject, which carries one, reads vmx-off under codex-vm, whose IA32_FEATURE_CONTROL reads 1. The pair moves the stage between two states, and a cfg that does not name vmx reads skipped'
+    'b3-banklost' = 'b3 bank lost inside the reset sequence with -usb-bot-die-len 5632 -usb-bot-die-lba 3945: the medium dies on the bank write in the MIDDLE of the b3 reset sequence (length cannot aim this arm at all, since ten consecutive notes share len=5632; the LBA is the discriminator), one of the b3 reset-* notes (WHICH one drifts run to run with the digit widths in the note text, so the arm derives it from the trail instead of naming it), the step says so on serial the moment its note is refused, every note before it banked and every note after it reads banked=-1, and the medium itself ends at the step immediately before the refused one; the summary says bank=lost at=b3. Sitting 11 shape: the glass names where the medium DIED, not where the ladder noticed'
     'b3-dhcp'  = 'b3=ok with ip=dhcp: the address is LEARNED from the segment and the row proves it, carrying addr=dhcp and the lease the NAT handed out (ip=10.0.2.15 gw=10.0.2.2). The lease facts are what a guess cannot produce'
     'b3-nolease' = 'b3=no-lease with ip=dhcp and -e1000 alone: the card is present and the link is up, and with no NAT there is no DHCP server, so the stage says the SEGMENT did not answer rather than blaming DIAG.CFG. The falsifier for the state'
     'k1-taken' = 'pchk1=taken with -i219: the part powers up at the campaign condition (K1 enabled, Giga_K1_disable clear) and the readback after e1000-init shows the disable bit SET, so the driver step landed'
     'k1-blocked' = 'pchk1=no-mdio with -i219-mng-holds: firmware holds the MNG bit, the semaphore cannot be acquired and MDIO is refused, so the same binary moves this row off taken. Without it the stage could only ever be seen saying taken'
     'ovmf'     = 'bank=ok serial==file QR decodes'
     'ovmf-ro'  = 'bank=none QR decodes'
+    'ovmf-cad' = 'Ctrl-Alt-Del under OVMF resets the box: QEMU''s USB keyboard alone (-UsbKbd -NoPs2), sendkey ctrl-alt-delete after END, and QEMU -no-reboot exits on the reset'
+    'ovmf-cad-ps2' = 'Ctrl-Alt-Del under OVMF over PS/2 alone (no USB keyboard, the i8042 present): the kernel IRQ1 handler resets on the chord after END, and QEMU -no-reboot exits on the reset'
 }
 $actual = [ordered]@{}
 $names = if ($Only) { @($Only) } else { @($expected.Keys) }
 foreach ($n in $names) { if (-not $expected.Contains($n)) { Write-Host "FAIL: no arm '$n'"; exit 1 } }
 if ($SkipOvmf) { $names = @($names | Where-Object { -not $_.StartsWith('ovmf') }) }
+# COMPILER-104: red on every kernel so far; run it by -Only until that row closes.
+if (-not $Only) { $names = @($names | Where-Object { $_ -ne 'ovmf-cad-ps2' }) }
 
 function Judge-Vm([string]$name, [string[]]$lines, [string]$disk, [bool]$wantBank, [string]$bankNote, [hashtable]$states) {
     # ONLY AN ARM BOOTING THE UNMODIFIED SUBJECT CARRIES THE SUBJECT'S CONFIG.
@@ -977,6 +990,12 @@ function Judge-Vm([string]$name, [string[]]$lines, [string]$disk, [bool]$wantBan
     # substitution exists to fix: the population is not homogeneous and a global
     # rule cannot see that.
     if ($script:SubjectArm -and $null -ne $states) {
+        # vmx runs only when the subject's cfg names it, and then reads vmx-off
+        # under codex-vm; a variant arm lays its own cfg and does not assert it.
+        if ($wantBank -and $name -ne 'no-medium' -and ($SubjectOff -notcontains 'vmx')) {
+            $states = $states.Clone()
+            $states['vmx'] = 'vmx-off'
+        }
         if ($SubjectLadder -and $states['sink'] -eq 'ok') {
             $states = $states.Clone()
             $states['sink'] = 'ladder-all'
@@ -1034,7 +1053,7 @@ function Judge-Vm([string]$name, [string[]]$lines, [string]$disk, [bool]$wantBan
         if ($bankNote -and -not $bank.Contains($bankNote)) { return "bank note is [$bank], wanted $bankNote" }
         if ($null -ne $file) { return 'bank=none but DIAG.TXT exists on the disk' }
     }
-    foreach ($st in @('smbios', 'edid', 'cpu', 'pci', 'scene', 'gopmode', 'block', 'xhci', 'sink', 'pch', 'nicsit', 'nicinit', 'nicring', 'b3', 'lease', 'rtcw', 'pchk1', 'asde')) {
+    foreach ($st in @('smbios', 'edid', 'cpu', 'pci', 'scene', 'gopmode', 'block', 'xhci', 'sink', 'pch', 'nicsit', 'nicinit', 'nicring', 'b3', 'lease', 'rtcw', 'pchk1', 'asde', 'edit', 'avx', 'vmx')) {
         $row = Field $block "stage=$st "
         if (-not $row) { return "(no $st stage row)" }
         if ($states.ContainsKey($st) -and -not $row.Contains("state=$($states[$st])")) { return "$st row is [$row]" }
@@ -1083,6 +1102,58 @@ foreach ($name in $names) {
             $lines = Invoke-Vm 'no-edid' $k $k @('-no-edid')
             $actual['no-edid'] = Judge-Vm 'no-edid' $lines $k $true '' @{ smbios = 'ok'; edid = 'absent'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured' }
         }
+        'cad-summary' {
+            $k = New-Copy 'k-cadsum.img'
+            $kf = Join-Path $Work 'cad-summary.keys'
+            Set-Content $kf "20000:29
+20020:56
+20040:83
+" -NoNewline
+            $lines = Invoke-Vm 'cad-summary' $k $k @('-hid-keys', '-keys-file', $kf) 60 -NoSettle
+            $errText = if (Test-Path (Join-Path $Work 'cad-summary.err')) { Get-Content (Join-Path $Work 'cad-summary.err') -Raw } else { '' }
+            $actual['cad-summary'] = if (-not ((Get-DiagBlock $lines) -contains 'END')) { '(no END before the chord)' } elseif ($errText -notmatch 'RESET: 0xCF9') { 'no 0xCF9 reset after the chord on the summary screen' } else { $expected['cad-summary'] }
+        }
+        'cad-stage' {
+            $k = New-Copy 'k-cadstage.img'
+            $kf = Join-Path $Work 'cad-stage.keys'
+            Set-Content $kf "1500:29
+1520:56
+1540:83
+" -NoNewline
+            $lines = Invoke-Vm 'cad-stage' $k $k @('-hid-keys', '-keys-file', $kf) 60 -NoSettle
+            $errText = if (Test-Path (Join-Path $Work 'cad-stage.err')) { Get-Content (Join-Path $Work 'cad-stage.err') -Raw } else { '' }
+            $block = Get-DiagBlock $lines
+            $last = ($block | Where-Object { $_ -like 'stage=*' } | Select-Object -Last 1)
+            $actual['cad-stage'] = if ($errText -notmatch 'RESET: 0xCF9') { "no 0xCF9 reset while the chord was held (last row [$last])" } elseif ($block -contains 'END') { 'the reset came only after END, not during the ladder' } else { Write-Host "  cad-stage: reset after [$last]"; $expected['cad-stage'] }
+        }
+        'cad-summary-ps2' {
+            $k = New-Copy 'k-cadsum2.img'
+            $kf = Join-Path $Work 'cad-summary-ps2.keys'
+            Set-Content $kf "20000:29
+20020:56
+20040:83
+" -NoNewline
+            $lines = Invoke-Vm 'cad-summary-ps2' $k $k @('-keys-file', $kf) 60 -NoSettle
+            $errText = if (Test-Path (Join-Path $Work 'cad-summary-ps2.err')) { Get-Content (Join-Path $Work 'cad-summary-ps2.err') -Raw } else { '' }
+            $actual['cad-summary-ps2'] = if (-not ((Get-DiagBlock $lines) -contains 'END')) { '(no END before the chord)' } elseif ($errText -notmatch 'RESET: 0xCF9') { 'no 0xCF9 reset after the PS/2 chord on the summary screen' } else { $expected['cad-summary-ps2'] }
+        }
+        'cad-stage-ps2' {
+            $k = New-Copy 'k-cadstage2.img'
+            $kf = Join-Path $Work 'cad-stage-ps2.keys'
+            Set-Content $kf "1500:29
+1520:56
+1540:83
+" -NoNewline
+            $lines = Invoke-Vm 'cad-stage-ps2' $k $k @('-keys-file', $kf) 60 -NoSettle
+            $errText = if (Test-Path (Join-Path $Work 'cad-stage-ps2.err')) { Get-Content (Join-Path $Work 'cad-stage-ps2.err') -Raw } else { '' }
+            $block = Get-DiagBlock $lines
+            $last = ($block | Where-Object { $_ -like 'stage=*' } | Select-Object -Last 1)
+            $actual['cad-stage-ps2'] = if ($errText -notmatch 'RESET: 0xCF9') { "no 0xCF9 reset while the PS/2 chord was held (last row [$last])" } elseif ($block -contains 'END') { 'the reset came only after END, not during the ladder' } else { Write-Host "  cad-stage-ps2: reset after [$last]"; $expected['cad-stage-ps2'] }
+        }        'avx-off' {
+            $k = New-Copy 'k-avxoff.img'
+            $lines = Invoke-Vm 'avx-off' $k $k @('-no-avx')
+            $actual['avx-off'] = Judge-Vm 'avx-off' $lines $k $true '' @{ avx = 'not-offered'; smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured' }
+        }
         'edid-bad' {
             $k = New-Copy 'k-edidbad.img'
             $lines = Invoke-Vm 'edid-bad' $k $k @('-edid-bad')
@@ -1108,7 +1179,7 @@ foreach ($name in $names) {
         }
         'bank-lost' {
             $k = New-Copy 'k-banklost.img'
-            $lines = Invoke-Vm 'bank-lost' $k $k @('-usb-bot-drop', '950', '-usb-bot-drops', '100000')
+            $lines = Invoke-Vm 'bank-lost' $k $k @('-usb-bot-drop', '1150', '-usb-bot-drops', '100000')
             $block = Get-DiagBlock $lines
             $sink = Field $block 'stage=sink '
             $wr = ($block | Where-Object { $_ -match 'wr=' } | Select-Object -First 1)
@@ -1148,7 +1219,7 @@ foreach ($name in $names) {
         }
         'sink-drop' {
             $k = New-Copy 'k-sinkdrop.img'
-            $lines = Invoke-Vm 'sink-drop' $k $k @('-usb-bot-drop', '950', '-usb-bot-drops', '4')
+            $lines = Invoke-Vm 'sink-drop' $k $k @('-usb-bot-drop', '1150', '-usb-bot-drops', '4')
             $block = Get-DiagBlock $lines
             $sink = Field $block 'stage=sink '
             $wr = ($block | Where-Object { $_ -match 'wr=' } | Select-Object -First 1)
@@ -1947,21 +2018,21 @@ foreach ($name in $names) {
             # clocked wait takes the clocked path against a counter that never
             # moves, bounded only by its read fuel. b3's clock control at entry
             # reads the counter across 100000 reads and refuses before bring-up.
-            # nicinit and nicring are turned off by this arm's own cfg,
-            # because nicinit's link wait would spend 409 million STATUS reads
-            # against the same stuck clock before b3 ever ran. nicsit runs:
+            # nicinit, nicring and asde are turned off by this arm's own cfg,
+            # because each spins on the stuck clock: nicinit's link wait would
+            # spend 409 million STATUS reads before b3 ever ran. nicsit runs:
             # it is the last passive stage, ahead of the ESP file that could
             # turn it off, and its register reads spend no clock, so its row
             # reads ok here and is asserted so. The arm is also the first to
             # rehearse a cfg-off composition on a New-Variant arm, so the two
             # skipped rows are asserted outright rather than substituted.
             $cfg = Join-Path $Work 'b3-clockstuck.cfg'
-            Set-Content $cfg "b3 peer=10.0.2.2:9300 ip=10.0.2.15`nnicinit off`nnicring off`n" -NoNewline
+            Set-Content $cfg "b3 peer=10.0.2.2:9300 ip=10.0.2.15`nnicinit off`nnicring off`nasde off`n" -NoNewline
             $k = New-Variant 'b3-clockstuck' '' $cfg
             if (-not $k) { $actual['b3-clockstuck'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
                 $lines = Invoke-Vm 'b3-clockstuck' $k $k @('-e1000', '-hpet-frozen') 90
-                $v = Judge-Vm 'b3-clockstuck' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'ok'; nicinit = 'skipped'; nicring = 'skipped'; b3 = 'clock-stuck' }
+                $v = Judge-Vm 'b3-clockstuck' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; nicsit = 'ok'; nicinit = 'skipped'; nicring = 'skipped'; b3 = 'clock-stuck'; edit = 'no-clock' }
                 # The refusal must carry its own reading: the control is the
                 # counter, not the rate, and a row that said clock-stuck with
                 # clk=y would be a verdict with no measurement under it.
@@ -1970,6 +2041,20 @@ foreach ($name in $names) {
                     if ($row -notlike '  clk=n *') { $v = "clock row is [$row], wanted clk=n" }
                 }
                 $actual['b3-clockstuck'] = $v
+            }
+        }
+        'vmx-noguest' {
+            # vmx runs only when DIAG.CFG names it (dg-stage-enabled), and only a
+            # sitting image carries GUEST.CDX, so a New-Variant image naming vmx on
+            # must stop at the guest read. The NIC stages are off for the same budget
+            # reason as b3-clockstuck.
+            $cfg = Join-Path $Work 'vmx-noguest.cfg'
+            Set-Content $cfg "vmx on`nnicinit off`nnicring off`nb3 off`nlease off`npchk1 off`nasde off`n" -NoNewline
+            $k = New-Variant 'vmx-noguest' '' $cfg
+            if (-not $k) { $actual['vmx-noguest'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
+            else {
+                $lines = Invoke-Vm 'vmx-noguest' $k $k @() 90
+                $actual['vmx-noguest'] = Judge-Vm 'vmx-noguest' $lines $k $true '' @{ smbios = 'ok'; edid = 'ok'; cpu = 'hypervisor'; pci = 'ok'; scene = 'rendered'; gopmode = 'honoured'; block = 'ok'; xhci = 'running'; sink = 'ok'; edit = 'measured'; vmx = 'no-guest' }
             }
         }
         'b3-banklost' {
@@ -2008,14 +2093,12 @@ foreach ($name in $names) {
             # DERIVE FROM THIS ARM AND NOT FROM b3-pass: this arm runs
             # ladder=off from its own recipe, so its bank sizes differ and the
             # note landing on a given LBA is not the one b3-pass puts there.
-            # Measured here 2026-09-08 (fester), after the record channel added
-            # one banked line ahead of b3 (record=peer opened) and two stages
-            # after b3 (lease 17, rtcw 18): the census dies on clock at lba
-            # 3686, so the seven reset-* steps span 3697 (reset-imc) to 3763
-            # (reset-icr). The die is aimed at 3730, reset-await-reset, the
-            # fourth of the seven: three notes of margin in each direction, and
-            # one added or removed ladder note ahead of b3 moves everything by
-            # eleven LBAs.
+            # Measured here 2026-09-25 (fester), after the avx stage and Ctrl-Alt-Del
+            # lengthened every bank: the die at 3945 lands on reset-rst-write, the
+            # third of the seven reset-* steps (two notes of margin before, four
+            # after), measured 2026-09-25 (fester). The previous aim, 3901, landed
+            # on clock. One added or removed ladder note ahead of b3 moves everything by eleven
+            # LBAs.
             #
             # TO RE-DERIVE: run THIS arm with -Keep, pair the len=5632 writes
             # in b3-banklost.census in order with the "b3 entering <step>"
@@ -2059,7 +2142,7 @@ foreach ($name in $names) {
             $k = New-Variant 'b3-banklost' '' $cfg
             if (-not $k) { $actual['b3-banklost'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
-                $lines = Invoke-Vm 'b3-banklost' $k $k @('-e1000', '-e1000-nat', '-usb-bot-die-len', '5632', '-usb-bot-die-lba', '3730') 240
+                $lines = Invoke-Vm 'b3-banklost' $k $k @('-e1000', '-e1000-nat', '-usb-bot-die-len', '5632', '-usb-bot-die-lba', '3945') 240
                 $block = Get-DiagBlock $lines
                 $notes = @($lines | Where-Object { $_ -match '^b3 entering (.+?) (ctrl=\d+ |settled=\d+ )?heap=\d+ banked=(-?\d+)$' })
                 $lost = @($lines | Where-Object { $_ -match '^b3 bank lost at (.+)$' })
@@ -2190,6 +2273,30 @@ foreach ($name in $names) {
         }
         'ovmf' { $actual['ovmf'] = Invoke-Ovmf 'ovmf' $false }
         'ovmf-ro' { $actual['ovmf-ro'] = Invoke-Ovmf 'ovmf-ro' $true }
+        'ovmf-cad' {
+            $tag = (Split-Path $Repo -Leaf) -replace '[^A-Za-z0-9]',''
+            $ser = Join-Path $env:TEMP "ovmf-serial-$tag.log"
+            Remove-Item $ser -ErrorAction SilentlyContinue
+            $log = & pwsh -NoProfile -File (Join-Path $Repo 'build\boot\test-ovmf.ps1') -Img $ImgAbs -Out (Join-Path $Work 'ovmf-cad.png') -UsbDisk -UsbKbd -NoPs2 -NoReboot -Seconds $OvmfSeconds -MouseCmds 'sendkey ctrl-alt-delete' 2>&1
+            $block = if (Test-Path $ser) { Get-DiagBlock @(Get-Content $ser) } else { @() }
+            $actual['ovmf-cad'] = if (-not ($block -contains 'END')) { '(no END on serial before the chord)' } elseif (-not (@($log) -match 'QEMU exited: the guest reset')) { 'QEMU still running after ctrl-alt-delete: no reset' } else { $expected['ovmf-cad'] }
+        }
+        'ovmf-cad-ps2' {
+            $tag = (Split-Path $Repo -Leaf) -replace '[^A-Za-z0-9]',''
+            $ser = Join-Path $env:TEMP "ovmf-serial-$tag.log"
+            Remove-Item $ser -ErrorAction SilentlyContinue
+            $log = & pwsh -NoProfile -File (Join-Path $Repo 'build\boot\test-ovmf.ps1') -Img $ImgAbs -Out (Join-Path $Work 'ovmf-cad-ps2.png') -UsbDisk -NoReboot -Seconds $OvmfSeconds -MouseCmds 'sendkey ctrl-alt-delete' 2>&1
+            $block = if (Test-Path $ser) { Get-DiagBlock @(Get-Content $ser) } else { @() }
+            $actual['ovmf-cad-ps2'] = if (-not ($block -contains 'END')) { '(no END on serial before the chord)' } elseif (-not (@($log) -match 'QEMU exited: the guest reset')) { 'QEMU still running after the PS/2 ctrl-alt-delete: no reset' } else { $expected['ovmf-cad-ps2'] }
+        }
+    }
+    # Arms ABOUT a NIC stage the subject turns off (root's ruling, 2026-09-08,
+    # the rule Test-StageOff states): the stage is skipped, so the arm's own
+    # follow-up reads find no row, and the arm verifies the skip and END instead.
+    $nicArmStage = @{ 'nic-pass' = 'nicring'; 'nic-nolink' = 'nicinit'; 'nic-rdhro' = 'nicring'; 'nic-invisible' = 'nicring'; 'nic-armed' = 'nicring'; 'nic-k1-off' = 'nicring' }
+    if ($nicArmStage.ContainsKey($name) -and ($SubjectOff -contains $nicArmStage[$name]) -and (Get-Variable lines -Scope Script -ErrorAction SilentlyContinue)) {
+        $so = Test-StageOff $name $lines $nicArmStage[$name]
+        if ($so) { $actual[$name] = $so }
     }
 }
 

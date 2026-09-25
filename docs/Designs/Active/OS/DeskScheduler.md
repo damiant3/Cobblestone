@@ -136,12 +136,9 @@ without a screen, a face or a pointer. The pacing itself needs the bed.
 **Sabotage before recording any expectation.** Collapsing a pane's declared
 period to zero should move the count and nothing else.
 
-## Open, and only Damian can call it
+## Ruled (Damian, 2026-09-24): support all of them
 
-- **Does a pane declare a RATE or a BUDGET?** A rate is simpler and is what
-  this document assumes. A budget ("you may have 4 ms") survives a slow pane
-  better and is more machinery than the desk has anywhere else.
-- **What happens when a pane misses its slot**, skip it or run it late? The
-  3D panes want skip; the clock wants late, or it loses a second.
-
-Neither is settled here. The rest of the design does not depend on the answer.
+"If there is valid use cases for all, make all available." Each pane declares
+either a RATE or a BUDGET ("you may have 4 ms"), and separately what happens
+when it misses its slot: SKIP (the 3D panes) or RUN LATE (the clock, which
+otherwise loses a second). The scheduler serves all four combinations.

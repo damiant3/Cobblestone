@@ -16,6 +16,11 @@ Section: Parser State
    deck-ceiling : Integer
   }
 
+  ScanDefResult = record {
+   maybe-header : Maybe DefHeader,
+   state : ParseState
+  }
+
   make-parse-state : List Token, Text -> ParseState
   make-parse-state (toks) (source) =
    ParseState {
@@ -600,6 +605,20 @@ Section: Token Helpers
   skip-newlines : ParseState -> ParseState
   skip-newlines (st) =
    let end-pos = skip-newlines-pos (st.tokens) (st.pos) (list-length (st.tokens))
+   in if end-pos == st.pos then st
+      else __record-set st "pos" end-pos
+
+  skip-newlines-prose-pos : List Token, Integer between 0 and 4294967295, Integer -> Integer between 0 and 4294967295
+  skip-newlines-prose-pos (tokens) (pos) (len) =
+   if pos >= len - 1 then pos
+   else let kind = (list-at tokens pos).kind
+   in when kind
+     is Newline | Indent | Dedent | ProseText -> skip-newlines-prose-pos tokens (pos + 1) len
+     is otherwise -> pos
+
+  skip-newlines-prose : ParseState -> ParseState
+  skip-newlines-prose (st) =
+   let end-pos = skip-newlines-prose-pos (st.tokens) (st.pos) (list-length (st.tokens))
    in if end-pos == st.pos then st
       else __record-set st "pos" end-pos
 

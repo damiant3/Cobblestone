@@ -276,6 +276,9 @@ The stubs live in the **WebApp quire**, `apps/webapp/`:
 | `WebRuntime.codex` | The whole JS-bridge stub contract: `dom-*`, `state-*`, `fetch-*`, `register-handlers`, `register-input-handler`, `set-render`, `mount-widget-themed`, `inject-theme-css`, `show-alert/confirm/prompt`, `play-tone`, `set-timeout`, `local-storage-*`, `download-text` |
 | `WebTheme.codex` | The eight theme builders (`bsn`, `bn`, `ez`, `bdr`, `eu`, `exy`, `ws`, `ss-flat`) and `inject-app-style theme css` |
 | `WebWidgets.codex` | `wk-attach`, `widget-box`, `widget-box-click`, `id-num`, `no-pick` |
+| `WebOverlay.codex` | `mount-overlays theme stack`; a page with overlays adds `cites WebApp chapter WebOverlay` |
+| `WebGraphics.codex` | `mount-svg`, `svg-draw-cmds`, `svg-label`, `svg-fill-path`, `svg-stroke-path`, and `mount-chart id chart` over them; cited by a page that draws |
+| `WebA11y.codex` | `dom-apply-a11y id info`; cited by a page that applies an `A11yInfo` |
 
 So a browser app's cite block is, almost always, exactly this:
 
@@ -298,7 +301,23 @@ tree, its data helpers, and its click/input handlers.
   `dom-prepend`, `dom-add-class`, `dom-remove-class`, `dom-set-style`
 - **Widget mount** -- `mount-widget`, `mount-widget-themed theme tree`
   (styles from the `Theme`, appends into `#app`), `mount-widget-into id tree`
-  (re-mounts a subtree in place -- this is how a designer rebuilds one row)
+  (re-mounts a subtree in place -- this is how a designer rebuilds one row).
+  A `widget-scroll-view` bounded by `widget-set-max` clips its children
+  and shows them from its `WkScroll` offset, clamped as natively; the
+  browser does not scroll the view on its own, and the offset changes
+  only when the page re-mounts with a new `widget-set-scroll`.
+- **Graphics** -- `mount-svg id w h` puts an empty `<svg>` of that size in
+  the element `#id` (the page's tree gives one, e.g. `widget-box id "" []`);
+  `svg-fill-path id path colour` and `svg-stroke-path id path width colour`
+  append a `Vector` path in path units, and `mount-chart id chart` does all
+  of it for a `Charts` chart
+- **Overlays** -- `mount-overlays theme stack` draws an `OverlayStack` the
+  way `gr-render-overlays` does natively: the first `os-count` entries in
+  list order, visible ones only, each a box at (`ov-x`, `ov-y`) of
+  `ov-width` by `ov-height` filled with `pal-bg`, its widget inside. The
+  boxes go in `#wk-ov`, a layer apart from `#app`, replaced on every call;
+  call it after `mount-widget-themed` in the render function. Input is not
+  routed: a modal does not block clicks beneath it.
 - **Events** -- `register-handlers pick click`, `register-input-handler`,
   `dom-on-click`, `dom-on-input`, `dom-on-key`. `WkButton` nodes wire
   their own click to the registered click handler, keyed by `wn-id`;
@@ -310,13 +329,35 @@ tree, its data helpers, and its click/input handlers.
   `json-parse-obj`, `json-obj-field`, `json-stringify`, `url-encode`
 - **Dialogs** -- `show-alert`, `show-confirm`, `show-prompt`,
   `close-dialog` (real `<dialog>` elements, `showModal()`)
-- **A11y** -- `dom-set-aria`, `dom-set-role`
+- **A11y** -- `dom-set-aria`, `dom-set-role`; `dom-apply-a11y id info`
+  (WebA11y) applies a whole `A11yInfo`: `RoleNone`, an empty text, `LiveOff`,
+  a focus order of 0 and `None` set nothing, and the value range is written
+  for `RoleSlider` only. Overlays carry `role` automatically (tooltip,
+  `menu` for a context menu, `status` with `aria-live="polite"` for a
+  notification, `dialog` with `aria-modal` for a modal; a popup has none)
 - **Animation** -- `css-animate-spin/pulse/bounce`, `css-transition`
   (`@keyframes wk-spin`, `wk-pulse`, `wk-bounce` are injected)
 - **Persistence** -- `local-storage-get/set`, `save-theme`, `load-theme`,
   `save-layout`, `load-layout`, `download-text`
 - **Misc** -- `random-int`, `play-tone`, `set-timeout`, `next-card-id`,
   `generate-image`, `check-sd-status`
+
+### Values, as natively
+
+- A top-level definition with no parameters is evaluated at every use, as
+  natively: the plug emits it as a function and each reference as a call, so
+  a `__record-set` on it touches that use's record only.
+- An Integer is a BigInt. A runtime builtin whose stub returns an Integer is
+  wrapped once per page so its JavaScript Number result arrives as a BigInt,
+  and arithmetic and `==` on it behave as natively.
+- `substring`, `char-code-at`, a gauge's value and maximum, `random-int`,
+  `set-timeout` and `play-tone` convert their Integers to Numbers for the
+  JavaScript they call. Every `dom-*` function given a missing element
+  (`dom-get` of an absent id) does nothing, as the native stubs do.
+- `list-push` and `list-snoc` return a new array. Natively they extend in
+  place when the block has room and copy otherwise (`Builtins.codex`), so
+  whether an older name sees the append is left to the caller in both: copy
+  at the holder that needs the old list.
 
 ### Adding a runtime primitive
 
@@ -550,12 +591,12 @@ gap that is still open stays on this list until it is closed.
 | Dialog | `Dialog.codex` (DialogConfig/Result) | `show-alert/confirm/prompt`, `close-dialog` emit `<dialog>` + `showModal()` | **CLOSED** -- the foreword's `DialogConfig` record is still not the input type; the runtime takes plain text |
 | Event routing | `Event.codex` (HandlerTable, EventPath) | Plug has its own two-callback registry (`register-handlers`, `register-input-handler`, `dom-on-*`) | **OPEN** -- the foreword event model is not what gets emitted. Bind `HandlerTable`/`EventPath` to `addEventListener` |
 | Binding | `Binding.codex` (Observable, BindingTable) | `set-render` / `request-render` / `state-set-render` rAF dirty-loop | **OPEN** -- a render loop exists, but `Observable`/`BindingTable` are not lowered |
-| Accessibility | `Accessibility.codex` (Role/Label/LiveRegion) | `dom-set-aria`, `dom-set-role` builtins | **OPEN** -- nothing is emitted automatically from the widget tree; a11y is opt-in, per call |
+| Accessibility | `Accessibility.codex` (`A11yInfo`: role, label, live region, focus order, state, range) | `dom-apply-a11y id info` sets the ARIA attributes an `A11yInfo` carries; overlays take a role from their kind; a chart's `<svg>` is `role="img"` labelled with its title | **CLOSED** |
 | Animation | `Animation.codex` (Throbber/Transition/KeyframeSeq) | `css-animate-spin/pulse/bounce`, `css-transition`, three `@keyframes` | **OPEN** -- fixed set only; `KeyframeSeq` does not lower to `@keyframes` |
-| Overlay | `Overlay.codex` (Tooltip/Popup/ContextMenu/Modal) | none (grep: no tooltip/popup/context-menu in `HtmlEmitter`) | **OPEN** -- modal is reachable only via the dialog builtins |
-| Scroll | `Scroll.codex` (ScrollState) | none | **OPEN** -- no `overflow` CSS; apps hand-write it in their CSS string |
-| Charts | `Charts.codex` (Bar/Line/Pie/Area) | none | **OPEN** -- no SVG and no canvas emission at all |
-| Vector | `Vector.codex` (paths) | none | **OPEN** -- no `<svg>` emission |
+| Overlay | `Overlay.codex` (Tooltip/Popup/ContextMenu/Modal) | `mount-overlays theme stack` draws the stack into `#wk-ov` | **CLOSED** for drawing; input routing (modal blocking, dismiss on click-away) is the page's own |
+| Scroll | `Scroll.codex` (ScrollState), `widget-scroll-view` | a `WkScroll` node is a clipped `div` (`overflow: hidden`, bare style, children unshrunk) whose offset is applied as `scrollTop` (`scrollLeft` in a row) after every mount; `wn-max-w`/`wn-max-h` lower to `max-width`/`max-height` | **CLOSED** -- program-driven as natively: the wheel and keys move it only through the page's own handler (`scroll-view-handle-wheel`, `-handle-key`) and a re-mount |
+| Charts | `Charts.codex` (Bar/Line/Scatter/Pie, rendered to `List DrawCmd`) | `mount-chart id chart` runs `chart-render` and draws each `DrawCmd` into an `<svg>` in `#id` | **CLOSED** -- nothing native draws a `DrawCmd`, so the SVG fixes the reading: a circle is filled, a text's `y` is its top, a line is one pixel |
+| Vector | `Vector.codex` (paths, `vec-coverage`, `vec-stroke-coverage`) | `svg-fill-path id path colour` (even-odd, as natively) and `svg-stroke-path id path width colour` (width in path units, square caps) append a `<path>` to the `<svg>` `mount-svg id w h` made | **CLOSED** -- `VecStyle` is not read, as natively |
 | Shadow / Gradient / AccentBorder | `Theme.codex` `WidgetStyle` fields | none | **OPEN (new)** -- `theme-to-css` and `_wkStyle` lower bg, fg, padding, margin, border, radius, min-w/h only |
 | Grid / Split layouts | `Layout.codex` | none | **OPEN (new)** -- only `.wk-row` / `.wk-col` are emitted; grid and split compute rects for the framebuffer backend only |
 

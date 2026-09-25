@@ -4,6 +4,7 @@ Chapter: TlsCert
   cites Foreword chapter Ed25519
   cites Foreword chapter Rsa
   cites Foreword chapter EcdsaP256
+  cites Foreword chapter EcdsaP256Sign
   cites Foreword chapter Maybe
 
  The two handshake messages that turn an anonymous key agreement into an
@@ -46,12 +47,12 @@ Chapter: TlsCert
 
 Section: Signature Schemes
 
- ed25519, 0x0807 (RFC 8446 section 4.2.3). Two bytes on the wire, and the
- only scheme this chapter can PRODUCE -- tls-cv-encode signs with Ed25519
- because that is the only private-key operation in the tree.
+ tls-cv-encode produces two schemes: ecdsa_secp256r1_sha256 for a 65-byte
+ SEC1 P-256 public key, ed25519 for anything else.
 
-  tls-scheme-ed25519-hi : Integer = #08
-  tls-scheme-ed25519-lo : Integer = #07
+  tls-cv-scheme-for : List Integer -> Integer
+  tls-cv-scheme-for (pub) =
+    if list-length pub == 65 then tls-sig-ecdsa-p256-sha256 else tls-sig-ed25519
 
  THE SET WE ACCEPT AND THE SET WE OFFER MUST BE THE SAME SET, and the
  numbers therefore live once, in Tls, beside the extension that advertises
@@ -88,12 +89,44 @@ Section: CertificateVerify
 
   tls-cv-encode : Boolean, List Integer, List Integer, List Integer -> List Integer
   tls-cv-encode (is-server) (priv) (pub) (transcript-hash) =
-    tls-cv-wrap (ed25519-sign priv pub (tls-cv-content is-server transcript-hash))
+    let content = tls-cv-content is-server transcript-hash
+    in if tls-cv-scheme-for pub == tls-sig-ecdsa-p256-sha256 then tls-cv-wrap-ecdsa (ecdsa-p256-sign priv content)
+    else tls-cv-wrap tls-sig-ed25519 (ed25519-sign priv pub content)
 
-  tls-cv-wrap : List Integer -> List Integer
-  tls-cv-wrap (sig) =
-    [tls-scheme-ed25519-hi, tls-scheme-ed25519-lo,
-     bit-shru (list-length sig) 8, bit-and (list-length sig) #FF] & sig
+ An empty body when the signer refused, so the caller can refuse too.
+
+  tls-cv-wrap-ecdsa : List Integer -> List Integer
+  tls-cv-wrap-ecdsa (rs) =
+    if list-length rs /= 64 then []
+    else tls-cv-wrap tls-sig-ecdsa-p256-sha256 (tls-cv-der-rs rs)
+
+  tls-cv-wrap : Integer, List Integer -> List Integer
+  tls-cv-wrap (scheme) (sig) =
+    tls-be16 scheme & [bit-shru (list-length sig) 8, bit-and (list-length sig) #FF] & sig
+
+ RFC 8446 section 4.2.3 and RFC 3279: ECDSA-Sig-Value is SEQUENCE { r
+ INTEGER, s INTEGER }, each INTEGER minimal and positive, so leading zero
+ bytes go and a 0x00 goes back in front of a high bit. At most 72 bytes,
+ so every length is one short-form byte.
+
+  tls-cv-der-rs : List Integer -> List Integer
+  tls-cv-der-rs (rs) =
+    let body = tlsc-der-int (tlsc-slice rs 0 32) & tlsc-der-int (tlsc-slice rs 32 32)
+    in [#30, list-length body] & body
+
+  tlsc-der-int : List Integer -> List Integer
+  tlsc-der-int (v) = tlsc-der-int-of (tlsc-strip-zeros v 0)
+
+  tlsc-der-int-of : List Integer -> List Integer
+  tlsc-der-int-of (t) =
+    let t2 = if list-at t 0 >= 128 then [0] & t else t
+    in [#02, list-length t2] & t2
+
+  tlsc-strip-zeros : List Integer, Integer -> List Integer
+  tlsc-strip-zeros (v) (i) =
+    if i >= list-length v - 1 then tlsc-slice v i (list-length v - i)
+    else if list-at v i /= 0 then tlsc-slice v i (list-length v - i)
+    else tlsc-strip-zeros v (i + 1)
 
  is-server is what the CHECKER expects, not what the message claims. A
  message does not get to tell us which role it was signed for; that is the

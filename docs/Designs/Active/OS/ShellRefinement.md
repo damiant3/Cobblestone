@@ -32,8 +32,8 @@ shadows or text ink. An undersized viewport needs reflow, more space or scrollin
 from its caller; overflow reporting does not supply scrolling automatically.
 `widget-layout` returns the arranged tree and does not retain those extent
 fields. A scroll viewport (`widget-scroll-view`, `WkScroll`, S4 below) stops
-child minima from enlarging the viewport and scrolls its content natively; the
-HTML adapter does not yet install scrolling (S4h).
+child minima from enlarging the viewport and scrolls its content natively, and the
+HTML adapter clips and offsets it the same way (S4h).
 
 Calculator uses layout stacks for its display and keypad groups. The display
 keeps its measured height and the keypad receives the remaining space. Tests in
@@ -78,13 +78,10 @@ minimum yields to the minimum, which stays the hard floor. The arm,
 capped child stops at its cap and the other takes the rest, and the same row
 with the cap removed as the control. S1 is native only.
 
-**S1h, the maximum in the HTML lowering.** `HtmlEmitter.codex`'s widget
-mount (beside `el.style.minWidth`) emits `max-width`/`max-height` for a
-nonzero `wn_max_w`/`wn_max_h`, never below the minimum. It is proved by
-rebuilding the html plug, regenerating one app page whose tree sets a maximum
-(`build/build-apps.ps1 -Only`), and loading it with
-`build/check-app-pages.ps1 -Only`; the regenerated page is the only artifact
-it moves.
+**S1h, the maximum in the HTML lowering (landed).** `_wk` in
+`HtmlEmitter.codex` emits `max-width`/`max-height` for a nonzero
+`wn_max_w`/`wn_max_h`; CSS lets the minimum win, as natively. No app page sets
+a maximum (2026-09-25), so the scroll probe under S4h is its proof.
 
 **S2, natural sizes are a separate fact from explicit ones.** A label or
 button's minimum is a guess (`text-length * 8`) that `comp-fit-node` replaces
@@ -117,9 +114,8 @@ the clip to the viewport's box for its children (`comp-kids-clip`).
 (`scroll-view-handle-key`: the main-axis arrows, page up and down, home, end)
 or a wheel delta (`scroll-view-handle-wheel`), at `scroll-line` 24 pixels per
 step. The Browser's hand-built pane (`gbr-paint`, `comp-translate-kids`) is
-not migrated. The HTML and MAUI plugs render `WkScroll` as they rendered the
-old `scroll-view` tag; the HTML lowering to `overflow: auto` is S4h, proved
-like S1h. The arm is `codex/test/ui/scroll-viewport`.
+not migrated. The MAUI plug renders `WkScroll` as it rendered the old `scroll-view`
+tag. The arm is `codex/test/ui/scroll-viewport`.
 
 **S5, a windowed Files listing, and this is what sizes the Files hole.**
 
@@ -154,11 +150,15 @@ Files paints its rows directly. Edit's list mode does the same: `EditState`
 keeps `ed-count`, and `ged-list-paint-cur` reads a screenful of rows from
 `top` for each paint.
 
-**S4h waits on a consumer.** No app page's tree holds a scroll viewport
-(`apps/*/*Page.codex`, 2026-09-23): the Browser and Review build theirs on
-the native desk only. An `overflow: auto` lowering that no page exercises
-cannot be proved the way S1h was, so S4h is built with the first HTML page
-that adopts `widget-scroll-view`.
+**S4h, the viewport in the HTML lowering (landed).** `_wk` builds a
+`WkScroll` node as a `div` with `overflow: hidden`, bare style and unshrunk
+children, and every mount sets its `scrollTop` (`scrollLeft` in a row) from
+the offset; the browser clamps as `widget-scroll-box` does. `hidden`, not
+`auto`: natively only the page's handler moves the offset, and a browser
+scroll would move content the page's offset does not know about. Graded
+against x86-64: three 200x100 column viewports (five 40-pixel children at
+offset 70, five at 500, two at 30) give the same child tops natively and in
+the page (offsets 70, 100 and 0, the last pair flex-filled to 0 and 50).
 
 **S6, cross-axis alignment (landed).** `LayoutItem.li-align` and
 `WidgetNode.wn-align` are an Integer (`align-stretch` 0, the default, then
@@ -679,7 +679,7 @@ painted by `comp-shadow`, `comp-bevel`, `comp-accent` and
 `dl-corner`, `dl-outline` and `dl-gradient` per language.
 
 - **Must not break: the idle repaint budget.** A wallpaper that repaints per
-  frame is a regression against WORKS-37's leak fix.
+  frame is a regression against the idle leak fix, `desk-loop`'s per-iteration mark.
 - **The root panel already carries the theme's own vertical gradient**, so a
   desktop drawn as a gradient off the palette is invisible and costs an
   interpolation per scanline per repaint. Take the control capture before
@@ -1620,7 +1620,7 @@ will be wrong at the Browser. Told to this campaign by red, 2026-08-20, as a
 property of the surface.
 
 **The taskbar band repaints every second** and is contested by any pane that
-renders `desk-chrome-with` (`WORKS-37`). Every stage that paints near it has
+renders `desk-chrome-with`; its clock cell is also the home of the transient notice (`works-desk-contract.md`, cell 272). Every stage that paints near it has
 to leave `dk-chrome-paint`'s clock repaint intact. Anything drawn into the
 band from OUTSIDE the tree is erased within a second of appearing, which is
 why a pill is a button in the taskbar tree rather than a painting.

@@ -2,21 +2,9 @@ Chapter: MetalLadder
   cites Works chapter GopHandoff
   cites Works chapter GopDraw
 
- A payload's report channel on a board with no serial port and no proven
- ConOut. The screen is the only channel demonstrated to reach a human on the
- ASUS: the stub's own fills render there, which is why this paints rather
- than prints.
-
- The contract is that the LAST COLOUR STANDING names the last stage passed.
- A stage paints on success and the payload spins on failure, so a dead
- machine still reports. The operator table lives in docs/Hardware/HardwareSitting.md.
-
  We say:
 
 Section: Palette
-
- Framebuffer pixels are B,G,R,X in memory order and poke-32 stores
- little-endian, so a 0xRRGGBB literal lands correctly.
 
   ladder-cyan : Integer = 65535
 
@@ -30,10 +18,6 @@ Section: Palette
 
   ladder-red : Integer = 16711680
 
- Green is deliberately absent. The UEFI stub holds dark green while it runs,
- so a green screen already means the payload never reached its first rung,
- and a rung painting green would be indistinguishable from that.
-
   ladder-blue : Integer = 255
 
 Section: Channel
@@ -45,25 +29,7 @@ Section: Channel
     else let f = gop-fill-rect b (boot-fb-stride 0) (boot-fb-h 0) 0 0 (boot-fb-w 0) (boot-fb-h 0) colour
     in if peek-32 b 0 == colour then 1 else 0
 
- A HEARTBEAT, for a stage that takes minutes. The rungs report the stage that
- PASSED, so a stage in progress and a stage that died inside it paint the same
- screen: the 2026-08-11 sink flight held ORANGE for both reasons and the
- operator had no way to tell which, which is the whole of what that flight
- failed to establish.
-
- The bar goes in a BAND below the field rather than over it, so the field still
- carries the last-colour-standing contract and only the band carries motion. It
- clears the band before drawing, so a bar can go backwards when a new phase
- resets it. It answers the painted width, which is what a bed asserts on: a
- heartbeat nobody can measure is the same failure one level up.
-
   ladder-band-h : Integer = 24
-
- The width is separated from the painting so it can be tested without a
- framebuffer. Everything that can be got wrong here is arithmetic -- a bar that
- saturates early, one that overflows the panel, one that divides before
- multiplying and reports zero for the whole first half -- and none of it needs
- a screen to catch. `codex/test/apps/ladder-bar-width` is the arm.
 
   ladder-bar-width : Integer, Integer, Integer -> Integer
   ladder-bar-width (w) (done) (total) =
@@ -85,21 +51,10 @@ Section: Channel
     in let f = if x > 0 then gop-fill-rect b (boot-fb-stride 0) h 0 y x ladder-band-h colour else 0
     in x
 
- ladder-hold repaints rather than spinning on an empty loop. A pure
- non-terminating function is not a halt: the optimizer removed the first
- version of this outright, so a FAILED stage fell through and painted the
- colour that means the stage passed. The framebuffer writes are what make
- this one survive.
-
   ladder-hold : Integer -> Integer
   ladder-hold (colour) =
     let f = ladder-paint colour
     in ladder-hold colour
-
- ladder-pass paints and RETURNS on either outcome, so a caller can say what
- it painted before it stops. Holding inside here made a failure mute: the
- hold never returns, so the stage that failed printed nothing at all and a
- held colour was indistinguishable from a run still in progress.
 
   ladder-pass : Integer, Integer, Integer -> Integer
   ladder-pass (ok) (colour) (prev) =

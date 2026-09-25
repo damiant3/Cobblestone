@@ -90,7 +90,7 @@ if (-not $ListSubjects) {
 # `classic-games-run` cite only `Games chapter *`, reach no hardware, and still
 # SIGILL on both targets. Excluding them would report the same score as fixing
 # them (L-CAPABILITY-LOST); they are a finding, not an ineligible subject.
-$excludePattern = 'Device\.|FileSystem|Network|Identity|Audio|Gpu|Media|Concurrent|Process\.|Works chapter Gop|Kernel chapter|Dev chapter CpuInspector|Works chapter CamCapture|Works chapter DevDebugger|cpu-read-cr|cpu-cpuid|__heap-advance|port-in|port-out|read-line|capability|process-spawn|raw-mem|address-of|atomic-|memory-fence'
+$excludePattern = 'Device\.|FileSystem|Network|Identity|Audio|Gpu|Media|Concurrent|Process\.|Works chapter Gop|Kernel chapter|Dev chapter CpuInspector|Works chapter CamCapture|Works chapter DevDebugger|cpu-read-cr|cpu-read-dr|cpu-write-dr|cpu-cpuid|__heap-advance|port-in|port-out|read-line|capability|process-spawn|raw-mem|address-of|atomic-|memory-fence'
 
 # The selection recurses. A subject's DIRECTORY is not part of the rule above --
 # the rule is what the source asks for -- so a non-recursive glob was excluding
@@ -112,6 +112,36 @@ function Get-EligibleSubjects {
     } | Sort-Object)
 }
 
+# The cap is a STRATIFIED sample, not the first N by name. By name, 55 of the
+# first 60 were `apps/*` and ops, forewords, lib and ui drew none (2026-09-25),
+# so a regression in those directories reached no capped run, including the
+# release gate's wasm-run phase. Each first path segment (top level is one
+# stratum) takes an equal share, a share a small stratum cannot fill goes to
+# the others, and a stratum's picks are its names of lowest SHA-256 rank.
+# Deterministic on purpose: a rotating sample turns a run red with no change.
+# Ranked rather than evenly spaced because a new subject then displaces at
+# most one pick in its stratum; evenly spaced picks all moved when one file
+# was added (2026-09-25, text-accum-owner pulled in scope-handler-clause).
+function Get-SubjectRank([string]$Name) {
+    [BitConverter]::ToUInt64([System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Name)), 0)
+}
+
+function Select-StratifiedSubjects([string[]]$Names, [int]$Cap) {
+    if ($Cap -le 0 -or $Names.Count -le $Cap) { return $Names }
+    $strata = @($Names | Group-Object { if ($_ -match '/') { ($_ -split '/')[0] } else { '.' } } | Sort-Object Name)
+    $quota = @{}
+    foreach ($g in $strata) { $quota[$g.Name] = 0 }
+    $left = $Cap
+    while ($left -gt 0) {
+        foreach ($g in $strata) {
+            if ($left -gt 0 -and $quota[$g.Name] -lt $g.Count) { $quota[$g.Name]++; $left-- }
+        }
+    }
+    @(foreach ($g in $strata) {
+        $g.Group | Sort-Object { Get-SubjectRank $_ } | Select-Object -First $quota[$g.Name]
+    }) | Sort-Object
+}
+
 $hasPattern = @($Subject | Where-Object { $_ -match '[*?\[]' }).Count -gt 0
 if ($Subject.Count -gt 0 -and -not $hasPattern) {
     # Naming exact subjects is the focused run, so it does not pay for the scan.
@@ -127,7 +157,7 @@ if ($Subject.Count -gt 0 -and -not $hasPattern) {
     }
 } else {
     $eligible = Get-EligibleSubjects
-    $subjects = if ($Max -gt 0) { @($eligible | Select-Object -First $Max) } else { $eligible }
+    $subjects = @(Select-StratifiedSubjects $eligible $Max)
 }
 
 if ($ListSubjects) { $subjects | ForEach-Object { $_ }; exit 0 }

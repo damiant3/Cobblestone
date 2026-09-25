@@ -1,4 +1,5 @@
 Chapter: RISC-V Code Generator
+  cites Foreword chapter Sort
 
 Section: Match
 
@@ -421,7 +422,12 @@ Section: Match
 
   rv-emit-unsupported-cpu : RvState, Text -> RvEmitResult
   rv-emit-unsupported-cpu (st) (name) =
-   let msg = "[UNSUPPORTED] " & name & ": x86 control registers and CPUID do not exist on this target (refused by design)"
+   let msg = "[UNSUPPORTED] " & name & ": x86 control and debug registers and CPUID do not exist on this target (refused by design)"
+   in rv-emit-int-lit (__record-set st "wcet-reports" (list-push (st.wcet-reports) msg)) 0
+
+  rv-emit-unsupported-arm64 : RvState, Text -> RvEmitResult
+  rv-emit-unsupported-arm64 (st) (name) =
+   let msg = "[UNSUPPORTED] " & name & ": the arm64 generic-timer system registers do not exist on this target (refused by design)"
    in rv-emit-int-lit (__record-set st "wcet-reports" (list-push (st.wcet-reports) msg)) 0
 
   rv-emit-unsupported-list : RvState, Text -> RvEmitResult
@@ -1242,7 +1248,36 @@ Section: Module Emission
 
   rv-tco-needs-ra : IRDef -> Boolean
   rv-tco-needs-ra (def) =
-   rv-body-needs-ra (def.body) (def.name)
+   let ps = when def.body
+    is IrLambda (lp) (lb) (lt) (ls) -> def.params & lp
+    is otherwise -> def.params
+   in rv-body-needs-ra (def.body) (def.name) | rv-tco-names-bound (def.body) (rv-tco-param-names ps 0 []) == False
+
+  rv-tco-param-names : List IRParam, Integer, List Text -> List Text
+  rv-tco-param-names (ps) (i) (acc) =
+   if i >= list-length ps then acc
+   else rv-tco-param-names ps (i + 1) (list-push acc ((list-at ps i).name))
+
+  rv-tco-names-bound : IRExpr, List Text -> Boolean
+  rv-tco-names-bound (e) (bound) =
+   when e
+    is IrName (n) (t) (s) -> rv-name-in-list n bound 0
+    is IrLambda (lp) (lb) (lt) (ls) -> rv-tco-names-bound lb bound
+    is IrApply (f) (a) (t) (s) -> rv-tco-names-bound a bound & rv-tco-head-bound f bound
+    is IrBinary (op) (l) (r) (t) (s) -> rv-tco-names-bound l bound & rv-tco-names-bound r bound
+    is IrNegate (x) (nty) (s) -> rv-tco-names-bound x bound
+    is IrFieldAccess (rec) (f) (t) (s) -> rv-tco-names-bound rec bound
+    is IrLet (n) (t) (v) (b) (s) -> rv-tco-names-bound v bound & rv-tco-names-bound b (bound & [n])
+    is IrIf (c) (th) (el) (t) (s) ->
+     rv-tco-names-bound c bound & rv-tco-names-bound th bound & rv-tco-names-bound el bound
+    is otherwise -> True
+
+  rv-tco-head-bound : IRExpr, List Text -> Boolean
+  rv-tco-head-bound (f) (bound) =
+   when f
+    is IrName (n) (t) (s) -> True
+    is IrApply (f2) (a2) (t2) (s2) -> rv-tco-names-bound a2 bound & rv-tco-head-bound f2 bound
+    is otherwise -> rv-tco-names-bound f bound
 
   rv-bind-params-to-args : RvState, List IRParam, Integer -> RvState
   rv-bind-params-to-args (st) (params) (i) =
@@ -1445,8 +1480,8 @@ Section: Module Emission
    else st5
    in let st5m = if use-memo then rv-emit st5 (rv-sd rv-s0 rv-a0 (memo-slot * 8)) else st5
    in let has-stack-params = list-length all-def-params > 8
-   in let base-frame = rv-compute-frame-size (st5m.spill-count)
-   in let frame-size = if has-stack-params then if base-frame < 256 then 256 else base-frame else base-frame
+   in let stack-slots = if has-stack-params then list-length all-def-params - 8 else 0
+   in let frame-size = rv-compute-frame-size (st5m.spill-count + stack-slots)
    in let st5p = rv-patch-stack-loads st5m spl-patches frame-size 0
    in let st6 = rv-patch-frame st5p frame-size
    in let actual-saves = rv-compute-save-count (st6.peak-local - rv-s2)
@@ -1481,8 +1516,10 @@ Section: Module Emission
    else let loc = rv-alloc-local st
    in let tr = rv-alloc-temp (loc.state)
    in let insn-idx = (tr.state).insn-count
-   in let st1 = rv-emit (tr.state) rv-nop
-   in let st2 = rv-store-local st1 (loc.reg) (tr.reg)
+   in let st1 = rv-emit (rv-emit (rv-emit (tr.state) rv-nop) rv-nop) rv-nop
+   in let ty = (list-at params i).type-val
+   in let st1g = if rv-guarded-bound ty then rv-maybe-clamp st1 (tr.reg) ty else st1
+   in let st2 = rv-store-local st1g (loc.reg) (tr.reg)
    in let st3 = rv-bind-local st2 ((list-at params i).name) (loc.reg)
    in rv-bind-stack-params st3 params (i + 1) (patches & [insn-idx, tr.reg, i])
 
@@ -1493,7 +1530,10 @@ Section: Module Emission
    in let rd = list-at patches (i + 1)
    in let param-idx = list-at patches (i + 2)
    in let off = frame-size - (param-idx - 7) * 8
-   in let st1 = rv-patch-insn st insn-idx (rv-ld rd rv-sp off)
+   in let st1 = if off > 2047 then
+    let hl = rv-split-hi20-lo12 off
+    in rv-patch-insn (rv-patch-insn (rv-patch-insn st insn-idx (rv-lui rd (hl.hi))) (insn-idx + 1) (rv-add rd rd rv-sp)) (insn-idx + 2) (rv-ld rd rd (hl.lo))
+    else rv-patch-insn st insn-idx (rv-ld rd rv-sp off)
    in rv-patch-stack-loads st1 patches frame-size (i + 3)
 
   rv-bind-params-from : RvState, List IRParam, Integer, Integer -> RvState
@@ -1600,23 +1640,26 @@ Section: Module Emission
 
   rv-emit-module : RvState, IRChapter, List ATypeDef, List Text -> RvState
   rv-emit-module (st) (chapter) (tdefs) (eff-ops) =
-   let st1 = __record-set st "type-defs" tdefs
+   let lifted = wh-lift-defs (chapter.defs) 0 [] [] []
+   in let defs = rv-drop-def (lifted.defs) wh-resume-id 0 []
+   in let st1 = __record-set st "type-defs" tdefs
    in let st1 = rv-pre-learn-type-defs st1 tdefs 0
    in let addrs = rv-assign-effect-op-addrs eff-ops 0 (list-length eff-ops) []
-   in let st1a = __record-set st1 "effect-op-addrs" addrs
-   in let htb = if list-length eff-ops > 0 then #80100000 else 0
-   in let st1b = __record-set st1a "handler-table-base" htb
-   in let st1c = __record-set st1b "boot-cap-mask" (pm-opening-cap-mask (chapter.defs))
-   in let st1d = __record-set st1c "boot-fs-scope" (pm-opening-fs-scope (chapter.defs))
-   in let st1e = __record-set st1d "boot-net-scope" (pm-opening-net-scope (chapter.defs))
-   in let pa-slug = rv-def-chapter-slug (chapter.defs) "init-phase-allocator" 0 (list-length (chapter.defs))
-   in let dr-slug = rv-def-chapter-slug (chapter.defs) "deck-record" 0 (list-length (chapter.defs))
+   in let st1a = __record-set (__record-set st1 "effect-op-addrs" addrs) "handled-ops" (lifted.ops)
+   in let st1ar = if list-length (lifted.ops) > 0 & list-length eff-ops >= rv-effect-op-slots then rv-add-shadow-warning st1a ("[UNSUPPORTED] effect-op table: " & show (list-length eff-ops) & " effect operations exceed the " & show (rv-effect-op-slots - 1) & " slots a program with handlers has") else st1a
+   in let htb = if list-length eff-ops > 0 then rv-effect-op-table-base else 0
+   in let st1b = __record-set st1ar "handler-table-base" htb
+   in let st1c = __record-set st1b "boot-cap-mask" (pm-opening-cap-mask defs)
+   in let st1d = __record-set st1c "boot-fs-scope" (pm-opening-fs-scope defs)
+   in let st1e = __record-set st1d "boot-net-scope" (pm-opening-net-scope defs)
+   in let pa-slug = rv-def-chapter-slug defs "init-phase-allocator" 0 (list-length defs)
+   in let dr-slug = rv-def-chapter-slug defs "deck-record" 0 (list-length defs)
    in let st1f = __record-set st1e "deck-record-intrinsic" (pa-slug /= "" & pa-slug == dr-slug)
-   in let st1g = __record-set st1f "has-block-driver" (rv-defs-have (chapter.defs) "vb-capacity-auto" 0 (list-length (chapter.defs)))
-   in let st1h = __record-set st1g "ir-defs" (chapter.defs)
+   in let st1g = __record-set st1f "has-block-driver" (rv-defs-have defs "vb-capacity-auto" 0 (list-length defs))
+   in let st1h = __record-set st1g "ir-defs" defs
    in let st2 = rv-emit-runtime st1h
    in let st2b = __record-set st2 "runtime-funcs" (list-length (st2.func-names))
-   in let st3 = rv-emit-all-defs st2b (chapter.defs) 0
+   in let st3 = rv-emit-all-defs st2b defs (shared-const-names defs) 0
    in let st3w = rv-check-builtin-collisions st3 (st3.func-names) 0
    in let st3c = rv-compact-nops st3w
    in let st3r = rv-flush-wcet-pending st3c 0
@@ -1628,7 +1671,13 @@ Section: Module Emission
   rv-assign-effect-op-addrs : List Text, Integer, Integer, List RvEffectOpAddr -> List RvEffectOpAddr
   rv-assign-effect-op-addrs (names) (i) (len) (acc) =
    if i >= len then acc
-   else rv-assign-effect-op-addrs names (i + 1) len (list-push acc (RvEffectOpAddr { eoa-name = list-at names i, eoa-addr = #80100000 + i * 8 }))
+   else rv-assign-effect-op-addrs names (i + 1) len (list-push acc (RvEffectOpAddr { eoa-name = list-at names i, eoa-addr = rv-effect-op-table-base + i * 8 }))
+
+  rv-drop-def : List IRDef, Text, Integer, List IRDef -> List IRDef
+  rv-drop-def (ds) (name) (i) (acc) =
+   if i >= list-length ds then acc
+   else if (list-at ds i).name == name then rv-drop-def ds name (i + 1) acc
+   else rv-drop-def ds name (i + 1) (list-push acc (list-at ds i))
 
   rv-defs-have : List IRDef, Text, Integer, Integer -> Boolean
   rv-defs-have (ds) (name) (i) (n) =
@@ -1651,8 +1700,8 @@ Section: Effect Handler Emission
    in if a.eoa-name == name then a.eoa-addr
    else rv-find-effect-op-addr addrs name (i + 1)
 
-  rv-emit-load-handler : RvState, Integer -> RvEmitResult
-  rv-emit-load-handler (st) (addr) =
+  rv-emit-load-slot : RvState, Integer -> RvEmitResult
+  rv-emit-load-slot (st) (addr) =
    let tr = rv-alloc-temp st
    in let st1 = rv-emit-li (tr.state) rv-t0 addr
    in let st2 = rv-emit st1 (rv-ld (tr.reg) rv-t0 0)
@@ -1665,20 +1714,21 @@ Section: Effect Handler Emission
 
   rv-emit-effect-op-call : RvState, Integer, List IRExpr -> RvEmitResult
   rv-emit-effect-op-call (st) (eoa) (args) =
-   let saved = rv-save-args st args 0 []
-   in let resume-ptr = rv-alloc-temp (saved.state)
-   in let st0a = rv-emit (resume-ptr.state) (rv-mv (resume-ptr.reg) rv-heap-reg)
-   in let st0b = rv-emit st0a (rv-addi rv-heap-reg rv-heap-reg 8)
-   in let st0c = rv-emit-load-func-addr st0b rv-t0 "__resume_id"
-   in let st0d = rv-emit st0c (rv-sd (resume-ptr.reg) rv-t0 0)
-   in let resume-loc = rv-alloc-local st0d
-   in let st0e = rv-store-local (resume-loc.state) (resume-loc.reg) (resume-ptr.reg)
-   in let all-locals = list-push (saved.locals) (resume-loc.reg)
-   in let st1 = rv-move-args-to-regs st0e all-locals 0
-   in let st2 = rv-emit-li st1 rv-t0 eoa
-   in let st3 = rv-emit st2 (rv-ld rv-t1 rv-t0 0)
-   in let st4 = rv-emit st3 (rv-jalr rv-ra rv-t1 0)
-   in RvEmitResult { state = st4, reg = rv-a0 }
+   let cr = rv-emit-load-slot st eoa
+   in let call-args = if list-length args == 0 then [IrIntLit 0 synthetic-span] else args
+   in rv-emit-closure-call-from-reg (cr.state) (cr.reg) call-args
+
+  rv-op-handled : RvState, Text -> Boolean
+  rv-op-handled (st) (name) = wh-op-arity (st.handled-ops) name 0 >= 0
+
+ The slot after the last operation's holds the closure `resume` is bound to.
+ The table ends where the memo area begins (#80100200, `rv-emit-runtime`).
+
+  rv-effect-op-table-base : Integer = #80100000
+  rv-effect-op-slots : Integer = 64
+
+  rv-resume-slot : RvState -> Integer
+  rv-resume-slot (st) = rv-effect-op-table-base + list-length (st.effect-op-addrs) * 8
 
   rv-emit-handle : RvState, Text, IRExpr, List IRHandleClause, CodexType -> RvEmitResult
   rv-emit-handle (st) (eff) (body) (clauses) (ty) =
@@ -1727,40 +1777,10 @@ Section: Effect Handler Emission
 
   rv-emit-handle-one-clause : RvState, IRHandleClause -> RvState
   rv-emit-handle-one-clause (st) (clause) =
-   let op-loc = rv-alloc-local st
-   in let clause-result = rv-unwrap-clause-lambda (clause.body) (clause.resume-name) (op-loc.state) (clause.op-name)
-   in let st11 = rv-store-local (clause-result.state) (op-loc.reg) (clause-result.reg)
-   in let eoa = rv-find-effect-op-addr (st.effect-op-addrs) (clause.op-name) 0
-   in if eoa >= 0 then
-     let lr = rv-load-local st11 (op-loc.reg)
-     in rv-emit-store-handler (lr.state) eoa (lr.reg)
-   else st11
-
-  rv-add-local : RvState, Text, Integer -> RvState
-  rv-add-local (st) (name) (reg) =
-   __record-set st "locals" (list-push (st.locals) (RvLocal { name = name, reg = __narrow reg }))
-
-  rv-strip-resume : IRExpr, Text -> IRExpr
-  rv-strip-resume (expr) (resume-name) =
-   when expr
-    is IrApply (f) (a) (ty) (s) ->
-     when f
-      is IrName (n) (fty) (sp) -> if n == resume-name then a else expr
-      is otherwise -> expr
-    is IrLet (n) (t) (v) (b) (sp) -> IrLet n t v (rv-strip-resume b resume-name) sp
-    is IrIf (c) (th) (el) (t) (sp) -> IrIf c (rv-strip-resume th resume-name) (rv-strip-resume el resume-name) t sp
-    is otherwise -> expr
-
-  RvFlatLambda = record {
-   flat-params : List IRParam,
-   flat-body : IRExpr
-  }
-
-  rv-flatten-lambda-body : IRExpr, Text, List IRParam -> RvFlatLambda
-  rv-flatten-lambda-body (expr) (resume-name) (acc) =
-   when expr
-    is IrLambda (params) (body) (lty) (s) -> rv-flatten-lambda-body body resume-name (acc & params)
-    is otherwise -> RvFlatLambda { flat-params = acc, flat-body = rv-strip-resume expr resume-name }
+   let eoa = rv-find-effect-op-addr (st.effect-op-addrs) (clause.op-name) 0
+   in if eoa < 0 then rv-add-shadow-warning st ("[UNSUPPORTED] handler clause for " & clause.op-name & ": no effect-op slot")
+   else let cr = rv-emit-partial-application st (rv-apply-head-name (clause.body)) (rv-apply-args (clause.body) [])
+   in rv-emit-store-handler (cr.state) eoa (cr.reg)
 
   rv-apply-head-name : IRExpr -> Text
   rv-apply-head-name (e) =
@@ -1769,85 +1789,15 @@ Section: Effect Handler Emission
     is IrName (n) (t) (s) -> n
     is otherwise -> ""
 
-  rv-find-ir-def : List IRDef, Text, Integer -> Integer
-  rv-find-ir-def (defs) (name) (i) =
-   if i >= list-length defs then 0 - 1
-   else if (list-at defs i).name == name then i
-   else rv-find-ir-def defs name (i + 1)
-
- A clause that captures a local OTHER than resume arrives as a lifted def
- carrying extra capture parameters, and a handler is installed in the
- effect-op table and called with the operation's arguments only, so there is
- nowhere to put them. arm64 refuses that shape by name; this fell through to
- the inline emission below, which is the older and quieter behaviour and
- produced a binary for a program it cannot serve. It refuses on the same
- terms now. Not lifted at all is the ordinary clause and is untouched.
+  rv-apply-args : IRExpr, List IRExpr -> List IRExpr
+  rv-apply-args (e) (acc) =
+   when e
+    is IrApply (f) (a) (t) (s) -> rv-apply-args f ([a] & acc)
+    is otherwise -> acc
 
   rv-add-shadow-warning : RvState, Text -> RvState
   rv-add-shadow-warning (st) (msg) =
    __record-set st "wcet-reports" (list-push (st.wcet-reports) msg)
-
-  rv-unwrap-clause-lambda : IRExpr, Text, RvState, Text -> RvEmitResult
-  rv-unwrap-clause-lambda (expr) (resume-name) (st) (op-name) =
-   let head = rv-apply-head-name expr
-   in let lifted = text-starts-with head "__lam_"
-   in let lidx = if lifted then rv-find-ir-def (st.ir-defs) head 0 else 0 - 1
-   in let lparams = if lidx >= 0 then (list-at (st.ir-defs) lidx).params else []
-   in let followable = lidx >= 0 & list-length lparams >= 1 & (list-at lparams 0).name == resume-name
-   in let st0 = if lifted & followable == False
-    then rv-add-shadow-warning st ("[UNSUPPORTED] handler clause for " & op-name & " was lifted as " & head & " and does not carry " & resume-name & " as its first capture; riscv calls a handler from a table with the operation arguments only and cannot carry a closure")
-    else st
-   in if followable
-    then rv-emit-clause-handler st0 resume-name op-name (IrLambda (rv-drop-first lparams 1 []) ((list-at (st.ir-defs) lidx).body) ErrorTy synthetic-span)
-    else rv-emit-clause-handler st0 resume-name op-name expr
-
-  rv-drop-first : List IRParam, Integer, List IRParam -> List IRParam
-  rv-drop-first (ps) (i) (acc) =
-   if i >= list-length ps then acc
-   else rv-drop-first ps (i + 1) (list-push acc (list-at ps i))
-
-  rv-emit-clause-handler : RvState, Text, Text, IRExpr -> RvEmitResult
-  rv-emit-clause-handler (st) (resume-name) (op-name) (expr) =
-   when expr
-    is IrLambda (params) (body) (lty) (s) ->
-     let flat = rv-flatten-lambda-body expr resume-name []
-     in let handler-name = "__handler_" & op-name & "_" & integer-to-text (st.insn-count)
-     in let jmp-over-idx = st.insn-count
-     in let st1 = rv-emit st [0, 0, 0, 0]
-     in let st2 = rv-record-func st1 handler-name
-     in let saved-locals = st2.locals
-     in let saved-nl = st2.next-local
-     in let saved-peak = st2.peak-local
-     in let saved-nt = st2.next-temp
-     in let saved-spill = st2.spill-count
-     in let st3 = __record-set (__record-set st2 "locals" []) "next-local" rv-s2
-     in let st4 = __record-set (__record-set st3 "next-temp" rv-t3) "spill-count" 0
-     in let prologue-idx = st4.insn-count
-     in let st4a = rv-emit-prologue st4 10
-     in let st5 = (rv-bind-params st4a (flat.flat-params) 0).sbr-state
-     in let er = rv-emit-expr st5 (flat.flat-body)
-     in let st7 = if er.reg == rv-a0 then er.state
-      else rv-emit (er.state) (rv-mv rv-a0 (er.reg))
-     in let frame-size = rv-compute-frame-size (st7.spill-count)
-     in let st7a = rv-patch-insn st7 prologue-idx (rv-addi rv-sp rv-sp (0 - frame-size))
-     in let st8 = rv-emit-epilogue st7a frame-size 10
-     in let after-body = st8.insn-count
-     in let delta = (after-body - jmp-over-idx) * 4
-     in let st9 = rv-patch-insn st8 jmp-over-idx (rv-jal rv-zero delta)
-     in let st10 = __record-set (__record-set (__record-set (__record-set (__record-set st9 "locals" saved-locals) "next-local" saved-nl) "peak-local" saved-peak) "next-temp" saved-nt) "spill-count" saved-spill
-     in let tr = rv-alloc-temp st10
-     in let st11 = rv-emit-load-func-addr (tr.state) (tr.reg) handler-name
-     in RvEmitResult { state = st11, reg = tr.reg }
-    is otherwise -> rv-emit-expr st (rv-strip-resume expr resume-name)
-
-  rv-bind-handler-params : RvState, List IRParam, Integer -> RvState
-  rv-bind-handler-params (st) (params) (i) =
-   if i >= list-length params then st
-   else let loc = rv-alloc-local st
-   in let p = list-at params i
-   in let st1 = rv-store-local (loc.state) (loc.reg) (rv-a0 + i)
-   in let st2 = rv-add-local st1 (p.name) (loc.reg)
-   in rv-bind-handler-params st2 params (i + 1)
 
   rv-patch-calls : RvState -> RvState
   rv-patch-calls (st) =
@@ -1972,14 +1922,41 @@ Section: Effect Handler Emission
    in let line = rv-wcet-report (w.wp-name) (w.wp-budget) (w.wp-end - w.wp-start)
    in rv-flush-wcet-pending (__record-set st "wcet-reports" (list-push (st.wcet-reports) line)) (i + 1)
 
-  rv-emit-all-defs : RvState, List IRDef, Integer -> RvState
-  rv-emit-all-defs (st) (defs) (i) =
+  rv-emit-all-defs : RvState, List IRDef, List Text, Integer -> RvState
+  rv-emit-all-defs (st) (defs) (shared) (i) =
    if i >= list-length defs then st
    else let def = list-at defs i
    in let start-insn = st.insn-count
-   in let st1 = rv-emit-function st def
+   in let st1 = if rv-name-member shared (def.name) 0 then rv-emit-shared-table st def else rv-emit-function st def
    in let st2 = if def.is-punctual then __record-set st1 "wcet-pending" (list-push (st1.wcet-pending) (RvWcetPending { wp-name = def.name, wp-budget = def.wcet-budget, wp-start = start-insn, wp-end = st1.insn-count })) else st1
-   in rv-emit-all-defs st2 defs (i + 1)
+   in rv-emit-all-defs st2 defs shared (i + 1)
+
+  rv-name-member : List Text, Text, Integer -> Boolean
+  rv-name-member (ns) (n) (i) =
+   if i >= list-length ns then False
+   else if list-at ns i == n then True
+   else rv-name-member ns n (i + 1)
+
+  rv-emit-shared-table : RvState, IRDef -> RvState
+  rv-emit-shared-table (st) (def) =
+   when def.body
+    is IrList (es) (ty) (sp) ->
+     if cs-int-lits es 0 then
+      let n = list-length es
+      in let off = list-length (st.data)
+      in let st1 = __record-set st "data" (rv-table-words es 0 (rv-push-all (rv-push-all (st.data) (write-i64-le n) 0) (write-i64-le n) 0))
+      in let st2 = rv-reset-func-state st1 (def.name)
+      in let st3 = rv-add-rodata-fixup st2 rv-a0 (off + 8)
+      in rv-emit (rv-emit (rv-emit st3 rv-nop) rv-nop) rv-ret
+     else rv-emit-function st def
+    is otherwise -> rv-emit-function st def
+
+  rv-table-words : List IRExpr, Integer, List Integer -> List Integer
+  rv-table-words (es) (i) (acc) =
+   if i >= list-length es then acc
+   else when list-at es i
+    is IrIntLit (v) (sp) -> rv-table-words es (i + 1) (rv-push-all acc (write-i64-le v) 0)
+    is otherwise -> rv-table-words es (i + 1) (rv-push-all acc (write-i64-le 0) 0)
 
 Section: Wire Output
 

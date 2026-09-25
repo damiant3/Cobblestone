@@ -1,0 +1,83 @@
+Chapter: Uri Guard
+  cites Foreword chapter Console
+  cites Encode chapter Uri
+
+Section: Helpers
+
+  rep : Text, Integer, Integer, Text -> Text
+  rep (s) (i) (n) (acc) = if i >= n then acc else rep s (i + 1) n (acc & s)
+
+  arm : Text, Text -> Text
+  arm (name) (s) =
+    let u = uri-parse s
+    in if u.valid then name & " ok " & u.scheme & "|" & u.host & "|" & show u.port & "|" & u.path & "|" & u.query & "|" & u.fragment
+    else name & " refused"
+
+  params : List QueryParam, Integer, Integer, Text -> Text
+  params (ps) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at ps i
+    in params ps (i + 1) n (acc & (if i == 0 then "" else " ") & p.param-key & "=" & p.param-value)
+
+  qcost : Integer -> Integer
+  qcost (n) =
+    let q = "k=" & rep "v" 0 n "" & "&" & rep "w" 0 n ""
+    in let b = __heap-save
+    in let r = list-length (uri-parse-query q)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  qmany : Integer -> Integer
+  qmany (n) =
+    let q = rep "k=v&" 0 n ""
+    in let b = __heap-save
+    in let r = list-length (uri-parse-query q)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  ecost : Integer -> Integer
+  ecost (n) =
+    let s = rep "a b" 0 n ""
+    in let b = __heap-save
+    in let r = text-length (uri-encode s)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  scaling : Text, Integer, Integer -> Text
+  scaling (name) (small) (large) =
+    if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let q = uri-parse-query "a=1&b=2=3&&=x&c"
+    in act
+      print-line-uni (arm "full" "http://example.com:8080/path?q=1")
+      print-line-uni (arm "default-port" "https://example.com/index")
+      print-line-uni (arm "relative" "/api/data?key=val")
+      print-line-uni (arm "root" "http://host/")
+      print-line-uni (arm "fragment" "http://h/p?q=1#frag")
+      print-line-uni (arm "query-no-path" "http://h?q=1")
+      print-line-uni (arm "empty-port" "http://h:/p")
+      print-line-uni (arm "port-max" "http://h:65535/")
+      print-line-uni (arm "file" "file:///etc/x")
+      print-line-uni (arm "plus-scheme" "svn+ssh://h/r")
+      print-line-uni (arm "confuse" "http://good.com:x@evil.com/p")
+      print-line-uni (arm "userinfo" "http://u@h/")
+      print-line-uni (arm "ip-literal" "http://[1]/")
+      print-line-uni (arm "port-junk" "http://h:80abc/")
+      print-line-uni (arm "port-65536" "http://h:65536/")
+      print-line-uni (arm "port-huge" "http://h:99999999999999999999/")
+      print-line-uni (arm "digit-scheme" "1http://h/")
+      print-line-uni (arm "under-scheme" "ht_tp://h/")
+      print-line-uni (arm "empty-host" "http:///p")
+      print-line-uni (arm "mailto" "mailto:x")
+      print-line-uni (arm "colon-segment" "a:b/c")
+      print-line-uni (arm "space" "/a b")
+      print-line-uni ("query " & show (list-length q) & " " & params q 0 (list-length q) "")
+      print-line-uni ("round-trip " & format-uri (uri-parse "http://h:81/p?q#f"))
+      print-line-uni (scaling "query" (qcost 256) (qcost 1024))
+      print-line-uni (scaling "query-many" (qmany 256) (qmany 1024))
+      print-line-uni (scaling "encode" (ecost 256) (ecost 1024))
+    end

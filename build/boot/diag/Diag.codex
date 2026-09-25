@@ -36,6 +36,10 @@ Chapter: Diag
   cites Diag chapter DiagXhci
   cites Diag chapter DiagMsc
   cites Diag chapter DiagKbd
+  cites Diag chapter DiagEdit
+  cites Diag chapter DiagVmx
+  cites Diag chapter DiagAvx
+  cites Diag chapter DiagCad
 
  The stub pre-loads DIAG.CFG text into the serial input ring: bytes at
  0x500000, the write position in the quadword at 28704, the read position at
@@ -69,12 +73,15 @@ Section: Hold
     else let on = int-mod (n / 262144) 2 == 0
     in gop-fill-rect (c.dc-base) (c.dc-stride) (c.dc-h) ((c.dc-w) - 24) (dg-row-y c (dg-band-row 0) + 4) 16 16 (if on then diag-col-good else diag-col-bg)
 
-  dg-hold : DiagCtx, Integer -> Integer
-  dg-hold (c) (n) = dg-hold c (n + 1 + dg-beat c n)
+  dg-hold : DiagCtx, Integer -> [Device.Port] Integer
+  dg-hold (c) (n) = act
+    z <- dcad-poll c
+    dg-hold c (n + 1 + dg-beat c n)
+  end
 
 Section: The Table
 
-  dg-stage-count : Integer = 20
+  dg-stage-count : Integer = 23
 
   dg-stage-name : Integer -> Text
   dg-stage-name (i) =
@@ -98,6 +105,9 @@ Section: The Table
     else if i == 18 then "rtcw"
     else if i == 19 then "pchk1"
     else if i == 20 then "asde"
+    else if i == 21 then "edit"
+    else if i == 22 then "avx"
+    else if i == 23 then "vmx"
     else "?"
 
  Stages are numbered in ladder order (the design's risk order): the passive
@@ -118,7 +128,7 @@ Section: The Table
  parses it.
 
   dg-stage-risk : Integer -> Integer
-  dg-stage-risk (i) = if i == 7 then diag-risk-passive else if i == 9 then diag-risk-passive else if i == 10 then diag-risk-passive else if i == 11 | i == 13 | i == 19 then diag-risk-touches else if i >= 8 then diag-risk-writes else diag-risk-passive
+  dg-stage-risk (i) = if i == 7 then diag-risk-passive else if i == 9 then diag-risk-passive else if i == 10 then diag-risk-passive else if i == 11 | i == 13 | i == 19 | i == 21 | i == 22 then diag-risk-touches else if i == 23 then diag-risk-may-wedge else if i >= 8 then diag-risk-writes else diag-risk-passive
 
   dg-stage-run : DiagCtx, Integer -> [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] DiagResult
   dg-stage-run (c) (i) =
@@ -142,6 +152,9 @@ Section: The Table
     else if i == 18 then drt-run c
     else if i == 19 then dpk-run c
     else if i == 20 then dasd-run c
+    else if i == 21 then dew-run c
+    else if i == 22 then dav-run c
+    else if i == 23 then dvx-run c
     else diag-result "unknown" diag-col-bad ["no such stage"] ["no such stage"]
 
   dg-stage-picture : Integer -> Boolean
@@ -151,7 +164,9 @@ Section: The Table
   dg-stage-rows (i) = if dg-stage-picture i then 3 else 2
 
   dg-stage-enabled : DiagCtx, Integer -> Boolean
-  dg-stage-enabled (c) (i) = diag-cfg-value c (dg-stage-name i) /= "off"
+  dg-stage-enabled (c) (i) =
+    let v = diag-cfg-value c (dg-stage-name i)
+    in if dg-stage-risk i == diag-risk-may-wedge then v /= "" & v /= "off" else v /= "off"
 
   dg-stage-defers : Integer -> Boolean
   dg-stage-defers (i) = i == 12
@@ -618,7 +633,40 @@ Section: Verdicts
     else if i == 18 then dg-verdict-rtcw s
     else if i == 19 then dg-verdict-pchk1 s
     else if i == 20 then dg-verdict-asde s
+    else if i == 21 then dg-verdict-edit s
+    else if i == 22 then dg-verdict-avx s
+    else if i == 23 then dg-verdict-vmx s
     else ""
+
+  dg-verdict-edit : Text -> Text
+  dg-verdict-edit (s) =
+    if s == "measured" then ""
+    else if s == "no-clock" then "the HPET did not move across the timed loops, so the editor timings are not measurements. Send DIAG.TXT"
+    else "no verdict row for edit " & s
+
+  dg-verdict-avx : Text -> Text
+  dg-verdict-avx (s) =
+    if s == "admitted" then ""
+    else if s == "not-offered" then "this processor reports no AVX, so a program using 256-bit vectors refuses here by design. Nothing to do at your end"
+    else if s == "not-admitted" then "the processor offers AVX and the boot did not admit it; send DIAG.TXT, the fix is ours"
+    else if s == "cr4-clear" then "the boot recorded AVX as admitted and CR4.OSXSAVE reads clear; send DIAG.TXT, the fix is ours"
+    else if s == "area-wrong" then "AVX is admitted and the XSAVE area is not the 832 bytes XCR0 = 7 needs; send DIAG.TXT, the fix is ours"
+    else if s == "no-leaf-d" then "the processor offers AVX and no XSAVE leaf 0Dh to size it; send DIAG.TXT"
+    else if s == "admitted-unoffered" then "the boot admitted AVX on a processor that does not report it; send DIAG.TXT, the fix is ours"
+    else if s == "lanes-wrong" then "AVX is admitted and a 256-bit lane answered wrong; send DIAG.TXT, the fix is ours"
+    else "no verdict row for avx " & s
+
+  dg-verdict-vmx : Text -> Text
+  dg-verdict-vmx (s) =
+    if s == "answered" then ""
+    else if s == "no-bank" then "the stick could not be mounted, so the guest could not be read. Try another stick"
+    else if s == "no-guest" then "this image carries no GUEST.CDX; the image is not a sitting image. Nothing to do at your end"
+    else if s == "vmx-off" then "virtualisation is off or unconfigured in the firmware setup; enable VT-x in the BIOS if you want the desk's compile command"
+    else if s == "refused" then "the hypervisor refused the guest before launching it; send DIAG.TXT, the reason is in it"
+    else if s == "crashed" then "the guest was launched and crashed; send DIAG.TXT, the fix is ours"
+    else if s == "no-answer" then "the guest was launched and never answered on its serial port; send DIAG.TXT, the fix is ours"
+    else if s == "wrong" then "the guest answered with the wrong bytes; send DIAG.TXT, the fix is ours"
+    else "no verdict row for vmx " & s
 
   dg-verdict-gopmode : Text -> Text
   dg-verdict-gopmode (s) =
@@ -965,7 +1013,9 @@ Section: The Ladder
     in let slot = dg-slot-for c i
     in let refused = dg-slot-refuses slot i
     in act
+      z0 <- dcad-poll c
       res <- dg-stage-run slot i
+      z1 <- dcad-poll c
       let q = dg-paint-result c i res
       in act
         s <- dg-say-block (dg-stage-lines i res) 0
@@ -1040,127 +1090,3 @@ Section: The Ladder
     if i > dg-stage-count then i
     else if dg-stage-risk i /= diag-risk-passive then i
     else dg-first-active (i + 1)
-
-Section: Entry
-
-  dg-world : Integer -> Integer
-  dg-world (dummy) = if peek-qword dg-systab-cell 0 == 0 then diag-world-ebs else diag-world-uefi
-
- Scale 2 when the fixed page fits at 32-pixel rows with a row of codes below
- the band, else 1: a small panel gets small text rather than a page with no
- QR block.
-
-  dg-scale : Integer, Integer -> Integer
-  dg-scale (w) (h) = if w >= 1024 & h >= 8 + (dg-band-row 0 + 2) * 32 + 8 + 32 + 204 + 8 then 2 else 1
-
-  dg-cfg-src : Text, List Text -> Text
-  dg-cfg-src (ring) (cfg) = if text-length ring > 0 then "stdin" else "default"
-
-  dg-ctx : Integer -> DiagCtx
-  dg-ctx (dummy) =
-    let ring = dg-ring-text 0
-    in let cfg = dg-cfg-lines ring
-    in let w = boot-fb-w 0
-    in DiagCtx { dc-base = boot-fb-base 0, dc-w = w, dc-h = boot-fb-h 0, dc-stride = boot-fb-stride 0, dc-scale = dg-scale w (boot-fb-h 0), dc-font = cbf-init, dc-world = dg-world 0, dc-id = diag-cfg-find cfg 0 "id", dc-kernel = diag-cfg-find cfg 0 "kernel", dc-cfg = cfg, dc-cfg-src = dg-cfg-src ring cfg, dc-pci = pci-scan-all, dc-box = dsm-box 0, dc-ram = dg-ram-word 0, dc-bank = False, dc-vol = gfat-null-vol, dc-lines = [], dc-slot-x = 0, dc-slot-y = 0, dc-slot-w = 0, dc-slot-h = 0 }
-
-  dg-esp-cfg : DiagBank -> [Device.Port] List Text
-  dg-esp-cfg (b) = act
-    if b.db-ok == False then []
-    else act
-      sz <- gfat-file-size (b.db-vol) "DIAG.CFG"
-      if sz <= 0 then []
-      else if sz > 4096 then []
-      else act
-        f <- gfat-read-file (b.db-vol) "DIAG.CFG"
-        if f.gf-ok == False then [] else dg-cfg-lines (gfat-text (f.gf-buf) 0 (f.gf-len) "")
-      end
-    end
-  end
-
-  dg-rcp-lines : List Text, Integer, List Text -> List Text
-  dg-rcp-lines (xs) (i) (acc) =
-    if i >= list-length xs then acc
-    else if list-length acc >= 12 then acc
-    else let l = list-at xs i
-    in dg-rcp-lines xs (i + 1) (if text-length l == 0 then acc else acc & ["rcp " & l])
-
-  dg-esp-rcp : DiagBank -> [Device.Port] List Text
-  dg-esp-rcp (b) = act
-    if b.db-ok == False then []
-    else act
-      sz <- gfat-file-size (b.db-vol) "DIAG.RCP"
-      if sz <= 0 then ["rcp none"]
-      else if sz > 2048 then ["rcp oversize"]
-      else act
-        f <- gfat-read-file (b.db-vol) "DIAG.RCP"
-        if f.gf-ok == False then ["rcp unreadable"] else dg-rcp-lines (dg-cfg-lines (gfat-text (f.gf-buf) 0 (f.gf-len) "")) 0 []
-      end
-    end
-  end
-
-  dg-ctx-with-cfg : DiagCtx, List Text, Boolean, Fat16Volume -> DiagCtx
-  dg-ctx-with-cfg (c) (more) (bank) (vol) =
-    DiagCtx { dc-base = c.dc-base, dc-w = c.dc-w, dc-h = c.dc-h, dc-stride = c.dc-stride, dc-scale = c.dc-scale, dc-font = c.dc-font, dc-world = c.dc-world, dc-id = c.dc-id, dc-kernel = c.dc-kernel, dc-cfg = (c.dc-cfg) & more, dc-cfg-src = (c.dc-cfg-src) & (if list-length more == 0 then "" else "+file"), dc-pci = c.dc-pci, dc-box = c.dc-box, dc-ram = c.dc-ram, dc-bank = bank, dc-vol = vol, dc-lines = c.dc-lines, dc-slot-x = c.dc-slot-x, dc-slot-y = c.dc-slot-y, dc-slot-w = c.dc-slot-w, dc-slot-h = c.dc-slot-h }
-
-  dg-band : DiagCtx, DiagRun, DiagBank, Integer, Text -> Integer
-  dg-band (c) (r) (b) (bytes) (todo) =
-    let row = dg-band-row 0
-    in let cl = dg-clear-rows c row 2
-    in let s = "SUMMARY run=" & show (r.run-count) & " skip=" & show (r.run-skip) & " " & dg-bank-line b & (if bytes >= 0 then " bytes=" & show bytes else "")
-    in let a = dg-text c 8 (dg-row-y c row) s (if dg-bank-whole b then diag-col-good else diag-col-warn)
-    in dg-text c 8 (dg-row-y c (row + 1)) todo diag-col-note
-
-  opening : [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] Integer
-  opening = act
-    ri <- runtime-init 0
-    let dz = drec-disarm 0
-    in let c = dg-ctx 0
-    in let hdr = dg-header-lines c
-    in let pg = dg-page c
-    in act
-      s00 <- dg-say-block hdr 0
-      r1 <- dg-run-passive c 1 (DiagRun { run-lines = hdr, run-states = [], run-colours = [], run-glass = [], run-count = 0, run-skip = 0 })
-      att <- usb-attach
-      b0 <- dg-select (c.dc-id)
-      more <- dg-esp-cfg b0
-      rcp <- dg-esp-rcp b0
-      opened <- drec-open (dg-ctx-with-cfg c more (b0.db-ok) (b0.db-vol)) (r1.run-lines)
-      b <- dg-open b0 (r1.run-lines) (c.dc-cfg)
-      let c2 = dg-ctx-with-cfg c more (b.db-ok) (b.db-vol)
-      in let fz = xdiag-put diag-cell-noflush (if diag-cfg-value c2 "flush" == "off" then 1 else 0)
-      in let lines1 = ((r1.run-lines) & [dg-bank-line b & " cfg-file=" & show (list-length more), opened]) & rcp
-      in act
-        s0 <- dg-say (dg-bank-line b & " cfg-file=" & show (list-length more))
-        s0o <- dg-say opened
-        s0r <- dg-say-block rcp 0
-        w0 <- dg-bank-write b lines1
-        sh0 <- drec-ship lines1
-        ra <- dg-run-rest c2 (dg-first-active 1) (DiagRun { run-lines = lines1, run-states = r1.run-states, run-colours = r1.run-colours, run-glass = r1.run-glass, run-count = r1.run-count, run-skip = r1.run-skip }) b
-        let preline = "before-deferred run=" & show (ra.run-count) & " skip=" & show (ra.run-skip) & " " & dg-bank-line b
-        in let rp = DiagRun { run-lines = list-push (ra.run-lines) preline, run-states = ra.run-states, run-colours = ra.run-colours, run-glass = ra.run-glass, run-count = ra.run-count, run-skip = ra.run-skip }
-        in act
-          sp <- dg-say preline
-          wp <- dg-bank-step c2 b (rp.run-lines) dg-stage-count
-          r2 <- dg-run-deferred c2 (dg-first-active 1) rp b
-          let vs0 = dg-verdicts (r2.run-states) (r2.run-colours) b
-          in let todo = dg-todo vs0
-          in let vs = if list-length vs0 == 0 then [todo] else vs0
-          in let sum = "summary run=" & show (r2.run-count) & " skip=" & show (r2.run-skip) & " " & dg-bank-line b & " " & drec-line 0
-          in let final = (list-push (r2.run-lines) sum) & vs
-          in act
-            bytes <- dg-bank-write b final
-            shipped <- drec-ship final
-            let bd = dg-band c r2 b bytes todo
-            in let qy = dg-row-y c (dg-band-row 0 + 2) + dg-row-h c + 8
-            in let qr = dg-qr c qy (dg-summary-body c (r2.run-states) (r2.run-glass) b bytes)
-            in act
-              s1 <- dg-say sum
-              s2 <- dg-say-block vs 0
-              s3 <- dg-say "END"
-              dg-hold c 0
-            end
-          end
-        end
-      end
-    end
-  end

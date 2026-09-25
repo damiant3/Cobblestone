@@ -1,0 +1,166 @@
+Chapter: DiagMain
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter TextSearch
+  cites Kernel chapter BitmapFont
+  cites Kernel chapter Pci
+  cites Works chapter GopDraw
+  cites Works chapter GopQr
+  cites Works chapter GopHandoff
+  cites Works chapter GopFat16
+  cites Works chapter GopDisk
+  cites Works chapter GopUsb
+  cites Works chapter GopUsbMsc
+  cites Works chapter GopNvme
+  cites Works chapter GopXhci
+  cites Diag chapter DiagStage
+  cites Diag chapter DiagRecord
+  cites Diag chapter DiagPci
+  cites Diag chapter DiagScene
+  cites Diag chapter DiagSmbios
+  cites Diag chapter DiagEdid
+  cites Diag chapter DiagCpu
+  cites Diag chapter DiagBlock
+  cites Diag chapter DiagSink
+  cites Diag chapter DiagPch
+  cites Diag chapter DiagNicSit
+  cites Diag chapter DiagNicInit
+  cites Diag chapter DiagNicRing
+  cites Diag chapter DiagB3
+  cites Diag chapter DiagLease
+  cites Diag chapter DiagRtcW
+  cites Diag chapter DiagPchK1
+  cites Diag chapter DiagAsde
+  cites Diag chapter DiagGop
+  cites Diag chapter DiagXhci
+  cites Diag chapter DiagMsc
+  cites Diag chapter DiagKbd
+  cites Diag chapter DiagEdit
+  cites Diag chapter DiagVmx
+  cites Diag chapter Diag
+  cites Works chapter GopUsbKbd
+
+Section: Entry
+
+  dg-world : Integer -> Integer
+  dg-world (dummy) = if peek-qword dg-systab-cell 0 == 0 then diag-world-ebs else diag-world-uefi
+
+ Scale 2 when the fixed page fits at 32-pixel rows with a row of codes below
+ the band, else 1: a small panel gets small text rather than a page with no
+ QR block.
+
+  dg-scale : Integer, Integer -> Integer
+  dg-scale (w) (h) = if w >= 1024 & h >= 8 + (dg-band-row 0 + 2) * 32 + 8 + 32 + 204 + 8 then 2 else 1
+
+  dg-cfg-src : Text, List Text -> Text
+  dg-cfg-src (ring) (cfg) = if text-length ring > 0 then "stdin" else "default"
+
+  dg-ctx : Integer -> DiagCtx
+  dg-ctx (dummy) =
+    let ring = dg-ring-text 0
+    in let cfg = dg-cfg-lines ring
+    in let w = boot-fb-w 0
+    in DiagCtx { dc-base = boot-fb-base 0, dc-w = w, dc-h = boot-fb-h 0, dc-stride = boot-fb-stride 0, dc-scale = dg-scale w (boot-fb-h 0), dc-font = cbf-init, dc-world = dg-world 0, dc-id = diag-cfg-find cfg 0 "id", dc-kernel = diag-cfg-find cfg 0 "kernel", dc-cfg = cfg, dc-cfg-src = dg-cfg-src ring cfg, dc-pci = pci-scan-all, dc-box = dsm-box 0, dc-ram = dg-ram-word 0, dc-bank = False, dc-vol = gfat-null-vol, dc-lines = [], dc-slot-x = 0, dc-slot-y = 0, dc-slot-w = 0, dc-slot-h = 0, dc-kbd = kbd-no-kbd }
+
+  dg-esp-cfg : DiagBank -> [Device.Port] List Text
+  dg-esp-cfg (b) = act
+    if b.db-ok == False then []
+    else act
+      sz <- gfat-file-size (b.db-vol) "DIAG.CFG"
+      if sz <= 0 then []
+      else if sz > 4096 then []
+      else act
+        f <- gfat-read-file (b.db-vol) "DIAG.CFG"
+        if f.gf-ok == False then [] else dg-cfg-lines (gfat-text (f.gf-buf) 0 (f.gf-len) "")
+      end
+    end
+  end
+
+  dg-rcp-lines : List Text, Integer, List Text -> List Text
+  dg-rcp-lines (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else if list-length acc >= 12 then acc
+    else let l = list-at xs i
+    in dg-rcp-lines xs (i + 1) (if text-length l == 0 then acc else acc & ["rcp " & l])
+
+  dg-esp-rcp : DiagBank -> [Device.Port] List Text
+  dg-esp-rcp (b) = act
+    if b.db-ok == False then []
+    else act
+      sz <- gfat-file-size (b.db-vol) "DIAG.RCP"
+      if sz <= 0 then ["rcp none"]
+      else if sz > 2048 then ["rcp oversize"]
+      else act
+        f <- gfat-read-file (b.db-vol) "DIAG.RCP"
+        if f.gf-ok == False then ["rcp unreadable"] else dg-rcp-lines (dg-cfg-lines (gfat-text (f.gf-buf) 0 (f.gf-len) "")) 0 []
+      end
+    end
+  end
+
+  dg-ctx-with-cfg : DiagCtx, List Text, Boolean, Fat16Volume, UsbKbd -> DiagCtx
+  dg-ctx-with-cfg (c) (more) (bank) (vol) (kbd) =
+    DiagCtx { dc-base = c.dc-base, dc-w = c.dc-w, dc-h = c.dc-h, dc-stride = c.dc-stride, dc-scale = c.dc-scale, dc-font = c.dc-font, dc-world = c.dc-world, dc-id = c.dc-id, dc-kernel = c.dc-kernel, dc-cfg = (c.dc-cfg) & more, dc-cfg-src = (c.dc-cfg-src) & (if list-length more == 0 then "" else "+file"), dc-pci = c.dc-pci, dc-box = c.dc-box, dc-ram = c.dc-ram, dc-bank = bank, dc-vol = vol, dc-lines = c.dc-lines, dc-slot-x = c.dc-slot-x, dc-slot-y = c.dc-slot-y, dc-slot-w = c.dc-slot-w, dc-slot-h = c.dc-slot-h, dc-kbd = kbd }
+
+  dg-band : DiagCtx, DiagRun, DiagBank, Integer, Text -> Integer
+  dg-band (c) (r) (b) (bytes) (todo) =
+    let row = dg-band-row 0
+    in let cl = dg-clear-rows c row 2
+    in let s = "SUMMARY run=" & show (r.run-count) & " skip=" & show (r.run-skip) & " " & dg-bank-line b & (if bytes >= 0 then " bytes=" & show bytes else "")
+    in let a = dg-text c 8 (dg-row-y c row) s (if dg-bank-whole b then diag-col-good else diag-col-warn)
+    in dg-text c 8 (dg-row-y c (row + 1)) todo diag-col-note
+
+  opening : [Device.Port, Device.Mmio, Console, Network.Read, Network.Write] Integer
+  opening = act
+    ri <- runtime-init 0
+    let dz = drec-disarm 0
+    in let c = dg-ctx 0
+    in let hdr = dg-header-lines c
+    in let pg = dg-page c
+    in act
+      s00 <- dg-say-block hdr 0
+      r1 <- dg-run-passive c 1 (DiagRun { run-lines = hdr, run-states = [], run-colours = [], run-glass = [], run-count = 0, run-skip = 0 })
+      att <- usb-attach
+      b0 <- dg-select (c.dc-id)
+      more <- dg-esp-cfg b0
+      rcp <- dg-esp-rcp b0
+      opened <- drec-open (dg-ctx-with-cfg c more (b0.db-ok) (b0.db-vol) (att.ua-kbd)) (r1.run-lines)
+      b <- dg-open b0 (r1.run-lines) (c.dc-cfg)
+      let c2 = dg-ctx-with-cfg c more (b.db-ok) (b.db-vol) (att.ua-kbd)
+      in let fz = xdiag-put diag-cell-noflush (if diag-cfg-value c2 "flush" == "off" then 1 else 0)
+      in let lines1 = ((r1.run-lines) & [dg-bank-line b & " cfg-file=" & show (list-length more), opened]) & rcp
+      in act
+        s0 <- dg-say (dg-bank-line b & " cfg-file=" & show (list-length more))
+        s0o <- dg-say opened
+        s0r <- dg-say-block rcp 0
+        w0 <- dg-bank-write b lines1
+        sh0 <- drec-ship lines1
+        ra <- dg-run-rest c2 (dg-first-active 1) (DiagRun { run-lines = lines1, run-states = r1.run-states, run-colours = r1.run-colours, run-glass = r1.run-glass, run-count = r1.run-count, run-skip = r1.run-skip }) b
+        let preline = "before-deferred run=" & show (ra.run-count) & " skip=" & show (ra.run-skip) & " " & dg-bank-line b
+        in let rp = DiagRun { run-lines = list-push (ra.run-lines) preline, run-states = ra.run-states, run-colours = ra.run-colours, run-glass = ra.run-glass, run-count = ra.run-count, run-skip = ra.run-skip }
+        in act
+          sp <- dg-say preline
+          wp <- dg-bank-step c2 b (rp.run-lines) dg-stage-count
+          r2 <- dg-run-deferred c2 (dg-first-active 1) rp b
+          let vs0 = dg-verdicts (r2.run-states) (r2.run-colours) b
+          in let todo = dg-todo vs0
+          in let vs = if list-length vs0 == 0 then [todo] else vs0
+          in let sum = "summary run=" & show (r2.run-count) & " skip=" & show (r2.run-skip) & " " & dg-bank-line b & " " & drec-line 0
+          in let final = (list-push (r2.run-lines) sum) & vs
+          in act
+            bytes <- dg-bank-write b final
+            shipped <- drec-ship final
+            let bd = dg-band c r2 b bytes todo
+            in let qy = dg-row-y c (dg-band-row 0 + 2) + dg-row-h c + 8
+            in let qr = dg-qr c qy (dg-summary-body c (r2.run-states) (r2.run-glass) b bytes)
+            in act
+              s1 <- dg-say sum
+              s2 <- dg-say-block vs 0
+              s3 <- dg-say "END"
+              dg-hold c2 0
+            end
+          end
+        end
+      end
+    end
+  end

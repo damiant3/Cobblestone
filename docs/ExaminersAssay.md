@@ -45,6 +45,8 @@ Each test `foo.codex` may have sidecars that control its behavior:
 | `foo.stdin` | Pumped to VM serial after boot (runtime input) |
 | `foo.keys` | Scancode timeline (`t:scancode` per line, t = ms since boot, `#` comments) handed to codex-vm as `-keys-file`. **Not interchangeable with `.stdin`** -- see below |
 | `foo.disk` | Attached as IDE disk image via codex-vm `-disk` flag (primary master) |
+| `foo.disk-mint` | The recipe `build/mint-test-disk.ps1` builds `foo.disk` from, into `build-output/test-disks`, when the depot carries no `foo.disk`: `zero <bytes>`, `sparse <bytes>` with `at <offset> <hex>` lines (and `fill <offset> <length>` standing in for file content no test reads), `gzip <bytes>` with `b64` lines for an image whose exact bytes are the oracle, or `script <path> <args>` (`{out}`, `{dir}`, `pick <file>`); and a required `sha256` the image must match. The header of `build/mint-test-disk.ps1` is the grammar. The public mirror carries no disk images (`docs/Agents/PublicPush.md`), so a disk test ships its recipe |
+| `foo.disk2-mint` | The same recipe for `foo.disk2` |
 | `foo.disk2` | A SECOND image, attached as the primary slave and reached by `block-select 1`. Every test in the tree attached at most one disk, and that is precisely why `block-select` could do nothing for as long as it did: with one image behind all four drive positions, a working drive-select and a missing one produce identical output, and `block-sector-count` returning a boot-time cache is indistinguishable from one that re-probes. `codex/test/block-select-drives` is the worked example and it demands two sizes AND two contents, so neither a stale channel nor a stale count can pass |
 | `foo.disk-src` | First line names ANOTHER test; that test's freshly compiled CDX is attached as this test's disk. `.disk` names a file and is therefore frozen, which is no use to a test pinning what the CURRENT compiler emits. `manifest-pin` is the case it was built for, and it had been skipped for want of it |
 | `foo.smp` | Core count. The test is booted with `-smp N`. This is how a test covers multi-core; without it every test boots single-core, which is why nothing exercised SMP for so long (`codex/test/smp-cores.codex` is the first) |
@@ -470,8 +472,8 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **219** expected-failure tests (measured
-2026-09-24).
+`codex/test/errors/` holds **237** expected-failure tests (measured
+2026-09-25).
 
 ## What the standing gate does not cover
 
@@ -1122,6 +1124,18 @@ the x86 codex-vm and no cross board can mount it), 14 `.fatal`, 10
 are one structural fact: **the cross lane boots a bare runtime with no
 kernel and no disk**, so the process table, the capability words and FAT16
 have no cross coverage by construction.
+
+**`<name>.expected-arm64` / `<name>.expected-riscv64` replaces `<name>.expected`
+on that architecture** in both cross harnesses (`test-cross.ps1`,
+`test-cross-batch.ps1`); the x86-64 battery never reads it. It is for an answer
+that is RIGHT and differs by bed or layout: `qemu-virt-board`'s PL011 writes,
+`wademo-bulk`'s heap count (plugs 2.73). Pin only a value that reproduces
+run to run on the same seed and plug. `.no-cross` skips a test whose subject
+the cross beds lack (`e1000-tx-deadline`, the x86 HPET). `<name>.arch-only`
+lists, one per line, the architectures a test runs on (`x86-64`, `arm64`,
+`riscv64`, and `wasm` for `hosted-wasm-test.ps1`), and every runner
+(`test.ps1`, `bvt.ps1`, both cross harnesses, the wasm harness) skips it
+elsewhere: `arm64-timer` holds `arm64`.
 
 **On "parity."** The measured result is `docs/PM/Milestones.md`, 2026-06-15:
 ARM64 and RISC-V meet or beat **GCC -O0 on four micro-benchmarks**. That is
@@ -3531,17 +3545,28 @@ unquoted field (`a"b`) is kept. Each is malformed under RFC 4180 section 2.
 
 `csv-well-formed` is one pass over four states (field start, unquoted, quoted,
 after a closing quote) and `csv-parse-checked` answers `None` unless it holds.
-`csv-parse` is unchanged, and the fixture prints what it answers beside the
-checked result (`raw=`), so the wrong answers stay visible.
+`csv-parse` still answers every input, and the fixture prints what it answers
+beside the checked result (`raw=`), so the wrong answers stay visible.
 
 Nine arms predicted before the run: six well-formed (with `quote-then-comma` as
 the discriminator for `after-quote`) and three refusals. Each of the three rules
 ablated alone accepts exactly its own arm.
 
+The parser built each field with `acc & char-to-text`, and the three emitters
+appended the same way, so all five paths were quadratic on seed 0291C387
+(`parse-field superlinear 40096 553120` at 256 and 1,024; `emit-table`
+704,512 against 10,682,368). A field is now one `substring`, a quoted field
+joins its runs between doubled quotes once, and the emitters push pieces and
+join once. Eleven more lines predicted before the run, including `two-byte`,
+which compares a parsed `ß` with the literal rather than printing it
+(COMPILER-93). Each accumulator put back to `acc & [...]` alone moves its own
+scaling arm, and the escape ablation also moves `emit-table`, whose rows carry
+a quote.
+
 ## The Base64 Guard (`codex/test/apps/base64-guard`)
 
-Track D row 13, run by `base64-test` and reached in production through `Jwt`
-and `AccpWasm`. `base64-decode` never faults and answers every input: a
+Track D row 13, run by `base64-test` and reached in production through
+`AccpWasm`. `base64-decode` never faults and answers every input: a
 character outside the alphabet reads as zero (`aG!s` gives `104 96 44`),
 anything after the first padding is ignored (`aGk=aGk=` gives `hi`), and a
 length that is not a multiple of four decodes its whole quartets and drops the
@@ -3552,9 +3577,45 @@ pushes now.
 only, `=` only as the last one or two characters) and `base64-decode-checked`
 answers `None` unless it holds. The fixture prints the raw decode beside the
 checked one. Eight arms predicted before the run; each of the three rules
-ablated alone accepts exactly its own arms. `Jwt` still decodes through the
-lenient `base64-decode-text`; it signs the raw segment text, so a lenient decode
-cannot forge a token, but a malformed segment is not refused.
+ablated alone accepts exactly its own arms.
+
+## The JWT Guard (`codex/test/apps/jwt-guard`)
+
+Track D row 13, `codex/foreword/encode/Jwt.codex` `jwt-decode`, reached in
+production through `ExternalAuthBridge`, which keys an identity on `sub`.
+Measured on seed 0291C387 BEFORE the change, every malformed token decoded: a
+padded segment, a segment of length 1 modulo 4, the standard alphabet's `+`
+and `/`, a `*` in the signature, and a payload byte 255 (`sub` became one
+unrelated character). UTF-8 was decoded per byte, so `José` came back as 7 characters,
+and the segment was rebuilt with `acc &` over `char-to-text`, quadratic
+(`decode superlinear 170504 2147848`, 256 and 1,024 bytes).
+
+The signature segment is base64url-checked and the header and payload decode
+strictly: RFC 7515's alphabet with no padding, no length of 1 modulo 4, no
+overlong UTF-8, and no character CCE cannot hold except JSON whitespace, so a
+character is refused rather than dropped from a claim. Sixteen lines predicted
+before the run, including RFC 7519 section 3.1's token (CR LF in its header)
+and an emoji that CCE holds. Ablated alone: the signature check and the
+alphabet move `bad-char`; the length rule traps on `len-mod-1` (`!EXC=06`);
+overlong accepts `sub=A`; the CCE rule accepts `surrogate` and `above-max` as
+an empty `sub` and `control` as `ab`; the whitespace exception refuses
+`rfc7519`; a per-group list append reads `segment superlinear 226136
+2998312`. The lead-byte check moves nothing, because the CCE rule refuses the
+-1 it catches; it stays so the walk never advances by zero. The scaling arm
+measures the segment decode alone, apart from `json-parse`.
+
+## The JSON Cost Guard (`codex/test/apps/json-cost-guard`)
+
+`codex/foreword/encode/Json.codex` read a string by appending each character
+to a Text, and its three emitters appended the same way, so all four paths
+were quadratic on seed 0291C387 (`parse-string superlinear 66928 955504` at 64
+and 256 pieces; `emit-object` 1,359,384 against 21,166,104 at 256 and 1,024
+pairs). Each now pushes the same pieces onto a list and joins once; the
+characters kept, dropped and refused are unchanged. The four output arms
+(nested values, every escape, empty containers, a bad escape) answer the same
+before and after and pin the old answers rather than predictions. Each
+accumulator put back to `acc & [...]` alone moves its own arm; the escape
+ablation also moves `parse-string`, which re-emits what it parsed.
 
 ## The Markdown Guard (`codex/test/lib/markdown-guard`)
 
@@ -3614,6 +3675,24 @@ check (`other-fp`), and the lenient decode in `KeyManager` (`priv-extra`).
 `other-pub` carries key B's fingerprint beside key B's public key, so only the
 derivation check can refuse it.
 
+`codex/test/apps/persist-hex-guard` covers the stored-record parsers in
+`BrowserPersist`, `ServicesPersist`, `FactArchive` and `RepoProtocolPersist`.
+Measured on seed 0291C387 BEFORE the change, every malformed field decoded to
+other bytes: a revocation scope `id:0a0z` revoked identity `[10 0]`, and a
+signature `0e0` became `[14]`. Each site now decodes checked and refuses the
+line; a tombstone keeps its path and carries an empty signature, because the
+index replay reads the path without verifying it. Twenty arms predicted
+before the run; the ten sites ablated alone each move only their own arm.
+Compiling `ServicesPersist` at all took four CDX1070 rewrites in `Revocation`
+and `ManagedAccounts`, three constructors declared with a comma
+(refused at the declaration since, CDX1076), and two fields read by names the records do not have
+(`ap-can-use-chat`, now `ap-can-use-network`; `tl-daily-limit-minutes`).
+The app has no `opening`, so `codex/test/apps/services-flow` is what compiles
+all five chapters: it runs the create-account, PIN and clock paths.
+`handle-create-event` cleared `pu-new-name` in place before its status read it
+(L-ALIAS), so every creation reported `Created: `; the ablation that reads the
+field after the clear prints exactly that.
+
 ## The TOML Guard (`codex/test/lib/toml-guard`)
 
 Track D row 13, `codex/foreword/encode/Toml.codex`, harness callers only.
@@ -3659,6 +3738,126 @@ three scaling arms and 200,000 keys and items. Eighteen guards ablated alone,
 each moving only its own arms. Indentation has no guard of its own: an
 indented line is refused because its key starts with a space, so ablating the
 key-character check moves `nested` and `indented` beside `bad-key`.
+
+## The URI Guard (`codex/test/apps/uri-guard`)
+
+Track D row 13, `codex/foreword/encode/Uri.codex`. `uri-parse` and
+`uri-parse-query` have harness callers only (`PageFetcher` and
+`ContentAddress` cite the chapter and call nothing in it); `uri-encode` is
+reached by `OAuthClient`. On seed 8751852D `uri-parse` set `valid = True` for
+every input: `http://good.com:x@evil.com/p` answered host `good.com`, which RFC
+3986 names `evil.com`; `#frag` landed in the query; `h:80abc` read as port 80;
+scheme `a b` and an empty host were accepted; and a 20-digit port trapped.
+`uri-parse-query` and `uri-encode` appended per character (553,072 bytes at a
+1,024-character value; 8,082,448 bytes to encode 3,072 characters).
+
+It reads a stated subset now (the chapter's prose) and answers `valid = False`
+outside it. Userinfo is outside the subset rather than parsed, so the
+confusion cannot be expressed. The authority ends at `/`, `?` or `#`, and
+`UriComponents` carries the fragment.
+
+Twenty-seven arms predicted before the run: ten accepts, twelve refusals, the
+query split, a `format-uri` round trip with a fragment, and three scaling arms.
+Userinfo is refused by whichever component its `@` lands in: in `confuse` it
+lands in the port (`x@evil.com` is not digits), in `userinfo` in the host (`@`
+is not a host character). Eleven guards ablated alone, each moving only its
+own arms; without the port-digit check `confuse` answers host `good.com`, and
+without the 65535 bound a 20-digit port traps. The query fix has two halves
+and needs two arms: a long value (`query`, whose old per-character parser
+read 40,048 bytes at 256 characters and 553,072 at 1,024 on the seed) and
+many parameters (`query-many`, which the list-accumulation ablation moves).
+
+## The SMTP Guard (`codex/test/apps/smtp-guard`)
+
+Track D row 13, `codex/foreword/encode/Smtp.codex`, harness callers only. On
+seed CC7DD455 `smtp-parse-response` read a non-digit as 0, so `2x0 OK`
+answered code 200 and success, and a `250-` continuation looked final. The
+encoder did not dot-stuff, so a body line `.` ended DATA and the lines after it
+went on the wire as commands; a line break in an address or the subject
+injected a command or header; and the To header had no `To: ` and no line
+break, so the recipient ran into `Subject:`.
+
+A reply is refused (code 0) unless it has RFC 5321 section 4.2's shape, and
+`smtp-more` carries the continuation. The body is dot-stuffed (section
+4.5.2), and `smtp-session-checked` answers `None` for a line break in any field
+or `<`/`>` in an address; bare `smtp-build-session` does not check.
+
+Twenty-two arms predicted before the run. Twelve guards ablated alone, each
+moving only its own arms. Two arms had to be rewritten so that one check alone
+refuses each: `199` is also refused by the second-digit rule, so the first-digit
+arm is `150`; and `2x0` is refused by the second-digit rule, so the third-digit
+arm is `25x`. Without the separator rule `250OK` answers success with message
+`K`, and without the length check `25` traps.
+
+## The Syslog Guard (`codex/test/apps/syslog-guard`)
+
+Track D row 13, `codex/os/net/Syslog.codex`, harness callers only. On seed
+CC7DD455 `syslog-parse` never checked the PRI's digits: `<a>` read as 49, `<>`
+as a valid 0, `<192>` was accepted, and a 20-digit PRI trapped. The body was
+decoded one byte at a time as Latin-1 with `acc &` (39,960 bytes at 256, 552,984
+at 1,024), so UTF-8 `é` came back as two characters; the encoder wrote code
+points, not UTF-8.
+
+The PRI is one to three digits, no leading zero, at most 191 (RFC 5424 section
+6.2.1), with `>` at byte 4 at the latest; the body decodes through CCE's
+`utf8-bytes-to-text` and the encoder writes UTF-8.
+
+Twenty arms predicted before the run. Ten guards ablated alone, each moving
+only its own arms; the 5-byte limit is what stops a 20-digit PRI reaching the
+multiply, and the short-length check only matters for an empty datagram,
+where `list-at data 0` traps. The digit check has two halves and needs two
+arms: `a` is above `9` and `/` is below `0`.
+
+## The TFTP Guard (`codex/test/apps/tftp-guard`)
+
+Track D row 13, `codex/os/net/Tftp.codex` `tftp-parse`, harness callers only.
+On seed CC7DD455 ten malformed packets parsed: DATA of 513
+bytes, an ACK with a trailing byte, an ERROR with no NUL or bytes after it or
+code 9, a request with no mode, no NUL, mode `binary`, an empty name, a byte
+above 127 (read as `Ĉ`), and the error string decoded per byte with `acc &`
+(40,280 bytes at 256, 554,072 at 1,024). The framing is RFC 1350 section 5's
+now, the mode is case-insensitive, and RFC 2347 options are outside the
+subset.
+
+Twenty-two arms predicted before the run. Ten guards ablated alone, each
+moving only its own arms; `error-high-byte` and `rrq-options` were added so
+the netascii check on ERROR and the mode-ends-the-packet rule each have an arm
+only they refuse.
+
+`tftp-receive-data` accepts only block `block-num + 1` and nothing after the
+last block, copies the block it is handed, and chains blocks for one join in
+`tftp-transfer-data`. It used to append whatever it was handed with `t.data &
+block-data`, copying the file per block; the sequence ablation reproduces the
+first half (a retransmitted block 1 makes a 515-byte file 1,027 bytes). Seven
+more arms predicted before the run, compiled by seed 0291C387; four guards
+ablated alone, each moving only its own arms: the sequence
+check (`dup`, `skip`, `block-0`), the completed check (`after-last`), the copy
+(`reused`, a caller mutating its buffer rewrote block 1), and the append
+(`transfer superlinear 769232 11477456`, 16 and 64 blocks).
+
+## The ICMP Guard (`codex/test/apps/icmp-guard`)
+
+Track D row 13, `codex/os/net/Icmp.codex`, no production caller. `icmp-parse`
+answers every input: a packet shorter than the 8-byte header reads as type 0,
+so `icmp-is-echo-reply` says True for 3 bytes, and the RFC 792 checksum is
+never verified. `icmp-parse-checked` answers `None` unless the message is at
+least 8 bytes, every value is a byte, and the checksum over the whole message
+sums to zero. The fixture prints the bare parse beside it (`raw=`).
+
+Eight arms predicted before the run; three guards ablated alone, each moving
+only its own arm. Two arms are built so one check alone refuses them:
+`[255, 255]` is short but checksums to zero, and `not-a-byte` replaces payload
+`7, 9` with `6, 265`, the same 16-bit word, so the checksum still verifies.
+
+## The Encode Markdown Guard (`codex/test/apps/md-encode-guard`)
+
+Track D row 13, `codex/foreword/encode/Markdown.codex` `md-parse`, reached by
+`smtp-md-test` only. On seed CC7DD455 a heading of hashes alone (`#`) trapped,
+because the text started one past a space that was not there; `#hello` read as
+heading `ello`, and `>x` as a quote of nothing. A heading needs a space or the
+end of the line after its hashes (CommonMark 4.2), a quote drops only its
+optional space, and `md-render` joins once. Nine arms predicted; four guards
+ablated alone, each moving only its own arm (the bare-heading ablation traps).
 
 ## The TrueType Plausibility Guard (`codex/test/apps/ttf-plausible-guard`)
 
@@ -4458,11 +4657,11 @@ chain cycles -- 2 to 3 and back to 2 -- is well formed at every single step,
 one direction.** `fat16-free-chain`, `fat16-find-free-slot-in-dir`,
 `fat16-find-name-slot-in-dir`, `fat16-find-in-cluster-dir`,
 `fat16-cluster-entries`; `fat32-find-chain-end`, `fat32-find-in-dir`,
-`fat32-list-dir-cluster`. **`fat16-read-cluster-bytes` is NOT among them**
-though the prose names it: it decrements a byte budget by at least one per
-step and stops at zero, so a cycle makes it re-read clusters and still
-terminate. Same for `fat32-read-cluster-bytes`, `fat32-alloc-loop` and
-`fat32-write-data-to-chain`, each bounded by a quantity that advances.
+`fat32-list-dir-cluster`. `fat32-alloc-loop` and `fat32-write-data-to-chain`
+are not, each bounded by a quantity that advances. The two file reads,
+`fat16-read-cluster-bytes` and `fat32-read-cluster-bytes`, carry Brent as
+well: their budget is a directory entry's 32-bit size, and a finite bound is
+not a survivable one (the Foreword Fat32 Guards section).
 
 **A COUNTING BOUND WAS TRIED FIRST AND MEASURED UNFIT. That measurement is
 the reason the shipped code is Brent's algorithm.** Fuel of cluster-count + 2
@@ -4546,12 +4745,25 @@ first read as a failure and was NOT one: it carries `.disk` AND `.disk2`, and
 a hand-run passing only `-DiskFile` measures the invocation rather than the
 code (L-SIDECAR).
 
-**NOT COVERED, and it is the same gap named against item 12.**
-`fat32-find-chain-end` (`:175`) recurses through `fat32-next-cluster` with no
-fuel and no cycle guard, reached from `fat32-alloc-chain` on the WRITE path. A
-chain that cycles within valid range still spins forever. These guards bound
-the cluster ADDRESS, not the walk; the walk is a different mechanism and is
-unmeasured.
+**The file read (`codex/test/fat32-read-guard`).** `fat32-read-bytes` read a
+file's chain bounded only by the directory entry's 32-bit size, so a cycle
+re-read clusters up to 4 GiB, a chain that ended early answered a TRUNCATED
+file, and a first cluster past the volume read a foreign sector. Measured on
+the old code: a 3-cluster cycle under a 4-cluster size read the right length
+with the wrong bytes, and a chain cut after one cluster answered one cluster's
+worth. The walker now answers `None` unless the chain carries the whole size:
+`fat32-cluster-ok` on every data cluster (an end-of-chain marker is out of
+range, so a short chain refuses), Brent's walk, and a return the moment the
+size is spent, so a file is never refused over what follows its last cluster.
+Eight lines, each guard ablated alone moving only its own: Brent
+`cycle-3-of-13`, the range `bad-first`, the early return `cycle-after-end` (a
+last cluster pointing at itself). **Brent's limit is pinned as an arm, not
+hidden:** `cycle-3-of-4` still reads, because a cycle closed within twice its
+length of the file's end is walked before it is seen; it answers cross-linked
+bytes, as a cross-linked chain does, and the size bounds it. `Fat16`'s read
+carries the same three guards (`codex/test/fat16-read-guard`, the same eight
+lines; on the old code `cycle-3-of-13` read cross-linked bytes and `short` a
+truncated file), and `AgentBundle`'s model window refuses on its `None`.
 
 ## The Foreword Cluster Guard (`codex/test/fat16-cluster-guard`)
 
@@ -4790,14 +5002,6 @@ on a 128-sector fixture the store is accepted and the walk runs ~200,000 reads
 past the end of the medium. `block-sector-count` moves with the fixture and
 cannot be tuned past.
 
-**Still open, and it is val's to land:** a per-record cap. A large medium still
-permits one record to allocate most of it, which the head bound does not touch.
-val's `fd-max-content-len` (4 MB, shipped without an arm because reaching it
-needs a store image over 4 MB) is the answer to that and is not folded in here.
-This section previously carried a paragraph of mine arguing the cap could not
-be chosen because the format has never stated a maximum; that was
-rationalisation and it is deleted rather than defended.
-
 **The codegen citation belongs to blu and val**, who both found
 `emit-substring-bounds` at `X86_64Builtins.codex:666-681` while this lane was
 still measuring the crater from the outside.
@@ -4815,7 +5019,7 @@ control** -- untouched, and it must still arrive, which is what makes this an
 instrument rather than a crash that stopped crashing. Entry 2 must NOT arrive,
 because its own header is the thing that is lying.
 
-**The residue, and it ships without an arm (val, 2026-08-16).**
+**The per-entry cap (`build/factdisk-cap-test.ps1`).**
 `fd-head-credible` bounds the walk and every entry's allocation, but it bounds
 them by the SIZE OF THE ATTACHED MEDIUM, which is still a number this code did
 not produce. On the store images this reader is pointed at, a megabyte or a
@@ -4826,15 +5030,32 @@ gigabyte on a guest that has three. `fd-max-content-len` caps one entry at
 chapter (the largest in the tree measured 735,952 bytes), and an over-long
 entry strides on exactly as an entry that will not fit the log already does.
 
-**Ablating it moves nothing any test can see, and that is stated rather than
-hidden.** Reaching it needs a store image over 4 MB, because on anything
-smaller the medium ceiling refuses the entry first, so the arm would cost a
-multi-megabyte fixture to exercise a guard whose whole purpose is the case the
-fixtures cannot reach. It is kept on the campaign's rule -- we do not size an
-allocation on a number we did not produce -- and not on a measurement. What IS
-measured is that it refuses nothing legitimate: `factdisk-read`,
-`factdisk-hostile-head`, `foreword-source-def-wire` and
-`build/test-quote-from-store.ps1` (`sorted=105`) all pass unchanged with it in.
+Reaching it needs a store over 4 MB, because on anything smaller the medium
+ceiling refuses the entry first, so the runner mints an 8.4 MB image at run
+time (`mint-factlog-fixture.ps1 -Big`) rather than keeping one in the depot,
+and `factdisk-cap` carries a `.skip` naming the runner. Entry 1 is exactly
+4,194,304 bytes and must arrive, entry 2 is 4,194,305 and must not, entry 3 is
+the signed positive control. **Entry 2 is a WELL-FORMED record**, because a
+record `sdw-decode` refuses is absent with or without the cap (L-VACUOUS).
+Ablated to 8 MB, the arm moves exactly `count` 2 to 3 and `past-cap` from
+`absent` to `4194260/val/78`.
+
+**A cap is not a bound until the entry AT it survives.** The arm's first run
+killed the guest: `FactLog.fl-text` built the Text one `char-to-text` at a
+time, so the accumulator was never topmost and every `&` copied it
+(DevelopersGuide, "What Text operations cost"), and the 4,194,304-byte entry
+the cap admits died `OUT OF MEMORY` with the heap at 0xb9e11998 on a 3 GB
+guest. `fl-text` now pushes the bytes onto a list sized once and converts with
+`raw-bytes-to-text`, which is linear: the whole arm runs in 6 s.
+
+**The signature field.** `sdw-hex-decode` read a non-hex digit as 0 and dropped
+an odd last digit, so on the old code `0a0g` decoded as `[10 0]`, `0a0` as
+`[10]` and `0A0B` as `[0 0]`: a stored signature that verified against
+nothing, where the persist chapters now refuse. `sdw-decode` refuses the
+record unless the field is an even run of the lowercase digits `sdw-bytes-to-hex`
+writes; the empty field an unsigned definition carries still passes. Arms 10
+to 13, ablated alone: the length rule moves `sig-odd`, the digit rule
+`sig-bad-char` and `sig-upper`.
 
 ## The GGUF Bounds Guards (`codex/test/apps/gguf-hostile`)
 
@@ -4965,12 +5186,13 @@ then asks whether the field fits:
     else if p9 + 1 + clen > text-length line then None
 ```
 
-That is wrong whenever `clen` can be large enough to wrap the sum. Measured
-2026-08-16 on the seed: `text-to-integer` of a 19-digit field answers **i64
-max**, and `46 + 9223372036854775807` is **-9223372036854775763**. A negative
-sum is under any length, so the guard answers False and admits exactly the
-record it exists to refuse. blu ran it against main 15576 and the guest died
-`!EXC=06`.
+That is wrong whenever `clen` can be large enough to wrap the sum:
+`text-to-integer` of a 19-digit field answers **i64 max**. Plain Integer
+addition traps on overflow (`DevelopersGuide.md`), so on the shipping seed the
+sum kills the guest `!EXC=06` at the add; on wrapping arithmetic the negative
+sum passes the guard and admits exactly the record it exists to refuse. Either
+way the guard is wrong: a trap is a denial of service on hostile input, not a
+refusal.
 
 **The fix is to subtract, not to add a second check.** `clen > text-length line
 - (p9 + 1)` cannot wrap, because both operands are already bounded by the
@@ -5011,8 +5233,8 @@ still pass. **Ablated to the additive form, `off` and `both` flip to admitted
 while `sane` stays green**, which is the discrimination -- the guard starts
 saying yes to a read of eight bytes at offset i64 max.
 
-**The remainder IS swept now (reek, 2026-08-20), every one is safe, and the
-reason is structural rather than site-by-site luck. WIDTH decides it, not
+**The census's remainder is swept (reek, 2026-08-20), every site it reached is
+safe, and the reason is structural rather than site-by-site luck. WIDTH decides it, not
 shape.** `a + b > len` can only wrap when an operand can approach i64 max.
 Every remaining addend in the tree is one of three things and none of them
 can:
@@ -5026,8 +5248,75 @@ can:
 So the rule for new code is one line, and it is cheaper than re-auditing:
 **the additive guard is unsafe exactly when an addend is UNBOUNDED, which in
 this tree means a decimal parse (`text-to-integer`) or a value already
-i64-wide.** That is precisely what `sdw-decode` did, and it is why that site
-and no other was exploitable.
+i64-wide.** That is precisely what `sdw-decode` did.
+
+**One i64-wide site sat outside that sweep: `CdxBinary`'s
+`cdx-verify-content-hash`**, on the loading-authority path (`CdxVerifier`,
+`WakeCeremony`, `CdxInspector`). It summed two le64 section-table fields per
+section and sliced the file to the largest sum with no bound at all, so a
+section past the end, an overflowing offset plus size, and a file shorter than
+its stored hash each killed the guest, and a NEGATIVE offset passed the hash,
+because the header is outside the hashed region. `cdx-section-fits` refuses
+all of them subtractively; `codex/test/apps/cdx-section-guard`, five rows, each
+guard ablated to its own row (the sign check to `hash-ok=True` on the negative
+offset, the subtraction to the overflow trap, the header length to the
+short-file trap). Found 2026-09-24 by listing every file holding both an
+additive guard and an eight-byte or decimal reader: 17 of the 90 files with an
+additive guard. A wide value produced in another chapter and added here is not
+reached by that filter.
+
+**`Gpt` was the second unsafe file among those 17, and the filter's own reading
+missed it** because its guard is one `&` chain spread over six lines.
+`gpt-read-u64` reads all 64 bits of an on-disk field, and three sites added to
+one: `gpt-header-geom-ok` added the array's sector count to PartitionEntryLBA,
+`gpt-read-after-hdr` added 1 to AlternateLBA, and `DriveManager`'s
+`dm-find-free-after` added 2048 to the largest partition EndingLBA, a value
+produced in `Gpt` and added in another chapter. Measured on seed CCA6DBCE with
+fixtures from `build/mint-gpt-core-fixtures.ps1`: PartitionEntryLBA 2^63-1 and
+AlternateLBA 2^63-1 each killed the guest `!EXC=06` inside `gpt-read`, and an
+EndingLBA of 2^63-1 was ACCEPTED by `gpt-read` and killed the guest at
+`dm-free-sectors`. `gpt-read` is on `fat16-boot-volume`'s path, so the disk a
+program resolves files on could crash it. `gpt-lba-ok` now bounds every LBA the
+reader hands on to [0, 2^48), the header check subtracts after an ordered
+comparison, and a table with an entry outside the bound or ending before it
+starts is refused whole; `dm-add-gpt-partition` takes the same header check
+before it re-reads the entry LBA itself. Arms: `codex/test/apps/gpt-core-lba-wide`,
+`gpt-core-alt-wide` and `gpt-core-part-wide`, each red on the unfixed reader for
+its own reason (two traps at different fault sites, one acceptance), with
+`gpt-core-read` and `gpt-core-size-256` as the positive controls.
+
+**Cross-chapter census (blu, 2026-09-24).** Every call to a wide producer
+outside its defining file: `json-get-int` (126 calls, 11 files),
+`parse-decimal-full` (51, 9), `text-to-integer` (24, 13), `read-le64` (24, 3),
+`frame-read-le64` (8, 4), `parse-decimal` (3, 1), `gpt-read-u64` (1, 1), and
+`peek-qword` in 20 firmware-table readers. Every additive comparison in those
+files was listed and each addend's source named. Safe on width:
+`TrustTransport:112` (`next-offset` is declared `between 0 and 4294967295`),
+Jwt `exp`/`iat` and OAuth `expires_in` (compared or stored, never added),
+`FactArchive`'s `fa-shift` (counts up to the head and stops at equality).
+The firmware-table readers (`GopAcpi`, `DevDebugger`'s map lookup) add to
+fields read 32 bits wide.
+
+**The superblock was the other cross-chapter route.** `DiskFacts` took the
+superblock's three u64 fields from `FactLog` unchecked and every later write
+adds to them (`log-head + nsec` in `DiskFacts`, `AppPersist` and
+`GopFacts`' `gfs-write`, `fact-count + 1`); `AppPersist:70` and
+`gfs-admits` are additive guards on that head. Measured on the depot code
+with `disk-facts-load.disk` patched by `build/mint-facts-fixtures.ps1`:
+log-head 2^63-1 walked the load toward sector 2^63 (wall budget exceeded),
+fact-count 2^63-1 trapped `!EXC=06` at the write, and index-gen 2^63-1 was
+accepted and written to. `disk-sb-credible` bounds all three to [0, 2^48) and
+the head to the region, and a store that fails it is refused as UNUSABLE rather
+than loaded empty, because `disk-load` answers a missing superblock with an
+empty store on a usable base and the first write would land on the existing
+log. `GopFacts`' mount takes the same check. Arms
+`codex/test/apps/disk-facts-head-wide`, `-count-wide` and `-gen-wide`, each
+red on the old code for its own reason; `disk-facts-load` is the control.
+
+**What the census does not claim.** It finds a wide value by the NAME of the
+reader that produced it (L-CENSUS). A 64-bit quantity assembled by hand with
+shifts, or one that crosses two chapters before it is added, is not reached
+unless a file on the path also names a reader.
 
 Judged individually, with the width named: `Asn1` long-len (`n > 4` refused
 above it) and `asn1-mk` (`asn1-be` over at most 4 bytes); `DtlsMessage`
@@ -5490,7 +5779,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-219 tests in `codex/test/errors/` verify that the compiler rejects
+237 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes. Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -6495,7 +6784,7 @@ against a caller that does not exist.
 2. Compile: `build/compile.ps1 -Src codex/test/foo.codex -Out foo.cdx`
 3. Run: `tools/codex-vm.exe -kernel foo.cdx -headless -output foo.out`
 4. Verify the output, then copy to `foo.expected`.
-5. For disk tests, create `foo.disk` (blank or pre-populated).
+5. For disk tests, write `foo.disk-mint` (the `.disk-mint` row above) and never add the image.
 6. `p4 add` all files and submit.
 
 ### Updating Expected Output
@@ -6989,6 +7278,14 @@ table, so an exact number would be an oracle copied from a run of the code
 under test rather than derived from anything. What the guard promises is that
 the walk stops when the bits do.
 
+**The stored block's header, rows 8 to 10.** `deflate-after-stored` read LEN
+with two bare `list-at` calls and never read NLEN, the ones' complement RFC
+1951 3.2.4 puts beside it. Measured unguarded: `[1, 5]`, a stream ending one
+byte into the four-byte header, dies `!EXC=06` with `RSI=2`, and NLEN 0 decodes
+three bytes of data. Both now answer the output so far, the channel the rest of
+the decoder already uses. Row 10 moves only on the length check, because the
+trap fires before NLEN is read; row 9 moves only on the complement check.
+
 **A red interop result here was NOT this change, and the elimination is the
 record.** `build/brotli-interop-test.ps1` failed once with four probe rows
 missing and a `HOST CRASH: codex-vm faulted` at a guest write to
@@ -7288,6 +7585,36 @@ control, `Sut.cdx` byte-identical to the depot seed after the gate.
 at position 0 and only with patterns that consume, which is precisely the
 blind spot both defects lived in (L-GAP).
 
+## The Debugger Expression Guard (`codex/test/apps/expr-eval`)
+
+`ExprEval` reads the operator's typed text at nine `DevConsoleBoot` debugger
+commands. Measured on seed 36913D0DE1AB08E4 BEFORE the change, each in its own
+guest beside a `42` control: `99999999999999999999`, `0xFFFF800000000000`,
+`0x7fffffffffffffff + 1` and `0x4000000000000000 * 4` all trapped `!EXC=06`,
+so one typo in an address killed the console. The kernel-half address traps
+because a literal is built as i64 by `acc * 16`.
+
+Both literal readers now refuse past i64 max, testing before the multiply;
+`+`, `-` and `*` refuse on overflow by the subtractive and divisive checks, and
+`/` refuses i64 min over -1. A refusal is `ExprErr`, never a wrapped value.
+Twenty-two arms added, their expected lines computed with BigInteger before the
+run: each boundary pair on both sides, negative operands through `$` (the only
+route to one, since there is no unary minus), and `5 * $` at
+-1844674407370955161 and -...162, which grades the truncation direction of
+`ex-min / a`.
+
+## App Integer Literals (`ideas-test`, `sheet-formula`, `sheet-csv`, `db-csv-roundtrip`, `mathbook-number-guard`)
+
+Five app readers built an integer as `acc * 10 + d` with no bound, so a
+20-digit field trapped the guest. Each now tests before the multiply and
+refuses through the channel it already had: `IdeaEngine`'s `parse-int-text`
+answers its -1, `CellFormula` refuses the formula with an offset, `CellCsv`
+keeps the field as text, `mathbook`'s `Parser` answers `ParseErr` (and bounds
+the integer part of a fraction, which it scales by 1000), and `BulkLoader`
+loads the cell as `ValNull`. Every arm except `db-csv-roundtrip` holds the
+i64-max value beside the first refused one. The readers with no channel are VerifiedFormatParsing
+row 23.
+
 ## The Glyph unitsPerEm Guards (`codex/test/apps/glyph-upem-guard`)
 
 Track D item 19, the `ui/` leg. **`unitsPerEm` is a raw 16-bit field of the
@@ -7584,6 +7911,12 @@ that reads the heap frontier (`alloc-bytes`, `__heap-save`), because the
 compiler decides the byte counts they print. An EMPTY selection is a statement
 about the cite graph rather than an all-clear, and the script says so in those
 words.
+
+**An allocation golden runs on the x86-64 bed whatever backend it was written
+for.** A chapter that reads the heap frontier is selected and run under
+codex-vm, so an arm64-only test that pins an arm64 byte count goes red there
+(`arm64-rx-reuse`, 2026-09-24: 1,276 bytes a frame on arm64, 727 on x86-64).
+Pin a bound both backends satisfy, not one backend's number.
 
 **What it costs**, measured over two batches rather than one subject times N
 (L-AMORTISED): 12 subjects compiled and run in 31.5 s, 24 in 72.7 s, both at

@@ -59,6 +59,11 @@ $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $PSScriptRoot 'quire-map.ps1')
+# The resolver pulls the WHOLE compiler for a cite of any Codex, Emit or
+# Semantics chapter, and takes that branch before -PathOverride is consulted,
+# so every compiler unit held every compiler chapter and measured nothing.
+# Per-chapter resolution is the point here: the override answers those cites.
+$QuireManifests = @{}
 
 if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
 if (-not (Test-Path $Kernel)) { throw "kernel not found: $Kernel" }
@@ -86,11 +91,16 @@ foreach ($fi in (Get-ChildItem $rootDir -Filter '*.codex' -Recurse -File)) {
 # never can be: it is satisfied by co-presence in the glob. Resolve it against
 # the tree itself, by chapter header and by file name, or every unit fails on
 # the cite instead of on the thing being measured.
+# A cite of a multi-file chapter must bring every page, so the index points at
+# one joined file per chapter, each page keeping its own header.
 $selfIdx = @{}
-foreach ($fi in (Get-ChildItem $rootDir -Filter '*.codex' -Recurse -File)) {
-    $head = Get-Content $fi.FullName -TotalCount 1
-    if ($head -match '^Chapter:\s*(.+?)\s*$') { $selfIdx[(Get-CiteKey $matches[1])] = $fi.FullName }
-    $selfIdx[(Get-CiteKey $fi.BaseName)] = $fi.FullName
+foreach ($chapter in $byChapter.Keys) {
+    $joined = Join-Path $work ('chapter-' + ($chapter -replace '[^A-Za-z0-9]', '_') + '.codex')
+    $jl = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in ($byChapter[$chapter] | Sort-Object)) { $jl.AddRange([System.IO.File]::ReadAllLines($f)); $jl.Add('') }
+    [System.IO.File]::WriteAllLines($joined, $jl)
+    $selfIdx[(Get-CiteKey $chapter)] = $joined
+    foreach ($f in $byChapter[$chapter]) { $selfIdx[(Get-CiteKey ([System.IO.Path]::GetFileNameWithoutExtension($f)))] = $joined }
 }
 # The key is computed inline rather than through Get-CiteKey: a GetNewClosure()
 # block resolves FUNCTIONS against the global scope, and quire-map.ps1 is
@@ -100,11 +110,9 @@ foreach ($fi in (Get-ChildItem $rootDir -Filter '*.codex' -Recurse -File)) {
 # whose directory is not this tree (Dev chapter HexFormat from a works chapter)
 # goes to the registry, or the same-named works chapter is substituted and the
 # unit fails on names the real one defines (val, 2026-08-19: 6 false borrows).
+# The chapter under test answers a cite back to itself by being present, so the
+# override refuses its own path and a cycle does not bundle it twice.
 $rootFull = (Resolve-Path $rootDir).Path
-$override = { param($quire, $name)
-    $dir = $QuireDirs[$quire]
-    if ($dir) { $full = Join-Path $Repo $dir; if (-not (Test-Path $full) -or (Resolve-Path $full).Path -ne $rootFull) { return $null } }
-    $k = ($name -replace '\s', '').ToLowerInvariant(); if ($selfIdx.ContainsKey($k)) { return $selfIdx[$k] } return $null }.GetNewClosure()
 
 # Every name the tree defines for itself, definitions and constructors alike.
 # An undefined name found here is INTERNAL: co-presence explains it.
@@ -121,24 +129,29 @@ $units = @()
 foreach ($chapter in ($byChapter.Keys | Sort-Object)) {
     if ($Only -and $chapter -notlike "*$Only*") { continue }
     $safe = ($chapter -replace '[^A-Za-z0-9]', '_')
+    # Every page keeps its header: the compiler counts a chapter's files by its
+    # headers and checks the count against each page's 'Page N of M' marker.
     $body = [System.Collections.Generic.List[string]]::new()
-    $firstFile = $true
     foreach ($f in ($byChapter[$chapter] | Sort-Object)) {
-        foreach ($ln in [System.IO.File]::ReadAllLines($f)) {
-            if ((-not $firstFile) -and $ln.StartsWith('Chapter:')) { continue }
-            $body.Add($ln)
-        }
-        $firstFile = $false
+        $body.AddRange([System.IO.File]::ReadAllLines($f))
         $body.Add('')
     }
+    $selfPath = $selfIdx[(Get-CiteKey $chapter)]
+    $override = { param($quire, $name)
+        $dir = $QuireDirs[$quire]
+        if ($dir) { $full = Join-Path $Repo $dir; if (-not (Test-Path $full) -or (Resolve-Path $full).Path -ne $rootFull) { return $null } }
+        $k = ($name -replace '\s', '').ToLowerInvariant()
+        if ($selfIdx.ContainsKey($k) -and $selfIdx[$k] -ne $selfPath) { return $selfIdx[$k] } return $null }.GetNewClosure()
     $ordered = Resolve-CiteOrder -RootLines $body.ToArray() -Repo $Repo -OnMissing skip -PathOverride $override
+    # One chapter cited under two quire names (Codex and Emit) resolves twice.
+    $emitted = @{}
     $unit = [System.Collections.Generic.List[string]]::new()
     foreach ($e in $ordered) {
-        $renamed = $false
+        if ($emitted[$e.Path]) { continue }
+        $emitted[$e.Path] = $true
         foreach ($ln in $e.Lines) {
-            if ((-not $renamed) -and $ln.StartsWith('Chapter:')) {
-                $unit.Add("Chapter: $($e.Quire)--" + $ln.Substring(8).Trim()); $renamed = $true
-            } else { $unit.Add($ln) }
+            if ($ln.StartsWith('Chapter:')) { $unit.Add("Chapter: $($e.Quire)--" + $ln.Substring(8).Trim()) }
+            else { $unit.Add($ln) }
         }
         $unit.Add(''); $unit.Add('')
     }
@@ -173,7 +186,7 @@ foreach ($r in $results) {
     if ($r.Code -eq 0) { continue }
     $failed += $r.Chapter
     foreach ($ln in (Get-Content $r.Log -ErrorAction SilentlyContinue)) {
-        if ($ln -match 'CDX(3002|2002): (?:Undefined|Unknown) name: (\S+)') {
+        if ($ln -match 'CDX(3002|2002|3008): (?:Undefined|Unknown) (?:type )?name: (\S+)') {
             $n = $matches[2]
             if ($ownNames[$n] -and -not $internalIsDefect) {
                 $internal[$n] = $true

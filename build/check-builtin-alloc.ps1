@@ -122,6 +122,10 @@ $Sites = @{
     'vec-div'             = @('emit-vec-arith-core')
     'vec-select'          = @('emit-vec-select-builtin')
     'vec4-select'         = @('emit-vec-select-builtin')
+    'vec8-splat'          = @('emit-wide-splat')
+    'vec4d-splat'         = @('emit-wide-splat')
+    'vec8-select'         = @('emit-wide-select-builtin')
+    'vec4d-select'        = @('emit-wide-select-builtin')
     'vec-empty'           = @('emit-list', 'emit-list-bivy')
     'vec-singleton'       = @('emit-list', 'emit-list-bivy')
 }

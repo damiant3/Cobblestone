@@ -221,9 +221,8 @@ Section: Account Creation
       acc-last-login = 0,
       acc-active = True
     }
-    in __record-set (__record-set store
-      "as-accounts" (list-push store.as-accounts account))
-      "as-next-id" (id + 1)
+    in let added = __record-set store "as-accounts" (list-push store.as-accounts account)
+    in __record-set added "as-next-id" (id + 1)
 
   derive-account-key : List Integer, Integer -> List Integer
   derive-account-key (guardian-key) (account-id) =
@@ -247,9 +246,8 @@ Section: Login
       is Just (acc) ->
         if verify-pin acc pin
         then let updated = __record-set acc "acc-last-login" now
-          in __record-set (__record-set store
-            "as-active-id" id)
-            "as-accounts" (replace-account store.as-accounts updated)
+          in let active = __record-set store "as-active-id" id
+          in __record-set active "as-accounts" (replace-account store.as-accounts updated)
         else store
 
   account-logout : AccountStore -> AccountStore
@@ -351,9 +349,8 @@ Section: Policy Modification (Guardian Only)
     in when acc
       is None -> store
       is Just (a) ->
-        let new-limits = __record-set (__record-set a.acc-policy.ap-time-limits
-              "tl-start-hour" start)
-              "tl-end-hour" end-hour
+        let started = __record-set a.acc-policy.ap-time-limits "tl-start-hour" start
+        in let new-limits = __record-set started "tl-end-hour" end-hour
         in let new-policy = __record-set a.acc-policy "ap-time-limits" new-limits
         in update-policy store account-id new-policy
 
@@ -458,10 +455,10 @@ Section: Audit Log
   AuditAction =
     | AuditLogin (Integer)
     | AuditLogout (Integer)
-    | AuditPolicyChange (Integer, Text)
-    | AuditContentBlocked (Integer, Text)
+    | AuditPolicyChange (Integer) (Text)
+    | AuditContentBlocked (Integer) (Text)
     | AuditTimeLimitHit (Integer)
-    | AuditAppAccess (Integer, Text)
+    | AuditAppAccess (Integer) (Text)
 
   AuditEntry = record {
     ae-timestamp : Integer,
@@ -491,9 +488,9 @@ Section: Policy Summary
     & " | Apps: " & show (list-length p.ap-allowed-apps)
     & " | Camera: " & (if p.ap-can-use-camera then "yes" else "no")
     & " | Files: " & (if p.ap-can-share-files then "yes" else "no")
-    & " | Chat: " & (if p.ap-can-use-chat then "yes" else "no")
+    & " | Network: " & (if p.ap-can-use-network then "yes" else "no")
     & " | Safe: " & (if (p.ap-content-filter).cf-safe-mode then "on" else "off")
-    & " | Daily limit: " & show (p.ap-time-limits).tl-daily-limit-minutes & "min"
+    & " | Daily limit: " & show (p.ap-time-limits).tl-daily-minutes & "min"
 
   format-account-detail : Account -> Text
   format-account-detail (a) =

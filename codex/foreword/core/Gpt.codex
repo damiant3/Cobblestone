@@ -14,6 +14,16 @@ Section: Constants
   gpt-sig-6 : Integer = 82
   gpt-sig-7 : Integer = 84
 
+ 2^48, ATA-8's 48-bit LBA space: the widest address a SATA disk presents. Every
+ LBA handed on is below it, so a consumer can add a 32-bit quantity to one
+ without wrapping; the fields are u64 on disk and a hostile one near 2^63 made
+ the additions here trap the guest.
+
+  gpt-lba-ceiling : Integer = 281474976710656
+
+  gpt-lba-ok : Integer -> Boolean
+  gpt-lba-ok (v) = if v < 0 then False else v < gpt-lba-ceiling
+
 Section: Types
 
   GptPartition = record {
@@ -190,11 +200,23 @@ Section: Read GPT
     in let cnt = gpt-read-u32 buf 80
     in let sz = gpt-read-u32 buf 84
     in let first-usable = gpt-read-u64 buf 40
-    in lba >= 2
-    & cnt >= 1 & cnt <= 1024
-    & sz >= 128 & sz <= 512
-    & sz - (sz / 128) * 128 == 0
-    & lba + (cnt * sz + 511) / 512 <= first-usable
+    in if lba < 2 then False
+    else if gpt-lba-ok first-usable == False then False
+    else if gpt-lba-ok (gpt-read-u64 buf 32) == False then False
+    else if cnt < 1 | cnt > 1024 then False
+    else if sz < 128 | sz > 512 then False
+    else if sz - (sz / 128) * 128 /= 0 then False
+    else if first-usable < lba then False
+    else (cnt * sz + 511) / 512 <= first-usable - lba
+
+  gpt-parts-ok : List GptPartition, Integer -> Boolean
+  gpt-parts-ok (parts) (i) =
+    if i >= list-length parts then True
+    else let p = list-at parts i
+    in if gpt-lba-ok (p.gp-start-lba) == False then False
+    else if gpt-lba-ok (p.gp-end-lba) == False then False
+    else if p.gp-end-lba < p.gp-start-lba then False
+    else gpt-parts-ok parts (i + 1)
 
   gpt-read-after-hdr : Integer -> [Device.Block] Maybe GptDisk
   gpt-read-after-hdr (hdr-buf) =
@@ -205,7 +227,7 @@ Section: Read GPT
     in let total-sectors = gpt-read-u64 hdr-buf 32 + 1
     in act
       parts <- gpt-read-entries (gpt-read-u64 hdr-buf 72) entry-size (gpt-read-u32 hdr-buf 80) 0 []
-      gpt-make-disk disk-guid total-sectors parts
+      if gpt-parts-ok parts 0 then gpt-make-disk disk-guid total-sectors parts else None
     end
 
   gpt-make-disk : List Integer, Integer, List GptPartition -> Maybe GptDisk

@@ -1,0 +1,76 @@
+Chapter: EnginePerspUv
+  cites Foreword chapter Console
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Engine chapter Mesh
+  cites Engine chapter Material
+  cites Engine chapter Texture
+  cites Math chapter Matrix4
+  cites Game chapter Color
+
+Section: Fixture
+
+ A two-triangle floor under an 8x8 checker, one texel per cell, seen from
+ above at an angle so depth varies across each triangle. The reference is
+ the vertex projection, which is exact: each cell centre is projected as a
+ vertex and the rendered pixel there must carry that cell's texel. Affine
+ UV shears the interior of each triangle by up to a cell or more at this
+ camera, so a cell centre lands on its neighbour's colour.
+
+  rw : Integer = 320
+  rh : Integer = 240
+
+  half : Integer = 2000
+
+  tex : EngineTexture
+  tex = etx-checkerboard 8 8 1 #F0F0F0 #202020
+
+  floor-scene : Scene3DState
+  floor-scene =
+    let cam = camera3d-new (vec3-new 0.0 1200.0 4200.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let node = sn3-with-mesh "floor" (mesh-plane half half) (emat-set-texture (emat-unlit (rgb 255 255 255)) tex)
+    in scene3d-add (scene3d-new cam) node
+
+Section: Instrument
+
+ Cell (i, j) spans u in [125 i, 125 i + 125) and the plane maps u = 0..1000
+ onto x = -half..half, so its centre is at x = -1750 + 500 i, and the same
+ in z for j.
+
+  cell-pv : Mat4, Integer, Integer -> ProjVert
+  cell-pv (vp) (i) (j) =
+    r3d-project-clip (r3d-clip-vertex (vertex (0 - 1750 + 500 * i) 0 (0 - 1750 + 500 * j) 0 1000 0 0 0 #FFFFFF) vp mat4-identity) (rw / 2) (rh / 2)
+
+  on-screen : ProjVert -> Boolean
+  on-screen (p) = p.pv-sx >= 2 & p.pv-sy >= 2 & p.pv-sx < rw - 2 & p.pv-sy < rh - 2
+
+  Tally = record {
+    ty-seen : Integer,
+    ty-right : Integer
+  }
+
+  tally : List Integer, Mat4, Integer, Tally -> Tally
+  tally (px) (vp) (k) (acc) =
+    if k >= 64 then acc
+    else let i = k - (k / 8) * 8
+    in let j = k / 8
+    in let p = cell-pv vp i j
+    in if on-screen p then tally px vp (k + 1) (Tally { ty-seen = acc.ty-seen + 1, ty-right = acc.ty-right + (if list-at px (p.pv-sy * rw + p.pv-sx) == etx-get tex i j then 1 else 0) })
+    else tally px vp (k + 1) acc
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let fb = r3d-render-scene floor-scene rw rh
+    in let t = tally (fb.fb-pixels) (camera3d-vp (floor-scene.s3-camera)) 0 (Tally { ty-seen = 0, ty-right = 0 })
+    in act
+      print-line-uni ("cell centres on screen   : " & show (t.ty-seen))
+      print-line-uni ("cell centres right texel : " & show (t.ty-right))
+      print-line-uni ("every centre right       : " & yn (t.ty-right == t.ty-seen & t.ty-seen > 0))
+    end
+  end
+
+Page 1

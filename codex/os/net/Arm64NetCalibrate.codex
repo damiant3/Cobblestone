@@ -1,0 +1,50 @@
+Chapter: Arm64NetCalibrate
+  cites Kernel chapter VirtioNet
+  cites Net chapter Arm64NetIO
+
+ The counter is read once per batch and not once per poll, for NetDriver's
+ reason: a per-poll clock read would measure the clock rather than the card.
+ The window, batch and fuel are NetDriver's, so the two lanes' intervals
+ mean the same 100 ms, and the fuel is what bounds a counter that never
+ reaches the deadline. A poll that finds a frame keeps the ring state it
+ returns, because the device has already handed that descriptor over.
+
+Section: Calibration
+
+  arm64-cal-tick-ms : Integer = 100
+
+  arm64-cal-batch-size : Integer = 1000
+
+  arm64-cal-fuel : Integer = 200000
+
+  Arm64CalRun = record {
+    cal-vnet : VirtioNetState,
+    cal-polls : Integer
+  }
+
+  arm64-cal-batch : VirtioNetState, List Integer, Integer -> VirtioNetState
+  arm64-cal-batch (vnet) (rx) (n) =
+   if n <= 0 then vnet
+   else let hp = __heap-save
+   in let recv = virtio-net-poll-into vnet rx
+   in if recv.vi-has == False then let restored = __heap-restore hp
+     in arm64-cal-batch vnet rx (n - 1)
+   else arm64-cal-batch (recv.vi-state) rx (n - 1)
+
+  arm64-cal-loop : VirtioNetState, List Integer, Integer, Integer, Integer -> Arm64CalRun
+  arm64-cal-loop (vnet) (rx) (deadline) (n) (fuel) =
+   if fuel <= 0 then Arm64CalRun { cal-vnet = vnet, cal-polls = n }
+   else if read-cntvct-el0 >= deadline then Arm64CalRun { cal-vnet = vnet, cal-polls = n }
+   else arm64-cal-loop (arm64-cal-batch vnet rx arm64-cal-batch-size) rx deadline (n + arm64-cal-batch-size) (fuel - 1)
+
+  arm64-net-io-calibrate : Arm64NetIOState -> Arm64NetIOState
+  arm64-net-io-calibrate (st) =
+   let freq = read-cntfrq-el0
+   in if freq <= 0 then st
+   else let sr = arm64-net-io-with-rx st
+   in let deadline = read-cntvct-el0 + (freq * arm64-cal-tick-ms) / 1000
+   in let run = arm64-cal-loop (sr.vnet) (sr.rx) deadline 0 arm64-cal-fuel
+   in let polls = if run.cal-polls < arm64-net-io-poll-floor then arm64-net-io-poll-floor else run.cal-polls
+   in arm64-net-io-with-poll (arm64-st sr (run.cal-vnet) (sr.transport)) polls
+
+Page 1

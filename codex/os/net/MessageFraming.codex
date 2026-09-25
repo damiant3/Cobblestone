@@ -1,18 +1,9 @@
 Chapter: MessageFraming
   cites Foreword chapter Sha256
 
- Length-prefixed deterministic serialization for trust network
- messages. Encodes integers as little-endian, text and byte arrays
- as length-prefixed, and frames each message with a type tag.
-
  We say:
 
 Section: Wire Format
-
- Length-prefixed deterministic serialization for trust network messages.
- Format: [4 bytes: length][1 byte: type tag][N bytes: fields]
- All integers are little-endian. Text is length-prefixed (4 bytes len + bytes).
- Byte arrays (keys, hashes, signatures) are length-prefixed.
 
   frame-encode : Integer, List Integer -> List Integer
   frame-encode (type-tag) (body) =
@@ -20,21 +11,14 @@ Section: Wire Format
     in frame-le32 total & [type-tag] & body
 
  EVERY LENGTH IN THIS FORMAT COMES FROM THE PEER, so no read here may be bounded
- by one. frame-byte-at answers 0 past the end, which is what read-be16 in
- Ethernet already does; the walkers below stop at the list end the way
- eth-payload-loop and dns-extract-rdata do. Before this, a 4-byte buffer
- holding a length prefix of 4 and nothing behind it died !EXC=06 reading index
- 4 of a 4-element list.
+ by one. frame-byte-at answers 0 past the end and the walkers stop at the end
+ of the list.
 
  HANDING BACK A TRUNCATED FIELD IS NOT SAFE, IT IS ONLY BETTER THAN THE CRASH.
- An earlier version of this block claimed a signature covering the field would
- catch it; that was asserted and is false. `codex/os/trust` contains no
- signature verification at all, and the only verify on this path is
- `RepoProtocol.codex:107`, which covers verdicts. For every other message type
- a short field is handed on as though it were whole. The refusal has nowhere to
- travel because FrameTextResult and FrameBytesResult carry only a value and an
- offset, which is the real defect and is open work rather than a decision this
- chapter has made.
+ No signature covers these fields except verdicts (`RepoProtocol.codex:107`),
+ so a short field is handed on as though it were whole: FrameTextResult and
+ FrameBytesResult carry only a value and an offset, and the refusal has nowhere
+ to travel. Open work.
 
   frame-byte-at : List Integer, Integer -> Integer
   frame-byte-at (bs) (i) =
@@ -42,13 +26,9 @@ Section: Wire Format
     else if i >= list-length bs then 0
     else list-at bs i
 
- The next offset is clamped for a second reason, one level up from the walk: it
- is __narrow-ed into a field banded 0 to 4294967295, and a length of 0xFFFFFFFF
- puts offset + 4 + len at 0x100000003, outside the band, which the
- bounded-integer check refuses at the boundary. Guarding the walk alone left
- that live -- measured, the huge arm still died after the first fix. Consuming
- at most the whole buffer is also the honest answer: no decoder can have read
- past what arrived.
+ The next offset is clamped as well: it is __narrow-ed into a field banded 0
+ to 4294967295, and a length of 0xFFFFFFFF puts offset + 4 + len outside the
+ band. No decoder can have read past what arrived.
 
   frame-next-offset : List Integer, Integer -> Integer
   frame-next-offset (bs) (v) =
@@ -110,7 +90,9 @@ Section: Serialization Primitives
   frame-decode-text : List Integer, Integer -> FrameTextResult
   frame-decode-text (bs) (offset) =
     let len = frame-read-le32 bs offset
-    in let text = frame-bytes-to-text bs (offset + 4) len ""
+    in let have = list-length bs - (offset + 4)
+    in let n = if have < 0 then 0 else if len < have then len else have
+    in let text = raw-bytes-to-text (frame-bytes-to-text bs (offset + 4) n (__list-with-capacity (n + 1)))
     in FrameTextResult { value = text, next-offset = __narrow (frame-next-offset bs (offset + 4 + len)), valid = frame-fits bs offset len }
 
   FrameTextResult = record {
@@ -119,11 +101,10 @@ Section: Serialization Primitives
     valid : Boolean
   }
 
-  frame-bytes-to-text : List Integer, Integer, Integer, Text -> Text
+  frame-bytes-to-text : List Integer, Integer, Integer, List Integer -> List Integer
   frame-bytes-to-text (bs) (i) (remaining) (acc) =
     if remaining <= 0 then acc
-    else if i >= list-length bs then acc
-    else frame-bytes-to-text bs (i + 1) (remaining - 1) (acc & char-to-text (code-to-char (list-at bs i)))
+    else frame-bytes-to-text bs (i + 1) (remaining - 1) (list-push acc (list-at bs i))
 
   frame-read-le32 : List Integer, Integer -> Integer
   frame-read-le32 (bs) (off) =

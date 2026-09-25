@@ -207,6 +207,25 @@ its state as a thing to reconcile against.
   Calibrated both ways: refused on a sitting image naming the baked lines,
   OK on the default.
 
+- **The old flight images and the test disk fixtures are not published
+  (Damian, 2026-09-25).** `build/boot/*.img` except `diag.img` and
+  `kbd-diag-v16.img`, and every `codex/test/**/*.disk` and `*.disk2`, are
+  untracked on the mirror and ignored by `.gitignore`; the disk tests build
+  their disks from `.disk-mint` recipes. Their old revisions stay in history.
+- **The retired phone project is gone from the public history and from
+  Perforce (Damian, 2026-09-25).** Its third-party firmware (TWRP images and
+  tars, a Linux `Image.gz`) and its docs and scripts were removed from every
+  commit with `git filter-repo` and force-pushed once to both remotes, the
+  one sanctioned exception to "no force". `.gitignore` refuses
+  `docs/**/[Pp]hone/`. A future phone effort starts fresh.
+- **The Commodore ROM bytes are gone from both public histories (Damian,
+  2026-09-25).** The C64 runs on the MEGA65 Open ROMs (LGPL-3.0-or-later,
+  `apps/c64/roms/`); every older `RomData.codex` and `c64-roms.disk`
+  revision was stripped from the Cobblestone history and every older
+  `c64/c64.wasm` from CobblestoneWeb, each force-pushed once. Public tips:
+  Cobblestone `9ee0a57e`, CobblestoneWeb `deead038`. Commodore C64 ROMs are
+  not redistributed.
+
 ## Divergence (Damian's rule: pull but take nothing, keep all local)
 
 If a remote tip is not an ancestor of local HEAD, a plain push is rejected

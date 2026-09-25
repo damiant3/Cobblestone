@@ -354,6 +354,48 @@ if ($bad.Count -gt 0) {
     Write-Host "IMG-FAT16-DIRS: PASS ($($dirFiles.Count) sources in subdirectories, dots and chains read off the image, one 8.3 collision separated)"
 }
 
+# -- FAT16 capacity: the writer refuses what does not fit -------------------
+#
+# 8192 sectors give the FAT16 partition 2007 data clusters of 1024 bytes. A
+# 1024-byte PE and CDX take one cluster each and the EFI, SEED and BOOT
+# directories three, leaving 2002: a source of 2002 * 1024 bytes fills the
+# partition exactly and one byte more needs cluster 2008. The depot plug before
+# the refusal answered OK to a payload twice the partition, writing past its
+# image buffer.
+$capDir = Join-Path $OutDir 'captest'
+Remove-Item $capDir -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $capDir | Out-Null
+$capPe = Join-Path $capDir 'tiny.efi'
+$capCdx = Join-Path $capDir 'tiny.cdx'
+[System.IO.File]::WriteAllBytes($capPe, [byte[]]::new(1024))
+[System.IO.File]::WriteAllBytes($capCdx, [byte[]]::new(1024))
+$bad = @()
+foreach ($extra in 0, 1) {
+    $capSrc = Join-Path $capDir "fill$extra.txt"
+    $fill = [byte[]]::new(2002 * 1024 + $extra)
+    for ($i = 0; $i -lt $fill.Length; $i++) { $fill[$i] = [byte](65 + ($i % 26)) }
+    [System.IO.File]::WriteAllBytes($capSrc, $fill)
+    $capOut = Join-Path $capDir "fill$extra.img"
+    $args = @('-NoProfile', '-File', (Join-Path $PlugDir 'run.ps1'),
+              '-PeInput', $capPe, '-CdxInput', $capCdx, '-Out', $capOut,
+              '-TotalSectors', '8192', '-Fat16', '-Source', $capSrc)
+    $said = (& pwsh @args 2>&1 | Out-String)
+    $code = $LASTEXITCODE
+    if ($extra -eq 0) {
+        if ($code -ne 0) { $bad += "the exact fit was refused (exit $code): $($said.Trim())" }
+        elseif ((Get-Item $capOut).Length -ne 8192 * 512) { $bad += "the exact fit delivered $((Get-Item $capOut).Length) bytes" }
+    } else {
+        if ($code -eq 0) { $bad += 'one byte over the partition was accepted' }
+        elseif ($said -notmatch 'REFUSED fat16 sectors=8192: needs 2008 data clusters, the partition holds 2007') { $bad += "one byte over failed without the writer's refusal: $($said.Trim())" }
+    }
+}
+if ($bad.Count -gt 0) {
+    Write-Host ("IMG-FAT16-CAPACITY: FAIL -- " + ($bad -join '; '))
+    $failed++
+} else {
+    Write-Host "IMG-FAT16-CAPACITY: PASS (2002 clusters of source accepted, one byte more refused)"
+}
+
 if ($failed -gt 0) { Write-Host "IMG: FAIL"; exit 1 }
 Write-Host "IMG: PASS"
 exit 0

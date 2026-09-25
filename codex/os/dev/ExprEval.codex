@@ -1,13 +1,6 @@
 Chapter: ExprEval
   cites Foreword chapter CCE
 
- A HYPHEN BINDS THE WAY IT BINDS EVERYWHERE ELSE IN CODEX. `heap-base-1`
- is one name and not a subtraction, because a hyphen followed by a digit
- continues an identifier; the subtraction is `heap-base - 1`. That is the
- same rule `docs/DevelopersGuide.md` states for the language, and having
- the debugger disagree with the language about what a hyphen means would
- be its own small trap.
-
  We say:
 
 Section: The Answer
@@ -38,9 +31,7 @@ Section: The Answer
 
 Section: Characters
 
- Derived from Text literals, so they are CCE by construction. A hardcoded
- 45 for a hyphen is the ASCII assumption this project has shipped more
- than once: `a` is 15 here and a space is 2.
+ Derived from Text literals, so they are CCE: `a` is 15 and a space is 2.
 
   ex-ch : Text -> Integer
   ex-ch (t) = char-code (char-at t 0)
@@ -99,14 +90,9 @@ Section: Atoms
     then ex-name-end s (i + 2)
    else i
 
- THE SIX LETTERS ARE COMPARED ONE AT A TIME, AND THAT IS NOT CLUMSINESS.
- The obvious version -- `if l >= 'a' & l <= 'f' then 10 + l - 'a'` -- is
- wrong here, and it was written that way first and shipped `0xff` as
- **391**. CCE orders letters by English frequency, not alphabetically:
- `a` is 15, `e` is 13, `f` is 28, and `c` is 24. So neither the range test
- nor the subtraction means anything. Digits ARE contiguous in CCE (3
- through 12), which is why the digit arm above is allowed its arithmetic
- and this one is not.
+ CCE orders letters by English frequency (`a` 15, `e` 13, `f` 28, `c` 24),
+ so the six hex letters are compared one at a time; digits are contiguous,
+ 3 through 12.
 
   ex-hex-letter : Text, Integer -> Integer
   ex-hex-letter (s) (i) =
@@ -126,6 +112,13 @@ Section: Atoms
    in if is-digit c then char-code c - ex-ch "0"
    else ex-hex-letter s i
 
+ Plain Integer arithmetic traps on overflow, so every step on operator input
+ is checked before it is taken and refused rather than wrapped.
+
+  ex-max : Integer = 9223372036854775807
+
+  ex-min : Integer = 0 - 9223372036854775807 - 1
+
   ex-hex : Text, Integer, Integer, Integer -> ExprStep
   ex-hex (s) (i) (acc) (n) =
    if ex-at-end s i then
@@ -133,13 +126,16 @@ Section: Atoms
    else let d = ex-hex-digit s i
    in if d < 0 then
      (if n == 0 then ex-step (ExprErr "0x with no digits") i else ex-step (ExprOk acc) i)
+   else if acc > (ex-max - d) / 16 then ex-step (ExprErr "number too large") i
    else ex-hex s (i + 1) (acc * 16 + d) (n + 1)
 
   ex-dec : Text, Integer, Integer, Integer -> ExprStep
   ex-dec (s) (i) (acc) (n) =
    if ex-at-end s i then ex-step (ExprOk acc) i
-   else if is-digit (char-at s i) then ex-dec s (i + 1) (acc * 10 + (char-code (char-at s i) - ex-ch "0")) (n + 1)
-   else ex-step (ExprOk acc) i
+   else if is-digit (char-at s i) == False then ex-step (ExprOk acc) i
+   else let d = char-code (char-at s i) - ex-ch "0"
+   in if acc > (ex-max - d) / 10 then ex-step (ExprErr "number too large") i
+   else ex-dec s (i + 1) (acc * 10 + d) (n + 1)
 
   ex-number : Text, Integer -> ExprStep
   ex-number (s) (i) =
@@ -161,15 +157,6 @@ Section: Atoms
 
 Section: Operators
 
- Two levels only, and it is a deliberate simplification written down
- rather than discovered: multiplicative binds tighter than everything
- else, and everything else is left to right. So `1 + 2 * 3` is 7, and
- `1 | 2 + 3` is 6 -- the or and the plus share a level, so it is
- `(1 | 2) + 3` and not the `1 | (2 + 3)` that C would give. A debugger
- line is short enough that left to right reads the way it is typed, and
- the test pins both directions so the choice cannot drift into being C's
- by accident.
-
   ex-op-len : Text, Integer -> Integer
   ex-op-len (s) (i) =
    if ex-is s i "<" & ex-is s (i + 1) "<" then 2
@@ -181,12 +168,28 @@ Section: Operators
   ex-is-mul : Text, Integer -> Boolean
   ex-is-mul (s) (i) = ex-is s i "*" | ex-is s i "/"
 
+  ex-add-ok : Integer, Integer -> Boolean
+  ex-add-ok (a) (b) = if b > 0 then a <= ex-max - b else a >= ex-min - b
+
+  ex-sub-ok : Integer, Integer -> Boolean
+  ex-sub-ok (a) (b) = if b > 0 then a >= ex-min + b else a <= ex-max + b
+
+  ex-mul-ok : Integer, Integer -> Boolean
+  ex-mul-ok (a) (b) =
+   if a == 0 | b == 0 then True
+   else if a > 0 then (if b > 0 then a <= ex-max / b else b >= ex-min / a)
+   else if b > 0 then a >= ex-min / b
+   else a >= ex-max / b
+
   ex-apply : Text, Integer, Integer -> ExprResult
   ex-apply (op) (a) (b) =
-   if op == "+" then ExprOk (a + b)
-   else if op == "-" then ExprOk (a - b)
-   else if op == "*" then ExprOk (a * b)
-   else if op == "/" then (if b == 0 then ExprErr "divide by zero" else ExprOk (a / b))
+   if op == "+" then (if ex-add-ok a b then ExprOk (a + b) else ExprErr "overflow")
+   else if op == "-" then (if ex-sub-ok a b then ExprOk (a - b) else ExprErr "overflow")
+   else if op == "*" then (if ex-mul-ok a b then ExprOk (a * b) else ExprErr "overflow")
+   else if op == "/" then
+     (if b == 0 then ExprErr "divide by zero"
+      else if a == ex-min & b == 0 - 1 then ExprErr "overflow"
+      else ExprOk (a / b))
    else if op == "&" then ExprOk (bit-and a b)
    else if op == "|" then ExprOk (bit-or a b)
    else if op == "^" then ExprOk (bit-xor a b)

@@ -104,7 +104,7 @@ if (-not $WatOnly) {
     $wat2wasm = Get-Command 'wat2wasm' -ErrorAction SilentlyContinue
     if ($wat2wasm) {
         $wasmFile = Join-Path $OutDir 'designer.wasm'
-        & wat2wasm $watFile -o $wasmFile
+        & wat2wasm --enable-tail-call $watFile -o $wasmFile
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[designer] WASM: $wasmFile ($((Get-Item $wasmFile).Length) bytes)"
         } else { Write-Warning "wat2wasm failed; WAT is still available at $watFile" }

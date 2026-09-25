@@ -14,8 +14,8 @@
 // hand must equal the best category available among the twenty-one. That
 // one cannot see a kicker mistake and is not asked to.
 //
-// The wild-card scoring is measured rather than asserted, because what it
-// should do is a piece of work and not a one-line repair. See GAME-27.
+// The wild-card scoring is graded against a brute-force substitution oracle
+// that shares no code with the engine. See GAME-27.
 //
 // Usage: node apps/games/pv-verify.mjs [path/to/pokervariants.wasm]
 
@@ -222,46 +222,87 @@ console.log(`pv-verify ${wasmPath}`);
      `P1=${CATEGORY[e.pv_p1(e.pv_run(2, 123, 2))]} P2=${CATEGORY[e.pv_p2(e.pv_run(2, 123, 2))]} winner=${e.pv_winner(e.pv_run(2, 123, 2))}`);
 }
 
-// -- THE WILD CARD MEASUREMENT --------------------------------------------
-// pv-evaluate-with-wilds adds the number of wild cards to the category and
-// caps at 8. It never substitutes anything, so this is measured and
-// recorded rather than asserted. GAME-27.
-{
-  const wildRank = 1;   // threes are wild, rank 1
-  const rows = [];
-  const cases = [
-    ['no wild, a pair of fives', [card(5,0), card(5,1), card(A,0), card(J,1), card(8,2)]],
-    ['one three, otherwise junk', [card(1,0), card(A,1), card(J,2), card(8,3), card(6,0)]],
-    ['two threes, otherwise junk', [card(1,0), card(1,1), card(A,2), card(J,3), card(8,0)]],
-    ['three threes, otherwise junk', [card(1,0), card(1,1), card(1,2), card(A,3), card(J,0)]],
-    ['four threes and an ace', [card(1,0), card(1,1), card(1,2), card(1,3), card(A,0)]],
-  ];
-  let anyImpossible = false;
-  for (const [name, cs] of cases) {
-    const n = e.pv_wildn(...cs, wildRank);
-    const got = e.pv_wild(...cs, wildRank);
-    const plain = classify(cs);
-    // What the hand could really make: try every substitution of the wilds.
-    const nonWild = cs.filter(c => rankOf(c) !== wildRank);
-    let bestReal = plain;
-    if (n === 1) {
-      for (let sub = 0; sub < 52; sub++) {
-        if (nonWild.includes(sub)) continue;
-        bestReal = Math.max(bestReal, classify([...nonWild, sub]));
-      }
+// -- WILD CARDS -------------------------------------------------------------
+// A wild card stands for any card, so a wild hand is worth the best category
+// any substitution reaches. The oracle below TRIES them: every multiset of
+// substitutes for the wilds, skipping any that puts five cards on one rank
+// (the engine has no five of a kind, and classify() would call it junk). It
+// shares no code with the engine's fifteen-candidate construction. GAME-27.
+function bestWild(cs, isWild) {
+  const nat = cs.filter(c => !isWild(c));
+  const k = cs.length - nat.length;
+  if (k === 0) return classify(cs);
+  let best = -1;
+  const pick = [];
+  const walk = (from) => {
+    if (pick.length === k) {
+      const h = [...nat, ...pick];
+      const cnt = new Array(13).fill(0);
+      for (const c of h) cnt[rankOf(c)]++;
+      if (Math.max(...cnt) <= 4) best = Math.max(best, classify(h));
+      return;
     }
-    if (n >= 2 || got > bestReal) anyImpossible = anyImpossible || got > bestReal;
-    rows.push(`${name}: wilds ${n}, engine ${CATEGORY[got]}` +
-              (n === 1 ? `, best real ${CATEGORY[bestReal]}` : ''));
+    for (let c = from; c < 52; c++) { pick.push(c); walk(c); pick.pop(); }
+  };
+  walk(0);
+  return best;
+}
+const threes = c => rankOf(c) === 1;
+{
+  const cases = [
+    ['no wild, a pair of fives', [card(5,0), card(5,1), card(A,0), card(J,1), card(8,2)], 1],
+    ['one three with A J T 8, a pair', [card(1,0), card(A,1), card(J,2), card(T,3), card(6,0)], 1],
+    ['two threes with A J T, a straight', [card(1,0), card(1,1), card(A,2), card(J,3), card(T,0)], 4],
+    ['three threes, an ace and a jack', [card(1,0), card(1,1), card(1,2), card(A,3), card(J,0)], 7],
+    ['four threes and an ace', [card(1,0), card(1,1), card(1,2), card(1,3), card(A,0)], 8],
+  ];
+  const bad = [];
+  for (const [name, cs, want] of cases) {
+    const got = e.pv_wild(...cs, 1);
+    const oracle = bestWild(cs, threes);
+    if (got !== want || oracle !== want) bad.push(`${name}: engine ${CATEGORY[got]}, oracle ${CATEGORY[oracle]}, by hand ${CATEGORY[want]}`);
   }
+  ok('five named wild hands score what substitution makes, by hand and by oracle', bad.length === 0, bad.join('; ') || undefined);
   ok('the wild count is the number of cards of the wild rank',
      e.pv_wildn(card(1,0), card(1,1), card(A,2), card(J,3), card(8,0), 1) === 2 &&
      e.pv_wildn(card(5,0), card(5,1), card(A,0), card(J,1), card(8,2), 1) === 0);
-  console.log('  note  wild scoring, recorded as GAME-27 and not asserted:');
-  for (const r of rows) console.log(`          ${r}`);
-  console.log(`  note  the engine claims a category the cards cannot make: ${anyImpossible}`);
 }
-
+{
+  // Generated hands with one to four threes, so every wild count is reached.
+  const bad = [];
+  const perK = [0, 0, 0, 0, 0];
+  for (let seed = 1; seed <= 200; seed++) {
+    const k = 1 + (seed % 4);
+    const rest = sevenCards(seed).filter(c => !threes(c)).slice(0, 5 - k);
+    const cs = [...[0, 1, 2, 3].slice(0, k).map(s => card(1, s)), ...rest];
+    perK[k]++;
+    const got = e.pv_wild(...cs, 1);
+    const want = bestWild(cs, threes);
+    if (got !== want) bad.push(`${show(cs)}: engine ${CATEGORY[got]}, oracle ${CATEGORY[want]}`);
+  }
+  ok('200 generated five-card wild hands agree with the substitution oracle',
+     bad.length === 0, bad.length ? bad.slice(0, 4).join('; ') : `by wild count ${perK.slice(1).join('/')}`);
+}
+{
+  // Seven cards: the best wild five of seven, not wilds applied to the best
+  // PLAIN five. The first hand is built so the two differ: A K Q J of spades,
+  // a wild three, and a pair of nines. The best plain five is the nines and
+  // leaves the three out; with the three the spades are a royal flush.
+  const royal = [card(A,3), card(K,3), card(Q,3), card(J,3), card(1,2), card(7,0), card(7,1)];
+  ok('seven cards: the wild three joins the spades, not the pair of nines',
+     e.pv_wild7(...royal, 1) === 8, CATEGORY[e.pv_wild7(...royal, 1)]);
+  const bad = [];
+  for (let seed = 1; seed <= 60; seed++) {
+    const base = [...new Set([...sevenCards(seed + 1000), ...sevenCards(seed + 5000)])].filter(c => !threes(c)).slice(0, 7 - (seed % 3));
+    const cs = [...[0, 1].slice(0, seed % 3).map(s => card(1, s)), ...base];
+    const got = e.pv_wild7(...cs, 1);
+    const want = Math.max(...subsets5(cs).map(h => bestWild(h, threes)));
+    if (cs.length !== 7) bad.push(`dealt ${cs.length} cards, not 7`);
+    else if (got !== want) bad.push(`${show(cs)}: engine ${CATEGORY[got]}, oracle ${CATEGORY[want]}`);
+  }
+  ok('60 seven-card hands with up to two wild threes agree with the oracle over all 21 fives',
+     bad.length === 0, bad.slice(0, 4).join('; ') || undefined);
+}
 // -- The table, per variant ----------------------------------------------
 //
 // All eight variants run on ONE table now. What differs between them is

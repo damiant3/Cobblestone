@@ -2,6 +2,13 @@ Chapter: Desugarer
   cites Codex chapter Build Settings (max-recursion-depth, demand-desugar-guard-band)
   cites Codex chapter Phase Allocator (deck-short-of)
   cites Codex chapter Syntax Nodes (copy-sx-span, copy-sx-ov, copy-sx-text)
+  cites Codex chapter Tokens (token-text, lit-text-to-integer)
+  cites Codex chapter AST Nodes (aexpr-span)
+  cites Codex chapter Parser (is-pipe-forward)
+  cites Codex chapter Name (make-name)
+  cites Codex chapter Source Text (span-at, span-with-provenance, synthetic-span)
+  cites Codex chapter Lexer (cc-backslash, cc-lower-n, cc-newline, cc-lower-t, cc-space, cc-lower-r, cc-single-quote, decode-escapes)
+  cites Codex chapter Method Specialization (method-free-vars)
 
 Section: Span Helpers
   token-span : Token -> SourceSpan
@@ -606,7 +613,7 @@ Section: Document Desugaring
    let raw-defs0 = desugar-defs-ll (doc.defs) 0 (list-length (doc.defs)) [] ceiling
    in let raw-defs-fam = synth-family-member-defs (doc.type-defs) 0 (list-length (doc.type-defs)) raw-defs0
    in let raw-defs-conv = synth-conversion-defs (doc.annotations) 0 (list-length (doc.annotations)) raw-defs-fam
-   in let raw-defs = synth-derived-defs (doc.type-defs) 0 (list-length (doc.type-defs)) raw-defs-conv
+   in let raw-defs = synth-derived-defs (doc.type-defs) (eq-withheld-set (doc.type-defs)) 0 (list-length (doc.type-defs)) raw-defs-conv
    in let raw-tds = desugar-type-defs-ll (doc.type-defs) 0 (list-length (doc.type-defs)) [] ceiling
    in let raw-eds = desugar-effect-defs-ll (doc.effect-defs) 0 (list-length (doc.effect-defs)) []
    in let raw-cites = desugar-cites-ll (doc.citations) 0 (list-length (doc.citations)) []
@@ -655,16 +662,16 @@ Section: Document Desugaring
    else if token-text (list-at toks i) == name then True
    else deriving-has-loop toks (i + 1) len name
 
-  synth-derived-defs : List TypeDef, Integer, Integer, LinkedList ADef -> LinkedList ADef
-  synth-derived-defs (tds) (i) (len) (acc) =
+  synth-derived-defs : List TypeDef, List Text, Integer, Integer, LinkedList ADef -> LinkedList ADef
+  synth-derived-defs (tds) (withheld) (i) (len) (acc) =
    if i >= len then acc
    else let td = list-at tds i
-   in synth-derived-defs tds (i + 1) len (push-derived-for-type td acc)
+   in synth-derived-defs tds withheld (i + 1) len (push-derived-for-type withheld td acc)
 
-  push-derived-for-type : TypeDef, LinkedList ADef -> LinkedList ADef
-  push-derived-for-type (td) (acc) =
+  push-derived-for-type : List Text, TypeDef, LinkedList ADef -> LinkedList ADef
+  push-derived-for-type (withheld) (td) (acc) =
    let acc1 = if deriving-has (td.deriving) "Show" then __linked-list-push acc (gen-show-def td) else acc
-   in let acc2 = if deriving-has (td.deriving) "Eq" | td-eq-safe td then __linked-list-push acc1 (gen-eq-def td) else acc1
+   in let acc2 = if deriving-has (td.deriving) "Eq" | td-eq-safe withheld td then __linked-list-push acc1 (gen-eq-def td) else acc1
    in if deriving-has (td.deriving) "Ord" then __linked-list-push acc2 (gen-compare-def td) else acc2
 
  EVERY SUM GETS `__eq_<T>`, not only the sums that derive Eq or name their own
@@ -682,30 +689,69 @@ Section: Document Desugaring
  the recursive case terminate.
 
 
-  td-eq-safe : TypeDef -> Boolean
-  td-eq-safe (td) =
+ The type checker refuses `==` on a type whose helper is withheld (CDX2099),
+ so the withholding is transitive over the chapter's own types, or a helper
+ comparing a field of a withheld type would be refused inside code nobody
+ wrote. The set is grown to a fixed point once per chapter; a recursive walk
+ per field multiplied through the compiler's mutually referring types and
+ exhausted the heap.
+
+  eq-withheld-set : List TypeDef -> List Text
+  eq-withheld-set (tds) = withheld-grow tds (withheld-pass tds [] 0 (list-length tds) [])
+
+  withheld-grow : List TypeDef, List Text -> List Text
+  withheld-grow (tds) (set) =
+   let next = withheld-pass tds set 0 (list-length tds) set
+   in if list-length next == list-length set then set else withheld-grow tds next
+
+  withheld-pass : List TypeDef, List Text, Integer, Integer, List Text -> List Text
+  withheld-pass (tds) (set) (i) (len) (acc) =
+   if i >= len then acc
+   else let td = list-at tds i
+   in let nm = token-text (td.name)
+   in if desugar-text-in-list acc nm 0 (list-length acc) then withheld-pass tds set (i + 1) len acc
+   else if td-names-withheld set td then withheld-pass tds set (i + 1) len (acc & [nm])
+   else withheld-pass tds set (i + 1) len acc
+
+  td-names-withheld : List Text, TypeDef -> Boolean
+  td-names-withheld (set) (td) =
    when td.body
-    is VariantBody (ctors) -> ctors-eq-safe ctors 0 (list-length ctors)
-    is RecordBody (fields) -> record-fields-eq-safe fields
+    is VariantBody (ctors) -> ctors-name-withheld set ctors 0 (list-length ctors)
+    is RecordBody (fields) -> types-name-withheld set (for f in fields -> f.type-expr)
+    is UnitBody (base) -> types-name-withheld set [base]
     is otherwise -> False
 
+  ctors-name-withheld : List Text, List VariantCtorDef, Integer, Integer -> Boolean
+  ctors-name-withheld (set) (ctors) (i) (len) =
+   if i >= len then False
+   else if types-name-withheld set ((list-at ctors i).fields) then True
+   else ctors-name-withheld set ctors (i + 1) len
 
-  field-types-eq-safe : List TypeExpr -> Boolean
-  field-types-eq-safe (tys) =
-   if fields-name-type tys "Real" 0 (list-length tys) then False
-   else if fields-name-type tys "Vector" 0 (list-length tys) then False
-   else if fields-name-type tys "SizedVec" 0 (list-length tys) then False
-   else True
+  types-name-withheld : List Text, List TypeExpr -> Boolean
+  types-name-withheld (set) (tys) =
+   if fields-name-type tys "Real" 0 (list-length tys) then True
+   else if fields-name-type tys "Vector" 0 (list-length tys) then True
+   else if fields-name-type tys "SizedVec" 0 (list-length tys) then True
+   else set-named-in set tys 0 (list-length set)
 
-  record-fields-eq-safe : List RecordFieldDef -> Boolean
-  record-fields-eq-safe (fs) =
-   field-types-eq-safe (for f in fs -> f.type-expr)
+  set-named-in : List Text, List TypeExpr, Integer, Integer -> Boolean
+  set-named-in (set) (tys) (i) (len) =
+   if i >= len then False
+   else if fields-name-type tys (list-at set i) 0 (list-length tys) then True
+   else set-named-in set tys (i + 1) len
 
-  ctors-eq-safe : List VariantCtorDef, Integer, Integer -> Boolean
-  ctors-eq-safe (ctors) (i) (len) =
-   if i >= len then True
-   else if field-types-eq-safe ((list-at ctors i).fields) == False then False
-   else ctors-eq-safe ctors (i + 1) len
+  desugar-text-in-list : List Text, Text, Integer, Integer -> Boolean
+  desugar-text-in-list (xs) (x) (i) (len) =
+   if i >= len then False
+   else if list-at xs i == x then True
+   else desugar-text-in-list xs x (i + 1) len
+
+  td-eq-safe : List Text, TypeDef -> Boolean
+  td-eq-safe (withheld) (td) =
+   when td.body
+    is VariantBody (ctors) -> desugar-text-in-list withheld (token-text (td.name)) 0 (list-length withheld) == False
+    is RecordBody (fields) -> desugar-text-in-list withheld (token-text (td.name)) 0 (list-length withheld) == False
+    is otherwise -> False
 
   fields-name-type : List TypeExpr, Text, Integer, Integer -> Boolean
   fields-name-type (fs) (tn) (i) (len) =
@@ -1872,5 +1918,73 @@ Section: Document Desugaring
     span = token-span (m.name)
    })
    in desugar-instance-methods ms (i + 1) len (list-push acc am)
+
+  aexpr-uses-name : AExpr, Text -> Boolean
+  aexpr-uses-name (e) (target) =
+   when e
+    is ALitExpr (lt) (k) (s) -> False
+    is ANameExpr (n) (s) -> n.value == target
+    is AApplyExpr (f) (a) (s) -> aexpr-uses-name f target | aexpr-uses-name a target
+    is ABinaryExpr (l) (op) (r) (s) -> aexpr-uses-name l target | aexpr-uses-name r target
+    is AUnaryExpr (x) (s) -> aexpr-uses-name x target
+    is AIfExpr (c) (tb) (el) (s) -> aexpr-uses-name c target | aexpr-uses-name tb target | aexpr-uses-name el target
+    is ALetExpr (binds) (lbody) (s) -> uses-name-in-binds binds 0 (list-length binds) target | aexpr-uses-name lbody target
+    is ALambdaExpr (ps) (lbody) (s) -> aexpr-uses-name lbody target
+    is AMatchExpr (scrut) (arms) (s) -> aexpr-uses-name scrut target | uses-name-in-arms arms 0 (list-length arms) target
+    is AListExpr (es) (s) -> uses-name-in-exprs es 0 (list-length es) target
+    is ARecordExpr (n) (fs) (s) -> uses-name-in-fields fs 0 (list-length fs) target
+    is AFieldAccess (r) (fl) (s) -> aexpr-uses-name r target
+    is AActExpr (ss) (s) -> uses-name-in-stmts ss 0 (list-length ss) target
+    is AHandleExpr (eff) (hb) (cs) (s) -> aexpr-uses-name hb target | uses-name-in-clauses cs 0 (list-length cs) target
+    is AWithTimeoutExpr (tv) (effs) (scopes) (wb) (s) -> aexpr-uses-name wb target
+    is ATryExpr (mx) (tb) (fb) (fl) (s) -> uses-name-in-stmts tb 0 (list-length tb) target | uses-name-in-stmts fb 0 (list-length fb) target | uses-name-in-stmts fl 0 (list-length fl) target
+    is AFieldAssignExpr (r) (fl) (v) (s) -> aexpr-uses-name r target | aexpr-uses-name v target
+    is ALazyExpr (inner) (s) -> aexpr-uses-name inner target
+    is AErrorExpr (m) (s) -> False
+    is AInductionExpr (sc) (arms) (s) -> aexpr-uses-name sc target | uses-name-in-arms arms 0 (list-length arms) target
+
+  uses-name-in-binds : List ALetBind, Integer, Integer, Text -> Boolean
+  uses-name-in-binds (binds) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-uses-name ((list-at binds i).value) target then True
+   else uses-name-in-binds binds (i + 1) len target
+
+  uses-name-in-exprs : List AExpr, Integer, Integer, Text -> Boolean
+  uses-name-in-exprs (es) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-uses-name (list-at es i) target then True
+   else uses-name-in-exprs es (i + 1) len target
+
+  uses-name-in-arms : List AMatchArm, Integer, Integer, Text -> Boolean
+  uses-name-in-arms (arms) (i) (len) (target) =
+   if i >= len then False
+   else let a = list-at arms i
+   in if aexpr-uses-name (a.guard) target then True
+   else if aexpr-uses-name (a.body) target then True
+   else uses-name-in-arms arms (i + 1) len target
+
+  uses-name-in-fields : List AFieldExpr, Integer, Integer, Text -> Boolean
+  uses-name-in-fields (fs) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-uses-name ((list-at fs i).value) target then True
+   else uses-name-in-fields fs (i + 1) len target
+
+  uses-name-in-stmts : List AActStmt, Integer, Integer, Text -> Boolean
+  uses-name-in-stmts (ss) (i) (len) (target) =
+   if i >= len then False
+   else if stmt-uses-name (list-at ss i) target then True
+   else uses-name-in-stmts ss (i + 1) len target
+
+  stmt-uses-name : AActStmt, Text -> Boolean
+  stmt-uses-name (s) (target) =
+   when s
+    is AActBindStmt (n) (v) (sp) -> aexpr-uses-name v target
+    is AActExprStmt (v) (sp) -> aexpr-uses-name v target
+
+  uses-name-in-clauses : List AHandleClause, Integer, Integer, Text -> Boolean
+  uses-name-in-clauses (cs) (i) (len) (target) =
+   if i >= len then False
+   else if aexpr-uses-name ((list-at cs i).body) target then True
+   else uses-name-in-clauses cs (i + 1) len target
 
 Page 1

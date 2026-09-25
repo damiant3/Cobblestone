@@ -58,11 +58,11 @@ function Run-Bounded([string]$Name,[string]$Executable,[string[]]$Arguments,[byt
     return ,$r.Output
 }
 $lines=[Collections.Generic.List[string]]::new()
-foreach($relative in @('codex/compiler/Core/Name.codex','codex/compiler/Core/SourceText.codex','codex/compiler/Types/CodexType.codex','codex/compiler/Ast/AstNodes.codex','codex/compiler/IR/IRChapter.codex')){
+foreach($relative in @('codex/compiler/Core/Name.codex','codex/compiler/Core/SourceText.codex','codex/compiler/Types/CodexType.codex','codex/compiler/Ast/AstNodes.codex','codex/compiler/IR/IRChapter.codex','codex/compiler/IR/ConstShare.codex')){
     $drop=if($relative -like '*AstNodes.codex'){@('Deck Copies')}else{@()}
     Add-PlugChapter -Lines $lines -Path (Join-Path $repo $relative) -Quire Wasm -DropSections $drop
 }
-foreach($relative in @('codex/plugs/common/PlugTypes.codex','codex/plugs/common/IRTextParser.codex','codex/plugs/wasm/WasmEmitter.codex','codex/plugs/wasm/WasmStdio.codex','codex/plugs/common/PlugStdio.codex')){
+foreach($relative in @('codex/plugs/common/PlugTypes.codex','codex/plugs/common/IRTextParser.codex','codex/plugs/common/HandlerLift.codex','codex/plugs/wasm/WasmEmitter.codex','codex/plugs/wasm/WasmStdio.codex','codex/plugs/common/PlugStdio.codex')){
     Add-PlugChapter -Lines $lines -Path (Join-Path $repo $relative) -Quire Wasm
 }
 $prelude=Resolve-PlugForewords $lines

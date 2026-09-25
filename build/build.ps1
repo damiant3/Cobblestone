@@ -58,6 +58,8 @@ $BuildLog = Join-Path $OutDir 'build.log'
 #     50 on main is compiler-without-build, so this costs 31 s and 63 s that
 #     rarely.
 #   app-sweep                   <- apps or codex/compiler (the compiler builds the apps)
+#   wasm-bundles                <- apps, codex/plugs or codex/compiler
+#   wasm-run                    <- codex/plugs/wasm or codex/compiler
 #   run-list                    <- tools/codex-vm.c or .exe, or build/check-run-list.ps1:
 #     a per-file trigger, which the audit above calls the precise fix and
 #     declined for the six existing phases only because widening them to
@@ -180,6 +182,8 @@ if ($Internal) {
         'vm-differential' = ($tCompiler -or $tBuild)
         'deck-headroom'   = ($tBuild -or $tCompiler)
         'app-sweep'       = ($tApps -or $tCompiler)
+        'wasm-bundles'    = ($tApps -or $tPlugs -or $tCompiler)
+        'wasm-run'        = (($changedPlugs -contains 'wasm') -or $tCompiler)
         'run-list'        = $tVm
         'uefi-conout'     = ($tCompiler -or $tTest -or $tVm)
         'text-stage1'     = $coreRuns
@@ -581,6 +585,17 @@ if (Test-Path $chkIds) {
     & pwsh -NoProfile -File $chkIds 2>&1 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'FAIL: a register gives two rows the same id; a citation to it cannot resolve.'
+        exit 1
+    }
+}
+
+# An annotation names its subject by function name; this fails one whose
+# chapter no longer defines it. Text only, no guest.
+$chkAnnTargets = (Join-Path $PSScriptRoot 'check-annotation-targets.ps1')
+if ((Test-Path -PathType Leaf $chkAnnTargets)) {
+    & pwsh -NoProfile -File $chkAnnTargets 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ((-not ($LASTEXITCODE -eq 0))) {
+        Write-Host "FAIL: an annotation names a function its chapter does not define, or a sidecar mirrors no chapter."
         exit 1
     }
 }
@@ -1493,6 +1508,52 @@ Measure-Phase 'app-sweep' {
             exit 1
         }
         $swOut | Where-Object { $_ -match 'units:|CHECK|elapsed:' } | ForEach-Object { Write-Host "  $_" }
+    }
+}
+
+# -- the web and wasm bundles: the nine apps/*/build-wasm.ps1 modules the landing
+# site ships. apps/landing/build.ps1 builds them and is run by hand, so no gate
+# did. Each builds with this run's compiler; games builds its default game
+# only, and fishtank writes to scratch because its shipped module is tracked.
+# 85 s measured 2026-09-24.
+Measure-Phase 'wasm-bundles' {
+    $wbPlug = Join-Path $Repo 'codex\plugs\wasm\build-output\wasm-plug.cdx'
+    $wbDir = Join-Path $OutDir 'wasm-bundles'
+    New-Item -ItemType Directory -Force -Path $wbDir | Out-Null
+    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\build.ps1') *> (Join-Path $wbDir 'wasm-plug.log')
+    if (-not (Test-Path $wbPlug)) {
+        Write-Host 'FAIL: the wasm plug did not build; see build\output\wasm-bundles\wasm-plug.log'
+        exit 1
+    }
+    $wbFail = @()
+    foreach ($wbApp in @('c64', 'data', 'fireworks', 'fishtank', 'games', 'mathbook', 'safari', 'spark', 'starmap')) {
+        $wbArgs = @('-Kernel', $SutCdx)
+        if ($wbApp -eq 'safari') { $wbArgs += '-Wasm' }
+        if ($wbApp -eq 'fishtank') { $wbArgs += @('-OutDir', (Join-Path $wbDir 'fishtank')) }
+        & pwsh -NoProfile -File (Join-Path $Repo "apps\$wbApp\build-wasm.ps1") @wbArgs *> (Join-Path $wbDir "$wbApp.log")
+        if ($LASTEXITCODE -ne 0) { $wbFail += $wbApp }
+    }
+    if ($wbFail.Count -gt 0) {
+        Write-Host ''
+        Write-Host "FAIL: wasm bundle build -- $($wbFail -join ', ')"
+        foreach ($wbApp in $wbFail) { Get-Content (Join-Path $wbDir "$wbApp.log") -ErrorAction SilentlyContinue | Select-Object -Last 5 | ForEach-Object { Write-Host "  ${wbApp}: $_" } }
+        exit 1
+    }
+    Write-Host '  wasm-bundles: OK (nine apps/*/build-wasm.ps1 modules built with this run''s compiler)'
+}
+
+# -- the wasm plug, RUN: wasm-bundles only assembles modules, and a missing builtin arm
+# assembles and traps at runtime, so this phase compiles subjects to wasm and runs them
+# under wasmtime against the same .expected the bare-metal battery grades (plugs 2.16).
+# It grades the harness default, 60 of the hosted corpus stratified by directory, not
+# the corpus (1096 eligible, 2026-09-25). A red listed in codex/plugs/wasm/wasm-run-baseline.txt
+# does not fail it; a listed subject that passes does. 68 s at -Jobs 4, 2026-09-25. After wasm-bundles, which rebuilt the plug after this
+# run's compiler existed, so the harness's plug-older-than-kernel refusal holds.
+Measure-Phase 'wasm-run' {
+    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\hosted-wasm-test.ps1') -Kernel $SutCdx -Jobs 4 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: the wasm plug disagrees with .expected; see the hosted-wasm lines above'
+        exit 1
     }
 }
 

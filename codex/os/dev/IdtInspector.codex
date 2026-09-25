@@ -2,36 +2,8 @@ Chapter: IdtInspector
   cites Dev chapter HexFormat
   grounds Device.Port
 
- THE TABLE IS AT A COMPILE-TIME CONSTANT AND IS NOT READ FROM IDTR. The
- boot path builds 256 gates at `idt-base` and then points IDTR at that
- same address, so the constant and the register agree by construction and
- an `sidt` would answer what is written here. That is worth stating rather
- than assuming, because it is the one thing this chapter cannot check: if
- something ever loaded a SECOND table, every line below would describe the
- table that is no longer installed. Reading IDTR needs a builtin that does
- not exist, and inventing one for this was more compiler work than the
- reading is worth.
-
- THE ENTRY LAYOUT IS READ OFF THE EMITTER, not off a manual. `emit-idt-
- entries` writes each gate as two stores: a qword at +0 carrying the low
- offset word and selector 8, then a qword at +4 carrying `0x8E00` in its
- low half, which is what puts the type in the nibble at +5 and the present
- bit above it. Every vector therefore reads back type 14, DPL 0 and
- present, and the stubs are twelve bytes apart, so vector N's handler is
- vector zero's plus twelve N. Vector 8 is the single exception: the boot
- path writes 1 to the IST field at +4 afterwards so a double fault lands
- on the emergency stack. An inspector that showed all 256 gates identical
- would be hiding the one gate whose difference is load-bearing.
-
- THE RING IS FOUR SLOTS AND THE HEAD IS A FREE-RUNNING COUNTER. The
- writer masks with three and scales by thirty-two, so the head is a total
- count of samples and not an index; the newest slot is the one before it.
- Reporting them oldest-first would put the sample that matters last.
-
- EVERYTHING HERE EXCEPT THE PIC READ IS `peek`, WHICH COSTS NOTHING. That
- is why these reports are built where they are asked for rather than
- cached, and it is the opposite of the disk inspector next door, where
- every read is 512 bytes of heap that is never returned.
+ Every read here except the PIC is a `peek`, so reports are built on demand
+ rather than cached.
 
  We say:
 
@@ -116,11 +88,6 @@ Section: The Counters
     in if ticks == 0 then "ticks 0 -- the timer ISR has not run"
     else "ticks " & show ticks
 
- The keyboard cell holds the last scancode the ISR read from port 0x60,
- zero-extended, and NOTHING CLEARS IT. The read syscall loads it without
- zeroing, so this is the last key seen and not a queue depth; a stale
- non-zero value is the normal resting state after any keypress.
-
   ii-key-line : Text
   ii-key-line =
     let k = bit-and (peek-qword ii-key-buffer-addr 0) 255
@@ -183,10 +150,8 @@ Section: The Stall Ring
 
 Section: The Interrupt Controller
 
- Three registers and not two. The design names ISR and IRR, which answer
- what is in service and what is pending; neither answers why a line that
- should be firing is silent, and that is the mask. It is one more port
- read on a register that needs no OCW3 at all.
+ ISR and IRR say what is in service and what is pending; the mask says why a
+ line that should fire is silent, and reading it needs no OCW3.
 
   ii-pic1-cmd : Integer = 32
   ii-pic1-data : Integer = 33

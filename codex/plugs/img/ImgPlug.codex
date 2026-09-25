@@ -75,6 +75,16 @@ Section: Drain
     else 0
    end
 
+Section: Refusal
+
+  img-refuse : TcpTransportState, Text, Integer -> [Console, Network.Read, Network.Write] Nothing
+  img-refuse (ts) (why) (total-sectors) =
+   act
+    ts6 <- net-io-close ts
+    drained <- drain-wait ts6 0
+    print-line-uni ("REFUSED fat16 sectors=" & show (total-sectors + drained - drained) & ": " & why)
+   end
+
 Section: Read Helpers
 
   img-read-i32 : List Integer, Integer -> Integer
@@ -123,7 +133,9 @@ Section: Body
       end
      else
       let lay = fat16w-compute-layout total-sectors
-      in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes src-count payload-buf tbl-off (hdr-len + pe-size + cdx-size) dir-count dtbl-off
+      in let why = fat16w-refusal lay pe-size cdx-size src-count payload-buf tbl-off dir-count dtbl-off
+      in if text-length why > 0 then img-refuse (recv.transport) why total-sectors
+      else let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes src-count payload-buf tbl-off (hdr-len + pe-size + cdx-size) dir-count dtbl-off
       in let restored = __heap-restore hp1
       in act
        sent <- send-buf-loop (recv.transport) img-buf 0 img-bytes 0

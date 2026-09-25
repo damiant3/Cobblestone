@@ -4,23 +4,12 @@ Chapter: DiskInspector
   cites Foreword chapter FactLog
   cites Foreword chapter Maybe
 
- THE STORE NO LONGER STARTS AT SECTOR ZERO, and that is why every command
- here resolves the region before it reads anything. The fact store lives
- in a partition of its own type and addresses every sector relative to
- that partition's base; on the shipped 16 MB image the base is 28639. A
- superblock decode pointed at LBA 0 therefore reads the protective MBR and
- reports no superblock about a disk that has one. The design this chapter
- implements still describes that command as reading sectors 0 and 1, which
- was true before the partition existed and is not true now.
+ The fact store addresses sectors relative to its partition's base (28639
+ on the shipped 16 MB image), so every command resolves the region first.
 
- EVERY SECTOR READ COSTS 512 BYTES OF HEAP THAT IS NEVER RETURNED.
- `block-read-sector` is three instructions over the bump allocator: it
- takes the current heap pointer as its destination and advances the heap
- register by 512. Two consequences, and both shape the code below. A
- comparison needs no snapshot, because two reads land on two distinct
- buffers. And a walk of N entries costs 512N bytes until the calling
- function returns, which is why the walk is fuel-capped rather than
- running to the log head unconditionally.
+ Every sector read takes 512 bytes of heap that is not returned until the
+ calling function returns, so a walk of N entries costs 512N bytes and is
+ fuel-capped.
 
  We say:
 
@@ -85,12 +74,8 @@ Section: The Superblock
 
 Section: The Fact Log
 
- The walk reads HEADERS and never entry content. `scan-fact-at` is the
- obvious primitive and it is the wrong one here: it calls
- `disk-read-entry-content`, which allocates a buffer the size of the whole
- fact and materialises it, so listing a log would cost the log. Kind,
- length and timestamp are all in the entry's first sector, which the walk
- has already paid for.
+ The walk reads entry headers only: kind, length and timestamp are in the
+ first sector, and materialising content would cost the whole log.
 
   di-fact-line : Integer, Integer, Integer, Integer -> Text
   di-fact-line (sector) (buf) (clen) (nsec) =

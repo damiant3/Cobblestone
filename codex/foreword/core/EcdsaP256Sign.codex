@@ -1,0 +1,141 @@
+Chapter: EcdsaP256Sign
+  cites Foreword chapter EcdsaP256
+  cites Foreword chapter CryptoBig
+  cites Foreword chapter Hmac
+
+ ECDSA signing on P-256 with SHA-256, the nonce derived by RFC 6979.
+
+ NOT CONSTANT TIME. The ladder spends one addition and one doubling on
+ every one of the 256 scalar bits, which removes the branch a
+ double-and-add takes per set bit. What it does not remove: an operation
+ on the point at infinity returns early, so the elapsed time reveals how
+ many leading zero bits the scalar has, the nonce-length leak (Minerva,
+ 2020) that recovers a key from a few thousand timed signatures; the
+ CryptoBig reduction and Montgomery multiply end in a conditional
+ subtraction that depends on the value; and the nonce inverse is a
+ square-and-multiply over a secret base. A key whose signing time an
+ attacker can measure over many signatures is exposed to this chapter.
+
+ We say:
+
+Section: RFC 6979 Nonce
+
+ RFC 6979 section 3.2 with HMAC-SHA256. For qlen = hlen = 256, bits2int
+ of a 32-byte string is the string itself and bits2octets is that value
+ reduced once modulo n, which is the same z the signature uses.
+
+  p256s-hmac : List Integer, List Integer -> List Integer
+  p256s-hmac (key) (msg) = hash-words-to-bytes (hmac-sha256 key msg)
+
+  P256sDrbg = record {
+    pd-k : List Integer,
+    pd-v : List Integer
+  }
+
+ Steps b through g.
+
+  p256s-drbg-init : List Integer, List Integer -> P256sDrbg
+  p256s-drbg-init (x) (h1) =
+    let v0 = repeat-byte 1 32
+    in let k1 = p256s-hmac (repeat-byte 0 32) (v0 & [0] & x & h1)
+    in let v1 = p256s-hmac k1 v0
+    in let k2 = p256s-hmac k1 (v1 & [1] & x & h1)
+    in P256sDrbg { pd-k = k2, pd-v = p256s-hmac k2 v1 }
+
+ Step h: V = HMAC_K(V), and V is the candidate. A rejected candidate
+ (out of range, or r or s zero) first sets K = HMAC_K(V || 0x00) and
+ V = HMAC_K(V).
+
+  p256s-draw : P256sDrbg -> P256sDrbg
+  p256s-draw (d) = P256sDrbg { pd-k = d.pd-k, pd-v = p256s-hmac d.pd-k d.pd-v }
+
+  p256s-reseed : P256sDrbg -> P256sDrbg
+  p256s-reseed (d) =
+    let k2 = p256s-hmac d.pd-k (d.pd-v & [0])
+    in P256sDrbg { pd-k = k2, pd-v = p256s-hmac k2 d.pd-v }
+
+Section: The Ladder
+
+  p256s-ladder : List Integer, EcPoint, EcField -> EcPoint
+  p256s-ladder (k) (p) (f) = p256s-rung k f (ec-infinity f) p (list-length k * 8 - 1)
+
+  p256s-rung : List Integer, EcField, EcPoint, EcPoint, Integer -> EcPoint
+  p256s-rung (k) (f) (r0) (r1) (i) =
+    if i < 0 then r0
+    else if cb-bit-at k i == 1 then p256s-rung k f (ec-add-pt r0 r1 f) (ec-double r1 f) (i - 1)
+    else p256s-rung k f (ec-double r0 f) (ec-add-pt r0 r1 f) (i - 1)
+
+Section: Keys
+
+ The SEC1 uncompressed public key, 0x04 then x then y, for a private
+ scalar in [1, n-1]; an empty list for anything else.
+
+  ecdsa-p256-public : List Integer -> List Integer
+  ecdsa-p256-public (d) =
+    if p256s-key-ok d == False then []
+    else p256s-public-of d ec-p256-curve
+
+  p256s-public-of : List Integer, EcField -> List Integer
+  p256s-public-of (d) (fp) =
+    let pt = p256s-ladder d (ec-point-of fp.ef-gx fp.ef-gy fp) fp
+    in let zi = ec-inv-mont pt.ep-z fp
+    in let zi3 = ec-mul-f zi (ec-mul-f zi zi fp) fp
+    in [4] & ec-affine-with pt fp zi & cb-to-bytes (ec-from-mont (ec-mul-f pt.ep-y zi3 fp) fp) fp.ef-w
+
+  p256s-key-ok : List Integer -> Boolean
+  p256s-key-ok (d) =
+    if cb-octets-ok d 0 == False then False
+    else ec-scalar-ok d ec-width ec-n-bytes
+
+Section: Signing
+
+ The signature as r then s, 32 bytes each; an empty list when the key is
+ not a scalar in [1, n-1], a byte is out of range, or sixteen candidate
+ nonces in a row are rejected (each rejection has probability near 2^-128).
+
+  ecdsa-p256-sign : List Integer, List Integer -> List Integer
+  ecdsa-p256-sign (d) (msg) =
+    if p256s-key-ok d == False then []
+    else if cb-octets-ok msg 0 == False then []
+    else p256s-sign-z d (p256s-reduce (ec-digest-bytes msg)) ec-p256-curve ec-p256-order
+
+  p256s-reduce : List Integer -> List Integer
+  p256s-reduce (h) =
+    cb-to-bytes (ec-reduce-mod (cb-from-bytes h ec-limbs) (cb-from-bytes ec-n-bytes ec-limbs) ec-limbs) ec-width
+
+  p256s-sign-z : List Integer, List Integer, EcField, EcField -> List Integer
+  p256s-sign-z (d) (z) (fp) (fn) = p256s-try d z fp fn (p256s-draw (p256s-drbg-init d z)) 16
+
+  p256s-try : List Integer, List Integer, EcField, EcField, P256sDrbg, Integer -> List Integer
+  p256s-try (d) (z) (fp) (fn) (st) (fuel) =
+    if fuel <= 0 then []
+    else if ec-scalar-ok st.pd-v ec-width fn.ef-mb == False then p256s-retry d z fp fn st fuel
+    else p256s-with-r d z fp fn st fuel (p256s-r st.pd-v fp fn)
+
+  p256s-retry : List Integer, List Integer, EcField, EcField, P256sDrbg, Integer -> List Integer
+  p256s-retry (d) (z) (fp) (fn) (st) (fuel) = p256s-try d z fp fn (p256s-draw (p256s-reseed st)) (fuel - 1)
+
+  p256s-r : List Integer, EcField, EcField -> List Integer
+  p256s-r (k) (fp) (fn) =
+    let pt = p256s-ladder k (ec-point-of fp.ef-gx fp.ef-gy fp) fp
+    in if ec-is-inf pt fp then repeat-byte 0 ec-width
+    else cb-to-bytes (ec-reduce-mod (cb-from-bytes (ec-affine-x pt fp) fn.ef-n) fn.ef-m fn.ef-n) fn.ef-w
+
+  p256s-with-r : List Integer, List Integer, EcField, EcField, P256sDrbg, Integer, List Integer -> List Integer
+  p256s-with-r (d) (z) (fp) (fn) (st) (fuel) (r) =
+    if ec-bytes-zero r then p256s-retry d z fp fn st fuel
+    else p256s-with-s d z fp fn st fuel r (p256s-s d z r st.pd-v fn)
+
+ s = k^-1 (z + r d) mod n. The inverse is Fermat's, k^(n-2).
+
+  p256s-s : List Integer, List Integer, List Integer, List Integer, EcField -> List Integer
+  p256s-s (d) (z) (r) (k) (fn) =
+    let rd = ec-mulmod (cb-from-bytes r fn.ef-n) (cb-from-bytes d fn.ef-n) fn
+    in let sum = ec-add-f (cb-from-bytes z fn.ef-n) rd fn
+    in let kinv = cb-from-bytes (cb-mod-exp-bytes k fn.ef-e2 fn.ef-mb) fn.ef-n
+    in cb-to-bytes (ec-mulmod kinv sum fn) fn.ef-w
+
+  p256s-with-s : List Integer, List Integer, EcField, EcField, P256sDrbg, Integer, List Integer, List Integer -> List Integer
+  p256s-with-s (d) (z) (fp) (fn) (st) (fuel) (r) (s) =
+    if ec-bytes-zero s then p256s-retry d z fp fn st fuel
+    else r & s

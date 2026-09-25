@@ -173,15 +173,123 @@ Section: Wild Card Substitution
     in let t2 = list-set-at table card-idx True
     in pv-mark-rank-wild t2 rank (suit + 1)
 
+  pv-naturals : List Integer, List Boolean, Integer, List Integer -> List Integer
+  pv-naturals (cards) (wilds) (i) (acc) =
+    if i >= list-length cards then acc
+    else let c = list-at cards i
+    in let w = if c < list-length wilds then list-at wilds c else False
+    in pv-naturals cards wilds (i + 1) (if w then acc else list-push acc c)
+
+  pv-rank-in : List Integer, Integer, Integer, Integer -> Integer
+  pv-rank-in (cards) (r) (i) (acc) =
+    if i >= list-length cards then acc
+    else pv-rank-in cards r (i + 1) (if card-rank (list-at cards i) == r then acc + 1 else acc)
+
+  pv-fill : List Integer, Integer, Integer -> List Integer
+  pv-fill (acc) (card) (n) =
+    if n <= 0 then acc
+    else pv-fill (list-push acc card) card (n - 1)
+
+  pv-copy : List Integer, Integer, List Integer -> List Integer
+  pv-copy (src) (i) (acc) =
+    if i >= list-length src then acc
+    else pv-copy src (i + 1) (list-push acc (list-at src i))
+
+  pv-better : HandRank, HandRank -> HandRank
+  pv-better (a) (b) = if compare-hands b a == 1 then b else a
+
+  pv-wild-on-rank : List Integer, Integer, Integer -> HandRank
+  pv-wild-on-rank (nat) (k) (r) =
+    let c = pv-rank-in nat r 0 0
+    in let room = 4 - c
+    in let put = if room < k then room else k
+    in let kick = if r == 12 then 11 else 12
+    in let h0 = pv-fill (pv-copy nat 0 []) r put
+    in evaluate-hand (PokerHand { cards = pv-fill h0 (13 + kick) (k - put) })
+
+  pv-all-ranks : List Integer, Integer, Integer, HandRank -> HandRank
+  pv-all-ranks (nat) (k) (r) (best) =
+    if r >= 13 then best
+    else pv-all-ranks nat k (r + 1) (pv-better best (pv-wild-on-rank nat k r))
+
+  pv-same-suit : List Integer, Integer -> Boolean
+  pv-same-suit (nat) (i) =
+    if i >= list-length nat then True
+    else if card-suit (list-at nat i) /= card-suit (list-at nat 0) then False
+    else pv-same-suit nat (i + 1)
+
+  pv-suit-of : List Integer -> Integer
+  pv-suit-of (nat) = if list-length nat == 0 then 0 else card-suit (list-at nat 0)
+
+  pv-window-rank : Integer, Integer -> Integer
+  pv-window-rank (high) (j) =
+    if high == 3 then (if j == 0 then 12 else j - 1)
+    else high - 4 + j
+
+  pv-in-window : Integer, Integer, Integer -> Boolean
+  pv-in-window (high) (r) (j) =
+    if j >= 5 then False
+    else if pv-window-rank high j == r then True
+    else pv-in-window high r (j + 1)
+
+  pv-fits-window : List Integer, Integer, Integer -> Boolean
+  pv-fits-window (nat) (high) (i) =
+    if i >= list-length nat then True
+    else let r = card-rank (list-at nat i)
+    in if pv-in-window high r 0 == False then False
+    else if pv-rank-in nat r 0 0 > 1 then False
+    else pv-fits-window nat high (i + 1)
+
+  pv-window-fill : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pv-window-fill (nat) (high) (suit) (j) (acc) =
+    if j >= 5 then acc
+    else let r = pv-window-rank high j
+    in pv-window-fill nat high suit (j + 1) (if pv-rank-in nat r 0 0 > 0 then acc else list-push acc (suit * 13 + r))
+
+  pv-straight-high : List Integer, Integer -> Integer
+  pv-straight-high (nat) (high) =
+    if high < 3 then 0 - 1
+    else if pv-fits-window nat high 0 then high
+    else pv-straight-high nat (high - 1)
+
+  pv-straight-try : List Integer, HandRank -> HandRank
+  pv-straight-try (nat) (best) =
+    let high = pv-straight-high nat 12
+    in if high < 0 then best
+    else pv-better best (evaluate-hand (PokerHand { cards = pv-window-fill nat high (pv-suit-of nat) 0 (pv-copy nat 0 []) }))
+
+  pv-flush-fill : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pv-flush-fill (nat) (suit) (r) (k) (acc) =
+    if k <= 0 | r < 0 then acc
+    else if pv-rank-in nat r 0 0 > 0 then pv-flush-fill nat suit (r - 1) k acc
+    else pv-flush-fill nat suit (r - 1) (k - 1) (list-push acc (suit * 13 + r))
+
+  pv-flush-try : List Integer, Integer, HandRank -> HandRank
+  pv-flush-try (nat) (k) (best) =
+    if pv-same-suit nat 0 == False then best
+    else pv-better best (evaluate-hand (PokerHand { cards = pv-flush-fill nat (pv-suit-of nat) 12 k (pv-copy nat 0 []) }))
+
+  pv-no-hand : HandRank
+  pv-no-hand = HandRank { rank = (0 - 1), primary = 0, secondary = 0 }
+
   pv-evaluate-with-wilds : PokerHand, List Boolean -> HandRank
   pv-evaluate-with-wilds (h) (wilds) =
-    let wild-count = pv-count-wilds-in-hand (h.cards) wilds
-    in if wild-count == 0 then evaluate-hand h
-    else
-      let base = evaluate-hand h
-      in let boosted = base.rank + wild-count
-      in let capped = if boosted > 8 then 8 else boosted
-      in HandRank { rank = capped, primary = base.primary, secondary = base.secondary }
+    let nat = pv-naturals (h.cards) wilds 0 []
+    in let k = list-length (h.cards) - list-length nat
+    in if k == 0 then evaluate-hand h
+    else pv-flush-try nat k (pv-straight-try nat (pv-all-ranks nat k 0 pv-no-hand))
+
+  pv-best-wild-combo : List Integer, List Boolean, Integer, Integer, Integer, Integer, Integer, HandRank -> HandRank
+  pv-best-wild-combo (cards) (wilds) (a) (b) (c) (d) (e) (best) =
+    if a >= 3 then best
+    else let hr = pv-evaluate-with-wilds (PokerHand { cards = pv-pick-5 cards a b c d e }) wilds
+    in let next = pv-next-combo a b c d e
+    in pv-best-wild-combo cards wilds (list-at next 0) (list-at next 1) (list-at next 2) (list-at next 3) (list-at next 4) (pv-better best hr)
+
+  pv-best-wild-of : List Integer, List Boolean -> HandRank
+  pv-best-wild-of (cards) (wilds) =
+    if list-length cards <= 5 then pv-evaluate-with-wilds (PokerHand { cards = cards }) wilds
+    else pv-best-wild-combo cards wilds 0 1 2 3 4 pv-no-hand
 
 Section: Spade Queries (Chicago variants)
 
@@ -316,10 +424,8 @@ Section: Baseball (3s and 9s wild, 4 gets extra card)
     in let h1-base = pv-collect-7 deck 0
     in let h2-base = pv-collect-7 deck 7
     in let wild-table = pv-build-rank-wilds [1, 7]
-    in let best1 = pv-best-5-of-7 h1-base
-    in let best2 = pv-best-5-of-7 h2-base
-    in let rank1 = pv-evaluate-with-wilds best1 wild-table
-    in let rank2 = pv-evaluate-with-wilds best2 wild-table
+    in let rank1 = pv-best-wild-of h1-base wild-table
+    in let rank2 = pv-best-wild-of h2-base wild-table
     in let winner = if rank1.rank > rank2.rank then 1
        else if rank2.rank > rank1.rank then 2
        else if rank1.primary > rank2.primary then 1
@@ -416,10 +522,8 @@ Section: FollowTheQueen
     in let wild-rank = pv-find-follow-queen deck 14
     in let wild-table = if wild-rank < 0 then pv-build-false-list 52
        else pv-build-rank-wilds [wild-rank]
-    in let best1 = pv-best-5-of-7 h1-cards
-    in let best2 = pv-best-5-of-7 h2-cards
-    in let rank1 = pv-evaluate-with-wilds best1 wild-table
-    in let rank2 = pv-evaluate-with-wilds best2 wild-table
+    in let rank1 = pv-best-wild-of h1-cards wild-table
+    in let rank2 = pv-best-wild-of h2-cards wild-table
     in let winner = if rank1.rank > rank2.rank then 1
        else if rank2.rank > rank1.rank then 2
        else if rank1.primary > rank2.primary then 1
@@ -491,14 +595,6 @@ Section: JacksOrBetter
 
 Section: A Table You Can Sit At, Per Variant
 
- The variants are one table, not eight games. `PokerTable` already holds a
- deck, a position in it, two hands, chips, bets, a pot, a stage, the marks
- and a winner, and its `pk-award` does all the money; what a variant
- changes is how many cards are dealt and how the two hands are RANKED. So
- this wraps that table rather than rebuilding it, and every ranking below
- is the one the watch-only session already uses, called from one more
- place.
-
  A variant arrives as an integer in the order `pvw-variant` maps: 0 draw,
  1 five stud, 2 seven stud, 3 baseball, 4 hi chicago, 5 low chicago,
  6 follow the queen, 7 jacks or better.
@@ -534,10 +630,6 @@ Section: A Table You Can Sit At, Per Variant
     if wild-rank < 0 then pv-build-false-list 52
     else pv-build-rank-wilds [wild-rank]
 
- The deal is `pk-table-new`'s, with the variant's hand size in place of
- five. The position after the deal is what the draw and the showdown both
- read, so it moves with the hand size rather than staying at ten.
-
   pvt-new : Integer, Integer -> PvTable
   pvt-new (variant) (seed) =
     let v = if variant < 0 then 0 else if variant > 7 then 7 else variant
@@ -561,11 +653,6 @@ Section: A Table You Can Sit At, Per Variant
   pvt-with (p) (t) =
     PvTable { table = t, variant = p.variant, wilds = p.wilds, spade = p.spade }
 
- The ranking, and it is the whole of what a variant is here. Five cards go
- straight to `evaluate-hand`; seven go through `pv-best-5-of-7` first; a
- wild variant asks `pv-evaluate-with-wilds` instead, which is the same call
- `pv-baseball` and `pv-follow-the-queen` make.
-
   pvt-best-hand : PvTable, Integer -> PokerHand
   pvt-best-hand (p) (who) =
     let cards = pk-hand-of (p.table) who
@@ -574,14 +661,8 @@ Section: A Table You Can Sit At, Per Variant
 
   pvt-eval : PvTable, Integer -> HandRank
   pvt-eval (p) (who) =
-    let h = pvt-best-hand p who
-    in if pvt-has-wilds (p.variant) then pv-evaluate-with-wilds h (p.wilds)
-    else evaluate-hand h
-
- A wild variant is compared on rank then primary, because that is what
- `pv-baseball` and `pv-follow-the-queen` do rather than calling
- `compare-hands`; keeping the two the same is what stops a hand played at
- this table from disagreeing with the same hand watched.
+    if pvt-has-wilds (p.variant) then pv-best-wild-of (pk-hand-of (p.table) who) (p.wilds)
+    else evaluate-hand (pvt-best-hand p who)
 
   pvt-compare : PvTable, HandRank, HandRank -> Integer
   pvt-compare (p) (a) (b) =
@@ -631,9 +712,7 @@ Section: A Table You Can Sit At, Per Variant
     else if s1 < s0 then 2
     else 0
 
- Who wins, in the seat numbering `pk-award` takes: 0, 1, or -1 for a split.
- The one-based answer the variant sessions speak is converted here rather
- than left for a caller to guess at.
+ Who wins, in `pk-award`'s seat numbering: 0, 1, or -1 for a split.
 
   pvt-winner-1based : PvTable -> Integer
   pvt-winner-1based (p) =
@@ -654,10 +733,8 @@ Section: A Table You Can Sit At, Per Variant
     in PvTable { table = pk-award (p.table) w, variant = p.variant,
                  wilds = p.wilds, spade = sw }
 
- Jacks or better is the one variant whose RULE is a decision rather than an
- evaluation: a seat may not open the betting without a pair of jacks or
- better. `pv-can-open` already answers it and nothing asked, because the
- watch-only session computes the opener instead of offering it.
+ Jacks or better: a seat may not open the betting without a pair of jacks or
+ better.
 
   pvt-can-open : PvTable, Integer -> Boolean
   pvt-can-open (p) (who) =
@@ -672,12 +749,8 @@ Section: A Table You Can Sit At, Per Variant
 
 Section: The Moves, Over The Same Table
 
- Only ONE of the table's moves is re-expressed here, and it is the end of a
- betting round: `pk-advance-now` goes to `pk-showdown`, which ranks five
- cards with `evaluate-hand`, and a seven-card or wild variant ranked that
- way would pay the wrong seat. Everything else -- what is owed, putting it
- in, noting it, folding, marking, drawing -- is the table's own and is
- called rather than copied.
+ A seven-card or wild variant ranked by `evaluate-hand` pays the wrong seat,
+ so the end of a betting round goes through this chapter's ranking.
 
   pvt-advance : PvTable -> PvTable
   pvt-advance (p) =
@@ -689,15 +762,10 @@ Section: The Moves, Over The Same Table
       then pvt-with p (pk-open-stage (p.table) 1)
     else pvt-showdown p
 
- A REFUSAL ANSWERS THE STATE IT WAS GIVEN. `pvt-with` builds a new record
- every time it is called, so wrapping a table move that refuses hands back
- a different handle for a move that did not happen, and a page comparing
- what came back against what it sent cannot tell the two apart. Every
- move below asks whether it is legal BEFORE it wraps anything. This was
- wrong here first and three arms caught it (games-backlog GAME-55).
+ A refusal answers the state it was given: `pvt-with` builds a new record,
+ so every move checks legality before it wraps anything.
 
- A fold needs no ranking: the seat that folded loses, whatever it held, so
- the table's own fold is right for every variant.
+ A fold loses whatever the seat held.
 
   pvt-fold : PvTable, Integer -> PvTable
   pvt-fold (p) (who) =
@@ -718,18 +786,15 @@ Section: The Moves, Over The Same Table
     in let paid = pk-put-in (p.table) who (owed + pk-bet-size)
     in pvt-advance (pvt-with p (pk-note paid 3))
 
- The draw belongs to five card draw alone, and the mark mask is the
- table's, so a variant that deals seven never reaches it.
+ The draw belongs to five card draw alone.
 
   pvt-can-draw : PvTable, Integer -> Boolean
   pvt-can-draw (p) (who) =
     if pvt-is-draw (p.variant) == False then False
     else pk-can-draw (p.table) who
 
- A click may only ever ADD a mark, never take one off, and clearing them
- is a move of its own. One direction per click is what stops a page that
- drives itself by scanning positions from marking a card, coming round,
- unmarking it, and never reaching the draw.
+ A click only ever adds a mark; clearing is its own move, so a page scanning
+ positions cannot mark and unmark a card forever.
 
   pvt-can-mark : PvTable, Integer -> Boolean
   pvt-can-mark (p) (i) =
@@ -754,9 +819,8 @@ Section: The Moves, Over The Same Table
     if pvt-can-draw p 0 == False then p
     else pvt-with p (pk-draw (p.table))
 
- The opponent plays the same moves through the same functions, and it
- judges its hand the VARIANT's way: `pk-ai-bet` reads `evaluate-hand` over
- whatever the seat holds, which for seven cards is not that seat's hand.
+ `pk-ai-bet` reads `evaluate-hand` over whatever the seat holds, which for
+ seven cards is not that seat's hand.
 
   pvt-ai-move : PvTable -> PvTable
   pvt-ai-move (p) =

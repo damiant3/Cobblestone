@@ -21,23 +21,6 @@ Chapter: GopEdit
 
 Section: Capacity
 
- Eight megabytes of buffer and 262,144 line slots, which is 9 MB against the
- 128 MB the Option A image gives Codex. The size is set by the file this
- pane exists to open rather than by a round number: the boot stick carries
- the whole tree as one `SOURCE.SRC`, measured 2,769,366 bytes on
- `seed/Codex.img`, and it grows. A megabyte was the first choice here and it
- refused the only source file on the medium.
-
- They are allocated on FIRST ENTRY to the pane, not at desk start, and kept
- for the rest of the session. A boot that never opens the editor pays
- nothing, one that opens it fifty times pays once.
-
- A file bigger than the buffer is REFUSED with its size on the glass rather
- than truncated. `gfat-read-file-bulk` sizes its own read from the directory
- entry and takes no capacity, so it would run off the end of a smaller
- destination and corrupt whatever the heap put there; the size is therefore
- checked before the read, not after.
-
   ged-cap : Integer = 8388608
   ged-max-lines : Integer = 262144
 
@@ -90,13 +73,6 @@ Section: The Line Index
 
   ged-lf : Integer = 10
 
- The scan is two levels deep on purpose. A single per-byte recursion over
- the whole buffer pushes one frame per byte: measured 2026-08-11 against
- `SOURCE.SRC` at 2,769,366 bytes, that took about 64 MB of stack and
- double-faulted (`!EXC=08`, CR2 one page under the guard). Chunking bounds
- both levels at 4,096 frames for a buffer of any size, which is what the
- pixel loops in GopShot do for the same reason.
-
   ged-chunk : Integer = 4096
 
   ged-scan-bytes : Integer, Integer, Integer, Integer, Integer -> Integer
@@ -140,27 +116,12 @@ Section: The Line Index
 
 Section: Bytes To Text
 
- The bytes on the medium are ASCII, because the image writer converted each
- CCE code point out through `to-unicode` on the way in. Each one comes back
- through `from-unicode` to be a Codex character again. Reading them as CCE
- directly is the boundary bug this project has shipped more than once, and
- here it would render every letter as the wrong glyph.
-
   ged-chars : Integer, Integer, Integer, Text -> Text
   ged-chars (buf) (i) (stop) (acc) =
     if i >= stop then acc
     else let b = peek-byte buf i
-    in let ch = if b < 32 then " " else char-encode (code-to-char (from-unicode b))
+    in let ch = if b < 32 | b == 127 then " " else char-encode (code-to-char (from-unicode b))
     in ged-chars buf (i + 1) stop (acc & ch)
-
- A line is built only as far as it can be DRAWN. Building all of it costs
- the square of its length, because `acc & ch` copies the accumulator every
- character, and none of that work reaches the glass: the runs are clipped to
- the panel a moment later. The tree's longest line is 131,038 characters
- (`codex/test/errors/list-literal-too-large.codex`), which is about eight
- billion bytes of copying for one row of one frame. That file is not in
- today's `SOURCE.SRC`, whose longest line is 1,090, but nothing stops the
- next concatenation from carrying it.
 
   ged-line-text : Integer, Integer, Integer -> Text
   ged-line-text (es) (i) (cols) =
@@ -170,14 +131,6 @@ Section: Bytes To Text
     in ged-chars (ged-buf es) st cap ""
 
 Section: Editing The Block
-
- Insert and delete move the tail of the buffer by one byte. Both are
- chunked for the reason the scan is: a byte-at-a-time recursion over the
- whole tail is one stack frame per byte, and the tail can be megabytes.
-
- The cost is honest and it is the price of a flat buffer: a keystroke at the
- top of a 2.7 MB file moves 2.7 MB. On a chapter-sized file it is nothing.
- A gap buffer is the standard cure and this is not one.
 
   ged-up-bytes : Integer, Integer, Integer -> Integer
   ged-up-bytes (buf) (i) (stop) =
@@ -230,12 +183,6 @@ Section: Editing The Block
 
 Section: The Undo Ring
 
- The capacity is a power of two so the wrap is a mask rather than a divide,
- and 4096 records at 12 bytes is 49,152 bytes against the 9 MB the buffer and
- the index already cost. It is allocated by `ged-init` and therefore shares
- the buffer's lifetime exactly: the close path reclaims both, so undo history
- does not outlive the session that typed it.
-
   ged-undo-cap : Integer = 4096
   ged-undo-mask : Integer = 4095
   ged-undo-rec : Integer = 12
@@ -266,11 +213,6 @@ Section: The Undo Ring
     in let sh = poke-32 es 32 (bit-and (h + 1) ged-undo-mask)
     in let n = ged-undo-count es
     in poke-32 es 36 (if n < ged-undo-cap then n + 1 else n)
-
- A refused edit must not leave a record behind, or undo replays an edit the
- buffer never took. `ged-insert` and `ged-delete` answer the line count on
- success, which `ged-reindex` never reports as zero, so the refusal is
- readable and these two are the only callers that record.
 
   ged-insert-u : Integer, Integer, Integer -> Integer
   ged-insert-u (es) (at) (b) =
@@ -303,10 +245,6 @@ Section: The Undo Ring
     in let e = if ins == 1 then ged-delete es at else ged-insert es at b
     in at
 
- A byte offset is turned back into a row by bisecting the line index rather
- than walking it. The concatenated tree is 59,461 lines, and a walk is that
- many stacked frames on a machine whose heap and stack share one arena.
-
   ged-line-search : Integer, Integer, Integer, Integer -> Integer
   ged-line-search (es) (at) (lo) (hi) =
     if lo >= hi then lo
@@ -319,44 +257,9 @@ Section: The Undo Ring
 
 Section: Annotation Marks
 
- WORKS-15 asked for a gutter mark on any line whose definition carries an
- annotation, and said the join needs `CodeBrowser`'s `SourceIndex`. It does
- not, and it must not: `index-source-file` takes the whole file as one Text,
- `SourceIndex` then holds every line as Text a second time, `index-add-def`
- appends with `list-snoc` once per definition, and `index-lines` recurses once
- per line. This pane exists to open a 2,896,050-byte file with 62,184 lines,
- and its own Bytes To Text section records why it never builds a whole-file
- Text: `acc & ch` costs the square of the length. Every one of those four is
- disqualifying on its own for that file.
-
- So the join reads BYTES. Each annotation's target is converted to a byte
- pattern once, and the buffer is scanned for the definition line that matches
- it; what a row paints is then one bit out of a bitmap, so `ged-draw-row`
- needs no annotation argument and no new parameter reaches four signatures.
-
- The bytes on the medium are ASCII and the comparisons here are against ASCII
- literals, NOT `char-code`, which answers a CCE code point and would match
- nothing.
-
   ged-chap-max : Integer = 8192
   ged-marks-bytes : Integer = 32768
   ged-name-scratch : Integer = 64
-
- THE STATE BLOCK'S SECOND HALF MOVED UP BY 64 AND THE OFFSETS HAVE NAMES NOW.
- Everything this chapter kept from 44 to 67 sat exactly where the desk's
- window slot lives -- `dk-wnd-st-cell` at 44 and the rect at 48 through 60 --
- which is why the Editor was the one pane the windows campaign could not
- take. Four things were in the way and only two of them were ever written
- down: the marks and chapter pointers at 56 and 60, and, found by grepping
- the block rather than by reading `ged-init`, the FILENAME BUFFER at bytes 44
- to 55 and the draft length at 64.
-
- So the block is 192 bytes rather than 128 and this half sits above the slot.
- `desk-run` allocates it and `codex/test/apps/annot-write` builds one, and
- both had to move together: a 128-byte block under these offsets reads and
- writes past its end, which the bump allocator's 64-byte alignment would hide
- by answering zeros out of padding, exactly as it hid `dk-icons-cell` for the
- `ds` block.
 
   ged-name-off : Integer = 108
   ged-marks-cell : Integer = 120
@@ -400,11 +303,6 @@ Section: Annotation Marks
     in ged-marks-clear es stop
 
 Section: The Chapter Table
-
- A definition's target is a chapter and a name, so a mark needs to know which
- chapter a line falls in. The table is the line number of every `Chapter:`
- line, built in one pass at open, and the lookup bisects it the way
- `ged-line-of` bisects the line index rather than walking it.
 
   ged-chap-count : Integer -> Integer
   ged-chap-count (es) = if ged-chaps es == 0 then 0 else peek-32 (ged-chaps es) 0
@@ -465,11 +363,6 @@ Section: The Chapter Table
 
 Section: Matching A Target To A Line
 
- A Text is turned into ASCII bytes ONCE per annotation, and every line
- comparison after that is byte against byte. Doing it the other way, building
- a Text per candidate line, allocates once per definition in the file and
- there are tens of thousands of them.
-
   ged-text-bytes : Text, Integer, Integer, Integer -> Integer
   ged-text-bytes (t) (dst) (i) (n) =
     if i >= n then n
@@ -481,10 +374,6 @@ Section: Matching A Target To A Line
     if n <= 0 then True
     else if peek-byte a (ao) /= peek-byte b (bo) then False
     else ged-bytes-eq a (ao + 1) b (bo + 1) (n - 1)
-
- A definition line is two spaces, a name, then a space. The name ends at the
- first space, which is what `extract-def-name` does one layer up in
- `CodeBrowser` on a Text.
 
   ged-def-name-len : Integer, Integer, Integer, Integer -> Integer
   ged-def-name-len (b) (st) (i) (size) =
@@ -511,12 +400,6 @@ Section: Matching A Target To A Line
 
 Section: Loading The Annotations
 
- The store is the medium's fact partition, read through `GopFacts` over the
- disk the desk selected. It used to read through `disk-load`, whose kernel
- syscall is ATA on the active drive, so a UEFI boot or a USB stick answered
- zero facts and no mark could appear. That was WORKS-46 and it is fixed;
- this reads the same road `GopReview` does.
-
   ged-annot-mark-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   ged-annot-mark-one (es) (i) (stop) (pat) (patlen) (cpat) (cplen) (hits) =
     if i >= stop then hits
@@ -533,12 +416,6 @@ Section: Loading The Annotations
     else let stop = if i + ged-chunk > n then n else i + ged-chunk
     in let h = ged-annot-mark-one es i stop pat patlen cpat cplen hits
     in ged-annot-walk es stop n pat patlen cpat cplen h
-
- The chapter name is compared as BYTES, like the path, and not as Text. The
- files on the medium end their lines CRLF, `ged-line-end` keeps the CR, and
- `ged-chars` renders every byte under 32 as a space -- so the Text for
- `Chapter: Name` reads `Name ` with a trailing space and never equals the
- target's `Name`. That cost a blank gutter and a staged probe to find.
 
   ged-chap-name-eq : Integer, Integer, Integer, Integer -> Boolean
   ged-chap-name-eq (es) (ci) (cpat) (cplen) =
@@ -584,19 +461,6 @@ Section: Loading The Annotations
     in ged-keep-trusted lat all 0 (list-length all) []
   end
 
- The trust filter, and it needed no ruling. This read as a design question --
- where does a desk's trust come from -- and it is not one: the medium already
- persists vouches (kind 32), `RepoVouch`'s voucher, subject and level are
- exactly `lattice-add-vouch`'s three arguments, and the threshold is already a
- named constant. Nothing here chooses between two defensible answers.
-
- The loaded identity is added DIRECT at full trust, because an author who
- cannot vouch for themselves would have to be vouched for by someone else
- before their own note appeared on their own machine. **With no identity the
- lattice is empty and nothing is above threshold, so no annotation shows** --
- the specified behaviour, and why the default `desk.ps1` bed, which loads
- none, shows an empty gutter.
-
   ged-parse-vouches : List Text, TrustLattice, Integer, Integer -> TrustLattice
   ged-parse-vouches (texts) (lat) (i) (n) =
     if i >= n then lat
@@ -640,16 +504,6 @@ Section: Loading The Annotations
 
 Section: Writing An Annotation
 
- The state block is 128 bytes (`desk-run`), and the first 64 are full. The
- draft an author is typing lives in the second half: a length and sixty
- characters, so a keystroke stores integers and the step answers 1, the same
- reason the new-file name does.
-
- The author is not asked for and cannot be chosen. It is the loaded
- identity's fingerprint, and a locked identity writes NOTHING rather than
- writing an annotation nobody can attribute. That is the shape `GopReview`
- casts a verdict with.
-
   ged-draft-max : Integer = 60
   ged-draft-off : Integer = 132
 
@@ -675,14 +529,10 @@ Section: Writing An Annotation
   ged-draft-text (es) (i) (n) (acc) =
     if i >= n then acc
     else let b = peek-byte es (ged-draft-off + i)
-    in ged-draft-text es (i + 1) n (acc & char-encode (code-to-char (from-unicode b)))
+    in ged-draft-text es (i + 1) n (acc & cce-foreign-byte-text b)
 
   ged-draft-of : Integer -> Text
   ged-draft-of (es) = ged-draft-text es 0 (ged-draft-len es) ""
-
- A trailing space is dropped because the line on the medium ends CRLF and
- `ged-chars` renders the CR as one. A chapter name compared with it still
- attached is the defect the gutter mark already paid for once.
 
   ged-trim-end : Text, Integer -> Text
   ged-trim-end (t) (n) =
@@ -710,9 +560,6 @@ Section: Writing An Annotation
     else let t = ged-line-text es (ged-chap-line es ci) 200
     in if text-length t <= 9 then ""
     else ged-trim-end (substring t 9 (text-length t - 9)) (text-length t - 9)
-
- A line is annotatable only if the marks' own predicate would recognise it as
- a definition, so what can be written to is exactly what can be marked.
 
   ged-line-is-def : Integer, Integer -> Boolean
   ged-line-is-def (es) (line) =
@@ -752,16 +599,6 @@ Section: Writing An Annotation
   end
 
 Section: The Annotation Bubble
-
- The mark says an annotation is there; this is what reads it. The store is
- re-read on the keystroke rather than held: at a human's rate a fact-partition
- read is affordable, and holding the list would put a List in the record and
- force every step that touches it to answer negative. `GopReview` pays exactly
- that price and holds its store in `da-review`, because its store read is three
- full scans rather than one line's worth.
-
- The predicate is the SAME one that set the marks, called on one line instead
- of the whole file, so a bubble cannot disagree with the mark beside it.
 
   ged-line-has-annot : Integer, Integer, Annotation, Integer -> Boolean
   ged-line-has-annot (es) (line) (a) (scratch) =
@@ -827,14 +664,6 @@ Section: The Annotation Bubble
 
 Section: Naming A New File
 
- The name being typed lives in the state block as bytes rather than in the
- record as Text, so a keystroke stores integers and the step answers 1. Built
- as Text it would allocate a new accumulator per character and the step would
- have to answer negative to keep it, which is the cost `works-desk-contract`
- reserves for human-decision events rather than for typing.
-
- Twelve is 8.3 plus the dot, which is the longest name `ged-name-83` can carry.
-
   ged-name-max : Integer = 12
 
   ged-name-len : Integer -> Integer
@@ -856,28 +685,16 @@ Section: Naming A New File
     let n = ged-name-len es
     in if n <= 0 then 0 else poke-32 es 40 (n - 1)
 
- The same `from-unicode` boundary `ged-chars` crosses, and for the same
- reason: a keycode is not a CCE code point.
-
   ged-name-text : Integer, Integer, Integer, Text -> Text
   ged-name-text (es) (i) (n) (acc) =
     if i >= n then acc
     else let b = peek-byte es (ged-name-off + i)
-    in ged-name-text es (i + 1) n (acc & char-encode (code-to-char (from-unicode b)))
+    in ged-name-text es (i + 1) n (acc & cce-foreign-byte-text b)
 
   ged-name-of : Integer -> Text
   ged-name-of (es) = ged-name-text es 0 (ged-name-len es) ""
 
 Section: Names On The Medium
-
- A FAT short name is eleven bytes, eight of base and three of extension,
- space-padded, with no dot stored. The Text comes back out of the directory
- entry with the dot put in, so it has to be taken apart again to write one.
-
- `char-code` answers CCE, not ASCII, so every character crossing back to the
- medium goes through `to-unicode`. This is the boundary bug the tree has
- shipped more than once, and here it would write a file whose name no
- firmware could find.
 
   ged-spaces : Integer, Integer, Integer -> Integer
   ged-spaces (buf) (i) (n) =
@@ -906,15 +723,6 @@ Section: Names On The Medium
   ged-ext-of (name) =
     let d = ged-dot name 0
     in if d < 0 then "" else substring name (d + 1) (text-length name - d - 1)
-
- The open file is carried as a PATH once the picker can descend, so every
- read goes through gfat-resolve unchanged. The two places that cannot take a
- path are the 8.3 directory-entry buffers, which hold a bare leaf name, and
- the slot search, which needs the containing directory as a cluster. The
- cluster rides in the state block at 24 rather than through ged-loop, whose
- ten recursive calls would each have grown a parameter that only two leaves
- read. Root is 0 here, not -1: gfat-find-slot-in reads anything below 2 as
- root, and a negative through peek-32 is a sign question nobody needs.
 
   ged-last-slash : Text, Integer, Integer -> Integer
   ged-last-slash (p) (i) (best) =
@@ -952,28 +760,6 @@ Section: Names On The Medium
     in buf
 
 Section: Save, And The One Hot Backup
-
- Damian's rule, 2026-08-11: every save keeps a backup so the save can be
- undone, and ONE generation is enough. Two saves back is asking too much.
-
- The backup costs no data movement, because a FAT directory entry is only a
- name, a first cluster and a size. The old content is not copied to
- `NAME.BAK`; `NAME.BAK` is pointed AT it, and the new content is written to
- a fresh chain under `NAME`. The previous backup's chain is released first,
- which is what makes it one generation.
-
- That also closes a defect rather than adding one. `gfat-slot-in-sector`
- matches an existing name before it takes a free slot, so an overwrite
- already reuses its own directory slot -- but nothing released the old
- chain, so every overwrite until now would have orphaned the previous
- clusters: allocated, unnamed, unrecoverable without a scan. Here the old
- chain always ends up owned by a name.
-
- THE WINDOW, stated because it is real: between the backup entry landing and
- the new write completing, `NAME` and `NAME.BAK` name the SAME chain. A
- power loss there costs no data -- both names read the old content -- but a
- later delete of one would free clusters the other still uses. Closing it
- needs a rename, which this FAT writer does not have.
 
   ged-v-ok : Integer = 1
   ged-v-nofile : Integer = 2
@@ -1040,13 +826,6 @@ Section: Save, And The One Hot Backup
     end
   end
 
- Revert LOADS the backup into the buffer rather than copying it over the file
- on the medium, and that is the whole trick: the file on disk is untouched,
- the pane is dirty, and F2 then writes the recovered content back -- which in
- turn makes the content you are abandoning the new `.BAK`. One generation
- gives you undo and redo of a save out of the same mechanism, with no second
- backup slot and no rename.
-
   ged-revert : Integer, Fat16Volume, Text -> [Device.Port] Integer
   ged-revert (es) (vol) (name) = act
     let bak = ged-bak-text name
@@ -1068,17 +847,6 @@ Section: Save, And The One Hot Backup
     end
   end
 
- The save reports its progress from INSIDE the write, because the pane is
- blocked in there and cannot paint for itself. The callback is a top-level
- function and a context block of integers rather than a closure: this
- language has no lambda literal, and the paint therefore has to be one that
- needs no font, no Text and no allocation. A filled rectangle is exactly
- that, so the report is a bar and not a sector count.
-
- Measured 2026-08-19: of a 59 s save of 2,896,050 bytes, the write is 57 s
- and every other phase is under a second, so a bar driven from the write is
- driven from essentially the whole wait.
-
   ged-bar-base : Integer = 0
   ged-bar-stride : Integer = 4
   ged-bar-x : Integer = 8
@@ -1090,11 +858,6 @@ Section: Save, And The One Hot Backup
   ged-bar-col : Integer = 28
 
   ged-bar-rows : Integer = 32
-
- The bar's colour rides in the context block with its geometry, because the
- callback's shape is fixed at `(ctx) (done)` by the write that calls it and
- cannot grow a parameter. The block is where everything else this paint needs
- already lives.
 
   ged-bar-report : Integer, Integer -> Integer
   ged-bar-report (ctx) (done) =
@@ -1119,11 +882,6 @@ Section: Save, And The One Hot Backup
     in let i = poke-32 c ged-bar-total total
     in let j = poke-32 c ged-bar-col (ged-bar pal)
     in c
-
- A file with no directory entry is CREATED rather than refused. There is no
- backup to rotate and no previous chain to release, which is the whole
- difference from `ged-commit`: the writer already takes a free slot when the
- name does not match an existing one, so creation needs no new FAT code.
 
   ged-create : Integer, Fat16Volume, Text, Integer -> [Device.Port] Integer
   ged-create (es) (vol) (name) (ctx) = act
@@ -1155,9 +913,6 @@ Section: Save, And The One Hot Backup
 
 Section: Geometry
 
- The panel, its rows and its close box are GopFiles' measures, so the two
- panes are the same window and a change to one moves both.
-
   ged-col-w : GopAppFont, Integer -> Integer
   ged-col-w (font) (s) = gapp-col-w font s
 
@@ -1171,18 +926,6 @@ Section: Geometry
   ged-cols (box) (font) (s) =
     let c = (box.lr-w - 20 * s - ged-gutter font s) / gapp-col-w font s
     in if c < 8 then 8 else c
-
- WORKS-17. The editor's own pens, as roles rather than numbers, on the same
- argument `GopFiles` states: the palette arrives as a parameter because
- `GopDesk` cites this chapter.
-
- `syn-colour` is deliberately NOT among them. A code editor's syntax scheme
- is arguably its own rather than the desktop's, and the two possible answers
- (grow `Theme` a syntax block, or leave `SyntaxHighlight` its own and let
- only the frame follow the desk) are a real question rather than a detail:
- a `minimal` desk on a white ground needs a light syntax set that does not
- exist yet. This chapter takes the second answer for now and changes no
- syntax colour (`works-backlog.md` WORKS-17).
 
   ged-cursor : Palette -> Integer
   ged-cursor (p) = p.pal-warning
@@ -1215,8 +958,8 @@ Section: Geometry
 
 Section: Drawing One Line
 
-  ged-draw-runs : Integer, Integer, Integer, GopAppFont, Integer, Integer, Integer, Text, List SynRun, Integer, Integer -> Integer
-  ged-draw-runs (base) (stride) (rows) (font) (s) (x0) (y) (line) (runs) (i) (cols) =
+  ged-draw-runs : Integer, Integer, Integer, GopAppFont, Integer, Integer, Integer, Integer, Text, List SynRun, Integer, Integer -> Integer
+  ged-draw-runs (base) (stride) (rows) (font) (s) (ground) (x0) (y) (line) (runs) (i) (cols) =
     if i >= list-length runs then 0
     else let r = list-at runs i
     in let st = r.sr-start
@@ -1224,8 +967,8 @@ Section: Drawing One Line
     else let room = cols - st
     in let take = if r.sr-len > room then room else r.sr-len
     in let t = substring line st take
-    in let d = gapp-code-text base stride rows font (x0 + st * gapp-col-w font s) y t (syn-colour (r.sr-class)) s 0
-    in ged-draw-runs base stride rows font s x0 y line runs (i + 1) cols
+    in let d = gapp-code-text base stride rows font (x0 + st * gapp-col-w font s) y t (syn-ink ground (r.sr-class)) s 0
+    in ged-draw-runs base stride rows font s ground x0 y line runs (i + 1) cols
 
   ged-draw-row : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, Integer, Integer, Integer, Integer -> Integer
   ged-draw-row (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (es) (idx) (row) (cur) =
@@ -1235,7 +978,8 @@ Section: Drawing One Line
     in let an = if ged-mark-get es idx == 1 then gapp-code-text base stride rows font (box.lr-x + 10 * s + 5 * gapp-col-w font s) (y + s) "*" (ged-annot pal) s 0 else 0
     in let cols = ged-cols box font s
     in let line = ged-line-text es idx cols
-    in let runs = ged-draw-runs base stride rows font s (ged-text-x box font s) (y + s) line (syn-line line) 0 cols
+    in let ground = if idx == cur then ged-row-band pal else gfl-bg pal
+    in let runs = ged-draw-runs base stride rows font s ground (ged-text-x box font s) (y + s) line (syn-line line) 0 cols
     in if ged-line-len es idx > cols
       then gapp-code-text base stride rows font (ged-text-x box font s + cols * gapp-col-w font s) (y + s) ">" (ged-more pal) s 0
       else 0
@@ -1282,10 +1026,6 @@ Section: Drawing The Pane
     in if mouse.um-ok then cursor-update cs base stride h w h s (mouse-x mouse) (mouse-y mouse) else 0
 
 Section: Moving
-
- Set-1 make codes, the same table every other pane reads: 72 up, 80 down,
- 75 left, 77 right, 73 page up, 81 page down, 71 home, 79 end, 28 enter,
- 1 escape, 88 F12.
 
   ged-clamp-col : Integer, Integer, Integer -> Integer
   ged-clamp-col (es) (line) (col) =
@@ -1376,11 +1116,6 @@ Section: The File List
     ged-list-paint base box w h stride rows s font pal mouse cs win sel top names
   end
 
- Descending is GopFiles' two moves: push the cluster and the name, re-list,
- and pop on the way back. The names stack is what builds the path handed to
- gfat-resolve, so the picker and the save agree on where the file lives by
- construction rather than by both being told.
-
   ged-prefix : List Text, Integer, Text -> Text
   ged-prefix (names) (i) (acc) =
     if i >= list-length names then acc
@@ -1393,35 +1128,6 @@ Section: The File List
     else if hover >= 0 then hover
     else sel
 Section: Step
-
- The two loops moved to `GopDesk` on 2026-08-18 and this is what replaced
- them. There were two, a file list and the editor proper, with the editor
- nested inside the list's `ged-activate` and returning to it on Esc. A step
- cannot nest, so the two became one step over a MODE held in the record, and
- the return to the list is a mode change rather than a stack unwind.
-
- The prose the old loops carried is worth keeping because the hazard has not
- gone away. Both were flat, dispatching to themselves and to nothing else, and
- a first cut of each routed a key through a helper that called the loop back.
- A cycle of two functions is not a self-tail-call: every poll left a frame
- behind, about 64 MB of them in fifteen seconds, and the pane double-faulted
- (`!EXC=08`) with the stack one page under its guard. That trap is now the
- desk's to avoid rather than this chapter's, and `desk-loop` states it.
-
- **The 9 MB buffer does not move into `EditState` and must not.** It is
- allocated lazily, its POINTER is parked in a `ds` cell, and it is handed to
- the step as `es` exactly as it was handed to the loops. Only the editor's
- TYPED values live here: the volume, the path of the open file, and the
- directory the list is standing in.
-
- **This block said the desk's base mark cannot reach that buffer, and it can.**
- `ged-init` runs from `desk-edit-open`, above the base mark, so a close
- restores over it while the cell keeps the address; `ged-ensure` above only
- allocates when the pointer is zero, so the next session would have written
- through it. Measured 2026-08-19: an Edit pane alive and hidden holds 9,598,200
- bytes and closes back to 72 bytes over a desk that never opened one. The
- desk's close paths now zero the pointer when the restore reaches it, which is
- why `ged-ensure` is no longer once per boot.
 
   EditState = record {
     ed-vol : Fat16Volume,
@@ -1456,18 +1162,8 @@ Section: Step
   ged-printable : Integer -> Boolean
   ged-printable (ch) = ch >= 32 & ch < 127
 
- The pointer position the pane last acted on is a field rather than a `ds`
- cell, and it stands in for the `mv` flag the old loops got from `mouse-pump`.
- Without it a pointer resting over a row would drag the selection back on every
- poll and the arrow keys would not work.
-
   ged-moved : EditState, UsbMouse -> Boolean
   ged-moved (st) (mouse) = st.ed-ptr /= (mouse-x mouse) * 4096 + (mouse-y mouse)
-
- THE OPEN'S DURABLE PART, which is what a D.5 hole for this pane holds: the
- mount, the blocks `ged-ensure` allocates and the state around a count.
- `desk-edit-open` runs the GPT lookup at the frontier before it and paints
- after leaving the hole.
 
   ged-init-bytes : Integer =
     ged-cap + ged-max-lines * 4 + ged-undo-cap * ged-undo-rec + ged-marks-bytes + (ged-chap-max + 1) * 4 + 5 * 64
@@ -1535,9 +1231,6 @@ Section: Step
       else 1)
     else ged-list-step base box w h stride s font pal mouse cs es st sc clicked
 
- Leaving the editor RE-COUNTS the directory, because a file just created
- changes the count and a file just saved changes the size a row reads.
-
   ged-to-list : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, EditState -> [Device.Port] Integer
   ged-to-list (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) = act
     n <- gfl-count-cur (st.ed-vol) (st.ed-clusters)
@@ -1581,14 +1274,6 @@ Section: Step
         1
       end
     else 1
-
- Changing directory and opening a file both answer a NEGATIVE number, which
- tells `desk-loop` to keep the frame. A directory change is two fresh lists and
- an open file is a fresh path Text, all allocated inside the iteration, and the
- restore at the end of it would free exactly what the record now points at.
- The paint after a directory change is bracketed, so the kept frame holds the
- lists and not a screenful of rows. Everything else here stores integers, so it
- answers 1 and the bracket closes as usual.
 
   ged-up : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, EditState -> [Device.Port] Integer
   ged-up (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (st) = act
@@ -1696,12 +1381,6 @@ Section: Step
     else 1
   end
 
- The stamp is seconds since midnight off the CMOS RTC, not a wall date. It
- orders the annotations written in one session, which is what a reader of the
- bubble needs, and it does not pretend to a precision this pane can reach.
- Read under the update-in-progress guard, because the three registers are
- three separate port reads and the clock can tick between them.
-
   ged-note-stamp : Integer -> [Device.Port] Integer
   ged-note-stamp (d) = act
     idle <- rtc-wait-idle rtc-uip-fuel
@@ -1721,9 +1400,6 @@ Section: Step
     in let t = gapp-ui-text base stride rows font (box.lr-x + 70 * s) (box.lr-y + 26 * s) (ged-name-of es & "_") (gfl-bright pal) s 0
     in let k = gapp-ui-text base stride rows font (box.lr-x + 10 * s) (box.lr-y + box.lr-h - 18 * s) "Type a name  Enter create  Bksp erase  Esc back" (gfl-hint pal) s 0
     in if mouse.um-ok then cursor-update cs base stride rows w h s (mouse-x mouse) (mouse-y mouse) else 0
-
- Enter builds the only Text this mode allocates, and it goes into the record,
- so this arm answers NEGATIVE and every other arm answers 1.
 
   ged-name-step : Integer, LayoutRect, Integer, Integer, Integer, Integer, GopAppFont, Palette, UsbMouse, Integer, Integer, EditState, Integer, Boolean -> [Device.Port] Integer
   ged-name-step (base) (box) (w) (h) (stride) (s) (font) (pal) (mouse) (cs) (es) (st) (sc) (clicked) =

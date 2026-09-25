@@ -1,0 +1,85 @@
+Chapter: DiagEdit
+  cites Kernel chapter Hpet
+  cites Works chapter GopEdit
+  cites Diag chapter DiagStage
+
+ WORKS-19 in `apps/works/works-backlog.md`: a keystroke at offset 0 of the
+ desk's editor shifts the whole tail one byte and reindexes every line, and
+ the bed measured 5 ms for each on SOURCE.SRC's 2,896,050 bytes. What no one
+ has measured is metal. The stage times the desk's own `ged-shift-up` and
+ `ged-reindex` on a buffer of that size and on a 317-byte control, against
+ HPET; a cost proportional to file size separates the two rows and a flat one
+ does not. Each loop threads its result into the printed accumulator,
+ because a loop whose result is unused was elided once and read 1.4 GB/s.
+
+Section: States
+
+  dew-states : List Text = ["measured", "no-clock"]
+
+Section: The Buffer
+
+ A 47-byte line is SOURCE.SRC's mean line length (2,896,050 bytes over 62,184
+ lines), so the synthesized buffer carries the same line count to within one
+ percent.
+
+  dew-big : Integer = 2896050
+  dew-small : Integer = 317
+  dew-line : Integer = 47
+  dew-reps : Integer = 20
+
+  dew-fill : Integer, Integer, Integer -> Integer
+  dew-fill (buf) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte buf i (if int-mod i dew-line == dew-line - 1 then 10 else 97 + int-mod i 26)
+    in dew-fill buf (i + 1) n
+
+Section: The Arms
+
+  dew-many-shift : Integer, Integer, Integer, Integer -> Integer
+  dew-many-shift (buf) (top) (n) (acc) =
+    if n <= 0 then acc
+    else let m = ged-shift-up buf 0 top
+    in dew-many-shift buf top (n - 1) (acc + m + peek-byte buf 1)
+
+  dew-many-reindex : Integer, Integer, Integer -> Integer
+  dew-many-reindex (es) (n) (acc) =
+    if n <= 0 then acc
+    else let c = ged-reindex es
+    in dew-many-reindex es (n - 1) (acc + c)
+
+  dew-us : Integer, Integer -> Integer
+  dew-us (dt) (hz) = if hz <= 0 then 0 - 1 else (dt * 1000000 / hz) / dew-reps
+
+  DewArm = record { da-shift-us : Integer, da-reindex-us : Integer, da-lines : Integer, da-acc : Integer, da-moved : Boolean }
+
+  dew-arm : Integer, Integer, Integer -> DewArm
+  dew-arm (es) (size) (hz) =
+    let p = poke-32 es 8 size
+    in let lines = ged-reindex es
+    in let t0 = hpet-ticks
+    in let a1 = dew-many-shift (ged-buf es) (size - 1) dew-reps 0
+    in let t1 = hpet-ticks
+    in let a2 = dew-many-reindex es dew-reps 0
+    in let t2 = hpet-ticks
+    in DewArm { da-shift-us = dew-us (t1 - t0) hz, da-reindex-us = dew-us (t2 - t1) hz, da-lines = lines, da-acc = a1 + a2, da-moved = t2 > t0 }
+
+  dew-row : Text, Integer, DewArm -> Text
+  dew-row (label) (size) (a) = label & " bytes=" & show size & " lines=" & show (a.da-lines) & " shift-us=" & show (a.da-shift-us) & " reindex-us=" & show (a.da-reindex-us)
+
+Section: The Stage
+
+  dew-run : DiagCtx -> DiagResult
+  dew-run (c) =
+    let hz = hpet-ticks-per-second
+    in let es = alloc-zeroed 64 64
+    in let i0 = ged-init es
+    in let f = dew-fill (ged-buf es) 0 dew-big
+    in let small = dew-arm es dew-small hz
+    in let big = dew-arm es dew-big hz
+    in let tail = "reps=" & show dew-reps & " hpet=" & show hz & " acc=" & show (small.da-acc + big.da-acc)
+    in let rows = [dew-row "small" dew-small small, dew-row "big" dew-big big, tail]
+    in if hz <= 0 | small.da-moved == False | big.da-moved == False
+      then diag-result "no-clock" diag-col-warn [tail & " clock did not move"] (rows & ["the HPET did not move across the timed loops, so no duration here is a measurement"])
+      else diag-result "measured" diag-col-good [dew-row "big" dew-big big, dew-row "small" dew-small small] rows
+
+Page 1

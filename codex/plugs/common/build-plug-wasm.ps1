@@ -98,7 +98,11 @@ if ($Transport -ne 'bytes') {
                         'codex\compiler\Ast\AstNodes.codex',
                         'codex\compiler\IR\IRChapter.codex')) {
         $drop = if ($decl -like '*AstNodes.codex') { @('Deck Copies') } else { @() }
-        Add-PlugChapter -Lines $lines -Path (Join-Path $Repo $decl) -Quire $plugQuire -DropSections $drop
+        # Same strips as Build-TranspilerPlug: Plug Types supplies deck-record,
+        # and Deck Copies is AST Nodes' only use of Syntax Nodes.
+        $strip = @('Phase Allocator')
+        if ($decl -like '*AstNodes.codex') { $strip += 'Syntax Nodes' }
+        Add-PlugChapter -Lines $lines -Path (Join-Path $Repo $decl) -Quire $plugQuire -DropSections $drop -StripCites $strip
     }
     if ($WithLir) {
         foreach ($lir in @('codex\compiler\Core\BuildSettings.codex',
@@ -106,7 +110,7 @@ if ($Transport -ne 'bytes') {
                            'codex\compiler\Syntax\Token.codex',
                            'codex\compiler\IR\Lir.codex',
                            'codex\compiler\IR\LirTargets.codex')) {
-            Add-PlugChapter -Lines $lines -Path (Join-Path $Repo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir')
+            Add-PlugChapter -Lines $lines -Path (Join-Path $Repo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir', 'Phase Allocator')
         }
     }
     foreach ($cc in @($CompilerChapters | ForEach-Object { $_ -split ',' } | Where-Object { $_ })) {

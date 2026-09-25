@@ -1,0 +1,116 @@
+Chapter: VectorWide
+  cites Foreword chapter Console
+
+Section: Four f64 Lanes
+
+  poke-f64 : Integer, Integer, Real -> Integer
+  poke-f64 (p) (off) (x) =
+   let bits = real-to-bits x
+   in let lo = poke-32 p off (bit-and bits 4294967295)
+   in poke-32 p (off + 4) (bit-shru bits 32)
+
+  make4d : Real, Real, Real, Real -> Vector 4 Real
+  make4d (a) (b) (c) (d) =
+   let v = vec4d-splat 0.0
+   in let p = address-of v
+   in let w0 = poke-f64 p 0 a
+   in let w1 = poke-f64 p 8 b
+   in let w2 = poke-f64 p 16 c
+   in let w3 = poke-f64 p 24 d
+   in v
+
+  lanes4 : Vector 4 Real -> Text
+  lanes4 (v) = show (vec4d-extract v 0) & " " & show (vec4d-extract v 1) & " " & show (vec4d-extract v 2) & " " & show (vec4d-extract v 3)
+
+  lane-value : Integer, Integer -> Real
+  lane-value (bits) (bit) = if bit-and bits bit > 0 then 0.0 else 2.0
+
+  score4 : Integer -> Integer
+  score4 (bits) =
+   let v = make4d (lane-value bits 1) (lane-value bits 2) (lane-value bits 4) (lane-value bits 8)
+   in let m = v < vec4d-splat 1.0
+   in mask4d-count m + (if mask4d-any m then 8 else 0) + (if mask4d-all m then 16 else 0) + (if mask4d-none m then 32 else 0)
+
+  score4-line : Integer -> Text
+  score4-line (bits) = "score4-" & show bits & ": " & show (score4 bits)
+
+Section: Eight f32 Lanes
+
+  make8 : Real, Real, Real, Real, Real, Real, Real, Real -> Vector 8 (Real approximate)
+  make8 (a) (b) (c) (d) (e) (f) (g) (h) =
+   let v = vec8-splat (to-real-approx 0.0)
+   in let p = address-of v
+   in let w0 = poke-32 p 0 (real-approx-to-bits (to-real-approx a))
+   in let w1 = poke-32 p 4 (real-approx-to-bits (to-real-approx b))
+   in let w2 = poke-32 p 8 (real-approx-to-bits (to-real-approx c))
+   in let w3 = poke-32 p 12 (real-approx-to-bits (to-real-approx d))
+   in let w4 = poke-32 p 16 (real-approx-to-bits (to-real-approx e))
+   in let w5 = poke-32 p 20 (real-approx-to-bits (to-real-approx f))
+   in let w6 = poke-32 p 24 (real-approx-to-bits (to-real-approx g))
+   in let w7 = poke-32 p 28 (real-approx-to-bits (to-real-approx h))
+   in v
+
+  lane8 : Vector 8 (Real approximate), Integer -> Text
+  lane8 (v) (i) = show (from-real-approx (vec8-extract v i))
+
+  lanes8 : Vector 8 (Real approximate) -> Text
+  lanes8 (v) = lane8 v 0 & " " & lane8 v 1 & " " & lane8 v 2 & " " & lane8 v 3 & " " & lane8 v 4 & " " & lane8 v 5 & " " & lane8 v 6 & " " & lane8 v 7
+
+  bit-lane : Integer, Integer -> Real
+  bit-lane (bits) (i) = lane-value bits (bit-shl 1 i)
+
+  score8 : Integer -> Integer
+  score8 (bits) =
+   let v = make8 (bit-lane bits 0) (bit-lane bits 1) (bit-lane bits 2) (bit-lane bits 3) (bit-lane bits 4) (bit-lane bits 5) (bit-lane bits 6) (bit-lane bits 7)
+   in let m = v < vec8-splat (to-real-approx 1.0)
+   in mask8-count m + (if mask8-any m then 16 else 0) + (if mask8-all m then 32 else 0) + (if mask8-none m then 64 else 0)
+
+  score8-sum : Integer, Integer -> Integer
+  score8-sum (bits) (acc) = if bits > 255 then acc else score8-sum (bits + 1) (acc + score8 bits)
+
+Section: Entry
+  opening : [Console] Nothing
+  opening = act
+    let a = make4d 1.0 -2.0 3.0 6.0
+    in let b = make4d 0.25 4.0 -1.5 2.0
+    in let lt = a < b
+    in act
+      print-line-uni ("add4: " & lanes4 (a + b))
+      print-line-uni ("sub4: " & lanes4 (a - b))
+      print-line-uni ("mul4: " & lanes4 (a * b))
+      print-line-uni ("div4: " & lanes4 (a / b))
+      print-line-uni ("lt4: " & show (mask4d-count lt) & " " & show (mask4d-any lt) & " " & show (mask4d-all lt) & " " & show (mask4d-none lt))
+      print-line-uni ("select4: " & lanes4 (vec4d-select lt a b))
+      print-line-uni ("splat4: " & show (vec4d-extract (vec4d-splat 2.5) 3))
+      print-line-uni ("reduce4: " & show (vec4d-reduce-add a))
+      print-line-uni ("ordered4: " & show (vec4d-reduce-add (make4d 100000000000000000.0 1.0 -100000000000000000.0 1.0)))
+      print-line-uni (score4-line 0)
+      print-line-uni (score4-line 1)
+      print-line-uni (score4-line 2)
+      print-line-uni (score4-line 5)
+      print-line-uni (score4-line 10)
+      print-line-uni (score4-line 14)
+      print-line-uni (score4-line 15)
+      let a8 = make8 1.0 -2.0 3.0 4.0 5.0 6.0 7.0 8.0
+      in let b8 = make8 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0
+      in let d8 = make8 2.0 4.0 8.0 16.0 32.0 64.0 128.0 256.0
+      in let gt8 = a8 > b8
+      in act
+        print-line-uni ("add8: " & lanes8 (a8 + b8))
+        print-line-uni ("sub8: " & lanes8 (a8 - b8))
+        print-line-uni ("mul8: " & lanes8 (a8 * b8))
+        print-line-uni ("div8: " & lanes8 (a8 / d8))
+        print-line-uni ("gt8: " & show (mask8-count gt8) & " " & show (mask8-any gt8) & " " & show (mask8-all gt8) & " " & show (mask8-none gt8))
+        print-line-uni ("select8: " & lanes8 (vec8-select (a8 < b8) a8 b8))
+        print-line-uni ("splat8: " & lane8 (vec8-splat (to-real-approx 2.5)) 7)
+        print-line-uni ("reduce8: " & show (from-real-approx (vec8-reduce-add a8)))
+        print-line-uni ("ordered8: " & show (from-real-approx (vec8-reduce-add (make8 100000000.0 1.0 -100000000.0 1.0 2.0 4.0 8.0 16.0))))
+        print-line-uni ("score8-0: " & show (score8 0))
+        print-line-uni ("score8-1: " & show (score8 1))
+        print-line-uni ("score8-128: " & show (score8 128))
+        print-line-uni ("score8-170: " & show (score8 170))
+        print-line-uni ("score8-255: " & show (score8 255))
+        print-line-uni ("score8-sum: " & show (score8-sum 0 0))
+      end
+    end
+  end

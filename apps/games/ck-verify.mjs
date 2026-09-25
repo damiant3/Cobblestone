@@ -111,7 +111,7 @@ function illegal(g, turn, m) {
 }
 
 function playGame(pick) {
-  let h = e.ck_new(), plies = 0, lastCapture = 0;
+  let h = e.ck_new(), plies = 0, lastCapture = 0, lastProgress = 0;
   const problems = [];
   while (e.ck_done(h) === 0 && plies < 400) {
     const g = cells(h), turn = e.ck_turn(h), ms = moves(h);
@@ -124,6 +124,8 @@ function playGame(pick) {
     const before = cells(h);
     const chosen = ms[idx];
     if (chosen.cap >= 0) lastCapture = plies;
+    const crowns = !isKing(g[chosen.from]) && (turn === 0 ? Math.floor(chosen.to / 8) === 0 : Math.floor(chosen.to / 8) === 7);
+    if (chosen.cap >= 0 || crowns) lastProgress = plies + 1;
     h = e.ck_apply(h, idx);
     const after = cells(h);
     // Piece bookkeeping: a jump removes exactly one enemy, a slide none.
@@ -144,12 +146,13 @@ function playGame(pick) {
     plies++;
     if (problems.length > 4) break;
   }
-  return { h, plies, problems, lastCapture };
+  return { h, plies, problems, lastCapture, lastProgress };
 }
 
 {
   const all = [];
-  let totalPlies = 0, ended = 0;
+  let totalPlies = 0, draws = 0, wipeouts = 0, blockedWins = 0;
+  const judged = [];
   const openEnded = [];
   for (let seed = 0; seed < 12; seed++) {
     // A seeded chooser rather than always the engine's pick, so the
@@ -159,28 +162,57 @@ function playGame(pick) {
     const r = playGame(seed === 0 ? (h => e.ck_ai(h)) : pick);
     all.push(...r.problems.map(p => `seed ${seed} ${p}`));
     totalPlies += r.plies;
-    if (e.ck_done(r.h) === 1 || e.ck_moves(r.h) === 0) ended++;
-    else openEnded.push({ seed, sinceCapture: r.plies - r.lastCapture });
+    if (e.ck_done(r.h) !== 1) { openEnded.push(`seed ${seed}: running after ${r.plies} plies`); continue; }
+    // A finished game is a win for the side that moved last, because the side
+    // to move has no piece or no legal move; or it is a draw at exactly eighty
+    // plies without a capture or a crowning.
+    const w = e.ck_winner(r.h), toMove = e.ck_turn(r.h), quiet = r.plies - r.lastProgress;
+    if (w === 1 - toMove) {
+      if (count(cells(r.h), toMove) > 0 && e.ck_moves(r.h) > 0) judged.push(`seed ${seed}: ${w} wins but ${toMove} can move`);
+      else if (count(cells(r.h), toMove) > 0) blockedWins++; else wipeouts++;
+    } else if (w === -1) {
+      if (quiet !== 80) judged.push(`seed ${seed}: a draw after ${quiet} quiet plies, not 80`);
+      else draws++;
+    } else judged.push(`seed ${seed}: winner ${w} with ${toMove} to move`);
   }
   ok('every move offered in twelve games is legal, and the pieces account for',
      all.length === 0, all.length ? all.slice(0, 3).join('; ') : `${totalPlies} plies`);
-  // NOT "every game ends". This engine has no draw rule -- real checkers
-  // ends a barren endgame by the forty-move-without-capture rule and
-  // `checkers-loop` only caps the move count and reports no winner
-  // (games-backlog GAME-18). So the property that actually holds is that an
-  // unfinished game is a no-capture shuffle rather than a stuck engine: a
-  // game still running with a capture in recent memory WOULD be a defect,
-  // because it would mean play had stopped making progress for some other
-  // reason.
-  const stuck = openEnded.filter(o => o.sinceCapture < 50);
-  ok('any game still running is a no-capture shuffle, not a stalled one',
-     stuck.length === 0,
-     openEnded.length
-       ? `${openEnded.length} unfinished, quiet for ${openEnded.map(o => o.sinceCapture).join('/')} plies`
-       : 'all 12 finished');
-  ok('control: the games were long enough to mean something', totalPlies > 100, totalPlies);
+  ok('every game ends, and every ending is a legal one',
+     openEnded.length === 0 && judged.length === 0,
+     [...openEnded, ...judged].slice(0, 3).join('; ') || `${wipeouts} wiped out, ${blockedWins} blocked, ${draws} drawn`);
+  // CONTROL: the draw rule must be REACHED, or the arm above says nothing
+  // about it. Before the rule, three of these twelve games were all-king
+  // shuffles that never ended.
+  ok('CONTROL: the corpus reaches the eighty-ply draw', draws > 0, `${draws} drawn`);  ok('control: the games were long enough to mean something', totalPlies > 100, totalPlies);
 }
 
+// -- A side with pieces and no legal move has lost ----------------------
+// No game above reaches it, so the position is set up. North's one man on
+// 49 (row 6) moves toward row 7, where 56 and 58 hold South men; it cannot
+// jump them, because the landing squares are off the board. South's men on
+// 40 and 42 also block those two men's jumps over 49, so South's only
+// moves are slides. After any of them North still has a piece and nothing
+// to do with it. The CONTROL frees 58, so the same slide leaves North a move.
+{
+  const setUp = (sqs) => sqs.reduce((h, [sq, v]) => e.ck_put(h, sq, v), e.ck_blank());
+  const slide = (h) => {
+    for (let i = 0; i < e.ck_moves(h); i++) if (e.ck_move_from(h, i) === 40) return i;
+    return -1;
+  };
+  const blocked = setUp([[49, 3], [56, 1], [58, 1], [40, 1], [42, 1]]);
+  const bi = slide(blocked);
+  const after = bi >= 0 ? e.ck_apply(blocked, bi) : blocked;
+  ok('a side with pieces and no legal move has lost',
+     bi >= 0 && e.ck_done(after) === 1 && e.ck_winner(after) === 0 &&
+     count(cells(after), 1) === 1 && e.ck_moves(after) === 0,
+     `slide ${bi}, done ${e.ck_done(after)}, winner ${e.ck_winner(after)}, north pieces ${count(cells(after), 1)}`);
+  const open = setUp([[49, 3], [56, 1], [40, 1], [42, 1]]);
+  const oi = slide(open);
+  const after2 = oi >= 0 ? e.ck_apply(open, oi) : open;
+  ok('CONTROL: with 58 free the same slide leaves North a move, and play goes on',
+     oi >= 0 && e.ck_done(after2) === 0 && e.ck_moves(after2) > 0,
+     `done ${e.ck_done(after2)}, north moves ${e.ck_moves(after2)}`);
+}
 // -- Refusals -------------------------------------------------------------
 {
   ok('a move index off the end is refused',

@@ -1,10 +1,6 @@
 Chapter: VirtioNet
   cites Kernel chapter VirtioPci
 
- Frame buffers are pre-allocated in a fixed region. Each RX
- buffer is 1526 bytes (10-byte virtio-net header + 1516 MTU).
- TX buffers are allocated from the same region.
-
    virtio-net-send-frame : List Integer -> Integer
    virtio-net-recv-frame : List Integer
 
@@ -19,18 +15,10 @@ Section: Constants
 
 Section: Buffer Region
 
- The DMA regions must sit above the top of everything the ARM64 stub
- allocates for the kernel (image, page tables, heap grant). That top,
- `stack-top`, is known only to the image builder, so the stub writes it,
- rounded up to a 2 MB boundary, to `vnet-dma-floor-cell` before jumping to
- the kernel (`codex/plugs/pe/Arm64PeWriter.codex`, `a64pe-stub-publish-dma-floor`),
- and the regions are derived from that cell rather than fixed. #40004000 is
- the cross-file contract between the stub and both drivers, the same kind of
- by-value agreement as the process-table offsets; `VirtioBlk` reads the same
- cell. This is what makes the layout self-adjust when the kernel or its heap
- grant grows, closing the failure recorded when these were fixed at
- #44000000: a heap grant raised past its headroom put the regions back inside
- the allocation and the NIC wrote frames over guest memory.
+ #40004000 holds the DMA floor: the stub writes the top of its allocation
+ (image, page tables, heap grant), rounded up to 2 MB, there before jumping
+ to the kernel (`a64pe-stub-publish-dma-floor`), and VirtioNet and VirtioBlk
+ derive their regions from it.
 
   vnet-dma-floor-cell : Integer = #40004000
   vnet-dma-floor : Integer = peek-32 vnet-dma-floor-cell 0
@@ -112,7 +100,7 @@ Section: Receive Frame
    in let buf-addr = vnet-rx-region + used-desc-id * vnet-max-frame
    in let data-len = used-len - vnet-hdr-size
    in let frame = virtio-net-read-frame-bytes buf-addr vnet-hdr-size data-len 0 []
-   in let rxq1 = virtio-submit-desc (st.rx-queue) (vnet-rx-region + used-desc-id * vnet-max-frame) vnet-max-frame vq-desc-f-write
+   in let rxq1 = virtio-repost-desc (st.rx-queue) used-desc-id
    in let notified = virtio-notify rxq1
    in let rxq2 = VirtqueueState { desc-base = (rxq1.desc-base), avail-base = (rxq1.avail-base), used-base = (rxq1.used-base), queue-size = (rxq1.queue-size), free-head = rxq1.free-head, avail-idx = rxq1.avail-idx, last-used-idx = (st.rx-queue).last-used-idx + 1, notify-addr = rxq1.notify-addr }
    in VirtioNetRecvResult { state = VirtioNetState { device = st.device, rx-queue = rxq2, tx-queue = st.tx-queue, mac = st.mac }, frame = frame, has-frame = True }
@@ -127,5 +115,40 @@ Section: Receive Frame
   virtio-net-read-frame-bytes (base) (off) (len) (i) (acc) =
    if i >= len then acc
    else virtio-net-read-frame-bytes base off len (i + 1) (list-push acc (peek-byte base (off + i)))
+
+Section: Receive Into A Caller's List
+
+ The used-ring index is 16 bits on the wire and `last-used-idx` counts up
+ without bound, so the comparison masks it; unmasked, the 65,536th frame
+ would never compare equal again.
+
+  VirtioNetRecvInto = record {
+    vi-state : VirtioNetState,
+    vi-len : Integer,
+    vi-has : Boolean
+  }
+
+  virtio-net-poll-into : VirtioNetState, List Integer -> VirtioNetRecvInto
+  virtio-net-poll-into (st) (dst) =
+   let bar = mmio-barrier
+   in let used-idx = bit-and (peek-16 ((st.rx-queue).used-base) 2) #FFFF
+   in if used-idx == bit-and ((st.rx-queue).last-used-idx) #FFFF then VirtioNetRecvInto { vi-state = st, vi-len = 0, vi-has = False }
+   else let ring-off = ((st.rx-queue).used-base) + 4 + bit-and ((st.rx-queue).last-used-idx) (((st.rx-queue).queue-size) - 1) * 8
+   in let used-desc-id = peek-32 ring-off 0
+   in let used-len = peek-32 ring-off 4
+   in let buf-addr = vnet-rx-region + used-desc-id * vnet-max-frame
+   in let data-len = used-len - vnet-hdr-size
+   in let capped = if data-len > list-length dst then list-length dst else if data-len < 0 then 0 else data-len
+   in let n = virtio-net-copy-into buf-addr vnet-hdr-size 0 capped dst
+   in let rxq1 = virtio-repost-desc (st.rx-queue) used-desc-id
+   in let notified = virtio-notify rxq1
+   in let rxq2 = VirtqueueState { desc-base = rxq1.desc-base, avail-base = rxq1.avail-base, used-base = rxq1.used-base, queue-size = rxq1.queue-size, free-head = rxq1.free-head, avail-idx = rxq1.avail-idx, last-used-idx = (st.rx-queue).last-used-idx + 1, notify-addr = rxq1.notify-addr }
+   in VirtioNetRecvInto { vi-state = VirtioNetState { device = st.device, rx-queue = rxq2, tx-queue = st.tx-queue, mac = st.mac }, vi-len = n, vi-has = True }
+
+  virtio-net-copy-into : Integer, Integer, Integer, Integer, List Integer -> Integer
+  virtio-net-copy-into (base) (off) (i) (len) (dst) =
+   if i >= len then len
+   else let s = list-set-at dst i (peek-byte base (off + i))
+   in virtio-net-copy-into base off (i + 1) len dst
 
 Page 1

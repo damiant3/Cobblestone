@@ -6,6 +6,7 @@ Chapter: CdxVerifier
   cites Foreword chapter Ed25519
   cites Foreword chapter Maybe
   cites Foreword chapter FactStore
+  cites Foreword chapter Identity
 
  We say:
 
@@ -58,6 +59,14 @@ Section: Phase 2 -- Author
   read-author-key (binary) =
     bytes-to-hex-range binary 40 72
 
+  lattice-self-of : Maybe (List Integer) -> TrustLattice
+  lattice-self-of (pub) = when pub
+    is None -> lattice-empty
+    is Just (k) -> lattice-add-direct lattice-empty (bytes-to-hex-range k 0 32) trust-max
+
+  lattice-self : [Identity] TrustLattice
+  lattice-self = lattice-self-of key-public
+
   bytes-to-hex-range : List Integer, Integer, Integer -> Text
   bytes-to-hex-range (bs) (start) (stop) =
     bytes-to-hex-loop bs start stop ""
@@ -73,10 +82,33 @@ Section: Phase 3 -- Capabilities
   verify-capabilities (binary) (policy) (lattice) (current-time) =
     let cap-off = read-le64 binary 136
     in let cap-sz = read-le64 binary 144
-    in let author-key = read-author-key binary
+    in if caps-well-formed binary cap-off (cap-off + cap-sz) == False then verify-reject PhaseCapabilities "a capability entry runs past its section"
+    else let author-key = read-author-key binary
     in let trust = lattice-trust-score lattice author-key
     in let caps = decode-capabilities binary cap-off (cap-off + cap-sz)
     in check-all-caps caps policy trust author-key current-time 0 (list-length caps)
+
+  caps-well-formed : List Integer, Integer, Integer -> Boolean
+  caps-well-formed (bs) (off) (limit) =
+    if off == limit then True
+    else if off + 8 > limit then False
+    else let next = off + 16 + read-le32 bs (off + 4)
+    in if next > limit then False
+    else caps-well-formed bs next limit
+
+  effects-well-formed : List Integer, Integer, Integer -> Boolean
+  effects-well-formed (bs) (off) (sz) =
+    if sz == 0 then True
+    else if sz < 2 then False
+    else effect-entries-well-formed bs (off + 2) (cdx-read-le16 bs off) 0 (off + sz)
+
+  effect-entries-well-formed : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  effect-entries-well-formed (bs) (off) (count) (i) (limit) =
+    if i >= count then off <= limit
+    else if off + 2 > limit then False
+    else let next = off + 2 + cdx-read-le16 bs off
+    in if next > limit then False
+    else effect-entries-well-formed bs next count (i + 1) limit
 
   decode-capabilities : List Integer, Integer, Integer -> List CdxCapability
   decode-capabilities (binary) (off) (limit) =
@@ -110,12 +142,14 @@ Section: Phase 3 -- Capabilities
 
   verify-bytes-to-text : List Integer, Integer, Integer -> Text
   verify-bytes-to-text (bs) (off) (len) =
-    verify-bytes-to-text-loop bs off len 0 ""
+    let have = list-length bs - off
+    in let cap = if have < 0 then 0 else if len < have then len else have
+    in raw-bytes-to-text (verify-bytes-to-text-loop bs off len 0 (__list-with-capacity (cap + 1)))
 
-  verify-bytes-to-text-loop : List Integer, Integer, Integer, Integer, Text -> Text
+  verify-bytes-to-text-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   verify-bytes-to-text-loop (bs) (off) (len) (i) (acc) =
     if i >= len then acc
-    else verify-bytes-to-text-loop bs off len (i + 1) (acc & char-to-text (code-to-char (list-at bs (off + i))))
+    else verify-bytes-to-text-loop bs off len (i + 1) (list-push acc (list-at bs (off + i)))
 
   cap-name : Integer -> Text
   cap-name (id) =
@@ -160,6 +194,7 @@ Section: Phase 4 -- Effects
     let eff-off = read-le64 binary 152
     in let eff-sz = read-le64 binary 160
     in if eff-sz == 0 then verify-ok PhaseEffects
+    else if effects-well-formed binary eff-off eff-sz == False then verify-reject PhaseEffects "an effect entry runs past its section"
     else let effects = decode-effects binary eff-off eff-sz
     in let cap-off = read-le64 binary 136
     in let cap-sz = read-le64 binary 144
@@ -185,10 +220,7 @@ Section: Phase 4 -- Effects
   effect-base-name : Text -> Text
   effect-base-name (n) = effect-base-loop n 0 (text-length n)
 
- effect-base-loop derives the dot's code from a literal because
- internal text is CCE: a bare 46 is ASCII thinking, and in CCE code
- 46 is the letter H -- the dotted-coverage relation (Device.Block
- covered by a Device entry) was dead code with the bare constant.
+ In CCE, code 46 is the letter H, so the dot's code is derived from a literal.
 
   effect-base-loop : Text, Integer, Integer -> Text
   effect-base-loop (n) (i) (len) =
@@ -202,8 +234,7 @@ Section: Composite Verification
   verify-cdx (binary) (lattice) (policy) (current-time) =
     let p1 = verify-integrity binary
     in if p1.accepted == False then p1
-    else let threshold = read-le16 binary 216
-    in let p2 = verify-author binary lattice threshold
+    else let p2 = verify-author binary lattice (policy.min-trust)
     in if p2.accepted == False then p2
     else let p3 = verify-capabilities binary policy lattice current-time
     in if p3.accepted == False then p3
@@ -248,13 +279,88 @@ Section: Full Verification
   verify-cdx-full (binary) (lattice) (policy) (current-time) (store) (fuel) =
     let p1 = verify-integrity binary
     in if p1.accepted == False then p1
-    else let threshold = read-le16 binary 216
-    in let p2 = verify-author binary lattice threshold
+    else let p2 = verify-author binary lattice (policy.min-trust)
     in if p2.accepted == False then p2
     else let p3 = verify-capabilities binary policy lattice current-time
     in if p3.accepted == False then p3
     else let p4 = verify-effects binary
     in if p4.accepted == False then p4
     else verify-proofs binary store fuel
+
+Section: Verification From An Address
+
+  cdx-at-read : Integer, Integer, Integer, List Integer -> List Integer
+  cdx-at-read (addr) (i) (stop) (acc) =
+    if i >= stop then acc
+    else cdx-at-read addr (i + 1) stop (list-push acc (peek-byte addr i))
+
+  cdx-at-section-fits : List Integer, Integer, Integer -> Boolean
+  cdx-at-section-fits (hdr) (len) (at) =
+    let off = read-le64 hdr at
+    in let sz = read-le64 hdr (at + 8)
+    in if off < 0 | sz < 0 then False
+    else sz <= len - off
+
+  cdx-at-content-hash-ok : Integer, Integer, List Integer -> Boolean
+  cdx-at-content-hash-ok (addr) (len) (hdr) =
+    if cdx-at-section-fits hdr len 136 == False then False
+    else if cdx-at-section-fits hdr len 152 == False then False
+    else if cdx-at-section-fits hdr len 168 == False then False
+    else if cdx-at-section-fits hdr len 184 == False then False
+    else let cap-end = read-le64 hdr 136 + read-le64 hdr 144
+    in let eff-end = read-le64 hdr 152 + read-le64 hdr 160
+    in let text-end = read-le64 hdr 168 + read-le64 hdr 176
+    in let ro-end = read-le64 hdr 184 + read-le64 hdr 192
+    in let e1 = if cap-end > eff-end then cap-end else eff-end
+    in let e2 = if text-end > ro-end then text-end else ro-end
+    in let section-end = if e1 > e2 then e1 else e2
+    in let content-end = if bit-and (read-le16 hdr 6) cdx-flag-has-proofs == 0 then section-end else len
+    in let n = if content-end > cdx-header-fixed-size then content-end - cdx-header-fixed-size else 0
+    in let computed-bytes = cdxb-hash-words-to-bytes (sha256-buf addr cdx-header-fixed-size n)
+    in bytes-equal (cdx-read-content-hash hdr) computed-bytes 0 32
+
+  verify-integrity-at : Integer, Integer, List Integer -> VerifyResult
+  verify-integrity-at (addr) (len) (hdr) =
+    if cdx-verify-magic hdr == False then
+      verify-reject PhaseIntegrity "bad magic"
+    else if cdx-at-content-hash-ok addr len hdr == False then
+      verify-reject PhaseIntegrity "content hash mismatch"
+    else if cdx-verify-signature hdr == False then
+      verify-reject PhaseIntegrity "signature invalid"
+    else verify-ok PhaseIntegrity
+
+  cdx-at-meta-end : List Integer -> Integer
+  cdx-at-meta-end (hdr) =
+    let cap-end = read-le64 hdr 136 + read-le64 hdr 144
+    in let eff-end = read-le64 hdr 152 + read-le64 hdr 160
+    in let e1 = if cap-end > eff-end then cap-end else eff-end
+    in if e1 > cdx-header-fixed-size then e1 else cdx-header-fixed-size
+
+  cdx-at-meta : Integer, List Integer -> List Integer
+  cdx-at-meta (addr) (hdr) = cdx-at-read addr 0 (cdx-at-meta-end hdr) []
+
+  verify-proofs-at : Integer, Integer, List Integer, BareFactStore, Integer -> VerifyResult
+  verify-proofs-at (addr) (len) (hdr) (store) (fuel) =
+    let flags = read-le16 hdr 6
+    in if bit-and flags cdx-flag-has-proofs == 0 then verify-ok PhaseProofs
+    else let proof-off = read-le64 hdr 184 + read-le64 hdr 192
+    in if proof-off < 0 | proof-off >= len then verify-reject PhaseProofs "proof section out of bounds"
+    else let entries = decode-proof-section (cdx-at-read addr proof-off len []) 0
+    in check-all-proofs entries store fuel 0 (list-length entries)
+
+  verify-cdx-full-at : Integer, Integer, TrustLattice, Policy, Integer, BareFactStore, Integer -> VerifyResult
+  verify-cdx-full-at (addr) (len) (lattice) (policy) (current-time) (store) (fuel) =
+    if len < cdx-header-fixed-size then verify-reject PhaseIntegrity "binary too small"
+    else let hdr = cdx-at-read addr 0 cdx-header-fixed-size []
+    in let p1 = verify-integrity-at addr len hdr
+    in if p1.accepted == False then p1
+    else let p2 = verify-author hdr lattice (policy.min-trust)
+    in if p2.accepted == False then p2
+    else let meta = cdx-at-meta addr hdr
+    in let p3 = verify-capabilities meta policy lattice current-time
+    in if p3.accepted == False then p3
+    else let p4 = verify-effects meta
+    in if p4.accepted == False then p4
+    else verify-proofs-at addr len hdr store fuel
 
 Page 1

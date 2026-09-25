@@ -1,0 +1,102 @@
+Chapter: Toml Guard
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Encode chapter Toml
+
+Section: Helpers
+
+  rep : Text, Integer, Integer, Text -> Text
+  rep (s) (i) (n) (acc) = if i >= n then acc else rep s (i + 1) n (acc & s)
+
+  keys : Integer, Integer, List Text -> List Text
+  keys (i) (n) (acc) = if i >= n then acc else keys (i + 1) n (list-push acc ("k" & show i & " = 1\n"))
+
+  arm : Text, Text -> Text
+  arm (name) (src) = when toml-parse src
+    is Just (v) -> name & " ok " & toml-emit-value v
+    is None -> name & " refused"
+
+  path-arm : Text, Text, List Text -> Text
+  path-arm (name) (src) (path) = when toml-parse src
+    is Just (v) -> when toml-get-path v path
+      is Just (x) -> name & " = " & toml-emit-value x
+      is None -> name & " missing"
+    is None -> name & " refused"
+
+  count-arm : Text, Text -> Text
+  count-arm (name) (src) = when toml-parse src
+    is Just (v) -> when v
+      is TomlTable (ps) -> name & " pairs=" & show (list-length ps)
+      is otherwise -> name & " not a table"
+    is None -> name & " refused"
+
+  trim-cost : Integer -> Integer
+  trim-cost (n) =
+    let src = rep " " 0 n "" & "a = 1"
+    in let b = __heap-save
+    in let r = when toml-parse src
+      is Just (v) -> 1
+      is None -> 0
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  emit-cost : Integer -> Integer
+  emit-cost (n) = when toml-parse (text-concat-list (keys 0 n []))
+    is Just (v) ->
+      let b = __heap-save
+      in let t = toml-emit v
+      in let a = __heap-save
+      in (a - b) + text-length t - text-length t
+    is None -> 0 - 1
+
+  parse-cost : Integer -> Integer
+  parse-cost (n) =
+    let src = text-concat-list (keys 0 n [])
+    in let b = __heap-save
+    in let r = when toml-parse src
+      is Just (v) -> 1
+      is None -> 0
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  scaling : Text, Integer, Integer -> Text
+  scaling (name) (small) (large) =
+    if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (arm "basic" "title = \"My Config\"\nport = 8080 # note\ndebug = true")
+    print-line-uni (arm "tables" "[a]\nx = 1\n[b]\nx = 2")
+    print-line-uni (path-arm "path b.x" "[a]\nx = 1\n[b]\nx = 2" ["b", "x"])
+    print-line-uni (arm "top-then-table" "k = 1\n[a]\nx = 2")
+    print-line-uni (arm "hash-in-string" "s = \"a # b\"")
+    print-line-uni (arm "literal" "p = 'x y'")
+    print-line-uni (arm "signs" "n = -42\nm = +7\nz = 0")
+    print-line-uni (arm "max-18" "n = 999999999999999999")
+    print-line-uni (arm "empty" "")
+    print-line-uni (arm "comments" "# c\n\n  # d  ")
+    print-line-uni (arm "no-eq" "just words")
+    print-line-uni (arm "dup-key" "x = 1\nx = 2")
+    print-line-uni (arm "dup-table" "[a]\n[a]")
+    print-line-uni (arm "key-then-table" "a = 1\n[a]")
+    print-line-uni (arm "unterminated" "s = \"abc")
+    print-line-uni (arm "after-string" "s = \"a\" b")
+    print-line-uni (arm "array" "xs = [1, 2]")
+    print-line-uni (arm "float" "f = 1.5")
+    print-line-uni (arm "digits-19" "n = 1234567890123456789")
+    print-line-uni (arm "digits-20" "n = 99999999999999999999")
+    print-line-uni (arm "header-junk" "[a] x = 1")
+    print-line-uni (arm "leading-zero" "n = 007")
+    print-line-uni (arm "empty-value" "a =")
+    print-line-uni (arm "bad-key" "a b = 1")
+    print-line-uni (arm "open-header" "[a")
+    print-line-uni (arm "array-table" "[[a]]")
+    print-line-uni (arm "dotted-table" "[a.b]")
+    print-line-uni (arm "escape" "s = \"a\\nb\"")
+    print-line-uni (scaling "trim" (trim-cost 256) (trim-cost 1024))
+    print-line-uni (scaling "emit" (emit-cost 256) (emit-cost 1024))
+    print-line-uni (scaling "parse" (parse-cost 1000) (parse-cost 4000))
+    print-line-uni (count-arm "deep-keys" (text-concat-list (keys 0 200000 [])))
+  end

@@ -3,16 +3,14 @@ Chapter: RiskWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- The browser interface for Risk, on the handle contract in
- games-backlog.md GAME-11. Twelve territories, their armies, and the player
- table are past an i32, so the page holds the state's address.
-
  `risk-set-terr` and `risk-recount-players` both write with `list-set-at`,
- which mutates in place, so `rk-wasm-turn` copies the state first.
+ in place, so every change copies the state first.
 
  We say:
 
 Section: Copying
+
+  wasm-exports : Text = ""
 
   rk-copy-terrs : List RiskTerritory, Integer, List RiskTerritory -> List RiskTerritory
   rk-copy-terrs (src) (i) (acc) =
@@ -43,9 +41,7 @@ Section: Copying
 
 Section: The Browser Interface
 
- A fresh board has nobody's turn open on it, so this opens the first one:
- until `risk-open-turn` runs there is nothing to place and nothing to
- attack with, and a page handed that state would have no move to offer.
+ A board has nothing to place or attack with until `risk-open-turn` runs.
 
   rk-wasm-new : Integer, Integer -> RiskState
   rk-wasm-new (seed) (players) = risk-open-turn (risk-init seed players)
@@ -111,15 +107,9 @@ Section: The Browser Interface
   rk-wasm-continent (s) (player) (continent) =
     if risk-owns-continent s player continent then 1 else 0
 
- `risk-do-turn` leaves the next player advanced but not OPENED, because
- the watch-only runner opens each turn as it takes it. A page holds the
- state between turns, so this opens it here.
-
- A dead player has no turn to open. `risk-do-turn` advances to the next
- seat whether or not it is still alive, because the watch-only runner takes
- the empty turn and advances again on the following call; a page that
- opened one would be handed a board with a reinforcement to place and no
- territory to place it on.
+ `risk-do-turn` advances to the next seat, alive or not, without opening its
+ turn, so this skips dead seats and opens the turn; an opened dead seat has
+ a reinforcement and no territory to place it on.
 
   rk-wasm-turn : RiskState, Integer -> RiskState
   rk-wasm-turn (s) (seed) =
@@ -133,10 +123,8 @@ Section: The Browser Interface
 
 Section: Taking A Turn Yourself
 
- Two phases: put the reinforcement down a territory at a time, then take
- up to three attacks, or stop early. Every one of these refuses rather
- than being refused silently, so a page can ring what is legal instead of
- letting a visitor find out by clicking.
+ A turn places the reinforcement one army at a time, then takes up to three
+ attacks or stops early.
 
   rk-wasm-phase : RiskState -> Integer
   rk-wasm-phase (s) = s.phase
@@ -151,11 +139,8 @@ Section: Taking A Turn Yourself
   rk-wasm-can-place (s) (terr) =
     if risk-can-place s (s.current-player) terr then 1 else 0
 
- A REFUSAL ANSWERS THE STATE IT WAS GIVEN, unchanged and un-copied. Copying
- first and letting the engine refuse the copy is the same game and a
- different handle, and a page comparing what came back against what it sent
- cannot then tell a refusal from a move: everything it clicks looks
- accepted. So legality is asked before the copy, never after.
+ Legality is asked before the copy, so a refusal answers the same handle and
+ a page can tell a refusal from a move.
 
   rk-wasm-place : RiskState, Integer -> RiskState
   rk-wasm-place (s) (terr) =
@@ -167,9 +152,7 @@ Section: Taking A Turn Yourself
   rk-wasm-can-attack (s) (from) (to) =
     if risk-can-attack s (s.current-player) from to then 1 else 0
 
- The dice are the caller's to supply, the same way the watch-only turn
- takes its own: a page that reused one seed would fight the same battle
- every time.
+ The caller supplies the dice seed; one seed reused fights the same battle.
 
   rk-wasm-attack : RiskState, Integer, Integer, Integer -> RiskState
   rk-wasm-attack (s) (from) (to) (seed) =
@@ -186,9 +169,6 @@ Section: Taking A Turn Yourself
     if risk-can-stop s (s.current-player)
       then risk-stop (rk-copy-state s) (s.current-player)
     else s
-
- Whether a territory of yours has anything worth attacking next to it,
- which is what a page rings when you are choosing what to attack FROM.
 
   rk-wasm-can-attack-from : RiskState, Integer -> Integer
   rk-wasm-can-attack-from (s) (terr) =

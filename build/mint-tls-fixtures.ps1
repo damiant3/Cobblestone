@@ -40,6 +40,12 @@ $CaSeed = [byte[]]@(
   17,34,51,68,85,102,119,136,153,170,187,204,221,238,255,16,
   32,48,64,80,96,112,128,144,160,176,192,208,224,240,1,2)
 
+# The P-256 leaf's private scalar, for clients that offer no Ed25519
+# signature scheme (Chrome, Edge). Signed by the same Ed25519 CA.
+$LeafP256Scalar = [byte[]]@(
+  10,17,24,31,38,45,52,59,66,73,80,87,94,101,108,115,
+  122,129,136,143,150,157,164,171,178,185,192,199,206,213,220,227)
+
 $Start = '200101000000Z'
 $End   = '400101000000Z'
 
@@ -122,6 +128,22 @@ Invoke-Ssl @('ca','-batch','-notext','-config',$cfg,
              '-in',(Join-Path $Out 'leaf.csr'),'-out',(Join-Path $Out 'leaf.pem'),
              '-extensions','leaf_ext','-startdate',$Start,'-enddate',$End) 'leaf sign'
 
+# --- the P-256 leaf: SEC1 ECPrivateKey (RFC 5915) with the prime256v1 OID and
+# no public key, which openssl derives ---
+$p256Sec1 = Join-Path $Out 'leaf-p256.sec1.der'
+[System.IO.File]::WriteAllBytes($p256Sec1, ([byte[]]@(0x30,0x31,0x02,0x01,0x01,0x04,0x20) + $LeafP256Scalar + [byte[]]@(0xa0,0x0a,0x06,0x08,0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07)))
+$p256Key = Join-Path $Out 'leaf-p256.key'
+Invoke-Ssl @('ec','-inform','DER','-in',$p256Sec1,'-out',$p256Key) 'p256 key'
+Invoke-Ssl @('req','-new','-key',$p256Key,'-out',(Join-Path $Out 'leaf-p256.csr'),
+             '-subj','/CN=device.codex.test','-config',$cfg) 'p256 leaf csr'
+Invoke-Ssl @('ca','-batch','-notext','-config',$cfg,
+             '-cert',(Join-Path $Out 'ca.pem'),'-keyfile',$caKey,
+             '-in',(Join-Path $Out 'leaf-p256.csr'),'-out',(Join-Path $Out 'leaf-p256.pem'),
+             '-extensions','leaf_ext','-startdate',$Start,'-enddate',$End) 'p256 leaf sign'
+Invoke-Ssl @('x509','-in',(Join-Path $Out 'leaf-p256.pem'),'-outform','DER','-out',(Join-Path $Out 'leaf-p256.der')) 'p256 leaf der'
+$p256Pub = Join-Path $Out 'leaf-p256.pub.der'
+Invoke-Ssl @('pkey','-in',$p256Key,'-pubout','-outform','DER','-out',$p256Pub) 'p256 pubkey'
+
 Invoke-Ssl @('x509','-in',(Join-Path $Out 'ca.pem'),  '-outform','DER','-out',(Join-Path $Out 'ca.der'))   'ca der'
 Invoke-Ssl @('x509','-in',(Join-Path $Out 'leaf.pem'),'-outform','DER','-out',(Join-Path $Out 'leaf.der')) 'leaf der'
 
@@ -151,6 +173,14 @@ if ($Emit) {
     }
     Emit-Literal 'ca-cert'   (Join-Path $Out 'ca.der')
     Emit-Literal 'leaf-cert' (Join-Path $Out 'leaf.der')
+    Emit-Literal 'leaf-p256-cert' (Join-Path $Out 'leaf-p256.der')
+    $pubAll = [System.IO.File]::ReadAllBytes($p256Pub)
+    $pubTail = Join-Path $Out 'leaf-p256.pub.raw'
+    [System.IO.File]::WriteAllBytes($pubTail, [byte[]]$pubAll[($pubAll.Length - 65)..($pubAll.Length - 1)])
+    Emit-Literal 'leaf-p256-pub' $pubTail
+    $privRaw = Join-Path $Out 'leaf-p256.priv.raw'
+    [System.IO.File]::WriteAllBytes($privRaw, $LeafP256Scalar)
+    Emit-Literal 'leaf-p256-priv' $privRaw
 }
 
 if ($Patch) {

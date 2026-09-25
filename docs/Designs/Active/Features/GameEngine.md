@@ -204,7 +204,7 @@ the opposite sign, since rows of a 256x256 map are 1,024 bytes apart so the
 line count grows as 3 to 5 while the taps grow as 9 to 25.
 
 **The finding that matters is not the timing.** At radius 2 `engine-shadow`
-reports `cube pixel unchanged : no`: the 5x5 kernel bleeds onto the caster
+reports `cube unshadowed by itself : no`: the 5x5 kernel bleeds onto the caster
 itself. **A wider kernel is not a quality setting, it is a defect**, so the
 knob's only useful direction is DOWN, which stage 2 already priced. That
 closes the campaign's measurement arc: what a cheaper kernel buys is bounded
@@ -717,8 +717,9 @@ bound rather than a performance one.** The percentage-closer kernel's
 half-width is the engine's one shadow-quality parameter, and raising it is
 the intuitive move for a softer edge. It is not available. At radius 2 the
 kernel reaches map texels belonging to the CASTER and the caster begins
-shadowing itself: `engine-shadow`'s `cube pixel unchanged` assertion holds at
-radius 1 and fails at radius 2, measured 2026-08-20 on cube-on-plane. Radius
+shadowing itself: `engine-shadow`'s `cube unshadowed by itself` assertion
+holds at radius 1 and fails at radius 2 (0 against 27 changed cube pixels,
+measured 2026-09-24 on cube-on-plane). Radius
 2 is where it was caught, not a proof that 1 is the exact edge; 3 and above
 were not measured because 2 already refuses. **The only useful direction on
 this constant is down**, trading a soft edge for speed, and stage 3 below has

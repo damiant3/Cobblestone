@@ -6,8 +6,6 @@ Chapter: CrazyEights
  suit = card / 13. Play a card matching the top discard's rank or suit.
  Eights (rank 6) are wild; player chooses new suit. Special: rank 0
  (2s) makes next player draw 2. First player to empty hand wins.
- AI plays matching non-eight first, then eight choosing most-held suit,
- then draws if forced.
 
  We say:
 
@@ -271,7 +269,54 @@ Section: Advance Player
     rng-mod (s.current-player + s.direction + s.num-players) s.num-players
 
   ce-advance : CrazyEightsState -> CrazyEightsState
-  ce-advance (s) =
+  ce-advance (s) = ce-settle (ce-pass s)
+
+ A dead position ends the game: the pile is empty, no penalty is pending and
+ no seat holds a playable card, so no turn can change anything again. The
+ smallest hand wins it; a tie for smallest is a draw.
+
+  ce-any-play : CrazyEightsState, Integer -> Boolean
+  ce-any-play (s) (p) =
+    if p >= s.num-players then False
+    else if ce-find-play s p >= 0 then True
+    else ce-any-play s (p + 1)
+
+  ce-dead : CrazyEightsState -> Boolean
+  ce-dead (s) =
+    if s.pile-size > 0 then False
+    else if s.draw-penalty > 0 then False
+    else ce-any-play s 0 == False
+
+  ce-smallest : CrazyEightsState, Integer, Integer, Integer, Boolean -> Integer
+  ce-smallest (s) (p) (best) (best-size) (tied) =
+    if p >= s.num-players then (if tied then (0 - 1) else best)
+    else let n = list-at (s.hand-sizes) p
+    in if n < best-size then ce-smallest s (p + 1) p n False
+    else if n == best-size then ce-smallest s (p + 1) best best-size True
+    else ce-smallest s (p + 1) best best-size tied
+
+  ce-settle : CrazyEightsState -> CrazyEightsState
+  ce-settle (s) =
+    if s.game-over then s
+    else if ce-dead s == False then s
+    else CrazyEightsState {
+         hands = s.hands,
+         hand-sizes = s.hand-sizes,
+         draw-pile = s.draw-pile,
+         pile-size = s.pile-size,
+         discard-rank = s.discard-rank,
+         discard-suit = s.discard-suit,
+         current-player = s.current-player,
+         num-players = s.num-players,
+         direction = s.direction,
+         draw-penalty = s.draw-penalty,
+         game-over = True,
+         winner = ce-smallest s 0 (0 - 1) 53 False,
+         declared-suit = s.declared-suit
+       }
+
+  ce-pass : CrazyEightsState -> CrazyEightsState
+  ce-pass (s) =
     let next = ce-next-player s
     in CrazyEightsState {
          hands = s.hands,

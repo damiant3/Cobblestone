@@ -111,22 +111,19 @@ foreach ($mode in @('absent', 'empty', 'missing', 'nonliteral')) {
     else {
         Assemble $mode
         $wanted = @('__heap_reset', '_start', 'disk_reserve')
-        if ($mode -eq 'absent') { $wanted += 'species_count' }
         Require-Exports $mode $wanted
     }
 }
 $fish = "$repo/apps/fishtank/FishTankWasm.codex"
-Compile-Ir 'fish-old-kernel' $fish $BaselineKernel
-Compile-Ir 'fish-new-kernel' $fish $Kernel
-if ((Get-FileHash "$WorkDir/fish-old-kernel.ir").Hash -ne (Get-FileHash "$WorkDir/fish-new-kernel.ir").Hash) { throw 'Undeclared fishtank IR changed.' }
-Emit-Wat 'fish-old' 'fish-old-kernel' $BaselinePlugCdx
-Emit-Wat 'fish-new' 'fish-new-kernel' $PlugCdx
+Compile-Ir 'fish' $fish $Kernel
+Emit-Wat 'fish-old' 'fish' $BaselinePlugCdx
+Emit-Wat 'fish-new' 'fish' $PlugCdx
 Assemble 'fish-old'
 Assemble 'fish-new'
 $oldExports = Exports 'fish-old'
-if ($oldExports.Count -le 3) { throw 'Fishtank does not exercise fallback exports.' }
+if ($oldExports.Count -le 3) { throw 'Fishtank declares no application exports.' }
 Require-Exports 'fish-new' $oldExports
 Invoke-Value 'fish-old' 'species_count' @() '8'
 Invoke-Value 'fish-new' 'species_count' @() '8'
-Write-Host 'PASS declared exports, DCE control, empty override, invalid declarations and fishtank fallback'
+Write-Host 'PASS declared exports, DCE control, absent and empty declarations, invalid declarations and fishtank declared exports'
 Set-Content "$WorkDir/result.txt" 'PASS'

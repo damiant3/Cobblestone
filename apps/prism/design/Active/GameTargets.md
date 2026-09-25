@@ -253,6 +253,12 @@ inspected and shows the label beside the unchanged native menu/version UI.
 The previous DLL is in `Support/Before-menu-25948`. Play-save file hashes were
 verified unchanged before relaunching the ordinary fullscreen copy.
 
+A composed subset is accepted in play (Damian, 2026-09-24): the arc-only
+build `20260925.022424` (`winhttp.dll` SHA-256 `39756DF8`, receipt features `arc`)
+showed the arc and no linked chests. Its package, receipt and install steps are in
+`Support/Staged-arc-only-20260925.022424`; the full build `20260924.013121` is
+reinstalled, with the pre-install DLL and `Saves.zip` in `Support/Before-arc-only`.
+
 The old scratch game copies, engine DLL copies, browser profiles and build
 temps were removed without traversing asset junctions. Historical paths below
 are relative to the former `build-output/prism-targets` tree:

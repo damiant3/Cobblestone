@@ -46,5 +46,11 @@ foreach ($subject in @('prose-binary-continuation', 'prose-binary-control')) {
     $candidateHash = (Get-FileHash (Join-Path $out "$subject-candidate.cdx")).Hash
     if ($baselineHash -ne $candidateHash) { throw "$subject emitted bytes changed." }
     "${subject}: warnings, locations, output and emitted bytes PASS"
+    $stem = Join-Path $out "$subject-candidate-prose"
+    & pwsh -NoProfile -File build/compile.ps1 -Src $source -Out "$stem.cdx" -Log "$stem.log" -Kernel $Candidate -Prose -TimeoutSec 30 *> "$stem.console"
+    if ($LASTEXITCODE -ne 0) { Get-Content "$stem.log"; throw "$subject -Prose compile failed." }
+    & pwsh -NoProfile -File build/test-run.ps1 -Kernel "$stem.cdx" -OutFile "$stem.out" *> "$stem.run.console"
+    if ([IO.File]::ReadAllText("$stem.out") -cne $expected) { throw "$subject -Prose output differs from normal mode." }
+    "${subject}: -Prose parses the same code PASS"
 }
 'COMPILER-55 focused checks passed.'

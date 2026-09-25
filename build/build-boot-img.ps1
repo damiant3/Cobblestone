@@ -117,10 +117,13 @@ if (((-not ($LASTEXITCODE -eq 0)) -or (-not (Test-Path -PathType Leaf $BootCdx))
 
 
 # Step 3: Convert CDX to PE
+# GopBoot runs after ExitBootServices, as every flown stick does; the dev
+# console (-Uefi) needs ConIn and ConOut and keeps boot services.
 $PeScript = Join-Path $PSScriptRoot 'cdx-to-pe.ps1'
 $BootPe = Join-Path $BuildOut 'boot.efi'
+$EbsArgs = @(if (-not $Uefi) { '-ExitBootServices' })
 Write-Host '  Converting CDX -> PE...'
-& pwsh -NoProfile -File $PeScript -CdxInput $BootCdx -Out $BootPe -HeapPages 131072
+& pwsh -NoProfile -File $PeScript -CdxInput $BootCdx -Out $BootPe -HeapPages 131072 @EbsArgs
 if (((-not ($LASTEXITCODE -eq 0)) -or (-not (Test-Path -PathType Leaf $BootPe)))) {
     Write-Host 'FAIL: PE conversion failed'
     exit 1

@@ -1,0 +1,115 @@
+Chapter: Yaml Guard
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Encode chapter Yaml
+
+Section: Helpers
+
+  rep : Text, Integer, Integer, Text -> Text
+  rep (s) (i) (n) (acc) = if i >= n then acc else rep s (i + 1) n (acc & s)
+
+  keys : Integer, Integer, List Text -> List Text
+  keys (i) (n) (acc) = if i >= n then acc else keys (i + 1) n (list-push acc ("k" & show i & ": 1\n"))
+
+  items : Integer, Integer, List Text -> List Text
+  items (i) (n) (acc) = if i >= n then acc else items (i + 1) n (list-push acc "- x\n")
+
+  render : YamlValue -> Text
+  render (v) = when v
+    is YamlString (s) -> "s:" & s
+    is YamlInt (n) -> "i:" & show n
+    is YamlBool (b) -> if b then "b:true" else "b:false"
+    is YamlNull -> "null"
+    is YamlList (xs) -> "[" & render-list xs 0 (list-length xs) "" & "]"
+    is YamlMap (ps) -> "{" & render-map ps 0 (list-length ps) "" & "}"
+
+  render-list : List YamlValue, Integer, Integer, Text -> Text
+  render-list (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else render-list xs (i + 1) n (acc & (if i == 0 then "" else ", ") & render (list-at xs i))
+
+  render-map : List YamlPair, Integer, Integer, Text -> Text
+  render-map (ps) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at ps i
+    in render-map ps (i + 1) n (acc & (if i == 0 then "" else ", ") & p.yp-key & "=" & render (p.yp-value))
+
+  arm : Text, Text -> Text
+  arm (name) (src) = when yaml-parse src
+    is Just (v) -> name & " ok " & render v
+    is None -> name & " refused"
+
+  count-arm : Text, Text -> Text
+  count-arm (name) (src) = when yaml-parse src
+    is Just (v) -> when v
+      is YamlMap (ps) -> name & " pairs=" & show (list-length ps)
+      is YamlList (xs) -> name & " items=" & show (list-length xs)
+      is otherwise -> name & " scalar"
+    is None -> name & " refused"
+
+  parse-cost : Text -> Integer
+  parse-cost (src) =
+    let b = __heap-save
+    in let r = when yaml-parse src
+      is Just (v) -> 1
+      is None -> 0
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  emit-cost : Integer -> Integer
+  emit-cost (n) = when yaml-parse (text-concat-list (keys 0 n []))
+    is Just (v) ->
+      let b = __heap-save
+      in let t = yaml-emit v
+      in let a = __heap-save
+      in (a - b) + text-length t - text-length t
+    is None -> 0 - 1
+
+  scaling : Text, Integer, Integer -> Text
+  scaling (name) (small) (large) =
+    if large <= 5 * small then name & " linear"
+    else name & " superlinear " & show small & " " & show large
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (arm "map" "name: Codex\nversion: 42\nenabled: true\n")
+    print-line-uni (arm "list" "- alpha\n- beta\n-\n- 7")
+    print-line-uni (arm "core" "a: True\nb: FALSE\nc: Null\nd: ~\ne:")
+    print-line-uni (arm "quoted" "s: \"a: b # c\"\nt: 'x'")
+    print-line-uni (arm "comment" "port: 8080 # note\nurl: http://x#frag")
+    print-line-uni (arm "signs" "n: -42\nm: +7\nz: 007")
+    print-line-uni (arm "dash-word" "w: -x")
+    print-line-uni (arm "max-18" "n: 999999999999999999")
+    print-line-uni (arm "empty" "")
+    print-line-uni (arm "comments" "# c\n\n  # d")
+    print-line-uni (arm "mixed" "a: 1\n- x")
+    print-line-uni (arm "nested" "a:\n  b: 1")
+    print-line-uni (arm "indented" "  a: 1")
+    print-line-uni (arm "unterminated" "s: \"abc")
+    print-line-uni (arm "after-quote" "s: \"a\" b")
+    print-line-uni (arm "escape" "s: \"a\\nb\"")
+    print-line-uni (arm "dup" "k: 1\nk: 2")
+    print-line-uni (arm "flow-seq" "xs: [1, 2]")
+    print-line-uni (arm "flow-map" "m: {a: 1}")
+    print-line-uni (arm "anchor" "a: &x 1")
+    print-line-uni (arm "alias" "b: *x")
+    print-line-uni (arm "tag" "t: !!str 1")
+    print-line-uni (arm "block" "t: |")
+    print-line-uni (arm "float" "f: 1.5")
+    print-line-uni (arm "hex" "h: 0x1F")
+    print-line-uni (arm "digits-19" "n: 1234567890123456789")
+    print-line-uni (arm "dash" "n: -")
+    print-line-uni (arm "value-colon" "a: b: c")
+    print-line-uni (arm "bad-key" "a b: 1")
+    print-line-uni (arm "no-colon" "just words")
+    print-line-uni (arm "doc-marker" "---")
+    print-line-uni (arm "seq-then-map" "- a\nb: 1")
+    print-line-uni (arm "trailing-colon" "a: b:")
+    print-line-uni (arm "dash-space" "a: - x")
+    print-line-uni (scaling "trim" (parse-cost ("a: 1" & rep " " 0 256 "")) (parse-cost ("a: 1" & rep " " 0 1024 "")))
+    print-line-uni (scaling "emit" (emit-cost 256) (emit-cost 1024))
+    print-line-uni (scaling "parse" (parse-cost (text-concat-list (keys 0 1000 []))) (parse-cost (text-concat-list (keys 0 4000 []))))
+    print-line-uni (count-arm "deep-keys" (text-concat-list (keys 0 200000 [])))
+    print-line-uni (count-arm "deep-items" (text-concat-list (items 0 200000 [])))
+  end

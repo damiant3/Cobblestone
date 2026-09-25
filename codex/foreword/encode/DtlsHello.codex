@@ -128,6 +128,14 @@ Section: ServerHello and HelloRetryRequest
     let exts = dtls-ext-versions-server & dtls-ext-cookie cookie
     in dtls-legacy-version & dtls-hrr-random & [list-length session-id] & session-id & tls-be16 tls-cipher-aes-128-gcm-sha256 & [0] & tls-be16 (list-length exts) & exts
 
+ RFC 8446 section 4.2.8: a HelloRetryRequest asking for a key share
+ carries key_share as the bare selected_group, two bytes, no key.
+
+  dtls-hrr-group-body : List Integer, Integer -> List Integer
+  dtls-hrr-group-body (session-id) (group) =
+    let exts = dtls-ext-versions-server & tls-be16 tls-ext-key-share & tls-be16 2 & tls-be16 group
+    in dtls-legacy-version & dtls-hrr-random & [list-length session-id] & session-id & tls-be16 tls-cipher-aes-128-gcm-sha256 & [0] & tls-be16 (list-length exts) & exts
+
   dtls-is-hrr : List Integer -> Boolean
   dtls-is-hrr (sh-body) =
     if list-length sh-body < 34 then False
@@ -220,14 +228,46 @@ Section: Parsing the Client's Hello
     else dtls-ext-scan b (dtls-ch-ext-offset b) want
 
  The client's key_share is a LIST of KeyShareEntry, unlike the server's
- bare one -- so skip the 2-byte list length before the first entry's
- group(2) and length(2).
+ bare one: a 2-byte list length, then entries of group(2) length(2) key.
+ A client may lead with GREASE (RFC 8701) or a group we do not speak, so the
+ X25519 entry (group 0x001D = 29, 32-byte key) is found by walking the list.
 
   dtls-ch-key-share : List Integer -> Maybe (List Integer)
   dtls-ch-key-share (ch-body) =
     when dtls-ch-find-ext ch-body tls-ext-key-share
       is None -> None
-      is Just (e) -> if list-length e < 38 then None else Just (dtls-take-at e 6 32)
+      is Just (e) -> dtls-key-share-x25519 e
+
+  dtls-key-share-x25519 : List Integer -> Maybe (List Integer)
+  dtls-key-share-x25519 (e) =
+    if list-length e < 2 then None
+    else let declared = 2 + list-at e 0 * 256 + list-at e 1
+    in dtls-ks-find e 2 (if declared < list-length e then declared else list-length e)
+
+  dtls-ks-find : List Integer, Integer, Integer -> Maybe (List Integer)
+  dtls-ks-find (e) (off) (stop) =
+    if off + 4 > stop then None
+    else let klen = list-at e (off + 2) * 256 + list-at e (off + 3)
+    in if list-at e off * 256 + list-at e (off + 1) == 29 & klen == 32 & off + 36 <= stop then Just (dtls-take-at e (off + 4) 32)
+    else dtls-ks-find e (off + 4 + klen) stop
+
+ RFC 8446 sections 4.2.7 and 4.2.3: supported_groups and
+ signature_algorithms are each a 2-byte list length, then 2-byte ids.
+
+  dtls-ch-offers-group : List Integer, Integer -> Boolean
+  dtls-ch-offers-group (ch-body) (group) = dtls-ch-offers-in ch-body tls-ext-supported-groups group
+
+  dtls-ch-offers-in : List Integer, Integer, Integer -> Boolean
+  dtls-ch-offers-in (ch-body) (ext) (id) =
+    when dtls-ch-find-ext ch-body ext
+      is None -> False
+      is Just (e) -> dtls-groups-has e 2 id
+
+  dtls-groups-has : List Integer, Integer, Integer -> Boolean
+  dtls-groups-has (e) (off) (group) =
+    if off + 2 > list-length e then False
+    else if list-at e off * 256 + list-at e (off + 1) == group then True
+    else dtls-groups-has e (off + 2) group
 
   dtls-ch-cookie : List Integer -> Maybe (List Integer)
   dtls-ch-cookie (ch-body) =

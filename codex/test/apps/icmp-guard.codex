@@ -1,0 +1,40 @@
+Chapter: Icmp Guard
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Net chapter Icmp
+
+Section: Helpers
+
+  arm : Text, List Integer -> Text
+  arm (name) (bs) =
+    let raw = "raw=" & format-icmp (icmp-parse bs) & " reply=" & show (icmp-is-echo-reply (icmp-parse bs))
+    in when icmp-parse-checked bs
+      is Just (m) -> name & " ok " & format-icmp m & " " & raw
+      is None -> name & " refused " & raw
+
+  flip-at : List Integer, Integer -> List Integer
+  flip-at (bs) (k) = set-at bs k (bit-xor (list-at bs k) 1)
+
+  set-at : List Integer, Integer, Integer -> List Integer
+  set-at (bs) (k) (v) = copy-set bs k v 0 (list-length bs) []
+
+  copy-set : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  copy-set (bs) (k) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else copy-set bs k v (i + 1) n (list-push acc (if i == k then v else list-at bs i))
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let good = icmp-build-echo-request 123 4 [7, 9]
+    in let odd = icmp-build-echo-request 5 6 [1, 2, 3]
+    in act
+      print-line-uni (arm "echo" good)
+      print-line-uni (arm "odd-payload" odd)
+      print-line-uni (arm "reply" (icmp-build-echo-reply (icmp-parse good)))
+      print-line-uni (arm "corrupt-payload" (flip-at good 8))
+      print-line-uni (arm "corrupt-header" (flip-at good 4))
+      print-line-uni (arm "short" [0, 0, 255])
+      print-line-uni (arm "short-sums-zero" [255, 255])
+      print-line-uni (arm "not-a-byte" (set-at (set-at good 8 6) 9 265))
+    end

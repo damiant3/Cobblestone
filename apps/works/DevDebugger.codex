@@ -12,10 +12,6 @@ Chapter: DevDebugger
   cites Dev chapter PortTrace
   cites Foreword chapter Maybe
 
- Interactive debugger for the UEFI dev console. Memory inspector,
- port I/O probe, breakpoint table, stack walker, and perf counters.
- Operates on the live system -- no GDB, no host-side tooling.
-
  We say:
 
 Section: Debugger Mode
@@ -70,14 +66,6 @@ Section: Breakpoint
 
 Section: Debugger State
 
- THE THREE PENDING CASES DO NOT CONSUME THEIR LINE THE SAME WAY, and that
- is the reason this is a variant rather than a Boolean. A write value is an
- EXPRESSION and goes through `ExprEval`, so `0x2a` and `$ - 1` both work.
- A symbol name and a breakpoint name are TEXT and must not: `main` is a
- name, and an evaluator handed it would answer "unknown name" for
- something that was never meant to be one. What the flag records is not
- "a line is expected" but "which reader gets it".
-
   DebugPending =
    | PendingNone
    | PendingWriteValue
@@ -95,13 +83,6 @@ Section: Debugger State
    | PendingCpuLeaf
    | PendingPortRead
    | PendingPortWatch
-
- `disk-lines` HOLDS A RENDERED REPORT RATHER THAN THE VIEW RE-READING IT.
- The memory dump can be produced during rendering because `peek-byte`
- costs nothing, but a sector read is a disk transaction and 512 bytes of
- heap that is never returned, so a view that produced one would perform
- I/O and leak a buffer on every repaint. The disk commands read once, when
- the operator asks, and store what they found.
 
   DebuggerState = record {
     mode : DebugMode,
@@ -126,21 +107,6 @@ Section: Debugger State
     last-leaf : Integer,
     port-trace : PortTrace
   }
-
- `serial-remote` NEVER DISABLES THE KEYBOARD. The poll checks the serial
- line in addition to `uefi-con-poll-key`, never instead of it, so the flag
- cannot strand an operator in front of a console that has stopped
- listening to them. That is a deliberate divergence from the `serial.local`
- row, which reads as a switch back from a mode this does not enter.
-
- A THIRD CURSOR, for the same reason there was a second. `last-address` is
- an address in the flat physical space and `last-lba` is a sector on a
- medium; a vector is an index into a 256-entry table, and it is the one of
- the three where a number from either of the others is guaranteed
- meaningless. `report-lines` is a rendered report for consistency with the
- disk view rather than out of necessity: every read behind it is a `peek`
- and costs nothing, so this one could safely be produced during rendering.
- Two views built the same way is worth more here than one saved field.
 
   debugger-init : DebuggerState
   debugger-init = DebuggerState {
@@ -219,15 +185,6 @@ Section: Debugger Menu
 
 Section: Reading And Writing One Cell
 
- `Dev chapter MemInspector` already reads and writes memory, and these do
- not call it, which is worth a sentence so nobody deletes one as a
- duplicate. Every MemInspector entry point takes and returns a
- `ConsoleState` from `Kernel chapter Console` -- it writes its answer to
- the kernel console as a side effect. This console is a `DevConsoleState`
- drawn through UEFI text-out, and it shows a command's answer by putting
- it in `status`, which is a `Text`. So what is needed here is the same
- arithmetic returning a value rather than performing an output.
-
   debug-read-u16 : Integer -> Integer
   debug-read-u16 (a) = bit-or (peek-byte a 0) (bit-shl (peek-byte a 1) 8)
 
@@ -262,20 +219,6 @@ Section: Reading And Writing One Cell
     in "0x" & hex-i64 addr & ": #" & hex-byte old & " -> #" & hex-byte val
 
 Section: Searching And Comparing
-
- These are the last two commands the design specifies and the chapter did
- not have. The specification writes them as `dbg mem.s <addr> <bytes>` and
- `dbg mem.cmp <a1> <a2> <len>`, which read as commands needing two and
- three arguments, and this console dispatches one line at a time. That
- looked like a reason to build a multi-argument parser.
-
- THE PATTERN IS PARSED WITH `hex-char-val` FROM `Dev chapter HexFormat`
- rather than a fourth spelling of the same table. That function is already
- CCE-correct in the way this project keeps having to relearn: digits are
- contiguous in CCE so the digit arm may do arithmetic, letters are ordered
- by English frequency so the letter arm is a six-way comparison. Writing
- `10 + c - 'a'` here would read `0xff` as 391, which is exactly what
- ExprEval shipped and had to be repaired.
 
   debug-pattern-len : Text -> Integer
   debug-pattern-len (t) = text-length t / 2
@@ -392,28 +335,11 @@ Section: MAP1 Debug Map
     strings-base : Integer
   }
 
- The emitter writes the magic as the four bytes `[77, 65, 80, 49]`, which
- is "MAP1" (`map1-magic` in `codex/compiler/Emit/X86_64Chapter.codex`).
- Read back little-endian that is 0x3150414D, and this constant is what
- `peek-32` is compared against.
-
- It was 826361677 until 2026-07-28, which is 0x3141474D, or "MGA1". No
- emitted binary has ever contained those bytes, so `map1-find` answered
- None every time it was called, in every binary, since it was written.
-
   map1-magic-le : Integer = 827343181
 
   map1-find : Maybe Map1Info
   map1-find =
     map1-scan 1048576 5242880
-
- THE STEP IS ONE BYTE AND IT HAS TO BE. This scanned by four until
- 2026-07-28, on the assumption that the map is four-byte aligned, and it
- is not: the emitter appends MAP1 wherever the preceding section ends.
- Measured in three separately compiled binaries, the magic landed at an
- address congruent to 3 modulo 4 every time, which a scan stepping by
- four from an aligned base can never read. Correcting the magic alone
- left this answering None, which is how the alignment came to light.
 
   map1-scan : Integer, Integer -> Maybe Map1Info
   map1-scan (addr) (limit) =
@@ -534,22 +460,6 @@ Section: Symbolic Breakpoints
     in bp-list-format bps (i + 1) len (list-push acc line)
 
 Section: Where A RIP Actually Comes From
-
- THIS SECTION USED TO READ THREE UNRELATED CELLS AND CALL THEM CPU STATE.
- It declared an exception record at 28928 with a vector, a RIP and an RSP
- at the first three offsets. There is no exception record on this machine
- and there never was: 28928 is `stdin-eof-settled-addr`, and the two cells
- the RIP and RSP were taken from are `cap-expiry-addr` and
- `sched-ready-head-addr`. So the Registers, Stack and Backtrace views were
- rendering the standard-input EOF flag as a fault vector and walking a
- stack from whatever the scheduler's ready-list head happened to hold.
-
- WHAT THE MACHINE DOES KEEP is the watchdog's ring: the timer ISR writes a
- RIP, an RSP and a heap pointer into it when neither the heap pointer nor
- the saved RIP has moved since the last tick. Those are real registers,
- sampled at the moment worth looking at. They are NOT a trap frame, so
- nothing below calls them one and no line reports a vector, because there
- is no vector to report.
 
 Section: Backtrace
 

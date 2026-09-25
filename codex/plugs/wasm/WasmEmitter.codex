@@ -1,6 +1,7 @@
 Chapter: WASM Emitter
   cites Foreword chapter CCE
   cites Foreword chapter ListUtils
+  cites Foreword chapter Sort
 
 Section: Keywords and Sanitization
 
@@ -18,7 +19,7 @@ Section: Keywords and Sanitization
 
   wat-sanitize : Text -> Text
   wat-sanitize (name) =
-   let s = text-replace name "-" "_"
+   let s = text-replace (text-replace (text-replace (text-replace name "-" "_") "[" "<") "]" ">") "," "|"
    in if wat-is-keyword s 0 then s & "_v"
       else s
 
@@ -111,11 +112,6 @@ Section: Arity Map
    else let mid = lo + (hi - lo) / 2
    in wat-emit-elem-span entries lo mid & wat-emit-elem-span entries mid hi
 
- `$fn1` is emitted even when nothing in the module has arity 1, because
- `$clo_apply1`'s no-capture fast path names it unconditionally and a module
- of nothing but `opening` would otherwise carry a call to a type it never
- declares.
-
   wat-fn-type-ceiling : List ArityEntry -> Integer
   wat-fn-type-ceiling (entries) =
    let m = wat-max-arity entries 0 0
@@ -152,12 +148,7 @@ Section: String Table
    else if (list-at xs i).value == s then (list-at xs i).offset
    else strtab-lookup xs s (i + 1)
 
- A missing entry answers 0, and the table starts at 1024, so 0 is not an address
- any string has. Every site that turns a lookup into a POINTER goes through this
- one, which refuses with a marker naming the string rather than emitting a
- pointer to linear-memory address 0 and printing whatever is there. A collector
- that fails to reach some new site is then a named refusal instead of plausible
- output (L-BAILVALUE).
+ The string table starts at 1024, so a lookup answering 0 names no string.
 
   wat-strtab-ref : List StringEntry, Text -> Text
   wat-strtab-ref (strings) (s) =
@@ -224,10 +215,6 @@ Section: String Table
    if i >= list-length bs then acc
    else let b = list-at bs i
    in collect-strings-branches-loop bs (collect-strings-pat (b.pattern) (collect-strings-expr (b.body) (collect-strings-expr (b.guard) acc))) (i + 1)
-
- A Text literal in a PATTERN is a string this module needs and no expression
- mentions, so the collector has to reach into the pattern or the table has no
- entry to look up.
 
   collect-strings-pat : IRPat, List StringEntry -> List StringEntry
   collect-strings-pat (p) (acc) =
@@ -314,9 +301,7 @@ Section: String Table
 Section: CCE Output Tables
 
  2176 is the first CCE code point above tier 1, so the flat table covers
- tiers 0 and 1 and the block table covers tier 2. Both are generated from
- `to-unicode` rather than transcribed: a transcribed copy is a second source
- of truth for the mapping and drifts from the seed's silently.
+ tiers 0 and 1 and the block table covers tier 2.
 
   cce-tab-entries : Integer = 2176
 
@@ -348,11 +333,8 @@ Section: CCE Output Tables
 
   cce-newline : Integer = from-unicode 10
 
- The input boundary is the output boundary run backwards, and it needs the
- reverse table. 128 entries is the whole of it: a byte under 128 is ASCII
- whichever way it came, and `from-unicode` answers for exactly that band.
- Anything above is left as the replacement rather than guessed at, which is
- what x86-64's `__read_line` does with the same 128-entry table.
+ 128 entries is the whole reverse table: a byte under 128 is ASCII whichever
+ way it came, and `from-unicode` answers for exactly that band.
 
   cce-rev-entries : Integer = 128
 
@@ -421,15 +403,10 @@ Section: Type Lookups
    else let af = list-at afs i
    in afields-to-rfields afs (i + 1) (list-push acc (RecordField { name = af.name, type-val = atype-to-codex-type (af.type-expr) }))
 
- A clamping bounded field saturates at its declared band. WebAssembly has no
- integer min or max instruction -- i64.min and i64.max do not exist, only the
- float forms -- so the clamp is two `select`s, each testing with i64.gt_s or
- i64.lt_s. `select` yields its FIRST operand when the condition is non-zero.
-
- The operand is repeated four times in the emitted text, so it must be a
- `local.get` and never an arbitrary expression, or the value would be
- evaluated four times. Both call sites store into `$_tv` first, which is what
- makes the repetition safe.
+ WebAssembly has no integer min or max instruction -- i64.min and i64.max do
+ not exist, only the float forms -- so the clamp is two `select`s, each testing
+ with i64.gt_s or i64.lt_s. `select` yields its FIRST operand when the
+ condition is non-zero.
 
   WatBand = record {
    clamps : Boolean,
@@ -466,13 +443,6 @@ Section: Type Lookups
      in if b.clamps | b.wraps then b else wat-band-for-field tds field-name (i + 1)
     is otherwise -> wat-band-for-field tds field-name (i + 1)
 
- A wrapping band is admitted only at a hardware width (`bounds-are-hw-width`,
- `Types/CodexTypeHelpers.codex`), so the band IS the width and no table is
- needed: an unsigned band's `hi` is exactly the mask, and a signed band's `hi`
- names which sign-extending instruction narrows it. A band that is neither
- refuses rather than answering, because a wrong wrap and a correct one are the
- same kind of number.
-
   wat-wrap : WatBand, Text -> Text
   wat-wrap (b) (v) =
    if b.blo == 0 then "(i64.and " & v & " (i64.const " & integer-to-text (b.bhi) & "))"
@@ -480,7 +450,7 @@ Section: Type Lookups
    else if b.bhi == 32767 then "(i64.extend16_s " & v & ")"
    else if b.bhi == 2147483647 then "(i64.extend32_s " & v & ")"
    else if b.bhi == 9223372036854775807 then v
-   else "(unreachable (; no wasm form for a wrapping band " & integer-to-text (b.blo) & " to " & integer-to-text (b.bhi) & " ;))"
+   else "(unreachable (; wasm plug: no form for a wrapping band " & integer-to-text (b.blo) & " to " & integer-to-text (b.bhi) & " ;))"
 
   wat-clamp : WatBand, Text -> Text
   wat-clamp (b) (v) =
@@ -540,7 +510,9 @@ Section: Emitter Context
    strings : List StringEntry,
    type-defs : List ATypeDef,
    bound : List Text,
-   scrut-depth : Integer
+   scrut-depth : Integer,
+   inplace : List Text,
+   eff-ops : List WhOp
   }
 
   wat-scrut-name : Integer -> Text
@@ -570,7 +542,7 @@ Section: Emitter Context
 
   ctx-deeper : WasmCtx -> WasmCtx
   ctx-deeper (ctx) =
-   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = ctx.bound, scrut-depth = ctx.scrut-depth + 1 }
+   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = ctx.bound, scrut-depth = ctx.scrut-depth + 1, inplace = ctx.inplace, eff-ops = ctx.eff-ops }
 
 Section: Local Collection
 
@@ -591,7 +563,11 @@ Section: Local Collection
 
   ctx-with : WasmCtx, List Text -> WasmCtx
   ctx-with (ctx) (bd) =
-   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = bd, scrut-depth = ctx.scrut-depth }
+   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = bd, scrut-depth = ctx.scrut-depth, inplace = ctx.inplace, eff-ops = ctx.eff-ops }
+
+  ctx-with-inplace : WasmCtx, List Text -> WasmCtx
+  ctx-with-inplace (ctx) (ip) =
+   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = ctx.bound, scrut-depth = ctx.scrut-depth, inplace = ip, eff-ops = ctx.eff-ops }
 
   collect-locals-params : List IRParam, Integer, List Text -> List Text
   collect-locals-params (ps) (i) (acc) =
@@ -693,10 +669,8 @@ Section: Local Collection
    if i >= list-length names then ""
    else "(local $" & list-at names i & " i64) " & emit-local-decls names (i + 1)
 
- A parameter already occupies a slot under its own name, so re-declaring it
- is `redefinition of parameter` and wat2wasm refuses the whole module on the
- first one. Sharing the slot is what this emitter already does for a `let`
- that shadows an outer `let`, since `locals-add` folds equal names together.
+ wat2wasm refuses a local that re-declares a parameter (`redefinition of
+ parameter`) and rejects the whole module on the first one.
 
   params-contain : List IRParam, Text, Integer -> Boolean
   params-contain (ps) (name) (i) =
@@ -734,18 +708,6 @@ Section: Type Definition Emission
 
 Section: Constructor Equality
 
- A field declared at a TYPE PARAMETER is compared by POINTER, and that is the
- oracle's answer rather than a shortcut taken here: measured 2026-08-25
- against the seed, `Held "hi" == Held "hi"` is False on x86-64, because
- `subst-field-type` has no argument to substitute and the compare falls to
- the integer path. A field declared `Text` is compared by content on both.
-
- One function per variant type rather than the oracle's inlining, because
- inlining is what makes `==` on a RECURSIVE variant unbounded: `Wrap Leaf ==
- Wrap Leaf` over `Nest = | Leaf | Wrap (Nest)` crashes the x86-64 compiler in
- `alloc-temp` with an invalid opcode, and the same type with no `==` compiles
- clean.
-
   wat-eq-fn-prefix : Text = "$cx_eq_"
 
   wat-variant-typedef-name : List ATypeDef, Text -> Text
@@ -776,11 +738,6 @@ Section: Constructor Equality
     is ABoundedIntType (base) (lo) (hi) (mode) (s) -> wat-atype-head-name base
     is AConstrainedType (cn) (vn) (inner) (s) -> wat-atype-head-name inner
     is otherwise -> ""
-
- A `Real` field is compared as an IEEE-754 double, which is what `emit-eq-op`
- does with a `RealTy` operand. Every real on this target is carried as f64
- bits in an i64 slot, `IrNumLit` included, so there is one width to reinterpret
- and no f32 case to separate.
 
   wat-eq-field-cmp : List ATypeDef, ATypeExpr, Text, Text -> Text
   wat-eq-field-cmp (tds) (fty) (la) (lb) =
@@ -837,16 +794,9 @@ Section: Constructor Equality
 
 Section: Expression Emission
 
- 4096 is the depth at which this emitter gives up, and it refuses there
- rather than answering. It bailed at 256 with `(i64.const 0)` until
- 2026-08-27, which is a WRONG ANSWER and not a bound: a chain of 300 nested
- `let`s printed 44 where x86-64 printed 300, assembling and running clean
- with no diagnostic anywhere. `let` is what makes that reachable, because it
- recurses without nesting its output, so wat2wasm's own parser limit (which
- sits between 200 and 250 folded expressions) never sees it. The number is
- chosen well above anything real: the largest program we have is the
- compiler's own 2.9 MB source, and it self-compiles byte-identically, so
- nothing in it reaches even the old 256.
+ 4096 is the nesting depth at which this emitter refuses. wat2wasm's own parser
+ limit sits between 200 and 250 folded expressions, and `let` recurses without
+ nesting its output, so only this bound sees a deep `let` chain.
 
   emit-wat-expr : WasmCtx, IRExpr -> Text
   emit-wat-expr (ctx) (e) = emit-wat-expr-at ctx e 0
@@ -871,31 +821,15 @@ Section: Expression Emission
     is IrList (elems) (ty) (sp) -> emit-wat-list ctx elems depth
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-wat-match ctx scrut branches depth
     is IrAct (stmts) (ty) (sp) -> emit-wat-act ctx stmts
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-wat-expr-at ctx body (depth + 1)
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> wh-emit-handle ctx body clauses depth
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-wat-expr-at ctx body (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> emit-wat-record ctx fields ty depth
     is IrFieldAccess (rec) (field) (ty) (sp) -> emit-wat-field-access ctx rec field ty depth
     is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-wat-field-store ctx rec field val ty depth
-    is IrFork (body) (ty) (sp) -> emit-wat-expr-at ctx body (depth + 1)
+    is IrFork (body) (ty) (sp) -> "(call $clo_apply1 " & emit-wat-expr-at ctx body (depth + 1) & " (i64.const 0))"
     is IrAwait (task) (ty) (sp) -> emit-wat-expr-at ctx task (depth + 1)
     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-wat-act ctx body
     is IrError (msg) (ty) (sp) -> "(unreachable)"
-
- An `else if` chain is the THIRD nesting site, and flattening the two match
- paths does not touch it. Measured against arm64-stdio.wat with both match
- twins already flat: max WAT depth 312, unmoved, and the deepest point is
- `a64_emit_direct_call` carrying 154 `(if ` and not one `(block $_a`. The
- chain is 152 alternating `if`/`else` levels, which is this emitter's arm and
- the arm count of the plug's instruction dispatch. The baseline table in
- `plugs-backlog.md` 2.03 measured "longest consecutive `else if` chain
- against WAT depth" and that is exactly what this is.
-
- Same repair as the match arms: the chain's else-spine becomes siblings under
- one outer block, so the nesting an `if` chain contributes is TWO whatever the
- chain length. A test that fails branches to the end of its own block and the
- next sibling runs; one that passes branches out of the whole chain carrying
- its value. Falling off the last sibling runs the final `else`, whose value is
- the block's result, which is what the innermost `else` used to say.
 
   emit-wat-if-chain : WasmCtx, IRExpr, Integer -> Text
   emit-wat-if-chain (ctx) (e) (depth) =
@@ -909,29 +843,10 @@ Section: Expression Emission
        & emit-wat-if-arms ctx el depth
     is otherwise -> emit-wat-expr-at ctx e (depth + 1)
 
- The labels are plain rather than numbered, so a chain nested inside an arm's
- body shadows them and an inner chain's branch belongs to the inner chain.
- That is the wanted reading and it is the same one the match arms rely on for
- `$_m`. The spine walk does NOT advance `depth`, which is the point: the guard
- counts real nesting and the spine no longer nests.
-
- `$_rp`, `$_lp` and `$_tv` are ONE set of scratch locals per function, so a
- construction nested inside an enclosing construction's field expression
- overwrites the enclosing object's pointer, and every remaining field store
- lands in the inner object. Measured 2026-08-25 in the compiler's own module:
- `LexCollected { collected-tokens = ll-push acc (make-token (deck-record
- EndOfFile) 0 st), ... }` allocated 16 bytes, then `deck-record EndOfFile`
- reset `$_rp` to its own 8-byte block, so the token list was stored over the
- `EndOfFile` tag and the errors 8 bytes past the block. `is-done` then read
- 4294967316 where 0 belongs, the parser never saw end of file, and the whole
- compiler spun in `skip-to-next-line`.
-
- The guard is the WASM OPERAND STACK, which is per-invocation and needs no
- second local: push the pointer, evaluate the field, pop it back. `(local.set
- $x)` with no folded operand pops, which is what makes this two instructions
- rather than a shadow stack. It is emitted only where the field expression
- can allocate, because emitting it everywhere grows the module by roughly a
- third.
+ A `(local.set $x)` with no folded operand pops the WASM OPERAND STACK, which is
+ per-invocation, so a pointer can be pushed, a field evaluated and the pointer
+ popped back with no second local. Emitting that everywhere grows the module by
+ roughly a third, so it is emitted only where the field expression can allocate.
 
   wat-scratch-safe : WasmCtx, IRExpr -> Boolean
   wat-scratch-safe (ctx) (e) =
@@ -987,14 +902,6 @@ Section: Expression Emission
      in if idx >= 0 then idx else find-field-in-typedefs tds field-name (i + 1)
     is otherwise -> find-field-in-typedefs tds field-name (i + 1)
 
- A field-access or field-store node spells its field `name/slot`, and those
- two node kinds are the only ones that carry the slot: a `field-val` inside a
- record construction carries the bare name. The slot is the authority, so it
- is read rather than searched for. `find-field-in-typedefs` remains as the
- fallback for a node with no slot, and it answers 0 for a name it cannot
- find, which is why a plug that hands it the unstripped `name/slot` reads
- slot 0 for every field in the program.
-
   wat-slash-pos : Text, Integer, Integer -> Integer
   wat-slash-pos (f) (i) (len) =
    if i >= len then (-1)
@@ -1012,11 +919,6 @@ Section: Expression Emission
    in let slash = wat-slash-pos f 0 len
    in if slash >= 0 then text-to-integer (substring f (slash + 1) (len - slash - 1))
       else find-field-in-typedefs tds f 0
-
- A band read by name across every typedef takes the first CLAMPING field of
- that name, so a clamping field in one record clamps a same-named field in
- another that does not declare a band. Where the record's own type is known,
- which is every construction site, the band is read from THAT typedef.
 
   wat-type-name : CodexType -> Text
   wat-type-name (ty) =
@@ -1094,14 +996,6 @@ Section: Expression Emission
  `unreachable` is stack-polymorphic, so a refusal assembles wherever a value
  is expected and traps only if that path actually runs.
 
- A NAME BOUND IN THIS FUNCTION IS A LOCAL, WHATEVER ELSE THE TREE CALLS IT.
- The arity lookup below turns a name with arity into a funcref table index, so
- a parameter that shares its name with a top-level definition was emitted as
- that definition's index instead of the parameter. `copy-as-chapter-guarded`
- takes a parameter `ch` and the compiler also defines a three-argument `ch`,
- so every `ch.defs` in that function read its fields off table index 3440.
- Locals shadow globals in Codex, so the bound set is consulted first.
-
   emit-wat-name (ctx) (n) =
    if locals-contains (ctx.bound) (wat-sanitize n) then "(local.get $" & wat-sanitize n & ")"
    else if n == "True" then "(i64.const 1)"
@@ -1117,19 +1011,13 @@ Section: Expression Emission
    else if n == "block-sector-count" then "(i64.extend_i32_u (i32.div_u (global.get $disk_size) (i32.const 512)))"
    else if n == "process-get-pid" then "(i64.const 0)"
    else if n == "hosted-kind" then "(i64.const 1)"
+   else if n == "__heap-base" then "(i64.extend_i32_u (global.get $heap_start))"
+   else if wh-op-arity (ctx.eff-ops) n 0 >= 0 then wh-emit-op-call ctx n []
    else if is-ctor-name (ctx.type-defs) n 0 then emit-wat-ctor ctx n []
    else let ar = lookup-arity (ctx.arities) n
    in if ar == 0 then "(call $" & wat-sanitize n & ")"
       else if ar > 0 then "(i64.const " & integer-to-text (lookup-fn-index (ctx.arities) n) & ")"
       else wat-refuse-name n
-
- `~` and `~0` are the x86-64 emitter's semantics, not wasm's: `emit-approx-eq`
- converts each operand to its IEEE-754 total ORDINAL, takes the absolute
- difference and compares it unsigned against a tolerance in ULPs. The two
- tolerances are `4` for `~` and `0` for `~0`, which is `cmp-ri 4` and `cmp-ri 0`
- under `setcc cc-be` in `X86_64.codex`. `f64.eq` would agree with both on equal
- and on far-apart operands and disagree on every value between, which is the
- whole span the operator exists for.
 
   emit-wat-binary : WasmCtx, IRBinaryOp, IRExpr, IRExpr, CodexType, Integer -> Text
   emit-wat-binary (ctx) (op) (l) (r) (ty) (depth) =
@@ -1203,29 +1091,9 @@ Section: Expression Emission
     is IrApproxEq -> "i64.eq"
     is IrApproxEqExact -> "i64.eq"
 
- A match used to emit its arms NESTED, each one inside the previous arm's
- `else`, so an N-arm match cost N levels of parenthesis in the WAT. That is a
- property of the arm COUNT and not of the program's size, which is why a 9.8 MB
- compiler module sat at depth 188 while a 2.1 MB instruction-dispatch module
- reached 309: measured 2026-08-28, the deepest point in codex-compiler.wat is a
- constructor-tag chain of exactly this shape. wabt's JS wat2wasm parses
- expressions recursively and dies with "memory access out of bounds" somewhere
- between 188 and 309, which held the riscv and arm64 board modules unshippable.
- THE MATCH HAS A TCO TWIN and it is the one the compiler's own deep path takes;
- flattening this one alone moved the depth 188 to 188. Both are flat now, and
- the twin's prose says how the two were told apart.
-
- The arms are siblings now, one block each under a single outer block, so the
- nesting a match contributes is TWO whatever the arm count. An arm that does
- not match branches to the end of its own block and the next sibling runs; an
- arm that matches branches out of the whole match carrying its value. Falling
- off the end of every arm is the no-match case, which is what the old innermost
- `else` said.
-
- Every arm takes the same shape, including the ones that always match, which
- carry a constant-true condition rather than a special form. The old code had
- four separate always-matches cases and each of them re-emitted the tail of the
- match, which is how the nesting got in.
+ wabt's JS wat2wasm parses expressions recursively and dies with "memory access
+ out of bounds" somewhere between WAT depth 188 and 309 (measured 2026-08-28),
+ so a match must not nest by arm count.
 
   emit-wat-match : WasmCtx, IRExpr, List IRBranch, Integer -> Text
   emit-wat-match (ctx) (scrut) (branches) (depth) =
@@ -1240,39 +1108,19 @@ Section: Expression Emission
    in let arm = emit-wat-match-arm ctx (b.pattern) (b.guard) (b.body) branches i depth
    in arm & emit-wat-match-body ctx branches (i + 1) depth
 
- The label is plain rather than numbered, and a match nested inside an arm's
- body shadows it. That is the wanted reading: an inner match's branch belongs
- to the inner match. The branch out sits in the arm block and not inside the
- body, so the body's own blocks have closed before the label is resolved.
-
- PRE runs before the condition and POST after it, and the split is load-bearing
- rather than tidy. A variable pattern must bind BEFORE its guard is tested,
- because the guard names what the pattern bound. A constructor pattern must NOT
- bind before its tag is tested, because a payload load on an object of the
- wrong tag can address past the object and trap, which is why its guard stays
- gated inside the condition rather than anded flat with it.
-
   emit-wat-arm-block : Text, Text, Text, Text -> Text
   emit-wat-arm-block (pre) (cond) (post) (body) =
    "(block $_a " & pre & "(br_if $_a (i32.eqz " & cond & ")) " & post
      & "(br $_m " & body & ")) "
 
- A hex literal in a PATTERN reaches here as its SPELLING, and Codex spells hex
- with a leading #, which wat2wasm refuses as "unexpected token #A9". wat takes
- 0x, so the prefix is rewritten; a decimal spelling carries no # and is left
- alone, and a sign survives because only the prefix moves. The expression side
- never needed this: an IrIntLit carries a value, not a spelling.
+ wat spells hex `0x`; the `#` prefix Codex uses is refused by wat2wasm as
+ "unexpected token #A9".
 
   wat-lit-pat-const : Text -> Text
   wat-lit-pat-const (t) =
    if t == "True" then "1"
    else if t == "False" then "0"
    else text-replace t "#" "0x"
-
- A Text literal pattern is the one literal whose SPELLING is not its value. The
- scrutinee is a pointer, so the test is `$text_eq` against the string table
- entry, the same place an `IrTextLit` expression reads. Splicing the spelling
- into an `i64.const` is what `wat2wasm` refused as `unexpected token "sin"`.
 
   wat-lit-pat-test : WasmCtx, Text, CodexType -> Text
   wat-lit-pat-test (ctx) (text) (ty) =
@@ -1312,10 +1160,6 @@ Section: Expression Emission
      in let cond = if wat-guard-trivial guard then vcond
         else "(i32.and " & vcond & " " & emit-wat-guard-test ctx guard & ")"
      in emit-wat-arm-block "" cond "" (emit-wat-expr ctx body)
-
- A payload load on an object of the wrong tag can address past the object,
- which traps. The tag test gates the guard inside the condition rather than
- the two being anded flat.
 
   emit-wat-ctor-pat : WasmCtx, Text, List IRPat, IRExpr, IRExpr, List IRBranch, Integer, Integer -> Text
   emit-wat-ctor-pat (ctx) (name) (subs) (guard) (body) (branches) (i) (depth) =
@@ -1411,6 +1255,8 @@ Section: Apply Emission
     is IrName (n) (ty) (sp) ->
      let bi = wat-try-builtin ctx n args
      in if text-length bi > 0 then bi
+     else if wh-op-arity (ctx.eff-ops) n 0 >= 0 then wh-emit-op-call ctx n args
+     else if locals-contains (ctx.bound) (wat-sanitize n) then wat-emit-indirect ctx args ("(local.get $" & wat-sanitize n & ")")
      else if is-ctor-name (ctx.type-defs) n 0 then emit-wat-ctor ctx n args
      else if lookup-arity (ctx.arities) n < 0 then
       (if locals-contains (ctx.bound) (wat-sanitize n)
@@ -1419,19 +1265,6 @@ Section: Apply Emission
      else wat-emit-named-apply ctx n args (lookup-arity (ctx.arities) n)
     is IrLambda (ps) (lbody) (lty) (lsp) -> emit-wat-lambda-apply ctx ps lbody args
     is otherwise -> wat-emit-indirect ctx args (emit-wat-expr ctx root)
-
- The callee is an index into `$ft`, so it narrows to i32 at the call. A name
- the arity map does not know is a LOCAL holding a function value, and that
- arm used to emit `emit-wat-apply-args` alone: the arguments were evaluated
- and the call was dropped, so `map-list f xs` silently became `xs`. Nothing
- downstream ran this plug's output, which is why a missing call never
- surfaced as a wrong answer.
-
- Applying a VALUE goes one argument at a time through `$clo_apply1`, which is
- what makes a short application a closure rather than a call that never
- happens. The old arm emitted one `call_indirect` over the whole argument
- list, which is right only when the application saturates and the runtime
- cannot know whether it does.
 
   wat-emit-indirect : WasmCtx, List IRExpr, Text -> Text
   wat-emit-indirect (ctx) (args) (callee) =
@@ -1451,11 +1284,6 @@ Section: Apply Emission
    else let step = "(call $clo_apply1 " & acc & " " & emit-wat-expr ctx (list-at args i) & ")"
    in wat-emit-apply-chain ctx args (i + 1) step
 
- A name whose arity the map knows takes the direct call when the application
- SATURATES, which is the ordinary case and the hot one. Short of that it
- builds a closure; past it, the saturating prefix is called and the surplus
- applied to whatever comes back.
-
   wat-emit-named-apply : WasmCtx, Text, List IRExpr, Integer -> Text
   wat-emit-named-apply (ctx) (n) (args) (ar) =
    let k = list-length args
@@ -1469,21 +1297,7 @@ Section: Apply Emission
 
 
  WebAssembly has no closures and no way to invoke a lambda where it stands, and
- the wire applies one at its definition site. The old arm emitted
- `call_indirect` over the arguments and then spliced the BODY beside them as
- another operand, so `lam_two` read `local.get $x` for a local nothing declares
- and the module would not assemble.
-
- Every parameter is bound into a local of its own name and the body follows.
- That is legal because this emitter already resolves an `IrName` to
- `local.get $name`, so the body needs no rewriting; the locals are declared by
- `collect-locals-expr`, which now walks a lambda's parameters as well as its
- body. Binding rather than substituting is what stops an argument that is a
- CALL from being evaluated once per use.
-
- A lambda applied to FEWER arguments than it declares is a partial application
- and has no wasm form; it refuses rather than emitting a body whose remaining
- parameters are unset.
+ a partial application has no wasm form.
 
   emit-wat-lambda-apply : WasmCtx, List IRParam, IRExpr, List IRExpr -> Text
   emit-wat-lambda-apply (ctx) (ps) (lbody) (args) =
@@ -1496,12 +1310,6 @@ Section: Apply Emission
    if i >= list-length ps then ""
    else "(local.set $" & wat-sanitize ((list-at ps i).name) & " " & emit-wat-expr ctx (list-at args i) & ") "
         & emit-wat-lambda-binds ctx ps args (i + 1)
-
- The byte loop is in the runtime and the `Maybe` wrapping is here, because a
- constructor's tag comes from the type-definition order and a fixed runtime
- string cannot know it. `read-line-cce` shares this arm: bare metal reads
- CCE off the wire without converting, and this host's bytes arrive as ASCII,
- where the two readings are the same byte.
 
   wat-emit-maybe-line : WasmCtx, Text -> Text
   wat-emit-maybe-line (ctx) (reader) =
@@ -1547,49 +1355,21 @@ Section: Apply Emission
     is EffectfulTy (effs) (scopes) (ret) -> wat-is-text-type ret
     is otherwise -> False
 
- A real is carried as its f64 BITS in an i64 slot, which is what every local
- declaration and `wat-eq-field-cmp` already assume. It reaches an f64 only
- inside the operator that needs one, and comes straight back. `IrNumLit` used
- to emit an f64 VALUE instead, so a real that passed through a local was a type
- error rather than a wrong answer: `let y = 2.25` was refused outright with
- `type mismatch in local.set, expected [i64] but got [f64]`, and real
- arithmetic worked only while every operand was a literal.
+ A real is carried as its f64 BITS in an i64 slot and reaches an f64 only inside
+ the operator that needs one. An approximate real is computed at f32: `f64.add`
+ on two singles answers a finite double where single arithmetic overflows.
+ 2139095039 is the largest finite single and 2139095040 is `+inf`.
 
- AN APPROXIMATE REAL IS COMPUTED AT f32 AND NOT AT f64, which is what makes an
- overflow overflow. The value is carried as a promoted f64 everywhere else here,
- so `f64.add` on two singles answers a finite double where the single arithmetic
- x86-64 emits (`real-sse-prefix f32`) answers an infinity, and the saturating
- clamp then has nothing to fire on. `real-approx-modes` distinguishes the two by
- one bit: 2139095039 is the largest finite single, 2139095040 is `+inf`.
+ IEEE-754: an all-ones exponent is an infinity or a NaN, and a nonzero mantissa
+ within that is a NaN. Decrementing an infinity's bit pattern gives the largest
+ finite magnitude of the same sign, because the decrement never reaches the
+ sign bit. A ULP is a property of the width: the two smallest denormals either
+ side of zero are 2 ULPs apart as singles and astronomically far apart as
+ doubles.
 
- The mode wrapper is `emit-real-trapping-arith` and `emit-real-saturating-arith`
- (`X86_64.codex:1887`) read as masks rather than as shifts. Exponent all-ones
- means infinity or NaN; a nonzero mantissa within that means NaN. Trapping traps
- on either. Saturating answers 0 for a NaN and DECREMENTS the bit pattern for an
- infinity, which is the largest finite magnitude of the same sign because the
- decrement never reaches the sign bit. The NaN-to-zero is x86-64's answer and is
- a language decision rather than a repair, so it is copied rather than revisited.
-
- A ULP is a property of the WIDTH, so the tolerance has to be counted in the
- operand's own representation. An approximate value is carried here as a
- promoted f64, and the two smallest denormals either side of zero are 2 ULPs
- apart as singles and astronomically far apart as doubles, which is the line
- `real-approx-equality` grades.
-
- A VECTOR IS A POINTER TO A 16-BYTE BOX, which is the language's own contract
- rather than a choice made here: `DevelopersGuide.md` measures every
- vector-returning builtin at `fixed` 16 bytes and `vec-load-at` as 16 bytes at
- an address. One box is exactly one `v128`, so the lanes are the shape and the
- CARRIER stays i64 like every other pointer, which is why no local declaration
- changes. The emitter used to write `f64x2.add` straight onto the two i64
- operands, which `wat2wasm` refuses as a type mismatch, and `vec-splat` had no
- form at all.
-
- The shape is `16 / lanes` bytes each, and the lane count is in the NAME
- (`vec-` is 2, `vec4-` is 4) for a splat, whose argument cannot carry it, and in
- the operand's `VectorTy` everywhere else. A shape this does not name refuses
- rather than guessing, and so does integer division: wasm SIMD has no integer
- divide at any width, so `i64x2.div` does not exist to emit.
+ One 16-byte vector box is exactly one `v128`; the lane width is `16 / lanes`
+ bytes. wasm SIMD has no integer divide at any width, so `i64x2.div` does not
+ exist.
 
   wat-vec-shape : Integer, CodexType -> Text
   wat-vec-shape (lanes) (elem) =
@@ -1620,6 +1400,26 @@ Section: Apply Emission
   wat-vec-refuse : Text -> Text
   wat-vec-refuse (why) = "(unreachable (; wasm plug: " & why & " ;))"
 
+  wat-is-vec256-name : Text -> Boolean
+  wat-is-vec256-name (n) = text-starts-with n "vec8-" | text-starts-with n "vec4d-" | text-starts-with n "mask8-" | text-starts-with n "mask4d-"
+
+  wat-vec256-refuse : Text -> Text
+  wat-vec256-refuse (n) = "(codex-refused-" & n & "-256-bit-vector-on-wasm)"
+
+  wat-vec-is-wide : CodexType -> Boolean
+  wat-vec-is-wide (ty) =
+   when ty
+    is VectorTy (n) (elem) -> if wat-is-real-type elem then (if wat-elem-is-f32 elem then n > 4 else n > 2) else n > 4
+    is UnitTy (n) (inner) -> wat-vec-is-wide inner
+    is EffectfulTy (effs) (scopes) (ret) -> wat-vec-is-wide ret
+    is otherwise -> False
+
+  wat-elem-is-f32 : CodexType -> Boolean
+  wat-elem-is-f32 (ty) =
+   when ty
+    is UnitTy (n) (inner) -> wat-elem-is-f32 inner
+    is otherwise -> is-real-f32 ty
+
   wat-emit-vec-splat : WasmCtx, IRExpr, Integer -> Text
   wat-emit-vec-splat (ctx) (arg) (lanes) =
    let shape = wat-vec-shape lanes (ir-expr-type arg)
@@ -1643,17 +1443,11 @@ Section: Apply Emission
   wat-emit-vec-arith (ctx) (op) (l) (r) (depth) =
    let shape = wat-vec-of-type (ir-expr-type l)
    in let isdiv = when op is IrDivVec -> True is otherwise -> False
-   in if text-length shape == 0 then wat-vec-refuse "no vector shape for this arithmetic"
+   in if wat-vec-is-wide (ir-expr-type l) then wat-vec256-refuse "vector-operator"
+   else if text-length shape == 0 then wat-vec-refuse "no vector shape for this arithmetic"
    else if isdiv & (shape == "i64x2" | shape == "i32x4") then
     wat-vec-refuse "wasm SIMD has no integer division, so a vector integer divide has no form"
    else "(call $cx_vec_box (" & shape & wat-vec-op-suffix op & " (v128.load (i32.wrap_i64 " & emit-wat-expr-at ctx l (depth + 1) & ")) (v128.load (i32.wrap_i64 " & emit-wat-expr-at ctx r (depth + 1) & "))))"
-
- A VECTOR PATTERN was not tested either, the same shape as a literal inside a
- constructor pattern: `IrVecPat` bound nothing and tested nothing, so
- `is Vector [0, 0]` matched every vector and `vec-pattern` answered `zero` three
- times. The lanes are compared against their literals out of the box. A float
- shape refuses rather than comparing: a real literal's SPELLING is not an
- `i64.const`, and nothing in the corpus writes one.
 
   wat-emit-vec-pat-cond : WasmCtx, List IRPat, CodexType -> Text
   wat-emit-vec-pat-cond (ctx) (pats) (ty) =
@@ -1702,7 +1496,8 @@ Section: Apply Emission
   wat-emit-vec-cmp : WasmCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> Text
   wat-emit-vec-cmp (ctx) (op) (l) (r) (depth) =
    let shape = wat-vec-of-type (ir-expr-type l)
-   in if text-length shape == 0 then wat-vec-refuse "no vector shape for this comparison"
+   in if wat-vec-is-wide (ir-expr-type l) then wat-vec256-refuse "vector-comparison"
+   else if text-length shape == 0 then wat-vec-refuse "no vector shape for this comparison"
    else let signed = if shape == "i64x2" | shape == "i32x4" then "_s" else ""
    in "(call $cx_vec_box (" & shape & wat-vec-cmp-suffix op & signed & " (v128.load (i32.wrap_i64 " & emit-wat-expr-at ctx l (depth + 1) & ")) (v128.load (i32.wrap_i64 " & emit-wat-expr-at ctx r (depth + 1) & "))))"
 
@@ -1803,15 +1598,6 @@ Section: Apply Emission
    in if wat-is-text-type ty then "(call $wasi_print_text " & emit-wat-expr ctx arg & ") (call $wasi_print_newline) (i64.const 0)"
    else "(call $wasi_print_i64 " & emit-wat-expr ctx arg & ") (call $wasi_print_newline) (i64.const 0)"
 
- `__record-set` names its field with a string, so the slot has to be resolved
- from the RECORD'S OWN type. Resolving it from the name alone searches every
- type-def and stops at the first match, which is a different record whenever
- two of them share a field name. `ParseResult.parse-bag` is slot 4 and
- `Document.parse-bag` is slot 14, so setting a Document's parse-bag wrote slot
- 4, which is `Document.instance-defs`. The name-only lookup stays as the
- fallback for a wire whose recorded type did not resolve, because that is what
- it was doing before and it is right whenever the name is unique.
-
   wat-slot-in-ty : WasmCtx, CodexType, Text, Integer -> Integer
   wat-slot-in-ty (ctx) (ty) (field-name) (fallback) =
    let fs = wat-fields-of-ty ctx ty
@@ -1866,22 +1652,13 @@ Section: Apply Emission
     is EffectfulTy (effs) (scopes) (ret) -> wat-is-boolean-type ret
     is otherwise -> False
 
- `peek` and `poke` address as base plus offset, which is the pair the x86
- arms take, so the sum is built once here rather than at five call sites.
-
   wat-addr-of : WasmCtx, List IRExpr -> Text
   wat-addr-of (ctx) (args) =
    "(i32.add (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ") (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 1) & "))"
 
- These name hardware and a host filesystem. A wasm module has neither, and
- there is no approximation of a disk sector or an I/O port that is better
- than refusing: `unreachable` is stack-polymorphic, so each assembles where a
- value is expected and traps only if that path runs. Emitting something
- plausible instead is this quire's first standing hazard.
-
   wat-refuse-name : Text -> Text
   wat-refuse-name (n) =
-   "(unreachable) (; no wasm form for " & n & " ;)"
+   "(unreachable (; wasm plug: no form for " & n & " ;))"
 
   wat-no-such-thing : Text -> Boolean
   wat-no-such-thing (n) =
@@ -1969,6 +1746,7 @@ Section: Apply Emission
    else if n == "real-approx-from-int" then wat-f64-out ("(f64.promote_f32 (f32.convert_i64_s " & emit-wat-expr ctx (list-at args 0) & "))")
    else if n == "real-to-int" | n == "real-approx-to-int" then "(call $cx_real_to_int " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "to-real-approx" then wat-f64-out ("(f64.promote_f32 (f32.demote_f64 " & wat-f64-in (emit-wat-expr ctx (list-at args 0)) & "))")
+   else if wat-is-vec256-name n then wat-vec256-refuse n
    else if n == "vec-splat" then wat-emit-vec-splat ctx (list-at args 0) 2
    else if n == "vec4-splat" then wat-emit-vec-splat ctx (list-at args 0) 4
    else if n == "vec-extract" | n == "vec4-extract" then wat-emit-vec-extract ctx (list-at args 0) (list-at args 1)
@@ -2039,10 +1817,23 @@ Section: Tail Call Optimization
    if i >= count then ""
    else "(local $_tco_" & integer-to-text i & " i64) " & emit-tco-temp-decls (i + 1) count
 
-  emit-tco-store-args : WasmCtx, List IRExpr, Integer -> Text
-  emit-tco-store-args (ctx) (args) (i) =
+  emit-tco-store-args : WasmCtx, List IRParam, List IRExpr, Integer -> Text
+  emit-tco-store-args (ctx) (params) (args) (i) =
    if i >= list-length args then ""
-   else "(local.set $_tco_" & integer-to-text i & " " & emit-wat-expr ctx (list-at args i) & ") " & emit-tco-store-args ctx args (i + 1)
+   else "(local.set $_tco_" & integer-to-text i & " " & emit-tco-arg ctx params (list-at args i) i & ") " & emit-tco-store-args ctx params args (i + 1)
+
+  emit-tco-arg : WasmCtx, List IRParam, IRExpr, Integer -> Text
+  emit-tco-arg (ctx) (params) (arg) (i) =
+   if i >= list-length params then emit-wat-expr ctx arg
+   else if wip-listed (ctx.inplace) ((list-at params i).name) 0 == False then emit-wat-expr ctx arg
+   else when arg
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     (when l
+      is IrName (ln) (lt) (ls) ->
+       if ln == (list-at params i).name & wip-is-append op then "(call $text_append_inplace " & emit-wat-expr ctx l & " " & emit-wat-expr ctx r & ")"
+       else emit-wat-expr ctx arg
+      is otherwise -> emit-wat-expr ctx arg)
+    is otherwise -> emit-wat-expr ctx arg
 
   emit-tco-copy-params : List IRParam, Integer -> Text
   emit-tco-copy-params (params) (i) =
@@ -2058,7 +1849,7 @@ Section: Tail Call Optimization
      in when chain.root
       is IrName (n) (ty2) (sp2) ->
        if n == fname then
-        emit-tco-store-args ctx (chain.args) 0 & emit-tco-copy-params params 0 & "(br $tco_loop)"
+        emit-tco-store-args ctx params (chain.args) 0 & emit-tco-copy-params params 0 & "(br $tco_loop)"
        else emit-wat-tail-apply ctx e n (chain.args)
       is otherwise -> emit-wat-apply ctx e
     is IrIf (c) (t) (el) (ty) (sp) ->
@@ -2070,11 +1861,6 @@ Section: Tail Call Optimization
     is IrAct (stmts) (ty) (sp) ->
      emit-wat-act-stmts-tco ctx fname params stmts 0 depth
     is otherwise -> emit-wat-expr-at ctx e depth
-
- The TCO twin of the chain above. An arm here may itself be a self-tail call,
- which emits its argument stores and a `(br $tco_loop)` and produces no value;
- that rides inside `(br $_i ...)` exactly as it already rides inside the match
- arms' `(br $_m ...)`, because a branch out makes what follows unreachable.
 
   emit-wat-if-chain-tco : WasmCtx, Text, List IRParam, IRExpr, Integer -> Text
   emit-wat-if-chain-tco (ctx) (fname) (params) (e) (depth) =
@@ -2097,16 +1883,9 @@ Section: Tail Call Optimization
     is IrDoBind (name) (ty) (val) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr ctx val & ") "
     is IrDoExec (e) (sp) -> if is-last then emit-wat-expr-tco ctx fname params e (depth + 1) else "(drop " & emit-wat-expr ctx e & ") ") & (if is-last then "" else emit-wat-act-stmts-tco ctx fname params stmts (i + 1) depth)
 
- A call in tail position to ANOTHER known function is a wasm `return_call`,
- which the engine runs in the caller's frame: mutual tail recursion -- the
- lexer's scan-token/skip-prose-line cycle, ping/pong -- runs in constant
- stack, which no self-loop can do and which is the difference between a
- browser's fixed stack and a flag only wasmtime honors. The dispatch order
- mirrors emit-wat-apply: builtins, constructors and locals-as-values never
- reach it, and only an application that SATURATES the callee's arity
- qualifies; everything else keeps the ordinary path. A builtin can carry a
- bracket (deck-record) or scratch protocol, so routing those through the
- plain path first is what keeps the enter/exit balance exact.
+ A wasm `return_call` runs in the caller's frame, so mutual tail recursion runs
+ in constant stack; a browser's stack is fixed and only wasmtime takes a flag to
+ grow it.
 
   emit-wat-tail-apply : WasmCtx, IRExpr, Text, List IRExpr -> Text
   emit-wat-tail-apply (ctx) (e) (n) (args) =
@@ -2118,24 +1897,6 @@ Section: Tail Call Optimization
    in if ar > 0 & list-length args == ar then
     "(return_call $" & wat-sanitize n & " " & emit-wat-apply-args ctx args 0 & ")"
    else emit-wat-apply ctx e
-
- This is the TCO twin of the match emission above and it is the one that was
- actually making the module deep. The measured deepest point in
- `codex-compiler.wat` is a constructor-tag chain reading
- `(if (result i64) (i64.eq (i64.load (i32.wrap_i64 (local.get $_s))) ...`,
- which is THIS function's shape: `emit-wat-expr-at`'s `IrIf` always puts
- `(i32.wrap_i64` immediately after `(result i64)` and the measured text does
- not have it, and `local.get $_s` is a match scrutinee rather than anything an
- `if` produces. Flattening the non-TCO twin alone moved the depth 188 to 188,
- because the compiler's constructor dispatch is self-tail-recursive and never
- takes that path.
-
- Two shapes the old code had that the arm form removes. A last literal or
- constructor arm was emitted with NO test at all, so an inexhaustive match ran
- the last arm on a value it did not match; the non-TCO twin has always tested
- and fallen through to `(unreachable)`, and these now agree. And an unguarded
- wildcard in the middle discarded every later arm rather than emitting them
- dead, which was a special case rather than a saving.
 
   emit-wat-match-tco : WasmCtx, Text, List IRParam, IRExpr, List IRBranch, Integer -> Text
   emit-wat-match-tco (ctx) (fname) (params) (scrut) (branches) (depth) =
@@ -2179,6 +1940,139 @@ Section: Tail Call Optimization
     emit-wat-arm-block "" "(i32.const 1)" bind-subs body
    else emit-wat-arm-block "" (wat-ctor-arm-cond ctx tag subs guard bind-subs) bind-subs body
 
+Section: Effect Handlers
+
+  wh-global : Text -> Text
+  wh-global (op) = "$eff_" & wat-sanitize op
+
+  wh-emit-op-call : WasmCtx, Text, List IRExpr -> Text
+  wh-emit-op-call (ctx) (n) (args) =
+   if list-length args /= wh-op-arity (ctx.eff-ops) n 0 then wat-refuse-name n
+   else if list-length args == 0 then "(call $clo_apply1 (global.get " & wh-global n & ") (i64.const 0))"
+   else wat-emit-indirect ctx args ("(global.get " & wh-global n & ")")
+
+  wh-emit-handle : WasmCtx, IRExpr, List IRHandleClause, Integer -> Text
+  wh-emit-handle (ctx) (body) (cs) (depth) =
+   "(block (result i64) " & wh-emit-installs ctx cs 0 & "(global.set $eff_res " & emit-wat-expr-at ctx body (depth + 1) & ") " & wh-emit-restores cs (list-length cs) & "(global.get $eff_res))"
+
+  wh-emit-installs : WasmCtx, List IRHandleClause, Integer -> Text
+  wh-emit-installs (ctx) (cs) (i) =
+   if i >= list-length cs then ""
+   else let c = list-at cs i
+   in "(call $eff_push (global.get " & wh-global (c.op-name) & ")) (global.set " & wh-global (c.op-name) & " " & emit-wat-expr ctx (c.body) & ") " & wh-emit-installs ctx cs (i + 1)
+
+  wh-emit-restores : List IRHandleClause, Integer -> Text
+  wh-emit-restores (cs) (i) =
+   if i <= 0 then ""
+   else "(global.set " & wh-global ((list-at cs (i - 1)).op-name) & " (call $eff_pop)) " & wh-emit-restores cs (i - 1)
+
+  wh-runtime : List WhOp -> Text
+  wh-runtime (ops) =
+   if list-length ops == 0 then ""
+   else "  (global $eff_top (mut i32) (i32.const 0))\n  (global $eff_res (mut i64) (i64.const 0))\n" & wh-op-globals ops 0 &
+   "  (func $eff_push (param $v i64) (local $p i32)\n" &
+   "    (local.set $p (call $bump_alloc (i32.const 12)))\n" &
+   "    (i64.store (local.get $p) (local.get $v))\n" &
+   "    (i32.store (i32.add (local.get $p) (i32.const 8)) (global.get $eff_top))\n" &
+   "    (global.set $eff_top (local.get $p)))\n" &
+   "  (func $eff_pop (result i64) (local $p i32)\n" &
+   "    (local.set $p (global.get $eff_top))\n" &
+   "    (global.set $eff_top (i32.load (i32.add (local.get $p) (i32.const 8))))\n" &
+   "    (i64.load (local.get $p)))\n"
+
+  wh-op-globals : List WhOp, Integer -> Text
+  wh-op-globals (ops) (i) =
+   if i >= list-length ops then ""
+   else "  (global " & wh-global ((list-at ops i).op) & " (mut i64) (i64.const -1))\n" & wh-op-globals ops (i + 1)
+
+Section: In-place Text Accumulators
+
+ The port of x86-64's `inplace-accumulators` (`Emit/X86_64.codex`). A Text
+ parameter qualifies when every self tail call passes it back as itself, a
+ literal, or `acc & r` with `r` not mentioning it, and nothing else reads it,
+ so the loop holds the only reference and extending it in place cannot change
+ a value anyone else can see. `$text_own` keeps the caller's copy out of reach.
+
+  wip-is-append : IRBinaryOp -> Boolean
+  wip-is-append (op) =
+   when op
+    is IrAppendText -> True
+    is otherwise -> False
+
+  wip-clean : IRExpr, Text -> Integer
+  wip-clean (e) (acc) = if wip-mentions e acc then 0 - 1 else 0
+
+  wip-join : Integer, Integer -> Integer
+  wip-join (a) (b) = if a < 0 | b < 0 then 0 - 1 else a + b
+
+  wip-walk : IRExpr, Text, Text, Integer, Integer -> Integer
+  wip-walk (e) (acc) (fname) (k) (np) =
+   when e
+    is IrName (n) (ty) (sp) -> 0
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     wip-join (wip-clean c acc) (wip-join (wip-walk t acc fname k np) (wip-walk el acc fname k np))
+    is IrLet (n) (ty) (v) (b) (sp) ->
+     if n == acc then 0 - 1
+     else wip-join (wip-clean v acc) (wip-walk b acc fname k np)
+    is IrApply (f) (a) (ty) (sp) ->
+     let chain = collect-apply-chain e []
+     in (when chain.root
+      is IrName (n) (t2) (s2) ->
+       if n /= fname then wip-clean e acc
+       else if list-length (chain.args) /= np then wip-clean e acc
+       else wip-walk-args (chain.args) acc k 0 0
+      is otherwise -> wip-clean e acc)
+    is IrMatch (s) (bs) (ty) (sp) ->
+     wip-join (wip-clean s acc) (wip-walk-branches bs acc fname k np 0 0)
+    is otherwise -> wip-clean e acc
+
+  wip-walk-branches : List IRBranch, Text, Text, Integer, Integer, Integer, Integer -> Integer
+  wip-walk-branches (bs) (acc) (fname) (k) (np) (i) (total) =
+   if total < 0 then total
+   else if i >= list-length bs then total
+   else let b = list-at bs i
+   in if wip-pat-binds (b.pattern) acc then 0 - 1
+   else let here = wip-join (wip-clean (b.guard) acc) (wip-walk (b.body) acc fname k np)
+   in wip-walk-branches bs acc fname k np (i + 1) (wip-join total here)
+
+  wip-walk-args : List IRExpr, Text, Integer, Integer, Integer -> Integer
+  wip-walk-args (args) (acc) (k) (i) (total) =
+   if total < 0 then total
+   else if i >= list-length args then total
+   else let arg = list-at args i
+   in let here = if i /= k then wip-clean arg acc else wip-acc-arg arg acc
+   in wip-walk-args args acc k (i + 1) (wip-join total here)
+
+  wip-acc-arg : IRExpr, Text -> Integer
+  wip-acc-arg (arg) (acc) =
+   when arg
+    is IrName (n) (ty) (sp) -> if n == acc then 0 else 0 - 1
+    is IrTextLit (t) (sp) -> 0
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     (when l
+      is IrName (ln) (lt) (ls) -> if wip-is-append op == False | ln /= acc | wip-mentions r acc then 0 - 1 else 1
+      is otherwise -> 0 - 1)
+    is otherwise -> 0 - 1
+
+  wip-param-is-text : CodexType -> Boolean
+  wip-param-is-text (ty) =
+   when ty
+    is TextTy -> True
+    is otherwise -> False
+
+  wip-accumulators : IRDef, Integer, List Text -> List Text
+  wip-accumulators (def) (i) (found) =
+   let params = def.params
+   in if i >= list-length params then found
+   else let p = list-at params i
+   in let ok = wip-param-is-text (p.type-val) & wip-walk (def.body) (p.name) (def.name) i (list-length params) > 0
+   in wip-accumulators def (i + 1) (if ok then list-push found (p.name) else found)
+
+  emit-wip-guards : List Text, Integer -> Text
+  emit-wip-guards (names) (i) =
+   if i >= list-length names then ""
+   else "(call $text_own (local.get $" & wat-sanitize (list-at names i) & ")) " & emit-wip-guards names (i + 1)
+
 Section: Definition Emission
 
   emit-wat-def : WasmCtx, IRDef -> Text
@@ -2192,7 +2086,8 @@ Section: Definition Emission
     let pc = list-length (d.params)
     in let tco-temps = emit-tco-temp-decls 0 pc
     in let local-text = emit-local-decls locals 0
-    in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & tco-temps & "\n    (loop $tco_loop (result i64) " & emit-wat-expr-tco dctx (d.name) (d.params) (d.body) 0 & "))\n"
+    in let ip = wip-accumulators d 0 []
+    in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & tco-temps & "\n    " & emit-wip-guards ip 0 & "(loop $tco_loop (result i64) " & emit-wat-expr-tco (ctx-with-inplace dctx ip) (d.name) (d.params) (d.body) 0 & "))\n"
    else let local-text = emit-local-decls locals 0
    in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & "\n    " & emit-wat-expr-tco dctx "" (d.params) (d.body) 0 & ")\n"
 
@@ -2203,12 +2098,10 @@ Section: Definition Emission
 
 Section: WASI Runtime Helpers
 
- The two `env` imports are emitted only when the program calls them. A WASI
- host supplies `wasi_snapshot_preview1` and nothing else, so importing
- `blit_framebuf` and `on_key` unconditionally made EVERY emitted module fail
- to instantiate -- `unknown import: env::blit_framebuf` under wasmtime -- which
- is why nothing had ever run this plug's output. A browser host that does
- provide them is unaffected: a program that calls them still declares them.
+ A WASI host supplies `wasi_snapshot_preview1` and nothing else, so an `env`
+ import the host lacks fails instantiation (`unknown import:
+ env::blit_framebuf` under wasmtime); the two `env` imports are emitted only
+ when the program calls them.
 
   wat-runtime-header : Integer, Boolean, Boolean -> Text
   wat-runtime-header (heap-start) (needs-blit) (needs-key) =
@@ -2247,21 +2140,17 @@ Section: WASI Runtime Helpers
    "    (local.set $r (i64.rem_s (local.get $a) (local.get $m)))\n" &
    "    (select (i64.add (local.get $r) (local.get $m)) (local.get $r) (i64.lt_s (local.get $r) (i64.const 0))))\n\n"
 
- `real-to-int` on x86-64 is `cvttsd2si` (X86_64Builtins.codex): truncate toward
- zero, and the integer indefinite INT64_MIN for a NaN, an infinity, or a value
- whose truncation does not fit. `i64.trunc_sat_f64_s` agrees on all of those
- except NaN (saturates to 0) and positive overflow (saturates to INT64_MAX), so
- those two are tested first.
+ `real-to-int` on x86-64 is `cvttsd2si`: truncate toward zero, and the integer
+ indefinite INT64_MIN for a NaN, an infinity, or a value whose truncation does
+ not fit. `i64.trunc_sat_f64_s` agrees on all of those except NaN (saturates
+ to 0) and positive overflow (saturates to INT64_MAX).
 
- A plain Integer traps on signed overflow (COMPILER-36 contract); only a node
- typed with the wrapping band takes the raw instruction. wasm has no overflow
- flag and no i128, so each check is on the result: add and sub overflow iff
- the sign of the result differs from both operands (add) or the operands'
- signs differ and the result's sign differs from the left's (sub); mul checks
- the quotient, which is exact whenever no overflow occurred and cannot equal
- the multiplier otherwise, because the wrapped result is off by a multiple of
- 2^64 and the divisor is below 2^63. The two divisions that themselves trap,
- a = 0 and (i64-min / -1), are answered before the quotient is taken.
+ wasm has no overflow flag and no i128, so each check is on the result: add and
+ sub overflow iff the result's sign differs from both operands (add) or the
+ operands' signs differ and the result's sign differs from the left's (sub);
+ mul checks the quotient, which cannot equal the multiplier after a wrap
+ because the wrapped result is off by a multiple of 2^64 and the divisor is
+ below 2^63.
 
   wat-rt-int-trap : Text =
    "  (func $cx_add_trap (param $a i64) (param $b i64) (result i64) (local $r i64)\n" &
@@ -2312,19 +2201,12 @@ Section: WASI Runtime Helpers
    "        (then (i64.const -9223372036854775808))\n" &
    "        (else (i64.trunc_sat_f64_s (local.get $f)))))))\n\n"
 
- THE ALLOCATOR GROWS THE MEMORY, because the declared 256 pages are 16 MB
- and the compiler compiling its own source asked for an address 206 MB in.
- Measured, not budgeted: `memory fault at wasm address 0xc4bac22 in linear
- memory of size 0x1000000`. Without the grow the bump pointer simply walks
- past the end and every access past it is an out-of-bounds trap, which reads
- as a codegen defect and is a ceiling.
-
- GROW IN 16 MB STEPS: V8's cost per memory.grow rises with the memory already
- held, so the COUNT of grows is what costs (measured 2026-08-31: 56,000 grows
- of one page to 3.5 GB, node 166.83 s against wasmtime 0.21 s; 1,000 grows of
- 16 pages to the same 1 GB as 16,000 of one, 0.38 s against 5.45 s). A fixed
- step rather than doubling, because doubling overshoots by up to 12.5 per cent
- and a compiler-sized subject sits near wasm32's hard 4 GiB ceiling.
+ The declared 256 pages are 16 MB. The memory grows in 16 MB steps because
+ V8's cost per `memory.grow` rises with the memory already held, so the COUNT
+ of grows is what costs (measured 2026-08-31: 56,000 one-page grows to 3.5 GB,
+ node 166.83 s against wasmtime 0.21 s; 1,000 grows of 16 pages to 1 GB, 0.38 s
+ against 5.45 s for 16,000 of one). A fixed step rather than doubling, because
+ doubling overshoots by up to 12.5 per cent near wasm32's 4 GiB ceiling.
 
   wasm-grow-step-pages : Integer = 256
 
@@ -2483,6 +2365,37 @@ Section: WASI Runtime Helpers
    "      (br $c2)))\n" &
    "    (i64.extend_i32_u (local.get $dst)))\n\n"
 
+ A Text below `$heap_start` is a data-segment literal, and the last one ends
+ exactly where the heap begins, so ending at the heap top alone does not make
+ a Text safe to extend.
+
+  wat-rt-text-append-inplace : Text =
+   "  (func $text_own (param $a i64)\n" &
+   "    (local $p i32)\n" &
+   "    (local.set $p (i32.wrap_i64 (local.get $a)))\n" &
+   "    (if (i32.eq (i32.add (i32.add (local.get $p) (i32.const 4)) (i32.load (local.get $p))) (global.get $heap_ptr))\n" &
+   "      (then (drop (call $bump_alloc (i32.const 16))))))\n\n" &
+   "  (func $text_append_inplace (param $a i64) (param $b i64) (result i64)\n" &
+   "    (local $pa i32) (local $pb i32) (local $la i32) (local $lb i32) (local $dst i32) (local $idx i32)\n" &
+   "    (local.set $pa (i32.wrap_i64 (local.get $a)))\n" &
+   "    (local.set $la (i32.load (local.get $pa)))\n" &
+   "    (if (i32.and (i32.ge_u (local.get $pa) (global.get $heap_start))\n" &
+   "                 (i32.eq (i32.add (i32.add (local.get $pa) (i32.const 4)) (local.get $la)) (global.get $heap_ptr)))\n" &
+   "      (then\n" &
+   "        (local.set $pb (i32.wrap_i64 (local.get $b)))\n" &
+   "        (local.set $lb (i32.load (local.get $pb)))\n" &
+   "        (local.set $dst (call $bump_alloc (local.get $lb)))\n" &
+   "        (local.set $idx (i32.const 0))\n" &
+   "        (block $d (loop $c\n" &
+   "          (br_if $d (i32.ge_s (local.get $idx) (local.get $lb)))\n" &
+   "          (i32.store8 (i32.add (local.get $dst) (local.get $idx))\n" &
+   "            (i32.load8_u (i32.add (i32.add (local.get $pb) (i32.const 4)) (local.get $idx))))\n" &
+   "          (local.set $idx (i32.add (local.get $idx) (i32.const 1)))\n" &
+   "          (br $c)))\n" &
+   "        (i32.store (local.get $pa) (i32.add (local.get $la) (local.get $lb)))\n" &
+   "        (return (local.get $a))))\n" &
+   "    (call $text_append (local.get $a) (local.get $b)))\n\n"
+
   wat-rt-i64-to-text : Text =
    "  (func $i64_to_text (param $val i64) (result i64)\n" &
    "    (local $abs i64) (local $neg i32) (local $buf i32) (local $pos i32)\n" &
@@ -2518,12 +2431,8 @@ Section: WASI Runtime Helpers
    "      (br $cpl)))\n" &
    "    (i64.extend_i32_u (local.get $result)))\n\n"
 
- The oracle is `__real_to_text` in `codex/compiler/Emit/X86_64TextHelpers.codex`,
- and the FORMAT is the part that has to match rather than the arithmetic: at most
- fifteen fractional digits, trailing zeros stripped down to one, always a dot and
- always a digit after it. A biased exponent from 1086 (2^63) to 2046 goes to
- `$__f64_big_to_text`, the exponent form every backend prints byte for byte, and
- 2047 answers `inf`, `-inf` or `nan` as CCE bytes packed into one i32.
+ A biased exponent from 1086 (2^63) to 2046 prints in the exponent form, and
+ 2047 answers `inf`, `-inf` or `nan`.
 
   wat-rt-f64-to-text : Text =
    "  (func $__f64_to_text (param $bits i64) (result i64)\n" &
@@ -2768,12 +2677,6 @@ Section: WASI Runtime Helpers
    "      (br $cc)))\n" &
    "    (i64.extend_i32_u (local.get $dst)))\n\n"
 
- The bytes are read off the literals with `char-code`, which is what
- `wat-escape-data` does for the string table. A transcribed ASCII "True" is
- the wrong answer here: this plug's Text is CCE, `$wasi_print_text` decodes
- through the CCE tables on the way out, and 84 is not the CCE code point for
- `T`.
-
   wat-bool-text-stores : Text, Integer, Integer -> Text
   wat-bool-text-stores (s) (i) (len) =
    if i >= len then ""
@@ -2799,33 +2702,11 @@ Section: WASI Runtime Helpers
    "      ))\n" &
    "    (i64.extend_i32_u (local.get $p)))\n\n"
 
- The bands are CCE code points and are the ones `emit-is-letter-builtin`
- (`X86_64Builtins.codex:382`) tests: letters are 13..64 and 97..127, two ranges
- because Tier 0 puts sixteen accented Latin letters and fifteen Cyrillic ones
- above the punctuation, and whitespace is 1..2. The digit band is derived from
- `cce-digit-zero` rather than written down twice.
+ CCE bands: letters are 13..64 and 97..127, whitespace is 1..2.
 
- `__list-tail` is a VIEW, as it is on x86-64 (`X86_64ListHelpers.codex:3`), and
- for the same two reasons: O(1) so a `when xs is Cons` recursion is not
- quadratic, and aliasing, because a write through `list-set-at` on a view must
- land in the backing where every sibling view can see it. A copy is correct for
- every reader and wrong for that one, which is the half a green on
- `list-view-bounds` cannot see and `list-view-probe`'s `set=` line can.
-
- This plug's list is `[len i32][cap i32][elements]` with the pointer at the
- header, so the sentinel is the CAPACITY cell rather than x86-64's cell behind
- the pointer: capacity -1 means view, and the view's third cell holds a phantom
- pointer chosen so that phantom+8 is the view's first element, which is the
- displacement every element loop here already uses. `$cx_list_base` is the one
- selection, and a reader that indexes elements calls it instead of wrapping the
- pointer. A plain list never carries -1: the empty literal is 0, `$list_append`
- and `$list_cons` set capacity equal to length, and `$list_with_capacity`
- floors at 0.
-
- A reduction reads its operand four times, so it is a helper taking the POINTER
- rather than four copies of an expression that may allocate. The f32 sum comes
- back as a promoted f64 because that is how this plug carries an approximate
- real everywhere else.
+ A list is `[len i32][cap i32][elements]` with the pointer at the header;
+ capacity -1 marks a view, whose third cell holds a phantom pointer such that
+ phantom+8 is the view's first element.
 
   wat-rt-vec : Text =
    "  (func $cx_vec_box (param $v v128) (result i64)\n" &
@@ -3058,22 +2939,8 @@ Section: WASI Runtime Helpers
    "    (i64.store (i32.add (call $cx_list_base (local.get $lst)) (i32.add (i32.const 8) (i32.mul (i32.wrap_i64 (local.get $idx)) (i32.const 8)))) (local.get $val))\n" &
    "    (local.get $lst))\n\n"
 
- Text here is a pointer to `[i32 length][bytes]` and a list is a pointer to
- `[i32 count][i32 capacity][i64 elements]`, both from `$bump_alloc`. The
- digits and the minus sign are ASCII, 48 and 45, which is what `$i64_to_text`
- writes on the way out.
-
- `$cx_text_match_at` is the one primitive the other four need: whether `sub`
- occurs in `s` at a byte offset. An EMPTY sub matches everywhere, which is
- what makes contains answer True and starts-with answer True for one, as the
- foreword definitions do.
-
- The cell layout and the reversing fill are x86-64's, not a choice made here:
- `emit-linked-list-push-builtin` (`X86_64Builtins.codex`) conses a 16-byte
- `[value][next]` onto the FRONT, and `emit-linked-list-to-list-helper`
- (`X86_64Helpers.codex`) walks that chain filling the result back to front.
- An append-at-tail list answers every length and membership question
- identically and hands back every sequence backwards.
+ Text is `[i32 length][bytes]` and a list is `[i32 count][i32 capacity][i64
+ elements]`. The digits and the minus sign are ASCII 48 and 45.
 
   wat-rt-linked-list : Text =
    "  (func $ll_push (param $lst i64) (param $val i64) (result i64)\n" &
@@ -3138,16 +3005,8 @@ Section: WASI Runtime Helpers
    "      (br $tcl)))\n" &
    "    (i64.extend_i32_u (local.get $dst)))\n\n"
 
- `list-insert-at` takes `0 <= i <= len`, one looser than `list-at` at the top
- end: inserting AT the length is an append. Out of range is `unreachable`,
- which is `ud2` on x86-64 (`X86_64ListHelpers.codex` Section
- `__list_insert_at`); this quire's first standing hazard is that emitting
- something plausible for a case we cannot serve is worse than refusing.
-
- It fills in place when the capacity allows, as x86-64 and `$list_push` both
- do. Always copying would be simpler and would make n inserts cost O(n^2) on
- an allocator that never frees, which is the pairing `__list-with-capacity`
- exists to avoid.
+ An insert fills in place when the capacity allows; always copying would make
+ n inserts cost O(n^2) on an allocator that never frees.
 
   wat-rt-list-insert : Text =
    "  (func $list_with_capacity (param $cap i64) (result i64)\n" &
@@ -3202,15 +3061,8 @@ Section: WASI Runtime Helpers
    "      (br $ibl)))\n" &
    "    (i64.extend_i32_u (local.get $dst)))\n\n"
 
- A buffer is a raw address in linear memory, which is what `alloc-bytes`
- hands back. Both writers return the offset PAST what they wrote, so a caller
- chains them without tracking a cursor; that return is the whole reason
- `__buf-write-byte` is not simply `poke-byte`.
-
- `__buf-read-bytes` costs 8 bytes of list per byte read, because its result
- type is `List Integer` and every value on this target is an i64. That is the
- 8x blow-up `CLAUDE.md` names as a red flag, it is inherent to the builtin
- rather than to this implementation, and x86-64 pays it identically.
+ `__buf-read-bytes` costs 8 bytes of list per byte read, because its result is
+ `List Integer` and every value on this target is an i64.
 
   wat-rt-buf : Text =
    "  (func $buf_write_byte (param $buf i64) (param $off i64) (param $b i64) (result i64)\n" &
@@ -3246,10 +3098,9 @@ Section: WASI Runtime Helpers
    "      (br $brl)))\n" &
    "    (i64.extend_i32_u (local.get $dst)))\n\n"
 
- `fd_write` may write FEWER bytes than the iovec offers and report the count,
- which every other writer here drops because the text printer flushes at most
- 240 bytes at a time. `write-binary-buf` hands over a whole artifact in one
- call, so `$write_raw` reads the count and loops (L-SHORT).
+ WASI `fd_write` may write FEWER bytes than the iovec offers and report the
+ count. The text printer flushes at most 240 bytes at a time; `$write_raw`
+ hands over a whole artifact, so it reads the count and loops.
 
   wat-rt-write-binary : Text =
    "  (func $write_raw (param $at i32) (param $n i32)\n" &
@@ -3408,18 +3259,8 @@ Section: WASI Runtime Helpers
    "      (call $substring (local.get $s) (i64.extend_i32_u (local.get $start))\n" &
    "        (i64.extend_i32_u (i32.sub (local.get $ls) (local.get $start))))))\n\n"
 
- `min` and `__memset` take a helper each rather than being inlined, because
- an inline form would have to name each argument twice and the second
- mention would evaluate it a second time. A helper binds its parameters
- once, which is what the x86 arms achieve by storing to locals.
-
- A function VALUE is a table index while nothing is captured, which is what
- it has always been, and becomes a heap block the moment an application
- leaves it short. Bit 62 tells the two apart: a table index never sets it and
- a heap pointer is under 2^32, so the tag costs nothing and cannot collide.
- The block is `[i32 index][i32 captured count][i64 args...]`; the arity comes
- from the sidecar table rather than the block, so a bare index answers the
- same question a closure does.
+ Bit 62 tags a closure block: a table index never sets it and a heap pointer is
+ under 2^32. The block is `[i32 index][i32 captured count][i64 args...]`.
 
   wat-rt-closure : Integer, Integer -> Text
   wat-rt-closure (arity-base) (max-arity) =
@@ -3462,16 +3303,9 @@ Section: WASI Runtime Helpers
    "    (i64.or (i64.extend_i32_u (local.get $new)) (i64.const 4611686018427387904)))\n\n" &
    wat-emit-apply-fams max-arity 2 ""
 
- A bare table index applied to exactly its arity is the dominant dynamic
- shape: a comparator handed to a sort, a mapper handed to a walk. The
- one-argument chain spends a closure allocation per argument on it -- 16
- then 24 bytes for every two-argument comparator call, measured at thirty
- million allocations in one compile -- where x86's trampoline passes the
- saturating arguments in registers and allocates only on genuine
- under-application. Each family member takes the whole argument row, calls
- straight through the table when the callee is bare and the row saturates
- it, and otherwise falls back to the chain, which stays the single place
- closures are built.
+ The one-argument apply chain allocates a closure per argument (16 then 24
+ bytes per two-argument call, thirty million allocations in one compile), so a
+ bare index whose row saturates it is called straight through the table.
 
   wat-emit-apply-fams : Integer, Integer, Text -> Text
   wat-emit-apply-fams (n) (i) (acc) =
@@ -3529,20 +3363,8 @@ Section: WASI Runtime Helpers
    else let row = byte-to-hex ((list-at entries i).arity)
    in wat-emit-arity-data entries base (i + 1) (list-push acc row)
 
- One byte per `fd_read`, which is the shape the caller needs rather than the
- fast one: a line ends at a newline and reading ahead would swallow the
- bytes after it, with nowhere to put them back. `$read_line_raw` answers 0
- at end of input and a Text pointer otherwise, and an empty line is a Text
- of length 0, which is NOT the same answer. Bytes convert through the
- reverse table on the way in, so what lands in memory is CCE, matching what
- 1.61 established for the way out.
-
- END OF INPUT DISCARDS A PARTIAL LINE, and that is bare metal's answer
- rather than a choice made here: measured against x86-64 on input whose last
- line carries no newline, the reference reports the three terminated lines
- and then end of input, dropping the tail. Returning the tail first is the
- more obliging reading and it disagrees with the oracle, which is the only
- standard this plug is held to.
+ One byte per `fd_read`: a line ends at a newline, and reading ahead would
+ swallow bytes with nowhere to put them back.
 
   wat-rt-read-line : Integer, Integer -> Text
   wat-rt-read-line (rev-base) (scratch) =
@@ -3582,53 +3404,12 @@ Section: WASI Runtime Helpers
    "    (i32.store (local.get $buf) (local.get $n))\n" &
    "    (i64.extend_i32_u (local.get $buf)))\n\n"
 
- `read-line-cce` and `read-serial-cce` are the RAW half of the family and
- they are not `read-line` with a different name. Measured against x86-64:
- `__read_line` converts each byte through the unicode-to-CCE table and ends
- the line on ASCII 10; `__read_line_cce` converts NOTHING and ends the line
- on CCE 1 (`X86_64Helpers.codex:1212`), because its caller is a wire that
- already speaks CCE. `__bare_metal_read_serial_cce` copies raw bytes until a
- NUL and is how every plug takes its whole input. Wiring the raw two to the
- converting one is wrong in both halves at once, and it is observable on the
- plainest input there is: on `hi` and a newline, bare metal's
- `read-line-cce` answers None, because it is still looking for a CCE 1 that
- ASCII text never contains.
-
- The scope pair beneath the disk: `fat16-scope-admits` consults
- `process-get-scope process-get-pid` on EVERY path resolution, so a
- target with no process table cannot read a volume at all. Here the
- module IS one process and the embedding page is the trust boundary, so
- the pid is 0 and the scope is the empty grant, which the scope code
- itself defines as "admits everything". Writes land in the SAME
- host-provided region -- the image is the host's own buffer handed in
- through `disk_reserve`, so a write mutates host-owned bytes and
- nothing beyond them; DISK mode's write-the-CDX-back tail (OUT.CDX and
- the re-read verdict) therefore completes in-tab exactly as it does on
- a stick. The status convention is x86's, not a boolean: 0 IS SUCCESS
- (`fat16-put-entry-and-write` tests `s == 0`), and an out-of-range
- write answers 1 and moves nothing. The first build of this function
- returned it inverted, and the symptom was exact: every byte of
- OUT.CDX on the image, the directory size right, and the verdict
- `DISK-OUT: FAILED 89323 of 89323` -- a landed write reported as a
- failure by its own status word.
-
- The virtual disk's HOST CONTRACT, for any embedder (the Prism page, a
- node bed): call the exported `disk_reserve(size)` BEFORE `_start`, copy
- the image bytes to the returned address, and re-fetch `memory.buffer`
- after the call, because the reserve may grow the memory and growing
- detaches the old buffer. Nothing else is required; a host that reserves
- nothing leaves `disk_size` 0, `block-sector-count` answers 0, and no
- volume mounts. The reserve goes through `$bump_alloc` so the region can
- never collide with the heap, and it is permanent for the instance, which
- is the x86 allocator's own contract. A sector read past `disk_size`
- answers a zeroed buffer rather than trapping, and 512 fresh bytes are
- bump-allocated per read exactly as the x86 `block-read-sector` does.
- The read-back half of the contract is the same region: writes land in
- it, so after `_start` the host slices `memory.buffer` at the reserved
- base to read anything the guest wrote (DISK mode's OUT.CDX included).
- Copy-in and read-back are one buffer; a host that forgets the second
- half ships a DISK mode that reports success while its artifact stays
- unread (fester's question at the stage-2 convergence, 2026-08-28).
+ The virtual disk's HOST CONTRACT: call the exported `disk_reserve(size)`
+ BEFORE `_start`, copy the image bytes to the returned address, and re-fetch
+ `memory.buffer` after the call, because the reserve may grow the memory and
+ growing detaches the old buffer. Writes land in the same region, so after
+ `_start` the host slices `memory.buffer` at the reserved base to read what the
+ guest wrote. A host that reserves nothing leaves `disk_size` 0.
 
   wat-rt-disk : Text =
    "  (func $process_scope_empty (param $pid i64) (result i64)\n" &
@@ -3669,16 +3450,9 @@ Section: WASI Runtime Helpers
    "      (return (i64.const 0)))\n" &
    "    (i64.const 1))\n\n"
 
- The 4096 below is a divergence x86 does not have: its `__read_line_cce`
- stores into the heap frontier byte by byte and sizes the allocation after
- the terminator, so a line there is as long as the line is. This runtime
- bump-allocates BEFORE reading, so a bound is structural, and bytes past it
- are dropped without a word. 256 truncated the evidence wire's `cdx-header`
- line (11 + 448 hex chars for 224 header bytes) to 122 parsed bytes, and the
- plug honestly answered "not a CDX" to a CDX (measured 2026-08-28; the x86
- reference answers present=y on the identical wire). 4096 clears every line
- the known raw-CCE wires carry by an order of magnitude. (Landed 20600 on
- red; restored here after a merge-down took main's pre-fix copy over it.)
+ 4096 bytes bounds a raw line because this runtime allocates before reading;
+ the longest known raw-CCE wire line is the evidence `cdx-header`, 11 + 448
+ hex characters.
 
   wat-rt-read-raw : Integer -> Text
   wat-rt-read-raw (cce-nl) =
@@ -3717,15 +3491,6 @@ Section: WASI Runtime Helpers
    "    (i32.store (local.get $buf) (local.get $n))\n" &
    "    (i64.extend_i32_u (local.get $buf)))\n\n"
 
- `read-file-uni` READS THE WIRE. The name says file and the effect row says
- `FileSystem.Read`, but on x86-64 it compiles to
- `__bare_metal_read_serial` (`X86_64Builtins.codex:768`), which slurps the
- serial stream: terminate on NUL or EOT, skip CR, convert bytes under 128
- through the unicode-to-CCE table and pass the rest through. That is why
- `compile.ps1` writes the mode line and the whole source body into ONE
- input file, and why `dispatch-on-mode`'s `utf8-to-cce` afterwards is a
- no-op on ASCII: the conversion already happened here.
-
   wat-rt-read-file : Integer -> Text
   wat-rt-read-file (rev-base) =
    "  (func $read_file_uni (param $ignored i64) (result i64)\n" &
@@ -3751,27 +3516,9 @@ Section: WASI Runtime Helpers
    "    (i32.store (local.get $buf) (local.get $n))\n" &
    "    (i64.extend_i32_u (local.get $buf)))\n\n"
 
- `read-file-raw` MEANS SOMETHING WIDER HERE THAN ON BARE METAL, deliberately
- (Damian, 2026-08-27: a builtin means whatever it needs to mean to make sense
- for its environment). x86-64's `__bare_metal_read_serial_raw` ends the read
- at a NUL or an EOT and skips CR, because a serial ring has no end of input
- and a sentinel is the only terminator available to it. wasm's stdin has a
- real one, so this arm ends at EOF and at nothing else: every byte value
- including NUL arrives, which is the whole point, because `elf`, `pe` and
- `img` take a compiled payload rather than text. A subject that reads
- NUL-free input agrees with the reference on both arms; past the first NUL
- the two targets answer different questions and only this one can carry a
- binary.
-
- Chunked, unlike `$read_line_raw` beside it. That one reads a byte per
- `fd_read` because a line ends at a newline and reading ahead would swallow
- what follows with nowhere to put it back; a slurp to EOF has no such
- boundary, so it reads 64 KB straight into the destination and a 2 MB payload
- costs about 32 calls instead of two million. The buffer grows by bumping
- again: consecutive `$bump_alloc` calls with nothing allocated between them
- are contiguous, so the reservation simply extends. Nothing allocates inside
- any of these read loops, which is what makes that sound here and unsound in
- `$list_push`, where the same trick grew a list a CALLER still held.
+ wasm's stdin has a real end of input, so a raw read ends at EOF and every byte
+ value including NUL arrives. It reads 64 KB per `fd_read`: a 2 MB payload
+ costs about 32 calls instead of two million.
 
   wat-rt-read-file-raw : Integer -> Text
   wat-rt-read-file-raw (in-base) =
@@ -3992,23 +3739,14 @@ Section: WASI Runtime Helpers
   wat-runtime-funcs : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
   wat-runtime-funcs (tab) (t2) (out) (arity-base) (max-arity) (rev-base) (in-base) =
    wat-rt-read-line rev-base in-base & wat-rt-read-raw cce-newline & wat-rt-disk & wat-rt-read-file rev-base & wat-rt-read-file-raw in-base &
-   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-i64-to-text & wat-rt-f64-to-text & wat-rt-f64-big-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-vec & wat-rt-real-modes & wat-rt-list-tail & wat-rt-char-class & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-write-binary & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
+   wat-rt-bump-alloc & wat-rt-print-i64 & wat-rt-print-misc tab t2 out & wat-rt-text-append & wat-rt-text-append-inplace & wat-rt-i64-to-text & wat-rt-f64-to-text & wat-rt-f64-big-to-text & wat-rt-list-ops & wat-rt-bool-text & wat-rt-vec & wat-rt-real-modes & wat-rt-list-tail & wat-rt-char-class & wat-rt-char-text & wat-rt-list-mutate & wat-rt-linked-list & wat-rt-list-insert & wat-rt-buf & wat-rt-write-binary & wat-rt-text-search & wat-rt-text-to-double & wat-rt-raw-bytes-to-text & wat-rt-closure arity-base max-arity & wat-rt-extra
 
 Section: Chapter Emission
 
- Emission STREAMS, and the reason is a measured ceiling rather than taste.
- The heap is a bump allocator with no GC, so every allocation a definition
- makes while being emitted stays live until the function that made it
- returns. Building the whole module as one `Text` therefore holds the
- working set of EVERY definition at once, and the cost is not the output:
- measured 2026-08-24, 2.06 MB of IR produced about 2 MB of WAT and consumed
- over 3.1 GB of heap before dying OUT OF MEMORY, roughly 1,500 bytes of heap
- per byte of IR. The knee sat between 1.29 MB and 1.55 MB of IR, which is
- why the compiler's own 16.3 MB has never fitted.
-
- `emit-streaming-ir-defs` in the compiler's `opening.codex` is the same
- shape and the pattern is taken from it: mark the heap, emit ONE definition,
- print it, restore the mark. Only a scalar may cross the restore.
+ Emission STREAMS because the heap has no GC: building the whole module as one
+ `Text` held about 1,500 bytes of heap per byte of IR (measured 2026-08-24:
+ 2.06 MB of IR died OUT OF MEMORY past 3.1 GB). Only a scalar may cross a
+ definition's heap restore.
 
   wat-apply-head-is : IRExpr, Text -> Boolean
   wat-apply-head-is (e) (n) =
@@ -4072,11 +3810,6 @@ Section: Chapter Emission
    else if wat-expr-calls-name ((list-at fs i).value) n then True
    else wat-fields-call-name fs n (i + 1)
 
- `$on_key_import` has no producer: no arm of this emitter emits it, so its
- flag is asked with the empty name and answers False without a walk. Whoever
- adds the `on-key` arm must replace `wasm-no-builtin` at the call site with
- the builtin's name, or the module calls an import it never declared.
-
   wasm-no-builtin : Text = ""
 
   wat-defs-call-name : List IRDef, Text, Integer -> Boolean
@@ -4093,25 +3826,82 @@ Section: Chapter Emission
    else if text-contains entry needle then True
    else wat-defs-call-name defs builtin 0
 
-  wasm-stream-defs : WasmCtx, List IRDef, Integer -> [Console] Nothing
-  wasm-stream-defs (ctx) (defs) (i) =
+  wasm-stream-defs : WasmCtx, List IRDef, List StringEntry, Integer -> [Console] Nothing
+  wasm-stream-defs (ctx) (defs) (tables) (i) =
    if i >= list-length defs then print-uni ""
    else let h = __heap-save
-   in let text = emit-wat-def ctx (list-at defs i)
+   in let d = list-at defs i
+   in let off = strtab-lookup tables (d.name) 0
+   in let text = if off > 0 then "  (func $" & wat-sanitize (d.name) & " (result i64) (i64.const " & integer-to-text off & "))\n" else emit-wat-def ctx d
    in act
     print-uni text
     print-uni "\n"
     let restored = __heap-restore h
-    in wasm-stream-defs ctx defs (i + 1)
+    in wasm-stream-defs ctx defs tables (i + 1)
    end
 
- The pieces are printed in the order the single concatenation used to build
- them, and the trailing newline is the one `print-line-uni` used to append
- to the whole module, so the bytes on the wire are unchanged.
+  wat-name-member : List Text, Text, Integer -> Boolean
+  wat-name-member (ns) (n) (i) =
+   if i >= list-length ns then False
+   else if list-at ns i == n then True
+   else wat-name-member ns n (i + 1)
+
+  wat-shared-len : IRDef, List Text -> Integer
+  wat-shared-len (d) (shared) =
+   if wat-name-member shared (d.name) 0 == False then 0 - 1
+   else when d.body
+    is IrList (es) (ty) (sp) -> if cs-int-lits es 0 then list-length es else 0 - 1
+    is otherwise -> 0 - 1
+
+  wat-shared-tables : List IRDef, List Text, Integer, Integer, List StringEntry -> List StringEntry
+  wat-shared-tables (defs) (shared) (i) (off) (acc) =
+   if i >= list-length defs then acc
+   else let n = wat-shared-len (list-at defs i) shared
+   in if n < 0 then wat-shared-tables defs shared (i + 1) off acc
+      else wat-shared-tables defs shared (i + 1) (off + 8 + n * 8) (list-push acc (StringEntry { value = (list-at defs i).name, offset = off }))
+
+  wat-tables-end : List IRDef, List StringEntry, Integer -> Integer
+  wat-tables-end (defs) (tables) (base) =
+   if list-length tables == 0 then base
+   else let last = list-at tables (list-length tables - 1)
+   in last.offset + 8 + 8 * wat-def-list-len defs (last.value) 0
+
+  wat-def-list-len : List IRDef, Text, Integer -> Integer
+  wat-def-list-len (defs) (name) (i) =
+   if i >= list-length defs then 0
+   else if (list-at defs i).name == name then
+    (when (list-at defs i).body
+     is IrList (es) (ty) (sp) -> list-length es
+     is otherwise -> 0)
+   else wat-def-list-len defs name (i + 1)
+
+  wat-table-data : List IRDef, List StringEntry, Integer, List Text -> Text
+  wat-table-data (defs) (tables) (i) (acc) =
+   if i >= list-length defs then text-concat-list acc
+   else let d = list-at defs i
+   in let off = strtab-lookup tables (d.name) 0
+   in if off == 0 then wat-table-data defs tables (i + 1) acc
+      else when d.body
+       is IrList (es) (ty) (sp) -> wat-table-data defs tables (i + 1) (list-push acc ("  (data (i32.const " & integer-to-text off & ") \"" & i32-to-hex-bytes (list-length es) & i32-to-hex-bytes (list-length es) & wat-i64-words es 0 [] & "\")\n"))
+       is otherwise -> wat-table-data defs tables (i + 1) acc
+
+  wat-i64-words : List IRExpr, Integer, List Text -> Text
+  wat-i64-words (es) (i) (acc) =
+   if i >= list-length es then text-concat-list acc
+   else when list-at es i
+    is IrIntLit (v) (sp) -> wat-i64-words es (i + 1) (list-push acc (wat-i64-hex v 0 []))
+    is otherwise -> wat-i64-words es (i + 1) (list-push acc (wat-i64-hex 0 0 []))
+
+  wat-i64-hex : Integer, Integer, List Text -> Text
+  wat-i64-hex (v) (k) (acc) =
+   if k >= 8 then text-concat-list acc
+   else wat-i64-hex v (k + 1) (list-push acc (byte-to-hex (bit-and (bit-shru v (k * 8)) 255)))
 
   emit-wasm-chapter-stream : IRChapter, List ATypeDef -> [Console] Nothing
-  emit-wasm-chapter-stream (m) (type-defs) =
-   let arities = build-arity-map (m.defs) 0 []
+  emit-wasm-chapter-stream (m0) (type-defs) =
+   let lifted = wh-lift-defs (m0.defs) 0 [] [] []
+   in let m = __record-set m0 "defs" (lifted.defs)
+   in let arities = build-arity-map (m.defs) 0 []
    in let raw-strings = wat-seed-entry-strings (m.defs) type-defs (collect-strings-defs (m.defs) 0 [])
    in let strings = strtab-assign-offsets raw-strings 0 1024 []
    in let cce-tab-base = strtab-end-offset strings
@@ -4121,8 +3911,11 @@ Section: Chapter Emission
    in let cce-in-base = cce-rev-base + cce-rev-entries
    in let fnarity-base = cce-tab-base + cce-tables-bytes
    in let max-arity = wat-fn-type-ceiling arities
-   in let heap-start = fnarity-base + list-length arities
-   in let ctx = WasmCtx { arities = arities, strings = strings, type-defs = type-defs, bound = [], scrut-depth = 0 }
+   in let arity-end = fnarity-base + list-length arities
+   in let tables-base = if int-mod arity-end 8 == 0 then arity-end else arity-end + 8 - int-mod arity-end 8
+   in let tables = wat-shared-tables (m.defs) (shared-const-names (m.defs)) 0 tables-base []
+   in let heap-start = if list-length tables == 0 then arity-end else wat-tables-end (m.defs) tables tables-base
+   in let ctx = WasmCtx { arities = arities, strings = strings, type-defs = type-defs, bound = [], scrut-depth = 0, inplace = [], eff-ops = lifted.ops }
    in let runtime = wat-runtime-funcs cce-tab-base cce-t2-base cce-out-base fnarity-base max-arity cce-rev-base cce-in-base
    in let data-text = emit-data-sections strings 0
    in let types-text = emit-wat-type-defs type-defs 0 & wat-eq-funcs type-defs 0
@@ -4132,42 +3925,30 @@ Section: Chapter Emission
    in let header = wat-runtime-header heap-start needs-blit needs-key
    in act
     print-uni header
+    print-uni (wh-runtime (lifted.ops))
     print-uni (wat-emit-table arities)
     print-uni data-text
     print-uni (wat-emit-arity-data arities fnarity-base 0 [])
+    print-uni (wat-table-data (m.defs) tables 0 [])
     wat-stream-cce-tables cce-tab-base cce-t2-base cce-rev-base
     print-uni runtime
     print-uni types-text
     print-uni "\n"
-    wasm-stream-defs ctx (m.defs) 0
+    wasm-stream-defs ctx (m.defs) tables 0
     print-uni entry
     print-uni ")\n"
     print-uni "\n"
    end
 
-  wasm-export-list : Text =
-   "|render-frame|key-event|mouse-event|focus-selected|add-object|delete-selected|select-object|cam-init|init-scene|add-scene-object|delete-scene-object|select-scene-object|set-object-prop|get-outliner-count|set-editor-mode|set-active-tool|toggle-grid|toggle-render-mode|get-layout|resize-layout|timeline-play|timeline-pause|timeline-stop|timeline-set-frame|timeline-tick|timeline-add-keyframe|timeline-eval|undo-push|undo-pop|canvas-init|canvas-paint|canvas-set-brush|project-serialize|duplicate-selected|rename-object|reparent-object|export-obj|canvas-add-layer|canvas-set-layer-visible|canvas-set-active-layer|timeline-delete-keyframe|set-cam-preset|set-total-frames|hide-all-objects|show-all-objects|isolate-selected|toggle-object-lock|snap-selected-to-grid|canvas-eyedrop|canvas-resize|export-stl|tl-set-speed|move-all-visible|reset-transform|center-pivot|group-selected|canvas-stroke|canvas-apply-filter|apply-material-to-obj|mat-lib-add|light-add|light-set-dir|canvas-flood-fill|canvas-erase|set-easing-mode|cam-kf-add|canvas-sel-start|canvas-sel-update|canvas-sel-clear|canvas-sel-fill|canvas-set-blend-mode|canvas-apply-filter-ext|toggle-axis-lock|multi-sel-clear|multi-sel-toggle|self-test|flatten-selected|tl-set-range-in|tl-set-range-out|sort-objects-by-type|duplicate-array|set-bg-color|particle-tick|create-instance|save-bookmark|load-bookmark|random-color|mirror-object|radial-duplicate|set-grid-subdivisions|align-objects-x|align-objects-y|distribute-objects-x|snap-rotation|rotate-by|copy-transform|paste-transform|measure-distance|scale-uniform|scale-by-factor|focus-scene-center|toggle-onion-skin|batch-set-color|tl-zoom-in|tl-zoom-out|tl-frame-all|export-animation|project-deserialize|set-subdiv-level|scene-new|compute-scene-bounds|kv-init|kv-put|kv-get|kv-count|kv-delete|kv-put-text|kv-get-text|kv-delete-text|kv-has-text|kv-put-i32|kv-get-i32|mesh-bool-union|mesh-bool-intersect|mesh-bool-difference|mesh-subdivide-selected|mesh-flip-selected|mesh-merge-selected|mesh-extrude-selected|mesh-smooth-selected|shape-build-extrude|shape-build-lathe|shape-build-star|shape-build-gear|shape-build-arrow|shape-build-cross|noise-fill-canvas|compute-histogram|get-histogram-bin|apply-levels|apply-drop-shadow|apply-outer-glow|curve-eval-at|cam-path-add-waypoint|cam-path-clear|cam-path-eval|cam-path-set-kind|cam-path-set-loop|measure-obj-distance|measure-obj-angle|armature-add-bone|armature-clear|armature-init-humanoid|armature-select-bone|armature-rotate-bone|uv-toggle|uv-init|uv-editor-visible|uv-emit-wireframe|uv-get-vert-count|uv-zoom-in|uv-zoom-out|uv-set-pan|uv-get-sel|gen-uv-panel|gen-material-panel|gen-light-panel|cad-init|cad-set-units|cad-units-mode|cad-unit-scale|cad-set-grid-spacing|cad-grid-spacing|cad-set-ortho|cad-ortho-mode|cad-set-tab|cad-tab|cad-set-constr-plane|cad-constr-plane|cad-set-density|cad-density|cad-format-val|cad-get-obj-dim-x|cad-get-obj-dim-y|cad-get-obj-dim-z|cad-get-obj-volume|cad-get-obj-mass|cad-mesh-hole|cad-mesh-shell|gen-cad-panel|designer-init|add-widget|delete-widget|select-widget|move-widget|resize-widget|reparent-widget|get-widget-count|get-widget-type|get-widget-x|get-widget-y|get-widget-w|get-widget-h|get-widget-parent|get-widget-flags|get-widget-grid-cols|get-widget-text-char|get-widget-text-len|get-widget-onclick-char|get-widget-onclick-len|get-selected-widget|set-widget-text-str|set-widget-onclick-str|export-codex|get-export-length|get-export-byte|render-canvas|render-preview|render-tree|render-props|export-ply|export-dxf|import-stl|dim-add-linear|dim-add-for-object|dim-clear|dim-emit-verts|dim-get-vert-count|dim-count|section-toggle|section-enabled|section-set-xy|section-set-xz|section-set-yz|section-init|sketch-activate|sketch-deactivate|sketch-add-line|sketch-add-circle|sketch-add-rect|sketch-clear|sketch-emit-verts|sketch-get-vert-count|cad-sketch-active|cad-sketch-count|spectrum-generate-test|get-spectrum-band|get-spectrum-count|synth-init|synth-set-preset|synth-get-waveform|synth-get-attack|synth-get-decay|synth-get-sustain|synth-get-release|synth-get-volume|synth-set-volume|synth-set-waveform|seq-init|seq-set-step|seq-get-step|seq-toggle-step|seq-advance|seq-set-bpm|seq-toggle-play|seq-toggle-mute|seq-set-track-vol|video-init|video-add-layer|video-remove-layer|video-set-opacity|video-set-blend|canvas-gradient-linear|canvas-posterize|canvas-pixelate|canvas-edge-detect|canvas-box-blur|canvas-sharpen|canvas-emboss|canvas-threshold|canvas-dither|canvas-swap-channels|canvas-isolate-channel|select-all-of-type|select-all|invert-selection|look-at-object|scatter-objects|import-obj|canvas-flip-h|canvas-flip-v|canvas-rotate-90|canvas-hue-shift|canvas-color-balance|canvas-gradient-map|canvas-solarize|canvas-vignette|canvas-ripple|canvas-wave|canvas-pinch|canvas-bloat|canvas-polar|canvas-blend-multiply|canvas-blend-screen|canvas-blend-overlay|canvas-blend-soft-light|canvas-blend-difference|paint-natural|set-brush-type|set-brush-size|set-brush-hardness|tex-paint-init-slot|tex-paint-brush|tex-read-pixel|tex-assign-to-obj|tex-fill-with-noise|edit-log-push|edit-log-clear|init-tool-palette|set-tool-set|export-bmp|export-svg-scene|import-bmp|import-ppm|import-tga|export-ppm|export-tga|batch-clear|batch-add-op|batch-run|batch-get-op|batch-get-param|load-rgba-to-canvas|get-export-length|get-export-byte|parse-hex-color|set-brush-from-rgb|set-obj-color-rgb|get-obj-name-len|get-obj-name-char|get-canvas-width|get-canvas-height|get-canvas-pixel|set-canvas-pixel|histogram-max-val|export-obj-scaled|toggle-obj-visible|get-editor-mode|get-active-tool-id|get-render-mode|get-grid-visible|get-total-verts|get-live-obj-count|get-visible-obj-count|get-onion-skin|get-xray|get-normals-vis|get-bounds-vis|get-toon|get-outline|get-cam-selected|get-obj-channel-val|get-obj-color-packed|get-tl-playhead|get-tl-kf-count|get-kf-obj|get-kf-frame|get-outliner-field|get-synth-val|get-seq-val|get-video-layer-val|get-cam-path-count|get-bone-count|get-canvas-w|get-canvas-h|get-xray-mode|get-show-normals|get-show-bounds|get-toon-mode|get-outline-mode|get-scene-info|get-mesh-vert-count|get-mesh-face-count|toggle-xray|toggle-show-normals|toggle-show-bounds|toggle-toon|toggle-outline|randomize-transforms|center-all-objects|mirror-scene-x|clipboard-copy|clipboard-paste|array-along-line|copy-kf-at|paste-kf-at|load-preset-arch|load-preset-city|load-preset-solar|load-preset-forest|kpt-texture|kpt-mandelbrot|kpt-glass-lens|kpt-twirl|kpt-page-curl|kpt-kaleidoscope|kpt-plasma|kpt-interform|canvas-snapshot-push|canvas-snapshot-pop|palette-init|palette-set-active|palette-get-color|hsv-to-rgb|canvas-draw-char|canvas-draw-text|ik-reach-target|wasm-init|gen-model-panel|gen-presets-panel|gen-commands-json|gen-image-panel|gen-audio-panel|gen-stage-panel|gen-render-panel|export-png-canvas|export-bmp-canvas|export-qoi-canvas|export-scene-json|export-jpeg-canvas|export-tiff-canvas|export-wav-mono|project-to-json|canvas-to-base64|gen-common-controls|gen-animate-panel|gen-export-buttons|audio-gen-tone|audio-apply-adsr|audio-apply-delay|audio-apply-distortion|audio-get-sample|audio-get-count|gen-waveform-display|get-waveform-sample|get-waveform-count|get-note-name-char|get-note-freq|gen-sheet-music|gen-audio-full|gen-timeline-panel|gen-mode-tabs|gen-toolbar|gen-outliner|gen-props-panel|gen-status-bar|species-count|species-name|species-tex|species-width|species-height|species-speed|species-turn|species-school|species-sep|species-solo|station-count|station-t|station-ry|station-rz|dorsal-start|dorsal-end|dorsal-height|tail-height|tail-fork|spawn-count|spawn-species|spawn-amount|tank-xmin|tank-xmax|tank-ymin|tank-ymax|tank-zmin|tank-zmax|"
-
-  wat-emit-exports : List IRDef, Integer -> Text
-  wat-emit-exports (defs) (i) =
+  wat-emit-exports : List IRDef -> Text
+  wat-emit-exports (defs) =
    let declared = wat-declared-exports defs 0 (list-length defs)
-   in if declared < 0 then wat-exports-allowed defs i
+   in if declared < 0 then ""
       else let d = list-at defs declared
       in if list-length (d.params) > 0 then "(wasm-exports-requires-text-literal)\n"
          else when d.body
           is IrTextLit (s) (sp) -> wat-exports-declared (wat-export-names s) 0
           is otherwise -> "(wasm-exports-requires-text-literal)\n"
-
-  wat-exports-allowed : List IRDef, Integer -> Text
-  wat-exports-allowed (defs) (i) =
-   if i >= list-length defs then ""
-   else let d = list-at defs i
-   in let sn = wat-sanitize (d.name)
-   in let needle = "|" & d.name & "|"
-   in let ex = if text-contains wasm-export-list needle
-               then "  (export \"" & sn & "\" (func $" & sn & "))\n"
-               else ""
-   in ex & wat-exports-allowed defs (i + 1)
 
   wat-exports-declared : List Text, Integer -> Text
   wat-exports-declared (names) (i) =
@@ -4197,13 +3978,6 @@ Section: Chapter Emission
   wat-export-flush (cur) (acc) =
    if list-length cur == 0 then acc else list-push acc (text-concat-list cur)
 
- An `opening` that answers a CONSTRUCTOR prints `Name field field`, one space
- before each field and a newline at the end, which is `emit-opening-print-sum`
- (`X86_64Chapter.codex:242`). The entry printer needs the type-defs to find the
- ctors and the string table to name them, which is why this pair takes the ctx:
- the ctor names appear in no expression, so `wat-seed-entry-strings` puts them
- in the table before offsets are assigned or `wat-strtab-ref` would refuse them.
-
   wat-entry-ret-type : List IRDef, Integer -> CodexType
   wat-entry-ret-type (defs) (i) =
    if i >= list-length defs then NothingTy
@@ -4211,12 +3985,6 @@ Section: Chapter Emission
    in if d.name == opening-entry-point then
        (if list-length (d.params) == 0 then strip-fun-args (d.type-val) else NothingTy)
       else wat-entry-ret-type defs (i + 1)
-
- `wat-type-name` answers for a `ConstructedTy`, a `TypeCon` and a `RecordTy`,
- which is every case its own caller has; an `opening` returning a variant
- arrives as a `SumTy` and it answered the empty string, so the printer below
- was emitted for no program until this existed. Kept separate rather than
- widening `wat-type-name`, whose callers are about record FIELDS.
 
   wat-entry-type-name : CodexType -> Text
   wat-entry-type-name (ty) =
@@ -4248,14 +4016,6 @@ Section: Chapter Emission
    in if list-length cs == 0 then acc
       else wat-seed-ctor-names cs 0 (strtab-add acc " ")
 
- A real in a MODE spells its own head: `real-approx`, `real-trapping` and
- `real-saturating` are separate names rather than `Real` applied to a modifier,
- so a test for `Real` alone renders three of the four fields of
- `ops/real-mode-fields` as integers. Measured off the emitted heads, not
- predicted. `wat-eq-field-cmp` tests `Real` alone and so compares a moded real
- FIELD as an i64; nothing reports it and it is left alone, recorded in
- `plugs-backlog.md`.
-
   wat-head-is-real : Text -> Boolean
   wat-head-is-real (h) =
    h == "Real" | h == "real-approx" | h == "real-trapping" | h == "real-saturating"
@@ -4286,7 +4046,7 @@ Section: Chapter Emission
       wat-entry-ctor-arms ctx cs (i + 1)
 
   wat-emit-entry : WasmCtx, List IRDef -> Text
-  wat-emit-entry (ctx) (defs) = wat-emit-entry-loop ctx defs 0 & wat-emit-exports defs 0
+  wat-emit-entry (ctx) (defs) = wat-emit-entry-loop ctx defs 0 & wat-emit-exports defs
 
   wat-emit-entry-loop : WasmCtx, List IRDef, Integer -> Text
   wat-emit-entry-loop (ctx) (defs) (i) =

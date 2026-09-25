@@ -126,5 +126,213 @@
     "date": "2026-08-06",
     "body": "Writes are chunked at 64 sectors: a bulk transfer above 64 KB crosses the TRB boundary question rung 3 of the sitting ladder has never answered on metal, and a screenshot must not be the first thing to ask it.",
     "thread": null
+  },
+  {
+    "target": "chapter:GopFat16",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The same mount also speaks FAT32 -- the format every vendor stick and every volume past two gigabytes actually carries. The volume record is shared: a FAT32 volume is recognized structurally (a zero 16-bit FAT size names the 32-bit layout, the same key Linux turns), its root-entry count is zero by construction (which is exactly how the rest of this chapter tells the two apart), vol-root-start holds the root directory's CLUSTER rather than a sector, and vol-fat-sectors comes from the 32-bit field. Three rules follow the width everywhere: FAT entries are four bytes whose top nibble is reserved (masked on read, PRESERVED on write); end-of-chain is a 28-bit compare, never the 16-bit sentinel -- on a large volume a perfectly valid cluster number exceeds 65528 and truncating it to the FAT16 test silently ends every long chain; and a directory entry's starting cluster carries a high word at offset 20 that the 16-bit decoder never reads.",
+    "thread": null
+  },
+  {
+    "target": "section:GPT",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The signature says the sector is a GPT header and nothing more. Both CRC32 fields the format carries were read by nobody until 2026-08-15, so a tampered or half-written table parsed exactly like a good one, and the ESP start LBA it hands out becomes the partition base every later read is relative to. A garbage LBA is caught downstream by the geometry guard, because the volume it lands on will not parse as FAT; an LBA moved to a DIFFERENT well-formed FAT is not, and that is the case the array CRC exists to stop.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-crc32-buf",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The CRC is streamed a sector at a time and never held: the entry array is NumberOfPartitionEntries * SizeOfPartitionEntry, 16 KB at our own 128 x 128, and accumulating it into a buffer or a list would cost that much arena on a path with no GC. A read failure answers -1, which no CRC can be, so a short medium refuses rather than comparing against a fabricated zero.",
+    "thread": null
+  },
+  {
+    "target": "function:gpt-header-crc-ok",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "UEFI computes the header CRC with the CRC field itself read as four zero bytes, over HeaderSize bytes and not over the whole sector.",
+    "thread": null
+  },
+  {
+    "target": "function:gpt-array-geom-ok",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "NumberOfPartitionEntries and SizeOfPartitionEntry are the array CRC's OWN EXTENT, so they are geometry and must be checked BEFORE the CRC that depends on them: a corrupt count moves the window and a reader then computes a perfectly valid CRC over the wrong bytes. The array must also fit between its own LBA and FirstUsableLBA, which is where the table is required to live.",
+    "thread": null
+  },
+  {
+    "target": "section:GPT",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "A partition entry's type GUID is all sixteen bytes; matching the first four accepts any type whose GUID happens to open with the ESP's first dword. The value is the foreword's `gpt-esp-type-guid` rather than a second copy here -- a GUID spelled twice is a GUID that can disagree with itself.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-cell-stage",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Cell 80 of the xHCI diagnostic block (map and growth ceiling in GopXhci). Zero is NOT ASKED, per that block's sentinel discipline.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-cell-write",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Cell 83 is the WRITE stage, and it is a separate cell because 80 is the mount stage: a write that fails on a mounted volume leaves 80 reading 7 (ok) and names nothing. 83 is the next free index in that block and is under the 96-dword wipe ceiling, so it is cleared on metal rather than reading firmware residue.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-cell-written",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Cell 88 is how many sectors the data run actually wrote. `gfat-w-data` says only that the run stopped short, and the metal reading of 2026-08-19 could not tell a medium that refuses the first sector of a long transfer from one that stops near the end.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-cell-lastsize",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "89 and 90 are the bank's truth, and they exist because a write's RETURN was believed over the file. The third grouped sitting (2026-08-19, `diag.img` C46DE4DD) came back with `DIAG.TXT` truncated at 4,577 bytes and the SUMMARY painting `bank=ok`: every append after the sink refusal was refused, the caller discarded the answer, and nothing downstream asked the medium what was actually there. 89 holds the size read back from the directory entry after the last write, and 90 holds the stage index plus one of the FIRST append that did not land, or zero while every one has.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-pow2-ok",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The BPB fields are volume GEOMETRY: they decide WHERE every later read lands, not how much is read, so a bogus one is REFUSED, never clamped. Clamping a wrong geometry does not read less, it reads the wrong sectors and hands the caller confident garbage, and the desk reads the compiler's own source off this volume. The bounds are FAT invariants (external spec): sectors-per-cluster is a power of two through 128, at least one reserved sector, one or two FATs, a non-empty FAT, and fat-start / data-start landing inside the declared volume.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-is-end",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "End-of-chain follows the volume's width: the 16-bit sentinel test on a FAT32 volume would silently end every chain at the first cluster number past 65528, which a large volume reaches in ordinary use. A failed FAT read answers end-of-chain in the right width, so a bad sector truncates a file instead of spinning the walk.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-cluster-ok",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "A cluster number arrives from a directory entry or a FAT slot, both of which are volume data we did not produce. `fat16-cluster-sector` turns it into an LBA by arithmetic alone, so a number above the volume's own limit addresses sectors past the medium. The sentinel test above cannot catch it: on FAT16 every value over 65528 already reads as end-of-chain, but on FAT32 the whole band from the cluster count to 268435447 is neither a sentinel nor addressable.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-read-entry32",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "On FAT32 a directory entry's starting cluster has a high word at offset 20 that the 16-bit decoder never reads; a file placed past cluster 65535 on a big volume would otherwise resolve to the wrong low-word cluster and read someone else's bytes. The 32-bit scanner mirrors the foreword's walk exactly -- free entry ends the directory, long-name and label entries are skipped -- and fixes the decoded entry's cluster.",
+    "thread": null
+  },
+  {
+    "target": "section:File Reading",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Disk bytes are ASCII; `code-to-char` wants a CCE code, so the byte goes through `from-unicode` first.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-w-oversize",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Write-stage codes for cell 83. The small-file path reports 1-7, the multi-cluster path 11-17, and 20 is a completed write. A code with 100 added is the same failure PLUS a failed rollback, which is the one outcome that leaves the volume dirty: the chain is allocated on disk with no directory entry behind it.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-max-cluster",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The FAT is allocated in whole sectors, so it always holds MORE entries than the volume has clusters. Per the spec data clusters number from 2 and the highest valid one is `vol-cluster-count + 1` (`fat16-last-cluster`); every entry above that is padding with no backing sectors behind it. The scan bound is therefore the volume's limit, and the FAT's own capacity only when a malformed BPB puts the capacity lower.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-find-free",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Scan the loaded FAT for the first free entry at cluster 2 or above. Free means the entry's CLUSTER bits are zero: FAT32's top nibble is reserved and may be dirty on a volume other tools have touched, so the read masks it off. Returns 0 when the volume is full.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-set-fat-entry",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Set one FAT entry in BOTH copies. Each copy is edited by reading the sector holding the entry, poking the bytes, and writing it back -- a FAT with two disagreeing copies is a corrupt volume. On FAT32 the entry's reserved top nibble is preserved, as the spec demands.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-write-dir-entry",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Write a directory entry into the located root slot: the 11-byte name, attribute 0x20 (archive), the starting cluster, and the size. The rest of the 32-byte entry is zeroed. The cluster's high word always lands at offset 20 -- zero on FAT16, load-bearing on FAT32.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-write-small-file",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The FAT reaches the disk LAST, after the data and the directory slot are both secured. A cluster marked used with nothing pointing at it is leaked storage no later mount can reclaim; a cluster holding data while the FAT still calls it free is invisible, and the next allocator overwrites it. Only the second is recoverable, so the order takes that risk and not the other one.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-no-report",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "Measured 2026-08-19 on a 2,896,050-byte file, 5,657 sectors: the whole write is 57 s of a 59 s save, and the chunk size is not what decides it -- one call, 64-sector chunks and 8-sector chunks came out 56, 59 and 58 s. At about 306 VM exits a sector the transfer is one exit per 16-bit PIO word, so reporting per chunk costs nothing next to it.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-chain-release",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The successor is read before the entry is cleared, or the walk loses the rest of the chain.",
+    "thread": null
+  },
+  {
+    "target": "section:Multi-Cluster Writing",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "A cluster the FAT reports free can still be claimed by a live directory entry on a volume another tool has corrupted, and the allocator cannot see that from the FAT alone. This marks every cluster reachable from the root directory and refuses a new chain that lands in one.",
+    "thread": null
+  },
+  {
+    "target": "section:Multi-Cluster Writing",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The walk descends into subdirectories, because the file whose loss stops an ESP booting is `EFI/BOOT/BOOTX64.EFI` and it is two levels down: a root-only walk marks the `EFI` directory's own cluster and nothing inside it.",
+    "thread": null
+  },
+  {
+    "target": "function:gfat-write-file",
+    "kind": "rationale",
+    "author": "val",
+    "date": "2026-09-24",
+    "body": "The caller's buffer must be readable to the size rounded up to a whole sector -- the tail of the last sector goes to the disk as it lies. gfat-load-fat allocates by raw heap bump, so a caller that wants the FAT buffer and the file buffer reclaimed brackets the whole write with __heap-save / __heap-restore.",
+    "thread": null
   }
 ]

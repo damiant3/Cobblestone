@@ -1155,8 +1155,9 @@ so the route must not keep anything it allocates across requests. Arm:
 `codex/plugs/elf/hosted-https-arm.ps1` over `codex/test/hosted-https.codex`,
 both targets, OpenSSL `s_client` pinned to the certificate the subject
 prints, with a wrong-pin arm and `s_server` and dead-port controls. Open:
-`core-backlog.md` CORE-10 (the key share a GREASE-first client offers)
-and CORE-9 step 3 (a CA; no browser trusts a self-signed leaf). `hosted-listen`
+the development certificate is Ed25519, which no browser offers (a P-256 one
+is signable through `Foreword chapter EcdsaP256Sign`), and CORE-9 step 3 (a
+CA; no browser trusts a self-signed leaf). `hosted-listen`
 binds INADDR_ANY; `host-socket`'s bind takes the address as its third argument
 (network order, `#0100007F` for 127.0.0.1), so a caller can bind loopback.
 
@@ -1244,8 +1245,8 @@ each is dispatched or queued in the CurrentPlan Prism section:
 
 ## What this campaign does not do
 
-- No new server processes; the essay-repl join and `apps/prism/server.ps1`
-  are untouched (their register rows stand).
+- No new server processes; the essay-repl join is untouched (its register
+  section stands).
 - No app development (webserver/RDBMS/router apps belong to their
   lanes; Prism consumes them as templates when they exist).
 - No foreign toolchains on the primary path. The transpiler lenses

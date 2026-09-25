@@ -1,4 +1,17 @@
 Chapter: X86-64 Code Generator
+  cites Codex chapter CdxCodes (cdx-accum-overflow, cdx-bounds-proven, cdx-claim-recognized, cdx-ir-error, cdx-rt-wcet-exceeded, cdx-rt-wcet-opaque, cdx-rt-wcet-report, cdx-rt-wcet-unchecked)
+  cites Codex chapter Codex Types (i64-max, i64-min)
+  cites Codex chapter IR Chapter (ir-expr-span, ir-expr-type)
+  cites Emit chapter X86-64 Boot Infrastructure (fork-free-head-addr, stack-min-rsp-addr)
+  cites Emit chapter CDX Binary Format Writer (compute-data-vaddr-at)
+  cites Codex chapter Builtins (builtins)
+  cites Codex chapter Const Share (cs-collect-defs, cs-find, cs-sort-index, shared-const-names)
+  cites Codex chapter Diagnostic Bag (empty-bag)
+  cites Codex chapter Lir (lir-assign-max-slot, lir-check-func, lir-has-backedge, lir-imm-pow2, lir-int-vec, lir-liveness, lir-loc-text, lir-make-vec, lir-op-divides, lower-def-to-lir)
+  cites Codex chapter OffsetTable (offset-table-empty, offset-table-lookup, offset-table-set)
+  cites Codex chapter CodexType Helpers (peel-fun-return, strip-fun-args)
+  cites Codex chapter SkipListText (replicate-int, skip-list-text-from-list, skip-list-text-has, skip-list-text-rank-of)
+  cites Codex chapter Type Environment (TypeBinding)
 
 Section: Function Emission
   emit-sub-rsp-imm32 : Integer -> List Integer
@@ -1086,8 +1099,10 @@ Section: Function Emission
    in let new-emit-work = func-st.emit-work
    in let func-start = list-at (func-st.fo-offsets) (list-length (func-st.fo-offsets) - 1)
    in let wcet-insns = if def.is-punctual then x86-count-insns (func-st.workspace.code-buffer) func-start new-code-len else 0
+   in let new-avx = func-st.avx-used
    in let restored = __heap-restore h
-   in let next-st = deck-record (codegen-carry-forward st new-code-len new-data-len new-emit-work)
+   in let carried = deck-record (codegen-carry-forward st new-code-len new-data-len new-emit-work)
+   in let next-st = if new-avx then st-mark-avx carried else carried
    in let wcet-st = if def.is-punctual then emit-wcet-check next-st def wcet-insns else next-st
    in emit-all-defs wcet-st defs (i + 1)
 
@@ -1654,9 +1669,9 @@ Section: Expression Emission
  representation rather than the value. Measured on the seed before this
  change, against an unwrapped control on every row:
 
-   unit Text     "abcd"  ->  1132612              the pointer, as decimal
-   unit Boolean  True    ->  1                    the raw tag
-   unit Real     2.5     ->  4612811918334230528  0x4004000000000000
+ unit Text     "abcd"  ->  1132612              the pointer, as decimal
+ unit Boolean  True    ->  1                    the raw tag
+ unit Real     2.5     ->  4612811918334230528  0x4004000000000000
 
  `unit Integer` was already correct, which is exactly what made this
  cheap to miss: the one row anybody would spot-check is the one row
@@ -2743,9 +2758,34 @@ Section: Expression Emission
     is VectorTy (n) (t) -> is-real-f32 t
     is otherwise -> False
 
-  emit-vec-op : CodegenState, Integer, Integer, CodexType, List Integer, List Integer, List Integer -> EmitResult
-  emit-vec-op (st) (l-reg) (r-reg) (operand-ty) (f64-insn) (int-insn) (f32-insn) =
-   let insn = if is-f32-vector operand-ty then f32-insn else if is-int-vector operand-ty then int-insn else f64-insn
+  vector-payload-bytes : CodexType -> Integer
+  vector-payload-bytes (ty) =
+   when ty
+    is VectorTy (n) (t) -> if is-real-f32 t then n * 4 else n * 8
+    is otherwise -> 0
+
+  is-wide-vector : CodexType -> Boolean
+  is-wide-vector (ty) =
+   when ty
+    is VectorTy (n) (t) -> when t
+     is RealTy (w) (m) -> if is-width-f32 w then n == 8 else n == 4
+     is otherwise -> False
+    is otherwise -> False
+
+  emit-wide-vec-op : CodegenState, Integer, Integer, List Integer -> EmitResult
+  emit-wide-vec-op (st) (l-reg) (r-reg) (insn) =
+   let st1 = st-append-code (st-mark-avx st) (vmovupd-load-y 0 l-reg 0 & vmovupd-load-y 1 r-reg 0 & insn)
+   in let alloc = emit-bivy-alloc st1 32
+   in let p1 = load-local (alloc.state) (alloc.ptr-loc)
+   in let st2 = st-append-code (p1.state) (vmovupd-store-y (p1.reg) 0 0 & vzeroupper)
+   in let result = load-local st2 (alloc.ptr-loc)
+   in EmitResult { state = result.state, reg = result.reg }
+
+  emit-vec-op : CodegenState, Integer, Integer, CodexType, List Integer, List Integer, List Integer, List Integer, List Integer -> EmitResult
+  emit-vec-op (st) (l-reg) (r-reg) (operand-ty) (f64-insn) (int-insn) (f32-insn) (f64x4-insn) (f32x8-insn) =
+   if is-wide-vector operand-ty then emit-wide-vec-op st l-reg r-reg (if is-f32-vector operand-ty then f32x8-insn else f64x4-insn)
+   else if vector-payload-bytes operand-ty > 16 then emit-vec256-pending st "a vector operator"
+   else let insn = if is-f32-vector operand-ty then f32-insn else if is-int-vector operand-ty then int-insn else f64-insn
    in let st1 = st-append-code st (movupd-load 0 l-reg 0 & movupd-load 1 r-reg 0 & insn)
    in let alloc = emit-bivy-alloc st1 16
    in let p1 = load-local (alloc.state) (alloc.ptr-loc)
@@ -2803,14 +2843,14 @@ Section: Expression Emission
     is IrSubRealSaturating -> emit-real-saturating-arith st l-reg r-reg 92 (real-arith-is-f32 st operand-ty)
     is IrMulRealSaturating -> emit-real-saturating-arith st l-reg r-reg 89 (real-arith-is-f32 st operand-ty)
     is IrDivRealSaturating -> emit-real-saturating-arith st l-reg r-reg 94 (real-arith-is-f32 st operand-ty)
-    is IrAddVec -> emit-vec-op st l-reg r-reg operand-ty (addpd-xmm 0 1) (paddq-xmm 0 1) (addps-xmm 0 1)
-    is IrSubVec -> emit-vec-op st l-reg r-reg operand-ty (subpd-xmm 0 1) (psubq-xmm 0 1) (subps-xmm 0 1)
-    is IrMulVec -> emit-vec-op st l-reg r-reg operand-ty (mulpd-xmm 0 1) (mulpd-xmm 0 1) (mulps-xmm 0 1)
-    is IrDivVec -> emit-vec-op st l-reg r-reg operand-ty (divpd-xmm 0 1) (divpd-xmm 0 1) (divps-xmm 0 1)
-    is IrLtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 1) (cmppd-xmm 0 1 1) (cmpps-xmm 0 1 1)
-    is IrLtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 2) (cmppd-xmm 0 1 2) (cmpps-xmm 0 1 2)
-    is IrGtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 6) (cmppd-xmm 0 1 6) (cmpps-xmm 0 1 6)
-    is IrGtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 5) (cmppd-xmm 0 1 5) (cmpps-xmm 0 1 5)
+    is IrAddVec -> emit-vec-op st l-reg r-reg operand-ty (addpd-xmm 0 1) (paddq-xmm 0 1) (addps-xmm 0 1) (vaddpd-y 0 0 1) (vaddps-y 0 0 1)
+    is IrSubVec -> emit-vec-op st l-reg r-reg operand-ty (subpd-xmm 0 1) (psubq-xmm 0 1) (subps-xmm 0 1) (vsubpd-y 0 0 1) (vsubps-y 0 0 1)
+    is IrMulVec -> emit-vec-op st l-reg r-reg operand-ty (mulpd-xmm 0 1) (mulpd-xmm 0 1) (mulps-xmm 0 1) (vmulpd-y 0 0 1) (vmulps-y 0 0 1)
+    is IrDivVec -> emit-vec-op st l-reg r-reg operand-ty (divpd-xmm 0 1) (divpd-xmm 0 1) (divps-xmm 0 1) (vdivpd-y 0 0 1) (vdivps-y 0 0 1)
+    is IrLtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 1) (cmppd-xmm 0 1 1) (cmpps-xmm 0 1 1) (vcmppd-y 0 0 1 1) (vcmpps-y 0 0 1 1)
+    is IrLtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 2) (cmppd-xmm 0 1 2) (cmpps-xmm 0 1 2) (vcmppd-y 0 0 1 2) (vcmpps-y 0 0 1 2)
+    is IrGtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 6) (cmppd-xmm 0 1 6) (cmpps-xmm 0 1 6) (vcmppd-y 0 0 1 6) (vcmpps-y 0 0 1 6)
+    is IrGtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 5) (cmppd-xmm 0 1 5) (cmpps-xmm 0 1 5) (vcmppd-y 0 0 1 5) (vcmpps-y 0 0 1 5)
     is IrApproxEq -> emit-approx-eq st l-reg r-reg (real-arith-is-f32 st operand-ty)
     is IrApproxEqExact -> emit-approx-eq-exact st l-reg r-reg (real-arith-is-f32 st operand-ty)
     is IrEq -> emit-eq-op st l-reg r-reg operand-ty
@@ -3186,6 +3226,7 @@ Section: Recursive Structural Equality Helpers
   eq-req-formals (req) =
    when req.eq-sum-ty
     is SumTy (n) (as) (cs) -> as
+    is RecordTy (n) (as) (fs) -> as
     is otherwise -> eq-empty-type-args
 
  The key is the INSTANTIATED name. Keyed on the bare sum name, Box Text and
@@ -3246,6 +3287,15 @@ Section: Recursive Structural Equality Helpers
         eq-sum-actuals = [e],
         eq-sum-ctors = []
        }))) (fuel - 1)
+    is RecordTy (rn) (formals) (fs) ->
+     if list-length actuals == 0 then acc
+     else if eq-req-has acc (eq-helper-name-inst (rn.value) actuals) 0 then acc
+     else list-push acc (deck-record (EqHelperReq {
+        eq-sum-name = rn.value,
+        eq-sum-ty = resolved,
+        eq-sum-actuals = actuals,
+        eq-sum-ctors = []
+       }))
     is otherwise -> acc
 
   eq-site-ctors : CodegenState, List SumCtor, Integer, List EqHelperReq, Integer, List CodexType, List CodexType -> List EqHelperReq
@@ -3340,7 +3390,13 @@ Section: Recursive Structural Equality Helpers
   eq-close-reqs (st) (reqs) (i) =
    if i >= list-length reqs then reqs
    else let r = list-at reqs i
-   in eq-close-reqs st (eq-site-ctors st (r.eq-sum-ctors) 0 reqs eq-rec-fuel (eq-req-formals r) (r.eq-sum-actuals)) (i + 1)
+   in let grown = when r.eq-sum-ty
+     is RecordTy (rn) (formals) (fs) -> eq-site-fields st (eq-subst-fields (eq-record-field-types fs) formals (r.eq-sum-actuals)) 0 reqs eq-rec-fuel
+     is otherwise -> eq-site-ctors st (r.eq-sum-ctors) 0 reqs eq-rec-fuel (eq-req-formals r) (r.eq-sum-actuals)
+   in eq-close-reqs st grown (i + 1)
+
+  eq-record-field-types : List RecordField -> List CodexType
+  eq-record-field-types (fs) = for f in fs -> f.type-val
 
   eq-helper-var : Text, Integer -> Text
   eq-helper-var (prefix) (i) = prefix & show i
@@ -3376,6 +3432,13 @@ Section: Recursive Structural Equality Helpers
     is SumTy (sn) (args) (cs) ->
      if eq-needs-inst-helper st (sn.value) cs (eq-site-actuals fty)
      then let hname = eq-helper-name-inst (sn.value) (eq-site-actuals fty)
+      in let hty = deck-record (FunTy fty empty-row (deck-record (FunTy fty empty-row BooleanTy)))
+      in let inner = deck-record (IrApply (deck-record (IrName hname hty synthetic-span)) lhs (peel-fun-return hty) synthetic-span)
+      in deck-record (IrApply inner rhs BooleanTy synthetic-span)
+     else plain
+    is RecordTy (rn) (ra) (rfs) ->
+     if list-length (eq-site-actuals fty) > 0
+     then let hname = eq-helper-name-inst (rn.value) (eq-site-actuals fty)
       in let hty = deck-record (FunTy fty empty-row (deck-record (FunTy fty empty-row BooleanTy)))
       in let inner = deck-record (IrApply (deck-record (IrName hname hty synthetic-span)) lhs (peel-fun-return hty) synthetic-span)
       in deck-record (IrApply inner rhs BooleanTy synthetic-span)
@@ -3567,7 +3630,60 @@ Section: Recursive Structural Equality Helpers
    else let req = list-at reqs i
    in if eq-req-is-list req
    then eq-helper-defs-acc st reqs (i + 1) (list-push (list-push acc (eq-list-helper-def st req)) (eq-list-loop-def st req))
+   else if eq-req-is-record req
+   then eq-helper-defs-acc st reqs (i + 1) (list-push acc (eq-record-helper-def st req))
    else eq-helper-defs-acc st reqs (i + 1) (list-push acc (eq-helper-def st req))
+
+  eq-req-is-record : EqHelperReq -> Boolean
+  eq-req-is-record (req) =
+   when req.eq-sum-ty
+    is RecordTy (n) (as) (fs) -> True
+    is otherwise -> False
+
+  eq-req-record-fields : EqHelperReq -> List RecordField
+  eq-req-record-fields (req) =
+   when req.eq-sum-ty
+    is RecordTy (n) (as) (fs) -> fs
+    is otherwise -> []
+
+  eq-record-fields-typed : List RecordField, List CodexType, Integer, List RecordField -> List RecordField
+  eq-record-fields-typed (fs) (tys) (i) (acc) =
+   if i >= list-length fs then acc
+   else eq-record-fields-typed fs tys (i + 1) (list-push acc (deck-record (RecordField { name = (list-at fs i).name, type-val = list-at tys i })))
+
+  eq-record-conj : CodegenState, List RecordField, CodexType, Integer, Integer -> IRExpr
+  eq-record-conj (st) (fs) (rty) (i) (n) =
+   if i >= n then eq-helper-true
+   else let f = list-at fs i
+   in let fty = f.type-val
+   in let lhs = deck-record (IrFieldAccess (deck-record (IrName "__eqa" rty synthetic-span)) ((f.name).value) fty synthetic-span)
+   in let rhs = deck-record (IrFieldAccess (deck-record (IrName "__eqb" rty synthetic-span)) ((f.name).value) fty synthetic-span)
+   in let one = eq-helper-field-eq st fty lhs rhs
+   in if i + 1 >= n then one
+   else deck-record (IrBinary IrAnd one (eq-record-conj st fs rty (i + 1) n) BooleanTy synthetic-span)
+
+  eq-record-helper-def : CodegenState, EqHelperReq -> IRDef
+  eq-record-helper-def (st) (req) =
+   let fs = eq-req-record-fields req
+   in let tys = eq-subst-fields (eq-record-field-types fs) (eq-req-formals req) (req.eq-sum-actuals)
+   in let typed = eq-record-fields-typed fs tys 0 []
+   in let rty = when req.eq-sum-ty
+     is RecordTy (n) (as) (rfs) -> deck-record (RecordTy n (req.eq-sum-actuals) typed)
+     is otherwise -> req.eq-sum-ty
+   in deck-record (IRDef {
+    name = eq-req-name req,
+    params = [
+      deck-record (IRParam { name = "__eqa", type-val = rty, span = synthetic-span }),
+      deck-record (IRParam { name = "__eqb", type-val = rty, span = synthetic-span })
+     ],
+    type-val = BooleanTy,
+    body = eq-record-conj st typed rty 0 (list-length typed),
+    chapter-slug = "",
+    is-punctual = False,
+    wcet-budget = 0,
+    unique-params = [],
+    span = synthetic-span
+   })
 
   eq-helper-defs : CodegenState, List IRDef -> List IRDef
   eq-helper-defs (st) (ds) =

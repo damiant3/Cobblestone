@@ -77,6 +77,18 @@ Section: Load Evaluation
       in LoadApproved (CapGrant { bitmask = bitmask, cap-count = __narrow (list-length caps), scope = cdx-caps-to-scope caps, net-scope = cdx-caps-to-net-scope caps })
     else LoadDenied result
 
+  evaluate-load-at : Integer, Integer, TrustLattice, Policy, Integer, BareFactStore, Integer -> LoadDecision
+  evaluate-load-at (addr) (len) (lattice) (policy) (current-time) (store) (fuel) =
+    let result = verify-cdx-full-at addr len lattice policy current-time store fuel
+    in if result.accepted then
+      let meta = cdx-at-meta addr (cdx-at-read addr 0 cdx-header-fixed-size [])
+      in let cap-off = read-le64 meta 136
+      in let cap-sz = read-le64 meta 144
+      in let caps = decode-capabilities meta cap-off (cap-off + cap-sz)
+      in let bitmask = cdx-caps-to-bitmask caps
+      in LoadApproved (CapGrant { bitmask = bitmask, cap-count = __narrow (list-length caps), scope = cdx-caps-to-scope caps, net-scope = cdx-caps-to-net-scope caps })
+    else LoadDenied result
+
   load-approved : LoadDecision -> Boolean
   load-approved (d) = when d
     is LoadApproved (g) -> True

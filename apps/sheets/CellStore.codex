@@ -20,9 +20,6 @@ Section: Layout
  same 1,000 cells in the tree's HamtMap keyed by `row,col` text. The trie is
  persistent, every set copies its path, and bare metal has no collector to
  give the old path back, so a sheet edited cell by cell grows without bound.
- The premise that dense storage costs megabytes is wrong at any column count
- a sheet shows: 104 bytes a row at 26 columns, and 208 now that a cell
- carries its kind.
 
  A cell is a KIND and a payload, four bytes each. The kind carries what a
  bare number cannot: an empty cell and a cell holding zero are different
@@ -67,11 +64,9 @@ Section: Layout
   sheet-off : Integer, Integer, Integer -> Integer
   sheet-off (blk) (r) (c) = cs-hdr + (r * sheet-cols blk + c) * cs-cell-bytes
 
- An ADDRESS, not an offset. Written as an offset it named absolute address
- 1040 for every sheet in the program, so two sheets shared one arena outside
- either block and the second one's text overwrote the first's. A single
- sheet reads back whatever it wrote and cannot see the fault, which is why
- the arm below builds TWO.
+ An ADDRESS, not an offset: an offset would name the same absolute address
+ for every sheet, and one sheet's text would overwrite another's. A single
+ sheet cannot see that fault, so the arm builds TWO.
 
   sheet-arena : Integer -> Integer
   sheet-arena (blk) = blk + cs-hdr + sheet-rows blk * sheet-cols blk * cs-cell-bytes
@@ -88,10 +83,8 @@ Section: Cells
   sheet-kind (blk) (r) (c) =
     if sheet-in blk r c then peek-32 blk (sheet-off blk r c) else cs-empty
 
- A payload is four bytes and `peek-32` answers them UNSIGNED, so a negative
- number stored and read straight back reads as its two's-complement twin:
- minus two came out as 4,294,967,294. A sheet holds negative quantities, so
- the payload is read as a signed 32-bit value.
+ A payload is four bytes and `peek-32` answers them UNSIGNED (minus two reads
+ as 4,294,967,294), so the payload is read as a signed 32-bit value.
 
   cs-sign-bit : Integer = 2147483648
   cs-two-32 : Integer = 4294967296
@@ -105,7 +98,8 @@ Section: Cells
 
   sheet-set : Integer, Integer, Integer, Integer -> Boolean
   sheet-set (blk) (r) (c) (v) =
-    if sheet-in blk r c then
+    if v >= cs-sign-bit | v < 0 - cs-sign-bit then False
+    else if sheet-in blk r c then
       let k = poke-32 blk (sheet-off blk r c) cs-number
       in let p = poke-32 blk (sheet-off blk r c + 4) v
       in True

@@ -33,7 +33,7 @@ if (-not (Test-Path -PathType Leaf $PlugCdx)) { Write-Host "REFUSE: missing $Plu
 # answer in either direction: nothing here runs the .codex, every step runs the
 # .cdx beside it.
 $plugAge = (Get-Item $PlugCdx).LastWriteTime
-foreach ($src in @((Join-Path $PlugDir 'WasmEmitter.codex'), (Join-Path $PlugDir 'WasmPlug.codex'), $Kernel)) {
+foreach ($src in @((Join-Path $PlugDir 'WasmEmitter.codex'), (Join-Path $PlugDir '..\common\HandlerLift.codex'), (Join-Path $PlugDir 'WasmPlug.codex'), $Kernel)) {
     if ((Get-Item $src).LastWriteTime -gt $plugAge) {
         Write-Host "REFUSE: $PlugCdx is older than $src. Rebuild the plug first."
         exit 2

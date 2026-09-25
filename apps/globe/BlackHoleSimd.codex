@@ -2,14 +2,6 @@ Chapter: BlackHoleSimd
   cites Game chapter Color
   cites Game chapter Rasterizer
 
- Trade-offs vs scalar:
-  + Single instruction for add/sub/mul/div on 3 components
-  + Dot product via vec-mul + vec-reduce-add (one multiply, one reduce)
-  + Color blending is naturally 4-wide
-  - Lane extraction needed for scalar comparisons (r < RS, branching)
-  - Cross product requires lane shuffling (no native shuffle builtin)
-  - Less readable field access (vec-extract v 0 vs v.x)
-
  We say:
 
 Section: SIMD Primitives
@@ -208,11 +200,8 @@ Section: Procedural Noise (SIMD-assisted)
   bh-fbm-s-loop (p) (acc) (amp) (i) =
     if i >= 4 then acc
     else let n = bh-noise-s p
-    in bh-fbm-s-loop
-      (v4f-add (v4f-scale p 2.0) (vec-splat 100.0))
-      (acc + amp * n)
-      (amp * 0.5)
-      (i + 1)
+    in let next = v4f-add (v4f-scale p 2.0) (vec-splat 100.0)
+    in bh-fbm-s-loop next (acc + amp * n) (amp * 0.5) (i + 1)
 
 Section: Camera
 
@@ -348,8 +337,8 @@ Section: Background Sky (SIMD)
 
   bh-sky-s : V4f, V4f, Rf -> V4f
   bh-sky-s (pos) (dir) (time) =
-    v4f-add (bh-sun-s pos dir time)
-      (v4f-add (bh-planet-s pos dir time) (bh-stars-s dir))
+    let rest = v4f-add (bh-planet-s pos dir time) (bh-stars-s dir)
+    in v4f-add (bh-sun-s pos dir time) rest
 
   bh-sun-pos-s : Rf -> V4f
   bh-sun-pos-s (time) =
@@ -396,10 +385,7 @@ Section: Background Sky (SIMD)
     in let diff = rf-max 0.02 (v4f-dot n light)
     in let band-noise = bh-noise-s (v4f-scale n 2.0)
     in let bands = rf-smoothstep 0.02 0.04 (rf-abs (rf-sin (v4f-y n * 12.0 + band-noise * 0.5)))
-    in let surface = v4f-color-mix
-      (v4f-color 0.1 0.4 0.75)
-      (v4f-color 0.04 0.2 0.45)
-      bands
+    in let surface = v4f-color-mix (v4f-color 0.1 0.4 0.75) (v4f-color 0.04 0.2 0.45) bands
     in v4f-scale surface diff
 
   bh-stars-s : V4f -> V4f

@@ -1,7 +1,9 @@
 # Lifting for the closureless targets
 
-*Proposal, reek 2026-09-07. No code. Read, not run: every claim below about a
-plug's behaviour comes from its emitter source, and the two claims about
+*Proposal, reek 2026-09-07. PARKED (root 2026-09-25): not built until a toolchain
+for one of the four targets is on this box, because its acceptance is running
+the emitted program (plugs-backlog 1.59). Read, not run: every claim below about
+a plug's behaviour comes from its emitter source, and the two claims about
 emitted output come from `codex/plugs/test-output`.*
 
 ## What this is for
@@ -33,17 +35,21 @@ emission as well as on its exit code.
 
 **The emitter half of that guard sits on a path nothing in the corpus reaches
 (L-UNCALLED), so it has never fired and cannot be demonstrated with the
-inputs we have.** Demonstrating it needs a subject whose lambda survives to
-the plug, and whether one can be written at all is the first question, ahead
-of the marker's wording.
+inputs we have.** No subject can reach it: the wire lifts every lambda,
+a capturing lambda passed as an argument and one returned from a function
+included (the probe under the next heading), so the marker is unreachable from
+source rather than untested.
 
 ## What the wire requires
 
-`DevelopersRulebook.md:260` and the contract above it: the IR a plug receives
-is LOWER plus the named passes, NOT resolved and NOT lambda-lifted. So a
-`lambda` node's body may name a local of the enclosing definition with no
-marker of any kind, and application arrives curried. A target without
-closures must therefore do the lifting itself.
+The IR a plug receives IS lambda-lifted (`prepare-method-ir`, `opening.codex`;
+the wire contract in `DevelopersRulebook.md`). A lambda arrives as a top-level
+`__lam_N` def taking its captured locals as leading parameters, and its value
+as that def partially applied to them: `pick (n) = \y -> y + n` is
+`(apply (name "__lam_1") (name "n"))` on the text-plug wire (val,
+2026-09-25). So a function VALUE reaches these four targets in exactly one
+form, a partial application of a named def, and the shape below needs no
+capture analysis: the captured values are the supplied arguments.
 
 ## The reference implementation is zig, not a new invention
 

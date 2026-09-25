@@ -11,7 +11,6 @@ $AppDir    = (Resolve-Path $PSScriptRoot).Path
 $OutDir    = Join-Path $AppDir 'build-output'
 $OutHtml   = Join-Path $OutDir 'cvmm-dashboard.html'
 $BundleSrc = Join-Path $OutDir 'app-source.codex'
-$LogFile   = Join-Path $OutDir 'app-build.log'
 $PlugDir   = Join-Path $Repo 'codex\plugs\html'
 $PlugCdx   = Join-Path $PlugDir 'build-output\html-plug.cdx'
 
@@ -74,21 +73,14 @@ $body = (($preLines + $lines) -join "`n") + "`n"
 [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))
 Write-Host "[cvmm-app] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes"
 
-# Compile through HTML plug -- compile to IR, then run through plug
-$compileScript = Join-Path $Repo 'build\compile.ps1'
-$irFile = Join-Path $OutDir 'app-ir.txt'
-& pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $irFile -Log $LogFile -IrUni
-if ($LASTEXITCODE -ne 0) {
-    [Console]::Error.WriteLine("FAIL: compile errors; see $LogFile")
+# run.ps1 compiles the bundle to IR through the seed compiler and runs the
+# plug; an exit code alone is not the verdict, so the page must also exist.
+$plugRun = Join-Path $PlugDir 'run.ps1'
+if (Test-Path -PathType Leaf $OutHtml) { Remove-Item -Force $OutHtml }
+& pwsh -NoProfile -File $plugRun -Src $BundleSrc -Out $OutHtml
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -PathType Leaf $OutHtml) -or (Get-Item $OutHtml).Length -eq 0) {
+    [Console]::Error.WriteLine("FAIL: the HTML plug produced no page (exit $LASTEXITCODE); see codex/plugs/html/build-output/run-cvmm-dashboard.log")
     exit 5
 }
 
-# Run HTML plug on the IR
-$plugRun = Join-Path $PlugDir 'run.ps1'
-if (Test-Path -PathType Leaf $plugRun) {
-    & pwsh -NoProfile -File $plugRun -Ir $irFile -Out $OutHtml
-} else {
-    Copy-Item $irFile $OutHtml
-}
-
-Write-Host "[cvmm-app] OK: $OutHtml"
+Write-Host "[cvmm-app] OK: $OutHtml ($((Get-Item $OutHtml).Length) bytes)"

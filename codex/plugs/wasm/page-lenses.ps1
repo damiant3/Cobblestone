@@ -86,7 +86,7 @@ $PageModules = @(
     @{ plug = 'wgsl';       file = 'wgsl-stdio.wasm';       transport = 'ir'; chapters = 'WgslEmitter,WgslStdio' }
     # The wasm plug as a lens: the emitter that builds every module on the site,
     # itself compiled to WebAssembly, answering WAT text for the IR it is handed.
-    @{ plug = 'wasm';       file = 'wasm-stdio.wasm';       transport = 'ir'; chapters = 'WasmEmitter,WasmStdio' }
+    @{ plug = 'wasm';       file = 'wasm-stdio.wasm';       transport = 'ir'; chapters = 'HandlerLift,WasmEmitter,WasmStdio'; compiler = 'IR\ConstShare' }
 
     # -- binary plugs, bytes transport (a compiled payload, not IR) -----------
     # elf's chapter list is the one build-plug-wasm.ps1's own header documents;
@@ -120,11 +120,11 @@ $PageModules = @(
     # for the IR compile (decks) -- without it that compile dies in __alloc at
     # about 542 MB, the same way the network build would without its -Decks 160.
     @{ plug = 'riscv'; file = 'riscv-stdio.wasm'; transport = 'irbytes'
-       chapters = 'RiscVRuntime,RiscVCodeGen,RiscVCodeGen2,RiscVLir,RiscVCodeGen3,RiscVDisasm,RiscVElf,RiscVStdio'
-       withLir = $true; common = 'PlugManifest'; decks = 160 }
+       chapters = 'HandlerLift,RiscVRuntime,RiscVCodeGen,RiscVCodeGen2,RiscVLir,RiscVCodeGen3,RiscVDisasm,RiscVElf,RiscVStdio'
+       withLir = $true; common = 'PlugManifest'; compiler = 'IR\ConstShare'; decks = 160 }
     @{ plug = 'arm64'; file = 'arm64-stdio.wasm'; transport = 'irbytes'
-       chapters = 'Arm64Runtime,Arm64CodeGen,Arm64CodeGen2,Arm64Lir,Arm64CodeGen3,Arm64Disasm,Arm64Elf,Arm64Stdio'
-       withLir = $true; common = 'PlugManifest'; decks = 160 }
+       chapters = 'HandlerLift,Arm64Runtime,Arm64CodeGen,Arm64CodeGen2,Arm64Lir,Arm64CodeGen3,Arm64Disasm,Arm64Elf,Arm64Stdio'
+       withLir = $true; common = 'PlugManifest'; compiler = 'IR\ConstShare'; decks = 160 }
 
     # -- plugs that carry their own wasm builder ------------------------------
     # evidence reads raw CCE lines on stdin (no PlugStdio); its builder is

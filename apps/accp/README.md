@@ -119,8 +119,9 @@ The source ceiling includes the selected library and caller source together.
 
 Compiler/lens linear memory is capped at 512 MiB and program memory at 64 MiB.
 Execution jobs have a 2 GiB committed-memory ceiling. The hosted Codex runtime
-reserves/commits a 3 GiB virtual arena, so the conduit job ceiling is 4 GiB;
-that reservation is not a measured RAM working set. Each completed request
+reserves a 3 GiB virtual arena and commits it in 64 MiB chunks as pages are
+first touched, so the conduit job ceiling is 4 GiB; the reservation is not
+charged against the commit limit. Each completed request
 restores the conduit heap checkpoint. Stderr reports both checkpoint and
 request allocation bytes, conduit RSS and execution-job peak commit.
 
@@ -182,8 +183,8 @@ pwsh -NoProfile -File apps/accp/serve.ps1 -Mcp
 `AccpMcp.cdx` owns MCP initialization, discovery, resources and calls. The
 adapter uses the corresponding console executable in place of `Accp.exe`;
 there is still one resident Codex process. Each configured client instance
-has the hosted runtime's 3 GiB committed arena described above. Budget that
-reservation separately from the much smaller measured RSS when running a fleet.
+reserves the hosted runtime's 3 GiB arena described above and commits only
+the chunks it touches.
 
 The four tools are `codex_run`, `codex_check`, `codex_lens` and
 `codex_describe`. The language card is the resource `codex://accp/language`.

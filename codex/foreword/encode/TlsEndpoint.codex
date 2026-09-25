@@ -126,11 +126,14 @@ Section: Record And Message Helpers
   tep-idle (ep) = TlsEpStep { tes-ep = ep, tes-out = [] }
 
   tep-abort-key-share : TlsEp -> TlsEpStep
-  tep-abort-key-share (ep) =
+  tep-abort-key-share (ep) = tep-abort-alert ep 47
+
+  tep-abort-alert : TlsEp, Integer -> TlsEpStep
+  tep-abort-alert (ep) (desc) =
     let e1 = __record-set (__record-set (__record-set ep "tep-phase" (0 - 1)) "tep-done" False) "tep-auth-done" False
     in let e2 = __record-set (__record-set (__record-set e1 "tep-hs-secret" []) "tep-c-hs" []) "tep-s-hs" []
     in let e3 = __record-set (__record-set e2 "tep-c-ap" []) "tep-s-ap" []
-    in TlsEpStep { tes-ep = e3, tes-out = [tls-encode-record 21 [2, 47]] }
+    in TlsEpStep { tes-ep = e3, tes-out = [tls-encode-record 21 [2, desc]] }
 
 Section: Client Hello
 
@@ -368,11 +371,42 @@ Section: Server Receive
       (if ep.tep-phase >= 3 then tep-server-app ep rec else tep-server-enc-hs ep rec)
     else tep-idle ep
 
+ RFC 8446 section 4.4.2.2: the server's certificate must be signable in a
+ scheme the client's signature_algorithms lists, and a server with no such
+ certificate aborts with handshake_failure.
+
   tep-server-ch : TlsEp, List Integer -> TlsEpStep
   tep-server-ch (ep) (msg) =
+    if dtls-ch-offers-in (tep-msg-body msg) tls-ext-signature-algorithms (tls-cv-scheme-for (ep.tep-sign-pub)) == False then tep-abort-alert ep 40
+    else tep-server-ch-share ep msg
+
+  tep-server-ch-share : TlsEp, List Integer -> TlsEpStep
+  tep-server-ch-share (ep) (msg) =
     when dtls-ch-key-share (tep-msg-body msg)
-      is None -> tep-idle ep
+      is None -> tep-server-no-share ep (tep-msg-body msg)
       is Just (peer) -> tep-server-flight ep (tep-msg-body msg) peer
+
+ RFC 8446 section 4.1.4: a ClientHello with no X25519 share that lists
+ X25519 in supported_groups is answered with a HelloRetryRequest naming
+ X25519, and ClientHello1 leaves the transcript for its message_hash
+ (section 4.4.1). A second ClientHello with no X25519 share is
+ illegal_parameter; a client that never lists X25519 is handshake_failure
+ (section 4.1.1).
+
+  tep-server-no-share : TlsEp, List Integer -> TlsEpStep
+  tep-server-no-share (ep) (ch-body) =
+    if ep.tep-phase == 1 then tep-abort-key-share ep
+    else if ep.tep-phase /= 0 then tep-idle ep
+    else if dtls-ch-offers-group ch-body tls-group-x25519 == False then tep-abort-alert ep 40
+    else tep-server-hrr ep ch-body
+
+  tep-server-hrr : TlsEp, List Integer -> TlsEpStep
+  tep-server-hrr (ep) (ch-body) =
+    let hrr-body = dtls-hrr-group-body (dtls-ch-session-id ch-body) tls-group-x25519
+    in let tr0 = tls13-transcript-after-hrr (tls13-msg-transcript dtls-hs-client-hello ch-body)
+    in let tr1 = tr0 & tls13-msg-transcript dtls-hs-server-hello hrr-body
+    in let ep2 = __record-set (__record-set ep "tep-transcript" tr1) "tep-phase" 1
+    in TlsEpStep { tes-ep = ep2, tes-out = [tls-encode-record tls-content-handshake (tls13-msg-transcript dtls-hs-server-hello hrr-body)] }
 
   tep-server-flight : TlsEp, List Integer, List Integer -> TlsEpStep
   tep-server-flight (ep) (ch-body) (peer) =
@@ -390,7 +424,8 @@ Section: Server Receive
     in let cert-body = tls-cert-encode (ep.tep-cert-chain)
     in let tr3 = tr2 & tls13-msg-transcript dtls-hs-certificate cert-body
     in let cv-body = tls-cv-encode True (ep.tep-sign-priv) (ep.tep-sign-pub) (tls13-transcript-hash tr3)
-    in let tr4 = tr3 & tls13-msg-transcript dtls-hs-cert-verify cv-body
+    in if list-length cv-body == 0 then tep-abort-alert ep 80
+    else let tr4 = tr3 & tls13-msg-transcript dtls-hs-cert-verify cv-body
     in let sfin = tls13-verify-data s-hs (tls13-transcript-hash tr4)
     in let tr5 = tr4 & tls13-msg-transcript dtls-hs-finished sfin
     in let th5 = tls13-transcript-hash tr5

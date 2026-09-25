@@ -1,5 +1,6 @@
 Chapter: Icmp
   cites Net chapter Ethernet
+  cites Foreword chapter Maybe
 
  We say:
 
@@ -46,6 +47,28 @@ Section: Destination Unreachable
     in [icmp-type-dest-unreachable, code] & write-be16 cksum & [0, 0, 0, 0] & original-ip-header
 
 Section: Parsing
+
+ RFC 792: the checksum is the ones' complement of the ones' complement sum of
+ the whole message, so summing a received message including its checksum
+ gives zero, and a message is at least the 8-byte header. icmp-parse answers
+ for anything (a short packet reads as type 0, an echo reply), so a caller
+ taking bytes from the wire asks icmp-parse-checked.
+
+  icmp-parse-checked : List Integer -> Maybe IcmpMessage
+  icmp-parse-checked (data) =
+    let dlen = list-length data
+    in if dlen < icmp-header-size then None
+    else if icmp-all-bytes data 0 dlen == False then None
+    else if ip-checksum data 0 dlen 0 /= 0 then None
+    else Just (icmp-parse data)
+
+  icmp-all-bytes : List Integer, Integer, Integer -> Boolean
+  icmp-all-bytes (data) (i) (n) =
+    if i >= n then True
+    else if list-at data i < 0 then False
+    else if list-at data i > 255 then False
+    else icmp-all-bytes data (i + 1) n
+
   icmp-parse : List Integer -> IcmpMessage
   icmp-parse (data) =
     let dlen = list-length data

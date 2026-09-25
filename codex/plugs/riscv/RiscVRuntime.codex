@@ -985,12 +985,64 @@ Section: CCE to Unicode Lookup Table
    else let unicode = if i < list-length cce-to-unicode-table then list-at cce-to-unicode-table i else 63
    in rv-build-cce-table (list-push acc (bit-and unicode 255)) (i + 1)
 
+ The printer reaches every table from `rv-cce-table-addr` with a 12-bit load
+ offset, so all of them sit below base + 2047. The high-byte table and the
+ multi-byte tables go at +1024, clear of the ASCII-to-CCE table at +256 and
+ the try cells at +512. The multi-byte layout is ARM64's: sixteen tier-1
+ slice bases split into a low and a high byte table, then one 12-byte tier-2
+ entry per block (CCE start, CCE end, Unicode base, little-endian words).
+
+  rv-cce-hi-off : Integer = 1024
+  rv-uni-slice-lo-off : Integer = 1152
+  rv-uni-slice-hi-off : Integer = 1168
+  rv-uni-tier2-off : Integer = 1184
+
+  rv-build-cce-to-unicode-hi : List Integer, Integer -> List Integer
+  rv-build-cce-to-unicode-hi (acc) (cce) =
+   if cce >= 128 then acc
+   else let uni = if cce < list-length cce-to-unicode-table then list-at cce-to-unicode-table cce else 0
+   in rv-build-cce-to-unicode-hi (list-push acc (uni / 256)) (cce + 1)
+
+  rv-tier1-slices : Integer, List Integer -> List Integer
+  rv-tier1-slices (block) (acc) =
+   if block >= cce-tier1-block-count then acc
+   else rv-tier1-slices (block + 1) (rv-tier1-block-slices acc (cce-tier1-block-unicode-base block) (cce-tier1-block-size block / 128) 0)
+
+  rv-tier1-block-slices : List Integer, Integer, Integer, Integer -> List Integer
+  rv-tier1-block-slices (acc) (base) (n) (k) =
+   if k >= n then acc
+   else rv-tier1-block-slices (list-push acc (base + k * 128)) base n (k + 1)
+
+  rv-u32-le : Integer -> List Integer
+  rv-u32-le (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  rv-tier2-entries : Integer, Integer, List Integer -> List Integer
+  rv-tier2-entries (block) (start) (acc) =
+   if block >= cce-tier2-block-count then acc
+   else let size = cce-tier2-block-size block
+   in rv-tier2-entries (block + 1) (start + size) (acc & rv-u32-le start & rv-u32-le (start + size) & rv-u32-le (cce-tier2-block-unicode-base block))
+
+  rv-cce-uni-ext-table : List Integer
+  rv-cce-uni-ext-table =
+   let slices = rv-tier1-slices 0 []
+   in (for x in slices -> bit-and x 255) & (for x in slices -> bit-shru x 8) & rv-tier2-entries 0 cce-tier2-base []
+
 Section: print-line-uni (NS16550A UART at 0x10000000 with CCE-to-Unicode)
 
   rv-rt-uart-base : Integer = #10000000
 
+  rv-rt-uni-cont : List Integer, Integer -> List Integer
+  rv-rt-uni-cont (i) (shift) =
+   let i = if shift == 0 then rv-rt-emit i (rv-mv rv-a2 rv-t2) else rv-rt-emit i (rv-srli rv-a2 rv-t2 shift)
+   in let i = rv-rt-emit i (rv-andi rv-a2 rv-a2 63)
+   in let i = rv-rt-emit i (rv-addi rv-a2 rv-a2 128)
+   in rv-rt-emit i (rv-sb rv-s4 rv-a2 0)
+
   rv-rt-print-line-uni : List Integer
-  rv-rt-print-line-uni =
+  rv-rt-print-line-uni = rv-rt-print-uni-with True
+
+  rv-rt-print-uni-with : Boolean -> List Integer
+  rv-rt-print-uni-with (newline) =
    let i = []
    in let i = rv-rt-emit i (rv-addi rv-sp rv-sp (0 - 64))
    in let i = rv-rt-emit i (rv-sd rv-sp rv-ra 56)
@@ -1008,16 +1060,120 @@ Section: print-line-uni (NS16550A UART at 0x10000000 with CCE-to-Unicode)
    in let loop = list-length i / 4
    in let exit = list-length i / 4
    in let i = rv-rt-emit i rv-nop
-   in let i = rv-rt-emit i (rv-add rv-t1 rv-s2 rv-t0)
-   in let i = rv-rt-emit i (rv-lb rv-t1 rv-t1 8)
-   in let i = rv-rt-emit i (rv-add rv-t1 rv-s5 rv-t1)
-   in let i = rv-rt-emit i (rv-lb rv-t1 rv-t1 0)
-   in let i = rv-rt-emit i (rv-sb rv-s4 rv-t1 0)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-s2 rv-t0)
+   in let i = rv-rt-emit i (rv-lbu rv-t1 rv-t2 8)
+   in let i = rv-rt-emit i (rv-addi rv-a1 rv-zero 128)
+   in let to-multi = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-add rv-a2 rv-s5 rv-t1)
+   in let i = rv-rt-emit i (rv-lbu rv-a3 rv-a2 0)
+   in let i = rv-rt-emit i (rv-lbu rv-a4 rv-a2 rv-cce-hi-off)
+   in let i = rv-rt-emit i (rv-slli rv-a4 rv-a4 8)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-a3 rv-a4)
    in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 1)
+   in let t0-done = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let multi = list-length i / 4
+   in let i = rv-rt-emit i (rv-srli rv-a2 rv-t1 5)
+   in let i = rv-rt-emit i (rv-addi rv-a1 rv-zero 6)
+   in let to-not2 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-lbu rv-a3 rv-t2 9)
+   in let i = rv-rt-emit i (rv-andi rv-a2 rv-t1 31)
+   in let i = rv-rt-emit i (rv-slli rv-a2 rv-a2 6)
+   in let i = rv-rt-emit i (rv-andi rv-a3 rv-a3 63)
+   in let i = rv-rt-emit i (rv-add rv-a2 rv-a2 rv-a3)
+   in let i = rv-rt-emit i (rv-srli rv-a3 rv-a2 7)
+   in let i = rv-rt-emit i (rv-andi rv-a4 rv-a2 127)
+   in let i = rv-rt-emit i (rv-add rv-a3 rv-s5 rv-a3)
+   in let i = rv-rt-emit i (rv-lbu rv-a5 rv-a3 rv-uni-slice-lo-off)
+   in let i = rv-rt-emit i (rv-lbu rv-a6 rv-a3 rv-uni-slice-hi-off)
+   in let i = rv-rt-emit i (rv-slli rv-a6 rv-a6 8)
+   in let i = rv-rt-emit i (rv-add rv-a5 rv-a5 rv-a6)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-a5 rv-a4)
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 2)
+   in let t1-done = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let not2 = list-length i / 4
+   in let i = rv-rt-emit i (rv-srli rv-a2 rv-t1 4)
+   in let i = rv-rt-emit i (rv-addi rv-a1 rv-zero 14)
+   in let to-not3 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-lbu rv-a3 rv-t2 9)
+   in let i = rv-rt-emit i (rv-lbu rv-a4 rv-t2 10)
+   in let i = rv-rt-emit i (rv-andi rv-a2 rv-t1 15)
+   in let i = rv-rt-emit i (rv-slli rv-a2 rv-a2 12)
+   in let i = rv-rt-emit i (rv-andi rv-a3 rv-a3 63)
+   in let i = rv-rt-emit i (rv-slli rv-a3 rv-a3 6)
+   in let i = rv-rt-emit i (rv-add rv-a2 rv-a2 rv-a3)
+   in let i = rv-rt-emit i (rv-andi rv-a4 rv-a4 63)
+   in let i = rv-rt-emit i (rv-add rv-a2 rv-a2 rv-a4)
+   in let i = i & rv-li rv-a5 cce-tier2-base
+   in let i = rv-rt-emit i (rv-add rv-a2 rv-a2 rv-a5)
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 3)
+   in let i = rv-rt-emit i (rv-addi rv-a3 rv-s5 rv-uni-tier2-off)
+   in let i = rv-rt-emit i (rv-addi rv-a4 rv-zero cce-tier2-block-count)
+   in let scan = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-lwu rv-a5 rv-a3 4)
+   in let to-found = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-addi rv-a3 rv-a3 12)
+   in let i = rv-rt-emit i (rv-addi rv-a4 rv-a4 (0 - 1))
+   in let i = rv-rt-emit i (rv-j ((scan - list-length i / 4) * 4))
+   in let found = list-length i / 4
+   in let i = rv-rt-emit i (rv-lwu rv-a5 rv-a3 0)
+   in let i = rv-rt-emit i (rv-lwu rv-a6 rv-a3 8)
+   in let i = rv-rt-emit i (rv-sub rv-a2 rv-a2 rv-a5)
+   in let i = rv-rt-emit i (rv-add rv-t2 rv-a2 rv-a6)
+   in let t2-done = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let not3 = list-length i / 4
+   in let i = rv-rt-emit i (rv-srli rv-a2 rv-t1 3)
+   in let i = rv-rt-emit i (rv-addi rv-a1 rv-zero 30)
+   in let to-stray = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 3)
+   in let stray = list-length i / 4
+   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 1)
+   in let repl = list-length i / 4
+   in let i = i & rv-li rv-t2 65533
+   in let encode = list-length i / 4
+   in let i = rv-rt-emit i (rv-addi rv-a1 rv-zero 128)
+   in let to-e2 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-sb rv-s4 rv-t2 0)
+   in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
+   in let e2 = list-length i / 4
+   in let i = i & rv-li rv-a1 2048
+   in let to-e3 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-srli rv-a2 rv-t2 6)
+   in let i = rv-rt-emit i (rv-addi rv-a2 rv-a2 192)
+   in let i = rv-rt-emit i (rv-sb rv-s4 rv-a2 0)
+   in let to-tail = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let e3 = list-length i / 4
+   in let i = i & rv-li rv-a1 65536
+   in let to-e4 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-srli rv-a2 rv-t2 12)
+   in let i = rv-rt-emit i (rv-addi rv-a2 rv-a2 224)
+   in let i = rv-rt-emit i (rv-sb rv-s4 rv-a2 0)
+   in let to-m6 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let e4 = list-length i / 4
+   in let i = rv-rt-emit i (rv-srli rv-a2 rv-t2 18)
+   in let i = rv-rt-emit i (rv-addi rv-a2 rv-a2 240)
+   in let i = rv-rt-emit i (rv-sb rv-s4 rv-a2 0)
+   in let i = rv-rt-uni-cont i 12
+   in let m6 = list-length i / 4
+   in let i = rv-rt-uni-cont i 6
+   in let tail = list-length i / 4
+   in let i = rv-rt-uni-cont i 0
    in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
    in let exit-label = list-length i / 4
-   in let i = rv-rt-emit i (rv-addi rv-t0 rv-zero 10)
-   in let i = rv-rt-emit i (rv-sb rv-s4 rv-t0 0)
+   in let i = if newline then rv-rt-emit (rv-rt-emit i (rv-addi rv-t0 rv-zero 10)) (rv-sb rv-s4 rv-t0 0) else i
    in let i = rv-rt-emit i (rv-ld rv-s5 rv-sp 16)
    in let i = rv-rt-emit i (rv-ld rv-s4 rv-sp 24)
    in let i = rv-rt-emit i (rv-ld rv-s3 rv-sp 32)
@@ -1026,7 +1182,21 @@ Section: print-line-uni (NS16550A UART at 0x10000000 with CCE-to-Unicode)
    in let i = rv-rt-emit i (rv-ld rv-ra rv-sp 56)
    in let i = rv-rt-emit i (rv-addi rv-sp rv-sp 64)
    in let i = rv-rt-emit i rv-ret
-   in rv-patch-insn-raw i exit (rv-bge rv-t0 rv-s3 ((exit-label - exit) * 4))
+   in let i = rv-patch-insn-raw i exit (rv-bge rv-t0 rv-s3 ((exit-label - exit) * 4))
+   in let i = rv-patch-insn-raw i to-multi (rv-bge rv-t1 rv-a1 ((multi - to-multi) * 4))
+   in let i = rv-patch-insn-raw i t0-done (rv-j ((encode - t0-done) * 4))
+   in let i = rv-patch-insn-raw i to-not2 (rv-bne rv-a2 rv-a1 ((not2 - to-not2) * 4))
+   in let i = rv-patch-insn-raw i t1-done (rv-j ((encode - t1-done) * 4))
+   in let i = rv-patch-insn-raw i to-not3 (rv-bne rv-a2 rv-a1 ((not3 - to-not3) * 4))
+   in let i = rv-patch-insn-raw i scan (rv-beq rv-a4 rv-zero ((repl - scan) * 4))
+   in let i = rv-patch-insn-raw i to-found (rv-blt rv-a2 rv-a5 ((found - to-found) * 4))
+   in let i = rv-patch-insn-raw i t2-done (rv-j ((encode - t2-done) * 4))
+   in let i = rv-patch-insn-raw i to-stray (rv-bne rv-a2 rv-a1 ((stray - to-stray) * 4))
+   in let i = rv-patch-insn-raw i to-e2 (rv-bge rv-t2 rv-a1 ((e2 - to-e2) * 4))
+   in let i = rv-patch-insn-raw i to-e3 (rv-bge rv-t2 rv-a1 ((e3 - to-e3) * 4))
+   in let i = rv-patch-insn-raw i to-tail (rv-j ((tail - to-tail) * 4))
+   in let i = rv-patch-insn-raw i to-e4 (rv-bge rv-t2 rv-a1 ((e4 - to-e4) * 4))
+   in rv-patch-insn-raw i to-m6 (rv-j ((m6 - to-m6) * 4))
 
 Section: int-mod
 
@@ -1078,7 +1248,7 @@ Section: Builtin Helpers
   rv-rt-char-at =
    let i = rv-rt-index-guard
    in let i = rv-rt-emit i (rv-add rv-t0 rv-a0 rv-a1)
-   in let i = rv-rt-emit i (rv-lb rv-a0 rv-t0 8)
+   in let i = rv-rt-emit i (rv-lbu rv-a0 rv-t0 8)
    in rv-rt-emit i rv-ret
 
   rv-rt-char-to-text : List Integer
@@ -1091,6 +1261,56 @@ Section: Builtin Helpers
    in let i = rv-rt-emit i (rv-sd rv-a0 rv-t1 0)
    in let i = rv-rt-emit i (rv-sb rv-a0 rv-t0 8)
    in rv-rt-emit i rv-ret
+
+Section: char-encode (a0=CCE code point -> Text)
+
+ 128, 2176 and 67712 are the CCE band boundaries and 192/224/240/128 the lead
+ and continuation masks; cce-encode in codex/foreword/core/CCE.codex is the
+ authority for all seven.
+
+  rv-rt-cce-byte : Integer, Boolean, Integer, Integer -> List Integer
+  rv-rt-cce-byte (shift) (keep6) (mask) (off) =
+   let i = if shift > 0 then rv-srli rv-t3 rv-t1 shift else rv-mv rv-t3 rv-t1
+   in let i = if keep6 then i & rv-andi rv-t3 rv-t3 63 else i
+   in i & rv-ori rv-t3 rv-t3 mask & rv-sb rv-t0 rv-t3 off
+
+  rv-rt-char-encode : List Integer
+  rv-rt-char-encode =
+   let i = rv-addi rv-s1 rv-s1 7 & rv-srli rv-s1 rv-s1 3 & rv-slli rv-s1 rv-s1 3
+   in let i = i & rv-mv rv-t0 rv-s1 & rv-addi rv-s1 rv-s1 16 & rv-mv rv-t1 rv-a0
+   in let i = i & rv-li rv-t2 128
+   in let ce-b2 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = i & rv-addi rv-t3 rv-zero 1 & rv-sd rv-t0 rv-t3 0 & rv-sb rv-t0 rv-t1 8
+   in let ce-e1 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let ce-l2 = list-length i / 4
+   in let i = i & rv-li rv-t2 2176
+   in let ce-b3 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = i & rv-addi rv-t1 rv-t1 (0 - 128) & rv-addi rv-t3 rv-zero 2 & rv-sd rv-t0 rv-t3 0
+   in let i = i & rv-rt-cce-byte 6 False 192 8 & rv-rt-cce-byte 0 True 128 9
+   in let ce-e2 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let ce-l3 = list-length i / 4
+   in let i = i & rv-li rv-t2 67712
+   in let ce-b4 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = i & rv-li rv-t2 2176 & rv-sub rv-t1 rv-t1 rv-t2 & rv-addi rv-t3 rv-zero 3 & rv-sd rv-t0 rv-t3 0
+   in let i = i & rv-rt-cce-byte 12 False 224 8 & rv-rt-cce-byte 6 True 128 9 & rv-rt-cce-byte 0 True 128 10
+   in let ce-e3 = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let ce-l4 = list-length i / 4
+   in let i = i & rv-sub rv-t1 rv-t1 rv-t2 & rv-addi rv-t3 rv-zero 4 & rv-sd rv-t0 rv-t3 0
+   in let i = i & rv-rt-cce-byte 18 False 240 8 & rv-rt-cce-byte 12 True 128 9 & rv-rt-cce-byte 6 True 128 10 & rv-rt-cce-byte 0 True 128 11
+   in let ce-end = list-length i / 4
+   in let i = i & rv-mv rv-a0 rv-t0 & rv-ret
+   in let i = rv-patch-insn-raw i ce-b2 (rv-bge rv-t1 rv-t2 ((ce-l2 - ce-b2) * 4))
+   in let i = rv-patch-insn-raw i ce-b3 (rv-bge rv-t1 rv-t2 ((ce-l3 - ce-b3) * 4))
+   in let i = rv-patch-insn-raw i ce-b4 (rv-bge rv-t1 rv-t2 ((ce-l4 - ce-b4) * 4))
+   in let i = rv-patch-insn-raw i ce-e1 (rv-j ((ce-end - ce-e1) * 4))
+   in let i = rv-patch-insn-raw i ce-e2 (rv-j ((ce-end - ce-e2) * 4))
+   in rv-patch-insn-raw i ce-e3 (rv-j ((ce-end - ce-e3) * 4))
 
 Section: list-set-at (a0=list, a1=index, a2=value -> new list)
 
@@ -1357,23 +1577,26 @@ Section: text-compare (a0=text-a, a1=text-b -> -1/0/1)
    in let exit-cmp = list-length i / 4
    in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-add rv-t4 rv-a0 rv-t3)
-   in let i = rv-rt-emit i (rv-lb rv-t4 rv-t4 0)
+   in let i = rv-rt-emit i (rv-lbu rv-t4 rv-t4 0)
    in let i = rv-rt-emit i (rv-add rv-t5 rv-a1 rv-t3)
-   in let i = rv-rt-emit i (rv-lb rv-t5 rv-t5 0)
+   in let i = rv-rt-emit i (rv-lbu rv-t5 rv-t5 0)
    in let i = rv-rt-emit i (rv-sub rv-t6 rv-t4 rv-t5)
    in let bne-diff = list-length i / 4
    in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 1)
    in let i = rv-rt-emit i (rv-j ((loop - list-length i / 4) * 4))
    in let diff-label = list-length i / 4
-   in let i = rv-rt-emit i (rv-mv rv-a0 rv-t6)
-   in let i = rv-rt-emit i rv-ret
+   in let i = i & rv-rt-sign-of-t6 & rv-ret
    in let equal-len-label = list-length i / 4
-   in let i = rv-rt-emit i (rv-sub rv-a0 rv-t0 rv-t1)
-   in let i = rv-rt-emit i rv-ret
-   in let i = rv-patch-insn-raw i bge-use-t1 (rv-bge rv-t0 rv-t1 ((use-min-label - bge-use-t1) * 4))
+   in let i = rv-rt-emit i (rv-sub rv-t6 rv-t0 rv-t1)
+   in let i = i & rv-rt-sign-of-t6 & rv-ret
+   in let i = rv-patch-insn-raw i bge-use-t1 (rv-bge rv-t1 rv-t0 ((use-min-label - bge-use-t1) * 4))
    in let i = rv-patch-insn-raw i exit-cmp (rv-bge rv-t3 rv-t2 ((equal-len-label - exit-cmp) * 4))
    in rv-patch-insn-raw i bne-diff (rv-bne rv-t6 rv-zero ((diff-label - bne-diff) * 4))
+
+  rv-rt-sign-of-t6 : List Integer
+  rv-rt-sign-of-t6 =
+   rv-slt rv-a0 rv-zero rv-t6 & rv-slt rv-t6 rv-t6 rv-zero & rv-sub rv-a0 rv-a0 rv-t6
 
 Section: Table Writer
 
@@ -1401,6 +1624,9 @@ Section: Heap Management Helpers
 
   rv-rt-heap-save : List Integer
   rv-rt-heap-save = rv-mv rv-a0 rv-s1 & rv-ret
+
+  rv-rt-heap-base : List Integer
+  rv-rt-heap-base = rv-addi rv-a0 rv-zero 1 & rv-slli rv-a0 rv-a0 31 & rv-ret
 
   rv-rt-heap-restore : List Integer
   rv-rt-heap-restore = rv-mv rv-s1 rv-a0 & rv-mv rv-a0 rv-zero & rv-ret
@@ -1597,7 +1823,7 @@ Section: Buffer Helpers
 
   rv-rt-buf-write-byte : List Integer
   rv-rt-buf-write-byte =
-   rv-add rv-a0 rv-a0 rv-a1 & rv-sb rv-a0 rv-a2 0 & rv-mv rv-a0 rv-zero & rv-ret
+   rv-add rv-t0 rv-a0 rv-a1 & rv-sb rv-t0 rv-a2 0 & rv-addi rv-a0 rv-a1 1 & rv-ret
 
   rv-rt-buf-read-bytes : List Integer
   rv-rt-buf-read-bytes =
@@ -1614,7 +1840,7 @@ Section: Buffer Helpers
    in let exit = list-length i / 4
    in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-add rv-t4 rv-t0 rv-t3)
-   in let i = rv-rt-emit i (rv-lb rv-t4 rv-t4 0)
+   in let i = rv-rt-emit i (rv-lbu rv-t4 rv-t4 0)
    in let i = rv-rt-emit i (rv-slli rv-t5 rv-t3 3)
    in let i = rv-rt-emit i (rv-add rv-t5 rv-t2 rv-t5)
    in let i = rv-rt-emit i (rv-sd rv-t5 rv-t4 0)
@@ -2315,7 +2541,8 @@ Section: Block device helpers
 
  The rings need a fixed page-aligned home clear of everything else. This
  lane's fixed map is the 32 KB mirror window at the image base (holding the
- process table at 0x80005000), the CCE tables at 0x80080000-0x80080200, the
+ process table at 0x80005000), the CCE tables at 0x80080000-0x80080180 and
+ 0x80080400-0x80080518, the
  AP marker at 0x80090000, the effect-op slots at 0x80100000 and the heap
  from 0x80100200. Measured 2026-08-17, an fs-servicer image spans
  0x80000080 to 0x80015498, so 0x80091000 is above the image and its tables,
@@ -2526,30 +2753,35 @@ Section: FileSystem servicer
    in let st10 = rv-emit st9 rv-ret
    in rv-patch-insn st10 deny-idx (rv-beq rv-t0 rv-zero ((deny - deny-idx) * 4))
 
- The install, run once at boot. A slot holds the handler's CODE address and
- `rv-emit-effect-op-call` dereferences it once, the same shape as ARM64.
-
- The slot address is materialised BEFORE the stub address is loaded, and
+ The slot address is materialised BEFORE the code address is loaded, and
  the order is load-bearing rather than stylistic. A slot address is above
  0x7FFFFFFF, so `rv-li` reaches `rv-li-64`, which takes a SCRATCH register
  (`RiscVEncoder.codex`: `tmp = if rd == rv-t0 then rv-t1 else rv-t0`).
- Loading the stub into t0 first and then materialising the address into t1
- destroys the stub address in the scratch, and the slot receives whatever
- the low half of the address was: the handler is installed, the call site
- reaches it, and the jump lands nowhere.
+ Loading the code into t0 first and then materialising the address into t1
+ destroys the code address in the scratch, and the slot receives whatever
+ the low half of the address was.
+
+  rv-emit-boot-closure : RvState, Text, Integer -> RvState
+  rv-emit-boot-closure (st) (code-name) (slot) =
+   let st1 = rv-emit-li st rv-t1 slot
+   in let st2 = rv-emit st1 (rv-mv rv-t2 rv-heap-reg)
+   in let st3 = rv-emit st2 (rv-addi rv-heap-reg rv-heap-reg 8)
+   in let st4 = rv-emit-load-func-addr st3 rv-t0 code-name
+   in let st5 = rv-emit st4 (rv-sd rv-t2 rv-t0 0)
+   in rv-emit st5 (rv-sd rv-t1 rv-t2 0)
 
   rv-emit-seed-fs-handler : RvState, Text, Text -> RvState
   rv-emit-seed-fs-handler (st) (op-name) (stub-name) =
    let eoa = rv-find-effect-op-addr (st.effect-op-addrs) op-name 0
    in if eoa < 0 then st
-   else let st1 = rv-emit-li st rv-t1 eoa
-   in let st2 = rv-emit-load-func-addr st1 rv-t0 stub-name
-   in rv-emit st2 (rv-sd rv-t1 rv-t0 0)
+   else rv-emit-boot-closure st stub-name eoa
 
   rv-emit-seed-fs-handlers : RvState -> RvState
   rv-emit-seed-fs-handlers (st) =
    let st1 = rv-emit-seed-fs-handler st "read-text" "__fs-read-servicer"
-   in rv-emit-seed-fs-handler st1 "write-file" "__fs-write-servicer"
+   in let st2 = rv-emit-seed-fs-handler st1 "write-file" "__fs-write-servicer"
+   in if list-length (st.handled-ops) == 0 then st2
+   else rv-emit-boot-closure st2 wh-resume-id (rv-resume-slot st)
 
 Section: Process Lifecycle
 
@@ -2886,7 +3118,11 @@ Section: Emit All Runtime Helpers
    in let st3b1 = rv-emit-li st3b rv-t0 rv-ascii-to-cce-table-addr
    in let a2c-table = rv-build-ascii-to-cce [] 0
    in let st3b2 = rv-write-table-loop st3b1 rv-t0 a2c-table 0
-   in let st3b3 = rv-emit-proc-table-init st3b2
+   in let st3bh = rv-emit-li st3b2 rv-t0 (rv-cce-table-addr + rv-cce-hi-off)
+   in let st3bi = rv-write-table-loop st3bh rv-t0 (rv-build-cce-to-unicode-hi [] 0) 0
+   in let st3bx = rv-emit-li st3bi rv-t0 (rv-cce-table-addr + rv-uni-slice-lo-off)
+   in let st3by = rv-write-table-loop st3bx rv-t0 rv-cce-uni-ext-table 0
+   in let st3b3 = rv-emit-proc-table-init st3by
    in let st3b4 = rv-emit-boot-grant st3b3
    in let st3c = rv-add-func-addr-fixup st3b4 rv-t0 "__trap_handler"
    in let st3d = rv-emit (rv-emit st3c rv-nop) rv-nop
@@ -2906,7 +3142,9 @@ Section: Emit All Runtime Helpers
    in let st7 = rv-record-func st6f "print-line-uni"
    in let st7a = rv-record-func st7 "print-line"
    in let st8 = rv-emit-block st7a rv-rt-print-line-uni
-   in let st9 = rv-record-func st8 "__str_eq"
+   in let st8p = rv-record-func st8 "print-uni"
+   in let st8q = rv-emit-block st8p (rv-rt-print-uni-with False)
+   in let st9 = rv-record-func st8q "__str_eq"
    in let st10 = rv-emit-block st9 rv-rt-str-eq
    in let st11 = rv-record-func st10 "__str_concat"
    in let st12 = rv-emit-block st11 rv-rt-str-concat
@@ -2942,7 +3180,9 @@ Section: Emit All Runtime Helpers
    in let st36 = rv-emit st35 rv-ret
    in let st37 = rv-record-func st36 "char-to-text"
    in let st38 = rv-emit-block st37 rv-rt-char-to-text
-   in let st39 = rv-record-func st38 "show"
+   in let st38c = rv-record-func st38 "char-encode"
+   in let st38d = rv-emit-block st38c rv-rt-char-encode
+   in let st39 = rv-record-func st38d "show"
    in let st40 = rv-emit-block st39 rv-rt-itoa
    in let st41 = rv-record-func st40 "int-mod"
    in let st42 = rv-emit-block st41 rv-rt-int-mod
@@ -2974,7 +3214,9 @@ Section: Emit All Runtime Helpers
    in let st68 = rv-emit-block st67 rv-rt-list-push
    in let st69 = rv-record-func st68 "__heap-save"
    in let st70 = rv-emit-block st69 rv-rt-heap-save
-   in let st71 = rv-record-func st70 "__heap-restore"
+   in let st70b = rv-record-func st70 "__heap-base"
+   in let st70c = rv-emit-block st70b rv-rt-heap-base
+   in let st71 = rv-record-func st70c "__heap-restore"
    in let st72 = rv-emit-block st71 rv-rt-heap-restore
    in let st73 = rv-record-func st72 "__heap-advance"
    in let st74 = rv-emit-block st73 rv-rt-heap-advance

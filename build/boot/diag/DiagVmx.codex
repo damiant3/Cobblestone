@@ -1,0 +1,84 @@
+Chapter: DiagVmx
+  cites Works chapter DevHypervisor
+  cites Works chapter VmCompile
+  cites Works chapter GopFat16
+  cites Diag chapter DiagStage
+
+ WORKS-76 in `apps/works/works-backlog.md`: the desk's `compile` launch
+ (`vm-compile-cdx` and below) has never run, because no bed reaches it --
+ codex-vm reads IA32_FEATURE_CONTROL as 1, locked with VMX off. This stage runs
+ the same pipeline `vm-compile` does (`vm-build-serial-input`,
+ `vm-setup-and-run-with-serial`, `vm-parse-compile-output`) against
+ `DiagVmxGuest`, laid on the ESP as GUEST.CDX, which echoes its source line.
+
+ The guest is 32 MB, the hypervisor's minimum, where the desk asks 256: guest
+ memory is carved from the payload heap by `__heap-advance`, and the diagnostic
+ image flies a 128 MB arena that a 256 MB guest cannot fit. So this reaches
+ VMXON, the VMCS, EPT, VMLAUNCH and the serial exchange, and not the desk's
+ sizing. It can wedge the box, so it runs last and only when DIAG.CFG names it.
+
+Section: States
+
+  dvx-states : List Text = ["no-bank", "no-guest", "vmx-off", "refused", "crashed", "no-answer", "wrong", "answered"]
+
+Section: The Probe
+
+  dvx-guest-mb : Integer = 32
+  dvx-entry : Integer = 1048576
+  dvx-src : Text = "ping codex"
+
+  dvx-list : Integer, Integer, Integer, List Integer -> List Integer
+  dvx-list (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else dvx-list buf (i + 1) n (list-push acc (peek-byte buf i))
+
+  dvx-same : List Integer, List Integer, Integer -> Boolean
+  dvx-same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else dvx-same a b (i + 1)
+
+  dvx-answer : VmSerialPort, Text -> DiagResult
+  dvx-answer (port) (head) =
+    let want = text-to-serial-bytes dvx-src 0 (text-length dvx-src) []
+    in let out = port.vs-output
+    in let p = vm-parse-compile-output port
+    in let row = head & " out=" & show (list-length out) & " size=" & show (p.vcr-size)
+    in if p.vcr-success == False then diag-result "no-answer" diag-col-bad [row & " " & p.vcr-log] [row, "the guest ran and its serial output carried no SIZE marker: " & p.vcr-log]
+    else if dvx-same (p.vcr-binary) want 0 then diag-result "answered" diag-col-good [row & " echo=ok"] [row & " echo=ok", "VMXON, VMLAUNCH and the guest's serial port both ways worked on this box"]
+    else diag-result "wrong" diag-col-bad [row & " echo differs"] [row & " echo differs from the " & show (list-length want) & " bytes sent"]
+
+  dvx-launch : List Integer, Text -> DiagResult
+  dvx-launch (code) (head) =
+    let cfg = GuestConfig { entry-point = dvx-entry, memory-mb = dvx-guest-mb }
+    in let r = vm-setup-and-run-with-serial cfg vmx-read-revision-id code (vm-build-serial-input "CDX" (dvx-src & "\n"))
+    in let out = r.vfr-devices.vd-com1.vs-output
+    in when r.vfr-status
+      is VmRefused (why) -> diag-result "refused" diag-col-bad [head & " " & why] [head, "the hypervisor refused the guest: " & why]
+      is VmCrashed (info) -> diag-result "crashed" diag-col-bad [head & " crashed out=" & show (list-length out)] [head & " the guest crashed after " & show (list-length out) & " serial bytes"]
+      is otherwise -> dvx-answer (r.vfr-devices.vd-com1) head
+
+Section: The Stage
+
+  dvx-run : DiagCtx -> [Device.Port] DiagResult
+  dvx-run (c) =
+    if c.dc-bank == False then diag-result "no-bank" diag-col-warn ["no medium to read GUEST.CDX from"] ["no bank, so GUEST.CDX cannot be read"]
+    else act
+      n <- gfat-file-size (c.dc-vol) "GUEST.CDX"
+      if n <= 0 then diag-result "no-guest" diag-col-warn ["GUEST.CDX absent"] ["GUEST.CDX is not on this stick's ESP"]
+      else dvx-read c n
+    end
+
+  dvx-read : DiagCtx, Integer -> [Device.Port] DiagResult
+  dvx-read (c) (n) =
+    let buf = alloc-zeroed n 64
+    in act
+      got <- gfat-read-file-bulk (c.dc-vol) "GUEST.CDX" buf
+      let head = "guest=" & show n & " fc=" & show vmx-feature-control
+      in if got /= n then diag-result "no-guest" diag-col-warn [head & " read=" & show got] [head & " GUEST.CDX read " & show got & " of " & show n & " bytes"]
+      else if vmx-available == False then diag-result "vmx-off" diag-col-warn [head] [head, vmx-unavailable-reason]
+      else dvx-launch (dvx-list buf 0 n []) head
+    end
+
+Page 1

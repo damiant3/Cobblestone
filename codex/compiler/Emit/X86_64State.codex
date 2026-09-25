@@ -118,7 +118,9 @@ Section: Record Types
    stype-sites : List Integer,
    range-env : List RangeBind,
    hosted-target : Integer between 0 and 2,
-   shared-consts : List CsIndex
+   shared-consts : List CsIndex,
+   avx-used : Boolean,
+   avx-local : Boolean
   }
 
   EffectOpAddr = record {
@@ -247,8 +249,13 @@ Section: Rodata Tables
 
   unicode-to-cce-rodata-offset : Integer = 128
 
+ The Unicode base of each 128-index slice of CCE tier 1: `cce-tier1-block-bases`
+ in Foreword CCE split into slices, so its 256-wide block 0 (base 128) is slices
+ 0 and 1, its 512-wide block 8 is slices 9 to 12, its 256-wide block 9 is 13
+ and 14.
+
   tier1-slice-bases : List Integer
-  tier1-slice-bases = [192, 320, 1024, 880, 1536, 1424, 2304, 3584, 4352, 19968, 20096, 20224, 20352, 12352, 12480, 8704]
+  tier1-slice-bases = [128, 256, 1024, 880, 1536, 1424, 2304, 3584, 4352, 19968, 20096, 20224, 20352, 12352, 12480, 8704]
 
   tier1-block-rodata : List Integer
   tier1-block-rodata =
@@ -541,7 +548,9 @@ Section: State Helpers
    stype-sites = [],
    range-env = [],
    hosted-target = 0,
-   shared-consts = []
+   shared-consts = [],
+   avx-used = False,
+   avx-local = False
   }
 
   fc-flush : CodegenState -> CodegenState
@@ -610,6 +619,12 @@ Section: State Helpers
     fc-offset = __narrow off,
     fc-reg = __narrow reg
    }))
+
+  st-mark-avx : CodegenState -> CodegenState
+  st-mark-avx (st) = if st.avx-used then st else __record-set st "avx-used" True
+
+  st-avx-refuses : CodegenState -> Boolean
+  st-avx-refuses (st) = if st.avx-used then st.avx-local == False else False
 
   st-add-error : CodegenState, Integer between 0 and 65535, Text, SourceSpan -> CodegenState
   st-add-error (st) (code) (msg) (sp) =
@@ -734,7 +749,9 @@ Section: State Helpers
     stype-sites = st.stype-sites,
     range-env = [],
     hosted-target = st.hosted-target,
-    shared-consts = st.shared-consts
+    shared-consts = st.shared-consts,
+    avx-used = st.avx-used,
+    avx-local = st.avx-local
    }
 
   reset-func-scratch : CodegenState -> CodegenState

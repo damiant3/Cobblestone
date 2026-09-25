@@ -1,17 +1,23 @@
 # Build FishTank WASM: source -> concat -> IR-CCE -> WASM plug -> WAT -> WASM
 # Then assemble the HTML page via the page emitter.
-# Usage: pwsh apps/FishTank/build-wasm.ps1
+# Usage: pwsh apps/fishtank/build-wasm.ps1 [-WatOnly] [-Kernel <cdx>] [-OutDir <dir>]
 [CmdletBinding()]
-param([switch]$WatOnly)
+param(
+    [switch]$WatOnly,
+    [string]$Kernel = '',
+    [string]$OutDir = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo      = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 $PlugDir   = Join-Path $Repo 'codex' 'plugs' 'wasm'
-$OutDir    = Join-Path $PSScriptRoot 'web'
+if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot 'web' }
 $PlugCdx   = Join-Path $PlugDir 'build-output' 'wasm-plug.cdx'
 $LogFile   = Join-Path $OutDir 'build-wasm.log'
+if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
+if (-not (Test-Path -PathType Leaf $Kernel)) { Write-Host "REFUSE: no kernel at $Kernel"; exit 2 }
 
 if (-not (Test-Path $PlugCdx)) {
     Write-Error "MISSING: $PlugCdx (run codex/plugs/wasm/build.ps1 first)"
@@ -86,7 +92,7 @@ Write-Host "[fishtank-wasm] bundled $($preLines.Count + $lines.Count) lines ($($
 
 # -- Phase 1: source -> IR-CCE --
 $IrFile = Join-Path $OutDir 'build-output' 'fishtank.ir'
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundleSrc -Out $IrFile -Log $LogFile -IrCce
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $bundleSrc -Out $IrFile -Log $LogFile -IrCce -Kernel $Kernel
 if ($LASTEXITCODE -ne 0) {
     Write-Error "FAIL: IR compile; see $LogFile"
     Get-Content $LogFile -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Write-Host "  $_" }
@@ -190,7 +196,7 @@ $pageBody = ($pageLines -join "`n") + "`n"
 
 $pageCdx = Join-Path $OutDir 'build-output' 'fishtank-page.cdx'
 $pageLog = Join-Path $OutDir 'build-page.log'
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $pageBundleSrc -Out $pageCdx -Log $pageLog
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $pageBundleSrc -Out $pageCdx -Log $pageLog -Kernel $Kernel
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "HTML assembly compile failed; see $pageLog"
 } else {

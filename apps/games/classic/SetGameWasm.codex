@@ -3,16 +3,11 @@ Chapter: SetGameWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- The browser interface for Set, on the handle contract in
- games-backlog.md GAME-11. A twelve-card tableau and the sixty-nine-card
- remainder are past an i32, so the page holds the state's address.
-
- The card decoder is exposed one attribute at a time because a page draws
- the attributes and a grader checks them; the id alone tells neither.
-
  We say:
 
 Section: The Card
+
+  wasm-exports : Text = ""
 
   sg-wasm-number : Integer -> Integer
   sg-wasm-number (id) =
@@ -84,15 +79,8 @@ Section: The Browser Interface
 
 Section: Playing By Hand
 
- `find-all-sets` COUNTS the sets on the table, which tells a page how many
- are there and not where any of them is, and `run-set-game` plays the whole
- game in one call. Neither lets a person take a set. These do.
-
- `sg-wasm-valid` compares three CARD IDS. Everything here works in tableau
- INDICES instead, because that is what a click gives you, and the two are
- easy to confuse: a tableau of twelve holds ids up to 80 at positions 0 to
- 11, so passing an index where an id belongs is silently a different card
- rather than an error.
+ `sg-wasm-valid` takes card ids; everything below takes tableau indices. An
+ index passed as an id is silently a different card, not an error.
 
   sg-wasm-can-take : SetGameState, Integer, Integer, Integer -> Integer
   sg-wasm-can-take (s) (i) (j) (k) =
@@ -111,9 +99,8 @@ Section: Playing By Hand
     in let c = set-card-from-id (list-at (s.tableau) k)
     in if is-valid-set a b c then 1 else 0
 
- Taking a set: the three go away and the table is refilled from the deck to
- twelve. When the deck is short the table simply gets smaller, which is how
- the end of the game arrives.
+ A taken set is refilled from the deck up to twelve cards; a short deck
+ leaves a smaller table.
 
   sg-keep-rest : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
   sg-keep-rest (tab) (i) (j) (k) (n) (acc) =
@@ -139,9 +126,8 @@ Section: Playing By Hand
     in let rest = set-drop (s.deck) take-n have []
     in SetGameState { deck = rest, tableau = filled, found = s.found + 1, seed = s.seed }
 
- WHERE a set is, rather than how many there are. Packed as
- `i * 10000 + j * 100 + k`, and -1 when the table holds none, which is also
- how the game ends: no set on the table and nothing left to deal.
+ A found set is `i * 10000 + j * 100 + k`, and -1 when the table holds none.
+ The game ends with no set on the table and nothing left to deal.
 
   sg-wasm-find : SetGameState -> Integer
   sg-wasm-find (s) = sg-find-i s 0
@@ -175,16 +161,8 @@ Section: Playing By Hand
   sg-wasm-find-k : Integer -> Integer
   sg-wasm-find-k (code) = if code < 0 then (-1) else rng-mod code 100
 
- WHEN NO SET IS ON THE TABLE, DEAL THREE MORE. That is the real rule of Set
- and the engine did not have it: `set-game-new` deals twelve and nothing
- ever grew the table, so a table of twelve holding no set ended the game
- with most of the deck unplayed. Measured before this was added: a run took
- 17 sets and stopped with 18 cards still in the deck.
-
- It also explains why `sg-wasm-take` refills only up to twelve. After a set
- is taken from a table of fifteen the table drops to twelve and stays there,
- which is what a real game does: the three extra were dealt because the
- table was stuck, not because the table is fifteen now.
+ When no set is on the table, three more cards are dealt. A set taken from a
+ table of fifteen leaves twelve, and the table stays at twelve.
 
   sg-wasm-can-deal : SetGameState -> Integer
   sg-wasm-can-deal (s) =
@@ -201,9 +179,6 @@ Section: Playing By Hand
     in let grown = sg-refill copy (s.deck) 0 take-n
     in let rest = set-drop (s.deck) take-n have []
     in SetGameState { deck = rest, tableau = grown, found = s.found, seed = s.seed }
-
- Watch mode: take the first set on the table, deal three when there is none,
- and answer the same state when neither is possible, which is the end.
 
   sg-wasm-step : SetGameState -> SetGameState
   sg-wasm-step (s) =

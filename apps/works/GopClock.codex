@@ -8,29 +8,6 @@ Chapter: GopClock
   cites Works chapter GopZones
   cites Works chapter GopWorld
 
- The clock accessory: what the machine thinks the time is, what that is
- somewhere else, and the means to correct it.
-
- The MC146818 is external hardware, so the details below are its spec and
- not our design, and a reader cannot derive them from this code.
-
-   Status B bit 7 (SET) freezes the update cycle. It MUST be raised
-   before writing any time register and lowered afterwards, or the part
-   can begin an update between two of the writes and carry a half-written
-   time forward.
-
-   Status B bit 2 chooses binary over BCD, and bit 1 chooses 24-hour over
-   12-hour. Both are properties of the PART, not of us: a writer that
-   assumes BCD corrupts a binary part and vice versa, so every value is
-   encoded the way the part currently declares.
-
-   In 12-hour mode the hour register carries 1..12 with bit 7 meaning PM,
-   and midnight is 12 AM rather than 0. That encoding is why the hour is
-   the only field with a conversion either side of it.
-
-   Register 9 is a two-digit year. The century register is not reliably
-   present, so the year here is 2000 plus that value.
-
  We say:
 
 Section: Registers
@@ -48,10 +25,6 @@ Section: Registers
 
 Section: State
 
- The zone is stored with twelve added to it so the cell never holds a
- negative number: `peek-32` zero-extends, so a stored -5 would read back
- as a large positive and the display would run off the end of the world.
-
   clk-field-cell : Integer = 0
   clk-editing-cell : Integer = 4
   clk-zone-cell : Integer = 8
@@ -66,13 +39,6 @@ Section: State
   clk-zone-bias : Integer = zone-bias
   clk-fields : Integer = 7
 
- THE SECOND HALF OF THE BLOCK IS THIS CHAPTER'S TOO, from 64 up. Cells 0 to 36
- were `GopClock`'s and 40 to 60 are the desk's, which is a split written in
- `works-desk-contract.md` and cross-checked by nothing; the block grew from 64
- bytes to 128 for the picker rather than taking one of the two remaining `ds`
- cells, because a `ds` cell is a fleet-wide resource and a pane's own block is
- not.
-
   clk-view-cell : Integer = 64
   clk-zid-cell : Integer = 68
   clk-cfmt-cell : Integer = 72
@@ -81,10 +47,6 @@ Section: State
   clk-world-cell : Integer = 84
   clk-pick-cell : Integer = 88
   clk-loaded-cell : Integer = 92
-
- The taskbar's own display choice, stored PLUS ONE for the reason the record
- stores it plus one: zero is a block nobody has loaded yet and an empty mask
- is a legal choice.
 
   clk-band-cell : Integer = 96
 
@@ -123,11 +85,6 @@ Section: State
   clk-dfmt : Integer -> Integer
   clk-dfmt (ks) = peek-32 ks clk-dfmt-cell
 
- THE STRIPE IS STORED PLUS TWELVE for the reason the hour offset is: `peek-32`
- zero-extends and a stored -8 would read back as four billion. Zero in the
- cell therefore means stripe -12, which is a real band, so the cell is written
- at load rather than left to mean two things.
-
   clk-stripe : Integer -> Integer
   clk-stripe (ks) = peek-32 ks clk-stripe-cell - 12
 
@@ -142,10 +99,6 @@ Section: State
 
   clk-world : Integer -> Integer
   clk-world (ks) = peek-32 ks clk-world-cell
-
- The ids in the stripe, and the one the pick index names. A stripe can hold
- several zones and the pick walks them; an empty stripe answers zero, which
- `zone-valid` refuses, so nothing downstream has to test for it twice.
 
   clk-stripe-list : Integer -> List Integer
   clk-stripe-list (ks) = zone-stripe-ids (clk-stripe ks)
@@ -169,10 +122,6 @@ Section: State
   clk-set-zone : Integer, Integer -> Integer
   clk-set-zone (ks) (z) = poke-32 ks clk-zone-cell (zone-clamp z + clk-zone-bias)
 
- The zone is read off the stick the first time the pane opens, not every
- time, so a change made in this session is not overwritten by the file it
- has not been written to yet.
-
   clk-ensure : Integer -> [Device.Port] Integer
   clk-ensure (ks) = act
     if peek-32 ks clk-ready-cell == 1 then 0
@@ -182,16 +131,6 @@ Section: State
       in clk-set-zone ks z
     end
   end
-
- THE WIDER RECORD IS READ ONCE AND THE WORLD IS BUILT ONCE, both on the first
- open. The map block is 648 words and rebuilding it inside a frame bracket
- would allocate it again every second and lose it again every second; it is
- allocated here, where the pane's own state is, and lives as long as the pane
- does.
-
- A stored zone id is trusted only if the table still has that row. The table
- is source and the record is a file: a stick written by a build with more
- zones in it, put into a build with fewer, would otherwise index off the end.
 
   clk-ensure2 : Integer -> [Device.Port] Integer
   clk-ensure2 (ks) = act
@@ -210,23 +149,6 @@ Section: State
       in poke-32 ks clk-ready-cell 1
     end
   end
-
- What the pane writes back. The minutes come from the zone when one is chosen
- and from the hour dial when one is not, because a machine set by the wizard
- has an offset and no zone and must not lose it by being opened here.
-
- THE PICTURE IS PAINTED FROM THESE CELLS AND THE TEXT IS NOT, so whoever built
- the tree from a live reading must leave that reading here or the two disagree.
- `desk-wnd-tree` reads the part every repaint and passes the fields into
- `clk-tree`, but the face and the map are painted over the laid tree by
- `desk-wnd-over`, which is handed no time at all and reads the block. Only
- `clk-load` wrote it, and `clk-load` runs when the setter opens, so the hands
- stood at midnight until somebody edited the clock and then stood wherever that
- edit left them.
-
- IT MUST NOT BE CALLED WHILE EDITING. These are the same cells the setter is
- editing, so a write here during an edit would drag the field being changed
- back to the hardware's value under the hand changing it.
 
   clk-note-now : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   clk-note-now (ks) (h) (mi) (s) (d) (mo) (y) =
@@ -261,9 +183,6 @@ Section: Reading
     raw <- rtc-read reg
     rtc-decode raw (bit-and b rtc-binary-bit)
   end
-
- The hour is read through the 12-hour encoding when the part is in it, so
- everything above this line works in plain 0..23.
 
   clk-decode-hour : Integer, Integer -> Integer
   clk-decode-hour (raw) (b) =
@@ -300,10 +219,6 @@ Section: Writing
     else if h < 12 then clk-encode h b
     else if h == 12 then clk-encode 12 b + clk-pm-bit
     else clk-encode (h - 12) b + clk-pm-bit
-
- The whole write sits inside one SET window. Nothing between raising and
- lowering that bit may fail or return early, which is why the values are
- taken from the state block rather than computed here.
 
   clk-commit : Integer -> [Device.Port] Integer
   clk-commit (ks) = act
@@ -410,11 +325,6 @@ Section: The Tree
     let mark = if clk-field ks == f then "> " else "  "
     in widget-set-min (widget-button ("clk-f-" & clk-field-name f) (mark & clk-field-name f & "   " & clk-field-text ks f)) 0 22
 
- Two columns for the seven fields, because the face above them already
- takes most of the pane and nothing clips a widget panel to its box: in
- one column the last two fields drew through the help line and out the
- bottom. Measured on the glass at 1600x900.
-
   clk-rows : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
   clk-rows (ks) (i) (stop) (acc) =
     if i >= stop then acc
@@ -422,31 +332,10 @@ Section: The Tree
 
   clk-split : Integer = 4
 
- The live face reads the part every repaint rather than caching, so a
- clock left open does not drift away from the hardware it is showing.
-
- THE GRAPHIC IS A HOLE IN THE TREE. Nothing in the widget layer draws a circle
- or a coastline, so the face and the map are painted over the laid tree by
- `desk-wnd-over`, the same door the launcher's icons come through. What the
- tree owes them is SPACE: a label with a fixed minimum height and no text,
- whose laid rectangle is exactly where the painter puts the picture. Reserving
- it in the tree rather than guessing at the painter is what keeps the two from
- drifting when a row above changes height.
-
   clk-art-h : Integer = 132
 
   clk-art : Text -> WidgetNode
   clk-art (id) = widget-set-min (widget-label id "") 0 clk-art-h
-
- WHAT THE TASKBAR PAINTS, BUILT HERE. The band used to format its own time
- from the RTC registers, so this pane's twelve hour choice reached the pane and
- nothing else and the two clocks on one screen disagreed about what time it
- was. One builder means the band cannot drift from the app; it is the same
- "one model, two views" the start menu and the launcher already share.
-
- It takes the parts rather than reading the part itself, because the caller
- painting once a second has already read them and a second read inside the
- same second can land the other side of a register rollover.
 
   clk-band-text : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
   clk-band-text (ks) (h) (mi) (s) (d) (mo) (y) =
@@ -460,9 +349,6 @@ Section: The Tree
                  else if zone-valid id then loc-utc-text (zone-offset-on id (2000 + y) mo d h)
                  else zone-text (clk-zone ks)
     in clk-join3 tt dt off
-
- An empty part takes its separator with it, so a band showing the time alone
- is not the time with two trailing gaps.
 
   clk-join2 : Text, Text -> Text
   clk-join2 (a) (b) =
@@ -485,11 +371,6 @@ Section: The Tree
   clk-nav : Integer -> WidgetNode
   clk-nav (ks) =
     widget-fixed (widget-tabs "clk-nav" ["Clock", "World", "Formats", "Set the clock"] (clk-nav-sel ks)) 0 clk-nav-h
-
- The civil time this machine is showing, which is the machine's clock plus the
- zone's offset. `loc-time` and `loc-date` take the formats, so this is the one
- place the user's choice of a twelve hour clock or a day-first date reaches the
- face.
 
   clk-local-mins : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   clk-local-mins (ks) (h) (mi) (y) (mo) (d) =
@@ -523,10 +404,6 @@ Section: The Tree
       widget-set-flex (widget-label "clk-gap" "") 1
     ]
 
- THE LIST IS THE STRIPE'S ZONES AND NOTHING ELSE, which is what makes a map
- click useful: it narrows fifty-nine rows to two or three, and the second
- choice is then a choice between places rather than a search.
-
   clk-zrow : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> WidgetNode
   clk-zrow (ks) (i) (id) (y) (mo) (d) (hh) =
     let mark = if clk-pick ks == i then "> " else "  "
@@ -552,25 +429,13 @@ Section: The Tree
       widget-set-min (widget-label "clk-help" "click the map, then a place") 0 20
     ]
 
- A FORMAT ROW SHOWS THE FORMAT IN THE FORMAT, because a list of names is a
- list of names and what somebody is choosing is what the date will look like.
-
   clk-frow : Text, Text, Text, Boolean -> WidgetNode
   clk-frow (id) (nm) (sample) (on) =
     widget-set-min (widget-button id ((if on then "> " else "  ") & nm & "    " & sample)) 0 22
 
- A TOGGLE SHOWS ITS STATE IN THE BOX AND NOT IN A SELECTION MARK. The format
- rows above are a choice of one from a list, so they carry the "> " the rest of
- this pane uses; these three are independent and each is on or off, which is a
- different question and reads wrongly with the same mark.
-
   clk-brow : Text, Text, Boolean -> WidgetNode
   clk-brow (id) (nm) (on) =
     widget-set-min (widget-button id ((if on then "[x]  " else "[ ]  ") & nm)) 0 22
-
- THE PREVIEW IS BUILT BY THE BAND'S OWN FUNCTION, so a reader is looking at
- what the taskbar will actually paint rather than at a second rendering that
- agrees with it today. The sample time matches the format rows above it.
 
   clk-band-preview : Integer, Integer, Integer, Integer -> Text
   clk-band-preview (ks) (y) (mo) (d) =
@@ -624,17 +489,6 @@ Section: The Tree
 
 Section: Keys
 
- The answer says what the CALLER must do, because reading and writing the
- part are effects and this is not the place for either: 0 nothing,
- 1 redraw, 2 load the registers and start editing, 3 leave the pane,
- 4 commit what was edited.
-
- ESC IS A STEP BACK AND NOT AN EXIT WHILE A VIEW IS OPEN. The pane used to
- have one screen, so Esc could only mean "leave"; with three it means "return
- to the face" from either of the other two, and only means leave from the face
- itself. A key that closed the window from inside the picker would throw away
- the choice being made.
-
   clk-key-view : Integer, Integer -> Integer
   clk-key-view (ks) (sc) =
     if sc == 1 then let d = clk-set-view ks clk-view-face in 1
@@ -659,11 +513,6 @@ Section: Keys
       else if sc == 28 then let d = clk-set-view ks clk-view-face in 5
       else 0
 
- The two format choices are walked as ONE list of five rows, two for the clock
- and three for the date, because that is what up and down do on a screen: they
- move to the next row, and the reader does not think of the screen as two
- lists that each need their own keys.
-
   clk-fmt-row : Integer -> Integer
   clk-fmt-row (ks) = if clk-cfmt ks == loc-clock-12 then 1 else 0
 
@@ -686,12 +535,6 @@ Section: Keys
     if clk-cfmt ks == loc-clock-24 then poke-32 ks clk-cfmt-cell loc-clock-12
     else if clk-dfmt ks < loc-date-ymd then poke-32 ks clk-dfmt-cell (clk-dfmt ks + 1)
     else 0
-
- The answer says what the CALLER must do, because reading and writing the part
- and the stick are effects and this is not the place for either: 0 nothing,
- 1 redraw, 2 load the registers and start editing, 3 leave the pane, 4 commit
- what was edited, 5 SAVE THE RECORD, which is new and is what a picked zone or
- a changed format needs.
 
   clk-key : Integer, Integer -> Integer
   clk-key (ks) (sc) =

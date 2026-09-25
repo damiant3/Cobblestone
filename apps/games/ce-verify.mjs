@@ -117,49 +117,54 @@ function playGame(seed, players) {
   return { h, turns };
 }
 
+// A game ends one of two ways. Somebody goes out, and holds nothing; or the
+// position is DEAD, with the pile empty and no seat holding a playable card,
+// and the smallest hand wins it (a tie for smallest is a draw, winner -1).
+function anyPlayable(h) {
+  let n = 0;
+  for (let p = 0; p < e.ce_players(h); p++)
+    for (let c = 0; c < 52; c++) n += e.ce_can(h, p, c);
+  return n;
+}
+function judgeEnd(h) {
+  const np = e.ce_players(h), w = e.ce_winner(h);
+  const sizes = [...Array(np)].map((_, p) => e.ce_size(h, p));
+  if (w >= 0 && sizes[w] === 0) return { how: 'out' };
+  if (e.ce_pile(h) !== 0) return { bad: `ended with ${e.ce_pile(h)} in the pile and nobody out` };
+  if (anyPlayable(h) > 0) return { bad: `ended with ${anyPlayable(h)} playable cards and nobody out` };
+  const least = Math.min(...sizes);
+  const holders = sizes.filter(n => n === least).length;
+  const want = holders > 1 ? -1 : sizes.indexOf(least);
+  if (w !== want) return { bad: `blocked with hands ${sizes.join(',')}: winner ${w}, want ${want}` };
+  return { how: 'blocked' };
+}
 {
-  let broke = null, finished = 0, winners = new Set();
+  let broke = null, winners = new Set(), outs = 0, blocked = 0;
   const unfinished = [];
   for (let seed = 1; seed <= 20 && !broke; seed++) {
     const players = 2 + (seed % 3);
     const r = playGame(seed, players);
     if (r.bad) { broke = `seed ${seed} (${players}p): ${r.bad}`; break; }
-    if (e.ce_done(r.h) !== 1) unfinished.push({ seed, h: r.h });
-    if (e.ce_done(r.h) === 1) {
-      finished++;
-      winners.add(e.ce_winner(r.h));
-      // The winner is the player who ran out.
-      if (e.ce_size(r.h, e.ce_winner(r.h)) !== 0) {
-        broke = `seed ${seed}: winner still holds ${e.ce_size(r.h, e.ce_winner(r.h))}`;
-      }
-    }
+    if (e.ce_done(r.h) !== 1) { unfinished.push(`seed ${seed} (${players}p)`); continue; }
+    winners.add(e.ce_winner(r.h));
+    const j = judgeEnd(r.h);
+    if (j.bad) broke = `seed ${seed} (${players}p): ${j.bad}`;
+    else if (j.how === 'out') outs++; else blocked++;
   }
-  ok('the flags and the counters agree on every turn of 20 games',
-     broke === null, broke ?? '20 games');
-  // NOT "every game reaches a winner". This engine has no end condition for
-  // a dead position: when the draw pile is empty and the player to move has
-  // nothing playable, `ce-do-turn` draws nothing, advances the seat, and the
-  // hands never change again. `ce-loop` resolves it only by capping the turn
-  // count and calling it a draw (games-backlog GAME-19). So the property
-  // that holds is that an unfinished game is genuinely DEAD rather than
-  // merely slow: an unfinished game with a card still playable, or with
-  // cards left to draw, would be a real defect in stepping.
-  const alive = [];
-  for (const u of unfinished) {
-    let playable = 0;
-    for (let c = 0; c < 52; c++) playable += e.ce_can(u.h, e.ce_cur(u.h), c);
-    if (playable > 0 || e.ce_pile(u.h) > 0) {
-      alive.push(`seed ${u.seed}: ${playable} playable, pile ${e.ce_pile(u.h)}`);
-    }
-  }
-  ok('any game that did not finish is dead, not merely slow',
-     alive.length === 0,
-     unfinished.length ? `${unfinished.length} unfinished, all with no play and an empty pile`
-                       : 'all 20 finished');
+  ok('the flags and the counters agree on every turn of 20 games, and every ending is legal',
+     broke === null, broke ?? `${outs} went out, ${blocked} blocked`);
+  ok('every game ends, going out or blocked, inside the turn cap',
+     unfinished.length === 0, unfinished.join('; ') || '20 of 20');
   ok('more than one seat wins across the set', winners.size > 1,
      `winners: ${[...winners].sort().join(',')}`);
+  // CONTROL: the blocked ending must be REACHED, or the arm above says nothing
+  // about it. Seed 12 at two players is the position measured dead from turn
+  // 200 to turn 800 before the engine could end it.
+  const d = playGame(12, 2);
+  const jd = e.ce_done(d.h) === 1 ? judgeEnd(d.h) : { bad: 'did not end' };
+  ok('CONTROL: seed 12 at two players ends BLOCKED, and the smallest hand wins',
+     jd.how === 'blocked', jd.bad ?? `${d.turns} turns, hands ${e.ce_size(d.h, 0)},${e.ce_size(d.h, 1)}, winner ${e.ce_winner(d.h)}`);
 }
-
 // -- Playability agrees with the rules -----------------------------------
 // ce-can-play says a card is playable when it is an eight, matches the
 // discard rank, or matches the declared suit. Re-derive that here.

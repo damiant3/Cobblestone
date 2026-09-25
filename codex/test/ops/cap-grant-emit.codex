@@ -1,0 +1,130 @@
+Chapter: CapGrantEmit
+  cites Emit chapter X86-64 Boot Infrastructure (emit-grant-cap-mask, emit-grant-capability, emit-revoke-capability, proc-table-base, proc-entry-size, proc-cap-offset)
+  cites Emit chapter X86-64 Code Generator (empty-codegen-state, st-append-code, li, mov-load, mov-store, or-ri, reg-rax, reg-rdi)
+  cites Emit chapter Emit Allocator (init-emit-workspace)
+  cites Foreword chapter Console
+
+ The boot grant and revoke emitters run against a one-qword machine that
+ executes x86-64 as the CPU does: a REX.W imm32 is sign-extended, a 32-bit
+ destination is zero-extended, and an opcode outside the set below is a
+ fault naming it. Each row prints the capability word after the emitted
+ bytes run.
+
+ Bit 31 is 2147483648, the first mask an imm32 sign-extends under REX.W;
+ bit 40 is 1099511627776, past what an imm32 can carry. The revoke row
+ starts from bits 30, 31 and 32 (7516192768) and must leave 30 and 32
+ (5368709120). The `old-or-ri` row is the CONTROL: the pre-fix
+ `or rax, imm32` form driven with bit 31, which the machine must answer
+ with the sign-extended word -2147483648. Without that row a machine that
+ zero-extended every immediate would pass the others.
+
+Section: Machine
+
+  Machine = record { regs : List Integer, addr : Integer, word : Integer, fault : Text }
+
+  fresh-regs : Integer, List Integer -> List Integer
+  fresh-regs (n) (acc) =
+    if n <= 0 then acc
+    else fresh-regs (n - 1) (list-push acc 0)
+
+  le-bytes : List Integer, Integer, Integer, Integer -> Integer
+  le-bytes (b) (off) (i) (n) =
+    if i >= n then 0
+    else bit-or (bit-shl (list-at b (off + i)) (8 * i)) (le-bytes b off (i + 1) n)
+
+  sext32 : Integer -> Integer
+  sext32 (v) = if v >= 2147483648 then v - 4294967296 else v
+
+  sext8 : Integer -> Integer
+  sext8 (v) = if v >= 128 then v - 256 else v
+
+  low32 : Integer -> Integer
+  low32 (v) = bit-and v 4294967295
+
+  width : Boolean, Integer -> Integer
+  width (w) (v) = if w then v else low32 v
+
+  set-reg : Machine, Integer, Integer -> Machine
+  set-reg (m) (r) (v) = Machine { regs = list-set-at (m.regs) r v, addr = m.addr, word = m.word, fault = m.fault }
+
+  set-word : Machine, Integer -> Machine
+  set-word (m) (v) = Machine { regs = m.regs, addr = m.addr, word = v, fault = m.fault }
+
+  fail : Machine, Text -> Machine
+  fail (m) (t) = Machine { regs = m.regs, addr = m.addr, word = m.word, fault = t }
+
+  alu : Integer, Integer, Integer -> Integer
+  alu (kind) (a) (b) =
+    if kind == 1 then bit-or a b
+    else if kind == 4 then bit-and a b
+    else bit-xor a b
+
+  run : Machine, List Integer, Integer, Integer -> Machine
+  run (m) (b) (pc) (len) =
+    if m.fault /= "" then m
+    else if pc >= len then m
+    else let op0 = list-at b pc
+    in let has-rex = op0 >= 64 & op0 <= 79
+    in let w = has-rex & bit-and op0 8 /= 0
+    in let rr = if has-rex & bit-and op0 4 /= 0 then 8 else 0
+    in let rb = if has-rex & bit-and op0 1 /= 0 then 8 else 0
+    in let at = if has-rex then pc + 1 else pc
+    in let op = list-at b at
+    in let mr = if at + 1 < len then list-at b (at + 1) else 0
+    in let md = bit-shr mr 6
+    in let rg = bit-and (bit-shr mr 3) 7
+    in let rm = bit-and mr 7
+    in if op >= 184 & op <= 191
+      then (if w then run (set-reg m (op - 184 + rb) (le-bytes b (at + 1) 0 8)) b (at + 9) len
+            else run (set-reg m (op - 184 + rb) (le-bytes b (at + 1) 0 4)) b (at + 5) len)
+    else if op == 199 & md == 3 & rg == 0
+      then run (set-reg m (rm + rb) (width w (sext32 (le-bytes b (at + 2) 0 4)))) b (at + 6) len
+    else if (op == 139 | op == 137) & md == 0 & rm /= 4 & rm /= 5
+      then (if list-at (m.regs) (rm + rb) /= m.addr then fail m ("access off the cap word at " & show at)
+            else if op == 139 then run (set-reg m (rg + rr) (width w (m.word))) b (at + 2) len
+            else run (set-word m (width w (list-at (m.regs) (rg + rr)))) b (at + 2) len)
+    else if (op == 9 | op == 33 | op == 49) & md == 3
+      then let kind = if op == 9 then 1 else if op == 33 then 4 else 6
+           in run (set-reg m (rm + rb) (width w (alu kind (list-at (m.regs) (rm + rb)) (list-at (m.regs) (rg + rr))))) b (at + 2) len
+    else if (op == 129 | op == 131) & md == 3 & (rg == 1 | rg == 4)
+      then let imm = if op == 129 then sext32 (le-bytes b (at + 2) 0 4) else sext8 (list-at b (at + 2))
+           in let next = if op == 129 then at + 6 else at + 3
+           in run (set-reg m (rm + rb) (width w (alu rg (list-at (m.regs) (rm + rb)) imm))) b next len
+    else fail m ("opcode " & show op & " at " & show at)
+
+Section: Scenarios
+
+  cap-addr0 : Integer = proc-table-base + proc-cap-offset
+
+  fresh-state : Integer -> CodegenState
+  fresh-state (u) = __record-set empty-codegen-state "workspace" (init-emit-workspace 256 0)
+
+  word-after : CodegenState, Integer -> Text
+  word-after (st) (w0) =
+    let bytes = __buf-read-bytes (st.workspace.code-buffer) 0 (st.code-len)
+    in let m = run (Machine { regs = fresh-regs 16 [], addr = cap-addr0, word = w0, fault = "" }) bytes 0 (list-length bytes)
+    in if m.fault /= "" then m.fault else show (m.word)
+
+  old-or-ri : CodegenState, Integer -> CodegenState
+  old-or-ri (st) (mask) =
+    let st1 = st-append-code st (li reg-rdi cap-addr0)
+    in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
+    in let st3 = st-append-code st2 (or-ri reg-rax mask)
+    in let st4 = st-append-code st3 (li reg-rdi cap-addr0)
+    in st-append-code st4 (mov-store reg-rdi reg-rax 0)
+
+  bit31 : Integer = 2147483648
+
+  bit40 : Integer = 1099511627776
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("mask-bit31 : " & word-after (emit-grant-cap-mask (fresh-state 256) 0 bit31) 0)
+    print-line-uni ("mask-bit31-40 : " & word-after (emit-grant-cap-mask (fresh-state 256) 0 (bit31 + bit40)) 0)
+    print-line-uni ("grant-bit31 : " & word-after (emit-grant-capability (fresh-state 256) 0 31) 0)
+    print-line-uni ("grant-bit40 : " & word-after (emit-grant-capability (fresh-state 256) 0 40) 1)
+    print-line-uni ("grant-bit3 : " & word-after (emit-grant-capability (fresh-state 256) 0 3) 0)
+    print-line-uni ("revoke-bit31 : " & word-after (emit-revoke-capability (fresh-state 256) 0 31) 7516192768)
+    print-line-uni ("old-or-ri : " & word-after (old-or-ri (fresh-state 256) bit31) 0)
+  end

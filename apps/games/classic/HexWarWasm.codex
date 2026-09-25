@@ -3,25 +3,16 @@ Chapter: HexWarWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- The browser interface for Hex War, on the handle contract in
- games-backlog.md GAME-11. This game does not keep its state in one record
- the way the others do: a position is a list of units, a terrain map, whose
- turn it is and how far through the game we are, threaded as separate
- arguments through `hexwar-loop`. So the handle the page holds is a record
- defined here that gathers them, and stepping it is one call of
- `run-hexwar-turn` rather than a whole game.
+ There are thirteen scenarios; the page picks one by index.
 
- There are thirteen scenarios, each a config of its own. The page picks one
- by index and the roster and map come with it.
-
- A unit is never removed from the list. It is marked `eliminated` and stays
- in place, so the unit COUNT is fixed for a whole game and the alive count
- is what moves. That is the invariant the grader leans on, since a game
- that quietly grew or dropped a unit would still play.
+ A unit is never removed from the list, only marked `eliminated`, so the unit
+ count is fixed for a game.
 
  We say:
 
 Section: The Handle
+
+  wasm-exports : Text = ""
 
   HwState = record {
     cfg    : WargameConfig,
@@ -52,11 +43,8 @@ Section: The Handle
 
 Section: Copying
 
- A shallow copy of the unit list is not enough here. The turn writes with
- `__record-set` as well as `list-set-at`, so it mutates the unit RECORDS
- and then writes them back into the list; copying only the list leaves both
- sides pointing at the same units. Every field is copied by hand below for
- that reason.
+ The turn mutates the unit RECORDS as well as the list, so a copy copies
+ every field by hand: a shallow copy shares the units.
 
   hw-copy-unit : Unit -> Unit
   hw-copy-unit (u) =
@@ -84,21 +72,10 @@ Section: The Browser Interface
     in HwState { cfg = cfg, units = hw-copy-units (cfg.unit-roster) 0 [], turn = 0, active = 0,
                  rng = rng-new seed, over = False, opened = False, attacks-left = 0 }
 
- A state whose turn has been opened has already had its bookkeeping done,
- so the runner takes the opened turn rather than beginning it a second
- time. A watch-only session never opens one, which is why `hw-wasm-step`
- alone plays exactly the game it always did.
-
   hw-over : HwState -> HwState
   hw-over (s) =
     HwState { cfg = s.cfg, units = s.units, turn = s.turn, active = s.active, rng = s.rng,
               over = True, opened = s.opened, attacks-left = 0 }
-
- Whether this turn is the one that ends the battle, asked BEFORE the turn
- is begun. Opening a turn asks it at the same point, so a turn that is
- opened and then stepped settles exactly as one that is only stepped: a
- side that supply attrition is about to wipe out is still alive when the
- question is put, in both.
 
   hw-settled : HwState -> Boolean
   hw-settled (s) =
@@ -203,10 +180,8 @@ Section: The Browser Interface
 
 Section: Taking A Turn Yourself
 
- Opening a turn is what `run-hexwar-turn` does to its own first, and it is
- idempotent here so a page cannot spend a side's supply twice by asking
- again. Until a turn is opened its units carry last turn's movement, so a
- page opens before it reads anything it means to offer as a move.
+ Opening a turn is idempotent, and until one is opened its units carry last
+ turn's movement: a page opens before it reads a move.
 
   hw-wasm-open : HwState -> HwState
   hw-wasm-open (s) =
@@ -247,10 +222,7 @@ Section: Taking A Turn Yourself
     else if hw-unit-has-move (s.units) (s.active) i (s.cfg.terrain-data) (s.cfg.map-width) (s.cfg.map-height) (s.cfg.stacking-limit) 0
       then 1 else 0
 
- A REFUSAL ANSWERS THE STATE IT WAS GIVEN, unchanged and un-copied. Copying
- first and letting the engine refuse the copy is the same game and a
- different handle, so a page comparing what came back against what it sent
- could not tell a refusal from a move.
+ A refusal answers the state it was given, unchanged and un-copied.
 
   hw-wasm-move : HwState, Integer, Integer, Integer -> HwState
   hw-wasm-move (s) (i) (tq) (tr) =
@@ -267,8 +239,7 @@ Section: Taking A Turn Yourself
     else if s.attacks-left <= 0 then 0
     else if hw-can-attack (s.units) (s.active) target then 1 else 0
 
- The die is the caller's to supply, the same way the runner takes its own:
- a page that reused one seed would fight the same battle every time.
+ The die is the caller's: a page reusing one seed fights one battle.
 
   hw-wasm-attack : HwState, Integer, Integer -> HwState
   hw-wasm-attack (s) (target) (seed) =
@@ -278,10 +249,6 @@ Section: Taking A Turn Yourself
                  units = hw-resolve-attack (hw-copy-units (s.units) 0 []) (s.cfg.terrain-data) target (s.active) (s.cfg.map-width) r2,
                  turn = s.turn, active = s.active, rng = r2, over = False,
                  opened = True, attacks-left = s.attacks-left - 1 }
-
- Ending your turn passes the seat on without running one, and settles the
- game if your own attack finished it: `hw-wasm-step` is what sets `over`
- for a side the runner plays, and nothing else would set it for yours.
 
   hw-wasm-end-turn : HwState -> HwState
   hw-wasm-end-turn (s) =

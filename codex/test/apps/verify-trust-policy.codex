@@ -1,0 +1,65 @@
+Chapter: VerifyTrustPolicy
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Verify chapter VerifyReport
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter FactStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ The threshold is the caller's policy, never byte 216 of the image. Before,
+ a key made a moment ago that declared 0 passed the author phase, and an
+ image that declared 65535 was refused whatever the caller trusted.
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+  known-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  fresh-sk : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  image : Integer, List Integer -> List Integer
+  image (declared) (sk) = cdx-encode-signed (CdxBinaryParts {
+    flags = cdx-flag-bare-metal,
+    capabilities = [
+      CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+    ],
+    effects = ["Console"],
+    text-bytes = [144, 195],
+    rodata-bytes = [],
+    entry-offset = 0,
+    stack-size = 65536,
+    heap-size = 65536,
+    trust-threshold = __narrow declared
+  }) sk
+
+  allow-console : Policy
+  allow-console = policy-add-rule (policy-empty "test") (rule-allow "allow-console" (CapabilityMatch "Console" 2))
+
+  say : Text, VerifyResult -> Text
+  say (label) (r) = label & ": accepted=" & yn (r.accepted) & " reason=" & r.reason
+
+Section: Body
+
+  opening : [Console] Nothing =
+    let fresh0 = image 0 fresh-sk
+    in let known-max = image 65535 known-sk
+    in let known0 = image 0 known-sk
+    in let known-lat = lattice-add-direct lattice-empty (read-author-key known-max) 5000
+    in let self-lat = lattice-self-of (Just (ed25519-public-key known-sk))
+    in let rep = verify-cdx-report fresh0 lattice-empty allow-console 0 fact-store-empty 100
+    in act
+      print-line-uni ("default min-trust " & show (allow-console.min-trust))
+      print-line-uni (say "fresh key declaring 0, default policy" (verify-cdx-full fresh0 lattice-empty allow-console 0 fact-store-empty 100))
+      print-line-uni (say "fresh key declaring 0, policy min-trust 0" (verify-cdx-full fresh0 lattice-empty (policy-with-min-trust allow-console 0) 0 fact-store-empty 100))
+      print-line-uni (say "known key at 5000 declaring 65535, default policy" (verify-cdx-full known-max known-lat allow-console 0 fact-store-empty 100))
+      print-line-uni (say "machine key, trust self" (verify-cdx-full known0 self-lat allow-console 0 fact-store-empty 100))
+      print-line-uni (say "machine key, no identity" (verify-cdx-full known0 (lattice-self-of None) allow-console 0 fact-store-empty 100))
+      print-line-uni ("report on the fresh key: author passed=" & yn ((rep.author).passed) & " phases passed=" & show (rep.phases-passed))
+    end

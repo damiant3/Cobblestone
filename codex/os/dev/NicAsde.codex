@@ -5,10 +5,8 @@ Chapter: NicAsde
   cites Kernel chapter Pci
 
  The 82583V datasheet says of ASDE, bit 5, "This bit must be set to 0b in
- the 82583V", and this driver sets it. The I219's MAC is integrated into
- the PCH and no public document covers its CSR block, so no bed can
- referee it: a model written from the 82583V would only report back the
- reading it was built from. Only the silicon can answer.
+ the 82583V". The I219's MAC is integrated into the PCH and no public
+ document covers its CSR block.
 
 Section: Reading
 
@@ -34,34 +32,8 @@ Section: Reading
 
   na-clear-asde : Integer = #FFFFFFFF - e1000-ctrl-asde
 
- This deliberately does NOT call e1000-phy-bring-up, and that is the fix
- for the flight that painted nothing. That function ends in
- e1000-await-aneg, whose fuel is a million iterations and whose EVERY
- iteration is a full MDIC transaction; on real MDIO a transaction is tens
- of microseconds, so an arm on a part with no link spends tens of seconds
- there before it gives up, and two arms is a minute or worse. It is
- bounded and it is indistinguishable from a hang.
-
- IT RESETS THE PHY AND NOW PAYS THE LCD RELOAD ITSELF, which is the change of
- 2026-08-21 and the reason every function here carries a device id. I219 rev
- 2.02 section 5.2 puts the obligation on the driver after any write of BMCR bit
- 15, which is the first line below. `e1000-init` pays it by running
- `e1000-pch-prepare` after bring-up; nothing behind this function did, so with
- `e1000-pch-k1-required` shipping True an arm here left 770.17 at its NVM value
- and the part stalled at gigabit. Measured, both rows, in
- `codex/test/e1000-lcd-reload`.
-
- THE DEVICE ID IS THREADED RATHER THAN GUESSED, and that is the whole cost of
- this change: `e1000-lcd-reload` needs it to answer whether the part is a PCH
- part at all, it is a PCI config read this layer cannot make from an MMIO base,
- and every stage that calls in here already held it when it chose the part.
- Passing 0 is legal and means "not a PCH part", which is what the non-I219
- arms want.
-
- THE GATE IS STILL OFF, so this call answers 0 and writes nothing until
- `e1000-pch-lcd-reload-required` flips. The call site is what was missing:
- `e1000-lcd-reload` had no production caller at all before this, so flipping
- the constant would have changed nothing anywhere (L-UNCALLED).
+ I219 rev 2.02 section 5.2 obliges the driver to reload the LCD registers
+ after any write of BMCR bit 15.
 
   na-phy-kick : Integer, Integer -> Integer
   na-phy-kick (mmio) (dev-id) =
@@ -74,13 +46,9 @@ Section: Reading
    else let reload = e1000-lcd-reload mmio dev-id
    in 1
 
- Bounded by wall time rather than by iterations, because the two bounds
- want opposite things: a real gigabit link takes a second or more to
- negotiate, so a fuel small enough to be safe on a dead cable would report
- no link on a live one. Where HPET reports no rate there is no wall clock
- to bound against, and the smaller pure-iteration fuel is the honest
- fallback -- it may cut a live negotiation short, and a row that says so
- is still better than a stage that does not paint.
+ Bounded by wall time: a gigabit link takes a second or more to negotiate,
+ so an iteration bound small enough for a dead cable cuts a live one short.
+ With no HPET rate the smaller iteration bound is the only one.
 
   na-link-budget-ms : Integer = 2000
   na-link-fuel-clocked : Integer = 20000000
@@ -108,11 +76,8 @@ Section: Reading
    in na-await-lu mmio start want na-link-fuel-clocked 0
 
  The I219's MAC sits in the PCH and its PHY is owned by the Management
- Engine, which is the class of part where an unhandshaked CTRL.RST is
- documented folklore for wedging the CSR block. Read STATUS and CTRL
- before writing anything, so a flight that dies can say WHICH touch
- killed it: no row at all means the first MMIO read never completed, and
- a painted row followed by silence means the reset did it.
+ Engine; an unhandshaked CTRL.RST is reported to wedge that CSR block, so
+ STATUS and CTRL are read before anything is written.
 
   na-bar-of : PciDevice -> PciBar
   na-bar-of (d) = pci-parse-bar (d.pci-bus) (d.pci-dev) (d.pci-func) 0
@@ -203,10 +168,8 @@ Section: Formatting
    in let c = b & " io=" & na-yn (if (bar.bar-is-io) then 1 else 0)
    in c & " verdict=" & na-verdict-text (e1000-bar-verdict bar)
 
- Gated on vendor and on the BAR verdict for the reason sitting rung 2 was:
- a second NIC is present on this board, a Realtek at 06:00.0 whose window
- lands below three gigabytes, and reading Intel register offsets off it
- would yield garbage shaped like an answer.
+ The ASUS carries a second NIC, a Realtek at 06:00.0 whose window lands
+ below three gigabytes; Intel register offsets read off it are garbage.
 
   na-eligible : PciDevice -> Boolean
   na-eligible (d) =
