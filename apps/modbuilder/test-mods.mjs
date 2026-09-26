@@ -1,9 +1,9 @@
-// PRISM-14: the game-mods page and Prism's #mod= composition, in headless
+// The game-mods page and Prism's #mod= composition, in headless
 // Chrome. The catalogue and mods.html come from build-page.ps1's OWN mods block
 // (run here on its own, so the code graded is the code shipped); Prism is the
 // template with the deployed page's embedded modules plus that catalogue. The
 // acceptance is the Unity C# a composed mod emits: exactly the chosen features.
-// Usage: node apps/prism/test-mods.mjs   Exit 0 = every arm passed.
+// Usage: node apps/modbuilder/test-mods.mjs   Exit 0 = every arm passed.
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import http from 'node:http';

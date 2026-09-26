@@ -39,7 +39,8 @@ the single source for those.
 ## Step 0a -- Start the box sampler, and publish what it recorded
 
 ```powershell
-Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-File','build/box-sample.ps1','-Out',"docs/Agents/box-release-$(Get-Date -Format yyyy-MM-dd).csv",'-Seconds','7200'
+$N = 64   # this release's Update number: two releases can share a date
+Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-File','build/box-sample.ps1','-Out',"docs/Agents/box-release-$(Get-Date -Format yyyy-MM-dd)-u$N.csv",'-Seconds','7200'
 ```
 
 Every proof below runs beside it, so the release leaves a memory profile in
@@ -314,6 +315,10 @@ of eleven had one. `gh pr comment N --body ...` from the release
 workspace, one per PR.
 
 ## Rules
+- **No ceremonial re-runs (Damian, 2026-09-25).** A tier or the gate that ends
+  with a small count of reds is not restarted: fix those reds, re-run only those
+  subjects and what the fix's own change touches, pick the chain up where it
+  stopped, and call the release good.
 - The battery, the app sweep, the poison build and the DDC are the four
   proofs a release cannot skip. Everything else is polish; these four are
   correctness. They prove different things: the battery is depth, the sweep

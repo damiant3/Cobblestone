@@ -43,7 +43,7 @@ preserving integer/vector argument registers and caller stack arguments.
 `MethodBridge.codex` supplies restricted Mono method copying and startup
 redirection; unsupported exception regions are refused. The Unity payload uses
 a private namespace to avoid Valheim's global `Console` type. Pure insert and
-withdraw plans live in `apps/prism/mods/valheim/`. The host validates quantity,
+withdraw plans live in `apps/modbuilder/mods/valheim/`. The host validates quantity,
 compatibility, unique debits and conservation before physical mutations.
 
 Current limits: solo play; linked crafting covers ordinary new-item recipes,
@@ -102,7 +102,7 @@ changing source or rebuilding.
 
 The embedded page is `apps/landing/web/compile/prism.html`; its template is
 `codex/plugs/wasm/page/prism.html`. Targets -> Load storage demo loads the
-sources in `apps/prism/mods/valheim/linked-storage.json`. Loading a template
+sources in `apps/modbuilder/mods/valheim/linked-storage.json`. Loading a template
 detaches an opened filesystem folder without deleting the folder's files.
 
 Targets -> Unity configures the game directory, separate test-save root,
@@ -136,7 +136,7 @@ ordinary packages. Run create, reload and feature-disabled checks serially:
 
 ```powershell
 node apps/prism/test-targets.cjs --unity
-pwsh apps/prism/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode create
+pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode create
 ```
 
 Read `build-output/prism-targets/latest-world-test.json` after completion.
@@ -145,8 +145,8 @@ latest pointer:
 
 ```powershell
 $fixtureSaves = (Get-Content build-output/prism-targets/latest-world-test.json -Raw | ConvertFrom-Json).saves
-pwsh apps/prism/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode reload -Saves $fixtureSaves
-pwsh apps/prism/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode vanilla -Saves $fixtureSaves
+pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode reload -Saves $fixtureSaves
+pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode vanilla -Saves $fixtureSaves
 ```
 
 `vanilla` skips storage initialization and verifies loaded items, the original
@@ -303,7 +303,7 @@ $restore = 'D:/Projects/Cobblestone-red/build-output/prism-recovery'
 if (Test-Path -LiteralPath $restore) { throw 'Choose an empty recovery destination' }
 Expand-Archive -LiteralPath 'D:/Games/Valheim-Prism/Support/Test-saves.zip' -DestinationPath $restore
 node apps/prism/test-targets.cjs
-pwsh apps/prism/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode reload -Saves "$restore/prism-world-tests/7d620bfd304a4465a0dfca1351962318/saves" -Play
+pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode reload -Saves "$restore/prism-world-tests/7d620bfd304a4465a0dfca1351962318/saves" -Play
 ```
 
 `-Play` explicitly requests a visible interactive game, grounds the marked test
@@ -318,7 +318,7 @@ and save compatibility checks when the implementation changes. The original
 installation remains unchanged. Recovered earlier test-only saves are archived under
 `prism-world-tests/137649d1a55e49d5a06a4baec1505e6a/recovered-saves`; the move
 manifest is `build-output/prism-targets/recovered-test-saves.json`.
-Current open work is PRISM-12.
+Current open work is MB-4 in `apps/modbuilder/modbuilder-backlog.md`.
 
 Prism assembles selected Codex feature sources into one versioned game
 extension. A saved target profile identifies the game, engine version,
@@ -348,8 +348,9 @@ retains its independent behavior and has no Unity references.
 
 `codex/plugs/unity/` owns Unity library emission and versioned target
 profiles. Shared C# emission stays under `codex/plugs/csharp/`. Unity
-operations have a typed Codex surface and target-specific bindings. A game
-adapter under `apps/prism/mods/<game>/` owns game-specific semantics.
+operations have a typed Codex surface; a game's bindings live under
+`apps/modbuilder/bindings/<game>/` and are bundled into the plug. A game
+adapter under `apps/modbuilder/mods/<game>/` owns game-specific semantics.
 Library initialization calls `opening` through a generated engine entry;
 Unity callbacks run on the required engine thread. The standalone C# big-stack
 thread/console wrapper does not run inside Unity. CCE converts at engine I/O.
@@ -517,7 +518,7 @@ foreground patches obscure the spectrum. Opaque depth also obscures it.
 This remains an artistic camera-relative layer, not physical refraction.
 
 The shipped `Sprites/Default` shader multiplies a continuous vertex spectrum
-by an embedded wispy cirrus PNG. `apps/prism/mods/valheim/cirrus-mask.png` was
+by an embedded wispy cirrus PNG. `apps/modbuilder/mods/valheim/cirrus-mask.png` was
 generated with the imagegen skill from Damian's cloud-shape reference; it has
 no baked rainbow. `target-toolchain.ps1` embeds it as
 `PrismGenerated.CirrusMask.png` and records its SHA-256 in the build receipt.
@@ -713,5 +714,5 @@ GT1/GT2 are implemented with focused checks. GT3's packaged bootstrap and
 GT4's playable linked-storage implementation are delivered; their automated
 proofs are recorded above. GT4 still needs full manual mouse/controller
 acceptance. GT5's wire output is implemented; Mac packaging/run remain unverified.
-The owning open-work entry is PRISM-12 in
-`apps/prism/prism-backlog.md`; this table owns acceptance details.
+The owning open-work entry is MB-4 in
+`apps/modbuilder/modbuilder-backlog.md`; this table owns acceptance details.

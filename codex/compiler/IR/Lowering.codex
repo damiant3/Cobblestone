@@ -523,7 +523,8 @@ Section: Expression Lowering
   lower-derived-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
    let func-ir = lower-expr inner-f NoExpectTy ctx
    in let func-ty = deep-resolve (ctx.ust) (ir-expr-type func-ir)
-   in let arg-ir = lower-expr a NoExpectTy ctx
+   in if pname == "__dderiv-Eq" then lower-eq-derived-apply func-ir func-ty a ty ctx sp
+   else let arg-ir = lower-expr a NoExpectTy ctx
    in let arg-ty = deep-resolve (ctx.ust) (ir-expr-type arg-ir)
    in let prefix = if pname == "__dderiv-Show" then "__show_" else "__compare_"
    in let dict-rn = prefix & type-name-of arg-ty
@@ -532,6 +533,83 @@ Section: Expression Lowering
    in let inner-ret = peel-fun-return func-ty
    in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
    in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret) (ctx.local-type-vars)) sp
+
+  lower-eq-derived-apply : IRExpr, CodexType, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-eq-derived-apply (func-ir) (func-ty) (a) (ty) (ctx) (sp) =
+   let arg-ir = lower-expr a NoExpectTy ctx
+   in let bound = strip-unit-ty (deep-resolve (ctx.ust) (peel-fun-param (peel-fun-param func-ty)))
+   in let dict-ir = eq-dict-expr bound ctx sp
+   in let inner-ret = peel-fun-return func-ty
+   in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
+   in lower-apply-dispatch inner-apply arg-ir (prefer-applied-ty ty (peel-fun-return inner-ret) (ctx.local-type-vars)) sp
+
+  eq-dict-ir : CodexType, LowerCtx, SourceSpan -> IRExpr
+  eq-dict-ir (bound) (ctx) (sp) =
+   let fty = deck-record (FunTy bound empty-row (deck-record (FunTy bound empty-row BooleanTy)))
+   in let passed = eq-dict-for-var bound ctx
+   in if text-length passed > 0 then deck-record (IrName passed fty sp)
+   else if eq-ty-is-list bound then deck-record (IrName (eq-helper-name-inst "List" (eq-site-actuals bound)) fty sp)
+   else let tn = type-name-of bound
+   in if tn == "Integer" | tn == "Boolean" | tn == "Text" | tn == "Char" then deck-record (IrName ("__eq_" & tn) fty sp)
+   else let probe = if text-length tn == 0 | is-primitive-type-name tn then ErrorTy
+    else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
+   in when probe
+    is ErrorTy | NoExpectTy -> deck-record (IrError "no Eq dictionary: the type this call binds has no structural equality" fty sp)
+    is otherwise -> deck-record (IrName (if eq-type-has-args bound then eq-helper-name-inst tn (eq-site-actuals bound) else "__eq_" & tn) fty sp)
+
+  eq-dict-expr : CodexType, LowerCtx, SourceSpan -> IRExpr
+  eq-dict-expr (t) (ctx) (sp) =
+   let passed = eq-dict-for-var t ctx
+   in if text-length passed > 0 then deck-record (IrName passed (eqd-dict-ty t) sp)
+   else if ty-has-typevars t == False then eq-dict-ir t ctx sp
+   else let tn = if eq-ty-is-list t then "List" else type-name-of t
+   in if text-length tn == 0 | list-length (eq-type-args-of t) == 0 then deck-record (IrError "no Eq dictionary: a type variable here has no Eq a => in scope" (eqd-dict-ty t) sp)
+   else eqd-helper-ref tn (for a in eq-type-args-of t -> eq-dict-expr (strip-unit-ty (deep-resolve (ctx.ust) a)) ctx sp) t
+
+  eq-type-args-of : CodexType -> List CodexType
+  eq-type-args-of (t) =
+   when t
+    is ListTy (e) -> [e]
+    is otherwise -> if eq-type-has-args t then type-key-args t else []
+
+  eq-needs-dict-helper : CodexType, LowerCtx -> Boolean
+  eq-needs-dict-helper (t) (ctx) =
+   if ty-has-typevars t == False then False
+   else if list-length (eq-type-args-of t) == 0 then False
+   else eq-any-dict-in-scope (ctx.overlay)
+
+  eq-any-dict-in-scope : LookupOverlay -> Boolean
+  eq-any-dict-in-scope (ovl) =
+   when ovl
+    is OverlayNil -> False
+    is OverlayCons (b) (rest) -> if text-starts-with (b.name) "__d-Eq-" then True else eq-any-dict-in-scope rest
+
+  lower-eq-dict-call : CodexType, IRExpr, IRExpr, IRExpr, SourceSpan, Boolean -> IRExpr
+  lower-eq-dict-call (opty) (dict) (left-ir) (right-ir) (s) (positive) =
+   let inner = deck-record (IrApply dict left-ir (deck-record (FunTy opty empty-row BooleanTy)) s)
+   in let call = deck-record (IrApply inner right-ir BooleanTy s)
+   in if positive then call
+      else deck-record (IrIf call (deck-record (IrBoolLit False s)) (deck-record (IrBoolLit True s)) BooleanTy s)
+
+  eq-dict-for-var : CodexType, LowerCtx -> Text
+  eq-dict-for-var (ty) (ctx) =
+   when ty
+    is TypeVar (id) -> eq-dict-in-overlay (ctx.overlay) id ctx
+    is otherwise -> ""
+
+  eq-dict-in-overlay : LookupOverlay, Integer, LowerCtx -> Text
+  eq-dict-in-overlay (ovl) (id) (ctx) =
+   when ovl
+    is OverlayNil -> ""
+    is OverlayCons (b) (rest) ->
+     if text-starts-with (b.name) "__d-Eq-" & eq-dict-binds-var (b.bound-type) id ctx then b.name
+     else eq-dict-in-overlay rest id ctx
+
+  eq-dict-binds-var : CodexType, Integer, LowerCtx -> Boolean
+  eq-dict-binds-var (dty) (id) (ctx) =
+   when deep-resolve (ctx.ust) (peel-fun-param dty)
+    is TypeVar (pid) -> pid == id
+    is otherwise -> False
 
   constrained-dict-rn : Text, Text, LowerCtx -> Text
   constrained-dict-rn (pname) (tn) (ctx) =
@@ -758,7 +836,12 @@ Section: Expression Lowering
    let resolved-left = deep-resolve (ctx.ust) left-ty
    in let tn = type-name-of resolved-left
    in let stripped = strip-unit-ty resolved-left
-   in if eq-ty-is-list stripped
+   in let dict = eq-dict-for-var stripped ctx
+   in if text-length dict > 0
+   then lower-eq-helper-call stripped dict left-ir right-ir s positive
+   else if eq-needs-dict-helper stripped ctx
+   then lower-eq-dict-call stripped (eq-dict-expr stripped ctx s) left-ir right-ir s positive
+   else if eq-ty-is-list stripped
    then lower-eq-helper-call stripped (eq-helper-name-inst "List" (eq-site-actuals stripped)) left-ir right-ir s positive
    else lower-eq-dispatch-named left-ty tn stripped left-ir right-ir ty ctx s positive
 
@@ -773,7 +856,7 @@ Section: Expression Lowering
   lower-eq-dispatch-named : CodexType, Text, CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan, Boolean -> IRExpr
   lower-eq-dispatch-named (left-ty) (tn) (stripped) (left-ir) (right-ir) (ty) (ctx) (s) (positive) =
    let has-args = eq-type-has-args stripped
-   in let probe = if text-length tn == 0 then ErrorTy
+   in let probe = if text-length tn == 0 | is-primitive-type-name tn then ErrorTy
     else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
    in when probe
     is ErrorTy | NoExpectTy -> deck-record (IrBinary (lower-bin-op (eq-op-for positive) left-ty) left-ir right-ir (binary-result-type (eq-op-for positive) left-ty ty) s)

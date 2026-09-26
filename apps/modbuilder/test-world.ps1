@@ -40,7 +40,7 @@ $building=[ordered]@{mode=$Mode;render=[bool]$Render;outDirectory=$out;saves=$Sa
 [IO.File]::WriteAllText((Join-Path $Saves 'prism-world-probe.marker'),'Isolated automated test saves')
 [IO.File]::WriteAllText((Join-Path $Saves 'prism-isolated-test.marker'),'Prism isolated game test')
 $emitter=Join-Path $out 'world-probe.cdx';$probeSource=Join-Path $out 'WorldProbe.cs'
-$probeUnit=Join-Path $repo 'apps/prism/mods/valheim/WorldProbe.codex'
+$probeUnit=Join-Path $repo 'apps/modbuilder/mods/valheim/WorldProbe.codex'
 & pwsh -NoProfile -File (Join-Path $repo 'build/compile.ps1') -Src $probeUnit -Out $emitter -Log (Join-Path $out 'world-probe-compile.log') -Kernel $Kernel
 if($LASTEXITCODE -ne 0){throw 'World acceptance emitter failed'}
 & pwsh -NoProfile -File (Join-Path $repo 'build/test-run.ps1') -Kernel $emitter -OutFile $probeSource

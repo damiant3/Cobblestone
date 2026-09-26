@@ -979,8 +979,6 @@ $actual = [ordered]@{}
 $names = if ($Only) { @($Only) } else { @($expected.Keys) }
 foreach ($n in $names) { if (-not $expected.Contains($n)) { Write-Host "FAIL: no arm '$n'"; exit 1 } }
 if ($SkipOvmf) { $names = @($names | Where-Object { -not $_.StartsWith('ovmf') }) }
-# COMPILER-104: red on every kernel so far; run it by -Only until that row closes.
-if (-not $Only) { $names = @($names | Where-Object { $_ -ne 'ovmf-cad-ps2' }) }
 
 function Judge-Vm([string]$name, [string[]]$lines, [string]$disk, [bool]$wantBank, [string]$bankNote, [hashtable]$states) {
     # ONLY AN ARM BOOTING THE UNMODIFIED SUBJECT CARRIES THE SUBJECT'S CONFIG.

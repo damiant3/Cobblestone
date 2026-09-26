@@ -887,7 +887,7 @@ Section: Check Definition
    in let (_, u-st) = unify (body-r.state) remaining-inner (body-r.inferred-type) (aexpr-span (def.body))
    in let ret-checked = lint-return-narrowing u-st (env2.env) (def.body) (body-r.inferred-type) remaining-inner (aexpr-span (def.body))
    in let effect-checked = check-effect-row-subset ret-checked (declared-performing-row (declared.expected-type) (list-length (def.params))) (body-r.effect-row) grounded (aexpr-span (def.body))
-   in let rigid-checked = check-eq-on-declared-vars (check-declared-rigidity effect-checked (declared.declared-vars) 0 (list-length (declared.declared-vars)) (def.name.value) (def.span)) (if text-starts-with (def.name.value) "__eq_" then [] else declared.declared-vars) eq0
+   in let rigid-checked = check-eq-on-declared-vars (check-declared-rigidity effect-checked (declared.declared-vars) 0 (list-length (declared.declared-vars)) (def.name.value) (def.span)) (if text-starts-with (def.name.value) "__eq_" then [] else declared.declared-vars) (eq-dict-var-of st0 def (declared.expected-type)) eq0
    in let env-type = env-lookup env rn
    in let tied-state = when env-type
         is ForAllTy (id) (body) -> let (_, tied-u) = unify rigid-checked (declared.expected-type) (strip-forall-ty env-type) (def.span) in tied-u
@@ -915,15 +915,62 @@ Section: Check Definition
         else add-unify-error st cdx-body-fixes-declared-var ("the body of '" & name & "' decides a type its own signature leaves to the caller: a declared type variable is fixed by the body to " & type-desc settled & ". A signature variable is the caller's to choose, so the body must answer every choice; if the body only ever answers " & type-desc settled & ", declare that.") span
    in check-declared-rigidity st2 ids (i + 1) len name span
 
-  check-eq-on-declared-vars : UnificationState, List Integer, Integer -> UnificationState
-  check-eq-on-declared-vars (st) (ids) (i) =
-   if list-length ids == 0 then st
-   else if i >= list-length (st.eq-sites) then st
+ An `Eq a =>` definition receives its dictionary as a first parameter named
+ `__d-Eq-<a>`, typed `a -> a -> Boolean`; that `a` is the one variable its body
+ may compare. A site with an empty span is a call's dictionary (the desugarer's
+ `dict-ref-span`), checked here for the type the call binds.
+
+  eq-dict-var-of : UnificationState, ADef, CodexType -> Integer
+  eq-dict-var-of (st) (def) (ty) =
+   if list-length (def.params) == 0 then 0 - 1
+   else if text-starts-with ((list-at (def.params) 0).name.value) "__d-Eq-" == False then 0 - 1
+   else when deep-resolve st (peel-fun-param (peel-fun-param ty))
+    is TypeVar (id) -> id
+    is otherwise -> 0 - 1
+
+  check-eq-on-declared-vars : UnificationState, List Integer, Integer, Integer -> UnificationState
+  check-eq-on-declared-vars (st) (ids) (eq-var) (i) =
+   if i >= list-length (st.eq-sites) then st
    else let site = list-at (st.eq-sites) i
-   in let st2 = if type-mentions-var-in (deep-resolve st (site.ty)) ids
-        then add-unify-error st cdx-eq-on-type-variable eq-on-type-variable-refusal (site.span)
+   in let t = deep-resolve st (site.ty)
+   in let st2 = if is-type-var-id t eq-var then st
+        else if type-mentions-var-in t (int-list-without ids eq-var 0 []) then add-unify-error st cdx-eq-on-type-variable eq-on-type-variable-refusal (site.span)
+        else if eq-var >= 0 & eq-var-shape-ok t eq-var 0 == False then add-unify-error st cdx-eq-on-type-variable eq-on-type-variable-refusal (site.span)
+        else if span-length (site.span) > 0 then st
+        else if is-vector-ty t then vec-eq-error st t (site.span)
+        else if is-real-type t then add-unify-error st cdx-real-equality-banned "This call binds an Eq a => variable to a Real, and floating-point equality is not safe. Compare with ~ or ~0 in a function of your own." (site.span)
+        else if eq-operand-withheld t then add-unify-error st cdx-structural-eq-withheld "This call binds an Eq a => variable to a type with no equality: a field holds a Real, a Vector or a SizedVec, which have no single structural equality." (site.span)
         else st
-   in check-eq-on-declared-vars st2 ids (i + 1)
+   in check-eq-on-declared-vars st2 ids eq-var (i + 1)
+
+  eq-var-shape-ok : CodexType, Integer, Integer -> Boolean
+  eq-var-shape-ok (t) (v) (depth) =
+   if type-mentions-var-in t [v] == False then True
+   else if depth >= 32 then False
+   else when t
+    is TypeVar (id) -> id == v
+    is ListTy (e) -> eq-var-shape-ok e v (depth + 1)
+    is ConstructedTy (n) (as) -> eq-var-shapes-ok as v 0 (depth + 1)
+    is SumTy (n) (as) (cs) -> eq-var-shapes-ok as v 0 (depth + 1)
+    is RecordTy (n) (as) (fs) -> eq-var-shapes-ok as v 0 (depth + 1)
+    is otherwise -> False
+
+  eq-var-shapes-ok : List CodexType, Integer, Integer, Integer -> Boolean
+  eq-var-shapes-ok (as) (v) (i) (depth) =
+   if i >= list-length as then list-length as > 0
+   else if eq-var-shape-ok (list-at as i) v depth then eq-var-shapes-ok as v (i + 1) depth
+   else False
+
+  int-list-without : List Integer, Integer, Integer, List Integer -> List Integer
+  int-list-without (xs) (x) (i) (acc) =
+   if i >= list-length xs then acc
+   else int-list-without xs x (i + 1) (if list-at xs i == x then acc else list-push acc (list-at xs i))
+
+  is-type-var-id : CodexType, Integer -> Boolean
+  is-type-var-id (t) (id) =
+   when t
+    is TypeVar (tid) -> tid == id
+    is otherwise -> False
 
   type-mentions-var-in : CodexType, List Integer -> Boolean
   type-mentions-var-in (ty) (ids) =
@@ -938,7 +985,7 @@ Section: Check Definition
    else int-in-list xs x (i + 1)
 
   eq-on-type-variable-refusal : Text
-  eq-on-type-variable-refusal = "== and /= are refused on a value whose type is a type variable of this definition's signature (or holds one): the body cannot see the type, so the comparison would compare the two values' words, which for Text, a list, a vector or a record are their addresses. Take the comparison as a parameter (an `a, a -> Boolean` argument), or declare the concrete type."
+  eq-on-type-variable-refusal = "== and /= are refused on a value whose type is a type variable of this definition's signature (or holds one): the body cannot see the type, so the comparison would compare the two values' words, which for Text, a list, a vector or a record are their addresses. Declare `Eq a =>` on the signature, take the comparison as a parameter (an `a, a -> Boolean` argument), or declare the concrete type."
 
   lint-return-narrowing : UnificationState, TypeEnv, AExpr, CodexType, CodexType, SourceSpan -> UnificationState
   lint-return-narrowing (st) (env) (body) (body-ty) (ret-ty) (span) =

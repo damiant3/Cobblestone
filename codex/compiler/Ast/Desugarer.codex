@@ -1140,7 +1140,35 @@ Section: Document Desugaring
    else single-instance-head ids class-name (i + 1)
 
   is-derived-class : Text -> Boolean
-  is-derived-class (name) = name == "Show" | name == "Ord"
+  is-derived-class (name) = name == "Show" | name == "Ord" | name == "Eq"
+
+  derived-takes-dict : Text, ATypeExpr, Text -> Boolean
+  derived-takes-dict (cls) (body-type) (tv) =
+   if cls == "Eq" then some-param-mentions-tyvar body-type tv 0
+   else first-param-is-tyvar body-type tv
+
+  some-param-mentions-tyvar : ATypeExpr, Text, Integer -> Boolean
+  some-param-mentions-tyvar (body-type) (tv) (depth) =
+   if depth >= 64 then False
+   else when body-type
+    is AFunType (p) (r) (s) -> if atype-mentions-name p tv 0 then True else some-param-mentions-tyvar r tv (depth + 1)
+    is otherwise -> False
+
+  atype-mentions-name : ATypeExpr, Text, Integer -> Boolean
+  atype-mentions-name (t) (tv) (depth) =
+   if depth >= 64 then False
+   else when t
+    is ANamedType (n) (ns) -> (n.value) == tv
+    is AFunType (p) (r) (s) -> if atype-mentions-name p tv (depth + 1) then True else atype-mentions-name r tv (depth + 1)
+    is AAppType (h) (as) (s) -> if atype-mentions-name h tv (depth + 1) then True else atype-list-mentions-name as tv 0 (depth + 1)
+    is ALinearType (inner) (s) -> atype-mentions-name inner tv (depth + 1)
+    is otherwise -> False
+
+  atype-list-mentions-name : List ATypeExpr, Text, Integer, Integer -> Boolean
+  atype-list-mentions-name (ts) (tv) (i) (depth) =
+   if i >= list-length ts then False
+   else if atype-mentions-name (list-at ts i) tv depth then True
+   else atype-list-mentions-name ts tv (i + 1) depth
 
   first-param-is-tyvar : ATypeExpr, Text -> Boolean
   first-param-is-tyvar (body-type) (tv) =
@@ -1159,18 +1187,20 @@ Section: Document Desugaring
    let tv = deck-record (ANamedType type-var synthetic-span)
    in if cls == "Show"
     then deck-record (AFunType tv (deck-record (ANamedType (make-name "Text") synthetic-span)) synthetic-span)
+    else if cls == "Eq"
+    then deck-record (AFunType tv (deck-record (AFunType tv (deck-record (ANamedType (make-name "Boolean") synthetic-span)) synthetic-span)) synthetic-span)
     else deck-record (AFunType tv (deck-record (AFunType tv (deck-record (ANamedType (make-name "Integer") synthetic-span)) synthetic-span)) synthetic-span)
 
   rewrite-derived-constrained : ADef, Text, Name, ATypeExpr -> ADef
   rewrite-derived-constrained (d) (cls) (type-var) (body-type) =
-   if first-param-is-tyvar body-type (type-var.value) == False
+   if derived-takes-dict cls body-type (type-var.value) == False
     then deck-record (__record-set d "declared-type" [body-type])
    else let dict-param-name = "__d-" & cls & "-" & (type-var.value)
    in let dict-ty = derived-dict-type cls type-var
    in let new-param = deck-record (AParam { name = make-name dict-param-name, span = synthetic-span })
    in let new-params = list-insert-at (d.params) 0 new-param
    in let all-param-names = for p in (d.params) -> p.name.value
-   in let new-body = rewrite-derived-method-calls-scoped (d.body) (derived-class-method cls) dict-param-name all-param-names
+   in let new-body = if cls == "Eq" then d.body else rewrite-derived-method-calls-scoped (d.body) (derived-class-method cls) dict-param-name all-param-names
    in let new-decl = deck-record (AFunType dict-ty body-type synthetic-span)
    in deck-record (ADef {
     name = d.name,
@@ -1334,6 +1364,19 @@ Section: Document Desugaring
     span = synthetic-span
    })
 
+  prim-eq-wrapper : Text -> ADef
+  prim-eq-wrapper (tn) =
+   let xn = make-name "__wx"
+   in let yn = make-name "__wy"
+   in deck-record (ADef {
+    name = make-name ("__eq_" & tn),
+    params = [deck-record (AParam { name = xn, span = synthetic-span }), deck-record (AParam { name = yn, span = synthetic-span })],
+    declared-type = [deck-record (AFunType (named-aty tn) (deck-record (AFunType (named-aty tn) (named-aty "Boolean") synthetic-span)) synthetic-span)],
+    body = deck-record (ABinaryExpr (deck-record (ANameExpr xn synthetic-span)) OpEq (deck-record (ANameExpr yn synthetic-span)) synthetic-span),
+    chapter-slug = "",
+    span = synthetic-span
+   })
+
   chapter-has-constraint : List ADef, Text, Integer, Integer -> Boolean
   chapter-has-constraint (defs) (cls) (i) (len) =
    if i >= len then False
@@ -1349,9 +1392,12 @@ Section: Document Desugaring
    in let with-show = if chapter-has-constraint all-defs "Show" 0 n
         then [prim-show-wrapper "Integer", prim-show-wrapper "Boolean", prim-show-wrapper "Text", prim-show-wrapper "Real"] & base
         else base
-   in if chapter-has-constraint all-defs "Ord" 0 n
-      then [prim-compare-wrapper "Integer", prim-compare-wrapper "Boolean", prim-compare-wrapper "Text", prim-compare-wrapper "Real"] & with-show
-      else with-show
+   in let with-ord = if chapter-has-constraint all-defs "Ord" 0 n
+        then [prim-compare-wrapper "Integer", prim-compare-wrapper "Boolean", prim-compare-wrapper "Text", prim-compare-wrapper "Real"] & with-show
+        else with-show
+   in if chapter-has-constraint all-defs "Eq" 0 n
+      then [prim-eq-wrapper "Integer", prim-eq-wrapper "Boolean", prim-eq-wrapper "Text", prim-eq-wrapper "Char"] & with-ord
+      else with-ord
 
   collect-class-method-names : List ClassDef, Text, Integer, Integer, List Text -> List Text
   collect-class-method-names (cds) (class-name) (i) (len) (acc) =
@@ -1571,7 +1617,7 @@ Section: Document Desugaring
    in when ty
     is AConstrainedType (class-name) (type-var) (body-type) (sp) ->
      if is-derived-class (class-name.value)
-      then if first-param-is-tyvar body-type (type-var.value)
+      then if derived-takes-dict (class-name.value) body-type (type-var.value)
         then collect-constrained-names defs cds ids (i + 1) len (list-push acc (ConstrainedFnInfo { fn-name = d.name.value, dict-name = "__dderiv-" & (class-name.value) }))
         else collect-constrained-names defs cds ids (i + 1) len acc
       else let ic = count-class-instances ids (class-name.value) 0 (list-length ids) 0
@@ -1607,7 +1653,7 @@ Section: Document Desugaring
       is ANameExpr (n) (ns) ->
        let dict = lookup-constrained-dict (n.value) info 0 (list-length info)
        in if dict == "" then deck-record (AApplyExpr func new-arg s)
-       else let dict-ref = deck-record (ANameExpr (make-name dict) synthetic-span)
+       else let dict-ref = deck-record (ANameExpr (make-name dict) (dict-ref-span dict ns))
         in let with-dict = deck-record (AApplyExpr func dict-ref s)
         in deck-record (AApplyExpr with-dict new-arg s)
       is otherwise -> deck-record (AApplyExpr (insert-dict-refs func info) new-arg s)
@@ -1621,6 +1667,16 @@ Section: Document Desugaring
     is AActExpr (stmts) (s) ->
      deck-record (AActExpr (insert-dict-refs-stmts stmts info 0 (list-length stmts) []) s)
     is otherwise -> expr
+
+ The Eq dictionary is checked at the call, so its reference carries a place to
+ report: an empty span at the callee's start. Empty, because the checker keys a
+ recorded type by start and length, and the callee's own entry at that start is
+ what lowering reads to resolve the dictionary.
+
+  dict-ref-span : Text, SourceSpan -> SourceSpan
+  dict-ref-span (dict) (ns) =
+   if dict == "__dderiv-Eq" then make-span (ns.start) (ns.start) (ns.file-id) (ns.provenance)
+   else synthetic-span
 
   insert-dict-refs-stmts : List AActStmt, List ConstrainedFnInfo, Integer, Integer, List AActStmt -> List AActStmt
   insert-dict-refs-stmts (stmts) (info) (i) (len) (acc) =

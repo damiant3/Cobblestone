@@ -227,13 +227,13 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**72 applications, 1,190 modules**, all written in Codex and compiled by
+**73 applications, 1,196 modules** (2026-09-25), all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
-**Test battery: 2,142 tests, 2,085 pass, 0 fail, 57 declared exclusions**
+**Test battery: 2,034 tests, 1,978 pass, 0 fail, 56 declared exclusions**
 (poison run of the release source, 2026-09-25, release seed
-`C74F10419BA0DB66`).
+`533C6D630D8660E6`).
 The BVT subset that `build/build.ps1`
 gates on is 81 tests, compiled and then run where an `.expected` exists,
 for 147 checks; it took 38.3 seconds on the release seed.
@@ -242,14 +242,14 @@ for 147 checks; it took 38.3 seconds on the release seed.
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,760,588 bytes, 2026-09-25, the Update 63 release seed) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,791,766 bytes, 2026-09-25, generic equality by dictionary passing, GenericEquality.md) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `B5674034F877DDA0` |
-| SHA-256 | `C74F10419BA0DB66DF3337C0FDDC2366FBB705FE3FDA8F2D501423AFC0BEAD32` |
-| MD5 | `21667BF49F0DE8CE85562F46328E6CC4` |
+| Content hash prefix | `7A0BBE5303D3C79F` |
+| SHA-256 | `533C6D630D8660E673529A07486BC28CDB186AA79C6F44D6C92D2D541199759E` |
+| MD5 | `0E05FB695E3674D04F31AAE378A34E8D` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -261,7 +261,7 @@ font selection and notices are documented in [fonts/README.md](fonts/README.md).
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `7571205E42FD9F072C76028084D6D95EE9619847D0AE60C27F01719C71E39FB3` |
+| SHA-256 | `0F4BD6BA5203E8303671C1B3FE9AE473CE81599C6DD07C62199136A466454512` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -285,7 +285,7 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `FD3FA5D717E309CA8D075E70AE585ED8A727BC856B1F8244897D70818A961785` |
+| SHA-256 | `04736D4C0CFC61F504BF3E2E1C89175561B19BD1E8E80DD22C924006C8559844` |
 
 All 57 rehearsal arms passed on Codex VM and QEMU/OVMF on 2026-09-25,
 using a 180-second minimum VM-arm allowance. The shipping check confirmed
@@ -601,9 +601,9 @@ codex/
   foreword/      441 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (165 modules)
-  plugs/         57 plugs, 209 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (2,028 files)
-apps/            72 applications, 1,190 modules
+  plugs/         57 plugs, 204 source modules -- IR-text-driven emitters
+  test/          Compiler samples + OS integration tests (2,035 files)
+apps/            73 applications, 1,196 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -637,7 +637,7 @@ non-blank lines, including comments and markup.
 |---|---:|---:|---:|---:|
 | `apps/` | 1,158 | 210,502 | 13,774 | 38,878 |
 | `codex/foreword/` | 439 | 61,643 | 7,231 | 14,584 |
-| `codex/test/` | 2,028 | 68,000 | 10,381 | 16,575 |
+| `codex/test/` | 2,035 | 68,000 | 10,381 | 16,575 |
 | `codex/plugs/` | 262 | 63,515 | 5,726 | 9,988 |
 | `codex/compiler/` | 68 | 45,246 | 6,145 | 9,482 |
 | `codex/os/` | 162 | 24,698 | 2,416 | 5,950 |

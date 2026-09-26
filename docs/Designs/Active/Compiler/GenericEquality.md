@@ -1,7 +1,31 @@
 # Generic equality by dictionary passing
 
-*Proposal, val 2026-09-25, for after Update 63 (Damian, via root). Docs only.
-Every claim about the compiler cites the line it was read from on main 29009.*
+*val 2026-09-25. BUILT on shelf 29042, proven (scratch fixed point, BVT, cite-gate,
+arm64 and riscv64 cross runs); lands after Update 63 (Damian, via root). The line
+citations below were read on main 29009 and describe the tree before the build.*
+
+## As built
+
+- The call site reads the dictionary's own type: at `f __dderiv-Eq x`, the
+  callee's recorded type is instantiated (`infer-name` records the instantiated
+  type, and the tail resolves it against the final substitution), so its first
+  parameter is `T -> T -> Boolean` and `T` is the bound type. No signature
+  matching is needed.
+- The call's dictionary reference carries an EMPTY span at the callee's start
+  (`dict-ref-span`), and the checker records it as an eq-site; the per-definition
+  pass (`check-eq-on-declared-vars`) refuses it at CDX2085, CDX2099 or CDX2100
+  as for `==` on the bound type.
+- Primitive dictionaries are desugarer wrappers `__eq_Integer`, `__eq_Boolean`,
+  `__eq_Text`, `__eq_Char`, minted in a chapter carrying an `Eq` constraint.
+- `__eqd_<T>` is the emitter's helper for T at SLOT actuals (type variables at
+  the top of the id range), one dictionary parameter per type parameter.
+- A generic type whose FIELD holds the constrained variable below a second
+  constructor (a field `Maybe (List a)`) would need a closure inside a helper
+  minted after lambda lifting; the helper refuses it as an IR error at emit, not
+  as CDX2100. At a user call site the same nesting is legal and builds the
+  closure there (`List (List a)` is in the acceptance chapter).
+- Acceptance: `codex/test/generic-eq` (30 rows, each beside the direct `==`);
+  refusals `codex/test/errors/generic-eq-{real,withheld,vector,unconstrained,shape}`.
 
 ## The problem, and what ships first
 
@@ -14,8 +38,7 @@ for `same 7 7` (COMPILER-103). The cause is `lower-eq-dispatch`
 falls back to `IrBinary IrEq`, which x86-64 emits as a register compare
 (`Emit/X86_64.codex:3033-3043`).
 
-The refusal ships first (blu; not yet on main at 29009, so CDX2100 is not in
-`Core/CdxCodes.codex` in this tree): `==` and `/=` on a type variable of the
+The refusal shipped first (blu, main 29046): `==` and `/=` on a type variable of the
 definition's signature are CDX2100. **This design is what replaces that
 refusal for a signature that asks for equality**, and it leaves the refusal in
 place for one that does not.

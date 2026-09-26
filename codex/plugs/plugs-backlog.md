@@ -800,6 +800,8 @@ address 2^31, which is the mask value that row passes, so an Integer is being us
 `builtins` +0x481C in the ELF map. x86-64 prints all seven rows. The fixture carries `.arch-only` x86-64 until
 this is fixed; acceptance is that sidecar deleted and the fixture green on arm64 against its `.expected`.
 
+**Localized (reek, 2026-09-25, plug B5DA7562, seed 7AA234B4): it is 2.73's frame cliff, not an Integer used as an address.** The faulting instruction is `str x12, [sp, #3696]`, a spill to slot 462 just after a 32-byte heap allocation, inside `builtins` (`codex/compiler/Types/Builtins.codex`, one list literal of 313 `BuiltinSpec` records; the fixture reaches it through the X86-64 emitter chapters it cites). FAR 2^31 is the top of QEMU's 1 GiB RAM, so the slot lies past the top of the stack: the frame reserves fewer slots than the function spills (inferred from the address; the prologue was not read), and the mask value is a coincidence. A probe that only appends `li reg-rdi 2147483648` to a fresh emit workspace faults identically, after `li` has returned the right ten bytes. Fixed by the frame repair 2.73 waits on (blu's prologue guard), after which the fixture is re-run here with the sidecar deleted.
+
 ## 2.82 -- OPEN (val, 2026-09-25): no runner grades the wasm plug's 256-bit vector refusal
 
 The wasm plug turns every `vec8-`, `vec4d-`, `mask8-` and `mask4d-` name, and any vector arithmetic or

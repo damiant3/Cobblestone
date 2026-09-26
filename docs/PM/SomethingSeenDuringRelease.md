@@ -29,6 +29,19 @@ count does.
 
 ## Done
 
+### Update 64 -- a second release on one day killed the box sampler at launch
+
+Step 0a named its output `box-release-<date>.csv`. Update 63 had shipped
+that morning, so the name was Update 63's submitted, read-only record; the
+sampler exited on its first write and nothing said so, and the gate, battery,
+sweep, poison battery and DDC ran unsampled. The skill's command now names
+the Update number (`box-release-<date>-u<N>.csv`). After launching, check the
+file grows:
+
+```powershell
+Get-Item docs/Agents/box-release-*-u<N>.csv | Select-Object Length, LastWriteTime
+```
+
 ### Update 63 -- four text guards were red at head, and only the full gate runs them
 
 Found at step 0b, 2026-09-25, one guard per gate attempt: `check-backlog-ids`

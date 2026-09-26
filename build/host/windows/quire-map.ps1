@@ -35,7 +35,7 @@ $QuireDirs = @{
     'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
     'Spark' = 'apps\spark'; 'Data' = 'apps\data'
     'Sheets' = 'apps\sheets'
-    'Prism' = 'apps\prism'; 'Valheim' = 'apps\prism\mods\valheim'
+    'Prism' = 'apps\prism'; 'Valheim' = 'apps\modbuilder\mods\valheim'
     'Csharp' = 'codex\plugs\csharp'
     'WaDemo' = 'apps\wademo'
     'Explorer' = 'apps\explorer'; 'FontExplorer' = 'apps\fontexplorer'

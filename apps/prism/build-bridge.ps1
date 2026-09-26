@@ -47,7 +47,7 @@ if (-not (Test-Path -PathType Container $Root)) {
     Write-Host "REFUSE: -Root is not a directory: $Root"; exit 2
 }
 $Root = (Resolve-Path $Root).Path
-. (Join-Path $PSScriptRoot 'target-toolchain.ps1')
+. (Join-Path $PSScriptRoot '../modbuilder/target-toolchain.ps1')
 
 # A token the caller cannot guess. New every run: a bridge you restarted is a
 # bridge whose old token stops working, which is the behaviour you want if you

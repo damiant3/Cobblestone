@@ -1,0 +1,10 @@
+# ModBuilder -- open work
+
+The app's register. The plan, the milestones and the campaign are
+`docs/Designs/Active/Apps/ModBuilder.md`; a closed row is deleted.
+
+| # | item | state |
+|---|---|---|
+| MB-1 | **Publish the site at `modbuilder.cobblestoneproject.com`.** `site/` is the pitch page: `site/ModBuilderPage.codex` generates `site/index.html` through the html plug (`site/build.ps1`; edit the chapter, never the HTML), with six illustrations from Diffusion Forge, credited in its footer. Needs a Pages repository for the subdomain with a `CNAME` file, and a Cloudflare CNAME record `modbuilder` pointing at `damiant3.github.io` (Damian). The page carries a "Draft for review" ribbon and proposed campaign figures; both change before it goes public. | open, waits on Damian's DNS record and figures |
+| MB-4 | **Valheim acceptance.** Measured 2026-09-22: Windows Valheim emits one DLL from typed Codex models and C# interop. Linked construction pools and upgrades, including warning colors, pass focused checks. Natural Meadows neck populations retain initial spawns; clearance starts a persistent random 7-14 Valheim-day cooldown, tested across reload. The distant wispy arc shows 09:00-15:00 on days 1, 8, 15 and on, in clear weather only (Damian's rulings, 2026-09-23; artistic, not physical), installed as build 20260924.013121. GT4 still needs full manual mouse/controller acceptance. Solo/recipe limits, deployment identity and receipts are owned by `design/Active/GameTargets.md`. The Mac target is PRISM-13 (`apps/prism/prism-backlog.md`). | open |
+| MB-5 | **M1: the Targets panel and `#mod=` leave Prism.** Both still live in `codex/plugs/wasm/page/prism.html` (`showTargets`, `targetEmit`, `composeMod`, `modFromHash`) because they run in Prism's compile workspace (the compiler module, unit assembly, `unity-stdio.wasm`). They move when ModBuilder has a page that hosts that workspace; `mods.html` then links there instead of `prism.html#mod=`, and the `#mod=` comment in `prism.html` stops naming `apps/prism/mods`. `apps/prism/test-targets.cjs` grades the panel and moves with it. | open, M1 |

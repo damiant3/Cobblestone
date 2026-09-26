@@ -79,7 +79,7 @@ async function main() {
   assert.doesNotMatch(cs, /class PrismCircumhorizontalArc/);
   const demo = assetContext.window.__TEMPLATES.ValheimLinkedStorage;
   assert.ok(demo && demo.files['LinkedStorage.codex'] && demo.files['ValheimStorage.codex']);
-  for (const [name,text] of Object.entries(demo.files)) assert.equal(text,fs.readFileSync(path.join(repo,'apps/prism/mods/valheim',name),'utf8').replace(/\r\n/g,'\n'));
+  for (const [name,text] of Object.entries(demo.files)) assert.equal(text,fs.readFileSync(path.join(repo,'apps/modbuilder/mods/valheim',name),'utf8').replace(/\r\n/g,'\n'));
   const originalUnit = ctx.assembleUnit;
   ctx.assembleUnit = () => ({text:Object.values(demo.files).join('\n'),regions:[]});
   const mod = await ctx.targetEmit(unity);

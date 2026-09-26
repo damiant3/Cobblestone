@@ -3234,7 +3234,7 @@ Section: Recursive Structural Equality Helpers
  how both compare their field, which compares an Integer with __str_eq.
 
   eq-req-name : EqHelperReq -> Text
-  eq-req-name (req) = eq-helper-name-inst (req.eq-sum-name) (req.eq-sum-actuals)
+  eq-req-name (req) = if eq-req-is-dict req then eqd-helper-name (req.eq-sum-name) else eq-helper-name-inst (req.eq-sum-name) (req.eq-sum-actuals)
 
   eq-req-has : List EqHelperReq, Text, Integer -> Boolean
   eq-req-has (xs) (n) (i) =
@@ -3266,6 +3266,7 @@ Section: Recursive Structural Equality Helpers
   eq-note-site : CodegenState, CodexType, List EqHelperReq, Integer -> List EqHelperReq
   eq-note-site (st) (ty) (acc) (fuel) =
    if fuel <= 0 then acc
+   else if eqd-mentions-slot ty fuel then eqd-note-slotted st ty acc fuel
    else let actuals = eq-site-actuals ty
    in let resolved = strip-unit-ty (resolve-to-sum-with-defs st ty)
    in when resolved
@@ -3323,7 +3324,10 @@ Section: Recursive Structural Equality Helpers
     is IrIntLit (n) (sp) | IrNumLit (n) (sp) -> acc
     is IrTextLit (s) (sp) -> acc
     is IrBoolLit (b) (sp) | IrCharLit (c) (sp) -> acc
-    is IrName (n) (ty) (sp) -> acc
+    is IrName (n) (ty) (sp) ->
+     if text-starts-with n "__eq_" & text-contains n "@" then eq-note-type st (peel-fun-param ty) acc
+     else if text-starts-with n "__eqd_" then eqd-request st (eqd-operand-ty ty eq-rec-fuel) acc
+     else acc
     is IrError (m) (ty) (sp) -> acc
     is IrBinary (op) (l) (r) (ty) (sp) ->
      let noted = if eq-op-is-equality op then eq-note-type st (ir-expr-type l) acc else acc
@@ -3419,9 +3423,186 @@ Section: Recursive Structural Equality Helpers
    in if i + 1 >= n then one
    else deck-record (IrBinary IrAnd one (eq-helper-field-conj st fs (i + 1) n) BooleanTy synthetic-span)
 
+ A DICTIONARY-TAKING HELPER `__eqd_<T>` (docs/Designs/Active/Compiler/
+ GenericEquality.md) is the helper for T instantiated at SLOTS: type variables
+ at the top of the id range, which no checker id reaches, one per type
+ parameter. The helper takes one dictionary per slot, `__eqdict<i>`, and a
+ field at slot i is compared by calling it. Only the canonical instantiation,
+ slots 0..k-1 in order, is minted; a call at other actuals passes their
+ dictionaries. A field whose type holds a slot below another constructor
+ cannot be compared without building a closure, which a helper minted after
+ lambda lifting must not do, so the checker refuses such a type.
+
+  eqd-slot-base : Integer
+  eqd-slot-base = 4294967040
+
+  eqd-slot-ty : Integer -> CodexType
+  eqd-slot-ty (i) = deck-record (TypeVar (__narrow (eqd-slot-base + i)))
+
+  eqd-slots : Integer, Integer, List CodexType -> List CodexType
+  eqd-slots (i) (n) (acc) =
+   if i >= n then acc
+   else eqd-slots (i + 1) n (list-push acc (eqd-slot-ty i))
+
+  eqd-slot-index : CodexType -> Integer
+  eqd-slot-index (ty) =
+   when ty
+    is TypeVar (id) -> if id >= eqd-slot-base then id - eqd-slot-base else 0 - 1
+    is otherwise -> 0 - 1
+
+  eqd-mentions-slot : CodexType, Integer -> Boolean
+  eqd-mentions-slot (ty) (fuel) =
+   if fuel <= 0 then False
+   else if eqd-slot-index ty >= 0 then True
+   else when ty
+    is ListTy (e) -> eqd-mentions-slot e (fuel - 1)
+    is ConstructedTy (n) (as) -> eqd-any-slot as 0 (fuel - 1)
+    is SumTy (n) (as) (cs) -> eqd-any-slot as 0 (fuel - 1)
+    is RecordTy (n) (as) (fs) -> eqd-any-slot as 0 (fuel - 1)
+    is otherwise -> False
+
+  eqd-any-slot : List CodexType, Integer, Integer -> Boolean
+  eqd-any-slot (as) (i) (fuel) =
+   if i >= list-length as then False
+   else if eqd-mentions-slot (list-at as i) fuel then True
+   else eqd-any-slot as (i + 1) fuel
+
+  eq-req-is-dict : EqHelperReq -> Boolean
+  eq-req-is-dict (req) =
+   if list-length (req.eq-sum-actuals) == 0 then False
+   else eqd-slot-index (list-at (req.eq-sum-actuals) 0) == 0
+
+  eqd-helper-name : Text -> Text
+  eqd-helper-name (sn) = deck-record ("__eqd_" & sn)
+
+  eqd-dict-ty : CodexType -> CodexType
+  eqd-dict-ty (t) = deck-record (FunTy t empty-row (deck-record (FunTy t empty-row BooleanTy)))
+
+  eqd-dict-params : EqHelperReq -> List IRParam
+  eqd-dict-params (req) =
+   if eq-req-is-dict req == False then []
+   else for a in (req.eq-sum-actuals) -> deck-record (IRParam { name = deck-record ("__eqdict" & show (eqd-slot-index a)), type-val = eqd-dict-ty a, span = synthetic-span })
+
+  eqd-dict-args : EqHelperReq -> List IRExpr
+  eqd-dict-args (req) =
+   if eq-req-is-dict req == False then []
+   else for a in (req.eq-sum-actuals) -> eq-ir-name (deck-record ("__eqdict" & show (eqd-slot-index a))) (eqd-dict-ty a)
+
+ The type a slot-free operand is compared at, as a dictionary: the desugarer's
+ primitive wrappers, or the helper `emit-eq-op` would call for it.
+
+  eqd-concrete-dict : CodegenState, CodexType -> IRExpr
+  eqd-concrete-dict (st) (t) =
+   let resolved = strip-unit-ty (resolve-to-sum-with-defs st t)
+   in let nm = when resolved
+     is IntegerTy (lo) (hi) (m) -> "__eq_Integer"
+     is TextTy -> "__eq_Text"
+     is BooleanTy -> "__eq_Boolean"
+     is CharTy -> "__eq_Char"
+     is ListTy (e) -> eq-helper-name-inst "List" [e]
+     is SumTy (sn) (as) (cs) -> if list-length (eq-site-actuals t) > 0 then eq-helper-name-inst (sn.value) (eq-site-actuals t) else eq-helper-name (sn.value)
+     is RecordTy (rn) (as) (fs) -> if list-length (eq-site-actuals t) > 0 then eq-helper-name-inst (rn.value) (eq-site-actuals t) else eq-helper-name (rn.value)
+     is otherwise -> ""
+   in if text-length nm == 0 then deck-record (IrError "no equality for a type argument of a dictionary-taking equality helper" (eqd-dict-ty t) synthetic-span)
+   else eq-ir-name nm (eqd-dict-ty t)
+
+  eqd-arg-dict : CodegenState, CodexType -> IRExpr
+  eqd-arg-dict (st) (t) =
+   let i = eqd-slot-index t
+   in if i >= 0 then eq-ir-name (deck-record ("__eqdict" & show i)) (eqd-dict-ty t)
+   else if eqd-mentions-slot t eq-rec-fuel then deck-record (IrError "a type argument holding a type variable below another constructor needs a closure; the checker refuses this type" (eqd-dict-ty t) synthetic-span)
+   else eqd-concrete-dict st t
+
+  eqd-full-ty : List IRExpr, Integer, CodexType -> CodexType
+  eqd-full-ty (ds) (i) (tail) =
+   if i >= list-length ds then tail
+   else deck-record (FunTy (ir-expr-type (list-at ds i)) empty-row (eqd-full-ty ds (i + 1) tail))
+
+  eqd-apply-all : IRExpr, CodexType, List IRExpr, Integer -> IRExpr
+  eqd-apply-all (f) (fty) (xs) (i) =
+   if i >= list-length xs then f
+   else let rty = peel-fun-return fty
+   in eqd-apply-all (deck-record (IrApply f (list-at xs i) rty synthetic-span)) rty xs (i + 1)
+
+  eqd-helper-ref : Text, List IRExpr, CodexType -> IRExpr
+  eqd-helper-ref (tn) (dicts) (t) =
+   let full = eqd-full-ty dicts 0 (eqd-dict-ty t)
+   in eqd-apply-all (eq-ir-name (eqd-helper-name tn) full) full dicts 0
+
+  eqd-type-args : CodexType -> List CodexType
+  eqd-type-args (t) =
+   when t
+    is ListTy (e) -> [e]
+    is ConstructedTy (n) (as) -> as
+    is SumTy (n) (as) (cs) -> as
+    is RecordTy (n) (as) (fs) -> as
+    is otherwise -> eq-empty-type-args
+
+  eqd-type-name : CodegenState, CodexType -> Text
+  eqd-type-name (st) (t) =
+   when strip-unit-ty (resolve-to-sum-with-defs st t)
+    is ListTy (e) -> "List"
+    is SumTy (sn) (as) (cs) -> sn.value
+    is RecordTy (rn) (as) (fs) -> rn.value
+    is otherwise -> ""
+
+  eqd-field-eq : CodegenState, CodexType, IRExpr, IRExpr -> IRExpr
+  eqd-field-eq (st) (fty) (lhs) (rhs) =
+   let i = eqd-slot-index fty
+   in let tn = eqd-type-name st fty
+   in let dict = if i >= 0 then eqd-arg-dict st fty
+    else if text-length tn == 0 then deck-record (IrError "a dictionary-taking equality helper met a field type it cannot compare" (eqd-dict-ty fty) synthetic-span)
+    else eqd-helper-ref tn (for a in eqd-type-args fty -> eqd-arg-dict st a) fty
+   in let inner = deck-record (IrApply dict lhs (deck-record (FunTy fty empty-row BooleanTy)) synthetic-span)
+   in deck-record (IrApply inner rhs BooleanTy synthetic-span)
+
+  eqd-request : CodegenState, CodexType, List EqHelperReq -> List EqHelperReq
+  eqd-request (st) (t) (acc) =
+   let resolved = strip-unit-ty (resolve-to-sum-with-defs st t)
+   in when resolved
+    is ListTy (e) ->
+     if eq-req-has acc (eqd-helper-name "List") 0 then acc
+     else list-push acc (deck-record (EqHelperReq { eq-sum-name = "List", eq-sum-ty = deck-record (ListTy (eqd-slot-ty 0)), eq-sum-actuals = [eqd-slot-ty 0], eq-sum-ctors = [] }))
+    is SumTy (sn) (formals) (cs) ->
+     if list-length formals == 0 | eq-req-has acc (eqd-helper-name (sn.value)) 0 then acc
+     else list-push acc (deck-record (EqHelperReq { eq-sum-name = sn.value, eq-sum-ty = resolved, eq-sum-actuals = eqd-slots 0 (list-length formals) [], eq-sum-ctors = cs }))
+    is RecordTy (rn) (formals) (fs) ->
+     if list-length formals == 0 | eq-req-has acc (eqd-helper-name (rn.value)) 0 then acc
+     else list-push acc (deck-record (EqHelperReq { eq-sum-name = rn.value, eq-sum-ty = resolved, eq-sum-actuals = eqd-slots 0 (list-length formals) [], eq-sum-ctors = [] }))
+    is otherwise -> acc
+
+  eqd-note-slotted : CodegenState, CodexType, List EqHelperReq, Integer -> List EqHelperReq
+  eqd-note-slotted (st) (ty) (acc) (fuel) =
+   if eqd-slot-index ty >= 0 then acc
+   else eqd-note-args st (eqd-type-args ty) 0 (eqd-request st ty acc) fuel
+
+  eqd-note-args : CodegenState, List CodexType, Integer, List EqHelperReq, Integer -> List EqHelperReq
+  eqd-note-args (st) (as) (i) (acc) (fuel) =
+   if i >= list-length as then acc
+   else let a = list-at as i
+   in let acc2 = if eqd-mentions-slot a eq-rec-fuel then acc else eq-note-site st a acc (fuel - 1)
+   in eqd-note-args st as (i + 1) acc2 fuel
+
+ The operand type of a `__eqd_<T>` reference, whatever its dictionary
+ parameters: the parameter of the last arrow before `Boolean`.
+
+  eqd-operand-ty : CodexType, Integer -> CodexType
+  eqd-operand-ty (ty) (fuel) =
+   if fuel <= 0 then ErrorTy
+   else when ty
+    is FunTy (p) (row) (r) ->
+     (when r
+       is FunTy (q) (row2) (r2) ->
+        (when r2
+          is BooleanTy -> p
+          is otherwise -> eqd-operand-ty r (fuel - 1))
+       is otherwise -> ErrorTy)
+    is otherwise -> ErrorTy
+
   eq-helper-field-eq : CodegenState, CodexType, IRExpr, IRExpr -> IRExpr
   eq-helper-field-eq (st) (fty) (lhs) (rhs) =
-   let resolved = strip-unit-ty (resolve-to-sum-with-defs st fty)
+   if eqd-mentions-slot fty eq-rec-fuel then eqd-field-eq st fty lhs rhs
+   else let resolved = strip-unit-ty (resolve-to-sum-with-defs st fty)
    in let plain = deck-record (IrBinary IrEq lhs rhs BooleanTy synthetic-span)
    in when resolved
     is ListTy (e) ->
@@ -3529,7 +3710,9 @@ Section: Recursive Structural Equality Helpers
    in let t3 = eq-fun1-ty eq-list-int-ty (eq-fun1-ty eq-list-int-ty BooleanTy)
    in let t2 = eq-fun1-ty lty t3
    in let t1 = eq-fun1-ty lty t2
-   in let a1 = deck-record (IrApply (eq-ir-name (eq-list-loop-name req) t1) xs t2 synthetic-span)
+   in let dicts = eqd-dict-args req
+   in let t0 = eqd-full-ty dicts 0 t1
+   in let a1 = deck-record (IrApply (eqd-apply-all (eq-ir-name (eq-list-loop-name req) t0) t0 dicts 0) xs t2 synthetic-span)
    in let a2 = deck-record (IrApply a1 ys t3 synthetic-span)
    in let a3 = deck-record (IrApply a2 i (eq-fun1-ty eq-list-int-ty BooleanTy) synthetic-span)
    in deck-record (IrApply a3 n BooleanTy synthetic-span)
@@ -3547,7 +3730,7 @@ Section: Recursive Structural Equality Helpers
    in let entry-body = deck-record (IrIf same-len walk no BooleanTy synthetic-span)
    in deck-record (IRDef {
     name = eq-req-name req,
-    params = [
+    params = eqd-dict-params req & [
       deck-record (IRParam { name = "__eqa", type-val = lty, span = synthetic-span }),
       deck-record (IRParam { name = "__eqb", type-val = lty, span = synthetic-span })
      ],
@@ -3581,7 +3764,7 @@ Section: Recursive Structural Equality Helpers
    in let loop-body = deck-record (IrIf done yes inner-if BooleanTy synthetic-span)
    in deck-record (IRDef {
     name = eq-list-loop-name req,
-    params = [
+    params = eqd-dict-params req & [
       deck-record (IRParam { name = "__eqa", type-val = lty, span = synthetic-span }),
       deck-record (IRParam { name = "__eqb", type-val = lty, span = synthetic-span }),
       deck-record (IRParam { name = "__eqi", type-val = eq-list-int-ty, span = synthetic-span }),
@@ -3611,7 +3794,7 @@ Section: Recursive Structural Equality Helpers
      is otherwise -> req.eq-sum-ty
    in deck-record (IRDef {
     name = eq-req-name req,
-    params = [
+    params = eqd-dict-params req & [
       deck-record (IRParam { name = "__eqa", type-val = sty, span = synthetic-span }),
       deck-record (IRParam { name = "__eqb", type-val = sty, span = synthetic-span })
      ],
@@ -3672,7 +3855,7 @@ Section: Recursive Structural Equality Helpers
      is otherwise -> req.eq-sum-ty
    in deck-record (IRDef {
     name = eq-req-name req,
-    params = [
+    params = eqd-dict-params req & [
       deck-record (IRParam { name = "__eqa", type-val = rty, span = synthetic-span }),
       deck-record (IRParam { name = "__eqb", type-val = rty, span = synthetic-span })
      ],

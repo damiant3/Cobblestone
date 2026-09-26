@@ -74,7 +74,7 @@ function Invoke-PrismTarget {
         $receipt.features = @(foreach ($f in $present) {
             [ordered]@{
                 id = $f.id
-                sources = @(foreach ($s in $f.sources) { [ordered]@{ path = 'apps/prism/mods/' + $target.game + '/' + $s; sha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot ('mods/' + $target.game + '/' + $s))).Hash } })
+                sources = @(foreach ($s in $f.sources) { [ordered]@{ path = 'apps/modbuilder/mods/' + $target.game + '/' + $s; sha256 = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot ('mods/' + $target.game + '/' + $s))).Hash } })
                 gameAssembly = $receipt.gameAssembly
                 unityPlayer = $receipt.unityPlayer
             }
@@ -112,7 +112,7 @@ function Invoke-PrismTarget {
         $mask = Join-Path $PSScriptRoot 'mods/valheim/cirrus-mask.png'
         if (-not (Test-Path -LiteralPath $mask -PathType Leaf)) { throw 'Missing cirrus mask asset' }
         $argsList.Add('-resource:' + $mask + ',PrismGenerated.CirrusMask.png')
-        $receipt.resources = @(@{name='PrismGenerated.CirrusMask.png';path='apps/prism/mods/valheim/cirrus-mask.png';sha256=(Get-FileHash -LiteralPath $mask).Hash})
+        $receipt.resources = @(@{name='PrismGenerated.CirrusMask.png';path='apps/modbuilder/mods/valheim/cirrus-mask.png';sha256=(Get-FileHash -LiteralPath $mask).Hash})
     }
     foreach ($ref in $refs) {
         $path = Join-Path $managed $ref

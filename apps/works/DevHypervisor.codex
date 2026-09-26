@@ -66,10 +66,34 @@ Section: VMX Capability MSRs
   vmx-adjust-control : Integer, Integer -> Integer
   vmx-adjust-control (msr-index) (desired) =
     if vmx-available == False then desired
-    else let raw = rdmsr msr-index
-    in let must-be-1 = bit-and raw msr-low32-mask
+    else vmx-adjust-raw (rdmsr msr-index) desired
+
+  vmx-adjust-raw : Integer, Integer -> Integer
+  vmx-adjust-raw (raw) (desired) =
+    let must-be-1 = bit-and raw msr-low32-mask
     in let allowed-1 = bit-shru raw 32
     in bit-and (bit-or desired must-be-1) allowed-1
+
+ Pin-based bit 6 activates the VMX-preemption timer (Intel SDM, pin-based
+ VM-execution controls). It
+ counts down from the guest-state field 0x482E at the TSC rate shifted right by
+ IA32_VMX_MISC bits 4:0, and exits with reason 52 at zero. The exit control
+ that saves the timer is left clear, so every entry reloads the full count: the
+ timer bounds the time between exits, and max-exits bounds their number. The
+ count is the field's maximum, about 2^37 to 2^39 TSC cycles on the parts we
+ know, so a slow but live guest is not cut short.
+
+  vmx-pin-preempt-timer : Integer = 64
+  vmcs-preempt-timer-value : Integer = 18478
+  vmx-preempt-count : Integer = 4294967295
+
+  vmx-preempt-armed : Integer -> Boolean
+  vmx-preempt-armed (pin) = bit-and pin vmx-pin-preempt-timer /= 0
+
+  vmx-preempt-offered : Boolean
+  vmx-preempt-offered =
+    if vmx-available == False then False
+    else vmx-preempt-armed (vmx-adjust-raw (rdmsr msr-vmx-pinbased-ctls) vmx-pin-preempt-timer)
 
   vmx-fixed-cr0 : Integer
   vmx-fixed-cr0 =
@@ -305,7 +329,8 @@ Section: VMCS Setup
 
   vmcs-setup-controls : Integer -> Integer
   vmcs-setup-controls (eptp) =
-    let pin = vmx-adjust-control msr-vmx-pinbased-ctls 0
+    let pin = vmx-adjust-control msr-vmx-pinbased-ctls vmx-pin-preempt-timer
+    in let pt = if vmx-preempt-armed pin then vmwrite vmcs-preempt-timer-value vmx-preempt-count else 0
     in let proc = vmx-adjust-control msr-vmx-procbased-ctls 2164260992
     in let proc2 = vmx-adjust-control msr-vmx-procbased2 2
     in let exit-ctl = vmx-adjust-control msr-vmx-exit-ctls 512
@@ -381,6 +406,7 @@ Section: Formatting
     else if code == 31 then "rdmsr"
     else if code == 32 then "wrmsr"
     else if code == 48 then "ept-violation"
+    else if code == 52 then "preemption-timer"
     else "exit-" & show code
 
   format-exit-info : VmExitInfo -> Text
