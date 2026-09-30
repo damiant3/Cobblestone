@@ -246,9 +246,47 @@ Section: Taking A Turn Yourself
     if hw-wasm-can-attack s target == 0 then s
     else let r2 = rng-new seed
     in HwState { cfg = s.cfg,
-                 units = hw-resolve-attack (hw-copy-units (s.units) 0 []) (s.cfg.terrain-data) target (s.active) (s.cfg.map-width) r2,
+                 units = hw-resolve-attack (hw-copy-units (s.units) 0 []) (s.cfg.terrain-data) target (s.active) (s.cfg.map-width) (s.cfg.map-height) (s.cfg.stacking-limit) r2,
                  turn = s.turn, active = s.active, rng = r2, over = False,
                  opened = True, attacks-left = s.attacks-left - 1 }
+
+  hw-wasm-stacking : HwState -> Integer
+  hw-wasm-stacking (s) = s.cfg.stacking-limit
+
+Section: Set-up
+
+  hw-with : HwState, WargameConfig, List Unit -> HwState
+  hw-with (s) (cfg) (units) =
+    HwState { cfg = cfg, units = units, turn = s.turn, active = s.active, rng = s.rng,
+              over = False, opened = False, attacks-left = 0 }
+
+  hw-wasm-blank : Integer, Integer -> HwState
+  hw-wasm-blank (w) (h) =
+    let cfg = WargameConfig { map-width = w, map-height = h, num-players = 2, turn-limit = 20,
+                              stacking-limit = 3, terrain-data = flat-terrain w h, unit-roster = [] }
+    in HwState { cfg = cfg, units = [], turn = 0, active = 0, rng = rng-new 1,
+                 over = False, opened = False, attacks-left = 0 }
+
+  hw-wasm-put : HwState, Integer, Integer, Integer, Integer -> HwState
+  hw-wasm-put (s) (type-id) (owner) (q) (r) =
+    if type-id < 0 then s
+    else if type-id > 9 then s
+    else let units = hw-copy-units (s.units) 0 []
+    in hw-with s (s.cfg) (list-push units (make-unit (list-length units) type-id owner q r))
+
+  hw-copy-terrain : List TerrainHex, Integer, List TerrainHex -> List TerrainHex
+  hw-copy-terrain (src) (i) (acc) =
+    if i >= list-length src then acc
+    else let t = list-at src i
+    in hw-copy-terrain src (i + 1) (list-push acc (TerrainHex { terrain = t.terrain, elevation = t.elevation, fortified = t.fortified, victory-point = t.victory-point }))
+
+  hw-wasm-terr : HwState, Integer, Integer, Integer -> HwState
+  hw-wasm-terr (s) (q) (r) (terrain) =
+    let c = s.cfg
+    in let td = set-terrain-at (hw-copy-terrain (c.terrain-data) 0 []) (c.map-width) q r terrain 0 False False
+    in hw-with s (WargameConfig { map-width = c.map-width, map-height = c.map-height, num-players = c.num-players,
+                                  turn-limit = c.turn-limit, stacking-limit = c.stacking-limit,
+                                  terrain-data = td, unit-roster = c.unit-roster }) (s.units)
 
   hw-wasm-end-turn : HwState -> HwState
   hw-wasm-end-turn (s) =

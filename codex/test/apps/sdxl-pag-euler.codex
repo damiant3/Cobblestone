@@ -1,0 +1,91 @@
+Chapter: SdxlPagEuler
+
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter SamplerSchedule
+  cites Diffusion chapter DenoiserGraph
+  cites Diffusion chapter Txt2Img
+  cites Diffusion chapter SdxlPagEulerReference
+
+ Three Euler steps of SDXL (a 16 x 16 latent, Karras sigmas) with ti-den at
+ CFG 5 and PAG 3, graded after each step against
+ build/sdxl-pag-euler-oracle.py, which applies PAG as the paper and
+ diffusers do at every step: L2 error within 1.5% of the reference's. The
+ sabotage grades the third step against Forge's own PAG past its first call,
+ whose patch persists in the sampler's options (27% apart in the references).
+
+ We say:
+
+Section: Inputs
+
+  value-at : Integer, Integer -> Real
+  value-at (which) (i) = if which == 0 then real-from-int (int-mod (i * 53 + 17) 263 - 131) / 128.0 else if which == 1 then real-from-int (int-mod (i * 13 + 5) 251 - 125) / 256.0 else if which == 2 then real-from-int (int-mod (i * 29 + 3) 241 - 120) / 256.0 else if which == 3 then real-from-int (int-mod (i * 17 + 3) 239 - 119) / 256.0 else real-from-int (int-mod (i * 23 + 7) 233 - 116) / 256.0
+
+  build : Integer, Integer, Integer, Real, List Real -> List Real
+  build (which) (i) (n) (scale) (acc) = if i >= n then acc else build which (i + 1) n scale (list-push acc (value-at which i * scale))
+
+Section: Grading
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  sum-sq : List Real, Integer, Real -> Real
+  sum-sq (xs) (i) (acc) = if i >= list-length xs then acc else sum-sq xs (i + 1) (acc + list-at xs i * list-at xs i)
+
+  diff-sq : List Real, List Real, Integer, Real -> Real
+  diff-sq (a) (b) (i) (acc) = if i >= list-length b then acc else diff-sq a b (i + 1) (acc + (list-at a i - list-at b i) * (list-at a i - list-at b i))
+
+  grade : List Real, List Real -> Text
+  grade (got) (ref) =
+    let rr = sum-sq ref 0 0.0 / real-from-int (list-length ref)
+    in let rg = if list-length got == 0 then 0.0 else sum-sq got 0 0.0 / real-from-int (list-length got)
+    in if list-length got /= list-length ref then "NO OUTPUT"
+    else "L2 error " & (if diff-sq got ref 0 0.0 <= 0.000225 * sum-sq ref 0 0.0 then "within 1.5%" else "PAST 1.5%") & ", rms " & (if abs (rg - rr) <= 0.02 * rr then "near" else "FAR")
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let u = unet-open "dreamshaperXL_lightningDPMSDE.safetensors"
+    in if (u.uf-file).st-valid == False then ["SKIP: no dreamshaperXL_lightningDPMSDE.safetensors under the model root build-output/diffusion-models"]
+    else run-steps (unet-load u)
+
+  step : TiCfg, Integer, List Real, Integer -> List Real
+  step (tc) (x) (sig) (i) =
+    let e = sample-euler (\xh s -> ti-den tc xh s) x [list-at sig i, list-at sig (i + 1)] 1024
+    in if e == 0 then un-download x 1024 else []
+
+  run-steps : UNetFile -> List Text
+  run-steps (u) =
+    let tab = unet-log-sigmas 0
+    in let sig = sdxl-karras-sigmas 3
+    in let cc = un-upload (build 1 0 157696 1.0 [])
+    in let yc = un-upload (build 2 0 2816 1.0 [])
+    in let cu = un-upload (build 3 0 157696 1.0 [])
+    in let yu = un-upload (build 4 0 2816 1.0 [])
+    in let tc = TiCfg { tc-unet = u, tc-tab = tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = 16, tc-w = 16, tc-cfg = 5.0, tc-sd15 = False, tc-extras = TiExtras { tx-freeu = [], tx-pag = 3.0, tx-sag = [], tx-dt = [], tx-step = [] } }
+    in let x = un-upload (build 0 0 1024 (list-at sig 0) [])
+    in let g0 = step tc x sig 0
+    in let l0 = "step 0: " & grade g0 spe-pag-0
+    in let g1 = step tc x sig 1
+    in let l1 = "step 1: " & grade g1 spe-pag-1
+    in let g2 = step tc x sig 2
+    in let l2 = "step 2: " & grade g2 spe-pag-2
+    in [l0, l1, l2, "sabotage, step 2 against Forge's persisted PAG: " & grade g2 spe-forge-2]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

@@ -1,0 +1,464 @@
+Chapter: DiffusionSampler
+  cites Diffusion chapter Sampler
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixtures are build/sampler-oracle.py's: Forge's Karras sigmas for 6
+ steps over SDXL's discrete schedule, a latent of 1024 elements, the
+ analytic denoiser D(x, sigma) = (s2 x + sigma^2 mu) / (s2 + sigma^2) with
+ s2 = 0.25, and the results of Forge's sample_euler and sample_dpmpp_sde,
+ the latter fed the recorded draws. The sabotage arm feeds DPM++ SDE the
+ draws shifted by one.
+
+ We say:
+
+Section: Fixtures
+
+  n : Integer = 1024
+
+  scratch : Integer = #BD700000
+
+  other : Integer = #BD740000
+
+  f32-real : Integer -> Real
+  f32-real (raw) =
+    let b = bit-and raw #FFFFFFFF
+    in let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-shru b 31) 63) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+  f64-at : Integer, Integer -> Real
+  f64-at (addr) (i) = bits-to-real (bit-or (bit-and (peek-32 addr (i * 8)) #FFFFFFFF) (bit-shl (peek-32 addr (i * 8 + 4)) 32))
+
+  post-mean : Integer, Integer, Real -> Integer
+  post-mean (mu) (x) (s) =
+    let out = gpu-buf-alloc (n * 4)
+    in let r = sm-lincomb x mu mu out (0.25 / (0.25 + s * s)) (s * s / (0.25 + s * s)) 0.0 n
+    in if r < 0 then 0 else out
+
+  draw : Integer, Integer, Integer -> Integer
+  draw (nb) (shift) (k) = draw-from "sampler-noise.bin" 10 nb shift k
+
+  draw-from : Text, Integer, Integer, Integer, Integer -> Integer
+  draw-from (file) (count) (nb) (shift) (k) =
+    let u = gpu-buf-upload nb 0 file (int-mod (k + shift) count * n * 4) n gpu-dt-f32 gpu-dt-f32
+    in nb
+
+Section: Comparisons
+
+  abs-real : Real -> Real
+  abs-real (v) = if v < 0.0 then 0.0 - v else v
+
+  max-diff : Integer, Real -> Real
+  max-diff (i) (acc) =
+    if i >= n then acc
+    else let d = abs-real (f32-real (peek-32 scratch (i * 4)) - f32-real (peek-32 other (i * 4)))
+    in max-diff (i + 1) (if d > acc then d else acc)
+
+  max-abs : Integer, Real -> Real
+  max-abs (i) (acc) =
+    if i >= n then acc
+    else let d = abs-real (f32-real (peek-32 other (i * 4)))
+    in max-abs (i + 1) (if d > acc then d else acc)
+
+  sigma-error : List Real, Integer, Real -> Real
+  sigma-error (ours) (i) (acc) =
+    if i >= list-length ours then acc
+    else let want = f64-at scratch i
+    in let e = if want <= 0.0 then abs-real (list-at ours i) else abs-real (list-at ours i - want) / want
+    in sigma-error ours (i + 1) (if e > acc then e else acc)
+
+  check-latent : Integer, Text -> Text
+  check-latent (x) (file) =
+    let h = gpu-buf-alloc (n * 4)
+    in let u = gpu-buf-upload h 0 file 0 n gpu-dt-f32 gpu-dt-f32
+    in let ok = if gpu-buf-read x 0 (n * 4) scratch then gpu-buf-read h 0 (n * 4) other else False
+    in let f = gpu-buf-free h
+    in if ok then diff-text (real-to-int (max-diff 0 0.0 * 1000000000.0)) (real-to-int (max-abs 0 0.0 * 1000.0)) else "read refused"
+
+  diff-text : Integer, Integer -> Text
+  diff-text (d) (m) = "max abs diff " & show d & "e-9, max abs x " & show m & "e-3"
+
+Section: Arms
+
+  fresh-x0 : Integer -> Integer
+  fresh-x0 (z) =
+    let h = gpu-buf-alloc (n * 4)
+    in let u = gpu-buf-upload h 0 "sampler-x0.bin" 0 n gpu-dt-f32 gpu-dt-f32
+    in h
+
+  sigma-report : List Real -> Text
+  sigma-report (sig) = sigma-report-from sig "sampler-sigmas.bin"
+
+  sigma-report-from : List Real, Text -> Text
+  sigma-report-from (sig) (file) =
+    let nb = 8 * list-length sig
+    in let h = gpu-buf-alloc nb
+    in let ok = if gpu-buf-upload h 0 file 0 nb gpu-dt-u8 gpu-dt-u8 == nb then gpu-buf-read h 0 nb scratch else False
+    in let f = gpu-buf-free h
+    in if ok == False then "read refused"
+    else show (list-length sig) & " sigmas, max relative error vs Forge " & show (real-to-int (sigma-error sig 0 0.0 * 1000000000000.0)) & "e-12"
+
+  mu-buf : Integer -> Integer
+  mu-buf (z) =
+    let mu = gpu-buf-alloc (n * 4)
+    in let um = gpu-buf-upload mu 0 "sampler-mu.bin" 0 n gpu-dt-f32 gpu-dt-f32
+    in mu
+
+  arm-bounds : Integer -> Text
+  arm-bounds (z) = "sigma bounds x 1e9: " & show (real-to-int (sm-discrete-sigma 0 * 1000000000.0)) & " " & show (real-to-int (sm-discrete-sigma 999 * 1000000000.0))
+
+  arm-karras : Integer -> Text
+  arm-karras (z) = "karras: " & sigma-report (sdxl-karras-sigmas 6)
+
+  arm-euler : Integer -> Text
+  arm-euler (z) =
+    let mu = mu-buf 0
+    in let x = fresh-x0 0
+    in let bad = sample-euler (\xh s -> post-mean mu xh s) x (sdxl-karras-sigmas 6) n
+    in let r = "euler vs Forge (" & show bad & " refused): " & check-latent x "sampler-euler.bin"
+    in let f = gpu-buf-free mu
+    in let g = gpu-buf-free x
+    in r
+
+  arm-heun : Text, Text -> Text
+  arm-heun (file) (label) =
+    let mu = mu-buf 0
+    in let x = fresh-x0 0
+    in let bad = sample-heun (\xh s -> post-mean mu xh s) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x file
+    in let f = gpu-buf-free mu
+    in let g = gpu-buf-free x
+    in r
+
+  arm-dpm2 : Text, Text -> Text
+  arm-dpm2 (file) (label) =
+    let mu = mu-buf 0
+    in let x = fresh-x0 0
+    in let bad = sample-dpm2 (\xh s -> post-mean mu xh s) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x file
+    in let f = gpu-buf-free mu
+    in let g = gpu-buf-free x
+    in r
+
+  arm-dpmpp : Integer, Text -> Text
+  arm-dpmpp (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-dpmpp-sde (\xh s -> post-mean mu xh s) (\k -> draw nb shift k) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-dpmpp.bin"
+    in let f = gpu-buf-free mu
+    in let g = gpu-buf-free nb
+    in let h = gpu-buf-free x
+    in r
+
+  arm-schedules : Integer -> List Text
+  arm-schedules (z) =
+    let e = "exponential: " & sigma-report-from (sdxl-exponential-sigmas 6) "sched-exponential.bin"
+    in let g = "sgm uniform: " & sigma-report-from (sgm-uniform-sigmas 6) "sched-sgm-uniform.bin"
+    in let nm = "normal: " & sigma-report-from (normal-sigmas 6) "sched-normal.bin"
+    in let dd = "ddim: " & sigma-report-from (ddim-sigmas 6) "sched-ddim.bin"
+    in let pe = "polyexponential: " & sigma-report-from (sdxl-polyexponential-sigmas 6) "sched-polyexponential.bin"
+    in let un = "uniform: " & sigma-report-from (uniform-sigmas 6) "sched-uniform.bin"
+    in let t6 = "turbo 6: " & sigma-report-from (turbo-sigmas 6) "sched-turbo-6.bin"
+    in let t16 = "turbo 16: " & sigma-report-from (turbo-sigmas 16) "sched-turbo-16.bin"
+    in [e, g, "simple: " & sigma-report-from (simple-sigmas 6) "sched-simple.bin", nm, dd, pe, un, t6, t16]
+
+  arm-euler-a : Integer, Text -> Text
+  arm-euler-a (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-euler-ancestral (\xh s -> post-mean mu xh s) (\k -> draw-from "sampler-noise-euler-a.bin" 5 nb shift k) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-euler-a.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+  arm-dpm2a : Integer, Text -> Text
+  arm-dpm2a (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-dpm2-ancestral (\xh s -> post-mean mu xh s) (\k -> draw-from "sampler-noise-dpm2a.bin" 5 nb shift k) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-dpm2a.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+  arm-dpmpp-2sa : Integer, Text -> Text
+  arm-dpmpp-2sa (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-dpmpp-2s-ancestral (\xh s -> post-mean mu xh s) (\k -> draw-from "sampler-noise-dpmpp-2s-a.bin" 5 nb shift k) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-dpmpp-2s-a.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+  arm-dpmpp-2msh : Integer, Text -> Text
+  arm-dpmpp-2msh (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-dpmpp-2m-sde-heun (\xh s -> post-mean mu xh s) (\k -> draw-from "sampler-noise-dpmpp-2m-sde-heun.bin" 5 nb shift k) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-dpmpp-2m-sde-heun.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+  arm-dpmpp-3m : Integer, Text -> Text
+  arm-dpmpp-3m (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-dpmpp-3m-sde (\xh s -> post-mean mu xh s) (\k -> draw-from "sampler-noise-dpmpp-3m-sde.bin" 5 nb shift k) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-dpmpp-3m-sde.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+  arm-dpmpp-2m : Integer -> Text
+  arm-dpmpp-2m (z) =
+    let mu = mu-buf 0
+    in let x = fresh-x0 0
+    in let bad = sample-dpmpp-2m (\xh s -> post-mean mu xh s) x (sdxl-karras-sigmas 6) n
+    in let r = "dpm++ 2m vs Forge (" & show bad & " refused): " & check-latent x "sampler-dpmpp-2m.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free x
+    in r
+
+  arm-dpmpp-2m-sde : Integer -> Text
+  arm-dpmpp-2m-sde (z) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-dpmpp-2m-sde (\xh s -> post-mean mu xh s) (\k -> draw-from "sampler-noise-dpmpp-2m-sde.bin" 5 nb 0 k) x (sdxl-karras-sigmas 6) n
+    in let r = "dpm++ 2m sde vs Forge (" & show bad & " refused): " & check-latent x "sampler-dpmpp-2m-sde.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+  arm-ddim : Integer -> Text
+  arm-ddim (z) =
+    let mu = mu-buf 0
+    in let x = gpu-buf-alloc (n * 4)
+    in let u = gpu-buf-upload x 0 "sampler-xt.bin" 0 n gpu-dt-f32 gpu-dt-f32
+    in let bad = sample-ddim (\xh s -> post-mean mu xh s) x 6 n
+    in let r = "ddim vs Forge (" & show bad & " refused, timesteps " & show (list-length (ddim-timesteps 6)) & "): " & check-latent x "sampler-ddim.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free x
+    in r
+
+  arm-unipc : Integer -> Text
+  arm-unipc (z) =
+    let mu = mu-buf 0
+    in let x = gpu-buf-alloc (n * 4)
+    in let u = gpu-buf-upload x 0 "sampler-xt.bin" 0 n gpu-dt-f32 gpu-dt-f32
+    in let bad = sample-unipc (\xh s -> post-mean mu xh s) x 6 n
+    in let r = "unipc vs Forge (" & show bad & " refused): " & check-latent x "sampler-unipc.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free x
+    in r
+
+  arm-lms : Integer -> Text
+  arm-lms (z) =
+    let mu = mu-buf 0
+    in let x = fresh-x0 0
+    in let bad = sample-lms (\xh s -> post-mean mu xh s) x (sdxl-karras-sigmas 6) n
+    in let r = "lms vs Forge (" & show bad & " refused): " & check-latent x "sampler-lms.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free x
+    in r
+
+  arm-lms-control : Integer -> Text
+  arm-lms-control (z) =
+    let mu = mu-buf 0
+    in let x = fresh-x0 0
+    in let bad = sample-euler (\xh s -> post-mean mu xh s) x (sdxl-karras-sigmas 6) n
+    in let r = "control, euler vs Forge's lms (" & show bad & " refused): " & check-latent x "sampler-lms.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free x
+    in r
+
+  arm-det : ((Integer, Real -> Integer), Integer, List Real, Integer -> Integer), Text, Text -> Text
+  arm-det (sampler) (file) (label) =
+    let mu = mu-buf 0
+    in let x = fresh-x0 0
+    in let bad = sampler (\xh s -> post-mean mu xh s) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x file
+    in let f = gpu-buf-free mu & gpu-buf-free x
+    in r
+
+  arm-plms : Text, Text -> Text
+  arm-plms (file) (label) =
+    let mu = mu-buf 0
+    in let x = gpu-buf-alloc (n * 4)
+    in let u = gpu-buf-upload x 0 "sampler-xt.bin" 0 n gpu-dt-f32 gpu-dt-f32
+    in let bad = sample-plms (\xh s -> post-mean mu xh s) x 6 n
+    in let r = label & " (" & show bad & " refused): " & check-latent x file
+    in let f = gpu-buf-free mu & gpu-buf-free x
+    in r
+
+  arm-schedules-more : Integer -> List Text
+  arm-schedules-more (z) =
+    let kl = "kl optimal: " & sigma-report-from (sdxl-kl-optimal-sigmas 6) "sched-kl-optimal.bin"
+    in let be = "beta: " & sigma-report-from (sdxl-beta-sigmas 6) "sched-beta.bin"
+    in let ay = "align your steps: " & sigma-report-from (align-your-steps-sigmas 6 True) "sched-align-your-steps.bin"
+    in let gi = "ays gits: " & sigma-report-from (ays-gits-sigmas 6 True) "sched-align-your-steps-gits.bin"
+    in let a11 = "ays 11: " & sigma-report-from (ays-11-sigmas 6 True) "sched-align-your-steps-11.bin"
+    in let a32 = "ays 32: " & sigma-report-from (ays-32-sigmas 6 True) "sched-align-your-steps-32.bin"
+    in let s11 = "ays at 11 steps: " & sigma-report-from (align-your-steps-sigmas 11 True) "sched-ays-11-steps.bin"
+    in let s8 = "ays at 8 steps: " & sigma-report-from (align-your-steps-sigmas 8 True) "sched-ays-8-steps.bin"
+    in let sd = "ays sd1.5: " & sigma-report-from (align-your-steps-sigmas 6 False) "sched-ays-sd15.bin"
+    in let gsd = "ays gits sd1.5: " & sigma-report-from (ays-gits-sigmas 6 False) "sched-ays-gits-sd15.bin"
+    in let tsd = "ays 32 sd1.5: " & sigma-report-from (ays-32-sigmas 6 False) "sched-ays-32-sd15.bin"
+    in let ctl = "control, ays sd1.5 graded against sdxl: " & sigma-report-from (align-your-steps-sigmas 6 False) "sched-align-your-steps.bin"
+    in [kl, be, ay, gi, a11, a32, s11, s8, sd, gsd, tsd, ctl]
+
+  arm-lcm : Integer, Text -> Text
+  arm-lcm (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-lcm (\xh s -> post-mean mu xh s) (\k -> draw-from "sampler-noise-lcm.bin" 5 nb shift k) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-lcm.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+  arm-ddpm : Integer, Text -> Text
+  arm-ddpm (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-ddpm (\xh s -> post-mean mu xh s) (\k -> draw-from "sampler-noise-ddpm.bin" 5 nb shift k) x (sdxl-karras-sigmas 6) n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-ddpm.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+  arm-restart : Integer, Text, Integer, Integer, Text, Text -> Text
+  arm-restart (steps) (draws) (count) (shift) (file) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-restart (\xh s -> post-mean mu xh s) (\k -> draw-from draws count nb shift k) x (sdxl-karras-sigmas steps) n
+    in let r = label & " (" & show bad & " refused, " & show (list-length (restart-plan (sdxl-karras-sigmas steps)) / 2) & " steps): " & check-latent x file
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+  arm-dpm-fast : Integer, Text -> Text
+  arm-dpm-fast (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let bad = sample-dpm-fast (\xh s -> post-mean mu xh s) (\k -> draw-from "sampler-noise-dpm-fast.bin" 3 nb shift k) x (sm-discrete-sigma 0) (sm-discrete-sigma 999) 6 n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-dpm-fast.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+ DPM adaptive draws once per accepted step, so the draws counted at
+ draw-count, outside every window the sampler reads back into, are its
+ accepted steps.
+
+  draw-count : Integer = #BD760000
+
+  counted-draw : Text, Integer, Integer, Integer, Integer -> Integer
+  counted-draw (file) (count) (nb) (shift) (k) =
+    let c = poke-32 draw-count 0 (k + 1)
+    in draw-from file count nb shift k
+
+  arm-dpm-adaptive : Integer, Text -> Text
+  arm-dpm-adaptive (shift) (label) =
+    let mu = mu-buf 0
+    in let nb = gpu-buf-alloc (n * 4)
+    in let x = fresh-x0 0
+    in let c0 = poke-32 draw-count 0 0
+    in let bad = sample-dpm-adaptive (\xh s -> post-mean mu xh s) (\k -> counted-draw "sampler-noise-dpm-adaptive.bin" 11 nb shift k) x (sm-discrete-sigma 0) (sm-discrete-sigma 999) n
+    in let r = label & " (" & show bad & " refused, " & show (peek-32 draw-count 0) & " draws, Forge 11 accepted of 15): " & check-latent x "sampler-dpm-adaptive.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free nb & gpu-buf-free x
+    in r
+
+ The guided denoiser at CFG 3 over two posterior means, the unconditional one
+ about sampler-mu-uncond.bin, copying Du into ub.
+
+  cfg-mean : Integer, Integer, Integer, Real, Integer -> Integer
+  cfg-mean (mu) (mu-u) (x) (s) (ub) =
+    let dc = post-mean mu x s
+    in let du = post-mean mu-u x s
+    in let rc = if du == 0 then 0 - 1 else sm-lincomb du du du ub 1.0 0.0 0.0 n
+    in let out = gpu-buf-alloc (n * 4)
+    in let r = if dc == 0 | rc < 0 | out == 0 then 0 - 1 else sm-lincomb du dc dc out (0.0 - 2.0) 3.0 0.0 n
+    in let f = (if dc == 0 then True else gpu-buf-free dc) & (if du == 0 then True else gpu-buf-free du)
+    in if r < 0 then 0 else out
+
+  arm-ddim-cfgpp : Boolean, Text -> Text
+  arm-ddim-cfgpp (plain) (label) =
+    let mu = mu-buf 0
+    in let mu-u = gpu-buf-alloc (n * 4)
+    in let uu = gpu-buf-upload mu-u 0 "sampler-mu-uncond.bin" 0 n gpu-dt-f32 gpu-dt-f32
+    in let ub = gpu-buf-alloc (n * 4)
+    in let x = gpu-buf-alloc (n * 4)
+    in let u = gpu-buf-upload x 0 "sampler-xt.bin" 0 n gpu-dt-f32 gpu-dt-f32
+    in let bad = if plain then sample-ddim (\xh s -> cfg-mean mu mu-u xh s ub) x 6 n else sample-ddim-cfgpp (\xh s b -> cfg-mean mu mu-u xh s b) x 6 n
+    in let r = label & " (" & show bad & " refused): " & check-latent x "sampler-ddim-cfgpp.bin"
+    in let f = gpu-buf-free mu & gpu-buf-free mu-u & gpu-buf-free ub & gpu-buf-free x
+    in r
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-line-uni (arm-bounds 0)
+    print-line-uni (arm-karras 0)
+    print-all (arm-schedules 0) 0
+    print-line-uni (arm-euler 0)
+   print-line-uni (arm-heun "sampler-heun.bin" "heun vs Forge")
+   print-line-uni (arm-heun "sampler-euler.bin" "control, heun graded against euler")
+   print-line-uni (arm-dpm2 "sampler-dpm2.bin" "dpm2 vs Forge")
+   print-line-uni (arm-dpm2 "sampler-heun.bin" "control, dpm2 graded against heun")
+    print-line-uni (arm-dpmpp 0 "dpm++ sde vs Forge")
+    print-line-uni (arm-dpmpp 1 "sabotage, draws shifted by one")
+    print-line-uni (arm-euler-a 0 "euler a vs Forge")
+    print-line-uni (arm-euler-a 1 "sabotage, euler a draws shifted by one")
+   print-line-uni (arm-dpm2a 0 "dpm2 a vs Forge")
+   print-line-uni (arm-dpm2a 1 "sabotage, dpm2 a draws shifted by one")
+   print-line-uni (arm-dpmpp-2sa 0 "dpm++ 2s a vs Forge")
+   print-line-uni (arm-dpmpp-2sa 1 "sabotage, dpm++ 2s a draws shifted by one")
+   print-line-uni (arm-dpmpp-2msh 0 "dpm++ 2m sde heun vs Forge")
+   print-line-uni (arm-dpmpp-2msh 1 "sabotage, dpm++ 2m sde heun draws shifted by one")
+   print-line-uni (arm-dpmpp-3m 0 "dpm++ 3m sde vs Forge")
+   print-line-uni (arm-dpmpp-3m 1 "sabotage, dpm++ 3m sde draws shifted by one")
+    print-line-uni (arm-dpmpp-2m 0)
+    print-line-uni (arm-dpmpp-2m-sde 0)
+    print-line-uni (arm-ddim 0)
+    print-line-uni (arm-unipc 0)
+    print-line-uni (arm-lms 0)
+    print-line-uni (arm-lms-control 0)
+    print-all (arm-schedules-more 0) 0
+    print-line-uni (arm-det (\d x s k -> sample-ipndm d x s k) "sampler-ipndm.bin" "ipndm vs Forge")
+    print-line-uni (arm-det (\d x s k -> sample-ipndm d x s k) "sampler-lms.bin" "control, ipndm graded against lms")
+    print-line-uni (arm-det (\d x s k -> sample-ipndm-v d x s k) "sampler-ipndm-v.bin" "ipndm v vs Forge")
+    print-line-uni (arm-det (\d x s k -> sample-ipndm-v d x s k) "sampler-ipndm.bin" "control, ipndm v graded against ipndm")
+    print-line-uni (arm-det (\d x s k -> sample-heunpp2 d x s k) "sampler-heunpp2.bin" "heunpp2 vs Forge")
+    print-line-uni (arm-det (\d x s k -> sample-heunpp2 d x s k) "sampler-heun.bin" "control, heunpp2 graded against heun")
+    print-line-uni (arm-det (\d x s k -> sample-deis d x s k) "sampler-deis.bin" "deis vs Forge")
+    print-line-uni (arm-det (\d x s k -> sample-deis d x s k) "sampler-ipndm-v.bin" "control, deis graded against ipndm v")
+    print-line-uni (arm-plms "sampler-plms.bin" "plms vs Forge")
+    print-line-uni (arm-plms "sampler-ddim.bin" "control, plms graded against ddim")
+    print-line-uni ("lcm schedule: " & sigma-report-from (lcm-sigmas 6) "sched-lcm.bin")
+    print-line-uni (arm-lcm 0 "lcm vs Forge")
+    print-line-uni (arm-lcm 1 "sabotage, lcm draws shifted by one")
+    print-line-uni (arm-ddpm 0 "ddpm vs Forge")
+    print-line-uni (arm-ddpm 1 "sabotage, ddpm draws shifted by one")
+    print-line-uni (arm-restart 6 "sampler-noise-restart-20.bin" 1 0 "sampler-heun.bin" "restart 6, below 20 steps, vs Forge's heun")
+    print-line-uni (arm-restart 20 "sampler-noise-restart-20.bin" 1 0 "sampler-restart-20.bin" "restart 20 vs Forge")
+    print-line-uni (arm-restart 20 "sampler-noise-restart-36.bin" 2 1 "sampler-restart-20.bin" "sabotage, restart 20 fed another draw")
+    print-line-uni (arm-restart 36 "sampler-noise-restart-36.bin" 2 0 "sampler-restart-36.bin" "restart 36 vs Forge")
+    print-line-uni (arm-restart 36 "sampler-noise-restart-36.bin" 2 1 "sampler-restart-36.bin" "sabotage, restart 36 draws shifted by one")
+    print-line-uni (arm-dpm-fast 0 "dpm fast vs Forge")
+    print-line-uni (arm-dpm-fast 1 "sabotage, dpm fast draws shifted by one")
+    print-line-uni (arm-dpm-adaptive 0 "dpm adaptive vs Forge")
+    print-line-uni (arm-dpm-adaptive 1 "sabotage, dpm adaptive draws shifted by one")
+    print-line-uni (arm-ddim-cfgpp False "ddim cfg++ vs Forge")
+    print-line-uni (arm-ddim-cfgpp True "control, ddim with the guided eps graded against ddim cfg++")
+    let r = 0 in r
+  end

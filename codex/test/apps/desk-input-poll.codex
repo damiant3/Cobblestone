@@ -1,0 +1,58 @@
+Chapter: DeskInputPollTest
+  cites Works chapter GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopAhci
+  cites Works chapter GopXhci
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopUsbKbd
+  cites Foreword chapter Console
+
+  dp-yn : Boolean -> Text
+  dp-yn (ok) = if ok then "yes" else "FAIL"
+
+  dp-events : Integer, Integer -> Integer
+  dp-events (ring) (i) =
+    if i >= 8 then 0
+    else let sts = poke-32 ring (i * 16 + 8) (bit-shl 1 24)
+    in let ctl = poke-32 ring (i * 16 + 12) (bit-or 1 (bit-or (bit-shl trb-t-xfer-event 10) (bit-or (bit-shl (i + 1) 24) (bit-shl 3 16))))
+    in dp-events ring (i + 1)
+
+  opening : [Console] Nothing =
+    let state = alloc-zeroed 2048 64
+    in let ring = alloc-zeroed (xhci-evt-count * 16) 64
+    in let rt = alloc-zeroed 256 64
+    in let host = XhciHost { xh-ok = True, xh-op = 0, xh-db = alloc-zeroed 64 64, xh-rt = rt, xh-ports = 0, xh-dcbaa = 0, xh-cmd-ring = 0, xh-evt-ring = ring, xh-state = state, xh-ctxsz = 32, xh-cap = 0, xh-xecp = 0 }
+    in let cyc = poke-32 state xh-st-evt-cyc 1
+    in let events = dp-events ring 0
+    in let before = alloc-bytes 0
+    in let absent = di-xfer host 9 3 4
+    in let budget-ok = absent == 0 & peek-32 state xh-st-evt-deq == 4
+    in let latched = di-xfer host 2 3 0
+    in let kept = latched == 1 & peek-32 state xh-st-evt-deq == 4
+    in let found = di-xfer host 5 3 4
+    in let matched = found == 1 & peek-32 state xh-st-evt-deq == 5
+    in let after = alloc-bytes 0
+    in let q = di-new 0
+    in let ms = alloc-zeroed 64 64
+    in let mouse = UsbMouse { um-ok = True, um-host = host, um-dev = xhci-no-dev, um-dci = 3, um-ring = xhci-ring-new, um-report = alloc-zeroed 64 64, um-state = ms, um-pos = ms, um-peers = [] }
+    in let ks = alloc-zeroed 64 64
+    in let kbd = UsbKbd { uk-ok = True, uk-host = host, uk-dev = xhci-no-dev, uk-dci = 5, uk-ring = 0, uk-report = 0, uk-prev = 0, uk-state = ks, uk-raw = False, uk-peers = [] }
+    in let arm-mouse = mouse-set-phase mouse um-ph-armed
+    in let arm-key = kbd-set-phase kbd uk-ph-armed
+    in let merror = xhci-latch-put host 0 3 4
+    in let kerror = xhci-latch-put host 0 5 6
+    in let error-start = alloc-bytes 0
+    in let mp = di-mouse-poll q mouse 100 100
+    in let mouse-ok = peek-qword q di-errors == 1 & peek-qword q di-error-code == 4 & peek-qword q di-loss == 1 & peek-qword q di-overflow == 0 & peek-32 ms 0 == um-ph-armed
+    in let kp = di-kbd-one q kbd
+    in let key-ok = peek-qword q di-errors == 2 & peek-qword q di-error-code == 6 & peek-qword q di-loss == 2 & peek-qword q di-overflow == 0 & peek-32 ks 0 == uk-ph-idle
+    in let error-end = alloc-bytes 0
+    in act
+      print-line-uni ("poll stops at its event budget: " & dp-yn budget-ok)
+      print-line-uni ("other endpoint completion survives: " & dp-yn kept)
+      print-line-uni ("next pass receives target completion: " & dp-yn matched)
+      print-line-uni ("poll allocates zero: " & dp-yn (before == after))
+      print-line-uni ("mouse transfer error is not overflow: " & dp-yn mouse-ok)
+      print-line-uni ("keyboard transfer error is not overflow: " & dp-yn key-ok)
+      print-line-uni ("transfer error recording allocates zero: " & dp-yn (error-start == error-end))
+    end

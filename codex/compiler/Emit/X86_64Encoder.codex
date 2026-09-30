@@ -3,9 +3,9 @@ Chapter: X86-64 Code Generator
 Section: Arithmetic Helpers
   int-mod : Integer, Integer -> Integer
   int-mod (n) (d) =
-   let abs-d = if d < 0 then -d else d
-   in let r = n - n / d * d
-   in if r < 0 then r + abs-d else r
+    let abs-d = if d < 0 then -d else d
+    in let r = n - n / d * d
+    in if r < 0 then r + abs-d else r
 
  The obvious spelling of a floor division biases the dividend before
  dividing: `if n >= 0 then n / d else (n - d + 1) / d`. That form
@@ -17,81 +17,81 @@ Section: Arithmetic Helpers
 
   floor-div : Integer, Integer -> Integer
   floor-div (n) (d) =
-   let q = n / d
-   in let r = n - q * d
-   in if r /= 0 & (r < 0) /= (d < 0) then q - 1 else q
+    let q = n / d
+    in let r = n - q * d
+    in if r /= 0 & (r < 0) /= (d < 0) then q - 1 else q
 
   to-byte : Integer -> Integer
   to-byte (n) =
-   int-mod n 256
+    int-mod n 256
 
 Section: Encoding Primitives
   rex : Boolean, Boolean, Boolean, Boolean -> Integer
   rex (w) (r) (x) (b) =
-   let wv = if w then 8 else 0
-   in let rv = if r then 4 else 0
-   in let xv = if x then 2 else 0
-   in let bv = if b then 1 else 0
-   in 64 + wv + rv + xv + bv
+    let wv = if w then 8 else 0
+    in let rv = if r then 4 else 0
+    in let xv = if x then 2 else 0
+    in let bv = if b then 1 else 0
+    in 64 + wv + rv + xv + bv
 
   rex-w : Integer, Integer -> Integer
   rex-w (reg) (rm) =
-   rex True (reg >= 8) False (rm >= 8)
+    rex True (reg >= 8) False (rm >= 8)
 
   modrm : Integer, Integer, Integer -> Integer
   modrm (m) (reg) (rm) =
-   m * 64 + int-mod reg 8 * 8 + int-mod rm 8
+    m * 64 + int-mod reg 8 * 8 + int-mod rm 8
 
   sib : Integer, Integer, Integer -> Integer
   sib (scale) (index) (base-reg) =
-   scale * 64 + int-mod index 8 * 8 + int-mod base-reg 8
+    scale * 64 + int-mod index 8 * 8 + int-mod base-reg 8
 
 Section: Immediate Encoding
   write-bytes : Integer, Integer -> List Integer
   write-bytes (v) (n) =
-   if n == 0 then []
-   else [to-byte v] & write-bytes (floor-div v 256) (n - 1)
+    if n == 0 then []
+    else [to-byte v] & write-bytes (floor-div v 256) (n - 1)
 
   write-i8 : Integer -> List Integer
   write-i8 (v) =
-   [to-byte v]
+    [to-byte v]
 
   write-i16 : Integer -> List Integer
   write-i16 (v) =
-   write-bytes v 2
+    write-bytes v 2
 
   write-i32 : Integer -> List Integer
   write-i32 (v) =
-   write-bytes v 4
+    write-bytes v 4
 
   write-i64 : Integer -> List Integer
   write-i64 (v) =
-   write-bytes v 8
+    write-bytes v 8
 
   pad-zeros : Integer -> List Integer
   pad-zeros (n) =
-   pad-zeros-acc n []
+    pad-zeros-acc n []
 
   pad-zeros-acc : Integer, List Integer -> List Integer
   pad-zeros-acc (n) (acc) =
-   if n <= 0 then acc
-   else pad-zeros-acc (n - 1) (list-push acc 0)
+    if n <= 0 then acc
+    else pad-zeros-acc (n - 1) (list-push acc 0)
 
   align-up : Integer, Integer -> Integer
   align-up (v) (a) =
-   let r = int-mod v a
-   in if r == 0 then v else v + a - r
+    let r = int-mod v a
+    in if r == 0 then v else v + a - r
 
 Section: Memory Operand Encoding
   emit-mem-operand : Integer, Integer, Integer -> List Integer
   emit-mem-operand (reg) (rm) (offset) =
-   let rm-low = int-mod rm 8
-   in let needs-sib = rm-low == 4
-   in let rbp-base = rm-low == 5
-   in let sib-byte = if needs-sib then [sib 0 4 rm-low] else []
-   in if offset == 0 & rbp-base == False then [modrm 0 reg rm] & sib-byte
-      else if offset >= -128 & offset <= 127 then [modrm 1 reg rm] & sib-byte & write-i8 offset
-      else [modrm 2 reg rm] & sib-byte & write-i32 offset
+    let rm-low = int-mod rm 8
+    in let needs-sib = rm-low == 4
+    in let rbp-base = rm-low == 5
+    in let sib-byte = if needs-sib then [sib 0 4 rm-low] else []
+    in if offset == 0 & rbp-base == False then [modrm 0 reg rm] & sib-byte
+    else if offset >= -128 & offset <= 127 then [modrm 1 reg rm] & sib-byte & write-i8 offset
+    else [modrm 2 reg rm] & sib-byte & write-i32 offset
 
 Section: Register Constants
   reg-rax : Integer = 0
@@ -156,25 +156,25 @@ Section: Condition Codes
 Section: MOV Instructions
   mov-rr : Integer, Integer -> List Integer
   mov-rr (rd) (rs) =
-   if rd == rs then []
-   else [rex-w rs rd, 137, modrm 3 rs rd]
+    if rd == rs then []
+    else [rex-w rs rd, 137, modrm 3 rs rd]
 
   mov-ri64 : Integer, Integer -> List Integer
   mov-ri64 (rd) (imm) =
-   [rex True False False (rd >= 8), 184 + int-mod rd 8]
-   & write-i64 imm
+    [rex True False False (rd >= 8), 184 + int-mod rd 8]
+    & write-i64 imm
 
   mov-ri32 : Integer, Integer -> List Integer
   mov-ri32 (rd) (imm) =
-   [rex-w 0 rd, 199, modrm 3 0 rd] & write-i32 imm
+    [rex-w 0 rd, 199, modrm 3 0 rd] & write-i32 imm
 
   mov-load : Integer, Integer, Integer -> List Integer
   mov-load (rd) (rs) (offset) =
-   [rex-w rd rs, 139] & emit-mem-operand rd rs offset
+    [rex-w rd rs, 139] & emit-mem-operand rd rs offset
 
   mov-store : Integer, Integer, Integer -> List Integer
   mov-store (rd) (rs) (offset) =
-   [rex-w rs rd, 137] & emit-mem-operand rs rd offset
+    [rex-w rs rd, 137] & emit-mem-operand rs rd offset
 
  A 32-bit store: the same opcode with REX.W clear. Memory-mapped device
  registers are dword-wide and a 64-bit write to one is undefined on real
@@ -182,41 +182,41 @@ Section: MOV Instructions
 
   mov-store-32 : Integer, Integer, Integer -> List Integer
   mov-store-32 (rd) (rs) (offset) =
-   [rex False (rs >= 8) False (rd >= 8), 137] & emit-mem-operand rs rd offset
+    [rex False (rs >= 8) False (rd >= 8), 137] & emit-mem-operand rs rd offset
 
   mov-load-rip-rel : Integer, Integer -> List Integer
   mov-load-rip-rel (rd) (disp32) =
-   [rex True (rd >= 8) False False, 139, modrm 0 rd 5] & write-i32 disp32
+    [rex True (rd >= 8) False False, 139, modrm 0 rd 5] & write-i32 disp32
 
   mov-store-rip-rel : Integer, Integer -> List Integer
   mov-store-rip-rel (rs) (disp32) =
-   [rex True (rs >= 8) False False, 137, modrm 0 rs 5] & write-i32 disp32
+    [rex True (rs >= 8) False False, 137, modrm 0 rs 5] & write-i32 disp32
 
   movzx-byte : Integer, Integer, Integer -> List Integer
   movzx-byte (rd) (rs) (offset) =
-   [rex-w rd rs, 15, 182] & emit-mem-operand rd rs offset
+    [rex-w rd rs, 15, 182] & emit-mem-operand rd rs offset
 
   movsx-byte : Integer, Integer, Integer -> List Integer
   movsx-byte (rd) (rs) (offset) =
-   [rex-w rd rs, 15, 190] & emit-mem-operand rd rs offset
+    [rex-w rd rs, 15, 190] & emit-mem-operand rd rs offset
 
   movzx-word : Integer, Integer, Integer -> List Integer
   movzx-word (rd) (rs) (offset) =
-   [rex-w rd rs, 15, 183] & emit-mem-operand rd rs offset
+    [rex-w rd rs, 15, 183] & emit-mem-operand rd rs offset
 
   movsx-word : Integer, Integer, Integer -> List Integer
   movsx-word (rd) (rs) (offset) =
-   [rex-w rd rs, 15, 191] & emit-mem-operand rd rs offset
+    [rex-w rd rs, 15, 191] & emit-mem-operand rd rs offset
 
   mov-load-u32 : Integer, Integer, Integer -> List Integer
   mov-load-u32 (rd) (rs) (offset) =
-   let rex-byte = rex False (rd >= 8) False (rs >= 8)
-   in let pfx = if rex-byte /= 64 then [rex-byte] else []
-   in pfx & [139] & emit-mem-operand rd rs offset
+    let rex-byte = rex False (rd >= 8) False (rs >= 8)
+    in let pfx = if rex-byte /= 64 then [rex-byte] else []
+    in pfx & [139] & emit-mem-operand rd rs offset
 
   movsxd : Integer, Integer, Integer -> List Integer
   movsxd (rd) (rs) (offset) =
-   [rex-w rd rs, 99] & emit-mem-operand rd rs offset
+    [rex-w rd rs, 99] & emit-mem-operand rd rs offset
 
  The register-to-register form of the same instruction, for the one case that
  needs it: a Windows import returning int leaves its answer in EAX, and an
@@ -226,114 +226,114 @@ Section: MOV Instructions
 
   mov-store-byte : Integer, Integer, Integer -> List Integer
   mov-store-byte (rd) (rs) (offset) =
-   let rex-byte = rex False (rs >= 8) False (rd >= 8)
-   in let pfx = if rex-byte /= 64 | rs >= 4 then [rex-byte] else []
-   in pfx & [136] & emit-mem-operand rs rd offset
+    let rex-byte = rex False (rs >= 8) False (rd >= 8)
+    in let pfx = if rex-byte /= 64 | rs >= 4 then [rex-byte] else []
+    in pfx & [136] & emit-mem-operand rs rd offset
 
   mov-store-word : Integer, Integer, Integer -> List Integer
   mov-store-word (rd) (rs) (offset) =
-   let rex-byte = rex False (rs >= 8) False (rd >= 8)
-   in let pfx = if rex-byte /= 64 then [rex-byte] else []
-   in [102] & pfx & [137] & emit-mem-operand rs rd offset
+    let rex-byte = rex False (rs >= 8) False (rd >= 8)
+    in let pfx = if rex-byte /= 64 then [rex-byte] else []
+    in [102] & pfx & [137] & emit-mem-operand rs rd offset
 
   mov-store-dword : Integer, Integer, Integer -> List Integer
   mov-store-dword (rd) (rs) (offset) =
-   let rex-byte = rex False (rs >= 8) False (rd >= 8)
-   in let pfx = if rex-byte /= 64 then [rex-byte] else []
-   in pfx & [137] & emit-mem-operand rs rd offset
+    let rex-byte = rex False (rs >= 8) False (rd >= 8)
+    in let pfx = if rex-byte /= 64 then [rex-byte] else []
+    in pfx & [137] & emit-mem-operand rs rd offset
 
 Section: Arithmetic Instructions
   alu-ri : Integer, Integer, Integer -> List Integer
   alu-ri (ext) (rd) (imm) =
-   if imm >= -128 & imm <= 127 then [rex-w 0 rd, 131, modrm 3 ext rd] & write-i8 imm
-   else [rex-w 0 rd, 129, modrm 3 ext rd] & write-i32 imm
+    if imm >= -128 & imm <= 127 then [rex-w 0 rd, 131, modrm 3 ext rd] & write-i8 imm
+    else [rex-w 0 rd, 129, modrm 3 ext rd] & write-i32 imm
 
   add-rr : Integer, Integer -> List Integer
   add-rr (rd) (rs) =
-   [rex-w rs rd, 1, modrm 3 rs rd]
+    [rex-w rs rd, 1, modrm 3 rs rd]
 
   add-ri : Integer, Integer -> List Integer
   add-ri (rd) (imm) =
-   alu-ri 0 rd imm
+    alu-ri 0 rd imm
 
   sub-rr : Integer, Integer -> List Integer
   sub-rr (rd) (rs) =
-   [rex-w rs rd, 41, modrm 3 rs rd]
+    [rex-w rs rd, 41, modrm 3 rs rd]
 
   sub-ri : Integer, Integer -> List Integer
   sub-ri (rd) (imm) =
-   alu-ri 5 rd imm
+    alu-ri 5 rd imm
 
   imul-rr : Integer, Integer -> List Integer
   imul-rr (rd) (rs) =
-   [rex-w rd rs, 15, 175, modrm 3 rd rs]
+    [rex-w rd rs, 15, 175, modrm 3 rd rs]
 
   imul-rri : Integer, Integer, Integer -> List Integer
   imul-rri (rd) (rs) (imm) =
-   [rex-w rd rs, 105, modrm 3 rd rs] & write-i32 imm
+    [rex-w rd rs, 105, modrm 3 rd rs] & write-i32 imm
 
   neg-r : Integer -> List Integer
   neg-r (rd) =
-   [rex-w 0 rd, 247, modrm 3 3 rd]
+    [rex-w 0 rd, 247, modrm 3 3 rd]
 
   cqo : List Integer = [rex True False False False, 153]
 
   idiv-r : Integer -> List Integer
   idiv-r (rs) =
-   [rex-w 0 rs, 247, modrm 3 7 rs]
+    [rex-w 0 rs, 247, modrm 3 7 rs]
 
   div-r : Integer -> List Integer
   div-r (rs) =
-   [rex-w 0 rs, 247, modrm 3 6 rs]
+    [rex-w 0 rs, 247, modrm 3 6 rs]
 
   and-rr : Integer, Integer -> List Integer
   and-rr (rd) (rs) =
-   [rex-w rs rd, 33, modrm 3 rs rd]
+    [rex-w rs rd, 33, modrm 3 rs rd]
 
   and-ri : Integer, Integer -> List Integer
   and-ri (rd) (imm) =
-   alu-ri 4 rd imm
+    alu-ri 4 rd imm
 
   or-rr : Integer, Integer -> List Integer
   or-rr (rd) (rs) =
-   [rex-w rs rd, 9, modrm 3 rs rd]
+    [rex-w rs rd, 9, modrm 3 rs rd]
 
   or-ri : Integer, Integer -> List Integer
   or-ri (rd) (imm) =
-   alu-ri 1 rd imm
+    alu-ri 1 rd imm
 
   shl-ri : Integer, Integer -> List Integer
   shl-ri (rd) (imm) =
-   [rex-w 0 rd, 193, modrm 3 4 rd, imm]
+    [rex-w 0 rd, 193, modrm 3 4 rd, imm]
 
   shr-ri : Integer, Integer -> List Integer
   shr-ri (rd) (imm) =
-   [rex-w 0 rd, 193, modrm 3 5 rd, imm]
+    [rex-w 0 rd, 193, modrm 3 5 rd, imm]
 
   shl-cl : Integer -> List Integer
   shl-cl (rd) =
-   [rex-w 0 rd, 211, modrm 3 4 rd]
+    [rex-w 0 rd, 211, modrm 3 4 rd]
 
   shr-cl : Integer -> List Integer
   shr-cl (rd) =
-   [rex-w 0 rd, 211, modrm 3 5 rd]
+    [rex-w 0 rd, 211, modrm 3 5 rd]
 
   sar-cl : Integer -> List Integer
   sar-cl (rd) =
-   [rex-w 0 rd, 211, modrm 3 7 rd]
+    [rex-w 0 rd, 211, modrm 3 7 rd]
 
   not-r : Integer -> List Integer
   not-r (rd) =
-   [rex-w 0 rd, 247, modrm 3 2 rd]
+    [rex-w 0 rd, 247, modrm 3 2 rd]
 
   sar-ri : Integer, Integer -> List Integer
   sar-ri (rd) (imm) =
-   [rex-w 0 rd, 193, modrm 3 7 rd, imm]
+    [rex-w 0 rd, 193, modrm 3 7 rd, imm]
 
 Section: Compare and Test
   cmp-rr : Integer, Integer -> List Integer
   cmp-rr (rd) (rs) =
-   [rex-w rs rd, 57, modrm 3 rs rd]
+    [rex-w rs rd, 57, modrm 3 rs rd]
 
  CMP r64, [disp32]. The SIB no-base form (mod 00, rm 100, index 100, base 101)
  is the only absolute addressing x86-64 offers without a base register, and
@@ -342,7 +342,7 @@ Section: Compare and Test
 
   cmp-r-abs : Integer, Integer -> List Integer
   cmp-r-abs (rd) (addr) =
-   [rex-w rd 0, 59, modrm 0 rd 4, sib 0 4 5] & write-i32 addr
+    [rex-w rd 0, 59, modrm 0 rd 4, sib 0 4 5] & write-i32 addr
 
  CMP qword [disp32], imm8, the same no-base SIB form with the group-1 opcode
  and CMP's /7 extension, so the reg field carries the extension and REX.R
@@ -351,70 +351,70 @@ Section: Compare and Test
 
   cmp-abs-imm8 : Integer, Integer -> List Integer
   cmp-abs-imm8 (addr) (imm) =
-   [rex-w 0 0, 131, modrm 0 7 4, sib 0 4 5] & write-i32 addr & write-i8 imm
+    [rex-w 0 0, 131, modrm 0 7 4, sib 0 4 5] & write-i32 addr & write-i8 imm
 
   cmp-ri : Integer, Integer -> List Integer
   cmp-ri (rd) (imm) =
-   alu-ri 7 rd imm
+    alu-ri 7 rd imm
 
   test-rr : Integer, Integer -> List Integer
   test-rr (rd) (rs) =
-   [rex-w rs rd, 133, modrm 3 rs rd]
+    [rex-w rs rd, 133, modrm 3 rs rd]
 
   test-ri : Integer, Integer -> List Integer
   test-ri (rd) (imm) =
-   [rex-w 0 rd, 247, modrm 3 0 rd] & write-i32 imm
+    [rex-w 0 rd, 247, modrm 3 0 rd] & write-i32 imm
 
 Section: Setcc
   setcc : Integer, Integer -> List Integer
   setcc (cc) (rd) =
-   let pfx = if rd >= 4 then [rex False False False (rd >= 8)] else []
-   in pfx & [15, 144 + cc, modrm 3 0 rd]
+    let pfx = if rd >= 4 then [rex False False False (rd >= 8)] else []
+    in pfx & [15, 144 + cc, modrm 3 0 rd]
 
   movzx-byte-self : Integer -> List Integer
   movzx-byte-self (rd) =
-   [rex-w rd rd, 15, 182, modrm 3 rd rd]
+    [rex-w rd rd, 15, 182, modrm 3 rd rd]
 
 Section: Branches and Jumps
   jcc : Integer, Integer -> List Integer
   jcc (cc) (rel32) =
-   [15, 128 + cc] & write-i32 rel32
+    [15, 128 + cc] & write-i32 rel32
 
   jmp : Integer -> List Integer
   jmp (rel32) =
-   [233] & write-i32 rel32
+    [233] & write-i32 rel32
 
   x86-call : Integer -> List Integer
   x86-call (rel32) =
-   [232] & write-i32 rel32
+    [232] & write-i32 rel32
 
   x86-ret : List Integer = [195]
 
   x86-ret-drop : Integer -> List Integer
   x86-ret-drop (bytes) =
-   [194] & write-i16 bytes
+    [194] & write-i16 bytes
 
   x86-nop : List Integer = [144]
 
 Section: Stack
   push-r : Integer -> List Integer
   push-r (rd) =
-   let pfx = if rd >= 8 then [rex False False False True] else []
-   in pfx & [80 + int-mod rd 8]
+    let pfx = if rd >= 8 then [rex False False False True] else []
+    in pfx & [80 + int-mod rd 8]
 
   push-i32 : Integer -> List Integer
   push-i32 (imm) =
-   [104] & write-i32 imm
+    [104] & write-i32 imm
 
   pop-r : Integer -> List Integer
   pop-r (rd) =
-   let pfx = if rd >= 8 then [rex False False False True] else []
-   in pfx & [88 + int-mod rd 8]
+    let pfx = if rd >= 8 then [rex False False False True] else []
+    in pfx & [88 + int-mod rd 8]
 
 Section: LEA
   lea : Integer, Integer, Integer -> List Integer
   lea (rd) (rs) (offset) =
-   [rex-w rd rs, 141] & emit-mem-operand rd rs offset
+    [rex-w rd rs, 141] & emit-mem-operand rd rs offset
 
  `lea rd, [base + index]` -- the sum of two registers into a third, which the
  two-operand ALU cannot do in one instruction. It needs the SIB form, so the
@@ -432,27 +432,27 @@ Section: LEA
 
   lea-rr : Integer, Integer, Integer -> List Integer
   lea-rr (rd) (base-reg) (idx) =
-   let r = rex True (rd >= 8) (idx >= 8) (base-reg >= 8)
-   in if int-mod base-reg 8 == 5
-      then [r, 141, modrm 1 rd 4, sib 0 idx base-reg] & write-i8 0
-      else [r, 141, modrm 0 rd 4, sib 0 idx base-reg]
+    let r = rex True (rd >= 8) (idx >= 8) (base-reg >= 8)
+    in if int-mod base-reg 8 == 5
+       then [r, 141, modrm 1 rd 4, sib 0 idx base-reg] & write-i8 0
+    else [r, 141, modrm 0 rd 4, sib 0 idx base-reg]
 
 Section: Load Immediate
   li : Integer, Integer -> List Integer
   li (rd) (value) =
-   if value == 0 then xor-rr rd rd
-   else if value >= -2147483648 & value <= 2147483647 then mov-ri32 rd value
-   else mov-ri64 rd value
+    if value == 0 then xor-rr rd rd
+    else if value >= -2147483648 & value <= 2147483647 then mov-ri32 rd value
+    else mov-ri64 rd value
 
   xor-rr : Integer, Integer -> List Integer
   xor-rr (rd) (rs) =
-   let rex-byte = rex False (rs >= 8) False (rd >= 8)
-   in let pfx = if rex-byte /= 64 then [rex-byte] else []
-   in pfx & [49, modrm 3 rs rd]
+    let rex-byte = rex False (rs >= 8) False (rd >= 8)
+    in let pfx = if rex-byte /= 64 then [rex-byte] else []
+    in pfx & [49, modrm 3 rs rd]
 
   xor-rr64 : Integer, Integer -> List Integer
   xor-rr64 (rd) (rs) =
-   [rex-w rs rd, 49, modrm 3 rs rd]
+    [rex-w rs rd, 49, modrm 3 rs rd]
 
 Section: System
   x86-syscall : List Integer = [15, 5]
@@ -464,7 +464,7 @@ Section: System
 
   call-abs-ind : Integer -> List Integer
   call-abs-ind (addr) =
-   [255, modrm 0 2 4, sib 0 4 5] & write-i32 addr
+    [255, modrm 0 2 4, sib 0 4 5] & write-i32 addr
 
   out-dx-al : List Integer = [238]
 
@@ -500,15 +500,15 @@ Section: Atomic Instructions
 
   lock-cmpxchg-mem : Integer, Integer, Integer -> List Integer
   lock-cmpxchg-mem (rs) (base) (offset) =
-   [240, rex-w rs base, 15, 177] & emit-mem-operand rs base offset
+    [240, rex-w rs base, 15, 177] & emit-mem-operand rs base offset
 
   lock-xadd-mem : Integer, Integer, Integer -> List Integer
   lock-xadd-mem (rs) (base) (offset) =
-   [240, rex-w rs base, 15, 193] & emit-mem-operand rs base offset
+    [240, rex-w rs base, 15, 193] & emit-mem-operand rs base offset
 
   xchg-mem : Integer, Integer, Integer -> List Integer
   xchg-mem (rs) (base) (offset) =
-   [rex-w rs base, 135] & emit-mem-operand rs base offset
+    [rex-w rs base, 135] & emit-mem-operand rs base offset
 
 Section: Privileged Instructions
   hlt : List Integer = [244]
@@ -529,167 +529,167 @@ Section: SSE2 Instructions
 
   movq-to-xmm : Integer, Integer -> List Integer
   movq-to-xmm (xmm) (gpr) =
-   [102, rex-w xmm gpr, 15, 110, modrm 3 xmm gpr]
+    [102, rex-w xmm gpr, 15, 110, modrm 3 xmm gpr]
 
   movq-from-xmm : Integer, Integer -> List Integer
   movq-from-xmm (gpr) (xmm) =
-   [102, rex-w xmm gpr, 15, 126, modrm 3 xmm gpr]
+    [102, rex-w xmm gpr, 15, 126, modrm 3 xmm gpr]
 
   addsd-xmm : Integer, Integer -> List Integer
   addsd-xmm (dst) (src) =
-   [242, 15, 88, modrm 3 dst src]
+    [242, 15, 88, modrm 3 dst src]
 
   subsd-xmm : Integer, Integer -> List Integer
   subsd-xmm (dst) (src) =
-   [242, 15, 92, modrm 3 dst src]
+    [242, 15, 92, modrm 3 dst src]
 
   mulsd-xmm : Integer, Integer -> List Integer
   mulsd-xmm (dst) (src) =
-   [242, 15, 89, modrm 3 dst src]
+    [242, 15, 89, modrm 3 dst src]
 
   divsd-xmm : Integer, Integer -> List Integer
   divsd-xmm (dst) (src) =
-   [242, 15, 94, modrm 3 dst src]
+    [242, 15, 94, modrm 3 dst src]
 
   addss-xmm : Integer, Integer -> List Integer
   addss-xmm (dst) (src) =
-   [243, 15, 88, modrm 3 dst src]
+    [243, 15, 88, modrm 3 dst src]
 
   subss-xmm : Integer, Integer -> List Integer
   subss-xmm (dst) (src) =
-   [243, 15, 92, modrm 3 dst src]
+    [243, 15, 92, modrm 3 dst src]
 
   mulss-xmm : Integer, Integer -> List Integer
   mulss-xmm (dst) (src) =
-   [243, 15, 89, modrm 3 dst src]
+    [243, 15, 89, modrm 3 dst src]
 
   divss-xmm : Integer, Integer -> List Integer
   divss-xmm (dst) (src) =
-   [243, 15, 94, modrm 3 dst src]
+    [243, 15, 94, modrm 3 dst src]
 
   movd-to-xmm : Integer, Integer -> List Integer
   movd-to-xmm (xmm) (gpr) =
-   if (xmm >= 8) | (gpr >= 8)
-   then [102, rex False (xmm >= 8) False (gpr >= 8), 15, 110, modrm 3 xmm gpr]
-   else [102, 15, 110, modrm 3 xmm gpr]
+    if (xmm >= 8) | (gpr >= 8)
+    then [102, rex False (xmm >= 8) False (gpr >= 8), 15, 110, modrm 3 xmm gpr]
+    else [102, 15, 110, modrm 3 xmm gpr]
 
   movd-from-xmm : Integer, Integer -> List Integer
   movd-from-xmm (gpr) (xmm) =
-   if (xmm >= 8) | (gpr >= 8)
-   then [102, rex False (xmm >= 8) False (gpr >= 8), 15, 126, modrm 3 xmm gpr]
-   else [102, 15, 126, modrm 3 xmm gpr]
+    if (xmm >= 8) | (gpr >= 8)
+    then [102, rex False (xmm >= 8) False (gpr >= 8), 15, 126, modrm 3 xmm gpr]
+    else [102, 15, 126, modrm 3 xmm gpr]
 
   cvtsd2ss-xmm : Integer, Integer -> List Integer
   cvtsd2ss-xmm (dst) (src) =
-   [242, 15, 90, modrm 3 dst src]
+    [242, 15, 90, modrm 3 dst src]
 
   cvtss2sd-xmm : Integer, Integer -> List Integer
   cvtss2sd-xmm (dst) (src) =
-   [243, 15, 90, modrm 3 dst src]
+    [243, 15, 90, modrm 3 dst src]
 
   ucomisd-xmm : Integer, Integer -> List Integer
   ucomisd-xmm (a) (b) =
-   [102, 15, 46, modrm 3 a b]
+    [102, 15, 46, modrm 3 a b]
 
   ucomiss-xmm : Integer, Integer -> List Integer
   ucomiss-xmm (a) (b) =
-   [15, 46, modrm 3 a b]
+    [15, 46, modrm 3 a b]
 
   cvtsi2sd : Integer, Integer -> List Integer
   cvtsi2sd (xmm) (gpr) =
-   [242, rex-w xmm gpr, 15, 42, modrm 3 xmm gpr]
+    [242, rex-w xmm gpr, 15, 42, modrm 3 xmm gpr]
 
   cvttsd2si : Integer, Integer -> List Integer
   cvttsd2si (gpr) (xmm) =
-   [242, rex-w gpr xmm, 15, 44, modrm 3 gpr xmm]
+    [242, rex-w gpr xmm, 15, 44, modrm 3 gpr xmm]
 
   movupd-load : Integer, Integer, Integer -> List Integer
   movupd-load (xmm) (base) (offset) =
-   [102, rex-w xmm base, 15, 16] & emit-mem-operand xmm base offset
+    [102, rex-w xmm base, 15, 16] & emit-mem-operand xmm base offset
 
   movupd-store : Integer, Integer, Integer -> List Integer
   movupd-store (base) (offset) (xmm) =
-   [102, rex-w xmm base, 15, 17] & emit-mem-operand xmm base offset
+    [102, rex-w xmm base, 15, 17] & emit-mem-operand xmm base offset
 
   addpd-xmm : Integer, Integer -> List Integer
   addpd-xmm (dst) (src) =
-   [102, 15, 88, modrm 3 dst src]
+    [102, 15, 88, modrm 3 dst src]
 
   subpd-xmm : Integer, Integer -> List Integer
   subpd-xmm (dst) (src) =
-   [102, 15, 92, modrm 3 dst src]
+    [102, 15, 92, modrm 3 dst src]
 
   mulpd-xmm : Integer, Integer -> List Integer
   mulpd-xmm (dst) (src) =
-   [102, 15, 89, modrm 3 dst src]
+    [102, 15, 89, modrm 3 dst src]
 
   divpd-xmm : Integer, Integer -> List Integer
   divpd-xmm (dst) (src) =
-   [102, 15, 94, modrm 3 dst src]
+    [102, 15, 94, modrm 3 dst src]
 
   cmppd-xmm : Integer, Integer, Integer -> List Integer
   cmppd-xmm (dst) (src) (imm) =
-   [102, 15, 194, modrm 3 dst src, imm]
+    [102, 15, 194, modrm 3 dst src, imm]
 
   addps-xmm : Integer, Integer -> List Integer
   addps-xmm (dst) (src) =
-   [15, 88, modrm 3 dst src]
+    [15, 88, modrm 3 dst src]
 
   subps-xmm : Integer, Integer -> List Integer
   subps-xmm (dst) (src) =
-   [15, 92, modrm 3 dst src]
+    [15, 92, modrm 3 dst src]
 
   mulps-xmm : Integer, Integer -> List Integer
   mulps-xmm (dst) (src) =
-   [15, 89, modrm 3 dst src]
+    [15, 89, modrm 3 dst src]
 
   divps-xmm : Integer, Integer -> List Integer
   divps-xmm (dst) (src) =
-   [15, 94, modrm 3 dst src]
+    [15, 94, modrm 3 dst src]
 
   cmpps-xmm : Integer, Integer, Integer -> List Integer
   cmpps-xmm (dst) (src) (imm) =
-   [15, 194, modrm 3 dst src, imm]
+    [15, 194, modrm 3 dst src, imm]
 
   movups-load : Integer, Integer, Integer -> List Integer
   movups-load (xmm) (base) (offset) =
-   let r = rex False (xmm >= 8) False (base >= 8)
-   in let pfx = if r /= 64 then [r] else []
-   in pfx & [15, 16] & emit-mem-operand xmm base offset
+    let r = rex False (xmm >= 8) False (base >= 8)
+    in let pfx = if r /= 64 then [r] else []
+    in pfx & [15, 16] & emit-mem-operand xmm base offset
 
   movups-store : Integer, Integer, Integer -> List Integer
   movups-store (base) (offset) (xmm) =
-   let r = rex False (xmm >= 8) False (base >= 8)
-   in let pfx = if r /= 64 then [r] else []
-   in pfx & [15, 17] & emit-mem-operand xmm base offset
+    let r = rex False (xmm >= 8) False (base >= 8)
+    in let pfx = if r /= 64 then [r] else []
+    in pfx & [15, 17] & emit-mem-operand xmm base offset
 
   xorps-xmm : Integer, Integer -> List Integer
   xorps-xmm (dst) (src) =
-   [15, 87, modrm 3 dst src]
+    [15, 87, modrm 3 dst src]
 
   shufps-xmm : Integer, Integer, Integer -> List Integer
   shufps-xmm (dst) (src) (imm) =
-   [15, 198, modrm 3 dst src, imm]
+    [15, 198, modrm 3 dst src, imm]
 
   andpd-xmm : Integer, Integer -> List Integer
   andpd-xmm (dst) (src) =
-   [102, 15, 84, modrm 3 dst src]
+    [102, 15, 84, modrm 3 dst src]
 
   andnpd-xmm : Integer, Integer -> List Integer
   andnpd-xmm (dst) (src) =
-   [102, 15, 85, modrm 3 dst src]
+    [102, 15, 85, modrm 3 dst src]
 
   orpd-xmm : Integer, Integer -> List Integer
   orpd-xmm (dst) (src) =
-   [102, 15, 86, modrm 3 dst src]
+    [102, 15, 86, modrm 3 dst src]
 
   paddq-xmm : Integer, Integer -> List Integer
   paddq-xmm (dst) (src) =
-   [102, 15, 212, modrm 3 dst src]
+    [102, 15, 212, modrm 3 dst src]
 
   psubq-xmm : Integer, Integer -> List Integer
   psubq-xmm (dst) (src) =
-   [102, 15, 251, modrm 3 dst src]
+    [102, 15, 251, modrm 3 dst src]
 
  The GPR here is the ModRM.reg field, so a destination in R8-R15 needs
  REX.R, and the XMM is the rm field, so REX.B. This carried no REX byte at
@@ -704,9 +704,9 @@ Section: SSE2 Instructions
 
   movmskpd : Integer, Integer -> List Integer
   movmskpd (gpr) (xmm) =
-   if (gpr >= 8) | (xmm >= 8)
-   then [102, rex False (gpr >= 8) False (xmm >= 8), 15, 80, modrm 3 gpr xmm]
-   else [102, 15, 80, modrm 3 gpr xmm]
+    if (gpr >= 8) | (xmm >= 8)
+    then [102, rex False (gpr >= 8) False (xmm >= 8), 15, 80, modrm 3 gpr xmm]
+    else [102, 15, 80, modrm 3 gpr xmm]
 
  The packed-single form is the same opcode without the 0x66 prefix, and it
  yields FOUR sign bits rather than two. The REX rule above is the same rule
@@ -714,13 +714,13 @@ Section: SSE2 Instructions
 
   movmskps : Integer, Integer -> List Integer
   movmskps (gpr) (xmm) =
-   if (gpr >= 8) | (xmm >= 8)
-   then [rex False (gpr >= 8) False (xmm >= 8), 15, 80, modrm 3 gpr xmm]
-   else [15, 80, modrm 3 gpr xmm]
+    if (gpr >= 8) | (xmm >= 8)
+    then [rex False (gpr >= 8) False (xmm >= 8), 15, 80, modrm 3 gpr xmm]
+    else [15, 80, modrm 3 gpr xmm]
 
   unpcklpd-xmm : Integer, Integer -> List Integer
   unpcklpd-xmm (dst) (src) =
-   [102, 15, 20, modrm 3 dst src]
+    [102, 15, 20, modrm 3 dst src]
 
  VEX (SDM 2.3.5). The three-byte form is C4, then R X B inverted over
  mmmmm (1 = 0F, 2 = 0F38, 3 = 0F3A), then W, vvvv inverted, L, pp
@@ -731,23 +731,23 @@ Section: SSE2 Instructions
 
   vex : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
   vex (l) (pp) (map) (w) (reg) (vvvv) (rm) =
-   let r-inv = if reg >= 8 then 0 else 128
-   in let b-inv = if rm >= 8 then 0 else 32
-   in let low = (15 - int-mod vvvv 16) * 8 + l * 4 + pp
-   in if rm < 8 & map == 1 & w == 0 then [197, r-inv + low]
-   else [196, r-inv + 64 + b-inv + map, w * 128 + low]
+    let r-inv = if reg >= 8 then 0 else 128
+    in let b-inv = if rm >= 8 then 0 else 32
+    in let low = (15 - int-mod vvvv 16) * 8 + l * 4 + pp
+    in if rm < 8 & map == 1 & w == 0 then [197, r-inv + low]
+    else [196, r-inv + 64 + b-inv + map, w * 128 + low]
 
   vex-rrr : Integer, Integer, Integer, Integer, Integer -> List Integer
   vex-rrr (pp) (op) (dst) (src1) (src2) =
-   vex 1 pp 1 0 dst src1 src2 & [op, modrm 3 dst src2]
+    vex 1 pp 1 0 dst src1 src2 & [op, modrm 3 dst src2]
 
   vmovupd-load-y : Integer, Integer, Integer -> List Integer
   vmovupd-load-y (ymm) (base) (offset) =
-   vex 1 1 1 0 ymm 0 base & [16] & emit-mem-operand ymm base offset
+    vex 1 1 1 0 ymm 0 base & [16] & emit-mem-operand ymm base offset
 
   vmovupd-store-y : Integer, Integer, Integer -> List Integer
   vmovupd-store-y (base) (offset) (ymm) =
-   vex 1 1 1 0 ymm 0 base & [17] & emit-mem-operand ymm base offset
+    vex 1 1 1 0 ymm 0 base & [17] & emit-mem-operand ymm base offset
 
   vaddpd-y : Integer, Integer, Integer -> List Integer
   vaddpd-y (dst) (src1) (src2) = vex-rrr 1 88 dst src1 src2
@@ -805,4 +805,3 @@ Section: SSE2 Instructions
   vzeroupper : List Integer = [197, 248, 119]
 
 Page 6 of 14
-

@@ -3,26 +3,11 @@ Chapter: SudokuWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- `sudoku-solve` and `sudoku-remove-cells` both write the grid with
- `list-set-at`, in place, so `sd-wasm-solve` and `sd-wasm-remove` copy first
- and a puzzle and its solution are two lists.
-
  We say:
 
-Section: Copying
+Section: The Browser Interface
 
   wasm-exports : Text = ""
-
-  sd-copy-grid : List Integer, Integer, List Integer -> List Integer
-  sd-copy-grid (src) (i) (acc) =
-    if i >= 81 then acc
-    else sd-copy-grid src (i + 1) (list-push acc (list-at src i))
-
-  sd-copy-state : SudokuState -> SudokuState
-  sd-copy-state (st) =
-    SudokuState { grid = sd-copy-grid (st.grid) 0 [], iterations = st.iterations }
-
-Section: The Browser Interface
 
   sd-wasm-new : Integer -> SudokuState
   sd-wasm-new (seed) = sudoku-new (rng-new seed)
@@ -54,42 +39,73 @@ Section: The Browser Interface
     else 0
 
   sd-wasm-solve : SudokuState -> SudokuState
-  sd-wasm-solve (st) = sudoku-solve (sd-copy-state st)
+  sd-wasm-solve (st) = sudoku-solve st
 
   sd-wasm-remove : SudokuState, Integer, Integer -> SudokuState
   sd-wasm-remove (st) (seed) (count) =
     if count < 0 then st
-    else sudoku-remove-cells (sd-copy-state st) (rng-new seed) count
+    else sudoku-remove-cells st (rng-new seed) count
+
+  sd-wasm-count : SudokuState, Integer -> Integer
+  sd-wasm-count (st) (limit) =
+    if limit < 1 then 0
+    else sudoku-count st limit
 
 Section: Playing By Hand
 
- `sudoku-is-valid` scans the row, the column and the box without excluding
- the target cell, so a cell is cleared before a value is tested there;
- otherwise an overwrite is refused as a duplicate of itself.
-
   sd-set-cell : SudokuState, Integer, Integer -> SudokuState
   sd-set-cell (st) (i) (val) =
-    SudokuState { grid = list-set-at (st.grid) i val, iterations = st.iterations }
+    let c = sudoku-copy st
+    in SudokuState { grid = list-set-at (c.grid) i val, fixed = c.fixed, iterations = c.iterations }
+
+  sd-on-board : Integer -> Boolean
+  sd-on-board (i) =
+    if i < 0 then False
+    else i < 81
 
   sd-wasm-place : SudokuState, Integer, Integer -> SudokuState
   sd-wasm-place (st) (i) (val) =
-    if i < 0 then st
-    else if i >= 81 then st
-    else if val < 0 then st
-    else if val > 9 then st
-    else if val == 0 then sd-set-cell (sd-copy-state st) i 0
-    else let cleared = sd-set-cell (sd-copy-state st) i 0
-    in if sudoku-is-valid (cleared.grid) (i / 9) (rng-mod i 9) val then sd-set-cell cleared i val
+    if sd-on-board i == False then st
+    else if sudoku-is-fixed st i then st
+    else if val == 0 then sd-set-cell st i 0
+    else if sudoku-fits (st.grid) i val then sd-set-cell st i val
     else st
 
   sd-wasm-fits : SudokuState, Integer, Integer -> Integer
   sd-wasm-fits (st) (i) (val) =
-    if i < 0 then 0
-    else if i >= 81 then 0
-    else if val < 1 then 0
-    else if val > 9 then 0
-    else let cleared = sd-set-cell (sd-copy-state st) i 0
-    in if sudoku-is-valid (cleared.grid) (i / 9) (rng-mod i 9) val then 1 else 0
+    if sd-on-board i == False then 0
+    else if sudoku-is-fixed st i then 0
+    else if sudoku-fits (st.grid) i val then 1
+    else 0
+
+  sd-wasm-fixed : SudokuState, Integer -> Integer
+  sd-wasm-fixed (st) (i) =
+    if sd-on-board i == False then (-1)
+    else if sudoku-is-fixed st i then 1
+    else 0
+
+  sd-wasm-won : SudokuState -> Integer
+  sd-wasm-won (st) = if sudoku-won (st.grid) then 1 else 0
+
+Section: Set-up
+
+  sd-wasm-blank : SudokuState
+  sd-wasm-blank = SudokuState { grid = sudoku-fill 0 [], fixed = sudoku-fill 0 [], iterations = 0 }
+
+  sd-wasm-put : SudokuState, Integer, Integer -> SudokuState
+  sd-wasm-put (st) (i) (val) =
+    if sd-on-board i == False then st
+    else if val < 0 then st
+    else if val > 9 then st
+    else sd-set-cell st i val
+
+  sd-wasm-fix : SudokuState, Integer, Integer -> SudokuState
+  sd-wasm-fix (st) (i) (val) =
+    if sd-on-board i == False then st
+    else if val < 1 then st
+    else if val > 9 then st
+    else let c = sd-set-cell st i val
+    in SudokuState { grid = c.grid, fixed = list-set-at (c.fixed) i 1, iterations = c.iterations }
 
   sd-wasm-empty-count : SudokuState -> Integer
   sd-wasm-empty-count (st) = sd-count-empty (st.grid) 0 0

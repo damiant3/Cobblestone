@@ -101,7 +101,7 @@ function playScenario(sc, seed) {
       if (b.owner !== a.owner) return { bad: `unit ${i} changed sides`, h };
       if (a.dead === 1 && b.dead === 0) return { bad: `unit ${i} came back to life`, h };
       // NOT "a dead unit has strength 0". Only the attrition path ties the
-      // two together; `eliminate-defender` and `elim-atk-loop` set the flag
+      // two together; `hw-eliminate-side`, `hw-exchange` and a blocked retreat set the flag
       // and leave the strength alone, so a combat casualty keeps its last
       // strength. That is consistent rather than broken, because every
       // consumer checks the flag first: `ai-atk-str-loop` skips eliminated
@@ -432,6 +432,226 @@ function findMove(h) {
   let wiped = e.hw_new(1, 5), n = 0;
   while (e.hw_done(wiped) === 0 && n++ < 400) wiped = e.hw_step(wiped);
   ok('a finished battle refuses to end another turn', e.hw_endturn(wiped) === wiped);
+}
+
+// -- THE RULES (HexWar.codex, "The Rules") --------------------------------
+//
+// The oracle is written from the rules and this game's tables, not from the
+// engine. Positions are built with hw_blank / hw_put / hw_terr, which apply
+// no rule, then opened (which takes supply attrition), then read back.
+const COST = [[1, 1, 1], [2, 3, 99], [2, 2, 2], [3, 99, 99], [2, 3, 99],
+              [1, 1, 1], [2, 2, 2], [3, 99, 99], [1, 2, 1], [99, 99, 99]];
+const SHIFT = [0, 1, 1, 2, 0, 0, 2, 1, 0, 99];
+const CAT = [0, 1, 0, 1, 0, 0, 1, 1, 0, 2];
+const ATK = [3, 6, 4, 5, 3, 1, 5, 3, 3, 1];
+const DEF = [3, 4, 2, 4, 3, 1, 4, 5, 3, 1];
+const RANGE = [1, 1, 3, 1, 1, 1, 1, 1, 1, 1];
+const CRT = [[0, 0, 1, 1, 2, 3], [0, 1, 1, 2, 3, 3], [1, 1, 2, 3, 3, 4], [1, 1, 2, 3, 4, 4],
+             [1, 2, 3, 3, 4, 4], [2, 2, 3, 4, 4, 4], [2, 3, 3, 4, 4, 4]];
+const dist = (a, b) => (Math.abs(a.q - b.q) + Math.abs(a.r - b.r) + Math.abs(a.q - b.q + a.r - b.r)) / 2;
+const read = h => ({
+  w: e.hw_width(h), ht: e.hw_height(h), stack: e.hw_stack(h), active: e.hw_active(h),
+  terr: [...Array(e.hw_width(h) * e.hw_height(h))].map((_, i) => e.hw_terrain(h, i)),
+  units: [...Array(e.hw_units(h))].map((_, i) => ({
+    i, owner: e.hw_owner(h, i), type: e.hw_type(h, i), q: e.hw_q(h, i), r: e.hw_r(h, i),
+    str: e.hw_str(h, i), dead: e.hw_dead(h, i) === 1, mp: e.hw_movepts(h, i) })),
+});
+const alive = s => s.units.filter(u => !u.dead);
+const onMap = (s, q, r) => q >= 0 && q < s.w && r >= 0 && r < s.ht;
+const enemyAt = (s, owner, q, r) => alive(s).some(u => u.owner !== owner && u.q === q && u.r === r);
+const friendsAt = (s, owner, q, r) => alive(s).filter(u => u.owner === owner && u.q === q && u.r === r).length;
+const inZoc = (s, owner, q, r) => alive(s).some(u => u.owner !== owner && dist(u, { q, r }) <= 1);
+const stepCost = (s, u, q, r) => {
+  const t = s.terr[r * s.w + q], base = COST[t][CAT[u.type]];
+  if (base >= 99) return 99;
+  return Math.max(1, base + (t === 5 ? -1 : 0)) + (inZoc(s, u.owner, q, r) ? 2 : 0);
+};
+// Rules 2 and 3.
+const canStep = (s, u, q, r) => !u.dead && u.owner === s.active && onMap(s, q, r)
+  && dist(u, { q, r }) === 1 && !enemyAt(s, u.owner, q, r)
+  && stepCost(s, u, q, r) <= u.mp && friendsAt(s, u.owner, q, r) < s.stack;
+// Rule 7.
+const retreatOk = (s, u, q, r) => onMap(s, q, r) && COST[s.terr[r * s.w + q]][CAT[u.type]] < 99
+  && !enemyAt(s, u.owner, q, r) && !inZoc(s, u.owner, q, r) && friendsAt(s, u.owner, q, r) < s.stack;
+// Rule 5.
+const oddsCol = (a, d) => d <= 0 ? 6 : a >= 5 * d ? 6 : a >= 4 * d ? 5 : a >= 3 * d ? 4
+  : a >= 2 * d ? 3 : a >= d ? 2 : 2 * a >= d ? 1 : 0;
+
+let rnd = 20260929;
+const rand = n => { rnd = (rnd * 1103515245 + 12345) % 2147483648; return Math.floor(rnd / 65536) % n; };
+
+// Rule 2's classes, built one at a time on a clear 7 x 7 map.
+{
+  const at = (q, r) => [q, r];
+  const cases = [
+    ['a clear hex', [[0, 0, 3, 3]], [], at(4, 3), true],
+    ['a hex held by an enemy unit', [[0, 0, 3, 3], [0, 1, 4, 3]], [], at(4, 3), false],
+    ['a hex in an enemy zone the movement pays for', [[0, 0, 3, 3], [0, 1, 5, 3]], [], at(4, 3), true],
+    ['a zoned forest hex the movement cannot pay for', [[5, 0, 3, 3], [0, 1, 5, 3]], [[4, 3, 1]], at(4, 3), false],
+    ['a hex holding two friendly units', [[0, 0, 3, 3], [0, 0, 4, 3], [0, 0, 4, 3]], [], at(4, 3), true],
+    ['a hex holding the stacking limit', [[0, 0, 3, 3], [0, 0, 4, 3], [0, 0, 4, 3], [0, 0, 4, 3]], [], at(4, 3), false],
+    ['ocean', [[0, 0, 3, 3]], [[4, 3, 9]], at(4, 3), false],
+    ['a mountain, by armor', [[1, 0, 3, 3]], [[4, 3, 3]], at(4, 3), false],
+    ['a mountain, by infantry', [[0, 0, 3, 3]], [[4, 3, 3]], at(4, 3), true],
+    ['two hexes away', [[0, 0, 3, 3]], [], at(5, 3), false],
+    ['off the map', [[0, 0, 0, 3]], [], at(-1, 3), false],
+  ];
+  for (const [name, puts, terrs, [q, r], want] of cases) {
+    let h = e.hw_blank(7, 7);
+    for (const [t, o, pq, pr] of puts) h = e.hw_put(h, t, o, pq, pr);
+    h = e.hw_put(h, 0, 1, 6, 0);
+    for (const [tq, tr, t] of terrs) h = e.hw_terr(h, tq, tr, t);
+    h = e.hw_open(h);
+    const s = read(h), rules = canStep(s, s.units[0], q, r), got = e.hw_canmove(h, 0, q, r) === 1;
+    const moved = e.hw_move(h, 0, q, r) !== h;
+    ok(`rules: a step onto ${name} is ${want ? 'allowed' : 'refused'}`,
+       rules === want && got === want && moved === want, `engine ${got}, move ${moved}, rules ${rules}`);
+  }
+}
+
+// Rules 2 and 3 over the whole legal set: random positions, every unit of
+// either side, every neighbour and two hexes past it, then a random legal
+// step, eight steps a position.
+{
+  let bad = '', checked = 0, allowed = 0, enemyRefusals = 0, zocSteps = 0;
+  for (let n = 0; n < 150 && !bad; n++) {
+    let h = e.hw_blank(8, 8);
+    for (let k = 0; k < 10; k++) h = e.hw_terr(h, rand(8), rand(8), rand(10));
+    for (let k = 0; k < 4 + rand(6); k++) h = e.hw_put(h, rand(10), rand(2), rand(8), rand(8));
+    h = e.hw_open(h);
+    if (e.hw_done(h) === 1) continue;
+    for (let step = 0; step < 8 && !bad; step++) {
+      const s = read(h), legal = [];
+      for (const u of s.units) {
+        for (const [dq, dr] of [...NB, [2, 0], [0, -2]]) {
+          const q = u.q + dq, r = u.r + dr, want = canStep(s, u, q, r);
+          const got = e.hw_canmove(h, u.i, q, r) === 1;
+          checked++;
+          if (want) { allowed++; legal.push([u.i, q, r]); if (inZoc(s, u.owner, q, r)) zocSteps++; }
+          else if (!u.dead && u.owner === s.active && onMap(s, q, r) && dist(u, { q, r }) === 1 && enemyAt(s, u.owner, q, r)) enemyRefusals++;
+          if (got !== want) { bad = `position ${n} step ${step}: unit ${u.i} (type ${u.type}, side ${u.owner}, ${u.mp} mp) to ${q},${r}: engine ${got}, rules ${want}`; break; }
+        }
+        if (bad) break;
+      }
+      if (!legal.length) break;
+      const [i, q, r] = legal[rand(legal.length)];
+      const before = read(h).units[i];
+      h = e.hw_move(h, i, q, r);
+      const after = read(h).units[i];
+      if (after.q !== q || after.r !== r || after.mp !== before.mp - stepCost(s, before, q, r)) {
+        bad = `position ${n}: the step to ${q},${r} landed at ${after.q},${after.r} with ${after.mp} mp`;
+      }
+    }
+  }
+  ok('rules: the engine\'s steps equal the rules\' steps in every position reached', !bad, bad || `${checked} steps asked`);
+  ok('control: steps were allowed and refused, into zones of control and onto enemy hexes',
+     allowed > 0 && enemyRefusals > 0 && zocSteps > 0, `${allowed} allowed, ${enemyRefusals} onto an enemy refused, ${zocSteps} into a zone`);
+}
+
+// Rules 4 to 7: an assault on unit 0 at hex 4,4 of a 9 x 9 map, checked
+// against the whole board the rules predict, with any legal retreat hex
+// accepted. Answers '' when the board agrees.
+const T = { q: 4, r: 4 };
+let blocked = 0, stacked = 0, partialEx = 0;
+function checkAssault(h, target, seed) {
+  {
+    const s = read(h);
+    const atkUnits = alive(s).filter(u => u.owner === 0 && dist(u, T) === 1);
+    const defUnits = alive(s).filter(u => u.owner === 1 && u.q === 4 && u.r === 4);
+    const atk = atkUnits.reduce((a, u) => a + ATK[u.type], 0)
+      + alive(s).filter(u => u.owner === 0 && u.type === 2 && dist(u, T) > 1 && dist(u, T) <= RANGE[2]).reduce((a, u) => a + u.str, 0);
+    const def = defUnits.reduce((a, u) => a + DEF[u.type], 0);
+    const col = Math.max(0, Math.min(6, oddsCol(atk, def) - SHIFT[s.terr[4 * 9 + 4]]));
+    const die = seed + 1, res = CRT[col][die - 1];
+    if (defUnits.length > 1) stacked++;
+    const after = read(e.hw_attack(h, target, seed));
+    // The board the rules predict, unit by unit.
+    const want = s.units.map(u => ({ ...u }));
+    const kill = ids => ids.forEach(i => { want[i].dead = true; });
+    const retreat = side => {
+      for (const u of side) {
+        const board = { ...s, units: want };
+        const opts = NB.map(([dq, dr]) => [u.q + dq, u.r + dr]).filter(([q, r]) => retreatOk(board, want[u.i], q, r));
+        const got = after.units[u.i];
+        if (got.dead) { if (opts.length) return `unit ${u.i} was eliminated with a retreat open to ${opts[0]}`; want[u.i].dead = true; blocked++; }
+        else if (!opts.some(([q, r]) => q === got.q && r === got.r)) return `unit ${u.i} retreated to ${got.q},${got.r}, not a legal retreat hex`;
+        else { want[u.i].q = got.q; want[u.i].r = got.r; }
+      }
+      return '';
+    };
+    let why = '';
+    if (res === 0) kill(atkUnits.map(u => u.i));
+    else if (res === 4) kill(defUnits.map(u => u.i));
+    else if (res === 1) why = retreat(atkUnits);
+    else if (res === 3) why = retreat(defUnits);
+    else {
+      kill(defUnits.map(u => u.i));
+      let lost = 0;
+      const order = [...atkUnits].sort((a, b) => ATK[a.type] - ATK[b.type] || a.i - b.i);
+      for (const u of order) { if (lost >= def) break; want[u.i].dead = true; lost += ATK[u.type]; }
+      if (order.some(u => !want[u.i].dead)) partialEx++;
+    }
+    if (!why) {
+      for (const u of s.units) {
+        const a = after.units[u.i], w = want[u.i];
+        if (a.dead !== w.dead || (!a.dead && (a.q !== w.q || a.r !== w.r))) {
+          why = `unit ${u.i} (side ${u.owner}) ends ${a.dead ? 'dead' : `at ${a.q},${a.r}`}, rules ${w.dead ? 'dead' : `at ${w.q},${w.r}`}`;
+          break;
+        }
+      }
+    }
+    return { why: why ? `${atk} against ${def}, column ${col}, die ${die}, result ${res}: ${why}` : '', col, res };
+  }
+}
+
+// Random assaults.
+{
+  let bad = '', fought = 0;
+  const cols = new Set(), results = new Set();
+  for (let n = 0; n < 4000 && !bad; n++) {
+    let h = e.hw_blank(9, 9);
+    for (let k = 0; k < 14; k++) { const q = rand(9), r = rand(9); if (q !== 4 || r !== 4) h = e.hw_terr(h, q, r, rand(10)); }
+    h = e.hw_terr(h, 4, 4, rand(9));
+    const nd = 1 + rand(3);
+    for (let k = 0; k < nd; k++) h = e.hw_put(h, rand(10), 1, 4, 4);
+    const sides = NB.map(([dq, dr]) => ({ q: 4 + dq, r: 4 + dr })).filter(() => rand(2));
+    if (!sides.length) sides.push({ q: 5, r: 4 });
+    for (const p of sides) { h = e.hw_terr(h, p.q, p.r, 0); for (let k = 0; k <= rand(2); k++) h = e.hw_put(h, rand(10), 0, p.q, p.r); }
+    if (rand(2)) h = e.hw_put(h, 2, 0, 4 + (rand(2) ? 2 : -2), 4);
+    for (let k = rand(5); k > 0; k--) { const q = rand(9), r = rand(9); if (dist({ q, r }, T) > 1) h = e.hw_put(h, rand(10), rand(2), q, r); }
+    h = e.hw_open(h);
+    if (e.hw_canatk(h, 0) !== 1) continue;
+    const r = checkAssault(h, 0, rand(6));
+    cols.add(r.col); results.add(r.res); fought++;
+    if (r.why) bad = `assault ${n}: ${r.why}`;
+  }
+  ok('rules: every assault ends on the board the rules predict', !bad, bad || `${fought} assaults`);
+  ok('control: all seven odds columns and all five results were reached',
+     cols.size === 7 && results.size === 5, `columns ${[...cols].sort()}, results ${[...results].sort()}`);
+  ok('control: stacked defenders, retreats with no hex and partial exchanges occurred',
+     stacked > 0 && blocked > 0 && partialEx > 0, `${stacked} stacks, ${blocked} blocked retreats, ${partialEx} partial exchanges`);
+}
+
+// Rule 5's boundaries, each built exactly: two infantry (defense 6) on clear
+// ground, attacked from 5,4 and 5,3 so a retreat hex stays open, at every
+// die. Adjacent columns differ on at least one die, so a boundary read one
+// column off changes a board.
+{
+  const sums = { 2: [5, 5], 3: [0], 5: [3], 6: [1], 11: [1, 3], 12: [1, 1], 17: [1, 1, 3],
+                 18: [1, 1, 1], 23: [1, 1, 1, 3], 24: [1, 1, 1, 1], 29: [1, 1, 1, 1, 3], 30: [1, 1, 1, 1, 1] };
+  let bad = '', cases = 0;
+  for (const [sum, types] of Object.entries(sums)) {
+    for (let seed = 0; seed < 6 && !bad; seed++) {
+      let h = e.hw_blank(9, 9);
+      h = e.hw_put(e.hw_put(h, 0, 1, 4, 4), 0, 1, 4, 4);
+      types.forEach((t, k) => { h = e.hw_put(h, t, 0, 5, k < 3 ? 4 : 3); });
+      h = e.hw_open(h);
+      const r = checkAssault(h, 0, seed);
+      cases++;
+      if (r.why) bad = `attack ${sum}: ${r.why}`;
+    }
+  }
+  ok('rules: every odds boundary from 1:3 to 5:1, exactly, at every die', !bad, bad || `${cases} assaults`);
 }
 
 console.log(fail === 0

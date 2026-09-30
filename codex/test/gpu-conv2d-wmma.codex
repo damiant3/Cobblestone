@@ -1,0 +1,160 @@
+Chapter: GpuConv2dWmma
+
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter GemmPtx
+
+   Each shape checks every output entry against a CPU convolution. The
+   first shape leaves a partial tile on all three GEMM axes (K = 180,
+   N = 289, M = 70). The sabotage arm launches the first shape with pad 0
+   and the same output size, which shifts every window by one pixel; the
+   count it prints was predicted on the host before the run.
+
+ We say:
+
+Section: Fill
+
+  ptx-fill : Text
+  ptx-fill =
+    let a = ".version 7.0\n.target sm_60\n.address_size 64\n\n.visible .entry fill(.param .u64 p_out, .param .u32 p_n, .param .u32 p_mul, .param .u32 p_mod, .param .u32 p_bias)\n{\n"
+    in let b = ".reg .pred %p<2>;\n.reg .b32 %r<12>;\n.reg .b64 %rd<6>;\n.reg .f32 %f<2>;\n.reg .b16 %h<2>;\n"
+    in let c = "ld.param.u64 %rd1, [p_out];\nld.param.u32 %r1, [p_n];\nld.param.u32 %r2, [p_mul];\nld.param.u32 %r3, [p_mod];\nld.param.u32 %r4, [p_bias];\n"
+    in let d = "mov.u32 %r5, %ctaid.x;\nmov.u32 %r6, %ntid.x;\nmov.u32 %r7, %tid.x;\nmad.lo.s32 %r8, %r5, %r6, %r7;\nsetp.ge.u32 %p1, %r8, %r1;\n@%p1 bra DONE;\n"
+    in let e = "mul.lo.u32 %r9, %r8, %r2;\nrem.u32 %r10, %r9, %r3;\nsub.s32 %r11, %r10, %r4;\ncvt.rn.f32.s32 %f1, %r11;\ncvt.rn.f16.f32 %h1, %f1;\n"
+    in let f = "cvta.to.global.u64 %rd2, %rd1;\nmul.wide.u32 %rd3, %r8, 2;\nadd.s64 %rd4, %rd2, %rd3;\nst.global.b16 [%rd4], %h1;\nDONE:\nret;\n}\n"
+    in a & b & c & d & e & f
+
+  fill : Integer, Integer, Integer, Integer, Integer -> Integer
+  fill (h) (count) (mul) (m) (bias) =
+    let g = GpuGrid { gx = (count + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+    in let ps = [gpu-arg-buf h 0, gpu-arg-u32 count, gpu-arg-u32 mul, gpu-arg-u32 m, gpu-arg-u32 bias]
+    in gpu-launch ptx-fill "fill" g ps
+
+  x-at : Integer -> Integer
+  x-at (i) = int-mod (i * 7) 17 - 8
+
+  w-at : Integer -> Integer
+  w-at (i) = int-mod (i * 13) 11 - 5
+
+Section: Shape
+
+  ConvShape = record {
+    cin : Integer,
+    h : Integer,
+    wd : Integer,
+    cout : Integer,
+    kh : Integer,
+    kw : Integer,
+    stride : Integer,
+    pad : Integer,
+    oh : Integer,
+    ow : Integer
+  }
+
+  kk : ConvShape -> Integer
+  kk (s) = s.cin * s.kh * s.kw
+
+  npix : ConvShape -> Integer
+  npix (s) = s.oh * s.ow
+
+Section: Reference
+
+  scratch : Integer = #BD700000
+
+  in-image : ConvShape, Integer, Integer -> Boolean
+  in-image (s) (iy) (ix) =
+    if iy < 0 then False
+    else if iy >= s.h then False
+    else if ix < 0 then False
+    else ix < s.wd
+
+  ref-dot : ConvShape, Integer, Integer, Integer, Integer, Integer -> Integer
+  ref-dot (s) (m) (oy) (ox) (i) (acc) =
+    if i >= kk s then acc
+    else let ci = i / (s.kh * s.kw)
+    in let rest = i - ci * s.kh * s.kw
+    in let ky = rest / s.kw
+    in let iy = oy * s.stride - s.pad + ky
+    in let ix = ox * s.stride - s.pad + rest - ky * s.kw
+    in let xv = if in-image s iy ix then x-at ((ci * s.h + iy) * s.wd + ix) else 0
+    in ref-dot s m oy ox (i + 1) (acc + w-at (m * kk s + i) * xv)
+
+  f32-int : Integer -> Integer
+  f32-int (bits) =
+    if bit-and bits #7FFFFFFF == 0 then 0
+    else let e = bit-and (bit-shru bits 23) 255
+    in let m = bit-or (bit-and bits #7FFFFF) #800000
+    in let mag = if e >= 150 then bit-shl m (e - 150) else bit-shru m (150 - e)
+    in if bit-and bits #80000000 /= 0 then 0 - mag else mag
+
+  row-check : ConvShape, Integer, Integer, Integer, Integer -> Integer
+  row-check (s) (m) (n) (good) (sum) =
+    if n >= npix s then good * 1000000 + int-mod (sum + 1000000) 1000000
+    else let want = ref-dot s m (n / s.ow) (n - (n / s.ow) * s.ow) 0 0
+    in let got = f32-int (peek-32 scratch (n * 4))
+    in row-check s m (n + 1) (good + (if got == want then 1 else 0)) (sum + want)
+
+  all-check : ConvShape, Integer, Integer, Integer, Integer -> Integer
+  all-check (s) (hy) (m) (good) (sum) =
+    if m >= s.cout then good * 1000000 + int-mod (sum + 1000000) 1000000
+    else if not (gpu-buf-read hy (m * npix s * 4) (npix s * 4) scratch) then 0 - 1
+    else let r = row-check s m 0 0 0
+    in all-check s hy (m + 1) (good + r / 1000000) (sum + int-mod r 1000000)
+
+Section: Launch
+
+  conv : ConvShape, Integer, Integer, Integer, Integer -> Integer
+  conv (s) (hx) (hw) (hy) (pad) =
+    let g = GpuGrid { gx = (npix s + 63) / 64, gy = (s.cout + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
+    in let ps = [gpu-arg-buf hx 0, gpu-arg-buf hw 0, gpu-arg-buf hy 0, gpu-arg-u64 (s.cin), gpu-arg-u64 (s.h), gpu-arg-u64 (s.wd),
+                 gpu-arg-u64 (s.cout), gpu-arg-u64 (s.kh), gpu-arg-u64 (s.kw), gpu-arg-u64 (s.stride), gpu-arg-u64 pad,
+                 gpu-arg-u64 (s.oh), gpu-arg-u64 (s.ow), gpu-arg-u64 0]
+    in gpu-launch gemm-ptx "kernel_conv2d_wmma" g ps
+
+  verdict : ConvShape, Integer, Integer -> Text
+  verdict (s) (hy) (launched) =
+    if launched < 0 then "launch refused"
+    else let t = all-check s hy 0 0 0
+    in if t < 0 then "read refused"
+    else show (t / 1000000) & "/" & show (s.cout * npix s) & ", checksum " & show (int-mod t 1000000)
+
+  case-report : ConvShape, Integer -> Text
+  case-report (s) (sab-pad) =
+    let hx = gpu-buf-alloc (s.cin * s.h * s.wd * 2)
+    in let hw = gpu-buf-alloc (s.cout * kk s * 2)
+    in let hy = gpu-buf-alloc (s.cout * npix s * 4)
+    in if hx == 0 then "alloc refused"
+    else if hw == 0 then "alloc refused"
+    else if hy == 0 then "alloc refused"
+    else if fill hx (s.cin * s.h * s.wd) 7 17 8 < 0 then "fill x refused"
+    else if fill hw (s.cout * kk s) 13 11 5 < 0 then "fill w refused"
+    else let v = verdict s hy (conv s hx hw hy (s.pad))
+    in let sab = if sab-pad < 0 then "" else "; sabotage pad " & show sab-pad & ": " & verdict s hy (conv s hx hw hy sab-pad)
+    in let f1 = gpu-buf-free hx
+    in let f2 = gpu-buf-free hw
+    in let f3 = gpu-buf-free hy
+    in v & sab & (if f1 & f2 & f3 then "" else "; free refused")
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let l1 = "3x3 s1 p1 20->70 17x17: " & case-report (ConvShape { cin = 20, h = 17, wd = 17, cout = 70, kh = 3, kw = 3, stride = 1, pad = 1, oh = 17, ow = 17 }) 0
+    in let l2 = "3x3 s2 p1 16->64 16x16: " & case-report (ConvShape { cin = 16, h = 16, wd = 16, cout = 64, kh = 3, kw = 3, stride = 2, pad = 1, oh = 8, ow = 8 }) (0 - 1)
+    in let l3 = "1x1 s1 p0 4->4 8x8: " & case-report (ConvShape { cin = 4, h = 8, wd = 8, cout = 4, kh = 1, kw = 1, stride = 1, pad = 0, oh = 8, ow = 8 }) (0 - 1)
+    in [l1, l2, l3]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

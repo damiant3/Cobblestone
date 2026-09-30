@@ -1,0 +1,58 @@
+Chapter: DiffusionVariation
+  cites Diffusion chapter Variation
+  cites Diffusion chapter Noise
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/variation-oracle.py's: Forge's own rng.py ImageRNG.first
+ on this box's card, in its case order; a value agrees within 1e-5. Case 4's
+ resize puts the row offset at -1, which only a floor division gives.
+
+ We say:
+
+Section: Reading
+
+  ours : Integer = #BD700000
+
+  theirs : Integer = #BD900000
+
+  load : Integer, Integer, Integer -> Boolean
+  load (h) (at) (n) =
+    let u = gpu-buf-upload h 0 "variation.bin" (at * 4) n gpu-dt-f32 gpu-dt-f32
+    in gpu-buf-read h 0 (n * 4) theirs
+
+  over : Integer, Integer, Integer -> Integer
+  over (i) (n) (acc) =
+    if i >= n then acc
+    else let d = va-get ours i - va-get theirs i
+    in let a = if d < 0.0 then 0.0 - d else d
+    in over (i + 1) n (acc + (if a > 0.00001 then 1 else 0))
+
+  verdict : Text, Integer, Integer -> Text
+  verdict (what) (n) (bad) =
+    if bad == 0 then what & ": all " & show n & " within 1e-5" else what & ": " & show bad & " of " & show n & " off"
+
+Section: Arms
+
+  var : Integer, Real, Integer, Integer -> Variation
+  var (sub) (s) (fh) (fw) = Variation { va-subseed = sub, va-strength = s, va-from-w = fw, va-from-h = fh }
+
+  arm : Integer, Integer, Integer, Variation, Integer, Text -> Text
+  arm (h) (at) (seed) (v) (c) (what) =
+    if load h at (c * 4096) == False then what & ": the fixture could not be read"
+    else let z = va-noise-into ours seed v c 64 64
+    in verdict what (c * 4096) (over 0 (c * 4096) 0)
+
+  opening : [Console] Nothing
+  opening = act
+    let h = gpu-buf-alloc (65536 * 4)
+    in act
+      print-line-uni (arm h 0 7201 (var 99 0.3 0 0) 4 "4x64x64 seed 7201, subseed 99 at 0.3")
+      print-line-uni (arm h 16384 7201 (var 99 1.0 0 0) 4 "4x64x64 seed 7201, subseed 99 at 1.0")
+      print-line-uni (arm h 32768 20260929 (var 5 0.5 384 640) 4 "4x64x64 seed 20260929, subseed 5 at 0.5, from 640x384")
+      print-line-uni (arm h 49152 11 (var 0 0.0 520 456) 4 "4x64x64 seed 11, from 456x520")
+      print-line-uni (arm h 65536 1 (var 2 0.7 0 0) 16 "16x64x64 seed 1, subseed 2 at 0.7")
+      print-line-uni (arm h 0 7201 (var 99 0.7 0 0) 4 "sabotage, strength 0.7 against 0.3")
+      print-line-uni (arm h 32768 20260929 (var 5 0.5 0 0) 4 "sabotage, no resize against from 640x384")
+    end
+  end

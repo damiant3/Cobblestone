@@ -1,0 +1,297 @@
+Chapter: Unity Hud Layout
+
+Section: Tree Helpers
+
+  hl-ty : Text -> CstType
+  hl-ty (name) = CstNamedType name []
+
+  hl-fn : CstType, CstType -> CstType
+  hl-fn (arg) (result) = CstNamedType "Func" [arg, result]
+
+  hl-long : CstType
+  hl-long = hl-ty "long"
+
+  hl-slot-policy : CstType
+  hl-slot-policy = hl-fn hl-long hl-long
+
+  hl-x-policy : CstType
+  hl-x-policy = hl-fn hl-long (hl-fn hl-long hl-long)
+
+  hl-n : Text -> CstExpr
+  hl-n (name) = CstName name []
+
+  hl-d : CstExpr, Text -> CstExpr
+  hl-d (target) (member) = CstMemberAccess target member []
+
+  hl-a : CstExpr -> CstArgument
+  hl-a (value) = CstArgument { ca-mode = [], ca-name = "", ca-value = value }
+
+  hl-c0 : CstExpr -> CstExpr
+  hl-c0 (f) = CstCall f []
+
+  hl-c1 : CstExpr, CstExpr -> CstExpr
+  hl-c1 (f) (a) = CstCall f [hl-a a]
+
+  hl-c2 : CstExpr, CstExpr, CstExpr -> CstExpr
+  hl-c2 (f) (a) (b) = CstCall f [hl-a a, hl-a b]
+
+  hl-c3 : CstExpr, CstExpr, CstExpr, CstExpr -> CstExpr
+  hl-c3 (f) (a) (b) (c) = CstCall f [hl-a a, hl-a b, hl-a c]
+
+  hl-var : Text, CstExpr -> CstStmt
+  hl-var (name) (value) = CstVariables [] CstInferredType [CstVariable { cv-name = name, cv-value = Just value }]
+
+  hl-do : CstExpr -> CstStmt
+  hl-do (e) = CstExpression e
+
+  hl-set : CstExpr, CstExpr -> CstStmt
+  hl-set (target) (value) = hl-do (CstAssignment CstAssign target value)
+
+  hl-float : Text -> CstExpr
+  hl-float (digits) = CstNumber digits CstFloat
+
+  hl-vec2 : CstExpr, CstExpr -> CstExpr
+  hl-vec2 (x) (y) = CstObjectNew (hl-ty "UnityEngine.Vector2") [hl-a x, hl-a y] []
+
+  hl-param : CstType, Text -> CstParameter
+  hl-param (ty) (name) = CstParameter { cp-modifiers = [], cp-type = ty, cp-name = name, cp-default = None }
+
+  hl-field : List CstModifier, CstType, Text -> CstMember
+  hl-field (mods) (ty) (name) = CstField [] mods ty [CstVariable { cv-name = name, cv-value = None }]
+
+  hl-method : List CstModifier, CstType, Text, List CstParameter, List CstStmt -> CstMember
+  hl-method (mods) (result) (name) (params) (body) =
+    CstMethod CstMethodSpec { cm-attributes = [], cm-modifiers = mods, cm-result = result, cm-name = name, cm-type-params = [], cm-params = params, cm-body = Just (CstBlock body) }
+
+  hl-message : CstExpr -> CstStmt
+  hl-message (text) =
+    hl-do (CstCall (hl-d (hl-n "player") "Message") [hl-a (hl-d (hl-d (hl-n "MessageHud") "MessageType") "Center"), hl-a text, hl-a (CstNumber "0" CstInt), hl-a CstNull, hl-a (CstBoolean False)])
+
+  hl-food-rect : CstExpr -> CstExpr
+  hl-food-rect (i) = CstAs (hl-d (hl-d (CstIndex (hl-d (hl-n "hud") "m_foodIcons") [hl-a i]) "transform") "parent") (hl-ty "UnityEngine.RectTransform")
+
+  hl-each-food : List CstStmt -> CstStmt
+  hl-each-food (body) =
+    CstFor (hl-var "i" (CstNumber "0" CstInt)) (Just (CstBinary CstLess (hl-n "i") (hl-d (hl-d (hl-n "hud") "m_foodIcons") "Length"))) [CstUnary CstPostIncrement (hl-n "i")] (CstBlock body)
+
+Section: Typed Interop
+
+  unity-hud-layout-hotbar-fn : Integer -> CstMember
+  unity-hud-layout-hotbar-fn (unused) =
+    CstDelegate CstMethodSpec { cm-attributes = [], cm-modifiers = [CstPrivate], cm-result = hl-ty "void", cm-name = "HotbarFn", cm-type-params = [], cm-params = [hl-param (hl-ty "Player") "subject", hl-param (hl-ty "int") "index"], cm-body = None }
+
+  unity-hud-layout-statics : Integer -> CstMember
+  unity-hud-layout-statics (unused) = hl-field [CstPrivate, CstStatic] (hl-ty "HotbarFn") "originalHotbar"
+
+  unity-hud-layout-hook : Integer -> CstMember
+  unity-hud-layout-hook (unused) = hl-field [CstPrivate, CstStatic] (hl-ty "PrismMethodBridge.Patch") "hotbarHook"
+
+  unity-hud-layout-instance : Integer -> CstMember
+  unity-hud-layout-instance (unused) = hl-field [CstPrivate, CstStatic] (hl-ty "PrismHudLayout") "instance"
+
+  unity-hud-layout-food-slot : Integer -> CstMember
+  unity-hud-layout-food-slot (unused) = hl-field [CstPrivate] hl-slot-policy "foodSlot"
+
+  unity-hud-layout-food-x : Integer -> CstMember
+  unity-hud-layout-food-x (unused) = hl-field [CstPrivate] hl-x-policy "foodX"
+
+  unity-hud-layout-row-y : Integer -> CstMember
+  unity-hud-layout-row-y (unused) = hl-field [CstPrivate] hl-slot-policy "rowY"
+
+  unity-hud-layout-arranged : Integer -> CstMember
+  unity-hud-layout-arranged (unused) = hl-field [CstPrivate] (hl-ty "Hud") "arranged"
+
+  unity-hud-layout-health-icon : Integer -> CstMember
+  unity-hud-layout-health-icon (unused) = hl-field [CstPrivate] (hl-ty "UnityEngine.RectTransform") "healthIcon"
+
+ The fork and knife beside the food slots is the health panel's active child
+ `foodicon (1)`; its inactive sibling `foodicon` is never shown.
+
+  unity-hud-layout-fork-icon : Integer -> CstMember
+  unity-hud-layout-fork-icon (unused) = hl-field [CstPrivate] (hl-ty "UnityEngine.RectTransform") "forkIcon"
+
+ Valheim's build panels, children of `BuildHud`: `SelectedInfo` (the piece and
+ its requirements) and `bar` (the piece list).
+
+  unity-hud-layout-build-info : Integer -> CstMember
+  unity-hud-layout-build-info (unused) = hl-field [CstPrivate] (hl-ty "UnityEngine.RectTransform") "buildInfo"
+
+  unity-hud-layout-build-list : Integer -> CstMember
+  unity-hud-layout-build-list (unused) = hl-field [CstPrivate] (hl-ty "UnityEngine.RectTransform") "buildList"
+
+  unity-hud-layout-info-base : Integer -> CstMember
+  unity-hud-layout-info-base (unused) = hl-field [CstPrivate] (hl-ty "UnityEngine.Vector2") "infoBase"
+
+  unity-hud-layout-list-base : Integer -> CstMember
+  unity-hud-layout-list-base (unused) = hl-field [CstPrivate] (hl-ty "UnityEngine.Vector2") "listBase"
+
+  unity-hud-layout-install : Integer -> CstMember
+  unity-hud-layout-install (unused) =
+    let flags = CstBinary CstBitOr (hl-d (hl-d (hl-d (hl-n "System") "Reflection") "BindingFlags") "Instance") (CstBinary CstBitOr (hl-d (hl-d (hl-d (hl-n "System") "Reflection") "BindingFlags") "Public") (hl-d (hl-d (hl-d (hl-n "System") "Reflection") "BindingFlags") "NonPublic"))
+    in hl-method [CstInternal, CstStatic] (hl-ty "void") "Install" [hl-param hl-slot-policy "slot", hl-param hl-x-policy "x", hl-param hl-slot-policy "row"] [
+      CstIf (hl-n "instance") (CstReturn None) None,
+      hl-var "method" (hl-c2 (hl-d (CstTypeOf (hl-ty "Player")) "GetMethod") (CstString "UseHotbarItem") flags),
+      hl-set (hl-n "originalHotbar") (hl-c1 (CstMemberAccess (hl-n "PrismMethodBridge") "Copy" [hl-ty "HotbarFn"]) (hl-n "method")),
+      hl-set (hl-n "hotbarHook") (hl-c2 (hl-d (hl-n "PrismMethodBridge") "Prepare") (hl-n "method") (hl-c1 (hl-d (CstTypeOf (hl-ty "PrismHudLayout")) "GetMethod") (CstString "UseHotbarItem"))),
+      hl-var "host" (CstObjectNew (hl-ty "UnityEngine.GameObject") [hl-a (CstString "Prism HUD Layout")] []),
+      hl-do (hl-c1 (hl-d (hl-d (hl-n "UnityEngine") "Object") "DontDestroyOnLoad") (hl-n "host")),
+      hl-set (hl-n "instance") (CstCall (CstMemberAccess (hl-n "host") "AddComponent" [hl-ty "PrismHudLayout"]) []),
+      hl-set (hl-d (hl-n "instance") "foodSlot") (hl-n "slot"),
+      hl-set (hl-d (hl-n "instance") "foodX") (hl-n "x"),
+      hl-set (hl-d (hl-n "instance") "rowY") (hl-n "row"),
+      hl-do (hl-c1 (hl-d (hl-n "hotbarHook") "Apply") (CstBoolean True))
+    ]
+
+  unity-hud-layout-use-hotbar : Integer -> CstMember
+  unity-hud-layout-use-hotbar (unused) =
+    hl-method [CstPublic, CstStatic] (hl-ty "void") "UseHotbarItem" [hl-param (hl-ty "Player") "player", hl-param (hl-ty "int") "index"] [
+      CstIf (CstBinary CstAnd (hl-n "instance") (hl-c1 (hl-d (hl-d (hl-n "UnityEngine") "Input") "GetKey") (hl-d (hl-d (hl-n "UnityEngine") "KeyCode") "LeftAlt"))) (CstBlock [
+        hl-var "slot" (hl-c1 (hl-d (hl-n "instance") "foodSlot") (CstCast hl-long (hl-n "index"))),
+        CstIf (CstBinary CstGreaterEqual (hl-n "slot") (CstNumber "0" CstLong)) (CstBlock [hl-do (hl-c2 (hl-n "EatFoodSlot") (hl-n "player") (CstCast (hl-ty "int") (hl-n "slot"))), CstReturn None]) None
+      ]) None,
+      hl-do (hl-c2 (hl-n "originalHotbar") (hl-n "player") (hl-n "index"))
+    ]
+
+  unity-hud-layout-eat-food-slot : Integer -> CstMember
+  unity-hud-layout-eat-food-slot (unused) =
+    hl-method [CstPublic, CstStatic] (hl-ty "bool") "EatFoodSlot" [hl-param (hl-ty "Player") "player", hl-param (hl-ty "int") "slot"] [
+      hl-var "foods" (hl-c0 (hl-d (hl-n "player") "GetFoods")),
+      CstIf (CstBinary CstGreaterEqual (hl-n "slot") (hl-d (hl-n "foods") "Count")) (CstBlock [hl-message (CstBinary CstAdd (CstString "No food in slot ") (CstParenthesized (CstBinary CstAdd (hl-n "slot") (CstNumber "1" CstInt)))), CstReturn (Just (CstBoolean False))]) None,
+      hl-var "name" (hl-d (hl-d (hl-d (CstIndex (hl-n "foods") [hl-a (hl-n "slot")]) "m_item") "m_shared") "m_name"),
+      hl-var "inventory" (hl-c0 (hl-d (hl-n "player") "GetInventory")),
+      hl-var "item" (CstCall (hl-d (hl-n "inventory") "GetItem") [hl-a (hl-n "name"), hl-a (CstNumber "-1" CstInt), hl-a (CstBoolean False)]),
+      CstIf (CstBinary CstEqual (hl-n "item") CstNull) (CstBlock [hl-message (CstBinary CstAdd (CstBinary CstAdd (CstString "No ") (hl-c1 (hl-d (hl-d (hl-n "Localization") "instance") "Localize") (hl-n "name"))) (CstString " in inventory")), CstReturn (Just (CstBoolean False))]) None,
+      CstReturn (Just (CstCall (hl-d (hl-n "player") "ConsumeItem") [hl-a (hl-n "inventory"), hl-a (hl-n "item"), hl-a (CstBoolean False)]))
+    ]
+
+  unity-hud-layout-late-update : Integer -> CstMember
+  unity-hud-layout-late-update (unused) =
+    hl-method [CstPrivate] (hl-ty "void") "LateUpdate" [] [
+      hl-var "hud" (hl-d (hl-n "Hud") "instance"),
+      CstIf (CstUnary CstNot (hl-n "hud")) (CstReturn None) None,
+      CstIf (CstBinary CstNotEqual (hl-n "arranged") (hl-n "hud")) (CstBlock [hl-do (hl-c1 (hl-n "Arrange") (hl-n "hud")), hl-set (hl-n "arranged") (hl-n "hud")]) None,
+      hl-do (hl-c1 (hl-n "Place") (hl-n "hud"))
+    ]
+
+  unity-hud-layout-detach : Integer -> CstMember
+  unity-hud-layout-detach (unused) =
+    hl-method [CstPrivate, CstStatic] (hl-ty "void") "Detach" [hl-param (hl-ty "UnityEngine.RectTransform") "rt", hl-param (hl-ty "UnityEngine.Transform") "parent", hl-param (hl-ty "UnityEngine.Transform") "below"] [
+      CstIf (CstUnary CstNot (hl-n "rt")) (CstReturn None) None,
+      hl-do (hl-c2 (hl-d (hl-n "rt") "SetParent") (hl-n "parent") (CstBoolean False)),
+      CstIf (CstBinary CstAnd (hl-n "below") (CstBinary CstEqual (hl-d (hl-n "below") "parent") (hl-n "parent"))) (hl-do (hl-c1 (hl-d (hl-n "rt") "SetSiblingIndex") (hl-c0 (hl-d (hl-n "below") "GetSiblingIndex")))) None,
+      hl-set (hl-d (hl-n "rt") "anchorMin") (hl-vec2 (hl-float "0.5") (hl-float "0")),
+      hl-set (hl-d (hl-n "rt") "anchorMax") (hl-vec2 (hl-float "0.5") (hl-float "0")),
+      hl-set (hl-d (hl-n "rt") "pivot") (hl-vec2 (hl-float "0.5") (hl-float "0.5"))
+    ]
+
+  unity-hud-layout-arrange : Integer -> CstMember
+  unity-hud-layout-arrange (unused) =
+    hl-method [CstPrivate] (hl-ty "void") "Arrange" [hl-param (hl-ty "Hud") "hud"] [
+      hl-var "parent" (hl-d (hl-d (hl-n "hud") "m_staminaBar2Root") "parent"),
+      hl-var "build" (hl-d (hl-d (hl-n "hud") "m_buildHud") "transform"),
+      hl-do (hl-c3 (hl-n "Detach") (hl-d (hl-n "hud") "m_healthBarRoot") (hl-n "parent") (hl-n "build")),
+      hl-set (hl-d (hl-d (hl-n "hud") "m_healthBarRoot") "localEulerAngles") (hl-d (hl-d (hl-n "UnityEngine") "Vector3") "zero"),
+      hl-set (hl-d (hl-d (hl-d (hl-n "hud") "m_healthText") "transform") "localEulerAngles") (hl-d (hl-d (hl-n "UnityEngine") "Vector3") "zero"),
+      hl-set (hl-n "healthIcon") (CstAs (hl-c1 (hl-d (hl-d (hl-n "hud") "m_healthPanel") "Find") (CstString "healthicon")) (hl-ty "UnityEngine.RectTransform")),
+      hl-do (hl-c3 (hl-n "Detach") (hl-n "healthIcon") (hl-n "parent") (hl-n "build")),
+      hl-set (hl-n "forkIcon") (CstAs (hl-c1 (hl-d (hl-d (hl-n "hud") "m_healthPanel") "Find") (CstString "foodicon (1)")) (hl-ty "UnityEngine.RectTransform")),
+      hl-do (hl-c3 (hl-n "Detach") (hl-n "forkIcon") (hl-n "parent") (hl-n "build")),
+      hl-each-food [hl-do (hl-c3 (hl-n "Detach") (hl-food-rect (hl-n "i")) (hl-n "parent") (hl-n "build"))],
+      hl-set (hl-n "buildInfo") (CstAs (hl-c1 (hl-d (hl-n "build") "Find") (CstString "SelectedInfo")) (hl-ty "UnityEngine.RectTransform")),
+      hl-set (hl-n "buildList") (CstAs (hl-c1 (hl-d (hl-n "build") "Find") (CstString "bar")) (hl-ty "UnityEngine.RectTransform")),
+      CstIf (hl-n "buildInfo") (hl-set (hl-n "infoBase") (hl-d (hl-n "buildInfo") "anchoredPosition")) None,
+      CstIf (hl-n "buildList") (hl-set (hl-n "listBase") (hl-d (hl-n "buildList") "anchoredPosition")) None
+    ]
+
+ A panel's height and lower edge in its parent's space, in HUD pixels.
+
+  hl-height : CstExpr -> CstExpr
+  hl-height (rt) = CstBinary CstMultiply (hl-d (hl-d rt "rect") "height") (hl-d (hl-d rt "localScale") "y")
+
+  hl-bottom : CstExpr, CstExpr, Text -> CstExpr
+  hl-bottom (rt) (base) (height) =
+    CstBinary CstSubtract (CstBinary CstAdd (CstBinary CstMultiply (hl-d (hl-d (CstAs (hl-d rt "parent") (hl-ty "UnityEngine.RectTransform")) "rect") "height") (hl-d (hl-d rt "anchorMin") "y")) (hl-d base "y")) (CstBinary CstMultiply (hl-d (hl-d rt "pivot") "y") (hl-n height))
+
+  hl-max0 : CstExpr -> CstExpr
+  hl-max0 (value) = hl-c2 (hl-d (hl-n "UnityEngine.Mathf") "Max") (hl-float "0") value
+
+ Build panels clear the health bar and each other by 8 HUD pixels.
+
+  unity-hud-layout-lift-build : Integer -> CstMember
+  unity-hud-layout-lift-build (unused) =
+    let gap = hl-float "8"
+    in let info = hl-n "buildInfo"
+    in let list = hl-n "buildList"
+    in hl-method [CstPrivate] (hl-ty "void") "LiftBuild" [hl-param (hl-ty "float") "clearTop"] [
+      CstIf (CstUnary CstNot info) (CstReturn None) None,
+      hl-var "infoH" (hl-height info),
+      hl-var "infoBottom" (hl-bottom info (hl-n "infoBase") "infoH"),
+      hl-var "lift" (hl-max0 (CstBinary CstSubtract (CstBinary CstAdd (hl-n "clearTop") gap) (hl-n "infoBottom"))),
+      hl-set (hl-d info "anchoredPosition") (hl-vec2 (hl-d (hl-n "infoBase") "x") (CstBinary CstAdd (hl-d (hl-n "infoBase") "y") (hl-n "lift"))),
+      CstIf (CstUnary CstNot list) (CstReturn None) None,
+      hl-var "listH" (hl-height list),
+      hl-var "listBottom" (hl-bottom list (hl-n "listBase") "listH"),
+      hl-var "room" (hl-d (hl-d (CstAs (hl-d list "parent") (hl-ty "UnityEngine.RectTransform")) "rect") "height"),
+      hl-var "need" (CstBinary CstSubtract (CstBinary CstAdd (CstBinary CstAdd (CstBinary CstAdd (hl-n "infoBottom") (hl-n "lift")) (hl-n "infoH")) gap) (hl-n "listBottom")),
+      hl-var "spare" (hl-max0 (CstBinary CstSubtract (hl-n "room") (CstBinary CstAdd (hl-n "listBottom") (hl-n "listH")))),
+      hl-set (hl-d list "anchoredPosition") (hl-vec2 (hl-d (hl-n "listBase") "x") (CstBinary CstAdd (hl-d (hl-n "listBase") "y") (hl-c3 (hl-d (hl-n "UnityEngine.Mathf") "Clamp") (hl-n "need") (hl-float "0") (hl-n "spare"))))
+    ]
+
+  unity-hud-layout-place : Integer -> CstMember
+  unity-hud-layout-place (unused) =
+    hl-method [CstPrivate] (hl-ty "void") "Place" [hl-param (hl-ty "Hud") "hud"] [
+      hl-var "bar" (hl-d (hl-n "hud") "m_healthBarRoot"),
+      hl-var "healthY" (CstCast (hl-ty "float") (hl-c1 (hl-n "rowY") (CstNumber "0" CstLong))),
+      hl-set (hl-d (hl-n "bar") "anchoredPosition") (hl-vec2 (hl-float "0") (hl-n "healthY")),
+      CstIf (hl-n "healthIcon") (hl-set (hl-d (hl-n "healthIcon") "anchoredPosition") (hl-vec2 (CstBinary CstSubtract (CstUnary CstNegate (CstParenthesized (CstBinary CstDivide (hl-d (hl-d (hl-n "bar") "sizeDelta") "x") (hl-float "2")))) (hl-float "20")) (hl-n "healthY"))) None,
+      hl-var "count" (CstCast hl-long (hl-d (hl-d (hl-n "hud") "m_foodIcons") "Length")),
+      hl-var "foodY" (CstCast (hl-ty "float") (hl-c1 (hl-n "rowY") (CstNumber "1" CstLong))),
+      hl-each-food [
+        hl-var "slotRect" (hl-food-rect (hl-n "i")),
+        CstIf (CstBinary CstNotEqual (hl-n "slotRect") CstNull) (hl-set (hl-d (hl-n "slotRect") "anchoredPosition") (hl-vec2 (CstCast (hl-ty "float") (hl-c1 (hl-c1 (hl-n "foodX") (CstCast hl-long (hl-n "i"))) (hl-n "count"))) (hl-n "foodY"))) None
+      ],
+      hl-var "first" (hl-c1 (hl-c1 (hl-n "foodX") (CstNumber "0" CstLong)) (hl-n "count")),
+      hl-var "pitch" (CstBinary CstSubtract (hl-c1 (hl-c1 (hl-n "foodX") (CstNumber "1" CstLong)) (hl-n "count")) (hl-n "first")),
+      CstIf (hl-n "forkIcon") (hl-set (hl-d (hl-n "forkIcon") "anchoredPosition") (hl-vec2 (CstCast (hl-ty "float") (CstBinary CstSubtract (hl-n "first") (hl-n "pitch"))) (hl-n "foodY"))) None,
+      hl-do (hl-c1 (hl-n "LiftBuild") (CstBinary CstAdd (hl-n "healthY") (CstBinary CstDivide (hl-height (hl-n "bar")) (hl-float "2"))))
+    ]
+
+  unity-hud-layout-members : List (Integer -> CstMember)
+  unity-hud-layout-members = [
+    unity-hud-layout-hotbar-fn,
+    unity-hud-layout-statics,
+    unity-hud-layout-hook,
+    unity-hud-layout-instance,
+    unity-hud-layout-food-slot,
+    unity-hud-layout-food-x,
+    unity-hud-layout-row-y,
+    unity-hud-layout-arranged,
+    unity-hud-layout-health-icon,
+    unity-hud-layout-fork-icon,
+    unity-hud-layout-build-info,
+    unity-hud-layout-build-list,
+    unity-hud-layout-info-base,
+    unity-hud-layout-list-base,
+    unity-hud-layout-install,
+    unity-hud-layout-use-hotbar,
+    unity-hud-layout-eat-food-slot,
+    unity-hud-layout-late-update,
+    unity-hud-layout-detach,
+    unity-hud-layout-arrange,
+    unity-hud-layout-lift-build,
+    unity-hud-layout-place
+  ]
+
+  unity-hud-layout-emit : [Console] Nothing
+  unity-hud-layout-emit = cst-stream-class (CstClassHead { ch-modifiers = [CstInternal, CstSealed], ch-name = "PrismHudLayout", ch-bases = [hl-ty "UnityEngine.MonoBehaviour"] }) unity-hud-layout-members 0
+
+  unity-hud-layout-effect : Integer -> CstMember
+  unity-hud-layout-effect (unused) =
+    hl-method [CstPublic, CstStatic] (hl-fn hl-x-policy (hl-fn hl-slot-policy (hl-ty "object"))) "unity_hud_layout_start" [hl-param hl-slot-policy "slot"] [
+      CstReturn (Just (CstLambdaBlock [hl-param CstInferredType "x"] (CstBlock [
+        CstReturn (Just (CstLambdaBlock [hl-param CstInferredType "row"] (CstBlock [
+          hl-do (CstCall (hl-d (hl-n "PrismHudLayout") "Install") [hl-a (hl-n "slot"), hl-a (hl-n "x"), hl-a (hl-n "row")]),
+          CstReturn (Just CstNull)
+        ])))
+      ])))
+    ]

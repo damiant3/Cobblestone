@@ -1,0 +1,110 @@
+Chapter: CapGrantRiscV
+  cites Foreword chapter RiscVEncoder
+  cites Foreword chapter Console
+
+ The riscv boot grant's instruction list runs against a one-word RV64 machine:
+ `lui` sign-extends its 32-bit result, `x0` reads zero and ignores writes, and
+ a load or store whose address is not the capability word is a fault naming
+ it. Each row prints the word after the list runs.
+
+ Bit 31 is 2147483648, the first mask `rv-li` builds through `rv-li-64`; bit 40
+ is 1099511627776. The `old-order` row is the CONTROL: the pre-fix list, with
+ the mask in t0, driven with bit 31, which the machine must answer with the
+ fault, because `rv-li-64`'s temporary lands on the address in t1.
+
+Section: Machine
+
+  Machine = record { regs : List Integer, addr : Integer, word : Integer, fault : Text }
+
+  fresh-regs : Integer, List Integer -> List Integer
+  fresh-regs (n) (acc) =
+    if n <= 0 then acc
+    else fresh-regs (n - 1) (list-push acc 0)
+
+  le-word : List Integer, Integer -> Integer
+  le-word (b) (off) =
+    bit-or (bit-or (list-at b off) (bit-shl (list-at b (off + 1)) 8)) (bit-or (bit-shl (list-at b (off + 2)) 16) (bit-shl (list-at b (off + 3)) 24))
+
+  sext12 : Integer -> Integer
+  sext12 (v) = if v >= 2048 then v - 4096 else v
+
+  sext32 : Integer -> Integer
+  sext32 (v) = if v >= 2147483648 then v - 4294967296 else v
+
+  reg : Machine, Integer -> Integer
+  reg (m) (r) = if r == 0 then 0 else list-at (m.regs) r
+
+  set-reg : Machine, Integer, Integer -> Machine
+  set-reg (m) (r) (v) =
+    if r == 0 then m
+    else Machine { regs = list-set-at (m.regs) r v, addr = m.addr, word = m.word, fault = m.fault }
+
+  set-word : Machine, Integer -> Machine
+  set-word (m) (v) = Machine { regs = m.regs, addr = m.addr, word = v, fault = m.fault }
+
+  fail : Machine, Text -> Machine
+  fail (m) (t) = Machine { regs = m.regs, addr = m.addr, word = m.word, fault = t }
+
+  step : Machine, Integer, Integer -> Machine
+  step (m) (w) (pc) =
+    let op = bit-and w 127
+    in let rd = bit-and (bit-shru w 7) 31
+    in let f3 = bit-and (bit-shru w 12) 7
+    in let rs1 = bit-and (bit-shru w 15) 31
+    in let rs2 = bit-and (bit-shru w 20) 31
+    in let f7 = bit-shru w 25
+    in let imm-i = sext12 (bit-shru w 20)
+    in let imm-s = sext12 (bit-or (bit-shl f7 5) rd)
+    in if op == 55 then set-reg m rd (sext32 (bit-and w 4294963200))
+    else if op == 19 & f3 == 0 then set-reg m rd (reg m rs1 + imm-i)
+    else if op == 19 & f3 == 1 then set-reg m rd (bit-shl (reg m rs1) (bit-and (bit-shru w 20) 63))
+    else if op == 51 & f3 == 0 & f7 == 0 then set-reg m rd (reg m rs1 + reg m rs2)
+    else if op == 51 & f3 == 6 & f7 == 0 then set-reg m rd (bit-or (reg m rs1) (reg m rs2))
+    else if op == 3 & f3 == 3
+      then (if reg m rs1 + imm-i /= m.addr then fail m ("load off the cap word at " & show pc)
+            else set-reg m rd (m.word))
+    else if op == 35 & f3 == 3
+      then (if reg m rs1 + imm-s /= m.addr then fail m ("store off the cap word at " & show pc)
+            else set-word m (reg m rs2))
+    else fail m ("opcode " & show op & " at " & show pc)
+
+  run : Machine, List Integer, Integer -> Machine
+  run (m) (b) (pc) =
+    if m.fault /= "" then m
+    else if pc >= list-length b then m
+    else run (step m (le-word b pc) pc) b (pc + 4)
+
+Section: Scenarios
+
+  cap-addr : Integer = 2415919104
+
+  bit31 : Integer = 2147483648
+
+  bit40 : Integer = 1099511627776
+
+  word-after : List Integer, Integer -> Text
+  word-after (b) (w0) =
+    let m = run (Machine { regs = fresh-regs 32 [], addr = cap-addr, word = w0, fault = "" }) b 0
+    in if m.fault /= "" then m.fault else show (m.word)
+
+  value-of : List Integer, Integer -> Text
+  value-of (b) (r) =
+    let m = run (Machine { regs = fresh-regs 32 [], addr = cap-addr, word = 0, fault = "" }) b 0
+    in if m.fault /= "" then m.fault else show (reg m r)
+
+  old-order : Integer, Integer -> List Integer
+  old-order (addr) (mask) =
+    rv-li rv-t1 addr & rv-ld rv-t2 rv-t1 0 & rv-li rv-t0 mask & rv-or rv-t2 rv-t2 rv-t0 & rv-sd rv-t1 rv-t2 0
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("li-bit31 : " & value-of (rv-li rv-t0 bit31) rv-t0)
+    print-line-uni ("li-bit40 : " & value-of (rv-li rv-t0 bit40) rv-t0)
+    print-line-uni ("li-bit31-40-3 : " & value-of (rv-li rv-t2 (bit31 + bit40 + 8)) rv-t2)
+    print-line-uni ("cell-bit31 : " & word-after (rv-or-into-cell cap-addr bit31) 0)
+    print-line-uni ("cell-bit31-40 : " & word-after (rv-or-into-cell cap-addr (bit31 + bit40)) 0)
+    print-line-uni ("cell-bit40 : " & word-after (rv-or-into-cell cap-addr bit40) 1)
+    print-line-uni ("cell-bit3 : " & word-after (rv-or-into-cell cap-addr 8) 0)
+    print-line-uni ("old-order : " & word-after (old-order cap-addr bit31) 0)
+  end

@@ -80,9 +80,8 @@ Section: The Browser Interface
 
 Section: Playing By Hand
 
- A player may only ask for a rank the player holds. A hit transfers the rank
- and checks for a book, a miss draws from the pile, and either way the turn
- passes.
+ A player may only ask for a rank the player holds, of another player at the
+ table; gf-resolve-ask plays the rest.
 
   gf-wasm-can-ask : GoFishState, Integer -> Integer
   gf-wasm-can-ask (s) (rank) =
@@ -101,23 +100,32 @@ Section: Playing By Hand
     else gf-ask-turn (gf-copy-state s) rank target
 
   gf-ask-turn : GoFishState, Integer, Integer -> GoFishState
-  gf-ask-turn (s) (rank) (target) =
-    let player = s.current-player
-    in if gf-count-rank-in-hand s target rank > 0 then gf-ask-hit s player target rank
-    else gf-ask-miss s player
+  gf-ask-turn (s) (rank) (target) = gf-resolve-ask s (s.current-player) target rank
 
-  gf-ask-hit : GoFishState, Integer, Integer, Integer -> GoFishState
-  gf-ask-hit (s) (player) (target) (rank) =
-    let s2 = gf-transfer-rank s target player rank
-    in let s3 = gf-check-books s2 player
-    in let s4 = gf-check-game-over s3
-    in gf-advance-player s4
+  gf-wasm-winner : GoFishState -> Integer
+  gf-wasm-winner (s) = gf-find-winner s 0 0 (0 - 1)
 
-  gf-ask-miss : GoFishState, Integer -> GoFishState
-  gf-ask-miss (s) (player) =
-    let s2 = gf-draw-card s player
-    in let s3 = gf-check-game-over s2
-    in gf-advance-player s3
+Section: Setting Up a Position
+
+ A grader seats np players with empty hands and an empty stock, then deals
+ each card where it wants it, on copies.
+
+  gf-wasm-empty : Integer -> GoFishState
+  gf-wasm-empty (np) =
+    let n = if np < 2 then 2 else if np > 4 then 4 else np
+    in GoFishState { hands = gf-build-zeroes 0 (n * 52) [], hand-sizes = gf-build-zeroes 0 n [], draw-pile = gf-build-zeroes 0 52 [], pile-size = 0, books = gf-build-zeroes 0 n [], current-player = 0, num-players = n, game-over = False, total-books = 0 }
+
+  gf-wasm-give : GoFishState, Integer, Integer -> GoFishState
+  gf-wasm-give (s) (player) (card) =
+    if player < 0 | player >= s.num-players | card < 0 | card >= 52 then s
+    else gf-hand-set (gf-copy-state s) player card 1
+
+  gf-wasm-stock : GoFishState, Integer -> GoFishState
+  gf-wasm-stock (s) (card) =
+    if card < 0 | card >= 52 | s.pile-size >= 52 then s
+    else let c = gf-copy-state s
+    in let w = list-set-at (c.draw-pile) (c.pile-size) card
+    in GoFishState { hands = c.hands, hand-sizes = c.hand-sizes, draw-pile = c.draw-pile, pile-size = c.pile-size + 1, books = c.books, current-player = c.current-player, num-players = c.num-players, game-over = c.game-over, total-books = c.total-books }
 
   gf-wasm-rank : Integer -> Integer
   gf-wasm-rank (c) = if c < 0 then (-1) else if c >= 52 then (-1) else gf-rank c

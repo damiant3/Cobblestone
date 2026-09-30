@@ -184,9 +184,9 @@ The pipeline:
    the grant maps to.
 
 Both page modules import exactly `wasi_snapshot_preview1.fd_write` and
-`wasi_snapshot_preview1.fd_read`. The emitter adds `env.blit_framebuf`
-and `env.on_key` only when a program calls them
-(`codex/plugs/wasm/WasmEmitter.codex`, lines 2181-2194). Builtins with
+`wasi_snapshot_preview1.fd_read`. The emitter adds `env.on_key` and
+`wasi_snapshot_preview1.random_get` only when a program uses them
+(`wat-runtime-header` in `codex/plugs/wasm/WasmEmitter.codex`). Builtins with
 no WASM form (`port-out-byte`, `host-socket`, and the rest of
 `wat-no-such-thing`) emit `unreachable` and trap if reached. The link
 surface is therefore small and fully enumerable.

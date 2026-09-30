@@ -96,8 +96,8 @@ which is what OCI runs.
   2026-08-18; shelved with the design.
 - **The serve loop's heap frontier climbs about 73 KB per request** and
   reaches the DMA floor around request 31, because the loop takes no heap
-  mark. The remedy is arm64 `deck-record` (`plugs-backlog.md` 1.33), which the
-  arm64 and riscv plugs do not implement.
+  mark. The remedy is a heap mark per request; both the arm64 and riscv plugs
+  implement the deck and `deck-record` (`codex/test/deck-*-contract`).
 - **Phase 5b, upload to OCI Object Storage and import as a custom image**:
   needs Damian's OCI account.
 - **Phase 5c, VCN security list (TCP 80/443) and addressing**: needs Damian's

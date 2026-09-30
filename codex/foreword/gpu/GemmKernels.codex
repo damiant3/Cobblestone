@@ -1,0 +1,1300 @@
+Chapter: GemmKernels
+  cites Gpu chapter DeviceEffect
+
+ We say:
+
+Section: WMMA GEMM
+
+ C = A B for row-major n x n matrices: A and B f16, C f32, n a multiple of
+ 64. Launch with a grid of (n / 64, n / 64) blocks of 128 threads and k = 0.
+ Each block owns a 64 x 64 tile of C; each of its four warps owns 32 x 32,
+ held as four 16 x 16 accumulator fragments (slots 0-3) across the whole K
+ loop, which is why the loop is a self tail call inside the kernel and not a
+ helper: a helper is a separate PTX function and cannot see the fragment
+ registers.
+
+  kernel-gemm-wmma : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-gemm-wmma (a) (b) (c) (n) (k) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   by <- block-idx-y
+   z0 <- if k == 0 then wmma-fill-f32 0 else 0
+   z1 <- if k == 0 then wmma-fill-f32 1 else 0
+   z2 <- if k == 0 then wmma-fill-f32 2 else 0
+   z3 <- if k == 0 then wmma-fill-f32 3 else 0
+   la0 <- wmma-load-a-f16 0 (a + ((by * 64 + (tid / 64) * 32) * n + k) * 2) n
+   la1 <- wmma-load-a-f16 1 (a + ((by * 64 + (tid / 64) * 32 + 16) * n + k) * 2) n
+   lb0 <- wmma-load-b-f16 0 (b + (k * n + bx * 64 + (tid / 32 - (tid / 64) * 2) * 32) * 2) n
+   lb1 <- wmma-load-b-f16 1 (b + (k * n + bx * 64 + (tid / 32 - (tid / 64) * 2) * 32 + 16) * 2) n
+   m0 <- wmma-mma-f32 0 0 0
+   m1 <- wmma-mma-f32 1 0 1
+   m2 <- wmma-mma-f32 2 1 0
+   m3 <- wmma-mma-f32 3 1 1
+   if k + 16 < n then kernel-gemm-wmma a b c n (k + 16)
+   else act
+    s0 <- wmma-store-f32 0 (c + ((by * 64 + (tid / 64) * 32) * n + bx * 64 + (tid / 32 - (tid / 64) * 2) * 32) * 4) n
+    s1 <- wmma-store-f32 1 (c + ((by * 64 + (tid / 64) * 32) * n + bx * 64 + (tid / 32 - (tid / 64) * 2) * 32 + 16) * 4) n
+    s2 <- wmma-store-f32 2 (c + ((by * 64 + (tid / 64) * 32 + 16) * n + bx * 64 + (tid / 32 - (tid / 64) * 2) * 32) * 4) n
+    wmma-store-f32 3 (c + ((by * 64 + (tid / 64) * 32 + 16) * n + bx * 64 + (tid / 32 - (tid / 64) * 2) * 32 + 16) * 4) n
+   end
+  end
+
+Section: Implicit GEMM Conv2d
+
+ y = conv2d x w, no bias: x is cin x h x wd f16, w is cout x (cin kh kw) f16
+ in PyTorch order, y is cout x (oh ow) f32. M = cout, N = oh ow, K = cin kh
+ kw. Each block owns a 64 x 64 tile of y and walks K by 16, gathering the
+ weight tile (64 x 16) and the im2col tile (16 x 64, zero outside the image
+ and past K) into shared memory as f16; the output tile leaves through
+ shared memory so any cout and oh ow store in bounds. Launch with a grid of
+ (ceil (oh ow / 64), ceil (cout / 64)) blocks of 128 threads, 20480 bytes of
+ shared memory (A at 0, B at 2048, C at 4096), and k = 0.
+
+  conv-stage-a : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  conv-stage-a (sa) (w) (cout) (kk) (m0) (k0) (t) (j) =
+    if j >= 8 then 0
+    else let e = t + j * 128
+    in let r = e / 16
+    in let m = m0 + r
+    in let kx = k0 + e - r * 16
+    in act
+     v <- if m < cout then (if kx < kk then device-load-u16 (w + (m * kk + kx) * 2) else 0) else 0
+     s <- shared-store-u16 (sa + e * 2) v
+     conv-stage-a sa w cout kk m0 k0 t (j + 1)
+    end
+
+  conv-stage-b : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  conv-stage-b (sb) (x) (cin) (h) (wd) (kh) (kw) (stride) (pad) (ow) (npix) (k0) (n0) (t) (j) =
+    if j >= 8 then 0
+    else let e = t + j * 128
+    in let r = e / 64
+    in let n = n0 + e - r * 64
+    in let kx = k0 + r
+    in let ci = kx / (kh * kw)
+    in let rest = kx - ci * kh * kw
+    in let ky = rest / kw
+    in let oy = n / ow
+    in let iy = oy * stride - pad + ky
+    in let ix = (n - oy * ow) * stride - pad + rest - ky * kw
+    in act
+     v <- if ci < cin then
+       (if n < npix then (if iy >= 0 then (if iy < h then (if ix >= 0 then (if ix < wd then device-load-u16 (x + ((ci * h + iy) * wd + ix) * 2) else 0) else 0) else 0) else 0) else 0)
+     else 0
+     s <- shared-store-u16 (sb + e * 2) v
+     conv-stage-b sb x cin h wd kh kw stride pad ow npix k0 n0 t (j + 1)
+    end
+
+  conv-store-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  conv-store-out (sc) (y) (cout) (npix) (m0) (n0) (t) (j) =
+    if j >= 32 then 0
+    else let e = t + j * 128
+    in let r = e / 64
+    in let m = m0 + r
+    in let n = n0 + e - r * 64
+    in act
+     v <- shared-load-u32 (sc + e * 4)
+     s <- if m < cout then
+       (if n < npix then device-store-u32 (y + (m * npix + n) * 4) v else 0)
+     else 0
+     conv-store-out sc y cout npix m0 n0 t (j + 1)
+    end
+
+  kernel-conv2d-wmma : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-conv2d-wmma (x) (w) (y) (cin) (h) (wd) (cout) (kh) (kw) (stride) (pad) (oh) (ow) (k) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   by <- block-idx-y
+   base <- shared-base
+   z0 <- if k == 0 then wmma-fill-f32 0 else 0
+   z1 <- if k == 0 then wmma-fill-f32 1 else 0
+   z2 <- if k == 0 then wmma-fill-f32 2 else 0
+   z3 <- if k == 0 then wmma-fill-f32 3 else 0
+   sa <- conv-stage-a base w cout (cin * kh * kw) (by * 64) k tid 0
+   sb <- conv-stage-b (base + 2048) x cin h wd kh kw stride pad ow (oh * ow) k (bx * 64) tid 0
+   b1 <- sync-threads
+   la0 <- wmma-load-a-f16-shared 0 (base + (tid / 64) * 32 * 32) 16
+   la1 <- wmma-load-a-f16-shared 1 (base + ((tid / 64) * 32 + 16) * 32) 16
+   lb0 <- wmma-load-b-f16-shared 0 (base + 2048 + (tid / 32 - (tid / 64) * 2) * 32 * 2) 64
+   lb1 <- wmma-load-b-f16-shared 1 (base + 2048 + ((tid / 32 - (tid / 64) * 2) * 32 + 16) * 2) 64
+   m0 <- wmma-mma-f32 0 0 0
+   m1 <- wmma-mma-f32 1 0 1
+   m2 <- wmma-mma-f32 2 1 0
+   m3 <- wmma-mma-f32 3 1 1
+   b2 <- sync-threads
+   if k + 16 < cin * kh * kw then
+     kernel-conv2d-wmma x w y cin h wd cout kh kw stride pad oh ow (k + 16)
+   else act
+    s0 <- wmma-store-f32-shared 0 (base + 4096 + ((tid / 64) * 32 * 64 + (tid / 32 - (tid / 64) * 2) * 32) * 4) 64
+    s1 <- wmma-store-f32-shared 1 (base + 4096 + ((tid / 64) * 32 * 64 + (tid / 32 - (tid / 64) * 2) * 32 + 16) * 4) 64
+    s2 <- wmma-store-f32-shared 2 (base + 4096 + (((tid / 64) * 32 + 16) * 64 + (tid / 32 - (tid / 64) * 2) * 32) * 4) 64
+    s3 <- wmma-store-f32-shared 3 (base + 4096 + (((tid / 64) * 32 + 16) * 64 + (tid / 32 - (tid / 64) * 2) * 32 + 16) * 4) 64
+    b3 <- sync-threads
+    conv-store-out (base + 4096) y cout (oh * ow) (by * 64) (bx * 64) tid 0
+   end
+  end
+
+Section: Linear
+
+ y = x W^T + b: x is mm x kk f16, W is nn x kk f16 as a checkpoint stores
+ it, b is nn f32 (0 for none), y is mm x nn f32; any mm, nn and kk. The
+ tiling, shared layout and launch are the conv's with a grid of
+ (ceil (nn / 64), ceil (mm / 64)); the A tile is gathered by conv-stage-a.
+
+  linear-stage-b : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  linear-stage-b (sb) (w) (nn) (kk) (n0) (k0) (t) (j) =
+    if j >= 8 then 0
+    else let e = t + j * 128
+    in let c = e / 16
+    in let r = e - c * 16
+    in let n = n0 + c
+    in let kx = k0 + r
+    in act
+     v <- if n < nn then (if kx < kk then device-load-u16 (w + (n * kk + kx) * 2) else 0) else 0
+     s <- shared-store-u16 (sb + (r * 64 + c) * 2) v
+     linear-stage-b sb w nn kk n0 k0 t (j + 1)
+    end
+
+  linear-store-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  linear-store-out (sc) (y) (b) (mm) (nn) (m0) (n0) (t) (j) =
+    if j >= 32 then 0
+    else let e = t + j * 128
+    in let r = e / 64
+    in let m = m0 + r
+    in let n = n0 + e - r * 64
+    in act
+     v <- shared-load-u32 (sc + e * 4)
+     s <- if m < mm then
+       (if n < nn then (if b == 0 then device-store-u32 (y + (m * nn + n) * 4) v else device-store-u32 (y + (m * nn + n) * 4) (f32-add-bits v (device-load-u32 (b + n * 4)))) else 0)
+     else 0
+     linear-store-out sc y b mm nn m0 n0 t (j + 1)
+    end
+
+ An e4m3 byte (sign, four exponent bits biased by 7, three mantissa bits, no
+ infinity, S.1111.111 the one NaN) is exact in f16: a normal value moves its
+ exponent to f16's bias of 15, a subnormal (m x 2^-9) becomes an f16 normal,
+ listed.
+
+  f8-e4m3-f16 : Integer -> Integer
+  f8-e4m3-f16 (v) =
+    let s = v / 128
+    in let e = (v - s * 128) / 8
+    in let m = v - s * 128 - e * 8
+    in let mag = if e == 0 then
+      (if m == 0 then 0 else if m == 1 then 6144 else if m == 2 then 7168 else if m == 3 then 7680 else if m == 4 then 8192 else if m == 5 then 8448 else if m == 6 then 8704 else 8960)
+    else if e == 15 then (if m == 7 then 32256 else (e + 8) * 1024 + m * 128)
+    else (e + 8) * 1024 + m * 128
+    in s * 32768 + mag
+
+ The e4m3 W tile: each thread loads two words of four consecutive k (kk a
+ multiple of 4, so every word is aligned) and stores their bytes as f16 in
+ linear-stage-b's layout.
+
+  linear-stage-b-fp8 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  linear-stage-b-fp8 (sb) (w) (nn) (kk) (n0) (k0) (t) (j) =
+    if j >= 2 then 0
+    else let q = t + j * 128
+    in let c = q / 4
+    in let kq = (q - c * 4) * 4
+    in act
+     wd <- if n0 + c < nn then
+       (if k0 + kq < kk then device-load-u32 (w + (n0 + c) * kk + k0 + kq) else 0)
+     else 0
+     s0 <- shared-store-u16 (sb + (kq * 64 + c) * 2) (f8-e4m3-f16 (wd - (wd / 256) * 256))
+     s1 <- shared-store-u16 (sb + ((kq + 1) * 64 + c) * 2) (f8-e4m3-f16 (wd / 256 - (wd / 65536) * 256))
+     s2 <- shared-store-u16 (sb + ((kq + 2) * 64 + c) * 2) (f8-e4m3-f16 (wd / 65536 - (wd / 16777216) * 256))
+     s3 <- shared-store-u16 (sb + ((kq + 3) * 64 + c) * 2) (f8-e4m3-f16 (wd / 16777216))
+     linear-stage-b-fp8 sb w nn kk n0 k0 t (j + 1)
+    end
+
+  kernel-linear-wmma : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-linear-wmma (x) (w) (b) (y) (mm) (nn) (kk) (k) = lw-linear x w b y mm nn kk k 0
+
+  kernel-linear-wmma-batched : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-linear-wmma-batched (x) (w) (b) (y) (mm) (nn) (kk) (xs) (ws) (ys) = act
+   bz <- block-idx-z
+   lw-linear (x + bz * xs) (w + bz * ws) b (y + bz * ys) mm nn kk 0 0
+  end
+
+ kernel-linear-wmma's contract with W e4m3 (one byte an element) and kk a
+ multiple of 4: Flux's weight-only fp8, activations and accumulation as
+ before.
+
+  kernel-linear-fp8 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-linear-fp8 (x) (w) (b) (y) (mm) (nn) (kk) (k) = lw-linear x w b y mm nn kk k 1
+
+  lw-linear : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lw-linear (x) (w) (b) (y) (mm) (nn) (kk) (k) (fp8) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   by <- block-idx-y
+   base <- shared-base
+   z0 <- if k == 0 then wmma-fill-f32 0 else 0
+   z1 <- if k == 0 then wmma-fill-f32 1 else 0
+   z2 <- if k == 0 then wmma-fill-f32 2 else 0
+   z3 <- if k == 0 then wmma-fill-f32 3 else 0
+   sa <- conv-stage-a base x mm kk (by * 64) k tid 0
+   sb <- if fp8 == 0 then
+     linear-stage-b (base + 2048) w nn kk (bx * 64) k tid 0
+   else linear-stage-b-fp8 (base + 2048) w nn kk (bx * 64) k tid 0
+   b1 <- sync-threads
+   la0 <- wmma-load-a-f16-shared 0 (base + (tid / 64) * 32 * 32) 16
+   la1 <- wmma-load-a-f16-shared 1 (base + ((tid / 64) * 32 + 16) * 32) 16
+   lb0 <- wmma-load-b-f16-shared 0 (base + 2048 + (tid / 32 - (tid / 64) * 2) * 32 * 2) 64
+   lb1 <- wmma-load-b-f16-shared 1 (base + 2048 + ((tid / 32 - (tid / 64) * 2) * 32 + 16) * 2) 64
+   m0 <- wmma-mma-f32 0 0 0
+   m1 <- wmma-mma-f32 1 0 1
+   m2 <- wmma-mma-f32 2 1 0
+   m3 <- wmma-mma-f32 3 1 1
+   b2 <- sync-threads
+   if k + 16 < kk then lw-linear x w b y mm nn kk (k + 16) fp8
+   else act
+    s0 <- wmma-store-f32-shared 0 (base + 4096 + ((tid / 64) * 32 * 64 + (tid / 32 - (tid / 64) * 2) * 32) * 4) 64
+    s1 <- wmma-store-f32-shared 1 (base + 4096 + ((tid / 64) * 32 * 64 + (tid / 32 - (tid / 64) * 2) * 32 + 16) * 4) 64
+    s2 <- wmma-store-f32-shared 2 (base + 4096 + (((tid / 64) * 32 + 16) * 64 + (tid / 32 - (tid / 64) * 2) * 32) * 4) 64
+    s3 <- wmma-store-f32-shared 3 (base + 4096 + (((tid / 64) * 32 + 16) * 64 + (tid / 32 - (tid / 64) * 2) * 32 + 16) * 4) 64
+    b3 <- sync-threads
+    linear-store-out (base + 4096) y b mm nn (by * 64) (bx * 64) tid 0
+   end
+  end
+
+Section: Linear, Pipelined
+
+ kernel-linear-wmma's contract with kk a multiple of 8. A block owns a 128 x
+ 128 tile of y, eight warps of 32 x 64 (2 x 4 fragments). K goes by 32
+ through two shared buffers of 20480 bytes (128 x rows then 128 W rows, 40
+ halves apart), filled by cp.async with zeros past mm, nn and kk while the
+ other buffer is multiplied. Launch with a grid of (ceil (nn / 128), ceil
+ (mm / 128)) blocks of 256 threads, 40960 bytes of shared memory, k = 0 and
+ s = 0. kernel-linear-fast-n64 is the same with a 128 x 64 tile, four warps
+ and buffers of 15360 bytes: a grid of (ceil (nn / 64), ceil (mm / 128))
+ blocks of 128 threads and 30720 bytes. Its own copy of the loop, not a
+ width parameter: the parameter cost the 128 x 128 kernel 13-29% (census).
+
+  lf-load-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf-load-rows (dst) (src) (rows) (kk) (r0) (k0) (c) =
+    let row = c / 4
+    in let kc = k0 + (c - row * 4) * 8
+    in let ok = if r0 + row < rows then (if kc < kk then 16 else 0) else 0
+    in let from = if ok > 0 then src + ((r0 + row) * kk + kc) * 2 else src
+    in act
+     cp-async-16 (dst + row * 80 + (c - row * 4) * 16) from ok
+    end
+
+  lf-stage : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf-stage (buf) (x) (w) (mm) (nn) (kk) (row0) (col0) (k0) (t) = act
+   a1 <- lf-load-rows buf x mm kk row0 k0 t
+   a2 <- lf-load-rows buf x mm kk row0 k0 (t + 256)
+   b1 <- lf-load-rows (buf + 10240) w nn kk col0 k0 t
+   b2 <- lf-load-rows (buf + 10240) w nn kk col0 k0 (t + 256)
+   cp-async-commit
+  end
+
+  lf-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf-out (st) (y) (b) (mm) (nn) (r0) (c0) (lane) (q) =
+    if q >= 8 then 0
+    else let e = lane + q * 32
+    in let m = r0 + e / 16
+    in let n = c0 + e - (e / 16) * 16
+    in act
+     v <- shared-load-u32 (st + e * 4)
+     s <- if m < mm then
+       (if n < nn then (if b == 0 then device-store-u32 (y + (m * nn + n) * 4) v else device-store-u32 (y + (m * nn + n) * 4) (f32-add-bits v (device-load-u32 (b + n * 4)))) else 0)
+     else 0
+     lf-out st y b mm nn r0 c0 lane (q + 1)
+    end
+
+  kernel-linear-fast : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-linear-fast (x) (w) (b) (y) (mm) (nn) (kk) (k) (s) = lf-linear x w b y mm nn kk k s
+
+ One product per block-idx-z, its x, w and y that many strides (bytes) along;
+ launch with gz products, k and s implicitly 0.
+
+  kernel-linear-fast-batched : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-linear-fast-batched (x) (w) (b) (y) (mm) (nn) (kk) (xs) (ws) (ys) = act
+   bz <- block-idx-z
+   lf-linear (x + bz * xs) (w + bz * ws) b (y + bz * ys) mm nn kk 0 0
+  end
+
+  lf-linear : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf-linear (x) (w) (b) (y) (mm) (nn) (kk) (k) (s) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   by <- block-idx-y
+   base <- shared-base
+   wm <- tid / 32 - (tid / 128) * 4
+   wn <- tid / 128
+   z0 <- if k == 0 then wmma-fill-f32 0 else 0
+   z1 <- if k == 0 then wmma-fill-f32 1 else 0
+   z2 <- if k == 0 then wmma-fill-f32 2 else 0
+   z3 <- if k == 0 then wmma-fill-f32 3 else 0
+   z4 <- if k == 0 then wmma-fill-f32 4 else 0
+   z5 <- if k == 0 then wmma-fill-f32 5 else 0
+   z6 <- if k == 0 then wmma-fill-f32 6 else 0
+   z7 <- if k == 0 then wmma-fill-f32 7 else 0
+   p0 <- if k == 0 then lf-stage base x w mm nn kk (by * 128) (bx * 128) 0 tid else 0
+   p1 <- if k + 32 < kk then
+     lf-stage (base + (1 - s) * 20480) x w mm nn kk (by * 128) (bx * 128) (k + 32) tid
+   else 0
+   wt <- if k + 32 < kk then cp-async-wait-one else cp-async-wait-all
+   b1 <- sync-threads
+   ab <- base + s * 20480 + wm * 32 * 80
+   bb <- base + s * 20480 + 10240 + wn * 64 * 80
+   la0 <- wmma-load-a-f16-shared 0 ab 40
+   la1 <- wmma-load-a-f16-shared 1 (ab + 1280) 40
+   lb0 <- wmma-load-b-col-f16-shared 0 bb 40
+   lb1 <- wmma-load-b-col-f16-shared 1 (bb + 1280) 40
+   lb2 <- wmma-load-b-col-f16-shared 2 (bb + 2560) 40
+   lb3 <- wmma-load-b-col-f16-shared 3 (bb + 3840) 40
+   m0 <- wmma-mma-rc-f32 0 0 0
+   m1 <- wmma-mma-rc-f32 1 0 1
+   m2 <- wmma-mma-rc-f32 2 0 2
+   m3 <- wmma-mma-rc-f32 3 0 3
+   m4 <- wmma-mma-rc-f32 4 1 0
+   m5 <- wmma-mma-rc-f32 5 1 1
+   m6 <- wmma-mma-rc-f32 6 1 2
+   m7 <- wmma-mma-rc-f32 7 1 3
+   ka0 <- wmma-load-a-f16-shared 0 (ab + 32) 40
+   ka1 <- wmma-load-a-f16-shared 1 (ab + 1312) 40
+   kb0 <- wmma-load-b-col-f16-shared 0 (bb + 32) 40
+   kb1 <- wmma-load-b-col-f16-shared 1 (bb + 1312) 40
+   kb2 <- wmma-load-b-col-f16-shared 2 (bb + 2592) 40
+   kb3 <- wmma-load-b-col-f16-shared 3 (bb + 3872) 40
+   n0 <- wmma-mma-rc-f32 0 0 0
+   n1 <- wmma-mma-rc-f32 1 0 1
+   n2 <- wmma-mma-rc-f32 2 0 2
+   n3 <- wmma-mma-rc-f32 3 0 3
+   n4 <- wmma-mma-rc-f32 4 1 0
+   n5 <- wmma-mma-rc-f32 5 1 1
+   n6 <- wmma-mma-rc-f32 6 1 2
+   n7 <- wmma-mma-rc-f32 7 1 3
+   b2 <- sync-threads
+   if k + 32 < kk then lf-linear x w b y mm nn kk (k + 32) (1 - s)
+   else act
+    st <- base + (tid / 32) * 1024
+    lane <- tid - (tid / 32) * 32
+    r0 <- by * 128 + wm * 32
+    c0 <- bx * 128 + wn * 64
+    e0 <- wmma-store-f32-shared 0 st 16
+    w0 <- sync-warp
+    o0 <- lf-out st y b mm nn r0 c0 lane 0
+    v0 <- sync-warp
+    e1 <- wmma-store-f32-shared 1 st 16
+    w1 <- sync-warp
+    o1 <- lf-out st y b mm nn r0 (c0 + 16) lane 0
+    v1 <- sync-warp
+    e2 <- wmma-store-f32-shared 2 st 16
+    w2 <- sync-warp
+    o2 <- lf-out st y b mm nn r0 (c0 + 32) lane 0
+    v2 <- sync-warp
+    e3 <- wmma-store-f32-shared 3 st 16
+    w3 <- sync-warp
+    o3 <- lf-out st y b mm nn r0 (c0 + 48) lane 0
+    v3 <- sync-warp
+    e4 <- wmma-store-f32-shared 4 st 16
+    w4 <- sync-warp
+    o4 <- lf-out st y b mm nn (r0 + 16) c0 lane 0
+    v4 <- sync-warp
+    e5 <- wmma-store-f32-shared 5 st 16
+    w5 <- sync-warp
+    o5 <- lf-out st y b mm nn (r0 + 16) (c0 + 16) lane 0
+    v5 <- sync-warp
+    e6 <- wmma-store-f32-shared 6 st 16
+    w6 <- sync-warp
+    o6 <- lf-out st y b mm nn (r0 + 16) (c0 + 32) lane 0
+    v6 <- sync-warp
+    e7 <- wmma-store-f32-shared 7 st 16
+    w7 <- sync-warp
+    lf-out st y b mm nn (r0 + 16) (c0 + 48) lane 0
+   end
+  end
+
+ kernel-linear-fast's pipeline with W e4m3 (kernel-linear-fp8's contract, kk a
+ multiple of 16): cp.async brings each stage's 128 W rows of 32 bytes to one of
+ two e4m3 buffers beside the x buffers, and a 256-entry table of their f16
+ values turns the current one into the f16 W tile before the MMA. Shared
+ memory: x at 0 and 10240, the W tile at 20480, e4m3 at 30720 and 34816, the
+ table at 38912; launch as kernel-linear-fast with 39936 bytes.
+ kernel-linear-fast-fp8-mfirst takes its row tile from block x and its column
+ tile from block y (grid ceil (mm / 128) by ceil (nn / 128)), so consecutive
+ blocks share one W tile: when x fits the L2 (32 MB on the RTX 4060 Ti) and W
+ does not, W leaves DRAM once instead of once per row band (4352 x 21504 x
+ 3072: 19.0 ms against 29.2, 2026-09-29).
+
+  lf8-lut : Integer, Integer -> [Device] Integer
+  lf8-lut (lut) (t) = if t < 256 then shared-store-u32 (lut + t * 4) (f8-e4m3-f16 t) else 0
+
+  lf8-load-w : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf8-load-w (dst) (src) (rows) (kk) (r0) (k0) (c) =
+    let row = c / 2
+    in let kc = k0 + (c - row * 2) * 16
+    in let ok = if r0 + row < rows then (if kc < kk then 16 else 0) else 0
+    in let from = if ok > 0 then src + (r0 + row) * kk + kc else src
+    in act
+     cp-async-16 (dst + row * 32 + (c - row * 2) * 16) from ok
+    end
+
+  lf8-stage : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf8-stage (xbuf) (wbuf) (x) (w) (mm) (nn) (kk) (row0) (col0) (k0) (t) = act
+   a1 <- lf-load-rows xbuf x mm kk row0 k0 t
+   a2 <- lf-load-rows xbuf x mm kk row0 k0 (t + 256)
+   b1 <- lf8-load-w wbuf w nn kk col0 k0 t
+   cp-async-commit
+  end
+
+  lf8-half : Integer, Integer -> [Device] Integer
+  lf8-half (lut) (b) = shared-load-u32 (lut + b * 4)
+
+  lf8-convert : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf8-convert (w8) (wf) (lut) (t) (j) =
+    if j >= 4 then 0
+    else let q = t + j * 256
+    in let row = q / 8
+    in let c = q - row * 8
+    in act
+     v <- shared-load-u32 (w8 + row * 32 + c * 4)
+     h0 <- lf8-half lut (v - (v / 256) * 256)
+     h1 <- lf8-half lut (v / 256 - (v / 65536) * 256)
+     h2 <- lf8-half lut (v / 65536 - (v / 16777216) * 256)
+     h3 <- lf8-half lut (v / 16777216)
+     s0 <- shared-store-u32 (wf + row * 80 + c * 8) (h1 * 65536 + h0)
+     s1 <- shared-store-u32 (wf + row * 80 + c * 8 + 4) (h3 * 65536 + h2)
+     lf8-convert w8 wf lut t (j + 1)
+    end
+
+  kernel-linear-fast-fp8 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-linear-fast-fp8 (x) (w) (b) (y) (mm) (nn) (kk) (k) (s) = lf8-linear x w b y mm nn kk k s 0
+
+  kernel-linear-fast-fp8-mfirst : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-linear-fast-fp8-mfirst (x) (w) (b) (y) (mm) (nn) (kk) (k) (s) = lf8-linear x w b y mm nn kk k s 1
+
+  lf8-linear : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf8-linear (x) (w) (b) (y) (mm) (nn) (kk) (k) (s) (mf) = act
+   tid <- thread-idx-x
+   bx <- if mf == 1 then block-idx-y else block-idx-x
+   by <- if mf == 1 then block-idx-x else block-idx-y
+   base <- shared-base
+   wm <- tid / 32 - (tid / 128) * 4
+   wn <- tid / 128
+   z0 <- if k == 0 then wmma-fill-f32 0 else 0
+   z1 <- if k == 0 then wmma-fill-f32 1 else 0
+   z2 <- if k == 0 then wmma-fill-f32 2 else 0
+   z3 <- if k == 0 then wmma-fill-f32 3 else 0
+   z4 <- if k == 0 then wmma-fill-f32 4 else 0
+   z5 <- if k == 0 then wmma-fill-f32 5 else 0
+   z6 <- if k == 0 then wmma-fill-f32 6 else 0
+   z7 <- if k == 0 then wmma-fill-f32 7 else 0
+   l0 <- if k == 0 then lf8-lut (base + 38912) tid else 0
+   p0 <- if k == 0 then
+     lf8-stage base (base + 30720) x w mm nn kk (by * 128) (bx * 128) 0 tid
+   else 0
+   p1 <- if k + 32 < kk then
+     lf8-stage (base + (1 - s) * 10240) (base + 30720 + (1 - s) * 4096) x w mm nn kk (by * 128) (bx * 128) (k + 32) tid
+   else 0
+   wt <- if k + 32 < kk then cp-async-wait-one else cp-async-wait-all
+   b1 <- sync-threads
+   cv <- lf8-convert (base + 30720 + s * 4096) (base + 20480) (base + 38912) tid 0
+   b1b <- sync-threads
+   ab <- base + s * 10240 + wm * 32 * 80
+   bb <- base + 20480 + wn * 64 * 80
+   la0 <- wmma-load-a-f16-shared 0 ab 40
+   la1 <- wmma-load-a-f16-shared 1 (ab + 1280) 40
+   lb0 <- wmma-load-b-col-f16-shared 0 bb 40
+   lb1 <- wmma-load-b-col-f16-shared 1 (bb + 1280) 40
+   lb2 <- wmma-load-b-col-f16-shared 2 (bb + 2560) 40
+   lb3 <- wmma-load-b-col-f16-shared 3 (bb + 3840) 40
+   m0 <- wmma-mma-rc-f32 0 0 0
+   m1 <- wmma-mma-rc-f32 1 0 1
+   m2 <- wmma-mma-rc-f32 2 0 2
+   m3 <- wmma-mma-rc-f32 3 0 3
+   m4 <- wmma-mma-rc-f32 4 1 0
+   m5 <- wmma-mma-rc-f32 5 1 1
+   m6 <- wmma-mma-rc-f32 6 1 2
+   m7 <- wmma-mma-rc-f32 7 1 3
+   ka0 <- wmma-load-a-f16-shared 0 (ab + 32) 40
+   ka1 <- wmma-load-a-f16-shared 1 (ab + 1312) 40
+   kb0 <- wmma-load-b-col-f16-shared 0 (bb + 32) 40
+   kb1 <- wmma-load-b-col-f16-shared 1 (bb + 1312) 40
+   kb2 <- wmma-load-b-col-f16-shared 2 (bb + 2592) 40
+   kb3 <- wmma-load-b-col-f16-shared 3 (bb + 3872) 40
+   n0 <- wmma-mma-rc-f32 0 0 0
+   n1 <- wmma-mma-rc-f32 1 0 1
+   n2 <- wmma-mma-rc-f32 2 0 2
+   n3 <- wmma-mma-rc-f32 3 0 3
+   n4 <- wmma-mma-rc-f32 4 1 0
+   n5 <- wmma-mma-rc-f32 5 1 1
+   n6 <- wmma-mma-rc-f32 6 1 2
+   n7 <- wmma-mma-rc-f32 7 1 3
+   b2 <- sync-threads
+   if k + 32 < kk then lf8-linear x w b y mm nn kk (k + 32) (1 - s) mf
+   else act
+    st <- base + (tid / 32) * 1024
+    lane <- tid - (tid / 32) * 32
+    r0 <- by * 128 + wm * 32
+    c0 <- bx * 128 + wn * 64
+    e0 <- wmma-store-f32-shared 0 st 16
+    w0 <- sync-warp
+    o0 <- lf-out st y b mm nn r0 c0 lane 0
+    v0 <- sync-warp
+    e1 <- wmma-store-f32-shared 1 st 16
+    w1 <- sync-warp
+    o1 <- lf-out st y b mm nn r0 (c0 + 16) lane 0
+    v1 <- sync-warp
+    e2 <- wmma-store-f32-shared 2 st 16
+    w2 <- sync-warp
+    o2 <- lf-out st y b mm nn r0 (c0 + 32) lane 0
+    v2 <- sync-warp
+    e3 <- wmma-store-f32-shared 3 st 16
+    w3 <- sync-warp
+    o3 <- lf-out st y b mm nn r0 (c0 + 48) lane 0
+    v3 <- sync-warp
+    e4 <- wmma-store-f32-shared 4 st 16
+    w4 <- sync-warp
+    o4 <- lf-out st y b mm nn (r0 + 16) c0 lane 0
+    v4 <- sync-warp
+    e5 <- wmma-store-f32-shared 5 st 16
+    w5 <- sync-warp
+    o5 <- lf-out st y b mm nn (r0 + 16) (c0 + 16) lane 0
+    v5 <- sync-warp
+    e6 <- wmma-store-f32-shared 6 st 16
+    w6 <- sync-warp
+    o6 <- lf-out st y b mm nn (r0 + 16) (c0 + 32) lane 0
+    v6 <- sync-warp
+    e7 <- wmma-store-f32-shared 7 st 16
+    w7 <- sync-warp
+    lf-out st y b mm nn (r0 + 16) (c0 + 48) lane 0
+   end
+  end
+
+  lf-stage-n64 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf-stage-n64 (buf) (x) (w) (mm) (nn) (kk) (row0) (col0) (k0) (t) = act
+   a1 <- lf-load-rows buf x mm kk row0 k0 t
+   a2 <- lf-load-rows buf x mm kk row0 k0 (t + 128)
+   a3 <- lf-load-rows buf x mm kk row0 k0 (t + 256)
+   a4 <- lf-load-rows buf x mm kk row0 k0 (t + 384)
+   b1 <- lf-load-rows (buf + 10240) w nn kk col0 k0 t
+   b2 <- lf-load-rows (buf + 10240) w nn kk col0 k0 (t + 128)
+   cp-async-commit
+  end
+
+  kernel-linear-fast-n64 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-linear-fast-n64 (x) (w) (b) (y) (mm) (nn) (kk) (k) (s) = lf-linear-n64 x w b y mm nn kk k s
+
+  lf-linear-n64 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lf-linear-n64 (x) (w) (b) (y) (mm) (nn) (kk) (k) (s) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   by <- block-idx-y
+   base <- shared-base
+   wm <- tid / 32 - (tid / 128) * 4
+   wn <- tid / 128
+   z0 <- if k == 0 then wmma-fill-f32 0 else 0
+   z1 <- if k == 0 then wmma-fill-f32 1 else 0
+   z2 <- if k == 0 then wmma-fill-f32 2 else 0
+   z3 <- if k == 0 then wmma-fill-f32 3 else 0
+   z4 <- if k == 0 then wmma-fill-f32 4 else 0
+   z5 <- if k == 0 then wmma-fill-f32 5 else 0
+   z6 <- if k == 0 then wmma-fill-f32 6 else 0
+   z7 <- if k == 0 then wmma-fill-f32 7 else 0
+   p0 <- if k == 0 then lf-stage-n64 base x w mm nn kk (by * 128) (bx * 64) 0 tid else 0
+   p1 <- if k + 32 < kk then
+     lf-stage-n64 (base + (1 - s) * 15360) x w mm nn kk (by * 128) (bx * 64) (k + 32) tid
+   else 0
+   wt <- if k + 32 < kk then cp-async-wait-one else cp-async-wait-all
+   b1 <- sync-threads
+   ab <- base + s * 15360 + wm * 32 * 80
+   bb <- base + s * 15360 + 10240 + wn * 64 * 80
+   la0 <- wmma-load-a-f16-shared 0 ab 40
+   la1 <- wmma-load-a-f16-shared 1 (ab + 1280) 40
+   lb0 <- wmma-load-b-col-f16-shared 0 bb 40
+   lb1 <- wmma-load-b-col-f16-shared 1 (bb + 1280) 40
+   lb2 <- wmma-load-b-col-f16-shared 2 (bb + 2560) 40
+   lb3 <- wmma-load-b-col-f16-shared 3 (bb + 3840) 40
+   m0 <- wmma-mma-rc-f32 0 0 0
+   m1 <- wmma-mma-rc-f32 1 0 1
+   m2 <- wmma-mma-rc-f32 2 0 2
+   m3 <- wmma-mma-rc-f32 3 0 3
+   m4 <- wmma-mma-rc-f32 4 1 0
+   m5 <- wmma-mma-rc-f32 5 1 1
+   m6 <- wmma-mma-rc-f32 6 1 2
+   m7 <- wmma-mma-rc-f32 7 1 3
+   ka0 <- wmma-load-a-f16-shared 0 (ab + 32) 40
+   ka1 <- wmma-load-a-f16-shared 1 (ab + 1312) 40
+   kb0 <- wmma-load-b-col-f16-shared 0 (bb + 32) 40
+   kb1 <- wmma-load-b-col-f16-shared 1 (bb + 1312) 40
+   kb2 <- wmma-load-b-col-f16-shared 2 (bb + 2592) 40
+   kb3 <- wmma-load-b-col-f16-shared 3 (bb + 3872) 40
+   n0 <- wmma-mma-rc-f32 0 0 0
+   n1 <- wmma-mma-rc-f32 1 0 1
+   n2 <- wmma-mma-rc-f32 2 0 2
+   n3 <- wmma-mma-rc-f32 3 0 3
+   n4 <- wmma-mma-rc-f32 4 1 0
+   n5 <- wmma-mma-rc-f32 5 1 1
+   n6 <- wmma-mma-rc-f32 6 1 2
+   n7 <- wmma-mma-rc-f32 7 1 3
+   b2 <- sync-threads
+   if k + 32 < kk then lf-linear-n64 x w b y mm nn kk (k + 32) (1 - s)
+   else act
+    st <- base + (tid / 32) * 1024
+    lane <- tid - (tid / 32) * 32
+    r0 <- by * 128 + wm * 32
+    c0 <- bx * 64 + wn * 64
+    e0 <- wmma-store-f32-shared 0 st 16
+    w0 <- sync-warp
+    o0 <- lf-out st y b mm nn r0 c0 lane 0
+    v0 <- sync-warp
+    e1 <- wmma-store-f32-shared 1 st 16
+    w1 <- sync-warp
+    o1 <- lf-out st y b mm nn r0 (c0 + 16) lane 0
+    v1 <- sync-warp
+    e2 <- wmma-store-f32-shared 2 st 16
+    w2 <- sync-warp
+    o2 <- lf-out st y b mm nn r0 (c0 + 32) lane 0
+    v2 <- sync-warp
+    e3 <- wmma-store-f32-shared 3 st 16
+    w3 <- sync-warp
+    o3 <- lf-out st y b mm nn r0 (c0 + 48) lane 0
+    v3 <- sync-warp
+    e4 <- wmma-store-f32-shared 4 st 16
+    w4 <- sync-warp
+    o4 <- lf-out st y b mm nn (r0 + 16) c0 lane 0
+    v4 <- sync-warp
+    e5 <- wmma-store-f32-shared 5 st 16
+    w5 <- sync-warp
+    o5 <- lf-out st y b mm nn (r0 + 16) (c0 + 16) lane 0
+    v5 <- sync-warp
+    e6 <- wmma-store-f32-shared 6 st 16
+    w6 <- sync-warp
+    o6 <- lf-out st y b mm nn (r0 + 16) (c0 + 32) lane 0
+    v6 <- sync-warp
+    e7 <- wmma-store-f32-shared 7 st 16
+    w7 <- sync-warp
+    lf-out st y b mm nn (r0 + 16) (c0 + 48) lane 0
+   end
+  end
+
+Section: Conv2d, Pipelined
+
+ kernel-conv2d-wmma's contract with cin a multiple of 32, a cout f32 bias
+ (0 for none), and two layouts made by the kernels below: the input xh is
+ h x wd x cin (NHWC) and the weights wp are cout x kh x kw x cin. y stays
+ cout x (oh ow). y = wp im2col^T, so M = cout and N = oh ow: the A tile is
+ weight rows and the B tile is im2col rows, each 16-byte chunk 8 channels
+ of one input pixel, zero outside the image. A K step of 32 never crosses
+ a filter tap, so the tap (ky, kx, ci) and each thread's two pixel origins
+ are carried through the tail call instead of divided out per step. The
+ tiling, the buffers and the launch are kernel-linear-fast's with a grid of
+ (ceil (oh ow / 128), ceil (cout / 128)) and the seven trailing arguments 0.
+
+  cf-load-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  cf-load-cols (dst) (xh) (cin) (h) (wd) (iy0) (ix0) (ky) (kx) (ci) (c) =
+    let row = c / 4
+    in let kc = (c - row * 4) * 8
+    in let iy = iy0 + ky
+    in let ix = ix0 + kx
+    in let ok = if iy >= 0 then
+      (if iy < h then (if ix >= 0 then (if ix < wd then 16 else 0) else 0) else 0)
+    else 0
+    in let from = if ok > 0 then xh + ((iy * wd + ix) * cin + ci + kc) * 2 else xh
+    in act
+     cp-async-16 (dst + row * 80 + kc * 2) from ok
+    end
+
+  cf-stage : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  cf-stage (buf) (xh) (wp) (cout) (kk) (cin) (h) (wd) (row0) (k0) (t) (ky) (kx) (ci) (ya) (xa) (yb) (xb) = act
+   a1 <- lf-load-rows buf wp cout kk row0 k0 t
+   a2 <- lf-load-rows buf wp cout kk row0 k0 (t + 256)
+   b1 <- cf-load-cols (buf + 10240) xh cin h wd ya xa ky kx ci t
+   b2 <- cf-load-cols (buf + 10240) xh cin h wd yb xb ky kx ci (t + 256)
+   cp-async-commit
+  end
+
+  cf-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  cf-out (st) (y) (b) (mm) (nn) (r0) (c0) (lane) (q) =
+    if q >= 8 then 0
+    else let e = lane + q * 32
+    in let m = r0 + e / 16
+    in let n = c0 + e - (e / 16) * 16
+    in act
+     v <- shared-load-u32 (st + e * 4)
+     s <- if m < mm then
+       (if n < nn then (if b == 0 then device-store-u32 (y + (m * nn + n) * 4) v else device-store-u32 (y + (m * nn + n) * 4) (f32-add-bits v (device-load-u32 (b + m * 4)))) else 0)
+     else 0
+     cf-out st y b mm nn r0 c0 lane (q + 1)
+    end
+
+  kernel-conv2d-fast : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-conv2d-fast (xh) (wp) (b) (y) (cin) (h) (wd) (cout) (kh) (kw) (stride) (pad) (oh) (ow) (k) (s) (ky) (kx) (ci) (ya) (xa) (yb) (xb) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   by <- block-idx-y
+   base <- shared-base
+   wm <- tid / 32 - (tid / 128) * 4
+   wn <- tid / 128
+   kk <- cin * kh * kw
+   na <- bx * 128 + tid / 4
+   nb <- na + 64
+   ya2 <- if k == 0 then (if na < oh * ow then (na / ow) * stride - pad else 0 - 1000000) else ya
+   xa2 <- if k == 0 then (na - (na / ow) * ow) * stride - pad else xa
+   yb2 <- if k == 0 then (if nb < oh * ow then (nb / ow) * stride - pad else 0 - 1000000) else yb
+   xb2 <- if k == 0 then (nb - (nb / ow) * ow) * stride - pad else xb
+   ci1 <- if k == 0 then (if 32 >= cin then 0 else 32) else ci
+   kx1 <- if k == 0 then (if 32 >= cin then (if 1 >= kw then 0 else 1) else 0) else kx
+   ky1 <- if k == 0 then (if 32 >= cin then (if 1 >= kw then 1 else 0) else 0) else ky
+   z0 <- if k == 0 then wmma-fill-f32 0 else 0
+   z1 <- if k == 0 then wmma-fill-f32 1 else 0
+   z2 <- if k == 0 then wmma-fill-f32 2 else 0
+   z3 <- if k == 0 then wmma-fill-f32 3 else 0
+   z4 <- if k == 0 then wmma-fill-f32 4 else 0
+   z5 <- if k == 0 then wmma-fill-f32 5 else 0
+   z6 <- if k == 0 then wmma-fill-f32 6 else 0
+   z7 <- if k == 0 then wmma-fill-f32 7 else 0
+   p0 <- if k == 0 then
+     cf-stage base xh wp cout kk cin h wd (by * 128) 0 tid 0 0 0 ya2 xa2 yb2 xb2
+   else 0
+   p1 <- if k + 32 < kk then
+     cf-stage (base + (1 - s) * 20480) xh wp cout kk cin h wd (by * 128) (k + 32) tid ky1 kx1 ci1 ya2 xa2 yb2 xb2
+   else 0
+   wt <- if k + 32 < kk then cp-async-wait-one else cp-async-wait-all
+   b1 <- sync-threads
+   ab <- base + s * 20480 + wm * 32 * 80
+   bb <- base + s * 20480 + 10240 + wn * 64 * 80
+   la0 <- wmma-load-a-f16-shared 0 ab 40
+   la1 <- wmma-load-a-f16-shared 1 (ab + 1280) 40
+   lb0 <- wmma-load-b-col-f16-shared 0 bb 40
+   lb1 <- wmma-load-b-col-f16-shared 1 (bb + 1280) 40
+   lb2 <- wmma-load-b-col-f16-shared 2 (bb + 2560) 40
+   lb3 <- wmma-load-b-col-f16-shared 3 (bb + 3840) 40
+   m0 <- wmma-mma-rc-f32 0 0 0
+   m1 <- wmma-mma-rc-f32 1 0 1
+   m2 <- wmma-mma-rc-f32 2 0 2
+   m3 <- wmma-mma-rc-f32 3 0 3
+   m4 <- wmma-mma-rc-f32 4 1 0
+   m5 <- wmma-mma-rc-f32 5 1 1
+   m6 <- wmma-mma-rc-f32 6 1 2
+   m7 <- wmma-mma-rc-f32 7 1 3
+   ka0 <- wmma-load-a-f16-shared 0 (ab + 32) 40
+   ka1 <- wmma-load-a-f16-shared 1 (ab + 1312) 40
+   kb0 <- wmma-load-b-col-f16-shared 0 (bb + 32) 40
+   kb1 <- wmma-load-b-col-f16-shared 1 (bb + 1312) 40
+   kb2 <- wmma-load-b-col-f16-shared 2 (bb + 2592) 40
+   kb3 <- wmma-load-b-col-f16-shared 3 (bb + 3872) 40
+   n0 <- wmma-mma-rc-f32 0 0 0
+   n1 <- wmma-mma-rc-f32 1 0 1
+   n2 <- wmma-mma-rc-f32 2 0 2
+   n3 <- wmma-mma-rc-f32 3 0 3
+   n4 <- wmma-mma-rc-f32 4 1 0
+   n5 <- wmma-mma-rc-f32 5 1 1
+   n6 <- wmma-mma-rc-f32 6 1 2
+   n7 <- wmma-mma-rc-f32 7 1 3
+   b2 <- sync-threads
+   if k + 32 < kk then
+     kernel-conv2d-fast xh wp b y cin h wd cout kh kw stride pad oh ow (k + 32) (1 - s) (if ci1 + 32 >= cin then (if kx1 + 1 >= kw then ky1 + 1 else ky1) else ky1) (if ci1 + 32 >= cin then (if kx1 + 1 >= kw then 0 else kx1 + 1) else kx1) (if ci1 + 32 >= cin then 0 else ci1 + 32) ya2 xa2 yb2 xb2
+   else act
+    st <- base + (tid / 32) * 1024
+    lane <- tid - (tid / 32) * 32
+    r0 <- by * 128 + wm * 32
+    c0 <- bx * 128 + wn * 64
+    np <- oh * ow
+    e0 <- wmma-store-f32-shared 0 st 16
+    w0 <- sync-warp
+    o0 <- cf-out st y b cout np r0 c0 lane 0
+    v0 <- sync-warp
+    e1 <- wmma-store-f32-shared 1 st 16
+    w1 <- sync-warp
+    o1 <- cf-out st y b cout np r0 (c0 + 16) lane 0
+    v1 <- sync-warp
+    e2 <- wmma-store-f32-shared 2 st 16
+    w2 <- sync-warp
+    o2 <- cf-out st y b cout np r0 (c0 + 32) lane 0
+    v2 <- sync-warp
+    e3 <- wmma-store-f32-shared 3 st 16
+    w3 <- sync-warp
+    o3 <- cf-out st y b cout np r0 (c0 + 48) lane 0
+    v3 <- sync-warp
+    e4 <- wmma-store-f32-shared 4 st 16
+    w4 <- sync-warp
+    o4 <- cf-out st y b cout np (r0 + 16) c0 lane 0
+    v4 <- sync-warp
+    e5 <- wmma-store-f32-shared 5 st 16
+    w5 <- sync-warp
+    o5 <- cf-out st y b cout np (r0 + 16) (c0 + 16) lane 0
+    v5 <- sync-warp
+    e6 <- wmma-store-f32-shared 6 st 16
+    w6 <- sync-warp
+    o6 <- cf-out st y b cout np (r0 + 16) (c0 + 32) lane 0
+    v6 <- sync-warp
+    e7 <- wmma-store-f32-shared 7 st 16
+    w7 <- sync-warp
+    cf-out st y b cout np (r0 + 16) (c0 + 48) lane 0
+   end
+  end
+
+ The two layouts kernel-conv2d-fast reads. x c x hw to hw x c goes through
+ a 32 x 32 tile in shared memory so both sides are read and written a row at
+ a time: launch with a grid of (ceil (hw / 32), ceil (c / 32)) blocks of 256
+ threads and 2176 bytes of shared memory; n is unused. A tile row is 34
+ halves, 17 words, so the 32 channels of one pixel fall in 32 banks. The
+ weights, cout x cin x kh x kw to cout x kh x kw x cin, go one f16 per thread
+ over n elements (blocks of 256).
+
+  nt-load : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  nt-load (sb) (x) (c) (hw) (c0) (p0) (t) (j) =
+    if j >= 4 then 0
+    else let r = t / 32 + j * 8
+    in let q = t - (t / 32) * 32
+    in act
+     v <- if c0 + r < c then
+       (if p0 + q < hw then device-load-u16 (x + ((c0 + r) * hw + p0 + q) * 2) else 0)
+     else 0
+     s <- shared-store-u16 (sb + (r * 34 + q) * 2) v
+     nt-load sb x c hw c0 p0 t (j + 1)
+    end
+
+  nt-store : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  nt-store (sb) (out) (c) (hw) (c0) (p0) (t) (j) =
+    if j >= 4 then 0
+    else let r = t / 32 + j * 8
+    in let q = t - (t / 32) * 32
+    in let e = q * 34 + r
+    in act
+     w <- shared-load-u32 (sb + (e / 2) * 4)
+     s <- if p0 + r < hw then
+       (if c0 + q < c then device-store-u16 (out + ((p0 + r) * c + c0 + q) * 2) (if e - (e / 2) * 2 == 0 then w - (w / 65536) * 65536 else w / 65536) else 0)
+     else 0
+     nt-store sb out c hw c0 p0 t (j + 1)
+    end
+
+  kernel-nchw-to-nhwc : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-nchw-to-nhwc (x) (out) (c) (hw) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   by <- block-idx-y
+   base <- shared-base
+   a <- nt-load base x c hw (by * 32) (bx * 32) tid 0
+   b <- sync-threads
+   nt-store base out c hw (by * 32) (bx * 32) tid 0
+  end
+
+  kernel-conv-weight-khwc : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-conv-weight-khwc (w) (out) (cin) (kh) (kw) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < n then act
+    v <- device-load-u16 (w + i * 2)
+    device-store-u16 (out + ((i / (cin * kh * kw) * kh * kw + (i - (i / (kh * kw)) * kh * kw)) * cin + (i / (kh * kw) - (i / (cin * kh * kw)) * cin)) * 2) v
+   end
+   else 0
+  end
+
+Section: Fused Attention
+
+ o = softmax (q k^T) v per 64-wide head, no score matrix in memory. q, k and
+ v are rows x ld f16, head h at column 64 h, q scaled by 0.125 log2 e so a
+ score is a base-two exponent; o is sq x ld f32, the same layout. A block owns
+ 64 query rows of one head, a warp 16 rows, a lane half a row. Pass 0 walks
+ the keys by 64 for each row's max and sum; pass 1 recomputes the scores and
+ accumulates p v in fragments 4-7, p = 2^(s - max - lg2 sum) as f16. Shared
+ memory: the K tile at 0 and the V tile at 9216 (64 rows of 144 bytes), then
+ 6656 bytes per warp: f32 scores (16 rows of 272) and f16 p (16 rows of 144),
+ which also stages the warp's q and the lanes' partial max and sum. Launch
+ with a grid of (ceil (sq / 64), heads) blocks of 128 threads and 45056 bytes
+ of shared memory. #FF800000 is f32 minus infinity.
+
+  fa-clamp : Integer -> Integer
+  fa-clamp (x) = if x < 0 then 0 else if x > 32 then 32 else x
+
+  fa-stage-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fa-stage-rows (dst) (src) (rows) (ld) (col) (row0) (t) (step) (j) =
+    if j >= 4 then 0
+    else let c = t + j * step
+    in let row = c / 8
+    in let part = c - row * 8
+    in let ok = if row0 + row < rows then 16 else 0
+    in let from = if ok > 0 then src + ((row0 + row) * ld + col + part * 8) * 2 else src
+    in act
+     s <- cp-async-16 (dst + row * 144 + part * 16) from ok
+     fa-stage-rows dst src rows ld col row0 t step (j + 1)
+    end
+
+  fa-max : Integer, Integer, Integer, Integer -> [Device] Integer
+  fa-max (row) (i) (n) (acc) =
+    if i >= n then acc
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     fa-max row (i + 1) n (f32-max-bits acc v)
+    end
+
+  fa-expsum : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fa-expsum (row) (i) (n) (m) (acc) =
+    if i >= n then acc
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     fa-expsum row (i + 1) n m (f32-add-bits acc (f32-ex2-bits (f32-sub-bits v m)))
+    end
+
+  fa-probs : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fa-probs (row) (prow) (i) (n) (m) =
+    if i >= 32 then 0
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     p <- if i < n then f32-to-f16-bits (f32-ex2-bits (f32-sub-bits v m)) else 0
+     s <- shared-store-u16 (prow + i * 2) p
+     fa-probs row prow (i + 1) n m
+    end
+
+  fa-out : Integer, Integer, Integer -> [Device] Integer
+  fa-out (row) (dst) (i) =
+    if i >= 32 then 0
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     s <- device-store-u32 (dst + i * 4) v
+     fa-out row dst (i + 1)
+    end
+
+  kernel-attention-fused : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-attention-fused (q) (k) (v) (o) (sq) (sk) (ld) = fa-run q k v o sq sk ld 0 0 #FF800000 0
+
+  fa-run : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fa-run (q) (k) (v) (o) (sq) (sk) (ld) (pass) (key0) (m) (l) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   by <- block-idx-y
+   base <- shared-base
+   lane <- tid - (tid / 32) * 32
+   r <- lane / 2
+   hh <- lane - (lane / 2) * 2
+   wb <- base + 18432 + (tid / 32) * 6656
+   pb <- wb + 4352
+   srow <- wb + r * 272 + hh * 128
+   col <- by * 64
+   q0 <- bx * 64 + (tid / 32) * 16
+   nv <- fa-clamp (sk - key0 - hh * 32)
+   first <- if pass == 0 then (if key0 == 0 then 1 else 0) else 0
+   sq1 <- if first == 1 then fa-stage-rows pb q sq ld col q0 lane 32 0 else 0
+   cq <- if first == 1 then cp-async-commit else 0
+   wq <- if first == 1 then cp-async-wait-all else 0
+   yq <- sync-warp
+   qa0 <- if first == 1 then wmma-load-a-f16-shared 0 pb 72 else 0
+   qa1 <- if first == 1 then wmma-load-a-f16-shared 1 (pb + 32) 72 else 0
+   qa2 <- if first == 1 then wmma-load-a-f16-shared 2 (pb + 64) 72 else 0
+   qa3 <- if first == 1 then wmma-load-a-f16-shared 3 (pb + 96) 72 else 0
+   ov0 <- if pass == 1 then (if key0 == 0 then wmma-fill-f32 4 else 0) else 0
+   ov1 <- if pass == 1 then (if key0 == 0 then wmma-fill-f32 5 else 0) else 0
+   ov2 <- if pass == 1 then (if key0 == 0 then wmma-fill-f32 6 else 0) else 0
+   ov3 <- if pass == 1 then (if key0 == 0 then wmma-fill-f32 7 else 0) else 0
+   b0 <- sync-threads
+   sk1 <- fa-stage-rows base k sk ld col key0 tid 128 0
+   sv1 <- if pass == 1 then fa-stage-rows (base + 9216) v sk ld col key0 tid 128 0 else 0
+   ck <- cp-async-commit
+   wk <- cp-async-wait-all
+   b1 <- sync-threads
+   z0 <- wmma-fill-f32 0
+   z1 <- wmma-fill-f32 1
+   z2 <- wmma-fill-f32 2
+   z3 <- wmma-fill-f32 3
+   ka0 <- wmma-load-b-col-f16-shared 0 base 72
+   ka1 <- wmma-load-b-col-f16-shared 1 (base + 32) 72
+   ka2 <- wmma-load-b-col-f16-shared 2 (base + 64) 72
+   ka3 <- wmma-load-b-col-f16-shared 3 (base + 96) 72
+   kb0 <- wmma-load-b-col-f16-shared 4 (base + 2304) 72
+   kb1 <- wmma-load-b-col-f16-shared 5 (base + 2336) 72
+   kb2 <- wmma-load-b-col-f16-shared 6 (base + 2368) 72
+   kb3 <- wmma-load-b-col-f16-shared 7 (base + 2400) 72
+   s00 <- wmma-mma-rc-f32 0 0 0
+   s01 <- wmma-mma-rc-f32 0 1 1
+   s02 <- wmma-mma-rc-f32 0 2 2
+   s03 <- wmma-mma-rc-f32 0 3 3
+   s10 <- wmma-mma-rc-f32 1 0 4
+   s11 <- wmma-mma-rc-f32 1 1 5
+   s12 <- wmma-mma-rc-f32 1 2 6
+   s13 <- wmma-mma-rc-f32 1 3 7
+   kc0 <- wmma-load-b-col-f16-shared 0 (base + 4608) 72
+   kc1 <- wmma-load-b-col-f16-shared 1 (base + 4640) 72
+   kc2 <- wmma-load-b-col-f16-shared 2 (base + 4672) 72
+   kc3 <- wmma-load-b-col-f16-shared 3 (base + 4704) 72
+   kd0 <- wmma-load-b-col-f16-shared 4 (base + 6912) 72
+   kd1 <- wmma-load-b-col-f16-shared 5 (base + 6944) 72
+   kd2 <- wmma-load-b-col-f16-shared 6 (base + 6976) 72
+   kd3 <- wmma-load-b-col-f16-shared 7 (base + 7008) 72
+   s20 <- wmma-mma-rc-f32 2 0 0
+   s21 <- wmma-mma-rc-f32 2 1 1
+   s22 <- wmma-mma-rc-f32 2 2 2
+   s23 <- wmma-mma-rc-f32 2 3 3
+   s30 <- wmma-mma-rc-f32 3 0 4
+   s31 <- wmma-mma-rc-f32 3 1 5
+   s32 <- wmma-mma-rc-f32 3 2 6
+   s33 <- wmma-mma-rc-f32 3 3 7
+   e0 <- wmma-store-f32-shared 0 wb 68
+   e1 <- wmma-store-f32-shared 1 (wb + 64) 68
+   e2 <- wmma-store-f32-shared 2 (wb + 128) 68
+   e3 <- wmma-store-f32-shared 3 (wb + 192) 68
+   y1 <- sync-warp
+   mx <- if pass == 0 then fa-max srow 0 nv #FF800000 else 0
+   x1 <- if pass == 0 then shared-store-u32 (pb + lane * 4) mx else 0
+   y2 <- sync-warp
+   pm <- shared-load-u32 (pb + (lane + 1 - hh * 2) * 4)
+   mn <- if pass == 0 then f32-max-bits m (f32-max-bits mx pm) else m
+   ps <- if pass == 0 then fa-expsum srow 0 nv mn 0 else 0
+   x2 <- if pass == 0 then shared-store-u32 (pb + 128 + lane * 4) ps else 0
+   y3 <- sync-warp
+   pp <- shared-load-u32 (pb + 128 + (lane + 1 - hh * 2) * 4)
+   ln <- if pass == 0 then
+     f32-add-bits (f32-mul-bits l (f32-ex2-bits (f32-sub-bits m mn))) (f32-add-bits ps pp)
+   else l
+   pw <- if pass == 1 then fa-probs srow (pb + r * 144 + hh * 64) 0 nv m else 0
+   y4 <- sync-warp
+   pa0 <- if pass == 1 then wmma-load-a-f16-shared 4 pb 72 else 0
+   pa1 <- if pass == 1 then wmma-load-a-f16-shared 5 (pb + 32) 72 else 0
+   pa2 <- if pass == 1 then wmma-load-a-f16-shared 6 (pb + 64) 72 else 0
+   pa3 <- if pass == 1 then wmma-load-a-f16-shared 7 (pb + 96) 72 else 0
+   va0 <- if pass == 1 then wmma-load-b-f16-shared 0 (base + 9216) 72 else 0
+   va1 <- if pass == 1 then wmma-load-b-f16-shared 1 (base + 11520) 72 else 0
+   va2 <- if pass == 1 then wmma-load-b-f16-shared 2 (base + 13824) 72 else 0
+   va3 <- if pass == 1 then wmma-load-b-f16-shared 3 (base + 16128) 72 else 0
+   vb0 <- if pass == 1 then wmma-load-b-f16-shared 4 (base + 9248) 72 else 0
+   vb1 <- if pass == 1 then wmma-load-b-f16-shared 5 (base + 11552) 72 else 0
+   vb2 <- if pass == 1 then wmma-load-b-f16-shared 6 (base + 13856) 72 else 0
+   vb3 <- if pass == 1 then wmma-load-b-f16-shared 7 (base + 16160) 72 else 0
+   p40 <- if pass == 1 then wmma-mma-f32 4 4 0 else 0
+   p41 <- if pass == 1 then wmma-mma-f32 4 5 1 else 0
+   p42 <- if pass == 1 then wmma-mma-f32 4 6 2 else 0
+   p43 <- if pass == 1 then wmma-mma-f32 4 7 3 else 0
+   p50 <- if pass == 1 then wmma-mma-f32 5 4 4 else 0
+   p51 <- if pass == 1 then wmma-mma-f32 5 5 5 else 0
+   p52 <- if pass == 1 then wmma-mma-f32 5 6 6 else 0
+   p53 <- if pass == 1 then wmma-mma-f32 5 7 7 else 0
+   vc0 <- if pass == 1 then wmma-load-b-f16-shared 0 (base + 9280) 72 else 0
+   vc1 <- if pass == 1 then wmma-load-b-f16-shared 1 (base + 11584) 72 else 0
+   vc2 <- if pass == 1 then wmma-load-b-f16-shared 2 (base + 13888) 72 else 0
+   vc3 <- if pass == 1 then wmma-load-b-f16-shared 3 (base + 16192) 72 else 0
+   vd0 <- if pass == 1 then wmma-load-b-f16-shared 4 (base + 9312) 72 else 0
+   vd1 <- if pass == 1 then wmma-load-b-f16-shared 5 (base + 11616) 72 else 0
+   vd2 <- if pass == 1 then wmma-load-b-f16-shared 6 (base + 13920) 72 else 0
+   vd3 <- if pass == 1 then wmma-load-b-f16-shared 7 (base + 16224) 72 else 0
+   p60 <- if pass == 1 then wmma-mma-f32 6 4 0 else 0
+   p61 <- if pass == 1 then wmma-mma-f32 6 5 1 else 0
+   p62 <- if pass == 1 then wmma-mma-f32 6 6 2 else 0
+   p63 <- if pass == 1 then wmma-mma-f32 6 7 3 else 0
+   p70 <- if pass == 1 then wmma-mma-f32 7 4 4 else 0
+   p71 <- if pass == 1 then wmma-mma-f32 7 5 5 else 0
+   p72 <- if pass == 1 then wmma-mma-f32 7 6 6 else 0
+   p73 <- if pass == 1 then wmma-mma-f32 7 7 7 else 0
+   if key0 + 64 < sk then fa-run q k v o sq sk ld pass (key0 + 64) mn ln
+   else if pass == 0 then fa-run q k v o sq sk ld 1 0 (f32-add-bits mn (f32-lg2-bits ln)) 0
+   else act
+    f4 <- wmma-store-f32-shared 4 wb 68
+    f5 <- wmma-store-f32-shared 5 (wb + 64) 68
+    f6 <- wmma-store-f32-shared 6 (wb + 128) 68
+    f7 <- wmma-store-f32-shared 7 (wb + 192) 68
+    y5 <- sync-warp
+    if q0 + r < sq then fa-out srow (o + ((q0 + r) * ld + col + hh * 32) * 4) 0 else 0
+   end
+  end
+
+ The same for 128-wide heads (Flux), scaled by 1/sqrt 128 log2 e. A block owns
+ 64 query rows and one 64-column half of one head's output: a grid of
+ (ceil (sq / 64), heads 2) blocks of 128 threads and 49152 bytes, the most
+ that keeps two blocks on an SM. One pass over the keys by 32 with a running
+ max and sum per row, so a lane owns 16 score columns; each warp keeps its q
+ in shared memory and reloads four A fragments at a time, the scores in C 0-1,
+ the output half in C 4-7, p in A 4-5. Shared memory: the K tile at 0 (32
+ rows of 272 bytes), the V half at 8704 (32 rows of 144), then 8960 bytes per
+ warp from 13312: q (16 rows of 272, which also carries the output out), f32
+ scores (16 rows of 144), f16 p (16 rows of 80) and 1024 bytes for the partial
+ max, sum and move flag; a rescale stores the output tile over scores, p and
+ flag (16 rows of 272).
+
+  fb-clamp : Integer -> Integer
+  fb-clamp (x) = if x < 0 then 0 else if x > 16 then 16 else x
+
+  fb-stage : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fb-stage (dst) (src) (rows) (ld) (col) (row0) (t) (step) (count) (cpr) (stride) (j) =
+    if j >= count then 0
+    else let c = t + j * step
+    in let row = c / cpr
+    in let part = c - row * cpr
+    in let ok = if row0 + row < rows then 16 else 0
+    in let from = if ok > 0 then src + ((row0 + row) * ld + col + part * 8) * 2 else src
+    in act
+     s <- cp-async-16 (dst + row * stride + part * 16) from ok
+     fb-stage dst src rows ld col row0 t step count cpr stride (j + 1)
+    end
+
+  fc-probs : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fc-probs (row) (prow) (i) (n) (m) (acc) =
+    if i >= 16 then acc
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     e <- if i < n then f32-ex2-bits (f32-sub-bits v m) else 0
+     s <- shared-store-u16 (prow + i * 2) (f32-to-f16-bits e)
+     fc-probs row prow (i + 1) n m (f32-add-bits acc e)
+    end
+
+  fc-scale : Integer, Integer, Integer -> [Device] Integer
+  fc-scale (row) (i) (al) =
+    if i >= 32 then 0
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     s <- shared-store-u32 (row + i * 4) (f32-mul-bits v al)
+     fc-scale row (i + 1) al
+    end
+
+  fc-out : Integer, Integer, Integer, Integer -> [Device] Integer
+  fc-out (row) (dst) (i) (inv) =
+    if i >= 32 then 0
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     s <- device-store-u32 (dst + i * 4) (f32-mul-bits v inv)
+     fc-out row dst (i + 1) inv
+    end
+
+ A row's running max moves only when the tile's max passes it by more than 8
+ (#41000000, 8.0 in f32), so p stays at most 2^8 in f16 and the output tile
+ is stored, rescaled and reloaded only on a move. Bits of 2^31 and above are
+ a negative f32.
+
+  kernel-attention-fused-128 : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-attention-fused-128 (q) (k) (v) (o) (sq) (sk) (ld) = fc-run q k v o sq sk ld 0 #FF800000 0
+
+  fc-run : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  fc-run (q) (k) (v) (o) (sq) (sk) (ld) (key0) (m) (l) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   by <- block-idx-y
+   base <- shared-base
+   head <- by / 2
+   half <- by - (by / 2) * 2
+   lane <- tid - (tid / 32) * 32
+   r <- lane / 2
+   hh <- lane - (lane / 2) * 2
+   wb <- base + 13312 + (tid / 32) * 8960
+   sb <- wb + 4352
+   pb <- wb + 6656
+   xb <- wb + 7936
+   srow <- sb + r * 144 + hh * 64
+   col <- head * 128
+   q0 <- bx * 64 + (tid / 32) * 16
+   nv <- fb-clamp (sk - key0 - hh * 16)
+   first <- if key0 == 0 then 1 else 0
+   sq1 <- if first == 1 then fb-stage wb q sq ld col q0 lane 32 8 16 272 0 else 0
+   cq <- if first == 1 then cp-async-commit else 0
+   wq <- if first == 1 then cp-async-wait-all else 0
+   yq <- sync-warp
+   ov0 <- if first == 1 then wmma-fill-f32 4 else 0
+   ov1 <- if first == 1 then wmma-fill-f32 5 else 0
+   ov2 <- if first == 1 then wmma-fill-f32 6 else 0
+   ov3 <- if first == 1 then wmma-fill-f32 7 else 0
+   b0 <- sync-threads
+   sk1 <- fb-stage base k sk ld col key0 tid 128 4 16 272 0
+   sv1 <- fb-stage (base + 8704) v sk ld (col + half * 64) key0 tid 128 2 8 144 0
+   ck <- cp-async-commit
+   wk <- cp-async-wait-all
+   b1 <- sync-threads
+   z0 <- wmma-fill-f32 0
+   z1 <- wmma-fill-f32 1
+   qa0 <- wmma-load-a-f16-shared 0 wb 136
+   qa1 <- wmma-load-a-f16-shared 1 (wb + 32) 136
+   qa2 <- wmma-load-a-f16-shared 2 (wb + 64) 136
+   qa3 <- wmma-load-a-f16-shared 3 (wb + 96) 136
+   ka0 <- wmma-load-b-col-f16-shared 0 base 136
+   ka1 <- wmma-load-b-col-f16-shared 1 (base + 32) 136
+   ka2 <- wmma-load-b-col-f16-shared 2 (base + 64) 136
+   ka3 <- wmma-load-b-col-f16-shared 3 (base + 96) 136
+   kb0 <- wmma-load-b-col-f16-shared 4 (base + 4352) 136
+   kb1 <- wmma-load-b-col-f16-shared 5 (base + 4384) 136
+   kb2 <- wmma-load-b-col-f16-shared 6 (base + 4416) 136
+   kb3 <- wmma-load-b-col-f16-shared 7 (base + 4448) 136
+   s00 <- wmma-mma-rc-f32 0 0 0
+   s01 <- wmma-mma-rc-f32 0 1 1
+   s02 <- wmma-mma-rc-f32 0 2 2
+   s03 <- wmma-mma-rc-f32 0 3 3
+   s10 <- wmma-mma-rc-f32 1 0 4
+   s11 <- wmma-mma-rc-f32 1 1 5
+   s12 <- wmma-mma-rc-f32 1 2 6
+   s13 <- wmma-mma-rc-f32 1 3 7
+   qb0 <- wmma-load-a-f16-shared 0 (wb + 128) 136
+   qb1 <- wmma-load-a-f16-shared 1 (wb + 160) 136
+   qb2 <- wmma-load-a-f16-shared 2 (wb + 192) 136
+   qb3 <- wmma-load-a-f16-shared 3 (wb + 224) 136
+   kc0 <- wmma-load-b-col-f16-shared 0 (base + 128) 136
+   kc1 <- wmma-load-b-col-f16-shared 1 (base + 160) 136
+   kc2 <- wmma-load-b-col-f16-shared 2 (base + 192) 136
+   kc3 <- wmma-load-b-col-f16-shared 3 (base + 224) 136
+   kd0 <- wmma-load-b-col-f16-shared 4 (base + 4480) 136
+   kd1 <- wmma-load-b-col-f16-shared 5 (base + 4512) 136
+   kd2 <- wmma-load-b-col-f16-shared 6 (base + 4544) 136
+   kd3 <- wmma-load-b-col-f16-shared 7 (base + 4576) 136
+   t00 <- wmma-mma-rc-f32 0 0 0
+   t01 <- wmma-mma-rc-f32 0 1 1
+   t02 <- wmma-mma-rc-f32 0 2 2
+   t03 <- wmma-mma-rc-f32 0 3 3
+   t10 <- wmma-mma-rc-f32 1 0 4
+   t11 <- wmma-mma-rc-f32 1 1 5
+   t12 <- wmma-mma-rc-f32 1 2 6
+   t13 <- wmma-mma-rc-f32 1 3 7
+   e0 <- wmma-store-f32-shared 0 sb 36
+   e1 <- wmma-store-f32-shared 1 (sb + 64) 36
+   fl <- if lane == 0 then shared-store-u32 (xb + 256) 0 else 0
+   y1 <- sync-warp
+   mx <- fa-max srow 0 nv #FF800000
+   x1 <- shared-store-u32 (xb + lane * 4) mx
+   y2 <- sync-warp
+   pm <- shared-load-u32 (xb + (lane + 1 - hh * 2) * 4)
+   mn <- f32-max-bits m (f32-max-bits mx pm)
+   d <- f32-sub-bits mn (f32-add-bits m #41000000)
+   up <- if d < 2147483648 then (if d > 0 then 1 else 0) else 0
+   mu <- if up == 1 then mn else m
+   al <- f32-ex2-bits (f32-sub-bits m mu)
+   ps <- fc-probs srow (pb + r * 80 + hh * 32) 0 nv mu 0
+   x2 <- shared-store-u32 (xb + 128 + lane * 4) ps
+   fu <- if up == 1 then shared-store-u32 (xb + 256) 1 else 0
+   y3 <- sync-warp
+   pp <- shared-load-u32 (xb + 128 + (lane + 1 - hh * 2) * 4)
+   need <- if first == 1 then 0 else shared-load-u32 (xb + 256)
+   ln <- f32-add-bits (f32-mul-bits l al) (f32-add-bits ps pp)
+   pa0 <- wmma-load-a-f16-shared 4 pb 40
+   pa1 <- wmma-load-a-f16-shared 5 (pb + 32) 40
+   y4 <- sync-warp
+   st4 <- if need == 1 then wmma-store-f32-shared 4 sb 68 else 0
+   st5 <- if need == 1 then wmma-store-f32-shared 5 (sb + 64) 68 else 0
+   st6 <- if need == 1 then wmma-store-f32-shared 6 (sb + 128) 68 else 0
+   st7 <- if need == 1 then wmma-store-f32-shared 7 (sb + 192) 68 else 0
+   y5 <- sync-warp
+   sc <- if need == 1 then fc-scale (sb + r * 272 + hh * 128) 0 al else 0
+   y6 <- sync-warp
+   lc4 <- if need == 1 then wmma-load-c-f32-shared 4 sb 68 else 0
+   lc5 <- if need == 1 then wmma-load-c-f32-shared 5 (sb + 64) 68 else 0
+   lc6 <- if need == 1 then wmma-load-c-f32-shared 6 (sb + 128) 68 else 0
+   lc7 <- if need == 1 then wmma-load-c-f32-shared 7 (sb + 192) 68 else 0
+   va0 <- wmma-load-b-f16-shared 0 (base + 8704) 72
+   va1 <- wmma-load-b-f16-shared 1 (base + 11008) 72
+   va2 <- wmma-load-b-f16-shared 2 (base + 8736) 72
+   va3 <- wmma-load-b-f16-shared 3 (base + 11040) 72
+   va4 <- wmma-load-b-f16-shared 4 (base + 8768) 72
+   va5 <- wmma-load-b-f16-shared 5 (base + 11072) 72
+   va6 <- wmma-load-b-f16-shared 6 (base + 8800) 72
+   va7 <- wmma-load-b-f16-shared 7 (base + 11104) 72
+   p40 <- wmma-mma-f32 4 4 0
+   p41 <- wmma-mma-f32 4 5 1
+   p50 <- wmma-mma-f32 5 4 2
+   p51 <- wmma-mma-f32 5 5 3
+   p60 <- wmma-mma-f32 6 4 4
+   p61 <- wmma-mma-f32 6 5 5
+   p70 <- wmma-mma-f32 7 4 6
+   p71 <- wmma-mma-f32 7 5 7
+   if key0 + 32 < sk then fc-run q k v o sq sk ld (key0 + 32) mu ln
+   else act
+    f4 <- wmma-store-f32-shared 4 wb 68
+    f5 <- wmma-store-f32-shared 5 (wb + 64) 68
+    f6 <- wmma-store-f32-shared 6 (wb + 128) 68
+    f7 <- wmma-store-f32-shared 7 (wb + 192) 68
+    y7 <- sync-warp
+    inv <- f32-ex2-bits (f32-sub-bits 0 (f32-lg2-bits ln))
+    if q0 + r < sq then
+      fc-out (wb + r * 272 + hh * 128) (o + ((q0 + r) * ld + col + half * 64 + hh * 32) * 4) 0 inv
+    else 0
+   end
+  end
+
+Page 1

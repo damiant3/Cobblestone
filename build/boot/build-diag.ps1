@@ -39,7 +39,20 @@ param(
     # one-off only. The shipping image uses the checked-in default cfg, never
     # this: an override the routine path takes stops being a signal, which is
     # how `flash-usb.ps1 -Rehearsed` came to certify nothing for a week.
-    [switch]$AllowUnnamedStages
+    [switch]$AllowUnnamedStages,
+    # A second boot on the same stick: an EFI application laid on the ESP as
+    # DESK.EFI, which the stub chain-loads when the operator holds -ChainKey
+    # through the first -ChainWindowMs (cdx-to-pe -ChainFile). -ChainExtra adds
+    # its files as build-img -Extra entries; -Seed, -Source, -Identity and -Font
+    # pass through to build-img for the files it names itself.
+    [string]$ChainEfi = '',
+    [string]$ChainKey = 'd',
+    [int]$ChainWindowMs = 3000,
+    [string]$ChainExtra = '',
+    [string]$Seed = '',
+    [string]$Source = '',
+    [string]$Identity = '',
+    [string]$Font = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -205,7 +218,12 @@ if ($StdinCfg) { $stdin += ($StdinCfg -replace '\r', '') + "`n" }
 if ([Text.Encoding]::ASCII.GetByteCount($stdin) -gt 120) { throw "-StdinCfg too long: the ring holds 120 bytes and the id and kernel lines take $([Text.Encoding]::ASCII.GetByteCount("id $id`nkernel $kernelDigest`n"))" }
 
 Write-Host "[diag] id=$id kernel=$kernelDigest"
-& pwsh -NoProfile -File (Join-Path $repo 'build/cdx-to-pe.ps1') -CdxInput $cdxOut -Out $peOut -HeapPages $AllocPages -ExitBootServices -Stdin $stdin
+$chainArgs = @()
+if ($ChainEfi) {
+    if (-not (Test-Path -PathType Leaf $ChainEfi)) { throw "-ChainEfi not found: $ChainEfi" }
+    $chainArgs = @('-ChainFile', '\DESK.EFI', '-ChainKey', $ChainKey, '-ChainWindowMs', "$ChainWindowMs")
+}
+& pwsh -NoProfile -File (Join-Path $repo 'build/cdx-to-pe.ps1') -CdxInput $cdxOut -Out $peOut -HeapPages $AllocPages -ExitBootServices -Stdin $stdin @chainArgs
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $peOut)) { throw "PE conversion failed" }
 
 [IO.File]::WriteAllText($idFile, $id, [Text.ASCIIEncoding]::new())
@@ -252,13 +270,24 @@ $rcpLines = @(
     "cfg=$Cfg",
     "diag-src-cl=$srcCl"
 )
+if ($ChainEfi) {
+    $rcpLines += @("chain-efi-sha256=$((Get-FileHash $ChainEfi -Algorithm SHA256).Hash)", "chain-key=$ChainKey", "chain-window-ms=$ChainWindowMs")
+}
 [IO.File]::WriteAllText($rcpFile, ($rcpLines -join "`n") + "`n", [Text.ASCIIEncoding]::new())
 $extra = @("DIAG.ID=$idFile", "DIAG.RCP=$rcpFile", "GUEST.CDX=$guestOut")
 if ($Cfg) {
     if (-not (Test-Path -PathType Leaf $Cfg)) { throw "-Cfg not found: $Cfg" }
     $extra += "DIAG.CFG=$((Resolve-Path $Cfg).Path)"
 }
-& pwsh -NoProfile -File (Join-Path $repo 'build/build-img.ps1') -PeInput $peOut -Out $outAbs -TotalSectors $TotalSectors -Extra ($extra -join ';')
+$imgArgs = @()
+if ($ChainEfi) {
+    $extra += "DESK.EFI=$((Resolve-Path $ChainEfi).Path)"
+    if ($ChainExtra) { $extra += @($ChainExtra -split ';' | Where-Object { $_ }) }
+}
+foreach ($p in @(@('Seed', $Seed), @('Source', $Source), @('Identity', $Identity), @('Font', $Font))) {
+    if ($p[1]) { $imgArgs += @("-$($p[0])", (Resolve-Path $p[1]).Path) }
+}
+& pwsh -NoProfile -File (Join-Path $repo 'build/build-img.ps1') -PeInput $peOut -Out $outAbs -TotalSectors $TotalSectors -Extra ($extra -join ';') @imgArgs
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $outAbs)) { throw "build-img failed" }
 
 # WHICH INSTRUMENTS ABOARD ARE ACTUALLY SWITCHED ON.

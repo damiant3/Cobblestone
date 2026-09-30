@@ -112,8 +112,12 @@ Section: Publishing
   mqtt-ep-publish (ep) (topic) (payload) (qos) (now) =
     if ep.me-state /= mqtt-st-ready then mqtt-ep-idle ep
     else if ep.me-acked == False then mqtt-ep-idle ep
-    else if mqtt-qos-value qos == 0
-    then MqttEpStep { ms-ep = ep, ms-out = [mqtt-build-publish topic payload qos False 0], ms-consumed = 0 }
+    else if mqtt-qos-value qos == 0 then
+      MqttEpStep {
+        ms-ep = ep,
+        ms-out = [mqtt-build-publish topic payload qos False 0],
+        ms-consumed = 0
+      }
     else let pid = ep.me-next-id
     in let pkt = mqtt-build-publish topic payload qos False pid
     in let phase = if mqtt-qos-value qos == 1 then mqtt-ph-puback else mqtt-ph-pubrec
@@ -207,7 +211,11 @@ Section: Receiving
   mqtt-ep-on-pubrel : MqttEp, MqttPacket -> MqttEpStep
   mqtt-ep-on-pubrel (ep) (p) =
     let id = mqtt-ack-id p
-    in MqttEpStep { ms-ep = __record-set ep "me-in-rec-id" (-1), ms-out = [mqtt-build-pubcomp id], ms-consumed = 0 }
+    in MqttEpStep {
+      ms-ep = __record-set ep "me-in-rec-id" (-1),
+      ms-out = [mqtt-build-pubcomp id],
+      ms-consumed = 0
+    }
 
  An inbound PUBLISH is the delivery a subscription exists for. At QoS 1
  it is acknowledged; unacknowledged, a broker redelivers it forever, which
@@ -218,8 +226,8 @@ Section: Receiving
     let b1 = __record-set ep "me-in-topic" (mqtt-publish-topic p)
     in let b2 = __record-set b1 "me-in-payload" (mqtt-publish-payload p)
     in let ep2 = __record-set b2 "me-in-count" ((ep.me-in-count) + 1)
-    in if mqtt-publish-qos p == 1
-    then MqttEpStep { ms-ep = ep2, ms-out = [mqtt-build-puback (mqtt-publish-id p)], ms-consumed = 0 }
+    in if mqtt-publish-qos p == 1 then
+      MqttEpStep { ms-ep = ep2, ms-out = [mqtt-build-puback (mqtt-publish-id p)], ms-consumed = 0 }
     else if mqtt-publish-qos p == 2
     then MqttEpStep { ms-ep = __record-set ep2 "me-in-rec-id" (mqtt-publish-id p),
                       ms-out = [mqtt-build-pubrec (mqtt-publish-id p)], ms-consumed = 0 }
@@ -237,8 +245,11 @@ Section: Retransmission and Keepalive
   mqtt-ep-tick (ep) (now) =
     if ep.me-acked then mqtt-ep-idle ep
     else if now < ep.me-pending-deadline then mqtt-ep-idle ep
-    else if ep.me-retries >= mqtt-max-retransmit then mqtt-ep-idle (__record-set ep "me-state" mqtt-st-failed)
-    else let again = if ep.me-phase == mqtt-ph-pubcomp then ep.me-pending-packet else mqtt-set-dup (ep.me-pending-packet)
+    else if ep.me-retries >= mqtt-max-retransmit then
+      mqtt-ep-idle (__record-set ep "me-state" mqtt-st-failed)
+    else let again = if ep.me-phase == mqtt-ph-pubcomp then
+      ep.me-pending-packet
+    else mqtt-set-dup (ep.me-pending-packet)
     in let ep2 = __record-set (__record-set ep "me-retries" ((ep.me-retries) + 1)) "me-pending-deadline" (now + mqtt-ack-timeout)
     in MqttEpStep { ms-ep = ep2, ms-out = [again], ms-consumed = 0 }
 

@@ -454,6 +454,89 @@ console.log(`pk-verify ${wasmPath}`);
        .map(([k, v]) => `${k}:${v}`).join(' '));
 }
 
+// -- RULES: whole hands decide ties, and the table's betting ---------------
+// pagat's five-card draw (https://www.pagat.com/poker/variants/5draw.html),
+// as Poker.codex states it. A card is suit 13 + rank, rank 0 the two, 12 the ace.
+{
+  // An independent evaluator: category, then every rank, the most numerous
+  // first and the higher first within a count; the wheel's ace counts low.
+  const evalHand = cs => {
+    const rs = cs.map(c => c % 13), ss = cs.map(c => Math.floor(c / 13));
+    const cnt = new Map(); rs.forEach(r => cnt.set(r, (cnt.get(r) || 0) + 1));
+    const groups = [...cnt.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0]);
+    const flush = ss.every(s => s === ss[0]);
+    const u = [...new Set(rs)].sort((a, b) => b - a);
+    const wheel = u.join() === '12,3,2,1,0';
+    const straight = u.length === 5 && (u[0] - u[4] === 4 || wheel);
+    const key = wheel ? [3, 2, 1, 0, -1] : groups.flatMap(([r, n]) => Array(n).fill(r));
+    const shape = groups.map(g => g[1]).join('');
+    const cat = straight && flush ? 8 : shape === '41' ? 7 : shape === '32' ? 6 : flush ? 5 : straight ? 4
+      : shape === '311' ? 3 : shape === '221' ? 2 : shape === '2111' ? 1 : 0;
+    return [cat, ...key];
+  };
+  const cmpOracle = (a, b) => { const x = evalHand(a), y = evalHand(b); for (let i = 0; i < x.length; i++) { if (x[i] > y[i]) return 1; if (x[i] < y[i]) return 2; } return 0; };
+  const hand = cs => e.pk_hand(...cs);
+  let seed = 12345;
+  const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const deal = () => { const d = [...Array(52).keys()]; for (let i = 51; i > 0; i--) { const j = rnd(i + 1); [d[i], d[j]] = [d[j], d[i]]; } return [d.slice(0, 5), d.slice(5, 10)]; };
+  const bad = []; let byKickers = 0, ties = 0;
+  for (let n = 0; n < 4000; n++) {
+    let [a, b] = deal();
+    // Every fourth pair shares a category and its top ranks, so the kickers decide.
+    if (n % 4 === 0) { const base = a.slice(0, 4); b = [...base.map(c => (c + 13) % 52), b[4]]; if (new Set([...a, ...b]).size < 10) continue; }
+    const want = cmpOracle(a, b), got = e.pk_cmp(hand(a), hand(b));
+    if (got !== want && bad.length < 3) bad.push(`${a} vs ${b}: engine ${got}, rules ${want}`);
+    const ea = evalHand(a), eb = evalHand(b);
+    if (ea[0] === eb[0] && ea[1] === eb[1] && want !== 0) byKickers++;
+    if (want === 0) ties++;
+  }
+  ok('every showdown is decided on the whole hand, kickers included, as an independent evaluator decides it',
+     bad.length === 0, bad.join('; ') || `4000 pairs, ${byKickers} decided below the top rank, ${ties} exact ties`);
+  ok('control: pairs were decided by kickers and exact ties occurred', byKickers > 100 && ties > 0, `${byKickers}, ${ties}`);
+  const C = (r, s) => s * 13 + r;
+  ok('a pair of kings with an ace kicker beats the same pair with a queen',
+     e.pk_cmp(hand([C(11, 0), C(11, 1), C(12, 2), C(4, 3), C(2, 0)]), hand([C(11, 2), C(11, 3), C(10, 0), C(4, 1), C(2, 1)])) === 1);
+  ok('a flush is compared on all five cards: A K Q J 9 beats A K Q J 8',
+     e.pk_cmp(hand([C(12, 0), C(11, 0), C(10, 0), C(9, 0), C(7, 0)]), hand([C(12, 1), C(11, 1), C(10, 1), C(9, 1), C(6, 1)])) === 1);
+  // Betting: seat 0 is left of the dealer. 0 fold, 1 call or check, 2 bet or raise.
+  const A = (h, who, a) => e.pkt_act(h, who, a);
+  {
+    let h = e.pkt_new(3);
+    h = A(h, 0, 2); const bet = e.pkt_bet(h, 0);
+    h = A(h, 1, 2); h = A(h, 0, 2); h = A(h, 1, 2);
+    ok('before the draw a bet is ten, and a round allows one bet and three raises',
+       bet === 10 && e.pkt_bet(h, 1) === 40 && e.pkt_canraise(h) === 0 && e.pkt_cancall(h) === 1,
+       `first bet ${bet}, stakes ${e.pkt_bet(h, 0)}/${e.pkt_bet(h, 1)}, raise ${e.pkt_canraise(h)}`);
+  }
+  {
+    // A check is not a bet: check, bet, raise, raise is three bets, so a
+    // third raise is still open. A cap on actions would have closed it.
+    let h = A(A(A(A(e.pkt_new(3), 0, 1), 1, 2), 0, 2), 1, 2);
+    ok('the cap counts bets and raises, not checks: after check, bet, raise, raise one raise remains',
+       e.pkt_canraise(h) === 1 && e.pkt_bet(h, 1) === 30, `raise ${e.pkt_canraise(h)}, stake ${e.pkt_bet(h, 1)}`);
+  }
+  const toSecond = (h) => { h = e.pkt_draw(h); for (let k = 0; k < 4 && e.pkt_stage(h) === 1; k++) h = e.pkt_step(h); return h; };
+  {
+    let h = A(A(A(e.pkt_new(3), 0, 1), 1, 2), 0, 1);
+    const drawFirst = e.pkt_stage(h) === 1 && e.pkt_cur(h) === 0;
+    h = toSecond(h);
+    ok('seat 0 checks and seat 1 opens: the draw starts at seat 0 and the second round at the opener, seat 1',
+       drawFirst && e.pkt_stage(h) === 2 && e.pkt_cur(h) === 1, `stage ${e.pkt_stage(h)}, cur ${e.pkt_cur(h)}`);
+    const r = A(h, 1, 2);
+    ok('after the draw a bet is twenty', e.pkt_bet(r, 1) === 20, `${e.pkt_bet(r, 1)}`);
+  }
+  {
+    const h = toSecond(A(A(e.pkt_new(3), 0, 2), 1, 1));
+    ok('control: when seat 0 opens, seat 0 starts the second round', e.pkt_stage(h) === 2 && e.pkt_cur(h) === 0, `cur ${e.pkt_cur(h)}`);
+  }
+  {
+    let h = A(A(e.pkt_new(3), 0, 1), 1, 1);
+    h = e.pkt_mark(e.pkt_mark(e.pkt_mark(h, 0), 1), 2);
+    const four = e.pkt_mark(h, 3);
+    ok('at most three cards may be discarded', e.pkt_stage(h) === 1 && e.pkt_marks(h) === 3 && e.pkt_canmark(h, 3) === 0 && e.pkt_marks(four) === 3,
+       `stage ${e.pkt_stage(h)}, marks ${e.pkt_marks(h)}`);
+  }
+}
 console.log(fail === 0
   ? `\nPASS: Poker classifies hands by the rules (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

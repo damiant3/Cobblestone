@@ -1,0 +1,61 @@
+Chapter: DiffusionSamplerTable
+  cites Diffusion chapter Txt2Img
+  cites Diffusion chapter Sampler
+  cites Foreword chapter StringUtils
+  cites Foreword chapter Console
+
+ Txt2Img's sampler and schedule labels, Automatic schedules, discarded
+ sigmas and timestep samplers against Forge's own tables, which
+ build/sampler-table-oracle.py reads from Forge's source and prints as the two
+ lists below. The control grades a dispatch that discards no sigma.
+
+ We say:
+
+Section: Forge
+
+  forge-schedulers : List Text = ["Automatic", "Uniform", "Karras", "Exponential", "Polyexponential", "SGM Uniform", "KL Optimal", "Align Your Steps", "Simple", "Normal", "DDIM", "Beta", "Turbo", "Align Your Steps GITS", "Align Your Steps 11", "Align Your Steps 32"]
+
+  forge-samplers : List Text = ["DPM++ 2M|Karras|k|0", "DPM++ SDE|Karras|k|0", "DPM++ 2M SDE|Exponential|k|0", "DPM++ 2M SDE Heun|Exponential|k|0", "DPM++ 2S a|Karras|k|0", "DPM++ 3M SDE|Exponential|k|1", "Euler a|Uniform|k|0", "Euler|Uniform|k|0", "LMS|Uniform|k|0", "Heun|Uniform|k|0", "DPM2|Karras|k|1", "DPM2 a|Karras|k|1", "DPM fast|Uniform|k|0", "DPM adaptive|Uniform|k|0", "Restart|Karras|k|0", "HeunPP2|Uniform|k|0", "IPNDM|Uniform|k|0", "IPNDM_V|Uniform|k|0", "DEIS|Uniform|k|0", "DDIM|none|t|0", "DDIM CFG++|none|t|0", "PLMS|none|t|0", "UniPC|none|t|0", "LCM|LCM|l|0", "DDPM|Uniform|a|0"]
+
+Section: Grading
+
+  ours : Integer, (Integer -> Boolean) -> Text
+  ours (s) (discards) =
+    if s < 0 then "missing"
+    else let sched = if ti-timestep-sampler s then "none" else if s == ti-lcm then "LCM" else list-at ti-scheduler-names (ti-auto-schedule s)
+    in let kind = if ti-timestep-sampler s then "t" else if s == ti-lcm then "l" else if s == 24 then "a" else "k"
+    in list-at ti-sampler-names s & "|" & sched & "|" & kind & "|" & (if discards s then "1" else "0")
+
+  misses : (Integer -> Boolean), Integer, List Text -> List Text
+  misses (discards) (i) (acc) =
+    if i >= list-length forge-samplers then acc
+    else let row = list-at forge-samplers i
+    in let label = list-at (text-split row "|") 0
+    in let got = ours (ti-name-index ti-sampler-names label 0) discards
+    in misses discards (i + 1) (if got == row then acc else list-push acc (row & " got " & got))
+
+  same-list : List Text, List Text, Integer -> Boolean
+  same-list (a) (b) (i) = if i >= list-length a then list-length a == list-length b else if i >= list-length b then False else if list-at a i /= list-at b i then False else same-list a b (i + 1)
+
+  same-reals : List Real, List Real, Integer -> Boolean
+  same-reals (a) (b) (i) = if i >= list-length a then list-length a == list-length b else if i >= list-length b then False else if list-at a i /= list-at b i then False else same-reals a b (i + 1)
+
+ DPM2 at 6 steps is Karras at 7 without its next-to-last sigma.
+
+  dropped : Integer -> Boolean
+  dropped (z) =
+    let k = sdxl-karras-sigmas 7
+    in same-reals (ti-sigmas 10 0 6 False) [list-at k 0, list-at k 1, list-at k 2, list-at k 3, list-at k 4, list-at k 5, list-at k 7] 0
+
+  report : List Text, Integer, Text -> Text
+  report (ms) (i) (acc) = if i >= list-length ms then acc else report ms (i + 1) (acc & "\n  " & list-at ms i)
+
+  opening : [Console] Integer
+  opening = act
+    print-line-uni ("samplers: " & show (list-length ti-sampler-names) & " ours, " & show (list-length forge-samplers) & " Forge's")
+    print-line-uni ("schedule labels in Forge's order: " & (if same-list ti-scheduler-names forge-schedulers 0 then "yes" else "NO"))
+    print-line-uni ("sampler rows differing: " & show (list-length (misses ti-discards 0 [])) & report (misses ti-discards 0 []) 0 "")
+    print-line-uni ("DPM2 drops the next-to-last sigma: " & (if dropped 0 then "yes" else "NO"))
+    print-line-uni ("control, no sigma discarded: " & show (list-length (misses (\s -> False) 0 [])) & " rows differ")
+    let r = 0 in r
+  end

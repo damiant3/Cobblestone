@@ -29,13 +29,58 @@ count does.
 
 ## Done
 
-### Update 64 -- a second release on one day killed the box sampler at launch
+### Update 65 -- the full gate's reds past its preflight were the bed, not the compiler
+
+Five, all fixed at step 0b, 2026-09-30. First, `build.ps1`'s clean phase kept
+only the `diffusion-models` junction and deleted the other five model roots, so
+every GPU subject naming them failed "no output" (main 32407). Second, a rename
+in WebRuntime (30135) missed `CreationsApp`'s three callers, seen only by the
+full app sweep (32429). Third, `diffusion-layout` reaches the GPU bridge through
+a cited chapter and trapped under wasmtime (32432, plugs 2.109). Fourth,
+`wasm-e2e` decoded wasmtime's stdout as ibm437 in a detached pwsh, so two
+non-ASCII subjects failed on every gate launched in the background (32438).
+Fifth, GPU subjects fanned out over one GPU exceed the 60 s budget
+(`Build.md`, "Open, unowned"). Before a release gate, check the junctions and
+re-run any GPU wall-budget red alone:
+
+```powershell
+Get-ChildItem build-output -Filter 'diffusion-*' | Select-Object Name, LinkType, Target
+build/bvt.ps1 -CodexCdx build/output/Sut.cdx -Jobs 1 -SubjectsFile <the reds, one path a line>
+```
+
+### Update 65 -- the gate's own archives failed its preflight, and annotations outlived their functions
+
+Two preflight reds at step 0b, 2026-09-30, neither a code defect. First,
+`check-annotation-targets`: three Magic annotations named functions the
+chapters had removed weeks earlier (`trample-over`, `legal-rows`,
+`has-destroy-artifact-effect`), and no lane gate runs that check; each was
+retargeted or deleted by what its body still claimed (main 32390). Second,
+`check-cite-names` failed on twelve stale concatenated units in
+`build/output-<stamp>/`, which `build.ps1`'s clean phase creates by renaming
+the previous `build/output`: the checker excluded `build/output/` only, so
+any workspace that has run the full gate twice fails it. The exclusion now
+covers the archives. Third, `check-builtin-alloc` refused: the code-layout
+pass (main 32239) put each `BuiltinSpec` field on its own line, the check read
+rows one line at a time, and it found no `fixed` row; its 13 pinned emitter
+bodies had moved too, identical once whitespace is removed, so they were
+re-pinned. The parser now carries the name to the `bs-alloc` that follows.
+Every one of the three is a check only the full gate runs. Before the gate in
+a release workspace, run the preflight checks alone, each a few seconds:
+
+```powershell
+pwsh build/check-annotation-targets.ps1; pwsh build/check-cite-names.ps1
+pwsh build/check-builtin-alloc.ps1; pwsh build/check-plug-types.ps1
+```
+
+### Update 64 -- a second release on one day left the box sampler writing nothing
 
 Step 0a named its output `box-release-<date>.csv`. Update 63 had shipped
-that morning, so the name was Update 63's submitted, read-only record; the
-sampler exited on its first write and nothing said so, and the gate, battery,
-sweep, poison battery and DDC ran unsampled. The skill's command now names
-the Update number (`box-release-<date>-u<N>.csv`). After launching, check the
+that morning, so the name was Update 63's submitted, read-only record. The
+sampler kept running for the whole release while every write failed, because
+`build/box-sample.ps1` wraps each `Add-Content` in `try { } catch {}`, and
+the gate, battery, sweep, poison battery and DDC ran unsampled. The skill's command now names
+the Update number (`box-release-<date>-u<N>.csv`), and `box-sample.ps1` refuses an existing
+`-Out` and stops after three failed writes in a row. After launching, check the
 file grows:
 
 ```powershell
@@ -72,7 +117,7 @@ run on x86-64, a new `*.ps1`, or a parser rule that refuses more gets:
 ```powershell
 build/check-test-compile.ps1 -Full -Kernel <candidate.cdx> -Ways 4
 pwsh build/checks/tool-catalog.ps1 -Repo (Get-Location).Path
-build/sweep-app-classes.ps1 -Check -Jobs 4 -Kernel <candidate.cdx>
+build/sweep-app-classes.ps1 -Check -Jobs 16 -Kernel <candidate.cdx>
 ```
 
 The battery then found `-Prose` mode silently skipping the CDX1101 prose
@@ -109,9 +154,9 @@ batch cap: the same shape as Update 60's timeout. Read the admission line; at
 one slot, run the battery as tier groups whose union is `-Tier all`:
 
 ```powershell
-build/test.ps1 -Tier lang -Jobs 4 -ApprovedBy damian
-build/test.ps1 -Tier lib,fw,oracles -Jobs 4 -ApprovedBy damian
-build/test.ps1 -Tier apps,hardware,traps,slow -Jobs 4 -ApprovedBy damian
+build/test.ps1 -Tier lang -Jobs 16 -ApprovedBy damian
+build/test.ps1 -Tier lib,fw,oracles -Jobs 16 -ApprovedBy damian
+build/test.ps1 -Tier apps,hardware,traps,slow -Jobs 16 -ApprovedBy damian
 ```
 
 ### Update 62 -- a library signature change broke the diag stick, and only the release builds it

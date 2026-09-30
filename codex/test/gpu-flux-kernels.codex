@@ -1,0 +1,340 @@
+Chapter: GpuFluxKernels
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter LayerKernelsPtx
+  cites Gpu chapter DeviceMath
+  cites Foreword chapter Console
+
+ LayerKernels' Flux section against f64 references here. Inputs are multiples
+ of 1/64 in [-2, 2), exact in f32. Each arm's sabotage is the plausible wrong
+ kernel: the erf GELU for the tanh one, centred statistics for RMSNorm, scale
+ and shift swapped, the gate broadcast one column short, RoPE at the wrong
+ column offset (the columns before the offset must come back untouched), and
+ unpatchify with h and w exchanged.
+
+ We say:
+
+Section: f32 Words
+
+  f32-bits : Real -> Integer
+  f32-bits (x) =
+    if real-to-bits x == 0 then 0
+    else let b = real-to-bits x
+    in let s = bit-and (bit-shru b 63) 1
+    in let e = bit-and (bit-shru b 52) 2047
+    in bit-or (bit-shl s 31) (bit-or (bit-shl (e - 896) 23) (bit-and (bit-shru b 29) #7FFFFF))
+
+  f32-real : Integer -> Real
+  f32-real (w) =
+    let s = bit-and (bit-shru w 31) 1
+    in let e = bit-and (bit-shru w 23) 255
+    in let m = bit-and w #7FFFFF
+    in if e == 255 then bits-to-real #7FF8000000000000
+    else if e == 0 then (if s == 1 then 0.0 - 1.0 else 1.0) * real-from-int m * bits-to-real (bit-shl 874 52)
+    else bits-to-real (bit-or (bit-shl s 63) (bit-or (bit-shl (e + 896) 52) (bit-shl m 29)))
+
+Section: Buffers
+
+  scratch : Integer = #BD700000
+
+  put-reals : List Real, Integer -> Integer
+  put-reals (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = poke-32 scratch (i * 4) (f32-bits (list-at xs i))
+    in put-reals xs (i + 1)
+
+  upload : List Real -> Integer
+  upload (xs) =
+    let h = gpu-buf-alloc (list-length xs * 4)
+    in let w = put-reals xs 0
+    in if h == 0 then 0
+    else if gpu-buf-write h 0 (list-length xs * 4) scratch then h
+    else 0
+
+  take-reals : Integer, Integer, List Real -> List Real
+  take-reals (i) (n) (acc) =
+    if i >= n then acc
+    else take-reals (i + 1) n (list-push acc (f32-real (bit-and (peek-32 scratch (i * 4)) #FFFFFFFF)))
+
+  download : Integer, Integer -> List Real
+  download (h) (n) =
+    if gpu-buf-read h 0 (n * 4) scratch then take-reals 0 n []
+    else []
+
+Section: Launch
+
+  buf : Integer -> GpuParam
+  buf (h) = gpu-arg-buf h 0
+
+  int : Integer -> GpuParam
+  int (v) = gpu-arg-u64 v
+
+  real : Real -> GpuParam
+  real (x) = gpu-arg-u64 (real-to-bits x)
+
+  launch : Text, Integer, List GpuParam -> Integer
+  launch (name) (threads) (ps) =
+    gpu-launch layer-kernels-ptx name (GpuGrid { gx = (threads + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) ps
+
+  rows : Text, Integer, List GpuParam -> Integer
+  rows (name) (r) (ps) =
+    gpu-launch layer-kernels-ptx name (GpuGrid { gx = r, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) ps
+
+  run : Text, Integer, List GpuParam, Integer, Integer -> List Real
+  run (name) (threads) (ps) (out) (n) =
+    if launch name threads ps < 0 then [] else download out n
+
+Section: Grading
+
+  within : Real, Real, Real -> Boolean
+  within (got) (want) (tol) =
+    let d = if got > want then got - want else want - got
+    in let m = if want < 0.0 then 0.0 - want else want
+    in d <= tol * (1.0 + m)
+
+  count-within : List Real, List Real, Real, Integer, Integer -> Integer
+  count-within (got) (want) (tol) (i) (acc) =
+    if i >= list-length want then acc
+    else if i >= list-length got then acc
+    else count-within got want tol (i + 1) (if within (list-at got i) (list-at want i) tol then acc + 1 else acc)
+
+  grade : Text, List Real, List Real, List Real, Real -> Text
+  grade (name) (got) (sabotaged) (want) (tol) =
+    let n = list-length want
+    in let good = count-within got want tol 0 0
+    in let bad = count-within sabotaged want tol 0 0
+    in name & ": " & show good & "/" & show n & (if list-length sabotaged == 0 then ", SABOTAGE REFUSED" else if bad < n then ", sabotage caught" else ", SABOTAGE MISSED")
+
+Section: Inputs and Reference Math
+
+  wave : Integer, Integer -> Real
+  wave (i) (seed) = real-from-int (int-mod (i * 37 + seed) 257 - 128) / 64.0
+
+  make : Integer, Integer -> List Real
+  make (n) (seed) = make-loop 0 n seed []
+
+  make-loop : Integer, Integer, Integer, List Real -> List Real
+  make-loop (i) (n) (seed) (acc) =
+    if i >= n then acc
+    else make-loop (i + 1) n seed (list-push acc (wave i seed))
+
+  gelu-ref : List Real, Integer, List Real -> List Real
+  gelu-ref (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else gelu-ref xs (i + 1) (list-push acc (ref-gelu-tanh (list-at xs i)))
+
+ exp reduced by a two-part ln 2 with a 17-term series, as gpu-layer-kernels'
+ reference; sqrt is Newton from 1.
+
+  ref-exp : Real -> Real
+  ref-exp (x) =
+    if x < 0.0 - 700.0 then 0.0
+    else let k = real-to-int (if x >= 0.0 then x * 1.4426950408889634 + 0.5 else x * 1.4426950408889634 - 0.5)
+    in let kr = real-from-int k
+    in let r = (x - kr * 0.6931471803691238) - kr * 0.00000000019082149292705877
+    in ref-exp-poly r 17 1.0 * bits-to-real (bit-shl (k + 1023) 52)
+
+  ref-exp-poly : Real, Integer, Real -> Real
+  ref-exp-poly (r) (k) (acc) =
+    if k <= 0 then acc
+    else ref-exp-poly r (k - 1) (1.0 + r * acc / real-from-int k)
+
+  ref-sqrt : Real, Real, Integer -> Real
+  ref-sqrt (x) (g) (k) = if k <= 0 then g else ref-sqrt x ((g + x / g) * 0.5) (k - 1)
+
+  ref-gelu-tanh : Real -> Real
+  ref-gelu-tanh (v) =
+    let u = 0.7978845608028654 * (v + 0.044715 * v * v * v)
+    in let e = ref-exp (0.0 - 2.0 * (if u < 0.0 then 0.0 - u else u))
+    in let th = (1.0 - e) / (1.0 + e)
+    in 0.5 * v * (1.0 + (if u < 0.0 then 0.0 - th else th))
+
+Section: Arms
+
+  gelu-arm : Integer -> Text
+  gelu-arm (z) =
+    let xs = make 1024 5
+    in let hx = upload xs
+    in let ho = gpu-buf-alloc (1024 * 4)
+    in let got = run "kernel_gelu_tanh" 1024 [buf hx, buf ho, int 1024] ho 1024
+    in let sab = run "kernel_gelu" 1024 [buf hx, buf ho, int 1024] ho 1024
+    in grade "gelu tanh" got sab (gelu-ref xs 0 []) 0.00001
+
+  row-sumsq : List Real, Integer, Integer, Integer, Real -> Real
+  row-sumsq (xs) (r) (dim) (j) (acc) =
+    if j >= dim then acc
+    else let v = list-at xs (r * dim + j)
+    in row-sumsq xs r dim (j + 1) (acc + v * v)
+
+  row-sum : List Real, Integer, Integer, Integer, Real -> Real
+  row-sum (xs) (r) (dim) (j) (acc) =
+    if j >= dim then acc
+    else row-sum xs r dim (j + 1) (acc + list-at xs (r * dim + j))
+
+  rms-ref : List Real, List Real, Integer, Integer, List Real -> List Real
+  rms-ref (xs) (g) (dim) (i) (acc) =
+    if i >= list-length xs then acc
+    else let r = i / dim
+    in let rs = 1.0 / ref-sqrt (row-sumsq xs r dim 0 0.0 / real-from-int dim + 0.000001) 1.0 60
+    in rms-ref xs g dim (i + 1) (list-push acc (list-at xs i * rs * list-at g (i - r * dim)))
+
+  rms-arm : Integer -> Text
+  rms-arm (z) =
+    let dim = 300
+    in let xs = make (6 * dim) 11
+    in let g = make dim 29
+    in let hx = upload xs
+    in let hg = upload g
+    in let st = gpu-buf-alloc (6 * 16)
+    in let part = gpu-buf-alloc (6 * 128 * 8)
+    in let ho = gpu-buf-alloc (6 * dim * 4)
+    in let s1 = rows "kernel_rms_stats_wide" 6 [buf hx, buf st, buf part, int dim, real 0.000001, int 6]
+    in let got = run "kernel_rms_norm" (6 * dim) [buf hx, buf st, buf hg, buf ho, int dim, int (6 * dim)] ho (6 * dim)
+    in let s2 = rows "kernel_row_stats_wide" 6 [buf hx, buf st, buf part, int dim, real 0.000001, int 6]
+    in let sab = run "kernel_rms_norm" (6 * dim) [buf hx, buf st, buf hg, buf ho, int dim, int (6 * dim)] ho (6 * dim)
+    in grade "rms norm, a block per row, 300 wide" (if s1 < 0 then [] else got) (if s2 < 0 then [] else sab) (rms-ref xs g dim 0 []) 0.000001
+
+  mod-ref : List Real, List Real, List Real, Integer, Integer, List Real -> List Real
+  mod-ref (xs) (sc) (sh) (dim) (i) (acc) =
+    if i >= list-length xs then acc
+    else let r = i / dim
+    in let mean = row-sum xs r dim 0 0.0 / real-from-int dim
+    in let var = row-sumsq xs r dim 0 0.0 / real-from-int dim - mean * mean
+    in let c = i - r * dim
+    in mod-ref xs sc sh dim (i + 1) (list-push acc ((list-at xs i - mean) / ref-sqrt (var + 0.000001) 1.0 60 * (1.0 + list-at sc c) + list-at sh c))
+
+  mod-arm : Integer -> Text
+  mod-arm (z) =
+    let dim = 300
+    in let xs = make (5 * dim) 3
+    in let sc = make dim 41
+    in let sh = make dim 97
+    in let hx = upload xs
+    in let hsc = upload sc
+    in let hsh = upload sh
+    in let st = gpu-buf-alloc (5 * 16)
+    in let part = gpu-buf-alloc (5 * 128 * 8)
+    in let ho = gpu-buf-alloc (5 * dim * 4)
+    in let s1 = rows "kernel_row_stats_wide" 5 [buf hx, buf st, buf part, int dim, real 0.000001, int 5]
+    in let got = run "kernel_layer_norm_mod" (5 * dim) [buf hx, buf st, buf hsc, buf hsh, buf ho, int dim, int (5 * dim)] ho (5 * dim)
+    in let sab = run "kernel_layer_norm_mod" (5 * dim) [buf hx, buf st, buf hsh, buf hsc, buf ho, int dim, int (5 * dim)] ho (5 * dim)
+    in grade "layer norm, modulated, 300 wide" (if s1 < 0 then [] else got) sab (mod-ref xs sc sh dim 0 []) 0.000001
+
+  gated-ref : List Real, List Real, List Real, Integer, Integer, List Real -> List Real
+  gated-ref (xs) (ys) (g) (dim) (i) (acc) =
+    if i >= list-length xs then acc
+    else gated-ref xs ys g dim (i + 1) (list-push acc (list-at xs i + list-at g (i - i / dim * dim) * list-at ys i))
+
+  gated-arm : Integer -> Text
+  gated-arm (z) =
+    let dim = 300
+    in let xs = make (4 * dim) 7
+    in let ys = make (4 * dim) 13
+    in let g = make dim 59
+    in let hx = upload xs
+    in let hy = upload ys
+    in let hg = upload g
+    in let ho = gpu-buf-alloc (4 * dim * 4)
+    in let got = run "kernel_gated_add" (4 * dim) [buf hx, buf hy, buf hg, buf ho, int dim, int (4 * dim)] ho (4 * dim)
+    in let sab = run "kernel_gated_add" (4 * dim) [buf hx, buf hy, buf hg, buf ho, int (dim - 1), int (4 * dim)] ho (4 * dim)
+    in grade "gated residual" got sab (gated-ref xs ys g dim 0 []) 0.000001
+
+ RoPE on 10 tokens of 3 heads, rows of 448 with the heads from column 64; the
+ table's angle for (token t, pair j) is (64 t + j) / 97.
+
+  angle : Integer -> Real
+  angle (k) = real-from-int k / 97.0
+
+  table-loop : Integer, Integer, List Real -> List Real
+  table-loop (k) (n) (acc) =
+    if k >= n then acc
+    else table-loop (k + 1) n (list-push (list-push acc (real-cos (angle k))) (real-sin (angle k)))
+
+  rope-ref : List Real, List Real, Integer, List Real -> List Real
+  rope-ref (xs) (tab) (i) (acc) =
+    if i >= list-length xs then acc
+    else let t = i / 448
+    in let col = i - t * 448
+    in if col < 64 then rope-ref xs tab (i + 1) (list-push acc (list-at xs i))
+    else let h = (col - 64) / 128
+    in let d = col - 64 - h * 128
+    in let j = d / 2
+    in let c = list-at tab ((t * 64 + j) * 2)
+    in let s = list-at tab ((t * 64 + j) * 2 + 1)
+    in let x0 = list-at xs (i - (d - j * 2))
+    in let x1 = list-at xs (i - (d - j * 2) + 1)
+    in rope-ref xs tab (i + 1) (list-push acc (if d - j * 2 == 0 then c * x0 - s * x1 else s * x0 + c * x1))
+
+  rope-arm : Integer -> Text
+  rope-arm (z) =
+    let xs = make (10 * 448) 17
+    in let tab = table-loop 0 (10 * 64) []
+    in let hx = upload xs
+    in let ht = upload tab
+    in let got = run "kernel_rope" (10 * 3 * 64) [buf hx, buf ht, buf hx, int 448, int 64, int 3, int (10 * 3 * 64)] hx (10 * 448)
+    in let hy = upload xs
+    in let sab = run "kernel_rope" (10 * 3 * 64) [buf hy, buf ht, buf hy, int 448, int 0, int 3, int (10 * 3 * 64)] hy (10 * 448)
+    in grade "rope in place, 3 heads of 128 from column 64" got sab (rope-ref xs tab 0 []) 0.000001
+
+ The patch reference walks tokens and features the other way round from the
+ kernel: token (ty, tx), feature (ch, py, px).
+
+  patch-ref : List Real, Integer, Integer, Integer, Integer, List Real -> List Real
+  patch-ref (xs) (c) (h) (w) (k) (acc) =
+    if k >= c * h * w then acc
+    else let f = int-mod k (c * 4)
+    in let tok = k / (c * 4)
+    in let tx = int-mod tok (w / 2)
+    in let ty = tok / (w / 2)
+    in let px = int-mod f 2
+    in let py = int-mod (f / 2) 2
+    in let ch = f / 4
+    in patch-ref xs c h w (k + 1) (list-push acc (list-at xs ((ch * h + ty * 2 + py) * w + tx * 2 + px)))
+
+  patch-arm : Integer -> Text
+  patch-arm (z) =
+    let c = 3
+    in let h = 6
+    in let w = 8
+    in let n = c * h * w
+    in let xs = make n 23
+    in let hx = upload xs
+    in let hp = gpu-buf-alloc (n * 4)
+    in let hb = gpu-buf-alloc (n * 4)
+    in let hs = gpu-buf-alloc (n * 4)
+    in let got = run "kernel_patchify" n [buf hx, buf hp, int c, int h, int w, int n] hp n
+    in let back = run "kernel_unpatchify" n [buf hp, buf hb, int c, int h, int w, int n] hb n
+    in let sab = run "kernel_unpatchify" n [buf hp, buf hb, int c, int w, int h, int n] hb n
+    in let psab = run "kernel_patchify" n [buf hx, buf hs, int c, int w, int h, int n] hs n
+    in grade "patchify 3 x 6 x 8" got psab (patch-ref xs c h w 0 []) 0.0 & "; " & grade "unpatchify, round trip" back sab xs 0.0
+
+ 5 rows of 7 into rows of 12 from column 3 of a buffer holding wave (seed 71):
+ columns 0-2 and 10-11 must come back as they were.
+
+  cols-ref : List Real, List Real, Integer, List Real -> List Real
+  cols-ref (src) (base) (i) (acc) =
+    if i >= 60 then acc
+    else let r = i / 12
+    in let c = i - r * 12
+    in cols-ref src base (i + 1) (list-push acc (if c >= 3 & c < 10 then list-at src (r * 7 + c - 3) else list-at base i))
+
+  cols-arm : Integer -> Text
+  cols-arm (z) =
+    let src = make 35 53
+    in let base = make 60 71
+    in let hs = upload src
+    in let ho = upload base
+    in let got = run "kernel_copy_cols" 35 [buf hs, buf ho, int 12, int 3, int 7, int 35] ho 60
+    in let hb = upload base
+    in let sab = run "kernel_copy_cols" 35 [buf hs, buf hb, int 12, int 2, int 7, int 35] hb 60
+    in grade "copy cols, 5 x 7 into 12 from column 3" got sab (cols-ref src base 0 []) 0.0
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni (cols-arm 0)
+    print-line-uni (gelu-arm 0)
+    print-line-uni (rms-arm 0)
+    print-line-uni (mod-arm 0)
+    print-line-uni (gated-arm 0)
+    print-line-uni (rope-arm 0)
+    print-line-uni (patch-arm 0)
+  end

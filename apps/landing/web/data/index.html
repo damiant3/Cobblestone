@@ -34,6 +34,11 @@
   .plans button:hover{background:rgba(212,160,23,.24)}
   .plans button.on{background:rgba(212,160,23,.28);font-weight:600}
 
+  .ask{display:flex;gap:8px;margin-bottom:18px;max-width:560px}
+  .ask input{flex:1;background:#12121e;border:1px solid var(--edge);border-radius:8px;color:var(--ink);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;padding:7px 10px}
+  .ask button{background:rgba(212,160,23,.12);border:1px solid rgba(212,160,23,.42);border-radius:8px;
+    color:var(--gold);font-family:inherit;font-size:13px;padding:6px 15px;cursor:pointer}
   .grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
   @media (max-width:820px){.grid{grid-template-columns:1fr}}
   .panel{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:16px}
@@ -61,6 +66,9 @@
   and no server is involved.</p>
 
   <div class="plans" id="plans"></div>
+  <form class="ask" id="ask"><input id="q" autocomplete="off" spellcheck="false"
+    placeholder="or write one filter: salary > 100000" aria-label="a filter: column, operator, value">
+    <button type="submit">Run</button></form>
 
   <div class="grid">
     <div class="panel">
@@ -77,7 +85,9 @@
   <div id="err"></div>
 
   <p class="note">There is no SQL here, and the page is not hiding one: this application has no
-  SQL parser, so what it offers is the algebra underneath SQL, selected by name. The engine also
+  SQL parser, so what it offers is the algebra underneath SQL, selected by name, or one filter you
+  write as <code>column operator value</code> (<code>= != &lt; &gt; &lt;= &gt;=</code>) over the
+  columns id, name, department, salary and hire-year. The engine also
   carries a write-ahead log, MVCC, a lock manager and two-phase commit, none of which this page
   exercises. Each query runs a fresh instance of the module against a freshly seeded catalog.</p>
 </div>
@@ -152,13 +162,18 @@ function pad(cells, widths) {
   return cells.map((c, i) => String(c).padEnd(widths[i])).join('  ').trimEnd();
 }
 
+// A written filter keeps every column and answers "plan: <algebra>" first, so
+// the plan panel shows what the module ran rather than what the page guessed.
+const FILTER_COLS = ['id', 'name', 'department', 'salary', 'hire-year'];
+
 function show(spec) {
   algebraEl.textContent = spec.algebra;
   let out;
   try { out = run(spec.id); }
   catch (e) { countEl.textContent = ''; resultEl.textContent = 'the module failed: ' + e.message; return; }
 
-  const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
+  let lines = out.split('\n').map(s => s.trim()).filter(Boolean);
+  if ((lines[0] || '').startsWith('plan: ')) { algebraEl.textContent = lines[0].slice(6); lines = lines.slice(1); }
   const m = /^(\d+) rows$/.exec(lines[0] || '');
   if (!m) { countEl.textContent = ''; resultEl.textContent = out; return; }
 
@@ -183,6 +198,14 @@ for (const spec of PLANS) {
   });
   document.getElementById('plans').append(b);
 }
+
+document.getElementById('ask').addEventListener('submit', ev => {
+  ev.preventDefault();
+  const q = document.getElementById('q').value.trim();
+  if (!q || !mod) return;
+  if (current) { current.classList.remove('on'); current = null; }
+  show({ id: q, algebra: '', cols: FILTER_COLS });
+});
 
 (async function () {
   try {

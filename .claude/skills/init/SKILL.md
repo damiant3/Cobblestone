@@ -174,7 +174,7 @@ Before Step 9, write `<coordinationDir>\status.json` with your live state:
 `claim` (the files or subsystems you hold), and `context` (your context
 used, whole-number percent, measured by `build/measure-context.ps1 -Lane XXX -Percent`, the one formula;
 required on every write, because a lane that runs to 100% unseen goes
-deaf; at 70 you run `/handoff` yourself). Then rewrite
+deaf; at 75 you run `/handoff` yourself). Then rewrite
 it at every change of state for the rest of the session: taken, gating,
 waiting on the box or the token, landed, handed off. A `status.json` still carrying
 the previous session's handoff text is what the fleet dashboard showed

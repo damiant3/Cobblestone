@@ -7,7 +7,7 @@
 [CmdletBinding()]
 param(
     [string]$CodexCdx = '',
-    [int]$Jobs = 8,
+    [int]$Jobs = 16,
     # A FILE of chapter paths, one per line, which REPLACES the BVT list for
     # the gate's cited-test run phase. It is this runner rather than a new loop
     # because the grading lives here: the .expected filter, the .disk sidecar,
@@ -61,6 +61,7 @@ $BvtTests = @(
     'codex\test\x509-parse.codex'  # the certificate parser, including the key-algorithm arms whose catch-all silently absorbed KeyEcdsaP384 and stopped every P-384 certificate parsing three stages downstream
     'codex\test\asn1-der-write.codex'  # the DER WRITER, the other half of x509-parse: every length form checked two ways that share no code, a round trip through our own reader and a byte comparison against the certificate RFC 8410 section 10.2 publishes, which carries all three length forms (5, 223 and 300) in encodings the IETF produced
     'codex\test\x509-dev-cert.codex'  # the self-signed certificate we MINT, graded by our parser, by the pinned-anchor verdicts (wrong identity, not yet valid, expired, tampered and other key must each refuse), and by a TLS 1.3 handshake authenticating against the minted leaf with a wrong-pin control. A minter whose output only our own parser reads can agree with itself and nobody else
+    'codex\test\x509-ca-issue.codex'  # the dev CA root and a leaf ISSUED under it, walked by x509-verify-peer with and without the CA sent; a same-name anchor with the wrong key, a rogue-issued leaf, a tampered leaf and a non-CA issuer must each refuse, issuance refuses a non-CA or a key mismatch, and a TLS 1.3 handshake authenticates the issued leaf against the CA anchor
     'codex\test\ecdsa-cert.codex'  # the REAL github.com chain, verified through its P-384 root. A fixture chain proves the arithmetic; a chain somebody else issued proves the parser agrees with the world
     'codex\test\real-cert.codex'  # RFC 6125 hostname matching, with no commonName fallback
     'codex\test\tls-cv-schemes.codex'  # CertificateVerify under every scheme the ClientHello offers, signed by OpenSSL and checked here. Also the only thing making the offered set and the accepted set agree: they are written in two places and nothing else compares them
@@ -203,6 +204,13 @@ $BvtTests = @($BvtTests | Where-Object {
     $true
 })
 foreach ($sk in $bvtSkipped) { Write-Host "  SKIP  $sk" -ForegroundColor DarkGray }
+# A .disk-src names a sibling test whose compiled CDX becomes this test's disk.
+foreach ($t in @($BvtTests)) {
+    $ds = $t -replace '\.codex$', '.disk-src'
+    if (-not (Test-Path -PathType Leaf $ds)) { continue }
+    $src = Join-Path (Split-Path $t -Parent) ((Get-Content -TotalCount 1 $ds).Trim() + '.codex')
+    if (-not (@($BvtTests | ForEach-Object { [System.IO.Path]::GetFileName($_) }) -contains [System.IO.Path]::GetFileName($src))) { $BvtTests = @($src) + $BvtTests }
+}
 
 $vmExe = Join-Path (Resolve-Path .).Path 'tools\codex-vm.exe'
 if ((-not (Test-Path -PathType Leaf $vmExe))) {
@@ -226,6 +234,8 @@ if ($missing.Count -gt 0) {
 }
 
 
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
+$Jobs = (Get-VmAdmittedSlots -Slots $Jobs -GuestMB 2200 -What 'BVT compile')
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 Write-Host "${BvtLabel}: $($BvtTests.Count) tests, $Jobs parallel slots"
 Write-Host ''
@@ -323,6 +333,7 @@ $runList = @($runnableTests)
 $runDir = Join-Path $OutRoot '_bvt-runs'
 if (Test-Path $runDir) { Remove-Item -Recurse -Force $runDir }
 New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+$Jobs = (Get-VmAdmittedSlots -Slots $Jobs -What 'BVT run')
 $slotLines = @{}
 for ($s = 0; $s -lt $Jobs; $s++) { $slotLines[$s] = [System.Collections.Generic.List[string]]::new() }
 $tempDisks = [System.Collections.Generic.List[string]]::new()
@@ -482,9 +493,9 @@ foreach ($t in $runList) {
         Write-Host "  FAIL  $base (no output)" -ForegroundColor Red
         continue
     }
-    # Filtered exactly as test-run.ps1 filtered it: CR and a leading SOH
-    # stripped, HEAP:/WD:/STACK: telemetry dropped, trailing blank lines cut.
-    $rawText = (Get-Content $raw -Raw -ErrorAction SilentlyContinue) -replace "`r", '' -replace "^\x01", ''
+    # Filtered exactly as test-run.ps1 filtered it: CR stripped,
+    # HEAP:/WD:/STACK: telemetry dropped, trailing blank lines cut.
+    $rawText = (Get-Content $raw -Raw -ErrorAction SilentlyContinue) -replace "`r", ''
     $kept = [System.Collections.Generic.List[string]]::new()
     foreach ($l in ($rawText -split "`n")) {
         if ($l.StartsWith('HEAP:') -or $l.StartsWith('WD:') -or $l.StartsWith('STACK:')) { continue }
@@ -496,7 +507,7 @@ foreach ($t in $runList) {
     $expected = (Get-Content $expFile -Raw -ErrorAction SilentlyContinue) -replace "`r", ''
     $actual = $actual.TrimEnd("`n")
     $expected = $expected.TrimEnd("`n")
-    if ($actual -eq $expected) {
+    if ([string]::Equals($actual, $expected, [StringComparison]::Ordinal)) {
         $runPass.Add($base)
         Write-Host "  PASS  $base" -ForegroundColor Green
     } else {

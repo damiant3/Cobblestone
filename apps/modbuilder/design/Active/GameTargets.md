@@ -31,13 +31,14 @@ refusal into padding, four-container limits and hover-effect target, reuse and
 movement removal. The screenshot was inspected; its panel top is cropped.
 Mouse/controller acceptance remains a separate manual check.
 
-The bootstrap packages the managed payload inside one `winhttp.dll` and pins
-the game assembly and Unity player hashes. `WindowsBootstrap.cpp` owns
-initialization. `windows-proxy.ps1` derives the complete named/ordinal export
-surface from the machine's System32 WinHTTP library and emits Win64 forwarding
-thunks. The package verifies that export surface and records the system-library
-identity. Unity's imports alone are insufficient: game networking libraries
-also import WinHTTP functions. Forwarding reaches the original system library,
+The bootstrap packages the managed payload inside one `winhttp.dll`; the
+managed adapter pins the game assembly and Unity player hashes.
+`codex/plugs/pe/PeBootstrap.codex` emits the Win64 initialization code.
+`PeExports.codex` reads System32's named/ordinal export surface and
+`PeWriter.codex` emits forwarding thunks. The package receipt records the
+system-library identity; `test-pe-bootstrap.ps1` grades the complete export
+map. Unity's imports alone are insufficient: game networking libraries also
+import WinHTTP functions. Forwarding reaches the original system library,
 preserving integer/vector argument registers and caller stack arguments.
 
 `MethodBridge.codex` supplies restricted Mono method copying and startup
@@ -70,11 +71,11 @@ shared C# renderer into the Unity module. The build does not parse embedded
 C# source. Member streaming restores temporary AST/render allocations after
 each member; nested string construction remains bounded by one member's size.
 
-`WindowsBootstrap.cpp` owns the native Windows/Mono ABI boundary, following
-the direct native-source pattern of `tools/codex-vm.c`. `package.ps1` invokes
-MSVC and records native source/compiler hashes. Native packaging requires no
-Codex printer compilation or VM execution. The generated WinHTTP export table
-and assembler thunks remain derived from the installed system library.
+`PeBootstrap.codex` owns the native Windows/Mono ABI boundary. `package.ps1`
+compiles and runs the Codex writer under the selected depot seed, with no
+native SDK. The package records source, seed and artifact hashes. The
+WinHTTP export table remains derived from the installed system library.
+`ZeroInstall.md`, section MB-7, owns the complete loader contract and proof.
 
 The isolated world-test launcher bundles `CsSyntax.codex`,
 `CsSyntaxEmitter.codex` and `WorldProbe.codex` before compiling the diagnostic
@@ -100,27 +101,44 @@ current rendered check above passes.
 Build from a workspace containing main25931. Inspect current open work before
 changing source or rebuilding.
 
-The embedded page is `apps/landing/web/compile/prism.html`; its template is
-`codex/plugs/wasm/page/prism.html`. Targets -> Load storage demo loads the
-sources in `apps/modbuilder/mods/valheim/linked-storage.json`. Loading a template
-detaches an opened filesystem folder without deleting the folder's files.
-
-Targets -> Unity configures the game directory, separate test-save root,
-MSVC toolset, Windows SDK, per-consumer container limit and workbench-link selection.
+The page is `apps/modbuilder/web/modbuilder.html`, built by
+`apps/modbuilder/build-page.ps1`: the Codex chapter `page/ModBuilderApp.codex`
+goes through the html plug, and the script injects one `window.__DATA` block
+holding `codex-compiler.wasm`, `unity-stdio.wasm`, every
+`mods/<game>/features.json` with its sources, and the `page/img/*.jpg`
+illustrations (Diffusion Forge, `page/generate-art.ps1`). Never edit the
+HTML. The page shows each feature as an illustrated card, takes
+`#mod=<game>:<feature>,...`, composes the chosen features' sources with an
+entry starting them, and its Forge & Install button runs package, test and
+install in order, stopping at the first refusal. Its Game
+profile section configures the game directory, separate test-save root,
+play-copy directory, per-consumer container limit and workbench-link selection.
 Profiles can be named, saved and exported. The machine-local prepared profile
 is `build-output/prism-targets/valheim-local.prism-target.json`.
 
-Build extension and Test extension require the authenticated local bridge:
+Build extension, Test extension and Install require the authenticated local
+bridge. One command starts it over `build-output/prism-targets` and opens the
+page already connected, with the machine-local profile loaded:
 
 ```powershell
-pwsh apps/prism/build-bridge.ps1 -Root D:/Projects/Cobblestone-red/build-output/prism-targets
+pwsh apps/modbuilder/run.ps1
 ```
 
-Paste the bridge's displayed token into Prism's Bridge settings. Inspect checks
-game identity. Build extension emits Unity C# and packages the DLL. Test
-extension validates the source/configuration/game receipt, then runs an isolated
-startup or inventory probe. Browser emission and profile editing need no bridge.
-No action installs into the original game directory.
+The token reaches the bridge through its environment and the page through the
+URL fragment, which the page reads once and clears. The bridge can also be run
+by hand (`apps/prism/build-bridge.ps1 -Root <dir>`) and its token pasted into
+the page's Local bridge section. Inspect checks game identity. Build extension
+emits Unity C# and packages the DLL. Test extension validates the
+source/configuration/game receipt, then runs an isolated startup or inventory
+probe. Install copies the packaged `winhttp.dll` into the profile's
+`installPath`, a separate play copy: it refuses the original game directory, a
+directory with no game executable, a running game, a loader whose hash is not
+the `modHash` in that copy's `Support/deployment.json`, and a build already
+installed. It keeps the previous loader and a `Saves.zip` in
+`Support/Before-<build>`, writes `restore.json` there with the command that
+puts the previous loader back, and rewrites `deployment.json`
+(`apps/modbuilder/test-install.ps1`). Browser emission and profile editing need
+no bridge.
 
 Valheim's client does not apply `-savedir` through the server-argument path.
 The test payload must explicitly call `Utils.SetSaveDataPath` and verify
@@ -135,8 +153,8 @@ actual library emitted by Prism. The diagnostic controller is absent from
 ordinary packages. Run create, reload and feature-disabled checks serially:
 
 ```powershell
-node apps/prism/test-targets.cjs --unity
-pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode create
+node apps/modbuilder/test-emit.mjs
+pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/mod-all.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode create
 ```
 
 Read `build-output/prism-targets/latest-world-test.json` after completion.
@@ -145,8 +163,8 @@ latest pointer:
 
 ```powershell
 $fixtureSaves = (Get-Content build-output/prism-targets/latest-world-test.json -Raw | ConvertFrom-Json).saves
-pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode reload -Saves $fixtureSaves
-pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode vanilla -Saves $fixtureSaves
+pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/mod-all.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode reload -Saves $fixtureSaves
+pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/mod-all.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode vanilla -Saves $fixtureSaves
 ```
 
 `vanilla` skips storage initialization and verifies loaded items, the original
@@ -176,29 +194,13 @@ game resources; cleanup must not recurse through those junctions.
 
 The host boundaries are `target-toolchain.ps1`, `test-game.ps1`,
 `test-world.ps1` and `codex/plugs/unity/package.ps1`. Packaging takes explicit
-managed-library, output, MSVC and SDK paths; output must be empty. Rebuild the
+managed-library and output paths plus an optional depot seed; output must be
+empty. The Codex PE writer emits the loader without a native SDK. Rebuild the
 emitter with `pwsh codex/plugs/unity/build.ps1 -Kernel <depot-seed>` after
-Unity emitter/binding changes, and refresh the embedded Unity module before
-using page-generated output as evidence.
-
-For a targeted refresh, first open `apps/landing/web/compile/prism.html` for
-edit in the current changelist, then run from the workspace root:
-
-```powershell
-$pagePath = [IO.Path]::GetFullPath('apps/landing/web/compile/prism.html')
-$modulePath = [IO.Path]::GetFullPath('codex/plugs/unity/build-output/unity-stdio.wasm')
-$page = [IO.File]::ReadAllText($pagePath)
-$pattern = '("unity-stdio\.wasm"\s*:\s*")[A-Za-z0-9+/=]+(")'
-if ([regex]::Matches($page, $pattern).Count -ne 1) { throw 'Expected one embedded Unity module' }
-$bytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($modulePath))
-$updated = [regex]::Replace($page, $pattern, [Text.RegularExpressions.MatchEvaluator]{
-    param($match)
-    $match.Groups[1].Value + $bytes + $match.Groups[2].Value
-})
-[IO.File]::WriteAllText($pagePath, $updated, [Text.UTF8Encoding]::new($false))
-node apps/prism/test-targets.cjs --unity
-if ($LASTEXITCODE) { throw 'Embedded target verification failed' }
-```
+Unity emitter/binding changes, then rebuild the page with
+`pwsh apps/modbuilder/build-page.ps1` and `pwsh apps/modbuilder/build-site.ps1`, and run `node apps/modbuilder/test-emit.mjs`
+and `node apps/modbuilder/test-modbuilder.mjs` before using page-emitted output
+as evidence.
 
 ### Proof boundary
 
@@ -302,8 +304,8 @@ the deployment's Saves directory or terminate an active user play session.
 $restore = 'D:/Projects/Cobblestone-red/build-output/prism-recovery'
 if (Test-Path -LiteralPath $restore) { throw 'Choose an empty recovery destination' }
 Expand-Archive -LiteralPath 'D:/Games/Valheim-Prism/Support/Test-saves.zip' -DestinationPath $restore
-node apps/prism/test-targets.cjs
-pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/page-storage.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode reload -Saves "$restore/prism-world-tests/7d620bfd304a4465a0dfca1351962318/saves" -Play
+node apps/modbuilder/test-emit.mjs
+pwsh apps/modbuilder/test-world.ps1 -UnitySource build-output/prism-targets/mod-all.cs -ProfilePath build-output/prism-targets/valheim-local.prism-target.json -Mode reload -Saves "$restore/prism-world-tests/7d620bfd304a4465a0dfca1351962318/saves" -Play
 ```
 
 `-Play` explicitly requests a visible interactive game, grounds the marked test
@@ -446,7 +448,9 @@ authoritative transaction and concurrency work before enablement.
 ## Meadows spawn policy
 
 Natural Meadows necks retain native initial spawn timing, chance and population
-limits. Once the tracked population originating in a zone has been killed,
+limits. The first tracked death marks the population as depleted, preventing
+replacement spawns while its surviving members are still alive. Once the
+tracked population originating in a zone has been killed,
 that zone suppresses natural neck spawns for a saved random seven to fourteen
 Valheim days. A private random generator leaves Unity's random state untouched.
 Only prefab `Neck`, biome exactly `Meadows`, and entries in the natural spawn
@@ -457,7 +461,8 @@ count as kills. Existing loaded necks are adopted into the appropriate zone.
 `MeadowsSpawns.codex` supplies the pure delay policy. The typed Unity component
 intercepts `SpawnSystem.Spawn` and subscribes to native character death events.
 Zone and population GUIDs persist in ZDO metadata because native network IDs
-change across world loads. A deadline is written only when the last tracked
+change across world loads. The depletion flag also persists in the zone ZDO;
+it resets when a new population starts after recovery. A deadline is written only when the last tracked
 neck dies and is not rerolled on reload. At the installed 1800-second day,
 the delay is 12600 to 25200 game seconds. There is no forced spawn at expiry;
 the native spawn conditions still decide when the next population appears.
@@ -470,6 +475,11 @@ unchanged spawn fields and unchanged Unity random state. These controlled
 checks do not claim an elapsed fourteen-day play session. Exact delay evidence
 is `neck-policy-proof.json`, fact hash
 `2b58a23ce5942632c778470bc4aca897e73df243941ac1e95431a5628ad7b164`.
+
+The partial-clearance regression is in `mods/valheim/WorldProbe.codex`.
+The isolated headless run at `build-output/prism-targets/prism-world-tests/683c1f3ccbce4de79bd2dce64192ab03/run.json`
+passes it together with initial spawning and the existing cooldown checks
+(2026-09-27). This is controlled game execution, not a long-play density measurement.
 
 ## Circumhorizontal arc preview, 2026-09-22
 
@@ -642,6 +652,100 @@ weather presets, indoor visibility and wet-to-clear transitions need further
 rendered acceptance. The controlled distant-blocker and render-order checks
 above pass; they do not cover every natural scene.
 
+## Station and taming hover
+
+Hovering a smelter-family station (smelter, charcoal kiln, blast furnace,
+refinery; windmills excluded, their rate follows the wind) adds when the next
+item finishes and when the queue is done, and says when fuel runs out first.
+A fermenter adds its time to ready; an animal being tamed adds the time left
+and when to feed it again, or that it is hungry. Untouched wild animals keep
+the vanilla hover.
+
+`mods/valheim/StationHover.codex` is the pure policy (the three lines are
+Codex text). `bindings/valheim/StationHover.codex` patches `Smelter.OnHoverAddOre`,
+`Fermenter.GetHoverText` and `Tameable.GetHoverText` through `PrismMethodBridge`,
+calls the copied original, and reads inputs through public paths only: the
+object's `ZNetView` ZDO with `ZDOVars` keys (`s_queued`, `s_bakeTimer`, `s_fuel`,
+`s_content`, `s_startTime`, `s_tameTimeLeft`, `s_tameLastFeeding`) and the public
+tuning fields. Times are nominal: a smelter only advances under a roof with
+fuel, and taming only while fed and calm.
+
+Acceptance, 2026-09-25: `WorldProbe`'s `StationHoverChecks` spawns a smelter,
+a fermenter and two boar states in the isolated create run and asserts each
+line against an independent C# clock, with an untouched wild boar as the
+control (`PRISM WORLD HOVER PASS`, storage world test PASS, exit 0). Skipped
+when the library carries no `PrismStationHover`. Visual acceptance of the
+rendered hover has not been inspected.
+## Centred health and food
+
+Damian's layout, 2026-09-25: the health bar lies flat, centred just below the
+stamina bar, with the food slots in a row beneath it; Left Alt with 1, 2 or 3
+eats another of that slot's food from the inventory without opening it (a
+hotkey, because play locks the cursor). `mods/valheim/HudLayout.codex` holds
+the hotkey-to-slot map and the layout offsets. `bindings/valheim/HudLayout.codex`
+re-parents `Hud.m_healthBarRoot`, the health icon and each food slot beside
+`m_staminaBar2Root`, clears the bar's 90-degree rotation (and its text's
+counter-rotation), and places them every `LateUpdate`, centring only the food
+slots that are showing. `Player.UseHotbarItem` is patched: with Left Alt held,
+keys the policy maps to a slot eat through `Player.ConsumeItem`, so vanilla's
+can-eat rule still refuses a fresh food; every other key is the vanilla hotbar.
+
+Acceptance, 2026-09-25: `WorldProbe`'s `HudLayoutChecks` in the isolated create
+run asserts the geometry (flat, centred, top 126 under the stamina bar's 130,
+upright number, shown foods centred left to right under the bar, with at least
+one shown) and the eat path on real cooked meat (vanilla first eat, a fresh food
+refused, a nearly spent food re-eaten from the inventory with one item taken,
+an empty slot refused); `PRISM WORLD HUD PASS`, exit 0. A rendered capture at
+1280x720 was inspected: bar and food centred at the bottom. The Left Alt key
+itself is not driven by the probe, which calls `EatFoodSlot` directly.
+
+## Planting in rows
+
+Damian's pick, 2026-09-25: the cultivator places a row of plants at once. The
+row is `plant-row-length` plants long (`mods/valheim/PlantRows.codex`: one more
+per ten Farming levels, one at Farming 0 to 9, capped at ten), spaced
+`plant-row-spacing` apart (twice the plant's `m_growRadius`, so no two row
+plants starve each other). The row runs from the player through the placement
+ghost. Each extra plant has its own ghost, grey when its spot is uncultivated
+(for a plant that needs cultivation), outside the piece's or the plant's biome,
+in a no-build location or another's private area, or within `m_growRadius` of
+another plant or piece (the `Plant.HaveGrowSpace` layers). Placing the main
+plant plants every valid ghost and skips every grey one; each extra costs its
+own seeds, build stamina, Farming skill raise and cultivator durability, and the
+row stops at the first extra the player cannot pay for.
+
+`bindings/valheim/PlantRows.codex` draws the ghosts in `LateUpdate` from clones
+of the vanilla ghost (made under an inactive parent, with `Plant` and
+`MaterialManNotifier` stripped so no `Awake` or unregister error fires) and tints
+grey through `MaterialMan`. Placement is learned from one record-only patch on
+`Piece.SetCreator`: when the local player's piece of the selected plant kind is
+created, its position and rotation are kept, and `LateUpdate` of that frame
+places the extras through `Player.PlacePiece` after the native path has charged
+the main plant. The row is computed again there because spending seeds makes
+Valheim rebuild the placement ghost in the same frame. `Player.UpdatePlacementGhost`
+and `Player.PlacePiece` cannot be patched (`PrismMethodBridge.Copy` refuses their
+exception regions) and linked storage already patches `Player.TryPlacePiece`, so
+the feature patches neither. Extras are paid from the player's inventory only,
+never from linked chests. `Piece.SetCreator` takes `Splatform.PlatformUserID`,
+so `target-toolchain.ps1` references `Splatform.dll` for this feature.
+
+The binding was written as C#, proven in game, and converted to its syntax tree;
+the emitter's output for the chapter compiles to IL identical to that C# in all
+15 methods.
+
+Acceptance, 2026-09-25: `apps/modbuilder/test-plants.ps1 -UnitySource <emitted C#>
+-ProfilePath <profile>` emits `mods/valheim/PlantProbe.codex`, packages it with
+the library and runs it in an isolated batch-mode world. On a cultivated meadow
+row it asserts row lengths at Farming 0, 50 and 100 (1, 6, 10), the spacing,
+uncultivated ground greying every extra, one existing plant greying only its own
+ghost, three seeds placing the main plant and two extras, and five seeds after a
+ghost rebuild placing the main plant and four; a library without the feature is
+the control (one placement, one plant). Passed on the rows-only, every-feature and
+hud-only libraries, and on the ModBuilder page's `mod-all.cs`; with the
+`SetCreator` patch left unapplied the row check fails with one plant, as
+predicted. The storage world test on the every-feature library also passes. The grey tint
+and the ghosts have not been seen rendered; the probe drives the ghost and
+`PlacePiece` directly, not the mouse.
 ## Prism toolchain workflow
 
 The Targets surface exposes Unity game extensions and Apple Silicon/Darwin

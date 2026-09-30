@@ -1,0 +1,1479 @@
+Chapter: Img2Img
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites AI chapter ClipBpe
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter ClipPrompt
+  cites Diffusion chapter UNet
+  cites Diffusion chapter UNetDenoiser
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter Noise
+  cites Diffusion chapter Variation
+  cites Diffusion chapter ResizeMode
+  cites Diffusion chapter InpaintFill
+  cites Diffusion chapter InpaintMasked
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter VaeEncoder
+  cites Diffusion chapter ImageOut
+  cites Diffusion chapter Txt2Img
+  cites Diffusion chapter PthFile
+  cites Diffusion chapter Esrgan
+  cites Diffusion chapter SwinIR
+  cites Diffusion chapter Dat
+  cites Diffusion chapter Resize
+  cites Diffusion chapter SoftInpaint
+  cites Diffusion chapter MatchedNoise
+
+ SDXL and SD1.5 img2img, inpaint and hires fix as Forge runs them
+ (modules/processing.py, sd_samplers_kdiffusion.py, sd_samplers_cfg_denoiser.py).
+
+ Resize mode 3 (latent upscale) encodes the picture at its own size and
+ resizes the init latent to the request's by torch's bilinear interpolation
+ (processing.py:1764, 1818).
+
+ img2img: setup_img2img_steps (sd_samplers_common.py) gives steps and t_enc,
+ by default steps and int (min (denoise, 0.999) steps), and for the hires
+ pass, which passes its steps, int (steps / min (denoise, 0.999)) and steps
+ - 1; the sampler runs the Karras schedule of that many steps from index
+ steps - t_enc - 1. The start is the init latent plus noise times the first
+ sigma (the eps predictor's noise_scaling). The init latent is the VAE
+ posterior's sample, mean + exp (clamp (logvar, -30, 20) / 2) eps, times
+ the VAE's scaling factor (vae.py:16-33, process_in). eps is torch.randn on
+ the CPU from the global generator (vae.py:27-29), which nothing seeds
+ before the encode: its seed is the last rng.randn gave torch.manual_seed,
+ (seed + 100000) % 65536 (rng.py:21-23), so a request's own seed from its
+ second run on. Under a mask every model call first draws
+ torch.randn_like of the init latent from the global CUDA generator, the
+ same seed, one draw a call (sd_samplers_cfg_denoiser.py:178-181).
+
+ inpaint: the mask is the picture's alpha thresholded at 128 when it is not
+ opaque, else its luma (create_binary_mask; PIL's L is (19595 R + 38470 G +
+ 7471 B + 32768) >> 16); blurred by cv2.GaussianBlur, kernel 2 int (2.5 blur
+ + 0.5) + 1 wide at sigma blur, across then down, reflect-101 borders, at
+ the picture's own size; then resized to the request by resize_image with the
+ request's mode (processing.py:1739); the overlay mask is twice that, clipped. The latent mask is the blurred mask
+ reduced to latent size by PIL's bicubic resize (Resample.c: a = -0.5,
+ support 2 times the scale, 22-bit fixed-point coefficients, the horizontal
+ pass first, each pass rounded to 8 bits), then rounded: 1 where it is at
+ least 128. At every model call the kept region of x is the init latent
+ plus fresh noise times sigma, and the kept region of the denoised latent is
+ the init latent; the samples are blended the same way at the end. The
+ picture pasted back is Pillow's: the original premultiplied by 255 minus
+ the overlay mask, unpremultiplied, then alpha-composited over the result.
+
+ hires fix: txt2img at the base size, the latent resized to int (size
+ scale) / 8 by torch's bilinear interpolation (align_corners False, no
+ antialias; the default "Latent" upscaler), then img2img at the new size
+ with its own noise, steps, denoise and CFG; at CFG 1 Forge drops the
+ negative prompt and runs the positive alone.
+
+ We say:
+
+Section: Request
+
+  I2i = record {
+    i2-base : Txt2Img,
+    i2-image : Text,
+    i2-mask : Text,
+    i2-denoise : Real,
+    i2-blur : Integer,
+    i2-hr-scale : Real,
+    i2-hr-denoise : Real,
+    i2-hr-steps : Integer,
+    i2-hr-cfg : Real,
+    i2-hr-upscaler : Text,
+    i2-var : Variation,
+    i2-src-w : Integer,
+    i2-src-h : Integer,
+    i2-resize : Integer,
+    i2-fill : Integer,
+    i2-area : Integer,
+    i2-padding : Integer,
+    i2-refiner : Text,
+    i2-switch : Real,
+    i2-hr-sampler : Integer,
+    i2-hr-scheduler : Integer,
+    i2-hr-prompt : Text,
+    i2-hr-negative : Text,
+    i2-hr-ckpt : Text,
+    i2-hr-vae : Text,
+    i2-soft : Integer,
+    i2-sc : SoftCfg,
+    i2-out-px : Integer,
+    i2-out-blur : Integer,
+    i2-out-dirs : Integer,
+    i2-post : Integer,
+    i2-out-mk2 : Integer,
+    i2-out-q : Real,
+    i2-out-cv : Real
+  }
+
+Section: Floats
+
+  i2-get : Integer, Integer -> Real
+  i2-get (a) (i) = un-f32-real (bit-and (peek-32 a (i * 4)) #FFFFFFFF)
+
+  i2-set : Integer, Integer, Real -> Integer
+  i2-set (a) (i) (v) = poke-32 a (i * 4) (nz-f32-bits v)
+
+  i2-abs : Real -> Real
+  i2-abs (x) = if x < 0.0 then 0.0 - x else x
+
+  i2-floor : Real -> Integer
+  i2-floor (x) = let t = real-to-int x in if real-from-int t > x then t - 1 else t
+
+Section: Schedule
+
+  img2img-plan : Integer, Real, Boolean -> List Integer
+  img2img-plan (steps) (d) (fixed) =
+    let dd = if d < 0.999 then d else 0.999
+    in if fixed then [(if d > 0.0 then real-to-int (real-from-int steps / dd) else 0), steps - 1]
+    else [steps, real-to-int (dd * real-from-int steps)]
+
+  i2-from : List Real, Integer, List Real -> List Real
+  i2-from (xs) (i) (acc) = if i >= list-length xs then acc else i2-from xs (i + 1) (list-push acc (list-at xs i))
+
+  i2-karras : Integer -> List Real
+  i2-karras (n) =
+    if n == 1 then [sm-pow (sm-pow (sm-discrete-sigma 999) (1.0 / 7.0)) 7.0, 0.0]
+    else sdxl-karras-sigmas n
+
+  img2img-sigmas : Integer, Real, Boolean -> List Real
+  img2img-sigmas (steps) (d) (fixed) =
+    let p = img2img-plan steps d fixed
+    in let s = list-at p 0
+    in i2-from (i2-karras s) (s - list-at p 1 - 1) []
+
+ The same tail of the request's sampler's sigmas under its schedule.
+
+  img2img-sigmas-for : Txt2Img, Boolean, Integer, Real, Boolean -> List Real
+  img2img-sigmas-for (r) (sd15) (steps) (d) (fixed) =
+    let p = img2img-plan steps d fixed
+    in let s = list-at p 0
+    in i2-from (ti-sigmas (r.ti-sampler) (r.ti-scheduler) s sd15) (s - list-at p 1 - 1) []
+
+ The whole schedule that tail is cut from, which Forge's Brownian tree spans.
+
+  img2img-full-for : Txt2Img, Boolean, Integer, Real, Boolean -> List Real
+  img2img-full-for (r) (sd15) (steps) (d) (fixed) = ti-sigmas (r.ti-sampler) (r.ti-scheduler) (list-at (img2img-plan steps d fixed) 0) sd15
+
+Section: The Picture
+
+ A staged file under -gpu-files read whole into guest memory, or 0.
+
+  i2-read-file : Text, Integer -> Integer
+  i2-read-file (name) (n) =
+    let h = gpu-buf-alloc n
+    in let a = alloc-bytes n
+    in let ok = if h == 0 then False else gpu-buf-upload h 0 name 0 n gpu-dt-u8 gpu-dt-u8 == n & gpu-buf-read h 0 n a
+    in let f = if h == 0 then True else gpu-buf-free h
+    in if ok then a else 0
+
+ Pillow's BLEND of two bytes under a mask byte.
+
+  i2-blend8 : Integer, Integer, Integer -> Integer
+  i2-blend8 (a) (b) (m) = let t = a * m + b * (255 - m) + 128 in bit-shru (t + bit-shru t 8) 8
+
+  i2-rgb : Integer, Integer, Integer -> Integer
+  i2-rgb (px) (p) (c) = i2-blend8 (peek-byte px (p * 4 + c)) 255 (peek-byte px (p * 4 + 3))
+
+  i2-rgb-bytes : Integer, Integer, Integer, Integer -> Integer
+  i2-rgb-bytes (px) (dst) (i) (n) =
+    if i >= n then dst
+    else let w = poke-byte dst i (i2-rgb px (i / 3) (i - i / 3 * 3))
+    in i2-rgb-bytes px dst (i + 1) n
+
+  i2-row : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-row (rgb) (w) (y) (c) (x) (dst) =
+    if x >= w then 0
+    else let s = i2-set dst x (real-from-int (peek-byte rgb ((y * w + x) * 3 + c)) * 2.0 / 255.0 - 1.0)
+    in i2-row rgb w y c (x + 1) dst
+
+  i2-upload-rows : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  i2-upload-rows (rgb) (h) (w) (dev) (k) (row) =
+    if k >= 3 * h then True
+    else let c = k / h
+    in let r = i2-row rgb w (k - c * h) c 0 row
+    in if gpu-buf-write dev (k * w * 4) (w * 4) row == False then False
+    else i2-upload-rows rgb h w dev (k + 1) row
+
+ The flattened picture as 3 x h x w f32 in [-1, 1] on the device.
+
+  img2img-picture : Integer, Integer, Integer -> Act
+  img2img-picture (rgb) (h) (w) =
+    let dev = gpu-buf-alloc (3 * h * w * 4)
+    in let ok = if dev == 0 then False else i2-upload-rows rgb h w dev 0 (alloc-bytes (w * 4))
+    in vd-act dev 3 h w ok
+
+Section: Posterior
+
+ The VAE's scaling factor: SDXL's 0.13025, SD1.5's 0.18215 (Forge's
+ latent.py, SDXL and SD15).
+
+  i2-latent-scale : Boolean -> Real
+  i2-latent-scale (sd15) = if sd15 then 0.18215 else 0.13025
+
+  img2img-posterior : Integer, Integer, Integer, Integer, Real, Integer -> Integer
+  img2img-posterior (mom) (eps) (out) (hw) (scale) (i) =
+    if i >= 4 * hw then 0
+    else let lv0 = i2-get mom (i + 4 * hw)
+    in let lv = if lv0 < 0.0 - 30.0 then 0.0 - 30.0 else if lv0 > 20.0 then 20.0 else lv0
+    in let s = i2-set out i ((i2-get mom i + sm-exp (0.5 * lv) * i2-get eps i) * scale)
+    in img2img-posterior mom eps out hw scale (i + 1)
+
+Section: Mask
+
+  i2-luma : Integer, Integer -> Integer
+  i2-luma (px) (p) = bit-shru (peek-byte px (p * 4) * 19595 + peek-byte px (p * 4 + 1) * 38470 + peek-byte px (p * 4 + 2) * 7471 + 32768) 16
+
+  i2-opaque : Integer, Integer, Integer -> Boolean
+  i2-opaque (px) (p) (n) = if p >= n then True else if peek-byte px (p * 4 + 3) /= 255 then False else i2-opaque px (p + 1) n
+
+  i2-mask-l : Integer, Integer, Integer, Boolean, Integer -> Integer
+  i2-mask-l (px) (dst) (n) (alpha) (p) =
+    if p >= n then dst
+    else let w = poke-byte dst p (if alpha then (if peek-byte px (p * 4 + 3) > 128 then 255 else 0) else i2-luma px p)
+    in i2-mask-l px dst n alpha (p + 1)
+
+  img2img-binary-mask : Integer, Integer -> Integer
+  img2img-binary-mask (px) (n) = i2-mask-l px (alloc-bytes n) n (i2-opaque px 0 n == False) 0
+
+ Soft inpainting's create_binary_mask (round=False): the alpha as it stands.
+
+  img2img-soft-mask : Integer, Integer -> Integer
+  img2img-soft-mask (px) (n) = i2-mask-soft px (alloc-bytes n) n (i2-opaque px 0 n == False) 0
+
+  i2-mask-soft : Integer, Integer, Integer, Boolean, Integer -> Integer
+  i2-mask-soft (px) (dst) (n) (alpha) (p) =
+    if p >= n then dst
+    else let w = poke-byte dst p (if alpha then peek-byte px (p * 4 + 3) else i2-luma px p)
+    in i2-mask-soft px dst n alpha (p + 1)
+
+  i2-gauss-raw : Integer, Real, Integer, List Real -> List Real
+  i2-gauss-raw (k) (s) (i) (acc) =
+    if i >= k then acc
+    else let x = real-from-int (i - (k - 1) / 2)
+    in i2-gauss-raw k s (i + 1) (list-push acc (sm-exp (0.0 - x * x / (2.0 * s * s))))
+
+  i2-sum : List Real, Integer, Real -> Real
+  i2-sum (xs) (i) (acc) = if i >= list-length xs then acc else i2-sum xs (i + 1) (acc + list-at xs i)
+
+  i2-scale : List Real, Real, Integer, List Real -> List Real
+  i2-scale (xs) (k) (i) (acc) = if i >= list-length xs then acc else i2-scale xs k (i + 1) (list-push acc (list-at xs i * k))
+
+  i2-gauss : Integer -> List Real
+  i2-gauss (blur) =
+    let raw = i2-gauss-raw (2 * real-to-int (2.5 * real-from-int blur + 0.5) + 1) (real-from-int blur) 0 []
+    in i2-scale raw (1.0 / i2-sum raw 0 0.0) 0 []
+
+  i2-reflect : Integer, Integer -> Integer
+  i2-reflect (i) (n) =
+    if n == 1 then 0
+    else if i < 0 then i2-reflect (0 - i) n
+    else if i >= n then i2-reflect (2 * n - 2 - i) n
+    else i
+
+  i2-tap : Integer, Integer, Integer, Integer, Boolean, List Real, Integer, Real -> Real
+  i2-tap (src) (w) (h) (p) (across) (k) (j) (acc) =
+    if j >= list-length k then acc
+    else let r = (list-length k - 1) / 2
+    in let y = p / w
+    in let x = p - y * w
+    in let q = if across then y * w + i2-reflect (x + j - r) w else i2-reflect (y + j - r) h * w + x
+    in i2-tap src w h p across k (j + 1) (acc + list-at k j * real-from-int (peek-byte src q))
+
+  i2-blur-pass : Integer, Integer, Integer, Integer, Boolean, List Real, Integer -> Integer
+  i2-blur-pass (src) (dst) (w) (h) (across) (k) (p) =
+    if p >= w * h then dst
+    else let v = real-to-int (i2-tap src w h p across k 0 0.0 + 0.5)
+    in let s = poke-byte dst p (if v > 255 then 255 else if v < 0 then 0 else v)
+    in i2-blur-pass src dst w h across k (p + 1)
+
+  img2img-blur : Integer, Integer, Integer, Integer -> Integer
+  img2img-blur (m) (w) (h) (blur) =
+    if blur <= 0 then m
+    else let k = i2-gauss blur
+    in let a = i2-blur-pass m (alloc-bytes (w * h)) w h True k 0
+    in i2-blur-pass a (alloc-bytes (w * h)) w h False k 0
+
+  i2-double : Integer, Integer, Integer, Integer -> Integer
+  i2-double (m) (dst) (i) (n) =
+    if i >= n then dst
+    else let v = 2 * peek-byte m i
+    in let s = poke-byte dst i (if v > 255 then 255 else v)
+    in i2-double m dst (i + 1) n
+
+  img2img-overlay-mask : Integer, Integer -> Integer
+  img2img-overlay-mask (m) (n) = i2-double m (alloc-bytes n) 0 n
+
+ Pillow's bicubic reduction along one axis.
+
+  i2-cubic : Real -> Real
+  i2-cubic (x0) =
+    let x = i2-abs x0
+    in if x < 1.0 then (1.5 * x - 2.5) * x * x + 1.0
+    else if x < 2.0 then (((x - 5.0) * x + 8.0) * x - 4.0) * (0.0 - 0.5)
+    else 0.0
+
+  i2-weights : Integer, Real, Real, Real, Integer, List Real -> List Real
+  i2-weights (xmin) (center) (fs) (x) (n) (acc) =
+    if real-to-int x >= n then acc
+    else i2-weights xmin center fs (x + 1.0) n (list-push acc (i2-cubic ((x + real-from-int xmin - center + 0.5) / fs)))
+
+  i2-fixed : List Real, Real, Integer, List Integer -> List Integer
+  i2-fixed (ws) (total) (i) (acc) =
+    if i >= list-length ws then acc
+    else let k = (if total ~0 0.0 then list-at ws i else list-at ws i / total) * 4194304.0
+    in i2-fixed ws total (i + 1) (list-push acc (if k < 0.0 then real-to-int (k - 0.5) else real-to-int (k + 0.5)))
+
+  I2Coeffs = record {
+    ic-min : Integer,
+    ic-k : List Integer
+  }
+
+  i2-coeffs : Integer, Integer, Integer -> I2Coeffs
+  i2-coeffs (inn) (outn) (xx) =
+    let scale = real-from-int inn / real-from-int outn
+    in let fs = if scale < 1.0 then 1.0 else scale
+    in let support = 2.0 * fs
+    in let center = (real-from-int xx + 0.5) * scale
+    in let lo0 = real-to-int (center - support + 0.5)
+    in let lo = if lo0 < 0 then 0 else lo0
+    in let hi0 = real-to-int (center + support + 0.5)
+    in let hi = if hi0 > inn then inn else hi0
+    in let ws = i2-weights lo center fs 0.0 (hi - lo) []
+    in I2Coeffs { ic-min = lo, ic-k = i2-fixed ws (i2-sum ws 0 0.0) 0 [] }
+
+  i2-dot8 : Integer, Integer, Integer, List Integer, Integer, Integer -> Integer
+  i2-dot8 (src) (base) (stride) (k) (j) (acc) =
+    if j >= list-length k then acc
+    else i2-dot8 src base stride k (j + 1) (acc + peek-byte src (base + j * stride) * list-at k j)
+
+  i2-clip8 : Integer -> Integer
+  i2-clip8 (v) = let s = bit-shr v 22 in if s < 0 then 0 else if s > 255 then 255 else s
+
+  i2-resize-h : Integer, Integer, Integer, Integer, Integer, List I2Coeffs, Integer -> Integer
+  i2-resize-h (src) (dst) (w) (h) (ow) (cs) (p) =
+    if p >= h * ow then dst
+    else let y = p / ow
+    in let c = list-at cs (p - y * ow)
+    in let s = poke-byte dst p (i2-clip8 (2097152 + i2-dot8 src (y * w + c.ic-min) 1 (c.ic-k) 0 0))
+    in i2-resize-h src dst w h ow cs (p + 1)
+
+  i2-resize-v : Integer, Integer, Integer, Integer, List I2Coeffs, Integer -> Integer
+  i2-resize-v (src) (dst) (w) (oh) (cs) (p) =
+    if p >= oh * w then dst
+    else let y = p / w
+    in let c = list-at cs y
+    in let s = poke-byte dst p (i2-clip8 (2097152 + i2-dot8 src (c.ic-min * w + p - y * w) w (c.ic-k) 0 0))
+    in i2-resize-v src dst w oh cs (p + 1)
+
+  i2-all-coeffs : Integer, Integer, Integer, List I2Coeffs -> List I2Coeffs
+  i2-all-coeffs (inn) (outn) (i) (acc) = if i >= outn then acc else i2-all-coeffs inn outn (i + 1) (list-push acc (i2-coeffs inn outn i))
+
+  img2img-reduce : Integer, Integer, Integer, Integer, Integer -> Integer
+  img2img-reduce (m) (w) (h) (ow) (oh) =
+    let a = i2-resize-h m (alloc-bytes (h * ow)) w h ow (i2-all-coeffs w ow 0 []) 0
+    in i2-resize-v a (alloc-bytes (oh * ow)) ow oh (i2-all-coeffs h oh 0 []) 0
+
+ The latent mask: 1 where the reduced mask is at least 128, one byte per
+ latent pixel.
+
+  i2-round : Integer, Integer, Integer, Integer -> Integer
+  i2-round (m) (dst) (i) (n) =
+    if i >= n then dst
+    else let s = poke-byte dst i (if peek-byte m i >= 128 then 1 else 0)
+    in i2-round m dst (i + 1) n
+
+  img2img-latent-mask : Integer, Integer, Integer -> Integer
+  img2img-latent-mask (blurred) (w) (h) = i2-round (img2img-reduce blurred w h (w / 8) (h / 8)) (alloc-bytes (w / 8 * (h / 8))) 0 (w / 8 * (h / 8))
+
+ Pillow's alpha_composite of an overlay pixel of alpha a over an opaque one,
+ the overlay being the original premultiplied by a then unpremultiplied.
+
+  i2-over : Integer, Integer, Integer -> Integer
+  i2-over (orig) (a) (gen) =
+    if a == 0 then gen
+    else let pm = i2-blend8 orig 0 a
+    in let src0 = if a == 255 then pm else (255 * pm) / a
+    in let src = if src0 > 255 then 255 else src0
+    in let t = (src * a + gen * (255 - a)) * 128 + 16384
+    in bit-shru (bit-shru t 8 + t) 8 / 128
+
+  img2img-composite : Integer, Integer, Integer, Integer, Integer -> Integer
+  img2img-composite (rgb) (mfo) (gen) (i) (n) =
+    if i >= n then gen
+    else let s = poke-byte gen i (i2-over (peek-byte rgb i) (255 - peek-byte mfo (i / 3)) (peek-byte gen i))
+    in img2img-composite rgb mfo gen (i + 1) n
+
+Section: Masked Content
+
+ Forge's latent nothing (3) and latent noise (2) on the init latent before
+ sampling (processing.py:1834-1840): times 1 - the latent mask, plus, for
+ latent noise, the mask times create_random_tensors of the seed alone, a
+ fresh generator's first draw with no variation.
+
+  i2-content : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-content (init) (nz) (lm) (hw) (i) (n) =
+    if i >= n then 0
+    else let m = real-from-int (peek-byte lm (i - i / hw * hw))
+    in let k = i2-get init i * (1.0 - m)
+    in let s = i2-set init i (if nz == 0 then k else k + i2-get nz i * m)
+    in i2-content init nz lm hw (i + 1) n
+
+  img2img-content : Integer, Integer, Integer, Integer, Integer -> Integer
+  img2img-content (fill) (init) (lm) (hw) (seed) =
+    let n = 4 * hw
+    in if fill == 3 then i2-content init 0 lm hw 0 n
+    else if fill == 2 then (let nz = alloc-bytes (n * 4) in let z = noise-torch-into nz seed 0 n in i2-content init nz lm hw 0 n)
+    else 0
+
+  i2-soft-content : Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-soft-content (fill) (init) (nm) (hw) (seed) =
+    if fill == 3 then soft-content 3 init 0 nm hw
+    else if fill == 2 then (let nz = alloc-bytes (4 * hw * 4) in let z = noise-torch-into nz seed 0 (4 * hw) in soft-content 2 init nz nm hw)
+    else 0
+
+Section: Latent Resize
+
+  i2-src : Integer, Integer, Integer -> Real
+  i2-src (o) (inn) (outn) =
+    let s = (real-from-int o + 0.5) * (real-from-int inn / real-from-int outn) - 0.5
+    in if s < 0.0 then 0.0 else s
+
+  i2-bilinear-at : Integer, Integer, Integer, Integer, Integer, Integer -> Real
+  i2-bilinear-at (src) (h) (w) (oh) (ow) (i) =
+    let c = i / (oh * ow)
+    in let r = i - c * oh * ow
+    in let oy = r / ow
+    in let sy = i2-src oy h oh
+    in let sx = i2-src (r - oy * ow) w ow
+    in let y0 = real-to-int sy
+    in let x0 = real-to-int sx
+    in let y1 = if y0 < h - 1 then y0 + 1 else y0
+    in let x1 = if x0 < w - 1 then x0 + 1 else x0
+    in let ly = sy - real-from-int y0
+    in let lx = sx - real-from-int x0
+    in let base = c * h * w
+    in (1.0 - ly) * ((1.0 - lx) * i2-get src (base + y0 * w + x0) + lx * i2-get src (base + y0 * w + x1)) + ly * ((1.0 - lx) * i2-get src (base + y1 * w + x0) + lx * i2-get src (base + y1 * w + x1))
+
+  img2img-bilinear : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  img2img-bilinear (src) (dst) (h) (w) (oh) (ow) (i) =
+    if i >= 4 * oh * ow then dst
+    else let s = i2-set dst i (i2-bilinear-at src h w oh ow i)
+    in img2img-bilinear src dst h w oh ow (i + 1)
+
+Section: Masked Denoiser
+
+  I2Mask = record {
+    mk-latent : Integer,
+    mk-init : Integer,
+    mk-hw : Integer,
+    mk-gx : Integer,
+    mk-gn : Integer,
+    mk-dev : Integer
+  }
+
+  i2-keep : Integer, Integer, Integer, Integer, Integer, Real, Integer, Integer -> Integer
+  i2-keep (x) (init) (nz) (lm) (hw) (s) (i) (n) =
+    if i >= n then 0
+    else let w = if peek-byte lm (i - i / hw * hw) == 1 then 0 else i2-set x i (i2-get init i + i2-get nz i * s)
+    in i2-keep x init nz lm hw s (i + 1) n
+
+  i2-settle : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-settle (x) (init) (lm) (hw) (i) (n) =
+    if i >= n then 0
+    else let w = if peek-byte lm (i - i / hw * hw) == 1 then 0 else poke-32 x (i * 4) (peek-32 init (i * 4))
+    in i2-settle x init lm hw (i + 1) n
+
+ The kept region of a device latent set to the init latent.
+
+  img2img-settle : I2Mask, Integer -> Boolean
+  img2img-settle (m) (x) =
+    let n = 4 * m.mk-hw
+    in if gpu-buf-read x 0 (n * 4) (m.mk-gx) == False then False
+    else let s = i2-settle (m.mk-gx) (m.mk-init) (m.mk-latent) (m.mk-hw) 0 n
+    in gpu-buf-write x 0 (n * 4) (m.mk-gx)
+
+ One model call under soft inpainting, mk-latent the unrounded mask.
+
+  img2img-soft-masked : I2Mask, SoftCfg, Integer, (Integer, Real -> Integer), (Real -> Integer), Integer, Real -> Integer
+  img2img-soft-masked (m) (sc) (tb) (den) (noise) (x) (s) =
+    let n = 4 * m.mk-hw
+    in let nb = noise s
+    in let ok = nb /= 0 & gpu-buf-read x 0 (n * 4) (m.mk-gx) & gpu-buf-read nb 0 (n * 4) (m.mk-gn)
+    in let k = if ok then soft-keep (m.mk-gx) (m.mk-init) (m.mk-gn) (m.mk-latent) (m.mk-hw) s 0 else 0
+    in if ok == False | gpu-buf-write (m.mk-dev) 0 (n * 4) (m.mk-gx) == False then 0
+    else let d = den (m.mk-dev) s
+    in if d == 0 | gpu-buf-read d 0 (n * 4) (m.mk-gn) == False then 0
+    else let t = soft-modified sc (m.mk-latent) tb (m.mk-hw) s
+    in let b = soft-latent-blend sc (m.mk-init) (m.mk-gn) t (m.mk-gn) (m.mk-hw)
+    in if gpu-buf-write d 0 (n * 4) (m.mk-gn) then d
+    else let f = gpu-buf-free d in 0
+
+ One model call under the mask: noise answers the device buffer of the
+ call's draw.
+
+  img2img-masked : I2Mask, (Integer, Real -> Integer), (Real -> Integer), Integer, Real -> Integer
+  img2img-masked (m) (den) (noise) (x) (s) =
+    let n = 4 * m.mk-hw
+    in let nb = noise s
+    in let ok = nb /= 0 & gpu-buf-read x 0 (n * 4) (m.mk-gx) & gpu-buf-read nb 0 (n * 4) (m.mk-gn)
+    in let k = if ok then i2-keep (m.mk-gx) (m.mk-init) (m.mk-gn) (m.mk-latent) (m.mk-hw) s 0 n else 0
+    in if ok == False | gpu-buf-write (m.mk-dev) 0 (n * 4) (m.mk-gx) == False then 0
+    else let d = den (m.mk-dev) s
+    in if d == 0 then 0
+    else if img2img-settle m d then d
+    else let f = gpu-buf-free d in 0
+
+Section: Generation
+
+  i2-torch-seed : Integer -> Integer
+  i2-torch-seed (seed) = let v = seed + 100000 in v - v / 65536 * 65536
+
+ The next draw of the global CUDA generator into buffer nb; drawn holds how
+ many it has given.
+
+  i2-blend : Integer, Integer, Integer, List Integer -> Integer
+  i2-blend (nb) (seed) (n) (drawn) =
+    let k = list-at drawn 0
+    in let c = list-set-at drawn 0 (k + 1)
+    in if noise-torch nb (i2-torch-seed seed) k n then nb else 0
+
+  i2-den : TiCfg, Integer, Real -> Integer
+  i2-den (c) (x) (s) =
+    if c.tc-cfg ~0 1.0 then (let tick = ti-tick (c.tc-extras) in i2-den-one c (ti-model c (c.tc-yc) (c.tc-cc) x s) x s)
+    else ti-den c x s
+
+ Forge skips the uncond call at guidance 1 and still runs its post-CFG
+ functions on the cond prediction.
+
+ Dynamic thresholding at guidance 1 takes the uncond prediction as zero,
+ which is what Forge's skipped uncond call leaves.
+
+  i2-dt-one : TiCfg, Integer, Real -> Integer
+  i2-dt-one (c) (dc) (s) =
+    let n = 4 * c.tc-h * c.tc-w
+    in let z = gpu-buf-alloc (n * 4)
+    in let o = gpu-buf-alloc (n * 4)
+    in let r = if z == 0 | o == 0 then 0 - 1 else if sm-lincomb dc dc dc z 0.0 0.0 0.0 n < 0 then 0 - 1 else ti-combine c s dc z o n
+    in let f = un-free 0 z
+    in if r < 0 then un-free 0 o else o
+
+  i2-den-one : TiCfg, Integer, Integer, Real -> Integer
+  i2-den-one (c) (dc) (x) (s) =
+    let g = if dc == 0 | list-length ((c.tc-extras).tx-dt) == 0 then dc else i2-dt-one c dc s
+    in let o = if g == 0 then 0 else ti-post c x s dc 0 0 g
+    in if o /= dc & dc /= 0 then un-free o dc else o
+
+  i2-sample : Txt2Img, TiCfg, Integer, List Real, List Real, Integer, (Integer, Real -> Integer) -> Integer
+ Over a schedule's tail, DPM fast and DPM adaptive run from its first sigma
+ to its next-to-last, DPM fast in one evaluation per step (Forge's
+ sample_img2img).
+
+  i2-sample (r) (tc) (x) (sig) (full) (n) (den) = i2-sample-with r (\k -> tc) x sig full n den
+
+  i2-sample-with : Txt2Img, (Integer -> TiCfg), Integer, List Real, List Real, Integer, (Integer, Real -> Integer) -> Integer
+  i2-sample-with (r) (cur) (x) (sig) (full) (n) (den) =
+    let nb = gpu-buf-alloc (n * 4)
+    in let len = list-length sig
+    in let l = ti-launch ((cur 0).tc-extras) (r.ti-sampler) (len - 1)
+    in let bad = if nb == 0 | len < 2 then 1 else ti-sample-with (r.ti-sampler) den (\xh s ub -> ti-den3 (cur 0) xh s ub) x sig full (len - 1) (list-at sig (len - 2)) (list-at sig 0) (len - 1) n nb (r.ti-seed)
+    in let f = if nb == 0 then True else gpu-buf-free nb
+    in bad
+
+  I2Start = record {
+    is-x : Integer,
+    is-rgb : Integer,
+    is-mfo : Integer,
+    is-why : Text
+  }
+
+  i2-fail : Text -> I2Start
+  i2-fail (why) = I2Start { is-x = 0, is-rgb = 0, is-mfo = 0, is-why = why }
+
+ A checkpoint's weights, loaded once and kept on the device while requests
+ name it. The family is SDXL when every SDXL tensor binds, else SD1.5 when
+ every SD1.5 tensor binds; SD1.5 has no OpenCLIP-G.
+
+  I2Model = record {
+    im-ckpt : Text,
+    im-why : Text,
+    im-sd15 : Boolean,
+    im-wl : ClipWeights,
+    im-wg : ClipWeights,
+    im-unet : UNetFile,
+    im-tab : List Real,
+    im-vd : VaeWeights,
+    im-ve : VaeWeights
+  }
+
+  i2-no-clip : ClipSpec -> ClipWeights
+  i2-no-clip (s) = ClipWeights { cw-spec = s, cw-status = 0 - 1, cw-path = "", cw-tok = BoundTensor { bt-name = "", bt-dtype = 0, bt-shape = [], bt-offset = 0, bt-bytes = 0 }, cw-pos = 0, cw-layers = [], cw-final-g = 0, cw-final-b = 0, cw-proj = 0 }
+
+  img2img-model : Text -> I2Model
+  img2img-model (ckpt) =
+    let file = ckpt-open ckpt
+    in let lx = layout-bind file sdxl-layout
+    in let xl = file.st-valid & parts-complete (lx.lb-parts) 0
+    in let l15 = if xl then lx else layout-bind file sd15-layout
+    in let sd15 = xl == False & file.st-valid & parts-complete (l15.lb-parts) 0
+    in let ok = xl | sd15
+    in let lb = if sd15 then l15 else lx
+    in let vpart = if ok then ti-vae-part (lb.lb-parts) 0 else PartBinding { pb-name = "vae", pb-required = 0, pb-bound = [], pb-missing = [], pb-misshapen = [], pb-optional = 0 }
+    in let wl = if ok then clip-load ckpt file lb (if sd15 then clip-l15-spec else clip-l-spec) else i2-no-clip clip-l-spec
+    in let wg = if xl then clip-load ckpt file lb openclip-g-spec else i2-no-clip openclip-g-spec
+    in I2Model { im-ckpt = ckpt, im-why = (if ok then "" else "refused: " & ckpt & " is not a readable SDXL or SD1.5 checkpoint"), im-sd15 = sd15, im-wl = wl, im-wg = wg, im-unet = (if ok then unet-load (unet-open ckpt) else unet-open ckpt), im-tab = unet-log-sigmas 0, im-vd = vae-load ckpt vpart "first_stage_model.", im-ve = vae-encoder-load ckpt vpart "first_stage_model." }
+
+  i2-skip : I2Model, Integer -> I2Model
+  i2-skip (m) (k) = I2Model { im-ckpt = m.im-ckpt, im-why = m.im-why, im-sd15 = m.im-sd15, im-wl = ce-skip (m.im-wl) k, im-wg = ce-skip (m.im-wg) k, im-unet = m.im-unet, im-tab = m.im-tab, im-vd = m.im-vd, im-ve = m.im-ve }
+
+  i2-layer-handles : List ClipLayer, Integer, List Integer -> List Integer
+  i2-layer-handles (ys) (i) (acc) =
+    if i >= list-length ys then acc
+    else let y = list-at ys i
+    in i2-layer-handles ys (i + 1) (acc & [y.cy-ln1-g, y.cy-ln1-b, y.cy-q-w, y.cy-q-b, y.cy-k-w, y.cy-k-b, y.cy-v-w, y.cy-v-b, y.cy-o-w, y.cy-o-b, y.cy-ln2-g, y.cy-ln2-b, y.cy-fc1-w, y.cy-fc1-b, y.cy-fc2-w, y.cy-fc2-b])
+
+  i2-clip-free : ClipWeights -> Integer
+  i2-clip-free (w) = ce-free-all ([w.cw-pos, w.cw-final-g, w.cw-final-b, w.cw-proj] & i2-layer-handles (w.cw-layers) 0 []) 0
+
+  img2img-model-free : I2Model -> Integer
+  img2img-model-free (m) = ti-free-all ((m.im-unet).uf-handles) 0 0 + i2-clip-free (m.im-wl) + i2-clip-free (m.im-wg) + vae-free (m.im-vd) 0 0 + vae-free (m.im-ve) 0 0
+
+ img2img or inpaint from the staged picture: the init latent, the start and
+ the sampling, with the mask blended where there is one.
+
+  i2-from-picture : I2i, TiCfg, I2Model, (Integer -> TiCfg) -> I2Start
+  i2-from-picture (q) (tc) (m) (cur) =
+    let r = q.i2-base
+    in let h = r.ti-height
+    in let w = r.ti-width
+    in let sw = if q.i2-src-w > 0 then q.i2-src-w else w
+    in let sh = if q.i2-src-h > 0 then q.i2-src-h else h
+    in let px = i2-read-file (q.i2-image) (sw * sh * 4)
+    in if px == 0 then i2-fail "refused: the picture could not be read"
+    else let src = i2-rgb-bytes px (alloc-bytes (sw * sh * 3)) 0 (sw * sh * 3)
+    in let only = q.i2-area == 1 & q.i2-mask /= ""
+    in let m0 = if only then i2-mask-blurred q sw sh sw sh else 0
+    in let box = if m0 == 0 then [] else i2-box q m0 sw sh w h
+    in if only & m0 == 0 then i2-fail "refused: the mask could not be read"
+    else if list-length box > 0 then i2-only-masked q tc m src sw sh m0 box cur
+    else let rgb = if (sw == w & sh == h) | q.i2-resize == 3 then src else resize-mode (q.i2-resize) src sw sh w h
+    in if rgb == 0 then i2-fail ("refused: resize mode " & show (q.i2-resize) & " is not built")
+    else let blurred = if q.i2-mask == "" | only then 0 else i2-mask-blurred q w h sw sh
+    in if q.i2-mask /= "" & only == False & blurred == 0 then i2-fail "refused: the mask could not be read"
+    else let pic = img2img-picture (if q.i2-fill == 0 & blurred /= 0 then inpaint-fill rgb blurred w h else rgb) (if q.i2-resize == 3 then sh else h) (if q.i2-resize == 3 then sw else w)
+    in let mom = if pic.ah == 0 then pic else vae-encode (m.im-ve) pic
+    in let f2 = vd-free pic
+    in if mom.ah == 0 then i2-fail "encode failed"
+    else i2-with-moments q tc rgb mom blurred (if blurred == 0 then 0 else img2img-overlay-mask blurred (w * h)) cur
+
+ Only masked (Diffusion chapter InpaintMasked): an empty box is a blank mask,
+ which Forge runs as img2img with no mask.
+
+  i2-box : I2i, Integer, Integer, Integer, Integer, Integer -> List Integer
+  i2-box (q) (m0) (sw) (sh) (w) (h) =
+    let b = inpaint-crop-box m0 sw sh (q.i2-padding)
+    in if list-length b == 0 then [] else inpaint-expand-box b w h sw sh
+
+  i2-only-masked : I2i, TiCfg, I2Model, Integer, Integer, Integer, Integer, List Integer, (Integer -> TiCfg) -> I2Start
+  i2-only-masked (q) (tc) (m) (src) (sw) (sh) (m0) (box) (cur) =
+    let r = q.i2-base
+    in let h = r.ti-height
+    in let w = r.ti-width
+    in let crop = inpaint-crop-rgb src sw box w h
+    in let lmask = inpaint-crop-l m0 sw box w h
+    in let pic = img2img-picture (if q.i2-fill == 0 then inpaint-fill crop lmask w h else crop) h w
+    in let mom = if pic.ah == 0 then pic else vae-encode (m.im-ve) pic
+    in let f2 = vd-free pic
+    in if mom.ah == 0 then i2-fail "encode failed"
+    else let st = i2-with-moments q tc src mom lmask m0 cur
+    in if q.i2-soft == 1 & st.is-x /= 0 then I2Start { is-x = st.is-x, is-rgb = st.is-rgb, is-mfo = i2-uncrop-l (st.is-mfo) w h box sw sh, is-why = "" } else st
+
+ uncrop of the soft overlay mask: resized into the box of a picture-sized
+ canvas that is black outside it (processing.py uncrop, an RGBA canvas read
+ as L).
+
+  i2-uncrop-l : Integer, Integer, Integer, List Integer, Integer, Integer -> Integer
+  i2-uncrop-l (m) (pw) (ph) (b) (sw) (sh) =
+    let cw = list-at b 2 - list-at b 0
+    in let ch = list-at b 3 - list-at b 1
+    in let placed = im-place (i2-zero-bytes (alloc-bytes (sw * sh * 3 + 8)) 0 (sw * sh * 3)) sw (resize-mode 1 (si-grey3 m (alloc-bytes (pw * ph * 3)) 0 (pw * ph)) pw ph cw ch) b 0 (cw * ch * 3)
+    in si-band0 placed (alloc-bytes (sw * sh)) 0 (sw * sh)
+
+  i2-mask-blurred : I2i, Integer, Integer, Integer, Integer -> Integer
+  i2-mask-blurred (q) (w) (h) (sw) (sh) =
+    let px = i2-read-file (q.i2-mask) (sw * sh * 4)
+    in if px == 0 then 0
+    else let b = img2img-blur (if q.i2-soft == 1 then img2img-soft-mask px (sw * sh) else img2img-binary-mask px (sw * sh)) sw sh (q.i2-blur)
+    in if sw == w & sh == h then b else resize-mode-l (q.i2-resize) b sw sh w h
+
+  i2-with-moments : I2i, TiCfg, Integer, Act, Integer, Integer, (Integer -> TiCfg) -> I2Start
+  i2-with-moments (q) (tc) (rgb) (mom) (blurred) (mfo) (cur) =
+    let r = q.i2-base
+    in let shw = mom.ahh * mom.aww
+    in let th = r.ti-height / 8
+    in let tw = r.ti-width / 8
+    in let hw = th * tw
+    in let n = 4 * hw
+    in let gm = alloc-bytes (8 * shw * 4)
+    in let ge = alloc-bytes (4 * shw * 4)
+    in let post = alloc-bytes (4 * shw * 4)
+    in let x = gpu-buf-alloc (n * 4)
+    in let nb = gpu-buf-alloc (n * 4)
+    in let ok = x /= 0 & nb /= 0 & gpu-buf-read (mom.ah) 0 (8 * shw * 4) gm & noise-torch-cpu-into ge (i2-torch-seed (if q.i2-post >= 0 then q.i2-post else r.ti-seed)) (4 * shw) == 0
+    in let p = if ok then img2img-posterior gm ge post shw (i2-latent-scale (tc.tc-sd15)) 0 else 0
+    in let init = if shw == hw then post else img2img-bilinear post (alloc-bytes (n * 4)) (mom.ahh) (mom.aww) th tw 0
+    in let f = vd-free mom
+    in let lm = if blurred == 0 then 0 else if q.i2-soft == 1 then soft-nmask (img2img-reduce blurred (r.ti-width) (r.ti-height) tw th) hw else img2img-latent-mask blurred (r.ti-width) (r.ti-height)
+    in let c = if ok == False | lm == 0 then 0 else if q.i2-soft == 1 then i2-soft-content (q.i2-fill) init lm hw (r.ti-seed) else img2img-content (q.i2-fill) init lm hw (r.ti-seed)
+    in let sig = img2img-sigmas-for r (tc.tc-sd15) (r.ti-steps) (q.i2-denoise) False
+    in if ok == False | gpu-buf-write x 0 (n * 4) init == False | va-noise nb (r.ti-seed) (q.i2-var) 4 th tw == False then i2-fail "the init latent could not be staged"
+    else let s0 = sm-lincomb x nb nb x 1.0 (list-at sig 0) 0.0 n
+    in let fb = gpu-buf-free nb
+    in if lm == 0 then i2-run q tc x sig n init 0 rgb 0 cur
+    else i2-run q tc x sig n init lm rgb mfo cur
+
+  i2-run : I2i, TiCfg, Integer, List Real, Integer, Integer, Integer, Integer, Integer, (Integer -> TiCfg) -> I2Start
+  i2-run (q) (tc) (x) (sig) (n) (init) (lm) (rgb) (mfo) (cur) =
+    let r = q.i2-base
+    in let mk = I2Mask { mk-latent = lm, mk-init = init, mk-hw = n / 4, mk-gx = alloc-bytes (n * 4), mk-gn = alloc-bytes (n * 4), mk-dev = gpu-buf-alloc (n * 4) }
+    in let nb = gpu-buf-alloc (n * 4)
+    in let drawn = [0]
+    in let noise = \s -> i2-blend nb (r.ti-seed) n drawn
+    in let soft = lm /= 0 & q.i2-soft == 1
+    in let tb = if soft then alloc-bytes (n / 4 * 4) else 0
+    in let den = if lm == 0 then (\xh s -> ti-den (cur 0) xh s) else if soft then (\xh s -> img2img-soft-masked mk (q.i2-sc) tb (\xx ss -> ti-den (cur 0) xx ss) noise xh s) else (\xh s -> img2img-masked mk (\xx ss -> ti-den (cur 0) xx ss) noise xh s)
+    in let bad = i2-sample-with r cur x sig (img2img-full-for r (tc.tc-sd15) (r.ti-steps) (q.i2-denoise) False) n den
+    in let settled = if lm == 0 | soft then True else img2img-settle mk x
+    in let f = gpu-buf-free nb & gpu-buf-free (mk.mk-dev)
+    in let smask = if soft & bad == 0 & gpu-buf-read x 0 (n * 4) (mk.mk-gx) then soft-adaptive-mask (q.i2-sc) (mk.mk-gx) init lm (r.ti-width / 8) (r.ti-height / 8) (r.ti-width) (r.ti-height) else 0
+    in if bad > 0 | settled == False | (soft & smask == 0) then i2-fail ("sampling failed: " & show bad & " refused steps")
+    else I2Start { is-x = x, is-rgb = (if lm == 0 then 0 else rgb), is-mfo = (if soft then smask else mfo), is-why = "" }
+
+ txt2img at the base size, as Txt2Img's ti-sample does.
+
+  i2-plain : I2i, TiCfg -> I2Start
+  i2-plain (q) (tc) =
+    let r = q.i2-base
+    in let n = 4 * tc.tc-h * tc.tc-w
+    in let x = gpu-buf-alloc (n * 4)
+    in let ok = x /= 0 & va-noise x (r.ti-seed) (q.i2-var) 4 (tc.tc-h) (tc.tc-w)
+    in let bad = if ok == False then 1 else ti-txt2img-run r tc x n
+    in if bad > 0 then i2-fail ("sampling failed: " & show bad & " refused steps")
+    else I2Start { is-x = x, is-rgb = 0, is-mfo = 0, is-why = "" }
+
+ The hires pass on the resized latent of i2-plain's.
+
+  i2-hires : I2i, TiCfg, TiCfg -> I2Start
+  i2-hires (q) (tc) (hc) =
+    let first = i2-first-latent q tc (hc.tc-h) (hc.tc-w)
+    in if first.is-rgb == 0 then first
+    else i2-hires-latent q hc (first.is-rgb) (\k -> hc)
+
+  i2-first-latent : I2i, TiCfg, Integer, Integer -> I2Start
+  i2-first-latent (q) (tc) (hh) (hw) =
+    let first = i2-plain q tc
+    in if first.is-x == 0 then first
+    else let x = first.is-x
+    in let n = 4 * tc.tc-h * tc.tc-w
+    in let gx = alloc-bytes (n * 4)
+    in let gy = alloc-bytes (4 * hh * hw * 4)
+    in let up = gpu-buf-read x 0 (n * 4) gx
+    in let rs = if up then img2img-bilinear gx gy (tc.tc-h) (tc.tc-w) hh hw 0 else 0
+    in let f = gpu-buf-free x
+    in if up == False then i2-fail "the first pass could not be read" else I2Start { is-x = 0, is-rgb = gy, is-mfo = 0, is-why = "" }
+
+  i2-hires-latent : I2i, TiCfg, Integer, (Integer -> TiCfg) -> I2Start
+  i2-hires-latent (q) (hc) (gy) (cur) =
+    let r = q.i2-base
+    in let n2 = 4 * hc.tc-h * hc.tc-w
+    in let x2 = gpu-buf-alloc (n2 * 4)
+    in let nb = gpu-buf-alloc (n2 * 4)
+    in let steps = if q.i2-hr-steps > 0 then q.i2-hr-steps else r.ti-steps
+    in let hsig = img2img-sigmas-for (i2-hr-base q) (hc.tc-sd15) steps (q.i2-hr-denoise) True
+    in if x2 == 0 | nb == 0 | gpu-buf-write x2 0 (n2 * 4) gy == False | va-noise nb (r.ti-seed) (q.i2-var) 4 (hc.tc-h) (hc.tc-w) == False then i2-fail "the hires latent could not be staged"
+    else let s1 = sm-lincomb x2 nb nb x2 1.0 (list-at hsig 0) 0.0 n2
+    in let fb = gpu-buf-free nb
+    in let bad2 = i2-sample-with (i2-hr-base q) cur x2 hsig (img2img-full-for (i2-hr-base q) (hc.tc-sd15) steps (q.i2-hr-denoise) True) n2 (\xh s -> i2-den (cur 0) xh s)
+    in if bad2 > 0 then i2-fail ("hires sampling failed: " & show bad2 & " refused steps")
+    else I2Start { is-x = x2, is-rgb = 0, is-mfo = 0, is-why = "" }
+
+ The hires pass through an upscaler, as sample_hr_pass's non-latent branch:
+ the first pass decoded and truncated to bytes, 255 clamp ((x + 1) / 2) in
+ f32 then astype (uint8); resize_image to the hires size, which for a scale
+ above 1 runs Upscaler.upscale (the model once, then LANCZOS to (int (W
+ scale) // 8 * 8, the same for H) when that differs) and then LANCZOS to the
+ hires size when that differs; the picture encoded and started as img2img
+ starts, over the hires schedule.
+
+  i2-trunc-bytes : Integer, Integer, Integer, Integer -> Integer
+  i2-trunc-bytes (host) (hw) (dst) (i) =
+    if i >= hw * 3 then dst
+    else let c = i - i / 3 * 3
+    in let v = sm-f32 (sm-f32 (esr-f32 (peek-32 host ((c * hw + i / 3) * 4)) + 1.0) / 2.0)
+    in let k = if v < 0.0 then 0.0 else if v > 1.0 then 1.0 else v
+    in let b = poke-byte dst i (real-to-int (sm-f32 (255.0 * k)))
+    in i2-trunc-bytes host hw dst (i + 1)
+
+  i2-upscaled : Text, Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-upscaled (path) (rgb) (w) (h) (fw) (fh) =
+    let sx = real-from-int fw / real-from-int w
+    in let sy = real-from-int fh / real-from-int h
+    in let scale = if sx > sy then sx else sy
+    in if scale <= 1.0 then resize-lanczos rgb w h fw fh
+    else let dw = 8 * real-to-int (real-from-int w * scale / 8.0)
+    in let dh = 8 * real-to-int (real-from-int h * scale / 8.0)
+    in let f = if w >= dw & h >= dh then pth-fail path "" else pth-open path
+    in let swin = f.pf-ok & swin-is f
+    in let dat = f.pf-ok & dat-is f
+    in let wts = if swin | dat then esr-load (pth-fail path "") else esr-load f
+    in let up = if w >= dw & h >= dh then rgb else if f.pf-ok == False then 0 else if swin then swin-upscale-file f rgb w h 192 8 else if dat then dat-upscale-file f rgb w h 192 8 else esr-upscale wts (esr-blocks f 0) rgb w h 192 8
+    in let uw = if w >= dw & h >= dh then w else 4 * w
+    in let uh = if w >= dw & h >= dh then h else 4 * h
+    in let fr = vae-free wts 0 0
+    in if up == 0 then 0
+    else let d1 = if uw == dw & uh == dh then up else resize-lanczos up uw uh dw dh
+    in if dw == fw & dh == fh then d1 else resize-lanczos d1 dw dh fw fh
+
+  i2-hires-upscaled : I2i, TiCfg, TiCfg, I2Model -> I2Start
+  i2-hires-upscaled (q) (tc) (hc) (m) =
+    let first = i2-first-bytes q tc m
+    in if first.is-rgb == 0 then first
+    else i2-hires-picture q tc hc m (first.is-rgb) (\k -> hc)
+
+  i2-first-bytes : I2i, TiCfg, I2Model -> I2Start
+  i2-first-bytes (q) (tc) (m) =
+    let first = i2-plain q tc
+    in if first.is-x == 0 then first
+    else let x = first.is-x
+    in let hw = tc.tc-h * tc.tc-w * 64
+    in let z = sm-lincomb x x x x (1.0 / i2-latent-scale (tc.tc-sd15)) 0.0 0.0 (4 * tc.tc-h * tc.tc-w)
+    in let img = vae-decode (m.im-vd) (Act { ah = x, ac = 4, ahh = tc.tc-h, aww = tc.tc-w })
+    in let fx = gpu-buf-free x
+    in let host = alloc-bytes (3 * hw * 4)
+    in let got = img.ah /= 0 & gpu-buf-read (img.ah) 0 (3 * hw * 4) host
+    in let fi = vd-free img
+    in if got == False then i2-fail "the first pass could not be decoded"
+    else I2Start { is-x = 0, is-rgb = i2-trunc-bytes host hw (alloc-bytes (hw * 3)) 0, is-mfo = 0, is-why = "" }
+
+  i2-hires-picture : I2i, TiCfg, TiCfg, I2Model, Integer, (Integer -> TiCfg) -> I2Start
+  i2-hires-picture (q) (tc) (hc) (m) (bytes) (cur) =
+    let fw = hc.tc-w * 8
+    in let fh = hc.tc-h * 8
+    in let up = i2-upscaled (q.i2-hr-upscaler) bytes (tc.tc-w * 8) (tc.tc-h * 8) fw fh
+    in if up == 0 then i2-fail ("the upscaler did not run: " & q.i2-hr-upscaler)
+    else let pic = img2img-picture up fh fw
+    in let mom = if pic.ah == 0 then pic else vae-encode (m.im-ve) pic
+    in let fp = vd-free pic
+    in if mom.ah == 0 then i2-fail "encode failed"
+    else i2-hires-from mom q hc cur
+
+ The upscaled picture's moments to a sampled hires latent: the posterior draw
+ as img2img's, the start noise the seed's draw 0 at the hires size (a new
+ ImageRNG), the hires schedule, the hires model call.
+
+  i2-hires-from : Act, I2i, TiCfg, (Integer -> TiCfg) -> I2Start
+  i2-hires-from (mom) (q) (hc) (cur) =
+    let r = q.i2-base
+    in let hw = mom.ahh * mom.aww
+    in let n = 4 * hw
+    in let gm = alloc-bytes (8 * hw * 4)
+    in let ge = alloc-bytes (n * 4)
+    in let init = alloc-bytes (n * 4)
+    in let x2 = gpu-buf-alloc (n * 4)
+    in let nb = gpu-buf-alloc (n * 4)
+    in let ok = x2 /= 0 & nb /= 0 & gpu-buf-read (mom.ah) 0 (8 * hw * 4) gm & noise-torch-cpu-into ge (i2-torch-seed (r.ti-seed)) n == 0
+    in let p = if ok then img2img-posterior gm ge init hw (i2-latent-scale (hc.tc-sd15)) 0 else 0
+    in let f = vd-free mom
+    in let steps = if q.i2-hr-steps > 0 then q.i2-hr-steps else r.ti-steps
+    in let hsig = img2img-sigmas-for (i2-hr-base q) (hc.tc-sd15) steps (q.i2-hr-denoise) True
+    in if ok == False | gpu-buf-write x2 0 (n * 4) init == False | va-noise nb (r.ti-seed) (q.i2-var) 4 (mom.ahh) (mom.aww) == False then i2-fail "the hires latent could not be staged"
+    else let s1 = sm-lincomb x2 nb nb x2 1.0 (list-at hsig 0) 0.0 n
+    in let fb = gpu-buf-free nb
+    in let bad2 = i2-sample-with (i2-hr-base q) cur x2 hsig (img2img-full-for (i2-hr-base q) (hc.tc-sd15) steps (q.i2-hr-denoise) True) n (\xh s -> i2-den (cur 0) xh s)
+    in if bad2 > 0 then i2-fail ("hires sampling failed: " & show bad2 & " refused steps")
+    else I2Start { is-x = x2, is-rgb = 0, is-mfo = 0, is-why = "" }
+  i2-hires-size : Integer, Real -> Integer
+  i2-hires-size (v) (scale) = real-to-int (real-from-int v * scale)
+
+ One request against a checkpoint that is already loaded; everything else it
+ allocates on the device it frees.
+
+  img2img-with : ClipBpe, I2Model, I2i -> Text
+  img2img-with (bpe) (m) (q) = if m.im-why /= "" then m.im-why else if q.i2-out-mk2 == 1 then i2-mk2 bpe m q else i2-go bpe m q
+
+  i2-go : ClipBpe, I2Model, I2i -> Text
+  i2-go (bpe) (m) (q) =
+    let r = q.i2-base
+    in let hires = q.i2-hr-scale > 0.0
+    in let fh = if hires then i2-hires-size (r.ti-height) (q.i2-hr-scale) else r.ti-height
+    in let fw = if hires then i2-hires-size (r.ti-width) (q.i2-hr-scale) else r.ti-width
+    in let c = if m.im-sd15 then clip-condition-l (m.im-wl) bpe (r.ti-prompt) else clip-condition (m.im-wl) (m.im-wg) bpe (r.ti-prompt) False
+    in let un = if m.im-sd15 then clip-condition-l (m.im-wl) bpe (r.ti-negative) else clip-condition (m.im-wl) (m.im-wg) bpe (r.ti-negative) True
+    in if c.cn-status /= 0 | un.cn-status /= 0 then "text encoders failed " & show (c.cn-status) & " " & show (un.cn-status)
+    else if c.cn-chunks /= 1 | un.cn-chunks /= 1 then "refused: prompt " & show (c.cn-chunks) & " chunks, negative " & show (un.cn-chunks) & "; the UNet context is one 77-token chunk"
+    else let hp = if hires & q.i2-hr-prompt /= "" then q.i2-hr-prompt else r.ti-prompt
+    in let hn = if hires & q.i2-hr-negative /= "" then q.i2-hr-negative else r.ti-negative
+    in let same = hp == r.ti-prompt & hn == r.ti-negative
+    in let c2 = if same then c else (if m.im-sd15 then clip-condition-l (m.im-wl) bpe hp else clip-condition (m.im-wl) (m.im-wg) bpe hp False)
+    in let un2 = if same then un else (if m.im-sd15 then clip-condition-l (m.im-wl) bpe hn else clip-condition (m.im-wl) (m.im-wg) bpe hn True)
+    in if c2.cn-status /= 0 | un2.cn-status /= 0 | c2.cn-chunks /= 1 | un2.cn-chunks /= 1 then "refused: the hires prompt and negative must each encode to one 77-token chunk"
+    else if m.im-sd15 then i2-sample-all q m (c.cn-cond-l) (un.cn-cond-l) 0 0 0 0 (c2.cn-cond-l) (un2.cn-cond-l) fh fw (if same then [c.cn-cond-l, un.cn-cond-l] else [c.cn-cond-l, un.cn-cond-l, c2.cn-cond-l, un2.cn-cond-l])
+    else let cc = clip-crossattn c
+    in let cu = clip-crossattn un
+    in let yc = ti-adm (c.cn-pooled) (r.ti-height) (r.ti-width)
+    in let yu = ti-adm (un.cn-pooled) (r.ti-height) (r.ti-width)
+    in let cc2 = if same then cc else clip-crossattn c2
+    in let cu2 = if same then cu else clip-crossattn un2
+    in let yc2 = if hires then ti-adm (c2.cn-pooled) fh fw else yc
+    in let yu2 = if hires then ti-adm (un2.cn-pooled) fh fw else yu
+    in let f1 = clip-cond-free c + clip-cond-free un + (if same then 0 else clip-cond-free c2 + clip-cond-free un2)
+    in if cc == 0 | cu == 0 | yc == 0 | yu == 0 | yc2 == 0 | yu2 == 0 | cc2 == 0 | cu2 == 0 then "conditioning failed"
+    else i2-sample-all q m cc cu yc yu yc2 yu2 cc2 cu2 fh fw (if hires then (if same then [cc, cu, yc, yu, yc2, yu2] else [cc, cu, yc, yu, yc2, yu2, cc2, cu2]) else [cc, cu, yc, yu])
+
+ SD1.5's context is CLIP-L's cond as it stands and it takes no ADM vector,
+ therefore its y handles are 0.
+
+  i2-sample-all : I2i, I2Model, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> Text
+  i2-sample-all (q) (m) (cc) (cu) (yc) (yu) (yc2) (yu2) (cc2) (cu2) (fh) (fw) (frees) =
+    let r = q.i2-base
+    in let u = m.im-unet
+    in let tc = TiCfg { tc-unet = u, tc-tab = m.im-tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = r.ti-height / 8, tc-w = r.ti-width / 8, tc-cfg = r.ti-cfg, tc-sd15 = m.im-sd15, tc-extras = r.ti-extras }
+    in let hc = TiCfg { tc-unet = u, tc-tab = m.im-tab, tc-yc = yc2, tc-cc = cc2, tc-yu = yu2, tc-cu = cu2, tc-h = fh / 8, tc-w = fw / 8, tc-cfg = q.i2-hr-cfg, tc-sd15 = m.im-sd15, tc-extras = r.ti-extras }
+    in if q.i2-out-px > 0 then (let res = i2-outpaint q tc m in let f0 = ti-free-all frees 0 0 in res)
+    else let st = if q.i2-hr-scale > 0.0 then (if q.i2-hr-upscaler == "" then i2-hires q tc hc else i2-hires-upscaled q tc hc m) else if q.i2-image /= "" then i2-from-picture q tc m (\k -> tc) else i2-plain q tc
+    in let f2 = ti-free-all frees 0 0
+    in if st.is-x == 0 then st.is-why
+    else i2-finish q st fh fw m
+
+  img2img : ClipBpe, I2i -> Text
+  img2img (bpe) (q) =
+    let m = i2-skip (img2img-model ((q.i2-base).ti-ckpt)) ((q.i2-base).ti-clip-skip)
+    in let res = img2img-with bpe m q
+    in let f = img2img-model-free m
+    in res
+
+  i2-finish : I2i, I2Start, Integer, Integer, I2Model -> Text
+  i2-finish (q) (st) (fh) (fw) (m) = i2-finish-with q st fh fw m ((q.i2-base).ti-params)
+
+  i2-finish-with : I2i, I2Start, Integer, Integer, I2Model, Text -> Text
+  i2-finish-with (q) (st) (fh) (fw) (m) (params) =
+    let r = q.i2-base
+    in let x = st.is-x
+    in let z = sm-lincomb x x x x (1.0 / i2-latent-scale (m.im-sd15)) 0.0 0.0 (4 * (fh / 8) * (fw / 8))
+    in let img = vae-decode (m.im-vd) (Act { ah = x, ac = 4, ahh = fh / 8, aww = fw / 8 })
+    in if img.ah == 0 then "decode failed"
+    else let rgb = st.is-rgb
+    in let mfo = st.is-mfo
+    in let only = rgb /= 0 & q.i2-area == 1
+    in let sw = if only & q.i2-src-w > 0 then q.i2-src-w else fw
+    in let sh = if only & q.i2-src-h > 0 then q.i2-src-h else fh
+    in let bytes = if rgb == 0 then png-save img (r.ti-out) params else if only then i2-masked-save q img rgb mfo fw fh sw sh params else png-save-with img (r.ti-out) params (\i b -> i2-over (peek-byte rgb i) (255 - peek-byte mfo (i / 3)) b)
+    in let f4 = vd-free img & gpu-buf-free x
+    in if bytes < 0 then "save refused" else "png " & show sw & "x" & show sh & ": " & show bytes & " bytes"
+
+ Forge's uncrop and apply_overlay: the result resized into the box of a
+ picture-sized canvas, the picture's own overlay composited over it.
+
+  i2-masked-save : I2i, Act, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  i2-masked-save (q) (img) (src) (m0) (fw) (fh) (sw) (sh) (params) =
+    let r = q.i2-base
+    in let gen = image-bytes img
+    in if gen == 0 then 0 - 1
+    else let bm = if q.i2-soft == 1 then i2-mask-blurred q sw sh sw sh else m0
+    in png-save-rgb (img2img-composite src m0 (inpaint-uncrop gen fw fh (i2-box q bm sw sh fw fh) sw sh) 0 (sw * sh * 3)) sw sh (r.ti-out) params
+
+Page 1
+
+Section: Refiner
+
+ Forge's apply_refiner (Diffusion.md, "Guidance and seeds"): the count of
+ model calls so far over the steps, doubled for the
+ samplers Forge marks second_order (DPM++ SDE, DPM++ 2S a, Heun, DPM2, DPM2 a,
+ Restart), and the first call at or past the switch frees the base, loads
+ the refiner and conditions on its text encoders for every later call; the
+ picture decodes through the refiner's VAE. The base and the refiner are
+ each loaded here, therefore the resident model is freed before.
+
+  i2-second-order : Integer -> Boolean
+  i2-second-order (s) = s == 1 | s == 5 | s == 9 | s == 10 | s == 11 | s == 14
+
+  I2Cond = record {
+    ic-tc : TiCfg,
+    ic-frees : List Integer,
+    ic-why : Text
+  }
+
+  i2-conds : ClipBpe, I2Model, Txt2Img -> I2Cond
+  i2-conds (bpe) (m) (r) = i2-conds-at bpe m (r.ti-prompt) (r.ti-negative) (r.ti-height) (r.ti-width) (r.ti-cfg) (r.ti-extras)
+
+  i2-conds-at : ClipBpe, I2Model, Text, Text, Integer, Integer, Real, TiExtras -> I2Cond
+  i2-conds-at (bpe) (m) (p) (ng) (h) (w) (cfg) (ex) =
+    let c = if m.im-sd15 then clip-condition-l (m.im-wl) bpe p else clip-condition (m.im-wl) (m.im-wg) bpe p False
+    in let un = if m.im-sd15 then clip-condition-l (m.im-wl) bpe ng else clip-condition (m.im-wl) (m.im-wg) bpe ng True
+    in let ok = c.cn-status == 0 & un.cn-status == 0 & c.cn-chunks == 1 & un.cn-chunks == 1
+    in let cc = if ok == False then 0 else if m.im-sd15 then c.cn-cond-l else clip-crossattn c
+    in let cu = if ok == False then 0 else if m.im-sd15 then un.cn-cond-l else clip-crossattn un
+    in let yc = if ok & m.im-sd15 == False then ti-adm (c.cn-pooled) h w else 0
+    in let yu = if ok & m.im-sd15 == False then ti-adm (un.cn-pooled) h w else 0
+    in let f = if m.im-sd15 & ok then 0 else clip-cond-free c + clip-cond-free un
+    in let tc = TiCfg { tc-unet = m.im-unet, tc-tab = m.im-tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = h / 8, tc-w = w / 8, tc-cfg = cfg, tc-sd15 = m.im-sd15, tc-extras = ex }
+    in I2Cond { ic-tc = tc, ic-frees = (if m.im-sd15 then [cc, cu] else [cc, cu, yc, yu]), ic-why = if ok & cc /= 0 & cu /= 0 & (m.im-sd15 | (yc /= 0 & yu /= 0)) then "" else "conditioning failed" }
+
+ The model in use, its configuration and the condition buffers to free are
+ one-element lists the denoiser replaces at the switch; calls holds the count
+ of model calls and whether the switch is done.
+
+  RefPass = record {
+    rp-prompt : Text,
+    rp-negative : Text,
+    rp-h : Integer,
+    rp-w : Integer,
+    rp-cfg : Real
+  }
+
+  RefState = record {
+    rs-calls : List Integer,
+    rs-models : List I2Model,
+    rs-cfgs : List TiCfg,
+    rs-frees : List (List Integer),
+    rs-pass : RefPass
+  }
+
+ At the switch Forge re-activates the prompt's networks on the refiner and
+ then conditions the pass's prompt on it (sd_samplers_common.py:201-204).
+
+  i2-ref-swap : ClipBpe, I2i, RefState, (I2Model -> Integer) -> TiCfg
+  i2-ref-swap (bpe) (q) (st) (lora) =
+    let f1 = ti-free-all (list-at (st.rs-frees) 0) 0 0 + img2img-model-free (list-at (st.rs-models) 0)
+    in let f2 = un-pool-drain 0 + gpu-buf-pool-drain 0
+    in let m1 = i2-skip (img2img-model (q.i2-refiner)) ((q.i2-base).ti-clip-skip)
+    in let lw = if m1.im-why == "" & m1.im-sd15 == False then lora m1 else 0
+    in let p = st.rs-pass
+    in let cd = if m1.im-why == "" & m1.im-sd15 == False & lw >= 0 then i2-conds-at bpe m1 (p.rp-prompt) (p.rp-negative) (p.rp-h) (p.rp-w) (p.rp-cfg) ti-no-extras else I2Cond { ic-tc = i2-no-cfg m1, ic-frees = [], ic-why = "refused: the refiner is not an SDXL checkpoint, or a LoRA could not be merged" }
+    in let a = list-set-at (st.rs-models) 0 m1
+    in let b = list-set-at (st.rs-cfgs) 0 (cd.ic-tc)
+    in let c = list-set-at (st.rs-frees) 0 (cd.ic-frees)
+    in let d = list-set-at (st.rs-calls) 1 1
+    in cd.ic-tc
+
+  i2-ref-cfg : ClipBpe, I2i, RefState, Integer, (I2Model -> Integer) -> TiCfg
+  i2-ref-cfg (bpe) (q) (st) (total) (lora) =
+    let k = list-at (st.rs-calls) 0
+    in let c = list-set-at (st.rs-calls) 0 (k + 1)
+    in if list-at (st.rs-calls) 1 == 1 | real-from-int k / real-from-int total < q.i2-switch then list-at (st.rs-cfgs) 0
+    else i2-ref-swap bpe q st lora
+
+ The refiner for text to image, img2img and inpaint, and hires fix, where
+ Forge's default hires_fix_refiner_pass, "second pass", applies it to the
+ hires pass alone (sd_samplers_common.py:174-181). The switch counts the
+ pass's model calls against its total_steps (launch_sampling): the steps for
+ text to image, t_enc + 1 for img2img and the hires pass, doubled for a
+ second-order sampler.
+
+  img2img-refined : ClipBpe, I2i, (I2Model -> Integer), Text -> Text
+  img2img-refined (bpe) (q) (lora) (keys) =
+    let r = q.i2-base
+    in let hires = q.i2-hr-scale > 0.0
+    in let fh = if hires then i2-hires-size (r.ti-height) (q.i2-hr-scale) else r.ti-height
+    in let fw = if hires then i2-hires-size (r.ti-width) (q.i2-hr-scale) else r.ti-width
+    in let m0 = i2-skip (img2img-model (r.ti-ckpt)) (r.ti-clip-skip)
+    in let lw = if m0.im-why == "" then lora m0 else 0
+    in let why = if m0.im-why /= "" then m0.im-why else if m0.im-sd15 then "refused: the refiner is for SDXL here" else if lw < 0 then "refused: a LoRA could not be merged" else ""
+    in let cd = if why == "" then i2-conds bpe m0 r else I2Cond { ic-tc = i2-no-cfg m0, ic-frees = [], ic-why = why }
+    in let pass = if hires then RefPass { rp-prompt = (if q.i2-hr-prompt /= "" then q.i2-hr-prompt else r.ti-prompt), rp-negative = (if q.i2-hr-negative /= "" then q.i2-hr-negative else r.ti-negative), rp-h = fh, rp-w = fw, rp-cfg = q.i2-hr-cfg } else RefPass { rp-prompt = r.ti-prompt, rp-negative = r.ti-negative, rp-h = fh, rp-w = fw, rp-cfg = r.ti-cfg }
+    in let hd = if hires & cd.ic-why == "" then i2-conds-at bpe m0 (pass.rp-prompt) (pass.rp-negative) fh fw (pass.rp-cfg) (r.ti-extras) else cd
+    in let st = RefState { rs-calls = [0, if q.i2-refiner == r.ti-ckpt then 1 else 0], rs-models = [m0], rs-cfgs = [hd.ic-tc], rs-frees = [(if hires then cd.ic-frees & hd.ic-frees else cd.ic-frees)], rs-pass = pass }
+    in let cur = \k -> i2-ref-cfg bpe q st (i2-ref-total q) lora
+    in let start = if hd.ic-why /= "" then i2-fail (hd.ic-why) else if hires then i2-ref-hires q (cd.ic-tc) (hd.ic-tc) m0 cur else if q.i2-image /= "" then i2-from-picture q (cd.ic-tc) m0 cur else i2-ref-plain q (cd.ic-tc) cur
+    in let m = list-at (st.rs-models) 0
+    in let switched = list-at (st.rs-calls) 1 == 1 & q.i2-refiner /= r.ti-ckpt
+    in let res = if start.is-x == 0 then start.is-why else i2-finish-with q start fh fw m (if switched then r.ti-params & keys else r.ti-params)
+    in let f = ti-free-all (list-at (st.rs-frees) 0) 0 0 + img2img-model-free m
+    in res
+
+  i2-ref-total : I2i -> Integer
+  i2-ref-total (q) =
+    let r = q.i2-base
+    in let h = i2-hr-base q
+    in if q.i2-hr-scale > 0.0 then (if q.i2-hr-steps > 0 then q.i2-hr-steps else r.ti-steps) * (if i2-second-order (h.ti-sampler) then 2 else 1)
+    else if q.i2-image /= "" then (list-at (img2img-plan (r.ti-steps) (q.i2-denoise) False) 1 + 1) * (if i2-second-order (r.ti-sampler) then 2 else 1)
+    else r.ti-steps * (if i2-second-order (r.ti-sampler) then 2 else 1)
+
+  i2-ref-plain : I2i, TiCfg, (Integer -> TiCfg) -> I2Start
+  i2-ref-plain (q) (tc) (cur) =
+    let r = q.i2-base
+    in let n = 4 * tc.tc-h * tc.tc-w
+    in let x = gpu-buf-alloc (n * 4)
+    in let ok = x /= 0 & va-noise x (r.ti-seed) (q.i2-var) 4 (tc.tc-h) (tc.tc-w)
+    in let bad = if ok == False then 1 else ti-txt2img-run-with r tc x n (\xh s -> i2-den (cur 0) xh s) (\xh s ub -> ti-den3 (cur 0) xh s ub)
+    in if bad > 0 then i2-fail ("sampling failed: " & show bad & " refused steps") else I2Start { is-x = x, is-rgb = 0, is-mfo = 0, is-why = "" }
+
+  i2-ref-hires : I2i, TiCfg, TiCfg, I2Model, (Integer -> TiCfg) -> I2Start
+  i2-ref-hires (q) (tc) (hc) (m0) (cur) =
+    if q.i2-hr-upscaler == "" then (let f = i2-first-latent q tc (hc.tc-h) (hc.tc-w) in if f.is-rgb == 0 then f else i2-hires-latent q hc (f.is-rgb) cur)
+    else (let f = i2-first-bytes q tc m0 in if f.is-rgb == 0 then f else i2-hires-picture q tc hc m0 (f.is-rgb) cur)
+
+Section: Outpainting
+
+ Forge's poor man's outpainting (scripts/poor_mans_outpainting.py): the
+ picture on a black canvas of multiples of 64, grown by pixels on each chosen
+ side, the growth split between opposite sides as left (W - w) // (left +
+ right) and the rest; an image mask white but for a black rectangle inset 2
+ blur from each grown side and a latent mask inset blur // 2, each
+ rectangle's corners inclusive (ImageDraw); split_grid into request-sized
+ tiles overlapping by pixels (x = int (col dx), dx = (W - tile) / (cols - 1)
+ in floating point, clamped to the last whole tile), every tile not wholly
+ inside the picture inpainted with mask blur 2 blur and the latent mask for
+ fill and for the latent, at seed plus its index; combine_grid joins them.
+ Forge's CPU generator gives a tile's posterior the previous tile's seed and
+ the first tile the last tile's of the run before (a request's second run).
+
+  i2-ceil64 : Integer -> Integer
+  i2-ceil64 (v) = (v + 63) / 64 * 64
+
+  OutPlan = record {
+    op-l : Integer,
+    op-r : Integer,
+    op-u : Integer,
+    op-d : Integer,
+    op-w : Integer,
+    op-h : Integer
+  }
+
+  i2-out-plan : I2i, Integer, Integer -> OutPlan
+  i2-out-plan (q) (sw) (sh) =
+    let px = q.i2-out-px
+    in let l0 = if bit-and (q.i2-out-dirs) 1 /= 0 then px else 0
+    in let r0 = if bit-and (q.i2-out-dirs) 2 /= 0 then px else 0
+    in let u0 = if bit-and (q.i2-out-dirs) 4 /= 0 then px else 0
+    in let d0 = if bit-and (q.i2-out-dirs) 8 /= 0 then px else 0
+    in let tw = i2-ceil64 (sw + l0 + r0)
+    in let th = i2-ceil64 (sh + u0 + d0)
+    in let l = if l0 > 0 then l0 * (tw - sw) / (l0 + r0) else 0
+    in let u = if u0 > 0 then u0 * (th - sh) / (u0 + d0) else 0
+    in OutPlan { op-l = l, op-r = (if r0 > 0 then tw - sw - l else 0), op-u = u, op-d = (if d0 > 0 then th - sh - u else 0), op-w = tw, op-h = th }
+
+  i2-canvas : Integer, Integer, Integer, OutPlan, Integer, Integer -> Integer
+  i2-canvas (src) (sw) (sh) (pl) (dst) (i) =
+    if i >= pl.op-w * pl.op-h * 3 then dst
+    else let y = i / (pl.op-w * 3)
+    in let x = (i - y * pl.op-w * 3) / 3
+    in let c = i - y * pl.op-w * 3 - x * 3
+    in let inside = x >= pl.op-l & x < pl.op-l + sw & y >= pl.op-u & y < pl.op-u + sh
+    in let s = poke-byte dst i (if inside then peek-byte src (((y - pl.op-u) * sw + x - pl.op-l) * 3 + c) else 0)
+    in i2-canvas src sw sh pl dst (i + 1)
+
+  i2-rect : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-rect (dst) (w) (h) (x0) (y0) (x1) (y1) (i) =
+    if i >= w * h then dst
+    else let y = i / w
+    in let x = i - y * w
+    in let s = poke-byte dst i (if x >= x0 & x <= x1 & y >= y0 & y <= y1 then 0 else 255)
+    in i2-rect dst w h x0 y0 x1 y1 (i + 1)
+
+  i2-out-mask : OutPlan, Integer -> Integer
+  i2-out-mask (pl) (b) = i2-rect (alloc-bytes (pl.op-w * pl.op-h)) (pl.op-w) (pl.op-h) (pl.op-l + (if pl.op-l > 0 then b else 0)) (pl.op-u + (if pl.op-u > 0 then b else 0)) (pl.op-w - pl.op-r - (if pl.op-r > 0 then b else 0)) (pl.op-h - pl.op-d - (if pl.op-d > 0 then b else 0)) 0
+
+  i2-crop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-crop (src) (sw) (ch) (x) (y) (w) (h) (dst) (i) =
+    if i >= w * h * ch then dst
+    else let yy = i / (w * ch)
+    in let s = poke-byte dst i (peek-byte src (((y + yy) * sw + x) * ch + i - yy * w * ch))
+    in i2-crop src sw ch x y w h dst (i + 1)
+
+  i2-grid-starts : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  i2-grid-starts (n) (tile) (count) (k) (acc) =
+    if k >= count then acc
+    else let x = if count > 1 then real-to-int (real-from-int k * (real-from-int (n - tile) / real-from-int (count - 1))) else 0
+    in i2-grid-starts n tile count (k + 1) (list-push acc (if x + tile >= n then n - tile else x))
+
+  i2-interior : OutPlan, Integer, Integer, Integer, Integer -> Boolean
+  i2-interior (pl) (x) (y) (w) (h) = x >= pl.op-l & x + w <= pl.op-w - pl.op-r & y >= pl.op-u & y + h <= pl.op-h - pl.op-d
+
+  i2-work-count : OutPlan, List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-work-count (pl) (xs) (ys) (w) (h) (i) (acc) =
+    if i >= list-length xs * list-length ys then acc
+    else let x = list-at xs (i - i / list-length xs * list-length xs)
+    in let y = list-at ys (i / list-length xs)
+    in i2-work-count pl xs ys w h (i + 1) (if i2-interior pl x y w h then acc else acc + 1)
+
+  i2-reseed : I2i, Integer, Integer, Integer, Integer -> I2i
+  i2-reseed (q) (seed) (post) (w) (h) =
+    let r = q.i2-base
+    in let b = Txt2Img { ti-ckpt = r.ti-ckpt, ti-prompt = r.ti-prompt, ti-negative = r.ti-negative, ti-sampler = r.ti-sampler, ti-scheduler = r.ti-scheduler, ti-steps = r.ti-steps, ti-cfg = r.ti-cfg, ti-seed = seed, ti-width = w, ti-height = h, ti-out = r.ti-out, ti-params = r.ti-params, ti-clip-skip = r.ti-clip-skip, ti-extras = r.ti-extras }
+    in I2i { i2-base = b, i2-image = q.i2-image, i2-mask = "", i2-denoise = q.i2-denoise, i2-blur = q.i2-blur, i2-hr-scale = 0.0, i2-hr-denoise = q.i2-hr-denoise, i2-hr-steps = q.i2-hr-steps, i2-hr-cfg = q.i2-hr-cfg, i2-hr-upscaler = "", i2-var = q.i2-var, i2-src-w = 0, i2-src-h = 0, i2-resize = 0, i2-fill = q.i2-fill, i2-area = 0, i2-padding = q.i2-padding, i2-refiner = "", i2-switch = q.i2-switch, i2-hr-sampler = q.i2-hr-sampler, i2-hr-scheduler = q.i2-hr-scheduler, i2-hr-prompt = "", i2-hr-negative = "", i2-hr-ckpt = "", i2-hr-vae = "", i2-soft = 0, i2-sc = q.i2-sc, i2-out-px = 0, i2-out-blur = 0, i2-out-dirs = 0, i2-post = post, i2-out-mk2 = 0, i2-out-q = q.i2-out-q, i2-out-cv = q.i2-out-cv }
+
+  i2-tile-bytes : I2Start, I2Model, Integer, Integer -> I2Start
+  i2-tile-bytes (st) (m) (w) (h) =
+    let x = st.is-x
+    in let z = sm-lincomb x x x x (1.0 / i2-latent-scale (m.im-sd15)) 0.0 0.0 (4 * (w / 8) * (h / 8))
+    in let img = vae-decode (m.im-vd) (Act { ah = x, ac = 4, ahh = h / 8, aww = w / 8 })
+    in let fx = gpu-buf-free x
+    in if img.ah == 0 then i2-fail "decode failed"
+    else let gen = image-bytes img
+    in let fi = vd-free img
+    in if gen == 0 then i2-fail "decode failed"
+    else I2Start { is-x = 0, is-rgb = img2img-composite (st.is-rgb) (st.is-mfo) gen 0 (w * h * 3), is-mfo = 0, is-why = "" }
+
+  i2-out-tile : I2i, TiCfg, I2Model, Integer, Integer, Integer, OutPlan, Integer, Integer, Integer, Integer -> I2Start
+  i2-out-tile (q) (tc) (m) (cv) (mk) (lk) (pl) (x) (y) (seed) (post) =
+    let r = q.i2-base
+    in let w = r.ti-width
+    in let h = r.ti-height
+    in let qq = i2-reseed q seed post w h
+    in let rgb = i2-crop cv (pl.op-w) 3 x y w h (alloc-bytes (w * h * 3)) 0
+    in let msk = i2-crop mk (pl.op-w) 1 x y w h (alloc-bytes (w * h)) 0
+    in let lmk = i2-crop lk (pl.op-w) 1 x y w h (alloc-bytes (w * h)) 0
+    in let blurred = img2img-blur msk w h (2 * q.i2-out-blur)
+    in let pic = img2img-picture (if q.i2-fill == 0 then inpaint-fill rgb lmk w h else rgb) h w
+    in let mom = if pic.ah == 0 then pic else vae-encode (m.im-ve) pic
+    in let f = vd-free pic
+    in if mom.ah == 0 then i2-fail "encode failed"
+    else let st = i2-with-moments qq tc rgb mom lmk (img2img-overlay-mask blurred (w * h)) (\k -> tc)
+    in if st.is-x == 0 then st else i2-tile-bytes st m w h
+
+  i2-out-cols : I2i, TiCfg, I2Model, Integer, Integer, Integer, OutPlan, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-out-cols (q) (tc) (m) (cv) (mk) (lk) (pl) (xs) (y) (i) (k) (n) (row) =
+    if i >= list-length xs then k
+    else let r = q.i2-base
+    in let w = r.ti-width
+    in let h = r.ti-height
+    in let x = list-at xs i
+    in let inner = i2-interior pl x y w h
+    in let st = if inner then I2Start { is-x = 0, is-rgb = i2-crop cv (pl.op-w) 3 x y w h (alloc-bytes (w * h * 3)) 0, is-mfo = 0, is-why = "" } else i2-out-tile q tc m cv mk lk pl x y (r.ti-seed + k) (r.ti-seed + (if k == 0 then n - 1 else k - 1))
+    in if st.is-rgb == 0 then 0 - 1
+    else let p = esr-paste row (pl.op-w) (st.is-rgb) w h x 0 (if x == 0 then 0 else q.i2-out-px) 0 0
+    in i2-out-cols q tc m cv mk lk pl xs y (i + 1) (if inner then k else k + 1) n row
+
+  i2-out-rows : I2i, TiCfg, I2Model, Integer, Integer, Integer, OutPlan, List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-out-rows (q) (tc) (m) (cv) (mk) (lk) (pl) (xs) (ys) (j) (k) (n) (out) =
+    if j >= list-length ys then k
+    else let h = (q.i2-base).ti-height
+    in let y = list-at ys j
+    in let row = alloc-bytes (pl.op-w * h * 3)
+    in let k2 = i2-out-cols q tc m cv mk lk pl xs y 0 k n row
+    in if k2 < 0 then k2
+    else let p = esr-paste out (pl.op-w) row (pl.op-w) h 0 y 0 (if y == 0 then 0 else q.i2-out-px) 0
+    in i2-out-rows q tc m cv mk lk pl xs ys (j + 1) k2 n out
+
+  i2-outpaint : I2i, TiCfg, I2Model -> Text
+  i2-outpaint (q) (tc) (m) =
+    let r = q.i2-base
+    in let w = r.ti-width
+    in let h = r.ti-height
+    in let sw = if q.i2-src-w > 0 then q.i2-src-w else w
+    in let sh = if q.i2-src-h > 0 then q.i2-src-h else h
+    in let pl = i2-out-plan q sw sh
+    in if pl.op-w < w | pl.op-h < h then "refused: the outpainted canvas " & show (pl.op-w) & "x" & show (pl.op-h) & " is smaller than the tile " & show w & "x" & show h
+    else let px = i2-read-file (q.i2-image) (sw * sh * 4)
+    in if px == 0 then "refused: the picture could not be read"
+    else let cv = i2-canvas (i2-rgb-bytes px (alloc-bytes (sw * sh * 3)) 0 (sw * sh * 3)) sw sh pl (alloc-bytes (pl.op-w * pl.op-h * 3)) 0
+    in let mk = i2-out-mask pl (2 * q.i2-out-blur)
+    in let lk = i2-out-mask pl (q.i2-out-blur / 2)
+    in let ov = q.i2-out-px
+    in let xs = i2-grid-starts (pl.op-w) w (esr-count (pl.op-w) w ov) 0 []
+    in let ys = i2-grid-starts (pl.op-h) h (esr-count (pl.op-h) h ov) 0 []
+    in let out = alloc-bytes (pl.op-w * pl.op-h * 3)
+    in let k = i2-out-rows q tc m cv mk lk pl xs ys 0 0 (i2-work-count pl xs ys w h 0 0) out
+    in if k < 0 then "outpainting failed at a tile"
+    else let bytes = png-save-rgb out (pl.op-w) (pl.op-h) (r.ti-out) (r.ti-params)
+    in if bytes < 0 then "save refused" else "png " & show (pl.op-w) & "x" & show (pl.op-h) & ": " & show bytes & " bytes"
+
+Section: Outpainting mk2
+
+ Forge's outpainting mk2 (scripts/outpainting_mk_2.py): the chosen sides in
+ the order left, right, up, down, each on the picture the last one left.
+ Each side: the picture on a black canvas of the side's growth rounded up to
+ multiples of 64, at the grown edge; an RGB mask white but for a black
+ rectangle from pixels plus blur in from each side being grown to the
+ picture's far edge (corners inclusive), where blur is the mask blur on the
+ axis of any horizontal (or vertical) side chosen and 0 on the other; the
+ canvas filled by get_matched_noise and truncated to bytes; the region of
+ the grown edge min (request, grown) wide on that axis and the canvas's size
+ on the other, inpainted with that mask cropped, blurred 4 blur across and 4
+ blur down, masked content original, the same seed, and a latent mask of
+ the same shape inset 2 blur; the result pasted back and the canvas cropped
+ to the grown size. The conditioning is the pass's own size's.
+
+  i2-blur-xy : Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-blur-xy (m) (w) (h) (bx) (by) =
+    let a = if bx > 0 then i2-blur-pass m (alloc-bytes (w * h)) w h True (i2-gauss bx) 0 else m
+    in if by > 0 then i2-blur-pass a (alloc-bytes (w * h)) w h False (i2-gauss by) 0 else a
+
+  i2-to-reals : Integer, Integer, Integer, Integer -> Integer
+  i2-to-reals (bytes) (dst) (i) (n) = if i >= n then dst else let s = md-set dst i (real-from-int (peek-byte bytes i) / 255.0) in i2-to-reals bytes dst (i + 1) n
+
+  i2-mask-reals : Integer, Integer, Integer, Integer -> Integer
+  i2-mask-reals (m) (dst) (i) (n) = if i >= n then dst else let v = real-from-int (peek-byte m (i / 3)) / 255.0 in let s = md-set dst i v in i2-mask-reals m dst (i + 1) n
+
+  i2-to-bytes : Integer, Integer, Integer, Integer -> Integer
+  i2-to-bytes (vals) (dst) (i) (n) =
+    if i >= n then dst
+    else let c = md-get vals i * 255.0
+    in let s = poke-byte dst i (real-to-int (if c < 0.0 then 0.0 else if c > 255.0 then 255.0 else c))
+    in i2-to-bytes vals dst (i + 1) n
+
+  i2-paste : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  i2-paste (dst) (dw) (src) (sw) (sh) (x) (y) (i) =
+    if i >= sw * sh * 3 then dst
+    else let yy = i / (sw * 3)
+    in let s = poke-byte dst (((y + yy) * dw + x) * 3 + i - yy * sw * 3) (peek-byte src i)
+    in i2-paste dst dw src sw sh x y (i + 1)
+
+  Mk2Side = record {
+    ms-left : Boolean,
+    ms-right : Boolean,
+    ms-top : Boolean,
+    ms-bottom : Boolean
+  }
+
+  i2-mk2-bx : I2i -> Integer
+  i2-mk2-bx (q) = if bit-and (q.i2-out-dirs) 3 /= 0 then q.i2-out-blur else 0
+
+  i2-mk2-by : I2i -> Integer
+  i2-mk2-by (q) = if bit-and (q.i2-out-dirs) 12 /= 0 then q.i2-out-blur else 0
+
+ One side's expand; the grown picture as bytes, or 0 with the reason in why.
+
+  i2-mk2-side : ClipBpe, I2Model, I2i, Integer, Integer, Integer, Mk2Side, List Text -> Integer
+  i2-mk2-side (bpe) (m) (q) (img) (cw) (ch) (sd) (why) =
+    let px = q.i2-out-px
+    in let horiz = sd.ms-left | sd.ms-right
+    in let ph = if horiz then px else 0
+    in let pv = if horiz then 0 else px
+    in let rw = cw + ph
+    in let rh = ch + pv
+    in let pw = i2-ceil64 rw
+    in let phh = i2-ceil64 rh
+    in let bx = i2-mk2-bx q
+    in let by = i2-mk2-by q
+    in let r = q.i2-base
+    in let tw = if horiz then (if r.ti-width < rw then r.ti-width else rw) else pw
+    in let th = if horiz then phh else (if r.ti-height < rh then r.ti-height else rh)
+    in if tw * th > 1048576 | int-mod tw 64 /= 0 | int-mod th 64 /= 0 then (let w = list-set-at why 0 ("refused: an outpainting pass of " & show tw & "x" & show th & " (multiples of 64, at most 1024x1024 pixels)") in 0)
+    else let cv = i2-paste (i2-zero-bytes (alloc-bytes (pw * phh * 3)) 0 (pw * phh * 3)) pw img cw ch (if sd.ms-left then ph else 0) (if sd.ms-top then pv else 0) 0
+    in let mk = i2-rect (alloc-bytes (pw * phh)) pw phh (if sd.ms-left then px + bx else 0) (if sd.ms-top then px + by else 0) (if sd.ms-right then pw - px - bx else rw) (if sd.ms-bottom then phh - px - by else rh) 0
+    in let noised = i2-to-bytes (matched-noise (i2-to-reals cv (md-new (pw * phh * 3)) 0 (pw * phh * 3)) (i2-mask-reals mk (md-new (pw * phh * 3)) 0 (pw * phh * 3)) cv phh pw (q.i2-out-q) (q.i2-out-cv)) (alloc-bytes (pw * phh * 3)) 0 (pw * phh * 3)
+    in let cx = if sd.ms-left then 0 else pw - tw
+    in let cy = if sd.ms-top then 0 else phh - th
+    in let part = i2-crop noised pw 3 cx cy tw th (alloc-bytes (tw * th * 3)) 0
+    in let pmask = i2-crop mk pw 1 cx cy tw th (alloc-bytes (tw * th)) 0
+    in let lmask = i2-rect (alloc-bytes (tw * th)) tw th (if sd.ms-left then px + 2 * bx else 0) (if sd.ms-top then px + 2 * by else 0) (if sd.ms-right then tw - px - 2 * bx else rw) (if sd.ms-bottom then th - px - 2 * by else rh) 0
+    in let done = i2-mk2-pass bpe m q part pmask lmask tw th (4 * bx) (4 * by)
+    in if done.is-rgb == 0 then (let w = list-set-at why 0 (done.is-why) in 0)
+    else let back = i2-paste noised pw (done.is-rgb) tw th cx cy 0
+    in i2-crop noised pw 3 0 0 rw rh (alloc-bytes (rw * rh * 3)) 0
+
+  i2-zero-bytes : Integer, Integer, Integer -> Integer
+  i2-zero-bytes (dst) (i) (n) = if i >= n then dst else let s = poke-byte dst i 0 in i2-zero-bytes dst (i + 1) n
+
+  i2-mk2-pass : ClipBpe, I2Model, I2i, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> I2Start
+  i2-mk2-pass (bpe) (m) (q) (img) (mask) (lmask) (tw) (th) (bx4) (by4) =
+    let r = q.i2-base
+    in let qq = i2-reseed q (r.ti-seed) (0 - 1) tw th
+    in let cd = i2-conds-at bpe m (r.ti-prompt) (r.ti-negative) th tw (r.ti-cfg) (r.ti-extras)
+    in if cd.ic-why /= "" then i2-fail (cd.ic-why)
+    else let blurred = i2-blur-xy mask tw th bx4 by4
+    in let pic = img2img-picture img th tw
+    in let mom = if pic.ah == 0 then pic else vae-encode (m.im-ve) pic
+    in let f = vd-free pic
+    in let st = if mom.ah == 0 then i2-fail "encode failed" else i2-with-moments qq (cd.ic-tc) img mom lmask (img2img-overlay-mask blurred (tw * th)) (\k -> cd.ic-tc)
+    in let f2 = ti-free-all (cd.ic-frees) 0 0
+    in if st.is-x == 0 then st else i2-tile-bytes st m tw th
+
+  i2-mk2-each : ClipBpe, I2Model, I2i, Integer, Integer, Integer, Integer, List Text -> Text
+  i2-mk2-each (bpe) (m) (q) (img) (cw) (ch) (k) (why) =
+    if k >= 4 then (let r = q.i2-base in let bytes = png-save-rgb img cw ch (r.ti-out) (r.ti-params) in if bytes < 0 then "save refused" else "png " & show cw & "x" & show ch & ": " & show bytes & " bytes")
+    else if bit-and (q.i2-out-dirs) (bit-shl 1 k) == 0 then i2-mk2-each bpe m q img cw ch (k + 1) why
+    else let sd = Mk2Side { ms-left = k == 0, ms-right = k == 1, ms-top = k == 2, ms-bottom = k == 3 }
+    in let next = i2-mk2-side bpe m q img cw ch sd why
+    in if next == 0 then list-at why 0
+    else i2-mk2-each bpe m q next (if k < 2 then cw + q.i2-out-px else cw) (if k >= 2 then ch + q.i2-out-px else ch) (k + 1) why
+
+  i2-mk2 : ClipBpe, I2Model, I2i -> Text
+  i2-mk2 (bpe) (m) (q) =
+    let r = q.i2-base
+    in let sw = if q.i2-src-w > 0 then q.i2-src-w else r.ti-width
+    in let sh = if q.i2-src-h > 0 then q.i2-src-h else r.ti-height
+    in let px = i2-read-file (q.i2-image) (sw * sh * 4)
+    in if px == 0 then "refused: the picture could not be read"
+    else i2-mk2-each bpe m q (i2-rgb-bytes px (alloc-bytes (sw * sh * 3)) 0 (sw * sh * 3)) sw sh 0 ["mk2 failed"]
+
+Section: Hires Checkpoint
+
+ Forge's hr_checkpoint_name (processing.py:1279-1285, 1400-1428): the first
+ pass samples on the base, and for an upscaler decodes through the base's VAE;
+ then the hires checkpoint is loaded in its place, conditions the hires prompt
+ on its own text encoders, samples the hires pass, encodes the upscaled
+ picture and decodes the result; the prompt's networks are activated on each
+ checkpoint as it loads. A refiner in the hires pass reloads only when it is
+ neither the hires checkpoint nor the base, because checkpoint_change compares
+ it with the configured checkpoint, the base (sd_samplers_common.py:171-199);
+ a refiner that is the base writes its keys and changes nothing. The latent
+ passes between the two unscaled,
+ as Forge's samples do. Two checkpoints do not fit the card together,
+ therefore the base is freed before the hires checkpoint loads, as in
+ img2img-refined.
+
+  img2img-hr-swapped : ClipBpe, I2i, (I2Model -> Integer), Text -> Text
+  img2img-hr-swapped (bpe) (q) (lora) (keys) =
+    let r = q.i2-base
+    in let fh = i2-hires-size (r.ti-height) (q.i2-hr-scale)
+    in let fw = i2-hires-size (r.ti-width) (q.i2-hr-scale)
+    in let m0 = i2-skip (img2img-model (r.ti-ckpt)) (r.ti-clip-skip)
+    in let why0 = if m0.im-why /= "" then m0.im-why else if lora m0 < 0 then "refused: a LoRA could not be merged" else ""
+    in let c0 = if why0 == "" then i2-conds bpe m0 r else I2Cond { ic-tc = i2-no-cfg m0, ic-frees = [], ic-why = why0 }
+    in let first = if c0.ic-why /= "" then i2-fail (c0.ic-why) else if q.i2-hr-upscaler == "" then i2-first-latent q (c0.ic-tc) (fh / 8) (fw / 8) else i2-first-bytes q (c0.ic-tc) m0
+    in let f0 = ti-free-all (c0.ic-frees) 0 0 + img2img-model-free m0 + un-pool-drain 0 + gpu-buf-pool-drain 0
+    in if first.is-rgb == 0 then first.is-why
+    else i2-hr-second bpe q (first.is-rgb) fh fw lora keys
+
+  i2-hr-second : ClipBpe, I2i, Integer, Integer, Integer, (I2Model -> Integer), Text -> Text
+  i2-hr-second (bpe) (q) (first) (fh) (fw) (lora) (keys) =
+    let r = q.i2-base
+    in let m1 = i2-skip (i2-with-vae (img2img-model (q.i2-hr-ckpt)) (q.i2-hr-vae)) ((q.i2-base).ti-clip-skip)
+    in let hp = if q.i2-hr-prompt /= "" then q.i2-hr-prompt else r.ti-prompt
+    in let hn = if q.i2-hr-negative /= "" then q.i2-hr-negative else r.ti-negative
+    in let why1 = if m1.im-why /= "" then m1.im-why else if lora m1 < 0 then "refused: a LoRA could not be merged" else ""
+    in let c1 = if why1 == "" then i2-conds-at bpe m1 hp hn fh fw (q.i2-hr-cfg) (r.ti-extras) else I2Cond { ic-tc = i2-no-cfg m1, ic-frees = [], ic-why = why1 }
+    in let tc = TiCfg { tc-unet = m1.im-unet, tc-tab = m1.im-tab, tc-yc = 0, tc-cc = 0, tc-yu = 0, tc-cu = 0, tc-h = r.ti-height / 8, tc-w = r.ti-width / 8, tc-cfg = r.ti-cfg, tc-sd15 = m1.im-sd15, tc-extras = r.ti-extras }
+    in let rs = RefState { rs-calls = [0, if q.i2-refiner == "" | q.i2-refiner == q.i2-hr-ckpt | q.i2-refiner == r.ti-ckpt then 1 else 0], rs-models = [m1], rs-cfgs = [c1.ic-tc], rs-frees = [c1.ic-frees], rs-pass = RefPass { rp-prompt = hp, rp-negative = hn, rp-h = fh, rp-w = fw, rp-cfg = q.i2-hr-cfg } }
+    in let cur = \k -> i2-ref-cfg bpe q rs (i2-ref-total q) lora
+    in let st = if c1.ic-why /= "" then i2-fail (c1.ic-why) else if q.i2-hr-upscaler == "" then i2-hires-latent q (c1.ic-tc) first cur else i2-hires-picture q tc (c1.ic-tc) m1 first cur
+    in let mf = list-at (rs.rs-models) 0
+    in let f1 = ti-free-all (list-at (rs.rs-frees) 0) 0 0
+    in let reached = real-from-int (i2-ref-total q - 1) / real-from-int (i2-ref-total q) >= q.i2-switch
+    in let switched = q.i2-refiner /= "" & q.i2-refiner /= q.i2-hr-ckpt & (if q.i2-refiner == r.ti-ckpt then reached else list-at (rs.rs-calls) 1 == 1)
+    in let res = if st.is-x == 0 then st.is-why else i2-finish-with q st fh fw mf (if switched then r.ti-params & keys else r.ti-params)
+    in let f2 = img2img-model-free mf
+    in res
+
+ Forge's hires VAE module (backend/loader.py:205-210): a file holding
+ decoder.conv_in.weight replaces every key under the checkpoint's VAE prefix,
+ therefore the hires model encodes and decodes through the file's VAE.
+
+  i2-with-vae : I2Model, Text -> I2Model
+  i2-with-vae (m) (path) =
+    if path == "" | m.im-why /= "" then m
+    else let file = ckpt-open path
+    in let lb = layout-bind file sd-vae-file-layout
+    in let ok = file.st-valid & parts-complete (lb.lb-parts) 0
+    in let vpart = ti-vae-part (lb.lb-parts) 0
+    in let f = if ok then vae-free (m.im-vd) 0 0 + vae-free (m.im-ve) 0 0 else 0
+    in I2Model { im-ckpt = m.im-ckpt, im-why = (if ok then "" else "refused: " & path & " is not a readable SDXL or SD1.5 VAE"), im-sd15 = m.im-sd15, im-wl = m.im-wl, im-wg = m.im-wg, im-unet = m.im-unet, im-tab = m.im-tab, im-vd = (if ok then vae-load path vpart "" else m.im-vd), im-ve = (if ok then vae-encoder-load path vpart "" else m.im-ve) }
+
+  i2-no-cfg : I2Model -> TiCfg
+  i2-no-cfg (m) = TiCfg { tc-unet = m.im-unet, tc-tab = m.im-tab, tc-yc = 0, tc-cc = 0, tc-yu = 0, tc-cu = 0, tc-h = 0, tc-w = 0, tc-cfg = 1.0, tc-sd15 = m.im-sd15, tc-extras = ti-no-extras }
+
+ The request as the hires pass runs it: the hires sampler and schedule where
+ the request names them (Forge's hr_sampler_name, hr_scheduler), else the
+ first pass's.
+
+  i2-hr-base : I2i -> Txt2Img
+  i2-hr-base (q) =
+    let r = q.i2-base
+    in Txt2Img { ti-ckpt = r.ti-ckpt, ti-prompt = r.ti-prompt, ti-negative = r.ti-negative, ti-sampler = (if q.i2-hr-sampler >= 0 then q.i2-hr-sampler else r.ti-sampler), ti-scheduler = (if q.i2-hr-scheduler >= 0 then q.i2-hr-scheduler else r.ti-scheduler), ti-steps = r.ti-steps, ti-cfg = r.ti-cfg, ti-seed = r.ti-seed, ti-width = r.ti-width, ti-height = r.ti-height, ti-out = r.ti-out, ti-params = r.ti-params, ti-clip-skip = r.ti-clip-skip, ti-extras = r.ti-extras }

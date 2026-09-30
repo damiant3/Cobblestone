@@ -1,5 +1,7 @@
 Chapter: PeWriter
   cites Common chapter ByteHelpers
+  cites Pe chapter PeExports
+  cites Foreword chapter CCE
 
 Section: PE Format Constants
   pe-machine-amd64 : Integer = 34404
@@ -481,10 +483,9 @@ Section: Windows Console PE
  X86_64Boot.codex. A disagreement is not a wrong answer, it is a call into
  whatever happens to be at that address.
 
- The import order is load-bearing: GetStdHandle, WriteFile, ExitProcess,
- VirtualAlloc. One descriptor plus its null terminator is 40 bytes, the lookup
- table is five 8-byte thunks, and the address table follows, so the first IAT
- slot is 80 bytes into .idata and the four sit at 80, 88, 96 and 104.
+ The import order is load-bearing, within each DLL and between the two: a slot
+ address is its position, so the lists below must match the order
+ cdx-to-pe-console.ps1 builds and the hosted-win-iat-* constants encode.
 
  ASLR is off (DllCharacteristics 0) because the code is position-dependent and
  patched for one address. That is a real constraint on the artifact, not a
@@ -519,10 +520,6 @@ Section: Windows Console PE
 
   pec-stack-reserve : Integer = 536870912
 
-  pec-iat-off : Integer = 88
-  pec-idata-size : Integer = 220
-  pec-names-off : Integer = 136
-  pec-dll-off : Integer = 206
   pec-section-idata-rw : Integer = 3221225536
 
   pec-nm-getstdhandle : List Integer = [71, 101, 116, 83, 116, 100, 72, 97, 110, 100, 108, 101]
@@ -530,50 +527,124 @@ Section: Windows Console PE
   pec-nm-exitprocess : List Integer = [69, 120, 105, 116, 80, 114, 111, 99, 101, 115, 115]
   pec-nm-virtualalloc : List Integer = [86, 105, 114, 116, 117, 97, 108, 65, 108, 108, 111, 99]
   pec-nm-readfile : List Integer = [82, 101, 97, 100, 70, 105, 108, 101]
+  pec-nm-addveh : List Integer = [65, 100, 100, 86, 101, 99, 116, 111, 114, 101, 100, 69, 120, 99, 101, 112, 116, 105, 111, 110, 72, 97, 110, 100, 108, 101, 114]
+  pec-nm-wsastartup : List Integer = [87, 83, 65, 83, 116, 97, 114, 116, 117, 112]
+  pec-nm-socket : List Integer = [115, 111, 99, 107, 101, 116]
+  pec-nm-bind : List Integer = [98, 105, 110, 100]
+  pec-nm-listen : List Integer = [108, 105, 115, 116, 101, 110]
+  pec-nm-accept : List Integer = [97, 99, 99, 101, 112, 116]
+  pec-nm-closesocket : List Integer = [99, 108, 111, 115, 101, 115, 111, 99, 107, 101, 116]
+  pec-nm-recv : List Integer = [114, 101, 99, 118]
+  pec-nm-send : List Integer = [115, 101, 110, 100]
+  pec-nm-setsockopt : List Integer = [115, 101, 116, 115, 111, 99, 107, 111, 112, 116]
   pec-nm-kernel32 : List Integer = [107, 101, 114, 110, 101, 108, 51, 50, 46, 100, 108, 108]
+  pec-nm-ws2 : List Integer = [119, 115, 50, 95, 51, 50, 46, 100, 108, 108]
+
+ DLL 0 is kernel32 and DLL 1 is ws2_32.
+
+  pec-count : Integer -> Integer
+  pec-count (dll) = if dll == 0 then 6 else 9
+
+  pec-name : Integer, Integer -> List Integer
+  pec-name (dll) (i) =
+   if dll == 0 then
+    (if i == 0 then pec-nm-getstdhandle
+     else if i == 1 then pec-nm-writefile
+     else if i == 2 then pec-nm-exitprocess
+     else if i == 3 then pec-nm-virtualalloc
+     else if i == 4 then pec-nm-readfile
+     else pec-nm-addveh)
+   else if i == 0 then pec-nm-wsastartup
+   else if i == 1 then pec-nm-socket
+   else if i == 2 then pec-nm-bind
+   else if i == 3 then pec-nm-listen
+   else if i == 4 then pec-nm-accept
+   else if i == 5 then pec-nm-closesocket
+   else if i == 6 then pec-nm-recv
+   else if i == 7 then pec-nm-send
+   else pec-nm-setsockopt
+
+  pec-dll-name : Integer -> List Integer
+  pec-dll-name (dll) = if dll == 0 then pec-nm-kernel32 else pec-nm-ws2
 
  A hint/name entry is a two-byte hint, the name, a NUL, and a pad to an even
- boundary. The four offsets below are those lengths accumulated from
- pec-names-off, written out rather than derived so the IAT arithmetic above
- stays readable against the assertion it has to satisfy.
+ boundary.
 
-  pec-off-getstdhandle : Integer = 136
-  pec-off-writefile : Integer = 152
-  pec-off-exitprocess : Integer = 164
-  pec-off-virtualalloc : Integer = 178
-  pec-off-readfile : Integer = 194
+  pec-hn-size : List Integer -> Integer
+  pec-hn-size (nm) = align-up (list-length nm + 3) 2
+
+  pec-names-size : Integer, Integer -> Integer
+  pec-names-size (dll) (i) =
+   if i >= pec-count dll then 0
+   else pec-hn-size (pec-name dll i) + pec-names-size dll (i + 1)
+
+  pec-thunks-size : Integer -> Integer
+  pec-thunks-size (dll) = (pec-count dll + 1) * 8
+
+ Two descriptors and the null terminator are 60 bytes; both lookup tables
+ follow, then both address tables, then the hint/name entries, then the DLL
+ names.
+
+  pec-desc-size : Integer = 60
+
+  pec-ilt-off : Integer -> Integer
+  pec-ilt-off (dll) = pec-desc-size + (if dll == 0 then 0 else pec-thunks-size 0)
+
+  pec-iat-base : Integer = pec-desc-size + pec-thunks-size 0 + pec-thunks-size 1
+
+  pec-iat-off : Integer -> Integer
+  pec-iat-off (dll) = pec-iat-base + (if dll == 0 then 0 else pec-thunks-size 0)
+
+  pec-names-off : Integer = pec-iat-base + pec-thunks-size 0 + pec-thunks-size 1
+
+  pec-name-off : Integer -> Integer
+  pec-name-off (dll) = pec-names-off + (if dll == 0 then 0 else pec-names-size 0 0)
+
+  pec-dll-slot : Integer -> Integer
+  pec-dll-slot (dll) = align-up (list-length (pec-dll-name dll) + 1) 2
+
+  pec-dll-off : Integer -> Integer
+  pec-dll-off (dll) =
+   pec-names-off + pec-names-size 0 0 + pec-names-size 1 0 + (if dll == 0 then 0 else pec-dll-slot 0)
+
+  pec-idata-size : Integer = pec-dll-off 1 + pec-dll-slot 1
 
   pec-hint-name : List Integer, Integer -> List Integer
   pec-hint-name (nm) (slot) =
    let body = write-i16 0 & nm & [0]
    in body & pad-zeros (slot - list-length body)
 
+  pec-thunks : Integer, Integer, Integer -> List Integer
+  pec-thunks (dll) (i) (at) =
+   if i >= pec-count dll then write-i64 0
+   else write-i64 (pec-idata-rva + at) & pec-thunks dll (i + 1) (at + pec-hn-size (pec-name dll i))
+
+  pec-hint-names : Integer, Integer -> List Integer
+  pec-hint-names (dll) (i) =
+   if i >= pec-count dll then []
+   else let nm = pec-name dll i
+   in pec-hint-name nm (pec-hn-size nm) & pec-hint-names dll (i + 1)
+
+  pec-dll-bytes : Integer -> List Integer
+  pec-dll-bytes (dll) =
+   let nm = pec-dll-name dll
+   in nm & [0] & pad-zeros (pec-dll-slot dll - list-length nm - 1)
+
+  pec-descriptor : Integer -> List Integer
+  pec-descriptor (dll) =
+   write-i32 (pec-idata-rva + pec-ilt-off dll)
+   & write-i32 0
+   & write-i32 0
+   & write-i32 (pec-idata-rva + pec-dll-off dll)
+   & write-i32 (pec-idata-rva + pec-iat-off dll)
+
   pec-idata-bytes : List Integer
   pec-idata-bytes =
-   write-i32 (pec-idata-rva + 40)
-   & write-i32 0
-   & write-i32 0
-   & write-i32 (pec-idata-rva + pec-dll-off)
-   & write-i32 (pec-idata-rva + pec-iat-off)
-   & pad-zeros 20
-   & write-i64 (pec-idata-rva + pec-off-getstdhandle)
-   & write-i64 (pec-idata-rva + pec-off-writefile)
-   & write-i64 (pec-idata-rva + pec-off-exitprocess)
-   & write-i64 (pec-idata-rva + pec-off-virtualalloc)
-   & write-i64 (pec-idata-rva + pec-off-readfile)
-   & write-i64 0
-   & write-i64 (pec-idata-rva + pec-off-getstdhandle)
-   & write-i64 (pec-idata-rva + pec-off-writefile)
-   & write-i64 (pec-idata-rva + pec-off-exitprocess)
-   & write-i64 (pec-idata-rva + pec-off-virtualalloc)
-   & write-i64 (pec-idata-rva + pec-off-readfile)
-   & write-i64 0
-   & pec-hint-name pec-nm-getstdhandle 16
-   & pec-hint-name pec-nm-writefile 12
-   & pec-hint-name pec-nm-exitprocess 14
-   & pec-hint-name pec-nm-virtualalloc 16
-   & pec-hint-name pec-nm-readfile 12
-   & pec-nm-kernel32 & [0] & pad-zeros 1
+   pec-descriptor 0 & pec-descriptor 1 & pad-zeros 20
+   & pec-thunks 0 0 (pec-name-off 0) & pec-thunks 1 0 (pec-name-off 1)
+   & pec-thunks 0 0 (pec-name-off 0) & pec-thunks 1 0 (pec-name-off 1)
+   & pec-hint-names 0 0 & pec-hint-names 1 0
+   & pec-dll-bytes 0 & pec-dll-bytes 1
 
   pec-dos-header : List Integer
   pec-dos-header =
@@ -615,7 +686,7 @@ Section: Windows Console PE
    & write-i64 0
    & write-i32 pec-idata-rva & write-i32 pec-idata-size
    & pad-zeros 80
-   & write-i32 (pec-idata-rva + pec-iat-off) & write-i32 40
+   & write-i32 (pec-idata-rva + pec-iat-base) & write-i32 (pec-names-off - pec-iat-base)
    & pad-zeros 24
 
   pec-section : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
@@ -680,3 +751,227 @@ Section: Windows Console PE
    in let c2 = pec-copy pe-buf (text-ptr + text-aligned) cdx-buf (cdx-off + rod-off) rod-sz
    in let wz3 = __buf-write-bytes pe-buf (text-ptr + content-len) (pad-zeros (text-raw - content-len))
    in __buf-read-bytes pe-buf 0 file-len
+
+Section: Windows Forwarding DLL
+
+ The DLL uses only RIP-relative instructions. DllMain seeds writable slots
+ with lazy-stub addresses; the Windows loader alone writes absolute IAT
+ addresses. The empty relocation block permits rebasing without DIR64 entries.
+ Win64 lazy stubs preserve all four integer and vector argument registers,
+ the caller's stack arguments, shadow space and 16-byte call alignment.
+
+  PeForwardDll = record { pfd-buffer : Integer, pfd-size : Integer, pfd-why : Text }
+
+  ped-put : Integer, Integer, List Integer -> Integer
+  ped-put (buf) (off) (bs) =
+    let w = __buf-write-bytes buf off bs
+    in off + list-length bs
+
+  ped-rel : Integer, Integer, List Integer, Integer -> Integer
+  ped-rel (buf) (off) (op) (target) =
+    let next = ped-put buf off op
+    in ped-put buf next (write-i32 (target - next - 4))
+
+  ped-ascii : Integer, Integer, Text, Integer -> Integer
+  ped-ascii (buf) (off) (s) (i) =
+    if i >= text-length s then ped-put buf (off + i) [0]
+    else let w = poke-byte buf (off + i) (to-unicode (char-code-at s i))
+    in ped-ascii buf off s (i + 1)
+
+  ped-name-valid : Text, Integer -> Boolean
+  ped-name-valid (s) (i) =
+    if i >= text-length s then i > 0 & i < 512
+    else let u = to-unicode (char-code-at s i)
+    in if u < 33 | u > 126 then False else ped-name-valid s (i + 1)
+
+  ped-name-before : Text, Text, Integer -> Boolean
+  ped-name-before (a) (b) (i) =
+    if i >= text-length a then i < text-length b
+    else if i >= text-length b then False
+    else let x = to-unicode (char-code-at a i)
+    in let y = to-unicode (char-code-at b i)
+    in if x == y then ped-name-before a b (i + 1) else x < y
+
+  ped-check : List PeExport, Integer, Integer -> Boolean
+  ped-check (xs) (seen) (i) =
+    if i >= list-length xs then True
+    else let e = list-at xs i
+    in if e.pex-ordinal < 1 | e.pex-ordinal > 65535 | not (ped-name-valid (e.pex-name) 0) then False
+    else if peek-byte seen (e.pex-ordinal) /= 0 then False
+    else if i > 0 & not (ped-name-before ((list-at xs (i - 1)).pex-name) (e.pex-name) 0) then False
+    else let w = poke-byte seen (e.pex-ordinal) 1
+    in ped-check xs seen (i + 1)
+
+  ped-max-ordinal : List PeExport, Integer, Integer -> Integer
+  ped-max-ordinal (xs) (i) (value) =
+    if i >= list-length xs then value
+    else ped-max-ordinal xs (i + 1) (max value ((list-at xs i).pex-ordinal))
+
+  ped-name-size : List PeExport, Integer, Integer -> Integer
+  ped-name-size (xs) (i) (size) =
+    if i >= list-length xs then size
+    else ped-name-size xs (i + 1) (size + text-length ((list-at xs i).pex-name) + 1)
+
+  ped-import-name : Integer -> Text
+  ped-import-name (i) =
+    if i == 0 then "GetSystemDirectoryW"
+    else if i == 1 then "LoadLibraryExW"
+    else if i == 2 then "GetProcAddress"
+    else "lstrcatW"
+
+  ped-imports : Integer, Integer, Integer -> Integer
+  ped-imports (buf) (rva) (i) =
+    if i >= 4 then 0
+    else let w0 = ped-put buf (40 + i * 8) (write-i64 (rva + 120 + i * 64))
+    in let w1 = ped-put buf (80 + i * 8) (write-i64 (rva + 120 + i * 64))
+    in let w2 = ped-ascii buf (122 + i * 64) (ped-import-name i) 0
+    in ped-imports buf rva (i + 1)
+
+  ped-init-slots : Integer, Integer, Integer, Integer, Integer -> Integer
+  ped-init-slots (buf) (n) (stubs) (slots) (i) =
+    if i >= n then 0
+    else let off = 9 + i * 14
+    in let a = ped-rel buf off [72, 141, 5] (stubs + i * 160 + 16)
+    in let b = ped-rel buf a [72, 137, 5] (slots + i * 8)
+    in ped-init-slots buf n stubs slots (i + 1)
+
+  ped-lazy : Integer, Integer, Integer, Integer, Integer -> Integer
+  ped-lazy (buf) (off) (slot) (name) (resolver) =
+    let a = ped-rel buf off [255, 37] slot
+    in let b = ped-put buf (off + 16) [72, 129, 236, 136, 0, 0, 0,
+      72, 137, 76, 36, 32, 72, 137, 84, 36, 40,
+      76, 137, 68, 36, 48, 76, 137, 76, 36, 56,
+      243, 15, 127, 68, 36, 64, 243, 15, 127, 76, 36, 80,
+      243, 15, 127, 84, 36, 96, 243, 15, 127, 92, 36, 112]
+    in let c = ped-rel buf b [72, 141, 13] name
+    in let d = ped-rel buf c [72, 141, 21] slot
+    in let e = ped-rel buf d [232] resolver
+    in ped-put buf e [73, 137, 195,
+      72, 139, 76, 36, 32, 72, 139, 84, 36, 40,
+      76, 139, 68, 36, 48, 76, 139, 76, 36, 56,
+      243, 15, 111, 68, 36, 64, 243, 15, 111, 76, 36, 80,
+      243, 15, 111, 84, 36, 96, 243, 15, 111, 92, 36, 112,
+      72, 129, 196, 136, 0, 0, 0, 65, 255, 227]
+
+  ped-resolver : Integer, Integer, Integer -> Integer
+  ped-resolver (buf) (off) (data) =
+    let a = ped-put buf off [72, 129, 236, 72, 2, 0, 0,
+      72, 137, 76, 36, 32, 72, 137, 84, 36, 40,
+      72, 141, 76, 36, 48, 186, 4, 1, 0, 0]
+    in let b = ped-rel buf a [255, 21] (data + 80)
+    in let c = ped-put buf b [133, 192]
+    in let bad1 = ped-rel buf c [15, 132] 0
+    in let d = ped-put buf bad1 [61, 247, 0, 0, 0]
+    in let bad2 = ped-rel buf d [15, 135] 0
+    in let e = ped-put buf bad2 [72, 141, 76, 36, 48]
+    in let f = ped-rel buf e [72, 141, 21] (data + 392)
+    in let g = ped-rel buf f [255, 21] (data + 104)
+    in let h = ped-put buf g [72, 141, 76, 36, 48, 49, 210, 65, 184, 0, 8, 0, 0]
+    in let j = ped-rel buf h [255, 21] (data + 88)
+    in let k = ped-put buf j [72, 133, 192]
+    in let bad3 = ped-rel buf k [15, 132] 0
+    in let m = ped-put buf bad3 [72, 137, 193, 72, 139, 84, 36, 32]
+    in let q = ped-rel buf m [255, 21] (data + 96)
+    in let done = ped-put buf q [72, 139, 84, 36, 40, 72, 135, 2, 72, 139, 2,
+      72, 129, 196, 72, 2, 0, 0, 195]
+    in let finish = ped-put buf done [49, 192, 72, 129, 196, 72, 2, 0, 0, 195]
+    in let fix1 = ped-put buf (bad1 - 4) (write-i32 (done - bad1))
+    in let fix2 = ped-put buf (bad2 - 4) (write-i32 (done - bad2))
+    in let fix3 = ped-put buf (bad3 - 4) (write-i32 (done - bad3))
+    in finish
+
+  ped-exports : Integer, Integer, List PeExport, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ped-exports (code) (data) (xs) (drva) (stubs) (resolver) (slots) (span) (names) (i) (pos) =
+    if i >= list-length xs then pos
+    else let e = list-at xs i
+    in let n = list-length xs
+    in let w0 = ped-put data (512 + (e.pex-ordinal - 1) * 4) (write-i32 (4096 + stubs + i * 160))
+    in let w1 = ped-put data (512 + span * 4 + i * 4) (write-i32 (drva + pos))
+    in let w2 = ped-put data (512 + span * 4 + n * 4 + i * 2) (write-i16 (e.pex-ordinal - 1))
+    in let next = ped-ascii data pos (e.pex-name) 0
+    in let w3 = ped-lazy code (stubs + i * 160) (drva - 4096 + slots + i * 8) (drva - 4096 + pos) resolver
+    in ped-exports code data xs drva stubs resolver slots span names (i + 1) next
+
+  ped-unwind : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ped-unwind (buf) (n) (stubs) (resolver) (prva) (i) =
+    if i >= n then ped-put buf (i * 12) (write-i32 (4096 + resolver) & write-i32 (4096 + resolver + 256) & write-i32 (prva + (n + 1) * 12 + 8))
+    else let w = ped-put buf (i * 12) (write-i32 (4096 + stubs + i * 160 + 16) & write-i32 (4096 + stubs + i * 160 + 143) & write-i32 (prva + (n + 1) * 12))
+    in ped-unwind buf n stubs resolver prva (i + 1)
+
+  ped-optional : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  ped-optional (cs) (ds) (drva) (exports-size) (prva) (ps) (rrva) =
+    write-i16 523 & [0, 0] & write-i32 cs & write-i32 (ds + ps + 512)
+    & write-i32 0 & write-i32 4096 & write-i32 4096 & write-i64 6442450944
+    & write-i32 4096 & write-i32 512
+    & write-i16 6 & write-i16 0 & write-i32 0 & write-i16 6 & write-i16 0
+    & write-i32 0 & write-i32 (rrva + 4096) & write-i32 512 & write-i32 0
+    & write-i16 3 & write-i16 352
+    & write-i64 1048576 & write-i64 4096 & write-i64 1048576 & write-i64 4096
+    & write-i32 0 & write-i32 16
+    & write-i32 (drva + 432) & write-i32 exports-size
+    & write-i32 drva & write-i32 40
+    & write-i64 0
+    & write-i32 prva & write-i32 (ps - 16)
+    & write-i64 0
+    & write-i32 rrva & write-i32 8
+    & pad-zeros 48
+    & write-i32 (drva + 80) & write-i32 40
+    & pad-zeros 24
+
+  ped-build : List PeExport -> PeForwardDll
+  ped-build (xs) =
+    let n = list-length xs
+    in let span = ped-max-ordinal xs 0 0
+    in let names = 512 + span * 4 + n * 6
+    in let slots = align-up (names + ped-name-size xs 0 0) 8
+    in let ds = slots + n * 8
+    in let stubs = align-up (15 + n * 14) 16
+    in let resolver = stubs + n * 160
+    in let cs = resolver + 256
+    in let drva = 4096 + align-up cs 4096
+    in let prva = drva + align-up ds 4096
+    in let ps = (n + 1) * 12 + 16
+    in let rrva = prva + align-up ps 4096
+    in let cr = align-up cs 512
+    in let dr = align-up ds 512
+    in let pr = align-up ps 512
+    in let size = 512 + cr + dr + pr + 512
+    in let buf = alloc-bytes size
+    in let zero = __memset buf 0 size
+    in let code = buf + 512
+    in let data = code + cr
+    in let pd = data + dr
+    in let hdr = pec-dos-header & [80, 69, 0, 0]
+      & write-i16 34404 & write-i16 4 & pad-zeros 12 & write-i16 240 & write-i16 8226
+      & ped-optional cr ds drva (slots - 432) prva ps rrva
+      & pec-section [46, 116, 101, 120, 116] cs 4096 cr 512 pe-section-code
+      & pec-section [46, 100, 97, 116, 97] ds drva dr (512 + cr) pec-section-idata-rw
+      & pec-section [46, 112, 100, 97, 116, 97] ps prva pr (512 + cr + dr) pe-section-idata-read
+      & pec-section [46, 114, 101, 108, 111, 99] 8 rrva 512 (512 + cr + dr + pr) pe-section-idata-read
+    in let w0 = ped-put buf 0 hdr
+    in let w1 = ped-put code 0 ([131, 250, 1, 15, 133] & write-i32 (n * 14))
+    in let w2 = ped-init-slots code n stubs (drva - 4096 + slots) 0
+    in let w3 = ped-put code (9 + n * 14) [184, 1, 0, 0, 0, 195]
+    in let w4 = ped-resolver code resolver (drva - 4096)
+    in let w5 = ped-put data 0 (write-i32 (drva + 40) & pad-zeros 8 & write-i32 (drva + 376) & write-i32 (drva + 80))
+    in let w6 = ped-imports data drva 0
+    in let w7 = ped-ascii data 376 "kernel32.dll" 0
+    in let w8 = ped-put data 392 [92, 0, 119, 0, 105, 0, 110, 0, 104, 0, 116, 0, 116, 0, 112, 0, 46, 0, 100, 0, 108, 0, 108, 0, 0, 0]
+    in let w9 = ped-ascii data 472 "winhttp.dll" 0
+    in let w10 = ped-put data 432 (pad-zeros 12 & write-i32 (drva + 472) & write-i32 1 & write-i32 span & write-i32 n & write-i32 (drva + 512) & write-i32 (drva + 512 + span * 4) & write-i32 (drva + 512 + span * 4 + n * 4))
+    in let w11 = ped-exports code data xs drva stubs resolver slots span names 0 names
+    in let w12 = ped-unwind pd n stubs resolver prva 0
+    in let w13 = ped-put pd ((n + 1) * 12) [1, 7, 2, 0, 7, 1, 17, 0, 1, 7, 2, 0, 7, 1, 73, 0]
+    in let w14 = ped-put buf (size - 512) pe-reloc-dummy
+    in PeForwardDll { pfd-buffer = buf, pfd-size = size, pfd-why = "" }
+
+  build-forwarding-winhttp : List PeExport -> PeForwardDll
+  build-forwarding-winhttp (xs) =
+    if list-length xs < 1 | list-length xs > 4096 then PeForwardDll { pfd-buffer = 0, pfd-size = 0, pfd-why = "export count outside 1..4096" }
+    else let mark = __heap-save
+    in let seen = alloc-bytes 65536
+    in let zero = __memset seen 0 65536
+    in let valid = ped-check xs seen 0
+    in let restored = __heap-restore mark
+    in if not valid then PeForwardDll { pfd-buffer = 0, pfd-size = 0, pfd-why = "exports require distinct ordinals and ASCII-sorted unique names" }
+    else ped-build xs

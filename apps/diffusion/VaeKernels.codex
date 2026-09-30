@@ -1,0 +1,55 @@
+Chapter: VaeKernels
+  cites Gpu chapter DeviceEffect
+
+ We say:
+
+Section: Casts
+
+ reek's conv2d reads f16 input; the layer kernels write f32. Both kernels take
+ one thread per source element, in blocks of 128.
+
+  kernel-cast-f16 : Integer, Integer, Integer -> [Device] Integer
+  kernel-cast-f16 (src) (dst) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then vk-cast-one src dst (bx * bd + tx) else 0
+  end
+
+  vk-cast-one : Integer, Integer, Integer -> [Device] Integer
+  vk-cast-one (src) (dst) (i) = act
+   v <- device-load-f32 src i
+   device-store-f16 dst i v
+  end
+
+ src is rows x cols f32, row-major; dst is cols x rows f16.
+
+  kernel-transpose-f16 : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-transpose-f16 (src) (dst) (rows) (cols) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then vk-transpose-one src dst rows cols (bx * bd + tx) else 0
+  end
+
+  vk-transpose-one : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  vk-transpose-one (src) (dst) (rows) (cols) (i) = act
+   v <- device-load-f32 src i
+   device-store-f16 dst ((i - (i / cols) * cols) * rows + i / cols) v
+  end
+
+Section: Scale
+
+  kernel-scale-f32 : Integer, Integer, Real, Integer -> [Device] Integer
+  kernel-scale-f32 (src) (dst) (s) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then vk-scale-one src dst s (bx * bd + tx) else 0
+  end
+
+  vk-scale-one : Integer, Integer, Real, Integer -> [Device] Integer
+  vk-scale-one (src) (dst) (s) (i) = act
+   v <- device-load-f32 src i
+   device-store-f32 dst i (v * s)
+  end

@@ -124,8 +124,9 @@ function playGame(seed, players) {
     if (r.bad) { broke = `seed ${seed} (${players}p): ${r.bad}`; break; }
     if (e.gf_done(r.h) === 1) {
       finished++;
-      if (e.gf_total(r.h) !== 13) {
-        broke = `seed ${seed}: finished with ${e.gf_total(r.h)} books, not 13`;
+      const emptyHand = [...Array(e.gf_players(r.h))].some((_, p) => e.gf_size(r.h, p) === 0);
+      if (!emptyHand && e.gf_pile(r.h) !== 0) {
+        broke = `seed ${seed}: finished with every hand holding cards and ${e.gf_pile(r.h)} in the stock`;
       }
       let best = -1, bestP = -1;
       for (let p = 0; p < e.gf_players(r.h); p++) {
@@ -136,7 +137,7 @@ function playGame(seed, players) {
   }
   ok('the fifty-two cards are accounted for on every turn of 20 games',
      broke === null, broke ?? '20 games');
-  ok('every game ends with all thirteen books taken', finished === 20, `${finished} of 20`);
+  ok('every game ends, and only when a hand or the stock is empty', finished === 20, `${finished} of 20`);
   ok('more than one seat leads across the set', winners.size > 1,
      `leaders: ${[...winners].sort().join(',')}`);
 }
@@ -161,6 +162,78 @@ ok('control: the same seed deals the same', snapshot(e.gf_new(6, 3)) === snapsho
 ok('control: the conservation reader would notice a missing card',
    0 + 0 + 4 * 0 !== 52);
 
+// -- RULES: every class of ask, from positions built card by card -----------
+// pagat's rules, as GoFish.codex states them. A card is suit 13 + rank.
+{
+  const C = (r, s = 0) => s * 13 + r;
+  const build = (np, hands, stock) => {
+    let h = e.gf_empty(np);
+    hands.forEach((cs, p) => cs.forEach(c => { h = e.gf_give(h, p, c); }));
+    for (const c of stock) h = e.gf_stock(h, c);
+    return h;
+  };
+  const asks = h => [...Array(13)].map((_, r) => r).filter(r => e.gf_canask(h, r) === 1);
+  for (const [np, each] of [[2, 7], [3, 5], [4, 5]]) {
+    const h = e.gf_new(5, np);
+    ok(`${np} players are dealt ${each} cards each and the rest is the stock`,
+       [...Array(np)].every((_, p) => e.gf_size(h, p) === each) && e.gf_pile(h) === 52 - np * each,
+       [...Array(np)].map((_, p) => e.gf_size(h, p)).join(',') + ` and ${e.gf_pile(h)}`);
+  }
+  {
+    const h = build(3, [[C(0), C(3), C(3, 1)], [C(7)], [C(9)]], [C(11)]);
+    ok('the ranks offered are exactly the ranks the asker holds', JSON.stringify(asks(h)) === '[0,3]', JSON.stringify(asks(h)));
+    ok('asking yourself or a seat off the table is refused, the position unchanged',
+       e.gf_ask(h, 0, 0) === h && e.gf_ask(h, 0, 3) === h && e.gf_ask(h, 5, 1) === h);
+  }
+  {
+    const h = e.gf_ask(build(3, [[C(0), C(3)], [C(0, 1), C(0, 2), C(7)], [C(9)]], [C(11)]), 0, 1);
+    ok('a hit hands over ALL of the rank and the asker asks again',
+       e.gf_rcount(h, 0, 0) === 3 && e.gf_rcount(h, 1, 0) === 0 && e.gf_size(h, 1) === 1 && e.gf_cur(h) === 0 && e.gf_done(h) === 0,
+       `asker holds ${e.gf_rcount(h, 0, 0)}, cur ${e.gf_cur(h)}`);
+  }
+  {
+    const h = e.gf_ask(build(3, [[C(0), C(0, 1), C(0, 2), C(3)], [C(0, 3), C(7)], [C(9)]], [C(11)]), 0, 1);
+    ok('four of a rank are booked at once and the asker goes on',
+       e.gf_books(h, 0) === 1 && e.gf_rcount(h, 0, 0) === 0 && e.gf_size(h, 0) === 1 && e.gf_cur(h) === 0,
+       `books ${e.gf_books(h, 0)}, hand ${e.gf_size(h, 0)}`);
+  }
+  {
+    const h = e.gf_ask(build(3, [[C(0), C(3)], [C(7)], [C(9)]], [C(0, 1), C(9, 1)]), 0, 1);
+    ok('go fish, and the card drawn is the rank asked: the asker asks again',
+       e.gf_rcount(h, 0, 0) === 2 && e.gf_pile(h) === 1 && e.gf_cur(h) === 0, `cur ${e.gf_cur(h)}`);
+  }
+  {
+    const h = e.gf_ask(build(3, [[C(0), C(3)], [C(7)], [C(9)]], [C(9, 1), C(0, 1)]), 0, 2);
+    ok('go fish, any other card: the turn passes to the LEFT, not to the player asked',
+       e.gf_size(h, 0) === 3 && e.gf_cur(h) === 1, `cur ${e.gf_cur(h)}`);
+  }
+  {
+    const h = e.gf_ask(build(3, [[C(0), C(3)], [C(0, 1)], [C(9)]], [C(5)]), 0, 1);
+    ok('the game ends as soon as a hand is empty: here the hand asked', e.gf_done(h) === 1 && e.gf_size(h, 1) === 0);
+  }
+  {
+    const h = e.gf_ask(build(3, [[C(0), C(0, 1), C(0, 2)], [C(0, 3), C(7)], [C(9)]], [C(5)]), 0, 1);
+    ok('a book that empties the asker\'s hand ends the game, and the most books wins',
+       e.gf_done(h) === 1 && e.gf_winner(h) === 0, `done ${e.gf_done(h)}, winner ${e.gf_winner(h)}`);
+  }
+  {
+    const h = e.gf_ask(build(3, [[C(0), C(3)], [C(7)], [C(9)]], [C(5)]), 0, 1);
+    ok('the game ends when the stock runs out', e.gf_done(h) === 1 && e.gf_pile(h) === 0 && e.gf_size(h, 0) === 3);
+  }
+  {
+    // Player 0 books the twos and goes on, misses on fives and fishes a
+    // seven; player 1 then takes the last three from player 2 and books them.
+    let h = build(3, [[C(0), C(0, 1), C(0, 2), C(3)], [C(0, 3), C(1), C(1, 1), C(1, 2), C(7)], [C(1, 3), C(9)]], [C(5), C(6), C(8)]);
+    h = e.gf_ask(h, 0, 1);
+    const after1 = e.gf_cur(h);
+    h = e.gf_ask(h, 3, 1);
+    const after2 = e.gf_cur(h);
+    h = e.gf_ask(h, 1, 2);
+    ok('one book each is a tie, and a tie has no single winner',
+       after1 === 0 && after2 === 1 && e.gf_books(h, 0) === 1 && e.gf_books(h, 1) === 1 && e.gf_winner(h) === -1,
+       `turns ${after1},${after2}; books ${e.gf_books(h, 0)},${e.gf_books(h, 1)}; winner ${e.gf_winner(h)}`);
+  }
+}
 console.log(fail === 0
   ? `\nPASS: Go Fish keeps all fifty-two cards (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

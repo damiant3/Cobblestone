@@ -1,0 +1,452 @@
+Chapter: PthFile
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Diffusion chapter CheckpointLayout
+
+ A torch.save checkpoint in the zip format (torch 1.6 on): a ZIP archive of
+ stored entries, <prefix>/data.pkl a pickle (protocol 2) of the state dict,
+ every tensor torch._utils._rebuild_tensor_v2 (storage, storage offset, size,
+ stride, requires_grad, hooks) and every storage the persistent id
+ ('storage', <dtype>Storage, key, location, numel) naming the entry
+ <prefix>/data/<key>. An entry's bytes follow its local header's name and
+ extra field, which torch pads, and the local headers carry no sizes (flag
+ bit 3), therefore the entries are found through the central directory,
+ whose end record must be the file's last 22 bytes (no comment, no ZIP64).
+ Only the opcodes and the three globals such a pickle uses are read; any
+ other refuses the file.
+
+ We say:
+
+Section: Values
+
+  PVal =
+    | PNone
+    | PMark
+    | PInt (Integer)
+    | PBool (Boolean)
+    | PText (Text)
+    | PGlobal (Text)
+    | PTuple (List PVal)
+    | PDict (List PEntry)
+    | PStorage (PthStorage)
+    | PTensor (PthTensor)
+    | PErr (Text)
+
+  PEntry = record {
+    en-key : Text,
+    en-val : PVal
+  }
+
+  PthStorage = record {
+    ps-key : Text,
+    ps-dtype : Integer,
+    ps-numel : Integer
+  }
+
+  PthTensor = record {
+    pt-key : Text,
+    pt-dtype : Integer,
+    pt-offset : Integer,
+    pt-shape : List Integer,
+    pt-stride : List Integer
+  }
+
+  PthTensorAt = record {
+    pa-name : Text,
+    pa-dtype : Integer,
+    pa-shape : List Integer,
+    pa-count : Integer,
+    pa-file-off : Integer,
+    pa-contiguous : Boolean
+  }
+
+  PthFile = record {
+    pf-ok : Boolean,
+    pf-why : Text,
+    pf-path : Text,
+    pf-tensors : List PthTensorAt
+  }
+
+  PthZipEntry = record {
+    ze-name : Text,
+    ze-local : Integer,
+    ze-size : Integer,
+    ze-method : Integer
+  }
+
+Section: Bytes
+
+ The bridge's file-range upload lands in its reply window, as CheckpointFile's
+ reads do; each read is copied out at once.
+
+  pth-window : Integer = #BD700000
+
+  pth-copy : Integer, Integer, Integer, Integer -> Integer
+  pth-copy (src) (dst) (i) (n) =
+    if i >= n then dst
+    else if i + 4 <= n then let w = poke-32 dst i (peek-32 src i) in pth-copy src dst (i + 4) n
+    else let b = poke-byte dst i (peek-byte src i) in pth-copy src dst (i + 1) n
+
+  pth-read : Text, Integer, Integer -> Integer
+  pth-read (path) (off) (len) =
+    if len <= 0 | len > 8388608 then 0
+    else let h = gpu-buf-alloc len
+    in if h == 0 then 0
+    else let n = gpu-buf-upload h 0 path off len gpu-dt-u8 gpu-dt-u8
+    in let ok = if n == len then gpu-buf-read h 0 len pth-window else False
+    in let f = gpu-buf-free h
+    in if ok then pth-copy pth-window (alloc-bytes (len + 8)) 0 len else 0
+
+  pth-u16 : Integer, Integer -> Integer
+  pth-u16 (a) (i) = peek-byte a i + 256 * peek-byte a (i + 1)
+
+  pth-u32 : Integer, Integer -> Integer
+  pth-u32 (a) (i) = pth-u16 a i + 65536 * pth-u16 a (i + 2)
+
+  pth-text : Integer, Integer, Integer, List Integer -> Text
+  pth-text (a) (off) (n) (rev) = raw-bytes-to-text (st-header-codes a off (off + n) rev (__list-with-capacity (n + 1)))
+
+ The file's size: the bridge refuses a read past the end, so the first offset
+ that does not read is found by doubling from 1 MiB, then halving.
+
+  pth-has : Text, Integer -> Boolean
+  pth-has (path) (off) = pth-read path off 1 /= 0
+
+  pth-grow : Text, Integer -> Integer
+  pth-grow (path) (hi) = if hi > 17179869184 then hi else if pth-has path hi then pth-grow path (hi * 2) else hi
+
+  pth-narrow : Text, Integer, Integer -> Integer
+  pth-narrow (path) (lo) (hi) =
+    if hi - lo <= 1 then hi
+    else let m = lo + (hi - lo) / 2
+    in if pth-has path m then pth-narrow path m hi else pth-narrow path lo m
+
+  pth-size : Text -> Integer
+  pth-size (path) =
+    if pth-has path 0 == False then 0
+    else let hi = pth-grow path 1048576
+    in pth-narrow path (if hi == 1048576 then 0 else hi / 2) hi
+
+Section: The Archive
+
+  pth-cd : Integer, Integer, Integer, List Integer, List PthZipEntry -> List PthZipEntry
+  pth-cd (cd) (pos) (left) (rev) (acc) =
+    if left <= 0 | pth-u32 cd pos /= #02014B50 then acc
+    else let nl = pth-u16 cd (pos + 28)
+    in let e = PthZipEntry { ze-name = pth-text cd (pos + 46) nl rev, ze-local = pth-u32 cd (pos + 42), ze-size = pth-u32 cd (pos + 20), ze-method = pth-u16 cd (pos + 10) }
+    in pth-cd cd (pos + 46 + nl + pth-u16 cd (pos + 30) + pth-u16 cd (pos + 32)) (left - 1) rev (list-push acc e)
+
+  pth-entries : Text, List Integer -> List PthZipEntry
+  pth-entries (path) (rev) =
+    let size = pth-size path
+    in let eocd = if size < 22 then 0 else pth-read path (size - 22) 22
+    in if eocd == 0 then []
+    else if pth-u32 eocd 0 /= #06054B50 | pth-u16 eocd 10 == #FFFF | pth-u32 eocd 16 == #FFFFFFFF then []
+    else let cd = pth-read path (pth-u32 eocd 16) (pth-u32 eocd 12)
+    in if cd == 0 then [] else pth-cd cd 0 (pth-u16 eocd 10) rev (__list-with-capacity (pth-u16 eocd 10 + 1))
+
+  pth-entry : List PthZipEntry, Text, Integer -> Integer
+  pth-entry (es) (name) (i) = if i >= list-length es then 0 - 1 else if (list-at es i).ze-name == name then i else pth-entry es name (i + 1)
+
+  pth-pkl : List PthZipEntry, Integer -> Integer
+  pth-pkl (es) (i) =
+    if i >= list-length es then 0 - 1
+    else let nm = (list-at es i).ze-name
+    in let k = text-length nm
+    in if k >= 8 & substring nm (k - 8) 8 == "data.pkl" then i else pth-pkl es (i + 1)
+
+  pth-data-at : Text, PthZipEntry -> Integer
+  pth-data-at (path) (e) =
+    let h = pth-read path (e.ze-local) 30
+    in if h == 0 | pth-u32 h 0 /= #04034B50 | e.ze-method /= 0 then 0 - 1
+    else e.ze-local + 30 + pth-u16 h 26 + pth-u16 h 28
+
+Section: The Pickle
+
+ The stack and the memo are lists made at full size once and written in
+ place; a dict is replaced whole when an item is set, which is safe because
+ this pickle's memo gives back only strings and globals.
+
+  pth-is-mark : PVal -> Boolean
+  pth-is-mark (v) = when v
+    is PMark -> True
+    is otherwise -> False
+
+  pth-fill : Integer, List PVal -> List PVal
+  pth-fill (k) (acc) = if k <= 0 then acc else pth-fill (k - 1) (list-push acc PNone)
+
+  pth-mark-at : List PVal, Integer -> Integer
+  pth-mark-at (st) (i) = if i < 0 then 0 - 1 else if pth-is-mark (list-at st i) then i else pth-mark-at st (i - 1)
+
+  pth-slice : List PVal, Integer, Integer, List PVal -> List PVal
+  pth-slice (st) (i) (stop) (acc) = if i >= stop then acc else pth-slice st (i + 1) stop (list-push acc (list-at st i))
+
+  pth-key : PVal -> Text
+  pth-key (v) = when v
+    is PText (t) -> t
+    is otherwise -> ""
+
+  pth-entries-of : PVal -> List PEntry
+  pth-entries-of (v) = when v
+    is PDict (es) -> es
+    is otherwise -> []
+
+  pth-copy-entries : List PEntry, Integer, List PEntry -> List PEntry
+  pth-copy-entries (es) (i) (acc) = if i >= list-length es then acc else pth-copy-entries es (i + 1) (list-push acc (list-at es i))
+
+  pth-set-pairs : List PVal, Integer, Integer, List PEntry -> List PEntry
+  pth-set-pairs (st) (i) (stop) (acc) =
+    if i + 1 >= stop then acc
+    else pth-set-pairs st (i + 2) stop (list-push acc (PEntry { en-key = pth-key (list-at st i), en-val = list-at st (i + 1) }))
+
+ A dict with the stack's items from i to stop set, key then value.
+
+  pth-dict-set : PVal, List PVal, Integer, Integer -> PVal
+  pth-dict-set (d) (st) (i) (stop) =
+    let old = pth-entries-of d
+    in PDict (pth-set-pairs st i stop (pth-copy-entries old 0 (__list-with-capacity (list-length old + (stop - i) / 2 + 1))))
+
+  pth-int : PVal -> Integer
+  pth-int (v) = when v
+    is PInt (k) -> k
+    is otherwise -> 0 - 1
+
+  pth-ints : List PVal, Integer, List Integer -> List Integer
+  pth-ints (xs) (i) (acc) = if i >= list-length xs then acc else pth-ints xs (i + 1) (list-push acc (pth-int (list-at xs i)))
+
+  pth-int-tuple : PVal -> List Integer
+  pth-int-tuple (v) = when v
+    is PTuple (xs) -> pth-ints xs 0 (__list-with-capacity (list-length xs + 1))
+    is otherwise -> []
+
+  pth-dtype : Text -> Integer
+  pth-dtype (g) =
+    if g == "torch FloatStorage" then st-dtype-f32
+    else if g == "torch HalfStorage" then st-dtype-f16
+    else if g == "torch BFloat16Storage" then st-dtype-bf16
+    else st-dtype-unknown
+
+  pth-global : PVal -> Text
+  pth-global (v) = when v
+    is PGlobal (g) -> g
+    is otherwise -> ""
+
+  pth-storage-of : List PVal -> PVal
+  pth-storage-of (xs) =
+    if list-length xs < 5 then PErr "a persistent id of fewer than 5 fields"
+    else PStorage (PthStorage { ps-key = pth-key (list-at xs 2), ps-dtype = pth-dtype (pth-global (list-at xs 1)), ps-numel = pth-int (list-at xs 4) })
+
+  pth-storage : PVal -> PVal
+  pth-storage (pid) = when pid
+    is PTuple (xs) -> pth-storage-of xs
+    is otherwise -> PErr "a persistent id that is not a tuple"
+
+  pth-tensor-of : List PVal, PthStorage -> PVal
+  pth-tensor-of (xs) (s) = PTensor (PthTensor { pt-key = s.ps-key, pt-dtype = s.ps-dtype, pt-offset = pth-int (list-at xs 1), pt-shape = pth-int-tuple (list-at xs 2), pt-stride = pth-int-tuple (list-at xs 3) })
+
+  pth-rebuild : List PVal -> PVal
+  pth-rebuild (xs) =
+    if list-length xs < 4 then PErr "a tensor of fewer than 4 fields"
+    else when list-at xs 0
+      is PStorage (s) -> pth-tensor-of xs s
+      is otherwise -> PErr "a tensor whose storage is not a persistent storage"
+
+  pth-rebuild-args : PVal -> PVal
+  pth-rebuild-args (args) = when args
+    is PTuple (xs) -> pth-rebuild xs
+    is otherwise -> PErr "tensor arguments that are not a tuple"
+
+  pth-apply : PVal, PVal -> PVal
+  pth-apply (f) (args) =
+    let g = pth-global f
+    in if g == "collections OrderedDict" then PDict []
+    else if g == "torch._utils _rebuild_tensor_v2" then pth-rebuild-args args
+    else PErr ("a call of " & (if g == "" then "a non-global" else g))
+
+  pth-err-of : PVal -> Text
+  pth-err-of (v) = when v
+    is PErr (why) -> why
+    is otherwise -> ""
+
+  pth-line-end : Integer, Integer, Integer -> Integer
+  pth-line-end (a) (i) (n) = if i >= n | peek-byte a i == 10 then i else pth-line-end a (i + 1) n
+
+  pth-s32 : Integer -> Integer
+  pth-s32 (v) = if v >= 2147483648 then v - 4294967296 else v
+
+ One opcode's effect: the stack written in place, the next position and
+ depth, an error text, or done when STOP leaves the answer on top.
+
+  PthStep = record {
+    sx-pos : Integer,
+    sx-sp : Integer,
+    sx-err : Text,
+    sx-done : Boolean
+  }
+
+  pth-next : Integer, Integer -> PthStep
+  pth-next (pos) (sp) = PthStep { sx-pos = pos, sx-sp = sp, sx-err = "", sx-done = False }
+
+  pth-bad : Text -> PthStep
+  pth-bad (why) = PthStep { sx-pos = 0, sx-sp = 0, sx-err = why, sx-done = False }
+
+ v replaces the stack from depth sp, and the step moves to pos.
+
+  pth-put-top : List PVal, Integer, Integer, PVal -> PthStep
+  pth-put-top (st) (sp) (pos) (v) =
+    let e = pth-err-of v
+    in if e /= "" then pth-bad e
+    else let s = list-set-at st sp v in pth-next pos (sp + 1)
+
+  pth-global-at : Integer, Integer, Integer, List PVal, Integer, List Integer -> PthStep
+  pth-global-at (a) (pos) (n) (st) (sp) (rev) =
+    let e1 = pth-line-end a (pos + 1) n
+    in let e2 = pth-line-end a (e1 + 1) n
+    in pth-put-top st sp (e2 + 1) (PGlobal (pth-text a (pos + 1) (e1 - pos - 1) rev & " " & pth-text a (e1 + 1) (e2 - e1 - 1) rev))
+
+  pth-memo-put : List PVal, Integer, List PVal, Integer, Integer -> PthStep
+  pth-memo-put (st) (sp) (memo) (k) (pos) =
+    if sp < 1 | k >= list-length memo then pth-bad ("a memo put out of range at " & show pos)
+    else let m = list-set-at memo k (list-at st (sp - 1)) in pth-next pos sp
+
+  pth-memo-get : List PVal, Integer, List PVal, Integer, Integer -> PthStep
+  pth-memo-get (st) (sp) (memo) (k) (pos) =
+    if k >= list-length memo then pth-bad ("a memo get out of range at " & show pos)
+    else pth-put-top st sp pos (list-at memo k)
+
+  pth-tuple-at : List PVal, Integer, Integer, Integer -> PthStep
+  pth-tuple-at (st) (sp) (m) (pos) =
+    if m < 0 then pth-bad ("TUPLE without a mark at " & show pos)
+    else pth-put-top st m (pos + 1) (PTuple (pth-slice st (m + 1) sp (__list-with-capacity (sp - m))))
+
+  pth-setitems-at : List PVal, Integer, Integer, Integer -> PthStep
+  pth-setitems-at (st) (sp) (m) (pos) =
+    if m < 1 then pth-bad ("SETITEMS without a mark and a dict at " & show pos)
+    else pth-put-top st (m - 1) (pos + 1) (pth-dict-set (list-at st (m - 1)) st (m + 1) sp)
+
+  pth-step : Integer, Integer, Integer, List PVal, Integer, List PVal, List Integer -> PthStep
+  pth-step (a) (pos) (n) (st) (sp) (memo) (rev) =
+    let op = peek-byte a pos
+    in if op == 128 then pth-next (pos + 2) sp
+    else if op == 46 then (if sp >= 1 then PthStep { sx-pos = pos, sx-sp = sp, sx-err = "", sx-done = True } else pth-bad "STOP on an empty stack")
+    else if op == 125 then pth-put-top st sp (pos + 1) (PDict [])
+    else if op == 41 then pth-put-top st sp (pos + 1) (PTuple [])
+    else if op == 40 then pth-put-top st sp (pos + 1) PMark
+    else if op == 78 then pth-put-top st sp (pos + 1) PNone
+    else if op == 136 then pth-put-top st sp (pos + 1) (PBool True)
+    else if op == 137 then pth-put-top st sp (pos + 1) (PBool False)
+    else if op == 75 then pth-put-top st sp (pos + 2) (PInt (peek-byte a (pos + 1)))
+    else if op == 77 then pth-put-top st sp (pos + 3) (PInt (pth-u16 a (pos + 1)))
+    else if op == 74 then pth-put-top st sp (pos + 5) (PInt (pth-s32 (pth-u32 a (pos + 1))))
+    else if op == 88 then pth-put-top st sp (pos + 5 + pth-u32 a (pos + 1)) (PText (pth-text a (pos + 5) (pth-u32 a (pos + 1)) rev))
+    else if op == 140 then pth-put-top st sp (pos + 2 + peek-byte a (pos + 1)) (PText (pth-text a (pos + 2) (peek-byte a (pos + 1)) rev))
+    else if op == 99 then pth-global-at a pos n st sp rev
+    else if op == 113 then pth-memo-put st sp memo (peek-byte a (pos + 1)) (pos + 2)
+    else if op == 114 then pth-memo-put st sp memo (pth-u32 a (pos + 1)) (pos + 5)
+    else if op == 104 then pth-memo-get st sp memo (peek-byte a (pos + 1)) (pos + 2)
+    else if op == 106 then pth-memo-get st sp memo (pth-u32 a (pos + 1)) (pos + 5)
+    else if sp < 1 then pth-bad ("pickle opcode " & show op & " on an empty stack at " & show pos)
+    else if op == 133 then pth-put-top st (sp - 1) (pos + 1) (PTuple [list-at st (sp - 1)])
+    else if op == 81 then pth-put-top st (sp - 1) (pos + 1) (pth-storage (list-at st (sp - 1)))
+    else if op == 116 then pth-tuple-at st sp (pth-mark-at st (sp - 1)) pos
+    else if op == 117 then pth-setitems-at st sp (pth-mark-at st (sp - 1)) pos
+    else if sp < 2 then pth-bad ("pickle opcode " & show op & " on a short stack at " & show pos)
+    else if op == 134 then pth-put-top st (sp - 2) (pos + 1) (PTuple [list-at st (sp - 2), list-at st (sp - 1)])
+    else if op == 82 then pth-put-top st (sp - 2) (pos + 1) (pth-apply (list-at st (sp - 2)) (list-at st (sp - 1)))
+    else if op == 98 then pth-next (pos + 1) (sp - 1)
+    else if sp < 3 then pth-bad ("pickle opcode " & show op & " on a short stack at " & show pos)
+    else if op == 135 then pth-put-top st (sp - 3) (pos + 1) (PTuple [list-at st (sp - 3), list-at st (sp - 2), list-at st (sp - 1)])
+    else if op == 115 then pth-put-top st (sp - 3) (pos + 1) (pth-dict-set (list-at st (sp - 3)) st (sp - 2) sp)
+    else pth-bad ("pickle opcode " & show op & " at " & show pos & " is not read")
+
+ The machine over the pickle's n bytes at a; the answer is the value STOP
+ leaves, or PErr.
+
+  pth-vm : Integer, Integer, Integer, List PVal, Integer, List PVal, List Integer -> PVal
+  pth-vm (a) (pos) (n) (st) (sp) (memo) (rev) =
+    if pos >= n then PErr "the pickle ends without STOP"
+    else if sp + 4 >= list-length st then PErr "the pickle's stack is too deep"
+    else let s = pth-step a pos n st sp memo rev
+    in if s.sx-err /= "" then PErr (s.sx-err)
+    else if s.sx-done then list-at st (s.sx-sp - 1)
+    else pth-vm a (s.sx-pos) n st (s.sx-sp) memo rev
+Section: The State Dict
+
+  pth-find-key : List PEntry, Text, Integer -> PVal
+  pth-find-key (es) (k) (i) = if i >= list-length es then PNone else if (list-at es i).en-key == k then (list-at es i).en-val else pth-find-key es k (i + 1)
+
+  pth-is-dict : PVal -> Boolean
+  pth-is-dict (v) = when v
+    is PDict (es) -> True
+    is otherwise -> False
+
+ The dict under params_ema, else under params, else the top dict, as
+ basicsr's checkpoints and spandrel's loader take them.
+
+  pth-state : PVal -> List PEntry
+  pth-state (top) =
+    let es = pth-entries-of top
+    in let ema = pth-find-key es "params_ema" 0
+    in let params = pth-find-key es "params" 0
+    in if pth-is-dict ema then pth-entries-of ema else if pth-is-dict params then pth-entries-of params else es
+
+  pth-contiguous : List Integer, List Integer, Integer, Integer -> Boolean
+  pth-contiguous (shape) (stride) (i) (want) =
+    if i < 0 then True
+    else if list-at stride i /= want & list-at shape i /= 1 then False
+    else pth-contiguous shape stride (i - 1) (want * list-at shape i)
+
+  pth-count : List Integer, Integer, Integer -> Integer
+  pth-count (shape) (i) (acc) = if i >= list-length shape then acc else pth-count shape (i + 1) (acc * list-at shape i)
+
+ Each tensor of the state dict with its first element's file offset: the
+ entry <prefix>/data/<key>'s data plus the storage offset. Matching a
+ storage to its entry is a search of the entry list per tensor, quadratic in
+ the entry count (704 for RealESRGAN x4plus).
+
+  pth-place : Text, List PthZipEntry, Text, List PEntry, Integer, List PthTensorAt -> List PthTensorAt
+  pth-place (path) (zs) (prefix) (es) (i) (acc) =
+    if i >= list-length es then acc
+    else let e = list-at es i
+    in when e.en-val
+      is PTensor (t) -> pth-place path zs prefix es (i + 1) (list-push acc (pth-at path zs prefix e.en-key t))
+      is otherwise -> pth-place path zs prefix es (i + 1) acc
+
+  pth-at : Text, List PthZipEntry, Text, Text, PthTensor -> PthTensorAt
+  pth-at (path) (zs) (prefix) (name) (t) =
+    let k = pth-entry zs (prefix & "data/" & t.pt-key) 0
+    in let data = if k < 0 then 0 - 1 else pth-data-at path (list-at zs k)
+    in let w = st-dtype-width (t.pt-dtype)
+    in PthTensorAt { pa-name = name, pa-dtype = t.pt-dtype, pa-shape = t.pt-shape, pa-count = pth-count (t.pt-shape) 0 1, pa-file-off = (if data < 0 | w <= 0 then 0 - 1 else data + t.pt-offset * w), pa-contiguous = list-length (t.pt-shape) == list-length (t.pt-stride) & pth-contiguous (t.pt-shape) (t.pt-stride) (list-length (t.pt-shape) - 1) 1 }
+
+  pth-fail : Text, Text -> PthFile
+  pth-fail (path) (why) = PthFile { pf-ok = False, pf-why = why, pf-path = path, pf-tensors = [] }
+
+  pth-open : Text -> PthFile
+  pth-open (path) =
+    let rev = st-ascii-to-cce cce-to-unicode-table 0 (st-minus-ones 0 (__list-with-capacity 128))
+    in let zs = pth-entries path rev
+    in let k = pth-pkl zs 0
+    in if k < 0 then pth-fail path "no ZIP central directory with a data.pkl"
+    else let z = list-at zs k
+    in let at = pth-data-at path z
+    in let pk = if at < 0 then 0 else pth-read path at (z.ze-size)
+    in if pk == 0 then pth-fail path "data.pkl could not be read"
+    else let cap = z.ze-size / 2 + 16
+    in let top = pth-vm pk 0 (z.ze-size) (pth-fill cap (__list-with-capacity (cap + 1))) 0 (pth-fill cap (__list-with-capacity (cap + 1))) rev
+    in when top
+      is PErr (why) -> pth-fail path why
+      is otherwise -> PthFile { pf-ok = True, pf-why = "", pf-path = path, pf-tensors = pth-place path zs (substring (z.ze-name) 0 (text-length (z.ze-name) - 8)) (pth-state top) 0 (__list-with-capacity 1024) }
+
+  pth-find : PthFile, Text, Integer -> Integer
+  pth-find (f) (name) (i) = if i >= list-length (f.pf-tensors) then 0 - 1 else if (list-at (f.pf-tensors) i).pa-name == name then i else pth-find f name (i + 1)
+
+ A tensor's elements into the device buffer h at dst-off as dst-dt; the
+ bytes the bridge wrote, or 0 - 1 for a tensor that is not contiguous or
+ has no place in the file.
+
+  pth-upload : PthFile, PthTensorAt, Integer, Integer, Integer -> Integer
+  pth-upload (f) (t) (h) (dst-off) (dst-dt) =
+    let src = if t.pa-dtype == st-dtype-f32 then gpu-dt-f32 else if t.pa-dtype == st-dtype-f16 then gpu-dt-f16 else if t.pa-dtype == st-dtype-bf16 then gpu-dt-bf16 else 0 - 1
+    in if src < 0 | t.pa-file-off < 0 | t.pa-contiguous == False then 0 - 1
+    else gpu-buf-upload h dst-off (f.pf-path) (t.pa-file-off) (t.pa-count) src dst-dt

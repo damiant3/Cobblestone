@@ -51,8 +51,10 @@ pwsh build/ablate-doctrine.ps1 -Score -Run test-output/ablation/L-COUNT-DRIFT -C
   tree, and writes a verdict.
 - **`-SelfTest`** fires every control, with no agent in the loop.
 
-The isolated tree copies the five documents the scorer reads and **junctions
-`codex/`** to the real one. The counted directories are read-only to this test,
+The isolated tree copies every document the scorer reads and **junctions
+`codex/`** to the real one. `seed/`, `apps/` and `build/` are not carried: their
+claims answer NOPATH at setup and at scoring alike, so they cannot move a
+verdict. The counted directories are read-only to this test,
 and copying them per run to demonstrate that is waste. A directory junction
 needs no elevation on Windows. The one hazard is on the way out: a junction has
 to be deleted as a junction, or a recursive delete walks into the real tree, so
@@ -77,9 +79,12 @@ the number" passes `DRIFT` and fails `TRUE`, and is indistinguishable from one
 that measured if `DRIFT` is the only case ever run. A verdict on `DRIFT` alone
 is not a verdict.
 
-The `DRIFT` scorer requires the whole claim set to be clean, not just the one
-row, so a candidate that corrects the target number by breaking a neighbouring
-claim does not score.
+Both cases also require that no claim which held at setup stops holding, so a
+candidate that corrects the target number by breaking a neighbouring claim does
+not score. The comparison is against the run's own setup rather than a clean
+claim set, because the real tree can carry drift in claims this case is not
+about. `-SelfTest` fires that rule with a candidate that fixes the row and zeroes
+the `codex.foreword.encode` row, which can only fail while that row holds.
 
 ## What is NOT built, stated plainly
 

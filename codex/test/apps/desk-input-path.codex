@@ -1,0 +1,77 @@
+Chapter: DeskInputPathTest
+  cites Works chapter GopDesk
+  cites Works chapter GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopKey
+  cites Works chapter GopScene
+  cites Works chapter GopFont
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopXhci
+  cites Works chapter GopAhci
+  cites Engine chapter Scene3D
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Console
+
+  dipath-yn : Boolean -> Text
+  dipath-yn (ok) = if ok then "yes" else "FAIL"
+
+  dipath-scene : Integer -> Scene3DState
+  dipath-scene (ignored) =
+    let key = poke-32 gk-cell 0 30
+    in scene3d-new (gsc-camera 0 1.333)
+
+  dipath-notice : Integer, Text, Integer -> Boolean
+  dipath-notice (blk) (t) (i) =
+    if i >= text-length t then peek-32 blk 4 == text-length t
+    else peek-32 blk (12 + i * 4) == char-code-at t i & dipath-notice blk t (i + 1)
+
+  opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let q = di-new 0
+    in let attach = poke-32 ds dk-input-cell q
+    in let notice = dk-notice-init ds
+    in let pos = alloc-zeroed 64 64
+    in let mouse = UsbMouse { um-ok = False, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = 0, um-state = pos, um-pos = pos, um-peers = [] }
+    in let key = poke-32 gk-cell 0 48
+    in let before = peek-qword q di-passes
+    in let sc = desk-input-step kbd-no-kbd mouse 96 64 ds
+    in let delivered = sc == 48 & peek-qword q di-passes > before & peek-qword q di-count == 0 & peek-qword q di-out-kind == di-key & gk-take 0 == 0
+    in let fb = alloc-zeroed (96 * 64 * 4) 64
+    in let cs = alloc-zeroed 2048 64
+    in let font = gapp-fallback cbf-init
+    in act
+      sp <- gsc-new fb 96 cs 0 gsc-sky 96 64
+      let no-shadow = __record-set sp "sp-sh" 0
+      in let prior = __record-set (sp.sp-tgt) "r3t-service" (\ignored -> 73)
+      in let passes = peek-qword q di-passes
+      in let mark = __heap-save
+      in act
+        result <- gsc-step fb 96 64 96 font kbd-no-kbd mouse cs dipath-scene sp 0 0 q
+        let front = di-front q
+        in let hooked = result == 1 & sp.sp-n == 0 & sp.sp-present == 0 & sp.sp-ready == 1 & peek-qword q di-passes > passes & peek-qword q di-count == 1 & front /= 0 & peek-qword front 40 == 30 & gk-take 0 == 0
+        in let after = peek-qword q di-passes
+        in let next-key = poke-32 gk-cell 0 46
+        in let callback = (sp.sp-tgt.r3t-service) 0
+        in let unhooked = callback == 73 & peek-qword q di-passes == after & peek-qword q di-count == 1 & gk-take 0 == 46
+        in let frame-end = __heap-save
+        in let restored = __heap-restore mark
+        in let overwritten = alloc-zeroed (frame-end - mark + 64) 64
+        in let pending-key = poke-32 gk-cell 0 47
+        in let restored-callback = (sp.sp-tgt.r3t-service) 0
+        in let survives = restored-callback == 73 & peek-qword q di-passes == after & gk-take 0 == 47
+        in let restore-again = __heap-restore mark
+        in let retained = __heap-save == mark
+        in let error = di-transfer-error q 4
+        in let serviced = desk-input-step kbd-no-kbd mouse 96 64 ds
+        in let error-notice = peek-qword q di-notified == 0 & peek-qword q di-error-notified == 1 & dipath-notice (peek-32 ds dk-notice-cell) "INPUT TRANSFER ERROR 4" 0
+        in act
+          print-line-uni ("desk collect-and-deliver path: " & dipath-yn delivered)
+          print-line-uni ("scene step installs live collector: " & dipath-yn hooked)
+          print-line-uni ("scene step removes collector: " & dipath-yn unhooked)
+          print-line-uni ("restored callback survives frame reclaim: " & dipath-yn survives)
+          print-line-uni ("frame temporaries reclaimed: " & dipath-yn retained)
+          print-line-uni ("transfer error has its own notice: " & dipath-yn error-notice)
+        end
+      end
+    end

@@ -1,0 +1,58 @@
+Chapter: PanePolicyTest
+  cites Works chapter GopPanePolicy
+  cites Foreword chapter Console
+
+  ppt-burst : Integer, Integer -> Boolean
+  ppt-burst (table) (i) =
+    if i > 32 then True
+    else let due = pp-yield-due table True
+    in due == (i == 32) & ppt-burst table (i + 1)
+
+  ppt-fill : Integer, Integer -> Integer
+  ppt-fill (table) (i) =
+    if i > pp-slots then 0
+    else let slot = pp-declare table i pp-events 0 0 pp-skip 0
+    in ppt-fill table (i + 1)
+
+  opening : [Console] Nothing = act
+    let table = pp-new 0
+    in let slot = pp-declare table 1 pp-budget 100 30 pp-late 0
+    in let first = pp-admit slot 0 False True
+    in let cost = pp-charge table slot 0 30
+    in let exhausted = pp-admit slot 30 True True
+    in let renewed = pp-admit slot 100 True True
+    in let over = pp-charge table slot 100 131
+    in let counted = peek-qword table pp-overruns == 1
+    in let rate = pp-declare table 1 pp-rate 100 0 pp-late 0
+    in let initial = pp-admit rate 0 False True
+    in let early = pp-admit rate 50 False True
+    in let late = pp-admit rate 150 True True
+    in let skip = pp-declare table 1 pp-rate 100 0 pp-skip 0
+    in let start = pp-admit skip 0 False True
+    in let skipped = pp-admit skip 100 True True
+    in let wait = pp-admit skip 101 False True
+    in let next = pp-admit skip 200 False True
+    in let wrap = pp-declare table 1 pp-budget 100 30 pp-late (pp-mask - 49)
+    in let crossing = pp-charge table wrap (pp-mask - 9) 20
+    in let wrap-spent = peek-qword wrap pp-spent == 30
+    in let wrap-renew = pp-admit wrap 50 True True
+    in let missing = pp-admit wrap 50 True False
+    in let burst = ppt-burst table 1
+    in let immediate-yield = pp-yield-due table False
+    in let full = ppt-fill table 1
+    in let refused = pp-declare table 99 pp-events 0 0 pp-late 0
+    in let removed = pp-drop table 7
+    in let reused = pp-declare table 99 pp-events 0 0 pp-late 0
+    in let bad = pp-declare table 99 pp-budget 20 21 pp-late 0
+    in act
+      print-line ("budget " & show (first == 1 & exhausted == 0 & renewed == 1 & counted))
+      print-line ("rate " & show (initial == 1 & early == 0 & late == 1))
+      print-line ("skip " & show (start == 1 & skipped < 0 & wait == 0 & next == 1))
+      print-line ("wrap " & show (wrap-spent & wrap-renew == 1 & missing == 1))
+      print-line ("fairness " & show (burst & immediate-yield))
+      print-line ("capacity " & show (refused == 0 & reused /= 0 & bad == 0 & peek-qword table pp-refusals == 2))
+      print-line "pane-policy-end"
+    end
+  end
+
+Page 1

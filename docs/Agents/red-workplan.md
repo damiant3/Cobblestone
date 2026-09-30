@@ -1,3 +1,3 @@
 # red -- workplan
 
-Empty by design.
+In-flight lane state only; emptied at handoff.

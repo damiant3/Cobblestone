@@ -345,9 +345,9 @@ each repair changes behaviour.
 - **`concat-codex-self` assigns `$ForewordDir` and nothing reads it.** Foreword
   directories resolve through `$QuireDirs` now, so the hardcoded path is a stale
   second answer a reader takes as authoritative.
-- **`build-explorer-pages` cannot fail**: it spells no `ScExit` anywhere, so no
-  caller can tell a run that built five pages from one that built none
-  (L-BAILVALUE). `lint-unused-cites` and `clean-zombies` are the same.
+- **`lint-unused-cites` and `clean-zombies` cannot fail**: neither spells
+  `ScExit` anywhere, so no caller can tell a run that did its work from one
+  that did none (L-BAILVALUE).
 - **`test-self-verify` ends at zero whatever the verification said**, so a caller
   reading only the exit code cannot tell "THE SEED VERIFIES ITSELF" from
   "SIGNATURE INVALID". The answer is the TEXT, which is why the seed path

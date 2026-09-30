@@ -1,0 +1,82 @@
+Chapter: DiffusionPth
+  cites Diffusion chapter PthFile
+  cites AI chapter SafeTensors
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/pth-oracle.py's: torch.load's view of the installed
+ RealESRGAN checkpoints, every tensor's name, shape and first and last
+ elements in state-dict order. A tensor agrees when its name and shape are
+ the same and both elements, uploaded from the file, are the same bits.
+
+ We say:
+
+Section: Fixture
+
+  got : Integer = #BD900000
+
+  Tally = record {
+    ty-off : Integer,
+    ty-names : Integer,
+    ty-shapes : Integer,
+    ty-values : Integer
+  }
+
+  fx-dims : Integer, Integer, Integer, List Integer -> List Integer
+  fx-dims (fx) (off) (k) (acc) = if k <= 0 then acc else fx-dims fx (off + 4) (k - 1) (list-push acc (pth-u32 fx off))
+
+  same-dims : List Integer, List Integer, Integer -> Boolean
+  same-dims (a) (b) (i) = if list-length a /= list-length b then False else if i >= list-length a then True else if list-at a i /= list-at b i then False else same-dims a b (i + 1)
+
+  ends-agree : PthFile, PthTensorAt, Integer, Integer -> Boolean
+  ends-agree (f) (t) (first) (last) =
+    let h = gpu-buf-alloc (t.pa-count * 4)
+    in let u = if h == 0 then 0 - 1 else pth-upload f t h 0 gpu-dt-f32
+    in let r = u == t.pa-count * 4 & gpu-buf-read h 0 4 got & gpu-buf-read h ((t.pa-count - 1) * 4) 4 (got + 4)
+    in let fr = if h == 0 then True else gpu-buf-free h
+    in r & bit-and (peek-32 got 0) #FFFFFFFF == first & bit-and (peek-32 got 4) #FFFFFFFF == last
+
+  one : PthFile, Integer, List Integer, Integer, Tally -> Tally
+  one (f) (fx) (rev) (i) (t) =
+    let nl = pth-u32 fx (t.ty-off)
+    in let name = pth-text fx (t.ty-off + 4) nl rev
+    in let nd = pth-u32 fx (t.ty-off + 4 + nl)
+    in let dims = fx-dims fx (t.ty-off + 8 + nl) nd (__list-with-capacity (nd + 1))
+    in let vo = t.ty-off + 8 + nl + 4 * nd
+    in let ours = if i < list-length (f.pf-tensors) then list-at (f.pf-tensors) i else PthTensorAt { pa-name = "", pa-dtype = 0, pa-shape = [], pa-count = 0, pa-file-off = 0 - 1, pa-contiguous = False }
+    in let nm = if ours.pa-name == name then 1 else 0
+    in let sh = if same-dims (ours.pa-shape) dims 0 then 1 else 0
+    in let vs = if ours.pa-count > 0 & ends-agree f ours (pth-u32 fx vo) (pth-u32 fx (vo + 4)) then 1 else 0
+    in Tally { ty-off = vo + 8, ty-names = t.ty-names + nm, ty-shapes = t.ty-shapes + sh, ty-values = t.ty-values + vs }
+
+  walk : PthFile, Integer, List Integer, Integer, Integer, Tally -> Tally
+  walk (f) (fx) (rev) (i) (n) (t) = if i >= n then t else walk f fx rev (i + 1) n (one f fx rev i t)
+
+  arm : PthFile, Integer, Integer, List Integer -> Tally
+  arm (f) (fx) (off) (rev) = walk f fx rev 0 (pth-u32 fx off) (Tally { ty-off = off + 4, ty-names = 0, ty-shapes = 0, ty-values = 0 })
+
+  line : Text, PthFile, Integer, Integer, Tally -> Text
+  line (what) (f) (fx) (off) (t) =
+    if f.pf-ok == False then what & ": refused: " & f.pf-why
+    else what & ": " & show (list-length (f.pf-tensors)) & " tensors, fixture " & show (pth-u32 fx off) & "; names " & show (t.ty-names) & ", shapes " & show (t.ty-shapes) & ", first and last elements " & show (t.ty-values)
+
+  report2 : Integer, List Integer, PthFile, PthFile, Tally -> [Console] Nothing
+  report2 (fx) (rev) (fa) (fb) (ta) = act
+    print-line-uni (line "RealESRGAN x4plus" fa fx 0 ta)
+    print-line-uni (line "RealESRGAN x4plus anime 6B" fb fx (ta.ty-off) (arm fb fx (ta.ty-off) rev))
+    print-line-uni (line "sabotage, x4plus against the anime 6B's fixture" fa fx (ta.ty-off) (arm fa fx (ta.ty-off) rev))
+    print-line-uni ("control, the fixture itself: " & (pth-open "pth-realesrgan.bin").pf-why)
+  end
+
+  report : Integer, List Integer, PthFile, PthFile -> [Console] Nothing
+  report (fx) (rev) (fa) (fb) = report2 fx rev fa fb (arm fa fx 0 rev)
+
+  start : Integer -> [Console] Nothing
+  start (fx) = if fx == 0 then act print-line-uni "the fixture could not be read" end
+    else if pth-has "RealESRGAN_x4plus.pth" 0 == False then act print-line-uni "SKIP: no RealESRGAN_x4plus.pth under the upscaler root build-output/diffusion-upscalers" end
+    else report fx (st-ascii-to-cce cce-to-unicode-table 0 (st-minus-ones 0 (__list-with-capacity 128))) (pth-open "RealESRGAN_x4plus.pth") (pth-open "RealESRGAN_x4plus_anime_6B.pth")
+  opening : [Console] Integer
+  opening = act
+    start (pth-read "pth-realesrgan.bin" 0 44000)
+    let r = 0 in r
+  end

@@ -1,0 +1,40 @@
+Chapter: ErpSnapshotFresh
+  cites ERP chapter ErpTypes
+  cites ERP chapter FinGL
+  cites ERP chapter ErpScenario
+  cites ERP chapter ErpSnapshot
+  cites Foreword chapter Console
+
+Section: Check
+
+  kv-diff : Text, Integer, Integer -> Text
+  kv-diff (k) (snap) (live) =
+    if snap == live then "" else k & " snapshot " & show snap & " live " & show live & "; "
+
+  tb-diff : List ErpSnapLine, List TrialBalanceLine, Integer, Text -> Text
+  tb-diff (snap) (live) (i) (acc) =
+    if i >= list-length live then acc
+    else if i >= list-length snap then acc & "line " & show i & " missing; "
+    else let s = list-at snap i
+    in let l = list-at live i
+    in let same = s.esl-account == l.tb-account & s.esl-name == l.tb-name & s.esl-debit == l.tb-debit & s.esl-credit == l.tb-credit
+    in tb-diff snap live (i + 1) (if same then acc else acc & "line " & show i & " differs; ")
+
+  fresh-report : Integer -> Text
+  fresh-report (x) =
+    let r = run-month
+    in let gl = r.scn-state
+    in let tb = trial-balance gl
+    in let a = kv-diff "revenue" erp-snap-revenue (total-revenue gl) & kv-diff "expenses" erp-snap-expenses (total-expenses gl) & kv-diff "net" erp-snap-net (net-income gl)
+    in let b = kv-diff "cash" erp-snap-cash (get-balance gl "1000") & kv-diff "assets" erp-snap-assets (total-assets gl) & kv-diff "liabilities" erp-snap-liabilities (total-liabilities gl)
+    in let c = kv-diff "equity" erp-snap-equity (total-equity gl) & kv-diff "ap-open" erp-snap-ap-open (r.scn-ap-open) & kv-diff "ar-open" erp-snap-ar-open (r.scn-ar-open)
+    in let d = if list-length erp-snap-tb == list-length tb then "" else "line count snapshot " & show (list-length erp-snap-tb) & " live " & show (list-length tb) & "; "
+    in let all = a & b & c & d & tb-diff erp-snap-tb tb 0 ""
+    in if text-length all == 0 then "erp snapshot: fresh, " & show (list-length tb) & " trial-balance lines"
+    else "erp snapshot: STALE, rerun apps/erp/build-snapshot.ps1: " & all
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (fresh-report 0)
+  end

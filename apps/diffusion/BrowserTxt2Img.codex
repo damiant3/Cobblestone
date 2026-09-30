@@ -1,0 +1,184 @@
+Chapter: BrowserTxt2Img
+  cites WebApp chapter WebGpu
+  cites AI chapter ClipBpe
+  cites Diffusion chapter SamplerSchedule
+  cites Diffusion chapter SamplerGraph
+  cites Diffusion chapter NoiseGen
+  cites Diffusion chapter ClipGraph
+  cites Diffusion chapter UNetGraph
+  cites Diffusion chapter UNet15Graph
+  cites Diffusion chapter VaeGraph
+  cites Diffusion chapter DenoiserGraph
+  cites Diffusion chapter BrowserClip
+  cites Diffusion chapter BrowserUNet
+  cites Diffusion chapter BrowserVae
+  cites Diffusion chapter BrowserSampler
+  cites Diffusion chapter ClipPromptText
+
+ SD1.5 text to image in a page as Forge runs it with Euler at the Automatic
+ schedule (the predictor's uniform sigmas): torch's GPU noise from the seed,
+ scaled by the first sigma; uncond + cfg (cond - uncond); the latent divided
+ by the VAE's 0.18215 before the decode. A prompt is parsed and weighted as
+ Forge's (ClipPromptText) and must fit one 77-token chunk, as the native
+ SD1.5 route requires.
+
+ We say:
+
+Section: Model
+
+  BrowserModel = record {
+    bm-code : Text,
+    bm-clip : BcWeights,
+    bm-unet : BuWeights,
+    bm-vae : BvWeights
+  }
+
+Section: Prompt
+
+  bt-ints : List Text, Integer, List Integer -> List Integer
+  bt-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else bt-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  bt-poke32 : Integer, List Integer, Integer -> Integer
+  bt-poke32 (a) (ws) (i) =
+    if i >= list-length ws then a
+    else let p = poke-32 a (i * 4) (list-at ws i)
+    in bt-poke32 a ws (i + 1)
+
+ A chunk's cond with Forge's emphasis applied: read back, weighted by
+ ClipPromptText's cp-emphasise in the page's byte heap, written again.
+
+  bt-emphasised : Integer, List Real, Text -> Integer
+  bt-emphasised (h) (mults) (r) =
+    let ws = if text-length r < 3 then [] else bt-ints (text-split (substring r 1 (text-length r - 2)) ",") 0 []
+    in let a = bt-poke32 (alloc-bytes (list-length ws * 4 + 8)) ws 0
+    in let e = cp-emphasise a mults 768
+    in if list-length ws /= clip-tokens * 768 then 0
+    else if gpu-buf-write-words h 0 (bt-words a 0 (list-length ws) []) then h
+    else 0
+
+  bt-cond : BrowserModel, ClipChunk, (Integer -> Integer) -> Integer
+  bt-cond (m) (c) (k) =
+    let o = clip-encode-with (browser-clip-ops (m.bm-code)) (m.bm-clip) (c.cc-ids)
+    in if o.co-status /= 0 then k 0
+    else if cp-all-ones (c.cc-mults) 0 then k (o.co-cond)
+    else gpu-buf-download-then (o.co-cond) 0 (clip-tokens * 768 * 4) (\r -> k (bt-emphasised (o.co-cond) (c.cc-mults) r))
+
+ The prompt's and the negative's conds, each one chunk, to k; k gets 0 for
+ either when a prompt is over one chunk or an encode was refused.
+
+  browser-conds-then : BrowserModel, ClipBpe, Text, Text, (Integer, Integer -> Integer) -> Integer
+  browser-conds-then (m) (bpe) (prompt) (negative) (k) =
+    let pc = clip-prompt-chunks bpe prompt
+    in let nc = clip-prompt-chunks bpe negative
+    in if list-length pc /= 1 | list-length nc /= 1 then k 0 0
+    else bt-cond m (list-at pc 0) (\cc -> bt-cond m (list-at nc 0) (\cu -> k cc cu))
+
+Section: Noise
+
+  bt-words : Integer, Integer, Integer, List Integer -> List Integer
+  bt-words (a) (i) (n) (acc) = if i >= n then acc else bt-words a (i + 1) n (list-snoc acc (peek-32 a (i * 4)))
+
+  bt-noise : Integer, Integer -> Integer
+  bt-noise (seed) (n) =
+    let a = alloc-bytes (n * 4)
+    in let z = noise-torch-into a seed 0 n
+    in let h = gpu-buf-alloc (n * 4)
+    in if h == 0 then 0
+    else if gpu-buf-write-words h 0 (bt-words a 0 n []) then h
+    else if gpu-buf-free h then 0 else 0
+
+Section: The Image
+
+ done gets the image as an f32 3 x height x width buffer, or -1 a prompt over
+ one chunk, -2 an encode refused, -3 sampling or the decode refused.
+
+  browser-txt2img-then : BrowserModel, ClipBpe, Text, Text, Integer, Integer, Real, Integer, Integer, (Integer -> Integer) -> Integer
+  browser-txt2img-then (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (done) =
+    if list-length (clip-prompt-chunks bpe prompt) /= 1 | list-length (clip-prompt-chunks bpe negative) /= 1 then done (0 - 1)
+    else browser-conds-then m bpe prompt negative (\cc cu -> done (if cc == 0 | cu == 0 then 0 - 2 else bt-sample m cc cu seed steps cfg (width / 8) (height / 8)))
+
+  bt-sample : BrowserModel, Integer, Integer, Integer, Integer, Real, Integer, Integer -> Integer
+  bt-sample (m) (cc) (cu) (seed) (steps) (cfg) (lw) (lh) =
+    let ops = browser-unet-ops (m.bm-code)
+    in let sops = browser-sampler-ops (m.bm-code)
+    in let n = 4 * lh * lw
+    in let tab = unet-log-sigmas 0
+    in let sig = uniform-sigmas steps
+    in let x = bt-noise seed n
+    in let s0 = if x == 0 then 0 - 1 else sops.lincomb x x x x (list-at sig 0) 0.0 0.0 n
+    in let bad = if s0 < 0 then 1 else sample-euler-with sops (\xh s -> guided-with ops sops (\a b -> unet15-denoise-with ops sops (m.bm-unet) tab cc lh lw a b) (\a b -> unet15-denoise-with ops sops (m.bm-unet) tab cu lh lw a b) cfg n xh s) x sig n
+    in let z = if bad > 0 then 0 - 1 else sops.lincomb x x x x (1.0 / 0.18215) 0.0 0.0 n
+    in let img = if z < 0 then BvAct { ah = 0, ac = 3, ahh = 0, aww = 0 } else vae-decode-with (browser-vae-ops (m.bm-code)) (m.bm-vae) (BvAct { ah = x, ac = 4, ahh = lh, aww = lw })
+    in let f = gpu-buf-free cc & gpu-buf-free cu & (if x == 0 then True else gpu-buf-free x)
+    in if img.ah == 0 then 0 - 3 else img.ah
+
+Section: Timed
+
+ The same image, one stage at a time with the device drained between stages,
+ therefore each stage's wall clock is its own: log gets one line per stage
+ and per step, done the image (or a status as browser-txt2img-then's) and a
+ one-line summary.
+
+  bt-ms : Integer -> Text
+  bt-ms (ms) = show ms & " ms"
+
+  bt-rate : Integer, Integer -> Text
+  bt-rate (steps) (ms) = if ms <= 0 then "-" else show (steps * 100000 / ms / 100) & "." & bt-two (steps * 100000 / ms - steps * 100000 / ms / 100 * 100)
+
+  bt-two : Integer -> Text
+  bt-two (k) = if k < 10 then "0" & show k else show k
+
+  browser-txt2img-timed : BrowserModel, ClipBpe, Text, Text, Integer, Integer, Real, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer
+  browser-txt2img-timed (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (log) (done) =
+    let t0 = clock-ms 0
+    in let a = log "text encode: start"
+    in if list-length (clip-prompt-chunks bpe prompt) /= 1 | list-length (clip-prompt-chunks bpe negative) /= 1 then done (0 - 1) ""
+    else browser-conds-then m bpe prompt negative (\cc cu -> if cc == 0 | cu == 0 then done (0 - 2) "" else gpu-done-then (\r -> bt-encoded m cc cu seed steps cfg (width / 8) (height / 8) t0 (clock-ms 0) log done))
+
+  bt-encoded : BrowserModel, Integer, Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer
+  bt-encoded (m) (cc) (cu) (seed) (steps) (cfg) (lw) (lh) (t0) (t1) (log) (done) =
+    let a = log ("text encode: " & bt-ms (t1 - t0))
+    in let sops = browser-sampler-ops (m.bm-code)
+    in let n = 4 * lh * lw
+    in let sig = uniform-sigmas steps
+    in let x = bt-noise seed n
+    in let s0 = if x == 0 then 0 - 1 else sops.lincomb x x x x (list-at sig 0) 0.0 0.0 n
+    in if s0 < 0 then done (0 - 3) ""
+    else bt-steps m cc cu cfg lw lh x sig (unet-log-sigmas 0) 0 steps t0 t1 (clock-ms 0) log done
+
+  bt-steps : BrowserModel, Integer, Integer, Real, Integer, Integer, Integer, List Real, List Real, Integer, Integer, Integer, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer
+  bt-steps (m) (cc) (cu) (cfg) (lw) (lh) (x) (sig) (tab) (i) (steps) (t0) (t1) (ts) (log) (done) =
+    if i >= steps then bt-sampled m cc cu lw lh x t0 t1 ts (clock-ms 0) steps log done
+    else let ops = browser-unet-ops (m.bm-code)
+    in let sops = browser-sampler-ops (m.bm-code)
+    in let n = 4 * lh * lw
+    in let s = clock-ms 0
+    in let bad = euler-step-with sops (\xh sg -> guided-with ops sops (\p q -> unet15-denoise-with ops sops (m.bm-unet) tab cc lh lw p q) (\p q -> unet15-denoise-with ops sops (m.bm-unet) tab cu lh lw p q) cfg n xh sg) x sig i n
+    in if bad > 0 then done (0 - 3) ""
+    else gpu-done-then (\r -> bt-stepped m cc cu cfg lw lh x sig tab i steps t0 t1 ts s log done)
+
+  bt-stepped : BrowserModel, Integer, Integer, Real, Integer, Integer, Integer, List Real, List Real, Integer, Integer, Integer, Integer, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer
+  bt-stepped (m) (cc) (cu) (cfg) (lw) (lh) (x) (sig) (tab) (i) (steps) (t0) (t1) (ts) (s) (log) (done) =
+    let now = clock-ms 0
+    in let spent = now - ts
+    in let left = if i + 1 >= steps then 0 else spent / (i + 1) * (steps - i - 1)
+    in let a = log ("step " & show (i + 1) & "/" & show steps & ": " & bt-ms (now - s) & ", " & bt-rate (i + 1) spent & " steps/s, " & show (left / 1000) & " s left")
+    in bt-steps m cc cu cfg lw lh x sig tab (i + 1) steps t0 t1 ts log done
+
+  bt-sampled : BrowserModel, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer
+  bt-sampled (m) (cc) (cu) (lw) (lh) (x) (t0) (t1) (ts) (t2) (steps) (log) (done) =
+    let a = log ("sampling: " & bt-ms (t2 - ts) & " for " & show steps & " steps, " & bt-rate steps (t2 - ts) & " steps/s")
+    in let sops = browser-sampler-ops (m.bm-code)
+    in let z = sops.lincomb x x x x (1.0 / 0.18215) 0.0 0.0 (4 * lh * lw)
+    in let b = log "VAE decode: start"
+    in let img = if z < 0 then BvAct { ah = 0, ac = 3, ahh = 0, aww = 0 } else vae-decode-with (browser-vae-ops (m.bm-code)) (m.bm-vae) (BvAct { ah = x, ac = 4, ahh = lh, aww = lw })
+    in let f = gpu-buf-free cc & gpu-buf-free cu & gpu-buf-free x
+    in if img.ah == 0 then done (0 - 3) ""
+    else gpu-done-then (\r -> bt-decoded (img.ah) t0 t1 ts t2 (clock-ms 0) steps log done)
+
+  bt-decoded : Integer, Integer, Integer, Integer, Integer, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer
+  bt-decoded (img) (t0) (t1) (ts) (t2) (t3) (steps) (log) (done) =
+    let a = log ("VAE decode: " & bt-ms (t3 - t2))
+    in done img ("total " & bt-ms (t3 - t0) & ": text encode " & bt-ms (t1 - t0) & ", sampling " & bt-ms (t2 - ts) & " (" & bt-rate steps (t2 - ts) & " steps/s), VAE decode " & bt-ms (t3 - t2))

@@ -1,0 +1,156 @@
+Chapter: DeskInputProof
+  cites Works chapter GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsb
+  cites Works chapter GopScene
+  cites Works chapter GopAhci
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Engine chapter Renderer3D
+  cites Engine chapter Scene3D
+  cites Kernel chapter Hpet
+  cites Foreword chapter Console
+
+Section: Capture
+
+  dip-limit-ms : Integer = 100
+  dip-width : Integer = 1024
+  dip-height : Integer = 768
+
+  dip-drain : Integer, Integer, Integer -> Integer
+  dip-drain (q) (capture) (fuel) =
+    let e = di-front q
+    in if e == 0 | fuel <= 0 then 0
+    else let kind = peek-qword e 0
+    in let value = peek-qword e 40
+    in let n = peek-qword capture 0
+    in let order = if peek-qword e 8 <= peek-qword capture 48 then poke-qword capture 24 1 else 0
+    in let seq = poke-qword capture 48 (peek-qword e 16)
+    in let sync-key = kind == di-key & (value == 59 | value == 187)
+    in let meaningful = if sync-key then 0 else poke-qword capture 56 (peek-qword e 16)
+    in let a = if sync-key then 0 else if kind == di-motion then
+      let x = poke-qword capture 8 (peek-qword capture 8 + peek-qword e 24)
+      in poke-qword capture 16 (peek-qword capture 16 + peek-qword e 32)
+      else if n >= 4 then poke-qword capture 24 1
+      else let k = poke-qword capture (64 + n * 40) kind
+      in let v = poke-qword capture (72 + n * 40) value
+      in let x = poke-qword capture (80 + n * 40) (peek-qword capture 8)
+      in let y = poke-qword capture (88 + n * 40) (peek-qword capture 16)
+      in let pos = poke-qword capture (96 + n * 40) (if peek-qword e 48 == peek-qword capture 8 & peek-qword e 56 == peek-qword capture 16 then 1 else 0)
+      in poke-qword capture 0 (n + 1)
+    in let p = di-pop q hpet-ticks
+    in dip-drain q capture (fuel - 1)
+
+  dip-frame : Integer, Integer, UsbKbd, UsbMouse, R3dTriState, Integer -> Integer
+  dip-frame (q) (capture) (kbd) (mouse) (tgt) (angle) =
+    let before = hpet-ticks
+    in let before-seq = peek-qword q di-sequence
+    in let tr0 = di-trace q 5 0 before 0
+    in let mark = __heap-save
+    in let scene = gsc-scene 0
+    in let tr1 = di-trace q 6 0 hpet-ticks 0
+    in let posed = scene3d-set-camera scene (gsc-camera angle (gsc-aspect (tgt.r3t-w) (tgt.r3t-h)))
+    in let clear = r3d-target-clear tgt gsc-sky
+    in let tr2 = di-trace q 7 0 hpet-ticks 0
+    in let frame = r3d-render-shadowed tgt posed 256
+    in let tr3 = di-trace q 8 0 hpet-ticks 0
+    in let present = gsc-blit-serviced (peek-qword capture 224) (tgt.r3t-w) tgt 0
+    in let tr4 = di-trace q 9 0 hpet-ticks 0
+    in let restore = __heap-restore mark
+    in let duration = hpet-ticks - before
+    in let mx = poke-qword capture 32 (if duration > peek-qword capture 32 then duration else peek-qword capture 32)
+    in let drain = dip-drain q capture 32
+    in let overlap = if duration > hpet-ticks-per-second * dip-limit-ms / 1000 & peek-qword capture 56 > before-seq then poke-qword capture 40 1 else 0
+    in 0
+
+  dip-frames : Integer, Integer, UsbKbd, UsbMouse, R3dTriState, Integer, Integer, Integer -> Integer
+  dip-frames (q) (capture) (kbd) (mouse) (tgt) (start) (duration) (n) =
+    if hpet-ticks - start >= duration then n
+    else let collected = di-collect q kbd mouse dip-width dip-height
+    in let frame = dip-frame q capture kbd mouse tgt (int-mod (n * 10) gsc-turn)
+    in dip-frames q capture kbd mouse tgt start duration (n + 1)
+
+  dip-yn : Boolean -> Text
+  dip-yn (ok) = if ok then "yes" else "NO"
+
+  dip-await : Integer, UsbKbd, UsbMouse, Integer, Integer -> Integer
+  dip-await (q) (kbd) (mouse) (start) (timeout) =
+    if hpet-ticks - start >= timeout then 0
+    else let collected = di-collect q kbd mouse dip-width dip-height
+    in let e = di-front q
+    in if e == 0 then dip-await q kbd mouse start timeout
+    else let marker = peek-qword e 0 == di-key & peek-qword e 40 == 59
+    in let p = di-pop q hpet-ticks
+    in if marker then hpet-ticks else dip-await q kbd mouse start timeout
+
+  dip-fill : Integer, Integer -> Integer
+  dip-fill (q) (n) =
+    if n <= 0 then 0
+    else let a = di-push q di-key 0 0 42 0 0 hpet-ticks
+    in dip-fill q (n - 1)
+
+  dip-traces : Integer, Integer -> [Console] Nothing
+  dip-traces (q) (i) = act
+    if i >= peek-qword q di-trace-count then print-line-uni "trace-end"
+    else let t = q + di-meta-bytes + di-cap * di-event-bytes + i * di-trace-bytes
+    in act
+      print-line-uni ("trace " & show (peek-qword t 0) & " " & show (peek-qword t 8) & " " & show (peek-qword t 16) & " " & show (peek-qword t 24))
+      dip-traces q (i + 1)
+    end
+  end
+
+  dip-run : Integer -> [Console, Device.Port, Device.Mmio] Nothing
+  dip-run (mode) = act
+    att <- usb-attach
+    let started = hpet-start
+    in let rate = hpet-ticks-per-second
+    in let q = di-new 1
+    in let off = poke-qword q di-no-rearm (if mode == 1 then 1 else 0)
+    in let edge = poke-qword q di-drop-edge (if mode == 2 then 1 else 0)
+    in let capture = alloc-zeroed 256 64
+    in let surface = poke-qword capture 224 (alloc-bytes (dip-width * dip-height * 4))
+    in let tgt = r3d-target-new dip-width dip-height gsc-sky
+    in let service = __record-set tgt "r3t-service" (\ignored -> di-collect q (att.ua-kbd) (att.ua-mouse) dip-width dip-height)
+    in act
+      print-line-uni ("input-proof queue=" & show q & " events=" & show (q + di-meta-bytes) & " pointer=" & show (q + di-col-x) & " capacity=" & show di-cap & " event-bytes=" & show di-event-bytes)
+      print-line-uni ("input-proof ready mode=" & show mode & " rate=" & show rate & " limit-ms=" & show dip-limit-ms & "; waiting for F1 anchor")
+      let t0 = if rate > 0 then dip-await q (att.ua-kbd) (att.ua-mouse) hpet-ticks (rate * 10) else 0
+      in act
+      print-line-uni "input-proof anchored"
+      let anchored = di-trace q 4 0 t0 0
+      in let flood = if mode == 3 then dip-fill q (di-cap + 1) else 0
+      in let heap0 = alloc-bytes 0
+      in let frames = if t0 > 0 then dip-frames q capture (att.ua-kbd) (att.ua-mouse) tgt t0 (rate * 3) 0 else 0
+      in let heap1 = alloc-bytes 0
+      in let final = di-collect q (att.ua-kbd) (att.ua-mouse) dip-width dip-height
+      in let drain = dip-drain q capture 32
+      in let done = hpet-ticks
+      in let sequence = peek-qword capture 0 == 4
+        & peek-qword capture 64 == di-button & peek-qword capture 72 == 1
+        & peek-qword capture 104 == di-key & peek-qword capture 112 == 30
+        & peek-qword capture 144 == di-key & peek-qword capture 152 == 158
+        & peek-qword capture 184 == di-button & peek-qword capture 192 == 0
+        & peek-qword capture 80 == 12 & peek-qword capture 88 == 8 & peek-qword capture 96 == 1
+        & peek-qword capture 120 == 12 & peek-qword capture 128 == 8 & peek-qword capture 136 == 1
+        & peek-qword capture 160 == 12 & peek-qword capture 168 == 8 & peek-qword capture 176 == 1
+        & peek-qword capture 200 == 20 & peek-qword capture 208 == 14 & peek-qword capture 216 == 1
+      in let motion = peek-qword capture 8 == 20 & peek-qword capture 16 == 14
+      in let lossless = peek-qword q di-loss == 0 & peek-qword q di-trace-loss == 0 & peek-qword capture 24 == 0
+      in let pending = if sequence & motion then 0 else done - (if peek-qword q di-event-count == 0 then t0 else peek-qword q di-last-event)
+      in let input-gap = if pending > peek-qword q di-event-gap then pending else peek-qword q di-event-gap
+      in let limit = rate * dip-limit-ms / 1000
+      in let gap-ok = rate > 0 & peek-qword q di-max-gap <= limit & input-gap <= limit
+      in let long-render = rate > 0 & peek-qword capture 32 > limit & peek-qword capture 40 == 1
+      in act
+        print-line-uni ("frames=" & show frames & " elapsed-ticks=" & show (done - t0) & " longest-frame-ticks=" & show (peek-qword capture 32))
+        print-line-uni ("collector-gap-ticks=" & show (peek-qword q di-max-gap) & " passes=" & show (peek-qword q di-passes) & " rearms=" & show (peek-qword q di-rearms))
+        print-line-uni ("input-gap-ticks=" & show input-gap & " outstanding-ticks=" & show pending)
+        print-line-uni ("motion=" & show (peek-qword capture 8) & "," & show (peek-qword capture 16) & " edges=" & show (peek-qword capture 0) & " loss=" & show (peek-qword q di-loss) & " trace-loss=" & show (peek-qword q di-trace-loss))
+        print-line-uni ("sequence=" & dip-yn sequence & " motion=" & dip-yn motion & " gap=" & dip-yn gap-ok & " lossless=" & dip-yn lossless)
+        print-line-uni ("long-render=" & dip-yn long-render & " retained-frame-bytes=" & show (heap1 - heap0))
+        print-line-uni ("accepted=" & dip-yn (t0 > 0 & att.ua-kbd.uk-ok & att.ua-mouse.um-ok & frames > 0 & long-render & sequence & motion & gap-ok & lossless & heap1 == heap0))
+        dip-traces q 0
+      end
+      end
+    end
+  end

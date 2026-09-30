@@ -3,7 +3,11 @@
 # COMPILED designer pages by route: / and /setting -> setting.html, /character,
 # /item. Each page fetches /api/d/<table> over AJAX; the bridge proxies /api/* to
 # the guest. No serial. Build the pages first with codex\plugs\html\run.ps1.
-param([int]$HttpPort = 8888, [int]$MemMB = 2048,
+# /api/generate, /api/config and /cache/* are answered here, on the host, against
+# a Stable Diffusion WebUI (AUTOMATIC1111 sdapi) on -SdPort; images are cached
+# under build-output\explorer-cache. With no WebUI listening, /api/config answers
+# 503 with an empty body, which the pages' check-sd-status shows as "SD offline".
+param([int]$HttpPort = 8888, [int]$MemMB = 2048, [int]$SdPort = 7860,
       [string]$Cdx = "build-output\explorer-server.cdx",
       [string]$Disk = "build-output\explorer.db.img")
 Set-StrictMode -Version Latest
@@ -12,9 +16,11 @@ $TcpPort = 9100   # the server connects OUT to host:9100 (hardcoded in WebServer
 $Repo  = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
 $vmBin = Join-Path $Repo 'tools\codex-vm.exe'
 $CdxPath = Join-Path $Repo $Cdx
+$SdApi = "http://127.0.0.1:$SdPort/sdapi/v1"
+$CacheDir = Join-Path $Repo 'build-output\explorer-cache'
 
-$pageFiles = @{ 'setting' = 'build-output\setting.html'; 'character' = 'build-output\character.html'; 'item' = 'build-output\item.html'; 'excalibur' = 'build-output\excalibur.html'; 'mine' = 'build-output\creations.html' }
-$pageSrc = @{ 'setting' = 'SettingDesignerApp'; 'character' = 'CharDesignerApp'; 'item' = 'ItemDesignerApp'; 'excalibur' = 'ExcaliburSlice'; 'mine' = 'CreationsApp' }
+$pageFiles = @{ 'setting' = 'build-output\setting.html'; 'character' = 'build-output\character.html'; 'item' = 'build-output\item.html'; 'excalibur' = 'build-output\excalibur.html'; 'mine' = 'build-output\creations.html'; 'card' = 'build-output\card.html'; 'forge' = 'build-output\worldforge.html' }
+$pageSrc = @{ 'setting' = 'SettingDesignerApp'; 'character' = 'CharDesignerApp'; 'item' = 'ItemDesignerApp'; 'excalibur' = 'ExcaliburSlice'; 'mine' = 'CreationsApp'; 'card' = 'CardDesignerApp'; 'forge' = 'WorldForge' }
 $pages = @{}
 foreach ($k in $pageFiles.Keys) {
   $p = Join-Path $Repo $pageFiles[$k]
@@ -57,7 +63,58 @@ $inject = @'
   };
 })();</script>
 '@
-foreach ($k in @($pages.Keys)) { if ($k -ne 'mine') { $pages[$k] = $pages[$k] -replace '</body>', ($inject + '</body>') } }
+foreach ($k in @($pages.Keys)) { if ($k -notin 'mine', 'card', 'forge') { $pages[$k] = $pages[$k] -replace '</body>', ($inject + '</body>') } }
+
+# --- Stable Diffusion, host side ---
+function Invoke-SdApi([string]$Path, [string]$Method = 'GET', $Body = $null, [int]$TimeoutSec = 300) {
+  $params = @{ Uri = "$SdApi/$Path"; Method = $Method; ContentType = 'application/json'; TimeoutSec = $TimeoutSec }
+  if ($null -ne $Body) { $params.Body = ($Body | ConvertTo-Json -Depth 10 -Compress) }
+  try { Invoke-RestMethod @params } catch { $null }
+}
+function Get-PromptHash([string]$Prompt) {
+  $h = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($Prompt))
+  (($h | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 12)
+}
+function Switch-SdModel([string]$Title) {
+  $null = Invoke-SdApi 'options' 'POST' @{ sd_model_checkpoint = $Title }
+  $deadline = [DateTime]::UtcNow.AddSeconds(120)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    $o = Invoke-SdApi 'options' -TimeoutSec 5
+    if ($o -and $o.sd_model_checkpoint -like "*$Title*") { return $true }
+    Start-Sleep -Seconds 2
+  }
+  $false
+}
+# The body is gen-body's (ExplorerTheme); the answer's `url` is what generate-image
+# (HtmlEmitter emit-dom-sd) puts in the history card and the hero image.
+function Invoke-SdGenerate($b) {
+  $seed = if ($b.seed) { [int]$b.seed } else { 424242 }
+  $w = if ($b.width) { [int]$b.width } else { 768 }
+  $h = if ($b.height) { [int]$b.height } else { 1024 }
+  $ph = Get-PromptHash $b.prompt
+  $dir = Join-Path $CacheDir $ph
+  New-Item -ItemType Directory -Force $dir | Out-Null
+  $m = ([string]$b.model_short -replace '[^a-zA-Z0-9]', '_'); if ($m.Length -gt 30) { $m = $m.Substring(0, 30) }
+  $l = if ($b.lora_short) { [string]$b.lora_short -replace '[^a-zA-Z0-9]', '_' } else { 'none' }; if ($l.Length -gt 25) { $l = $l.Substring(0, 25) }
+  $s = ([string]$b.sampler -replace ' ', '_' -replace '\+', 'p')
+  $fname = "${m}_${s}_s$($b.steps)_c$($b.cfg)_lora_${l}_seed$seed.png"
+  $fpath = Join-Path $dir $fname
+  $url = "/cache/$ph/$fname"
+  if (Test-Path $fpath) { return @{ status = 'cached'; url = $url } }
+  if ($b.model_title) {
+    $cur = Invoke-SdApi 'options' -TimeoutSec 5
+    if (-not ($cur -and $cur.sd_model_checkpoint -eq $b.model_title) -and -not (Switch-SdModel $b.model_title)) { return @{ status = 'error'; error = 'model switch failed' } }
+  }
+  $prompt = if ($b.lora) { "<lora:$($b.lora):0.8>, $($b.prompt)" } else { $b.prompt }
+  $r = Invoke-SdApi 'txt2img' 'POST' @{ prompt = $prompt; negative_prompt = $b.negative_prompt; steps = [int]$b.steps; sampler_name = $b.sampler; cfg_scale = [double]$b.cfg; width = $w; height = $h; seed = $seed }
+  if (-not $r -or -not $r.images) { return @{ status = 'error'; error = 'SD WebUI returned no image' } }
+  [System.IO.File]::WriteAllBytes($fpath, [Convert]::FromBase64String($r.images[0]))
+  @{ status = 'ok'; url = $url }
+}
+function Send-Bytes($resp, [int]$status, [string]$ctype, [byte[]]$b) {
+  $resp.StatusCode = $status; $resp.ContentType = $ctype; $resp.Headers.Add('Access-Control-Allow-Origin', '*')
+  $resp.ContentLength64 = $b.Length; if ($b.Length -gt 0) { $resp.OutputStream.Write($b, 0, $b.Length) }
+}
 
 function Send-Frame($stream, [int]$tag, [byte[]]$body) {
   $hdr = [BitConverter]::GetBytes([int](1 + $body.Length))
@@ -105,20 +162,33 @@ Write-Host "[demo] guest connected."
 $http = [System.Net.HttpListener]::new()
 $http.Prefixes.Add("http://localhost:$HttpPort/")
 $http.Start()
-Write-Host "[demo] OPEN  http://localhost:$HttpPort/   (setting | /character | /item | /excalibur | /mine ; Ctrl+C to stop)"
+Write-Host "[demo] OPEN  http://localhost:$HttpPort/   (setting | /character | /item | /excalibur | /mine | /card | /forge ; Ctrl+C to stop)"
 try {
   while ($http.IsListening) {
     $ctx = $http.GetContext(); $resp = $ctx.Response
     try {
       $path = $ctx.Request.Url.PathAndQuery
-      if ($path -like '/api/*') {
+      $abs = $ctx.Request.Url.AbsolutePath
+      if ($abs -eq '/api/generate' -and $ctx.Request.HttpMethod -eq 'POST') {
+        $reader = [System.IO.StreamReader]::new($ctx.Request.InputStream, [System.Text.Encoding]::UTF8)
+        $g = Invoke-SdGenerate ($reader.ReadToEnd() | ConvertFrom-Json)
+        Send-Bytes $resp ($(if ($g.status -eq 'error') { 502 } else { 200 })) 'application/json; charset=utf-8' ([System.Text.Encoding]::UTF8.GetBytes(($g | ConvertTo-Json -Compress)))
+      } elseif ($abs -eq '/api/config') {
+        $o = Invoke-SdApi 'options' -TimeoutSec 5
+        if ($o) { Send-Bytes $resp 200 'application/json; charset=utf-8' ([System.Text.Encoding]::UTF8.GetBytes((@{ current_model = $o.sd_model_checkpoint } | ConvertTo-Json -Compress))) }
+        else { Send-Bytes $resp 503 'application/json; charset=utf-8' ([byte[]]@()) }
+      } elseif ($abs -match '^/cache/([0-9a-f]{12})/([\w.+-]+\.png)$') {
+        $f = Join-Path (Join-Path $CacheDir $matches[1]) $matches[2]
+        if (Test-Path -PathType Leaf $f) { Send-Bytes $resp 200 'image/png' ([System.IO.File]::ReadAllBytes($f)) }
+        else { Send-Bytes $resp 404 'text/plain' ([System.Text.Encoding]::UTF8.GetBytes('not cached')) }
+      } elseif ($path -like '/api/*') {
         $q = Query-Guest $guest $path
         $b = [System.Text.Encoding]::UTF8.GetBytes($q.body)
         $resp.StatusCode = $q.status; $resp.ContentType = 'application/json; charset=utf-8'
         $resp.Headers.Add('Access-Control-Allow-Origin','*'); $resp.ContentLength64 = $b.Length
         $resp.OutputStream.Write($b, 0, $b.Length)
       } else {
-        $key = switch -Wildcard ($path) { '/mine*' { 'mine' } '/character*' { 'character' } '/item*' { 'item' } '/excalibur*' { 'excalibur' } default { 'setting' } }
+        $key = switch -Wildcard ($path) { '/mine*' { 'mine' } '/character*' { 'character' } '/item*' { 'item' } '/excalibur*' { 'excalibur' } '/card*' { 'card' } '/forge*' { 'forge' } default { 'setting' } }
         $html = if ($pages.ContainsKey($key)) { $pages[$key] } else { "<!doctype html><meta charset=utf-8><body style='font:14px system-ui;background:#0a0a0a;color:#ccc;padding:40px'>Page '<b>$key</b>' is not built. Run: <code>pwsh codex\plugs\html\run.ps1 -Src apps\explorer\$($pageSrc[$key]).codex -Out $($pageFiles[$key])</code></body>" }
         $b = [System.Text.Encoding]::UTF8.GetBytes($html)
         $resp.StatusCode = 200; $resp.ContentType = 'text/html; charset=utf-8'; $resp.ContentLength64 = $b.Length

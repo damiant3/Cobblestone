@@ -1,0 +1,84 @@
+Chapter: T5Prompt
+  cites AI chapter T5Tokenizer
+  cites Diffusion chapter ClipPrompt
+  cites Foreword chapter CCE
+
+ A whole prompt as Forge's T5TextProcessingEngine turns it into token chunks
+ for Flux's T5 (backend/text_processing/t5_engine.py, parsing.py). The prompt
+ is parsed as for CLIP (clip-parse-attention, emphasis "Original"); each
+ segment is tokenized alone with no special tokens, and every token joins
+ the one open chunk at its segment's weight: there is no chunk length, only
+ BREAK closes a chunk. A closed chunk ends in </s> (1) at weight 1.0 and is
+ padded with <pad> (0) at weight 1.0 to 256 tokens; a prompt that leaves no
+ tokens open and no chunk closed closes one empty chunk. Finally every chunk
+ is padded the same way to the longest chunk's length. The weights scale the
+ encoder's hidden states (Original emphasis) after the encoder.
+
+ We say:
+
+Section: Chunks
+
+  T5Chunk = record {
+    t5c-ids : List Integer,
+    t5c-mults : List Real
+  }
+
+  T5Fill = record {
+    t5f-chunks : List T5Chunk,
+    t5f-ids : List Integer,
+    t5f-mults : List Real
+  }
+
+  t5p-min-length : Integer = 256
+
+  t5p-pad-ids : List Integer, Integer -> List Integer
+  t5p-pad-ids (ids) (n) = if list-length ids >= n then ids else t5p-pad-ids (ids & [0]) n
+
+  t5p-pad-mults : List Real, Integer -> List Real
+  t5p-pad-mults (ms) (n) = if list-length ms >= n then ms else t5p-pad-mults (ms & [1.0]) n
+
+  t5p-close : T5Fill -> T5Fill
+  t5p-close (f) =
+    let ids = f.t5f-ids & [1]
+    in let ms = f.t5f-mults & [1.0]
+    in T5Fill { t5f-chunks = f.t5f-chunks & [T5Chunk { t5c-ids = t5p-pad-ids ids t5p-min-length, t5c-mults = t5p-pad-mults ms t5p-min-length }], t5f-ids = [], t5f-mults = [] }
+
+ A segment's text as UTF-8 at a fresh buffer, tokenized.
+
+  t5p-utf8 : List Integer, Integer, Integer, Integer -> Integer
+  t5p-utf8 (cps) (i) (out) (len) = if i >= list-length cps then len else t5p-utf8 cps (i + 1) out (len + tj-utf8 (out + len) (list-at cps i))
+
+  t5p-segment : T5Tok, Text -> List Integer
+  t5p-segment (tok) (s) =
+    let cps = text-to-unicode-bytes s
+    in let buf = alloc-bytes (4 * list-length cps + 1)
+    in t5-tokenize-plain tok buf (t5p-utf8 cps 0 buf 0)
+
+  t5p-weights : Real, Integer, List Real -> List Real
+  t5p-weights (w) (n) (acc) = if list-length acc >= n then acc else t5p-weights w n (acc & [w])
+
+  t5p-fill : T5Tok, AttnParse, Integer, T5Fill -> T5Fill
+  t5p-fill (tok) (p) (i) (f) =
+    if i >= list-length (p.ap-texts) then f
+    else let s = list-at (p.ap-texts) i
+    in let w = list-at (p.ap-weights) i
+    in if s == "BREAK" & cp-bits-equal w (0.0 - 1.0) then t5p-fill tok p (i + 1) (t5p-close f)
+    else let ids = t5p-segment tok s
+    in t5p-fill tok p (i + 1) (T5Fill { t5f-chunks = f.t5f-chunks, t5f-ids = f.t5f-ids & ids, t5f-mults = f.t5f-mults & t5p-weights w (list-length ids) [] })
+
+  t5p-longest : List T5Chunk, Integer, Integer -> Integer
+  t5p-longest (cs) (i) (m) = if i >= list-length cs then m else t5p-longest cs (i + 1) (if list-length ((list-at cs i).t5c-ids) > m then list-length ((list-at cs i).t5c-ids) else m)
+
+  t5p-even : List T5Chunk, Integer, Integer, List T5Chunk -> List T5Chunk
+  t5p-even (cs) (n) (i) (acc) =
+    if i >= list-length cs then acc
+    else let c = list-at cs i
+    in t5p-even cs n (i + 1) (acc & [T5Chunk { t5c-ids = t5p-pad-ids (c.t5c-ids) n, t5c-mults = t5p-pad-mults (c.t5c-mults) n }])
+
+  t5-prompt-chunks : T5Tok, Text -> List T5Chunk
+  t5-prompt-chunks (tok) (prompt) =
+    let f = t5p-fill tok (clip-parse-attention prompt) 0 (T5Fill { t5f-chunks = [], t5f-ids = [], t5f-mults = [] })
+    in let g = if list-length (f.t5f-ids) > 0 | list-length (f.t5f-chunks) == 0 then t5p-close f else f
+    in t5p-even (g.t5f-chunks) (t5p-longest (g.t5f-chunks) 0 0) 0 []
+
+Page 1

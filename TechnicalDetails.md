@@ -166,7 +166,7 @@ Measured 2026-08-03, except where an item gives its own date.
               an accumulator is copied by & inside a self call, here or in
               something it calls
    ```
-6. **606 library modules across 22 quires** (441 foreword + 165 OS): data
+6. **615 library modules across 22 quires** (450 foreword + 165 OS): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
@@ -227,7 +227,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**73 applications, 1,196 modules** (2026-09-25), all written in Codex and compiled by
+**74 applications, 1,335 modules** (2026-09-28), all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -235,21 +235,21 @@ the seed; 33 carry a web front end through the HTML plug. Catalog:
 (poison run of the release source, 2026-09-25, release seed
 `533C6D630D8660E6`).
 The BVT subset that `build/build.ps1`
-gates on is 81 tests, compiled and then run where an `.expected` exists,
-for 147 checks; it took 38.3 seconds on the release seed.
+gates on is 82 tests, compiled and then run where an `.expected` exists,
+for 149 checks (2026-09-28).
 
 ---
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,791,766 bytes, 2026-09-25, generic equality by dictionary passing, GenericEquality.md) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,813,351 bytes, 2026-09-29, a record-field call with seven or more arguments keeps its first argument, COMPILER-108) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `7A0BBE5303D3C79F` |
-| SHA-256 | `533C6D630D8660E673529A07486BC28CDB186AA79C6F44D6C92D2D541199759E` |
-| MD5 | `0E05FB695E3674D04F31AAE378A34E8D` |
+| Content hash prefix | `8FCE8344D16CAAB4` |
+| SHA-256 | `B3256BF8B4CC8327EAFB42E53997C3A5FD0385BBD59E257013663E3618072E82` |
+| MD5 | `9B9494C11B00231768F41F2B2A15992C` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -261,7 +261,7 @@ font selection and notices are documented in [fonts/README.md](fonts/README.md).
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `0F4BD6BA5203E8303671C1B3FE9AE473CE81599C6DD07C62199136A466454512` |
+| SHA-256 | `2AD6A4E111ADE76BFB29861B3530223D8DD5AC7F5EA753466DF9881BCB5C0C1C` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -285,7 +285,7 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `04736D4C0CFC61F504BF3E2E1C89175561B19BD1E8E80DD22C924006C8559844` |
+| SHA-256 | `8AC817F307B8DDEAFAFB0F21AD3CFDCB665EAC59FCF3461507261CCB85F86448` |
 
 All 57 rehearsal arms passed on Codex VM and QEMU/OVMF on 2026-09-25,
 using a 180-second minimum VM-arm allowance. The shipping check confirmed
@@ -566,7 +566,7 @@ is preserved regardless of Tier 1 and 2 support.
 ## Library Quires
 
 Code outside the compiler is organized into **22 quires** (library
-namespaces) holding **606 modules** (441 foreword, 165 OS). Quires cite
+namespaces) holding **615 modules** (450 foreword, 165 OS). Quires cite
 each other as `cites Game chapter AStar`; the quire name is the last
 segment of the directory name, capitalized. Full catalog:
 [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
@@ -576,12 +576,12 @@ segment of the directory name, capitalized. Full catalog:
 | Foreword | `codex/foreword/core/` | 134 |
 | Encode | `codex/foreword/encode/` | 78 |
 | UI | `codex/foreword/ui/` | 49 |
-| AI | `codex/foreword/ai/` | 43 |
-| Engine | `codex/foreword/engine/` | 43 |
+| AI | `codex/foreword/ai/` | 45 |
+| Engine | `codex/foreword/engine/` | 45 |
 | Game | `codex/foreword/game/` | 26 |
 | Signal | `codex/foreword/signal/` | 14 |
 | Math | `codex/foreword/math/` | 14 |
-| GPU | `codex/foreword/gpu/` | 11 |
+| GPU | `codex/foreword/gpu/` | 16 |
 | Compress | `codex/foreword/compress/` | 8 |
 | Punctual | `codex/foreword/punctual/` | 8 |
 | Sim | `codex/foreword/sim/` | 7 |
@@ -597,13 +597,13 @@ segment of the directory name, capitalized. Full catalog:
 
 ```
 codex/
-  compiler/      Self-hosted compiler (68 files, 65,428 lines)
-  foreword/      441 library modules across 13 quires
+  compiler/      Self-hosted compiler (69 files, 70,392 lines)
+  foreword/      450 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (165 modules)
-  plugs/         57 plugs, 204 source modules -- IR-text-driven emitters
-  test/          Compiler samples + OS integration tests (2,035 files)
-apps/            73 applications, 1,196 modules
+  plugs/         58 plugs, 227 source modules -- IR-text-driven emitters (2026-09-27)
+  test/          Compiler samples + OS integration tests (2,168 files)
+apps/            74 applications, 1,335 modules
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -637,7 +637,7 @@ non-blank lines, including comments and markup.
 |---|---:|---:|---:|---:|
 | `apps/` | 1,158 | 210,502 | 13,774 | 38,878 |
 | `codex/foreword/` | 439 | 61,643 | 7,231 | 14,584 |
-| `codex/test/` | 2,035 | 68,000 | 10,381 | 16,575 |
+| `codex/test/` | 2,168 | 68,000 | 10,381 | 16,575 |
 | `codex/plugs/` | 262 | 63,515 | 5,726 | 9,988 |
 | `codex/compiler/` | 68 | 45,246 | 6,145 | 9,482 |
 | `codex/os/` | 162 | 24,698 | 2,416 | 5,950 |

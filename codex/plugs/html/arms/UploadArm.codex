@@ -1,0 +1,99 @@
+Chapter: UploadArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter SafeTensors
+
+ The page codex/plugs/html/arms/upload.mjs drives: a picked SD1.5 checkpoint's
+ header parsed and bound, then every tensor of the part page-data "part" names
+ uploaded to the device by a chain of gpu-buf-upload-then, each in its own
+ dtype, and the first 64 bytes of the first and last tensors read back.
+
+ We say:
+
+Section: Header
+
+  opening : [Console] Integer
+  opening =
+    let c = dom-on-click (dom-query "html") ua-pick
+    in state-set "armed" 1
+
+  ua-pick : Text -> Integer
+  ua-pick (id) = pick-file-then ".safetensors" ua-picked
+
+  ua-picked : Text -> Integer
+  ua-picked (r) =
+    let f = state-set-text "file" (json-obj-field (json-parse-obj r) "name")
+    in gpu-open-then ua-opened
+
+  ua-opened : Text -> Integer
+  ua-opened (r) = file-read-then (state-get-text "file") 0 8 ua-got-len
+
+  ua-ints : List Text, Integer, List Integer -> List Integer
+  ua-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else ua-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  ua-bytes : Text -> List Integer
+  ua-bytes (t) = if text-length t < 3 then [] else ua-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  ua-got-len : Text -> Integer
+  ua-got-len (r) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (ua-bytes r) 0) ua-got-header
+
+  ua-part : List PartBinding, Integer, Text -> List BoundTensor
+  ua-part (parts) (i) (name) =
+    if i >= list-length parts then []
+    else if (list-at parts i).pb-name == name then (list-at parts i).pb-bound
+    else ua-part parts (i + 1) name
+
+  ua-got-header : Text -> Integer
+  ua-got-header (r) =
+    let lb = layout-bind (st-parse-file (ua-bytes r)) sd15-layout
+    in let ts = ua-part (lb.lb-parts) 0 (page-data "part")
+    in let n = state-set "tensors" (list-length ts)
+    in ua-upload ts 0 [] 0 0
+
+Section: Upload
+
+  ua-dt : Integer -> Integer
+  ua-dt (d) = if d == st-dtype-f16 then gpu-dt-f16 else if d == st-dtype-f32 then gpu-dt-f32 else 0 - 1
+
+  ua-upload : List BoundTensor, Integer, List Integer, Integer, Integer -> Integer
+  ua-upload (ts) (i) (hs) (bad) (bytes) =
+    if i >= list-length ts then ua-done ts hs bad bytes
+    else let t = list-at ts i
+    in let dt = ua-dt (t.bt-dtype)
+    in let w = st-dtype-width (t.bt-dtype)
+    in let h = if dt < 0 then 0 else gpu-buf-alloc (t.bt-bytes)
+    in if h == 0 then ua-upload ts (i + 1) (list-snoc hs 0) (bad + 1) bytes
+    else gpu-buf-upload-then h 0 (state-get-text "file") (t.bt-offset) (t.bt-bytes / w) dt dt (\r -> ua-uploaded ts i (list-snoc hs h) bad bytes r)
+
+  ua-uploaded : List BoundTensor, Integer, List Integer, Integer, Integer, Text -> Integer
+  ua-uploaded (ts) (i) (hs) (bad) (bytes) (r) =
+    if text-contains r "\"ok\":true" then ua-upload ts (i + 1) hs bad (bytes + (list-at ts i).bt-bytes)
+    else ua-upload ts (i + 1) hs (bad + 1) bytes
+
+  ua-done : List BoundTensor, List Integer, Integer, Integer -> Integer
+  ua-done (ts) (hs) (bad) (bytes) =
+    let a = state-set "failed" bad
+    in let b = state-set "bytes" bytes
+    in let n = list-length ts
+    in let c = state-set-text "first-name" ((list-at ts 0).bt-name)
+    in let d = state-set "first-offset" ((list-at ts 0).bt-offset)
+    in let e = state-set-text "last-name" ((list-at ts (n - 1)).bt-name)
+    in let f = state-set "last-offset" ((list-at ts (n - 1)).bt-offset)
+    in let g = state-set "last-handle" (list-at hs (n - 1))
+    in let k = state-set "first-bytes" (if (list-at ts 0).bt-bytes < 64 then (list-at ts 0).bt-bytes else 64)
+    in let l = state-set "last-bytes" (if (list-at ts (n - 1)).bt-bytes < 64 then (list-at ts (n - 1)).bt-bytes else 64)
+    in gpu-buf-download-then (list-at hs 0) 0 (state-get "first-bytes") ua-got-first
+
+  ua-got-first : Text -> Integer
+  ua-got-first (r) =
+    let s = state-set-text "first" r
+    in gpu-buf-download-then (state-get "last-handle") 0 (state-get "last-bytes") ua-got-last
+
+  ua-got-last : Text -> Integer
+  ua-got-last (r) =
+    let s = state-set-text "last" r
+    in let e = state-set-text "err" (gpu-error 0)
+    in state-set "done" 1

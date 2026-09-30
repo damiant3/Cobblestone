@@ -49,9 +49,9 @@ Section: The Record
 
   slot-bit : BootSlot -> Integer
   slot-bit (s) =
-   when s
-    is SlotA -> 0
-    is SlotB -> 1
+    when s
+     is SlotA -> 0
+     is SlotB -> 1
 
   bit-slot : Integer -> BootSlot
   bit-slot (b) = if b == 0 then SlotA else SlotB
@@ -61,20 +61,20 @@ Section: The Record
 
   boot-flag-word : BootRecord -> Integer
   boot-flag-word (r) =
-   let p = slot-bit (r.br-primary)
-   in let c = when r.br-candidate
-       is None -> 0
-       is Just (s) -> bit-or 2 (bit-shl (slot-bit s) 2)
-   in bit-or (bit-or (bit-or p c) (bit-shl (r.br-attempts) 8)) (bit-shl boot-marker 24)
+    let p = slot-bit (r.br-primary)
+    in let c = when r.br-candidate
+        is None -> 0
+        is Just (s) -> bit-or 2 (bit-shl (slot-bit s) 2)
+    in bit-or (bit-or (bit-or p c) (bit-shl (r.br-attempts) 8)) (bit-shl boot-marker 24)
 
   boot-record-of-word : Integer -> BootRecord
   boot-record-of-word (w) =
-   if bit-and (bit-shru w 24) 255 /= boot-marker then boot-factory-record
-   else BootRecord {
-    br-primary = bit-slot (bit-and w 1),
-    br-candidate = if bit-and w 2 == 0 then None else Just (bit-slot (bit-and (bit-shru w 2) 1)),
-    br-attempts = __narrow (bit-and (bit-shru w 8) 255)
-   }
+    if bit-and (bit-shru w 24) 255 /= boot-marker then boot-factory-record
+    else BootRecord {
+     br-primary = bit-slot (bit-and w 1),
+     br-candidate = if bit-and w 2 == 0 then None else Just (bit-slot (bit-and (bit-shru w 2) 1)),
+     br-attempts = __narrow (bit-and (bit-shru w 8) 255)
+    }
 
 Section: The Transitions
 
@@ -118,28 +118,28 @@ Section: The Transitions
 
   ota-commit : BootRecord -> BootRecord
   ota-commit (r) =
-   when r.br-candidate
-    is None -> r
-    is Just (c) -> BootRecord {
-     br-primary = c,
-     br-candidate = None,
-     br-attempts = 0
-    }
+    when r.br-candidate
+     is None -> r
+     is Just (c) -> BootRecord {
+      br-primary = c,
+      br-candidate = None,
+      br-attempts = 0
+     }
 
   boot-select : BootRecord, Boolean -> BootSlot
   boot-select (r) (candidate-ok) =
-   when r.br-candidate
-    is None -> r.br-primary
-    is Just (c) ->
-      if candidate-ok == False then r.br-primary
-      else if r.br-attempts > boot-attempt-limit then r.br-primary
-      else c
+    when r.br-candidate
+     is None -> r.br-primary
+     is Just (c) ->
+       if candidate-ok == False then r.br-primary
+       else if r.br-attempts > boot-attempt-limit then r.br-primary
+       else c
 
   boot-give-up : BootRecord, Boolean -> Boolean
   boot-give-up (r) (candidate-ok) =
-   when r.br-candidate
-    is None -> False
-    is Just (c) -> (candidate-ok == False) | (r.br-attempts > boot-attempt-limit)
+    when r.br-candidate
+     is None -> False
+     is Just (c) -> (candidate-ok == False) | (r.br-attempts > boot-attempt-limit)
 
 Section: The Flash Half
 
@@ -153,19 +153,19 @@ Section: The Flash Half
 
   boot-read-word : Integer -> Integer
   boot-read-word (addr) =
-   let b0 = peek-byte addr 0
-   in let b1 = bit-shl (peek-byte addr 1) 8
-   in let b2 = bit-shl (peek-byte addr 2) 16
-   in let b3 = bit-shl (peek-byte addr 3) 24
-   in bit-or (bit-or b0 b1) (bit-or b2 b3)
+    let b0 = peek-byte addr 0
+    in let b1 = bit-shl (peek-byte addr 1) 8
+    in let b2 = bit-shl (peek-byte addr 2) 16
+    in let b3 = bit-shl (peek-byte addr 3) 24
+    in bit-or (bit-or b0 b1) (bit-or b2 b3)
 
   boot-load : Integer -> BootRecord
   boot-load (rec-addr) = boot-record-of-word (boot-read-word (rec-addr + boot-flag-offset))
 
   boot-read-bytes : Integer, Integer, Integer, List Integer -> List Integer
   boot-read-bytes (addr) (i) (len) (acc) =
-   if i >= len then acc
-   else boot-read-bytes addr (i + 1) len (list-push acc (peek-byte addr i))
+    if i >= len then acc
+    else boot-read-bytes addr (i + 1) len (list-push acc (peek-byte addr i))
 
   boot-expected-digest : Integer -> List Integer
   boot-expected-digest (rec-addr) = boot-read-bytes (rec-addr + boot-digest-offset) 0 32 []
@@ -208,9 +208,10 @@ Section: The Flash Half
 
   boot-verify-candidate : Integer, Integer -> Boolean
   boot-verify-candidate (rec-addr) (slot-addr) =
-   let len = boot-candidate-length rec-addr
-   in if len <= 0 then False
-   else ota-hash-eq (hkdf-words-to-bytes (sha256-buf slot-addr 0 len)) (boot-expected-digest rec-addr) 0 32
+    let len = boot-candidate-length rec-addr
+    in if len <= 0 then False
+    else
+      ota-hash-eq (hkdf-words-to-bytes (sha256-buf slot-addr 0 len)) (boot-expected-digest rec-addr) 0 32
 
 Section: The Selector
 
@@ -220,43 +221,43 @@ Section: The Selector
 
   slot-address : BootSlot, Integer, Integer -> Integer
   slot-address (s) (a-addr) (b-addr) =
-   when s
-    is SlotA -> a-addr
-    is SlotB -> b-addr
+    when s
+     is SlotA -> a-addr
+     is SlotB -> b-addr
 
   boot-check : BootRecord, Integer, Integer -> Boolean
   boot-check (counted) (rec-addr) (slot-addr) =
-   if counted.br-attempts > boot-attempt-limit then False
-   else boot-verify-candidate rec-addr slot-addr
+    if counted.br-attempts > boot-attempt-limit then False
+    else boot-verify-candidate rec-addr slot-addr
 
   boot-give-up-store : linear Board, Integer, Integer, BootRecord, Boolean -> [Flash, Device.Mmio] (linear Board, Integer)
   boot-give-up-store (brd) (bank) (rec-addr) (r) (ok) =
-   if boot-give-up r ok then boot-store brd bank rec-addr (ota-rollback r)
-   else board-pair brd 0
+    if boot-give-up r ok then boot-store brd bank rec-addr (ota-rollback r)
+    else board-pair brd 0
 
   boot-run-candidate : linear Board, Integer, Integer, Integer, BootRecord, BootSlot -> [Flash, Device.Mmio] (linear Board, BootSlot)
   boot-run-candidate (brd) (bank) (rec-addr) (slot-addr) (r) (c) =
-   let counted = ota-boot-attempt r
-   in act
-    w <- boot-store brd bank rec-addr counted
-    when w
-     is (brd1, wr) ->
-       let ok = boot-check counted rec-addr slot-addr
-       in act
-        g <- boot-give-up-store brd1 bank rec-addr counted ok
-        when g
-         is (brd2, gr) -> board-pair brd2 (boot-select counted ok)
+    let counted = ota-boot-attempt r
+    in act
+     w <- boot-store brd bank rec-addr counted
+     when w
+      is (brd1, wr) ->
+        let ok = boot-check counted rec-addr slot-addr
+        in act
+         g <- boot-give-up-store brd1 bank rec-addr counted ok
+         when g
+          is (brd2, gr) -> board-pair brd2 (boot-select counted ok)
+         end
         end
-       end
 
   boot-run : linear Board, Integer, Integer, Integer, Integer -> [Flash, Device.Mmio] (linear Board, BootSlot)
   boot-run (brd) (bank) (rec-addr) (slot-a-addr) (slot-b-addr) =
-   let r = boot-load rec-addr
-   in when r.br-candidate
-    is None -> board-pair brd (r.br-primary)
-    is Just (c) -> boot-run-candidate brd bank rec-addr (slot-address c slot-a-addr slot-b-addr) r c
+    let r = boot-load rec-addr
+    in when r.br-candidate
+     is None -> board-pair brd (r.br-primary)
+     is Just (c) -> boot-run-candidate brd bank rec-addr (slot-address c slot-a-addr slot-b-addr) r c
 
   boot-commit : linear Board, Integer, Integer -> [Flash, Device.Mmio] (linear Board, Integer)
   boot-commit (brd) (bank) (rec-addr) =
-   let r = boot-load rec-addr
-   in boot-store brd bank rec-addr (ota-commit r)
+    let r = boot-load rec-addr
+    in boot-store brd bank rec-addr (ota-commit r)

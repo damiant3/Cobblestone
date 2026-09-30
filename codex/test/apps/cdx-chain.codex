@@ -1,0 +1,64 @@
+Chapter: CdxChainTest
+  cites Works chapter CdxChain
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+
+ The disk is `cdx-chain-subject` compiled by the current compiler, unsigned.
+ Byte 300 lies in its text, inside the hashed content.
+
+Section: Staging
+
+  cct-len : List Integer -> Integer
+  cct-len (hdr) =
+    let t = read-le64 hdr 168 + read-le64 hdr 176
+    in let r = read-le64 hdr 184 + read-le64 hdr 192
+    in let c = read-le64 hdr 136 + read-le64 hdr 144
+    in let e = read-le64 hdr 152 + read-le64 hdr 160
+    in max (max t r) (max c e)
+
+  cct-copy : Integer, Integer, Integer -> Integer
+  cct-copy (src) (dst) (i) =
+    if i >= 512 then 0
+    else let w = poke-qword dst i (peek-qword src i)
+    in cct-copy src dst (i + 8)
+
+  cct-stage : Integer, Integer, Integer -> [Device.Block] Integer
+  cct-stage (buf) (s) (n) =
+    if s >= n then buf
+    else let mark = __heap-save
+    in act
+      sb <- block-read-sector s
+      let c = cct-copy sb (buf + s * 512) 0
+      in let r = __heap-restore mark
+      in cct-stage buf (s + 1) n
+    end
+
+  cct-flip : Integer, Integer -> Integer
+  cct-flip (buf) (at) = poke-byte buf at (bit-xor (peek-byte buf at) 1)
+
+  cct-verdict : Text -> Text
+  cct-verdict (why) = if text-length why == 0 then "accepted" else "refused: " & why
+
+Section: Entry
+
+  cct-run : Integer, Integer -> [Console] Nothing
+  cct-run (buf) (len) = act
+    print-line-uni ("staged " & show len & " bytes")
+    let f = cct-flip buf 300
+    in print-line-uni ("one content byte flipped: " & cct-verdict (cdxc-refusal buf len False))
+    let g = cct-flip buf 300
+    in print-line-uni ("restored: " & cct-verdict (cdxc-refusal buf len False))
+    print-line-uni ("signature required: " & cct-verdict (cdxc-refusal buf len True))
+    print-line-uni "chaining"
+    print-line-uni (cdxc-chain buf len False 0)
+  end
+
+  opening : [Console, Device.Block] Nothing = act
+    h <- block-read-sector 0
+    let len = cct-len (cdx-at-read h 0 cdx-header-fixed-size [])
+    in let n = (len + 511) / 512
+    in act
+      buf <- cct-stage (alloc-bytes (n * 512)) 0 n
+      cct-run buf len
+    end
+  end

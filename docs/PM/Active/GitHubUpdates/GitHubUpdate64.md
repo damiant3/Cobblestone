@@ -87,8 +87,11 @@ shipping check confirmed the default configuration. The diagnostic image
 SHA-256 is
 `04736D4C0CFC61F504BF3E2E1C89175561B19BD1E8E80DD22C924006C8559844`.
 
-The box sampler died at launch on this release (its output name collided
-with the Update 63 record, which is read-only), so the gate, battery, sweep,
-poison battery and DDC ran unsampled. `docs/Agents/box-release-2026-09-25-u64.csv`
+The box sampler recorded nothing for most of this release: its output name
+collided with the Update 63 record, which is read-only, and the sampler ran
+the whole release with every write failing silently (`build/box-sample.ps1`
+catches and discards a failed write), so the gate, battery, sweep, poison
+battery and DDC ran unsampled. The published text of this report first said
+the sampler died at launch; it did not. `docs/Agents/box-release-2026-09-25-u64.csv`
 covers 18:34 to 18:54, the image builds and the rehearsal: a free-memory floor
 of 6.33 GiB at 18:35 and at most one guest at a time.

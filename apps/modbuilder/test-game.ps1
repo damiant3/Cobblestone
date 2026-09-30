@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$Package,
     [Parameter(Mandatory)][string]$OutDirectory,
     [string]$SaveRoot = '',
-    [ValidateSet('startup','storage')][string]$Probe = 'storage'
+    [ValidateSet('startup','storage')][string]$Probe = 'storage',
+    [string]$ExpectedBootstrapRefusal = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -45,15 +46,25 @@ try{
     $marker=if($Probe -eq 'storage'){'PRISM STORAGE INVENTORY TEST PASS'}else{'Prism Codex entry initialized'}
     do{
         $text=Read-Shared $log
-        if($text.Contains($marker) -and $text.Contains('PRISM TEST SAVES VERIFIED: '+$saves)){$receipt.passed=$true;break}
+        if($ExpectedBootstrapRefusal){
+            $bootstrap=Read-Shared (Join-Path $OutDirectory 'prism-bootstrap.log')
+            if($bootstrap.Contains($ExpectedBootstrapRefusal) -and $text.Contains('Set background loading budget to High') -and -not $text.Contains('Prism Codex entry initialized') -and -not $proc.HasExited){$receipt.passed=$true;break}
+        }
+        elseif($text.Contains($marker) -and $text.Contains('PRISM TEST SAVES VERIFIED: '+$saves)){$receipt.passed=$true;break}
         if($proc.HasExited){break}
         Start-Sleep -Milliseconds 250
     }while([DateTime]::UtcNow -lt $deadline)
     if($receipt.passed){[void]$proc.WaitForExit(10000)}
+    if($ExpectedBootstrapRefusal -and $proc.HasExited){$receipt.passed=$false}
     if(-not $proc.HasExited){$proc.Kill();$proc.WaitForExit();$receipt.stoppedByHarness=$true}
     $receipt.exitCode=$proc.ExitCode
-    if($Probe -eq 'storage' -and ($proc.ExitCode -ne 0 -or $receipt.Contains('stoppedByHarness'))){$receipt.passed=$false}
+    if(-not $ExpectedBootstrapRefusal -and $Probe -eq 'storage' -and ($proc.ExitCode -ne 0 -or $receipt.Contains('stoppedByHarness'))){$receipt.passed=$false}
     $receipt.bootstrap=Read-Shared (Join-Path $OutDirectory 'prism-bootstrap.log')
+    if($ExpectedBootstrapRefusal){
+        $receipt.expectedBootstrapRefusal=$ExpectedBootstrapRefusal
+        $receipt.vanillaProgressMarker='Set background loading budget to High'
+        if(-not $receipt.bootstrap.Contains($ExpectedBootstrapRefusal) -or $receipt.bootstrap.Contains('PASS managed initializer returned') -or (Read-Shared $log).Contains('Prism Codex entry initialized')){$receipt.passed=$false}
+    }elseif(-not $receipt.bootstrap.Contains('PASS managed initializer returned')){$receipt.passed=$false}
     $receipt.finished=[DateTime]::UtcNow.ToString('o')
     [IO.File]::WriteAllText((Join-Path $OutDirectory 'run.json'),($receipt|ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
     if(-not $receipt.passed){[Console]::Error.WriteLine((Read-Shared $log));throw "Game $Probe probe did not reach its success marker; see $log"}

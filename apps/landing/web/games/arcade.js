@@ -161,7 +161,7 @@ const SD_DIGIT = 100;
 // puzzle's own non-zero cells read once at the deal, because the engine
 // holds one grid and does not mark which of it was given -- and a player
 // who can overwrite a given is not solving the puzzle they were handed.
-let sdDigit = 1, sdGiven = new Set();
+let sdDigit = 1;
 
 // Mahjong's 36 tile types drawn as tiles rather than as the type NUMBER the
 // page printed before. Unicode's Mahjong Tiles block runs from U+1F000 and
@@ -223,13 +223,22 @@ const pinCell = (c, extra) => ({
 });
 // Seats at a bridge table, in the order Bridge.codex numbers them.
 const BR_SEAT = ['North', 'South', 'East', 'West'];
+// Bridge.codex calls: 0 pass, 1 double, 2 redouble, or 5 * level +
+// denomination, the denomination 0 clubs up to 4 no trumps.
+const BR_DENOM = ['♣', '♦', '♥', '♠', 'NT'];
+const brBid = code => `${Math.floor(code / 5)}${BR_DENOM[code % 5]}`;
+const brCall = code => code === 0 ? 'pass' : code === 1 ? 'double' : code === 2 ? 'redouble' : brBid(code);
+const brLowest = (last, d) => {
+  const lvl = last === 0 ? 1 : Math.floor(last / 5) + (d > last % 5 ? 0 : 1);
+  return 5 * lvl + d;
+};
 
 // Poker.codex stages: two betting rounds around one draw.
 const STAGE = ['first bets', 'the draw', 'last bets', 'shown down'];
 
 // Poker.codex ranks hands 0 to 8, low to high.
 const HANDS = ['high card', 'a pair', 'two pair', 'trips', 'a straight',
-  'a flush', 'a full house', 'quads', 'a straight flush'];
+  'a flush', 'a full house', 'quads', 'a straight flush', 'five of a kind'];
 
 // PokerVariants.codex, the order pvw-variant and pvt-new both map.
 const PV_NAMES = ['five card draw', 'five card stud', 'seven card stud',
@@ -244,7 +253,29 @@ const UR_ROSETTE = [4, 8, 14];
 // bear-off tray at the bottom right, where the player sitting there expects
 // them. The bar and the tray are moves, so they get indices past the 24
 // points rather than being crammed into them.
+// Chess: a promotion waiting for its piece, held in `sel` (see chess `move`).
+const CS_PROMO = 4096;
+// Minesweeper: the next click sets or clears a flag.
+const MS_FLAG = -2;
+
 const BG_YOU = 0, BG_BAR = 100, BG_OFF = 101;
+// A die in the tray is clickable too, as BG_DIE + its face, for the one
+// choice no destination can express: which of two dice bears a checker off.
+const BG_DIE = 200;
+// The engine names the bar 24 and takes the dice still in hand packed as
+// base-8 digits, first die lowest (BackgammonWasm.codex).
+const BG_EBAR = 24;
+const bgPack = q => q.reduce((n, d, i) => n + d * Math.pow(8, i), 0);
+const bgFrom = s => s === BG_BAR ? BG_EBAR : s;
+const bgDie = (s, p) => BG_YOU === 0 ? bgFrom(s) - p : p - (s === BG_BAR ? -1 : s);
+const bgOffBy = (s, d) => BG_YOU === 0 ? bgFrom(s) - d < 0 : s + d >= 24;
+// Every legal start for each die in hand, one mask per face, asked once per
+// view: bit f of masks[d] is the move (f, d).
+const bgMasks = (e, h, q) => {
+  const pk = bgPack(q), m = {};
+  for (const d of new Set(q)) m[d] = e.bg_mask(h, pk, d);
+  return m;
+};
 // Index of the Roll action in backgammon's `actions` list. The board draws
 // that button itself, so the two have to agree on which one it is.
 const BG_ROLL = 0;
@@ -258,6 +289,43 @@ const BG_ROLL = 0;
 // came out as "a draw" -- checkers winner 0 is SOUTH, not nobody.
 const named = (code, map, fallback) =>
   Object.prototype.hasOwnProperty.call(map, code) ? map[code] : fallback;
+
+// Risk's territories in the engine's numbering, the dice and fortifying
+// amounts the buttons set, and an action's arguments packed as the engine
+// takes them: a + 64 b + 4096 c.
+const RK_ABBR = ['ALA', 'NWT', 'GRN', 'ALB', 'ONT', 'QUE', 'WUS', 'EUS', 'CAM', 'VEN', 'PER', 'BRA', 'ARG',
+  'ICE', 'SCA', 'GBR', 'NEU', 'UKR', 'WEU', 'SEU', 'NAF', 'EGY', 'EAF', 'CON', 'SAF', 'MAD',
+  'URA', 'SIB', 'YAK', 'KAM', 'IRK', 'MON', 'JAP', 'AFG', 'CHI', 'MID', 'IND', 'SIA', 'INO', 'NGU', 'WAU', 'EAU'];
+let rkDice = 3, rkFort = 'all';
+const rkPack = (a, b, c) => a + 64 * b + 4096 * c;
+const rkFortN = (e, h, from) => {
+  const most = e.rk_armies(h, from) - 1;
+  return rkFort === 'one' ? 1 : rkFort === 'half' ? Math.max(1, Math.floor(most / 2)) : most;
+};
+// Whether seat 0 has a legal attack (kind 2) or fortify (kind 5) from `a`.
+const rkCanFrom = (e, h, a, kind) => seq(42).some(b => e.rk_legal(h, 0, kind, rkPack(a, b, 1)) === 1);
+const RK_MOVE = {
+  least: (e, h) => e.rk_mmin(h),
+  half: (e, h) => Math.max(e.rk_mmin(h), Math.floor((e.rk_armies(h, e.rk_mfrom(h)) - 1) / 2)),
+  all: (e, h) => e.rk_armies(h, e.rk_mfrom(h)) - 1,
+};
+
+// Monopoly's deeds in board order (the engine's deed numbers), and its
+// action kinds: 5 build, 6 sell a building, 7 mortgage, 8 lift.
+const MO_DEED = ['Mediterranean', 'Baltic', 'Reading RR', 'Oriental', 'Vermont', 'Connecticut',
+  'St. Charles', 'Electric Co.', 'States', 'Virginia', 'Pennsylvania RR', 'St. James', 'Tennessee',
+  'New York', 'Kentucky', 'Indiana', 'Illinois', 'B&O RR', 'Atlantic', 'Ventnor', 'Water Works',
+  'Marvin Gardens', 'Pacific', 'North Carolina', 'Pennsylvania Ave', 'Short Line', 'Park Place', 'Boardwalk'];
+const MO_MODE = { 5: 'build on', 6: 'sell a building from', 7: 'mortgage', 8: 'lift the mortgage on' };
+const MO_BUTTON = { 5: 'Build', 6: 'Sell a building', 7: 'Mortgage', 8: 'Lift a mortgage' };
+const moDo = kind => (e, h) => ({ handle: e.mo_act(h, 0, kind, 0) });
+const moCan = kind => (e, h) => e.mo_legal(h, 0, kind, 0) === 1;
+// While seat 0 owes more than its cash (phase 4), the action a plain click
+// on deed `pi` takes: 6 sells a building, 7 mortgages, 0 none.
+const moRaise = (e, h, pi) => {
+  if (pi < 0 || e.mo_phase(h) !== 4 || e.mo_actor(h) !== 0) return 0;
+  return e.mo_legal(h, 0, 6, pi) === 1 ? 6 : e.mo_legal(h, 0, 7, pi) === 1 ? 7 : 0;
+};
 
 export const GAMES = [
   {
@@ -490,7 +558,12 @@ export const GAMES = [
     // a board with pieces still on it reads as a bug.
     status: (e, h) => e.cs_done(h) === 1
       ? (e.cs_result(h) === 2
-        ? (e.cs_moves(h) === 0 ? 'Stalemate: no legal move and no check' : 'Fifty moves without a pawn or a capture')
+        ? named(e.cs_drawkind(h), {
+          1: 'Stalemate: no legal move and no check',
+          2: 'Fifty moves without a pawn or a capture',
+          3: 'The same position a third time: a draw',
+          4: 'Neither side can mate: a dead position',
+        }, 'A draw')
         : named(e.cs_result(h), { 0: 'White mates', 1: 'Black mates' }, 'A draw'))
       : `${e.cs_turn(h) === 0 ? 'White (you)' : 'Black'} to move`
         + `${e.cs_check(h) === 1 ? ' · in check' : ''}`
@@ -514,17 +587,27 @@ export const GAMES = [
     // legal moves by index, so `cs_find` does the search inside the module
     // rather than the page reading the whole list back one call at a time.
     // A pawn reaching the last rank offers four moves for the one pair of
-    // squares; cs_find answers the queen, which is the promotion a player
-    // who was not asked wanted.
+    // squares, so that click holds the move as CS_PROMO + from * 64 + to and
+    // the four Promote actions choose the piece.
     move: (e, h, i, st) => {
-      if (st.sel === null || st.sel === undefined) {
+      if (st.sel === null || st.sel === undefined || st.sel >= CS_PROMO) {
         return e.cs_can(h, i) === 1 ? { sel: i } : null;
       }
       if (i === st.sel) return { sel: null };
       const m = e.cs_find(h, st.sel, i);
+      if (m >= 0 && e.cs_move_promote(h, m) > 0) return { sel: CS_PROMO + st.sel * 64 + i };
       if (m >= 0) return { handle: e.cs_apply(h, m) };
       return e.cs_can(h, i) === 1 ? { sel: i } : null;
     },
+    actions: [[5, 'Queen'], [4, 'Rook'], [3, 'Bishop'], [2, 'Knight']].map(([kind, name]) => ({
+      label: `Promote to ${name}`,
+      enabled: (e, h, roll, sel) => sel !== null && sel !== undefined && sel >= CS_PROMO,
+      run: (e, h, rand, roll, sel) => {
+        const from = Math.floor((sel - CS_PROMO) / 64), to = (sel - CS_PROMO) % 64;
+        const m = e.cs_findp(h, from, to, kind);
+        return m < 0 ? null : { handle: e.cs_apply(h, m) };
+      },
+    })),
     steps: 200,
   },
   {
@@ -533,35 +616,35 @@ export const GAMES = [
     boot: e => e.go_new(),
     step: (e, h, r) => { const m = e.go_ai(h, r()); return m < 0 ? e.go_pass(h) : e.go_place(h, m); },
     done: (e, h) => e.go_done(h) === 1,
+    // Area scoring with komi 7.5 (Go.codex rule 6), so a margin is always a
+    // half point away from a tie.
     status: (e, h) => {
-      const b = e.go_score(h, 1), w = e.go_score(h, 2);
-      return (e.go_done(h) === 1 ? `${b > w ? 'Black' : 'White'} leads the board` : `${e.go_cur(h) === 1 ? 'Black' : 'White'} to play`)
-        + ` · B ${b} W ${w} · captures ${e.go_captures(h, 1)}/${e.go_captures(h, 2)}`;
+      const b = e.go_area(h, 1), w = e.go_area(h, 2);
+      const margin = Math.abs(b - (w + 7.5));
+      return (e.go_done(h) === 1 ? `${e.go_winner(h) === 1 ? 'Black' : 'White'} wins by ${margin}` : `${e.go_cur(h) === 1 ? 'Black' : 'White'} to play`)
+        + ` · area B ${b} W ${w} + 7.5 komi · captures ${e.go_captures(h, 1)}/${e.go_captures(h, 2)}`;
     },
     view: (e, h) => grid(9, seq(81).map(i =>
       cell('', 'goban ' + ['', 'stone black', 'stone white'][e.go_cell(h, i)]))),
     human: 1,
     turn: (e, h) => e.go_cur(h),
-    // Go exports no legality test, and a HANDLE CANNOT BE COMPARED to find
-    // one: every call allocates a fresh state, so `place(h,i) === h` is
-    // never true and a refused move reads as a move made. The board is the
-    // only witness -- if the point does not hold your stone afterwards, the
-    // rules refused it (occupied, ko, or self-capture).
-    move: (e, h, i) => {
-      if (e.go_cell(h, i) !== 0) return null;
-      const me = e.go_cur(h);
-      const n = e.go_place(h, i);
-      return e.go_cell(n, i) === me ? { handle: n } : null;
-    },
+    // The engine answers legality (occupied, suicide, superko), so a refused
+    // point is refused before anything is placed.
+    move: (e, h, i) => e.go_legal(h, i) === 1 ? { handle: e.go_place(h, i) } : null,
     actions: [{ label: 'Pass', run: (e, h) => ({ handle: e.go_pass(h) }) }],
-    ghost: (e, h, i) => e.go_cell(h, i) !== 0 ? null
+    ghost: (e, h, i) => e.go_legal(h, i) !== 1 ? null
       : { i, cls: 'goban stone black', carry: 'stone black' },
   },
   {
     id: 'hexgame', name: 'Hex', cat: 'Board', icon: '⬢',
     desc: '11x11. Connect your two edges. A finished Hex board always has exactly one winner.',
     boot: e => e.hx_new(),
-    step: (e, h) => { const m = e.hx_ai(h); return m < 0 ? null : e.hx_place(h, m); },
+    // The swap rule: in place of its first move the engine may take over
+    // your opening stone (HexGame.codex); it does for a central opening.
+    step: (e, h) => {
+      if (e.hx_canswap(h) === 1 && e.hx_aiswap(h) === 1) return e.hx_swap(h);
+      const m = e.hx_ai(h); return m < 0 ? null : e.hx_place(h, m);
+    },
     done: (e, h) => e.hx_done(h) === 1,
     status: (e, h) => e.hx_done(h) === 1
       ? `Player ${e.hx_winner(h)} joins ${e.hx_winner(h) === 1 ? 'top to bottom' : 'left to right'} in ${e.hx_moves(h)} moves`
@@ -606,31 +689,53 @@ export const GAMES = [
     id: 'backgammon', name: 'Backgammon', cat: 'Board', icon: '\u{1F3B2}',
     desc: '24 points, the bar, and bearing off.',
     boot: e => e.bg_new(),
-    // Backgammon.codex: "Dice are 2d6; doubles = 4 moves." bg_step spends
-    // ONE die, so a turn is a queue of two, or four on a double, and the
-    // page spends them one at a time so each checker is seen to move.
+    // A turn is a queue of two dice, or four on a double, spent one move at
+    // a time so each checker is seen to move. The engine picks the move AND
+    // the die, among legal moves only, so the both-dice and larger-die rules
+    // bind the opponent as they bind you.
     beginTurn: (e, h, rand) => {
       const a = e.bg_die(rand()), b = e.bg_die(rand());
       return { dice: [a, b], queue: a === b ? [a, a, a, a] : [a, b], spent: [] };
     },
     step: (e, h, rand, roll) => {
+      // A double waiting on the engine's answer (only when it plays both
+      // sides; yours is answered inside the Offer action).
+      if (e.bg_offered(h) === 1) {
+        return { handle: e.bg_aitake(h) === 1 ? e.bg_take(h) : e.bg_drop(h), roll: null };
+      }
       if (!roll || !roll.queue.length) return null;
-      const die = roll.queue[0];
-      const moved = e.bg_step(h, die);
-      const rest = {
-        dice: roll.dice, queue: roll.queue.slice(1), spent: roll.spent.concat(die),
-      };
-      // Turn over when the dice are spent.
-      return rest.queue.length
+      // Rule 8: a double is offered before the roll, so the throw the driver
+      // made for this turn is discarded and a fresh one follows the answer.
+      if (!roll.spent.length && e.bg_aidouble(h) === 1) return { handle: e.bg_double(h), roll: null };
+      const pick = e.bg_ai(h, bgPack(roll.queue));
+      // No die left can be played: the rest of the throw is lost.
+      if (pick < 0) return { handle: e.bg_endturn(h), roll: null };
+      const die = pick >> 5, moved = e.bg_play(h, bgPack(roll.queue), pick & 31, die);
+      const queue = roll.queue.slice();
+      queue.splice(queue.indexOf(die), 1);
+      const rest = { dice: roll.dice, queue, spent: roll.spent.concat(die) };
+      return queue.length
         ? { handle: moved, roll: rest }
         : { handle: e.bg_endturn(moved), roll: null };
     },
     done: (e, h) => e.bg_done(h) === 1,
     // Backgammon.codex: winner 0 is White, 1 is Black. Indexing a label
     // array by that put an EMPTY name in front of "bears off last".
-    status: (e, h) => e.bg_done(h) === 1
-      ? `${named(e.bg_winner(h), { 0: 'White', 1: 'Black' }, 'Nobody')} bears off last`
-      : `${e.bg_cur(h) === 0 ? 'White' : 'Black'} to move · off ${e.bg_off(h, 0)}/${e.bg_off(h, 1)} · bar ${e.bg_bar(h, 0)}/${e.bg_bar(h, 1)}`,
+    status: (e, h) => {
+      const side = p => p === 0 ? 'White' : 'Black';
+      const pts = n => `${n} point${n === 1 ? '' : 's'}`;
+      if (e.bg_done(h) === 1) {
+        const w = e.bg_winner(h);
+        const won = named(w, { 0: 'White', 1: 'Black' }, 'Nobody');
+        if (e.bg_off(h, w) < 15) return `${side(1 - w)} drops the double · ${won} wins ${pts(e.bg_points(h))}`;
+        const how = named(e.bg_kind(h), { 1: 'wins', 2: 'wins a gammon', 3: 'wins a backgammon' }, 'wins');
+        return `${won} ${how} · ${pts(e.bg_points(h))}`;
+      }
+      if (e.bg_offered(h) === 1) {
+        return `${side(e.bg_cur(h))} offers to double to ${e.bg_cube(h) * 2}: ${side(1 - e.bg_cur(h))} takes or drops`;
+      }
+      return `${side(e.bg_cur(h))} to move · cube ${e.bg_cube(h)} · off ${e.bg_off(h, 0)}/${e.bg_off(h, 1)} · bar ${e.bg_bar(h, 0)}/${e.bg_bar(h, 1)}`;
+    },
     // A real board, drawn by the page. The photographic one that used to
     // stand in for this is the one Damian called out as looking bad, so
     // backgammon is the one game here with no scene behind it and a board
@@ -643,14 +748,16 @@ export const GAMES = [
     view: (e, h, s, sel, roll) => {
       const dice = roll ? roll.queue : [];
       const mine = e.bg_cur(h) === BG_YOU;
+      const masks = mine && dice.length ? bgMasks(e, h, dice) : {};
+      const legal = (f, d) => masks[d] !== undefined && ((masks[d] >>> f) & 1) === 1;
+      const held = sel !== null && sel !== undefined;
       // A point you could move FROM with any die still in hand, or, once
       // one is picked up, a point that die could land it on.
-      const from = p => mine && dice.some(d => e.bg_can(h, p, d) === 1);
-      const dieFor = (a, b) => BG_YOU === 0 ? a - b : b - a;
+      const from = p => mine && dice.some(d => legal(p, d));
       const dest = p => {
-        if (!mine || sel === null || sel === undefined) return false;
-        const d = dieFor(sel, p);
-        return dice.includes(d) && e.bg_can(h, sel, d) === 1;
+        if (!mine || !held) return false;
+        const d = bgDie(sel, p);
+        return dice.includes(d) && legal(bgFrom(sel), d);
       };
       const pt = p => ({
         n: e.bg_point(h, p), i: p,
@@ -671,24 +778,27 @@ export const GAMES = [
       dice: roll ? roll.dice : null,
       spent: roll ? roll.spent : [],
         thrower: e.bg_cur(h) === 0 ? 'w' : 'b',
-        // The engine implements no doubling, so the cube is board furniture
-        // sitting where an untouched cube sits. The rules panel says so
-        // rather than leaving a control that would do nothing.
-        cube: 64,
+        // A centred cube shows 64, as a real one does; an owned cube its value.
+        cube: e.bg_cube(h) === 1 && e.bg_owner(h) < 0 ? 64 : e.bg_cube(h),
+        cubeOwner: e.bg_owner(h) < 0 ? '' : e.bg_owner(h) === BG_YOU ? 'yours' : 'theirs',
+        offered: e.bg_offered(h) === 1,
         // Entering from the bar and bearing off are moves too, so they are
         // clickable in their own right.
         // Your throw, offered in the middle of the board. The opponent
         // rolls its own as part of its turn, so this only ever shows on
         // your side of the game.
         showRoll: mine && !roll,
-        barHint: mine && dice.some(d => e.bg_canenter(h, d) === 1),
-        offHint: mine && sel !== null && sel !== undefined &&
-          dice.some(d => e.bg_can(h, sel, d) === 1 &&
-            (BG_YOU === 0 ? sel - d < 0 : sel + d >= 24)),
+        barHint: mine && dice.some(d => legal(BG_EBAR, d)),
+        barPicked: sel === BG_BAR,
+        offHint: mine && held && dice.some(d => legal(bgFrom(sel), d) && bgOffBy(sel, d)),
+        // The dice that can move the checker you hold, clickable in the tray.
+        dieHint: mine && held ? dice.filter(d => legal(bgFrom(sel), d)) : [],
       };
     },
     human: BG_YOU,
-    turn: (e, h) => e.bg_cur(h),
+    // An offered double is answered by the other side, so the turn is theirs
+    // until they take or drop.
+    turn: (e, h) => e.bg_offered(h) === 1 ? 1 - e.bg_cur(h) : e.bg_cur(h),
     land: 'slide',
     // You throw when you are ready. Rolling for you the moment the turn
     // arrives takes away the one thing that makes a dice game feel like one.
@@ -699,7 +809,7 @@ export const GAMES = [
         // Drawn on the board itself, in the middle where a real player
         // throws, so it is not up in the toolbar away from the game.
         inBoard: true,
-        enabled: (e, h, roll) => !roll,
+        enabled: (e, h, roll) => !roll && e.bg_offered(h) === 0 && e.bg_cur(h) === BG_YOU,
         run: (e, h, rand) => {
           const a = e.bg_die(rand()), b = e.bg_die(rand());
           return {
@@ -710,16 +820,44 @@ export const GAMES = [
       },
       {
         label: 'No move, pass',
-        enabled: (e, h, roll) => !!roll && roll.queue.every(d => e.bg_any(h, d) === 0),
+        enabled: (e, h, roll) => !!roll && e.bg_most(h, bgPack(roll.queue)) === 0,
         run: (e, h) => ({ handle: e.bg_endturn(h), roll: null }),
+      },
+      // Rule 8. You offer before you roll, and the engine answers at once.
+      {
+        label: 'Offer double',
+        enabled: (e, h, roll) => !roll && e.bg_cur(h) === BG_YOU && e.bg_candouble(h) === 1,
+        run: (e, h) => {
+          const offered = e.bg_double(h);
+          return { handle: e.bg_aitake(offered) === 1 ? e.bg_take(offered) : e.bg_drop(offered), roll: null };
+        },
+      },
+      {
+        label: 'Take',
+        enabled: (e, h) => e.bg_offered(h) === 1 && e.bg_cur(h) !== BG_YOU,
+        run: (e, h) => ({ handle: e.bg_take(h), roll: null }),
+      },
+      {
+        label: 'Drop',
+        enabled: (e, h) => e.bg_offered(h) === 1 && e.bg_cur(h) !== BG_YOU,
+        run: (e, h) => ({ handle: e.bg_drop(h), roll: null }),
       },
     ],
     // BAR and OFF are moves in their own right, so they get indices of
     // their own rather than being squeezed into the twenty-four points.
+    // Every move is (from, die) asked of the engine, which answers for the
+    // whole of rule 3, so no click here chooses a die for you: a point names
+    // its die by distance, the bar is picked up like a checker and entered by
+    // clicking the entry point, and where two dice could bear the same
+    // checker off, the die you click in the tray is the one spent.
     move: (e, h, i, st) => {
       const dice = st.roll ? st.roll.queue : [];
       if (!dice.length) return null;
-      const spend = (d, handle) => {
+      const pk = bgPack(dice);
+      const legal = (f, d) => e.bg_legal(h, pk, f, d) === 1;
+      const held = st.sel !== null && st.sel !== undefined;
+      const spend = d => {
+        const handle = e.bg_play(h, pk, bgFrom(st.sel), d);
         const q = dice.slice();
         q.splice(q.indexOf(d), 1);
         const spent = (st.roll.spent || []).concat(d);
@@ -727,38 +865,24 @@ export const GAMES = [
           ? { handle, roll: { dice: st.roll.dice, queue: q, spent } }
           : { handle: e.bg_endturn(handle), roll: null };
       };
+      if (i > BG_DIE && i <= BG_DIE + 6) {
+        const d = i - BG_DIE;
+        return held && dice.includes(d) && legal(bgFrom(st.sel), d) ? spend(d) : null;
+      }
       if (i === BG_BAR) {
-        // Deterministic rather than queue order, so the same click always
-        // enters on the same point.
-        const cands = dice.filter(x => e.bg_canenter(h, x) === 1).sort((a, b) => a - b);
-        return cands.length ? spend(cands[0], e.bg_enter(h, cands[0])) : null;
+        if (st.sel === BG_BAR) return { sel: null };
+        return dice.some(d => legal(BG_EBAR, d)) ? { sel: BG_BAR } : null;
       }
       if (i === BG_OFF) {
-        if (st.sel === null || st.sel === undefined) return null;
-        // SPEND THE DIE THE MOVE ACTUALLY USES. Bearing off a checker from
-        // the three-point uses the three; a five also satisfies the test,
-        // and taking the first die that happens to work spent the five and
-        // left the three still owed -- so the next move looked like the
-        // three being spent twice. Exact die first, then the smallest that
-        // will do.
-        const need = BG_YOU === 0 ? st.sel + 1 : 24 - st.sel;
-        const cands = dice
-          .filter(x => e.bg_can(h, st.sel, x) === 1 &&
-            (BG_YOU === 0 ? st.sel - x < 0 : st.sel + x >= 24))
-          .sort((a, b) => a - b);
-        if (!cands.length) return null;
-        const d = cands.includes(need) ? need : cands[0];
-        return spend(d, e.bg_move(h, st.sel, d));
+        if (!held) return null;
+        const ds = [...new Set(dice)].filter(d => legal(bgFrom(st.sel), d) && bgOffBy(st.sel, d));
+        return ds.length === 1 ? spend(ds[0]) : null;
       }
-      if (st.sel === null || st.sel === undefined) {
-        return dice.some(d => e.bg_can(h, i, d) === 1) ? { sel: i } : null;
-      }
+      if (!held) return dice.some(d => legal(i, d)) ? { sel: i } : null;
       if (i === st.sel) return { sel: null };
-      const want = BG_YOU === 0 ? st.sel - i : i - st.sel;
-      if (dice.includes(want) && e.bg_can(h, st.sel, want) === 1) {
-        return spend(want, e.bg_move(h, st.sel, want));
-      }
-      return dice.some(d => e.bg_can(h, i, d) === 1) ? { sel: i } : null;
+      const want = bgDie(st.sel, i);
+      if (dice.includes(want) && legal(bgFrom(st.sel), want)) return spend(want);
+      return dice.some(d => legal(i, d)) ? { sel: i } : null;
     },
     steps: 600,
   },
@@ -827,25 +951,36 @@ export const GAMES = [
       + (e.ms_done(h) === 1 ? (e.ms_won(h) === 1 ? ' · cleared' : ' · over') : ''),
     view: (e, h) => grid(9, seq(81).map(i => {
       const mine = e.ms_mine(h, i) === 1, shown = e.ms_shown(h, i) === 1;
+      if (e.ms_shown(h, i) === 2) return cell('\u{1F6A9}', 'ms hidden flag');
       if (!shown) return cell(e.ms_done(h) === 1 && mine ? '\u{1F4A3}' : '', 'ms hidden');
       if (mine) return cell('\u{1F4A3}', 'ms boom');
       const a = e.ms_adj(h, i);
       return cell(a || '', 'ms open n' + a);
     })),
     solo: true,
-    move: (e, h, i) => e.ms_shown(h, i) === 1 ? null : { handle: e.ms_open(h, i) },
-    ghost: (e, h, i) => e.ms_shown(h, i) === 1 ? null : { i, cls: 'ms probe' },
+    // A flagged cell (ms_shown 2) is never opened by a click. "Flag a mine"
+    // arms the next click to set or clear a flag instead of revealing.
+    move: (e, h, i, st) => {
+      if (st && st.sel === MS_FLAG) return e.ms_shown(h, i) === 1 ? { sel: null } : { handle: e.ms_flag(h, i) };
+      return e.ms_shown(h, i) === 0 ? { handle: e.ms_open(h, i) } : null;
+    },
+    actions: [{
+      label: '\u{1F6A9} Flag a mine',
+      enabled: (e, h, roll, sel) => sel !== MS_FLAG,
+      run: (e, h) => ({ handle: h, sel: MS_FLAG }),
+    }],
+    ghost: (e, h, i) => e.ms_shown(h, i) !== 0 ? null : { i, cls: 'ms probe' },
   },
   {
     id: 'sudoku', name: 'Sudoku', cat: 'Puzzle', icon: '\u{1F9E9}',
-    desc: 'A real puzzle: the grid is solved and then holes are punched in it, so every blank has a digit that belongs there. Pick a digit, then a square.',
+    desc: 'A proper puzzle: the grid is solved and then holes are punched in it, each one kept only while the puzzle still has exactly one solution. Pick a digit, then a square.',
     // The option is ATTEMPTS at punching a hole, not holes. `sudoku-remove-cells`
     // picks a random index each pass and spends the pass whether or not that
-    // cell still held a digit, so asking for 45 gives about 34 blanks and the
-    // exact number moves with the seed. Labelling it "45 blanks" would state a
-    // number the player can count and find wrong, so it is named for the
-    // difficulty it produces and the status line reports the blanks it really
-    // dealt.
+    // cell still held a digit, or the hole would admit a second solution, so
+    // the blanks dealt fall short of the attempts and the exact number moves
+    // with the seed. Labelling it "45 blanks" would state a number the player
+    // can count and find wrong, so it is named for the difficulty it produces
+    // and the status line reports the blanks it really dealt.
     options: [{
       name: 'holes', label: 'Puzzle',
       values: [36, 50, 64], labels: ['gentle', 'middling', 'hard'], def: 50,
@@ -857,26 +992,31 @@ export const GAMES = [
     boot: (e, s, o) => {
       const solved = e.sd_solve(e.sd_new(s));
       const puzzle = e.sd_remove(solved, s, (o && o.holes) || 50);
-      sdGiven = new Set(seq(81).filter(i => e.sd_cell(puzzle, i) !== 0));
       sdDigit = 1;
       return puzzle;
     },
-    // Watch mode still solves it in one step, which is the backtracking
-    // solver doing what it always did.
-    step: (e, h) => (e.sd_blanks(h) === 0 ? null : e.sd_solve(h)),
-    done: (e, h) => e.sd_blanks(h) === 0,
-    won: (e, h) => e.sd_blanks(h) === 0,
+    // Watch mode hands the position to the backtracking solver. Digits the
+    // player wrote can leave a position with no solution; the solver then
+    // answers the position unchanged, and the step stops rather than repeat.
+    step: (e, h) => {
+      if (e.sd_won(h) === 1) return null;
+      const s = e.sd_solve(h);
+      return e.sd_won(s) === 1 ? s : null;
+    },
+    done: (e, h) => e.sd_won(h) === 1,
+    won: (e, h) => e.sd_won(h) === 1,
     status: (e, h) => {
       const left = e.sd_blanks(h);
-      if (left === 0) return `Solved · ${e.sd_givens(h)} of 81 were given`;
-      return `${left} blank${left === 1 ? '' : 's'} left · ${sdGiven.size} given`
+      const given = seq(81).filter(i => e.sd_fixed(h, i) === 1).length;
+      if (e.sd_won(h) === 1) return `Solved · ${given} of 81 were given`;
+      return `${left} blank${left === 1 ? '' : 's'} left · ${given} given`
         + ` · placing ${sdDigit}`;
     },
     view: (e, h) => {
       const cells = seq(81).map(i => {
         const v = e.sd_cell(h, i), r = Math.floor(i / 9), c = i % 9;
         const box = (Math.floor(r / 3) + Math.floor(c / 3)) % 2 ? ' shade' : '';
-        const given = sdGiven.has(i);
+        const given = e.sd_fixed(h, i) === 1;
         // A blank where the chosen digit would not go is shown as closed, so
         // the board answers "where can this go" before you click.
         const fits = !v && e.sd_fits(h, i, sdDigit) === 1;
@@ -893,13 +1033,12 @@ export const GAMES = [
     solo: true,
     // Two kinds of click: a digit to hold, or a square to write it into.
     // Clicking a square that already holds YOUR digit clears it, which is
-    // the only way back out of a mistake.
+    // the only way back out of a mistake. The engine refuses a given and a
+    // digit that repeats, by answering the same handle.
     move: (e, h, i) => {
       if (i >= SD_DIGIT) { sdDigit = i - SD_DIGIT; return { sel: null }; }
-      if (i < 0 || i >= 81 || sdGiven.has(i)) return null;
-      if (e.sd_cell(h, i) !== 0) return { handle: e.sd_place(h, i, 0) };
-      if (e.sd_fits(h, i, sdDigit) !== 1) return null;
-      return { handle: e.sd_place(h, i, sdDigit) };
+      const next = e.sd_place(h, i, e.sd_cell(h, i) > 0 ? 0 : sdDigit);
+      return next === h ? null : { handle: next };
     },
     steps: 2,
   },
@@ -1089,47 +1228,45 @@ export const GAMES = [
 
   {
     id: 'blackjack', name: 'Blackjack', cat: 'Card', icon: '\u{1F0CF}',
-    desc: 'Basic strategy against the dealer. Aces soften.',
+    desc: 'Casino rules against the dealer: double down on 9 to 11, split pairs, insure against an ace, and a natural paid 3:2.',
     boot: (e, s) => e.bj_new(s),
     step: (e, h) => e.bj_auto(h),
-    // bj_result is a COMPARISON of the two totals as they stand: 1 the
-    // player, 0 a push, -1 the dealer. There is no "still in" among its
-    // values, so indexing a label array by it read a loss as "still in" and
-    // a push as "still in", and `> 0` read a loss as a hand not yet over.
-    // Whether the hand is live is the page's business, not the module's:
-    // the page owns the hit-or-stand flow.
-    // Solo: the hand is live until the player stands or busts, and that is
-    // page state, so the driver's `settled` flag carries it.
-    done: (e, h, settled) => settled === true || e.bj_bust(h) === 1,
-    status: (e, h, settled) => `you ${e.bj_pvalue(h)}${e.bj_psoft(h) === 1 ? ' soft' : ''} · dealer ${e.bj_dvalue(h)}`
-      + (settled || e.bj_bust(h) === 1
-        ? ' · ' + (e.bj_bust(h) === 1 ? 'bust, dealer takes it'
-          : { 1: 'you win', 0: 'a push', '-1': 'dealer wins' }[e.bj_result(h)])
-        : ' · hit or stand'),
-    // Dealer above, you below, the way it sits on a table, and the winner
-    // named against whoever took it rather than only in the status line.
-    view: (e, h, settled) => {
-      const over = settled || e.bj_bust(h) === 1;
-      const res = e.bj_bust(h) === 1 ? -1 : e.bj_result(h);
-      const mark = who => !over ? '' : res === 0 ? '  --  push'
-        : (res === who ? '  --  WINNER' : '');
-      return rows([
-        // The hole card stays face down while the hand is live. That is the
-        // rule, not decoration: showing it gives away the answer.
-        [`Dealer ${e.bj_dvalue(h)}${mark(-1)}`, over
+    // The module owns the whole round (Blackjack.codex, "The Table"): which
+    // actions are legal, whose hand is in play, when it settles. The page
+    // asks bj_can and never decides a rule itself.
+    done: (e, h) => e.bj_phase(h) === 2,
+    status: (e, h) => {
+      const ph = e.bj_phase(h);
+      if (ph === 0) return 'the dealer shows an ace · insurance?';
+      if (ph === 1) return `hand ${e.bj_cur(h) + 1} of ${e.bj_nh(h)}: ${e.bj_hv(h, e.bj_cur(h))}${e.bj_hsoft(h, e.bj_cur(h)) === 1 ? ' soft' : ''} · dealer shows ${e.bj_card_value(e.bj_dcard(h, 0))}`;
+      const net = e.bj_net(h);
+      return `dealer ${e.bj_dvalue(h)} · ${net > 0 ? 'you win ' + net : net < 0 ? 'you lose ' + (-net) : 'even'} (a bet is 2)`;
+    },
+    view: (e, h) => {
+      const over = e.bj_phase(h) === 2;
+      const n = e.bj_nh(h), cur = e.bj_cur(h);
+      const out = [
+        // The hole card stays face down until the round settles: showing it
+        // gives away the answer.
+        [`Dealer ${over ? e.bj_dvalue(h) : ''}`, over
           ? hand(e.bj_dcount(h), i => e.bj_dcard(h, i))
           : [cardCell(e.bj_dcard(h, 0)), { text: '', cls: 'card back' }]],
-        [`You ${e.bj_pvalue(h)}${e.bj_psoft(h) === 1 ? ' soft' : ''}${mark(1)}`,
-        hand(e.bj_pcount(h), i => e.bj_pcard(h, i))],
-      ]);
+      ];
+      for (let k = 0; k < n; k++) {
+        const st = e.bj_hst(h, k);
+        const tag = st === 2 ? ' bust' : (!over && k === cur && e.bj_phase(h) === 1) ? '  <-' : '';
+        out.push([`${n > 1 ? 'Hand ' + (k + 1) : 'You'} ${e.bj_hv(h, k)}${e.bj_hsoft(h, k) === 1 ? ' soft' : ''} · bet ${e.bj_hbet(h, k)}${tag}`,
+          hand(e.bj_hn(h, k), i => e.bj_hc(h, k, i))]);
+      }
+      return rows(out);
     },
     solo: true,
-    // Hit and Stand belong under your own cards, not up with New Game.
     actionsInStage: true,
-    actions: [
-      { label: 'Hit', run: (e, h) => ({ handle: e.bj_hit(h), settled: false }) },
-      { label: 'Stand', run: (e, h) => ({ handle: e.bj_stand(h), settled: true }) },
-    ],
+    actions: ['Hit', 'Stand', 'Double', 'Split', 'Insure', 'No insurance'].map((label, a) => ({
+      label,
+      run: (e, h) => ({ handle: e.bj_act(h, a) }),
+      enabled: (e, h) => e.bj_can(h, a) === 1,
+    })),
     steps: 2,
   },
   {
@@ -1255,8 +1392,9 @@ export const GAMES = [
     id: 'pokervariants', name: 'Poker Variants', cat: 'Card', icon: '\u{1F0AA}',
     desc: 'Stud, Baseball, Hi/Low Chicago and more, each with its own wild cards.',
     // All eight variants are one table: what changes between them is how
-    // many cards are dealt and how the two hands are ranked. The seed
-    // picks which variant you sit down to.
+    // the cards are dealt and how the two hands are ranked. The studs deal
+    // a street at a time with a betting round after each. The seed picks
+    // which variant you sit down to.
     boot: (e, s) => e.pvt_new(s % 8, s),
     step: (e, h) => e.pvt_step(h),
     done: (e, h) => e.pvt_done(h) === 1,
@@ -1276,18 +1414,20 @@ export const GAMES = [
       }
       const owed = e.pvt_tocall(h, 0);
       const said = named(e.pvt_last(h),
-        { 0: 'they folded', 1: 'they checked', 2: 'they called', 3: 'they raised', 4: 'they drew' }, '');
+        { 0: 'they folded', 1: 'they checked', 2: 'they called', 3: 'they raised', 4: 'they drew',
+          5: 'they brought it in' }, '');
       const shut = e.pvt_cur(h) === 0 && owed === 0 && e.pvt_canopen(h) === 0;
       return `${v} · pot ${e.pvt_pot(h)} · ${chips}`
+        + (e.pvt_bring(h) === 0 ? ' · your low card brings it in: call for 5 or raise to 10' : '')
         + (owed > 0 ? ` · ${owed} to you to stay in` : '')
         + (shut ? ' · you cannot open without jacks or better' : '')
         + (said ? ` · ${said}` : '')
         + ` · ${e.pvt_cur(h) === 0 ? 'your move' : 'they are thinking'}`;
     },
-    // A hand is five cards or seven, so the row is built from what the
-    // table says it dealt rather than from a five nobody checked.
+    // A hand is built from what the table says it has dealt so far: a stud
+    // grows a card a street. The opponent's up cards show as they fall.
     view: (e, h) => {
-      const n = e.pvt_size(h);
+      const n = e.pvt_dealt(h, 0);
       const drawing = e.pvt_candraw(h) === 1;
       const wildOf = c => e.pvt_wildat(h, c) === 1 ? ' gold' : '';
       return rows([
@@ -1302,7 +1442,7 @@ export const GAMES = [
               + wildOf(e.pvt_card(h, 0, i))),
             i,
           }))],
-        ['Them', seq(n).map(i => cardCell(e.pvt_shown(h, 1, i)))],
+        ['Them', seq(e.pvt_dealt(h, 1)).map(i => cardCell(e.pvt_shown(h, 1, i)))],
         ['Yours reads', [cell(HANDS[e.pvt_rank(h, 0)] || '?', 'chip gold')]],
       ]);
     },
@@ -1323,6 +1463,12 @@ export const GAMES = [
         label: 'Raise',
         run: (e, h) => ({ handle: e.pvt_raise(h) }),
         enabled: (e, h) => e.pvt_canraise(h) === 1,
+      },
+      {
+        // A stud's second round, with a pair showing on either board.
+        label: 'Bet big',
+        run: (e, h) => ({ handle: e.pvt_big(h) }),
+        enabled: (e, h) => e.pvt_canbig(h) === 1,
       },
       {
         label: 'Fold',
@@ -1348,100 +1494,209 @@ export const GAMES = [
     boot: (e, s) => e.pn_new(s),
     step: (e, h) => e.pn_step(h),
     done: (e, h) => e.pn_done(h) === 1,
-    // You sit at seat 0 and you lead the first trick, so the game opens on
-    // your move without anything having to be played for you first.
+    // You sit at seat 0 and open the first auction. Between hands the turn
+    // is yours, so the next deal waits for you.
     human: 0,
     turn: (e, h) => e.pn_cur(h),
     // Pinochle.codex: 0 is Team0, 1 is Team1, anything else a tie.
     runs: (e, s) => named(e.pn_winner(e.pn_run(s)),
       { 0: 'team zero takes it', 1: 'team one takes it' }, 'tied'),
     status: (e, h) => {
-      const you = e.pn_pts(h, 0), them = e.pn_pts(h, 1);
-      if (e.pn_done(h) === 1) {
-        // The melds are gone with the cards by now, so the finished line
-        // reports the tricks alone and says so.
-        return `trick points ${you} to ${them} · `
-          + (you > them ? 'you and your partner take them'
-            : you < them ? 'the other pair take them' : 'level');
+      const ph = e.pn_phase(h), cur = e.pn_cur(h);
+      const who = p => p === 0 ? 'you' : p === 2 ? 'your partner' : PLAYERS[p];
+      const game = `game ${e.pn_score(h, 0)} to ${e.pn_score(h, 1)}`;
+      if (ph === 6) {
+        return `${e.pn_gwinner(h) === 0 ? 'you and your partner win' : 'the other pair win'} · ${game}`;
       }
-      return `trump ${PIN_SUIT[e.pn_trump(h)]} · your meld ${e.pn_meld(h, 0)}`
-        + ` · trick points ${you} to ${them}`
-        + ` · ${e.pn_tricks(h)} of 12 played`
-        + ` · ${e.pn_cur(h) === 0 ? 'your lead or your card'
-          : `${PLAYERS[e.pn_cur(h)]} to play`}`;
+      if (ph === 0) {
+        return `the auction · ${e.pn_bid(h) ? `${who(e.pn_bidder(h))} bid ${e.pn_bid(h)}` : 'no bid yet'}`
+          + ` · your meld as it stands ${e.pn_meld(h, 0)} · ${cur === 0 ? 'your call' : `${who(cur)} to call`} · ${game}`;
+      }
+      const deal = `${who(e.pn_bidder(h))} bid ${e.pn_bid(h)}`;
+      if (ph === 1) return `${deal} · ${cur === 0 ? 'name trump' : `${who(cur)} is naming trump`} · ${game}`;
+      if (ph === 2 || ph === 3) {
+        return `${deal} · trump ${PIN_SUIT[e.pn_trump(h)]}`
+          + ` · ${cur === 0 ? 'pick four cards to pass across' : `${who(cur)} is passing four`} · ${game}`;
+      }
+      const tricks = `counters ${e.pn_pts(h, 0)} to ${e.pn_pts(h, 1)}`;
+      const meld = `meld ${e.pn_hmeld(h, 0)} to ${e.pn_hmeld(h, 1)}`;
+      if (ph === 5) {
+        return `${deal} and ${e.pn_made(h) === 1 ? 'made it' : 'went set'} · ${meld} · ${tricks} · ${game}`;
+      }
+      return `${deal} · trump ${PIN_SUIT[e.pn_trump(h)]} · ${meld} · ${tricks}`
+        + ` · ${e.pn_tricks(h)} of 12 played · ${cur === 0 ? 'your card' : `${who(cur)} to play`}`;
     },
     // Your partner sits opposite at seat 2. Their cards are theirs, so the
     // count is all that shows, the same way the opponents' do.
-    view: (e, h) => rows([
-      ['On the table', seq(4).map(p =>
-        pinCell(e.pn_trick(h, p), e.pn_leader(h) === p ? 'picked' : ''))],
-      ['Your hand' + (e.pn_cur(h) === 0 ? ' (to play)' : ''),
-        seq(e.pn_count(h, 0)).map(i => ({
-          ...pinCell(e.pn_card(h, 0, i), e.pn_legal(h, i) === 1 ? 'movable' : ''),
-          i,
-        }))],
-      ...[1, 2, 3].map(p => [
-        `${p === 2 ? 'Partner' : PLAYERS[p]}${p === e.pn_cur(h) ? ' to play' : ''}`,
-        [cell(`${e.pn_count(h, p)} cards`, 'chip')],
-      ]),
-    ]),
+    view: (e, h) => {
+      const ph = e.pn_phase(h);
+      const passing = ph === 2 || ph === 3;
+      return rows([
+        ['On the table', seq(4).map(p =>
+          pinCell(e.pn_trick(h, p), e.pn_leader(h) === p ? 'picked' : ''))],
+        ['Your hand' + (passing && e.pn_cur(h) === 0 ? ' (pick four to pass)' : ''),
+          seq(e.pn_count(h, 0)).map(i => ({
+            ...pinCell(e.pn_card(h, 0, i),
+              e.pn_marked(h, i) === 1 ? 'picked'
+                : e.pn_legal(h, i) === 1 || e.pn_canmark(h, i) === 1 ? 'movable' : ''),
+            i,
+          }))],
+        ...[1, 2, 3].map(p => [
+          `${p === 2 ? 'Partner' : PLAYERS[p]}${p === e.pn_cur(h) ? ' to act' : ''}`,
+          [cell(`${e.pn_count(h, p)} cards`, 'chip'),
+            ...(ph === 0 && e.pn_out(h, p) === 1 ? [cell('passed', 'chip')] : [])],
+        ]),
+      ]);
+    },
     // A click is an index into YOUR hand and not a card id, because a
     // pinochle deck holds two of every card and an id names both of them.
+    // In the pass it marks a card; in the play it plays one.
     move: (e, h, i) => {
       if (i < 0 || i >= e.pn_count(h, 0)) return null;
+      if (e.pn_canmark(h, i) === 1) return { handle: e.pn_mark(h, i) };
       if (e.pn_legal(h, i) !== 1) return null;
       return { handle: e.pn_play(h, i) };
     },
+    actions: [
+      {
+        label: 'Bid the minimum',
+        run: (e, h) => ({ handle: e.pn_callbid(h, e.pn_minbid(h)) }),
+        enabled: (e, h) => e.pn_cur(h) === 0 && e.pn_canbid(h, e.pn_minbid(h)) === 1,
+      },
+      {
+        label: 'Jump fifty',
+        run: (e, h) => ({ handle: e.pn_callbid(h, e.pn_minbid(h) + 40) }),
+        enabled: (e, h) => e.pn_cur(h) === 0 && e.pn_canbid(h, e.pn_minbid(h) + 40) === 1,
+      },
+      {
+        label: 'Pass',
+        run: (e, h) => ({ handle: e.pn_pass(h) }),
+        enabled: (e, h) => e.pn_cur(h) === 0 && e.pn_phase(h) === 0,
+      },
+      ...[0, 1, 2, 3].map(s => ({
+        label: `Trump ${PIN_SUIT[s]}`,
+        run: (e, h) => ({ handle: e.pn_name(h, s) }),
+        enabled: (e, h) => e.pn_cur(h) === 0 && e.pn_phase(h) === 1,
+      })),
+      {
+        label: 'Pass the four across',
+        run: (e, h) => ({ handle: e.pn_give(h) }),
+        enabled: (e, h) => e.pn_cur(h) === 0 && e.pn_cangive(h) === 1,
+      },
+      {
+        label: 'Start the marks again',
+        run: (e, h) => ({ handle: e.pn_clear(h) }),
+        enabled: (e, h) => e.pn_cur(h) === 0 && [...Array(16).keys()].some(i => e.pn_marked(h, i) === 1),
+      },
+      {
+        label: 'Deal the next hand',
+        run: (e, h) => ({ handle: e.pn_next(h) }),
+        enabled: (e, h) => e.pn_phase(h) === 5,
+      },
+    ],
+    actionsInStage: true,
   },
   {
     id: 'bridge', name: 'Bridge', cat: 'Card', icon: '♠',
-    desc: 'Four hands, high-card-point bidding, and a contract scored at the end.',
+    desc: 'One duplicate board: a real auction, a dummy you play from, and the duplicate score.',
     boot: (e, s) => e.br_new(s),
     step: (e, h) => e.br_step(h),
     done: (e, h) => e.br_done(h) === 1,
-    // You are South. The opening lead belongs to the declarer's left, which
-    // is South only when East-West bought the contract, so `br_new` plays
-    // the seats ahead of you before it answers and the game still opens on
-    // your move.
+    // You are South. `br_who` is the seat that decides the next call or
+    // card: the declarer decides for the dummy, so you play North's cards
+    // when you declare, and North plays yours when North declares.
     human: 1,
-    turn: (e, h) => e.br_cur(h),
+    turn: (e, h) => e.br_who(h),
     status: (e, h) => {
-      const decl = e.br_declarer(h) === 0 ? 'North-South' : 'East-West';
-      const need = e.br_contract(h) + 6;
-      const got = e.br_made(h);
-      const head = `${e.br_contract(h)}${SUIT[e.br_trump(h)] || 'NT'} by ${decl}`
-        + ` · needs ${need}`;
-      if (e.br_done(h) === 1) {
-        return `${head} · made ${got} · ${got >= need ? 'contract home' : `down ${need - got}`}`
-          + ` · ${e.br_score(h)}`;
+      const vul = ['nobody', 'North-South', 'East-West', 'both sides'][e.br_vul(h)];
+      const head = `board ${e.br_board(h)} · ${BR_SEAT[e.br_dealer(h)]} dealt · ${vul} vulnerable`;
+      const ph = e.br_phase(h);
+      if (ph === 0) {
+        const last = e.br_lastbid(h);
+        return `${head} · ${last ? `${BR_SEAT[e.br_bidder(h)]} bid ${brBid(last)}${['', ' doubled', ' redoubled'][e.br_dbl(h)]}` : 'no bid yet'}`
+          + ` · ${e.br_who(h) === 1 ? 'your call' : `${BR_SEAT[e.br_cur(h)]} to call`} · you hold ${e.br_hcp(h, 1)} hcp`;
       }
-      return `${head} · NS ${e.br_nstricks(h)} EW ${e.br_ewtricks(h)}`
-        + ` · ${e.br_tricks(h)} of 13 played`
-        + ` · ${e.br_cur(h) === 1 ? 'yours to play' : `${BR_SEAT[e.br_cur(h)]} to play`}`;
+      if (e.br_decl(h) < 0) return `${head} · passed out · 0`;
+      const need = e.br_level(h) + 6;
+      const got = e.br_made(h);
+      const contract = `${brBid(e.br_level(h) * 5 + e.br_strain(h))}${['', 'x', 'xx'][e.br_dbl(h)]} by ${BR_SEAT[e.br_decl(h)]}`;
+      if (ph === 2) {
+        return `${contract} · took ${got} of ${need} · ${got >= need ? 'made' : `down ${need - got}`}`
+          + ` · north-south ${e.br_score(h)}`;
+      }
+      return `${contract} · NS ${e.br_nstricks(h)} EW ${e.br_ewtricks(h)} · ${e.br_tricks(h)} of 13 played`
+        + ` · ${e.br_who(h) === 1 ? (e.br_cur(h) === 1 ? 'your card' : `your card from ${BR_SEAT[e.br_cur(h)]}`)
+          : `${BR_SEAT[e.br_cur(h)]} to play`}`;
     },
-    // Every hand but yours is a count. North is your partner and the engine
-    // plays it: there is no dummy here, which is the one thing a bridge
-    // player will notice missing.
-    view: (e, h) => rows([
-      ['On the table', seq(4).map(p =>
-        cardCell(e.br_trick(h, p), e.br_leader(h) === p ? 'picked' : ''))],
-      ['South, you' + (e.br_cur(h) === 1 ? ' (to play)' : '')
-        + ` (${e.br_hcp(h, 1)} hcp)`,
-        seq(e.br_count(h, 1)).map(i => ({
-          ...cardCell(e.br_card(h, 1, i), e.br_legal(h, i) === 1 ? 'movable' : ''),
-          i,
-        }))],
-      ...[0, 2, 3].map(p => [
-        `${BR_SEAT[p]}${p === 0 ? ', your partner' : ''}`
-        + `${p === e.br_cur(h) ? ' to play' : ''}`,
-        [cell(`${e.br_count(h, p)} cards`, 'chip')],
-      ]),
-    ]),
+    // Your hand, the dummy once the opening lead is out, and a count for the
+    // rest. A dummy you play from takes clicks at 100 and up.
+    view: (e, h) => {
+      const mine = e.br_who(h) === 1;
+      const dummyRows = [0, 2, 3].map(p => {
+        const shown = e.br_shown(h, p, 0) >= 0;
+        const label = `${BR_SEAT[p]}${p === 0 ? ', your partner' : ''}${shown ? ' (dummy)' : ''}`
+          + `${p === e.br_cur(h) && e.br_phase(h) !== 2 ? ' to act' : ''}`;
+        if (!shown) return [label, [cell(`${e.br_count(h, p)} cards`, 'chip')]];
+        const playable = mine && e.br_cur(h) === p;
+        return [label, seq(e.br_count(h, p)).map(i => ({
+          ...cardCell(e.br_shown(h, p, i), playable && e.br_legal(h, i) === 1 ? 'movable' : ''),
+          i: 100 + i,
+        }))];
+      });
+      return rows([
+        ['The auction', [...Array(e.br_ncalls(h)).keys()].map(k => {
+          const c = e.br_callat(h, k);
+          return cell(`${BR_SEAT[Math.floor(c / 100)][0]} ${brCall(c % 100)}`, 'chip');
+        })],
+        ['On the table', seq(4).map(p =>
+          cardCell(e.br_trick(h, p), e.br_leader(h) === p ? 'picked' : ''))],
+        ['South, you' + (mine && e.br_cur(h) === 1 ? ' (to act)' : '') + ` (${e.br_hcp(h, 1)} hcp)`,
+          seq(e.br_count(h, 1)).map(i => ({
+            ...cardCell(e.br_card(h, 1, i),
+              mine && e.br_cur(h) === 1 && e.br_legal(h, i) === 1 ? 'movable' : ''),
+            i,
+          }))],
+        ...dummyRows,
+      ]);
+    },
     move: (e, h, i) => {
-      if (i < 0 || i >= e.br_count(h, 1)) return null;
-      if (e.br_legal(h, i) !== 1) return null;
-      return { handle: e.br_play(h, i) };
+      if (e.br_who(h) !== 1 || e.br_phase(h) !== 1) return null;
+      const seat = i >= 100 ? 0 : 1;
+      const k = i >= 100 ? i - 100 : i;
+      if (e.br_cur(h) !== seat) return null;
+      if (k < 0 || k >= e.br_count(h, seat) || e.br_legal(h, k) !== 1) return null;
+      return { handle: e.br_play(h, k) };
     },
+    actions: [
+      {
+        label: 'Pass',
+        run: (e, h) => ({ handle: e.br_call(h, 0) }),
+        enabled: (e, h) => e.br_who(h) === 1 && e.br_cancall(h, 0) === 1,
+      },
+      {
+        label: 'Double',
+        run: (e, h) => ({ handle: e.br_call(h, 1) }),
+        enabled: (e, h) => e.br_who(h) === 1 && e.br_cancall(h, 1) === 1,
+      },
+      {
+        label: 'Redouble',
+        run: (e, h) => ({ handle: e.br_call(h, 2) }),
+        enabled: (e, h) => e.br_who(h) === 1 && e.br_cancall(h, 2) === 1,
+      },
+      // Every bid, one level at a time: the page offers the next level in
+      // each denomination that still beats the last bid.
+      ...[0, 1, 2, 3, 4].map(d => ({
+        label: `Bid ${['clubs', 'diamonds', 'hearts', 'spades', 'no trumps'][d]} at the lowest level`,
+        run: (e, h) => ({ handle: e.br_call(h, brLowest(e.br_lastbid(h), d)) }),
+        enabled: (e, h) => e.br_who(h) === 1 && e.br_cancall(h, brLowest(e.br_lastbid(h), d)) === 1,
+      })),
+      ...[0, 1, 2, 3, 4].map(d => ({
+        label: `Jump in ${['clubs', 'diamonds', 'hearts', 'spades', 'no trumps'][d]}`,
+        run: (e, h) => ({ handle: e.br_call(h, brLowest(e.br_lastbid(h), d) + 5) }),
+        enabled: (e, h) => e.br_who(h) === 1 && e.br_cancall(h, brLowest(e.br_lastbid(h), d) + 5) === 1,
+      })),
+    ],
+    actionsInStage: true,
   },
   {
     id: 'crazyeights', name: 'Crazy Eights', cat: 'Card', icon: '\u{1F0A8}',
@@ -1458,16 +1713,14 @@ export const GAMES = [
           return `${w === 0 ? 'You go out' : `${named(w, PLAYERS, 'nobody')} goes out`}`
             + ` · you were left with ${e.ce_size(h, 0)}`;
         }
-        return `Blocked: nobody can play and the pile is empty · `
-          + (w < 0 ? 'a tie for fewest cards, a draw'
-                   : `${w === 0 ? 'you win' : `${named(w, PLAYERS, '?')} wins`} with the fewest cards`)
-          + ` · you hold ${e.ce_size(h, 0)}`;
+        return `Blocked: nobody can play or draw · `
+          + (w < 0 ? 'a tie for the fewest penalty points, a draw'
+                   : `${w === 0 ? 'you win' : `${named(w, PLAYERS, '?')} wins`} with the fewest penalty points`)
+          + ` · you hold ${e.ce_points(h, 0)}`;
       }
-      const pen = e.ce_penalty(h);
-      return `pile ${card(e.ce_pile(h))}`
+      return `pile ${card(e.ce_top(h))}`
         + (e.ce_declared(h) >= 0 ? ` (called ${SUIT[e.ce_declared(h)]})` : '')
         + ` · ${e.ce_cur(h) === 0 ? 'your turn' : `${named(e.ce_cur(h), PLAYERS, '?')} to play`}`
-        + (pen > 0 ? ` · ${pen} to draw before you can play` : '')
         + (ceEight >= 0 ? ` · name a suit for the ${card(ceEight)}` : '');
     },
     // ce_has answers whether a player holds a given card, so the hand can
@@ -1476,7 +1729,8 @@ export const GAMES = [
     view: (e, h) => {
       const yours = seq(52).filter(c => e.ce_has(h, 0, c) === 1);
       return rows([
-        ['Pile', [cardCell(e.ce_pile(h))]],
+        // The top of the discard pile. ce_pile is the stock's COUNT.
+        ['Pile', [cardCell(e.ce_top(h))]],
         // Naming a suit is a second question, asked only while an eight is
         // waiting to be laid, so the row is not there the rest of the time.
         ceEight >= 0 && ['Name a suit', seq(4).map(s =>
@@ -1513,14 +1767,9 @@ export const GAMES = [
       {
         label: 'Draw a card',
         run: (e, h) => ({ handle: e.ce_draw(h) }),
-        // Only when nothing in your hand will go. Offered otherwise it is a
-        // way of skipping a turn you were able to take.
-        enabled: (e, h) => e.ce_cur(h) === 0 && e.ce_stuck(h) === 1,
-      },
-      {
-        label: 'Take the penalty',
-        run: (e, h) => ({ handle: e.ce_takepen(h) }),
-        enabled: (e, h) => e.ce_cur(h) === 0 && e.ce_canpen(h) === 1,
+        // A turn plays a card OR draws one, and pagat's basic game lets you
+        // draw with a card to play.
+        enabled: (e, h) => e.ce_cur(h) === 0 && e.ce_candraw(h) === 1,
       },
     ],
     actionsInStage: true,
@@ -1531,16 +1780,16 @@ export const GAMES = [
     boot: (e, s) => { gfSaid = null; return e.gf_new(s, 3); },
     step: (e, h) => e.gf_step(h),
     done: (e, h) => e.gf_done(h) === 1,
-    // You are player 0. The engine passes the turn after every question,
-    // hit or miss, so a turn is exactly one ask.
+    // You are player 0. A hit, or a fished card of the rank asked, keeps the
+    // turn (GoFish.codex), so gf_cur says whose ask is next.
     human: 0,
     turn: (e, h) => e.gf_cur(h),
     status: (e, h) => {
       if (e.gf_done(h) === 1) {
         const books = seq(e.gf_players(h)).map(p => e.gf_books(h, p));
         const best = Math.max(...books);
-        const who = books.indexOf(best);
-        return `${e.gf_total(h)} books made · ${PLAYERS[who]} takes it with ${best}`;
+        const w = e.gf_winner(h);
+        return `${e.gf_total(h)} books made · ` + (w >= 0 ? `${PLAYERS[w]} takes it with ${best}` : `a tie at ${best}`);
       }
       return `${PLAYERS[e.gf_cur(h)]} to ask · ${e.gf_pile(h)} left in the pond`
         + ` · ${e.gf_total(h)} books made`
@@ -2006,7 +2255,13 @@ export const GAMES = [
         return `${you} · ${them} · `
           + (w === 1 ? 'your fleet takes it' : w === 2 ? 'their fleet takes it' : 'neither fleet');
       }
-      return `${you} · ${them} · 17 cells of ship to sink`;
+      // Rule 3: the owner announces each ship sunk, so the page names them.
+      const SHIPS = ['carrier', 'battleship', 'cruiser', 'submarine', 'destroyer'];
+      const sunk = p => SHIPS.filter((_, k) => e.bs_sunk(h, p, k + 1) === 1);
+      const theirs = sunk(BS_THEM), mine = sunk(BS_YOU);
+      return `${you} · ${them}`
+        + (theirs.length ? ` · you sank their ${theirs.join(', ')}` : '')
+        + (mine.length ? ` · they sank your ${mine.join(', ')}` : '');
     },
     view: (e, h) => ({
       kind: 'pair', cols: 10, labels: ['You fire at', 'They fire at'],
@@ -2032,153 +2287,194 @@ export const GAMES = [
   },
   {
     id: 'risk', name: 'Risk', cat: 'Strategy', icon: '\u{1F30D}',
-    desc: 'Twelve territories in four continents. The turn cap used to decide games nobody could see being decided.',
-    boot: (e, s) => e.rk_new(s, 4),
-    step: (e, h, r) => e.rk_turn(h, r()),
-    // Risk is the only game here you can be knocked OUT of while it carries
-    // on. The engine is not over until somebody owns all twelve, but your
-    // game is over the moment you own none, and a page that kept stepping
-    // would be showing a visitor a game they are no longer in.
+    desc: 'The classic board: 42 territories, six continents, cards and trade-ins, attacks as long as you like, and a fortifying move.',
+    boot: (e, s) => { rkDice = 3; rkFort = 'all'; return e.rk_new(s, 4); },
+    step: (e, h, r) => e.rk_step(h, r()),
+    // You can be knocked OUT while the game carries on: the engine is not
+    // over until somebody holds all 42, but your game is over the moment
+    // you hold none.
     done: (e, h) => e.rk_done(h) === 1 || e.rk_alive(h, 0) === 0,
-    // You are player one. A turn is two phases: put the reinforcement down
-    // a territory at a time, then take up to three attacks, or stop.
+    // You are P1. Set up, then each turn: reinforce (trading cards when you
+    // can or must), attack as long as you like, then fortify once or end.
     human: 0,
     turn: (e, h) => e.rk_cur(h),
-    status: (e, h) => {
+    status: (e, h, settled, sel) => {
       const armies = seq(e.rk_np(h)).map(p =>
-        `${PLAYERS[p]} ${e.rk_total(h, p)}`).join(' ');
-      if (e.rk_done(h) === 1) {
-        return `turn ${e.rk_turnno(h)} · ${armies}`
-          + ` · ${named(e.rk_winner(h), PLAYERS, 'nobody')} takes the world`;
+        e.rk_alive(h, p) === 1 ? `${PLAYERS[p]} ${e.rk_total(h, p)}` : `${PLAYERS[p]} out`).join(' ');
+      const head = `turn ${e.rk_turnno(h)} · ${armies}`;
+      if (e.rk_done(h) === 1) return `${head} · ${named(e.rk_winner(h), PLAYERS, 'nobody')} takes the world`;
+      if (e.rk_alive(h, 0) === 0) return `${head} · you are off the board, and the rest fight on without you`;
+      const cur = e.rk_cur(h), me = cur === 0, ph = e.rk_phase(h), who = me ? 'you' : PLAYERS[cur];
+      const cards = ` · ${e.rk_hand(h, cur)} card${e.rk_hand(h, cur) === 1 ? '' : 's'}`;
+      if (ph === 0) return `${head} · setting up: ${who}, ${e.rk_setupleft(h, cur)} to place` + (me ? ' · click one of yours' : '');
+      if (ph === 1 || ph === 5) {
+        return `${head} · ${who}: ${e.rk_toplace(h)} to place${cards}`
+          + (me ? (e.rk_hand(h, 0) >= 5 ? ' · trade a set first' : ' · click one of yours') : '');
       }
-      if (e.rk_alive(h, 0) === 0) {
-        return `turn ${e.rk_turnno(h)} · ${armies}`
-          + ' · you are off the board, and the rest fight on without you';
+      if (ph === 2) {
+        return `${head} · ${who} attacking${cards}`
+          + (me ? ` · ${rkDice} dice · click yours, then an enemy beside it, or stop` : '');
       }
-      const yours = e.rk_cur(h) === 0;
-      const what = e.rk_phase(h) === 0
-        ? `${e.rk_toplace(h)} to place`
-        : `${e.rk_atkleft(h)} attack${e.rk_atkleft(h) === 1 ? '' : 's'} left`;
-      return `turn ${e.rk_turnno(h)} · ${armies} · ${what}`
-        + ` · ${yours ? (e.rk_phase(h) === 0
-          ? 'click one of yours to reinforce it'
-          : 'click a territory of yours, then one to attack')
-          : `${named(e.rk_cur(h), PLAYERS, '?')} to move`}`;
+      if (ph === 3) {
+        return `${head} · ${who} took ${RK_ABBR[e.rk_mto(h)]}: move in ${e.rk_mmin(h)} to ${e.rk_armies(h, e.rk_mfrom(h)) - 1}`;
+      }
+      return `${head} · ${who} fortifying`
+        + (me ? ` · moves ${rkFort === 'all' ? 'all but one' : rkFort} · click yours, then one joined to it, or end the turn` : '');
     },
-    // Ringing what is legal is the whole of the interface here: which of
-    // your territories can take an army, and which can attack from.
-    view: (e, h) => grid(4, seq(12).map(i => {
-      const mark = e.rk_canplace(h, i) === 1 ? ' movable'
-        : e.rk_canatkfrom(h, i) === 1 ? ' movable' : '';
-      return { ...cell(`${e.rk_armies(h, i)}`, 'terr o' + e.rk_owner(h, i) + mark), i };
+    // Rings are what is legal: where an army may go, which territories can
+    // attack or fortify from, and once one is held, where it may go.
+    view: (e, h, settled, sel) => grid(7, seq(42).map(i => {
+      const ph = e.rk_phase(h), held = sel !== null && sel !== undefined;
+      let ring = false;
+      if (e.rk_cur(h) === 0) {
+        if (ph === 0 || ph === 1 || ph === 5) ring = e.rk_legal(h, 0, 0, i) === 1;
+        else if (ph === 2) ring = held ? e.rk_legal(h, 0, 2, rkPack(sel, i, 1)) === 1 : rkCanFrom(e, h, i, 2);
+        else if (ph === 4) ring = held ? e.rk_legal(h, 0, 5, rkPack(sel, i, 1)) === 1 : rkCanFrom(e, h, i, 5);
+      }
+      return {
+        ...cell(`${RK_ABBR[i]} ${e.rk_armies(h, i)}`, 'terr o' + (e.rk_owner(h, i) + 1)
+          + (ring ? ' movable' : '') + (held && sel === i ? ' picked' : '')),
+        i,
+      };
     })),
-    // Placing is one click. Attacking is two, and the second is offered
-    // only where the rules allow it, so a held selection cannot be
-    // spent on a territory that is not adjacent or is already yours.
-    move: (e, h, i, ctx) => {
-      if (i < 0 || i >= 12) return null;
-      if (e.rk_phase(h) === 0) {
-        if (e.rk_canplace(h, i) !== 1) return null;
-        return { handle: e.rk_place(h, i) };
-      }
-      const held = ctx && ctx.sel;
-      if (held === null || held === undefined) {
-        if (e.rk_canatkfrom(h, i) !== 1) return null;
-        return { sel: i };
-      }
-      if (e.rk_canattack(h, held, i) !== 1) return null;
-      return { handle: e.rk_attack(h, held, i, ctx.rand()) };
+    // Placing is one click. Attacking and fortifying are two: a territory of
+    // yours, then where it goes, with the dice and the armies the buttons
+    // set; a second click on the held territory lets it go.
+    move: (e, h, i, st) => {
+      if (i < 0 || i >= 42) return null;
+      const ph = e.rk_phase(h), sel = st ? st.sel : null, held = sel !== null && sel !== undefined;
+      if (ph === 0 || ph === 1 || ph === 5) return e.rk_legal(h, 0, 0, i) === 1 ? { handle: e.rk_act(h, 0, 0, i, 0) } : null;
+      if (ph !== 2 && ph !== 4) return null;
+      const kind = ph === 2 ? 2 : 5;
+      if (!held) return rkCanFrom(e, h, i, kind) ? { sel: i } : null;
+      if (i === sel) return { sel: null };
+      const arg = rkPack(sel, i, kind === 2 ? Math.min(rkDice, e.rk_armies(h, sel) - 1) : rkFortN(e, h, sel));
+      if (e.rk_legal(h, 0, kind, arg) !== 1) return null;
+      return { handle: e.rk_act(h, 0, kind, arg, st.rand ? st.rand() : 1) };
     },
     actions: [
       {
-        label: 'Stop attacking',
-        run: (e, h) => ({ handle: e.rk_stop(h) }),
-        enabled: (e, h) => e.rk_canstop(h) === 1,
+        label: 'Trade cards',
+        run: (e, h) => ({ handle: e.rk_act(h, 0, 1, e.rk_firstset(h, 0), 0) }),
+        enabled: (e, h) => e.rk_legal(h, 0, 1, e.rk_firstset(h, 0)) === 1,
       },
+      ...Object.keys(RK_MOVE).map(k => ({
+        label: `Move in: ${k}`,
+        run: (e, h) => ({ handle: e.rk_act(h, 0, 4, RK_MOVE[k](e, h), 0) }),
+        enabled: (e, h) => e.rk_phase(h) === 3 && e.rk_legal(h, 0, 4, RK_MOVE[k](e, h)) === 1,
+      })),
+      { label: 'Stop attacking', run: (e, h) => ({ handle: e.rk_act(h, 0, 3, 0, 0) }), enabled: (e, h) => e.rk_legal(h, 0, 3, 0) === 1 },
+      { label: 'End turn', run: (e, h) => ({ handle: e.rk_act(h, 0, 6, 0, 0) }), enabled: (e, h) => e.rk_legal(h, 0, 6, 0) === 1 },
+      ...[3, 2, 1].map(n => ({
+        label: `Dice: ${n}`,
+        run: (e, h) => { rkDice = n; return { handle: h }; },
+        enabled: (e, h) => e.rk_phase(h) === 2 && e.rk_cur(h) === 0 && rkDice !== n,
+      })),
+      ...[['all', 'all but one'], ['half', 'half'], ['one', 'one']].map(([k, l]) => ({
+        label: `Fortify moves ${l}`,
+        run: (e, h) => { rkFort = k; return { handle: h }; },
+        enabled: (e, h) => e.rk_phase(h) === 4 && e.rk_cur(h) === 0 && rkFort !== k,
+      })),
     ],
     actionsInStage: true,
     steps: 400,
   },
   {
     id: 'monopoly', name: 'Monopoly', cat: 'Strategy', icon: '\u{1F3E0}',
-    desc: 'Forty spaces, simplified: property changes hands, no houses.',
+    desc: 'The full Hasbro rules: houses and hotels, auctions, mortgages, the cards, Jail and bankruptcy.',
     boot: (e, s) => e.mo_new(s, 4),
     step: (e, h, r) => e.mo_step(h, r()),
     done: (e, h) => e.mo_done(h) === 1,
-    // You are player one: a turn is a roll and then, on an unowned square
-    // you can afford, buy or pass. A seat that wants a deed you hold offers
-    // a swap or a price, and the turn waits for your answer.
+    // You are P1. The engine names whose choice it is: your throw, a deed
+    // you landed on, your bid, a debt you owe, a trade offered to you. Every
+    // button and click is asked of the engine before it is offered.
     human: 0,
-    turn: (e, h) => (e.mo_twant(h) >= 0 ? 0 : e.mo_cur(h)),
-    // Saying "of 601" invented an ending: the engine ends on bankruptcy.
-    status: (e, h) => {
+    turn: (e, h) => e.mo_actor(h),
+    status: (e, h, settled, sel) => {
       const money = seq(e.mo_players(h)).map(p =>
-        `${PLAYERS[p]} $${e.mo_cash(h, p)}`).join(' ');
+        e.mo_out(h, p) === 1 ? `${PLAYERS[p]} out` : `${PLAYERS[p]} $${e.mo_cash(h, p)}`).join(' ');
+      const head = `turn ${e.mo_turn(h)} · ${money}`;
       if (e.mo_done(h) === 1) {
-        return `turn ${e.mo_turn(h)} · ${money}`
-          + ` · ${named(e.mo_winner(h), PLAYERS, 'nobody')} bankrupts the rest`;
+        return `${head} · ${named(e.mo_winner(h), PLAYERS, 'nobody')} bankrupts the rest`;
       }
-      if (e.mo_twant(h) >= 0) {
-        const price = e.mo_tprice(h);
-        return `turn ${e.mo_turn(h)} · ${money} · ${PLAYERS[e.mo_cur(h)]} wants one of your deeds`
-          + (price > 0 ? ` for $${price}` : ' in a swap') + ' · accept or decline';
+      const who = e.mo_actor(h), me = who === 0, ph = e.mo_phase(h);
+      const name = p => (p < 0 ? 'the Bank' : p === 0 ? 'you' : PLAYERS[p]);
+      if (MO_MODE[sel]) return `${head} · click a deed to ${MO_MODE[sel]}`;
+      if (ph === 1) {
+        const pi = e.mo_offered(h);
+        return `${head} · ${me ? 'you' : PLAYERS[who]} landed on ${MO_DEED[pi]}, $${e.mo_cost(h, pi)}`
+          + (me ? ' · buy it, or leave it to auction' : '');
       }
-      const offer = e.mo_offered(h);
-      return `turn ${e.mo_turn(h)} · ${money}`
-        + (e.mo_lastroll(h) ? ` · rolled ${e.mo_lastroll(h)}` : '')
-        + (offer >= 0
-          ? ` · ${e.mo_offercost(h)} to buy it, rent ${e.mo_offerrent(h)}`
-          : ` · ${named(e.mo_richest(h), PLAYERS, '?')} richest`)
-        + ` · ${e.mo_cur(h) === 0 ? (offer >= 0 ? 'buy it or pass' : 'your roll')
-          : `${PLAYERS[e.mo_cur(h)]} to move`}`;
+      if (ph === 2) {
+        const want = e.mo_twant(h), give = e.mo_tgive(h);
+        return `${head} · ${PLAYERS[e.mo_cur(h)]} wants your ${MO_DEED[want]}`
+          + (give >= 0 ? ` for their ${MO_DEED[give]}` : ` for $${e.mo_tprice(h)}`) + ' · accept or decline';
+      }
+      if (ph === 3) {
+        const lead = e.mo_alead(h);
+        return `${head} · auction for ${MO_DEED[e.mo_adeed(h)]}: `
+          + (lead >= 0 ? `$${e.mo_ahigh(h)} by ${name(lead)}` : 'no bid yet')
+          + ` · ${me ? 'your bid' : PLAYERS[who] + ' to bid'}`;
+      }
+      if (ph === 4) {
+        return `${head} · ${me ? 'you owe' : PLAYERS[who] + ' owes'} $${e.mo_debt(h, 0, 2)} to ${name(e.mo_debt(h, 0, 1))}`
+          + (me ? ' · sell buildings or mortgage, or declare bankruptcy' : '');
+      }
+      const threw = e.mo_lastroll(h) ? ` · threw ${e.mo_die(h, 0)}+${e.mo_die(h, 1)}` : '';
+      const jail = e.mo_jail(h, who) === 1 ? ' (in Jail)' : '';
+      return `${head}${threw} · ${me ? 'your throw' : PLAYERS[who] + ' to move'}${jail}`;
     },
-    // A board SPACE is not a property index and neither is a player. This
-    // read all three off the same number and so never coloured an owned
-    // square: `mo_propat` is what turns a space into a deed.
-    view: (e, h) => grid(10, seq(40).map(i => {
+    // A board SPACE is not a deed and neither is a player: `mo_propat`
+    // turns a space into a deed. A number on a square is the players on
+    // it; 1h to 4h are houses and H a hotel.
+    view: (e, h, settled, sel) => grid(10, seq(40).map(i => {
       const pi = e.mo_propat(i);
       const owner = pi >= 0 && e.mo_owner(h, pi) >= 0 ? e.mo_owner(h, pi) + 1 : 0;
-      const here = seq(e.mo_players(h)).filter(p => e.mo_pos(h, p) === i);
-      const offered = e.mo_offerspace(h) === i;
+      const here = seq(e.mo_players(h)).filter(p => e.mo_out(h, p) !== 1 && e.mo_pos(h, p) === i);
+      const b = pi >= 0 ? e.mo_houses(h, pi) : 0;
+      const built = b === 5 ? 'H' : b > 0 ? `${b}h` : '';
+      const target = MO_MODE[sel] ? pi >= 0 && e.mo_legal(h, 0, sel, pi) === 1
+        : (e.mo_offerspace(h) === i && e.mo_legal(h, 0, 1, 0) === 1) || moRaise(e, h, pi) > 0;
       return {
-        ...cell(here.map(p => p + 1).join('') || '', 'space o' + owner
-          + (offered ? ' movable' : '')),
+        ...cell([here.map(p => p + 1).join(''), built].filter(Boolean).join(' '), 'space o' + owner
+          + (pi >= 0 && e.mo_mort(h, pi) === 1 ? ' mort' : '') + (target ? ' movable' : '')),
         i,
       };
     })),
-    // The only square a click means anything on is the one you are being
-    // offered, and clicking it buys. Passing is a button, because a click
-    // on nothing in particular is not a decision anybody meant to make.
-    move: (e, h, i) => {
-      if (e.mo_offerspace(h) !== i) return null;
-      return { handle: e.mo_take(h) };
+    // A click means something on the deed you are offered (it buys); after
+    // a build, sell, mortgage or lift button, on a deed that action is legal
+    // for; and while you owe more than your cash, on a deed that raises
+    // money, which is a building to sell or a deed to mortgage and never
+    // both.
+    move: (e, h, i, st) => {
+      const pi = e.mo_propat(i);
+      if (st && MO_MODE[st.sel]) {
+        return pi >= 0 && e.mo_legal(h, 0, st.sel, pi) === 1 ? { handle: e.mo_act(h, 0, st.sel, pi) } : null;
+      }
+      if (e.mo_offerspace(h) === i && e.mo_legal(h, 0, 1, 0) === 1) return { handle: e.mo_act(h, 0, 1, 0) };
+      const raise = moRaise(e, h, pi);
+      return raise > 0 ? { handle: e.mo_act(h, 0, raise, pi) } : null;
     },
     actions: [
-      {
-        label: 'Roll',
-        run: (e, h, rand) => ({ handle: e.mo_roll(h, rand()) }),
-        enabled: (e, h) => e.mo_canroll(h) === 1,
-      },
-      {
-        label: 'Buy it',
-        run: (e, h) => ({ handle: e.mo_take(h) }),
-        enabled: (e, h) => e.mo_candecide(h, e.mo_cur(h)) === 1,
-      },
-      {
-        label: 'Leave it',
-        run: (e, h) => ({ handle: e.mo_leave(h) }),
-        enabled: (e, h) => e.mo_candecide(h, e.mo_cur(h)) === 1,
-      },
-      {
-        label: 'Accept trade',
-        run: (e, h, rand) => ({ handle: e.mo_resume(e.mo_accept(h), rand()) }),
-        enabled: (e, h) => e.mo_twant(h) >= 0,
-      },
-      {
-        label: 'Decline trade',
-        run: (e, h, rand) => ({ handle: e.mo_resume(e.mo_decline(h), rand()) }),
-        enabled: (e, h) => e.mo_twant(h) >= 0,
-      },
+      { label: 'Roll', run: (e, h, rand) => ({ handle: e.mo_act(h, 0, 0, rand()) }), enabled: moCan(0) },
+      { label: 'Buy it', run: moDo(1), enabled: moCan(1) },
+      { label: 'Leave it (auction)', run: moDo(2), enabled: moCan(2) },
+      ...[10, 50, 100].map(inc => ({
+        label: `Bid +$${inc}`,
+        run: (e, h) => ({ handle: e.mo_act(h, 0, 3, e.mo_ahigh(h) + inc) }),
+        enabled: (e, h) => e.mo_legal(h, 0, 3, e.mo_ahigh(h) + inc) === 1,
+      })),
+      { label: 'Drop out', run: moDo(4), enabled: moCan(4) },
+      { label: 'Pay $50 fine', run: moDo(9), enabled: moCan(9) },
+      { label: 'Use Get Out of Jail card', run: moDo(10), enabled: moCan(10) },
+      { label: 'Declare bankruptcy', run: moDo(11), enabled: moCan(11) },
+      { label: 'Accept trade', run: moDo(12), enabled: moCan(12) },
+      { label: 'Decline trade', run: moDo(13), enabled: moCan(13) },
+      ...[5, 6, 7, 8].map(kind => ({
+        label: MO_BUTTON[kind],
+        run: (e, h) => ({ handle: h, sel: kind }),
+        enabled: (e, h, roll, sel) => sel !== kind && seq(28).some(pi => e.mo_legal(h, 0, kind, pi) === 1),
+      })),
     ],
     actionsInStage: true,
     steps: 300,
@@ -2345,8 +2641,10 @@ export const GAMES = [
           YH_CATS.slice(half ? 6 : 0, half ? 13 : 6).map((name, k) => {
             const cat = (half ? 6 : 0) + k;
             const done = e.yh_done(h, cat) === 1;
+            // A box the Joker rule bars is shown but not offered; the engine says which.
+            const legal = !done && e.yh_legal(h, cat) === 1;
             return cell(`${name} ${done ? e.yh_card(h, cat) : e.yh_would(h, cat)}`,
-              'chip' + (done ? ' spent' : ' open'), done ? undefined : YH_CAT + cat);
+              'chip' + (done ? ' spent' : legal ? ' open' : ''), legal ? YH_CAT + cat : undefined);
           })]),
       ]);
     },
@@ -2362,7 +2660,7 @@ export const GAMES = [
       }
       if (i >= YH_CAT && i < YH_CAT + 13) {
         const cat = i - YH_CAT;
-        if (e.yh_done(h, cat) === 1) return null;
+        if (e.yh_legal(h, cat) !== 1) return null;
         const next = e.yh_take(h, cat);
         // A new turn opens with a fresh roll of all five, unless that was
         // the thirteenth box and the game is over.
@@ -2716,7 +3014,7 @@ export function renderHtml(v, clickable) {
     // strip is left clear for the dice and the throw rather than being
     // overlapped by them.
     const barHalf = (n, who, row, hint) =>
-      `<div class="bgbar${hint ? ' hint' : ''}"${hint ? ` data-i="${BG_BAR}"` : ''} ` +
+      `<div class="bgbar${hint ? ' hint' : ''}${hint && v.barPicked ? ' picked' : ''}"${hint ? ` data-i="${BG_BAR}"` : ''} ` +
       `style="grid-column:7;grid-row:${row}">` +
       (n ? `<div class="chk ${who}">${n > 1 ? n : ''}</div>` : '') + '</div>';
     h += barHalf(v.bar[0], 'w', 1, v.barHint) + barHalf(v.bar[1], 'b', 3, false);
@@ -2731,15 +3029,21 @@ export function renderHtml(v, clickable) {
     // cube waits between the two trays: the middle of the bear-off zone.
     h += well(v.off[1], 'b', 1, false) +
       '<div class="bgcubewell" style="grid-column:14;grid-row:2">' +
-      `<span class="bgcube" title="this engine implements no doubling">${v.cube}</span></div>` +
+      `<span class="bgcube${v.offered ? ' offered' : ''}" title="the doubling cube">${v.cube}</span>` +
+      (v.cubeOwner ? `<span class="lbl">${v.cubeOwner}</span>` : '') + '</div>' +
       well(v.off[0], 'w', 3, v.offHint);
     // The dice tray runs across the middle: White throws on the left half,
     // Black on the right, and a die that has been spent goes flat.
     // Each side throws its own dice: White's are white, Black's are black
     // with white pips.
-    const die = (n, i) =>
-      `<span class="bgdie ${v.thrower}` +
-      `${v.spent.filter(x => x === n).length > i ? ' spent' : ''}">${pips(n)}</span>`;
+    const die = (n, i) => {
+      // The k-th die showing this face is spent once k+1 of that face are.
+      const k = v.dice.slice(0, i).filter(x => x === n).length;
+      const spent = v.spent.filter(x => x === n).length > k;
+      const pick = !spent && v.dieHint && v.dieHint.includes(n);
+      return `<span class="bgdie ${v.thrower}${spent ? ' spent' : ''}${pick ? ' hint' : ''}"` +
+        `${pick ? ` data-i="${BG_DIE + n}"` : ''}>${pips(n)}</span>`;
+    };
     const tray = v.dice
       ? `<span class="bgdice">${v.dice.map((n, i) => die(n, i)).join('')}</span>` : '';
     // The middle of the board: dice on their thrower's side, and the throw
@@ -2984,10 +3288,14 @@ export function driver(game, exports) {
     act(index) {
       const a = game.actions && game.actions[index];
       if (!a || handle === null || isDone()) return false;
-      const out = a.run(exports, handle, rand, roll);
+      const out = a.run(exports, handle, rand, roll, sel);
       if (!out || out.handle === null || out.handle === undefined) return false;
       remember();
       handle = out.handle;
+      // A selection is about the position it was made in (chess holds a
+      // promotion in it), so it does not survive the action that answers it,
+      // unless the action is what makes one (minesweeper's flag mode).
+      sel = ('sel' in out) ? out.sel : null;
       // An action may also be what starts or ends a turn: rolling the dice
       // changes nothing on the board and everything about what you can do.
       if ('roll' in out) roll = out.roll;
@@ -2998,7 +3306,7 @@ export function driver(game, exports) {
       if (!game.actions || handle === null) return [];
       return game.actions.map((a, i) => ({
         label: a.label, index: i, inBoard: !!a.inBoard,
-        enabled: !isDone() && (!a.enabled || a.enabled(exports, handle, roll)),
+        enabled: !isDone() && (!a.enabled || a.enabled(exports, handle, roll, sel)),
       }));
     },
 

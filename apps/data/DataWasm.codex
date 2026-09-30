@@ -4,59 +4,28 @@ Chapter: DataWasm
   cites Data chapter Row
   cites Data chapter RelAlgebra
   cites Data chapter Executor
+  cites Data chapter Employees
   cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Foreword chapter Parse
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
 
  The browser interface for the database, on the same WASI shape the notebook
- uses: a query name arrives on `fd_read`, the result table leaves on
- `fd_write`, both plain UTF-8, and `_start` runs once so the page instantiates
- per query. Each query therefore gets a freshly seeded catalog and a clean
- heap, which is what a module with no collector wants anyway.
+ uses: a query arrives on `fd_read`, the result table leaves on `fd_write`,
+ both plain UTF-8, and `_start` runs once so the page instantiates per query.
+ Each query therefore gets a freshly seeded catalog and a clean heap, which is
+ what a module with no collector wants anyway.
 
- There is no SQL text parser: the page selects a relational-algebra PLAN by
- name and shows it beside the answer.
-
- The table and its rows are declared here rather than cited from `Example`,
- because that chapter carries its own `opening` and a module may have only
- one.
+ There is no SQL text parser. A query is either the NAME of a plan or one
+ filter, `<column> <op> <value>`.
 
 Section: The Table
 
-  dw-employees : TableDef
-  dw-employees = table-def-with-pk "employees" [
-    col-def-not-null "id" ColInteger,
-    col-def-not-null "name" ColText,
-    col-def-not-null "department" ColText,
-    col-def "salary" ColInteger,
-    col-def "hire-year" ColInteger
-  ] ["id"]
-
-  dw-seed-rows : Catalog -> Catalog
-  dw-seed-rows (cat) =
-    let s = table-schema dw-employees
-    in let rows = [
-      row-new s [ValInteger 1,  ValText "Alice", ValText "Engineering", ValInteger 125000, ValInteger 2022],
-      row-new s [ValInteger 2,  ValText "Bob",   ValText "Engineering", ValInteger 118000, ValInteger 2023],
-      row-new s [ValInteger 3,  ValText "Carol", ValText "Sales",       ValInteger 95000,  ValInteger 2021],
-      row-new s [ValInteger 4,  ValText "Dave",  ValText "Sales",       ValInteger 88000,  ValInteger 2024],
-      row-new s [ValInteger 5,  ValText "Eve",   ValText "Research",    ValInteger 135000, ValInteger 2020],
-      row-new s [ValInteger 6,  ValText "Frank", ValText "Research",    ValInteger 110000, ValInteger 2023],
-      row-new s [ValInteger 7,  ValText "Grace", ValText "Engineering", ValInteger 142000, ValInteger 2019],
-      row-new s [ValInteger 8,  ValText "Heidi", ValText "Sales",       ValInteger 78000,  ValInteger 2025],
-      row-new s [ValInteger 9,  ValText "Ivan",  ValText "Research",    ValInteger 98000,  ValInteger 2024],
-      row-new s [ValInteger 10, ValText "Judy",  ValText "Engineering", ValInteger 131000, ValInteger 2021]
-    ]
-    in dw-insert-rows cat "employees" rows 0 (list-length rows)
-
-  dw-insert-rows : Catalog, Text, List RowData, Integer, Integer -> Catalog
-  dw-insert-rows (cat) (table) (rows) (i) (len) =
-    if i >= len then cat
-    else let r = catalog-insert-row cat table (list-at rows i)
-    in dw-insert-rows (r.cir-cat) table rows (i + 1) len
-
   dw-catalog : Integer -> Catalog
   dw-catalog (dummy) =
-    let cr = catalog-create-table catalog-new dw-employees
-    in dw-seed-rows (cr.cat)
+    let cr = catalog-create-table catalog-new employees-table
+    in seed-employees (cr.cat)
 
 Section: The Plans
 
@@ -109,6 +78,115 @@ Section: Selecting a Plan
   dw-names : Text
   dw-names = "all, engineering, top, departments, recent"
 
+Section: A Written Filter
+
+  DwAsk = record { da-ok : Boolean, da-plan : RelOp, da-algebra : Text, da-why : Text }
+
+  dw-refuse : Text -> DwAsk
+  dw-refuse (why) = DwAsk { da-ok = False, da-plan = dw-all, da-algebra = "", da-why = why }
+
+  dw-op-for : Text -> Maybe CmpOp
+  dw-op-for (t) =
+    if t == "=" then Just CmpEq
+    else if t == "==" then Just CmpEq
+    else if t == "!=" then Just CmpNe
+    else if t == "<>" then Just CmpNe
+    else if t == "<" then Just CmpLt
+    else if t == ">" then Just CmpGt
+    else if t == "<=" then Just CmpLe
+    else if t == ">=" then Just CmpGe
+    else None
+
+  dw-op-text : CmpOp -> Text
+  dw-op-text (op) =
+    when op
+      is CmpEq -> "="
+      is CmpNe -> "!="
+      is CmpLt -> "<"
+      is CmpGt -> ">"
+      is CmpLe -> "<="
+      is CmpGe -> ">="
+
+  dw-ops : Text
+  dw-ops = "= != < > <= >="
+
+  dw-digits : Text, Integer, Integer -> Boolean
+  dw-digits (t) (i) (n) =
+    if i >= n then True
+    else if is-digit (char-at t i) then dw-digits t (i + 1) n
+    else False
+
+  dw-int-text : Text -> Boolean
+  dw-int-text (t) =
+    let n = text-length t
+    in if n == 0 then False
+    else if text-starts-with t "-" then (n > 1) & dw-digits t 1 n
+    else dw-digits t 0 n
+
+  dw-int-of : Text -> Integer
+  dw-int-of (t) =
+    if text-starts-with t "-" then 0 - text-to-integer (substring t 1 (text-length t - 1))
+    else text-to-integer t
+
+  dw-unquote : Text -> Text
+  dw-unquote (t) =
+    let n = text-length t
+    in if n < 2 then t
+    else if (text-starts-with t "\"") & (substring t (n - 1) 1 == "\"") then substring t 1 (n - 2)
+    else t
+
+  dw-col-index : List Text, Text, Integer, Integer -> Integer
+  dw-col-index (names) (col) (i) (n) =
+    if i >= n then -1
+    else if list-at names i == col then i
+    else dw-col-index names col (i + 1) n
+
+  dw-join : List Text, Integer, Integer, Text -> Text
+  dw-join (names) (i) (n) (acc) =
+    if i >= n then acc
+    else dw-join names (i + 1) n (acc & (if i > 0 then ", " else "") & list-at names i)
+
+  dw-filter : Text, CmpOp, ColumnValue, Text -> DwAsk
+  dw-filter (col) (op) (v) (shown) =
+    DwAsk { da-ok = True,
+      da-plan = RelFilter (RelScan "employees") (PredColCmp col op v),
+      da-algebra = "RelFilter (RelScan \"employees\") (" & col & " " & dw-op-text op & " " & shown & ")",
+      da-why = "" }
+
+  dw-typed : Text, CmpOp, Text, ColumnType -> DwAsk
+  dw-typed (col) (op) (val) (ty) =
+    when ty
+      is ColInteger ->
+        if dw-int-text val then dw-filter col op (ValInteger (dw-int-of val)) (show (dw-int-of val))
+        else dw-refuse (col & " holds integers and " & val & " is not one")
+      is ColText -> dw-filter col op (ValText val) ("\"" & val & "\"")
+      is ColBoolean ->
+        if val == "true" then dw-filter col op (ValBoolean True) "true"
+        else if val == "false" then dw-filter col op (ValBoolean False) "false"
+        else dw-refuse (col & " holds true or false and " & val & " is neither")
+
+  dw-ask-parts : Text, Text, Text -> DwAsk
+  dw-ask-parts (col) (opt) (val) =
+    let s = table-schema employees-table
+    in let idx = dw-col-index (s.col-names) col 0 (s.col-count)
+    in if idx < 0 then dw-refuse ("no column " & col & "; the columns are " & dw-join (s.col-names) 0 (s.col-count) "")
+    else when dw-op-for opt
+      is Just (op) -> dw-typed col op val (list-at (s.col-types) idx)
+      is otherwise -> dw-refuse ("no operator " & opt & "; the operators are " & dw-ops)
+
+  dw-after : Text, Integer -> Text
+  dw-after (t) (i) = text-trim (substring t (i + 1) (text-length t - i - 1))
+
+  dw-ask : Text -> DwAsk
+  dw-ask (q) =
+    let t = text-trim q
+    in let i1 = text-index-of t " "
+    in if i1 < 0 then dw-refuse "a filter is <column> <op> <value>"
+    else let rest = dw-after t i1
+    in let i2 = text-index-of rest " "
+    in if i2 < 0 then dw-refuse "a filter is <column> <op> <value>"
+    else dw-ask-parts (substring t 0 i1) (substring rest 0 i2) (dw-unquote (dw-after rest i2))
+
 Section: Rendering
 
   dw-vals : List ColumnValue, Integer, Integer, Text -> Text
@@ -141,7 +219,14 @@ Section: One Query
   dw-run (name) =
     when dw-plan-for name
       is Just (plan) -> dw-render (query (dw-catalog 0) plan)
-      is otherwise -> "no such query: " & name & "\nknown: " & dw-names
+      is otherwise -> dw-run-filter name
+
+  dw-run-filter : Text -> Text
+  dw-run-filter (q) =
+    if text-index-of (text-trim q) " " < 0 then "no such query: " & q & "\nknown: " & dw-names & "\nor a filter: <column> <op> <value>"
+    else let a = dw-ask q
+    in if a.da-ok then "plan: " & a.da-algebra & "\n" & dw-render (query (dw-catalog 0) (a.da-plan))
+    else "bad filter: " & a.da-why
 
 Section: Entry Point
 

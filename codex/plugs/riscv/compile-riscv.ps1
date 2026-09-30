@@ -232,7 +232,10 @@ $mapLines = [System.Collections.Generic.List[string]]::new()
 [void]$mapLines.Add('# Address         Size  Name')
 for ($mi = 0; $mi -lt $funcEntries.Count; $mi++) {
     $fe = $funcEntries[$mi]
-    [uint64]$addr = $loadAddr + [uint64]$textStart + [uint64]$fe.Offset
+    # The map describes the flat .bin the bed boots (-bios none, loaded at
+    # 0x80000000 with code at offset 0, which rv-load-base assumes), not the
+    # ELF, whose .text sits $textStart bytes into the file.
+    [uint64]$addr = $loadAddr + [uint64]$fe.Offset
     $nextOff = if ($mi + 1 -lt $funcEntries.Count) { $funcEntries[$mi + 1].Offset } else { $codeLen }
     $fsize = $nextOff - $fe.Offset
     [void]$mapLines.Add("0x$($addr.ToString('X8').PadLeft(8,'0')) $fsize $($fe.Name)")

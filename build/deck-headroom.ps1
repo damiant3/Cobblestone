@@ -2,7 +2,7 @@
 # derivation hands it?
 #
 #   pwsh build/deck-headroom.ps1                          # the whole corpus
-#   pwsh build/deck-headroom.ps1 -List units.txt -Jobs 4
+#   pwsh build/deck-headroom.ps1 -List units.txt -Jobs 16
 #   pwsh build/deck-headroom.ps1 -List units.txt -Top 40  # more of the table
 #   pwsh build/deck-headroom.ps1 -Quire codex\build -WithSelf -MinMargin 1.25
 #
@@ -102,7 +102,7 @@ param(
   [string]$Quire = '',
   [string]$Kernel = 'seed/Codex.cdx',
   [string]$Tag = 'corpus',
-  [int]$Jobs = 8,
+  [int]$Jobs = 16,
   [int]$TimeoutSec = 600,
   [int]$Top = 25,
   [double]$MinMargin = 0,
@@ -395,7 +395,7 @@ $script:Unmeasured = @()
 # So the question this asks is whether the compiler RAN: phase records and no
 # deck records is a unit that got far enough to refuse, and that is the deck
 # answer this tool exists to give. No phase records at all is a measurement
-# that never happened -- eight concurrent VMs at 3072 MB on a 15.8 GB box die
+# that never happened -- concurrent VMs that overcommit the box's RAM die
 # instantly leaving an empty log, and the failing set moves run to run (2 units,
 # then 4, then 0, same tree), which is why it must not be reported as a grown
 # reservation: the rust bundle so named compiles alone at exit 0.

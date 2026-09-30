@@ -1,0 +1,255 @@
+Chapter: FluxVae
+
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter VaeEncoder
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter SafeTensors
+  cites Foreword chapter Console
+  cites Diffusion chapter Flux
+
+ Flux's 16-channel ae.safetensors (no quant_conv, no post_quant_conv), from
+ Forge's models/VAE folder. The picture is build/vae-decode-oracle.py's closed
+ formula; flux-vae-latent.bin is Forge's own encoder's posterior mean of it
+ (16 x 32 x 32 f32) and flux-vae-reference.bin that mean decoded in f32 as
+ clamped RGB bytes, both build/flux-vae-oracle.py's. The decode arm decodes
+ Forge's mean, the encode arm grades our mean, the round trip decodes ours.
+ The sabotage arms exchange latent channels 0 and 1, and red and blue.
+
+ We say:
+
+Section: Picture
+
+  pic-scratch : Integer = #BD700000
+
+  lat-scratch : Integer = #BD900000
+
+  ref-scratch : Integer = #BDA00000
+
+  ckpt : Text = "ae.safetensors"
+
+  f32-bits : Real -> Integer
+  f32-bits (x) =
+    let b = real-to-bits x
+    in if bit-and b #7FFFFFFFFFFFFFFF == 0 then bit-and (bit-shru b 32) #80000000
+    else let s = bit-and (bit-shru b 63) 1
+    in let e = bit-and (bit-shru b 52) 2047
+    in let m = bit-and b #FFFFFFFFFFFFF
+    in let keep = bit-shru m 29
+    in let rest = bit-and m #1FFFFFFF
+    in let up = if rest > #10000000 then 1 else if rest < #10000000 then 0 else bit-and keep 1
+    in bit-or (bit-shl s 31) (bit-shl (e - 896) 23) + keep + up
+
+  bits-real : Integer -> Real
+  bits-real (w) =
+    let e = bit-and (bit-shru w 23) 255
+    in if e == 0 then 0.0
+    else if e == 255 then 1000000000.0
+    else bits-to-real (bit-or (bit-shl (bit-and w #80000000) 32) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and w #7FFFFF) 29)))
+
+  f32 : Real -> Real
+  f32 (x) = bits-real (f32-bits x)
+
+  in-disc : Integer, Integer, Integer, Integer, Integer -> Boolean
+  in-disc (x) (y) (cx) (cy) (r) = (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r
+
+  source : Integer, Integer, Integer -> Real
+  source (c) (x) (y) =
+    if x >= 176 & x < 240 & y >= 176 & y < 240 then real-from-int (int-mod (x / 8 + y / 8) 2)
+    else if in-disc x y 128 180 50 then f32 (list-at [0.95, 0.9, 0.2] c)
+    else if in-disc x y 170 80 30 then f32 (list-at [0.1, 0.8, 0.2] c)
+    else if in-disc x y 80 90 40 then f32 (list-at [0.9, 0.1, 0.1] c)
+    else if c == 0 then f32 (real-from-int x / 255.0)
+    else if c == 1 then f32 (real-from-int y / 255.0)
+    else f32 (1.0 - f32 (real-from-int (x + y) / 510.0))
+
+  fill : Integer, Boolean -> Integer
+  fill (i) (swap) =
+    if i >= 196608 then 0
+    else let c = i / 65536
+    in let p = i - c * 65536
+    in let sc = if swap then 2 - c else c
+    in let w = poke-32 pic-scratch (i * 4) (f32-bits (source sc (p - (p / 256) * 256) (p / 256) * 2.0 - 1.0))
+    in fill (i + 1) swap
+
+  picture : Boolean -> Act
+  picture (swap) =
+    let h = gpu-buf-alloc 786432
+    in let f = fill 0 swap
+    in Act { ah = if h /= 0 & gpu-buf-write h 0 786432 pic-scratch then h else 0, ac = 3, ahh = 256, aww = 256 }
+
+Section: Grading
+
+  Err = record {
+    e-max : Real,
+    e-sum : Real,
+    e-small : Integer,
+    e-half : Integer,
+    e-nan : Integer
+  }
+
+  err-loop : Integer, Integer, Err -> Err
+  err-loop (i) (n) (e) =
+    if i >= n then e
+    else let got = bits-real (bit-and (peek-32 lat-scratch (i * 4)) #FFFFFFFF)
+    in let want = bits-real (bit-and (peek-32 ref-scratch (i * 4)) #FFFFFFFF)
+    in let a = if got > want then got - want else want - got
+    in err-loop (i + 1) n (Err { e-max = if a > e.e-max then a else e.e-max, e-sum = e.e-sum + a, e-small = e.e-small + (if a <= 0.05 then 1 else 0), e-half = e.e-half + (if a <= 0.5 then 1 else 0), e-nan = e.e-nan + (if got >= 1000000000.0 then 1 else 0) })
+
+  format-err : Err, Integer -> Text
+  format-err (e) (n) =
+    "max " & show (real-to-int (e.e-max * 100.0)) & "/100, mean " & show (real-to-int (e.e-sum * 1000.0 / real-from-int n)) & "/1000, within 0.05: " & show (e.e-small) & ", within 0.5: " & show (e.e-half) & " of " & show n & ", nan " & show (e.e-nan)
+
+  pixel-of : Integer -> Integer
+  pixel-of (raw) =
+    let bits = bit-and raw #FFFFFFFF
+    in let neg = bit-and bits #80000000 /= 0
+    in let e = bit-and (bit-shru bits 23) 255
+    in if e == 255 then 1000
+    else if e >= 128 then (if neg then 0 else 255)
+    else let m = bit-or (bit-and bits #7FFFFF) #800000
+    in let fx = if e == 0 then 0 else if e >= 126 then bit-shl m (e - 126) else bit-shru m (126 - e)
+    in let v = if neg then 0 - fx else fx
+    in if v <= 0 - 16777216 then 0
+    else if v >= 16777216 then 255
+    else ((v + 16777216) * 255 + 16777216) / 33554432
+
+  Diff = record {
+    d-max : Integer,
+    d-sum : Integer,
+    d-one : Integer,
+    d-three : Integer,
+    d-nan : Integer
+  }
+
+  diff-loop : Integer, Integer, Diff -> Diff
+  diff-loop (i) (hw) (d) =
+    if i >= hw * 3 then d
+    else let pix = i / 3
+    in let c = i - pix * 3
+    in let got = pixel-of (peek-32 pic-scratch ((c * hw + pix) * 4))
+    in let want = peek-byte ref-scratch i
+    in let a = if got > want then got - want else want - got
+    in diff-loop (i + 1) hw (Diff { d-max = if a > d.d-max then a else d.d-max, d-sum = d.d-sum + a, d-one = d.d-one + (if a <= 1 then 1 else 0), d-three = d.d-three + (if a <= 3 then 1 else 0), d-nan = d.d-nan + (if got == 1000 then 1 else 0) })
+
+  format-diff : Diff, Integer -> Text
+  format-diff (d) (n) =
+    "max " & show (d.d-max) & ", mean " & show (d.d-sum * 1000 / n) & "/1000, within 1: " & show (d.d-one) & ", within 3: " & show (d.d-three) & " of " & show n & ", nan " & show (d.d-nan)
+
+  load-file : Text, Integer, Integer -> Boolean
+  load-file (name) (bytes) (dst) =
+    let h = gpu-buf-alloc bytes
+    in let ok = if h == 0 then False else if gpu-buf-upload h 0 name 0 bytes gpu-dt-u8 gpu-dt-u8 /= bytes then False else gpu-buf-read h 0 bytes dst
+    in let f = if h == 0 then True else gpu-buf-free h
+    in ok
+
+Section: Arms
+
+ Forge's mean, channels 0 and 1 exchanged on the sabotage arm.
+
+  latent : Boolean -> Act
+  latent (swap) =
+    let h = gpu-buf-alloc 65536
+    in let a = if swap then gpu-buf-upload h 0 "flux-vae-latent.bin" 1024 1024 gpu-dt-f32 gpu-dt-f32 else gpu-buf-upload h 0 "flux-vae-latent.bin" 0 16384 gpu-dt-f32 gpu-dt-f32
+    in let b = if swap then gpu-buf-upload h 4096 "flux-vae-latent.bin" 0 1024 gpu-dt-f32 gpu-dt-f32 else 0
+    in let c = if swap then gpu-buf-upload h 8192 "flux-vae-latent.bin" 2048 14336 gpu-dt-f32 gpu-dt-f32 else 0
+    in Act { ah = if a < 0 | b < 0 | c < 0 then 0 else h, ac = 16, ahh = 32, aww = 32 }
+
+  decode-grade : VaeWeights, Act -> Text
+  decode-grade (w) (z) =
+    let out = vae-decode w z
+    in if out.ah == 0 then "decode refused"
+    else if gpu-buf-read (out.ah) 0 786432 pic-scratch == False then "read refused"
+    else let d = diff-loop 0 65536 (Diff { d-max = 0, d-sum = 0, d-one = 0, d-three = 0, d-nan = 0 })
+    in let g = vd-free out
+    in show (out.ac) & "x" & show (out.ahh) & "x" & show (out.aww) & ": " & format-diff d 196608
+
+  decode-report : VaeWeights, Boolean -> Text
+  decode-report (w) (swap) =
+    let z = latent swap
+    in let r = decode-grade w z
+    in let f = vd-free z
+    in r
+
+  encode-report : VaeWeights, Boolean -> Text
+  encode-report (w) (swap) =
+    let x = picture swap
+    in let z = vae-encode w x
+    in let f = vd-free x
+    in if z.ah == 0 then "encode refused"
+    else if gpu-buf-read (z.ah) 0 65536 lat-scratch == False then "read refused"
+    else let e = err-loop 0 16384 (Err { e-max = 0.0, e-sum = 0.0, e-small = 0, e-half = 0, e-nan = 0 })
+    in let g = vd-free z
+    in show (z.ac) & "x" & show (z.ahh) & "x" & show (z.aww) & ", mean channels 0-15: " & format-err e 16384
+
+  round-trip : VaeWeights, VaeWeights -> Text
+  round-trip (we) (wd) =
+    let x = picture False
+    in let z = vae-encode we x
+    in let f = vd-free x
+    in if z.ah == 0 then "encode refused"
+    else let r = decode-grade wd (Act { ah = z.ah, ac = 16, ahh = z.ahh, aww = z.aww })
+    in let g = vd-free z
+    in r
+
+ Forge's mean through Forge's process_in on the host, (m - 0.1159) 0.3611,
+ then flux-latent-to-vae (or, sabotaged, nothing) and the decode: the
+ pixels must come back.
+
+  scale-in : Integer -> Integer
+  scale-in (i) =
+    if i >= 16384 then i
+    else let v = bits-real (bit-and (peek-32 lat-scratch (i * 4)) #FFFFFFFF)
+    in let p = poke-32 lat-scratch (i * 4) (f32-bits ((v - 0.1159) * 0.3611))
+    in scale-in (i + 1)
+
+  map-report : VaeWeights, Boolean -> Text
+  map-report (w) (mapped) =
+    let h = gpu-buf-alloc 65536
+    in let ok = h /= 0 & load-file "flux-vae-latent.bin" 65536 lat-scratch
+    in let s = if ok then scale-in 0 else 0
+    in let up = ok & gpu-buf-write h 0 65536 lat-scratch
+    in let m = if up == False then False else if mapped then flux-latent-to-vae h 16384 else True
+    in if m == False then "map refused"
+    else let r = decode-grade w (Act { ah = h, ac = 16, ahh = 32, aww = 32 })
+    in let f = gpu-buf-free h
+    in r
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let file = ckpt-open ckpt
+    in if file.st-valid == False then ["SKIP: no ae.safetensors under Forge's models/VAE"]
+    else let part = flux-vae-part ckpt
+    in let wd = vae-load ckpt part ""
+    in let we = vae-encoder-load ckpt part ""
+    in let l1 = "weights: decoder " & show (list-length (wd.vw-handles)) & ", encoder " & show (list-length (we.vw-handles)) & " uploaded, " & show (wd.vw-failed + we.vw-failed) & " failed"
+    in let l2 = "pixel reference: " & (if load-file "flux-vae-reference.bin" 196608 ref-scratch then "loaded" else "refused")
+    in let l3 = "decode " & decode-report wd False
+    in let l4 = "sabotage channels 0 and 1 exchanged, decode " & decode-report wd True
+    in let l4b = "process_in then flux-latent-to-vae, decode " & map-report wd True
+    in let l4c = "sabotage, process_in with no map, decode " & map-report wd False
+    in let l5 = "round trip decode of our mean: " & round-trip we wd
+    in let l6 = "latent reference: " & (if load-file "flux-vae-latent.bin" 65536 ref-scratch then "loaded" else "refused")
+    in let l7 = "encode " & encode-report we False
+    in let l8 = "sabotage red and blue exchanged, encode " & encode-report we True
+    in let l9 = "free: " & (if vae-free we 0 0 == 0 & vae-free wd 0 0 == 0 then "ok" else "refused")
+    in [l1, l2, l3, l4, l4b, l4c, l5, l6, l7, l8, l9]
+
+Section: Body
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

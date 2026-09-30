@@ -42,24 +42,11 @@ Section: The Browser Interface
 
 Section: Playing By Hand
 
- A turn is a raise or a challenge. A raise is more dice than the standing
- bid, or the same number of a higher face; the engine only constructs
- raises and never tests one. A bid is `qty * 10 + face`, and 0 is no bid,
- so the first bid of a round is any legal pair.
+ A turn is a raise or a challenge, as LiarsDice's Rules 2 and 3 say; a bid is
+ `qty * 10 + face`, and 0 is no bid.
 
   ld-wasm-can-bid : LDState, Integer, Integer -> Integer
-  ld-wasm-can-bid (s) (qty) (face) =
-    if s.alive-count <= 1 then 0
-    else if face < 1 then 0
-    else if face > 6 then 0
-    else if qty < 1 then 0
-    else if qty > ld-total-dice s then 0
-    else if s.current-bid == 0 then 1
-    else let cq = ld-bid-qty (s.current-bid)
-    in let cf = ld-bid-face (s.current-bid)
-    in if qty > cq then 1
-    else if qty == cq then (if face > cf then 1 else 0)
-    else 0
+  ld-wasm-can-bid (s) (qty) (face) = if ld-legal-bid s qty face then 1 else 0
 
   ld-wasm-make-bid : LDState, Integer, Integer -> LDState
   ld-wasm-make-bid (s) (qty) (face) =
@@ -78,8 +65,6 @@ Section: Playing By Hand
          rng          = c.rng
        }
 
- If the bid dice are on the table the challenger loses a die, otherwise the
- last bidder does. Every die is then rerolled and the bidding restarts.
 
   ld-wasm-can-challenge : LDState -> Integer
   ld-wasm-can-challenge (s) =
@@ -91,28 +76,7 @@ Section: Playing By Hand
   ld-wasm-challenge (s) =
     if ld-wasm-can-challenge s == 0 then s
     else let c = ld-copy-state s
-    in let p = c.current-turn
-    in let qty = ld-bid-qty (c.current-bid)
-    in let face = ld-bid-face (c.current-bid)
-    in let actual = ld-count-face c face
-    in if actual >= qty then ld-settle c p
-    else ld-settle c (c.last-bidder)
-
-  ld-settle : LDState, Integer -> LDState
-  ld-settle (s) (loser) =
-    let s2 = ld-lose-die s loser
-    in let s3 = ld-roll-all s2
-    in LDState {
-         dice-counts  = s3.dice-counts,
-         dice-pools   = s3.dice-pools,
-         num-players  = s3.num-players,
-         current-bid  = 0,
-         last-bidder  = s3.last-bidder,
-         current-turn = ld-next-alive s3 loser,
-         alive        = s3.alive,
-         alive-count  = s3.alive-count,
-         rng          = s3.rng
-       }
+    in ld-resolve c (c.current-turn)
 
  The true count of the bid face is hidden information until a challenge.
 

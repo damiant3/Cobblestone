@@ -6,155 +6,48 @@ Chapter: CvmmServer
   cites Cvmm chapter CvmmShell
   cites Cvmm chapter CvmmDashboard
   cites Cvmm chapter FileExplorer
+  cites Cvmm chapter FileLive
   cites Cvmm chapter DriveManager
   cites Cvmm chapter UsbManager
+  cites Cvmm chapter UsbLive
+  cites Works chapter GopUsb
   cites Cvmm chapter ProcessManager
   cites Cvmm chapter ServiceManager
+  cites OS chapter ServiceRegistry
   cites Cvmm chapter PortMonitor
   cites Cvmm chapter NetworkManager
   cites Cvmm chapter DisplayManager
+  cites Cvmm chapter DisplayLive
   cites Cvmm chapter ServerManager
   cites Cvmm chapter FleetManager
   cites Cvmm chapter DeployManager
   cites Cvmm chapter LogViewer
+  cites Cvmm chapter LogLive
+  cites Kernel chapter DiskFacts
   cites Cvmm chapter Terminal
+  cites Cvmm chapter TerminalLive
   cites Cvmm chapter Monitor
 
 Section: Mock Data
 
-  mock-explorer : ExplorerState
-  mock-explorer =
-    let root-entries = [
-      file-entry-new "codex" "/codex" FkDirectory 0,
-      file-entry-new "boot" "/boot" FkDirectory 0,
-      file-entry-new "dev" "/dev" FkDirectory 0,
-      file-entry-new "tmp" "/tmp" FkDirectory 0,
-      file-entry-new "home" "/home" FkDirectory 0,
-      file-entry-new "kernel.cdx" "/kernel.cdx" FkFile 2162688,
-      file-entry-new "config.json" "/config.json" FkFile 1024,
-      file-entry-new ".hidden" "/.hidden" FkFile 64
-    ]
-    in explorer-navigate explorer-new "/" root-entries
+  server-registry : ServiceRegistry
+  server-registry = service-register service-registry-empty "web" 0 0
 
-  mock-usb : UsbManagerState
-  mock-usb =
-    let xhci = usb-device-new "xhci0" "xHCI Host Controller" UcHub SpeedSuper
-    in let kbd = __record-set (usb-device-new "kbd0" "Codex HID Keyboard" UcHid SpeedLow) "usb-parent-id" "xhci0"
-    in let msc = __record-set (usb-device-new "msc0" "Codex Mass Storage" UcMassStorage SpeedHigh) "usb-parent-id" "xhci0"
-    in let cam = __record-set (usb-device-new "cam0" "Codex UVC Camera" UcVideo SpeedHigh) "usb-parent-id" "xhci0"
-    in let st1 = um-add-device usb-manager-new xhci
-    in let st2 = um-add-device st1 kbd
-    in let st3 = um-add-device st2 msc
-    in let st4 = um-add-device st3 cam
-    in __record-set st4 "um-host-controllers" 1
-
-  mock-services : ServiceManagerState
-  mock-services =
-    let sched = __record-set (__record-set (service-new "sched" "Scheduler" SvcTypeSystem) "svc-state" SvcRunning) "svc-uptime" 3600
-    in let net = __record-set (__record-set (__record-set (__record-set (service-new "net" "Network Stack" SvcTypeNetwork) "svc-state" SvcRunning) "svc-uptime" 3590) "svc-dependencies" ["sched"]) "svc-dep-count" 1
-    in let usb-svc = __record-set (__record-set (__record-set (__record-set (service-new "usb" "USB Driver" SvcTypeSystem) "svc-state" SvcRunning) "svc-uptime" 3590) "svc-dependencies" ["sched"]) "svc-dep-count" 1
-    in let display = __record-set (__record-set (__record-set (__record-set (service-new "display" "Display Server" SvcTypeSystem) "svc-state" SvcRunning) "svc-uptime" 3570) "svc-dependencies" ["sched", "usb"]) "svc-dep-count" 2
-    in let web = __record-set (__record-set (__record-set (__record-set (__record-set (service-new "web" "CVMM Web Server" SvcTypeSystem) "svc-state" SvcRunning) "svc-uptime" 3580) "svc-dependencies" ["net"]) "svc-dep-count" 1) "svc-description" "Management dashboard on port 2682"
-    in let dhcp = __record-set (__record-set (__record-set (service-new "dhcp" "DHCP Client" SvcTypeNetwork) "svc-state" SvcStopped) "svc-dependencies" ["net"]) "svc-dep-count" 1
-    in let dns-svc = __record-set (__record-set (__record-set (__record-set (service-new "dns" "DNS Resolver" SvcTypeNetwork) "svc-state" SvcRunning) "svc-uptime" 3585) "svc-dependencies" ["net"]) "svc-dep-count" 1
-    in let fleet-svc = __record-set (__record-set (__record-set (__record-set (service-new "fleet" "Fleet Agent" SvcTypeNetwork) "svc-state" SvcRunning) "svc-uptime" 3560) "svc-dependencies" ["net", "dns"]) "svc-dep-count" 2
-    in sm-add-service (sm-add-service (sm-add-service (sm-add-service (sm-add-service (sm-add-service (sm-add-service (sm-add-service svc-manager-new sched) net) usb-svc) display) web) dhcp) dns-svc) fleet-svc
-
-  mock-ports : PortMonitorState
-  mock-ports =
-    let web-listener = PortListener {
-      pl-port = 9100, pl-protocol = ProtoTcp, pl-bind-addr = "0.0.0.0",
-      pl-service-id = "web", pl-service-name = "CVMM Web Server",
-      pl-pid = 20, pl-connections = 2, pl-bytes-in = kilobytes 512, pl-bytes-out = megabytes 8
-    }
-    in let fleet-listener = PortListener {
-      pl-port = 9200, pl-protocol = ProtoTcp, pl-bind-addr = "0.0.0.0",
-      pl-service-id = "fleet", pl-service-name = "Fleet Agent",
-      pl-pid = 50, pl-connections = 0, pl-bytes-in = kilobytes 32, pl-bytes-out = kilobytes 64
-    }
-    in let dns-listener = PortListener {
-      pl-port = 53, pl-protocol = ProtoUdp, pl-bind-addr = "0.0.0.0",
-      pl-service-id = "dns", pl-service-name = "DNS Resolver",
-      pl-pid = 45, pl-connections = 0, pl-bytes-in = kilobytes 128, pl-bytes-out = kilobytes 128
-    }
-    in let conn1 = NetConnection {
-      nc-id = "c1", nc-local-port = 9100, nc-remote-addr = "10.0.2.2",
-      nc-remote-port = 52431, nc-protocol = ProtoTcp, nc-state = ConnEstablished,
-      nc-bytes-in = kilobytes 256, nc-bytes-out = megabytes 4,
-      nc-pid = 20, nc-duration = 120
-    }
-    in let conn2 = NetConnection {
-      nc-id = "c2", nc-local-port = 9100, nc-remote-addr = "10.0.2.2",
-      nc-remote-port = 52432, nc-protocol = ProtoTcp, nc-state = ConnTimeWait,
-      nc-bytes-in = kilobytes 128, nc-bytes-out = megabytes 2,
-      nc-pid = 20, nc-duration = 45
-    }
-    in let fw-allow = FirewallRule {
-      fw-id = "fw1", fw-name = "Allow Web", fw-action = FwAllow,
-      fw-direction = FwInbound, fw-protocol = ProtoTcp,
-      fw-port = 9100, fw-remote-addr = "*", fw-enabled = True, fw-hit-count = 1024
-    }
-    in let fw-deny = FirewallRule {
-      fw-id = "fw2", fw-name = "Deny External SSH", fw-action = FwDeny,
-      fw-direction = FwInbound, fw-protocol = ProtoTcp,
-      fw-port = 22, fw-remote-addr = "*", fw-enabled = True, fw-hit-count = 37
-    }
-    in let st0 = portmon-add-listener (portmon-add-listener (portmon-add-listener port-monitor-new web-listener) fleet-listener) dns-listener
-    in let st1 = portmon-add-connection (portmon-add-connection st0 conn1) conn2
-    in portmon-add-rule (portmon-add-rule st1 fw-allow) fw-deny
-
-  mock-display : DisplayManagerState
-  mock-display =
-    let vga = gpu-new "gpu0" "Bochs VBE" GpuVirtual 16777216
-    in let mon = display-monitor-new "mon0" "Virtual Display" ConnVirtual
-    in let mon-primary = __record-set mon "mon-primary" True
-    in disp-add-monitor (disp-add-gpu display-manager-new vga) mon-primary
-
-  mock-logs : LogViewerState
-  mock-logs =
-    let lv = log-viewer-new
-    in let lv1 = lv-append lv 0 SrcKernel LogInfo "Codex OS booting"
-    in let lv2 = lv-append lv1 1 SrcKernel LogInfo "Memory: 2048 MB detected"
-    in let lv3 = lv-append lv2 2 SrcKernel LogInfo "CPU: x86-64 identified"
-    in let lv4 = lv-append lv3 3 SrcScheduler LogInfo "Preemptive scheduler started"
-    in let lv5 = lv-append lv4 4 SrcNetwork LogInfo "NE2K NIC initialized at 10.0.2.15"
-    in let lv6 = lv-append lv5 5 SrcUsb LogInfo "xHCI controller found, 3 devices"
-    in let lv7 = lv-append lv6 6 SrcDisplay LogInfo "Bochs VBE 1024x768 initialized"
-    in let lv8 = lv-append lv7 7 (SrcService "web") LogInfo "CVMM web server listening on :9100"
-    in let lv9 = lv-append lv8 8 (SrcService "fleet") LogInfo "Fleet agent started, discovery active"
-    in let lv10 = lv-append lv9 9 SrcNetwork LogWarn "DNS resolution slow (>100ms)"
-    in let lv11 = lv-append lv10 10 (SrcService "dhcp") LogDebug "DHCP client not started (static config)"
-    in lv11
-
-  mock-terminal : TerminalState
-  mock-terminal =
-    let t = terminal-new 25 80
-    in let t1 = term-writeln t "Codex OS v0.1 (bare-metal x86-64)"
-    in let t2 = term-writeln t1 "Kernel: Codex.cdx 2126879 bytes"
-    in let t3 = term-writeln t2 "Memory: 2048 MB"
-    in let t4 = term-writeln t3 "NIC: NE2K 10.0.2.15/24"
-    in let t5 = term-writeln t4 "USB: xHCI (3 devices)"
-    in let t6 = term-writeln t5 "Display: Bochs VBE 1024x768"
-    in let t7 = term-writeln t6 ""
-    in let t8 = term-writeln t7 "Type 'help' for available commands."
-    in let t9 = term-write t8 "codex> "
-    in t9
-
-  server-views : DriveManagerState -> ManagerViews
-  server-views (drives) = ManagerViews {
-    mv-file = mock-explorer,
+  server-views : DriveManagerState, UsbManagerState, ExplorerState -> ManagerViews
+  server-views (drives) (usb) (files) = ManagerViews {
+    mv-file = files,
     mv-drive = drives,
-    mv-usb = mock-usb,
+    mv-usb = usb,
     mv-proc = pm-live,
-    mv-service = mock-services,
-    mv-port = mock-ports,
+    mv-service = sm-from-registry server-registry,
+    mv-port = port-monitor-new,
     mv-net = nm-live,
-    mv-display = mock-display,
+    mv-display = dm-live,
     mv-server = server-manager-new,
     mv-fleet = fleet-manager-new,
     mv-deploy = deploy-manager-new,
-    mv-log = mock-logs,
-    mv-terminal = mock-terminal,
+    mv-log = lv-live disk-load,
+    mv-terminal = term-from-views nm-live usb dm-live,
     mv-mesh-group = group-new "codex-mesh" "local",
     mv-mesh-health = health-checker-new
   }
@@ -185,16 +78,21 @@ Section: Summary from Views
 
 Section: Entry
 
+  live-views : ManagerViews, WebLoop -> ManagerViews
+  live-views (views) (ls) = __record-set views "mv-port" (portmon-live (ls.transport) "web" "CVMM Web Server")
+
   route : ManagerViews, AppState, Text -> Text
   route (views) (st) (path) = cvmm-route st views path
 
-  opening : [Console, Device.Block, Network.Read, Network.Write] Nothing = act
+  opening : [Console, Device.Block, Device.Port, Network.Read, Network.Write] Nothing = act
     drives <- dm-read-block-devices
-    let views = server-views drives
+    attached <- usb-attach
+    files <- fe-live
+    let views = server-views drives (um-from-attach attached) files
     in let summary = summary-from-views views
     in let st = __record-set app-state-new "app-summary" summary
     in act
-      r <- web-serve-framed (\path -> route views st path)
+      r <- web-serve-framed-with (\ls path -> route (live-views views ls) st path)
       print-line-uni "CVMM SHUTDOWN"
     end
   end

@@ -1,0 +1,193 @@
+Chapter: LoraResidentTest
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Lora
+  cites Diffusion chapter LoraReference
+  cites Diffusion chapter LoraResident
+  cites Foreword chapter Console
+
+ dreamshaperXL's CLIP-L and OpenCLIP-G loaded resident as codex_image loads
+ them, and three of its UNet tensors (the rest absent), patched in place by
+ lora-resident-apply with the two text-encoder LoRAs of LoraReference and the
+ kinds fixture. Each f16 weight must equal, byte for byte, lora-merged-weight's
+ merge of the same tensor (graded against Forge by diffusion-lora), OpenCLIP-G's
+ fused in_proj as its three resident thirds; each f32 bias the fixture's diff_b
+ patches must lie within one f16 rounding of the merged f16 and differ from the
+ file's; a tensor no LoRA names must equal a plain upload. The control merges
+ CLIP-L's weight with the fixture alone and must differ. lora-resident-restore
+ then puts every patched tensor back: each must differ from a plain upload of
+ the file before it and equal one after, and it must restore as many tensors as
+ were patched.
+
+ We say:
+
+Section: Values
+
+  ckpt-name : Text = "dreamshaperXL_lightningDPMSDE.safetensors"
+
+  lr-files : List LoraFile
+  lr-files = [lora-open (list-at lora-ref-te-files 0) (list-at lora-ref-te-strengths 0), lora-open (list-at lora-ref-te-files 1) (list-at lora-ref-te-strengths 1), lora-open lora-ref-kinds-file lora-ref-kinds-strength]
+
+  lr-no-te : List LoraFile
+  lr-no-te = [lora-open lora-ref-kinds-file lora-ref-kinds-strength]
+
+  unet-w : Text = "model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn1.to_k.weight"
+
+  unet-b : Text = "model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_out.0.bias"
+
+  unet-none : Text = "model.diffusion_model.out.0.weight"
+
+Section: Compare
+
+  first-diff : Integer, Integer, Integer, Integer -> Integer
+  first-diff (a) (b) (n) (i) =
+    if i >= n then 0 - 1
+    else if bit-and (peek-32 a i) #FFFFFFFF /= bit-and (peek-32 b i) #FFFFFFFF then i
+    else first-diff a b n (i + 4)
+
+  same : Integer, Integer, Text, Integer, Integer, Integer, Integer, Integer -> Text
+  same (host-a) (host-b) (label) (h) (hoff) (m) (moff) (bytes) =
+    if h == 0 | m == 0 then label & ": MISSING"
+    else if gpu-buf-read h hoff bytes host-a == False | gpu-buf-read m moff bytes host-b == False then label & ": READ FAILED"
+    else let d = first-diff host-a host-b bytes 0
+    in label & ": " & show bytes & " bytes, " & (if d < 0 then "equal" else "DIFFER at byte " & show d)
+
+  pow2 : Integer -> Real
+  pow2 (k) = bits-to-real (bit-shl (k + 1023) 52)
+
+  f32-real : Integer -> Real
+  f32-real (w) =
+    let s = bit-and (bit-shru w 31) 1
+    in let e = bit-and (bit-shru w 23) 255
+    in let m = bit-and w #7FFFFF
+    in let mag = if e == 0 then real-from-int m * pow2 (0 - 149) else (1.0 + real-from-int m / 8388608.0) * pow2 (e - 127)
+    in if s == 1 then 0.0 - mag else mag
+
+  f16-real : Integer -> Real
+  f16-real (w) =
+    let s = bit-and (bit-shru w 15) 1
+    in let e = bit-and (bit-shru w 10) 31
+    in let m = bit-and w 1023
+    in let mag = if e == 0 then real-from-int m * pow2 (0 - 24) else (1.0 + real-from-int m / 1024.0) * pow2 (e - 15)
+    in if s == 1 then 0.0 - mag else mag
+
+  near-f16 : Real, Real -> Boolean
+  near-f16 (r) (q) = (if r > q then r - q else q - r) <= (if q < 0.0 then 0.0 - q else q) / 2048.0 + pow2 (0 - 24)
+
+  bias-count : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bias-count (res) (mer) (orig) (n) (i) (acc) =
+    if i >= n then acc
+    else let r = bit-and (peek-32 res (i * 4)) #FFFFFFFF
+    in let q = bit-and (peek-32 mer (i * 2)) 65535
+    in let o = bit-and (peek-32 orig (i * 4)) #FFFFFFFF
+    in bias-count res mer orig n (i + 1) (acc + (if near-f16 (f32-real r) (f16-real q) then 1 else 0) + (if r /= o then 1000000 else 0))
+
+Section: Report
+
+  merged : SafeTensorFile, List LoraFile, Text -> Integer
+  merged (ckpt) (ls) (name) = lora-merged-weight ckpt-name ckpt ls 2 name
+
+  plain32 : SafeTensorFile, Text, Integer, Integer -> Integer
+  plain32 (ckpt) (name) (first) (n) =
+    when st-find-tensor ckpt name
+     is None -> 0
+     is Just (m) -> let h = gpu-buf-alloc (n * 4) in if h /= 0 & gpu-buf-upload h 0 ckpt-name (ckpt.st-data-offset + m.stm-offset-start + first * st-dtype-width (m.stm-dtype)) n (ckpt-gpu-dtype (m.stm-dtype)) gpu-dt-f32 == n * 4 then h else 0
+
+  plain16 : SafeTensorFile, Text, Integer, Integer -> Integer
+  plain16 (ckpt) (name) (first) (n) =
+    when st-find-tensor ckpt name
+     is None -> 0
+     is Just (m) -> let h = gpu-buf-alloc (n * 2) in if h /= 0 & gpu-buf-upload h 0 ckpt-name (ckpt.st-data-offset + m.stm-offset-start + first * st-dtype-width (m.stm-dtype)) n (ckpt-gpu-dtype (m.stm-dtype)) gpu-dt-f16 == n * 2 then h else 0
+
+  bias-report : Integer, Integer, Text, SafeTensorFile, Text, Integer, Integer, Integer -> Text
+  bias-report (host-a) (host-b) (label) (ckpt) (name) (h) (first) (n) =
+    let mer = merged ckpt lr-files name
+    in let orig = plain32 ckpt name first n
+    in let ok = h /= 0 & mer /= 0 & orig /= 0 & gpu-buf-read h 0 (n * 4) host-a & gpu-buf-read mer (first * 2) (n * 2) host-b & gpu-buf-read orig 0 (n * 4) (host-b + n * 2)
+    in if ok == False then label & ": READ FAILED"
+    else let c = bias-count host-a host-b (host-b + n * 2) n 0 0
+    in label & " (f32): " & show (int-mod c 1000000) & "/" & show n & " within one f16 rounding of the merge, " & show (c / 1000000) & "/" & show n & " changed from the file"
+
+  part-handles : UNetFile, List Text, Integer, List Integer -> List Integer
+  part-handles (u) (names) (i) (acc) =
+    if i >= list-length names then acc
+    else let nm = list-at names i
+    in let h = if nm == unet-w | nm == unet-b | nm == unet-none then
+        (when st-find-tensor (u.uf-file) nm
+          is None -> 0
+          is Just (m) -> un-weight-meta u m (if list-length (m.stm-shape) == 1 then gpu-dt-f32 else gpu-dt-f16))
+      else 0
+    in part-handles u names (i + 1) (list-push acc h)
+
+  unet-part : SafeTensorFile -> UNetFile
+  unet-part (ckpt) =
+    let u = UNetFile { uf-path = ckpt-name, uf-file = ckpt, uf-index = name-index [], uf-handles = [] }
+    in let names = un-unet-names (ckpt.st-tensors) 0 []
+    in UNetFile { uf-path = ckpt-name, uf-file = ckpt, uf-index = name-index names, uf-handles = part-handles u names 0 [] }
+
+  handle : UNetFile, Text -> Integer
+  handle (u) (name) = let i = name-find (u.uf-index) name in if i < 0 then 0 else list-at (u.uf-handles) i
+
+  report : Integer, Integer, UNetFile, ClipWeights, ClipWeights, Integer -> List Text
+  report (host-a) (host-b) (u) (wl) (wg) (applied) =
+    let ckpt = u.uf-file
+    in let cl = "conditioner.embedders.0.transformer.text_model.encoder.layers.5.self_attn.q_proj.weight"
+    in let gw = "conditioner.embedders.1.model.transformer.resblocks.20.attn.in_proj_weight"
+    in let gb = "conditioner.embedders.1.model.transformer.resblocks.20.attn.in_proj_bias"
+    in let yl = list-at (wl.cw-layers) 5
+    in let yg = list-at (wg.cw-layers) 20
+    in let mw = merged ckpt lr-files unet-w
+    in let mc = merged ckpt lr-files cl
+    in let mg = merged ckpt lr-files gw
+    in let mc0 = merged ckpt lr-no-te cl
+    in let po = plain32 ckpt unet-none 0 320
+    in ["patched " & show applied & " tensors",
+        same host-a host-b ("unet " & unet-w) (handle u unet-w) 0 mw 0 (640 * 640 * 2),
+        bias-report host-a host-b ("unet " & unet-b) ckpt unet-b (handle u unet-b) 0 640,
+        same host-a host-b ("CLIP-L " & cl) (yl.cy-q-w) 0 mc 0 (768 * 768 * 2),
+        same host-a host-b "G in_proj_weight q third" (yg.cy-q-w) 0 mg 0 (1280 * 1280 * 2),
+        same host-a host-b "G in_proj_weight k third" (yg.cy-k-w) 0 mg (1280 * 1280 * 2) (1280 * 1280 * 2),
+        same host-a host-b "G in_proj_weight v third" (yg.cy-v-w) 0 mg (2 * 1280 * 1280 * 2) (1280 * 1280 * 2),
+        bias-report host-a host-b "G in_proj_bias k third" ckpt gb (yg.cy-k-b) 1280 1280,
+        same host-a host-b ("unnamed " & unet-none & " (f32)") (handle u unet-none) 0 po 0 (320 * 4),
+        same host-a host-b "control: CLIP-L merged with the fixture alone" (yl.cy-q-w) 0 mc0 0 (768 * 768 * 2)]
+
+  against-file : Integer, Integer, UNetFile, ClipWeights, ClipWeights, Text -> List Text
+  against-file (host-a) (host-b) (u) (wl) (wg) (when-label) =
+    let ckpt = u.uf-file
+    in let cl = "conditioner.embedders.0.transformer.text_model.encoder.layers.5.self_attn.q_proj.weight"
+    in let gw = "conditioner.embedders.1.model.transformer.resblocks.20.attn.in_proj_weight"
+    in let gb = "conditioner.embedders.1.model.transformer.resblocks.20.attn.in_proj_bias"
+    in let yl = list-at (wl.cw-layers) 5
+    in let yg = list-at (wg.cw-layers) 20
+    in let pg = plain16 ckpt gw 0 (3 * 1280 * 1280)
+    in [same host-a host-b (when-label & " unet weight vs file") (handle u unet-w) 0 (plain16 ckpt unet-w 0 (640 * 640)) 0 (640 * 640 * 2),
+        same host-a host-b (when-label & " unet bias (f32) vs file") (handle u unet-b) 0 (plain32 ckpt unet-b 0 640) 0 (640 * 4),
+        same host-a host-b (when-label & " CLIP-L q weight vs file") (yl.cy-q-w) 0 (plain16 ckpt cl 0 (768 * 768)) 0 (768 * 768 * 2),
+        same host-a host-b (when-label & " G q third vs file") (yg.cy-q-w) 0 pg 0 (1280 * 1280 * 2),
+        same host-a host-b (when-label & " G k third vs file") (yg.cy-k-w) 0 pg (1280 * 1280 * 2) (1280 * 1280 * 2),
+        same host-a host-b (when-label & " G v third vs file") (yg.cy-v-w) 0 pg (2 * 1280 * 1280 * 2) (1280 * 1280 * 2),
+        same host-a host-b (when-label & " G k bias third (f32) vs file") (yg.cy-k-b) 0 (plain32 ckpt gb 1280 1280) 0 (1280 * 4)]
+
+Section: Entry
+
+  opening : [Console] Nothing
+  opening = act
+    let ckpt = ckpt-open ckpt-name
+    in let lb = layout-bind ckpt sdxl-layout
+    in let wl = clip-load ckpt-name ckpt lb clip-l-spec
+    in let wg = clip-load ckpt-name ckpt lb openclip-g-spec
+    in let u = unet-part ckpt
+    in let applied = lora-resident-apply u wl wg lr-files
+    in let ha = alloc-bytes 3276800
+    in let hb = alloc-bytes 3276800
+    in let before = text-join "\n" (report ha hb u wl wg applied) & "\n" & text-join "\n" (against-file ha hb u wl wg "patched:")
+    in let restored = lora-resident-restore u wl wg lr-files
+    in print-line-uni (before & "\nrestored " & show restored & " tensors\n" & text-join "\n" (against-file ha hb u wl wg "restored:"))
+  end
+
+Page 1

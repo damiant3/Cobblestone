@@ -216,10 +216,6 @@ if ($LASTEXITCODE -ne 0) {
         Write-Warning "HTML assembly run failed"
     } else {
         $rawBytes = [System.IO.File]::ReadAllBytes($rawOut)
-        # The serial stream opens with a SOH; drop just that one byte.
-        if ($rawBytes.Length -gt 0 -and $rawBytes[0] -eq 1) {
-            $rawBytes = $rawBytes[1..($rawBytes.Length - 1)]
-        }
         $enc = [System.Text.UTF8Encoding]::new($false)
         # The page is a CCE stream. Decoding it a byte at a time turned every
         # character above tier 0 into '?' in the shipped HTML; ConvertFrom-CceBytes

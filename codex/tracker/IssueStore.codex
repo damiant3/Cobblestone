@@ -65,9 +65,24 @@ Section: Issue CRUD
   iss-add-issue : IssueStoreState, Issue -> IssueStoreState
   iss-add-issue (store) (issue) =
     let srv = store.iss-db
-    in let row = [ValInteger (issue.issue-id), ValText (issue.issue-key), ValText (issue.issue-title), ValInteger (issue-status-id (issue.issue-status)), ValInteger (issue-priority-id (issue.issue-priority)), ValText (issue.issue-label), ValText (issue.issue-assignee), ValText (issue.issue-project), ValText (issue.issue-cycle), ValInteger (issue.issue-estimate), ValText (issue.issue-description), ValText (issue.issue-created)]
+    in let row = [
+      ValInteger (issue.issue-id),
+      ValText (issue.issue-key),
+      ValText (issue.issue-title),
+      ValInteger (issue-status-id (issue.issue-status)),
+      ValInteger (issue-priority-id (issue.issue-priority)),
+      ValText (issue.issue-label),
+      ValText (issue.issue-assignee),
+      ValText (issue.issue-project),
+      ValText (issue.issue-cycle),
+      ValInteger (issue.issue-estimate),
+      ValText (issue.issue-description),
+      ValText (issue.issue-created)
+    ]
     in let srv2 = iss-insert srv "issues" row
-    in let next = if issue.issue-id >= store.iss-next-id then issue.issue-id + 1 else store.iss-next-id
+    in let next = if issue.issue-id >= store.iss-next-id then
+      issue.issue-id + 1
+    else store.iss-next-id
     in IssueStoreState { iss-db = srv2, iss-next-id = next }
 
   iss-insert : DbServer, Text, List ColumnValue -> DbServer
@@ -89,7 +104,8 @@ Section: Issue CRUD
 
   iss-update-priority : IssueStoreState, Integer, IssuePriority -> IssueStoreState
   iss-update-priority (store) (id) (new-priority) =
-    let srv = iss-update-field (store.iss-db) id "priority" (ValInteger (issue-priority-id new-priority))
+    let pv = ValInteger (issue-priority-id new-priority)
+    in let srv = iss-update-field (store.iss-db) id "priority" pv
     in __record-set store "iss-db" srv
 
   iss-update-assignee : IssueStoreState, Integer, Text -> IssueStoreState
@@ -116,23 +132,31 @@ Section: Issue CRUD
 Section: Issue Queries
   iss-all-issues : IssueStoreState -> QueryResult
   iss-all-issues (store) =
-    query (store.iss-db.db-catalog) (RelSort (RelScan "issues") [SortSpec { sort-col = "id", sort-dir = SortAsc }])
+    query (store.iss-db.db-catalog) (RelSort (RelScan "issues") [
+      SortSpec { sort-col = "id", sort-dir = SortAsc }
+    ])
+
+  iss-query-where : IssueStoreState, Predicate -> QueryResult
+  iss-query-where (store) (pred) =
+    query (store.iss-db.db-catalog) (RelFilter (RelScan "issues") pred)
 
   iss-issues-by-status : IssueStoreState, IssueStatus -> QueryResult
   iss-issues-by-status (store) (status) =
-    query (store.iss-db.db-catalog) (RelFilter (RelScan "issues") (PredColCmp "status" CmpEq (ValInteger (issue-status-id status))))
+    iss-query-where store (PredColCmp "status" CmpEq (ValInteger (issue-status-id status)))
 
   iss-issues-by-project : IssueStoreState, Text -> QueryResult
   iss-issues-by-project (store) (project) =
-    query (store.iss-db.db-catalog) (RelFilter (RelScan "issues") (PredColCmp "project" CmpEq (ValText project)))
+    iss-query-where store (PredColCmp "project" CmpEq (ValText project))
 
   iss-issues-by-cycle : IssueStoreState, Text -> QueryResult
   iss-issues-by-cycle (store) (cycle) =
-    query (store.iss-db.db-catalog) (RelFilter (RelScan "issues") (PredColCmp "cycle" CmpEq (ValText cycle)))
+    iss-query-where store (PredColCmp "cycle" CmpEq (ValText cycle))
 
   iss-open-issues : IssueStoreState -> QueryResult
   iss-open-issues (store) =
-    query (store.iss-db.db-catalog) (RelFilter (RelScan "issues") (PredAnd (PredColCmp "status" CmpGe (ValInteger 0)) (PredColCmp "status" CmpLt (ValInteger 4))))
+    let open-lo = PredColCmp "status" CmpGe (ValInteger 0)
+    in let open-hi = PredColCmp "status" CmpLt (ValInteger 4)
+    in iss-query-where store (PredAnd open-lo open-hi)
 
   iss-count : IssueStoreState -> Integer
   iss-count (store) = catalog-table-row-count (store.iss-db.db-catalog) "issues"
@@ -181,17 +205,32 @@ Section: Row Helpers
 Section: Project/Cycle/Label CRUD
   iss-add-project : IssueStoreState, Project -> IssueStoreState
   iss-add-project (store) (proj) =
-    let srv = iss-insert (store.iss-db) "projects" [ValInteger (proj.project-id), ValText (proj.project-name), ValText (proj.project-lead), ValInteger (proj.project-color)]
+    let srv = iss-insert (store.iss-db) "projects" [
+      ValInteger (proj.project-id),
+      ValText (proj.project-name),
+      ValText (proj.project-lead),
+      ValInteger (proj.project-color)
+    ]
     in __record-set store "iss-db" srv
 
   iss-add-cycle : IssueStoreState, Cycle -> IssueStoreState
   iss-add-cycle (store) (cyc) =
-    let srv = iss-insert (store.iss-db) "cycles" [ValInteger (cyc.cycle-id), ValText (cyc.cycle-name), ValText (cyc.cycle-start), ValText (cyc.cycle-end), ValBoolean (cyc.cycle-active)]
+    let srv = iss-insert (store.iss-db) "cycles" [
+      ValInteger (cyc.cycle-id),
+      ValText (cyc.cycle-name),
+      ValText (cyc.cycle-start),
+      ValText (cyc.cycle-end),
+      ValBoolean (cyc.cycle-active)
+    ]
     in __record-set store "iss-db" srv
 
   iss-add-label : IssueStoreState, Label -> IssueStoreState
   iss-add-label (store) (lbl) =
-    let srv = iss-insert (store.iss-db) "labels" [ValInteger (lbl.label-id), ValText (lbl.label-name), ValInteger (lbl.label-color)]
+    let srv = iss-insert (store.iss-db) "labels" [
+      ValInteger (lbl.label-id),
+      ValText (lbl.label-name),
+      ValInteger (lbl.label-color)
+    ]
     in __record-set store "iss-db" srv
 
   iss-all-projects : IssueStoreState -> QueryResult

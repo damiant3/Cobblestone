@@ -142,7 +142,7 @@ other than what it is:
 
 ```powershell
 build/test.ps1                        # Sample battery (~2-5s per sample)
-build/test.ps1 -Jobs 4                # Parallel test (4 batch slots; 4 is the standard since 2026-08-27, RAM-bounded)
+build/test.ps1 -Jobs 16               # Parallel test (16 batch slots, the default since 2026-09-28; clamped to free RAM)
 build/test.ps1 -All                   # Include foreword + app tests
 build/test.ps1 -Fatal                 # Include fatal (GPF/exception) tests
 build/build.ps1                       # Full pipeline (all gates)
@@ -181,8 +181,8 @@ refresh. Two examples, because the shape matters more than the count:
   it removes the stop that keeps the full battery from being launched by an
   agent, and removes it silently. `stress-sweep.ps1` was the same until it
   was backported.
-- **Every unconverted generator still defaults to `-Jobs 4`.** That number was
-  overturned on 2026-08-02; the shipped scripts say 8.
+- **Every unconverted generator still defaults to `-Jobs 4`.** The ruled
+  default is 16 (`CoordinationProtocol.md`, "The token does not cover RAM").
 
 So the generators encode at least two rulings that have since been reversed.
 Until a generator is backported, **hand-editing the `.ps1` is the correct
@@ -556,6 +556,8 @@ codex-vm -kernel file.cdx [options]
 | `-kernel <file>` | (required) | CDX or multiboot kernel to boot |
 | `-mem <MB>` | 3072 | Guest RAM in megabytes. Binaries compiled by seeds older than CL 7209 require more than 2048 (their boot stack lands in the demand-paged range below 2 GB); current seeds boot at any size from ~128 MB up. **The size REPORTED to the guest is capped at 3040 MB**, so anything above that changes nothing without `-mem-nocap`: see "The guest heap ceiling is 3040 MB" |
 | `-mem-nocap` | off | Report the real `-mem` to the guest instead of the 3040 MB cap. Only for a run that draws nothing: the heap may then grow through the GPU and GOP windows, which are at fixed GPAs |
+| `-gpu-files DIR` | none | Root for the GPU bridge's file-range upload (op 44): a guest path is relative to DIR, and an absolute path, a drive, a stream or any `..` component is refused. Repeat it for up to 4 roots; the first root holding the path serves it. Without it every upload is refused. The diffusion tests name one model root, `build-output/diffusion-models`, a junction made once per box: `New-Item -ItemType Junction build-output/diffusion-models -Target <the folder holding the checkpoints>`. Without the junction codex-vm refuses to start (`-gpu-files: not a directory`), which `bvt.ps1` and `cite-gate.ps1` report as `FAIL <test> (no output)`; with a junction that lacks the checkpoint the test prints a named `SKIP:` line; both fail, neither passes. The T5 tests name a second root, `build-output/diffusion-text-encoders`, a junction to the folder holding `t5xxl_fp8_e4m3fn.safetensors` (Forge's `models\text_encoder`), made the same way, and `build-output/diffusion-vae` to Forge's `models\VAE` for Flux's `clip_l.safetensors`. The ESRGAN-family upscaler tests name `build-output/diffusion-upscalers`, a junction to Forge's `models\RealESRGAN`, the SwinIR test `build-output/diffusion-swinir`, a junction to Forge's `models\SwinIR`, and the DAT test `build-output/diffusion-dat`, a junction to Forge's `models\DAT`. `gpu-buf-upload` answers the bytes it wrote at the destination, not the elements read: 4,096 e4m3 elements widened to f32 answer 16,384 (blu, 2026-09-29, `T5Encoder`). A raw copy is u8 to u8; e4m3 to u8 is refused and answers 0. A run that launches on the GPU prints at exit one `GPU CENSUS:` line per kernel (launches, device microseconds from launch to sync, host microseconds for the whole op 45, PTX bytes the guest sent) and a TOTAL; the run's wall time minus the host total is the guest's own cost |
+| `-gpu-out DIR` | none | Root for the GPU bridge's buffer save (op 46, `gpu-buf-save`): a guest path is relative to DIR under the same rules as `-gpu-files`, and the file is created or replaced. Without it every save is refused. |
 | `-input <file>` | -- | Pre-load file into serial ring buffer (source input). **The image needs a TRAILING ZERO BYTE after the source** -- see below |
 | `-output <file>` | -- | Capture serial output to file |
 | `-disk <file>` | -- | Attach IDE disk image as the primary channel's MASTER (read/write, flushed to host) |
@@ -572,6 +574,7 @@ codex-vm -kernel file.cdx [options]
 | `-usb-bot-drop-len-max <M>` | 0 (no upper bound) | Bound `-usb-bot-drop-len` above, so the lever refuses a BAND of command sizes rather than everything from N upward. It exists because the diagnostic bank writes 32,768-byte commands of its own: without it, every threshold small enough to refuse a rung also refuses the bank, the bank dies before the stage runs, and the row reads `no-medium`. With `N == M` the lever refuses exactly one command size, which is what a control wants. **It cannot rescue an ordinal-keyed arm whose target is the same size as the bank's writes:** the 2.7 MB sink stage writes 32,768-byte commands and so does the bank, so no threshold separates them, and `diag-arm.ps1`'s `sink-drop` stays ordinal-keyed for that reason. |
 | `-usb-bot-revive-on-reset` | off (the death is LATCHED) | Pairs with `-usb-bot-die-len` / `-usb-bot-die-lba`, which kill the BOT target at a write of a given size at or above a given LBA and leave it dead for the rest of the run. With this switch the target ANSWERS AGAIN after a Bulk-Only Mass Storage Reset, and the die trigger is SPENT rather than merely lifted. It keys on the BOT class reset and not a port reset because that is the one the driver issues: measured off `sink-dies`, the guest sends four Mass Storage Resets after the death and no port reset at all. Without the trigger being spent the driver retries the write that killed it, the length and LBA still match, and it dies again forever. This is what makes `msc-cell-retry` reach `msc-retry-ok` (3): the latched default can only ever reach `msc-retry-failed` (2), so the driver's recovery had a bed for its failure and none for its success |
 | `-usb-bot-die-on-nic` | off | The BOT target stops answering FOREVER at the first bulk WRITE issued after the e1000 model sees the first observable of NIC bring-up. Latched like `-usb-bot-die-lba`, and spent by `-usb-bot-revive-on-reset` in the same way. **It injects a symptom, not a mechanism**, exactly as `-usb-setcfg-fault` does: nothing here claims to know why a part would behave this way, and no reading taken under it is evidence that it does. It exists because the other two medium-death levers key on a property of the WRITE (its length, its LBA) and so can only express "the medium dies at a certain kind of write"; the candidate sitting 11 raised is that the write is innocent and its TIMING is the whole of it, which no length and no LBA can separate. Arms on either the CTRL write that sets SLU or the RCTL write that sets EN, whichever comes first, and the stderr line NAMES the register rather than assuming one: measured 2026-08-21 on the diag ladder it is **RCTL.EN**, written by `nicinit`. Its arm is `nic-kills-msc` and its control is `b3-pass` |
+| `-usb-bot-stall-lba <L>` `-usb-bot-stall-after <B>` `-usb-bot-stall-nth <K>` | off; K=1 | On the Kth WRITE(10) at exactly LBA L longer than B bytes, the BOT target takes the first B bytes of the data phase and NAKs the rest: the TRB stays at the dequeue pointer, so Stop Endpoint reports it as a TD in hand (code 26) with the true residual. The target stays in that command's data-out phase: a Mass Storage Reset is answered STALL, an IN transfer is NAKed, and each later OUT transfer is stored as the next 512-byte packets of the write, so a CBW lands at the start of a sector. When the write's declared length is complete the target returns its CSW, unless short packets (CBWs) completed it, in which case it latches dead (`-usb-bot-revive-on-reset` revives it). Sitting 17's loss (`HardwareSitting.md`, SITTING 17); its arm is `bank-desync` |
 | `-usb-writeback` | off (the target is WRITE-THROUGH) | The BOT target keeps written blocks in a volatile cache and makes them durable only when SYNCHRONIZE CACHE (0x35) commits them; whatever is uncommitted when the machine stops is LOST, as at a real power-off. **The default cannot express a missing flush** (L-FREEDOM): write-through calls `ide_flush` in the write's own data phase, so the bytes reach the image whether or not the guest ever asks for a commit, and a run with the flush and a run without it are the same colour, while sittings 13 and 14 lost the bank on the board. `Read-Bank` in `diag-arm.ps1` already reads the file out of the IMAGE after codex-vm is killed, so a power-off readback needs no new machinery. **Read the exit line before reading the arm's colour:** `USB WRITEBACK: commits=N committed-bytes=N lost-bytes=N`, printed whenever the flag is on. A flush-absent arm reporting `lost-bytes=0` never reached the condition it exists to test and its colour means nothing (L-VACUOUS). The dirty region is one coalesced span, which is exact and not an approximation: bytes between two writes are unmodified, so the in-memory image already equals the file there. |
 | `-usb-no-unit-attention` | off (the condition is ON) | Restore the old always-ready storage target. **By default the device now presents the power-on UNIT ATTENTION every conforming SCSI target presents:** the first command after a controller reset answers CHECK CONDITION with sense key 0x06 / ASC 0x29, and the condition persists until REQUEST SENSE reads it. A host that skips that handshake sees its first real command fail on real hardware and used to pass here; `msc-wait-ready`'s retry loop had never executed. The condition is armed in the RESET path, not at init, because the guest issues HCRST during bring-up and would wipe it -- a sabotage arm that should have failed and did not is what found that. |
 | `-usb-disk-port <N>` | 1 | Carry the mass-storage device to root port N; its old port goes dark rather than answering as well. Pair with `-xhci-ports` to reproduce a device sitting where no reader can see it. **No bed could put a connected device above root port 7** before this: the model had four ports, and QEMU refuses attachment above its eighth whatever HCSPARAMS1 claims. The ASUS answered with the boot stick on port 9, past the probe's eight PORTSC rows, so a count of connected ports named none of them. `-xhci-ports 26 -usb-disk-port 10` reproduces the board's `port=9 speed=4`. **Before believing a wide-port PASS, run the arm that must FAIL:** `-xhci-ports 8 -usb-disk-port 10` seats the disk past the declared port count, so the walk's own bound cannot reach it and the run has to report `connect=FAILED` (or `ok=0` on a `usb-attach` probe). Without that third arm a passing wide-port run is indistinguishable from a flag the emulator ignored. Better still, make the probe PRINT the port the walk settled on, so a vacuous run says `port=0` and convicts itself. |
@@ -1104,10 +1107,11 @@ duration. The RAM-polling ones, which are the class above, are:
 - **`nvme-fuel` (`GopNvme.codex`)** polls a completion-queue phase bit, which
   is DMAd memory. Not measured, not mine, named here because it is the same
   shape.
-- **`xhci-fuel` (`GopXhci.codex`)** is already open as WORKS-9, which states
-  the problem exactly: it is a spin count nobody has converted to a duration
-  on that box, and no bed can, because codex-vm completes every transfer
-  before the guest spins once.
+- **`xhci-fuel` (`GopXhci.codex`)** is a spin count nobody has converted to a
+  duration, and no bed can, because codex-vm completes every transfer before
+  the guest spins once. On the ASUS the smallest fuel any completed sink
+  transfer left was 806,239 of 1,000,000 (sitting 18, 2026-09-30), so the
+  budget has margin on that box.
 - **`smp-wait-fuel` (`X86_64Boot.codex`)** polls a RAM flag another core sets.
   Boot-time only and it has never failed, but it is the same shape.
 
@@ -1454,7 +1458,12 @@ topology the emulator presents.
 driven by QueryPerformanceCounter. Comparator 0 with periodic mode
 and interrupt generation.
 
-**Timers and Interrupts.** Dual 8259 PIC (master 0x20, slave 0xA0).
+**Timers and Interrupts.** Dual 8259 PIC (master 0x20, slave 0xA0). The
+master holds an in-service bit for IRQ0 and IRQ1 from delivery until an EOI
+on port 0x20 (non-specific or specific; ICW4 auto-EOI honoured), and an IRQ
+waits while it or a higher-priority IRQ is in service, so an EOI sent to the
+local APIC instead stops the tick and the keyboard as it does under QEMU and
+on hardware (`codex/test/ops/pic-eoi-by-vector`).
 PIT channel 0 at port 0x40 (host-driven periodic tick). CMOS RTC at
 port 0x70/0x71 (real host time). PC speaker via Windows Beep().
 
@@ -1617,7 +1626,7 @@ ways, `USE_QEMU=1` leaves `UseCodexVm` **True**.
 
 ```powershell
 $env:CODEX_VM_HOST = 'qemu'
-build/test.ps1 -Jobs 4
+build/test.ps1 -Jobs 16
 ```
 
 `CODEX_ACCEL` overrides the accelerator (`whpx` on Windows, `tcg` on Linux).
@@ -1757,12 +1766,14 @@ and no fault. For more than the PC, drive Renode directly:
 cpu CreateExecutionTracing "tracer" @<path> PC   # then RunFor, then Dispose
 sysbus.cpu PC ; sysbus.cpu GetRegister <n>       # at the trap
 sysbus ReadDoubleWord 0x<addr>                   # the instruction actually there
-riscv64-linux-gnu-objdump -D -b binary -m riscv:rv64 --adjust-vma=0x80000080 <bin>
+riscv64-linux-gnu-objdump -D -b binary -m riscv:rv64 --adjust-vma=0x80000000 <bin>
 ```
 
-The riscv flat `.bin` begins at the ENTRY, 0x80000080, not at 0x80000000; an
-`--adjust-vma=0x80000000` shifts every address by 0x80 and makes correct
-code read as misaligned.
+The riscv flat `.bin` begins at the load base, 0x80000000, and the entry is
+0x80000080 inside it; the `.map` addresses are load addresses (measured
+2026-09-28 on `trie-prefix-test`: `list-at` at its map address under
+0x80000000, mid-function under 0x80000080). Check one known symbol against
+the listing before reading a fault PC.
 
 ### `compile-arm64.ps1` ASKS FOR 3 GiB A GUEST, AND A CORPUS RUN IS ONE GUEST PER SUBJECT
 
@@ -4009,6 +4020,17 @@ under WSL with QEMU TCG is a last resort for hardware watchpoints
 (DR0-DR3) on specific memory addresses. Rule 6 permits Unix tools
 for this purpose only. See `build/gdb-watchpoint.ps1`.
 
+Take the address from the map of the kernel you boot, and name that kernel
+with `-Kernel` (the default is whatever `build-output` holds). A function's
+address is `Get-Map1Symbols <kernel>` (`build/vm-config.ps1`, load base
+included); a heap address is a `DECK-<n>` origin printed by `compile.ps1
+-Measure` for the same source and kernel, which is deterministic run to run.
+Proven 2026-09-28 on seed `858812B9`, a 313-byte source, TCG, about 10 s an
+arm: `-Break` on `tokenize-collect` stops at its entry; `-Watch` on the LEX
+deck origin stops in `__start` (a `rep stos` of `0xCD`, old and new values
+printed); `-Watch` on an address nothing writes runs the compile to `SIZE:`
+without stopping. Map a stopping RIP back with the same symbol list.
+
 ## Reading Telemetry Off the Glass (QR)
 
 On real hardware there is no serial port. Consumer boards of this era
@@ -4110,7 +4132,7 @@ build/compile.ps1 -Src build/output/Codex.codex `
 
 # 3. Run the battery against the poison seed. Name the tiers you want:
 #    a bare invocation is the `lang` tier only, which is NOT the full battery.
-build/test.ps1 -CodexCdx build/output/poison-seed.cdx -Tier all -Jobs 4 -ApprovedBy damian
+build/test.ps1 -CodexCdx build/output/poison-seed.cdx -Tier all -Jobs 16 -ApprovedBy damian
 
 # 4. PUT YOUR KERNEL BACK. Step 3 does not.
 Copy-Item -Force build-output/kernel-backup.cdx build-output/bare-metal/Codex.cdx
@@ -4229,37 +4251,28 @@ also the signature of a headless parameter prompt, which is why `compile.ps1`
 requires `-Log`. Check the artifact's timestamp too: an output file still
 carrying its previous mtime while the step "runs" is the same tell.
 
-**`-Jobs 4`, RE-RULED by Damian 2026-08-27, superseding the 2026-08-02
-`-Jobs 8` standard, release runs included.** Not the dead XMP workaround
-returning: a different condition, measured and named. The box holds 15.8 GiB
-and 8 slots of 3072 MB guests overcommit it, killing guests with a moving
-culprit that reads as codegen ("The compile batch asks for 12 GB of guest
-RAM, and a short box reports it as a CODEGEN failure", below -- **and read
-"asks for" literally: that number is REQUEST arithmetic, slots times the
-`-mem 3072` ceiling, never a measured appetite.** `-mem` is a ceiling, not a
-commitment; measured 2026-08-28, a self-compile guest peaks ~1.1 GB and a
-compile-BATCH guest scales linearly with its batch, 234 MB at 60 chapters to
-2,134 MB at a 416-chapter slot. On 2026-08-28 this sentence was quoted as
-consumption and a day's regression hunt rode on it before the differential
-came back FLAT; a request figure cited as an appetite is the false report
-that hunt was chasing). The 2026-08-02
-raise was right on its own evidence (977 s of compile phase at 4 slots was
-the XMP-era workaround outliving its condition); this lowering carries its
-condition with it for the same reason -- when the box grows RAM, re-measure
-and re-raise. The crash-shaped contention classes are still caught by the
-retry paths (`Invoke-StandaloneRetry` here, the sweep's no-diagnostic
-re-runs), which is why 4 is enough width to keep.
+**`-Jobs 16`, release runs included** (Damian, 2026-09-28). The box holds
+47.77 GiB and 20 logical CPUs, CPU runs out before RAM does, and the
+measurement is `CoordinationProtocol.md`, "The token does not cover RAM".
+An overcommit still kills guests with a moving culprit that reads as codegen
+("The compile batch asks for 12 GB of guest RAM, and a short box reports it
+as a CODEGEN failure", below). **Read "asks for" literally: that number is
+REQUEST arithmetic, slots times the `-mem 3072` ceiling, never a measured
+appetite** (L-REQUEST). Measured 2026-08-28, a self-compile guest peaks
+~1.1 GB and a compile-BATCH guest scales linearly with its batch, 234 MB at
+60 chapters to 2,134 MB at a 416-chapter slot. The crash-shaped contention
+classes are caught by the retry paths (`Invoke-StandaloneRetry` here, the
+sweep's no-diagnostic re-runs).
 
 **A Renode instance is a VM load under this ruling, and its peak is
 invisible to a spot check.** Measured 2026-08-28 during the riscv cross bed:
 four concurrent instances read 268 MB at their largest in a one-shot sample
 while Damian watched the same processes BOUNCE TO ~1 GB EACH at peak, so a
-Renode battery is transiently ~4 GB beside whatever gates are running --
-four gate slots of 3072 MB plus four Renode peaks is the whole box, and
-that day it read as four killed gates and a "qemu produced nothing" with a
+Renode battery is transiently ~4 GB beside whatever gates are running, and
+an overcommit reads as killed gates and a "qemu produced nothing" with a
 different plausible culprit each time. Count running Renode instances
-against the box before launching a gate, and run Renode beds at `-Jobs 4`
-or serial like every other parallel harness.
+against the box before launching a gate. Renode arms run ALONE until a
+Renode bed is measured on this box (`CoordinationProtocol.md`).
 
 **A bare `build/test.ps1` is the `lang` tier, not the full battery.** The
 command above says `-Tier all` on purpose. A poison run over `lang` proves
@@ -4327,14 +4340,12 @@ needed internally.
 
 ## Host changes on the build box, 2026-09-01, with the undo for each
 
-The box lost a DIMM (one 16 GB KSD516G72C34VTR at Controller1-DIMMB2,
-15.8 GiB visible) and the replacement is weeks away, so Damian directed a
-host-side purge of resident processes that were not the fleet's. Every
-change below was made from an elevated shell he approved at the UAC prompt
-(root, 2026-09-01, 09:06-09:16) unless marked per-user. Nothing here
-touches the depot, the seed, or the build scripts; the build-side changes
-of the same morning (`-Jobs 8`, the gate-RAM units) are in
-`CoordinationProtocol.md` and `CurrentPlan.md`.
+Damian directed a host-side purge of resident processes that were not the
+fleet's while the box ran one DIMM down. Every change below was made from an
+elevated shell he approved at the UAC prompt (root, 2026-09-01,
+09:06-09:16) unless marked per-user. Nothing here touches the depot, the
+seed, or the build scripts. The box holds 47.77 GiB again (2026-09-28), so
+each row's undo is available.
 
 | # | what | how | measured effect | undo |
 |---|---|---|---|---|

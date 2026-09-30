@@ -1,0 +1,32 @@
+Chapter: SamplerGraph
+
+ k-diffusion's sample_euler (k_diffusion/sampling.py) at s_churn 0:
+ x + (sigma' - sigma) (x - D) / sigma, as one combination of x and D.
+
+ We say:
+
+Section: Euler
+
+  SamplerOps = record {
+    lincomb : (Integer, Integer, Integer, Integer, Real, Real, Real, Integer -> Integer),
+    free : (Integer -> Boolean)
+  }
+
+  euler-loop-with : SamplerOps, (Integer, Real -> Integer), Integer, List Real, Integer, Integer, Integer -> Integer
+  euler-loop-with (ops) (den) (x) (sig) (i) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else euler-loop-with ops den x sig (i + 1) n (bad + euler-step-with ops den x sig i n)
+
+ Step i alone, x updated in place; 1 when it was refused, else 0.
+
+  euler-step-with : SamplerOps, (Integer, Real -> Integer), Integer, List Real, Integer, Integer -> Integer
+  euler-step-with (ops) (den) (x) (sig) (i) (n) =
+    let s = list-at sig i
+    in let dt = list-at sig (i + 1) - s
+    in let d = den x s
+    in let r = if d == 0 then 0 - 1 else ops.lincomb x d d x (1.0 + dt / s) (0.0 - dt / s) 0.0 n
+    in let f = if d == 0 then True else ops.free d
+    in if r < 0 then 1 else 0
+
+  sample-euler-with : SamplerOps, (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-euler-with (ops) (den) (x) (sigmas) (n) = euler-loop-with ops den x sigmas 0 n 0

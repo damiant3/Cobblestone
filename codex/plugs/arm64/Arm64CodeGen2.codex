@@ -1253,11 +1253,6 @@ Section: Apply
    let msg = "[UNSUPPORTED] " & name & ": host sockets are hosted-Linux only (refused by design)"
    in a64-emit-int-lit (a64-add-shadow-warning st msg) (0 - 1)
 
-  a64-emit-unsupported-vec4 : A64State, Text -> A64EmitResult
-  a64-emit-unsupported-vec4 (st) (name) =
-   let msg = "[UNSUPPORTED] " & name & ": the four-lane mask and reduction family is not built for arm64 (x86-64 and wasm serve it)"
-   in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
-
  The x86 CPU-state builtins, refused for the same reason and named
  separately because the reason is a different one to state. A control
  register and CPUID are x86 architecture, not devices: AArch64 has system
@@ -1409,6 +1404,18 @@ Section: Apply
     state = a64-emit (vr.state) (arm64-ldr (vr.reg) (ar.reg) 0),
     reg = vr.reg
    }
+
+  a64-emit-heap-base : A64State -> A64EmitResult
+  a64-emit-heap-base (st) =
+   if (st.extra).darwin-boot then a64-emit-int-lit st a64-darwin-heap-addr
+   else
+    let ar = a64-alloc-temp st
+    in let st1 = a64-emit-li (ar.state) (ar.reg) a64-heap-base-cell
+    in let vr = a64-alloc-temp st1
+    in A64EmitResult {
+     state = a64-emit (vr.state) (arm64-ldr (vr.reg) (ar.reg) 0),
+     reg = vr.reg
+    }
 
   a64-emit-deck-set : A64State, IRExpr -> A64EmitResult
   a64-emit-deck-set (st) (arg) =
@@ -1590,7 +1597,11 @@ Section: Apply
    else if name == "read-serial-cce" & list-length args == 1 then a64-emit-empty-text st
    else if name == "prof-start" then a64-emit-int-lit st 0
    else if name == "prof-dump" then a64-emit-int-lit st 0
-   else if name == "__self-type-defs" then a64-emit-int-lit st 0
+   else if name == "__self-type-defs" then a64-emit-empty-list st
+   else if name == "variant-tag" & list-length args == 1 then
+    let r = a64-emit-expr st (list-at args 0)
+    in let rd = a64-alloc-temp (r.state)
+    in A64EmitResult { state = a64-emit (rd.state) (arm64-ldr (rd.reg) (r.reg) 0), reg = rd.reg }
    else if name == "uefi-read-key" then a64-emit-unsupported-firmware st "uefi-read-key"
    else if name == "port-in-byte" then a64-emit-unsupported-port st "port-in-byte"
    else if name == "port-out-byte" then a64-emit-unsupported-port st "port-out-byte"
@@ -1599,7 +1610,7 @@ Section: Apply
    else if name == "port-in-32" then a64-emit-unsupported-port st "port-in-32"
    else if name == "port-out-32" then a64-emit-unsupported-port st "port-out-32"
    else if name == "hosted-kind" then a64-emit-int-lit st 0
-   else if name == "__heap-base" then a64-emit-int-lit st 1073741824
+   else if name == "__heap-base" then a64-emit-heap-base st
    else if name == "host-socket" then a64-emit-unsupported-socket st "host-socket"
    else if name == "cpu-read-cr0" then a64-emit-unsupported-cpu st "cpu-read-cr0"
    else if name == "cpu-read-cr3" then a64-emit-unsupported-cpu st "cpu-read-cr3"
@@ -1647,7 +1658,16 @@ Section: Apply
    else if name == "mask-count" & list-length args == 1 then a64-emit-mask-count st (list-at args 0)
    else if name == "vec4-splat" & list-length args == 1 then a64-emit-vec-splat st (list-at args 0) (VectorTy 4 real-f32)
    else if name == "vec4-extract" & list-length args == 2 then a64-emit-vec-extract st (list-at args 0) (list-at args 1) 4
-   else if name == "mask4-any" | name == "mask4-all" | name == "mask4-none" | name == "mask4-count" | name == "vec4-select" | name == "vec4-reduce-add" then a64-emit-unsupported-vec4 st name
+   else if name == "vec-eq" & list-length args == 2 then a64-emit-vec-eq-call st args 0
+   else if name == "vec-ne" & list-length args == 2 then a64-emit-vec-eq-call st args 1
+   else if (name == "vec-approx-eq" | name == "vec4-approx-eq") & list-length args == 2 then a64-emit-vec-eq-call st args 2
+   else if (name == "vec-approx-exact" | name == "vec4-approx-exact") & list-length args == 2 then a64-emit-vec-eq-call st args 3
+   else if name == "mask4-any" & list-length args == 1 then a64-emit-mask-any st (list-at args 0)
+   else if name == "mask4-all" & list-length args == 1 then a64-emit-mask-all-n st (list-at args 0) 4
+   else if name == "mask4-none" & list-length args == 1 then a64-emit-mask-none st (list-at args 0)
+   else if name == "mask4-count" & list-length args == 1 then a64-emit-mask-count-n st (list-at args 0) 4
+   else if name == "vec4-select" & list-length args == 3 then a64-emit-vec-select st (list-at args 0) (list-at args 1) (list-at args 2) (VectorTy 4 real-f32)
+   else if name == "vec4-reduce-add" & list-length args == 1 then a64-emit-vec4-reduce-add st (list-at args 0)
    else a64-emit-user-fn-call st name args
 
 
@@ -1676,21 +1696,15 @@ Section: Apply
   a64-push-stack-args-pre : A64State, List Integer, Integer, Integer, Integer -> A64State
   a64-push-stack-args-pre (st) (locals) (i) (len) (stack-size) =
    if stack-size <= 0 then st
-   else let st0 = a64-load-stack-args-to-scratch st locals i len 0
-   in let st1 = a64-emit st0 (arm64-sub-imm a64-sp a64-sp stack-size)
-   in a64-store-scratch-to-stack st1 (len - i) 0
+   else a64-copy-stack-args (a64-emit st (arm64-sub-imm a64-sp a64-sp stack-size)) locals i len 0 stack-size
 
-  a64-load-stack-args-to-scratch : A64State, List Integer, Integer, Integer, Integer -> A64State
-  a64-load-stack-args-to-scratch (st) (locals) (i) (len) (slot) =
+  a64-copy-stack-args : A64State, List Integer, Integer, Integer, Integer, Integer -> A64State
+  a64-copy-stack-args (st) (locals) (i) (len) (slot) (shift) =
    if i >= len then st
-   else let st1 = a64-load-local-into st (list-at locals i) (a64-x10 + slot)
-   in a64-load-stack-args-to-scratch st1 locals (i + 1) len (slot + 1)
-
-  a64-store-scratch-to-stack : A64State, Integer, Integer -> A64State
-  a64-store-scratch-to-stack (st) (count) (slot) =
-   if slot >= count then st
-   else let st1 = a64-emit st (arm64-str (a64-x10 + slot) a64-sp (slot * 8))
-   in a64-store-scratch-to-stack st1 count (slot + 1)
+   else let local = list-at locals i
+   in let st1 = if local < a64-spill-base then a64-emit st (arm64-str local a64-sp (slot * 8))
+    else a64-emit (a64-emit st (arm64-ldr a64-x10 a64-sp ((local - a64-spill-base) * 8 + 96 + shift))) (arm64-str a64-x10 a64-sp (slot * 8))
+   in a64-copy-stack-args st1 locals (i + 1) len (slot + 1) shift
 
   a64-push-stack-args : A64State, List Integer, Integer, Integer, Integer -> A64State
   a64-push-stack-args (st) (locals) (i) (len) (slot) =
@@ -1752,12 +1766,15 @@ Section: Apply
   a64-emit-closure-call-direct (st) (closure-local) (args) =
    let saved-nl = st.next-local
    in let saved = a64-save-args st args 0 []
+   in let stack-size = if list-length args > 8 then a64-align-16 ((list-length args - 8) * 8) else 0
    in let st1 = a64-move-args-to-regs (saved.state) (saved.locals) 0
    in let cl = a64-load-local st1 closure-local
    in let st2 = a64-emit (cl.state) (arm64-mov a64-x11 (cl.reg))
    in let st3 = a64-emit st2 (arm64-ldr a64-x9 a64-x11 0)
-   in let st4 = a64-emit st3 (arm64-blr a64-x9)
-   in let st5 = __record-set st4 "next-local" saved-nl
+   in let st3a = a64-push-stack-args-pre st3 (saved.locals) 8 (list-length args) stack-size
+   in let st4 = a64-emit st3a (arm64-blr a64-x9)
+   in let st4a = if stack-size > 0 then a64-emit st4 (arm64-add-imm a64-sp a64-sp stack-size) else st4
+   in let st5 = __record-set st4a "next-local" saved-nl
    in A64EmitResult { state = st5, reg = a64-x0 }
 
   a64-emit-chained-closure-call : A64State, Integer, List IRExpr, Integer -> A64EmitResult
@@ -1837,6 +1854,51 @@ Section: Partial Application
    else if i < 8 then a64-tramp-load-captures (a64-emit st (arm64-ldr (a64-x0 + i) a64-x11 (16 + i * 8))) (i + 1) num-captures
    else st
 
+  a64-emit-small-tramp : A64State, Text, Integer -> A64State
+  a64-emit-small-tramp (st) (func-name) (c) =
+   let st2 = a64-tramp-shift-args st 7 c
+   in let st3 = a64-tramp-load-captures st2 0 c
+   in let st4 = a64-emit-load-func-addr st3 a64-x9 func-name
+   in a64-emit st4 (arm64-br a64-x9)
+
+ A closure whose captures and arguments pass eight is called through a frame of
+ its own. After the frame: [x29+16+8(i-8)] is the caller's argument i from 8,
+ and [sp+8(p-8)] is the callee's value p from 8.
+
+  a64-emit-big-tramp : A64State, Text, Integer, Integer -> A64State
+  a64-emit-big-tramp (st) (func-name) (c) (r) =
+   let n = c + r
+   in let st1 = a64-emit st (arm64-stp-pre 29 30 a64-sp (0 - 16))
+   in let st2 = a64-emit st1 (arm64-add-imm 29 a64-sp 0)
+   in let st3 = a64-emit st2 (arm64-sub-imm a64-sp a64-sp (a64-align-16 ((n - 8) * 8)))
+   in let st4 = a64-big-tramp-fill st3 c 8 n
+   in let st5 = a64-big-tramp-shift st4 c 7
+   in let st6 = a64-big-tramp-caps st5 c 0
+   in let st7 = a64-emit-load-func-addr st6 a64-x9 func-name
+   in let st8 = a64-emit st7 (arm64-blr a64-x9)
+   in let st9 = a64-emit st8 (arm64-add-imm a64-sp 29 0)
+   in a64-emit (a64-emit st9 (arm64-ldp-post 29 30 a64-sp 16)) arm64-ret
+
+  a64-big-tramp-fill : A64State, Integer, Integer, Integer -> A64State
+  a64-big-tramp-fill (st) (c) (p) (n) =
+   if p >= n then st
+   else let slot = (p - 8) * 8
+   in let st1 = if p < c then a64-emit (a64-emit st (arm64-ldr a64-x10 a64-x11 (16 + p * 8))) (arm64-str a64-x10 a64-sp slot)
+    else if p - c < 8 then a64-emit st (arm64-str (a64-x0 + p - c) a64-sp slot)
+    else a64-emit (a64-emit st (arm64-ldr a64-x10 29 (16 + (p - c - 8) * 8))) (arm64-str a64-x10 a64-sp slot)
+   in a64-big-tramp-fill st1 c (p + 1) n
+
+  a64-big-tramp-shift : A64State, Integer, Integer -> A64State
+  a64-big-tramp-shift (st) (c) (p) =
+   if p < c then st
+   else a64-big-tramp-shift (a64-emit st (arm64-mov (a64-x0 + p) (a64-x0 + p - c))) c (p - 1)
+
+  a64-big-tramp-caps : A64State, Integer, Integer -> A64State
+  a64-big-tramp-caps (st) (c) (p) =
+   if p >= c then st
+   else if p >= 8 then st
+   else a64-big-tramp-caps (a64-emit st (arm64-ldr (a64-x0 + p) a64-x11 (16 + p * 8))) c (p + 1)
+
   a64-store-closure-captures : A64State, List Integer, Integer, Integer -> A64State
   a64-store-closure-captures (st) (cap-locals) (ptr-local) (i) =
    if i >= list-length cap-locals then st
@@ -1871,14 +1933,12 @@ Section: Partial Application
    in let num-captures = list-length captured-args
    in if num-captures == 0 then a64-emit-zero-capture-closure (saved.state) func-name type-arity
    else let jmp-over-index = saved.state.insn-count
+   in let effective-arity = if type-arity > num-captures then type-arity - num-captures else 1
    in let st1 = a64-emit (saved.state) arm64-nop
    in let tramp-index = st1.insn-count
-   in let st2 = a64-tramp-shift-args st1 7 num-captures
-   in let st3 = a64-tramp-load-captures st2 0 num-captures
-   in let st4 = a64-emit-load-func-addr st3 a64-x9 func-name
-   in let st5 = a64-emit st4 (arm64-br a64-x9)
+   in let st5 = if num-captures + effective-arity > 8 then a64-emit-big-tramp st1 func-name num-captures effective-arity
+    else a64-emit-small-tramp st1 func-name num-captures
    in let st6 = a64-patch-insn st5 jmp-over-index (arm64-b ((st5.insn-count - jmp-over-index) * 4))
-   in let effective-arity = if type-arity > num-captures then type-arity - num-captures else 1
    in let closure-size = (2 + num-captures) * 8
    in let ptr-r = a64-alloc-temp st6
    in let st7 = a64-emit (ptr-r.state) (arm64-mov (ptr-r.reg) a64-heap-reg)

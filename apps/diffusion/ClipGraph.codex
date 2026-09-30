@@ -1,0 +1,260 @@
+Chapter: ClipGraph
+
+ SDXL's two text encoders on the GPU, as Forge's SDXL engine runs them
+ (backend/diffusion_engine/sdxl.py:39-63, transformers CLIPTextModel): a
+ pre-LayerNorm transformer over 77 tokens, token and position embeddings in,
+ causal self-attention with 64-wide heads scaled by 1/8, LayerNorm eps 1e-5.
+ CLIP ViT-L/14 is 12 layers of 768 with quick_gelu; OpenCLIP ViT-bigG/14 is
+ 32 of 1280 with the exact gelu, and stores q, k and v as the three row
+ thirds of in_proj. Forge conditions on the hidden state after all but the
+ last layer, with no final LayerNorm (clip skip 2). G's pooled output is the
+ final LayerNorm of the last layer at the first EOS position (the argmax of
+ the ids, transformers' eos_token_id 2 path), times text_projection, which
+ open_clip stores as [in x out].
+
+ We say:
+
+Section: Types
+
+  ClipSpec = record {
+    cs-width : Integer,
+    cs-heads : Integer,
+    cs-layers : Integer,
+    cs-mlp : Integer,
+    cs-erf-gelu : Boolean,
+    cs-open : Boolean,
+    cs-pool : Boolean,
+    cs-prefix : Text,
+    cs-part : Integer,
+    cs-pad : Integer,
+    cs-skip : Integer,
+    cs-final-norm : Boolean
+  }
+
+  ClipLayer = record {
+    cy-ln1-g : Integer,
+    cy-ln1-b : Integer,
+    cy-q-w : Integer,
+    cy-q-b : Integer,
+    cy-k-w : Integer,
+    cy-k-b : Integer,
+    cy-v-w : Integer,
+    cy-v-b : Integer,
+    cy-o-w : Integer,
+    cy-o-b : Integer,
+    cy-ln2-g : Integer,
+    cy-ln2-b : Integer,
+    cy-fc1-w : Integer,
+    cy-fc1-b : Integer,
+    cy-fc2-w : Integer,
+    cy-fc2-b : Integer
+  }
+
+  ClipWork = record {
+    ck-x : Integer,
+    ck-h : Integer,
+    ck-h16 : Integer,
+    ck-q : Integer,
+    ck-k : Integer,
+    ck-v : Integer,
+    ck-s : Integer,
+    ck-att : Integer,
+    ck-o : Integer,
+    ck-m : Integer,
+    ck-m16 : Integer,
+    ck-stats : Integer,
+    ck-zero : Integer
+  }
+
+  ClipOutput = record {
+    co-status : Integer,
+    co-cond : Integer,
+    co-pooled : Integer
+  }
+
+  clip-tokens : Integer = 77
+
+Section: Op Set
+
+  ClipOps a = record {
+    norm : (ClipWork, Integer, Integer, Integer, Integer, Integer -> Integer),
+    cast : (Integer, Integer, Integer -> Integer),
+    linear : (Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer),
+    add : (Integer, Integer, Integer, Integer -> Integer),
+    attn-scores : (Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> Integer),
+    softmax-causal : (Integer, Integer, Integer, Integer -> Integer),
+    attn-values : (Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer),
+    gelu : (Boolean, Integer, Integer -> Integer),
+    cast-at : (Integer, Integer, Integer, Integer -> Integer),
+    copy-row : (Integer, Integer, Integer, Integer -> Boolean),
+    alloc : (Integer -> Integer),
+    free : (Integer -> Boolean),
+    embed : (a, Integer, List Integer, Integer -> Integer),
+    zero-fill : (Integer, Integer -> Integer),
+    work-sizes : (ClipSpec -> List Integer),
+    spec : (a -> ClipSpec),
+    status : (a -> Integer),
+    pos : (a -> Integer),
+    layers : (a -> List ClipLayer),
+    final-g : (a -> Integer),
+    final-b : (a -> Integer),
+    proj : (a -> Integer)
+  }
+
+Section: One Layer
+
+ Every step answers the kernel microseconds or a negative refusal, and the
+ first refusal ends the layer; a layer is the eleven launches below in order.
+
+  ce-steps : List Integer, Integer -> Integer
+  ce-steps (rs) (i) =
+    if i >= list-length rs then 0
+    else if list-at rs i < 0 then 0 - 4
+    else ce-steps rs (i + 1)
+
+  ce-attention-with : ClipOps a, ClipSpec, ClipWork, ClipLayer -> Integer
+  ce-attention-with (ops) (s) (w) (y) =
+    let d = s.cs-width
+    in let t = clip-tokens
+    in let hd = s.cs-heads
+    in let a = ops.norm w (w.ck-x) (y.cy-ln1-g) (y.cy-ln1-b) d t
+    in if a < 0 then a
+    else ce-steps [
+      ops.cast (w.ck-h) (w.ck-h16) (t * d),
+      ops.linear (w.ck-h16) (y.cy-q-w) (y.cy-q-b) (w.ck-q) t d d,
+      ops.linear (w.ck-h16) (y.cy-k-w) (y.cy-k-b) (w.ck-k) t d d,
+      ops.linear (w.ck-h16) (y.cy-v-w) (y.cy-v-b) (w.ck-v) t d d,
+      ops.attn-scores (w.ck-q) (w.ck-k) (w.ck-s) hd t t 64 0.125,
+      ops.softmax-causal (w.ck-s) t t (hd * t),
+      ops.attn-values (w.ck-s) (w.ck-v) (w.ck-att) hd t t 64,
+      ops.cast (w.ck-att) (w.ck-h16) (t * d),
+      ops.linear (w.ck-h16) (y.cy-o-w) (y.cy-o-b) (w.ck-o) t d d,
+      ops.add (w.ck-x) (w.ck-o) (w.ck-x) (t * d)] 0
+
+  ce-mlp-with : ClipOps a, ClipSpec, ClipWork, ClipLayer -> Integer
+  ce-mlp-with (ops) (s) (w) (y) =
+    let d = s.cs-width
+    in let t = clip-tokens
+    in let f = s.cs-mlp
+    in let a = ops.norm w (w.ck-x) (y.cy-ln2-g) (y.cy-ln2-b) d t
+    in if a < 0 then a
+    else ce-steps [
+      ops.cast (w.ck-h) (w.ck-h16) (t * d),
+      ops.linear (w.ck-h16) (y.cy-fc1-w) (y.cy-fc1-b) (w.ck-m) t f d,
+      ops.gelu (s.cs-erf-gelu) (w.ck-m) (t * f),
+      ops.cast (w.ck-m) (w.ck-m16) (t * f),
+      ops.linear (w.ck-m16) (y.cy-fc2-w) (y.cy-fc2-b) (w.ck-o) t d f,
+      ops.add (w.ck-x) (w.ck-o) (w.ck-x) (t * d)] 0
+
+  ce-layer-with : ClipOps a, ClipSpec, ClipWork, ClipLayer -> Integer
+  ce-layer-with (ops) (s) (w) (y) =
+    let a = ce-attention-with ops s w y
+    in if a < 0 then a else ce-mlp-with ops s w y
+
+  ce-layers-with : ClipOps a, ClipSpec, ClipWork, List ClipLayer, Integer, Integer -> Integer
+  ce-layers-with (ops) (s) (w) (ys) (i) (stop) =
+    if i >= stop then 0
+    else let r = ce-layer-with ops s w (list-at ys i)
+    in if r < 0 then r else ce-layers-with ops s w ys (i + 1) stop
+
+Section: Work Buffers
+
+  ce-alloc-into-with : ClipOps a, List Integer, Integer, List Integer -> List Integer
+  ce-alloc-into-with (ops) (sizes) (i) (acc) =
+    if i >= list-length sizes then acc
+    else ce-alloc-into-with ops sizes (i + 1) (list-push acc (ops.alloc (list-at sizes i)))
+
+  ce-all-nonzero : List Integer, Integer -> Boolean
+  ce-all-nonzero (hs) (i) =
+    if i >= list-length hs then True
+    else if list-at hs i == 0 then False
+    else ce-all-nonzero hs (i + 1)
+
+  ce-free-all-with : ClipOps a, List Integer, Integer -> Integer
+  ce-free-all-with (ops) (hs) (i) =
+    if i >= list-length hs then 0
+    else let f = if list-at hs i == 0 then True else ops.free (list-at hs i)
+    in ce-free-all-with ops hs (i + 1)
+
+  ce-work : List Integer -> ClipWork
+  ce-work (hs) =
+    ClipWork { ck-x = list-at hs 0, ck-h = list-at hs 1, ck-h16 = list-at hs 2, ck-q = list-at hs 3, ck-k = list-at hs 4, ck-v = list-at hs 5, ck-s = list-at hs 6, ck-att = list-at hs 7, ck-o = list-at hs 8, ck-m = list-at hs 9, ck-m16 = list-at hs 10, ck-stats = list-at hs 11, ck-zero = list-at hs 12 }
+
+Section: Encoding
+
+  ce-eos : List Integer, Integer -> Integer
+  ce-eos (ids) (i) =
+    if i >= list-length ids then list-length ids - 1
+    else if list-at ids i == 49407 then i
+    else ce-eos ids (i + 1)
+
+  ce-pooled-with : ClipOps a, a, ClipWork, List Integer, Integer -> Integer
+  ce-pooled-with (ops) (cw) (w) (ids) (out) =
+    let s = ops.spec cw
+    in let d = s.cs-width
+    in let n = ops.norm w (w.ck-x) (ops.final-g cw) (ops.final-b cw) d clip-tokens
+    in if n < 0 then n
+    else let e = ce-eos ids 0
+    in if s.cs-open == False then (if ops.copy-row (w.ck-h) (e * d * 4) (d * 4) out then 0 else 0 - 2)
+    else ce-steps [
+      ops.cast-at (w.ck-h) (e * d * 4) (w.ck-h16) d,
+      ops.linear (w.ck-h16) (ops.proj cw) 0 out 1 d d] 0
+
+ The penultimate hidden state is x after all but the last layer; it is copied
+ out by adding a zero buffer, and x runs on through the last layer only when
+ the pooled output is wanted.
+
+ Forge re-pads every position after the first EOS with the encoder's own
+ tokenizer's pad id where that differs from EOS (classic_engine.py:300-303):
+ SDXL's tokenizer_2 pads with "!", id 0, therefore G reads zeros where L
+ reads EOS. clip-encode takes the ids as the CLIP-L tokenizer pads them.
+
+  ce-repad : List Integer, Integer, Integer, Boolean, List Integer -> List Integer
+  ce-repad (ids) (pad) (i) (seen) (acc) =
+    if i >= list-length ids then acc
+    else if seen then ce-repad ids pad (i + 1) True (list-push acc pad)
+    else ce-repad ids pad (i + 1) (list-at ids i == 49407) (list-push acc (list-at ids i))
+
+  clip-encode-with : ClipOps a, a, List Integer -> ClipOutput
+  clip-encode-with (ops) (cw) (given) =
+    let s = ops.spec cw
+    in let ids = if s.cs-pad == 49407 then given else ce-repad given (s.cs-pad) 0 False []
+    in let t = clip-tokens
+    in let d = s.cs-width
+    in let hs = ce-alloc-into-with ops (ops.work-sizes s) 0 []
+    in let cond = ops.alloc (t * d * 4)
+    in let pooled = if s.cs-pool then ops.alloc (d * 4) else 0
+    in if ops.status cw /= 0 then ce-fail-with ops hs cond pooled (ops.status cw)
+    else if ce-all-nonzero hs 0 == False | cond == 0 | (s.cs-pool & pooled == 0) then ce-fail-with ops hs cond pooled (0 - 3)
+    else clip-encode-in-with ops cw ids (ce-work hs) hs cond pooled
+
+  clip-encode-in-with : ClipOps a, a, List Integer, ClipWork, List Integer, Integer, Integer -> ClipOutput
+  clip-encode-in-with (ops) (cw) (ids) (w) (hs) (cond) (pooled) =
+    let s = ops.spec cw
+    in let t = clip-tokens
+    in let d = s.cs-width
+    in let e = ops.embed cw (w.ck-x) ids 0
+    in let p = if e < 0 then e else ops.add (w.ck-x) (ops.pos cw) (w.ck-x) (t * d)
+    in let z = if p < 0 then p else ops.zero-fill (w.ck-zero) (t * d * 4)
+    in let run = s.cs-layers + 1 - s.cs-skip
+    in let r = if z < 0 then z else ce-layers-with ops s w (ops.layers cw) 0 run
+    in let c = if r < 0 then r else ce-cond-with ops cw w cond
+    in let last = if c < 0 | s.cs-open == False then c else ce-layers-with ops s w (ops.layers cw) run (s.cs-layers)
+    in let pl = if last < 0 | s.cs-pool == False then last else ce-pooled-with ops cw w ids pooled
+    in let f = ce-free-all-with ops hs 0
+    in if pl < 0 then ce-fail-with ops [] cond pooled pl
+    else ClipOutput { co-status = 0, co-cond = cond, co-pooled = pooled }
+
+  ce-cond-with : ClipOps a, a, ClipWork, Integer -> Integer
+  ce-cond-with (ops) (cw) (w) (cond) =
+    let s = ops.spec cw
+    in let n = clip-tokens * s.cs-width
+    in if s.cs-final-norm == False then ops.add (w.ck-x) (w.ck-zero) cond n
+    else let a = ops.norm w (w.ck-x) (ops.final-g cw) (ops.final-b cw) (s.cs-width) clip-tokens
+    in if a < 0 then a else ops.add (w.ck-h) (w.ck-zero) cond n
+
+  ce-fail-with : ClipOps a, List Integer, Integer, Integer, Integer -> ClipOutput
+  ce-fail-with (ops) (hs) (cond) (pooled) (status) =
+    let f = ce-free-all-with ops hs 0
+    in let g = ce-free-all-with ops [cond, pooled] 0
+    in ClipOutput { co-status = status, co-cond = 0, co-pooled = 0 }

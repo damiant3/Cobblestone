@@ -1,0 +1,450 @@
+Chapter: ClipPromptText
+  cites AI chapter ClipBpe
+
+ Parsing is parse_prompt_attention's scan: at each position the first of \(
+ \) \[ \] \\ \ ( [ :weight) ) ] text : that matches. ( and [ open a range;
+ ) closes one at x1.1, ] at x1/1.1, :w) at x w; a close with nothing open, a
+ :w) with no ( open, and a lone : are text; an escape is its character and a
+ lone \ is empty text. Ranges still open at the end close at x1.1 or x1/1.1.
+ Text splits on a whole-word BREAK and the whitespace around it, which
+ becomes the segment "BREAK" at weight -1. Adjacent segments of bit-equal
+ weight join.
+
+ Chunking: each segment is tokenized alone and its tokens fill 75-token
+ chunks. A comma (",</w>", id 267) marks a break point; a token arriving at
+ a full chunk whose last comma is within 20 tokens moves everything after
+ that comma to the next chunk. A BREAK segment closes the chunk even when it
+ is empty. Each chunk is padded with EOS to 75 and wrapped in BOS and EOS,
+ its weights in 1.0.
+
+ Emphasis "Original", Forge's default: a chunk's hidden states scale row by
+ row by the weights, then by the chunk's mean before over its mean after. A
+ chunk whose weights are all 1.0 is unchanged. Pooled is the first chunk's,
+ before emphasis. An empty negative prompt is zeros, one chunk long.
+
+ We say:
+
+Section: Types
+  ClipChunk = record {
+    cc-ids : List Integer,
+    cc-mults : List Real
+  }
+
+  AttnParse = record {
+    ap-texts : List Text,
+    ap-weights : List Real,
+    ap-round : List Integer,
+    ap-square : List Integer
+  }
+
+  ChunkFill = record {
+    cf-chunks : List ClipChunk,
+    cf-ids : List Integer,
+    cf-mults : List Real,
+    cf-comma : Integer
+  }
+
+  ClipCond = record {
+    cn-status : Integer,
+    cn-chunks : Integer,
+    cn-cond-l : Integer,
+    cn-cond-g : Integer,
+    cn-pooled : Integer
+  }
+
+Section: Characters
+
+  cp-code : Text -> Integer
+  cp-code (c) = char-code-at c 0
+
+  cp-special : Integer -> Boolean
+  cp-special (c) =
+    if c == cp-code "\\" then True
+    else if c == cp-code "(" then True
+    else if c == cp-code ")" then True
+    else if c == cp-code "[" then True
+    else if c == cp-code "]" then True
+    else c == cp-code ":"
+
+  cp-space : Integer -> Boolean
+  cp-space (c) = if c == cp-code " " then True else c == cp-code "\n"
+
+  cp-digitish : Integer -> Boolean
+  cp-digitish (c) = if c == cp-code "." then True else is-digit (code-to-char c)
+
+  cp-word : Integer -> Boolean
+  cp-word (c) =
+    if c >= 128 then True
+    else if c == cp-code "_" then True
+    else if is-digit (code-to-char c) then True
+    else is-letter (code-to-char c)
+
+  cp-at : Text, Integer -> Integer
+  cp-at (s) (i) = if i >= text-length s then 0 - 1 else char-code-at s i
+
+Section: Weights
+
+ An f64 to f32 conversion that rounds to nearest, ties to even, as Python's
+ struct and torch do; normal range only, which every weight here is.
+
+  cp-f32-bits : Real -> Integer
+  cp-f32-bits (x) =
+    let b = real-to-bits x
+    in if bit-and b #7FFFFFFFFFFFFFFF == 0 then 0
+    else let s = bit-and (bit-shru b 63) 1
+    in let e = bit-and (bit-shru b 52) 2047
+    in let m = bit-and b #FFFFFFFFFFFFF
+    in let keep = bit-shru m 29
+    in let rest = bit-and m #1FFFFFFF
+    in let up = if rest > #10000000 then 1 else if rest < #10000000 then 0 else bit-and keep 1
+    in bit-or (bit-shl s 31) (bit-shl (e - 896) 23) + keep + up
+
+  cp-weight : Text -> Real
+  cp-weight (t) =
+    let neg = text-starts-with t "-"
+    in let body = if text-starts-with t "-" | text-starts-with t "+" then substring t 1 (text-length t - 1) else t
+    in let lead = if text-starts-with body "." then "0" & body else body
+    in let full = if cp-at lead (text-length lead - 1) == cp-code "." then lead & "0" else lead
+    in let v = bits-to-real (text-to-double-bits full)
+    in if neg then 0.0 - v else v
+
+ Weights compare as Python's == does: bit for bit, except that 0.0 and -0.0
+ are equal.
+
+  cp-bits-equal : Real, Real -> Boolean
+  cp-bits-equal (a) (b) =
+    if bit-and (real-to-bits a) #7FFFFFFFFFFFFFFF == 0 & bit-and (real-to-bits b) #7FFFFFFFFFFFFFFF == 0 then True
+    else real-to-bits a == real-to-bits b
+
+Section: Parsing
+
+  cp-multiply : List Real, Integer, Real -> List Real
+  cp-multiply (ws) (start) (m) = cp-multiply-loop ws start m 0 []
+
+  cp-multiply-loop : List Real, Integer, Real, Integer, List Real -> List Real
+  cp-multiply-loop (ws) (start) (m) (i) (acc) =
+    if i >= list-length ws then acc
+    else cp-multiply-loop ws start m (i + 1) (list-push acc (if i >= start then list-at ws i * m else list-at ws i))
+
+  cp-pop : List Integer -> List Integer
+  cp-pop (xs) = cp-take xs 0 (list-length xs - 1) []
+
+  cp-take : List Integer, Integer, Integer, List Integer -> List Integer
+  cp-take (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else cp-take xs (i + 1) n (list-push acc (list-at xs i))
+
+  cp-top : List Integer -> Integer
+  cp-top (xs) = list-at xs (list-length xs - 1)
+
+  cp-with-text : AttnParse, Text, Real -> AttnParse
+  cp-with-text (p) (t) (w) =
+    AttnParse { ap-texts = p.ap-texts & [t], ap-weights = p.ap-weights & [w], ap-round = p.ap-round, ap-square = p.ap-square }
+
+  cp-closed : AttnParse, Boolean, Real -> AttnParse
+  cp-closed (p) (round) (m) =
+    if round then AttnParse { ap-texts = p.ap-texts, ap-weights = cp-multiply (p.ap-weights) (cp-top (p.ap-round)) m, ap-round = cp-pop (p.ap-round), ap-square = p.ap-square }
+    else AttnParse { ap-texts = p.ap-texts, ap-weights = cp-multiply (p.ap-weights) (cp-top (p.ap-square)) m, ap-round = p.ap-round, ap-square = cp-pop (p.ap-square) }
+
+ The weight alternative is : then spaces, an optional sign, a run of digits
+ and dots, spaces and ); the answer is the index after ), or -1.
+
+  cp-weight-end : Text, Integer -> Integer
+  cp-weight-end (s) (i) =
+    let a = cp-skip-space s (i + 1)
+    in let b = if cp-at s a == cp-code "+" | cp-at s a == cp-code "-" then a + 1 else a
+    in let c = cp-digit-run s b
+    in if c == b then 0 - 1
+    else let d = cp-skip-space s c
+    in if cp-at s d == cp-code ")" then d + 1 else 0 - 1
+
+  cp-skip-space : Text, Integer -> Integer
+  cp-skip-space (s) (i) = if i < text-length s & cp-space (cp-at s i) then cp-skip-space s (i + 1) else i
+
+  cp-digit-run : Text, Integer -> Integer
+  cp-digit-run (s) (i) = if i < text-length s & cp-digitish (cp-at s i) then cp-digit-run s (i + 1) else i
+
+  cp-weight-text : Text, Integer -> Text
+  cp-weight-text (s) (i) =
+    let a = cp-skip-space s (i + 1)
+    in let c = cp-digit-run s (if cp-at s a == cp-code "+" | cp-at s a == cp-code "-" then a + 1 else a)
+    in substring s a (c - a)
+
+  cp-run-end : Text, Integer -> Integer
+  cp-run-end (s) (i) = if i < text-length s & cp-special (cp-at s i) == False then cp-run-end s (i + 1) else i
+
+  cp-parse-at : Text, Integer, AttnParse -> AttnParse
+  cp-parse-at (s) (i) (p) =
+    if i >= text-length s then p
+    else let c = cp-at s i
+    in if c == cp-code "\\" then cp-escape s i p
+    else if c == cp-code "(" then cp-parse-at s (i + 1) (AttnParse { ap-texts = p.ap-texts, ap-weights = p.ap-weights, ap-round = list-push (cp-take (p.ap-round) 0 (list-length (p.ap-round)) []) (list-length (p.ap-texts)), ap-square = p.ap-square })
+    else if c == cp-code "[" then cp-parse-at s (i + 1) (AttnParse { ap-texts = p.ap-texts, ap-weights = p.ap-weights, ap-round = p.ap-round, ap-square = list-push (cp-take (p.ap-square) 0 (list-length (p.ap-square)) []) (list-length (p.ap-texts)) })
+    else if c == cp-code ":" then cp-colon s i p
+    else if c == cp-code ")" then cp-parse-at s (i + 1) (if list-length (p.ap-round) > 0 then cp-closed p True 1.1 else cp-with-text p ")" 1.0)
+    else if c == cp-code "]" then cp-parse-at s (i + 1) (if list-length (p.ap-square) > 0 then cp-closed p False (1.0 / 1.1) else cp-with-text p "]" 1.0)
+    else cp-parse-at s (cp-run-end s i) (cp-split-break s i (cp-run-end s i) p)
+
+  cp-escape : Text, Integer, AttnParse -> AttnParse
+  cp-escape (s) (i) (p) =
+    let n = cp-at s (i + 1)
+    in if n >= 0 & (n == cp-code "(" | n == cp-code ")" | n == cp-code "[" | n == cp-code "]" | n == cp-code "\\") then cp-parse-at s (i + 2) (cp-with-text p (substring s (i + 1) 1) 1.0)
+    else cp-parse-at s (i + 1) (cp-with-text p "" 1.0)
+
+  cp-colon : Text, Integer, AttnParse -> AttnParse
+  cp-colon (s) (i) (p) =
+    let e = cp-weight-end s i
+    in if e < 0 then cp-parse-at s (i + 1) (cp-with-text p ":" 1.0)
+    else if list-length (p.ap-round) > 0 then cp-parse-at s e (cp-closed p True (cp-weight (cp-weight-text s i)))
+    else cp-parse-at s e (cp-with-text p (substring s i (e - i)) 1.0)
+
+ A text run splits at every whole-word BREAK with the spaces either side.
+
+  cp-break-at : Text, Integer, Integer -> Integer
+  cp-break-at (s) (i) (e) =
+    if i + 5 > e then 0 - 1
+    else if substring s i 5 == "BREAK" & (i == 0 | cp-word (cp-at s (i - 1)) == False) & (i + 5 >= e | cp-word (cp-at s (i + 5)) == False) then i
+    else cp-break-at s (i + 1) e
+
+  cp-back-space : Text, Integer, Integer -> Integer
+  cp-back-space (s) (lo) (i) = if i > lo & cp-space (cp-at s (i - 1)) then cp-back-space s lo (i - 1) else i
+
+  cp-fwd-space : Text, Integer, Integer -> Integer
+  cp-fwd-space (s) (i) (e) = if i < e & cp-space (cp-at s i) then cp-fwd-space s (i + 1) e else i
+
+  cp-split-break : Text, Integer, Integer, AttnParse -> AttnParse
+  cp-split-break (s) (i) (e) (p) =
+    let b = cp-break-at s i e
+    in if b < 0 then cp-with-text p (substring s i (e - i)) 1.0
+    else let left = cp-back-space s i b
+    in let right = cp-fwd-space s (b + 5) e
+    in cp-split-break s right e (cp-with-text (cp-with-text p (substring s i (left - i)) 1.0) "BREAK" (0.0 - 1.0))
+
+  cp-close-open : List Real, List Integer, Integer, Real -> List Real
+  cp-close-open (ws) (stack) (i) (m) =
+    if i >= list-length stack then ws
+    else cp-close-open (cp-multiply ws (list-at stack i) m) stack (i + 1) m
+
+  cp-merge : List Text, List Real, Integer, List Text, List Real -> AttnParse
+  cp-merge (ts) (ws) (i) (ot) (ow) =
+    if i >= list-length ts then AttnParse { ap-texts = ot, ap-weights = ow, ap-round = [], ap-square = [] }
+    else if list-length ot > 0 & cp-bits-equal (list-at ow (list-length ow - 1)) (list-at ws i) then cp-merge ts ws (i + 1) (cp-replace-last ot (list-at ot (list-length ot - 1) & list-at ts i)) ow
+    else cp-merge ts ws (i + 1) (ot & [list-at ts i]) (ow & [list-at ws i])
+
+  cp-replace-last : List Text, Text -> List Text
+  cp-replace-last (ts) (t) = cp-replace-loop ts 0 (list-length ts - 1) t []
+
+  cp-replace-loop : List Text, Integer, Integer, Text, List Text -> List Text
+  cp-replace-loop (ts) (i) (last) (t) (acc) =
+    if i > last then acc
+    else cp-replace-loop ts (i + 1) last t (list-push acc (if i == last then t else list-at ts i))
+
+  clip-parse-attention : Text -> AttnParse
+  clip-parse-attention (s) =
+    let p = cp-parse-at s 0 (AttnParse { ap-texts = [], ap-weights = [], ap-round = [], ap-square = [] })
+    in let w1 = cp-close-open (p.ap-weights) (p.ap-round) 0 1.1
+    in let w2 = cp-close-open w1 (p.ap-square) 0 (1.0 / 1.1)
+    in if list-length (p.ap-texts) == 0 then AttnParse { ap-texts = [""], ap-weights = [1.0], ap-round = [], ap-square = [] }
+    else cp-merge (p.ap-texts) w2 0 [] []
+
+Section: Extra Network Tags
+
+ Forge strips every <kind:args> from the positive prompt before anything else
+ reads it (modules/extra_networks.py parse_prompt, the pattern <(\w+):([^>]+)>,
+ called at processing.py:511; the negative prompt keeps its tags as text).
+ args split at ":" into items; an item with exactly one "=" is named, any
+ other is positional. A lora tag is positional name, then te (item 2 or te=,
+ 1.0 when absent) and unet (item 3 or unet=, te when absent)
+ (extensions-builtin/sd_forge_lora/extra_networks_lora.py:30-36). A kind other
+ than lora, "LORA" included, is stripped and reported by name.
+
+  LoraTag = record {
+    xl-name : Text,
+    xl-te : Real,
+    xl-unet : Real
+  }
+
+  PromptNets = record {
+    xn-prompt : Text,
+    xn-loras : List LoraTag,
+    xn-other : List Text,
+    xn-status : Integer
+  }
+
+  cp-word-run : Text, Integer -> Integer
+  cp-word-run (s) (i) = if i < text-length s & cp-word (cp-at s i) then cp-word-run s (i + 1) else i
+
+  cp-find : Text, Integer, Integer -> Integer
+  cp-find (s) (i) (c) = if i >= text-length s then 0 - 1 else if cp-at s i == c then i else cp-find s (i + 1) c
+
+ The index after the tag at i, or -1 when none starts there; the kind ends
+ at the colon and the args run from it to the first ">".
+
+  cp-tag-end : Text, Integer -> Integer
+  cp-tag-end (s) (i) =
+    let k = cp-word-run s (i + 1)
+    in if k == i + 1 | cp-at s k /= cp-code ":" then 0 - 1
+    else let g = cp-find s (k + 1) (cp-code ">")
+    in if g <= k + 1 then 0 - 1 else g + 1
+
+  cp-count-eq : Text, Integer, Integer -> Integer
+  cp-count-eq (s) (i) (n) = if i >= text-length s then n else cp-count-eq s (i + 1) (if cp-at s i == cp-code "=" then n + 1 else n)
+
+  cp-number-ok : Text -> Boolean
+  cp-number-ok (t) =
+    let b = if text-starts-with t "-" | text-starts-with t "+" then 1 else 0
+    in text-length t > b & cp-digit-run t b == text-length t & cp-count-dots t b 0 <= 1 & cp-count-dots t b 0 < text-length t - b
+
+  cp-count-dots : Text, Integer, Integer -> Integer
+  cp-count-dots (t) (i) (n) = if i >= text-length t then n else cp-count-dots t (i + 1) (if cp-at t i == cp-code "." then n + 1 else n)
+
+  cp-named : List Text, Text, Integer, Text -> Text
+  cp-named (items) (key) (i) (found) =
+    if i >= list-length items then found
+    else let it = list-at items i
+    in let e = cp-find it 0 (cp-code "=")
+    in cp-named items key (i + 1) (if cp-count-eq it 0 0 == 1 & substring it 0 (if e < 0 then 0 else e) == key then substring it (e + 1) (text-length it - e - 1) else found)
+
+  cp-positional : List Text, Integer, List Text -> List Text
+  cp-positional (items) (i) (acc) =
+    if i >= list-length items then acc
+    else cp-positional items (i + 1) (if cp-count-eq (list-at items i) 0 0 == 1 then acc else acc & [list-at items i])
+
+  cp-lora : Text -> PromptNets
+  cp-lora (args) =
+    let items = text-split args ":"
+    in let pos = cp-positional items 0 []
+    in let te-text = cp-named items "te" 0 (if list-length pos > 1 then list-at pos 1 else "1.0")
+    in let unet-text = cp-named items "unet" 0 (if list-length pos > 2 then list-at pos 2 else te-text)
+    in if list-length pos == 0 then PromptNets { xn-prompt = "", xn-loras = [], xn-other = [], xn-status = 0 - 1 }
+    else if cp-number-ok te-text == False | cp-number-ok unet-text == False then PromptNets { xn-prompt = "", xn-loras = [], xn-other = [], xn-status = 0 - 2 }
+    else PromptNets { xn-prompt = "", xn-loras = [LoraTag { xl-name = list-at pos 0, xl-te = cp-weight te-text, xl-unet = cp-weight unet-text }], xn-other = [], xn-status = 0 }
+
+  cp-nets-at : Text, Integer, Integer, List Text, PromptNets -> PromptNets
+  cp-nets-at (s) (i) (seg) (pieces) (acc) =
+    if i >= text-length s then PromptNets { xn-prompt = text-concat-list (pieces & [substring s seg (i - seg)]), xn-loras = acc.xn-loras, xn-other = acc.xn-other, xn-status = acc.xn-status }
+    else if cp-at s i /= cp-code "<" then cp-nets-at s (i + 1) seg pieces acc
+    else let e = cp-tag-end s i
+    in if e < 0 then cp-nets-at s (i + 1) seg pieces acc
+    else let k = cp-word-run s (i + 1)
+    in let kind = substring s (i + 1) (k - i - 1)
+    in let args = substring s (k + 1) (e - k - 2)
+    in let one = if kind == "lora" then cp-lora args else PromptNets { xn-prompt = "", xn-loras = [], xn-other = [kind], xn-status = 0 }
+    in let status = if acc.xn-status /= 0 then acc.xn-status else one.xn-status
+    in cp-nets-at s e e (pieces & [substring s seg (i - seg)]) (PromptNets { xn-prompt = "", xn-loras = acc.xn-loras & one.xn-loras, xn-other = acc.xn-other & one.xn-other, xn-status = status })
+
+ Status 0 is parsed; -1 a lora tag with no name, where Forge raises; -2 a
+ weight other than a sign, digits and one dot, which refuses Python's exponent
+ and inf forms as well as its errors.
+
+  clip-prompt-nets : Text -> PromptNets
+  clip-prompt-nets (prompt) = cp-nets-at prompt 0 0 [] (PromptNets { xn-prompt = "", xn-loras = [], xn-other = [], xn-status = 0 })
+
+Section: Chunking
+
+  cp-comma : Integer = 267
+
+  cp-fill-new : ChunkFill
+  cp-fill-new = ChunkFill { cf-chunks = [], cf-ids = [], cf-mults = [], cf-comma = 0 - 1 }
+
+  cp-pad-ids : List Integer -> List Integer
+  cp-pad-ids (xs) = if list-length xs >= 75 then xs else cp-pad-ids (xs & [49407])
+
+  cp-pad-mults : List Real -> List Real
+  cp-pad-mults (xs) = if list-length xs >= 75 then xs else cp-pad-mults (xs & [1.0])
+
+  cp-next-chunk : ChunkFill -> ChunkFill
+  cp-next-chunk (f) =
+    let c = ClipChunk { cc-ids = [49406] & cp-pad-ids (f.cf-ids) & [49407], cc-mults = [1.0] & cp-pad-mults (f.cf-mults) & [1.0] }
+    in ChunkFill { cf-chunks = f.cf-chunks & [c], cf-ids = [], cf-mults = [], cf-comma = 0 - 1 }
+
+  cp-slice-ids : List Integer, Integer, Integer -> List Integer
+  cp-slice-ids (xs) (a) (b) = cp-take xs a b []
+
+  cp-slice-mults : List Real, Integer, Integer, List Real -> List Real
+  cp-slice-mults (xs) (a) (b) (acc) = if a >= b then acc else cp-slice-mults xs (a + 1) b (list-push acc (list-at xs a))
+
+  cp-backtrack : ChunkFill -> ChunkFill
+  cp-backtrack (f) =
+    let at = f.cf-comma + 1
+    in let n = list-length (f.cf-ids)
+    in let moved-ids = cp-slice-ids (f.cf-ids) at n
+    in let moved-mults = cp-slice-mults (f.cf-mults) at n []
+    in let closed = cp-next-chunk (ChunkFill { cf-chunks = f.cf-chunks, cf-ids = cp-slice-ids (f.cf-ids) 0 at, cf-mults = cp-slice-mults (f.cf-mults) 0 at [], cf-comma = f.cf-comma })
+    in ChunkFill { cf-chunks = closed.cf-chunks, cf-ids = moved-ids, cf-mults = moved-mults, cf-comma = 0 - 1 }
+
+  cp-add-token : ChunkFill, Integer, Real, Integer -> ChunkFill
+  cp-add-token (f) (tok) (w) (back) =
+    let n = list-length (f.cf-ids)
+    in let f1 = if tok == cp-comma then ChunkFill { cf-chunks = f.cf-chunks, cf-ids = f.cf-ids, cf-mults = f.cf-mults, cf-comma = n }
+      else if back /= 0 & n == 75 & f.cf-comma /= 0 - 1 & n - f.cf-comma <= back then cp-backtrack f
+      else f
+    in let f2 = if list-length (f1.cf-ids) == 75 then cp-next-chunk f1 else f1
+    in ChunkFill { cf-chunks = f2.cf-chunks, cf-ids = f2.cf-ids & [tok], cf-mults = f2.cf-mults & [w], cf-comma = f2.cf-comma }
+
+  cp-add-tokens : ChunkFill, List Integer, Integer, Real, Integer -> ChunkFill
+  cp-add-tokens (f) (toks) (i) (w) (back) =
+    if i >= list-length toks then f
+    else cp-add-tokens (cp-add-token f (list-at toks i) w back) toks (i + 1) w back
+
+  cp-fill : ClipBpe, AttnParse, Integer, ChunkFill, Integer -> ChunkFill
+  cp-fill (bpe) (p) (i) (f) (back) =
+    if i >= list-length (p.ap-texts) then f
+    else let t = list-at (p.ap-texts) i
+    in let w = list-at (p.ap-weights) i
+    in if t == "BREAK" & cp-bits-equal w (0.0 - 1.0) then cp-fill bpe p (i + 1) (cp-next-chunk f) back
+    else cp-fill bpe p (i + 1) (cp-add-tokens f (clip-bpe-tokenize bpe t) 0 w back) back
+
+  clip-prompt-chunks : ClipBpe, Text -> List ClipChunk
+  clip-prompt-chunks (bpe) (prompt) = clip-prompt-chunks-back bpe prompt 20
+
+  clip-prompt-chunks-back : ClipBpe, Text, Integer -> List ClipChunk
+  clip-prompt-chunks-back (bpe) (prompt) (back) =
+    let f = cp-fill bpe (clip-parse-attention prompt) 0 cp-fill-new back
+    in if list-length (f.cf-ids) > 0 | list-length (f.cf-chunks) == 0 then (cp-next-chunk f).cf-chunks
+    else f.cf-chunks
+
+Section: Emphasis
+
+ A chunk's rows arrive in the reply region as f32; the means are summed in f64.
+
+  cp-sum : Integer, Integer, Integer, Real -> Real
+  cp-sum (addr) (i) (n) (acc) =
+    if i >= n then acc
+    else cp-sum addr (i + 1) n (acc + un-f32-real-cp (bit-and (peek-32 addr (i * 4)) #FFFFFFFF))
+
+  un-f32-real-cp : Integer -> Real
+  un-f32-real-cp (w) =
+    let e = bit-and (bit-shru w 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-and w #80000000) 32) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and w #7FFFFF) 29)))
+
+  cp-f32 : Real -> Real
+  cp-f32 (x) = un-f32-real-cp (cp-f32-bits x)
+
+  cp-scale-rows : Integer, List Real, Integer, Integer, Integer -> Integer
+  cp-scale-rows (addr) (mults) (d) (i) (n) =
+    if i >= n then 0
+    else let w = poke-32 addr (i * 4) (cp-f32-bits (un-f32-real-cp (bit-and (peek-32 addr (i * 4)) #FFFFFFFF) * cp-f32 (list-at mults (i / d))))
+    in cp-scale-rows addr mults d (i + 1) n
+
+  cp-scale-all : Integer, Real, Integer, Integer -> Integer
+  cp-scale-all (addr) (k) (i) (n) =
+    if i >= n then 0
+    else let w = poke-32 addr (i * 4) (cp-f32-bits (un-f32-real-cp (bit-and (peek-32 addr (i * 4)) #FFFFFFFF) * k))
+    in cp-scale-all addr k (i + 1) n
+
+  cp-all-ones : List Real, Integer -> Boolean
+  cp-all-ones (ws) (i) =
+    if i >= list-length ws then True
+    else if cp-bits-equal (list-at ws i) 1.0 == False then False
+    else cp-all-ones ws (i + 1)
+
+  cp-emphasise : Integer, List Real, Integer -> Integer
+  cp-emphasise (addr) (mults) (d) =
+    if cp-all-ones mults 0 then 0
+    else let n = 77 * d
+    in let before = cp-f32 (cp-sum addr 0 n 0.0 / real-from-int n)
+    in let s = cp-scale-rows addr mults d 0 n
+    in let after = cp-f32 (cp-sum addr 0 n 0.0 / real-from-int n)
+    in cp-scale-all addr (cp-f32 (before / after)) 0 n

@@ -1,0 +1,127 @@
+Chapter: ScenePresentUnitTest
+  cites Works chapter GopScene
+  cites Works chapter GopFont
+  cites Works chapter GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopKey
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopAhci
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Console
+
+  ppu-width : Integer = 1537
+  ppu-height : Integer = 37
+  ppu-source-pitch : Integer = 1553
+  ppu-dest-pitch : Integer = 1571
+  ppu-rows : Integer = 48
+  ppu-guard : Integer = 12345678
+
+  ppu-fill : Integer, Integer, Integer, Integer -> Integer
+  ppu-fill (p) (n) (value) (i) =
+    if i >= n then 0
+    else let w = poke-32 p (i * 4) value
+    in ppu-fill p n value (i + 1)
+
+  ppu-source : Integer, Integer -> Integer
+  ppu-source (p) (i) =
+    if i >= ppu-source-pitch * ppu-rows then 0
+    else let value = (i / ppu-source-pitch) * 8192 + int-mod i ppu-source-pitch + 1
+    in let w = poke-32 p (i * 4) value
+    in ppu-source p (i + 1)
+
+  ppu-service : Integer, Integer, Integer, UsbKbd, UsbMouse, Integer -> Integer
+  ppu-service (q) (stats) (dst) (kbd) (mouse) (ignored) =
+    let at = peek-qword stats 40
+    in let address = (at / ppu-width) * ppu-dest-pitch + int-mod at ppu-width
+    in let order = if peek-32 dst (address * 4) /= ppu-guard then poke-qword stats 24 1 else 0
+    in di-collect q kbd mouse ppu-width ppu-height
+
+  ppu-copy : Integer, Integer, ScenePane, UsbMouse, Integer, Integer -> Integer
+  ppu-copy (q) (stats) (sp) (mouse) (dst) (at) =
+    if at >= ppu-width * ppu-height then at
+    else let saved = poke-qword stats 40 at
+    in let key = poke-32 gk-cell 0 48
+    in let mark = __heap-save
+    in let next = gsc-blit-unit dst ppu-dest-pitch (sp.sp-tgt) at
+    in let fence = if next > at & next < ppu-width * ppu-height then
+      peek-32 dst (((next / ppu-width) * ppu-dest-pitch + int-mod next ppu-width) * 4) == ppu-guard
+      else True
+    in let delivered = di-deliver q mouse
+    in let heap = if __heap-save /= mark then poke-qword stats 32 1 else 0
+    in let pump = if peek-qword q di-out-key /= 48 | peek-qword q di-count /= 0 then poke-qword stats 16 1 else 0
+    in let count = poke-qword stats 0 (peek-qword stats 0 + 1)
+    in let restore = __heap-restore mark
+    in let overwrite = alloc-zeroed 256 64
+    in let restore-again = __heap-restore mark
+    in if next <= at | next - at > 1024 | next > ppu-width * ppu-height | fence == False then
+      let bad = poke-qword stats 8 1
+      in next
+    else ppu-copy q stats sp mouse dst next
+
+  ppu-pixels : Integer, Integer -> Boolean
+  ppu-pixels (fb) (i) =
+    if i >= ppu-dest-pitch * ppu-rows then True
+    else let x = int-mod i ppu-dest-pitch
+    in let y = i / ppu-dest-pitch
+    in let inside = x >= 7 & x < 7 + ppu-width & y >= 5 & y < 5 + ppu-height
+    in let want = if inside then (y - 5) * 8192 + x - 7 + 1 else ppu-guard
+    in if peek-32 fb (i * 4) /= want then False else ppu-pixels fb (i + 1)
+
+  ppu-yn : Boolean -> Text
+  ppu-yn (ok) = if ok then "yes" else "NO"
+
+  opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing =
+    let fb = alloc-bytes (ppu-dest-pitch * ppu-rows * 4)
+    in let fill = ppu-fill fb (ppu-dest-pitch * ppu-rows) ppu-guard 0
+    in let cs = alloc-zeroed 2048 64
+    in act
+      sp <- gsc-new fb ppu-dest-pitch cs 0 0 ppu-source-pitch ppu-rows
+      let source = ppu-source (sp.sp-px) 0
+      in let q = di-new 0
+      in let kbd = kbd-no-kbd
+      in let mouse = mouse-no-mouse
+      in let stats = alloc-zeroed 64 64
+      in let frame = __heap-save
+      in let scratch = alloc-zeroed 4096 64
+      in let place-before = __heap-save
+      in let placed = gsc-place sp fb ppu-dest-pitch 7 5 ppu-width ppu-height
+      in let place-after = __heap-save
+      in let restore = __heap-restore frame
+      in let overwrite = alloc-zeroed 8192 64
+      in let metadata-stable = place-before == place-after & sp.sp-tgt.r3t-base == sp.sp-px & sp.sp-tgt.r3t-w == ppu-width & sp.sp-tgt.r3t-h == ppu-height & sp.sp-gv.gv-x == 7 & sp.sp-gv.gv-y == 5 & sp.sp-gv.gv-w == ppu-width
+      in let default-service = if metadata-stable then (sp.sp-tgt.r3t-service) 0 else 0
+      in let stable = metadata-stable & default-service == 0
+      in let dst = fb + (5 * ppu-dest-pitch + 7) * 4
+      in let hook = if stable then __record-set (sp.sp-tgt) "r3t-service" (\ignored -> ppu-service q stats dst kbd mouse ignored) else sp.sp-tgt
+      in let before = __heap-save
+      in let finish = if stable then ppu-copy q stats sp mouse dst 0 else 0 - 1
+      in let after = __heap-save
+      in let done = finish == ppu-width * ppu-height
+      in let calls = peek-qword q di-passes
+      in let completed = if stable then gsc-blit-unit dst ppu-dest-pitch (sp.sp-tgt) (ppu-width * ppu-height) else 0 - 1
+      in let negative = if stable then gsc-blit-unit dst ppu-dest-pitch (sp.sp-tgt) (0 - 1) else 0
+      in let past = if stable then gsc-blit-unit dst ppu-dest-pitch (sp.sp-tgt) (ppu-width * ppu-height + 1) else 0
+      in let pitch = if stable then gsc-blit-unit dst (ppu-width - 1) (sp.sp-tgt) 0 else 0
+      in let zero-width = if stable then __record-set (sp.sp-tgt) "r3t-w" 0 else sp.sp-tgt
+      in let bad-width = if stable then gsc-blit-unit dst ppu-dest-pitch (sp.sp-tgt) 0 else 0
+      in let width-back = if stable then __record-set (sp.sp-tgt) "r3t-w" ppu-width else sp.sp-tgt
+      in let zero-height = if stable then __record-set (sp.sp-tgt) "r3t-h" 0 else sp.sp-tgt
+      in let bad-height = if stable then gsc-blit-unit dst ppu-dest-pitch (sp.sp-tgt) 0 else 0
+      in let height-back = if stable then __record-set (sp.sp-tgt) "r3t-h" ppu-height else sp.sp-tgt
+      in let short-source = if stable then __record-set (sp.sp-tgt) "r3t-stride" (ppu-width - 1) else sp.sp-tgt
+      in let bad-source = if stable then gsc-blit-unit dst ppu-dest-pitch (sp.sp-tgt) 0 else 0
+      in let source-back = if stable then __record-set (sp.sp-tgt) "r3t-stride" ppu-source-pitch else sp.sp-tgt
+      in let boundaries = completed == ppu-width * ppu-height & negative == (0 - 1) & past == (0 - 1) & pitch == (0 - 1) & bad-width == (0 - 1) & bad-height == (0 - 1) & bad-source == (0 - 1) & peek-qword q di-passes == calls
+      in let pixels = ppu-pixels fb 0
+      in let bound = peek-qword stats 8 == 0 & peek-qword stats 0 > 1
+      in let pump = peek-qword stats 16 == 0 & calls == peek-qword stats 0
+      in let order = peek-qword stats 24 == 0
+      in let heap = before == after & peek-qword stats 32 == 0
+      in act
+        print-line-uni ("stable=" & ppu-yn stable & " bound=" & ppu-yn bound & " pump=" & ppu-yn pump & " order=" & ppu-yn order)
+        print-line-uni ("pixels=" & ppu-yn pixels & " heap=" & ppu-yn heap & " boundaries=" & ppu-yn boundaries & " done=" & ppu-yn done)
+        print-line-uni ("accepted=" & ppu-yn (stable & bound & pump & order & pixels & heap & boundaries & done))
+        print-line-uni "present-proof-end"
+      end
+    end

@@ -434,7 +434,13 @@ Section: Concurrent Event Loop
 Section: Legacy Framed Serve (for backward compat)
 
   web-serve-framed : (Text -> Text) -> [Console, Network.Read, Network.Write] Integer
-  web-serve-framed (route) =
+  web-serve-framed (route) = web-serve-framed-with (\ls path -> route path)
+
+ The route also receives the live loop: the transport the request arrived on
+ and the request count, so a page can report its own connection.
+
+  web-serve-framed-with : (WebLoop, Text -> Text) -> [Console, Network.Read, Network.Write] Integer
+  web-serve-framed-with (route) =
     let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
     in let ts = transport-new sess
     in act
@@ -442,14 +448,14 @@ Section: Legacy Framed Serve (for backward compat)
       web-loop-framed route (WebLoop { server = web-new, transport = ts1 })
     end
 
-  web-loop-framed : (Text -> Text), WebLoop -> [Console, Network.Read, Network.Write] Integer
+  web-loop-framed : (WebLoop, Text -> Text), WebLoop -> [Console, Network.Read, Network.Write] Integer
   web-loop-framed (route) (ls) = act
     recv <- net-io-recv-loop (ls.transport) 0
     if recv.has-message then act
       let request-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
       in let ns = WebState { request-count = (ls.server).request-count + 1 }
       in let path = extract-web-path request-text
-      in let response = route path
+      in let response = route (WebLoop { server = ns, transport = ls.transport }) path
       in act
         ts2 <- web-send (ls.transport) response
         web-loop-framed route (WebLoop { server = ns, transport = ts2 })

@@ -1,0 +1,160 @@
+Chapter: DiffusionSoftInpaint
+  cites Diffusion chapter SoftInpaint
+  cites Diffusion chapter Sampler
+  cites Foreword chapter FactDisk
+
+ SoftInpaint against Forge's own soft inpainting over the same formula
+ inputs. The disk is build/mint-clip-bpe-disk.ps1's with two extras from
+ codex/test/apps/soft-inpaint-ref, written by build/soft-inpaint-oracle.py:
+ reals.ref, little-endian f64 (per settings A then B, per sigma 14.6, 1.2 and
+ 0.03: the modified mask, 192, then latent_blend, 4 x 192; then the two
+ histogram filter passes, 192 each), and bytes.ref (per settings: the latent
+ mask bytes, 16 x 12, then the overlay mask, 128 x 96). Every real is graded to 1e-6. The sabotage arms must move: the blur at radius
+ 3, and the second filter pass at the first pass's percentiles.
+
+ We say:
+
+Section: Disk
+
+  sp-load : Integer, Integer -> [Device.Block] Integer
+  sp-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+  ref-real : Integer, Integer -> Real
+  ref-real (r) (k) = bits-to-real (bit-or (bit-and (peek-32 r (k * 8)) #FFFFFFFF) (bit-shl (bit-and (peek-32 r (k * 8 + 4)) #FFFFFFFF) 32))
+
+Section: Inputs
+
+  lw : Integer
+  lw = 16
+
+  lh : Integer
+  lh = 12
+
+  init-at : Integer, Integer -> Real
+  init-at (c) (p) = real-from-int (int-mod (p * 37 + c * 11) 97) / 97.0 * 4.0 - 2.0
+
+  denoised-at : Integer, Integer -> Real
+  denoised-at (c) (p) = real-from-int (int-mod (p * 53 + c * 29 + 5) 89) / 89.0 * 4.0 - 2.0
+
+  samples-at : Integer, Integer -> Real
+  samples-at (c) (p) = init-at c p + real-from-int (int-mod (p * 7 + c * 3) 13 - 6) * (if int-mod p 16 >= 8 then 0.35 else 0.05)
+
+  mask-at : Integer -> Integer
+  mask-at (p) = let v = (int-mod p 16 - 4) * 40 + p / 16 * 7 in if v < 0 then 0 else if v > 255 then 255 else v
+
+  latent-fill : Integer, Integer, Integer -> Integer
+  latent-fill (which) (dst) (i) =
+    if i >= 4 * 192 then dst
+    else let c = i / 192
+    in let p = i - c * 192
+    in let v = if which == 0 then init-at c p else if which == 1 then denoised-at c p else samples-at c p
+    in let s = si-set dst i (sm-f32 v)
+    in latent-fill which dst (i + 1)
+
+  latent-of : Integer -> Integer
+  latent-of (which) = latent-fill which (alloc-bytes (4 * 192 * 4)) 0
+
+  mask-fill : Integer, Integer -> Integer
+  mask-fill (dst) (i) = if i >= 192 then dst else let s = poke-byte dst i (mask-at i) in mask-fill dst (i + 1)
+
+  settings-of : Integer -> SoftCfg
+  settings-of (k) = if k == 0 then soft-default else SoftCfg { sc-power = 2.0, sc-scale = 1.5, sc-detail = 2.0, sc-infl = 0.6, sc-thresh = 0.8, sc-contrast = 3.0 }
+
+  sigma-at : Integer -> Real
+  sigma-at (i) = if i == 0 then 14.6 else if i == 1 then 1.2 else 0.03
+
+Section: Grading
+
+  max-err : Integer, Integer, Integer, Integer, Integer, Real -> Real
+  max-err (a) (r) (at) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = si-get a i - ref-real r (at + i)
+    in let ae = if e < 0.0 then 0.0 - e else e
+    in max-err a r at (i + 1) n (if ae > acc then ae else acc)
+
+  verdict : Text, Integer, Integer, Integer, Integer, Real, Text -> Text
+  verdict (label) (a) (r) (at) (n) (tol) (tolname) = label & ": " & (if max-err a r at 0 n 0.0 <= tol then "within " else "PAST ") & tolname
+
+  byte-diffs : Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  byte-diffs (a) (b) (at) (i) (n) (count) = byte-diffs-max a b at i n count 0
+
+  byte-diffs-max : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  byte-diffs-max (a) (b) (at) (i) (n) (count) (mx) =
+    if i >= n then [count, mx]
+    else let d0 = peek-byte a i - peek-byte b (at + i)
+    in let d = if d0 < 0 then 0 - d0 else d0
+    in byte-diffs-max a b at (i + 1) n (if d > 0 then count + 1 else count) (if d > mx then d else mx)
+
+  bytes-line : Text, Integer, Integer, Integer, Integer -> Text
+  bytes-line (label) (a) (b) (at) (n) =
+    let d = byte-diffs a b at 0 n 0
+    in label & ": " & show (list-at d 0) & " of " & show n & " bytes differ, by at most " & show (list-at d 1)
+
+Section: Run
+
+  mod-lines : Integer, Integer, Integer, Integer, Integer, Integer, List Text -> List Text
+  mod-lines (r) (a) (b) (nm) (k) (i) (acc) =
+    if i >= 3 then acc
+    else let c = settings-of k
+    in let at = k * 2880 + i * 960
+    in let t = soft-modified c nm (alloc-bytes (192 * 4)) 192 (sigma-at i)
+    in let out = soft-latent-blend c a b t (alloc-bytes (4 * 192 * 4)) 192
+    in let name = (if k == 0 then "A" else "B") & " sigma " & show i
+    in mod-lines r a b nm k (i + 1) (acc & [verdict (name & " modified mask") t r at 192 0.000001 "1e-6", verdict (name & " latent_blend") out r (at + 192) 768 0.000001 "1e-6"])
+
+  distance-of : Integer, Integer -> Integer
+  distance-of (s) (a) = si-dist-fill s a (alloc-bytes (192 * 4)) 192 0
+
+  run-all : Integer, Integer -> List Text
+  run-all (r) (b) =
+    let a = latent-of 0
+    in let d = latent-of 1
+    in let s = latent-of 2
+    in let m = mask-fill (alloc-bytes 192) 0
+    in let nm = soft-nmask m 192
+    in let blends = mod-lines r a d nm 0 0 [] & mod-lines r a d nm 1 0 []
+    in let k = soft-kernel
+    in let f1 = soft-hist-filter (distance-of s a) lw lh k 0.9 1.0
+    in let f2 = soft-hist-filter f1 lw lh k 0.25 0.75
+    in let filters = [verdict "histogram filter, 0.9 to 1" f1 r 5760 192 0.000001 "1e-6", verdict "histogram filter, 0.25 to 0.75" f2 r 5952 192 0.000001 "1e-6"]
+    in let pa = soft-mask-pre (settings-of 0) f2 nm 192
+    in let pb = soft-mask-pre (settings-of 1) f2 nm 192
+    in let oa = soft-mask-overlay pa lw lh 128 96
+    in let ob = soft-mask-overlay pb lw lh 128 96
+    in let at-b = 192 + 12288
+    in let masks = [bytes-line "A latent mask" pa b 0 192, bytes-line "A overlay mask" oa b 192 12288, bytes-line "B latent mask" pb b at-b 192, bytes-line "B overlay mask" ob b (at-b + 192) 12288]
+    in let whole = bytes-line "A through soft-adaptive-mask" (soft-adaptive-mask (settings-of 0) s a nm lw lh 128 96) b 192 12288
+    in let s1 = soft-gaussian-blur (si-band0 (resize-lanczos (si-grey3 pa (alloc-bytes (192 * 3)) 0 192) lw lh 128 96) (alloc-bytes 12288) 0 12288) 128 96 3.0
+    in let s2 = soft-hist-filter f1 lw lh k 0.9 1.0
+    in let sab = [bytes-line "sabotage, the blur at radius 3" s1 b 192 12288, verdict "sabotage, the second pass at 0.9 to 1" s2 r 5952 192 0.000001 "1e-6"]
+    in blends & filters & masks & [whole] & sab
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  sp-go : Integer, Integer, Integer, Integer -> [Console, Device.Block] Nothing
+  sp-go (rs) (rl) (bs) (bl) =
+    act
+      r <- sp-load rs rl
+      b <- sp-load bs bl
+      print-all (run-all r b) 0
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    sp-go (peek-32 h 12) (peek-32 h 16) (peek-32 h 20) (peek-32 h 24)
+  end

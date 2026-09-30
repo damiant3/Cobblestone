@@ -43,6 +43,7 @@ $Exports = @(
     @{ Name = 'c64_screen'; Fn = 'c64w_screen';       Arity = 1 }
     @{ Name = 'c64_pc';     Fn = 'c64w_pc';           Arity = 1 }
     @{ Name = 'c64_halted'; Fn = 'c64w_halted';       Arity = 1 }
+    @{ Name = 'c64_base';   Fn = 'c64w_band_base';    Arity = 1 }
 )
 
 if (-not (Test-Path -PathType Leaf $Chapter)) { Write-Host "REFUSE: missing $Chapter"; exit 2 }

@@ -1,0 +1,103 @@
+Chapter: ClipPrompt
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter CheckpointFile
+  cites AI chapter ClipBpe
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter ClipPromptText
+
+ A whole prompt as Forge's ClassicTextProcessingEngine conditions SDXL on it
+ (backend/text_processing/parsing.py, classic_engine.py:150-232, 297-314,
+ emphasis.py, sdxl.py:104-109).
+
+ We say:
+
+Section: Conditioning
+
+  cp-zero-scratch : Integer -> Integer
+  cp-zero-scratch (bytes) =
+    let z = __memset ckpt-scratch 0 bytes
+    in 0
+
+  cp-place : Integer, Integer, Integer, List Real, Integer, Boolean -> Integer
+  cp-place (src) (dst) (chunk) (mults) (d) (zero) =
+    if src == 0 then 0 - 1
+    else if gpu-buf-read src 0 (77 * d * 4) ckpt-scratch == False then 0 - 2
+    else let z = if zero then cp-zero-scratch (77 * d * 4) else cp-emphasise ckpt-scratch mults d
+    in if gpu-buf-write dst (chunk * 77 * d * 4) (77 * d * 4) ckpt-scratch then 0 else 0 - 2
+
+  cp-encode-chunks : ClipWeights, ClipWeights, List ClipChunk, Integer, Boolean, ClipCond -> ClipCond
+  cp-encode-chunks (wl) (wg) (cs) (i) (zero) (acc) =
+    if i >= list-length cs | acc.cn-status /= 0 then acc
+    else let c = list-at cs i
+    in let ol = clip-encode wl (c.cc-ids)
+    in let og = clip-encode wg (c.cc-ids)
+    in let pl = cp-place (ol.co-cond) (acc.cn-cond-l) i (c.cc-mults) 768 zero
+    in let pg = cp-place (og.co-cond) (acc.cn-cond-g) i (c.cc-mults) 1280 zero
+    in let pooled = if i == 0 then cp-first-pooled (og.co-pooled) (acc.cn-pooled) zero else 0
+    in let f = ce-free-all [ol.co-cond, og.co-cond, og.co-pooled] 0
+    in let status = if ol.co-status /= 0 then ol.co-status else if og.co-status /= 0 then og.co-status else if pl < 0 then pl else if pg < 0 then pg else pooled
+    in cp-encode-chunks wl wg cs (i + 1) zero (ClipCond { cn-status = status, cn-chunks = acc.cn-chunks, cn-cond-l = acc.cn-cond-l, cn-cond-g = acc.cn-cond-g, cn-pooled = acc.cn-pooled })
+
+  cp-first-pooled : Integer, Integer, Boolean -> Integer
+  cp-first-pooled (src) (dst) (zero) =
+    if src == 0 then 0 - 1
+    else if gpu-buf-read src 0 (1280 * 4) ckpt-scratch == False then 0 - 2
+    else let z = if zero then cp-zero-scratch (1280 * 4) else 0
+    in if gpu-buf-write dst 0 (1280 * 4) ckpt-scratch then 0 else 0 - 2
+
+  clip-condition : ClipWeights, ClipWeights, ClipBpe, Text, Boolean -> ClipCond
+  clip-condition (wl) (wg) (bpe) (prompt) (negative) =
+    let cs = clip-prompt-chunks bpe prompt
+    in let n = list-length cs
+    in let hl = gpu-buf-alloc (77 * n * 768 * 4)
+    in let hg = gpu-buf-alloc (77 * n * 1280 * 4)
+    in let hp = gpu-buf-alloc (1280 * 4)
+    in if hl == 0 | hg == 0 | hp == 0 then ClipCond { cn-status = 0 - 3, cn-chunks = n, cn-cond-l = hl, cn-cond-g = hg, cn-pooled = hp }
+    else cp-encode-chunks wl wg cs 0 (negative & prompt == "") (ClipCond { cn-status = 0, cn-chunks = n, cn-cond-l = hl, cn-cond-g = hg, cn-pooled = hp })
+
+ SD1.5 conditions on CLIP-L alone (sd15.py:36-47): the same chunks and
+ emphasis, no pooled output, and an empty negative encoded as any prompt is,
+ the zeroing at sdxl.py:104-109 being SDXL's alone. cond_l is the UNet's
+ context as it stands.
+
+  cp-encode-chunks-l : ClipWeights, List ClipChunk, Integer, ClipCond -> ClipCond
+  cp-encode-chunks-l (wl) (cs) (i) (acc) =
+    if i >= list-length cs | acc.cn-status /= 0 then acc
+    else let c = list-at cs i
+    in let ol = clip-encode wl (c.cc-ids)
+    in let pl = cp-place (ol.co-cond) (acc.cn-cond-l) i (c.cc-mults) 768 False
+    in let f = ce-free-all [ol.co-cond] 0
+    in let status = if ol.co-status /= 0 then ol.co-status else pl
+    in cp-encode-chunks-l wl cs (i + 1) (ClipCond { cn-status = status, cn-chunks = acc.cn-chunks, cn-cond-l = acc.cn-cond-l, cn-cond-g = 0, cn-pooled = 0 })
+
+  clip-condition-l : ClipWeights, ClipBpe, Text -> ClipCond
+  clip-condition-l (wl) (bpe) (prompt) =
+    let cs = clip-prompt-chunks bpe prompt
+    in let n = list-length cs
+    in let hl = gpu-buf-alloc (77 * n * 768 * 4)
+    in let c0 = ClipCond { cn-status = 0, cn-chunks = n, cn-cond-l = hl, cn-cond-g = 0, cn-pooled = 0 }
+    in if hl == 0 then ClipCond { cn-status = 0 - 3, cn-chunks = n, cn-cond-l = 0, cn-cond-g = 0, cn-pooled = 0 }
+    else cp-encode-chunks-l wl cs 0 c0
+
+ The UNet's crossattn is each row's 768 CLIP-L values then its 1280 G values.
+
+  cp-cat-rows : ClipCond, Integer, Integer, Integer -> Integer
+  cp-cat-rows (c) (dst) (r) (n) =
+    if r >= n then 0
+    else if gpu-buf-read (c.cn-cond-l) (r * 768 * 4) (768 * 4) ckpt-scratch == False then 0 - 2
+    else if gpu-buf-read (c.cn-cond-g) (r * 1280 * 4) (1280 * 4) (ckpt-scratch + 768 * 4) == False then 0 - 2
+    else if gpu-buf-write dst (r * 2048 * 4) (2048 * 4) ckpt-scratch == False then 0 - 2
+    else cp-cat-rows c dst (r + 1) n
+
+  clip-crossattn : ClipCond -> Integer
+  clip-crossattn (c) =
+    let n = 77 * c.cn-chunks
+    in let h = gpu-buf-alloc (n * 2048 * 4)
+    in if h == 0 then 0
+    else if cp-cat-rows c h 0 n < 0 then ce-freed-zero h
+    else h
+
+  clip-cond-free : ClipCond -> Integer
+  clip-cond-free (c) = ce-free-all [c.cn-cond-l, c.cn-cond-g, c.cn-pooled] 0
+
+Page 1

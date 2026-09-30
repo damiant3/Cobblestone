@@ -10,7 +10,7 @@ Chapter: PokerVariants
    HiChicago      -- highest spade in hole wins half pot
    LowChicago     -- lowest spade in hole wins half pot
    FollowTheQueen -- card after each queen dealt face-up is wild
-   JacksOrBetter  -- need pair of jacks+ to open; need trips+ to win
+   JacksOrBetter  -- need a pair of jacks or better to open; no minimum to win
 
  We say:
 
@@ -102,7 +102,7 @@ Section: Best 5 of 7 (SevenCardStud, Baseball)
 
   pv-best-5-of-7 : List Integer -> PokerHand
   pv-best-5-of-7 (cards) =
-    pv-best-combo cards 0 1 2 3 4 (HandRank { rank = (-1), primary = 0, secondary = 0 }) []
+    pv-best-combo cards 0 1 2 3 4 (HandRank { rank = (-1), primary = 0, secondary = 0, kickers = 0 }) []
 
   pv-best-combo : List Integer, Integer, Integer, Integer, Integer, Integer, HandRank, List Integer -> PokerHand
   pv-best-combo (cards) (a) (b) (c) (d) (e) (best-rank) (best-cards) =
@@ -198,8 +198,16 @@ Section: Wild Card Substitution
   pv-better : HandRank, HandRank -> HandRank
   pv-better (a) (b) = if compare-hands b a == 1 then b else a
 
+ pagat's hand ranking: with wild cards five of a kind is the highest hand,
+ above a royal flush, the higher rank beating the lower.
+
   pv-wild-on-rank : List Integer, Integer, Integer -> HandRank
   pv-wild-on-rank (nat) (k) (r) =
+    if pv-rank-in nat r 0 0 + k >= 5 then HandRank { rank = 9, primary = r, secondary = 0, kickers = 0 }
+    else pv-wild-rank-fill nat k r
+
+  pv-wild-rank-fill : List Integer, Integer, Integer -> HandRank
+  pv-wild-rank-fill (nat) (k) (r) =
     let c = pv-rank-in nat r 0 0
     in let room = 4 - c
     in let put = if room < k then room else k
@@ -270,7 +278,7 @@ Section: Wild Card Substitution
     else pv-better best (evaluate-hand (PokerHand { cards = pv-flush-fill nat (pv-suit-of nat) 12 k (pv-copy nat 0 []) }))
 
   pv-no-hand : HandRank
-  pv-no-hand = HandRank { rank = (0 - 1), primary = 0, secondary = 0 }
+  pv-no-hand = HandRank { rank = (0 - 1), primary = 0, secondary = 0, kickers = 0 }
 
   pv-evaluate-with-wilds : PokerHand, List Boolean -> HandRank
   pv-evaluate-with-wilds (h) (wilds) =
@@ -293,8 +301,10 @@ Section: Wild Card Substitution
 
 Section: Spade Queries (Chicago variants)
 
+ Suit 0 is spades, as the arcade draws the cards.
+
   pv-card-is-spade : Integer -> Boolean
-  pv-card-is-spade (card) = card-suit card == 3
+  pv-card-is-spade (card) = card-suit card == 0
 
   pv-highest-spade-in-hole : List Integer -> Integer
   pv-highest-spade-in-hole (hole-cards) =
@@ -324,267 +334,27 @@ Section: Spade Queries (Chicago variants)
       else pv-lowest-spade-loop cards (i + 1) best
     else pv-lowest-spade-loop cards (i + 1) best
 
-Section: FiveCardDraw
+Section: Follow The Queen's Wild
 
-  pv-five-card-draw : Integer, Rng -> PokerSession
-  pv-five-card-draw (seed) (r) =
-    let deck = pv-shuffle (pv-build-deck 0 []) r
-    in let h1 = deal-hand deck 0
-    in let h2 = deal-hand deck 5
-    in let draw1 = draw-count h1
-    in let draw2 = draw-count h2
-    in let r2 = rng-next r
-    in let deck2 = pv-shuffle deck r2
-    in let h1-final = pv-redeal h1 deck2 10 draw1
-    in let h2-final = pv-redeal h2 deck2 (10 + draw1) draw2
-    in let rank1 = evaluate-hand h1-final
-    in let rank2 = evaluate-hand h2-final
-    in let winner = compare-hands rank1 rank2
-    in PokerSession {
-         variant = FiveCardDraw,
-         seed = seed,
-         num-players = 2,
-         winner = winner,
-         p1-hand-rank = rank1.rank,
-         p2-hand-rank = rank2.rank,
-         hands-played = 1,
-         special-winner = 0
-       }
-
-  pv-redeal : PokerHand, List Integer, Integer, Integer -> PokerHand
-  pv-redeal (h) (deck) (offset) (n) =
-    pv-redeal-loop (h.cards) deck offset n 0
-
-  pv-redeal-loop : List Integer, List Integer, Integer, Integer, Integer -> PokerHand
-  pv-redeal-loop (cards) (deck) (offset) (n) (replaced) =
-    if replaced >= n then PokerHand { cards = cards }
-    else let new-card = list-at deck (offset + replaced)
-    in let idx = 4 - replaced
-    in let new-cards = list-set-at cards idx new-card
-    in pv-redeal-loop new-cards deck offset n (replaced + 1)
-
-Section: FiveCardStud
-
-  pv-five-card-stud : Integer, Rng -> PokerSession
-  pv-five-card-stud (seed) (r) =
-    let deck = pv-shuffle (pv-build-deck 0 []) r
-    in let h1 = deal-hand deck 0
-    in let h2 = deal-hand deck 5
-    in let rank1 = evaluate-hand h1
-    in let rank2 = evaluate-hand h2
-    in let winner = compare-hands rank1 rank2
-    in PokerSession {
-         variant = FiveCardStud,
-         seed = seed,
-         num-players = 2,
-         winner = winner,
-         p1-hand-rank = rank1.rank,
-         p2-hand-rank = rank2.rank,
-         hands-played = 1,
-         special-winner = 0
-       }
-
-Section: SevenCardStud
-
-  pv-seven-card-stud : Integer, Rng -> PokerSession
-  pv-seven-card-stud (seed) (r) =
-    let deck = pv-shuffle (pv-build-deck 0 []) r
-    in let h1-cards = pv-collect-7 deck 0
-    in let h2-cards = pv-collect-7 deck 7
-    in let best1 = pv-best-5-of-7 h1-cards
-    in let best2 = pv-best-5-of-7 h2-cards
-    in let rank1 = evaluate-hand best1
-    in let rank2 = evaluate-hand best2
-    in let winner = compare-hands rank1 rank2
-    in PokerSession {
-         variant = SevenCardStud,
-         seed = seed,
-         num-players = 2,
-         winner = winner,
-         p1-hand-rank = rank1.rank,
-         p2-hand-rank = rank2.rank,
-         hands-played = 1,
-         special-winner = 0
-       }
-
-  pv-collect-7 : List Integer, Integer -> List Integer
-  pv-collect-7 (deck) (start) =
-    pv-collect-loop deck start 0 []
-
-  pv-collect-loop : List Integer, Integer, Integer, List Integer -> List Integer
-  pv-collect-loop (deck) (start) (i) (acc) =
-    if i >= 7 then acc
-    else pv-collect-loop deck start (i + 1) (list-push acc (list-at deck (start + i)))
-
-Section: Baseball (3s and 9s wild, 4 gets extra card)
-
-  pv-baseball : Integer, Rng -> PokerSession
-  pv-baseball (seed) (r) =
-    let deck = pv-shuffle (pv-build-deck 0 []) r
-    in let h1-base = pv-collect-7 deck 0
-    in let h2-base = pv-collect-7 deck 7
-    in let wild-table = pv-build-rank-wilds [1, 7]
-    in let rank1 = pv-best-wild-of h1-base wild-table
-    in let rank2 = pv-best-wild-of h2-base wild-table
-    in let winner = if rank1.rank > rank2.rank then 1
-       else if rank2.rank > rank1.rank then 2
-       else if rank1.primary > rank2.primary then 1
-       else if rank2.primary > rank1.primary then 2
-       else 0
-    in PokerSession {
-         variant = Baseball,
-         seed = seed,
-         num-players = 2,
-         winner = winner,
-         p1-hand-rank = rank1.rank,
-         p2-hand-rank = rank2.rank,
-         hands-played = 1,
-         special-winner = 0
-       }
-
-Section: HiChicago
-
-  pv-hi-chicago : Integer, Rng -> PokerSession
-  pv-hi-chicago (seed) (r) =
-    let deck = pv-shuffle (pv-build-deck 0 []) r
-    in let h1-cards = pv-collect-7 deck 0
-    in let h2-cards = pv-collect-7 deck 7
-    in let hole1 = [list-at h1-cards 0, list-at h1-cards 1]
-    in let hole2 = [list-at h2-cards 0, list-at h2-cards 1]
-    in let best1 = pv-best-5-of-7 h1-cards
-    in let best2 = pv-best-5-of-7 h2-cards
-    in let rank1 = evaluate-hand best1
-    in let rank2 = evaluate-hand best2
-    in let spade1 = pv-highest-spade-in-hole hole1
-    in let spade2 = pv-highest-spade-in-hole hole2
-    in let hand-winner = compare-hands rank1 rank2
-    in let spade-winner = if spade1 > spade2 then 1 else if spade2 > spade1 then 2 else 0
-    in let overall = if hand-winner == spade-winner then hand-winner
-       else if hand-winner == 0 then spade-winner
-       else hand-winner
-    in PokerSession {
-         variant = HiChicago,
-         seed = seed,
-         num-players = 2,
-         winner = overall,
-         p1-hand-rank = rank1.rank,
-         p2-hand-rank = rank2.rank,
-         hands-played = 1,
-         special-winner = spade-winner
-       }
-
-Section: LowChicago
-
-  pv-low-chicago : Integer, Rng -> PokerSession
-  pv-low-chicago (seed) (r) =
-    let deck = pv-shuffle (pv-build-deck 0 []) r
-    in let h1-cards = pv-collect-7 deck 0
-    in let h2-cards = pv-collect-7 deck 7
-    in let hole1 = [list-at h1-cards 0, list-at h1-cards 1]
-    in let hole2 = [list-at h2-cards 0, list-at h2-cards 1]
-    in let best1 = pv-best-5-of-7 h1-cards
-    in let best2 = pv-best-5-of-7 h2-cards
-    in let rank1 = evaluate-hand best1
-    in let rank2 = evaluate-hand best2
-    in let spade1 = pv-lowest-spade-in-hole hole1
-    in let spade2 = pv-lowest-spade-in-hole hole2
-    in let hand-winner = compare-hands rank1 rank2
-    in let spade-winner = if spade1 < 0 & spade2 < 0 then 0
-       else if spade1 < 0 then 2
-       else if spade2 < 0 then 1
-       else if spade1 < spade2 then 1
-       else if spade2 < spade1 then 2
-       else 0
-    in let overall = if hand-winner == spade-winner then hand-winner
-       else if hand-winner == 0 then spade-winner
-       else hand-winner
-    in PokerSession {
-         variant = LowChicago,
-         seed = seed,
-         num-players = 2,
-         winner = overall,
-         p1-hand-rank = rank1.rank,
-         p2-hand-rank = rank2.rank,
-         hands-played = 1,
-         special-winner = spade-winner
-       }
-
-Section: FollowTheQueen
-
- Card after each queen dealt face-up becomes wild rank.
- Queens are rank 10 (card-rank 10 = Queen: 0=2,1=3,...,10=Q,11=K,12=A).
-
-  pv-follow-the-queen : Integer, Rng -> PokerSession
-  pv-follow-the-queen (seed) (r) =
-    let deck = pv-shuffle (pv-build-deck 0 []) r
-    in let h1-cards = pv-collect-7 deck 0
-    in let h2-cards = pv-collect-7 deck 7
-    in let wild-rank = pv-find-follow-queen deck 14
-    in let wild-table = if wild-rank < 0 then pv-build-false-list 52
-       else pv-build-rank-wilds [wild-rank]
-    in let rank1 = pv-best-wild-of h1-cards wild-table
-    in let rank2 = pv-best-wild-of h2-cards wild-table
-    in let winner = if rank1.rank > rank2.rank then 1
-       else if rank2.rank > rank1.rank then 2
-       else if rank1.primary > rank2.primary then 1
-       else if rank2.primary > rank1.primary then 2
-       else 0
-    in PokerSession {
-         variant = FollowTheQueen,
-         seed = seed,
-         num-players = 2,
-         winner = winner,
-         p1-hand-rank = rank1.rank,
-         p2-hand-rank = rank2.rank,
-         hands-played = 1,
-         special-winner = wild-rank
-       }
+ pagat: a later face-up queen cancels the wild before it, and if the last
+ face-up card dealt is a queen there are no wild cards. So the wild rank is
+ the card after the LAST queen among the first `deal-count`, or none.
 
   pv-find-follow-queen : List Integer, Integer -> Integer
   pv-find-follow-queen (deck) (deal-count) =
-    pv-ftq-loop deck deal-count 0 (-1)
+    let q = pv-last-queen deck deal-count 0 (-1)
+    in if q < 0 then (-1)
+    else if q + 1 >= deal-count then (-1)
+    else card-rank (list-at deck (q + 1))
 
-  pv-ftq-loop : List Integer, Integer, Integer, Integer -> Integer
-  pv-ftq-loop (deck) (deal-count) (i) (last-wild) =
-    if i >= deal-count then last-wild
-    else let card = list-at deck i
-    in if card-rank card == 10 then
-      let next-idx = i + 1
-      in if next-idx < deal-count then
-        pv-ftq-loop deck deal-count (i + 1) (card-rank (list-at deck next-idx))
-      else pv-ftq-loop deck deal-count (i + 1) last-wild
-    else pv-ftq-loop deck deal-count (i + 1) last-wild
+  pv-last-queen : List Integer, Integer, Integer, Integer -> Integer
+  pv-last-queen (deck) (deal-count) (i) (found) =
+    if i >= deal-count then found
+    else pv-last-queen deck deal-count (i + 1) (if card-rank (list-at deck i) == 10 then i else found)
 
-Section: JacksOrBetter
+Section: Jacks Or Better
 
- Pair of jacks (rank 9) or better needed to open; trips or better to win pot.
- If no one can open, pot rolls over (simplified: first player with jacks+ wins).
-
-  pv-jacks-or-better : Integer, Rng -> PokerSession
-  pv-jacks-or-better (seed) (r) =
-    let deck = pv-shuffle (pv-build-deck 0 []) r
-    in let h1 = deal-hand deck 0
-    in let h2 = deal-hand deck 5
-    in let rank1 = evaluate-hand h1
-    in let rank2 = evaluate-hand h2
-    in let can-open1 = pv-can-open h1
-    in let can-open2 = pv-can-open h2
-    in let can-win1 = rank1.rank >= 3
-    in let can-win2 = rank2.rank >= 3
-    in let winner = if can-open1 == False & can-open2 == False then 0
-       else if can-win1 & can-win2 == False then 1
-       else if can-win2 & can-win1 == False then 2
-       else compare-hands rank1 rank2
-    in PokerSession {
-         variant = JacksOrBetter,
-         seed = seed,
-         num-players = 2,
-         winner = winner,
-         p1-hand-rank = rank1.rank,
-         p2-hand-rank = rank2.rank,
-         hands-played = 1,
-         special-winner = if can-open1 then 1 else if can-open2 then 2 else 0
-       }
+ A pair of jacks (rank 9) or better is needed to open.
 
   pv-can-open : PokerHand -> Boolean
   pv-can-open (h) =
@@ -603,7 +373,13 @@ Section: A Table You Can Sit At, Per Variant
     table   : PokerTable,
     variant : Integer,
     wilds   : List Boolean,
-    spade   : Integer
+    spade   : Integer,
+    street  : Integer,
+    bet-unit    : Integer,
+    bets    : Integer,
+    bring   : Integer,
+    up0     : Integer,
+    up1     : Integer
   }
 
   pvt-cards-per-hand : Integer -> Integer
@@ -617,41 +393,290 @@ Section: A Table You Can Sit At, Per Variant
   pvt-has-wilds (v) = v == 3 | v == 6
 
   pvt-is-draw : Integer -> Boolean
-  pvt-is-draw (v) = v == 0
+  pvt-is-draw (v) = v == 0 | v == 7
 
-  pvt-wild-table : Integer, List Integer -> List Boolean
-  pvt-wild-table (v) (deck) =
+  pvt-is-stud : Integer -> Boolean
+  pvt-is-stud (v) = v >= 1 & v <= 6
+
+ The studs, by pagat.com (https://www.pagat.com/poker/variants/7stud.html
+ and 5stud.html). Seven card stud deals two down and one up, then one up on
+ each of fourth to sixth street and one down on seventh; five card stud
+ deals one down and one up, then three more up. A betting round follows
+ every street. The lowest up card brings in on the first round (clubs,
+ diamonds, hearts, spades from low to high breaking a tie) for less than a
+ small bet and more than the ante, and may complete to a small bet instead;
+ every later round is begun by the best hand showing. Fixed limit: small
+ bets on the first two rounds and big bets after, except that on the second
+ round a pair or better showing allows a big bet or raise. At most one bet
+ and three raises a round.
+
+  pvt-first-deal : Integer -> Integer
+  pvt-first-deal (v) =
+    if v == 1 then 2
+    else if pvt-is-stud v then 3
+    else pvt-cards-per-hand v
+
+  pvt-last-street : Integer -> Integer
+  pvt-last-street (v) = pvt-cards-per-hand v - pvt-first-deal v
+
+
+  pvt-stud-ante : Integer
+  pvt-stud-ante = 2
+
+  pvt-bring-in : Integer
+  pvt-bring-in = 5
+
+  pvt-big-bet : Integer
+  pvt-big-bet = 2 * pk-bet-size
+
+  pvt-ante : Integer -> Integer
+  pvt-ante (v) = if pvt-is-stud v then pvt-stud-ante else pk-ante
+
+  pvt-street-unit : Integer -> Integer
+  pvt-street-unit (street) = if street >= 2 then pvt-big-bet else pk-bet-size
+
+Section: What The Board Shows
+
+ A card's worth for the bring-in and for a tie between boards: rank first,
+ then suit.
+
+  pvt-card-value : Integer -> Integer
+  pvt-card-value (c) = card-rank c * 4 + card-suit c
+
+ Which of a seat's cards are face up is a bit set over its hand, because
+ Baseball's extra card moves every later card along.
+
+  pvt-up-at : Integer, Integer -> Boolean
+  pvt-up-at (mask) (i) = pk-bit mask i == 1
+
+  pvt-mask-of : PvTable, Integer -> Integer
+  pvt-mask-of (p) (who) = if who == 0 then p.up0 else p.up1
+
+  pvt-up-cards : List Integer, Integer, Integer, List Integer -> List Integer
+  pvt-up-cards (cards) (mask) (i) (acc) =
+    if i >= list-length cards then acc
+    else pvt-up-cards cards mask (i + 1) (if pvt-up-at mask i then list-push acc (list-at cards i) else acc)
+
+  pvt-max-count : List Integer, Integer, Integer -> Integer
+  pvt-max-count (cards) (r) (best) =
+    if r >= 13 then best
+    else let n = pv-rank-in cards r 0 0
+    in pvt-max-count cards (r + 1) (if n > best then n else best)
+
+  pvt-pair-count : List Integer, Integer, Integer -> Integer
+  pvt-pair-count (cards) (r) (acc) =
+    if r >= 13 then acc
+    else pvt-pair-count cards (r + 1) (if pv-rank-in cards r 0 0 == 2 then acc + 1 else acc)
+
+ A board ranks on the hand-rank scale. Under five cards it makes no
+ straight or flush and ranks by its groups alone; five or more (Baseball's
+ extras) rank as their best five-card hand, wild cards counting as what they
+ are. Ties go by the ranks, most numerous first, padded to five with the
+ lowest, then by the best card's worth.
+
+  pvt-show-cat : List Integer -> Integer
+  pvt-show-cat (cards) =
+    let m = pvt-max-count cards 0 0
+    in if m >= 4 then 7
+    else if m == 3 then 3
+    else if pvt-pair-count cards 0 0 >= 2 then 2
+    else if m == 2 then 1
+    else 0
+
+  pvt-plain-best : List Integer, Integer, List Integer, HandRank -> HandRank
+  pvt-plain-best (cards) (i) (chosen) (best) =
+    if list-length chosen == 5 then pv-better best (evaluate-hand (PokerHand { cards = chosen }))
+    else if list-length cards - i < 5 - list-length chosen then best
+    else let taken = pvt-plain-best cards (i + 1) (list-push (pv-copy chosen 0 []) (list-at cards i)) best
+    in pvt-plain-best cards (i + 1) chosen taken
+
+  pvt-pad-kick : Integer, Integer -> Integer
+  pvt-pad-kick (kick) (n) = if n >= 5 then kick else pvt-pad-kick (kick * 13) (n + 1)
+
+  pvt-show-kick : List Integer, Integer, Integer, Integer -> Integer
+  pvt-show-kick (cards) (cnt) (r) (acc) =
+    if cnt < 1 then acc
+    else if r < 0 then pvt-show-kick cards (cnt - 1) 12 acc
+    else if pv-rank-in cards r 0 0 == cnt then pvt-show-kick cards cnt (r - 1) (pk-push-n acc r cnt)
+    else pvt-show-kick cards cnt (r - 1) acc
+
+  pvt-top-value : List Integer, Integer, Integer -> Integer
+  pvt-top-value (cards) (i) (best) =
+    if i >= list-length cards then best
+    else let c = pvt-card-value (list-at cards i)
+    in pvt-top-value cards (i + 1) (if c > best then c else best)
+
+ Five ranks fit in 13^5 = 371293 and the top card's worth in 52.
+
+  pvt-show-score : List Integer -> Integer
+  pvt-show-score (cards) =
+    let n = list-length cards
+    in let top = pvt-top-value cards 0 0
+    in if n >= 5 then
+      let hr = pvt-plain-best cards 0 [] pv-no-hand
+      in (hr.rank * 371293 + hr.kickers) * 52 + top
+    else (pvt-show-cat cards * 371293 + pvt-pad-kick (pvt-show-kick cards 4 12 0) n) * 52 + top
+
+  pvt-best-showing : PvDeal, PvDeal -> Integer
+  pvt-best-showing (d0) (d1) =
+    if pvt-show-score (pvt-up-cards (d1.cards) (d1.up) 0 []) > pvt-show-score (pvt-up-cards (d0.cards) (d0.up) 0 []) then 1 else 0
+
+ The lowest card showing brings in; with Baseball's extra card a seat can
+ show two, and its lower one counts.
+
+  pvt-low-value : List Integer, Integer, Integer -> Integer
+  pvt-low-value (cards) (i) (best) =
+    if i >= list-length cards then best
+    else let c = pvt-card-value (list-at cards i)
+    in pvt-low-value cards (i + 1) (if c < best then c else best)
+
+  pvt-bring-seat : PvDeal, PvDeal -> Integer
+  pvt-bring-seat (d0) (d1) =
+    let a = pvt-low-value (pvt-up-cards (d0.cards) (d0.up) 0 []) 0 99
+    in let b = pvt-low-value (pvt-up-cards (d1.cards) (d1.up) 0 []) 0 99
+    in if b < a then 1 else 0
+
+  pvt-pair-showing : PvTable -> Boolean
+  pvt-pair-showing (p) =
+    if pvt-max-count (pvt-up-cards ((p.table).h0) (p.up0) 0 []) 0 0 >= 2 then True
+    else pvt-max-count (pvt-up-cards ((p.table).h1) (p.up1) 0 []) 0 0 >= 2
+
+ Follow the queen's wild is the rank of the card dealt face up after the
+ last face-up queen, read from the up cards in the order they were dealt.
+
+  pvt-up-seq : PvDeal, PvDeal, Integer, List Integer -> List Integer
+  pvt-up-seq (d0) (d1) (i) (acc) =
+    if i >= list-length (d0.cards) then acc
+    else let a = if pvt-up-at (d0.up) i then list-push acc (list-at (d0.cards) i) else acc
+    in let b = if i < list-length (d1.cards) & pvt-up-at (d1.up) i then list-push a (list-at (d1.cards) i) else a
+    in pvt-up-seq d0 d1 (i + 1) b
+
+  pvt-wild-table : Integer, PvDeal, PvDeal -> List Boolean
+  pvt-wild-table (v) (d0) (d1) =
     if v == 3 then pv-build-rank-wilds [1, 7]
-    else if v == 6 then pvt-queen-wilds (pv-find-follow-queen deck 14)
+    else if v == 6 then pvt-queen-wilds (pvt-ftq-rank (pvt-up-seq d0 d1 0 []))
     else pv-build-false-list 52
+
+  pvt-ftq-rank : List Integer -> Integer
+  pvt-ftq-rank (seq) = pv-find-follow-queen seq (list-length seq)
 
   pvt-queen-wilds : Integer -> List Boolean
   pvt-queen-wilds (wild-rank) =
     if wild-rank < 0 then pv-build-false-list 52
     else pv-build-rank-wilds [wild-rank]
 
+Section: Dealing The Table
+
+  pvt-street-table : PokerTable, List Integer, List Integer, Integer, Integer -> PokerTable
+  pvt-street-table (t) (h0) (h1) (pos) (turn) =
+    PokerTable {
+      deck = t.deck, pos = pos, h0 = h0, h1 = h1,
+      chips0 = t.chips0, chips1 = t.chips1,
+      bet0 = 0, bet1 = 0, pot = t.pot,
+      stage = 0, turn = turn, acted = 0, marked = 0,
+      folded = t.folded, winner = t.winner, last = (-1), done = False,
+      opener = t.opener
+    }
+
+ Baseball (https://www.pagat.com/poker/variants/baseball.html): threes and
+ nines are wild, and a player dealt a four face up is at once dealt an extra
+ face-up card, before the next player's card.
+
+ A seat's cards so far, which of them are face up, and the next deck
+ position. A card is dealt onto a fresh list: `list-push` extends the list
+ it is given in place, and the table this one came from still holds it.
+
+  PvDeal = record {
+    cards : List Integer,
+    up    : Integer,
+    pos   : Integer
+  }
+
+  pvt-deal-one : Integer, PvDeal, List Integer, Boolean -> PvDeal
+  pvt-deal-one (v) (d) (deck) (face-up) =
+    let c = list-at deck (d.pos)
+    in let i = list-length (d.cards)
+    in let d2 = PvDeal { cards = list-push (pv-copy (d.cards) 0 []) c,
+                         up = (if face-up then d.up + pk-pow2 i else d.up),
+                         pos = d.pos + 1 }
+    in if face-up & v == 3 & card-rank c == 2 then pvt-deal-one v d2 deck True else d2
+
+  pvt-deal-down : Integer, PvDeal, List Integer, Integer -> PvDeal
+  pvt-deal-down (v) (d) (deck) (k) =
+    if k <= 0 then d else pvt-deal-down v (pvt-deal-one v d deck False) deck (k - 1)
+
+ The first street: the draw games deal five down; a stud deals its down
+ cards and then one up.
+
+  pvt-deal-first : Integer, List Integer, Integer -> PvDeal
+  pvt-deal-first (v) (deck) (pos) =
+    let d = PvDeal { cards = [], up = 0, pos = pos }
+    in if pvt-is-stud v then pvt-deal-one v (pvt-deal-down v d deck (pvt-first-deal v - 1)) deck True
+    else pvt-deal-down v d deck (pvt-first-deal v)
+
+  pvt-street-up : Integer, Integer -> Boolean
+  pvt-street-up (v) (street) = if v == 1 then True else street <= 3
+
   pvt-new : Integer, Integer -> PvTable
   pvt-new (variant) (seed) =
     let v = if variant < 0 then 0 else if variant > 7 then 7 else variant
     in let deck = poker-shuffle poker-deck-new (rng-new seed)
-    in let n = pvt-cards-per-hand v
+    in let a = pvt-ante v
+    in let d0 = pvt-deal-first v deck 0
+    in let d1 = pvt-deal-first v deck (d0.pos)
+    in let bring = if pvt-is-stud v then pvt-bring-seat d0 d1 else (-1)
     in PvTable {
          table = PokerTable {
-           deck = deck, pos = n * 2,
-           h0 = pk-take deck 0 n [], h1 = pk-take deck n n [],
-           chips0 = pk-start-chips - pk-ante, chips1 = pk-start-chips - pk-ante,
-           bet0 = 0, bet1 = 0, pot = pk-ante * 2,
-           stage = 0, turn = 0, acted = 0, marked = 0,
-           folded = (-1), winner = (-1), last = (-1), done = False
+           deck = deck, pos = d1.pos,
+           h0 = d0.cards, h1 = d1.cards,
+           chips0 = pk-start-chips - a, chips1 = pk-start-chips - a,
+           bet0 = 0, bet1 = 0, pot = a * 2,
+           stage = 0, turn = (if bring < 0 then 0 else bring), acted = 0, marked = 0,
+           folded = (-1), winner = (-1), last = (-1), done = False, opener = (-1)
          },
          variant = v,
-         wilds = pvt-wild-table v deck,
-         spade = (-1)
+         wilds = pvt-wild-table v d0 d1,
+         spade = (-1),
+         street = 0,
+         bet-unit = pk-bet-size,
+         bets = 0,
+         bring = bring,
+         up0 = d0.up,
+         up1 = d1.up
+       }
+
+  pvt-next-street : PvTable -> PvTable
+  pvt-next-street (p) =
+    let t = p.table
+    in let v = p.variant
+    in let street = p.street + 1
+    in let face-up = pvt-street-up v street
+    in let d0 = pvt-deal-one v (PvDeal { cards = t.h0, up = p.up0, pos = t.pos }) (t.deck) face-up
+    in let d1 = pvt-deal-one v (PvDeal { cards = t.h1, up = p.up1, pos = d0.pos }) (t.deck) face-up
+    in PvTable {
+         table = pvt-street-table t (d0.cards) (d1.cards) (d1.pos) (pvt-best-showing d0 d1),
+         variant = v,
+         wilds = pvt-wild-table v d0 d1,
+         spade = p.spade,
+         street = street,
+         bet-unit = pvt-street-unit street,
+         bets = 0,
+         bring = (-1),
+         up0 = d0.up,
+         up1 = d1.up
        }
 
   pvt-with : PvTable, PokerTable -> PvTable
   pvt-with (p) (t) =
-    PvTable { table = t, variant = p.variant, wilds = p.wilds, spade = p.spade }
+    PvTable { table = t, variant = p.variant, wilds = p.wilds, spade = p.spade,
+              street = p.street, bet-unit = p.bet-unit, bets = p.bets, bring = p.bring,
+              up0 = p.up0, up1 = p.up1 }
+
+  pvt-with-bet : PvTable, PokerTable, Integer, Integer -> PvTable
+  pvt-with-bet (p) (t) (bets) (bet-unit) =
+    PvTable { table = t, variant = p.variant, wilds = p.wilds, spade = p.spade,
+              street = p.street, bet-unit = bet-unit, bets = bets, bring = (-1),
+              up0 = p.up0, up1 = p.up1 }
 
   pvt-best-hand : PvTable, Integer -> PokerHand
   pvt-best-hand (p) (who) =
@@ -659,10 +684,47 @@ Section: A Table You Can Sit At, Per Variant
     in if pvt-cards-per-hand (p.variant) == 5 then PokerHand { cards = cards }
     else pv-best-5-of-7 cards
 
+Section: Ranking A Hand Of Any Size
+
+ A stud hand is ranked as it stands: under five cards by its groups, with
+ each wild joining the largest; five as they are; more as the best five of
+ them, which with Baseball's extra cards can be eleven.
+
+  pvt-partial-rank : List Integer, List Boolean -> HandRank
+  pvt-partial-rank (cards) (wilds) =
+    let nat = pv-naturals cards wilds 0 []
+    in let k = list-length cards - list-length nat
+    in let m0 = pvt-max-count nat 0 0 + k
+    in let m = if m0 > 4 then 4 else m0
+    in let r = if m >= 4 then 7
+       else if m == 3 then 3
+       else if m == 2 then (if k == 0 & pvt-pair-count nat 0 0 >= 2 then 2 else 1)
+       else 0
+    in HandRank { rank = r, primary = 0, secondary = 0, kickers = 0 }
+
+  pvt-eval-5 : PvTable, List Integer -> HandRank
+  pvt-eval-5 (p) (cards) =
+    if pvt-has-wilds (p.variant) then pv-evaluate-with-wilds (PokerHand { cards = cards }) (p.wilds)
+    else evaluate-hand (PokerHand { cards = cards })
+
+ Every five of the hand, choosing each card in or out; a branch that can no
+ longer reach five stops. `chosen` is copied before a card is added, so the
+ branch that leaves the card out never sees it.
+
+  pvt-best-five : PvTable, List Integer, Integer, List Integer, HandRank -> HandRank
+  pvt-best-five (p) (cards) (i) (chosen) (best) =
+    if list-length chosen == 5 then pv-better best (pvt-eval-5 p chosen)
+    else if list-length cards - i < 5 - list-length chosen then best
+    else let taken = pvt-best-five p cards (i + 1) (list-push (pv-copy chosen 0 []) (list-at cards i)) best
+    in pvt-best-five p cards (i + 1) chosen taken
+
   pvt-eval : PvTable, Integer -> HandRank
   pvt-eval (p) (who) =
-    if pvt-has-wilds (p.variant) then pv-best-wild-of (pk-hand-of (p.table) who) (p.wilds)
-    else evaluate-hand (pvt-best-hand p who)
+    let cards = pk-hand-of (p.table) who
+    in let n = list-length cards
+    in if n < 5 then pvt-partial-rank cards (p.wilds)
+    else if n == 5 then pvt-eval-5 p cards
+    else pvt-best-five p cards 0 [] pv-no-hand
 
   pvt-compare : PvTable, HandRank, HandRank -> Integer
   pvt-compare (p) (a) (b) =
@@ -677,13 +739,19 @@ Section: A Table You Can Sit At, Per Variant
     else if b.primary > a.primary then 2
     else 0
 
- The spade in the hole is a side pot in the Chicagos, decided off the first
- two cards dealt to each seat, and it can carry a hand that lost.
+ pagat's Chicagos (https://www.pagat.com/poker/variants/chicago.html): the
+ pot is split between the highest hand and the highest spade in the hole
+ (the lowest, ace high, in Low Chicago). The hole is every card dealt face
+ down, seventh street's included; face-up spades do not count. With no spade
+ in either hole the highest hand takes it all.
 
   pvt-hole : PvTable, Integer -> List Integer
-  pvt-hole (p) (who) =
-    let cards = pk-hand-of (p.table) who
-    in list-push (list-push [] (list-at cards 0)) (list-at cards 1)
+  pvt-hole (p) (who) = pvt-down-cards (pk-hand-of (p.table) who) (pvt-mask-of p who) 0 []
+
+  pvt-down-cards : List Integer, Integer, Integer, List Integer -> List Integer
+  pvt-down-cards (cards) (mask) (i) (acc) =
+    if i >= list-length cards then acc
+    else pvt-down-cards cards mask (i + 1) (if pvt-up-at mask i then acc else list-push acc (list-at cards i))
 
   pvt-spade-winner : PvTable -> Integer
   pvt-spade-winner (p) =
@@ -712,26 +780,42 @@ Section: A Table You Can Sit At, Per Variant
     else if s1 < s0 then 2
     else 0
 
- Who wins, in `pk-award`'s seat numbering: 0, 1, or -1 for a split.
-
-  pvt-winner-1based : PvTable -> Integer
-  pvt-winner-1based (p) =
-    let hand-winner = pvt-compare p (pvt-eval p 0) (pvt-eval p 1)
-    in let sw = pvt-spade-winner p
-    in if sw == 0 then hand-winner
-    else if hand-winner == sw then hand-winner
-    else if hand-winner == 0 then sw
-    else hand-winner
-
   pvt-seat-of : Integer -> Integer
   pvt-seat-of (w) = if w == 1 then 0 else if w == 2 then 1 else (-1)
+
+ The hand's half is the larger when the pot is odd; a tied hand splits its
+ half the same way, the odd chip to seat 0.
 
   pvt-showdown : PvTable -> PvTable
   pvt-showdown (p) =
     let sw = pvt-spade-winner p
-    in let w = pvt-seat-of (pvt-winner-1based p)
-    in PvTable { table = pk-award (p.table) w, variant = p.variant,
-                 wilds = p.wilds, spade = sw }
+    in let hw = pvt-seat-of (pvt-compare p (pvt-eval p 0) (pvt-eval p 1))
+    in let t = if sw == 0 then pk-award (p.table) hw else pvt-split-pot (p.table) hw (pvt-seat-of sw)
+    in PvTable { table = t, variant = p.variant,
+                 wilds = p.wilds, spade = sw,
+                 street = p.street, bet-unit = p.bet-unit, bets = p.bets, bring = (-1),
+                 up0 = p.up0, up1 = p.up1 }
+
+  pvt-half-to : Integer, Integer, Integer -> Integer
+  pvt-half-to (amount) (w) (who) =
+    if w == who then amount
+    else if w >= 0 then 0
+    else if who == 0 then amount - amount / 2
+    else amount / 2
+
+  pvt-split-pot : PokerTable, Integer, Integer -> PokerTable
+  pvt-split-pot (t) (hw) (sw) =
+    let spade-half = t.pot / 2
+    in let hand-half = t.pot - spade-half
+    in PokerTable {
+      deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
+      chips0 = t.chips0 + pvt-half-to hand-half hw 0 + pvt-half-to spade-half sw 0,
+      chips1 = t.chips1 + pvt-half-to hand-half hw 1 + pvt-half-to spade-half sw 1,
+      bet0 = t.bet0, bet1 = t.bet1, pot = 0,
+      stage = 3, turn = t.turn, acted = t.acted,
+      marked = 0, folded = t.folded, winner = hw,
+      last = t.last, done = True, opener = t.opener
+    }
 
  Jacks or better: a seat may not open the betting without a pair of jacks or
  better.
@@ -743,9 +827,44 @@ Section: A Table You Can Sit At, Per Variant
 
   pvt-can-raise : PvTable, Integer -> Boolean
   pvt-can-raise (p) (who) =
-    if pk-can-raise (p.table) who == False then False
+    if pvt-is-stud (p.variant) then pvt-can-raise-to p who (pvt-target p (p.bet-unit))
+    else if pk-can-raise (p.table) who == False then False
     else if pk-to-call (p.table) who > 0 then True
     else pvt-can-open p who
+
+ A stud bet or raise brings the seat's stake to a target: the unit when
+ nothing has been bet (which is how a bring-in is completed), else one unit
+ over the larger stake.
+
+  pvt-target : PvTable, Integer -> Integer
+  pvt-target (p) (bet-unit) =
+    let t = p.table
+    in if p.bets == 0 then bet-unit
+    else (if t.bet0 > t.bet1 then t.bet0 else t.bet1) + bet-unit
+
+  pvt-can-raise-to : PvTable, Integer, Integer -> Boolean
+  pvt-can-raise-to (p) (who) (target) =
+    let t = p.table
+    in let amount = target - pk-bet-of t who
+    in if pk-can-fold t who == False then False
+    else if p.bets >= pk-max-raises then False
+    else if amount <= pk-to-call t who then False
+    else amount <= pk-chips-of t who
+
+  pvt-can-big : PvTable, Integer -> Boolean
+  pvt-can-big (p) (who) =
+    if pvt-is-stud (p.variant) == False then False
+    else if p.street /= 1 then False
+    else if p.bet-unit /= pk-bet-size then False
+    else if pvt-pair-showing p == False then False
+    else pvt-can-raise-to p who (pvt-target p pvt-big-bet)
+
+ The seat bringing in may not fold or check: its call is the bring-in.
+
+  pvt-can-fold : PvTable, Integer -> Boolean
+  pvt-can-fold (p) (who) =
+    if p.bring == who then False
+    else pk-can-fold (p.table) who
 
 Section: The Moves, Over The Same Table
 
@@ -760,6 +879,7 @@ Section: The Moves, Over The Same Table
   pvt-advance-now (p) =
     if (p.table).stage == 0 & pvt-is-draw (p.variant)
       then pvt-with p (pk-open-stage (p.table) 1)
+    else if p.street < pvt-last-street (p.variant) then pvt-next-street p
     else pvt-showdown p
 
  A refusal answers the state it was given: `pvt-with` builds a new record,
@@ -769,22 +889,46 @@ Section: The Moves, Over The Same Table
 
   pvt-fold : PvTable, Integer -> PvTable
   pvt-fold (p) (who) =
-    if pk-can-fold (p.table) who == False then p
+    if pvt-can-fold p who == False then p
     else pvt-with p (pk-fold (p.table) who)
+
+ A bring-in is noted as 5.
 
   pvt-call : PvTable, Integer -> PvTable
   pvt-call (p) (who) =
     if pk-can-call (p.table) who == False then p
+    else if p.bring == who then pvt-bring p who
     else let owed = pk-to-call (p.table) who
     in let paid = pk-put-in (p.table) who owed
     in pvt-advance (pvt-with p (pk-note paid (if owed == 0 then 1 else 2)))
 
+  pvt-bring : PvTable, Integer -> PvTable
+  pvt-bring (p) (who) =
+    let chips = pk-chips-of (p.table) who
+    in let amount = if chips < pvt-bring-in then chips else pvt-bring-in
+    in let paid = pk-put-in (p.table) who amount
+    in pvt-advance (pvt-with-bet p (pk-note paid 5) (p.bets) (p.bet-unit))
+
+ The draw games raise by the round's bet, ten before the draw and twenty
+ after it.
+
   pvt-raise : PvTable, Integer -> PvTable
   pvt-raise (p) (who) =
     if pvt-can-raise p who == False then p
+    else if pvt-is-stud (p.variant) then pvt-raise-to p who (pvt-target p (p.bet-unit)) (p.bet-unit)
     else let owed = pk-to-call (p.table) who
-    in let paid = pk-put-in (p.table) who (owed + pk-bet-size)
+    in let paid = pk-put-in (p.table) who (owed + pk-round-bet (p.table))
     in pvt-advance (pvt-with p (pk-note paid 3))
+
+  pvt-raise-to : PvTable, Integer, Integer, Integer -> PvTable
+  pvt-raise-to (p) (who) (target) (bet-unit) =
+    let paid = pk-put-in (p.table) who (target - pk-bet-of (p.table) who)
+    in pvt-advance (pvt-with-bet p (pk-note paid 3) (p.bets + 1) bet-unit)
+
+  pvt-big : PvTable, Integer -> PvTable
+  pvt-big (p) (who) =
+    if pvt-can-big p who == False then p
+    else pvt-raise-to p who (pvt-target p pvt-big-bet) pvt-big-bet
 
  The draw belongs to five card draw alone.
 
@@ -846,18 +990,62 @@ Section: The Moves, Over The Same Table
 
 Section: Game Runner
 
+ One hand of the table, both seats played by the other seats' rules. The
+ winner is 1 or 2 for the seat the pot went to, 0 for a split; a hand that
+ ended in a fold was won by the seat still in. `special-winner` is the spade
+ in the hole's seat in the Chicagos, the wild rank (or -1) in Follow the
+ Queen, the first seat that could open in Jacks or Better, and 0 elsewhere.
+
+  pv-variant-index : PokerVariant -> Integer
+  pv-variant-index (v) =
+    when v
+      is FiveCardDraw    -> 0
+      is FiveCardStud    -> 1
+      is SevenCardStud   -> 2
+      is Baseball        -> 3
+      is HiChicago       -> 4
+      is LowChicago      -> 5
+      is FollowTheQueen  -> 6
+      is JacksOrBetter   -> 7
+
+  pvt-play-out : PvTable, Integer -> PvTable
+  pvt-play-out (p) (fuel) =
+    if fuel <= 0 then p
+    else if (p.table).done then p
+    else pvt-play-out (pvt-ai-move p) (fuel - 1)
+
+  pvt-wild-rank : List Boolean, Integer -> Integer
+  pvt-wild-rank (wilds) (card) =
+    if card >= 52 then (-1)
+    else if list-at wilds card then card-rank card
+    else pvt-wild-rank wilds (card + 1)
+
+  pvt-special : PvTable -> Integer
+  pvt-special (p) =
+    if p.variant == 4 | p.variant == 5 then p.spade
+    else if p.variant == 6 then pvt-wild-rank (p.wilds) 0
+    else if p.variant == 7 then (if pvt-can-open p 0 then 1 else if pvt-can-open p 1 then 2 else 0)
+    else 0
+
   run-poker-variant : PokerVariant, Integer, Integer -> PokerSession
   run-poker-variant (variant) (seed) (num-players) =
-    let r = rng-new seed
-    in when variant
-      is FiveCardDraw    -> pv-five-card-draw seed r
-      is FiveCardStud    -> pv-five-card-stud seed r
-      is SevenCardStud   -> pv-seven-card-stud seed r
-      is Baseball        -> pv-baseball seed r
-      is HiChicago       -> pv-hi-chicago seed r
-      is LowChicago      -> pv-low-chicago seed r
-      is FollowTheQueen  -> pv-follow-the-queen seed r
-      is JacksOrBetter   -> pv-jacks-or-better seed r
+    let fin = pvt-play-out (pvt-new (pv-variant-index variant) seed) 400
+    in let t = fin.table
+    in let w = if t.folded == 0 then 2
+       else if t.folded == 1 then 1
+       else if t.winner == 0 then 1
+       else if t.winner == 1 then 2
+       else 0
+    in PokerSession {
+         variant = variant,
+         seed = seed,
+         num-players = 2,
+         winner = w,
+         p1-hand-rank = (pvt-eval fin 0).rank,
+         p2-hand-rank = (pvt-eval fin 1).rank,
+         hands-played = 1,
+         special-winner = pvt-special fin
+       }
 
   pv-variant-name : PokerVariant -> Text
   pv-variant-name (v) =

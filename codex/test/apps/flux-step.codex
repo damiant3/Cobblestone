@@ -1,0 +1,96 @@
+Chapter: FluxStep
+
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Flux
+  cites Diffusion chapter FluxReference
+
+ One Flux schnell transformer call on build/flux-oracle.py's formula inputs,
+ every module output against Forge's own model in f32: 64 samples within 1%
+ of the record's rms, and the rms itself within 2%. The sabotage arms run the
+ call again at sigma 0.25, which the vector path must catch, and with a zero
+ context, which txt_in must catch.
+
+ We say:
+
+Section: Inputs
+
+  latent-at : Integer -> Real
+  latent-at (i) = real-from-int (int-mod (i * 37 + 11) 257 - 128) / 128.0
+
+  context-at : Integer -> Real
+  context-at (i) = real-from-int (int-mod (i * 13 + 5) 251 - 125) / 256.0
+
+  pooled-at : Integer -> Real
+  pooled-at (i) = real-from-int (int-mod (i * 29 + 3) 241 - 120) / 256.0
+
+  build : Integer, Integer, Integer, List Real -> List Real
+  build (which) (i) (n) (acc) =
+    if i >= n then acc
+    else build which (i + 1) n (list-push acc (if which == 0 then latent-at i else if which == 1 then context-at i else if which == 2 then pooled-at i else 0.0))
+
+Section: Grading
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  count-near : List Real, FluxRefBlock, Integer, Integer -> Integer
+  count-near (got) (ref) (j) (acc) =
+    if j >= flux-ref-samples then acc
+    else let v = list-at got (int-mod (j * flux-ref-stride + flux-ref-offset) (list-length got))
+    in count-near got ref (j + 1) (if abs (v - list-at (ref.frb-samples) j) <= 0.01 * ref.frb-rms then acc + 1 else acc)
+
+  sum-sq : List Real, Integer, Real -> Real
+  sum-sq (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else sum-sq xs (i + 1) (acc + list-at xs i * list-at xs i)
+
+  grade : Integer, Integer -> Text
+  grade (h) (k) =
+    let ref = list-at flux-ref-blocks k
+    in let got = if h == 0 then [] else un-download h (ref.frb-count)
+    in if list-length got /= ref.frb-count then ref.frb-name & ": NO OUTPUT"
+    else let ms = sum-sq got 0 0.0 / real-from-int (ref.frb-count)
+    in ref.frb-name & ": " & show (count-near got ref 0 0) & "/" & show flux-ref-samples & " within 1% of rms, rms " & (if abs (ms - ref.frb-rms * ref.frb-rms) <= 0.02 * ref.frb-rms * ref.frb-rms then "near" else "FAR")
+
+  grade-all : List Integer, Integer, List Text -> List Text
+  grade-all (hs) (k) (acc) =
+    if k >= list-length flux-ref-blocks then acc
+    else grade-all hs (k + 1) (list-push acc (grade (if k < list-length hs then list-at hs k else 0) k))
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let f = flux-open "flux1-schnell-fp8-e4m3fn.safetensors"
+    in if (f.ff-file).st-valid == False then ["SKIP: no flux1-schnell-fp8-e4m3fn.safetensors under the model root build-output/diffusion-models"]
+    else run-step (flux-load f)
+
+  run-step : FluxFile -> List Text
+  run-step (f) =
+    let lat = un-upload (build 0 0 (16 * flux-ref-h * flux-ref-w) [])
+    in let ctx = un-upload (build 1 0 (flux-ref-txt * 4096) [])
+    in let y = un-upload (build 2 0 768 [])
+    in let hs = flux-run f lat flux-ref-h flux-ref-w flux-ref-sigma ctx flux-ref-txt y True
+    in let lines = grade-all hs 0 []
+    in let far = flux-run f lat flux-ref-h flux-ref-w 0.25 ctx flux-ref-txt y True
+    in let ctx0 = un-upload (build 3 0 (flux-ref-txt * 4096) [])
+    in let zero = flux-run f lat flux-ref-h flux-ref-w flux-ref-sigma ctx0 flux-ref-txt y True
+    in let last = list-length flux-ref-blocks - 1
+    in lines & ["sabotage, sigma 0.25: " & grade (list-at far 1) 1 & "; " & grade (list-at far last) last, "sabotage, a zero context: " & grade (list-at zero 3) 3 & "; " & grade (list-at zero last) last]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

@@ -41,7 +41,7 @@ function Emit-Wat([string]$name, [string]$irName, [string]$plug) {
     $raw = [IO.File]::ReadAllText("$WorkDir/$name.raw")
     $diag = [IO.File]::ReadAllText("$WorkDir/$name.emit.log")
     if (($raw + $diag) -match 'DROPPED|!EXC|OUT OF MEMORY') { throw "Plug failed: $name" }
-    $wat = (($raw -replace '^\x01', '') -split "`n" | Where-Object { $_ -notmatch '^(HEAP|WD|STACK|PM):' }) -join "`n"
+    $wat = ($raw -split "`n" | Where-Object { $_ -notmatch '^(HEAP|WD|STACK|PM):' }) -join "`n"
     if (-not $wat.TrimStart().StartsWith('(module')) { throw "Missing module: $name" }
     [IO.File]::WriteAllText("$WorkDir/$name.wat", $wat)
 }

@@ -1,0 +1,36 @@
+Chapter: CvmmLogTable
+  cites Cvmm chapter LogLive
+  cites Cvmm chapter LogViewer
+  cites Kernel chapter AppLog
+  cites Kernel chapter DiskFacts
+  cites Foreword chapter Console
+
+ Booted with a zeroed disk (the sidecar). A freshly formatted store shows no
+ row; after an info and a warning are logged it shows both, and a fresh
+ disk-load after the checkpoint shows them again, so the rows are read from
+ the disk rather than carried in memory; facts reach the disk at a checkpoint.
+
+Section: Report
+
+  lt-rows : List LogEntry, Integer, Integer, Text -> Text
+  lt-rows (es) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at es i
+    in lt-rows es (i + 1) n (acc & " [" & log-source-label (e.le-source) & " " & log-severity-label (e.le-severity) & " " & e.le-message & "]")
+
+  lt-line : Text, LogViewerState -> Text
+  lt-line (tag) (lv) = tag & " rows " & show ((lv.lv-buffer).lb-count) & lt-rows ((lv.lv-buffer).lb-entries) 0 ((lv.lv-buffer).lb-count) ""
+
+Section: Entry
+  opening : [Device.Block, Console.Write] Nothing = act
+    let s0 = disk-init
+    in let before = lv-live s0
+    in let s1 = app-log-info s0 "cvmm" "web listening" 5
+    in let s2 = app-log-warn s1 "dns" "slow reply" 6
+    in let s3 = disk-checkpoint s2
+    in act
+      print-line-uni (lt-line "formatted" before)
+      print-line-uni (lt-line "logged" (lv-live s2))
+      print-line-uni (lt-line "reloaded" (lv-live disk-load))
+    end
+  end

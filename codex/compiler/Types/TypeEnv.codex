@@ -21,11 +21,11 @@ Section: Environment Type
 
   bsearch-text-pos : List TypeBinding, Text, Integer, Integer -> Integer
   bsearch-text-pos (bindings) (name) (lo) (hi) =
-   if lo >= hi then lo
-   else let mid = lo + (hi - lo) / 2
-   in let mid-name = (list-at bindings mid).name
-   in if text-compare name mid-name <= 0 then bsearch-text-pos bindings name lo mid
-      else bsearch-text-pos bindings name (mid + 1) hi
+    if lo >= hi then lo
+    else let mid = lo + (hi - lo) / 2
+    in let mid-name = (list-at bindings mid).name
+    in if text-compare name mid-name <= 0 then bsearch-text-pos bindings name lo mid
+    else bsearch-text-pos bindings name (mid + 1) hi
 
   ConstRange = record {
    name : Text,
@@ -34,67 +34,74 @@ Section: Environment Type
   }
 
 Section: Construction
-  empty-type-env : TypeEnv = TypeEnv { bindings = [], locals = [], chapter-renames = [], const-ranges = [], local-ranges = [] }
+  empty-type-env : TypeEnv = TypeEnv {
+    bindings = [],
+    locals = [],
+    chapter-renames = [],
+    const-ranges = [],
+    local-ranges = []
+  }
 
 Section: Lookup (locals first, then globals)
   env-lookup-in : List TypeBinding, Text -> CodexType
   env-lookup-in (bs) (name) =
-   let len = list-length bs
-   in if len == 0 then ErrorTy
-   else let pos = bsearch-text-pos bs name 0 len
-   in if pos >= len then ErrorTy
-   else let b = list-at bs pos
-   in if b.name == name then b.bound-type else ErrorTy
+    let len = list-length bs
+    in if len == 0 then ErrorTy
+    else let pos = bsearch-text-pos bs name 0 len
+    in if pos >= len then ErrorTy
+    else let b = list-at bs pos
+    in if b.name == name then b.bound-type else ErrorTy
 
   env-has-in : List TypeBinding, Text -> Boolean
   env-has-in (bs) (name) =
-   let len = list-length bs
-   in if len == 0 then False
-   else let pos = bsearch-text-pos bs name 0 len
-   in if pos >= len then False
-      else (list-at bs pos).name == name
+    let len = list-length bs
+    in if len == 0 then False
+    else let pos = bsearch-text-pos bs name 0 len
+    in if pos >= len then False
+    else (list-at bs pos).name == name
 
   env-lookup : TypeEnv, Text -> CodexType
   env-lookup (env) (name) =
-   let llen = list-length (env.locals)
-   in let lpos = bsearch-text-pos (env.locals) name 0 llen
-   in if lpos < llen
-      then let lb = list-at (env.locals) lpos
-           in if lb.name == name then lb.bound-type
-              else env-lookup-in (env.bindings) name
-      else env-lookup-in (env.bindings) name
+    let llen = list-length (env.locals)
+    in let lpos = bsearch-text-pos (env.locals) name 0 llen
+    in if lpos < llen
+       then let lb = list-at (env.locals) lpos
+       in if lb.name == name then lb.bound-type
+       else env-lookup-in (env.bindings) name
+    else env-lookup-in (env.bindings) name
 
   env-has : TypeEnv, Text -> Boolean
   env-has (env) (name) =
-   let llen = list-length (env.locals)
-   in let lpos = bsearch-text-pos (env.locals) name 0 llen
-   in if lpos < llen
-      then if (list-at (env.locals) lpos).name == name then True
-           else env-has-in (env.bindings) name
-      else env-has-in (env.bindings) name
+    let llen = list-length (env.locals)
+    in let lpos = bsearch-text-pos (env.locals) name 0 llen
+    in if lpos < llen
+       then if (list-at (env.locals) lpos).name == name then True
+       else env-has-in (env.bindings) name
+    else env-has-in (env.bindings) name
 
 Section: Unsorted Membership (linear scan, for use before env-finalize)
   env-has-linear-in : List TypeBinding, Text, Integer, Integer -> Boolean
   env-has-linear-in (bs) (name) (i) (len) =
-   if i == len then False
-   else if (list-at bs i).name == name then True
-        else env-has-linear-in bs name (i + 1) len
+    if i == len then False
+    else if (list-at bs i).name == name then True
+    else env-has-linear-in bs name (i + 1) len
 
   env-has-unsorted : TypeEnv, Text -> Boolean
   env-has-unsorted (env) (name) =
-   env-has-linear-in (env.bindings) name 0 (list-length (env.bindings))
+    env-has-linear-in (env.bindings) name 0 (list-length (env.bindings))
 
 Section: Bind (unsorted accumulation -- call env-finalize before lookup)
   env-replace-in : List TypeBinding, Text, CodexType, Integer, Integer -> List TypeBinding
   env-replace-in (bs) (name) (ty) (i) (len) =
-   if i >= len then list-push bs (deck-record (TypeBinding { name = name, bound-type = ty }))
-   else if (list-at bs i).name == name then list-set-at bs i (deck-record (TypeBinding { name = name, bound-type = ty }))
-   else env-replace-in bs name ty (i + 1) len
+    if i >= len then list-push bs (deck-record (TypeBinding { name = name, bound-type = ty }))
+    else if (list-at bs i).name == name then
+      list-set-at bs i (deck-record (TypeBinding { name = name, bound-type = ty }))
+    else env-replace-in bs name ty (i + 1) len
 
   env-bind : TypeEnv, Text, CodexType -> TypeEnv
   env-bind (env) (name) (ty) =
-   let bs = env.bindings
-   in __record-set env "bindings" (env-replace-in bs name ty 0 (list-length bs))
+    let bs = env.bindings
+    in __record-set env "bindings" (env-replace-in bs name ty 0 (list-length bs))
 
  Cost is one 5-field record plus a copy of (locals + 1) per bind.
  `check-all-defs` resets `locals` per def, so the copy is bounded by one
@@ -102,18 +109,18 @@ Section: Bind (unsorted accumulation -- call env-finalize before lookup)
 
   env-bind-local : TypeEnv, Text, CodexType -> TypeEnv
   env-bind-local (env) (name) (ty) =
-   let len = list-length (env.locals)
-   in let pos = bsearch-text-pos (env.locals) name 0 len
-   in deck-record (TypeEnv {
-    bindings = env.bindings,
-    locals = list-insert-at (copy-list-with-headroom (env.locals) 1) pos (deck-record (TypeBinding {
-     name = name,
-     bound-type = ty
-    })),
-    chapter-renames = env.chapter-renames,
-    const-ranges = env.const-ranges,
-    local-ranges = env.local-ranges
-   })
+    let len = list-length (env.locals)
+    in let pos = bsearch-text-pos (env.locals) name 0 len
+    in deck-record (TypeEnv {
+     bindings = env.bindings,
+     locals = list-insert-at (copy-list-with-headroom (env.locals) 1) pos (deck-record (TypeBinding {
+      name = name,
+      bound-type = ty
+     })),
+     chapter-renames = env.chapter-renames,
+     const-ranges = env.const-ranges,
+     local-ranges = env.local-ranges
+    })
 
 Section: Constant Ranges (proven values of literal-defined constants)
 
@@ -123,40 +130,40 @@ Section: Constant Ranges (proven values of literal-defined constants)
 
   env-add-const-range : TypeEnv, Text, Integer -> TypeEnv
   env-add-const-range (env) (name) (value) =
-   __record-set env "const-ranges" (list-push (env.const-ranges) (deck-record (ConstRange {
-    name = name,
-    lo = value,
-    hi = value
-   })))
+    __record-set env "const-ranges" (list-push (env.const-ranges) (deck-record (ConstRange {
+     name = name,
+     lo = value,
+     hi = value
+    })))
 
   env-const-find : List ConstRange, Text, Integer, Integer -> Integer
   env-const-find (cs) (name) (i) (len) =
-   if i == len then 0 - 1
-   else if (list-at cs i).name == name then i
-   else env-const-find cs name (i + 1) len
+    if i == len then 0 - 1
+    else if (list-at cs i).name == name then i
+    else env-const-find cs name (i + 1) len
 
   env-is-local : TypeEnv, Text -> Boolean
   env-is-local (env) (name) =
-   let llen = list-length (env.locals)
-   in let lpos = bsearch-text-pos (env.locals) name 0 llen
-   in if lpos < llen then (list-at (env.locals) lpos).name == name
-   else False
+    let llen = list-length (env.locals)
+    in let lpos = bsearch-text-pos (env.locals) name 0 llen
+    in if lpos < llen then (list-at (env.locals) lpos).name == name
+    else False
 
   env-add-local-range : TypeEnv, Text, Integer, Integer -> TypeEnv
   env-add-local-range (env) (name) (lo) (hi) =
-   deck-record (TypeEnv {
-    bindings = env.bindings,
-    locals = env.locals,
-    chapter-renames = env.chapter-renames,
-    const-ranges = env.const-ranges,
-    local-ranges = deck-record (ConstRange { name = name, lo = lo, hi = hi }) :: (env.local-ranges)
-   })
+    deck-record (TypeEnv {
+     bindings = env.bindings,
+     locals = env.locals,
+     chapter-renames = env.chapter-renames,
+     const-ranges = env.const-ranges,
+     local-ranges = deck-record (ConstRange { name = name, lo = lo, hi = hi }) :: (env.local-ranges)
+    })
 
   env-local-find : List ConstRange, Text, Integer, Integer -> Integer
   env-local-find (cs) (name) (i) (len) =
-   if i == len then 0 - 1
-   else if (list-at cs i).name == name then i
-   else env-local-find cs name (i + 1) len
+    if i == len then 0 - 1
+    else if (list-at cs i).name == name then i
+    else env-local-find cs name (i + 1) len
 
 Section: Finalize (sort bindings for bsearch lookup)
   compare-type-binding-names : TypeBinding, TypeBinding -> Integer
@@ -164,7 +171,7 @@ Section: Finalize (sort bindings for bsearch lookup)
 
   env-finalize : TypeEnv -> TypeEnv
   env-finalize (env) =
-   __record-set env "bindings" (sort-by (env.bindings) compare-type-binding-names)
+    __record-set env "bindings" (sort-by (env.bindings) compare-type-binding-names)
 
 Section: Builtins
 
@@ -173,11 +180,10 @@ Section: Builtins
 
   builtin-env-fold : List BuiltinSpec, Integer, Integer, TypeEnv -> TypeEnv
   builtin-env-fold (bs) (i) (len) (env) =
-   if i >= len then env
-   else let b = list-at bs i
-   in when b.bs-type
-    is Just (ty) -> builtin-env-fold bs (i + 1) len (env-bind env (b.bs-name) ty)
-    is otherwise -> builtin-env-fold bs (i + 1) len env
+    if i >= len then env
+    else let b = list-at bs i
+    in when b.bs-type
+     is Just (ty) -> builtin-env-fold bs (i + 1) len (env-bind env (b.bs-name) ty)
+     is otherwise -> builtin-env-fold bs (i + 1) len env
 
 Page 1
-

@@ -91,6 +91,7 @@ Section: Bring-Up Ladder
   msc-retry-recover-failed : Integer = 1
   msc-retry-failed : Integer = 2
   msc-retry-ok : Integer = 3
+  msc-retry-continued : Integer = 4
   msc-ce-no-event : Integer = 256
 
   msc-ph-cbw : Integer = 1
@@ -415,8 +416,49 @@ Section: BOT Transfer
       else msc-code-ok (msc-xfer-code d (d.md-ring-in) (d.md-dci-in) (d.md-csw) 13)
     else msc-code-ok s
 
+ A target left inside a command's data-out phase takes the next CBW as
+ write data (sitting 17: eight READ CBWs landed as sectors 2209-2216 of the
+ FAT). So after a recovery that failed, no CBW goes out until a recovery
+ succeeds.
+
+  msc-desynced : MscDisk -> Boolean
+  msc-desynced (d) = peek-32 ((d.md-host).xh-state) xh-st-desync /= 0
+
+  msc-set-desync : MscDisk, Integer -> Integer
+  msc-set-desync (d) (v) = poke-32 ((d.md-host).xh-state) xh-st-desync v
+
   msc-issue : MscDisk, Integer, Boolean, Integer, Integer -> Boolean
   msc-issue (d) (tag) (dir-in) (data-buf) (data-len) =
+    if msc-desynced d == False then msc-issue-now d tag dir-in data-buf data-len
+    else if msc-reset-recovery-stopped d == False then False
+    else let c = msc-set-desync d 0
+    in msc-issue-now d tag dir-in data-buf data-len
+
+ A BOT target that stops taking a data-out phase part way stays in that
+ phase: the rest of the declared length is still owed.
+
+  msc-continue-out : MscDisk, Integer, Integer, Integer -> Boolean
+  msc-continue-out (d) (tag) (buf) (len) =
+    let xh = d.md-host
+    in let slot = (d.md-dev).ud-slot
+    in let dci = d.md-dci-out
+    in let s = xhci-stop-endpoint xh slot dci
+    in if s.xe-ok == False then False
+    else let code = xhci-latch-take xh slot dci
+    in let resid = xhci-stop-resid xh
+    in let q = xhci-set-tr-dequeue xh slot dci (d.md-ring-out)
+    in if q.xe-ok == False then False
+    else if q.xe-code /= trb-cc-success then False
+    else if code /= trb-cc-stopped then False
+    else if resid <= 0 then False
+    else if resid > len then False
+    else let c = msc-xfer-code d (d.md-ring-out) dci (buf + len - resid) resid
+    in if msc-code-ok c == False then False
+    else let r = xdiag-put msc-cell-retry msc-retry-continued
+    in msc-finish d tag
+
+  msc-issue-now : MscDisk, Integer, Boolean, Integer, Integer -> Boolean
+  msc-issue-now (d) (tag) (dir-in) (data-buf) (data-len) =
     let z = poke-32 (d.md-csw) 0 0
     in let p1 = xdiag-put msc-cell-phase msc-ph-cbw
     in let ccode = msc-xfer-code d (d.md-ring-out) (d.md-dci-out) (d.md-cbw) 31
@@ -427,6 +469,7 @@ Section: BOT Transfer
       else if dir-in then msc-xfer-code d (d.md-ring-in) (d.md-dci-in) data-buf data-len
       else msc-xfer-code d (d.md-ring-out) (d.md-dci-out) data-buf data-len
     in if dcode == trb-cc-stall then msc-stalled-data d tag dir-in
+    else if (dcode == 0) & (dir-in == False) then msc-continue-out d tag data-buf data-len
     else if msc-code-ok dcode == False then False
     else msc-finish d tag
 
@@ -597,8 +640,11 @@ Section: Sector Read and Write
   msc-retry-chunk : MscDisk, Integer -> Boolean
   msc-retry-chunk (d) (lba) =
     let f = xdiag-put msc-cell-fail-lba lba
-    in if xdiag-get msc-cell-lastcc == msc-ce-no-event then msc-reset-recovery-stopped d
-    else msc-reset-recovery d
+    in let r = if xdiag-get msc-cell-lastcc == msc-ce-no-event then msc-reset-recovery-stopped d
+      else msc-reset-recovery d
+    in if r then True
+    else let s = msc-set-desync d 1
+    in False
 
   msc-read-into : MscDisk, Integer, Integer, Integer -> Integer
   msc-read-into (d) (lba) (count) (dest) =

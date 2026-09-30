@@ -151,6 +151,7 @@ Section: TRB Vocabulary
   trb-cc-success : Integer = 1
   trb-cc-short : Integer = 13
   trb-cc-stall : Integer = 6
+  trb-cc-stopped : Integer = 26
   trb-cc-usb-transaction-error : Integer = 4
 
 Section: Producer Rings
@@ -216,6 +217,8 @@ Section: Host State
  (xHCI 6.4.2.1); the Slot ID is bits 24 to 31 of the same dword.
 
   xh-st-latch : Integer = 64
+  xh-st-stop-resid : Integer = 1088
+  xh-st-desync : Integer = 1092
 
   xhci-evt-count : Integer = 64
 
@@ -970,7 +973,7 @@ Section: Ownership Handback
     in let cmd-ring = xhci-ring-new
     in let evt-ring = alloc-zeroed 1024 64
     in let erst = alloc-zeroed 64 64
-    in let state = alloc-zeroed 1088 64
+    in let state = alloc-zeroed 1152 64
     in let c0 = poke-32 op xh-op-config maxslots
     in let c1 = poke-32 op xh-op-dcbaap dcbaa
     in let c2 = poke-32 op (xh-op-dcbaap + 4) 0
@@ -1011,6 +1014,19 @@ Section: Event Ring
   xhci-latch-put : XhciHost, Integer, Integer, Integer -> Integer
   xhci-latch-put (xh) (slot) (dci) (code) =
     poke-byte (xh.xh-state) (xhci-latch-at slot dci) code
+
+ A Stopped transfer event (26, TD in progress) carries in its low 24 bits
+ the bytes of that TD the controller did NOT move (xHCI 6.4.2.1), which is
+ what a caller needs to finish the TD by hand after stopping it.
+
+  xhci-latch-evt : XhciHost, Integer, Integer, Integer -> Integer
+  xhci-latch-evt (xh) (slot) (dci) (sts) =
+    let code = bit-and (bit-shru sts 24) 255
+    in let r = if code == trb-cc-stopped then poke-32 (xh.xh-state) xh-st-stop-resid (bit-and sts 16777215) else 0
+    in xhci-latch-put xh slot dci code
+
+  xhci-stop-resid : XhciHost -> Integer
+  xhci-stop-resid (xh) = peek-32 (xh.xh-state) xh-st-stop-resid
 
   xhci-latch-take : XhciHost, Integer, Integer -> Integer
   xhci-latch-take (xh) (slot) (dci) =
@@ -1064,7 +1080,7 @@ Section: Event Ring
     in let edci = bit-and (bit-shru ctl 16) 31
     in let mine = if eslot == slot then (if edci == dci then 1 else 0) else 0
     in if mine == 1 then let fl = xdiag-put xhci-cell-fuel-left fuel in code
-    else let put = xhci-latch-put xh eslot edci code
+    else let put = xhci-latch-evt xh eslot edci sts
     in xhci-wait-xfer xh slot dci fuel
 
   XhciEvent = record {
@@ -1089,7 +1105,7 @@ Section: Event Ring
     in let adv = xhci-evt-advance xh deq cyc
     in let ty = bit-and (bit-shru ctl 10) 63
     in if ty == trb-t-xfer-event then
-      let put = xhci-latch-put xh (bit-and (bit-shru ctl 24) 255) (bit-and (bit-shru ctl 16) 31) (bit-and (bit-shru sts 24) 255)
+      let put = xhci-latch-evt xh (bit-and (bit-shru ctl 24) 255) (bit-and (bit-shru ctl 16) 31) sts
       in xhci-wait-event xh want fuel
     else if ty /= want then xhci-wait-event xh want fuel
     else XhciEvent { xe-ok = True, xe-code = bit-and (bit-shru sts 24) 255, xe-slot = bit-and (bit-shru ctl 24) 255 }

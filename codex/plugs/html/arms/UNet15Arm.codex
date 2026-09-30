@@ -1,0 +1,125 @@
+Chapter: UNet15Arm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter UNetGraph
+  cites Diffusion chapter UNet15Graph
+  cites Diffusion chapter BrowserUNet
+  cites AI chapter SafeTensors
+
+ The page codex/plugs/html/arms/unet15.mjs drives: a picked SD1.5 checkpoint's
+ UNet uploaded to the device as f32, then one unet15-forward-with step over
+ browser-unet-ops on sd15-unet-step's inputs (page-data "latent" and
+ "context", f32 bit patterns) at t = 500, then input block 1 again at t = 900
+ and with a zero context. Every block is read back; page-data "sizes" holds
+ each one's element count.
+
+ We say:
+
+Section: Header
+
+  opening : [Console] Integer
+  opening =
+    let c = dom-on-click (dom-query "html") u1-pick
+    in state-set "armed" 1
+
+  u1-pick : Text -> Integer
+  u1-pick (id) = pick-file-then ".safetensors" u1-picked
+
+  u1-picked : Text -> Integer
+  u1-picked (r) =
+    let f = state-set-text "file" (json-obj-field (json-parse-obj r) "name")
+    in gpu-open-then u1-opened
+
+  u1-opened : Text -> Integer
+  u1-opened (r) = file-read-then (state-get-text "file") 0 8 u1-got-len
+
+  u1-ints : List Text, Integer, List Integer -> List Integer
+  u1-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else u1-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  u1-list : Text -> List Integer
+  u1-list (t) = if text-length t < 3 then [] else u1-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  u1-got-len : Text -> Integer
+  u1-got-len (r) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (u1-list r) 0) u1-got-header
+
+  u1-part : List PartBinding, Integer, Text -> List BoundTensor
+  u1-part (parts) (i) (name) =
+    if i >= list-length parts then []
+    else if (list-at parts i).pb-name == name then (list-at parts i).pb-bound
+    else u1-part parts (i + 1) name
+
+  u1-got-header : Text -> Integer
+  u1-got-header (r) =
+    let lb = layout-bind (st-parse-file (u1-list r)) sd15-layout
+    in u1-upload (u1-part (lb.lb-parts) 0 "unet") 0 [] [] 0
+
+Section: Upload
+
+  u1-prefix : Text = "model.diffusion_model."
+
+  u1-short : Text -> Text
+  u1-short (n) = substring n (text-length u1-prefix) (text-length n - text-length u1-prefix)
+
+  u1-dt : Integer -> Integer
+  u1-dt (d) = if d == st-dtype-f16 then gpu-dt-f16 else if d == st-dtype-f32 then gpu-dt-f32 else 0 - 1
+
+  u1-upload : List BoundTensor, Integer, List Text, List Integer, Integer -> Integer
+  u1-upload (ts) (i) (ns) (hs) (bad) =
+    if i >= list-length ts then u1-run (BuWeights { bu-names = ns, bu-handles = hs }) bad
+    else let t = list-at ts i
+    in let dt = u1-dt (t.bt-dtype)
+    in let elems = t.bt-bytes / st-dtype-width (t.bt-dtype)
+    in let h = if dt < 0 then 0 else gpu-buf-alloc (if bt-half t then (elems + 1) / 2 * 4 else elems * 4)
+    in let ns2 = list-snoc ns (u1-short (t.bt-name))
+    in if h == 0 then u1-upload ts (i + 1) ns2 (list-snoc hs 0) (bad + 1)
+    else gpu-buf-upload-then h 0 (state-get-text "file") (t.bt-offset) elems dt (if bt-half t then gpu-dt-f16 else gpu-dt-f32) (\r -> u1-uploaded ts i ns2 (list-snoc hs h) bad r)
+
+  u1-uploaded : List BoundTensor, Integer, List Text, List Integer, Integer, Text -> Integer
+  u1-uploaded (ts) (i) (ns) (hs) (bad) (r) =
+    if text-contains r "\"ok\":true" then u1-upload ts (i + 1) ns hs bad
+    else u1-upload ts (i + 1) ns hs (bad + 1)
+
+Section: Step
+
+  u1-buf : Text, Integer -> Integer
+  u1-buf (key) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 then 0
+    else if gpu-buf-write-words h 0 (u1-list (page-data key)) then h
+    else 0
+
+  u1-run : BuWeights, Integer -> Integer
+  u1-run (w) (bad) =
+    let a = state-set "tensors" (list-length (w.bu-names))
+    in let b = state-set "failed" bad
+    in let ops = browser-unet-ops (page-data "bk")
+    in let x = u1-buf "latent" 1024
+    in let ctx = u1-buf "context" 59136
+    in let emb = unet15-embedding-with ops w 500.0
+    in let embs = ops.silu emb 1280
+    in let blocks = unet15-forward-with ops w x embs ctx 16 16
+    in let far = unet15-embedding-with ops w 900.0
+    in let fars = ops.silu far 1280
+    in let s1 = u15-stage-with ops w (list-at blocks 0) fars ctx 320 320 16 16 "input_blocks.1." True
+    in let ctx0 = gpu-buf-alloc (59136 * 4)
+    in let z1 = u15-stage-with ops w (list-at blocks 0) embs ctx0 320 320 16 16 "input_blocks.1." True
+    in let e = state-set-text "err-run" (gpu-error 0)
+    in u1-download (list-snoc (list-snoc blocks s1) z1) (u1-list (page-data "sizes")) 0
+
+  u1-download : List Integer, List Integer, Integer -> Integer
+  u1-download (hs) (sizes) (i) =
+    if i >= list-length hs then u1-done 0
+    else gpu-buf-download-then (list-at hs i) 0 (list-at sizes i * 4) (\r -> u1-got hs sizes i r)
+
+  u1-got : List Integer, List Integer, Integer, Text -> Integer
+  u1-got (hs) (sizes) (i) (r) =
+    let s = state-set-text ("b" & show i) r
+    in u1-download hs sizes (i + 1)
+
+  u1-done : Integer -> Integer
+  u1-done (z) =
+    let e = state-set-text "err" (gpu-error 0)
+    in state-set "done" 1

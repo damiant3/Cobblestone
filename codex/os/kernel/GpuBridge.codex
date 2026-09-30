@@ -66,10 +66,20 @@ Section: Command Buffer
 
 Section: Dispatch
 
+ codex-vm keeps the command and reply addresses between doorbells
+ (com3_cmd_addr, com3_reply_addr), so they cross once: a magic word in the
+ command region's last slot records that they were written. Every port write
+ is a VM exit.
+
+  gpu-latch : Integer = #BD5FFFF0
+  gpu-latch-magic : Integer = #4C415443
+
   gpu-ring : Integer -> Integer
   gpu-ring (cmd-bytes) =
-    let p1 = port-out-32 gpu-port-cmd-addr gpu-cmd-buf
-    in let p2 = port-out-32 gpu-port-reply-addr gpu-reply-buf
+    let a = if bit-and (peek-32 gpu-latch 0) #FFFFFFFF == gpu-latch-magic then 0
+       else let p1 = port-out-32 gpu-port-cmd-addr gpu-cmd-buf
+       in let p2 = port-out-32 gpu-port-reply-addr gpu-reply-buf
+       in poke-32 gpu-latch 0 gpu-latch-magic
     in let p3 = port-out-32 gpu-port-doorbell cmd-bytes
     in port-in-32 gpu-port-reply-len
 
@@ -249,6 +259,288 @@ Section: A Kernel On The Actual Device
     in if rlen <= 0 then None
     else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
     else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 n-out 0 [], rows = out-rows, cols = out-cols })
+
+Section: Device Buffers
+
+  gpu-op-buf-alloc : Integer = 40
+  gpu-op-buf-free : Integer = 41
+  gpu-op-buf-write : Integer = 42
+  gpu-op-buf-read : Integer = 43
+  gpu-op-buf-upload : Integer = 44
+  gpu-op-launch : Integer = 45
+  gpu-op-buf-save : Integer = 46
+
+  gpu-dt-u8 : Integer = 0
+  gpu-dt-f32 : Integer = 1
+  gpu-dt-f16 : Integer = 2
+  gpu-dt-bf16 : Integer = 3
+  gpu-dt-fp8-e4m3 : Integer = 4
+  gpu-dt-fp8-e5m2 : Integer = 5
+
+  GpuParam = record {
+    kind : Integer,
+    handle : Integer,
+    value : Integer
+  }
+
+  GpuGrid = record {
+    gx : Integer,
+    gy : Integer,
+    gz : Integer,
+    bx : Integer,
+    by : Integer,
+    bz : Integer,
+    shared : Integer
+  }
+
+  gpu-arg-buf : Integer, Integer -> GpuParam
+  gpu-arg-buf (h) (off) = GpuParam { kind = 0, handle = h, value = off }
+
+  gpu-arg-u32 : Integer -> GpuParam
+  gpu-arg-u32 (v) = GpuParam { kind = 1, handle = 0, value = v }
+
+  gpu-arg-u64 : Integer -> GpuParam
+  gpu-arg-u64 (v) = GpuParam { kind = 2, handle = 0, value = v }
+
+  gpu-put-u64 : Integer, Integer -> Integer
+  gpu-put-u64 (off) (v) =
+    let lo = poke-32 gpu-cmd-buf off (bit-and v #FFFFFFFF)
+    in poke-32 gpu-cmd-buf (off + 4) (bit-shru v 32)
+
+  gpu-reply-u64 : Integer -> Integer
+  gpu-reply-u64 (off) = bit-or (peek-32 gpu-reply-buf off) (bit-shl (peek-32 gpu-reply-buf (off + 4)) 32)
+
+  gpu-op-head : Integer -> Integer
+  gpu-op-head (op) =
+    let h0 = poke-32 gpu-cmd-buf 0 gpu-status-pending
+    in poke-32 gpu-cmd-buf 4 op
+
+  gpu-answered : Integer -> Boolean
+  gpu-answered (rlen) =
+    if rlen <= 0 then False
+    else peek-32 gpu-reply-buf 0 == gpu-status-complete
+
+  gpu-buf-alloc-raw : Integer -> Integer
+  gpu-buf-alloc-raw (bytes) =
+    let h0 = gpu-op-head gpu-op-buf-alloc
+    in let h1 = gpu-put-u64 8 bytes
+    in if gpu-answered (gpu-ring 16) then peek-32 gpu-reply-buf 4 else 0
+
+  gpu-buf-free-raw : Integer -> Boolean
+  gpu-buf-free-raw (h) =
+    let h0 = gpu-op-head gpu-op-buf-free
+    in let h1 = poke-32 gpu-cmd-buf 8 h
+    in gpu-answered (gpu-ring 12)
+
+Section: Buffer Pool
+
+ A freed buffer returns to a pool keyed by its exact size instead of to the
+ host, where each free is four VM exits and a cuMemFree that waits for the
+ device to drain. Every allocation and every free passes through the two
+ functions below, which record each live handle's size, so a pooled size is
+ never stale. The tables sit in the command region's tail, below the address
+ latch: sizes by handle (4096 x 8 bytes), the free list (4096 x 16 bytes:
+ size, handle) and a head of count, bytes held and a magic word. Past
+ gpu-pool-cap bytes held a buffer goes to the host; a refused allocation
+ drains the pool and tries once more.
+
+  gpu-pool-sizes : Integer = #BD5E0000
+  gpu-pool-list : Integer = #BD5E8000
+  gpu-pool-head : Integer = #BD5FFF00
+  gpu-pool-slots : Integer = 4096
+  gpu-pool-cap : Integer = 2147483648
+  gpu-pool-magic : Integer = #504F4F42
+
+  gpu-w32 : Integer, Integer -> Integer
+  gpu-w32 (base) (off) = bit-and (peek-32 base off) #FFFFFFFF
+
+  gpu-get64 : Integer, Integer -> Integer
+  gpu-get64 (base) (off) = bit-or (gpu-w32 base off) (bit-shl (gpu-w32 base (off + 4)) 32)
+
+  gpu-set64 : Integer, Integer, Integer -> Integer
+  gpu-set64 (base) (off) (v) =
+    let lo = poke-32 base off (bit-and v #FFFFFFFF)
+    in poke-32 base (off + 4) (bit-shru v 32)
+
+  gpu-pool-clear : Integer -> Integer
+  gpu-pool-clear (i) = if i >= gpu-pool-slots then 0 else let w = gpu-set64 gpu-pool-sizes (i * 8) 0 in gpu-pool-clear (i + 1)
+
+  gpu-pool-count : Integer -> Integer
+  gpu-pool-count (z) =
+    if gpu-w32 gpu-pool-head 12 == gpu-pool-magic then gpu-w32 gpu-pool-head 0
+    else let a = gpu-pool-clear 0
+    in let b = poke-32 gpu-pool-head 0 0
+    in let c = gpu-set64 gpu-pool-head 4 0
+    in let d = poke-32 gpu-pool-head 12 gpu-pool-magic
+    in 0
+
+  gpu-buf-pool-held : Integer -> Integer
+  gpu-buf-pool-held (z) = let n = gpu-pool-count 0 in gpu-get64 gpu-pool-head 4
+
+  gpu-pool-find : Integer, Integer, Integer -> Integer
+  gpu-pool-find (bytes) (i) (n) =
+    if i >= n then 0 - 1
+    else if gpu-get64 gpu-pool-list (i * 16) == bytes then i
+    else gpu-pool-find bytes (i + 1) n
+
+ A pooled handle's recorded size carries gpu-pool-mark, so a second free of
+ it answers False as the host would, instead of pooling it twice.
+
+  gpu-pool-mark : Integer = #4000000000000000
+
+  gpu-pool-take : Integer, Integer, Integer -> Integer
+  gpu-pool-take (i) (n) (bytes) =
+    let h = gpu-w32 gpu-pool-list (i * 16 + 8)
+    in let m = gpu-set64 gpu-pool-sizes ((h - 1) * 8) bytes
+    in let a = gpu-set64 gpu-pool-list (i * 16) (gpu-get64 gpu-pool-list ((n - 1) * 16))
+    in let b = poke-32 gpu-pool-list (i * 16 + 8) (gpu-w32 gpu-pool-list ((n - 1) * 16 + 8))
+    in let c = poke-32 gpu-pool-head 0 (n - 1)
+    in let d = gpu-set64 gpu-pool-head 4 (gpu-get64 gpu-pool-head 4 - bytes)
+    in h
+
+ Frees every pooled buffer to the host; a resident server calls it on idle.
+
+  gpu-buf-pool-drain : Integer -> Integer
+  gpu-buf-pool-drain (freed) =
+    let n = gpu-pool-count 0
+    in if n <= 0 then freed
+    else let h = gpu-pool-take (n - 1) n (gpu-get64 gpu-pool-list ((n - 1) * 16))
+    in let f = gpu-buf-free-raw h
+    in let z = gpu-set64 gpu-pool-sizes ((h - 1) * 8) 0
+    in gpu-buf-pool-drain (freed + 1)
+
+  gpu-buf-alloc : Integer -> Integer
+  gpu-buf-alloc (bytes) =
+    let n = gpu-pool-count 0
+    in let i = gpu-pool-find bytes 0 n
+    in if i >= 0 then gpu-pool-take i n bytes
+    else let h1 = gpu-buf-alloc-raw bytes
+    in let h = if h1 > 0 then h1 else (if gpu-buf-pool-drain 0 > 0 then gpu-buf-alloc-raw bytes else 0)
+    in if h > 0 & h <= gpu-pool-slots then (let r = gpu-set64 gpu-pool-sizes ((h - 1) * 8) bytes in h) else h
+
+  gpu-buf-free : Integer -> Boolean
+  gpu-buf-free (h) =
+    let n = gpu-pool-count 0
+    in let size = if h > 0 & h <= gpu-pool-slots then gpu-get64 gpu-pool-sizes ((h - 1) * 8) else 0
+    in let held = gpu-get64 gpu-pool-head 4
+    in if size >= gpu-pool-mark then False
+    else if size > 0 & n < gpu-pool-slots & held + size <= gpu-pool-cap then
+      (let a = gpu-set64 gpu-pool-list (n * 16) size
+      in let b = poke-32 gpu-pool-list (n * 16 + 8) h
+      in let c = poke-32 gpu-pool-head 0 (n + 1)
+      in let d = gpu-set64 gpu-pool-head 4 (held + size)
+      in let e = gpu-set64 gpu-pool-sizes ((h - 1) * 8) (size + gpu-pool-mark)
+      in True)
+    else let z = if h > 0 & h <= gpu-pool-slots then gpu-set64 gpu-pool-sizes ((h - 1) * 8) 0 else 0
+    in gpu-buf-free-raw h
+
+  gpu-buf-copy : Integer, Integer, Integer, Integer, Integer -> Boolean
+  gpu-buf-copy (op) (h) (off) (bytes) (addr) =
+    let h0 = gpu-op-head op
+    in let h1 = poke-32 gpu-cmd-buf 8 h
+    in let h2 = gpu-put-u64 12 off
+    in let h3 = gpu-put-u64 20 bytes
+    in let h4 = gpu-put-u64 28 addr
+    in gpu-answered (gpu-ring 36)
+
+  gpu-buf-write : Integer, Integer, Integer, Integer -> Boolean
+  gpu-buf-write (h) (off) (bytes) (addr) = gpu-buf-copy gpu-op-buf-write h off bytes addr
+
+  gpu-buf-read : Integer, Integer, Integer, Integer -> Boolean
+  gpu-buf-read (h) (off) (bytes) (addr) = gpu-buf-copy gpu-op-buf-read h off bytes addr
+
+  gpu-buf-upload : Integer, Integer, Text, Integer, Integer, Integer, Integer -> Integer
+  gpu-buf-upload (h) (dst-off) (path) (file-off) (count) (src-dt) (dst-dt) =
+    let n = text-length path
+    in let h0 = gpu-op-head gpu-op-buf-upload
+    in let h1 = poke-32 gpu-cmd-buf 8 h
+    in let h2 = gpu-put-u64 12 dst-off
+    in let h3 = gpu-put-u64 20 file-off
+    in let h4 = gpu-put-u64 28 count
+    in let h5 = poke-32 gpu-cmd-buf 36 src-dt
+    in let h6 = poke-32 gpu-cmd-buf 40 dst-dt
+    in let h7 = poke-32 gpu-cmd-buf 44 n
+    in let wp = gpu-put-text gpu-cmd-buf 48 path 0 n
+    in if gpu-answered (gpu-ring (48 + n)) then gpu-reply-u64 4 else 0 - 1
+
+  gpu-buf-save : Integer, Integer, Integer, Text -> Integer
+  gpu-buf-save (h) (off) (bytes) (path) =
+    let n = text-length path
+    in let h0 = gpu-op-head gpu-op-buf-save
+    in let h1 = poke-32 gpu-cmd-buf 8 h
+    in let h2 = gpu-put-u64 12 off
+    in let h3 = gpu-put-u64 20 bytes
+    in let h4 = poke-32 gpu-cmd-buf 28 n
+    in let wp = gpu-put-text gpu-cmd-buf 32 path 0 n
+    in if gpu-answered (gpu-ring (32 + n)) then gpu-reply-u64 4 else 0 - 1
+
+  gpu-put-params : List GpuParam, Integer -> Integer
+  gpu-put-params (ps) (i) =
+    if i >= list-length ps then 0
+    else let p = list-at ps i
+    in let off = 48 + i * 16
+    in let a = poke-32 gpu-cmd-buf off (p.kind)
+    in let b = poke-32 gpu-cmd-buf (off + 4) (p.handle)
+    in let c = gpu-put-u64 (off + 8) (p.value)
+    in gpu-put-params ps (i + 1)
+
+  gpu-launch : Text, Text, GpuGrid, List GpuParam -> Integer
+  gpu-launch (ptx) (name) (g) (ps) =
+    let np = list-length ps
+    in let plen = text-length ptx
+    in let nlen = text-length name
+    in let h0 = gpu-op-head gpu-op-launch
+    in let h1 = poke-32 gpu-cmd-buf 8 (g.gx)
+    in let h2 = poke-32 gpu-cmd-buf 12 (g.gy)
+    in let h3 = poke-32 gpu-cmd-buf 16 (g.gz)
+    in let h4 = poke-32 gpu-cmd-buf 20 (g.bx)
+    in let h5 = poke-32 gpu-cmd-buf 24 (g.by)
+    in let h6 = poke-32 gpu-cmd-buf 28 (g.bz)
+    in let h7 = poke-32 gpu-cmd-buf 32 (g.shared)
+    in let h8 = poke-32 gpu-cmd-buf 36 plen
+    in let h9 = poke-32 gpu-cmd-buf 40 nlen
+    in let h10 = poke-32 gpu-cmd-buf 44 np
+    in let wa = gpu-put-params ps 0
+    in let base = 48 + np * 16
+    in let wp = gpu-put-text gpu-cmd-buf base ptx 0 plen
+    in let wn = gpu-put-text gpu-cmd-buf (base + plen) name 0 nlen
+    in if gpu-answered (gpu-ring (base + plen + nlen)) then gpu-reply-u64 4 else 0 - 1
+
+Section: Modules
+
+ A module's PTX crosses once (op 47, which answers the same handle for the
+ same text) and is launched by handle after (op 48: gpu-launch's layout with
+ the handle in the PTX length's word and no text before the name).
+
+  gpu-op-module-load : Integer = 47
+  gpu-op-launch-module : Integer = 48
+
+  gpu-module-load : Text -> Integer
+  gpu-module-load (ptx) =
+    let plen = text-length ptx
+    in let h0 = gpu-op-head gpu-op-module-load
+    in let h1 = poke-32 gpu-cmd-buf 8 plen
+    in let wp = gpu-put-text gpu-cmd-buf 12 ptx 0 plen
+    in if gpu-answered (gpu-ring (12 + plen)) then peek-32 gpu-reply-buf 4 else 0
+
+  gpu-launch-module : Integer, Text, GpuGrid, List GpuParam -> Integer
+  gpu-launch-module (mh) (name) (g) (ps) =
+    let np = list-length ps
+    in let nlen = text-length name
+    in let h0 = gpu-op-head gpu-op-launch-module
+    in let h1 = poke-32 gpu-cmd-buf 8 (g.gx)
+    in let h2 = poke-32 gpu-cmd-buf 12 (g.gy)
+    in let h3 = poke-32 gpu-cmd-buf 16 (g.gz)
+    in let h4 = poke-32 gpu-cmd-buf 20 (g.bx)
+    in let h5 = poke-32 gpu-cmd-buf 24 (g.by)
+    in let h6 = poke-32 gpu-cmd-buf 28 (g.bz)
+    in let h7 = poke-32 gpu-cmd-buf 32 (g.shared)
+    in let h8 = poke-32 gpu-cmd-buf 36 mh
+    in let h9 = poke-32 gpu-cmd-buf 40 nlen
+    in let h10 = poke-32 gpu-cmd-buf 44 np
+    in let wa = gpu-put-params ps 0
+    in let wn = gpu-put-text gpu-cmd-buf (48 + np * 16) name 0 nlen
+    in if gpu-answered (gpu-ring (48 + np * 16 + nlen)) then gpu-reply-u64 4 else 0 - 1
 
 Section: Formatting
   format-gpu-bridge : GpuBridge -> Text

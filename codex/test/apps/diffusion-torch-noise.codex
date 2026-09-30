@@ -1,0 +1,84 @@
+Chapter: DiffusionTorchNoise
+  cites Diffusion chapter Noise
+  cites Diffusion chapter Sampler
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/torch-noise-oracle.py's, torch's own CUDA draws on this
+ box's card, in its case order; a value agrees within 1e-5.
+
+ We say:
+
+Section: Reading
+
+  ours : Integer = #BD700000
+
+  theirs : Integer = #BD900000
+
+  f32-real : Integer -> Real
+  f32-real (raw) =
+    let b = bit-and raw #FFFFFFFF
+    in let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-shru b 31) 63) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+  load : Integer, Integer, Integer -> Boolean
+  load (h) (at) (n) =
+    let u = gpu-buf-upload h 0 "torch-noise.bin" (at * 4) n gpu-dt-f32 gpu-dt-f32
+    in gpu-buf-read h 0 (n * 4) theirs
+
+  over : Integer, Integer, Integer -> Integer
+  over (i) (n) (acc) =
+    if i >= n then acc
+    else let d = f32-real (peek-32 ours (i * 4)) - f32-real (peek-32 theirs (i * 4))
+    in let a = if d < 0.0 then 0.0 - d else d
+    in over (i + 1) n (acc + (if a > 0.00001 then 1 else 0))
+
+  verdict : Text, Integer, Integer -> Text
+  verdict (what) (n) (bad) =
+    if bad == 0 then what & ": all " & show n & " within 1e-5" else what & ": " & show bad & " of " & show n & " off"
+
+Section: Arms
+
+  arm : Integer, Integer, Integer, Integer, Integer, Text -> Text
+  arm (h) (at) (n) (seed) (draw) (what) =
+    if load h at n == False then what & ": the fixture could not be read"
+    else let z = noise-torch-into ours seed draw n
+    in verdict what n (over 0 n 0)
+
+ Forge's rng_philox layout, the "NV" source: one element per thread and the
+ offset moved on by one a draw.
+
+  nv-fill : Integer, Integer, Integer, Integer, Integer -> Integer
+  nv-fill (c) (seed) (draw) (t) (n) =
+    if t >= n then 0
+    else let z = nt-pass ours c seed draw t 0 n n
+    in nv-fill c seed draw (t + 1) n
+
+  arm-nv : Integer, Integer, Integer, Integer, Integer, Text -> Text
+  arm-nv (h) (at) (n) (seed) (draw) (what) =
+    if load h at n == False then what & ": the fixture could not be read"
+    else let z = nv-fill (alloc-bytes 16) seed draw 0 n
+    in verdict what n (over 0 n 0)
+
+  arms : Integer -> [Console] Nothing
+  arms (h) = act
+    print-line-uni (arm h 0 16384 0 0 "4x64x64 seed 0, draw 0")
+    print-line-uni (arm h 16384 16384 0 1 "4x64x64 seed 0, draw 1")
+    print-line-uni (arm h 32768 65536 20260929 0 "4x128x128 seed 20260929, draw 0")
+    print-line-uni (arm h 98304 65536 20260929 1 "4x128x128 seed 20260929, draw 1")
+    print-line-uni (arm h 163840 65536 20260929 2 "4x128x128 seed 20260929, draw 2")
+    print-line-uni (arm h 229376 61440 4294967295 0 "4x80x192 seed 4294967295, draw 0")
+    print-line-uni (arm h 290816 61440 4294967295 1 "4x80x192 seed 4294967295, draw 1")
+    print-line-uni (arm h 352256 262144 1234 0 "16x128x128 seed 1234, draw 0")
+    print-line-uni (arm h 614400 262144 1234 1 "16x128x128 seed 1234, draw 1")
+    print-line-uni (arm h 98304 65536 20260929 0 "sabotage, draw 0 against draw 1")
+    print-line-uni (arm-nv h 0 16384 0 0 "control, rng_philox's layout on 4x64x64")
+    print-line-uni (arm-nv h 32768 65536 20260929 0 "sabotage, rng_philox's layout on 4x128x128")
+  end
+
+  opening : [Console] Integer
+  opening = act
+    arms (gpu-buf-alloc (262144 * 4))
+    let r = 0 in r
+  end

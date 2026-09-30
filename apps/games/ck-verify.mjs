@@ -110,6 +110,30 @@ function illegal(g, turn, m) {
   return `moves ${Math.abs(dr)} squares`;
 }
 
+// The WHOLE legal set, from the rules text, in rows and columns: a pending
+// chain allows only that piece's captures (rule 5); otherwise any capture
+// makes every non-capture illegal (rule 4). Compared as a set, so a move the
+// engine leaves out is as wrong as one it adds.
+function oracleSet(g, turn, chain) {
+  const caps = [], slides = [];
+  const fwd = turn === 0 ? -1 : 1;
+  for (let sq = 0; sq < 64; sq++) {
+    if (owner(g[sq]) !== turn) continue;
+    if (chain >= 0 && sq !== chain) continue;
+    const r = Math.floor(sq / 8), c = sq % 8;
+    const dirs = isKing(g[sq]) ? [-1, 1] : [fwd];
+    for (const dr of dirs) for (const dc of [-1, 1]) {
+      const r1 = r + dr, c1 = c + dc, r2 = r + 2 * dr, c2 = c + 2 * dc;
+      if (r1 < 0 || r1 > 7 || c1 < 0 || c1 > 7) continue;
+      if (g[r1 * 8 + c1] === 0) slides.push(`${sq}-${r1 * 8 + c1}`);
+      else if (owner(g[r1 * 8 + c1]) === 1 - turn && r2 >= 0 && r2 <= 7 && c2 >= 0 && c2 <= 7 &&
+        g[r2 * 8 + c2] === 0) caps.push(`${sq}-${r2 * 8 + c2}x${r1 * 8 + c1}`);
+    }
+  }
+  return (caps.length || chain >= 0 ? caps : slides).sort();
+}
+const engineSet = h => moves(h).map(m => m.cap >= 0 ? `${m.from}-${m.to}x${m.cap}` : `${m.from}-${m.to}`).sort();
+
 function playGame(pick) {
   let h = e.ck_new(), plies = 0, lastCapture = 0, lastProgress = 0;
   const problems = [];
@@ -120,6 +144,10 @@ function playGame(pick) {
       const why = illegal(g, turn, m);
       if (why) problems.push(`ply ${plies}: ${m.from}->${m.to} ${why}`);
     }
+    const rulesSay = oracleSet(g, turn, e.ck_chain(h)), got = engineSet(h);
+    if (JSON.stringify(rulesSay) !== JSON.stringify(got)) {
+      problems.push(`ply ${plies}: legal ${JSON.stringify(got)}, rules say ${JSON.stringify(rulesSay)}`);
+    }
     const idx = pick(h, ms.length, plies);
     const before = cells(h);
     const chosen = ms[idx];
@@ -128,6 +156,16 @@ function playGame(pick) {
     if (chosen.cap >= 0 || crowns) lastProgress = plies + 1;
     h = e.ck_apply(h, idx);
     const after = cells(h);
+    // Rules 5 and 6 from the board, not from the engine's own chain: after a
+    // capture that did not crown, the turn stays exactly when the piece can
+    // capture again from where it landed.
+    if (e.ck_done(h) === 0) {
+      const goesOn = chosen.cap >= 0 && !crowns && oracleSet(after, turn, chosen.to).length > 0;
+      const wantTurn = goesOn ? turn : 1 - turn, wantChain = goesOn ? chosen.to : -1;
+      if (e.ck_turn(h) !== wantTurn || e.ck_chain(h) !== wantChain) {
+        problems.push(`ply ${plies}: after ${chosen.from}->${chosen.to} turn ${e.ck_turn(h)} chain ${e.ck_chain(h)}, rules say ${wantTurn} and ${wantChain}`);
+      }
+    }
     // Piece bookkeeping: a jump removes exactly one enemy, a slide none.
     const lost = count(before, 1 - turn) - count(after, 1 - turn);
     const want = chosen.cap >= 0 ? 1 : 0;
@@ -213,6 +251,66 @@ function playGame(pick) {
      oi >= 0 && e.ck_done(after2) === 0 && e.ck_moves(after2) > 0,
      `done ${e.ck_done(after2)}, north moves ${e.ck_moves(after2)}`);
 }
+// -- THE RULES: one arm per board-state class -----------------------------
+// South is player 0, men 1 and kings 2, moving toward row 0.
+const setUp = (sqs, turn = 0) =>
+  e.ck_put(sqs.reduce((h, [sq, v]) => e.ck_put(h, sq, v), e.ck_blank()), 64, turn);
+const find = (h, from, to) => moves(h).findIndex(m => m.from === from && m.to === to);
+const cls = (name, h, want) => {
+  const got = engineSet(h);
+  ok(`class: ${name}`, JSON.stringify(got) === JSON.stringify([...want].sort()),
+     `legal ${JSON.stringify(got)}, want ${JSON.stringify([...want].sort())}`);
+  return h;
+};
+cls('a capture is compulsory: the slides of 46 are refused', setUp([[42, 1], [33, 3], [46, 1]]), ['42-24x33']);
+const two = cls('any capture may be chosen, the single as well as the start of a double',
+    setUp([[40, 1], [33, 3], [45, 1], [36, 3], [20, 3]]), ['40-26x33', '45-27x36']);
+const mid = e.ck_apply(two, find(two, 45, 27));
+cls('a chain must go on: the same piece, and only its capture', mid, ['27-13x20']);
+ok('class: while the chain goes on, the turn is not handed over',
+   e.ck_turn(mid) === 0 && e.ck_chain(mid) === 27, `turn ${e.ck_turn(mid)} chain ${e.ck_chain(mid)}`);
+const end = e.ck_apply(mid, find(mid, 27, 13));
+ok('class: the chain ends when no capture is left, and the turn passes',
+   e.ck_turn(end) === 1 && e.ck_chain(end) === -1 && e.ck_cell(end, 20) === 0 && e.ck_cell(end, 36) === 0,
+   `turn ${e.ck_turn(end)} chain ${e.ck_chain(end)}`);
+const crown = setUp([[17, 1], [10, 3], [12, 3], [60, 3]]);
+const crowned = e.ck_apply(crown, find(crown, 17, 3));
+ok('class: crowning ends the move, though the new king could capture again',
+   e.ck_cell(crowned, 3) === 2 && e.ck_turn(crowned) === 1 && e.ck_chain(crowned) === -1,
+   `cell ${e.ck_cell(crowned, 3)} turn ${e.ck_turn(crowned)} chain ${e.ck_chain(crowned)}`);
+cls('a man does not capture backwards', setUp([[26, 1], [35, 3], [60, 3]]), ['26-17', '26-19']);
+cls('a king captures backwards, and must', setUp([[26, 2], [35, 3], [60, 3]]), ['26-44x35']);
+cls('a king moves one square, not flying', setUp([[27, 2], [60, 3]]), ['27-18', '27-20', '27-34', '27-36']);
+cls('North captures toward row 7, and a chain goes on for North too',
+    setUp([[21, 3], [28, 1], [44, 1], [0, 1]], 1), ['21-35x28']);
+{
+  const n = setUp([[21, 3], [28, 1], [44, 1], [0, 1]], 1);
+  const n2 = e.ck_apply(n, find(n, 21, 35));
+  cls('North\'s chain: the same piece, and only its capture', n2, ['35-53x44']);
+}
+const last = setUp([[42, 1], [33, 3]]);
+const won = e.ck_apply(last, find(last, 42, 24));
+ok('class: taking the last piece wins', e.ck_done(won) === 1 && e.ck_winner(won) === 0,
+   `done ${e.ck_done(won)} winner ${e.ck_winner(won)}`);
+
+// -- THE PAGE -------------------------------------------------------------
+{
+  const { GAMES } = await import('../landing/web/games/arcade.js');
+  const g = GAMES.find(x => x.id === 'checkers');
+  const click = (h, i, sel) => g.move(e, h, i, { sel, roll: null, rand: () => 1 });
+  const p1 = click(two, 45, null);
+  const p2 = click(two, 27, 45);
+  ok('page: pick up 45, put it down on 27: the first capture of the chain', p1 && p1.sel === 45 && p2 && p2.handle,
+     `${JSON.stringify(p1)} ${JSON.stringify(p2)}`);
+  const h = p2.handle;
+  ok('page: mid-chain the other piece cannot be picked up', click(h, 40, null) === null);
+  const p3 = click(h, 27, null), p4 = p3 && click(h, 13, 27);
+  ok('page: the chain piece is picked up again and finishes the chain',
+     p3 && p3.sel === 27 && p4 && p4.handle && e.ck_turn(p4.handle) === 1, `${JSON.stringify(p3)} ${JSON.stringify(p4)}`);
+  const slide = click(setUp([[42, 1], [33, 3], [46, 1]]), 46, null);
+  ok('page: a piece with only slides is not picked up while a capture is owed', slide === null, JSON.stringify(slide));
+}
+
 // -- Refusals -------------------------------------------------------------
 {
   ok('a move index off the end is refused',

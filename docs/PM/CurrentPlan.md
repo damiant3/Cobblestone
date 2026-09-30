@@ -48,7 +48,7 @@ changes. Rebase retained work onto current main before fresh proof. A fixed poin
 does not grade typed IR or hosted output.
 
 Declared test exclusions are deliberate decisions (Damian, 2026-09-10).
-Preserve the runner's prescribed `-Tier all -Jobs 4` selection for normal
+Preserve the runner's prescribed `-Tier all -Jobs 16` selection for normal
 and poison release batteries. Report exclusions separately from unexpected failures; do not
 remove sidecars or add flags to override those exclusions for the release.
 
@@ -88,10 +88,11 @@ Open:
 - The release gate's `wasm-bundles` phase builds the wasm plug and all nine
   `apps/*/build-wasm.ps1` modules with the compiler the run built (85 s,
   2026-09-24); games builds its default game only, and `wasm-run` then RUNS the
-  first 60 hosted subjects under wasmtime (plugs 2.16). Still outside every gate:
-  `apps/gpushow/tools/validate-all.mjs` (needs a browser; GPUSHOW-1), and the
-  tracked `apps/fishtank/web/fishtank.wasm` the site ships (33,678 bytes) is not
-  what head builds (35,729) and nothing grades either one.
+  hosted corpus under wasmtime and `wasm-e2e.ps1`; `page-build` builds the
+  compile page and runs its own arms; `browser-checks` runs the gpushow WGSL
+  sweep and ModBuilder's `test-emit.mjs` / `test-site.mjs` in headless Edge
+  (release gate only). Still outside every gate: `apps/fishtank/ft-verify.mjs`,
+  which grades the tracked `fishtank.wasm` by hand (node).
 Claims: `codex/plugs/wasm/**` is reek's; fester keeps
 `apps/landing/web/compile/**` and the Prism page; reek announces before
 touching `build-page.ps1` or `page-lenses.ps1`. The plug alone takes no token.
@@ -104,6 +105,13 @@ Latest public release: **Update 63** (2026-09-25, commit `fb5f2a70` on
 GitHub master and GitLab main, frozen at main 29159, seed `C74F10419BA0DB66`).
 `GitHubUpdate63.md` records the proofs and limits; `GitHubUpdate64.md`
 accumulates the new cycle. Re-measure the seed and mirror tips at the next release.
+
+**PREVIEW NOW (Damian, 2026-09-30: "push this to preview for now").** red runs `build/push-preview.ps1` (dry run at head, then `-Push`; Damian's word is given).
+
+**The next release (Damian, 2026-09-30, final: "put a bow on the current work we have, and accept the loss in performance as a platform limitation").** Owner: red. It ships when the units now in flight land: red's page unit (checkpoint list, live console, job history) and the page integrated into the landing site as it stands (Damian, 2026-09-30: "get that diffusion page up and integrated as is": built by ``apps/landing/build.ps1`` beside ``imagegen.html``, reached from the landing's image card; val reviews the landing change), blu's WORKS-78 first half, fester's DeskScheduler stage 2 (bounded rendering and pane policy, landed main 32370); then every lane merges down past them with its own tests green. NOT a gate: speed parity with Forge (stable WebGPU reaches no tensor cores; register tiling in `bk-linear`/`bk-conv2d` stays in red's queue because that part of the gap is ours), val's nine-set coverage (no size cap, continues across the release), the Spark studio. The image page's publish rides this release.
+
+**GPU compute on our own OS is the GSP firmware route, a TIER 1 requirement (Damian, 2026-09-30: "use the gsp firmware is an absolute tier 1 requirement. forget this dll stuff").** Our own driver against the GPU's GSP firmware and our own code generation; no vendor DLL, no vendor driver in a contained VM, no page hand-off to a native helper. Not scheduled; a design precedes any work.
+
 ## The brand boundary (Damian, 2026-08-29)
 
 The public name is **the Cobblestone Project**: the OS and every brand
@@ -169,11 +177,9 @@ the guard pattern is settled in `ExaminersAssay.md` (clamp where a length
 decides a slice, refuse where it decides WHERE a read lands, the ablated
 call IN the arm). Still open in 10.1, unowned unless named:
 
-- 8b, `VirtioBlk`'s device-written used-ring index: waits for a bed.
 - 18, `OtaBoot boot-load` (reek): LATENT, no production caller.
-- The latent corpus rows 6, 7, 11 and 13.
 
-## The Prism dev environment (red's primary lane; fallback for the others)
+## The Prism dev environment (red's when Damian opens the build-out; the games rules campaign comes first)
 
 Damian, 2026-09-23: red goes on "full blown prism awesomeness build out"
 after the Valheim work (MB-4, `apps/modbuilder/modbuilder-backlog.md`). Every other lane takes a Prism stage only when nothing
@@ -197,30 +203,140 @@ board build targets per HAL board chapter; **bench** means our codegen
 benchmarks against any configured build chain; the zig work (Steve's PRs)
 rides LAST.
 
+## The games rules campaign (Damian, 2026-09-29)
+
+Damian's words: "i want a thorough review of all the games, every move from
+every possible board state class. no more half baked rules." Scope: every
+game in `apps/games/classic` (36 engines) as played in the arcade
+(`apps/landing/web/games/arcade.js`, `rules.js`), engine AND page, because
+the page decides which legal move a click makes. Per game: first, the rules
+written from the canonical source, every move and every exception; then, the
+board-state classes those rules distinguish; finally, one graded arm per
+class asserting the LEGAL SET, both what is allowed and what is refused
+(L-BOTHARMS, L-VACUOUS). A rule the engine lacks is fixed, not noted. Lead:
+red. val takes the card games;
+`apps/games/**` and `apps/landing/web/games/**` are shared by the two for
+this campaign.
+
+The idiom, set by backgammon: the rules are prose in the engine chapter
+("The Rules", `Backgammon.codex`), cited to their published source; the
+engine answers legality for a whole move, so the page never chooses one;
+set-up exports (`bg_empty`, `bg_put`) let `<prefix>-verify.mjs` build
+each state class and assert its whole legal set; an oracle written in the
+grader from the rules text, not from the engine, is run against the engine
+on random positions and against every move of the engine's own player; the
+page's `move` and `view` are driven for the choices only the page makes;
+and a sabotaged rule must turn the arms red. For a solo puzzle the legal set is the moves the rules allow from a position (for sudoku, a digit not already in the cell's row, column or box, if the page refuses conflicts; else the win test) and the win condition, each graded both ways.
+
+| game | owner | state |
+|---|---|---|
+| backgammon | red | rules graded, engine and page: moves (20 classes, 800-position oracle), the doubling cube (offer, take, drop, ownership) and gammon/backgammon scoring (300-game oracle) |
+| checkers | red | rules graded, engine and page: compulsory capture, capture chains (the turn stays with the capturing piece), crowning ends the move, men capture forward only; a whole-set oracle at every ply of 12 games |
+| chess | red | rules graded, engine and page: promotion to any of the four pieces (the page asked, not a forced queen), threefold repetition from an exact position record, dead positions by material; movement stays graded by perft 4 and an independent generator |
+| go | red | rules graded, engine and page (Chinese rules, Tromp-Taylor area): captures before the suicide test, positional superko, region scoring, komi 7.5; an oracle on every point and both areas through random play |
+| othello | red | verified, no change: ot-verify already asserts the whole legal set, flips, passes, the end and the winner in lockstep over 40 games, and the page takes legality from the engine |
+| connect4 | red | verified, no engine change; c4-verify gained both diagonals and the full-board draw |
+| mancala | red | rules graded (Kalah): sowing past the opponent's store sowed the next pit twice; now a cursor walk; a lockstep oracle over 60 games reaching every rule |
+| hex | red | rules graded: wins by a path oracle with its own neighbours; the swap rule (player 2 may take over the first stone, mirrored), which the engine uses on a central opening |
+| dots and boxes | red | verified, no change (edges, scores, the extra turn on a completed box, the full board) |
+| royal ur | red | verified, no engine change; ur-verify gained a Finkel-rules oracle in lockstep over 40 games (every legal set and move; the wasm layer keeps its own legality copy, and sabotaging it turns the oracle red) |
+| 2048 | red | rules graded: the score was the sum of the board, now the merged values; a slide/merge/spawn/score oracle over every move of 20 games |
+| minesweeper | red | rules graded: flags added (a flagged cell is never opened, by click or flood) and a safe first click (the mine moves, Microsoft rule); counts, flood, loss and win were already graded |
+| sudoku | red | rules graded, engine and page: givens are the engine's (a fixed mask; the page asked a set of its own), the win is all 27 constraints, and a dealt puzzle has exactly one solution (a hole is kept only while a capped solution count stays 1); 17 placement classes, the whole legal set over 300 played positions, 6 win classes, 30 puzzles counted unique by an independent solver, a deadly-rectangle control; sabotaged boxes, givens and uniqueness turn them red. `sudoku-solve` and `sudoku-remove-cells` now copy, so `/api/sudoku/` no longer serves the solution as the puzzle |
+| mastermind | red | rules graded, engine and page: the secret took `state mod 1296` one LCG step from the seed, and 1103515245 is 81 x 13623645, so only 16 of the 1296 codes were ever the secret (16 reached over 20,000 seeds); each peg is now a mixed draw (`rand-in-range`), all 1296 reached. Key pegs over all 1,679,616 ordered pairs; the guess legal set at a new game, 5, 9 and 10 wrong guesses and a broken code; the codes still fitting recomputed from the history; sabotaged scoring, row limit and pool filter turn them red. `classic-games-run.expected` moved with the secret |
+| life | red | verified, no engine change (Conway B3/S23 on a 20x20 torus; rules prose added): lf-verify gained every (state, live-neighbour count) class, 2 x 9, at an interior, an edge and two corner cells, and the toggle; the generation oracle was already complete. Sabotaged S234 and a broken wrap turn them red |
+| tictactoe | red | verified, no engine change (rules prose added): wasm-verify gained the whole game tree played both sides, the legal set, mover and result at all 5,478 positions against a rules oracle, and the published totals (958 final: 626 X, 316 O, 16 drawn; 255,168 games) counted by the engine's own verdicts; a dropped diagonal and a ninth-mark win scored as a draw turn them red |
+| rps | red | verified, no engine change (rules prose added): rp-verify now drives `rp_play`, the page's only move, which nothing graded: from one state all three of your throws meet the same reply (simultaneous throws) and each round scores by the rules, over 800 rounds; a throw off the table is refused. An opponent that reads your throw turns it red |
+| yahtzee | blu | rules graded, engine and page: the upper bonus (63 for 35), the Yahtzee bonus (100 with 50 in the box) and the Joker rules (forced upper box, full lower scores, else 0 in an upper box); the engine answers the legal boxes and the page offers only those; 7 state classes and a 400-card oracle, a sabotaged Joker turns them red |
+| liars dice | blu | rules graded, engine and page: the loser of a challenge opens the next round (the next player still in when the loser is out), bid legality answered by the engine (the page already asked it), and the computer calls when no raise is legal; a lockstep oracle over 30 games checks every legal bid set, bid and challenge, and a sabotaged opener turns it red |
+| battleship | blu | rules graded, engine and page: turns alternate one shot at a time and the shot that sinks the last ship ends the game (the old round fired both sides and could hand a same-round finish to player 1), each ship keeps its number so a sinking is announced (the page names them), placement falls back to a scan so a fleet is always whole; a 1000-fleet shape arm and a lockstep oracle over 40 games, and a sabotaged turn order turns them red |
+| mahjong | blu | rules written (Shanghai: 36 groups of four with flowers and seasons each one group, free by sliding left or right on the one-layer layout) and graded, no engine change: every ordered pair at every state of 6 deals against the rules, 2,178 legal and 6.2 million refused, and "stuck" as no legal pair; the page already asks the engine; a both-sides-free sabotage turns it red |
+| monopoly | blu | rules graded, engine and page (main 31032): the full Hasbro rules, 2008 amounts; railroads and utilities with their rents, taxes, both 16-card decks, double rent on a whole group, houses and hotels built and sold evenly from a Bank of 32 and 12, doubles and three-doubles Jail, all four ways out of Jail, auctions, mortgages at 10%, debts raised or bankruptcy to a player or the Bank. Every action is answered by `mono-legal`; `mo-verify` runs an oracle written from the rules text in lockstep (100,032 actions, 32.9 million legal-set questions, 83 classes reached) and drives seat 0 only through the page; five sabotages turn it red. The old dice could never throw doubles (consecutive Rng states alternate their low bit), fixed |
+| risk | blu | rules graded, engine and page (main 31086): the classic 42-territory board, 83 borders, six continents at 5, 2, 5, 3, 7, 2; the deal round the table and setup placement of 40/35/30; reinforcements with continent bonuses; 44 cards traded in sets for 4, 6, 8, 10, 12, 15 and then 5 more, with the 2-army territory bonus and the forced trade at five; any number of attacks with the attacker choosing 1 to 3 dice; move-in of at least the dice rolled; an eliminated player's cards taken with the forced trade at six; one fortifying move through connected territories. Every action is answered by `rk-legal`; `rk-verify` runs an oracle written from the rules text in lockstep (122,536 actions, 36.2 million legal-set questions, 43 classes reached) and drives seat 0 only through the page; five sabotages turn it red. The old dice came from consecutive Rng states, fixed |
+| hexwar | red | rules graded, engine (moved from blu by root 2026-09-29): rules written to the Avalon Hill conventions with the game's own tables; seven defects fixed: a unit could step into an enemy-held hex; retreats went in a random direction (off the map, into enemies, into zones of control) where a blocked retreat now eliminates; adjacent artillery added nothing yet died with the attackers; the CRT was read transposed (the 5:1 column unreachable) and exactly 1:2 fell to 1:3; defenders fought with strength instead of the defense factor; a stack defended as one unit; an exchange killed every attacker. hw-verify: 11 step classes, 45,280 steps against a rules oracle, 4,000 random assaults and every odds boundary at every die checked board-for-board; each defect's sabotage turns them red. `hexwar-run` and `hexwar-supply-census` expectations moved (the census's contact count fell to 0 in all 130 games; which fix removed those cases is not isolated). `fortified` and `elevation` are read by nothing |
+## The local image generator page (Damian, 2026-09-29)
+
+Damian: the diffusion app "needs a webUI on the cobblestoneproject.com with a
+card on the landing. it should direct users on how to start generating images
+locally on their gpu", with a test of capabilities, and "a tutorial about
+downloading the models from huggingface, and the lora site with the
+downloads". Owner: red.
+
+**Built (2026-09-29):** `apps/landing/ImageGenPage.codex` (`web/imagegen.html`,
+generated by `apps/landing/build.ps1`) and the landing card `td10`. The probe is
+the html plug's `gpu-probe-then` (adapter, limits, `shader-f16`, a timed 1024^3
+f32 GEMM checked exactly on 64 samples), graded by
+`apps/landing/test-imagegen.mjs` (8 arms: real GPU, no WebGPU, a GEMM made
+wrong). The route is NVIDIA compute capability 8.9 and up only (the PTX plug
+targets `sm_89`); a browser cannot read device memory, so the page states
+SDXL's 9.6 GB instead. Flux is listed as not served, with no downloads, since
+`serve.ps1` takes SDXL and SD1.5 only. The SDXL download is byte-identical to
+the measured file; the SD1.5 one matches every required tensor (headers
+compared, not run); the tokenizer disk minted from Hugging Face's two files
+is byte-identical to Forge's; the driver command compiles.
+
+**Publish gate:** the public mirror has no `apps/diffusion` yet (404,
+2026-09-29), so the page's steps and source link work only after a release
+carries it. The page's step 5 mints the CLIP disk by hand, which still works; since main 31057 `serve.ps1` mints it itself from `<models>\tokenizers\clip` (vocab.json, merges.txt; T5 under `tokenizers\t5`), so the next page edit makes step 5 a download into that folder.
+
+Pool work (Damian, 2026-09-29: "lets take that on when we need more things
+to do"): in-browser generation (wasm orchestration, WGSL kernels on WebGPU,
+SD1.5 then SDXL; red, taken 2026-09-29, `docs/Designs/Active/Apps/InBrowserDiffusion.md`: stage 1 in progress: f32 storage lowers in the WGSL plug; next, the kernels in the gid convention), and the two Magic games (val, taken 2026-09-29; `apps/games/magic`, its 16 open
+findings and `WorkPlan.md`'s waves; `apps/games/codexmagic`), taken when a lane
+has no registered unit. The site publish is Damian's.
+## Spark, the image studio (Damian, 2026-09-30)
+
+Damian's words: a "visual uplift of the app, add links in to download the
+popular models and loras from the community sites, and make it a useful tool
+to someone new to image generation. it needs to have a simple interface with
+'advanced' mode for full features that are useful but niche. I want it to work
+into a LLM account for the actual prompt, like we are trying to do with the
+prism dev environment. basically this feature now needs to hook into spark the
+app and spark the app needs to be lifted and built into the cobblestoneproject
+landing as a touch it now fully featured app."
+
+Owner: red for the implementation, after the release; **the design and plan in ``apps/spark/`` are reek's** (landed main 32223); val holds
+`apps/landing/**` and reviews the landing card. Starts after red's current
+unit (the checkpoint list, the run console and the job history). **The source is the ORIGINAL Spark, `D:\Projects\Spark`** (Damian's WPF app, .NET 8, 101 .cs/.xaml files, outside the depot): an AI creative workbench whose Concept Art tab already has Forge integration, prompt stacks, a LoRA browser, refine presets and preference tracking; `Services\CivitAiClient.cs` (the community model and LoRA site); `Services\OllamaClient.cs` (local LLM for story and prompt generation in the new-project wizard); `SetupGuidePresenter` (the newcomer path); a project document store; `Spark\PLAN.md`, `SPARK_VISION.md`, `Spark.md`, `THEME_SPEC.md`. `apps/spark` in the depot is NOT a port of it: it is a separate 3D, canvas and audio suite (May, Phases 1-7; June's WebGPU studio) that carries none of the workbench. The port replaces the Forge HTTP backend with the in-browser engine (and `codex_image` natively). Stages, each
+its own landing:
+
+- **0, the design** (`apps/spark/SparkStudio.md`, reek, 2026-09-30, naive-read and corrected; its section 9 is the step plan): an inventory of
+  the original's features and what each maps to in Codex, what Spark
+  is in the browser (today `apps/spark` is a bare-metal suite whose browser
+  demo is SPARK-6), the simple and advanced modes (which Forge controls each
+  shows), the model and LoRA links (links to the community sites, never
+  hosted copies), the LLM prompt panel and its account model shared with
+  Prism stage 4, the first-run path for a newcomer; a naive reader (R-NAIVE).
+- **1 onward** are the design's section 9: the uplift and both modes, the
+  catalogue, the provider LLM panel, the local LLM, then audio, video and 3D,
+  then the landing card.
+
+**Ruled (Damian, 2026-09-30):** both a local LLM and a provider one ("a provider based one like you"); the local one runs in OUR OWN wasm/WebGPU code, not Ollama. Spark's full scope stays the goal ("audio, video, 3d modeling etc. but one step at a time"). **The design and the plan are written into `apps/spark/`** (a design doc and a plan) now; **ALL implementation is shelved until after the next release** ("write the goals down, but shelve the implementation work till after release"). Open for Damian: whether Prism stage 4's DEFERRED billed-call acceptance lifts for step 3; whether the provider list starts at Anthropic alone; which GGUF model the local LLM targets first.
+
 ## The lanes (RULED by Damian 2026-08-15)
 
 **ROOT commands the fleet; red assists (Damian, 2026-09-12).** The table is the
 assignment, not a suggestion; re-read it on every merge-down. An item here is
 a pointer; the register named beside it holds the detail. The compiler-bug
 order is whatever `codex/compiler/compiler-backlog.md` shows open. fester is
-otherwise held in reserve for the hardest problems (Damian, 2026-08-26). **The
-DeskScheduler is PARKED (Damian, 2026-08-26), not cancelled**; its two
-questions are ruled (Damian, 2026-09-24): support all of them, each pane
-declares a rate or a budget and skip or run late on a miss
-(`DeskScheduler.md`).
+otherwise held in reserve for the hardest problems (Damian, 2026-08-26).
+**DeskScheduler's remaining scope is pane policy and bounded-work enforcement.**
+The 2026-09-24 ruling still applies: each pane declares a rate or a budget
+and skip or run late on a miss (`DeskScheduler.md`). The design separates
+policy, enforcement and the required physical GUIOS acceptance.
 | agent | now | then | standing |
 |---|---|---|---|
-| **blu** | **NOW:** idle, awaiting dispatch. | **NEXT:** from root. | `ProtocolStack.md` holds no open edge-mesh row (checked 2026-09-24). |
-| **val** | **NOW:** GenericEquality (`Eq a =>` by dictionary passing) landed on main 29212, seed 533C6D63. ModBuilder MB-2 closed: `apps/modbuilder/site/ModBuilderPage.codex` generates `site/index.html` through the html plug (`site/build.ps1`), pixel-identical to the hand-written page at 1280 and 390 px. GopBoot is val's. | **NEXT:** finish the Valheim hover timers, shelf 29219 (Damian to val directly, 2026-09-25): prism.html unity-module refresh, emission test, isolated game test. Reek builds planting in rows beside it (reek's row); files shared under `apps/modbuilder/mods/valheim/` are named to reek before either edits them. Then standing GO. | Damian's batch: the virtual-desktop wording; FW-1's three fix options are Deferred (Damian, 2026-09-08 18:00). `ShellRefinement.md` "6.4: WHAT IS STILL OPEN" |
-| **fester** | **NOW:** nothing open. Shelf 28166 holds C64-1, UNVERIFIED (opening drops its six duplicate constants, Cpu6502 cites Memory; the checks it still needs are in its description), parked because apps wait. | **NEXT:** fester flies the next sitting (root's order, 2026-09-25): one image, one boot. On main: the diag `avx` stage runs ten 256-bit lanes when admitted (29025), Option A admission (28945), the card draft. When reek lands Ctrl-Alt-Del (fester's shelf 28969 handed over), rebuild `diag-sitting16.img` on the depot seed, run every arm in both beds (`diag-arm.ps1`, no `-Only`), record the hash on the sitting 16 card, and ask root to sign off. Then plugs 2.73: read the arm64 empty-list emitter (arm64 `[]` is capacity 4, 48 bytes against 16). | The name-the-kernel class is closed: `test-self-verify`, `check-generated-scripts` and `test-cross` all take `-Kernel` (2026-09-07). `deck-headroom`; WORKS-24 rides a sitting; ProductBuilder stage 6 on hold |
-| **reek** | **NOW:** ModBuilder M4, planting in rows (Damian's pick, 2026-09-25; the other five candidates are not picked): the cultivator places a row of plants at once, the row's length grows with Farming skill up to 10 plants; a ghost per plant shows whether that plant has its spacing, and a ghost goes gray when it overlaps another plant or piece or stands on terrain the plant refuses; placing plants every valid ghost and skips every gray one. Build in `apps/modbuilder/mods/valheim/` on the bindings reek moved in MB-3. **`tools/codex-vm.exe` changed at main 27464 and no lane rebuilds it**: the depot binary arrives with merge-down; a lane running a LOCALLY built codex-vm from pre-27464 source must rebuild (`tools/build-vm.ps1`), because that binary reads the new `GpuScene` count word (bit 0x20000000) as an oversized count and draws no frame. | **NEXT:** ModBuilder (Damian, 2026-09-25; `apps/modbuilder/modbuilder-backlog.md`, design `docs/Designs/Active/Apps/ModBuilder.md`): new Valheim features (M4), two to three proposed to root with val; MB-5 (the Targets panel and `#mod=` onto a ModBuilder page) is M1. Latent: Latent rows, each taken on its trigger (checked 2026-09-24, none fired): 2.07 (ELF machine field; trigger: the first non-x86 caller of the ELF plug) and 2.70 (8-byte-aligned __heap-advance on x86-64 and riscv together, one seed CL, per root's ruling; trigger: a riscv bed that traps misaligned access). 1.73 QEMU per-run port PARKED (root 2026-09-25). | Plugs close-out lane; WORKS-9 metal-gated; `ShellDslReadability.md` same campaign; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4 |
-| **red** | **NOW:** Update 64 release from main 29237 (seed `533C6D63`): ships COMPILER-104, the cause of Steve's U63 serial-ring stall (GitHubUpdate64.md). | **NEXT:** from root. | Releases, personally and end to end; `GopWizard.codex`, `apps/guios/**` (`apps/works/GopBoot.codex` released to val for WORKS-5, root 2026-09-24); the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
-| **root** | **NOW:** commander. M4 dispatched: planting in rows to reek (Damian's pick, 2026-09-25). Steve reports an intermittent serial-ring stall at U63 on a 1 MB refill boundary under QEMU `-cpu max`; root's reading is a lost-wakeup race widened by the XSAVE switch (main 28778); red owns the investigation (Damian, 2026-09-25; red's row). | **NEXT:** Open for Damian: campaign figures, the Cloudflare `modbuilder` CNAME (MB-1), deleting the claude.ai copy of the pitch page, deleting `D:\Cobblestone-backup-stage`. fester's row is stale (sitting 16 flew): fester's updated row is change 29127 on fester's stream, copied up when fester relaunches. Rejected features: quick-stack (vanilla has it), boar/deer respawn (balanced now), night-sky effects (sky is busy). | Survey and scope in `docs/Designs/Active/OS/ShellRefinement.md`. Build-tooling first slice main25858; remaining closure in `Build.md`. `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` released to red for the two stage lifts. |
+| **blu** | **NOW:** the code-layout campaign (Damian, 2026-09-30: "the expression formatting terseness sometimes creating walls of text"), stage 4: `codex/build/CodeLayoutFormat.codex` over the quires outside the compiler. The compiler is formatted (stage 3); its hand rewrites are COMPILER-109. Design and recipes: `docs/Designs/Active/Build/CodeLayout.md`. | **NEXT:** WORKS-78's metal reading at the next sitting (every desk repaint blu owns is bounded; the off-screen present is fester's DeskScheduler). reek holds the img2img resize and masked-content modes. | `ProtocolStack.md` holds no open edge-mesh row (checked 2026-09-24). |
+| **val** | **NOW:** complete the nine-set pool's coverage (8.1: LEA/LEB/2ED/3ED/ARN/ATQ/LEG/DRK/FEM), largest family first, colour change included; no size cap (Damian, 2026-09-30: "there is no work too big to get that first nine sets done"). CoverageExport reads 110 unmodelled spell rows of 404 (2026-09-30); resume from the WorkPlan "Nine-set coverage" row (open families, parser rules, the AI-inert set), one family per landing with its battery arm. Then: the Magic games from the pool (`apps/games/magic/WorkPlan.md`, Wave 2 onward; findings in `MagicFormatSolver.md`); the battery is `apps/games/magic/Test.codex`, 279/279 (2026-09-30). Lanes K, S and A and wave 3 are done, FIX-27's word tokenizer included, and the era ladder 8.1's engine families (WorkPlan wave 4); lane D DR-I is blocked on a WPF Command Bridge host (WorkPlan lane D). The card games are done. The diffusion sampler and scheduler table is complete (`Diffusion.md`), and `DiffusionDriver` takes every Forge sampler label and `lora=` lines. Open: WORKS-77 (the preview fill is a partial application nothing calls); `p4 status -a`'s lapse in the server log (`Build.md`, "Open, unowned"). GopBoot is val's. | **NEXT:** `apps/games/codexmagic`, then WORKS-77. | **For Damian, each blocked on a ruling, hardware or an asset:** (DATA-1, DATA-W2, SPARK-3, FW-3, GPUSHOW-1/3, GLOBE-1, each in its row; the options live in `docs/PM/Active/DamianDecisions.md`); fishtank 1.1 (the Stable Diffusion endpoint); fishtank 1.5, SPARK-6 and FW-2 (a look at the page on a real GPU). Standing: the virtual-desktop wording (`DamianDecisions.md` 3.11); FW-1's options are Deferred. |
+| **fester** | **NOW:** DeskScheduler stage 2 landed on main CL 32370: bounded software rendering, phased presentation and pane rate/budget with skip/run-late policy. Both-bed controls and 72 compile/runtime subjects pass (`DeskScheduler.md`). | **NEXT:** coordinated physical acceptance in `HardwareSitting.md`, queued desk sequence. Sampled frame time rises 35.69 percent; longest scene call falls from 110511 to 1449 us. MCP leak investigation remains deferred. | `test-self-verify`, `check-generated-scripts` and `test-cross` take `-Kernel`; `build/boot-arm64.ps1` does NOT. `deck-headroom`; ProductBuilder stage 6 on hold |
+| **reek** | **NOW:** `ShellDslReadability.md` section 2's blocker census. First, check whether `ScEcho (SeText ...)` reproduces `Write-Host "..."` byte-exact: 12 blocks stop on it, and `ps-dquote` escapes a backtick and `"`. If it does, add that line rule to `build/shell-block-convert.ps1` and convert the blocks it frees, one generator per CL (`$env:GEN`, then `$env:WRITE`; proved by `check-generated-scripts -Only <emitted-name>` byte-level, plus `check-shell-raw -Update -Only <X>Script`). The statement-level `Join-Path` assignment (9 blocks) is the next node to design. | **NEXT:** img2img resize and masked content other than "original" (blu's row assigns them to reek; `Diffusion.md` stage 6 lists both as declined), graded against Forge the way the refiner was | Plugs close-out lane and the codex-vm GPU bridge; `tools/codex-vm.c`; a tokenless `codex/foreword/` landing names the closure check in its CL (`PerforceProcess.md`, root 2026-09-08); Blocked on Damian: SPARK-4 |
+| **red** | **NOW:** the release (root 2026-09-30, gates met at main 32370). In-browser speed after it, by the isolation split: `bk-conv2d-h` 45% at 1838 GFLOPS, `bk-attn-values` 13% at 852 (one output a thread); sampling 1.17 s a step, 36.5 s click to image. The WGSL plug binds a buffer-reading helper to one buffer per kernel with no diagnostic (`InBrowserDiffusion.md`). The page's kernels are register-tiled and its weights packed f16 (2.14 GB; `txt2img.mjs` 67.9 s click to image, from 126 s; `InBrowserDiffusion.md`). f16 arithmetic only if the steps then prove arithmetic-bound, with a graded tolerance against `codex_image` (root 2026-09-30). `apps/landing/web/imagegen-browser.html` carries none of this until rebuilt. The release unit (checkpoint list, page on the site, stats/console/history) landed 2026-09-30 (main 32188, 32196, 32226, 32232, 32244). A headless WebGPU page run commits about 20 GB: check commit headroom before launching (`CoordinationProtocol.md`). **Before that:** In-browser diffusion (`docs/Designs/Active/Apps/InBrowserDiffusion.md`), standing GO: stages 1 and 2 landed; every SD1.5 kernel runs on WebGPU (main 31305). Every stage-3 graph is in a chapter a page can cite (`SamplerGraph`, `UNetGraph`, `UNet15Graph`, `ClipGraph`, `VaeGraph`; native outputs byte-identical, 2026-09-29), Euler runs in the browser over `BrowserSampler`; a page parses a picked checkpoint's header with `SafeTensors` and binds it with `CheckpointLayout` exactly as natively (the html plug is CCE-faithful with tail calls, main 31726; arms in `codex/plugs/html/arms/`). Preview pushed 2026-09-30 on Damian's word: `Preview @32174`, commit eca1a001 on github and gitlab `preview` (`build/push-preview.ps1 -Push`, both remotes verified). The image page is built (section above) and publishes after a release carries `apps/diffusion`. The Update 65 release (draft main 30717) waits Damian's go. Sitting 18's card and image are ready to fly (`HardwareSitting.md`, `diag-sitting18.img` 81B75294, rehearsed arms=60; boot 2 needs a USB mouse). | **NEXT:** stage 3: the VAE decodes in a page within max 1 of Forge (`vae-decode.mjs`) , one SD1.5 UNet step matches `sd15-unet-step` on all 26 blocks (`unet15.mjs`) and CLIP-L encodes within 3.0e-5 of Forge (`clip.mjs`, `InBrowserDiffusion.md`); `ClipBpe` tokenizes in a page as Forge does over the html plug's byte heap (`tokenizer.mjs`); the first SD1.5 image in a tab matches `codex_image`'s render within a mean 0.52 of 255 (stage 4, `txt2img.mjs`, 126 s); the demo page runs (`apps/diffusion/BrowserImagePage.codex`, `node apps/diffusion/build-browser-page.mjs` writes `build-output/browser-imagegen.html`: pick an SD1.5 file, 18 s to load, 94 s an image at 512 x 512, 20 steps); next emphasis and several chunks (`ClipPrompt` cites the native encoder), a tokenizer source for a published page, and `Txt2Img`'s `ti-den` onto `guided-with`; after it, register tiling in `bk-linear`/`bk-conv2d`. | Releases, personally and end to end; the next release carries GPUSHOW-3, the gpushow live-compile block (Damian, main 30196), beside his batch site republish; `GopWizard.codex`, `apps/guios/**` (`apps/works/GopBoot.codex` released to val for WORKS-5, root 2026-09-24); the 4.3 seed hash check runs BEFORE build-complete; appendix F is refreshed with `build/lp-findings-index.ps1` and its table 2 reproduced by hand, which the script overwrites. |
+| **root** | **NOW:** commander. ModBuilder gameplay acceptance remains in `apps/modbuilder/modbuilder-backlog.md`. Damian's direct ModBuilder assignments supersede the prior pause for the assigned work. | **NEXT:** respond to Damian's play-test feedback. Separate campaign figures remain MB-1; the claude.ai pitch page stays. Rejected features: quick-stack (vanilla has it), boar/deer respawn (balanced now), night-sky effects (sky is busy). | Survey and scope in `docs/Designs/Active/OS/ShellRefinement.md`. Build-tooling first slice main25858; remaining closure in `Build.md`. `DiagnosticStick.md` composition; `ComplianceEvidence.md`; `HardwareAbstractionLayer.md` question 5 blocked on a board crypto manual; OracleCloudArm64 deferred; `build/boot/diag/**` released to red for the two stage lifts. |
 
 **Plugs are reek's close-out lane** (from val, Damian's direction
 2026-08-18): the register in order, one entry at a time, said in
-status.json. Entries other lanes hold are named in the register (1.33 blu,
-1.38 and 1.3 fester, 1.36 and 1.32 reek, 1.34 root). `codex/plugs/zig/**`
+status.json. Entries other lanes hold are named in the register.
+`codex/plugs/zig/**`
 is ORDINARY FLEET CODE, edited like any other plug (Damian, 2026-08-18);
 credit Steve in a CL that changes what he wrote and flag it in the next
 GitHubUpdate, which is courtesy and not a gate.
@@ -249,16 +365,6 @@ older than the last change to its subject is not evidence (L-COUNT).
   drain cut (still `arm64-net-io-max-ticks` 500). Whoever lifts the deferral
   inherits both; an arm64 TCP send that hangs or truncates before then is this
   row, not a new defect.
-- **Six gate phases have their runner under `build/` and do not trigger on it**
-  (`jonquil`, `plug-binary`, `cross-smoke`, `plug-smoke`, `app-sweep`,
-  `sem-equiv`; reek 2026-08-25; PARKED, not claimed). A per-file trigger is the
-  precise fix and blanket-widening `$tBuild` is not (L-LESS). Interim rule:
-  whoever edits one of those six harnesses runs its phase by hand and says so.
-  Costs are in `Build.md`. The plug half of this was ruled and landed (21438);
-  only the harness-edit triggers remain a question.
-  `gdb-watchpoint` is proven as a PATH and unproven as a debugging SESSION: a
-  real one needs an address from the booted kernel's own map, not the
-  compiler's, and probably more than 120 s under TCG.
 ## Decisions
 
 **Numbers are stable ids, not an order.** A ruled item shrinks to one line
@@ -276,7 +382,9 @@ is the commander's call, not his.
 
 - **Deferred by Damian, not pending:** OCI account access for
   `OracleCloudArm64.md` phases 5b-5d; the Prism stage-4 API key; FW-1's three
-  fix options.
+  fix options; CORE-9's CA policy (naming, revocation, key location; the
+  current state is tolerable, 2026-09-30); PRISM-13 (no Mac in the near term,
+  2026-09-30).
 - **Not a question until there is a design partner:** secure-element support
   in `Identity` (`ThreatModel.md`'s fourth open question).
 
@@ -300,15 +408,9 @@ pending decisions and not drawable until he opens the build-out.
 - **Prism's product scope** (Damian, 2026-08-24): compile/transpile on the
   fly; the pre-baked IR path goes. `apps/prism/prism-backlog.md` is the
   register.
-- **plugs 1.34, the ARM64 MMIO boundary: (a)**, gate the MMIO window in the
-  effect system; (b), a real EL0 boundary, is a different project.
-  Seed-affecting, token. Until it lands the ARM64 capability gate covers the
-  `block-*` builtins only. (red, routed from root.)
-- **plugs 1.57: the Rulebook's over-application rule binds every plug that
-  keeps an arity map** (red, 2026-08-24). The java half stands as ruled; the
-  riscv wiring named in the row is INERT and the real miscompile site is
-  unnamed, so reek hunts it from the reproducer rather than re-wiring.
-  Account: `plugs-backlog.md` 1.57.
+- **The Rulebook's over-application rule binds every plug that keeps an
+  arity map** (red, 2026-08-24; root, 2026-09-25). Measured correct on every
+  backend that runs here (2026-09-25), under-application included.
 - **A ping goes unanswered, deliberately** (red, 2026-08-20): no production
   caller for `icmp-parse` until something needs one. Re-verified 2026-09-07:
   one definition in `Icmp.codex` and six callers, all in `icmp-test`. (Track
@@ -348,27 +450,27 @@ pending decisions and not drawable until he opens the build-out.
 | `codex/test/cost/**` and `CostModel.md` | FREE -- announce |
 | the integer-literal lexer and text emitter; `codex/plugs/csharp/**` and the `build/` DDC harness; `codex/plugs/recheck/**` | val, lane ownerships rather than open work |
 | `codex/plugs/**` and `codex/plugs/plugs-backlog.md` | reek, the close-out lane (from val, 2026-08-18). Includes `codex/plugs/zig/**` (ordinary fleet code, Damian 2026-08-18); excludes the entries other lanes hold (named in the lanes table). **`codex/plugs/wasm/**` is reek's for the parity campaign (2026-08-31, Damian); fester keeps `apps/landing/web/compile/**`; `build-page.ps1` and `page-lenses.ps1` are RELEASED to reek without announce (fester's row, 2026-09-01, on that lane being parked)** |
-| `apps/games/**`, `apps/landing/**` except `web/compile/**` | val, 2026-08-31, the games campaign (Damian; the disposition section). `web/compile/**` is the Prism page and stays fester's |
+| `apps/games/**`, `apps/landing/**` except `web/compile/**` | val and red shared for the games rules campaign (2026-09-29; blu holds the seven games its row names).  `web/compile/**` is the Prism page and stays fester's |
 | `codex/plugs/spirv/**` (plugs-backlog 1.24) and every `run.ps1` under `codex/plugs/` (1.15) | reek, with the plugs lane |
 | `build/plug-oracle-test.ps1`, `codex/test/plug-oracle-arith.*` | blu, 2026-08-18 |
 | `deck-headroom` | fester |
 | `codex/foreword/shell/**` and `codex/build/*Script.codex` generators | reek, 2026-08-16, by Damian's direction. Catalog and order: `ShellDslReadability.md` |
 | `codex/foreword/compress/**` and `core/OtaBoot.codex`, `core/Aes256.codex`, `core/KeyboardLayout.codex` (Track D 10.1 item 18) | reek, 2026-08-16, red's routing. Seed-reachability is measured per file, not assumed from the row |
 | `codex/foreword/core/FactDisk.codex`, `core/SourceDefWire.codex` | FREE -- announce, and it takes the token (seed-affecting) |
-
+| `apps/diffusion/**`, `codex/foreword/ai/SafeTensors.codex`, `codex/test/apps/diffusion-*`, `codex/test/gpu-files/*.safetensors` | val, 2026-09-29, `Diffusion.md` stages 3 and 5 (layouts, VAE decoder) |
 A claim nobody honours is worse than no claim. Announce before you go into
 a claimed or FREE-announce file.
 
 ## Standing rules that gate nothing but bind everyone
 
-**A LANE HANDS OFF AT 70 PERCENT MEASURED, NOT BEFORE (Damian, 2026-09-08
+**A LANE HANDS OFF AT 75 PERCENT MEASURED, NOT BEFORE (Damian, 2026-09-08
 03:35: "58% is not enough action on the context we load at init; agent
-estimates of token spend are almost always very much over").** The number is
-the AgentGrid formula over the transcript (the handoff skill carries the
-script); a lane's own estimate is not a number. Below 70 measured a lane
-keeps working, and a handoff a lane starts early is cancelled by root and
-the session resumed; root orders one at 70 or at a genuine boundary above
-it. The init read is paid once per session and a handoff at 58 throws a
+estimates of token spend are almost always very much over"; 75 ruled
+2026-09-28).** The number is `build/measure-context.ps1` over the transcript;
+a lane's own estimate is not a number. Below 75 measured a lane keeps
+working, and a handoff a lane starts early is cancelled by root and the
+session resumed; root orders one at 75 or at a genuine boundary above it,
+never below. The init read is paid once per session and a handoff at 58 throws a
 third of the session away.
 
 **EVERYTHING WRITTEN TO DAMIAN IS WRITTEN IN THE CODEX PROSE LANGUAGE
@@ -468,7 +570,7 @@ not as a defect in somebody's document. CL descriptions are not mirrored.
 The rest, each one line: battery runs are Damian's (release proofs excepted).
 Goldens stay parked during active GUI work. No new platform-wide register.
 Prose about our own code is deleted in files you touch. The em-dash stays
-banned. `-Jobs 8` on every parallel harness; Renode arms run ALONE; a fan-out
+banned. `-Jobs 16` on every parallel harness; Renode arms run ALONE; a fan-out
 launches on the lane's own runtime measurement against the per-guest bar
 (`CoordinationProtocol.md`). Do not lower `deck-headroom -MinMargin` to clear
 a red. `print-line` CONVERTS and `print-line-raw` is byte-exact

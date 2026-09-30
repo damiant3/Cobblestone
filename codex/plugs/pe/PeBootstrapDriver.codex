@@ -1,0 +1,46 @@
+Chapter: PeBootstrapDriver
+  cites Pe chapter PeBootstrap
+  cites Pe chapter PeExports
+
+Section: Input
+
+  pbd-copy : Integer, Integer, Integer -> Integer
+  pbd-copy (src) (dst) (i) =
+    if i >= 512 then 0
+    else let w = poke-qword dst i (peek-qword src i)
+    in pbd-copy src dst (i + 8)
+
+  pbd-read : Integer, Integer, Integer -> [Device.Block] Integer
+  pbd-read (buf) (i) (n) =
+    if i >= n then buf
+    else let mark = __heap-save
+    in act
+      sector <- block-read-sector i
+      let copied = pbd-copy sector (buf + i * 512) 0
+      in let restored = __heap-restore mark
+      in pbd-read buf (i + 1) n
+    end
+
+  pbd-emit : Integer, Integer -> [Console] Nothing
+  pbd-emit (buf) (size) =
+    let system-size = pex-u32 buf 0
+    in let managed-size = pex-u32 buf 4
+    in if system-size < 64 | managed-size < 1 | 512 + system-size + managed-size > size then print-line-uni "REFUSED truncated package input"
+    else let table = pe-exports (buf + 512) system-size
+    in if table.pet-why /= "" then print-line-uni ("REFUSED " & table.pet-why)
+    else let dll = build-mono-winhttp (table.pet-exports) (buf + 512 + system-size) managed-size
+    in if dll.pfd-why /= "" then print-line-uni ("REFUSED " & dll.pfd-why)
+    else act
+      print-line-uni ("SIZE:" & show (dll.pfd-size))
+      let written = write-binary-buf (dll.pfd-buffer) 0 (dll.pfd-size)
+      in print-line-uni "END"
+    end
+
+  opening : [Console, Device.Block] Nothing = act
+    n <- block-sector-count
+    if n < 2 | n > 262144 then print-line-uni "REFUSED package disk outside bounds"
+    else act
+      buf <- pbd-read (alloc-bytes (n * 512)) 0 n
+      pbd-emit buf (n * 512)
+    end
+  end

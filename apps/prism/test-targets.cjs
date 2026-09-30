@@ -37,76 +37,24 @@ vm.runInContext(slice('function mountDisk(', '// The compile runs OFF'), ctx);
 ctx.runW = async (bytes, input) => ctx.runModule(bytes, input);
 vm.runInContext(slice('const TARGET_TYPES =', 'function cfgSay('), ctx);
 async function main() {
-  const unityOnly = process.argv.includes('--unity');
-  const unity = ctx.targetDefaults('unity');
-  ctx.targetSave(unity);
-  const second = unityOnly ? Object.assign({}, unity, { id: 'unity-alternate' }) : ctx.targetDefaults('darwin');
-  ctx.targetSave(second);
+  const darwin = ctx.targetDefaults('darwin');
+  ctx.targetSave(darwin);
+  ctx.targetSave(Object.assign({}, darwin, { id: 'darwin-alternate' }));
   assert.equal(ctx.targetProfiles().length, 2);
-  assert.deepEqual(JSON.parse(JSON.stringify(ctx.targetProfiles()[0])), JSON.parse(JSON.stringify(unity)));
-  assert.equal(unity.groupLimit, 4);
-  assert.equal(ctx.targetValidate(Object.assign({}, unity, { groupLimit: 64 })).groupLimit, 4);
-  assert.equal(ctx.targetValidate(Object.assign({}, unity, { groupLimit: 128 })).groupLimit, 4);
-  for (const change of [{ profile: 'future-version' }, { kind: 'unknown' }, { version: 2 },
-    { id: '../escape' }, { groupLimit: 0 }, { groupLimit: 1.5 }, { groupLimit: 129 },
-    { gamePath: 'x\nstart-process bad' }, { gamePath: 'D:/game', testSavePath: 'd:/game/' }]) {
-    assert.throws(() => ctx.targetValidate(Object.assign({}, unity, change)));
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.targetProfiles()[0])), JSON.parse(JSON.stringify(darwin)));
+  for (const change of [{ profile: 'future-version' }, { kind: 'unknown' }, { kind: 'unity' }, { version: 2 },
+    { id: '../escape' }, { macToolchain: 'x\nstart-process bad' }]) {
+    assert.throws(() => ctx.targetValidate(Object.assign({}, darwin, change)));
   }
-  const migrated = ctx.targetValidate(Object.assign({}, unity, { chestRadius: 20, stationRadius: 30 }));
-  assert.equal(Object.hasOwn(migrated, 'chestRadius'), false);
-  assert.equal(Object.hasOwn(migrated, 'stationRadius'), false);
-  const managed = await ctx.targetEmit(unity);
-  const cs = new TextDecoder().decode(managed.bytes);
-  assert.match(cs, /public static class PrismUnityEntry/);
-  assert.doesNotMatch(cs, /_codexMain|static void Main/);
-  assert.match(cs, /6000\.0\.75f1/);
-  let appleWire;
-  if (!unityOnly) {
-    appleWire = await ctx.targetEmit(second);
-    assert.equal(appleWire.extension, '.arm64-wire');
-    const compiler = await ctx.moduleBytes('codex-compiler.wasm');
-    const compiled = ctx.runModule(compiler, 'IR-UNI decks=125\n' + ctx.assembleUnit().text).text;
-    const ir = compiled.slice(compiled.indexOf('IR-BEGIN') + 8, compiled.indexOf('IR-END')).trim();
-    const baseline = ctx.runModule(await ctx.moduleBytes('arm64-stdio.wasm'), ir);
-    assert.notDeepEqual(Buffer.from(baseline.bytes), Buffer.from(appleWire.bytes), 'Darwin must not emit the virt target');
-  }
-  const unityModule = await ctx.moduleBytes('unity-stdio.wasm');
-  assert.match(ctx.runModule(unityModule, 'UNITY future\n(chapter "Bad")').text, /^REFUSED/);
-  assert.match(ctx.runModule(unityModule, 'UNITY windows-x64-mono-6000.0.75f1\nnot IR').text, /^REFUSED/);
-  assert.doesNotMatch(cs, /class PrismStorage/);
-  assert.doesNotMatch(cs, /class PrismMeadowsSpawns/);
-  assert.doesNotMatch(cs, /class PrismModIdentity/);
-  assert.doesNotMatch(cs, /class PrismCircumhorizontalArc/);
-  const demo = assetContext.window.__TEMPLATES.ValheimLinkedStorage;
-  assert.ok(demo && demo.files['LinkedStorage.codex'] && demo.files['ValheimStorage.codex']);
-  for (const [name,text] of Object.entries(demo.files)) assert.equal(text,fs.readFileSync(path.join(repo,'apps/modbuilder/mods/valheim',name),'utf8').replace(/\r\n/g,'\n'));
-  const originalUnit = ctx.assembleUnit;
-  ctx.assembleUnit = () => ({text:Object.values(demo.files).join('\n'),regions:[]});
-  const mod = await ctx.targetEmit(unity);
-  const modCs = new TextDecoder().decode(mod.bytes);
-  assert.match(modCs,/class PrismStorage/);
-  assert.match(modCs,/PrismStorage.Install/);
-  assert.match(modCs,/class PrismMeadowsSpawns/);
-  assert.match(modCs,/PrismMeadowsSpawns.Install/);
-  assert.match(modCs,/class PrismModIdentity/);
-  assert.match(modCs,/__PRISM_BUILD_NUMBER__/);
-  assert.match(modCs,/class PrismCircumhorizontalArc/);
-  assert.match(modCs,/PrismCircumhorizontalArc.Install/);
-  assert.match(modCs,/__PRISM_GAME_HASH__/);
-  assert.match(modCs,/__PRISM_UNITY_HASH__/);
-  ctx.assembleUnit = () => ({text:demo.files['MeadowsSpawns.codex'] + '\nChapter: Meadows Entry\n\nSection: Engine Entry\n\n  effect Process where\n    unity-meadows-spawns-start : (Integer, Integer -> Integer) -> [Process] Nothing\n\nSection: Entry\n\n  opening : [Process] Nothing = unity-meadows-spawns-start meadows-neck-clearance-delay\n',regions:[]});
-  const meadows = await ctx.targetEmit(unity);
-  const meadowsCs = new TextDecoder().decode(meadows.bytes);
-  assert.match(meadowsCs,/class PrismMeadowsSpawns/);
-  assert.match(meadowsCs,/class PrismModIdentity/);
-  assert.doesNotMatch(meadowsCs,/class PrismStorage/);
-  ctx.assembleUnit = () => ({text:demo.files['CircumhorizontalArc.codex'] + '\nChapter: Arc Entry\n\nSection: Engine Entry\n\n  effect Process where\n    unity-circumhorizontal-arc-start : ArcPreviewSettings -> [Process] Nothing\n\nSection: Entry\n\n  opening : [Process] Nothing = unity-circumhorizontal-arc-start arc-preview-settings\n',regions:[]});
-  const arc = await ctx.targetEmit(unity);
-  const arcCs = new TextDecoder().decode(arc.bytes);
-  assert.match(arcCs,/class PrismCircumhorizontalArc/);
-  assert.doesNotMatch(arcCs,/class PrismStorage/);
-  assert.doesNotMatch(arcCs,/class PrismMeadowsSpawns/);
-  ctx.assembleUnit = originalUnit;
+  const appleWire = await ctx.targetEmit(darwin);
+  assert.equal(appleWire.extension, '.arm64-wire');
+  const compiler = await ctx.moduleBytes('codex-compiler.wasm');
+  const compiled = ctx.runModule(compiler, 'IR-UNI decks=125\n' + ctx.assembleUnit().text).text;
+  const ir = compiled.slice(compiled.indexOf('IR-BEGIN') + 8, compiled.indexOf('IR-END')).trim();
+  const baseline = ctx.runModule(await ctx.moduleBytes('arm64-stdio.wasm'), ir);
+  assert.notDeepEqual(Buffer.from(baseline.bytes), Buffer.from(appleWire.bytes), 'Darwin must not emit the virt target');
+  assert.equal(assetContext.window.__EMBED['unity-stdio.wasm'], undefined, 'Prism no longer ships the Unity module');
+  assert.equal(assetContext.window.__MODS, undefined, 'Prism no longer carries the mod catalogue');
   const deleted=[];
   const firstDir={removeEntry:async p=>deleted.push('first/'+p)};
   const secondDir={removeEntry:async p=>deleted.push('second/'+p)};
@@ -119,16 +67,12 @@ async function main() {
   deleted.length=0;ctx.fsaDir=null;
   const detached=ctx.persistDelete('old.codex');ctx.fsaDir=secondDir;await detached;
   assert.deepEqual(deleted,[]);
-  for (const prefix of unityOnly ? [] : ['', 'ELF\n', 'DARWIN\n']) {
+  for (const prefix of ['', 'ELF\n', 'DARWIN\n']) {
     assert.match(ctx.runModule(await ctx.moduleBytes('arm64-stdio.wasm'), prefix + 'not IR').text, /^REFUSED/);
   }
   const out = path.join(repo, 'build-output/prism-targets');
   fs.mkdirSync(out, { recursive: true });
-  fs.writeFileSync(path.join(out, 'page-unity.cs'), managed.bytes);
-  fs.writeFileSync(path.join(out, 'page-storage.cs'), mod.bytes);
-  fs.writeFileSync(path.join(out, 'page-meadows.cs'), meadows.bytes);
-  fs.writeFileSync(path.join(out, 'page-arc.cs'), arc.bytes);
-  if (appleWire) fs.writeFileSync(path.join(out, 'page-darwin.wire'), appleWire.bytes);
-  console.log(unityOnly ? 'PASS: Unity profiles, linked-storage emission, and version/IR refusals' : 'PASS: saved target profiles, invalid profiles, actual Unity emission, Darwin framing, and version/IR refusals');
+  fs.writeFileSync(path.join(out, 'page-darwin.wire'), appleWire.bytes);
+  console.log('PASS: saved Darwin target profiles, invalid profiles, Darwin framing, IR refusals, and no Unity module or mod catalogue in Prism');
 }
 main().catch(err => { console.error(err); process.exitCode = 1; });

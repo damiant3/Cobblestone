@@ -1,0 +1,346 @@
+Chapter: ClipEncoder
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter GemmPtx
+  cites Gpu chapter LayerKernelsPtx
+  cites Diffusion chapter VaeKernelsPtx
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter SafeTensors
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter ClipGraph
+
+ SDXL's two text encoders on the GPU, as Forge's SDXL engine runs them
+ (backend/diffusion_engine/sdxl.py:39-63, transformers CLIPTextModel): a
+ pre-LayerNorm transformer over 77 tokens, token and position embeddings in,
+ causal self-attention with 64-wide heads scaled by 1/8, LayerNorm eps 1e-5.
+ CLIP ViT-L/14 is 12 layers of 768 with quick_gelu; OpenCLIP ViT-bigG/14 is
+ 32 of 1280 with the exact gelu, and stores q, k and v as the three row
+ thirds of in_proj. Forge conditions on the hidden state after all but the
+ last layer, with no final LayerNorm (clip skip 2). G's pooled output is the
+ final LayerNorm of the last layer at the first EOS position (the argmax of
+ the ids, transformers' eos_token_id 2 path), times text_projection, which
+ open_clip stores as [in x out].
+
+ We say:
+
+Section: Types
+
+  ClipWeights = record {
+    cw-spec : ClipSpec,
+    cw-status : Integer,
+    cw-path : Text,
+    cw-tok : BoundTensor,
+    cw-pos : Integer,
+    cw-layers : List ClipLayer,
+    cw-final-g : Integer,
+    cw-final-b : Integer,
+    cw-proj : Integer
+  }
+
+Section: The Two Encoders
+
+ Status 0 is loaded or encoded. -1 a tensor the layout did not bind, -2 an
+ upload the bridge refused, -3 an allocation refused, -4 a launch refused.
+
+  clip-l-spec : ClipSpec
+  clip-l-spec = ClipSpec { cs-width = 768, cs-heads = 12, cs-layers = 12, cs-mlp = 3072, cs-erf-gelu = False, cs-open = False, cs-pool = False, cs-prefix = "conditioner.embedders.0.transformer.text_model.", cs-part = 1, cs-pad = 49407, cs-skip = 2, cs-final-norm = False }
+
+  openclip-g-spec : ClipSpec
+  openclip-g-spec = ClipSpec { cs-width = 1280, cs-heads = 20, cs-layers = 32, cs-mlp = 5120, cs-erf-gelu = True, cs-open = True, cs-pool = True, cs-prefix = "conditioner.embedders.1.model.", cs-part = 2, cs-pad = 0, cs-skip = 2, cs-final-norm = False }
+
+ SD1.5's CLIP-L, as Forge's sd15.py:36-47 configures its engine: clip skip 1
+ and the final LayerNorm.
+
+  clip-l15-spec : ClipSpec
+  clip-l15-spec = ClipSpec { cs-width = 768, cs-heads = 12, cs-layers = 12, cs-mlp = 3072, cs-erf-gelu = False, cs-open = False, cs-pool = False, cs-prefix = "cond_stage_model.transformer.text_model.", cs-part = 1, cs-pad = 49407, cs-skip = 1, cs-final-norm = True }
+
+ Flux's CLIP-L (diffusion_engine/flux.py:55-67): clip skip 1 with the final
+ LayerNorm, and the pooled output unprojected (text_projection False).
+
+  clip-l-flux-spec : ClipSpec
+  clip-l-flux-spec = ClipSpec { cs-width = 768, cs-heads = 12, cs-layers = 12, cs-mlp = 3072, cs-erf-gelu = False, cs-open = False, cs-pool = True, cs-prefix = "text_model.", cs-part = 0, cs-pad = 49407, cs-skip = 1, cs-final-norm = True }
+
+  ce-tok-name : ClipSpec -> Text
+  ce-tok-name (s) = if s.cs-open then s.cs-prefix & "token_embedding.weight" else s.cs-prefix & "embeddings.token_embedding.weight"
+
+  ce-pos-name : ClipSpec -> Text
+  ce-pos-name (s) = if s.cs-open then s.cs-prefix & "positional_embedding" else s.cs-prefix & "embeddings.position_embedding.weight"
+
+ Forge's clip skip (backend/text_processing/classic_engine.py:135) takes the
+ hidden state at -max(clip_skip, minimal_clip_skip); the engine's minimum is
+ the spec's cs-skip, and the final LayerNorm stays the engine's own choice.
+
+  ce-skip : ClipWeights, Integer -> ClipWeights
+  ce-skip (w) (k) =
+    let s = w.cw-spec
+    in if k <= s.cs-skip then w
+    else ClipWeights { cw-spec = ClipSpec { cs-width = s.cs-width, cs-heads = s.cs-heads, cs-layers = s.cs-layers, cs-mlp = s.cs-mlp, cs-erf-gelu = s.cs-erf-gelu, cs-open = s.cs-open, cs-pool = s.cs-pool, cs-prefix = s.cs-prefix, cs-part = s.cs-part, cs-pad = s.cs-pad, cs-skip = k, cs-final-norm = s.cs-final-norm }, cw-status = w.cw-status, cw-path = w.cw-path, cw-tok = w.cw-tok, cw-pos = w.cw-pos, cw-layers = w.cw-layers, cw-final-g = w.cw-final-g, cw-final-b = w.cw-final-b, cw-proj = w.cw-proj }
+
+  ce-final-name : ClipSpec -> Text
+  ce-final-name (s) = if s.cs-open then s.cs-prefix & "ln_final" else s.cs-prefix & "final_layer_norm"
+
+  ce-layer-prefix : ClipSpec, Integer -> Text
+  ce-layer-prefix (s) (i) = if s.cs-open then s.cs-prefix & "transformer.resblocks." & show i & "." else s.cs-prefix & "encoder.layers." & show i & "."
+
+Section: Uploads
+
+  ce-names : List BoundTensor, Integer, List Text -> List Text
+  ce-names (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else ce-names ts (i + 1) (list-push acc ((list-at ts i).bt-name))
+
+  ce-none : BoundTensor
+  ce-none = BoundTensor { bt-name = "", bt-dtype = 0, bt-shape = [], bt-offset = 0, bt-bytes = 0 }
+
+  ce-find : NameIndex, List BoundTensor, Text -> BoundTensor
+  ce-find (ni) (ts) (name) =
+    let i = name-find ni name
+    in if i < 0 then ce-none else list-at ts i
+
+  ce-width : Integer -> Integer
+  ce-width (dt) = if dt == gpu-dt-f16 then 2 else 4
+
+ An upload names the element range of a tensor, first and count, therefore
+ one of in_proj's thirds reads from the file without the other two.
+
+  ce-upload-range : Text, BoundTensor, Integer, Integer, Integer -> Integer
+  ce-upload-range (path) (t) (first) (count) (dst-dt) =
+    let src = ckpt-gpu-dtype (t.bt-dtype)
+    in let w = st-dtype-width (t.bt-dtype)
+    in if t.bt-bytes == 0 then 0
+    else if src < 0 then 0
+    else let h = gpu-buf-alloc (count * ce-width dst-dt)
+    in if h == 0 then 0
+    else if gpu-buf-upload h 0 path (t.bt-offset + first * w) count src dst-dt == count * ce-width dst-dt then h
+    else ce-freed-zero h
+
+  ce-freed-zero : Integer -> Integer
+  ce-freed-zero (h) =
+    let f = gpu-buf-free h
+    in 0
+
+  ce-upload : Text, NameIndex, List BoundTensor, Text, Integer -> Integer
+  ce-upload (path) (ni) (ts) (name) (dst-dt) =
+    let t = ce-find ni ts name
+    in ce-upload-range path t 0 (t.bt-bytes / (if t.bt-bytes == 0 then 1 else st-dtype-width (t.bt-dtype))) dst-dt
+
+  ce-third : Text, NameIndex, List BoundTensor, Text, Integer, Integer, Integer -> Integer
+  ce-third (path) (ni) (ts) (name) (part) (count) (dst-dt) = ce-upload-range path (ce-find ni ts name) (part * count) count dst-dt
+
+  ce-load-layer : Text, ClipSpec, NameIndex, List BoundTensor, Integer -> ClipLayer
+  ce-load-layer (path) (s) (ni) (ts) (i) =
+    let p = ce-layer-prefix s i
+    in let d = s.cs-width
+    in if s.cs-open then ce-load-open path p d ni ts else ce-load-hf path p ni ts
+
+  ce-load-hf : Text, Text, NameIndex, List BoundTensor -> ClipLayer
+  ce-load-hf (path) (p) (ni) (ts) =
+    ClipLayer {
+      cy-ln1-g = ce-upload path ni ts (p & "layer_norm1.weight") gpu-dt-f32,
+      cy-ln1-b = ce-upload path ni ts (p & "layer_norm1.bias") gpu-dt-f32,
+      cy-q-w = ce-upload path ni ts (p & "self_attn.q_proj.weight") gpu-dt-f16,
+      cy-q-b = ce-upload path ni ts (p & "self_attn.q_proj.bias") gpu-dt-f32,
+      cy-k-w = ce-upload path ni ts (p & "self_attn.k_proj.weight") gpu-dt-f16,
+      cy-k-b = ce-upload path ni ts (p & "self_attn.k_proj.bias") gpu-dt-f32,
+      cy-v-w = ce-upload path ni ts (p & "self_attn.v_proj.weight") gpu-dt-f16,
+      cy-v-b = ce-upload path ni ts (p & "self_attn.v_proj.bias") gpu-dt-f32,
+      cy-o-w = ce-upload path ni ts (p & "self_attn.out_proj.weight") gpu-dt-f16,
+      cy-o-b = ce-upload path ni ts (p & "self_attn.out_proj.bias") gpu-dt-f32,
+      cy-ln2-g = ce-upload path ni ts (p & "layer_norm2.weight") gpu-dt-f32,
+      cy-ln2-b = ce-upload path ni ts (p & "layer_norm2.bias") gpu-dt-f32,
+      cy-fc1-w = ce-upload path ni ts (p & "mlp.fc1.weight") gpu-dt-f16,
+      cy-fc1-b = ce-upload path ni ts (p & "mlp.fc1.bias") gpu-dt-f32,
+      cy-fc2-w = ce-upload path ni ts (p & "mlp.fc2.weight") gpu-dt-f16,
+      cy-fc2-b = ce-upload path ni ts (p & "mlp.fc2.bias") gpu-dt-f32
+    }
+
+  ce-load-open : Text, Text, Integer, NameIndex, List BoundTensor -> ClipLayer
+  ce-load-open (path) (p) (d) (ni) (ts) =
+    ClipLayer {
+      cy-ln1-g = ce-upload path ni ts (p & "ln_1.weight") gpu-dt-f32,
+      cy-ln1-b = ce-upload path ni ts (p & "ln_1.bias") gpu-dt-f32,
+      cy-q-w = ce-third path ni ts (p & "attn.in_proj_weight") 0 (d * d) gpu-dt-f16,
+      cy-q-b = ce-third path ni ts (p & "attn.in_proj_bias") 0 d gpu-dt-f32,
+      cy-k-w = ce-third path ni ts (p & "attn.in_proj_weight") 1 (d * d) gpu-dt-f16,
+      cy-k-b = ce-third path ni ts (p & "attn.in_proj_bias") 1 d gpu-dt-f32,
+      cy-v-w = ce-third path ni ts (p & "attn.in_proj_weight") 2 (d * d) gpu-dt-f16,
+      cy-v-b = ce-third path ni ts (p & "attn.in_proj_bias") 2 d gpu-dt-f32,
+      cy-o-w = ce-upload path ni ts (p & "attn.out_proj.weight") gpu-dt-f16,
+      cy-o-b = ce-upload path ni ts (p & "attn.out_proj.bias") gpu-dt-f32,
+      cy-ln2-g = ce-upload path ni ts (p & "ln_2.weight") gpu-dt-f32,
+      cy-ln2-b = ce-upload path ni ts (p & "ln_2.bias") gpu-dt-f32,
+      cy-fc1-w = ce-upload path ni ts (p & "mlp.c_fc.weight") gpu-dt-f16,
+      cy-fc1-b = ce-upload path ni ts (p & "mlp.c_fc.bias") gpu-dt-f32,
+      cy-fc2-w = ce-upload path ni ts (p & "mlp.c_proj.weight") gpu-dt-f16,
+      cy-fc2-b = ce-upload path ni ts (p & "mlp.c_proj.bias") gpu-dt-f32
+    }
+
+  ce-layer-ok : ClipLayer -> Boolean
+  ce-layer-ok (y) =
+    if y.cy-ln1-g == 0 | y.cy-ln1-b == 0 | y.cy-q-w == 0 | y.cy-q-b == 0 then False
+    else if y.cy-k-w == 0 | y.cy-k-b == 0 | y.cy-v-w == 0 | y.cy-v-b == 0 then False
+    else if y.cy-o-w == 0 | y.cy-o-b == 0 | y.cy-ln2-g == 0 | y.cy-ln2-b == 0 then False
+    else if y.cy-fc1-w == 0 | y.cy-fc1-b == 0 | y.cy-fc2-w == 0 then False
+    else y.cy-fc2-b /= 0
+
+  ce-load-layers : Text, ClipSpec, NameIndex, List BoundTensor, Integer, List ClipLayer -> List ClipLayer
+  ce-load-layers (path) (s) (ni) (ts) (i) (acc) =
+    if i >= s.cs-layers then acc
+    else let y = ce-load-layer path s ni ts i
+    in if ce-layer-ok y then ce-load-layers path s ni ts (i + 1) (list-push acc y)
+    else acc
+
+ The projection arrives as f32 [in x out] and leaves as f16 [out x in], the
+ W a linear layer multiplies by its transpose.
+
+  ce-load-proj : Text, ClipSpec, NameIndex, List BoundTensor -> Integer
+  ce-load-proj (path) (s) (ni) (ts) =
+    if s.cs-open == False then 0
+    else let src = ce-upload path ni ts (s.cs-prefix & "text_projection") gpu-dt-f32
+    in if src == 0 then 0
+    else let d = s.cs-width
+    in let dst = gpu-buf-alloc (d * d * 2)
+    in if dst == 0 then ce-freed-zero src
+    else let t = ce-launch gm-slot-vae vae-kernels-ptx "kernel_transpose_f16" (d * d) [ce-buf src, ce-buf dst, ce-int d, ce-int d, ce-int (d * d)]
+    in let f = gpu-buf-free src
+    in if t < 0 then ce-freed-zero dst else dst
+
+  clip-load : Text, SafeTensorFile, LayoutBinding, ClipSpec -> ClipWeights
+  clip-load (path) (file) (lb) (s) =
+    let pb = list-at (lb.lb-parts) (s.cs-part)
+    in let ts = pb.pb-bound
+    in let ni = name-index (ce-names ts 0 [])
+    in let tok = ce-find ni ts (ce-tok-name s)
+    in let pos = ce-upload path ni ts (ce-pos-name s) gpu-dt-f32
+    in let layers = ce-load-layers path s ni ts 0 []
+    in let fg = ce-upload path ni ts (ce-final-name s & ".weight") gpu-dt-f32
+    in let fb = ce-upload path ni ts (ce-final-name s & ".bias") gpu-dt-f32
+    in let proj = ce-load-proj path s ni ts
+    in let status = if tok.bt-bytes == 0 then 0 - 1
+      else if pos == 0 | fg == 0 | fb == 0 then 0 - 2
+      else if list-length layers < s.cs-layers then 0 - 2
+      else if s.cs-open & proj == 0 then 0 - 2
+      else 0
+    in ClipWeights { cw-spec = s, cw-status = status, cw-path = path, cw-tok = tok, cw-pos = pos, cw-layers = layers, cw-final-g = fg, cw-final-b = fb, cw-proj = proj }
+
+Section: Launches
+
+  ce-buf : Integer -> GpuParam
+  ce-buf (h) = gpu-arg-buf h 0
+
+  ce-row : Integer, Integer -> GpuParam
+  ce-row (h) (byte-off) = gpu-arg-buf h byte-off
+
+  ce-int : Integer -> GpuParam
+  ce-int (v) = gpu-arg-u64 v
+
+  ce-real : Real -> GpuParam
+  ce-real (x) = gpu-arg-u64 (real-to-bits x)
+
+  ce-launch : Integer, Text, Text, Integer, List GpuParam -> Integer
+  ce-launch (slot) (ptx) (name) (threads) (ps) =
+    gm-launch slot ptx name (GpuGrid { gx = (threads + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) ps
+
+  ce-layer-kernel : Text, Integer, List GpuParam -> Integer
+  ce-layer-kernel (name) (threads) (ps) = ce-launch gm-slot-layer layer-kernels-ptx name threads ps
+
+  ce-linear : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ce-linear (x16) (w) (b) (y) (m) (n) (k) =
+    gm-launch gm-slot-gemm gemm-ptx "kernel_linear_wmma" (GpuGrid { gx = (n + 63) / 64, gy = (m + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }) [ce-buf x16, ce-buf w, (if b == 0 then ce-int 0 else ce-buf b), ce-buf y, ce-int m, ce-int n, ce-int k, ce-int 0]
+
+  ce-cast : Integer, Integer, Integer -> Integer
+  ce-cast (src) (dst) (n) = ce-launch gm-slot-vae vae-kernels-ptx "kernel_cast_f16" n [ce-buf src, ce-buf dst, ce-int n]
+
+  ce-norm : ClipWork, Integer, Integer, Integer, Integer, Integer -> Integer
+  ce-norm (w) (x) (g) (b) (d) (rows) =
+    if ce-layer-kernel "kernel_row_stats" rows [ce-buf x, ce-buf (w.ck-stats), ce-int d, ce-real 0.00001, ce-int rows] < 0 then 0 - 4
+    else ce-layer-kernel "kernel_layer_norm" (rows * d) [ce-buf x, ce-buf (w.ck-stats), ce-buf g, ce-buf b, ce-buf (w.ck-h), ce-int d, ce-int (rows * d)]
+
+  ce-add : Integer, Integer, Integer, Integer -> Integer
+  ce-add (a) (b) (out) (n) = ce-layer-kernel "kernel_add" n [ce-buf a, ce-buf b, ce-buf out, ce-int n]
+
+Section: Op Set
+
+ The encoder's graph (ClipGraph) does its GPU work through a ClipOps value, as
+ UNet's does through UNetOps (docs/Designs/Active/Apps/InBrowserDiffusion.md,
+ stage 3). The launches and copies the graph used to make itself are the six
+ below, unchanged.
+
+  ce-scores-launch : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> Integer
+  ce-scores-launch (q) (k) (s) (heads) (sq) (sk) (dh) (scale) = ce-layer-kernel "kernel_attn_scores" (heads * sq * sk) [ce-buf q, ce-buf k, ce-buf s, ce-int heads, ce-int sq, ce-int sk, ce-int dh, ce-real scale, ce-int (heads * sq * sk)]
+
+  ce-causal-launch : Integer, Integer, Integer, Integer -> Integer
+  ce-causal-launch (s) (cols) (sq) (rows) = ce-layer-kernel "kernel_softmax_causal" rows [ce-buf s, ce-int cols, ce-int sq, ce-int rows]
+
+  ce-values-launch : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ce-values-launch (s) (v) (o) (heads) (sq) (sk) (dh) = ce-layer-kernel "kernel_attn_values" (sq * heads * dh) [ce-buf s, ce-buf v, ce-buf o, ce-int heads, ce-int sq, ce-int sk, ce-int dh, ce-int (sq * heads * dh)]
+
+  ce-gelu-launch : Boolean, Integer, Integer -> Integer
+  ce-gelu-launch (erf) (x) (n) = ce-layer-kernel (if erf then "kernel_gelu" else "kernel_quick_gelu") n [ce-buf x, ce-buf x, ce-int n]
+
+  ce-cast-at : Integer, Integer, Integer, Integer -> Integer
+  ce-cast-at (src) (off) (dst) (n) = ce-launch gm-slot-vae vae-kernels-ptx "kernel_cast_f16" n [ce-row src off, ce-buf dst, ce-int n]
+
+  ce-copy-row : Integer, Integer, Integer, Integer -> Boolean
+  ce-copy-row (src) (off) (bytes) (dst) = gpu-buf-read src off bytes ckpt-scratch & gpu-buf-write dst 0 bytes ckpt-scratch
+
+  ce-spec : ClipWeights -> ClipSpec
+  ce-spec (cw) = cw.cw-spec
+
+  ce-status : ClipWeights -> Integer
+  ce-status (cw) = cw.cw-status
+
+  ce-pos : ClipWeights -> Integer
+  ce-pos (cw) = cw.cw-pos
+
+  ce-layers : ClipWeights -> List ClipLayer
+  ce-layers (cw) = cw.cw-layers
+
+  ce-final-g : ClipWeights -> Integer
+  ce-final-g (cw) = cw.cw-final-g
+
+  ce-final-b : ClipWeights -> Integer
+  ce-final-b (cw) = cw.cw-final-b
+
+  ce-proj : ClipWeights -> Integer
+  ce-proj (cw) = cw.cw-proj
+
+  clip-native-ops : ClipOps ClipWeights
+  clip-native-ops = ClipOps { norm = ce-norm, cast = ce-cast, linear = ce-linear, add = ce-add, attn-scores = ce-scores-launch, softmax-causal = ce-causal-launch, attn-values = ce-values-launch, gelu = ce-gelu-launch, cast-at = ce-cast-at, copy-row = ce-copy-row, alloc = gpu-buf-alloc, free = gpu-buf-free, embed = ce-embed, zero-fill = ce-zero-fill, work-sizes = ce-work-sizes, spec = ce-spec, status = ce-status, pos = ce-pos, layers = ce-layers, final-g = ce-final-g, final-b = ce-final-b, proj = ce-proj }
+
+  ce-work-sizes : ClipSpec -> List Integer
+  ce-work-sizes (s) =
+    let t = clip-tokens
+    in let d = s.cs-width
+    in let f = s.cs-mlp
+    in [t * d * 4, t * d * 4, t * f * 2, t * d * 4, t * d * 4, t * d * 4, s.cs-heads * t * t * 4, t * d * 4, t * d * 4, t * f * 4, t * f * 2, t * 16, t * d * 4]
+
+Section: Encoding
+
+ Each token's row comes straight from the checkpoint into its row of x, so
+ the embedding gather is 77 file-range uploads and no kernel.
+
+  ce-embed : ClipWeights, Integer, List Integer, Integer -> Integer
+  ce-embed (cw) (x) (ids) (r) =
+    if r >= clip-tokens then 0
+    else let s = cw.cw-spec
+    in let d = s.cs-width
+    in let tok = cw.cw-tok
+    in let w = st-dtype-width (tok.bt-dtype)
+    in if gpu-buf-upload x (r * d * 4) (cw.cw-path) (tok.bt-offset + list-at ids r * d * w) d (ckpt-gpu-dtype (tok.bt-dtype)) gpu-dt-f32 /= d * 4 then 0 - 2
+    else ce-embed cw x ids (r + 1)
+
+  ce-zero-fill : Integer, Integer -> Integer
+  ce-zero-fill (h) (bytes) =
+    let z = __memset ckpt-scratch 0 bytes
+    in if gpu-buf-write h 0 bytes ckpt-scratch then 0 else 0 - 2
+
+Section: Native Graph
+
+  clip-encode : ClipWeights, List Integer -> ClipOutput
+  clip-encode (cw) (given) = clip-encode-with clip-native-ops cw given
+
+  ce-free-all : List Integer, Integer -> Integer
+  ce-free-all (hs) (i) = ce-free-all-with clip-native-ops hs i
+
+Page 1

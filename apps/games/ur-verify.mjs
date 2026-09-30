@@ -183,6 +183,63 @@ const seen = new Set();
 ok('control: the AI is not a constant function over real positions',
    seen.size > 1, `chose ${[...seen].sort((a, b) => a - b).join(',')}`);
 
+// -- THE RULES: the Finkel rules, in lockstep with an oracle ----------------
+// A piece at step s moves to s + roll. Past 15 is refused, and 15 is borne
+// off by the exact roll. It may not land on its own piece; in the shared
+// row (5 to 12) it captures an enemy piece there, sending it to step 0,
+// except on the central rosette (8), which is safe. Landing on a rosette
+// (4, 8, 14) gives another turn; everything else passes it.
+const ROS = new Set([4, 8, 14]);
+function urLegal(mine, theirs, i, roll) {
+  const s = mine[i], t = s + roll;
+  if (roll < 1 || s === 15 || t > 15) return false;
+  if (t === 15) return true;
+  if (mine.some((x, j) => j !== i && x === t)) return false;
+  if (t >= 5 && t <= 12 && t === 8 && theirs.includes(8)) return false;
+  return true;
+}
+function urApply(mine, theirs, i, roll) {
+  const m = mine.slice(), o = theirs.slice(), t = m[i] + roll;
+  m[i] = t;
+  const hit = t >= 5 && t <= 12 && t !== 8 ? o.indexOf(t) : -1;
+  if (hit >= 0) o[hit] = 0;
+  return { m, o, again: ROS.has(t), hit: hit >= 0 };
+}
+{
+  const side = (h, p) => [...Array(7).keys()].map(i => e.ur_piece(h, p, i));
+  let s = 3, bad = null, plies = 0;
+  const seen = { capture: 0, safeRefused: 0, ownBlock: 0, again: 0, off: 0, overshoot: 0 };
+  const rnd = n => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s >>> 16) % n; };
+  for (let g = 0; g < 40 && !bad; g++) {
+    let h = e.ur_new();
+    for (let ply = 0; ply < 600 && !bad && e.ur_done(h) === 0; ply++) {
+      const p = e.ur_cur(h), q = 3 - p, roll = e.ur_roll(s = (s * 1103515245 + 12345) & 0x7fffffff);
+      const mine = side(h, p), theirs = side(h, q);
+      const want = [...Array(7).keys()].filter(i => urLegal(mine, theirs, i, roll));
+      const got = [...Array(7).keys()].filter(i => e.ur_can(h, i, roll) === 1);
+      for (let i = 0; i < 7; i++) {
+        const t = mine[i] + roll;
+        if (roll > 0 && mine[i] !== 15 && t > 15) seen.overshoot++;
+        if (roll > 0 && t === 8 && theirs.includes(8) && mine[i] !== 15) seen.safeRefused++;
+        if (roll > 0 && t < 15 && mine.some((x, j) => j !== i && x === t)) seen.ownBlock++;
+      }
+      if (JSON.stringify(want) !== JSON.stringify(got)) { bad = `game ${g}: roll ${roll} mine ${mine} theirs ${theirs}: engine ${got}, rules ${want}`; break; }
+      if (!want.length) { h = e.ur_pass(h); continue; }
+      const i = want[rnd(want.length)];
+      const r = urApply(mine, theirs, i, roll);
+      h = e.ur_play(h, i, roll); plies++;
+      if (r.hit) seen.capture++; if (r.again) seen.again++; if (r.m[i] === 15) seen.off++;
+      const nextTurn = r.again ? p : q;
+      if (e.ur_done(h) === 0 && (JSON.stringify(side(h, p)) !== JSON.stringify(r.m) || JSON.stringify(side(h, q)) !== JSON.stringify(r.o) || e.ur_cur(h) !== nextTurn)) {
+        bad = `game ${g}: after piece ${i} roll ${roll}: engine ${side(h, p)}/${side(h, q)} turn ${e.ur_cur(h)}, rules ${r.m}/${r.o} turn ${nextTurn}`;
+      }
+    }
+  }
+  ok('rules: forty games in lockstep with the Finkel rules, every legal set and every move', bad === null, bad ?? `${plies} moves`);
+  ok('rules: the games reached captures, the safe rosette, own-piece blocks, extra turns, bearing off and overshoots',
+     Object.values(seen).every(n => n > 0), JSON.stringify(seen));
+}
+
 console.log(fail === 0
   ? `\nPASS: the Ur module holds every rule invariant (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

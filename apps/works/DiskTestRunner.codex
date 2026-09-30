@@ -19,17 +19,19 @@ Section: The Compile
    rr-emit-code : Integer,
    rr-message : Text,
    rr-line : Integer,
-   rr-col : Integer
+   rr-col : Integer,
+   rr-codes : Text
   }
 
   RunnerEmit = record {
    re-bytes : Integer,
    re-errors : Integer,
-   re-code : Integer
+   re-code : Integer,
+   re-codes : Text
   }
 
   runner-emit-none : RunnerEmit
-  runner-emit-none = RunnerEmit { re-bytes = 0, re-errors = 0, re-code = 0 }
+  runner-emit-none = RunnerEmit { re-bytes = 0, re-errors = 0, re-code = 0, re-codes = "" }
 
   runner-emit : CompileFrontend -> RunnerEmit
   runner-emit (fe) =
@@ -38,36 +40,76 @@ Section: The Compile
    in RunnerEmit {
     re-bytes = list-length (r.header-bytes) + (r.content-len) + list-length (r.tail-bytes),
     re-errors = list-length ees,
-    re-code = if list-length ees == 0 then 0 else (list-at ees 0).code
+    re-code = if list-length ees == 0 then 0 else (list-at ees 0).code,
+    re-codes = runner-codes ees 0 (list-length ees) ""
    }
+
+  runner-codes : List Diagnostic, Integer, Integer, Text -> Text
+  runner-codes (es) (i) (n) (acc) =
+   if i >= n then acc
+   else let d = list-at es i
+   in let one = show (d.code) & "@" & show (d.span.start.line) & ":" & show (d.span.start.column)
+   in runner-codes es (i + 1) n (if i == 0 then one else acc & "," & one)
 
   runner-run : Text -> RunnerResult
   runner-run (t) =
-   let hp = __heap-save
-   in let fe = compile-frontend-cdx t "Program" (parse-mode-flags "CDX" (text-length t))
+   let split = split-quoted-works t
+   in if has-quotations (split.sp-body) then runner-quoted split
+   else runner-plain (split.sp-body)
+
+  runner-quoted : SourceSplit -> RunnerResult
+  runner-quoted (split) =
+   let qr = resolve-quotations (split.sp-body) ((build-works (split.sp-works)).ws-bundle)
+   in if bag-has-errors (qr.qr-bag) then runner-errors (bag-errors (qr.qr-bag)) runner-emit-none
+   else runner-plain (qr.qr-prefix & split.sp-body)
+
+  runner-plain : Text -> RunnerResult
+  runner-plain (t) =
+   let fe = compile-frontend-cdx t "Program" (parse-mode-flags "CDX" (text-length t))
    in let es = bag-errors (fe.bag)
-   in let n = list-length es
+   in runner-errors es (if list-length es == 0 then runner-emit fe else runner-emit-none)
+
+  runner-errors : List Diagnostic, RunnerEmit -> RunnerResult
+  runner-errors (es) (em) =
+   let n = list-length es
    in let code = if n == 0 then 0 else (list-at es 0).code
    in let msg = if n == 0 then "" else (list-at es 0).message
    in let ln = if n == 0 then 0 else ((list-at es 0).span.start.line)
    in let cl = if n == 0 then 0 else ((list-at es 0).span.start.column)
-   in let em = if n == 0 then runner-emit fe else runner-emit-none
+   in let codes = runner-codes es 0 n ""
    in let bytes = em.re-bytes
    in let ecount = em.re-errors
    in let ecode = em.re-code
-   in let restored = __heap-restore hp
-   in RunnerResult { rr-errors = n, rr-code = code, rr-bytes = bytes, rr-emit-errors = ecount, rr-emit-code = ecode, rr-message = msg, rr-line = ln, rr-col = cl }
+   in let ecodes = em.re-codes
+   in RunnerResult { rr-errors = n, rr-code = code, rr-bytes = bytes, rr-emit-errors = ecount, rr-emit-code = ecode, rr-message = msg, rr-line = ln, rr-col = cl, rr-codes = if n == 0 then ecodes else codes }
 
-  runner-of : Maybe Text -> RunnerResult
+ The compiler's serial reader drops byte 13, keeps a byte of 128 or more as
+ it arrived and maps the rest through the CCE table, then `utf8-to-cce`
+ decodes the high bytes. `fat16-read-source` maps a high byte on its own, so a
+ UTF-8 identifier read through it is not the source the compiler sees.
+
+  runner-source-bytes : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  runner-source-bytes (tbl) (bs) (i) (len) (acc) =
+   if i >= len then acc
+   else let b = list-at bs i
+   in if b == 13 then runner-source-bytes tbl bs (i + 1) len acc
+   else runner-source-bytes tbl bs (i + 1) len (list-push acc (if b >= 128 then b else fat16-byte-to-cce tbl b))
+
+  runner-source : List Integer -> Text
+  runner-source (bs) =
+   let n = list-length bs
+   in utf8-to-cce (raw-bytes-to-text (runner-source-bytes cce-to-unicode-table bs 0 n (__list-with-capacity (n + 1))))
+
+  runner-of : Maybe (List Integer) -> RunnerResult
   runner-of (src) =
-   if is-none src then RunnerResult { rr-errors = 0 - 1, rr-code = 0, rr-bytes = 0, rr-emit-errors = 0, rr-emit-code = 0, rr-message = "", rr-line = 0, rr-col = 0 }
-   else runner-run (from-maybe src "")
+   if is-none src then RunnerResult { rr-errors = 0 - 1, rr-code = 0, rr-bytes = 0, rr-emit-errors = 0, rr-emit-code = 0, rr-message = "", rr-line = 0, rr-col = 0, rr-codes = "" }
+   else runner-run (runner-source (from-maybe src []))
 
   runner-line : Text, RunnerResult -> Text
   runner-line (nm) (r) =
    if r.rr-errors < 0 then nm & " : READ FAILED"
-   else if r.rr-errors > 0 then nm & " : errors=" & show (r.rr-errors) & " ok=no first=CDX" & show (r.rr-code) & " at " & show (r.rr-line) & ":" & show (r.rr-col) & " -- " & (r.rr-message)
-   else if r.rr-emit-errors > 0 then nm & " : frontend ok, CODEGEN errors=" & show (r.rr-emit-errors) & " first=CDX" & show (r.rr-emit-code)
+   else if r.rr-errors > 0 then nm & " : errors=" & show (r.rr-errors) & " ok=no first=CDX" & show (r.rr-code) & " at " & show (r.rr-line) & ":" & show (r.rr-col) & " codes=" & (r.rr-codes) & " -- " & (r.rr-message)
+   else if r.rr-emit-errors > 0 then nm & " : frontend ok, CODEGEN errors=" & show (r.rr-emit-errors) & " first=CDX" & show (r.rr-emit-code) & " codes=" & (r.rr-codes)
    else nm & " : errors=0 ok=yes cdx=" & show (r.rr-bytes)
 
   runner-skip : Text -> Boolean
@@ -84,9 +126,16 @@ Section: The Compile
    end
 
   runner-subject : Fat16Volume, Text -> [Console, Device.Block] Integer
-  runner-subject (vol) (path) = act
-    src <- fat16-read-source vol path
-    runner-say path (runner-of src)
+  runner-subject (vol) (path) =
+   let hp = __heap-save
+   in runner-subject-at vol path hp
+
+  runner-subject-at : Fat16Volume, Text, Integer -> [Console, Device.Block] Integer
+  runner-subject-at (vol) (path) (hp) = act
+    src <- fat16-read-bytes vol path
+    err <- runner-say path (runner-of src)
+    let restored = __heap-restore hp
+    in err
    end
 
   runner-files : Fat16Volume, Text, List Fat16DirEntry, Integer, Integer, Integer -> [Console, Device.Block] Integer
@@ -127,7 +176,7 @@ Section: Body
     else act
     entries <- fat16-root-entries vol
     print-line-uni ("entries   : " & show (list-length entries) & " on the root")
-    print-line-uni "note      : each entry is compiled ALONE, with no cite resolution, so a chapter carrying cites reports every cited name undefined. Only a cite-free chapter's verdict is comparable with test.ps1's."
+    print-line-uni "note      : each entry is compiled as ONE unit with no cite resolution; build/test-disk-runner.ps1 bundles every cite on the host before imaging, and a raw chapter carrying cites reports every cited name undefined."
     bad <- runner-walk vol entries 0 (list-length entries) 0
     print-line-uni ("summary   : failed=" & show bad)
     print-line-uni "=== runner done ==="

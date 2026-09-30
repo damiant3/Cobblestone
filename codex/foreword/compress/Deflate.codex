@@ -52,7 +52,7 @@ Section: The Bit Writer
     let cur = bit-or (w.bw-cur) (bit-shl (bit-and b 1) (w.bw-nbits))
     in if w.bw-nbits == 7
       then BitWriter { bw-bytes = list-push (w.bw-bytes) cur, bw-cur = 0, bw-nbits = 0 }
-      else BitWriter { bw-bytes = w.bw-bytes, bw-cur = cur, bw-nbits = w.bw-nbits + 1 }
+    else BitWriter { bw-bytes = w.bw-bytes, bw-cur = cur, bw-nbits = w.bw-nbits + 1 }
 
   bw-bits : BitWriter, Integer, Integer -> BitWriter
   bw-bits (w) (val) (n) = bw-bits-loop w val n 0
@@ -248,13 +248,15 @@ Section: Dynamic Huffman -- Canonical Codes
   dh-leaves : List Integer, Integer, Integer, List DhNode -> List DhNode
   dh-leaves (freq) (i) (nsym) (acc) =
     if i >= nsym then acc
-    else if list-at freq i > 0 then dh-leaves freq (i + 1) nsym (list-push acc (DhLeaf i (list-at freq i)))
+    else if list-at freq i > 0 then
+      dh-leaves freq (i + 1) nsym (list-push acc (DhLeaf i (list-at freq i)))
     else dh-leaves freq (i + 1) nsym acc
 
   dh-find-min : List DhNode, Integer, Integer, Integer -> Integer
   dh-find-min (nodes) (i) (len) (best) =
     if i >= len then best
-    else if dh-node-freq (list-at nodes i) < dh-node-freq (list-at nodes best) then dh-find-min nodes (i + 1) len i
+    else if dh-node-freq (list-at nodes i) < dh-node-freq (list-at nodes best) then
+      dh-find-min nodes (i + 1) len i
     else dh-find-min nodes (i + 1) len best
 
   dh-remove-at : List DhNode, Integer, Integer, Integer, List DhNode -> List DhNode
@@ -326,9 +328,9 @@ Section: Dynamic Huffman -- Canonical Codes
     if i >= nsym then codes
     else let l = list-at lengths i
     in if l > 0 then
-         let c = list-at nc l
-         in dh-assign-codes lengths (i + 1) nsym (list-set-at nc l (c + 1)) (list-set-at codes i c)
-       else dh-assign-codes lengths (i + 1) nsym nc codes
+      let c = list-at nc l
+      in dh-assign-codes lengths (i + 1) nsym (list-set-at nc l (c + 1)) (list-set-at codes i c)
+    else dh-assign-codes lengths (i + 1) nsym nc codes
 
   dh-sorted-syms : List Integer, Integer -> List Integer
   dh-sorted-syms (lengths) (nsym) =
@@ -343,7 +345,8 @@ Section: Dynamic Huffman -- Canonical Codes
   dh-sorted-inner : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   dh-sorted-inner (lengths) (nsym) (len) (sym) (acc) =
     if sym >= nsym then acc
-    else if list-at lengths sym == len then dh-sorted-inner lengths nsym len (sym + 1) (list-push acc sym)
+    else if list-at lengths sym == len then
+      dh-sorted-inner lengths nsym len (sym + 1) (list-push acc sym)
     else dh-sorted-inner lengths nsym len (sym + 1) acc
 
   DhTable = record {
@@ -373,8 +376,10 @@ Section: Dynamic Huffman -- Canonical Codes
     else let code2 = bit-or code (br-bit r)
     in let r2 = br-advance r 1
     in let count = list-at bl len
-    in if code2 - count < first then DhSymRead { dr-sym = list-at syms (index + (code2 - first)), dr-reader = r2 }
-    else dh-decode-loop r2 bl syms maxlen (len + 1) (bit-shl code2 1) (bit-shl (first + count) 1) (index + count)
+    in if code2 - count < first then
+      DhSymRead { dr-sym = list-at syms (index + (code2 - first)), dr-reader = r2 }
+    else
+      dh-decode-loop r2 bl syms maxlen (len + 1) (bit-shl code2 1) (bit-shl (first + count) 1) (index + count)
 
 Section: Dynamic Huffman -- Compression
 
@@ -475,8 +480,17 @@ Section: Dynamic Huffman -- Compression
 
   dh-rle-16 : Integer, Integer, List DhCl -> List DhCl
   dh-rle-16 (v) (rem) (acc) =
-    if rem >= 3 then let cnt = if rem > 6 then 6 else rem in dh-rle-16 v (rem - cnt) (list-push acc (DhCl { dc-sym = 16, dc-extra = cnt - 3, dc-nbits = 2 }))
-    else if rem > 0 then dh-rle-16 v (rem - 1) (list-push acc (DhCl { dc-sym = v, dc-extra = 0, dc-nbits = 0 }))
+    if rem >= 3 then
+      let cnt = if rem > 6 then
+        6
+      else
+        rem in dh-rle-16 v (rem - cnt) (list-push acc (DhCl {
+          dc-sym = 16,
+          dc-extra = cnt - 3,
+          dc-nbits = 2
+        }))
+    else if rem > 0 then
+      dh-rle-16 v (rem - 1) (list-push acc (DhCl { dc-sym = v, dc-extra = 0, dc-nbits = 0 }))
     else acc
 
   dh-rle : List Integer, Integer, Integer, List DhCl -> List DhCl
@@ -484,14 +498,27 @@ Section: Dynamic Huffman -- Compression
     if i >= n then acc
     else let v = list-at seq i
     in if v == 0 then
-         let run = dh-run-eq seq i n 0 0
-         in if run >= 11 then let cnt = if run > 138 then 138 else run in dh-rle seq (i + cnt) n (list-push acc (DhCl { dc-sym = 18, dc-extra = cnt - 11, dc-nbits = 7 }))
-         else if run >= 3 then dh-rle seq (i + run) n (list-push acc (DhCl { dc-sym = 17, dc-extra = run - 3, dc-nbits = 3 }))
-         else dh-rle seq (i + 1) n (list-push acc (DhCl { dc-sym = 0, dc-extra = 0, dc-nbits = 0 }))
-       else
-         let run = dh-run-eq seq i n v 0
-         in let acc1 = list-push acc (DhCl { dc-sym = v, dc-extra = 0, dc-nbits = 0 })
-         in dh-rle seq (i + run) n (dh-rle-16 v (run - 1) acc1)
+      let run = dh-run-eq seq i n 0 0
+      in if run >= 11 then
+        let cnt = if run > 138 then
+          138
+        else
+          run in dh-rle seq (i + cnt) n (list-push acc (DhCl {
+            dc-sym = 18,
+            dc-extra = cnt - 11,
+            dc-nbits = 7
+          }))
+      else if run >= 3 then
+        dh-rle seq (i + run) n (list-push acc (DhCl {
+          dc-sym = 17,
+          dc-extra = run - 3,
+          dc-nbits = 3
+        }))
+      else dh-rle seq (i + 1) n (list-push acc (DhCl { dc-sym = 0, dc-extra = 0, dc-nbits = 0 }))
+    else
+      let run = dh-run-eq seq i n v 0
+      in let acc1 = list-push acc (DhCl { dc-sym = v, dc-extra = 0, dc-nbits = 0 })
+      in dh-rle seq (i + run) n (dh-rle-16 v (run - 1) acc1)
 
   dh-count-cl : List DhCl, Integer, Integer, List Integer -> List Integer
   dh-count-cl (items) (i) (n) (freq) =
@@ -865,9 +892,11 @@ Section: Decoding A Dynamic Block
     in let sym = d.dr-sym
     in let r2 = d.dr-reader
     in if sym <= 15 then dh-read-cls r2 cltab need (list-push acc sym) sym
-       else if sym == 16 then let cnt = 3 + br-bits r2 2 in dh-read-cls (br-advance r2 2) cltab need (dh-repeat-append acc prev cnt) prev
-       else if sym == 17 then let cnt = 3 + br-bits r2 3 in dh-read-cls (br-advance r2 3) cltab need (dh-repeat-append acc 0 cnt) 0
-       else let cnt = 11 + br-bits r2 7 in dh-read-cls (br-advance r2 7) cltab need (dh-repeat-append acc 0 cnt) 0
+    else if sym == 16 then
+      let cnt = 3 + br-bits r2 2 in dh-read-cls (br-advance r2 2) cltab need (dh-repeat-append acc prev cnt) prev
+    else if sym == 17 then
+      let cnt = 3 + br-bits r2 3 in dh-read-cls (br-advance r2 3) cltab need (dh-repeat-append acc 0 cnt) 0
+    else let cnt = 11 + br-bits r2 7 in dh-read-cls (br-advance r2 7) cltab need (dh-repeat-append acc 0 cnt) 0
 
   dh-fill : List Integer, Integer, Integer, List Integer, Integer -> List Integer
   dh-fill (src) (srcoff) (count) (dst) (i) =

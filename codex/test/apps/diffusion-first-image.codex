@@ -1,0 +1,50 @@
+Chapter: DiffusionFirstImage
+  cites Diffusion chapter Txt2Img
+  cites AI chapter ClipBpe
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter FactDisk
+  cites Foreword chapter Console
+
+ The first image: dreamshaperXL lightning at generate-art.ps1's published
+ settings (DPM++ SDE, Karras, 6 steps, CFG 2), its "storage" prompt and seed
+ 7201, 1024 x 1024, written to build-output/diffusion-first-image.png. The
+ disk is build/mint-clip-bpe-disk.ps1's (CLIP's vocab.json and merges.txt).
+
+ We say:
+
+Section: Disk
+
+  fi-load : Integer, Integer -> [Device.Block] Integer
+  fi-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+Section: Request
+
+  fi-request : Txt2Img
+  fi-request =
+    let style = "painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, "
+    in let prompt = style & "four iron-bound wooden chests around a carpenter workbench, joined by glowing golden rune threads, inside a torch-lit longhouse"
+    in let negative = "text, letters, words, watermark, signature, logo, ui, blurry, deformed, ugly, lowres, jpeg artifacts, photo, photograph, modern"
+    in let params = prompt & "\nNegative prompt: " & negative & "\nSteps: 6, Sampler: DPM++ SDE, Schedule type: Karras, CFG scale: 2, Seed: 7201, Size: 1024x1024, Model: dreamshaperXL_lightningDPMSDE"
+    in Txt2Img { ti-ckpt = "dreamshaperXL_lightningDPMSDE.safetensors", ti-prompt = prompt, ti-negative = negative, ti-sampler = ti-dpmpp-sde, ti-scheduler = 0, ti-steps = 6, ti-cfg = 2.0, ti-seed = 7201, ti-width = 1024, ti-height = 1024, ti-out = "diffusion-first-image.png", ti-params = params, ti-clip-skip = 1, ti-extras = ti-no-extras }
+
+Section: Entry
+
+  fi-go : Integer, Integer -> [Console, Device.Block] Nothing
+  fi-go (vlen) (mlen) =
+    act
+      vbuf <- fi-load 1 vlen
+      mbuf <- fi-load (1 + (vlen + 511) / 512) mlen
+      print-line-uni (txt2img (clip-bpe-load vbuf vlen mbuf mlen) fi-request)
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    fi-go (peek-32 h 0) (peek-32 h 4)
+  end

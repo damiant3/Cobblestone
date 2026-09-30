@@ -103,7 +103,7 @@ try {
         [Array]::Copy($data, 0, $inputBytes, $hdr.Length, $data.Length)
         [IO.File]::WriteAllBytes("$WorkDir/plug.input", $inputBytes)
         Invoke-Checked 'emit' "$repo/tools/codex-vm.exe" @('-kernel', $PlugCdx, '-input', "$WorkDir/plug.input", '-output', "$WorkDir/plug.raw", '-mem', '3072', '-headless') -GuestExit
-        $raw = [IO.File]::ReadAllText("$WorkDir/plug.raw") -replace '^\x01', ''
+        $raw = [IO.File]::ReadAllText("$WorkDir/plug.raw")
         $diag = [IO.File]::ReadAllText("$WorkDir/emit.log")
         if (($raw + $diag) -match 'DROPPED|!EXC|OUT OF MEMORY') { throw 'Wasm emission failed or lost bytes.' }
         $wat = ($raw -split "`n" | Where-Object { $_ -notmatch '^(HEAP|WD|STACK|PM):' }) -join "`n"

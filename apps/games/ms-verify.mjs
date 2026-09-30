@@ -112,8 +112,11 @@ ok('not over, not won, nothing hit',
 
 // -- Revealing a mine ends it --------------------------------------------
 {
-  const mineAt = [...Array(81)].map((_, i) => i).find(i => e.ms_mine(s0, i) === 1);
-  const boom = e.ms_open(s0, mineAt);
+  // After the first click, which is always safe (the rules section below).
+  const safeAt = [...Array(81)].map((_, i) => i).find(i => e.ms_mine(s0, i) === 0 && e.ms_adj(s0, i) > 0);
+  const played = e.ms_open(s0, safeAt);
+  const mineAt = [...Array(81)].map((_, i) => i).find(i => e.ms_mine(played, i) === 1);
+  const boom = e.ms_open(played, mineAt);
   ok('revealing a mine ends the game and is not a win',
      e.ms_done(boom) === 1 && e.ms_won(boom) === 0 && e.ms_hits(boom) === 1);
   ok('a finished game refuses another reveal', e.ms_open(boom, 0) === boom);
@@ -199,6 +202,51 @@ ok('control: different seeds lay different mines',
   const i = [...Array(81)].map((_, k) => k).find(k => trueAdj(m, k) > 0);
   ok('control: the adjacency oracle rejects a count that is one too high',
      trueAdj(m, i) + 1 !== trueAdj(m, i));
+}
+
+// -- THE RULES: the first click, and flags ------------------------------------
+{
+  const mineCells = h => [...Array(81).keys()].filter(i => e.ms_mine(h, i) === 1);
+  let checked = 0, bad = null;
+  for (let s = 1; s <= 400 && !bad; s++) {
+    const h = e.ms_new(s), mines = mineCells(h);
+    if (!mines.length) continue;
+    const first = mines[0];
+    const after = e.ms_open(h, first);
+    checked++;
+    const now = mineCells(after);
+    const adjOk = [...Array(81).keys()].every(i => {
+      const r = Math.floor(i / 9), c = i % 9; let n = 0;
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        if (!dr && !dc) continue; const rr = r + dr, cc = c + dc;
+        if (rr >= 0 && rr < 9 && cc >= 0 && cc < 9 && e.ms_mine(after, rr * 9 + cc) === 1) n++; }
+      return now.includes(i) || e.ms_adj(after, i) === n; });
+    if (e.ms_done(after) === 1 || e.ms_hits(after) !== 0 || now.length !== 10 || now.includes(first) || !adjOk) {
+      bad = `seed ${s}: first click on mine ${first}: done ${e.ms_done(after)} hits ${e.ms_hits(after)} mines ${now.length} counts ${adjOk}`;
+    }
+    if (checked >= 40) break;
+  }
+  ok('rules: a first click on a mine is safe, the mine moves, ten remain and every count holds', bad === null && checked >= 40, bad ?? `${checked} boards`);
+  const h = e.ms_new(7), mine = mineCells(h)[0], safe = [...Array(81).keys()].find(i => e.ms_mine(h, i) === 0);
+  const opened = e.ms_open(h, safe);
+  const hidden = [...Array(81).keys()].find(i => e.ms_shown(opened, i) === 0 && e.ms_mine(opened, i) === 0);
+  const flagged = e.ms_flag(opened, hidden);
+  ok('rules: a flagged cell cannot be revealed', e.ms_shown(flagged, hidden) === 2 &&
+     e.ms_shown(e.ms_open(flagged, hidden), hidden) === 2 && e.ms_count(e.ms_open(flagged, hidden)) === e.ms_count(flagged));
+  const unflagged = e.ms_flag(flagged, hidden);
+  ok('rules: removing the flag makes it revealable again', e.ms_shown(unflagged, hidden) === 0 &&
+     e.ms_shown(e.ms_open(unflagged, hidden), hidden) === 1);
+  ok('rules: a revealed cell takes no flag', e.ms_shown(e.ms_flag(opened, safe), safe) === 1);
+  // A flood stops at a flag: flag every hidden safe cell, then open a zero.
+  const z = e.ms_new(3), zero = [...Array(81).keys()].find(i => e.ms_mine(z, i) === 0 && e.ms_adj(z, i) === 0);
+  const nb = [...Array(81).keys()].find(i => i !== zero && Math.abs(Math.floor(i / 9) - Math.floor(zero / 9)) <= 1 && Math.abs(i % 9 - zero % 9) <= 1);
+  const flood = e.ms_open(e.ms_flag(z, nb), zero);
+  ok('rules: a flood does not open a flagged cell', e.ms_shown(flood, nb) === 2 && e.ms_shown(flood, zero) === 1);
+  const g = (await import('../landing/web/games/arcade.js')).GAMES.find(x => x.id === 'minesweeper');
+  const arm = g.actions[0].run(e, opened);
+  const pf = g.move(e, opened, hidden, { sel: arm.sel });
+  ok('page: Flag a mine arms the next click to flag, and a flagged cell does not open',
+     arm.sel !== null && pf && e.ms_shown(pf.handle, hidden) === 2 && g.move(e, pf.handle, hidden, { sel: null }) === null);
 }
 
 console.log(fail === 0

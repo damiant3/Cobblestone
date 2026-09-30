@@ -1,0 +1,439 @@
+Chapter: MatchedNoise
+  cites Diffusion chapter Pcg64
+  cites Diffusion chapter Sampler
+
+ get_matched_noise of Forge's outpainting mk2 (scripts/outpainting_mk_2.py,
+ from g-diffuser-bot), in f64 over an H x W x 3 picture of byte / 255 and a
+ mask of 0 or 1 (white where it is to be filled).
+
+ The picture's unmasked part scaled by its own maximum, the masked part set
+ to the picture's mean, is transformed per channel (fftshift, fft2 with ortho
+ normalization, ifftshift) for its magnitudes and phases. Noise is
+ default_rng (0).random ((H, W, 3)) blended toward its grey by color
+ variation, windowed in frequency by 1 / ((x^2 + 1) (y^2 + 1)) (x over the
+ rows and y over the columns, each from -1 to 1 scaled by its side over the
+ shorter side), back, forward again, squared in magnitude times the
+ picture's magnitude to the noise_q times its phase, back to real, scaled to
+ 0..1; its masked values matched to the histogram of the picture's unmasked
+ values per channel (skimage 0.21 _match_cumulative_cdf: np.unique of each,
+ cumulative counts over the size, np.interp), then the picture kept where
+ the mask is 0 and clipped to 0..1.
+
+ Every size here is a multiple of 64, therefore even, and fftshift and
+ ifftshift are both a roll by half. The FFT is mixed-radix
+ decimation in time over a table of the length's roots of unity.
+
+ We say:
+
+Section: Doubles
+
+  md-get : Integer, Integer -> Real
+  md-get (a) (i) = bits-to-real (bit-or (bit-and (peek-32 a (i * 8)) #FFFFFFFF) (bit-shl (bit-and (peek-32 a (i * 8 + 4)) #FFFFFFFF) 32))
+
+  md-set : Integer, Integer, Real -> Integer
+  md-set (a) (i) (v) = let b = real-to-bits v in let l = poke-32 a (i * 8) (bit-and b #FFFFFFFF) in poke-32 a (i * 8 + 4) (bit-shru b 32)
+
+  md-new : Integer -> Integer
+  md-new (n) = alloc-bytes (n * 8)
+
+  md-fill : Integer, Real, Integer, Integer -> Integer
+  md-fill (a) (v) (i) (n) = if i >= n then a else let s = md-set a i v in md-fill a v (i + 1) n
+
+Section: Roots
+
+  Roots = record {
+    rt-n : Integer,
+    rt-re : Integer,
+    rt-im : Integer
+  }
+
+ exp (-2 pi i j / n) for j below n.
+
+  md-roots : Integer -> Roots
+  md-roots (n) = md-roots-fill n (md-new n) (md-new n) 0
+
+  md-roots-fill : Integer, Integer, Integer, Integer -> Roots
+  md-roots-fill (n) (re) (im) (j) =
+    if j >= n then Roots { rt-n = n, rt-re = re, rt-im = im }
+    else let a = 2.0 * dm-pi * real-from-int j / real-from-int n
+    in let s = md-set re j (real-cos a) + md-set im j (0.0 - real-sin a)
+    in md-roots-fill n re im (j + 1)
+
+  md-least-factor : Integer, Integer -> Integer
+  md-least-factor (n) (p) = if p * p > n then n else if n - n / p * p == 0 then p else md-least-factor n (p + 1)
+
+Section: FFT
+
+ One transform of length n from (ire, iim) at ioff every istride into
+ (ore, oim) at ooff contiguous; inv conjugates the roots; tmp holds 2 p.
+
+  md-fft : Roots, Boolean, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-fft (rt) (inv) (ire) (iim) (ioff) (istride) (ore) (oim) (ooff) (n) (tmp) =
+    if n == 1 then md-set ore ooff (md-get ire ioff) + md-set oim ooff (md-get iim ioff)
+    else let p = md-least-factor n 2
+    in let m = n / p
+    in let subs = md-fft-subs rt inv ire iim ioff istride ore oim ooff m p 0 tmp
+    in md-combine rt inv ore oim ooff n m p 0 tmp
+
+  md-fft-subs : Roots, Boolean, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-fft-subs (rt) (inv) (ire) (iim) (ioff) (istride) (ore) (oim) (ooff) (m) (p) (r) (tmp) =
+    if r >= p then 0
+    else let s = md-fft rt inv ire iim (ioff + r * istride) (istride * p) ore oim (ooff + r * m) m tmp
+    in md-fft-subs rt inv ire iim ioff istride ore oim ooff m p (r + 1) tmp
+
+  md-combine : Roots, Boolean, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-combine (rt) (inv) (ore) (oim) (ooff) (n) (m) (p) (k) (tmp) =
+    if k >= m then 0
+    else let g = md-gather ore oim ooff m p k 0 tmp
+    in let w = md-butterfly rt inv ore oim ooff n m p k 0 tmp
+    in md-combine rt inv ore oim ooff n m p (k + 1) tmp
+
+  md-gather : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-gather (ore) (oim) (ooff) (m) (p) (k) (r) (tmp) =
+    if r >= p then 0
+    else let s = md-set tmp (2 * r) (md-get ore (ooff + r * m + k)) + md-set tmp (2 * r + 1) (md-get oim (ooff + r * m + k))
+    in md-gather ore oim ooff m p k (r + 1) tmp
+
+  md-butterfly : Roots, Boolean, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-butterfly (rt) (inv) (ore) (oim) (ooff) (n) (m) (p) (k) (q) (tmp) =
+    if q >= p then 0
+    else let idx = q * m + k
+    in let s = md-set ore (ooff + idx) (md-acc rt inv n p idx 0 tmp True 0.0) + md-set oim (ooff + idx) (md-acc rt inv n p idx 0 tmp False 0.0)
+    in md-butterfly rt inv ore oim ooff n m p k (q + 1) tmp
+
+ The real (re) or imaginary part of the sum over r of t_r times the root of
+ n to the r idx.
+
+  md-acc : Roots, Boolean, Integer, Integer, Integer, Integer, Integer, Boolean, Real -> Real
+  md-acc (rt) (inv) (n) (p) (idx) (r) (tmp) (re) (acc) =
+    if r >= p then acc
+    else let e = r * idx - (r * idx) / n * n
+    in let j = e * (rt.rt-n / n)
+    in let wr = md-get (rt.rt-re) j
+    in let wi0 = md-get (rt.rt-im) j
+    in let wi = if inv then 0.0 - wi0 else wi0
+    in let tr = md-get tmp (2 * r)
+    in let ti = md-get tmp (2 * r + 1)
+    in md-acc rt inv n p idx (r + 1) tmp re (acc + (if re then tr * wr - ti * wi else tr * wi + ti * wr))
+Section: Planes
+
+ A 2-D transform in place over an H x W plane (re, im): every row, then every
+ column, through the line buffers; then ortho normalization.
+
+  Fft2 = record {
+    ff-rows : Roots,
+    ff-cols : Roots,
+    ff-lre : Integer,
+    ff-lim : Integer,
+    ff-tmp : Integer
+  }
+
+  md-fft2-for : Integer, Integer -> Fft2
+  md-fft2-for (h) (w) = Fft2 { ff-rows = md-roots w, ff-cols = md-roots h, ff-lre = md-new (if h > w then h else w), ff-lim = md-new (if h > w then h else w), ff-tmp = md-new 128 }
+
+  md-put-line : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-put-line (re) (im) (off) (stride) (lre) (lim) (i) (n) =
+    if i >= n then 0
+    else let s = md-set re (off + i * stride) (md-get lre i) + md-set im (off + i * stride) (md-get lim i)
+    in md-put-line re im off stride lre lim (i + 1) n
+
+  md-lines : Fft2, Boolean, Integer, Integer, Integer, Integer, Boolean, Integer -> Integer
+  md-lines (f) (inv) (re) (im) (h) (w) (rows) (k) =
+    if k >= (if rows then h else w) then 0
+    else let n = if rows then w else h
+    in let off = if rows then k * w else k
+    in let stride = if rows then 1 else w
+    in let a = md-fft (if rows then f.ff-rows else f.ff-cols) inv re im off stride (f.ff-lre) (f.ff-lim) 0 n (f.ff-tmp)
+    in let b = md-put-line re im off stride (f.ff-lre) (f.ff-lim) 0 n
+    in md-lines f inv re im h w rows (k + 1)
+
+  md-scale : Integer, Integer, Real, Integer, Integer -> Integer
+  md-scale (re) (im) (k) (i) (n) = if i >= n then 0 else let s = md-set re i (md-get re i * k) + md-set im i (md-get im i * k) in md-scale re im k (i + 1) n
+
+ np.fft.fftshift and ifftshift of an even plane: a roll by half each way.
+
+  md-roll : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-roll (re) (im) (h) (w) (dre) (dim) (i) =
+    if i >= h * w then 0
+    else let y = i / w
+    in let x = i - y * w
+    in let j = (y + h / 2 - (y + h / 2) / h * h) * w + (x + w / 2 - (x + w / 2) / w * w)
+    in let s = md-set dre i (md-get re j) + md-set dim i (md-get im j)
+    in md-roll re im h w dre dim (i + 1)
+
+ _fft2 (or _ifft2 when inv) of the plane (re, im), as fresh planes.
+
+  md-shifted-fft2 : Fft2, Boolean, Integer, Integer, Integer, Integer -> List Integer
+  md-shifted-fft2 (f) (inv) (re) (im) (h) (w) =
+    let n = h * w
+    in let are = md-new n
+    in let aim = md-new n
+    in let r1 = md-roll re im h w are aim 0
+    in let t1 = md-lines f inv are aim h w True 0
+    in let t2 = md-lines f inv are aim h w False 0
+    in let sc = md-scale are aim (1.0 / real-sqrt (real-from-int n)) 0 n
+    in let bre = md-new n
+    in let bim = md-new n
+    in let r2 = md-roll are aim h w bre bim 0
+    in [bre, bim]
+
+Section: Noise
+
+  md-plane : Integer, Integer, Integer -> Integer
+  md-plane (src) (c) (n) = md-plane-fill src c (md-new n) 0 n
+
+  md-plane-fill : Integer, Integer, Integer, Integer, Integer -> Integer
+  md-plane-fill (src) (c) (dst) (i) (n) = if i >= n then dst else let s = md-set dst i (md-get src (i * 3 + c)) in md-plane-fill src c dst (i + 1) n
+
+  md-draws : Pcg, Integer, Integer, Integer -> Integer
+  md-draws (g) (dst) (i) (n) = if i >= n then dst else let s = md-set dst i (pcg-random g) in md-draws g dst (i + 1) n
+
+  md-tint : Integer, Real, Integer, Integer -> Integer
+  md-tint (nz) (cv) (p) (n) =
+    if p >= n then nz
+    else let g = (md-get nz (p * 3) + md-get nz (p * 3 + 1) + md-get nz (p * 3 + 2)) / 3.0
+    in let a = md-set nz (p * 3) (md-get nz (p * 3) * cv + (1.0 - cv) * g)
+    in let b = md-set nz (p * 3 + 1) (md-get nz (p * 3 + 1) * cv + (1.0 - cv) * g)
+    in let c = md-set nz (p * 3 + 2) (md-get nz (p * 3 + 2) * cv + (1.0 - cv) * g)
+    in md-tint nz cv (p + 1) n
+
+  md-window : Integer, Integer, Integer -> Real
+  md-window (h) (w) (i) =
+    let y = i / w
+    in let x = i - y * w
+    in let mn = real-from-int (if h < w then h else w)
+    in let a = (real-from-int y / real-from-int h * 2.0 - 1.0) * (real-from-int h / mn)
+    in let b = (real-from-int x / real-from-int w * 2.0 - 1.0) * (real-from-int w / mn)
+    in 1.0 / ((a * a + 1.0) * (b * b + 1.0))
+
+  md-windowed : Integer, Integer, Integer, Integer, Integer -> Integer
+  md-windowed (re) (im) (h) (w) (i) =
+    if i >= h * w then 0
+    else let k = md-window h w i
+    in let s = md-set re i (md-get re i * k) + md-set im i (md-get im i * k)
+    in md-windowed re im h w (i + 1)
+
+ The shaping: |s| ^ 2 times the picture's magnitude to the noise_q, times
+ its phase.
+
+  md-shape : Integer, Integer, Integer, Integer, Real, Integer, Integer -> Integer
+  md-shape (sre) (sim) (pre) (pim) (q) (i) (n) =
+    if i >= n then 0
+    else let a0 = real-sqrt (md-get sre i * md-get sre i + md-get sim i * md-get sim i)
+    in let d = real-sqrt (md-get pre i * md-get pre i + md-get pim i * md-get pim i)
+    in let a = a0 * a0 * (if q ~0 1.0 then d else sm-pow d q)
+    in let s = md-set sre i (a * (md-get pre i / d)) + md-set sim i (a * (md-get pim i / d))
+    in md-shape sre sim pre pim q (i + 1) n
+Section: Histogram Match
+
+ Bottom-up merge sort of an index buffer by value; stable.
+
+  md-merge : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-merge (v) (src) (dst) (lo) (mid) (hi) (i) (j) =
+    md-merge-at v src dst lo mid hi i j lo
+
+  md-merge-at : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-merge-at (v) (src) (dst) (lo) (mid) (hi) (i) (j) (k) =
+    if k >= hi then 0
+    else let takeleft = i < mid & (j >= hi | md-get v (peek-32 src (i * 4)) <= md-get v (peek-32 src (j * 4)))
+    in let s = poke-32 dst (k * 4) (peek-32 src ((if takeleft then i else j) * 4))
+    in md-merge-at v src dst lo mid hi (if takeleft then i + 1 else i) (if takeleft then j else j + 1) (k + 1)
+
+  md-pass : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-pass (v) (src) (dst) (width) (lo) (n) =
+    if lo >= n then 0
+    else let mid = if lo + width > n then n else lo + width
+    in let hi = if lo + 2 * width > n then n else lo + 2 * width
+    in let m = md-merge v src dst lo mid hi lo mid
+    in md-pass v src dst width (lo + 2 * width) n
+
+  md-sort-from : Integer, Integer, Integer, Integer, Integer -> Integer
+  md-sort-from (v) (a) (b) (width) (n) =
+    if width >= n then a
+    else let s = md-pass v a b width 0 n
+    in md-sort-from v b a (width * 2) n
+
+  md-iota : Integer, Integer, Integer -> Integer
+  md-iota (dst) (i) (n) = if i >= n then dst else let s = poke-32 dst (i * 4) i in md-iota dst (i + 1) n
+
+ The template: each byte value present among the reference bytes, its
+ value byte / 255 and its cumulative count over the total.
+
+  md-byte-counts : Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  md-byte-counts (bytes) (keep) (c) (i) (n) (acc) =
+    if i >= n then acc
+    else let k = peek-byte bytes (i * 3 + c)
+    in let u = if peek-byte keep i == 1 then list-set-at acc k (list-at acc k + 1) else acc
+    in md-byte-counts bytes keep c (i + 1) n acc
+
+  md-zeros : Integer, List Integer -> List Integer
+  md-zeros (n) (acc) = if n <= 0 then acc else md-zeros (n - 1) (list-push acc 0)
+
+  Tmpl = record {
+    tp-x : List Real,
+    tp-y : List Real
+  }
+
+  md-template : List Integer, Integer, Integer, Integer, List Real, List Real -> Tmpl
+  md-template (counts) (total) (k) (cum) (xs) (ys) =
+    if k >= 256 then Tmpl { tp-x = xs, tp-y = ys }
+    else if list-at counts k == 0 then md-template counts total (k + 1) cum xs ys
+    else let c = cum + list-at counts k
+    in md-template counts total (k + 1) c (list-push xs (real-from-int c / real-from-int total)) (list-push ys (real-from-int k / 255.0))
+
+ np.interp (numpy 1.26 arr_interp) of x over the template.
+
+  md-search : List Real, Real, Integer, Integer -> Integer
+  md-search (xs) (x) (lo) (hi) =
+    if hi - lo <= 1 then lo
+    else let mid = (lo + hi) / 2
+    in if list-at xs mid <= x then md-search xs x mid hi else md-search xs x lo mid
+
+  md-interp : Tmpl, Real -> Real
+  md-interp (t) (x) =
+    let n = list-length (t.tp-x)
+    in if x < list-at (t.tp-x) 0 then list-at (t.tp-y) 0
+    else if x > list-at (t.tp-x) (n - 1) then list-at (t.tp-y) (n - 1)
+    else let j = md-search (t.tp-x) x 0 n
+    in if j == n - 1 | list-at (t.tp-x) j ~0 x then list-at (t.tp-y) j
+    else (list-at (t.tp-y) (j + 1) - list-at (t.tp-y) j) / (list-at (t.tp-x) (j + 1) - list-at (t.tp-x) j) * (x - list-at (t.tp-x) j) + list-at (t.tp-y) j
+
+ The sorted source values in groups of equal value: each group's
+ cumulative count over the size, interpolated, written to its members.
+
+  md-groups : Integer, Integer, Integer, Integer, Tmpl, Integer, Integer -> Integer
+  md-groups (v) (order) (out) (n) (t) (i) (cum) =
+    if i >= n then 0
+    else let x = md-get v (peek-32 order (i * 4))
+    in let e = md-group-end v order n x (i + 1)
+    in let y = md-interp t (real-from-int (cum + e - i) / real-from-int n)
+    in let w = md-group-put order out y i e
+    in md-groups v order out n t e (cum + e - i)
+
+  md-group-end : Integer, Integer, Integer, Real, Integer -> Integer
+  md-group-end (v) (order) (n) (x) (i) = if i >= n then n else if md-get v (peek-32 order (i * 4)) ~0 x then md-group-end v order n x (i + 1) else i
+
+  md-group-put : Integer, Integer, Real, Integer, Integer -> Integer
+  md-group-put (order) (out) (y) (i) (e) = if i >= e then 0 else let s = md-set out (peek-32 order (i * 4)) y in md-group-put order out y (i + 1) e
+
+Section: Matched Noise
+
+  md-each3 : Integer, Integer, Integer, Integer -> Integer
+  md-each3 (dst) (plane) (c) (n) = md-each3-at dst plane c 0 n
+
+  md-each3-at : Integer, Integer, Integer, Integer, Integer -> Integer
+  md-each3-at (dst) (plane) (c) (i) (n) = if i >= n then dst else let s = md-set dst (i * 3 + c) (md-get plane i) in md-each3-at dst plane c (i + 1) n
+
+  md-max : Integer, Integer, Integer, Real -> Real
+  md-max (a) (i) (n) (acc) = if i >= n then acc else md-max a (i + 1) n (if md-get a i > acc then md-get a i else acc)
+
+  md-min : Integer, Integer, Integer, Real -> Real
+  md-min (a) (i) (n) (acc) = if i >= n then acc else md-min a (i + 1) n (if md-get a i < acc then md-get a i else acc)
+
+  md-sum-all : Integer, Integer, Integer, Real -> Real
+  md-sum-all (a) (i) (n) (acc) = if i >= n then acc else md-sum-all a (i + 1) n (acc + md-get a i)
+
+  md-affine : Integer, Real, Real, Integer, Integer -> Integer
+  md-affine (a) (mul) (add) (i) (n) = if i >= n then a else let s = md-set a i (md-get a i * mul + add) in md-affine a mul add (i + 1) n
+
+ The windowed picture: the unmasked part over its maximum, the masked part the
+ picture's mean.
+
+  md-src-window : Integer, Integer, Integer -> Integer
+  md-src-window (src) (mask) (n) =
+    let w = md-new n
+    in let a = md-mul-rest src mask w 0 n
+    in let mx = md-max w 0 n 0.0
+    in let avg = md-sum-all src 0 n 0.0 / real-from-int n
+    in md-add-mean w mask mx avg 0 n
+
+  md-mul-rest : Integer, Integer, Integer, Integer, Integer -> Integer
+  md-mul-rest (src) (mask) (dst) (i) (n) = if i >= n then dst else let s = md-set dst i (md-get src i * (1.0 - md-get mask i)) in md-mul-rest src mask dst (i + 1) n
+
+  md-add-mean : Integer, Integer, Real, Real, Integer, Integer -> Integer
+  md-add-mean (w) (mask) (mx) (avg) (i) (n) = if i >= n then w else let s = md-set w i (md-get w i / mx + avg * md-get mask i) in md-add-mean w mask mx avg (i + 1) n
+
+ One channel's shaped noise: its noise plane windowed, back, forward again
+ and shaped by the picture's transform, back to real.
+
+  md-channel : Fft2, Integer, Integer, Integer, Integer, Integer, Real -> Integer
+  md-channel (f) (h) (w) (win) (nz) (c) (q) =
+    let n = h * w
+    in let zero = md-fill (md-new n) 0.0 0 n
+    in let p = md-shifted-fft2 f False (md-plane win c n) zero h w
+    in let s1 = md-shifted-fft2 f False (md-plane nz c n) (md-fill (md-new n) 0.0 0 n) h w
+    in let s2 = md-windowed (list-at s1 0) (list-at s1 1) h w 0
+    in let back = md-shifted-fft2 f True (list-at s1 0) (list-at s1 1) h w
+    in let s3 = md-shifted-fft2 f False (list-at back 0) (md-fill (md-new n) 0.0 0 n) h w
+    in let sh = md-shape (list-at s3 0) (list-at s3 1) (list-at p 0) (list-at p 1) q 0 n
+    in list-at (md-shifted-fft2 f True (list-at s3 0) (list-at s3 1) h w) 0
+
+ get_matched_noise over src and mask (H x W x 3 f64, the mask 0 or 1, equal
+ across channels) and the picture's bytes; the result as fresh f64.
+
+  matched-noise : Integer, Integer, Integer, Integer, Integer, Real, Real -> Integer
+  matched-noise (src) (mask) (bytes) (h) (w) (q) (cv) =
+    let n = h * w
+    in let f = md-fft2-for h w
+    in let win = md-src-window src mask (n * 3)
+    in let nz = md-tint (md-draws (pcg-seeded 0) (md-new (n * 3)) 0 (n * 3)) cv 0 n
+    in let out = md-new (n * 3)
+    in let c0 = md-each3 out (md-channel f h w win nz 0 q) 0 n
+    in let c1 = md-each3 out (md-channel f h w win nz 1 q) 1 n
+    in let c2 = md-each3 out (md-channel f h w win nz 2 q) 2 n
+    in let lo = md-min out 0 (n * 3) (md-get out 0)
+    in let s = md-affine out 1.0 (0.0 - lo) 0 (n * 3)
+    in let hi = md-max out 0 (n * 3) (md-get out 0)
+    in let t = md-affine out (1.0 / hi) 0.0 0 (n * 3)
+    in md-finish src mask bytes out n
+
+  md-flags : Integer, Integer, Boolean, Integer, Integer -> Integer
+  md-flags (mask) (dst) (fill) (i) (n) =
+    if i >= n then dst
+    else let g = (md-get mask (i * 3) + md-get mask (i * 3 + 1) + md-get mask (i * 3 + 2)) / 3.0
+    in let s = poke-byte dst i (if fill then (if g > 0.000001 then 1 else 0) else (if g < 0.001 then 1 else 0))
+    in md-flags mask dst fill (i + 1) n
+
+  md-pick : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-pick (vals) (keep) (c) (dst) (i) (n) (k) =
+    if i >= n then k
+    else if peek-byte keep i == 1 then (let s = md-set dst k (md-get vals (i * 3 + c)) in md-pick vals keep c dst (i + 1) n (k + 1))
+    else md-pick vals keep c dst (i + 1) n k
+
+  md-drop : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-drop (vals) (keep) (c) (src) (i) (n) (k) =
+    if i >= n then k
+    else if peek-byte keep i == 1 then (let s = md-set vals (i * 3 + c) (md-get src k) in md-drop vals keep c src (i + 1) n (k + 1))
+    else md-drop vals keep c src (i + 1) n k
+
+  md-match-channel : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-match-channel (out) (bytes) (fillm) (refm) (c) (n) =
+    let v = md-new n
+    in let m = md-pick out fillm c v 0 n 0
+    in if m == 0 then 0
+    else let counts = md-byte-counts bytes refm c 0 n (md-zeros 256 [])
+    in let total = md-sum-counts counts 0 0
+    in if total == 0 then 0
+    else let order = md-sort-from v (md-iota (alloc-bytes (m * 4)) 0 m) (alloc-bytes (m * 4)) 1 m
+    in let matched = md-new m
+    in let g = md-groups v order matched m (md-template counts total 0 0 [] []) 0 0
+    in md-drop out fillm c matched 0 n 0
+
+  md-sum-counts : List Integer, Integer, Integer -> Integer
+  md-sum-counts (xs) (i) (acc) = if i >= list-length xs then acc else md-sum-counts xs (i + 1) (acc + list-at xs i)
+
+  md-finish : Integer, Integer, Integer, Integer, Integer -> Integer
+  md-finish (src) (mask) (bytes) (out) (n) =
+    let fillm = md-flags mask (alloc-bytes n) True 0 n
+    in let refm = md-flags mask (alloc-bytes n) False 0 n
+    in let a = md-match-channel out bytes fillm refm 0 n
+    in let b = md-match-channel out bytes fillm refm 1 n
+    in let c = md-match-channel out bytes fillm refm 2 n
+    in md-blend src mask out 0 (n * 3)
+
+  md-blend : Integer, Integer, Integer, Integer, Integer -> Integer
+  md-blend (src) (mask) (out) (i) (n) =
+    if i >= n then out
+    else let v = md-get src i * (1.0 - md-get mask i) + md-get out i * md-get mask i
+    in let s = md-set out i (if v < 0.0 then 0.0 else if v > 1.0 then 1.0 else v)
+    in md-blend src mask out (i + 1) n

@@ -1,0 +1,429 @@
+Chapter: Dat
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Foreword chapter StringUtils
+  cites Gpu chapter DeviceMath
+  cites Gpu chapter GemmPtx
+  cites Gpu chapter LayerKernelsPtx
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter PthFile
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter UpscaleKernelsPtx
+  cites Diffusion chapter Noise
+  cites Diffusion chapter Esrgan
+  cites Diffusion chapter SwinIR
+
+ DAT, the Dual Aggregation Transformer, as spandrel runs it
+ (architectures/DAT/arch/DAT.py) for the state dict Forge's DAT upscaler
+ loads (upsampler pixelshuffle): the picture less the mean (0.4488, 0.4371,
+ 0.4040) by channel; conv_first; tokens in image order through before_RG's
+ LayerNorm; residual groups of blocks, each x + attn (norm1 x) then x + SGFN
+ (norm2 x), a group's conv (1conv, or 3conv as SwinIR's) added to its input;
+ LayerNorm and conv_after_body added to conv_first's output;
+ conv_before_upsample with nn.LeakyReLU's default slope 0.01; per 2x a 3x3
+ conv to 256 channels and a pixel shuffle; conv_last; the mean added back.
+
+ An even block is spatial (Adaptive_Spatial_Attention): qkv; each half of
+ the channels attends within windows, split[0] x split[1] for the first half
+ and split[1] x split[0] for the second, heads / 2 heads each, with the
+ dynamic position bias (a 2 -> dim / 16 MLP through three LayerNorm, ReLU,
+ Linear stages over the rpe_biases table) and, in the blocks the rule below
+ picks, the map rolled by half a window and the shift mask; v as a map through
+ a depthwise 3x3 conv, BatchNorm and GELU; the channel map (mean pool, 1x1 to
+ dim / 8, BatchNorm, GELU, 1x1 back) of the conv branch gates the attention
+ branch, the spatial map (1x1 to dim / 16, BatchNorm, GELU, 1x1 to 1) of the
+ attention branch gates the conv branch; their sum through proj. An odd block
+ is channel attention (Adaptive_Channel_Attention): per head, q and k
+ normalized over the tokens, softmax (temperature q k^T) v, the same conv
+ branch, and the two maps taken the other way round. The SGFN is fc1, GELU,
+ the second half LayerNormed and through a depthwise 3x3 conv, times the
+ first half, fc2. LayerNorm eps 1e-5, BatchNorm eps 1e-5 in eval. The model
+ runs in f32 in Forge (spandrel reports no half support); here qkv, proj,
+ fc1, fc2 and the full convolutions take f16 operands against f16 weights
+ and accumulate in f32, and everything else is f32.
+
+ We say:
+
+Section: Weights
+
+  dat-f16 : PthTensorAt -> Boolean
+  dat-f16 (t) =
+    let s = t.pa-shape
+    in if list-length s == 4 then list-at s 1 > 1 & list-at s 2 == 3
+    else list-length s == 2 & text-ends-with (t.pa-name) ".weight" & (text-contains (t.pa-name) ".qkv." | text-contains (t.pa-name) ".proj." | text-contains (t.pa-name) ".fc1." | text-contains (t.pa-name) ".fc2.")
+
+  dat-skip : Text -> Boolean
+  dat-skip (name) = text-ends-with name ".relative_position_index" | text-ends-with name ".attn_mask_0" | text-ends-with name ".attn_mask_1" | text-ends-with name ".num_batches_tracked"
+
+  dat-load : PthFile -> SwWeights
+  dat-load (f) = sw-load dat-f16 dat-skip f
+
+ The shape spandrel's loader reads. The window is the last row of
+ rpe_biases plus one on each axis, read from the file; heads come from the
+ second block's temperature; the reconstruction is pixelshuffle by 2 per
+ upsample conv.
+
+  DatCfg = record {
+    dc-ok : Boolean,
+    dc-dim : Integer,
+    dc-hidden : Integer,
+    dc-depths : List Integer,
+    dc-heads : List Integer,
+    dc-split0 : Integer,
+    dc-split1 : Integer,
+    dc-ups : Integer,
+    dc-pos : Integer,
+    dc-ci : Integer,
+    dc-si : Integer,
+    dc-conv3 : Boolean
+  }
+
+  dat-split : PthFile, Integer -> Integer
+  dat-split (f) (k) =
+    let i = pth-find f "layers.0.blocks.0.attn.attns.0.rpe_biases" 0
+    in if i < 0 then 0
+    else let t = list-at (f.pf-tensors) i
+    in if t.pa-file-off < 0 | list-length (t.pa-shape) /= 2 then 0
+    else let at = pth-read (f.pf-path) (t.pa-file-off + (t.pa-count - 2 + k) * 4) 4
+    in if at == 0 then 0 else real-to-int (esr-f32 (peek-32 at 0)) + 1
+
+  dat-depths : PthFile, Integer, Integer, List Integer -> List Integer
+  dat-depths (f) (i) (n) (acc) =
+    if i >= n then acc
+    else dat-depths f (i + 1) n (list-push acc (sw-seq f ("layers." & show i & ".blocks.") ".norm1.weight" 0))
+
+  dat-heads : PthFile, Integer, Integer, List Integer -> List Integer
+  dat-heads (f) (i) (n) (acc) =
+    if i >= n then acc
+    else dat-heads f (i + 1) n (list-push acc (sw-shape f ("layers." & show i & ".blocks.1.attn.temperature") 0))
+
+  dat-heads-fit : List Integer, Integer, Integer -> Boolean
+  dat-heads-fit (hs) (dim) (i) =
+    if i >= list-length hs then True
+    else let h = list-at hs i
+    in if h <= 0 | h - h / 2 * 2 /= 0 then False else if dim - dim / h * h /= 0 | dim / h > 40 then False else dat-heads-fit hs dim (i + 1)
+
+  dat-config : PthFile -> DatCfg
+  dat-config (f) =
+    let dim = sw-shape f "conv_first.weight" 0
+    in let layers = sw-seq f "layers." ".blocks.0.norm1.weight" 0
+    in let heads = dat-heads f 0 layers (__list-with-capacity (layers + 1))
+    in let s0 = dat-split f 0
+    in let s1 = dat-split f 1
+    in let ups = dat-ups-count f 0
+    in let depths = dat-depths f 0 layers (__list-with-capacity (layers + 1))
+    in let ok = f.pf-ok & dim > 0 & layers > 0 & s0 > 0 & s1 > 0 & s0 * s1 <= 256 & (s0 * s1) - (s0 * s1) / 32 * 32 == 0 & pth-find f "conv_last.weight" 0 >= 0 & pth-find f "conv_before_upsample.0.weight" 0 >= 0 & sw-shape f "conv_first.weight" 1 == 3 & dat-heads-fit heads dim 0
+    in DatCfg { dc-ok = ok, dc-dim = dim, dc-hidden = sw-shape f "layers.0.blocks.0.ffn.fc1.weight" 0, dc-depths = depths, dc-heads = heads, dc-split0 = s0, dc-split1 = s1, dc-ups = ups, dc-pos = sw-shape f "layers.0.blocks.0.attn.attns.0.pos.pos_proj.bias" 0, dc-ci = sw-shape f "layers.0.blocks.0.attn.channel_interaction.1.bias" 0, dc-si = sw-shape f "layers.0.blocks.0.attn.spatial_interaction.0.bias" 0, dc-conv3 = pth-find f "conv_after_body.weight" 0 < 0 }
+
+  dat-ups-count : PthFile, Integer -> Integer
+  dat-ups-count (f) (k) = if pth-find f ("upsample." & show (2 * k) & ".weight") 0 < 0 then k else dat-ups-count f (k + 1)
+
+  dat-is : PthFile -> Boolean
+  dat-is (f) = pth-find f "layers.0.blocks.0.attn.attns.0.rpe_biases" 0 >= 0
+
+Section: Small Layers
+
+  dat-grid : Integer -> GpuGrid
+  dat-grid (n) = vd-grid n
+
+  dat-run : Text, Integer, List GpuParam -> Boolean
+  dat-run (name) (n) (ps) = gm-launch gm-slot-upscale upscale-kernels-ptx name (dat-grid n) ps >= 0
+
+ A 1x1 convolution with its bias at each of l positions of x (element (i,
+ p) at i sc + p sp); out is l x cout, token-major.
+
+  dat-mix : SwWeights, GpuParam, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-mix (w) (x) (sc) (sp) (cin) (cout) (l) (p) =
+    let y = gpu-buf-alloc (l * cout * 4)
+    in let ok = if y == 0 | sw-has w (p & ".weight") == False | sw-has w (p & ".bias") == False then False else dat-run "kernel_pix_mix" (l * cout) [x, vd-int sc, vd-int sp, vd-int cin, sw-arg w (p & ".weight"), sw-arg w (p & ".bias"), vd-buf y, vd-int cout, vd-int (l * cout)]
+    in sw-keep y ok
+
+ BatchNorm (eval) then GELU in place over x, channel (i / hw) mod c.
+
+  dat-bn-gelu : SwWeights, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-bn-gelu (w) (x) (hw) (c) (n) (p) =
+    let ok = if x == 0 | sw-has w (p & ".weight") == False | sw-has w (p & ".running_var") == False then False
+       else if dat-run "kernel_batch_norm" n [vd-buf x, sw-arg w (p & ".weight"), sw-arg w (p & ".bias"), sw-arg w (p & ".running_mean"), sw-arg w (p & ".running_var"), vd-int hw, vd-int c, vd-int n] == False then False
+       else vd-layer "kernel_gelu" n [vd-buf x, vd-buf x, vd-int n] >= 0
+    in sw-keep x ok
+
+  dat-relu : Integer, Integer -> Integer
+  dat-relu (x) (n) = if x == 0 then 0 else sw-keep x (dat-run "kernel_lrelu_into" n [vd-buf x, vd-buf x, vd-int 0, gpu-arg-u64 (real-to-bits 0.0), vd-int n])
+
+ A depthwise 3x3 conv with its bias over a c x hh x ww map.
+
+  dat-dwconv : SwWeights, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-dwconv (w) (x) (c) (hh) (ww) (p) =
+    let y = gpu-buf-alloc (c * hh * ww * 4)
+    in let ok = if x == 0 | y == 0 | sw-has w (p & ".weight") == False | sw-has w (p & ".bias") == False then False else dat-run "kernel_dwconv3" (c * hh * ww) [vd-buf x, sw-arg w (p & ".weight"), sw-arg w (p & ".bias"), vd-buf y, vd-int hh, vd-int ww, vd-int (c * hh * ww)]
+    in sw-keep y ok
+
+ DynamicPosBias over the rows of rpe_biases (residual False): pos_proj,
+ then pos1, pos2 and pos3 each LayerNorm, ReLU, Linear; rows x heads.
+
+  dat-pos-stage : SwWeights, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-pos-stage (w) (x) (rows) (d) (cout) (p) =
+    let n = sw-ln w x rows d (p & ".0")
+    in let r = dat-relu n (rows * d)
+    in let y = dat-mix w (vd-buf r) 1 d d cout rows (p & ".2")
+    in let f = sw-free r
+    in y
+
+  dat-pos : SwWeights, Integer, Text, Integer, Integer -> Integer
+  dat-pos (w) (d) (p) (rows) (heads) =
+    let a = dat-mix w (sw-arg w (p & ".rpe_biases")) 1 2 2 d rows (p & ".pos.pos_proj")
+    in let b = dat-pos-stage w a rows d d (p & ".pos.pos1")
+    in let f1 = sw-free a
+    in let c = dat-pos-stage w b rows d d (p & ".pos.pos2")
+    in let f2 = sw-free b
+    in let t = dat-pos-stage w c rows d heads (p & ".pos.pos3")
+    in let f3 = sw-free c
+    in t
+
+Section: Blocks
+
+ One attention branch of a spatial block: channels [b dim / 2, (b + 1) dim
+ / 2) of q, k and v, window wh x wn rolled by (shy, shx), into att.
+
+  dat-branch : SwWeights, DatCfg, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Boolean
+  dat-branch (w) (c) (qkv) (att) (hh) (ww) (heads) (b) (wh) (wn) (shy) (shx) (p) =
+    let d = c.dc-dim
+    in let hb = heads / 2
+    in let hd = d / 2 / hb
+    in let table = dat-pos w (c.dc-pos) (p & ".attns." & show b) ((2 * wh - 1) * (2 * wn - 1)) hb
+    in let g = GpuGrid { gx = (hh / wh) * (ww / wn) * (wh * wn / 32), gy = hb, gz = 1, bx = 32, by = 1, bz = 1, shared = (32 * hd + 32 * (wh * wn + 1)) * 4 }
+    in let ok = if table == 0 then False else gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_window_attention" g [vd-buf qkv, vd-buf att, vd-buf table, vd-int hh, vd-int ww, vd-int wh, vd-int wn, vd-int shy, vd-int shx, vd-int hb, vd-int hd, vd-int (nz-f32-bits (1.0 / real-sqrt (real-from-int hd))), vd-int (3 * d), vd-int (b * d / 2), vd-int (d + b * d / 2), vd-int (2 * d + b * d / 2), vd-int d, vd-int (b * d / 2), vd-int 32] >= 0
+    in let f = sw-free table
+    in ok
+
+ The rule the block picks its roll by: rg even and b in 2, 6, 10 ...; rg odd
+ and b in 0, 4, 8 ...
+
+  dat-rolled : Integer, Integer -> Boolean
+  dat-rolled (rg) (b) = if rg - rg / 2 * 2 == 0 then b > 0 & (b - 2) - (b - 2) / 4 * 4 == 0 else b - b / 4 * 4 == 0
+
+ The conv branch: v (columns 2 dim of qkv) as a map, depthwise conv,
+ BatchNorm, GELU.
+
+  dat-conv-branch : SwWeights, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-conv-branch (w) (qkv) (d) (hh) (ww) (p) =
+    let l = hh * ww
+    in let v = gpu-buf-alloc (d * l * 4)
+    in let ok = if v == 0 | qkv == 0 then False else dat-run "kernel_cols_to_map" (d * l) [vd-buf qkv, vd-buf v, vd-int (3 * d), vd-int (2 * d), vd-int l, vd-int (d * l)]
+    in let dc = dat-dwconv w (sw-keep v ok) d hh ww (p & ".dwconv.0")
+    in let f = sw-free v
+    in dat-bn-gelu w dc l d (d * l) (p & ".dwconv.1")
+
+ The channel map of x (element (ch, pos) at ch sc + pos sp): the mean over
+ positions, 1x1 to dim / 8, BatchNorm, GELU, 1x1 back.
+
+  dat-channel-map : SwWeights, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-channel-map (w) (mid) (x) (sc) (sp) (d) (l) (p) =
+    let m = gpu-buf-alloc (d * 4)
+    in let ok = if m == 0 | x == 0 then False else dat-run "kernel_channel_mean" d [vd-buf x, vd-buf m, vd-int sc, vd-int sp, vd-int l, vd-int d]
+    in let a = dat-bn-gelu w (dat-mix w (vd-buf (sw-keep m ok)) 1 0 d mid 1 (p & ".channel_interaction.1")) 1 mid mid (p & ".channel_interaction.2")
+    in let f = sw-free m
+    in let y = dat-mix w (vd-buf a) 1 0 mid d 1 (p & ".channel_interaction.4")
+    in let g = sw-free a
+    in y
+
+ The spatial map of x: 1x1 to dim / 16, BatchNorm, GELU, 1x1 to one value
+ per position.
+
+  dat-spatial-map : SwWeights, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-spatial-map (w) (mid) (x) (sc) (sp) (d) (l) (p) =
+    let a = dat-bn-gelu w (dat-mix w (vd-buf x) sc sp d mid l (p & ".spatial_interaction.0")) 1 mid (l * mid) (p & ".spatial_interaction.1")
+    in let y = dat-mix w (vd-buf a) 1 mid mid 1 l (p & ".spatial_interaction.3")
+    in let f = sw-free a
+    in y
+
+ The adaptive interaction and proj over the attention branch att (l x d)
+ and the conv branch cv (d x l).
+
+  dat-combine : SwWeights, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-combine (w) (att) (cv) (cm) (sm) (d) (l) (mode) (p) =
+    let o = gpu-buf-alloc (l * d * 4)
+    in let ok = if o == 0 | att == 0 | cv == 0 | cm == 0 | sm == 0 then False else dat-run "kernel_aim" (l * d) [vd-buf att, vd-buf cv, vd-buf cm, vd-buf sm, vd-buf o, vd-int d, vd-int l, vd-int mode, vd-int (l * d)]
+    in let y = sw-linear w (sw-keep o ok) l d d (p & ".proj")
+    in let f = sw-free o
+    in y
+
+  dat-spatial : SwWeights, DatCfg, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-spatial (w) (c) (x) (hh) (ww) (heads) (rg) (b) (p) =
+    let d = c.dc-dim
+    in let l = hh * ww
+    in let qkv = sw-linear w x l d (3 * d) (p & ".qkv")
+    in let att = gpu-buf-alloc (l * d * 4)
+    in let r = dat-rolled rg b
+    in let s0 = c.dc-split0
+    in let s1 = c.dc-split1
+    in let a0 = if att == 0 | qkv == 0 then False else dat-branch w c qkv att hh ww heads 0 s0 s1 (if r then s0 / 2 else 0) (if r then s1 / 2 else 0) p
+    in let a1 = if a0 == False then False else dat-branch w c qkv att hh ww heads 1 s1 s0 (if r then s1 / 2 else 0) (if r then s0 / 2 else 0) p
+    in let cv = dat-conv-branch w qkv d hh ww p
+    in let f1 = sw-free qkv
+    in let at = sw-keep att a1
+    in let cm = dat-channel-map w (c.dc-ci) cv l 1 d l p
+    in let sm = dat-spatial-map w (c.dc-si) at 1 d d l p
+    in let y = dat-combine w at cv cm sm d l 0 p
+    in let f2 = sw-free at & sw-free cv & sw-free cm & sw-free sm
+    in y
+
+  dat-channel : SwWeights, DatCfg, Integer, Integer, Integer, Integer, Text -> Integer
+  dat-channel (w) (c) (x) (hh) (ww) (heads) (p) =
+    let d = c.dc-dim
+    in let l = hh * ww
+    in let hd = d / heads
+    in let qkv = sw-linear w x l d (3 * d) (p & ".qkv")
+    in let g = gpu-buf-alloc (d * hd * 4)
+    in let att = gpu-buf-alloc (l * d * 4)
+    in let ok = if qkv == 0 | g == 0 | att == 0 | sw-has w (p & ".temperature") == False then False
+       else if gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_chan_gram" (GpuGrid { gx = d, gy = 1, gz = 1, bx = hd, by = 1, bz = 1, shared = 0 }) [vd-buf qkv, sw-arg w (p & ".temperature"), vd-buf g, vd-int (3 * d), vd-int d, vd-int hd, vd-int l] < 0 then False
+       else if dat-run "kernel_row_softmax" d [vd-buf g, vd-int hd, vd-int d] == False then False
+       else dat-run "kernel_chan_apply" (l * d) [vd-buf qkv, vd-buf g, vd-buf att, vd-int (3 * d), vd-int (2 * d), vd-int d, vd-int hd, vd-int (l * d)]
+    in let cv = dat-conv-branch w qkv d hh ww p
+    in let f1 = sw-free qkv & sw-free g
+    in let at = sw-keep att ok
+    in let cm = dat-channel-map w (c.dc-ci) at 1 d d l p
+    in let sm = dat-spatial-map w (c.dc-si) cv l 1 d l p
+    in let y = dat-combine w at cv cm sm d l 1 p
+    in let f2 = sw-free at & sw-free cv & sw-free cm & sw-free sm
+    in y
+
+ SGFN: fc1, GELU, the second half LayerNormed as a map through the
+ depthwise conv, times the first half, fc2.
+
+  dat-ffn : SwWeights, DatCfg, Integer, Integer, Integer, Text -> Integer
+  dat-ffn (w) (c) (x) (hh) (ww) (p) =
+    let d = c.dc-dim
+    in let l = hh * ww
+    in let hid = c.dc-hidden
+    in let half = hid / 2
+    in let h = sw-gelu (sw-linear w x l d hid (p & ".fc1")) (l * hid)
+    in let x2 = gpu-buf-alloc (l * half * 4)
+    in let t = if h == 0 | x2 == 0 then False else dat-run "kernel_take_cols" (l * half) [vd-buf h, vd-buf x2, vd-int hid, vd-int half, vd-int half, vd-int (l * half)]
+    in let n = sw-ln w (sw-keep x2 t) l half (p & ".sg.norm")
+    in let f1 = sw-free x2
+    in let m = sw-to-map n half hh ww
+    in let f2 = sw-free n
+    in let cv = dat-dwconv w (m.ah) half hh ww (p & ".sg.conv")
+    in let f3 = vd-free m
+    in let gated = gpu-buf-alloc (l * half * 4)
+    in let ok = if h == 0 | cv == 0 | gated == 0 then False else dat-run "kernel_gate" (l * half) [vd-buf h, vd-buf cv, vd-buf gated, vd-int half, vd-int l, vd-int (l * half)]
+    in let f4 = sw-free h & sw-free cv
+    in let y = sw-linear w (sw-keep gated ok) l half d (p & ".fc2")
+    in let f5 = sw-free gated
+    in y
+
+  dat-block : SwWeights, DatCfg, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dat-block (w) (c) (x) (hh) (ww) (heads) (rg) (b) =
+    let p = "layers." & show rg & ".blocks." & show b
+    in let l = hh * ww
+    in let d = c.dc-dim
+    in let n1 = sw-ln w x l d (p & ".norm1")
+    in let a = if b - b / 2 * 2 == 0 then dat-spatial w c n1 hh ww heads rg b (p & ".attn") else dat-channel w c n1 hh ww heads (p & ".attn")
+    in let f1 = sw-free n1
+    in let x1 = sw-add a x (l * d)
+    in let n2 = sw-ln w x1 l d (p & ".norm2")
+    in let m = dat-ffn w c n2 hh ww (p & ".ffn")
+    in let f2 = sw-free n2
+    in let y = sw-add m x1 (l * d)
+    in let f3 = sw-free x1
+    in y
+
+  dat-blocks : SwWeights, DatCfg, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  dat-blocks (w) (c) (x) (keep) (hh) (ww) (heads) (rg) (b) (n) =
+    if b >= n | x == 0 then x
+    else let y = dat-block w c x hh ww heads rg b
+    in let f = if x == keep then True else sw-free x
+    in dat-blocks w c y keep hh ww heads rg (b + 1) n
+
+  dat-group : SwWeights, DatCfg, Integer, Integer, Integer, Integer -> Integer
+  dat-group (w) (c) (x) (hh) (ww) (i) =
+    let g = dat-blocks w c x x hh ww (list-at (c.dc-heads) i) i 0 (list-at (c.dc-depths) i)
+    in let m = sw-to-map g (c.dc-dim) hh ww
+    in let f1 = if g == x then True else sw-free g
+    in let r = sw-resi w (c.dc-conv3) (c.dc-dim) m ("layers." & show i & ".conv")
+    in let f2 = vd-free m
+    in let t = sw-to-tokens r
+    in let f3 = vd-free r
+    in sw-add t x (hh * ww * c.dc-dim)
+
+  dat-layers : SwWeights, DatCfg, Integer, Integer, Integer, Integer -> Integer
+  dat-layers (w) (c) (x) (hh) (ww) (i) =
+    if i >= list-length (c.dc-depths) | x == 0 then x
+    else let y = dat-group w c x hh ww i
+    in let f = sw-free x
+    in dat-layers w c y hh ww (i + 1)
+
+Section: Forward
+
+  dat-shuffle : Act -> Act
+  dat-shuffle (x) =
+    let n = x.ac * x.ahh * x.aww
+    in let o = gpu-buf-alloc (n * 4)
+    in let ok = if x.ah == 0 | o == 0 then False else dat-run "kernel_pixel_shuffle" n [vd-buf (x.ah), vd-buf o, vd-int (x.ahh), vd-int (x.aww), vd-int n]
+    in let f = vd-free x
+    in vd-act (sw-keep o ok) (x.ac / 4) (x.ahh * 2) (x.aww * 2) ok
+
+  dat-ups : SwWeights, Act, Integer, Integer -> Act
+  dat-ups (w) (x) (k) (n) =
+    if k >= n | x.ah == 0 then x
+    else let y = dat-shuffle (sw-conv w x ("upsample." & show (2 * k)) 256 3 1)
+    in let f = vd-free x
+    in dat-ups w y (k + 1) n
+
+ The picture img (3 x h x w, BGR in 0 to 1, h and w multiples of both
+ window sides, the buffer overwritten) to 2^ups times its size. The caller
+ frees the answer.
+
+  dat-forward : SwWeights, DatCfg, Act -> Act
+  dat-forward (w) (c) (img) =
+    let hh = img.ahh
+    in let ww = img.aww
+    in let l = hh * ww
+    in let d = c.dc-dim
+    in let neg = sw-mean (0.0 - 1.0)
+    in let x0 = sw-add-channel img neg
+    in let f = sw-conv w x0 "conv_first" d 3 1
+    in let t0 = sw-to-tokens f
+    in let t1 = sw-ln w t0 l d "before_RG.1"
+    in let g0 = sw-free t0
+    in let t2 = dat-layers w c t1 hh ww 0
+    in let t3 = sw-ln w t2 l d "norm"
+    in let g1 = sw-free t2
+    in let m = sw-to-map t3 d hh ww
+    in let g2 = sw-free t3
+    in let ab = sw-resi w (c.dc-conv3) d m "conv_after_body"
+    in let g3 = vd-free m
+    in let s = if ab.ah == 0 | f.ah == 0 then ab else vd-add ab f
+    in let g4 = vd-free f
+    in let cb = sw-lrelu (sw-conv w s "conv_before_upsample.0" 64 3 1) 0.01
+    in let g5 = vd-free s
+    in let u = dat-ups w cb 0 (c.dc-ups)
+    in let out = vd-then (sw-conv w u "conv_last" 3 3 1) u
+    in let pos = sw-mean 1.0
+    in let r = sw-add-channel out pos
+    in let g6 = sw-free neg & sw-free pos
+    in if r.ah == 0 & out.ah /= 0 then vd-then r out else r
+
+ The picture of width x height RGB bytes at rgb through Forge's
+ upscale_with_model at tile tile and overlap ov (the DAT_tile options); the
+ answer's RGB bytes, or 0. The tile must be a multiple of both window sides.
+
+  dat-upscale : SwWeights, DatCfg, Integer, Integer, Integer, Integer, Integer -> Integer
+  dat-upscale (w) (c) (rgb) (width) (height) (tile) (ov) =
+    if c.dc-ok == False | w.sw-failed > 0 | c.dc-ups /= 2 | tile - tile / c.dc-split0 * c.dc-split0 /= 0 | tile - tile / c.dc-split1 * c.dc-split1 /= 0 then 0
+    else esr-upscale-by (\x -> dat-forward w c x) False rgb width height tile ov
+
+ The checkpoint f (a DAT the chapter runs) loaded, the picture upscaled at
+ tile and overlap ov, and the weights freed.
+
+  dat-upscale-file : PthFile, Integer, Integer, Integer, Integer, Integer -> Integer
+  dat-upscale-file (f) (rgb) (width) (height) (tile) (ov) =
+    let c = dat-config f
+    in if c.dc-ok == False then 0
+    else let w = dat-load f
+    in let up = dat-upscale w c rgb width height tile ov
+    in let fr = sw-unload w
+    in up

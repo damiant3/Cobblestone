@@ -1,4 +1,7 @@
 Chapter: GopDesk
+  cites Works chapter GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopPanePolicy
   cites Works chapter GopSheet
   cites Works chapter GopDraw
   cites Works chapter GopWeb
@@ -428,6 +431,10 @@ Section: Chrome
   dk-pinned-cell : Integer = 244
 
   dk-ds-bytes : Integer = 512
+
+  dk-input-cell : Integer = 276
+
+  dk-policy-cell : Integer = 296
 
   dk-sheet-cell : Integer = 256
 
@@ -1057,7 +1064,7 @@ Section: Monitor
     else desk-hole-room ms i top >= want
 
   desk-scene-want : Integer, Integer -> Integer
-  desk-scene-want (bw) (bh) = bw * bh * 8 + 4096
+  desk-scene-want (bw) (bh) = bw * bh * 12 + 2097152
 
   dk-prev-w : Integer = 128
   dk-prev-h : Integer = 72
@@ -1194,7 +1201,7 @@ Section: Monitor
           let st = poke-32 ds 16 now
           in let hd = cursor-hide cs base stride
           in act
-            p <- desk-mon-paint base w h stride font tf ds
+            p <- desk-wnd-paint-from base w h stride font tf ds desk-focus-mon
             let c = dk-cursor base w h stride cs mouse
             in let dropped = __heap-restore mark
             in 1
@@ -1474,12 +1481,12 @@ Section: Calculator
 
   desk-calc-draw : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-calc-draw (base) (w) (h) (stride) (font) (tf) (ks) (ds) =
-    desk-wnd-paint-all base w h stride font tf ds
+    desk-wnd-paint-from base w h stride font tf ds desk-focus-calc
 
   desk-calc-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-calc-paint (base) (w) (h) (stride) (font) (tf) (ks) (ds) = act
     let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
-    in desk-calc-draw base w h stride font tf ks ds
+    in desk-wnd-paint-all base w h stride font tf ds
   end
 
   dk-calc-hit : Integer, Integer, Integer, Integer, Integer, Integer, GopFont -> Integer
@@ -1547,12 +1554,12 @@ Section: The Console Pane
 
   desk-console-draw : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-console-draw (base) (w) (h) (stride) (font) (tf) (ns) (ds) =
-    desk-wnd-paint-all base w h stride font tf ds
+    desk-wnd-paint-from base w h stride font tf ds desk-focus-con
 
   desk-console-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-console-paint (base) (w) (h) (stride) (font) (tf) (ns) (ds) = act
     let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
-    in desk-console-draw base w h stride font tf ns ds
+    in desk-wnd-paint-all base w h stride font tf ds
   end
 
   desk-console-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbMouse, Integer, Integer -> [Device.Port] Integer
@@ -2033,7 +2040,51 @@ Section: What a windowed pane is
     in let oy = dk-wnd-cascade-y n w h ds
     in let p = if fresh then dk-wnd-place blk (dk-wnd-x w dk-wnd-st-normal ds + ox) (dk-wnd-y w h dk-wnd-st-normal ds + oy) (dk-wnd-w w dk-wnd-st-normal ds) (dk-wnd-h w h dk-wnd-st-normal ds) else 0
     in let m = if fresh & dk-wnd-wants-box fid then poke-32 blk dk-wnd-st-cell dk-wnd-st-max else 0
-    in dk-wr-open ws fid
+    in let opened = dk-wr-open ws fid
+    in let policy = desk-policy-register ds fid
+    in opened
+
+  desk-policy-prune : Integer, Integer, Integer -> Integer
+  desk-policy-prune (table) (ws) (i) =
+    if table == 0 | i >= pp-slots then 0
+    else let slot = pp-at table i
+    in let fid = peek-qword slot pp-id
+    in let clear = if fid /= 0 & dk-wr-find ws fid 0 < 0 then poke-qword slot pp-id 0 else 0
+    in desk-policy-prune table ws (i + 1)
+
+  desk-policy-register : Integer, Integer -> Integer
+  desk-policy-register (ds) (fid) =
+    let table = peek-32 ds dk-policy-cell
+    in if table == 0 then 0
+    else let prune = desk-policy-prune table (peek-32 ds dk-wr-cell) 0
+    in let found = pp-find table fid 0
+    in if found /= 0 then found
+    else let rate = hpet-ticks-per-second
+    in let scene = fid == desk-focus-scene | fid == desk-focus-fish
+    in let periodic = fid == desk-focus-mon | fid == desk-focus-clkp | fid == desk-focus-con | fid == desk-focus-edit | fid == desk-focus-web | fid == desk-focus-bro | fid == desk-focus-files | fid == desk-focus-menu
+    in let mode = if scene then pp-budget else if periodic then pp-rate else pp-events
+    in let period = if scene then r-pp-max 1 (rate * 16 / 1000) else r-pp-max 1 (rate / 20)
+    in let allowance = if scene then r-pp-max 1 (rate * 8 / 1000) else 0
+    in let slot = pp-declare table fid mode period allowance pp-late hpet-ticks
+    in let refused = if slot == 0 then dk-notice-set ds "PANE POLICY REFUSED" else 0
+    in slot
+
+  desk-policy-active : DeskApps, Integer -> Boolean
+  desk-policy-active (apps) (fid) =
+    if fid /= desk-focus-scene & fid /= desk-focus-fish then False
+    else when apps.da-scene
+      is None -> False
+      is Just (sp) -> gsc-render-active sp | sp.sp-present >= 0
+
+  desk-policy-scene : DeskApps, Integer, Integer -> Integer
+  desk-policy-scene (apps) (fid) (admit) =
+    if fid /= desk-focus-scene & fid /= desk-focus-fish then 0
+    else when apps.da-scene
+      is None -> 0
+      is Just (sp) ->
+        let cancel = if admit < 0 then gsc-cancel sp else 0
+        in let allowed = __record-set sp "sp-allowed" (if admit > 0 then 1 else 0)
+        in 0
 
   desk-clock-art : Integer, Integer, Integer, Integer, WidgetNode, Integer -> Integer
   desk-clock-art (base) (stride) (rows) (ws) (laid) (ds) =
@@ -2248,6 +2299,52 @@ Section: What a windowed pane is
     end
   end
 
+  dk-rects-meet : LayoutRect, LayoutRect -> Boolean
+  dk-rects-meet (a) (b) =
+    if a.lr-x >= b.lr-x + b.lr-w | b.lr-x >= a.lr-x + a.lr-w then False
+    else a.lr-y < b.lr-y + b.lr-h & b.lr-y < a.lr-y + a.lr-h
+
+  dk-rect-union : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> LayoutRect
+  dk-rect-union (x0) (y0) (w0) (h0) (x1) (y1) (w1) (h1) (w) (h) =
+    let lx = if x0 < x1 then x0 else x1
+    in let ty = if y0 < y1 then y0 else y1
+    in let rx = if x0 + w0 > x1 + w1 then x0 + w0 else x1 + w1
+    in let by = if y0 + h0 > y1 + h1 then y0 + h0 else y1 + h1
+    in comp-clip (layout-rect lx ty (rx - lx) (by - ty)) (layout-rect 0 0 w h)
+
+  desk-wnd-first-hit : Integer, Integer, Integer, Integer, Integer, LayoutRect -> Integer
+  desk-wnd-first-hit (w) (h) (ds) (ws) (i) (r) =
+    if i >= dk-wr-count ws then dk-wr-count ws
+    else
+      let blk = desk-wnd-blk (dk-wr-at ws i) ds
+      in let st = dk-wnd-st blk
+      in let wr = layout-rect (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds)
+      in if dk-wnd-minimised blk == False & dk-rects-meet wr r then i
+      else desk-wnd-first-hit w h ds ws (i + 1) r
+
+  desk-wnd-band-meets : WidgetNode, Integer, LayoutRect -> Boolean
+  desk-wnd-band-meets (laid) (s) (r) =
+    when widget-find laid "taskbar"
+      is None -> False
+      is Just (tb) -> dk-rects-meet (comp-mul-rect (tb.wn-bounds) s) r
+
+  desk-wnd-paint-rect : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, LayoutRect -> [Device.Port] Integer
+  desk-wnd-paint-rect (base) (w) (h) (stride) (font) (tf) (ds) (r) = act
+    let ws = peek-32 ds dk-wr-cell
+    in let rs = poke-32 ds dk-restay-cell (dk-wr-visible ws ds)
+    in let s = ui-wscale w
+    in let face = desk-chrome-face (widget-panel "content" DirColumn 0 []) w ds tf
+    in let laid = widget-layout face (dk-theme-ds ds) (layout-rect 0 0 (w / s) (h / s))
+    in let c = comp-walk base stride h r font tf laid (dk-theme-ds ds) s
+    in let hit = desk-wnd-first-hit w h ds ws 0 r
+    in let top2 = if dk-wr-count ws > 2 then dk-wr-count ws - 2 else 0
+    in act
+      all <- desk-wnd-walk base w h stride font tf ds ws (if hit < top2 then hit else top2)
+      let band = if desk-wnd-band-meets laid s r then desk-wnd-band base w stride h font tf laid ds else 0
+      in if r.lr-y < dk-bar-h * s then desk-topbar base w stride font (ui-scale w) tf h ds else 0
+    end
+  end
+
   desk-wnd-at : Integer, Integer, Integer, Integer, GopFont, Integer, Integer, Integer -> Integer
   desk-wnd-at (w) (h) (mx) (my) (tf) (ds) (ws) (i) =
     if i < 0 then desk-focus-none
@@ -2450,10 +2547,28 @@ Section: The loop's own rate
   dk-drag-dy : Integer -> Integer
   dk-drag-dy (ds) = peek-32 ds dk-drag-off-cell - dk-drag-dx ds * 65536
 
+  dk-drag-x0-cell : Integer = 280
+  dk-drag-y0-cell : Integer = 284
+  dk-drag-w0-cell : Integer = 288
+  dk-drag-h0-cell : Integer = 292
+
   dk-drag-begin : Integer, Integer, Integer, Integer -> Integer
   dk-drag-begin (ds) (fid) (dx) (dy) =
     let a = poke-32 ds dk-drag-off-cell (dx * 65536 + dy)
     in poke-32 ds dk-drag-cell fid
+
+  dk-drag-note-start : Integer, Integer, Integer, Integer, Integer -> Integer
+  dk-drag-note-start (ds) (x0) (y0) (w0) (h0) =
+    let b = poke-32 ds dk-drag-x0-cell x0
+    in let c = poke-32 ds dk-drag-y0-cell y0
+    in let d = poke-32 ds dk-drag-w0-cell w0
+    in poke-32 ds dk-drag-h0-cell h0
+
+  dk-drag-start-union : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> LayoutRect
+  dk-drag-start-union (ds) (x1) (y1) (w1) (h1) (w) (h) =
+    let x0 = dk-cell-signed (peek-32 ds dk-drag-x0-cell)
+    in let y0 = dk-cell-signed (peek-32 ds dk-drag-y0-cell)
+    in dk-rect-union x0 y0 (peek-32 ds dk-drag-w0-cell) (peek-32 ds dk-drag-h0-cell) x1 y1 w1 h1 w h
 
   dk-drag-end : Integer -> Integer
   dk-drag-end (ds) = poke-32 ds dk-drag-cell desk-focus-none
@@ -2626,7 +2741,7 @@ Section: The loop's own rate
         then dk-flick-arm ds fid (dk-flick-edge vx vy) (mouse-x mouse) (mouse-y mouse) now
         else 0
       in act
-        r <- desk-wnd-paint-all base w h stride font tf ds
+        r <- desk-wnd-paint-rect base w h stride font tf ds (dk-drag-start-union ds ox oy ww wh w h)
         c <- act dk-cursor base w h stride cs mouse end
         desk-wnd-ev-stay
       end
@@ -2684,8 +2799,11 @@ Section: The loop's own rate
       hd <- act cursor-hide cs base stride end
       let e = gop-xor-frame base stride w h ox oy ow oh dk-drag-edge
       in let d = dk-size-end ds
+      in let x0 = dk-cell-signed (peek-32 ds dk-size-x0-cell)
+      in let y0 = dk-cell-signed (peek-32 ds dk-size-y0-cell)
+      in let u = dk-rect-union x0 y0 (peek-32 ds dk-size-w0-cell) (peek-32 ds dk-size-h0-cell) ox oy ow oh w h
       in act
-        r <- desk-wnd-paint-all base w h stride font tf ds
+        r <- desk-wnd-paint-rect base w h stride font tf ds u
         c <- act dk-cursor base w h stride cs mouse end
         desk-wnd-ev-stay
       end
@@ -2730,10 +2848,10 @@ Section: The window chrome's own step
     in let btn = if clicked & onto == fid then dk-wnd-hit (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) (mouse-x mouse) (mouse-y mouse) tf (ui-wscale w) else dk-wnd-none
     in let zone = if clicked & fid == dk-wr-visible ws ds & st /= dk-wnd-st-max then dk-size-zone-rect (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) (dk-size-grip * ui-scale w) (mouse-x mouse) (mouse-y mouse) else dk-size-none
     in let fd = if dk-flick-fid ds /= desk-focus-none & (clicked | dk-flick-fid ds /= fid) then dk-flick-end ds else 0
-    in if peek-32 ds dk-restay-cell == fid then act
-      let c = poke-32 ds dk-restay-cell desk-focus-none
-      in desk-wnd-ev-stay
-    end
+    in let restay = peek-32 ds dk-restay-cell == fid
+    in if restay & sc == 0 & clicked == False then
+      let rs = poke-32 ds dk-restay-cell desk-focus-none
+      in act desk-wnd-ev-stay end
     else if dk-size-active ds /= dk-size-none then desk-wnd-size-step base w h stride font tf mouse ds cs
     else if dk-drag-fid ds /= desk-focus-none then desk-wnd-drag-step base w h stride font tf mouse ds cs
     else if dk-flick-fid ds /= desk-focus-none then act desk-wnd-flick-step w ds mouse hpet-ticks end
@@ -2773,7 +2891,10 @@ Section: The window chrome's own step
       in let ob = desk-wnd-blk onto ds
       in let ost = dk-wnd-st ob
       in let ohit = dk-wnd-hit (dk-wnd-rx ob w ost ds) (dk-wnd-ry ob w h ost ds) (dk-wnd-rw ob w ost ds) (dk-wnd-rh ob w h ost ds) (mouse-x mouse) (mouse-y mouse) tf (ui-wscale w)
-      in let g = if ohit == dk-wnd-bar & ost /= dk-wnd-st-max then dk-drag-begin ds onto (mouse-x mouse - dk-wnd-rx ob w ost ds) (mouse-y mouse - dk-wnd-ry ob w h ost ds) else 0
+      in let ox = dk-wnd-rx ob w ost ds
+      in let oy = dk-wnd-ry ob w h ost ds
+      in let ns = dk-drag-note-start ds ox oy (dk-wnd-rw ob w ost ds) (dk-wnd-rh ob w h ost ds)
+      in let g = if ohit == dk-wnd-bar & ost /= dk-wnd-st-max then dk-drag-begin ds onto (mouse-x mouse - ox) (mouse-y mouse - oy) else 0
       in let fb = if dk-drag-fid ds /= desk-focus-none then dk-flick-begin ds (mouse-x mouse) (mouse-y mouse) hpet-ticks else 0
       in if dk-drag-fid ds /= desk-focus-none then act
         hd <- act cursor-hide cs base stride end
@@ -2784,13 +2905,21 @@ Section: The window chrome's own step
         end
       end
       else act
-        r <- desk-wnd-repaint base w h stride font tf cs mouse ds
-        desk-wnd-ev-stay
+        hd <- act cursor-hide cs base stride end
+        let rs = poke-32 ds dk-restay-cell (dk-wr-visible ws ds)
+        in act
+          r <- desk-wnd-paint-from base w h stride font tf ds fid
+          c <- act dk-cursor base w h stride cs mouse end
+          desk-wnd-ev-stay
+        end
       end
     end
     else if btn == dk-wnd-bar & st /= dk-wnd-st-max then act
       hd <- act cursor-hide cs base stride end
-      let g = dk-drag-begin ds fid (mouse-x mouse - dk-wnd-rx blk w st ds) (mouse-y mouse - dk-wnd-ry blk w h st ds)
+      let bx = dk-wnd-rx blk w st ds
+      in let by = dk-wnd-ry blk w h st ds
+      in let ns = dk-drag-note-start ds bx by (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds)
+      in let g = dk-drag-begin ds fid (mouse-x mouse - bx) (mouse-y mouse - by)
       in let fb = dk-flick-begin ds (mouse-x mouse) (mouse-y mouse) hpet-ticks
       in let o = gop-xor-frame base stride w h (dk-wnd-rx blk w st ds) (dk-wnd-ry blk w h st ds) (dk-wnd-rw blk w st ds) (dk-wnd-rh blk w h st ds) dk-drag-edge
       in act
@@ -2970,12 +3099,12 @@ Section: Programs
 
   desk-programs-draw : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-programs-draw (base) (w) (h) (stride) (font) (tf) (ps) (ds) =
-    desk-wnd-paint-all base w h stride font tf ds
+    desk-wnd-paint-from base w h stride font tf ds desk-focus-prog
 
   desk-programs-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, Integer -> [Device.Port] Integer
   desk-programs-paint (base) (w) (h) (stride) (font) (tf) (ps) (ds) = act
     let bg = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
-    in desk-programs-draw base w h stride font tf ps ds
+    in desk-wnd-paint-all base w h stride font tf ds
   end
 
   desk-programs-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbMouse, Integer, Integer -> [Device.Port] Integer
@@ -3110,6 +3239,28 @@ Section: Programs
     end
   end
 
+  dk-menu-box : Integer, Integer, Integer, Integer, GopFont -> LayoutRect
+  dk-menu-box (w) (h) (ps) (ds) (tf) =
+    when widget-find (dk-menu-laid w h ps ds tf) "sysmenu-body"
+      is None -> layout-rect-zero
+      is Just (mb) -> mb.wn-bounds
+
+  dk-rect-same : LayoutRect, LayoutRect -> Boolean
+  dk-rect-same (a) (b) = a.lr-x == b.lr-x & a.lr-y == b.lr-y & a.lr-w == b.lr-w & a.lr-h == b.lr-h
+
+  desk-menu-sel-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbMouse, Integer, Integer, DeskApps, LayoutRect -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-menu-sel-repaint (base) (w) (h) (stride) (font) (tf) (cs) (mouse) (ps) (ds) (apps) (b0) =
+    let laid = dk-menu-laid w h ps ds tf
+    in let b1 = when widget-find laid "sysmenu-body"
+          is None -> layout-rect-zero
+          is Just (mb) -> mb.wn-bounds
+    in if b0.lr-w > 0 & dk-rect-same b0 b1 then act
+      let hd = cursor-hide cs base stride
+      in let m = desk-menu-over base w stride h font tf laid ps ds
+      in dk-cursor base w h stride cs mouse
+    end
+    else desk-menu-repaint base w h stride font tf cs mouse ps ds apps
+
   dk-sc-bye : Integer = 65536
 
   dk-sc-group : Integer = 131072
@@ -3156,10 +3307,11 @@ Section: Programs
     in if hit == dk-sc-toggle then desk-step-dismiss
     else if sc == 1 then desk-step-dismiss
     else if hit >= dk-sc-group then act
-      let g = gpr-set-sel ps (hit - dk-sc-group)
-      in let mark = __heap-save
+      let mark = __heap-save
+      in let b0 = dk-menu-box w h ps ds tf
+      in let g = gpr-set-sel ps (hit - dk-sc-group)
       in act
-        p <- desk-menu-repaint base w h stride font tf cs mouse ps ds apps
+        p <- desk-menu-sel-repaint base w h stride font tf cs mouse ps ds apps b0
         let d = __heap-restore mark
         in 1
       end
@@ -3179,10 +3331,11 @@ Section: Programs
     else if sc == 0 then 1
     else if sc == 28 then gpr-key ps sc
     else act
-      let k = gpr-key ps sc
-      in let mark = __heap-save
+      let mark = __heap-save
+      in let b0 = dk-menu-box w h ps ds tf
+      in let k = gpr-key ps sc
       in act
-        p <- desk-menu-repaint base w h stride font tf cs mouse ps ds apps
+        p <- desk-menu-sel-repaint base w h stride font tf cs mouse ps ds apps b0
         let d = __heap-restore mark
         in 1
       end
@@ -3569,7 +3722,7 @@ Section: Issues
         in let s1 = poke-32 ds 40 ns
         in let hd = cursor-hide cs base stride
         in act
-          p <- desk-trk-paint base w h stride font tf ds
+          p <- desk-wnd-paint-from base w h stride font tf ds desk-focus-trk
           let c = dk-cursor base w h stride cs mouse
           in let d = __heap-restore mark
           in 1
@@ -4223,17 +4376,21 @@ Section: The 3D panes
         ev <- desk-wnd-chrome-step base w h stride font tf mouse ds cs foc sc clicked
         if ev == desk-wnd-ev-close then act
           v <- (gs-viewport-release)
-          0
+          gsc-cancel sp
         end
         else if ev == desk-wnd-ev-min then act
           v <- (gs-viewport-release)
-          desk-step-hide
+          let cancel = gsc-cancel sp
+          in desk-step-hide
         end
-        else if ev == desk-wnd-ev-stay then act 1 end
+        else if ev == desk-wnd-ev-stay then act
+          let cancel = gsc-cancel sp
+          in 1
+        end
         else act
           let pl = desk-scene-place sp base w h stride tf ds foc
           in act
-            r <- gsc-step base w h stride (apps.da-fonts) kbd mouse cs build sp sc (dk-task-px ds w)
+            r <- gsc-step base w h stride (apps.da-fonts) kbd mouse cs build sp sc (dk-task-px ds w) (peek-32 ds dk-input-cell)
             if r == gsc-step-hide then desk-step-hide else r
           end
         end
@@ -4259,7 +4416,10 @@ Section: The 3D panes
 
   desk-scene-reenter : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-scene-reenter (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (foc) = act
-    let hd = cursor-hide cs base stride
+    let cancel = when apps.da-scene
+      is Just (sp) -> gsc-cancel sp
+      is None -> 0
+    in let hd = cursor-hide cs base stride
     in let rc = desk-root-reclaim ds
     in let rm = __heap-save
     in let root2 = desk-draw base w h stride font (ui-scale w) tf ds
@@ -4284,7 +4444,8 @@ Section: The 3D panes
     in let mp = if hole < 0 then desk-marks-push ms foc __heap-save else 0
     in act
     sp <- gsc-new base stride cs (dk-gpu ds) sky bw bh
-    let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
+    let own = if foc == desk-focus-fish then gsc-own sp (gf-scene 0) gf-advance else gsc-own sp (gsc-scene 0) gsc-no-advance
+    in let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
     in let claimed = desk-hole-exit ms hole foc
     in let o = desk-wnd-open foc w h ds
     in act
@@ -4419,16 +4580,33 @@ Section: Browser
        & desk-wnd-at w h (mouse-x mouse) (mouse-y mouse) tf ds ws (dk-wr-count ws - 1) == desk-focus-none
        & dk-size-zone ds w h (mouse-x mouse) (mouse-y mouse) == dk-size-none
 
+  desk-input-step : UsbKbd, UsbMouse, Integer, Integer, Integer -> Integer
+  desk-input-step (kbd) (mouse) (w) (h) (ds) =
+    let iq = peek-32 ds dk-input-cell
+    in let collected = di-collect iq kbd mouse w h
+    in let queued = if iq == 0 then False else peek-qword iq di-count > 0
+    in let y = if pp-yield-due (peek-32 ds dk-policy-cell) queued then process-yield else 0
+    in if iq == 0 then kbd-take kbd
+    else let delivered = di-deliver iq mouse
+    in let lost = if peek-qword iq di-overflow /= 0 & peek-qword iq di-notified == 0 then
+      let notice = dk-notice-set ds "INPUT QUEUE OVERFLOW"
+      in poke-qword iq di-notified 1
+      else if peek-qword iq di-errors /= 0 & peek-qword iq di-error-notified == 0 then
+      let notice = dk-notice-set ds ("INPUT TRANSFER ERROR " & integer-to-text (peek-qword iq di-error-code))
+      in poke-qword iq di-error-notified 1
+      else 0
+    in peek-qword iq di-out-key
+
   desk-loop : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-loop (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
-    let y = process-yield
-    in let fmark = __heap-save
+    let fmark = __heap-save
+    in let iq = peek-32 ds dk-input-cell
+    in let sc = desk-input-step kbd mouse w h ds
     in act
-      sc <- kbd-take kbd
-      ck <- if dk-drag-fid ds == desk-focus-none then desk-clock base w h stride font tf ds root else act 0 end
+      ck <- if dk-drag-fid ds == desk-focus-none & pp-clock-due (peek-32 ds dk-policy-cell) hpet-ticks hpet-ticks-per-second then desk-clock base w h stride font tf ds root else act 0 end
       let rr = dk-rate-tick ds
       in let rp = if rr == 1 then desk-rate-paint base w h stride font (ui-scale w) tf cs mouse ds else 0
-      in let mv = mouse-pump mouse w h
+      in let mv = if iq == 0 then mouse-pump mouse w h else if peek-qword iq di-out-kind == di-motion | peek-qword iq di-out-kind == di-button then 1 else 0
       in let zs = if mv == 1 & dk-drag-fid ds == desk-focus-none & dk-size-active ds == dk-size-none then cursor-set-shape cs (dk-size-cursor (dk-size-zone ds w h (mouse-x mouse) (mouse-y mouse))) else 0
       in let cu = if mv == 1 then cursor-update cs base stride h w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
       in let clicked = mouse-take-click mouse
@@ -4440,7 +4618,18 @@ Section: Browser
           let d = __heap-restore fmark
           in desk-dispatch base w h stride font tf kbd mouse ds cs apps root sc clicked
         else if peek-32 ds desk-focus-cell /= desk-focus-none then act
-          alive <- desk-step-of base w h stride font tf kbd mouse ds cs apps root (peek-32 ds desk-focus-cell) sc clicked
+          let fid = peek-32 ds desk-focus-cell
+          in let table = peek-32 ds dk-policy-cell
+          in let known = pp-find table fid 0
+          in let slot = if table == 0 | known /= 0 then known else desk-policy-register ds fid
+          in let started = hpet-ticks
+          in let admit = if table == 0 then 1 else pp-admit slot started (desk-policy-active apps fid) (hpet-ticks-per-second > 0)
+          in let scene-policy = desk-policy-scene apps fid admit
+          in let essential = sc /= 0 | clicked | mv == 1 | dk-drag-fid ds /= desk-focus-none | dk-size-active ds /= dk-size-none | peek-32 ds dk-restay-cell == fid
+          in act
+          alive <- if admit > 0 | essential then desk-step-of base w h stride font tf kbd mouse ds cs apps root fid sc clicked else act 1 end
+          let charged = if admit > 0 | essential then pp-charge table slot started hpet-ticks else 0
+          in
           if alive == 0 then desk-app-close base w h stride font tf kbd mouse ds cs apps
           else if alive == desk-step-dismiss then desk-menu-dismiss base w h stride font tf kbd mouse ds cs apps
           else if alive == desk-step-hide then desk-app-hide base w h stride font tf kbd mouse ds cs apps
@@ -4449,6 +4638,7 @@ Section: Browser
             in desk-loop base w h stride font tf kbd mouse ds cs apps root
           else if alive < 0 then desk-loop base w h stride font tf kbd mouse ds cs apps root
           else desk-app-close-to base w h stride font tf kbd mouse ds cs apps alive
+          end
         end
         else if clicked == False & sc /= desk-sc-shot then act
           hv <- dk-hover-maybe (mv == 1 | peek-32 ds dk-hover-cell /= desk-focus-none) base w h stride font tf ds cs root mouse
@@ -4789,6 +4979,11 @@ Section: Browser
       ce <- clk-ensure (peek-32 ds desk-clock-cell)
       ce2 <- clk-ensure2 (peek-32 ds desk-clock-cell)
       let wp = mouse-warp mouse (w / 2) (h / 2)
+      in let iq = di-new 0
+      in let ip = poke-32 ds dk-input-cell iq
+      in let policy = poke-32 ds dk-policy-cell (pp-new 0)
+      in let ix = poke-qword iq di-col-x (w / 2)
+      in let iy = poke-qword iq di-col-y (h / 2)
       in let apps = desk-apps-empty af
       in let bm = poke-32 ds desk-mark-cell __heap-save
       in let rm = __heap-save

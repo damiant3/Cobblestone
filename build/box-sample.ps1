@@ -41,8 +41,22 @@ $procsOut = [System.IO.Path]::ChangeExtension($Out, '.procs.csv')
 $header = "ts,freeGiB,guests,guestMB,renode,renodeMB,pwsh,pwshMB,cpu,supervisors,supervisorMB"
 $procsHeader = "ts,pid,name,role,wsMB"
 $hostFilter = "Name='codex-vm.exe' OR Name='qemu-system-x86_64.exe' OR Name='wasmtime.exe'"
-$header | Set-Content $Out
-$procsHeader | Set-Content $procsOut
+# An existing -Out is refused rather than overwritten: it is usually an earlier
+# run's record, and a submitted one is read-only, so every write failed and the
+# sampler ran a whole release recording nothing (Update 64,
+# docs/PM/SomethingSeenDuringRelease.md).
+if (Test-Path -LiteralPath $Out) {
+    Write-Host "REFUSED: -Out $Out already exists. Name this run's record, e.g. box-release-<date>-u<N>.csv."
+    exit 2
+}
+try {
+    $header | Set-Content $Out -ErrorAction Stop
+    $procsHeader | Set-Content $procsOut -ErrorAction Stop
+} catch {
+    Write-Host "REFUSED: cannot write -Out ${Out}: $($_.Exception.Message)"
+    exit 2
+}
+$failures = 0
 $deadline = (Get-Date).AddSeconds($Seconds)
 while ((Get-Date) -lt $deadline) {
     try {
@@ -63,12 +77,20 @@ while ((Get-Date) -lt $deadline) {
             [int](($r | Measure-Object WorkingSet64 -Sum).Sum / 1MB), $p.Count,
             [int](($p | Measure-Object WorkingSet64 -Sum).Sum / 1MB), $cpu,
             $s.Count, [int](($s | Measure-Object WsMB -Sum).Sum)
-        if (-not (Test-Path -PathType Leaf $Out)) { $header | Set-Content $Out }
-        Add-Content $Out $line
+        if (-not (Test-Path -PathType Leaf $Out)) { $header | Set-Content $Out -ErrorAction Stop }
+        Add-Content $Out $line -ErrorAction Stop
         if ($hosts.Count -gt 0) {
-            if (-not (Test-Path -PathType Leaf $procsOut)) { $procsHeader | Set-Content $procsOut }
-            Add-Content $procsOut @($hosts | ForEach-Object { "{0},{1},{2},{3},{4}" -f $ts, $_.Pid, $_.Name, $_.Role, $_.WsMB })
+            if (-not (Test-Path -PathType Leaf $procsOut)) { $procsHeader | Set-Content $procsOut -ErrorAction Stop }
+            Add-Content $procsOut @($hosts | ForEach-Object { "{0},{1},{2},{3},{4}" -f $ts, $_.Pid, $_.Name, $_.Role, $_.WsMB }) -ErrorAction Stop
         }
-    } catch {}
+        $failures = 0
+    } catch {
+        $failures++
+        [Console]::Error.WriteLine("box-sample: sample failed ($failures in a row): $($_.Exception.Message)")
+        if ($failures -ge 3) {
+            [Console]::Error.WriteLine("box-sample: STOPPED after 3 failed samples in a row; $Out is short")
+            exit 1
+        }
+    }
     Start-Sleep -Seconds $IntervalSec
 }

@@ -1,0 +1,118 @@
+Chapter: DiffusionFluxLora
+  cites Diffusion chapter FluxLora
+  cites Diffusion chapter Lora
+  cites Diffusion chapter CheckpointFile
+  cites AI chapter SafeTensors
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ The fixture is build/flux-lora-oracle.py's: Forge's own merge of the
+ installed Flux LoRA at 0.8 into six Flux schnell e4m3 weights; per weight
+ the bytes it changed and a checksum of every merged byte must match, a
+ zero's sign ignored (0x80 read as 0x00): the rank dot here runs in f64 and
+ Forge's in f32, which can leave a zero sum's sign different (1 byte in each of
+ two of these weights, measured 2026-09-29). The sabotage merges the first at 0.4.
+
+ We say:
+
+Section: Grading
+
+  ckpt-name : Text = "flux1-schnell-fp8-e4m3fn.safetensors"
+
+  lora-name : Text = "FLUX.1-dev-lora-Dark-Fantasy.safetensors"
+
+  targets : List Text
+  targets = ["double_blocks.0.img_attn.qkv.weight", "double_blocks.7.txt_mlp.2.weight", "double_blocks.18.img_mod.lin.weight", "single_blocks.0.linear1.weight", "single_blocks.37.linear2.weight", "single_blocks.9.modulation.lin.weight"]
+
+  rec-bytes : Integer = 6168
+
+  chunk : Integer = 1048576
+
+  ref : Integer = #BD900000
+
+  le64 : Integer, Integer -> Integer
+  le64 (a) (k) = bit-or (bit-and (peek-32 a k) #FFFFFFFF) (bit-shl (bit-and (peek-32 a (k + 4)) #FFFFFFFF) 32)
+
+  cell-add : Integer, Integer -> Integer
+  cell-add (c) (v) =
+    let x = le64 c 0 + v
+    in let lo = poke-32 c 0 (bit-and x #FFFFFFFF)
+    in poke-32 c 4 (bit-shr x 32)
+
+  unsign : Integer -> Integer
+  unsign (x) = if x == 128 then 0 else x
+
+  tally : Integer, Integer, Integer, Integer, Integer -> Integer
+  tally (a) (b) (i) (n) (changed) =
+    if i >= n then changed
+    else tally a b (i + 1) n (changed + (if unsign (peek-byte a i) == unsign (peek-byte b i) then 0 else 1))
+
+  weigh : Integer, Integer, Integer, Integer, Integer -> Integer
+  weigh (a) (base) (i) (n) (acc) =
+    if i >= n then acc
+    else weigh a base (i + 1) n (acc + unsign (peek-byte a i) * (int-mod (base + i) 251 + 1))
+
+  Bufs = record {
+    bf-h8 : Integer,
+    bf-ho : Integer,
+    bf-ha : Integer,
+    bf-hb : Integer,
+    bf-cell : Integer
+  }
+
+  scan : Bufs, Integer, Integer -> Integer
+  scan (b) (at) (n) =
+    if at >= n then le64 (b.bf-cell) 8
+    else let k = if n - at < chunk then n - at else chunk
+    in let r = gpu-buf-read (b.bf-h8) at k (b.bf-ha) & gpu-buf-read (b.bf-ho) at k (b.bf-hb)
+    in if r == False then 0 - 1
+    else let w = cell-add (b.bf-cell) (weigh (b.bf-ha) at 0 k 0)
+    in let z = cell-add (b.bf-cell + 8) (tally (b.bf-ha) (b.bf-hb) 0 k 0)
+    in scan b (at + k) n
+  arm : SafeTensorFile, LoraFile, Integer, Integer, Integer, Integer, Text -> Text
+  arm (ck) (lf) (fx) (k) (ha) (hb) (what) =
+    let name = list-at targets k
+    in let up = gpu-buf-upload fx 0 "flux-lora.bin" (k * rec-bytes) 24 gpu-dt-u8 gpu-dt-u8
+    in let rok = gpu-buf-read fx 0 24 ref
+    in when st-find-tensor ck name
+     is None -> what & ": no " & name
+     is Just (m) ->
+      (let n = st-element-count m
+       in let off = ck.st-data-offset + m.stm-offset-start
+       in let h8 = gpu-buf-alloc n
+       in let ho = gpu-buf-alloc n
+       in let ok = h8 /= 0 & ho /= 0 & gpu-buf-upload h8 0 ckpt-name off n gpu-dt-u8 gpu-dt-u8 == n & gpu-buf-upload ho 0 ckpt-name off n gpu-dt-u8 gpu-dt-u8 == n
+       in let a = if ok then flux-lora-merge [lf] name h8 (list-at (m.stm-shape) 0) n else 0 - 1
+       in let c = alloc-bytes 16
+       in let z0 = poke-32 c 0 0 + poke-32 c 4 0 + poke-32 c 8 0 + poke-32 c 12 0
+       in let changed = if a > 0 then scan (Bufs { bf-h8 = h8, bf-ho = ho, bf-ha = ha, bf-hb = hb, bf-cell = c }) 0 n else 0 - 1
+       in let got = [changed, le64 c 0]
+       in let f = gpu-buf-free h8 & gpu-buf-free ho
+       in if rok == False then what & ": the fixture could not be read"
+       else if a <= 0 then what & ": not merged (" & show a & ")"
+       else if list-at got 0 == le64 ref 8 & list-at got 1 == le64 ref 16 then what & ": " & show (list-at got 0) & " of " & show n & " bytes changed, checksum Forge's"
+       else what & ": " & show (list-at got 0) & " changed, Forge " & show (le64 ref 8) & (if list-at got 1 == le64 ref 16 then ", checksum Forge's" else ", checksum NOT Forge's"))
+
+  arms : SafeTensorFile, LoraFile, Integer, Integer, Integer, Integer -> List Text
+  arms (ck) (lf) (fx) (ha) (hb) (k) = if k >= list-length targets then [] else [arm ck lf fx k ha hb (list-at targets k)] & arms ck lf fx ha hb (k + 1)
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Nothing
+  opening = act
+    let ck = ckpt-open ckpt-name
+    in let lf = lora-open lora-name 0.8
+    in let fx = gpu-buf-alloc 64
+    in let ha = alloc-bytes chunk
+    in let hb = alloc-bytes chunk
+    in print-all (if ck.st-valid == False then ["SKIP: no " & ckpt-name & " under the model root"] else arms ck lf fx ha hb 0 & [arm ck (lora-open lora-name 0.4) fx 0 ha hb "sabotage, strength 0.4"]) 0
+  end

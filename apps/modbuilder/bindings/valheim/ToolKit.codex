@@ -1,0 +1,334 @@
+Chapter: Unity Tool Kit
+
+Section: Tree Helpers
+
+  tk-ty : Text -> CstType
+  tk-ty (name) = CstNamedType name []
+
+  tk-fn : CstType, CstType -> CstType
+  tk-fn (arg) (result) = CstNamedType "Func" [arg, result]
+
+  tk-policy : CstType
+  tk-policy = tk-fn (tk-ty "long") (tk-ty "long")
+
+  tk-go : CstType
+  tk-go = tk-ty "UnityEngine.GameObject"
+
+  tk-gos : CstType
+  tk-gos = CstNamedType "List" [tk-go]
+
+  tk-n : Text -> CstExpr
+  tk-n (name) = CstName name []
+
+  tk-d : CstExpr, Text -> CstExpr
+  tk-d (target) (member) = CstMemberAccess target member []
+
+  tk-call : CstExpr, List CstExpr -> CstExpr
+  tk-call (f) (args) = CstCall f (list-map (\v -> CstArgument { ca-mode = [], ca-name = "", ca-value = v }) args)
+
+  tk-get : CstExpr, Text -> CstExpr
+  tk-get (target) (ty) = CstCall (CstMemberAccess target "GetComponent" [tk-ty ty]) []
+
+  tk-add : CstExpr, Text -> CstExpr
+  tk-add (target) (ty) = CstCall (CstMemberAccess target "AddComponent" [tk-ty ty]) []
+
+  tk-var : Text, CstExpr -> CstStmt
+  tk-var (name) (value) = CstVariables [] CstInferredType [CstVariable { cv-name = name, cv-value = Just value }]
+
+  tk-do : CstExpr -> CstStmt
+  tk-do (e) = CstExpression e
+
+  tk-set : CstExpr, CstExpr -> CstStmt
+  tk-set (target) (value) = CstExpression (CstAssignment CstAssign target value)
+
+  tk-not : CstExpr -> CstExpr
+  tk-not (e) = CstUnary CstNot e
+
+  tk-or : CstExpr, CstExpr -> CstExpr
+  tk-or (a) (b) = CstBinary CstOr a b
+
+  tk-and : CstExpr, CstExpr -> CstExpr
+  tk-and (a) (b) = CstBinary CstAnd a b
+
+  tk-guard : CstExpr -> CstStmt
+  tk-guard (cond) = CstIf cond (CstReturn None) None
+
+  tk-int : Text -> CstExpr
+  tk-int (digits) = CstNumber digits CstInt
+
+  tk-float : Text -> CstExpr
+  tk-float (digits) = CstNumber digits CstFloat
+
+  tk-setting : Text -> CstExpr
+  tk-setting (key) = CstBinary CstDivide (CstCast (tk-ty "float") (tk-call (tk-d (tk-n "instance") "setting") [CstNumber key CstLong])) (tk-float "100")
+
+  tk-param : CstType, Text -> CstParameter
+  tk-param (ty) (name) = CstParameter { cp-modifiers = [], cp-type = ty, cp-name = name, cp-default = None }
+
+  tk-field : List CstModifier, CstType, Text, Maybe CstExpr -> CstMember
+  tk-field (mods) (ty) (name) (value) = CstField [] mods ty [CstVariable { cv-name = name, cv-value = value }]
+
+  tk-method : List CstModifier, CstType, Text, List CstParameter, List CstStmt -> CstMember
+  tk-method (mods) (result) (name) (params) (body) =
+    CstMethod CstMethodSpec { cm-attributes = [], cm-modifiers = mods, cm-result = result, cm-name = name, cm-type-params = [], cm-params = params, cm-body = Just (CstBlock body) }
+
+  tk-strings : List Text -> CstExpr
+  tk-strings (xs) = CstArrayNew (tk-ty "string") [] (list-map (\x -> CstString x) xs) True
+
+Section: Ornamentals
+
+ The hoe's seedless plantings: the game prefab and the build-menu name. A
+ prefab that yields a harvest costs one of it.
+
+  tk-ornament-prefabs : List Text
+  tk-ornament-prefabs = ["Bush01", "Bush01_heath", "Bush01_deepnorth", "Bush02_en", "shrub_2", "shrub_2_heath", "AshlandsBush1", "AshlandsBush2", "FernAshlands", "FernFiddleHeadAshlands", "vines", "RaspberryBush", "BlueberryBush", "CloudberryBush", "LingonberryBush", "Pickable_Dandelion", "Pickable_Thistle", "Pickable_Mushroom", "Pickable_Mushroom_yellow", "Pickable_Mushroom_blue", "vines", "vines"]
+
+  tk-ornament-labels : List Text
+  tk-ornament-labels = ["Meadow bush", "Heath bush", "Frost bush", "Tall bush", "Shrub", "Heath shrub", "Ash bush", "Tall ash bush", "Ash fern", "Fiddlehead fern", "Vines", "Raspberry bush", "Blueberry bush", "Cloudberry bush", "Lingonberry bush", "Dandelion", "Thistle", "Mushroom", "Yellow mushroom", "Blue mushroom", "Vines on a 45 degree roof", "Vines on a 26 degree roof"]
+
+ Degrees each planting leans from upright: a vine on a 45 degree roof leans 45, on
+ a 26 degree roof 64.
+
+  tk-ornament-tilts : List Text
+  tk-ornament-tilts = ["0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "45", "64"]
+
+Section: Hoe Swap
+
+ A planted ornamental is the game's own prefab, so a save holds nothing of
+ ours, and a harvest-bearing one starts picked so it pays back by regrowing.
+ `Start` runs after the placement has written its creator; `Awake` runs
+ the clear before a terrain op destroys its carrier. A placement ghost is
+ built while `ZNetView.m_forceDisableInit` is set.
+
+  unity-tool-kit-swap-emit : [Console] Nothing
+  unity-tool-kit-swap-emit =
+    let nview = tk-n "nview"
+    in let valid = tk-or (tk-or (tk-not nview) (tk-not (tk-call (tk-d nview "IsValid") []))) (tk-not (tk-call (tk-d nview "IsOwner") []))
+    in let members = [
+      \u -> tk-field [CstPublic] (tk-ty "string") "target" None,
+      \u -> tk-field [CstPublic] (tk-ty "float") "clear" None,
+      \u -> tk-field [CstPublic] (tk-ty "float") "tilt" None,
+      \u -> tk-method [CstPrivate] (tk-ty "void") "Awake" [] [
+        tk-guard (tk-or (tk-d (tk-n "ZNetView") "m_forceDisableInit") (CstBinary CstLessEqual (tk-n "clear") (tk-float "0"))),
+        tk-var "nview" (tk-get CstThis "ZNetView"),
+        tk-guard (tk-and nview (tk-and (tk-call (tk-d nview "IsValid") []) (tk-not (tk-call (tk-d nview "IsOwner") [])))),
+        tk-do (tk-call (tk-d (tk-n "PrismToolKit") "Clear") [tk-d (tk-n "transform") "position", tk-n "clear"])
+      ],
+      \u -> tk-method [CstPrivate] (tk-ty "void") "Start" [] [
+        tk-var "nview" (tk-get CstThis "ZNetView"),
+        tk-guard (tk-or valid (CstBinary CstEqual (tk-n "target") CstNull)),
+        tk-var "prefab" (tk-call (tk-d (tk-d (tk-n "ZNetScene") "instance") "GetPrefab") [tk-n "target"]),
+        CstIf (tk-n "prefab") (CstBlock [
+          tk-var "made" (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "Instantiate") [tk-n "prefab", tk-d (tk-n "transform") "position", CstBinary CstMultiply (tk-d (tk-n "transform") "rotation") (tk-call (tk-d (tk-n "UnityEngine.Quaternion") "Euler") [tk-n "tilt", tk-float "0", tk-float "0"])]),
+          tk-var "pick" (tk-get (tk-n "made") "Pickable"),
+          tk-var "grown" (tk-get (tk-n "made") "ZNetView"),
+          CstIf (tk-and (tk-and (tk-n "pick") (tk-n "grown")) (tk-call (tk-d (tk-n "grown") "IsValid") [])) (CstBlock [
+            tk-do (tk-call (tk-d (tk-call (tk-d (tk-n "grown") "GetZDO") []) "Set") [tk-d (tk-n "ZDOVars") "s_pickedTime", tk-d (tk-call (tk-d (tk-d (tk-n "ZNet") "instance") "GetTime") []) "Ticks"]),
+            tk-do (tk-call (tk-d (tk-n "pick") "SetPicked") [CstBoolean True])
+          ]) None
+        ]) None,        tk-do (tk-call (tk-d (tk-d (tk-n "ZNetScene") "instance") "Destroy") [tk-n "gameObject"])
+      ]
+    ]
+    in cst-stream-class (CstClassHead { ch-modifiers = [CstInternal, CstSealed], ch-name = "PrismHoeSwap", ch-bases = [tk-ty "UnityEngine.MonoBehaviour"] }) members 0
+
+Section: Tool Kit
+
+  unity-tool-kit-fields : List (Integer -> CstMember)
+  unity-tool-kit-fields = [
+    \u -> tk-field [CstPrivate, CstStatic] (tk-ty "PrismToolKit") "instance" None,
+    \u -> tk-field [CstPrivate, CstStatic] (tk-ty "ObjectDB") "built" None,
+    \u -> tk-field [CstPrivate, CstStatic] tk-gos "hoeBase" None,
+    \u -> tk-field [CstPrivate, CstStatic] tk-gos "cultivatorBase" None,
+    \u -> tk-field [CstPrivate, CstStatic] tk-gos "made" (Just (CstObjectNew tk-gos [] [])),
+    \u -> tk-field [CstPrivate, CstStatic] tk-gos "ornaments" (Just (CstObjectNew tk-gos [] [])),
+    \u -> tk-field [CstPrivate, CstStatic] (CstNamedType "HashSet" [tk-ty "string"]) "ornamentNames" (Just (CstObjectNew (CstNamedType "HashSet" [tk-ty "string"]) [] [])),
+    \u -> tk-field [CstPrivate, CstStatic] tk-go "holder" None,
+    \u -> tk-field [CstPrivate, CstStatic, CstReadonly] (CstArrayType (tk-ty "string") 1) "OrnamentPrefabs" (Just (tk-strings tk-ornament-prefabs)),
+    \u -> tk-field [CstPrivate, CstStatic, CstReadonly] (CstArrayType (tk-ty "string") 1) "OrnamentLabels" (Just (tk-strings tk-ornament-labels)),
+    \u -> tk-field [CstPrivate, CstStatic, CstReadonly] (CstArrayType (tk-ty "float") 1) "OrnamentTilts" (Just (CstArrayNew (tk-ty "float") [] (list-map (\x -> tk-float x) tk-ornament-tilts) True)),
+    \u -> tk-field [CstPrivate] tk-policy "setting" None
+  ]
+
+  unity-tool-kit-install : Integer -> CstMember
+  unity-tool-kit-install (unused) =
+    tk-method [CstInternal, CstStatic] (tk-ty "void") "Install" [tk-param tk-policy "setting", tk-param tk-policy "length", tk-param tk-policy "spacing"] [
+      tk-guard (tk-n "instance"),
+      tk-set (tk-d (tk-n "PrismPlantRows") "plantingTool") (CstString "Hoe"),
+      tk-set (tk-d (tk-n "PrismPlantRows") "graftHoe") (CstBoolean False),
+      tk-var "host" (CstObjectNew tk-go [CstArgument { ca-mode = [], ca-name = "", ca-value = CstString "Prism Tool Kit" }] []),
+      tk-do (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "DontDestroyOnLoad") [tk-n "host"]),
+      tk-set (tk-n "instance") (tk-add (tk-n "host") "PrismToolKit"),
+      tk-set (tk-d (tk-n "instance") "setting") (tk-n "setting")
+    ]
+
+  unity-tool-kit-late-update : Integer -> CstMember
+  unity-tool-kit-late-update (unused) =
+    tk-method [CstPrivate] (tk-ty "void") "LateUpdate" [] [
+      tk-var "db" (tk-d (tk-n "ObjectDB") "instance"),
+      tk-guard (tk-or (tk-or (tk-not (tk-n "db")) (tk-not (tk-d (tk-n "ZNetScene") "instance"))) (CstBinary CstEqual (tk-n "built") (tk-n "db"))),
+      tk-var "hoe" (tk-call (tk-d (tk-n "db") "GetItemPrefab") [CstString "Hoe"]),
+      tk-var "cultivator" (tk-call (tk-d (tk-n "db") "GetItemPrefab") [CstString "Cultivator"]),
+      tk-guard (tk-or (tk-not (tk-n "hoe")) (tk-not (tk-n "cultivator"))),
+      tk-var "hoeShared" (tk-d (tk-d (tk-get (tk-n "hoe") "ItemDrop") "m_itemData") "m_shared"),
+      tk-var "shovelShared" (tk-d (tk-d (tk-get (tk-n "cultivator") "ItemDrop") "m_itemData") "m_shared"),
+      tk-guard (tk-or (tk-not (tk-d (tk-n "hoeShared") "m_buildPieces")) (tk-not (tk-d (tk-n "shovelShared") "m_buildPieces"))),
+      CstIf (CstBinary CstEqual (tk-n "hoeBase") CstNull) (CstBlock [
+        tk-set (tk-n "hoeBase") (CstObjectNew tk-gos [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-d (tk-d (tk-n "hoeShared") "m_buildPieces") "m_pieces" }] []),
+        tk-set (tk-n "cultivatorBase") (CstObjectNew tk-gos [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-d (tk-d (tk-n "shovelShared") "m_buildPieces") "m_pieces" }] []),
+        tk-do (tk-call (tk-n "MakeTemplates") [])
+      ]) None,
+      tk-set (tk-d (tk-n "shovelShared") "m_name") (CstString "Shovel"),
+      tk-set (tk-d (tk-n "shovelShared") "m_description") (CstString "Levels, smooths, digs and raises the ground, and lays paths and stone."),
+      tk-var "copper" (tk-get (tk-call (tk-d (tk-n "db") "GetItemPrefab") [CstString "Copper"]) "ItemDrop"),
+      CstForEach CstInferredType "r" (tk-d (tk-n "db") "m_recipes") (CstIf (tk-and (tk-and (tk-n "r") (tk-d (tk-n "r") "m_item")) (CstBinary CstEqual (tk-d (tk-d (tk-n "r") "m_item") "name") (CstString "Cultivator"))) (CstForEach CstInferredType "q" (tk-d (tk-n "r") "m_resources") (CstIf (tk-and (tk-and (tk-n "copper") (tk-d (tk-n "q") "m_resItem")) (CstBinary CstEqual (tk-d (tk-d (tk-n "q") "m_resItem") "name") (CstString "Bronze"))) (tk-set (tk-d (tk-n "q") "m_resItem") (tk-n "copper")) None)) None),
+      tk-set (tk-d (tk-n "hoeShared") "m_description") (CstString "Cultivates, clears and gently smooths the ground, and plants seeds, saplings and wild plants."),
+      tk-var "shovel" (CstObjectNew tk-gos [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-n "hoeBase" }] []),
+      tk-do (tk-call (tk-d (tk-n "shovel") "Add") [CstIndex (tk-n "made") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "0" }]]),
+      tk-do (tk-call (tk-d (tk-n "shovel") "Add") [CstIndex (tk-n "made") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "1" }]]),
+      tk-var "tilling" (tk-call (tk-d (tk-n "cultivatorBase") "FindAll") [CstLambda [tk-param CstInferredType "p"] (CstBinary CstEqual (tk-get (tk-n "p") "Plant") CstNull)]),
+      tk-var "planting" (tk-call (tk-d (tk-n "cultivatorBase") "FindAll") [CstLambda [tk-param CstInferredType "p"] (CstBinary CstNotEqual (tk-get (tk-n "p") "Plant") CstNull)]),
+      tk-var "hoeList" (CstObjectNew tk-gos [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-n "tilling" }] []),
+      tk-do (tk-call (tk-d (tk-n "hoeList") "Add") [CstIndex (tk-n "made") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "2" }]]),
+      tk-do (tk-call (tk-d (tk-n "hoeList") "Add") [CstIndex (tk-n "made") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "3" }]]),
+      tk-do (tk-call (tk-d (tk-n "hoeList") "AddRange") [tk-n "planting"]),
+      tk-do (tk-call (tk-d (tk-n "hoeList") "AddRange") [tk-n "ornaments"]),
+      tk-set (tk-d (tk-d (tk-n "shovelShared") "m_buildPieces") "m_pieces") (tk-n "shovel"),
+      tk-set (tk-d (tk-d (tk-n "hoeShared") "m_buildPieces") "m_pieces") (tk-n "hoeList"),
+      tk-set (tk-n "built") (tk-n "db")
+    ]
+
+  unity-tool-kit-find : Integer -> CstMember
+  unity-tool-kit-find (unused) =
+    tk-method [CstPrivate, CstStatic] tk-go "Find" [tk-param (tk-ty "string") "name"] [
+      CstReturn (Just (tk-call (tk-d (tk-n "hoeBase") "Find") [CstLambda [tk-param CstInferredType "p"] (tk-and (tk-n "p") (CstBinary CstEqual (tk-d (tk-n "p") "name") (tk-n "name")))]))
+    ]
+
+  unity-tool-kit-terrain : Integer -> CstMember
+  unity-tool-kit-terrain (unused) =
+    tk-method [CstPrivate, CstStatic] (tk-ty "TerrainOp.Settings") "Terrain" [tk-param (tk-ty "string") "from", tk-param (tk-ty "string") "id", tk-param (tk-ty "string") "label", tk-param (tk-ty "string") "text"] [
+      tk-var "t" (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "Instantiate") [tk-call (tk-n "Find") [tk-n "from"], tk-d (tk-n "holder") "transform"]),
+      tk-set (tk-d (tk-n "t") "name") (tk-n "id"),
+      tk-var "piece" (tk-get (tk-n "t") "Piece"),
+      tk-set (tk-d (tk-n "piece") "m_name") (tk-n "label"),
+      tk-set (tk-d (tk-n "piece") "m_description") (tk-n "text"),
+      tk-set (tk-d (tk-n "piece") "m_resources") (CstArrayNew (tk-ty "Piece.Requirement") [tk-int "0"] [] False),
+      tk-do (tk-call (tk-d (tk-n "made") "Add") [tk-n "t"]),
+      CstReturn (Just (tk-d (tk-get (tk-n "t") "TerrainOp") "m_settings"))
+    ]
+
+  unity-tool-kit-make-templates : Integer -> CstMember
+  unity-tool-kit-make-templates (unused) =
+    tk-method [CstPrivate, CstStatic] (tk-ty "void") "MakeTemplates" [] [
+      tk-set (tk-n "holder") (CstObjectNew tk-go [CstArgument { ca-mode = [], ca-name = "", ca-value = CstString "Prism Tool Kit Templates" }] []),
+      tk-do (tk-call (tk-d (tk-n "holder") "SetActive") [CstBoolean False]),
+      tk-do (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "DontDestroyOnLoad") [tk-n "holder"]),
+      tk-var "dig" (tk-call (tk-n "Terrain") [CstString "raise_v2", CstString "PrismShovelDig", CstString "Dig", CstString "Lowers the ground half a step."]),
+      tk-set (tk-d (tk-n "dig") "m_raiseDelta") (CstUnary CstNegate (tk-setting "0")),
+      tk-var "smooth" (tk-call (tk-n "Terrain") [CstString "mud_road_v2", CstString "PrismShovelSmooth", CstString "Smooth", CstString "Smooths the ground without laying dirt."]),
+      tk-set (tk-d (tk-n "smooth") "m_paintCleared") (CstBoolean False),
+      tk-var "clear" (tk-call (tk-n "Terrain") [CstString "path_v2", CstString "PrismHoeClear", CstString "Clear", CstString "Clears grass, bushes and plantings."]),
+      tk-set (tk-d (tk-n "clear") "m_paintType") (tk-d (tk-d (tk-n "TerrainModifier") "PaintType") "ClearVegetation"),
+      tk-set (tk-d (tk-n "clear") "m_paintRadius") (tk-setting "3"),
+      tk-set (tk-d (tk-add (CstIndex (tk-n "made") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "2" }]) "PrismHoeSwap") "clear") (tk-setting "3"),
+      tk-var "gentle" (tk-call (tk-n "Terrain") [CstString "mud_road_v2", CstString "PrismHoeSmooth", CstString "Smooth gently", CstString "Smooths a small patch a little."]),
+      tk-set (tk-d (tk-n "gentle") "m_paintCleared") (CstBoolean False),
+      tk-set (tk-d (tk-n "gentle") "m_smoothRadius") (tk-setting "1"),
+      tk-set (tk-d (tk-n "gentle") "m_smoothPower") (tk-setting "2"),
+      tk-var "fallback" (tk-d (tk-get (tk-call (tk-d (tk-n "cultivatorBase") "Find") [CstLambda [tk-param CstInferredType "p"] (tk-and (tk-n "p") (CstBinary CstEqual (tk-d (tk-n "p") "name") (CstString "replant_v2")))]) "Piece") "m_icon"),
+      tk-var "effect" (tk-d (tk-get (tk-call (tk-d (tk-n "cultivatorBase") "Find") [CstLambda [tk-param CstInferredType "p"] (tk-and (tk-n "p") (CstBinary CstEqual (tk-d (tk-n "p") "name") (CstString "sapling_carrot")))]) "Piece") "m_placeEffect"),
+      CstFor (tk-var "i" (tk-int "0")) (Just (CstBinary CstLess (tk-n "i") (tk-d (tk-n "OrnamentPrefabs") "Length"))) [CstUnary CstPostIncrement (tk-n "i")] (tk-do (tk-call (tk-n "Ornament") [tk-n "i", tk-n "fallback", tk-n "effect"]))
+    ]
+
+  unity-tool-kit-ornament : Integer -> CstMember
+  unity-tool-kit-ornament (unused) =
+    let name = CstIndex (tk-n "OrnamentPrefabs") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-n "i" }]
+    in let piece = tk-n "piece"
+    in let tilt = CstIndex (tk-n "OrnamentTilts") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-n "i" }]
+    in tk-method [CstPrivate, CstStatic] (tk-ty "void") "Ornament" [tk-param (tk-ty "int") "i", tk-param (tk-ty "UnityEngine.Sprite") "fallback", tk-param (tk-ty "EffectList") "effect"] [
+      tk-var "source" (tk-call (tk-d (tk-d (tk-n "ZNetScene") "instance") "GetPrefab") [name]),
+      tk-guard (tk-not (tk-n "source")),
+      tk-var "t" (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "Instantiate") [tk-n "source", tk-d (tk-n "holder") "transform"]),
+      tk-set (tk-d (tk-n "t") "name") (CstBinary CstAdd (CstBinary CstAdd (CstString "PrismHoe_") name) (CstConditional (CstBinary CstGreater tilt (tk-float "0")) (CstBinary CstAdd (CstString "_") tilt) (CstString ""))),
+      tk-var "lean" (tk-call (tk-d (tk-n "UnityEngine.Quaternion") "Euler") [tilt, tk-float "0", tk-float "0"]),
+      CstFor (tk-var "k" (tk-int "0")) (Just (CstBinary CstLess (tk-n "k") (tk-d (tk-d (tk-n "t") "transform") "childCount"))) [CstUnary CstPostIncrement (tk-n "k")] (CstBlock [
+        tk-var "child" (tk-call (tk-d (tk-d (tk-n "t") "transform") "GetChild") [tk-n "k"]),
+        tk-set (tk-d (tk-n "child") "localPosition") (CstBinary CstMultiply (tk-n "lean") (tk-d (tk-n "child") "localPosition")),
+        tk-set (tk-d (tk-n "child") "localRotation") (CstBinary CstMultiply (tk-n "lean") (tk-d (tk-n "child") "localRotation"))
+      ]),      tk-var "piece" (tk-add (tk-n "t") "Piece"),
+      tk-set (tk-d piece "m_name") (CstIndex (tk-n "OrnamentLabels") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-n "i" }]),
+      tk-set (tk-d piece "m_description") (CstString "Planted with the hoe."),
+      tk-set (tk-d piece "m_category") (tk-d (tk-d (tk-n "Piece") "PieceCategory") "Misc"),
+      tk-set (tk-d piece "m_groundOnly") (CstBoolean True),
+      tk-set (tk-d piece "m_icon") (tk-n "fallback"),
+      tk-set (tk-d piece "m_placeEffect") (tk-n "effect"),
+      tk-var "solid" (tk-add (tk-n "t") "UnityEngine.SphereCollider"),
+      tk-set (tk-d (tk-n "solid") "radius") (tk-float "0.25"),
+      tk-set (tk-d (tk-n "solid") "center") (CstObjectNew (tk-ty "UnityEngine.Vector3") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0.25" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0" }] []),
+      tk-set (tk-d piece "m_resources") (CstArrayNew (tk-ty "Piece.Requirement") [tk-int "0"] [] False),
+      tk-var "pickable" (tk-get (tk-n "source") "Pickable"),
+      CstIf (tk-and (tk-n "pickable") (tk-d (tk-n "pickable") "m_itemPrefab")) (CstBlock [
+        tk-var "harvest" (tk-get (tk-d (tk-n "pickable") "m_itemPrefab") "ItemDrop"),
+        tk-var "cost" (CstObjectNew (tk-ty "Piece.Requirement") [] []),
+        tk-set (tk-d (tk-n "cost") "m_resItem") (tk-n "harvest"),
+        tk-set (tk-d (tk-n "cost") "m_amount") (tk-int "1"),
+        tk-set (tk-d piece "m_resources") (CstArrayNew (tk-ty "Piece.Requirement") [] [tk-n "cost"] True),
+        tk-set (tk-d piece "m_icon") (tk-call (tk-d (tk-d (tk-n "harvest") "m_itemData") "GetIcon") [])
+      ]) None,
+      tk-var "swap" (tk-add (tk-n "t") "PrismHoeSwap"),
+      tk-set (tk-d (tk-n "swap") "target") name,
+      tk-set (tk-d (tk-n "swap") "tilt") tilt,
+      tk-do (tk-call (tk-d (tk-n "ornaments") "Add") [tk-n "t"]),
+      tk-do (tk-call (tk-d (tk-n "ornamentNames") "Add") [name])
+    ]
+
+  unity-tool-kit-clear : Integer -> CstMember
+  unity-tool-kit-clear (unused) =
+    let go = tk-n "go"
+    in tk-method [CstInternal, CstStatic] (tk-ty "void") "Clear" [tk-param (tk-ty "UnityEngine.Vector3") "at", tk-param (tk-ty "float") "radius"] [
+      tk-var "seen" (CstObjectNew (CstNamedType "HashSet" [tk-go]) [] []),
+      CstForEach CstInferredType "c" (tk-call (tk-d (tk-n "UnityEngine.Physics") "OverlapSphere") [tk-n "at", tk-n "radius"]) (CstBlock [
+        tk-var "nview" (CstCall (CstMemberAccess (tk-n "c") "GetComponentInParent" [tk-ty "ZNetView"]) []),
+        CstIf (tk-or (tk-not (tk-n "nview")) (tk-not (tk-call (tk-d (tk-n "nview") "IsValid") []))) CstContinue None,
+        tk-var "go" (tk-d (tk-n "nview") "gameObject"),
+        CstIf (tk-not (tk-call (tk-d (tk-n "seen") "Add") [go])) CstContinue None,
+        tk-var "wild" (tk-or (tk-or (CstBinary CstNotEqual (tk-get go "Pickable") CstNull) (CstBinary CstNotEqual (tk-get go "Plant") CstNull)) (tk-call (tk-d (tk-n "ornamentNames") "Contains") [tk-call (tk-d (tk-n "Utils") "GetPrefabName") [go]])),
+        CstIf (tk-or (tk-not (tk-n "wild")) (tk-or (CstBinary CstNotEqual (tk-get go "Character") CstNull) (CstBinary CstNotEqual (tk-get go "ItemDrop") CstNull))) CstContinue None,
+        tk-do (tk-call (tk-d (tk-n "nview") "ClaimOwnership") []),
+        tk-do (tk-call (tk-d (tk-d (tk-n "ZNetScene") "instance") "Destroy") [go])
+      ])
+    ]
+
+  unity-tool-kit-members : List (Integer -> CstMember)
+  unity-tool-kit-members = unity-tool-kit-fields & [
+    unity-tool-kit-install,
+    unity-tool-kit-late-update,
+    unity-tool-kit-find,
+    unity-tool-kit-terrain,
+    unity-tool-kit-make-templates,
+    unity-tool-kit-ornament,
+    unity-tool-kit-clear,
+    unity-tool-kit-garden-plants
+  ]
+
+  unity-tool-kit-emit : [Console] Nothing
+  unity-tool-kit-emit = act
+    cst-stream-class (CstClassHead { ch-modifiers = [CstInternal, CstSealed], ch-name = "PrismToolKit", ch-bases = [tk-ty "UnityEngine.MonoBehaviour"] }) unity-tool-kit-members 0
+    unity-tool-kit-swap-emit
+  end
+
+  unity-tool-kit-effect : Integer -> CstMember
+  unity-tool-kit-effect (unused) =
+    let policy = tk-policy
+    in tk-method [CstPublic, CstStatic] (tk-fn policy (tk-fn policy (tk-ty "object"))) "unity_tool_kit_start" [tk-param policy "setting"] [
+      CstReturn (Just (CstLambdaBlock [tk-param CstInferredType "length"] (CstBlock [
+        CstReturn (Just (CstLambdaBlock [tk-param CstInferredType "spacing"] (CstBlock [
+          tk-do (tk-call (tk-d (tk-n "PrismToolKit") "Install") [tk-n "setting", tk-n "length", tk-n "spacing"]),
+          CstReturn (Just CstNull)
+        ])))
+      ])))
+    ]
+
+  unity-tool-kit-garden-plants : Integer -> CstMember
+  unity-tool-kit-garden-plants (unused) =
+    (CstMethod CstMethodSpec { cm-attributes = [], cm-modifiers = [CstInternal, CstStatic], cm-result = (CstNamedType "void" []), cm-name = "GardenPlants", cm-type-params = [], cm-params = [], cm-body = (Just (CstBlock [(CstIf (CstBinary CstOr (CstBinary CstOr (CstName "instance" []) (CstUnary CstNot (CstMemberAccess (CstName "ObjectDB" []) "instance" []))) (CstUnary CstNot (CstMemberAccess (CstName "ZNetScene" []) "instance" []))) (CstReturn None) None), (CstVariables [] CstInferredType [CstVariable { cv-name = "cultivator", cv-value = (Just (CstCall (CstMemberAccess (CstMemberAccess (CstName "ObjectDB" []) "instance" []) "GetItemPrefab" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = (CstString "Cultivator") }])) }]), (CstIf (CstUnary CstNot (CstName "cultivator" [])) (CstReturn None) None), (CstVariables [] CstInferredType [CstVariable { cv-name = "table", cv-value = (Just (CstMemberAccess (CstMemberAccess (CstMemberAccess (CstCall (CstMemberAccess (CstName "cultivator" []) "GetComponent" [(CstNamedType "ItemDrop" [])]) []) "m_itemData" []) "m_shared" []) "m_buildPieces" [])) }]), (CstIf (CstUnary CstNot (CstName "table" [])) (CstReturn None) None), (CstIf (CstBinary CstEqual (CstMemberAccess (CstName "ornaments" []) "Count" []) (CstNumber "0" CstInt)) (CstBlock [(CstVariables [] CstInferredType [CstVariable { cv-name = "replant", cv-value = (Just (CstCall (CstMemberAccess (CstMemberAccess (CstName "table" []) "m_pieces" []) "Find" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = (CstLambda [CstParameter { cp-modifiers = [], cp-type = CstInferredType, cp-name = "p", cp-default = None }] (CstBinary CstAnd (CstName "p" []) (CstBinary CstEqual (CstMemberAccess (CstName "p" []) "name" []) (CstString "replant_v2")))) }])) }]), (CstVariables [] CstInferredType [CstVariable { cv-name = "carrot", cv-value = (Just (CstCall (CstMemberAccess (CstMemberAccess (CstName "table" []) "m_pieces" []) "Find" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = (CstLambda [CstParameter { cp-modifiers = [], cp-type = CstInferredType, cp-name = "p", cp-default = None }] (CstBinary CstAnd (CstName "p" []) (CstBinary CstEqual (CstMemberAccess (CstName "p" []) "name" []) (CstString "sapling_carrot")))) }])) }]), (CstIf (CstBinary CstOr (CstUnary CstNot (CstName "replant" [])) (CstUnary CstNot (CstName "carrot" []))) (CstReturn None) None), (CstExpression (CstAssignment CstAssign (CstName "holder" []) (CstObjectNew (CstNamedType "UnityEngine.GameObject" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = (CstString "Cobblestone Garden Templates") }] []))), (CstExpression (CstCall (CstMemberAccess (CstName "holder" []) "SetActive" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = (CstBoolean False) }])), (CstExpression (CstCall (CstMemberAccess (CstMemberAccess (CstName "UnityEngine" []) "Object" []) "DontDestroyOnLoad" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = (CstName "holder" []) }])), (CstFor (CstVariables [] (CstNamedType "int" []) [CstVariable { cv-name = "i", cv-value = (Just (CstNumber "0" CstInt)) }]) (Just (CstBinary CstLess (CstName "i" []) (CstMemberAccess (CstName "OrnamentPrefabs" []) "Length" []))) [(CstUnary CstPostIncrement (CstName "i" []))] (CstExpression (CstCall (CstName "Ornament" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = (CstName "i" []) }, CstArgument { ca-mode = [], ca-name = "", ca-value = (CstMemberAccess (CstCall (CstMemberAccess (CstName "replant" []) "GetComponent" [(CstNamedType "Piece" [])]) []) "m_icon" []) }, CstArgument { ca-mode = [], ca-name = "", ca-value = (CstMemberAccess (CstCall (CstMemberAccess (CstName "carrot" []) "GetComponent" [(CstNamedType "Piece" [])]) []) "m_placeEffect" []) }])))]) None), (CstForEach CstInferredType "plant" (CstName "ornaments" []) (CstIf (CstBinary CstAnd (CstName "plant" []) (CstUnary CstNot (CstCall (CstMemberAccess (CstMemberAccess (CstName "table" []) "m_pieces" []) "Contains" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = (CstName "plant" []) }]))) (CstExpression (CstCall (CstMemberAccess (CstMemberAccess (CstName "table" []) "m_pieces" []) "Add" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = (CstName "plant" []) }])) None))])) })
+

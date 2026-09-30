@@ -35,7 +35,13 @@ param(
     # makes the bed as hostile as the board. Probe arm only, never a flight:
     # with a nonzero requested base the stub's unwritten-cell 'B' check is
     # vacuous, because the cell is seeded with the base instead of zero.
-    [long]$HeapAt = 0
+    [long]$HeapAt = 0,
+    # A second EFI application on the same volume, chain-loaded when the
+    # operator holds -ChainKey during the first -ChainWindowMs of the stub.
+    # Empty emits no chooser, so every image built without it keeps its bytes.
+    [string]$ChainFile = '',
+    [string]$ChainKey = 'd',
+    [int]$ChainWindowMs = 3000
 )
 
 Set-StrictMode -Version Latest
@@ -801,6 +807,122 @@ $bw.Write([byte[]]@(
     0x4C, 0x89, 0x44, 0x24, 0x20, # mov [rsp+0x20], r8
     0xFF, 0x90, 0x00, 0x01, 0x00, 0x00  # call [rax+0x100]
 ))
+
+# The chooser: poll ConIn every 10 ms for -ChainWindowMs; on -ChainKey, build
+# the device path of the volume this image booted from plus -ChainFile, then
+# LoadImage and StartImage it. Runs before any allocation, so the chained
+# image finds 0x100000 as free as this one would. Any failure, or a chained
+# image that returns, falls through to this image. Serial: 'w' window open,
+# 'j' key seen, 'L' the chain was refused or returned.
+# Offsets are the spec's: SystemTable+0x30 ConIn, ConIn+0x08 ReadKeyStroke,
+# BootServices +0x40 AllocatePool, +0x98 HandleProtocol, +0xC8 LoadImage,
+# +0xD0 StartImage, +0xF8 Stall; LoadedImage+0x18 DeviceHandle; a device path
+# ends at type 0x7F subtype 0xFF, and a file path node is type 4 subtype 4.
+if ($ChainFile) {
+    $k = [int][char]($ChainKey.ToLowerInvariant()[0])
+    if ($k -gt 127) { throw "[cdx-to-pe] -ChainKey must be ASCII" }
+    $iters = [int][Math]::Ceiling($ChainWindowMs / 10)
+    $path = [System.Text.Encoding]::Unicode.GetBytes($ChainFile + [char]0)
+    $tail = [System.Collections.Generic.List[byte]]::new()
+    $tail.AddRange([byte[]]@(0x04, 0x04)); $tail.AddRange([BitConverter]::GetBytes([uint16](4 + $path.Length)))
+    $tail.AddRange($path)
+    $tail.AddRange([byte[]]@(0x7F, 0xFF, 0x04, 0x00))
+    $liGuid = [byte[]]@(0xA1, 0x31, 0x1B, 0x5B, 0x62, 0x95, 0xD2, 0x11, 0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B)
+    $dpGuid = [byte[]]@(0x91, 0x6E, 0x57, 0x09, 0x3F, 0x6D, 0xD2, 0x11, 0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B)
+    $c = [System.Collections.Generic.List[byte]]::new()
+    $fix = @()
+    function CallBs([int]$off) {
+        $c.AddRange([byte[]]@(0x49, 0x8B, 0x47, 0x60))                  # mov rax, [r15+0x60]
+        $c.AddRange([byte[]]@(0xFF, 0x90)); $c.AddRange([BitConverter]::GetBytes([int]$off))  # call [rax+off]
+    }
+    function JnzFail() {
+        $c.AddRange([byte[]]@(0x48, 0x85, 0xC0, 0x0F, 0x85))            # test rax, rax; jnz fail
+        $script:fix += ,@('fail', $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))
+    }
+    function LeaRip([byte]$modrm, [string]$label) {
+        $c.AddRange([byte[]]@(0x48, 0x8D, $modrm))                     # lea reg, [rip+label]
+        $script:fix += ,@($label, $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))
+    }
+    $c.AddRange([byte[]](MarkBytes 'w'))
+    $c.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x40))                      # sub rsp, 0x40
+    $c.Add(0xBB); $c.AddRange([BitConverter]::GetBytes([int]$iters))    # mov ebx, iters
+    $poll = $c.Count
+    $c.AddRange([byte[]]@(0x49, 0x8B, 0x4F, 0x30))                      # mov rcx, [r15+0x30]   ConIn
+    $c.AddRange([byte[]]@(0x48, 0x8D, 0x54, 0x24, 0x30))                # lea rdx, [rsp+0x30]   &key
+    $c.AddRange([byte[]]@(0xFF, 0x51, 0x08))                            # call [rcx+8]          ReadKeyStroke
+    $c.AddRange([byte[]]@(0x48, 0x85, 0xC0))                            # test rax, rax
+    $c.Add(0x75); $jNoKey = $c.Count; $c.Add(0)                         # jnz nokey
+    $c.AddRange([byte[]]@(0x0F, 0xB7, 0x44, 0x24, 0x32))                # movzx eax, word [rsp+0x32]  UnicodeChar
+    $c.AddRange([byte[]]@(0x83, 0xC8, 0x20))                            # or eax, 0x20
+    $c.AddRange([byte[]]@(0x83, 0xF8, [byte]$k))                        # cmp eax, key
+    $c.AddRange([byte[]]@(0x0F, 0x84)); $fix += ,@('chain', $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))  # je chain
+    $c[$jNoKey] = [byte]($c.Count - ($jNoKey + 1))
+    $c.Add(0xB9); $c.AddRange([BitConverter]::GetBytes([int]10000))    # mov ecx, 10000
+    CallBs 0xF8                                                         # Stall
+    $c.AddRange([byte[]]@(0xFF, 0xCB))                                  # dec ebx
+    $c.AddRange([byte[]]@(0x0F, 0x85)); $c.AddRange([BitConverter]::GetBytes([int]($poll - ($c.Count + 4))))  # jnz poll
+    $c.Add(0xE9); $fix += ,@('done', $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))  # jmp done
+    $labels = @{ chain = $c.Count }
+    $c.AddRange([byte[]](MarkBytes 'j'))
+    $c.AddRange([byte[]]@(0x4C, 0x89, 0xF1))                            # mov rcx, r14          ImageHandle
+    LeaRip 0x15 'li'                                                    # lea rdx, [rip+li]
+    $c.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x28))                # lea r8, [rsp+0x28]
+    CallBs 0x98; JnzFail                                                # HandleProtocol(LoadedImage)
+    $c.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))                # mov rax, [rsp+0x28]
+    $c.AddRange([byte[]]@(0x48, 0x8B, 0x48, 0x18))                      # mov rcx, [rax+0x18]   DeviceHandle
+    LeaRip 0x15 'dp'                                                    # lea rdx, [rip+dp]
+    $c.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x28))                # lea r8, [rsp+0x28]
+    CallBs 0x98; JnzFail                                                # HandleProtocol(DevicePath)
+    $c.AddRange([byte[]]@(0x48, 0x8B, 0x74, 0x24, 0x28))                # mov rsi, [rsp+0x28]   path start
+    $c.AddRange([byte[]]@(0x48, 0x89, 0xF7))                            # mov rdi, rsi
+    $walk = $c.Count
+    $c.AddRange([byte[]]@(0x66, 0x81, 0x3F, 0x7F, 0xFF))                # cmp word [rdi], 0xFF7F  end node
+    $c.Add(0x74); $jWalked = $c.Count; $c.Add(0)                        # je walked
+    $c.AddRange([byte[]]@(0x0F, 0xB7, 0x47, 0x02))                      # movzx eax, word [rdi+2]  node length
+    $c.AddRange([byte[]]@(0x83, 0xF8, 0x04, 0x0F, 0x82))                # cmp eax, 4; jb fail
+    $fix += ,@('fail', $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))
+    $c.AddRange([byte[]]@(0x48, 0x01, 0xC7))                            # add rdi, rax
+    $c.Add(0xEB); $c.Add([byte](256 - (($c.Count + 1) - $walk)))       # jmp walk
+    $c[$jWalked] = [byte]($c.Count - ($jWalked + 1))
+    $c.AddRange([byte[]]@(0x48, 0x29, 0xF7))                            # sub rdi, rsi          prefix length
+    $c.AddRange([byte[]]@(0x48, 0x89, 0x7C, 0x24, 0x38))                # mov [rsp+0x38], rdi
+    $c.AddRange([byte[]]@(0xB9, 0x02, 0x00, 0x00, 0x00))                # mov ecx, 2            EfiLoaderData
+    $c.AddRange([byte[]]@(0x48, 0x8D, 0x97)); $c.AddRange([BitConverter]::GetBytes([int]$tail.Count))  # lea rdx, [rdi+tail]
+    $c.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x28))                # lea r8, [rsp+0x28]
+    CallBs 0x40; JnzFail                                                # AllocatePool
+    $c.AddRange([byte[]]@(0x48, 0x8B, 0x7C, 0x24, 0x28))                # mov rdi, [rsp+0x28]   buffer
+    $c.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x38))                # mov rcx, [rsp+0x38]
+    $c.AddRange([byte[]]@(0xFC, 0xF3, 0xA4))                            # cld; rep movsb        device path
+    LeaRip 0x35 'tail'                                                  # lea rsi, [rip+tail]
+    $c.Add(0xB9); $c.AddRange([BitConverter]::GetBytes([int]$tail.Count))  # mov ecx, tail
+    $c.AddRange([byte[]]@(0xF3, 0xA4))                                  # rep movsb             file node + end
+    $c.AddRange([byte[]]@(0x31, 0xC9))                                  # xor ecx, ecx          BootPolicy FALSE
+    $c.AddRange([byte[]]@(0x4C, 0x89, 0xF2))                            # mov rdx, r14          parent
+    $c.AddRange([byte[]]@(0x4C, 0x8B, 0x44, 0x24, 0x28))                # mov r8, [rsp+0x28]    path
+    $c.AddRange([byte[]]@(0x45, 0x31, 0xC9))                            # xor r9d, r9d          no buffer
+    $c.AddRange([byte[]]@(0x48, 0xC7, 0x44, 0x24, 0x20, 0, 0, 0, 0))    # mov qword [rsp+0x20], 0
+    $c.AddRange([byte[]]@(0x48, 0x8D, 0x44, 0x24, 0x30))                # lea rax, [rsp+0x30]
+    $c.AddRange([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x28))                # mov [rsp+0x28], rax   &handle
+    CallBs 0xC8; JnzFail                                                # LoadImage
+    $c.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x30))                # mov rcx, [rsp+0x30]   handle
+    $c.AddRange([byte[]]@(0x31, 0xD2, 0x45, 0x31, 0xC0))                # xor edx, edx; xor r8d, r8d
+    CallBs 0xD0                                                         # StartImage
+    $labels['fail'] = $c.Count
+    $c.AddRange([byte[]](MarkBytes 'L'))
+    $data = 16 + 16 + $tail.Count
+    $c.Add(0xE9); $c.AddRange([BitConverter]::GetBytes([int]$data))    # jmp over the data
+    $labels['li'] = $c.Count; $c.AddRange($liGuid)
+    $labels['dp'] = $c.Count; $c.AddRange($dpGuid)
+    $labels['tail'] = $c.Count; $c.AddRange($tail)
+    $labels['done'] = $c.Count
+    $c.AddRange([byte[]]@(0x48, 0x83, 0xC4, 0x40))                      # add rsp, 0x40
+    foreach ($f in $fix) {
+        $rel = [BitConverter]::GetBytes([int]($labels[$f[0]] - ($f[1] + 4)))
+        for ($b = 0; $b -lt 4; $b++) { $c[$f[1] + $b] = $rel[$b] }
+    }
+    $bw.Write($c.ToArray())
+    Write-Host "[cdx-to-pe] chooser: '$ChainKey' for $ChainWindowMs ms chains to $ChainFile ($($c.Count) bytes)"
+}
 
 # ConOut ClearScreen BEFORE GopAcquire, and the order is the fix for the ASUS
 # display corruption of 2026-08-02. On AMI Aptio V the first real ConOut use

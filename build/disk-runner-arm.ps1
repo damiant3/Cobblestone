@@ -103,13 +103,21 @@ if ($noDisk -like '*ok=yes cdx=*') { $fails += 'the control compiled something w
 if ($noDisk -notmatch '(?m)^=== runner done ===\r?$') { $fails += 'the control did not finish' }
 
 Write-Host 'disk-runner-arm: arm 3, an entry the codegen refuses...'
-$badSrc = Join-Path $work 'nochap.codex'
-Set-Content -Path $badSrc -Value 'hello' -NoNewline -Encoding ASCII
+# A builtin passed as a value is refused by the emitter, not the frontend
+# (codex/test/errors/builtin-as-value, cite-free here because the arm images
+# raw sources).
+$badSrc = Join-Path $work 'cgonly.codex'
+$cgLines = @('Chapter: CodegenOnly', '', 'Section: Body', '',
+             '  apply-it : (Text -> [Console.Write] Nothing), Text -> [Console.Write] Nothing',
+             '  apply-it (f) (t) = f t', '',
+             '  opening : [Console] Nothing = act',
+             '    apply-it print-line-uni "builtin"', '  end', '')
+[System.IO.File]::WriteAllText($badSrc, ($cgLines -join "`n"), [System.Text.UTF8Encoding]::new($false))
 $badImg = Join-Path $work 'codegen-red.img'
 Invoke-Step 'codegen-red image' @('-NoProfile', '-File', (Join-Path $repo 'codex\plugs\img\run.ps1'), '-PeInput', $samplePe, '-CdxInput', $sampleCdx, '-Out', $badImg, '-Fat16', '-Source', $badSrc) $badImg
 $codegenRed = Get-Run 'codegen-red' @('-DiskFile', $badImg)
 Write-Host ($codegenRed.TrimEnd() -split "`r?`n" | ForEach-Object { "  $_" }) -Separator "`n"
-if ($codegenRed -notmatch '(?m)^NOCHAP\.COD : frontend ok, CODEGEN errors=[1-9]\d* first=CDX\d+\r?$') { $fails += 'arm 3 did not reach the CODEGEN branch at all' }
+if ($codegenRed -notmatch '(?m)^CGONLY\.COD : frontend ok, CODEGEN errors=[1-9]\d* first=CDX2040 codes=2040@\d+:\d+\S*\r?$') { $fails += 'arm 3 did not reach the CODEGEN branch at all' }
 if ($codegenRed -notmatch '(?m)^summary   : failed=1\r?$') {
     $fails += 'arm 3: the summary did not count the entry the codegen refused'
 }

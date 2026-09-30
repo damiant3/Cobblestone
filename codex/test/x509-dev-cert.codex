@@ -4,10 +4,13 @@ Chapter: X509DevCertTest
   cites Encode chapter X509Chain
   cites Encode chapter TlsEndpoint
   cites Foreword chapter Ed25519
+  cites Foreword chapter EcdsaP256Sign
+  cites Foreword chapter EcdsaP256
   cites Foreword chapter CCE
   cites Foreword chapter Maybe
 
- The keys are RFC 8032 section 7.1, TEST 1 and TEST 2.
+ The keys are RFC 8032 section 7.1, TEST 1 and TEST 2. p1 is RFC 6979
+ A.2.5's P-256 key and p1-pub its public key.
 
  We say:
 
@@ -24,6 +27,19 @@ Section: Fixtures
   k2-priv : List Integer =
     [#4C, #CD, #08, #9B, #28, #FF, #96, #DA, #9D, #B6, #C3, #46, #EC, #11, #4E, #0F,
      #5B, #8A, #31, #9F, #35, #AB, #A6, #24, #DA, #8C, #F6, #ED, #4F, #B8, #A6, #FB]
+
+  p1-priv : List Integer =
+    [201, 175, 169, 216, 69, 186, 117, 22, 107, 92, 33, 87, 103, 177, 214, 147,
+     78, 80, 195, 219, 54, 232, 155, 18, 123, 138, 98, 43, 18, 15, 103, 33]
+
+  p1-pub : List Integer =
+    [4, 96, 254, 212, 186, 37, 90, 157, 49, 201, 97, 235, 116, 198, 53, 109,
+     104, 192, 73, 184, 146, 59, 97, 250, 108, 230, 105, 98, 46, 96, 242, 159,
+     182, 121, 3, 254, 16, 8, 184, 188, 153, 164, 26, 233, 233, 86, 40, 188,
+     100, 242, 241, 178, 12, 45, 126, 159, 81, 119, 163, 194, 148, 212, 70, 34,
+     153]
+
+  p2-priv : List Integer = list-set-at (copy-bytes p1-priv 0 []) 31 34
 
   loopback : List Integer = [127, 0, 0, 1]
 
@@ -181,6 +197,38 @@ Section: Refusals
     in let empty-cn = is-none (x509-dev-cert-ed25519 k1-priv [1] [] (ascii "20250101000000") (ascii "20350101000000") [ascii "localhost"] [])
     in "refuse no-names=" & yn no-names & " short-ip=" & yn short-ip & " empty-cn=" & yn empty-cn
 
+Section: P-256
+
+  mint-p256 : List Integer, Text -> Maybe (List Integer)
+  mint-p256 (priv) (not-after) =
+    x509-dev-cert-p256 priv [1] (ascii "codex-dev") (ascii "20250101000000") (ascii not-after) [ascii "localhost"] [loopback]
+
+  p256-fields-line : List Integer -> Text
+  p256-fields-line (cert) =
+    when x509-parse cert
+      is None -> "p256 parse=fail"
+      is Just (c) -> p256-fields-of c
+
+  p256-fields-of : X509Cert -> Text
+  p256-fields-of (c) =
+    let key = " key=" & yn (bytes-eq ((c.xc-key).xk-bytes) p1-pub)
+    in "p256 parse=ok version=" & show (c.xc-version) & " self-issued=" & yn (bytes-eq (c.xc-issuer) (c.xc-subject)) & " alg=" & alg-text ((c.xc-key).xk-alg) & key
+
+  alg-text : X509KeyAlg -> Text
+  alg-text (a) =
+    when a
+      is KeyEcdsaP256 -> "p256"
+      is KeyEd25519 -> "ed25519"
+      is otherwise -> "other"
+
+  p256-refusals : Text
+  p256-refusals =
+    let short-key = is-none (x509-dev-cert-p256 [1, 2, 3] [1] (ascii "cn") (ascii "20250101000000") (ascii "20350101000000") [ascii "localhost"] [])
+    in let zero-key = is-none (x509-dev-cert-p256 (for b in p1-priv -> 0) [1] (ascii "cn") (ascii "20250101000000") (ascii "20350101000000") [ascii "localhost"] [])
+    in let order-key = is-none (x509-dev-cert-p256 ec-n-bytes [1] (ascii "cn") (ascii "20250101000000") (ascii "20350101000000") [ascii "localhost"] [])
+    in let no-names = is-none (x509-dev-cert-p256 p1-priv [1] (ascii "cn") (ascii "20250101000000") (ascii "20350101000000") [] [])
+    in "p256 refuse short-key=" & yn short-key & " zero-key=" & yn zero-key & " order-key=" & yn order-key & " no-names=" & yn no-names
+
 Section: The Handshake
 
   tls-line : List Integer, List Integer -> Text
@@ -190,8 +238,17 @@ Section: The Handshake
       is Just (a) -> tls-run cert (anchor-of a)
 
   tls-run : List Integer, X509Anchor -> Text
-  tls-run (cert) (anchor) =
-    let s0 = tls-ep-server-new s-priv s-random [cert] k1-priv (ed25519-public-key k1-priv)
+  tls-run (cert) (anchor) = tls-run-with cert anchor k1-priv (ed25519-public-key k1-priv)
+
+  tls-line-p256 : List Integer, List Integer -> Text
+  tls-line-p256 (cert) (pinned) =
+    when x509-parse pinned
+      is None -> "tls pin-unparsed"
+      is Just (a) -> tls-run-with cert (anchor-of a) p1-priv (ecdsa-p256-public p1-priv)
+
+  tls-run-with : List Integer, X509Anchor, List Integer, List Integer -> Text
+  tls-run-with (cert) (anchor) (sign-priv) (sign-pub) =
+    let s0 = tls-ep-server-new s-priv s-random [cert] sign-priv sign-pub
     in let c0 = tls-ep-client-new c-priv c-random [anchor] (ascii "20260923000000") (ascii "localhost")
     in let st1 = tls-ep-hello c0
     in let sv1 = tls-ep-recv s0 (list-at (st1.tes-out) 0)
@@ -233,5 +290,23 @@ Section: Entry
       print-line-uni refusals-b
       print-line-uni (tls-line cert cert)
       print-line-uni ("pinned-other " & tls-line cert other)
+      p256-lines
+    end
+  end
+
+  p256-lines : [Console] Nothing = act
+    let pc = or-empty (mint-p256 p1-priv "20350101000000")
+    in let po = or-empty (mint-p256 p2-priv "20350101000000")
+    in act
+      print-line-uni ("p256 fixture-pub=" & yn (bytes-eq (ecdsa-p256-public p1-priv) p1-pub) & " minted=" & yn (list-length pc > 0) & " other=" & yn (list-length po > 0))
+      print-line-uni (p256-fields-line pc)
+      print-line-uni ("p256 " & names-line pc)
+      print-line-uni ("p256 pinned localhost=" & verdict pc pc "20260923000000" "localhost")
+      print-line-uni ("p256 pinned ip=" & verdict pc pc "20260923000000" "127.0.0.1")
+      print-line-uni ("p256 tampered=" & verdict (flip-late pc) pc "20260923000000" "localhost")
+      print-line-uni ("p256 other key=" & verdict pc po "20260923000000" "localhost")
+      print-line-uni p256-refusals
+      print-line-uni ("p256 " & tls-line-p256 pc pc)
+      print-line-uni ("p256 pinned-other " & tls-line-p256 pc po)
     end
   end

@@ -1,0 +1,54 @@
+Chapter: FluxFirstImage
+  cites Kernel chapter GpuBridge
+  cites AI chapter ClipBpe
+  cites AI chapter T5Tokenizer
+  cites Diffusion chapter Txt2Img
+  cites Diffusion chapter FluxTxt2Img
+  cites Foreword chapter FactDisk
+  cites Foreword chapter Console
+
+ The first Flux image: flux1-schnell-fp8 at its published settings (4 steps,
+ CFG 1, Euler, the simple schedule), generate-art.ps1's "storage" prompt and
+ seed 7201, 1024 x 1024, written to build-output/flux-first-image.png. The disk
+ is build/mint-clip-bpe-disk.ps1's (CLIP's vocab.json and merges.txt) with
+ FLUX.1-schnell's T5 tokenizer.json as its one extra.
+
+ We say:
+
+Section: Disk
+
+  fi-load : Integer, Integer -> [Device.Block] Integer
+  fi-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+Section: Request
+
+  fi-request : Txt2Img
+  fi-request =
+    let style = "painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, "
+    in let prompt = style & "four iron-bound wooden chests around a carpenter workbench, joined by glowing golden rune threads, inside a torch-lit longhouse"
+    in let params = prompt & "\nSteps: 4, Sampler: Euler, Schedule type: Simple, CFG scale: 1, Seed: 7201, Size: 1024x1024, Model: flux1-schnell-fp8-e4m3fn"
+    in Txt2Img { ti-ckpt = "flux1-schnell-fp8-e4m3fn.safetensors", ti-prompt = prompt, ti-negative = "", ti-sampler = ti-euler, ti-scheduler = 8, ti-steps = 4, ti-cfg = 1.0, ti-seed = 7201, ti-width = 1024, ti-height = 1024, ti-out = "flux-first-image.png", ti-params = params, ti-clip-skip = 1, ti-extras = ti-no-extras }
+
+Section: Entry
+
+  fi-go : List Integer -> [Console, Device.Block] Nothing
+  fi-go (hd) =
+    act
+      v <- fi-load 1 (list-at hd 0)
+      m <- fi-load (1 + (list-at hd 0 + 511) / 512) (list-at hd 1)
+      j <- fi-load (list-at hd 2) (list-at hd 3)
+      let tt = t5-json-tables j (list-at hd 3)
+      in print-line-uni (flux-txt2img (clip-bpe-load v (list-at hd 0) m (list-at hd 1)) (t5-tok-load (tt.tt-vocab) (tt.tt-charsmap)) fi-request [])
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    fi-go [peek-32 h 0, peek-32 h 4, peek-32 h 12, peek-32 h 16]
+  end

@@ -155,6 +155,74 @@ ok('control: the same seed starts the same',
 // L-FALSIF: the power-of-two reader must reject something.
 ok('control: the tile reader rejects a non power of two', !isPow2(6) && isPow2(8));
 
+// -- THE RULES: the slide, merge, spawn and score of each move ---------------
+// Every tile slides as far as it can toward the move's side; two equal tiles
+// that meet merge into one of twice the value, each tile merging at most once
+// a move and the pair nearest the side merging first; the score rises by the
+// value of every merged tile; a move that changes nothing is refused; a
+// changed board gains one 2 or 4 on an empty cell; the game ends when no
+// direction changes anything. Directions: 0 left, 1 right, 2 up, 3 down.
+function slideLine(line) {
+  const t = line.filter(v => v), out = []; let gained = 0;
+  for (let i = 0; i < t.length; i++) {
+    if (i + 1 < t.length && t[i] === t[i + 1]) { out.push(t[i] * 2); gained += t[i] * 2; i++; }
+    else out.push(t[i]);
+  }
+  while (out.length < 4) out.push(0);
+  return { out, gained };
+}
+function slide(g, d) {
+  const n = g.slice(); let gained = 0;
+  for (let k = 0; k < 4; k++) {
+    const idx = [0, 1, 2, 3].map(j => d === 0 ? k * 4 + j : d === 1 ? k * 4 + 3 - j : d === 2 ? j * 4 + k : (3 - j) * 4 + k);
+    const r = slideLine(idx.map(i => g[i]));
+    idx.forEach((i, j) => { n[i] = r.out[j]; });
+    gained += r.gained;
+  }
+  return { n, gained, changed: n.some((v, i) => v !== g[i]) };
+}
+{
+  let bad = null, moves = 0, merges = 0, refused = 0, fours = 0, s = 9;
+  const rnd = k => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s >>> 16) % k; };
+  for (let g = 0; g < 20 && !bad; g++) {
+    let h = e.g2_new(g + 1);
+    for (let m = 0; m < 3000 && !bad && e.g2_done(h) === 0; m++) {
+      const before = grid(h), score = e.g2_score(h);
+      for (let d = 0; d < 4; d++) {
+        const ch = slide(before, d).changed;
+        if ((e.g2_can(h, d) === 1) !== ch) { bad = `game ${g}: direction ${d} playable ${e.g2_can(h, d)}, rules ${ch}`; break; }
+      }
+      if (bad) break;
+      const d = rnd(4), r = slide(before, d);
+      const next = e.g2_move(h, d);
+      if (!r.changed) {
+        refused++;
+        if (JSON.stringify(grid(next)) !== JSON.stringify(before) || e.g2_moves(next) !== e.g2_moves(h) || e.g2_score(next) !== score) {
+          bad = `game ${g}: a move that changes nothing changed the game`;
+        }
+        continue;
+      }
+      const after = grid(next);
+      const diff = after.map((v, i) => i).filter(i => after[i] !== r.n[i]);
+      if (diff.length !== 1 || r.n[diff[0]] !== 0 || (after[diff[0]] !== 2 && after[diff[0]] !== 4)) {
+        bad = `game ${g}: after ${d} the board is ${after}, the slide gives ${r.n} plus one new 2 or 4`; break;
+      }
+      if (after[diff[0]] === 4) fours++;
+      if (e.g2_score(next) !== score + r.gained) { bad = `game ${g}: score ${e.g2_score(next)}, rules ${score + r.gained}`; break; }
+      if (r.gained) merges++;
+      const over = [0, 1, 2, 3].every(k => !slide(after, k).changed);
+      if ((e.g2_done(next) === 1) !== over) { bad = `game ${g}: done ${e.g2_done(next)}, rules ${over}`; break; }
+      h = next; moves++;
+    }
+  }
+  ok('rules: every move of 20 games slides, merges, spawns and scores by the rules', bad === null, bad ?? `${moves} moves`);
+  ok('rules: the games reached merges, refused moves and spawned 4s', merges > 0 && refused > 0 && fours > 0,
+     `${merges} merging moves, ${refused} refusals, ${fours} fours`);
+  const once = slide([2, 2, 2, 2, 4, 4, 8, 0, 2, 2, 4, 0, 0, 0, 0, 0], 0).n.slice(0, 12);
+  ok('control: the oracle merges each tile once, nearest the side first',
+     JSON.stringify(once) === JSON.stringify([4, 4, 0, 0, 8, 8, 0, 0, 4, 4, 0, 0]), JSON.stringify(once));
+}
+
 console.log(fail === 0
   ? `\nPASS: 2048 merges without losing or inventing a tile (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

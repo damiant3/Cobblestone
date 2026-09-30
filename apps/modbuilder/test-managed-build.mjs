@@ -1,0 +1,78 @@
+import {spawn,spawnSync} from 'node:child_process';
+import {readFileSync,writeFileSync,mkdirSync,mkdtempSync,copyFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {resolve,join} from 'node:path';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+import {createServer} from 'node:net';
+import assert from 'node:assert/strict';
+const repo=resolve(fileURLToPath(new URL('../..',import.meta.url)));
+const out=join(repo,'build-output/modbuilder-site');mkdirSync(out,{recursive:true});
+const scratch=mkdtempSync(join(tmpdir(),'modbuilder-cil-page-'));
+const hosted=process.argv.find(arg=>arg.startsWith('--url='))?.slice(6);
+const pageUrl=hosted||pathToFileURL(join(scratch,'workspace.html')).href;
+const allowedOrigin=hosted?new URL(hosted).origin:null;
+copyFileSync(join(repo,'apps/modbuilder/web/workspace.html'),join(scratch,'workspace.html'));
+const probe=createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
+const edge=spawn('C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',['--headless=new','--no-first-run','--remote-debugging-port='+port,'--user-data-dir='+join(scratch,'profile'),'about:blank'],{stdio:'ignore',windowsHide:true});
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));let ws;const external=[];
+try{
+  let target;for(let i=0;i<80&&!target;i++){try{target=(await(await fetch('http://127.0.0.1:'+port+'/json/list')).json()).find(t=>t.type==='page');}catch{}if(!target)await sleep(200);}
+  assert(target,'test browser started');
+  ws=new WebSocket(target.webSocketDebuggerUrl);await new Promise(r=>ws.addEventListener('open',r));let id=0;const pending=new Map();
+  ws.addEventListener('message',e=>{const m=JSON.parse(e.data);if(m.id){pending.get(m.id)?.(m);pending.delete(m.id);}if(m.method==='Network.requestWillBeSent'&&/^https?:/.test(m.params.request.url)){const url=new URL(m.params.request.url);if(url.origin!==allowedOrigin&&!['127.0.0.1','localhost'].includes(url.hostname))external.push(url.href);}});
+  const send=(method,params={})=>new Promise(r=>{const n=++id;pending.set(n,r);ws.send(JSON.stringify({id:n,method,params}));});
+  const evaluate=async expression=>{const r=await send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.result?.exceptionDetails||r.error)throw new Error(JSON.stringify(r));return r.result.result.value;};
+  await send('Network.enable');await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});await send('Page.navigate',{url:pageUrl});
+  let ready=false;for(let i=0;i<240&&!ready;i++){ready=await evaluate('window.__prismReady===true&&!!document.getElementById("mb-compile-project")');if(!ready)await sleep(250);}assert(ready,'workspace ready');
+  assert(await evaluate(`!!EMBED['cil-stdio.wasm']&&!!EMBED['PrismRuntime.dll']&&!!window.__MOD_COMPILER_SOURCE['codex/plugs/cil/CilEmitter.codex']&&document.querySelector('#mb-compiler-source-code .k-kw')`),'compiler, adapter and highlighted source are embedded');
+  assert(await evaluate(`!document.getElementById('note')&&getComputedStyle(document.querySelector('[data-plug=csharp]')).display==='none'&&document.getElementById('mb-output-help').textContent.includes('does not build a DLL')&&document.getElementById('saveout').textContent==='Save C# source'`),'ModBuilder explains source export separately from embedded DLL build');
+  await evaluate(`document.getElementById('mb-project-card').open=true;document.getElementById('mb-compiler-source').open=true;document.querySelector('#mb-compiler-source-file [data-path="PrismRuntime.cs"]').click()`);
+  assert(await evaluate(`document.getElementById('mb-compiler-source-name').textContent==='PrismRuntime.cs'&&!!document.querySelector('#mb-compiler-source-code .k-kw')&&document.getElementById('mb-compiler-source-code').textContent.startsWith(window.__MOD_COMPILER_SOURCE['PrismRuntime.cs'].slice(0,100).replaceAll('\\r',''))`),'file selection renders the adapter source with syntax colours');
+  const sourceShot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});writeFileSync(join(out,'compiler-source-review.png'),Buffer.from(sourceShot.result.data,'base64'));
+  assert(await evaluate(`(()=>{const path='PrismRuntime.cs',original=window.__MOD_COMPILER_SOURCE[path],button=document.querySelector('#mb-compiler-source-file [data-path="PrismRuntime.cs"]');try{window.__MOD_COMPILER_SOURCE[path]='public string text = "<img src=x onerror=alert(1)>";\\n'+ 'x'.repeat(HL_PLAIN+1);button.click();return !document.querySelector('#mb-compiler-source-code img')&&document.getElementById('mb-compiler-source-code').textContent.includes('<img')&&document.getElementById('mb-compiler-source-code').textContent.length<=HL_PLAIN&&document.getElementById('mb-compiler-source-status').textContent.includes('shortened');}finally{window.__MOD_COMPILER_SOURCE[path]=original;button.click();}})()`),'source text is escaped and large previews are bounded');
+  await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
+  await evaluate(`document.getElementById('mb-project-card').open=true;document.getElementById('mb-compiler-source').open=true;`);
+  assert(await evaluate(`document.documentElement.scrollWidth<=400`),'expanded compiler source fits a narrow screen');
+  await evaluate(`document.getElementById('mb-project-card').open=false;document.getElementById('mb-compiler-source').open=false;`);
+  await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
+  await evaluate(`window.confirm=()=>true;document.getElementById('mb-build-without-helper').click();document.getElementById('mb-create-project').click();openFile('HudLayout.codex');srcEl.value=srcEl.value.replace('then 110 else 62','then 117 else 62');srcEl.dispatchEvent(new Event('input'));`);
+  await evaluate(`document.getElementById('mb-compile-project').onclick()`);
+  assert(await evaluate(`document.getElementById('mb-deploy-card').open&&!document.getElementById('mb-project-card').open&&document.querySelectorAll('#mb-player-flow>.mb-step-card').length===4`),'combined build opens deployment in the four-card flow');
+  assert(await evaluate(`!document.getElementById('mb-save-binary').disabled`),'edited model produces a DLL without a build server');
+  assert(await evaluate(`!document.getElementById('mb-manual-deployment').hidden&&document.getElementById('mb-assisted-deployment').hidden&&!document.getElementById('mb-manual-save').disabled&&!forgeFrame.contentWindow.mba_token(0n)`),'manual build and save require no connected helper');
+  const readyShot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});writeFileSync(join(out,'managed-build-flow.png'),Buffer.from(readyShot.result.data,'base64'));
+  const saved=await evaluate(`(async()=>{
+    const picker=window.showSaveFilePicker,blob=URL.createObjectURL;let bytes,release,done=false,blobCalls=0;
+    URL.createObjectURL=(...args)=>{blobCalls++;return blob(...args);};
+    try{
+      window.showSaveFilePicker=async options=>{if(options.suggestedName!=='PrismMod.dll')throw new Error('Wrong output name');return {createWritable:async()=>({write:async data=>{bytes=new Uint8Array(data);},close:()=>new Promise(r=>{release=r;}),abort:async()=>{}})};};
+      const saving=document.getElementById('mb-save-binary').onclick().then(()=>{done=true;});
+      while(!release)await new Promise(r=>setTimeout(r,0));
+      const waits=!done&&document.getElementById('mb-save-binary').disabled;release();await saving;
+      const collapsed=!document.getElementById('mb-project-card').open&&document.getElementById('mb-deploy-card').open;
+      window.showSaveFilePicker=async()=>{throw new DOMException('Cancelled','AbortError');};await document.getElementById('mb-save-binary').onclick();
+      const cancelled=document.getElementById('mb-binary-status').textContent.startsWith('Save cancelled');
+      window.showSaveFilePicker=async()=>({createWritable:async()=>({write:async()=>{},close:async()=>{throw new Error('Security check refused file');},abort:async()=>{}})});await document.getElementById('mb-save-binary').onclick();
+      const refused=document.getElementById('mb-binary-status').textContent.includes('Security check refused');
+      window.showSaveFilePicker=undefined;await document.getElementById('mb-save-binary').onclick();
+      const unsupported=document.getElementById('mb-binary-status').textContent.includes('Save As support');
+      return {waits,collapsed,cancelled,refused,unsupported,blobCalls,bytes:btoa(Array.from(bytes,c=>String.fromCharCode(c)).join(''))};
+    }finally{window.showSaveFilePicker=picker;URL.createObjectURL=blob;}
+  })()`);
+  assert(saved.waits&&saved.collapsed&&saved.cancelled&&saved.refused&&saved.unsupported&&saved.blobCalls===0,'Save As waits for close, handles cancellation/security failure and never falls back to a DLL blob download (picker stand-in)');
+  writeFileSync(join(out,'PrismMod-browser.dll'),Buffer.from(saved.bytes,'base64'));
+  assert(await evaluate(`(async()=>{const picker=window.showSaveFilePicker;let data;try{window.showSaveFilePicker=async()=>({createWritable:async()=>({write:async bytes=>{data=new Uint8Array(bytes);},close:async()=>{},abort:async()=>{}})});await document.getElementById('mb-manual-save').onclick();const expected=Uint8Array.from(atob(${JSON.stringify(saved.bytes)}),c=>c.charCodeAt(0));return data.length===expected.length&&data.every((b,i)=>b===expected[i])&&document.getElementById('mb-manual-status').textContent.includes('Saved PrismMod.dll');}finally{window.showSaveFilePicker=picker;}})()`),'manual deployment save writes exactly the current build');
+  const build=await evaluate(`ModBuilderManaged.buildNumber(Uint8Array.from(atob(${JSON.stringify(saved.bytes)}),c=>c.charCodeAt(0)))`);
+  assert(await evaluate(`document.getElementById('mb-deploy-artifact').textContent.includes(${JSON.stringify(build)})`),'fresh build identifier is visible before deployment');
+  const identity=spawnSync('pwsh',['-NoProfile','-Command',`[Reflection.Assembly]::Load([IO.File]::ReadAllBytes('${join(out,'PrismMod-browser.dll').replaceAll("'","''")}')).ManifestModule.ModuleVersionId.ToString('N')`],{encoding:'utf8',windowsHide:true});
+  assert.equal(identity.status,0,identity.stderr);assert.equal(build,identity.stdout.trim(),'page identifier is exactly the CLR module ID shown in the game');
+  const quote=value=>"'"+value.replaceAll("'","''")+"'";
+  const proof=spawnSync('pwsh',['-NoProfile','-Command',`$ErrorActionPreference='Stop';$assembly=[Reflection.Assembly]::Load([IO.File]::ReadAllBytes(${quote(join(out,'PrismMod-browser.dll'))}));$value=$assembly.GetType('PrismGenerated.Codex_Program',$true).GetMethod('hud-row-y').Invoke($null,@(0L));if($value -ne 117L){throw "Edited HUD value differs: $value"};$resource=$assembly.GetManifestResourceStream('PrismRuntime.dll');if($null -eq $resource){throw 'Embedded adapter missing'};try{if([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($resource)) -ne (Get-FileHash ${quote(join(repo,'codex/plugs/cil/build-output/runtime/PrismRuntime.dll'))}).Hash){throw 'Embedded adapter differs'}}finally{$resource.Dispose()}`],{encoding:'utf8',windowsHide:true,timeout:30000});
+  assert.equal(proof.status,0,'saved browser DLL preserves the source edit and adapter bytes: '+proof.stdout+proof.stderr);
+  assert(await evaluate(`(async()=>{let createdWriter=false;const picker=window.showSaveFilePicker;try{window.showSaveFilePicker=async()=>{srcEl.value+='\\n';srcEl.dispatchEvent(new Event('input'));return {createWritable:async()=>{createdWriter=true;throw new Error('Unexpected write');}};};await document.getElementById('mb-save-binary').onclick();return !createdWriter&&document.getElementById('mb-save-binary').disabled;}finally{window.showSaveFilePicker=picker;}})()`),'source changes while the picker is open prevent stale writes');
+  await evaluate(`(async()=>{srcEl.value=srcEl.value.replace('if row == 0 then 117 else 62','__heap-save');srcEl.dispatchEvent(new Event('input'));await document.getElementById('mb-compile-project').onclick();})()`);
+  assert(await evaluate(`document.getElementById('mb-save-binary').disabled&&document.getElementById('mb-binary-status').textContent.includes('REFUSED CIL')`),'unsupported code refuses and leaves no previous DLL available');
+  assert.deepEqual(external,[],'standalone builds make no external requests');
+  const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});writeFileSync(join(out,'managed-build-refusal.png'),Buffer.from(shot.result.data,'base64'));
+  console.log('PASS '+(hosted?'hosted':'standalone')+' managed build, source review, edited artifact and Save As state checks');
+}finally{ws?.close();edge.kill();await sleep(500);if(!scratch.startsWith(tmpdir()))throw new Error('Unexpected scratch path');try{rmSync(scratch,{recursive:true,force:true});}catch{}}

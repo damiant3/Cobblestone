@@ -36,6 +36,7 @@ Section: Verdict
     | ChainNoAnchor
     | ChainTooLong
     | ChainWrongIdentity
+    | ChainOutlivesIssuer
 
  A trust anchor is a name and a key. It is not a certificate: an anchor is
  trusted because the operator put it there, not because something signed
@@ -316,7 +317,7 @@ Section: Peer Identity
   x509-wildcard-match (cert-name) (expected) =
     let d = x509-first-dot expected 0
     in if d < 1 then False
-       else x509-ci-eq (x509-id-drop cert-name 1) (x509-id-drop expected d)
+    else x509-ci-eq (x509-id-drop cert-name 1) (x509-id-drop expected d)
 
   x509-first-dot : List Integer, Integer -> Integer
   x509-first-dot (bs) (i) =
@@ -430,6 +431,46 @@ Section: The Walk
     else if x509-signed-by (list-at chain i) ((list-at chain (i + 1)).xc-key) == False
     then ChainBadSignature
     else x509-walk chain anchors now (i + 1)
+
+ RFC 5280 path validation does not require nested validity, and web
+ chains break it: a cross-signed root can expire before the leaves it
+ vouches for. The walk above follows the RFC. A caller that issued the
+ chain itself, or pins it, asks for nesting as well: every certificate's
+ notAfter no later than its issuer certificate's. An anchor carries no
+ validity, so the last link to the anchor is not measured.
+
+  x509-verify-peer-nested : List X509Cert, List X509Anchor, List Integer, List Integer -> X509Verdict
+  x509-verify-peer-nested (chain) (anchors) (now) (expected) =
+    x509-nested-after (x509-verify-peer chain anchors now expected) chain
+
+  x509-nested-after : X509Verdict, List X509Cert -> X509Verdict
+  x509-nested-after (v) (chain) =
+    when v
+      is ChainOk -> x509-nested chain 0
+      is otherwise -> v
+
+  x509-nested : List X509Cert, Integer -> X509Verdict
+  x509-nested (chain) (i) =
+    if i + 1 >= list-length chain then ChainOk
+    else x509-nested-link chain i (x509-outlives (list-at chain i) (list-at chain (i + 1)))
+
+  x509-nested-link : List X509Cert, Integer, X509Verdict -> X509Verdict
+  x509-nested-link (chain) (i) (v) =
+    when v
+      is ChainOk -> x509-nested chain (i + 1)
+      is otherwise -> v
+
+  x509-outlives : X509Cert, X509Cert -> X509Verdict
+  x509-outlives (c) (issuer) =
+    when x509-time-norm (c.xc-not-after)
+      is None -> ChainBadTime
+      is Just (na) -> x509-not-after-within na (issuer.xc-not-after)
+
+  x509-not-after-within : List Integer, List Integer -> X509Verdict
+  x509-not-after-within (na) (issuer-na) =
+    when x509-time-norm issuer-na
+      is None -> ChainBadTime
+      is Just (ina) -> if x509-time-le na ina then ChainOk else ChainOutlivesIssuer
 
  An anchor matches on its name, and then it must actually have signed the
  thing. A name match alone proves nothing at all -- anyone can put any name

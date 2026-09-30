@@ -25,7 +25,7 @@ Section: Copying
   yh-copy-state : YahtzeeState -> YahtzeeState
   yh-copy-state (s) =
     YahtzeeState {
-      scorecard = yh-copy-13 (s.scorecard) 0 [],
+      scorecard = yh-copy-dice (s.scorecard) 0 [],
       scored    = yh-copy-13 (s.scored) 0 [],
       dice      = yh-copy-dice (s.dice) 0 [],
       rng       = s.rng
@@ -71,7 +71,13 @@ Section: The Browser Interface
     else list-at (s.dice) i
 
   yh-wasm-total : YahtzeeState -> Integer
-  yh-wasm-total (s) = yh-total-score (s.scorecard) 0 0
+  yh-wasm-total (s) = yh-total (s.scorecard)
+
+  yh-wasm-bonus : YahtzeeState -> Integer
+  yh-wasm-bonus (s) = list-at (s.scorecard) 13
+
+  yh-wasm-legal : YahtzeeState, Integer -> Integer
+  yh-wasm-legal (s) (cat) = if list-length (s.dice) == 5 & yh-legal (s.dice) (s.scored) cat then 1 else 0
 
   yh-wasm-turn : YahtzeeState -> YahtzeeState
   yh-wasm-turn (s) = yh-do-turn (yh-copy-state s)
@@ -105,17 +111,14 @@ Section: Playing By Hand
     in YahtzeeState { scorecard = st.scorecard, scored = st.scored,
                       dice = yh-reroll-some (st.dice) mask r, rng = r }
 
- A filled category stays filled for the rest of the game, so taking one
- again is refused.
+ A box the rules do not allow (filled, or barred by the Joker) is refused:
+ the state comes back unchanged.
 
   yh-wasm-take : YahtzeeState, Integer -> YahtzeeState
   yh-wasm-take (s) (cat) =
-    if cat < 0 then s
-    else if cat > 12 then s
-    else if list-at (s.scored) cat == 1 then s
+    if yh-wasm-legal s cat == 0 then s
     else let st = yh-copy-state s
-    in let sc = yh-score-category (st.dice) cat
-    in YahtzeeState { scorecard = list-set-at (st.scorecard) cat sc,
+    in YahtzeeState { scorecard = yh-fill (st.scorecard) (st.scored) (st.dice) cat,
                       scored = list-set-at (st.scored) cat 1,
                       dice = st.dice, rng = st.rng }
 
@@ -123,7 +126,26 @@ Section: Playing By Hand
   yh-wasm-preview (s) (cat) =
     if cat < 0 then (-1)
     else if cat > 12 then (-1)
-    else yh-score-category (s.dice) cat
+    else yh-take-score (s.dice) (s.scored) cat
+
+Section: Set-up
+
+ For the grader: box cat filled with value (value -1 empties it), and the
+ dice set to five faces.
+
+  yh-wasm-put : YahtzeeState, Integer, Integer -> YahtzeeState
+  yh-wasm-put (s) (cat) (value) =
+    if cat < 0 | cat > 13 then s
+    else let st = yh-copy-state s
+    in let v = if value < 0 then 0 else value
+    in let card = list-set-at (st.scorecard) cat v
+    in let done = if cat == 13 then st.scored else list-set-at (st.scored) cat (if value < 0 then 0 else 1)
+    in YahtzeeState { scorecard = card, scored = done, dice = st.dice, rng = st.rng }
+
+  yh-wasm-set-dice : YahtzeeState, Integer, Integer, Integer, Integer, Integer -> YahtzeeState
+  yh-wasm-set-dice (s) (a) (b) (c) (d) (e) =
+    let st = yh-copy-state s
+    in YahtzeeState { scorecard = st.scorecard, scored = st.scored, dice = yh-five a b c d e, rng = st.rng }
 
   yh-wasm-filled : YahtzeeState -> Integer
   yh-wasm-filled (s) = yh-count-filled (s.scored) 0 0

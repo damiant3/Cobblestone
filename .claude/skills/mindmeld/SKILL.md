@@ -84,8 +84,8 @@ who that is in every baton message so nobody has to recompute it.
 ## Step 0b -- Wind-down mode: the commander schedules the baton just in time
 
 The ring above assumes every agent is at rest and can take the baton the
-moment it arrives. A wind-down is the other case (Damian, 2026-09-02, before
-the DIMM RMA): the fleet is mid-work, lanes reach their handoff point at
+moment it arrives. A wind-down is the other case (Damian, 2026-09-02): the
+fleet is mid-work, lanes reach their handoff point at
 different times, and a baton parked on a busy lane stalls the whole ring
 while a finished lane sits idle with nothing to do. So in a wind-down the
 order is NOT fixed at step 0. **The commander (root) holds the schedule and

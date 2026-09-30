@@ -1,10 +1,32 @@
 Chapter: Checkers
   cites Games chapter Rng
 
- English draughts on an 8x8 board. 12 pieces per side. Pieces move
- diagonally forward; kings move in all four diagonal directions.
- Jumps are mandatory and multi-jump chains are followed. Reaching
- the opposite back rank promotes a piece to king.
+ English draughts on an 8x8 board, by the rules of the English Draughts
+ Association and the American Checker Federation.
+
+ Rule 1. Twelve pieces a side on the dark squares of the three nearest
+ rows. The darker side, South here, moves first, and the sides alternate.
+
+ Rule 2. A man moves one square diagonally forward onto an empty square.
+ A king moves one square diagonally in any of the four directions.
+
+ Rule 3. A man captures by jumping diagonally forward over an adjacent
+ enemy piece onto the empty square beyond it, and a king in any of the
+ four directions. The captured piece is removed.
+
+ Rule 4. Capturing is compulsory: when any capture is available, a move
+ that is not a capture is illegal. Among the captures available the
+ player chooses freely; there is no rule to take the most.
+
+ Rule 5. A capturing piece that can capture again from its landing square
+ must go on capturing, in the same turn, until it cannot; the turn passes
+ only when its chain ends.
+
+ Rule 6. A man reaching the far row becomes a king, and the move ends
+ there, even when the new king could capture again.
+
+ Rule 7. A player with no piece, or with no legal move, loses. Forty
+ moves by each side with no capture and no crowning is a draw.
 
  Board encoding (List Integer, 64 cells):
    0 = empty, 1 = south man, 2 = south king,
@@ -19,8 +41,12 @@ Section: Types
     turn    : Integer,
     over    : Boolean,
     winner  : Integer,
-    quiet   : Integer
+    quiet   : Integer,
+    chain   : Integer
   }
+
+ chain is the square of a piece that has just captured and must go on
+ (rule 5), or -1.
 
   CheckerMove = record {
     from-sq  : Integer,
@@ -40,7 +66,7 @@ Section: Construction
   checkers-new : Integer -> CheckerBoard
   checkers-new (seed) =
     let cells = initial-board 0 []
-    in CheckerBoard { cells = cells, turn = 0, over = False, winner = -1, quiet = 0 }
+    in CheckerBoard { cells = cells, turn = 0, over = False, winner = -1, quiet = 0, chain = -1 }
 
   initial-board : Integer, List Integer -> List Integer
   initial-board (i) (acc) =
@@ -93,7 +119,8 @@ Section: Move Generation
 
   generate-moves : CheckerBoard -> List CheckerMove
   generate-moves (b) =
-    let jumps = collect-jumps b 0 []
+    if b.chain >= 0 then find-jumps b (b.chain) []
+    else let jumps = collect-jumps b 0 []
     in if list-length jumps > 0 then jumps
     else collect-slides b 0 []
 
@@ -189,10 +216,22 @@ Section: Apply Move
     in let cells3 = list-set-at cells2 (m.to-sq) promoted
     in let next-turn = 1 - b.turn
     in let q = if m.captured >= 0 | promoted /= piece then 0 else b.quiet + 1
-    in let moved = CheckerBoard { cells = cells3, turn = next-turn, over = False, winner = -1, quiet = q }
-    in if check-game-over moved then CheckerBoard { cells = cells3, turn = next-turn, over = True, winner = b.turn, quiet = q }
-    else if q >= ck-quiet-limit then CheckerBoard { cells = cells3, turn = next-turn, over = True, winner = -1, quiet = q }
+    in if ck-chain-goes-on b m cells3 (promoted /= piece) then
+      CheckerBoard { cells = cells3, turn = b.turn, over = False, winner = -1, quiet = q, chain = m.to-sq }
+    else let moved = CheckerBoard { cells = cells3, turn = next-turn, over = False, winner = -1, quiet = q, chain = -1 }
+    in if check-game-over moved then CheckerBoard { cells = cells3, turn = next-turn, over = True, winner = b.turn, quiet = q, chain = -1 }
+    else if q >= ck-quiet-limit then CheckerBoard { cells = cells3, turn = next-turn, over = True, winner = -1, quiet = q, chain = -1 }
     else moved
+
+ Rules 5 and 6: after a capture that did not crown, the same piece goes on
+ when it has a capture from where it landed.
+
+  ck-chain-goes-on : CheckerBoard, CheckerMove, List Integer, Boolean -> Boolean
+  ck-chain-goes-on (b) (m) (cells) (crowned) =
+    if m.captured < 0 then False
+    else if crowned then False
+    else let probe = CheckerBoard { cells = cells, turn = b.turn, over = False, winner = -1, quiet = 0, chain = m.to-sq }
+    in list-length (find-jumps probe (m.to-sq) []) > 0
 
  Forty moves by each side, eighty plies, with no capture and no crowning is
  a draw: the English draughts rule for a position neither side can force.
@@ -255,8 +294,8 @@ Section: Evaluation
 
 Section: AI
 
-  checkers-ai-move : CheckerBoard, Integer -> Integer
-  checkers-ai-move (b) (depth) =
+  checkers-ai-move : CheckerBoard -> Integer
+  checkers-ai-move (b) =
     let moves = generate-moves b
     in let n = list-length moves
     in if n == 0 then -1
@@ -289,21 +328,21 @@ Section: AI
 
 Section: Game Runner
 
-  run-checkers-game : Integer, Integer -> CheckerResult
-  run-checkers-game (seed) (ai-depth) =
+  run-checkers-game : Integer -> CheckerResult
+  run-checkers-game (seed) =
     let b = checkers-new seed
-    in checkers-loop b ai-depth 0
+    in checkers-loop b 0
 
-  checkers-loop : CheckerBoard, Integer, Integer -> CheckerResult
-  checkers-loop (b) (depth) (moves-played) =
+  checkers-loop : CheckerBoard, Integer -> CheckerResult
+  checkers-loop (b) (moves-played) =
     if b.over then make-checker-result b moves-played
     else if moves-played > 300 then make-checker-result b moves-played
-    else let move-idx = checkers-ai-move b depth
+    else let move-idx = checkers-ai-move b
     in if move-idx < 0 then make-checker-result b moves-played
     else let all-moves = generate-moves b
     in let chosen = list-at all-moves move-idx
     in let next = apply-move b chosen
-    in checkers-loop next depth (moves-played + 1)
+    in checkers-loop next (moves-played + 1)
 
   make-checker-result : CheckerBoard, Integer -> CheckerResult
   make-checker-result (b) (moves-played) =

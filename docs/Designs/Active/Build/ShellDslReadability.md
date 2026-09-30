@@ -70,9 +70,61 @@ with a constructor that does the job" but the narrower **"raw payloads whose
 text a constructor already reproduces character for character"**. `CompileScript`
 is what the narrow set looks like when it is large, because those payloads were
 literally what the constructors emit; a hashtable literal, and every cause-1
-wall, are not. **Sizing that convertible fraction is unmeasured, and it is the
-number that says what this campaign can deliver.** Nobody should take another
-generator until it exists.
+wall, are not. **Measured 2026-09-30 (reek) over the 7,734 `ScRaw` payloads in
+`codex/build/*Script.codex`: 475 (6.1%) are text an existing constructor
+renders character for character, not counting 1,499 comments.** Those 475
+are 246 `exit`, `return` or `Write-Host` of one atom, 156 `$x = <atom>`
+(`ScAssign` over a single-quoted literal, an integer or a variable), 27
+`break` or `continue`, 24 `++` or `--`, 16 blank lines and 6 strict-mode or
+error-stop lines. **Only 93 of them sit at depth 0**, where `pad` is empty
+and the swap is byte-exact alone; the other 382 are indented inside raw
+blocks and convert only with the block that holds them. So line-by-line
+conversion delivers about 1% of the corpus. The unit that moves the count is
+a whole raw block rewritten into `ScIf`, `ScForEach` and `ScTry`. By
+generator, the non-comment convertibles are highest in `BuildScript` (153 of
+960), `testScript` (88 of 1,154), `vmconfigScript` (42 of 847) and
+`buildimgScript` (35 of 636), and `cdxtopeScript` has 14 of 1,505. This
+measures single atoms only: double-quoted text (`SeText`) and `Join-Path`
+payloads (below) are not counted.
+
+**And no raw block converts whole with today's nodes: 0 in the corpus**
+(same day). A block counts when its opener is `if (<atom>) {`,
+`foreach ($x in <atom>) {` or `while (<atom>) {` and every line inside is one of
+the classes above. `ScIf` renders `if (` + condition + `) {` while every
+comparison node brings its own parentheses, so `if ($a -eq $b) {`, the common
+opener, comes out as `if (($a -eq $b)) {` and cannot be reproduced. **Step 3
+therefore waits on step 4:** a condition node that renders without the outer
+parentheses, and the other expression forms real openers use, designed
+against the openers' measured shapes, before any block moves byte-exact.
+
+**Step 4's first node, designed against the census (2026-09-30, reek).** The
+raw blocks open 365 times. By condition shape: a bare variable or property 45;
+a variable against a number (`-ne`, `-gt`, `-eq`, `-lt`, `-le`) 77; `-match` a
+literal 11; a variable against a variable or a literal 19; `Test-Path
+-PathType Leaf` 24; bare `Test-Path` 24; `-not` a variable 21; `-not (Test-Path
+-PathType Leaf ...)` 6; the rest are compound. **`ScIf` cannot change its
+rendering: 574 shipped lines already open `if ((` or `while ((`.** The node is
+additive: `SeBare e` renders `e` with its one outer pair of parentheses
+removed, for use as a top-level condition. Over the existing `SeVar`,
+comparison, `SeMatch`, `SeNot` and `SeFileExists` nodes it reproduces 203 of
+the 365 openers (56%). A `Test-Path` node without `-PathType` adds 24 more.
+An opener reproduced is not a block converted: the block's inner lines must
+convert too. **`SeBare` landed (main 32349): 26 raw blocks now convert whole,
+114 lines, all in `BuildScript`** (same census, same day), against 0 before it;
+none of them opens at column 0: 15 open at indent 4 and 11 at indent 8, inside
+raw `Measure-Phase` blocks, and a node in a flat raw list renders at that
+list's `pad`. **`ScIndent` (reek, 2026-09-30) emits its command list one
+indent deeper**, so a block at indent 4 is `ScIndent [ScIf (SeBare ...) ...]`
+and one at indent 8 nests two. **Step 3's first CL converted 25 of them** (reek,
+2026-09-30): `BuildScript` ScRaw 996 to 887, byte-level; the 26th has a non-raw
+node inside its span and was left. No other generator has a block these rules
+convert. Across all generators, 195 raw blocks have an opener that
+reproduces, and each stops at an inner line; the first such line, by shape:
+`Write-Host "..."` 12 (`ScEcho (SeText ...)` if `SeText`'s escaping matches),
+`"..." | Set-Content -Path $x -Encoding UTF8` 9, `$x = Join-Path $y "..."` 9
+(the statement-level path assignment above), `($x).Add("...")` 6,
+`$x = [System.IO.Path]::GetFileNameWithoutExtension($y)` 5, `$x = $y['k'] -replace
+'a', 'b'` 5, `[System.IO.Path]::GetTempFileName()` 4 (2026-09-30).
 
 ## 3. The ratchet
 
@@ -190,6 +242,15 @@ cannot be told from a mistake by `match / 0 drift`, and
 stays the maintained side. The embedded bucket is untouched by either option and
 is where most of the `Join-Path` text now lives.
 
+**`cdxtopeScript`'s UEFI key-chooser stub is not DSL work** (main 30670; its 115
+raw lines booked in main 32329). Measured 2026-09-30: 10 are comments, 65 emit
+x86 machine-code bytes through `List[byte].AddRange` and `BitConverter`, 3
+declare local functions (`CallBs`, `JnzFail`, `LeaRip`) that fill a fix-up
+table, and 37 are the loops and branches of that assembler. No `ShellCmd`
+constructor should model an instruction encoder, and step 4's node would not.
+It converts by moving the stub's encoding into Codex beside the PE writer
+(`codex/plugs/pe/PeWriter.codex`), leaving the script to pass `-ChainFile`,
+`-ChainKey` and `-ChainWindowMs`; until then the lines stay raw and booked.
 **Step 4, the cmdlet residue, is last and needs a node designed against real
 call sites.** `g01b`'s body is `ScRaw` on purpose: an ordered hashtable literal,
 a generic HashSet and a `$(if ...)` subexpression have no constructor. Do not

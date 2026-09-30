@@ -1,187 +1,155 @@
 Chapter: RiskWasm
   cites Games chapter Risk
   cites Games chapter Rng
-  cites Foreword chapter List
-
- `risk-set-terr` and `risk-recount-players` both write with `list-set-at`,
- in place, so every change copies the state first.
 
  We say:
 
-Section: Copying
+Section: The Browser Interface
 
   wasm-exports : Text = ""
 
-  rk-copy-terrs : List RiskTerritory, Integer, List RiskTerritory -> List RiskTerritory
-  rk-copy-terrs (src) (i) (acc) =
-    if i >= 12 then acc
-    else let t = list-at src i
-    in rk-copy-terrs src (i + 1) (list-push acc (RiskTerritory { owner = t.owner, armies = t.armies }))
-
-  rk-copy-players : List RiskPlayer, Integer, Integer, List RiskPlayer -> List RiskPlayer
-  rk-copy-players (src) (n) (i) (acc) =
-    if i >= n then acc
-    else let p = list-at src i
-    in rk-copy-players src n (i + 1) (list-push acc (RiskPlayer { id = p.id, alive = p.alive, total-armies = p.total-armies }))
-
-  rk-copy-state : RiskState -> RiskState
-  rk-copy-state (s) =
-    RiskState {
-      territories = rk-copy-terrs (s.territories) 0 [],
-      players = rk-copy-players (s.players) (s.num-players) 0 [],
-      current-player = s.current-player,
-      turn-number = s.turn-number,
-      game-over = s.game-over,
-      winner = s.winner,
-      num-players = s.num-players,
-      phase = s.phase,
-      to-place = s.to-place,
-      attacks-left = s.attacks-left
-    }
-
-Section: The Browser Interface
-
- A board has nothing to place or attack with until `risk-open-turn` runs.
+ The page's person is seat 0.
 
   rk-wasm-new : Integer, Integer -> RiskState
-  rk-wasm-new (seed) (players) = risk-open-turn (risk-init seed players)
+  rk-wasm-new (seed) (players) = rk-set-human (risk-init seed players) 0
 
-  rk-wasm-owner : RiskState, Integer -> Integer
-  rk-wasm-owner (s) (i) =
-    if i < 0 then (-1)
-    else if i >= 12 then (-1)
-    else let t = list-at (s.territories) i
-    in t.owner
+  rk-wasm-step : RiskState, Integer -> RiskState
+  rk-wasm-step (s) (seed) = risk-step s seed
 
-  rk-wasm-armies : RiskState, Integer -> Integer
-  rk-wasm-armies (s) (i) =
-    if i < 0 then (-1)
-    else if i >= 12 then (-1)
-    else let t = list-at (s.territories) i
-    in t.armies
+  rk-wasm-act : RiskState, Integer, Integer, Integer, Integer -> RiskState
+  rk-wasm-act (s) (p) (kind) (arg) (seed) = rk-act s p kind arg seed
 
-  rk-wasm-current : RiskState -> Integer
-  rk-wasm-current (s) = s.current-player
+  rk-wasm-legal : RiskState, Integer, Integer, Integer -> Integer
+  rk-wasm-legal (s) (p) (kind) (arg) = if rk-legal s p kind arg then 1 else 0
 
-  rk-wasm-turn-number : RiskState -> Integer
-  rk-wasm-turn-number (s) = s.turn-number
+  rk-wasm-ai : RiskState -> Integer
+  rk-wasm-ai (s) = rk-ai s
 
-  rk-wasm-done : RiskState -> Integer
-  rk-wasm-done (s) = if s.game-over then 1 else 0
+  rk-wasm-slot : RiskState, Integer -> Integer
+  rk-wasm-slot (s) (i) =
+    if i < 0 then (-9)
+    else if i >= rk-size then (-9)
+    else rk-get s i
 
-  rk-wasm-winner : RiskState -> Integer
-  rk-wasm-winner (s) = s.winner
+ A grader's set-up: a copy with one slot of the state layout set.
+
+  rk-wasm-poke : RiskState, Integer, Integer -> RiskState
+  rk-wasm-poke (s) (i) (v) =
+    if i < 0 then s
+    else if i >= rk-size then s
+    else rk-put (rk-copy s) i v
+
+Section: Reading The Board
 
   rk-wasm-players : RiskState -> Integer
-  rk-wasm-players (s) = s.num-players
+  rk-wasm-players (s) = rk-players s
 
-  rk-wasm-alive : RiskState, Integer -> Integer
-  rk-wasm-alive (s) (p) =
-    if p < 0 then (-1)
-    else if p >= s.num-players then (-1)
-    else let pl = list-at (s.players) p
-    in if pl.alive then 1 else 0
+  rk-wasm-owner : RiskState, Integer -> Integer
+  rk-wasm-owner (s) (t) = if rk-terr-ok t then rk-owner s t else (-1)
 
-  rk-wasm-total : RiskState, Integer -> Integer
-  rk-wasm-total (s) (p) =
-    if p < 0 then (-1)
-    else if p >= s.num-players then (-1)
-    else let pl = list-at (s.players) p
-    in pl.total-armies
-
-  rk-wasm-reinf : RiskState, Integer -> Integer
-  rk-wasm-reinf (s) (p) =
-    if p < 0 then (-1)
-    else if p >= s.num-players then (-1)
-    else risk-calc-reinforcements s p
+  rk-wasm-armies : RiskState, Integer -> Integer
+  rk-wasm-armies (s) (t) = if rk-terr-ok t then rk-armies s t else (-1)
 
   rk-wasm-adjacent : Integer, Integer -> Integer
-  rk-wasm-adjacent (a) (b) =
-    if a < 0 then 0
-    else if a >= 12 then 0
-    else if b < 0 then 0
-    else if b >= 12 then 0
-    else if risk-adjacent a b then 1 else 0
+  rk-wasm-adjacent (a) (b) = if rk-adjacent a b then 1 else 0
 
-  rk-wasm-continent : RiskState, Integer, Integer -> Integer
-  rk-wasm-continent (s) (player) (continent) =
-    if risk-owns-continent s player continent then 1 else 0
+  rk-wasm-continent : Integer -> Integer
+  rk-wasm-continent (t) = if rk-terr-ok t then rk-continent t else (-1)
 
- `risk-do-turn` advances to the next seat, alive or not, without opening its
- turn, so this skips dead seats and opens the turn; an opened dead seat has
- a reinforcement and no territory to place it on.
+  rk-wasm-cont-bonus : Integer -> Integer
+  rk-wasm-cont-bonus (c) = if c < 0 then (-1) else if c > 5 then (-1) else rk-continent-bonus c
 
-  rk-wasm-turn : RiskState, Integer -> RiskState
-  rk-wasm-turn (s) (seed) =
-    if s.game-over then s
-    else rk-open-live (risk-do-turn (rk-copy-state s) (rng-new seed))
+  rk-wasm-seat-ok : RiskState, Integer -> Boolean
+  rk-wasm-seat-ok (s) (p) = if p < 0 then False else p < rk-players s
 
-  rk-open-live : RiskState -> RiskState
-  rk-open-live (s) =
-    if s.game-over then s
-    else risk-open-turn (risk-skip-dead s 0)
+  rk-wasm-alive : RiskState, Integer -> Integer
+  rk-wasm-alive (s) (p) = if rk-wasm-seat-ok s p then (if rk-alive s p then 1 else 0) else (-1)
 
-Section: Taking A Turn Yourself
+  rk-wasm-total : RiskState, Integer -> Integer
+  rk-wasm-total (s) (p) = if rk-wasm-seat-ok s p then rk-total-armies s p else (-1)
 
- A turn places the reinforcement one army at a time, then takes up to three
- attacks or stops early.
+  rk-wasm-held : RiskState, Integer -> Integer
+  rk-wasm-held (s) (p) = if rk-wasm-seat-ok s p then rk-held s p else (-1)
+
+  rk-wasm-reinf : RiskState, Integer -> Integer
+  rk-wasm-reinf (s) (p) = if rk-wasm-seat-ok s p then rk-reinforcements s p else (-1)
+
+  rk-wasm-hand : RiskState, Integer -> Integer
+  rk-wasm-hand (s) (p) = if rk-wasm-seat-ok s p then rk-hand s p else (-1)
+
+  rk-wasm-setup-left : RiskState, Integer -> Integer
+  rk-wasm-setup-left (s) (p) = if rk-wasm-seat-ok s p then rk-get s (rk-f-setup + p) else (-1)
+
+  rk-wasm-holder : RiskState, Integer -> Integer
+  rk-wasm-holder (s) (c) = if c < 0 then (-9) else if c >= 44 then (-9) else rk-holder s c
+
+  rk-wasm-symbol : Integer -> Integer
+  rk-wasm-symbol (c) = if c < 0 then (-1) else if c >= 44 then (-1) else rk-symbol c
+
+  rk-wasm-first-set : RiskState, Integer -> Integer
+  rk-wasm-first-set (s) (p) = if rk-wasm-seat-ok s p then rk-first-set s p 0 1 2 else (-1)
+
+  rk-wasm-connected : RiskState, Integer, Integer, Integer -> Integer
+  rk-wasm-connected (s) (p) (a) (b) =
+    if rk-terr-ok a == False then 0
+    else if rk-terr-ok b == False then 0
+    else if rk-connected s p a b then 1 else 0
+
+Section: The Turn
+
+  rk-wasm-cur : RiskState -> Integer
+  rk-wasm-cur (s) = rk-cur s
 
   rk-wasm-phase : RiskState -> Integer
-  rk-wasm-phase (s) = s.phase
+  rk-wasm-phase (s) = rk-phase s
+
+  rk-wasm-turn : RiskState -> Integer
+  rk-wasm-turn (s) = rk-get s rk-f-turn
+
+  rk-wasm-done : RiskState -> Integer
+  rk-wasm-done (s) = if rk-over s then 1 else 0
+
+  rk-wasm-winner : RiskState -> Integer
+  rk-wasm-winner (s) = rk-get s rk-f-winner
 
   rk-wasm-to-place : RiskState -> Integer
-  rk-wasm-to-place (s) = s.to-place
+  rk-wasm-to-place (s) = rk-get s rk-f-place
 
-  rk-wasm-attacks-left : RiskState -> Integer
-  rk-wasm-attacks-left (s) = s.attacks-left
+  rk-wasm-trades : RiskState -> Integer
+  rk-wasm-trades (s) = rk-get s rk-f-trades
 
-  rk-wasm-can-place : RiskState, Integer -> Integer
-  rk-wasm-can-place (s) (terr) =
-    if risk-can-place s (s.current-player) terr then 1 else 0
+  rk-wasm-die : RiskState, Integer -> Integer
+  rk-wasm-die (s) (k) = if k < 0 then (-1) else if k > 4 then (-1) else rk-get s (rk-f-dice + k)
 
- Legality is asked before the copy, so a refusal answers the same handle and
- a page can tell a refusal from a move.
+  rk-wasm-lost : RiskState, Integer -> Integer
+  rk-wasm-lost (s) (side) = if side == 0 then rk-get s rk-f-alost else rk-get s rk-f-dlost
 
-  rk-wasm-place : RiskState, Integer -> RiskState
-  rk-wasm-place (s) (terr) =
-    if risk-can-place s (s.current-player) terr
-      then risk-place-one (rk-copy-state s) (s.current-player) terr
-    else s
+  rk-wasm-move-from : RiskState -> Integer
+  rk-wasm-move-from (s) = if rk-phase s == 3 then rk-get s rk-f-mfrom else (-1)
 
-  rk-wasm-can-attack : RiskState, Integer, Integer -> Integer
-  rk-wasm-can-attack (s) (from) (to) =
-    if risk-can-attack s (s.current-player) from to then 1 else 0
+  rk-wasm-move-to : RiskState -> Integer
+  rk-wasm-move-to (s) = if rk-phase s == 3 then rk-get s rk-f-mto else (-1)
 
- The caller supplies the dice seed; one seed reused fights the same battle.
+  rk-wasm-move-min : RiskState -> Integer
+  rk-wasm-move-min (s) = if rk-phase s == 3 then rk-get s rk-f-mmin else (-1)
 
-  rk-wasm-attack : RiskState, Integer, Integer, Integer -> RiskState
-  rk-wasm-attack (s) (from) (to) (seed) =
-    if risk-can-attack s (s.current-player) from to
-      then risk-attack (rk-copy-state s) (s.current-player) from to (rng-new seed)
-    else s
+  rk-wasm-conquered : RiskState -> Integer
+  rk-wasm-conquered (s) = rk-get s rk-f-conquered
 
-  rk-wasm-can-stop : RiskState -> Integer
-  rk-wasm-can-stop (s) =
-    if risk-can-stop s (s.current-player) then 1 else 0
+  rk-wasm-deck-len : RiskState -> Integer
+  rk-wasm-deck-len (s) = rk-get s rk-f-decklen
 
-  rk-wasm-stop : RiskState -> RiskState
-  rk-wasm-stop (s) =
-    if risk-can-stop s (s.current-player)
-      then risk-stop (rk-copy-state s) (s.current-player)
-    else s
+  rk-wasm-deck : RiskState, Integer -> Integer
+  rk-wasm-deck (s) (k) = if k < 0 then (-1) else if k >= rk-get s rk-f-decklen then (-1) else rk-get s (180 + k)
 
-  rk-wasm-can-attack-from : RiskState, Integer -> Integer
-  rk-wasm-can-attack-from (s) (terr) =
-    if s.phase /= 1 then 0
-    else if terr < 0 then 0
-    else if terr >= 12 then 0
-    else rk-any-target s terr 0
+  rk-wasm-discard-len : RiskState -> Integer
+  rk-wasm-discard-len (s) = rk-get s rk-f-discardlen
 
-  rk-any-target : RiskState, Integer, Integer -> Integer
-  rk-any-target (s) (from) (i) =
-    if i >= 12 then 0
-    else if risk-can-attack s (s.current-player) from i then 1
-    else rk-any-target s from (i + 1)
+  rk-wasm-discard : RiskState, Integer -> Integer
+  rk-wasm-discard (s) (k) = if k < 0 then (-1) else if k >= rk-get s rk-f-discardlen then (-1) else rk-get s (230 + k)
+
+  rk-wasm-turn-cap : Integer
+  rk-wasm-turn-cap = risk-turn-cap
 
 Section: The Whole Game
 

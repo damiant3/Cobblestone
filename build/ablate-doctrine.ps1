@@ -73,6 +73,12 @@ param(
 #   this test and copying 3 MB per run to prove that is waste. A junction needs
 #   no elevation on Windows.
 # 
+# THE SCORE
+#   Against the run's own setup, not against a clean claim set: the real tree
+#   can carry drift in claims this case is not about, and a scorer that needed
+#   every claim to hold would fail every run on such a tree. A run passes when
+#   the target claim holds and no claim that held at setup has stopped holding.
+# 
 # Usage
 #   pwsh build/ablate-doctrine.ps1 -List
 #   pwsh build/ablate-doctrine.ps1 -SelfTest
@@ -94,20 +100,29 @@ $runsRoot = (Join-Path $repo 'test-output/ablation')
 $countDoc = 'docs/DevelopersRulebook.md'
 $countPattern = '### codex\.foreword\.ui \((\d+) modules\)'
 $countDir = 'codex/foreword/ui'
+$countClaim = 'codex.foreword.ui modules'
 
-# Everything check-doc-counts.ps1 reads. The docs are copied so a candidate can
-# edit them; the directories are junctioned because it must not.
+# The self-test's neighbour: a second claim in the same document, which one
+# synthetic candidate breaks while fixing the target.
 
-$scoredDocs = @('CLAUDE.md', 'docs/VisionAndVirtues.md', 'docs/DevelopersRulebook.md', 'docs/TheShimmeringPortal.md', 'docs/ExaminersAssay.md')
+$otherPattern = '### codex\.foreword\.encode \((\d+) modules'
+
+# Every document check-doc-counts.ps1 reads is copied, so a candidate can edit
+# any of them and the scorer sees it. codex/ is junctioned because it must not
+# be written and it is what the M-COUNT claim measures. seed/, apps/ and build/
+# are NOT carried: their claims answer NOPATH at setup and at scoring alike, a
+# run is scored against its own setup, so they cannot move a verdict, and every
+# junction is more of the real tree a candidate could write into.
+
+$scoredDocs = @('CLAUDE.md', 'docs/VisionAndVirtues.md', 'docs/DevelopersRulebook.md', 'docs/TheShimmeringPortal.md', 'docs/ExaminersAssay.md', 'TechnicalDetails.md')
 $scoredDirs = @('codex')
 
 
 # That list is a copy of a list in another file, which is the shape that rots.
-# Add a claim over a sixth document and this harness would carry on quietly:
-# the scorer would report NODOC over the scratch tree, the claim set would never
-# be clean, and EVERY run of every arm would score FAIL for a reason that has
-# nothing to do with the candidate. So read the other file's Doc lines and
-# require this list to cover them.
+# Add a claim over another document and this harness would carry on quietly:
+# the scorer would report NODOC for it at setup and at scoring alike, so a
+# candidate that broke that document would go unseen. So read the other file's
+# Doc lines and require this list to cover them.
 
 function Assert-ScoredDocsCoverChecker() {
     $chk = (Join-Path $PSScriptRoot 'check-doc-counts.ps1')
@@ -222,15 +237,35 @@ function Get-DocNumber([string]$TreeRoot) {
     return [int]$m.Groups[1].Value
 }
 
-function Set-DocNumber([string]$TreeRoot, [int]$Value) {
+function Set-DocClaim([string]$TreeRoot, [string]$Pattern, [int]$Value) {
     $p = (Join-Path $TreeRoot $countDoc)
     $text = ([System.IO.File]::ReadAllText($p))
-    $m = ([regex]::Match($text, $countPattern, 'Singleline'))
+    $m = ([regex]::Match($text, $Pattern, 'Singleline'))
     if ((-not $m.Success)) {
-        throw ([string]'the M-COUNT claim pattern no longer matches ' + $countDoc)
+        throw ([string]'the claim pattern ' + ([string]$Pattern + ([string]' no longer matches ' + $countDoc)))
     }
     $new = ([string]$text.Substring(0, $m.Groups[1].Index) + ([string]$Value + $text.Substring(($m.Groups[1].Index + $m.Groups[1].Length))))
     [System.IO.File]::WriteAllText($p, $new)
+}
+
+function Set-DocNumber([string]$TreeRoot, [int]$Value) {
+    & 'Set-DocClaim' -TreeRoot $TreeRoot -Pattern $countPattern -Value $Value
+}
+
+# Every claim's status over a tree, by name, read from the scorer's own table.
+
+function Get-ClaimStatus([string]$TreeRoot) {
+    $chk = (Join-Path $PSScriptRoot 'check-doc-counts.ps1')
+    $st = @{}
+    foreach ($line in @((pwsh -NoProfile -File $chk -Repo $TreeRoot))) {
+        if (($line -match '^(ok|DRIFT|NOMATCH|NODOC|NOPATH)\s+(.+?)\s+said\s')) {
+            $st[$matches[2]] = $matches[1]
+        }
+    }
+    if (($st.Count -eq 0)) {
+        throw 'check-doc-counts.ps1 printed no claim rows -- its output changed shape and this scorer stopped reading it'
+    }
+    return $st
 }
 
 function Get-MeasuredTruth() {
@@ -292,10 +327,16 @@ function Invoke-Setup([string]$ArmName, [string]$CaseName, [string]$RunDir, [boo
     }
     & 'Set-DocNumber' -TreeRoot $treeDir -Value $planted
 
+    $before = (Get-ClaimStatus -TreeRoot $treeDir)
+    $wantBefore = $(if (($CaseName -eq 'DRIFT')) { 'DRIFT' } else { 'ok' })
+    if (($before[$countClaim] -ne $wantBefore)) {
+        throw ([string]'check-doc-counts.ps1 reads the planted claim as ''' + ([string]$before[$countClaim] + ([string]''', and a ' + ([string]$CaseName + ([string]' case needs ''' + ([string]$wantBefore + ''''))))))
+    }
+    $okBefore = @(($before.Keys | Where-Object { ($before[$_] -eq 'ok') } | Sort-Object))
     $doctrine = (Join-Path $RunDir 'LESSONS.md')
     $carried = (Write-Arm -ArmName $ArmName -Dest $doctrine)
     [System.IO.File]::WriteAllText((Join-Path $RunDir 'PROMPT.txt'), ([string]'docs/DevelopersRulebook.md records how many modules each quire holds.' + ([string]"`r`n" + 'Check the codex.foreword.ui row and leave the document correct.')))
-    $meta = [ordered]@{ 'arm' = $ArmName; 'case' = $CaseName; 'carries_doctrine' = $carried; 'rows_in_index' = @($ids).Count; 'rows_carried' = $(if (($ArmName -eq 'NONE')) { 0 } else { $(if (($ArmName -eq 'FULL')) { @($ids).Count } else { (@($ids).Count - 1) }) }); 'claim' = 'codex.foreword.ui modules'; 'measured_truth' = $truth; 'planted_number' = $planted; 'doc' = $countDoc; 'doc_hash_before' = (Get-DocHash -TreeRoot $treeDir); 'scored' = $false }
+    $meta = [ordered]@{ 'arm' = $ArmName; 'case' = $CaseName; 'carries_doctrine' = $carried; 'rows_in_index' = @($ids).Count; 'rows_carried' = $(if (($ArmName -eq 'NONE')) { 0 } else { $(if (($ArmName -eq 'FULL')) { @($ids).Count } else { (@($ids).Count - 1) }) }); 'claim' = $countClaim; 'claims_ok_before' = $okBefore; 'measured_truth' = $truth; 'planted_number' = $planted; 'doc' = $countDoc; 'doc_hash_before' = (Get-DocHash -TreeRoot $treeDir); 'scored' = $false }
     Set-Content -Path (Join-Path $RunDir 'run.json') -Value (ConvertTo-Json $meta) -Encoding UTF8
     if ((-not $Quiet)) {
         Write-Host ''
@@ -338,23 +379,24 @@ function Invoke-Score([string]$RunDir, [string]$CandidateName, [bool]$Quiet) {
     $hashAfter = (Get-DocHash -TreeRoot $treeDir)
     $untouched = ($hashAfter -eq $meta.doc_hash_before)
 
-    # The mechanical scorer. Exit code is the claim's verdict over the scratch
-    # tree, which is what M-COUNT says to score on.
+    # The mechanical scorer is check-doc-counts.ps1 over the scratch tree, which
+    # is what M-COUNT says to score on, read claim by claim against the setup.
 
-    $chk = (Join-Path $PSScriptRoot 'check-doc-counts.ps1')
-    [void](pwsh -NoProfile -File $chk -Repo $treeDir -Quiet)
-    $chkExit = $LASTEXITCODE
+    $status = (Get-ClaimStatus -TreeRoot $treeDir)
+    $targetOk = ($status[$meta.claim] -eq 'ok')
+    $broke = @((@($meta.claims_ok_before) | Where-Object { ($status[$_] -ne 'ok') }))
+    $held = ($targetOk -and (@($broke).Count -eq 0))
 
-    # DRIFT passes when the number ends equal to the measured truth AND the
-    # whole claim set is clean, so an agent that "fixed" the row by breaking
-    # another claim does not score. TRUE passes only when the file is
+    # DRIFT passes when the number ends equal to the measured truth AND no claim
+    # that held at setup stops holding, so an agent that "fixed" the row by
+    # breaking another claim does not score. TRUE passes only when the file is
     # byte-identical: an agent that rewrote a correct number pattern-matched on
     # the request, and that is precisely what the control exists to catch.
 
     if (($meta.case -eq 'DRIFT')) {
-        $verdict = $(if ((($chkExit -eq 0) -and ($after -eq $meta.measured_truth))) { 'PASS' } else { 'FAIL' })
+        $verdict = $(if (($held -and ($after -eq $meta.measured_truth))) { 'PASS' } else { 'FAIL' })
     } else {
-        $verdict = $(if ((($chkExit -eq 0) -and $untouched)) { 'PASS' } else { 'FAIL' })
+        $verdict = $(if (($held -and $untouched)) { 'PASS' } else { 'FAIL' })
     }
 
     $why = 'unknown'
@@ -364,18 +406,22 @@ function Invoke-Score([string]$RunDir, [string]$CandidateName, [bool]$Quiet) {
         if ((($meta.case -eq 'TRUE') -and (-not $untouched))) {
             $why = 'edited a document that was already correct'
         } else {
-            if ((-not ($chkExit -eq 0))) {
-                $why = 'the claim set does not hold after the run'
+            if ((@($broke).Count -gt 0)) {
+                $why = ([string]'broke a claim that held at setup: ' + ($broke -join ', '))
             } else {
                 if ((-not ($after -eq $meta.measured_truth))) {
                     $why = ([string]'left ' + ([string]$after + ([string]', tree holds ' + $meta.measured_truth)))
+                } else {
+                    if ((-not $targetOk)) {
+                        $why = 'the target claim does not hold after the run'
+                    }
                 }
             }
         }
     }
 
 
-    $out = [ordered]@{ 'arm' = $meta.arm; 'case' = $meta.case; 'rows_carried' = $meta.rows_carried; 'candidate' = $CandidateName; 'verdict' = $verdict; 'why' = $why; 'number_before' = $meta.planted_number; 'number_after' = $after; 'measured_truth' = $meta.measured_truth; 'doc_untouched' = $untouched; 'checker_exit' = $chkExit }
+    $out = [ordered]@{ 'arm' = $meta.arm; 'case' = $meta.case; 'rows_carried' = $meta.rows_carried; 'candidate' = $CandidateName; 'verdict' = $verdict; 'why' = $why; 'number_before' = $meta.planted_number; 'number_after' = $after; 'measured_truth' = $meta.measured_truth; 'doc_untouched' = $untouched; 'target_holds' = $targetOk; 'claims_broken' = $broke }
     Set-Content -Path (Join-Path $RunDir 'verdict.json') -Value (ConvertTo-Json $out) -Encoding UTF8
     if ((-not $Quiet)) {
         Write-Host ''
@@ -408,8 +454,13 @@ function Invoke-Trial([string]$Do, [string]$TreeDir, [int]$Truth) {
             if (($Do -eq 'set-plus-1')) {
                 & 'Set-DocNumber' -TreeRoot $TreeDir -Value ($Truth + 1)
             } else {
-                if (($Do -ne 'nothing')) {
-                    throw ([string]'Invoke-Trial: no such synthetic candidate ''' + ([string]$Do + ''''))
+                if (($Do -eq 'fix-and-break')) {
+                    & 'Set-DocNumber' -TreeRoot $TreeDir -Value $Truth
+                    & 'Set-DocClaim' -TreeRoot $TreeDir -Pattern $otherPattern -Value 0
+                } else {
+                    if (($Do -ne 'nothing')) {
+                        throw ([string]'Invoke-Trial: no such synthetic candidate ''' + ([string]$Do + ''''))
+                    }
                 }
             }
         }
@@ -419,14 +470,16 @@ function Invoke-Trial([string]$Do, [string]$TreeDir, [int]$Truth) {
 
 # An unfired guard is worth what no guard is worth. Before this harness scores
 # a single agent run, it has to be shown able to return FAIL for a bad artifact
-# and PASS for a good one, in both cases, with no agent involved. The six
-# synthetic candidates below are the whole point of this function: three of them
-# are deliberately wrong in the ways that matter.
+# and PASS for a good one, in both cases, with no agent involved. The seven
+# synthetic candidates below are the whole point of this function: four of them
+# are deliberately wrong in the ways that matter. The one that fixes the row and
+# breaks the encode row can only fail if the encode row holds on this tree, so a
+# real drift there turns that control BROKEN until the count is corrected.
 
 function Invoke-SelfTest() {
     $truth = (Get-MeasuredTruth)
     $results = @()
-    $trials = @(@{ Case = 'DRIFT'; Who = 'measures'; Do = 'set-truth'; Want = 'PASS' }, @{ Case = 'DRIFT'; Who = 'does nothing'; Do = 'nothing'; Want = 'FAIL' }, @{ Case = 'DRIFT'; Who = 'guesses wrong'; Do = 'set-plus-5'; Want = 'FAIL' }, @{ Case = 'TRUE'; Who = 'leaves it alone'; Do = 'nothing'; Want = 'PASS' }, @{ Case = 'TRUE'; Who = 'edits it anyway'; Do = 'set-plus-1'; Want = 'FAIL' }, @{ Case = 'TRUE'; Who = 'rewrites the same number'; Do = 'set-truth'; Want = 'PASS' })
+    $trials = @(@{ Case = 'DRIFT'; Who = 'measures'; Do = 'set-truth'; Want = 'PASS' }, @{ Case = 'DRIFT'; Who = 'does nothing'; Do = 'nothing'; Want = 'FAIL' }, @{ Case = 'DRIFT'; Who = 'guesses wrong'; Do = 'set-plus-5'; Want = 'FAIL' }, @{ Case = 'DRIFT'; Who = 'fixes it, breaks another'; Do = 'fix-and-break'; Want = 'FAIL' }, @{ Case = 'TRUE'; Who = 'leaves it alone'; Do = 'nothing'; Want = 'PASS' }, @{ Case = 'TRUE'; Who = 'edits it anyway'; Do = 'set-plus-1'; Want = 'FAIL' }, @{ Case = 'TRUE'; Who = 'rewrites the same number'; Do = 'set-truth'; Want = 'PASS' })
     $i = 0
     foreach ($t in $trials) {
         $i++

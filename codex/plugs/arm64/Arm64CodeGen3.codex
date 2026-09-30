@@ -600,11 +600,31 @@ Section: List Emission
 
   a64-emit-list : A64State, List IRExpr -> A64EmitResult
   a64-emit-list (st) (elems) =
-   let st1 = a64-emit st (arm64-mov a64-x0 a64-xzr)
-   in let st2 = a64-emit-call-to st1 "list-empty"
-   in let result-loc = a64-alloc-local st2
-   in let st3 = a64-store-local (result-loc.state) (result-loc.reg) a64-x0
+   if list-length elems == 0 then
+    let st2 = a64-emit-call-to (a64-emit st (arm64-mov a64-x0 a64-xzr)) "__list_nil"
+    in let result-loc = a64-alloc-local st2
+    in let st3 = a64-store-local (result-loc.state) (result-loc.reg) a64-x0
+    in a64-emit-list-elems st3 elems (result-loc.reg) 0
+   else let lr = a64-emit-list-exact st (list-length elems)
+   in let result-loc = a64-alloc-local (lr.state)
+   in let st3 = a64-store-local (result-loc.state) (result-loc.reg) (lr.reg)
    in a64-emit-list-elems st3 elems (result-loc.reg) 0
+
+  a64-emit-list-exact : A64State, Integer -> A64EmitResult
+  a64-emit-list-exact (st) (n) =
+   let r = a64-alloc-temp st
+   in let st1 = a64-emit (r.state) (arm64-add-imm a64-heap-reg a64-heap-reg 7)
+   in let st2 = a64-emit st1 (arm64-lsr-imm a64-heap-reg a64-heap-reg 3)
+   in let st3 = a64-emit st2 (arm64-lsl-imm a64-heap-reg a64-heap-reg 3)
+   in let st4 = a64-emit-li st3 a64-x10 n
+   in let st5 = a64-emit st4 (arm64-str a64-x10 a64-heap-reg 0)
+   in let st6 = a64-emit st5 (arm64-add-imm (r.reg) a64-heap-reg 8)
+   in let st7 = a64-emit st6 (arm64-str a64-xzr (r.reg) 0)
+   in let bytes = 16 + n * 8
+   in let st8 = if bytes <= 4095 then a64-emit st7 (arm64-add-imm a64-heap-reg a64-heap-reg bytes)
+    else let sh = a64-emit st7 (arm64-add-imm-hi a64-heap-reg a64-heap-reg (bytes / 4096))
+    in if int-mod bytes 4096 == 0 then sh else a64-emit sh (arm64-add-imm a64-heap-reg a64-heap-reg (int-mod bytes 4096))
+   in A64EmitResult { state = st8, reg = r.reg }
 
   a64-emit-list-elems : A64State, List IRExpr, Integer, Integer -> A64EmitResult
   a64-emit-list-elems (st) (elems) (list-local) (i) =
@@ -1145,7 +1165,7 @@ Section: Module Emission
    in let st3 = a64-bind-params st2 (def.params) 0
    in let stack-arg-base-idx = if list-length (def.params) > 8 then st3.insn-count else 0 - 1
    in let st3 = if list-length (def.params) > 8 then
-    let st3x = a64-emit st3 arm64-nop
+    let st3x = a64-emit (a64-emit st3 arm64-nop) arm64-nop
     in a64-bind-stack-params st3x (def.params) 8
    else st3
    in let actual-body = when def.body
@@ -1183,7 +1203,7 @@ Section: Module Emission
    in let actual-pairs = a64-compute-save-pairs (st5.peak-local - a64-x19)
    in let st5a = a64-nop-unused-saves st5 (st5.prologue-index) actual-pairs
    in let st6 = a64-patch-frame st5a frame-size
-   in let st6 = if stack-arg-base-idx >= 0 then a64-patch-insn st6 stack-arg-base-idx (arm64-add-imm a64-x9 a64-sp frame-size) else st6
+   in let st6 = if stack-arg-base-idx >= 0 then a64-patch-stack-arg-base st6 stack-arg-base-idx frame-size else st6
    in let st7 = a64-peephole-mov-elim st6 (st6.prologue-index + 1) (st6.insn-count)
    in let st8 = a64-compact-function st7 (st7.prologue-index) (st7.insn-count)
    in a64-emit-epilogue st8 frame-size save-pairs
@@ -1239,8 +1259,18 @@ Section: Module Emission
   a64-patch-frame-at (st) (idx) (frame-size) =
    if frame-size <= 504 then
     let st1 = a64-patch-insn st idx (arm64-stp-pre a64-fp a64-lr a64-sp (0 - frame-size))
-    in a64-patch-insn st1 (idx + 1) arm64-nop
-   else a64-patch-insn st (idx) (arm64-sub-imm a64-sp a64-sp frame-size)
+    in a64-patch-insn st1 (idx + 2) arm64-nop
+   else if frame-size <= 4095 then a64-patch-insn st (idx) (arm64-sub-imm a64-sp a64-sp frame-size)
+   else let st1 = a64-patch-insn st (idx) (arm64-sub-imm-hi a64-sp a64-sp (frame-size / 4096))
+   in if int-mod frame-size 4096 == 0 then st1
+   else a64-patch-insn st1 (idx + 1) (arm64-sub-imm a64-sp a64-sp (int-mod frame-size 4096))
+
+  a64-patch-stack-arg-base : A64State, Integer, Integer -> A64State
+  a64-patch-stack-arg-base (st) (idx) (frame-size) =
+   if frame-size <= 4095 then a64-patch-insn st idx (arm64-add-imm a64-x9 a64-sp frame-size)
+   else let st1 = a64-patch-insn st idx (arm64-add-imm-hi a64-x9 a64-sp (frame-size / 4096))
+   in if int-mod frame-size 4096 == 0 then st1
+   else a64-patch-insn st1 (idx + 1) (arm64-add-imm a64-x9 a64-x9 (int-mod frame-size 4096))
 
   a64-patch-frame : A64State, Integer -> A64State
   a64-patch-frame (st) (frame-size) =

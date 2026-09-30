@@ -25,8 +25,13 @@ Section: Types
     wq-castle  : Boolean,
     bk-castle  : Boolean,
     bq-castle  : Boolean,
-    halfmove   : Integer
+    halfmove   : Integer,
+    seen       : List Integer
   }
+
+ seen is the game's positions since the last capture or pawn move, six
+ integers each (`cs-key`), the current one last. Only `chess-make`, the
+ move a game makes, extends it; the search applies moves without it.
 
   ChessMove = record {
     from-sq  : Integer,
@@ -40,7 +45,7 @@ Section: Constructors
 
   cs-board : List Integer, Integer, Integer, Boolean, Boolean, Boolean, Boolean, Integer -> ChessBoard
   cs-board (cells) (turn) (ep) (wk) (wq) (bk) (bq) (hm) =
-    ChessBoard { cells = cells, turn = turn, ep-sq = ep, wk-castle = wk, wq-castle = wq, bk-castle = bk, bq-castle = bq, halfmove = hm }
+    ChessBoard { cells = cells, turn = turn, ep-sq = ep, wk-castle = wk, wq-castle = wq, bk-castle = bk, bq-castle = bq, halfmove = hm, seen = [] }
 
   cs-plain : Integer, Integer, Integer -> ChessMove
   cs-plain (from) (to) (cap) =
@@ -55,7 +60,8 @@ Section: Construction
   chess-new : ChessBoard
   chess-new =
     let cells = cs-initial-cells 0 []
-    in cs-board cells 0 (-1) True True True True 0
+    in let b = cs-board cells 0 (-1) True True True True 0
+    in __record-set b "seen" (cs-key b)
 
   cs-initial-cells : Integer, List Integer -> List Integer
   cs-initial-cells (i) (acc) =
@@ -708,6 +714,107 @@ Section: Draws
 
   chess-threefold : List ChessBoard, ChessBoard -> Boolean
   chess-threefold (history) (b) = chess-repetitions history b >= 3
+
+ A game's positions, exactly (FIDE article 9.2.3): the pieces as five
+ words of fifteen four-bit cells, and one word for the side to move, the
+ four castling rights and the en passant square, the last counted only
+ when an en passant capture is in fact legal, which is when two positions
+ differ by it. Packing, not hashing: this kernel traps on overflow, and a
+ hash narrow enough to avoid it would confuse positions.
+
+  cs-key : ChessBoard -> List Integer
+  cs-key (b) =
+    [cs-pack (b.cells) 0, cs-pack (b.cells) 15, cs-pack (b.cells) 30, cs-pack (b.cells) 45, cs-pack (b.cells) 60, cs-meta b]
+
+  cs-pack : List Integer, Integer -> Integer
+  cs-pack (cells) (start) = cs-pack-loop cells start (if start + 15 > 64 then 64 else start + 15) 0 0
+
+  cs-pack-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  cs-pack-loop (cells) (i) (stop) (shift) (acc) =
+    if i >= stop then acc
+    else cs-pack-loop cells (i + 1) stop (shift + 4) (bit-or acc (bit-shl (list-at cells i) shift))
+
+  cs-meta : ChessBoard -> Integer
+  cs-meta (b) =
+    let rights = (if b.wk-castle then 2 else 0) + (if b.wq-castle then 4 else 0) + (if b.bk-castle then 8 else 0) + (if b.bq-castle then 16 else 0)
+    in b.turn + rights + 32 * (cs-ep-live b + 1)
+
+  cs-ep-live : ChessBoard -> Integer
+  cs-ep-live (b) =
+    if b.ep-sq < 0 then (-1)
+    else if cs-has-ep (chess-legal b) 0 then b.ep-sq
+    else (-1)
+
+  cs-has-ep : List ChessMove, Integer -> Boolean
+  cs-has-ep (ms) (i) =
+    if i >= list-length ms then False
+    else if (list-at ms i).special == 2 then True
+    else cs-has-ep ms (i + 1)
+
+ The move a game makes: the position after it joins the record, which a
+ capture or a pawn move starts afresh, because no earlier position can
+ recur after either.
+
+  chess-make : ChessBoard, ChessMove -> ChessBoard
+  chess-make (b) (m) =
+    let nb = chess-apply b m
+    in __record-set nb "seen" (if nb.halfmove == 0 then cs-key nb else b.seen & cs-key nb)
+
+  chess-occurrences : ChessBoard -> Integer
+  chess-occurrences (b) = cs-occ-loop (b.seen) (cs-key b) 0 0
+
+  cs-occ-loop : List Integer, List Integer, Integer, Integer -> Integer
+  cs-occ-loop (seen) (k) (i) (acc) =
+    if i + 6 > list-length seen then acc
+    else cs-occ-loop seen k (i + 6) (acc + (if cs-key-at seen k i 0 then 1 else 0))
+
+  cs-key-at : List Integer, List Integer, Integer, Integer -> Boolean
+  cs-key-at (seen) (k) (i) (j) =
+    if j >= 6 then True
+    else if list-at seen (i + j) /= list-at k j then False
+    else cs-key-at seen k i (j + 1)
+
+ A dead position (FIDE article 5.2.2): no series of legal moves can
+ checkmate. By material, that is bare kings, a king and one minor piece
+ against a bare king, and kings with bishops only, every bishop on squares
+ of one colour. A blocked position that is dead by its pawn structure is
+ not detected.
+
+  chess-dead : ChessBoard -> Boolean
+  chess-dead (b) = cs-dead-loop (b.cells) 0 0 0 0
+
+  cs-dead-loop : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  cs-dead-loop (cells) (i) (knights) (light) (dark) =
+    if i >= 64 then cs-dead-verdict knights light dark
+    else let k = cs-kind (list-at cells i)
+    in if list-at cells i == 0 then cs-dead-loop cells (i + 1) knights light dark
+    else if k == 1 then False
+    else if k == 4 then False
+    else if k == 5 then False
+    else if k == 2 then cs-dead-loop cells (i + 1) (knights + 1) light dark
+    else if k == 3 then (if cs-dark-sq i then cs-dead-loop cells (i + 1) knights light (dark + 1) else cs-dead-loop cells (i + 1) knights (light + 1) dark)
+    else cs-dead-loop cells (i + 1) knights light dark
+
+  cs-dead-verdict : Integer, Integer, Integer -> Boolean
+  cs-dead-verdict (knights) (light) (dark) =
+    if knights + light + dark <= 1 then True
+    else if knights > 0 then False
+    else light == 0 | dark == 0
+
+  cs-dark-sq : Integer -> Boolean
+  cs-dark-sq (sq) = (sq / 8 + (sq - (sq / 8) * 8)) - ((sq / 8 + (sq - (sq / 8) * 8)) / 2) * 2 == 1
+
+ Why a game with moves left is drawn, 0 when it is not: 2 the fifty-move
+ rule, 3 the third occurrence of a position, 4 a dead position. The arcade
+ applies the fifty-move and threefold rules on their own rather than on a
+ player's claim.
+
+  chess-draw-kind : ChessBoard -> Integer
+  chess-draw-kind (b) =
+    if chess-fifty b then 2
+    else if chess-occurrences b >= 3 then 3
+    else if chess-dead b then 4
+    else 0
 
 Section: Perft
 

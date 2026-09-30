@@ -15,8 +15,7 @@ and `klondike` are played in the arcade only.
 ### Abstract / Strategy
 - **TicTacToe** -- 3x3 rules + full-depth minimax (battery-verified: never loses, self-play always draws)
 - **Connect4** -- 6x7 board; the AI takes a win, blocks a loss, else favours the
-  centre. `Minimax.codex` also holds a two-ply search for it (`c4-iterative-ai`)
-  that nothing calls
+  centre
 - **Checkers** -- Full draughts rules with AI
 - **Go** -- 9x9 board, territory scoring
 - **Othello** -- 8x8 flip-disc game

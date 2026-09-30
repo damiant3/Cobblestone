@@ -1,0 +1,45 @@
+Chapter: FluxLora
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter StringUtils
+  cites Diffusion chapter Lora
+  cites Diffusion chapter Flux
+  cites AI chapter SafeTensors
+
+ A kohya Flux LoRA merged into a Flux transformer weight held as
+ float8_e4m3fn on the device, as Diffusion Forge merges it under its default
+ Diffusion in Low Bits, Automatic, which is not the online patch: the weight
+ widened to f32, every LoRA naming it adding strength (alpha / rank) up down,
+ then one cast back to e4m3 (backend/patcher/lora.py:76-270). The kohya
+ module is lora_unet_ and the Flux key without .weight, dots to underscores
+ (comfyui_lora_collection lora.py:273).
+
+ We say:
+
+Section: Merge
+
+  flux-lora-slots : Text, Integer -> List LoraSlot
+  flux-lora-slots (name) (rows) = if text-ends-with name ".weight" then lora-slot [lora-kohya name] 0 rows False else []
+
+  flux-lora-merge : List LoraFile, Text, Integer, Integer, Integer -> Integer
+  flux-lora-merge (ls) (name) (h8) (rows) (n) =
+    let slots = flux-lora-slots name rows
+    in if lora-names-any ls slots 0 0 == False then 0
+    else let h32 = gpu-buf-alloc (n * 4)
+    in if h32 == 0 then 0 - 1
+    else let wide = lora-launch "kernel_lora_from_f8" (n / 4) [gpu-arg-buf h8 0, gpu-arg-buf h32 0, gpu-arg-u64 n]
+    in let a = if wide then lora-apply-slots ls slots h32 (n / rows) 0 0 else 0 - 1
+    in let back = if a > 0 then lora-launch "kernel_lora_to_f8" (n / 4) [gpu-arg-buf h32 0, gpu-arg-buf h8 0, gpu-arg-u64 n] else False
+    in let f = gpu-buf-free h32
+    in if a > 0 & back then a else if a == 0 then 0 else 0 - 1
+
+  flux-lora-apply : FluxFile, List LoraFile -> Integer
+  flux-lora-apply (f) (ls) = fla-walk f ls ((f.ff-file).st-tensors) 0 0
+
+  fla-walk : FluxFile, List LoraFile, List StTensorMeta, Integer, Integer -> Integer
+  fla-walk (f) (ls) (ts) (i) (acc) =
+    if acc < 0 | i >= list-length ts then acc
+    else let m = list-at ts i
+    in if list-length (m.stm-shape) /= 2 | text-ends-with (m.stm-name) ".weight" == False then fla-walk f ls ts (i + 1) acc
+    else let h = fx-w f (m.stm-name)
+    in let r = if h == 0 then 0 else flux-lora-merge ls (m.stm-name) h (list-at (m.stm-shape) 0) (st-element-count m)
+    in fla-walk f ls ts (i + 1) (if r < 0 then r else acc + r)

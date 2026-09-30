@@ -1,0 +1,398 @@
+Chapter: SoftInpaint
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Noise
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter Resize
+
+ Forge's soft inpainting (extensions-builtin/soft-inpainting/scripts/
+ soft_inpainting.py), on host f32 buffers, a latent channel-major 4 x hw.
+
+ The mask is the latent mask unrounded, byte / 255 in f32 and then f16, Forge's
+ devices.dtype on this card (processing.py:1823-1831 with mask_round off). At
+ each model call the denoised latent is latent_blend (init, denoised, t) with t
+ the mask to the power sigma ^ power times scale (get_modified_nmask), that
+ exponent a 0-dim f32 tensor which torch casts to the mask's f16 first:
+ the vectors interpolated linearly, then rescaled to the interpolation of
+ their magnitudes each raised to detail, in f64 (lines 50-105). The final blend
+ is skipped (on_mask_blend, is_final_blend).
+
+ The overlay mask (apply_adaptive_masks): the latent distance between the
+ samples and the init latent, through weighted_histogram_filter with a 5 x 5
+ kernel (get_gaussian_kernel, stddev 1.5, max radius 2) at percentiles 0.9 to
+ 1 and then 0.25 to 0.75, over a half-weight distance of threshold times the
+ mask scalar, 1 / (1 + d ^ contrast), smootherstep, 1 minus, times 255 and
+ truncated to bytes; resized to the picture by LANCZOS (resize_image mode 2 at
+ the same aspect) and blurred by Pillow 9.5's GaussianBlur, radius 4: three
+ extended box blurs across and then three down (BoxBlur.c), each of radius
+ l + a from _gaussian_blur_radius, 24-bit fixed point, edges repeated.
+
+ We say:
+
+Section: Settings
+
+  SoftCfg = record {
+    sc-power : Real,
+    sc-scale : Real,
+    sc-detail : Real,
+    sc-infl : Real,
+    sc-thresh : Real,
+    sc-contrast : Real
+  }
+
+ Forge's defaults (soft_inpainting.py:444).
+
+  soft-default : SoftCfg
+  soft-default = SoftCfg { sc-power = 1.0, sc-scale = 0.5, sc-detail = 4.0, sc-infl = 0.0, sc-thresh = 0.5, sc-contrast = 2.0 }
+
+Section: Floats
+
+  si-get : Integer, Integer -> Real
+  si-get (a) (i) = un-f32-real (bit-and (peek-32 a (i * 4)) #FFFFFFFF)
+
+  si-set : Integer, Integer, Real -> Integer
+  si-set (a) (i) (v) = poke-32 a (i * 4) (nz-f32-bits v)
+
+  si-round-even : Real -> Real
+  si-round-even (r) =
+    let f = real-from-int (real-to-int r)
+    in let d = r - f
+    in if d > 0.5 then f + 1.0 else if d < 0.5 then f else if real-to-int f - real-to-int f / 2 * 2 == 0 then f else f + 1.0
+
+ IEEE half precision, round to nearest even; normal from 2 ^ -14, then a
+ fixed quantum of 2 ^ -24.
+
+  si-f16 : Real -> Real
+  si-f16 (x) =
+    if x ~0 0.0 then 0.0
+    else let ax = if x < 0.0 then 0.0 - x else x
+    in let e0 = bit-and (bit-shru (real-to-bits ax) 52) 2047 - 1023
+    in let e = if e0 < 0 - 14 then 0 - 14 else e0
+    in let q = sm-pow2 (e - 10)
+    in let v = si-round-even (ax / q) * q
+    in if x < 0.0 then 0.0 - v else v
+
+  si-pow : Real, Real -> Real
+  si-pow (x) (y) = if x <= 0.0 then 0.0 else let l = y * sm-ln x in if l < 0.0 - 700.0 then 0.0 else sm-exp l
+
+Section: Mask
+
+  soft-nmask : Integer, Integer -> Integer
+  soft-nmask (reduced) (hw) = si-nmask-fill reduced (alloc-bytes (hw * 4)) 0 hw
+
+  si-nmask-fill : Integer, Integer, Integer, Integer -> Integer
+  si-nmask-fill (m) (dst) (i) (n) =
+    if i >= n then dst
+    else let s = si-set dst i (si-f16 (sm-f32 (real-from-int (peek-byte m i) / 255.0)))
+    in si-nmask-fill m dst (i + 1) n
+
+  soft-modified : SoftCfg, Integer, Integer, Integer, Real -> Integer
+  soft-modified (c) (nm) (dst) (hw) (sigma) =
+    let e = si-f16 (sm-f32 (sm-f32 (si-pow (sm-f32 sigma) (c.sc-power)) * c.sc-scale))
+    in si-mod-fill nm dst e 0 hw
+
+  si-mod-fill : Integer, Integer, Real, Integer, Integer -> Integer
+  si-mod-fill (nm) (dst) (e) (i) (n) =
+    if i >= n then dst
+    else let s = si-set dst i (si-f16 (sm-f32 (si-pow (si-get nm i) e)))
+    in si-mod-fill nm dst e (i + 1) n
+
+ Before each model call x becomes x nmask + (init + noise sigma) mask, mask
+ being 1 - nmask in f16 (sd_samplers_cfg_denoiser.py:178-181).
+
+  soft-keep : Integer, Integer, Integer, Integer, Integer, Real, Integer -> Integer
+  soft-keep (x) (init) (nz) (nm) (hw) (s) (i) =
+    if i >= 4 * hw then 0
+    else let n = si-get nm (i - i / hw * hw)
+    in let k = sm-f32 (si-get init i + sm-f32 (si-get nz i * s))
+    in let w = si-set x i (sm-f32 (sm-f32 (si-get x i * n) + sm-f32 (k * si-f16 (1.0 - n))))
+    in soft-keep x init nz nm hw s (i + 1)
+
+ Latent noise (2) and latent nothing (3) over the unrounded mask
+ (processing.py:1834-1840).
+
+  soft-content : Integer, Integer, Integer, Integer, Integer -> Integer
+  soft-content (fill) (init) (nz) (nm) (hw) = si-content-at fill init nz nm hw 0
+
+  si-content-at : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  si-content-at (fill) (init) (nz) (nm) (hw) (i) =
+    if i >= 4 * hw then 0
+    else let n = si-get nm (i - i / hw * hw)
+    in let k = sm-f32 (si-get init i * si-f16 (1.0 - n))
+    in let w = si-set init i (if fill == 2 then sm-f32 (k + sm-f32 (si-get nz i * n)) else k)
+    in si-content-at fill init nz nm hw (i + 1)
+
+Section: Blend
+
+  si-norm4 : Integer, Integer, Integer -> Real
+  si-norm4 (a) (hw) (p) =
+    let x0 = si-get a p
+    in let x1 = si-get a (hw + p)
+    in let x2 = si-get a (2 * hw + p)
+    in let x3 = si-get a (3 * hw + p)
+    in sm-f32 (real-sqrt (x0 * x0 + x1 * x1 + x2 * x2 + x3 * x3))
+
+  si-lerp : Integer, Integer, Integer, Real, Real, Integer -> Integer
+  si-lerp (a) (b) (out) (omt) (t) (i) = si-set out i (sm-f32 (sm-f32 (si-get a i * omt) + sm-f32 (si-get b i * t)))
+
+  si-rescale : Integer, Integer, Real, Integer -> Integer
+  si-rescale (out) (i) (k) (z) = si-set out i (sm-f32 (si-get out i * k))
+
+ latent_blend at one latent pixel p, written to out.
+
+  si-blend-px : SoftCfg, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  si-blend-px (c) (a) (b) (t) (out) (hw) (p) =
+    let tt = si-get t p
+    in let omt = si-f16 (1.0 - tt)
+    in let am = si-pow (si-norm4 a hw p) (c.sc-detail) * omt
+    in let bm = si-pow (si-norm4 b hw p) (c.sc-detail) * tt
+    in let l0 = si-lerp a b out omt tt p
+    in let l1 = si-lerp a b out omt tt (hw + p)
+    in let l2 = si-lerp a b out omt tt (2 * hw + p)
+    in let l3 = si-lerp a b out omt tt (3 * hw + p)
+    in let cur = si-norm4 out hw p + 0.00001
+    in let k = sm-f32 (si-pow (am + bm) (1.0 / c.sc-detail) / cur)
+    in si-rescale out p k (si-rescale out (hw + p) k (si-rescale out (2 * hw + p) k (si-rescale out (3 * hw + p) k 0)))
+
+ latent_blend (a, b, t) over every pixel into out, which may be b.
+
+  soft-latent-blend : SoftCfg, Integer, Integer, Integer, Integer, Integer -> Integer
+  soft-latent-blend (c) (a) (b) (t) (out) (hw) = si-blend-all c a b t out hw 0
+
+  si-blend-all : SoftCfg, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  si-blend-all (c) (a) (b) (t) (out) (hw) (p) =
+    if p >= hw then out
+    else let w = si-blend-px c a b t out hw p
+    in si-blend-all c a b t out hw (p + 1)
+
+Section: Histogram Filter
+
+ get_gaussian_kernel (1.5, 2): exp (-(x^2 + y^2) / 1.5^2) less its value at
+ radius 3, over 1 less it, floored at 0; row-major 5 x 5.
+
+  soft-kernel : List Real
+  soft-kernel = si-kernel-fill 0 []
+
+  si-kernel-fill : Integer, List Real -> List Real
+  si-kernel-fill (i) (acc) =
+    if i >= 25 then acc
+    else let dy = real-from-int (i / 5 - 2)
+    in let dx = real-from-int (i - i / 5 * 5 - 2)
+    in let gz = sm-exp (0.0 - 9.0 / 2.25)
+    in let v = (sm-exp (0.0 - (dx * dx + dy * dy) / 2.25) - gz) * (1.0 / (1.0 - gz))
+    in si-kernel-fill (i + 1) (list-push acc (if v < 0.0 then 0.0 else v))
+
+  si-gather : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  si-gather (slots) (w) (y) (x) (y0) (x0) (x1) (k) (n) =
+    let yy = y0 + k / (x1 - x0)
+    in let xx = x0 + k - k / (x1 - x0) * (x1 - x0)
+    in let a = poke-32 slots (k * 8) (yy * w + xx)
+    in poke-32 slots (k * 8 + 4) ((yy - y + 2) * 5 + xx - x + 2)
+
+  si-gather-all : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  si-gather-all (slots) (w) (y) (x) (y0) (x0) (x1) (k) (n) =
+    if k >= n then n
+    else let g = si-gather slots w y x y0 x0 x1 k n
+    in si-gather-all slots w y x y0 x0 x1 (k + 1) n
+
+ Python's sort is stable, therefore equal values keep window order.
+
+  si-slot-value : Integer, Integer, Integer -> Real
+  si-slot-value (img) (slots) (k) = si-get img (peek-32 slots (k * 8))
+
+  si-swap : Integer, Integer -> Integer
+  si-swap (slots) (k) =
+    let a0 = peek-32 slots (k * 8)
+    in let a1 = peek-32 slots (k * 8 + 4)
+    in let b0 = poke-32 slots (k * 8) (peek-32 slots (k * 8 + 8))
+    in let b1 = poke-32 slots (k * 8 + 4) (peek-32 slots (k * 8 + 12))
+    in let c0 = poke-32 slots (k * 8 + 8) a0
+    in poke-32 slots (k * 8 + 12) a1
+
+  si-sink : Integer, Integer, Integer -> Integer
+  si-sink (img) (slots) (k) =
+    if k < 0 then 0
+    else if si-slot-value img slots k > si-slot-value img slots (k + 1) then (let s = si-swap slots k in si-sink img slots (k - 1))
+    else 0
+
+  si-sort : Integer, Integer, Integer, Integer -> Integer
+  si-sort (img) (slots) (i) (n) = if i >= n then 0 else let s = si-sink img slots (i - 1) in si-sort img slots (i + 1) n
+
+  si-weight : List Real, Integer, Integer -> Real
+  si-weight (kern) (slots) (k) = list-at kern (peek-32 slots (k * 8 + 4))
+
+  si-total : List Real, Integer, Integer, Integer, Real -> Real
+  si-total (kern) (slots) (k) (n) (acc) = if k >= n then acc else si-total kern slots (k + 1) n (acc + si-weight kern slots k)
+
+ The weighted mean of the samples overlapping the window [lo, hi) of the
+ stacked weights.
+
+  si-window-mean : Integer, List Real, Integer, Integer, Integer, Real, Real, Real, Real, Real -> Real
+  si-window-mean (img) (kern) (slots) (k) (n) (lo) (hi) (at) (value) (weight) =
+    if k >= n then (if weight ~0 0.0 then 0.0 else value / weight)
+    else let wmax = at + si-weight kern slots k
+    in if lo >= wmax then si-window-mean img kern slots (k + 1) n lo hi wmax value weight
+    else if hi <= at then (if weight ~0 0.0 then 0.0 else value / weight)
+    else let s = if lo > at then lo else at
+    in let e = if hi < wmax then hi else wmax
+    in si-window-mean img kern slots (k + 1) n lo hi wmax (value + si-slot-value img slots k * (e - s)) (weight + (e - s))
+
+  si-hist-px : Integer, Integer, Integer, List Real, Real, Real, Integer, Integer -> Real
+  si-hist-px (img) (w) (h) (kern) (pmin) (pmax) (slots) (p) =
+    let y = p / w
+    in let x = p - y * w
+    in let y0 = if y - 2 < 0 then 0 else y - 2
+    in let y1 = if y + 3 > h then h else y + 3
+    in let x0 = if x - 2 < 0 then 0 else x - 2
+    in let x1 = if x + 3 > w then w else x + 3
+    in let n = si-gather-all slots w y x y0 x0 x1 0 ((y1 - y0) * (x1 - x0))
+    in let s = si-sort img slots 1 n
+    in let total = si-total kern slots 0 n 0.0
+    in let lo0 = total * pmin
+    in let hi0 = total * pmax
+    in if hi0 - lo0 >= 1.0 then si-window-mean img kern slots 0 n lo0 hi0 0.0 0.0 0.0
+    else let mid = (lo0 + hi0) / 2.0
+    in let lo1 = mid - 0.5
+    in let hi1 = mid + 0.5
+    in let lo2 = if hi1 > total then total - 1.0 else lo1
+    in let hi2 = if hi1 > total then total else hi1
+    in if lo2 < 0.0 then si-window-mean img kern slots 0 n 0.0 1.0 0.0 0.0 0.0
+    else si-window-mean img kern slots 0 n lo2 hi2 0.0 0.0 0.0
+
+ weighted_histogram_filter over a w x h f32 image; a fresh f32 image.
+
+  soft-hist-filter : Integer, Integer, Integer, List Real, Real, Real -> Integer
+  soft-hist-filter (img) (w) (h) (kern) (pmin) (pmax) = si-hist-all img w h kern pmin pmax (alloc-bytes 200) (alloc-bytes (w * h * 4)) 0
+
+  si-hist-all : Integer, Integer, Integer, List Real, Real, Real, Integer, Integer, Integer -> Integer
+  si-hist-all (img) (w) (h) (kern) (pmin) (pmax) (slots) (dst) (p) =
+    if p >= w * h then dst
+    else let s = si-set dst p (si-hist-px img w h kern pmin pmax slots p)
+    in si-hist-all img w h kern pmin pmax slots dst (p + 1)
+
+Section: Box Blur
+
+  si-box-radius : Real, Integer -> Real
+  si-box-radius (radius) (passes) =
+    let s2 = radius * radius / real-from-int passes
+    in let big = real-sqrt (s2 * 12.0 + 1.0)
+    in let l = real-from-int (real-to-int ((big - 1.0) / 2.0))
+    in let a = (2.0 * l + 1.0) * (l * (l + 1.0) - 3.0 * s2) / (6.0 * (s2 - (l + 1.0) * (l + 1.0)))
+    in sm-f32 (l + a)
+
+  si-px : Integer, Integer, Integer, Integer, Integer -> Integer
+  si-px (src) (off) (stride) (last) (i) = peek-byte src (off + stride * (if i < 0 then 0 else if i > last then last else i))
+
+  si-acc0 : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  si-acc0 (src) (off) (stride) (last) (ri) (x) (acc) = if x >= ri then acc else si-acc0 src off stride last ri (x + 1) (acc + si-px src off stride last x)
+
+ ImagingLineBoxBlur8 over one line of length last + 1 at off, stride apart.
+
+  si-line : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  si-line (src) (dst) (off) (stride) (last) (ri) (ww) (fw) (acc0) = si-line-at src dst off stride last ri ww fw acc0 0
+
+  si-line-at : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  si-line-at (src) (dst) (off) (stride) (last) (ri) (ww) (fw) (acc) (x) =
+    if x > last then 0
+    else let a = acc + si-px src off stride last (x + ri) - si-px src off stride last (x - ri - 1)
+    in let bulk = a * ww + (si-px src off stride last (x - ri - 1) + si-px src off stride last (x + ri + 1)) * fw
+    in let p = poke-byte dst (off + stride * x) (bit-shru (bulk + 8388608) 24)
+    in si-line-at src dst off stride last ri ww fw a (x + 1)
+
+  si-pass : Integer, Integer, Integer, Integer, Real, Boolean, Integer -> Integer
+  si-pass (src) (dst) (w) (h) (r) (across) (k) =
+    if k >= (if across then h else w) then dst
+    else let ri = real-to-int r
+    in let ww = real-to-int (sm-f32 (16777216.0 / sm-f32 (r * 2.0 + 1.0)))
+    in let fw = (16777216 - (ri * 2 + 1) * ww) / 2
+    in let off = if across then k * w else k
+    in let stride = if across then 1 else w
+    in let last = (if across then w else h) - 1
+    in let edge = if ri + 1 < last + 1 then ri + 1 else last + 1
+    in let acc = peek-byte src off * (ri + 1) + si-acc0 src off stride last (edge - 1) 0 0 + si-px src off stride last last * (ri - edge + 1)
+    in let l = si-line src dst off stride last ri ww fw acc
+    in si-pass src dst w h r across (k + 1)
+
+ Pillow's GaussianBlur (radius) of a w x h L image; fresh bytes.
+
+  soft-gaussian-blur : Integer, Integer, Integer, Real -> Integer
+  soft-gaussian-blur (m) (w) (h) (radius) =
+    let r = si-box-radius radius 3
+    in let a = si-pass m (alloc-bytes (w * h)) w h r True 0
+    in let b = si-pass a (alloc-bytes (w * h)) w h r True 0
+    in let c = si-pass b (alloc-bytes (w * h)) w h r True 0
+    in let d = si-pass c (alloc-bytes (w * h)) w h r False 0
+    in let e = si-pass d (alloc-bytes (w * h)) w h r False 0
+    in si-pass e (alloc-bytes (w * h)) w h r False 0
+
+Section: Adaptive Mask
+
+  si-dist-fill : Integer, Integer, Integer, Integer, Integer -> Integer
+  si-dist-fill (s) (a) (dst) (hw) (p) =
+    if p >= hw then dst
+    else let d0 = sm-f32 (si-get s p - si-get a p)
+    in let d1 = sm-f32 (si-get s (hw + p) - si-get a (hw + p))
+    in let d2 = sm-f32 (si-get s (2 * hw + p) - si-get a (2 * hw + p))
+    in let d3 = sm-f32 (si-get s (3 * hw + p) - si-get a (3 * hw + p))
+    in let w = si-set dst p (sm-f32 (real-sqrt (d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3)))
+    in si-dist-fill s a dst hw (p + 1)
+
+ The mask scalar at one pixel, as f32 torch arithmetic.
+
+  si-scalar : SoftCfg, Real -> Real
+  si-scalar (c) (n) =
+    let cl = if n < 0.0 then 0.0 else if n > 1.0 then 1.0 else n
+    in let m0 = sm-f32 (1.0 - sm-f32 (si-pow cl (c.sc-scale / 2.0)))
+    in let m1 = sm-f32 (sm-f32 (0.5 * (1.0 - c.sc-infl)) + sm-f32 (m0 * c.sc-infl))
+    in sm-f32 (m1 / sm-f32 (1.00001 - m1))
+
+  si-smoother : Real -> Real
+  si-smoother (x) =
+    let x2 = sm-f32 (x * x)
+    in let x3 = sm-f32 (x2 * x)
+    in let inner = sm-f32 (sm-f32 (x * sm-f32 (sm-f32 (6.0 * x) - 15.0)) + 10.0)
+    in sm-f32 (x3 * inner)
+
+  si-pre-fill : SoftCfg, Integer, Integer, Integer, Integer, Integer -> Integer
+  si-pre-fill (c) (f2) (nm) (dst) (hw) (p) =
+    if p >= hw then dst
+    else let half = sm-f32 (c.sc-thresh * si-scalar c (si-get nm p))
+    in let d = sm-f32 (si-get f2 p / half)
+    in let q = sm-f32 (1.0 / sm-f32 (1.0 + sm-f32 (si-pow d (c.sc-contrast))))
+    in let v = sm-f32 (255.0 * sm-f32 (1.0 - si-smoother q))
+    in let w = poke-byte dst p (real-to-int v)
+    in si-pre-fill c f2 nm dst hw (p + 1)
+
+ The latent-size bytes before the resize, from the two filter passes'
+ second.
+
+  soft-mask-pre : SoftCfg, Integer, Integer, Integer -> Integer
+  soft-mask-pre (c) (f2) (nm) (hw) = si-pre-fill c f2 nm (alloc-bytes hw) hw 0
+
+  si-grey3 : Integer, Integer, Integer, Integer -> Integer
+  si-grey3 (m) (dst) (i) (n) =
+    if i >= n then dst
+    else let v = peek-byte m i
+    in let a = poke-byte dst (i * 3) v + poke-byte dst (i * 3 + 1) v + poke-byte dst (i * 3 + 2) v
+    in si-grey3 m dst (i + 1) n
+
+  si-band0 : Integer, Integer, Integer, Integer -> Integer
+  si-band0 (rgb) (dst) (i) (n) = if i >= n then dst else let v = poke-byte dst i (peek-byte rgb (i * 3)) in si-band0 rgb dst (i + 1) n
+
+ The overlay mask: the latent-size bytes resized to w x h and blurred.
+
+  soft-mask-overlay : Integer, Integer, Integer, Integer, Integer -> Integer
+  soft-mask-overlay (pre) (lw) (lh) (w) (h) =
+    let up = resize-lanczos (si-grey3 pre (alloc-bytes (lw * lh * 3)) 0 (lw * lh)) lw lh w h
+    in soft-gaussian-blur (si-band0 up (alloc-bytes (w * h)) 0 (w * h)) w h 4.0
+
+ apply_adaptive_masks end to end: samples and init latents 4 x lw x lh, the
+ unrounded mask; the overlay mask at w x h.
+
+  soft-adaptive-mask : SoftCfg, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  soft-adaptive-mask (c) (s) (a) (nm) (lw) (lh) (w) (h) =
+    let hw = lw * lh
+    in let d = si-dist-fill s a (alloc-bytes (hw * 4)) hw 0
+    in let k = soft-kernel
+    in let f1 = soft-hist-filter d lw lh k 0.9 1.0
+    in let f2 = soft-hist-filter f1 lw lh k 0.25 0.75
+    in soft-mask-overlay (soft-mask-pre c f2 nm hw) lw lh w h

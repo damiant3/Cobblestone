@@ -227,7 +227,7 @@ launched on the lane's own measurement of the box:
 ```powershell
 build/compile.ps1 -Src X -Out Y -Log Z -Kernel seed\Codex.cdx   # one .codex file; -Log is MANDATORY
                                                                 # (omitting it hangs headless), -Kernel names the compiler
-build/bvt.ps1 -CodexCdx <candidate> -Jobs 4                     # the BVT over a candidate compiler, a fan-out
+build/bvt.ps1 -CodexCdx <candidate> -Jobs 16                    # the BVT over a candidate compiler, a fan-out
 ```
 
 A change is done when the tests it touches pass, compiled and run one at
@@ -298,13 +298,13 @@ the BOX. the Fleet Commander is how you synchronize on the BOX").**
   A lane's own leftovers (a watcher loop, a second slot waiter, a demo
   server, an assembly launched beside a gate) kill other runs. A lane audits its
   own shells, background tasks, monitors, servers and guests at every
-  handoff and after any run of its is killed, and kills what it left. The box is one DIMM down (15.8 GiB)
-until an RMA lands, and an overcommit kills guests with a different
-plausible culprit each run, reading as codegen when it is RAM. The
-measurements behind the numbers are `CoordinationProtocol.md`, "The
-token does not cover RAM"; the history of the default is
-`ExaminersAssay.md`, "The parallelism default". Re-measure before quoting
-any of them (L-COUNT).
+  handoff and after any run of its is killed, and kills what it left.
+  The box holds 47.77 GiB and 20 logical CPUs (2026-09-28), so run wide:
+  `-Jobs 16` is the default, and CPU runs out before RAM does. An
+  overcommit still kills guests with a different plausible culprit each
+  run, reading as codegen when it is RAM. The measurements behind the
+  numbers are `CoordinationProtocol.md`, "The token does not cover RAM".
+  Re-measure before quoting any of them (L-COUNT).
 
 **The full battery (`build/test.ps1`) is Damian's tool, and `-All` is
 prohibited except for release builds** (Damian, 2026-09-01). The script

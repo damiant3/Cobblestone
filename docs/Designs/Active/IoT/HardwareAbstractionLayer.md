@@ -52,11 +52,10 @@ UART driver already occupies, and the distinction is the entire point of the
 capability.
 
 **`I2c`, `Adc` and `Power` sit on the table's previously unassigned bits 1,
-2 and 13.** The x86-64 boot grant and revoke emitters carry bit 31 and above
-exactly (`codex/test/ops/cap-grant-emit`); the arm64 and riscv boot grants
-refuse a capability at bit 31 or above (`compiler-backlog` COMPILER-17), so
-the next capability placed there compiles for x86-64 only until those two
-are measured.
+2 and 13.** The boot grant carries bit 31 and above exactly on all three
+targets: x86-64 grant and revoke (`codex/test/ops/cap-grant-emit`), and the
+arm64 and riscv grant lists `arm64-or-into-cell` and `rv-or-into-cell`
+(`codex/test/ops/cap-grant-arm64`, `cap-grant-riscv`).
 
 **The read side.** `gpio-read : linear Pin -> (linear Pin, Boolean)`
 (IDR +0x10), `uart-recv : linear UartPort, Integer -> (linear UartPort, List

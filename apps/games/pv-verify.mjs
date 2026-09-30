@@ -51,7 +51,7 @@ const RANKNAME = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
 const SUITNAME = ['c','d','h','s'];
 const show = cs => cs.map(c => RANKNAME[rankOf(c)] + SUITNAME[suitOf(c)]).join(' ');
 const CATEGORY = ['high card','pair','two pair','trips','straight','flush',
-                  'full house','quads','straight flush'];
+                  'full house','quads','straight flush','five of a kind'];
 const VARIANTS = ['FiveCardDraw','FiveCardStud','SevenCardStud','Baseball',
                   'HiChicago','LowChicago','FollowTheQueen','JacksOrBetter'];
 const A = 12, K = 11, Q = 10, J = 9, T = 8;
@@ -68,6 +68,7 @@ function classify(cs) {
     if (ranks[4] - ranks[0] === 4) straight = true;
     else if (JSON.stringify(ranks) === JSON.stringify([0, 1, 2, 3, 12])) straight = true;
   }
+  if (shape[0] === 5) return 9; // only a wild card makes one
   if (straight && flush) return 8;
   if (shape[0] === 4) return 7;
   if (shape[0] === 3 && shape[1] === 2) return 6;
@@ -204,8 +205,8 @@ console.log(`pv-verify ${wasmPath}`);
       const s = e.pv_run(v, seed, 2);
       const w = e.pv_winner(s), p1 = e.pv_p1(s), p2 = e.pv_p2(s);
       if (w < 0 || w > 2) bad.push(`${VARIANTS[v]} seed ${seed}: winner ${w}`);
-      if (p1 < 0 || p1 > 8) bad.push(`${VARIANTS[v]} seed ${seed}: p1 rank ${p1}`);
-      if (p2 < 0 || p2 > 8) bad.push(`${VARIANTS[v]} seed ${seed}: p2 rank ${p2}`);
+      if (p1 < 0 || p1 > 9) bad.push(`${VARIANTS[v]} seed ${seed}: p1 rank ${p1}`);
+      if (p2 < 0 || p2 > 9) bad.push(`${VARIANTS[v]} seed ${seed}: p2 rank ${p2}`);
       if (seed === 123) lines.push(`${VARIANTS[v]} P1=${CATEGORY[p1]} P2=${CATEGORY[p2]} w=${w}`);
     }
   }
@@ -213,13 +214,28 @@ console.log(`pv-verify ${wasmPath}`);
      bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '24 sessions');
   ok('control: the variants are not all the same session',
      new Set(lines).size > 1, `${new Set(lines).size} distinct results at seed 123`);
-  // The index must select the variant: a wrapper that ignored it would give
-  // eight identical sessions, which the control above already refuses, but
-  // this pins the one the pinned test names.
-  ok('SevenCardStud at seed 123 is the session classic-games-run pins',
-     e.pv_p1(e.pv_run(2, 123, 2)) === 1 && e.pv_p2(e.pv_run(2, 123, 2)) === 1 &&
-     e.pv_winner(e.pv_run(2, 123, 2)) === 2,
-     `P1=${CATEGORY[e.pv_p1(e.pv_run(2, 123, 2))]} P2=${CATEGORY[e.pv_p2(e.pv_run(2, 123, 2))]} winner=${e.pv_winner(e.pv_run(2, 123, 2))}`);
+  // The session is the table's own hand with both seats played by the
+  // other seats' rules: stepping a fresh table to the end must give the
+  // same winner, ranks and special result, so no second set of rules exists.
+  const same = [];
+  let folds = 0, played = 0;
+  for (let v = 0; v < 8; v++) {
+    for (const seed of [1, 2, 3, 5, 8, 13, 123]) {
+      let p = e.pvt_new(v, seed), guard = 0;
+      while (e.pvt_done(p) === 0 && guard++ < 400) p = e.pvt_step(p);
+      const s = e.pv_run(v, seed, 2);
+      played++;
+      const f = e.pvt_folded(p);
+      if (f >= 0) folds++;
+      const w = f === 0 ? 2 : f === 1 ? 1 : e.pvt_winner(p) === 0 ? 1 : e.pvt_winner(p) === 1 ? 2 : 0;
+      const got = [e.pv_winner(s), e.pv_p1(s), e.pv_p2(s)].join();
+      const want = [w, e.pvt_rank(p, 0), e.pvt_rank(p, 1)].join();
+      if (got !== want) same.push(`${VARIANTS[v]} seed ${seed}: session ${got}, table ${want}`);
+      if ((v === 4 || v === 5) && e.pv_special(s) !== e.pvt_spade(p)) same.push(`${VARIANTS[v]} seed ${seed}: spade ${e.pv_special(s)} against ${e.pvt_spade(p)}`);
+    }
+  }
+  ok('the watch-only session is the table\'s hand played out by the other seats', same.length === 0,
+     same.length ? same.slice(0, 3).join('; ') : `${played} hands, ${folds} ending in a fold`);
 }
 
 // -- WILD CARDS -------------------------------------------------------------
@@ -239,7 +255,7 @@ function bestWild(cs, isWild) {
       const h = [...nat, ...pick];
       const cnt = new Array(13).fill(0);
       for (const c of h) cnt[rankOf(c)]++;
-      if (Math.max(...cnt) <= 4) best = Math.max(best, classify(h));
+      best = Math.max(best, classify(h));
       return;
     }
     for (let c = from; c < 52; c++) { pick.push(c); walk(c); pick.pop(); }
@@ -254,7 +270,7 @@ const threes = c => rankOf(c) === 1;
     ['one three with A J T 8, a pair', [card(1,0), card(A,1), card(J,2), card(T,3), card(6,0)], 1],
     ['two threes with A J T, a straight', [card(1,0), card(1,1), card(A,2), card(J,3), card(T,0)], 4],
     ['three threes, an ace and a jack', [card(1,0), card(1,1), card(1,2), card(A,3), card(J,0)], 7],
-    ['four threes and an ace', [card(1,0), card(1,1), card(1,2), card(1,3), card(A,0)], 8],
+    ['four threes and an ace, five aces', [card(1,0), card(1,1), card(1,2), card(1,3), card(A,0)], 9],
   ];
   const bad = [];
   for (const [name, cs, want] of cases) {
@@ -313,33 +329,77 @@ const V = ['5-draw', '5-stud', '7-stud', 'baseball', 'hi-chicago',
            'low-chicago', 'follow-queen', 'jacks-or-better'];
 const START = 400; // two seats, two hundred each
 
+// pagat's studs, written down here from the rules rather than read from the
+// engine: five card stud deals one down and one up and then three up; the
+// seven-card games deal two down and one up, three more up, and the last
+// down. Everything else is dealt whole.
+const isStud = v => v >= 1 && v <= 6;
+const FIRST = v => v === 1 ? 2 : isStud(v) ? 3 : 5;
+const FINAL = v => (v === 0 || v === 1 || v === 7) ? 5 : 7;
+const UP = (v, i) => v === 1 ? i >= 1 : isStud(v) ? (i >= 2 && i <= 5) : false;
+// Which of a seat's cards are face up, dealt street by street from the cards
+// themselves: in Baseball a four dealt face up brings an extra face-up card
+// at once (pagat, baseball.html). `want` is how many cards the streets so
+// far call for; the extras make it depend on the ranks.
+function upModel(v, cards, streets) {
+  const flags = [];
+  let want = 0;
+  const deal = face => {
+    const c = cards[want++];
+    flags.push(face);
+    if (face && v === 3 && c !== undefined && rankOf(c) === 2) deal(true);
+  };
+  for (let k = 0; k < FIRST(v) - (isStud(v) ? 1 : 0); k++) deal(false);
+  if (isStud(v)) deal(true);
+  for (let s = 1; s <= streets; s++) deal(v === 1 || s <= 3);
+  return { flags: flags.slice(0, cards.length), want };
+}
+const truth = (p, who) => [...Array(e.pvt_dealt(p, who)).keys()].map(i => e.pvt_card(p, who, i));
+const modelOf = (p, v, who) => upModel(v, truth(p, who), e.pvt_street(p));
+// A card's worth for the bring-in and for a tie: rank, then clubs, diamonds,
+// hearts, spades from low to high.
+const worth = c => rankOf(c) * 4 + suitOf(c);
+
 {
   const bad = [];
   for (let v = 0; v < 8; v++) {
     const p = e.pvt_new(v, 7);
-    const want = (v === 0 || v === 1 || v === 7) ? 5 : 7;
-    if (e.pvt_size(p) !== want) bad.push(`${V[v]}: dealt ${e.pvt_size(p)}, wanted ${want}`);
-    if (e.pvt_card(p, 0, want - 1) < 0) bad.push(`${V[v]}: your last card is missing`);
-    if (e.pvt_card(p, 0, want) !== -1) bad.push(`${V[v]}: a card past the hand was answered`);
+    const first = FIRST(v);
+    if (e.pvt_size(p) !== FINAL(v)) bad.push(`${V[v]}: a hand of ${e.pvt_size(p)}, wanted ${FINAL(v)}`);
+    for (const who of [0, 1]) {
+      const m = modelOf(p, v, who);
+      if (e.pvt_dealt(p, who) !== m.want) bad.push(`${V[v]}: seat ${who} dealt ${e.pvt_dealt(p, who)}, wanted ${m.want}`);
+      const pattern = m.flags.map((_, i) => e.pvt_up(p, who, i)).join('');
+      if (pattern !== m.flags.map(f => f ? 1 : 0).join('')) bad.push(`${V[v]}: seat ${who} up cards ${pattern}, wanted ${m.flags.map(f => f ? 1 : 0).join('')}`);
+    }
+    if (e.pvt_card(p, 0, e.pvt_dealt(p, 0) - 1) < 0) bad.push(`${V[v]}: your last card is missing`);
+    if (e.pvt_card(p, 0, e.pvt_dealt(p, 0)) !== -1) bad.push(`${V[v]}: a card not yet dealt was answered`);
     if (e.pvt_chips(p, 0) + e.pvt_chips(p, 1) + e.pvt_pot(p) !== START) {
       bad.push(`${V[v]}: ${e.pvt_chips(p,0)}+${e.pvt_chips(p,1)}+${e.pvt_pot(p)} is not ${START}`);
     }
+
   }
-  ok('every variant deals its own hand size and antes the same', bad.length === 0,
-     bad.length ? bad.slice(0, 3).join('; ') : '8 variants');
+  ok('every variant deals its first street, face up where the rules say, and antes out of the 400',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '8 variants');
 }
 
 {
   const seen = [];
+  let upShown = 0;
   for (let v = 0; v < 8; v++) {
     const p = e.pvt_new(v, 3);
-    const n = e.pvt_size(p);
-    const hidden = [...Array(n)].every((_, i) => e.pvt_shown(p, 1, i) === -1);
-    if (!hidden) seen.push(V[v]);
+    const m = modelOf(p, v, 1);
+    for (let i = 0; i < e.pvt_size(p) + 4; i++) {
+      const s = e.pvt_shown(p, 1, i);
+      const dealt = i < e.pvt_dealt(p, 1);
+      if (dealt && m.flags[i]) { if (s < 0) seen.push(`${V[v]} card ${i}: an up card hidden`); else upShown++; }
+      else if (s !== -1) seen.push(`${V[v]} card ${i}: a down or undealt card shown`);
+    }
   }
-  ok('the opponent\'s cards are hidden while the hand is live', seen.length === 0,
-     seen.length ? seen.join('; ') : '8 variants');
-  ok('and its rank is hidden with them',
+  ok('the opponent\'s down cards are hidden while the hand is live, its up cards shown',
+     seen.length === 0, seen.length ? seen.slice(0, 3).join('; ') : `${upShown} up cards shown`);
+  ok('CONTROL: the studs did show an up card', upShown >= 6, `${upShown} up cards`);
+  ok('and its rank is hidden',
      [...Array(8)].every((_, v) => e.pvt_rank(e.pvt_new(v, 3), 1) === -1));
 }
 
@@ -392,7 +452,8 @@ const callDown = p =>
   let checked = 0;
   for (const v of [2, 4, 5]) { // seven cards, no wilds
     for (const seed of [1, 2, 3, 5, 8, 13, 21, 34]) {
-      const p = e.pvt_new(v, seed);
+      const { p } = playOut(v, seed, callDown);
+      if (e.pvt_dealt(p, 0) !== 7) continue; // a fold before seventh street
       const c = [...Array(7)].map((_, i) => e.pvt_card(p, 0, i));
       const viaBest5 = e.pv_rank(e.pv_best5(c[0], c[1], c[2], c[3], c[4], c[5], c[6]));
       checked++;
@@ -401,6 +462,7 @@ const callDown = p =>
       }
     }
   }
+  ok('CONTROL: seven-card hands reached seventh street', checked > 0, `${checked} hands`);
   ok('a seven-card variant ranks a hand the way the session does',
      bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : `${checked} hands`);
 }
@@ -449,7 +511,8 @@ const callDown = p =>
   let moved = 0, bad = [];
   for (const v of [3, 6]) {
     for (let seed = 1; seed <= 40; seed++) {
-      const p = e.pvt_new(v, seed);
+      const { p } = playOut(v, seed, callDown);
+      if (e.pvt_dealt(p, 0) !== 7) continue;
       const c = [...Array(7)].map((_, i) => e.pvt_card(p, 0, i));
       const plain = e.pv_rank(e.pv_best5(c[0], c[1], c[2], c[3], c[4], c[5], c[6]));
       const wildCards = c.filter(x => e.pvt_wildat(p, x) === 1).length;
@@ -481,8 +544,9 @@ const callDown = p =>
   for (let v = 0; v < 8; v++) {
     for (let seed = 1; seed <= 30; seed++) {
       const { p } = playOut(v, seed, callDown);
+      if (e.pvt_folded(p) !== -1) continue; // a fold settles no side pot
       const s = e.pvt_spade(p);
-      if (v === 4 || v === 5) { if (s !== 0) decided++; }
+      if (v === 4 || v === 5) { if (s === 1 || s === 2) decided++; }
       else if (s !== 0) elsewhere.push(`${V[v]} seed ${seed}: spade ${s}`);
     }
   }
@@ -517,7 +581,7 @@ const callDown = p =>
      gated.length ? gated.map(v => V[v]).join('; ') : '7 variants');
 }
 
-// The draw belongs to five card draw alone.
+// The draw belongs to the two draw games, five card draw and jacks or better.
 {
   const offered = [1, 2, 3, 4, 5, 6, 7].filter(v => {
     let p = e.pvt_new(v, 9), guard = 0;
@@ -527,8 +591,8 @@ const callDown = p =>
     }
     return false;
   });
-  ok('only five card draw ever offers a draw', offered.length === 0,
-     offered.length ? offered.map(v => V[v]).join('; ') : '7 variants refuse');
+  ok('of the others only jacks or better, a draw game, offers a draw', offered.join() === '7',
+     offered.map(v => V[v]).join('; ') || 'none offered');
   let p = e.pvt_new(0, 9), guard = 0;
   while (e.pvt_done(p) === 0 && e.pvt_candraw(p) === 0 && guard++ < 20) {
     p = e.pvt_cur(p) === 0 ? (e.pvt_cancall(p) === 1 ? e.pvt_call(p) : p) : e.pvt_step(p);
@@ -541,6 +605,434 @@ const callDown = p =>
   ok('marking the same card twice is refused un-copied', e.pvt_mark(marked, 0) === marked);
   ok('a mark off the hand is refused un-copied',
      e.pvt_mark(p, 5) === p && e.pvt_mark(p, -1) === p);
+}
+
+// -- THE STUDS, STREET BY STREET -------------------------------------------
+//
+// Every arm below reads the table the way a player at it would: its own
+// cards, the opponent's up cards, the stakes. The rules are pagat's
+// (7stud.html, 5stud.html) and are written out here, not asked of the engine.
+
+// Visit every state of a hand, the human playing `act`.
+function walk(v, seed, act, visit) {
+  let p = e.pvt_new(v, seed), guard = 0;
+  while (e.pvt_done(p) === 0 && guard++ < 80) {
+    visit(p);
+    const before = p;
+    p = e.pvt_cur(p) === 0 ? act(p) : e.pvt_step(p);
+    if (p === before) break;
+  }
+  visit(p);
+  return p;
+}
+const upOf = (p, v, who) => { const m = modelOf(p, v, who); return truth(p, who).filter((_, i) => m.flags[i]); };
+// A board ranks on the hand-rank scale: under five cards by its groups alone
+// (pair 1, two pair 2, trips 3, quads 7), five or more as its best five-card
+// hand. Ties go by the ranks, most numerous first (a five-high straight
+// reads 5 4 3 2 with the ace below the two), padded to five with the lowest
+// rank, then by the worth of the best card showing.
+const kickOf = cs => {
+  const cnt = new Map();
+  for (const c of cs) cnt.set(rankOf(c), (cnt.get(rankOf(c)) || 0) + 1);
+  const rs = [...cnt.keys()].sort((a, b) => a - b);
+  if (cs.length === 5 && rs.join() === '0,1,2,3,12') return [3, 2, 1, 0, 0];
+  return [...cnt.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0]).flatMap(([r, n]) => Array(n).fill(r));
+};
+function showKey(cs) {
+  const top = Math.max(...cs.map(worth));
+  if (cs.length >= 5) {
+    let best = null;
+    const pick = [];
+    const go = from => {
+      if (pick.length === 5) {
+        const h = pick.map(i => cs[i]);
+        const key = [classify(h), ...kickOf(h)];
+        if (!best || cmpKey(key, best) > 0) best = key;
+        return;
+      }
+      for (let i = from; i < cs.length; i++) { pick.push(i); go(i + 1); pick.pop(); }
+    };
+    go(0);
+    return [...best, top];
+  }
+  const cnt = new Map();
+  for (const c of cs) cnt.set(rankOf(c), (cnt.get(rankOf(c)) || 0) + 1);
+  const m = Math.max(0, ...cnt.values());
+  const pairs = [...cnt.values()].filter(n => n === 2).length;
+  const cat = m >= 4 ? 7 : m === 3 ? 3 : pairs >= 2 ? 2 : m === 2 ? 1 : 0;
+  const ranks = kickOf(cs);
+  while (ranks.length < 5) ranks.push(0);
+  return [cat, ...ranks, top];
+}
+const cmpKey = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
+const pairShowing = (p, v) => [0, 1].some(w => {
+  const rs = upOf(p, v, w).map(rankOf);
+  return new Set(rs).size < rs.length;
+});
+
+{
+  const bad = [];
+  const starts = [0, 0];
+  let full = 0, bigBoards = 0;
+  for (let v = 1; v <= 6; v++) {
+    for (let seed = 1; seed <= 15; seed++) {
+      let prev = -1;
+      const streets = new Set();
+      const p = walk(v, seed, callDown, q => {
+        const s = e.pvt_street(q);
+        streets.add(s);
+        for (const who of [0, 1]) {
+          const m = modelOf(q, v, who);
+          if (e.pvt_dealt(q, who) !== m.want) bad.push(`${V[v]} seed ${seed} street ${s}: seat ${who} holds ${e.pvt_dealt(q, who)}, the streets deal ${m.want}`);
+          const flags = m.flags.map((f, i) => (f ? 1 : 0) === e.pvt_up(q, who, i)).every(Boolean);
+          if (!flags) bad.push(`${V[v]} seed ${seed} street ${s}: seat ${who} face-up cards ${m.flags.map((_, i) => e.pvt_up(q, who, i)).join('')}, the streets say ${m.flags.map(f => f ? 1 : 0).join('')}`);
+        }
+        if (s !== prev && s > 0 && e.pvt_done(q) === 0) {
+          const want = cmpKey(showKey(upOf(q, v, 1)), showKey(upOf(q, v, 0))) > 0 ? 1 : 0;
+          starts[want]++;
+          if (upOf(q, v, 0).length >= 5 || upOf(q, v, 1).length >= 5) bigBoards++;
+          if (e.pvt_cur(q) !== want) bad.push(`${V[v]} seed ${seed} street ${s}: seat ${e.pvt_cur(q)} began, the boards say ${want}`);
+        }
+        prev = s;
+      });
+      if (e.pvt_folded(p) === -1) {
+        full++;
+        if (e.pvt_dealt(p, 0) !== upModel(v, truth(p, 0), FINAL(v) - FIRST(v)).want) bad.push(`${V[v]} seed ${seed}: showed down holding ${e.pvt_dealt(p, 0)}`);
+        if (streets.size !== FINAL(v) - FIRST(v) + 1) bad.push(`${V[v]} seed ${seed}: ${streets.size} betting rounds`);
+      }
+    }
+  }
+  ok('CONTROL: stud hands reached the showdown, each seat began a later round, and a board of five or more was ranked',
+     full > 0 && starts[0] > 0 && starts[1] > 0 && bigBoards > 0,
+     `${full} showdowns, begun by you ${starts[0]}, by them ${starts[1]}, ${bigBoards} with a board of five or more`);
+  ok('a stud deals one card a street, bets after each, and each later round is begun by the best board',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '90 hands');
+}
+
+{
+  const bad = [];
+  const by = [0, 0];
+  let lowerDecided = 0;
+  for (let v = 1; v <= 6; v++) {
+    for (let seed = 1; seed <= (v === 3 ? 200 : 40); seed++) {
+      const p = e.pvt_new(v, seed);
+      const low = who => Math.min(...upOf(p, v, who).map(worth));
+      const high = who => Math.max(...upOf(p, v, who).map(worth));
+      const want = low(1) < low(0) ? 1 : 0;
+      if ((high(1) < high(0) ? 1 : 0) !== want) lowerDecided++;
+      by[want]++;
+      if (e.pvt_bring(p) !== want || e.pvt_cur(p) !== want) {
+        bad.push(`${V[v]} seed ${seed}: seat ${e.pvt_bring(p)} brings in, the low card is seat ${want}`); continue;
+      }
+      if (e.pvt_pot(p) !== 4) bad.push(`${V[v]} seed ${seed}: the antes made ${e.pvt_pot(p)}, not 4`);
+      if (want === 0) {
+        if (e.pvt_canfold(p) !== 0) bad.push(`${V[v]} seed ${seed}: the bring-in could be folded`);
+        const q = e.pvt_call(p);
+        if (e.pvt_bet(q, 0) !== 5 || e.pvt_last(q) !== 5) bad.push(`${V[v]} seed ${seed}: brought in ${e.pvt_bet(q, 0)}`);
+        if (e.pvt_tocall(q, 1) !== 5) bad.push(`${V[v]} seed ${seed}: they owe ${e.pvt_tocall(q, 1)} after a bring-in`);
+        const r = e.pvt_raise(p);
+        if (e.pvt_bet(r, 0) !== 10) bad.push(`${V[v]} seed ${seed}: completed to ${e.pvt_bet(r, 0)}`);
+      } else {
+        const q = e.pvt_step(p);
+        const b = e.pvt_bet(q, 1);
+        if (b !== 5 && b !== 10) bad.push(`${V[v]} seed ${seed}: they brought in ${b}`);
+        if (b === 5 && e.pvt_canraise(q) === 1 && e.pvt_bet(e.pvt_raise(q), 0) !== 10) {
+          bad.push(`${V[v]} seed ${seed}: completing their bring-in came to ${e.pvt_bet(e.pvt_raise(q), 0)}`);
+        }
+      }
+    }
+  }
+  ok('CONTROL: the corpus reached bring-ins by both seats, and a Baseball extra card decided one',
+     by[0] > 0 && by[1] > 0 && lowerDecided > 0, `you ${by[0]}, them ${by[1]}, ${lowerDecided} decided by a seat's lower card`);
+  ok('the lowest up card brings in 5, may not fold, and a completion makes the small bet',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : `${by[0] + by[1]} deals`);
+}
+
+{
+  // The size of every raise the human could make, probed off the side of a
+  // hand played by calling. With no bet yet in a round (the bring-in is not
+  // one) a raise makes the round's bet; after one it adds a bet to the top.
+  const bad = [];
+  const n = { small: 0, big: 0, option: 0, optionOff: 0, reraise: 0 };
+  for (let v = 1; v <= 6; v++) {
+    for (let seed = 1; seed <= 80; seed++) {
+      walk(v, seed, callDown, p => {
+        if (e.pvt_done(p) === 1 || e.pvt_cur(p) !== 0) return;
+        const s = e.pvt_street(p);
+        const top = Math.max(e.pvt_bet(p, 0), e.pvt_bet(p, 1));
+        const unbet = s === 0 ? top <= 5 : top === 0;
+        const bet = s >= 2 ? 20 : 10;
+        if (e.pvt_canraise(p) === 1) {
+          const want = unbet ? bet : top + bet;
+          const got = e.pvt_bet(e.pvt_raise(p), 0);
+          n[s >= 2 ? 'big' : 'small']++;
+          if (got !== want) bad.push(`${V[v]} seed ${seed} street ${s}: raised to ${got}, wanted ${want}`);
+        }
+        const may = s === 1 && pairShowing(p, v) && e.pvt_canraise(p) === 1;
+        if (e.pvt_canbig(p) !== (may ? 1 : 0)) {
+          bad.push(`${V[v]} seed ${seed} street ${s}: the big-bet option is ${e.pvt_canbig(p)}, a pair showing ${pairShowing(p, v)}`);
+        }
+        if (s === 1 && !pairShowing(p, v) && e.pvt_canraise(p) === 1) n.optionOff++;
+        if (e.pvt_canbig(p) === 1) {
+          n.option++;
+          const q = e.pvt_big(p);
+          const want = unbet ? 20 : top + 20;
+          if (e.pvt_bet(q, 0) !== want) bad.push(`${V[v]} seed ${seed}: a big bet made ${e.pvt_bet(q, 0)}, wanted ${want}`);
+          const r = e.pvt_step(q);
+          if (e.pvt_last(r) === 3) {
+            n.reraise++;
+            if (e.pvt_bet(r, 1) !== e.pvt_bet(q, 0) + 20) bad.push(`${V[v]} seed ${seed}: raised a big bet to ${e.pvt_bet(r, 1)}`);
+          }
+        }
+      });
+    }
+  }
+  ok('CONTROL: small and big raises, the big-bet option, and its absence were all reached',
+     n.small > 0 && n.big > 0 && n.option > 0 && n.optionOff > 0,
+     `${n.small} small, ${n.big} big, option ${n.option} (reraised ${n.reraise}), no pair ${n.optionOff}`);
+  ok('small bets on the first two rounds, big after, and a big bet on the second only when a pair shows',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '480 hands');
+}
+
+{
+  // One bet and three raises a round. The human raises whenever it may, so
+  // the opponent's raises can drive a round to the cap.
+  const bad = [];
+  let capped = 0;
+  const raiser = p => e.pvt_canraise(p) === 1 ? e.pvt_raise(p) : callDown(p);
+  for (let v = 1; v <= 6; v++) {
+    for (let seed = 1; seed <= 30; seed++) {
+      walk(v, seed, raiser, p => {
+        const s = e.pvt_street(p);
+        const top = Math.max(e.pvt_bet(p, 0), e.pvt_bet(p, 1));
+        const cap = 4 * (s >= 2 ? 20 : 10);
+        if (top > cap) bad.push(`${V[v]} seed ${seed} street ${s}: a stake of ${top}, the cap is ${cap}`);
+        if (e.pvt_done(p) === 0 && e.pvt_cur(p) === 0 && top === cap && e.pvt_canraise(p) === 0) capped++;
+      });
+    }
+  }
+  ok('CONTROL: a round reached the cap', capped > 0, `${capped} times`);
+  ok('no round goes past one bet and three raises', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : '180 hands');
+}
+
+{
+  // Follow the queen (pagat, chicago.html): the card dealt face up after a
+  // face-up queen names the wild rank; a later face-up queen cancels it, and
+  // if the last face-up card dealt is a queen there are no wild cards. Queens
+  // are not wild. Read from the up cards in the order dealt, seat 0 then
+  // seat 1 each street, and only from cards already dealt.
+  const bad = [];
+  let named = 0, moved = 0, queenLast = 0;
+  for (let seed = 1; seed <= 300; seed++) {
+    let last = -2;
+    walk(6, seed, callDown, p => {
+      const seq = [];
+      for (let i = 0; i < e.pvt_dealt(p, 0); i++) {
+        if (UP(6, i)) seq.push(e.pvt_card(p, 0, i), e.pvt_shown(p, 1, i));
+      }
+      let lastQ = -1;
+      seq.forEach((c, j) => { if (rankOf(c) === Q) lastQ = j; });
+      const wild = lastQ < 0 || lastQ === seq.length - 1 ? -1 : rankOf(seq[lastQ + 1]);
+      if (lastQ >= 0 && lastQ === seq.length - 1 && seq.slice(0, -1).some(c => rankOf(c) === Q)) queenLast++;
+      if (wild >= 0) named++;
+      if (last >= -1 && wild !== last) moved++;
+      last = wild;
+      const got = [...Array(52).keys()].filter(c => e.pvt_wildat(p, c) === 1);
+      const want = wild < 0 ? [] : [0, 1, 2, 3].map(s => card(wild, s));
+      if (got.join() !== want.join()) {
+        bad.push(`seed ${seed} street ${e.pvt_street(p)}: wild ${got.map(c => RANKNAME[rankOf(c)]).join('')}, the up cards ${show(seq)} say ${wild < 0 ? 'none' : RANKNAME[wild]}`);
+      }
+    });
+  }
+  ok('CONTROL: follow the queen named a wild, a wild changed as the deal went, and a second queen fell last',
+     named > 0 && moved > 0 && queenLast > 0, `${named} states with a wild, ${moved} changes, ${queenLast} with a queen last`);
+  ok('follow the queen\'s wild comes from the up cards dealt so far', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : '300 hands');
+}
+
+{
+  // The Chicagos (pagat, chicago.html): the pot splits between the highest
+  // hand and the highest spade in the hole (the lowest, ace high, in Low
+  // Chicago). The hole is every face-down card; spades are suit 0, the suit
+  // the arcade draws as a spade. The hand's half takes the odd chip, and a
+  // tied hand splits its half with the odd chip to seat 0.
+  const bad = [];
+  let split = 0, seventh = 0, noSpade = 0, showdowns = 0;
+  for (const v of [4, 5]) {
+    for (let seed = 1; seed <= 80; seed++) {
+      let prev = null;
+      const p = walk(v, seed, callDown, q => { if (e.pvt_done(q) === 0) prev = q; });
+      if (e.pvt_done(p) !== 1 || e.pvt_folded(p) !== -1 || !prev) continue;
+      showdowns++;
+      const cards = w => [...Array(7).keys()].map(i => e.pvt_shown(p, w, i));
+      const hole = w => [0, 1, 6].map(i => cards(w)[i]).filter(c => suitOf(c) === 0);
+      const pick = cs => cs.length === 0 ? -1 : (v === 4 ? Math.max : Math.min)(...cs.map(rankOf));
+      const s = [pick(hole(0)), pick(hole(1))];
+      let sw = -1;
+      if (s[0] >= 0 || s[1] >= 0) sw = s[1] < 0 ? 0 : s[0] < 0 ? 1 : (v === 4 ? (s[0] > s[1] ? 0 : 1) : (s[0] < s[1] ? 0 : 1));
+      const cmp = e.pv_cmp(e.pv_best5(...cards(0)), e.pv_best5(...cards(1)));
+      const hw = cmp === 1 ? 0 : cmp === 2 ? 1 : -1;
+      const caller = e.pvt_cur(prev), owed = e.pvt_tocall(prev, caller);
+      const pot = e.pvt_pot(prev) + owed;
+      const share = [0, 0];
+      const give = (amount, w) => {
+        if (w >= 0) share[w] += amount;
+        else { share[0] += amount - Math.floor(amount / 2); share[1] += Math.floor(amount / 2); }
+      };
+      if (sw < 0) { noSpade++; give(pot, hw); }
+      else {
+        give(pot - Math.floor(pot / 2), hw);
+        give(Math.floor(pot / 2), sw);
+        if (sw !== hw) split++;
+        const winning = hole(sw).find(c => rankOf(c) === s[sw]);
+        if (cards(sw).indexOf(winning) === 6) seventh++;
+      }
+      for (const w of [0, 1]) {
+        const want = e.pvt_chips(prev, w) - (w === caller ? owed : 0) + share[w];
+        if (e.pvt_chips(p, w) !== want) {
+          bad.push(`${V[v]} seed ${seed}: seat ${w} ended on ${e.pvt_chips(p, w)}, wanted ${want} (pot ${pot}, hand ${hw}, spade ${sw})`);
+        }
+      }
+    }
+  }
+  ok('CONTROL: Chicago pots split between two seats, a seventh-street spade decided one, and some had no hole spade',
+     split > 0 && seventh > 0 && noSpade > 0, `${showdowns} showdowns: ${split} split, ${seventh} by seventh street, ${noSpade} with no hole spade`);
+  ok('the Chicagos split the pot between the best hand and the spade in the hole', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : `${showdowns} showdowns`);
+}
+
+{
+  // Five card draw's fixed limit: ten before the draw, twenty after it.
+  const bad = [];
+  const by = [0, 0, 0];
+  for (let seed = 1; seed <= 30; seed++) {
+    walk(0, seed, callDown, p => {
+      if (e.pvt_done(p) === 1 || e.pvt_cur(p) !== 0 || e.pvt_canraise(p) !== 1) return;
+      const st = e.pvt_stage(p);
+      const want = e.pvt_bet(p, 0) + e.pvt_tocall(p, 0) + (st >= 2 ? 20 : 10);
+      by[st]++;
+      const got = e.pvt_bet(e.pvt_raise(p), 0);
+      if (got !== want) bad.push(`seed ${seed} stage ${st}: raised to ${got}, wanted ${want}`);
+    });
+  }
+  ok('CONTROL: draw raises were probed before and after the draw', by[0] > 0 && by[2] > 0, `${by[0]} before, ${by[2]} after`);
+  ok('a draw raise is ten before the draw and twenty after', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : `${by[0] + by[2]} raises`);
+}
+
+{
+  // Boards built here, ordered by the engine's score and by this side's key.
+  // A five-card board ranks as a poker hand, so a straight showing beats
+  // trips showing and a flush beats a straight; a four-card board's quads
+  // beat a five-card straight. The random pairs run across both sizes.
+  const b = cs => cs.length === 4 ? e.pv_board4(...cs) : e.pv_board5(...cs);
+  const built = [
+    ['a straight showing over trips', [card(5,0), card(6,1), card(7,2), card(8,3), card(9,0)], [card(K,0), card(K,1), card(K,2), card(2,3), card(4,0)]],
+    ['a flush showing over a straight', [card(2,1), card(5,1), card(7,1), card(9,1), card(J,1)], [card(5,0), card(6,1), card(7,2), card(8,3), card(9,0)]],
+    ['four-card quads over a five-card straight', [card(Q,0), card(Q,1), card(Q,2), card(Q,3)], [card(5,0), card(6,1), card(7,2), card(8,3), card(9,0)]],
+    ['a pair of aces over a pair of kings', [card(A,0), card(A,1), card(2,2), card(3,3)], [card(K,0), card(K,1), card(Q,2), card(J,3)]],
+  ];
+  const bad = [];
+  for (const [name, hi, lo] of built) {
+    if (!(cmpKey(showKey(hi), showKey(lo)) > 0)) bad.push(`ORACLE ${name}`);
+    if (!(b(hi) > b(lo))) bad.push(`${name}: ${b(hi)} against ${b(lo)}`);
+  }
+  let pairs = 0;
+  for (let seed = 1; seed <= 600; seed++) {
+    const deal = sevenCards(seed + 20000).concat(sevenCards(seed + 30000)).filter((c, i, a) => a.indexOf(c) === i);
+    const x = deal.slice(0, seed % 2 ? 5 : 4), y = deal.slice(5, 10 - (seed % 3 === 0 ? 1 : 0));
+    if (y.length < 4 || new Set([...x, ...y]).size !== x.length + y.length) continue;
+    pairs++;
+    const want = Math.sign(cmpKey(showKey(x), showKey(y))), got = Math.sign(b(x) - b(y));
+    if (want !== got) bad.push(`${show(x)} against ${show(y)}: engine ${got}, key ${want}`);
+  }
+  ok('boards of four and five cards order as poker hands, built and at random', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : `${built.length} built, ${pairs} random pairs`);
+}
+
+// -- BASEBALL AND FIVE OF A KIND ------------------------------------------
+//
+// The best category five cards with k wild cards can make, reasoned out from
+// the hand ranking rather than tried: five of a kind needs every natural on
+// one rank, a straight flush needs the naturals on one suit inside one
+// five-rank window, and so on down. It is checked against the brute-force
+// oracle above before it grades anything.
+function catWild(nat, k) {
+  if (k === 0) return classify(nat);
+  const cnt = new Map();
+  for (const c of nat) cnt.set(rankOf(c), (cnt.get(rankOf(c)) || 0) + 1);
+  const m = Math.max(0, ...cnt.values());
+  const oneSuit = new Set(nat.map(suitOf)).size <= 1;
+  const ranks = [...cnt.keys()];
+  const distinct = ranks.length === nat.length;
+  const windows = [[12, 0, 1, 2, 3], ...[...Array(9).keys()].map(lo => [lo, lo + 1, lo + 2, lo + 3, lo + 4])];
+  const inWindow = distinct && windows.some(w => ranks.every(r => w.includes(r)));
+  if (m + k >= 5) return 9;
+  if (oneSuit && inWindow) return 8;
+  if (m + k >= 4) return 7;
+  if (k === 1 && [...cnt.values()].filter(n => n === 2).length === 2) return 6;
+  if (oneSuit) return 5;
+  if (inWindow) return 4;
+  if (m + k >= 3) return 3;
+  if (m + k >= 2) return 1;
+  return 0;
+}
+const bestOfAll = (cards, isWild) => {
+  let best = -1;
+  const n = cards.length, pick = [];
+  const go = from => {
+    if (pick.length === 5) {
+      const h = pick.map(i => cards[i]);
+      const nat = h.filter(c => !isWild(c));
+      best = Math.max(best, catWild(nat, 5 - nat.length));
+      return;
+    }
+    for (let i = from; i < n; i++) { pick.push(i); go(i + 1); pick.pop(); }
+  };
+  go(0);
+  return best;
+};
+{
+  const bad = [];
+  let checked = 0;
+  const nines = c => rankOf(c) === 1 || rankOf(c) === 7;
+  for (let seed = 1; seed <= 300; seed++) {
+    const k = seed % 3;
+    const base = sevenCards(seed + 9000).filter(c => !nines(c)).slice(0, 5 - k);
+    const cs = [...[card(1, 0), card(7, 1)].slice(0, k), ...base];
+    checked++;
+    if (catWild(cs.filter(c => !nines(c)), k) !== bestWild(cs, nines)) {
+      bad.push(`${show(cs)}: reasoned ${CATEGORY[catWild(cs.filter(c => !nines(c)), k)]}, tried ${CATEGORY[bestWild(cs, nines)]}`);
+    }
+  }
+  ok('control: the reasoned wild classifier agrees with the substitution oracle', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : `${checked} hands with up to two wilds`);
+}
+{
+  const bad = [];
+  let showdowns = 0, grown = 0, five = 0, extras = 0;
+  for (const v of [3, 6]) {
+    for (let seed = 1; seed <= 120; seed++) {
+      const p = walk(v, seed, callDown, () => {});
+      for (const who of [0, 1]) if (v === 3) extras += e.pvt_dealt(p, who) - 7 > 0 ? 1 : 0;
+      if (e.pvt_done(p) !== 1 || e.pvt_folded(p) !== -1) continue;
+      showdowns++;
+      for (const who of [0, 1]) {
+        const cs = truth(p, who);
+        if (cs.length > 7) grown++;
+        const wild = c => e.pvt_wildat(p, c) === 1;
+        const want = bestOfAll(cs, wild);
+        const got = e.pvt_rank(p, who);
+        if (got === 9) five++;
+        if (got !== want) bad.push(`${V[v]} seed ${seed} seat ${who}: ${show(cs)} ranked ${CATEGORY[got]}, reasoned ${CATEGORY[want]}`);
+      }
+    }
+  }
+  ok('CONTROL: Baseball dealt extra cards for fours, hands past seven reached a showdown, and five of a kind was made',
+     extras > 0 && grown > 0 && five > 0, `${extras} seats with extras, ${grown} showdown hands past seven, ${five} fives of a kind in ${showdowns} showdowns`);
+  ok('every Baseball and Follow the Queen hand is ranked at its best five, five of a kind on top', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : `${showdowns} showdowns`);
 }
 
 // A REFUSAL ANSWERS THE STATE IT WAS GIVEN. A wrapper that copies first

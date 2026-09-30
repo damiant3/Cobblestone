@@ -1,11 +1,22 @@
 Chapter: Pinochle
   cites Games chapter Rng
 
- Two-team Pinochle (4 players, teams 0 and 1). 48-card deck:
- ranks A,10,K,Q,J,9 (encoded 5,4,3,2,1,0) duplicated twice,
- four suits (0=clubs, 1=diamonds, 2=hearts, 3=spades).
+ Single deck partnership pinochle by pagat.com
+ (https://www.pagat.com/marriage/pinmain.html): four players, partners
+ opposite. 48-card deck: ranks A,10,K,Q,J,9 (encoded 5,4,3,2,1,0)
+ duplicated twice, four suits (0=clubs, 1=diamonds, 2=hearts, 3=spades).
  Card = suit * 12 + copy * 6 + rank.
- Scoring: melds then trick points (A=11, 10=10, K=4, Q=3, J=2).
+
+ An auction opens at the dealer's left at 250 and rises by at least 10; a
+ seat that passes is out, and three passes end it. If the three before the
+ dealer pass, the dealer takes it at 250. The declarer names trump, the
+ declarer's partner passes four cards across and the declarer passes four
+ back, and the declarer leads. Aces, tens and kings are counters worth 10
+ each and the last trick 10, 250 in all. A declaring team that reaches its
+ bid in meld and counters scores both; one that does not goes set, scoring
+ nothing and losing the bid. The other team's meld counts only if it takes
+ a counter or the last trick. Game is 1500, and if both teams reach it on
+ one hand the declaring team wins.
 
  We say:
 
@@ -56,11 +67,7 @@ Section: Card Helpers
 
   pin-point-value : Integer -> Integer
   pin-point-value (rank) =
-    if rank == 5 then 11
-    else if rank == 4 then 10
-    else if rank == 3 then 4
-    else if rank == 2 then 3
-    else if rank == 1 then 2
+    if rank >= 3 then 10
     else 0
 
   pin-rank-name : Integer -> Text
@@ -97,15 +104,14 @@ Section: Deck
     in let d3 = list-set-at d2 j a
     in pin-fy d3 (i - 1) r2
 
-  pin-deal : List Integer -> PinochleState
-  pin-deal (deck) =
+  pin-deal : List Integer, Integer -> PinochleState
+  pin-deal (deck) (turn) =
     let h0 = pin-collect deck 0 12 []
     in let h1 = pin-collect deck 12 24 []
     in let h2 = pin-collect deck 24 36 []
     in let h3 = pin-collect deck 36 48 []
-    in let trump = pin-suit (list-at deck 0)
     in PinochleState { deck = deck, h0 = h0, h1 = h1, h2 = h2, h3 = h3,
-                       trump = trump, leader = 0, turn = 0,
+                       trump = (-1), leader = turn, turn = turn,
                        p0 = (-1), p1 = (-1), p2 = (-1), p3 = (-1),
                        t0 = 0, t1 = 0, tricks = 0, done = False }
 
@@ -137,9 +143,9 @@ Section: Melding
   meld-marriage-loop : List Integer, Integer, Integer, Integer -> Integer
   meld-marriage-loop (hand) (trump) (s) (score) =
     if s >= 4 then score
+    else if s == trump then meld-marriage-loop hand trump (s + 1) score
     else let pairs = pin-min (count-sr-loop hand s 3 0 0) (count-sr-loop hand s 2 0 0)
-    in let each = if s == trump then 40 else 20
-    in meld-marriage-loop hand trump (s + 1) (score + pairs * each)
+    in meld-marriage-loop hand trump (s + 1) (score + pairs * 20)
 
   meld-pinochle : List Integer -> Integer
   meld-pinochle (hand) =
@@ -169,17 +175,26 @@ Section: Melding
       else 0
     else 0
 
+ pagat's trump pieces: a bare run 150, a run with an extra king or an
+ extra queen 190, with an extra marriage 230, a double run 1500; without a
+ run each royal marriage is 40. The nine of trump is 10.
+
   meld-run : List Integer, Integer -> Integer
   meld-run (hand) (trump) =
-    let a = count-sr-loop hand trump 5 0 0
+    if trump < 0 then 0
+    else let a = count-sr-loop hand trump 5 0 0
     in let t = count-sr-loop hand trump 4 0 0
     in let k = count-sr-loop hand trump 3 0 0
     in let q = count-sr-loop hand trump 2 0 0
     in let j = count-sr-loop hand trump 1 0 0
     in let n = pin-min (pin-min (pin-min a t) (pin-min k q)) j
     in if n >= 2 then 1500
-    else if n == 1 then 150
-    else 0
+    else if n == 1 then 150 + 40 * (k - 1) + 40 * (q - 1)
+    else 40 * pin-min k q
+
+  meld-dix : List Integer, Integer -> Integer
+  meld-dix (hand) (trump) =
+    if trump < 0 then 0 else 10 * count-sr-loop hand trump 0 0 0
 
   score-meld : List Integer, Integer -> Integer
   score-meld (hand) (trump) =
@@ -190,7 +205,7 @@ Section: Melding
     in let qa = meld-around hand 2
     in let ja = meld-around hand 1
     in let run = meld-run hand trump
-    in m + p + aa + ka + qa + ja + run
+    in m + p + aa + ka + qa + ja + run + meld-dix hand trump
 
 Section: The Trick
 
@@ -244,20 +259,23 @@ Section: The Trick
     else False
 
  A trick is won by a seat, not a card: the deck holds two of every card, so
- a card value cannot say which seat played it.
+ a card value cannot say which seat played it. The seats are walked in the
+ order they played, from the leader, because of two identical cards the
+ first played wins.
 
   pin-best-seat : PinochleState -> Integer
   pin-best-seat (st) =
-    pin-seat-loop st (pin-led-suit st) (st.trump) 0 (st.leader)
+    pin-seat-loop st (pin-led-suit st) (st.trump) 1 (st.leader)
 
   pin-seat-loop : PinochleState, Integer, Integer, Integer, Integer -> Integer
-  pin-seat-loop (st) (led) (trump) (seat) (best-seat) =
-    if seat >= 4 then best-seat
-    else let c = pin-played st seat
+  pin-seat-loop (st) (led) (trump) (k) (best-seat) =
+    if k >= 4 then best-seat
+    else let seat = rng-mod (st.leader + k) 4
+    in let c = pin-played st seat
     in let b = pin-played st best-seat
-    in if c < 0 then pin-seat-loop st led trump (seat + 1) best-seat
-    else if pin-beats c b led trump then pin-seat-loop st led trump (seat + 1) seat
-    else pin-seat-loop st led trump (seat + 1) best-seat
+    in if c < 0 then pin-seat-loop st led trump (k + 1) best-seat
+    else if pin-beats c b led trump then pin-seat-loop st led trump (k + 1) seat
+    else pin-seat-loop st led trump (k + 1) best-seat
 
   pin-best-card : PinochleState -> Integer
   pin-best-card (st) = pin-played st (pin-best-seat st)
@@ -405,38 +423,357 @@ Section: Playing One Card
       done = over
     }
 
-  pin-play-at : PinochleState, Integer -> PinochleState
-  pin-play-at (st) (idx) =
-    if pin-legal st idx then pin-place st idx else st
+Section: The Game
 
-  pin-step : PinochleState -> PinochleState
-  pin-step (st) =
-    if st.done then st
-    else let idx = pin-ai-pick st
-    in if idx < 0 then st else pin-place st idx
+ `phase` is 0 for the auction, 1 while the declarer names trump, 2 while
+ the partner passes four, 3 while the declarer passes four back, 4 for the
+ play, 5 when a hand is scored and 6 when the game is over. `turn` in the
+ hand's state is the seat to act in every phase. `out` and `marked` are bit
+ sets: the seats that have passed, and the hand positions picked to pass.
 
- Forty-eight cards is forty-eight steps; the fuel stops a seat with no legal
- card from spinning.
+  PinGame = record {
+    st     : PinochleState,
+    phase  : Integer,
+    dealer : Integer,
+    bid    : Integer,
+    bidder : Integer,
+    out    : Integer,
+    marked : Integer,
+    m0     : Integer,
+    m1     : Integer,
+    s0     : Integer,
+    s1     : Integer,
+    made   : Integer,
+    hands  : Integer,
+    seed   : Integer,
+    winner : Integer
+  }
 
-  pin-play-out : PinochleState, Integer -> PinochleState
-  pin-play-out (st) (fuel) =
-    if fuel <= 0 then st
-    else if st.done then st
-    else pin-play-out (pin-step st) (fuel - 1)
+  pin-pow2 : Integer -> Integer
+  pin-pow2 (i) = if i <= 0 then 1 else 2 * pin-pow2 (i - 1)
+
+  pin-bit : Integer, Integer -> Integer
+  pin-bit (m) (i) = rng-mod (m / pin-pow2 i) 2
+
+  pin-bit-count : Integer, Integer, Integer, Integer -> Integer
+  pin-bit-count (m) (i) (n) (acc) =
+    if i >= n then acc
+    else pin-bit-count m (i + 1) n (acc + pin-bit m i)
+
+  pin-with-turn : PinochleState, Integer -> PinochleState
+  pin-with-turn (st) (seat) =
+    PinochleState { deck = st.deck, h0 = st.h0, h1 = st.h1, h2 = st.h2, h3 = st.h3,
+                    trump = st.trump, leader = st.leader, turn = seat,
+                    p0 = st.p0, p1 = st.p1, p2 = st.p2, p3 = st.p3,
+                    t0 = st.t0, t1 = st.t1, tricks = st.tricks, done = st.done }
+
+  pin-with-st : PinGame, PinochleState -> PinGame
+  pin-with-st (g) (st) =
+    PinGame { st = st, phase = g.phase, dealer = g.dealer, bid = g.bid,
+              bidder = g.bidder, out = g.out, marked = g.marked,
+              m0 = g.m0, m1 = g.m1, s0 = g.s0, s1 = g.s1, made = g.made,
+              hands = g.hands, seed = g.seed, winner = g.winner }
+
+  pin-deal-game : Integer, Integer, Integer, Integer, Integer -> PinGame
+  pin-deal-game (seed) (hands) (dealer) (s0) (s1) =
+    let deck = pin-shuffle pin-deck-new (rng-new (seed + 7919 * hands))
+    in PinGame { st = pin-deal deck (rng-mod (dealer + 1) 4), phase = 0,
+                 dealer = dealer, bid = 0, bidder = (-1), out = 0, marked = 0,
+                 m0 = 0, m1 = 0, s0 = s0, s1 = s1, made = (-1),
+                 hands = hands, seed = seed, winner = (-1) }
+
+ Seat 3 deals the first hand, so seat 0 opens the first auction.
+
+  pin-new-game : Integer -> PinGame
+  pin-new-game (seed) = pin-deal-game seed 0 3 0 0
+
+  pin-next-hand : PinGame -> PinGame
+  pin-next-hand (g) =
+    if g.phase /= 5 then g
+    else pin-deal-game (g.seed) (g.hands + 1) (rng-mod (g.dealer + 1) 4) (g.s0) (g.s1)
+
+Section: The Auction
+
+  pin-min-bid : PinGame -> Integer
+  pin-min-bid (g) = if g.bid == 0 then 250 else g.bid + 10
+
+  pin-next-in : Integer, Integer -> Integer
+  pin-next-in (out) (seat) =
+    let s = rng-mod (seat + 1) 4
+    in if pin-bit out s == 1 then pin-next-in out s else s
+
+  pin-can-bid : PinGame, Integer -> Boolean
+  pin-can-bid (g) (amount) =
+    if g.phase /= 0 then False
+    else if amount < pin-min-bid g then False
+    else rng-mod amount 10 == 0
+
+  pin-call-bid : PinGame, Integer -> PinGame
+  pin-call-bid (g) (amount) =
+    if pin-can-bid g amount == False then g
+    else let seat = (g.st).turn
+    in PinGame { st = pin-with-turn (g.st) (pin-next-in (g.out) seat), phase = 0,
+                 dealer = g.dealer, bid = amount, bidder = seat, out = g.out, marked = 0,
+                 m0 = 0, m1 = 0, s0 = g.s0, s1 = g.s1, made = (-1),
+                 hands = g.hands, seed = g.seed, winner = (-1) }
+
+ The high bidder is never asked again: the turn skips the seats that are
+ out, and the auction ends at the third pass, before it comes back round.
+
+  pin-call-pass : PinGame -> PinGame
+  pin-call-pass (g) =
+    if g.phase /= 0 then g
+    else let seat = (g.st).turn
+    in let out = g.out + pin-pow2 seat
+    in if pin-bit-count out 0 4 0 >= 3 then pin-win-auction g out
+    else PinGame { st = pin-with-turn (g.st) (pin-next-in out seat), phase = 0,
+                   dealer = g.dealer, bid = g.bid, bidder = g.bidder, out = out, marked = 0,
+                   m0 = 0, m1 = 0, s0 = g.s0, s1 = g.s1, made = (-1),
+                   hands = g.hands, seed = g.seed, winner = (-1) }
+
+  pin-first-in : Integer, Integer -> Integer
+  pin-first-in (out) (seat) =
+    if seat >= 3 then 3
+    else if pin-bit out seat == 0 then seat
+    else pin-first-in out (seat + 1)
+
+  pin-win-auction : PinGame, Integer -> PinGame
+  pin-win-auction (g) (out) =
+    let decl = pin-first-in out 0
+    in PinGame { st = pin-with-turn (g.st) decl, phase = 1,
+                 dealer = g.dealer, bid = (if g.bid < 250 then 250 else g.bid),
+                 bidder = decl, out = out, marked = 0,
+                 m0 = 0, m1 = 0, s0 = g.s0, s1 = g.s1, made = (-1),
+                 hands = g.hands, seed = g.seed, winner = (-1) }
+
+Section: Trump And The Pass
+
+  pin-name-trump : PinGame, Integer -> PinGame
+  pin-name-trump (g) (suit) =
+    if g.phase /= 1 then g
+    else if suit < 0 then g
+    else if suit > 3 then g
+    else let st = g.st
+    in PinGame { st = PinochleState { deck = st.deck, h0 = st.h0, h1 = st.h1, h2 = st.h2, h3 = st.h3,
+                                      trump = suit, leader = g.bidder,
+                                      turn = rng-mod (g.bidder + 2) 4,
+                                      p0 = st.p0, p1 = st.p1, p2 = st.p2, p3 = st.p3,
+                                      t0 = 0, t1 = 0, tricks = 0, done = False },
+                 phase = 2, dealer = g.dealer, bid = g.bid, bidder = g.bidder,
+                 out = g.out, marked = 0, m0 = 0, m1 = 0, s0 = g.s0, s1 = g.s1,
+                 made = (-1), hands = g.hands, seed = g.seed, winner = (-1) }
+
+  pin-passing : PinGame -> Boolean
+  pin-passing (g) = g.phase == 2 | g.phase == 3
+
+  pin-can-mark : PinGame, Integer -> Boolean
+  pin-can-mark (g) (i) =
+    if pin-passing g == False then False
+    else if i < 0 then False
+    else if i >= list-length (pin-hand (g.st) ((g.st).turn)) then False
+    else if pin-bit (g.marked) i == 1 then False
+    else pin-bit-count (g.marked) 0 16 0 < 4
+
+  pin-set-marked : PinGame, Integer -> PinGame
+  pin-set-marked (g) (m) =
+    PinGame { st = g.st, phase = g.phase, dealer = g.dealer, bid = g.bid,
+              bidder = g.bidder, out = g.out, marked = m,
+              m0 = g.m0, m1 = g.m1, s0 = g.s0, s1 = g.s1, made = g.made,
+              hands = g.hands, seed = g.seed, winner = g.winner }
+
+  pin-mark : PinGame, Integer -> PinGame
+  pin-mark (g) (i) =
+    if pin-can-mark g i then pin-set-marked g (g.marked + pin-pow2 i) else g
+
+  pin-clear-marks : PinGame -> PinGame
+  pin-clear-marks (g) =
+    if pin-passing g == False then g
+    else if g.marked == 0 then g
+    else pin-set-marked g 0
+
+  pin-can-give : PinGame -> Boolean
+  pin-can-give (g) =
+    if pin-passing g == False then False
+    else pin-bit-count (g.marked) 0 16 0 == 4
+
+  pin-give : PinGame -> PinGame
+  pin-give (g) =
+    if pin-can-give g then pin-give-mask g (g.marked) else g
+
+  pin-split : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pin-split (hand) (mask) (want) (i) (acc) =
+    if i >= list-length hand then acc
+    else let next = if pin-bit mask i == want then list-push acc (list-at hand i) else acc
+    in pin-split hand mask want (i + 1) next
+
+  pin-append : List Integer, List Integer, Integer -> List Integer
+  pin-append (acc) (more) (i) =
+    if i >= list-length more then acc
+    else pin-append (list-push acc (list-at more i)) more (i + 1)
+
+  pin-hand-after : PinochleState, Integer, List Integer, Integer, List Integer, Integer -> List Integer
+  pin-hand-after (st) (giver) (kept) (taker) (got) (seat) =
+    if seat == giver then kept
+    else if seat == taker then got
+    else pin-hand st seat
+
+ The four go across the table to the partner opposite. After the partner's
+ four the declarer passes back; after the declarer's the hand is melded and
+ the declarer leads.
+
+  pin-give-mask : PinGame, Integer -> PinGame
+  pin-give-mask (g) (mask) =
+    let st = g.st
+    in let giver = st.turn
+    in let taker = rng-mod (giver + 2) 4
+    in let kept = pin-split (pin-hand st giver) mask 0 0 []
+    in let got = pin-append (pin-split (pin-hand st taker) 0 0 0 []) (pin-split (pin-hand st giver) mask 1 0 []) 0
+    in let st2 = PinochleState { deck = st.deck,
+                   h0 = pin-hand-after st giver kept taker got 0,
+                   h1 = pin-hand-after st giver kept taker got 1,
+                   h2 = pin-hand-after st giver kept taker got 2,
+                   h3 = pin-hand-after st giver kept taker got 3,
+                   trump = st.trump, leader = g.bidder,
+                   turn = (if g.phase == 2 then taker else g.bidder),
+                   p0 = (-1), p1 = (-1), p2 = (-1), p3 = (-1),
+                   t0 = 0, t1 = 0, tricks = 0, done = False }
+    in if g.phase == 2 then
+      PinGame { st = st2, phase = 3, dealer = g.dealer, bid = g.bid, bidder = g.bidder,
+                out = g.out, marked = 0, m0 = 0, m1 = 0, s0 = g.s0, s1 = g.s1,
+                made = (-1), hands = g.hands, seed = g.seed, winner = (-1) }
+    else
+      PinGame { st = st2, phase = 4, dealer = g.dealer, bid = g.bid, bidder = g.bidder,
+                out = g.out, marked = 0,
+                m0 = score-meld (st2.h0) (st2.trump) + score-meld (st2.h2) (st2.trump),
+                m1 = score-meld (st2.h1) (st2.trump) + score-meld (st2.h3) (st2.trump),
+                s0 = g.s0, s1 = g.s1,
+                made = (-1), hands = g.hands, seed = g.seed, winner = (-1) }
+
+Section: The Play And The Score
+
+  pin-legal-now : PinGame, Integer -> Boolean
+  pin-legal-now (g) (idx) =
+    if g.phase /= 4 then False else pin-legal (g.st) idx
+
+  pin-play : PinGame, Integer -> PinGame
+  pin-play (g) (idx) =
+    if pin-legal-now g idx then pin-after-play g (pin-place (g.st) idx) else g
+
+  pin-after-play : PinGame, PinochleState -> PinGame
+  pin-after-play (g) (st) =
+    if st.done then pin-score-hand (pin-with-st g st) else pin-with-st g st
+
+  pin-score-hand : PinGame -> PinGame
+  pin-score-hand (g) =
+    let st = g.st
+    in let d = pin-team (g.bidder)
+    in let md = if d == 0 then g.m0 else g.m1
+    in let td = if d == 0 then st.t0 else st.t1
+    in let me = if d == 0 then g.m1 else g.m0
+    in let te = if d == 0 then st.t1 else st.t0
+    in let sd = if d == 0 then g.s0 else g.s1
+    in let se = if d == 0 then g.s1 else g.s0
+    in let make = md + td >= g.bid
+    in let nd = if make then sd + md + td else sd - g.bid
+    in let ne = if te > 0 then se + me + te else se
+    in let n0 = if d == 0 then nd else ne
+    in let n1 = if d == 0 then ne else nd
+    in let over = n0 >= 1500 | n1 >= 1500
+    in let w = if over == False then (-1)
+       else if n0 >= 1500 & n1 >= 1500 then d
+       else if n0 >= 1500 then 0
+       else 1
+    in PinGame { st = pin-with-turn st 0, phase = (if over then 6 else 5),
+                 dealer = g.dealer, bid = g.bid, bidder = g.bidder, out = g.out,
+                 marked = 0, m0 = g.m0, m1 = g.m1, s0 = n0, s1 = n1,
+                 made = (if make then 1 else 0), hands = g.hands, seed = g.seed,
+                 winner = w }
+
+Section: The Other Seats
+
+ A seat bids the next bid while it stays under what its best trump would
+ meld, plus ten a card of that suit, plus a hundred for the play.
+
+  pin-suit-count : List Integer, Integer, Integer, Integer -> Integer
+  pin-suit-count (hand) (s) (i) (acc) =
+    if i >= list-length hand then acc
+    else pin-suit-count hand s (i + 1) (if pin-suit (list-at hand i) == s then acc + 1 else acc)
+
+  pin-trump-worth : List Integer, Integer -> Integer
+  pin-trump-worth (hand) (s) = score-meld hand s + 10 * pin-suit-count hand s 0 0
+
+  pin-best-trump : List Integer, Integer, Integer -> Integer
+  pin-best-trump (hand) (s) (best) =
+    if s >= 4 then best
+    else let next = if pin-trump-worth hand s > pin-trump-worth hand best then s else best
+    in pin-best-trump hand (s + 1) next
+
+  pin-ai-call : PinGame -> PinGame
+  pin-ai-call (g) =
+    let hand = pin-hand (g.st) ((g.st).turn)
+    in let est = pin-trump-worth hand (pin-best-trump hand 1 0) + 100
+    in if pin-min-bid g <= est then pin-call-bid g (pin-min-bid g) else pin-call-pass g
+
+ The partner sends trumps and aces; the declarer sends back what it can
+ best spare.
+
+  pin-use : Integer, Integer -> Integer
+  pin-use (c) (trump) =
+    if pin-suit c == trump then 100 + pin-rank c
+    else if pin-rank c == 5 then 50
+    else pin-rank c
+
+  pin-give-key : Integer, Integer, Integer -> Integer
+  pin-give-key (c) (trump) (phase) =
+    if phase == 2 then pin-use c trump else 200 - pin-use c trump
+
+  pin-top-free : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pin-top-free (hand) (trump) (phase) (mask) (i) (best) (best-key) =
+    if i >= list-length hand then best
+    else if pin-bit mask i == 1 then pin-top-free hand trump phase mask (i + 1) best best-key
+    else let k = pin-give-key (list-at hand i) trump phase
+    in if k > best-key then pin-top-free hand trump phase mask (i + 1) i k
+    else pin-top-free hand trump phase mask (i + 1) best best-key
+
+  pin-pick-four : List Integer, Integer, Integer, Integer, Integer -> Integer
+  pin-pick-four (hand) (trump) (phase) (n) (mask) =
+    if n >= 4 then mask
+    else let next = mask + pin-pow2 (pin-top-free hand trump phase mask 0 (-1) (-1))
+    in pin-pick-four hand trump phase (n + 1) next
+
+  pin-step : PinGame -> PinGame
+  pin-step (g) =
+    let st = g.st
+    in if g.phase == 0 then pin-ai-call g
+    else if g.phase == 1 then pin-name-trump g (pin-best-trump (pin-hand st (st.turn)) 1 0)
+    else if pin-passing g then pin-give-mask g (pin-pick-four (pin-hand st (st.turn)) (st.trump) (g.phase) 0 0)
+    else if g.phase == 4 then pin-step-play g
+    else if g.phase == 5 then pin-next-hand g
+    else g
+
+  pin-step-play : PinGame -> PinGame
+  pin-step-play (g) =
+    let idx = pin-ai-pick (g.st)
+    in if idx < 0 then g else pin-after-play g (pin-place (g.st) idx)
+
+ An auction is at most a few dozen calls and a hand forty-eight cards, so
+ the fuel only stops a seat that cannot act from spinning.
+
+  pin-run-to : PinGame, Integer, Integer -> PinGame
+  pin-run-to (g) (phase) (fuel) =
+    if fuel <= 0 then g
+    else if g.phase >= phase then g
+    else pin-run-to (pin-step g) phase (fuel - 1)
 
 Section: Game Runner
 
+ One hand, every seat played by the other seats' rules, scored.
+
   run-pinochle-hand : Integer -> PinochleResult
   run-pinochle-hand (seed) =
-    let deck = pin-shuffle pin-deck-new (rng-new seed)
-    in let st = pin-deal deck
-    in let meld0 = score-meld (st.h0) (st.trump) + score-meld (st.h2) (st.trump)
-    in let meld1 = score-meld (st.h1) (st.trump) + score-meld (st.h3) (st.trump)
-    in let fin = pin-play-out st 60
-    in let team0 = meld0 + fin.t0
-    in let team1 = meld1 + fin.t1
-    in let w = if team0 > team1 then 0 else if team1 > team0 then 1 else (-1)
-    in PinochleResult { team0-score = team0, team1-score = team1, winner = w }
+    let fin = pin-run-to (pin-new-game seed) 5 400
+    in let w = if fin.s0 > fin.s1 then 0 else if fin.s1 > fin.s0 then 1 else (-1)
+    in PinochleResult { team0-score = fin.s0, team1-score = fin.s1, winner = w }
 
 Section: Formatting
 

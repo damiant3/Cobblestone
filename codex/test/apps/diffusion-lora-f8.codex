@@ -1,0 +1,63 @@
+Chapter: DiffusionLoraF8
+  cites Diffusion chapter Lora
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/lora-f8-oracle.py's: torch's float8_e4m3fn casts on the
+ CUDA device, all 256 bytes widened and 4096 f32 values narrowed; every bit
+ must match. The sabotage narrows each value's neighbour.
+
+ We say:
+
+Section: Grading
+
+  theirs : Integer = #BD900000
+
+  host : Integer = #BD700000
+
+  n : Integer = 4096
+
+  diff32 : Integer, Integer, Integer, Integer, Integer -> Integer
+  diff32 (a) (b) (k) (i) (acc) =
+    if i >= k then acc
+    else diff32 a b k (i + 1) (acc + (if bit-and (peek-32 a (i * 4)) #FFFFFFFF == bit-and (peek-32 b (i * 4)) #FFFFFFFF then 0 else 1))
+
+  diff8 : Integer, Integer, Integer, Integer, Integer -> Integer
+  diff8 (a) (b) (k) (i) (acc) =
+    if i >= k then acc
+    else diff8 a b k (i + 1) (acc + (if peek-byte a i == peek-byte b i then 0 else 1))
+
+  line : Text, Integer, Integer -> Text
+  line (what) (d) (k) = what & (if d == 0 then ": all " & show k & " equal" else ": " & show d & " of " & show k & " differ")
+
+  put-bytes : Integer, Integer -> Integer
+  put-bytes (a) (i) = if i >= 256 then a else let z = poke-byte a i i in put-bytes a (i + 1)
+
+  widen : Integer -> Text
+  widen (h) =
+    let up = gpu-buf-upload h 0 "lora-f8.bin" 0 1024 gpu-dt-u8 gpu-dt-u8
+    in let ok = gpu-buf-read h 0 1024 theirs
+    in let b8 = gpu-buf-alloc 256
+    in let w = gpu-buf-alloc 1024
+    in let staged = b8 /= 0 & w /= 0 & gpu-buf-write b8 0 256 (put-bytes (alloc-bytes 256) 0)
+    in if ok == False | staged == False | lora-launch "kernel_lora_from_f8" 64 [gpu-arg-buf b8 0, gpu-arg-buf w 0, gpu-arg-u64 256] == False | gpu-buf-read w 0 1024 host == False then "widened: NOT RUN"
+    else line "the 256 bytes widened" (diff32 host theirs 256 0 0) 256
+
+  narrow : Integer, Integer, Text -> Text
+  narrow (h) (shift) (what) =
+    let up = gpu-buf-upload h 0 "lora-f8.bin" (1024 + shift * 4) (n * 4) gpu-dt-u8 gpu-dt-u8
+    in let b8 = gpu-buf-alloc n
+    in let up2 = gpu-buf-upload b8 0 "lora-f8.bin" (1024 + n * 4) n gpu-dt-u8 gpu-dt-u8
+    in let ok = gpu-buf-read b8 0 n theirs
+    in if ok == False | lora-launch "kernel_lora_to_f8" (n / 4) [gpu-arg-buf h 0, gpu-arg-buf b8 0, gpu-arg-u64 n] == False | gpu-buf-read b8 0 n host == False then what & ": NOT RUN"
+    else line what (diff8 host theirs n 0 0) n
+
+  opening : [Console] Nothing
+  opening = act
+    let h = gpu-buf-alloc (n * 4 + 64)
+    in act
+      print-line-uni (widen h)
+      print-line-uni (narrow h 0 "4096 values narrowed")
+      print-line-uni (narrow h 1 "sabotage, each value's neighbour narrowed")
+    end
+  end

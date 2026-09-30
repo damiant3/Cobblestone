@@ -1,0 +1,302 @@
+Chapter: T5Encoder
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter GemmPtx
+  cites Gpu chapter LayerKernelsPtx
+  cites Diffusion chapter VaeKernelsPtx
+  cites Diffusion chapter LoraKernelsPtx
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Sampler
+  cites AI chapter SafeTensors
+  cites AI chapter T5Tokenizer
+  cites Diffusion chapter ClipPrompt
+  cites Diffusion chapter T5Prompt
+
+ Flux's T5-XXL encoder (transformers T5EncoderModel under FLUX.1-schnell's
+ text_encoder_2 config) over t5xxl_fp8_e4m3fn, whose every tensor is e4m3:
+ 24 blocks of 4096, each an RMS layer norm (eps 1e-6, a scale, no bias,
+ statistics in f32), self-attention of 64 heads of 64 with no 1/sqrt(d)
+ scale and a relative position bias, and an RMS layer norm then the gated FFN
+ wo (gelu_tanh (wi_0 x) * wi_1 x), 10240 wide; then the final RMS layer norm.
+ The bias is block 0's relative_attention_bias, 32 buckets by 64 heads, shared
+ by every block: bucket (j - i) is 16 when j > i, plus |j - i| below 8, else
+ min (15, 8 + int (ln (|j - i| / 8) / ln 16 * 8)), each operation in f32 as
+ transformers computes it. No attention mask: <pad> tokens attend and are
+ attended, as Forge runs the encoder.
+
+ Every weight is cast from e4m3 at use as Forge casts fp8 storage: a Linear's
+ weight stays e4m3 on the device and kernel_linear_fp8 widens each tile to
+ f16, the norm scales, the bias table and the embedding rows are uploaded as
+ f32. The residual stream and every GEMM's output are f32; a GEMM's input is
+ cast to f16. A block's weights (193 MB) are uploaded when the block runs and
+ freed after it, so the encoder holds one block at a time.
+
+ We say:
+
+Section: File
+
+  T5File = record {
+    tf-path : Text,
+    tf-file : SafeTensorFile,
+    tf-index : NameIndex
+  }
+
+  t5-open : Text -> T5File
+  t5-open (path) =
+    let f = ckpt-open path
+    in T5File { tf-path = path, tf-file = f, tf-index = name-index (tensor-names (f.st-tensors) 0 (__list-with-capacity (f.st-tensor-count + 1))) }
+
+  t5-meta-offset : T5File, Text -> Integer
+  t5-meta-offset (t) (name) =
+    let v = name-find (t.tf-index) name
+    in if v < 0 then 0 - 1 else (t.tf-file).st-data-offset + (list-at ((t.tf-file).st-tensors) v).stm-offset-start
+
+ A tensor of count elements uploaded as its raw e4m3 bytes (dst u8) or widened
+ to f32, or 0;
+ the bridge answers the bytes it wrote.
+
+  t5-upload : T5File, Text, Integer, Integer -> Integer
+  t5-upload (t) (name) (count) (dst) =
+    let off = t5-meta-offset t name
+    in let h = if off < 0 then 0 else gpu-buf-alloc (if dst == gpu-dt-f32 then count * 4 else count)
+    in if h == 0 then 0
+    else if gpu-buf-upload h 0 (t.tf-path) off count (if dst == gpu-dt-f32 then gpu-dt-fp8-e4m3 else gpu-dt-u8) (if dst == gpu-dt-f32 then gpu-dt-f32 else gpu-dt-u8) == (if dst == gpu-dt-f32 then count * 4 else count) then h
+    else ce-freed-zero h
+
+  t5-d : Integer = 4096
+
+  t5-ff : Integer = 10240
+
+  t5-heads : Integer = 64
+
+Section: Buckets
+
+ The bucket of a distance j - i; f32 rounding after each operation.
+
+  t5-bucket : Integer -> Integer
+  t5-bucket (rel) =
+    let side = if rel > 0 then 16 else 0
+    in let n = if rel < 0 then 0 - rel else rel
+    in if n < 8 then side + n
+    else let lg = sm-f32 (sm-ln (real-from-int n / 8.0))
+    in let q = sm-f32 (lg / sm-f32 (sm-ln 16.0))
+    in let large = 8 + real-to-int (sm-f32 (q * 8.0))
+    in side + (if large > 15 then 15 else large)
+
+ The bias for t tokens, [heads, t, t] f32 on the device, from the table
+ [32, heads] of relative_attention_bias.
+
+  t5-buckets : Integer, Integer, List Integer -> List Integer
+  t5-buckets (rel) (t) (acc) = if rel >= t then acc else t5-buckets (rel + 1) t (list-push acc (t5-bucket rel))
+
+  t5-bias-fill : Integer, List Integer, Integer, Integer, Integer -> Integer
+  t5-bias-fill (tab) (bk) (out) (t) (e) =
+    if e >= t5-heads * t * t then out
+    else let h = e / (t * t)
+    in let r = e - h * t * t
+    in let i = r / t
+    in let j = r - i * t
+    in let w = poke-32 out (e * 4) (peek-32 tab ((list-at bk (j - i + t - 1) * t5-heads + h) * 4))
+    in t5-bias-fill tab bk out t (e + 1)
+
+  t5-bias : T5File, Integer -> Integer
+  t5-bias (tf) (t) =
+    let tb = t5-upload tf "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight" (32 * t5-heads) gpu-dt-f32
+    in let tab = alloc-bytes (32 * t5-heads * 4)
+    in let ok = tb /= 0 & gpu-buf-read tb 0 (32 * t5-heads * 4) tab
+    in let f = un-free 0 tb
+    in let n = t5-heads * t * t
+    in let out = if ok then t5-bias-fill tab (t5-buckets (1 - t) t []) (alloc-bytes (n * 4)) t 0 else 0
+    in let h = if out == 0 then 0 else gpu-buf-alloc (n * 4)
+    in if h == 0 then 0
+    else if gpu-buf-write h 0 (n * 4) out then h
+    else ce-freed-zero h
+
+Section: Layers
+
+ y = x W^T over rows of x, W e4m3 [n, k] on the device: x cast to f16, the
+ product f32.
+
+  t5-linear : Integer, Integer, Integer, Integer, Integer -> Integer
+  t5-linear (x) (w) (m) (n) (k) =
+    let x16 = gpu-buf-alloc (m * k * 2)
+    in let y = gpu-buf-alloc (m * n * 4)
+    in let ok0 = x16 /= 0 & y /= 0 & w /= 0 & ce-cast x x16 (m * k) >= 0
+    in let ok = if ok0 == False then False else gm-launch gm-slot-gemm gemm-ptx "kernel_linear_fp8" (GpuGrid { gx = (n + 63) / 64, gy = (m + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }) [ce-buf x16, ce-buf w, ce-int 0, ce-buf y, ce-int m, ce-int n, ce-int k, ce-int 0] >= 0
+    in let f = un-free 0 x16
+    in if ok then y else un-free 0 y
+
+ RMS layer norm of rows of x with the scale named, into a fresh buffer.
+
+  t5-rms : T5File, Integer, Integer, Text -> Integer
+  t5-rms (tf) (x) (rows) (scale) =
+    let g = t5-upload tf scale t5-d gpu-dt-f32
+    in let st = gpu-buf-alloc (rows * 16)
+    in let part = gpu-buf-alloc (rows * 128 * 8)
+    in let y = gpu-buf-alloc (rows * t5-d * 4)
+    in let ok0 = g /= 0 & st /= 0 & part /= 0 & y /= 0
+    in let ok1 = if ok0 then un-rows "kernel_rms_stats_wide" rows [un-buf x, un-buf st, un-buf part, un-int t5-d, un-real 0.000001, un-int rows] else False
+    in let ok = if ok1 then un-layer "kernel_rms_norm" (rows * t5-d) [un-buf x, un-buf st, un-buf g, un-buf y, un-int t5-d, un-int (rows * t5-d)] else False
+    in let f = un-free (un-free (un-free 0 g) st) part
+    in if ok then y else un-free 0 y
+
+ x += y over n elements; y is freed.
+
+  t5-add-into : Integer, Integer, Integer -> Boolean
+  t5-add-into (x) (y) (n) =
+    let r = if y == 0 then 0 - 1 else sm-lincomb x y y x 1.0 1.0 0.0 n
+    in let f = un-free 0 y
+    in r >= 0
+
+  t5-attention : T5File, Integer, Integer, Integer, Text -> Integer
+  t5-attention (tf) (x) (bias) (t) (p) =
+    let n = t * t5-d
+    in let wq = t5-upload tf (p & "q.weight") (t5-d * t5-d) gpu-dt-u8
+    in let q = t5-linear x wq t t5-d t5-d
+    in let f1 = un-free 0 wq
+    in let wk = t5-upload tf (p & "k.weight") (t5-d * t5-d) gpu-dt-u8
+    in let k = t5-linear x wk t t5-d t5-d
+    in let f2 = un-free 0 wk
+    in let wv = t5-upload tf (p & "v.weight") (t5-d * t5-d) gpu-dt-u8
+    in let v = t5-linear x wv t t5-d t5-d
+    in let f3 = un-free 0 wv
+    in let s = gpu-buf-alloc (t5-heads * t * t * 4)
+    in let att = gpu-buf-alloc (n * 4)
+    in let ok0 = q /= 0 & k /= 0 & v /= 0 & s /= 0 & att /= 0
+    in let ok1 = if ok0 then un-layer "kernel_attn_scores" (t5-heads * t * t) [un-buf q, un-buf k, un-buf s, un-int t5-heads, un-int t, un-int t, un-int 64, un-real 1.0, un-int (t5-heads * t * t)] else False
+    in let ok2 = if ok1 then sm-lincomb s bias bias s 1.0 1.0 0.0 (t5-heads * t * t) >= 0 else False
+    in let ok3 = if ok2 then un-layer "kernel_softmax_rows" (t5-heads * t) [un-buf s, un-int t, un-int (t5-heads * t)] else False
+    in let ok = if ok3 then un-layer "kernel_attn_values" n [un-buf s, un-buf v, un-buf att, un-int t5-heads, un-int t, un-int t, un-int 64, un-int n] else False
+    in let f4 = un-free (un-free (un-free (un-free 0 q) k) v) s
+    in let wo = t5-upload tf (p & "o.weight") (t5-d * t5-d) gpu-dt-u8
+    in let o = if ok then t5-linear att wo t t5-d t5-d else 0
+    in let f5 = un-free (un-free 0 wo) att
+    in o
+
+ The gated FFN: gelu_tanh (x wi_0^T) * x wi_1^T, then wo. The product is taken
+ by LoRA's kernel_lora_prod, w += scale (a b), into a buffer zeroed from the
+ finite b.
+
+  t5-ffn : T5File, Integer, Integer, Text -> Integer
+  t5-ffn (tf) (x) (t) (p) =
+    let m = t * t5-ff
+    in let w0 = t5-upload tf (p & "wi_0.weight") (t5-ff * t5-d) gpu-dt-u8
+    in let a = t5-linear x w0 t t5-ff t5-d
+    in let f0 = un-free 0 w0
+    in let w1 = t5-upload tf (p & "wi_1.weight") (t5-ff * t5-d) gpu-dt-u8
+    in let b = t5-linear x w1 t t5-ff t5-d
+    in let f1 = un-free 0 w1
+    in let g = gpu-buf-alloc (m * 4)
+    in let ok0 = a /= 0 & b /= 0 & g /= 0
+    in let ok1 = if ok0 then un-layer "kernel_gelu_tanh" m [un-buf a, un-buf a, un-int m] else False
+    in let ok2 = if ok1 then sm-lincomb b b b g 0.0 0.0 0.0 m >= 0 else False
+    in let ok = if ok2 then gm-launch gm-slot-lora lora-kernels-ptx "kernel_lora_prod" (GpuGrid { gx = (m + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }) [un-buf g, un-buf a, un-buf b, un-real 1.0, un-int m] >= 0 else False
+    in let f2 = un-free (un-free 0 a) b
+    in let wo = t5-upload tf (p & "wo.weight") (t5-d * t5-ff) gpu-dt-u8
+    in let o = if ok then t5-linear g wo t t5-d t5-ff else 0
+    in let f3 = un-free (un-free 0 wo) g
+    in o
+
+  t5-block : T5File, Integer, Integer, Integer, Integer -> Boolean
+  t5-block (tf) (h) (bias) (t) (i) =
+    let p = "encoder.block." & show i & ".layer."
+    in let n1 = t5-rms tf h t (p & "0.layer_norm.weight")
+    in let a = if n1 == 0 then 0 else t5-attention tf n1 bias t (p & "0.SelfAttention.")
+    in let f1 = un-free 0 n1
+    in let ok1 = t5-add-into h a (t * t5-d)
+    in let n2 = if ok1 then t5-rms tf h t (p & "1.layer_norm.weight") else 0
+    in let o = if n2 == 0 then 0 else t5-ffn tf n2 t (p & "1.DenseReluDense.")
+    in let f2 = un-free 0 n2
+    in ok1 & t5-add-into h o (t * t5-d)
+
+Section: Encoder
+
+ The embedding rows of ids as [t, 4096] f32.
+
+  t5-embed-rows : T5File, List Integer, Integer, Integer, Integer -> Boolean
+  t5-embed-rows (tf) (ids) (h) (off) (i) =
+    if i >= list-length ids then True
+    else if gpu-buf-upload h (i * t5-d * 4) (tf.tf-path) (off + list-at ids i * t5-d) t5-d gpu-dt-fp8-e4m3 gpu-dt-f32 /= t5-d * 4 then False
+    else t5-embed-rows tf ids h off (i + 1)
+
+  t5-embed : T5File, List Integer -> Integer
+  t5-embed (tf) (ids) =
+    let off = t5-meta-offset tf "encoder.embed_tokens.weight"
+    in let h = if off < 0 then 0 else gpu-buf-alloc (list-length ids * t5-d * 4)
+    in if h == 0 then 0
+    else if t5-embed-rows tf ids h off 0 then h
+    else ce-freed-zero h
+
+  t5-blocks : T5File, Integer, Integer, Integer, Integer, Integer, (Integer, Integer -> Integer) -> Integer
+  t5-blocks (tf) (h) (bias) (t) (i) (upto) (seen) =
+    if i >= upto then 0
+    else if t5-block tf h bias t i == False then i + 1
+    else let s = seen h i
+    in t5-blocks tf h bias t (i + 1) upto seen
+
+ The encoder's output for ids, [t, 4096] f32 after the final layer norm, or
+ 0. seen is called with the hidden state after the embedding (as block -1)
+ and after each block; blocks runs that many of the 24, for a partial check.
+
+  t5-encode-with : T5File, List Integer, Integer, (Integer, Integer -> Integer) -> Integer
+  t5-encode-with (tf) (ids) (blocks) (seen) =
+    let t = list-length ids
+    in let h = t5-embed tf ids
+    in let s0 = if h == 0 then 0 else seen h (0 - 1)
+    in let bias = if h == 0 then 0 else t5-bias tf t
+    in let bad = if bias == 0 then 1 else t5-blocks tf h bias t 0 blocks seen
+    in let f = un-free 0 bias
+    in let out = if bad /= 0 | h == 0 then 0 else t5-rms tf h t "encoder.final_layer_norm.weight"
+    in un-free out h
+
+  t5-encode : T5File, List Integer -> Integer
+  t5-encode (tf) (ids) = t5-encode-with tf ids 24 (\h i -> 0)
+
+Section: Conditioning
+
+ Forge's T5 engine output for a prompt: each T5Prompt chunk encoded, then
+ Original emphasis (emphasis.py EmphasisOriginal): the rows scaled by their
+ weights, then all by the chunk's mean before over its mean after, a chunk
+ whose weights are all 1.0 unchanged; the chunks stacked, [chunks, rows, 4096]
+ f32, as the engine's torch.stack.
+
+  t5-emphasise-rows : Integer, List Real -> Integer
+  t5-emphasise-rows (addr) (mults) =
+    if cp-all-ones mults 0 then 0
+    else let n = list-length mults * t5-d
+    in let before = cp-f32 (cp-sum addr 0 n 0.0 / real-from-int n)
+    in let s = cp-scale-rows addr mults t5-d 0 n
+    in let after = cp-f32 (cp-sum addr 0 n 0.0 / real-from-int n)
+    in cp-scale-all addr (cp-f32 (before / after)) 0 n
+
+  T5Cond = record {
+    t5k-h : Integer,
+    t5k-chunks : Integer,
+    t5k-rows : Integer
+  }
+
+  t5-cond-chunks : T5File, List T5Chunk, Integer, Integer, Integer, Integer -> Boolean
+  t5-cond-chunks (tf) (cs) (i) (dst) (rows) (buf) =
+    if i >= list-length cs then True
+    else let c = list-at cs i
+    in let z = t5-encode tf (c.t5c-ids)
+    in let bytes = rows * t5-d * 4
+    in let ok = z /= 0 & gpu-buf-read z 0 bytes buf
+    in let e = if ok then t5-emphasise-rows buf (c.t5c-mults) else 0
+    in let w = ok & gpu-buf-write dst (i * bytes) bytes buf
+    in let f = un-free 0 z
+    in if w then t5-cond-chunks tf cs (i + 1) dst rows buf else False
+
+  t5-condition : T5File, T5Tok, Text -> T5Cond
+  t5-condition (tf) (tok) (prompt) =
+    let cs = t5-prompt-chunks tok prompt
+    in let rows = list-length ((list-at cs 0).t5c-ids)
+    in let dst = gpu-buf-alloc (list-length cs * rows * t5-d * 4)
+    in let ok = dst /= 0 & t5-cond-chunks tf cs 0 dst rows (alloc-bytes (rows * t5-d * 4))
+    in if ok then T5Cond { t5k-h = dst, t5k-chunks = list-length cs, t5k-rows = rows }
+    else T5Cond { t5k-h = un-free 0 dst, t5k-chunks = 0, t5k-rows = 0 }
+
+Page 1

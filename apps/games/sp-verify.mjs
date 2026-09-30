@@ -44,7 +44,8 @@ const ok = (name, cond, detail) => {
 };
 
 const COLS = 10;
-const col = (h, c) => [...Array(e.sp_coln(h, c))].map((_, i) => e.sp_card(h, c, i));
+// Every card of a column, the face-down ones too: a grader counts the deck.
+const col = (h, c) => [...Array(e.sp_coln(h, c))].map((_, i) => e.sp_peek(h, c, i));
 const board = h => [...Array(COLS)].map((_, c) => col(h, c));
 const allCards = h => board(h).flat();
 
@@ -83,7 +84,7 @@ console.log(`sp-verify ${wasmPath}`);
   const two = deal(2);
   const suits = new Set(two.cards.map(c => e.sp_suit(c)));
   console.log(`  note  a two-suit deal shows ${suits.size} suits over its ` +
-              `${two.cards.length} face-up cards`);
+              `${two.cards.length} dealt cards`);
   ok('the deck is the two-suit deck the chapter says it is',
      suits.size === 2, `${suits.size} suits among the cards dealt`);
   ok('control: every rank appears in a deal',
@@ -228,7 +229,10 @@ console.log(`sp-verify ${wasmPath}`);
           // Second, the destination: empty takes anything, otherwise the
           // lifted card sits one rank below the target's top card.
           const fits = tc.length === 0 || rank(fc[i]) === rank(tc[tc.length - 1]) - 1;
-          const want = isRun && fits ? 1 : 0;
+          // Third, only dealt cards move: nothing lifted from under the
+          // column's face-down cards.
+          const faceUp = i >= e.sp_down(h, from);
+          const want = isRun && fits && faceUp ? 1 : 0;
           const got = e.sp_can(h, from, i, to);
           if (got !== want) {
             bad.push(`seed ${seed}: ${from}[${i}]->${to} engine ${got}, rule ${want}`);
@@ -329,6 +333,37 @@ console.log(`sp-verify ${wasmPath}`);
   console.log(`  note  30 games: ${won} won, best ${best} of 8 suits, ${total} suits completed in total`);
 }
 
+// -- THE HINT AND SELF-PLAY SEE WHAT A PLAYER SEES -------------------------
+// A player cannot see the face-down cards, so the move the hint names (and
+// self-play takes) must not change when two of them are swapped. Walked
+// through real games along the hint's own line, swapping the deepest cards
+// of two columns that are both still face down there.
+{
+  const bad = [];
+  let checked = 0, differed = 0;
+  for (let seed = 1; seed <= 20; seed++) {
+    let h = e.sp_new(seed, 2);
+    for (let step = 0; step < 120; step++) {
+      const downs = [...Array(COLS).keys()].filter(c => e.sp_down(h, c) >= 1);
+      if (downs.length >= 2) {
+        const [a, b] = [downs[step % downs.length], downs[(step + 1) % downs.length]];
+        const twin = e.sp_swapdown(h, a, b);
+        if (e.sp_peek(twin, a, 0) !== e.sp_peek(h, a, 0)) differed++;
+        checked++;
+        if (e.sp_sugg(twin) !== e.sp_sugg(h)) bad.push(`seed ${seed} step ${step}: swapping hidden cards of columns ${a} and ${b} changed the hint`);
+      }
+      const m = e.sp_sugg(h);
+      const next = m >= 0 ? e.sp_move(h, e.sp_mfrom(m), e.sp_mstart(m), e.sp_mto(m)) : e.sp_deal(h);
+      if (next === h) break;
+      h = next;
+    }
+  }
+  ok('CONTROL: positions were twinned with different face-down cards', checked > 0 && differed > 0,
+     `${checked} positions, ${differed} with a different hidden card`);
+  ok('the hint names the same move whatever lies face down', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : `${checked} positions`);
+}
+
 // -- An ace onto a deuce, on a real board ---------------------------------
 // The rank arms above test the rule; this one tests that a player can
 // actually make the move, which is the thing that was broken. It hunts real
@@ -373,6 +408,48 @@ const isDeuce = c => c >= 0 && c % 13 === 0;
      `${legal} of ${found} accepted${firstMiss ? '; ' + firstMiss : ''}`);
 }
 
+// -- RULES: the face-down cards ---------------------------------------------
+// Spider deals all but the last card of each column face down, and a card is
+// turned up when it is uncovered.
+{
+  const bad = [];
+  for (let seed = 1; seed <= 20; seed++) {
+    const h = e.sp_new(seed, 2);
+    for (let c = 0; c < 10; c++) {
+      const n = e.sp_coln(h, c), d = e.sp_down(h, c);
+      if (d !== n - 1) bad.push(`seed ${seed} col ${c}: ${d} down of ${n}`);
+      for (let i = 0; i < n; i++) if ((e.sp_card(h, c, i) < 0) !== (i < d)) bad.push(`seed ${seed} col ${c} card ${i} reads ${e.sp_card(h, c, i)}`);
+    }
+  }
+  ok('the deal hides all but the last card of each column, and a hidden card reads -1', bad.length === 0, bad.slice(0, 2).join('; ') || '20 deals');
+  // Play the suggested moves and watch every column: its face-down count
+  // never grows, drops only to uncover (by exactly one, to its new last card
+  // at most), and no legal move starts under it.
+  let flips = 0, moves = 0;
+  const bad2 = [];
+  for (let seed = 1; seed <= 20; seed++) {
+    let h = e.sp_new(seed, 1);
+    for (let step = 0; step < 80; step++) {
+      const m = e.sp_sugg(h);
+      if (m < 0) break;
+      const before = [...Array(10)].map((_, c) => e.sp_down(h, c));
+      const next = e.sp_move(h, e.sp_mfrom(m), e.sp_mstart(m), e.sp_mto(m));
+      if (next === h) break;
+      moves++;
+      for (let c = 0; c < 10; c++) {
+        const d = e.sp_down(next, c), n = e.sp_coln(next, c);
+        if (d > before[c]) bad2.push(`seed ${seed} step ${step} col ${c}: ${before[c]} down became ${d}`);
+        if (d < before[c]) { flips++; if (d !== before[c] - 1 || d !== n - 1) bad2.push(`seed ${seed} step ${step} col ${c}: ${before[c]} down became ${d} with ${n} cards`); }
+        if (n > 0 && d > n - 1) bad2.push(`seed ${seed} step ${step} col ${c}: no card face up`);
+        for (let i = 0; i < d; i++) for (let to = 0; to < 10; to++) if (e.sp_can(next, c, i, to) === 1) bad2.push(`seed ${seed} step ${step}: a move from under the face-down cards`);
+      }
+      h = next;
+    }
+  }
+  ok('a face-down card turns up exactly when it is uncovered, and nothing moves from under one', bad2.length === 0,
+     bad2.slice(0, 2).join('; ') || `${moves} moves, ${flips} cards turned`);
+  ok('control: cards were turned up, so the flip was exercised', flips > 0, `${flips}`);
+}
 console.log(fail === 0
   ? `\nPASS: Spider deals, sequences and moves by its rules (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

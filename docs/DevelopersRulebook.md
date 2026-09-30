@@ -199,7 +199,7 @@ Emit chapters render that model to Bash, Ksh, or PowerShell.
 
 These are not auto-loaded. User code must `cites` them explicitly.
 
-### codex (68 modules) -- The Compiler
+### codex (69 modules) -- The Compiler
 
 The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading
@@ -245,7 +245,7 @@ chapters elsewhere compile against it. The layering rule above orders the
 QUIRES (`codex.foreword` -> `codex` -> `codex.os` -> apps) and says nothing
 about sub-quires, which is why these cites are legal.
 
-### codex.plugs (57 plugs, all building clean) -- Transpiler Plugs
+### codex.plugs (58 plugs) -- Transpiler Plugs
 
 48 language and UI transpilers (Ada to Zig, 14 UI frameworks, GPU PTX +
 SPIR-V + WGSL), 6 native backends (ARM64, RISC-V, T3ISA, ELF, PE, IMG),

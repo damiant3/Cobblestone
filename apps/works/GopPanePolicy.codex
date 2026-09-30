@@ -1,0 +1,139 @@
+Chapter: GopPanePolicy
+  cites Works chapter GopAhci
+
+ We say:
+
+Section: Storage
+
+  pp-slots : Integer = 15
+  pp-slot-bytes : Integer = 64
+  pp-header : Integer = 64
+  pp-mask : Integer = 4294967295
+  pp-half : Integer = 2147483648
+  pp-events : Integer = 0
+  pp-rate : Integer = 1
+  pp-budget : Integer = 2
+  pp-late : Integer = 0
+  pp-skip : Integer = 1
+  pp-id : Integer = 0
+  pp-mode : Integer = 8
+  pp-period : Integer = 16
+  pp-allowance : Integer = 24
+  pp-epoch : Integer = 32
+  pp-spent : Integer = 40
+  pp-miss : Integer = 48
+  pp-started : Integer = 56
+  pp-refusals : Integer = 0
+  pp-overruns : Integer = 8
+  pp-clock-at : Integer = 16
+  pp-burst : Integer = 24
+  pp-clock-count : Integer = 32
+  pp-clock-fault : Integer = 40
+
+  pp-new : Integer -> Integer
+  pp-new (unused) = alloc-zeroed (pp-header + pp-slots * pp-slot-bytes) 64
+
+  pp-at : Integer, Integer -> Integer
+  pp-at (table) (index) = table + pp-header + index * pp-slot-bytes
+
+  pp-find : Integer, Integer, Integer -> Integer
+  pp-find (table) (id) (i) =
+    if table == 0 | i >= pp-slots then 0
+    else let slot = pp-at table i
+    in if peek-qword slot pp-id == id then slot else pp-find table id (i + 1)
+
+  pp-drop : Integer, Integer -> Integer
+  pp-drop (table) (id) =
+    let slot = pp-find table id 0
+    in if slot == 0 then 0 else poke-qword slot pp-id 0
+
+  pp-declare : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pp-declare (table) (id) (mode) (period) (allowance) (miss) (now) =
+    if table == 0 then 0
+    else if id <= 0 | mode < pp-events | mode > pp-budget | miss < pp-late | miss > pp-skip | period < 0 | period >= pp-half | allowance < 0 | allowance > period | (mode /= pp-events & period == 0) | (mode == pp-budget & allowance == 0) then pp-refuse table
+    else let existing = pp-find table id 0
+    in let slot = if existing /= 0 then existing else pp-find table 0 0
+    in if slot == 0 then pp-refuse table
+    else let a = poke-qword slot pp-id id
+    in let b = poke-qword slot pp-mode mode
+    in let c = poke-qword slot pp-period period
+    in let d = poke-qword slot pp-allowance allowance
+    in let e = poke-qword slot pp-epoch (bit-and now pp-mask)
+    in let f = poke-qword slot pp-spent 0
+    in let g = poke-qword slot pp-miss miss
+    in let h = poke-qword slot pp-started 0
+    in slot
+
+  pp-refuse : Integer -> Integer
+  pp-refuse (table) =
+    let note = poke-qword table pp-refusals (peek-qword table pp-refusals + 1)
+    in 0
+
+Section: Admission
+
+  pp-elapsed : Integer, Integer -> Integer
+  pp-elapsed (now) (prior) = bit-and (now - prior) pp-mask
+
+  pp-admit : Integer, Integer, Boolean, Boolean -> Integer
+  pp-admit (slot) (now) (active) (clock-ok) =
+    if slot == 0 then 0
+    else if clock-ok == False then 1
+    else let mode = peek-qword slot pp-mode
+    in if mode == pp-events then 0
+    else let period = peek-qword slot pp-period
+    in let elapsed = pp-elapsed now (peek-qword slot pp-epoch)
+    in let first = peek-qword slot pp-started == 0
+    in if mode == pp-budget then
+      let renew = elapsed >= period
+      in let epoch = if renew then poke-qword slot pp-epoch (bit-and now pp-mask) else 0
+      in let spent = if renew then poke-qword slot pp-spent 0 else 0
+      in let started = poke-qword slot pp-started 1
+      in if renew & active & peek-qword slot pp-miss == pp-skip then 0 - 1
+      else if peek-qword slot pp-spent < peek-qword slot pp-allowance then 1 else 0
+    else if active then
+      if elapsed >= period & peek-qword slot pp-miss == pp-skip then
+        let epoch = poke-qword slot pp-epoch (bit-and now pp-mask)
+        in 0 - 1
+      else 1
+    else if first | elapsed >= period then
+      let epoch = poke-qword slot pp-epoch (bit-and now pp-mask)
+      in let started = poke-qword slot pp-started 1
+      in 1
+    else 0
+
+  pp-charge : Integer, Integer, Integer, Integer -> Integer
+  pp-charge (table) (slot) (started) (stopped) =
+    if table == 0 | slot == 0 then 0
+    else let elapsed = pp-elapsed stopped started
+    in let spent = peek-qword slot pp-spent + elapsed
+    in let updated = poke-qword slot pp-spent spent
+    in if peek-qword slot pp-mode == pp-budget & spent > peek-qword slot pp-allowance then
+      poke-qword table pp-overruns (peek-qword table pp-overruns + 1)
+    else 0
+
+  pp-yield-due : Integer, Boolean -> Boolean
+  pp-yield-due (table) (queued) =
+    if table == 0 then queued == False
+    else let count = peek-qword table pp-burst + 1
+    in let due = queued == False | count >= 32
+    in let set = poke-qword table pp-burst (if due then 0 else count)
+    in due
+
+  pp-clock-due : Integer, Integer, Integer -> Boolean
+  pp-clock-due (table) (now) (rate) =
+    if table == 0 then True
+    else if rate <= 0 then
+      let note = poke-qword table pp-clock-fault 1
+      in let count = int-mod (peek-qword table pp-clock-count + 1) 64
+      in let save = poke-qword table pp-clock-count count
+      in count == 1
+    else let interval = r-pp-max 1 (rate / 10)
+    in let due = peek-qword table pp-clock-count == 0 | pp-elapsed now (peek-qword table pp-clock-at) >= interval
+    in let at = if due then poke-qword table pp-clock-at (bit-and now pp-mask) else 0
+    in let started = poke-qword table pp-clock-count 1
+    in due
+
+  r-pp-max : Integer, Integer -> Integer
+  r-pp-max (a) (b) = if a > b then a else b
+
+Page 1

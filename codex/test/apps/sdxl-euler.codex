@@ -1,0 +1,102 @@
+Chapter: SdxlEuler
+
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter UNetDenoiser
+  cites Diffusion chapter SamplerReference
+  cites Diffusion chapter UNetReference
+
+ We say:
+
+Section: Inputs
+
+ The formulas build/sdxl-unet-oracle.py fed Forge.
+
+  noise-at : Integer -> Real
+  noise-at (i) = real-from-int (int-mod (i * 53 + 17) 263 - 131) / 128.0
+
+  label-at : Integer -> Real
+  label-at (i) = real-from-int (int-mod (i * 29 + 3) 241 - 120) / 256.0
+
+  context-at : Integer -> Real
+  context-at (i) = real-from-int (int-mod (i * 13 + 5) 251 - 125) / 256.0
+
+  build : Integer, Integer, Integer, Real, List Real -> List Real
+  build (which) (i) (n) (scale) (acc) =
+    if i >= n then acc
+    else build which (i + 1) n scale (list-push acc (scale * (if which == 0 then noise-at i else if which == 1 then label-at i else context-at i)))
+
+Section: Grading
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  count-near : List Real, SamplerRefStep, Integer, Integer -> Integer
+  count-near (got) (ref) (j) (acc) =
+    if j >= unet-ref-samples then acc
+    else let v = list-at got (int-mod (j * unet-ref-stride + unet-ref-offset) (list-length got))
+    in count-near got ref (j + 1) (if abs (v - list-at (ref.srs-samples) j) <= 0.01 * ref.srs-rms then acc + 1 else acc)
+
+  grade-step : Integer, Integer -> Text
+  grade-step (h) (k) =
+    let ref = list-at sampler-ref-steps k
+    in let got = if h == 0 then [] else un-download h 1024
+    in if list-length got /= 1024 then "step " & show k & ": NO OUTPUT"
+    else "step " & show k & ": " & show (count-near got ref 0 0) & "/" & show unet-ref-samples & " within 1% of rms"
+
+ The reference schedule is Forge's, built in f32: near sigma_min, 1 - abar is
+ 8.5e-4 and f32 cancellation costs about 3.5e-5 of sigma there (1.3e-5 measured,
+ and 1.1e-3 in t at sigma 1), which is the reference's precision and not the
+ guest's; the bounds sit a decade outside it.
+
+  schedule-line : List Real, List Real, Integer -> Text
+  schedule-line (tab) (sig) (k) =
+    let ref = list-at sampler-ref-steps k
+    in let s = list-at sig k
+    in "sigma " & show k & ": " & (if abs (s - ref.srs-sigma) <= 0.0001 * ref.srs-sigma then "ok" else "WRONG") & ", t " & (if abs (unet-sigma-to-t tab s - ref.srs-t) <= 0.01 then "ok" else "WRONG")
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let u = unet-open "dreamshaperXL_lightningDPMSDE.safetensors"
+    in if (u.uf-file).st-valid == False then ["SKIP: no dreamshaperXL_lightningDPMSDE.safetensors under the model root build-output/diffusion-models"]
+    else run-steps u
+
+  run-steps : UNetFile -> List Text
+  run-steps (u) =
+    let tab = unet-log-sigmas 0
+    in let sig = sdxl-karras-sigmas 3
+    in let y = un-upload (build 1 0 2816 1.0 [])
+    in let ctx = un-upload (build 2 0 157696 1.0 [])
+    in let x = un-upload (build 0 0 1024 (list-at sig 0) [])
+    in let xb = un-upload (build 0 0 1024 (list-at sig 0) [])
+    in let s0 = schedule-line tab sig 0
+    in let s1 = schedule-line tab sig 1
+    in let s2 = schedule-line tab sig 2
+    in let e0 = sample-euler (\xh s -> unet-denoise u tab y ctx 16 16 xh s) x [list-at sig 0, list-at sig 1] 1024
+    in let g0 = grade-step (if e0 == 0 then x else 0) 0
+    in let e1 = sample-euler (\xh s -> unet-denoise u tab y ctx 16 16 xh s) x [list-at sig 1, list-at sig 2] 1024
+    in let g1 = grade-step (if e1 == 0 then x else 0) 1
+    in let e2 = sample-euler (\xh s -> unet-denoise u tab y ctx 16 16 xh s) x [list-at sig 2, list-at sig 3] 1024
+    in let g2 = grade-step (if e2 == 0 then x else 0) 2
+    in let eb = sample-euler (\xh s -> unet-denoise u tab y ctx 16 16 xh s) xb [list-at sig 0, list-at sig 2] 1024
+    in let gb = grade-step (if eb == 0 then xb else 0) 0
+    in [s0, s1, s2, g0, g1, g2, "sabotage, step 0 straight to sigma 2: " & gb]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

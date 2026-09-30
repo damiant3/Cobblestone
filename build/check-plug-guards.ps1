@@ -80,7 +80,7 @@ param(
     [string]$Only = '',
     [switch]$Calibrate,
     [switch]$SkipBuild,
-    [int]$Jobs = 6,
+    [int]$Jobs = 16,
     [string]$Kernel = ''
 )
 

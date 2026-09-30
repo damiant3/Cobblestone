@@ -1,0 +1,344 @@
+Chapter: ExtrasKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ FreeU's and SAG's device work (forge_freeu.py, forge_sag.py), one element
+ or one sum per thread in blocks of 256, f32 storage and f64 sums taken in
+ the same order as the host forms they replaced.
+
+ We say:
+
+Section: FreeU backbone
+
+  fx-chan-sum : Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  fx-chan-sum (h) (hw) (p) (c) (k) (acc) =
+   if k >= c then acc
+   else act
+    v <- device-load-f32 h (k * hw + p)
+    fx-chan-sum h hw p c (k + 1) (acc + v)
+   end
+
+  kernel-freeu-mean : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-freeu-mean (h) (means) (c) (hw) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   p <- bx * 256 + tid
+   if p < hw then act
+    s <- fx-chan-sum h hw p c 0 0.0
+    device-store-f64 means p (s / real-from-int c)
+   end
+   else 0
+  end
+
+  fx-min : Integer, Integer, Integer, Real -> [Device] Real
+  fx-min (m) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- device-load-f64 m i
+    fx-min m n (i + 1) (if v < acc then v else acc)
+   end
+
+  fx-max : Integer, Integer, Integer, Real -> [Device] Real
+  fx-max (m) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- device-load-f64 m i
+    fx-max m n (i + 1) (if v > acc then v else acc)
+   end
+
+  kernel-freeu-range : Integer, Integer, Integer -> [Device] Integer
+  kernel-freeu-range (means) (mm) (hw) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   if tid == 0 & bx == 0 then act
+    v0 <- device-load-f64 means 0
+    lo <- fx-min means hw 1 v0
+    hi <- fx-max means hw 1 v0
+    a <- device-store-f64 mm 0 lo
+    device-store-f64 mm 1 hi
+   end
+   else 0
+  end
+
+  kernel-freeu-scale : Integer, Integer, Integer, Integer, Integer, Real -> [Device] Integer
+  kernel-freeu-scale (h) (means) (mm) (hw) (n) (b) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < n then act
+    lo <- device-load-f64 mm 0
+    hi <- device-load-f64 mm 1
+    m <- device-load-f64 means (i - (i / hw) * hw)
+    v <- device-load-f32 h i
+    device-store-f32 h i (v * ((b - 1.0) * ((m - lo) / (hi - lo)) + 1.0))
+   end
+   else 0
+  end
+
+Section: FreeU skip
+
+ tab holds f64 cos and sin of 2 pi m / H (H each), then of 2 pi q / W (W
+ each). Sum kind 0 is the plain sum; 1 to 4 weigh by cos m, sin m, cos q,
+ sin q; 5 and 6 by cos and sin of their sum.
+
+  fx-weight : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Real
+  fx-weight (tab) (hh) (ww) (m) (q) (kind) = act
+   ch <- device-load-f64 tab m
+   sh <- device-load-f64 tab (hh + m)
+   cw <- device-load-f64 tab (2 * hh + q)
+   sw <- device-load-f64 tab (2 * hh + ww + q)
+   if kind == 0 then 1.0
+   else if kind == 1 then ch
+   else if kind == 2 then sh
+   else if kind == 3 then cw
+   else if kind == 4 then sw
+   else if kind == 5 then ch * cw - sh * sw
+   else sh * cw + ch * sw
+  end
+
+  fx-dot : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  fx-dot (x) (tab) (base) (hh) (ww) (kind) (i) (acc) =
+   if i >= hh * ww then acc
+   else act
+    v <- device-load-f32 x (base + i)
+    w <- fx-weight tab hh ww (i / ww) (i - (i / ww) * ww) kind
+    fx-dot x tab base hh ww kind (i + 1) (if kind == 0 then acc + v else acc + v * w)
+   end
+
+  kernel-freeu-sums : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-freeu-sums (x) (tab) (sums) (c) (hh) (ww) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   t <- bx * 256 + tid
+   if t < c * 7 then act
+    j <- t / 7
+    s <- fx-dot x tab (j * hh * ww) hh ww (t - j * 7) 0 0.0
+    device-store-f64 sums t s
+   end
+   else 0
+  end
+
+  kernel-freeu-update : Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Integer
+  kernel-freeu-update (x) (tab) (sums) (c) (hh) (ww) (k) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < c * hh * ww then act
+    j <- i / (hh * ww)
+    r <- i - j * hh * ww
+    m <- r / ww
+    q <- r - m * ww
+    a00 <- device-load-f64 sums (j * 7)
+    a10r <- device-load-f64 sums (j * 7 + 1)
+    a10i <- device-load-f64 sums (j * 7 + 2)
+    a01r <- device-load-f64 sums (j * 7 + 3)
+    a01i <- device-load-f64 sums (j * 7 + 4)
+    a11r <- device-load-f64 sums (j * 7 + 5)
+    a11i <- device-load-f64 sums (j * 7 + 6)
+    ch <- fx-weight tab hh ww m q 1
+    sh <- fx-weight tab hh ww m q 2
+    cw <- fx-weight tab hh ww m q 3
+    sw <- fx-weight tab hh ww m q 4
+    c11 <- fx-weight tab hh ww m q 5
+    s11 <- fx-weight tab hh ww m q 6
+    v <- device-load-f32 x i
+    device-store-f32 x i (v + k * (a00 + (a10r * ch + a10i * sh) + (a01r * cw + a01i * sw) + (a11r * c11 + a11i * s11)))
+   end
+   else 0
+  end
+
+Section: SAG
+
+  fx-col : Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  fx-col (s) (heads) (rows) (j) (k) (acc) =
+   if k >= heads * rows then acc
+   else act
+    v <- device-load-f32 s (k * rows + j)
+    fx-col s heads rows j (k + 1) (acc + v)
+   end
+
+  kernel-sag-mask : Integer, Integer, Integer, Integer, Real -> [Device] Integer
+  kernel-sag-mask (s) (mask) (heads) (rows) (thr) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   j <- bx * 256 + tid
+   if j < rows then act
+    t <- fx-col s heads rows j 0 0.0
+    device-store-f32 mask j (if t / real-from-int heads > thr then 1.0 else 0.0)
+   end
+   else 0
+  end
+
+  fx-reflect : Integer, Integer -> Integer
+  fx-reflect (i) (n) = if i < 0 then 0 - i else if i >= n then 2 * (n - 1) - i else i
+
+  fx-tap : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  fx-tap (x0) (kern) (base) (lh) (lw) (y) (x) (t) (acc) =
+   if t >= 81 then acc
+   else act
+    w <- device-load-f32 kern t
+    v <- device-load-f32 x0 (base + fx-reflect (y + t / 9 - 4) lh * lw + fx-reflect (x + (t - (t / 9) * 9) - 4) lw)
+    fx-tap x0 kern base lh lw y x (t + 1) (acc + w * v)
+   end
+
+ rix and cix hold, per latent row and column, the mask row and column
+ PyTorch's nearest upsample reads.
+
+  kernel-sag-blur : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-sag-blur (x0) (out) (mask) (kern) (rix) (cix) (lh) (lw) (mw) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < 4 * lh * lw then act
+    c <- i / (lh * lw)
+    r <- i - c * lh * lw
+    y <- r / lw
+    x <- r - y * lw
+    my <- device-load-f32 rix y
+    mx <- device-load-f32 cix x
+    m <- device-load-f32 mask (real-to-int my * mw + real-to-int mx)
+    v <- if m > 0.5 then fx-tap x0 kern (c * lh * lw) lh lw y x 0 0.0 else device-load-f32 x0 i
+    device-store-f32 out i v
+   end
+   else 0
+  end
+
+Section: Dynamic thresholding
+
+ mcmonkey's DynThresh (lib_dynamic_thresholding/dynthres_core.py): the
+ mimic-scale and CFG-scale targets, per-channel sums, the rank of each
+ centred value within its group for torch.quantile, and the renormalised
+ result.
+
+  kernel-dt-targets : Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Integer
+  kernel-dt-targets (dc) (du) (mim) (cfgt) (n) (ms) (cs) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < n then act
+    c <- device-load-f32 dc i
+    u <- device-load-f32 du i
+    a <- device-store-f32 mim i (u + (c - u) * ms)
+    device-store-f32 cfgt i (u + (c - u) * cs)
+   end
+   else 0
+  end
+
+  fx-sum : Integer, Integer, Integer, Integer, Real -> [Device] Real
+  fx-sum (b) (base) (n) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- device-load-f32 b (base + i)
+    fx-sum b base n (i + 1) (acc + v)
+   end
+
+  fx-maxabs : Integer, Integer, Integer, Real, Integer, Real -> [Device] Real
+  fx-maxabs (b) (base) (n) (mean) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- device-load-f32 b (base + i)
+    fx-maxabs b base n mean (i + 1) (if v - mean > acc then v - mean else if mean - v > acc then mean - v else acc)
+   end
+
+  fx-ss : Integer, Integer, Integer, Real, Integer, Real -> [Device] Real
+  fx-ss (b) (base) (n) (mean) (i) (acc) =
+   if i >= n then acc
+   else act
+    v <- device-load-f32 b (base + i)
+    fx-ss b base n mean (i + 1) (acc + (v - mean) * (v - mean))
+   end
+
+ stats per channel c, f64 at c * 6: mimic mean, CFG mean, mimic max |x -
+ mean|, mimic sum of squares about the mean, CFG max |x - mean|, CFG sum of
+ squares.
+
+  kernel-dt-stats : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-dt-stats (mim) (cfgt) (stats) (hw) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   c <- bx * 256 + tid
+   if c < 4 then act
+    sm <- fx-sum mim (c * hw) hw 0 0.0
+    sc <- fx-sum cfgt (c * hw) hw 0 0.0
+    mm <- sm / real-from-int hw
+    mc <- sc / real-from-int hw
+    am <- fx-maxabs mim (c * hw) hw mm 0 0.0
+    qm <- fx-ss mim (c * hw) hw mm 0 0.0
+    ac <- fx-maxabs cfgt (c * hw) hw mc 0 0.0
+    qc <- fx-ss cfgt (c * hw) hw mc 0 0.0
+    a <- device-store-f64 stats (c * 6) mm
+    b <- device-store-f64 stats (c * 6 + 1) mc
+    d <- device-store-f64 stats (c * 6 + 2) am
+    e <- device-store-f64 stats (c * 6 + 3) qm
+    f <- device-store-f64 stats (c * 6 + 4) ac
+    device-store-f64 stats (c * 6 + 5) qc
+   end
+   else 0
+  end
+
+  fx-centred : Integer, Integer, Integer, Integer -> [Device] Real
+  fx-centred (cfgt) (stats) (hw) (j) = act
+   v <- device-load-f32 cfgt j
+   m <- device-load-f64 stats ((j / hw) * 6 + 1)
+   if v - m < 0.0 then m - v else v - m
+  end
+
+  fx-less : Integer, Integer, Integer, Integer, Integer, Real, Integer, Integer -> [Device] Integer
+  fx-less (cfgt) (stats) (hw) (base) (n) (a) (j) (acc) =
+   if j >= n then acc
+   else act
+    b <- fx-centred cfgt stats hw (base + j)
+    fx-less cfgt stats hw base n a (j + 1) (if b < a then acc + 1 else acc)
+   end
+
+  fx-equal : Integer, Integer, Integer, Integer, Integer, Real, Integer, Integer -> [Device] Integer
+  fx-equal (cfgt) (stats) (hw) (base) (n) (a) (j) (acc) =
+   if j >= n then acc
+   else act
+    b <- fx-centred cfgt stats hw (base + j)
+    fx-equal cfgt stats hw base n a (j + 1) (if b ~0 a then acc + 1 else acc)
+   end
+
+ The values at sorted ranks k0 and k1 of |x - its channel's mean| within a
+ group (a channel, or all four when sep is 0), into qv at group * 2.
+
+  kernel-dt-rank : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-dt-rank (cfgt) (stats) (qv) (hw) (sep) (k0) (k1) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < 4 * hw then act
+    g <- if sep == 1 then i / hw else 0
+    base <- if sep == 1 then g * hw else 0
+    n <- if sep == 1 then hw else 4 * hw
+    a <- fx-centred cfgt stats hw i
+    lt <- fx-less cfgt stats hw base n a 0 0
+    eq <- fx-equal cfgt stats hw base n a 0 0
+    x <- if lt <= k0 & k0 < lt + eq then device-store-f64 qv (g * 2) a else 0
+    if lt <= k1 & k1 < lt + eq then device-store-f64 qv (g * 2 + 1) a else 0
+   end
+   else 0
+  end
+
+ refs per channel c, f64 at c * 3: CFG mean, mimic reference, CFG
+ reference. zero and std are 1 for the ZERO startpoint and the STD measure.
+
+  kernel-dt-apply : Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Integer
+  kernel-dt-apply (cfgt) (out) (refs) (hw) (zero) (std) (phi) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < 4 * hw then act
+    c <- i / hw
+    x <- device-load-f32 cfgt i
+    m <- device-load-f64 refs (c * 3)
+    mr <- device-load-f64 refs (c * 3 + 1)
+    cr <- device-load-f64 refs (c * 3 + 2)
+    mx <- if mr > cr then mr else cr
+    d <- x - m
+    cl <- if d > mx then mx else if d < 0.0 - mx then 0.0 - mx else d
+    r <- if zero == 1 then x * (mr / cr) else if std == 1 then (d / cr) * mr + m else (cl / mx) * mr + m
+    device-store-f32 out i (if phi ~0 1.0 then r else r * phi + x * (1.0 - phi))
+   end
+   else 0
+  end

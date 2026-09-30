@@ -1,0 +1,151 @@
+Chapter: CIL Unity
+  cites Encode chapter Base64
+  cites Foreword chapter StringUtils
+
+  cil-unity-record : Text -> Boolean
+  cil-unity-record (name) = name == "StorageSlot" | name == "StorageMove" | name == "StoragePlan" | name == "ArcColour" | name == "ArcPreviewSettings"
+
+  cil-unity-record-abi : Text -> Text
+  cil-unity-record-abi (name) =
+   if name == "StorageSlot" then "ss-index=i64;ss-quantity=i64;ss-capacity=i64;ss-compatible=bool;"
+   else if name == "StorageMove" then "sm-index=i64;sm-expected=i64;sm-amount=i64;"
+   else if name == "StoragePlan" then "sp-valid=bool;sp-moves=list<record:StorageMove>;sp-remainder=i64;"
+   else if name == "ArcColour" then "ac-red=i64;ac-green=i64;ac-blue=i64;"
+   else "aps-elevation-degrees=i64;aps-span-degrees=i64;aps-band-degrees=i64;aps-distance=i64;aps-strength=i64;aps-start-hour=i64;aps-end-hour=i64;aps-first-day=i64;aps-period-days=i64;aps-weathers=list<text>;aps-spectrum=list<record:ArcColour>;"
+
+  cil-unity-fields-abi : List RecordField, Integer, Text -> Text
+  cil-unity-fields-abi (fields) (i) (out) =
+   if i >= list-length fields then out
+   else let field = list-at fields i
+   in cil-unity-fields-abi fields (i + 1) (out & field.name.value & "=" & cil-type-key (field.type-val) & ";")
+
+  cil-unity-configure : CilProgram -> Integer
+  cil-unity-configure (p) =
+   let reference = cil-row (p.md) 35 [CilU2 1, CilU2 0, CilU2 0, CilU2 0, CilU4 0, CilBlob 0, CilString (cil-string (p.md) "PrismRuntime"), CilString 0, CilBlob 0]
+   in let set = __record-set p "unity-ref" reference
+   in reference
+
+  cil-unity-type : CilProgram, Text -> Integer
+  cil-unity-type (p) (name) =
+   let key = "unity-type:" & name
+   in let found = cil-cache-get (p.members) key
+   in if found >= 0 then found
+   else let row = cil-row (p.md) 1 [CilCoded 2 [0, 26, 35, 1] (p.unity-ref * 4 + 2), CilString (cil-string (p.md) name), CilString (cil-string (p.md) "PrismGenerated")]
+   in cil-cache-put (p.members) key row
+
+  cil-unity-operation : Text -> Boolean
+  cil-unity-operation (name) =
+   name == "unity-storage-start" | name == "unity-meadows-spawns-start" | name == "unity-circumhorizontal-arc-start" | name == "unity-station-hover-start" | name == "unity-hud-layout-start" | name == "unity-plant-rows-start" | name == "unity-tool-kit-start" | name == "unity-firekeeping-start" | name == "unity-build-camera-start" | name == "unity-loadout-start" | name == "unity-farming-start"
+
+  cil-unity-arguments : Text -> List Text
+  cil-unity-arguments (name) =
+   if name == "unity-storage-start" then ["fn<list<record:StorageSlot>,fn<i64,record:StoragePlan>>", "fn<list<record:StorageSlot>,fn<i64,record:StoragePlan>>"]
+   else if name == "unity-meadows-spawns-start" then ["fn<i64,fn<i64,i64>>"]
+   else if name == "unity-circumhorizontal-arc-start" then ["record:ArcPreviewSettings"]
+   else if name == "unity-station-hover-start" then ["fn<i64,fn<i64,fn<i64,fn<i64,fn<i64,fn<i64,text>>>>>>", "fn<i64,fn<i64,text>>", "fn<i64,fn<i64,text>>"]
+   else if name == "unity-hud-layout-start" then ["fn<i64,i64>", "fn<i64,fn<i64,i64>>", "fn<i64,i64>"]
+   else if name == "unity-plant-rows-start" then ["fn<i64,i64>", "fn<i64,i64>"]
+   else if name == "unity-firekeeping-start" | name == "unity-build-camera-start" | name == "unity-loadout-start" | name == "unity-farming-start" then ["fn<i64,i64>"]
+   else ["fn<i64,i64>", "fn<i64,i64>", "fn<i64,i64>"]
+
+  cil-unity-arguments-match : CodexType, List Text, Integer -> Boolean
+  cil-unity-arguments-match (ty) (expected) (i) =
+   if i >= list-length expected then cil-void ty
+   else when cil-core-type ty
+    is FunTy (arg) (effects) (ret) -> cil-type-key arg == list-at expected i & cil-unity-arguments-match ret expected (i + 1)
+    is otherwise -> False
+
+  cil-unity-parameters : CilProgram, CodexType, Integer -> List Integer
+  cil-unity-parameters (p) (ty) (count) =
+   if count == 0 then [] else when cil-core-type ty
+    is FunTy (arg) (effects) (ret) -> cil-type p arg & cil-unity-parameters p ret (count - 1)
+    is otherwise -> let refused = cil-refuse p "Unity effect arity mismatch" in []
+
+  cil-unity-call : CilProgram, CilMethod, CilEnv, IRExpr, List IRExpr, Integer -> Boolean
+  cil-unity-call (p) (method) (env) (root) (args) (depth) = when root
+   is IrName (name) (ty) (sp) ->
+    if p.unity-ref == 0 | cil-env-find env name /= 0 then False
+    else if name == "integer-to-text" then
+     if list-length args /= 1 then let refused = cil-refuse p "integer-to-text requires one argument" in True
+     else let owner = cil-unity-type p "PrismRuntimeEffects"
+     in let member = cil-member p "unity:integer-to-text" (owner * 8 + 1) "integer_to_text_cil" [0, 1, 14, 10]
+     in let value = cil-emit-args p method env args 0 depth
+     in let call = cil-put method ([40] & write-i32 member)
+     in True
+    else if cil-unity-operation name == False then False
+    else if cil-unity-arguments-match ty (cil-unity-arguments name) 0 == False then let refused = cil-refuse p ("Unity effect ABI differs: " & name) in True
+    else let count = list-length args
+    in let result = cil-drop-args ty count
+    in if cil-void result == False then let refused = cil-refuse p "Unity effects require full application" in True
+    else let owner = cil-unity-type p "PrismRuntimeEffects"
+    in let signature = [0] & cil-compressed count & [1] & cil-unity-parameters p ty count
+    in let member = cil-member p ("unity-call:" & name) (owner * 8 + 1) (text-replace name "-" "_" & "_cil") signature
+    in let values = cil-emit-args p method env args 0 depth
+    in let call = cil-put method ([40] & write-i32 member)
+    in True
+   is otherwise -> False
+
+  cil-ascii-units : List Integer, Integer, List Integer -> List Integer
+  cil-ascii-units (bytes) (i) (out) =
+   if i >= list-length bytes then out
+   else cil-ascii-units bytes (i + 1) (list-push (list-push out (list-at bytes i)) 0)
+
+  cil-unity-string : CilProgram, Text -> Integer
+  cil-unity-string (p) (text) =
+   let bytes = cil-ascii-units (text-to-utf8-bytes text) 0 [] & [0]
+   in let offset = list-length ((p.md).users)
+   in let prefix = cil-append ((p.md).users) (cil-compressed (list-length bytes)) 0
+   in let put = __record-set (p.md) "users" (cil-append prefix bytes 0)
+   in 1879048192 + offset
+
+  cil-unity-entry : CilProgram, Integer -> Integer
+  cil-unity-entry (p) (runtime-size) =
+   let assembly = cil-core-ref p "System.Reflection" "Assembly"
+   in let stream = cil-core-ref p "System.IO" "Stream"
+   in let reader = cil-core-ref p "System.IO" "BinaryReader"
+   in let type = cil-core-ref p "System" "Type"
+   in let info = cil-core-ref p "System.Reflection" "MethodInfo"
+   in let method-base = cil-core-ref p "System.Reflection" "MethodBase"
+   in let assembly-sig = [18] & cil-compressed (assembly * 4 + 1)
+   in let get-self = cil-member p "Assembly:GetExecutingAssembly" (assembly * 8 + 1) "GetExecutingAssembly" ([0, 0] & assembly-sig)
+   in let resource = cil-member p "Assembly:GetManifestResourceStream" (assembly * 8 + 1) "GetManifestResourceStream" ([32, 1, 18] & cil-compressed (stream * 4 + 1) & [14])
+   in let reader-new = cil-member p "BinaryReader:.ctor" (reader * 8 + 1) ".ctor" ([32, 1, 1, 18] & cil-compressed (stream * 4 + 1))
+   in let read = cil-member p "BinaryReader:ReadBytes" (reader * 8 + 1) "ReadBytes" [32, 1, 29, 5, 8]
+   in let load = cil-member p "Assembly:Load" (assembly * 8 + 1) "Load" ([0, 1] & assembly-sig & [29, 5])
+   in let get-type = cil-member p "Assembly:GetType" (assembly * 8 + 1) "GetType" ([32, 1, 18] & cil-compressed (type * 4 + 1) & [14])
+   in let get-method = cil-member p "Type:GetMethod" (type * 8 + 1) "GetMethod" ([32, 1, 18] & cil-compressed (info * 4 + 1) & [14])
+   in let invoke = cil-member p "MethodBase:Invoke" (method-base * 8 + 1) "Invoke" [32, 2, 28, 28, 29, 28]
+   in let method = CilMethod { code = [], locals = [], label = "Initialize" }
+   in let start = cil-put method ([40] & write-i32 get-self & [114] & write-i32 (cil-unity-string p "PrismRuntime.dll") & [111] & write-i32 resource & [115] & write-i32 reader-new & [32] & write-i32 runtime-size & [111] & write-i32 read & [40] & write-i32 load)
+   in let target = cil-put method ([114] & write-i32 (cil-unity-string p "PrismGenerated.PrismRuntimeModel") & [111] & write-i32 get-type & [114] & write-i32 (cil-unity-string p "Initialize") & [111] & write-i32 get-method)
+   in let args = cil-put method ([20, 23, 141] & write-i32 (16777216 + p.object-ref) & [37, 22, 40] & write-i32 get-self & [162, 111] & write-i32 invoke & [38, 42])
+   in let entry = cil-row (p.md) 2 [CilU4 1048961, CilString (cil-string (p.md) "PrismUnityEntry"), CilString 0, CilCoded 2 [2, 1, 27] (p.object-ref * 4 + 1), CilTable 4 (list-at ((p.md).counts) 4 + 1), CilTable 6 (list-at ((p.md).counts) 6 + 1)]
+   in let emitted = cil-generated-method p method 6 "Initialize" 150 [0, 0, 1]
+   in cil-row (p.md) 40 [CilU4 0, CilU4 1, CilString (cil-string (p.md) "PrismRuntime.dll"), CilCoded 2 [38, 35, 39] 0]
+
+  cil-unity-input : Text -> [Console] Nothing
+  cil-unity-input (input) =
+   let line = cil-unity-line input 0
+   in if line >= text-length input then print-line-uni "REFUSED CIL missing runtime boundary"
+   else let encoded = substring input 0 line
+   in let ir = substring input (line + 1) (text-length input - line - 1)
+   in if base64-valid encoded == False | ir-text-is-chapter ir == False then print-line-uni "REFUSED CIL invalid bundled runtime input"
+   else let runtime = base64-decode encoded
+   in if list-length runtime < 512 then print-line-uni "REFUSED CIL runtime is not a managed assembly"
+   else if list-at runtime 0 /= 77 | list-at runtime 1 /= 90 then print-line-uni "REFUSED CIL runtime is not a managed assembly"
+   else let p = cil-program-mode (parse-ir-chapter ir) True
+   in let opening-index = cil-find-def p "opening"
+   in let checked = if opening-index < 0 then cil-refuse p "Unity model requires opening"
+    else let def = list-at (p.defs) opening-index
+    in if list-length (def.params) /= 0 | cil-void (def.type-val) == False then cil-refuse p "Unity opening must take no arguments and return Nothing" else 0
+   in let emitted = cil-emit-defs p 0
+   in let constructors = cil-emit-record-ctors p 0
+   in let closures = cil-emit-closures p 0
+   in let entry = cil-unity-entry p (list-length runtime)
+   in if p.error /= "" then print-line-uni ("REFUSED CIL " & p.error)
+   else write-binary (cil-build-pe-resources (p.md) (p.methods) (write-i32 (list-length runtime) & runtime))
+
+  cil-unity-line : Text, Integer -> Integer
+  cil-unity-line (input) (i) =
+   if i >= text-length input then i
+   else if char-code-at input i == char-code-at "\n" 0 then i else cil-unity-line input (i + 1)

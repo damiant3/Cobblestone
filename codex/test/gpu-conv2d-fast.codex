@@ -1,0 +1,214 @@
+Chapter: GpuConv2dFast
+
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter GemmPtx
+
+   x and w start in PyTorch layout and reach kernel-conv2d-fast through
+   kernel-nchw-to-nhwc and kernel-conv-weight-khwc, so a wrong index in
+   either layout kernel fails the same entries. y is poisoned before each
+   launch. The sabotage arm launches the first shape with pad 0 and the
+   same output size; its count was predicted on the host before the run.
+
+ We say:
+
+Section: Fill
+
+  ptx-fill : Text
+  ptx-fill =
+    let a = ".version 7.0\n.target sm_60\n.address_size 64\n\n.visible .entry fill(.param .u64 p_out, .param .u32 p_n, .param .u32 p_mul, .param .u32 p_mod, .param .u32 p_bias)\n{\n"
+    in let b = ".reg .pred %p<2>;\n.reg .b32 %r<12>;\n.reg .b64 %rd<6>;\n.reg .f32 %f<2>;\n.reg .b16 %h<2>;\n"
+    in let c = "ld.param.u64 %rd1, [p_out];\nld.param.u32 %r1, [p_n];\nld.param.u32 %r2, [p_mul];\nld.param.u32 %r3, [p_mod];\nld.param.u32 %r4, [p_bias];\n"
+    in let d = "mov.u32 %r5, %ctaid.x;\nmov.u32 %r6, %ntid.x;\nmov.u32 %r7, %tid.x;\nmad.lo.s32 %r8, %r5, %r6, %r7;\nsetp.ge.u32 %p1, %r8, %r1;\n@%p1 bra DONE;\n"
+    in let e = "mul.lo.u32 %r9, %r8, %r2;\nrem.u32 %r10, %r9, %r3;\nsub.s32 %r11, %r10, %r4;\ncvt.rn.f32.s32 %f1, %r11;\ncvt.rn.f16.f32 %h1, %f1;\n"
+    in let f = "cvta.to.global.u64 %rd2, %rd1;\nmul.wide.u32 %rd3, %r8, 2;\nadd.s64 %rd4, %rd2, %rd3;\nst.global.b16 [%rd4], %h1;\nDONE:\nret;\n}\n"
+    in a & b & c & d & e & f
+
+  fill : Integer, Integer, Integer, Integer, Integer -> Integer
+  fill (h) (count) (mul) (m) (bias) =
+    let g = GpuGrid { gx = (count + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+    in let ps = [gpu-arg-buf h 0, gpu-arg-u32 count, gpu-arg-u32 mul, gpu-arg-u32 m, gpu-arg-u32 bias]
+    in gpu-launch ptx-fill "fill" g ps
+
+  x-at : Integer -> Integer
+  x-at (i) = int-mod (i * 7) 17 - 8
+
+  w-at : Integer -> Integer
+  w-at (i) = int-mod (i * 13) 11 - 5
+
+  b-at : Integer -> Integer
+  b-at (m) = int-mod m 9 - 4
+
+Section: Shape
+
+  ConvShape = record {
+    cin : Integer,
+    h : Integer,
+    wd : Integer,
+    cout : Integer,
+    kh : Integer,
+    kw : Integer,
+    stride : Integer,
+    pad : Integer,
+    oh : Integer,
+    ow : Integer
+  }
+
+  kk : ConvShape -> Integer
+  kk (s) = s.cin * s.kh * s.kw
+
+  npix : ConvShape -> Integer
+  npix (s) = s.oh * s.ow
+
+Section: Bias Upload
+
+  scratch : Integer = #BD700000
+
+  top-bit : Integer, Integer -> Integer
+  top-bit (m) (e) = if bit-shru m (e + 1) == 0 then e else top-bit m (e + 1)
+
+  f32-bits : Integer -> Integer
+  f32-bits (v) =
+    if v == 0 then 0
+    else let mag = if v < 0 then 0 - v else v
+    in let e = top-bit mag 0
+    in let sign = if v < 0 then #80000000 else 0
+    in bit-or sign (bit-or (bit-shl (127 + e) 23) (bit-and (bit-shl mag (23 - e)) #7FFFFF))
+
+  put-bias : Integer, Integer -> Integer
+  put-bias (i) (n) =
+    if i >= n then n
+    else let p = poke-32 scratch (i * 4) (f32-bits (b-at i))
+    in put-bias (i + 1) n
+
+Section: Reference
+
+  in-image : ConvShape, Integer, Integer -> Boolean
+  in-image (s) (iy) (ix) =
+    if iy < 0 then False
+    else if iy >= s.h then False
+    else if ix < 0 then False
+    else ix < s.wd
+
+  ref-dot : ConvShape, Integer, Integer, Integer, Integer, Integer -> Integer
+  ref-dot (s) (m) (oy) (ox) (i) (acc) =
+    if i >= kk s then acc
+    else let ci = i / (s.kh * s.kw)
+    in let rest = i - ci * s.kh * s.kw
+    in let ky = rest / s.kw
+    in let iy = oy * s.stride - s.pad + ky
+    in let ix = ox * s.stride - s.pad + rest - ky * s.kw
+    in let xv = if in-image s iy ix then x-at ((ci * s.h + iy) * s.wd + ix) else 0
+    in ref-dot s m oy ox (i + 1) (acc + w-at (m * kk s + i) * xv)
+
+  f32-int : Integer -> Integer
+  f32-int (bits) =
+    if bit-and bits #7FFFFFFF == 0 then 0
+    else let e = bit-and (bit-shru bits 23) 255
+    in let m = bit-or (bit-and bits #7FFFFF) #800000
+    in let mag = if e >= 150 then bit-shl m (e - 150) else bit-shru m (150 - e)
+    in if bit-and bits #80000000 /= 0 then 0 - mag else mag
+
+  row-check : ConvShape, Boolean, Integer, Integer, Integer, Integer -> Integer
+  row-check (s) (with-bias) (m) (n) (good) (sum) =
+    if n >= npix s then good * 1000000 + int-mod (sum + 1000000) 1000000
+    else let want = ref-dot s m (n / s.ow) (n - (n / s.ow) * s.ow) 0 (if with-bias then b-at m else 0)
+    in let got = f32-int (peek-32 scratch (n * 4))
+    in row-check s with-bias m (n + 1) (good + (if got == want then 1 else 0)) (sum + want)
+
+  all-check : ConvShape, Boolean, Integer, Integer, Integer, Integer -> Integer
+  all-check (s) (with-bias) (hy) (m) (good) (sum) =
+    if m >= s.cout then good * 1000000 + int-mod (sum + 1000000) 1000000
+    else if not (gpu-buf-read hy (m * npix s * 4) (npix s * 4) scratch) then 0 - 1
+    else let r = row-check s with-bias m 0 0 0
+    in all-check s with-bias hy (m + 1) (good + r / 1000000) (sum + int-mod r 1000000)
+
+Section: Launch
+
+  per-element : Integer -> GpuGrid
+  per-element (n) = GpuGrid { gx = (n + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+
+  to-nhwc : ConvShape, Integer, Integer -> Integer
+  to-nhwc (s) (hx) (hxh) =
+    let n = s.cin * s.h * s.wd
+    in gpu-launch gemm-ptx "kernel_nchw_to_nhwc" (GpuGrid { gx = (s.h * s.wd + 31) / 32, gy = (s.cin + 31) / 32, gz = 1, bx = 256, by = 1, bz = 1, shared = 2176 }) [gpu-arg-buf hx 0, gpu-arg-buf hxh 0, gpu-arg-u64 (s.cin), gpu-arg-u64 (s.h * s.wd), gpu-arg-u64 n]
+
+  to-khwc : ConvShape, Integer, Integer -> Integer
+  to-khwc (s) (hw) (hwp) =
+    let n = s.cout * kk s
+    in gpu-launch gemm-ptx "kernel_conv_weight_khwc" (per-element n) [gpu-arg-buf hw 0, gpu-arg-buf hwp 0, gpu-arg-u64 (s.cin), gpu-arg-u64 (s.kh), gpu-arg-u64 (s.kw), gpu-arg-u64 n]
+
+  conv : ConvShape, Integer, Integer, Integer, Integer, Boolean, Integer -> Integer
+  conv (s) (hxh) (hwp) (hb) (hy) (with-bias) (pad) =
+    let poison = fill hy (s.cout * npix s * 2) 1 1 (0 - 30000)
+    in let g = GpuGrid { gx = (npix s + 127) / 128, gy = (s.cout + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 }
+    in let bias = if with-bias then gpu-arg-buf hb 0 else gpu-arg-u64 0
+    in let ps = [gpu-arg-buf hxh 0, gpu-arg-buf hwp 0, bias, gpu-arg-buf hy 0, gpu-arg-u64 (s.cin), gpu-arg-u64 (s.h), gpu-arg-u64 (s.wd),
+                 gpu-arg-u64 (s.cout), gpu-arg-u64 (s.kh), gpu-arg-u64 (s.kw), gpu-arg-u64 (s.stride), gpu-arg-u64 pad,
+                 gpu-arg-u64 (s.oh), gpu-arg-u64 (s.ow), gpu-arg-u64 0, gpu-arg-u64 0,
+                 gpu-arg-u64 0, gpu-arg-u64 0, gpu-arg-u64 0, gpu-arg-u64 0, gpu-arg-u64 0, gpu-arg-u64 0, gpu-arg-u64 0]
+    in if poison < 0 then 0 - 1
+    else gpu-launch gemm-ptx "kernel_conv2d_fast" g ps
+
+  verdict : ConvShape, Boolean, Integer, Integer -> Text
+  verdict (s) (with-bias) (hy) (launched) =
+    if launched < 0 then "launch refused"
+    else let t = all-check s with-bias hy 0 0 0
+    in if t < 0 then "read refused"
+    else show (t / 1000000) & "/" & show (s.cout * npix s) & ", checksum " & show (int-mod t 1000000)
+
+  case-report : ConvShape, Boolean, Integer -> Text
+  case-report (s) (with-bias) (sab-pad) =
+    let hx = gpu-buf-alloc (s.cin * s.h * s.wd * 2)
+    in let hxh = gpu-buf-alloc (s.cin * s.h * s.wd * 2)
+    in let hw = gpu-buf-alloc (s.cout * kk s * 2)
+    in let hwp = gpu-buf-alloc (s.cout * kk s * 2)
+    in let hb = gpu-buf-alloc (s.cout * 4)
+    in let hy = gpu-buf-alloc (s.cout * npix s * 4)
+    in if hx == 0 then "alloc refused"
+    else if hxh == 0 then "alloc refused"
+    else if hw == 0 then "alloc refused"
+    else if hwp == 0 then "alloc refused"
+    else if hb == 0 then "alloc refused"
+    else if hy == 0 then "alloc refused"
+    else if fill hx (s.cin * s.h * s.wd) 7 17 8 < 0 then "fill x refused"
+    else if fill hw (s.cout * kk s) 13 11 5 < 0 then "fill w refused"
+    else if to-nhwc s hx hxh < 0 then "nhwc refused"
+    else if to-khwc s hw hwp < 0 then "khwc refused"
+    else if put-bias 0 (s.cout) < 0 then "bias refused"
+    else if not (gpu-buf-write hb 0 (s.cout * 4) scratch) then "bias write refused"
+    else let v = verdict s with-bias hy (conv s hxh hwp hb hy with-bias (s.pad))
+    in let sab = if sab-pad < 0 then "" else "; sabotage pad " & show sab-pad & ": " & verdict s with-bias hy (conv s hxh hwp hb hy with-bias sab-pad)
+    in let f1 = gpu-buf-free hx
+    in let f2 = gpu-buf-free hxh
+    in let f3 = gpu-buf-free hw
+    in let f4 = gpu-buf-free hwp
+    in let f5 = gpu-buf-free hb
+    in let f6 = gpu-buf-free hy
+    in v & sab & (if f1 & f2 & f3 & f4 & f5 & f6 then "" else "; free refused")
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let l1 = "3x3 s1 p1 32->70 17x17 + b: " & case-report (ConvShape { cin = 32, h = 17, wd = 17, cout = 70, kh = 3, kw = 3, stride = 1, pad = 1, oh = 17, ow = 17 }) True 0
+    in let l2 = "3x3 s2 p1 64->136 16x16: " & case-report (ConvShape { cin = 64, h = 16, wd = 16, cout = 136, kh = 3, kw = 3, stride = 2, pad = 1, oh = 8, ow = 8 }) False (0 - 1)
+    in let l3 = "1x1 s1 p0 32->40 9x9 + b: " & case-report (ConvShape { cin = 32, h = 9, wd = 9, cout = 40, kh = 1, kw = 1, stride = 1, pad = 0, oh = 9, ow = 9 }) True (0 - 1)
+    in let l4 = "3x3 s1 p1 32->48 24x24: " & case-report (ConvShape { cin = 32, h = 24, wd = 24, cout = 48, kh = 3, kw = 3, stride = 1, pad = 1, oh = 24, ow = 24 }) False (0 - 1)
+    in let l5 = "3x3 s1 p0 96->24 10x10 + b: " & case-report (ConvShape { cin = 96, h = 10, wd = 10, cout = 24, kh = 3, kw = 3, stride = 1, pad = 0, oh = 8, ow = 8 }) True (0 - 1)
+    in [l1, l2, l3, l4, l5]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

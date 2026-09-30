@@ -7,7 +7,7 @@
 [CmdletBinding()]
 param(
     [string]$CodexCdx,
-    [int]$Jobs = 8,
+    [int]$Jobs = 16,
     [switch]$ErrorsOnly,
     [switch]$NoErrors,
     [switch]$Apps,
@@ -947,7 +947,7 @@ if ($needsRun.Count -gt 0) {
 
     # The verdict on one test from what its run left behind: $RunOk and $Why
     # from the supervisor's END line, the raw capture filtered exactly as
-    # test-run.ps1 filtered it (CR and a leading SOH stripped, HEAP:/WD:/STACK:
+    # test-run.ps1 filtered it (CR stripped, HEAP:/WD:/STACK:
     # telemetry dropped, trailing blank lines cut) into runtime.actual.
     function Write-RunVerdict($t, [bool]$RunOk, [string]$Why) {
         $name = $t.Name
@@ -959,7 +959,7 @@ if ($needsRun.Count -gt 0) {
             if ((-not (Test-Path -PathType Leaf $t.Raw)) -or (Get-Item $t.Raw).Length -eq 0) {
                 $RunOk = $false; $Why = 'no output'
             } else {
-                $raw = (Read-LogShared $t.Raw) -replace "`r", '' -replace "^\x01", ''
+                $raw = (Read-LogShared $t.Raw) -replace "`r", ''
                 $kept = [System.Collections.Generic.List[string]]::new()
                 foreach ($l in ($raw -split "`n")) {
                     if ($l.StartsWith('HEAP:') -or $l.StartsWith('WD:') -or $l.StartsWith('STACK:')) { continue }
@@ -999,7 +999,7 @@ if ($needsRun.Count -gt 0) {
             return
         }
         $expectedBytes = (Read-LogShared $t.Expected) -replace "`r", ''
-        if ($expectedBytes -eq $txt) {
+        if ([string]::Equals($expectedBytes, $txt, [StringComparison]::Ordinal)) {
             "PASS_EXPECTED`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
         } else {
             "FAIL_OUTPUT`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8

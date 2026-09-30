@@ -1,0 +1,551 @@
+Chapter: BrowserKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ The layer kernels in the form the WGSL plug lowers for WebGPU
+ (docs/Designs/Active/Apps/InBrowserDiffusion.md, stage 1): f32 in and out,
+ no f64, and the thread index as the last parameter, gid.
+
+ We say:
+
+Section: Activations
+
+ SiLU, x / (1 + e^-x); e^-x is 2^(-x log2 e), log2 e = 1.4426950408889634.
+
+  bk-silu : Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-silu (xb) (yb) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-silu-of (device-load-f32 xb gid)) else 0
+
+  bk-silu-of : Real -> Real
+  bk-silu-of (v) = v / (1.0 + real-exp2-approx (0.0 - v * 1.4426950408889634))
+
+ The exact GELU, 0.5 x (1 + erf (x / sqrt 2)), erf by Abramowitz and Stegun
+ 7.1.26 (absolute error below 1.5e-7), as lk-erf-fast computes it.
+
+  bk-gelu : Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-gelu (xb) (yb) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-gelu-of (device-load-f32 xb gid)) else 0
+
+  bk-gelu-of : Real -> Real
+  bk-gelu-of (v) = 0.5 * v * (1.0 + bk-erf (v * 0.7071067811865476))
+
+  bk-erf : Real -> Real
+  bk-erf (x) =
+    let a = if x < 0.0 then 0.0 - x else x
+    in let t = 1.0 / (1.0 + 0.3275911 * a)
+    in let e = 1.0 - t * (0.254829592 + t * ((0.0 - 0.284496736) + t * (1.421413741 + t * ((0.0 - 1.453152027) + t * 1.061405429)))) * real-exp2-approx (0.0 - a * a * 1.4426950408889634)
+    in if x < 0.0 then 0.0 - e else e
+
+ GEGLU as kernel-geglu: a row of x is [a, gate], each inner wide.
+
+  bk-geglu : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-geglu (xb) (yb) (inner) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-geglu-of (device-load-f32 xb (gid / inner * 2 * inner + gid - gid / inner * inner)) (device-load-f32 xb (gid / inner * 2 * inner + inner + gid - gid / inner * inner))) else 0
+
+  bk-geglu-of : Real, Real -> Real
+  bk-geglu-of (a) (g) = a * bk-gelu-of g
+
+ CLIP-L's quick_gelu, x sigmoid (1.702 x).
+
+  bk-quick-gelu : Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-quick-gelu (xb) (yb) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-quick-gelu-of (device-load-f32 xb gid)) else 0
+
+  bk-quick-gelu-of : Real -> Real
+  bk-quick-gelu-of (v) = v / (1.0 + real-exp2-approx (0.0 - 1.702 * v * 1.4426950408889634))
+
+Section: Normalization
+
+ The mean and 1/sqrt(var + eps) of `len` elements, an f32 pair per row, one
+ 256-thread workgroup per row: thread t takes elements t, t + 256, ..., then a
+ tree over workgroup words 0 to 255. GroupNorm is a row per (batch, group);
+ bk-group-affine then normalizes element i of channel ch, row
+ b * groups + ch / (c / groups). bk-row-rstd recomputes the mean, so it needs
+ nothing from bk-row-mean.
+
+  bk-row-mean : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-row-mean (xb) (sb) (len) (rows) (gid) = act
+   t <- thread-idx-x
+   r <- block-idx-x
+   s <- bk-wg-reduce 0 t (bk-sum-stride xb (r * len + t) (r * len + len) 0.0)
+   (if t == 0 & r < rows then device-store-f32 sb (r * 2) (s / real-from-int len) else 0)
+  end
+
+  bk-row-rstd : Integer, Integer, Integer, Real, Integer, Integer -> [Device] Integer
+  bk-row-rstd (xb) (sb) (len) (eps) (rows) (gid) = act
+   t <- thread-idx-x
+   r <- block-idx-x
+   s <- bk-wg-reduce 0 t (bk-sum-stride xb (r * len + t) (r * len + len) 0.0)
+   q <- bk-wg-reduce 0 t (bk-sq-stride xb (r * len + t) (r * len + len) (s / real-from-int len) 0.0)
+   (if t == 0 & r < rows then device-store-f32 sb (r * 2 + 1) (1.0 / real-sqrt (q / real-from-int len + eps)) else 0)
+  end
+
+ The workgroup's 256 values v combined by op (0 sum, 1 max), answered to every
+ thread; the closing barrier lets the next reduction reuse the words.
+
+  bk-wg-reduce : Integer, Integer, Real -> [Device] Real
+  bk-wg-reduce (op) (t) (v) = act
+   a <- shared-store-approx (t * 4) (to-real-approx v)
+   s0 <- sync-threads
+   bk-wg-level op t 128
+  end
+
+  bk-wg-level : Integer, Integer, Integer -> [Device] Real
+  bk-wg-level (op) (t) (s) =
+    if s == 0 then act
+     v <- shared-load-approx 0
+     s3 <- sync-threads
+     from-real-approx v
+    end
+    else act
+     a <- shared-load-approx (t * 4)
+     b <- shared-load-approx ((if t < s then t + s else t) * 4)
+     s1 <- sync-threads
+     w <- shared-store-approx (t * 4) (if t < s then bk-combine op a b else a)
+     s2 <- sync-threads
+     bk-wg-level op t (s / 2)
+    end
+
+  bk-combine : Integer, Real approximate, Real approximate -> Real approximate
+  bk-combine (op) (a) (b) = if op == 1 then (if b > a then b else a) else a + b
+
+  bk-sum-stride : Integer, Integer, Integer, Real -> [Device] Real
+  bk-sum-stride (xb) (i) (stop) (acc) =
+    if i >= stop then acc else bk-sum-stride xb (i + 256) stop (acc + device-load-f32 xb i)
+
+  bk-sq-stride : Integer, Integer, Integer, Real, Real -> [Device] Real
+  bk-sq-stride (xb) (i) (stop) (mean) (acc) =
+    if i >= stop then acc else bk-sq-stride xb (i + 256) stop mean (acc + (device-load-f32 xb i - mean) * (device-load-f32 xb i - mean))
+
+  bk-max-stride : Integer, Integer, Integer, Real -> [Device] Real
+  bk-max-stride (sb) (i) (stop) (acc) =
+    if i >= stop then acc else bk-max-stride sb (i + 256) stop (real-max acc (device-load-f32 sb i))
+
+  bk-exp-stride : Integer, Integer, Integer, Real, Real -> [Device] Real
+  bk-exp-stride (sb) (i) (stop) (m) (acc) =
+    if i >= stop then acc else bk-exp-stride sb (i + 256) stop m (acc + bk-exp-of (device-load-f32 sb i - m))
+
+  bk-group-affine : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-group-affine (xb) (sb) (gb) (bb) (yb) (c) (hw) (groups) (n) (gid) =
+    if gid < n then bk-affine-at xb sb gb bb yb ((gid / hw / c) * groups + (gid / hw - (gid / hw / c) * c) / (c / groups)) (gid / hw - (gid / hw / c) * c) gid else 0
+
+  bk-layer-affine : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-layer-affine (xb) (sb) (gb) (bb) (yb) (dim) (n) (gid) =
+    if gid < n then bk-affine-at xb sb gb bb yb (gid / dim) (gid - gid / dim * dim) gid else 0
+
+  bk-affine-at : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-affine-at (xb) (sb) (gb) (bb) (yb) (row) (ch) (i) =
+    device-store-f32 yb i ((device-load-f32 xb i - device-load-f32 sb (row * 2)) * device-load-f32 sb (row * 2 + 1) * device-load-f32 gb ch + device-load-f32 bb ch)
+
+Section: Softmax
+
+ Row softmax out of place, one thread per element: each thread finds its row's
+ max and exponent sum, then stores one value.
+
+  bk-softmax : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-softmax (sb) (yb) (cols) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-softmax-at sb (gid / cols * cols) cols gid) else 0
+
+  bk-softmax-at : Integer, Integer, Integer, Integer -> [Device] Real
+  bk-softmax-at (sb) (lo) (cols) (i) =
+    bk-softmax-with sb lo cols i (bk-max sb (lo + 1) (lo + cols) (device-load-f32 sb lo))
+
+  bk-softmax-with : Integer, Integer, Integer, Integer, Real -> [Device] Real
+  bk-softmax-with (sb) (lo) (cols) (i) (m) =
+    bk-exp-of (device-load-f32 sb i - m) / bk-exp-sum sb lo (lo + cols) m 0.0
+
+  bk-max : Integer, Integer, Integer, Real -> [Device] Real
+  bk-max (sb) (i) (stop) (acc) =
+    if i >= stop then acc else bk-max sb (i + 1) stop (real-max acc (device-load-f32 sb i))
+
+  bk-exp-sum : Integer, Integer, Integer, Real, Real -> [Device] Real
+  bk-exp-sum (sb) (i) (stop) (m) (acc) =
+    if i >= stop then acc else bk-exp-sum sb (i + 1) stop m (acc + bk-exp-of (device-load-f32 sb i - m))
+
+ The same softmax for long rows in three launches: every row's max into mb at
+ 2 r and its exponent sum at 2 r + 1, a 256-thread workgroup per row as
+ bk-row-mean, then one thread per element. A row of 4096 (SD1.5's
+ self-attention at 512 x 512) costs three passes, where bk-softmax rereads the
+ row twice for every element.
+
+  bk-row-max : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-row-max (sb) (mb) (cols) (rows) (gid) = act
+   t <- thread-idx-x
+   r <- block-idx-x
+   m <- bk-wg-reduce 1 t (bk-max-stride sb (r * cols + t) (r * cols + cols) (device-load-f32 sb (r * cols)))
+   (if t == 0 & r < rows then device-store-f32 mb (r * 2) m else 0)
+  end
+
+  bk-row-expsum : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-row-expsum (sb) (mb) (cols) (rows) (gid) = act
+   t <- thread-idx-x
+   r <- block-idx-x
+   m <- device-load-f32 mb (r * 2)
+   e <- bk-wg-reduce 0 t (bk-exp-stride sb (r * cols + t) (r * cols + cols) m 0.0)
+   (if t == 0 & r < rows then device-store-f32 mb (r * 2 + 1) e else 0)
+  end
+
+  bk-softmax-apply : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-softmax-apply (sb) (mb) (yb) (cols) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-exp-of (device-load-f32 sb gid - device-load-f32 mb (gid / cols * 2)) / device-load-f32 mb (gid / cols * 2 + 1)) else 0
+
+ e^v is 2^(v log2 e).
+
+  bk-exp-of : Real -> Real
+  bk-exp-of (v) = real-exp2-approx (v * 1.4426950408889634)
+
+ Causal softmax as kernel-softmax-causal, out of place: row r sees its first
+ r mod sq + 1 entries, and the rest are 0.
+
+  bk-softmax-causal : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-softmax-causal (sb) (yb) (cols) (sq) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-causal-at sb (gid / cols * cols) (bk-causal-seen (gid / cols - gid / cols / sq * sq + 1) cols) (gid - gid / cols * cols)) else 0
+
+  bk-causal-seen : Integer, Integer -> Integer
+  bk-causal-seen (seen) (cols) = if seen < cols then seen else cols
+
+  bk-causal-at : Integer, Integer, Integer, Integer -> [Device] Real
+  bk-causal-at (sb) (lo) (seen) (j) =
+    if j >= seen then 0.0 else bk-softmax-at sb lo seen (lo + j)
+
+Section: Attention
+
+ The three-step attention the SD1.5 UNet and CLIP-L run, as kernel-attn-scores
+ and kernel-attn-values: q, k and v are rows of heads x d, s and p are heads
+ x sq x sk, the output rows of heads x d.
+
+ The scores are a GEMM per head, s_h = q_h k_h^T, on bk-linear-4x4's tiles and
+ staging: ceil (sq / 64) x ceil (sk / 64) workgroups of 256 per head, heads
+ outermost; q_h's row i is word (i heads + h) d.
+
+  bk-attn-scores : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Integer, Integer -> [Device] Integer
+  bk-attn-scores (qb) (kb) (sb) (heads) (sq) (sk) (d) (scale) (n) (gid) = act
+   t <- thread-idx-x
+   bx <- block-idx-x
+   bk-attn-tile qb kb sb heads sq sk d scale (bx / (((sq + 63) / 64) * ((sk + 63) / 64))) (bx - bx / (((sq + 63) / 64) * ((sk + 63) / 64)) * (((sq + 63) / 64) * ((sk + 63) / 64))) ((sk + 63) / 64) t
+  end
+
+  bk-attn-tile : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-attn-tile (qb) (kb) (sb) (heads) (sq) (sk) (d) (scale) (h) (tile) (tn) (t) =
+    bk-attn-4x4 qb kb sb heads sq sk d scale h (tile / tn * 64) ((tile - tile / tn * tn) * 64) (t / 16) (t - t / 16 * 16) 0 16 (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0)
+
+  bk-attn-4x4 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate -> [Device] Integer
+  bk-attn-4x4 (qb) (kb) (sb) (heads) (sq) (sk) (d) (scale) (h) (r0) (c0) (ly) (lx) (k0) (k) (a00) (a01) (a02) (a03) (a10) (a11) (a12) (a13) (a20) (a21) (a22) (a23) (a30) (a31) (a32) (a33) =
+    if k >= 16 & k0 >= d then bk-attn-store16 sb (h * sq * sk) sq sk scale (r0 + ly) (c0 + lx) a00 a01 a02 a03 a10 a11 a12 a13 a20 a21 a22 a23 a30 a31 a32 a33
+    else if k >= 16 then act
+     s0 <- sync-threads
+     p0 <- shared-store-approx ((lx * 65 + ly) * 4) (bk-attn-q-at qb heads sq d h (r0 + ly) (k0 + lx))
+     p1 <- shared-store-approx ((lx * 65 + ly + 16) * 4) (bk-attn-q-at qb heads sq d h (r0 + ly + 16) (k0 + lx))
+     p2 <- shared-store-approx ((lx * 65 + ly + 32) * 4) (bk-attn-q-at qb heads sq d h (r0 + ly + 32) (k0 + lx))
+     p3 <- shared-store-approx ((lx * 65 + ly + 48) * 4) (bk-attn-q-at qb heads sq d h (r0 + ly + 48) (k0 + lx))
+     q0 <- shared-store-approx ((1040 + lx * 65 + ly) * 4) (bk-attn-k-at kb heads sk d h (c0 + ly) (k0 + lx))
+     q1 <- shared-store-approx ((1040 + lx * 65 + ly + 16) * 4) (bk-attn-k-at kb heads sk d h (c0 + ly + 16) (k0 + lx))
+     q2 <- shared-store-approx ((1040 + lx * 65 + ly + 32) * 4) (bk-attn-k-at kb heads sk d h (c0 + ly + 32) (k0 + lx))
+     q3 <- shared-store-approx ((1040 + lx * 65 + ly + 48) * 4) (bk-attn-k-at kb heads sk d h (c0 + ly + 48) (k0 + lx))
+     s1 <- sync-threads
+     bk-attn-4x4 qb kb sb heads sq sk d scale h r0 c0 ly lx (k0 + 16) 0 a00 a01 a02 a03 a10 a11 a12 a13 a20 a21 a22 a23 a30 a31 a32 a33
+    end
+    else act
+     x0 <- shared-load-approx ((k * 65 + ly) * 4)
+     x1 <- shared-load-approx ((k * 65 + ly + 16) * 4)
+     x2 <- shared-load-approx ((k * 65 + ly + 32) * 4)
+     x3 <- shared-load-approx ((k * 65 + ly + 48) * 4)
+     w0 <- shared-load-approx ((1040 + k * 65 + lx) * 4)
+     w1 <- shared-load-approx ((1040 + k * 65 + lx + 16) * 4)
+     w2 <- shared-load-approx ((1040 + k * 65 + lx + 32) * 4)
+     w3 <- shared-load-approx ((1040 + k * 65 + lx + 48) * 4)
+     bk-attn-4x4 qb kb sb heads sq sk d scale h r0 c0 ly lx k0 (k + 1) (a00 + x0 * w0) (a01 + x0 * w1) (a02 + x0 * w2) (a03 + x0 * w3) (a10 + x1 * w0) (a11 + x1 * w1) (a12 + x1 * w2) (a13 + x1 * w3) (a20 + x2 * w0) (a21 + x2 * w1) (a22 + x2 * w2) (a23 + x2 * w3) (a30 + x3 * w0) (a31 + x3 * w1) (a32 + x3 * w2) (a33 + x3 * w3)
+    end
+
+ A helper reads one buffer per kernel in the WGSL plug, so q and k each get one.
+
+  bk-attn-q-at : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Real approximate
+  bk-attn-q-at (qb) (heads) (rows) (d) (h) (r) (c) =
+    if r < rows then (if c < d then device-load-approx qb ((r * heads + h) * d + c) else real-approx-from-int 0) else real-approx-from-int 0
+
+  bk-attn-k-at : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Real approximate
+  bk-attn-k-at (kb) (heads) (rows) (d) (h) (r) (c) =
+    if r < rows then (if c < d then device-load-approx kb ((r * heads + h) * d + c) else real-approx-from-int 0) else real-approx-from-int 0
+
+  bk-attn-store16 : Integer, Integer, Integer, Integer, Real, Integer, Integer, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate -> [Device] Integer
+  bk-attn-store16 (sb) (base) (sq) (sk) (scale) (row) (col) (a00) (a01) (a02) (a03) (a10) (a11) (a12) (a13) (a20) (a21) (a22) (a23) (a30) (a31) (a32) (a33) = act
+   s00 <- bk-attn-out sb base sq sk scale row col a00
+   s01 <- bk-attn-out sb base sq sk scale row (col + 16) a01
+   s02 <- bk-attn-out sb base sq sk scale row (col + 32) a02
+   s03 <- bk-attn-out sb base sq sk scale row (col + 48) a03
+   s10 <- bk-attn-out sb base sq sk scale (row + 16) col a10
+   s11 <- bk-attn-out sb base sq sk scale (row + 16) (col + 16) a11
+   s12 <- bk-attn-out sb base sq sk scale (row + 16) (col + 32) a12
+   s13 <- bk-attn-out sb base sq sk scale (row + 16) (col + 48) a13
+   s20 <- bk-attn-out sb base sq sk scale (row + 32) col a20
+   s21 <- bk-attn-out sb base sq sk scale (row + 32) (col + 16) a21
+   s22 <- bk-attn-out sb base sq sk scale (row + 32) (col + 32) a22
+   s23 <- bk-attn-out sb base sq sk scale (row + 32) (col + 48) a23
+   s30 <- bk-attn-out sb base sq sk scale (row + 48) col a30
+   s31 <- bk-attn-out sb base sq sk scale (row + 48) (col + 16) a31
+   s32 <- bk-attn-out sb base sq sk scale (row + 48) (col + 32) a32
+   s33 <- bk-attn-out sb base sq sk scale (row + 48) (col + 48) a33
+   0
+  end
+
+  bk-attn-out : Integer, Integer, Integer, Integer, Real, Integer, Integer, Real approximate -> [Device] Integer
+  bk-attn-out (sb) (base) (sq) (sk) (scale) (row) (col) (v) =
+    if row < sq then (if col < sk then device-store-f32 sb (base + row * sk + col) (from-real-approx v * scale) else 0) else 0
+
+  bk-attn-values : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-attn-values (pb) (vb) (yb) (heads) (sq) (sk) (d) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-weighted pb vb (((gid - gid / (heads * d) * heads * d) / d * sq + gid / (heads * d)) * sk) (gid - gid / (heads * d) * heads * d) (heads * d) 0 sk 0.0) else 0
+
+  bk-weighted : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  bk-weighted (pb) (vb) (po) (vo) (vstride) (j) (sk) (acc) =
+    if j >= sk then acc else bk-weighted pb vb po vo vstride (j + 1) sk (acc + device-load-f32 pb (po + j) * device-load-f32 vb (vo + j * vstride))
+
+Section: Layout
+
+  bk-transpose : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-transpose (xb) (yb) (rows) (cols) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (device-load-f32 xb ((gid - gid / rows * rows) * cols + gid / rows)) else 0
+
+  bk-concat : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-concat (ab) (bb) (yb) (ca) (cb) (inner) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-concat-at ab bb ca cb inner (gid / inner) gid) else 0
+
+  bk-concat-at : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Real
+  bk-concat-at (ab) (bb) (ca) (cb) (inner) (plane) (i) =
+    let bt = plane / (ca + cb)
+    in let ch = plane - bt * (ca + cb)
+    in if ch < ca then device-load-f32 ab ((bt * ca + ch) * inner + i - plane * inner)
+    else device-load-f32 bb ((bt * cb + ch - ca) * inner + i - plane * inner)
+
+  bk-upsample : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-upsample (xb) (yb) (h) (w) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (device-load-f32 xb (bk-upsample-src h w (gid / (4 * h * w)) gid)) else 0
+
+  bk-upsample-src : Integer, Integer, Integer, Integer -> Integer
+  bk-upsample-src (h) (w) (plane) (i) =
+    let oy = (i - plane * 4 * h * w) / (2 * w)
+    in plane * h * w + (oy / 2) * w + (i - plane * 4 * h * w - oy * 2 * w) / 2
+
+Section: Timestep Embedding
+
+ The LDM sinusoidal embedding as kernel-timestep-embedding, in f32 as Forge
+ computes it: for half = dim / 2 and k < half, frequency
+ e^(-log-period k / half), the row [cos (t f), sin (t f)].
+
+  bk-timestep : Integer, Integer, Integer, Real, Integer, Integer -> [Device] Integer
+  bk-timestep (tb) (yb) (dim) (log-period) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (bk-timestep-at (device-load-f32 tb (gid / dim)) (dim / 2) log-period (gid - gid / dim * dim)) else 0
+
+  bk-timestep-at : Real, Integer, Real, Integer -> Real
+  bk-timestep-at (tv) (half) (log-period) (j) =
+    if j < half then real-cos (tv * bk-exp-of (0.0 - log-period * real-from-int j / real-from-int half))
+    else real-sin (tv * bk-exp-of (0.0 - log-period * real-from-int (j - half) / real-from-int half))
+
+Section: Linear
+
+ A 64 x 64 tile of y per 256-thread workgroup, 4 x 4 outputs a thread, rows
+ ly + 16 i and columns lx + 16 j; a 16-wide step of kk is staged k-major with a
+ row stride of 65, x at word 0 and w at word 1040, so the staging stores of a
+ warp (16 k columns, stride 65) fall in 16 distinct banks where a stride of 64
+ puts them in one. `half` 1 reads w as packed f16.
+
+  bk-linear : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-linear (xb) (wb) (bb) (yb) (mm) (nn) (kk) (gid) = act
+   t <- thread-idx-x
+   bx <- block-idx-x
+   bk-linear-4x4 xb wb bb yb mm nn kk 0 (bx / ((nn + 63) / 64) * 64) ((bx - bx / ((nn + 63) / 64) * ((nn + 63) / 64)) * 64) (t / 16) (t - t / 16 * 16) 0 16 (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0)
+  end
+
+  bk-linear-4x4 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate -> [Device] Integer
+  bk-linear-4x4 (xb) (wb) (bb) (yb) (mm) (nn) (kk) (half) (r0) (c0) (ly) (lx) (k0) (k) (a00) (a01) (a02) (a03) (a10) (a11) (a12) (a13) (a20) (a21) (a22) (a23) (a30) (a31) (a32) (a33) =
+    if k >= 16 & k0 >= kk then bk-linear-store16 yb bb mm nn (r0 + ly) (c0 + lx) a00 a01 a02 a03 a10 a11 a12 a13 a20 a21 a22 a23 a30 a31 a32 a33
+    else if k >= 16 then act
+     s0 <- sync-threads
+     p0 <- shared-store-approx ((lx * 65 + ly) * 4) (bk-linear-x-at xb mm kk (r0 + ly) (k0 + lx))
+     p1 <- shared-store-approx ((lx * 65 + ly + 16) * 4) (bk-linear-x-at xb mm kk (r0 + ly + 16) (k0 + lx))
+     p2 <- shared-store-approx ((lx * 65 + ly + 32) * 4) (bk-linear-x-at xb mm kk (r0 + ly + 32) (k0 + lx))
+     p3 <- shared-store-approx ((lx * 65 + ly + 48) * 4) (bk-linear-x-at xb mm kk (r0 + ly + 48) (k0 + lx))
+     q0 <- shared-store-approx ((1040 + lx * 65 + ly) * 4) (bk-linear-wany-at wb nn kk half (c0 + ly) (k0 + lx))
+     q1 <- shared-store-approx ((1040 + lx * 65 + ly + 16) * 4) (bk-linear-wany-at wb nn kk half (c0 + ly + 16) (k0 + lx))
+     q2 <- shared-store-approx ((1040 + lx * 65 + ly + 32) * 4) (bk-linear-wany-at wb nn kk half (c0 + ly + 32) (k0 + lx))
+     q3 <- shared-store-approx ((1040 + lx * 65 + ly + 48) * 4) (bk-linear-wany-at wb nn kk half (c0 + ly + 48) (k0 + lx))
+     s1 <- sync-threads
+     bk-linear-4x4 xb wb bb yb mm nn kk half r0 c0 ly lx (k0 + 16) 0 a00 a01 a02 a03 a10 a11 a12 a13 a20 a21 a22 a23 a30 a31 a32 a33
+    end
+    else act
+     x0 <- shared-load-approx ((k * 65 + ly) * 4)
+     x1 <- shared-load-approx ((k * 65 + ly + 16) * 4)
+     x2 <- shared-load-approx ((k * 65 + ly + 32) * 4)
+     x3 <- shared-load-approx ((k * 65 + ly + 48) * 4)
+     w0 <- shared-load-approx ((1040 + k * 65 + lx) * 4)
+     w1 <- shared-load-approx ((1040 + k * 65 + lx + 16) * 4)
+     w2 <- shared-load-approx ((1040 + k * 65 + lx + 32) * 4)
+     w3 <- shared-load-approx ((1040 + k * 65 + lx + 48) * 4)
+     bk-linear-4x4 xb wb bb yb mm nn kk half r0 c0 ly lx k0 (k + 1) (a00 + x0 * w0) (a01 + x0 * w1) (a02 + x0 * w2) (a03 + x0 * w3) (a10 + x1 * w0) (a11 + x1 * w1) (a12 + x1 * w2) (a13 + x1 * w3) (a20 + x2 * w0) (a21 + x2 * w1) (a22 + x2 * w2) (a23 + x2 * w3) (a30 + x3 * w0) (a31 + x3 * w1) (a32 + x3 * w2) (a33 + x3 * w3)
+    end
+
+  bk-linear-store16 : Integer, Integer, Integer, Integer, Integer, Integer, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate -> [Device] Integer
+  bk-linear-store16 (yb) (bb) (mm) (nn) (row) (col) (a00) (a01) (a02) (a03) (a10) (a11) (a12) (a13) (a20) (a21) (a22) (a23) (a30) (a31) (a32) (a33) = act
+   s00 <- bk-linear-out yb bb mm nn row col a00
+   s01 <- bk-linear-out yb bb mm nn row (col + 16) a01
+   s02 <- bk-linear-out yb bb mm nn row (col + 32) a02
+   s03 <- bk-linear-out yb bb mm nn row (col + 48) a03
+   s10 <- bk-linear-out yb bb mm nn (row + 16) col a10
+   s11 <- bk-linear-out yb bb mm nn (row + 16) (col + 16) a11
+   s12 <- bk-linear-out yb bb mm nn (row + 16) (col + 32) a12
+   s13 <- bk-linear-out yb bb mm nn (row + 16) (col + 48) a13
+   s20 <- bk-linear-out yb bb mm nn (row + 32) col a20
+   s21 <- bk-linear-out yb bb mm nn (row + 32) (col + 16) a21
+   s22 <- bk-linear-out yb bb mm nn (row + 32) (col + 32) a22
+   s23 <- bk-linear-out yb bb mm nn (row + 32) (col + 48) a23
+   s30 <- bk-linear-out yb bb mm nn (row + 48) col a30
+   s31 <- bk-linear-out yb bb mm nn (row + 48) (col + 16) a31
+   s32 <- bk-linear-out yb bb mm nn (row + 48) (col + 32) a32
+   s33 <- bk-linear-out yb bb mm nn (row + 48) (col + 48) a33
+   0
+  end
+
+  bk-linear-wany-at : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Real approximate
+  bk-linear-wany-at (wb) (rows) (cols) (half) (r) (c) =
+    if half == 1 then bk-linear-wh-at wb rows cols r c else bk-linear-w-at wb rows cols r c
+
+  bk-linear-x-at : Integer, Integer, Integer, Integer, Integer -> [Device] Real approximate
+  bk-linear-x-at (xb) (rows) (cols) (r) (c) =
+    if r < rows then (if c < cols then device-load-approx xb (r * cols + c) else real-approx-from-int 0) else real-approx-from-int 0
+
+  bk-linear-w-at : Integer, Integer, Integer, Integer, Integer -> [Device] Real approximate
+  bk-linear-w-at (wb) (rows) (cols) (r) (c) =
+    if r < rows then (if c < cols then device-load-approx wb (r * cols + c) else real-approx-from-int 0) else real-approx-from-int 0
+
+  bk-linear-out : Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Integer
+  bk-linear-out (yb) (bb) (mm) (nn) (row) (col) (v) =
+    if row < mm then (if col < nn then device-store-approx yb (row * nn + col) (v + device-load-approx bb col) else 0) else 0
+
+ bk-linear-h is bk-linear with w in packed f16 (SD and SDXL weights as a
+ checkpoint stores them); x, b and y stay f32.
+
+  bk-linear-h : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-linear-h (xb) (wb) (bb) (yb) (mm) (nn) (kk) (gid) = act
+   t <- thread-idx-x
+   bx <- block-idx-x
+   bk-linear-4x4 xb wb bb yb mm nn kk 1 (bx / ((nn + 63) / 64) * 64) ((bx - bx / ((nn + 63) / 64) * ((nn + 63) / 64)) * 64) (t / 16) (t - t / 16 * 16) 0 16 (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0)
+  end
+
+  bk-linear-wh-at : Integer, Integer, Integer, Integer, Integer -> [Device] Real approximate
+  bk-linear-wh-at (wb) (rows) (cols) (r) (c) =
+    if r < rows then (if c < cols then device-load-f16-approx wb (r * cols + c) else real-approx-from-int 0) else real-approx-from-int 0
+
+Section: Conv2d
+
+ y = conv2d x w + b as an implicit GEMM, kernel-conv2d-wmma's contract with a
+ cout bias: x is cin x h x wd, w is cout x (cin kh kw) in PyTorch order, y is
+ cout x (oh ow). M = cout, N = oh ow, K = cin kh kw; 64 x 64 tiles of y as
+ bk-linear, the weight tile at word 0 and the im2col tile, zero outside the
+ image and past K, at word 1040. bk-conv2d-h reads w as packed f16.
+
+  bk-conv2d-h : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-conv2d-h (xb) (wb) (bb) (yb) (cin) (h) (wd) (cout) (kh) (kw) (stride) (pad) (oh) (ow) (gid) = act
+   t <- thread-idx-x
+   bx <- block-idx-x
+   bk-conv-4x4 xb wb bb yb cin h wd cout kh kw stride pad 1 ow (oh * ow) (bx / ((oh * ow + 63) / 64) * 64) ((bx - bx / ((oh * ow + 63) / 64) * ((oh * ow + 63) / 64)) * 64) (t / 16) (t - t / 16 * 16) 0 16 (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0)
+  end
+
+  bk-conv2d : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-conv2d (xb) (wb) (bb) (yb) (cin) (h) (wd) (cout) (kh) (kw) (stride) (pad) (oh) (ow) (gid) = act
+   t <- thread-idx-x
+   bx <- block-idx-x
+   bk-conv-4x4 xb wb bb yb cin h wd cout kh kw stride pad 0 ow (oh * ow) (bx / ((oh * ow + 63) / 64) * 64) ((bx - bx / ((oh * ow + 63) / 64) * ((oh * ow + 63) / 64)) * 64) (t / 16) (t - t / 16 * 16) 0 16 (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0) (real-approx-from-int 0)
+  end
+
+  bk-conv-4x4 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate -> [Device] Integer
+  bk-conv-4x4 (xb) (wb) (bb) (yb) (cin) (h) (wd) (cout) (kh) (kw) (stride) (pad) (half) (ow) (npix) (m0) (n0) (ly) (lx) (k0) (k) (a00) (a01) (a02) (a03) (a10) (a11) (a12) (a13) (a20) (a21) (a22) (a23) (a30) (a31) (a32) (a33) =
+    if k >= 16 & k0 >= cin * kh * kw then bk-conv-store16 yb bb cout npix (m0 + ly) (n0 + lx) a00 a01 a02 a03 a10 a11 a12 a13 a20 a21 a22 a23 a30 a31 a32 a33
+    else if k >= 16 then act
+     s0 <- sync-threads
+     p0 <- shared-store-approx ((lx * 65 + ly) * 4) (bk-conv-w-at wb half cout (cin * kh * kw) (m0 + ly) (k0 + lx))
+     p1 <- shared-store-approx ((lx * 65 + ly + 16) * 4) (bk-conv-w-at wb half cout (cin * kh * kw) (m0 + ly + 16) (k0 + lx))
+     p2 <- shared-store-approx ((lx * 65 + ly + 32) * 4) (bk-conv-w-at wb half cout (cin * kh * kw) (m0 + ly + 32) (k0 + lx))
+     p3 <- shared-store-approx ((lx * 65 + ly + 48) * 4) (bk-conv-w-at wb half cout (cin * kh * kw) (m0 + ly + 48) (k0 + lx))
+     q0 <- shared-store-approx ((1040 + lx * 65 + ly) * 4) (bk-conv-x-at xb cin h wd kh kw stride pad ow npix (n0 + ly) (k0 + lx))
+     q1 <- shared-store-approx ((1040 + lx * 65 + ly + 16) * 4) (bk-conv-x-at xb cin h wd kh kw stride pad ow npix (n0 + ly + 16) (k0 + lx))
+     q2 <- shared-store-approx ((1040 + lx * 65 + ly + 32) * 4) (bk-conv-x-at xb cin h wd kh kw stride pad ow npix (n0 + ly + 32) (k0 + lx))
+     q3 <- shared-store-approx ((1040 + lx * 65 + ly + 48) * 4) (bk-conv-x-at xb cin h wd kh kw stride pad ow npix (n0 + ly + 48) (k0 + lx))
+     s1 <- sync-threads
+     bk-conv-4x4 xb wb bb yb cin h wd cout kh kw stride pad half ow npix m0 n0 ly lx (k0 + 16) 0 a00 a01 a02 a03 a10 a11 a12 a13 a20 a21 a22 a23 a30 a31 a32 a33
+    end
+    else act
+     x0 <- shared-load-approx ((k * 65 + ly) * 4)
+     x1 <- shared-load-approx ((k * 65 + ly + 16) * 4)
+     x2 <- shared-load-approx ((k * 65 + ly + 32) * 4)
+     x3 <- shared-load-approx ((k * 65 + ly + 48) * 4)
+     w0 <- shared-load-approx ((1040 + k * 65 + lx) * 4)
+     w1 <- shared-load-approx ((1040 + k * 65 + lx + 16) * 4)
+     w2 <- shared-load-approx ((1040 + k * 65 + lx + 32) * 4)
+     w3 <- shared-load-approx ((1040 + k * 65 + lx + 48) * 4)
+     bk-conv-4x4 xb wb bb yb cin h wd cout kh kw stride pad half ow npix m0 n0 ly lx k0 (k + 1) (a00 + x0 * w0) (a01 + x0 * w1) (a02 + x0 * w2) (a03 + x0 * w3) (a10 + x1 * w0) (a11 + x1 * w1) (a12 + x1 * w2) (a13 + x1 * w3) (a20 + x2 * w0) (a21 + x2 * w1) (a22 + x2 * w2) (a23 + x2 * w3) (a30 + x3 * w0) (a31 + x3 * w1) (a32 + x3 * w2) (a33 + x3 * w3)
+    end
+
+  bk-conv-store16 : Integer, Integer, Integer, Integer, Integer, Integer, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate, Real approximate -> [Device] Integer
+  bk-conv-store16 (yb) (bb) (cout) (npix) (m) (n) (a00) (a01) (a02) (a03) (a10) (a11) (a12) (a13) (a20) (a21) (a22) (a23) (a30) (a31) (a32) (a33) = act
+   s00 <- bk-conv-out yb bb cout npix m n a00
+   s01 <- bk-conv-out yb bb cout npix m (n + 16) a01
+   s02 <- bk-conv-out yb bb cout npix m (n + 32) a02
+   s03 <- bk-conv-out yb bb cout npix m (n + 48) a03
+   s10 <- bk-conv-out yb bb cout npix (m + 16) n a10
+   s11 <- bk-conv-out yb bb cout npix (m + 16) (n + 16) a11
+   s12 <- bk-conv-out yb bb cout npix (m + 16) (n + 32) a12
+   s13 <- bk-conv-out yb bb cout npix (m + 16) (n + 48) a13
+   s20 <- bk-conv-out yb bb cout npix (m + 32) n a20
+   s21 <- bk-conv-out yb bb cout npix (m + 32) (n + 16) a21
+   s22 <- bk-conv-out yb bb cout npix (m + 32) (n + 32) a22
+   s23 <- bk-conv-out yb bb cout npix (m + 32) (n + 48) a23
+   s30 <- bk-conv-out yb bb cout npix (m + 48) n a30
+   s31 <- bk-conv-out yb bb cout npix (m + 48) (n + 16) a31
+   s32 <- bk-conv-out yb bb cout npix (m + 48) (n + 32) a32
+   s33 <- bk-conv-out yb bb cout npix (m + 48) (n + 48) a33
+   0
+  end
+
+  bk-conv-w-at : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Real approximate
+  bk-conv-w-at (wb) (half) (cout) (kk) (m) (kx) =
+    if half == 1 then bk-linear-wh-at wb cout kk m kx else bk-linear-w-at wb cout kk m kx
+
+  bk-conv-x-at : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Real approximate
+  bk-conv-x-at (xb) (cin) (h) (wd) (kh) (kw) (stride) (pad) (ow) (npix) (n) (kx) =
+    if n >= npix then real-approx-from-int 0
+    else if kx >= cin * kh * kw then real-approx-from-int 0
+    else let rest = kx - kx / (kh * kw) * (kh * kw)
+    in bk-conv-x-pix xb h wd (kx / (kh * kw)) ((n / ow) * stride - pad + rest / kw) ((n - n / ow * ow) * stride - pad + rest - rest / kw * kw)
+
+  bk-conv-x-pix : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Real approximate
+  bk-conv-x-pix (xb) (h) (wd) (ci) (iy) (ix) =
+    if iy < 0 then real-approx-from-int 0
+    else if iy >= h then real-approx-from-int 0
+    else if ix < 0 then real-approx-from-int 0
+    else if ix >= wd then real-approx-from-int 0
+    else device-load-approx xb ((ci * h + iy) * wd + ix)
+
+  bk-conv-out : Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Integer
+  bk-conv-out (yb) (bb) (cout) (npix) (m) (n) (v) =
+    if m < cout then (if n < npix then device-store-approx yb (m * npix + n) (v + device-load-approx bb m) else 0) else 0
+
+Section: Element-wise
+
+  bk-add-channel : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-add-channel (xb) (cb) (yb) (hw) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (device-load-f32 xb gid + device-load-f32 cb (gid / hw)) else 0
+
+  bk-scale : Integer, Integer, Real, Integer, Integer -> [Device] Integer
+  bk-scale (xb) (yb) (s) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (device-load-f32 xb gid * s) else 0
+
+ The sampler's a x + b y + c z. WebGPU refuses one buffer bound twice as
+ writable storage, so out is never x, y or z here.
+
+  bk-lincomb3 : Integer, Integer, Integer, Integer, Real, Real, Real, Integer, Integer -> [Device] Integer
+  bk-lincomb3 (xb) (yb) (zb) (ob) (a) (b) (c) (n) (gid) =
+    if gid < n then device-store-f32 ob gid (a * device-load-f32 xb gid + b * device-load-f32 yb gid + c * device-load-f32 zb gid) else 0
+
+  bk-add : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  bk-add (ab) (bb) (yb) (n) (gid) =
+    if gid < n then device-store-f32 yb gid (device-load-f32 ab gid + device-load-f32 bb gid) else 0

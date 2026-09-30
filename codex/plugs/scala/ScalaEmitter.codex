@@ -233,7 +233,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-sc-name n ty arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-sc-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-sc-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-sc-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-sc-expr-at c arities (depth + 1) & " then " & emit-sc-expr-at t arities (depth + 1) & " else " & emit-sc-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "{ val " & sc-sanitize name & " = " & emit-sc-expr-at val arities (depth + 1) & "; " & emit-sc-expr-at body arities (depth + 1) & " }"
@@ -263,9 +263,12 @@ Section: Expression Emission
    else if is-sc-builtin-name n then sc-sanitize n
    else sc-sanitize n
 
-  emit-sc-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-sc-binary (op) (l) (r) (arities) =
+  emit-sc-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-sc-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> sc-int-arith "+" "addExact" l r ty arities
+    is IrSubInt -> sc-int-arith "-" "subtractExact" l r ty arities
+    is IrMulInt -> sc-int-arith "*" "multiplyExact" l r ty arities
     is IrAppendText -> "(" & emit-sc-expr l arities & " + " & emit-sc-expr r arities & ")"
     is IrAppendList -> "(" & emit-sc-expr l arities & " ++ " & emit-sc-expr r arities & ")"
     is IrConsList -> "(" & emit-sc-expr l arities & " :: " & emit-sc-expr r arities & ")"
@@ -279,6 +282,17 @@ Section: Expression Emission
     is IrDivVec -> emit-sc-expr l arities & ".asInstanceOf[List[Double]].zip(" & emit-sc-expr r arities & ".asInstanceOf[List[Double]]).map { case (a, b) => a / b }"
     is IrPowInt -> "_cx_ipow(" & emit-sc-expr l arities & ".asInstanceOf[Long], " & emit-sc-expr r arities & ".asInstanceOf[Long])"
     is otherwise -> "(" & emit-sc-expr l arities & " " & sc-bin-op-symbol op & " " & emit-sc-expr r arities & ")"
+
+ A Scala Long wraps, so the wrapping band is the bare operator;
+ `java.lang.Math.addExact` and its two siblings throw ArithmeticException on
+ signed overflow.
+
+  sc-int-arith : Text, Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  sc-int-arith (sym) (exact) (l) (r) (ty) (arities) =
+   let lhs = emit-sc-expr l arities
+   in let rhs = emit-sc-expr r arities
+   in if int-ty-wraps ty then "(" & lhs & " " & sym & " " & rhs & ")"
+   else "java.lang.Math." & exact & "(" & lhs & ".asInstanceOf[Long], " & rhs & ".asInstanceOf[Long])"
 
   sc-bin-op-symbol : IRBinaryOp -> Text
   sc-bin-op-symbol (op) =

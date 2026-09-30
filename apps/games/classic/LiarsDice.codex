@@ -1,16 +1,35 @@
 Chapter: LiarsDice
   cites Games chapter Rng
 
- Liar's Dice: 2-4 players, each starts with 5 dice kept hidden.
- A bid is a quantity and face value. Each bid must raise the quantity
- or raise the face value at the same quantity. A player may challenge
- the previous bid. On challenge all dice are revealed: if the total
- count of the bid face is at least the bid quantity, the bidder wins
- (challenger loses a die); otherwise the bidder loses a die.
- A player eliminated when they have 0 dice. Last player remaining wins.
- Bid encoded as quantity * 10 + face (face 1-6).
+ Liar's Dice, 2 to 4 players. A bid is encoded as quantity * 10 + face.
 
  We say:
+
+Section: The Rules
+
+ The rules of the common hand game as Wikipedia's "Liar's dice" sets them
+ out, in the variant this engine plays: no wild ones (the article gives wild
+ ones as a common option), and a raise as below.
+
+ Rule 1. Each player starts with five dice, rolled under a cup and seen only
+ by their owner. Players act in turn around the table, skipping players who
+ have no dice.
+
+ Rule 2. The first player of a round bids a quantity and a face: that at
+ least that many dice on the table show that face. Each later player either
+ raises or challenges the standing bid. A raise is a higher quantity of any
+ face, or the same quantity of a higher face. A bid names a face from 1 to
+ 6 and a quantity from 1 to the dice on the table; the article sets no upper
+ bound, and a bid above the dice in play cannot be true, so this engine
+ refuses it.
+
+ Rule 3. A challenge reveals every die. If at least the bid quantity show
+ the bid face, the challenger loses a die; otherwise the bidder does.
+ Everyone rerolls, and "the loser of the last round starts the bidding on
+ the next round"; a loser left with no dice is out, and the next player
+ still in starts instead.
+
+ Rule 4. The last player with dice wins.
 
 Section: Types
 
@@ -172,7 +191,46 @@ Section: Next Player
     else if list-at (s.alive) p == 1 then p
     else ld-find-alive s (rng-mod (p + 1) (s.num-players)) (tries + 1)
 
+Section: Legal Moves
+
+ Rule 2's legal bid.
+
+  ld-legal-bid : LDState, Integer, Integer -> Boolean
+  ld-legal-bid (s) (qty) (face) =
+    if s.alive-count <= 1 then False
+    else if face < 1 | face > 6 | qty < 1 | qty > ld-total-dice s then False
+    else if s.current-bid == 0 then True
+    else if qty > ld-bid-qty (s.current-bid) then True
+    else qty == ld-bid-qty (s.current-bid) & face > ld-bid-face (s.current-bid)
+
+ Rule 3: the loser opens the next round, or the next player still in.
+
+  ld-round-opener : LDState, Integer -> Integer
+  ld-round-opener (s) (loser) = if list-at (s.alive) loser == 1 then loser else ld-next-alive s loser
+
+ Rule 3's challenge by player p of the standing bid.
+
+  ld-resolve : LDState, Integer -> LDState
+  ld-resolve (s) (p) =
+    let actual = ld-count-face s (ld-bid-face (s.current-bid))
+    in let loser = if actual >= ld-bid-qty (s.current-bid) then p else s.last-bidder
+    in let s3 = ld-roll-all (ld-lose-die s loser)
+    in LDState {
+         dice-counts  = s3.dice-counts,
+         dice-pools   = s3.dice-pools,
+         num-players  = s3.num-players,
+         current-bid  = 0,
+         last-bidder  = s3.last-bidder,
+         current-turn = ld-round-opener s3 loser,
+         alive        = s3.alive,
+         alive-count  = s3.alive-count,
+         rng          = s3.rng
+       }
+
 Section: Turn
+
+ The computer's turn: open or raise with ld-ai-bid, or challenge when it
+ doubts the bid or its raise would not be legal.
 
   ld-do-turn : LDState -> LDState
   ld-do-turn (s) =
@@ -191,40 +249,7 @@ Section: Turn
                rng          = s.rng
              }
       in s2
-    else if ld-should-challenge s p then
-      let cur-qty = ld-bid-qty (s.current-bid)
-      in let cur-face = ld-bid-face (s.current-bid)
-      in let actual = ld-count-face s cur-face
-      in if actual >= cur-qty then
-        let s2 = ld-lose-die s p
-        in let s3 = ld-roll-all s2
-        in let next = ld-next-alive s3 p
-        in LDState {
-               dice-counts  = s3.dice-counts,
-               dice-pools   = s3.dice-pools,
-               num-players  = s3.num-players,
-               current-bid  = 0,
-               last-bidder  = s3.last-bidder,
-               current-turn = next,
-               alive        = s3.alive,
-               alive-count  = s3.alive-count,
-               rng          = s3.rng
-             }
-      else
-        let s2 = ld-lose-die s (s.last-bidder)
-        in let s3 = ld-roll-all s2
-        in let next = ld-next-alive s3 (s.last-bidder)
-        in LDState {
-               dice-counts  = s3.dice-counts,
-               dice-pools   = s3.dice-pools,
-               num-players  = s3.num-players,
-               current-bid  = 0,
-               last-bidder  = s3.last-bidder,
-               current-turn = next,
-               alive        = s3.alive,
-               alive-count  = s3.alive-count,
-               rng          = s3.rng
-             }
+    else if ld-should-challenge s p | ld-legal-bid s (ld-bid-qty (ld-ai-bid s p)) (ld-bid-face (ld-ai-bid s p)) == False then ld-resolve s p
     else
       let bid = ld-ai-bid s p
       in LDState {

@@ -77,7 +77,6 @@ $outputBytes = [System.IO.File]::ReadAllBytes($outFile)
 # A guest FAULT is not an emission. Same arm as the riscv sibling, and the
 # reasoning is there: the plug prints a register dump beginning `!EXC=` and
 # exits cleanly, so without this a crash is written to $Out and reported OK.
-# Found rather than anchored: the dump may carry codex-vm's leading 0x01 marker.
 $leadAscii = [System.Text.Encoding]::ASCII.GetString($outputBytes, 0, [Math]::Min(8, $outputBytes.Length))
 if ($leadAscii.Contains('!EXC')) {
     $dump = [System.Text.Encoding]::ASCII.GetString($outputBytes)

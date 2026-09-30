@@ -1,6 +1,7 @@
 Chapter: SafeTensors
   cites AI chapter Tensor
   cites Foreword chapter Maybe
+  cites Foreword chapter CCE
   cites Encode chapter Json
 
  Format:
@@ -23,7 +24,17 @@ Section: Constants
   st-dtype-bf16 : Integer = 2
   st-dtype-i32 : Integer = 3
   st-dtype-i8 : Integer = 4
+  st-dtype-f8-e4m3 : Integer = 5
+  st-dtype-f8-e5m2 : Integer = 6
   st-dtype-unknown : Integer = 99
+
+ An fp8 NaN or infinity has no fixed-point value, so it decodes to a sentinel
+ outside every finite fp8 value times 1000 (448,000 and 57,344,000 are the
+ largest): NaN is the smallest 64-bit integer, infinity the largest or its
+ negation.
+
+  st-f8-nan : Integer = 0 - 9223372036854775807 - 1
+  st-f8-inf : Integer = 9223372036854775807
 
 Section: Types
   SafeTensorFile = record {
@@ -77,22 +88,47 @@ Section: Byte Reading
 Section: Header Parsing
   st-parse-file : List Integer -> SafeTensorFile
   st-parse-file (data) =
-    if list-length data < 8 then SafeTensorFile { st-header-len = 0, st-data-offset = 0, st-tensors = [], st-tensor-count = 0, st-valid = False }
+    if list-length data < 8 then
+      SafeTensorFile {
+        st-header-len = 0,
+        st-data-offset = 0,
+        st-tensors = [],
+        st-tensor-count = 0,
+        st-valid = False
+      }
     else let hlen = st-read-u64 data 0
     in let data-off = 8 + hlen
     in let header-text = st-extract-text data 8 hlen ""
     in let parsed = json-parse header-text
     in when parsed
       is Just (jv) -> st-build-file hlen data-off jv
-      is None -> SafeTensorFile { st-header-len = hlen, st-data-offset = data-off, st-tensors = [], st-tensor-count = 0, st-valid = False }
+      is None -> SafeTensorFile {
+        st-header-len = hlen,
+        st-data-offset = data-off,
+        st-tensors = [],
+        st-tensor-count = 0,
+        st-valid = False
+      }
 
   st-build-file : Integer, Integer, JsonValue -> SafeTensorFile
   st-build-file (hlen) (data-off) (jv) =
     when jv
       is JsonObject (pairs) ->
         let tensors = st-parse-tensor-pairs pairs 0 (list-length pairs) []
-        in SafeTensorFile { st-header-len = hlen, st-data-offset = data-off, st-tensors = tensors, st-tensor-count = list-length tensors, st-valid = True }
-      is otherwise -> SafeTensorFile { st-header-len = hlen, st-data-offset = data-off, st-tensors = [], st-tensor-count = 0, st-valid = False }
+        in SafeTensorFile {
+          st-header-len = hlen,
+          st-data-offset = data-off,
+          st-tensors = tensors,
+          st-tensor-count = list-length tensors,
+          st-valid = True
+        }
+      is otherwise -> SafeTensorFile {
+        st-header-len = hlen,
+        st-data-offset = data-off,
+        st-tensors = [],
+        st-tensor-count = 0,
+        st-valid = False
+      }
 
   st-parse-tensor-pairs : List JsonPair, Integer, Integer, List StTensorMeta -> List StTensorMeta
   st-parse-tensor-pairs (pairs) (i) (len) (acc) =
@@ -107,7 +143,54 @@ Section: Header Parsing
     let dtype = st-parse-dtype (json-get-str v "dtype" "F32")
     in let shape = st-parse-shape (json-get v "shape")
     in let offsets = st-parse-offsets (json-get v "data_offsets")
-    in StTensorMeta { stm-name = name, stm-dtype = dtype, stm-shape = shape.st-dims, stm-ndim = shape.st-ndim, stm-offset-start = offsets.st-off-start, stm-offset-end = offsets.st-off-end }
+    in StTensorMeta {
+      stm-name = name,
+      stm-dtype = dtype,
+      stm-shape = shape.st-dims,
+      stm-ndim = shape.st-ndim,
+      stm-offset-start = offsets.st-off-start,
+      stm-offset-end = offsets.st-off-end
+    }
+
+Section: Header In Memory
+
+ The header of a checkpoint read from a file sits in guest memory at addr, its
+ hlen JSON bytes and no length prefix. The JSON is UTF-8 and every tensor name
+ is ASCII, therefore a byte past 127 can only sit inside a __metadata__ string;
+ such a byte is dropped, as is every ASCII byte CCE cannot carry.
+
+  st-parse-header-at : Integer, Integer -> SafeTensorFile
+  st-parse-header-at (addr) (hlen) =
+    let rev = st-ascii-to-cce cce-to-unicode-table 0 (st-minus-ones 0 (__list-with-capacity 128))
+    in let text = raw-bytes-to-text (st-header-codes addr 0 hlen rev (__list-with-capacity (hlen + 1)))
+    in let parsed = json-parse text
+    in when parsed
+      is Just (jv) -> st-build-file hlen (8 + hlen) jv
+      is None -> SafeTensorFile {
+        st-header-len = hlen,
+        st-data-offset = 8 + hlen,
+        st-tensors = [],
+        st-tensor-count = 0,
+        st-valid = False
+      }
+
+  st-minus-ones : Integer, List Integer -> List Integer
+  st-minus-ones (i) (acc) = if i >= 128 then acc else st-minus-ones (i + 1) (list-push acc (0 - 1))
+
+  st-ascii-to-cce : List Integer, Integer, List Integer -> List Integer
+  st-ascii-to-cce (tbl) (i) (rev) =
+    if i >= 128 then rev
+    else let u = list-at tbl i
+    in let r = if u >= 0 & u < 128 then list-set-at rev u i else rev
+    in st-ascii-to-cce tbl (i + 1) r
+
+  st-header-codes : Integer, Integer, Integer, List Integer, List Integer -> List Integer
+  st-header-codes (addr) (i) (n) (rev) (acc) =
+    if i >= n then acc
+    else let b = peek-byte addr i
+    in let c = if b < 128 then list-at rev b else 0 - 1
+    in if c < 0 then st-header-codes addr (i + 1) n rev acc
+    else st-header-codes addr (i + 1) n rev (list-push acc c)
 
 Section: Dtype Parsing
   st-parse-dtype : Text -> Integer
@@ -117,6 +200,8 @@ Section: Dtype Parsing
     else if s == "BF16" then st-dtype-bf16
     else if s == "I32" then st-dtype-i32
     else if s == "I8" then st-dtype-i8
+    else if s == "F8_E4M3" then st-dtype-f8-e4m3
+    else if s == "F8_E5M2" then st-dtype-f8-e5m2
     else st-dtype-unknown
 
 Section: Shape Parsing
@@ -127,7 +212,10 @@ Section: Shape Parsing
     when mv
       is Just (jv) ->
         when jv
-          is JsonArray (items) -> StShape { st-dims = st-extract-ints items 0 (list-length items) [], st-ndim = list-length items }
+          is JsonArray (items) -> StShape {
+            st-dims = st-extract-ints items 0 (list-length items) [],
+            st-ndim = list-length items
+          }
           is otherwise -> StShape { st-dims = [], st-ndim = 0 }
       is None -> StShape { st-dims = [], st-ndim = 0 }
 
@@ -278,12 +366,58 @@ Section: Tensor Loading (BF16)
     in let shifted = if e >= 0 then val * st-pow2 e else val / st-pow2 (-e)
     in if sign == 1 then -shifted else shifted
 
+Section: Tensor Loading (FP8)
+
+ E4M3 (the OCP "fn" form): sign, 4 exponent bits biased 7, 3 mantissa bits, no
+ infinity, and S.1111.111 is NaN, so the largest value is 448. E5M2: sign, 5
+ exponent bits biased 15, 2 mantissa bits, IEEE infinity and NaN at exponent
+ 31, largest 57,344. A zero exponent is subnormal in both. Values are times
+ 1000, truncated toward zero, as the other loaders answer.
+
+  st-f8e4m3-to-fixed : Integer -> Integer
+  st-f8e4m3-to-fixed (b) =
+    let sign = bit-and (bit-shru b 7) 1
+    in let exp = bit-and (bit-shru b 3) 15
+    in let mant = bit-and b 7
+    in if exp == 15 & mant == 7 then st-f8-nan
+    else let mag = if exp == 0 then mant * 1000 / 512 else (8 + mant) * 1000 * st-pow2 exp / 1024
+    in if sign == 1 then 0 - mag else mag
+
+  st-f8e5m2-to-fixed : Integer -> Integer
+  st-f8e5m2-to-fixed (b) =
+    let sign = bit-and (bit-shru b 7) 1
+    in let exp = bit-and (bit-shru b 2) 31
+    in let mant = bit-and b 3
+    in if exp == 31 then
+      (if mant /= 0 then st-f8-nan else if sign == 1 then 0 - st-f8-inf else st-f8-inf)
+    else let mag = if exp == 0 then
+      mant * 1000 / 65536
+    else (4 + mant) * 1000 * st-pow2 exp / 131072
+    in if sign == 1 then 0 - mag else mag
+
+  st-load-f8 : List Integer, SafeTensorFile, StTensorMeta -> Tensor
+  st-load-f8 (data) (file) (meta) =
+    let abs-start = file.st-data-offset + meta.stm-offset-start
+    in let elements = st-element-count meta
+    in if st-can-read data abs-start elements 1 == False then tensor-new 0 0
+    else let values = st-read-f8-loop data abs-start elements (meta.stm-dtype == st-dtype-f8-e4m3) 0 []
+    in tensor-from (st-rows meta) (st-cols meta) values
+
+  st-read-f8-loop : List Integer, Integer, Integer, Boolean, Integer, List Integer -> List Integer
+  st-read-f8-loop (data) (off) (count) (e4m3) (i) (acc) =
+    if i >= count then acc
+    else let b = list-at data (off + i)
+    in let val = if e4m3 then st-f8e4m3-to-fixed b else st-f8e5m2-to-fixed b
+    in st-read-f8-loop data off count e4m3 (i + 1) (list-push acc val)
+
 Section: Auto-Load (dispatch on dtype)
   st-load-tensor : List Integer, SafeTensorFile, StTensorMeta -> Tensor
   st-load-tensor (data) (file) (meta) =
     if meta.stm-dtype == st-dtype-f32 then st-load-f32 data file meta
     else if meta.stm-dtype == st-dtype-f16 then st-load-f16 data file meta
     else if meta.stm-dtype == st-dtype-bf16 then st-load-bf16 data file meta
+    else if meta.stm-dtype == st-dtype-f8-e4m3 then st-load-f8 data file meta
+    else if meta.stm-dtype == st-dtype-f8-e5m2 then st-load-f8 data file meta
     else tensor-new 0 0
 
   st-load-by-name : List Integer, SafeTensorFile, Text -> Tensor
@@ -332,6 +466,8 @@ Section: Queries
     else if d == st-dtype-bf16 then "BF16"
     else if d == st-dtype-i32 then "I32"
     else if d == st-dtype-i8 then "I8"
+    else if d == st-dtype-f8-e4m3 then "F8_E4M3"
+    else if d == st-dtype-f8-e5m2 then "F8_E5M2"
     else "unknown"
 
   st-format-shape : List Integer, Integer, Integer, Text -> Text

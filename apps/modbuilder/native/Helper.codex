@@ -1,0 +1,341 @@
+Chapter: ModBuilder Native Helper
+  cites ModBuilder chapter WindowsHost
+  cites ModBuilder chapter Deploy
+  cites ModBuilder chapter Cleanup
+
+  mb-hex : Integer -> Text
+  mb-hex (n) = substring "0123456789abcdef" (int-mod n 16) 1
+
+  mb-hex2 : Integer -> Text
+  mb-hex2 (n) = mb-hex (n / 16) & mb-hex n
+
+  mb-hex4 : Integer -> Text
+  mb-hex4 (n) = mb-hex2 (n / 256) & mb-hex2 n
+
+  mb-join : List Text, Integer, Integer -> Text
+  mb-join (xs) (lo) (hi) =
+   if hi <= lo then ""
+   else if hi == lo + 1 then list-at xs lo
+   else let mid = lo + (hi - lo) / 2 in mb-join xs lo mid & mb-join xs mid hi
+
+  mb-json-char : Integer -> Text
+  mb-json-char (u) =
+   if u == 34 then "\\\""
+   else if u == 92 then "\\\\"
+   else if u < 32 | u > 126 then
+    if u < 65536 then "\\u" & mb-hex4 u
+    else let v = u - 65536 in "\\u" & mb-hex4 (55296 + v / 1024) & "\\u" & mb-hex4 (56320 + int-mod v 1024)
+   else char-to-text (code-to-char (from-unicode u))
+
+  mb-json-loop : Text, Integer, List Text -> List Text
+  mb-json-loop (s) (i) (acc) =
+   if i >= text-length s then acc
+   else mb-json-loop s (i + cce-decode-length (char-code-at s i)) (list-push acc (mb-json-char (to-unicode (cce-decode-at s i))))
+
+  mb-json : Text -> Text
+  mb-json (s) = let xs = mb-json-loop s 0 [] in "\"" & mb-join xs 0 (list-length xs) & "\""
+
+  mb-unescape-loop : Text, Integer, List Integer -> List Integer
+  mb-unescape-loop (s) (i) (acc) =
+   if i >= text-length s then acc
+   else let skip = i + 1 < text-length s & substring s i 2 == "\\\\"
+   in mb-unescape-loop s (i + (if skip then 2 else 1)) (list-push acc (char-code-at s i))
+
+  mb-unescape : Text -> Text
+  mb-unescape (s) = raw-bytes-to-text (mb-unescape-loop s 0 [])
+
+  mb-game-valid : MbHost, Text -> Boolean
+  mb-game-valid (h) (root) =
+   text-length root > 2 & text-length root < 2048
+   & mb-exists h (root & "\\valheim.exe")
+   & mb-exists h (root & "\\valheim_Data\\Managed\\assembly_valheim.dll")
+   & mb-exists h (root & "\\MonoBleedingEdge\\EmbedRuntime\\mono-2.0-bdwgc.dll")
+
+  mb-steam : MbHost -> Text
+  mb-steam (h) =
+   let data = mb-alloc 8192
+   in let size = mb-alloc 8
+   in let init = poke-32 size 0 8192
+   in let result = mb-call (h.registry) -2147483647 (mb-wide "Software\\Valve\\Steam") (mb-wide "SteamPath") 2 0 data size 0
+   in if result == 0 then mb-from-wide data 4096
+   else let standard = mb-env h "ProgramFiles(x86)"
+   in if standard == "" then "" else standard & "\\Steam"
+
+  mb-library-game : MbHost, Text -> Text
+  mb-library-game (h) (root) =
+   let game = root & "\\steamapps\\common\\Valheim"
+   in if mb-game-valid h game then game else ""
+
+  mb-find-library : MbHost, List Text, Integer -> Text
+  mb-find-library (h) (parts) (i) =
+   if i >= list-length parts | i > 64 then ""
+   else let s = list-at parts i
+   in let first = text-index-of s "\""
+   in let rest = if first >= 0 then substring s (first + 1) (text-length s - first - 1) else ""
+   in let last = text-index-of rest "\""
+   in let root = if last > 0 & last < 2048 then mb-unescape (substring rest 0 last) else ""
+   in let game = if root == "" then "" else mb-library-game h root
+   in if game /= "" then game else mb-find-library h parts (i + 1)
+
+  mb-discover : MbHost, Boolean -> Text
+  mb-discover (h) (testing) =
+   let fixture = if testing then mb-env h "MODBUILDER_TEST_STEAM" else ""
+   in let steam = if fixture /= "" then fixture else mb-steam h
+   in if steam == "" then ""
+   else let direct = mb-library-game h steam
+   in if direct /= "" then direct
+   else let libraries = mb-read h (steam & "\\steamapps\\libraryfolders.vdf")
+   in mb-find-library h (text-split libraries "\"path\"") 1
+
+  mb-profile : Text -> Text
+  mb-profile (game) =
+   "{\"version\":1,\"id\":\"valheim-native\",\"kind\":\"unity\",\"profile\":\"windows-x64-mono-6000.0.75f1\",\"gamePath\":" & mb-json game
+   & ",\"testSavePath\":\"\",\"installPath\":\"\",\"groupLimit\":4,\"workbenchLinks\":true}"
+
+  mb-inventory : Text -> Text
+  mb-inventory (game) =
+   "{\"found\":" & (if game == "" then "false" else "true") & ",\"gamePath\":" & mb-json game
+   & ",\"versionChecked\":false,\"profile\":" & mb-profile game & "}"
+
+  mb-token-loop : Integer, Integer, List Text -> List Text
+  mb-token-loop (p) (i) (acc) = if i >= 32 then acc else mb-token-loop p (i + 1) (list-push acc (mb-hex2 (peek-byte p i)))
+
+  mb-token : MbHost -> Text
+  mb-token (h) =
+   let p = mb-alloc 32
+   in let result = mb-call (h.random) 0 p 32 2 0 0 0 0
+   in if result /= 0 then fail "Windows random generator refused"
+   else let xs = mb-token-loop p 0 [] in mb-join xs 0 (list-length xs)
+
+  mb-owner : Text = "Cobblestone ModBuilder native helper v1\n"
+
+  mb-settings : MbHost -> Text
+  mb-settings (h) = let local = mb-env h "LOCALAPPDATA" in if local == "" then "" else local & "\\Cobblestone\\ModBuilder"
+
+  mb-own-settings : MbHost, Text, Text -> Boolean
+  mb-own-settings (h) (root) (inventory) =
+   if root == "" then False
+   else let present = mb-exists h root
+   in if present & mb-read h (root & "\\owner.txt") /= mb-owner then False
+   else let parent = mb-call (h.mkdir) (mb-wide (mb-env h "LOCALAPPDATA" & "\\Cobblestone")) 0 0 0 0 0 0 0
+   in let made = mb-call (h.mkdir) (mb-wide root) 0 0 0 0 0 0 0
+   in mb-write h (root & "\\owner.txt") mb-owner & mb-write h (root & "\\inventory.json") inventory & mb-register-executable h root
+
+  mb-stop-name : Text = "Local\\Cobblestone.ModBuilder.Native.Stop.v1"
+
+  mb-event-name : MbHost -> Text
+  mb-event-name (h) =
+   let command = mb-from-wide (mb-call (h.command) 0 0 0 0 0 0 0 0) 32768
+   in mb-stop-name & (if text-contains command " --test" then ".Test." & show mb-port else "")
+
+  mb-stop : MbHost -> Integer
+  mb-stop (h) =
+   let event = mb-call (h.event) 0 1 0 (mb-wide (mb-event-name h)) 0 0 0 0
+   in let signalled = mb-call (h.setevent) event 0 0 0 0 0 0 0
+   in let waited = mb-call (h.sleep) 2000 0 0 0 0 0 0 0
+   in let closed = mb-call (h.close) event 0 0 0 0 0 0 0
+   in if signalled /= 0 & closed /= 0 then 1 else 0
+
+  mb-uninstall : MbHost, Boolean -> [Console] Nothing
+  mb-uninstall (h) (testing) =
+   let consent = if testing then 6 else mb-dialog h "Stop ModBuilder and remove recognized helper versions from recorded locations, Desktop, Downloads and this folder? Valheim, mods, saves and unrelated files will be kept. This uninstaller can be deleted after it closes." 292
+   in if consent /= 6 then print-line-uni "Uninstall cancelled"
+   else let root = mb-settings h
+   in if root == "" | (mb-exists h root & mb-read h (root & "\\owner.txt") /= mb-owner) then
+    let shown = if testing then 0 else mb-dialog h "No owned ModBuilder setup was found. No files were removed." 64
+    in print-line-uni "UNINSTALL REFUSED: ownership marker missing or different"
+   else let running = mb-running-helper h
+   in let stopped = mb-stop h
+   in let waited = if running.handle == 0 then 0 else mb-call (h.wait) (running.handle) 8000 0 0 0 0 0 0
+   in let closed = if running.handle == 0 then 1 else mb-call (h.close) (running.handle) 0 0 0 0 0 0 0
+   in if stopped == 0 | waited /= 0 | closed == 0 then
+    let shown = if testing then 0 else mb-dialog h "The helper could not be stopped. No settings were removed. Close the helper and try again." 48
+    in print-line-uni "UNINSTALL INCOMPLETE: native stop signal failed"
+   else let problem = mb-clean-helpers h root (running.path)
+   in if problem /= "" then
+    let shown = if testing then 0 else mb-dialog h ("Cleanup could not remove or verify:\n" & problem & "\n\nClose any program using the file and run the uninstaller again. Remaining files and settings were kept.") 48
+    in print-line-uni ("UNINSTALL INCOMPLETE: " & problem)
+   else let registry = if mb-exists h (root & "\\helpers.json") then mb-call (h.delete) (mb-wide (root & "\\helpers.json")) 0 0 0 0 0 0 0 else 1
+   in let destination = if registry == 0 then 0 else if mb-exists h (root & "\\destination.txt") then mb-call (h.delete) (mb-wide (root & "\\destination.txt")) 0 0 0 0 0 0 0 else 1
+   in let one = if destination == 0 then 0 else if mb-exists h (root & "\\inventory.json") then mb-call (h.delete) (mb-wide (root & "\\inventory.json")) 0 0 0 0 0 0 0 else 1
+   in let two = if one == 0 then 0 else if mb-exists h (root & "\\owner.txt") then mb-call (h.delete) (mb-wide (root & "\\owner.txt")) 0 0 0 0 0 0 0 else 1
+   in if one == 0 | two == 0 then
+    let shown = if testing then 0 else mb-dialog h "Some settings could not be removed. Close any program using the settings files, then run the uninstaller again. Your game and saves were kept." 48
+    in print-line-uni "UNINSTALL INCOMPLETE: settings could not be removed; retry after closing files"
+   else let removed = mb-call (h.rmdir) (mb-wide root) 0 0 0 0 0 0 0
+   in let shown = if testing then 0 else mb-dialog h "Recognized ModBuilder helper versions and local setup removed. Valheim, mods and saves were kept. You can delete this uninstaller after closing it." 64
+   in print-line-uni "UNINSTALL COMPLETE: game and saves preserved"
+
+  mb-listener : MbHost -> Integer
+  mb-listener (h) =
+   let data = mb-alloc 512
+   in let started = mb-call (h.wsa) 514 data 0 0 0 0 0 0
+   in if started /= 0 then -1
+   else let socket = mb-call (h.socket) 2 1 6 0 0 0 0 0
+   in let addr = mb-alloc 16
+   in let z0 = poke-qword addr 0 0
+   in let z1 = poke-qword addr 8 0
+   in let family = poke-16 addr 0 2
+   in let port-hi = poke-byte addr 2 (mb-port / 256)
+   in let port-lo = poke-byte addr 3 (int-mod mb-port 256)
+   in let a = poke-byte addr 4 127
+   in let b = poke-byte addr 7 1
+   in let bound = mb-call (h.bind) socket addr 16 0 0 0 0 0
+   in let listening = if bound == 0 then mb-call (h.listen) socket 8 0 0 0 0 0 0 else -1
+   in if listening == 0 then socket else let closed = mb-call (h.closesocket) socket 0 0 0 0 0 0 0 in -1
+
+  mb-http-bytes : Text, Integer, List Integer -> List Integer
+  mb-http-bytes (s) (i) (acc) =
+   if i >= text-length s then acc
+   else let u = to-unicode (char-code-at s i)
+   in mb-http-bytes s (i + 1) (if u == 10 then list-push (list-push acc 13) 10 else list-push acc u)
+
+  mb-send-loop : MbHost, Integer, Integer, Integer, Integer -> Integer
+  mb-send-loop (h) (socket) (buf) (n) (i) =
+   if i >= n then i
+   else let sent = mb-call (h.send) socket (buf + i) (n - i) 0 0 0 0 0
+   in if sent <= 0 | sent > n - i then -1 else mb-send-loop h socket buf n (i + sent)
+
+  mb-respond : MbHost, Integer, Text, Text, Text -> Integer
+  mb-respond (h) (socket) (status) (origin) (body) =
+   let text = "HTTP/1.1 " & status & "\nContent-Type: application/json\nAccess-Control-Allow-Origin: " & origin & "\nVary: Origin\nAccess-Control-Allow-Headers: Content-Type, X-Bridge-Token\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\nAccess-Control-Allow-Private-Network: true\nCache-Control: no-store\nConnection: close\nContent-Length: " & show (text-length body) & "\n\n" & body
+   in let bytes = mb-http-bytes text 0 []
+   in let buf = mb-alloc (list-length bytes)
+   in let wrote = __buf-write-bytes buf 0 bytes
+   in mb-send-loop h socket buf (list-length bytes) 0
+
+  mb-header-end : Integer, Integer, Integer -> Integer
+  mb-header-end (buf) (n) (i) =
+   if i + 3 >= n then -1
+   else if peek-byte buf i == 13 & peek-byte buf (i + 1) == 10 & peek-byte buf (i + 2) == 13 & peek-byte buf (i + 3) == 10 then i + 4
+   else mb-header-end buf n (i + 1)
+
+  mb-receive : MbHost, Integer, Integer, Integer, Integer -> Integer
+  mb-receive (h) (socket) (buf) (n) (deadline) =
+   if n >= 8192 | mb-call (h.ticks) 0 0 0 0 0 0 0 0 > deadline then -1
+   else let read = mb-call (h.recv) socket (buf + n) (8192 - n) 0 0 0 0 0
+   in if read <= 0 | read > 8192 - n then -1
+   else let size = n + read
+   in let header-end-pos = mb-header-end buf size (if n > 3 then n - 3 else 0)
+   in if header-end-pos >= 0 then size else mb-receive h socket buf size deadline
+
+  mb-header : List Text, Text, Integer -> Text
+  mb-header (lines) (name) (i) =
+   if i >= list-length lines then ""
+   else let line = list-at lines i
+   in if text-starts-with (text-to-lower line) (name & ": ") then substring line (text-length name + 2) (text-length line - text-length name - 2)
+   else mb-header lines name (i + 1)
+
+  mb-origin : Text -> Text
+  mb-origin (url) =
+   if text-starts-with url "file:" then "null"
+   else let scheme = text-index-of url "://"
+   in if scheme < 0 then "null"
+   else let tail = substring url (scheme + 3) (text-length url - scheme - 3)
+   in let slash = text-index-of tail "/"
+   in if slash < 0 then url else substring url 0 (scheme + 3 + slash)
+
+  mb-health : Boolean, Text -> Text
+  mb-health (authenticated) (game) =
+   "{\"ok\":true,\"bridge\":\"modbuilder-native\",\"version\":6,\"tokenOk\":" & (if authenticated then "true" else "false")
+   & ",\"capabilities\":{\"discover\":true,\"inspect\":true,\"build\":false,\"test\":false,\"launch\":true,\"lightCopy\":true,\"targetFolders\":true,\"install\":" & (if mb-option 2112 >= 512 then "true" else "false") & "},\"inventory\":" & (if authenticated then mb-inventory game else "null") & "}"
+
+  mb-request : MbHost, Integer, Text, Text, Text -> Integer
+  mb-request (h) (socket) (origin) (token) (game) =
+   let timeout = mb-alloc 8
+   in let t = poke-32 timeout 0 1500
+   in let receive-timeout = mb-call (h.sockopt) socket 65535 4102 timeout 4 0 0 0
+   in let send-timeout = mb-call (h.sockopt) socket 65535 4101 timeout 4 0 0 0
+   in let buf = mb-alloc 8192
+   in let count = mb-receive h socket buf 0 (mb-call (h.ticks) 0 0 0 0 0 0 0 0 + 5000)
+   in if count < 0 then 0
+   else let header-size = mb-header-end buf count 0
+   in let request = mb-from-ascii buf header-size
+   in let lines = text-split request "\n"
+   in let request-origin = mb-header lines "origin" 1
+   in let authenticated = mb-header lines "x-bridge-token" 1 == token
+   in if request-origin /= "" & request-origin /= origin then mb-respond h socket "403 Forbidden" origin "{\"ok\":false,\"err\":\"Origin refused\"}"
+   else if text-starts-with request "OPTIONS " then mb-respond h socket "200 OK" origin "{}"
+   else if text-starts-with request "GET /health " then mb-respond h socket "200 OK" origin (mb-health authenticated game)
+   else if authenticated == False then mb-respond h socket "403 Forbidden" origin "{\"ok\":false,\"err\":\"Pair with the helper first\"}"
+   else if text-starts-with request "GET /inventory " then mb-respond h socket "200 OK" origin ("{\"ok\":true,\"inventory\":" & mb-inventory game & "}")
+   else if text-starts-with request "GET /deployment " then mb-respond h socket "200 OK" origin (mb-deployment-info h game)
+   else if text-starts-with request "POST /launch " then mb-respond h socket "200 OK" origin (mb-launch h game)
+   else if text-starts-with request "POST /deployment/select " then mb-respond h socket "200 OK" origin (mb-choose-destination h game)
+   else if text-starts-with request "POST /deployment/create " then mb-respond h socket "200 OK" origin (mb-create-copy h game False False)
+   else if text-starts-with request "POST /deployment/create-light " then mb-respond h socket "200 OK" origin (mb-create-copy h game True False)
+   else if text-starts-with request "POST /deployment/create-folder " then mb-respond h socket "200 OK" origin (mb-create-copy h game False True)
+   else if text-starts-with request "POST /deployment/create-folder-light " then mb-respond h socket "200 OK" origin (mb-create-copy h game True True)
+   else if text-starts-with request "POST /deployment " then
+    let size = mb-body-size (mb-header lines "content-length" 1) 0 0
+    in if size < 512 | size > 16777216 | mb-header lines "transfer-encoding" 1 /= "" then mb-respond h socket "400 Bad Request" origin (mb-deploy-error "Invalid or oversized DLL upload")
+    else if count - header-size > size then mb-respond h socket "400 Bad Request" origin (mb-deploy-error "Unexpected request data")
+    else let body = mb-alloc size
+    in let copied = mb-copy-bytes body (buf + header-size) (count - header-size) 0
+    in let received = mb-receive-body h socket body size (count - header-size) (mb-call (h.ticks) 0 0 0 0 0 0 0 0 + 30000)
+    in if received == False then mb-respond h socket "400 Bad Request" origin (mb-deploy-error "The DLL upload was interrupted")
+    else mb-respond h socket "200 OK" origin (mb-deploy h game body size)
+   else mb-respond h socket "409 Conflict" origin "{\"ok\":false,\"err\":\"Use the workspace Build mod DLL and Deploy mod cards. This operation is not supported by the native helper.\"}"
+
+ Each request is released after send/close. Host, game, token and origin are
+ allocated below the request mark. Only the native stop handle crosses it.
+
+  mb-serve : MbHost, Integer, Integer, Text, Text, Text, Integer -> [Console] Nothing
+  mb-serve (h) (server) (stop) (origin) (token) (game) (mark) =
+   if mb-call (h.wait) stop 0 0 0 0 0 0 0 == 0 then
+    let closed = mb-call (h.closesocket) server 0 0 0 0 0 0 0
+    in let closed2 = mb-call (h.close) stop 0 0 0 0 0 0 0
+    in print-line-uni "ModBuilder helper stopped"
+   else let poll = mb-alloc 16
+   in let fd = poke-qword poll 0 server
+   in let events = poke-16 poll 8 256
+   in let clear = poke-16 poll 10 0
+   in let ready = mb-call (h.poll) poll 1 250 0 0 0 0 0
+   in let done = if ready > 0 & ready < 2147483648 then
+    let socket = mb-call (h.accept) server 0 0 0 0 0 0 0
+    in if socket == -1 then 0
+    else let replied = mb-request h socket origin token game
+    in mb-call (h.closesocket) socket 0 0 0 0 0 0 0
+   else 0
+   in let restore = __heap-restore mark
+   in mb-serve h server stop origin token game mark
+
+  opening : [Console] Nothing =
+   let h = mb-host 0
+   in let command = mb-from-wide (mb-call (h.command) 0 0 0 0 0 0 0 0) 32768
+   in let testing = text-contains command " --test" | text-contains command " --probe"
+   in let uninstall = peek-qword 1054768 0 == 1 | text-contains command " --uninstall"
+   in if uninstall then mb-uninstall h testing
+   else let consent = if testing then 1 else mb-dialog h "Allow ModBuilder to find Valheim and connect to the page? Deployment is a separate action: you choose a play copy and confirm before a mod is installed. Your original Steam game is not a deployment target." 321
+   in if consent /= 1 then print-line-uni "Setup cancelled"
+   else let game = mb-discover h testing
+   in let inventory = mb-inventory game
+   in if text-contains command " --probe" then print-line-uni inventory
+   else let owned = mb-own-settings h (mb-settings h) inventory
+   in if owned == False then
+    let shown = if testing then 0 else mb-dialog h "The local settings folder is not owned by this ModBuilder helper. No existing files were replaced." 48
+    in print-line-uni "SETUP REFUSED: settings ownership"
+   else let first-server = mb-listener h
+   in let restart = if first-server /= -1 then False else (if testing then 6 else mb-dialog h "A helper may already be running. Restart the native helper and reconnect this workspace?" 292) == 6
+   in let server = if restart then let stopped = mb-stop h in mb-listener h else first-server
+   in if server == -1 then
+    let shown = if testing then 0 else mb-dialog h "Port 8789 is already in use. Close the previous ModBuilder native helper before starting another copy." 48
+    in print-line-uni "SETUP REFUSED: port unavailable"
+   else let stop = mb-call (h.event) 0 1 0 (mb-wide (mb-event-name h)) 0 0 0 0
+   in if stop == 0 then
+    let closed = mb-call (h.closesocket) server 0 0 0 0 0 0 0
+    in let shown = if testing then 0 else mb-dialog h "Windows could not create the helper stop signal. Setup stopped without changing your game." 48
+    in print-line-uni "SETUP REFUSED: native stop signal unavailable"
+   else let selected = mb-default-selection h game
+   in let token = mb-token h
+   in let return-url = mb-from-ascii (peek-qword 1054752 0) (peek-qword 1054760 0)
+   in let url = return-url & "#bridge=" & token & "&bridgeUrl=http%3A%2F%2F127.0.0.1%3A" & show mb-port
+   in let launch-requested = return-url /= "" & (testing == False | text-contains command " --test-launch")
+   in let launched = if launch-requested then mb-open-page h url else 0
+   in let launch-error = if testing | launch-requested == False | launched > 32 then 0 else mb-dialog h "Windows could not open the connected workspace in your default browser. Check your default web browser, then reopen the helper." 48
+   in let origin = mb-origin return-url
+   in act
+    print-line-uni (if testing then "{\"ready\":true,\"token\":" & mb-json token & ",\"inventory\":" & inventory & "}" else "ModBuilder native helper ready")
+    let mark = __heap-save
+    in mb-serve h server stop origin token game mark
+   end

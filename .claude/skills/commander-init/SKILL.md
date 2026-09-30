@@ -38,17 +38,19 @@ it out of the skill and into a proper tool").
 
 Read it downward, every pulse:
 
-- **70 or more: order `/handoff` by one message, now.** That is an event.
+- **75 or more: order `/handoff` by one message, now; never below 75.**
+  That is an event. A dispatch never tells a lane to hand off early "if
+  the unit does not fit"; under 75 the lane takes the unit.
   A lane at 90 has one turn of useful work left and a handoff costs a turn.
 - **A lane silent after hours of landings is context-exhausted until this
   number says otherwise.** Do not read silence as a stuck terminal, a
   killed run or a lost message before you have measured.
-- **Under 70, `status.json` Working, no detached run in flight, and at
+- **Under 75, `status.json` Working, no detached run in flight, and at
   rest: the lane ended its turn on a progress report with work still
   owed** (an Opus 5.5 early stop), or it named a unit and is waiting for
   a GO. Send one message naming the open item and GO. Stop after two such
   messages to one lane and report the lane to Damian.
-- **Your own row is in the table.** At 70 you run `/handoff` too.
+- **Your own row is in the table.** At 75 you run `/handoff` too.
 - `at-rest False` means the lane is mid-turn; do not message it unless the
   message is a grant it is waiting on.
 
@@ -76,7 +78,7 @@ re-read of its context, and five lanes bumped every 12 minutes while
 Damian slept is what this rule exists to prevent. Never re-send a grant
 because a lane has not launched yet; measure its context instead.
 
-**Pulse checklist:** (1) Step 1's table, handoffs ordered at 70; (2)
+**Pulse checklist:** (1) Step 1's table, handoffs ordered at 75; (2)
 status.json per lane, grant FIFO where a WaitingForBox lane's ask fits
 the box, bump only a lane whose run has exited; (3) guests and free
 memory; (4) main landings and root's merge-down; (5) Steve's PRs, issues
@@ -125,7 +127,7 @@ which lanes hold detached runs. End with "Ready for instructions."
 
 ## Handoff
 
-At 70 on your own row: `/handoff`. Before it, this skill's Step 1 table
+At 75 on your own row: `/handoff`. Before it, this skill's Step 1 table
 and every lane's in-flight run (PID, log) go into `status.json` and the
 root CurrentPlan row, so the next commander can bump exits it did not
 launch. The memory file carries conduct, never lane state.

@@ -19,6 +19,22 @@ function Get-Block([string]$listName) {
 function Rows-2str([string]$b) { ([regex]'\{ name = "([^"]*)", [\w-]+ = "([^"]*)"').Matches($b) | ForEach-Object { ,@($_.Groups[1].Value, $_.Groups[2].Value) } }
 function Rows-rar([string]$b)  { ([regex]'\{ name = "([^"]*)", color = "([^"]*)", prompt = "([^"]*)" \}').Matches($b) | ForEach-Object { ,@($_.Groups[1].Value, $_.Groups[2].Value, $_.Groups[3].Value) } }
 function Rows-grp([string]$b)  { ([regex]'\{ name = "([^"]*)", from = (\d+), to = (\d+) \}').Matches($b) | ForEach-Object { ,@($_.Groups[1].Value, $_.Groups[2].Value, $_.Groups[3].Value) } }
+function Rows-counted([string]$b, [string]$ctor, [string]$pattern) {
+  $rows = @(([regex]$pattern).Matches($b) | ForEach-Object { $m = $_; ,@(1..($m.Groups.Count - 1) | ForEach-Object { $m.Groups[$_].Value }) })
+  $declared = ([regex]"$ctor \{").Matches($b).Count
+  if ($rows.Count -ne $declared) { throw "$ctor : parsed $($rows.Count) of $declared rows; the pattern no longer matches the list" }
+  $rows
+}
+function Rows-rel([string]$b) { Rows-counted $b 'WorldRelation' '\{ from = "([^"]*)", kind = "([^"]*)", to = "([^"]*)" \}' }
+function Rows-evt([string]$b) {
+  $rows = Rows-counted $b 'WorldEvent' '\{ name = "([^"]*)", timing = "([^"]*)", participants = "([^"]*)", preconditions = "([^"]*)" \}'
+  $seen = @{}
+  foreach ($r in $rows) {
+    foreach ($p in ($r[3] -split '; ' | Where-Object { $_ -ne '' })) { if (-not $seen.ContainsKey($p)) { throw "WorldEvent '$($r[0])': precondition '$p' names no earlier event" } }
+    $seen[$r[0]] = $true
+  }
+  $rows
+}
 
 # (db-table-name, ExplorerData list var, kind)
 $spec = @(
@@ -31,7 +47,8 @@ $spec = @(
   @('mod-pommel','sword-pommel-opts','2'), @('mod-guard','sword-guard-opts','2'), @('mod-blade','sword-blade-opts','2'),
   @('mod-phead','polearm-head-opts','2'), @('mod-phaft','polearm-haft-opts','2'),
   @('mod-bottle','potion-bottle-opts','2'), @('mod-liquid','potion-liquid-opts','2'),
-  @('mod-style','shield-style-opts','2'), @('mod-emblem','shield-emblem-opts','2'), @('mod-visor','helm-visor-opts','2'), @('mod-gem','ring-gem-opts','2')
+  @('mod-style','shield-style-opts','2'), @('mod-emblem','shield-emblem-opts','2'), @('mod-visor','helm-visor-opts','2'), @('mod-gem','ring-gem-opts','2'),
+  @('relationships','world-relations','rel'), @('events','world-events','evt')
 )
 
 function W16($list,[int]$v){ $list.Add([byte]($v -band 0xFF)); $list.Add([byte](($v -shr 8) -band 0xFF)) }
@@ -47,7 +64,7 @@ function Build-Block($rows) {
 
 $tables = foreach ($s in $spec) {
   $block = Get-Block $s[1]
-  $rows = switch ($s[2]) { '2' { Rows-2str $block } 'r' { Rows-rar $block } 'g' { Rows-grp $block } }
+  $rows = switch ($s[2]) { '2' { Rows-2str $block } 'r' { Rows-rar $block } 'g' { Rows-grp $block } 'rel' { Rows-rel $block } 'evt' { Rows-evt $block } }
   @{ name = $s[0]; bytes = (Build-Block $rows); count = @($rows).Count }
 }
 

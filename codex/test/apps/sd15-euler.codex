@@ -1,0 +1,104 @@
+Chapter: Sd15Euler
+
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter UNetDenoiser
+  cites Diffusion chapter SamplerReference
+  cites Diffusion chapter Sampler15Reference
+  cites Diffusion chapter UNetReference
+
+ We say:
+
+Section: Inputs
+
+ The formulas build/sd15-unet-oracle.py fed Forge.
+
+  noise-at : Integer -> Real
+  noise-at (i) = real-from-int (int-mod (i * 53 + 17) 263 - 131) / 128.0
+
+  context-at : Integer -> Real
+  context-at (i) = real-from-int (int-mod (i * 13 + 5) 251 - 125) / 256.0
+
+  build : Integer, Integer, Integer, Real, List Real -> List Real
+  build (which) (i) (n) (scale) (acc) =
+    if i >= n then acc
+    else build which (i + 1) n scale (list-push acc (scale * (if which == 0 then noise-at i else context-at i)))
+
+Section: Grading
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  count-near : List Real, SamplerRefStep, Real, Integer, Integer -> Integer
+  count-near (got) (ref) (tol) (j) (acc) =
+    if j >= unet-ref-samples then acc
+    else let v = list-at got (int-mod (j * unet-ref-stride + unet-ref-offset) (list-length got))
+    in count-near got ref tol (j + 1) (if abs (v - list-at (ref.srs-samples) j) <= tol * ref.srs-rms then acc + 1 else acc)
+
+ Step 0 is graded within 4% of rms and the others within 1%: step 0's update
+ multiplies the eps error by sigma 0 - sigma 1 = 13.3, and Forge's own SD1.5
+ UNet in f16 deviates from its f32 there by up to 3.7% of rms (44/64 within
+ 1%; 1.2% and 1.3% at steps 1 and 2; measured 2026-09-29).
+
+  step-tol : Integer -> Real
+  step-tol (k) = if k == 0 then 0.04 else 0.01
+
+  grade-step : Integer, Integer -> Text
+  grade-step (h) (k) =
+    let ref = list-at sampler15-ref-steps k
+    in let got = if h == 0 then [] else un-download h 1024
+    in if list-length got /= 1024 then "step " & show k & ": NO OUTPUT"
+    else "step " & show k & ": " & show (count-near got ref (step-tol k) 0 0) & "/" & show unet-ref-samples & " within " & show (real-to-int (step-tol k * 100.0)) & "% of rms"
+
+ The bounds are sdxl-euler's, for the same f32 reference schedule.
+
+  schedule-line : List Real, List Real, Integer -> Text
+  schedule-line (tab) (sig) (k) =
+    let ref = list-at sampler15-ref-steps k
+    in let s = list-at sig k
+    in "sigma " & show k & ": " & (if abs (s - ref.srs-sigma) <= 0.0001 * ref.srs-sigma then "ok" else "WRONG") & ", t " & (if abs (unet-sigma-to-t tab s - ref.srs-t) <= 0.01 then "ok" else "WRONG")
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let u = unet-open "realisticVisionV60B1_v20Novae.safetensors"
+    in if (u.uf-file).st-valid == False then ["SKIP: no realisticVisionV60B1_v20Novae.safetensors under the model root build-output/diffusion-models"]
+    else run-steps (unet-load u)
+
+  run-steps : UNetFile -> List Text
+  run-steps (u) =
+    let tab = unet-log-sigmas 0
+    in let sig = sdxl-karras-sigmas 3
+    in let ctx = un-upload (build 1 0 59136 1.0 [])
+    in let x = un-upload (build 0 0 1024 (list-at sig 0) [])
+    in let xb = un-upload (build 0 0 1024 (list-at sig 0) [])
+    in let s0 = schedule-line tab sig 0
+    in let s1 = schedule-line tab sig 1
+    in let s2 = schedule-line tab sig 2
+    in let e0 = sample-euler (\xh s -> unet15-denoise u tab ctx 16 16 xh s) x [list-at sig 0, list-at sig 1] 1024
+    in let g0 = grade-step (if e0 == 0 then x else 0) 0
+    in let e1 = sample-euler (\xh s -> unet15-denoise u tab ctx 16 16 xh s) x [list-at sig 1, list-at sig 2] 1024
+    in let g1 = grade-step (if e1 == 0 then x else 0) 1
+    in let e2 = sample-euler (\xh s -> unet15-denoise u tab ctx 16 16 xh s) x [list-at sig 2, list-at sig 3] 1024
+    in let g2 = grade-step (if e2 == 0 then x else 0) 2
+    in let eb = sample-euler (\xh s -> unet15-denoise u tab ctx 16 16 xh s) xb [list-at sig 0, list-at sig 2] 1024
+    in let gb = grade-step (if eb == 0 then xb else 0) 0
+    in [s0, s1, s2, g0, g1, g2, "sabotage, step 0 straight to sigma 2: " & gb]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

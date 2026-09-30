@@ -15,7 +15,7 @@ Chapter: DiagVmx
  memory is carved from the payload heap by `__heap-advance`, and the diagnostic
  image flies a 128 MB arena that a 256 MB guest cannot fit. So this reaches
  VMXON, the VMCS, EPT, VMLAUNCH and the serial exchange, and not the desk's
- sizing. It can wedge the box, so it runs last and only when DIAG.CFG names it.
+ sizing. It can wedge the box, so it runs only when DIAG.CFG names it.
 
 Section: States
 
@@ -59,11 +59,70 @@ Section: The Probe
       is VmCrashed (info) -> diag-result "crashed" diag-col-bad [head & " crashed out=" & show (list-length out) & " " & format-exit-info info] [head & " the guest crashed after " & show (list-length out) & " serial bytes, " & format-exit-info info]
       is otherwise -> dvx-answer (r.vfr-devices.vd-com1) head
 
+Section: Held Across The Sink
+
+ Cells 95 to 98 of the xHCI diagnostic block: the first free run, between
+ `diag-cell-noflush` (94) and `kbd-cell-magic` (112).
+
+  dvx-cell-lo : Integer = 95
+  dvx-cell-hi : Integer = 96
+  dvx-cell-size : Integer = 97
+  dvx-cell-held : Integer = 98
+  dvx-cell-sum : Integer = 99
+  dvx-held-magic : Integer = #444C4856
+
+  dvx-sum : Integer, Integer, Integer, Integer -> Integer
+  dvx-sum (buf) (i) (n) (acc) =
+    if i >= n then acc
+    else dvx-sum buf (i + 1) n (bit-and (acc * 31 + peek-byte buf i) #FFFFFFF)
+
+  dvx-head : Integer -> Text
+  dvx-head (n) = "guest=" & show n & " fc=" & show vmx-feature-control & " ptimer=" & (if vmx-preempt-offered then "on" else "off")
+
+  dvx-hold : Integer, Integer -> Integer
+  dvx-hold (buf) (n) =
+    let a = xdiag-put dvx-cell-lo (bit-and buf #FFFFFFFF)
+    in let b = xdiag-put dvx-cell-hi (bit-shru buf 32)
+    in let s = xdiag-put dvx-cell-size n
+    in let k = xdiag-put dvx-cell-sum (dvx-sum buf 0 n 0)
+    in xdiag-put dvx-cell-held dvx-held-magic
+
+  dvx-prepare : DiagCtx -> [Device.Port] List Text
+  dvx-prepare (c) =
+    let z = xdiag-put dvx-cell-held 0
+    in if c.dc-bank == False then ["vmx-hold no-bank"]
+    else act
+      n <- gfat-file-size (c.dc-vol) "GUEST.CDX"
+      if n <= 0 then ["vmx-hold no-guest"]
+      else dvx-prepare-read c n
+    end
+
+  dvx-prepare-read : DiagCtx, Integer -> [Device.Port] List Text
+  dvx-prepare-read (c) (n) =
+    let buf = alloc-zeroed n 64
+    in act
+      got <- gfat-read-file-bulk (c.dc-vol) "GUEST.CDX" buf
+      if got /= n then ["vmx-hold short read=" & show got & " " & dvx-head n]
+      else let h = dvx-hold buf n in ["vmx-hold ok " & dvx-head n]
+    end
+
+  dvx-launch-held : Integer -> DiagResult
+  dvx-launch-held (u) =
+    let buf = bit-or (bit-and (xdiag-get dvx-cell-lo) #FFFFFFFF) (bit-shl (bit-and (xdiag-get dvx-cell-hi) #FFFFFFFF) 32)
+    in let n = bit-and (xdiag-get dvx-cell-size) #FFFFFFFF
+    in let z = xdiag-put dvx-cell-held 0
+    in let same = dvx-sum buf 0 n 0 == bit-and (xdiag-get dvx-cell-sum) #FFFFFFFF
+    in let head = dvx-head n & " held=" & (if same then "ok" else "bad")
+    in if same == False then diag-result "no-guest" diag-col-bad [head] [head, "the guest held across the sink no longer matches its checksum"]
+    else if vmx-available == False then diag-result "vmx-off" diag-col-warn [head] [head, vmx-unavailable-reason]
+    else dvx-launch (dvx-list buf 0 n []) head
+
 Section: The Stage
 
   dvx-run : DiagCtx -> [Device.Port] DiagResult
   dvx-run (c) =
-    if c.dc-bank == False then diag-result "no-bank" diag-col-warn ["no medium to read GUEST.CDX from"] ["no bank, so GUEST.CDX cannot be read"]
+    if xdiag-get dvx-cell-held == dvx-held-magic then dvx-launch-held 0
+    else if c.dc-bank == False then diag-result "no-bank" diag-col-warn ["no medium to read GUEST.CDX from"] ["no bank, so GUEST.CDX cannot be read"]
     else act
       n <- gfat-file-size (c.dc-vol) "GUEST.CDX"
       if n <= 0 then diag-result "no-guest" diag-col-warn ["GUEST.CDX absent"] ["GUEST.CDX is not on this stick's ESP"]
@@ -75,7 +134,7 @@ Section: The Stage
     let buf = alloc-zeroed n 64
     in act
       got <- gfat-read-file-bulk (c.dc-vol) "GUEST.CDX" buf
-      let head = "guest=" & show n & " fc=" & show vmx-feature-control & " ptimer=" & (if vmx-preempt-offered then "on" else "off")
+      let head = dvx-head n
       in if got /= n then diag-result "no-guest" diag-col-warn [head & " read=" & show got] [head & " GUEST.CDX read " & show got & " of " & show n & " bytes"]
       else if vmx-available == False then diag-result "vmx-off" diag-col-warn [head] [head, vmx-unavailable-reason]
       else dvx-launch (dvx-list buf 0 n []) head

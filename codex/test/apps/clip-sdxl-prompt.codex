@@ -1,0 +1,245 @@
+Chapter: ClipSdxlPrompt
+  cites Diffusion chapter ClipPrompt
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter ClipBpe
+  cites AI chapter SafeTensors
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter FactDisk
+
+ The disk is build/mint-clip-bpe-disk.ps1's with three extras from
+ codex/test/apps/clip-sdxl-prompt-ref, written by build/clip-prompt-oracle.py
+ through Forge's own ClassicTextProcessingEngine: the chunk count as i32,
+ CLIP-L's 77 tokens per chunk as i32, the token weights as f32, then cond_l,
+ cond_g and pooled as f32. negative is generate-art.ps1's negative prompt;
+ emphasis carries nested, weighted, escaped and unclosed brackets; long cuts
+ three chunks, one at a comma backtrack and one at BREAK.
+
+ Chunks match when the count, every id and every weight's f32 bits agree.
+ Each bound is the deviation of the same chunks through the f16 models, with
+ the same emphasis arithmetic, from the f32 answer, as the oracle printed it
+ on 2026-09-29, over all rows and over the rows that are not a chunk's BOS.
+ The sabotage arms must fail: the emphasis prompt with its weights set to 1,
+ and the long prompt chunked with the comma backtrack off.
+
+ We say:
+
+Section: Disk
+  csp-load : Integer, Integer -> [Device.Block] Integer
+  csp-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+Section: Grading
+
+  csp-abs : Real -> Real
+  csp-abs (x) = if x < 0.0 then 0.0 - x else x
+
+  csp-real : Integer -> Real
+  csp-real (b) =
+    let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else if e == 255 then 1000000000.0
+    else bits-to-real (bit-or (bit-shl (bit-and b #80000000) 32) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+  csp-max-err : Integer, Integer, Integer, Integer, Integer, Boolean, Real -> Real
+  csp-max-err (ours) (ref) (d) (i) (n) (skip-bos) (acc) =
+    if i >= n then acc
+    else if skip-bos & int-mod (i / d) 77 == 0 then csp-max-err ours ref d (i + d) n skip-bos acc
+    else let e = csp-abs (csp-real (bit-and (peek-32 ours (i * 4)) #FFFFFFFF) - csp-real (bit-and (peek-32 ref (i * 4)) #FFFFFFFF))
+    in csp-max-err ours ref d (i + 1) n skip-bos (if e > acc then e else acc)
+
+  csp-within : Integer, Integer, Integer, Integer, Boolean, Real -> Text
+  csp-within (h) (ref) (d) (n) (skip-bos) (bound) =
+    if h == 0 then "no output"
+    else if gpu-buf-read h 0 (n * 4) ckpt-scratch == False then "read refused"
+    else if csp-max-err ckpt-scratch ref d 0 n skip-bos 0.0 <= bound then "yes"
+    else "no"
+
+  csp-zero : Integer, Integer -> Boolean
+  csp-zero (h) (n) =
+    if h == 0 then False
+    else if gpu-buf-read h 0 (n * 4) ckpt-scratch == False then False
+    else csp-zero-at 0 n
+
+  csp-zero-at : Integer, Integer -> Boolean
+  csp-zero-at (i) (n) =
+    if i >= n then True
+    else if bit-and (peek-32 ckpt-scratch (i * 4)) #FFFFFFFF /= 0 then False
+    else csp-zero-at (i + 1) n
+
+Section: Chunks
+
+  csp-chunk-ok : List ClipChunk, Integer, Integer, Integer -> Boolean
+  csp-chunk-ok (cs) (ref) (n) (c) =
+    if c >= n then True
+    else let k = list-at cs c
+    in if csp-ids-ok (k.cc-ids) (ref + 4 + c * 308) 0 == False then False
+    else if csp-mults-ok (k.cc-mults) (ref + 4 + n * 308 + c * 308) 0 == False then False
+    else csp-chunk-ok cs ref n (c + 1)
+
+  csp-ids-ok : List Integer, Integer, Integer -> Boolean
+  csp-ids-ok (ids) (at) (i) =
+    if i >= 77 then True
+    else if list-at ids i /= bit-and (peek-32 at (i * 4)) #FFFFFFFF then False
+    else csp-ids-ok ids at (i + 1)
+
+  csp-mults-ok : List Real, Integer, Integer -> Boolean
+  csp-mults-ok (ws) (at) (i) =
+    if i >= 77 then True
+    else if cp-f32-bits (list-at ws i) /= bit-and (peek-32 at (i * 4)) #FFFFFFFF then False
+    else csp-mults-ok ws at (i + 1)
+
+  csp-chunks-match : List ClipChunk, Integer -> Text
+  csp-chunks-match (cs) (ref) =
+    let n = peek-32 ref 0
+    in if list-length cs /= n then "no, " & show (list-length cs) & " chunks against Forge's " & show n
+    else if csp-chunk-ok cs ref n 0 then "yes"
+    else "no"
+
+Section: Arms
+
+  csp-cond-l : Integer, Integer -> Integer
+  csp-cond-l (ref) (n) = ref + 4 + n * 616
+
+  csp-cond-g : Integer, Integer -> Integer
+  csp-cond-g (ref) (n) = ref + 4 + n * 616 + 77 * n * 768 * 4
+
+  csp-pooled : Integer, Integer -> Integer
+  csp-pooled (ref) (n) = ref + 4 + n * 616 + 77 * n * 2048 * 4
+
+  csp-prompt : ClipBpe, ClipWeights, ClipWeights, Text, Text, Integer, List Real -> List Text
+  csp-prompt (bpe) (wl) (wg) (label) (prompt) (ref) (b) =
+    let n = peek-32 ref 0
+    in let c = clip-condition wl wg bpe prompt False
+    in let lines = [
+      label & " chunks match Forge: " & csp-chunks-match (clip-prompt-chunks bpe prompt) ref,
+      label & " condition status " & show (c.cn-status),
+      label & " cond_l all rows within Forge f16: " & csp-within (c.cn-cond-l) (csp-cond-l ref n) 768 (77 * n * 768) False (list-at b 0),
+      label & " cond_l non-BOS rows within Forge f16: " & csp-within (c.cn-cond-l) (csp-cond-l ref n) 768 (77 * n * 768) True (list-at b 1),
+      label & " cond_g all rows within Forge f16: " & csp-within (c.cn-cond-g) (csp-cond-g ref n) 1280 (77 * n * 1280) False (list-at b 2),
+      label & " cond_g non-BOS rows within Forge f16: " & csp-within (c.cn-cond-g) (csp-cond-g ref n) 1280 (77 * n * 1280) True (list-at b 3),
+      label & " pooled within Forge f16: " & csp-within (c.cn-pooled) (csp-pooled ref n) 1280 1280 False (list-at b 4)]
+    in let f = clip-cond-free c
+    in lines
+
+ The crossattn arm grades every row's 768 CLIP-L columns against cond_l and
+ its 1280 G columns against cond_g, rows that are not a BOS, at the larger of
+ the two bounds.
+
+  csp-cross-err : Integer, Integer, Integer, Integer, Integer, Real -> Real
+  csp-cross-err (ours) (rl) (rg) (i) (n) (acc) =
+    if i >= n then acc
+    else if int-mod (i / 2048) 77 == 0 then csp-cross-err ours rl rg (i + 2048) n acc
+    else let r = i / 2048
+    in let c = i - r * 2048
+    in let want = if c < 768 then peek-32 rl ((r * 768 + c) * 4) else peek-32 rg ((r * 1280 + c - 768) * 4)
+    in let e = csp-abs (csp-real (bit-and (peek-32 ours (i * 4)) #FFFFFFFF) - csp-real (bit-and want #FFFFFFFF))
+    in csp-cross-err ours rl rg (i + 1) n (if e > acc then e else acc)
+
+  csp-crossattn : ClipBpe, ClipWeights, ClipWeights, Text, Integer, Real -> Text
+  csp-crossattn (bpe) (wl) (wg) (prompt) (ref) (bound) =
+    let n = peek-32 ref 0
+    in let c = clip-condition wl wg bpe prompt False
+    in let h = clip-crossattn c
+    in let v = if h == 0 then "no output"
+      else if gpu-buf-read h 0 (77 * n * 2048 * 4) ckpt-scratch == False then "read refused"
+      else if csp-cross-err ckpt-scratch (csp-cond-l ref n) (csp-cond-g ref n) 0 (77 * n * 2048) 0.0 <= bound then "yes"
+      else "no"
+    in let f = ce-free-all [h] 0
+    in let g = clip-cond-free c
+    in "negative crossattn non-BOS rows within Forge f16: " & v
+
+  csp-empty-negative : ClipBpe, ClipWeights, ClipWeights -> Text
+  csp-empty-negative (bpe) (wl) (wg) =
+    let c = clip-condition wl wg bpe "" True
+    in let ok = c.cn-status == 0 & c.cn-chunks == 1 & csp-zero (c.cn-cond-l) (77 * 768) & csp-zero (c.cn-cond-g) (77 * 1280) & csp-zero (c.cn-pooled) 1280
+    in let f = clip-cond-free c
+    in "empty negative zeroed, one chunk: " & (if ok then "yes" else "no")
+
+  csp-ones : List ClipChunk, Integer, List ClipChunk -> List ClipChunk
+  csp-ones (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else csp-ones cs (i + 1) (acc & [ClipChunk { cc-ids = (list-at cs i).cc-ids, cc-mults = csp-ones-mults 0 [] }])
+
+  csp-ones-mults : Integer, List Real -> List Real
+  csp-ones-mults (i) (acc) = if i >= 77 then acc else csp-ones-mults (i + 1) (list-push acc 1.0)
+
+  csp-no-emphasis : ClipBpe, ClipWeights, ClipWeights, Text, Integer, Real -> Text
+  csp-no-emphasis (bpe) (wl) (wg) (prompt) (ref) (bound) =
+    let n = peek-32 ref 0
+    in let cs = csp-ones (clip-prompt-chunks bpe prompt) 0 []
+    in let hl = gpu-buf-alloc (77 * n * 768 * 4)
+    in let hg = gpu-buf-alloc (77 * n * 1280 * 4)
+    in let hp = gpu-buf-alloc (1280 * 4)
+    in let c = cp-encode-chunks wl wg cs 0 False (ClipCond { cn-status = 0, cn-chunks = n, cn-cond-l = hl, cn-cond-g = hg, cn-pooled = hp })
+    in let v = "sabotage emphasis weights at 1, cond_l non-BOS rows within Forge f16: " & csp-within (c.cn-cond-l) (csp-cond-l ref n) 768 (77 * n * 768) True bound
+    in let f = clip-cond-free c
+    in v
+
+  csp-part-line : LayoutBinding, Integer -> Text
+  csp-part-line (lb) (i) =
+    let pb = list-at (lb.lb-parts) i
+    in pb.pb-name & " " & show (list-length (pb.pb-bound)) & "/" & show (pb.pb-required)
+
+  csp-run : ClipBpe, Integer, Integer, Integer -> List Text
+  csp-run (bpe) (neg) (emph) (long) =
+    let path = "dreamshaperXL_lightningDPMSDE.safetensors"
+    in let file = ckpt-open path
+    in let lb = layout-bind file sdxl-layout
+    in let wl = clip-load path file lb clip-l-spec
+    in let wg = clip-load path file lb openclip-g-spec
+    in let long-prompt = "painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, a viking smithy at night where glowing runes are hammered into an amulet on an anvil, sparks flying, open book of runes on the bench, snowy mountains through an arched window, carved dragon heads on the rafters, frost on the windows, a sleeping wolf by the hearth BREAK a longship on a calm fjord at dawn"
+    in let emph-prompt = "(masterpiece:1.2), ((best quality)), a [red] cat on a \\(wooden\\) table, (glowing runes:0.8), [[blurry]] (sharp:1.5 edges"
+    in let head = [
+      "tokenizer status " & show (clip-bpe-status bpe),
+      "checkpoint valid " & (if file.st-valid then "yes" else "no") & ", " & csp-part-line lb 1 & ", " & csp-part-line lb 2,
+      "load clip-l " & show (wl.cw-status) & ", openclip-g " & show (wg.cw-status)]
+    in let a = csp-prompt bpe wl wg "negative" "text, letters, words, watermark, signature, logo, ui, blurry, deformed, ugly, lowres, jpeg artifacts, photo, photograph, modern" neg [0.55157, 0.01006, 0.21764, 0.04752, 0.00612]
+    in let b = csp-prompt bpe wl wg "emphasis" emph-prompt emph [0.58484, 0.0153, 0.21808, 0.04066, 0.00388]
+    in let c = csp-prompt bpe wl wg "long" long-prompt long [0.55157, 0.01527, 0.21764, 0.08168, 0.00369]
+    in let d = [
+      csp-crossattn bpe wl wg "text, letters, words, watermark, signature, logo, ui, blurry, deformed, ugly, lowres, jpeg artifacts, photo, photograph, modern" neg 0.04752,
+      csp-empty-negative bpe wl wg,
+      csp-no-emphasis bpe wl wg emph-prompt emph 0.0153,
+      "sabotage long chunked with no comma backtrack, chunks match Forge: " & csp-chunks-match (clip-prompt-chunks-back bpe long-prompt 0) long]
+    in head & a & b & c & d
+
+Section: Body
+  csp-print : List Text, Integer -> [Console] Nothing
+  csp-print (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      csp-print ls (i + 1)
+    end
+
+  csp-go : List Integer -> [Console, Device.Block] Nothing
+  csp-go (hd) =
+    act
+      vbuf <- csp-load 1 (list-at hd 0)
+      mbuf <- csp-load (1 + (list-at hd 0 + 511) / 512) (list-at hd 1)
+      neg <- csp-load (list-at hd 3) (list-at hd 4)
+      emph <- csp-load (list-at hd 5) (list-at hd 6)
+      long <- csp-load (list-at hd 7) (list-at hd 8)
+      csp-print (csp-run (clip-bpe-load vbuf (list-at hd 0) mbuf (list-at hd 1)) neg emph long) 0
+    end
+
+ The header's words are copied out before any load, which reuses the sector
+ buffer block-read-sector answers.
+
+  csp-words : Integer, Integer, List Integer -> List Integer
+  csp-words (h) (i) (acc) = if i >= 9 then acc else csp-words h (i + 1) (list-push acc (peek-32 h (i * 4)))
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    csp-go (csp-words h 0 [])
+  end

@@ -1,0 +1,43 @@
+Chapter: UsbLive
+  cites Cvmm chapter UsbManager
+  cites Works chapter GopUsb
+  cites Works chapter GopXhci
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopUsbMsc
+
+ The view of what usb-attach found: one row per device the walk bound, under
+ one host row when any device answered. A controller with nothing bound shows
+ no rows, because nothing here can see it.
+
+Section: Mapping
+
+ xHCI 1.2 section 7.2.2.1.1, the default Protocol Speed IDs a port reports:
+ 1 full, 2 low, 3 high, 4 SuperSpeed, 5 SuperSpeedPlus.
+
+  ul-speed : Integer -> UsbSpeed
+  ul-speed (psi) =
+    if psi == 2 then SpeedLow
+    else if psi == 3 then SpeedHigh
+    else if psi == 4 then SpeedSuper
+    else if psi == 5 then SpeedSuperPlus
+    else SpeedFull
+
+  ul-device : Text, Text, UsbClass, UsbDev -> UsbDevice
+  ul-device (id) (name) (cls) (dev) =
+    __record-set (usb-device-new id name cls (ul-speed (dev.ud-speed))) "usb-parent-id" "xhci0"
+
+  ul-add-if : UsbManagerState, Boolean, UsbDevice -> UsbManagerState
+  ul-add-if (st) (ok) (d) = if ok then um-add-device st d else st
+
+  um-from-attach : UsbAttach -> UsbManagerState
+  um-from-attach (a) =
+    let any = (a.ua-kbd).uk-ok | (a.ua-mouse).um-ok | (a.ua-disk).md-ok
+    in if any == False then usb-manager-new
+    else let st0 = um-add-device usb-manager-new (usb-device-new "xhci0" "xHCI Host Controller" UcHub SpeedSuper)
+    in let st1 = ul-add-if st0 ((a.ua-kbd).uk-ok) (ul-device "kbd0" "USB Keyboard" UcHid ((a.ua-kbd).uk-dev))
+    in let st2 = ul-add-if st1 ((a.ua-mouse).um-ok) (ul-device "mouse0" "USB Mouse" UcHid ((a.ua-mouse).um-dev))
+    in let st3 = ul-add-if st2 ((a.ua-disk).md-ok) (ul-device "msc0" "USB Mass Storage" UcMassStorage ((a.ua-disk).md-dev))
+    in __record-set st3 "um-host-controllers" 1
+
+Page 1

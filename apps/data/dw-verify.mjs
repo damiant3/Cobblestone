@@ -66,15 +66,19 @@ function run(plan) {
 }
 
 // "<n> rows" then one row per line, columns separated by " | ".
+// A written filter answers "plan: <algebra>" on the line before the count.
 function table(plan) {
   const out = run(plan);
-  const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
+  let lines = out.split('\n').map(s => s.trim()).filter(Boolean);
+  let algebra = null;
+  if ((lines[0] || '').startsWith('plan: ')) { algebra = lines[0].slice(6); lines = lines.slice(1); }
   const m = /^(\d+) rows$/.exec(lines[0] || '');
-  if (!m) return { count: null, rows: [], raw: out };
+  if (!m) return { count: null, rows: [], raw: out, algebra };
   return {
     count: Number(m[1]),
     rows: lines.slice(1).map(l => l.split('|').map(c => c.trim())),
     raw: out,
+    algebra,
   };
 }
 
@@ -133,6 +137,36 @@ const recent = table('recent');
 check('recent: PredColCmp CmpGe admits only hire-year >= 2024',
       recent.rows.every(r => Number(r[4]) >= 2024),
       recent.rows.map(r => r[4]).join(' '));
+
+// -- a written filter, <column> <op> <value> onto PredColCmp -----------------
+// Graded against the scan it filters, never against a recorded answer: the
+// rows it keeps are exactly the rows of `all` that satisfy the comparison.
+const byCol = { id: 0, name: 1, department: 2, salary: 3, 'hire-year': 4 };
+function expectFrom(col, keep) { return all.rows.filter(r => keep(r[byCol[col]])).length; }
+const gt = table('salary > 118000');
+check('filter: salary > 118000 keeps exactly the scan rows above 118000, which one salary equals',
+      gt.count !== null && gt.count === expectFrom('salary', v => Number(v) > 118000)
+        && gt.rows.every(r => Number(r[3]) > 118000),
+      `${gt.count} vs ${expectFrom('salary', v => Number(v) > 118000)}`);
+check('filter: the answer names the algebra it ran',
+      gt.algebra === 'RelFilter (RelScan "employees") (salary > 118000)', `${gt.algebra}`);
+const ne = table('salary != 95000');
+check('filter: != is the complement of =',
+      ne.count !== null && ne.count + table('salary = 95000').count === all.count, `${ne.count} + = vs ${all.count}`);
+const dept = table('department = Engineering');
+check('filter: a text equality agrees with the engineering plan',
+      dept.count !== null && dept.count === eng.count, `${dept.count} vs ${eng.count}`);
+const quoted = table('department = "Engineering"');
+check('filter: a quoted value is the same value', quoted.count === dept.count, `${quoted.count} vs ${dept.count}`);
+const ge = table('hire-year >= 2024');
+check('filter: hire-year >= 2024 agrees with the recent plan', ge.count !== null && ge.count === recent.count,
+      `${ge.count} vs ${recent.count}`);
+check('filter: an unknown column is refused and the columns named',
+      run('wage > 5').startsWith('bad filter: no column wage') && run('wage > 5').includes('hire-year'), run('wage > 5'));
+check('filter: an unknown operator is refused', run('salary ~ 5').startsWith('bad filter: no operator ~'), run('salary ~ 5'));
+check('filter: a text value against an integer column is refused',
+      run('salary > lots').startsWith('bad filter: salary holds integers'), run('salary > lots'));
+check('filter: two tokens are refused', run('salary >').startsWith('bad filter:'), run('salary >'));
 
 // -- refusal ---------------------------------------------------------------
 const bad = run('nonsense');

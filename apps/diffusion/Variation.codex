@@ -1,0 +1,138 @@
+Chapter: Variation
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter DeviceMath
+  cites Diffusion chapter Noise
+
+ Forge's variation seed and seed resize (modules/rng.py, ImageRNG.first and
+ slerp). The start noise of shape (c, h, w) is the seed's first torch draw;
+ with a strength, the subseed's first draw of the same shape is slerped into
+ it; with resize from (from-w, from-h), both draws are (c, from-h / 8,
+ from-w / 8) and are pasted centred into the seed's full-size first draw.
+ slerp normalises over dim 1 of each (c, h, w) tensor, so each channel and
+ column is one vector over the rows; a mean dot above 0.9995 blends linearly,
+ low * val + high * (1 - val), as Forge writes it. The paste offsets are
+ Python floor divisions.
+
+ We say:
+
+Section: Request
+
+  Variation = record {
+    va-subseed : Integer,
+    va-strength : Real,
+    va-from-w : Integer,
+    va-from-h : Integer
+  }
+
+  va-none : Variation
+  va-none = Variation { va-subseed = 0, va-strength = 0.0, va-from-w = 0, va-from-h = 0 }
+
+Section: Floats
+
+  va-get : Integer, Integer -> Real
+  va-get (a) (i) =
+    let b = bit-and (peek-32 a (i * 4)) #FFFFFFFF
+    in let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-shru b 31) 63) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+  va-put : Integer, Integer, Real -> Integer
+  va-put (a) (i) (v) = poke-32 a (i * 4) (nz-f32-bits v)
+
+Section: Slerp
+
+  va-col : Integer, Integer, Integer, Integer, Integer, Integer, Real, Real, Real -> Real
+  va-col (lo) (hi) (base) (w) (h) (y) (ll) (hh) (lh) =
+    if y >= h then lh / (real-sqrt ll * real-sqrt hh)
+    else let a = va-get lo (base + y * w)
+    in let b = va-get hi (base + y * w)
+    in va-col lo hi base w h (y + 1) (ll + a * a) (hh + b * b) (lh + a * b)
+
+  va-base : Integer, Integer, Integer -> Integer
+  va-base (k) (h) (w) = (k / w) * h * w + (k - (k / w) * w)
+
+  va-dots : Integer, Integer, Integer, Integer, Integer, Integer, List Real -> List Real
+  va-dots (lo) (hi) (cols) (h) (w) (k) (acc) =
+    if k >= cols then acc
+    else va-dots lo hi cols h w (k + 1) (list-push acc (va-col lo hi (va-base k h w) w h 0 0.0 0.0 0.0))
+
+  va-sum : List Real, Integer, Real -> Real
+  va-sum (xs) (i) (acc) = if i >= list-length xs then acc else va-sum xs (i + 1) (acc + list-at xs i)
+
+  va-acos : Real -> Real
+  va-acos (d) = real-atan2 (real-sqrt (if d > 1.0 then 0.0 else 1.0 - d * d)) d
+
+  va-mix-col : Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> Integer
+  va-mix-col (lo) (hi) (base) (w) (h) (y) (a) (b) =
+    if y >= h then 0
+    else let i = base + y * w
+    in let z = va-put lo i (a * va-get lo i + b * va-get hi i)
+    in va-mix-col lo hi base w h (y + 1) a b
+
+  va-mix : Integer, Integer, Integer, Integer, Integer, Integer, List Real, Real, Boolean -> Integer
+  va-mix (lo) (hi) (cols) (h) (w) (k) (dots) (val) (lin) =
+    if k >= cols then 0
+    else let om = va-acos (list-at dots k)
+    in let so = real-sin om
+    in let a = if lin then val else real-sin ((1.0 - val) * om) / so
+    in let b = if lin then 1.0 - val else real-sin (val * om) / so
+    in let z = va-mix-col lo hi (va-base k h w) w h 0 a b
+    in va-mix lo hi cols h w (k + 1) dots val lin
+
+  va-slerp : Real, Integer, Integer, Integer, Integer, Integer -> Integer
+  va-slerp (val) (lo) (hi) (c) (h) (w) =
+    let dots = va-dots lo hi (c * w) h w 0 []
+    in va-mix lo hi (c * w) h w 0 dots val (va-sum dots 0 0.0 / real-from-int (c * w) > 0.9995)
+
+Section: Resize
+
+  va-floor-half : Integer -> Integer
+  va-floor-half (d) = if d < 0 then 0 - ((0 - d + 1) / 2) else d / 2
+
+  va-paste-row : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  va-paste-row (dst) (src) (di) (si) (n) (k) (z) =
+    if k >= n then 0
+    else va-paste-row dst src di si n (k + 1) (poke-32 dst ((di + k) * 4) (peek-32 src ((si + k) * 4)))
+
+  va-paste : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  va-paste (dst) (src) (c) (h) (w) (nh) (nw) (r) =
+    let dx = va-floor-half (w - nw)
+    in let dy = va-floor-half (h - nh)
+    in let cw = if dx >= 0 then nw else nw + 2 * dx
+    in let ch = if dy >= 0 then nh else nh + 2 * dy
+    in if r >= c * ch then 0
+    else let p = r / ch
+    in let y = r - p * ch
+    in let tx = if dx < 0 then 0 else dx
+    in let ty = if dy < 0 then 0 else dy
+    in let sx = if dx < 0 then 0 - dx else 0
+    in let sy = if dy < 0 then 0 - dy else 0
+    in let z = va-paste-row dst src ((p * h + ty + y) * w + tx) ((p * nh + sy + y) * nw + sx) cw 0 0
+    in va-paste dst src c h w nh nw (r + 1)
+
+Section: Entry
+
+ The start noise at dst (host f32, c * h * w values) for seed and v.
+
+  va-noise-into : Integer, Integer, Variation, Integer, Integer, Integer -> Integer
+  va-noise-into (dst) (seed) (v) (c) (h) (w) =
+    let resize = v.va-from-h > 0 & v.va-from-w > 0
+    in let nh = if resize then v.va-from-h / 8 else h
+    in let nw = if resize then v.va-from-w / 8 else w
+    in let paste = nh /= h | nw /= w
+    in let nn = c * nh * nw
+    in let lo = if paste then alloc-bytes (nn * 4) else dst
+    in let z = noise-torch-into lo seed 0 nn
+    in let s = if v.va-strength > 0.0 | v.va-strength < 0.0 then va-slerp (v.va-strength) lo (let hi = alloc-bytes (nn * 4) in let y = noise-torch-into hi (v.va-subseed) 0 nn in hi) c nh nw else 0
+    in if paste == False then 0
+    else let f = noise-torch-into dst seed 0 (c * h * w)
+    in va-paste dst lo c h w nh nw 0
+
+ The same into the f32 device buffer x; False when the latent is over the
+ staging chunk or the write is refused.
+
+  va-noise : Integer, Integer, Variation, Integer, Integer, Integer -> Boolean
+  va-noise (x) (seed) (v) (c) (h) (w) =
+    if c * h * w > nz-chunk then False
+    else let z = va-noise-into nz-scratch seed v c h w
+    in gpu-buf-write x 0 (c * h * w * 4) nz-scratch

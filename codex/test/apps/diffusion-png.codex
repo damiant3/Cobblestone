@@ -1,0 +1,81 @@
+Chapter: DiffusionPng
+  cites Diffusion chapter ImageOut
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter SafeTensors
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The diffusion-vae-decode latent, decoded and written as a PNG under
+ -gpu-out (build-output), then read back through the -gpu-files root on the
+ same folder and compared byte for byte with what was sent. A 256 x 256 RGB
+ image is 256 scanlines of 769 bytes, four stored blocks. The refusal arms
+ name a path that escapes with .., one that starts at the root, and one with
+ a drive.
+
+ We say:
+
+Section: Arms
+
+  ckpt : Text = "dreamshaperXL_lightningDPMSDE.safetensors"
+
+  params : Text = "fixed 256x256 test picture\nSteps: 0, Sampler: none, Seed: 0, Size: 256x256, Model: dreamshaperXL_lightningDPMSDE"
+
+  find-vae : List PartBinding, Integer -> PartBinding
+  find-vae (parts) (i) =
+    let pb = list-at parts i
+    in if pb.pb-name == "vae" then pb else find-vae parts (i + 1)
+
+  decoded : Integer -> Act
+  decoded (z) =
+    let file = ckpt-open ckpt
+    in let lb = layout-bind file sdxl-layout
+    in let w = vae-load ckpt (find-vae (lb.lb-parts) 0) "first_stage_model."
+    in let h = gpu-buf-alloc 16384
+    in let u = gpu-buf-upload h 0 "vae-latent.bin" 0 4096 gpu-dt-f32 gpu-dt-f32
+    in let out = vae-decode w (Act { ah = h, ac = 4, ahh = 32, aww = 32 })
+    in let f = vd-free (Act { ah = h, ac = 4, ahh = 32, aww = 32 })
+    in let g = vae-free w 0 0
+    in out
+
+  same-bytes : Integer, Integer, Integer -> Integer
+  same-bytes (i) (n) (acc) = if i >= n then acc else same-bytes (i + 1) n (acc + (if peek-byte io-png i == peek-byte io-raw i then 1 else 0))
+
+  reread : Integer -> Text
+  reread (n) =
+    let h = gpu-buf-alloc n
+    in let u = gpu-buf-upload h 0 "diffusion-png.png" 0 n gpu-dt-u8 gpu-dt-u8
+    in let ok = if u == n then gpu-buf-read h 0 n io-raw else False
+    in let f = gpu-buf-free h
+    in if ok then show (same-bytes 0 n 0) & "/" & show n & " bytes as sent" else "reread refused"
+
+  refusal : Integer -> Text
+  refusal (v) = if v < 0 then "refused" else "WROTE " & show v
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let img = decoded 0
+    in let n = png-save img "diffusion-png.png" params
+    in let l1 = "png 256x256: " & show n & " bytes written"
+    in let l2 = "read back: " & reread n
+    in let l3 = "escape with ..: " & refusal (png-save img "../diffusion-png.png" params)
+    in let l4 = "rooted path: " & refusal (png-save img "/diffusion-png.png" params)
+    in let l5 = "drive path: " & refusal (png-save img "C:diffusion-png.png" params)
+    in [l1, l2, l3, l4, l5]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

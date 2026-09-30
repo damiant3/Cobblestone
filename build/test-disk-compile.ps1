@@ -9,7 +9,8 @@ param(
     [string]$DiskPath = '',
     [string]$SampleSrc = 'codex\test\field-range-proven.codex',
     [string]$Expected = '12',
-    [int]$PCore = 1
+    [int]$PCore = 1,
+    [string]$Kernel = ''
 )
 
 Set-StrictMode -Version Latest
@@ -28,6 +29,11 @@ if (-not $DiskPath) {
 }
 
 $root = Split-Path $PSScriptRoot
+# The compiler under test, at both the host compile and the DISK guest:
+# build-output\bare-metal holds whichever compiler ran last.
+if ((-not $Kernel)) {
+    $Kernel = (Join-Path $root 'seed\Codex.cdx')
+}
 $outDir = Join-Path $root 'build-output\disk-compile-test'
 if ((-not (Test-Path -PathType Container $outDir))) {
     New-Item -ItemType Directory -Force $outDir | Out-Null
@@ -117,7 +123,7 @@ Write-Host 'Step 1a: Compile source to CDX...'
 $imgOut = Join-Path $outDir 'disk-test.img'
 $cdxOut = Join-Path $outDir 'disk-test.cdx'
 $cdxLog = Join-Path $outDir 'cdx-build.log'
-& pwsh -NoProfile -File $compile -Src $SampleSrc -Out $cdxOut -Log $cdxLog -PCore $PCore
+& pwsh -NoProfile -File $compile -Src $SampleSrc -Out $cdxOut -Log $cdxLog -PCore $PCore -Kernel $Kernel
 if (($LASTEXITCODE -ne 0 -or (-not (Test-Path -PathType Leaf $cdxOut)))) {
     Write-Host 'FAIL: CDX compile failed' -ForegroundColor Red
     if ((Test-Path -PathType Leaf $cdxLog)) {
@@ -148,7 +154,7 @@ Write-Host "  IMG: $((Get-Item $imgOut).Length) bytes"
 
 
 Write-Host 'Step 2: DISK compile...'
-$Stage0 = Join-Path $root 'build-output\bare-metal\Codex.cdx'
+$Stage0 = $Kernel
 if ((-not (Test-Path -PathType Leaf $Stage0))) {
     Write-Host "FAIL: no compiler CDX at $Stage0"
     exit 1
@@ -252,4 +258,3 @@ if (($output -eq $Expected)) {
     Write-Host 'FAIL: output mismatch' -ForegroundColor Red
     exit 1
 }
-

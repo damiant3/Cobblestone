@@ -14,4 +14,4 @@ Design: `apps/erp/design/Active/`.
 
 | # | Capability | State of the gap |
 |---|---|---|
-| ERP-1 | **Phase 5: the page and the dashboard** | `ErpPage.codex` and the dashboard are not built. Phases 0-4 are green with 11 tests. |
+| ERP-1 | **The dashboard page shows no RAG status and no aging buckets** | `ErpPage.codex` (`web/erp.html`) renders a snapshot of a native `run-month`, written by `build-snapshot.ps1` and naming the compiler and depot change that produced it: seven KPI tiles, open payables and receivables, and the trial balance with its totals. `codex/test/apps/erp-snapshot-fresh` fails when the snapshot and the scenario disagree. Missing from the design's Phase 5: a RAG status per tile (`BwAnalytics` `eval-kpi-status`) and the AP/AR aging buckets (`calc-ap-aging`, `calc-ar-aging`). The page cannot run the scenario itself until the HTML runtime has `alloc-bytes` (`plugs-backlog.md`). |

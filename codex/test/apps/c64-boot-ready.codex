@@ -1,0 +1,59 @@
+Chapter: C64 Boot Ready
+  cites Foreword chapter Console
+  cites C64 chapter Memory
+  cites C64 chapter Cpu6502
+  cites C64 chapter Cia
+  cites C64 chapter RomData
+  cites C64 chapter Machine
+
+Section: Body
+
+  ready-at : Integer -> Boolean
+  ready-at (p) =
+    peek-byte c64-ram p == 18 & peek-byte c64-ram (p + 1) == 5 & peek-byte c64-ram (p + 2) == 1 & peek-byte c64-ram (p + 3) == 4 & peek-byte c64-ram (p + 4) == 25 & peek-byte c64-ram (p + 5) == 46
+
+  find-ready : Integer -> Integer
+  find-ready (p) =
+    if p >= #0400 + 994 then 0 - 1
+    else if ready-at p then p - #0400
+    else find-ready (p + 1)
+
+  frames : CpuState, Integer, Integer -> Integer
+  frames (s) (n) (limit) =
+    if n >= limit then 0 - 1
+    else let s2 = c64-frame-step s
+    in if find-ready #0400 >= 0 then n + 1
+    else frames s2 (n + 1) limit
+
+  row-codes : Integer, Integer, Text -> Text
+  row-codes (row) (col) (acc) =
+    if col >= 40 then acc
+    else row-codes row (col + 1) (acc & " " & show (peek-byte c64-ram (#0400 + row * 40 + col)))
+
+  row-blank : Integer, Integer -> Boolean
+  row-blank (row) (col) =
+    if col >= 40 then True
+    else if peek-byte c64-ram (#0400 + row * 40 + col) /= 32 then False
+    else row-blank row (col + 1)
+
+  dump-rows : Integer -> Text
+  dump-rows (row) =
+    if row >= 25 then ""
+    else if row-blank row 0 then dump-rows (row + 1)
+    else "row " & show row & ":" & row-codes row 0 "" & "\n" & dump-rows (row + 1)
+
+  opening : [Console] Nothing =
+    let reserved = c64-reserve 0
+    in let d0 = c64-init-ram 0
+    in let d3 = cia-init 0
+    in let d4 = c64-init-vic 0
+    in let d5 = init-all-roms 0
+    in let cpu = c64-boot-cpu 0
+    in let n = frames cpu 0 400
+    in act
+      print-line-uni ("band reserved: " & show reserved)
+      print-line-uni ("READY after frames: " & show n & " at offset " & show (find-ready #0400))
+      print-line-uni (dump-rows 0)
+    end
+
+Page 1

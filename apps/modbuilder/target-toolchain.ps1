@@ -13,10 +13,58 @@ function Invoke-PrismChild([string]$Exe, [string[]]$Arguments, [int]$Timeout = 1
     } finally {$proc.Dispose()}
 }
 
+function Get-PrismBuiltArtifact($Root, $Request, $Receipt, [string]$SourceHash) {
+    $profile=$Request.profile
+    $artifact=[IO.Path]::GetFullPath([string]$Request.artifact)
+    $allowed=[IO.Path]::GetFullPath((Join-Path $Root 'prism-target-builds'))+[IO.Path]::DirectorySeparatorChar
+    if(-not $artifact.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($artifact) -cne 'winhttp.dll'){throw 'Artifact is outside the target build directory'}
+    $receiptPath=Join-Path (Split-Path (Split-Path $artifact -Parent) -Parent) 'receipt.json'
+    $prior=Get-Content -LiteralPath $receiptPath -Raw|ConvertFrom-Json
+    if(-not $prior.ok -or $prior.artifactHash -cne (Get-FileHash -LiteralPath $artifact).Hash -or $prior.inputSourceHash -cne $SourceHash -or $prior.gameAssembly -cne $Receipt.gameAssembly -or $prior.unityPlayer -cne $Receipt.unityPlayer){throw 'Artifact, source or game changed; build the extension again'}
+    foreach($field in @('profile','groupLimit','workbenchLinks')){if($prior.profile.$field -cne $profile.$field){throw 'Target configuration changed; build the extension again'}}
+    return @{artifact=$artifact; prior=$prior; receiptPath=$receiptPath}
+}
+
+function Install-PrismArtifact($Built, $Receipt, [string]$Game, $Target, $Profile) {
+    if(-not $Profile.PSObject.Properties['installPath'] -or -not [IO.Path]::IsPathFullyQualified([string]$Profile.installPath)){throw 'Configure an absolute install directory'}
+    $dest=(Resolve-Path -LiteralPath $Profile.installPath -ErrorAction Stop).Path.TrimEnd('\','/')
+    if($dest -ieq $Game.TrimEnd('\','/')){throw 'Refusing to install into the original game directory'}
+    if(-not (Test-Path -LiteralPath (Join-Path $dest $Target.executable) -PathType Leaf)){throw 'The install directory holds no game executable'}
+    if(Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($Target.executable)) -ErrorAction SilentlyContinue){throw 'Close the game before installing'}
+    $support=Join-Path $dest 'Support'; $deploy=Join-Path $support 'deployment.json'; $loader=Join-Path $dest 'winhttp.dll'
+    $record=if(Test-Path -LiteralPath $deploy -PathType Leaf){Get-Content -LiteralPath $deploy -Raw|ConvertFrom-Json}else{$null}
+    $previous=$null
+    if(Test-Path -LiteralPath $loader -PathType Leaf){
+        $previous=(Get-FileHash -LiteralPath $loader).Hash
+        if(-not $record -or $previous -cne $record.modHash){throw 'Unknown loader in the install directory: its winhttp.dll is not the recorded Prism install'}
+    }
+    $build=[string]$Built.prior.buildNumber
+    $backup=Join-Path $support ('Before-'+$build)
+    if(Test-Path -LiteralPath $backup){throw "This build was already installed; its backup exists: $backup"}
+    [void](New-Item -ItemType Directory -Path $backup -Force)
+    if($previous){Copy-Item -LiteralPath $loader -Destination (Join-Path $backup 'winhttp.dll')}
+    $saves=Join-Path $dest 'Saves'
+    if(Test-Path -LiteralPath $saves -PathType Container){Compress-Archive -LiteralPath $saves -DestinationPath (Join-Path $backup 'Saves.zip')}
+    Copy-Item -LiteralPath $Built.receiptPath -Destination (Join-Path $backup 'installed-receipt.json')
+    Copy-Item -LiteralPath $Built.artifact -Destination $loader -Force
+    $installed=(Get-FileHash -LiteralPath $loader).Hash
+    if($installed -cne $Built.prior.artifactHash){throw 'The installed loader does not match the build receipt'}
+    $restore=[ordered]@{buildNumber=$build; installedAt=[DateTime]::UtcNow.ToString('o'); installedHash=$installed; previousHash=$previous;
+        restore=$(if($previous){"Copy-Item -LiteralPath '$(Join-Path $backup 'winhttp.dll')' -Destination '$loader' -Force"}else{"Remove-Item -LiteralPath '$loader'"})}
+    [IO.File]::WriteAllText((Join-Path $backup 'restore.json'),($restore|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+    $next=[ordered]@{}
+    if($record){foreach($p in $record.PSObject.Properties){if($p.Name -notin @('sourceChangelist','verification')){$next[$p.Name]=$p.Value}}}
+    $next.game=$dest; $next.modHash=$installed; $next.buildNumber=$build; $next.features=@($Built.prior.features|ForEach-Object{$_.id}); $next.receipt=Join-Path $backup 'installed-receipt.json'
+    [void](New-Item -ItemType Directory -Path $support -Force)
+    [IO.File]::WriteAllText($deploy,($next|ConvertTo-Json -Depth 4),[Text.UTF8Encoding]::new($false))
+    $Receipt.installed=$true; $Receipt.installPath=$dest; $Receipt.backup=$backup; $Receipt.previousHash=$previous; $Receipt.installedHash=$installed; $Receipt.buildNumber=$build
+    return $Receipt
+}
+
 function Invoke-PrismTarget {
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)]$Request)
     $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-    if ($Request.operation -notin @('inspect', 'build', 'package', 'test')) { throw 'Unsupported target operation' }
+    if ($Request.operation -notin @('inspect', 'build', 'package', 'test', 'install')) { throw 'Unsupported target operation' }
     $profile = $Request.profile
     if ($profile.version -ne 1 -or $profile.kind -ne 'unity') { throw 'Unsupported target schema or family' }
     if ($profile.id -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw 'Invalid profile name' }
@@ -46,15 +94,12 @@ function Invoke-PrismTarget {
     $code = [string]$Request.code
     if ($code.Length -gt 16777216 -or -not $code.Contains('public static class PrismUnityEntry')) { throw 'Missing or oversized Unity source artifact' }
     $sourceHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($code)))
+    if($Request.operation -eq 'install') {
+        return Install-PrismArtifact (Get-PrismBuiltArtifact $Root $Request $receipt $sourceHash) $receipt $game $target $profile
+    }
     if($Request.operation -eq 'test') {
         if(-not [IO.Path]::IsPathFullyQualified([string]$profile.testSavePath)){throw 'Configure an absolute test save directory'}
-        $artifact=[IO.Path]::GetFullPath([string]$Request.artifact)
-        $allowed=[IO.Path]::GetFullPath((Join-Path $Root 'prism-target-builds'))+[IO.Path]::DirectorySeparatorChar
-        if(-not $artifact.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($artifact) -cne 'winhttp.dll'){throw 'Test artifact is outside the target build directory'}
-        $nativeDir=Split-Path $artifact -Parent
-        $prior=Get-Content -LiteralPath (Join-Path (Split-Path $nativeDir -Parent) 'receipt.json') -Raw|ConvertFrom-Json
-        if(-not $prior.ok -or $prior.artifactHash -cne (Get-FileHash -LiteralPath $artifact).Hash -or $prior.inputSourceHash -cne $sourceHash -or $prior.gameAssembly -cne $receipt.gameAssembly -or $prior.unityPlayer -cne $receipt.unityPlayer){throw 'Artifact, source or game changed; build the extension again'}
-        foreach($field in @('profile','groupLimit','workbenchLinks')){if($prior.profile.$field -cne $profile.$field){throw 'Target configuration changed; build the extension again'}}
+        $artifact=(Get-PrismBuiltArtifact $Root $Request $receipt $sourceHash).artifact
         $testOut=Join-Path (Join-Path $Root 'prism-target-tests') ([guid]::NewGuid().ToString('N'))
         $probe=if($code.Contains('class PrismStorage')){'storage'}else{'startup'}
         $child=Invoke-PrismChild (Get-Command pwsh).Source @('-NoProfile','-File',(Join-Path $PSScriptRoot 'test-game.ps1'),'-GamePath',$game,'-Package',$artifact,'-OutDirectory',$testOut,'-SaveRoot',$profile.testSavePath,'-Probe',$probe)
@@ -65,7 +110,7 @@ function Invoke-PrismTarget {
     $receipt.features = @()
     if (Test-Path -LiteralPath $featureFile -PathType Leaf) {
         $declared = @((Get-Content -LiteralPath $featureFile -Raw | ConvertFrom-Json).features)
-        $present = @($declared | Where-Object { $code.Contains('class ' + $_.marker) })
+        $present = @($declared | Where-Object { if ($_.PSObject.Properties['detect']) { $code.Contains($_.detect) } else { $code.Contains('class ' + $_.marker) } })
         if ($Request.PSObject.Properties['features'] -and $null -ne $Request.features) {
             $asked = (@($Request.features | ForEach-Object { [string]$_ }) | Sort-Object) -join ', '
             $found = (@($present | ForEach-Object { $_.id }) | Sort-Object) -join ', '
@@ -106,7 +151,9 @@ function Invoke-PrismTarget {
     $argsList = [Collections.Generic.List[string]]::new()
     foreach ($arg in @('-nologo','-target:library','-langversion:latest','-nostdlib+','-deterministic+','-optimize+','-platform:x64',('-out:' + $dll))) { $argsList.Add($arg) }
     $refs = @('mscorlib.dll','netstandard.dll','System.dll','System.Core.dll','System.Numerics.dll','UnityEngine.CoreModule.dll')
-    if ($code.Contains('class PrismStorage') -or $code.Contains('class PrismMeadowsSpawns') -or $code.Contains('class PrismCircumhorizontalArc')) { $refs += @('assembly_valheim.dll','assembly_utils.dll','assembly_guiutils.dll','UnityEngine.PhysicsModule.dll','UnityEngine.IMGUIModule.dll','UnityEngine.InputLegacyModule.dll','UnityEngine.UI.dll','Unity.TextMeshPro.dll') }
+    if ($code.Contains('class PrismStorage') -or $code.Contains('class PrismMeadowsSpawns') -or $code.Contains('class PrismCircumhorizontalArc') -or $code.Contains('class PrismStationHover') -or $code.Contains('class PrismHudLayout') -or $code.Contains('class PrismPlantRows') -or $code.Contains('class PrismFirekeeping') -or $code.Contains('class PrismBuildCamera') -or $code.Contains('class PrismLoadout') -or $code.Contains('class PrismFarming')) { $refs += @('assembly_valheim.dll','assembly_utils.dll','assembly_guiutils.dll','UnityEngine.PhysicsModule.dll','UnityEngine.IMGUIModule.dll','UnityEngine.InputLegacyModule.dll','UnityEngine.UI.dll','Unity.TextMeshPro.dll') }
+    if ($code.Contains('class PrismPlantRows')) { $refs += 'Splatform.dll' }
+    if ($code.Contains('class PrismExpansionProbe')) { $refs += 'UnityEngine.UIModule.dll' }
     if ($code.Contains('class PrismCircumhorizontalArc')) {
         $refs += 'UnityEngine.ImageConversionModule.dll'
         $mask = Join-Path $PSScriptRoot 'mods/valheim/cirrus-mask.png'
@@ -141,9 +188,8 @@ function Invoke-PrismTarget {
     $receipt.references = @($refs | ForEach-Object { @{ name = $_; sha256 = (Get-FileHash -LiteralPath (Join-Path $managed $_)).Hash } })
     if ($receipt.ok) { $receipt.artifact = $dll; $receipt.artifactHash = (Get-FileHash -LiteralPath $dll).Hash }
     if($receipt.ok -and $Request.operation -eq 'package') {
-        foreach($field in @('msvcRoot','windowsSdkRoot','windowsSdkVersion')){if(-not $profile.PSObject.Properties[$field] -or -not $profile.$field){throw "Configure $field before native packaging"}}
         $native=Join-Path $out 'native'
-        $child=Invoke-PrismChild (Get-Command pwsh).Source @('-NoProfile','-File',(Join-Path $repo 'codex/plugs/unity/package.ps1'),'-ManagedLibrary',$dll,'-OutDirectory',$native,'-MsvcRoot',$profile.msvcRoot,'-WindowsSdkRoot',$profile.windowsSdkRoot,'-WindowsSdkVersion',$profile.windowsSdkVersion)
+        $child=Invoke-PrismChild (Get-Command pwsh).Source @('-NoProfile','-File',(Join-Path $repo 'codex/plugs/unity/package.ps1'),'-ManagedLibrary',$dll,'-OutDirectory',$native)
         $receipt.ok=$child.code -eq 0; $receipt.code=$child.code; $receipt.out=$child.out; $receipt.err=$child.err
         $receipt.managedArtifact=$dll
         if($receipt.ok){$receipt.artifact=Join-Path $native 'winhttp.dll';$receipt.artifactHash=(Get-FileHash -LiteralPath $receipt.artifact).Hash}

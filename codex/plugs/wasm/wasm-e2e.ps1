@@ -11,7 +11,12 @@ param([string]$Subject, [string]$Kernel)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+# wasmtime's stdout is decoded with [Console]::OutputEncoding, which is ibm437 in
+# a pwsh launched detached with redirected output (as the release gate runs), so
+# any non-ASCII answer read as two characters against the UTF-8 x86-64 truth.
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+
+$Repo =(Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir = $PSScriptRoot
 $PlugCdx = Join-Path $PlugDir 'build-output\wasm-plug.cdx'
 $TestDir = Join-Path $PlugDir 'test'
@@ -71,10 +76,7 @@ foreach ($s in $subjects) {
     if (-not (Test-Path $truthOut) -or (Get-Item $truthOut).Length -eq 0) {
         Write-Host "FAIL $name : the x86-64 run produced no output, so there is no truth to grade against."; $fail++; continue
     }
-    # codex-vm's capture carries a leading CCE 0x01 the wasmtime run has no
-    # equivalent of. Everything after it is the program's own bytes.
     $truthBytes = [IO.File]::ReadAllBytes($truthOut)
-    if ($truthBytes.Length -gt 0 -and $truthBytes[0] -eq 1) { $truthBytes = $truthBytes[1..($truthBytes.Length - 1)] }
     $truth = [Text.Encoding]::UTF8.GetString($truthBytes)
 
     # Same kernel as the truth arm above. Two arms compiled by two different

@@ -1,0 +1,247 @@
+Chapter: VaeDecoder
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter GemmPtx
+  cites Gpu chapter LayerKernelsPtx
+  cites Diffusion chapter VaeKernelsPtx
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter CheckpointFile
+  cites AI chapter SafeTensors
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter VaeGraph
+
+ The ldm AutoencoderKL decoder (Forge backend/nn/vae.py Decoder, with
+ post_quant_conv in front): conv_in to 512 channels; a middle of a residual
+ block, a single-head attention and a residual block; four up levels from
+ the deepest, 512/512/256/128 channels, three residual blocks each and a 2x
+ nearest upsample plus 3x3 conv after every level but the last; GroupNorm (32
+ groups, eps 1e-6), SiLU and a 3x3 conv to RGB. Activations are C x H x W
+ f32; a convolution reads them cast to f16.
+
+ We say:
+
+Section: Weights
+
+  VaeWeights = record {
+    vw-prefix : Text,
+    vw-index : NameIndex,
+    vw-handles : List Integer,
+    vw-failed : Integer
+  }
+
+  Act = record {
+    ah : Integer,
+    ac : Integer,
+    ahh : Integer,
+    aww : Integer
+  }
+
+  vd-wanted : Text, Text -> Boolean
+  vd-wanted (prefix) (name) = text-starts-with name (prefix & "decoder.") | text-starts-with name (prefix & "post_quant_conv.")
+
+  vd-upload : Text, BoundTensor -> Integer
+  vd-upload (path) (t) =
+    let conv = list-length (t.bt-shape) == 4
+    in let elems = t.bt-bytes / st-dtype-width (t.bt-dtype)
+    in let h = gpu-buf-alloc (elems * (if conv then 2 else 4))
+    in if h == 0 then 0
+    else if ckpt-upload path t h 0 (if conv then gpu-dt-f16 else gpu-dt-f32) < 0 then 0
+    else h
+
+  vd-load-loop : Text, Text, List BoundTensor, Integer, List Text, List Integer, Integer -> VaeWeights
+  vd-load-loop (path) (prefix) (ts) (i) (names) (hs) (failed) =
+    if i >= list-length ts then VaeWeights { vw-prefix = prefix, vw-index = name-index names, vw-handles = hs, vw-failed = failed }
+    else let t = list-at ts i
+    in if vd-wanted prefix (t.bt-name) == False then vd-load-loop path prefix ts (i + 1) names hs failed
+    else let h = vd-upload path t
+    in vd-load-loop path prefix ts (i + 1) (list-push names (t.bt-name)) (list-push hs h) (failed + (if h == 0 then 1 else 0))
+
+  vae-load : Text, PartBinding, Text -> VaeWeights
+  vae-load (path) (part) (prefix) = vd-load-loop path prefix (part.pb-bound) 0 [] [] 0
+
+  vw-get : VaeWeights, Text -> Integer
+  vw-get (w) (name) =
+    let v = name-find (w.vw-index) (w.vw-prefix & name)
+    in if v < 0 then 0 else list-at (w.vw-handles) v
+
+  vae-free : VaeWeights, Integer, Integer -> Integer
+  vae-free (w) (i) (bad) =
+    if i >= list-length (w.vw-handles) then bad
+    else vae-free w (i + 1) (bad + (if gpu-buf-free (list-at (w.vw-handles) i) then 0 else 1))
+
+Section: Launches
+
+  vd-grid : Integer -> GpuGrid
+  vd-grid (n) = GpuGrid { gx = (n + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }
+
+  vd-layer : Text, Integer, List GpuParam -> Integer
+  vd-layer (name) (n) (ps) = gm-launch gm-slot-layer layer-kernels-ptx name (vd-grid n) ps
+
+  vd-rows : Text, Integer, List GpuParam -> Integer
+  vd-rows (name) (rows) (ps) = gm-launch gm-slot-layer layer-kernels-ptx name (GpuGrid { gx = rows, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) ps
+
+  vd-glue : Text, Integer, List GpuParam -> Integer
+  vd-glue (name) (n) (ps) = gm-launch gm-slot-vae vae-kernels-ptx name (vd-grid n) ps
+
+  vd-per256 : Integer -> GpuGrid
+  vd-per256 (n) = GpuGrid { gx = (n + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+
+  vd-buf : Integer -> GpuParam
+  vd-buf (h) = gpu-arg-buf h 0
+
+  vd-int : Integer -> GpuParam
+  vd-int (v) = gpu-arg-u64 v
+
+  vd-act : Integer, Integer, Integer, Integer, Boolean -> Act
+  vd-act (h) (c) (hh) (ww) (ok) = Act { ah = if ok then h else 0, ac = c, ahh = hh, aww = ww }
+
+  vd-free : Act -> Boolean
+  vd-free (x) = if x.ah == 0 then True else gpu-buf-free (x.ah)
+
+ y = x w^T: x is mm x kk f16, w is nn x kk f16, y is mm x nn f32.
+ kernel-linear-fast needs kk a multiple of 8; the attention's kk is h w, which
+ off multiples of 64 pixels is not, and takes the plain WMMA kernel.
+
+  vd-linear : Integer, Integer, Integer, Integer, Integer -> Integer
+  vd-linear (hx) (hw) (mm) (nn) (kk) =
+    let hy = gpu-buf-alloc (mm * nn * 4)
+    in let fast = kk - kk / 8 * 8 == 0
+    in let g = if fast then GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 } else GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
+    in let ps = [vd-buf hx, vd-buf hw, vd-int 0, vd-buf hy, vd-int mm, vd-int nn, vd-int kk, vd-int 0]
+    in if hy == 0 then 0
+    else if gm-launch gm-slot-gemm gemm-ptx (if fast then "kernel_linear_fast" else "kernel_linear_wmma") g (if fast then ps & [vd-int 0] else ps) < 0 then 0
+    else hy
+
+  vd-cast : Act -> Integer
+  vd-cast (x) =
+    let n = x.ac * x.ahh * x.aww
+    in let h = gpu-buf-alloc (n * 2)
+    in if h == 0 then 0
+    else if vd-glue "kernel_cast_f16" n [vd-buf (x.ah), vd-buf h, vd-int n] < 0 then 0
+    else h
+
+Section: Op Set
+
+ The decoder's graph (VaeGraph) does its GPU work through a VaeOps value, as
+ UNet's does through UNetOps (docs/Designs/Active/Apps/InBrowserDiffusion.md,
+ stage 3); the attention is one op, its f16 transposes being the native
+ route's own.
+
+  vd-has : VaeWeights, Text -> Boolean
+  vd-has (w) (name) = vw-get w name /= 0
+
+  vd-channels : Act -> Integer
+  vd-channels (x) = x.ac
+
+  vae-native-ops : VaeOps VaeWeights Act
+  vae-native-ops = VaeOps { conv = vd-conv, norm = vd-norm, add = vd-add, upsample = vd-upsample, attention = vd-attention, free = vd-free, has = vd-has, channels = vd-channels }
+
+Section: Layers
+
+  vd-conv : VaeWeights, Act, Text, Integer, Integer, Integer -> Act
+  vd-conv (w) (x) (p) (cout) (k) (pad) =
+    if x.ac - x.ac / 32 * 32 == 0 then vd-conv-fast w x p cout k pad
+    else vd-conv-wmma w x p cout k pad
+
+  vd-conv-fast : VaeWeights, Act, Text, Integer, Integer, Integer -> Act
+  vd-conv-fast (w) (x) (p) (cout) (k) (pad) =
+    let hw = x.ahh * x.aww
+    in let n = x.ac * hw
+    in let nw = cout * x.ac * k * k
+    in let hx = vd-cast x
+    in let xn = gpu-buf-alloc (n * 2)
+    in let wp = gpu-buf-alloc (nw * 2)
+    in let hy = gpu-buf-alloc (cout * hw * 4)
+    in let g = GpuGrid { gx = (hw + 127) / 128, gy = (cout + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 }
+    in let ok = if hx == 0 | xn == 0 | wp == 0 | hy == 0 then False
+       else if gm-launch gm-slot-gemm gemm-ptx "kernel_nchw_to_nhwc" (GpuGrid { gx = (hw + 31) / 32, gy = (x.ac + 31) / 32, gz = 1, bx = 256, by = 1, bz = 1, shared = 2176 }) [vd-buf hx, vd-buf xn, vd-int (x.ac), vd-int hw, vd-int n] < 0 then False
+       else if gm-launch gm-slot-gemm gemm-ptx "kernel_conv_weight_khwc" (vd-per256 nw) [vd-buf (vw-get w (p & ".weight")), vd-buf wp, vd-int (x.ac), vd-int k, vd-int k, vd-int nw] < 0 then False
+       else gm-launch gm-slot-gemm gemm-ptx "kernel_conv2d_fast" g [vd-buf xn, vd-buf wp, vd-buf (vw-get w (p & ".bias")), vd-buf hy, vd-int (x.ac), vd-int (x.ahh), vd-int (x.aww), vd-int cout, vd-int k, vd-int k, vd-int 1, vd-int pad, vd-int (x.ahh), vd-int (x.aww), vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0] >= 0
+    in let f = (if hx == 0 then True else gpu-buf-free hx) & (if xn == 0 then True else gpu-buf-free xn) & (if wp == 0 then True else gpu-buf-free wp)
+    in let g2 = if ok | hy == 0 then True else gpu-buf-free hy
+    in vd-act hy cout (x.ahh) (x.aww) ok
+
+  vd-conv-wmma : VaeWeights, Act, Text, Integer, Integer, Integer -> Act
+  vd-conv-wmma (w) (x) (p) (cout) (k) (pad) =
+    let hw = x.ahh * x.aww
+    in let hx = vd-cast x
+    in let hy = gpu-buf-alloc (cout * hw * 4)
+    in let g = GpuGrid { gx = (hw + 63) / 64, gy = (cout + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
+    in let ps = [vd-buf hx, vd-buf (vw-get w (p & ".weight")), vd-buf hy, vd-int (x.ac), vd-int (x.ahh), vd-int (x.aww), vd-int cout, vd-int k, vd-int k, vd-int 1, vd-int pad, vd-int (x.ahh), vd-int (x.aww), vd-int 0]
+    in let c1 = if hx == 0 | hy == 0 then 0 - 1 else gm-launch gm-slot-gemm gemm-ptx "kernel_conv2d_wmma" g ps
+    in let f = if hx == 0 then True else gpu-buf-free hx
+    in let c2 = if c1 < 0 then 0 - 1 else vd-layer "kernel_add_channel" (cout * hw) [vd-buf hy, vd-buf (vw-get w (p & ".bias")), vd-buf hy, vd-int hw, vd-int (cout * hw)]
+    in vd-act hy cout (x.ahh) (x.aww) (c2 >= 0)
+
+  vd-norm : VaeWeights, Act, Text, Boolean -> Act
+  vd-norm (w) (x) (p) (silu) =
+    let n = x.ac * x.ahh * x.aww
+    in let hs = gpu-buf-alloc 512
+    in let part = gpu-buf-alloc (32 * 128 * 8)
+    in let ho = gpu-buf-alloc (n * 4)
+    in let c1 = if hs == 0 | part == 0 | ho == 0 then 0 - 1 else vd-rows "kernel_row_stats_wide" 32 [vd-buf (x.ah), vd-buf hs, vd-buf part, vd-int (n / 32), gpu-arg-u64 (real-to-bits 0.000001), vd-int 32]
+    in let c2 = if c1 < 0 then 0 - 1 else vd-layer "kernel_group_norm" n [vd-buf (x.ah), vd-buf hs, vd-buf (vw-get w (p & ".weight")), vd-buf (vw-get w (p & ".bias")), vd-buf ho, vd-int (x.ac), vd-int (x.ahh * x.aww), vd-int 32, vd-int n]
+    in let c3 = if c2 < 0 then 0 - 1 else if silu then vd-layer "kernel_silu" n [vd-buf ho, vd-buf ho, vd-int n] else 0
+    in let f = (if hs == 0 then True else gpu-buf-free hs) & (if part == 0 then True else gpu-buf-free part)
+    in vd-act ho (x.ac) (x.ahh) (x.aww) (c3 >= 0)
+
+  vd-add : Act, Act -> Act
+  vd-add (a) (b) =
+    let n = a.ac * a.ahh * a.aww
+    in let c = if a.ah == 0 | b.ah == 0 then 0 - 1 else vd-layer "kernel_add" n [vd-buf (a.ah), vd-buf (b.ah), vd-buf (a.ah), vd-int n]
+    in vd-act (a.ah) (a.ac) (a.ahh) (a.aww) (c >= 0)
+
+  vd-upsample : Act -> Act
+  vd-upsample (x) =
+    let n = x.ac * x.ahh * x.aww * 4
+    in let ho = gpu-buf-alloc (n * 4)
+    in let c = if ho == 0 | x.ah == 0 then 0 - 1 else vd-layer "kernel_upsample_nearest" n [vd-buf (x.ah), vd-buf ho, vd-int (x.ahh), vd-int (x.aww), vd-int n]
+    in vd-act ho (x.ac) (x.ahh * 2) (x.aww * 2) (c >= 0)
+
+ 1 / sqrt 512: the VAE's only attention is over 512 channels.
+
+  vd-attn-scale : Real = 0.044194173824159216
+
+ Single-head attention over the n = h w positions, softmax (q^T k / sqrt c) v:
+ the scores are q^T (k^T)^T with q^T and k^T n x c; the output is v p^T with v
+ c x n and p n x n, both through vd-linear.
+
+  vd-attention : VaeWeights, Act, Text -> Act
+  vd-attention (w) (x) (p) =
+    let c = x.ac
+    in let n = x.ahh * x.aww
+    in let hn = vd-norm w x (p & "norm") False
+    in let q = vd-conv w hn (p & "q") c 1 0
+    in let k = vd-conv w hn (p & "k") c 1 0
+    in let v = vd-conv w hn (p & "v") c 1 0
+    in let f0 = vd-free hn
+    in let s0 = vd-glue "kernel_scale_f32" (c * n) [vd-buf (q.ah), vd-buf (q.ah), gpu-arg-u64 (real-to-bits vd-attn-scale), vd-int (c * n)]
+    in let qt = gpu-buf-alloc (n * c * 2)
+    in let t0 = vd-glue "kernel_transpose_f16" (c * n) [vd-buf (q.ah), vd-buf qt, vd-int c, vd-int n, vd-int (c * n)]
+    in let kt = gpu-buf-alloc (n * c * 2)
+    in let t2 = vd-glue "kernel_transpose_f16" (c * n) [vd-buf (k.ah), vd-buf kt, vd-int c, vd-int n, vd-int (c * n)]
+    in let hs = vd-linear qt kt n n c
+    in let part = gpu-buf-alloc (n * 128 * 8)
+    in let sm = if part == 0 | hs == 0 then 0 - 1 else vd-rows "kernel_softmax_rows_wide" n [vd-buf hs, vd-buf part, vd-int n, vd-int n]
+    in let fp = if part == 0 then True else gpu-buf-free part
+    in let p16 = gpu-buf-alloc (n * n * 2)
+    in let t1 = vd-glue "kernel_cast_f16" (n * n) [vd-buf hs, vd-buf p16, vd-int (n * n)]
+    in let v16 = vd-cast v
+    in let ho = vd-linear v16 p16 c n n
+    in let f1 = gpu-buf-free qt & gpu-buf-free kt & gpu-buf-free hs & gpu-buf-free p16 & gpu-buf-free v16
+    in let f2 = vd-free q & vd-free k & vd-free v
+    in let ok = s0 >= 0 & t0 >= 0 & t2 >= 0 & sm >= 0 & t1 >= 0 & ho /= 0
+    in let o = vd-act ho c (x.ahh) (x.aww) ok
+    in let h = vd-conv w o (p & "proj_out") c 1 0
+    in let f3 = vd-free o
+    in vd-add h x
+
+Section: Native Graph
+
+  vd-resblock : VaeWeights, Act, Text, Integer -> Act
+  vd-resblock (w) (x) (p) (cout) = vd-resblock-with vae-native-ops w x p cout
+
+  vd-then : Act, Act -> Act
+  vd-then (next) (prev) = vd-then-with vae-native-ops next prev
+
+  vae-decode : VaeWeights, Act -> Act
+  vae-decode (w) (z) = vae-decode-with vae-native-ops w z

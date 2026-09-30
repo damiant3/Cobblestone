@@ -17,11 +17,11 @@ Section: Message Types
 
   coap-type-value : CoapType -> Integer
   coap-type-value (t) =
-   when t
-    is CoapConfirmable -> 0
-    is CoapNonConfirmable -> 1
-    is CoapAcknowledgement -> 2
-    is CoapReset -> 3
+    when t
+     is CoapConfirmable -> 0
+     is CoapNonConfirmable -> 1
+     is CoapAcknowledgement -> 2
+     is CoapReset -> 3
 
 Section: Method Codes
 
@@ -33,11 +33,11 @@ Section: Method Codes
 
   coap-method-code : CoapMethod -> Integer
   coap-method-code (m) =
-   when m
-    is CoapGet -> 1
-    is CoapPost -> 2
-    is CoapPut -> 3
-    is CoapDelete -> 4
+    when m
+     is CoapGet -> 1
+     is CoapPost -> 2
+     is CoapPut -> 3
+     is CoapDelete -> 4
 
 Section: Response Codes
 
@@ -48,7 +48,7 @@ Section: Response Codes
 
   coap-response-code : Integer, Integer -> Integer
   coap-response-code (class-val) (detail) =
-   bit-or (bit-shl class-val 5) detail
+    bit-or (bit-shl class-val 5) detail
 
   coap-200-ok : Integer = coap-response-code 2 0
   coap-201-created : Integer = coap-response-code 2 1
@@ -83,9 +83,9 @@ Section: Packet Builder
 
   coap-build-header : CoapType, Integer, Integer, Integer -> List Integer
   coap-build-header (msg-type) (code) (msg-id) (token-len) =
-   let ver = 1
-   in let byte0 = bit-or (bit-or (bit-shl ver 6) (bit-shl (coap-type-value msg-type) 4)) (bit-and token-len 15)
-   in [byte0, code, bit-shru msg-id 8, bit-and msg-id 255]
+    let ver = 1
+    in let byte0 = bit-or (bit-or (bit-shl ver 6) (bit-shl (coap-type-value msg-type) 4)) (bit-and token-len 15)
+    in [byte0, code, bit-shru msg-id 8, bit-and msg-id 255]
 
   CoapOption = record {
    number : Integer between 0 and 65535,
@@ -100,37 +100,45 @@ Section: Packet Builder
 
   coap-encode-option : Integer, CoapOption -> List Integer
   coap-encode-option (prev-number) (opt) =
-   let delta = opt.number - prev-number
-   in let opt-len = list-length (opt.value)
-   in let delta-nibble = if delta < 13 then delta else if delta < 269 then 13 else 14
-   in let len-nibble = if opt-len < 13 then opt-len else if opt-len < 269 then 13 else 14
-   in let header = [int-widen (bit-or (bit-shl delta-nibble 4) len-nibble)]
-   in let delta-ext = if delta < 13 then [] else if delta < 269 then [int-widen (delta - 13)] else [int-widen (bit-shru (delta - 269) 8), int-widen (bit-and (delta - 269) 255)]
-   in let len-ext = if opt-len < 13 then [] else if opt-len < 269 then [int-widen (opt-len - 13)] else [int-widen (bit-shru (opt-len - 269) 8), int-widen (bit-and (opt-len - 269) 255)]
-   in header & delta-ext & len-ext & opt.value
+    let delta = opt.number - prev-number
+    in let opt-len = list-length (opt.value)
+    in let delta-nibble = if delta < 13 then delta else if delta < 269 then 13 else 14
+    in let len-nibble = if opt-len < 13 then opt-len else if opt-len < 269 then 13 else 14
+    in let header = [int-widen (bit-or (bit-shl delta-nibble 4) len-nibble)]
+    in let delta-ext = if delta < 13 then
+      []
+    else if delta < 269 then
+      [int-widen (delta - 13)]
+    else [int-widen (bit-shru (delta - 269) 8), int-widen (bit-and (delta - 269) 255)]
+    in let len-ext = if opt-len < 13 then
+      []
+    else if opt-len < 269 then
+      [int-widen (opt-len - 13)]
+    else [int-widen (bit-shru (opt-len - 269) 8), int-widen (bit-and (opt-len - 269) 255)]
+    in header & delta-ext & len-ext & opt.value
 
   coap-build-request : CoapType, CoapMethod, Integer, List Integer, List CoapOption, List Integer -> List Integer
   coap-build-request (msg-type) (method) (msg-id) (token) (options) (payload) =
-   let header = coap-build-header msg-type (coap-method-code method) msg-id (list-length token)
-   in let opts = coap-encode-options options 0 0
-   in let payload-marker = if list-length payload > 0 then [255] else []
-   in header & token & opts & payload-marker & payload
+    let header = coap-build-header msg-type (coap-method-code method) msg-id (list-length token)
+    in let opts = coap-encode-options options 0 0
+    in let payload-marker = if list-length payload > 0 then [255] else []
+    in header & token & opts & payload-marker & payload
 
   coap-encode-options : List CoapOption, Integer, Integer -> List Integer
   coap-encode-options (options) (i) (prev-number) =
-   if i >= list-length options then []
-   else let opt = list-at options i
-   in let encoded = coap-encode-option prev-number opt
-   in encoded & coap-encode-options options (i + 1) (opt.number)
+    if i >= list-length options then []
+    else let opt = list-at options i
+    in let encoded = coap-encode-option prev-number opt
+    in encoded & coap-encode-options options (i + 1) (opt.number)
 
 Section: URI Path Helper
 
   coap-uri-path-option : Text -> CoapOption
   coap-uri-path-option (segment) =
-   CoapOption {
-    number = coap-opt-uri-path,
-    value = coap-text-to-bytes segment
-   }
+    CoapOption {
+     number = coap-opt-uri-path,
+     value = coap-text-to-bytes segment
+    }
 
  RFC 7252 section 6.4 step 7 and section 5.10.1: each path SEGMENT is its
  own Uri-Path option, and an option value must not contain a slash. One
@@ -153,9 +161,10 @@ Section: URI Path Helper
 
   coap-split-opts : List Integer, Integer, Integer, Integer, Integer, List CoapOption -> List CoapOption
   coap-split-opts (bs) (num) (sep) (i) (start) (acc) =
-   if i >= list-length bs then coap-emit-seg bs num start i acc
-   else if list-at bs i == sep then coap-split-opts bs num sep (i + 1) (i + 1) (coap-emit-seg bs num start i acc)
-   else coap-split-opts bs num sep (i + 1) start acc
+    if i >= list-length bs then coap-emit-seg bs num start i acc
+    else if list-at bs i == sep then
+      coap-split-opts bs num sep (i + 1) (i + 1) (coap-emit-seg bs num start i acc)
+    else coap-split-opts bs num sep (i + 1) start acc
 
  An empty segment is dropped rather than sent. A leading slash and a
  trailing one both produce one, and "//" produces one between them; an
@@ -164,8 +173,12 @@ Section: URI Path Helper
 
   coap-emit-seg : List Integer, Integer, Integer, Integer, List CoapOption -> List CoapOption
   coap-emit-seg (bs) (num) (start) (stop) (acc) =
-   if stop <= start then acc
-   else list-push acc (CoapOption { number = __narrow num, value = coap-slice bs start (stop - start) })
+    if stop <= start then acc
+    else
+      list-push acc (CoapOption {
+        number = __narrow num,
+        value = coap-slice bs start (stop - start)
+      })
 
  A Uri-Path segment goes on the wire, so the conversion is an I/O
  boundary and runs through `to-unicode`. This said `char-code` alone
@@ -182,29 +195,30 @@ Section: URI Path Helper
 
   coap-text-to-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
   coap-text-to-bytes-loop (s) (i) (len) (acc) =
-   if i >= len then acc
-   else coap-text-to-bytes-loop s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+    if i >= len then acc
+    else
+      coap-text-to-bytes-loop s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
 
 Section: Convenience Builders
 
   coap-get : Integer, List Integer, Text -> List Integer
   coap-get (msg-id) (token) (path) =
-   coap-build-request CoapConfirmable CoapGet msg-id token [coap-uri-path-option path] []
+    coap-build-request CoapConfirmable CoapGet msg-id token [coap-uri-path-option path] []
 
   coap-post : Integer, List Integer, Text, List Integer -> List Integer
   coap-post (msg-id) (token) (path) (payload) =
-   coap-build-request CoapConfirmable CoapPost msg-id token [coap-uri-path-option path, CoapOption { number = coap-opt-content-format, value = [coap-format-cbor] }] payload
+    coap-build-request CoapConfirmable CoapPost msg-id token [coap-uri-path-option path, CoapOption { number = coap-opt-content-format, value = [coap-format-cbor] }] payload
 
   coap-ack : Integer -> List Integer
   coap-ack (msg-id) =
-   coap-build-header CoapAcknowledgement 0 msg-id 0
+    coap-build-header CoapAcknowledgement 0 msg-id 0
 
   coap-build-response : CoapType, Integer, Integer, List Integer, List CoapOption, List Integer -> List Integer
   coap-build-response (msg-type) (code) (msg-id) (token) (options) (payload) =
-   let header = coap-build-header msg-type code msg-id (list-length token)
-   in let opts = coap-encode-options options 0 0
-   in let payload-marker = if list-length payload > 0 then [255] else []
-   in header & token & opts & payload-marker & payload
+    let header = coap-build-header msg-type code msg-id (list-length token)
+    in let opts = coap-encode-options options 0 0
+    in let payload-marker = if list-length payload > 0 then [255] else []
+    in header & token & opts & payload-marker & payload
 
 Section: Block-Wise Transfer and Observe
 
@@ -230,28 +244,28 @@ Section: Block-Wise Transfer and Observe
 
   coap-uint-bytes : Integer -> List Integer
   coap-uint-bytes (v) =
-   if v == 0 then []
-   else if v < 256 then [v]
-   else if v < 65536 then [bit-and (bit-shru v 8) 255, bit-and v 255]
-   else [bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+    if v == 0 then []
+    else if v < 256 then [v]
+    else if v < 65536 then [bit-and (bit-shru v 8) 255, bit-and v 255]
+    else [bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
 
   coap-block-value : Integer, Integer, Integer -> Integer
   coap-block-value (num) (more) (szx) =
-   bit-or (bit-or (bit-shl num 4) (bit-shl more 3)) szx
+    bit-or (bit-or (bit-shl num 4) (bit-shl more 3)) szx
 
   coap-block-option : Integer, Integer, Integer, Integer -> CoapOption
   coap-block-option (option-num) (num) (more) (szx) =
-   CoapOption {
-    number = __narrow option-num,
-    value = coap-uint-bytes (coap-block-value num more szx)
-   }
+    CoapOption {
+     number = __narrow option-num,
+     value = coap-uint-bytes (coap-block-value num more szx)
+    }
 
   coap-observe-option : Integer -> CoapOption
   coap-observe-option (seq) =
-   CoapOption {
-    number = coap-opt-observe,
-    value = coap-uint-bytes seq
-   }
+    CoapOption {
+     number = coap-opt-observe,
+     value = coap-uint-bytes seq
+    }
 
 Section: Parsing
 
@@ -298,8 +312,8 @@ Section: Parsing
 
   coap-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   coap-slice-loop (bytes) (off) (len) (i) (acc) =
-   if i >= len then acc
-   else coap-slice-loop bytes off len (i + 1) (list-push acc (list-at bytes (off + i)))
+    if i >= len then acc
+    else coap-slice-loop bytes off len (i + 1) (list-push acc (list-at bytes (off + i)))
 
  An option delta or length is a nibble, and 13 and 14 mean the real value
  is in the bytes that follow (RFC 7252 section 3.1). The extension must
@@ -308,60 +322,65 @@ Section: Parsing
 
   coap-ext : List Integer, Integer, Integer, Integer -> CoapExt
   coap-ext (bytes) (p) (n) (nib) =
-   if nib < 13 then CoapExt { ce-ok = True, ce-val = nib, ce-next = p }
-   else if nib == 13 then
-     if p >= n then CoapExt { ce-ok = False, ce-val = 0, ce-next = p }
-     else CoapExt { ce-ok = True, ce-val = (list-at bytes p) + 13, ce-next = p + 1 }
-   else if p + 1 >= n then CoapExt { ce-ok = False, ce-val = 0, ce-next = p }
-   else CoapExt { ce-ok = True, ce-val = (bit-or (bit-shl (list-at bytes p) 8) (list-at bytes (p + 1))) + 269, ce-next = p + 2 }
+    if nib < 13 then CoapExt { ce-ok = True, ce-val = nib, ce-next = p }
+    else if nib == 13 then
+      if p >= n then CoapExt { ce-ok = False, ce-val = 0, ce-next = p }
+      else CoapExt { ce-ok = True, ce-val = (list-at bytes p) + 13, ce-next = p + 1 }
+    else if p + 1 >= n then CoapExt { ce-ok = False, ce-val = 0, ce-next = p }
+    else
+      CoapExt {
+        ce-ok = True,
+        ce-val = (bit-or (bit-shl (list-at bytes p) 8) (list-at bytes (p + 1))) + 269,
+        ce-next = p + 2
+      }
 
   coap-scan-fail : CoapOptScan
   coap-scan-fail = CoapOptScan { co-ok = False, co-opts = [], co-next = 0 }
 
   coap-scan-options : List Integer, Integer, Integer, Integer, List CoapOption -> CoapOptScan
   coap-scan-options (bytes) (i) (n) (prev) (acc) =
-   if i >= n then CoapOptScan { co-ok = True, co-opts = acc, co-next = n }
-   else if list-at bytes i == 255 then
-     (if i + 1 >= n then coap-scan-fail
-      else CoapOptScan { co-ok = True, co-opts = acc, co-next = i + 1 })
-   else let h = list-at bytes i
-   in let dn = bit-shru h 4
-   in let ln = bit-and h 15
-   in if dn == 15 then coap-scan-fail
-   else if ln == 15 then coap-scan-fail
-   else let de = coap-ext bytes (i + 1) n dn
-   in if de.ce-ok == False then coap-scan-fail
-   else let le = coap-ext bytes (de.ce-next) n ln
-   in if le.ce-ok == False then coap-scan-fail
-   else let vstart = le.ce-next
-   in if vstart + (le.ce-val) > n then coap-scan-fail
-   else let num = prev + (de.ce-val)
-   in if num > 65535 then coap-scan-fail
-   else coap-scan-options bytes (vstart + (le.ce-val)) n num (list-push acc (CoapOption {
-     number = __narrow num,
-     value = coap-slice bytes vstart (le.ce-val)
-   }))
+    if i >= n then CoapOptScan { co-ok = True, co-opts = acc, co-next = n }
+    else if list-at bytes i == 255 then
+      (if i + 1 >= n then coap-scan-fail
+       else CoapOptScan { co-ok = True, co-opts = acc, co-next = i + 1 })
+    else let h = list-at bytes i
+    in let dn = bit-shru h 4
+    in let ln = bit-and h 15
+    in if dn == 15 then coap-scan-fail
+    else if ln == 15 then coap-scan-fail
+    else let de = coap-ext bytes (i + 1) n dn
+    in if de.ce-ok == False then coap-scan-fail
+    else let le = coap-ext bytes (de.ce-next) n ln
+    in if le.ce-ok == False then coap-scan-fail
+    else let vstart = le.ce-next
+    in if vstart + (le.ce-val) > n then coap-scan-fail
+    else let num = prev + (de.ce-val)
+    in if num > 65535 then coap-scan-fail
+    else coap-scan-options bytes (vstart + (le.ce-val)) n num (list-push acc (CoapOption {
+      number = __narrow num,
+      value = coap-slice bytes vstart (le.ce-val)
+    }))
 
   coap-parse : List Integer -> Maybe CoapMessage
   coap-parse (bytes) =
-   let n = list-length bytes
-   in if n < 4 then None
-   else let byte0 = list-at bytes 0
-   in let ver = bit-shru byte0 6
-   in let tkl = bit-and byte0 15
-   in if ver /= 1 then None
-   else if tkl > 8 then None
-   else if 4 + tkl > n then None
-   else let scan = coap-scan-options bytes (4 + tkl) n 0 []
-   in if scan.co-ok == False then None
-   else Just (CoapMessage {
-     cm-type = __narrow (bit-and (bit-shru byte0 4) 3),
-     cm-code = __narrow (list-at bytes 1),
-     cm-msg-id = __narrow (bit-or (bit-shl (list-at bytes 2) 8) (list-at bytes 3)),
-     cm-token = coap-slice bytes 4 tkl,
-     cm-options = scan.co-opts,
-     cm-payload = coap-slice bytes (scan.co-next) (n - (scan.co-next))
-   })
+    let n = list-length bytes
+    in if n < 4 then None
+    else let byte0 = list-at bytes 0
+    in let ver = bit-shru byte0 6
+    in let tkl = bit-and byte0 15
+    in if ver /= 1 then None
+    else if tkl > 8 then None
+    else if 4 + tkl > n then None
+    else let scan = coap-scan-options bytes (4 + tkl) n 0 []
+    in if scan.co-ok == False then None
+    else Just (CoapMessage {
+      cm-type = __narrow (bit-and (bit-shru byte0 4) 3),
+      cm-code = __narrow (list-at bytes 1),
+      cm-msg-id = __narrow (bit-or (bit-shl (list-at bytes 2) 8) (list-at bytes 3)),
+      cm-token = coap-slice bytes 4 tkl,
+      cm-options = scan.co-opts,
+      cm-payload = coap-slice bytes (scan.co-next) (n - (scan.co-next))
+    })
 
 Section: Reading Options
 
@@ -383,10 +402,10 @@ Section: Reading Options
 
   coap-find-options-loop : List CoapOption, Integer, Integer, List (List Integer) -> List (List Integer)
   coap-find-options-loop (opts) (num) (i) (acc) =
-   if i >= list-length opts then acc
-   else let o = list-at opts i
-   in if o.number == num then coap-find-options-loop opts num (i + 1) (list-push acc (o.value))
-   else coap-find-options-loop opts num (i + 1) acc
+    if i >= list-length opts then acc
+    else let o = list-at opts i
+    in if o.number == num then coap-find-options-loop opts num (i + 1) (list-push acc (o.value))
+    else coap-find-options-loop opts num (i + 1) acc
 
  2.04 Changed, which a Write and an Execute both answer with. The constant
  named coap-204-deleted above is 2.02 Deleted (response-code 2 2); its VALUE
@@ -400,18 +419,18 @@ Section: Reading Options
 
   coap-find-option-loop : List CoapOption, Integer, Integer, Integer -> Maybe (List Integer)
   coap-find-option-loop (opts) (num) (i) (len) =
-   if i >= len then None
-   else let o = list-at opts i
-   in if o.number == num then Just (o.value)
-   else coap-find-option-loop opts num (i + 1) len
+    if i >= len then None
+    else let o = list-at opts i
+    in if o.number == num then Just (o.value)
+    else coap-find-option-loop opts num (i + 1) len
 
   coap-uint-value : List Integer -> Integer
   coap-uint-value (bytes) = coap-uint-value-loop bytes 0 (list-length bytes) 0
 
   coap-uint-value-loop : List Integer, Integer, Integer, Integer -> Integer
   coap-uint-value-loop (bytes) (i) (len) (acc) =
-   if i >= len then acc
-   else coap-uint-value-loop bytes (i + 1) len (bit-or (bit-shl acc 8) (list-at bytes i))
+    if i >= len then acc
+    else coap-uint-value-loop bytes (i + 1) len (bit-or (bit-shl acc 8) (list-at bytes i))
 
   coap-block-num : Integer -> Integer
   coap-block-num (v) = bit-shru v 4

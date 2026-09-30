@@ -1,0 +1,36 @@
+Chapter: PeForwardProbe
+  cites Pe chapter PeWriter
+  cites Pe chapter PeExports
+
+Section: Input
+
+  pfp-copy : Integer, Integer, Integer -> Integer
+  pfp-copy (src) (dst) (i) =
+    if i >= 512 then 0
+    else let w = poke-qword dst i (peek-qword src i)
+    in pfp-copy src dst (i + 8)
+
+  pfp-stage : Integer, Integer, Integer -> [Device.Block] Integer
+  pfp-stage (buf) (s) (n) =
+    if s >= n then buf
+    else let mark = __heap-save
+    in act
+      sector <- block-read-sector s
+      let copied = pfp-copy sector (buf + s * 512) 0
+      in let restored = __heap-restore mark
+      in pfp-stage buf (s + 1) n
+    end
+
+  opening : [Console, Device.Block] Nothing = act
+    n <- block-sector-count
+    buf <- pfp-stage (alloc-bytes (n * 512)) 0 n
+    let table = pe-exports buf (n * 512)
+    in if table.pet-why /= "" then print-line-uni ("REFUSED " & table.pet-why)
+    else let dll = build-forwarding-winhttp (table.pet-exports)
+    in if dll.pfd-why /= "" then print-line-uni ("REFUSED " & dll.pfd-why)
+    else act
+      print-line-uni ("SIZE:" & show (dll.pfd-size))
+      let sent = write-binary-buf (dll.pfd-buffer) 0 (dll.pfd-size)
+      in print-line-uni "END"
+    end
+  end

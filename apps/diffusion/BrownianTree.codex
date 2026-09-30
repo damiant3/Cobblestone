@@ -1,0 +1,289 @@
+Chapter: BrownianTree
+  cites Diffusion chapter Noise
+  cites Diffusion chapter SeedSequence
+  cites Diffusion chapter Sampler
+
+ torchsde 0.2's BrownianTree as k-diffusion's BrownianTreeNoiseSampler
+ builds it for Forge's SDE samplers (Diffusion.md, "Guidance and seeds"):
+ halfway splits, every time rounded to 6 decimals, pool 24, no Levy area,
+ each node's values an f32 array of n in guest memory.
+
+ We say:
+
+Section: Nodes
+
+  BtTree = record {
+    bt-seed  : Integer,
+    bt-n     : Integer,
+    bt-start : List Real,
+    bt-end   : List Real,
+    bt-mid   : List Real,
+    bt-parent : List Integer,
+    bt-left  : List Integer,
+    bt-key   : List Integer,
+    bt-depth : List Integer,
+    bt-wseed : List Integer,
+    bt-w     : List Integer,
+    bt-count : List Integer,
+    bt-top-w : Integer,
+    bt-x : Integer
+  }
+
+ Python's round(x, 6) rounds the exact binary value of x, ties to even, so
+ a product x * 1e6 that rounds onto a .5 decides nothing: e is that
+ product's exact error (Veltkamp's split of x, exact because 1e6 has 14
+ significant bits), and its sign settles the tie.
+
+  bt-round : Real -> Real
+  bt-round (x) = if x < 0.0 then 0.0 - bt-round-pos (0.0 - x) else bt-round-pos x
+
+  bt-round-pos : Real -> Real
+  bt-round-pos (x) =
+    let p = x * 1000000.0
+    in let c = 134217729.0 * x
+    in let xh = c - (c - x)
+    in let xl = x - xh
+    in let e = (xh * 1000000.0 - p) + xl * 1000000.0
+    in let f = real-from-int (real-to-int p)
+    in let d = p - f
+    in let up = if d > 0.5 then True else if d < 0.5 then False else if e > 0.0 then True else if e < 0.0 then False else real-to-int f - (real-to-int f / 2) * 2 /= 0
+    in (if up then f + 1.0 else f) / 1000000.0
+
+  bt-new-node : BtTree, Real, Real, Integer -> Integer
+  bt-new-node (t) (s) (e) (parent) =
+    let i = list-at (t.bt-count) 0
+    in let n = list-set-at (t.bt-count) 0 (i + 1)
+    in let a = list-set-at (t.bt-start) i (bt-round s)
+    in let b = list-set-at (t.bt-end) i (bt-round e)
+    in let c = list-set-at (t.bt-mid) i (0.0 - 1.0)
+    in let d = list-set-at (t.bt-parent) i parent
+    in let f = list-set-at (t.bt-left) i (0 - 1)
+    in let g = list-set-at (t.bt-key) i 0
+    in let h = list-set-at (t.bt-depth) i 0
+    in let k = list-set-at (t.bt-wseed) i 0
+    in let m = list-set-at (t.bt-w) i 0
+    in i
+
+ Node lists are made at their full size once, because a push past a list's
+ capacity can move it and the record would keep the old one.
+
+  bt-cap : Integer
+  bt-cap = 8192
+
+  bt-ints : Integer, List Integer -> List Integer
+  bt-ints (k) (acc) = if k <= 0 then acc else bt-ints (k - 1) (list-push acc 0)
+
+  bt-reals : Integer, List Real -> List Real
+  bt-reals (k) (acc) = if k <= 0 then acc else bt-reals (k - 1) (list-push acc 0.0)
+
+ A tree over (t0, t1) for one image's n values; the top's W is a draw from
+ the first word of SeedSequence(seed, pool 24) times sqrt (t1 - t0).
+
+  bt-new : Integer, Integer, Real, Real -> BtTree
+  bt-new (seed) (n) (t0) (t1) =
+    let st = seed-sequence-state (seed-sequence seed [] 24) 3
+    in let w = alloc-bytes (n * 4)
+    in let z = noise-torch-into w (list-at st 0) 0 n
+    in let q = bt-scale w n (sm-f32 (sm-sqrt (t1 - t0))) 0
+    in let t = BtTree { bt-seed = seed, bt-n = n, bt-start = bt-reals bt-cap [], bt-end = bt-reals bt-cap [], bt-mid = bt-reals bt-cap [], bt-parent = bt-ints bt-cap [], bt-left = bt-ints bt-cap [], bt-key = bt-ints bt-cap [], bt-depth = bt-ints bt-cap [], bt-wseed = bt-ints bt-cap [], bt-w = bt-ints bt-cap [], bt-count = [0], bt-top-w = w, bt-x = alloc-bytes (n * 4) }
+    in let r = bt-new-node t t0 t1 (0 - 1)
+    in t
+
+  bt-scale : Integer, Integer, Real, Integer -> Integer
+  bt-scale (w) (n) (k) (i) =
+    if i >= n then 0
+    else let p = poke-32 w (i * 4) (nz-f32-bits (sm-f32 (bt-f32 (peek-32 w (i * 4)) * k)))
+    in bt-scale w n k (i + 1)
+
+  bt-f32 : Integer -> Real
+  bt-f32 (raw) =
+    let b = bit-and raw #FFFFFFFF
+    in let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-shru b 31) 63) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+Section: Splitting
+
+ A node splits at its rounded halfway point, taking its spawn key and depth
+ from its parent's (the top's are 0 and 0) and its W seed from the first of
+ SeedSequence(seed, (key, depth), pool 24)'s four words, then splits the
+ child holding the target until the target is a boundary. A node's right
+ child is the one made after its left.
+
+  bt-split : BtTree, Integer, Real -> Integer
+  bt-split (t) (i) (target) =
+    let s = list-at (t.bt-start) i
+    in let e = list-at (t.bt-end) i
+    in let mid = bt-round (0.5 * (e + s))
+    in let p = list-at (t.bt-parent) i
+    in let key = if p < 0 then 0 else 2 * list-at (t.bt-key) p + (if list-at (t.bt-left) p == i then 0 else 1)
+    in let depth = if p < 0 then 0 else list-at (t.bt-depth) p + 1
+    in let st = seed-sequence-state (seed-sequence (t.bt-seed) [key, depth] 24) 4
+    in let a = list-set-at (t.bt-mid) i mid
+    in let b = list-set-at (t.bt-key) i key
+    in let c = list-set-at (t.bt-depth) i depth
+    in let d = list-set-at (t.bt-wseed) i (list-at st 0)
+    in let l = bt-new-node t s mid i
+    in let r = bt-new-node t mid e i
+    in let g = list-set-at (t.bt-left) i l
+    in if target > mid then bt-split t r target
+    else if target < mid then bt-split t l target
+    else 0
+
+ The nodes that tile (ta, tb), left to right, appended to acc.
+
+  bt-loc : BtTree, Integer, Real, Real, List Integer -> List Integer
+  bt-loc (t) (i) (ta) (tb) (acc) =
+    let s = list-at (t.bt-start) i
+    in let e = list-at (t.bt-end) i
+    in let mid = list-at (t.bt-mid) i
+    in let l = list-at (t.bt-left) i
+    in if (ta ~0 s) & (tb ~0 e) then list-push acc i
+    else if l < 0 then bt-loc-split t i ta tb acc
+    else if tb <= mid then bt-loc t l ta tb acc
+    else if ta >= mid then bt-loc t (l + 1) ta tb acc
+    else bt-loc t (l + 1) mid tb (bt-loc t l ta mid acc)
+
+ torchsde hands the query to the new left (or right) child, and a child that
+ does not hold it passes it back up; asking the split node again is the same.
+
+  bt-loc-split : BtTree, Integer, Real, Real, List Integer -> List Integer
+  bt-loc-split (t) (i) (ta) (tb) (acc) =
+    if ta ~0 list-at (t.bt-start) i then bt-loc-again t i ta tb acc (bt-split t i tb)
+    else bt-loc-again t i ta tb acc (bt-split t i ta)
+
+  bt-loc-again : BtTree, Integer, Real, Real, List Integer, Integer -> List Integer
+  bt-loc-again (t) (i) (ta) (tb) (acc) (z) = bt-loc t i ta tb acc
+
+Section: Values
+
+ A node's W, kept once made: the top's is the tree's; a child's comes from
+ its parent's W and one draw X of the parent's W seed, left = l W / h +
+ sqrt (l r / h) X and right = W - left, each step in f32 as torch's tensors
+ are.
+
+  bt-value : BtTree, Integer -> Integer
+  bt-value (t) (i) =
+    let p = list-at (t.bt-parent) i
+    in if p < 0 then t.bt-top-w
+    else if list-at (t.bt-w) i /= 0 then list-at (t.bt-w) i
+    else bt-value-made t i (bt-children t p)
+
+  bt-value-made : BtTree, Integer, Integer -> Integer
+  bt-value-made (t) (i) (z) = list-at (t.bt-w) i
+
+  bt-children : BtTree, Integer -> Integer
+  bt-children (t) (p) =
+    let n = t.bt-n
+    in let wp = bt-value t p
+    in let s = list-at (t.bt-start) p
+    in let e = list-at (t.bt-end) p
+    in let mid = list-at (t.bt-mid) p
+    in let ld = mid - s
+    in let rd = e - mid
+    in let hrec = 1.0 / (e - s)
+    in let x = t.bt-x
+    in let z = noise-torch-into x (list-at (t.bt-wseed) p) 0 n
+    in let lw = alloc-bytes (n * 4)
+    in let rw = alloc-bytes (n * 4)
+    in let q = bt-mix wp x lw rw (sm-f32 ld) (sm-f32 hrec) (sm-f32 (sm-sqrt (ld * rd * hrec))) 0 n
+    in let l = list-at (t.bt-left) p
+    in let a = list-set-at (t.bt-w) l lw
+    in let b = list-set-at (t.bt-w) (l + 1) rw
+    in 0
+
+  bt-mix : Integer, Integer, Integer, Integer, Real, Real, Real, Integer, Integer -> Integer
+  bt-mix (wp) (x) (lw) (rw) (ld) (hrec) (sd) (i) (n) =
+    if i >= n then 0
+    else let w = bt-f32 (peek-32 wp (i * 4))
+    in let mean = sm-f32 (sm-f32 (ld * w) * hrec)
+    in let left = sm-f32 (mean + sm-f32 (sd * bt-f32 (peek-32 x (i * 4))))
+    in let a = poke-32 lw (i * 4) (nz-f32-bits left)
+    in let b = poke-32 rw (i * 4) (nz-f32-bits (sm-f32 (w - left)))
+    in bt-mix wp x lw rw ld hrec sd (i + 1) n
+
+Section: Drawing
+
+ W over (ta, tb) into out: the sum of its tiling nodes' W, in order; a time
+ past the top's end is taken at the end, as torchsde clamps it.
+
+  bt-query : BtTree, Real, Real, Integer -> Integer
+  bt-query (t) (ta) (tb) (out) =
+    let e = list-at (t.bt-end) 0
+    in let a = bt-round (if ta > e then e else ta)
+    in let b = bt-round (if tb > e then e else tb)
+    in let z = bt-zero out 0 (t.bt-n)
+    in if a ~0 b then 0
+    else bt-sum t (bt-loc t 0 a b []) 0 out
+
+  bt-zero : Integer, Integer, Integer -> Integer
+  bt-zero (out) (i) (n) = if i >= n then 0 else let a = poke-32 out (i * 4) 0 in bt-zero out (i + 1) n
+
+  bt-sum : BtTree, List Integer, Integer, Integer -> Integer
+  bt-sum (t) (nodes) (k) (out) =
+    if k >= list-length nodes then 0
+    else let z = bt-add out (bt-value t (list-at nodes k)) 0 (t.bt-n)
+    in bt-sum t nodes (k + 1) out
+
+  bt-add : Integer, Integer, Integer, Integer -> Integer
+  bt-add (out) (w) (i) (n) =
+    if i >= n then 0
+    else let a = poke-32 out (i * 4) (nz-f32-bits (sm-f32 (bt-f32 (peek-32 out (i * 4)) + bt-f32 (peek-32 w (i * 4)))))
+    in bt-add out w (i + 1) n
+
+ k-diffusion's draw between sigma and sigma' (both f32): W over the sorted
+ pair, negated when sigma' < sigma, over sqrt |sigma' - sigma| in f32.
+
+  brownian-draw : BtTree, Real, Real, Integer -> Integer
+  brownian-draw (t) (sigma) (next) (out) =
+    let lo = if sigma < next then sigma else next
+    in let hi = if sigma < next then next else sigma
+    in let z = bt-query t lo hi out
+    in let k = sm-f32 (sm-sqrt (sm-f32 (hi - lo)))
+    in bt-div out (if next < sigma then 0.0 - 1.0 else 1.0) k 0 (t.bt-n)
+
+  bt-div : Integer, Real, Real, Integer, Integer -> Integer
+  bt-div (out) (sign) (k) (i) (n) =
+    if i >= n then 0
+    else let a = poke-32 out (i * 4) (nz-f32-bits (sm-f32 (sm-f32 (sign * bt-f32 (peek-32 out (i * 4))) / k)))
+    in bt-div out sign k (i + 1) n
+
+Section: Samplers
+
+ Forge's tree for sigmas sig (create_noise_sampler): from the smallest
+ nonzero sigma to the largest, both f32.
+
+  brownian-tree : Integer, Integer, List Real -> BtTree
+  brownian-tree (seed) (n) (sig) = bt-new seed n (sm-f32 (bt-min-pos sig 0 0.0)) (sm-f32 (bt-max sig 0 0.0))
+
+  bt-min-pos : List Real, Integer, Real -> Real
+  bt-min-pos (sig) (i) (m) =
+    if i >= list-length sig then m
+    else let s = list-at sig i
+    in bt-min-pos sig (i + 1) (if s > 0.0 & (m <= 0.0 | s < m) then s else m)
+
+  bt-max : List Real, Integer, Real -> Real
+  bt-max (sig) (i) (m) = if i >= list-length sig then m else bt-max sig (i + 1) (if list-at sig i > m then list-at sig i else m)
+
+ k-diffusion's calls to the noise sampler over sig, as (sigma, sigma')
+ pairs in call order, one call per step to a nonzero sigma' for the
+ multistep SDE samplers and two for DPM++ SDE (mid), which asks at
+ sigma_fn (t_fn sigma) and at the midpoint s = t + (t' - t) / 2 in log
+ sigma, every op an f32 tensor op.
+
+  brownian-queries : Boolean, List Real, Integer, List Real -> List Real
+  brownian-queries (mid) (sig) (i) (acc) =
+    if i >= list-length sig - 1 then acc
+    else let s = sm-f32 (list-at sig i)
+    in let sn = sm-f32 (list-at sig (i + 1))
+    in if sn <= 0.0 then brownian-queries mid sig (i + 1) acc
+    else if mid == False then brownian-queries mid sig (i + 1) (list-push (list-push acc s) sn)
+    else let lt = sm-f32 (sm-ln s)
+    in let ln = sm-f32 (sm-ln sn)
+    in let h = sm-f32 (lt - ln)
+    in let st = sm-f32 (sm-f32 (h * 0.5) - lt)
+    in let a = sm-f32 (sm-exp lt)
+    in let q = list-push (list-push (list-push (list-push acc a) (sm-f32 (sm-exp (0.0 - st)))) a) (sm-f32 (sm-exp ln))
+    in brownian-queries mid sig (i + 1) q
+
+Page 1

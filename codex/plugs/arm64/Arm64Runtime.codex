@@ -707,7 +707,8 @@ Section: __list_push
    in let i = a64-rt-emit i arm64-ret
    in let grow-l = list-length i / 4
    in let i = a64-rt-emit i (arm64-add 12 10 10)
-   in let i = a64-rt-emit i (arm64-cmp 12 10)
+   in let i = i & arm64-movz 13 4 0
+   in let i = a64-rt-emit i (arm64-cmp 12 13)
    in let cap-ok = list-length i / 4
    in let i = a64-rt-emit i arm64-nop
    in let i = i & arm64-movz 12 4 0
@@ -762,6 +763,23 @@ Section: __list_empty
    in let i = i & arm64-movz 9 0 0
    in let i = a64-rt-emit i (arm64-str 9 0 0)
    in let i = a64-rt-emit i (arm64-add-imm 28 28 48)
+   in a64-rt-emit i arm64-ret
+
+ The empty literal: capacity 0 and length 0, 16 bytes, as x86-64's
+ `emit-list-bivy` lays out `[]`. `list-empty` keeps capacity 4 because the
+ non-empty literals push into it.
+
+  a64-rt-list-nil : List Integer
+  a64-rt-list-nil =
+   let i = []
+   in let i = a64-rt-emit i (arm64-add-imm 28 28 7)
+   in let i = i & arm64-lsr-imm 28 28 3
+   in let i = i & arm64-lsl-imm 28 28 3
+   in let i = i & arm64-movz 9 0 0
+   in let i = a64-rt-emit i (arm64-str 9 28 0)
+   in let i = a64-rt-emit i (arm64-add-imm 0 28 8)
+   in let i = a64-rt-emit i (arm64-str 9 0 0)
+   in let i = a64-rt-emit i (arm64-add-imm 28 28 16)
    in a64-rt-emit i arm64-ret
 
 Section: int-mod
@@ -825,9 +843,13 @@ Section: Builtin Helpers
    in let i = a64-rt-emit i (arm64-ldrb 0 9 8)
    in a64-rt-emit i arm64-ret
 
+  a64-rt-refuse-negative-x0 : List Integer
+  a64-rt-refuse-negative-x0 =
+   arm64-cmp-imm 0 0 & arm64-b-cond 10 8 & arm64-encode #D4200020
+
   a64-rt-char-to-text : List Integer
   a64-rt-char-to-text =
-   let i = []
+   let i = a64-rt-refuse-negative-x0
    in let i = a64-rt-emit i (arm64-add-imm 28 28 7)
    in let i = i & arm64-lsr-imm 28 28 3
    in let i = i & arm64-lsl-imm 28 28 3
@@ -1384,9 +1406,10 @@ Section: Heap Management Helpers
   a64-rt-heap-save =
    arm64-mov 0 28 & arm64-ret
 
-  a64-rt-heap-base : List Integer
-  a64-rt-heap-base =
-   arm64-movz 0 16384 16 & arm64-ret
+  a64-rt-heap-base : Boolean -> List Integer
+  a64-rt-heap-base (darwin) =
+   if darwin then arm64-li 0 a64-darwin-heap-addr & arm64-ret
+   else arm64-li 0 a64-heap-base-cell & arm64-ldr 0 0 0 & arm64-ret
 
   a64-rt-heap-restore : List Integer
   a64-rt-heap-restore =
@@ -1857,7 +1880,7 @@ Section: Char Encode
 
   a64-rt-char-encode : List Integer
   a64-rt-char-encode =
-   let i = []
+   let i = a64-rt-refuse-negative-x0
    in let i = a64-rt-emit i (arm64-add-imm 28 28 7)
    in let i = i & arm64-lsr-imm 28 28 3
    in let i = i & arm64-lsl-imm 28 28 3
@@ -1930,6 +1953,51 @@ Section: Apply One
    in let i = a64-rt-emit i arm64-ret
    in let ap-tramp = list-length i / 4
    in let i = a64-patch-insn-raw i ap-adr (a64-encode-adr-signed 9 ((ap-tramp - ap-adr) * 4))
+   in let i = a64-rt-emit i (arm64-ldr 10 11 8)
+   in let i = a64-rt-emit i (arm64-cmp-imm 10 8)
+   in let ap-small = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = a64-rt-emit i (arm64-stp-pre 29 30 31 (0 - 16))
+   in let i = a64-rt-emit i (arm64-add-imm 29 31 0)
+   in let i = a64-rt-emit i (arm64-sub-imm 12 10 7)
+   in let i = i & arm64-lsl-imm 12 12 3
+   in let i = a64-rt-emit i (arm64-add-imm 12 12 15)
+   in let i = i & arm64-lsr-imm 12 12 4 & arm64-lsl-imm 12 12 4
+   in let i = a64-rt-emit i (arm64-add-imm 13 31 0)
+   in let i = a64-rt-emit i (arm64-sub 13 13 12)
+   in let i = a64-rt-emit i (arm64-add-imm 31 13 0)
+   in let i = a64-rt-emit i (arm64-str 7 31 0)
+   in let i = a64-rt-emit i (arm64-sub-imm 14 10 8)
+   in let i = i & arm64-movz 15 0 0
+   in let ap-copy = list-length i / 4
+   in let i = a64-rt-emit i (arm64-cmp 15 14)
+   in let ap-copy-exit = list-length i / 4
+   in let i = a64-rt-emit i arm64-nop
+   in let i = i & arm64-lsl-imm 16 15 3
+   in let i = a64-rt-emit i (arm64-add 17 29 16)
+   in let i = a64-rt-emit i (arm64-ldr 17 17 16)
+   in let i = a64-rt-emit i (arm64-add 16 16 13)
+   in let i = a64-rt-emit i (arm64-str 17 16 8)
+   in let i = a64-rt-emit i (arm64-add-imm 15 15 1)
+   in let i = a64-rt-emit i (arm64-b ((ap-copy - list-length i / 4) * 4))
+   in let ap-copied = list-length i / 4
+   in let i = a64-patch-insn-raw i ap-copy-exit (arm64-b-cond 10 ((ap-copied - ap-copy-exit) * 4))
+   in let i = a64-rt-emit i (arm64-mov 7 6)
+   in let i = a64-rt-emit i (arm64-mov 6 5)
+   in let i = a64-rt-emit i (arm64-mov 5 4)
+   in let i = a64-rt-emit i (arm64-mov 4 3)
+   in let i = a64-rt-emit i (arm64-mov 3 2)
+   in let i = a64-rt-emit i (arm64-mov 2 1)
+   in let i = a64-rt-emit i (arm64-mov 1 0)
+   in let i = a64-rt-emit i (arm64-ldr 0 11 24)
+   in let i = a64-rt-emit i (arm64-ldr 11 11 16)
+   in let i = a64-rt-emit i (arm64-ldr 9 11 0)
+   in let i = a64-rt-emit i (arm64-blr 9)
+   in let i = a64-rt-emit i (arm64-add-imm 31 29 0)
+   in let i = a64-rt-emit i (arm64-ldp-post 29 30 31 16)
+   in let i = a64-rt-emit i arm64-ret
+   in let ap-small-at = list-length i / 4
+   in let i = a64-patch-insn-raw i ap-small (arm64-b-cond 11 ((ap-small-at - ap-small) * 4))
    in let i = a64-rt-emit i (arm64-mov 7 6)
    in let i = a64-rt-emit i (arm64-mov 6 5)
    in let i = a64-rt-emit i (arm64-mov 5 4)
@@ -2892,7 +2960,8 @@ Section: Block device helpers
  `#40020000`..`#40022000` (`a64-effect-op-table-base`,
  `a64-effect-op-slots` in `Arm64CodeGen3.codex`), moved off the ELF load
  base where it had room for only 16 slots, and the three deck cells
- below. The next free span is `#40022018`..`#40100000`.
+ below, and the heap-base cell after them. The next free span is
+ `#40022020`..`#40100000`.
 
  The deck needs no region, which is the thing the plugs-backlog 1.33 row
  got wrong and the reason it was sized as an allocator. A deck is a
@@ -2906,6 +2975,11 @@ Section: Block device helpers
   a64-deck-pos-addr : Integer = #40022000
   a64-deck-bound-counter-addr : Integer = #40022008
   a64-bivy-save-addr : Integer = #40022010
+
+ Under UEFI the PE stub hands `__start` an x28 computed from the image
+ size after this plug has run, so the heap start is known only at boot.
+
+  a64-heap-base-cell : Integer = #40022018
 
   a64-vblk-ring-base : Integer = #40010000
 
@@ -3134,11 +3208,7 @@ Section: FileSystem servicer
 
   a64-emit-or-into-cell : A64State, Integer, Integer -> A64State
   a64-emit-or-into-cell (st) (addr) (mask) =
-   let st1 = a64-emit-li st 9 addr
-   in let st2 = a64-emit st1 (arm64-ldr 10 9 0)
-   in let st3 = a64-emit-li st2 11 mask
-   in let st4 = a64-emit st3 (arm64-or 10 10 11)
-   in a64-emit st4 (arm64-str 10 9 0)
+   a64-emit-insn-list st (arm64-or-into-cell addr mask) 0
 
   a64-emit-store-scope : A64State, Integer, Text -> A64State
   a64-emit-store-scope (st) (addr) (scope) =
@@ -3152,9 +3222,7 @@ Section: FileSystem servicer
   a64-emit-boot-grant (st) =
    let mask = (st.extra).boot-cap-mask
    in let cap0 = a64-proc-table-base + a64-proc-cap-offset
-   in let st1 = if bit-shru mask 31 /= 0
-    then a64-add-shadow-warning st "[UNSUPPORTED] boot capability grant: a capability at bit 31 or above is REFUSED on arm64 and no grant is emitted. a64-emit-li is unmeasured for a mask that wide and the arm64 bed is unavailable, so this refuses rather than miscompiling (COMPILER-17)."
-    else if mask == 0 then st else a64-emit-or-into-cell st cap0 mask
+   in let st1 = if mask == 0 then st else a64-emit-or-into-cell st cap0 mask
    in let st2 = a64-emit-store-scope st1 (a64-proc-table-base + a64-proc-scope-offset) ((st.extra).boot-fs-scope)
    in let st3 = a64-emit-store-scope st2 (a64-proc-table-base + a64-proc-net-scope-offset) ((st.extra).boot-net-scope)
    in a64-emit-or-into-cell st3 (a64-proc-table-base + 256 + a64-proc-cap-offset) 1
@@ -3671,7 +3739,9 @@ Section: Emit All Runtime Helpers
    in let st3 = a64-emit st2 (arm64-mov 31 9)
    in let st3x = a64-emit-li st3 28 a64-heap-start
    in let uefi-label = st3x.insn-count
-   in let st3a = a64-emit-li st3x 10 a64-ascii-to-cce-table-addr
+   in let st3y = a64-emit-li st3x 10 a64-heap-base-cell
+   in let st3z = a64-emit st3y (arm64-str 28 10 0)
+   in let st3a = a64-emit-li st3z 10 a64-ascii-to-cce-table-addr
    in let a2c-table = a64-build-ascii-to-cce [] 0
    in let st3b = a64-write-table-loop st3a 10 a2c-table 0
    in let st3c = a64-emit-li st3b 10 a64-cce-to-unicode-table-addr
@@ -3720,7 +3790,9 @@ Section: Emit All Runtime Helpers
    in let st20 = a64-record-func st19 "list-push"
    in let f20 = a64-rt-list-push in let st21 = a64-emit-block st20 f20 0 (list-length f20)
    in let st22 = a64-record-func st21 "list-empty"
-   in let f22 = a64-rt-list-empty in let st23 = a64-emit-block st22 f22 0 (list-length f22)
+   in let f22 = a64-rt-list-empty in let st22a = a64-emit-block st22 f22 0 (list-length f22)
+   in let st22b = a64-record-func st22a "__list_nil"
+   in let f22b = a64-rt-list-nil in let st23 = a64-emit-block st22b f22b 0 (list-length f22b)
    in let st24 = a64-record-func st23 "integer-to-text"
    in let f24 = a64-rt-itoa in let st25 = a64-emit-block st24 f24 0 (list-length f24)
    in let st26 = a64-record-func st25 "text-length"
@@ -3782,7 +3854,7 @@ Section: Emit All Runtime Helpers
    in let st72 = a64-record-func st71 "__heap-save"
    in let f72 = a64-rt-heap-save in let st73 = a64-emit-block st72 f72 0 (list-length f72)
    in let st73b = a64-record-func st73 "__heap-base"
-   in let f73b = a64-rt-heap-base in let st73c = a64-emit-block st73b f73b 0 (list-length f73b)
+   in let f73b = a64-rt-heap-base ((st.extra).darwin-boot) in let st73c = a64-emit-block st73b f73b 0 (list-length f73b)
    in let st74 = a64-record-func st73c "__heap-restore"
    in let f74 = a64-rt-heap-restore in let st75 = a64-emit-block st74 f74 0 (list-length f74)
    in let st76 = a64-record-func st75 "__heap-advance"

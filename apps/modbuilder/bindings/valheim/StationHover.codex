@@ -1,0 +1,253 @@
+Chapter: Unity Station Hover
+
+Section: Tree Helpers
+
+  sth-ty : Text -> CstType
+  sth-ty (name) = CstNamedType name []
+
+  sth-fn : CstType, CstType -> CstType
+  sth-fn (arg) (result) = CstNamedType "Func" [arg, result]
+
+  sth-long : CstType
+  sth-long = sth-ty "long"
+
+  sth-smelter-policy : CstType
+  sth-smelter-policy = sth-fn sth-long (sth-fn sth-long (sth-fn sth-long (sth-fn sth-long (sth-fn sth-long (sth-fn sth-long (sth-ty "string"))))))
+
+  sth-pair-policy : CstType
+  sth-pair-policy = sth-fn sth-long (sth-fn sth-long (sth-ty "string"))
+
+  sth-name : Text -> CstExpr
+  sth-name (name) = CstName name []
+
+  sth-dot : CstExpr, Text -> CstExpr
+  sth-dot (target) (member) = CstMemberAccess target member []
+
+  sth-arg : CstExpr -> CstArgument
+  sth-arg (value) = CstArgument { ca-mode = [], ca-name = "", ca-value = value }
+
+  sth-call0 : CstExpr -> CstExpr
+  sth-call0 (f) = CstCall f []
+
+  sth-call1 : CstExpr, CstExpr -> CstExpr
+  sth-call1 (f) (a) = CstCall f [sth-arg a]
+
+  sth-call2 : CstExpr, CstExpr, CstExpr -> CstExpr
+  sth-call2 (f) (a) (b) = CstCall f [sth-arg a, sth-arg b]
+
+  sth-as-long : CstExpr -> CstExpr
+  sth-as-long (value) = CstCast sth-long value
+
+  sth-var : Text, CstExpr -> CstStmt
+  sth-var (name) (value) = CstVariables [] CstInferredType [CstVariable { cv-name = name, cv-value = Just value }]
+
+  sth-param : CstType, Text -> CstParameter
+  sth-param (ty) (name) = CstParameter { cp-modifiers = [], cp-type = ty, cp-name = name, cp-default = None }
+
+  sth-static-field : CstType, Text -> CstMember
+  sth-static-field (ty) (name) = CstField [] [CstPrivate, CstStatic] ty [CstVariable { cv-name = name, cv-value = None }]
+
+  sth-zdo-key : Text -> CstExpr
+  sth-zdo-key (key) = sth-dot (sth-name "ZDOVars") key
+
+  sth-zdo-get : Text, Text, CstExpr -> CstExpr
+  sth-zdo-get (getter) (key) (fallback) = sth-call2 (sth-dot (sth-name "zdo") getter) (sth-zdo-key key) fallback
+
+  sth-seconds-since : CstExpr -> CstExpr
+  sth-seconds-since (ticks) =
+    sth-dot (CstParenthesized (CstBinary CstSubtract (sth-call0 (sth-dot (sth-dot (sth-name "ZNet") "instance") "GetTime")) (CstObjectNew (sth-ty "DateTime") [sth-arg ticks] []))) "TotalSeconds"
+
+  sth-return-text : CstStmt
+  sth-return-text = CstReturn (Just (sth-name "text"))
+
+  sth-hover-prelude : Text, Text, Text -> List CstStmt
+  sth-hover-prelude (original) (subject) (component) = [
+    sth-var "text" (sth-call1 (sth-name original) (sth-name subject)),
+    CstIf (CstUnary CstNot (sth-dot (sth-name "ZNet") "instance")) sth-return-text None,
+    sth-var "view" (CstCall (CstMemberAccess (sth-name subject) "GetComponent" [sth-ty "ZNetView"]) []),
+    CstIf (CstBinary CstOr (CstUnary CstNot (sth-name "view")) (CstUnary CstNot (sth-call0 (sth-dot (sth-name "view") "IsValid")))) sth-return-text None,
+    sth-var "zdo" (sth-call0 (sth-dot (sth-name "view") "GetZDO")),
+    CstIf (CstBinary CstEqual (sth-name "zdo") CstNull) sth-return-text None
+  ]
+
+  sth-return-with : CstExpr -> CstStmt
+  sth-return-with (line) = CstReturn (Just (sth-call2 (sth-name "WithLine") (sth-name "text") (sth-call1 (sth-dot (sth-name "_Cce") "ToUnicode") line)))
+
+  sth-hover-method : Text, Text, Text, List CstStmt -> CstMember
+  sth-hover-method (name) (subject-type) (subject) (body) =
+    CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPublic, CstStatic],
+      cm-result = sth-ty "string",
+      cm-name = name,
+      cm-type-params = [],
+      cm-params = [sth-param (sth-ty subject-type) subject],
+      cm-body = Just (CstBlock body)
+    }
+
+  sth-hover-delegate : Text, Text -> CstMember
+  sth-hover-delegate (name) (subject-type) =
+    CstDelegate CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPrivate],
+      cm-result = sth-ty "string",
+      cm-name = name,
+      cm-type-params = [],
+      cm-params = [sth-param (sth-ty subject-type) "subject"],
+      cm-body = None
+    }
+
+  sth-hook-install : Text, Text, Text, Text, Text -> List CstStmt
+  sth-hook-install (game-type) (game-method) (fn-type) (original) (replacement) = [
+    sth-var (original & "Method") (sth-call2 (sth-dot (CstTypeOf (sth-ty game-type)) "GetMethod") (CstString game-method) (sth-name "flags")),
+    CstExpression (CstAssignment CstAssign (sth-name original) (sth-call1 (CstMemberAccess (sth-name "PrismMethodBridge") "Copy" [sth-ty fn-type]) (sth-name (original & "Method")))),
+    CstExpression (CstAssignment CstAssign (sth-name (original & "Hook")) (sth-call2 (sth-dot (sth-name "PrismMethodBridge") "Prepare") (sth-name (original & "Method")) (sth-call1 (sth-dot (CstTypeOf (sth-ty "PrismStationHover")) "GetMethod") (CstString replacement))))
+  ]
+
+  sth-hook-apply : Text -> CstStmt
+  sth-hook-apply (original) = CstExpression (sth-call1 (sth-dot (sth-name (original & "Hook")) "Apply") (CstBoolean True))
+
+Section: Typed Interop
+
+  unity-station-hover-smelter-fn : Integer -> CstMember
+  unity-station-hover-smelter-fn (unused) = sth-hover-delegate "SmelterHoverFn" "Smelter"
+
+  unity-station-hover-fermenter-fn : Integer -> CstMember
+  unity-station-hover-fermenter-fn (unused) = sth-hover-delegate "FermenterHoverFn" "Fermenter"
+
+  unity-station-hover-tameable-fn : Integer -> CstMember
+  unity-station-hover-tameable-fn (unused) = sth-hover-delegate "TameableHoverFn" "Tameable"
+
+  unity-station-hover-originals : Integer -> CstMember
+  unity-station-hover-originals (unused) = sth-static-field (sth-ty "SmelterHoverFn") "originalSmelter"
+
+  unity-station-hover-original-fermenter : Integer -> CstMember
+  unity-station-hover-original-fermenter (unused) = sth-static-field (sth-ty "FermenterHoverFn") "originalFermenter"
+
+  unity-station-hover-original-tameable : Integer -> CstMember
+  unity-station-hover-original-tameable (unused) = sth-static-field (sth-ty "TameableHoverFn") "originalTameable"
+
+  unity-station-hover-hooks : Integer -> CstMember
+  unity-station-hover-hooks (unused) =
+    CstField [] [CstPrivate, CstStatic] (sth-ty "PrismMethodBridge.Patch") [CstVariable { cv-name = "originalSmelterHook", cv-value = None }, CstVariable { cv-name = "originalFermenterHook", cv-value = None }, CstVariable { cv-name = "originalTameableHook", cv-value = None }]
+
+  unity-station-hover-smelter-line : Integer -> CstMember
+  unity-station-hover-smelter-line (unused) = sth-static-field sth-smelter-policy "smelterLine"
+
+  unity-station-hover-fermenter-line : Integer -> CstMember
+  unity-station-hover-fermenter-line (unused) = sth-static-field sth-pair-policy "fermenterLine"
+
+  unity-station-hover-tame-line : Integer -> CstMember
+  unity-station-hover-tame-line (unused) = sth-static-field sth-pair-policy "tameLine"
+
+  unity-station-hover-install : Integer -> CstMember
+  unity-station-hover-install (unused) =
+    CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstInternal, CstStatic],
+      cm-result = sth-ty "void",
+      cm-name = "Install",
+      cm-type-params = [],
+      cm-params = [sth-param sth-smelter-policy "smelter", sth-param sth-pair-policy "fermenter", sth-param sth-pair-policy "tame"],
+      cm-body = Just (CstBlock (unity-station-hover-install-body 0))
+    }
+
+  unity-station-hover-install-body : Integer -> List CstStmt
+  unity-station-hover-install-body (unused) =
+    let flags = CstBinary CstBitOr (sth-dot (sth-dot (sth-dot (sth-name "System") "Reflection") "BindingFlags") "Instance") (CstBinary CstBitOr (sth-dot (sth-dot (sth-dot (sth-name "System") "Reflection") "BindingFlags") "Public") (sth-dot (sth-dot (sth-dot (sth-name "System") "Reflection") "BindingFlags") "NonPublic"))
+    in let lead = [
+      CstIf (CstBinary CstNotEqual (sth-name "originalSmelterHook") CstNull) (CstReturn None) None,
+      CstExpression (CstAssignment CstAssign (sth-name "smelterLine") (sth-name "smelter")),
+      CstExpression (CstAssignment CstAssign (sth-name "fermenterLine") (sth-name "fermenter")),
+      CstExpression (CstAssignment CstAssign (sth-name "tameLine") (sth-name "tame")),
+      sth-var "flags" flags
+    ]
+    in lead
+      & sth-hook-install "Smelter" "OnHoverAddOre" "SmelterHoverFn" "originalSmelter" "SmelterHover"
+      & sth-hook-install "Fermenter" "GetHoverText" "FermenterHoverFn" "originalFermenter" "FermenterHover"
+      & sth-hook-install "Tameable" "GetHoverText" "TameableHoverFn" "originalTameable" "TameableHover"
+      & [sth-hook-apply "originalSmelter", sth-hook-apply "originalFermenter", sth-hook-apply "originalTameable"]
+
+  unity-station-hover-with-line : Integer -> CstMember
+  unity-station-hover-with-line (unused) =
+    CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPrivate, CstStatic],
+      cm-result = sth-ty "string",
+      cm-name = "WithLine",
+      cm-type-params = [],
+      cm-params = [sth-param (sth-ty "string") "text", sth-param (sth-ty "string") "line"],
+      cm-body = Just (CstBlock [
+        CstIf (CstBinary CstEqual (sth-dot (sth-name "line") "Length") (CstNumber "0" CstInt)) sth-return-text None,
+        CstReturn (Just (CstBinary CstAdd (CstBinary CstAdd (CstBinary CstAdd (sth-name "text") (CstString "\n<color=#A39CAE>")) (sth-name "line")) (CstString "</color>")))
+      ])
+    }
+
+  unity-station-hover-smelter : Integer -> CstMember
+  unity-station-hover-smelter (unused) =
+    let line = sth-call1 (sth-call1 (sth-call1 (sth-call1 (sth-call1 (sth-call1 (sth-name "smelterLine") (sth-as-long (sth-zdo-get "GetInt" "s_queued" (CstNumber "0" CstInt)))) (sth-as-long (sth-dot (sth-name "smelter") "m_secPerProduct"))) (sth-as-long (sth-zdo-get "GetFloat" "s_bakeTimer" (CstNumber "0" CstFloat)))) (sth-as-long (sth-call1 (sth-dot (sth-name "Math") "Ceiling") (sth-zdo-get "GetFloat" "s_fuel" (CstNumber "0" CstFloat))))) (sth-as-long (sth-dot (sth-name "smelter") "m_fuelPerProduct"))) (sth-as-long (sth-dot (sth-name "smelter") "m_maxFuel"))
+    in sth-hover-method "SmelterHover" "Smelter" "smelter" (sth-hover-prelude "originalSmelter" "smelter" "Smelter" & [
+      CstIf (CstCall (CstMemberAccess (sth-name "smelter") "GetComponent" [sth-ty "Windmill"]) []) sth-return-text None,
+      sth-return-with line
+    ])
+
+  unity-station-hover-fermenter : Integer -> CstMember
+  unity-station-hover-fermenter (unused) =
+    sth-hover-method "FermenterHover" "Fermenter" "fermenter" (sth-hover-prelude "originalFermenter" "fermenter" "Fermenter" & [
+      CstIf (CstBinary CstEqual (sth-zdo-get "GetString" "s_content" (CstString "")) (CstString "")) sth-return-text None,
+      sth-var "start" (sth-zdo-get "GetLong" "s_startTime" (CstNumber "0" CstLong)),
+      CstIf (CstBinary CstEqual (sth-name "start") (CstNumber "0" CstLong)) sth-return-text None,
+      sth-return-with (sth-call1 (sth-call1 (sth-name "fermenterLine") (sth-as-long (sth-dot (sth-name "fermenter") "m_fermentationDuration"))) (sth-as-long (sth-seconds-since (sth-name "start"))))
+    ])
+
+  unity-station-hover-tameable : Integer -> CstMember
+  unity-station-hover-tameable (unused) =
+    sth-hover-method "TameableHover" "Tameable" "tameable" (sth-hover-prelude "originalTameable" "tameable" "Tameable" & [
+      CstIf (sth-call0 (sth-dot (sth-name "tameable") "IsTamed")) sth-return-text None,
+      sth-var "remaining" (sth-zdo-get "GetFloat" "s_tameTimeLeft" (sth-dot (sth-name "tameable") "m_tamingTime")),
+      sth-var "fed" (sth-zdo-get "GetLong" "s_tameLastFeeding" (CstNumber "0" CstLong)),
+      CstIf (CstBinary CstAnd (CstBinary CstEqual (sth-name "fed") (CstNumber "0" CstLong)) (CstBinary CstGreaterEqual (sth-name "remaining") (sth-dot (sth-name "tameable") "m_tamingTime"))) sth-return-text None,
+      sth-var "fedLeft" (CstConditional (CstBinary CstEqual (sth-name "fed") (CstNumber "0" CstLong)) (CstNumber "0" CstDouble) (CstBinary CstSubtract (sth-dot (sth-name "tameable") "m_fedDuration") (sth-seconds-since (sth-name "fed")))),
+      sth-return-with (sth-call1 (sth-call1 (sth-name "tameLine") (sth-as-long (sth-name "remaining"))) (sth-as-long (sth-name "fedLeft")))
+    ])
+
+  unity-station-hover-members : List (Integer -> CstMember)
+  unity-station-hover-members = [
+    unity-station-hover-smelter-fn,
+    unity-station-hover-fermenter-fn,
+    unity-station-hover-tameable-fn,
+    unity-station-hover-originals,
+    unity-station-hover-original-fermenter,
+    unity-station-hover-original-tameable,
+    unity-station-hover-hooks,
+    unity-station-hover-smelter-line,
+    unity-station-hover-fermenter-line,
+    unity-station-hover-tame-line,
+    unity-station-hover-install,
+    unity-station-hover-with-line,
+    unity-station-hover-smelter,
+    unity-station-hover-fermenter,
+    unity-station-hover-tameable
+  ]
+
+  unity-station-hover-emit : [Console] Nothing
+  unity-station-hover-emit = cst-stream-class (CstClassHead { ch-modifiers = [CstInternal, CstStatic], ch-name = "PrismStationHover", ch-bases = [] }) unity-station-hover-members 0
+
+  unity-station-hover-effect : Integer -> CstMember
+  unity-station-hover-effect (unused) =
+    CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPublic, CstStatic],
+      cm-result = sth-fn sth-pair-policy (sth-fn sth-pair-policy (sth-ty "object")),
+      cm-name = "unity_station_hover_start",
+      cm-type-params = [],
+      cm-params = [sth-param sth-smelter-policy "smelter"],
+      cm-body = Just (CstBlock [
+        CstReturn (Just (CstLambdaBlock [sth-param CstInferredType "fermenter"] (CstBlock [
+          CstReturn (Just (CstLambdaBlock [sth-param CstInferredType "tame"] (CstBlock [
+            CstExpression (CstCall (sth-dot (sth-name "PrismStationHover") "Install") [sth-arg (sth-name "smelter"), sth-arg (sth-name "fermenter"), sth-arg (sth-name "tame")]),
+            CstReturn (Just CstNull)
+          ])))
+        ])))
+      ])
+    }

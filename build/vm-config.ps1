@@ -538,7 +538,7 @@ function Get-VmChardevCtrl { param([int]$Port) "socket,id=ch1,host=127.0.0.1,por
 # How many guests of $GuestMB the box can take right now. Answers a COUNT
 # rather than refusing, because the failure this exists to stop is a guest
 # killed for want of host RAM and then reported as a codegen defect
-# (OperatorsManual, the -Jobs 4 section; deck-headroom read a contended run
+# (OperatorsManual, the -Jobs 16 section; deck-headroom read a contended run
 # as 'a plug bundle has grown into its deck reservation', main 20381).
 #
 # Called at a FAN-OUT, before any guest starts, never per guest: a per-guest
@@ -553,11 +553,9 @@ function Get-VmChardevCtrl { param([int]$Port) "socket,id=ch1,host=127.0.0.1,por
 # the workload. Budgeting the ask would have admitted ONE slot where four
 # demonstrably run green, quietly serialising every battery.
 #
-# The measured figure also re-derives Damian's -Jobs 4 ruling from the other
-# end: 8 x 1100 = 8,800 MB against ~6,400 MB free overcommits, 4 x 1100 =
-# 4,400 MB fits. Re-measure both numbers on a box with different RAM rather
-# than carrying them (L-COUNT); the sampling recipe is a Get-Process loop on
-# codex-vm's WorkingSet64 while a compile runs.
+# Re-measure the figure on a box with different RAM rather than carrying it
+# (L-COUNT); the sampling recipe is a Get-Process loop on codex-vm's
+# WorkingSet64 while a compile runs.
 #
 # 1100 IS THE PER-TEST GUEST AND NOT EVERY GUEST, so the arithmetic above
 # sizes the wrong thing for a battery. `test.ps1` passes -GuestMB 2200 for
@@ -578,7 +576,7 @@ function Get-VmAdmittedSlots {
     try { $freeMB = [int]([double](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1024) } catch { return $Slots }
     if ($freeMB -le 0) { return $Slots }
     # Live guests are loads the free figure only half sees: a guest that just
-    # launched shows a small working set and grows toward GuestMB, and a Renode
+    # launched shows a small working set and grows, and a Renode
     # instance is a VM load under another name (OperatorsManual, 'A Renode
     # instance is a VM load'). Measured 2026-09-02: one freshly launched
     # codex-vm moved free by 23 MB and the answer not at all. Reserve each
@@ -587,7 +585,9 @@ function Get-VmAdmittedSlots {
     try {
         foreach ($p in @(Get-Process -Name codex-vm, Renode, renode -ErrorAction SilentlyContinue)) {
             $ws = [int]($p.WorkingSet64 / 1MB)
-            $grow = $GuestMB - $ws
+            # A live guest grows to the 1 GiB run-guest bar at most, whatever this
+            # caller's GuestMB (docs/Agents/box-*-2026-09-28.csv).
+            $grow = [Math]::Min($GuestMB, 1024) - $ws
             if ($grow -gt 0) { $liveMB += $grow }
             $live += "$($p.ProcessName)#$($p.Id)=${ws}MB"
         }
@@ -1099,7 +1099,7 @@ function Invoke-PlugVmFileSerial {
     if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }
     if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') }
     $vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))
-    $vmArgs += @('-kernel', $Kernel, '-display', 'none', '-no-reboot', '-m', "$MemMB", '-chardev', "socket,id=ch0,host=127.0.0.1,port=$port,server=on,wait=on,nodelay=on", '-serial', 'chardev:ch0', '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')
+    $vmArgs += @('-kernel', $Kernel, '-display', 'none', '-no-reboot', '-m', "$MemMB", '-chardev', (Get-VmChardevData -Port $port), '-chardev', (Get-VmChardevCtrl -Port ($port + 1)), '-serial', 'chardev:ch0', '-serial', 'chardev:ch1', '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')
     if ($DiskFile) { $vmArgs += @('-drive', "file=$DiskFile,format=raw,if=ide,index=0") }
     $startArgs = @{ FilePath = $script:FallbackVmBin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }
     if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }
@@ -1115,7 +1115,20 @@ function Invoke-PlugVmFileSerial {
         [Console]::Error.WriteLine("FAIL: could not reach the QEMU serial socket on port $port")
         return $false
     }
+    # COM1 init writes FCR = 0xC7, which clears the 16550 receive FIFO, so a byte
+    # written before it is lost. The guest sends READY on COM2 after COM1 init.
+    $ctrl = $null
+    while ([DateTime]::UtcNow -lt $deadline -and -not $proc.HasExited) {
+        try { $ctrl = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $port + 1); break } catch { Start-Sleep -Milliseconds 200 }
+    }
+    if (-not $ctrl -or -not (Read-VmReady -Conn @{ Ctrl = $ctrl } -TimeoutSec $TimeoutSec)) {
+        $client.Close(); if ($ctrl) { $ctrl.Close() }
+        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+        [Console]::Error.WriteLine("FAIL: the guest sent no READY on COM2, so its input was not written")
+        return $false
+    }
     $ok = $true
+    $trapped = $false
     try {
         $stream = $client.GetStream()
         $stream.ReadTimeout = $TimeoutSec * 1000
@@ -1126,20 +1139,31 @@ function Invoke-PlugVmFileSerial {
         $buf = New-Object byte[] 65536
         # The guest closing the wire is the end of the answer. A read timeout is
         # NOT, so it is reported rather than written out as a whole result.
+        # A trap dump ends in cli; hlt, which QEMU never leaves, and carries no end
+        # marker, so the first two quiet seconds after !EXC= end it, as codex-vm's
+        # exit on the halt would.
+        $carry = ''
         try {
             while ($true) {
                 $n = $stream.Read($buf, 0, $buf.Length)
                 if ($n -le 0) { break }
                 $outMs.Write($buf, 0, $n)
+                if (-not $trapped) {
+                    $tail = $carry + [System.Text.Encoding]::ASCII.GetString($buf, 0, $n)
+                    if ($tail.Contains('!EXC=')) { $trapped = $true; $stream.ReadTimeout = 2000 }
+                    $carry = $tail.Substring([Math]::Max(0, $tail.Length - 4))
+                }
             }
         } catch [System.IO.IOException] {
-            if (-not $proc.HasExited) { $ok = $false; [Console]::Error.WriteLine("FAIL: the QEMU serial read ended by timeout, so the capture may be short") }
+            if ($trapped) { [Console]::Error.WriteLine("FAIL: the guest trapped; its !EXC dump is the output") }
+            elseif (-not $proc.HasExited) { $ok = $false; [Console]::Error.WriteLine("FAIL: the QEMU serial read ended by timeout, so the capture may be short") }
         }
         [System.IO.File]::WriteAllBytes($OutputFile, $outMs.ToArray())
     } finally {
         $client.Close()
-        if (-not $proc.HasExited) { $null = $proc.WaitForExit(20000) }
-        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; $ok = $false }
+        if ($ctrl) { $ctrl.Close() }
+        if (-not $proc.HasExited -and -not $trapped) { $null = $proc.WaitForExit(20000) }
+        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; if (-not $trapped) { $ok = $false } }
     }
     return $ok
 }

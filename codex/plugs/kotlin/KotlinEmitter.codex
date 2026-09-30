@@ -239,7 +239,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> integer-to-text n
     is IrName (n) (ty) (sp) -> emit-kt-name n ty arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-kt-binary op l r arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-kt-binary op l r ty arities
     is IrNegate (operand) (nty) (sp) -> "(-" & emit-kt-expr-at operand arities (depth + 1) & ")"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-kt-expr-at c arities (depth + 1) & ") " & emit-kt-expr-at t arities (depth + 1) & " else " & emit-kt-expr-at el arities (depth + 1) & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "run { val " & kt-sanitize name & " = " & emit-kt-expr-at val arities (depth + 1) & "; " & emit-kt-expr-at body arities (depth + 1) & " }"
@@ -269,9 +269,12 @@ Section: Expression Emission
    else if is-kt-builtin-name n then kt-sanitize n
    else kt-sanitize n
 
-  emit-kt-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
-  emit-kt-binary (op) (l) (r) (arities) =
+  emit-kt-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  emit-kt-binary (op) (l) (r) (ty) (arities) =
    when op
+    is IrAddInt -> kt-int-arith "+" "addExact" l r ty arities
+    is IrSubInt -> kt-int-arith "-" "subtractExact" l r ty arities
+    is IrMulInt -> kt-int-arith "*" "multiplyExact" l r ty arities
     is IrAppendText -> "(" & emit-kt-expr l arities & " + " & emit-kt-expr r arities & ")"
     is IrAppendList -> "(" & emit-kt-expr l arities & " + " & emit-kt-expr r arities & ")"
     is IrConsList -> "(listOf(" & emit-kt-expr l arities & ") + " & emit-kt-expr r arities & ")"
@@ -285,6 +288,17 @@ Section: Expression Emission
     is IrDivVec -> "(" & emit-kt-expr l arities & " as List<Double>).zip(" & emit-kt-expr r arities & " as List<Double>).map { (a, b) -> a / b }"
     is IrPowInt -> "_cx_ipow(" & emit-kt-expr l arities & " as Long, " & emit-kt-expr r arities & " as Long)"
     is otherwise -> "(" & emit-kt-expr l arities & " " & kt-bin-op-symbol op & " " & emit-kt-expr r arities & ")"
+
+ A Kotlin Long wraps, so the wrapping band is the bare operator;
+ `Math.addExact` and its two siblings throw ArithmeticException on signed
+ overflow.
+
+  kt-int-arith : Text, Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
+  kt-int-arith (sym) (exact) (l) (r) (ty) (arities) =
+   let lhs = emit-kt-expr l arities
+   in let rhs = emit-kt-expr r arities
+   in if int-ty-wraps ty then "(" & lhs & " " & sym & " " & rhs & ")"
+   else "Math." & exact & "(" & lhs & " as Long, " & rhs & " as Long)"
 
   kt-bin-op-symbol : IRBinaryOp -> Text
   kt-bin-op-symbol (op) =

@@ -1,0 +1,328 @@
+Chapter: SamplerSchedule
+  cites Gpu chapter DeviceMath
+
+ We say:
+
+Section: Real Arithmetic
+
+ f64 exp, ln and sqrt for the schedule: exp by k ln 2 reduction and a Taylor
+ series, ln by the exponent field and 2 atanh ((m - 1) / (m + 1)), sqrt by
+ Newton. Each is exact to a few units in the last place over the range the
+ schedule uses.
+
+  sm-ln2 : Real = 0.6931471805599453
+
+  sm-pow2 : Integer -> Real
+  sm-pow2 (k) = bits-to-real (bit-shl (k + 1023) 52)
+
+  sm-exp-series : Real, Real, Real, Integer -> Real
+  sm-exp-series (r) (term) (acc) (k) = if k > 30 then acc else sm-exp-series r (term * r / real-from-int k) (acc + term * r / real-from-int k) (k + 1)
+
+  sm-exp : Real -> Real
+  sm-exp (x) =
+    let k = real-to-int (x / sm-ln2 + (if x >= 0.0 then 0.5 else 0.0 - 0.5))
+    in let r = x - real-from-int k * sm-ln2
+    in sm-exp-series r 1.0 1.0 1 * sm-pow2 k
+
+  sm-atanh-series : Real, Real, Real, Integer -> Real
+  sm-atanh-series (u2) (term) (acc) (k) = if k > 61 then acc else sm-atanh-series u2 (term * u2) (acc + term * u2 / real-from-int k) (k + 2)
+
+  sm-ln : Real -> Real
+  sm-ln (x) =
+    let b = real-to-bits x
+    in let e = bit-and (bit-shru b 52) 2047 - 1023
+    in let m = bits-to-real (bit-or (bit-and b #000FFFFFFFFFFFFF) #3FF0000000000000)
+    in let u = (m - 1.0) / (m + 1.0)
+    in real-from-int e * sm-ln2 + 2.0 * sm-atanh-series (u * u) u u 3
+
+  sm-sqrt-loop : Real, Real, Integer -> Real
+  sm-sqrt-loop (x) (g) (k) = if k >= 60 then g else sm-sqrt-loop x ((g + x / g) / 2.0) (k + 1)
+
+  sm-sqrt : Real -> Real
+  sm-sqrt (x) = if x <= 0.0 then 0.0 else sm-sqrt-loop x (if x > 1.0 then x else 1.0) 0
+
+  sm-pow : Real, Real -> Real
+  sm-pow (x) (y) = sm-exp (y * sm-ln x)
+
+ A float32 value read back as a double (Forge's sigmas buffer is float32 and
+ .item() widens it): round the 52-bit mantissa to 23 bits, ties to even.
+
+  sm-f32 : Real -> Real
+  sm-f32 (v) =
+    let b = real-to-bits v
+    in let low = bit-and b #1FFFFFFF
+    in let up = if low > #10000000 then True else if low < #10000000 then False else bit-and (bit-shru b 29) 1 == 1
+    in bits-to-real (if up then b - low + #20000000 else b - low)
+
+Section: Schedule
+
+ SDXL and SD1.5 share the DDPM discrete schedule (backend/modules/k_prediction.py):
+ betas linear in sqrt from 0.00085 to 0.012 over 1000 steps, alphas_cumprod
+ their running product of 1 - beta, sigma = sqrt ((1 - ac) / ac).
+
+  sm-cumprod : Real, Real, Integer, Integer, Real -> Real
+  sm-cumprod (lo) (step) (i) (stop) (acc) =
+    if i > stop then acc
+    else let rb = lo + step * real-from-int i
+    in sm-cumprod lo step (i + 1) stop (acc * (1.0 - rb * rb))
+
+  sm-discrete-sigma-raw : Integer -> Real
+  sm-discrete-sigma-raw (i) =
+    let lo = sm-sqrt 0.00085
+    in let ac = sm-cumprod lo ((sm-sqrt 0.012 - lo) / 999.0) 0 i 1.0
+    in sm-sqrt ((1.0 - ac) / ac)
+
+  sm-discrete-sigma : Integer -> Real
+  sm-discrete-sigma (i) = sm-f32 (sm-discrete-sigma-raw i)
+
+  sm-karras-loop : Real, Real, Integer, Integer, List Real -> List Real
+  sm-karras-loop (maxr) (minr) (i) (n) (acc) =
+    if i >= n then list-push acc 0.0
+    else let ramp = real-from-int i / real-from-int (n - 1)
+    in sm-karras-loop maxr minr (i + 1) n (list-push acc (sm-pow (maxr + ramp * (minr - maxr)) 7.0))
+
+  karras-sigmas : Integer, Real, Real -> List Real
+  karras-sigmas (n) (smin) (smax) = sm-karras-loop (sm-pow smax (1.0 / 7.0)) (sm-pow smin (1.0 / 7.0)) 0 n []
+
+  sdxl-karras-sigmas : Integer -> List Real
+  sdxl-karras-sigmas (n) = karras-sigmas n (sm-discrete-sigma 0) (sm-discrete-sigma 999)
+
+ k_diffusion's get_sigmas_exponential: n sigmas evenly spaced in log sigma.
+
+  sm-exp-ramp : Real, Real, Integer, Integer, List Real -> List Real
+  sm-exp-ramp (a) (b) (i) (n) (acc) =
+    if i >= n then list-push acc 0.0
+    else sm-exp-ramp a b (i + 1) n (list-push acc (sm-exp (a + (b - a) * real-from-int i / real-from-int (n - 1))))
+
+  exponential-sigmas : Integer, Real, Real -> List Real
+  exponential-sigmas (n) (smin) (smax) = sm-exp-ramp (sm-ln smax) (sm-ln smin) 0 n []
+
+  sdxl-exponential-sigmas : Integer -> List Real
+  sdxl-exponential-sigmas (n) = exponential-sigmas n (sm-discrete-sigma 0) (sm-discrete-sigma 999)
+
+ Forge's t_to_sigma (backend/modules/k_prediction.py Prediction.sigma): the
+ log sigmas table, f32 logs of the unrounded sigmas, interpolated linearly at
+ a fractional timestep clamped to 0..999.
+
+  sm-log-sigma : Integer -> Real
+  sm-log-sigma (i) = sm-f32 (sm-ln (sm-discrete-sigma-raw i))
+
+  sm-t-to-sigma : Real -> Real
+  sm-t-to-sigma (t) =
+    let c = if t < 0.0 then 0.0 else if t > 999.0 then 999.0 else t
+    in let lo = real-to-int c
+    in let w = c - real-from-int lo
+    in let hi = if w > 0.0 then lo + 1 else lo
+    in sm-exp ((1.0 - w) * sm-log-sigma lo + w * sm-log-sigma hi)
+
+ Forge's sgm_uniform (modules/sd_schedulers.py): n timesteps from 999 down,
+ torch.linspace (999, 0, n + 1) without its last, each through t_to_sigma.
+
+  sm-sgm-loop : Integer, Integer, List Real -> List Real
+  sm-sgm-loop (i) (n) (acc) =
+    if i >= n then list-push acc 0.0
+    else sm-sgm-loop (i + 1) n (list-push acc (sm-t-to-sigma (999.0 - 999.0 * real-from-int i / real-from-int n)))
+
+  sgm-uniform-sigmas : Integer -> List Real
+  sgm-uniform-sigmas (n) = sm-sgm-loop 0 n []
+
+ Forge's normal_scheduler: torch.linspace (999, 0, n) itself, each through
+ t_to_sigma, then 0.
+
+  sm-normal-loop : Integer, Integer, List Real -> List Real
+  sm-normal-loop (i) (n) (acc) =
+    if i >= n then list-push acc 0.0
+    else sm-normal-loop (i + 1) n (list-push acc (sm-t-to-sigma (999.0 - 999.0 * real-from-int i / real-from-int (n - 1))))
+
+  normal-sigmas : Integer -> List Real
+  normal-sigmas (n) = sm-normal-loop 0 n []
+
+ Forge's uniform is the predictor's get_sigmas (n), the same linspace.
+
+  uniform-sigmas : Integer -> List Real
+  uniform-sigmas (n) = sm-normal-loop 0 n []
+
+ Forge's turbo_scheduler: the predictor's sigma at round (k 1000 / n - 1) for
+ k from n down to 1, clipped to 0..999, then 0. torch rounds a half to even,
+ so the rounding is done on the exact fraction (1000 k - n) / n.
+
+  sm-round-half-even : Integer, Integer -> Integer
+  sm-round-half-even (num) (den) =
+    let q = num / den
+    in let rem = num - q * den
+    in if 2 * rem > den then q + 1 else if 2 * rem < den then q else q + int-mod q 2
+
+  sm-turbo-loop : Integer, Integer, List Real -> List Real
+  sm-turbo-loop (k) (n) (acc) =
+    if k < 1 then list-push acc 0.0
+    else let t = sm-round-half-even (1000 * k - n) n
+    in let tc = if t < 0 then 0 else if t > 999 then 999 else t
+    in sm-turbo-loop (k - 1) n (list-push acc (sm-t-to-sigma (real-from-int tc)))
+
+  turbo-sigmas : Integer -> List Real
+  turbo-sigmas (n) = sm-turbo-loop n n []
+
+ Forge's ddim_scheduler: the discrete sigmas at 1, 1 + s, 1 + 2s, ... below
+ 1000 with s = 1000 div n, largest first, then 0.
+
+  sm-ddim-sched-loop : Integer, Integer, List Real -> List Real
+  sm-ddim-sched-loop (x) (ss) (acc) =
+    if x < 1 then list-push acc 0.0
+    else sm-ddim-sched-loop (x - ss) ss (list-push acc (sm-discrete-sigma x))
+
+  ddim-sigmas : Integer -> List Real
+  ddim-sigmas (n) =
+    let ss = if 1000 / n < 1 then 1 else 1000 / n
+    in sm-ddim-sched-loop (1 + ((999 - 1) / ss) * ss) ss []
+
+ k-diffusion get_sigmas_polyexponential, Forge's default rho 1: exp (ramp^rho
+ (ln sigma_max - ln sigma_min) + ln sigma_min), ramp from 1 down to 0.
+
+  sm-polyexp-loop : Real, Real, Real, Integer, Integer, List Real -> List Real
+  sm-polyexp-loop (lmin) (lmax) (rho) (i) (n) (acc) =
+    if i >= n then list-push acc 0.0
+    else let ramp = 1.0 - real-from-int i / real-from-int (n - 1)
+    in sm-polyexp-loop lmin lmax rho (i + 1) n (list-push acc (sm-exp ((if ramp > 0.0 then sm-pow ramp rho else 0.0) * (lmax - lmin) + lmin)))
+
+  polyexponential-sigmas : Integer, Real, Real, Real -> List Real
+  polyexponential-sigmas (n) (smin) (smax) (rho) = sm-polyexp-loop (sm-ln smin) (sm-ln smax) rho 0 n []
+
+  sdxl-polyexponential-sigmas : Integer -> List Real
+  sdxl-polyexponential-sigmas (n) = polyexponential-sigmas n (sm-discrete-sigma 0) (sm-discrete-sigma 999) 1.0
+
+ Forge's simple_scheduler: the discrete sigma at 999 - int (x 1000 / n).
+
+  sm-simple-loop : Integer, Integer, Real, List Real -> List Real
+  sm-simple-loop (x) (n) (ss) (acc) =
+    if x >= n then list-push acc 0.0
+    else sm-simple-loop (x + 1) n ss (list-push acc (sm-discrete-sigma (999 - real-to-int (real-from-int x * ss))))
+
+  simple-sigmas : Integer -> List Real
+  simple-sigmas (n) = sm-simple-loop 0 n (1000.0 / real-from-int n) []
+
+ Forge's kl_optimal: tan (i/n atan sigma_min + (1 - i/n) atan sigma_max) for i
+ from 0 to n, with no trailing 0, every operation in f32.
+
+  sm-kl-loop : Real, Real, Integer, Integer, List Real -> List Real
+  sm-kl-loop (amin) (amax) (i) (n) (acc) =
+    if i > n then acc
+    else let w = sm-f32 (real-from-int i / real-from-int n)
+    in let a = sm-f32 (sm-f32 (w * amin) + sm-f32 (sm-f32 (1.0 - w) * amax))
+    in sm-kl-loop amin amax (i + 1) n (list-push acc (sm-f32 (real-sin a / real-cos a)))
+
+  kl-optimal-sigmas : Integer, Real, Real -> List Real
+  kl-optimal-sigmas (n) (smin) (smax) = sm-kl-loop (sm-f32 (real-atan (sm-f32 smin))) (sm-f32 (real-atan (sm-f32 smax))) 0 n []
+
+  sdxl-kl-optimal-sigmas : Integer -> List Real
+  sdxl-kl-optimal-sigmas (n) = kl-optimal-sigmas n (sm-discrete-sigma 0) (sm-discrete-sigma 999)
+
+ Forge's beta_scheduler: sigma_min + (sigma_max - sigma_min) times scipy's
+ beta.ppf (1 - linspace (0, 1, n)) at alpha = beta = 0.6 (Forge's defaults),
+ then 0. The quantile is bisected on the regularized incomplete beta, which
+ is Numerical Recipes' continued fraction under a Lanczos (g 7, 9 terms) log
+ gamma.
+
+  sm-lgamma : Real -> Real
+  sm-lgamma (x) =
+    let z = x - 1.0
+    in let s = 0.99999999999980993 + 676.5203681218851 / (z + 1.0) - 1259.1392167224028 / (z + 2.0) + 771.32342877765313 / (z + 3.0) - 176.61502916214059 / (z + 4.0) + 12.507343278686905 / (z + 5.0) - 0.13857109526572012 / (z + 6.0) + 0.0000099843695780195716 / (z + 7.0) + 0.00000015056327351493116 / (z + 8.0)
+    in let t = z + 7.5
+    in 0.9189385332046727 + (z + 0.5) * sm-ln t - t + sm-ln s
+
+  sm-cf-fix : Real -> Real
+  sm-cf-fix (v) = if real-abs v < sm-pow2 (0 - 990) then sm-pow2 (0 - 990) else v
+
+  sm-betacf-loop : Real, Real, Real, Integer, Real, Real, Real -> Real
+  sm-betacf-loop (a) (b) (x) (m) (c) (d) (h) =
+    if m > 300 then h
+    else let mr = real-from-int m
+    in let aa = mr * (b - mr) * x / ((a - 1.0 + 2.0 * mr) * (a + 2.0 * mr))
+    in let d1 = 1.0 / sm-cf-fix (1.0 + aa * d)
+    in let c1 = sm-cf-fix (1.0 + aa / c)
+    in let ab = 0.0 - (a + mr) * (a + b + mr) * x / ((a + 2.0 * mr) * (a + 1.0 + 2.0 * mr))
+    in let d2 = 1.0 / sm-cf-fix (1.0 + ab * d1)
+    in let c2 = sm-cf-fix (1.0 + ab / c1)
+    in let h2 = h * d1 * c1 * d2 * c2
+    in if real-abs (d2 * c2 - 1.0) < 0.0000000000000003 then h2 else sm-betacf-loop a b x (m + 1) c2 d2 h2
+
+  sm-betacf : Real, Real, Real -> Real
+  sm-betacf (a) (b) (x) =
+    let d = 1.0 / sm-cf-fix (1.0 - (a + b) * x / (a + 1.0))
+    in sm-betacf-loop a b x 1 1.0 d d
+
+  sm-betai : Real, Real, Real -> Real
+  sm-betai (a) (b) (x) =
+    if x <= 0.0 then 0.0 else if x >= 1.0 then 1.0
+    else let front = sm-exp (sm-lgamma (a + b) - sm-lgamma a - sm-lgamma b + a * sm-ln x + b * sm-ln (1.0 - x))
+    in if x < (a + 1.0) / (a + b + 2.0) then front * sm-betacf a b x / a
+    else 1.0 - front * sm-betacf b a (1.0 - x) / b
+
+  sm-ppf-loop : Real, Real, Real, Real, Real, Integer -> Real
+  sm-ppf-loop (a) (b) (p) (lo) (hi) (k) =
+    if k >= 64 then (lo + hi) / 2.0
+    else let mid = (lo + hi) / 2.0
+    in if sm-betai a b mid < p then sm-ppf-loop a b p mid hi (k + 1) else sm-ppf-loop a b p lo mid (k + 1)
+
+  beta-ppf : Real, Real, Real -> Real
+  beta-ppf (p) (a) (b) = if p <= 0.0 then 0.0 else if p >= 1.0 then 1.0 else sm-ppf-loop a b p 0.0 1.0 0
+
+  sm-beta-loop : Real, Real, Real, Real, Integer, Integer, List Real -> List Real
+  sm-beta-loop (smin) (smax) (a) (b) (i) (n) (acc) =
+    if i >= n then list-push acc 0.0
+    else let p = if i >= n - 1 then 0.0 else 1.0 - real-from-int i * (1.0 / real-from-int (n - 1))
+    in sm-beta-loop smin smax a b (i + 1) n (list-push acc (smin + beta-ppf p a b * (smax - smin)))
+
+  beta-sigmas : Integer, Real, Real, Real, Real -> List Real
+  beta-sigmas (n) (smin) (smax) (a) (b) = if n < 2 then [smax, 0.0] else sm-beta-loop smin smax a b 0 n []
+
+  sdxl-beta-sigmas : Integer -> List Real
+  sdxl-beta-sigmas (n) = beta-sigmas n (sm-discrete-sigma 0) (sm-discrete-sigma 999) 0.6 0.6
+
+ Forge's Align Your Steps family: NVIDIA's published tables (SDXL's or
+ SD1.5's), used as they stand when n is the table's length and otherwise
+ numpy's loglinear_interp, np.interp of the log sigmas over linspace (0, 1)
+ of the table's length, read at linspace (0, 1, n); then 0. Align Your Steps
+ 11 is the same tables and the same code as Align Your Steps.
+
+  ays-table : Boolean -> List Real
+  ays-table (sdxl) = if sdxl then [14.615, 6.315, 3.771, 2.181, 1.342, 0.862, 0.555, 0.380, 0.234, 0.113, 0.029] else [14.615, 6.475, 3.861, 2.697, 1.886, 1.396, 0.963, 0.652, 0.399, 0.152, 0.029]
+
+  ays-gits-table : Boolean -> List Real
+  ays-gits-table (sdxl) = if sdxl then [14.615, 4.734, 2.567, 1.529, 0.987, 0.652, 0.418, 0.268, 0.179, 0.127, 0.029] else [14.615, 4.617, 2.507, 1.236, 0.702, 0.402, 0.240, 0.156, 0.104, 0.094, 0.029]
+
+  ays-32-table : Boolean -> List Real
+  ays-32-table (sdxl) = if sdxl then [14.615, 11.1491618, 8.50522127, 6.48827151, 5.43707402, 4.60398619, 3.89854704, 3.27407457, 2.74396527, 2.29968659, 1.95448514, 1.67108715, 1.42878152, 1.23181009, 1.06789649, 0.92579443, 0.80290886, 0.69660121, 0.60436903, 0.52852552, 0.46773344, 0.41393379, 0.36258186, 0.31008517, 0.26518925, 0.22326461, 0.17653877, 0.13959192, 0.10587381, 0.05519369, 0.02877334, 0.015] else [14.615, 11.23951352, 8.64363081, 6.64729424, 5.57250862, 4.71648546, 3.99196065, 3.5195609, 3.13490466, 2.79228788, 2.48773628, 2.21663865, 1.97508351, 1.7793172, 1.61475335, 1.46540953, 1.314849, 1.16642497, 1.03475547, 0.91573744, 0.80748169, 0.71202361, 0.621739, 0.53065202, 0.4529096, 0.37491455, 0.27461819, 0.2011529, 0.14105873, 0.06682881, 0.03166121, 0.015]
+
+  ays-x : Integer, Integer -> Real
+  ays-x (i) (count) = if i >= count - 1 then 1.0 else real-from-int i * (1.0 / real-from-int (count - 1))
+
+  ays-y : List Real, Integer -> Real
+  ays-y (tab) (i) = sm-ln (list-at tab (list-length tab - 1 - i))
+
+  ays-interp : List Real, Real, Integer -> Real
+  ays-interp (tab) (x) (j) =
+    let len = list-length tab
+    in if j >= len - 1 then ays-y tab (len - 1)
+    else if x < ays-x (j + 1) len then (ays-y tab (j + 1) - ays-y tab j) / (ays-x (j + 1) len - ays-x j len) * (x - ays-x j len) + ays-y tab j
+    else ays-interp tab x (j + 1)
+
+  ays-loop : List Real, Integer, Integer, List Real -> List Real
+  ays-loop (tab) (n) (k) (acc) =
+    if k >= n then list-push acc 0.0
+    else ays-loop tab n (k + 1) (list-push acc (sm-exp (ays-interp tab (ays-x (n - 1 - k) n) 0)))
+
+  ays-sigmas : List Real, Integer -> List Real
+  ays-sigmas (tab) (n) = if n == list-length tab then tab & [0.0] else ays-loop tab n 0 []
+
+  align-your-steps-sigmas : Integer, Boolean -> List Real
+  align-your-steps-sigmas (n) (sdxl) = ays-sigmas (ays-table sdxl) n
+
+  ays-gits-sigmas : Integer, Boolean -> List Real
+  ays-gits-sigmas (n) (sdxl) = ays-sigmas (ays-gits-table sdxl) n
+
+  ays-11-sigmas : Integer, Boolean -> List Real
+  ays-11-sigmas (n) (sdxl) = ays-sigmas (ays-table sdxl) n
+
+  ays-32-sigmas : Integer, Boolean -> List Real
+  ays-32-sigmas (n) (sdxl) = ays-sigmas (ays-32-table sdxl) n
+

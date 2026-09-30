@@ -1,0 +1,143 @@
+Chapter: ClipArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter ClipGraph
+  cites Diffusion chapter BrowserClip
+  cites Diffusion chapter BrowserUNet
+  cites Diffusion chapter BrowserVae
+  cites Diffusion chapter ClipPromptText
+  cites Diffusion chapter BrowserTxt2Img
+  cites AI chapter SafeTensors
+  cites AI chapter ClipBpe
+
+ The page codex/plugs/html/arms/clip.mjs drives: a picked SD1.5 checkpoint's
+ CLIP-L uploaded to the device as f32, then clip-encode-with over
+ browser-clip-ops on the 77 ids page-data "cat" and "empty" name, and "cat"
+ again at clip skip 2 without the final LayerNorm; then page-data "emph"
+ chunked by ClipPromptText over ClipBpe (page-data "vocab" and "merges") and
+ encoded with Forge's emphasis by bt-cond, and the same ids without it. Each
+ cond is read back.
+
+ We say:
+
+Section: Header
+
+  opening : [Console] Integer
+  opening =
+    let c = dom-on-click (dom-query "html") ca-pick
+    in state-set "armed" 1
+
+  ca-pick : Text -> Integer
+  ca-pick (id) = pick-file-then ".safetensors" ca-picked
+
+  ca-picked : Text -> Integer
+  ca-picked (r) =
+    let f = state-set-text "file" (json-obj-field (json-parse-obj r) "name")
+    in gpu-open-then ca-opened
+
+  ca-opened : Text -> Integer
+  ca-opened (r) = file-read-then (state-get-text "file") 0 8 ca-got-len
+
+  ca-ints : List Text, Integer, List Integer -> List Integer
+  ca-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else ca-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  ca-list : Text -> List Integer
+  ca-list (t) = if text-length t < 3 then [] else ca-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  ca-got-len : Text -> Integer
+  ca-got-len (r) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (ca-list r) 0) ca-got-header
+
+  ca-part : List PartBinding, Integer, Text -> List BoundTensor
+  ca-part (parts) (i) (name) =
+    if i >= list-length parts then []
+    else if (list-at parts i).pb-name == name then (list-at parts i).pb-bound
+    else ca-part parts (i + 1) name
+
+  ca-got-header : Text -> Integer
+  ca-got-header (r) =
+    let lb = layout-bind (st-parse-file (ca-list r)) sd15-layout
+    in ca-upload (ca-part (lb.lb-parts) 0 "clip-l") 0 [] [] 0
+
+Section: Upload
+
+  ca-dt : Integer -> Integer
+  ca-dt (d) = if d == st-dtype-f16 then gpu-dt-f16 else if d == st-dtype-f32 then gpu-dt-f32 else 0 - 1
+
+  ca-upload : List BoundTensor, Integer, List Text, List Integer, Integer -> Integer
+  ca-upload (ts) (i) (ns) (hs) (bad) =
+    if i >= list-length ts then ca-run ns hs bad
+    else let t = list-at ts i
+    in let dt = ca-dt (t.bt-dtype)
+    in let elems = t.bt-bytes / st-dtype-width (t.bt-dtype)
+    in let h = if dt < 0 then 0 else gpu-buf-alloc (if bt-half t then (elems + 1) / 2 * 4 else elems * 4)
+    in let ns2 = list-snoc ns (t.bt-name)
+    in if h == 0 then ca-upload ts (i + 1) ns2 (list-snoc hs 0) (bad + 1)
+    else gpu-buf-upload-then h 0 (state-get-text "file") (t.bt-offset) elems dt (if bt-half t then gpu-dt-f16 else gpu-dt-f32) (\r -> ca-uploaded ts i ns2 (list-snoc hs h) bad r)
+
+  ca-uploaded : List BoundTensor, Integer, List Text, List Integer, Integer, Text -> Integer
+  ca-uploaded (ts) (i) (ns) (hs) (bad) (r) =
+    if text-contains r "\"ok\":true" then ca-upload ts (i + 1) ns hs bad
+    else ca-upload ts (i + 1) ns hs (bad + 1)
+
+Section: Encode
+
+  ca-skip2 : ClipSpec -> ClipSpec
+  ca-skip2 (s) = ClipSpec { cs-width = s.cs-width, cs-heads = s.cs-heads, cs-layers = s.cs-layers, cs-mlp = s.cs-mlp, cs-erf-gelu = s.cs-erf-gelu, cs-open = s.cs-open, cs-pool = s.cs-pool, cs-prefix = s.cs-prefix, cs-part = s.cs-part, cs-pad = s.cs-pad, cs-skip = 2, cs-final-norm = False }
+
+  ca-run : List Text, List Integer, Integer -> Integer
+  ca-run (ns) (hs) (bad) =
+    let a = state-set "tensors" (list-length ns)
+    in let b = state-set "failed" bad
+    in let ops = browser-clip-ops (page-data "bk")
+    in let cw = browser-clip-weights bc-l15-spec ns hs
+    in let c = state-set "load" (cw.bc-status)
+    in let cat = clip-encode-with ops cw (ca-list (page-data "cat"))
+    in let empty = clip-encode-with ops cw (ca-list (page-data "empty"))
+    in let sw = BcWeights { bc-spec = ca-skip2 bc-l15-spec, bc-status = cw.bc-status, bc-tok = cw.bc-tok, bc-pos = cw.bc-pos, bc-layers = cw.bc-layers, bc-final-g = cw.bc-final-g, bc-final-b = cw.bc-final-b }
+    in let skip = clip-encode-with ops sw (ca-list (page-data "cat"))
+    in let d = state-set-text "status" (show (cat.co-status) & "," & show (empty.co-status) & "," & show (skip.co-status))
+    in let e = state-set-text "err-run" (gpu-error 0)
+    in let m = BrowserModel { bm-code = page-data "bk", bm-clip = cw, bm-unet = BuWeights { bu-names = [], bu-handles = [] }, bm-vae = BvWeights { bw-names = [], bw-handles = [] } }
+    in let vb = ca-list (page-data "vocab")
+    in let mb = ca-list (page-data "merges")
+    in let bpe = clip-bpe-load (ca-heap vb) (list-length vb) (ca-heap mb) (list-length mb)
+    in let cs = clip-prompt-chunks bpe (page-data "emph")
+    in let g = state-set "emph-chunks" (list-length cs)
+    in let ch = list-at cs 0
+    in let h = state-set-text "emph-ids" (ca-join (ch.cc-ids) 0 "")
+    in let k = state-set-text "emph-mults" (ca-join-reals (ch.cc-mults) 0 "")
+    in let raw = clip-encode-with ops cw (ch.cc-ids)
+    in bt-cond m ch (\eh -> ca-download [cat.co-cond, empty.co-cond, skip.co-cond, eh, raw.co-cond] 0)
+
+  ca-poke : Integer, List Integer, Integer -> Integer
+  ca-poke (a) (bs) (i) =
+    if i >= list-length bs then a
+    else let p = poke-byte a i (list-at bs i)
+    in ca-poke a bs (i + 1)
+
+  ca-heap : List Integer -> Integer
+  ca-heap (bs) = ca-poke (alloc-bytes (list-length bs + 8)) bs 0
+
+  ca-join : List Integer, Integer, Text -> Text
+  ca-join (xs) (i) (acc) = if i >= list-length xs then acc else ca-join xs (i + 1) (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
+
+  ca-join-reals : List Real, Integer, Text -> Text
+  ca-join-reals (xs) (i) (acc) = if i >= list-length xs then acc else ca-join-reals xs (i + 1) (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
+
+  ca-download : List Integer, Integer -> Integer
+  ca-download (hs) (i) =
+    if i >= list-length hs then ca-done 0
+    else gpu-buf-download-then (list-at hs i) 0 (77 * 768 * 4) (\r -> ca-got hs i r)
+
+  ca-got : List Integer, Integer, Text -> Integer
+  ca-got (hs) (i) (r) =
+    let s = state-set-text ("c" & show i) r
+    in ca-download hs (i + 1)
+
+  ca-done : Integer -> Integer
+  ca-done (z) =
+    let e = state-set-text "err" (gpu-error 0)
+    in state-set "done" 1

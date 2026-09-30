@@ -68,7 +68,7 @@ Section: The Superblock
    lh1 <- fd-log-head-of 1
    if g0 < 0
     then (if g1 < 0 then fl-fact-log-start else lh1)
-    else if g1 > g0 then lh1 else lh0
+   else if g1 > g0 then lh1 else lh0
   end
 
 Section: The Ceiling On One Entry
@@ -93,48 +93,53 @@ Section: Reading An Entry's Content
 
   fd-copy-sector : Integer, Integer, Integer, Integer -> Integer
   fd-copy-sector (src) (dst) (dst-off) (i) =
-   if i >= fl-sector-size then 0
-   else let w = poke-byte dst (dst-off + i) (peek-byte src i)
-   in fd-copy-sector src dst dst-off (i + 1)
+    if i >= fl-sector-size then 0
+    else let w = poke-byte dst (dst-off + i) (peek-byte src i)
+    in fd-copy-sector src dst dst-off (i + 1)
 
   fd-load-sectors : Integer, Integer, Integer, Integer -> [Device.Block] Integer
   fd-load-sectors (start) (count) (dst) (i) =
-   if i >= count then act 0 end
-   else act
-    src <- block-read-sector (start + i)
-    let c = fd-copy-sector src dst (i * fl-sector-size) 0
-    in fd-load-sectors start count dst (i + 1)
-   end
+    if i >= count then act 0 end
+    else act
+     src <- block-read-sector (start + i)
+     let c = fd-copy-sector src dst (i * fl-sector-size) 0
+     in fd-load-sectors start count dst (i + 1)
+    end
 
   fd-entry-content : Integer, Integer -> [Device.Block] Text
   fd-entry-content (sector) (content-len) =
-   let nsec = fl-sectors-for content-len
-   in let buf = alloc-bytes (nsec * fl-sector-size)
-   in act
-    loaded <- fd-load-sectors sector nsec buf 0
-    fl-text buf fl-header-size content-len
-   end
+    let nsec = fl-sectors-for content-len
+    in let buf = alloc-bytes (nsec * fl-sector-size)
+    in act
+     loaded <- fd-load-sectors sector nsec buf 0
+     fl-text buf fl-header-size content-len
+    end
 
 Section: Decoding A Source Definition
 
   fd-admit : FactBundle, Text -> FactBundle
   fd-admit (acc) (line) =
-   when sdw-decode line
-    is None -> acc
-    is Just (w) -> fd-admit-work acc w
+    when sdw-decode line
+     is None -> acc
+     is Just (w) -> fd-admit-work acc w
 
   fd-admit-work : FactBundle, SourceDefWire -> FactBundle
   fd-admit-work (acc) (w) =
-   let fact = Fact {
-     hash = w.sdw-hash,
-     kind = DefinitionFact,
-     content = w.sdw-content,
-     author = w.sdw-author,
-     timestamp = w.sdw-timestamp
-   }
-   in if list-length (w.sdw-signature) == 0
-      then bundle-offer acc fact
-      else bundle-publish acc (SignedFact { fact = fact, signature = w.sdw-signature, signer-fingerprint = w.sdw-signer })
+    let fact = Fact {
+      hash = w.sdw-hash,
+      kind = DefinitionFact,
+      content = w.sdw-content,
+      author = w.sdw-author,
+      timestamp = w.sdw-timestamp
+    }
+    in if list-length (w.sdw-signature) == 0
+       then bundle-offer acc fact
+    else
+      bundle-publish acc (SignedFact {
+        fact = fact,
+        signature = w.sdw-signature,
+        signer-fingerprint = w.sdw-signer
+      })
 
 Section: Walking The Log
 
@@ -145,27 +150,27 @@ Section: Walking The Log
 
   fd-fold : Integer, Integer, FactBundle -> [Device.Block] FactBundle
   fd-fold (sector) (end-sec) (acc) =
-   if sector >= end-sec then act acc end
-   else act
-    buf <- block-read-sector sector
-    let clen = fl-entry-content-len buf
-    in fd-fold-entry sector end-sec acc buf clen
-   end
+    if sector >= end-sec then act acc end
+    else act
+     buf <- block-read-sector sector
+     let clen = fl-entry-content-len buf
+     in fd-fold-entry sector end-sec acc buf clen
+    end
 
   fd-fold-entry : Integer, Integer, FactBundle, Integer, Integer -> [Device.Block] FactBundle
   fd-fold-entry (sector) (end-sec) (acc) (buf) (clen) =
-   if clen == 0 then fd-fold (sector + 1) end-sec acc
-   else if clen > fd-max-content-len then fd-fold (sector + 1) end-sec acc
-   else let nsec = fl-sectors-for clen
-   in if sector + nsec > end-sec then fd-fold (sector + 1) end-sec acc
-   else let kind = fl-entry-kind buf
-   in if kind == fl-kind-definition
-      then act
-       content <- fd-entry-content sector clen
-       let acc2 = fd-admit acc content
-       in fd-fold (sector + nsec) end-sec acc2
-      end
-      else fd-fold (sector + nsec) end-sec acc
+    if clen == 0 then fd-fold (sector + 1) end-sec acc
+    else if clen > fd-max-content-len then fd-fold (sector + 1) end-sec acc
+    else let nsec = fl-sectors-for clen
+    in if sector + nsec > end-sec then fd-fold (sector + 1) end-sec acc
+    else let kind = fl-entry-kind buf
+    in if kind == fl-kind-definition
+       then act
+        content <- fd-entry-content sector clen
+        let acc2 = fd-admit acc content
+        in fd-fold (sector + nsec) end-sec acc2
+       end
+    else fd-fold (sector + nsec) end-sec acc
 
  A store cannot extend past the disk that holds it, so the device's own sector
  count is the ceiling on the head. A count of zero or less is the no-drive
@@ -181,7 +186,7 @@ Section: Walking The Log
 
   fd-head-credible : Integer, Integer -> Boolean
   fd-head-credible (log-head) (sector-count) =
-   if sector-count <= 0 then True else log-head <= sector-count
+    if sector-count <= 0 then True else log-head <= sector-count
 
   store-read-bundle : FactBundle -> [Device.Block] FactBundle
   store-read-bundle (base) = act
@@ -189,5 +194,5 @@ Section: Walking The Log
    n <- block-sector-count
    if fd-head-credible lh n
     then fd-fold fl-fact-log-start lh base
-    else act base end
+   else act base end
   end

@@ -95,6 +95,11 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 
 | in the archive | SHA-256 | what it is |
 |---|---|---|
+| `pre-desk-stage2-20260930.img` | `839915EB80DFD53AD3C378BEC50429DB4F8E0332621E2955D75E7076EB863DAA` | Raw disk 2 dump before the DeskScheduler acceptance flash, USB serial `FE21E85142604D33`. The first 16 MiB hash matches `diag18-returned-20260930.img`; the preserved dump covers 32 MiB. Dump receipt: `pre-desk-stage2-20260930.log`. Flashed `D:/Projects/sitting-images/desk-stage2-32370/desk-stage2-32370.img`, SHA-256 `66588CC0C83C0220CF0C9975A07A9DA00DE5D55EE9A73AB541B06BAC1CD4A3EB`, including fester CL 32449. `flash-usb.ps1 -SpecFit` exited 0 with full image and all GPT patches verified; receipt `desk-stage2-flash-20260930.log`. Physical acceptance remains unrun. |
+| `diag18-returned-20260930.img` | `98DB43A9 C12D9880 7F3A3DCD EB484586 0D97E0AF 68D40E4B E7058D1E 11FF00B5` | SITTING 18 as it came back 2026-09-30, image 81B75294. The ladder ran TWICE: run 1 with no keyboard attached read `sink mount-fail`, `vmx no-guest GUEST.CDX absent` and `bank=lost at=b3` (photograph only; xhci `binds=3 asked int=2 maxpkt=32`); run 2 with the keyboard overwrote `DIAG.TXT`. `DIAG.TXT` 6,938 bytes whole, ending `END`, extracted as `diag18-20260930\DIAG.TXT`: sink `state=ok size=2745998 read=2745998 bad=0 fuel=806239` (WORKS-9 green); `vmx-hold ok guest=94046 fc=5 ptimer=on` against the bed's `fc=1 ptimer=off`; the launch wedged at `vmx running` and banked no row (WORKS-76); edit big `shift-us=14652 reindex-us=16702`; avx `lanes=10 match=10`. Boot 2 (desk, keyboard and mouse): the editor's last keystroke `key 114248 us` at the top of the 72,922-line `SOURCE.SRC` (WORKS-19); every click repaints and flashes the whole desk (WORKS-78). Dump log `diag18-returned-20260930.dump.log`. |
+| `before-diag18-20260930.img` | `1EE841FB 942EF5F1 F77077F0 66101FF4 7D42EACD 2E3D7C38 94C72DFD 2D2FB7D1` | disk 2 read off by root 2026-09-30 before sitting 18 (`diag-sitting18.img` 81B75294) went over it. **Differs from `diag17-returned-20260929.img` in exactly one sector, LBA 2290**, the same sector that differed before sitting 17: a host-side write lands there between flights. Logs `before-diag18-20260930.dump.log`, `diag18-flash-20260930.log`. |
+| `diag17-returned-20260929.img` | `E260FB33 71F27F79 B19DC518 E7230E79 BC9313BC C540152B 54869019 1113FE5B` | SITTING 17 as it came back 2026-09-29, image 9B08E2EB: bank lost at `edit`. `DIAG.TXT` 5,895 bytes ending `END` after the skipped rows; FAT copies differ in 87 entries; 158 clusters (1745 up) allocated to nothing. Extracted as `diag17-20260929\DIAG.TXT`. Dump log `diag17-returned-20260929.dump.log`. |
+| `before-diag17-20260929.img` | `6BA8D6E2 7973DE08 B72FA525 7DAD6BA4 7B0F18FB BC6A2FD0 0ED3B4A3 60BC3A51` | disk 2 read off by root 2026-09-29 before sitting 17 (`diag-sitting17.img` 9B08E2EB) went over it. **Differs from `diag16-returned-20260925.img`**: something wrote to the stick between sitting 16 coming back and this flash, in exactly one sector, LBA 2290. Logs `before-diag17-20260929.dump.log`, `diag17-flash-20260929.log`. |
 | `diag16-returned-20260925.img` | `76B16D85 94E97E00 E832720F 9C23E2F1 5DA0078D 5C9EAFD5 7C09B271 C093D84B` | SITTING 16 as it came back 2026-09-25, image 9017134229B9: `DIAG.TXT` 6,663 bytes whole, ending `END` after `avx`; FAT copies identical, no overlaps, 170 clusters (1734-1903) allocated to nothing. Extracted as `diag16-20260925-DIAG.TXT`. |
 | `before-diag16-20260925.img` | `03D03888 D8B0F35A 14B1C94A C3708178 CB5533F0 6839232A 332251FA F3AE2C86` | disk 2 read off by root 2026-09-25 before sitting 16 went over it. |
 | `diag14-returned-20260907.img` | `D4B6D858 C3A2A57E 2CCB80FA 39B1F885 157C8809 BBB0C1DC C5216418 6F746C1A` | SITTING 14 as it came back 2026-09-07, image AFC6AD65 (flush-less, sitting-13 cfg): THE MEDIUM KEPT ONE WRITE AND NOT ITS DIRECTORY ENTRY. No `DIAG.TXT` in the root directory, which is byte-identical to the flashed image; `dg-open`'s probe write (stages 1-6, 4,312 bytes) sits orphaned at clusters 1283-1291 with its chain in both FATs, extracted as `diag14-20260907\DIAG-orphan-cluster1283.TXT`. Nothing after it, not even `block`'s scratch sector at LBA 30000. `DIAG.CFG` and `DIAG.RCP` read back as built. Flash transcript in root's session scratchpad; dump log `diag14-returned-20260907.dump.log`. No before-flash dump was taken (root's omission); the stick had held sitting 13's returned image. |
@@ -155,8 +160,248 @@ entries say only "on blu's box", and that vagueness is half of what made
 "Sittings are open, but same rules as before: answer all open question in 1
 sit, and don't waste my time or my back." Root composes the next sitting from
 every open metal question (`CurrentPlan.md`, "SITTINGS ARE OPEN"). The I219
-medium-death hunt stays parked (Damian, 2026-08-24). Sitting 15, below, is the
+medium-death hunt stays parked (Damian, 2026-08-24). Sitting 16, below, is the
 last sitting flown.
+
+### Queued desk acceptance: bounded rendering and pane policy
+
+This check rides the next coordinated desk boot. It does not request a
+separate flash. Build the desk from the submitted stage-2 candidate named in
+`docs/Designs/Active/OS/DeskScheduler.md`, then record the composed image hash
+and rehearse those exact bytes through the sitting's normal procedure.
+The software renderer, input queue and pane policy must all be present;
+an older desk image cannot answer this question.
+
+Use a USB keyboard and mouse. Film the pointer and pane together during the
+following sequence, and photograph any refusal or input-error notice.
+
+1. Open **3D View** and confirm the label says software pipeline. Use the
+   default shadows-on state, move the pointer continuously, turn the view by
+   dragging inside it, and press/release S twice to compare shadows off and
+   on between movements. Check that the pointer and
+   keyboard action respond before waiting for a whole frame. Record visible
+   stalls rather than assigning an unmeasured input-to-photon number.
+2. Move and resize the window during rendering, minimize and restore it,
+   then close and reopen it. Expect a completed frame or the fresh background
+   during cancellation, no stale pixels outside the new pane, and no old job
+   publishing after close. A live framebuffer copy can still tear.
+3. Repeat the interaction in **Aquarium**. Fish must keep animating after
+   completed frames. Release a held pointer button, move again, and check that
+   the released drag does not remain active. Hide the pane with Tab, open the
+   editor or console, and verify ordinary typing and button releases.
+4. If the Web pane reports a working network service, request its displayed
+   address on port 9100 from the host before and during 3D interaction, then
+   inspect the request log. Responses during rendering establish background
+   service progress. A missing network baseline leaves this physical check
+   unrun; the two-bed cooperative process fixture is separate evidence.
+
+Record pane, action and outcome for any failure, plus the image hash. Input
+queue overflow, transfer error, `3D WORK REFUSED`, stuck input, stale publication
+or a stopped background service fails the affected case. Bed acceptance and
+cost evidence are in `DeskScheduler.md`; physical acceptance remains unrun
+until this sequence is observed on the board.
+
+### PRE-FLIGHT CARD, SITTING 18: `diag-sitting18.img` 81B75294, the ASUS, TWO BOOTS ON ONE STICK (red for root, 2026-09-29)
+
+**The census** (root's composition, 2026-09-29). Boot 1 is the diag ladder
+asking what sitting 17 lost to the medium: WORKS-9 (the sink) and WORKS-76 (the
+vmx timer and launch), on blu's `GopUsbMsc` repair (main 30193, `bank-desync`),
+then the Ctrl-Alt-Del row sitting 17 never tried. `edit` and `avx` ride again as
+repeats and because `cad-stage` needs a stage boundary after its chord; the cfg
+is `build/boot/diag-sitting18.cfg`, sitting 17's stage selection. Boot 2 is the
+desk, for WORKS-19's remaining question: whether typing at the top of a large
+file keeps up on the desk editor.
+
+**How one stick carries both.** One ESP carries the diag as
+`\EFI\BOOT\BOOTX64.EFI` and the desk as `\DESK.EFI`, with the desk's files
+(`CODEX.CDX`, `SOURCE.SRC`, `CMUNSS.TTF`, `IDENTITY.DAT`) beside the diag's.
+The image keeps the diag's 16 MB geometry, because the ladder's aimed arms
+(`bank-desync`, `bank-lost`, `sink-drop`) name LBAs and ordinals of that
+geometry; so the desk carries no font pack and draws with its single-font
+fallback.
+The diag's stub polls the keyboard for 3 s before it does anything else
+(`cdx-to-pe.ps1 -ChainFile`): **holding D chain-loads `\DESK.EFI` through the
+firmware's LoadImage and StartImage; no key boots the diag.** A `DESK.EFI` that
+does not load marks `L` on serial and boots the diag, so a fault in boot 2 costs
+boot 2 and never boot 1 (the `ovmf-chain` arm's control: a bogus `DESK.EFI`
+reads `swjL` and the ladder runs). The identity is the bed identity
+`build/boot/BEDIDENT.DAT`, so boot 2 needs no ceremony and no passphrase; it is
+a test identity and carries nothing of the ASUS's own.
+
+**The bytes.** `D:\Projects\Cobblestone-red\build-output\diag-sitting18.img`, SHA-256
+`81B75294E89F3107397B1ABE0A2113EBB13B84EDEC9465E65B3864B717E43955`, 16 MB, seed
+`32B9D43FCCAB0D26`. The desk is `build/build-boot-img.ps1 -Identity
+build/boot/BEDIDENT.DAT`'s `boot.efi`; the image is `build/boot/build-diag.ps1
+-Cfg build/boot/diag-sitting18.cfg -TotalSectors 32768 -ChainEfi <that boot.efi>
+-Seed seed/Codex.cdx -Source build-output/Codex.codex -Identity
+build/boot/BEDIDENT.DAT -Font fonts/cc0/cmunss.ttf`. A PS/2 key struck inside
+the chooser's window is read by the chooser, so `cad-stage-ps2` strikes its
+chord after the window on an image that carries one. Rehearsed in both beds
+with every arm answering (`build/boot/diag.rehearsed`, `arms=60` including
+`ovmf-chain`, 2026-09-29); any other hash is unrehearsed and `flash-usb.ps1`
+refuses it. `build-output/` is wiped by a gate's clean, so copy the image out
+before any gate runs in this workspace.
+
+**Equipment.** The stick, a USB keyboard, **a USB MOUSE** (the desk opens an
+app only by a click), and the camera. No peer and no cable.
+
+**The flash.** Dump the stick first and confirm its disk number (the rule at
+the top of this file), then
+`build/flash-usb.ps1 -Image <the image> -DiskNumber N -SpecFit`.
+
+**Boot 1.** Boot the ASUS from the stick and touch nothing. The ladder runs as
+sitting 17's did. Photograph the whole screen when the run stops: at the
+summary band, or at a `vmx running` row unchanged for two minutes. At the
+summary band press Ctrl, Alt and Delete together once. After a `vmx running`
+wedge the chord is never read: use the power button instead, and boot 2 still
+follows.
+
+**Boot 2.** Hold down the D key, and keep holding it, from the moment you press
+the chord or the power button until the screen reads "Welcome Back" in cyan
+(about 10 to 20 s). Then release D. If the diagnostic's coloured rows appear
+instead, press the power button at once, because a second ladder writes
+`DIAG.TXT` again, and try boot 2 once more holding D from earlier. At every
+screen ending in a green "Press Enter ..." line, press Enter (six screens in the
+bed, in order: Welcome Back, the seed check, Disks, the USB screen, Wake, the
+interface menu). The desktop has a green "Cobblestone" button at the bottom left. Click
+it, click Productivity, click Text Editor. In the file list press Down once, to
+`SOURCE.SRC`, and Enter. Wait for the text to appear (seconds), then type any
+five letters at the very top at your normal pace. The status line above the
+text shows the LAST keystroke's `key N us`; photograph it after the fifth
+letter. Do not press F2: nothing is to be saved. Bring the stick back; root
+dumps it and reads `DIAG.TXT` off the image.
+
+| question | row | bed reading | what each ASUS reading means |
+|---|---|---|---|
+| WORKS-9 | `sink` second line, `... chunk=N fuel=F` | `fuel=1000000` | as sitting 17's card |
+| WORKS-19, repeat | `edit`, `big ... shift-us=S reindex-us=R` | big S=4433 R=6561 | a repeat of sitting 17's 15329 and 16161; a move above 25% is a finding about the box or the build |
+| COMPILER-77, repeat | `avx`, `admitted`, `lanes=10 match=10` | `admitted` under an AVX host | a repeat |
+| WORKS-76, the timer | `vmx-hold` in `DIAG.TXT` | `vmx-hold ok guest=94046 fc=1 ptimer=off` | as sitting 17's card |
+| WORKS-76, the launch | `vmx`, `guest=N fc=F ptimer=P held=ok ...` | `vmx-off` | as sitting 17's card |
+| Ctrl-Alt-Del | the operator, at the summary band | the bed resets on the chord | the box reboots: the chord works on this board. Nothing happens: note it, and use the power button to reach boot 2 |
+| the chooser | whether the desk came up | `ovmf-chain`: `s w j`, then the desk's stub | the desk: the chain works on this firmware. The diag again, twice: D is not seen in the window on this board, or the firmware refuses the chain; stop, and the WORKS-19 row rides a reflash |
+| WORKS-19, the desk | the editor's status line, `key N us` | `key 14976 us` (codex-vm, this image's own 3,468,494-byte `SOURCE.SRC`, 72,922 lines) | N is one keystroke's insert and repaint on the HPET. N under 60000: the desk keeps up with typing at this size. N above 60000: typing lags, and WORKS-19's gap buffer is the repair. `key no clock`: the desk read no HPET, and the row is lost |
+
+### SITTING 17, 2026-09-29: `diag-sitting17.img` 9B08E2EB, disk 2, the ASUS
+
+Flashed by root elevated from the archive copy (dump first, rehearsal record
+and `-ExpectHash` matched, all 16,777,216 bytes and the four SpecFit sectors
+verified). The run reached the summary band. Returned stick
+`diag17-returned-20260929.img`; `DIAG.TXT` extracted to
+`stick-archive\diag17-20260929\`.
+
+**THE BANK WAS LOST AT `edit`, BEFORE `sink` RAN, and the medium is the
+finding.** Glass: `SUMMARY run=12 skip=11 bank=lost at=edit size=5895
+medium=usb`, `todo: the bank's own volume would not mount a second time`.
+`DIAG.TXT` (5,895 bytes) holds the passive stages, `xhci` and the skipped rows,
+then `END`: no `edit`, `avx`, `vmx-hold` or `sink` line. `fat16-walk` on the
+returned image: FAT copies differ in 87 entries and 158 clusters from 1745 up
+are allocated to nothing; the flashed image walks clean (FATs identical, no
+orphans), so the guest wrote those. `GUEST.CDX` is whole on the stick (94,046
+bytes, 184 clusters) while the ladder read it `absent`. Sitting 16 ran the same
+`xhci` stage (`ctl0 running disk=y`) and banked `rtcw`, `edit` and `avx` after
+it, so `xhci` alone does not explain the loss; sitting 17's cfg differs from
+16's only in `rtcw off`.
+
+**The write that killed the medium is the bank's flush of the second FAT copy
+after `edit`** (blu, 2026-09-29, read off the returned image). The bank wrote
+the new `DIAG.TXT` (6,084 bytes ending in the `edit` rows and `END`, clusters
+1903-1914, chained in both FATs and unlinked: the directory entry still names
+the old file at 1891), flushed the first FAT copy whole, and then its WRITE(10)
+of the second copy's first 64 sectors (LBA 2153, 32,768 bytes) stopped 56
+sectors in. The sink row's shared MSC cells carry that failure: `cc=256 ph=2`,
+no completion in the data phase, and `rty=1`, the recovery returned false, so
+no retry was sent. The target stayed in that command's data-out phase: LBA
+2209-2216, its last eight sectors, each begin with a CBW (tags 0x110-0x117,
+READ(10) of the FAT at 2049 and of the root at 2257, the remount's commands)
+stored as write data. Those eight sectors are the 87 differing FAT entries,
+and nothing reached the medium after them. The 158 unowned clusters are the
+bank's usual leak (sitting 16 returned 170). **The target did not stop
+answering at the timeout**: it took eight OUT packets after the host gave up.
+The host's wait is `xhci-fuel`, a spin count, and its recovery did not
+resynchronise the target. Not established: why the target paused, and which of
+the recovery's three steps (Stop Endpoint on each bulk endpoint, the Mass
+Storage Reset) returned false.
+
+**The bed arm is `bank-desync`** (`build/boot/diag-arm.ps1`, codex-vm
+`-usb-bot-stall-lba 2153 -usb-bot-stall-after 28672`, `docs/OperatorsManual.md`).
+Aimed at this bank write (`-usb-bot-stall-nth 15` on the sitting-17
+composition, seed 291AEC64) the bed reproduces the summary (`bank=lost
+at=edit`), the todo line, the sink row (`cc=256 lba=1 rty=1 ph=2 after=-1`) and
+CBWs with tags 0x110-0x117 at LBA 2209-2216 under the pre-repair driver; the
+arm itself aims at the first post-open bank write so that no stage change moves
+it.
+
+**Repaired in `GopUsbMsc`** (blu, 2026-09-29). A data-out phase with no
+completion is finished rather than abandoned: Stop Endpoint, the residual off
+the Stopped event, and exactly that many bytes sent from where the TD stopped.
+After a recovery that failed, no CBW goes out until a recovery succeeds.
+`bank-desync` reads the stall in codex-vm's log and then `bank=ok`, serial ==
+file, both FAT copies identical. Measured red without it: the pre-repair driver
+loses the bank and puts CBWs at 2209-2216; with the continuation disabled and
+the gate kept, the bank is lost and no CBW reaches the medium. On metal the
+repair rests on one observed fact, that the stick took OUT data after the
+timeout; the glass does not show a rescued write, because the sink zeroes the
+retry cell.
+
+| question | row (glass) | answer |
+|---|---|---|
+| WORKS-9 | `sink mount-fail size=2745990 read=0 bad=0 shift=0 wstage=1`, `wr=12 cc=256 lba=1 rty=1 ph=2 after=-1 chunk=64 fuel=999659` | not answered as asked: the sink could not mount, on a medium already lost at `edit`; `fuel=999659` says the spin budget was not what failed |
+| WORKS-19, repeat | `edit measured big bytes=2896050 lines=61619 shift-us=15329 reindex-us=16161` | repeats sitting 16 (13664 / 16666) within 12% |
+| COMPILER-77, repeat | `avx admitted xsave=1 avx=1 avx2=1 osxsave=1 admitted=1`, `lanes=10 match=10` | repeats sitting 16 on seed E580C4C3 |
+| WORKS-76 | `vmx no-guest GUEST.CDX absent` | not answered: the held guest never loaded, because the lost volume could not be read |
+| Ctrl-Alt-Del | operator | not tried; the box was powered off at the summary band before the stick came out. Rides the next sitting |
+
+### PRE-FLIGHT CARD, SITTING 17 (FLOWN 2026-09-29, above): `diag-sitting17.img`, the ASUS, WORKS-9 and WORKS-76, SIGNED OFF (red for root, 2026-09-28)
+
+**The census** (fester for red, 2026-09-28, over `CurrentPlan.md`, every
+`*-backlog.md` and `docs/Designs/Active/`). Two open questions only metal
+answers and this image asks: WORKS-9 (the sink, not reached in sitting 16)
+and WORKS-76 (the vmx wedge). Ctrl-Alt-Del has no metal reading yet and rides
+as an operator step. Not in this image: WORKS-19's remaining question (typing
+on the desk editor on the ASUS) needs the desk image and a person typing, a
+second boot; the I219 hunt stays parked. `OsHardwareRoadmap.md` and
+`DeviceEmulationCatalog.md` were sampled, not read row by row. `edit` and
+`avx` ride again as repeat readings against sitting 16, and because
+`cad-stage` needs a stage boundary after its chord at 1.5 s: with only sink
+and vmx on, the bed ladder reaches END first and the arm reads red.
+
+**The bytes.** `D:\Projects\Cobblestone-fester\build-output\diag-sitting17.img`,
+SHA-256 `9B08E2EBBB829B579A2C0E0EEC6F38D7422949ACE4F007BDF8BDB48D323AE832`,
+built by `build/boot/build-diag.ps1 -Cfg build/boot/diag-sitting17.cfg -Out build-output/diag-sitting17.img`
+on seed `E580C4C33F18CE23`, rehearsed in both beds with every arm answering
+(`build/boot/diag.rehearsed`, `arms=58`, 2026-09-28; `cad-stage` resets after
+`avx`; in `sink-dies` the
+sink reads `died`, the bank `lost at=sink`, and vmx still runs after it with
+`held=ok`). The held guest's checksum was shown able to fail: an address
+planted 64 bytes off reads `held=bad`. The rehearsal ran at `-Seconds 90`,
+`diag-arm.ps1`'s default. Any other hash is unrehearsed and `flash-usb.ps1` refuses it.
+
+**Order, and why a hang cannot starve a later stage (L-BANK).** The passive
+stages run, the bank opens, and the main pass reaches vmx's slot, where the
+ladder reads `GUEST.CDX` off the stick into memory and banks
+`vmx-hold ok guest=94046 fc= ptimer=`. Then `before-deferred` is banked, sink
+runs, and the VMX launch runs LAST from the held guest. A vmx wedge costs only
+the summary band and the QR; a sink that kills the medium leaves the launch
+able to run and its row on the glass. Sitting 16 ran vmx before sink and its
+wedge ate WORKS-9.
+
+**The flash and the boot.** Dump the stick first and confirm its disk number,
+as for every flight (the rule at the top of this file). Then
+`build/flash-usb.ps1 -Image <the path above> -DiskNumber N -SpecFit`, then boot
+the ASUS from the stick. No peer and no cable; the USB keyboard only for
+Ctrl-Alt-Del. Photograph the whole screen when the run stops (the summary band,
+or a `vmx running` row that has not changed for two minutes), then read the
+Ctrl-Alt-Del row below, and bring the stick back.
+
+| question | row | bed reading | what each ASUS reading means |
+|---|---|---|---|
+| WORKS-9 | `sink` second line, `... chunk=N fuel=F` | `fuel=1000000` (the bed completes a transfer before the guest spins) | `fuel` near 1000000 on a failed write: the budget was innocent and the device stopped answering. A small `fuel`: the spin budget was marginal on this box. `state=ok` with a small `fuel`: it passed with little margin |
+| WORKS-19, repeat | `edit`, `big ... shift-us=S reindex-us=R` | big S=4433 R=6561 (sitting 16's card) | a repeat of sitting 16's 13664 and 16666; a large move is a finding about the box or the build, not the buffer |
+| COMPILER-77, repeat | `avx`, `admitted` and `lanes=10 match=10` | `admitted` under an AVX host | a repeat of sitting 16's `admitted`, `lanes=10 match=10`, on seed E580C4C3 |
+| WORKS-76, the timer | `vmx-hold` in `DIAG.TXT` | `vmx-hold ok guest=94046 fc=1 ptimer=off` | `ptimer=on`: the ASUS offers the VMX-preemption timer, so a guest that never exits comes back `crashed ... reason=preemption-timer`. `ptimer=off`: nothing bounds a guest that never exits. `vmx-hold` other than `ok`: the launch reads GUEST.CDX off the stick after the sink instead |
+| WORKS-76, the launch | `vmx`, `guest=N fc=F ptimer=P held=ok ...` | `vmx-off` (codex-vm reads IA32_FEATURE_CONTROL as 1) | `answered echo=ok`: VMXON, VMLAUNCH and the guest's serial port both ways work here. `crashed ... reason=preemption-timer`, up to about a minute after the row goes `running`: the guest ran and never exited. `vmx running` for two minutes with `ptimer=on` banked: the wedge is before or inside VMLAUNCH. `held=bad`: the held guest was overwritten between the passes, send DIAG.TXT. `refused`, `crashed` (other reason), `no-answer`, `wrong` carry their reason in DIAG.TXT |
+| Ctrl-Alt-Del | the operator: at the summary band press Ctrl-Alt-Del on the USB keyboard | the bed resets on the chord (`cad-summary`, `ovmf-cad`) | the box reboots: the chord works on this board. Nothing happens: it does not, note it. After a `vmx running` wedge the chord is never polled; skip this row and use the power button |
 
 ### SITTING 16, 2026-09-25: `diag-sitting16.img` 9017134229B9, disk 2, the ASUS
 

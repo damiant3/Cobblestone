@@ -1,8 +1,9 @@
 # ERP Buildout: from schema to application
 
-Status: **Phases 0 through 4 are shipped.** The quire builds, the
-scenario runs, the API answers, and 11 tests guard it. Phase 5 (the
-browser dashboard) is the remaining work. Written 2026-06-10 by reek;
+Status: **Phases 0 through 4 are shipped, and Phase 5's first cut.** The quire
+builds, the scenario runs, the API answers, 12 tests guard it (2026-09-29),
+and `web/erp.html` shows a snapshot of a native scenario run. What Phase 5
+still lacks is the ERP-1 row in `apps/erp/erp-backlog.md`. Written 2026-06-10 by reek;
 the plan below is retained because Phases 5 and 6 still execute against
 it -- one CL at a time, after a fresh session init.
 
@@ -25,12 +26,12 @@ It is an app now. What shipped:
   (Phase 4).
 - Persistence through Codex DB (Phase 3), guarded by `erp-db-test`.
 
-**What remains: Phase 5.** There is no `ErpPage.codex` and no
-`apps/erp/web/erp.html`. The executive dashboard -- KPI tiles, trial
-balance, AP/AR aging, cash position -- is the last piece between this and
-the "omg awesome" description at the foot of this document. Everything
-it needs (the scenario data, the KPI engine, the WebApp quire, the page
-gates) is already in place.
+**Phase 5 is a snapshot page.** `ErpPage.codex` renders `ErpSnapshot.codex`,
+which `build-snapshot.ps1` writes from a native run of `run-month`: the page
+cannot run the scenario, because `gl-init` builds a Data-quire server whose
+pages need `alloc-bytes` and the HTML runtime has none.
+`codex/test/apps/erp-snapshot-fresh` fails when the snapshot and the scenario
+disagree.
 
 ### For the historical record -- what it was
 

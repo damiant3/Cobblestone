@@ -33,4 +33,18 @@ chapters were graded broken from their expressions; two of them (Steering,
 ImageTensor) measured fine. Measure first, then migrate.
 Migrating a chapter CHANGES ITS OUTPUT, so each is its own changelist with
 its own re-recorded expectations.
-No open entries.
+
+## ClipBpe above ASCII
+
+`ClipBpe` matches Forge's CLIPTokenizer on every line of
+`codex/test/apps/clip-bpe-forge`, one of which is Latin-1, Cyrillic and curly
+quotes. Four differences remain for text outside that line, each ungraded:
+of ftfy's repairs only quote uncurling is made, so NFD accents (a macOS
+paste), HTML entities, ligatures, fullwidth Latin, mojibake and control
+characters all tokenize differently from Forge; a code point CCE cannot
+carry is dropped when the prompt becomes CCE Text, before the tokenizer sees
+it, where Forge emits its byte tokens; letters, digits and lowercasing above
+ASCII follow a range table covering Latin through Hangul, not Unicode's full
+categories (Vietnamese in U+1E00..U+1EFF is not a letter); a word-final capital sigma lowers to U+03C3 where Python
+gives U+03C2. Grade each with a line in that test's oracle before changing
+the table.

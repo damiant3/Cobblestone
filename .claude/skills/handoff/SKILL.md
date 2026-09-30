@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Session wrap-or-continue decision point. Assess remaining context against remaining work, then either commit to a bounded next unit of work or execute the formal handoff so the next session resumes losslessly. Run when the user invokes /handoff, when root orders it, or when MEASURED context passes 70% used; never earlier on a lane's own estimate.
+description: Session wrap-or-continue decision point. Assess remaining context against remaining work, then either commit to a bounded next unit of work or execute the formal handoff so the next session resumes losslessly. Run when the user invokes /handoff, when root orders it, or when MEASURED context passes 75% used; never earlier on a lane's own estimate.
 ---
 
 You are at a decision point: continue working or wrap the session.
@@ -53,18 +53,17 @@ Gather, with tools (do not answer from memory):
 
 ## Step 2 -- Decide
 
-**Below 70 per cent measured, the answer is continue (Damian, 2026-09-08:
+**Below 75 per cent measured, the answer is continue (Damian, 2026-09-08:
 "58% is not enough action on the context we load at init; agent estimates
-of token spend are almost always very much over").** Pick a unit that
-fits 300k free and work. A wrap you start under 70 is cancelled by root
-and the session resumed. At 70 measured, or when root orders it, wrap.
+of token spend are almost always very much over"; 75 ruled 2026-09-28).** Pick a unit that fits
+250k free and work. A wrap you start under 75 is cancelled by root and the
+session resumed. At 75 measured, or when root orders it, wrap.
 
 **The test is the number measured at the START of the turn, never a forecast
-of where the next unit will end** (Damian, 2026-09-24: "they should start new
-tasks until 70% measured at turn start, not estimate of when turn ends").
-Under 70 at turn start, take the next unit even if you judge it will not
-finish; land what proves, and the next session resumes the rest. An empty
-row under 70 is a question to root for a unit, not a wrap.
+of where the next unit will end** (Damian, 2026-09-24). Under 75 at turn
+start, take the next unit even if you judge it will not finish; land what
+proves, and the next session resumes the rest. An empty row under 75 is a
+question to root for a unit, not a wrap. Root orders a handoff only at 75.
 
 State the decision and the reasoning in one short paragraph to the
 user. If continuing, also state the wrap trigger ("after X submits I

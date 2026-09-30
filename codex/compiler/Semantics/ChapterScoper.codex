@@ -19,46 +19,52 @@ Section: Chapter Assignment
 
   assign-chapters : List DefHeader, Text, Integer, List ChapterAssignment -> List ChapterAssignment
   assign-chapters (headers) (current-chapter) (i) (acc) =
-   if i == list-length headers then acc
-   else let hdr = list-at headers i
-   in assign-chapters headers current-chapter (i + 1) (list-push acc (ChapterAssignment {
-    def-name = token-text (hdr.name),
-    chapter-slug = current-chapter
-   }))
+    if i == list-length headers then acc
+    else let hdr = list-at headers i
+    in assign-chapters headers current-chapter (i + 1) (list-push acc (ChapterAssignment {
+     def-name = token-text (hdr.name),
+     chapter-slug = current-chapter
+    }))
 
 Section: Collision Detection
   find-colliding-names : List ChapterAssignment -> SkipListText
   find-colliding-names (assignments) =
-   find-collisions-loop assignments 0 (list-length assignments) skip-list-text-empty [] []
+    find-collisions-loop assignments 0 (list-length assignments) skip-list-text-empty [] []
 
   find-collisions-loop : List ChapterAssignment, Integer, Integer, SkipListText, List Text, List Text -> SkipListText
   find-collisions-loop (assignments) (i) (len) (acc) (seen-names) (seen-slugs) =
-   if i == len then acc
-   else let a = list-at assignments i
-   in if a.def-name == opening-entry-point then find-collisions-loop assignments (i + 1) len acc seen-names seen-slugs
-      else if skip-list-text-has acc (a.def-name) then find-collisions-loop assignments (i + 1) len acc seen-names seen-slugs
-      else let slen = list-length seen-names
-      in let pos = bsearch-text-set seen-names (a.def-name) 0 slen
-      in if pos < slen then
-        if list-at seen-names pos == a.def-name then
-          if list-at seen-slugs pos /= a.chapter-slug
-            then find-collisions-loop assignments (i + 1) len (skip-list-text-insert acc (a.def-name)) seen-names seen-slugs
-            else find-collisions-loop assignments (i + 1) len acc seen-names seen-slugs
-        else find-collisions-loop assignments (i + 1) len acc (list-insert-at seen-names pos (a.def-name)) (list-insert-at seen-slugs pos (a.chapter-slug))
-      else find-collisions-loop assignments (i + 1) len acc (list-insert-at seen-names pos (a.def-name)) (list-insert-at seen-slugs pos (a.chapter-slug))
+    if i == len then acc
+    else let a = list-at assignments i
+    in if a.def-name == opening-entry-point then
+      find-collisions-loop assignments (i + 1) len acc seen-names seen-slugs
+    else if skip-list-text-has acc (a.def-name) then
+      find-collisions-loop assignments (i + 1) len acc seen-names seen-slugs
+    else let slen = list-length seen-names
+    in let pos = bsearch-text-set seen-names (a.def-name) 0 slen
+    in if pos < slen then
+      if list-at seen-names pos == a.def-name then
+        if list-at seen-slugs pos /= a.chapter-slug then
+          find-collisions-loop assignments (i + 1) len (skip-list-text-insert acc (a.def-name)) seen-names seen-slugs
+        else find-collisions-loop assignments (i + 1) len acc seen-names seen-slugs
+      else
+        find-collisions-loop assignments (i + 1) len acc (list-insert-at seen-names pos (a.def-name)) (list-insert-at seen-slugs pos (a.chapter-slug))
+    else
+      find-collisions-loop assignments (i + 1) len acc (list-insert-at seen-names pos (a.def-name)) (list-insert-at seen-slugs pos (a.chapter-slug))
 
   count-openings : List ChapterAssignment, Integer, Integer, Integer -> Integer
   count-openings (assignments) (i) (len) (count) =
-   if i == len then count
-   else let a = list-at assignments i
-   in if a.def-name == opening-entry-point then count-openings assignments (i + 1) len (count + 1)
-      else count-openings assignments (i + 1) len count
+    if i == len then count
+    else let a = list-at assignments i
+    in if a.def-name == opening-entry-point then count-openings assignments (i + 1) len (count + 1)
+    else count-openings assignments (i + 1) len count
 
   check-entry-point-duplicate : List ChapterAssignment -> List Diagnostic
   check-entry-point-duplicate (assignments) =
-   if count-openings assignments 0 (list-length assignments) 0 >= 2
-   then [make-error cdx-duplicate-definition "'opening' is defined in multiple chapters. A program has exactly one entry point." synthetic-span]
-   else []
+    if count-openings assignments 0 (list-length assignments) 0 >= 2 then
+      [
+        make-error cdx-duplicate-definition "'opening' is defined in multiple chapters. A program has exactly one entry point." synthetic-span
+      ]
+    else []
 
 Section: Builtin Shadowing
 
@@ -84,12 +90,12 @@ Section: Builtin Shadowing
 
   check-shadowed-builtins : List DefHeader, SkipListText, Integer, Integer, List Diagnostic -> List Diagnostic
   check-shadowed-builtins (headers) (bset) (i) (len) (acc) =
-   if i >= len then acc
-   else let h = list-at headers i
-   in let n = token-text (h.name)
-   in if skip-list-text-has bset n
-      then check-shadowed-builtins headers bset (i + 1) len (list-push acc (make-warning cdx-shadows-builtin ("Definition '" & n & "' has the same name as a builtin. Whether a call site gets this definition or the builtin depends on how that builtin is lowered, and the source does not say which -- so if this is deliberate, it is deliberate about something you cannot read here. If it is not, rename it. Check the COST as well as the answer: a shadow that computes the same result more slowly is the failure mode that has actually cost time here. This chapter's shadow applies to the whole compilation unit, and to any unit that cites it.") (token-span (h.name))))
-      else check-shadowed-builtins headers bset (i + 1) len acc
+    if i >= len then acc
+    else let h = list-at headers i
+    in let n = token-text (h.name)
+    in if skip-list-text-has bset n then
+      check-shadowed-builtins headers bset (i + 1) len (list-push acc (make-warning cdx-shadows-builtin ("Definition '" & n & "' has the same name as a builtin. Whether a call site gets this definition or the builtin depends on how that builtin is lowered, and the source does not say which -- so if this is deliberate, it is deliberate about something you cannot read here. If it is not, rename it. Check the COST as well as the answer: a shadow that computes the same result more slowly is the failure mode that has actually cost time here. This chapter's shadow applies to the whole compilation unit, and to any unit that cites it.") (token-span (h.name))))
+    else check-shadowed-builtins headers bset (i + 1) len acc
 
 Section: Colliding Across Chapters
 
@@ -102,49 +108,51 @@ Section: Colliding Across Chapters
 
   colliding-other-chapter : List ChapterAssignment, Text, Text, Integer, Integer -> Text
   colliding-other-chapter (assignments) (name) (own-slug) (i) (len) =
-   if i >= len then ""
-   else let a = list-at assignments i
-   in if a.def-name == name then if a.chapter-slug /= own-slug then a.chapter-slug
-      else colliding-other-chapter assignments name own-slug (i + 1) len
-      else colliding-other-chapter assignments name own-slug (i + 1) len
+    if i >= len then ""
+    else let a = list-at assignments i
+    in if a.def-name == name then if a.chapter-slug /= own-slug then a.chapter-slug
+    else colliding-other-chapter assignments name own-slug (i + 1) len
+    else colliding-other-chapter assignments name own-slug (i + 1) len
 
   check-cross-chapter-collisions : List DefHeader, SkipListText, List ChapterAssignment, Integer, Integer, List Diagnostic -> List Diagnostic
   check-cross-chapter-collisions (headers) (colliding) (assignments) (i) (len) (acc) =
-   if i >= len then acc
-   else let h = list-at headers i
-   in let n = token-text (h.name)
-   in if skip-list-text-has colliding n
-      then let other = colliding-other-chapter assignments n (h.chapter-slug) 0 (list-length assignments)
-   in check-cross-chapter-collisions headers colliding assignments (i + 1) len (list-push acc (make-warning cdx-collides-across-chapters ("Definition '" & n & "' is also defined in chapter '" & other & "'. Both are kept and each chapter sees its own, so this compiles and runs -- but which definition a mention gets depends on the chapter the mention sits in, and in a chapter that defines neither it depends on the order the build globs files. Move this body to the other chapter and it silently means the other thing. Give one of them a chapter-specific prefix, or cite the one you mean instead of defining it twice.") (token-span (h.name))))
-      else check-cross-chapter-collisions headers colliding assignments (i + 1) len acc
+    if i >= len then acc
+    else let h = list-at headers i
+    in let n = token-text (h.name)
+    in if skip-list-text-has colliding n then
+      let other = colliding-other-chapter assignments n (h.chapter-slug) 0 (list-length assignments)
+      in check-cross-chapter-collisions headers colliding assignments (i + 1) len (list-push acc (make-warning cdx-collides-across-chapters ("Definition '" & n & "' is also defined in chapter '" & other & "'. Both are kept and each chapter sees its own, so this compiles and runs -- but which definition a mention gets depends on the chapter the mention sits in, and in a chapter that defines neither it depends on the order the build globs files. Move this body to the other chapter and it silently means the other thing. Give one of them a chapter-specific prefix, or cite the one you mean instead of defining it twice.") (token-span (h.name))))
+    else check-cross-chapter-collisions headers colliding assignments (i + 1) len acc
 
 Section: Name Mangling
   mangle-name : Text, Text -> Text
   mangle-name (chapter-slug) (def-name) =
-   slugify chapter-slug & "_" & def-name
+    slugify chapter-slug & "_" & def-name
 
   slugify-loop : Text, Integer, Integer, List Text -> List Text
   slugify-loop (s) (i) (len) (acc) =
-   if i == len then acc
-   else let c = char-code-at s i
-   in if c == char-code-at " " 0 then slugify-loop s (i + 1) len (list-push acc "-")
-      else if c >= cc-first-upper then if c <= cc-upper-z then slugify-loop s (i + 1) len (list-push acc (char-to-text (code-to-char (c - 26))))
+    if i == len then acc
+    else let c = char-code-at s i
+    in if c == char-code-at " " 0 then slugify-loop s (i + 1) len (list-push acc "-")
+    else if c >= cc-first-upper then
+      if c <= cc-upper-z then
+        slugify-loop s (i + 1) len (list-push acc (char-to-text (code-to-char (c - 26))))
       else slugify-loop s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
-      else slugify-loop s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
+    else slugify-loop s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
 
   slugify : Text -> Text
   slugify (s) = text-concat-list (slugify-loop s 0 (text-length s) [])
 
   lookup-chapter : List ChapterAssignment, Text -> Text
   lookup-chapter (assignments) (name) =
-   lookup-chapter-loop assignments name 0 (list-length assignments)
+    lookup-chapter-loop assignments name 0 (list-length assignments)
 
   lookup-chapter-loop : List ChapterAssignment, Text, Integer, Integer -> Text
   lookup-chapter-loop (assignments) (name) (i) (len) =
-   if i == len then ""
-   else let a = list-at assignments i
-   in if a.def-name == name then a.chapter-slug
-      else lookup-chapter-loop assignments name (i + 1) len
+    if i == len then ""
+    else let a = list-at assignments i
+    in if a.def-name == name then a.chapter-slug
+    else lookup-chapter-loop assignments name (i + 1) len
 
 Section: Rename Map
   RenameEntry = record {
@@ -155,183 +163,185 @@ Section: Rename Map
 Section: Binary Search -- RenameEntry (lower bound by original)
   bsearch-rename-pos : List RenameEntry, Text, Integer, Integer -> Integer
   bsearch-rename-pos (entries) (name) (lo) (hi) =
-   if lo >= hi then lo
-   else let mid = lo + (hi - lo) / 2
-   in if text-compare name (list-at entries mid).original <= 0 then bsearch-rename-pos entries name lo mid
-      else bsearch-rename-pos entries name (mid + 1) hi
+    if lo >= hi then lo
+    else let mid = lo + (hi - lo) / 2
+    in if text-compare name (list-at entries mid).original <= 0 then
+      bsearch-rename-pos entries name lo mid
+    else bsearch-rename-pos entries name (mid + 1) hi
 
   sorted-rename-insert : List RenameEntry, RenameEntry -> List RenameEntry
   sorted-rename-insert (entries) (entry) =
-   list-insert-at entries (bsearch-rename-pos entries (entry.original) 0 (list-length entries)) entry
+    list-insert-at entries (bsearch-rename-pos entries (entry.original) 0 (list-length entries)) entry
 
 Section: Apply Rename
   scope-copy-text : Text -> Text
   scope-copy-text (t) =
-   if text-length t == 0 then "" else deck-record (substring t 0 (text-length t))
+    if text-length t == 0 then "" else deck-record (substring t 0 (text-length t))
 
   rename-lookup : List RenameEntry, Text -> Text
   rename-lookup (entries) (name) =
-   let len = list-length entries
-   in let pos = bsearch-rename-pos entries name 0 len
-   in if pos < len then
-     if (list-at entries pos).original == name then scope-copy-text ((list-at entries pos).mangled)
-     else name
-   else name
+    let len = list-length entries
+    in let pos = bsearch-rename-pos entries name 0 len
+    in if pos < len then
+      if (list-at entries pos).original == name then scope-copy-text ((list-at entries pos).mangled)
+      else name
+    else name
 
   is-colliding : SkipListText, Text -> Boolean
   is-colliding (names) (name) =
-   skip-list-text-has names name
+    skip-list-text-has names name
 
 Section: IR Expression Renaming
   rename-has-entry : List RenameEntry, Text -> Boolean
   rename-has-entry (entries) (name) =
-   let len = list-length entries
-   in let pos = bsearch-rename-pos entries name 0 len
-   in if pos >= len then False
-      else (list-at entries pos).original == name
+    let len = list-length entries
+    in let pos = bsearch-rename-pos entries name 0 len
+    in if pos >= len then False
+    else (list-at entries pos).original == name
 
   remove-rename : List RenameEntry, Text -> List RenameEntry
   remove-rename (entries) (name) =
-   if rename-has-entry entries name then
-    remove-rename-loop entries name 0 (list-length entries) []
-   else entries
+    if rename-has-entry entries name then
+      remove-rename-loop entries name 0 (list-length entries) []
+    else entries
 
   remove-rename-loop : List RenameEntry, Text, Integer, Integer, List RenameEntry -> List RenameEntry
   remove-rename-loop (entries) (name) (i) (len) (acc) =
-   if i == len then acc
-   else let e = list-at entries i
-   in if e.original == name then remove-rename-loop entries name (i + 1) len acc
-      else remove-rename-loop entries name (i + 1) len (list-push acc e)
+    if i == len then acc
+    else let e = list-at entries i
+    in if e.original == name then remove-rename-loop entries name (i + 1) len acc
+    else remove-rename-loop entries name (i + 1) len (list-push acc e)
 
   remove-renames-for-params : List RenameEntry, List IRParam, Integer -> List RenameEntry
   remove-renames-for-params (entries) (params) (i) =
-   if i == list-length params then entries
-   else let p = list-at params i
-   in remove-renames-for-params (remove-rename entries (p.name)) params (i + 1)
+    if i == list-length params then entries
+    else let p = list-at params i
+    in remove-renames-for-params (remove-rename entries (p.name)) params (i + 1)
 
   rename-ir-expr : List RenameEntry, IRExpr -> IRExpr
   rename-ir-expr (rn) (e) =
-   when e
-    is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrTextLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) | IrError (msg) (ty) (sp) -> e
-    is IrFork (x) (ty) (sp) -> IrFork (rename-ir-expr rn x) ty sp
-    is IrAwait (x) (ty) (sp) -> IrAwait (rename-ir-expr rn x) ty sp
-    is IrNegate (x) (t) (sp) -> IrNegate (rename-ir-expr rn x) t sp
-    is IrName (n) (ty) (sp) -> IrName (rename-lookup rn n) ty sp
-    is IrBinary (op) (l) (r) (ty) (sp) -> IrBinary op (rename-ir-expr rn l) (rename-ir-expr rn r) ty sp
-    is IrApply (f) (a) (ty) (sp) -> IrApply (rename-ir-expr rn f) (rename-ir-expr rn a) ty sp
-    is IrIf (c) (t) (el) (ty) (sp) -> IrIf (rename-ir-expr rn c) (rename-ir-expr rn t) (rename-ir-expr rn el) ty sp
-    is IrFieldAccess (rec) (field) (ty) (sp) -> IrFieldAccess (rename-ir-expr rn rec) field ty sp
-    is IrLet (nm) (ty) (val) (body) (sp) -> rename-ir-let rn nm ty val body sp
-    is IrLambda (params) (body) (ty) (sp) -> rename-ir-lambda rn params body ty sp
-    is IrMatch (scrut) (branches) (ty) (sp) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty sp
-    is IrList (elems) (ty) (sp) -> IrList (for e in elems -> rename-ir-expr rn e) ty sp
-    is IrRecord (nm) (fields) (ty) (sp) -> IrRecord nm (for f in fields -> IRFieldVal { name = f.name, value = rename-ir-expr rn (f.value), span = f.span }) ty sp
-    is IrAct (stmts) (ty) (sp) -> IrAct (rename-ir-act-stmts rn stmts 0 []) ty sp
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty sp
-    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> IrWithTimeout secs effs scopes (rename-ir-expr rn body) ty sp
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> IrTry max (rename-ir-act-stmts rn body 0 []) (rename-ir-act-stmts rn fb 0 []) (rename-ir-act-stmts rn fail 0 []) ty sp
-    is otherwise -> e
+    when e
+      is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrTextLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) | IrError (msg) (ty) (sp) -> e
+      is IrFork (x) (ty) (sp) -> IrFork (rename-ir-expr rn x) ty sp
+      is IrAwait (x) (ty) (sp) -> IrAwait (rename-ir-expr rn x) ty sp
+      is IrNegate (x) (t) (sp) -> IrNegate (rename-ir-expr rn x) t sp
+      is IrName (n) (ty) (sp) -> IrName (rename-lookup rn n) ty sp
+      is IrBinary (op) (l) (r) (ty) (sp) -> IrBinary op (rename-ir-expr rn l) (rename-ir-expr rn r) ty sp
+      is IrApply (f) (a) (ty) (sp) -> IrApply (rename-ir-expr rn f) (rename-ir-expr rn a) ty sp
+      is IrIf (c) (t) (el) (ty) (sp) -> IrIf (rename-ir-expr rn c) (rename-ir-expr rn t) (rename-ir-expr rn el) ty sp
+      is IrFieldAccess (rec) (field) (ty) (sp) -> IrFieldAccess (rename-ir-expr rn rec) field ty sp
+      is IrLet (nm) (ty) (val) (body) (sp) -> rename-ir-let rn nm ty val body sp
+      is IrLambda (params) (body) (ty) (sp) -> rename-ir-lambda rn params body ty sp
+      is IrMatch (scrut) (branches) (ty) (sp) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty sp
+      is IrList (elems) (ty) (sp) -> IrList (for e in elems -> rename-ir-expr rn e) ty sp
+      is IrRecord (nm) (fields) (ty) (sp) -> IrRecord nm (for f in fields -> IRFieldVal { name = f.name, value = rename-ir-expr rn (f.value), span = f.span }) ty sp
+      is IrAct (stmts) (ty) (sp) -> IrAct (rename-ir-act-stmts rn stmts 0 []) ty sp
+      is IrHandle (eff) (body) (clauses) (ty) (sp) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty sp
+      is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> IrWithTimeout secs effs scopes (rename-ir-expr rn body) ty sp
+      is IrTry (max) (body) (fb) (fail) (ty) (sp) -> IrTry max (rename-ir-act-stmts rn body 0 []) (rename-ir-act-stmts rn fb 0 []) (rename-ir-act-stmts rn fail 0 []) ty sp
+      is otherwise -> e
 
   rename-ir-let : List RenameEntry, Text, CodexType, IRExpr, IRExpr, SourceSpan -> IRExpr
   rename-ir-let (rn) (nm) (ty) (val) (body) (sp) =
-   let rn2 = remove-rename rn nm
-   in IrLet nm ty (rename-ir-expr rn val) (rename-ir-expr rn2 body) sp
+    let rn2 = remove-rename rn nm
+    in IrLet nm ty (rename-ir-expr rn val) (rename-ir-expr rn2 body) sp
 
   rename-ir-lambda : List RenameEntry, List IRParam, IRExpr, CodexType, SourceSpan -> IRExpr
   rename-ir-lambda (rn) (params) (body) (ty) (sp) =
-   let rn2 = remove-renames-for-params rn params 0
-   in IrLambda params (rename-ir-expr rn2 body) ty sp
+    let rn2 = remove-renames-for-params rn params 0
+    in IrLambda params (rename-ir-expr rn2 body) ty sp
 
 Section: IR Collection Renaming
   rename-ir-branches : List RenameEntry, List IRBranch, Integer, List IRBranch -> List IRBranch
   rename-ir-branches (rn) (branches) (i) (acc) =
-   if i == list-length branches then acc
-   else let b = list-at branches i
-   in let rn2 = remove-renames-for-pat rn (b.pattern)
-   in let b2 = deck-record (__record-set b "body" (rename-ir-expr rn2 (b.body)))
-   in let b3 = deck-record (__record-set b2 "guard" (rename-ir-expr rn2 (b.guard)))
-   in rename-ir-branches rn branches (i + 1) (list-push acc b3)
+    if i == list-length branches then acc
+    else let b = list-at branches i
+    in let rn2 = remove-renames-for-pat rn (b.pattern)
+    in let b2 = deck-record (__record-set b "body" (rename-ir-expr rn2 (b.body)))
+    in let b3 = deck-record (__record-set b2 "guard" (rename-ir-expr rn2 (b.guard)))
+    in rename-ir-branches rn branches (i + 1) (list-push acc b3)
 
   remove-renames-for-pat : List RenameEntry, IRPat -> List RenameEntry
   remove-renames-for-pat (rn) (p) =
-   when p
-    is IrVarPat (nm) (ty) (sp) -> remove-rename rn nm
-    is IrCtorPat (nm) (subs) (ty) (sp) -> remove-renames-for-pats rn subs 0
-    is IrVecPat (subs) (ty) (sp) -> remove-renames-for-pats rn subs 0
-    is IrLitPat (v) (ty) (sp) | IrWildPat (sp) -> rn
+    when p
+      is IrVarPat (nm) (ty) (sp) -> remove-rename rn nm
+      is IrCtorPat (nm) (subs) (ty) (sp) -> remove-renames-for-pats rn subs 0
+      is IrVecPat (subs) (ty) (sp) -> remove-renames-for-pats rn subs 0
+      is IrLitPat (v) (ty) (sp) | IrWildPat (sp) -> rn
 
   remove-renames-for-pats : List RenameEntry, List IRPat, Integer -> List RenameEntry
   remove-renames-for-pats (rn) (pats) (i) =
-   if i == list-length pats then rn
-   else remove-renames-for-pats (remove-renames-for-pat rn (list-at pats i)) pats (i + 1)
+    if i == list-length pats then rn
+    else remove-renames-for-pats (remove-renames-for-pat rn (list-at pats i)) pats (i + 1)
 
   rename-ir-act-stmts : List RenameEntry, List IRActStmt, Integer, List IRActStmt -> List IRActStmt
   rename-ir-act-stmts (rn) (stmts) (i) (acc) =
-   if i == list-length stmts then acc
-   else let stmt = list-at stmts i
-   in when stmt
-    is IrDoBind (nm) (ty) (expr) (sp) ->
-     let rn2 = remove-rename rn nm
-   in rename-ir-act-stmts rn2 stmts (i + 1) (list-push acc (IrDoBind nm ty (rename-ir-expr rn expr) sp))
-    is IrDoExec (expr) (sp) ->
-     rename-ir-act-stmts rn stmts (i + 1) (list-push acc (IrDoExec (rename-ir-expr rn expr) sp))
+    if i == list-length stmts then acc
+    else let stmt = list-at stmts i
+    in when stmt
+      is IrDoBind (nm) (ty) (expr) (sp) ->
+       let rn2 = remove-rename rn nm
+       in rename-ir-act-stmts rn2 stmts (i + 1) (list-push acc (IrDoBind nm ty (rename-ir-expr rn expr) sp))
+      is IrDoExec (expr) (sp) ->
+       rename-ir-act-stmts rn stmts (i + 1) (list-push acc (IrDoExec (rename-ir-expr rn expr) sp))
 
   rename-ir-handle-clauses : List RenameEntry, List IRHandleClause, Integer, List IRHandleClause -> List IRHandleClause
   rename-ir-handle-clauses (rn) (clauses) (i) (acc) =
-   if i == list-length clauses then acc
-   else let c = list-at clauses i
-   in let rn2 = remove-rename rn (c.resume-name)
-   in let rn3 = remove-clause-param-renames rn2 (c.params) 0 (list-length (c.params))
-   in rename-ir-handle-clauses rn clauses (i + 1) (list-push acc (IRHandleClause {
-    op-name = c.op-name,
-    params = c.params,
-    resume-name = c.resume-name,
-    body = rename-ir-expr rn3 (c.body),
-    span = c.span
-   }))
+    if i == list-length clauses then acc
+    else let c = list-at clauses i
+    in let rn2 = remove-rename rn (c.resume-name)
+    in let rn3 = remove-clause-param-renames rn2 (c.params) 0 (list-length (c.params))
+    in rename-ir-handle-clauses rn clauses (i + 1) (list-push acc (IRHandleClause {
+     op-name = c.op-name,
+     params = c.params,
+     resume-name = c.resume-name,
+     body = rename-ir-expr rn3 (c.body),
+     span = c.span
+    }))
 
   remove-clause-param-renames : List RenameEntry, List Text, Integer, Integer -> List RenameEntry
   remove-clause-param-renames (rn) (ps) (i) (len) =
-   if i >= len then rn
-   else remove-clause-param-renames (remove-rename rn (list-at ps i)) ps (i + 1) len
+    if i >= len then rn
+    else remove-clause-param-renames (remove-rename rn (list-at ps i)) ps (i + 1) len
 
 Section: Chapter Scoping Pipeline
   build-all-assignments : Text, List DefHeader, Integer, List ChapterAssignment -> List ChapterAssignment
   build-all-assignments (source) (headers) (i) (acc) =
-   if i == list-length headers then acc
-   else let hdr = list-at headers i
-   in build-all-assignments source headers (i + 1) (list-push acc (ChapterAssignment {
-    def-name = token-text (hdr.name),
-    chapter-slug = hdr.chapter-slug
-   }))
+    if i == list-length headers then acc
+    else let hdr = list-at headers i
+    in build-all-assignments source headers (i + 1) (list-push acc (ChapterAssignment {
+     def-name = token-text (hdr.name),
+     chapter-slug = hdr.chapter-slug
+    }))
 
   build-chapter-rename-map : SkipListText, List ChapterAssignment, Text -> List RenameEntry
   build-chapter-rename-map (colliding) (assignments) (cur-chap) =
-   build-mod-renames colliding assignments cur-chap 0 (list-length assignments) []
+    build-mod-renames colliding assignments cur-chap 0 (list-length assignments) []
 
   build-mod-renames : SkipListText, List ChapterAssignment, Text, Integer, Integer, List RenameEntry -> List RenameEntry
   build-mod-renames (colliding) (assignments) (cur-chap) (i) (len) (acc) =
-   if i == len then acc
-   else let a = list-at assignments i
-   in if is-colliding colliding (a.def-name)
-      then if a.chapter-slug == cur-chap
-           then let cleaned = remove-rename acc (a.def-name)
-   in build-mod-renames colliding assignments cur-chap (i + 1) len (sorted-rename-insert cleaned (RenameEntry {
-                 original = a.def-name,
-                 mangled = mangle-name cur-chap (a.def-name)
-                }))
-           else if has-rename acc (a.def-name)
-                then build-mod-renames colliding assignments cur-chap (i + 1) len acc
-                else build-mod-renames colliding assignments cur-chap (i + 1) len (sorted-rename-insert acc (RenameEntry {
-                 original = a.def-name,
-                 mangled = mangle-name (a.chapter-slug) (a.def-name)
-                }))
-      else build-mod-renames colliding assignments cur-chap (i + 1) len acc
+    if i == len then acc
+    else let a = list-at assignments i
+    in if is-colliding colliding (a.def-name)
+       then if a.chapter-slug == cur-chap
+            then let cleaned = remove-rename acc (a.def-name)
+            in build-mod-renames colliding assignments cur-chap (i + 1) len (sorted-rename-insert cleaned (RenameEntry {
+                          original = a.def-name,
+                          mangled = mangle-name cur-chap (a.def-name)
+                         }))
+       else if has-rename acc (a.def-name)
+            then build-mod-renames colliding assignments cur-chap (i + 1) len acc
+       else
+         build-mod-renames colliding assignments cur-chap (i + 1) len (sorted-rename-insert acc (RenameEntry {
+          original = a.def-name,
+          mangled = mangle-name (a.chapter-slug) (a.def-name)
+         }))
+    else build-mod-renames colliding assignments cur-chap (i + 1) len acc
 
   build-global-rename-table : List ChapterAssignment, SkipListText -> List RenameEntry
   build-global-rename-table (assignments) (colliding) =
-   let pushed = build-global-renames assignments colliding (list-length assignments - 1) (__list-with-capacity (list-length assignments))
-   in dedupe-renames (sort-by pushed compare-rename-originals)
+    let pushed = build-global-renames assignments colliding (list-length assignments - 1) (__list-with-capacity (list-length assignments))
+    in dedupe-renames (sort-by pushed compare-rename-originals)
 
  The table is built by a single reversed push pass, one merge sort,
  and an adjacent dedupe - O(n log n). The previous per-entry
@@ -350,79 +360,81 @@ Section: Chapter Scoping Pipeline
 
   build-global-renames : List ChapterAssignment, SkipListText, Integer, List RenameEntry -> List RenameEntry
   build-global-renames (assignments) (colliding) (i) (acc) =
-   if i < 0 then acc
-   else let a = list-at assignments i
-   in if is-colliding colliding (a.def-name)
-      then build-global-renames assignments colliding (i - 1) (list-push acc (RenameEntry {
-            original = a.def-name,
-            mangled = mangle-name (a.chapter-slug) (a.def-name)
-           }))
-      else build-global-renames assignments colliding (i - 1) acc
+    if i < 0 then acc
+    else let a = list-at assignments i
+    in if is-colliding colliding (a.def-name)
+       then build-global-renames assignments colliding (i - 1) (list-push acc (RenameEntry {
+             original = a.def-name,
+             mangled = mangle-name (a.chapter-slug) (a.def-name)
+            }))
+    else build-global-renames assignments colliding (i - 1) acc
 
   dedupe-renames : List RenameEntry -> List RenameEntry
   dedupe-renames (entries) =
-   dedupe-renames-loop entries 0 (list-length entries) (__list-with-capacity (list-length entries))
+    dedupe-renames-loop entries 0 (list-length entries) (__list-with-capacity (list-length entries))
 
   dedupe-renames-loop : List RenameEntry, Integer, Integer, List RenameEntry -> List RenameEntry
   dedupe-renames-loop (entries) (i) (len) (acc) =
-   if i == len then acc
-   else let e = list-at entries i
-   in if i > 0
-      then if (list-at entries (i - 1)).original == e.original
-           then dedupe-renames-loop entries (i + 1) len acc
-           else dedupe-renames-loop entries (i + 1) len (list-push acc e)
-      else dedupe-renames-loop entries (i + 1) len (list-push acc e)
+    if i == len then acc
+    else let e = list-at entries i
+    in if i > 0
+       then if (list-at entries (i - 1)).original == e.original
+            then dedupe-renames-loop entries (i + 1) len acc
+       else dedupe-renames-loop entries (i + 1) len (list-push acc e)
+    else dedupe-renames-loop entries (i + 1) len (list-push acc e)
 
   resolve-def-name : List RenameEntry, Text, Text -> Text
   resolve-def-name (renames) (name) (chapter-slug) =
-   if rename-has-entry renames name then mangle-name chapter-slug name
-   else name
+    if rename-has-entry renames name then mangle-name chapter-slug name
+    else name
 
   has-rename : List RenameEntry, Text -> Boolean
   has-rename (entries) (name) =
-   rename-has-entry entries name
+    rename-has-entry entries name
 
 Section: Duplicate Cite Detection
   cite-selects-name : ACitesDecl, Text -> Boolean
   cite-selects-name (c) (name) =
-   cite-selects-name-loop (c.selected-names) name 0 (list-length (c.selected-names))
+    cite-selects-name-loop (c.selected-names) name 0 (list-length (c.selected-names))
 
   cite-selects-name-loop : List Name, Text, Integer, Integer -> Boolean
   cite-selects-name-loop (names) (target) (j) (len) =
-   if j == len then False
-   else if (list-at names j).value == target then True
-   else cite-selects-name-loop names target (j + 1) len
+    if j == len then False
+    else if (list-at names j).value == target then True
+    else cite-selects-name-loop names target (j + 1) len
 
   find-cite-conflict : List ACitesDecl, Text, Text, Integer, Integer -> Text
   find-cite-conflict (citations) (citing) (name) (k) (total) =
-   if k == total then ""
-   else let c = list-at citations k
-   in if c.citing-chapter == citing then if cite-selects-name c name then c.chapter-name.value
-     else find-cite-conflict citations citing name (k + 1) total
-     else find-cite-conflict citations citing name (k + 1) total
+    if k == total then ""
+    else let c = list-at citations k
+    in if c.citing-chapter == citing then if cite-selects-name c name then c.chapter-name.value
+    else find-cite-conflict citations citing name (k + 1) total
+    else find-cite-conflict citations citing name (k + 1) total
 
   add-duplicate-cite-error : DiagnosticBag, ACitesDecl, Text, Text -> DiagnosticBag
   add-duplicate-cite-error (bag) (cite) (name-val) (conflict) =
-   bag-add bag (make-error cdx-duplicate-cite ("Name '" & name-val & "' is cited from both '" & (cite.chapter-name.value) & "' and '" & conflict & "' in chapter '" & (cite.citing-chapter) & "'") (cite.span))
+    bag-add bag (make-error cdx-duplicate-cite ("Name '" & name-val & "' is cited from both '" & (cite.chapter-name.value) & "' and '" & conflict & "' in chapter '" & (cite.citing-chapter) & "'") (cite.span))
 
   check-cite-names : ACitesDecl, Integer, Integer, List ACitesDecl, Integer, Integer, DiagnosticBag -> DiagnosticBag
   check-cite-names (cite) (j) (nlen) (all-citations) (i) (total) (bag) =
-   if j == nlen then bag
-   else let name = list-at (cite.selected-names) j
-   in let conflict = find-cite-conflict all-citations (cite.citing-chapter) (name.value) (i + 1) total
-   in let bag2 = if conflict == "" then bag else add-duplicate-cite-error bag cite (name.value) conflict
-   in check-cite-names cite (j + 1) nlen all-citations i total bag2
+    if j == nlen then bag
+    else let name = list-at (cite.selected-names) j
+    in let conflict = find-cite-conflict all-citations (cite.citing-chapter) (name.value) (i + 1) total
+    in let bag2 = if conflict == "" then
+      bag
+    else add-duplicate-cite-error bag cite (name.value) conflict
+    in check-cite-names cite (j + 1) nlen all-citations i total bag2
 
   check-duplicate-cites-loop : List ACitesDecl, Integer, Integer, DiagnosticBag -> DiagnosticBag
   check-duplicate-cites-loop (citations) (i) (len) (bag) =
-   if i == len then bag
-   else let cite-i = list-at citations i
-   in let bag2 = check-cite-names cite-i 0 (list-length (cite-i.selected-names)) citations i len bag
-   in check-duplicate-cites-loop citations (i + 1) len bag2
+    if i == len then bag
+    else let cite-i = list-at citations i
+    in let bag2 = check-cite-names cite-i 0 (list-length (cite-i.selected-names)) citations i len bag
+    in check-duplicate-cites-loop citations (i + 1) len bag2
 
   check-duplicate-cites : List ACitesDecl -> DiagnosticBag
   check-duplicate-cites (citations) =
-   check-duplicate-cites-loop citations 0 (list-length citations) empty-bag
+    check-duplicate-cites-loop citations 0 (list-length citations) empty-bag
 
  It is an ERROR (CDX3007) since 2026-07-20, and both the warning period
  and the flip were decided by measurement rather than by taste. It began
@@ -441,94 +453,98 @@ Section: Duplicate Cite Detection
 
   chapter-slug-dashes : Text, Integer, Integer -> Integer
   chapter-slug-dashes (s) (i) (len) =
-   if i + 1 >= len then -1
-   else if char-code-at s i == char-code-at "-" 0 then if char-code-at s (i + 1) == char-code-at "-" 0 then i
-     else chapter-slug-dashes s (i + 1) len
-     else chapter-slug-dashes s (i + 1) len
+    if i + 1 >= len then -1
+    else if char-code-at s i == char-code-at "-" 0 then
+      if char-code-at s (i + 1) == char-code-at "-" 0 then i
+      else chapter-slug-dashes s (i + 1) len
+    else chapter-slug-dashes s (i + 1) len
 
   chapter-bare-name : Text -> Text
   chapter-bare-name (s) =
-   let p = chapter-slug-dashes s 0 (text-length s)
-   in if p < 0 then s else substring s (p + 2) (text-length s - p - 2)
+    let p = chapter-slug-dashes s 0 (text-length s)
+    in if p < 0 then s else substring s (p + 2) (text-length s - p - 2)
 
   cite-key-loop : Text, Integer, Integer, List Text -> List Text
   cite-key-loop (s) (i) (len) (acc) =
-   if i == len then acc
-   else let c = char-code-at s i
-   in if c == char-code-at " " 0 then cite-key-loop s (i + 1) len acc
-      else if c >= cc-first-upper then if c <= cc-upper-z then cite-key-loop s (i + 1) len (list-push acc (char-to-text (code-to-char (c - 26))))
+    if i == len then acc
+    else let c = char-code-at s i
+    in if c == char-code-at " " 0 then cite-key-loop s (i + 1) len acc
+    else if c >= cc-first-upper then
+      if c <= cc-upper-z then
+        cite-key-loop s (i + 1) len (list-push acc (char-to-text (code-to-char (c - 26))))
       else cite-key-loop s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
-      else cite-key-loop s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
+    else cite-key-loop s (i + 1) len (list-push acc (char-to-text (code-to-char c)))
 
   cite-key : Text -> Text
   cite-key (s) = text-concat-list (cite-key-loop s 0 (text-length s) [])
 
   add-missing-cite-error : DiagnosticBag, ACitesDecl -> DiagnosticBag
   add-missing-cite-error (bag) (cite) =
-   bag-add bag (make-error cdx-cite-not-in-unit ("Cited chapter '" & (cite.chapter-name.value) & "' of quire '" & (cite.quire.value) & "' is not present in this compilation unit") (cite.span))
+    bag-add bag (make-error cdx-cite-not-in-unit ("Cited chapter '" & (cite.chapter-name.value) & "' of quire '" & (cite.quire.value) & "' is not present in this compilation unit") (cite.span))
 
   bare-name-present : List Text, Text, Integer, Integer -> Boolean
   bare-name-present (bare-cache) (target) (i) (len) =
-   if i == len then False
-   else if list-at bare-cache i == target then True
-   else bare-name-present bare-cache target (i + 1) len
+    if i == len then False
+    else if list-at bare-cache i == target then True
+    else bare-name-present bare-cache target (i + 1) len
 
   check-cites-resolve-loop : List ACitesDecl, List Text, Integer, Integer, DiagnosticBag -> DiagnosticBag
   check-cites-resolve-loop (citations) (bare-cache) (i) (len) (bag) =
-   if i == len then bag
-   else let cite = list-at citations i
-   in if bare-name-present bare-cache (cite-key (cite.chapter-name.value)) 0 (list-length bare-cache)
-      then check-cites-resolve-loop citations bare-cache (i + 1) len bag
-      else check-cites-resolve-loop citations bare-cache (i + 1) len (add-missing-cite-error bag cite)
+    if i == len then bag
+    else let cite = list-at citations i
+    in if bare-name-present bare-cache (cite-key (cite.chapter-name.value)) 0 (list-length bare-cache)
+       then check-cites-resolve-loop citations bare-cache (i + 1) len bag
+    else check-cites-resolve-loop citations bare-cache (i + 1) len (add-missing-cite-error bag cite)
 
   check-cites-resolve : List ACitesDecl, List ChapterAssignment, List Text -> DiagnosticBag
   check-cites-resolve (citations) (assignments) (chapter-names) =
-   let from-defs = for a in assignments -> cite-key (chapter-bare-name (a.chapter-slug))
-   in let from-headers = for n in chapter-names -> cite-key (chapter-bare-name n)
-   in check-cites-resolve-loop citations (deck-record (from-defs & from-headers)) 0 (list-length citations) empty-bag
+    let from-defs = for a in assignments -> cite-key (chapter-bare-name (a.chapter-slug))
+    in let from-headers = for n in chapter-names -> cite-key (chapter-bare-name n)
+    in check-cites-resolve-loop citations (deck-record (from-defs & from-headers)) 0 (list-length citations) empty-bag
 
 Section: AST-Level Chapter Scoping
   scope-achapter : AChapter, SkipListText, List ChapterAssignment, Integer -> AChapter
   scope-achapter (ast) (colliding) (assignments) (ceiling) =
-   let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
-   in let cite-slugs = for c in (ast.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
-   in let raw-defs = scope-adefs-ll (ast.defs) colliding assignments (ast.citations) cite-slugs "" [] 0 [] ceiling
-   in deck-record (AChapter {
-    name = ast.name,
-    defs = deck-record (__linked-list-to-list raw-defs),
-    type-defs = ast.type-defs,
-    effect-defs = ast.effect-defs,
-    class-defs = ast.class-defs,
-    instance-defs = ast.instance-defs,
-    citations = ast.citations,
-    ground-effects = ast.ground-effects,
-    chapter-title = ast.chapter-title,
-    prose = ast.prose,
-    prose-blocks = ast.prose-blocks,
-    annotations = ast.annotations,
-    section-titles = ast.section-titles,
-    rt-names = ast.rt-names,
-    rt-budgets = ast.rt-budgets,
-    conversions = ast.conversions,
-    span = ast.span
-   })
+    let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
+    in let cite-slugs = for c in (ast.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
+    in let raw-defs = scope-adefs-ll (ast.defs) colliding assignments (ast.citations) cite-slugs "" [] 0 [] ceiling
+    in deck-record (AChapter {
+     name = ast.name,
+     defs = deck-record (__linked-list-to-list raw-defs),
+     type-defs = ast.type-defs,
+     effect-defs = ast.effect-defs,
+     class-defs = ast.class-defs,
+     instance-defs = ast.instance-defs,
+     citations = ast.citations,
+     ground-effects = ast.ground-effects,
+     chapter-title = ast.chapter-title,
+     prose = ast.prose,
+     prose-blocks = ast.prose-blocks,
+     annotations = ast.annotations,
+     section-titles = ast.section-titles,
+     rt-names = ast.rt-names,
+     rt-budgets = ast.rt-budgets,
+     conversions = ast.conversions,
+     span = ast.span
+    })
 
   scope-adefs-ll : List ADef, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer, LinkedList ADef, Integer -> LinkedList ADef
   scope-adefs-ll (defs) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-rn) (i) (acc) (ceiling) =
-   if i == list-length defs then acc
-   else if deck-short-of ceiling demand-scope-guard-band then acc
-   else let d = list-at defs i
-   in let rn = if d.chapter-slug == cur-slug then cur-rn
-      else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments cite-slugs (d.chapter-slug) 0
-   in let new-name = deck-record (Name { value = rename-lookup rn (d.name.value) })
-   in scope-adefs-ll defs colliding assignments citations cite-slugs (d.chapter-slug) rn (i + 1) (__linked-list-push acc (deck-record (ADef {
-    name = new-name,
-    params = d.params,
-    declared-type = d.declared-type,
-    body = d.body,
-    chapter-slug = d.chapter-slug,
-    span = d.span
-   }))) ceiling
+    if i == list-length defs then acc
+    else if deck-short-of ceiling demand-scope-guard-band then acc
+    else let d = list-at defs i
+    in let rn = if d.chapter-slug == cur-slug then cur-rn
+    else
+      apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments cite-slugs (d.chapter-slug) 0
+    in let new-name = deck-record (Name { value = rename-lookup rn (d.name.value) })
+    in scope-adefs-ll defs colliding assignments citations cite-slugs (d.chapter-slug) rn (i + 1) (__linked-list-push acc (deck-record (ADef {
+     name = new-name,
+     params = d.params,
+     declared-type = d.declared-type,
+     body = d.body,
+     chapter-slug = d.chapter-slug,
+     span = d.span
+    }))) ceiling
 
  EVERY CITATION IS RESOLVED ONCE PER UNIT, not once per slug transition.
  `find-slug-for-cite-name` depends on the quire, the cite name, the assignments
@@ -561,15 +577,15 @@ Section: AST-Level Chapter Scoping
 
   apply-cite-overrides : List RenameEntry, List ACitesDecl, SkipListText, List ChapterAssignment, List Text, Text, Integer -> List RenameEntry
   apply-cite-overrides (rn) (citations) (colliding) (assignments) (cite-slugs) (cur-slug) (i) =
-   apply-cite-overrides-loop rn citations colliding assignments cite-slugs cur-slug i
+    apply-cite-overrides-loop rn citations colliding assignments cite-slugs cur-slug i
 
   apply-cite-overrides-loop : List RenameEntry, List ACitesDecl, SkipListText, List ChapterAssignment, List Text, Text, Integer -> List RenameEntry
   apply-cite-overrides-loop (rn) (citations) (colliding) (assignments) (cite-slugs) (cur-slug) (i) =
-   if i == list-length citations then rn
-   else let cite = list-at citations i
-   in let cite-slug = list-at cite-slugs i
-   in let rn2 = apply-cite-selected rn (cite.selected-names) cite-slug colliding assignments cur-slug 0
-   in apply-cite-overrides-loop rn2 citations colliding assignments cite-slugs cur-slug (i + 1)
+    if i == list-length citations then rn
+    else let cite = list-at citations i
+    in let cite-slug = list-at cite-slugs i
+    in let rn2 = apply-cite-selected rn (cite.selected-names) cite-slug colliding assignments cur-slug 0
+    in apply-cite-overrides-loop rn2 citations colliding assignments cite-slugs cur-slug (i + 1)
 
  The suffix test compares characters in place. It runs per assignment,
  per citation that misses the composed key, per slug transition of the
@@ -598,74 +614,77 @@ Section: AST-Level Chapter Scoping
 
   slug-has-suffix : Text, Text -> Boolean
   slug-has-suffix (s) (suf) =
-   let sl = text-length s
-   in let fl = text-length suf
-   in if fl > sl then False else slug-suffix-eq s suf (sl - fl) 0 fl
+    let sl = text-length s
+    in let fl = text-length suf
+    in if fl > sl then False else slug-suffix-eq s suf (sl - fl) 0 fl
 
   slug-suffix-eq : Text, Text, Integer, Integer, Integer -> Boolean
   slug-suffix-eq (s) (suf) (base) (j) (fl) =
-   if j == fl then True
-   else if char-code-at s (base + j) == char-code-at suf j then slug-suffix-eq s suf base (j + 1) fl
-   else False
+    if j == fl then True
+    else if char-code-at s (base + j) == char-code-at suf j then
+      slug-suffix-eq s suf base (j + 1) fl
+    else False
 
   slug-matches-bare : Text, Text, Text -> Boolean
   slug-matches-bare (s) (bare) (suf) =
-   if s == bare then True else slug-has-suffix s suf
+    if s == bare then True else slug-has-suffix s suf
 
   count-bare-matches : Text, Text, List Text, Integer, Integer, Integer -> Integer
   count-bare-matches (bare) (suf) (slug-cache) (i) (len) (n) =
-   if i == len then n
-   else if slug-matches-bare (list-at slug-cache i) bare suf then count-bare-matches bare suf slug-cache (i + 1) len (n + 1)
-      else count-bare-matches bare suf slug-cache (i + 1) len n
+    if i == len then n
+    else if slug-matches-bare (list-at slug-cache i) bare suf then
+      count-bare-matches bare suf slug-cache (i + 1) len (n + 1)
+    else count-bare-matches bare suf slug-cache (i + 1) len n
 
   find-slug-bare-loop : Text, Text, List ChapterAssignment, List Text, Integer, Integer -> Text
   find-slug-bare-loop (bare) (suf) (assignments) (slug-cache) (i) (len) =
-   if i == len then ""
-   else if slug-matches-bare (list-at slug-cache i) bare suf then (list-at assignments i).chapter-slug
-      else find-slug-bare-loop bare suf assignments slug-cache (i + 1) len
+    if i == len then ""
+    else if slug-matches-bare (list-at slug-cache i) bare suf then
+      (list-at assignments i).chapter-slug
+    else find-slug-bare-loop bare suf assignments slug-cache (i + 1) len
 
   find-slug-by-bare-name : Text, List ChapterAssignment, List Text -> Text
   find-slug-by-bare-name (bare) (assignments) (slug-cache) =
-   let suf = "--" & bare
-   in if count-bare-matches bare suf slug-cache 0 (list-length slug-cache) 0 == 1
-      then find-slug-bare-loop bare suf assignments slug-cache 0 (list-length assignments)
-      else ""
+    let suf = "--" & bare
+    in if count-bare-matches bare suf slug-cache 0 (list-length slug-cache) 0 == 1
+       then find-slug-bare-loop bare suf assignments slug-cache 0 (list-length assignments)
+    else ""
 
   find-slug-for-cite-name : Text, Text, List ChapterAssignment, List Text -> Text
   find-slug-for-cite-name (quire) (cite-name) (assignments) (slug-cache) =
-   let exact = find-slug-for-cite-name-loop (cite-key (quire & "--" & cite-name)) assignments slug-cache 0 (list-length assignments)
-   in if exact == "" then find-slug-by-bare-name (cite-key cite-name) assignments slug-cache
-      else exact
+    let exact = find-slug-for-cite-name-loop (cite-key (quire & "--" & cite-name)) assignments slug-cache 0 (list-length assignments)
+    in if exact == "" then find-slug-by-bare-name (cite-key cite-name) assignments slug-cache
+    else exact
 
   find-slug-for-cite-name-loop : Text, List ChapterAssignment, List Text, Integer, Integer -> Text
   find-slug-for-cite-name-loop (slug-cite) (assignments) (slug-cache) (i) (len) =
-   if i == len then ""
-   else if list-at slug-cache i == slug-cite then (list-at assignments i).chapter-slug
-      else find-slug-for-cite-name-loop slug-cite assignments slug-cache (i + 1) len
+    if i == len then ""
+    else if list-at slug-cache i == slug-cite then (list-at assignments i).chapter-slug
+    else find-slug-for-cite-name-loop slug-cite assignments slug-cache (i + 1) len
 
   apply-cite-selected : List RenameEntry, List Name, Text, SkipListText, List ChapterAssignment, Text, Integer -> List RenameEntry
   apply-cite-selected (rn) (names) (cite-slug) (colliding) (assignments) (cur-slug) (i) =
-   if i == list-length names then rn
-   else let n = (list-at names i).value
-   in if is-colliding colliding n then if chapter-defines-name assignments cur-slug n
-     then apply-cite-selected rn names cite-slug colliding assignments cur-slug (i + 1)
-   else let cleaned = remove-rename rn n
-   in apply-cite-selected (sorted-rename-insert cleaned (RenameEntry {
-      original = n,
-      mangled = mangle-name cite-slug n
-     })) names cite-slug colliding assignments cur-slug (i + 1)
-     else apply-cite-selected rn names cite-slug colliding assignments cur-slug (i + 1)
+    if i == list-length names then rn
+    else let n = (list-at names i).value
+    in if is-colliding colliding n then if chapter-defines-name assignments cur-slug n
+      then apply-cite-selected rn names cite-slug colliding assignments cur-slug (i + 1)
+    else let cleaned = remove-rename rn n
+    in apply-cite-selected (sorted-rename-insert cleaned (RenameEntry {
+       original = n,
+       mangled = mangle-name cite-slug n
+      })) names cite-slug colliding assignments cur-slug (i + 1)
+    else apply-cite-selected rn names cite-slug colliding assignments cur-slug (i + 1)
 
   chapter-defines-name : List ChapterAssignment, Text, Text -> Boolean
   chapter-defines-name (assignments) (slug) (name) =
-   chapter-defines-loop assignments slug name 0 (list-length assignments)
+    chapter-defines-loop assignments slug name 0 (list-length assignments)
 
   chapter-defines-loop : List ChapterAssignment, Text, Text, Integer, Integer -> Boolean
   chapter-defines-loop (assignments) (slug) (name) (i) (len) =
-   if i == len then False
-   else let a = list-at assignments i
-   in if a.def-name == name then if a.chapter-slug == slug then True
-      else chapter-defines-loop assignments slug name (i + 1) len
-      else chapter-defines-loop assignments slug name (i + 1) len
+    if i == len then False
+    else let a = list-at assignments i
+    in if a.def-name == name then if a.chapter-slug == slug then True
+    else chapter-defines-loop assignments slug name (i + 1) len
+    else chapter-defines-loop assignments slug name (i + 1) len
 
 Page 1

@@ -1,0 +1,115 @@
+Chapter: DiffusionFreeUSteps
+  cites Diffusion chapter Txt2Img
+  cites Diffusion chapter FreeUStepReference
+  cites Diffusion chapter Sampler
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+  cites Foreword chapter Parse
+
+ Every line of FreeUStepReference (build/freeu-step-oracle.py: Forge's own
+ samplers and sd_forge_freeu's denoiser_callback) against ti-run on the
+ sampler-oracle fixtures: the step each model call sees, and FreeU's gate for
+ start 0.3 end 0.7 and for 0 to 1, through ti-launch and ti-tick. DPM
+ adaptive's attempts follow the data, so it runs on Forge's recorded draws.
+ The sabotage starts the window at dr-real's 0.30000000000000004, which must
+ move exactly the 25 lines at 11 steps, where step 3 of 10 is 0.3.
+
+ We say:
+
+Section: Fixtures
+
+  n : Integer = 1024
+
+  seen-log : Integer = #BD780000
+
+  on-a-log : Integer = #BD781000
+
+  on-b-log : Integer = #BD782000
+
+  post-mean : Integer, Integer, Real -> Integer
+  post-mean (mu) (x) (s) =
+    let out = gpu-buf-alloc (n * 4)
+    in let r = sm-lincomb x mu mu out (0.25 / (0.25 + s * s)) (s * s / (0.25 + s * s)) 0.0 n
+    in if r < 0 then 0 else out
+
+  draw : Integer, Integer -> Integer
+  draw (nb) (k) =
+    let u = gpu-buf-upload nb 0 "sampler-noise-dpm-adaptive.bin" (int-mod k 11 * n * 4) n gpu-dt-f32 gpu-dt-f32
+    in nb
+
+  window : Integer, Integer -> TiExtras
+  window (a) (b) = TiExtras { tx-freeu = [1.0, 1.0, 1.0, 1.0, bits-to-real a, bits-to-real b], tx-pag = 0.0, tx-sag = [], tx-dt = [], tx-step = [0, 0, 0, 1] }
+
+Section: One run
+
+ One model call: the step the map gives call k, and each window's gate.
+
+  record-call : Integer, Integer, TiExtras, TiExtras, List Integer, Integer, Integer, Real -> Integer
+  record-call (s) (steps) (ea) (eb) (cnt) (mu) (x) (sig) =
+    let k = list-at cnt 0
+    in let c = list-set-at cnt 0 (k + 1)
+    in let p1 = poke-32 seen-log (k * 4) (ti-seen-step s steps k)
+    in let p2 = poke-32 on-a-log (k * 4) (if ti-tick ea then 1 else 0)
+    in let p3 = poke-32 on-b-log (k * 4) (if ti-tick eb then 1 else 0)
+    in post-mean mu x sig
+
+  record-call3 : Integer, Integer, TiExtras, TiExtras, List Integer, Integer, Integer, Real, Integer -> Integer
+  record-call3 (s) (steps) (ea) (eb) (cnt) (mu) (x) (sig) (ub) =
+    let d = record-call s steps ea eb cnt mu x sig
+    in let r = if d == 0 then 0 - 1 else sm-lincomb d d d ub 1.0 0.0 0.0 n
+    in d
+
+  seq-text : Integer, Integer, Integer, Text, Text -> Text
+  seq-text (addr) (i) (count) (sep) (acc) =
+    if i >= count then acc
+    else seq-text addr (i + 1) count sep (acc & (if i == 0 then "" else sep) & show (peek-32 addr (i * 4)))
+
+  run-line : Text, Integer, Integer, Integer -> Text
+  run-line (label) (steps) (start) (mu) =
+    let s = ti-name-index ti-sampler-names label 0
+    in let ea = window start #3FE6666666666666
+    in let eb = window 0 #3FF0000000000000
+    in let la = ti-launch ea s steps
+    in let lb = ti-launch eb s steps
+    in let cnt = [0]
+    in let x = gpu-buf-alloc (n * 4)
+    in let u = gpu-buf-upload x 0 "sampler-x0.bin" 0 n gpu-dt-f32 gpu-dt-f32
+    in let nb = gpu-buf-alloc (n * 4)
+    in let bad = ti-run s (\xh sg -> record-call s steps ea eb cnt mu xh sg) (\k -> draw nb k) (\xh sg ub -> record-call3 s steps ea eb cnt mu xh sg ub) x (ti-sigmas s 0 steps False) steps (sm-discrete-sigma 0) (sm-discrete-sigma 999) steps n
+    in let k = list-at cnt 0
+    in let f = gpu-buf-free x & gpu-buf-free nb
+    in label & " " & show steps & " | " & seq-text seen-log 0 k " " "" & " | " & seq-text on-a-log 0 k "" "" & " | " & seq-text on-b-log 0 k "" ""
+
+Section: Arms
+
+ The label and step count of a reference line, and the line ours gives.
+
+  ours-for : Text, Integer, Integer -> Text
+  ours-for (ref) (start) (mu) =
+    let head = list-at (text-split ref " | ") 0
+    in let words = text-split head " "
+    in let last = list-at words (list-length words - 1)
+    in run-line (substring head 0 (text-length head - text-length last - 1)) (text-to-int last) start mu
+
+  compare-all : Integer, Integer, Integer, Integer, Text -> Text
+  compare-all (i) (start) (mu) (same) (misses) =
+    if i >= list-length fsr-lines then show same & " of " & show (list-length fsr-lines) & " lines match Forge" & misses
+    else let ref = list-at fsr-lines i
+    in let ours = ours-for ref start mu
+    in if ours == ref then compare-all (i + 1) start mu (same + 1) misses
+    else compare-all (i + 1) start mu same (misses & "\n  ours:  " & ours & "\n  Forge: " & ref)
+
+  arm : Integer, Text, Boolean -> Text
+  arm (start) (label) (detail) =
+    let mu = gpu-buf-alloc (n * 4)
+    in let um = gpu-buf-upload mu 0 "sampler-mu.bin" 0 n gpu-dt-f32 gpu-dt-f32
+    in let r = compare-all 0 start mu 0 ""
+    in let f = gpu-buf-free mu
+    in label & ": " & (if detail then r else list-at (text-split r "\n") 0)
+
+  opening : [Console] Integer
+  opening = act
+    print-line-uni (arm #3FD3333333333333 "freeu steps vs Forge" True)
+    print-line-uni (arm #3FD3333333333334 "sabotage, start 0.30000000000000004" False)
+    let r = 0 in r
+  end

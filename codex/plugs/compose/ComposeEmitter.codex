@@ -86,7 +86,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> show n & ".toChar()"
     is IrName (n) (ty) (sp) -> kt-sanitize n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-kt-binary op l r arities indent
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-kt-binary op l r ty arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-kt-expr x arities indent & " as Long))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(if (" & emit-kt-expr c arities indent & " as Boolean) " & emit-kt-expr t arities indent & " else " & emit-kt-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> "run {\n" & kt-indent (indent + 1) & "val " & kt-sanitize name & ": Any? = " & emit-kt-expr val arities (indent + 1) & "\n" & kt-indent (indent + 1) & emit-kt-expr body arities (indent + 1) & "\n" & kt-indent indent & "}"
@@ -105,14 +105,14 @@ Section: Expression Emission
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-kt-act body arities indent
     is IrError (msg) (ty) (sp) -> "error(\"" & kt-escape msg & "\")"
 
-  emit-kt-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
-  emit-kt-binary (op) (l) (r) (arities) (indent) =
+  emit-kt-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  emit-kt-binary (op) (l) (r) (ty) (arities) (indent) =
    let lhs = emit-kt-expr l arities indent
    in let rhs = emit-kt-expr r arities indent
    in when op
-    is IrAddInt -> "((" & lhs & " as Long) + (" & rhs & " as Long))"
-    is IrSubInt -> "((" & lhs & " as Long) - (" & rhs & " as Long))"
-    is IrMulInt -> "((" & lhs & " as Long) * (" & rhs & " as Long))"
+    is IrAddInt -> cmp-int-arith "+" "addExact" lhs rhs ty
+    is IrSubInt -> cmp-int-arith "-" "subtractExact" lhs rhs ty
+    is IrMulInt -> cmp-int-arith "*" "multiplyExact" lhs rhs ty
     is IrDivInt -> "((" & lhs & " as Long) / (" & rhs & " as Long))"
     is IrRemInt -> "((" & lhs & " as Long) % (" & rhs & " as Long))"
     is IrPowInt -> "_cx_ipow(" & lhs & " as Long, " & rhs & " as Long)"
@@ -137,6 +137,15 @@ Section: Expression Emission
     is IrSubVec -> "((" & lhs & " as List<Double>).zip(" & rhs & " as List<Double>).map { (a, b) -> a - b })"
     is IrMulVec -> "((" & lhs & " as List<Double>).zip(" & rhs & " as List<Double>).map { (a, b) -> a * b })"
     is IrDivVec -> "((" & lhs & " as List<Double>).zip(" & rhs & " as List<Double>).map { (a, b) -> a / b })"
+
+ A Kotlin Long wraps, so the wrapping band is the bare operator;
+ `Math.addExact` and its two siblings throw ArithmeticException on signed
+ overflow.
+
+  cmp-int-arith : Text, Text, Text, Text, CodexType -> Text
+  cmp-int-arith (sym) (exact) (lhs) (rhs) (ty) =
+   if int-ty-wraps ty then "((" & lhs & " as Long) " & sym & " (" & rhs & " as Long))"
+   else "Math." & exact & "(" & lhs & " as Long, " & rhs & " as Long)"
 
   FlatApply = record { root : IRExpr, args : List IRExpr }
 

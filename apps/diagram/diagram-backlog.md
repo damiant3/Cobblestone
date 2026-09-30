@@ -20,7 +20,3 @@ is still real is never quietly dropped.
   fabricated for the unknown name checked against nothing, so the wrong field
   prefix was invisible for as long as the type name was wrong. Both are
   fixed; what is missing is the call from the editor. Found by CDX3008.
-
-- **`Toolbar.codex:13-14` cites `Diagram chapter DiagramTheme` twice.** A
-  duplicate cite is CDX3003 territory and the later one silently shadows the
-  earlier. Unrelated to the fix above and left for this app's owner.

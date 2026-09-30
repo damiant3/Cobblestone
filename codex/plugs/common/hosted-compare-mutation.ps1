@@ -26,7 +26,7 @@ function Compare-Old {
 }
 function Compare-New {
     param([string]$Got, [string]$Want)
-    return ((Get-HarnessActual $Got) -eq (Get-HarnessExpected $Want))
+    return (Test-HarnessMatch (Get-HarnessActual $Got) (Get-HarnessExpected $Want))
 }
 
 $SOH = [char]1
@@ -39,7 +39,6 @@ $cases = @(
     @{ k='RELAX'; n='missing final LF';                 got="a`nb";            want="a`nb`n";      req=$true  }
     @{ k='RELAX'; n='several trailing blank lines';     got="a`nb`n`n`n`n";    want="a`nb`n";      req=$true  }
     @{ k='RELAX'; n='CRLF actual against LF oracle';    got="a`r`nb`r`n";      want="a`nb`n";      req=$true  }
-    @{ k='RELAX'; n='leading SOH on the ACTUAL';        got="${SOH}a`nb`n";    want="a`nb`n";      req=$true  }
     @{ k='RELAX'; n='HEAP: telemetry line';             got="HEAP: 1`na`nb`n"; want="a`nb`n";      req=$true  }
     @{ k='RELAX'; n='WD: and STACK: telemetry';         got="WD:x`na`nSTACK:y`nb`n"; want="a`nb`n"; req=$true }
 
@@ -54,6 +53,8 @@ $cases = @(
     @{ k='GUARD'; n='TRAILING space on a line';         got="a `nb`n";         want="a`nb`n";      req=$false }
     @{ k='GUARD'; n='line order swapped';               got="b`na`n";          want="a`nb`n";      req=$false }
     @{ k='GUARD'; n='actual gains a HEAP-LIKE content line'; got="a`nHEAPX`nb`n"; want="a`nb`n";   req=$false }
+    @{ k='GUARD'; n='leading SOH on the ACTUAL';        got="${SOH}a`nb`n";    want="a`nb`n";      req=$false }
+    @{ k='GUARD'; n='case differs';                     got="A`nb`n";          want="a`nb`n";      req=$false }
 
     @{ k='SAME';  n='identical';                        got="a`nb`n";          want="a`nb`n";      req=$true  }
     @{ k='SAME';  n='both empty';                       got='';                want='';            req=$true  }

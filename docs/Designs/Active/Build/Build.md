@@ -748,48 +748,43 @@ does not honour. `SOURCE.SRC` is now the fallback rather than the only answer an
 COUNT and a table of 8.3 name plus size per source, and the host refuses to
 exceed the 509-entry root rather than silently truncating.
 
-### What Phase B still owes
+### The host half: bundling and the `.failing` diff
 
-**Execution, and cite resolution for a corpus that is not cite-free.** The runner
-compiles a FILE, not a UNIT: measured over twenty subjects, every entry carrying
-a `cites` line reports errors and every cite-free entry reports zero, 20 for 20
-with nothing on either diagonal. `bundle-app` resolves cites on the HOST before
-`test.ps1` compiles anything and the runner has no such step. The runner says so
-in its own output once per run, rather than leaving a reader to infer it from a
-column of failures.
+**Cites are resolved ON THE HOST (Option B).** `build/test-disk-runner.ps1`
+writes each subject as the unit `compile.ps1` would hand the compiler, every
+cited chapter and then the subject, through the same `Resolve-CiteOrder` and
+`Format-CiteChapters`, so the guest has no resolver to drift from the host's.
+The runner itself still compiles a FILE and says so once per run.
 
-The two options, both priced:
+**Every code is graded, at its position.** The guest prints each error with its
+unit position (`codes=2003@128:24,...`), `Get-DiagRegions` maps each back to
+its file as `compile.ps1` does, and the host applies `bvt.ps1`'s rule: every
+code the `.failing` sidecar records appears, at its line and column when the
+sidecar gives one. A codegen error is graded the same way;
+`errors/builtin-as-value`'s CDX2040 is raised by the emitter, and
+`build/disk-runner-arm.ps1` arm 3 reaches that branch with a cite-free copy of
+it. The sidecars stay on the host.
 
-- **Option A, resolution ON THE GUEST.** The image carries the test chapters and
-  the cited library chapters once each; the runner indexes chapters by name,
-  walks each test's cites, assembles a unit, and compiles it. Payload is about
-  5.5 MB, the library paid once. Cost is a second implementation of the host's
-  resolver, which must not drift from it.
-- **Option B, bundling ON THE HOST.** `bundle-app`'s output becomes the image's
-  entries and the runner needs no resolver at all. **Measured rather than
-  extrapolated over twenty subjects: a factor of 10.0**, so the corpus is about
-  15.5 MB of image. An earlier extrapolation from eight files said 6.5 and was
-  low by half, which is the difference between an extrapolation and a
-  measurement. All twenty compile clean on the guest, including the fourteen that
-  were red when read raw, and **the control is in the same run and fires**: two
-  error fixtures bundled the same way still report `errors=1 ok=no`.
+**The guest reads a source as the compiler's serial reader does**: byte 13
+dropped, a byte of 128 or more kept, the rest mapped through the CCE table, then
+`utf8-to-cce`; and it splits `%%QUOTED-WORKS%%` and resolves quotations as
+`dispatch-on-mode` does. `fat16-read-source` maps a high byte on its own, so a
+UTF-8 identifier (`ident-letters`) compiled to different text on the guest.
 
-**Option B works end to end today with no guest code**, and a runner over a
-CHOSEN SUBSET is buildable now under either option.
+**Shards.** `test-run.ps1` gives a guest 60 s and the img plug aborted its
+connection on a 20 MB payload, so the corpus is imaged in shards of 250 subjects
+or 6 MB of bundles. Measured 2026-09-29: 982 bundles are 80.6 MB (a subject
+citing the compiler bundles to 2.8 MB), 15 shards, the slowest guest 11 s, each
+image about 5 minutes, the whole run about 75 minutes.
 
-**The `.expected` diff needs execution; the `.failing` half does not.** A
-`.expected` sidecar holds the PROGRAM'S OUTPUT, so diffing it requires running
-what was compiled. A `.failing` sidecar holds a diagnostic CODE and the runner
-already has the bag, so a diagnostic-code diff is buildable now. **The pairing
-stays on the HOST deliberately**: the sidecars are not on the image, and putting
-them there is the same namespace question as the corpus itself.
+**Result (2026-09-29, seed `8617D27629B6731B`): 984 of 984 pass** over
+`codex\test` and `codex\test\errors`, 21 dropped by sidecar (6 `.flags`, 10
+`.skip`, 5 `.arch-only`). Four controls fail as designed: a wrong position, a
+code the guest does not raise, a clean chapter given a `.failing`, and a wrong
+codegen code. In no gate.
 
-**The CODEGEN-error branch is written and UNREACHED, and no fixture in the corpus
-can reach it** (L-VACUOUS). Both candidates raise through the FRONTEND bag,
-because `compile-frontend-cdx` already runs the phase that raises them. That is a
-gap in the fixtures rather than a property of the compiler, and the branch stays
-because a codegen error reported as `errors=0 ok=yes` would be a silent wrong
-answer.
+**The `.expected` diff needs execution.** A `.expected` sidecar holds the
+PROGRAM'S OUTPUT, so diffing it requires running what was compiled.
 
 **STAGE 3, executing what was compiled, belongs to
 `docs/Designs/Active/OS/DeskBuildLoop.md` (RULED by root, 2026-09-09).** Nothing
@@ -798,11 +793,6 @@ prints a grant and runs nothing, and `OsScheduler` dispatches tasks by NAME.
 That page's mechanism is a nested guest, and what is missing there is not code
 but a machine: no bed has VT-x, so metal is the first machine that can execute
 it. **Do not build a second execution path here.**
-
-**An observation, not a claim:** a 5-byte file carrying no `Chapter:` line at all
-compiled through `compile-frontend` with errors=0. Seen once in passing. If a
-unit with no chapter is genuinely accepted, that is a compiler question and
-belongs to the compiler register.
 
 ## Phase C: self-hosted pingpong -- NOT PROVEN END TO END
 
@@ -819,9 +809,10 @@ leaving the machine.
 
 ## Priority Order
 
-1. On-disk test runner.
-2. Text pingpong on device.
-3. Editor and shell as the default on-image path.
+1. Text pingpong on device.
+2. Editor and shell as the default on-image path.
+
+The on-disk runner's remaining stage, execution, is `DeskBuildLoop.md`'s.
 
 ## The gate's trigger map
 
@@ -889,7 +880,7 @@ The question per phase is not what it is ABOUT but what decides its answer.
 | `app-sweep` | `$tApps -or $tCompiler` | cite-scoped on an apps change, the 30-unit stride only when `$tCompiler` | as today |
 | `wasm-bundles` | `$tApps -or $tPlugs -or $tCompiler` | the wasm plug and the nine `apps/*/build-wasm.ps1`, each built with `$SutCdx`; games builds its default game only | added |
 | `wasm-run` | `wasm` in `$changedPlugs` `-or $tCompiler` | `codex/plugs/wasm/hosted-wasm-test.ps1 -Kernel $SutCdx`: the harness default 60 of the hosted corpus RUN under wasmtime against `.expected` (plugs 2.16) | added |
-| `jonquil`, `cross-smoke` | `$tCompiler`, `$tPlugs -or $tCompiler` | their runners under `build/` | **not widened, open** |
+| `jonquil`, `cross-smoke`, `plug-binary`, `plug-smoke`, `app-sweep` | as above, plus their own runner per file | `build/jonquil.ps1`; `build/plug-source-digest.ps1`; `build/check-cross-smoke.ps1`, `test-cross.ps1`, `test-cross-batch.ps1`; `build/sweep-app-classes.ps1`, `sweep-classes.ps1`, `app-sweep-baseline.txt` | added, per-file |
 
 **The TRIGGER was never the gap for the plug phases; the GRADED SET was.** Both
 fired correctly on `$tPlugs` while grading hardcoded lists that between them
@@ -908,12 +899,12 @@ them. **The discriminator is not the extension**: non-source files that DO decid
 an answer exist and keep their trigger, `build/app-sweep-baseline.txt` being the
 standing example.
 
-**The six phases whose runners live under `build/` are NOT widened, deliberately
-and openly.** `$tBuild` is a true answer-dependency for all of them, but it fires
-often and blanket-widening turns `-Internal` into the full gate for any build
-change. The precise fix is a per-file trigger, which is machinery to manage a
-modest risk the next full gate already catches (L-LESS). **Whoever edits one of
-those harnesses runs its phase by hand and says so.**
+**The phases whose runners live under `build/` trigger on that runner, per file, not on `$tBuild`**,
+which fires on any build change and would turn `-Internal` into the full gate (L-LESS). `sem-equiv`
+needs none: it rides `$coreRuns`, and `$tBuild` is in `$tKernel`. Each trigger is proven with
+`build/build.ps1 -Internal -PlanOnly`, which prints the phase map for the opened set and exits
+before any phase, compile or guest: open the runner and the phase runs, open only `build.ps1`
+and it does not.
 
 **`run-list` is the first per-file trigger and is the shape the six could not
 afford**, precisely because the phase is seconds rather than minutes. Its happy
@@ -1019,24 +1010,30 @@ one `test-cross-batch.ps1` sizes its admission by.
   three acquire from a pool whose head is an x86-64 process-table address.
 ### Open, unowned
 
-- **The gate's unaccounted wall time.** With nothing implicated, one sample ran
-  10.1 s and another of the same shape on the same box ran 225.2 s. The idle
-  components sum to about 10 s and the slow sample's phase timings sum to 0.6 s,
-  so about 224 s sat outside every phase. Same defect val measured at 311 s in a
-  615 s gate. Cause not isolated (L-GREEN: quote the spread, not the sample).
-- **`ablate-doctrine -SelfTest` and `-Setup` refuse on main, and its own guard is
-  why.** `check-doc-counts` gained claims the harness's `$scoredDocs` was never
-  extended to cover, so `Assert-ScoredDocsCoverChecker` throws, which is the
-  guard doing its job. The fix is not one line: the scratch tree would also need
-  `seed/`, `apps/` and `build/bvt.ps1` junctioned in, or every claim reports
-  NOPATH and every arm scores FAIL for a reason unrelated to the candidate. It is
-  a design decision about what the scratch tree carries.
+- **The gate's unaccounted wall time: `p4-stale-check` now runs `p4 status -a`,
+  and whether that removed it is NOT yet measured.** The bare `p4 status` it
+  replaced was 77.8 s of the 101.1 s outside every phase in red's 2026-09-25
+  release gate, with 0 ms lock wait and the server waiting on the client for
+  77.6 s; 418 of the log's 3,707 bare calls took 60 to 399 s (62 of 126 on
+  2026-09-02). `-a` finds the same adds without a digest per tracked file (13
+  rpc messages against 15,718). The reading: `D:\PerforceRoot\log` writes a
+  `--- lapse` line only at 60 s or more, so a gate's `user-status -a` with no
+  lapse line closes this, and one with a lapse says the cost is the client's
+  walk rather than the digest. Pair a lapse with its command by the block it
+  sits in, never by pid: Windows reuses pids. The unphased guards cost 22.5 to
+  25.4 s a pass on a quiet box, `check-cite-names` 10.4 s of it.
 - **`build-apps.ps1` is destructive on a clean tree**: every app rewrites its
   page and the rewrite is a DEGRADATION. Both arms degrade identically so a
   comparison still holds, but do not run it expecting a no-op. Separately, many
   `apps/*/web/*.html` artifacts are orphans with no Page chapter to regenerate
   them; the script warns and continues, so the shortfall is invisible unless the
   printed count is compared against the artifact count.
+- **`test.ps1` and `bvt.ps1` fan GPU subjects out over one GPU against a fixed
+  60 s wall budget.** At `-Jobs 16` (14 slots) the Update 65 battery failed 11
+  diffusion subjects on the budget and 10 passed serially the same hour
+  (2026-09-30). A subject whose `.vmargs` names `-gpu-files` needs a slot class
+  of its own, one GPU guest at a time, or every release battery reds on
+  contention. Re-run the reds with `bvt.ps1 -Jobs 1 -SubjectsFile <list>`.
 
 ## Quire tables that are copies or derivations
 

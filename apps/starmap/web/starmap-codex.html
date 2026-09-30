@@ -38,6 +38,7 @@
   <dl>
     <dt>catalogue</dt><dd id="n-total">-</dd>
     <dt>above the cut</dt><dd id="n-visible">-</dd>
+    <dt>deep sky</dt><dd id="n-dso">-</dd>
     <dt>on screen</dt><dd id="n-drawn">-</dd>
     <dt>magnitude</dt><dd id="n-mag">-</dd>
     <dt>field</dt><dd id="n-fov">-</dd>
@@ -45,7 +46,7 @@
 </div>
 <div class="panel" id="keys" hidden>
   <b>drag</b> look &nbsp; <b>wheel</b> zoom &nbsp; <b>click</b> identify &nbsp;
-  <b>L</b> labels &nbsp; <b>G</b> grid &nbsp; <b>[ ]</b> magnitude
+  <b>L</b> labels &nbsp; <b>G</b> grid &nbsp; <b>C</b> figures &nbsp; <b>[ ]</b> magnitude
 </div>
 <div class="panel" id="info"></div>
 <div class="panel" id="err"></div>
@@ -56,7 +57,8 @@
 // the contract between the two halves.
 const CELL_STARS = 256, CELL_VISIBLE = 260, CELL_READY = 264, CELL_DATLEN = 268,
       CELL_NAMED = 272, CELL_DSOCOUNT = 276, CELL_DSOOFF = 280, CELL_NAMEOFF = 284,
-      CELL_ERROR = 288;
+      CELL_ERROR = 288, CELL_DSOVIS = 292, CELL_CONLINES = 296;
+const CON_BUF = 6438912;
 const CAM = 352;
 const CAM_FOCUS_X = 0, CAM_FOCUS_Y = 8, CAM_FOCUS_Z = 16, CAM_YAW = 24,
       CAM_PITCH = 28, CAM_SELECTED = 40, CAM_OBJECTS = 44, CAM_MAG = 48,
@@ -65,10 +67,16 @@ const DAT_BASE = 1048576, DAT_MAX = 5242880, VISIBLE_BUF = 6291456;
 const HDR_SIZE = 64, REC = 32;
 const R_ID = 0, R_X = 4, R_Y = 8, R_Z = 12, R_MAG = 16, R_ABSMAG = 18, R_BV = 20,
       R_SPECT = 22, R_CON = 23, R_FLAGS = 26, R_NAMEIDX = 27;
+const DSO_BUF = 6422528, DSO_REC = 80;
+const D_MAG = 16, D_KIND = 18, D_CON = 19, D_NAMELEN = 22, D_NAME = 23, D_DESCLEN = 63, D_DESC = 64;
+const DSO_KINDS = ['globular cluster', 'open cluster', 'planetary nebula', 'diffuse nebula',
+                   'galaxy', 'quasar', 'dark nebula', 'supernova remnant'];
 const ABSENT = 65535, WIDE = 1000000;
 const ERRORS = { 1: 'the file did not start with STAR', 2: 'the file is a version this build does not read',
                  3: 'the file is larger than the module reserves for it',
-                 4: 'the header claims more stars than the bytes delivered' };
+                 4: 'the header claims more stars than the bytes delivered',
+                 5: 'the header claims more deep-sky records than the bytes delivered',
+                 6: 'the constellation section does not hold the lines the header claims' };
 
 const el = id => document.getElementById(id);
 const fail = m => { el('err').textContent = m; el('err').style.display = 'block';
@@ -102,19 +110,21 @@ function readNames() {
 }
 const nameOf = s => (s.flags & 1) && s.nameIdx >= 0 && s.nameIdx < names.length ? names[s.nameIdx] : '';
 
+const dsoAt = j => DAT_BASE + geti(CELL_DSOOFF) + j * DSO_REC;
+const text = (a, len) => new TextDecoder().decode(u8.subarray(a, a + len));
+function dso(j) {
+  const a = dsoAt(j);
+  return { j, x: dv.getInt32(a + R_X, true), y: dv.getInt32(a + R_Y, true), z: dv.getInt32(a + R_Z, true),
+           mag: dv.getInt16(a + D_MAG, true), kind: u8[a + D_KIND], con: text(a + D_CON, 3),
+           name: text(a + D_NAME, Math.min(u8[a + D_NAMELEN], 40)),
+           desc: text(a + D_DESC, Math.min(u8[a + D_DESCLEN], 16)) };
+}
+
 // B-V colour index to a display colour. The index is scaled by 1000 in the file.
+// The ramp is the module's (CelestialTypes bv-to-rgb), so the page holds no copy.
 function bvColour(bv) {
-  const b = bv / 1000;
-  let r, g, bl;
-  if (b < -0.2) { r = 155; g = 176; bl = 255; }
-  else if (b < 0.0) { r = 170; g = 191; bl = 255; }
-  else if (b < 0.3) { r = 202; g = 215; bl = 255; }
-  else if (b < 0.6) { r = 248; g = 247; bl = 255; }
-  else if (b < 0.9) { r = 255; g = 244; bl = 234; }
-  else if (b < 1.3) { r = 255; g = 210; bl = 161; }
-  else if (b < 1.7) { r = 255; g = 179; bl = 119; }
-  else { r = 255; g = 143; bl = 92; }
-  return [r, g, bl];
+  const c = wasm.sm_bv_rgb(bv) >>> 0;
+  return [(c >> 16) & 255, (c >> 8) & 255, c & 255];
 }
 
 let out = '';
@@ -144,7 +154,7 @@ addEventListener('resize', resize);
 // is DIRECTION, so the vector from the observer to the star is normalised
 // first and only then projected. Distance survives as parallax when the
 // observer moves, which is the one thing flying through the catalogue is for.
-let drawn = [];
+let drawn = [], lines = [];
 function project() {
   const yaw = geti(CAM + CAM_YAW) / 1000 * Math.PI / 180;
   const pitch = geti(CAM + CAM_PITCH) / 1000 * Math.PI / 180;
@@ -161,26 +171,52 @@ function project() {
   const halfDiag = Math.atan(Math.hypot(W, H) / 2 / f);
   const minCz = Math.cos(Math.min(halfDiag * 1.05, Math.PI / 2 - 1e-3));
 
+  const place = a => {
+    let dx = dv.getInt32(a + R_X, true) - ex;
+    let dy = dv.getInt32(a + R_Y, true) - ey;
+    let dz = dv.getInt32(a + R_Z, true) - ez;
+    const len = Math.hypot(dx, dy, dz);
+    if (len === 0) return null;           // the observer's own position
+    dx /= len; dy /= len; dz /= len;
+    const cz = dx * F[0] + dy * F[1] + dz * F[2];
+    if (cz < minCz) return null;
+    const cx = dx * R[0] + dy * R[1] + dz * R[2];
+    const cu = dx * U[0] + dy * U[1] + dz * U[2];
+    const sx = W / 2 + f * cx / cz, sy = H / 2 - f * cu / cz;
+    if (sx < -8 || sx > W + 8 || sy < -8 || sy > H + 8) return null;
+    return { sx, sy };
+  };
+
   const count = geti(CELL_VISIBLE);
   const list = [];
   for (let k = 0; k < count; k++) {
     const idx = geti(VISIBLE_BUF + k * 4);
     const a = recAt(idx);
-    let dx = dv.getInt32(a + R_X, true) - ex;
-    let dy = dv.getInt32(a + R_Y, true) - ey;
-    let dz = dv.getInt32(a + R_Z, true) - ez;
-    const len = Math.hypot(dx, dy, dz);
-    if (len === 0) continue;              // the observer's own position
-    dx /= len; dy /= len; dz /= len;
-    const cz = dx * F[0] + dy * F[1] + dz * F[2];
-    if (cz < minCz) continue;
-    const cx = dx * R[0] + dy * R[1] + dz * R[2];
-    const cu = dx * U[0] + dy * U[1] + dz * U[2];
-    const sx = W / 2 + f * cx / cz, spy = H / 2 - f * cu / cz;
-    if (sx < -8 || sx > W + 8 || spy < -8 || spy > H + 8) continue;
-    list.push({ idx, sx, sy: spy, mag: dv.getInt16(a + R_MAG, true), bv: dv.getInt16(a + R_BV, true) });
+    const p = place(a);
+    if (!p) continue;
+    list.push({ idx, sx: p.sx, sy: p.sy, mag: dv.getInt16(a + R_MAG, true), bv: dv.getInt16(a + R_BV, true) });
+  }
+  // A deep-sky record is selected as the star count plus its own index, which
+  // is how StarMapWasm's sm-select-obj tells the two apart.
+  const stars = geti(CELL_STARS), dcount = geti(CELL_DSOVIS);
+  for (let k = 0; k < dcount; k++) {
+    const j = geti(DSO_BUF + k * 4);
+    const a = dsoAt(j);
+    const p = place(a);
+    if (!p) continue;
+    list.push({ idx: stars + j, dso: j, sx: p.sx, sy: p.sy, mag: dv.getInt16(a + D_MAG, true), kind: u8[a + D_KIND] });
   }
   drawn = list;
+
+  const segs = [];
+  if (geti(CAM + CAM_FLAGS) & 4) {
+    const nl = geti(CELL_CONLINES);
+    for (let k = 0; k < nl; k++) {
+      const pa = place(recAt(geti(CON_BUF + k * 8))), pb = place(recAt(geti(CON_BUF + k * 8 + 4)));
+      if (pa && pb) segs.push([pa.sx, pa.sy, pb.sx, pb.sy]);
+    }
+  }
+  lines = segs;
 }
 
 // Radius from magnitude. Sized so that the naked-eye sky reads like a sky:
@@ -201,7 +237,27 @@ function draw() {
     }
   }
 
+  if (lines.length) {
+    ctx.strokeStyle = 'rgba(110,150,220,.38)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const [x1, y1, x2, y2] of lines) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
+    ctx.stroke();
+  }
+
   for (const s of drawn) {
+    if (s.dso !== undefined) {
+      ctx.strokeStyle = dsoColour(s.kind); ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      if (s.kind === 4 || s.kind === 5) ctx.ellipse(s.sx, s.sy, 7, 3.5, -0.5, 0, Math.PI * 2);
+      else if (s.kind <= 1) ctx.arc(s.sx, s.sy, 5, 0, Math.PI * 2);
+      else ctx.rect(s.sx - 4.5, s.sy - 4.5, 9, 9);
+      ctx.stroke();
+      if (s.idx === selected) {
+        ctx.strokeStyle = '#ffd9a0'; ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.arc(s.sx, s.sy, 12, 0, Math.PI * 2); ctx.stroke();
+      }
+      continue;
+    }
     const r = radiusFor(s.mag);
     const [cr, cg, cb] = bvColour(s.bv);
     ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
@@ -222,21 +278,53 @@ function draw() {
     let shown = 0;
     for (const s of drawn) {
       if (shown >= 60) break;
+      if (s.dso !== undefined) continue;
       if (s.mag > 2600) continue;
       const nm = nameOf(star(s.idx));
       if (!nm) continue;
       ctx.fillText(nm, s.sx + radiusFor(s.mag) + 4, s.sy + 3);
       shown++;
     }
+    ctx.fillStyle = 'rgba(150,220,190,.78)';
+    for (const s of drawn) {
+      if (s.dso === undefined) continue;
+      ctx.fillText(dso(s.dso).name, s.sx + 9, s.sy + 3);
+    }
   }
+}
+
+function dsoColour(kind) {
+  return kind === 4 || kind === 5 ? '#e0b060' : kind <= 1 ? '#8fb8ff' : '#70d8a0';
 }
 
 function hud() {
   el('n-total').textContent = geti(CELL_STARS).toLocaleString();
   el('n-visible').textContent = geti(CELL_VISIBLE).toLocaleString();
+  el('n-dso').textContent = geti(CELL_DSOVIS) + ' of ' + geti(CELL_DSOCOUNT);
   el('n-drawn').textContent = drawn.length.toLocaleString();
   el('n-mag').textContent = (geti(CAM + CAM_MAG) / 1000).toFixed(1);
   el('n-fov').textContent = geti(CAM + CAM_FOV) + '°';
+}
+
+const distText = pc => pc > 0
+  ? (pc >= 1000 ? (pc / 1000).toFixed(2) + ' kpc' : pc.toFixed(1) + ' pc') + ' / ' + (pc * 3.262).toFixed(1) + ' ly'
+  : 'the observer';
+
+function showDso(d) {
+  const box = el('info');
+  box.innerHTML = '<h2></h2>'
+    + '<div><span class="k">kind</span> <span id="i-k"></span></div>'
+    + '<div><span class="k">constellation</span> <span id="i-c"></span></div>'
+    + '<div><span class="k">magnitude</span> <span id="i-m"></span></div>'
+    + '<div><span class="k">distance</span> <span id="i-d"></span></div>'
+    + '<div id="i-t"></div>';
+  box.querySelector('h2').textContent = d.name;
+  box.querySelector('#i-k').textContent = DSO_KINDS[d.kind] || ('kind ' + d.kind);
+  box.querySelector('#i-c').textContent = d.con;
+  box.querySelector('#i-m').textContent = (d.mag / 1000).toFixed(1);
+  box.querySelector('#i-d').textContent = distText(Math.hypot(d.x, d.y, d.z) / 1000);
+  box.querySelector('#i-t').textContent = d.desc;
+  box.style.display = 'block';
 }
 
 function showInfo(s) {
@@ -251,10 +339,7 @@ function showInfo(s) {
   box.querySelector('h2').textContent = nm || ('HYG ' + s.id);
   box.querySelector('#i-m').textContent = (s.mag / 1000).toFixed(2);
   box.querySelector('#i-b').textContent = (s.bv / 1000).toFixed(2);
-  box.querySelector('#i-d').textContent = pc > 0
-    ? (pc >= 1000 ? (pc / 1000).toFixed(2) + ' kpc' : pc.toFixed(1) + ' pc')
-      + ' / ' + (pc * 3.262).toFixed(1) + ' ly'
-    : 'the observer';
+  box.querySelector('#i-d').textContent = distText(pc);
   box.style.display = 'block';
 }
 
@@ -285,7 +370,10 @@ canvas.addEventListener('pointerup', e => {
     const d = (s.sx - px) ** 2 + (s.sy - py) ** 2;
     if (d < bd) { bd = d; best = s; }
   }
-  if (best) { wasm.sm_select_obj(best.idx); showInfo(star(best.idx)); }
+  if (best) {
+    wasm.sm_select_obj(best.idx);
+    if (best.dso !== undefined) showDso(dso(best.dso)); else showInfo(star(best.idx));
+  }
   else { wasm.sm_select_obj(-1); showInfo(null); }
 });
 canvas.addEventListener('wheel', e => {
@@ -297,6 +385,7 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (k === 'l') wasm.sm_toggle_labels();
   else if (k === 'g') wasm.sm_toggle_grid();
+  else if (k === 'c') wasm.sm_toggle_constellations();
   else if (k === '[') wasm.sm_set_mag_limit(geti(CAM + CAM_MAG) - 500);
   else if (k === ']') wasm.sm_set_mag_limit(geti(CAM + CAM_MAG) + 500);
   else return;

@@ -279,6 +279,7 @@ The stubs live in the **WebApp quire**, `apps/webapp/`:
 | `WebOverlay.codex` | `mount-overlays theme stack`; a page with overlays adds `cites WebApp chapter WebOverlay` |
 | `WebGraphics.codex` | `mount-svg`, `svg-draw-cmds`, `svg-label`, `svg-fill-path`, `svg-stroke-path`, and `mount-chart id chart` over them; cited by a page that draws |
 | `WebA11y.codex` | `dom-apply-a11y id info`; cited by a page that applies an `A11yInfo` |
+| `WebGpu.codex` | The WebGPU bridge: `GpuGrid`, `GpuParam`, `gpu-open-then`, `gpu-buf-alloc/free`, `gpu-buf-write-words`, `gpu-buf-download-then`, `gpu-buf-upload-then` (a range of a file from `pick-file-then`), `file-read-then` (a range of that file to Codex as a JSON byte array), `gpu-launch` over WGSL plug output (`gpu-arg-f32` passes a Real as its f32 bits), `gpu-error`; the runtime is emitted only into a page that calls it (`InBrowserDiffusion.md`, stage 2) |
 
 So a browser app's cite block is, almost always, exactly this:
 
@@ -326,7 +327,8 @@ tree, its data helpers, and its click/input handlers.
   `set-render f`, `request-render`, `state-set-render` (set a key and
   schedule a repaint on the next animation frame)
 - **AJAX** -- `fetch-json`, `fetch-then`, `fetch-get-then url cb`,
-  `json-parse-obj`, `json-obj-field`, `json-stringify`, `url-encode`
+  `json-parse-obj`, `json-parse-rows` (a JSON array of arrays of text),
+  `json-obj-field`, `json-stringify`, `url-encode`
 - **Dialogs** -- `show-alert`, `show-confirm`, `show-prompt`,
   `close-dialog` (real `<dialog>` elements, `showModal()`)
 - **A11y** -- `dom-set-aria`, `dom-set-role`; `dom-apply-a11y id info`
@@ -341,6 +343,16 @@ tree, its data helpers, and its click/input handlers.
   `save-layout`, `load-layout`, `download-text`
 - **Misc** -- `random-int`, `play-tone`, `set-timeout`, `next-card-id`,
   `generate-image`, `check-sd-status`
+- **Host** -- `page-data key` reads `window.__DATA[key]`, a data block a
+  page's build script injects beside the plug output (a string as is, anything
+  else as JSON); `wasm-run-then name input cb` runs the base64 WASI module
+  `__DATA[name]` in a worker with `input` as its NUL-terminated stdin and
+  hands `cb` its stdout, or `!WASM <reason>`; `fetch-with-then url method
+  headers-json body cb` is a fetch with headers that hands `cb` the response
+  text, or `{"ok":false,"err":...}`; `json-valid`, `location-hash`,
+  `location-clear-hash`, `on-hash-change`, `uri-decode-component`,
+  `pick-file-text accept cb`. `apps/modbuilder/page/ModBuilderApp.codex` is
+  the page that uses all of them.
 
 ### Values, as natively
 
@@ -350,14 +362,56 @@ tree, its data helpers, and its click/input handlers.
 - An Integer is a BigInt. A runtime builtin whose stub returns an Integer is
   wrapped once per page so its JavaScript Number result arrives as a BigInt,
   and arithmetic and `==` on it behave as natively.
+- A Real is a JavaScript Number; a Real literal is decoded from the f64 bits
+  the IR carries (`__real`).
+- A definition applied to fewer arguments than it takes (a lambda that
+  captures is one, once lifted) becomes `__pa`, which takes the rest together
+  or one at a time; surplus arguments go to the result only when it is a
+  function.
 - `substring`, `char-code-at`, a gauge's value and maximum, `random-int`,
   `set-timeout` and `play-tone` convert their Integers to Numbers for the
   JavaScript they call. Every `dom-*` function given a missing element
   (`dom-get` of an absent id) does nothing, as the native stubs do.
-- `list-push` and `list-snoc` return a new array. Natively they extend in
-  place when the block has room and copy otherwise (`Builtins.codex`), so
-  whether an older name sees the append is left to the caller in both: copy
-  at the holder that needs the old list.
+- `list-push` and `list-snoc` extend the array in place and return it, as
+  natively when the block has room (`Builtins.codex`, L-ALIAS): an older name
+  sees the append, so copy at the holder that needs the old list. A copy per
+  push made building a long list quadratic. `list-set-at` stores in place and
+  returns the same array, and an index outside `0 <= i < length` throws
+  `CODEX_TRAP_index_out_of_bounds`, as natively.
+- Every character code a program sees is a CCE code point, as natively:
+  `char-code`, `char-code-at` and `code-to-char` convert through CCE's own
+  tables, emitted from `CCE.codex`, and a char literal or pattern is the
+  Unicode character of its CCE code. Text stays a JavaScript string, so within
+  tier 0 a code is the byte native Text holds and beyond it a page sees the
+  whole code point where native Text holds its encoded bytes.
+- WebGPU refuses a launch that binds one buffer twice as writable storage (every
+  `BrowserKernels` buffer is `read_write`), and the refusal can leave
+  `gpu-error` empty while the output buffer keeps its old contents: an in-place
+  `bk_silu` read as a norm without SiLU (`vae-ops.mjs`, 2026-09-29). Give every
+  launch an output apart from its inputs, and grade the output, not the error.
+- `pick-dir-then` lists a folder the user picks (an `input` with
+  `webkitdirectory`, every file under it by path, none read); a headless test
+  answers Chrome's file chooser with the folder's own path, not its files.
+- A page has a byte heap: `alloc-bytes`, `peek-byte`, `poke-byte`, `peek-32`,
+  `poke-32` and `__memset` run over one growable ArrayBuffer, emitted only into
+  a page that calls one of them, so a chapter written over raw memory (the
+  CLIP tokenizer, `ClipBpe`) compiles for a page unchanged.
+- The GPU bridge pools a freed buffer by size and hands it back cleared on the
+  next alloc of that size: WebGPU reclaims a destroyed buffer only once the
+  work queued on it runs, and a page that queues a whole generation would
+  otherwise hold every temporary at once. `gpu-buf-show-then` draws an f32
+  3 x h x w buffer into a canvas; `real-from-int`, `real-to-int`,
+  `real-to-bits` and `bits-to-real` run in a page.
+- WebGPU dispatches at most 65,535 workgroups a dimension, and a 256 x 256 VAE
+  decode needs 262,144 in x. The html bridge folds a one-dimensional `gx` past
+  the limit into `gx` by `gy`, and the WGSL plug's entry reads `gid` (and a
+  tiled kernel's block index) linearized over x and y, so a kernel still sees
+  one index; the surplus workgroups the fold adds must be guarded by the kernel
+  as a partial tile is.
+- A tail call does not grow the stack: a definition's call to itself becomes a
+  loop, and a tail call into another definition that makes one returns a
+  `__TC` marker its caller's trampoline runs, so mutually recursive loops over
+  a long list run as natively.
 
 ### Adding a runtime primitive
 
@@ -458,7 +512,7 @@ add a table row to the `$spec` table in
 
 ```powershell
 pwsh apps\explorer\build-explorer-db.ps1
-# -> build-output\explorer.db.img  (1 MB, 31 tables today)
+# -> build-output\explorer.db.img  (1 MB, 33 tables on 2026-09-29)
 ```
 
 **Step 3 -- the page chapter.** Create `apps/explorer/MyDesignerApp.codex`
@@ -509,8 +563,9 @@ pwsh apps\explorer\run-designers-demo.ps1        # -HttpPort 8888 by default
 It boots `explorer-server.cdx` in codex-vm with `explorer.db.img`
 attached, waits for the guest to dial home on TCP 9100 (framed protocol,
 hardcoded in `WebServer`), fronts it with an `HttpListener` on 8888, and
-proxies `/api/*` to the guest. Today it serves `/` and `/setting`,
-`/character`, `/item`, `/excalibur`, `/mine`.
+proxies `/api/*` to the guest. It serves `/` and `/setting`,
+`/character`, `/item`, `/excalibur`, `/mine`, `/card` and `/forge`, and
+answers `/api/generate`, `/api/config` and `/cache/*` itself (Chapter 6).
 
 ---
 
@@ -564,17 +619,16 @@ construction:
    card when the image comes back.
 4. `check-sd-status` pings `/api/config` and flips a status dot.
 
-**The back half of this is not wired in-repo.** `/api/generate` and
-`/api/config` have no implementation in the depot today:
-`ExplorerServer.codex` serves the DB tables, the creations API
-(`/api/save`, `/api/mine`, `/api/delete`, `/api/remix`, `/api/export`,
-`/api/export-workflow`) and auth -- not generation.
-`apps/explorer/server.ps1` *defines* `Invoke-SdGenerate` and
-`Feed-SdConfig` against a local SD WebUI on port 7860, but never
-dispatches to them, and it serves its pages from a directory outside the
-depot. Chapter 7 tracks both. The prompt-building half -- the part that
-is Codex -- works and is testable without SD: the prompt string is
-visible in the page.
+The back half runs on the host, not in the guest.
+`run-designers-demo.ps1` answers `POST /api/generate` by forwarding the
+`gen-body` JSON to an AUTOMATIC1111 SD WebUI (`-SdPort`, 7860 by default)
+as `sdapi/v1/txt2img`, writes the PNG under
+`build-output\explorer-cache\<prompt-hash>\` and answers `{status, url}`;
+a repeat of the same body answers `cached` without calling SD.
+`/api/config` answers `{current_model}` from `sdapi/v1/options`, and 503
+with an empty body when no WebUI answers, which `check-sd-status` shows as
+"SD offline". `/cache/<hash>/<file>.png` serves the cached image. No SD
+WebUI runs on the build box; the path is graded against a stub WebUI.
 
 ---
 
@@ -607,12 +661,11 @@ gap that is still open stays on this list until it is closed.
 | Character explorer | **CLOSED** -- `apps/explorer/CharDesignerApp.codex`, compiled, routed at `/character` by `run-designers-demo.ps1` |
 | Setting explorer | **CLOSED** -- `apps/explorer/SettingDesignerApp.codex`, routed at `/` and `/setting` |
 | Item explorer | **CLOSED** -- `apps/explorer/ItemDesignerApp.codex`, routed at `/item` |
-| Card explorer | **OPEN (new)** -- `CardDesignerApp.codex` + `CardEmitter.codex` exist and compile, but no server routes them: `run-designers-demo.ps1`'s page map has no `card` key |
-| `/api/generate`, `/api/config` | **OPEN (new)** -- every designer page calls them; no server in the depot answers them (see Chapter 6) |
-| `apps/explorer/server.ps1` | **OPEN (new)** -- serves pages from `D:\Projects\CodexMagic\explorer\pages`, a path outside the depot, so it cannot work from a fresh sync. `run-designers-demo.ps1` is the working server; fold the SD generation code into it and retire the out-of-repo path |
-| `build/build-explorer-pages.ps1` | **OPEN (new)** -- stale. It runs `build-output\{carddesigner,characterdesigner,settingdesigner,voicestudio}.cdx`, which nothing produces, and writes outside the depot. Delete it or rewrite it over `codex\plugs\html\run.ps1` |
+| Card explorer | **OPEN** -- routed at `/card`, but `CardDesignerApp.codex` is a stub: its `opening` prints one line and the page has no interaction |
+| `/api/generate`, `/api/config` | **CLOSED** -- answered on the host by `run-designers-demo.ps1` (see Chapter 6) |
+| WorldForge, StoryGraph, NameForge | **CLOSED** -- `WorldForge` routed at `/forge`; it runs `StoryGraph` and `NameForge` in the page |
 | "Save to My Creations" bar | **OPEN (new)** -- injected as hand-written JS by `run-designers-demo.ps1` (`$inject`) into the three designer pages. It should be an `AuthClient` widget in the page chapters, the way `CreationsApp` already does it |
-| VoiceStudio, WorkflowExporter, StoryGraph, WorldForge, NameForge | Chapters exist and compile; no page is routed by `run-designers-demo.ps1`. **OPEN** |
+| VoiceStudio, WorkflowExporter | **OPEN** -- `VoiceStudio.codex` and `WorkflowExporterMain.codex` are page GENERATORS: `opening` prints a hand-written HTML and JS document, so the HTML plug renders that source as text. Nothing answers VoiceStudio's `/api/tts/*` |
 
 ### Games portal
 
@@ -651,7 +704,6 @@ build/
   compile.ps1                Source -> CDX or IR (-IrCce). -Log is mandatory
   build-magic-pages.ps1      CodexMagic *Page.codex -> apps/games/codexmagic/web/*.html
   quire-map.ps1              Quire name -> directory (UI, WebApp, Explorer, Games, ...)
-  build-explorer-pages.ps1   STALE -- see Chapter 7
 
 codex/foreword/ui/           49 modules, quire UI (the source of truth)
   Widget.codex               WidgetNode, WidgetKind, constructors, queries
@@ -681,8 +733,7 @@ apps/explorer/               Compiled pages + CDX server (pure Codex)
   ExcaliburSlice.codex WorldModel.codex Emitters.codex NameForge.codex
   StoryGraph.codex WorldForge.codex VoiceStudio.codex WorkflowExporter.codex
   build-explorer-db.ps1      ExplorerData -> build-output/explorer.db.img
-  run-designers-demo.ps1     Boots the CDX + HTTP bridge on :8888  <- use this
-  server.ps1                 SD-oriented server; out-of-repo pages dir (Ch. 7)
+  run-designers-demo.ps1     Boots the CDX + HTTP bridge on :8888; SD generation
   README.md
 
 apps/games/                  Hand-built portal + Codex engines

@@ -1,0 +1,112 @@
+Chapter: DiffusionSwinIR
+  cites Diffusion chapter SwinIR
+  cites Diffusion chapter PthFile
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter Noise
+  cites Diffusion chapter Esrgan
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixtures are build/swinir-oracle.py's: spandrel's SwinIR on the CUDA
+ device in f32 over a 3 x 40 x 32 tile, and a 256 x 192 picture through
+ Forge's own upscale_2 at tile 192, overlap 8.
+
+ We say:
+
+Section: Arms
+
+  n-in : Integer = 3840
+
+  n-out : Integer = 61440
+
+  ours : Integer = #BD700000
+
+  theirs : Integer = #BD800000
+
+  tile-fill : Integer, Integer -> Integer
+  tile-fill (a) (i) =
+    if i >= n-in then a
+    else let c = i / 1280
+    in let y = (i - c * 1280) / 32
+    in let x = i - c * 1280 - y * 32
+    in let v = real-from-int ((97 * c + 31 * y + 17 * x) - (97 * c + 31 * y + 17 * x) / 256 * 256) / 255.0
+    in let p = poke-32 a (i * 4) (nz-f32-bits v)
+    in tile-fill a (i + 1)
+
+  Near = record {
+    nr-8 : Integer,
+    nr-6 : Integer,
+    nr-4 : Integer
+  }
+
+  near : Integer, Near -> Near
+  near (i) (t) =
+    if i >= n-out then t
+    else let d0 = esr-f32 (peek-32 ours (i * 4)) - esr-f32 (peek-32 theirs (i * 4))
+    in let d = if d0 < 0.0 then 0.0 - d0 else d0
+    in near (i + 1) (Near { nr-8 = t.nr-8 + (if d <= 0.00390625 then 1 else 0), nr-6 = t.nr-6 + (if d <= 0.015625 then 1 else 0), nr-4 = t.nr-4 + (if d <= 0.0625 then 1 else 0) })
+
+  run : SwWeights, SwinCfg, Integer, Integer -> Boolean
+  run (w) (c) (shift) (h) =
+    let img = gpu-buf-alloc (n-in * 4)
+    in let staged = gpu-buf-write img 0 (n-in * 4) (tile-fill (alloc-bytes (n-in * 4)) 0)
+    in let out = swin-forward w c (vd-act img 3 40 32 staged) shift
+    in let ok = out.ah /= 0 & out.ac == 3 & out.ahh == 160 & out.aww == 128 & gpu-buf-read (out.ah) 0 (n-out * 4) ours
+    in let fr = vd-free out & gpu-buf-free img
+    in let u = gpu-buf-upload h 0 "swinir-tile.bin" 0 n-out gpu-dt-f32 gpu-dt-f32
+    in ok & gpu-buf-read h 0 (n-out * 4) theirs
+
+  line : Text, Boolean -> Text
+  line (what) (ran) =
+    if ran == False then what & ": the network did not run"
+    else let t = near 0 (Near { nr-8 = 0, nr-6 = 0, nr-4 = 0 })
+    in what & ": " & show (t.nr-8) & " of 61440 within 2^-8 of Forge's f32, " & show (t.nr-6) & " within 2^-6, " & show (t.nr-4) & " within 2^-4"
+
+  pic-bytes : Integer = 2359296
+
+  PicTally = record {
+    pt-equal : Integer,
+    pt-one : Integer,
+    pt-max : Integer
+  }
+
+  pic-cmp : Integer, Integer, Integer, PicTally -> PicTally
+  pic-cmp (a) (b) (i) (t) =
+    if i >= pic-bytes then t
+    else let d0 = peek-byte a i - peek-byte b i
+    in let d = if d0 < 0 then 0 - d0 else d0
+    in pic-cmp a b (i + 1) (PicTally { pt-equal = t.pt-equal + (if d == 0 then 1 else 0), pt-one = t.pt-one + (if d <= 1 then 1 else 0), pt-max = if d > t.pt-max then d else t.pt-max })
+
+  pic-line : Text, Integer, Integer -> Text
+  pic-line (what) (ours-rgb) (fx) =
+    if ours-rgb == 0 then what & ": the upscale did not run"
+    else let t = pic-cmp ours-rgb (fx + 147456) 0 (PicTally { pt-equal = 0, pt-one = 0, pt-max = 0 })
+    in what & ": " & show (t.pt-equal) & " of 2359296 bytes equal to Forge's, " & show (t.pt-one) & " within 1, the largest difference " & show (t.pt-max)
+
+  report : SwWeights, SwinCfg, Integer -> [Console] Nothing
+  report (w) (c) (h) = act
+    print-line-uni ("SwinIR 4x: " & show (list-length (c.sc-depths)) & " groups of " & show (list-at (c.sc-depths) 0) & " blocks, dim " & show (c.sc-dim) & ", " & show (list-at (c.sc-heads) 0) & " heads, mlp " & show (c.sc-hidden) & ", 3conv " & (if c.sc-conv3 then "yes" else "no") & ", " & show (w.sw-failed) & " uploads refused")
+    print-line-uni (line "tile 40 x 32" (run w c 4 h))
+    print-line-uni (line "sabotage, no shifted windows" (run w c 0 h))
+    picture w c (pth-read "swinir-picture.bin" 0 2506752)
+  end
+
+  picture : SwWeights, SwinCfg, Integer -> [Console] Nothing
+  picture (w) (c) (fx) = act
+    print-line-uni (pic-line "picture 256 x 192 by 4, tile 192 overlap 8" (swin-upscale w c fx 256 192 192 8 4) fx)
+    print-line-uni (pic-line "control, tile 96 overlap 8" (swin-upscale w c fx 256 192 96 8 4) fx)
+  end
+
+  start : Integer -> [Console] Nothing
+  start (h) =
+    if pth-has "SwinIR_4x.pth" 0 == False then act print-line-uni "SKIP: no SwinIR_4x.pth under the upscaler root build-output/diffusion-swinir" end
+    else let f = pth-open "SwinIR_4x.pth"
+    in let c = swin-config f
+    in if c.sc-ok == False then act print-line-uni ("SwinIR_4x.pth is not the SwinIR this chapter runs: " & f.pf-why) end
+    else report (swin-load f) c h
+
+  opening : [Console] Integer
+  opening = act
+    start (gpu-buf-alloc (n-out * 4))
+    let r = 0 in r
+  end

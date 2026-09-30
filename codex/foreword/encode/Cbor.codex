@@ -63,7 +63,14 @@ Section: Encoding
     in if n < 24 then [bit-or major n]
     else if n < 256 then [bit-or major 24, n]
     else if n < 65536 then [bit-or major 25, bit-shru n 8, bit-and n 255]
-    else if n < 4294967296 then [bit-or major 26, bit-and (bit-shru n 24) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 8) 255, bit-and n 255]
+    else if n < 4294967296 then
+      [
+        bit-or major 26,
+        bit-and (bit-shru n 24) 255,
+        bit-and (bit-shru n 16) 255,
+        bit-and (bit-shru n 8) 255,
+        bit-and n 255
+      ]
     else [bit-or major 27] & cbor-be-bytes n 8 []
 
   cbor-be-bytes : Integer, Integer, List Integer -> List Integer
@@ -164,7 +171,8 @@ Section: Decoding
   cbor-dispatch : Integer, Integer, List Integer, Integer, Integer -> CborDecodeResult
   cbor-dispatch (mt) (arg) (bs) (off) (depth) =
     if mt == cbor-mt-uint then CborDecodeResult { cdr-value = CborUint arg, cdr-offset = off }
-    else if mt == cbor-mt-nint then CborDecodeResult { cdr-value = CborNint (0 - 1 - arg), cdr-offset = off }
+    else if mt == cbor-mt-nint then
+      CborDecodeResult { cdr-value = CborNint (0 - 1 - arg), cdr-offset = off }
     else if mt == cbor-mt-bytes then cbor-decode-bytes bs off arg
     else if mt == cbor-mt-text then cbor-decode-text bs off arg
     else if mt == cbor-mt-array then cbor-decode-array-loop bs off arg 0 [] (depth + 1)
@@ -175,7 +183,11 @@ Section: Decoding
   cbor-decode-bytes : List Integer, Integer, Integer -> CborDecodeResult
   cbor-decode-bytes (bs) (off) (len) =
     if len > list-length bs - off then cbor-fail
-    else CborDecodeResult { cdr-value = CborBytes (cbor-slice bs off len 0 []), cdr-offset = off + len }
+    else
+      CborDecodeResult {
+        cdr-value = CborBytes (cbor-slice bs off len 0 []),
+        cdr-offset = off + len
+      }
 
  Text is UTF-8 on the wire. Bytes that do not survive the round trip through
  Text (malformed UTF-8, or a character CCE cannot hold) are refused rather
@@ -186,7 +198,8 @@ Section: Decoding
     if len > list-length bs - off then cbor-fail
     else let bytes = cbor-slice bs off len 0 []
     in let s = utf8-bytes-to-text bytes
-    in if cbor-same-bytes (text-to-utf8-bytes s) bytes 0 then CborDecodeResult { cdr-value = CborText s, cdr-offset = off + len }
+    in if cbor-same-bytes (text-to-utf8-bytes s) bytes 0 then
+      CborDecodeResult { cdr-value = CborText s, cdr-offset = off + len }
     else cbor-fail
 
   cbor-same-bytes : List Integer, List Integer, Integer -> Boolean
@@ -216,7 +229,8 @@ Section: Decoding
     in if kr.cdr-offset < 0 then cbor-fail
     else let vr = cbor-decode-item bs (kr.cdr-offset) depth
     in if vr.cdr-offset < 0 then cbor-fail
-    else cbor-decode-map-loop bs (vr.cdr-offset) count (i + 1) (list-push acc (CborMapEntry { cme-key = kr.cdr-value, cme-value = vr.cdr-value })) depth
+    else
+      cbor-decode-map-loop bs (vr.cdr-offset) count (i + 1) (list-push acc (CborMapEntry { cme-key = kr.cdr-value, cme-value = vr.cdr-value })) depth
 
  Major type 7 carries false (20), true (21), null (22) and undefined (23),
  read here as null. Floats (ai 25 to 27) and every other simple value have no

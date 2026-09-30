@@ -334,6 +334,66 @@ console.log(`kd-verify ${wasmPath}`);
     `${three.reduce((a, b) => a + b, 0)} banked in total`);
 }
 
+// -- RULES: the whole legal set of every position a game passes through ----
+// Klondike.codex's rules, re-derived: every source (a column at every start
+// index, the waste, a foundation) against every destination, compared with
+// kd_can at each position of 30 games at both draw sizes.
+{
+  const runOk = (cs, s) => { for (let i = s + 1; i < cs.length; i++) if (rank(cs[i]) !== rank(cs[i - 1]) - 1 || red(cs[i]) === red(cs[i - 1])) return false; return true; };
+  const takes = (h, to, card) => {
+    if (to >= 7) { const f = to - 7; return suit(card) === f && rank(card) === e.kd_found(h, f) + 1; }
+    const cs = col(h, to);
+    if (cs.length === 0) return rank(card) === 12;
+    const top = cs[cs.length - 1];
+    return rank(card) === rank(top) - 1 && red(card) !== red(top);
+  };
+  const oracle = (h, from, start, to) => {
+    if (from < 7) {
+      const cs = col(h, from), down = e.kd_down(h, from);
+      if (start < down || start >= cs.length || !runOk(cs, start)) return false;
+      if (to < 7) return to !== from && takes(h, to, cs[start]);
+      return start === cs.length - 1 && takes(h, to, cs[start]);
+    }
+    const head = from === 7 ? e.kd_wastetop(h) : e.kd_foundcard(h, from - 8);
+    if (head < 0) return false;
+    if (from >= 8 && to >= 7) return false;
+    return takes(h, to, head);
+  };
+  const bad = [];
+  let positions = 0, allowed = 0, kingToSpace = 0, fromFound = 0, partial = 0, fromWaste = 0;
+  for (const draw of [1, 3]) {
+    for (let seed = 1; seed <= 15; seed++) {
+      let h = e.kd_new(seed, draw);
+      for (let step = 0; step < 120 && e.kd_won(h) === 0; step++) {
+        positions++;
+        for (let from = 0; from < 12; from++) {
+          const starts = from < 7 ? [...Array(e.kd_coln(h, from) + 1).keys()] : [0];
+          for (const start of starts) {
+            for (let to = 0; to < 11; to++) {
+              const want = oracle(h, from, start, to), got = e.kd_can(h, from, start, to) === 1;
+              if (want !== got && bad.length < 3) bad.push(`draw ${draw} seed ${seed} step ${step}: ${from}/${start} -> ${to} engine ${got} rules ${want}`);
+              if (got) {
+                allowed++;
+                if (to < 7 && col(h, to).length === 0) kingToSpace++;
+                if (from >= 8) fromFound++;
+                if (from === 7) fromWaste++;
+                if (from < 7 && start < col(h, from).length - 1) partial++;
+              }
+            }
+          }
+        }
+        const m = e.kd_ai(h);
+        if (m === -1) break;
+        h = m === -2 ? e.kd_draw(h) : m === -3 ? e.kd_recycle(h) : e.kd_move(h, e.kd_mfrom(m), e.kd_mstart(m), e.kd_mto(m));
+      }
+    }
+  }
+  ok('at every position the engine allows exactly the moves the rules allow', bad.length === 0,
+     bad.join('; ') || `${positions} positions, ${allowed} legal moves`);
+  ok('control: kings to empty columns, cards back from a foundation, the waste and part-runs were all legal somewhere',
+     kingToSpace > 0 && fromFound > 0 && fromWaste > 0 && partial > 0,
+     `${kingToSpace} to a space, ${fromFound} from a foundation, ${fromWaste} from the waste, ${partial} part-runs`);
+}
 console.log(fail === 0
   ? `\nPASS: Klondike deals, builds and turns by its rules (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

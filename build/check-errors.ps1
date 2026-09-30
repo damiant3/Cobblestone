@@ -10,7 +10,7 @@ param(
     # build-output/bare-metal/Codex.cdx and therefore whichever kernel ran
     # LAST. Every caller inside a gate passes this explicitly.
     [string]$Kernel = '',
-    [int]$Jobs = 8
+    [int]$Jobs = 16
 )
 
 Set-StrictMode -Version Latest
@@ -19,23 +19,23 @@ Set-Location (Join-Path $PSScriptRoot '..')
 [Environment]::CurrentDirectory = (Get-Location).Path
 
 # 176 tests assert a REFUSAL, and until 2026-08-17 the gate ran 13 of them.
-#
+# 
 # codex/test/errors is the diagnostic path: each source is a program the
 # compiler must reject, and its .failing names the codes that must fire. The
 # set is reachable only from build/test.ps1, which is the battery and refuses
 # to run without Damian. bvt.ps1 carries thirteen by name. So a rejection that
 # stopped happening, or started happening for a different reason, was caught
 # by nothing an agent is allowed to run.
-#
+# 
 # That is not hypothetical. bounded-exceeded declared `bounded linear` over a
 # loop appending a text LITERAL; COMPILER-8 made that extend in place, rule 3
 # stopped inferring it growing, the declaration held, and the test compiled
 # clean -- the exact opposite of what it exists to assert. It reached main
 # green in Update 45 and was found by a release battery, not by a gate.
-#
+# 
 # The set is derived from the directory, never listed here. A hand-maintained
 # list is how the thirteen came to stand for a hundred and seventy-six.
-#
+# 
 # Exit 1 on any test that compiles, that fails with the wrong codes, or that
 # declares nothing at all.
 
@@ -51,10 +51,13 @@ if ($tests.Count -eq 0) {
     exit 1
 }
 
+
 $outRoot = Join-Path 'test-output' '_errors'
 if (Test-Path $outRoot) { Remove-Item -Recurse -Force $outRoot }
 New-Item -ItemType Directory -Force -Path $outRoot | Out-Null
 
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
+$Jobs = (Get-VmAdmittedSlots -Slots $Jobs -GuestMB 256 -What 'check-errors')
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 Write-Host "  check-errors: $($tests.Count) refusals, $Jobs parallel slots"
 
@@ -123,6 +126,7 @@ $tests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
         ($using:passed).Add($base)
     }
 }
+
 
 $sw.Stop()
 $elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)

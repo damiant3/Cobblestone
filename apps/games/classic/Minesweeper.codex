@@ -7,6 +7,11 @@ Chapter: Minesweeper
  Adjacent count: number of mines in 8 neighboring cells.
  Game ends when all safe cells revealed (win) or a mine is hit (lose).
 
+ As Microsoft Minesweeper plays it: the first cell revealed is never a
+ mine (a mine there moves to the first mine-free cell from the top left);
+ a hidden cell may be flagged (revealed value 2), and a flagged cell cannot
+ be revealed, by a click or by a flood, until its flag is removed.
+
  We say:
 
 Section: Types
@@ -99,6 +104,7 @@ Section: Reveal
     else if idx < 0 then st
     else if idx >= 81 then st
     else if list-at (st.revealed) idx /= 0 then st
+    else if st.moves == 0 & list-at (st.mine-grid) idx == 1 then ms-reveal (ms-move-mine st idx) idx
     else if list-at (st.mine-grid) idx == 1 then
       let new-rev = list-set-at (st.revealed) idx 1
       in let new-hits = st.mines-hit + 1
@@ -110,6 +116,37 @@ Section: Reveal
     in let st2 = MinesweeperState { mine-grid = st.mine-grid, revealed = new-rev, adjacent = st.adjacent, cells-revealed = new-count, mines-hit = st.mines-hit, safe-cells = st.safe-cells, game-over = won, won = won, moves = st.moves + 1, rng = st.rng }
     in if adj-count == 0 then ms-flood-fill st2 idx
     else st2
+
+ The first click's mine moves to the first mine-free cell from the top
+ left, on a fresh copy of the mine grid, and the counts are rebuilt.
+
+  ms-move-mine : MinesweeperState, Integer -> MinesweeperState
+  ms-move-mine (st) (idx) =
+    let copy = ms-copy-mines (st.mine-grid) 0 []
+    in let to = ms-first-free copy idx 0
+    in let moved = list-set-at (list-set-at copy idx 0) to 1
+    in MinesweeperState { mine-grid = moved, revealed = st.revealed, adjacent = ms-build-adjacent moved 0 [], cells-revealed = st.cells-revealed, mines-hit = st.mines-hit, safe-cells = st.safe-cells, game-over = st.game-over, won = st.won, moves = st.moves, rng = st.rng }
+
+  ms-copy-mines : List Integer, Integer, List Integer -> List Integer
+  ms-copy-mines (src) (i) (acc) =
+    if i >= 81 then acc
+    else ms-copy-mines src (i + 1) (list-push acc (list-at src i))
+
+  ms-first-free : List Integer, Integer, Integer -> Integer
+  ms-first-free (mines) (skip) (i) =
+    if i >= 81 then skip
+    else if i /= skip & list-at mines i == 0 then i
+    else ms-first-free mines skip (i + 1)
+
+ A flag toggles on a hidden cell only; revealed cells and a finished game
+ are left alone.
+
+  ms-toggle-flag : MinesweeperState, Integer -> MinesweeperState
+  ms-toggle-flag (st) (idx) =
+    if st.game-over then st
+    else if idx < 0 | idx >= 81 then st
+    else if list-at (st.revealed) idx == 1 then st
+    else MinesweeperState { mine-grid = st.mine-grid, revealed = list-set-at (st.revealed) idx (2 - list-at (st.revealed) idx), adjacent = st.adjacent, cells-revealed = st.cells-revealed, mines-hit = st.mines-hit, safe-cells = st.safe-cells, game-over = st.game-over, won = st.won, moves = st.moves, rng = st.rng }
 
   ms-flood-fill : MinesweeperState, Integer -> MinesweeperState
   ms-flood-fill (st) (idx) =

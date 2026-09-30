@@ -108,7 +108,7 @@ $Plugs = @(
            if (-not (Get-Command wat2wasm -ErrorAction SilentlyContinue)) { throw "wat2wasm is not on PATH; the WAT cannot be assembled" }
            $mod = [System.IO.Path]::ChangeExtension($srcOut, '.wasm')
            Remove-Item $mod -Force -ErrorAction SilentlyContinue
-           $asm = & wat2wasm $srcOut -o $mod 2>&1
+           $asm = & wat2wasm --enable-tail-call $srcOut -o $mod 2>&1
            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -PathType Leaf $mod)) { throw "wat2wasm failed:`n$($asm -join "`n")" }
            # Bare metal answers deep recursion with a multi-gigabyte arena, so a
            # host stack small enough to refuse it is grading the HOST and not the

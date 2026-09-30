@@ -152,6 +152,79 @@ console.log(`wr-verify ${wasmPath}`);
      warsSeen > 0, `${warsSeen} wars in ${rounds} rounds`);
 }
 
+// -- RULES: every class of round, from a position built card by card -----
+// The rules are pagat's (https://www.pagat.com/war/war.html), as War.codex
+// states them. A round has no choice in it, so the legal set of each class
+// is one outcome, and each arm asserts both packets exactly: the cards not
+// played keep their order on top, and the taker's winnings go underneath,
+// player 1's table cards and then player 2's. Each war arm is built so that
+// the engine's earlier rules (three cards face down, a tied war card won by
+// player 1) give a different answer.
+{
+  const C = (r, s = 0) => s * 13 + r;          // r: 0 is the two, 12 the ace
+  const [R2, R3, R4, R5, R7, R9, RT, RJ, RQ, RK, RA] = [0, 1, 2, 3, 5, 7, 8, 9, 10, 11, 12];
+  const pos = (a, b) => {
+    let h = e.wr_empty(1);
+    for (const c of a) h = e.wr_push1(h, c);
+    for (const c of b) h = e.wr_push2(h, c);
+    return h;
+  };
+  const same = (x, y) => x.length === y.length && x.every((v, i) => v === y[i]);
+  const round = (name, a, b, want1, want2) => {
+    const h = pos(a, b);
+    const built = same(hand1(h), a) && same(hand2(h), b);
+    const n = e.wr_round(h);
+    const got1 = hand1(n), got2 = hand2(n);
+    ok(name, built && same(got1, want1) && same(got2, want2),
+       built ? `player 1 [${got1}] player 2 [${got2}], want [${want1}] and [${want2}]` : 'the position did not build');
+  };
+  round('a plain round: the higher card takes both, underneath',
+    [C(RK), C(R5)], [C(R9, 1), C(R7, 1)], [C(R5), C(RK), C(R9, 1)], [C(R7, 1)]);
+  round('a plain round the other way: player 2 takes',
+    [C(R3), C(R5)], [C(RJ, 1), C(R7, 1)], [C(R5)], [C(R7, 1), C(R3), C(RJ, 1)]);
+  round('aces are high: an ace takes a king',
+    [C(RA), C(R5)], [C(RK, 1)], [C(R5), C(RA), C(RK, 1)], []);
+  round('the two is lowest: a two loses to a three',
+    [C(R2)], [C(R3, 1), C(R4, 1)], [], [C(R4, 1), C(R2), C(R3, 1)]);
+  // War: tie, then ONE down and one up. Face-up are the third cards (a four
+  // against a queen, player 2 takes); three down would have read the fifth
+  // cards (a king against a two, player 1).
+  round('a war is one card down and one up, and the higher up card takes the six',
+    [C(R7), C(RT), C(R4), C(R9), C(RK), C(R5)],
+    [C(R7, 1), C(RJ, 1), C(RQ, 1), C(R3, 1), C(R2, 1), C(R5, 1)],
+    [C(R9), C(RK), C(R5)],
+    [C(R3, 1), C(R2, 1), C(R5, 1), C(R7), C(RT), C(R4), C(R7, 1), C(RJ, 1), C(RQ, 1)]);
+  // The up cards tie twice (nines, then threes) and the third up cards, a
+  // two against an ace, give player 2 all fourteen. Three down would have
+  // read the tied threes as its only up cards and given them to player 1.
+  round('equal face-up cards continue the war until an up card is higher',
+    [C(R7), C(RT), C(R9), C(R4), C(R3), C(RQ), C(R2), C(R5)],
+    [C(R7, 1), C(RJ, 1), C(R9, 1), C(R2, 1), C(R3, 1), C(RK, 1), C(RA, 1), C(R4, 1)],
+    [C(R5)],
+    [C(R4, 1), C(R7), C(RT), C(R9), C(R4), C(R3), C(RQ), C(R2),
+     C(R7, 1), C(RJ, 1), C(R9, 1), C(R2, 1), C(R3, 1), C(RK, 1), C(RA, 1)]);
+  round('two cards after the tie are enough for a war',
+    [C(R7), C(R2), C(RK)], [C(R7, 1), C(R3, 1), C(R4, 1)],
+    [C(R7), C(R2), C(RK), C(R7, 1), C(R3, 1), C(R4, 1)], []);
+  round('a player left with one card after the tie cannot play the war and loses: the other takes every card',
+    [C(R7), C(RA)], [C(R7, 1), C(R2, 1), C(R3, 1), C(R4, 1)],
+    [], [C(R2, 1), C(R3, 1), C(R4, 1), C(RA), C(R7), C(R7, 1)]);
+  round('the same for player 2, with no card left after the tie',
+    [C(R7), C(R2), C(R3), C(R4)], [C(R7, 1)],
+    [C(R2), C(R3), C(R4), C(R7), C(R7, 1)], []);
+  round('running short in a CONTINUED war loses the same way',
+    [C(R7), C(RT), C(R9), C(RK)], [C(R7, 1), C(RJ, 1), C(R9, 1), C(R2, 1), C(R3, 1)],
+    [], [C(R2, 1), C(R3, 1), C(RK), C(R7), C(RT), C(R9), C(R7, 1), C(RJ, 1), C(R9, 1)]);
+  round('both short in the same war: each takes back what it put down',
+    [C(R7), C(RA)], [C(R7, 1), C(R2, 1)], [C(RA), C(R7)], [C(R2, 1), C(R7, 1)]);
+  {
+    const h = pos([C(R7)], []);
+    const n = e.wr_round(h);
+    ok('a finished game refuses a round: the position comes back unchanged',
+       e.wr_p1n(n) === 1 && e.wr_p2n(n) === 0 && e.wr_p1c(n, 0) === C(R7));
+  }
+}
+
 // -- The whole game -------------------------------------------------------
 {
   const bad = [];

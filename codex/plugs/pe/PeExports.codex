@@ -1,0 +1,100 @@
+Chapter: PeExports
+  cites Foreword chapter CCE
+
+ The PE/COFF layout belongs to Microsoft. The u32 at 0x3C, e_lfanew, points at
+ the signature PE followed by two zero bytes; the COFF header follows it, with
+ NumberOfSections at offset 6 and SizeOfOptionalHeader at offset 20; the PE32+
+ optional header starts 24 bytes past the signature with magic 0x20B, and its
+ first data directory, the export table as RVA then size, sits 112 bytes into
+ that header. Each 40-byte section header holds VirtualSize at offset 8,
+ VirtualAddress at 12, SizeOfRawData at 16 and PointerToRawData at 20. The
+ export directory holds Base at 16, NumberOfFunctions at 20, NumberOfNames
+ at 24, AddressOfFunctions at 28, AddressOfNames at 32 and
+ AddressOfNameOrdinals at 36. A function RVA that falls inside the export directory's own range
+ names a forwarder string, not code.
+
+Section: Reading
+
+  PeExport = record {
+    pex-ordinal : Integer,
+    pex-name : Text,
+    pex-forwarder : Text
+  }
+
+  PeExportTable = record {
+    pet-why : Text,
+    pet-exports : List PeExport
+  }
+
+  pex-u16 : Integer, Integer -> Integer
+  pex-u16 (buf) (off) = peek-byte buf off + peek-byte buf (off + 1) * 256
+
+  pex-u32 : Integer, Integer -> Integer
+  pex-u32 (buf) (off) = pex-u16 buf off + pex-u16 buf (off + 2) * 65536
+
+  pex-refuse : Text -> PeExportTable
+  pex-refuse (why) = PeExportTable { pet-why = why, pet-exports = [] }
+
+  pex-section-hit : Integer, Integer, Integer -> Integer
+  pex-section-hit (buf) (sec) (rva) =
+    let va = pex-u32 buf (sec + 12)
+    in let vs = pex-u32 buf (sec + 8)
+    in let raw = pex-u32 buf (sec + 16)
+    in let span = if vs > raw then vs else raw
+    in if rva >= va & rva < va + span then pex-u32 buf (sec + 20) + (rva - va) else 0 - 1
+
+  pex-offset-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  pex-offset-loop (buf) (secs) (i) (n) (rva) =
+    if i >= n then 0 - 1
+    else let o = pex-section-hit buf (secs + i * 40) rva
+    in if o >= 0 then o else pex-offset-loop buf secs (i + 1) n rva
+
+  pex-string-loop : Integer, Integer, Integer, Integer, Text -> Text
+  pex-string-loop (buf) (off) (len) (i) (acc) =
+    if i >= 512 | off + i >= len then acc
+    else let b = peek-byte buf (off + i)
+    in if b == 0 then acc
+    else pex-string-loop buf off len (i + 1) (acc & cce-foreign-byte-text b)
+
+  pex-entry : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> PeExport
+  pex-entry (buf) (len) (secs) (nsec) (base) (funcs) (dir-lo) (dir-hi) (ord-index) =
+    let frva = pex-u32 buf (funcs + ord-index * 4)
+    in let fwd = if frva >= dir-lo & frva < dir-hi then pex-string-loop buf (pex-offset-loop buf secs 0 nsec frva) len 0 "" else ""
+    in PeExport { pex-ordinal = base + ord-index, pex-name = "", pex-forwarder = fwd }
+
+  pex-names-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List PeExport -> List PeExport
+  pex-names-loop (buf) (len) (secs) (nsec) (base) (funcs) (names) (ords) (dir-lo) (dir-hi) (i) (acc) =
+    if i < 0 then acc
+    else let nrva = pex-u32 buf (names + i * 4)
+    in let oi = pex-u16 buf (ords + i * 2)
+    in let e = pex-entry buf len secs nsec base funcs dir-lo dir-hi oi
+    in let name = pex-string-loop buf (pex-offset-loop buf secs 0 nsec nrva) len 0 ""
+    in pex-names-loop buf len secs nsec base funcs names ords dir-lo dir-hi (i - 1) (PeExport { pex-ordinal = e.pex-ordinal, pex-name = name, pex-forwarder = e.pex-forwarder } :: acc)
+
+  pex-read-dir : Integer, Integer, Integer, Integer, Integer, Integer -> PeExportTable
+  pex-read-dir (buf) (len) (secs) (nsec) (dir-rva) (dir-size) =
+    let dir = pex-offset-loop buf secs 0 nsec dir-rva
+    in if dir < 0 | dir + 40 > len then pex-refuse "export directory outside every section"
+    else let base = pex-u32 buf (dir + 16)
+    in let nnames = pex-u32 buf (dir + 24)
+    in let funcs = pex-offset-loop buf secs 0 nsec (pex-u32 buf (dir + 28))
+    in let names = pex-offset-loop buf secs 0 nsec (pex-u32 buf (dir + 32))
+    in let ords = pex-offset-loop buf secs 0 nsec (pex-u32 buf (dir + 36))
+    in if funcs < 0 | names < 0 | ords < 0 then pex-refuse "an export array lies outside every section"
+    else if names + nnames * 4 > len | ords + nnames * 2 > len then pex-refuse "the export name arrays run past the image"
+    else PeExportTable { pet-why = "", pet-exports = pex-names-loop buf len secs nsec base funcs names ords dir-rva (dir-rva + dir-size) (nnames - 1) [] }
+
+  pe-exports : Integer, Integer -> PeExportTable
+  pe-exports (buf) (len) =
+    if len < 64 | peek-byte buf 0 /= 77 | peek-byte buf 1 /= 90 then pex-refuse "no MZ header"
+    else let pe = pex-u32 buf 60
+    in if pe < 0 | pe + 24 + 128 > len then pex-refuse "e_lfanew outside the image"
+    else if pex-u32 buf pe /= 17744 then pex-refuse "no PE signature"
+    else let opt = pe + 24
+    in if pex-u16 buf opt /= 523 then pex-refuse "not a PE32+ image"
+    else let nsec = pex-u16 buf (pe + 6)
+    in let secs = opt + pex-u16 buf (pe + 20)
+    in if secs + nsec * 40 > len then pex-refuse "the section table runs past the image"
+    else let dir-rva = pex-u32 buf (opt + 112)
+    in if dir-rva == 0 then pex-refuse "no export table"
+    else pex-read-dir buf len secs nsec dir-rva (pex-u32 buf (opt + 116))

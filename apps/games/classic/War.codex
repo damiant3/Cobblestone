@@ -1,12 +1,19 @@
 Chapter: War
   cites Games chapter Rng
 
- War card game. 52-card deck split evenly between 2 players (26 each).
- Each round both players flip their top card; higher card wins both.
- On a tie (war): each player places 3 cards face-down then 1 face-up;
- the higher face-up card takes all cards. If a player runs out during war,
- the other player wins. Game ends when one player has all 52 cards or
- after 1000 rounds (whichever comes first). Winner is player with more cards.
+ War as pagat.com gives it (https://www.pagat.com/war/war.html): all 52
+ cards dealt, 26 each; cards rank A K Q J T 9 8 7 6 5 4 3 2, suits do not
+ matter. Both players turn their top card and the higher takes both, to the
+ bottom of the taker's packet. Equal cards are a war: the tied cards stay on
+ the table and each player plays one card face down and one face up; the
+ higher face-up card takes everything on the table, and equal face-up cards
+ continue the war the same way. Of pagat's two rules for a player who runs
+ short, this is the first: a player who cannot play both the face-down and
+ the face-up card loses at once, and the other takes every card. pagat says
+ nothing of both running short in the same war; then each takes back the
+ cards they put on the table. The game ends when one player holds all 52.
+ The self-playing runner also stops after 1000 rounds and names the player
+ holding more, because War need not end.
 
  We say:
 
@@ -91,7 +98,7 @@ Section: Round Logic
     in let r2 = war-card-rank c2
     in if r1 > r2 then war-p1-takes s2 c1 c2
     else if r2 > r1 then war-p2-takes s2 c1 c2
-    else war-do-war s2 c1 c2
+    else war-do-war s2 [c1] [c2]
 
   war-p1-takes : WarState, Integer, Integer -> WarState
   war-p1-takes (s) (c1) (c2) =
@@ -151,34 +158,33 @@ Section: Round Logic
         rng      = s.rng
       }
 
-  war-do-war : WarState, Integer, Integer -> WarState
-  war-do-war (s) (orig1) (orig2) =
-    let skip1 = if s.p1-size >= 3 then 3 else s.p1-size
-    in let skip2 = if s.p2-size >= 3 then 3 else s.p2-size
-    in let down1 = war-top-n (s.p1-hand) 0 skip1 []
-    in let down2 = war-top-n (s.p2-hand) 0 skip2 []
-    in let s2 = war-skip-cards s skip1 skip2
-    in let pot-a = list-push (list-push [] orig1) orig2
-    in let pot-b = war-add-all pot-a down1 0
-    in let pot = war-add-all pot-b down2 0
-    in if s2.p1-size <= 0 then war-give s2 2 pot
-    else if s2.p2-size <= 0 then war-give s2 1 pot
-    else let wc1 = war-take-top (s2.p1-hand) (s2.p1-size)
-    in let wc2 = war-take-top (s2.p2-hand) (s2.p2-size)
-    in let h1 = war-shift-hand (s2.p1-hand) (s2.p1-size)
-    in let h2 = war-shift-hand (s2.p2-hand) (s2.p2-size)
-    in let s3 = WarState {
-           p1-hand  = h1,
-           p1-size  = s2.p1-size - 1,
-           p2-hand  = h2,
-           p2-size  = s2.p2-size - 1,
-           rng      = s2.rng
-         }
-    in let full-pot = list-push (list-push pot wc1) wc2
-    in let wr1 = war-card-rank wc1
-    in let wr2 = war-card-rank wc2
-    in if wr1 >= wr2 then war-give s3 1 full-pot
-    else war-give s3 2 full-pot
+ pot1 and pot2 are the cards each player has on the table; the taker gets
+ player 1's then player 2's.
+
+  war-give-both : WarState, Integer, List Integer, List Integer -> WarState
+  war-give-both (s) (who) (pot1) (pot2) = war-give (war-give s who pot1) who pot2
+
+  war-forfeit : WarState, Integer -> WarState
+  war-forfeit (s) (loser) =
+    let rest = if loser == 1 then war-top-n (s.p1-hand) 0 (s.p1-size) [] else war-top-n (s.p2-hand) 0 (s.p2-size) []
+    in if loser == 1 then war-give (war-skip-cards s (s.p1-size) 0) 2 rest
+    else war-give (war-skip-cards s 0 (s.p2-size)) 1 rest
+
+  war-do-war : WarState, List Integer, List Integer -> WarState
+  war-do-war (s) (pot1) (pot2) =
+    let short1 = s.p1-size < 2
+    in let short2 = s.p2-size < 2
+    in if short1 & short2 then war-give (war-give s 1 pot1) 2 pot2
+    else if short1 then war-give-both (war-forfeit s 1) 2 pot1 pot2
+    else if short2 then war-give-both (war-forfeit s 2) 1 pot1 pot2
+    else let u1 = list-at (s.p1-hand) 1
+    in let u2 = list-at (s.p2-hand) 1
+    in let q1 = war-add-all pot1 (war-top-n (s.p1-hand) 0 2 []) 0
+    in let q2 = war-add-all pot2 (war-top-n (s.p2-hand) 0 2 []) 0
+    in let s3 = war-skip-cards s 2 2
+    in if war-card-rank u1 > war-card-rank u2 then war-give-both s3 1 q1 q2
+    else if war-card-rank u2 > war-card-rank u1 then war-give-both s3 2 q1 q2
+    else war-do-war s3 q1 q2
 
   war-skip-cards : WarState, Integer, Integer -> WarState
   war-skip-cards (s) (n1) (n2) =

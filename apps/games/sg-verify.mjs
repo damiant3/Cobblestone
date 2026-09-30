@@ -54,6 +54,28 @@ const validSet = (x, y, z) => {
 
 console.log(`sg-verify ${wasmPath}`);
 
+const table = h => [...Array(e.sg_tabn(h))].map((_, i) => e.sg_tab(h, i));
+const deckOf = h => [...Array(e.sg_deckn(h))].map((_, i) => e.sg_deck(h, i));
+// The whole legal set of a position, by the oracle: every valid triple of
+// distinct table positions, and a deal exactly when no set is out and the
+// deck holds a card.
+const oracleTriples = tab => {
+  const out = [];
+  for (let i = 0; i < tab.length; i++)
+    for (let j = i + 1; j < tab.length; j++)
+      for (let k = j + 1; k < tab.length; k++)
+        if (validSet(tab[i], tab[j], tab[k])) out.push(`${i},${j},${k}`);
+  return out;
+};
+const engineTriples = h => {
+  const n = e.sg_tabn(h), out = [];
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++)
+      for (let k = j + 1; k < n; k++)
+        if (e.sg_cantake(h, i, j, k) === 1) out.push(`${i},${j},${k}`);
+  return out;
+};
+
 // -- The decoder ----------------------------------------------------------
 {
   const bad = [];
@@ -196,6 +218,96 @@ console.log(`sg-verify ${wasmPath}`);
      counts.some(c => c > 0), `mean ${mean.toFixed(2)} sets, range ${Math.min(...counts)} to ${Math.max(...counts)}`);
 }
 
+// -- RULES: the legal set of every position a game passes through ---------
+// Set Enterprises' rules, as SetGame.codex states them. At every position of
+// 40 played-through games the engine's takeable triples must be exactly the
+// oracle's, the deal offered exactly when no set is out and the deck is not
+// empty, and each move must grow or shrink the table as the rules say.
+{
+  const badSet = [], badDeal = [], badMove = [];
+  let positions = 0, maxTable = 0, grew = 0, shrank = 0;
+  for (let seed = 1; seed <= 40; seed++) {
+    let h = e.sg_new(seed);
+    for (let step = 0; step < 60; step++) {
+      const tab = table(h), deck = deckOf(h);
+      positions++;
+      maxTable = Math.max(maxTable, tab.length);
+      const want = oracleTriples(tab), got = engineTriples(h);
+      if (want.join(';') !== got.join(';')) badSet.push(`seed ${seed} step ${step}: engine ${got.length}, oracle ${want.length} on ${tab.length} cards`);
+      const dealWant = want.length === 0 && deck.length > 0 ? 1 : 0;
+      if (e.sg_candeal(h) !== dealWant) badDeal.push(`seed ${seed} step ${step}: deal ${e.sg_candeal(h)}, want ${dealWant}`);
+      if (want.length === 0 && deck.length === 0) break;
+      const next = e.sg_step(h);
+      const nt = table(next), nd = deckOf(next);
+      if (want.length === 0) {
+        grew++;
+        const add = Math.min(3, deck.length);
+        if (nt.length !== tab.length + add || nd.length !== deck.length - add ||
+            nt.slice(tab.length).join() !== deck.slice(0, add).join())
+          badMove.push(`seed ${seed} step ${step}: a deal from ${tab.length} made ${nt.length}`);
+      } else {
+        const keep = tab.length - 3;
+        const refill = keep >= 12 ? 0 : Math.min(12 - keep, deck.length);
+        if (tab.length > 12) shrank++;
+        if (nt.length !== keep + refill || nd.length !== deck.length - refill)
+          badMove.push(`seed ${seed} step ${step}: a take from ${tab.length} (deck ${deck.length}) left ${nt.length} (deck ${nd.length}), want ${keep + refill}`);
+      }
+      h = next;
+    }
+  }
+  ok('every position offers exactly the oracle\'s sets, no more and no fewer', badSet.length === 0,
+     badSet.slice(0, 2).join('; ') || `${positions} positions`);
+  ok('the deal is offered exactly when no set is out and the deck is not empty', badDeal.length === 0,
+     badDeal.slice(0, 2).join('; ') || `${positions} positions`);
+  ok('a deal adds three from the deck, a take from twelve refills and a take from more does not', badMove.length === 0,
+     badMove.slice(0, 2).join('; ') || `${grew} deals, ${shrank} takes from a grown table`);
+  ok('control: tables grew past twelve and shrank back, so both rules were exercised', grew > 0 && shrank > 0 && maxTable > 12,
+     `${grew} deals, ${shrank} shrinks, largest table ${maxTable}`);
+}
+
+// -- RULES: built positions -------------------------------------------------
+{
+  // The sixteen cards whose every attribute is 0 or 1 hold no set: all-
+  // different needs a 2 somewhere, and all-same is one card.
+  const cap = [];
+  for (let id = 0; id < 81; id++) if (attrs(id).every(v => v < 2)) cap.push(id);
+  const third = (a, b) => { for (let c = 0; c < 81; c++) if (c !== a && c !== b && validSet(a, b, c)) return c; return -1; };
+  const build = (tab, deck) => {
+    let h = e.sg_empty(0);
+    for (const c of tab) h = e.sg_pushtab(h, c);
+    for (const c of deck) h = e.sg_pushdeck(h, c);
+    return h;
+  };
+  ok('control: the sixteen cards hold no set', cap.length === 16 && oracleTriples(cap).length === 0);
+  const y = third(cap[0], cap[1]);
+  const extra = [0, 1, 2, 3, 4, 5, 6, 7, 8].map(i => third(cap[2], cap[3 + i])).filter(c => c !== y && !cap.includes(c));
+  let h = build(cap.slice(0, 12), [cap[12], cap[13], cap[14], cap[15], y, extra[0], extra[1], extra[2]]);
+  ok('twelve cards with no set offer the deal and no triple', e.sg_candeal(h) === 1 && engineTriples(h).length === 0);
+  h = e.sg_deal(h);
+  ok('fifteen with still no set offer the deal again', e.sg_tabn(h) === 15 && e.sg_candeal(h) === 1 && engineTriples(h).length === 0,
+     `${e.sg_tabn(h)} cards`);
+  h = e.sg_deal(h);
+  const tab = table(h);
+  ok('eighteen cards, and now a set is out, so the deal is refused', e.sg_tabn(h) === 18 && e.sg_candeal(h) === 0 && engineTriples(h).length > 0,
+     `${e.sg_tabn(h)} cards, ${engineTriples(h).length} sets`);
+  const [i, j, k] = [tab.indexOf(cap[0]), tab.indexOf(cap[1]), tab.indexOf(y)];
+  const deckBefore = e.sg_deckn(h);
+  const t = e.sg_take(h, i, j, k);
+  ok('a set taken from eighteen is not replaced: fifteen stay and the deck is untouched',
+     e.sg_tabn(t) === 15 && e.sg_deckn(t) === deckBefore && !table(t).includes(cap[0]) && !table(t).includes(y),
+     `${e.sg_tabn(t)} cards, deck ${e.sg_deckn(t)} of ${deckBefore}`);
+  ok('the same index twice, or one off the table, is not a set',
+     e.sg_cantake(h, i, i, k) === 0 && e.sg_cantake(h, i, j, 18) === 0 && e.sg_cantake(h, -1, j, k) === 0);
+  const short = e.sg_take(build([cap[0], cap[1], y, ...cap.slice(2, 11)], [cap[11], cap[12]]), 0, 1, 2);
+  ok('a take from twelve with two cards left refills two: eleven out', e.sg_tabn(short) === 11 && e.sg_deckn(short) === 0,
+     `${e.sg_tabn(short)} cards`);
+  const end = build(cap.slice(0, 12), []);
+  ok('no set out and an empty deck: no triple and no deal, which is the end',
+     engineTriples(end).length === 0 && e.sg_candeal(end) === 0 && e.sg_find(end) < 0);
+  const refused = build([cap[0], cap[1], y, ...cap.slice(2, 11)], [cap[11]]);
+  ok('a deal while a set is out is refused and leaves the table as it was',
+     e.sg_candeal(refused) === 0 && e.sg_deal(refused) === refused);
+}
 console.log(fail === 0
   ? `\nPASS: Set decodes, judges and counts by the rules (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

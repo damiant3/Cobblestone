@@ -3,13 +3,16 @@ Chapter: MathbookWasm
   cites Mathbook chapter Parser
   cites Mathbook chapter Printer
   cites Mathbook chapter Simplify
+  cites Mathbook chapter Symbols
 
  A Codex `Text` is a pointer to a four-byte length followed by CCE bytes, which
  a page cannot decode, so the module is a WASI program: the expression arrives
  on `fd_read` and the answer leaves on `fd_write`, both plain UTF-8 (R-CCE).
 
  `_start` runs once and exits, so the page instantiates the module per
- evaluation, and each evaluation gets a fresh heap.
+ evaluation, and each evaluation gets a fresh heap. A notebook's state survives
+ by REPLAY: the page sends the whole session, one line per cell, and the module
+ evaluates every line against one symbol table and answers one line per cell.
 
 Section: One Evaluation
 
@@ -17,23 +20,40 @@ Section: One Evaluation
  `simplify-fuel`; `fold-constants` is one pass at the TOP node only and answers
  `1 + 2 * 3` for `1+2*3`.
 
-  mb-eval : Text -> Text
-  mb-eval (line) =
-    let parsed = parse-expr line
-    in if parsed.po-ok
-       then ex-print (simplify (parsed.po-expr))
-       else "parse error: " & parsed.po-error
-
 Section: Entry Point
 
   wasm-exports : Text = ""
 
-  opening : [Console] Nothing = act
+  mb-cell : SymbolTable, Text -> MbStep
+  mb-cell (env) (line) =
+    let parsed = parse-input line
+    in if parsed.ar-ok == False then MbStep { mb-env = env, mb-out = "parse error: " & parsed.ar-error }
+    else let value = simplify (symtab-apply env (parsed.ar-expr))
+    in if parsed.ar-is-assign then MbStep { mb-env = symtab-set env (parsed.ar-name) value, mb-out = ex-print value }
+    else MbStep { mb-env = env, mb-out = ex-print value }
+
+  MbStep = record { mb-env : SymbolTable, mb-out : Text }
+
+  mb-session : SymbolTable, Integer -> [Console] Nothing
+  mb-session (env) (n) = act
     entered <- read-line
     when entered
-      is Just (line) -> print-line-uni (mb-eval line)
-      is otherwise -> print-line-uni "parse error: no input"
-    end
+      is Just (line) -> mb-session-line env n line
+      is otherwise -> mb-session-end n
   end
+
+  mb-session-line : SymbolTable, Integer, Text -> [Console] Nothing
+  mb-session-line (env) (n) (line) =
+    if text-length line == 0 then mb-session-end n
+    else let step = mb-cell env line
+    in act
+      print-line-uni (step.mb-out)
+      mb-session (step.mb-env) (n + 1)
+    end
+
+  mb-session-end : Integer -> [Console] Nothing
+  mb-session-end (n) = if n == 0 then print-line-uni "parse error: no input" else print-line-uni ""
+
+  opening : [Console] Nothing = mb-session symtab-new 0
 
 Page 1

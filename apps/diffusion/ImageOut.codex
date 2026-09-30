@@ -1,0 +1,229 @@
+Chapter: ImageOut
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter VaeDecoder
+  cites Foreword chapter CCE
+
+ A decoded image (3 x H x W f32 in [-1, 1]) as an 8-bit RGB PNG (ISO 15948):
+ the signature, IHDR (bit depth 8, colour type 2, no interlace), a tEXt chunk
+ "parameters" (the key Forge writes its generation settings under), IDAT and
+ IEND; each chunk is its length, type and data, then the CRC-32 (reflected
+ polynomial 0xEDB88320) of type and data. IDAT is a zlib stream (CMF 0x78,
+ FLG 0x01) of stored deflate blocks of at most 65,535 bytes, each a BFINAL
+ byte and LEN and NLEN little-endian, closed by the Adler-32 (modulus 65,521)
+ of the scanlines, each scanline filter byte 0 then R G B per pixel.
+
+ The file is built in the reply region, the scanlines at #BD700000 and the
+ PNG after them, and one row of the image is staged at #BDF00000; an image
+ whose scanlines pass 3.5 MB (1024 x 1024 is 3.1 MB) is refused.
+
+ We say:
+
+Section: Bytes
+
+  io-raw : Integer = #BD700000
+
+  io-png : Integer = #BDA80000
+
+  io-row : Integer = #BDF00000
+
+  io-raw-cap : Integer = 3670016
+
+  io-be32 : Integer, Integer -> Integer
+  io-be32 (pos) (v) =
+    let a = poke-byte pos 0 (bit-and (bit-shru v 24) 255)
+    in let b = poke-byte pos 1 (bit-and (bit-shru v 16) 255)
+    in let c = poke-byte pos 2 (bit-and (bit-shru v 8) 255)
+    in let d = poke-byte pos 3 (bit-and v 255)
+    in pos + 4
+
+  io-bytes : Integer, List Integer, Integer -> Integer
+  io-bytes (pos) (bs) (i) = if i >= list-length bs then pos else let w = poke-byte pos 0 (list-at bs i) in io-bytes (pos + 1) bs (i + 1)
+
+  io-text : Integer, Text, Integer -> Integer
+  io-text (pos) (s) (i) =
+    if i >= text-length s then pos
+    else let u = to-unicode (char-code (char-at s i))
+    in let w = poke-byte pos 0 (if u >= 0 & u < 256 then u else 63)
+    in io-text (pos + 1) s (i + 1)
+
+  io-copy : Integer, Integer, Integer -> Integer
+  io-copy (dst) (src) (n) = if n <= 0 then dst else let w = poke-byte dst 0 (peek-byte src 0) in io-copy (dst + 1) (src + 1) (n - 1)
+
+Section: Checksums
+
+  io-crc-entry : Integer, Integer -> Integer
+  io-crc-entry (c) (k) = if k >= 8 then c else io-crc-entry (if bit-and c 1 == 1 then bit-xor #EDB88320 (bit-shru c 1) else bit-shru c 1) (k + 1)
+
+  io-crc-table : Integer, List Integer -> List Integer
+  io-crc-table (n) (acc) = if n >= 256 then acc else io-crc-table (n + 1) (list-push acc (io-crc-entry n 0))
+
+  io-crc : List Integer, Integer, Integer, Integer -> Integer
+  io-crc (tbl) (crc) (addr) (stop) =
+    if addr >= stop then crc
+    else io-crc tbl (bit-xor (list-at tbl (bit-and (bit-xor crc (peek-byte addr 0)) 255)) (bit-shru crc 8)) (addr + 1) stop
+
+  io-adler : Integer, Integer, Integer, Integer -> Integer
+  io-adler (addr) (stop) (a) (b) =
+    if addr >= stop then b * 65536 + a
+    else let a2 = int-mod (a + peek-byte addr 0) 65521
+    in io-adler (addr + 1) stop a2 (int-mod (b + a2) 65521)
+
+ A chunk: its data is already written at pos + 8; this writes the length and
+ type in front and the CRC behind, and answers the position after it.
+
+  io-chunk : List Integer, Integer, Text, Integer -> Integer
+  io-chunk (tbl) (pos) (kind) (len) =
+    let l = io-be32 pos len
+    in let t = io-text (pos + 4) kind 0
+    in let c = bit-xor (io-crc tbl #FFFFFFFF (pos + 4) (pos + 8 + len)) #FFFFFFFF
+    in io-be32 (pos + 8 + len) c
+
+Section: Scanlines
+
+ f32 bits to a byte as Forge writes it (`modules/processing.py:1013,1038-1039`):
+ clamp ((v + 1) / 2, 0, 1) in f32, times 255 in f32, then truncated. Both f32
+ results are rounded to nearest even at 24 bits (`io-f32-round`). v + 1 is
+ exact in units of 2^-50 because |v| < 1 has an exponent of at least -50 or
+ rounds v + 1 to 1 (|v| < 2^-26, under half an ulp of 1); halving is exact, so
+ s in units of 2^-50 is (v + 1) / 2 in units of 2^-51, and the byte is
+ 255 s in those units shifted right by 51.
+
+  io-bitlen : Integer, Integer, Integer -> Integer
+  io-bitlen (v) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = (lo + hi) / 2
+    in if bit-shru v mid == 0 then io-bitlen v lo mid else io-bitlen v (mid + 1) hi
+
+  io-f32-round : Integer -> Integer
+  io-f32-round (v) =
+    let l = io-bitlen v 0 63
+    in if l <= 24 then v
+    else let sh = l - 24
+    in let q = bit-shru v sh
+    in let r = v - bit-shl q sh
+    in let half = bit-shl 1 (sh - 1)
+    in let q2 = if r > half | (r == half & bit-and q 1 == 1) then q + 1 else q
+    in bit-shl q2 sh
+
+  io-pixel : Integer -> Integer
+  io-pixel (raw) =
+    let bits = bit-and raw #FFFFFFFF
+    in let neg = bit-and bits #80000000 /= 0
+    in let e = bit-and (bit-shru bits 23) 255
+    in if e == 255 then (if neg | bit-and bits #7FFFFF /= 0 then 0 else 255)
+    else if e >= 127 then (if neg then 0 else 255)
+    else let m = bit-or (bit-and bits #7FFFFF) #800000
+    in let x = if e < 100 then 0 else bit-shl m (e - 100)
+    in let s = io-f32-round (if neg then 1125899906842624 - x else 1125899906842624 + x)
+    in bit-shru (io-f32-round (255 * s)) 51
+
+ over maps a byte's index in R G B order, (y w + x) 3 + c, and the byte to
+ the byte written.
+
+  io-row-pixels : Integer, Integer, Integer, Integer, (Integer, Integer -> Integer) -> Integer
+  io-row-pixels (pos) (w) (y) (i) (over) =
+    if i >= w * 3 then pos
+    else let x = i / 3
+    in let c = i - x * 3
+    in let p = poke-byte pos 0 (over (y * w * 3 + i) (io-pixel (peek-32 io-row ((c * w + x) * 4))))
+    in io-row-pixels (pos + 1) w y (i + 1) over
+
+  io-rows : Act, Integer, Integer, (Integer, Integer -> Integer) -> Integer
+  io-rows (img) (pos) (y) (over) =
+    if y >= img.ahh then pos
+    else let w = img.aww
+    in let r0 = gpu-buf-read (img.ah) ((0 * img.ahh + y) * w * 4) (w * 4) io-row
+    in let r1 = gpu-buf-read (img.ah) ((1 * img.ahh + y) * w * 4) (w * 4) (io-row + w * 4)
+    in let r2 = gpu-buf-read (img.ah) ((2 * img.ahh + y) * w * 4) (w * 4) (io-row + w * 8)
+    in if (r0 & r1 & r2) == False then 0 - 1
+    else let f = poke-byte pos 0 0
+    in io-rows img (io-row-pixels (pos + 1) w y 0 over) (y + 1) over
+
+Section: Deflate
+
+  io-stored : Integer, Integer, Integer -> Integer
+  io-stored (pos) (src) (left) =
+    if left <= 0 then pos
+    else let n = if left > 65535 then 65535 else left
+    in let h = poke-byte pos 0 (if left > 65535 then 0 else 1)
+    in let a = poke-byte pos 1 (bit-and n 255)
+    in let b = poke-byte pos 2 (bit-shru n 8)
+    in let c = poke-byte pos 3 (bit-and (bit-xor n 65535) 255)
+    in let d = poke-byte pos 4 (bit-shru (bit-xor n 65535) 8)
+    in io-stored (io-copy (pos + 5) src n) (src + n) (left - n)
+
+Section: The File
+
+  io-build : Act, Text, (Integer, Integer -> Integer) -> Integer
+  io-build (img) (params) (over) = io-build-with (img.aww) (img.ahh) params (\pos -> io-rows img pos 0 over)
+
+  io-build-with : Integer, Integer, Text, (Integer -> Integer) -> Integer
+  io-build-with (w) (h) (params) (rows) =
+    let tbl = io-crc-table 0 []
+    in let rawlen = h * (1 + w * 3)
+    in if rawlen > io-raw-cap then 0 - 1
+    else let rend = rows io-raw
+    in if rend < 0 then 0 - 1
+    else let p0 = io-bytes io-png [137, 80, 78, 71, 13, 10, 26, 10] 0
+    in let d1 = io-be32 (io-be32 (p0 + 8) w) h
+    in let d2 = io-bytes d1 [8, 2, 0, 0, 0] 0
+    in let p1 = io-chunk tbl p0 "IHDR" 13
+    in let kw = io-text (p1 + 8) "parameters" 0
+    in let z = poke-byte kw 0 0
+    in let tend = io-text (kw + 1) params 0
+    in let p2 = io-chunk tbl p1 "tEXt" (tend - p1 - 8)
+    in let zh = io-bytes (p2 + 8) [120, 1] 0
+    in let dend = io-stored zh io-raw rawlen
+    in let ad = io-be32 dend (io-adler io-raw (io-raw + rawlen) 1 0)
+    in let p3 = io-chunk tbl p2 "IDAT" (ad - p2 - 8)
+    in let p4 = io-chunk tbl p3 "IEND" 0
+    in p4 - io-png
+
+ Writes the image to path under -gpu-out; answers the bytes written, or -1.
+
+  png-save : Act, Text, Text -> Integer
+  png-save (img) (path) (params) = png-save-with img path params (\i b -> b)
+
+  png-save-with : Act, Text, Text, (Integer, Integer -> Integer) -> Integer
+  png-save-with (img) (path) (params) (over) = io-save (io-build img params over) path
+
+  png-save-rgb : Integer, Integer, Integer, Text, Text -> Integer
+  png-save-rgb (rgb) (w) (h) (path) (params) = io-save (io-build-with w h params (\pos -> io-rgb-rows rgb w h pos 0)) path
+
+  io-rgb-rows : Integer, Integer, Integer, Integer, Integer -> Integer
+  io-rgb-rows (rgb) (w) (h) (pos) (y) =
+    if y >= h then pos
+    else let f = poke-byte pos 0 0
+    in io-rgb-rows rgb w h (io-copy (pos + 1) (rgb + y * w * 3) (w * 3)) (y + 1)
+
+  image-bytes : Act -> Integer
+  image-bytes (img) = io-host-rows img (alloc-bytes (img.ahh * img.aww * 3 + 8)) 0
+
+  io-host-rows : Act, Integer, Integer -> Integer
+  io-host-rows (img) (dst) (y) =
+    if y >= img.ahh then dst
+    else let w = img.aww
+    in let r0 = gpu-buf-read (img.ah) ((0 * img.ahh + y) * w * 4) (w * 4) io-row
+    in let r1 = gpu-buf-read (img.ah) ((1 * img.ahh + y) * w * 4) (w * 4) (io-row + w * 4)
+    in let r2 = gpu-buf-read (img.ah) ((2 * img.ahh + y) * w * 4) (w * 4) (io-row + w * 8)
+    in if (r0 & r1 & r2) == False then 0
+    else let z = io-host-row dst w y 0
+    in io-host-rows img dst (y + 1)
+
+  io-host-row : Integer, Integer, Integer, Integer -> Integer
+  io-host-row (dst) (w) (y) (i) =
+    if i >= w * 3 then 0
+    else let x = i / 3
+    in let c = i - x * 3
+    in let z = poke-byte dst (y * w * 3 + i) (io-pixel (peek-32 io-row ((c * w + x) * 4)))
+    in io-host-row dst w y (i + 1)
+
+  io-save : Integer, Text -> Integer
+  io-save (n) (path) =
+    if n <= 0 then 0 - 1
+    else let h = gpu-buf-alloc n
+    in if h == 0 then 0 - 1
+    else let w = gpu-buf-write h 0 n io-png
+    in let s = if w then gpu-buf-save h 0 n path else 0 - 1
+    in let f = gpu-buf-free h
+    in s

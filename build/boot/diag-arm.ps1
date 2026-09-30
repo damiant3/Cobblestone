@@ -134,7 +134,7 @@
 #   this paragraph is the warning rather than a CL nobody re-reads: if it
 #   starts reporting mount-fail, something upstream moved and the number
 #   needs re-deriving, NOT tuning until it goes green.
-#   sink-drop  codex-vm -usb-bot-drop 500 -usb-bot-drops 4: four consecutive
+#   sink-drop  codex-vm -usb-bot-drop 1150 -usb-bot-drops 11: eleven consecutive
 #              transfer events swallowed inside the 2.7 MB data run, which is
 #              past what the single retry recovers. sink=write-refused, and the
 #              row carries wr=0 cc=256 lba=3574 rty=2 ph=1 after=0 -- the
@@ -345,7 +345,9 @@ param(
     [switch]$Keep,
     [switch]$SkipOvmf,
     # Minimum VM-arm wall budget; longer arm-specific budgets still apply.
-    [int]$Seconds = 30,
+    # 90 because the b3 variant arms take about 81 s to END at head
+    # (2026-09-28); an arm returns at END, so the budget is a ceiling only.
+    [int]$Seconds = 90,
     [int]$OvmfSeconds = 100
 )
 Set-StrictMode -Version Latest
@@ -941,12 +943,13 @@ $expected = [ordered]@{
     'sink-revived' = 'the DRIVER RECOVERS and the row says so: the same death as sink-dies, with -usb-bot-revive-on-reset, so the target answers again after the Bulk-Only Mass Storage Reset the driver already sends. sink=recovered with rty=3 (msc-retry-ok) and bank=ok with the file whole, against sink-dies reading died with rty=2 and bank=lost off the same lever. This is the only arm in the tree where WORKS-9''s recovery path SUCCEEDS; every other one measures it failing. ABLATION: a driver that does not reset on no-event turns this red, measured that way -- with the no-event branch of msc-retry-chunk forced away the write never comes back and the row reads died, which is the same row the latched control gives'
         'sink-shift' = 'sink=bad-bytes (oracle shifted by one), bank=ok'
     'bank-lost' = 'the wedge persists past the sink stage: bank=lost naming sink, the SUMMARY no longer claims ok over a truncated file, and the six stages sink used to eat are on the medium behind a before-deferred marker'
-    'sink-drop' = 'sink=write-refused, after=0 (a small write is refused straight after), and yet bank=ok with the file whole: the bed does NOT reproduce the metal bank death'
+    'sink-drop' = 'sink=died, after=0 (a small write is refused straight after), and yet bank=ok with the file whole: the bed does NOT reproduce the metal bank death. -usb-bot-drops 11 is the middle of the band measured 2026-09-29 after the MSC data-out continuation landed (10..12; 9 and 13 up lose the bank at sink): the continuation''s Stop Endpoint posts Stopped transfer events that the ordinal drop counts, so the old 4 let the retry carry the write'
     'nic-pass'  = 'nicsit=ok nicinit=ok nicring=frames with -e1000 -e1000-nat (no card by default), bank=ok'
     'nic-noread' = 'nicring listen=0 in DIAG.CFG sends the ARP and idles without polling, so nothing recycles the descriptor: wb comes back ABOVE ZERO with buf=y, which is the one arm that shows the hexdump can read a writeback at all'
     'nic-nolink' = 'nicinit=no-link with -e1000-no-link; nicsit ok, nicring quiet, bank=ok'
     'nic-rdhro' = 'nicring rdh-writable=n with -e1000-rdh-ro: the part keeps the head and our write is dropped. THE FALSIFIER FOR NIC-4 ITSELF -- every other arm reads rdh-writable=y, and a field that has only ever said one word cannot tell frames-moving from RDH-is-not-ours on metal'
     'sink-dies' = 'the sink kills the target and the bank dies WITH the sink named: bank=lost at=sink with before-deferred still bank=ok, so the run was healthy right up to the write that killed it. -usb-bot-die-len 32768 -usb-bot-die-lba 3000, and the LBA is what aims it -- censused 2026-08-21, the bank issues 32768-byte writes too, at fixed lba 2049 and 2153, while the sink is one burst of sixty at 3548..7324. Without the lba key the same length kills the FAT write at 2049 and the bank never forms at all. THE CONTROL IS sink-ladder: the same image with no flag at all, where every rung completes and the sink returns ladder-all, so this arm reads a death and its pair reads a healthy medium'
+    'bank-desync' = 'sitting 17''s stall, repaired: -usb-bot-stall-lba 2153 -usb-bot-stall-after 28672 -usb-bot-stall-nth 2 stops the first post-open bank write of the second FAT copy 56 sectors in and holds the target in that write''s data-out phase, refusing the Mass Storage Reset. codex-vm logs the stall, the driver stops the endpoint, reads the 4096-byte residual off the Stopped event and sends exactly that, the target returns its CSW, and the run ends bank=ok with serial==file and both FAT copies identical. RED WITHOUT THE REPAIR, measured: the pre-repair driver leaves the target to take eight CBWs as sectors 2209-2216 (short packets) and the bank is lost. THE CONTROL runs in the same arm: the same image with no lever banks ok with identical FAT copies'
     'xhci-two' = 'codex-vm -xhci-two: ctls=2 and the SECOND controller, the ASMedia 1b21:1242, comes up running. The model has carried two controllers for some time and no arm anywhere ran it -- measured 2026-08-21, zero hits for -xhci-two, -xhci-no-disk or -xhci-bar2 across every arm and every .vmargs. Without the flag there is no ctl1 row at all, so the assertion cannot be satisfied by a one-controller run'
     'nic-invisible' = 'nicring gp above zero with rdh=0 and dd=0 under -i219 -e1000-inject-armed: the MAC counted a frame in THIS stage window and no descriptor came back. Sitting 9 read that off the ASUS (gp=1 rnbc=0 ddset=0, aim rdba=ours) and no bed could produce it -- paired with nic-armed, which reads the SAME gp above zero and sees the frame, so gp is not the discriminator'
     'nic-armed' = 'the positive control for nic-invisible: same injected frame, same armed timing, no stall, so nicring reports frames with rdh above zero. Without it, gp=1 beside an invisible frame could be a model that never delivers anything. It drops -i219 to get there, so what it varies is DEVICE IDENTITY: it answers "does this bed deliver anything at all" and cannot answer "does K1 gate delivery". nic-k1-off is the arm for that'
@@ -974,6 +977,26 @@ $expected = [ordered]@{
     'ovmf-ro'  = 'bank=none QR decodes'
     'ovmf-cad' = 'Ctrl-Alt-Del under OVMF resets the box: QEMU''s USB keyboard alone (-UsbKbd -NoPs2), sendkey ctrl-alt-delete after END, and QEMU -no-reboot exits on the reset'
     'ovmf-cad-ps2' = 'Ctrl-Alt-Del under OVMF over PS/2 alone (no USB keyboard, the i8042 present): the kernel IRQ1 handler resets on the chord after END, and QEMU -no-reboot exits on the reset'
+}
+# An image whose stub carries the chooser (build-diag -ChainEfi, recorded in
+# DIAG.RCP as chain-key=) is rehearsed on BOTH paths: every arm above boots it
+# with no key held, and this one holds the key and requires the second stub.
+$SubjectChainKey = ''
+$rcpPath = Join-Path $stickDir 'DIAG.RCP'
+if (Test-Path $rcpPath) {
+    $ck = Get-Content $rcpPath | Where-Object { $_ -match '^chain-key=' } | Select-Object -First 1
+    if ($ck) { $SubjectChainKey = $ck.Substring(10).Trim().ToLowerInvariant() }
+}
+# A PS/2 chord struck inside the chooser's window is read by the chooser's
+# ReadKeyStroke, which codex-vm answers from the same PS/2 queue, so the PS/2
+# arm that holds a chord DURING the ladder strikes it after the window. The
+# window is 10 ms polls, and codex-vm caps each Stall at 8 ms. A HID chord
+# never reaches ConIn and needs no shift.
+$ChainShiftMs = 0
+if ($SubjectChainKey) {
+    $cw = Get-Content $rcpPath | Where-Object { $_ -match '^chain-window-ms=(\d+)' } | Select-Object -First 1
+    $ChainShiftMs = if ($cw -match '=(\d+)') { [int][Math]::Ceiling([int]$Matches[1] / 10) * 8 } else { 2400 }
+    $expected['ovmf-chain'] = "holding '$SubjectChainKey' under OVMF (USB keyboard alone) chain-loads DESK.EFI: serial s w j, then the second stub's s, and no DIAG1 row"
 }
 $actual = [ordered]@{}
 $names = if ($Only) { @($Only) } else { @($expected.Keys) }
@@ -1138,9 +1161,9 @@ foreach ($name in $names) {
         'cad-stage-ps2' {
             $k = New-Copy 'k-cadstage2.img'
             $kf = Join-Path $Work 'cad-stage-ps2.keys'
-            Set-Content $kf "1500:29
-1520:56
-1540:83
+            Set-Content $kf "$(1500 + $ChainShiftMs):29
+$(1520 + $ChainShiftMs):56
+$(1540 + $ChainShiftMs):83
 " -NoNewline
             $lines = Invoke-Vm 'cad-stage-ps2' $k $k @('-keys-file', $kf) 60 -NoSettle
             $errText = if (Test-Path (Join-Path $Work 'cad-stage-ps2.err')) { Get-Content (Join-Path $Work 'cad-stage-ps2.err') -Raw } else { '' }
@@ -1217,7 +1240,7 @@ foreach ($name in $names) {
         }
         'sink-drop' {
             $k = New-Copy 'k-sinkdrop.img'
-            $lines = Invoke-Vm 'sink-drop' $k $k @('-usb-bot-drop', '1150', '-usb-bot-drops', '4')
+            $lines = Invoke-Vm 'sink-drop' $k $k @('-usb-bot-drop', '1150', '-usb-bot-drops', '11')
             $block = Get-DiagBlock $lines
             $sink = Field $block 'stage=sink '
             $wr = ($block | Where-Object { $_ -match 'wr=' } | Select-Object -First 1)
@@ -1870,6 +1893,60 @@ foreach ($name in $names) {
             elseif ((Field $block 'stage=sink ') -notmatch 'state=died') { "sink row is [$(Field $block 'stage=sink ')], wanted state=died (the target stopped answering; a refusal would have COMPLETED)" }
                 else { $expected['sink-dies'] }
         }
+        'bank-desync' {
+            # Sitting 17's stall (HardwareSitting.md, SITTING 17): the second
+            # FAT copy's first 64-sector write at 2153 stops 56 sectors in and
+            # the target stays in that command's data-out phase. Without the
+            # driver's continuation the target stores the host's next eight
+            # CBWs as sectors 2209-2216 and the bank is lost; with it the
+            # driver sends the 4096-byte residual and the bank survives.
+            # Aimed at the SECOND write at 2153, the first bank write after the
+            # bank opens, because nothing ahead of the open can move that
+            # ordinal. The stall is read off codex-vm's own log: the ladder
+            # zeroes the retry cell at the sink, so no glass row carries it.
+            $stallLba = 2153; $stallAfter = 28672; $chunk = 32768
+            $kc = New-Copy 'k-desync-ctl.img'
+            $cl = Invoke-Vm 'bank-desync-ctl' $kc $kc @()
+            $k = New-Copy 'k-desync.img'
+            $lines = Invoke-Vm 'bank-desync' $k $k @('-usb-bot-stall-lba', "$stallLba", '-usb-bot-stall-after', "$stallAfter", '-usb-bot-stall-nth', '2')
+            $block = Get-DiagBlock $lines
+            $sum = ($block | Where-Object { $_ -match '^summary ' } | Select-Object -Last 1)
+            $file = Read-Bank $k 'bank-desync'
+            $vmlog = @(Get-Content (Join-Path $Work 'bank-desync.err') -ErrorAction SilentlyContinue)
+            $stalled = @($vmlog | Where-Object { $_ -match "target STOPPED $stallAfter bytes into a $chunk-byte write at lba=$stallLba" }).Count
+            $tail = @($vmlog | Where-Object { $_ -match "$($chunk - $stallAfter)-byte OUT transfer taken as write data at offset $stallAfter " }).Count
+            $csw = @($vmlog | Where-Object { $_ -match 'stalled write is complete; the target returns its CSW' }).Count
+            $short = @($vmlog | Where-Object { $_ -match 'completed by \d+ short packets' }).Count
+            Write-Host "  bank-desync: $sum"
+            function Get-FatSplit([string]$img) {
+                $b = [IO.File]::ReadAllBytes($img); $p = 2048 * 512
+                $rsvd = [BitConverter]::ToUInt16($b, $p + 14); $fatSz = [BitConverter]::ToUInt16($b, $p + 22)
+                $f0 = 2048 + $rsvd; $f1 = $f0 + $fatSz
+                $diff = @(); $usbc = @()
+                for ($s = 0; $s -lt $fatSz; $s++) {
+                    $o0 = ($f0 + $s) * 512; $o1 = ($f1 + $s) * 512
+                    for ($i = 0; $i -lt 512; $i++) { if ($b[$o0 + $i] -ne $b[$o1 + $i]) { $diff += ($f1 + $s); break } }
+                    if ([BitConverter]::ToUInt32($b, $o0) -eq 0x43425355) { $usbc += ($f0 + $s) }
+                    if ([BitConverter]::ToUInt32($b, $o1) -eq 0x43425355) { $usbc += ($f1 + $s) }
+                }
+                @{ fat1 = $f1; diff = $diff; usbc = $usbc }
+            }
+            $c = Get-FatSplit $kc; $f = Get-FatSplit $k
+            Write-Host "  bank-desync: stall=$stalled tail=$tail csw=$csw short=$short; FAT copies differ in [$($f.diff -join ',')], CBW sectors [$($f.usbc -join ',')]"
+            $d = if ($null -ne $file) { Compare-Rows $block $file } else { 'no DIAG.TXT on the medium' }
+            $actual['bank-desync'] =
+                if ((Field (Get-DiagBlock $cl) 'summary ') -notmatch 'bank=ok') { "control run did not bank: [$(Field (Get-DiagBlock $cl) 'summary ')]" }
+                elseif ($c.diff.Count -ne 0) { "control run left the FAT copies differing in $($c.diff.Count) sectors" }
+                elseif ($f.fat1 -ne $stallLba) { "the second FAT copy starts at $($f.fat1), not $stallLba, so the lever is aimed at nothing on this geometry" }
+                elseif ($stalled -ne 1) { "codex-vm logged $stalled stalls at lba=$stallLba, wanted 1: the lever never reached the write" }
+                elseif ($block.Count -eq 0) { '(no DIAG1 row on serial)' }
+                elseif ($short -ne 0) { "the target's data phase was finished by short packets (CBWs taken as data): [$sum], CBW sectors [$($f.usbc -join ',')]" }
+                elseif ($tail -ne 1 -or $csw -ne 1) { "the driver did not finish the stalled TD with exactly its $($chunk - $stallAfter)-byte residual (tail=$tail csw=$csw): [$sum]" }
+                elseif ($sum -notmatch 'bank=ok') { "summary row is [$sum], wanted bank=ok" }
+                elseif ($d) { "serial vs file: $d" }
+                elseif ($f.diff.Count -ne 0 -or $f.usbc.Count -ne 0) { "the FAT copies differ in [$($f.diff -join ',')] with CBW sectors [$($f.usbc -join ',')]" }
+                else { $expected['bank-desync'] }
+        }
         'xhci-two' {
             # The bed has modelled both of the ASUS's controllers for some
             # time and NOTHING HAS EVER RUN IT. A device model no arm
@@ -2286,6 +2363,20 @@ foreach ($name in $names) {
             $log = & pwsh -NoProfile -File (Join-Path $Repo 'build\boot\test-ovmf.ps1') -Img $ImgAbs -Out (Join-Path $Work 'ovmf-cad-ps2.png') -UsbDisk -NoReboot -Seconds $OvmfSeconds -MouseCmds 'sendkey ctrl-alt-delete' 2>&1
             $block = if (Test-Path $ser) { Get-DiagBlock @(Get-Content $ser) } else { @() }
             $actual['ovmf-cad-ps2'] = if (-not ($block -contains 'END')) { '(no END on serial before the chord)' } elseif (-not (@($log) -match 'QEMU exited: the guest reset')) { 'QEMU still running after the PS/2 ctrl-alt-delete: no reset' } else { $expected['ovmf-cad-ps2'] }
+        }
+        'ovmf-chain' {
+            # Set-1 make codes, as test-ovmf.ps1 -Keys takes them. The key is
+            # struck every 150 ms from 4 s after launch for 9 s, which spans
+            # OVMF's boot and the 3 s window the way a held key's repeat does.
+            $set1 = @{ q=16; w=17; e=18; r=19; t=20; y=21; u=22; i=23; o=24; p=25; a=30; s=31; d=32; f=33; g=34; h=35; j=36; k=37; l=38; z=44; x=45; c=46; v=47; b=48; n=49; m=50 }
+            $tag = (Split-Path $Repo -Leaf) -replace '[^A-Za-z0-9]',''
+            $ser = Join-Path $env:TEMP "ovmf-serial-$tag.log"
+            Remove-Item $ser -ErrorAction SilentlyContinue
+            if (-not $set1.ContainsKey($SubjectChainKey)) { $actual['ovmf-chain'] = "(no Set-1 code for the chain key '$SubjectChainKey')"; break }
+            $keys = ((1..60) | ForEach-Object { "$($set1[$SubjectChainKey])" }) -join ','
+            $log = & pwsh -NoProfile -File (Join-Path $Repo 'build\boot\test-ovmf.ps1') -Img $ImgAbs -Out (Join-Path $Work 'ovmf-chain.png') -UsbDisk -UsbKbd -NoPs2 -Seconds 4 -Keys $keys -KeyDelayMs 150 -AfterKeys 40 2>&1
+            $txt = if (Test-Path $ser) { Get-Content $ser -Raw } else { '' }
+            $actual['ovmf-chain'] = if (-not $txt) { '(no serial log from OVMF)' } elseif ($txt -notmatch 'swj') { '(no s w j on serial: the key was not seen in the window)' } elseif ($txt -notmatch 'swj[^s]*s') { '(no second stub after j: the chain did not start)' } elseif ($txt -match 'DIAG1') { '(the diag ran after the chain: DIAG1 on serial)' } else { $expected['ovmf-chain'] }
         }
     }
     # Arms ABOUT a NIC stage the subject turns off (root's ruling, 2026-09-08,

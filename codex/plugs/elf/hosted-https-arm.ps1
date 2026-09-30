@@ -9,6 +9,11 @@
 # the server speaks TLS 1.3 to somebody else. Windows' own stack (Schannel) is
 # not used because it does not do Ed25519.
 #
+# -Key p256 runs codex/test/hosted-https-p256.codex, a P-256 key and certificate,
+# and the client offers ONLY ecdsa_secp256r1_sha256, as a browser offers no
+# Ed25519 scheme. Either key, openssl checks the printed certificate's own
+# signature (-check_ss_sig), which a pinned trust anchor otherwise skips.
+#
 # The subject prints its certificate, minted at start from a key drawn from
 # RDRAND, and the arm pins exactly that certificate. Three connections, in order:
 #   wrong pin    the client trusts a DIFFERENT self-signed certificate for the
@@ -26,6 +31,7 @@ param(
     [string]$Kernel = '',
     [switch]$ControlsOnly,
     [ValidateSet('linux','windows','both')][string]$Target = 'both',
+    [ValidateSet('ed25519','p256')][string]$Key = 'ed25519',
     [string]$WorkDir = '',
     # The subject binds $PortBase + hosted-kind: linux base+1, windows base+2.
     # The same base is in codex/test/hosted-https.codex.
@@ -76,17 +82,19 @@ function Invoke-Ssl([string[]]$argv, [string]$stdin = '', [int]$ms = 15000) {
 function Ask-Https([int]$p, [string]$path, [string]$pinPem, [string]$name = 'localhost', [string]$ip = '') {
     $req = "GET $path HTTP/1.0`r`nHost: localhost`r`n`r`n"
     $idArgs = if ($ip) { @('-verify_ip', $ip) } else { @('-verify_hostname', $name) }
-    $argv = @('s_client', '-connect', "127.0.0.1:$p", '-tls1_3', '-CAfile', $pinPem, '-partial_chain', '-verify_return_error') + $idArgs + @('-quiet')
+    $sigArgs = if ($Key -eq 'p256') { @('-sigalgs', 'ecdsa_secp256r1_sha256') } else { @() }
+    $argv = @('s_client', '-connect', "127.0.0.1:$p", '-tls1_3', '-CAfile', $pinPem, '-partial_chain', '-verify_return_error') + $sigArgs + $idArgs + @('-quiet')
     return Invoke-Ssl $argv $req
 }
 
-# The control certificate: a second self-signed Ed25519 leaf for the same names,
-# minted by openssl. It is the wrong pin in the arm and the server's own
-# certificate in the positive control.
-$ctlKey = Join-Path $WorkDir 'control.key'
-$ctlPem = Join-Path $WorkDir 'control.pem'
-$mk = Invoke-Ssl @('req', '-x509', '-newkey', 'ed25519', '-nodes', '-keyout', $ctlKey, '-out', $ctlPem, '-days', '30',
-    '-subj', '/O=Codex DEV-ONLY self-signed/CN=codex-dev', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1', '-addext', 'basicConstraints=critical,CA:FALSE')
+# The control certificate: a second self-signed leaf of the arm's key type for
+# the same names, minted by openssl. It is the wrong pin in the arm and the
+# server's own certificate in the positive control.
+$ctlKey = Join-Path $WorkDir "control.$Key.key"
+$ctlPem = Join-Path $WorkDir "control.$Key.pem"
+$newKey = if ($Key -eq 'p256') { @('-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1') } else { @('-newkey', 'ed25519') }
+$mk = Invoke-Ssl (@('req', '-x509') + $newKey + @('-nodes', '-keyout', $ctlKey, '-out', $ctlPem, '-days', '30',
+    '-subj', '/O=Codex DEV-ONLY self-signed/CN=codex-dev', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1', '-addext', 'basicConstraints=critical,CA:FALSE'))
 if ($mk.Exit -ne 0 -or -not (Test-Path $ctlPem)) { throw "could not mint the control certificate: $($mk.Err)" }
 
 # ---- positive control -------------------------------------------------------
@@ -117,7 +125,9 @@ if ($ControlsOnly) {
 }
 
 # ---- the arm ----------------------------------------------------------------
-$src = Join-Path $Repo 'codex\test\hosted-https.codex'
+$src = if ($Key -eq 'p256') { Join-Path $Repo 'codex\test\hosted-https-p256.codex' } else { Join-Path $Repo 'codex\test\hosted-https.codex' }
+# What `openssl x509 -text` must say of the subject's certificate.
+$keyText = if ($Key -eq 'p256') { @('id-ecPublicKey', 'prime256v1', 'ecdsa-with-SHA256') } else { @('ED25519') }
 
 function Wait-Listening([string]$outPath, [int]$seconds = 30) {
     $deadline = (Get-Date).AddSeconds($seconds)
@@ -160,6 +170,10 @@ function Invoke-Target([string]$tgt) {
         [IO.File]::WriteAllBytes($derPath, $der)
         $cv = Invoke-Ssl @('x509', '-inform', 'der', '-in', $derPath, '-out', $pin)
         if ($cv.Exit -ne 0) { Fail "$tgt : openssl cannot read the certificate the subject printed: $($cv.Err)"; return $null }
+        $tx = Invoke-Ssl @('x509', '-in', $pin, '-noout', '-text')
+        foreach ($k in $keyText) { if ($tx.Out -notmatch [regex]::Escape($k)) { Fail "$tgt : the certificate is not $Key; openssl x509 -text lacks '$k'" } }
+        $ss = Invoke-Ssl @('verify', '-check_ss_sig', '-partial_chain', '-CAfile', $pin, $pin)
+        if ($ss.Exit -ne 0) { Fail "$tgt : openssl rejects the certificate's own signature: $(($ss.Out + $ss.Err) -replace '\r?\n', ' | ')" }
 
         $wrong = Ask-Https $port '/hello' $ctlPem
         if ($wrong.Exit -eq 0 -or $wrong.Out -match 'HTTP/') { Fail "$tgt : a client pinned to a different certificate was served: exit $($wrong.Exit)" }
@@ -206,5 +220,5 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 $parity = if ($targets.Count -gt 1) { ', and the two targets printed identical output apart from their certificates' } else { '' }
-Write-Host "hosted-https-arm: ALL ARMS OK over $($targets -join '+'); openssl s_server control answered, dead port refused, a wrong pin was refused on verification, /hello (by name) and /api/health (by address) answered over TLS 1.3$parity"
+Write-Host "hosted-https-arm: ALL ARMS OK [$Key] over $($targets -join '+'); openssl read the certificate as $Key and verified its own signature, openssl s_server control answered, dead port refused, a wrong pin was refused on verification, /hello (by name) and /api/health (by address) answered over TLS 1.3$parity"
 exit 0

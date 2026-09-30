@@ -38,14 +38,15 @@
 # eight to ten minutes at -Jobs 1. Read the count before starting the run.
 #
 # It boots a guest per subject through bvt.ps1 -Jobs. Fan-outs are self-serve
-# on a runtime measurement (Damian, 2026-09-08): measure free memory, 3 GiB per
-# guest is the bar, and name the run in status.json.
+# on a runtime measurement: measure free memory against the per-guest bar in
+# CoordinationProtocol.md ("The token does not cover RAM"), and name the run
+# in status.json. bvt.ps1 does not clamp its slots to free memory.
 #
 # Usage:
 #   build/cite-gate.ps1                            # changed = p4 opened here
 #   build/cite-gate.ps1 -Files a.codex,b.codex     # changed = these
 #   build/cite-gate.ps1 -ListOnly                  # the selection, no run
-#   build/cite-gate.ps1 -Jobs 4 -Kernel seed\Codex.cdx
+#   build/cite-gate.ps1 -Jobs 16 -Kernel seed\Codex.cdx
 [CmdletBinding()]
 param(
     [string[]]$Files = @(),
@@ -54,7 +55,7 @@ param(
     # first element binds. bvt.ps1 -SubjectsFile carries the same note.
     [string]$FilesFile = '',
     [string]$Kernel = '',
-    [int]$Jobs = 4,
+    [int]$Jobs = 16,
     [switch]$ListOnly,
     # Select every test that cites ANY compiler chapter. The compiler is
     # assembled by glob, so its callers need no cite and the graph under-reads

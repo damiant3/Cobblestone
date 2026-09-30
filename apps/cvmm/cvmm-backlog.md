@@ -14,4 +14,3 @@ Design: `apps/cvmm/design/Active/`.
 
 | # | Capability | State of the gap |
 |---|---|---|
-| CVMM-1 | **Phase 2: the managers serve real state** | ProcessManager serves the kernel process table (`pm-read-kernel-table`, `pm-live`; `codex/test/apps/cvmm-process-table`). DriveManager serves the IDE drives and their GPT partitions (`dm-read-block-devices`; `codex/test/apps/cvmm-drive-table`). NetworkManager serves the NIC the stack is bound to and its live MAC (`nm-live`; `codex/test/apps/cvmm-nic-table`). Every other manager serves a `mock-*` fixture in `CvmmServer`. Staged one manager per landing, each replacing one fixture with a reader over the real source and armed by a test that changes the source and sees the view follow: 4 PortMonitor from live transports. 5 ServiceManager from spawned services. 6 UsbManager from xHCI enumeration. 7 DisplayManager from the GOP mode. 8 FileExplorer from the FAT16 volume. Unowned. |

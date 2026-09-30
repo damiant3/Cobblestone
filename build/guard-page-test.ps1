@@ -123,7 +123,7 @@ function Invoke-Arm {
     Start-Sleep -Milliseconds 300
   }
   if (-not (Test-Path $outFile)) { return '' }
-  return ([System.IO.File]::ReadAllText($outFile) -replace "`r", '' -replace "^\x01", '')
+  return ([System.IO.File]::ReadAllText($outFile) -replace "`r", '')
 }
 
 $failures = 0

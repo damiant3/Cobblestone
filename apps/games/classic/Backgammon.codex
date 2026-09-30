@@ -18,8 +18,17 @@ Section: Types
     bar-black  : Integer,
     off-white  : Integer,
     off-black  : Integer,
-    current-player : Integer
+    current-player : Integer,
+    cube       : Integer,
+    cube-owner : Integer,
+    offered    : Integer,
+    dropped    : Integer
   }
+
+ cube is the doubling cube's value; cube-owner is the player who may next
+ double, or -1 while it is centred; offered is 1 while the player on roll
+ has offered a double the other has not answered; dropped is the player who
+ declined a double, or -1.
 
   BgMove = record {
     from-pt : Integer,
@@ -37,7 +46,8 @@ Section: Board Construction
   backgammon-new =
     let pts = bg-initial 0 []
     in BackgammonBoard { points = pts, bar-white = 0, bar-black = 0,
-                         off-white = 0, off-black = 0, current-player = 0 }
+                         off-white = 0, off-black = 0, current-player = 0,
+                         cube = 1, cube-owner = (-1), offered = 0, dropped = (-1) }
 
   bg-initial : Integer, List Integer -> List Integer
   bg-initial (i) (acc) =
@@ -138,7 +148,8 @@ Section: Move Application
     in let new-hit-bw = if is-hit & player == 0 then new-bb + 1 else new-bb
     in let new-hit-bb = if is-hit & player == 1 then new-bw + 1 else new-bw
     in BackgammonBoard { points = pts2, bar-white = new-hit-bb, bar-black = new-hit-bw,
-                         off-white = b.off-white, off-black = b.off-black, current-player = player }
+                         off-white = b.off-white, off-black = b.off-black, current-player = player,
+                         cube = b.cube, cube-owner = b.cube-owner, offered = b.offered, dropped = b.dropped }
 
   bg-move-piece : BackgammonBoard, Integer, Integer -> BackgammonBoard
   bg-move-piece (b) (from-pt) (die) =
@@ -153,7 +164,8 @@ Section: Move Application
       in let new-ow = if player == 0 then b.off-white + 1 else b.off-white
       in let new-ob = if player == 1 then b.off-black + 1 else b.off-black
       in BackgammonBoard { points = pts2, bar-white = b.bar-white, bar-black = b.bar-black,
-                           off-white = new-ow, off-black = new-ob, current-player = player }
+                           off-white = new-ow, off-black = new-ob, current-player = player,
+                           cube = b.cube, cube-owner = b.cube-owner, offered = b.offered, dropped = b.dropped }
     else if target < 0 then b
     else if target >= 24 then b
     else if pt-blocked b target player then b
@@ -172,38 +184,308 @@ Section: Move Application
     in let new-bw = if is-hit & player == 0 then b.bar-black + 1 else b.bar-black
     in let new-bb = if is-hit & player == 1 then b.bar-white + 1 else b.bar-white
     in BackgammonBoard { points = pts3, bar-white = new-bb, bar-black = new-bw,
-                         off-white = b.off-white, off-black = b.off-black, current-player = player }
+                         off-white = b.off-white, off-black = b.off-black, current-player = player,
+                         cube = b.cube, cube-owner = b.cube-owner, offered = b.offered, dropped = b.dropped }
 
-Section: AI Move Selection
+Section: The Rules
 
-  bg-apply-die : BackgammonBoard, Integer -> BackgammonBoard
-  bg-apply-die (b) (die) =
+ The rules of play, as the World Backgammon Federation and the US
+ Backgammon Federation publish them for a single game played for points.
+ The Crawford rule belongs to match play and the Jacoby rule is an
+ optional agreement, so neither applies.
+
+ Rule 1. A checker moves forward by the number on one die to a point not
+ held by two or more of the other side's checkers. The two dice are two
+ separate moves, by one checker or by two; one checker moving both lands
+ on the intermediate point, which must be open too.
+
+ Rule 2. A double is played four times.
+
+ Rule 3. Both dice must be played when both can be. When only one can be,
+ that one is played; when either can be but not both, the larger is
+ played. With a double, as many as can be played are played. A die that
+ cannot be played is lost, and a turn with no legal move is forfeit.
+
+ Rule 4. A checker landing on a point holding one of the other side's
+ checkers (a blot) hits it and sends it to the bar.
+
+ Rule 5. A player with a checker on the bar moves nothing else until every
+ checker on the bar has entered, on the point in the other side's home
+ board that a die names, and only onto an open point.
+
+ Rule 6. Bearing off begins when all fifteen checkers are in the home
+ board. A die bears off a checker from the point it names. A die higher
+ than the highest occupied point bears off a checker from that highest
+ point. A die naming an empty point below which checkers still stand must
+ be played by moving one of those higher checkers inside the home board.
+ Bearing off is never compulsory while another legal move exists. A
+ checker hit while bearing off must re-enter and come home before any
+ more are borne off.
+
+ Rule 7. The first player to bear off all fifteen wins.
+
+ Rule 8. The doubling cube starts in the middle at 1. At the start of a
+ turn, before rolling, a player who owns the cube, or either player while
+ it is in the middle, may offer to double. The other player either takes,
+ and the game goes on at twice the value with the cube now owned by the
+ taker, or drops, and loses the game at the value before the offer. There
+ is no limit to how often the cube is turned.
+
+ Rule 9. The game is worth the cube's value, twice that as a gammon when
+ the loser has borne off no checker, and three times as a backgammon when
+ the loser has borne off none and still has a checker on the bar or in
+ the winner's home board.
+
+ A move is written as (from, die): from is a point index, or 24 for the bar.
+
+  bg-bar-from : Integer = 24
+
+  bg-mine-at : BackgammonBoard, Integer, Integer -> Boolean
+  bg-mine-at (b) (player) (i) =
+    let v = list-at (b.points) i
+    in if player == 0 then v > 0 else v < 0
+
+  bg-any-mine : BackgammonBoard, Integer, Integer, Integer -> Boolean
+  bg-any-mine (b) (player) (i) (stop) =
+    if i >= stop then False
+    else if bg-mine-at b player i then True
+    else bg-any-mine b player (i + 1) stop
+
+ Rule 6's highest occupied point: whether the player has a checker inside
+ the home board that is further from bearing off than `from`.
+
+  bg-higher-home : BackgammonBoard, Integer, Integer -> Boolean
+  bg-higher-home (b) (player) (from) =
+    if player == 0 then bg-any-mine b player (from + 1) 6
+    else bg-any-mine b player 18 from
+
+  bg-off-ok : BackgammonBoard, Integer, Integer, Integer -> Boolean
+  bg-off-ok (b) (player) (from) (die) =
+    let need = if player == 0 then from + 1 else 24 - from
+    in if all-in-home b player == False then False
+    else if die == need then True
+    else bg-higher-home b player from == False
+
+  bg-step-ok : BackgammonBoard, Integer, Integer, Integer -> Boolean
+  bg-step-ok (b) (player) (from) (die) =
+    let target = if player == 0 then from - die else from + die
+    in if target < 0 then bg-off-ok b player from die
+    else if target >= 24 then bg-off-ok b player from die
+    else pt-blocked b target player == False
+
+  bg-enter-ok : BackgammonBoard, Integer, Integer -> Boolean
+  bg-enter-ok (b) (player) (die) =
+    if on-bar b player == False then False
+    else pt-blocked b (if player == 0 then 24 - die else die - 1) player == False
+
+ One move by itself, before rule 3 asks about the rest of the turn.
+
+  bg-single-ok : BackgammonBoard, Integer, Integer -> Boolean
+  bg-single-ok (b) (from) (die) =
     let player = b.current-player
-    in if on-bar b player then bg-enter-from-bar b die
-    else let best-pt = bg-pick-point b die player
-    in if best-pt < 0 then b
-    else bg-move-piece b best-pt die
+    in if die < 1 then False
+    else if die > 6 then False
+    else if from == bg-bar-from then bg-enter-ok b player die
+    else if from < 0 then False
+    else if from >= 24 then False
+    else if on-bar b player then False
+    else if bg-mine-at b player from == False then False
+    else bg-step-ok b player from die
 
-  bg-pick-point : BackgammonBoard, Integer, Integer -> Integer
-  bg-pick-point (b) (die) (player) =
-    bg-pick-loop b die player 0 (-1) (-1)
+Section: Copying And Applying
 
-  bg-pick-loop : BackgammonBoard, Integer, Integer, Integer, Integer, Integer -> Integer
-  bg-pick-loop (b) (die) (player) (i) (best-pt) (best-score) =
-    if i >= 24 then best-pt
-    else let v = list-at (b.points) i
-    in let mine = if player == 0 then v > 0 else v < 0
-    in if mine == False then bg-pick-loop b die player (i + 1) best-pt best-score
-    else let target = if player == 0 then i - die else i + die
+ `bg-move-piece` and `bg-enter-from-bar` write through `list-set-at`, so a
+ move is applied to a copy.
+
+  bg-clone-points : List Integer, Integer, List Integer -> List Integer
+  bg-clone-points (src) (i) (acc) =
+    if i >= 24 then acc
+    else bg-clone-points src (i + 1) (list-push acc (list-at src i))
+
+  bg-clone : BackgammonBoard -> BackgammonBoard
+  bg-clone (b) =
+    BackgammonBoard { points = bg-clone-points (b.points) 0 [], bar-white = b.bar-white, bar-black = b.bar-black,
+                      off-white = b.off-white, off-black = b.off-black, current-player = b.current-player,
+                      cube = b.cube, cube-owner = b.cube-owner, offered = b.offered, dropped = b.dropped }
+
+  bg-apply-one : BackgammonBoard, Integer, Integer -> BackgammonBoard
+  bg-apply-one (b) (from) (die) =
+    if from == bg-bar-from then bg-enter-from-bar (bg-clone b) die
+    else bg-move-piece (bg-clone b) from die
+
+  bg-drop-one : List Integer, Integer, Integer, Boolean, List Integer -> List Integer
+  bg-drop-one (ds) (die) (i) (dropped) (acc) =
+    if i >= list-length ds then acc
+    else if dropped then bg-drop-one ds die (i + 1) True (list-push acc (list-at ds i))
+    else if list-at ds i == die then bg-drop-one ds die (i + 1) True acc
+    else bg-drop-one ds die (i + 1) False (list-push acc (list-at ds i))
+
+  bg-has-die : List Integer, Integer, Integer -> Boolean
+  bg-has-die (ds) (die) (i) =
+    if i >= list-length ds then False
+    else if list-at ds i == die then True
+    else bg-has-die ds die (i + 1)
+
+  bg-all-same : List Integer -> Boolean
+  bg-all-same (ds) =
+    if list-length ds < 2 then True
+    else bg-has-other ds (list-at ds 0) 1 == False
+
+  bg-has-other : List Integer, Integer, Integer -> Boolean
+  bg-has-other (ds) (v) (i) =
+    if i >= list-length ds then False
+    else if list-at ds i /= v then True
+    else bg-has-other ds v (i + 1)
+
+Section: Rule 3, The Most Dice
+
+ How many of `dice` the side on roll can play from `b`. The search stops as
+ soon as every die is placed. With a double, the moves of one play can be
+ put in order of their starting point, furthest from home first, and still
+ be legal: a move never blocks the mover's own later moves, the bar enters
+ before anything else, and bearing off only gets easier as higher checkers
+ leave. A double's search therefore takes starts in that order only,
+ bounded by `cap`, the order key of the previous start.
+
+  bg-key : Integer, Integer -> Integer
+  bg-key (player) (from) =
+    if from == bg-bar-from then 24
+    else if player == 0 then from
+    else 23 - from
+
+  bg-max-use : BackgammonBoard, List Integer, Integer -> Integer
+  bg-max-use (b) (dice) (cap) =
+    if list-length dice == 0 then 0
+    else if bg-check-win b then 0
+    else if b.offered == 1 then 0
+    else bg-max-dice b dice cap 0 0
+
+  bg-max-dice : BackgammonBoard, List Integer, Integer, Integer, Integer -> Integer
+  bg-max-dice (b) (dice) (cap) (j) (best) =
+    if j >= list-length dice then best
+    else if best == list-length dice then best
+    else if bg-has-die (bg-prefix dice j 0 []) (list-at dice j) 0 then bg-max-dice b dice cap (j + 1) best
+    else bg-max-dice b dice cap (j + 1) (bg-max-from b dice cap (list-at dice j) 0 best)
+
+  bg-prefix : List Integer, Integer, Integer, List Integer -> List Integer
+  bg-prefix (ds) (n) (i) (acc) =
+    if i >= n then acc
+    else bg-prefix ds n (i + 1) (list-push acc (list-at ds i))
+
+  bg-max-from : BackgammonBoard, List Integer, Integer, Integer, Integer, Integer -> Integer
+  bg-max-from (b) (dice) (cap) (die) (f) (best) =
+    if f > 24 then best
+    else if best == list-length dice then best
+    else if bg-key (b.current-player) f > cap then bg-max-from b dice cap die (f + 1) best
+    else if bg-single-ok b f die == False then bg-max-from b dice cap die (f + 1) best
+    else let got = 1 + bg-after b dice f die (bg-next-cap b dice f)
+    in bg-max-from b dice cap die (f + 1) (if got > best then got else best)
+
+ The dice the rest of the turn can play after (f, die). Every board the
+ search copies is reclaimed before the count is returned, so a query costs
+ its depth in memory rather than its breadth; the page never resets the
+ module's heap during a game.
+
+  bg-after : BackgammonBoard, List Integer, Integer, Integer, Integer -> Integer
+  bg-after (b) (dice) (f) (die) (cap) =
+    let mark = __heap-save
+    in let n = bg-max-use (bg-apply-one b f die) (bg-drop-one dice die 0 False []) cap
+    in let r = __heap-restore mark
+    in n
+
+  bg-next-cap : BackgammonBoard, List Integer, Integer -> Integer
+  bg-next-cap (b) (dice) (f) =
+    if bg-all-same dice then bg-key (b.current-player) f else 24
+
+Section: The Legal Move
+
+ A move (from, die) is legal when the die is in hand, the move is legal by
+ itself, the rest of the turn can still play as many dice as the whole turn
+ could (rule 3), and, when only one die of two different ones can be
+ played, the move uses the larger one if the larger can be played at all.
+
+  bg-legal : BackgammonBoard, List Integer, Integer, Integer -> Boolean
+  bg-legal (b) (dice) (from) (die) = bg-legal-of b dice from die (bg-max-use b dice 24)
+
+  bg-legal-of : BackgammonBoard, List Integer, Integer, Integer, Integer -> Boolean
+  bg-legal-of (b) (dice) (from) (die) (total) =
+    if total < 1 then False
+    else if bg-has-die dice die 0 == False then False
+    else if bg-single-ok b from die == False then False
+    else if 1 + bg-after b dice from die 24 /= total then False
+    else if total > 1 then True
+    else bg-larger-ok b dice die
+
+  bg-larger-ok : BackgammonBoard, List Integer, Integer -> Boolean
+  bg-larger-ok (b) (dice) (die) =
+    if list-length dice /= 2 then True
+    else let hi = if list-at dice 0 > list-at dice 1 then list-at dice 0 else list-at dice 1
+    in if die == hi then True
+    else bg-die-playable b hi 0 == False
+
+  bg-die-playable : BackgammonBoard, Integer, Integer -> Boolean
+  bg-die-playable (b) (die) (f) =
+    if f > 24 then False
+    else if bg-single-ok b f die then True
+    else bg-die-playable b die (f + 1)
+
+ Every legal start for one die, as a mask over from 0 to 24.
+
+  bg-legal-mask : BackgammonBoard, List Integer, Integer -> Integer
+  bg-legal-mask (b) (dice) (die) = bg-mask-loop b dice die (bg-max-use b dice 24) 0 0 1
+
+  bg-mask-loop : BackgammonBoard, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bg-mask-loop (b) (dice) (die) (total) (f) (acc) (bit) =
+    if f > 24 then acc
+    else if bg-legal-of b dice f die total then bg-mask-loop b dice die total (f + 1) (acc + bit) (bit * 2)
+    else bg-mask-loop b dice die total (f + 1) acc (bit * 2)
+
+  bg-play : BackgammonBoard, List Integer, Integer, Integer -> BackgammonBoard
+  bg-play (b) (dice) (from) (die) =
+    if bg-legal b dice from die then bg-apply-one b from die else b
+
+Section: The Opponent
+
+ The engine's own player picks among the legal moves only: bearing off
+ above all, a hit next, making a point after that, and the furthest run.
+ The answer is die * 32 + from, or -1 when no die can be played.
+
+  bg-ai-pick : BackgammonBoard, List Integer -> Integer
+  bg-ai-pick (b) (dice) = bg-ai-dice b dice (bg-max-use b dice 24) 0 (-1) (-1)
+
+  bg-ai-dice : BackgammonBoard, List Integer, Integer, Integer, Integer, Integer -> Integer
+  bg-ai-dice (b) (dice) (total) (j) (best) (best-score) =
+    if j >= list-length dice then best
+    else let die = list-at dice j
+    in let pick = bg-ai-from b dice total die 0 best best-score
+    in bg-ai-dice b dice total (j + 1) (pick.ap-move) (pick.ap-score)
+
+  BgAiPick = record { ap-move : Integer, ap-score : Integer }
+
+  bg-ai-from : BackgammonBoard, List Integer, Integer, Integer, Integer, Integer, Integer -> BgAiPick
+  bg-ai-from (b) (dice) (total) (die) (f) (best) (best-score) =
+    if f > 24 then BgAiPick { ap-move = best, ap-score = best-score }
+    else if bg-legal-of b dice f die total == False then bg-ai-from b dice total die (f + 1) best best-score
+    else let score = bg-ai-score b f die
+    in if score > best-score then bg-ai-from b dice total die (f + 1) (die * 32 + f) score
+    else bg-ai-from b dice total die (f + 1) best best-score
+
+  bg-ai-score : BackgammonBoard, Integer, Integer -> Integer
+  bg-ai-score (b) (f) (die) =
+    let player = b.current-player
+    in let pos = if f == bg-bar-from then (if player == 0 then 24 else (-1)) else f
+    in let target = if player == 0 then pos - die else pos + die
     in let bearing-off = if player == 0 then target < 0 else target >= 24
-    in let can-move = if bearing-off then all-in-home b player
-      else if target < 0 then False
-      else if target >= 24 then False
-      else pt-blocked b target player == False
-    in if can-move == False then bg-pick-loop b die player (i + 1) best-pt best-score
-    else let score = bg-score-move b i target player bearing-off
-    in if score > best-score then bg-pick-loop b die player (i + 1) i score
-    else bg-pick-loop b die player (i + 1) best-pt best-score
+    in bg-score-move b pos target player bearing-off
+
+  bg-ai-turn : BackgammonBoard, List Integer -> BackgammonBoard
+  bg-ai-turn (b) (dice) =
+    if list-length dice == 0 then b
+    else if bg-check-win b then b
+    else let p = bg-ai-pick b dice
+    in if p < 0 then b
+    else let die = bit-shru p 5
+    in bg-ai-turn (bg-apply-one b (bit-and p 31) die) (bg-drop-one dice die 0 False [])
 
   bg-score-move : BackgammonBoard, Integer, Integer, Integer, Boolean -> Integer
   bg-score-move (b) (from-pt) (target) (player) (bearing-off) =
@@ -219,13 +501,99 @@ Section: Win Detection
 
   bg-check-win : BackgammonBoard -> Boolean
   bg-check-win (b) =
-    b.off-white >= 15 | b.off-black >= 15
+    if b.dropped >= 0 then True
+    else b.off-white >= 15 | b.off-black >= 15
 
   bg-winner : BackgammonBoard -> Integer
   bg-winner (b) =
-    if b.off-white >= 15 then 0
+    if b.dropped >= 0 then 1 - b.dropped
+    else if b.off-white >= 15 then 0
     else if b.off-black >= 15 then 1
     else (-1)
+
+ Rule 9's multiplier: 1 for a single game, 2 for a gammon, 3 for a
+ backgammon, 1 again when a double was dropped, and 0 while the game goes
+ on.
+
+  bg-result-kind : BackgammonBoard -> Integer
+  bg-result-kind (b) =
+    if bg-check-win b == False then 0
+    else if b.dropped >= 0 then 1
+    else bg-kind-for b (bg-winner b)
+
+  bg-kind-for : BackgammonBoard, Integer -> Integer
+  bg-kind-for (b) (w) =
+    let loser-off = if w == 0 then b.off-black else b.off-white
+    in if loser-off > 0 then 1
+    else if bg-left-behind b w then 3
+    else 2
+
+ A loser's checker on the bar, or in the winner's home board: White's
+ home is indexes 0 to 5 and Black's 18 to 23.
+
+  bg-left-behind : BackgammonBoard, Integer -> Boolean
+  bg-left-behind (b) (w) =
+    if w == 0 then (if b.bar-black > 0 then True else bg-any-mine b 1 0 6)
+    else (if b.bar-white > 0 then True else bg-any-mine b 0 18 24)
+
+  bg-points : BackgammonBoard -> Integer
+  bg-points (b) = b.cube * bg-result-kind b
+
+Section: The Doubling Cube
+
+  bg-can-double : BackgammonBoard -> Boolean
+  bg-can-double (b) =
+    if bg-check-win b then False
+    else if b.offered == 1 then False
+    else if b.cube-owner < 0 then True
+    else b.cube-owner == b.current-player
+
+  bg-double : BackgammonBoard -> BackgammonBoard
+  bg-double (b) =
+    if bg-can-double b == False then b
+    else __record-set (bg-clone b) "offered" 1
+
+  bg-take : BackgammonBoard -> BackgammonBoard
+  bg-take (b) =
+    if b.offered /= 1 then b
+    else let c = bg-clone b
+    in let c1 = __record-set c "cube" (b.cube * 2)
+    in let c2 = __record-set c1 "cube-owner" (1 - b.current-player)
+    in __record-set c2 "offered" 0
+
+  bg-drop : BackgammonBoard -> BackgammonBoard
+  bg-drop (b) =
+    if b.offered /= 1 then b
+    else let c = __record-set (bg-clone b) "offered" 0
+    in __record-set c "dropped" (1 - b.current-player)
+
+ The engine's own cube play, by pip count: a side doubles when it leads by
+ a tenth of its own count or more, and takes when it trails the doubler by
+ no more than an eighth. These are the engine's judgement, not the rules.
+
+  bg-pips : BackgammonBoard, Integer -> Integer
+  bg-pips (b) (player) =
+    let bar = if player == 0 then b.bar-white else b.bar-black
+    in bg-pips-loop b player 0 (bar * 25)
+
+  bg-pips-loop : BackgammonBoard, Integer, Integer, Integer -> Integer
+  bg-pips-loop (b) (player) (i) (acc) =
+    if i >= 24 then acc
+    else let n = pt-count b i
+    in let d = if player == 0 then i + 1 else 24 - i
+    in if bg-mine-at b player i then bg-pips-loop b player (i + 1) (acc + n * d)
+    else bg-pips-loop b player (i + 1) acc
+
+  bg-ai-double : BackgammonBoard -> Boolean
+  bg-ai-double (b) =
+    if bg-can-double b == False then False
+    else let me = bg-pips b (b.current-player)
+    in (bg-pips b (1 - b.current-player) - me) * 10 >= me
+
+  bg-ai-take : BackgammonBoard -> Boolean
+  bg-ai-take (b) =
+    let doubler = bg-pips b (b.current-player)
+    in bg-pips b (1 - b.current-player) * 8 <= doubler * 9
 
 Section: Game Runner
 
@@ -243,10 +611,7 @@ Section: Game Runner
     in let r2 = rng-next r1
     in let d1 = rng-range r1 1 6
     in let d2 = rng-range r2 1 6
-    in let b1 = bg-apply-die b d1
-    in let b2 = bg-apply-die b1 d2
-    in let b3 = if d1 == d2 then bg-apply-die b2 d1 else b2
-    in let b4 = if d1 == d2 then bg-apply-die b3 d2 else b3
+    in let b4 = bg-ai-turn b (if d1 == d2 then [d1, d1, d1, d1] else [d1, d2])
     in let next-player = 1 - b.current-player
     in let b5 = __record-set b4 "current-player" next-player
     in bg-game-loop b5 r2 (plies + 1)

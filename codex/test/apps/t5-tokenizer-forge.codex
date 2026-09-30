@@ -1,0 +1,113 @@
+Chapter: T5TokenizerForge
+  cites AI chapter T5Tokenizer
+  cites Foreword chapter FactDisk
+
+ The disk is build/mint-clip-bpe-disk.ps1's with four extras from
+ codex/test/apps/t5-tokenizer-ref, written by build/t5-tokenizer-oracle.py:
+ vocab.bin and charsmap.bin (FLUX.1-schnell tokenizer_2's tables), the
+ prompts as UTF-8, and the ids transformers' T5TokenizerFast gives each; the
+ fifth is that tokenizer.json itself. The tables built from tokenizer.json must
+ equal vocab.bin and charsmap.bin byte for byte, and the prompts are
+ tokenized by the tokenizer built from it. The control changes one digit of
+ the JSON after the vocab key, and the vocab table must then differ. Every
+ prompt must match id for id: the generate-art prompts, the negative, the
+ empty prompt, runs of spaces, ASCII punctuation, accented Latin, full-width
+ forms with a ligature and a circled digit, and CJK, emoji, a tab and a
+ newline. The sabotage arm, the full-width prompt without the charsmap, must
+ not match.
+
+ We say:
+
+Section: Disk
+  tf-load : Integer, Integer -> [Device.Block] Integer
+  tf-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+Section: Grading
+
+  tf-ref : Integer, Integer, Integer, List Integer -> List Integer
+  tf-ref (a) (i) (n) (acc) = if i >= n then acc else tf-ref a (i + 1) n (list-push acc (tk-u32 a i))
+
+  tf-first-diff : List Integer, List Integer, Integer -> Integer
+  tf-first-diff (a) (b) (i) =
+    if i >= list-length a | i >= list-length b then (if list-length a == list-length b then 0 - 1 else i)
+    else if list-at a i /= list-at b i then i
+    else tf-first-diff a b (i + 1)
+
+  tf-line : Text, List Integer, List Integer -> Text
+  tf-line (label) (got) (want) =
+    let d = tf-first-diff got want 0
+    in label & ": " & show (list-length want) & " ids, " & (if d < 0 then "match" else "DIFFER at " & show d & " (" & show (list-length got) & " ids)")
+
+  tf-raw : T5Tok, Integer, Integer -> List Integer
+  tf-raw (t) (a) (n) =
+    let spaced = tk-spaces (tk-copy a 0 n []) 0 (tk-strip-end (tk-copy a 0 n []) n) []
+    in let meta = if list-length spaced > 0 & tk-is-meta spaced 0 then spaced else tk-meta [] & spaced
+    in list-push (tk-words t meta 0 0 []) 1
+
+  tf-prompts : T5Tok, Integer, Integer, Integer, Integer, Integer, List Text -> List Text
+  tf-prompts (t) (p) (r) (k) (count) (pos-r) (acc) =
+    if k >= count then acc
+    else let n = tk-u32 p 0
+    in let want = tf-ref (r + pos-r * 4 + 4) 0 (tk-u32 r pos-r) []
+    in let line = tf-line ("prompt " & show k) (t5-tokenize t (p + 4) n) want
+    in let extra = if k == 13 then [tf-line "sabotage, prompt 13 without the charsmap" (tf-raw t (p + 4) n) want] else []
+    in tf-prompts t (p + 4 + n) r (k + 1) count (pos-r + 1 + tk-u32 r pos-r) ((acc & [line]) & extra)
+
+  tf-same : Integer, Integer, Integer, Integer -> Integer
+  tf-same (a) (b) (i) (n) = if i >= n then 0 - 1 else if peek-byte a i /= peek-byte b i then i else tf-same a b (i + 1) n
+
+  tf-table : Text, Integer, Integer, Integer, Integer -> Text
+  tf-table (label) (got) (glen) (want) (wlen) =
+    let d = if glen /= wlen then 0 else tf-same got want 0 wlen
+    in label & ": " & show glen & " bytes, " & (if glen == wlen & d < 0 then "equal to the oracle's" else "DIFFER at byte " & show d & " (oracle " & show wlen & " bytes)")
+
+  tf-seven : Integer, Integer, Integer -> Integer
+  tf-seven (j) (n) (i) = if i >= n then 0 - 1 else if peek-byte j i == 55 then i else tf-seven j n (i + 1)
+
+  tf-control : Integer, Integer, Integer, Integer -> Text
+  tf-control (j) (n) (v) (vlen) =
+    let k = tf-seven j n (tj-value j n "vocab")
+    in let w = poke-byte j k 56
+    in let tt = t5-json-tables j n
+    in let back = poke-byte j k 55
+    in tf-table "control, one digit changed, vocab table" (tt.tt-vocab) (tt.tt-vocab-len) v vlen
+
+Section: Body
+  tf-print : List Text, Integer -> [Console] Nothing
+  tf-print (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      tf-print ls (i + 1)
+    end
+
+  tf-go : List Integer -> [Console, Device.Block] Nothing
+  tf-go (hd) =
+    act
+      v <- tf-load (list-at hd 0) (list-at hd 1)
+      c <- tf-load (list-at hd 2) (list-at hd 3)
+      p <- tf-load (list-at hd 4) (list-at hd 5)
+      r <- tf-load (list-at hd 6) (list-at hd 7)
+      j <- tf-load (list-at hd 8) (list-at hd 9)
+      let tt = t5-json-tables j (list-at hd 9)
+      in let t = t5-tok-load (tt.tt-vocab) (tt.tt-charsmap)
+      in let head = ["tokenizer.json: " & (if tt.tt-why == "" then "read" else tt.tt-why), tf-table "vocab table" (tt.tt-vocab) (tt.tt-vocab-len) v (list-at hd 1), tf-table "charsmap table" (tt.tt-charsmap) (tt.tt-charsmap-len) c (list-at hd 3), tf-control j (list-at hd 9) v (list-at hd 1), "pieces " & show (t.tk-count)]
+      in tf-print (head & tf-prompts t (p + 4) r 0 (tk-u32 p 0) 0 []) 0
+    end
+
+  tf-words : Integer, Integer, List Integer -> List Integer
+  tf-words (h) (i) (acc) = if i >= 10 then acc else tf-words h (i + 1) (list-push acc (peek-32 h (12 + i * 4)))
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    tf-go (tf-words h 0 [])
+  end

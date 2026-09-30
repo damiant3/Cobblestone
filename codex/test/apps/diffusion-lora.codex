@@ -1,0 +1,263 @@
+Chapter: DiffusionLora
+
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter Lora
+  cites Diffusion chapter LoraReference
+
+   Graded against build/lora-merge-oracle.py, Diffusion Forge's own patcher.
+   The key map is checked both ways: every entry of Forge's diffusers-form
+   map must be among the names this chapter derives for its weight, and every
+   name derived for a weight of the SDXL layout must be in Forge's map.
+   pixel-art-xl names its modules in the LDM form and papercut-xl in the
+   diffusers form, so every target is patched through both. The sabotage arm
+   merges at strength 0, which leaves the checkpoint weight; it can match the
+   reference only where Forge's merge moved nothing, and that count is read
+   from the reference itself.
+
+ We say:
+
+Section: Key Map
+
+  ckpt-name : Text = "dreamshaperXL_lightningDPMSDE.safetensors"
+
+  res-blocks : Integer = 2
+
+  list-has : List Text, Text, Integer -> Boolean
+  list-has (xs) (x) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == x then True
+    else list-has xs x (i + 1)
+
+  forge-found : Integer, Integer -> Integer
+  forge-found (i) (good) =
+    if i >= list-length lora-ref-kohya then good
+    else let ok = list-has (lora-unet-keys (list-at lora-ref-ldm i) res-blocks) (list-at lora-ref-kohya i) 0
+    in forge-found (i + 1) (good + (if ok then 1 else 0))
+
+  forge-index : NameIndex
+  forge-index = name-index lora-ref-kohya
+
+  derived-in-forge : List Text, Integer, Integer, Integer -> Integer
+  derived-in-forge (ks) (j) (total) (good) =
+    if j >= list-length ks then total * 100000 + good
+    else derived-in-forge ks (j + 1) (total + 1) (good + (if name-find forge-index (list-at ks j) >= 0 then 1 else 0))
+
+  layout-derived : List LayoutTensor, Integer, Integer -> Integer
+  layout-derived (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let keys = lora-unet-keys ((list-at ts i).lt-name) res-blocks
+    in let d = if list-length keys > 1 then derived-in-forge keys 1 0 0 else 0
+    in layout-derived ts (i + 1) (acc + d)
+
+  key-map-report : Integer -> Text
+  key-map-report (z) =
+    let unet = list-at (sdxl-layout.cl-parts) 0
+    in let d = layout-derived (unet.lp-required) 0 0
+    in "key map: " & show (forge-found 0 0) & "/" & show (list-length lora-ref-kohya) & " of Forge's entries derived; "
+       & show (int-mod d 100000) & "/" & show (d / 100000) & " derived names in Forge's map"
+
+Section: Merge
+
+  scratch : Integer = #BD700000
+
+  f16-at : Integer, Integer -> Integer
+  f16-at (h) (p) = if gpu-buf-read h (p * 2) 2 scratch then bit-and (peek-32 scratch 0) #FFFF else 0 - 1
+
+  near : Integer, Integer -> Boolean
+  near (a) (b) =
+    if a == b then True
+    else if bit-and a #8000 /= bit-and b #8000 then False
+    else a - b == 1 | b - a == 1
+
+  Score = record {
+    exact : Integer,
+    close : Integer,
+    moved : Integer,
+    still : Integer
+  }
+
+  score-loop : Integer, LoraRefTarget, Integer, Score -> Score
+  score-loop (h) (t) (j) (s) =
+    if j >= lora-ref-samples then s
+    else let n = t.lrt-rows * t.lrt-cols
+    in let got = f16-at h (int-mod (j * lora-ref-stride + lora-ref-offset) n)
+    in let want = list-at (t.lrt-merged) j
+    in let base = list-at (t.lrt-base) j
+    in score-loop h t (j + 1) (Score {
+         exact = s.exact + (if got == want then 1 else 0),
+         close = s.close + (if near got want then 1 else 0),
+         moved = s.moved + (if base /= want then 1 else 0),
+         still = s.still + (if base == want then 1 else 0) })
+
+  loras-at : List Real -> List LoraFile
+  loras-at (strengths) = [lora-open (list-at lora-ref-files 0) (list-at strengths 0), lora-open (list-at lora-ref-files 1) (list-at strengths 1)]
+
+  target-report : SafeTensorFile, List LoraFile, LoraRefTarget -> Text
+  target-report (ckpt) (ls) (t) =
+    let h = lora-merged-weight ckpt-name ckpt ls res-blocks ("model.diffusion_model." & t.lrt-name)
+    in if h == 0 then t.lrt-name & ": merge refused"
+    else let s = score-loop h t 0 (Score { exact = 0, close = 0, moved = 0, still = 0 })
+    in let f = gpu-buf-free h
+    in t.lrt-name & ": " & show (s.exact) & "/" & show lora-ref-samples & " exact, " & show (s.close) & " within 1 ulp; Forge moved " & show (s.moved)
+
+  sabotage-report : SafeTensorFile, LoraRefTarget -> Text
+  sabotage-report (ckpt) (t) =
+    let h = lora-merged-weight ckpt-name ckpt (loras-at [0.0, 0.0]) res-blocks ("model.diffusion_model." & t.lrt-name)
+    in if h == 0 then "sabotage: merge refused"
+    else let s = score-loop h t 0 (Score { exact = 0, close = 0, moved = 0, still = 0 })
+    in let f = gpu-buf-free h
+    in "sabotage strength 0, " & t.lrt-name & ": " & show (s.exact) & " exact, predicted " & show (s.still)
+
+  targets-report : SafeTensorFile, List LoraFile, Integer, List Text -> List Text
+  targets-report (ckpt) (ls) (i) (acc) =
+    if i >= list-length lora-ref-targets then acc
+    else targets-report ckpt ls (i + 1) (acc & [target-report ckpt ls (list-at lora-ref-targets i)])
+
+Section: Text Encoders
+
+  te-slots : SafeTensorFile, Text -> List LoraSlot
+  te-slots (ckpt) (tensor) =
+    when st-find-tensor ckpt tensor
+     is None -> []
+     is Just (m) -> lora-slots tensor (list-at (m.stm-shape) 0) res-blocks sdxl-te-l sdxl-te-g
+
+  slot-has : List LoraSlot, Text, Integer, Integer -> Boolean
+  slot-has (ss) (k) (row0) (i) =
+    if i >= list-length ss then False
+    else let s = list-at ss i
+    in if s.ls-row0 == row0 & list-has (s.ls-keys) k 0 then True
+    else slot-has ss k row0 (i + 1)
+
+  te-forge-found : SafeTensorFile, Integer, Integer -> Integer
+  te-forge-found (ckpt) (i) (good) =
+    if i >= list-length lora-ref-te-kohya then good
+    else let ok = slot-has (te-slots ckpt (list-at lora-ref-te-tensor i)) (list-at lora-ref-te-kohya i) (list-at lora-ref-te-row0 i) 0
+    in te-forge-found ckpt (i + 1) (good + (if ok then 1 else 0))
+
+  te-index : NameIndex
+  te-index = name-index lora-ref-te-kohya
+
+  keys-in-forge : List Text, Integer, Integer -> Integer
+  keys-in-forge (ks) (j) (good) =
+    if j >= list-length ks then good
+    else keys-in-forge ks (j + 1) (good + (if name-find te-index (list-at ks j) >= 0 then 1 else 0))
+
+  slots-in-forge : List LoraSlot, Integer, Integer, Integer -> Integer
+  slots-in-forge (ss) (i) (total) (good) =
+    if i >= list-length ss then total * 100000 + good
+    else let ks = (list-at ss i).ls-keys
+    in slots-in-forge ss (i + 1) (total + list-length ks) (good + keys-in-forge ks 0 0)
+
+  part-derived : Text, List LayoutTensor, Integer, Integer -> Integer
+  part-derived (prefix) (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in let ss = lora-slots (prefix & t.lt-name) (list-at (t.lt-shape) 0) res-blocks sdxl-te-l sdxl-te-g
+    in part-derived prefix ts (i + 1) (acc + slots-in-forge ss 0 0 0)
+
+  te-map-report : SafeTensorFile -> Text
+  te-map-report (ckpt) =
+    let l = list-at (sdxl-layout.cl-parts) 1
+    in let g = list-at (sdxl-layout.cl-parts) 2
+    in let d = part-derived (l.lp-prefix) (l.lp-required) 0 0 + part-derived (g.lp-prefix) (g.lp-required) 0 0
+    in "text-encoder key map: " & show (te-forge-found ckpt 0 0) & "/" & show (list-length lora-ref-te-kohya) & " of Forge's entries derived with their rows; "
+       & show (int-mod d 100000) & "/" & show (d / 100000) & " derived keys in Forge's map"
+
+  slice-loop : Integer, LoraRefSlice, Integer, Score -> Score
+  slice-loop (h) (t) (j) (s) =
+    if j >= lora-ref-samples then s
+    else let p = t.lrs-row0 * t.lrs-cols + int-mod (j * lora-ref-stride + lora-ref-offset) (t.lrs-rows * t.lrs-cols)
+    in let got = f16-at h p
+    in let want = list-at (t.lrs-merged) j
+    in let base = list-at (t.lrs-base) j
+    in slice-loop h t (j + 1) (Score {
+         exact = s.exact + (if got == want then 1 else 0),
+         close = s.close + (if near got want then 1 else 0),
+         moved = s.moved + (if base /= want then 1 else 0),
+         still = s.still + (if base == want then 1 else 0) })
+
+  slice-report : Text, SafeTensorFile, List LoraFile, LoraRefSlice -> Text
+  slice-report (path) (ckpt) (ls) (t) =
+    let h = lora-merged-weight path ckpt ls res-blocks (t.lrs-tensor)
+    in let label = t.lrs-tensor & " rows " & show (t.lrs-row0) & "+" & show (t.lrs-rows)
+    in if h == 0 then label & ": merge refused"
+    else let s = slice-loop h t 0 (Score { exact = 0, close = 0, moved = 0, still = 0 })
+    in let f = gpu-buf-free h
+    in label & ": " & show (s.exact) & "/" & show lora-ref-samples & " exact, " & show (s.close) & " within 1 ulp; Forge moved " & show (s.moved)
+
+  slices-report : SafeTensorFile, List LoraFile, Integer, List Text -> List Text
+  slices-report (ckpt) (ls) (i) (acc) =
+    if i >= list-length lora-ref-te-targets then acc
+    else slices-report ckpt ls (i + 1) (acc & [slice-report ckpt-name ckpt ls (list-at lora-ref-te-targets i)])
+
+  te-loras : List LoraFile
+  te-loras = [lora-open (list-at lora-ref-te-files 0) (list-at lora-ref-te-strengths 0), lora-open (list-at lora-ref-te-files 1) (list-at lora-ref-te-strengths 1)]
+  kinds-report : SafeTensorFile, Integer, List Text -> List Text
+  kinds-report (ckpt) (i) (acc) =
+    if i >= list-length lora-ref-kind-targets then acc
+    else let ls = [lora-open lora-ref-kinds-file lora-ref-kinds-strength]
+    in kinds-report ckpt (i + 1) (acc & [list-at lora-ref-kind-names i & " " & target-report ckpt ls (list-at lora-ref-kind-targets i)])
+
+Section: SD1.5
+
+  sd15-found : Integer, Integer -> Integer
+  sd15-found (i) (good) =
+    if i >= list-length lora-ref-sd15-kohya then good
+    else let ok = list-has (lora-unet-keys (list-at lora-ref-sd15-ldm i) res-blocks) (list-at lora-ref-sd15-kohya i) 0
+    in sd15-found (i + 1) (good + (if ok then 1 else 0))
+
+  sd15-index : NameIndex
+  sd15-index = name-index lora-ref-sd15-kohya
+
+  sd15-in-forge : List Text, Integer, Integer, Integer -> Integer
+  sd15-in-forge (ks) (j) (total) (good) =
+    if j >= list-length ks then total * 100000 + good
+    else sd15-in-forge ks (j + 1) (total + 1) (good + (if name-find sd15-index (list-at ks j) >= 0 then 1 else 0))
+
+  sd15-derived : List LayoutTensor, Integer, Integer -> Integer
+  sd15-derived (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let keys = lora-unet-keys ((list-at ts i).lt-name) res-blocks
+    in sd15-derived ts (i + 1) (acc + (if list-length keys > 1 then sd15-in-forge keys 1 0 0 else 0))
+
+  sd15-slices : SafeTensorFile, List LoraFile, Integer, List Text -> List Text
+  sd15-slices (ckpt) (ls) (i) (acc) =
+    if i >= list-length lora-ref-sd15-targets then acc
+    else sd15-slices ckpt ls (i + 1) (acc & ["sd15 " & slice-report lora-ref-sd15-ckpt ckpt ls (list-at lora-ref-sd15-targets i)])
+
+  sd15-report : Integer -> List Text
+  sd15-report (z) =
+    let unet = list-at (sd15-layout.cl-parts) 0
+    in let d = sd15-derived (unet.lp-required) 0 0
+    in let map = "sd15 key map: " & show (sd15-found 0 0) & "/" & show (list-length lora-ref-sd15-kohya) & " of Forge's entries derived; "
+       & show (int-mod d 100000) & "/" & show (d / 100000) & " derived names in Forge's map"
+    in let ckpt = ckpt-open lora-ref-sd15-ckpt
+    in if not (ckpt.st-valid) then [map, "sd15 checkpoint refused"]
+    else [map] & sd15-slices ckpt [lora-open lora-ref-sd15-file lora-ref-sd15-strength] 0 []
+
+Section: Entry  run-all : Integer -> List Text
+  run-all (z) =
+    let ckpt = ckpt-open ckpt-name
+    in if not (ckpt.st-valid) then ["checkpoint refused"]
+    else let ls = loras-at lora-ref-strengths
+    in let modules = "modules: " & show (((list-at ls 0).lf-file).st-tensor-count / 3) & " + " & show (((list-at ls 1).lf-file).st-tensor-count / 3)
+    in [key-map-report 0, modules] & targets-report ckpt ls 0 [] & [sabotage-report ckpt (list-at lora-ref-targets 0), te-map-report ckpt] & slices-report ckpt te-loras 0 [] & kinds-report ckpt 0 [] & ["diff_b " & slice-report ckpt-name ckpt [lora-open lora-ref-kinds-file lora-ref-kinds-strength] lora-ref-kind-te] & ["dora at strength 1 " & target-report ckpt [lora-open lora-ref-kinds-file 1.0] lora-ref-dora-full] & sd15-report 0
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

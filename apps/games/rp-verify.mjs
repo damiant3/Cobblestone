@@ -169,6 +169,47 @@ console.log(`rp-verify ${wasmPath}`);
      e.rp_rp1(e.rp_run(1, 0)) === 0 && e.rp_rties(e.rp_run(1, 0)) === 0);
 }
 
+// -- THE RULES (RPS.codex, "The Rules"), through the move the page makes ---
+//
+// rp_play is the arcade's only move. Rule 1: the opponent's throw is fixed
+// before yours is seen, so from one state all three of your throws meet the
+// SAME answering throw. Rule 2: the round is scored by the rules against
+// that throw. Played over 40 series of 20 rounds with throws of every kind.
+{
+  const thrown = (h, n) => [0, 1, 2].find(m => e.rp_c2(n, m) === e.rp_c2(h, m) + 1);
+  let bad = '', rounds = 0, peeks = 0;
+  const seenOutcome = new Set();
+  for (let seed = 1; seed <= 40 && !bad; seed++) {
+    let h = e.rp_new(seed);
+    for (let k = 0; k < 20 && !bad; k++) {
+      const next = [0, 1, 2].map(m => e.rp_play(h, m));
+      const theirs = next.map(n => thrown(h, n));
+      if (theirs[0] !== theirs[1] || theirs[1] !== theirs[2]) {
+        peeks++;
+        bad = `seed ${seed} round ${k + 1}: the reply to rock/paper/scissors was ${theirs.map(t => NAME[t]).join('/')}`;
+        break;
+      }
+      for (let m = 0; m < 3; m++) {
+        const n = next[m], them = theirs[m], r = outcome(m, them);
+        seenOutcome.add(r);
+        const mine = [0, 1, 2].map(x => e.rp_c1(n, x) - e.rp_c1(h, x));
+        const d = [e.rp_w1(n) - e.rp_w1(h), e.rp_w2(n) - e.rp_w2(h), e.rp_ties(n) - e.rp_ties(h)];
+        const want = r === 1 ? [1, 0, 0] : r === -1 ? [0, 1, 0] : [0, 0, 1];
+        if (them === undefined || mine.join() !== [0, 1, 2].map(x => (x === m ? 1 : 0)).join() || d.join() !== want.join()) {
+          bad = `seed ${seed} round ${k + 1}: ${NAME[m]} against ${NAME[them]} scored ${d}, rules ${want}`;
+        }
+      }
+      h = next[(seed + k) % 3];
+      rounds++;
+    }
+  }
+  ok('rules: your throw cannot change theirs, and every round scores by the rules',
+     !bad, bad || `${rounds} rounds, each played all three ways`);
+  ok('control: wins, losses and ties all occurred', seenOutcome.size === 3, [...seenOutcome].join(','));
+  const h = e.rp_new(3);
+  ok('rules: a throw off the table is refused', [-1, 3, 7].every(m => e.rp_play(h, m) === h));
+}
+
 console.log(fail === 0
   ? `\nPASS: RPS scores by the rules and its AI counters (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

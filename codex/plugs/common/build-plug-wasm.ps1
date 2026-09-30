@@ -122,6 +122,10 @@ Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugTyp
         Add-PlugChapter -Lines $lines -Path (Join-Path $Repo "codex\plugs\common\$cc.codex") -Quire $plugQuire
     }
     $opening = if ($Transport -eq 'irbytes') { 'PlugIrBytes.codex' } else { 'PlugStdio.codex' }
+    # PlugStdio's IR arrives as UTF-8 and decodes it with the compiler's utf8-to-cce.
+    if ($Transport -eq 'ir') {
+        Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\compiler\Core\Utf8Cce.codex') -Quire $plugQuire
+    }
     Add-PlugChapter -Lines $lines -Path (Join-Path $Repo "codex\plugs\common\$opening") -Quire $plugQuire
 } else {
     Add-PlugChapter -Lines $lines -Path (Join-Path $Repo 'codex\plugs\common\PlugBytes.codex')    -Quire $plugQuire

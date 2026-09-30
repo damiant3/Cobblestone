@@ -264,12 +264,33 @@ Section: Apply Move
     in if g2048-grids-equal (st.grid) after then st
     else let r = rng-next (st.rng)
     in let new-grid = g2048-add-tile after r
-    in let new-score = g2048-sum-grid new-grid
+    in let new-score = st.score + g2048-dir-gain (st.grid) dir
     in let can = g2048-can-move new-grid
     in G2048State { grid = new-grid, score = new-score, moves = st.moves + 1, game-over = can == False, rng = r }
 
-Section: Game Runner
+ The score rises by the value of every tile a merge makes. Per line the gain
+ is the same from either end: a run of k equal tiles makes k / 2 merges.
 
+  g2048-dir-gain : List Integer, Integer -> Integer
+  g2048-dir-gain (grid) (dir) = g2048-gain-lines grid (dir >= 2) 0 0
+
+  g2048-gain-lines : List Integer, Boolean, Integer, Integer -> Integer
+  g2048-gain-lines (grid) (cols) (k) (acc) =
+    if k >= 4 then acc
+    else g2048-gain-lines grid cols (k + 1) (acc + g2048-line-gain (g2048-compact (g2048-line grid cols k) 0 []) 0 0)
+
+  g2048-line : List Integer, Boolean, Integer -> List Integer
+  g2048-line (grid) (cols) (k) =
+    if cols then [list-at grid k, list-at grid (4 + k), list-at grid (8 + k), list-at grid (12 + k)]
+    else [list-at grid (k * 4), list-at grid (k * 4 + 1), list-at grid (k * 4 + 2), list-at grid (k * 4 + 3)]
+
+  g2048-line-gain : List Integer, Integer, Integer -> Integer
+  g2048-line-gain (row) (i) (acc) =
+    if i + 1 >= list-length row then acc
+    else if list-at row i == list-at row (i + 1) then g2048-line-gain row (i + 2) (acc + list-at row i * 2)
+    else g2048-line-gain row (i + 1) acc
+
+Section: Game Runner
   run-2048-game : G2048Result
   run-2048-game =
     let rng = rng-new 11

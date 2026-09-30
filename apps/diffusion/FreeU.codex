@@ -1,0 +1,102 @@
+Chapter: FreeU
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter Noise
+  cites Diffusion chapter UNet
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter ExtrasKernelsPtx
+
+ FreeU as Forge's sd_forge_freeu patches a UNet output block (forge_freeu.py,
+ patch_freeu_v2), on device f32 C x H x W buffers. h: its channel mean at each
+ pixel, min-max normalised over the pixels, scales the first C / 2 channels
+ by (b - 1) mean + 1. The skip hsp: Fourier_filter at threshold 1 multiplies
+ by s only the 2 x 2 bins about the centre of the shifted spectrum, the
+ frequencies 0 and -1 on each axis, so hsp gains (s - 1) times its
+ projection on those four DFT components, (1 / HW) Re sum X(a, b)
+ e^(-i (a 2 pi m / H + b 2 pi q / W)) for a, b in {0, 1}, where X(a, b) sums
+ hsp e^(+i (...)). Forge runs the FFT in f32; the kernels sum in f64 (a mirror of
+ this form matched Forge within 1.1e-6).
+
+ We say:
+
+Section: Floats
+
+  fu-get : Integer, Integer -> Real
+  fu-get (a) (i) = un-f32-real (bit-and (peek-32 a (i * 4)) #FFFFFFFF)
+
+  fu-set : Integer, Integer, Real -> Integer
+  fu-set (a) (i) (v) = poke-32 a (i * 4) (nz-f32-bits v)
+
+Section: Launch
+
+  fu-grid : Integer -> GpuGrid
+  fu-grid (n) = GpuGrid { gx = (n + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+
+  fu-run : Text, Integer, List GpuParam -> Boolean
+  fu-run (name) (n) (ps) = gm-launch gm-slot-extras extras-kernels-ptx name (fu-grid n) ps >= 0
+
+Section: Backbone
+
+  freeu-backbone : Integer, Integer, Integer, Real -> Boolean
+  freeu-backbone (h) (c) (hw) (b) =
+    let means = gpu-buf-alloc (hw * 8)
+    in let mm = gpu-buf-alloc 16
+    in let ok = if means == 0 | mm == 0 then False
+       else if fu-run "kernel_freeu_mean" hw [gpu-arg-buf h 0, gpu-arg-buf means 0, gpu-arg-u64 c, gpu-arg-u64 hw] == False then False
+       else if fu-run "kernel_freeu_range" 1 [gpu-arg-buf means 0, gpu-arg-buf mm 0, gpu-arg-u64 hw] == False then False
+       else fu-run "kernel_freeu_scale" (c / 2 * hw) [gpu-arg-buf h 0, gpu-arg-buf means 0, gpu-arg-buf mm 0, gpu-arg-u64 hw, gpu-arg-u64 (c / 2 * hw), gpu-arg-u64 (real-to-bits b)]
+    in let f = un-free (un-free 0 means) mm
+    in ok
+
+Section: Skip
+
+ The tables are cos and sin of 2 pi m / H, then of 2 pi q / W, as f64.
+
+  fu-trig : Integer, Integer, Boolean, List Real -> List Real
+  fu-trig (n) (i) (sine) (acc) =
+    if i >= n then acc
+    else let t = 6.283185307179586 * real-from-int i / real-from-int n
+    in fu-trig n (i + 1) sine (list-push acc (if sine then real-sin t else real-cos t))
+
+  fu-put64 : Integer, List Real, Integer, Integer -> Integer
+  fu-put64 (a) (xs) (at) (i) =
+    if i >= list-length xs then at + i
+    else let b = real-to-bits (list-at xs i)
+    in let z = poke-32 a ((at + i) * 8) (bit-and b #FFFFFFFF)
+    in let y = poke-32 a ((at + i) * 8 + 4) (bit-and (bit-shru b 32) #FFFFFFFF)
+    in fu-put64 a xs at (i + 1)
+
+  fu-tables : Integer, Integer, Integer -> Boolean
+  fu-tables (tab) (hh) (ww) =
+    let mark = __heap-save
+    in let a = alloc-bytes (2 * (hh + ww) * 8)
+    in let z = fu-put64 a (fu-trig ww 0 True []) (fu-put64 a (fu-trig ww 0 False []) (fu-put64 a (fu-trig hh 0 True []) (fu-put64 a (fu-trig hh 0 False []) 0 0) 0) 0) 0
+    in let w = gpu-buf-write tab 0 (2 * (hh + ww) * 8) a
+    in let back = __heap-restore mark
+    in w
+
+  freeu-skip : Integer, Integer, Integer, Integer, Real -> Boolean
+  freeu-skip (x) (c) (hh) (ww) (s) =
+    let tab = gpu-buf-alloc (2 * (hh + ww) * 8)
+    in let sums = gpu-buf-alloc (c * 7 * 8)
+    in let ok = if tab == 0 | sums == 0 then False
+       else if fu-tables tab hh ww == False then False
+       else if fu-run "kernel_freeu_sums" (c * 7) [gpu-arg-buf x 0, gpu-arg-buf tab 0, gpu-arg-buf sums 0, gpu-arg-u64 c, gpu-arg-u64 hh, gpu-arg-u64 ww] == False then False
+       else fu-run "kernel_freeu_update" (c * hh * ww) [gpu-arg-buf x 0, gpu-arg-buf tab 0, gpu-arg-buf sums 0, gpu-arg-u64 c, gpu-arg-u64 hh, gpu-arg-u64 ww, gpu-arg-u64 (real-to-bits ((s - 1.0) / real-from-int (hh * ww)))]
+    in let f = un-free (un-free 0 tab) sums
+    in ok
+
+Section: Patch
+
+ Forge keys the patch on h's channels: 4 x model_channels takes (b1, s1),
+ 2 x model_channels (b2, s2); model_channels is 320 in SDXL and SD1.5.
+
+  freeu-apply : Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> Boolean
+  freeu-apply (x) (skip) (cx) (cs) (hh) (ww) (b) (s) =
+    if freeu-backbone x cx (hh * ww) b then freeu-skip skip cs hh ww s
+    else False
+
+  freeu-patch : Real, Real, Real, Real, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  freeu-patch (b1) (b2) (s1) (s2) (x) (skip) (cx) (cs) (hh) (ww) =
+    if cx == 1280 then freeu-apply x skip cx cs hh ww b1 s1
+    else if cx == 640 then freeu-apply x skip cx cs hh ww b2 s2
+    else True

@@ -1,0 +1,105 @@
+Chapter: Pcg64
+  cites Foreword chapter Wrap64
+  cites Diffusion chapter SeedSequence
+
+ numpy's PCG64 (numpy 1.26, numpy/random/src/pcg64/pcg64.h), which
+ np.random.default_rng (seed) draws from: a 128-bit LCG, state times
+ 0x2360ED051FC65DA44385DF649FCCF645 plus an odd increment, stepped before each
+ output; the output XSL-RR, the high and low halves xored and rotated right
+ by the top 6 bits of the state. Seeding: SeedSequence (seed).generate_state
+ (4, uint64), each u64 two 32-bit words little-endian; the state from the
+ first two (high, low) and the increment from the last two shifted left by
+ one with the low bit set; the state zeroed, stepped, the seed state added,
+ stepped again. random () is the next u64 shifted right by 11 times 2 ^ -53.
+ Every product and sum wraps, therefore through Wrap64.
+
+ We say:
+
+Section: Words
+
+  pc-min : Integer
+  pc-min = bit-shl 1 63
+
+  pc-ult : Integer, Integer -> Boolean
+  pc-ult (a) (b) = bit-xor a pc-min < bit-xor b pc-min
+
+  pc-lo32 : Integer -> Integer
+  pc-lo32 (x) = bit-and x #FFFFFFFF
+
+ The high 64 bits of the unsigned product a b.
+
+  pc-mulhi : Integer, Integer -> Integer
+  pc-mulhi (a) (b) =
+    let a0 = pc-lo32 a
+    in let a1 = bit-shru a 32
+    in let b0 = pc-lo32 b
+    in let b1 = bit-shru b 32
+    in let p00 = w64-mul a0 b0
+    in let p01 = w64-mul a0 b1
+    in let p10 = w64-mul a1 b0
+    in let p11 = w64-mul a1 b1
+    in let mid = w64-add (w64-add (bit-shru p00 32) (pc-lo32 p01)) (pc-lo32 p10)
+    in w64-add (w64-add (w64-add p11 (bit-shru p01 32)) (bit-shru p10 32)) (bit-shru mid 32)
+
+Section: State
+
+  Pcg = record {
+    pg-hi : List Integer,
+    pg-lo : List Integer,
+    pg-inc-hi : Integer,
+    pg-inc-lo : Integer
+  }
+
+  pc-mult-hi : Integer
+  pc-mult-hi = #2360ED051FC65DA4
+
+  pc-mult-lo : Integer
+  pc-mult-lo = #4385DF649FCCF645
+
+ One LCG step in place.
+
+  pc-step : Pcg -> Integer
+  pc-step (g) =
+    let h = list-at (g.pg-hi) 0
+    in let l = list-at (g.pg-lo) 0
+    in let ml = w64-mul l pc-mult-lo
+    in let mh = w64-add (pc-mulhi l pc-mult-lo) (w64-add (w64-mul l pc-mult-hi) (w64-mul h pc-mult-lo))
+    in let nl = w64-add ml (g.pg-inc-lo)
+    in let carry = if pc-ult nl ml then 1 else 0
+    in let nh = w64-add (w64-add mh (g.pg-inc-hi)) carry
+    in let a = list-set-at (g.pg-lo) 0 nl
+    in let b = list-set-at (g.pg-hi) 0 nh
+    in 0
+
+  pc-rotr : Integer, Integer -> Integer
+  pc-rotr (x) (r) = bit-or (bit-shru x r) (bit-shl x (bit-and (64 - r) 63))
+
+ The next u64.
+
+  pcg-next : Pcg -> Integer
+  pcg-next (g) =
+    let s = pc-step g
+    in let h = list-at (g.pg-hi) 0
+    in pc-rotr (bit-xor h (list-at (g.pg-lo) 0)) (bit-shru h 58)
+
+  pcg-random : Pcg -> Real
+  pcg-random (g) = real-from-int (bit-shru (pcg-next g) 11) * (1.0 / 9007199254740992.0)
+
+  pc-u64 : List Integer, Integer -> Integer
+  pc-u64 (w) (i) = bit-or (list-at w (2 * i)) (bit-shl (list-at w (2 * i + 1)) 32)
+
+ default_rng (seed)'s bit generator.
+
+  pcg-seeded : Integer -> Pcg
+  pcg-seeded (seed) =
+    let w = seed-sequence-state (seed-sequence seed [] 4) 8
+    in let ih = pc-u64 w 2
+    in let il = pc-u64 w 3
+    in let g = Pcg { pg-hi = [0], pg-lo = [0], pg-inc-hi = bit-or (bit-shl ih 1) (bit-shru il 63), pg-inc-lo = bit-or (bit-shl il 1) 1 }
+    in let a = pc-step g
+    in let sl = w64-add (list-at (g.pg-lo) 0) (pc-u64 w 1)
+    in let carry = if pc-ult sl (pc-u64 w 1) then 1 else 0
+    in let b = list-set-at (g.pg-hi) 0 (w64-add (w64-add (list-at (g.pg-hi) 0) (pc-u64 w 0)) carry)
+    in let c = list-set-at (g.pg-lo) 0 sl
+    in let d = pc-step g
+    in g
