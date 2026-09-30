@@ -1,0 +1,42 @@
+Chapter: BrowserSampler
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter SamplerGraph
+
+ The sampler's operations over BrowserKernels' WGSL module, for a page. WebGPU
+ refuses one buffer bound twice as writable storage, so a combination whose
+ inputs or output alias is computed into a fresh buffer from fresh copies and
+ copied back.
+
+ We say:
+
+Section: Operations
+
+  bs-grid : Integer -> GpuGrid
+  bs-grid (n) = GpuGrid { gx = (n + 63) / 64, gy = 1, gz = 1, bx = 64, by = 1, bz = 1, shared = 0 }
+
+  bs-scale-into : Text, Integer, Integer, Real, Integer -> Integer
+  bs-scale-into (code) (src) (dst) (s) (n) = gpu-launch code "bk_scale_main" (bs-grid n) [gpu-arg-buf src 0, gpu-arg-buf dst 0, gpu-arg-f32 s, gpu-arg-u32 n]
+
+  bs-scaled : Text, Integer, Real, Integer -> Integer
+  bs-scaled (code) (src) (s) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 then 0
+    else if bs-scale-into code src h s n < 0 then (if gpu-buf-free h then 0 else 0)
+    else h
+
+  bs-free-if : Boolean, Integer -> Boolean
+  bs-free-if (own) (h) = if own & h /= 0 then gpu-buf-free h else True
+
+  bs-lincomb : Text, Integer, Integer, Integer, Integer, Real, Real, Real, Integer -> Integer
+  bs-lincomb (code) (x) (y) (z) (out) (a) (b) (c) (n) =
+    let y2 = if y == x then bs-scaled code y 1.0 n else y
+    in let z2 = if z == x | z == y then bs-scaled code z 1.0 n else z
+    in let t = gpu-buf-alloc (n * 4)
+    in let r = if y2 == 0 | z2 == 0 | t == 0 then 0 - 1
+       else gpu-launch code "bk_lincomb3_main" (bs-grid n) [gpu-arg-buf x 0, gpu-arg-buf y2 0, gpu-arg-buf z2 0, gpu-arg-buf t 0, gpu-arg-f32 a, gpu-arg-f32 b, gpu-arg-f32 c, gpu-arg-u32 n]
+    in let back = if r < 0 then r else bs-scale-into code t out 1.0 n
+    in let f = bs-free-if (y2 /= y) y2 & bs-free-if (z2 /= z) z2 & bs-free-if True t
+    in back
+
+  browser-sampler-ops : Text -> SamplerOps
+  browser-sampler-ops (code) = SamplerOps { lincomb = \x y z out a b c n -> bs-lincomb code x y z out a b c n, free = gpu-buf-free }

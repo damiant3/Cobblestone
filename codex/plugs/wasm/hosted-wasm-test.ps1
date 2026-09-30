@@ -21,7 +21,7 @@ param(
     # defect, and the repair in both is the denominator, not the cap.
     [int]$Max = 60,
     [string]$WorkDir = '',
-    [int]$Jobs = 4,
+    [int]$Jobs = 16,
     # Mangle each subject's entry so a subject that cannot fail is visible.
     [switch]$Calibrate,
     # Known wasm reds, one per line: subject, plugs-backlog row, reason. A red
@@ -83,6 +83,11 @@ if (-not $NoBaseline -and -not $Calibrate -and (Test-Path -PathType Leaf $Baseli
     }
 }
 
+# A `<name>.wasm-refusal` subject has no `.expected`: its oracle is the refusal
+# itself, so no -ListSubjects draw can name it. Every one joins every draw.
+$refusalSubjects = @(Get-ChildItem $TestDir -Recurse -File -Filter '*.wasm-refusal' | ForEach-Object {
+    [IO.Path]::GetRelativePath($TestDir, $_.FullName).Replace('\', '/') -replace '\.wasm-refusal$', ''
+})
 $hasPattern = @($Subject | Where-Object { $_ -match '[*?\[]' }).Count -gt 0
 if ($Subject.Count -gt 0 -and -not $hasPattern) {
     $subjects = $Subject
@@ -95,6 +100,7 @@ if ($Subject.Count -gt 0 -and -not $hasPattern) {
         Write-Host "REFUSE: $ElfTest -ListSubjects returned no corpus."
         exit 2
     }
+    $eligible = @($eligible + $refusalSubjects | Select-Object -Unique)
     $subjects = @($eligible | Where-Object { $s = $_; @($Subject | Where-Object { $s -like $_ }).Count -gt 0 })
     if ($subjects.Count -eq 0) {
         Write-Host "REFUSE: -Subject $($Subject -join ',') matched none of the $($eligible.Count) eligible subjects."
@@ -115,7 +121,19 @@ if ($Subject.Count -gt 0 -and -not $hasPattern) {
         Write-Host "REFUSE: $ElfTest -ListSubjects -Max $Max returned no selection."
         exit 2
     }
-    $drawnFrom = "$($subjects.Count) selected of $($eligible.Count) eligible"
+    $extra = @($refusalSubjects | Where-Object { $subjects -notcontains $_ })
+    $subjects = @($subjects + $extra)
+    $drawnFrom = "$($subjects.Count) selected of $($eligible.Count) eligible, $($extra.Count) refusal subject(s) added"
+}
+
+# The rule's drops are counted here as they are there (plugs 2.88): a drop
+# nobody can count is a silent skip.
+if (Test-Path variable:eligible) {
+    $dropped = @(& pwsh -NoProfile -File $ElfTest -ListDropped)
+    if ($LASTEXITCODE -ne 0) { Write-Host "REFUSE: $ElfTest -ListDropped failed."; exit 2 }
+    $bm = @($dropped | Where-Object { $_.StartsWith("bare-metal`t") } | ForEach-Object { ($_ -split "`t")[1] })
+    $r0 = @($dropped | Where-Object { $_.StartsWith("ring0`t") } | ForEach-Object { ($_ -split "`t")[1] })
+    $drawnFrom += "; dropped $($bm.Count) declared .bare-metal ($($bm -join ', ')) and $($r0.Count) naming a ring-0 builtin ($($r0 -join ', '))"
 }
 
 # `<name>.arch-only` lists the architectures a subject runs on and every runner
@@ -146,6 +164,27 @@ $results = $subjects | ForEach-Object -ThrottleLimit $Jobs -Parallel {
 
     $src = Join-Path $TestDir "$s.codex"
     $exp = Join-Path $TestDir "$s.expected"
+    # A refusal subject passes when the plug emits a refusal token wat2wasm
+    # rejects for every name in the sidecar and the module fails to assemble.
+    $refusal = Join-Path $TestDir "$s.wasm-refusal"
+    if ((Test-Path -PathType Leaf $refusal) -and (Test-Path -PathType Leaf $src)) {
+        if ($Calibrate) { return [pscustomobject]@{ Name = $s; Ok = $true; Note = '' } }
+        $a = $s -replace '/', '_'
+        $wat  = Join-Path $WorkDir "$a.wat"
+        $wasm = Join-Path $WorkDir "$a.wasm"
+        Remove-Item $wat, $wasm -Force -ErrorAction SilentlyContinue
+        & pwsh -NoProfile -File $RunPs1 -Src $src -Out $wat -Kernel $Kernel *> (Join-Path $WorkDir "$a.plug.log")
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $wat)) { return [pscustomobject]@{ Name = $s; Ok = $false; Note = 'PLUG-FAILED before emitting its refusal' } }
+        $watText = [System.IO.File]::ReadAllText($wat)
+        $names = @(Get-Content $refusal | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+        $missing = @($names | Where-Object { -not $watText.Contains("(codex-refused-$_-256-bit-vector-on-wasm)") })
+        & wat2wasm --enable-tail-call $wat -o $wasm 2>$null | Out-Null
+        $assembled = ($LASTEXITCODE -eq 0) -and (Test-Path $wasm)
+        if ($names.Count -gt 0 -and $missing.Count -eq 0 -and -not $assembled) { return [pscustomobject]@{ Name = $s; Ok = $true; Note = '' } }
+        $miss = if ($missing.Count) { $missing -join ',' } else { 'none' }
+        $mod = if ($assembled) { 'ASSEMBLED' } else { 'refused' }
+        return [pscustomobject]@{ Name = $s; Ok = $false; Note = "REFUSAL NOT OBSERVED: tokens missing $miss; module $mod" }
+    }
     if (-not (Test-Path $src) -or -not (Test-Path $exp)) {
         return [pscustomobject]@{ Name = $s; Ok = $false; Note = 'NO SUBJECT OR ORACLE' }
     }
@@ -223,10 +262,10 @@ $results = $subjects | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     $want = Get-HarnessExpected ([System.IO.File]::ReadAllText($exp))
 
     if ($Calibrate) {
-        if ($got -ne $want) { return [pscustomobject]@{ Name = $s; Ok = $true; Note = '' } }
+        if (-not (Test-HarnessMatch $got $want)) { return [pscustomobject]@{ Name = $s; Ok = $true; Note = '' } }
         return [pscustomobject]@{ Name = $s; Ok = $false; Note = 'CALIBRATION FAILED: mangled subject still produced its oracle' }
     }
-    if ($got -eq $want) { return [pscustomobject]@{ Name = $s; Ok = $true; Note = '' } }
+    if (Test-HarnessMatch $got $want) { return [pscustomobject]@{ Name = $s; Ok = $true; Note = '' } }
 
     # A truncated capture and a wrong answer are different claims (L-SHORT).
     $shape = if ($code -ne 0) {

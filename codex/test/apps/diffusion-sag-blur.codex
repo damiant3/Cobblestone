@@ -1,0 +1,85 @@
+Chapter: DiffusionSagBlur
+  cites Diffusion chapter Sag
+  cites Diffusion chapter UNet
+  cites Diffusion chapter GpuModules
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/sag-oracle.py's: Forge's own create_blur_map over the
+ probabilities and uncond prediction built below, at blur sigma 2 and
+ threshold 1; every value within 1e-5. The cases are an SDXL 16 x 16 latent,
+ an SD1.5 64 x 96 one, and a 75 x 75 one whose mask grid (19 x 19) takes
+ PyTorch's float nearest index. The sabotage flips the first case's mask.
+
+ We say:
+
+Section: Inputs
+
+  heads : Integer = 2
+
+  unit-of : Integer -> Real
+  unit-of (rows) = 1.0 / real-from-int (bit-shl 1 (sg-bit-length (2 * rows - 1) 0))
+
+  fill-attn : Integer, Integer, Integer, Real -> Integer
+  fill-attn (a) (rows) (i) (u) =
+    if i >= heads * rows * rows then a
+    else let h = i / (rows * rows)
+    in let r = i - h * rows * rows
+    in let q = r / rows
+    in let j = r - q * rows
+    in let k = int-mod (j * 29) 7 + int-mod (q * 13 + h * 7) 3
+    in let z = sg-set a i (real-from-int k * u / 2.0)
+    in fill-attn a rows (i + 1) u
+
+  fill-latent : Integer, Integer, Integer -> Integer
+  fill-latent (a) (i) (n) = if i >= n then a else let z = sg-set a i (real-from-int (int-mod (i * 37 + 11) 257 - 128) / 64.0) in fill-latent a (i + 1) n
+
+Section: Grading
+
+  theirs : Integer = #BD900000
+
+  worst : Integer, Integer, Integer, Integer, Real -> Real
+  worst (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = sg-get a i - sg-get b i
+    in let e = if d < 0.0 then 0.0 - d else d
+    in worst a b (i + 1) n (if e > acc then e else acc)
+
+  flip : List Integer, Integer, List Real -> List Real
+  flip (m) (i) (acc) = if i >= list-length m then acc else flip m (i + 1) (list-push acc (real-from-int (1 - list-at m i)))
+
+  ones : List Integer, Integer, Integer -> Integer
+  ones (m) (i) (acc) = if i >= list-length m then acc else ones m (i + 1) (acc + list-at m i)
+
+  to-dev : Integer, Integer -> Integer
+  to-dev (host) (n) = let d = gpu-buf-alloc (n * 4) in if d /= 0 & gpu-buf-write d 0 (n * 4) host then d else 0
+
+  arm : Integer, Integer, Integer, Integer, Integer, Boolean -> Text
+  arm (h) (at) (lh) (lw) (rows) (sabotage) =
+    let n = 4 * lh * lw
+    in let up = gpu-buf-upload h 0 "sag.bin" at (n * 4) gpu-dt-u8 gpu-dt-u8
+    in let what = show lh & " x " & show lw & (if sabotage then ", sabotage, the mask flipped" else "")
+    in if gpu-buf-read h 0 (n * 4) theirs == False then what & ": the fixture could not be read"
+    else let a = to-dev (fill-attn (alloc-bytes (heads * rows * rows * 4)) rows 0 (unit-of rows)) (heads * rows * rows)
+    in let mbuf = gpu-buf-alloc (rows * 4)
+    in let rec = if a == 0 | mbuf == 0 then False else sag-probs mbuf 1.0 a heads rows
+    in let mdev = if sabotage then un-upload (flip (sag-mask-of mbuf rows) 0 []) else mbuf
+    in let m = sag-mask-of mdev rows
+    in let x0 = to-dev (fill-latent (alloc-bytes (n * 4)) 0 n) n
+    in let out = gpu-buf-alloc (n * 4)
+    in let host = alloc-bytes (n * 4)
+    in let ok = if rec == False | x0 == 0 | out == 0 then False else if sag-degrade x0 out lh lw mdev rows 2.0 then gpu-buf-read out 0 (n * 4) host else False
+    in let f = un-free (un-free (un-free (un-free (un-free 0 a) mbuf) x0) out) (if sabotage then mdev else 0)
+    in if ok == False then what & ": refused"
+    else what & ", mask " & show (ones m 0 0) & " of " & show rows & (if worst host theirs 0 n 0.0 <= 0.00001 then ": within 1e-5" else ": PAST 1e-5")
+
+  opening : [Console] Nothing
+  opening = act
+    let h = gpu-buf-alloc (4 * 64 * 96 * 4)
+    in act
+      print-line-uni (arm h 0 16 16 16 False)
+      print-line-uni (arm h (4 * 16 * 16 * 4) 64 96 96 False)
+      print-line-uni (arm h (4 * 16 * 16 * 4 + 4 * 64 * 96 * 4) 75 75 361 False)
+      print-line-uni (arm h 0 16 16 16 True)
+    end
+  end

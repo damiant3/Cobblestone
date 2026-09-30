@@ -40,7 +40,7 @@
 param(
     [string]$Root = 'codex\compiler',
     [string]$Only = '',
-    [int]$Jobs = 8,
+    [int]$Jobs = 16,
     [string]$Kernel = '',
     [switch]$KeepUnits,
     # The compiler is assembled by glob, so a name a sibling chapter defines is
@@ -167,6 +167,8 @@ foreach ($chapter in ($byChapter.Keys | Sort-Object)) {
     $units += [pscustomobject]@{ Chapter = $chapter; Src = $src; Safe = $safe }
 }
 
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
+$Jobs = Get-VmAdmittedSlots -Slots $Jobs -GuestMB 256 -What 'subset-cite compiles'
 Write-Host "check-subset-cites: $($units.Count) chapter unit(s), -Jobs $Jobs"
 
 $compile = Join-Path $PSScriptRoot 'compile.ps1'

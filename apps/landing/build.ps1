@@ -83,6 +83,11 @@ try {
         -Src (Join-Path $AppDir 'LandingPage.codex') `
         -Out (Join-Path $Web 'landing.html')
     if ($LASTEXITCODE -ne 0) { Write-Host '[landing] FAIL: page generation'; exit 3 }
+    Write-Host "[landing] generating imagegen.html ..."
+    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\html\run.ps1') `
+        -Src (Join-Path $AppDir 'ImageGenPage.codex') `
+        -Out (Join-Path $Web 'imagegen.html')
+    if ($LASTEXITCODE -ne 0) { Write-Host '[landing] FAIL: imagegen page generation'; exit 3 }
 } finally {
     if ($restore) { Copy-Item $saved $defaultKernel -Force; Remove-Item $saved -Force }
 }
@@ -200,7 +205,7 @@ New-Item -ItemType Directory -Force -Path $dst | Out-Null
 # prism.html resolves it as EMBED['library.img.gz'] ? b64ToBytes(...) : fetch(...)
 # and it DOES ride the embed, but a fetch fallback that 404s is a cliff rather
 # than a fallback, and it is a built artifact this bundle simply was not copying.
-foreach ($f in 'codex-compiler.wasm', 'Codex.codex', 'roundabout.jpg', 'prism.html', 'mods.html', 'examples.json', 'library.img.gz') {
+foreach ($f in 'codex-compiler.wasm', 'Codex.codex', 'roundabout.jpg', 'prism.html', 'examples.json', 'library.img.gz') {
     $from = Join-Path $pageSrc $f
     if (-not (Test-Path -PathType Leaf $from)) { Write-Host "[landing] FAIL: missing $f"; exit 5 }
     Copy-Item $from (Join-Path $dst $f) -Force
@@ -520,6 +525,9 @@ Write-Host ('[landing] experimental: page {0:N0} B, DeviceEffect {1:N0} B' -f `
     (Get-Item (Join-Path $exDst 'index.html')).Length, (Get-Item (Join-Path $exDst 'DeviceEffect.codex')).Length)
 Write-Host ''
 Write-Host '[landing] assembled:'
+$modBuilderDst = Join-Path $Web 'modbuilder'
+New-Item -ItemType Directory -Force -Path $modBuilderDst | Out-Null
+Copy-Item -LiteralPath (Join-Path $Repo 'apps/modbuilder/web/workspace.html') -Destination (Join-Path $modBuilderDst 'index.html') -Force
 foreach ($f in (Get-ChildItem $Web -File | Sort-Object Name)) {
     '  {0,-22} {1,10:N0}' -f $f.Name, $f.Length
 }

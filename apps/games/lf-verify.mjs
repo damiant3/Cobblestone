@@ -148,6 +148,46 @@ ok('a blank grid stays blank', live(grid(e.lf_step(blank))) === 0);
   ok('control: enough generations to mean something', gens >= 300, gens);
 }
 
+// -- THE RULES (Life.codex, "The Rules"), one class at a time -------------
+//
+// Every (state, live-neighbour count) pair the rules distinguish, 2 x 9, at an
+// interior cell, an edge cell and two corners, so each neighbourhood crosses
+// the joined edges in a different direction. The position is built by
+// toggles alone, and the neighbours lit are the first n of the eight in a
+// fixed order.
+{
+  const rule = (alive, n) => (alive ? (n === 2 || n === 3 ? 1 : 0) : (n === 3 ? 1 : 0));
+  const around = (r, c) => [[-1, -1], [-1, 0], [-1, 1], [0, 1], [1, 1], [1, 0], [1, -1], [0, -1]]
+    .map(([dr, dc]) => [(r + dr + N) % N, (c + dc + N) % N]);
+  for (const [name, r, c] of [['interior', 10, 10], ['top edge', 0, 7], ['top-left corner', 0, 0], ['bottom-right corner', 19, 19]]) {
+    const bad = [];
+    for (const alive of [0, 1]) {
+      for (let n = 0; n <= 8; n++) {
+        let h = e.lf_blank();
+        if (alive) h = e.lf_toggle(h, r, c);
+        for (const [nr, nc] of around(r, c).slice(0, n)) h = e.lf_toggle(h, nr, nc);
+        const counted = e.lf_nbrs(h, r, c);
+        const got = e.lf_cell(e.lf_step(h), r, c), want = rule(alive, n);
+        const oracle = nextGen(grid(h))[r][c];
+        if (counted !== n || got !== want || oracle !== want) {
+          bad.push(`${alive ? 'live' : 'dead'} with ${n}: counted ${counted}, next ${got}, rules ${want}`);
+        }
+      }
+    }
+    ok(`rules: B3/S23 for a live and a dead cell with 0..8 neighbours, ${name} cell`,
+       bad.length === 0, bad.slice(0, 2).join('; ') || '18 classes');
+  }
+  // A toggle is the player's only single-cell move: it flips that cell and no other.
+  const g0 = grid(e.lf_new(3));
+  let flips = '';
+  for (const [r, c] of [[0, 0], [0, 19], [19, 0], [7, 13]]) {
+    const h = e.lf_toggle(e.lf_new(3), r, c), g = grid(h);
+    const diff = g.flat().filter((v, i) => v !== g0.flat()[i]).length;
+    if (diff !== 1 || g[r][c] !== 1 - g0[r][c] || e.lf_alive(h) !== live(g)) flips += ` ${r},${c}`;
+  }
+  ok('rules: a toggle flips exactly the cell clicked, and the count follows', !flips, flips || '4 cells');
+}
+
 // -- The copy arm ---------------------------------------------------------
 {
   const base = e.lf_place(blank, 0, 10, 10);

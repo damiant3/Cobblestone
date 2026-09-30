@@ -1,6 +1,7 @@
 Chapter: StarMapWasm
   cites Foreword chapter Console
   cites Starmap chapter StarMapScene
+  cites Starmap chapter CelestialTypes
 
  Browser entry point for the star map. The catalogue is not built here: the
  page hands over data/starmap.dat and this chapter reads it in place, so the
@@ -19,12 +20,24 @@ Section: The File Format
    16 name table     20 dso count 24 dso offset   28 con count
    32 con offset     36 con lines
 
- THE SHIPPED FILE'S CONSTELLATION FIELDS ARE WRONG and this chapter does not
- read them. import-hyg.ps1 patched the constellation offset into byte 28,
- which is the COUNT's slot, so every file it has written carries an offset
- where the count belongs and a zero where the offset belongs. The importer is
- fixed; the file in the depot cannot be regenerated without hyg_v42.csv, which
- is not in the tree.
+ THE SHIPPED FILE'S CONSTELLATION FIELDS ARE SWAPPED. import-hyg.ps1 patched
+ the constellation offset into byte 28, the COUNT's slot, and left 0 at byte
+ 32, so a file whose byte 32 is zero keeps its section offset at 28 and a file
+ with a nonzero 32 is laid out as documented. Neither layout's count is read:
+ the section is walked until the segments it holds reach con lines (byte 36).
+ One constellation is an abbreviation length byte, 3 abbreviation bytes, a name
+ length byte, 20 name bytes, a 16-bit line count at 25, then that many pairs of
+ 32-bit HYG ids, 27 + 8 per line bytes in all.
+
+  sm-hdr-conslot : Integer = 28
+
+  sm-hdr-conoff : Integer = 32
+
+  sm-hdr-conlines : Integer = 36
+
+  sm-con-head : Integer = 27
+
+  sm-con-linecount : Integer = 25
 
   wasm-exports : Text = ""
 
@@ -59,6 +72,17 @@ Section: The File Format
 
   sm-rec-magword : Integer = 16
 
+ One deep-sky record is 80 bytes at dso offset, written by import-hyg.ps1: id,
+ then x, y, z at the star record's offsets, then a word holding the 16-bit
+ magnitude and the kind byte above it (0 globular, 1 open cluster, 2 planetary
+ nebula, 3 diffuse nebula, 4 galaxy, 5 quasar, 6 dark nebula, 7 supernova
+ remnant), then the constellation (3 bytes at 19), the name (length at 22, 40
+ bytes at 23) and the description (length at 63, 16 bytes at 64).
+
+  sm-dso-size : Integer = 80
+
+  sm-dso-magword : Integer = 16
+
 Section: Memory Map
 
  The page writes the file into the window at sm-dat-base, so the window has to
@@ -84,6 +108,12 @@ Section: Memory Map
 
   sm-cell-error : Integer = 288
 
+  sm-cell-dsovisible : Integer = 292
+
+  sm-cell-conlines : Integer = 296
+
+  sm-cell-concount : Integer = 300
+
   sm-cam-state : Integer = 352
 
   sm-dat-base : Integer = 1048576
@@ -93,6 +123,14 @@ Section: Memory Map
   sm-visible-buf : Integer = 6291456
 
   sm-visible-cap : Integer = 30000
+
+  sm-dso-buf : Integer = 6422528
+
+  sm-dso-cap : Integer = 4096
+
+  sm-con-buf : Integer = 6438912
+
+  sm-con-cap : Integer = 1024
 
   sm-heap-floor : Integer = 8388608
 
@@ -140,6 +178,10 @@ Section: Loading
 
   sm-err-truncated : Integer = 4
 
+  sm-err-dso-truncated : Integer = 5
+
+  sm-err-con : Integer = 6
+
  "STAR" read as one little-endian word, which is what peek-32 answers over the
  first four bytes. Verified against the shipped file rather than derived.
 
@@ -152,13 +194,52 @@ Section: Loading
     else if sm-get sm-dat-base sm-hdr-version /= 2 then sm-fail sm-err-version
     else let n = sm-get sm-dat-base sm-hdr-stars
     in if sm-hdr-size + n * sm-rec-size > len then sm-fail sm-err-truncated
+    else if sm-dso-fits len == False then sm-fail sm-err-dso-truncated
+    else if sm-con-end len < 0 then sm-fail sm-err-con
     else sm-accept n len
+
+  sm-con-off : Integer
+  sm-con-off =
+    let o = sm-get sm-dat-base sm-hdr-conoff
+    in if o > 0 then o else sm-get sm-dat-base sm-hdr-conslot
+
+  sm-u16 : Integer -> Integer
+  sm-u16 (p) = peek-byte sm-dat-base p + peek-byte sm-dat-base (p + 1) * 256
+
+  sm-con-end : Integer -> Integer
+  sm-con-end (len) =
+    let want = sm-get sm-dat-base sm-hdr-conlines
+    in if want == 0 then 0
+    else if want < 0 then -1
+    else let off = sm-con-off
+    in if off < sm-hdr-size then -1
+    else sm-con-walk off 0 want len
+
+  sm-con-walk : Integer, Integer, Integer, Integer -> Integer
+  sm-con-walk (p) (got) (want) (len) =
+    if got == want then p
+    else if got > want then -1
+    else if p + sm-con-head > len then -1
+    else let q = p + sm-con-head + sm-u16 (p + sm-con-linecount) * 8
+    in if q > len then -1
+    else sm-con-walk q (got + sm-u16 (p + sm-con-linecount)) want len
+
+  sm-dso-fits : Integer -> Boolean
+  sm-dso-fits (len) =
+    let dn = sm-get sm-dat-base sm-hdr-dsocount
+    in if dn == 0 then True
+    else if dn < 0 then False
+    else let off = sm-get sm-dat-base sm-hdr-dsooff
+    in if off < sm-hdr-size then False
+    else off + dn * sm-dso-size <= len
 
   sm-fail : Integer -> Integer
   sm-fail (code) =
     let a = sm-put 0 sm-cell-error code
     in let b = sm-put 0 sm-cell-ready 0
     in let c = sm-put 0 sm-cell-stars 0
+    in let d = sm-put 0 sm-cell-dsovisible 0
+    in let e = sm-put 0 sm-cell-conlines 0
     in 0 - code
 
   sm-accept : Integer, Integer -> Integer
@@ -170,6 +251,7 @@ Section: Loading
     in let a4 = sm-put 0 sm-cell-nameoff (sm-get sm-dat-base sm-hdr-nameoff)
     in let a5 = sm-put 0 sm-cell-dsocount (sm-get sm-dat-base sm-hdr-dsocount)
     in let a6 = sm-put 0 sm-cell-dsooff (sm-get sm-dat-base sm-hdr-dsooff)
+    in let c0 = sm-con-publish n
     in let a7 = sm-write-cam camera-new
     in let a8 = sm-put 0 (sm-cam-state + sm-cam-objects) n
     in let a9 = sm-put 0 (sm-cam-state + sm-cam-mag-limit) 6000
@@ -179,6 +261,53 @@ Section: Loading
     in let vis = sm-select
     in let rdy = sm-put 0 sm-cell-ready 1
     in n
+
+Section: Constellation Lines
+
+ A segment names its two stars by HYG id and the page needs record indices.
+ Star records are in ascending id order in the shipped file, so each id is a
+ binary search, and an id that names no record drops its segment rather than
+ drawing a line to record 0.
+
+  sm-find-star : Integer, Integer, Integer -> Integer
+  sm-find-star (id) (lo) (hi) =
+    if lo > hi then -1
+    else let mid = (lo + hi) / 2
+    in let got = sm-get (sm-star-at mid) 0
+    in if got == id then mid
+    else if got < id then sm-find-star id (mid + 1) hi
+    else sm-find-star id lo (mid - 1)
+
+  sm-con-publish : Integer -> Integer
+  sm-con-publish (n) =
+    let want = sm-get sm-dat-base sm-hdr-conlines
+    in if want <= 0 then sm-con-done 0 0
+    else sm-con-each sm-con-off 0 0 want n 0
+
+  sm-con-done : Integer, Integer -> Integer
+  sm-con-done (lines) (cons) =
+    let a = sm-put 0 sm-cell-conlines lines
+    in let b = sm-put 0 sm-cell-concount cons
+    in lines
+
+  sm-con-each : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sm-con-each (p) (got) (out) (want) (n) (cons) =
+    if got >= want then sm-con-done out cons
+    else let lc = sm-u16 (p + sm-con-linecount)
+    in let out2 = sm-con-lines (p + sm-con-head) 0 lc out n
+    in sm-con-each (p + sm-con-head + lc * 8) (got + lc) out2 want n (cons + 1)
+
+  sm-con-lines : Integer, Integer, Integer, Integer, Integer -> Integer
+  sm-con-lines (p) (k) (lc) (out) (n) =
+    if k >= lc then out
+    else if out >= sm-con-cap then out
+    else let a = sm-find-star (sm-get sm-dat-base (p + k * 8)) 0 (n - 1)
+    in let b = sm-find-star (sm-get sm-dat-base (p + k * 8 + 4)) 0 (n - 1)
+    in if a < 0 then sm-con-lines p (k + 1) lc out n
+    else if b < 0 then sm-con-lines p (k + 1) lc out n
+    else let w1 = sm-put sm-con-buf (out * 8) a
+    in let w2 = sm-put sm-con-buf (out * 8 + 4) b
+    in sm-con-lines p (k + 1) lc (out + 1) n
 
 Section: The Query
 
@@ -198,6 +327,7 @@ Section: The Query
     in let lim = sm-get 0 (sm-cam-state + sm-cam-mag-limit)
     in let v = sm-select-loop 0 n lim 0
     in let w = sm-put 0 sm-cell-visible v
+    in let d = sm-select-dso lim
     in v
 
   sm-select-loop : Integer, Integer, Integer, Integer -> Integer
@@ -207,6 +337,26 @@ Section: The Query
     else if sm-star-mag i > lim then sm-select-loop (i + 1) n lim out
     else let w = sm-put sm-visible-buf (out * 4) i
     in sm-select-loop (i + 1) n lim (out + 1)
+
+  sm-dso-at : Integer -> Integer
+  sm-dso-at (j) = sm-dat-base + sm-get 0 sm-cell-dsooff + j * sm-dso-size
+
+  sm-dso-mag : Integer -> Integer
+  sm-dso-mag (j) = sm-get-lo16 (sm-dso-at j) sm-dso-magword
+
+  sm-select-dso : Integer -> Integer
+  sm-select-dso (lim) =
+    let v = sm-select-dso-loop 0 (sm-get 0 sm-cell-dsocount) lim 0
+    in let w = sm-put 0 sm-cell-dsovisible v
+    in v
+
+  sm-select-dso-loop : Integer, Integer, Integer, Integer -> Integer
+  sm-select-dso-loop (j) (n) (lim) (out) =
+    if j >= n then out
+    else if out >= sm-dso-cap then out
+    else if sm-dso-mag j > lim then sm-select-dso-loop (j + 1) n lim out
+    else let w = sm-put sm-dso-buf (out * 4) j
+    in sm-select-dso-loop (j + 1) n lim (out + 1)
 
 Section: Camera State
 
@@ -292,6 +442,9 @@ Section: Camera Controls
 
   sm-fov-max : Integer = 120
 
+  sm-bv-rgb : Integer -> Integer
+  sm-bv-rgb (bv) = bv-to-rgb bv
+
   sm-zoom : Integer -> Integer
   sm-zoom (delta) =
     let f = sm-get 0 (sm-cam-state + sm-cam-fov) + delta
@@ -315,7 +468,7 @@ Section: Selection and Toggles
 
   sm-select-obj : Integer -> Integer
   sm-select-obj (i) =
-    let n = sm-get 0 sm-cell-stars
+    let n = sm-get 0 sm-cell-stars + sm-get 0 sm-cell-dsocount
     in if i < 0 then sm-put 0 (sm-cam-state + sm-cam-selected) sm-absent
     else if i >= n then sm-put 0 (sm-cam-state + sm-cam-selected) sm-absent
     else let w = sm-put 0 (sm-cam-state + sm-cam-selected) i
@@ -356,6 +509,9 @@ Section: Queries
   sm-get-visible-count : Integer
   sm-get-visible-count = sm-get 0 sm-cell-visible
 
+  sm-get-dso-visible-count : Integer
+  sm-get-dso-visible-count = sm-get 0 sm-cell-dsovisible
+
   sm-get-error : Integer
   sm-get-error = sm-get 0 sm-cell-error
 
@@ -373,7 +529,7 @@ Section: Keeping the Page's Entries Alive
 
   sm-keep-alive : Integer -> Integer
   sm-keep-alive (x) =
-    sm-load x + sm-select + sm-tick x + sm-orbit x x + sm-look-at x x + sm-zoom x + sm-move-forward x + sm-move-right x + sm-move-up x + sm-set-speed x + sm-select-obj x + sm-set-mag-limit x + sm-toggle-labels + sm-toggle-grid + sm-toggle-constellations + sm-get-star-count + sm-get-visible-count + sm-get-error
+    sm-load x + sm-select + sm-tick x + sm-orbit x x + sm-look-at x x + sm-zoom x + sm-move-forward x + sm-move-right x + sm-move-up x + sm-set-speed x + sm-select-obj x + sm-set-mag-limit x + sm-toggle-labels + sm-toggle-grid + sm-toggle-constellations + sm-get-star-count + sm-get-visible-count + sm-get-error + sm-bv-rgb x + sm-get-dso-visible-count
 
 Section: Entry
 
@@ -386,6 +542,7 @@ Section: Entry
     in let c0 = sm-put 0 sm-cell-ready 0
     in let c1 = sm-put 0 sm-cell-stars 0
     in let c2 = sm-put 0 sm-cell-visible 0
+    in let c4 = sm-put 0 sm-cell-dsovisible 0
     in let c3 = sm-put 0 sm-cell-error sm-err-none
     in print-line-uni ("StarMap WASM: ready for a catalogue, window " & show (sm-dat-max / 1048576) & " MB, cap " & show sm-visible-cap)
   end

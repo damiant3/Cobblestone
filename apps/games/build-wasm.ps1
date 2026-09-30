@@ -46,44 +46,59 @@ $Games = @{
     'monopoly' = @{
         Chapter = 'classic\MonopolyWasm.codex'
         Exports = @(
-            @{ Name = 'mo_new';     Fn = 'mo_wasm_new';        Arity = 2 }
-            @{ Name = 'mo_step';    Fn = 'mo_wasm_step';       Arity = 2 }
-            @{ Name = 'mo_resume';  Fn = 'mo_wasm_resume';     Arity = 2 }
-            @{ Name = 'mo_accept';  Fn = 'mo_wasm_accept';     Arity = 1 }
-            @{ Name = 'mo_decline'; Fn = 'mo_wasm_decline';    Arity = 1 }
-            @{ Name = 'mo_twant';   Fn = 'mo_wasm_trade_want'; Arity = 1 }
-            @{ Name = 'mo_tgive';   Fn = 'mo_wasm_trade_give'; Arity = 1 }
-            @{ Name = 'mo_tprice';  Fn = 'mo_wasm_trade_price'; Arity = 1 }
-            @{ Name = 'mo_players'; Fn = 'mo_wasm_players';    Arity = 1 }
-            @{ Name = 'mo_cash';    Fn = 'mo_wasm_cash';       Arity = 2 }
-            @{ Name = 'mo_pos';     Fn = 'mo_wasm_position';   Arity = 2 }
-            @{ Name = 'mo_jail';    Fn = 'mo_wasm_in_jail';    Arity = 2 }
-            @{ Name = 'mo_props';   Fn = 'mo_wasm_props';      Arity = 1 }
-            @{ Name = 'mo_owner';   Fn = 'mo_wasm_prop_owner'; Arity = 2 }
-            @{ Name = 'mo_cost';    Fn = 'mo_wasm_prop_cost';  Arity = 2 }
-            @{ Name = 'mo_color';   Fn = 'mo_wasm_prop_color'; Arity = 2 }
-            @{ Name = 'mo_owned';   Fn = 'mo_wasm_owned';      Arity = 2 }
-            @{ Name = 'mo_ownedat'; Fn = 'mo_wasm_owned_at';   Arity = 3 }
-            @{ Name = 'mo_cur';     Fn = 'mo_wasm_cur';        Arity = 1 }
-            @{ Name = 'mo_turn';    Fn = 'mo_wasm_turn';       Arity = 1 }
-            @{ Name = 'mo_done';    Fn = 'mo_wasm_done';       Arity = 1 }
-            @{ Name = 'mo_winner';  Fn = 'mo_wasm_winner';     Arity = 1 }
-            @{ Name = 'mo_richest'; Fn = 'mo_wasm_richest';    Arity = 1 }
-            @{ Name = 'mo_cap';     Fn = 'mo_wasm_turn_cap';   Arity = 0 }
-            @{ Name = 'mo_roll';    Fn = 'mo_wasm_roll';         Arity = 2 }
-            @{ Name = 'mo_take';    Fn = 'mo_wasm_take';         Arity = 1 }
-            @{ Name = 'mo_leave';   Fn = 'mo_wasm_leave';        Arity = 1 }
-            @{ Name = 'mo_phase';   Fn = 'mo_wasm_phase';        Arity = 1 }
-            @{ Name = 'mo_offered'; Fn = 'mo_wasm_offered';      Arity = 1 }
-            @{ Name = 'mo_lastroll'; Fn = 'mo_wasm_last_roll';   Arity = 1 }
-            @{ Name = 'mo_canroll'; Fn = 'mo_wasm_can_roll';     Arity = 1 }
-            @{ Name = 'mo_candecide'; Fn = 'mo_wasm_can_decide'; Arity = 2 }
-            @{ Name = 'mo_offercost'; Fn = 'mo_wasm_offer_cost'; Arity = 1 }
-            @{ Name = 'mo_offercolor'; Fn = 'mo_wasm_offer_color'; Arity = 1 }
-            @{ Name = 'mo_offerrent'; Fn = 'mo_wasm_offer_rent'; Arity = 1 }
-            @{ Name = 'mo_propat';  Fn = 'mo_wasm_prop_at';      Arity = 1 }
+            @{ Name = 'mo_new'; Fn = 'mo_wasm_new'; Arity = 2 }
+            @{ Name = 'mo_step'; Fn = 'mo_wasm_step'; Arity = 2 }
+            @{ Name = 'mo_act'; Fn = 'mo_wasm_act'; Arity = 4 }
+            @{ Name = 'mo_legal'; Fn = 'mo_wasm_legal'; Arity = 4 }
+            @{ Name = 'mo_ai'; Fn = 'mo_wasm_ai'; Arity = 1 }
+            @{ Name = 'mo_actor'; Fn = 'mo_wasm_actor'; Arity = 1 }
+            @{ Name = 'mo_slot'; Fn = 'mo_wasm_slot'; Arity = 2 }
+            @{ Name = 'mo_poke'; Fn = 'mo_wasm_poke'; Arity = 3 }
+            @{ Name = 'mo_players'; Fn = 'mo_wasm_players'; Arity = 1 }
+            @{ Name = 'mo_cash'; Fn = 'mo_wasm_cash'; Arity = 2 }
+            @{ Name = 'mo_pos'; Fn = 'mo_wasm_position'; Arity = 2 }
+            @{ Name = 'mo_jail'; Fn = 'mo_wasm_in_jail'; Arity = 2 }
+            @{ Name = 'mo_jturns'; Fn = 'mo_wasm_jail_turns'; Arity = 2 }
+            @{ Name = 'mo_cards'; Fn = 'mo_wasm_cards'; Arity = 3 }
+            @{ Name = 'mo_out'; Fn = 'mo_wasm_out'; Arity = 2 }
+            @{ Name = 'mo_worth'; Fn = 'mo_wasm_worth'; Arity = 2 }
+            @{ Name = 'mo_props'; Fn = 'mo_wasm_props'; Arity = 1 }
+            @{ Name = 'mo_owner'; Fn = 'mo_wasm_owner'; Arity = 2 }
+            @{ Name = 'mo_houses'; Fn = 'mo_wasm_houses'; Arity = 2 }
+            @{ Name = 'mo_mort'; Fn = 'mo_wasm_mortgaged'; Arity = 2 }
+            @{ Name = 'mo_cost'; Fn = 'mo_wasm_cost'; Arity = 2 }
+            @{ Name = 'mo_group'; Fn = 'mo_wasm_group'; Arity = 2 }
+            @{ Name = 'mo_space'; Fn = 'mo_wasm_space'; Arity = 1 }
+            @{ Name = 'mo_hcost'; Fn = 'mo_wasm_house_cost'; Arity = 1 }
+            @{ Name = 'mo_rent'; Fn = 'mo_wasm_rent_at'; Arity = 2 }
+            @{ Name = 'mo_propat'; Fn = 'mo_wasm_prop_at'; Arity = 1 }
+            @{ Name = 'mo_cur'; Fn = 'mo_wasm_cur'; Arity = 1 }
+            @{ Name = 'mo_phase'; Fn = 'mo_wasm_phase'; Arity = 1 }
+            @{ Name = 'mo_turn'; Fn = 'mo_wasm_turn'; Arity = 1 }
+            @{ Name = 'mo_done'; Fn = 'mo_wasm_done'; Arity = 1 }
+            @{ Name = 'mo_winner'; Fn = 'mo_wasm_winner'; Arity = 1 }
+            @{ Name = 'mo_richest'; Fn = 'mo_wasm_richest'; Arity = 1 }
+            @{ Name = 'mo_cap'; Fn = 'mo_wasm_turn_cap'; Arity = 0 }
+            @{ Name = 'mo_die'; Fn = 'mo_wasm_die'; Arity = 2 }
+            @{ Name = 'mo_lastroll'; Fn = 'mo_wasm_last_roll'; Arity = 1 }
+            @{ Name = 'mo_offered'; Fn = 'mo_wasm_offered'; Arity = 1 }
             @{ Name = 'mo_offerspace'; Fn = 'mo_wasm_offer_space'; Arity = 1 }
-            @{ Name = 'mo_trade';   Fn = 'mo_wasm_trade';        Arity = 1 }
+            @{ Name = 'mo_card'; Fn = 'mo_wasm_last_card'; Arity = 1 }
+            @{ Name = 'mo_cthrow'; Fn = 'mo_wasm_card_throw'; Arity = 1 }
+            @{ Name = 'mo_bhouses'; Fn = 'mo_wasm_bank_houses'; Arity = 1 }
+            @{ Name = 'mo_bhotels'; Fn = 'mo_wasm_bank_hotels'; Arity = 1 }
+            @{ Name = 'mo_adeed'; Fn = 'mo_wasm_auction_deed'; Arity = 1 }
+            @{ Name = 'mo_ahigh'; Fn = 'mo_wasm_auction_high'; Arity = 1 }
+            @{ Name = 'mo_alead'; Fn = 'mo_wasm_auction_lead'; Arity = 1 }
+            @{ Name = 'mo_debts'; Fn = 'mo_wasm_debts'; Arity = 1 }
+            @{ Name = 'mo_debt'; Fn = 'mo_wasm_debt'; Arity = 3 }
+            @{ Name = 'mo_twant'; Fn = 'mo_wasm_trade_want'; Arity = 1 }
+            @{ Name = 'mo_tgive'; Fn = 'mo_wasm_trade_give'; Arity = 1 }
+            @{ Name = 'mo_tprice'; Fn = 'mo_wasm_trade_price'; Arity = 1 }
+            @{ Name = 'mo_qgive'; Fn = 'mo_wasm_quote_give'; Arity = 3 }
+            @{ Name = 'mo_qprice'; Fn = 'mo_wasm_quote_price'; Arity = 3 }
+            @{ Name = 'mo_deck'; Fn = 'mo_wasm_deck'; Arity = 3 }
+            @{ Name = 'mo_decklen'; Fn = 'mo_wasm_deck_len'; Arity = 2 }
         )
     }
     'minesweeper' = @{
@@ -101,6 +116,7 @@ $Games = @{
             @{ Name = 'ms_safe';  Fn = 'ms_wasm_safe';     Arity = 1 }
             @{ Name = 'ms_open';  Fn = 'ms_wasm_reveal';   Arity = 2 }
             @{ Name = 'ms_ai';    Fn = 'ms_wasm_ai';       Arity = 1 }
+            @{ Name = 'ms_flag';  Fn = 'ms_wasm_flag';  Arity = 2 }
         )
     }
     'yahtzee' = @{
@@ -122,6 +138,10 @@ $Games = @{
             @{ Name = 'yh_run';    Fn = 'yh_wasm_run';        Arity = 1 }
             @{ Name = 'yh_rscore'; Fn = 'yh_wasm_res_score';  Arity = 1 }
             @{ Name = 'yh_rturns'; Fn = 'yh_wasm_res_turns';  Arity = 1 }
+            @{ Name = 'yh_legal';  Fn = 'yh_wasm_legal';      Arity = 2 }
+            @{ Name = 'yh_bonus';  Fn = 'yh_wasm_bonus';      Arity = 1 }
+            @{ Name = 'yh_put';    Fn = 'yh_wasm_put';        Arity = 3 }
+            @{ Name = 'yh_dice';   Fn = 'yh_wasm_set_dice';   Arity = 6 }
         )
     }
     'war' = @{
@@ -137,6 +157,9 @@ $Games = @{
             @{ Name = 'wr_run';    Fn = 'wr_wasm_run';         Arity = 1 }
             @{ Name = 'wr_winner'; Fn = 'wr_wasm_res_winner';  Arity = 1 }
             @{ Name = 'wr_rounds'; Fn = 'wr_wasm_res_rounds';  Arity = 1 }
+            @{ Name = 'wr_empty';  Fn = 'wr_wasm_empty';       Arity = 1 }
+            @{ Name = 'wr_push1';  Fn = 'wr_wasm_push1';       Arity = 2 }
+            @{ Name = 'wr_push2';  Fn = 'wr_wasm_push2';       Arity = 2 }
         )
     }
     'sudoku' = @{
@@ -153,6 +176,12 @@ $Games = @{
             @{ Name = 'sd_place';   Fn = 'sd_wasm_place';           Arity = 3 }
             @{ Name = 'sd_fits';    Fn = 'sd_wasm_fits';            Arity = 3 }
             @{ Name = 'sd_blanks';  Fn = 'sd_wasm_empty_count';     Arity = 1 }
+            @{ Name = 'sd_fixed';   Fn = 'sd_wasm_fixed';           Arity = 2 }
+            @{ Name = 'sd_won';     Fn = 'sd_wasm_won';             Arity = 1 }
+            @{ Name = 'sd_count';   Fn = 'sd_wasm_count';           Arity = 2 }
+            @{ Name = 'sd_blank';   Fn = 'sd_wasm_blank';           Arity = 0 }
+            @{ Name = 'sd_put';     Fn = 'sd_wasm_put';             Arity = 3 }
+            @{ Name = 'sd_fix';     Fn = 'sd_wasm_fix';             Arity = 3 }
             @{ Name = 'sd_run';     Fn = 'sd_wasm_run';             Arity = 0 }
             @{ Name = 'sd_rsolved'; Fn = 'sd_wasm_res_solved';      Arity = 1 }
             @{ Name = 'sd_riters';  Fn = 'sd_wasm_res_iterations';  Arity = 1 }
@@ -202,6 +231,8 @@ $Games = @{
             @{ Name = 'sp_suit';   Fn = 'sp_wasm_suit';       Arity = 1 }
             @{ Name = 'sp_coln';   Fn = 'sp_wasm_col_size';   Arity = 2 }
             @{ Name = 'sp_card';   Fn = 'sp_wasm_card';       Arity = 3 }
+            @{ Name = 'sp_down'; Fn = 'sp_wasm_down'; Arity = 2 }
+            @{ Name = 'sp_peek'; Fn = 'sp_wasm_peek'; Arity = 3 }
             @{ Name = 'sp_stockn'; Fn = 'sp_wasm_stock_size'; Arity = 1 }
             @{ Name = 'sp_suits';  Fn = 'sp_wasm_suits';      Arity = 1 }
             @{ Name = 'sp_moves';  Fn = 'sp_wasm_moves';      Arity = 1 }
@@ -214,6 +245,7 @@ $Games = @{
             @{ Name = 'sp_mstart'; Fn = 'sp_wasm_move_start'; Arity = 1 }
             @{ Name = 'sp_mto';    Fn = 'sp_wasm_move_to';    Arity = 1 }
             @{ Name = 'sp_run';    Fn = 'sp_wasm_run';        Arity = 1 }
+            @{ Name = 'sp_swapdown'; Fn = 'sp_wasm_swap_down'; Arity = 3 }
             @{ Name = 'sp_rsuits'; Fn = 'sp_wasm_res_suits';  Arity = 1 }
             @{ Name = 'sp_rmoves'; Fn = 'sp_wasm_res_moves';  Arity = 1 }
             @{ Name = 'sp_rwon';   Fn = 'sp_wasm_res_won';    Arity = 1 }
@@ -244,6 +276,9 @@ $Games = @{
             @{ Name = 'sg_candeal'; Fn = 'sg_wasm_can_deal';     Arity = 1 }
             @{ Name = 'sg_deal';    Fn = 'sg_wasm_deal';         Arity = 1 }
             @{ Name = 'sg_run';     Fn = 'sg_wasm_run';          Arity = 1 }
+            @{ Name = 'sg_empty';   Fn = 'sg_wasm_empty';        Arity = 1 }
+            @{ Name = 'sg_pushtab'; Fn = 'sg_wasm_push_tab';     Arity = 2 }
+            @{ Name = 'sg_pushdeck'; Fn = 'sg_wasm_push_deck';   Arity = 2 }
         )
     }
     'rps' = @{
@@ -269,34 +304,51 @@ $Games = @{
     'risk' = @{
         Chapter = 'classic\RiskWasm.codex'
         Exports = @(
-            @{ Name = 'rk_new';    Fn = 'rk_wasm_new';         Arity = 2 }
-            @{ Name = 'rk_owner';  Fn = 'rk_wasm_owner';       Arity = 2 }
-            @{ Name = 'rk_armies'; Fn = 'rk_wasm_armies';      Arity = 2 }
-            @{ Name = 'rk_cur';    Fn = 'rk_wasm_current';     Arity = 1 }
-            @{ Name = 'rk_turnno'; Fn = 'rk_wasm_turn_number'; Arity = 1 }
-            @{ Name = 'rk_done';   Fn = 'rk_wasm_done';        Arity = 1 }
-            @{ Name = 'rk_winner'; Fn = 'rk_wasm_winner';      Arity = 1 }
-            @{ Name = 'rk_np';     Fn = 'rk_wasm_players';     Arity = 1 }
-            @{ Name = 'rk_alive';  Fn = 'rk_wasm_alive';       Arity = 2 }
-            @{ Name = 'rk_total';  Fn = 'rk_wasm_total';       Arity = 2 }
-            @{ Name = 'rk_reinf';  Fn = 'rk_wasm_reinf';       Arity = 2 }
-            @{ Name = 'rk_adj';    Fn = 'rk_wasm_adjacent';    Arity = 2 }
-            @{ Name = 'rk_cont';   Fn = 'rk_wasm_continent';   Arity = 3 }
-            @{ Name = 'rk_turn';   Fn = 'rk_wasm_turn';        Arity = 2 }
-            @{ Name = 'rk_phase';     Fn = 'rk_wasm_phase';           Arity = 1 }
-            @{ Name = 'rk_toplace';   Fn = 'rk_wasm_to_place';        Arity = 1 }
-            @{ Name = 'rk_atkleft';   Fn = 'rk_wasm_attacks_left';    Arity = 1 }
-            @{ Name = 'rk_canplace';  Fn = 'rk_wasm_can_place';       Arity = 2 }
-            @{ Name = 'rk_place';     Fn = 'rk_wasm_place';           Arity = 2 }
-            @{ Name = 'rk_canattack'; Fn = 'rk_wasm_can_attack';      Arity = 3 }
-            @{ Name = 'rk_attack';    Fn = 'rk_wasm_attack';          Arity = 4 }
-            @{ Name = 'rk_canstop';   Fn = 'rk_wasm_can_stop';        Arity = 1 }
-            @{ Name = 'rk_stop';      Fn = 'rk_wasm_stop';            Arity = 1 }
-            @{ Name = 'rk_canatkfrom'; Fn = 'rk_wasm_can_attack_from'; Arity = 2 }
-            @{ Name = 'rk_run';    Fn = 'rk_wasm_run';         Arity = 2 }
-            @{ Name = 'rk_rwin';   Fn = 'rk_wasm_res_winner';  Arity = 1 }
-            @{ Name = 'rk_rturns'; Fn = 'rk_wasm_res_turns';   Arity = 1 }
-            @{ Name = 'rk_rowner'; Fn = 'rk_wasm_res_owner';   Arity = 2 }
+            @{ Name = 'rk_new'; Fn = 'rk_wasm_new'; Arity = 2 }
+            @{ Name = 'rk_step'; Fn = 'rk_wasm_step'; Arity = 2 }
+            @{ Name = 'rk_act'; Fn = 'rk_wasm_act'; Arity = 5 }
+            @{ Name = 'rk_legal'; Fn = 'rk_wasm_legal'; Arity = 4 }
+            @{ Name = 'rk_ai'; Fn = 'rk_wasm_ai'; Arity = 1 }
+            @{ Name = 'rk_slot'; Fn = 'rk_wasm_slot'; Arity = 2 }
+            @{ Name = 'rk_poke'; Fn = 'rk_wasm_poke'; Arity = 3 }
+            @{ Name = 'rk_np'; Fn = 'rk_wasm_players'; Arity = 1 }
+            @{ Name = 'rk_owner'; Fn = 'rk_wasm_owner'; Arity = 2 }
+            @{ Name = 'rk_armies'; Fn = 'rk_wasm_armies'; Arity = 2 }
+            @{ Name = 'rk_adj'; Fn = 'rk_wasm_adjacent'; Arity = 2 }
+            @{ Name = 'rk_cont'; Fn = 'rk_wasm_continent'; Arity = 1 }
+            @{ Name = 'rk_contbonus'; Fn = 'rk_wasm_cont_bonus'; Arity = 1 }
+            @{ Name = 'rk_alive'; Fn = 'rk_wasm_alive'; Arity = 2 }
+            @{ Name = 'rk_total'; Fn = 'rk_wasm_total'; Arity = 2 }
+            @{ Name = 'rk_held'; Fn = 'rk_wasm_held'; Arity = 2 }
+            @{ Name = 'rk_reinf'; Fn = 'rk_wasm_reinf'; Arity = 2 }
+            @{ Name = 'rk_hand'; Fn = 'rk_wasm_hand'; Arity = 2 }
+            @{ Name = 'rk_setupleft'; Fn = 'rk_wasm_setup_left'; Arity = 2 }
+            @{ Name = 'rk_holder'; Fn = 'rk_wasm_holder'; Arity = 2 }
+            @{ Name = 'rk_symbol'; Fn = 'rk_wasm_symbol'; Arity = 1 }
+            @{ Name = 'rk_firstset'; Fn = 'rk_wasm_first_set'; Arity = 2 }
+            @{ Name = 'rk_connected'; Fn = 'rk_wasm_connected'; Arity = 4 }
+            @{ Name = 'rk_cur'; Fn = 'rk_wasm_cur'; Arity = 1 }
+            @{ Name = 'rk_phase'; Fn = 'rk_wasm_phase'; Arity = 1 }
+            @{ Name = 'rk_turnno'; Fn = 'rk_wasm_turn'; Arity = 1 }
+            @{ Name = 'rk_done'; Fn = 'rk_wasm_done'; Arity = 1 }
+            @{ Name = 'rk_winner'; Fn = 'rk_wasm_winner'; Arity = 1 }
+            @{ Name = 'rk_toplace'; Fn = 'rk_wasm_to_place'; Arity = 1 }
+            @{ Name = 'rk_trades'; Fn = 'rk_wasm_trades'; Arity = 1 }
+            @{ Name = 'rk_die'; Fn = 'rk_wasm_die'; Arity = 2 }
+            @{ Name = 'rk_lost'; Fn = 'rk_wasm_lost'; Arity = 2 }
+            @{ Name = 'rk_mfrom'; Fn = 'rk_wasm_move_from'; Arity = 1 }
+            @{ Name = 'rk_mto'; Fn = 'rk_wasm_move_to'; Arity = 1 }
+            @{ Name = 'rk_mmin'; Fn = 'rk_wasm_move_min'; Arity = 1 }
+            @{ Name = 'rk_conquered'; Fn = 'rk_wasm_conquered'; Arity = 1 }
+            @{ Name = 'rk_decklen'; Fn = 'rk_wasm_deck_len'; Arity = 1 }
+            @{ Name = 'rk_deck'; Fn = 'rk_wasm_deck'; Arity = 2 }
+            @{ Name = 'rk_discardlen'; Fn = 'rk_wasm_discard_len'; Arity = 1 }
+            @{ Name = 'rk_discard'; Fn = 'rk_wasm_discard'; Arity = 2 }
+            @{ Name = 'rk_cap'; Fn = 'rk_wasm_turn_cap'; Arity = 0 }
+            @{ Name = 'rk_run'; Fn = 'rk_wasm_run'; Arity = 2 }
+            @{ Name = 'rk_rwin'; Fn = 'rk_wasm_res_winner'; Arity = 1 }
+            @{ Name = 'rk_rturns'; Fn = 'rk_wasm_res_turns'; Arity = 1 }
+            @{ Name = 'rk_rowner'; Fn = 'rk_wasm_res_owner'; Arity = 2 }
         )
     }
     'pokervariants' = @{
@@ -318,6 +370,8 @@ $Games = @{
             @{ Name = 'pv_eval5';   Fn = 'pvw_wasm_eval5';      Arity = 5 }
             @{ Name = 'pv_cmp';     Fn = 'pvw_wasm_cmp';        Arity = 2 }
             @{ Name = 'pv_rank';    Fn = 'pvw_wasm_rank';       Arity = 1 }
+            @{ Name = 'pv_board4';  Fn = 'pvw_wasm_board4';     Arity = 4 }
+            @{ Name = 'pv_board5';  Fn = 'pvw_wasm_board5';     Arity = 5 }
             @{ Name = 'pvt_new';      Fn = 'pvt_wasm_new';       Arity = 2 }
             @{ Name = 'pvt_variant';  Fn = 'pvt_wasm_variant';   Arity = 1 }
             @{ Name = 'pvt_size';     Fn = 'pvt_wasm_hand_size'; Arity = 1 }
@@ -350,6 +404,12 @@ $Games = @{
             @{ Name = 'pvt_marked';   Fn = 'pvt_wasm_marked';    Arity = 2 }
             @{ Name = 'pvt_canmark';  Fn = 'pvt_wasm_can_mark';  Arity = 2 }
             @{ Name = 'pvt_step';     Fn = 'pvt_wasm_step';      Arity = 1 }
+            @{ Name = 'pvt_dealt';    Fn = 'pvt_wasm_dealt';     Arity = 2 }
+            @{ Name = 'pvt_up';       Fn = 'pvt_wasm_up';        Arity = 3 }
+            @{ Name = 'pvt_street';   Fn = 'pvt_wasm_street';    Arity = 1 }
+            @{ Name = 'pvt_bring';    Fn = 'pvt_wasm_bring';     Arity = 1 }
+            @{ Name = 'pvt_canbig';   Fn = 'pvt_wasm_can_big';   Arity = 1 }
+            @{ Name = 'pvt_big';      Fn = 'pvt_wasm_big';       Arity = 1 }
         )
     }
     'poker' = @{
@@ -396,6 +456,7 @@ $Games = @{
             @{ Name = 'pkt_clear';    Fn = 'pkt_wasm_clear';          Arity = 1 }
             @{ Name = 'pkt_canmark';  Fn = 'pkt_wasm_can_mark';       Arity = 2 }
             @{ Name = 'pkt_marks';    Fn = 'pkt_wasm_marks';          Arity = 1 }
+            @{ Name = 'pkt_act'; Fn = 'pkt_wasm_act'; Arity = 3 }
         )
     }
     'pinochle' = @{
@@ -419,6 +480,32 @@ $Games = @{
             @{ Name = 'pn_t0';     Fn = 'pn_wasm_t0';     Arity = 1 }
             @{ Name = 'pn_t1';     Fn = 'pn_wasm_t1';     Arity = 1 }
             @{ Name = 'pn_winner'; Fn = 'pn_wasm_winner'; Arity = 1 }
+            @{ Name = 'pn_phase';    Fn = 'pn_wasm_phase';       Arity = 1 }
+            @{ Name = 'pn_dealer';   Fn = 'pn_wasm_dealer';      Arity = 1 }
+            @{ Name = 'pn_bid';      Fn = 'pn_wasm_bid';         Arity = 1 }
+            @{ Name = 'pn_bidder';   Fn = 'pn_wasm_bidder';      Arity = 1 }
+            @{ Name = 'pn_minbid';   Fn = 'pn_wasm_min_bid';     Arity = 1 }
+            @{ Name = 'pn_out';      Fn = 'pn_wasm_out';         Arity = 2 }
+            @{ Name = 'pn_meldin';   Fn = 'pn_wasm_meld_in';     Arity = 3 }
+            @{ Name = 'pn_hmeld';    Fn = 'pn_wasm_hand_meld';   Arity = 2 }
+            @{ Name = 'pn_canbid';   Fn = 'pn_wasm_can_bid';     Arity = 2 }
+            @{ Name = 'pn_callbid';  Fn = 'pn_wasm_call_bid';    Arity = 2 }
+            @{ Name = 'pn_pass';     Fn = 'pn_wasm_pass';        Arity = 1 }
+            @{ Name = 'pn_name';     Fn = 'pn_wasm_name';        Arity = 2 }
+            @{ Name = 'pn_canmark';  Fn = 'pn_wasm_can_mark';    Arity = 2 }
+            @{ Name = 'pn_mark';     Fn = 'pn_wasm_mark';        Arity = 2 }
+            @{ Name = 'pn_marked';   Fn = 'pn_wasm_marked';      Arity = 2 }
+            @{ Name = 'pn_clear';    Fn = 'pn_wasm_clear';       Arity = 1 }
+            @{ Name = 'pn_cangive';  Fn = 'pn_wasm_can_give';    Arity = 1 }
+            @{ Name = 'pn_give';     Fn = 'pn_wasm_give';        Arity = 1 }
+            @{ Name = 'pn_next';     Fn = 'pn_wasm_next';        Arity = 1 }
+            @{ Name = 'pn_score';    Fn = 'pn_wasm_score';       Arity = 2 }
+            @{ Name = 'pn_made';     Fn = 'pn_wasm_made';        Arity = 1 }
+            @{ Name = 'pn_gwinner';  Fn = 'pn_wasm_game_winner'; Arity = 1 }
+            @{ Name = 'pn_hands';    Fn = 'pn_wasm_hands';       Arity = 1 }
+            @{ Name = 'pn_cards0';   Fn = 'pn_wasm_cards0';      Arity = 1 }
+            @{ Name = 'pn_cardsadd'; Fn = 'pn_wasm_cards_add';   Arity = 2 }
+            @{ Name = 'pn_meldof';   Fn = 'pn_wasm_meld_of';     Arity = 2 }
         )
     }
     'othello' = @{
@@ -562,6 +649,10 @@ $Games = @{
             @{ Name = 'hw_hasmove';  Fn = 'hw_wasm_has_move';       Arity = 2 }
             @{ Name = 'hw_move';     Fn = 'hw_wasm_move';           Arity = 4 }
             @{ Name = 'hw_canatk';   Fn = 'hw_wasm_can_attack';     Arity = 2 }
+            @{ Name = 'hw_stack';    Fn = 'hw_wasm_stacking';       Arity = 1 }
+            @{ Name = 'hw_blank';    Fn = 'hw_wasm_blank';          Arity = 2 }
+            @{ Name = 'hw_put';      Fn = 'hw_wasm_put';            Arity = 5 }
+            @{ Name = 'hw_terr';     Fn = 'hw_wasm_terr';           Arity = 4 }
             @{ Name = 'hw_attack';   Fn = 'hw_wasm_attack';         Arity = 3 }
             @{ Name = 'hw_endturn';  Fn = 'hw_wasm_end_turn';       Arity = 1 }
         )
@@ -579,6 +670,9 @@ $Games = @{
             @{ Name = 'hx_place';     Fn = 'hx_wasm_place';     Arity = 2 }
             @{ Name = 'hx_ai';        Fn = 'hx_wasm_ai';        Arity = 1 }
             @{ Name = 'hx_connected'; Fn = 'hx_wasm_connected'; Arity = 2 }
+            @{ Name = 'hx_canswap';   Fn = 'hx_wasm_can_swap';  Arity = 1 }
+            @{ Name = 'hx_swap';      Fn = 'hx_wasm_swap';      Arity = 1 }
+            @{ Name = 'hx_aiswap';    Fn = 'hx_wasm_ai_swap';   Arity = 1 }
         )
     }
     'gofish' = @{
@@ -596,6 +690,10 @@ $Games = @{
             @{ Name = 'gf_done';    Fn = 'gf_wasm_done';        Arity = 1 }
             @{ Name = 'gf_rank';    Fn = 'gf_wasm_rank';        Arity = 1 }
             @{ Name = 'gf_rcount';  Fn = 'gf_wasm_rank_count';  Arity = 3 }
+            @{ Name = 'gf_winner'; Fn = 'gf_wasm_winner'; Arity = 1 }
+            @{ Name = 'gf_empty'; Fn = 'gf_wasm_empty'; Arity = 1 }
+            @{ Name = 'gf_give'; Fn = 'gf_wasm_give'; Arity = 3 }
+            @{ Name = 'gf_stock'; Fn = 'gf_wasm_stock'; Arity = 2 }
             @{ Name = 'gf_canask';  Fn = 'gf_wasm_can_ask';     Arity = 2 }
             @{ Name = 'gf_ask';     Fn = 'gf_wasm_ask';         Arity = 3 }
         )
@@ -615,6 +713,12 @@ $Games = @{
             @{ Name = 'go_pass';      Fn = 'go_wasm_pass';      Arity = 1 }
             @{ Name = 'go_ai';        Fn = 'go_wasm_ai';        Arity = 2 }
             @{ Name = 'go_liberties'; Fn = 'go_wasm_liberties'; Arity = 2 }
+            @{ Name = 'go_legal';     Fn = 'go_wasm_legal';     Arity = 2 }
+            @{ Name = 'go_area';      Fn = 'go_wasm_area';      Arity = 2 }
+            @{ Name = 'go_winner';    Fn = 'go_wasm_winner';    Arity = 1 }
+            @{ Name = 'go_put';       Fn = 'go_wasm_put';       Arity = 3 }
+            @{ Name = 'go_side';      Fn = 'go_wasm_side';      Arity = 2 }
+            @{ Name = 'go_seal';      Fn = 'go_wasm_seal';      Arity = 1 }
         )
     }
     'game2048' = @{
@@ -660,19 +764,23 @@ $Games = @{
             @{ Name = 'ce_play';     Fn = 'ce_wasm_play';      Arity = 3 }
             @{ Name = 'ce_stuck';    Fn = 'ce_wasm_stuck';     Arity = 1 }
             @{ Name = 'ce_draw';     Fn = 'ce_wasm_draw';      Arity = 1 }
-            @{ Name = 'ce_canpen';   Fn = 'ce_wasm_can_take_penalty'; Arity = 1 }
-            @{ Name = 'ce_takepen';  Fn = 'ce_wasm_take_penalty';     Arity = 1 }
             @{ Name = 'ce_players';  Fn = 'ce_wasm_players';   Arity = 1 }
             @{ Name = 'ce_cur';      Fn = 'ce_wasm_cur';       Arity = 1 }
             @{ Name = 'ce_pile';     Fn = 'ce_wasm_pile';      Arity = 1 }
             @{ Name = 'ce_drank';    Fn = 'ce_wasm_drank';     Arity = 1 }
             @{ Name = 'ce_dsuit';    Fn = 'ce_wasm_dsuit';     Arity = 1 }
             @{ Name = 'ce_declared'; Fn = 'ce_wasm_declared';  Arity = 1 }
-            @{ Name = 'ce_penalty';  Fn = 'ce_wasm_penalty';   Arity = 1 }
             @{ Name = 'ce_done';     Fn = 'ce_wasm_done';      Arity = 1 }
             @{ Name = 'ce_winner';   Fn = 'ce_wasm_winner';    Arity = 1 }
             @{ Name = 'ce_rank';     Fn = 'ce_wasm_card_rank'; Arity = 1 }
             @{ Name = 'ce_suit';     Fn = 'ce_wasm_card_suit'; Arity = 1 }
+            @{ Name = 'ce_candraw'; Fn = 'ce_wasm_can_draw'; Arity = 1 }
+            @{ Name = 'ce_points'; Fn = 'ce_wasm_points'; Arity = 2 }
+            @{ Name = 'ce_top'; Fn = 'ce_wasm_top'; Arity = 1 }
+            @{ Name = 'ce_empty'; Fn = 'ce_wasm_empty'; Arity = 2 }
+            @{ Name = 'ce_give'; Fn = 'ce_wasm_give'; Arity = 3 }
+            @{ Name = 'ce_stock'; Fn = 'ce_wasm_stock'; Arity = 2 }
+            @{ Name = 'ce_call'; Fn = 'ce_wasm_call'; Arity = 2 }
         )
     }
     'checkers' = @{
@@ -691,6 +799,7 @@ $Games = @{
             @{ Name = 'ck_ai';        Fn = 'ck_wasm_ai';        Arity = 1 }
             @{ Name = 'ck_blank';     Fn = 'ck_wasm_blank';     Arity = 0 }
             @{ Name = 'ck_put';       Fn = 'ck_wasm_put';       Arity = 3 }
+            @{ Name = 'ck_chain';     Fn = 'ck_wasm_chain';     Arity = 1 }
         )
     }
     'chess' = @{
@@ -717,18 +826,46 @@ $Games = @{
             @{ Name = 'cs_done';         Fn = 'cs_wasm_done';         Arity = 1 }
             @{ Name = 'cs_result';       Fn = 'cs_wasm_result';       Arity = 1 }
             @{ Name = 'cs_perft';        Fn = 'cs_wasm_perft';        Arity = 2 }
+            @{ Name = 'cs_findp';        Fn = 'cs_wasm_find_promote'; Arity = 4 }
+            @{ Name = 'cs_drawkind';     Fn = 'cs_wasm_draw_kind';    Arity = 1 }
+            @{ Name = 'cs_reps';         Fn = 'cs_wasm_occurrences';  Arity = 1 }
+            @{ Name = 'cs_blank';        Fn = 'cs_wasm_blank';        Arity = 0 }
+            @{ Name = 'cs_place';        Fn = 'cs_wasm_place';        Arity = 3 }
+            @{ Name = 'cs_side';         Fn = 'cs_wasm_side';         Arity = 2 }
+            @{ Name = 'cs_rights';       Fn = 'cs_wasm_rights';       Arity = 5 }
+            @{ Name = 'cs_seal';         Fn = 'cs_wasm_seal';         Arity = 1 }
         )
     }
     'bridge' = @{
         Chapter = 'classic\BridgeWasm.codex'
         Exports = @(
             @{ Name = 'br_new';       Fn = 'br_wasm_new';         Arity = 1 }
+            @{ Name = 'br_board';     Fn = 'br_wasm_board';       Arity = 1 }
+            @{ Name = 'br_dealer';    Fn = 'br_wasm_dealer';      Arity = 1 }
+            @{ Name = 'br_vul';       Fn = 'br_wasm_vul';         Arity = 1 }
+            @{ Name = 'br_phase';     Fn = 'br_wasm_phase';       Arity = 1 }
+            @{ Name = 'br_who';       Fn = 'br_wasm_who';         Arity = 1 }
+            @{ Name = 'br_ncalls';    Fn = 'br_wasm_ncalls';      Arity = 1 }
+            @{ Name = 'br_callat';    Fn = 'br_wasm_call_at';     Arity = 2 }
+            @{ Name = 'br_lastbid';   Fn = 'br_wasm_last_bid';    Arity = 1 }
+            @{ Name = 'br_bidder';    Fn = 'br_wasm_bidder';      Arity = 1 }
+            @{ Name = 'br_dbl';       Fn = 'br_wasm_dbl';         Arity = 1 }
+            @{ Name = 'br_cancall';   Fn = 'br_wasm_can_call';    Arity = 2 }
+            @{ Name = 'br_call';      Fn = 'br_wasm_call';        Arity = 2 }
+            @{ Name = 'br_decl';      Fn = 'br_wasm_decl';        Arity = 1 }
+            @{ Name = 'br_level';     Fn = 'br_wasm_level';       Arity = 1 }
+            @{ Name = 'br_strain';    Fn = 'br_wasm_strain';      Arity = 1 }
+            @{ Name = 'br_shown';     Fn = 'br_wasm_shown';       Arity = 3 }
+            @{ Name = 'br_dupscore';  Fn = 'br_wasm_dup_score';   Arity = 5 }
+            @{ Name = 'br_run';       Fn = 'br_wasm_run';         Arity = 1 }
+            @{ Name = 'br_rteam';     Fn = 'br_wasm_run_team';    Arity = 1 }
+            @{ Name = 'br_rlevel';    Fn = 'br_wasm_run_level';   Arity = 1 }
+            @{ Name = 'br_rtricks';   Fn = 'br_wasm_run_tricks';  Arity = 1 }
+            @{ Name = 'br_rscore';    Fn = 'br_wasm_run_score';   Arity = 1 }
             @{ Name = 'br_count';     Fn = 'br_wasm_count';       Arity = 2 }
             @{ Name = 'br_card';      Fn = 'br_wasm_card';        Arity = 3 }
             @{ Name = 'br_hcp';       Fn = 'br_wasm_hcp';         Arity = 2 }
             @{ Name = 'br_trump';     Fn = 'br_wasm_trump';       Arity = 1 }
-            @{ Name = 'br_contract';  Fn = 'br_wasm_contract';    Arity = 1 }
-            @{ Name = 'br_declarer';  Fn = 'br_wasm_declarer';    Arity = 1 }
             @{ Name = 'br_nstricks';  Fn = 'br_wasm_nstricks';    Arity = 1 }
             @{ Name = 'br_ewtricks';  Fn = 'br_wasm_ewtricks';    Arity = 1 }
             @{ Name = 'br_made';      Fn = 'br_wasm_tricks_made'; Arity = 1 }
@@ -750,22 +887,31 @@ $Games = @{
     'blackjack' = @{
         Chapter = 'classic\BlackjackWasm.codex'
         Exports = @(
-            @{ Name = 'bj_new';        Fn = 'bj_wasm_new';        Arity = 1 }
-            @{ Name = 'bj_hit';        Fn = 'bj_wasm_hit';        Arity = 1 }
-            @{ Name = 'bj_stand';      Fn = 'bj_wasm_stand';      Arity = 1 }
-            @{ Name = 'bj_auto';       Fn = 'bj_wasm_auto';       Arity = 1 }
-            @{ Name = 'bj_pcount';     Fn = 'bj_wasm_pcount';     Arity = 1 }
-            @{ Name = 'bj_dcount';     Fn = 'bj_wasm_dcount';     Arity = 1 }
-            @{ Name = 'bj_pcard';      Fn = 'bj_wasm_pcard';      Arity = 2 }
-            @{ Name = 'bj_dcard';      Fn = 'bj_wasm_dcard';      Arity = 2 }
-            @{ Name = 'bj_pvalue';     Fn = 'bj_wasm_pvalue';     Arity = 1 }
-            @{ Name = 'bj_dvalue';     Fn = 'bj_wasm_dvalue';     Arity = 1 }
-            @{ Name = 'bj_card_rank';  Fn = 'bj_wasm_card_rank';  Arity = 1 }
+            @{ Name = 'bj_new'; Fn = 'bj_wasm_new'; Arity = 1 }
+            @{ Name = 'bj_phase'; Fn = 'bj_wasm_phase'; Arity = 1 }
+            @{ Name = 'bj_nh'; Fn = 'bj_wasm_nhands'; Arity = 1 }
+            @{ Name = 'bj_cur'; Fn = 'bj_wasm_cur'; Arity = 1 }
+            @{ Name = 'bj_hn'; Fn = 'bj_wasm_hcount'; Arity = 2 }
+            @{ Name = 'bj_hc'; Fn = 'bj_wasm_hcard'; Arity = 3 }
+            @{ Name = 'bj_hv'; Fn = 'bj_wasm_hvalue'; Arity = 2 }
+            @{ Name = 'bj_hsoft'; Fn = 'bj_wasm_hsoft'; Arity = 2 }
+            @{ Name = 'bj_hbet'; Fn = 'bj_wasm_hbet'; Arity = 2 }
+            @{ Name = 'bj_hst'; Fn = 'bj_wasm_hstate'; Arity = 2 }
+            @{ Name = 'bj_dcount'; Fn = 'bj_wasm_dcount'; Arity = 1 }
+            @{ Name = 'bj_dcard'; Fn = 'bj_wasm_dcard'; Arity = 2 }
+            @{ Name = 'bj_dvalue'; Fn = 'bj_wasm_dvalue'; Arity = 1 }
+            @{ Name = 'bj_can'; Fn = 'bj_wasm_can'; Arity = 2 }
+            @{ Name = 'bj_act'; Fn = 'bj_wasm_act'; Arity = 2 }
+            @{ Name = 'bj_auto'; Fn = 'bj_wasm_auto'; Arity = 1 }
+            @{ Name = 'bj_net'; Fn = 'bj_wasm_net'; Arity = 1 }
+            @{ Name = 'bj_insured'; Fn = 'bj_wasm_insured'; Arity = 1 }
+            @{ Name = 'bj_deckpos'; Fn = 'bj_wasm_deckpos'; Arity = 1 }
+            @{ Name = 'bj_card_rank'; Fn = 'bj_wasm_card_rank'; Arity = 1 }
             @{ Name = 'bj_card_value'; Fn = 'bj_wasm_card_value'; Arity = 1 }
-            @{ Name = 'bj_psoft';      Fn = 'bj_wasm_psoft';      Arity = 1 }
-            @{ Name = 'bj_bust';       Fn = 'bj_wasm_bust';       Arity = 1 }
-            @{ Name = 'bj_result';     Fn = 'bj_wasm_result';     Arity = 1 }
-            @{ Name = 'bj_deckpos';    Fn = 'bj_wasm_deckpos';    Arity = 1 }
+            @{ Name = 'bj_stack'; Fn = 'bj_wasm_stack'; Arity = 1 }
+            @{ Name = 'bj_stack_push'; Fn = 'bj_wasm_stack_push'; Arity = 2 }
+            @{ Name = 'bj_stack_deal'; Fn = 'bj_wasm_stack_deal'; Arity = 1 }
+            @{ Name = 'bj_ref'; Fn = 'bj_wasm_ref'; Arity = 1 }
         )
     }
     'battleship' = @{
@@ -781,6 +927,8 @@ $Games = @{
             @{ Name = 'bs_shots';  Fn = 'bs_wasm_shots';  Arity = 2 }
             @{ Name = 'bs_done';   Fn = 'bs_wasm_done';   Arity = 1 }
             @{ Name = 'bs_winner'; Fn = 'bs_wasm_winner'; Arity = 1 }
+            @{ Name = 'bs_tomove'; Fn = 'bs_wasm_to_move';  Arity = 1 }
+            @{ Name = 'bs_sunk';   Fn = 'bs_wasm_sunk';     Arity = 3 }
         )
     }
     'backgammon' = @{
@@ -788,7 +936,6 @@ $Games = @{
         Exports = @(
             @{ Name = 'bg_new';     Fn = 'bg_wasm_new';     Arity = 0 }
             @{ Name = 'bg_die';     Fn = 'bg_wasm_die';     Arity = 1 }
-            @{ Name = 'bg_step';    Fn = 'bg_wasm_step';    Arity = 2 }
             @{ Name = 'bg_endturn'; Fn = 'bg_wasm_endturn'; Arity = 1 }
             @{ Name = 'bg_point';   Fn = 'bg_wasm_point';   Arity = 2 }
             @{ Name = 'bg_bar';     Fn = 'bg_wasm_bar';     Arity = 2 }
@@ -796,11 +943,24 @@ $Games = @{
             @{ Name = 'bg_cur';     Fn = 'bg_wasm_cur';     Arity = 1 }
             @{ Name = 'bg_done';    Fn = 'bg_wasm_done';    Arity = 1 }
             @{ Name = 'bg_winner';  Fn = 'bg_wasm_winner';  Arity = 1 }
-            @{ Name = 'bg_can';     Fn = 'bg_wasm_can';       Arity = 3 }
-            @{ Name = 'bg_move';    Fn = 'bg_wasm_move';      Arity = 3 }
-            @{ Name = 'bg_canenter'; Fn = 'bg_wasm_can_enter'; Arity = 2 }
-            @{ Name = 'bg_enter';   Fn = 'bg_wasm_enter';     Arity = 2 }
-            @{ Name = 'bg_any';     Fn = 'bg_wasm_any';       Arity = 2 }
+            @{ Name = 'bg_legal';   Fn = 'bg_wasm_legal';     Arity = 4 }
+            @{ Name = 'bg_mask';    Fn = 'bg_wasm_mask';      Arity = 3 }
+            @{ Name = 'bg_play';    Fn = 'bg_wasm_play';      Arity = 4 }
+            @{ Name = 'bg_most';    Fn = 'bg_wasm_most';      Arity = 2 }
+            @{ Name = 'bg_ai';      Fn = 'bg_wasm_ai';        Arity = 2 }
+            @{ Name = 'bg_empty';   Fn = 'bg_wasm_empty';     Arity = 1 }
+            @{ Name = 'bg_put';     Fn = 'bg_wasm_put';       Arity = 3 }
+            @{ Name = 'bg_kind';    Fn = 'bg_wasm_kind';      Arity = 1 }
+            @{ Name = 'bg_points';  Fn = 'bg_wasm_points';    Arity = 1 }
+            @{ Name = 'bg_cube';    Fn = 'bg_wasm_cube';      Arity = 1 }
+            @{ Name = 'bg_owner';   Fn = 'bg_wasm_owner';     Arity = 1 }
+            @{ Name = 'bg_offered'; Fn = 'bg_wasm_offered';   Arity = 1 }
+            @{ Name = 'bg_candouble'; Fn = 'bg_wasm_can_double'; Arity = 1 }
+            @{ Name = 'bg_double';  Fn = 'bg_wasm_double';    Arity = 1 }
+            @{ Name = 'bg_take';    Fn = 'bg_wasm_take';      Arity = 1 }
+            @{ Name = 'bg_drop';    Fn = 'bg_wasm_drop';      Arity = 1 }
+            @{ Name = 'bg_aidouble'; Fn = 'bg_wasm_ai_double'; Arity = 1 }
+            @{ Name = 'bg_aitake';  Fn = 'bg_wasm_ai_take';   Arity = 1 }
         )
     }
     'connect4' = @{

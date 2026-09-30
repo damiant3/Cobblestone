@@ -1,0 +1,78 @@
+Chapter: VaeGraph
+
+ The ldm AutoencoderKL decoder (Forge backend/nn/vae.py Decoder, with
+ post_quant_conv in front): conv_in to 512 channels; a middle of a residual
+ block, a single-head attention and a residual block; four up levels from
+ the deepest, 512/512/256/128 channels, three residual blocks each and a 2x
+ nearest upsample plus 3x3 conv after every level but the last; GroupNorm (32
+ groups, eps 1e-6), SiLU and a 3x3 conv to RGB. The graph is over a VaeOps
+ value, its first type the weights and its second an activation.
+
+ We say:
+
+Section: Op Set
+
+  VaeOps a b = record {
+    conv : (a, b, Text, Integer, Integer, Integer -> b),
+    norm : (a, b, Text, Boolean -> b),
+    add : (b, b -> b),
+    upsample : (b -> b),
+    attention : (a, b, Text -> b),
+    free : (b -> Boolean),
+    has : (a, Text -> Boolean),
+    channels : (b -> Integer)
+  }
+
+Section: The Decoder
+
+  vd-resblock-with : VaeOps a b, a, b, Text, Integer -> b
+  vd-resblock-with (ops) (w) (x) (p) (cout) =
+    let h1 = ops.norm w x (p & "norm1") True
+    in let h2 = ops.conv w h1 (p & "conv1") cout 3 1
+    in let f1 = ops.free h1
+    in let h3 = ops.norm w h2 (p & "norm2") True
+    in let f2 = ops.free h2
+    in let h4 = ops.conv w h3 (p & "conv2") cout 3 1
+    in let f3 = ops.free h3
+    in if ops.channels x == cout then ops.add h4 x
+    else let sc = ops.conv w x (p & "nin_shortcut") cout 1 0
+    in let r = ops.add h4 sc
+    in let f4 = ops.free sc
+    in r
+
+  vd-then-with : VaeOps a b, b, b -> b
+  vd-then-with (ops) (next) (prev) =
+    let f = ops.free prev
+    in next
+
+  vd-level-blocks-with : VaeOps a b, a, b, Integer, Integer, Integer -> b
+  vd-level-blocks-with (ops) (w) (x) (i) (j) (cout) =
+    if j >= 3 then x
+    else vd-level-blocks-with ops w (vd-then-with ops (vd-resblock-with ops w x ("decoder.up." & show i & ".block." & show j & ".") cout) x) i (j + 1) cout
+
+  vd-levels-with : VaeOps a b, a, b, Integer -> b
+  vd-levels-with (ops) (w) (x) (i) =
+    if i < 0 then x
+    else let cout = 128 * list-at [1, 2, 4, 4] i
+    in let b = vd-level-blocks-with ops w x i 0 cout
+    in if i == 0 then b
+    else let u = vd-then-with ops (ops.upsample b) b
+    in vd-levels-with ops w (vd-then-with ops (ops.conv w u ("decoder.up." & show i & ".upsample.conv") cout 3 1) u) (i - 1)
+
+ z is the unscaled latent (c x h x w f32, the tensor post_quant_conv
+ receives, or conv_in where the checkpoint has no post_quant_conv, as
+ Flux's 16-channel ae has none); the result is 3 x 8h x 8w f32 in [-1, 1]
+ before clamping. z is left allocated.
+
+  vae-decode-with : VaeOps a b, a, b -> b
+  vae-decode-with (ops) (w) (z) =
+    let pq = ops.has w "post_quant_conv.weight"
+    in let a0 = if pq then ops.conv w z "post_quant_conv" (ops.channels z) 1 0 else z
+    in let c1 = ops.conv w a0 "decoder.conv_in" 512 3 1
+    in let a1 = if pq then vd-then-with ops c1 a0 else c1
+    in let m1 = vd-then-with ops (vd-resblock-with ops w a1 "decoder.mid.block_1." 512) a1
+    in let m2 = vd-then-with ops (ops.attention w m1 "decoder.mid.attn_1.") m1
+    in let m3 = vd-then-with ops (vd-resblock-with ops w m2 "decoder.mid.block_2." 512) m2
+    in let u = vd-levels-with ops w m3 3
+    in let n1 = vd-then-with ops (ops.norm w u "decoder.norm_out" True) u
+    in vd-then-with ops (ops.conv w n1 "decoder.conv_out" 3 3 1) n1

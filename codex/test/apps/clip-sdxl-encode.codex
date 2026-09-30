@@ -1,0 +1,169 @@
+Chapter: ClipSdxlEncode
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter ClipBpe
+  cites AI chapter SafeTensors
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter FactDisk
+
+ The disk is build/mint-clip-bpe-disk.ps1's with two extras,
+ codex/test/apps/clip-sdxl-ref/cat.ref and hero.ref, which
+ build/clip-encoder-oracle.py wrote from Forge's own weights mapping and
+ transformers' CLIPTextModel in f32: CLIP-L's 77 token ids as i32, then cond_l 77 x
+ 768, cond_g 77 x 1280 and pooled 1280 as f32. The weights are the installed
+ dreamshaperXL checkpoint, reached through .vmargs.
+
+ Each bound is the largest deviation of the same model run in f16, the
+ precision Forge runs it at, from that f32 answer, as the oracle printed it on
+ 2026-09-29, once over all rows and once over rows 1-76: CLIP-L's BOS row
+ reaches 820 and sets the all-rows figure, which would hide an error on every
+ other row. An encoder within both agrees with the reference as closely as
+ Forge does. The three sabotage arms must leave the rows 1-76 bound: CLIP-L
+ with the exact gelu, G with quick_gelu, and G padded with EOS where Forge
+ pads it with id 0.
+
+ We say:
+
+Section: Disk
+  cse-load : Integer, Integer -> [Device.Block] Integer
+  cse-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+Section: Reading Floats
+
+  cse-f32-real : Integer -> Real
+  cse-f32-real (b) =
+    let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else if e == 255 then 1000000000.0
+    else bits-to-real (bit-or (bit-shl (bit-and b #80000000) 32) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+  cse-abs : Real -> Real
+  cse-abs (x) = if x < 0.0 then 0.0 - x else x
+
+  cse-max-err : Integer, Integer, Integer, Integer, Real -> Real
+  cse-max-err (ours) (ref) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = cse-abs (cse-f32-real (peek-32 ours (i * 4)) - cse-f32-real (peek-32 ref (i * 4)))
+    in cse-max-err ours ref (i + 1) n (if d > acc then d else acc)
+
+  cse-within : Integer, Integer, Integer, Integer, Real -> Text
+  cse-within (h) (ref) (first) (n) (bound) =
+    if h == 0 then "no output"
+    else if gpu-buf-read h 0 (n * 4) ckpt-scratch == False then "read refused"
+    else if cse-max-err ckpt-scratch ref first n 0.0 <= bound then "yes"
+    else "no"
+
+Section: Tokens
+
+  cse-pad : List Integer -> List Integer
+  cse-pad (ids) = if list-length ids >= 77 then ids else cse-pad (list-push ids 49407)
+
+  cse-ids : ClipBpe, Text -> List Integer
+  cse-ids (bpe) (prompt) = cse-pad (clip-bpe-with-specials (clip-bpe-tokenize bpe prompt))
+
+  cse-ids-match : List Integer, Integer, Integer -> Boolean
+  cse-ids-match (ids) (ref) (i) =
+    if i >= 77 then True
+    else if list-at ids i /= peek-32 ref (i * 4) then False
+    else cse-ids-match ids ref (i + 1)
+
+Section: Arms
+
+ A bound pair is all rows then rows 1-76; the ref offsets follow the file:
+ 308 bytes of ids, then cond_l, cond_g and pooled.
+
+  cse-l : Integer -> Integer
+  cse-l (ref) = ref + 308
+
+  cse-g : Integer -> Integer
+  cse-g (ref) = ref + 308 + 77 * 768 * 4
+
+  cse-p : Integer -> Integer
+  cse-p (ref) = ref + 308 + 77 * 2048 * 4
+
+  cse-prompt : ClipBpe, ClipWeights, ClipWeights, Text, Text, Integer, List Real -> List Text
+  cse-prompt (bpe) (wl) (wg) (label) (prompt) (ref) (b) =
+    let ids = cse-ids bpe prompt
+    in let ol = clip-encode wl ids
+    in let og = clip-encode wg ids
+    in let lines = [
+      label & " ids match Forge: " & (if cse-ids-match ids ref 0 then "yes" else "no"),
+      label & " encode status clip-l " & show (ol.co-status) & ", openclip-g " & show (og.co-status),
+      label & " cond_l all rows within Forge f16: " & cse-within (ol.co-cond) (cse-l ref) 0 (77 * 768) (list-at b 0),
+      label & " cond_l rows 1-76 within Forge f16: " & cse-within (ol.co-cond) (cse-l ref) 768 (77 * 768) (list-at b 1),
+      label & " cond_g all rows within Forge f16: " & cse-within (og.co-cond) (cse-g ref) 0 (77 * 1280) (list-at b 2),
+      label & " cond_g rows 1-76 within Forge f16: " & cse-within (og.co-cond) (cse-g ref) 1280 (77 * 1280) (list-at b 3),
+      label & " pooled within Forge f16: " & cse-within (og.co-pooled) (cse-p ref) 0 1280 (list-at b 4)]
+    in let f = ce-free-all [ol.co-cond, og.co-cond, og.co-pooled] 0
+    in lines
+
+  cse-variant : ClipWeights, Boolean, Integer -> ClipWeights
+  cse-variant (w) (erf) (pad) =
+    let s = w.cw-spec
+    in ClipWeights { cw-spec = ClipSpec { cs-width = s.cs-width, cs-heads = s.cs-heads, cs-layers = s.cs-layers, cs-mlp = s.cs-mlp, cs-erf-gelu = erf, cs-open = s.cs-open, cs-pool = s.cs-pool, cs-prefix = s.cs-prefix, cs-part = s.cs-part, cs-pad = pad, cs-skip = s.cs-skip, cs-final-norm = s.cs-final-norm }, cw-status = w.cw-status, cw-path = w.cw-path, cw-tok = w.cw-tok, cw-pos = w.cw-pos, cw-layers = w.cw-layers, cw-final-g = w.cw-final-g, cw-final-b = w.cw-final-b, cw-proj = w.cw-proj }
+
+  cse-sabotage : Text, ClipWeights, List Integer, Integer, Integer, Integer, Real -> Text
+  cse-sabotage (label) (w) (ids) (ref) (first) (n) (bound) =
+    let o = clip-encode w ids
+    in let v = "sabotage cat " & label & " rows 1-76 within Forge f16: " & cse-within (o.co-cond) ref first n bound
+    in let f = ce-free-all [o.co-cond, o.co-pooled] 0
+    in v
+
+  cse-part-line : LayoutBinding, Integer -> Text
+  cse-part-line (lb) (i) =
+    let pb = list-at (lb.lb-parts) i
+    in pb.pb-name & " " & show (list-length (pb.pb-bound)) & "/" & show (pb.pb-required)
+
+  cse-run : ClipBpe, Integer, Integer -> List Text
+  cse-run (bpe) (cat) (hero) =
+    let path = "dreamshaperXL_lightningDPMSDE.safetensors"
+    in let file = ckpt-open path
+    in let lb = layout-bind file sdxl-layout
+    in let wl = clip-load path file lb clip-l-spec
+    in let wg = clip-load path file lb openclip-g-spec
+    in let head = [
+      "tokenizer status " & show (clip-bpe-status bpe),
+      "checkpoint valid " & (if file.st-valid then "yes" else "no") & ", " & cse-part-line lb 1 & ", " & cse-part-line lb 2,
+      "load clip-l " & show (wl.cw-status) & ", openclip-g " & show (wg.cw-status)]
+    in let a = cse-prompt bpe wl wg "cat" "a photo of a cat" cat [0.55182, 0.0139, 0.21781, 0.05502, 0.00672]
+    in let b = cse-prompt bpe wl wg "hero" "painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, a viking smithy at night where glowing runes are hammered into an amulet on an anvil, sparks flying, open book of runes on the bench, snowy mountains through an arched window" hero [0.55182, 0.00832, 0.21781, 0.04259, 0.00463]
+    in let cat-ids = cse-ids bpe "a photo of a cat"
+    in let c = [
+      cse-sabotage "cond_l with erf gelu" (cse-variant wl True 49407) cat-ids (cse-l cat) 768 (77 * 768) 0.0139,
+      cse-sabotage "cond_g with quick_gelu" (cse-variant wg False 0) cat-ids (cse-g cat) 1280 (77 * 1280) 0.05502,
+      cse-sabotage "cond_g padded with EOS" (cse-variant wg True 49407) cat-ids (cse-g cat) 1280 (77 * 1280) 0.05502]
+    in head & a & b & c
+
+Section: Body
+  cse-print : List Text, Integer -> [Console] Nothing
+  cse-print (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      cse-print ls (i + 1)
+    end
+
+  cse-go : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Nothing
+  cse-go (vlen) (mlen) (cs) (cl) (hs) (hl) (vsec) (z) =
+    act
+      vbuf <- cse-load 1 vlen
+      mbuf <- cse-load (1 + vsec) mlen
+      cat <- cse-load cs cl
+      hero <- cse-load hs hl
+      cse-print (cse-run (clip-bpe-load vbuf vlen mbuf mlen) cat hero) 0
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    cse-go (peek-32 h 0) (peek-32 h 4) (peek-32 h 12) (peek-32 h 16) (peek-32 h 20) (peek-32 h 24) ((peek-32 h 0 + 511) / 512) 0
+  end

@@ -1,11 +1,20 @@
 Chapter: CrazyEights
   cites Games chapter Rng
 
- Crazy Eights: standard 52-card deck, 2-4 players, 7 cards each.
- Card encoding: 0-51, rank = card mod 13 (0=2,1=3,...,6=8,...,12=A),
- suit = card / 13. Play a card matching the top discard's rank or suit.
- Eights (rank 6) are wild; player chooses new suit. Special: rank 0
- (2s) makes next player draw 2. First player to empty hand wins.
+ Basic Crazy Eights as pagat.com gives it (https://www.pagat.com/eights/
+ crazy8s.html), for 2 to 4 players: a 52-card deck, rank = card mod 13 (0 the
+ two, 6 the eight, 12 the ace), suit = card / 13. Five cards each, seven each
+ for two players; the next card starts the discard pile, and a starting eight
+ calls its own suit (the dealer's nomination). A turn plays one card or draws
+ one card, and drawing is allowed even with a card to play. A card matches
+ the top card's rank or suit; an eight goes on anything and its player names
+ a suit, and on an eight only another eight or the named suit goes. An empty
+ stock is remade from the discards under the top card, shuffled. The first
+ player out wins. The others score penalty points: 50 for an eight, 10 for a
+ picture, spot cards at face value (the ace 1). No special cards; twos are
+ pagat's variation. A game cannot block: with no card to draw, every card but
+ the top one is in a hand, and some hand holds the suit in force. The lowest
+ penalty count still decides a position nobody can move in, as a guard.
 
  We say:
 
@@ -21,7 +30,6 @@ Section: Types
     current-player : Integer,
     num-players    : Integer,
     direction      : Integer,
-    draw-penalty   : Integer,
     game-over      : Boolean,
     winner         : Integer,
     declared-suit  : Integer
@@ -86,7 +94,6 @@ Section: Hand Storage
          current-player = s.current-player,
          num-players = s.num-players,
          direction = s.direction,
-         draw-penalty = s.draw-penalty,
          game-over = s.game-over,
          winner = s.winner,
          declared-suit = s.declared-suit
@@ -116,14 +123,14 @@ Section: Initialization
          current-player = 0,
          num-players = np,
          direction = 1,
-         draw-penalty = 0,
          game-over = False,
          winner = 0,
          declared-suit = 0
        }
-    in let s1 = ce-deal s0 deck 0 np 0
-    in let top-card = list-at deck (7 * np)
-    in let pile-start = 7 * np + 1
+    in let each = if np == 2 then 7 else 5
+    in let s1 = ce-deal s0 deck 0 np each
+    in let top-card = list-at deck (each * np)
+    in let pile-start = each * np + 1
     in let s2 = ce-load-pile s1 deck pile-start 0 (52 - pile-start)
     in CrazyEightsState {
          hands = s2.hands,
@@ -135,19 +142,18 @@ Section: Initialization
          current-player = 0,
          num-players = np,
          direction = 1,
-         draw-penalty = 0,
          game-over = False,
          winner = 0,
          declared-suit = ce-suit top-card
        }
 
   ce-deal : CrazyEightsState, List Integer, Integer, Integer, Integer -> CrazyEightsState
-  ce-deal (s) (deck) (dealt) (np) (player) =
-    if dealt >= 7 * np then s
-    else let actual-player = dealt / 7
+  ce-deal (s) (deck) (dealt) (np) (each) =
+    if dealt >= each * np then s
+    else let actual-player = dealt / each
     in let card-idx = list-at deck dealt
     in let s2 = ce-hand-set s actual-player card-idx 1
-    in ce-deal s2 deck (dealt + 1) np player
+    in ce-deal s2 deck (dealt + 1) np each
 
   ce-load-pile : CrazyEightsState, List Integer, Integer, Integer, Integer -> CrazyEightsState
   ce-load-pile (s) (deck) (start) (i) (count) =
@@ -165,7 +171,6 @@ Section: Initialization
          current-player = s.current-player,
          num-players = s.num-players,
          direction = s.direction,
-         draw-penalty = s.draw-penalty,
          game-over = s.game-over,
          winner = s.winner,
          declared-suit = s.declared-suit
@@ -228,9 +233,39 @@ Section: Play Logic
 
 Section: Drawing
 
+ The discards are every card in no hand and not on top of the pile, because
+ the stock is empty whenever they are needed. They are shuffled with a seed
+ drawn from the position, so a replay remakes the same stock.
+
+  ce-top : CrazyEightsState -> Integer
+  ce-top (s) = s.discard-suit * 13 + s.discard-rank
+
+  ce-held : CrazyEightsState, Integer, Integer -> Boolean
+  ce-held (s) (c) (p) = if p >= s.num-players then False else if ce-hand-has s p c then True else ce-held s c (p + 1)
+
+  ce-discards : CrazyEightsState, Integer, List Integer -> List Integer
+  ce-discards (s) (c) (acc) =
+    if c >= 52 then acc
+    else if c == ce-top s | ce-held s c 0 then ce-discards s (c + 1) acc
+    else ce-discards s (c + 1) (list-push acc c)
+
+  ce-restock : CrazyEightsState -> CrazyEightsState
+  ce-restock (s) =
+    let ds = ce-discards s 0 []
+    in let n = list-length ds
+    in if n == 0 then s
+    else let seed = ce-top s * 101 + n * 7 + list-at (s.hand-sizes) 0 * 13 + s.current-player
+    in let sh = ce-fy ds (n - 1) (rng-new seed)
+    in let pile = ce-build-zeroes 0 52 []
+    in ce-load-pile (CrazyEightsState { hands = s.hands, hand-sizes = s.hand-sizes, draw-pile = pile, pile-size = 0, discard-rank = s.discard-rank, discard-suit = s.discard-suit, current-player = s.current-player, num-players = s.num-players, direction = s.direction, game-over = s.game-over, winner = s.winner, declared-suit = s.declared-suit }) sh 0 0 n
+
+  ce-can-draw : CrazyEightsState -> Boolean
+  ce-can-draw (s) = s.pile-size > 0 | list-length (ce-discards s 0 []) > 0
+
   ce-draw-one : CrazyEightsState, Integer -> CrazyEightsState
-  ce-draw-one (s) (player) =
-    if s.pile-size <= 0 then s
+  ce-draw-one (s0) (player) =
+    let s = if s0.pile-size <= 0 then ce-restock s0 else s0
+    in if s.pile-size <= 0 then s
     else let card-idx = list-at (s.draw-pile) 0
     in let new-pile = ce-shift-pile (s.draw-pile) 0 (s.pile-size)
     in let s2 = CrazyEightsState {
@@ -243,7 +278,6 @@ Section: Drawing
          current-player = s.current-player,
          num-players = s.num-players,
          direction = s.direction,
-         draw-penalty = s.draw-penalty,
          game-over = s.game-over,
          winner = s.winner,
          declared-suit = s.declared-suit
@@ -257,10 +291,6 @@ Section: Drawing
     in let p2 = list-set-at pile i next
     in ce-shift-pile p2 (i + 1) sz
 
-  ce-draw-n : CrazyEightsState, Integer, Integer -> CrazyEightsState
-  ce-draw-n (s) (player) (n) =
-    if n <= 0 then s
-    else ce-draw-n (ce-draw-one s player) player (n - 1)
 
 Section: Advance Player
 
@@ -283,14 +313,23 @@ Section: Advance Player
 
   ce-dead : CrazyEightsState -> Boolean
   ce-dead (s) =
-    if s.pile-size > 0 then False
-    else if s.draw-penalty > 0 then False
+    if ce-can-draw s then False
     else ce-any-play s 0 == False
+
+  ce-points : Integer -> Integer
+  ce-points (c) =
+    let r = ce-rank c
+    in if r == 6 then 50 else if r >= 9 & r <= 11 then 10 else if r == 12 then 1 else r + 2
+
+  ce-hand-points : CrazyEightsState, Integer, Integer, Integer -> Integer
+  ce-hand-points (s) (p) (c) (acc) =
+    if c >= 52 then acc
+    else ce-hand-points s p (c + 1) (acc + (if ce-hand-has s p c then ce-points c else 0))
 
   ce-smallest : CrazyEightsState, Integer, Integer, Integer, Boolean -> Integer
   ce-smallest (s) (p) (best) (best-size) (tied) =
     if p >= s.num-players then (if tied then (0 - 1) else best)
-    else let n = list-at (s.hand-sizes) p
+    else let n = ce-hand-points s p 0 0
     in if n < best-size then ce-smallest s (p + 1) p n False
     else if n == best-size then ce-smallest s (p + 1) best best-size True
     else ce-smallest s (p + 1) best best-size tied
@@ -309,9 +348,8 @@ Section: Advance Player
          current-player = s.current-player,
          num-players = s.num-players,
          direction = s.direction,
-         draw-penalty = s.draw-penalty,
          game-over = True,
-         winner = ce-smallest s 0 (0 - 1) 53 False,
+         winner = ce-smallest s 0 (0 - 1) 100000 False,
          declared-suit = s.declared-suit
        }
 
@@ -328,7 +366,6 @@ Section: Advance Player
          current-player = next,
          num-players = s.num-players,
          direction = s.direction,
-         draw-penalty = s.draw-penalty,
          game-over = s.game-over,
          winner = s.winner,
          declared-suit = s.declared-suit
@@ -341,8 +378,6 @@ Section: Play Card
     let r = ce-rank card-idx
     in let new-suit = if r == 6 then ce-best-suit-for-player s player else ce-suit card-idx
     in let s2 = ce-hand-set s player card-idx 0
-    in let is-two = r == 0
-    in let new-penalty = if is-two then s2.draw-penalty + 2 else s2.draw-penalty
     in let s3 = CrazyEightsState {
          hands = s2.hands,
          hand-sizes = s2.hand-sizes,
@@ -353,7 +388,6 @@ Section: Play Card
          current-player = s2.current-player,
          num-players = s2.num-players,
          direction = s2.direction,
-         draw-penalty = new-penalty,
          game-over = s2.game-over,
          winner = s2.winner,
          declared-suit = new-suit
@@ -369,7 +403,6 @@ Section: Play Card
         current-player = s3.current-player,
         num-players = s3.num-players,
         direction = s3.direction,
-        draw-penalty = s3.draw-penalty,
         game-over = True,
         winner = player,
         declared-suit = s3.declared-suit
@@ -382,25 +415,7 @@ Section: Turn
   ce-do-turn (s) =
     if s.game-over then s
     else let player = s.current-player
-    in if s.draw-penalty > 0 then
-      let s2 = ce-draw-n s player (s.draw-penalty)
-      in let s3 = CrazyEightsState {
-           hands = s2.hands,
-           hand-sizes = s2.hand-sizes,
-           draw-pile = s2.draw-pile,
-           pile-size = s2.pile-size,
-           discard-rank = s2.discard-rank,
-           discard-suit = s2.discard-suit,
-           current-player = s2.current-player,
-           num-players = s2.num-players,
-           direction = s2.direction,
-           draw-penalty = 0,
-           game-over = s2.game-over,
-           winner = s2.winner,
-           declared-suit = s2.declared-suit
-         }
-      in ce-advance s3
-    else let card = ce-find-play s player
+    in let card = ce-find-play s player
     in if card >= 0 then ce-play-card s player card
     else let s2 = ce-draw-one s player
     in ce-advance s2

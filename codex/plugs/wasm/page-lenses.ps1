@@ -30,17 +30,14 @@
 #   chapters  build-plug-wasm.ps1 -Chapters value; Name:Sec1|Sec2 drops
 #             sections (the transport half of a network entry chapter)
 #   ship      $false keeps a module out of the page (built and graded, not
-#             shipped); absent means shipped. NO module carries it today: elf
-#             has never had it in this table, and arm64's went when it gained
-#             an Arm64Elf chapter and stopped being a payload the page cannot
-#             reach
-#             because nothing emits the payload it reads (plugs 1.92).
+#             shipped); absent means shipped. unity ships in the ModBuilder
+#             page (apps/modbuilder/build-page.ps1), not in Prism.
 
 $PageModules = @(
     # -- text and UI lenses, IR transport -------------------------------------
     @{ plug = 'javascript'; file = 'javascript-stdio.wasm'; transport = 'ir'; chapters = 'JavaScriptEmitter,JavaScriptStdio' }
     @{ plug = 'csharp';     file = 'csharp-stdio.wasm';     transport = 'ir'; chapters = 'CsAst,CSharpEmitter,CSharpEmitterExpressions,CSharpPlug:Network Config|Drain|Body,CSharpStdio' }
-    @{ plug = 'unity';      file = 'unity-stdio.wasm';      transport = 'ir'; inputPrefix = "UNITY windows-x64-mono-6000.0.75f1`n"; chapters = '../csharp/CsAst,../csharp/CsSyntax,../csharp/CsSyntaxEmitter,../csharp/CSharpEmitter,../csharp/CSharpEmitterExpressions,../csharp/CSharpPlug:Network Config|Drain|Body,MethodBridge,../../../apps/modbuilder/bindings/valheim/ValheimBindings,../../../apps/modbuilder/bindings/valheim/ValheimInventory,../../../apps/modbuilder/bindings/valheim/ValheimConstruction,../../../apps/modbuilder/bindings/valheim/MeadowsSpawns,../../../apps/modbuilder/bindings/valheim/CircumhorizontalArc,ModIdentity,UnityLocalSaves,UnityEntry,UnityExport,UnityEffect,UnityStdio' }
+    @{ plug = 'unity';      file = 'unity-stdio.wasm';      transport = 'ir'; ship = $false; inputPrefix = "UNITY windows-x64-mono-6000.0.75f1`n"; chapters = '../csharp/CsAst,../csharp/CsSyntax,../csharp/CsSyntaxEmitter,../csharp/CSharpEmitter,../csharp/CSharpEmitterExpressions,../csharp/CSharpPlug:Network Config|Drain|Body,MethodBridge,../../../apps/modbuilder/bindings/valheim/ValheimBindings,../../../apps/modbuilder/bindings/valheim/ValheimInventory,../../../apps/modbuilder/bindings/valheim/ValheimConstruction,../../../apps/modbuilder/bindings/valheim/MeadowsSpawns,../../../apps/modbuilder/bindings/valheim/CircumhorizontalArc,../../../apps/modbuilder/bindings/valheim/StationHover,../../../apps/modbuilder/bindings/valheim/HudLayout,../../../apps/modbuilder/bindings/valheim/PlantRows,../../../apps/modbuilder/bindings/valheim/ToolKit,../../../apps/modbuilder/bindings/valheim/Firekeeping,../../../apps/modbuilder/bindings/valheim/BuildCamera,../../../apps/modbuilder/bindings/valheim/Loadout,../../../apps/modbuilder/bindings/valheim/Farming,ModIdentity,UnityLocalSaves,UnityEntry,UnityExport,UnityEffect,UnityStdio' }
     @{ plug = 'python';     file = 'python-stdio.wasm';     transport = 'ir'; chapters = 'PythonEmitter,PythonStdio' }
     @{ plug = 'typescript'; file = 'typescript-stdio.wasm'; transport = 'ir'; chapters = 'TypeScriptEmitter,TypeScriptStdio' }
     @{ plug = 'zig';        file = 'zig-stdio.wasm';        transport = 'ir'; chapters = 'ZigEmitter,ZigStdio'; compiler = 'IR\ConstShare' }

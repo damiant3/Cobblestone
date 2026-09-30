@@ -1,7 +1,13 @@
 Chapter: Poker
   cites Games chapter Rng
 
- Five-card draw poker, two players. Cards are integers 0-51:
+ Five-card draw poker for two, by pagat.com's draw poker rules
+ (https://www.pagat.com/poker/variants/draw.html), fixed limit: an ante, five
+ cards each, a betting round, one draw of any number of cards, a second
+ betting round, a showdown. Hands rank as pagat's poker hand ranking gives
+ them, ties between hands of one category broken card by card on all five
+ (the most numerous rank first), a five-high straight the lowest straight, and
+ an exact tie splits the pot. Cards are integers 0-51:
  suit = card / 13, rank = card mod 13 (0=2 up to 12=Ace).
  Hand ranks: 0=high-card, 1=pair, 2=two-pair, 3=trips,
  4=straight, 5=flush, 6=full-house, 7=quads, 8=straight-flush.
@@ -17,7 +23,8 @@ Section: Types
   HandRank = record {
     rank    : Integer,
     primary : Integer,
-    secondary : Integer
+    secondary : Integer,
+    kickers   : Integer
   }
 
   PokerResult = record {
@@ -45,6 +52,7 @@ Section: Types
     acted  : Integer,
     marked : Integer,
     folded : Integer,
+    opener : Integer,
     winner : Integer,
     last   : Integer,
     done   : Boolean
@@ -185,7 +193,7 @@ Section: Hand Evaluation
   best-rank-loop (cards) (target) (r) (found) =
     if r < 0 then found
     else let n = count-rank cards r
-    in let new-found = if n == target then r else found
+    in let new-found = if found < 0 & n == target then r else found
     in best-rank-loop cards target (r - 1) new-found
 
   max-rank-count : List Integer -> Integer
@@ -202,6 +210,7 @@ Section: Hand Evaluation
   evaluate-hand : PokerHand -> HandRank
   evaluate-hand (h) =
     let cards = h.cards
+    in let k = hand-kickers cards
     in let flush = hand-is-flush cards
     in let straight = hand-is-straight cards
     in let mc = max-rank-count cards
@@ -209,17 +218,17 @@ Section: Hand Evaluation
     in let trip-rank = best-rank-of-count cards 3
     in let pair-rank = best-rank-of-count cards 2
     in let hi = hand-max-rank cards
-    in if flush & straight then HandRank { rank = 8, primary = hand-straight-high cards, secondary = 0 }
-    else if mc == 4 then HandRank { rank = 7, primary = quad-rank, secondary = hi }
-    else if trip-rank >= 0 & pair-rank >= 0 then HandRank { rank = 6, primary = trip-rank, secondary = pair-rank }
-    else if flush then HandRank { rank = 5, primary = hi, secondary = 0 }
-    else if straight then HandRank { rank = 4, primary = hand-straight-high cards, secondary = 0 }
-    else if mc == 3 then HandRank { rank = 3, primary = trip-rank, secondary = hi }
+    in if flush & straight then HandRank { rank = 8, primary = hand-straight-high cards, secondary = 0, kickers = k }
+    else if mc == 4 then HandRank { rank = 7, primary = quad-rank, secondary = hi, kickers = k }
+    else if trip-rank >= 0 & pair-rank >= 0 then HandRank { rank = 6, primary = trip-rank, secondary = pair-rank, kickers = k }
+    else if flush then HandRank { rank = 5, primary = hi, secondary = 0, kickers = k }
+    else if straight then HandRank { rank = 4, primary = hand-straight-high cards, secondary = 0, kickers = k }
+    else if mc == 3 then HandRank { rank = 3, primary = trip-rank, secondary = hi, kickers = k }
     else if mc == 2 then
       let p2 = second-pair-rank cards pair-rank
-      in if p2 >= 0 then HandRank { rank = 2, primary = pair-rank, secondary = p2 }
-      else HandRank { rank = 1, primary = pair-rank, secondary = hi }
-    else HandRank { rank = 0, primary = hi, secondary = 0 }
+      in if p2 >= 0 then HandRank { rank = 2, primary = pair-rank, secondary = p2, kickers = k }
+      else HandRank { rank = 1, primary = pair-rank, secondary = hi, kickers = k }
+    else HandRank { rank = 0, primary = hi, secondary = 0, kickers = k }
 
   second-pair-rank : List Integer, Integer -> Integer
   second-pair-rank (cards) (first-pair) =
@@ -230,7 +239,7 @@ Section: Hand Evaluation
     if r < 0 then found
     else if r == first-pair then second-pair-loop cards first-pair (r - 1) found
     else let n = count-rank cards r
-    in let new-found = if n >= 2 then r else found
+    in let new-found = if found < 0 & n >= 2 then r else found
     in second-pair-loop cards first-pair (r - 1) new-found
 
 Section: Hand Comparison
@@ -243,7 +252,28 @@ Section: Hand Comparison
     else if a.primary < b.primary then 2
     else if a.secondary > b.secondary then 1
     else if a.secondary < b.secondary then 2
+    else if a.kickers > b.kickers then 1
+    else if a.kickers < b.kickers then 2
     else 0
+
+ The whole hand as one base-13 number: its ranks, the most numerous first
+ and the higher first within a count, each as often as it is held. A
+ five-high straight reads 5 4 3 2 with the ace below the two.
+
+  hand-kickers : List Integer -> Integer
+  hand-kickers (cards) =
+    if hand-is-wheel cards then ((3 * 13 + 2) * 13 + 1) * 13 * 13
+    else pk-kick-count cards 4 12 0
+
+  pk-kick-count : List Integer, Integer, Integer, Integer -> Integer
+  pk-kick-count (cards) (cnt) (r) (acc) =
+    if cnt < 1 then acc
+    else if r < 0 then pk-kick-count cards (cnt - 1) 12 acc
+    else if count-rank cards r == cnt then pk-kick-count cards cnt (r - 1) (pk-push-n acc r cnt)
+    else pk-kick-count cards cnt (r - 1) acc
+
+  pk-push-n : Integer, Integer, Integer -> Integer
+  pk-push-n (acc) (r) (n) = if n <= 0 then acc else pk-push-n (acc * 13 + r) r (n - 1)
 
 Section: Draw Strategy (AI)
 
@@ -293,7 +323,8 @@ Section: Game Runner
 
 Section: A Table You Can Sit At
 
- Fixed limit: an ante of five, a bet of ten, two hundred to start with.
+ Fixed limit: an ante of five, a bet of ten before the draw and twenty after
+ it, at most one bet and three raises a round, two hundred to start with.
 
   pk-ante : Integer
   pk-ante = 5
@@ -349,7 +380,8 @@ Section: Dealing From A Position
       folded = (-1),
       winner = (-1),
       last = (-1),
-      done = False
+      done = False,
+      opener = (-1)
     }
 
   pk-hand-of : PokerTable, Integer -> List Integer
@@ -393,8 +425,16 @@ Section: The Moves
 
   pk-raise-room : PokerTable, Integer -> Boolean
   pk-raise-room (t) (who) =
-    if t.acted >= pk-max-raises then False
-    else pk-to-call t who + pk-bet-size <= pk-chips-of t who
+    if pk-bets-made t >= pk-max-raises then False
+    else pk-to-call t who + pk-round-bet t <= pk-chips-of t who
+
+ Each bet or raise adds exactly one round bet to the larger stake.
+
+  pk-round-bet : PokerTable -> Integer
+  pk-round-bet (t) = if t.stage >= 2 then 2 * pk-bet-size else pk-bet-size
+
+  pk-bets-made : PokerTable -> Integer
+  pk-bets-made (t) = (if t.bet0 > t.bet1 then t.bet0 else t.bet1) / pk-round-bet t
 
  A betting round is over when both have acted AND the stakes agree: stakes
  alone agree before anybody acts, actions alone after a raise.
@@ -412,6 +452,7 @@ Section: The Moves
       bet0 = if who == 0 then t.bet0 + amount else t.bet0,
       bet1 = if who == 1 then t.bet1 + amount else t.bet1,
       pot = t.pot + amount,
+      opener = if t.opener < 0 & t.stage == 0 & amount > 0 then who else t.opener,
       stage = t.stage,
       turn = 1 - who,
       acted = t.acted + 1,
@@ -430,7 +471,8 @@ Section: The Moves
       bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
       stage = t.stage, turn = t.turn, acted = t.acted,
       marked = t.marked, folded = t.folded, winner = t.winner,
-      last = what, done = t.done
+      last = what, done = t.done,
+      opener = t.opener
     }
 
  A fold ends the hand and the pot goes to the player left.
@@ -447,7 +489,8 @@ Section: The Moves
       bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
       stage = 3, turn = t.turn, acted = t.acted,
       marked = t.marked, folded = who, winner = t.winner,
-      last = 0, done = t.done
+      last = 0, done = t.done,
+      opener = t.opener
     }
 
   pk-call : PokerTable, Integer -> PokerTable
@@ -468,10 +511,10 @@ Section: The Moves
   pk-raise-ok : PokerTable, Integer -> PokerTable
   pk-raise-ok (t) (who) =
     let owed = pk-to-call t who
-    in let paid = pk-put-in t who (owed + pk-bet-size)
+    in let paid = pk-put-in t who (owed + pk-round-bet t)
     in pk-advance (pk-note paid 3)
 
- The player who did not open the previous round speaks first.
+ Player 0, left of the dealer, speaks first in both rounds.
 
   pk-advance : PokerTable -> PokerTable
   pk-advance (t) =
@@ -487,9 +530,10 @@ Section: The Moves
       deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
       chips0 = t.chips0, chips1 = t.chips1,
       bet0 = 0, bet1 = 0, pot = t.pot,
-      stage = next, turn = 0, acted = 0,
+      stage = next, turn = (if next == 2 & t.opener >= 0 then t.opener else 0), acted = 0,
       marked = t.marked, folded = t.folded, winner = t.winner,
-      last = t.last, done = False
+      last = t.last, done = False,
+      opener = t.opener
     }
 
 Section: The Draw
@@ -590,7 +634,8 @@ Section: The Draw
       bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
       stage = t.stage, turn = 1 - who, acted = t.acted + 1,
       marked = 0, folded = t.folded, winner = t.winner,
-      last = 4, done = False
+      last = 4, done = False,
+      opener = t.opener
     }
 
   pk-can-draw : PokerTable, Integer -> Boolean
@@ -607,13 +652,15 @@ Section: The Draw
   pk-mark-ok (t) (i) =
     if i < 0 then t
     else if i >= 5 then t
+    else if pk-bit (t.marked) i == 0 & pk-count-bits (t.marked) 0 0 >= 3 then t
     else PokerTable {
       deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
       chips0 = t.chips0, chips1 = t.chips1,
       bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
       stage = t.stage, turn = t.turn, acted = t.acted,
       marked = pk-toggle-bit (t.marked) i,
-      folded = t.folded, winner = t.winner, last = t.last, done = t.done
+      folded = t.folded, winner = t.winner, last = t.last, done = t.done,
+      opener = t.opener
     }
 
   pk-clear-marks : PokerTable -> PokerTable
@@ -628,12 +675,16 @@ Section: The Draw
       bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
       stage = t.stage, turn = t.turn, acted = t.acted,
       marked = 0, folded = t.folded, winner = t.winner,
-      last = t.last, done = t.done
+      last = t.last, done = t.done,
+      opener = t.opener
     }
 
   pk-draw : PokerTable -> PokerTable
+ At most three cards are discarded.
+
   pk-draw (t) =
-    if pk-can-draw t 0 then pk-after-draw (pk-draw-for t 0 (t.marked)) else t
+    if pk-count-bits (t.marked) 0 0 > 3 then t
+    else if pk-can-draw t 0 then pk-after-draw (pk-draw-for t 0 (t.marked)) else t
 
   pk-after-draw : PokerTable -> PokerTable
   pk-after-draw (t) =
@@ -669,7 +720,8 @@ Section: The Showdown
       pot = 0,
       stage = 3, turn = t.turn, acted = t.acted,
       marked = 0, folded = t.folded, winner = w,
-      last = t.last, done = True
+      last = t.last, done = True,
+      opener = t.opener
     }
 
 Section: The Opponent
@@ -701,7 +753,8 @@ Section: Formatting
 
   rank-name : Integer -> Text
   rank-name (r) =
-    if r == 8 then "Straight-Flush"
+    if r == 9 then "Five-of-a-Kind"
+    else if r == 8 then "Straight-Flush"
     else if r == 7 then "Quads"
     else if r == 6 then "Full-House"
     else if r == 5 then "Flush"

@@ -1,45 +1,75 @@
 Chapter: Risk
   cites Games chapter Rng
-
- Simplified Risk: 12 territories in 4 continents (3 territories each).
- Territories 0-2: Continent A, 3-5: Continent B, 6-8: Continent C, 9-11: Continent D.
- Each continent bonus = 2 armies. Adjacency is hardcoded.
- Turn: reinforcements (territories/3 + continent bonuses, min 3), then up
- to three attacks on an adjacent enemy (attacker up to 3 dice, defender up
- to 2, compare sorted descending, ties to the defender).
- Win when one player owns all territories.
+  cites Foreword chapter Random
 
  We say:
 
+Section: The Rules
+
+ The rules as Hasbro publishes them (Risk, the classic game's rules
+ leaflet), for two to four players.
+
+ Rule 1. The board is 42 territories in six continents: North America (9
+ territories, 5 bonus armies), South America (4, 2), Europe (7, 5), Africa
+ (6, 3), Asia (12, 7) and Australia (4, 2). Territories are adjacent where
+ they share a border or a sea line.
+
+ Rule 2. Setting up: the territories are dealt round the table, one army on
+ each, and the players then place the rest of their starting armies one at
+ a time in turn, each on a territory of their own. Two players start with
+ 40 armies, three with 35, four with 30.
+
+ Rule 3. A turn is three parts in order: reinforce, attack, fortify.
+
+ Rule 4. Reinforcing: the player receives the territories they hold divided
+ by three, at least 3, plus each continent's bonus for a continent they
+ hold whole, plus armies for any set of cards traded in, and places them
+ on their own territories.
+
+ Rule 5. Cards: 42 territory cards, each showing an infantry, a cavalry or
+ an artillery, and 2 wild cards. A set is three cards of one symbol, one of
+ each, or any two with a wild card. A set trades in during reinforcement
+ for 4, 6, 8, 10, 12 and 15 armies, and 5 more for each set after, counted
+ over every player's trades. A traded card showing a territory the player
+ holds puts 2 more armies on it, at most once a turn. A player holding five
+ or more cards at the start of their turn must trade.
+
+ Rule 6. Attacking: from a territory of theirs with at least two armies,
+ the player attacks an adjacent enemy territory, rolling 1, 2 or 3 dice as
+ they choose, at most one fewer than the armies there. The defender rolls
+ 1 or 2 dice, at most the armies defending. The highest dice are compared
+ in pairs; the higher die wins each pair and a tie goes to the defender,
+ each lost pair costing one army. A player may attack any number of times.
+
+ Rule 7. A territory emptied of defenders is conquered: the attacker moves
+ in at least as many armies as dice rolled in that battle, and at most all
+ but one of the attacking territory's armies.
+
+ Rule 8. A player who conquers at least one territory in a turn draws one
+ card at the end of it. A player who eliminates another takes their cards,
+ and holding six or more then trades in sets at once until they hold four
+ or fewer, placing those armies before attacking on.
+
+ Rule 9. Fortifying: the turn ends with at most one move of armies from one
+ territory to another of the player's own connected to it through their own
+ territories, leaving at least one army behind.
+
+ Rule 10. The player who holds all 42 territories wins.
+
+ Where the rules leave a choice, this engine takes these. The defender
+ always rolls as many dice as allowed. The deal and the deck are shuffled
+ from the game's seed, the first player to set up plays first, and two
+ players play without the neutral army. A card's symbol is its territory
+ number modulo 3 (infantry, cavalry, artillery), 14 of each as the deck
+ has. Traded cards go to a discard pile that is shuffled into a new deck
+ when the deck runs out. The 2 armies for a held territory go to the first
+ such card of the set in territory order. A game nobody has won after 400
+ turns has no winner.
+
 Section: Types
 
-  RiskTerritory = record {
-    owner  : Integer,
-    armies : Integer
-  }
-
-  RiskPlayer = record {
-    id          : Integer,
-    alive       : Boolean,
-    total-armies : Integer
-  }
-
- A turn is reinforce, then attack; there is no fortify.
-
- `phase` is 0 while there are armies to place, 1 while attacks remain, and
- 2 when the game is over; `attacks-left` counts down from three.
-
   RiskState = record {
-    territories    : List RiskTerritory,
-    players        : List RiskPlayer,
-    current-player : Integer,
-    turn-number    : Integer,
-    game-over      : Boolean,
-    winner         : Integer,
-    num-players    : Integer,
-    phase          : Integer,
-    to-place       : Integer,
-    attacks-left   : Integer
+    cells : List Integer
   }
 
   RiskResult = record {
@@ -48,550 +78,895 @@ Section: Types
     territories : List Integer
   }
 
-Section: Adjacency
+Section: The State Layout
 
-  risk-adjacent : Integer, Integer -> Boolean
-  risk-adjacent (a) (b) =
-    risk-adj-check a b | risk-adj-check b a
+ The state is one Integer list of 280 slots. Slots 0 to 31 are the fields
+ named below, with the starting armies each player has left to place at 26
+ to 29. Territories sit at 40 in strides of 2 (owner, armies). Each card's
+ holder sits at 130 (-2 the deck, -1 the discard pile, else a player); the
+ deck's order at 180 and the discard pile's at 230, each 44 slots.
 
-  risk-adj-check : Integer, Integer -> Boolean
-  risk-adj-check (a) (b) =
-    if a == 0  then b == 1 | b == 3 | b == 9
-    else if a == 1  then b == 2 | b == 4
-    else if a == 2  then b == 5 | b == 11
-    else if a == 3  then b == 4 | b == 6
-    else if a == 4  then b == 5 | b == 7
-    else if a == 5  then b == 8
-    else if a == 6  then b == 7 | b == 9
-    else if a == 7  then b == 8 | b == 10
-    else if a == 8  then b == 11
-    else if a == 9  then b == 10
-    else if a == 10 then b == 11
+  rk-f-np : Integer
+  rk-f-np = 0
+
+  rk-f-cur : Integer
+  rk-f-cur = 1
+
+  rk-f-turn : Integer
+  rk-f-turn = 2
+
+  rk-f-over : Integer
+  rk-f-over = 3
+
+  rk-f-winner : Integer
+  rk-f-winner = 4
+
+  rk-f-phase : Integer
+  rk-f-phase = 5
+
+  rk-f-place : Integer
+  rk-f-place = 6
+
+  rk-f-trades : Integer
+  rk-f-trades = 7
+
+  rk-f-conquered : Integer
+  rk-f-conquered = 8
+
+  rk-f-bonus : Integer
+  rk-f-bonus = 9
+
+  rk-f-mfrom : Integer
+  rk-f-mfrom = 10
+
+  rk-f-mto : Integer
+  rk-f-mto = 11
+
+  rk-f-mmin : Integer
+  rk-f-mmin = 12
+
+  rk-f-human : Integer
+  rk-f-human = 13
+
+  rk-f-seed : Integer
+  rk-f-seed = 14
+
+  rk-f-reshuffles : Integer
+  rk-f-reshuffles = 15
+
+  rk-f-dice : Integer
+  rk-f-dice = 16
+
+  rk-f-alost : Integer
+  rk-f-alost = 21
+
+  rk-f-dlost : Integer
+  rk-f-dlost = 22
+
+  rk-f-decklen : Integer
+  rk-f-decklen = 23
+
+  rk-f-discardlen : Integer
+  rk-f-discardlen = 24
+
+  rk-f-setup : Integer
+  rk-f-setup = 26
+
+  rk-f-rolled : Integer
+  rk-f-rolled = 30
+
+  rk-f-elim : Integer
+  rk-f-elim = 31
+
+  rk-size : Integer
+  rk-size = 280
+
+  rk-tslot : Integer, Integer -> Integer
+  rk-tslot (t) (f) = 40 + t * 2 + f
+
+ Phases: 0 setting up, 1 reinforcing, 2 attacking, 3 moving in after a
+ conquest, 4 fortifying, 5 trading and placing after an elimination, 6
+ over.
+
+ Actions: 0 place an army, 1 trade a set (three card numbers packed as
+ a + 64 b + 4096 c), 2 attack (from, to and dice packed the same way), 3
+ stop attacking, 4 move in, 5 fortify (from, to and armies packed), 6 end
+ the turn without fortifying.
+
+Section: Reading And Writing
+
+  rk-get : RiskState, Integer -> Integer
+  rk-get (s) (i) = list-at (s.cells) i
+
+  rk-put : RiskState, Integer, Integer -> RiskState
+  rk-put (s) (i) (v) =
+    let c = list-set-at (s.cells) i v
+    in s
+
+  rk-copy : RiskState -> RiskState
+  rk-copy (s) = RiskState { cells = rk-copy-cells (s.cells) 0 (list-length (s.cells)) [] }
+
+  rk-copy-cells : List Integer, Integer, Integer, List Integer -> List Integer
+  rk-copy-cells (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else rk-copy-cells xs (i + 1) n (list-push acc (list-at xs i))
+
+  rk-players : RiskState -> Integer
+  rk-players (s) = rk-get s rk-f-np
+
+  rk-cur : RiskState -> Integer
+  rk-cur (s) = rk-get s rk-f-cur
+
+  rk-phase : RiskState -> Integer
+  rk-phase (s) = rk-get s rk-f-phase
+
+  rk-over : RiskState -> Boolean
+  rk-over (s) = rk-get s rk-f-over == 1
+
+  rk-owner : RiskState, Integer -> Integer
+  rk-owner (s) (t) = rk-get s (rk-tslot t 0)
+
+  rk-armies : RiskState, Integer -> Integer
+  rk-armies (s) (t) = rk-get s (rk-tslot t 1)
+
+  rk-set-armies : RiskState, Integer, Integer -> RiskState
+  rk-set-armies (s) (t) (n) = rk-put s (rk-tslot t 1) n
+
+  rk-holder : RiskState, Integer -> Integer
+  rk-holder (s) (c) = rk-get s (130 + c)
+
+  rk-unpack-a : Integer -> Integer
+  rk-unpack-a (x) = rng-mod x 64
+
+  rk-unpack-b : Integer -> Integer
+  rk-unpack-b (x) = rng-mod (x / 64) 64
+
+  rk-unpack-c : Integer -> Integer
+  rk-unpack-c (x) = x / 4096
+
+  rk-pack : Integer, Integer, Integer -> Integer
+  rk-pack (a) (b) (c) = a + 64 * b + 4096 * c
+
+Section: The Board
+
+ Territories: North America 0 Alaska, 1 Northwest Territory, 2 Greenland,
+ 3 Alberta, 4 Ontario, 5 Quebec, 6 Western United States, 7 Eastern United
+ States, 8 Central America; South America 9 Venezuela, 10 Peru, 11 Brazil,
+ 12 Argentina; Europe 13 Iceland, 14 Scandinavia, 15 Great Britain, 16
+ Northern Europe, 17 Ukraine, 18 Western Europe, 19 Southern Europe; Africa
+ 20 North Africa, 21 Egypt, 22 East Africa, 23 Congo, 24 South Africa, 25
+ Madagascar; Asia 26 Ural, 27 Siberia, 28 Yakutsk, 29 Kamchatka, 30
+ Irkutsk, 31 Mongolia, 32 Japan, 33 Afghanistan, 34 China, 35 Middle East,
+ 36 India, 37 Siam; Australia 38 Indonesia, 39 New Guinea, 40 Western
+ Australia, 41 Eastern Australia.
+
+  rk-territories : Integer
+  rk-territories = 42
+
+  rk-continent : Integer -> Integer
+  rk-continent (t) =
+    if t <= 8 then 0
+    else if t <= 12 then 1
+    else if t <= 19 then 2
+    else if t <= 25 then 3
+    else if t <= 37 then 4
+    else 5
+
+  rk-continent-bonus : Integer -> Integer
+  rk-continent-bonus (c) =
+    if c == 0 then 5
+    else if c == 1 then 2
+    else if c == 2 then 5
+    else if c == 3 then 3
+    else if c == 4 then 7
+    else 2
+
+ Each border once, from the lower-numbered territory: 83 borders.
+
+  rk-border : Integer, Integer -> Boolean
+  rk-border (a) (b) =
+    if a == 0 then b == 1 | b == 3 | b == 29
+    else if a == 1 then b == 2 | b == 3 | b == 4
+    else if a == 2 then b == 4 | b == 5 | b == 13
+    else if a == 3 then b == 4 | b == 6
+    else if a == 4 then b == 5 | b == 6 | b == 7
+    else if a == 5 then b == 7
+    else if a == 6 then b == 7 | b == 8
+    else if a == 7 then b == 8
+    else if a == 8 then b == 9
+    else if a == 9 then b == 10 | b == 11
+    else if a == 10 then b == 11 | b == 12
+    else if a == 11 then b == 12 | b == 20
+    else if a == 13 then b == 14 | b == 15
+    else if a == 14 then b == 15 | b == 16 | b == 17
+    else if a == 15 then b == 16 | b == 18
+    else if a == 16 then b == 17 | b == 18 | b == 19
+    else if a == 17 then b == 19 | b == 26 | b == 33 | b == 35
+    else if a == 18 then b == 19 | b == 20
+    else if a == 19 then b == 20 | b == 21 | b == 35
+    else if a == 20 then b == 21 | b == 22 | b == 23
+    else if a == 21 then b == 22 | b == 35
+    else if a == 22 then b == 23 | b == 24 | b == 25 | b == 35
+    else if a == 23 then b == 24
+    else if a == 24 then b == 25
+    else if a == 26 then b == 27 | b == 33 | b == 34
+    else if a == 27 then b == 28 | b == 30 | b == 31 | b == 34
+    else if a == 28 then b == 29 | b == 30
+    else if a == 29 then b == 30 | b == 31 | b == 32
+    else if a == 30 then b == 31
+    else if a == 31 then b == 32 | b == 34
+    else if a == 33 then b == 34 | b == 35 | b == 36
+    else if a == 34 then b == 36 | b == 37
+    else if a == 35 then b == 36
+    else if a == 36 then b == 37
+    else if a == 37 then b == 38
+    else if a == 38 then b == 39 | b == 40
+    else if a == 39 then b == 40 | b == 41
+    else if a == 40 then b == 41
     else False
 
-Section: Continent Bonus
+  rk-adjacent : Integer, Integer -> Boolean
+  rk-adjacent (a) (b) =
+    if a < 0 | b < 0 | a >= rk-territories | b >= rk-territories then False
+    else if a < b then rk-border a b
+    else if b < a then rk-border b a
+    else False
 
-  risk-continent : Integer -> Integer
-  risk-continent (t) = t / 3
+Section: Dice
 
-  risk-continent-bonus : RiskState, Integer -> Integer
-  risk-continent-bonus (s) (player) =
-    risk-check-continents s player 0 0
+ The Rng's low bit alternates from one state to the next, so dice drawn
+ from consecutive states are correlated; each die folds the high bits of
+ its own mix down instead.
 
-  risk-check-continents : RiskState, Integer, Integer, Integer -> Integer
-  risk-check-continents (s) (player) (continent) (bonus) =
-    if continent >= 4 then bonus
-    else let owned = risk-owns-continent s player continent
-    in let b = if owned then 2 else 0
-    in risk-check-continents s player (continent + 1) (bonus + b)
+  rk-die : Integer, Integer -> Integer
+  rk-die (seed) (k) = 1 + rng-mod (bit-shru (mix-bits seed k) 1) 6
 
-  risk-owns-continent : RiskState, Integer, Integer -> Boolean
-  risk-owns-continent (s) (player) (continent) =
-    risk-owns-cont-loop s player continent 0
+  rk-rand : Integer, Integer, Integer -> Integer
+  rk-rand (seed) (k) (n) = rng-mod (bit-shru (mix-bits seed k) 1) n
 
-  risk-owns-cont-loop : RiskState, Integer, Integer, Integer -> Boolean
-  risk-owns-cont-loop (s) (player) (continent) (i) =
-    if i >= 12 then True
-    else if risk-continent i /= continent then risk-owns-cont-loop s player continent (i + 1)
-    else let t = list-at (s.territories) i
-    in if t.owner /= player then False
-    else risk-owns-cont-loop s player continent (i + 1)
+Section: Counting
 
-Section: Initialization
+  rk-held : RiskState, Integer -> Integer
+  rk-held (s) (p) = rk-held-loop s p 0 0
+
+  rk-held-loop : RiskState, Integer, Integer, Integer -> Integer
+  rk-held-loop (s) (p) (t) (acc) =
+    if t >= rk-territories then acc
+    else rk-held-loop s p (t + 1) (acc + (if rk-owner s t == p then 1 else 0))
+
+  rk-total-armies : RiskState, Integer -> Integer
+  rk-total-armies (s) (p) = rk-total-loop s p 0 0
+
+  rk-total-loop : RiskState, Integer, Integer, Integer -> Integer
+  rk-total-loop (s) (p) (t) (acc) =
+    if t >= rk-territories then acc
+    else rk-total-loop s p (t + 1) (acc + (if rk-owner s t == p then rk-armies s t else 0))
+
+  rk-holds-continent : RiskState, Integer, Integer -> Boolean
+  rk-holds-continent (s) (p) (c) = rk-holds-cont-loop s p c 0
+
+  rk-holds-cont-loop : RiskState, Integer, Integer, Integer -> Boolean
+  rk-holds-cont-loop (s) (p) (c) (t) =
+    if t >= rk-territories then True
+    else if rk-continent t /= c then rk-holds-cont-loop s p c (t + 1)
+    else if rk-owner s t /= p then False
+    else rk-holds-cont-loop s p c (t + 1)
+
+  rk-bonus-total : RiskState, Integer, Integer, Integer -> Integer
+  rk-bonus-total (s) (p) (c) (acc) =
+    if c >= 6 then acc
+    else rk-bonus-total s p (c + 1) (acc + (if rk-holds-continent s p c then rk-continent-bonus c else 0))
+
+  rk-reinforcements : RiskState, Integer -> Integer
+  rk-reinforcements (s) (p) =
+    let base = rk-held s p / 3
+    in (if base < 3 then 3 else base) + rk-bonus-total s p 0 0
+
+  rk-alive : RiskState, Integer -> Boolean
+  rk-alive (s) (p) = rk-held s p > 0
+
+  rk-hand : RiskState, Integer -> Integer
+  rk-hand (s) (p) = rk-hand-loop s p 0 0
+
+  rk-hand-loop : RiskState, Integer, Integer, Integer -> Integer
+  rk-hand-loop (s) (p) (c) (acc) =
+    if c >= 44 then acc
+    else rk-hand-loop s p (c + 1) (acc + (if rk-holder s c == p then 1 else 0))
+
+Section: Setting Up
+
+  rk-zeros : Integer, List Integer -> List Integer
+  rk-zeros (n) (acc) =
+    if n <= 0 then acc
+    else rk-zeros (n - 1) (list-push acc 0)
+
+  rk-start-armies : Integer -> Integer
+  rk-start-armies (np) = if np <= 2 then 40 else if np == 3 then 35 else 30
 
   risk-init : Integer, Integer -> RiskState
   risk-init (seed) (num-players) =
     let np = if num-players < 2 then 2 else if num-players > 4 then 4 else num-players
-    in let terrs = risk-assign-territories np (rng-new seed)
-    in let players = risk-build-players np 0 []
-    in let s0 = RiskState {
-         territories = terrs,
-         players = players,
-         current-player = 0,
-         turn-number = 0,
-         game-over = False,
-         winner = (-1),
-         num-players = np,
-         phase = 0,
-         to-place = 0,
-         attacks-left = 0
-       }
-    in risk-update-army-counts s0
+    in let s0 = RiskState { cells = rk-zeros rk-size [] }
+    in let s1 = rk-put (rk-put (rk-put (rk-put s0 rk-f-np np) rk-f-winner (-1)) rk-f-human (-1)) rk-f-seed seed
+    in let s2 = rk-put (rk-put (rk-put s1 rk-f-mfrom (-1)) rk-f-mto (-1)) rk-f-decklen 44
+    in let s3 = rk-deal-assign (rk-deal-shuffle (rk-order-fill s2 0) seed 41) np 0
+    in let s4 = rk-setup-left s3 0 np
+    in let s5 = rk-deck-fill s4 0
+    in rk-deck-shuffle s5 seed 43
 
-  risk-assign-territories : Integer, Rng -> List RiskTerritory
-  risk-assign-territories (np) (r) =
-    let seq = risk-owner-seq np 0 []
-    in let dealt = risk-shuffle-owners seq 11 r
-    in risk-assign-loop dealt 0 []
+ The deal's order is shuffled in the discard slots, which are empty until
+ the first trade, and then dealt round the table.
 
-  risk-owner-seq : Integer, Integer, List Integer -> List Integer
-  risk-owner-seq (np) (i) (acc) =
-    if i >= 12 then acc
-    else risk-owner-seq np (i + 1) (list-push acc (rng-mod i np))
+  rk-order-fill : RiskState, Integer -> RiskState
+  rk-order-fill (s) (i) =
+    if i >= rk-territories then s
+    else rk-order-fill (rk-put s (230 + i) i) (i + 1)
 
-  risk-shuffle-owners : List Integer, Integer, Rng -> List Integer
-  risk-shuffle-owners (xs) (i) (r) =
-    if i <= 0 then xs
-    else let r2 = rng-next r
-    in let j = rng-mod (rng-value r2) (i + 1)
-    in let a = list-at xs i
-    in let b = list-at xs j
-    in let x2 = list-set-at xs i b
-    in let x3 = list-set-at x2 j a
-    in risk-shuffle-owners x3 (i - 1) r2
+  rk-deal-shuffle : RiskState, Integer, Integer -> RiskState
+  rk-deal-shuffle (s) (seed) (i) =
+    if i <= 0 then s
+    else let j = rk-rand seed (1000 + i) (i + 1)
+    in let a = rk-get s (230 + i)
+    in let b = rk-get s (230 + j)
+    in rk-deal-shuffle (rk-put (rk-put s (230 + i) b) (230 + j) a) seed (i - 1)
 
-  risk-assign-loop : List Integer, Integer, List RiskTerritory -> List RiskTerritory
-  risk-assign-loop (dealt) (i) (acc) =
-    if i >= 12 then acc
-    else let t = RiskTerritory { owner = list-at dealt i, armies = 3 }
-    in risk-assign-loop dealt (i + 1) (list-push acc t)
+  rk-deal-assign : RiskState, Integer, Integer -> RiskState
+  rk-deal-assign (s) (np) (i) =
+    if i >= rk-territories then s
+    else let t = rk-get s (230 + i)
+    in rk-deal-assign (rk-put (rk-put (rk-put s (rk-tslot t 0) (rng-mod i np)) (rk-tslot t 1) 1) (230 + i) 0) np (i + 1)
 
-  risk-build-players : Integer, Integer, List RiskPlayer -> List RiskPlayer
-  risk-build-players (np) (i) (acc) =
-    if i >= np then acc
-    else let p = RiskPlayer { id = i, alive = True, total-armies = 0 }
-    in risk-build-players np (i + 1) (list-push acc p)
+  rk-setup-left : RiskState, Integer, Integer -> RiskState
+  rk-setup-left (s) (p) (np) =
+    if p >= np then s
+    else rk-setup-left (rk-put s (rk-f-setup + p) (rk-start-armies np - rk-held s p)) (p + 1) np
 
-  risk-update-army-counts : RiskState -> RiskState
-  risk-update-army-counts (s) =
-    let players2 = risk-recount-players s 0 (s.players)
-    in RiskState {
-         territories = s.territories,
-         players = players2,
-         current-player = s.current-player,
-         turn-number = s.turn-number,
-         game-over = s.game-over,
-         winner = s.winner,
-         num-players = s.num-players,
-         phase = s.phase,
-         to-place = s.to-place,
-         attacks-left = s.attacks-left
-       }
+  rk-deck-fill : RiskState, Integer -> RiskState
+  rk-deck-fill (s) (c) =
+    if c >= 44 then s
+    else rk-deck-fill (rk-put (rk-put s (180 + c) c) (130 + c) (-2)) (c + 1)
 
-  risk-recount-players : RiskState, Integer, List RiskPlayer -> List RiskPlayer
-  risk-recount-players (s) (i) (players) =
-    if i >= s.num-players then players
-    else let count = risk-count-armies s i
-    in let p = list-at players i
-    in let new-p = RiskPlayer { id = p.id, alive = count > 0, total-armies = count }
-    in risk-recount-players s (i + 1) (list-set-at players i new-p)
+  rk-deck-shuffle : RiskState, Integer, Integer -> RiskState
+  rk-deck-shuffle (s) (seed) (i) =
+    if i <= 0 then s
+    else let j = rk-rand seed (3000 + i) (i + 1)
+    in let a = rk-get s (180 + i)
+    in let b = rk-get s (180 + j)
+    in rk-deck-shuffle (rk-put (rk-put s (180 + i) b) (180 + j) a) seed (i - 1)
 
-  risk-count-armies : RiskState, Integer -> Integer
-  risk-count-armies (s) (player) =
-    risk-count-loop s player 0 0
+  rk-set-human : RiskState, Integer -> RiskState
+  rk-set-human (s) (p) = rk-put s rk-f-human p
 
-  risk-count-loop : RiskState, Integer, Integer, Integer -> Integer
-  risk-count-loop (s) (player) (i) (acc) =
-    if i >= 12 then acc
-    else let t = list-at (s.territories) i
-    in let delta = if t.owner == player then t.armies else 0
-    in risk-count-loop s player (i + 1) (acc + delta)
+Section: Cards
 
-Section: Territory Helpers
+  rk-symbol : Integer -> Integer
+  rk-symbol (c) = if c >= 42 then 3 else rng-mod c 3
 
-  risk-get-terr : RiskState, Integer -> RiskTerritory
-  risk-get-terr (s) (i) = list-at (s.territories) i
+  rk-set-ok : Integer, Integer, Integer -> Boolean
+  rk-set-ok (a) (b) (c) =
+    let x = rk-symbol a
+    in let y = rk-symbol b
+    in let z = rk-symbol c
+    in if x == 3 | y == 3 | z == 3 then True
+    else if x == y & y == z then True
+    else x /= y & y /= z & x /= z
 
-  risk-set-terr : RiskState, Integer, RiskTerritory -> RiskState
-  risk-set-terr (s) (i) (t) =
-    RiskState {
-      territories = list-set-at (s.territories) i t,
-      players = s.players,
-      current-player = s.current-player,
-      turn-number = s.turn-number,
-      game-over = s.game-over,
-      winner = s.winner,
-      num-players = s.num-players,
-      phase = s.phase,
-      to-place = s.to-place,
-      attacks-left = s.attacks-left
-    }
+  rk-trade-value : Integer -> Integer
+  rk-trade-value (k) =
+    if k == 0 then 4
+    else if k == 1 then 6
+    else if k == 2 then 8
+    else if k == 3 then 10
+    else if k == 4 then 12
+    else 15 + 5 * (k - 5)
 
-  risk-count-player-territories : RiskState, Integer -> Integer
-  risk-count-player-territories (s) (player) =
-    risk-terr-count-loop s player 0 0
+  rk-can-trade-cards : RiskState, Integer, Integer -> Boolean
+  rk-can-trade-cards (s) (p) (packed) =
+    let a = rk-unpack-a packed
+    in let b = rk-unpack-b packed
+    in let c = rk-unpack-c packed
+    in if a >= b | b >= c | c >= 44 | a < 0 then False
+    else if rk-holder s a /= p | rk-holder s b /= p | rk-holder s c /= p then False
+    else rk-set-ok a b c
 
-  risk-terr-count-loop : RiskState, Integer, Integer, Integer -> Integer
-  risk-terr-count-loop (s) (player) (i) (acc) =
-    if i >= 12 then acc
-    else let t = list-at (s.territories) i
-    in let delta = if t.owner == player then 1 else 0
-    in risk-terr-count-loop s player (i + 1) (acc + delta)
+  rk-discard : RiskState, Integer -> RiskState
+  rk-discard (s) (c) =
+    let n = rk-get s rk-f-discardlen
+    in rk-put (rk-put (rk-put s (230 + n) c) rk-f-discardlen (n + 1)) (130 + c) (-1)
 
-Section: Reinforcements
+  rk-trade : RiskState, Integer, Integer -> RiskState
+  rk-trade (s) (p) (packed) =
+    let a = rk-unpack-a packed
+    in let b = rk-unpack-b packed
+    in let c = rk-unpack-c packed
+    in let k = rk-get s rk-f-trades
+    in let s2 = rk-put (rk-put s rk-f-trades (k + 1)) rk-f-place (rk-get s rk-f-place + rk-trade-value k)
+    in let s3 = rk-discard (rk-discard (rk-discard s2 a) b) c
+    in if rk-get s3 rk-f-bonus == 1 then s3
+    else rk-trade-bonus s3 p (rk-bonus-card s3 p a b c)
 
-  risk-calc-reinforcements : RiskState, Integer -> Integer
-  risk-calc-reinforcements (s) (player) =
-    let terr-count = risk-count-player-territories s player
-    in let base = if terr-count / 3 < 3 then 3 else terr-count / 3
-    in let bonus = risk-continent-bonus s player
-    in base + bonus
+  rk-bonus-card : RiskState, Integer, Integer, Integer, Integer -> Integer
+  rk-bonus-card (s) (p) (a) (b) (c) =
+    if a < 42 & rk-owner s a == p then a
+    else if b < 42 & rk-owner s b == p then b
+    else if c < 42 & rk-owner s c == p then c
+    else (-1)
 
-  risk-find-border-territory : RiskState, Integer -> Integer
-  risk-find-border-territory (s) (player) =
-    risk-border-loop s player 0 (-1) 999999
+  rk-trade-bonus : RiskState, Integer, Integer -> RiskState
+  rk-trade-bonus (s) (p) (t) =
+    if t < 0 then s
+    else rk-put (rk-set-armies s t (rk-armies s t + 2)) rk-f-bonus 1
 
-  risk-border-loop : RiskState, Integer, Integer, Integer, Integer -> Integer
-  risk-border-loop (s) (player) (i) (best) (best-ratio) =
-    if i >= 12 then best
-    else let t = list-at (s.territories) i
-    in if t.owner /= player then risk-border-loop s player (i + 1) best best-ratio
-    else if risk-has-enemy-neighbor s player i == False then risk-border-loop s player (i + 1) best best-ratio
-    else if t.armies < best-ratio then risk-border-loop s player (i + 1) i t.armies
-    else risk-border-loop s player (i + 1) best best-ratio
+ A card is drawn from the top; an empty deck is first remade from the
+ discard pile, shuffled.
 
-  risk-has-enemy-neighbor : RiskState, Integer, Integer -> Boolean
-  risk-has-enemy-neighbor (s) (player) (terr) =
-    risk-enemy-neighbor-loop s player terr 0
+  rk-draw : RiskState, Integer -> RiskState
+  rk-draw (s) (p) =
+    let s2 = if rk-get s rk-f-decklen == 0 then rk-reshuffle s else s
+    in let n = rk-get s2 rk-f-decklen
+    in if n == 0 then s2
+    else let c = rk-get s2 180
+    in rk-put (rk-put (rk-deck-shift s2 0 n) rk-f-decklen (n - 1)) (130 + c) p
 
-  risk-enemy-neighbor-loop : RiskState, Integer, Integer, Integer -> Boolean
-  risk-enemy-neighbor-loop (s) (player) (terr) (i) =
-    if i >= 12 then False
-    else if risk-adjacent terr i == False then risk-enemy-neighbor-loop s player terr (i + 1)
-    else let t = list-at (s.territories) i
-    in if t.owner /= player then True
-    else risk-enemy-neighbor-loop s player terr (i + 1)
+  rk-deck-shift : RiskState, Integer, Integer -> RiskState
+  rk-deck-shift (s) (k) (n) =
+    if k + 1 >= n then s
+    else rk-deck-shift (rk-put s (180 + k) (rk-get s (181 + k))) (k + 1) n
 
-Section: Attack Dice
+  rk-reshuffle : RiskState -> RiskState
+  rk-reshuffle (s) =
+    let n = rk-get s rk-f-discardlen
+    in let r = rk-get s rk-f-reshuffles
+    in let s2 = rk-move-discards s 0 n
+    in let s3 = rk-put (rk-put (rk-put s2 rk-f-decklen n) rk-f-discardlen 0) rk-f-reshuffles (r + 1)
+    in rk-deck-shuffle-from s3 (rk-get s rk-f-seed) (5000 + r * 64) (n - 1)
 
-  risk-roll-dice : Rng, Integer -> Integer
-  risk-roll-dice (r) (n) =
-    rng-range r 1 6
+  rk-move-discards : RiskState, Integer, Integer -> RiskState
+  rk-move-discards (s) (k) (n) =
+    if k >= n then s
+    else let c = rk-get s (230 + k)
+    in rk-move-discards (rk-put (rk-put s (180 + k) c) (130 + c) (-2)) (k + 1) n
 
-  risk-attack-result : Rng, Integer, Integer, RiskState -> RiskState
-  risk-attack-result (r) (atk-terr) (def-terr) (s) =
-    let atk-t = risk-get-terr s atk-terr
-    in let def-t = risk-get-terr s def-terr
-    in let atk-dice = if atk-t.armies - 1 >= 3 then 3 else atk-t.armies - 1
-    in let def-dice = if def-t.armies >= 2 then 2 else def-t.armies
-    in if atk-dice <= 0 then s
-    else
-      let r2 = rng-next r
-      in let r3 = rng-next r2
-      in let r4 = rng-next r3
-      in let r5 = rng-next r4
-      in let r6 = rng-next r5
-      in let a1 = rng-range r2 1 6
-      in let a2 = if atk-dice >= 2 then rng-range r3 1 6 else 0
-      in let a3 = if atk-dice >= 3 then rng-range r4 1 6 else 0
-      in let d1 = rng-range r5 1 6
-      in let d2 = if def-dice >= 2 then rng-range r6 1 6 else 0
-      in let atk-best = if a1 >= a2 & a1 >= a3 then a1 else if a2 >= a3 then a2 else a3
-      in let atk-second = if a1 >= a2 & a1 >= a3 then
-             if a2 >= a3 then a2 else a3
-           else if a2 >= a3 then
-             if a1 >= a3 then a1 else a3
-           else if a1 >= a2 then a1 else a2
-      in let def-best = if d1 >= d2 then d1 else d2
-      in let def-second = if d1 >= d2 then d2 else d1
-      in let atk-loses-best = if atk-best > def-best then 0 else 1
-      in let def-loses-best = if atk-best > def-best then 1 else 0
-      in let atk-loses-second = if def-dice >= 2 & atk-dice >= 2 then
-             if atk-second > def-second then 0 else 1
-           else 0
-      in let def-loses-second = if def-dice >= 2 & atk-dice >= 2 then
-             if atk-second > def-second then 1 else 0
-           else 0
-      in let atk-losses = atk-loses-best + atk-loses-second
-      in let def-losses = def-loses-best + def-loses-second
-      in let new-atk-armies = atk-t.armies - atk-losses
-      in let new-def-armies = def-t.armies - def-losses
-      in let new-atk-t = RiskTerritory { owner = atk-t.owner, armies = new-atk-armies }
-      in if new-def-armies <= 0 then
-        let conquer-armies = if new-atk-armies - 1 > atk-dice then atk-dice else new-atk-armies - 1
-        in let remain-atk = new-atk-armies - conquer-armies
-        in let new-atk2 = RiskTerritory { owner = atk-t.owner, armies = remain-atk }
-        in let new-def = RiskTerritory { owner = atk-t.owner, armies = conquer-armies }
-        in let s2 = risk-set-terr s atk-terr new-atk2
-        in risk-set-terr s2 def-terr new-def
-      else
-        let new-def-t = RiskTerritory { owner = def-t.owner, armies = new-def-armies }
-        in let s2 = risk-set-terr s atk-terr new-atk-t
-        in risk-set-terr s2 def-terr new-def-t
+  rk-deck-shuffle-from : RiskState, Integer, Integer, Integer -> RiskState
+  rk-deck-shuffle-from (s) (seed) (base) (i) =
+    if i <= 0 then s
+    else let j = rk-rand seed (base + i) (i + 1)
+    in let a = rk-get s (180 + i)
+    in let b = rk-get s (180 + j)
+    in rk-deck-shuffle-from (rk-put (rk-put s (180 + i) b) (180 + j) a) seed base (i - 1)
 
-Section: AI Strategy
+  rk-take-cards : RiskState, Integer, Integer, Integer -> RiskState
+  rk-take-cards (s) (from) (to) (c) =
+    if c >= 44 then s
+    else rk-take-cards (if rk-holder s c == from then rk-put s (130 + c) to else s) from to (c + 1)
 
-  risk-find-attack : RiskState, Integer -> Integer
-  risk-find-attack (s) (player) =
-    risk-find-attack-loop s player 0 (-1) 0
+Section: Connection
 
-  risk-find-attack-loop : RiskState, Integer, Integer, Integer, Integer -> Integer
-  risk-find-attack-loop (s) (player) (i) (best-def) (best-def-armies) =
-    if i >= 12 then best-def
-    else let t = list-at (s.territories) i
-    in if t.owner /= player then risk-find-attack-loop s player (i + 1) best-def best-def-armies
-    else if t.armies < 2 then risk-find-attack-loop s player (i + 1) best-def best-def-armies
-    else
-      let weak-enemy = risk-weakest-enemy-neighbor s player i
-      in if weak-enemy < 0 then risk-find-attack-loop s player (i + 1) best-def best-def-armies
-      else let enemy-t = list-at (s.territories) weak-enemy
-      in if best-def < 0 | enemy-t.armies < best-def-armies then
-        risk-find-attack-loop s player (i + 1) weak-enemy enemy-t.armies
-      else risk-find-attack-loop s player (i + 1) best-def best-def-armies
+ Whether two territories of a player are joined through that player's own
+ territories: a flood from `a` over a 42-bit mask of reached territories,
+ expanding each reached territory once.
 
-  risk-find-attack-from : RiskState, Integer, Integer -> Integer
-  risk-find-attack-from (s) (player) (def-terr) =
-    risk-find-from-loop s player def-terr 0 (-1) 0
+  rk-connected : RiskState, Integer, Integer, Integer -> Boolean
+  rk-connected (s) (p) (a) (b) = rk-has (rk-flood s p (rk-bit a) 0) b
 
-  risk-find-from-loop : RiskState, Integer, Integer, Integer, Integer, Integer -> Integer
-  risk-find-from-loop (s) (player) (def-terr) (i) (best-atk) (best-armies) =
-    if i >= 12 then best-atk
-    else let t = list-at (s.territories) i
-    in if t.owner /= player then risk-find-from-loop s player def-terr (i + 1) best-atk best-armies
-    else if t.armies < 2 then risk-find-from-loop s player def-terr (i + 1) best-atk best-armies
-    else if risk-adjacent i def-terr == False then risk-find-from-loop s player def-terr (i + 1) best-atk best-armies
-    else if t.armies > best-armies then risk-find-from-loop s player def-terr (i + 1) i t.armies
-    else risk-find-from-loop s player def-terr (i + 1) best-atk best-armies
+  rk-bit : Integer -> Integer
+  rk-bit (t) = if t <= 0 then 1 else 2 * rk-bit (t - 1)
 
-  risk-weakest-enemy-neighbor : RiskState, Integer, Integer -> Integer
-  risk-weakest-enemy-neighbor (s) (player) (terr) =
-    risk-weakest-loop s player terr 0 (-1) 999999
+  rk-has : Integer, Integer -> Boolean
+  rk-has (mask) (t) = rng-mod (mask / rk-bit t) 2 == 1
 
-  risk-weakest-loop : RiskState, Integer, Integer, Integer, Integer, Integer -> Integer
-  risk-weakest-loop (s) (player) (terr) (i) (best) (best-armies) =
-    if i >= 12 then best
-    else if risk-adjacent terr i == False then risk-weakest-loop s player terr (i + 1) best best-armies
-    else let t = list-at (s.territories) i
-    in if t.owner == player then risk-weakest-loop s player terr (i + 1) best best-armies
-    else if t.armies < best-armies then risk-weakest-loop s player terr (i + 1) i t.armies
-    else risk-weakest-loop s player terr (i + 1) best best-armies
+  rk-flood : RiskState, Integer, Integer, Integer -> Integer
+  rk-flood (s) (p) (mask) (done) =
+    let t = rk-next-open mask done 0
+    in if t < 0 then mask
+    else rk-flood s p (rk-expand s p t mask 0) (done + rk-bit t)
 
-Section: A Turn In Steps
+  rk-next-open : Integer, Integer, Integer -> Integer
+  rk-next-open (mask) (done) (t) =
+    if t >= rk-territories then (-1)
+    else if rk-has mask t & rk-has done t == False then t
+    else rk-next-open mask done (t + 1)
 
-  risk-open-turn : RiskState -> RiskState
-  risk-open-turn (s) =
-    if s.game-over then s
-    else risk-set-turn-state s 0 (risk-calc-reinforcements s (s.current-player)) 3
+  rk-expand : RiskState, Integer, Integer, Integer, Integer -> Integer
+  rk-expand (s) (p) (t) (mask) (u) =
+    if u >= rk-territories then mask
+    else if rk-has mask u then rk-expand s p t mask (u + 1)
+    else if rk-owner s u == p & rk-adjacent t u then rk-expand s p t (mask + rk-bit u) (u + 1)
+    else rk-expand s p t mask (u + 1)
 
-  risk-set-turn-state : RiskState, Integer, Integer, Integer -> RiskState
-  risk-set-turn-state (s) (phase) (to-place) (attacks) =
-    RiskState {
-      territories = s.territories, players = s.players,
-      current-player = s.current-player, turn-number = s.turn-number,
-      game-over = s.game-over, winner = s.winner,
-      num-players = s.num-players,
-      phase = phase, to-place = to-place, attacks-left = attacks
-    }
+Section: What Each Player May Do
 
-  risk-can-place : RiskState, Integer, Integer -> Boolean
-  risk-can-place (s) (player) (terr) =
-    if s.game-over then False
-    else if s.phase /= 0 then False
-    else if s.to-place <= 0 then False
-    else if s.current-player /= player then False
-    else if terr < 0 then False
-    else if terr >= 12 then False
-    else (list-at (s.territories) terr).owner == player
+  rk-live : RiskState, Integer -> Boolean
+  rk-live (s) (p) =
+    if rk-over s then False
+    else if p < 0 then False
+    else if p >= rk-players s then False
+    else True
 
-  risk-place-one : RiskState, Integer, Integer -> RiskState
-  risk-place-one (s) (player) (terr) =
-    if risk-can-place s player terr then risk-place-ok s terr else s
+  rk-terr-ok : Integer -> Boolean
+  rk-terr-ok (t) = if t < 0 then False else t < rk-territories
 
-  risk-place-ok : RiskState, Integer -> RiskState
-  risk-place-ok (s) (terr) =
-    let t = list-at (s.territories) terr
-    in let s2 = risk-set-terr s terr (RiskTerritory { owner = t.owner, armies = t.armies + 1 })
-    in let left = s.to-place - 1
-    in let s3 = risk-set-turn-state s2 (if left <= 0 then 1 else 0) left (s.attacks-left)
-    in risk-update-army-counts s3
+  rk-legal : RiskState, Integer, Integer, Integer -> Boolean
+  rk-legal (s) (p) (kind) (arg) =
+    if rk-live s p == False then False
+    else if p /= rk-cur s then False
+    else let ph = rk-phase s
+    in if kind == 0 then rk-can-place s p ph arg
+    else if kind == 1 then (if ph == 1 then rk-can-trade-cards s p arg else if ph == 5 then (if rk-hand s p >= 5 then rk-can-trade-cards s p arg else False) else False)
+    else if kind == 2 then (if ph == 2 then rk-can-attack s p arg else False)
+    else if kind == 3 then ph == 2
+    else if kind == 4 then (if ph == 3 then (arg >= rk-get s rk-f-mmin) & (arg <= rk-armies s (rk-get s rk-f-mfrom) - 1) else False)
+    else if kind == 5 then (if ph == 4 then rk-can-fortify s p arg else False)
+    else if kind == 6 then ph == 4
+    else False
 
- An attack needs a territory of yours with something to attack WITH: an
- army has to stay behind, so one on its own cannot move.
+  rk-can-place : RiskState, Integer, Integer, Integer -> Boolean
+  rk-can-place (s) (p) (ph) (t) =
+    if rk-terr-ok t == False then False
+    else if rk-owner s t /= p then False
+    else if ph == 0 then rk-get s (rk-f-setup + p) > 0
+    else if ph == 1 | ph == 5 then (if rk-get s rk-f-place <= 0 then False else rk-hand s p < 5)
+    else False
 
-  risk-can-attack : RiskState, Integer, Integer, Integer -> Boolean
-  risk-can-attack (s) (player) (from) (to) =
-    if s.game-over then False
-    else if s.phase /= 1 then False
-    else if s.attacks-left <= 0 then False
-    else if s.current-player /= player then False
-    else if from < 0 then False
-    else if from >= 12 then False
-    else if to < 0 then False
-    else if to >= 12 then False
-    else risk-attack-legal s player from to
+  rk-can-attack : RiskState, Integer, Integer -> Boolean
+  rk-can-attack (s) (p) (packed) =
+    let from = rk-unpack-a packed
+    in let dest = rk-unpack-b packed
+    in let dice = rk-unpack-c packed
+    in if rk-terr-ok from == False | rk-terr-ok dest == False then False
+    else if rk-owner s from /= p then False
+    else if rk-owner s dest == p then False
+    else if rk-adjacent from dest == False then False
+    else if dice < 1 | dice > 3 then False
+    else dice <= rk-armies s from - 1
 
-  risk-attack-legal : RiskState, Integer, Integer, Integer -> Boolean
-  risk-attack-legal (s) (player) (from) (to) =
-    let a = list-at (s.territories) from
-    in let d = list-at (s.territories) to
-    in if a.owner /= player then False
-    else if d.owner == player then False
-    else if a.armies < 2 then False
-    else risk-adjacent from to
+  rk-can-fortify : RiskState, Integer, Integer -> Boolean
+  rk-can-fortify (s) (p) (packed) =
+    let from = rk-unpack-a packed
+    in let dest = rk-unpack-b packed
+    in let n = rk-unpack-c packed
+    in if rk-terr-ok from == False | rk-terr-ok dest == False then False
+    else if from == dest then False
+    else if rk-owner s from /= p | rk-owner s dest /= p then False
+    else if n < 1 | n > rk-armies s from - 1 then False
+    else rk-connected s p from dest
 
-  risk-attack : RiskState, Integer, Integer, Integer, Rng -> RiskState
-  risk-attack (s) (player) (from) (to) (r) =
-    if risk-can-attack s player from to then risk-attack-ok s from to r else s
+Section: Acting
 
-  risk-attack-ok : RiskState, Integer, Integer, Rng -> RiskState
-  risk-attack-ok (s) (from) (to) (r) =
-    let s2 = risk-attack-result r from to s
-    in let s3 = risk-set-turn-state s2 1 0 (s.attacks-left - 1)
-    in let s4 = risk-check-winner (risk-update-alive s3)
-    in if s4.attacks-left <= 0 then risk-end-turn s4 else s4
+  rk-act : RiskState, Integer, Integer, Integer, Integer -> RiskState
+  rk-act (s) (p) (kind) (arg) (seed) =
+    if rk-legal s p kind arg then rk-act-in (rk-copy s) p kind arg seed else s
 
- Giving up the rest of your attacks is a move.
+ The unchecked form writes into the state it is given.
 
-  risk-can-stop : RiskState, Integer -> Boolean
-  risk-can-stop (s) (player) =
-    if s.game-over then False
-    else if s.phase /= 1 then False
-    else s.current-player == player
-
-  risk-stop : RiskState, Integer -> RiskState
-  risk-stop (s) (player) =
-    if risk-can-stop s player then risk-end-turn s else s
-
-  risk-end-turn : RiskState -> RiskState
-  risk-end-turn (s) =
-    if s.game-over then s
-    else risk-open-turn (risk-skip-dead (risk-advance-player s) 0)
-
- The fuel is the table size, so a board with every player out stops.
-
-  risk-skip-dead : RiskState, Integer -> RiskState
-  risk-skip-dead (s) (tried) =
-    if tried >= s.num-players then s
-    else if (list-at (s.players) (s.current-player)).alive then s
-    else risk-skip-dead (risk-advance-player s) (tried + 1)
-
-Section: Turn
-
-  risk-do-turn : RiskState, Rng -> RiskState
-  risk-do-turn (s) (r) =
-    if s.game-over then s
-    else let player = s.current-player
-    in let p = list-at (s.players) player
-    in if p.alive == False then risk-advance-player s
-    else
-      let opened = risk-open-turn s
-      in let s2 = risk-ai-place opened player (risk-find-border-territory opened player)
-      in let s3 = risk-do-attacks s2 player r 0
-      in let s4 = risk-update-alive s3
-      in let s5 = risk-check-winner s4
-      in risk-advance-player s5
-
-  risk-ai-place : RiskState, Integer, Integer -> RiskState
-  risk-ai-place (s) (player) (terr) =
-    if terr < 0 then risk-set-turn-state s 1 0 (s.attacks-left)
-    else if s.to-place <= 0 then s
-    else risk-ai-place (risk-place-one s player terr) player terr
-
-  risk-do-attacks : RiskState, Integer, Rng, Integer -> RiskState
-  risk-do-attacks (s) (player) (r) (attack-count) =
-    if s.game-over then s
-    else if attack-count >= 3 then s
-    else let def-terr = risk-find-attack s player
-    in if def-terr < 0 then s
-    else let atk-terr = risk-find-attack-from s player def-terr
-    in if atk-terr < 0 then s
-    else let r2 = rng-next r
-    in let s2 = risk-attack-result r2 atk-terr def-terr s
-    in risk-do-attacks s2 player r2 (attack-count + 1)
-
-  risk-update-alive : RiskState -> RiskState
-  risk-update-alive (s) =
-    let players2 = risk-recount-players s 0 (s.players)
-    in RiskState {
-         territories = s.territories,
-         players = players2,
-         current-player = s.current-player,
-         turn-number = s.turn-number,
-         game-over = s.game-over,
-         winner = s.winner,
-         num-players = s.num-players,
-         phase = s.phase,
-         to-place = s.to-place,
-         attacks-left = s.attacks-left
-       }
-
-  risk-check-winner : RiskState -> RiskState
-  risk-check-winner (s) =
-    let alive-count = risk-count-alive s
-    in if alive-count <= 1 then
-      let w = risk-find-alive s
-      in RiskState {
-           territories = s.territories,
-           players = s.players,
-           current-player = s.current-player,
-           turn-number = s.turn-number,
-           game-over = True,
-           winner = w,
-           num-players = s.num-players,
-           phase = 2,
-           to-place = 0,
-           attacks-left = 0
-         }
+  rk-act-in : RiskState, Integer, Integer, Integer, Integer -> RiskState
+  rk-act-in (s) (p) (kind) (arg) (seed) =
+    if kind == 0 then rk-place s p arg
+    else if kind == 1 then rk-trade s p arg
+    else if kind == 2 then rk-attack s p arg seed
+    else if kind == 3 then rk-put s rk-f-phase 4
+    else if kind == 4 then rk-move-in s arg
+    else if kind == 5 then rk-fortify s arg
+    else if kind == 6 then rk-end-turn s
     else s
 
-  risk-count-alive : RiskState -> Integer
-  risk-count-alive (s) =
-    risk-alive-loop s 0 0
+  rk-place : RiskState, Integer, Integer -> RiskState
+  rk-place (s) (p) (t) =
+    let s2 = rk-set-armies s t (rk-armies s t + 1)
+    in if rk-phase s2 == 0 then rk-setup-next (rk-put s2 (rk-f-setup + p) (rk-get s2 (rk-f-setup + p) - 1)) p
+    else let left = rk-get s2 rk-f-place - 1
+    in let s3 = rk-put s2 rk-f-place left
+    in if left > 0 then s3
+    else rk-put s3 rk-f-phase 2
 
-  risk-alive-loop : RiskState, Integer, Integer -> Integer
-  risk-alive-loop (s) (i) (acc) =
-    if i >= s.num-players then acc
-    else let p = list-at (s.players) i
-    in let delta = if p.alive then 1 else 0
-    in risk-alive-loop s (i + 1) (acc + delta)
+  rk-setup-next : RiskState, Integer -> RiskState
+  rk-setup-next (s) (p) = rk-setup-next-loop s p 1
 
-  risk-find-alive : RiskState -> Integer
-  risk-find-alive (s) =
-    risk-find-alive-loop s 0
+  rk-setup-next-loop : RiskState, Integer, Integer -> RiskState
+  rk-setup-next-loop (s) (p) (k) =
+    if k > rk-players s then rk-begin-turn (rk-put s rk-f-cur 0)
+    else let q = rng-mod (p + k) (rk-players s)
+    in if rk-get s (rk-f-setup + q) > 0 then rk-put s rk-f-cur q
+    else rk-setup-next-loop s p (k + 1)
 
-  risk-find-alive-loop : RiskState, Integer -> Integer
-  risk-find-alive-loop (s) (i) =
-    if i >= s.num-players then (-1)
-    else let p = list-at (s.players) i
-    in if p.alive then i
-    else risk-find-alive-loop s (i + 1)
+  rk-begin-turn : RiskState -> RiskState
+  rk-begin-turn (s) =
+    let p = rk-cur s
+    in let s2 = rk-put (rk-put (rk-put s rk-f-conquered 0) rk-f-bonus 0) rk-f-elim 0
+    in rk-put (rk-put s2 rk-f-place (rk-reinforcements s2 p)) rk-f-phase 1
 
-  risk-advance-player : RiskState -> RiskState
-  risk-advance-player (s) =
-    let next = rng-mod (s.current-player + 1) s.num-players
-    in RiskState {
-         territories = s.territories,
-         players = s.players,
-         current-player = next,
-         turn-number = s.turn-number + 1,
-         game-over = s.game-over,
-         winner = s.winner,
-         num-players = s.num-players,
-         phase = s.phase,
-         to-place = s.to-place,
-         attacks-left = s.attacks-left
-       }
+ A battle: the attacker's dice are the first `dice` of the seed's dice 1 to
+ 3, the defender's its dice 4 and 5, each side sorted high to low.
+
+  rk-attack : RiskState, Integer, Integer, Integer -> RiskState
+  rk-attack (s) (p) (packed) (seed) =
+    let from = rk-unpack-a packed
+    in let dest = rk-unpack-b packed
+    in let n = rk-unpack-c packed
+    in let m = if rk-armies s dest >= 2 then 2 else 1
+    in let a1 = rk-die seed 1
+    in let a2 = if n >= 2 then rk-die seed 2 else 0
+    in let a3 = if n >= 3 then rk-die seed 3 else 0
+    in let d1 = rk-die seed 4
+    in let d2 = if m >= 2 then rk-die seed 5 else 0
+    in let s2 = rk-put (rk-put (rk-put (rk-put (rk-put s rk-f-dice a1) (rk-f-dice + 1) a2) (rk-f-dice + 2) a3) (rk-f-dice + 3) d1) (rk-f-dice + 4) d2
+    in rk-battle s2 p from dest n (rk-high3 a1 a2 a3) (rk-mid3 a1 a2 a3) (rk-high2 d1 d2) (rk-low2 d1 d2) m
+
+  rk-high3 : Integer, Integer, Integer -> Integer
+  rk-high3 (a) (b) (c) = if a >= b & a >= c then a else if b >= c then b else c
+
+  rk-mid3 : Integer, Integer, Integer -> Integer
+  rk-mid3 (a) (b) (c) =
+    if a >= b & a >= c then (if b >= c then b else c)
+    else if b >= a & b >= c then (if a >= c then a else c)
+    else if a >= b then a
+    else b
+
+  rk-high2 : Integer, Integer -> Integer
+  rk-high2 (a) (b) = if a >= b then a else b
+
+  rk-low2 : Integer, Integer -> Integer
+  rk-low2 (a) (b) = if a >= b then b else a
+
+  rk-battle : RiskState, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> RiskState
+  rk-battle (s) (p) (from) (dest) (n) (ah) (am) (dh) (dl) (m) =
+    let first-a = if ah > dh then 0 else 1
+    in let pairs = if n >= 2 & m >= 2 then 2 else 1
+    in let second-a = if pairs == 2 then (if am > dl then 0 else 1) else 0
+    in let alost = first-a + second-a
+    in let dlost = pairs - alost
+    in let s2 = rk-put (rk-put (rk-put s rk-f-alost alost) rk-f-dlost dlost) rk-f-rolled n
+    in let s3 = rk-set-armies (rk-set-armies s2 from (rk-armies s2 from - alost)) dest (rk-armies s2 dest - dlost)
+    in if rk-armies s3 dest > 0 then s3
+    else rk-conquer s3 p from dest n
+
+  rk-conquer : RiskState, Integer, Integer, Integer, Integer -> RiskState
+  rk-conquer (s) (p) (from) (dest) (n) =
+    let q = rk-owner s dest
+    in let s2 = rk-put (rk-put s (rk-tslot dest 0) p) rk-f-conquered 1
+    in let s3 = rk-put (rk-put (rk-put s2 rk-f-mfrom from) rk-f-mto dest) rk-f-mmin n
+    in if rk-held s3 p == rk-territories then rk-finish (rk-set-armies (rk-set-armies s3 dest n) from (rk-armies s3 from - n)) p
+    else if rk-held s3 q > 0 then rk-put s3 rk-f-phase 3
+    else let s4 = rk-take-cards s3 q p 0
+    in rk-put (rk-put s4 rk-f-elim (if rk-hand s4 p >= 6 then 1 else 0)) rk-f-phase 3
+
+  rk-finish : RiskState, Integer -> RiskState
+  rk-finish (s) (p) =
+    rk-put (rk-put (rk-put (rk-put s rk-f-over 1) rk-f-winner p) rk-f-phase 6) rk-f-place 0
+
+  rk-move-in : RiskState, Integer -> RiskState
+  rk-move-in (s) (n) =
+    let from = rk-get s rk-f-mfrom
+    in let dest = rk-get s rk-f-mto
+    in let s2 = rk-set-armies (rk-set-armies s from (rk-armies s from - n)) dest n
+    in let s3 = rk-put (rk-put (rk-put s2 rk-f-mfrom (-1)) rk-f-mto (-1)) rk-f-mmin 0
+    in if rk-get s3 rk-f-elim == 1 then rk-put (rk-put (rk-put s3 rk-f-elim 0) rk-f-place 0) rk-f-phase 5
+    else rk-put s3 rk-f-phase 2
+
+  rk-fortify : RiskState, Integer -> RiskState
+  rk-fortify (s) (packed) =
+    let from = rk-unpack-a packed
+    in let dest = rk-unpack-b packed
+    in let n = rk-unpack-c packed
+    in rk-end-turn (rk-set-armies (rk-set-armies s from (rk-armies s from - n)) dest (rk-armies s dest + n))
+
+  rk-end-turn : RiskState -> RiskState
+  rk-end-turn (s) =
+    let p = rk-cur s
+    in let s2 = if rk-get s rk-f-conquered == 1 then rk-draw s p else s
+    in let s3 = rk-put (rk-put s2 rk-f-cur (rk-next-live s2 p 1)) rk-f-turn (rk-get s2 rk-f-turn + 1)
+    in rk-begin-turn s3
+
+  rk-next-live : RiskState, Integer, Integer -> Integer
+  rk-next-live (s) (p) (k) =
+    if k > rk-players s then p
+    else let q = rng-mod (p + k) (rk-players s)
+    in if rk-alive s q then q
+    else rk-next-live s p (k + 1)
+
+Section: The Engine's Players
+
+ A choice is one action packed as kind + 8 * player + 64 * argument, or -1
+ when there is none. The engine's players set up on their weakest border
+ territory, trade the first set they hold whenever they may, reinforce
+ their strongest border territory, attack from the strongest odds while the
+ attacker has at least two more armies than the defender, rolling all the
+ dice they may, move everything in when the attacking territory has no
+ enemy left beside it and half otherwise, and fortify the strongest
+ interior territory onto the weakest border territory joined to it.
+
+  rk-code : Integer, Integer, Integer -> Integer
+  rk-code (kind) (p) (arg) = kind + 8 * p + 64 * arg
+
+  rk-code-kind : Integer -> Integer
+  rk-code-kind (c) = rng-mod c 8
+
+  rk-code-player : Integer -> Integer
+  rk-code-player (c) = rng-mod (c / 8) 8
+
+  rk-code-arg : Integer -> Integer
+  rk-code-arg (c) = c / 64
+
+  rk-border-terr : RiskState, Integer, Integer -> Boolean
+  rk-border-terr (s) (p) (t) = rk-enemy-near s p t 0
+
+  rk-enemy-near : RiskState, Integer, Integer, Integer -> Boolean
+  rk-enemy-near (s) (p) (t) (u) =
+    if u >= rk-territories then False
+    else if rk-adjacent t u & rk-owner s u /= p then True
+    else rk-enemy-near s p t (u + 1)
+
+ The border territory with the fewest (`want-most` False) or most armies,
+ lowest number first; -1 when the player has no border.
+
+  rk-pick-border : RiskState, Integer, Boolean, Integer, Integer -> Integer
+  rk-pick-border (s) (p) (want-most) (t) (best) =
+    if t >= rk-territories then best
+    else if rk-owner s t /= p then rk-pick-border s p want-most (t + 1) best
+    else if rk-border-terr s p t == False then rk-pick-border s p want-most (t + 1) best
+    else if best < 0 then rk-pick-border s p want-most (t + 1) t
+    else if want-most & rk-armies s t > rk-armies s best then rk-pick-border s p want-most (t + 1) t
+    else if want-most == False & rk-armies s t < rk-armies s best then rk-pick-border s p want-most (t + 1) t
+    else rk-pick-border s p want-most (t + 1) best
+
+  rk-first-owned : RiskState, Integer, Integer -> Integer
+  rk-first-owned (s) (p) (t) =
+    if t >= rk-territories then (-1)
+    else if rk-owner s t == p then t
+    else rk-first-owned s p (t + 1)
+
+  rk-ai-place-target : RiskState, Integer, Boolean -> Integer
+  rk-ai-place-target (s) (p) (want-most) =
+    let b = rk-pick-border s p want-most 0 (-1)
+    in if b >= 0 then b else rk-first-owned s p 0
+
+  rk-first-set : RiskState, Integer, Integer, Integer, Integer -> Integer
+  rk-first-set (s) (p) (a) (b) (c) =
+    if a >= 42 then (-1)
+    else if b >= 43 then rk-first-set s p (a + 1) (a + 2) (a + 3)
+    else if c >= 44 then rk-first-set s p a (b + 1) (b + 2)
+    else if rk-holder s a /= p then rk-first-set s p (a + 1) (a + 2) (a + 3)
+    else if rk-holder s b /= p then rk-first-set s p a (b + 1) (b + 2)
+    else if rk-can-trade-cards s p (rk-pack a b c) then rk-pack a b c
+    else rk-first-set s p a b (c + 1)
+
+ The best attack: most attacking armies less defending armies, over pairs
+ with the attacker at least two ahead; -1 when there is none.
+
+  rk-best-attack : RiskState, Integer, Integer, Integer, Integer, Integer -> Integer
+  rk-best-attack (s) (p) (from) (dest) (best) (best-gap) =
+    if from >= rk-territories then best
+    else if dest >= rk-territories then rk-best-attack s p (from + 1) 0 best best-gap
+    else if rk-owner s from /= p | rk-owner s dest == p | rk-adjacent from dest == False then rk-best-attack s p from (dest + 1) best best-gap
+    else let gap = rk-armies s from - rk-armies s dest
+    in if gap >= 2 & gap > best-gap then rk-best-attack s p from (dest + 1) (rk-pack from dest 0) gap
+    else rk-best-attack s p from (dest + 1) best best-gap
+
+  rk-ai-fortify : RiskState, Integer -> Integer
+  rk-ai-fortify (s) (p) =
+    let from = rk-strongest-interior s p 0 (-1)
+    in if from < 0 then (-1)
+    else let dest = rk-weakest-joined-border s p from 0 (-1)
+    in if dest < 0 then (-1)
+    else rk-pack from dest (rk-armies s from - 1)
+
+  rk-strongest-interior : RiskState, Integer, Integer, Integer -> Integer
+  rk-strongest-interior (s) (p) (t) (best) =
+    if t >= rk-territories then best
+    else if rk-owner s t /= p | rk-armies s t < 2 | rk-border-terr s p t then rk-strongest-interior s p (t + 1) best
+    else if best < 0 then rk-strongest-interior s p (t + 1) t
+    else if rk-armies s t > rk-armies s best then rk-strongest-interior s p (t + 1) t
+    else rk-strongest-interior s p (t + 1) best
+
+  rk-weakest-joined-border : RiskState, Integer, Integer, Integer, Integer -> Integer
+  rk-weakest-joined-border (s) (p) (from) (t) (best) =
+    if t >= rk-territories then best
+    else if rk-owner s t /= p | rk-border-terr s p t == False then rk-weakest-joined-border s p from (t + 1) best
+    else if best >= 0 & rk-armies s t >= rk-armies s best then rk-weakest-joined-border s p from (t + 1) best
+    else if rk-connected s p from t then rk-weakest-joined-border s p from (t + 1) t
+    else rk-weakest-joined-border s p from (t + 1) best
+
+  rk-ai : RiskState -> Integer
+  rk-ai (s) =
+    let p = rk-cur s
+    in let ph = rk-phase s
+    in if rk-over s then (-1)
+    else if ph == 0 then rk-code 0 p (rk-ai-place-target s p False)
+    else if ph == 1 | ph == 5 then rk-ai-reinforce s p ph
+    else if ph == 2 then rk-ai-attack s p
+    else if ph == 3 then rk-code 4 p (rk-ai-move-in s)
+    else if ph == 4 then rk-ai-end s p (rk-ai-fortify s p)
+    else (-1)
+
+  rk-ai-end : RiskState, Integer, Integer -> Integer
+  rk-ai-end (s) (p) (f) = if f >= 0 then rk-code 5 p f else rk-code 6 p 0
+
+  rk-ai-reinforce : RiskState, Integer, Integer -> Integer
+  rk-ai-reinforce (s) (p) (ph) =
+    let set = rk-first-set s p 0 1 2
+    in if set >= 0 & rk-legal s p 1 set then rk-code 1 p set
+    else rk-code 0 p (rk-ai-place-target s p True)
+
+  rk-ai-attack : RiskState, Integer -> Integer
+  rk-ai-attack (s) (p) =
+    let a = rk-best-attack s p 0 0 (-1) 0
+    in if a < 0 then rk-code 3 p 0
+    else let from = rk-unpack-a a
+    in let most = rk-armies s from - 1
+    in rk-code 2 p (rk-pack from (rk-unpack-b a) (if most > 3 then 3 else most))
+
+  rk-ai-move-in : RiskState -> Integer
+  rk-ai-move-in (s) =
+    let from = rk-get s rk-f-mfrom
+    in let most = rk-armies s from - 1
+    in let least = rk-get s rk-f-mmin
+    in if rk-border-terr s (rk-cur s) from == False then most
+    else let half = most / 2
+    in if half < least then least else half
+
+Section: Stepping
+
+ A step plays the engine's choices until the turn passes, the game ends,
+ or the choice falls to the person when it did not start with them. The
+ attack seed is the step's seed moved on for each choice.
+
+  risk-step : RiskState, Integer -> RiskState
+  risk-step (s) (seed) =
+    if rk-over s then s
+    else risk-step-in (rk-copy s) seed
+
+  risk-step-in : RiskState, Integer -> RiskState
+  risk-step-in (s) (seed) =
+    let human = rk-get s rk-f-human
+    in rk-step-loop s seed 0 (rk-get s rk-f-turn) (rk-cur s == human) (rk-phase s == 0)
+
+  rk-step-loop : RiskState, Integer, Integer, Integer, Boolean, Boolean -> RiskState
+  rk-step-loop (s) (seed) (n) (turn) (theirs) (setup) =
+    if rk-over s then s
+    else if n >= 2000 then s
+    else if (n > 0) & (setup == False) & (rk-get s rk-f-turn /= turn) then s
+    else if (n > 0) & setup & (rk-phase s /= 0) then s
+    else if (n > 0) & setup & (rk-cur s == rk-get s rk-f-human) then s
+    else if (n > 0) & (theirs == False) & (rk-cur s == rk-get s rk-f-human) then s
+    else let code = rk-ai s
+    in if code < 0 then s
+    else let kind = rk-code-kind code
+    in let p = rk-code-player code
+    in let arg = rk-code-arg code
+    in let step-seed = seed + n * 7919
+    in if rk-legal s p kind arg == False then s
+    else rk-step-loop (rk-act-in s p kind arg step-seed) seed (n + 1) turn theirs setup
 
 Section: Game Runner
 
+  risk-turn-cap : Integer
+  risk-turn-cap = 400
+
   run-risk-game : Integer, Integer -> RiskResult
   run-risk-game (seed) (num-players) =
-    let s = risk-init seed num-players
-    in risk-loop s (rng-new seed) 0
+    risk-loop (risk-init seed num-players) seed 0
 
-  risk-loop : RiskState, Rng, Integer -> RiskResult
-  risk-loop (s) (r) (turns) =
-    if s.game-over then risk-make-result s turns
-    else if turns > 400 then risk-make-result s turns
-    else let r2 = rng-next r
-    in risk-loop (risk-do-turn s r2) r2 (turns + 1)
+  risk-loop : RiskState, Integer, Integer -> RiskResult
+  risk-loop (s) (seed) (n) =
+    if rk-over s then risk-make-result s
+    else if rk-get s rk-f-turn >= risk-turn-cap then risk-make-result s
+    else if n > 20000 then risk-make-result s
+    else risk-loop (risk-step-in s (seed * 7919 + n * 104729)) seed (n + 1)
 
-  risk-make-result : RiskState, Integer -> RiskResult
-  risk-make-result (s) (turns) =
-    let terr-list = risk-collect-owners s 0 []
-    in RiskResult { winner = s.winner, turns = turns, territories = terr-list }
+  risk-make-result : RiskState -> RiskResult
+  risk-make-result (s) =
+    RiskResult { winner = rk-get s rk-f-winner, turns = rk-get s rk-f-turn, territories = risk-collect-owners s 0 [] }
 
   risk-collect-owners : RiskState, Integer, List Integer -> List Integer
-  risk-collect-owners (s) (i) (acc) =
-    if i >= 12 then acc
-    else let t = list-at (s.territories) i
-    in risk-collect-owners s (i + 1) (list-push acc t.owner)
+  risk-collect-owners (s) (t) (acc) =
+    if t >= rk-territories then acc
+    else risk-collect-owners s (t + 1) (list-push acc (rk-owner s t))
 
 Section: Formatting
 
   format-risk-result : RiskResult -> Text
   format-risk-result (r) =
     let w = if r.winner < 0 then "None" else "P" & show (r.winner + 1)
-    in "Risk (12 territories, " & show r.turns & " turns): winner=" & w
+    in "Risk (42 territories, " & show r.turns & " turns): winner=" & w
 
 Page 1

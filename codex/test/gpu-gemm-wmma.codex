@@ -1,0 +1,129 @@
+Chapter: GpuGemmWmma
+
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter GemmPtx
+
+   The sabotage arm launches the same kernel with A and B swapped, so it
+   computes B A; the count of sampled entries B A shares with A B is the
+   predicted value, and a checker that could not see a wrong product would
+   print 256 there.
+
+ We say:
+
+Section: Fill
+
+ fill writes ((i * mul) mod m) - bias as f16, so every operand is a small
+ integer and the product is exact in f32.
+
+  ptx-fill : Text
+  ptx-fill =
+    let a = ".version 7.0\n.target sm_60\n.address_size 64\n\n.visible .entry fill(.param .u64 p_out, .param .u32 p_n, .param .u32 p_mul, .param .u32 p_mod, .param .u32 p_bias)\n{\n"
+    in let b = ".reg .pred %p<2>;\n.reg .b32 %r<12>;\n.reg .b64 %rd<6>;\n.reg .f32 %f<2>;\n.reg .b16 %h<2>;\n"
+    in let c = "ld.param.u64 %rd1, [p_out];\nld.param.u32 %r1, [p_n];\nld.param.u32 %r2, [p_mul];\nld.param.u32 %r3, [p_mod];\nld.param.u32 %r4, [p_bias];\n"
+    in let d = "mov.u32 %r5, %ctaid.x;\nmov.u32 %r6, %ntid.x;\nmov.u32 %r7, %tid.x;\nmad.lo.s32 %r8, %r5, %r6, %r7;\nsetp.ge.u32 %p1, %r8, %r1;\n@%p1 bra DONE;\n"
+    in let e = "mul.lo.u32 %r9, %r8, %r2;\nrem.u32 %r10, %r9, %r3;\nsub.s32 %r11, %r10, %r4;\ncvt.rn.f32.s32 %f1, %r11;\ncvt.rn.f16.f32 %h1, %f1;\n"
+    in let f = "cvta.to.global.u64 %rd2, %rd1;\nmul.wide.u32 %rd3, %r8, 2;\nadd.s64 %rd4, %rd2, %rd3;\nst.global.b16 [%rd4], %h1;\nDONE:\nret;\n}\n"
+    in a & b & c & d & e & f
+
+  n : Integer = 4096
+
+  fill : Integer, Integer, Integer, Integer -> Integer
+  fill (h) (mul) (m) (bias) =
+    let g = GpuGrid { gx = n * n / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+    in let ps = [gpu-arg-buf h 0, gpu-arg-u32 (n * n), gpu-arg-u32 mul, gpu-arg-u32 m, gpu-arg-u32 bias]
+    in gpu-launch ptx-fill "fill" g ps
+
+Section: Reference
+
+ Samples are rows 1000 + 5i and columns 2000 + 7j for i, j in 0..15, which
+ cross a block boundary on both axes and land in all four fragments of a
+ warp.
+
+  scratch : Integer = #BD700000
+
+  a-at : Integer, Integer -> Integer
+  a-at (r) (k) = int-mod ((r * n + k) * 7) 17 - 8
+
+  b-at : Integer, Integer -> Integer
+  b-at (k) (c) = int-mod ((k * n + c) * 13) 11 - 5
+
+  dot : Integer, Integer, Integer, Integer -> Integer
+  dot (r) (c) (k) (acc) =
+    if k >= n then acc
+    else dot r c (k + 1) (acc + a-at r k * b-at k c)
+
+  f32-int : Integer -> Integer
+  f32-int (bits) =
+    if bit-and bits #7FFFFFFF == 0 then 0
+    else let e = bit-and (bit-shru bits 23) 255
+    in let m = bit-or (bit-and bits #7FFFFF) #800000
+    in let mag = if e >= 150 then bit-shl m (e - 150) else bit-shru m (150 - e)
+    in if bit-and bits #80000000 /= 0 then 0 - mag else mag
+
+  row0 : Integer = 1000
+  col0 : Integer = 2000
+
+  read-rows : Integer, Integer -> Boolean
+  read-rows (hc) (i) =
+    if i >= 16 then True
+    else if not (gpu-buf-read hc (((row0 + 5 * i) * n + col0) * 4) 428 (scratch + i * 512)) then False
+    else read-rows hc (i + 1)
+
+  sample-check : Integer, Integer, Integer -> Integer
+  sample-check (s) (good) (sum) =
+    if s >= 256 then good * 1000000 + int-mod (sum + 1000000) 1000000
+    else let i = s / 16
+    in let j = int-mod s 16
+    in let got = f32-int (peek-32 scratch (i * 512 + 7 * j * 4))
+    in let want = dot (row0 + 5 * i) (col0 + 7 * j) 0 0
+    in sample-check (s + 1) (good + (if got == want then 1 else 0)) (sum + want)
+
+Section: Launch
+
+  wmma : Integer, Integer, Integer -> Integer
+  wmma (ha) (hb) (hc) =
+    let g = GpuGrid { gx = n / 64, gy = n / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }
+    in let ps = [gpu-arg-buf ha 0, gpu-arg-buf hb 0, gpu-arg-buf hc 0, gpu-arg-u64 n, gpu-arg-u64 0]
+    in gpu-launch gemm-ptx "kernel_gemm_wmma" g ps
+
+  product-report : Integer, Integer, Integer -> Text
+  product-report (ha) (hb) (hc) =
+    if wmma ha hb hc < 0 then "launch refused"
+    else if not (read-rows hc 0) then "read refused"
+    else let t = sample-check 0 0 0
+    in show (t / 1000000) & "/256, checksum " & show (int-mod t 1000000)
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let ha = gpu-buf-alloc (n * n * 2)
+    in let hb = gpu-buf-alloc (n * n * 2)
+    in let hc = gpu-buf-alloc (n * n * 4)
+    in if ha == 0 then ["alloc refused"]
+    else if hb == 0 then ["alloc refused"]
+    else if hc == 0 then ["alloc refused"]
+    else if fill ha 7 17 8 < 0 then ["fill A refused"]
+    else if fill hb 13 11 5 < 0 then ["fill B refused"]
+    else let l1 = "wmma 4096^3 A B: " & product-report ha hb hc
+    in let l2 = "sabotage B A: " & product-report hb ha hc
+    in let f1 = gpu-buf-free ha
+    in let f2 = gpu-buf-free hb
+    in let f3 = gpu-buf-free hc
+    in [l1, l2, "free: " & (if f1 & f2 & f3 then "ok" else "refused")]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

@@ -109,9 +109,6 @@ foreach ($b in $boards) {
     $want = ((Get-Content $exp -Raw) -replace "`r", '').Trim()
 
     if ($got -eq $want) {
-        # The serial stream opens with a 0x01 (SOH) marker, which Trim() does not
-        # strip and which both the actual and the expected carry -- so equality
-        # holds, but a ^\d+$ anchor does not. Pull the count out by search.
         $n = if ($got -match '(\d+)') { [int]$matches[1] } else { 0 }
         $subtotal += $n
         $note = if ($b.Aperture) { "  [aperture: $($b.Aperture)]" } else { '' }

@@ -1,0 +1,284 @@
+Chapter: ScenePresentStepTest
+  cites Works chapter GopScene
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Works chapter GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopXhci
+  cites Works chapter GopAhci
+  cites Engine chapter Scene3D
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Console
+
+  PstFixture = record {
+    ps-pane : ScenePane,
+    ps-fb : Integer,
+    ps-cs : Integer,
+    ps-font : GopAppFont,
+    ps-q : Integer,
+    ps-mouse : UsbMouse,
+    ps-stats : Integer,
+    ps-ds : Integer
+  }
+
+  pst-guard : Integer = 12345678
+  pst-stride : Integer = 128
+
+  pst-fill : Integer, Integer -> Integer
+  pst-fill (fb) (i) =
+    if i >= pst-stride * 64 then 0
+    else let p = poke-32 fb (i * 4) pst-guard
+    in pst-fill fb (i + 1)
+
+  pst-prefix : Integer, Integer, Integer, Integer -> Boolean
+  pst-prefix (fb) (at) (color) (i) =
+    if i >= pst-stride * 64 then True
+    else let x = int-mod i pst-stride
+    in let y = i / pst-stride
+    in let inside = x >= 7 & x < 80 & y >= 5 & y < 42
+    in let copied = inside & ((y - 5) * 73 + x - 7) < at
+    in let want = if copied then color else pst-guard
+    in peek-32 fb (i * 4) == want & pst-prefix fb at color (i + 1)
+
+  pst-top : Integer, Integer, Integer -> Boolean
+  pst-top (fb) (color) (i) =
+    if i >= 73 * 17 then True
+    else let x = int-mod i 73 + 7
+    in let y = i / 73 + 5
+    in peek-32 fb ((y * pst-stride + x) * 4) == color & pst-top fb color (i + 1)
+
+  pst-build : Integer, Integer -> Scene3DState
+  pst-build (stats) (tick) =
+    let count = poke-qword stats 0 (peek-qword stats 0 + 1)
+    in scene3d-new (gsc-camera 0 1.333)
+
+  pst-new : Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] PstFixture
+  pst-new (ignored) =
+    let fb = alloc-bytes (pst-stride * 64 * 4)
+    in let fill = pst-fill fb 0
+    in let cs = alloc-zeroed 2048 64
+    in let q = di-new 0
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let attached = poke-32 ds dk-input-cell q
+    in let pos = alloc-zeroed 64 64
+    in let mouse = UsbMouse {
+      um-ok = False,
+      um-host = xhci-no-host,
+      um-dev = xhci-no-dev,
+      um-dci = 0,
+      um-ring = 0,
+      um-report = 0,
+      um-state = pos,
+      um-pos = pos,
+      um-peers = []
+    }
+    in act
+      sp <- gsc-new fb pst-stride cs 0 37 80 40
+      let shadow = __record-set sp "sp-sh" 0
+      in let service = __record-set (sp.sp-tgt) "r3t-service" (\ignored -> 73)
+      in let placed = gsc-place sp fb pst-stride 7 5 73 37
+      in PstFixture {
+        ps-pane = sp,
+        ps-fb = fb,
+        ps-cs = cs,
+        ps-font = gapp-fallback cbf-init,
+        ps-q = q,
+        ps-mouse = mouse,
+        ps-stats = alloc-zeroed 64 64,
+        ps-ds = ds
+      }
+    end
+
+  pst-call : PstFixture, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  pst-call (f) (sc) =
+    let mark = __heap-save
+    in act
+      r <- gsc-step (f.ps-fb) 96 64 pst-stride (f.ps-font) kbd-no-kbd (f.ps-mouse) (f.ps-cs) (\tick -> pst-build (f.ps-stats) tick) (f.ps-pane) sc 0 (f.ps-q)
+      let before = ((f.ps-pane).sp-tgt.r3t-service) 0
+      in let used = __heap-save - mark
+      in let restore = __heap-restore mark
+      in let overwrite = alloc-zeroed (used + 256) 64
+      in let after = if before == 73 then ((f.ps-pane).sp-tgt.r3t-service) 0 else 0
+      in let bad = if after == 73 then 0 else poke-qword (f.ps-stats) 8 1
+      in let restore-again = __heap-restore mark
+      in let heap = if __heap-save == mark then 0 else poke-qword (f.ps-stats) 8 1
+      in r
+    end
+
+  pst-yn : Boolean -> Text
+  pst-yn (ok) = if ok then "yes" else "NO"
+
+  pst-copy-case : Integer -> [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing
+  pst-copy-case (ignored) = act
+    f <- pst-new 0
+    first <- pst-call f 0
+    let sp = f.ps-pane
+    in let staged = sp.sp-ready == 1 & sp.sp-present == 0 & sp.sp-n == 0
+    in let hidden = pst-prefix (f.ps-fb) 0 37 0
+    in let key = di-push (f.ps-q) di-key 0 0 48 0 0 1
+    in act
+      waiting <- pst-call f 0
+      let deferred = sp.sp-present == 0 & peek-qword (f.ps-stats) 0 == 1
+      in let sc = desk-input-step kbd-no-kbd (f.ps-mouse) 96 64 (f.ps-ds)
+      in act
+        copied <- pst-call f sc
+        let bound-ok = sp.sp-present == 1024 & pst-prefix (f.ps-fb) 1024 37 0
+        in let delivered = sc == 48 & peek-qword (f.ps-q) di-count == 0 & deferred
+        in let changed = __record-set sp "sp-sky" 73
+        in act
+          second <- pst-call f 0
+          let held = sp.sp-present == 2048 & peek-qword (f.ps-stats) 0 == 1
+          in act
+            third <- pst-call f 0
+            let complete = sp.sp-present < 0 & sp.sp-n == 1 & sp.sp-ready == 1
+            in let coherent = pst-top (f.ps-fb) 37 0 & peek-qword (f.ps-stats) 0 == 1
+            in act
+              next <- pst-call f 0
+              let fresh = sp.sp-present == 0 & peek-qword (f.ps-stats) 0 == 2
+              in let unpublished = pst-top (f.ps-fb) 37 0 & sp.sp-n == 1
+              in act
+                print-line-uni ("render completes before publication: " & pst-yn (staged & hidden))
+                print-line-uni ("desk input delivered between units: " & pst-yn delivered)
+                print-line-uni ("one step copies a bounded prefix: " & pst-yn bound-ok)
+                print-line-uni ("pending copy owns one completed frame: " & pst-yn (held & coherent))
+                print-line-uni ("frame count advances only on completion: " & pst-yn complete)
+                print-line-uni ("next frame waits for presentation: " & pst-yn (fresh & unpublished))
+                print-line-uni ("continuation survives frame reclaim: " & pst-yn (peek-qword (f.ps-stats) 8 == 0))
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  pst-geometry-case : Integer -> [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing
+  pst-geometry-case (ignored) = act
+    f <- pst-new 0
+    render <- pst-call f 0
+    copy <- pst-call f 0
+    let sp = f.ps-pane
+    in let stable = gsc-place sp (f.ps-fb) pst-stride 7 5 73 37
+    in let kept = sp.sp-present == 1024 & sp.sp-ready == 1
+    in let moved = gsc-place sp (f.ps-fb) pst-stride 8 6 73 37
+    in let cancelled = sp.sp-present < 0 & sp.sp-ready == 0
+    in let fill = pst-fill (f.ps-fb) 0
+    in act
+      render2 <- pst-call f 0
+      let no-stale = pst-prefix (f.ps-fb) 0 37 0 & sp.sp-present == 0
+      in let origin = gsc-place sp (f.ps-fb) pst-stride 0 0 73 37
+      in act
+        render3 <- pst-call f 0
+        copy3 <- pst-call f 0
+        let pitch = gsc-place sp (f.ps-fb) (pst-stride - 1) 0 0 73 37
+        in let pitched = sp.sp-present < 0 & sp.sp-ready == 0
+        in let armed = __record-set sp "sp-present" 1024
+        in let ready = __record-set sp "sp-ready" 1
+        in let resized = gsc-place sp (f.ps-fb) (pst-stride - 1) 0 0 72 36
+        in let size = sp.sp-present < 0 & sp.sp-ready == 0
+        in let armed2 = __record-set sp "sp-present" 1024
+        in let ready2 = __record-set sp "sp-ready" 1
+        in let fb2 = alloc-bytes (pst-stride * 64 * 4)
+        in let replaced = gsc-place sp fb2 (pst-stride - 1) 0 0 72 36
+        in let base = sp.sp-present < 0 & sp.sp-ready == 0
+        in act
+          print-line-uni ("unchanged placement keeps progress: " & pst-yn kept)
+          print-line-uni ("moved pane cancels stale publication: " & pst-yn (cancelled & no-stale))
+          print-line-uni ("pitch and size changes invalidate: " & pst-yn (pitched & size))
+          print-line-uni ("framebuffer replacement invalidates: " & pst-yn base)
+        end
+      end
+    end
+  end
+
+  pst-event-case : Integer -> [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing
+  pst-event-case (ignored) = act
+    f <- pst-new 0
+    render <- pst-call f 0
+    copy <- pst-call f 0
+    hide <- pst-call f 15
+    let sp = f.ps-pane
+    in let hidden = hide == gsc-step-hide & sp.sp-present < 0
+    in let armed = __record-set sp "sp-present" 1024
+    in act
+      toggled <- pst-call f 31
+      let shadow = sp.sp-sh == 1 & sp.sp-present < 0 & sp.sp-ready == 0
+      in let armed2 = __record-set sp "sp-present" 1024
+      in let ready = __record-set sp "sp-ready" 1
+      in act
+        gpu <- pst-call f 34
+        let mode = sp.sp-gpu == 1 & sp.sp-present < 0 & sp.sp-ready == 0
+        in let soft = __record-set sp "sp-gpu" 0
+        in let ready2 = __record-set sp "sp-ready" 1
+        in let armed3 = __record-set sp "sp-present" 1024
+        in let builds = peek-qword (f.ps-stats) 0
+        in act
+          shown <- gsc-show pst-stride (f.ps-font) (\tick -> pst-build (f.ps-stats) tick) sp
+          let redraw = sp.sp-present < 0 & peek-qword (f.ps-stats) 0 == builds
+          in act
+            print-line-uni ("hide cancels pending copy: " & pst-yn hidden)
+            print-line-uni ("render option changes invalidate: " & pst-yn (shadow & mode))
+            print-line-uni ("cached redraw cancels pending copy: " & pst-yn redraw)
+          end
+        end
+      end
+    end
+  end
+
+  pst-chrome-call : PstFixture, DeskApps, Boolean -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  pst-chrome-call (f) (apps) (clicked) =
+    desk-scene-step (f.ps-fb) 96 64 pst-stride cbf-init gfont-none kbd-no-kbd (f.ps-mouse) (f.ps-ds) (f.ps-cs) apps (\tick -> pst-build (f.ps-stats) tick) desk-focus-scene 0 clicked
+
+  pst-chrome-case : Integer -> [Console, Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Nothing
+  pst-chrome-case (ignored) = act
+    f <- pst-new 0
+    let ds = f.ps-ds
+    in let sp = f.ps-pane
+    in let ws = alloc-zeroed 64 64
+    in let blk = alloc-zeroed 64 64
+    in let registry = poke-32 ds dk-wr-cell ws
+    in let scene = poke-32 ds dk-scene-cell blk
+    in let opened = dk-wr-open ws desk-focus-scene
+    in let place = dk-wnd-place blk 0 0 96 64
+    in let apps = desk-apps-empty (f.ps-font)
+    in let attached = __record-set apps "da-scene" (Just sp)
+    in let pending = __record-set sp "sp-present" 1024
+    in let restay = poke-32 ds dk-restay-cell desk-focus-scene
+    in act
+      stayed <- pst-chrome-call f apps False
+      let stay = stayed == 1 & sp.sp-present < 0
+      in let pending2 = __record-set sp "sp-present" 1024
+      in let bar = dk-wnd-bar-h gfont-none 1
+      in let mouse = f.ps-mouse
+      in let mx = poke-32 (mouse.um-pos) 4 (dk-wnd-btn-x 0 96 gfont-none 1 0 + bar / 2)
+      in let my = poke-32 (mouse.um-pos) 8 (bar / 2)
+      in act
+        minimized <- pst-chrome-call f apps True
+        let hidden = minimized == desk-step-hide & sp.sp-present < 0
+        in let visible = poke-32 blk dk-wnd-st-cell dk-wnd-st-normal
+        in let pending3 = __record-set sp "sp-present" 1024
+        in let close-x = poke-32 (mouse.um-pos) 4 (dk-wnd-btn-x 0 96 gfont-none 1 2 + bar / 2)
+        in act
+          closed <- pst-chrome-call f apps True
+          let close = closed == 0 & sp.sp-present < 0
+          in act
+            print-line-uni ("chrome repaint cancels pending copy: " & pst-yn stay)
+            print-line-uni ("chrome minimize cancels pending copy: " & pst-yn hidden)
+            print-line-uni ("chrome close cancels pending copy: " & pst-yn close)
+          end
+        end
+      end
+    end
+  end
+
+  opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Nothing = act
+    pst-copy-case 0
+    pst-geometry-case 0
+    pst-event-case 0
+    pst-chrome-case 0
+    print-line-uni "scene-step-proof-end"
+  end
+
+Page 1

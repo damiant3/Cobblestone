@@ -48,7 +48,9 @@ $api = @(
     @{ n = 'sm_toggle_constellations';  a = 0 },
     @{ n = 'sm_get_star_count';         a = 0 },
     @{ n = 'sm_get_visible_count';      a = 0 },
-    @{ n = 'sm_get_error';              a = 0 }
+    @{ n = 'sm_get_dso_visible_count';  a = 0 },
+    @{ n = 'sm_get_error';              a = 0 },
+    @{ n = 'sm_bv_rgb';                 a = 1 }
 )
 
 $wat = [System.IO.File]::ReadAllText($watFile, [System.Text.UTF8Encoding]::new($false))

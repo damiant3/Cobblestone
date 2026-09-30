@@ -1,0 +1,619 @@
+Chapter: Lora
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Parse
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter LoraKernelsPtx
+  cites Diffusion chapter GpuModules
+
+ Kohya LoRA files merged into checkpoint weights the way Diffusion Forge merges them
+ (backend/patcher/lora.py:76, merge_lora_to_weight): the weight widened to
+ f32, every LoRA that names it adding strength * (alpha / rank) * (up down),
+ then one cast back to f16. A module is found under either kohya naming of
+ the weight, the LDM form (lora_unet_ + the name, dots to underscores) or the
+ diffusers form (packages_3rdparty/comfyui_lora_collection/utils.py:189,
+ unet_to_diffusers, applied here to one name at a time).
+
+ We say:
+
+Section: Files
+
+  LoraFile = record {
+    lf-path : Text,
+    lf-file : SafeTensorFile,
+    lf-names : NameIndex,
+    lf-strength : Real
+  }
+
+  lora-open : Text, Real -> LoraFile
+  lora-open (path) (strength) =
+    let f = ckpt-open path
+    in LoraFile { lf-path = path, lf-file = f, lf-names = name-index (tensor-names (f.st-tensors) 0 []), lf-strength = strength }
+
+  lora-meta : LoraFile, Text -> Maybe StTensorMeta
+  lora-meta (l) (name) =
+    let i = name-find (l.lf-names) name
+    in if i < 0 then None else Just (list-at ((l.lf-file).st-tensors) i)
+
+  lora-has : LoraFile, Text -> Boolean
+  lora-has (l) (name) = name-find (l.lf-names) name >= 0
+
+Section: Kohya Names
+
+ The diffusers name of an LDM UNet weight, for res-blocks residual blocks per
+ level: input block n = 1 + (res-blocks + 1) x + i holds down block x's i-th
+ resnet and attention, or its downsampler when i = res-blocks; output block
+ n = (res-blocks + 1) x + i holds up block x's; "" when the weight has none.
+
+  lora-join : List Text, Integer, Text -> Text
+  lora-join (ps) (i) (acc) =
+    if i >= list-length ps then acc
+    else lora-join ps (i + 1) (if acc == "" then list-at ps i else acc & "." & list-at ps i)
+
+  lora-rest : List Text, Integer -> Text
+  lora-rest (ps) (i) = lora-join ps i ""
+
+  lora-resnet : List Text, Integer -> Text
+  lora-resnet (ps) (i) =
+    let a = list-at ps i
+    in let b = if i + 1 < list-length ps then list-at ps (i + 1) else ""
+    in if a == "in_layers" & b == "2" then "conv1." & lora-rest ps (i + 2)
+    else if a == "in_layers" & b == "0" then "norm1." & lora-rest ps (i + 2)
+    else if a == "emb_layers" & b == "1" then "time_emb_proj." & lora-rest ps (i + 2)
+    else if a == "out_layers" & b == "3" then "conv2." & lora-rest ps (i + 2)
+    else if a == "out_layers" & b == "0" then "norm2." & lora-rest ps (i + 2)
+    else if a == "skip_connection" then "conv_shortcut." & lora-rest ps (i + 1)
+    else ""
+
+  lora-prefixed : Text, Text -> Text
+  lora-prefixed (p) (tail) = if tail == "" then "" else p & tail
+
+  lora-input : List Text, Integer -> Text
+  lora-input (ps) (r) =
+    let n = text-to-integer (list-at ps 1)
+    in let b = list-at ps 2
+    in if n == 0 then (if b == "0" then "conv_in." & lora-rest ps 3 else "")
+    else let x = (n - 1) / (r + 1)
+    in let i = n - 1 - x * (r + 1)
+    in if i == r then (if b == "0" & list-at ps 3 == "op" then "down_blocks." & show x & ".downsamplers.0.conv." & lora-rest ps 4 else "")
+    else if b == "0" then lora-prefixed ("down_blocks." & show x & ".resnets." & show i & ".") (lora-resnet ps 3)
+    else if b == "1" then "down_blocks." & show x & ".attentions." & show i & "." & lora-rest ps 3
+    else ""
+
+  lora-output : List Text, Integer -> Text
+  lora-output (ps) (r) =
+    let n = text-to-integer (list-at ps 1)
+    in let b = list-at ps 2
+    in let x = n / (r + 1)
+    in let i = n - x * (r + 1)
+    in if b == "0" then lora-prefixed ("up_blocks." & show x & ".resnets." & show i & ".") (lora-resnet ps 3)
+    else if list-at ps 3 == "conv" then "up_blocks." & show x & ".upsamplers.0.conv." & lora-rest ps 4
+    else if b == "1" then "up_blocks." & show x & ".attentions." & show i & "." & lora-rest ps 3
+    else ""
+
+  lora-middle : List Text -> Text
+  lora-middle (ps) =
+    let b = list-at ps 1
+    in if b == "0" then lora-prefixed "mid_block.resnets.0." (lora-resnet ps 2)
+    else if b == "2" then lora-prefixed "mid_block.resnets.1." (lora-resnet ps 2)
+    else if b == "1" then "mid_block.attentions.0." & lora-rest ps 2
+    else ""
+
+  lora-basic : List Text -> List Text
+  lora-basic (ps) =
+    let p = list-at ps 0 & "." & list-at ps 1
+    in let tail = lora-rest ps 2
+    in if p == "time_embed.0" then ["time_embedding.linear_1." & tail]
+    else if p == "time_embed.2" then ["time_embedding.linear_2." & tail]
+    else if p == "out.0" then ["conv_norm_out." & tail]
+    else if p == "out.2" then ["conv_out." & tail]
+    else if list-length ps > 3 & p == "label_emb.0" then
+      (if list-at ps 2 == "0" then ["class_embedding.linear_1." & lora-rest ps 3, "add_embedding.linear_1." & lora-rest ps 3]
+       else if list-at ps 2 == "2" then ["class_embedding.linear_2." & lora-rest ps 3, "add_embedding.linear_2." & lora-rest ps 3]
+       else [])
+    else []
+
+  lora-diffusers-names : Text, Integer -> List Text
+  lora-diffusers-names (name) (r) =
+    let ps = text-split name "."
+    in let head = list-at ps 0
+    in let one = if head == "input_blocks" then lora-input ps r
+      else if head == "output_blocks" then lora-output ps r
+      else if head == "middle_block" then lora-middle ps
+      else ""
+    in if one /= "" then [one]
+    else if list-length ps >= 3 then lora-basic ps
+    else []
+
+  lora-kohya : Text -> Text
+  lora-kohya (name) = "lora_unet_" & text-replace (substring name 0 (text-length name - 7)) "." "_"
+
+ Every kohya module name of an LDM UNet weight ("....weight"): the LDM form
+ first, then the diffusers forms.
+
+  lora-unet-keys : Text, Integer -> List Text
+  lora-unet-keys (name) (r) =
+    if not (text-ends-with name ".weight") then []
+    else lora-kohya-all (lora-diffusers-names name r) 0 [lora-kohya name]
+
+  lora-kohya-all : List Text, Integer, List Text -> List Text
+  lora-kohya-all (ds) (i) (acc) =
+    if i >= list-length ds then acc
+    else lora-kohya-all ds (i + 1) (acc & [lora-kohya (list-at ds i)])
+
+Section: Scalars
+
+  lora-f32-real : Integer -> Real
+  lora-f32-real (w) =
+    let s = bit-and (bit-shru w 31) 1
+    in let e = bit-and (bit-shru w 23) 255
+    in let m = bit-and w #7FFFFF
+    in if e == 255 then bits-to-real #7FF8000000000000
+    else if e == 0 then (if s == 1 then 0.0 - 1.0 else 1.0) * real-from-int m * bits-to-real (bit-shl 874 52)
+    else bits-to-real (bit-or (bit-shl s 63) (bit-or (bit-shl (e + 896) 52) (bit-shl m 29)))
+
+  lora-upload : LoraFile, StTensorMeta -> Integer
+  lora-upload (l) (m) =
+    let n = st-element-count m
+    in let src = ckpt-gpu-dtype (m.stm-dtype)
+    in let h = gpu-buf-alloc (n * 4)
+    in if h == 0 | src < 0 then lora-free 0 h
+    else if gpu-buf-upload h 0 (l.lf-path) ((l.lf-file).st-data-offset + m.stm-offset-start) n src gpu-dt-f32 == n * 4 then h
+    else lora-free 0 h
+
+  lora-free : Integer, Integer -> Integer
+  lora-free (keep) (h) =
+    let f = if h > 0 then gpu-buf-free h else False
+    in keep
+
+ An alpha is a scalar tensor; a module without one scales by 1 (alpha = rank).
+
+  lora-alpha : LoraFile, Text, Integer -> Real
+  lora-alpha (l) (module) (rank) =
+    when lora-meta l (module & ".alpha")
+     is None -> real-from-int rank
+     is Just (m) -> lora-scalar l m
+
+  lora-scalar : LoraFile, StTensorMeta -> Real
+  lora-scalar (l) (m) =
+    let h = lora-upload l m
+    in if h == 0 then bits-to-real #7FF8000000000000
+    else let ok = gpu-buf-read h 0 4 ckpt-scratch
+    in lora-free-real (if ok then lora-f32-real (bit-and (peek-32 ckpt-scratch 0) #FFFFFFFF) else bits-to-real #7FF8000000000000) h
+
+  lora-free-real : Real, Integer -> Real
+  lora-free-real (keep) (h) =
+    let f = gpu-buf-free h
+    in keep
+
+Section: Text Encoder Names
+
+ The kohya names of a text-encoder weight of an SDXL checkpoint, as Forge maps
+ them (comfyui_lora_collection/lora.py:196, model_lora_keys_clip): CLIP-L's
+ weights carry Hugging Face names under prefix-l; OpenCLIP-G's carry open_clip
+ names under prefix-g, where Forge's transformers_convert (utils.py:67) splits
+ attn.in_proj_weight into q, k and v row slices and renames the rest.
+
+  LoraSlot = record {
+    ls-keys : List Text,
+    ls-row0 : Integer,
+    ls-rows : Integer,
+    ls-bias : Boolean
+  }
+
+  lora-slot : List Text, Integer, Integer, Boolean -> List LoraSlot
+  lora-slot (keys) (row0) (rows) (bias) = if list-length keys == 0 then [] else [LoraSlot { ls-keys = keys, ls-row0 = row0, ls-rows = rows, ls-bias = bias }]
+
+  lora-clip-module : Text -> Text
+  lora-clip-module (m) =
+    if m == "mlp.fc1" then "mlp_fc1"
+    else if m == "mlp.fc2" then "mlp_fc2"
+    else if m == "self_attn.k_proj" then "self_attn_k_proj"
+    else if m == "self_attn.q_proj" then "self_attn_q_proj"
+    else if m == "self_attn.v_proj" then "self_attn_v_proj"
+    else if m == "self_attn.out_proj" then "self_attn_out_proj"
+    else ""
+
+ Forge also takes lora_te_ for CLIP-L and the diffusers names text_encoder. and
+ text_encoder_2. with the module in dots (lora.py:207-233).
+
+  lora-te-key : Text, Text, Text -> List Text
+  lora-te-key (te) (layer) (m) =
+    if m == "" then []
+    else let kohya = "lora_" & te & "_text_model_encoder_layers_" & layer & "_" & m
+    in let dotted = lora-clip-dotted m
+    in if te == "te1" then [kohya, "lora_te_text_model_encoder_layers_" & layer & "_" & m, "text_encoder.text_model.encoder.layers." & layer & "." & dotted]
+    else [kohya, "text_encoder_2.text_model.encoder.layers." & layer & "." & dotted]
+
+  lora-clip-dotted : Text -> Text
+  lora-clip-dotted (m) =
+    if m == "mlp_fc1" then "mlp.fc1"
+    else if m == "mlp_fc2" then "mlp.fc2"
+    else if m == "self_attn_k_proj" then "self_attn.k_proj"
+    else if m == "self_attn_q_proj" then "self_attn.q_proj"
+    else if m == "self_attn_v_proj" then "self_attn.v_proj"
+    else "self_attn.out_proj"
+
+  lora-te-l : List Text, Integer -> List LoraSlot
+  lora-te-l (ps) (rows) =
+    if list-length ps /= 7 | list-at ps 0 /= "text_model" | list-at ps 1 /= "encoder" | list-at ps 2 /= "layers" then []
+    else if list-at ps 6 /= "weight" & list-at ps 6 /= "bias" then []
+    else lora-slot (lora-te-key "te1" (list-at ps 3) (lora-clip-module (list-at ps 4 & "." & list-at ps 5))) 0 rows (list-at ps 6 == "bias")
+
+  lora-te-g-one : Text, Text, Integer, Boolean -> List LoraSlot
+  lora-te-g-one (layer) (m) (rows) (bias) = lora-slot (lora-te-key "te2" layer m) 0 rows bias
+
+  lora-te-g-qkv : Text, Integer, Boolean -> List LoraSlot
+  lora-te-g-qkv (layer) (rows) (bias) =
+    let d = rows / 3
+    in lora-slot (lora-te-key "te2" layer "self_attn_q_proj") 0 d bias & lora-slot (lora-te-key "te2" layer "self_attn_k_proj") d d bias & lora-slot (lora-te-key "te2" layer "self_attn_v_proj") (2 * d) d bias
+
+  lora-te-g : List Text, Integer -> List LoraSlot
+  lora-te-g (ps) (rows) =
+    if list-length ps < 5 | list-at ps 0 /= "transformer" | list-at ps 1 /= "resblocks" then []
+    else let layer = list-at ps 2
+    in let m = lora-rest ps 3
+    in if m == "attn.in_proj_weight" then lora-te-g-qkv layer rows False
+    else if m == "attn.in_proj_bias" then lora-te-g-qkv layer rows True
+    else if m == "attn.out_proj.weight" then lora-te-g-one layer "self_attn_out_proj" rows False
+    else if m == "attn.out_proj.bias" then lora-te-g-one layer "self_attn_out_proj" rows True
+    else if m == "mlp.c_fc.weight" then lora-te-g-one layer "mlp_fc1" rows False
+    else if m == "mlp.c_fc.bias" then lora-te-g-one layer "mlp_fc1" rows True
+    else if m == "mlp.c_proj.weight" then lora-te-g-one layer "mlp_fc2" rows False
+    else if m == "mlp.c_proj.bias" then lora-te-g-one layer "mlp_fc2" rows True
+    else []
+
+ The slots of a full checkpoint tensor name with rows rows: a UNet weight is
+ one slot over all its rows, a bias one slot under its weight's keys (Forge
+ sends diff_b and b_norm to the module's bias, lora.py:176,186); a
+ text-encoder tensor is as above; anything else has none. SD1.5's CLIP-L sits under cond_stage_model. and takes the same keys.
+
+  lora-slots : Text, Integer, Integer, Text, Text -> List LoraSlot
+  lora-slots (name) (rows) (res-blocks) (prefix-l) (prefix-g) =
+    if text-starts-with name "model.diffusion_model." then
+      (let unet = substring name 22 (text-length name - 22)
+       in if text-ends-with unet ".bias" then lora-slot (lora-unet-keys (substring unet 0 (text-length unet - 5) & ".weight") res-blocks) 0 rows True
+       else lora-slot (lora-unet-keys unet res-blocks) 0 rows False)
+    else if text-starts-with name (prefix-l & "transformer.") then lora-te-l (text-split (substring name (text-length prefix-l + 12) (text-length name - text-length prefix-l - 12)) ".") rows
+    else if text-starts-with name "cond_stage_model.transformer." then lora-te-l (text-split (substring name 29 (text-length name - 29)) ".") rows
+    else if text-starts-with name "text_model." then lora-te-l (text-split name ".") rows
+    else if text-starts-with name (prefix-g & "model.") then lora-te-g (text-split (substring name (text-length prefix-g + 6) (text-length name - text-length prefix-g - 6)) ".") rows
+    else []
+
+  sdxl-te-l : Text = "conditioner.embedders.0."
+
+  sdxl-te-g : Text = "conditioner.embedders.1."
+
+Section: Merge
+
+  lora-grid : Integer -> GpuGrid
+  lora-grid (n) = GpuGrid { gx = (n + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+
+  lora-weight-kinds : List Text
+  lora-weight-kinds = [".lora_down.weight", ".hada_w1_a", ".lokr_w1", ".lokr_w1_a", ".lokr_w2", ".lokr_w2_a", ".diff", ".w_norm", ".a1.weight"]
+
+  lora-bias-kinds : List Text
+  lora-bias-kinds = [".diff_b", ".b_norm"]
+
+  lora-kinds-of : LoraSlot -> List Text
+  lora-kinds-of (s) = if s.ls-bias then lora-bias-kinds else lora-weight-kinds
+
+  lora-names-module : LoraFile, Text, List Text, Integer -> Boolean
+  lora-names-module (l) (m) (kinds) (j) =
+    if j >= list-length kinds then False
+    else if lora-has l (m & list-at kinds j) then True
+    else lora-names-module l m kinds (j + 1)
+
+  lora-module : LoraFile, LoraSlot, Integer -> Text
+  lora-module (l) (slot) (i) =
+    if i >= list-length (slot.ls-keys) then ""
+    else if lora-names-module l (list-at (slot.ls-keys) i) (lora-kinds-of slot) 0 then list-at (slot.ls-keys) i
+    else lora-module l slot (i + 1)
+
+ Adds one LoRA's patch into rows row0 .. row0 + rows of the f32 weight w32
+ (cols wide; a conv flattened to cout x cin kh kw): 1 when applied, 0 when
+ the file does not name the slot, -1 when it names it with a shape that does
+ not fit or a transfer was refused.
+
+  lora-apply : LoraFile, LoraSlot, Integer, Integer -> Integer
+  lora-apply (l) (slot) (w32) (cols) =
+    let module = lora-module l slot 0
+    in if module == "" then 0
+    else if slot.ls-bias then lora-apply-diff l module (if lora-has l (module & ".diff_b") then ".diff_b" else ".b_norm") slot w32 cols
+    else if lora-has l (module & ".dora_scale") then lora-apply-dora l module slot w32 cols
+    else lora-apply-kind l module slot w32 cols
+
+  lora-apply-kind : LoraFile, Text, LoraSlot, Integer, Integer -> Integer
+  lora-apply-kind (l) (module) (slot) (w32) (cols) =
+    if lora-has l (module & ".lora_down.weight") then
+      (when lora-meta l (module & ".lora_down.weight")
+        is None -> 0 - 1
+        is Just (down) -> lora-apply-down l module down slot w32 cols)
+    else if lora-has l (module & ".hada_w1_a") then lora-apply-loha l module slot w32 cols
+    else if lora-has l (module & ".diff") then lora-apply-diff l module ".diff" slot w32 cols
+    else if lora-has l (module & ".w_norm") then lora-apply-diff l module ".w_norm" slot w32 cols
+    else if lora-has l (module & ".a1.weight") then lora-apply-glora l module slot w32 cols
+    else lora-apply-lokr l module slot w32 cols
+
+  lora-apply-down : LoraFile, Text, StTensorMeta, LoraSlot, Integer, Integer -> Integer
+  lora-apply-down (l) (module) (down) (slot) (w32) (cols) =
+    when lora-meta l (module & ".lora_up.weight")
+     is None -> 0 - 1
+     is Just (up) -> lora-apply-pair l module down up slot w32 cols
+
+  lora-apply-pair : LoraFile, Text, StTensorMeta, StTensorMeta, LoraSlot, Integer, Integer -> Integer
+  lora-apply-pair (l) (module) (down) (up) (slot) (w32) (cols) =
+    let rank = list-at (down.stm-shape) 0
+    in let rows = slot.ls-rows
+    in let mid = lora-need l (module & ".lora_mid.weight")
+    in let kk = lora-dim mid 2 * lora-dim mid 3
+    in let tucker = lora-has l (module & ".lora_mid.weight")
+    in if rank <= 0 | st-element-count up /= rows * rank then 0 - 1
+    else if tucker & (kk <= 0 | st-element-count mid /= rank * rank * kk | st-element-count down * kk /= rank * cols) then 0 - 1
+    else if (not tucker) & (st-element-count down /= rank * cols) then 0 - 1
+    else let scale = l.lf-strength * lora-alpha l module rank / real-from-int rank
+    in let hd = if tucker then lora-mid-down l mid down rank (cols / kk) kk else lora-upload l down
+    in let hu = lora-upload l up
+    in let ok = if hd == 0 | hu == 0 then False
+      else gm-launch gm-slot-lora lora-kernels-ptx "kernel_lora_delta" (lora-grid (rows * cols)) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf hu 0, gpu-arg-buf hd 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 rank] >= 0
+    in lora-free (lora-free (if ok then 1 else 0 - 1) hd) hu
+
+ The other kinds read their tensors by name; a missing one or a count that
+ does not fit the slot refuses the merge (-1).
+
+  lora-need : LoraFile, Text -> StTensorMeta
+  lora-need (l) (name) =
+    when lora-meta l name
+     is None -> StTensorMeta { stm-name = "", stm-dtype = st-dtype-unknown, stm-shape = [0], stm-ndim = 0, stm-offset-start = 0, stm-offset-end = 0 }
+     is Just (m) -> m
+
+  lora-dim : StTensorMeta, Integer -> Integer
+  lora-dim (m) (i) = if i < list-length (m.stm-shape) then list-at (m.stm-shape) i else 0
+
+  lora-launch : Text, Integer, List GpuParam -> Boolean
+  lora-launch (kernel) (n) (ps) = gm-launch gm-slot-lora lora-kernels-ptx kernel (lora-grid n) ps >= 0
+
+  lora-apply-loha : LoraFile, Text, LoraSlot, Integer, Integer -> Integer
+  lora-apply-loha (l) (module) (slot) (w32) (cols) =
+    if lora-has l (module & ".hada_t1") then lora-apply-loha-t l module slot w32 cols
+    else let m1a = lora-need l (module & ".hada_w1_a")
+    in let m1b = lora-need l (module & ".hada_w1_b")
+    in let m2a = lora-need l (module & ".hada_w2_a")
+    in let m2b = lora-need l (module & ".hada_w2_b")
+    in let rows = slot.ls-rows
+    in let r1 = lora-dim m1b 0
+    in let r2 = lora-dim m2b 0
+    in if r1 <= 0 | r2 <= 0 | st-element-count m1a /= rows * r1 | st-element-count m1b /= r1 * cols | st-element-count m2a /= rows * r2 | st-element-count m2b /= r2 * cols then 0 - 1
+    else let scale = l.lf-strength * lora-alpha l module r1 / real-from-int r1
+    in let h1a = lora-upload l m1a
+    in let h1b = lora-upload l m1b
+    in let h2a = lora-upload l m2a
+    in let h2b = lora-upload l m2b
+    in let ok = if h1a == 0 | h1b == 0 | h2a == 0 | h2b == 0 then False
+      else lora-launch "kernel_lora_loha" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1a 0, gpu-arg-buf h1b 0, gpu-arg-buf h2a 0, gpu-arg-buf h2b 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 r1, gpu-arg-u64 r2]
+    in lora-free (lora-free (lora-free (lora-free (if ok then 1 else 0 - 1) h1a) h1b) h2a) h2b
+
+ A LoKr factor as an f32 device matrix: the full tensor when the file has it,
+ else its two low-rank halves multiplied out; answers the handle times 2^32
+ plus the factored rank (0 when full), or 0 when refused.
+
+  lora-kr-factor : LoraFile, Text, Text -> Integer
+  lora-kr-factor (l) (module) (w) =
+    if lora-has l (module & ".lokr_" & w) then lora-upload l (lora-need l (module & ".lokr_" & w)) * 4294967296
+    else let ma = lora-need l (module & ".lokr_" & w & "_a")
+    in let mb = lora-need l (module & ".lokr_" & w & "_b")
+    in let a = lora-dim ma 0
+    in let k = lora-dim mb 0
+    in let b = lora-dim mb 1
+    in if a <= 0 | k <= 0 | b <= 0 | st-element-count ma /= a * k then 0
+    else let ha = lora-upload l ma
+    in let hb = lora-upload l mb
+    in let h = gpu-buf-alloc (a * b * 4)
+    in let ok = if ha == 0 | hb == 0 | h == 0 then False else lora-launch "kernel_lora_matmul" (a * b) [gpu-arg-buf h 0, gpu-arg-buf ha 0, gpu-arg-buf hb 0, gpu-arg-u64 a, gpu-arg-u64 b, gpu-arg-u64 k]
+    in lora-free (lora-free (if ok then h * 4294967296 + k else lora-free 0 h) ha) hb
+
+  lora-kr-shape : LoraFile, Text, Text, Integer -> Integer
+  lora-kr-shape (l) (module) (w) (i) =
+    if lora-has l (module & ".lokr_" & w) then lora-dim (lora-need l (module & ".lokr_" & w)) i
+    else if i == 0 then lora-dim (lora-need l (module & ".lokr_" & w & "_a")) 0
+    else lora-dim (lora-need l (module & ".lokr_" & w & "_b")) 1
+
+ Forge's alpha divisor is the rank of the last factored side, w2's when both
+ are (lora.py:165-173); with neither factored the alpha is not used.
+
+  lora-apply-lokr : LoraFile, Text, LoraSlot, Integer, Integer -> Integer
+  lora-apply-lokr (l) (module) (slot) (w32) (cols) =
+    if lora-has l (module & ".lokr_t2") then lora-apply-lokr-t l module slot w32 cols
+    else let rows = slot.ls-rows
+    in let a = lora-kr-shape l module "w1" 0
+    in let b = lora-kr-shape l module "w1" 1
+    in let c = lora-kr-shape l module "w2" 0
+    in let d = lora-kr-shape l module "w2" 1
+    in if a <= 0 | b <= 0 | c <= 0 | d <= 0 | a * c /= rows | b * d /= cols then 0 - 1
+    else let f1 = lora-kr-factor l module "w1"
+    in let f2 = lora-kr-factor l module "w2"
+    in let h1 = f1 / 4294967296
+    in let h2 = f2 / 4294967296
+    in let dim = if f2 - h2 * 4294967296 > 0 then f2 - h2 * 4294967296 else f1 - h1 * 4294967296
+    in let alpha = if dim > 0 then lora-alpha l module dim / real-from-int dim else 1.0
+    in let ok = if h1 == 0 | h2 == 0 then False
+      else lora-launch "kernel_lora_kron" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1 0, gpu-arg-buf h2 0, gpu-arg-u64 (real-to-bits (l.lf-strength * alpha)), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 c, gpu-arg-u64 d]
+    in lora-free (lora-free (if ok then 1 else 0 - 1) h1) h2
+
+ A full difference (diff, w_norm, diff_b, b_norm) adds strength * d.
+
+  lora-apply-diff : LoraFile, Text, Text, LoraSlot, Integer, Integer -> Integer
+  lora-apply-diff (l) (module) (suffix) (slot) (w32) (cols) =
+    let m = lora-need l (module & suffix)
+    in let n = slot.ls-rows * cols
+    in if st-element-count m /= n then 0 - 1
+    else let h = lora-upload l m
+    in let ok = if h == 0 then False else lora-launch "kernel_lora_axpy" n [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h 0, gpu-arg-u64 (real-to-bits (l.lf-strength)), gpu-arg-u64 n]
+    in lora-free (if ok then 1 else 0 - 1) h
+ GLoRA reads the weight as it stands (W a2 into a temporary) before patching
+ it; alpha is over a1's rank.
+
+  lora-apply-glora : LoraFile, Text, LoraSlot, Integer, Integer -> Integer
+  lora-apply-glora (l) (module) (slot) (w32) (cols) =
+    let ma1 = lora-need l (module & ".a1.weight")
+    in let ma2 = lora-need l (module & ".a2.weight")
+    in let mb1 = lora-need l (module & ".b1.weight")
+    in let mb2 = lora-need l (module & ".b2.weight")
+    in let rows = slot.ls-rows
+    in let r = lora-dim ma1 0
+    in let rb = lora-dim mb1 0
+    in if r <= 0 | rb <= 0 | st-element-count ma1 /= r * cols | st-element-count ma2 /= cols * r | st-element-count mb1 /= rb * cols | st-element-count mb2 /= rows * rb then 0 - 1
+    else let scale = l.lf-strength * lora-alpha l module r / real-from-int r
+    in let ha1 = lora-upload l ma1
+    in let ha2 = lora-upload l ma2
+    in let hb1 = lora-upload l mb1
+    in let hb2 = lora-upload l mb2
+    in let hwa = gpu-buf-alloc (rows * r * 4)
+    in let base = gpu-arg-buf w32 (slot.ls-row0 * cols * 4)
+    in let ok = if ha1 == 0 | ha2 == 0 | hb1 == 0 | hb2 == 0 | hwa == 0 then False
+      else if not (lora-launch "kernel_lora_matmul" (rows * r) [gpu-arg-buf hwa 0, base, gpu-arg-buf ha2 0, gpu-arg-u64 rows, gpu-arg-u64 r, gpu-arg-u64 cols]) then False
+      else lora-launch "kernel_lora_sum2" (rows * cols) [base, gpu-arg-buf hb2 0, gpu-arg-buf hb1 0, gpu-arg-buf hwa 0, gpu-arg-buf ha1 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 rb, gpu-arg-u64 r]
+    in lora-free (lora-free (lora-free (lora-free (lora-free (if ok then 1 else 0 - 1) ha1) ha2) hb1) hb2) hwa
+ DoRA: the kind's delta at strength 1 into a zeroed temporary, then every
+ input channel of W + d rescaled by dora_scale over its norm and blended in at
+ the file's strength; a channel is cols / count (dora_scale) columns wide.
+
+  lora-apply-dora : LoraFile, Text, LoraSlot, Integer, Integer -> Integer
+  lora-apply-dora (l) (module) (slot) (w32) (cols) =
+    let ms = lora-need l (module & ".dora_scale")
+    in let rows = slot.ls-rows
+    in let n = rows * cols
+    in let chans = st-element-count ms
+    in if chans <= 0 | cols - (cols / chans) * chans /= 0 then 0 - 1
+    else let inner = cols / chans
+    in let hd = gpu-buf-alloc (n * 4)
+    in let hn = gpu-buf-alloc (chans * 4)
+    in let hs = lora-upload l ms
+    in let one = LoraFile { lf-path = l.lf-path, lf-file = l.lf-file, lf-names = l.lf-names, lf-strength = 1.0 }
+    in let local = LoraSlot { ls-keys = slot.ls-keys, ls-row0 = 0, ls-rows = rows, ls-bias = False }
+    in let base = gpu-arg-buf w32 (slot.ls-row0 * cols * 4)
+    in let full = if real-to-bits (l.lf-strength) == real-to-bits 1.0 then 1 else 0
+    in let ok = if hd == 0 | hn == 0 | hs == 0 then False
+      else if not (lora-launch "kernel_lora_zero" n [gpu-arg-buf hd 0, gpu-arg-u64 n]) then False
+      else if lora-apply-kind one module local hd cols /= 1 then False
+      else if not (lora-launch "kernel_lora_dora_norm" chans [base, gpu-arg-buf hd 0, gpu-arg-buf hn 0, gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 inner]) then False
+      else lora-launch "kernel_lora_dora_apply" n [base, gpu-arg-buf hd 0, gpu-arg-buf hn 0, gpu-arg-buf hs 0, gpu-arg-u64 (real-to-bits (l.lf-strength)), gpu-arg-u64 full, gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 inner]
+    in lora-free (lora-free (lora-free (if ok then 1 else 0 - 1) hd) hn) hs
+ LoCon's mid folded into the down it multiplies: rank x (cin kk) f32, or 0.
+
+  lora-mid-down : LoraFile, StTensorMeta, StTensorMeta, Integer, Integer, Integer -> Integer
+  lora-mid-down (l) (mid) (down) (rank) (cin) (kk) =
+    let hm = lora-upload l mid
+    in let hd = lora-upload l down
+    in let h = gpu-buf-alloc (rank * cin * kk * 4)
+    in let ok = if hm == 0 | hd == 0 | h == 0 then False else lora-launch "kernel_lora_mid" (rank * cin * kk) [gpu-arg-buf h 0, gpu-arg-buf hm 0, gpu-arg-buf hd 0, gpu-arg-u64 rank, gpu-arg-u64 cin, gpu-arg-u64 kk]
+    in lora-free (lora-free (if ok then h else lora-free 0 h) hm) hd
+
+ LoHa with hada_t1 / hada_t2: each half is a Tucker product (kernel_lora_tucker)
+ of t (rank x rank x kh kw) with w_a (rank x rows) and w_b (rank x cin).
+
+  lora-tucker-half : LoraFile, Text, Text, Integer, Integer, Integer -> Integer
+  lora-tucker-half (l) (module) (n) (rows) (cols) (rank) =
+    let mt = lora-need l (module & ".hada_t" & n)
+    in let ma = lora-need l (module & ".hada_w" & n & "_a")
+    in let mb = lora-need l (module & ".hada_w" & n & "_b")
+    in let kk = lora-dim mt 2 * lora-dim mt 3
+    in let cin = if kk > 0 then cols / kk else 0
+    in if kk <= 0 | st-element-count mt /= rank * rank * kk | st-element-count ma /= rank * rows | st-element-count mb /= rank * cin | cin * kk /= cols then 0
+    else let ht = lora-upload l mt
+    in let ha = lora-upload l ma
+    in let hb = lora-upload l mb
+    in let h = gpu-buf-alloc (rows * cols * 4)
+    in let ok = if ht == 0 | ha == 0 | hb == 0 | h == 0 then False else lora-launch "kernel_lora_tucker" (rows * cols) [gpu-arg-buf h 0, gpu-arg-buf ht 0, gpu-arg-buf ha 0, gpu-arg-buf hb 0, gpu-arg-u64 rank, gpu-arg-u64 rows, gpu-arg-u64 cin, gpu-arg-u64 kk]
+    in lora-free (lora-free (lora-free (if ok then h else lora-free 0 h) ht) ha) hb
+
+  lora-apply-loha-t : LoraFile, Text, LoraSlot, Integer, Integer -> Integer
+  lora-apply-loha-t (l) (module) (slot) (w32) (cols) =
+    let rows = slot.ls-rows
+    in let rank = lora-dim (lora-need l (module & ".hada_w1_b")) 0
+    in if rank <= 0 then 0 - 1
+    else let h1 = lora-tucker-half l module "1" rows cols rank
+    in let h2 = lora-tucker-half l module "2" rows cols rank
+    in let scale = l.lf-strength * lora-alpha l module rank / real-from-int rank
+    in let ok = if h1 == 0 | h2 == 0 then False else lora-launch "kernel_lora_prod" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1 0, gpu-arg-buf h2 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 (rows * cols)]
+    in lora-free (lora-free (if ok then 1 else 0 - 1) h1) h2
+
+ LoKr with lokr_t2: w2 is the Tucker product of t2 with lokr_w2_a (rank x c)
+ and lokr_w2_b (rank x d), c x d x kk; w1 full or factored as before; alpha
+ over w2's rank.
+
+  lora-apply-lokr-t : LoraFile, Text, LoraSlot, Integer, Integer -> Integer
+  lora-apply-lokr-t (l) (module) (slot) (w32) (cols) =
+    let rows = slot.ls-rows
+    in let mt = lora-need l (module & ".lokr_t2")
+    in let ma = lora-need l (module & ".lokr_w2_a")
+    in let mb = lora-need l (module & ".lokr_w2_b")
+    in let rank = lora-dim mb 0
+    in let c = lora-dim ma 1
+    in let d = lora-dim mb 1
+    in let kk = lora-dim mt 2 * lora-dim mt 3
+    in let a = lora-kr-shape l module "w1" 0
+    in let b = lora-kr-shape l module "w1" 1
+    in if rank <= 0 | c <= 0 | d <= 0 | kk <= 0 | a <= 0 | b <= 0 | a * c /= rows | b * d * kk /= cols | st-element-count mt /= rank * rank * kk then 0 - 1
+    else let f1 = lora-kr-factor l module "w1"
+    in let h1 = f1 / 4294967296
+    in let ht = lora-upload l mt
+    in let ha = lora-upload l ma
+    in let hb = lora-upload l mb
+    in let h2 = gpu-buf-alloc (c * d * kk * 4)
+    in let alpha = lora-alpha l module rank / real-from-int rank
+    in let ok = if h1 == 0 | ht == 0 | ha == 0 | hb == 0 | h2 == 0 then False
+      else if not (lora-launch "kernel_lora_tucker" (c * d * kk) [gpu-arg-buf h2 0, gpu-arg-buf ht 0, gpu-arg-buf ha 0, gpu-arg-buf hb 0, gpu-arg-u64 rank, gpu-arg-u64 c, gpu-arg-u64 d, gpu-arg-u64 kk]) then False
+      else lora-launch "kernel_lora_kron4" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1 0, gpu-arg-buf h2 0, gpu-arg-u64 (real-to-bits (l.lf-strength * alpha)), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 c, gpu-arg-u64 d, gpu-arg-u64 kk]
+    in lora-free (lora-free (lora-free (lora-free (lora-free (if ok then 1 else 0 - 1) h1) ht) ha) hb) h2
+
+  lora-apply-files : List LoraFile, LoraSlot, Integer, Integer, Integer, Integer -> Integer
+  lora-apply-files (ls) (slot) (w32) (cols) (i) (applied) =
+    if i >= list-length ls then applied
+    else let a = lora-apply (list-at ls i) slot w32 cols
+    in if a < 0 then a
+    else lora-apply-files ls slot w32 cols (i + 1) (applied + a)
+
+  lora-apply-slots : List LoraFile, List LoraSlot, Integer, Integer, Integer, Integer -> Integer
+  lora-apply-slots (ls) (slots) (w32) (cols) (i) (applied) =
+    if i >= list-length slots then applied
+    else let a = lora-apply-files ls (list-at slots i) w32 cols 0 0
+    in if a < 0 then a
+    else lora-apply-slots ls slots w32 cols (i + 1) (applied + a)
+
+  lora-names-any : List LoraFile, List LoraSlot, Integer, Integer -> Boolean
+  lora-names-any (ls) (slots) (i) (j) =
+    if i >= list-length ls then False
+    else if j >= list-length slots then lora-names-any ls slots (i + 1) 0
+    else if lora-module (list-at ls i) (list-at slots j) 0 /= "" then True
+    else lora-names-any ls slots i (j + 1)
+
+ The named checkpoint tensor (its full name) as a fresh f16 device buffer with
+ every LoRA in ls merged: widened to f32, each slot patched by each file that
+ names it, one cast back; 0 when a file or transfer refused. A tensor no LoRA
+ names is uploaded as f16 directly.
+
+  lora-merged-weight : Text, SafeTensorFile, List LoraFile, Integer, Text -> Integer
+  lora-merged-weight (path) (ckpt) (ls) (res-blocks) (name) =
+    when st-find-tensor ckpt name
+     is None -> 0
+     is Just (m) -> lora-merged-meta path ckpt ls (lora-slots name (list-at (m.stm-shape) 0) res-blocks sdxl-te-l sdxl-te-g) m
+
+  lora-merged-meta : Text, SafeTensorFile, List LoraFile, List LoraSlot, StTensorMeta -> Integer
+  lora-merged-meta (path) (ckpt) (ls) (slots) (m) =
+    let n = st-element-count m
+    in let src = ckpt-gpu-dtype (m.stm-dtype)
+    in let off = ckpt.st-data-offset + m.stm-offset-start
+    in let h16 = gpu-buf-alloc (n * 2)
+    in if h16 == 0 | src < 0 then lora-free 0 h16
+    else if not (lora-names-any ls slots 0 0) then (if gpu-buf-upload h16 0 path off n src gpu-dt-f16 == n * 2 then h16 else lora-free 0 h16)
+    else let h32 = gpu-buf-alloc (n * 4)
+    in let cols = n / list-at (m.stm-shape) 0
+    in let up = if h32 == 0 then 0 else gpu-buf-upload h32 0 path off n src gpu-dt-f32
+    in let applied = if up == n * 4 then lora-apply-slots ls slots h32 cols 0 0 else 0 - 1
+    in let cast = if applied > 0 then gm-launch gm-slot-lora lora-kernels-ptx "kernel_lora_to_f16" (lora-grid n) [gpu-arg-buf h32 0, gpu-arg-buf h16 0, gpu-arg-u64 n] >= 0 else False
+    in lora-free (if cast then h16 else lora-free 0 h16) h32

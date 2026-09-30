@@ -94,6 +94,58 @@ say('the opening board is empty and X is to move',
       cur: call(x.ttt_cur, start), done: call(x.ttt_done, start) },
     { cells: [0,0,0,0,0,0,0,0,0], cur: 1, done: 0 });
 
+// THE RULES (TicTacToe.codex, "The Rules"): the whole game tree, both sides
+// played through ttt_play, against a rules oracle written here. At every
+// reachable position the legal set is every empty square while no line is
+// complete and the board is not full, and nothing after; the mover
+// alternates from X; the result is the rules'. The counts are the published
+// ones for the game (5,478 positions, 958 of them final: 626 won by X, 316 by
+// O, 16 drawn; 255,168 games: 131,184 won by X, 77,904 by O, 46,080 drawn).
+{
+  const LINES = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+  const cellsOf = w => [...Array(9)].map((_, i) => call(x.ttt_cell, w, i));
+  const lineOf = g => { for (const [a, b, c] of LINES) if (g[a] && g[a] === g[b] && g[a] === g[c]) return g[a]; return 0; };
+  const seen = new Map();
+  const finals = { x: 0, o: 0, draw: 0 };
+  let bad = '';
+  // Returns [X wins, O wins, draws] over every game from w.
+  const games = w => {
+    if (seen.has(w)) return seen.get(w);
+    const g = cellsOf(w);
+    const marks = g.filter(v => v).length;
+    const won = lineOf(g), full = marks === 9, over = won !== 0 || full;
+    const mover = marks % 2 === 0 ? 1 : 2;
+    let res = [0, 0, 0];
+    if (call(x.ttt_done, w) !== (over ? 1 : 0) || (over && call(x.ttt_winner, w) !== won)
+        || (!over && call(x.ttt_cur, w) !== mover)) {
+      bad = bad || `position ${g.join('')}: done ${call(x.ttt_done, w)} winner ${call(x.ttt_winner, w)} cur ${call(x.ttt_cur, w)}, rules over ${over} winner ${won} mover ${mover}`;
+    }
+    // The counts follow the ENGINE's verdicts and moves, so a defect the
+    // per-position check names also moves the published totals.
+    const eOver = call(x.ttt_done, w) === 1, eWon = call(x.ttt_winner, w);
+    if (eOver) {
+      if (eWon === 1) { finals.x++; res = [1, 0, 0]; } else if (eWon === 2) { finals.o++; res = [0, 1, 0]; } else { finals.draw++; res = [0, 0, 1]; }
+    }
+    for (let c = -1; c <= 9; c++) {
+      const n = call(x.ttt_play, w, c);
+      const legal = !over && c >= 0 && c < 9 && g[c] === 0;
+      if ((n !== w) !== legal) bad = bad || `position ${g.join('')} square ${c}: ${n !== w ? 'taken' : 'refused'}`;
+      if (n === w) continue;
+      const g2 = cellsOf(n);
+      if (g2.some((v, i) => v !== (i === c ? mover : g[i]))) { bad = bad || `position ${g.join('')} square ${c}: the mark landed wrong`; continue; }
+      const r = games(n);
+      res = [res[0] + r[0], res[1] + r[1], res[2] + r[2]];
+    }
+    seen.set(w, res);
+    return res;
+  };
+  const total = games(call(x.ttt_new));
+  say('rules: every reachable position, legal set, mover and result', bad || 'agrees', 'agrees');
+  say('rules: positions reachable, and the final ones by result',
+      { positions: seen.size, ...finals }, { positions: 5478, x: 626, o: 316, draw: 16 });
+  say('rules: games by result', { x: total[0], o: total[1], draw: total[2] }, { x: 131184, o: 77904, draw: 46080 });
+}
+
 // The control, and it is the arm that makes `losses: 0` mean anything.
 //
 // A walk that can never RECORD a loss reports zero losses whether or not the
@@ -129,7 +181,7 @@ console.log(`  ${controlSees ? 'ok  ' : 'FAIL'}  control: a first-empty-cell pla
 if (!controlSees) fails.push('control');
 
 if (fails.length) {
-  console.log(`\nFAILED: ${fails.length} of 8 -- ${fails.join(', ')}`);
+  console.log(`\nFAILED: ${fails.length} of 11 -- ${fails.join(', ')}`);
   process.exitCode = 1;
 }
 console.log('\nPASS: the wasm module matches codex/test/ttt-perfect.expected on every line.');

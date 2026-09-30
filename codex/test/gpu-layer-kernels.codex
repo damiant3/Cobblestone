@@ -1,0 +1,766 @@
+Chapter: GpuLayerKernels
+
+  cites Kernel chapter GpuBridge
+  cites AI chapter GpuProxy
+  cites Gpu chapter LayerKernelsPtx
+
+ We say:
+
+Section: f32 Words
+
+ Inputs are multiples of 1/64 inside [-16, 16), so every one is an exact f32
+ and the f64-to-f32 narrowing below only moves bits. Outputs are widened
+ exactly, subnormals included; an infinity or NaN decodes to NaN, which no
+ tolerance accepts.
+
+  f32-bits : Real -> Integer
+  f32-bits (x) =
+    if real-to-bits x == 0 then 0
+    else let b = real-to-bits x
+    in let s = bit-and (bit-shru b 63) 1
+    in let e = bit-and (bit-shru b 52) 2047
+    in bit-or (bit-shl s 31) (bit-or (bit-shl (e - 896) 23) (bit-and (bit-shru b 29) #7FFFFF))
+
+  f32-real : Integer -> Real
+  f32-real (w) =
+    let s = bit-and (bit-shru w 31) 1
+    in let e = bit-and (bit-shru w 23) 255
+    in let m = bit-and w #7FFFFF
+    in if e == 255 then bits-to-real #7FF8000000000000
+    else if e == 0 then (if s == 1 then 0.0 - 1.0 else 1.0) * real-from-int m * bits-to-real (bit-shl 874 52)
+    else bits-to-real (bit-or (bit-shl s 63) (bit-or (bit-shl (e + 896) 52) (bit-shl m 29)))
+
+Section: Buffers
+
+  scratch : Integer = #BD700000
+
+  put-reals : List Real, Integer -> Integer
+  put-reals (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = poke-32 scratch (i * 4) (f32-bits (list-at xs i))
+    in put-reals xs (i + 1)
+
+  upload : List Real -> Integer
+  upload (xs) =
+    let h = gpu-buf-alloc (list-length xs * 4)
+    in let w = put-reals xs 0
+    in if h == 0 then 0
+    else if gpu-buf-write h 0 (list-length xs * 4) scratch then h
+    else 0
+
+  take-reals : Integer, Integer, List Real -> List Real
+  take-reals (i) (n) (acc) =
+    if i >= n then acc
+    else take-reals (i + 1) n (list-push acc (f32-real (bit-and (peek-32 scratch (i * 4)) #FFFFFFFF)))
+
+  download : Integer, Integer -> List Real
+  download (h) (n) =
+    if gpu-buf-read h 0 (n * 4) scratch then take-reals 0 n []
+    else []
+
+  fresh : Integer -> Integer
+  fresh (n) = gpu-buf-alloc (n * 8)
+
+Section: Launch
+
+  arg-buf : Integer -> GpuParam
+  arg-buf (h) = gpu-arg-buf h 0
+
+  arg-int : Integer -> GpuParam
+  arg-int (v) = gpu-arg-u64 v
+
+  arg-real : Real -> GpuParam
+  arg-real (x) = gpu-arg-u64 (real-to-bits x)
+
+  launch : Text, Integer, List GpuParam -> Integer
+  launch (name) (threads) (ps) =
+    gpu-launch layer-kernels-ptx name (GpuGrid { gx = (threads + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) ps
+
+  run : Text, Integer, List GpuParam, Integer, Integer -> List Real
+  run (name) (threads) (ps) (out) (n) =
+    if launch name threads ps < 0 then []
+    else download out n
+
+Section: Grading
+
+ One part in a million of the magnitude, and one in a million absolute near
+ zero: an f32 result carries 6e-8 relative, so an honest kernel sits two
+ decades inside the bound and a wrong formula lands far outside it.
+
+  within : Real, Real -> Boolean
+  within (got) (want) =
+    let d = if got > want then got - want else want - got
+    in let m = if want < 0.0 then 0.0 - want else want
+    in d <= 0.000001 * (1.0 + m)
+
+  count-within : List Real, List Real, Integer, Integer -> Integer
+  count-within (got) (want) (i) (acc) =
+    if i >= list-length want then acc
+    else if i >= list-length got then acc
+    else count-within got want (i + 1) (if within (list-at got i) (list-at want i) then acc + 1 else acc)
+
+  grade : Text, List Real, List Real, List Real -> Text
+  grade (name) (got) (sabotaged) (want) =
+    let n = list-length want
+    in let good = count-within got want 0 0
+    in let bad = count-within sabotaged want 0 0
+    in name & ": " & show good & "/" & show n & (if list-length sabotaged == 0 then ", SABOTAGE REFUSED" else if bad < n then ", sabotage caught" else ", SABOTAGE MISSED")
+
+Section: Inputs
+
+  wave : Integer, Integer -> Real
+  wave (i) (seed) = real-from-int (int-mod (i * 37 + seed) 257 - 128) / 64.0
+
+  make : Integer, Integer -> List Real
+  make (n) (seed) = make-loop 0 n seed []
+
+  make-loop : Integer, Integer, Integer, List Real -> List Real
+  make-loop (i) (n) (seed) (acc) =
+    if i >= n then acc
+    else make-loop (i + 1) n seed (list-push acc (wave i seed))
+
+  ramp : Integer, Integer, Real -> List Real
+  ramp (n) (mid) (step) = ramp-loop 0 n mid step []
+
+  ramp-loop : Integer, Integer, Integer, Real, List Real -> List Real
+  ramp-loop (i) (n) (mid) (step) (acc) =
+    if i >= n then acc
+    else ramp-loop (i + 1) n mid step (list-push acc (real-from-int (i - mid) * step))
+
+Section: Reference Math
+
+ None of these share an algorithm with the device. exp reduces by a two-part
+ ln 2 and scales by building 2^k from its bits; erf is the alternating Taylor
+ series up to 3 and the asymptotic erfc past it, where the next term is below
+ 1e-8; sin and cos reduce by pi/2 in two parts (fdlibm's pio2_1, pio2_1t) and
+ fold by quadrant; sqrt is Newton from a guess made by halving the exponent.
+
+  ref-exp : Real -> Real
+  ref-exp (x) =
+    if x < 0.0 - 700.0 then 0.0
+    else let k = real-to-int (if x >= 0.0 then x * 1.4426950408889634 + 0.5 else x * 1.4426950408889634 - 0.5)
+    in let kr = real-from-int k
+    in let r = (x - kr * 0.6931471803691238) - kr * 0.00000000019082149292705877
+    in ref-exp-poly r 17 1.0 * bits-to-real (bit-shl (k + 1023) 52)
+
+  ref-exp-poly : Real, Integer, Real -> Real
+  ref-exp-poly (r) (k) (acc) =
+    if k <= 0 then acc
+    else ref-exp-poly r (k - 1) (1.0 + r * acc / real-from-int k)
+
+  ref-erf : Real -> Real
+  ref-erf (x) =
+    let a = if x < 0.0 then 0.0 - x else x
+    in let e = if a <= 3.0 then 1.1283791670955126 * ref-erf-taylor (a * a) a 0 0.0 else 1.0 - ref-erfc-asym a
+    in if x < 0.0 then 0.0 - e else e
+
+  ref-erf-taylor : Real, Real, Integer, Real -> Real
+  ref-erf-taylor (x2) (t) (n) (acc) =
+    if n > 120 then acc
+    else ref-erf-taylor x2 (0.0 - t * x2 / real-from-int (n + 1)) (n + 1) (acc + t / real-from-int (2 * n + 1))
+
+  ref-erfc-asym : Real -> Real
+  ref-erfc-asym (a) =
+    let u = 1.0 / (2.0 * a * a)
+    in ref-exp (0.0 - a * a) * 0.5641895835477563 / a * (1.0 - u * (1.0 - 3.0 * u * (1.0 - 5.0 * u * (1.0 - 7.0 * u * (1.0 - 9.0 * u)))))
+
+  ref-sqrt : Real -> Real
+  ref-sqrt (x) =
+    if x <= 0.0 then 0.0
+    else ref-newton x (bits-to-real (bit-shru (real-to-bits x) 1 + bit-shl 511 52)) 8
+
+  ref-newton : Real, Real, Integer -> Real
+  ref-newton (x) (y) (k) =
+    if k <= 0 then y
+    else ref-newton x (0.5 * (y + x / y)) (k - 1)
+
+  ref-quadrant : Real -> Integer
+  ref-quadrant (x) = real-to-int (x * 0.6366197723675814 + 0.5)
+
+  ref-reduced : Real, Integer -> Real
+  ref-reduced (x) (q) =
+    let qr = real-from-int q
+    in (x - qr * 1.5707963267341256) - qr * 0.00000000006077100506506192
+
+  ref-sin-poly : Real, Integer, Real -> Real
+  ref-sin-poly (r2) (k) (acc) =
+    if k <= 0 then acc
+    else ref-sin-poly r2 (k - 1) (1.0 - r2 * acc / real-from-int ((2 * k) * (2 * k + 1)))
+
+  ref-cos-poly : Real, Integer, Real -> Real
+  ref-cos-poly (r2) (k) (acc) =
+    if k <= 0 then acc
+    else ref-cos-poly r2 (k - 1) (1.0 - r2 * acc / real-from-int ((2 * k - 1) * (2 * k)))
+
+  ref-sin-at : Real, Integer -> Real
+  ref-sin-at (r) (q) =
+    let m = int-mod q 4
+    in if m == 0 then r * ref-sin-poly (r * r) 11 1.0
+    else if m == 1 then ref-cos-poly (r * r) 11 1.0
+    else if m == 2 then 0.0 - r * ref-sin-poly (r * r) 11 1.0
+    else 0.0 - ref-cos-poly (r * r) 11 1.0
+
+  ref-sin : Real -> Real
+  ref-sin (x) = ref-sin-at (ref-reduced x (ref-quadrant x)) (ref-quadrant x)
+
+  ref-cos : Real -> Real
+  ref-cos (x) = ref-sin-at (ref-reduced x (ref-quadrant x)) (ref-quadrant x + 1)
+
+Section: Elementwise References
+
+  ref-add : List Real, List Real, Integer, List Real -> List Real
+  ref-add (a) (b) (i) (acc) =
+    if i >= list-length a then acc
+    else ref-add a b (i + 1) (list-push acc (list-at a i + list-at b i))
+
+  ref-add-channel : List Real, List Real, Integer, Integer, List Real -> List Real
+  ref-add-channel (x) (bias) (hw) (i) (acc) =
+    if i >= list-length x then acc
+    else ref-add-channel x bias hw (i + 1) (list-push acc (list-at x i + list-at bias (i / hw)))
+
+  ref-silu : List Real, Integer, List Real -> List Real
+  ref-silu (x) (i) (acc) =
+    if i >= list-length x then acc
+    else ref-silu x (i + 1) (list-push acc (list-at x i / (1.0 + ref-exp (0.0 - list-at x i))))
+
+  ref-quick-gelu : List Real, Integer, List Real -> List Real
+  ref-quick-gelu (x) (i) (acc) =
+    if i >= list-length x then acc
+    else ref-quick-gelu x (i + 1) (list-push acc (list-at x i / (1.0 + ref-exp (0.0 - 1.702 * list-at x i))))
+
+  ref-geglu : List Real, Integer, Integer, Integer, List Real -> List Real
+  ref-geglu (x) (inner) (i) (n) (acc) =
+    if i >= n then acc
+    else let a = list-at x (i / inner * 2 * inner + i - i / inner * inner)
+    in let g = list-at x (i / inner * 2 * inner + inner + i - i / inner * inner)
+    in ref-geglu x inner (i + 1) n (list-push acc (a * 0.5 * g * (1.0 + ref-erf (g * 0.7071067811865476))))
+
+  ref-transpose : List Real, Integer, Integer, Integer, List Real -> List Real
+  ref-transpose (x) (rows) (cols) (i) (acc) =
+    if i >= rows * cols then acc
+    else ref-transpose x rows cols (i + 1) (list-push acc (list-at x ((i - i / rows * rows) * cols + i / rows)))
+
+  ref-gelu : List Real, Integer, List Real -> List Real
+  ref-gelu (x) (i) (acc) =
+    if i >= list-length x then acc
+    else ref-gelu x (i + 1) (list-push acc (0.5 * list-at x i * (1.0 + ref-erf (list-at x i * 0.7071067811865476))))
+
+Section: Norm References
+
+  seg-sum : List Real, Integer, Integer, Real -> Real
+  seg-sum (x) (i) (e) (acc) =
+    if i >= e then acc
+    else seg-sum x (i + 1) e (acc + list-at x i)
+
+  seg-sq : List Real, Integer, Integer, Real, Real -> Real
+  seg-sq (x) (i) (e) (mean) (acc) =
+    if i >= e then acc
+    else seg-sq x (i + 1) e mean (acc + (list-at x i - mean) * (list-at x i - mean))
+
+  seg-mean : List Real, Integer, Integer -> Real
+  seg-mean (x) (lo) (len) = seg-sum x lo (lo + len) 0.0 / real-from-int len
+
+  seg-rstd : List Real, Integer, Integer, Real -> Real
+  seg-rstd (x) (lo) (len) (eps) =
+    1.0 / ref-sqrt (seg-sq x lo (lo + len) (seg-mean x lo len) 0.0 / real-from-int len + eps)
+
+  ref-layer-norm : List Real, List Real, List Real, Integer, Real, Integer, List Real -> List Real
+  ref-layer-norm (x) (g) (b) (dim) (eps) (i) (acc) =
+    if i >= list-length x then acc
+    else let lo = i / dim * dim
+    in let v = (list-at x i - seg-mean x lo dim) * seg-rstd x lo dim eps * list-at g (i - lo) + list-at b (i - lo)
+    in ref-layer-norm x g b dim eps (i + 1) (list-push acc v)
+
+  ref-group-norm : List Real, List Real, List Real, Integer, Integer, Integer, Real, Integer, List Real -> List Real
+  ref-group-norm (x) (g) (b) (c) (hw) (groups) (eps) (i) (acc) =
+    if i >= list-length x then acc
+    else let ch = i / hw - i / hw / c * c
+    in let len = c / groups * hw
+    in let lo = (i / hw / c * groups + ch / (c / groups)) * len
+    in let v = (list-at x i - seg-mean x lo len) * seg-rstd x lo len eps * list-at g ch + list-at b ch
+    in ref-group-norm x g b c hw groups eps (i + 1) (list-push acc v)
+
+Section: Attention Reference
+
+  ref-scores : List Real, List Real, Integer, Integer, Integer, Integer, Real, Integer, List Real -> List Real
+  ref-scores (q) (k) (heads) (sq) (sk) (d) (scale) (idx) (acc) =
+    if idx >= heads * sq * sk then acc
+    else let h = idx / (sq * sk)
+    in let qi = (idx - h * sq * sk) / sk
+    in let kj = idx - h * sq * sk - qi * sk
+    in ref-scores q k heads sq sk d scale (idx + 1) (list-push acc (scale * ref-dot q k ((qi * heads + h) * d) ((kj * heads + h) * d) 0 d 0.0))
+
+  ref-dot : List Real, List Real, Integer, Integer, Integer, Integer, Real -> Real
+  ref-dot (a) (b) (ao) (bo) (t) (d) (acc) =
+    if t >= d then acc
+    else ref-dot a b ao bo (t + 1) d (acc + list-at a (ao + t) * list-at b (bo + t))
+
+  seg-max : List Real, Integer, Integer, Real -> Real
+  seg-max (x) (i) (e) (acc) =
+    if i >= e then acc
+    else seg-max x (i + 1) e (if list-at x i > acc then list-at x i else acc)
+
+  seg-exp-sum : List Real, Integer, Integer, Real, Real -> Real
+  seg-exp-sum (x) (i) (e) (m) (acc) =
+    if i >= e then acc
+    else seg-exp-sum x (i + 1) e m (acc + ref-exp (list-at x i - m))
+
+  ref-softmax : List Real, Integer, Integer, List Real -> List Real
+  ref-softmax (s) (cols) (i) (acc) =
+    if i >= list-length s then acc
+    else let lo = i / cols * cols
+    in let m = seg-max s lo (lo + cols) (list-at s lo)
+    in ref-softmax s cols (i + 1) (list-push acc (ref-exp (list-at s i - m) / seg-exp-sum s lo (lo + cols) m 0.0))
+
+  ref-softmax-causal : List Real, Integer, Integer, Integer, List Real -> List Real
+  ref-softmax-causal (s) (cols) (sq) (i) (acc) =
+    if i >= list-length s then acc
+    else let lo = i / cols * cols
+    in let seen = i / cols - i / cols / sq * sq + 1
+    in let m = seg-max s lo (lo + seen) (list-at s lo)
+    in let v = if i - lo >= seen then 0.0 else ref-exp (list-at s i - m) / seg-exp-sum s lo (lo + seen) m 0.0
+    in ref-softmax-causal s cols sq (i + 1) (list-push acc v)
+
+  ref-values : List Real, List Real, Integer, Integer, Integer, Integer, Integer, List Real -> List Real
+  ref-values (p) (v) (heads) (sq) (sk) (d) (idx) (acc) =
+    if idx >= sq * heads * d then acc
+    else let qi = idx / (heads * d)
+    in let h = (idx - qi * heads * d) / d
+    in let c = idx - qi * heads * d - h * d
+    in ref-values p v heads sq sk d (idx + 1) (list-push acc (ref-weighted p v ((h * sq + qi) * sk) (h * d + c) (heads * d) 0 sk 0.0))
+
+  ref-weighted : List Real, List Real, Integer, Integer, Integer, Integer, Integer, Real -> Real
+  ref-weighted (p) (v) (po) (vo) (stride) (j) (sk) (acc) =
+    if j >= sk then acc
+    else ref-weighted p v po vo stride (j + 1) sk (acc + list-at p (po + j) * list-at v (vo + j * stride))
+
+Section: Layout References
+
+  ref-concat : List Real, List Real, Integer, Integer, Integer, Integer, Integer, List Real -> List Real
+  ref-concat (a) (b) (ca) (cb) (inner) (i) (n) (acc) =
+    if i >= n then acc
+    else let plane = i / inner
+    in let bt = plane / (ca + cb)
+    in let ch = plane - bt * (ca + cb)
+    in let off = i - plane * inner
+    in let v = if ch < ca then list-at a ((bt * ca + ch) * inner + off) else list-at b ((bt * cb + ch - ca) * inner + off)
+    in ref-concat a b ca cb inner (i + 1) n (list-push acc v)
+
+  ref-upsample : List Real, Integer, Integer, Integer, Integer, List Real -> List Real
+  ref-upsample (x) (h) (w) (i) (n) (acc) =
+    if i >= n then acc
+    else let plane = i / (4 * h * w)
+    in let oy = (i - plane * 4 * h * w) / (2 * w)
+    in let ox = i - plane * 4 * h * w - oy * 2 * w
+    in ref-upsample x h w (i + 1) n (list-push acc (list-at x (plane * h * w + oy / 2 * w + ox / 2)))
+
+  ref-timestep : List Real, Integer, Real, Integer, Integer, List Real -> List Real
+  ref-timestep (t) (dim) (lp) (i) (n) (acc) =
+    if i >= n then acc
+    else let j = i - i / dim * dim
+    in let half = dim / 2
+    in let k = if j < half then j else j - half
+    in let arg = list-at t (i / dim) * ref-exp (0.0 - lp * real-from-int k / real-from-int half)
+    in ref-timestep t dim lp (i + 1) n (list-push acc (if j < half then ref-cos arg else ref-sin arg))
+
+Section: Arms
+
+  arm-add : Integer -> Text
+  arm-add (z) =
+    let a = make 1000 11
+    in let b = make 1000 29
+    in let ha = upload a
+    in let hb = upload b
+    in let ho = fresh 1000
+    in let hs = fresh 1000
+    in let good = run "kernel_add" 1000 [arg-buf ha, arg-buf hb, arg-buf ho, arg-int 1000] ho 1000
+    in let bad = run "kernel_add" 1000 [arg-buf ha, arg-buf ha, arg-buf hs, arg-int 1000] hs 1000
+    in grade "add" good bad (ref-add a b 0 [])
+
+  arm-add-channel : Integer -> Text
+  arm-add-channel (z) =
+    let x = make 30 5
+    in let bias = make 6 17
+    in let hx = upload x
+    in let hb = upload bias
+    in let ho = fresh 30
+    in let hs = fresh 30
+    in let good = run "kernel_add_channel" 30 [arg-buf hx, arg-buf hb, arg-buf ho, arg-int 5, arg-int 30] ho 30
+    in let bad = run "kernel_add_channel" 30 [arg-buf hx, arg-buf hb, arg-buf hs, arg-int 6, arg-int 30] hs 30
+    in grade "add-channel" good bad (ref-add-channel x bias 5 0 [])
+
+  arm-silu : Integer -> Text
+  arm-silu (z) =
+    let x = ramp 1024 512 0.03125
+    in let hx = upload x
+    in let ho = fresh 1024
+    in let hs = fresh 1024
+    in let good = run "kernel_silu" 1024 [arg-buf hx, arg-buf ho, arg-int 1024] ho 1024
+    in let bad = run "kernel_gelu" 1024 [arg-buf hx, arg-buf hs, arg-int 1024] hs 1024
+    in grade "silu" good bad (ref-silu x 0 [])
+
+  arm-gelu : Integer -> Text
+  arm-gelu (z) =
+    let x = ramp 1024 512 0.015625
+    in let hx = upload x
+    in let ho = fresh 1024
+    in let hs = fresh 1024
+    in let good = run "kernel_gelu" 1024 [arg-buf hx, arg-buf ho, arg-int 1024] ho 1024
+    in let bad = run "kernel_silu" 1024 [arg-buf hx, arg-buf hs, arg-int 1024] hs 1024
+    in grade "gelu" good bad (ref-gelu x 0 [])
+
+  arm-quick-gelu : Integer -> Text
+  arm-quick-gelu (z) =
+    let x = ramp 1024 512 0.03125
+    in let hx = upload x
+    in let ho = fresh 1024
+    in let hs = fresh 1024
+    in let good = run "kernel_quick_gelu" 1024 [arg-buf hx, arg-buf ho, arg-int 1024] ho 1024
+    in let bad = run "kernel_silu" 1024 [arg-buf hx, arg-buf hs, arg-int 1024] hs 1024
+    in grade "quick-gelu" good bad (ref-quick-gelu x 0 [])
+
+  arm-geglu : Integer -> Text
+  arm-geglu (z) =
+    let x = make 96 79
+    in let hx = upload x
+    in let ho = fresh 48
+    in let hs = fresh 48
+    in let good = run "kernel_geglu" 48 [arg-buf hx, arg-buf ho, arg-int 16, arg-int 48] ho 48
+    in let bad = run "kernel_geglu" 48 [arg-buf hx, arg-buf hs, arg-int 8, arg-int 48] hs 48
+    in grade "geglu" good bad (ref-geglu x 16 0 48 [])
+
+  arm-transpose : Integer -> Text
+  arm-transpose (z) =
+    let x = make 60 83
+    in let hx = upload x
+    in let ho = fresh 60
+    in let hs = fresh 60
+    in let good = run "kernel_transpose" 60 [arg-buf hx, arg-buf ho, arg-int 6, arg-int 10, arg-int 60] ho 60
+    in let bad = run "kernel_transpose" 60 [arg-buf hx, arg-buf hs, arg-int 10, arg-int 6, arg-int 60] hs 60
+    in grade "transpose" good bad (ref-transpose x 6 10 0 [])
+
+  ref-split : List Real, Integer, Integer, Integer, Integer, Integer, List Real -> List Real
+  ref-split (x) (s) (heads) (d) (t) (i) (acc) =
+    if i >= s * heads * d then acc
+    else let h = i / (s * d)
+    in let r = i - h * s * d
+    in let row = if t == 1 then r - r / s * s else r / d
+    in let col = if t == 1 then r / s else r - r / d * d
+    in ref-split x s heads d t (i + 1) (list-push acc (list-at x (row * heads * d + h * d + col)))
+
+  ref-merge : List Real, Integer, Integer, Integer, Integer, List Real -> List Real
+  ref-merge (x) (s) (heads) (d) (i) (acc) =
+    if i >= s * heads * d then acc
+    else let row = i / (heads * d)
+    in let h = (i - row * heads * d) / d
+    in ref-merge x s heads d (i + 1) (list-push acc (list-at x ((h * s + row) * d + i - row * heads * d - h * d)))
+
+  arm-split : Integer -> Text
+  arm-split (t) =
+    let x = make 60 89
+    in let hx = upload x
+    in let ho = fresh 60
+    in let hs = fresh 60
+    in let good = run "kernel_split_heads" 60 [arg-buf hx, arg-buf ho, arg-int 5, arg-int 3, arg-int 4, arg-int t, arg-int 60] ho 60
+    in let bad = run "kernel_split_heads" 60 [arg-buf hx, arg-buf hs, arg-int 6, arg-int 2, arg-int 5, arg-int t, arg-int 60] hs 60
+    in grade (if t == 1 then "split heads, transposed" else "split heads") good bad (ref-split x 5 3 4 t 0 [])
+
+  arm-merge : Integer -> Text
+  arm-merge (z) =
+    let x = make 60 97
+    in let hx = upload x
+    in let ho = fresh 60
+    in let hs = fresh 60
+    in let good = run "kernel_merge_heads" 60 [arg-buf hx, arg-buf ho, arg-int 5, arg-int 3, arg-int 4, arg-int 60] ho 60
+    in let bad = run "kernel_merge_heads" 60 [arg-buf hx, arg-buf hs, arg-int 5, arg-int 4, arg-int 3, arg-int 60] hs 60
+    in grade "merge heads" good bad (ref-merge x 5 3 4 0 [])
+
+  norm-apply : Text, Integer, Integer, Integer, Real, List GpuParam, Integer, Integer -> List Real
+  norm-apply (name) (hx) (len) (rows) (eps) (tail) (ho) (n) =
+    let hst = fresh (rows * 2)
+    in if launch "kernel_row_stats" rows [arg-buf hx, arg-buf hst, arg-int len, arg-real eps, arg-int rows] < 0 then []
+    else run name n ([arg-buf hx, arg-buf hst] & tail) ho n
+
+  arm-layer-norm : Integer -> Text
+  arm-layer-norm (z) =
+    let x = make 512 3
+    in let g = make 64 7
+    in let b = make 64 13
+    in let hx = upload x
+    in let hg = upload g
+    in let hb = upload b
+    in let ho = fresh 512
+    in let hs = fresh 512
+    in let good = norm-apply "kernel_layer_norm" hx 64 8 0.00001 [arg-buf hg, arg-buf hb, arg-buf ho, arg-int 64, arg-int 512] ho 512
+    in let bad = norm-apply "kernel_layer_norm" hx 64 8 1.0 [arg-buf hg, arg-buf hb, arg-buf hs, arg-int 64, arg-int 512] hs 512
+    in grade "layer-norm" good bad (ref-layer-norm x g b 64 0.00001 0 [])
+
+  arm-group-norm : Integer -> Text
+  arm-group-norm (z) =
+    let x = make 192 19
+    in let g = make 8 23
+    in let b = make 8 31
+    in let hx = upload x
+    in let hg = upload g
+    in let hb = upload b
+    in let ho = fresh 192
+    in let hs = fresh 192
+    in let good = norm-apply "kernel_group_norm" hx 24 8 0.00001 [arg-buf hg, arg-buf hb, arg-buf ho, arg-int 8, arg-int 12, arg-int 4, arg-int 192] ho 192
+    in let bad = norm-apply "kernel_group_norm" hx 24 8 0.00001 [arg-buf hg, arg-buf hb, arg-buf hs, arg-int 8, arg-int 12, arg-int 2, arg-int 192] hs 192
+    in grade "group-norm" good bad (ref-group-norm x g b 8 12 4 0.00001 0 [])
+
+  launch-rows : Text, Integer, List GpuParam -> Integer
+  launch-rows (name) (rows) (ps) =
+    gpu-launch layer-kernels-ptx name (GpuGrid { gx = rows, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) ps
+
+  norm-apply-wide : Text, Integer, Integer, Integer, Real, List GpuParam, Integer, Integer -> List Real
+  norm-apply-wide (name) (hx) (len) (rows) (eps) (tail) (ho) (n) =
+    let hst = fresh (rows * 2)
+    in let hp = fresh (rows * 128)
+    in if launch-rows "kernel_row_stats_wide" rows [arg-buf hx, arg-buf hst, arg-buf hp, arg-int len, arg-real eps, arg-int rows] < 0 then []
+    else run name n ([arg-buf hx, arg-buf hst] & tail) ho n
+
+  arm-norms-wide : Integer -> List Text
+  arm-norms-wide (z) =
+    let x = make 512 3
+    in let g = make 64 7
+    in let b = make 64 13
+    in let hx = upload x
+    in let hg = upload g
+    in let hb = upload b
+    in let lo = fresh 512
+    in let ls = fresh 512
+    in let lgood = norm-apply-wide "kernel_layer_norm" hx 64 8 0.00001 [arg-buf hg, arg-buf hb, arg-buf lo, arg-int 64, arg-int 512] lo 512
+    in let lbad = norm-apply-wide "kernel_layer_norm" hx 64 8 1.0 [arg-buf hg, arg-buf hb, arg-buf ls, arg-int 64, arg-int 512] ls 512
+    in let x3 = make 900 5
+    in let g3 = make 300 11
+    in let b3 = make 300 17
+    in let hx3 = upload x3
+    in let hg3 = upload g3
+    in let hb3 = upload b3
+    in let wo = fresh 900
+    in let ws = fresh 900
+    in let wgood = norm-apply-wide "kernel_layer_norm" hx3 300 3 0.00001 [arg-buf hg3, arg-buf hb3, arg-buf wo, arg-int 300, arg-int 900] wo 900
+    in let wbad = norm-apply-wide "kernel_layer_norm" hx3 300 3 1.0 [arg-buf hg3, arg-buf hb3, arg-buf ws, arg-int 300, arg-int 900] ws 900
+    in let xg = make 192 19
+    in let gg = make 8 23
+    in let bg = make 8 31
+    in let hxg = upload xg
+    in let hgg = upload gg
+    in let hbg = upload bg
+    in let go = fresh 192
+    in let gs = fresh 192
+    in let ggood = norm-apply-wide "kernel_group_norm" hxg 24 8 0.00001 [arg-buf hgg, arg-buf hbg, arg-buf go, arg-int 8, arg-int 12, arg-int 4, arg-int 192] go 192
+    in let gbad = norm-apply-wide "kernel_group_norm" hxg 24 8 0.00001 [arg-buf hgg, arg-buf hbg, arg-buf gs, arg-int 8, arg-int 12, arg-int 2, arg-int 192] gs 192
+    in let l1 = grade "layer-norm, a block per row" lgood lbad (ref-layer-norm x g b 64 0.00001 0 [])
+    in let l2 = grade "layer-norm, a block per row, 300 wide" wgood wbad (ref-layer-norm x3 g3 b3 300 0.00001 0 [])
+    in [l1, l2, grade "group-norm, a block per row" ggood gbad (ref-group-norm xg gg bg 8 12 4 0.00001 0 [])]
+
+  softmax-wide : List Real, Integer, Integer, Integer -> List Real
+  softmax-wide (s) (cols) (rows) (n) =
+    let h = upload s
+    in let hp = fresh (rows * 128)
+    in if launch-rows "kernel_softmax_rows_wide" rows [arg-buf h, arg-buf hp, arg-int cols, arg-int rows] < 0 then []
+    else download h n
+
+  pow2 : Integer -> Real
+  pow2 (k) = if k == 0 then 1.0 else if k > 0 then 2.0 * pow2 (k - 1) else 0.5 * pow2 (k + 1)
+
+  f16-real : Integer -> Real
+  f16-real (h) =
+    let e = bit-and (bit-shru h 10) 31
+    in let m = bit-and h 1023
+    in let v = if e == 0 then real-from-int m * pow2 (0 - 24) else real-from-int (1024 + m) * pow2 (e - 25)
+    in if bit-and (bit-shru h 15) 1 == 1 then 0.0 - v else v
+
+  take-halves : Integer, Integer, List Real -> List Real
+  take-halves (i) (n) (acc) =
+    if i >= n then acc
+    else let w = bit-and (peek-32 scratch (i / 2 * 4)) #FFFFFFFF
+    in take-halves (i + 1) n (list-push acc (f16-real (if i - i / 2 * 2 == 0 then bit-and w #FFFF else bit-shru w 16)))
+
+  download16 : Integer, Integer -> List Real
+  download16 (h) (n) =
+    if gpu-buf-read h 0 (n * 2) scratch then take-halves 0 n []
+    else []
+
+ f16 holds 11 significant bits, a relative step of 4.9e-4.
+
+  within16 : Real, Real -> Boolean
+  within16 (got) (want) =
+    let d = if got > want then got - want else want - got
+    in let m = if want < 0.0 then 0.0 - want else want
+    in d <= 0.001 * (1.0 + m)
+
+  count-within16 : List Real, List Real, Integer, Integer -> Integer
+  count-within16 (got) (want) (i) (acc) =
+    if i >= list-length want then acc
+    else if i >= list-length got then acc
+    else count-within16 got want (i + 1) (if within16 (list-at got i) (list-at want i) then acc + 1 else acc)
+
+  grade16 : Text, List Real, List Real, List Real -> Text
+  grade16 (name) (got) (sabotaged) (want) =
+    let n = list-length want
+    in let good = count-within16 got want 0 0
+    in let bad = count-within16 sabotaged want 0 0
+    in name & ": " & show good & "/" & show n & (if list-length sabotaged == 0 then ", SABOTAGE REFUSED" else if bad < n then ", sabotage caught" else ", SABOTAGE MISSED")
+
+  softmax-wide-f16 : List Real, Integer, Integer, Integer -> List Real
+  softmax-wide-f16 (s) (cols) (rows) (n) =
+    let h = upload s
+    in let hp = fresh (rows * 128)
+    in let p = fresh n
+    in if launch-rows "kernel_softmax_rows_wide_f16" rows [arg-buf h, arg-buf p, arg-buf hp, arg-int cols, arg-int rows] < 0 then []
+    else download16 p n
+
+  split-f16 : Integer, Integer, Integer, Integer, Integer -> List Real
+  split-f16 (hx) (s) (heads) (d) (t) =
+    let ho = fresh 60
+    in if launch "kernel_split_heads_f16" 60 [arg-buf hx, arg-buf ho, arg-int s, arg-int heads, arg-int d, arg-int t, arg-int 60] < 0 then []
+    else download16 ho 60
+
+  arm-f16 : Integer -> List Text
+  arm-f16 (z) =
+    let q = make 40 41
+    in let k = make 56 43
+    in let sc = ref-scores q k 2 5 7 4 0.5 0 []
+    in let s3 = make 900 29
+    in let x = make 60 89
+    in let hx = upload x
+    in let a = grade16 "softmax to f16, a block per row" (softmax-wide-f16 sc 7 10 70) (softmax-wide-f16 sc 6 10 70) (ref-softmax sc 7 0 [])
+    in let b = grade16 "softmax to f16, a block per row, 300 wide" (softmax-wide-f16 s3 300 3 900) (softmax-wide-f16 s3 299 3 900) (ref-softmax s3 300 0 [])
+    in let c = grade16 "split heads to f16" (split-f16 hx 5 3 4 0) (split-f16 hx 6 2 5 0) (ref-split x 5 3 4 0 0 [])
+    in [a, b, c, grade16 "split heads to f16, transposed" (split-f16 hx 5 3 4 1) (split-f16 hx 6 2 5 1) (ref-split x 5 3 4 1 0 [])]
+
+  arm-softmax-wide : Integer -> List Text
+  arm-softmax-wide (z) =
+    let q = make 40 41
+    in let k = make 56 43
+    in let sc = ref-scores q k 2 5 7 4 0.5 0 []
+    in let s3 = make 900 29
+    in let s1 = grade "softmax, a block per row" (softmax-wide sc 7 10 70) (softmax-wide sc 6 10 70) (ref-softmax sc 7 0 [])
+    in [s1, grade "softmax, a block per row, 300 wide" (softmax-wide s3 300 3 900) (softmax-wide s3 299 3 900) (ref-softmax s3 300 0 [])]
+
+  attend : Integer, Integer, Integer, Real, Integer -> List Real
+  attend (hq) (hk) (hv) (scale) (ho) =
+    let hsc = fresh 70
+    in if launch "kernel_attn_scores" 70 [arg-buf hq, arg-buf hk, arg-buf hsc, arg-int 2, arg-int 5, arg-int 7, arg-int 4, arg-real scale, arg-int 70] < 0 then []
+    else if launch "kernel_softmax_rows" 10 [arg-buf hsc, arg-int 7, arg-int 10] < 0 then []
+    else run "kernel_attn_values" 40 [arg-buf hsc, arg-buf hv, arg-buf ho, arg-int 2, arg-int 5, arg-int 7, arg-int 4, arg-int 40] ho 40
+
+  probs : Integer, Integer, Real -> List Real
+  probs (hq) (hk) (scale) =
+    let hsc = fresh 70
+    in if launch "kernel_attn_scores" 70 [arg-buf hq, arg-buf hk, arg-buf hsc, arg-int 2, arg-int 5, arg-int 7, arg-int 4, arg-real scale, arg-int 70] < 0 then []
+    else run "kernel_softmax_rows" 10 [arg-buf hsc, arg-int 7, arg-int 10] hsc 70
+
+  arm-attention : Integer -> List Text
+  arm-attention (z) =
+    let q = make 40 41
+    in let k = make 56 43
+    in let v = make 56 47
+    in let hq = upload q
+    in let hk = upload k
+    in let hv = upload v
+    in let p = ref-softmax (ref-scores q k 2 5 7 4 0.5 0 []) 7 0 []
+    in let sm = grade "softmax" (probs hq hk 0.5) (probs hq hk 1.0) p
+    in let at = grade "attention" (attend hq hk hv 0.5 (fresh 40)) (attend hq hk hv 1.0 (fresh 40)) (ref-values p v 2 5 7 4 0 [])
+    in [sm, at]
+
+  causal-softmax : Integer, Boolean -> Integer
+  causal-softmax (hsc) (causal) =
+    if causal then launch "kernel_softmax_causal" 12 [arg-buf hsc, arg-int 6, arg-int 6, arg-int 12]
+    else launch "kernel_softmax_rows" 12 [arg-buf hsc, arg-int 6, arg-int 12]
+
+  causal-scores : Integer, Integer -> Integer
+  causal-scores (hq) (hk) =
+    let hsc = fresh 72
+    in if launch "kernel_attn_scores" 72 [arg-buf hq, arg-buf hk, arg-buf hsc, arg-int 2, arg-int 6, arg-int 6, arg-int 4, arg-real 0.5, arg-int 72] < 0 then 0
+    else hsc
+
+  causal-probs : Integer, Integer, Boolean -> List Real
+  causal-probs (hq) (hk) (causal) =
+    let hsc = causal-scores hq hk
+    in if hsc == 0 then []
+    else if causal-softmax hsc causal < 0 then []
+    else download hsc 72
+
+  causal-attend : Integer, Integer, Integer, Boolean -> List Real
+  causal-attend (hq) (hk) (hv) (causal) =
+    let hsc = causal-scores hq hk
+    in let ho = fresh 48
+    in if hsc == 0 then []
+    else if causal-softmax hsc causal < 0 then []
+    else run "kernel_attn_values" 48 [arg-buf hsc, arg-buf hv, arg-buf ho, arg-int 2, arg-int 6, arg-int 6, arg-int 4, arg-int 48] ho 48
+
+  arm-causal : Integer -> List Text
+  arm-causal (z) =
+    let q = make 48 67
+    in let k = make 48 71
+    in let v = make 48 73
+    in let hq = upload q
+    in let hk = upload k
+    in let hv = upload v
+    in let p = ref-softmax-causal (ref-scores q k 2 6 6 4 0.5 0 []) 6 6 0 []
+    in let sm = grade "causal softmax" (causal-probs hq hk True) (causal-probs hq hk False) p
+    in let at = grade "causal attention" (causal-attend hq hk hv True) (causal-attend hq hk hv False) (ref-values p v 2 6 6 4 0 [])
+    in [sm, at]
+
+  arm-concat : Integer -> Text
+  arm-concat (z) =
+    let a = make 36 53
+    in let b = make 24 59
+    in let ha = upload a
+    in let hb = upload b
+    in let ho = fresh 60
+    in let hs = fresh 60
+    in let good = run "kernel_concat" 60 [arg-buf ha, arg-buf hb, arg-buf ho, arg-int 3, arg-int 2, arg-int 6, arg-int 60] ho 60
+    in let bad = run "kernel_concat" 60 [arg-buf ha, arg-buf hb, arg-buf hs, arg-int 2, arg-int 3, arg-int 6, arg-int 60] hs 60
+    in grade "concat" good bad (ref-concat a b 3 2 6 0 60 [])
+
+  arm-upsample : Integer -> Text
+  arm-upsample (z) =
+    let x = make 60 61
+    in let hx = upload x
+    in let ho = fresh 240
+    in let hs = fresh 240
+    in let good = run "kernel_upsample_nearest" 240 [arg-buf hx, arg-buf ho, arg-int 4, arg-int 5, arg-int 240] ho 240
+    in let bad = run "kernel_upsample_nearest" 240 [arg-buf hx, arg-buf hs, arg-int 5, arg-int 4, arg-int 240] hs 240
+    in grade "upsample" good bad (ref-upsample x 4 5 0 240 [])
+
+ ln 10000 and ln 1000.
+
+  arm-timestep : Integer -> Text
+  arm-timestep (z) =
+    let t = [0.0, 1.0, 999.0]
+    in let ht = upload t
+    in let ho = fresh 960
+    in let hs = fresh 960
+    in let good = run "kernel_timestep_embedding" 960 [arg-buf ht, arg-buf ho, arg-int 320, arg-real 9.210340371976184, arg-int 960] ho 960
+    in let bad = run "kernel_timestep_embedding" 960 [arg-buf ht, arg-buf hs, arg-int 320, arg-real 6.907755278982137, arg-int 960] hs 960
+    in grade "timestep" good bad (ref-timestep t 320 9.210340371976184 0 960 [])
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let head = [arm-add 0, arm-add-channel 0, arm-silu 0, arm-gelu 0, arm-quick-gelu 0, arm-layer-norm 0, arm-group-norm 0]
+    in let mid = arm-attention 0
+    in let causal = arm-causal 0
+    in head & mid & causal & arm-norms-wide 0 & arm-softmax-wide 0 & arm-f16 0 & [arm-concat 0, arm-upsample 0, arm-timestep 0, arm-geglu 0, arm-transpose 0, arm-split 0, arm-split 1, arm-merge 0]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

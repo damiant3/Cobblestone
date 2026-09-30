@@ -1,0 +1,107 @@
+Chapter: DeskSceneStepCost
+  cites Works chapter GopScene
+  cites Works chapter GopInput
+  cites Works chapter GopFont
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopXhci
+  cites Works chapter GopAhci
+  cites Engine chapter Renderer3D
+  cites Kernel chapter BitmapFont
+  cites Kernel chapter Hpet
+  cites Foreword chapter Console
+
+  StepCost = record {
+    co-pane : ScenePane,
+    co-fb : Integer,
+    co-cs : Integer,
+    co-font : GopAppFont,
+    co-kbd : UsbKbd,
+    co-mouse : UsbMouse,
+    co-q : Integer
+  }
+
+  co-frames : StepCost, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  co-frames (c) (goal) (steps) =
+    if (c.co-pane).sp-n >= goal then act steps end
+    else if steps >= goal * 2048 then act 0 - 1 end
+    else let mark = __heap-save
+    in act
+      step <- gsc-step (c.co-fb) 640 480 640 (c.co-font) (c.co-kbd) (c.co-mouse) (c.co-cs) gsc-scene (c.co-pane) 0 0 (c.co-q)
+      let restore = __heap-restore mark
+      in co-frames c goal (steps + 1)
+    end
+
+  co-hash : Integer, Integer, Integer -> Integer
+  co-hash (p) (i) (hash) =
+    if i >= 640 * 480 then hash
+    else let next = bit-and (hash * 31 + peek-32 p (i * 4)) 2147483647
+    in co-hash p (i + 1) next
+
+  co-painted : Integer, Integer, Integer, Integer -> Integer
+  co-painted (p) (sky) (i) (count) =
+    if i >= 640 * 480 then count
+    else let n = if peek-32 p (i * 4) /= sky then count + 1 else count
+    in co-painted p sky (i + 1) n
+
+  co-visible : Integer, Integer, Integer -> Boolean
+  co-visible (source) (dest) (i) =
+    if i >= 640 * (480 - gsc-label-band) then True
+    else if peek-32 source (i * 4) /= peek-32 dest (i * 4) then False
+    else co-visible source dest (i + 1)
+
+  opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing =
+    let fb = alloc-bytes (640 * 480 * 4)
+    in let cs = alloc-zeroed 2048 64
+    in let q = di-new 0
+    in let pos = alloc-zeroed 64 64
+    in let mouse = UsbMouse {
+      um-ok = False,
+      um-host = xhci-no-host,
+      um-dev = xhci-no-dev,
+      um-dci = 0,
+      um-ring = 0,
+      um-report = 0,
+      um-state = pos,
+      um-pos = pos,
+      um-peers = []
+    }
+    in act
+      sp <- gsc-new fb 640 cs 0 gsc-sky 640 480
+      let fixed = __record-set sp "sp-look" 1
+      in let c = StepCost {
+        co-pane = sp,
+        co-fb = fb,
+        co-cs = cs,
+        co-font = gapp-fallback cbf-init,
+        co-kbd = kbd-no-kbd,
+        co-mouse = mouse,
+        co-q = q
+      }
+      in act
+        warm <- co-frames c 1 0
+        if warm < 0 | sp.sp-n /= 1 then print-line-uni "cost-refused: warmup incomplete"
+        else let cleared = r3d-fill-32 fb 0 0 (640 * 480)
+        in let heap0 = __heap-save
+        in let start = hpet-ticks
+        in act
+          steps <- co-frames c 17 0
+          let elapsed = hpet-ticks - start
+          in let retained = __heap-save - heap0
+          in let hash = co-hash (sp.sp-px) 0 0
+          in let painted = co-painted (sp.sp-px) (sp.sp-sky) 0 0
+          in let visible = co-visible (sp.sp-px) fb 0
+          in if steps < 0 | sp.sp-n /= 17 then act
+            print-line-uni "cost-refused: timed frames incomplete"
+          end
+          else act
+            print-line-uni ("frames=" & show (sp.sp-n - 1) & " steps=" & show steps)
+            print-line-uni ("ticks=" & show elapsed & " rate=" & show hpet-ticks-per-second)
+            print-line-uni ("retained=" & show retained & " pixels=" & show hash & " painted=" & show painted)
+            print-line-uni ("presented=" & if visible then "yes" else "NO")
+          end
+        end
+      end
+    end
+
+Page 1

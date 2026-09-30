@@ -202,6 +202,40 @@ ok('control: dropping in different columns gives different boards',
      seen.size > 1, `chose ${[...seen].sort((a, b) => a - b).join(',')}`);
 }
 
+// -- THE RULES: the two diagonals, and a full board with no four ------------
+{
+  const play = cols => cols.reduce((h, c) => e.c4_drop(h, c), e.c4_new());
+  const rising = [0, 1, 1, 2, 2, 3, 2, 3, 3, 6, 3];
+  const before = play(rising.slice(0, -1)), up = play(rising);
+  ok('rules: four on the rising diagonal wins, and not a move sooner',
+     e.c4_done(before) === 0 && e.c4_done(up) === 1 && e.c4_winner(up) === 1,
+     `before ${e.c4_done(before)} after ${e.c4_done(up)} winner ${e.c4_winner(up)}`);
+  const down = play(rising.map(c => 6 - c));
+  ok('rules: four on the falling diagonal wins', e.c4_done(down) === 1 && e.c4_winner(down) === 1);
+  // A full board with no four: play on, never completing a four, until the
+  // board fills. The search must find one or the arm has tested nothing.
+  let drawn = null, s = 11;
+  const rnd = n => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s >>> 16) % n; };
+  for (let attempt = 0; attempt < 400 && drawn === null; attempt++) {
+    let h = e.c4_new(), placed = 0;
+    while (placed < 42) {
+      const safe = [...Array(7).keys()].filter(c => e.c4_can(h, c) === 1 && e.c4_done(e.c4_drop(h, c)) === 0);
+      if (!safe.length) break;
+      h = e.c4_drop(h, safe[rnd(safe.length)]); placed++;
+      if (placed === 41) {
+        const last = [...Array(7).keys()].find(c => e.c4_can(h, c) === 1);
+        const full = e.c4_drop(h, last);
+        if (e.c4_winner(full) === 0) drawn = full;
+        break;
+      }
+    }
+  }
+  ok('rules: a full board with no four is a draw, and the game is over',
+     drawn !== null && e.c4_done(drawn) === 1 && e.c4_winner(drawn) === 0 &&
+     [...Array(7).keys()].every(c => e.c4_can(drawn, c) === 0),
+     drawn === null ? 'the search found no drawn board' : `done ${e.c4_done(drawn)} winner ${e.c4_winner(drawn)}`);
+}
+
 console.log(fail === 0
   ? `\nPASS: the Connect Four module holds its rules and its tactics (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

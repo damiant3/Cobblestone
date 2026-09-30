@@ -1,0 +1,91 @@
+Chapter: DiffusionResizeMode
+  cites Diffusion chapter ResizeMode
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/resize-mode-oracle.py's: Forge's own
+ images.resize_image over the 256 x 192 picture built below, in its case
+ order, then an L picture's (an inpaint mask's path); every byte must match.
+ The sabotages paste mode 1 at the corner and resize L mode 3 as mode 0.
+
+ We say:
+
+Section: Picture
+
+  pic-w : Integer = 256
+
+  pic-h : Integer = 192
+
+  put-px : Integer, Integer, Integer -> Integer
+  put-px (a) (i) (z) =
+    if i >= pic-w * pic-h then a
+    else let y = i / pic-w
+    in let x = i - y * pic-w
+    in let r = poke-byte a (i * 3) (int-mod (3 * x + y) 256)
+    in let g = poke-byte a (i * 3 + 1) (int-mod (x * y / 7) 256)
+    in put-px a (i + 1) (poke-byte a (i * 3 + 2) (int-mod (5 * bit-xor x y) 256))
+
+Section: Grading
+
+  theirs : Integer = #BD900000
+
+  diff : Integer, Integer, Integer, Integer -> Integer
+  diff (a) (n) (i) (acc) =
+    if i >= n then acc
+    else diff a n (i + 1) (acc + (if peek-byte a i == peek-byte theirs i then 0 else 1))
+
+  arm : Integer, Integer, Integer, Integer, Integer, Integer, Text -> Text
+  arm (h) (pic) (at) (mode) (ow) (oh) (what) =
+    let n = ow * oh * 3
+    in let up = gpu-buf-upload h 0 "resize-mode.bin" at n gpu-dt-u8 gpu-dt-u8
+    in if gpu-buf-read h 0 n theirs == False then what & ": the fixture could not be read"
+    else let got = resize-mode mode pic pic-w pic-h ow oh
+    in if got == 0 then what & ": not built"
+    else let d = diff got n 0 0
+    in what & (if d == 0 then ": all " & show n & " bytes equal" else ": " & show d & " of " & show n & " bytes differ")
+
+  put-l : Integer, Integer, Integer -> Integer
+  put-l (a) (i) (z) =
+    if i >= pic-w * pic-h then a
+    else let y = i / pic-w
+    in let x = i - y * pic-w
+    in put-l a (i + 1) (poke-byte a i (int-mod (3 * x + x * y / 7) 256))
+
+  arm-l : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Text
+  arm-l (h) (gray) (at) (mode) (as) (ow) (oh) (what) =
+    let n = ow * oh
+    in let up = gpu-buf-upload h 0 "resize-mode.bin" at n gpu-dt-u8 gpu-dt-u8
+    in if gpu-buf-read h 0 n theirs == False then what & ": the fixture could not be read"
+    else let got = resize-mode-l as gray pic-w pic-h ow oh
+    in if got == 0 then what & ": not built"
+    else let d = diff got n 0 0
+    in what & (if d == 0 then ": all " & show n & " bytes equal" else ": " & show d & " of " & show n & " bytes differ")
+
+  sabotage : Integer, Integer -> Text
+  sabotage (h) (pic) =
+    let n = 192 * 256 * 3
+    in let up = gpu-buf-upload h 0 "resize-mode.bin" (320 * 256 * 3) n gpu-dt-u8 gpu-dt-u8
+    in let ok = gpu-buf-read h 0 n theirs
+    in let d = diff (rm-paste (alloc-bytes (n + 8)) 192 256 (resize-lanczos pic pic-w pic-h 341 256) 341 256 0 0 0) n 0 0
+    in "sabotage, mode 1 pasted at the corner: " & show d & " of " & show n & " bytes differ"
+
+  opening : [Console] Nothing
+  opening = act
+    let h = gpu-buf-alloc (320 * 256 * 3)
+    in let pic = put-px (alloc-bytes (pic-w * pic-h * 3 + 8)) 0 0
+    in let gray = put-l (alloc-bytes (pic-w * pic-h + 8)) 0 0
+    in act
+      print-line-uni (arm h pic 0 0 320 256 "mode 0 to 320x256")
+      print-line-uni (arm h pic (320 * 256 * 3) 1 192 256 "mode 1 to 192x256")
+      print-line-uni (arm h pic (320 * 256 * 3 + 192 * 256 * 3) 1 320 128 "mode 1 to 320x128")
+      print-line-uni (arm h pic (320 * 256 * 3 + 192 * 256 * 3 + 320 * 128 * 3) 2 320 192 "mode 2 to 320x192, margins left and right")
+      print-line-uni (arm h pic (320 * 256 * 3 + 192 * 256 * 3 + 320 * 128 * 3 + 320 * 192 * 3) 2 192 256 "mode 2 to 192x256, margins top and bottom")
+      print-line-uni (sabotage h pic)
+      print-line-uni (arm-l h gray 847872 0 0 320 256 "L mode 0 to 320x256")
+      print-line-uni (arm-l h gray 929792 1 1 192 256 "L mode 1 to 192x256")
+      print-line-uni (arm-l h gray 978944 2 2 320 192 "L mode 2 to 320x192")
+      print-line-uni (arm-l h gray 1040384 2 2 192 256 "L mode 2 to 192x256")
+      print-line-uni (arm-l h gray 1089536 3 3 320 192 "L mode 3 to 320x192, the fill branch")
+      print-line-uni (arm-l h gray 1089536 3 0 320 192 "sabotage, L mode 3 resized as mode 0")
+    end
+  end

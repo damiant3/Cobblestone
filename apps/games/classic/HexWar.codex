@@ -8,6 +8,54 @@ Chapter: HexWar
 
  We say:
 
+Section: The Rules
+
+ The conventions of the Avalon Hill hex-and-counter wargame (the basic game
+ of Afrika Korps and its successors), with this game's own tables: the
+ terrain costs and defense shifts, the unit factors and the combat results
+ below.
+
+ Rule 1. Two sides alternate turns; the first side moves first. A turn is
+ movement, then at most one attack, then the turn passes.
+
+ Rule 2. A unit moves one hex at a time to an adjacent hex on the map,
+ paying that hex's terrain cost from its movement allowance, and never
+ enters a hex whose cost it cannot pay, impassable terrain, or a hex held by
+ an enemy unit. At most the stacking limit of friendly units share a hex.
+
+ Rule 3. The six hexes around an enemy unit are its zone of control.
+ Entering a hex in an enemy zone of control costs two movement points more.
+
+ Rule 4. An attack names an enemy hex next to at least one friendly unit.
+ Every friendly unit next to that hex attacks with its attack factor, and
+ every friendly artillery unit two or more hexes away and within its range
+ adds its strength. Every unit in the defending hex defends together with
+ the sum of its defense factors.
+
+ Rule 5. The odds are attack to defense rounded in the defender's favour:
+ 1:3 (or worse), 1:2, 1:1, 2:1, 3:1, 4:1, 5:1 (or better). The defending
+ hex's terrain shifts the column that many places toward 1:3. One die is
+ read against that column.
+
+ Rule 6. AE: every attacking unit is eliminated. AR: every attacking unit
+ retreats one hex. DR: every defending unit retreats one hex. DE: every
+ defending unit is eliminated. EX: every defending unit is eliminated, and
+ the attacker loses attacking units, the weakest attack factor first, until
+ the attack factors lost equal or exceed the defense lost.
+
+ Rule 7. A retreat is one hex, to an adjacent hex the unit could enter, on
+ the map, holding no enemy unit, outside every enemy zone of control, and
+ under the stacking limit. A unit with no such hex is eliminated instead.
+
+ Rule 8. A unit is in supply when a path of hexes reaches its side's map
+ edge through hexes free of enemy zones of control or held by friendly
+ units. A unit that begins its side's turn out of supply loses one strength
+ point, and a unit at no strength is eliminated.
+
+ Rule 9. The game ends when a side has no unit left, the other side
+ winning, or at the turn limit, when the side holding more victory-point
+ hexes wins, and equal holdings are a draw.
+
 Section: Hex Grid
 
   HexCoord = record {
@@ -207,9 +255,9 @@ Section: Unit System
 
 Section: Combat Resolution
 
- CRT encoded as flat list. Odds columns: 0=1:3, 1=1:2, 2=1:1,
- 3=2:1, 4=3:1, 5=4:1, 6=5:1+. Die rows 1-6, 6 columns each.
- Results: 0=AE, 1=AR, 2=EX, 3=DR, 4=DE.
+ CRT encoded as flat list, one line per odds column: 0=1:3, 1=1:2,
+ 2=1:1, 3=2:1, 4=3:1, 5=4:1, 6=5:1+, each line the results for die
+ 1 to 6. Results: 0=AE, 1=AR, 2=EX, 3=DR, 4=DE.
 
   crt-table : List Integer
   crt-table =
@@ -227,26 +275,25 @@ Section: Combat Resolution
        2) 3) 3) 4) 4) 4
 
   crt-lookup : Integer, Integer -> Integer
-  crt-lookup (die) (col) =
-    let row = die - 1
-    in list-at crt-table (row * 6 + col)
+  crt-lookup (die) (col) = list-at crt-table (col * 6 + die - 1)
 
   calc-odds-col : Integer, Integer -> Integer
   calc-odds-col (atk) (def) =
-    if def <= 0 then 5
+    if def <= 0 then 6
     else let ratio = atk / def
-    in if ratio == 0 then
-         if atk * 2 <= def then 0 else 1
-       else if ratio >= 4 then 5
-       else if ratio >= 3 then 4
-       else if ratio >= 2 then 3
-       else 2
+    in if ratio >= 5 then 6
+    else if ratio >= 4 then 5
+    else if ratio >= 3 then 4
+    else if ratio >= 2 then 3
+    else if ratio >= 1 then 2
+    else if atk * 2 >= def then 1
+    else 0
 
   apply-column-shifts : Integer, Integer -> Integer
   apply-column-shifts (col) (shifts) =
     let shifted = col + shifts
     in if shifted < 0 then 0
-    else if shifted > 5 then 5
+    else if shifted > 6 then 6
     else shifted
 
   combat-result : Integer, Integer, Integer, Integer -> Integer
@@ -1161,7 +1208,7 @@ Section: Game Runner
     in let r2 = rng-next r
     in let target = ai-find-target units2 active-player terrain-data width
     in if target < 0 then units2
-    else hw-resolve-attack units2 terrain-data target active-player width r2
+    else hw-resolve-attack units2 terrain-data target active-player width height stack-limit r2
 
   ai-count-attack-strength : List Unit, Integer, Integer, Integer -> Integer
   ai-count-attack-strength (units) (owner) (tq) (tr) =
@@ -1174,73 +1221,87 @@ Section: Game Runner
     in if u.owner /= owner then ai-atk-str-loop units owner tq tr (i + 1) acc
     else if u.eliminated then ai-atk-str-loop units owner tq tr (i + 1) acc
     else let dist = hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = tq, r = tr })
-    in let adj = if dist <= 1 & u.type-id /= 2 then u.attack else 0
+    in let adj = if dist <= 1 then u.attack else 0
     in ai-atk-str-loop units owner tq tr (i + 1) (acc + adj)
 
-  apply-combat-result : List Unit, Integer, Integer, Integer, Rng -> List Unit
-  apply-combat-result (units) (def-idx) (result) (atk-owner) (r) =
-    if result == 0 then eliminate-attackers units atk-owner def-idx
-    else if result == 1 then retreat-attackers units atk-owner def-idx r
-    else if result == 2 then
-      let u2 = eliminate-one units def-idx
-      in eliminate-attackers u2 atk-owner def-idx
-    else if result == 3 then retreat-defender units def-idx r
-    else eliminate-defender units def-idx
+  hw-hex-defense : List Unit, Integer, Integer, Integer, Integer, Integer -> Integer
+  hw-hex-defense (units) (atk-owner) (q) (r) (i) (acc) =
+    if i >= list-length units then acc
+    else let u = list-at units i
+    in let d = if u.eliminated == False & u.owner /= atk-owner & u.q == q & u.r == r then u.defense else 0
+    in hw-hex-defense units atk-owner q r (i + 1) (acc + d)
 
-  eliminate-defender : List Unit, Integer -> List Unit
-  eliminate-defender (units) (def-idx) =
-    let u = list-at units def-idx
-    in let u2 = __record-set u "eliminated" True
-    in list-set-at units def-idx u2
+  hw-is-defender : Unit, Integer, Integer, Integer -> Boolean
+  hw-is-defender (u) (atk-owner) (q) (r) =
+    u.eliminated == False & u.owner /= atk-owner & u.q == q & u.r == r
 
-  eliminate-one : List Unit, Integer -> List Unit
-  eliminate-one (units) (def-idx) =
-    eliminate-defender units def-idx
+  hw-is-attacker : Unit, Integer, Integer, Integer -> Boolean
+  hw-is-attacker (u) (atk-owner) (q) (r) =
+    if u.eliminated then False
+    else if u.owner /= atk-owner then False
+    else hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = q, r = r }) == 1
 
-  eliminate-attackers : List Unit, Integer, Integer -> List Unit
-  eliminate-attackers (units) (owner) (def-idx) =
-    elim-atk-loop units owner def-idx 0
+  apply-combat-result : List Unit, List TerrainHex, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Unit
+  apply-combat-result (units) (td) (width) (height) (stack) (q) (r) (result) (atk-owner) (def-total) =
+    if result == 0 then hw-eliminate-side units True atk-owner q r 0
+    else if result == 1 then hw-retreat-side units True atk-owner q r td width height stack 0
+    else if result == 2 then hw-exchange (hw-eliminate-side units False atk-owner q r 0) atk-owner q r def-total
+    else if result == 3 then hw-retreat-side units False atk-owner q r td width height stack 0
+    else hw-eliminate-side units False atk-owner q r 0
 
-  elim-atk-loop : List Unit, Integer, Integer, Integer -> List Unit
-  elim-atk-loop (units) (owner) (def-idx) (i) =
+  hw-in-side : Unit, Boolean, Integer, Integer, Integer -> Boolean
+  hw-in-side (u) (attackers) (atk-owner) (q) (r) =
+    if attackers then hw-is-attacker u atk-owner q r
+    else hw-is-defender u atk-owner q r
+
+  hw-eliminate-side : List Unit, Boolean, Integer, Integer, Integer, Integer -> List Unit
+  hw-eliminate-side (units) (attackers) (atk-owner) (q) (r) (i) =
     if i >= list-length units then units
     else let u = list-at units i
-    in if u.owner /= owner then elim-atk-loop units owner def-idx (i + 1)
-    else if u.eliminated then elim-atk-loop units owner def-idx (i + 1)
-    else let du = list-at units def-idx
-    in let dist = hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = du.q, r = du.r })
-    in if dist > 1 then elim-atk-loop units owner def-idx (i + 1)
-    else let u2 = __record-set u "eliminated" True
-    in elim-atk-loop (list-set-at units i u2) owner def-idx (i + 1)
+    in if hw-in-side u attackers atk-owner q r == False then hw-eliminate-side units attackers atk-owner q r (i + 1)
+    else hw-eliminate-side (list-set-at units i (__record-set u "eliminated" True)) attackers atk-owner q r (i + 1)
 
-  retreat-defender : List Unit, Integer, Rng -> List Unit
-  retreat-defender (units) (def-idx) (r) =
-    let u = list-at units def-idx
-    in let dir = rng-mod (rng-value r) 6
-    in let nq = hex-neighbor-q dir u.q
+  hw-weakest-attacker : List Unit, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  hw-weakest-attacker (units) (atk-owner) (q) (r) (i) (best) (best-atk) =
+    if i >= list-length units then best
+    else let u = list-at units i
+    in if hw-is-attacker u atk-owner q r == False then hw-weakest-attacker units atk-owner q r (i + 1) best best-atk
+    else if u.attack < best-atk then hw-weakest-attacker units atk-owner q r (i + 1) i u.attack
+    else hw-weakest-attacker units atk-owner q r (i + 1) best best-atk
+
+  hw-exchange : List Unit, Integer, Integer, Integer, Integer -> List Unit
+  hw-exchange (units) (atk-owner) (q) (r) (owed) =
+    if owed <= 0 then units
+    else let i = hw-weakest-attacker units atk-owner q r 0 (-1) 1000000
+    in if i < 0 then units
+    else let u = list-at units i
+    in hw-exchange (list-set-at units i (__record-set u "eliminated" True)) atk-owner q r (owed - u.attack)
+
+  hw-retreat-ok : Unit, Integer, Integer, List TerrainHex, List Unit, Integer, Integer, Integer -> Boolean
+  hw-retreat-ok (u) (q) (r) (td) (units) (width) (height) (stack) =
+    if hex-valid (HexCoord { q = q, r = r }) width height == False then False
+    else if can-enter-hex q r td width u.type-id == False then False
+    else if hw-enemy-at units u.owner q r 0 then False
+    else if in-enemy-zoc (HexCoord { q = q, r = r }) units u.owner then False
+    else hw-friendly-count units u.owner q r 0 0 < stack
+
+  hw-retreat-hex : Unit, List TerrainHex, List Unit, Integer, Integer, Integer, Integer -> Integer
+  hw-retreat-hex (u) (td) (units) (width) (height) (stack) (dir) =
+    if dir >= 6 then (-1)
+    else let nq = hex-neighbor-q dir u.q
     in let nr = hex-neighbor-r dir u.r
-    in let u2 = __record-set (__record-set u "q" nq) "r" nr
-    in list-set-at units def-idx u2
+    in if hw-retreat-ok u nq nr td units width height stack then nr * width + nq
+    else hw-retreat-hex u td units width height stack (dir + 1)
 
-  retreat-attackers : List Unit, Integer, Integer, Rng -> List Unit
-  retreat-attackers (units) (owner) (def-idx) (r) =
-    retreat-atk-loop units owner def-idx r 0
-
-  retreat-atk-loop : List Unit, Integer, Integer, Rng, Integer -> List Unit
-  retreat-atk-loop (units) (owner) (def-idx) (r) (i) =
+  hw-retreat-side : List Unit, Boolean, Integer, Integer, Integer, List TerrainHex, Integer, Integer, Integer, Integer -> List Unit
+  hw-retreat-side (units) (attackers) (atk-owner) (q) (r) (td) (width) (height) (stack) (i) =
     if i >= list-length units then units
     else let u = list-at units i
-    in if u.owner /= owner then retreat-atk-loop units owner def-idx r (i + 1)
-    else if u.eliminated then retreat-atk-loop units owner def-idx r (i + 1)
-    else let du = list-at units def-idx
-    in let dist = hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = du.q, r = du.r })
-    in if dist > 1 then retreat-atk-loop units owner def-idx r (i + 1)
-    else let dir = rng-mod (rng-value r) 6
-    in let opp = rng-mod (dir + 3) 6
-    in let nq = hex-neighbor-q opp u.q
-    in let nr = hex-neighbor-r opp u.r
-    in let u2 = __record-set (__record-set u "q" nq) "r" nr
-    in retreat-atk-loop (list-set-at units i u2) owner def-idx r (i + 1)
+    in if hw-in-side u attackers atk-owner q r == False then hw-retreat-side units attackers atk-owner q r td width height stack (i + 1)
+    else let to = hw-retreat-hex u td units width height stack 0
+    in let u2 = if to < 0 then __record-set u "eliminated" True
+      else __record-set (__record-set u "q" (rng-mod to width)) "r" (to / width)
+    in hw-retreat-side (list-set-at units i u2) attackers atk-owner q r td width height stack (i + 1)
 
   run-hexwar-game : WargameConfig, Integer -> HexwarResult
   run-hexwar-game (cfg) (seed) =
@@ -1291,8 +1352,23 @@ Section: Taking A Turn Yourself
     if u.eliminated then False
     else if hex-valid (HexCoord { q = tq, r = tr }) width height == False then False
     else if hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = tq, r = tr }) /= 1 then False
+    else if hw-enemy-at units u.owner tq tr 0 then False
     else if can-move-to u tq tr td units width == False then False
-    else ai-hex-occupancy units tq tr 0 0 < stack-limit
+    else hw-friendly-count units u.owner tq tr 0 0 < stack-limit
+
+  hw-enemy-at : List Unit, Integer, Integer, Integer, Integer -> Boolean
+  hw-enemy-at (units) (owner) (q) (r) (i) =
+    if i >= list-length units then False
+    else let u = list-at units i
+    in if u.eliminated == False & u.owner /= owner & u.q == q & u.r == r then True
+    else hw-enemy-at units owner q r (i + 1)
+
+  hw-friendly-count : List Unit, Integer, Integer, Integer, Integer, Integer -> Integer
+  hw-friendly-count (units) (owner) (q) (r) (i) (acc) =
+    if i >= list-length units then acc
+    else let u = list-at units i
+    in let here = if u.eliminated == False & u.owner == owner & u.q == q & u.r == r then 1 else 0
+    in hw-friendly-count units owner q r (i + 1) (acc + here)
 
   hw-can-move : List Unit, Integer, Integer, Integer, Integer, List TerrainHex, Integer, Integer, Integer -> Boolean
   hw-can-move (units) (owner) (idx) (tq) (tr) (td) (width) (height) (stack-limit) =
@@ -1317,18 +1393,18 @@ Section: Taking A Turn Yourself
     else if u.eliminated then False
     else ai-any-adjacent-friendly units owner u.q u.r
 
-  hw-resolve-attack : List Unit, List TerrainHex, Integer, Integer, Integer, Rng -> List Unit
-  hw-resolve-attack (units) (td) (target) (owner) (width) (r2) =
+  hw-resolve-attack : List Unit, List TerrainHex, Integer, Integer, Integer, Integer, Integer, Rng -> List Unit
+  hw-resolve-attack (units) (td) (target) (owner) (width) (height) (stack) (r2) =
     let tu = list-at units target
-    in let def-str = tu.strength
+    in let def-total = hw-hex-defense units owner tu.q tu.r 0 0
     in let def-hex = list-at td (tu.r * width + tu.q)
     in let def-bonus = get-defense-bonus def-hex.terrain
     in let atk-str = ai-count-attack-strength units owner tu.q tu.r
     in let arty = artillery-support units tu.q tu.r owner
     in let total-atk = atk-str + arty
     in let die = rng-range r2 1 6
-    in let result = combat-result total-atk def-str def-bonus die
-    in apply-combat-result units target result owner r2
+    in let result = combat-result total-atk def-total def-bonus die
+    in apply-combat-result units td width height stack tu.q tu.r result owner def-total
 
   hw-unit-has-move : List Unit, Integer, Integer, List TerrainHex, Integer, Integer, Integer, Integer -> Boolean
   hw-unit-has-move (units) (owner) (idx) (td) (width) (height) (stack-limit) (dir) =

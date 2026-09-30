@@ -1,0 +1,123 @@
+Chapter: Sd15UnetSag
+
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter UNet
+  cites Diffusion chapter UNet15
+  cites Diffusion chapter UNetReference
+  cites Diffusion chapter UNetGraph
+  cites Diffusion chapter UNet15Graph
+  cites Diffusion chapter Sag
+  cites Diffusion chapter UNet15SagReference
+
+ The step of sd15-unet-step as SAG's uncond call, the middle block's first
+ self-attention handing its probabilities to sag-probs, graded against
+ build/sd15-unet-oracle.py --sag, which runs sd_forge_sag's own
+ attn_and_record: every block within 1%, the recorded mask bit for bit, and
+ sag-degrade over it against Forge's create_blur_map within 1e-5. The
+ sabotage is the mask an unrecorded run leaves, all zero.
+
+ We say:
+
+Section: Inputs
+
+ The formulas build/sd15-unet-oracle.py fed Forge's UNet.
+
+  latent-at : Integer -> Real
+  latent-at (i) = real-from-int (int-mod (i * 37 + 11) 257 - 128) / 128.0
+
+  context-at : Integer -> Real
+  context-at (i) = real-from-int (int-mod (i * 13 + 5) 251 - 125) / 256.0
+
+  build : Integer, Integer, Integer, List Real -> List Real
+  build (which) (i) (n) (acc) =
+    if i >= n then acc
+    else build which (i + 1) n (list-push acc (if which == 0 then latent-at i else if which == 2 then context-at i else 0.0))
+
+Section: Grading
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  count-near : List Real, UNetRefBlock, Real, Integer, Integer -> Integer
+  count-near (got) (ref) (tol) (j) (acc) =
+    if j >= unet-ref-samples then acc
+    else let n = list-length got
+    in let v = list-at got (int-mod (j * unet-ref-stride + unet-ref-offset) n)
+    in count-near got ref tol (j + 1) (if abs (v - list-at (ref.urb-samples) j) <= tol * ref.urb-rms then acc + 1 else acc)
+
+  sum-sq : List Real, Integer, Real -> Real
+  sum-sq (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else sum-sq xs (i + 1) (acc + list-at xs i * list-at xs i)
+
+  rms-near : List Real, UNetRefBlock -> Boolean
+  rms-near (got) (ref) =
+    let n = list-length got
+    in let ms = if n == 0 then 0.0 else sum-sq got 0 0.0 / real-from-int n
+    in abs (ms - ref.urb-rms * ref.urb-rms) <= 0.02 * ref.urb-rms * ref.urb-rms
+
+  grade : Integer, Integer, Real -> Text
+  grade (h) (k) (tol) =
+    let ref = list-at unet15-sag-ref-blocks k
+    in let n = ref.urb-c * ref.urb-h * ref.urb-w
+    in let got = if h == 0 then [] else un-download h n
+    in if list-length got /= n then ref.urb-name & ": NO OUTPUT"
+    else ref.urb-name & ": " & show (count-near got ref tol 0 0) & "/" & show unet-ref-samples & " within " & show (real-to-int (tol * 100.0)) & "% of rms, rms " & (if rms-near got ref then "near" else "FAR")
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let u = unet-open "realisticVisionV60B1_v20Novae.safetensors"
+    in if (u.uf-file).st-valid == False then ["SKIP: no realisticVisionV60B1_v20Novae.safetensors under the model root build-output/diffusion-models"]
+    else run-step (unet-load u)
+
+  run-step : UNetFile -> List Text
+  run-step (u) =
+    let x = un-upload (build 0 0 1024 [])
+    in let ctx = un-upload (build 2 0 59136 [])
+    in let emb = unet15-embedding u unet15-sag-ref-t
+    in let embs = un-silu emb 1280
+    in let mbuf = gpu-buf-alloc (4 * 4)
+    in let ops = unet-ops-with (\a s cx cs hh ww -> True) (\p -> False) (\p -> p == "middle_block.1.transformer_blocks.0.attn1.") (\s hd r -> sag-probs mbuf 1.0 s hd r)
+    in let blocks = unet15-forward-with ops u x embs ctx 16 16
+    in let lines = grade-all blocks 0 []
+    in lines & [degrade-line "recorded" mbuf, degrade-line "sabotage, no mask recorded" (un-upload [0.0, 0.0, 0.0, 0.0])]
+
+  same-bits : List Integer, Integer, Integer -> Integer
+  same-bits (m) (i) (acc) = if i >= list-length m then acc else same-bits m (i + 1) (if list-at m i == list-at unet15-sag-ref-mask i then acc + 1 else acc)
+
+  worst-of : List Real, Integer, Real -> Real
+  worst-of (got) (i) (acc) = if i >= list-length got then acc else worst-of got (i + 1) (let d = list-at got i - list-at unet15-sag-ref-degraded i in let e = if d < 0.0 then 0.0 - d else d in if e > acc then e else acc)
+
+  sag-x0 : Integer, List Real -> List Real
+  sag-x0 (i) (acc) = if i >= 1024 then acc else sag-x0 (i + 1) (list-push acc (real-from-int (int-mod (i * 37 + 11) 257 - 128) / 64.0))
+
+  degrade-line : Text, Integer -> Text
+  degrade-line (what) (mbuf) =
+    let x0 = un-upload (sag-x0 0 [])
+    in let out = gpu-buf-alloc (1024 * 4)
+    in let mask = sag-mask-of mbuf 4
+    in let got = if sag-degrade x0 out 16 16 mbuf 4 2.0 then un-download out 1024 else []
+    in what & ": mask " & show (same-bits mask 0 0) & "/4 as Forge's, degraded " & (if list-length got == 1024 & worst-of got 0 0.0 <= 0.00001 then "within 1e-5" else "PAST 1e-5")
+
+  grade-all : List Integer, Integer, List Text -> List Text
+  grade-all (hs) (k) (acc) =
+    if k >= list-length unet15-sag-ref-blocks then acc
+    else grade-all hs (k + 1) (list-push acc (grade (if k < list-length hs then list-at hs k else 0) k 0.01))
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

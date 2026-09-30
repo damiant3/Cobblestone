@@ -241,7 +241,7 @@ Section: Match
   rv-emit-heap-advance : RvState, IRExpr -> RvEmitResult
   rv-emit-heap-advance (st) (arg) =
    let r = rv-emit-expr st arg
-   in let st1 = rv-emit (r.state) (rv-add rv-heap-reg rv-heap-reg (r.reg))
+   in let st1 = rv-emit-block (r.state) (rv-add rv-heap-reg rv-heap-reg (r.reg) & rv-addi rv-heap-reg rv-heap-reg 7 & rv-andi rv-heap-reg rv-heap-reg (0 - 8))
    in rv-emit-int-lit st1 0
 
   rv-emit-deck-pos : RvState -> RvEmitResult
@@ -466,7 +466,7 @@ Section: Match
    in let st4 = rv-emit st3 (rv-sd (ptr-r.reg) (tag-r.reg) 0)
    in let ptr-loc = rv-alloc-local st4
    in let st5 = rv-store-local (ptr-loc.state) (ptr-loc.reg) (ptr-r.reg)
-   in let st6 = rv-store-closure-captures st5 (saved.locals) (ptr-loc.reg) 0
+   in let st6 = rv-store-closure-captures st5 (saved.locals) (ptr-loc.reg) 8 0
    in rv-load-local st6 (ptr-loc.reg)
 
  rv-bne encodes both of its registers, so unlike ARM64 an index alone cannot
@@ -521,17 +521,49 @@ Section: Match
      in let ld = rv-load-local st2 (loc.reg)
      in let chk = rv-emit-pat-lit-test (ld.state) (ld.reg) value ty
      in rv-bind-ctor-fields (chk.state) pats scrut-reg (i + 1) (acc & (chk.checks))
+    is IrCtorPat (cname) (subs) (cty) (s) ->
+     let loc = rv-alloc-local st
+     in let lr = rv-load-local (loc.state) scrut-reg
+     in let tr = rv-alloc-temp (lr.state)
+     in let st1 = rv-emit (tr.state) (rv-ld (tr.reg) (lr.reg) ((i + 1) * 8))
+     in let st2 = rv-store-local st1 (loc.reg) (tr.reg)
+     in let ld = rv-load-local st2 (loc.reg)
+     in let gr = rv-alloc-temp (ld.state)
+     in let st3 = rv-emit (gr.state) (rv-ld (gr.reg) (ld.reg) 0)
+     in let er = rv-alloc-temp st3
+     in let st4 = rv-emit-li (er.state) (er.reg) (rv-resolve-ctor-tag st cty cname)
+     in let idx = st4.insn-count
+     in let st5 = rv-emit st4 (rv-bne (gr.reg) (er.reg) 0)
+     in let inner = rv-bind-ctor-fields st5 subs (loc.reg) 0 []
+     in rv-bind-ctor-fields (inner.state) pats scrut-reg (i + 1) ((acc & [RvPatCheck { pc-idx = idx, pc-rs1 = gr.reg, pc-rs2 = er.reg }]) & (inner.checks))
     is otherwise -> rv-bind-ctor-fields st pats scrut-reg (i + 1) acc
 
 Section: List Emission
 
   rv-emit-list : RvState, List IRExpr -> RvEmitResult
   rv-emit-list (st) (elems) =
-   let st1 = rv-emit st (rv-mv rv-a0 rv-zero)
-   in let st2 = rv-emit-call-to st1 "__list_empty"
-   in let result-loc = rv-alloc-local st2
-   in let st3 = rv-store-local (result-loc.state) (result-loc.reg) rv-a0
+   if list-length elems == 0 then
+    let st2 = rv-emit-call-to (rv-emit st (rv-mv rv-a0 rv-zero)) "__list_empty"
+    in let result-loc = rv-alloc-local st2
+    in let st3 = rv-store-local (result-loc.state) (result-loc.reg) rv-a0
+    in rv-emit-list-elems st3 elems (result-loc.reg) 0
+   else let lr = rv-emit-list-exact st (list-length elems)
+   in let result-loc = rv-alloc-local (lr.state)
+   in let st3 = rv-store-local (result-loc.state) (result-loc.reg) (lr.reg)
    in rv-emit-list-elems st3 elems (result-loc.reg) 0
+
+  rv-emit-list-exact : RvState, Integer -> RvEmitResult
+  rv-emit-list-exact (st) (n) =
+   let r = rv-alloc-temp st
+   in let st1 = rv-emit-li (r.state) rv-t0 n
+   in let st2 = rv-emit st1 (rv-sd rv-heap-reg rv-t0 0)
+   in let st3 = rv-emit st2 (rv-addi rv-heap-reg rv-heap-reg 8)
+   in let st4 = rv-emit st3 (rv-mv (r.reg) rv-heap-reg)
+   in let st5 = rv-emit st4 (rv-sd rv-heap-reg rv-zero 0)
+   in let bytes = 8 + n * 8
+   in let st6 = if bytes <= 2047 then rv-emit st5 (rv-addi rv-heap-reg rv-heap-reg bytes)
+    else rv-emit (rv-emit-li st5 rv-t0 bytes) (rv-add rv-heap-reg rv-heap-reg rv-t0)
+   in RvEmitResult { state = st6, reg = r.reg }
 
   rv-emit-list-elems : RvState, List IRExpr, Integer, Integer -> RvEmitResult
   rv-emit-list-elems (st) (elems) (list-local) (i) =
@@ -550,8 +582,9 @@ Section: List Emission
 Section: Instruction Patching
 
   rv-patch-insn : RvState, Integer, List Integer -> RvState
-  rv-patch-insn (st) (insn-index) (new-bytes) =
-   let pos = insn-index * 4
+  rv-patch-insn (st0) (insn-index) (new-bytes) =
+   let st = rv-note-refused-imm st0 new-bytes "a patched immediate"
+   in let pos = insn-index * 4
    in let w0 = __buf-write-byte (st.code-buf) pos (list-at new-bytes 0)
    in let w1 = __buf-write-byte (st.code-buf) (pos + 1) (list-at new-bytes 1)
    in let w2 = __buf-write-byte (st.code-buf) (pos + 2) (list-at new-bytes 2)
@@ -979,7 +1012,7 @@ Section: Tail Call Optimization
   rv-save-tail-args : RvState, List IRExpr, Integer, List Integer -> RvSavedArgs
   rv-save-tail-args (st) (args) (i) (acc) =
    if i >= list-length args then RvSavedArgs { state = st, locals = acc }
-   else let er = rv-emit-expr st (list-at args i)
+   else let er = rv-emit-expr (rv-set-result-dest st (0 - 1)) (list-at args i)
    in let loc = rv-alloc-local (er.state)
    in let st1 = rv-store-local (loc.state) (loc.reg) (er.reg)
    in rv-save-tail-args st1 args (i + 1) (list-push acc (loc.reg))
@@ -1413,7 +1446,7 @@ Section: Module Emission
    in let compact-margin = if use-da then if body-locals == 1 & dest-adjust == 1 & rv-top-cond-is-zero-safe (def.body) then 0 else 2 else 2
    in let compact-save-est = rv-compute-save-count (adjusted-locals + all-param-count + tco-extra + compact-margin)
    in let use-compact = if use-compact then compact-save-est <= 6 else False
-   in let save-regs = if use-compact then compact-save-est else 10
+   in let save-regs = 10
    in let memo-slot = st.memo-next-slot
    in let st-pre = if use-memo then __record-set st "memo-next-slot" (memo-slot + 1) else st
    in let st1 = rv-reset-func-state st-pre (def.name)
@@ -1665,8 +1698,18 @@ Section: Module Emission
    in let st3r = rv-flush-wcet-pending st3c 0
    in let st4 = rv-patch-calls st3r
    in let st5 = rv-patch-func-addrs st4
-   in let st6 = rv-patch-rodata st5
+   in let st6 = rv-check-image-fits (rv-patch-rodata st5)
    in if rv-disasm-enabled then rv-disasm-listing st6 else st6
+
+ The image loads at `rv-load-base` with its code 128 bytes in and its rodata
+ after the code, and the boot writes its tables at `rv-fixed-base`, so an
+ image that reaches that address is overwritten by its own boot.
+
+  rv-check-image-fits : RvState -> RvState
+  rv-check-image-fits (st) =
+   let image-end = rv-load-base + 128 + rv-align-8 (st.code-pos) + list-length (st.data)
+   in if image-end <= rv-fixed-base then st
+   else rv-add-shadow-warning st ("[UNSUPPORTED] image: " & show (image-end - rv-load-base) & " bytes reach the fixed data at " & show (rv-fixed-base - rv-load-base) & " bytes past the load base (refused rather than overwritten at boot)")
 
   rv-assign-effect-op-addrs : List Text, Integer, Integer, List RvEffectOpAddr -> List RvEffectOpAddr
   rv-assign-effect-op-addrs (names) (i) (len) (acc) =
@@ -1722,9 +1765,9 @@ Section: Effect Handler Emission
   rv-op-handled (st) (name) = wh-op-arity (st.handled-ops) name 0 >= 0
 
  The slot after the last operation's holds the closure `resume` is bound to.
- The table ends where the memo area begins (#80100200, `rv-emit-runtime`).
+ The table ends where the memo area begins (`rv-memo-addr`).
 
-  rv-effect-op-table-base : Integer = #80100000
+  rv-effect-op-table-base : Integer = rv-fixed-base + #80000
   rv-effect-op-slots : Integer = 64
 
   rv-resume-slot : RvState -> Integer

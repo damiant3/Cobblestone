@@ -1,0 +1,83 @@
+Chapter: DiffusionLayout
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter SafeTensors
+  cites Foreword chapter Console
+
+ The fixtures are the first 8 + N bytes of two installed checkpoints, the
+ length prefix and the JSON header with no tensor data:
+ dreamshaperXL_lightningDPMSDE (SDXL) and realisticVisionV60B1_v20Novae (SD1.5).
+ Each is bound against its own layout, then against the other family's layout
+ as the control, which must report missing and unknown tensors.
+
+Section: Arms
+
+  last-bound : List PartBinding, Integer, BoundTensor -> BoundTensor
+  last-bound (parts) (i) (best) =
+    if i >= list-length parts then best
+    else let pb = list-at parts i
+    in last-bound parts (i + 1) (last-in (pb.pb-bound) 0 best)
+
+  last-in : List BoundTensor, Integer, BoundTensor -> BoundTensor
+  last-in (ts) (i) (best) =
+    if i >= list-length ts then best
+    else let t = list-at ts i
+    in last-in ts (i + 1) (if t.bt-offset > best.bt-offset then t else best)
+
+  report : Text, SafeTensorFile, CheckpointLayout -> List Text
+  report (label) (file) (layout) =
+    let head = label & ": header " & show (file.st-header-len) & ", tensors " & show (file.st-tensor-count) & ", valid " & (if file.st-valid then "yes" else "no")
+    in let lb = layout-bind file layout
+    in let lines = report-parts label (lb.lb-parts) 0 (list-push [] head)
+    in let tail = label & " extra " & show (lb.lb-extra) & ", unknown " & show (list-length (lb.lb-unknown)) & ", complete " & (if layout-complete lb then "yes" else "no")
+    in let none = BoundTensor { bt-name = "none", bt-dtype = 0, bt-shape = [], bt-offset = 0, bt-bytes = 0 }
+    in let far = last-bound (lb.lb-parts) 0 none
+    in let bytes = label & " bound bytes " & show (layout-bound-bytes (lb.lb-parts) 0 0)
+    in let farline = label & " last: " & far.bt-name & " offset " & show (far.bt-offset) & " bytes " & show (far.bt-bytes)
+    in list-push (list-push (list-push lines tail) bytes) farline
+
+  report-parts : Text, List PartBinding, Integer, List Text -> List Text
+  report-parts (label) (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else report-parts label parts (i + 1) (list-push acc (label & " " & format-part-binding (list-at parts i)))
+
+  control : Text, SafeTensorFile, CheckpointLayout -> Text
+  control (label) (file) (layout) =
+    let lb = layout-bind file layout
+    in label & ": complete " & (if layout-complete lb then "yes" else "no") & ", unknown " & show (list-length (lb.lb-unknown)) & ", " & control-parts (lb.lb-parts) 0 ""
+
+  control-parts : List PartBinding, Integer, Text -> Text
+  control-parts (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else let pb = list-at parts i
+    in control-parts parts (i + 1) (acc & pb.pb-name & " " & show (list-length (pb.pb-bound)) & "/" & show (pb.pb-required) & " ")
+
+Section: Entry
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let xl = ckpt-open "sdxl-dreamshaper-header.safetensors"
+    in let sd = ckpt-open "sd15-realvis-header.safetensors"
+    in let absent = ckpt-open "absent.safetensors"
+    in let a = report "sdxl" xl sdxl-layout
+    in let b = report "sd15" sd sd15-layout
+    in let c1 = control "sd15 as sdxl" sd sdxl-layout
+    in let c2 = control "sdxl as sd15" xl sd15-layout
+    in let c3 = "absent: valid " & (if absent.st-valid then "yes" else "no")
+    in list-push (list-push (list-push (a & b) c1) c2) c3
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

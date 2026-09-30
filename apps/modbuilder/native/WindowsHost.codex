@@ -1,0 +1,189 @@
+Chapter: WindowsHost
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+
+ The PE specialization links this explicit adapter to Win64. The source is
+ compiled with passes=none so the adapter remains a separate symbol.
+
+  mb-native-call : Integer, Integer -> Integer
+  mb-native-call (target) (args) = fail "Native Windows adapter was not linked"
+
+  mb-alloc : Integer -> Integer
+  mb-alloc (n) =
+   let p = __heap-save
+   in let aligned = (p + 7) / 8 * 8
+   in let a = __heap-advance (aligned - p + (n + 7) / 8 * 8)
+   in aligned
+
+  mb-call : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  mb-call (fn) (a) (b) (c) (d) (e) (f) (g) (h) =
+   let p = mb-alloc 64
+   in let w0 = poke-qword p 0 a
+   in let w1 = poke-qword p 8 b
+   in let w2 = poke-qword p 16 c
+   in let w3 = poke-qword p 24 d
+   in let w4 = poke-qword p 32 e
+   in let w5 = poke-qword p 40 f
+   in let w6 = poke-qword p 48 g
+   in let w7 = poke-qword p 56 h
+   in mb-native-call fn p
+
+  mb-ascii-loop : Text, Integer, Integer -> Integer
+  mb-ascii-loop (s) (p) (i) =
+   if i >= text-length s then poke-byte p i 0
+   else let u = to-unicode (char-code-at s i)
+   in let w = poke-byte p i u
+   in mb-ascii-loop s p (i + 1)
+
+  mb-ascii : Text -> Integer
+  mb-ascii (s) = let p = mb-alloc (text-length s + 1) in let w = mb-ascii-loop s p 0 in p
+
+  mb-from-ascii-loop : Integer, Integer, Integer, List Integer -> List Integer
+  mb-from-ascii-loop (p) (n) (i) (acc) =
+   if i >= n then acc
+   else let c = peek-byte p i
+   in mb-from-ascii-loop p n (i + 1) (if c == 13 then acc else list-push acc (from-unicode (if c == 9 then 32 else c)))
+
+  mb-from-ascii : Integer, Integer -> Text
+  mb-from-ascii (p) (n) = raw-bytes-to-text (mb-from-ascii-loop p n 0 [])
+
+  mb-wide-loop : Text, Integer, Integer, Integer -> Integer
+  mb-wide-loop (s) (p) (i) (j) =
+   if i >= text-length s then poke-16 p (j * 2) 0
+   else let u = to-unicode (cce-decode-at s i)
+   in let step = cce-decode-length (char-code-at s i)
+   in if u < 65536 then let w = poke-16 p (j * 2) u in mb-wide-loop s p (i + step) (j + 1)
+   else let v = u - 65536
+   in let w = poke-16 p (j * 2) (55296 + v / 1024)
+   in let w2 = poke-16 p ((j + 1) * 2) (56320 + int-mod v 1024)
+   in mb-wide-loop s p (i + step) (j + 2)
+
+  mb-wide : Text -> Integer
+  mb-wide (s) = let p = mb-alloc ((text-length s + 1) * 2) in let w = mb-wide-loop s p 0 0 in p
+
+  mb-from-wide-loop : Integer, Integer, Integer, List Integer -> List Integer
+  mb-from-wide-loop (p) (cap) (i) (acc) =
+   if i >= cap then acc
+   else let c = peek-16 p (i * 2)
+   in if c == 0 then acc
+   else if c == 13 then mb-from-wide-loop p cap (i + 1) acc
+   else if c == 9 then mb-from-wide-loop p cap (i + 1) (list-push acc (from-unicode 32))
+   else if c >= 55296 & c <= 56319 & i + 1 < cap then
+    let low = peek-16 p ((i + 1) * 2)
+    in if low >= 56320 & low <= 57343 then mb-from-wide-loop p cap (i + 2) (cce-encode-into acc (from-unicode (65536 + (c - 55296) * 1024 + low - 56320)))
+    else mb-from-wide-loop p cap (i + 1) (cce-encode-into acc (from-unicode 65533))
+   else mb-from-wide-loop p cap (i + 1) (cce-encode-into acc (from-unicode c))
+
+  mb-from-wide : Integer, Integer -> Text
+  mb-from-wide (p) (cap) = if p == 0 then "" else raw-bytes-to-text (mb-from-wide-loop p cap 0 [])
+
+ The added IAT slots are fixed by winhost.js. Modules come only from System32.
+
+  mb-proc : Text, Text -> Integer
+  mb-proc (dll) (name) =
+   let mod = mb-call (peek-qword 1054720 0) (mb-wide dll) 0 2048 0 0 0 0 0
+   in if mod == 0 then fail ("Windows library unavailable: " & dll)
+   else let fn = mb-call (peek-qword 1054728 0) mod (mb-ascii name) 0 0 0 0 0 0
+   in if fn == 0 then fail ("Windows API unavailable: " & name) else fn
+
+  MbHost = record {
+   env : Integer, attrs : Integer, open : Integer, read : Integer, write : Integer, close : Integer,
+   utf8 : Integer, mkdir : Integer, delete : Integer, rmdir : Integer, command : Integer,
+   message : Integer, shell : Integer, registry : Integer, random : Integer, sleep : Integer,
+   wsa : Integer, socket : Integer, bind : Integer, listen : Integer, accept : Integer,
+   recv : Integer, send : Integer, sockopt : Integer, closesocket : Integer, poll : Integer,
+   event : Integer, setevent : Integer, wait : Integer, association : Integer,
+   copy : Integer, move : Integer, flush : Integer, finalpath : Integer,
+   browse : Integer, browsepath : Integer, coinit : Integer, cofree : Integer, shellcopy : Integer,
+   beginresource : Integer, updateresource : Integer, endresource : Integer,
+   hashopen : Integer, hashcreate : Integer, hashdata : Integer, hashfinish : Integer, hashdestroy : Integer, hashclose : Integer,
+   snapshot : Integer, processfirst : Integer, processnext : Integer, ticks : Integer,
+   modulepath : Integer, filesize : Integer, disposition : Integer, findfirst : Integer, findnext : Integer, findclose : Integer,
+   knownfolder : Integer, tcptable : Integer, openprocess : Integer, imagepath : Integer, error : Integer, control : Integer
+  }
+
+  mb-host : Integer -> MbHost
+  mb-host (x) = MbHost {
+   env = mb-proc "kernel32.dll" "GetEnvironmentVariableW", attrs = mb-proc "kernel32.dll" "GetFileAttributesW",
+   open = mb-proc "kernel32.dll" "CreateFileW", read = mb-proc "kernel32.dll" "ReadFile", write = mb-proc "kernel32.dll" "WriteFile", close = mb-proc "kernel32.dll" "CloseHandle",
+   utf8 = mb-proc "kernel32.dll" "MultiByteToWideChar", mkdir = mb-proc "kernel32.dll" "CreateDirectoryW", delete = mb-proc "kernel32.dll" "DeleteFileW", rmdir = mb-proc "kernel32.dll" "RemoveDirectoryW",
+   command = mb-proc "kernel32.dll" "GetCommandLineW", message = mb-proc "user32.dll" "MessageBoxW", shell = mb-proc "shell32.dll" "ShellExecuteW", registry = mb-proc "advapi32.dll" "RegGetValueW",
+   random = mb-proc "bcrypt.dll" "BCryptGenRandom", sleep = mb-proc "kernel32.dll" "Sleep",
+   wsa = mb-proc "ws2_32.dll" "WSAStartup", socket = mb-proc "ws2_32.dll" "socket", bind = mb-proc "ws2_32.dll" "bind", listen = mb-proc "ws2_32.dll" "listen", accept = mb-proc "ws2_32.dll" "accept",
+   recv = mb-proc "ws2_32.dll" "recv", send = mb-proc "ws2_32.dll" "send", sockopt = mb-proc "ws2_32.dll" "setsockopt", closesocket = mb-proc "ws2_32.dll" "closesocket", poll = mb-proc "ws2_32.dll" "WSAPoll",
+   event = mb-proc "kernel32.dll" "CreateEventW", setevent = mb-proc "kernel32.dll" "SetEvent", wait = mb-proc "kernel32.dll" "WaitForSingleObject",
+   association = mb-proc "shlwapi.dll" "AssocQueryStringW",
+   copy = mb-proc "kernel32.dll" "CopyFileW", move = mb-proc "kernel32.dll" "MoveFileExW", flush = mb-proc "kernel32.dll" "FlushFileBuffers",
+   finalpath = mb-proc "kernel32.dll" "GetFinalPathNameByHandleW",
+   browse = mb-proc "shell32.dll" "SHBrowseForFolderW", browsepath = mb-proc "shell32.dll" "SHGetPathFromIDListW",
+   coinit = mb-proc "ole32.dll" "CoInitializeEx", cofree = mb-proc "ole32.dll" "CoTaskMemFree", shellcopy = mb-proc "shell32.dll" "SHFileOperationW",
+   beginresource = mb-proc "kernel32.dll" "BeginUpdateResourceW", updateresource = mb-proc "kernel32.dll" "UpdateResourceW", endresource = mb-proc "kernel32.dll" "EndUpdateResourceW",
+   hashopen = mb-proc "bcrypt.dll" "BCryptOpenAlgorithmProvider", hashcreate = mb-proc "bcrypt.dll" "BCryptCreateHash", hashdata = mb-proc "bcrypt.dll" "BCryptHashData",
+   hashfinish = mb-proc "bcrypt.dll" "BCryptFinishHash", hashdestroy = mb-proc "bcrypt.dll" "BCryptDestroyHash", hashclose = mb-proc "bcrypt.dll" "BCryptCloseAlgorithmProvider",
+   snapshot = mb-proc "kernel32.dll" "CreateToolhelp32Snapshot", processfirst = mb-proc "kernel32.dll" "Process32FirstW", processnext = mb-proc "kernel32.dll" "Process32NextW", ticks = mb-proc "kernel32.dll" "GetTickCount64",
+   modulepath = mb-proc "kernel32.dll" "GetModuleFileNameW", filesize = mb-proc "kernel32.dll" "GetFileSizeEx", disposition = mb-proc "kernel32.dll" "SetFileInformationByHandle",
+   findfirst = mb-proc "kernel32.dll" "FindFirstFileW", findnext = mb-proc "kernel32.dll" "FindNextFileW", findclose = mb-proc "kernel32.dll" "FindClose",
+   knownfolder = mb-proc "shell32.dll" "SHGetKnownFolderPath", tcptable = mb-proc "iphlpapi.dll" "GetExtendedTcpTable",
+   openprocess = mb-proc "kernel32.dll" "OpenProcess", imagepath = mb-proc "kernel32.dll" "QueryFullProcessImageNameW", error = mb-proc "kernel32.dll" "GetLastError", control = mb-proc "kernel32.dll" "DeviceIoControl"
+  }
+
+  mb-env : MbHost, Text -> Text
+  mb-env (h) (name) =
+   let p = mb-alloc 8192
+   in let n = mb-call (h.env) (mb-wide name) p 4096 0 0 0 0 0
+   in if n <= 0 | n >= 4096 then "" else mb-from-wide p n
+
+  mb-exists : MbHost, Text -> Boolean
+  mb-exists (h) (path) = mb-call (h.attrs) (mb-wide path) 0 0 0 0 0 0 0 /= 4294967295
+
+  mb-read : MbHost, Text -> Text
+  mb-read (h) (path) =
+   let file = mb-call (h.open) (mb-wide path) 2147483648 7 0 3 128 0 0
+   in if file == -1 then ""
+   else let buf = mb-alloc 65536
+   in let count = mb-alloc 8
+   in let ok = mb-call (h.read) file buf 65535 count 0 0 0 0
+   in let closed = mb-call (h.close) file 0 0 0 0 0 0 0
+   in let n = peek-32 count 0
+   in if ok == 0 | n >= 65535 then ""
+   else let wide = mb-alloc 131072
+   in let wn = mb-call (h.utf8) 65001 8 buf n wide 65535 0 0
+   in if wn <= 0 then "" else mb-from-wide wide wn
+
+  mb-write : MbHost, Text, Text -> Boolean
+  mb-write (h) (path) (value) =
+   let bytes = text-to-utf8-bytes value
+   in let data = mb-alloc (list-length bytes)
+   in let filled = __buf-write-bytes data 0 bytes
+   in let file = mb-call (h.open) (mb-wide path) 1073741824 0 0 2 128 0 0
+   in if file == -1 then False
+   else let count = mb-alloc 8
+   in let result = mb-call (h.write) file data (list-length bytes) count 0 0 0 0
+   in let flushed = mb-call (h.flush) file 0 0 0 0 0 0 0
+   in let closed = mb-call (h.close) file 0 0 0 0 0 0 0
+   in result /= 0 & flushed /= 0 & peek-32 count 0 == list-length bytes
+
+  mb-dialog : MbHost, Text, Integer -> Integer
+  mb-dialog (h) (message) (flags) = mb-call (h.message) 0 (mb-wide message) (mb-wide "ModBuilder") flags 0 0 0 0
+
+ ASSOCF_IS_PROTOCOL and ASSOCSTR_EXECUTABLE resolve the user's web browser.
+ A local URL must be its quoted argument: ShellExecute's file-document route
+ strips the fragment carrying the pairing token.
+
+  mb-browser : MbHost -> Text
+  mb-browser (h) =
+   let path = mb-alloc 65536
+   in let size = mb-alloc 8
+   in let init = poke-32 size 0 32768
+   in let result = mb-call (h.association) 4096 2 (mb-wide "https") (mb-wide "open") path size 0 0
+   in if result /= 0 then "" else mb-from-wide path 32768
+
+  mb-open-browser : MbHost, Text, Text -> Integer
+  mb-open-browser (h) (browser) (url) =
+   if browser == "" | text-contains url "\"" then 0
+   else mb-call (h.shell) 0 (mb-wide "open") (mb-wide browser) (mb-wide ("\"" & url & "\"")) 0 1 0 0
+
+  mb-open-page : MbHost, Text -> Integer
+  mb-open-page (h) (url) =
+   if text-starts-with url "file:" then mb-open-browser h (mb-browser h) url
+   else mb-call (h.shell) 0 (mb-wide "open") (mb-wide url) 0 0 1 0 0

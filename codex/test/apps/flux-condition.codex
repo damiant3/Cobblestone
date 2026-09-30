@@ -1,0 +1,95 @@
+Chapter: FluxConditionTest
+  cites Kernel chapter GpuBridge
+  cites AI chapter ClipBpe
+  cites AI chapter T5Tokenizer
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter ClipPrompt
+  cites Diffusion chapter T5Encoder
+  cites Diffusion chapter FluxCondition
+  cites Diffusion chapter FluxClipReference
+  cites Diffusion chapter UNet
+  cites Foreword chapter FactDisk
+  cites Foreword chapter Console
+
+ flux-condition over the prompt build/flux-clip-oracle.py fed transformers'
+ CLIPTextModel over clip_l.safetensors: the first chunk's ids against Forge's,
+ every one of the 768 pooled values within twice the deviation of the same
+ model in f16 (at least 1% of their rms), and the T5 context's shape (T5's
+ values are t5-encoder-step's). The disk is t5-encoder-step's: CLIP's vocab and
+ merges, and tokenizer.json as the fifth extra. The control grades the empty
+ prompt's pooled output against the same reference.
+
+ We say:
+
+Section: Grading
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  tol : Real
+  tol = if 2.0 * flux-clip-ref-f16-dev > 0.01 then 2.0 * flux-clip-ref-f16-dev else 0.01
+
+  near : List Real, Integer, Integer -> Integer
+  near (got) (i) (acc) =
+    if i >= 768 then acc
+    else near got (i + 1) (if abs (list-at got i - list-at flux-clip-ref-pooled i) <= tol * flux-clip-ref-rms then acc + 1 else acc)
+
+  same-ids : List Integer, List Integer, Integer -> Boolean
+  same-ids (a) (b) (i) = if i >= list-length b then list-length a == list-length b else if i >= list-length a then False else if list-at a i /= list-at b i then False else same-ids a b (i + 1)
+
+  graded : Integer -> Integer
+  graded (h) = if h == 0 then 0 - 1 else near (un-download h 768) 0 0
+
+  run-all : ClipBpe, T5Tok -> List Text
+  run-all (bpe) (tok) =
+    let file = ckpt-open "clip_l.safetensors"
+    in let tf = t5-open "t5xxl_fp8_e4m3fn.safetensors"
+    in if file.st-valid == False | (tf.tf-file).st-valid == False then ["SKIP: clip_l.safetensors under build-output/diffusion-vae or t5xxl_fp8_e4m3fn.safetensors under build-output/diffusion-text-encoders is missing"]
+    else let wl = clip-load "clip_l.safetensors" file (layout-bind file flux-clip-l-layout) clip-l-flux-spec
+    in let ids = (list-at (clip-prompt-chunks bpe flux-clip-ref-prompt) 0).cc-ids
+    in let fc = flux-condition tf tok wl bpe flux-clip-ref-prompt
+    in let g = graded (fc.fc-pooled)
+    in let ctl = clip-encode wl ((list-at (clip-prompt-chunks bpe "") 0).cc-ids)
+    in let c = graded (ctl.co-pooled)
+    in ["status " & show (fc.fc-status) & ", clip-l " & show (wl.cw-status),
+        "first chunk ids: " & (if same-ids ids flux-clip-ref-ids 0 then "Forge's" else "DIFFER"),
+        "pooled: " & show g & "/768 within " & show (real-to-int (tol * 1000.0)) & " per mille of rms",
+        "t5 context: " & show (fc.fc-rows) & " rows",
+        "control, the empty prompt's pooled: " & show c & "/768"]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  tf-load : Integer, Integer -> [Device.Block] Integer
+  tf-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+  go : List Integer -> [Console, Device.Block] Nothing
+  go (hd) =
+    act
+      v <- tf-load 1 (list-at hd 0)
+      m <- tf-load (1 + (list-at hd 0 + 511) / 512) (list-at hd 1)
+      j <- tf-load (list-at hd 2) (list-at hd 3)
+      let tt = t5-json-tables j (list-at hd 3)
+      in print-all (run-all (clip-bpe-load v (list-at hd 0) m (list-at hd 1)) (t5-tok-load (tt.tt-vocab) (tt.tt-charsmap))) 0
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    go [peek-32 h 0, peek-32 h 4, peek-32 h (12 + 8 * 4), peek-32 h (16 + 8 * 4)]
+  end

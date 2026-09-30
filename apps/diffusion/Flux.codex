@@ -1,0 +1,388 @@
+Chapter: Flux
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Foreword chapter Maybe
+  cites Gpu chapter LayerKernelsPtx
+  cites Gpu chapter GemmPtx
+  cites Gpu chapter DeviceMath
+  cites Diffusion chapter VaeKernelsPtx
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Sampler
+
+ We say:
+
+Section: Weights
+
+ The Flux transformer file (keys with no prefix, every tensor F8_E4M3):
+ a matrix stays e4m3 on the device for kernel-linear-fp8, a bias or norm
+ scale is widened to f32 at upload. 11.9 GB for schnell.
+
+  FluxFile = record {
+    ff-path : Text,
+    ff-file : SafeTensorFile,
+    ff-index : NameIndex,
+    ff-handles : List Integer
+  }
+
+  flux-open : Text -> FluxFile
+  flux-open (path) = FluxFile { ff-path = path, ff-file = ckpt-open path, ff-index = name-index [], ff-handles = [] }
+
+  flux-load : FluxFile -> FluxFile
+  flux-load (f) =
+    let ts = (f.ff-file).st-tensors
+    in FluxFile { ff-path = f.ff-path, ff-file = f.ff-file, ff-index = name-index (fx-names ts 0 []), ff-handles = fx-load-all f ts 0 [] }
+
+  fx-names : List StTensorMeta, Integer, List Text -> List Text
+  fx-names (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else fx-names ts (i + 1) (list-push acc ((list-at ts i).stm-name))
+
+  fx-load-all : FluxFile, List StTensorMeta, Integer, List Integer -> List Integer
+  fx-load-all (f) (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else fx-load-all f ts (i + 1) (list-push acc (fx-upload f (list-at ts i)))
+
+  fx-upload : FluxFile, StTensorMeta -> Integer
+  fx-upload (f) (m) =
+    let count = st-element-count m
+    in let flat = list-length (m.stm-shape) == 1
+    in let bytes = if flat then count * 4 else count
+    in let h = gpu-buf-alloc bytes
+    in let off = (f.ff-file).st-data-offset + m.stm-offset-start
+    in if h == 0 then 0
+    else if (if flat then gpu-buf-upload h 0 (f.ff-path) off count (ckpt-gpu-dtype (m.stm-dtype)) gpu-dt-f32 else gpu-buf-upload h 0 (f.ff-path) off count gpu-dt-u8 gpu-dt-u8) == bytes then h
+    else un-free 0 h
+
+  fx-w : FluxFile, Text -> Integer
+  fx-w (f) (name) =
+    let i = name-find (f.ff-index) name
+    in if i < 0 then 0 else list-at (f.ff-handles) i
+
+Section: Operations
+
+ Each answers a fresh f32 buffer, or 0 when an allocation or a launch was
+ refused. A linear reads x from a byte offset and takes nn rows of the
+ named weight from row wrow, which is how q, k, v and the MLP input come out
+ of one fused matrix.
+
+  fx-cast16 : Integer, Integer, Integer -> Integer
+  fx-cast16 (x) (off) (n) =
+    let h = un-temp (n * 2)
+    in if x == 0 | h == 0 then un-tfree 0 h (n * 2)
+    else if un-run 1 vae-kernels-ptx "kernel_cast_f16" (un-grid n) [gpu-arg-buf x off, un-buf h, un-int n] >= 0 then h
+    else un-tfree 0 h (n * 2)
+
+  fx-linear-into : FluxFile, Integer, Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer -> Boolean
+  fx-linear-into (f) (x) (xoff) (mm) (kk) (nn) (name) (wrow) (y) (yoff) =
+    let xh = fx-cast16 x xoff (mm * kk)
+    in let w = fx-w f (name & ".weight")
+    in let b = fx-w f (name & ".bias")
+    in let ok = if xh == 0 | w == 0 | b == 0 | y == 0 then False
+       else if kk - kk / 16 * 16 == 0 & mm * kk * 2 <= 41943040 then un-run 2 gemm-ptx "kernel_linear_fast_fp8_mfirst" (GpuGrid { gx = (mm + 127) / 128, gy = (nn + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 39936 }) [un-buf xh, gpu-arg-buf w (wrow * kk), gpu-arg-buf b (wrow * 4), gpu-arg-buf y yoff, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0] >= 0
+       else if kk - kk / 16 * 16 == 0 then un-run 2 gemm-ptx "kernel_linear_fast_fp8" (GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 39936 }) [un-buf xh, gpu-arg-buf w (wrow * kk), gpu-arg-buf b (wrow * 4), gpu-arg-buf y yoff, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0] >= 0
+       else un-run 2 gemm-ptx "kernel_linear_fp8" (GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }) [un-buf xh, gpu-arg-buf w (wrow * kk), gpu-arg-buf b (wrow * 4), gpu-arg-buf y yoff, un-int mm, un-int nn, un-int kk, un-int 0] >= 0
+    in let fr = un-tfree 0 xh (mm * kk * 2)
+    in ok
+
+  fx-linear : FluxFile, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  fx-linear (f) (x) (xoff) (mm) (kk) (nn) (name) =
+    let y = gpu-buf-alloc (mm * nn * 4)
+    in if fx-linear-into f x xoff mm kk nn name 0 y 0 then y else un-free 0 y
+
+  fx-gelu : Integer, Integer -> Integer
+  fx-gelu (x) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 | x == 0 then un-free 0 h
+    else un-out h (un-layer "kernel_gelu_tanh" n [un-buf x, un-buf h, un-int n])
+
+ LayerNorm without affine at eps 1e-6 over rows of 3072 from byte offset
+ xoff, then x (1 + scale) + shift, scale and shift the chunks of 3072 at
+ those indices of mod.
+
+  fx-norm-mod : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fx-norm-mod (x) (xoff) (rows) (mod) (scale) (shift) =
+    let st = un-temp (rows * 16)
+    in let part = un-temp (rows * 128 * 8)
+    in let y = gpu-buf-alloc (rows * 3072 * 4)
+    in let ok = if x == 0 | mod == 0 | st == 0 | part == 0 | y == 0 then False
+       else if un-rows "kernel_row_stats_wide" rows [gpu-arg-buf x xoff, un-buf st, un-buf part, un-int 3072, un-real 0.000001, un-int rows] then un-layer "kernel_layer_norm_mod" (rows * 3072) [gpu-arg-buf x xoff, un-buf st, gpu-arg-buf mod (scale * 12288), gpu-arg-buf mod (shift * 12288), un-buf y, un-int 3072, un-int (rows * 3072)]
+       else False
+    in un-tfree (un-tfree (un-out y ok) st (rows * 16)) part (rows * 128 * 8)
+
+ x + gate y into a fresh buffer, the gate the chunk of mod at that index.
+
+  fx-gated : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fx-gated (x) (xoff) (y) (mod) (gate) (rows) =
+    let out = gpu-buf-alloc (rows * 3072 * 4)
+    in if out == 0 | x == 0 | y == 0 | mod == 0 then un-free 0 out
+    else un-out out (un-layer "kernel_gated_add" (rows * 3072) [gpu-arg-buf x xoff, un-buf y, gpu-arg-buf mod (gate * 12288), un-buf out, un-int 3072, un-int (rows * 3072)])
+
+ RMSNorm of each 128-wide head in place, rows tokens from byte offset off.
+
+  fx-qk-norm : FluxFile, Integer, Integer, Integer, Text -> Boolean
+  fx-qk-norm (f) (q) (off) (rows) (name) =
+    let n = rows * 24
+    in let st = un-temp (n * 16)
+    in let part = un-temp (n * 128 * 8)
+    in let g = fx-w f name
+    in let ok = if q == 0 | g == 0 | st == 0 | part == 0 then False
+       else if un-rows "kernel_rms_stats_wide" n [gpu-arg-buf q off, un-buf st, un-buf part, un-int 128, un-real 0.000001, un-int n] then un-layer "kernel_rms_norm" (n * 128) [gpu-arg-buf q off, un-buf st, un-buf g, gpu-arg-buf q off, un-int 128, un-int (n * 128)]
+       else False
+    in let fr = un-tfree (un-tfree 0 st (n * 16)) part (n * 128 * 8)
+    in ok
+
+  fx-qkv : FluxFile, Integer, Integer, Text, Integer, Integer, Integer, Integer -> Boolean
+  fx-qkv (f) (x) (rows) (name) (q) (k) (v) (off) =
+    if fx-linear-into f x 0 rows 3072 3072 name 0 q off == False then False
+    else if fx-linear-into f x 0 rows 3072 3072 name 3072 k off == False then False
+    else fx-linear-into f x 0 rows 3072 3072 name 6144 v off
+
+  fx-rope : Integer, Integer, Integer -> Boolean
+  fx-rope (x) (table) (n) = un-layer "kernel_rope" (n * 24 * 64) [un-buf x, un-buf table, un-buf x, un-int 3072, un-int 0, un-int 24, un-int (n * 24 * 64)]
+
+Section: Rotary Table
+
+ EmbedND over ids (0, row, col) for an image token and 0 for a text token:
+ pair j < 8 is axis 0 (16 wide), j < 36 axis 1 and the rest axis 2 (56 wide
+ each), omega = 10000^(-2 jj / dim) (13.287712379549449 = log2 10000), the
+ angle pos omega, stored as (cos, sin) f32.
+
+  fx-omega : Integer, Integer -> Real
+  fx-omega (jj) (dim) = real-exp2-approx (0.0 - real-from-int (2 * jj) / real-from-int dim * 13.287712379549449)
+
+  fx-angle : Integer, Integer, Integer, Integer -> Real
+  fx-angle (t) (j) (txt) (w2) =
+    if t < txt | j < 8 then 0.0
+    else let p = t - txt
+    in let row = p / w2
+    in if j < 36 then real-from-int row * fx-omega (j - 8) 56
+    else real-from-int (p - row * w2) * fx-omega (j - 36) 56
+
+  fx-table-loop : Integer, Integer, Integer, Integer, List Real -> List Real
+  fx-table-loop (k) (n) (txt) (w2) (acc) =
+    if k >= n then acc
+    else let a = fx-angle (k / 64) (k - k / 64 * 64) txt w2
+    in fx-table-loop (k + 1) n txt w2 (list-push (list-push acc (real-cos a)) (real-sin a))
+
+  flux-rope-table : Integer, Integer, Integer -> Integer
+  flux-rope-table (txt) (h) (w) = un-upload (fx-table-loop 0 ((txt + (h / 2) * (w / 2)) * 64) txt (w / 2) [])
+
+Section: Attention
+
+ softmax (q k^T / sqrt 128) v over n tokens, 24 heads of 128, through
+ kernel-attention-fused-128: q scaled by 1 / sqrt 128 times log2 e
+ (0.12751743074173627), q, k and v as f16, the output the merged heads.
+
+  fx-attention : Integer, Integer, Integer, Integer -> Integer
+  fx-attention (q) (k) (v) (n) =
+    let scaled = if q == 0 then False else un-vae "kernel_scale_f32" (n * 3072) [un-buf q, un-buf q, un-real 0.12751743074173627, un-int (n * 3072)]
+    in let qh = if scaled then fx-cast16 q 0 (n * 3072) else 0
+    in let kh = fx-cast16 k 0 (n * 3072)
+    in let vh = fx-cast16 v 0 (n * 3072)
+    in let o = gpu-buf-alloc (n * 12288)
+    in let ok = if qh == 0 | kh == 0 | vh == 0 | o == 0 then False
+       else un-run 2 gemm-ptx "kernel_attention_fused_128" (GpuGrid { gx = (n + 63) / 64, gy = 48, gz = 1, bx = 128, by = 1, bz = 1, shared = 49152 }) [un-buf qh, un-buf kh, un-buf vh, un-buf o, un-int n, un-int n, un-int 3072] >= 0
+    in un-tfree (un-tfree (un-tfree (un-out o ok) qh (n * 6144)) kh (n * 6144)) vh (n * 6144)
+
+Section: Blocks
+
+  FxPair = record {
+    fp-img : Integer,
+    fp-txt : Integer
+  }
+
+ A stream's half of a double block after the joint attention: the gated
+ projection, then the gated MLP of its modulated LayerNorm.
+
+  fx-stream : FluxFile, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  fx-stream (f) (x) (o) (ooff) (rows) (mod) (p) =
+    let a = fx-linear f o ooff rows 3072 3072 (p & "attn.proj")
+    in let x1 = fx-gated x 0 a mod 2 rows
+    in let xm = fx-norm-mod x1 0 rows mod 4 3
+    in let h1 = fx-linear f xm 0 rows 3072 12288 (p & "mlp.0")
+    in let g = fx-gelu h1 (rows * 12288)
+    in let h2 = fx-linear f g 0 rows 12288 3072 (p & "mlp.2")
+    in let x2 = fx-gated x1 0 h2 mod 5 rows
+    in un-free (un-free (un-free (un-free (un-free (un-free x2 a) x1) xm) h1) g) h2
+
+  fx-double : FluxFile, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> FxPair
+  fx-double (f) (img) (txt) (vs) (table) (t) (l) (i) =
+    let p = "double_blocks." & show i & "."
+    in let n = t + l
+    in let mi = fx-linear f vs 0 1 3072 18432 (p & "img_mod.lin")
+    in let mt = fx-linear f vs 0 1 3072 18432 (p & "txt_mod.lin")
+    in let xi = fx-norm-mod img 0 l mi 1 0
+    in let xt = fx-norm-mod txt 0 t mt 1 0
+    in let q = gpu-buf-alloc (n * 12288)
+    in let k = gpu-buf-alloc (n * 12288)
+    in let v = gpu-buf-alloc (n * 12288)
+    in let ok = if fx-qkv f xt t (p & "txt_attn.qkv") q k v 0 == False then False
+       else if fx-qkv f xi l (p & "img_attn.qkv") q k v (t * 12288) == False then False
+       else if fx-qk-norm f q 0 t (p & "txt_attn.norm.query_norm.scale") == False then False
+       else if fx-qk-norm f k 0 t (p & "txt_attn.norm.key_norm.scale") == False then False
+       else if fx-qk-norm f q (t * 12288) l (p & "img_attn.norm.query_norm.scale") == False then False
+       else if fx-qk-norm f k (t * 12288) l (p & "img_attn.norm.key_norm.scale") == False then False
+       else if fx-rope q table n == False then False
+       else fx-rope k table n
+    in let o = if ok then fx-attention q k v n else 0
+    in let img2 = if o == 0 then 0 else fx-stream f img o (t * 12288) l mi (p & "img_")
+    in let txt2 = if o == 0 then 0 else fx-stream f txt o 0 t mt (p & "txt_")
+    in let fr = un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free 0 mi) mt) xi) xt) q) k) v) o
+    in FxPair { fp-img = img2, fp-txt = txt2 }
+
+  fx-single : FluxFile, Integer, Integer, Integer, Integer, Integer -> Integer
+  fx-single (f) (x) (vs) (table) (n) (i) =
+    let p = "single_blocks." & show i & "."
+    in let m = fx-linear f vs 0 1 3072 9216 (p & "modulation.lin")
+    in let xm = fx-norm-mod x 0 n m 1 0
+    in let q = gpu-buf-alloc (n * 12288)
+    in let k = gpu-buf-alloc (n * 12288)
+    in let v = gpu-buf-alloc (n * 12288)
+    in let mlp = gpu-buf-alloc (n * 49152)
+    in let ok = if fx-qkv f xm n (p & "linear1") q k v 0 == False then False
+       else if fx-linear-into f xm 0 n 3072 12288 (p & "linear1") 9216 mlp 0 == False then False
+       else if fx-qk-norm f q 0 n (p & "norm.query_norm.scale") == False then False
+       else if fx-qk-norm f k 0 n (p & "norm.key_norm.scale") == False then False
+       else if fx-rope q table n == False then False
+       else fx-rope k table n
+    in let o = if ok then fx-attention q k v n else 0
+    in let g = if o == 0 then 0 else fx-gelu mlp (n * 12288)
+    in let cat = gpu-buf-alloc (n * 61440)
+    in let placed = if g == 0 | cat == 0 then False
+       else if un-layer "kernel_copy_cols" (n * 3072) [un-buf o, un-buf cat, un-int 15360, un-int 0, un-int 3072, un-int (n * 3072)] == False then False
+       else un-layer "kernel_copy_cols" (n * 12288) [un-buf g, un-buf cat, un-int 15360, un-int 3072, un-int 12288, un-int (n * 12288)]
+    in let out = if placed then fx-linear f cat 0 n 15360 3072 (p & "linear2") else 0
+    in let y = if out == 0 then 0 else fx-gated x 0 out m 2 n
+    in un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free y m) xm) q) k) v) mlp) o) g) cat) out
+
+Section: Forward
+
+ One call of the transformer on a 16 x h x w latent at sigma, ctx the T5
+ context (txt x 4096 f32) and y CLIP-L's pooled 768. With keep, every module
+ output stays and the list is build/flux-oracle.py's records in its order
+ (img_in, time_in, vector_in, txt_in, each double block's img and txt, each
+ single block, final, out); without, each is freed once used and the list is
+ the output alone.
+
+  FxRun = record {
+    fr-a : Integer,
+    fr-b : Integer,
+    fr-recs : List Integer
+  }
+
+  fx-keep : Boolean, List Integer, Integer -> List Integer
+  fx-keep (keep) (recs) (h) = if keep then list-push recs h else recs
+
+  fx-drop : Boolean, Integer, Integer -> Integer
+  fx-drop (keep) (live) (h) = if keep then live else un-free live h
+
+  fx-doubles : FluxFile, FxRun, Integer, Integer, Integer, Integer, Integer, Boolean -> FxRun
+  fx-doubles (f) (r) (vs) (table) (t) (l) (i) (keep) =
+    if i >= 19 | r.fr-a == 0 | r.fr-b == 0 then r
+    else let pr = fx-double f (r.fr-a) (r.fr-b) vs table t l i
+    in let d = fx-drop keep (fx-drop keep 0 (r.fr-a)) (r.fr-b)
+    in fx-doubles f (FxRun { fr-a = pr.fp-img, fr-b = pr.fp-txt, fr-recs = fx-keep keep (fx-keep keep (r.fr-recs) (pr.fp-img)) (pr.fp-txt) }) vs table t l (i + 1) keep
+
+  fx-singles : FluxFile, FxRun, Integer, Integer, Integer, Integer, Boolean -> FxRun
+  fx-singles (f) (r) (vs) (table) (n) (i) (keep) =
+    if i >= 38 | r.fr-a == 0 then r
+    else let y = fx-single f (r.fr-a) vs table n i
+    in let d = if i == 0 then 0 else fx-drop keep 0 (r.fr-a)
+    in fx-singles f (FxRun { fr-a = y, fr-b = 0, fr-recs = fx-keep keep (r.fr-recs) y }) vs table n (i + 1) keep
+
+  flux-run : FluxFile, Integer, Integer, Integer, Real, Integer, Integer, Integer, Boolean -> List Integer
+  flux-run (f) (lat) (h) (w) (sigma) (ctx) (txt) (y) (keep) =
+    let l = (h / 2) * (w / 2)
+    in let n = txt + l
+    in let pimg = gpu-buf-alloc (l * 256)
+    in let pk = if pimg == 0 | lat == 0 then False else un-layer "kernel_patchify" (16 * h * w) [un-buf lat, un-buf pimg, un-int 16, un-int h, un-int w, un-int (16 * h * w)]
+    in let img = if pk then fx-linear f pimg 0 l 64 3072 "img_in" else 0
+    in let tb = un-upload [sigma * 1000.0]
+    in let e = gpu-buf-alloc 1024
+    in let ek = if tb == 0 | e == 0 then False else un-layer "kernel_timestep_embedding" 256 [un-buf tb, un-buf e, un-int 256, un-real 9.210340371976184, un-int 256]
+    in let t1 = if ek then fx-linear f e 0 1 256 3072 "time_in.in_layer" else 0
+    in let t1s = un-silu t1 3072
+    in let ti = fx-linear f t1s 0 1 3072 3072 "time_in.out_layer"
+    in let v1 = fx-linear f y 0 1 768 3072 "vector_in.in_layer"
+    in let v1s = un-silu v1 3072
+    in let vi = fx-linear f v1s 0 1 3072 3072 "vector_in.out_layer"
+    in let vec = un-add ti vi 3072
+    in let vs = un-silu vec 3072
+    in let tx = fx-linear f ctx 0 txt 4096 3072 "txt_in"
+    in let table = flux-rope-table txt h w
+    in let recs0 = fx-keep keep (fx-keep keep (fx-keep keep (fx-keep keep [] img) ti) vi) tx
+    in let dr = fx-doubles f (FxRun { fr-a = img, fr-b = tx, fr-recs = recs0 }) vs table txt l 0 keep
+    in let x = gpu-buf-alloc (n * 12288)
+    in let joined = if x == 0 | dr.fr-a == 0 | dr.fr-b == 0 then False
+       else if un-layer "kernel_copy_cols" (txt * 3072) [un-buf (dr.fr-b), un-buf x, un-int 3072, un-int 0, un-int 3072, un-int (txt * 3072)] == False then False
+       else un-layer "kernel_copy_cols" (l * 3072) [un-buf (dr.fr-a), gpu-arg-buf x (txt * 12288), un-int 3072, un-int 0, un-int 3072, un-int (l * 3072)]
+    in let sr = fx-singles f (FxRun { fr-a = if joined then x else 0, fr-b = 0, fr-recs = dr.fr-recs }) vs table n 0 keep
+    in let fm = fx-linear f vs 0 1 3072 6144 "final_layer.adaLN_modulation.1"
+    in let xn = if sr.fr-a == 0 then 0 else fx-norm-mod (sr.fr-a) (txt * 12288) l fm 1 0
+    in let fo = fx-linear f xn 0 l 3072 64 "final_layer.linear"
+    in let out = gpu-buf-alloc (16 * h * w * 4)
+    in let uk = if fo == 0 | out == 0 then False else un-layer "kernel_unpatchify" (16 * h * w) [un-buf fo, un-buf out, un-int 16, un-int h, un-int w, un-int (16 * h * w)]
+    in let res = if uk then out else un-free 0 out
+    in let fr1 = un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free 0 pimg) tb) e) t1) t1s) v1) v1s) vec) vs) table
+    in let fr2 = un-free (un-free (un-free 0 x) fm) xn
+    in let fr3 = if keep then 0 else un-free (un-free (un-free (un-free (un-free 0 ti) vi) (dr.fr-a)) (dr.fr-b)) (sr.fr-a)
+    in let fr4 = if keep then 0 else un-free 0 fo
+    in if keep then list-push (list-push (sr.fr-recs) fo) res else [res]
+
+Section: Flow Sampling
+
+ Forge's PredictionFlux for schnell (mu = 1): a table of 10000 sigmas, entry k
+ the f32 of e / (e + 1 / t - 1) at t = k / 10000, whose largest is 1; the
+ model sees x unscaled with sigma as its timestep, and the denoised latent is
+ x - sigma v. The simple schedule takes entry 10000 - int (x 10000 / n) for x
+ below n, then 0. 2.718281828459045 is e.
+
+  flux-sigma-at : Integer -> Real
+  flux-sigma-at (k) =
+    let t = sm-f32 (real-from-int k / 10000.0)
+    in sm-f32 (2.718281828459045 / (2.718281828459045 + (1.0 / t - 1.0)))
+
+  fx-simple-loop : Integer, Integer, List Real -> List Real
+  fx-simple-loop (x) (n) (acc) =
+    if x >= n then list-push acc 0.0
+    else fx-simple-loop (x + 1) n (list-push acc (flux-sigma-at (10000 - real-to-int (real-from-int x * (10000.0 / real-from-int n)))))
+
+  flux-simple-sigmas : Integer -> List Real
+  flux-simple-sigmas (n) = fx-simple-loop 0 n []
+
+  flux-denoise : FluxFile, Integer, Integer, Integer, Integer, Integer, Integer, Real -> Integer
+  flux-denoise (f) (ctx) (txt) (y) (h) (w) (x) (sigma) =
+    let v = list-at (flux-run f x h w sigma ctx txt y False) 0
+    in let d = gpu-buf-alloc (16 * h * w * 4)
+    in let r = if v == 0 | d == 0 then 0 - 1 else sm-lincomb x v v d 1.0 (0.0 - sigma) 0.0 (16 * h * w)
+    in let fr = un-free 0 v
+    in if r < 0 then un-free 0 d else d
+
+Section: Image
+
+ The latent the VAE decodes: Forge's process_out for Flux's ae, latent /
+ 0.3611 + 0.1159, in place.
+
+  flux-latent-to-vae : Integer, Integer -> Boolean
+  flux-latent-to-vae (x) (n) =
+    let shift = un-upload [0.1159]
+    in let s = if shift == 0 | x == 0 then 0 - 1 else sm-lincomb x x x x (1.0 / 0.3611) 0.0 0.0 n
+    in let a = if s < 0 then False else un-layer "kernel_add_channel" n [un-buf x, un-buf shift, un-buf x, un-int n, un-int n]
+    in let fr = un-free 0 shift
+    in a
+
+ A bare VAE file, Flux's ae.safetensors, as one part holding every tensor.
+
+  fx-bind-all : SafeTensorFile, Integer, List BoundTensor -> List BoundTensor
+  fx-bind-all (file) (i) (acc) =
+    if i >= list-length (file.st-tensors) then acc
+    else let m = list-at (file.st-tensors) i
+    in fx-bind-all file (i + 1) (list-push acc (BoundTensor { bt-name = m.stm-name, bt-dtype = m.stm-dtype, bt-shape = m.stm-shape, bt-offset = file.st-data-offset + m.stm-offset-start, bt-bytes = m.stm-offset-end - m.stm-offset-start }))
+
+  flux-vae-part : Text -> PartBinding
+  flux-vae-part (path) = PartBinding { pb-name = "vae", pb-required = 0, pb-bound = fx-bind-all (ckpt-open path) 0 [], pb-missing = [], pb-misshapen = [], pb-optional = 0 }
+
+Page 1

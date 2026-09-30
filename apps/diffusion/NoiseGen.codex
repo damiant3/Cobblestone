@@ -1,0 +1,259 @@
+Chapter: NoiseGen
+  cites Diffusion chapter SamplerSchedule
+  cites Gpu chapter DeviceMath
+  cites Foreword chapter Wrap64
+
+ Seeded standard normal draws for a latent: SplitMix64 (Steele, Lea and
+ Flood 2014: add 0x9E3779B97F4A7C15, then xor-shift 30, multiply
+ 0xBF58476D1CE4E5B9, xor-shift 27, multiply 0x94D049BB133111EB, xor-shift
+ 31) over the counter seed * 2^32 + i gives uniforms in (-1, 1) from the top
+ 53 bits; Marsaglia's polar method turns each accepted pair into two normals.
+ The same seed gives the same draws; they are not torch's.
+
+ We say:
+
+Section: Uniforms
+
+  nz-mix : Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Integer
+  nz-mix (x) = nz-mix-b (x + #9E3779B97F4A7C15)
+
+  nz-mix-b : Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Integer
+  nz-mix-b (x) = nz-mul-b (bit-xor x (bit-shru x 30))
+
+  nz-mul-b : Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Integer
+  nz-mul-b (y) = nz-mix-c (y * #BF58476D1CE4E5B9)
+
+  nz-mix-c : Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Integer
+  nz-mix-c (x) = nz-mul-c (bit-xor x (bit-shru x 27))
+
+  nz-mul-c : Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Integer
+  nz-mul-c (y) = nz-mix-d (y * #94D049BB133111EB)
+
+  nz-mix-d : Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Integer
+  nz-mix-d (x) = bit-xor x (bit-shru x 31)
+
+  nz-uniform : Integer, Integer -> Real
+  nz-uniform (seed) (i) = real-from-int (bit-shru (nz-mix (bit-shl seed 32 + i)) 11) / 4503599627370496.0 - 1.0
+
+Section: Normals
+
+ f32 bits of a double, round to nearest even; every value the polar method
+ produces is a normal f32 or zero.
+
+  nz-f32-bits : Real -> Integer
+  nz-f32-bits (v) =
+    let b = real-to-bits v
+    in let e = bit-and (bit-shru b 52) 2047
+    in if e == 0 then 0
+    else let m = bit-and b #000FFFFFFFFFFFFF
+    in let low = bit-and m #1FFFFFFF
+    in let top = bit-shru m 29
+    in let up = if low > #10000000 then 1 else if low < #10000000 then 0 else bit-and top 1
+    in let mag = bit-or (bit-shl (e - 896) 23) top + up
+    in if b < 0 then bit-or mag #80000000 else mag
+
+  nz-fill : Integer, Integer, Integer, Integer, Integer -> Integer
+  nz-fill (addr) (seed) (ctr) (i) (n) =
+    if i >= n then ctr
+    else let u = nz-uniform seed ctr
+    in let v = nz-uniform seed (ctr + 1)
+    in let s = u * u + v * v
+    in if s >= 1.0 | s <= 0.0 then nz-fill addr seed (ctr + 2) i n
+    else let f = sm-sqrt (0.0 - 2.0 * sm-ln s / s)
+    in let a = poke-32 addr (i * 4) (nz-f32-bits (u * f))
+    in let b = if i + 1 < n then poke-32 addr (i * 4 + 4) (nz-f32-bits (v * f)) else 0
+    in nz-fill addr seed (ctr + 2) (i + 2) n
+
+
+Section: Torch's Generator
+
+ Forge's default noise (`modules/rng.py`, randn_source "GPU") is torch.randn
+ on the CUDA device from a torch.Generator seeded with the seed, one draw of
+ the latent's shape for the start and one more for every later draw. torch
+ 2.3's CUDA normal (ATen `DistributionTemplates.h`, calc_execution_policy and
+ distribution_elementwise_grid_stride_kernel) runs blocks of 256 threads, at
+ most multiProcessorCount x (maxThreadsPerMultiProcessor / 256) of them: 34 x
+ 6 on this box's RTX 4060 Ti (sm_89, 1536 threads per SM), so another card
+ draws other noise from the same seed. Thread t starts curand's
+ Philox4x32-10 at key = the seed and counter = (offset, 0, t, 0); pass j of
+ its grid-stride loop takes the output at counter offset + j, and
+ curand_normal4 turns its four words into four normals, (x0, x1) and then
+ (x2, x3), each through Box-Muller as sin and then cos times sqrt (-2 ln u),
+ u = x 2^-32 + 2^-33 and the angle y 2^-32 2 pi + 2^-32 pi, for the elements
+ t + T (4 j + ii) of T threads. A draw moves the generator's offset on by its
+ number of passes. The Philox constants are Salmon et al. 2011's.
+
+  nt-blocks : Integer
+  nt-blocks = 204
+
+  nt-threads : Integer -> Integer
+  nt-threads (n) =
+    let b = (n + 255) / 256
+    in 256 * (if b < nt-blocks then b else nt-blocks)
+
+  nt-passes : Integer -> Integer
+  nt-passes (n) = (n - 1) / (nt-threads n * 4) + 1
+
+  nt-lo : Integer -> Integer
+  nt-lo (x) = bit-and x #FFFFFFFF
+
+  nt-round : Integer, Integer, Integer -> Integer
+  nt-round (c) (k0) (k1) =
+    let c0 = peek-32 c 0
+    in let c1 = peek-32 c 4
+    in let c2 = peek-32 c 8
+    in let c3 = peek-32 c 12
+    in let p0 = w64-mul c0 #D2511F53
+    in let p1 = w64-mul c2 #CD9E8D57
+    in let a = poke-32 c 0 (bit-xor (bit-xor (bit-shru p1 32) c1) k0)
+    in let b = poke-32 c 4 (nt-lo p1)
+    in let d = poke-32 c 8 (bit-xor (bit-xor (bit-shru p0 32) c3) k1)
+    in poke-32 c 12 (nt-lo p0)
+
+  nt-philox : Integer, Integer, Integer, Integer -> Integer
+  nt-philox (c) (k0) (k1) (r) =
+    if r >= 10 then 0
+    else let z = nt-round c k0 k1
+    in nt-philox c (nt-lo (k0 + #9E3779B9)) (nt-lo (k1 + #BB67AE85)) (r + 1)
+
+  nt-inv : Real
+  nt-inv = 1.0 / 4294967296.0
+
+ 2^-32 times 6.2831855 as f32 (curand's CURAND_2POW32_INV_2PI), exact in f32;
+ each word is an f32 before it is scaled, as curand converts it.
+
+  nt-inv-2pi : Real
+  nt-inv-2pi = 6.2831854820251465 / 4294967296.0
+
+  nt-radius : Integer -> Real
+  nt-radius (x) = sm-sqrt (0.0 - 2.0 * sm-ln (sm-f32 (sm-f32 (real-from-int x) * nt-inv + nt-inv / 2.0)))
+
+  nt-angle : Integer -> Real
+  nt-angle (y) = sm-f32 (sm-f32 (real-from-int y) * nt-inv-2pi + nt-inv-2pi / 2.0)
+
+  nt-put : Integer, Integer, Integer, Real -> Integer
+  nt-put (addr) (li) (n) (v) = if li < n then poke-32 addr (li * 4) (nz-f32-bits v) else 0
+
+ One pass j of thread t: its Philox output, and the four normals it writes.
+
+  nt-pass : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  nt-pass (addr) (c) (seed) (base) (t) (j) (tt) (n) =
+    let p1 = poke-32 c 0 (nt-lo (base + j))
+    in let p2 = poke-32 c 4 (bit-shru (base + j) 32)
+    in let p3 = poke-32 c 8 t
+    in let p4 = poke-32 c 12 0
+    in let z = nt-philox c (nt-lo seed) (nt-lo (bit-shru seed 32)) 0
+    in let r1 = nt-radius (peek-32 c 0)
+    in let a1 = nt-angle (peek-32 c 4)
+    in let r2 = nt-radius (peek-32 c 8)
+    in let a2 = nt-angle (peek-32 c 12)
+    in let li = t + tt * 4 * j
+    in let w1 = nt-put addr li n (real-sin a1 * r1)
+    in let w2 = nt-put addr (li + tt) n (real-cos a1 * r1)
+    in let w3 = nt-put addr (li + 2 * tt) n (real-sin a2 * r2)
+    in nt-put addr (li + 3 * tt) n (real-cos a2 * r2)
+
+  nt-thread : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  nt-thread (addr) (c) (seed) (base) (t) (j) (passes) (n) =
+    if j >= passes then 0
+    else let z = nt-pass addr c seed base t j (nt-threads n) n
+    in nt-thread addr c seed base t (j + 1) passes n
+
+  nt-fill : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  nt-fill (addr) (c) (seed) (base) (t) (n) =
+    if t >= nt-threads n then 0
+    else let z = nt-thread addr c seed base t 0 (nt-passes n) n
+    in nt-fill addr c seed base (t + 1) n
+
+ The draw-th torch.randn of n values from a generator seeded with seed, as
+ f32 at addr; draw 0 is the first.
+
+  noise-torch-into : Integer, Integer, Integer, Integer -> Integer
+  noise-torch-into (addr) (seed) (draw) (n) = nt-fill addr (alloc-bytes 16) seed (draw * nt-passes n) 0 n
+
+
+Section: Torch's CPU Generator
+
+ torch.randn on the CPU from a generator after manual_seed (torch 2.3's ATen
+ MT19937RNGEngine.h, DistributionsHelper.h, and normal_fill in the CPU
+ DistributionTemplates.h): the generator is MT19937 (Matsumoto and
+ Nishimura 1998, init_genrand's seeding, the constants theirs). Every value
+ first takes a uniform, the low 24 bits of one word times 2^-24; then each
+ whole block of 16 from the start turns its j-th and (j + 8)-th uniforms
+ (j below 8) into r cos t and r sin t, r = sqrt (-2 ln (1 - u_j)) and t = 2 pi
+ u_j+8; when n is not a multiple of 16 the last 16 take new uniforms and are
+ turned again. Each f32 step is rounded as torch's float math rounds it;
+ its vectorised log, sin and cos are within an ulp or two of these.
+
+  tcpu-get : Integer, Integer -> Integer
+  tcpu-get (st) (i) = bit-and (peek-32 st (i * 4)) #FFFFFFFF
+
+  tcpu-init : Integer, Integer -> Integer
+  tcpu-init (st) (i) =
+    if i >= 624 then poke-32 st 2496 624
+    else let p = tcpu-get st (i - 1)
+    in let a = poke-32 st (i * 4) (nt-lo (nt-lo (w64-mul 1812433253 (bit-xor p (bit-shru p 30))) + i))
+    in tcpu-init st (i + 1)
+
+  tcpu-wrap : Integer -> Integer
+  tcpu-wrap (i) = if i >= 624 then i - 624 else i
+
+  tcpu-twist : Integer, Integer -> Integer
+  tcpu-twist (st) (i) =
+    if i >= 624 then poke-32 st 2496 0
+    else let y = bit-or (bit-and (tcpu-get st i) #80000000) (bit-and (tcpu-get st (tcpu-wrap (i + 1))) #7FFFFFFF)
+    in let v = bit-xor (bit-xor (tcpu-get st (tcpu-wrap (i + 397))) (bit-shru y 1)) (if bit-and y 1 == 1 then #9908B0DF else 0)
+    in let a = poke-32 st (i * 4) v
+    in tcpu-twist st (i + 1)
+
+  tcpu-next : Integer -> Integer
+  tcpu-next (st) =
+    let z = if tcpu-get st 624 >= 624 then tcpu-twist st 0 else 0
+    in let k = tcpu-get st 624
+    in let y0 = tcpu-get st k
+    in let a = poke-32 st 2496 (k + 1)
+    in let y1 = bit-xor y0 (bit-shru y0 11)
+    in let y2 = bit-xor y1 (bit-and (bit-shl y1 7) #9D2C5680)
+    in let y3 = bit-xor y2 (bit-and (bit-shl y2 15) #EFC60000)
+    in bit-xor y3 (bit-shru y3 18)
+
+  tcpu-uniforms : Integer, Integer, Integer, Integer -> Integer
+  tcpu-uniforms (addr) (st) (i) (n) =
+    if i >= n then 0
+    else let a = poke-32 addr (i * 4) (bit-and (tcpu-next st) #FFFFFF)
+    in tcpu-uniforms addr st (i + 1) n
+
+ 2 pi as f32 (6.2831855), as torch's vectorised fill holds it.
+
+  tcpu-two-pi : Real
+  tcpu-two-pi = 6.2831854820251465
+
+  tcpu-box : Integer, Integer, Integer -> Integer
+  tcpu-box (addr) (b) (j) =
+    if j >= 8 then 0
+    else let u1 = 1.0 - real-from-int (peek-32 addr ((b + j) * 4)) / 16777216.0
+    in let u2 = real-from-int (peek-32 addr ((b + j + 8) * 4)) / 16777216.0
+    in let r = sm-f32 (sm-sqrt (sm-f32 (0.0 - 2.0 * sm-f32 (sm-ln u1))))
+    in let t = sm-f32 (tcpu-two-pi * u2)
+    in let a = poke-32 addr ((b + j) * 4) (nz-f32-bits (sm-f32 (r * sm-f32 (real-cos t))))
+    in let c = poke-32 addr ((b + j + 8) * 4) (nz-f32-bits (sm-f32 (r * sm-f32 (real-sin t))))
+    in tcpu-box addr b (j + 1)
+
+  tcpu-blocks : Integer, Integer, Integer -> Integer
+  tcpu-blocks (addr) (b) (n) = if b + 16 > n then 0 else let z = tcpu-box addr b 0 in tcpu-blocks addr (b + 16) n
+
+ torch.randn of n values (at least 16) after torch.manual_seed (seed), as f32
+ at addr; 0 - 1 and nothing written when n is under 16, which torch draws
+ another way.
+
+  noise-torch-cpu-into : Integer, Integer, Integer -> Integer
+  noise-torch-cpu-into (addr) (seed) (n) =
+    if n < 16 then 0 - 1
+    else let st = alloc-bytes 2500
+    in let s = poke-32 st 0 (nt-lo seed)
+    in let i = tcpu-init st 1
+    in let u = tcpu-uniforms addr st 0 n
+    in let z = tcpu-blocks addr 0 n
+    in if n - n / 16 * 16 == 0 then 0
+    else let v = tcpu-uniforms (addr + (n - 16) * 4) st 0 16
+    in tcpu-box addr (n - 16) 0

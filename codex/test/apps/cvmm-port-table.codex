@@ -1,0 +1,62 @@
+Chapter: CvmmPortTable
+  cites Cvmm chapter PortMonitor
+  cites Cvmm chapter CvmmTypes
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter NetIO
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+ The view follows the transport. A fresh transport is CLOSED and shows no
+ row; listening on 9100 shows one listener; the same steps on 9300 move it.
+ The last arm sets the connection ESTABLISHED by hand, because nothing opens a
+ real connection without a network: it tests the view's mapping, not TCP.
+ __record-set writes through the pointer (L-ALIAS), so that arm gets a
+ transport of its own; built from t0 it rewrote the fresh arm too.
+
+Section: Fixtures
+
+  pt-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  pt-ip : List Integer = [10, 0, 2, 15]
+  pt-gw : List Integer = [10, 0, 2, 2]
+
+  pt-transport : Integer -> TcpTransportState
+  pt-transport (port) = transport-new-with-cap (net-session-new pt-mac pt-ip pt-gw port 0 pt-gw 1000) 4096
+
+  pt-established : TcpTransportState -> TcpTransportState
+  pt-established (ts) =
+    let sess = ts.session
+    in let c = __record-set (__record-set (__record-set (sess.conn) "state" TcpEstablished) "remote-port" 52431) "remote-ip" [10, 0, 2, 2]
+    in transport-set-session ts (__record-set sess "conn" c)
+
+Section: Report
+
+  pt-line : Text, PortMonitorState -> Text
+  pt-line (tag) (st) =
+    tag & " listeners " & show (st.pm-listener-count) & " conns " & show (st.pm-connection-count) & pt-first-listener st & pt-first-conn st
+
+  pt-first-listener : PortMonitorState -> Text
+  pt-first-listener (st) =
+    if st.pm-listener-count == 0 then ""
+    else let l = list-at (st.pm-listeners) 0
+    in " listen " & show (l.pl-port) & " " & l.pl-service-id
+
+  pt-first-conn : PortMonitorState -> Text
+  pt-first-conn (st) =
+    if st.pm-connection-count == 0 then ""
+    else let c = list-at (st.pm-connections) 0
+    in " conn " & show (c.nc-local-port) & " " & c.nc-remote-addr & ":" & show (c.nc-remote-port) & " " & conn-state-label (c.nc-state)
+
+Section: Entry
+  opening : [Console] Nothing = act
+    let t0 = pt-transport 9100
+    in let t1 = net-io-listen t0
+    in let t2 = net-io-listen (pt-transport 9300)
+    in let t3 = pt-established (pt-transport 9100)
+    in act
+      print-line-uni (pt-line "fresh" (portmon-live t0 "web" "CVMM Web Server"))
+      print-line-uni (pt-line "listen" (portmon-live t1 "web" "CVMM Web Server"))
+      print-line-uni (pt-line "moved" (portmon-live t2 "web" "CVMM Web Server"))
+      print-line-uni (pt-line "established" (portmon-live t3 "web" "CVMM Web Server"))
+    end
+  end

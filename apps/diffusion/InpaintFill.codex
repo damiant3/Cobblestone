@@ -1,0 +1,164 @@
+Chapter: InpaintFill
+
+ Forge's masked content "fill" (modules/masking.py fill), run on the picture
+ before it is encoded: the picture premultiplied under the inverted blurred
+ mask, then Pillow 9.5's GaussianBlur of that at radii 256, 64, 16, 4, 2 and
+ 0, each unpremultiplied and alpha-composited 1, 1, 2, 4, 2 and 1 times over a
+ transparent canvas, the canvas's RGB kept.
+
+ We say:
+
+Section: Box Blur
+
+ Pillow's GaussianBlur is three box blurs a direction (BoxBlur.c) at radius
+ _gaussian_blur_radius (r, 3): 255.49902, 63.496094, 15.484375, 3.4375 and
+ 1.375 for Forge's radii. Each box uses its whole part, ww = 2^24 / (2 radius
+ + 1) in f32 truncated, and fw = (2^24 - (2 whole + 1) ww) / 2; the sums are
+ UINT32.
+
+  fl-whole : Integer -> Integer
+  fl-whole (r) = if r == 256 then 255 else if r == 64 then 63 else if r == 16 then 15 else if r == 4 then 3 else 1
+
+  fl-ww : Integer -> Integer
+  fl-ww (r) = if r == 256 then 32768 else if r == 64 then 131080 else if r == 16 then 524800 else if r == 4 then 2130440 else 4473924
+
+  fl-fw : Integer -> Integer
+  fl-fw (r) = if r == 256 then 16384 else if r == 64 then 65028 else if r == 16 then 254208 else if r == 4 then 932068 else 1677722
+
+  fl-sum : Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-sum (s) (base) (x) (n) (acc) = if x >= n then acc else fl-sum s base (x + 1) n (acc + peek-byte s (base + x * 4))
+
+ One channel of one line, x from 0 to lastx: the pixel leaving the window
+ is 0 until edgeA, and the one entering is lastx from edgeB on.
+
+  fl-run : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-run (s) (d) (base) (x) (lastx) (r) (ea) (eb) (ww) (fw) (acc) =
+    if x > lastx then 0
+    else let sub = if x < ea then 0 else x - r - 1
+    in let add = if x < eb then x + r else lastx
+    in let right = if x < eb then x + r + 1 else lastx
+    in let a2 = acc + peek-byte s (base + add * 4) - peek-byte s (base + sub * 4)
+    in let bulk = bit-and (a2 * ww + (peek-byte s (base + sub * 4) + peek-byte s (base + right * 4)) * fw) #FFFFFFFF
+    in let w = poke-byte d (base + x * 4) (bit-and (bit-shru (bit-and (bulk + 8388608) #FFFFFFFF) 24) 255)
+    in fl-run s d base (x + 1) lastx r ea eb ww fw a2
+
+  fl-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-rows (s) (d) (w) (h) (r) (ww) (fw) (k) =
+    if k >= h * 4 then d
+    else let y = k / 4
+    in let base = y * w * 4 + (k - y * 4)
+    in let ea = if r + 1 < w then r + 1 else w
+    in let eb = if w - r - 1 > 0 then w - r - 1 else 0
+    in let a0 = peek-byte s base * (r + 1) + fl-sum s base 0 (ea - 1) 0 + peek-byte s (base + (w - 1) * 4) * (r - ea + 1)
+    in let z = fl-run s d base 0 (w - 1) r ea eb ww fw a0
+    in fl-rows s d w h r ww fw (k + 1)
+
+  fl-transpose : Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-transpose (s) (d) (w) (h) (p) =
+    if p >= w * h then d
+    else let y = p / w
+    in let x = p - y * w
+    in let v = poke-32 d ((x * h + y) * 4) (peek-32 s (p * 4))
+    in fl-transpose s d w h (p + 1)
+
+  fl-gauss : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-gauss (img) (t1) (t2) (w) (h) (r) =
+    let rr = fl-whole r
+    in let ww = fl-ww r
+    in let fw = fl-fw r
+    in let a = fl-rows (fl-rows (fl-rows img t1 w h rr ww fw 0) t2 w h rr ww fw 0) t1 w h rr ww fw 0
+    in let b = fl-transpose a t2 w h 0
+    in let c = fl-rows (fl-rows (fl-rows b t1 h w rr ww fw 0) t2 h w rr ww fw 0) t1 h w rr ww fw 0
+    in fl-transpose c t2 h w 0
+
+Section: Pixels
+
+ Pillow's BLEND and MULDIV255 of a byte by a mask byte, its RGBa to RGBA
+ (255 c / a, clipped, where a is neither 0 nor 255), and alpha_composite's
+ integer arithmetic (AlphaComposite.c, 7 bits of precision).
+
+  fl-blend8 : Integer, Integer -> Integer
+  fl-blend8 (a) (m) = let t = a * m + 128 in bit-shru (t + bit-shru t 8) 8
+
+  fl-masked : Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-masked (rgb) (mask) (d) (i) (n) =
+    if i >= n then d
+    else let p = i / 4
+    in let c = i - p * 4
+    in let m = 255 - peek-byte mask p
+    in let w = poke-byte d i (fl-blend8 (if c == 3 then 255 else peek-byte rgb (p * 3 + c)) m)
+    in fl-masked rgb mask d (i + 1) n
+
+  fl-unpremultiply : Integer, Integer, Integer -> Integer
+  fl-unpremultiply (a) (p) (n) =
+    if p >= n then a
+    else let al = peek-byte a (p * 4 + 3)
+    in let z = if al == 0 | al == 255 then 0 else fl-unpre3 a (p * 4) al 0
+    in fl-unpremultiply a (p + 1) n
+
+  fl-unpre3 : Integer, Integer, Integer, Integer -> Integer
+  fl-unpre3 (a) (at) (al) (c) =
+    if c >= 3 then 0
+    else let v = (255 * peek-byte a (at + c)) / al
+    in let w = poke-byte a (at + c) (if v > 255 then 255 else v)
+    in fl-unpre3 a at al (c + 1)
+
+  fl-div255 : Integer -> Integer
+  fl-div255 (t) = bit-shru (bit-shru t 8 + t) 8
+
+  fl-over-px : Integer, Integer, Integer -> Integer
+  fl-over-px (dst) (src) (at) =
+    let sa = peek-byte src (at + 3)
+    in if sa == 0 then 0
+    else let outa = sa * 255 + peek-byte dst (at + 3) * (255 - sa)
+    in let k1 = sa * 255 * 255 * 128 / outa
+    in let k2 = 255 * 128 - k1
+    in let r = poke-byte dst at (bit-shru (fl-div255 (peek-byte src at * k1 + peek-byte dst at * k2 + 16384)) 7)
+    in let g = poke-byte dst (at + 1) (bit-shru (fl-div255 (peek-byte src (at + 1) * k1 + peek-byte dst (at + 1) * k2 + 16384)) 7)
+    in let b = poke-byte dst (at + 2) (bit-shru (fl-div255 (peek-byte src (at + 2) * k1 + peek-byte dst (at + 2) * k2 + 16384)) 7)
+    in poke-byte dst (at + 3) (fl-div255 (outa + 128))
+
+  fl-over : Integer, Integer, Integer, Integer -> Integer
+  fl-over (dst) (src) (p) (n) =
+    if p >= n then dst
+    else let z = fl-over-px dst src (p * 4)
+    in fl-over dst src (p + 1) n
+
+  fl-over-times : Integer, Integer, Integer, Integer -> Integer
+  fl-over-times (dst) (src) (n) (k) = if k <= 0 then dst else let z = fl-over dst src 0 n in fl-over-times dst src n (k - 1)
+
+  fl-rgb : Integer, Integer, Integer, Integer -> Integer
+  fl-rgb (a) (d) (i) (n) =
+    if i >= n then d
+    else let p = i / 3
+    in let w = poke-byte d i (peek-byte a (p * 4 + i - p * 3))
+    in fl-rgb a d (i + 1) n
+
+  fl-zero : Integer, Integer, Integer -> Integer
+  fl-zero (a) (i) (n) = if i >= n then a else let z = poke-32 a (i * 4) 0 in fl-zero a (i + 1) n
+
+  fl-copy : Integer, Integer, Integer, Integer -> Integer
+  fl-copy (s) (d) (i) (n) = if i >= n then d else let z = poke-32 d (i * 4) (peek-32 s (i * 4)) in fl-copy s d (i + 1) n
+
+Section: Fill
+
+  fl-layer : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fl-layer (mod) (masked) (t1) (t2) (w) (h) (r) (k) =
+    let b = if r == 0 then fl-copy masked t2 0 (w * h) else fl-gauss masked t1 t2 w h r
+    in let u = fl-unpremultiply b 0 (w * h)
+    in fl-over-times mod u (w * h) k
+
+  inpaint-fill : Integer, Integer, Integer, Integer -> Integer
+  inpaint-fill (rgb) (mask) (w) (h) =
+    let n = w * h
+    in let masked = fl-masked rgb mask (alloc-bytes (n * 4)) 0 (n * 4)
+    in let t1 = alloc-bytes (n * 4)
+    in let t2 = alloc-bytes (n * 4)
+    in let mod = fl-zero (alloc-bytes (n * 4)) 0 n
+    in let a = fl-layer mod masked t1 t2 w h 256 1
+    in let b = fl-layer mod masked t1 t2 w h 64 1
+    in let c = fl-layer mod masked t1 t2 w h 16 2
+    in let d = fl-layer mod masked t1 t2 w h 4 4
+    in let e = fl-layer mod masked t1 t2 w h 2 2
+    in let f = fl-layer mod masked t1 t2 w h 0 1
+    in fl-rgb mod (alloc-bytes (n * 3)) 0 (n * 3)

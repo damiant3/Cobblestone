@@ -1,0 +1,50 @@
+Chapter: PeExportsProbe
+  cites Pe chapter PeExports
+
+Section: Staging
+
+  pep-copy : Integer, Integer, Integer -> Integer
+  pep-copy (src) (dst) (i) =
+    if i >= 512 then 0
+    else let w = poke-qword dst i (peek-qword src i)
+    in pep-copy src dst (i + 8)
+
+  pep-stage : Integer, Integer, Integer -> [Device.Block] Integer
+  pep-stage (buf) (s) (n) =
+    if s >= n then buf
+    else let mark = __heap-save
+    in act
+      sb <- block-read-sector s
+      let c = pep-copy sb (buf + s * 512) 0
+      in let r = __heap-restore mark
+      in pep-stage buf (s + 1) n
+    end
+
+Section: Report
+
+  pep-line : PeExport -> Text
+  pep-line (e) = show (e.pex-ordinal) & " " & e.pex-name & (if text-length (e.pex-forwarder) > 0 then " -> " & e.pex-forwarder else "")
+
+  pep-print : List PeExport, Integer -> [Console] Nothing
+  pep-print (xs) (i) =
+    if i >= list-length xs then print-line-uni "END"
+    else act
+      print-line-uni (pep-line (list-at xs i))
+      pep-print xs (i + 1)
+    end
+
+  pep-report : PeExportTable -> [Console] Nothing
+  pep-report (t) =
+    if text-length (t.pet-why) > 0 then print-line-uni ("REFUSED " & t.pet-why)
+    else act
+      print-line-uni ("EXPORTS " & show (list-length (t.pet-exports)))
+      pep-print (t.pet-exports) 0
+    end
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    n <- block-sector-count
+    b <- pep-stage (alloc-bytes (n * 512)) 0 n
+    pep-report (pe-exports b (n * 512))
+  end

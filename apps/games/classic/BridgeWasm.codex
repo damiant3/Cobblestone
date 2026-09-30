@@ -3,114 +3,149 @@ Chapter: BridgeWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- A play builds a fresh hand through `remove-at` and a fresh record, so no
- copy is needed. `determine-contract` writes in place through
- `__record-set`, so it runs only on the state `br-wasm-new` has just built.
-
  Seats are north 0, south 1, east 2, west 3, the engine's argument order
- rather than the order round a table.
-
- The person is South. The opening lead belongs to the declarer's left, so
- `br-wasm-new` plays the seats ahead of South before it answers. The engine
- plays North, and no dummy is modelled.
+ rather than the order round a table. The person is South. `br-wasm-who` is
+ the seat that decides the next call or card: the declarer decides for the
+ dummy, so it is South on North's turn when South declares, and North on
+ South's turn when North declares.
 
  We say:
 
-Section: The Browser Interface
+Section: The Board
 
   wasm-exports : Text = ""
 
-  br-wasm-new : Integer -> BridgeState
-  br-wasm-new (seed) =
-    let deck = br-shuffle br-deck-new (rng-new seed)
-    in br-to-human (br-begin (determine-contract (br-deal deck))) 4
+  br-wasm-new : Integer -> BrTable
+  br-wasm-new (seed) = br-new-board seed
 
-  br-to-human : BridgeState, Integer -> BridgeState
-  br-to-human (st) (fuel) =
-    if fuel <= 0 then st
-    else if st.done then st
-    else if st.turn == 1 then st
-    else br-to-human (br-step st) (fuel - 1)
+  br-wasm-board : BrTable -> Integer
+  br-wasm-board (g) = g.board
 
-  br-wasm-hand : BridgeState, Integer -> List Integer
-  br-wasm-hand (st) (seat) =
-    if seat == 0 then st.north
-    else if seat == 1 then st.south
-    else if seat == 2 then st.east
-    else st.west
+  br-wasm-dealer : BrTable -> Integer
+  br-wasm-dealer (g) = g.dealer
 
-  br-wasm-count : BridgeState, Integer -> Integer
-  br-wasm-count (st) (seat) =
+  br-wasm-vul : BrTable -> Integer
+  br-wasm-vul (g) = g.vul
+
+  br-wasm-phase : BrTable -> Integer
+  br-wasm-phase (g) = g.phase
+
+  br-wasm-done : BrTable -> Integer
+  br-wasm-done (g) = if g.phase == 2 then 1 else 0
+
+  br-wasm-cur : BrTable -> Integer
+  br-wasm-cur (g) = (g.st).turn
+
+  br-wasm-who : BrTable -> Integer
+  br-wasm-who (g) = br-who g
+
+  br-wasm-step : BrTable -> BrTable
+  br-wasm-step (g) = br-step g
+
+Section: The Auction
+
+  br-wasm-ncalls : BrTable -> Integer
+  br-wasm-ncalls (g) = list-length (g.calls)
+
+  br-wasm-call-at : BrTable, Integer -> Integer
+  br-wasm-call-at (g) (i) =
+    if i < 0 then (-1)
+    else if i >= list-length (g.calls) then (-1)
+    else list-at (g.calls) i
+
+  br-wasm-last-bid : BrTable -> Integer
+  br-wasm-last-bid (g) = g.last-bid
+
+  br-wasm-bidder : BrTable -> Integer
+  br-wasm-bidder (g) = g.bidder
+
+  br-wasm-dbl : BrTable -> Integer
+  br-wasm-dbl (g) = g.dbl
+
+  br-wasm-can-call : BrTable, Integer -> Integer
+  br-wasm-can-call (g) (code) = if br-can-call g code then 1 else 0
+
+  br-wasm-call : BrTable, Integer -> BrTable
+  br-wasm-call (g) (code) = br-call g code
+
+  br-wasm-decl : BrTable -> Integer
+  br-wasm-decl (g) = g.decl
+
+  br-wasm-level : BrTable -> Integer
+  br-wasm-level (g) = if g.decl < 0 then 0 else g.last-bid / 5
+
+  br-wasm-strain : BrTable -> Integer
+  br-wasm-strain (g) = if g.decl < 0 then (-1) else rng-mod (g.last-bid) 5
+
+  br-wasm-trump : BrTable -> Integer
+  br-wasm-trump (g) = (g.st).trump
+
+Section: The Hands
+
+  br-wasm-count : BrTable, Integer -> Integer
+  br-wasm-count (g) (seat) =
     if seat < 0 then 0
     else if seat > 3 then 0
-    else list-length (br-wasm-hand st seat)
+    else list-length (br-hand (g.st) seat)
 
-  br-wasm-card : BridgeState, Integer, Integer -> Integer
-  br-wasm-card (st) (seat) (i) =
+  br-wasm-card : BrTable, Integer, Integer -> Integer
+  br-wasm-card (g) (seat) (i) =
     if seat < 0 then (-1)
     else if seat > 3 then (-1)
     else if i < 0 then (-1)
-    else if i >= br-wasm-count st seat then (-1)
-    else list-at (br-wasm-hand st seat) i
+    else if i >= br-wasm-count g seat then (-1)
+    else list-at (br-hand (g.st) seat) i
 
-  br-wasm-hcp : BridgeState, Integer -> Integer
-  br-wasm-hcp (st) (seat) =
+ What South may see: its own hand, and the dummy once the opening lead is
+ on the table.
+
+  br-wasm-shown : BrTable, Integer, Integer -> Integer
+  br-wasm-shown (g) (seat) (i) =
+    if seat == 1 then br-wasm-card g seat i
+    else if g.phase /= 1 then (-1)
+    else if seat /= br-dummy g then (-1)
+    else if (g.st).tricks == 0 & br-played (g.st) ((g.st).leader) < 0 then (-1)
+    else br-wasm-card g seat i
+
+  br-wasm-hcp : BrTable, Integer -> Integer
+  br-wasm-hcp (g) (seat) =
     if seat < 0 then 0
     else if seat > 3 then 0
-    else hand-hcp (br-wasm-hand st seat)
+    else hand-hcp (br-hand (g.st) seat)
 
-  br-wasm-trump : BridgeState -> Integer
-  br-wasm-trump (st) = st.trump
+Section: The Play
 
-  br-wasm-contract : BridgeState -> Integer
-  br-wasm-contract (st) = st.contract
+  br-wasm-leader : BrTable -> Integer
+  br-wasm-leader (g) = (g.st).leader
 
-  br-wasm-declarer : BridgeState -> Integer
-  br-wasm-declarer (st) = st.declarer
-
-  br-wasm-nstricks : BridgeState -> Integer
-  br-wasm-nstricks (st) = st.ns-tricks
-
-  br-wasm-ewtricks : BridgeState -> Integer
-  br-wasm-ewtricks (st) = st.ew-tricks
-
- The tricks the declarer has taken so far, not a projection over the whole
- hand.
-
-  br-wasm-tricks-made : BridgeState -> Integer
-  br-wasm-tricks-made (st) =
-    if st.declarer == 0 then st.ns-tricks else st.ew-tricks
-
-  br-wasm-cur : BridgeState -> Integer
-  br-wasm-cur (st) = st.turn
-
-  br-wasm-leader : BridgeState -> Integer
-  br-wasm-leader (st) = st.leader
-
-  br-wasm-trick : BridgeState, Integer -> Integer
-  br-wasm-trick (st) (seat) =
+  br-wasm-trick : BrTable, Integer -> Integer
+  br-wasm-trick (g) (seat) =
     if seat < 0 then (-1)
     else if seat > 3 then (-1)
-    else br-played st seat
+    else br-played (g.st) seat
 
-  br-wasm-legal : BridgeState, Integer -> Integer
-  br-wasm-legal (st) (idx) = if br-legal st idx then 1 else 0
+  br-wasm-legal : BrTable, Integer -> Integer
+  br-wasm-legal (g) (idx) = if br-legal-now g idx then 1 else 0
 
-  br-wasm-play : BridgeState, Integer -> BridgeState
-  br-wasm-play (st) (idx) = br-play-at st idx
+  br-wasm-play : BrTable, Integer -> BrTable
+  br-wasm-play (g) (idx) = br-play-card g idx
 
-  br-wasm-step : BridgeState -> BridgeState
-  br-wasm-step (st) = br-step st
+  br-wasm-tricks : BrTable -> Integer
+  br-wasm-tricks (g) = (g.st).tricks
 
-  br-wasm-done : BridgeState -> Integer
-  br-wasm-done (st) = if st.done then 1 else 0
+  br-wasm-nstricks : BrTable -> Integer
+  br-wasm-nstricks (g) = (g.st).ns-tricks
 
-  br-wasm-tricks : BridgeState -> Integer
-  br-wasm-tricks (st) = st.tricks
+  br-wasm-ewtricks : BrTable -> Integer
+  br-wasm-ewtricks (g) = (g.st).ew-tricks
 
-  br-wasm-score : BridgeState -> Integer
-  br-wasm-score (st) =
-    bridge-score (st.contract) (br-wasm-tricks-made st) (st.trump)
+  br-wasm-tricks-made : BrTable -> Integer
+  br-wasm-tricks-made (g) = if g.decl < 0 then 0 else br-decl-tricks g
+
+  br-wasm-score : BrTable -> Integer
+  br-wasm-score (g) = g.score
+
+Section: Cards And The Score Table
 
   br-wasm-card-suit : Integer -> Integer
   br-wasm-card-suit (c) = if c < 0 then (-1) else br-suit c
@@ -124,5 +159,26 @@ Section: The Browser Interface
   br-wasm-beats : Integer, Integer, Integer, Integer -> Integer
   br-wasm-beats (challenger) (best) (led-suit) (trump) =
     if card-beats challenger best led-suit trump then 1 else 0
+
+  br-wasm-dup-score : Integer, Integer, Integer, Integer, Integer -> Integer
+  br-wasm-dup-score (level) (strain) (dbl) (vul) (tricks) =
+    br-dup-score level strain dbl (vul == 1) tricks
+
+Section: The Session
+
+  br-wasm-run : Integer -> BridgeResult
+  br-wasm-run (seed) = run-bridge-hand seed
+
+  br-wasm-run-team : BridgeResult -> Integer
+  br-wasm-run-team (r) = r.declarer-team
+
+  br-wasm-run-level : BridgeResult -> Integer
+  br-wasm-run-level (r) = r.contract-level
+
+  br-wasm-run-tricks : BridgeResult -> Integer
+  br-wasm-run-tricks (r) = r.tricks-made
+
+  br-wasm-run-score : BridgeResult -> Integer
+  br-wasm-run-score (r) = r.score
 
 Page 1

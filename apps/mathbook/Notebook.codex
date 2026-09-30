@@ -1,5 +1,6 @@
 Chapter: Notebook
   cites Mathbook chapter Expr
+  cites Mathbook chapter Symbols
   cites Mathbook chapter Parser
   cites Mathbook chapter Printer
   cites Mathbook chapter Simplify
@@ -17,6 +18,7 @@ Chapter: Notebook
   cites UI chapter CommandPalette
   cites UI chapter SearchBar
   cites UI chapter StatusBadge
+  cites Foreword chapter Console
 
 Section: Cell Types
 
@@ -39,52 +41,6 @@ Section: Cell Types
     | OutPlot
     | OutTable
     | OutNone
-
-Section: Symbol Table
-
-  Binding = record { bind-name : Text, bind-value : Expr }
-
-  SymbolTable = record {
-    st-bindings : List Binding,
-    st-count : Integer
-  }
-
-  symtab-new : SymbolTable
-  symtab-new = SymbolTable { st-bindings = [], st-count = 0 }
-
-  symtab-set : SymbolTable, Text, Expr -> SymbolTable
-  symtab-set (st) (name) (val) =
-    let updated = symtab-update-loop (st.st-bindings) name val 0 (st.st-count) [] False
-    in if updated.su-found then __record-set st "st-bindings" (updated.su-bindings)
-    else SymbolTable { st-bindings = list-push (st.st-bindings) (Binding { bind-name = name, bind-value = val }), st-count = st.st-count + 1 }
-
-  SymtabUpdate = record { su-bindings : List Binding, su-found : Boolean }
-
-  symtab-update-loop : List Binding, Text, Expr, Integer, Integer, List Binding, Boolean -> SymtabUpdate
-  symtab-update-loop (binds) (name) (val) (i) (n) (acc) (found) =
-    if i >= n then SymtabUpdate { su-bindings = acc, su-found = found }
-    else let b = list-at binds i
-    in if b.bind-name == name then symtab-update-loop binds name val (i + 1) n (list-push acc (Binding { bind-name = name, bind-value = val })) True
-    else symtab-update-loop binds name val (i + 1) n (list-push acc b) found
-
-  symtab-get : SymbolTable, Text -> Maybe Expr
-  symtab-get (st) (name) = symtab-lookup (st.st-bindings) name 0 (st.st-count)
-
-  symtab-lookup : List Binding, Text, Integer, Integer -> Maybe Expr
-  symtab-lookup (binds) (name) (i) (n) =
-    if i >= n then None
-    else let b = list-at binds i
-    in if b.bind-name == name then Just (b.bind-value)
-    else symtab-lookup binds name (i + 1) n
-
-  symtab-apply : SymbolTable, Expr -> Expr
-  symtab-apply (st) (e) = symtab-apply-loop (st.st-bindings) e 0 (st.st-count)
-
-  symtab-apply-loop : List Binding, Expr, Integer, Integer -> Expr
-  symtab-apply-loop (binds) (e) (i) (n) =
-    if i >= n then e
-    else let b = list-at binds i
-    in symtab-apply-loop binds (ex-subst e (b.bind-name) (b.bind-value)) (i + 1) n
 
 Section: Cell
 
@@ -315,35 +271,35 @@ Section: Widget Building
     else nb-cell-widgets cells (i + 1) n (list-push acc (nb-cell-widget (list-at cells i) i))
 
 Section: Rich Cell Rendering (Editor + Markdown + DataTable)
-  nb-rich-cell : Cell, Integer -> WidgetNode
+  nb-rich-cell : NotebookCell, Integer -> WidgetNode
   nb-rich-cell (cell) (idx) =
-    when cell.cell-type
+    when cell.nc-kind
       is CellExpr -> nb-expr-editor cell idx
       is CellText -> nb-text-md cell idx
       is CellTable -> nb-table-view cell idx
       is CellPlot -> nb-cell-widget cell idx
 
-  nb-expr-editor : Cell, Integer -> WidgetNode
+  nb-expr-editor : NotebookCell, Integer -> WidgetNode
   nb-expr-editor (cell) (idx) =
-    let ed = editor-with-text ("cell-ed-" & show idx) (cell.cell-input)
+    let ed = editor-with-text ("cell-ed-" & show idx) (cell.nc-input)
     in let ed2 = __record-set ed "ed-show-line-numbers" True
-    in let output-lbl = widget-label ("cell-out-" & show idx) (cell.cell-output)
+    in let output-lbl = widget-label ("cell-out-" & show idx) ((cell.nc-result).cr-display)
     in widget-panel ("cell-" & show idx) DirColumn 2 [
       editor-widget ed2,
       output-lbl
     ]
 
-  nb-text-md : Cell, Integer -> WidgetNode
+  nb-text-md : NotebookCell, Integer -> WidgetNode
   nb-text-md (cell) (idx) =
-    let doc = ui-md-parse (cell.cell-input)
+    let doc = ui-md-parse (cell.nc-input)
     in md-document-to-widget doc ("cell-md-" & show idx)
 
-  nb-table-view : Cell, Integer -> WidgetNode
+  nb-table-view : NotebookCell, Integer -> WidgetNode
   nb-table-view (cell) (idx) =
     let dt = nb-parse-table-cell cell idx
     in data-table-widget dt
 
-  nb-parse-table-cell : Cell, Integer -> DataTableState
+  nb-parse-table-cell : NotebookCell, Integer -> DataTableState
   nb-parse-table-cell (cell) (idx) =
     let cols = [table-column "col0" "X" 80, table-column "col1" "Y" 80, table-column "col2" "Result" 100]
     in data-table-new ("cell-tbl-" & show idx) cols []
@@ -354,4 +310,32 @@ Section: Cell Input Validation
     field-validation "expr" [VrRequired, VrMinLength 1]
   ]
 
+Section: Console Session
+
+ Each line read is one expression cell in the same notebook, so an assignment
+ (`x := 3`) is visible to every later line. An empty line ends the session.
+
+  nb-console-show : NotebookState, Integer -> Text
+  nb-console-show (st) (idx) =
+    let cell = list-at (st.nb-cells) idx
+    in let r = cell.nc-result
+    in if text-length (r.cr-error) > 0 then "error: " & r.cr-error else r.cr-display
+
+  nb-console-loop : NotebookState -> [Console] Nothing
+  nb-console-loop (st) = act
+    got <- read-line
+    when got
+      is Just (line) -> nb-console-line st line
+      is None -> print-line-uni ("cells " & show (st.nb-cell-count))
+  end
+
+  nb-console-line : NotebookState, Text -> [Console] Nothing
+  nb-console-line (st) (line) =
+    if text-length line == 0 then print-line-uni ("cells " & show (st.nb-cell-count))
+    else let idx = st.nb-cell-count
+    in let st2 = nb-eval-cell (nb-add-cell st CellExpr line) idx
+    in act
+      print-line-uni (line & " => " & nb-console-show st2 idx)
+      nb-console-loop st2
+    end
 Page 1

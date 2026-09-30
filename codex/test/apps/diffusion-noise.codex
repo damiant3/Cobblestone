@@ -1,0 +1,77 @@
+Chapter: DiffusionNoise
+  cites Diffusion chapter Noise
+  cites Diffusion chapter Sampler
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ SplitMix64's published first output for state 0 is 0xE220A8397B1DCDAF,
+ -2152535657050944081 as a signed 64-bit integer. 65,536 draws for seed 42
+ are read back and summarised: a standard normal has mean 0, variance 1,
+ P(|z| < 1) = 0.6827 and P(|z| < 2) = 0.9545. Noise stages through
+ #BD700000, therefore both read-backs sit above it. Seed 42 again must repeat every
+ draw and seed 43 must share none.
+
+ We say:
+
+Section: Stats
+
+  n : Integer = 65536
+
+  scratch : Integer = #BD900000
+
+  other : Integer = #BDA00000
+
+  f32-real : Integer -> Real
+  f32-real (raw) =
+    let b = bit-and raw #FFFFFFFF
+    in let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-shru b 31) 63) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+  Moments = record {
+    m-sum : Real,
+    m-sq : Real,
+    m-one : Integer,
+    m-two : Integer
+  }
+
+  moments : Integer, Moments -> Moments
+  moments (i) (m) =
+    if i >= n then m
+    else let z = f32-real (peek-32 scratch (i * 4))
+    in let a = if z < 0.0 then 0.0 - z else z
+    in moments (i + 1) (Moments { m-sum = m.m-sum + z, m-sq = m.m-sq + z * z, m-one = m.m-one + (if a < 1.0 then 1 else 0), m-two = m.m-two + (if a < 2.0 then 1 else 0) })
+
+  same-count : Integer, Integer -> Integer
+  same-count (i) (acc) =
+    if i >= n then acc
+    else same-count (i + 1) (acc + (if bit-and (peek-32 scratch (i * 4)) #FFFFFFFF == bit-and (peek-32 other (i * 4)) #FFFFFFFF then 1 else 0))
+
+Section: Arms
+
+  draws-into : Integer, Integer, Integer -> Boolean
+  draws-into (h) (seed) (addr) = if noise-fill h seed n then gpu-buf-read h 0 (n * 4) addr else False
+
+  arm-known : Integer -> Text
+  arm-known (z) = "splitmix64 state 0: " & (if nz-mix 0 == 0 - 2152535657050944081 then "matches the published value" else "WRONG " & show (nz-mix 0))
+
+  arm-moments : Integer -> Text
+  arm-moments (h) =
+    if draws-into h 42 scratch == False then "refused"
+    else let m = moments 0 (Moments { m-sum = 0.0, m-sq = 0.0, m-one = 0, m-two = 0 })
+    in let mean = m.m-sum / real-from-int n
+    in "seed 42, " & show n & " draws: mean x 1e4 " & show (real-to-int (mean * 10000.0)) & ", variance x 1e4 " & show (real-to-int ((m.m-sq / real-from-int n - mean * mean) * 10000.0)) & ", within 1 x 1e4 " & show (m.m-one * 10000 / n) & ", within 2 x 1e4 " & show (m.m-two * 10000 / n)
+
+  arm-repeat : Integer, Integer -> Text
+  arm-repeat (h) (seed) =
+    if draws-into h seed other == False then "refused"
+    else "seed " & show seed & " against seed 42: " & show (same-count 0 0) & " of " & show n & " equal"
+
+  opening : [Console] Integer
+  opening = act
+    print-line-uni (arm-known 0)
+    print-line-uni (arm-moments (gpu-buf-alloc (n * 4)))
+    print-line-uni (arm-repeat (gpu-buf-alloc (n * 4)) 42)
+    print-line-uni (arm-repeat (gpu-buf-alloc (n * 4)) 43)
+    let r = 0 in r
+  end

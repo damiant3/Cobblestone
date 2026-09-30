@@ -1,0 +1,77 @@
+Chapter: ClipBpeForge
+  cites AI chapter ClipBpe
+  cites Foreword chapter FactDisk
+
+ The disk is build/mint-clip-bpe-disk.ps1's: a header sector holding the two
+ file lengths, then vocab.json and merges.txt unmodified. Every id line of the
+ .expected is build/clip-bpe-oracle.py's output, the ids Diffusion Forge's
+ own CLIPTokenizer gives the same strings. The first is Diffusion.md's stage
+ 4a grade, the next nine are generate-art.ps1's eight prompts behind its style
+ prefix and its negative prompt, and the last four aim at contractions,
+ digits and punctuation runs, the special tokens, and characters above ASCII.
+
+ We say:
+
+Section: Prompts
+  cbf-style : Text
+  cbf-style = "painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, "
+
+  cbf-prompts : List Text
+  cbf-prompts = [
+    cbf-style & "a viking smithy at night where glowing runes are hammered into an amulet on an anvil, sparks flying, open book of runes on the bench, snowy mountains through an arched window",
+    cbf-style & "four iron-bound wooden chests around a carpenter workbench, joined by glowing golden rune threads, inside a torch-lit longhouse",
+    cbf-style & "a sunlit green meadow with wildflowers and a clear stream, small harmless lizard creatures basking on rocks, birch forest, soft morning light",
+    cbf-style & "a vivid rainbow-coloured circumhorizontal arc across wispy cirrus clouds high above a viking longhouse on a green hill, bright midday sky",
+    cbf-style & "a wild boar animal on four legs resting on straw beside a stone cooking fire, a small glowing golden hourglass floating in the air above the fire, cozy barn interior, no people",
+    cbf-style & "three steaming bowls of stew, bread and roasted meat on a carved wooden shelf beside a glowing red health potion vial, warm hearth light",
+    cbf-style & "perfectly straight rows of carrot and turnip seedlings in dark tilled soil beside a viking farmhouse, a wooden hoe, golden hour",
+    cbf-style & "a blazing forge fire and anvil in a dark stone smithy, a glowing rune-carved amulet cooling in a quench trough, embers drifting",
+    "text, letters, words, watermark, signature, logo, ui, blurry, deformed, ugly, lowres, jpeg artifacts, photo, photograph, modern",
+    "  It's THEY'RE we'll I'd you've I'm ''s 'sun   don't  ",
+    "1024x768 3.14 v2.0 (masterpiece:1.2) [bad] {x} <lora:foo:0.8> !!! ... ?! --- @#$%^&*_=+~`|\\/\"",
+    "a<|endoftext|>b <|startoftext|> Supercalifragilisticexpialidocious",
+    "Café ÉCOLE über ЖИЗНЬ naïve ‘quoted’ “double”"
+  ]
+
+Section: Report
+  cbf-ids : List Integer, Integer, List Text -> Text
+  cbf-ids (ids) (i) (acc) =
+    if i >= list-length ids then text-concat-list acc
+    else if i == 0 then cbf-ids ids (i + 1) (list-push acc (show (list-at ids i)))
+    else cbf-ids ids (i + 1) (list-push (list-push acc " ") (show (list-at ids i)))
+
+  cbf-print-all : ClipBpe, List Text, Integer -> [Console] Nothing
+  cbf-print-all (t) (prompts) (i) =
+    if i >= list-length prompts then act
+      print-line-uni ("prompts " & show i)
+    end
+    else act
+      print-line-uni (cbf-ids (clip-bpe-tokenize t (list-at prompts i)) 0 [])
+      cbf-print-all t prompts (i + 1)
+    end
+
+  cbf-report : ClipBpe -> [Console] Nothing
+  cbf-report (t) = act
+    print-line-uni ("status " & show (clip-bpe-status t) & " vocab " & show (clip-bpe-vocab-count t) & " merges " & show (clip-bpe-merge-count t))
+    print-line-uni (cbf-ids (clip-bpe-with-specials (clip-bpe-tokenize t "a photo of a cat")) 0 [])
+    cbf-print-all t cbf-prompts 0
+  end
+
+Section: Body
+  cbf-run : Integer, Integer -> [Console, Device.Block] Nothing
+  cbf-run (vlen) (mlen) =
+    let vsec = (vlen + 511) / 512
+    in let msec = (mlen + 511) / 512
+    in let vbuf = alloc-bytes (vsec * 512)
+    in let mbuf = alloc-bytes (msec * 512)
+    in act
+      v <- fd-load-sectors 1 vsec vbuf 0
+      m <- fd-load-sectors (1 + vsec) msec mbuf 0
+      cbf-report (clip-bpe-load vbuf vlen mbuf mlen)
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    header <- block-read-sector 0
+    cbf-run (peek-32 header 0) (peek-32 header 4)
+  end

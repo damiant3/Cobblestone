@@ -1,0 +1,192 @@
+Chapter: ClipSd15Prompt
+  cites Diffusion chapter ClipPrompt
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter ClipBpe
+  cites AI chapter SafeTensors
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter FactDisk
+
+ The disk is build/mint-clip-bpe-disk.ps1's with four extras from
+ codex/test/apps/clip-sd15-ref, written by build/clip-sd15-oracle.py through
+ Forge's own ClassicTextProcessingEngine configured as sd15.py configures it:
+ the chunk count as i32, the 77 tokens per chunk as i32, the token weights as
+ f32, then cond as f32. The weights are the installed realisticVisionV60B1
+ v20Novae checkpoint. empty is the empty prompt, which SD1.5 encodes rather
+ than zeroes.
+
+ Each bound is the deviation of the same chunks through the f16 model, with
+ the same emphasis arithmetic, from the f32 answer, as the oracle printed it
+ on 2026-09-29, over all rows and over the rows that are not a chunk's BOS.
+ The sabotage arms must fail: cat through SDXL's clip skip 2 with no final
+ LayerNorm, and the emphasis prompt with its weights set to 1.
+
+ We say:
+
+Section: Disk
+  c15-load : Integer, Integer -> [Device.Block] Integer
+  c15-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+Section: Grading
+
+  c15-abs : Real -> Real
+  c15-abs (x) = if x < 0.0 then 0.0 - x else x
+
+  c15-real : Integer -> Real
+  c15-real (b) =
+    let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else if e == 255 then 1000000000.0
+    else bits-to-real (bit-or (bit-shl (bit-and b #80000000) 32) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+  c15-max-err : Integer, Integer, Integer, Integer, Boolean, Real -> Real
+  c15-max-err (ours) (ref) (i) (n) (skip-bos) (acc) =
+    if i >= n then acc
+    else if skip-bos & int-mod (i / 768) 77 == 0 then c15-max-err ours ref (i + 768) n skip-bos acc
+    else let e = c15-abs (c15-real (bit-and (peek-32 ours (i * 4)) #FFFFFFFF) - c15-real (bit-and (peek-32 ref (i * 4)) #FFFFFFFF))
+    in c15-max-err ours ref (i + 1) n skip-bos (if e > acc then e else acc)
+
+  c15-within : Integer, Integer, Integer, Boolean, Real -> Text
+  c15-within (h) (ref) (n) (skip-bos) (bound) =
+    if h == 0 then "no output"
+    else if gpu-buf-read h 0 (n * 4) ckpt-scratch == False then "read refused"
+    else if c15-max-err ckpt-scratch ref 0 n skip-bos 0.0 <= bound then "yes"
+    else "no"
+
+Section: Chunks
+
+  c15-ids-ok : List Integer, Integer, Integer -> Boolean
+  c15-ids-ok (ids) (at) (i) =
+    if i >= 77 then True
+    else if list-at ids i /= bit-and (peek-32 at (i * 4)) #FFFFFFFF then False
+    else c15-ids-ok ids at (i + 1)
+
+  c15-mults-ok : List Real, Integer, Integer -> Boolean
+  c15-mults-ok (ws) (at) (i) =
+    if i >= 77 then True
+    else if cp-f32-bits (list-at ws i) /= bit-and (peek-32 at (i * 4)) #FFFFFFFF then False
+    else c15-mults-ok ws at (i + 1)
+
+  c15-chunk-ok : List ClipChunk, Integer, Integer, Integer -> Boolean
+  c15-chunk-ok (cs) (ref) (n) (c) =
+    if c >= n then True
+    else let k = list-at cs c
+    in if c15-ids-ok (k.cc-ids) (ref + 4 + c * 308) 0 == False then False
+    else if c15-mults-ok (k.cc-mults) (ref + 4 + n * 308 + c * 308) 0 == False then False
+    else c15-chunk-ok cs ref n (c + 1)
+
+  c15-chunks-match : List ClipChunk, Integer -> Text
+  c15-chunks-match (cs) (ref) =
+    let n = peek-32 ref 0
+    in if list-length cs /= n then "no, " & show (list-length cs) & " chunks against Forge's " & show n
+    else if c15-chunk-ok cs ref n 0 then "yes"
+    else "no"
+
+Section: Arms
+
+  c15-cond : Integer, Integer -> Integer
+  c15-cond (ref) (n) = ref + 4 + n * 616
+
+  c15-prompt : ClipBpe, ClipWeights, Text, Text, Integer, Real, Real -> List Text
+  c15-prompt (bpe) (wl) (label) (prompt) (ref) (all) (body) =
+    let n = peek-32 ref 0
+    in let c = clip-condition-l wl bpe prompt
+    in let lines = [
+      label & " chunks match Forge: " & c15-chunks-match (clip-prompt-chunks bpe prompt) ref,
+      label & " condition status " & show (c.cn-status),
+      label & " cond all rows within Forge f16: " & c15-within (c.cn-cond-l) (c15-cond ref n) (77 * n * 768) False all,
+      label & " cond non-BOS rows within Forge f16: " & c15-within (c.cn-cond-l) (c15-cond ref n) (77 * n * 768) True body]
+    in let f = clip-cond-free c
+    in lines
+
+  c15-skip2 : ClipWeights -> ClipWeights
+  c15-skip2 (w) =
+    let s = w.cw-spec
+    in ClipWeights { cw-spec = ClipSpec { cs-width = s.cs-width, cs-heads = s.cs-heads, cs-layers = s.cs-layers, cs-mlp = s.cs-mlp, cs-erf-gelu = s.cs-erf-gelu, cs-open = s.cs-open, cs-pool = s.cs-pool, cs-prefix = s.cs-prefix, cs-part = s.cs-part, cs-pad = s.cs-pad, cs-skip = 2, cs-final-norm = False }, cw-status = w.cw-status, cw-path = w.cw-path, cw-tok = w.cw-tok, cw-pos = w.cw-pos, cw-layers = w.cw-layers, cw-final-g = w.cw-final-g, cw-final-b = w.cw-final-b, cw-proj = w.cw-proj }
+
+  c15-ones : List ClipChunk, Integer, List ClipChunk -> List ClipChunk
+  c15-ones (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else c15-ones cs (i + 1) (acc & [ClipChunk { cc-ids = (list-at cs i).cc-ids, cc-mults = c15-ones-mults 0 [] }])
+
+  c15-ones-mults : Integer, List Real -> List Real
+  c15-ones-mults (i) (acc) = if i >= 77 then acc else c15-ones-mults (i + 1) (list-push acc 1.0)
+
+  c15-no-emphasis : ClipBpe, ClipWeights, Text, Integer, Real -> Text
+  c15-no-emphasis (bpe) (wl) (prompt) (ref) (bound) =
+    let n = peek-32 ref 0
+    in let cs = c15-ones (clip-prompt-chunks bpe prompt) 0 []
+    in let hl = gpu-buf-alloc (77 * n * 768 * 4)
+    in let c = cp-encode-chunks-l wl cs 0 (ClipCond { cn-status = 0, cn-chunks = n, cn-cond-l = hl, cn-cond-g = 0, cn-pooled = 0 })
+    in let v = "sabotage emphasis weights at 1, cond non-BOS rows within Forge f16: " & c15-within (c.cn-cond-l) (c15-cond ref n) (77 * n * 768) True bound
+    in let f = clip-cond-free c
+    in v
+
+  c15-skip2-arm : ClipBpe, ClipWeights, Integer, Real -> Text
+  c15-skip2-arm (bpe) (wl) (ref) (bound) =
+    let c = clip-condition-l (c15-skip2 wl) bpe "a photo of a cat"
+    in let v = "sabotage cat at clip skip 2 without the final LayerNorm, cond non-BOS rows within Forge f16: " & c15-within (c.cn-cond-l) (c15-cond ref 1) (77 * 768) True bound
+    in let f = clip-cond-free c
+    in v
+
+  c15-run : ClipBpe, Integer, Integer, Integer, Integer -> List Text
+  c15-run (bpe) (cat) (emph) (long) (empty) =
+    let path = "realisticVisionV60B1_v20Novae.safetensors"
+    in let file = ckpt-open path
+    in let lb = layout-bind file sd15-layout
+    in let pb = list-at (lb.lb-parts) 1
+    in let wl = clip-load path file lb clip-l15-spec
+    in let long-prompt = "painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, a viking smithy at night where glowing runes are hammered into an amulet on an anvil, sparks flying, open book of runes on the bench, snowy mountains through an arched window, carved dragon heads on the rafters, frost on the windows, a sleeping wolf by the hearth BREAK a longship on a calm fjord at dawn"
+    in let emph-prompt = "(masterpiece:1.2), ((best quality)), a [red] cat on a \\(wooden\\) table, (glowing runes:0.8), [[blurry]] (sharp:1.5 edges"
+    in let head = [
+      "tokenizer status " & show (clip-bpe-status bpe),
+      "checkpoint valid " & (if file.st-valid then "yes" else "no") & ", " & pb.pb-name & " " & show (list-length (pb.pb-bound)) & "/" & show (pb.pb-required),
+      "load clip-l " & show (wl.cw-status)]
+    in let a = c15-prompt bpe wl "cat" "a photo of a cat" cat 0.03046 0.01266
+    in let b = c15-prompt bpe wl "emphasis" emph-prompt emph 0.0303 0.01499
+    in let c = c15-prompt bpe wl "long" long-prompt long 0.03046 0.01583
+    in let d = c15-prompt bpe wl "empty" "" empty 0.03046 0.01251
+    in let e = [c15-skip2-arm bpe wl cat 0.01266, c15-no-emphasis bpe wl emph-prompt emph 0.01499]
+    in head & a & b & c & d & e
+
+Section: Body
+  c15-print : List Text, Integer -> [Console] Nothing
+  c15-print (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      c15-print ls (i + 1)
+    end
+
+  c15-go : List Integer -> [Console, Device.Block] Nothing
+  c15-go (hd) =
+    act
+      vbuf <- c15-load 1 (list-at hd 0)
+      mbuf <- c15-load (1 + (list-at hd 0 + 511) / 512) (list-at hd 1)
+      cat <- c15-load (list-at hd 3) (list-at hd 4)
+      emph <- c15-load (list-at hd 5) (list-at hd 6)
+      long <- c15-load (list-at hd 7) (list-at hd 8)
+      empty <- c15-load (list-at hd 9) (list-at hd 10)
+      c15-print (c15-run (clip-bpe-load vbuf (list-at hd 0) mbuf (list-at hd 1)) cat emph long empty) 0
+    end
+
+ The header's words are copied out before any load, which reuses the sector
+ buffer block-read-sector answers.
+
+  c15-words : Integer, Integer, List Integer -> List Integer
+  c15-words (h) (i) (acc) = if i >= 11 then acc else c15-words h (i + 1) (list-push acc (peek-32 h (i * 4)))
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    c15-go (c15-words h 0 [])
+  end

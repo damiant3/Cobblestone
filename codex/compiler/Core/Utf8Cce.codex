@@ -1,0 +1,165 @@
+Chapter: UTF-8 To CCE
+  cites Foreword chapter CCE (cce-to-unicode-table)
+
+Section: Full CCE Conversion
+  cce-tier1-blocks : List Integer
+  cce-tier1-blocks = [128, 256, 1024, 128, 880, 128, 1536, 128, 1424, 128, 2304, 128, 3584, 128, 4352, 128, 19968, 512, 12352, 256, 8704, 128]
+
+  cce-tier1-count : Integer = 11
+
+  cce-tier1-ubase : Integer -> Integer
+  cce-tier1-ubase (block) = list-at cce-tier1-blocks (block * 2)
+
+  cce-tier1-usize : Integer -> Integer
+  cce-tier1-usize (block) = list-at cce-tier1-blocks (block * 2 + 1)
+
+  cce-tier2-ubase-c : Integer = 2176
+  cce-tier2-count : Integer = 10
+
+  cce-tier2-blocks : List Integer
+  cce-tier2-blocks = [12288, 64, 12352, 96, 12448, 96, 19968, 20992, 13312, 6592, 44032, 11172, 3584, 256, 8192, 512, 127744, 1024, 9728, 256]
+
+  cce-tier2-ubase : Integer -> Integer
+  cce-tier2-ubase (block) = list-at cce-tier2-blocks (block * 2)
+
+  cce-tier2-usize : Integer -> Integer
+  cce-tier2-usize (block) = list-at cce-tier2-blocks (block * 2 + 1)
+
+  cce-tier2-cbase-loop : Integer, Integer, Integer -> Integer
+  cce-tier2-cbase-loop (target) (i) (acc) =
+    if i >= target then acc
+    else cce-tier2-cbase-loop target (i + 1) (acc + cce-tier2-usize i)
+
+  cce-tier2-cbase : Integer -> Integer
+  cce-tier2-cbase (block) = cce-tier2-cbase-loop block 0 cce-tier2-ubase-c
+
+  cce-from-uni : Integer -> Integer
+  cce-from-uni (u) =
+    let t0 = cce-from-uni-t0 u 0 128
+    in if t0 >= 0 then t0
+    else let t1 = cce-from-uni-t1 u 0
+    in if t1 >= 0 then t1
+    else cce-from-uni-t2 u 0
+
+  cce-from-uni-t0 : Integer, Integer, Integer -> Integer
+  cce-from-uni-t0 (u) (i) (len) =
+    if i >= len then (-1)
+    else if list-at cce-to-unicode-table i == u then i
+    else cce-from-uni-t0 u (i + 1) len
+
+  cce-from-uni-t1 : Integer, Integer -> Integer
+  cce-from-uni-t1 (u) (block) =
+    if block >= cce-tier1-count then (-1)
+    else let base = cce-tier1-ubase block
+    in let size = cce-tier1-usize block
+    in if u >= base then
+      if u < base + size then
+        let bstart = if block == 0 then 128
+          else if block < 8 then 256 + block * 128
+          else if block == 8 then 1280
+          else if block == 9 then 1792
+          else if block == 10 then 2048
+          else (-1)
+        in if bstart < 0 then (-1)
+        else bstart + (u - base)
+      else cce-from-uni-t1 u (block + 1)
+    else cce-from-uni-t1 u (block + 1)
+
+  cce-from-uni-t2 : Integer, Integer -> Integer
+  cce-from-uni-t2 (u) (block) =
+    if block >= cce-tier2-count then (-1)
+    else let base = cce-tier2-ubase block
+    in let size = cce-tier2-usize block
+    in if u >= base then
+      if u < base + size then cce-tier2-cbase block + (u - base)
+      else cce-from-uni-t2 u (block + 1)
+    else cce-from-uni-t2 u (block + 1)
+
+  cce-frame : Integer -> List Integer
+  cce-frame (cp) =
+    if cp < 128 then [cp]
+    else if cp < 2176 then
+      let v = cp - 128
+      in [bit-or 192 (bit-shru v 6), bit-or 128 (bit-and v 63)]
+    else if cp < 67712 then
+      let v = cp - 2176
+      in [bit-or 224 (bit-shru v 12), bit-or 128 (bit-and (bit-shru v 6) 63), bit-or 128 (bit-and v 63)]
+    else
+      let v = cp - 67712
+      in [bit-or 240 (bit-shru v 18), bit-or 128 (bit-and (bit-shru v 12) 63), bit-or 128 (bit-and (bit-shru v 6) 63), bit-or 128 (bit-and v 63)]
+
+  cce-frame-len : Integer -> Integer
+  cce-frame-len (b) =
+    if bit-and b 128 == 0 then 1
+    else if bit-and b 224 == 192 then 2
+    else if bit-and b 240 == 224 then 3
+    else 4
+
+  cce-unframe : Text, Integer -> Integer
+  cce-unframe (s) (off) =
+    let b0 = char-code-at s off
+    in if bit-and b0 128 == 0 then b0
+    else if bit-and b0 224 == 192 then
+      128 + bit-shl (bit-and b0 31) 6 + bit-and (char-code-at s (off + 1)) 63
+    else if bit-and b0 240 == 224 then
+      2176 + bit-shl (bit-and b0 15) 12 + bit-shl (bit-and (char-code-at s (off + 1)) 63) 6 + bit-and (char-code-at s (off + 2)) 63
+    else
+      67712 + bit-shl (bit-and b0 7) 18 + bit-shl (bit-and (char-code-at s (off + 1)) 63) 12 + bit-shl (bit-and (char-code-at s (off + 2)) 63) 6 + bit-and (char-code-at s (off + 3)) 63
+
+  utf8-len : Integer -> Integer
+  utf8-len (b) =
+    if bit-and b 128 == 0 then 1
+    else if bit-and b 224 == 192 then 2
+    else if bit-and b 240 == 224 then 3
+    else if bit-and b 248 == 240 then 4
+    else 1
+
+  utf8-unframe : Text, Integer -> Integer
+  utf8-unframe (s) (off) =
+    let b0 = char-code-at s off
+    in if bit-and b0 128 == 0 then b0
+    else if bit-and b0 224 == 192 then
+      bit-shl (bit-and b0 31) 6 + bit-and (char-code-at s (off + 1)) 63
+    else if bit-and b0 240 == 224 then
+      bit-shl (bit-and b0 15) 12 + bit-shl (bit-and (char-code-at s (off + 1)) 63) 6 + bit-and (char-code-at s (off + 2)) 63
+    else
+      bit-shl (bit-and b0 7) 18 + bit-shl (bit-and (char-code-at s (off + 1)) 63) 12 + bit-shl (bit-and (char-code-at s (off + 2)) 63) 6 + bit-and (char-code-at s (off + 3)) 63
+
+  utf8-frame : Integer -> List Integer
+  utf8-frame (cp) =
+    if cp < 128 then [cp]
+    else if cp < 2048 then
+      [bit-or 192 (bit-shru cp 6), bit-or 128 (bit-and cp 63)]
+    else if cp < 65536 then
+      [bit-or 224 (bit-shru cp 12), bit-or 128 (bit-and (bit-shru cp 6) 63), bit-or 128 (bit-and cp 63)]
+    else
+      [bit-or 240 (bit-shru cp 18), bit-or 128 (bit-and (bit-shru cp 12) 63), bit-or 128 (bit-and (bit-shru cp 6) 63), bit-or 128 (bit-and cp 63)]
+
+  cce-push-bytes : List Integer, List Integer, Integer -> List Integer
+  cce-push-bytes (acc) (bs) (i) =
+    if i >= list-length bs then acc
+    else cce-push-bytes (list-push acc (list-at bs i)) bs (i + 1)
+
+  utf8-has-high : Text, Integer, Integer -> Boolean
+  utf8-has-high (s) (i) (len) =
+    if i >= len then False
+    else if char-code-at s i >= 128 then True
+    else utf8-has-high s (i + 1) len
+
+  utf8-to-cce-loop : Text, Integer, Integer, List Integer -> List Integer
+  utf8-to-cce-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = char-code-at s i
+    in if b < 128 then utf8-to-cce-loop s (i + 1) len (list-push acc b)
+    else let cp = utf8-unframe s i
+    in let blen = utf8-len b
+    in let cc0 = cce-from-uni cp
+    in let cc = if cc0 < 0 then cce-from-uni 63 else cc0
+    in utf8-to-cce-loop s (i + blen) len (cce-push-bytes acc (cce-frame cc) 0)
+
+  utf8-to-cce : Text -> Text
+  utf8-to-cce (s) =
+    let len = text-length s
+    in if utf8-has-high s 0 len
+    then raw-bytes-to-text (utf8-to-cce-loop s 0 len (__list-with-capacity (len + 1)))
+    else s

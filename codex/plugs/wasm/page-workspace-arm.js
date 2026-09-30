@@ -45,7 +45,8 @@ const sandbox = {
   },
   location: { protocol: 'https:' },
   navigator: {},
-  window: { addEventListener() {} },
+  Event: class { constructor(type) { this.type = type; } },
+  window: { addEventListener() {}, dispatchEvent() { return true; } },
   prompt() { return null; }, confirm() { return false; }, alert() {},
   atob(s) { return Buffer.from(s, 'base64').toString('binary'); },
   fetch(u) {

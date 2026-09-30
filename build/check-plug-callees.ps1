@@ -41,6 +41,7 @@ $Rows = @(
     @{ Plug = 'typescript'; Ext = 'ts'; Analyzer = 'node' }
     @{ Plug = 'zig';        Ext = 'zig'; Analyzer = 'zig' }
     @{ Plug = 'csharp';     Ext = 'cs'; Analyzer = 'dotnet' }
+    @{ Plug = 'wasm';       Ext = 'wat'; Analyzer = 'wat2wasm' }
 )
 
 # Zig analyses lazily: a helper nothing calls is never semantically checked,
@@ -48,7 +49,10 @@ $Rows = @(
 # `zig ast-check` resolves every identifier in every function and names each
 # undeclared one. Roslyn checks the whole file, so for C# the build itself is
 # the analyzer and CS0103 names the missing callee; the project matches the
-# one plug-oracle-test.ps1 builds the subject with.
+# one plug-oracle-test.ps1 builds the subject with. wat2wasm resolves every
+# `call`, `return_call` and `ref.func` in every function, called or not, and
+# names each missing target "undefined function variable"; the plug emits
+# tail calls, so it needs --enable-tail-call as every wasm build here passes.
 $CsProj = @(
     '<Project Sdk="Microsoft.NET.Sdk">'
     '  <PropertyGroup>'
@@ -162,6 +166,19 @@ function Invoke-Analyzer([string]$analyzer, [string]$file) {
         if ($other.Count -gt 0) { return @{ Error = "zig ast-check: $($other[0])" } }
         return @{ Called = (Get-CallCount $file); Missing = $missing }
     }
+    if ($analyzer -eq 'wat2wasm') {
+        if (-not (Get-Command wat2wasm -ErrorAction SilentlyContinue)) { return @{ Error = "'wat2wasm' is not on PATH" } }
+        $mod = Join-Path $work ('wat-' + [System.IO.Path]::GetRandomFileName() + '.wasm')
+        $raw = @(& wat2wasm --enable-tail-call $file -o $mod 2>&1 | ForEach-Object { "$_" })
+        $errs = @($raw | Where-Object { $_ -match ': error: ' })
+        $missing = @($errs | ForEach-Object { if ($_ -match 'undefined function variable "\$?([^"]+)"') { $Matches[1] } } | Sort-Object -Unique)
+        $other = @($errs | Where-Object { $_ -notmatch 'undefined function variable' })
+        if ($other.Count -gt 0) { return @{ Error = "wat2wasm: $($other[0])" } }
+        if ($errs.Count -eq 0 -and $LASTEXITCODE -ne 0) { return @{ Error = "wat2wasm failed: $(($raw | Select-Object -Last 3) -join ' ')" } }
+        $text = [System.IO.File]::ReadAllText($file)
+        $called = @([regex]::Matches($text, '\b(?:call|return_call|ref\.func)\s+\$([^\s()]+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique).Count
+        return @{ Called = $called; Missing = $missing }
+    }
     if ($analyzer -eq 'dotnet') {
         if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) { return @{ Error = "'dotnet' is not on PATH" } }
         $d = Join-Path $work ('cs-' + [System.IO.Path]::GetRandomFileName())
@@ -196,6 +213,7 @@ try {
             @{ Analyzer = 'node';   Ext = 'ts'; Text = "function helper<T>(x: T[]): number { return x.length; }`nconst g = (a: bigint): bigint => a;`nconsole.log(helper<number>([1]), g(1n), BigInt(3), ``v=`${String(codex_planted_missing(2))}``);`n" }
             @{ Analyzer = 'zig';    Ext = 'zig'; Text = "const std = @import(`"std`");`nfn helper(x: i64) i64 { return x + 1; }`nfn never_called() i64 { return codex_planted_missing(2); }`npub fn main() void { std.debug.print(`"{}\n`", .{helper(1)}); }`n" }
             @{ Analyzer = 'dotnet'; Ext = 'cs'; Text = "using System;`nstatic class P {`n  static long Helper(long x) { return x + 1; }`n  static long NeverCalled() { return codex_planted_missing(2); }`n  static void Main() { Console.WriteLine(Helper(1)); }`n}`n" }
+            @{ Analyzer = 'wat2wasm'; Ext = 'wat'; Text = "(module`n  (func `$helper (param i64) (result i64) local.get 0 i64.const 1 i64.add)`n  (func `$loop (param i64) (result i64) local.get 0 return_call `$helper)`n  (func `$never_called (result i64) i64.const 2 call `$codex_planted_missing)`n  (func (export `"_start`") i64.const 1 call `$loop drop)`n)`n" }
         )
         $bad = 0
         foreach ($p in $plants) {

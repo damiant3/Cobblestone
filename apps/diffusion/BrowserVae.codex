@@ -1,0 +1,125 @@
+Chapter: BrowserVae
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter VaeGraph
+
+ The decoder's operations over BrowserKernels' WGSL module, for a page. Weights
+ are f32 device buffers by LDM name; GroupNorm is 32 groups at eps 1e-6.
+
+ We say:
+
+Section: Types
+
+  BvWeights = record {
+    bw-names : List Text,
+    bw-handles : List Integer
+  }
+
+  BvAct = record {
+    ah : Integer,
+    ac : Integer,
+    ahh : Integer,
+    aww : Integer
+  }
+
+Section: Operations
+
+  bv-get-loop : BvWeights, Text, Integer -> Integer
+  bv-get-loop (w) (name) (i) =
+    if i >= list-length (w.bw-names) then 0
+    else if list-at (w.bw-names) i == name then list-at (w.bw-handles) i
+    else bv-get-loop w name (i + 1)
+
+  bv-get : BvWeights, Text -> Integer
+  bv-get (w) (name) = bv-get-loop w name 0
+
+  bv-grid : Integer -> GpuGrid
+  bv-grid (n) = GpuGrid { gx = (n + 63) / 64, gy = 1, gz = 1, bx = 64, by = 1, bz = 1, shared = 0 }
+
+  bv-act : Integer, Integer, Integer, Integer, Integer -> BvAct
+  bv-act (h) (c) (hh) (ww) (r) = BvAct { ah = if r < 0 then 0 else h, ac = c, ahh = hh, aww = ww }
+
+  bv-conv : Text, BvWeights, BvAct, Text, Integer, Integer, Integer -> BvAct
+  bv-conv (code) (w) (x) (p) (cout) (k) (pad) =
+    let npix = x.ahh * x.aww
+    in let y = gpu-buf-alloc (cout * npix * 4)
+    in let g = GpuGrid { gx = ((cout + 15) / 16) * ((npix + 15) / 16), gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+    in let r = if y == 0 | x.ah == 0 then 0 - 1
+       else gpu-launch code "bk_conv2d_main" g [gpu-arg-buf (x.ah) 0, gpu-arg-buf (bv-get w (p & ".weight")) 0, gpu-arg-buf (bv-get w (p & ".bias")) 0, gpu-arg-buf y 0, gpu-arg-u32 (x.ac), gpu-arg-u32 (x.ahh), gpu-arg-u32 (x.aww), gpu-arg-u32 cout, gpu-arg-u32 k, gpu-arg-u32 k, gpu-arg-u32 1, gpu-arg-u32 pad, gpu-arg-u32 (x.ahh), gpu-arg-u32 (x.aww)]
+    in bv-act y cout (x.ahh) (x.aww) r
+
+  bv-norm : Text, BvWeights, BvAct, Text, Boolean -> BvAct
+  bv-norm (code) (w) (x) (p) (silu) =
+    let n = x.ac * x.ahh * x.aww
+    in let len = n / 32
+    in let s = gpu-buf-alloc (32 * 2 * 4)
+    in let y = gpu-buf-alloc (n * 4)
+    in let r1 = if s == 0 | y == 0 | x.ah == 0 then 0 - 1 else gpu-launch code "bk_row_mean_main" (bv-grid 32) [gpu-arg-buf (x.ah) 0, gpu-arg-buf s 0, gpu-arg-u32 len, gpu-arg-u32 32]
+    in let r2 = if r1 < 0 then r1 else gpu-launch code "bk_row_rstd_main" (bv-grid 32) [gpu-arg-buf (x.ah) 0, gpu-arg-buf s 0, gpu-arg-u32 len, gpu-arg-f32 0.000001, gpu-arg-u32 32]
+    in let r3 = if r2 < 0 then r2 else gpu-launch code "bk_group_affine_main" (bv-grid n) [gpu-arg-buf (x.ah) 0, gpu-arg-buf s 0, gpu-arg-buf (bv-get w (p & ".weight")) 0, gpu-arg-buf (bv-get w (p & ".bias")) 0, gpu-arg-buf y 0, gpu-arg-u32 (x.ac), gpu-arg-u32 (x.ahh * x.aww), gpu-arg-u32 32, gpu-arg-u32 n]
+    in let z = if silu then gpu-buf-alloc (n * 4) else y
+    in let r4 = if r3 < 0 | silu == False then r3 else if z == 0 then 0 - 1 else gpu-launch code "bk_silu_main" (bv-grid n) [gpu-arg-buf y 0, gpu-arg-buf z 0, gpu-arg-u32 n]
+    in let f = (if s == 0 then True else gpu-buf-free s) & (if silu & y /= 0 then gpu-buf-free y else True)
+    in bv-act z (x.ac) (x.ahh) (x.aww) r4
+
+  bv-add : Text, BvAct, BvAct -> BvAct
+  bv-add (code) (a) (b) =
+    let n = a.ac * a.ahh * a.aww
+    in let y = gpu-buf-alloc (n * 4)
+    in let r = if y == 0 | a.ah == 0 | b.ah == 0 then 0 - 1 else gpu-launch code "bk_add_main" (bv-grid n) [gpu-arg-buf (a.ah) 0, gpu-arg-buf (b.ah) 0, gpu-arg-buf y 0, gpu-arg-u32 n]
+    in bv-act y (a.ac) (a.ahh) (a.aww) r
+
+  bv-upsample : Text, BvAct -> BvAct
+  bv-upsample (code) (x) =
+    let n = x.ac * x.ahh * x.aww * 4
+    in let y = gpu-buf-alloc (n * 4)
+    in let r = if y == 0 | x.ah == 0 then 0 - 1 else gpu-launch code "bk_upsample_main" (bv-grid n) [gpu-arg-buf (x.ah) 0, gpu-arg-buf y 0, gpu-arg-u32 (x.ahh), gpu-arg-u32 (x.aww), gpu-arg-u32 n]
+    in bv-act y (x.ac) (x.ahh * 2) (x.aww * 2) r
+
+  bv-transpose : Text, Integer, Integer, Integer -> Integer
+  bv-transpose (code) (x) (rows) (cols) =
+    let y = gpu-buf-alloc (rows * cols * 4)
+    in if y == 0 | x == 0 then 0
+    else if gpu-launch code "bk_transpose_main" (bv-grid (rows * cols)) [gpu-arg-buf x 0, gpu-arg-buf y 0, gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 (rows * cols)] < 0 then 0
+    else y
+
+  bv-attention : Text, BvWeights, BvAct, Text -> BvAct
+  bv-attention (code) (w) (x) (p) =
+    let c = x.ac
+    in let n = x.ahh * x.aww
+    in let hn = bv-norm code w x (p & "norm") False
+    in let q = bv-conv code w hn (p & "q") c 1 0
+    in let k = bv-conv code w hn (p & "k") c 1 0
+    in let v = bv-conv code w hn (p & "v") c 1 0
+    in let qt = bv-transpose code (q.ah) c n
+    in let kt = bv-transpose code (k.ah) c n
+    in let vt = bv-transpose code (v.ah) c n
+    in let s = gpu-buf-alloc (n * n * 4)
+    in let pr = gpu-buf-alloc (n * n * 4)
+    in let ot = gpu-buf-alloc (n * c * 4)
+    in let r1 = if qt == 0 | kt == 0 | vt == 0 | s == 0 | pr == 0 | ot == 0 then 0 - 1
+       else gpu-launch code "bk_attn_scores_main" (bv-grid (n * n)) [gpu-arg-buf qt 0, gpu-arg-buf kt 0, gpu-arg-buf s 0, gpu-arg-u32 1, gpu-arg-u32 n, gpu-arg-u32 n, gpu-arg-u32 c, gpu-arg-f32 0.044194173824159216, gpu-arg-u32 (n * n)]
+    in let sm = gpu-buf-alloc (n * 2 * 4)
+    in let r2a = if r1 < 0 | sm == 0 then 0 - 1 else gpu-launch code "bk_row_max_main" (bv-grid n) [gpu-arg-buf s 0, gpu-arg-buf sm 0, gpu-arg-u32 n, gpu-arg-u32 n]
+    in let r2b = if r2a < 0 then r2a else gpu-launch code "bk_row_expsum_main" (bv-grid n) [gpu-arg-buf s 0, gpu-arg-buf sm 0, gpu-arg-u32 n, gpu-arg-u32 n]
+    in let r2 = if r2b < 0 then r2b else gpu-launch code "bk_softmax_apply_main" (bv-grid (n * n)) [gpu-arg-buf s 0, gpu-arg-buf sm 0, gpu-arg-buf pr 0, gpu-arg-u32 n, gpu-arg-u32 (n * n)]
+    in let r3 = if r2 < 0 then r2 else gpu-launch code "bk_attn_values_main" (bv-grid (n * c)) [gpu-arg-buf pr 0, gpu-arg-buf vt 0, gpu-arg-buf ot 0, gpu-arg-u32 1, gpu-arg-u32 n, gpu-arg-u32 n, gpu-arg-u32 c, gpu-arg-u32 (n * c)]
+    in let o = if r3 < 0 then 0 else bv-transpose code ot n c
+    in let proj = bv-conv code w (bv-act o c (x.ahh) (x.aww) (if o == 0 then 0 - 1 else 0)) (p & "proj_out") c 1 0
+    in let out = bv-add code proj x
+    in let f = bv-free hn & bv-free q & bv-free k & bv-free v & bv-free proj & bv-free-h qt & bv-free-h kt & bv-free-h vt & bv-free-h s & bv-free-h sm & bv-free-h pr & bv-free-h ot & bv-free-h o
+    in out
+
+  bv-free-h : Integer -> Boolean
+  bv-free-h (h) = if h == 0 then True else gpu-buf-free h
+
+  bv-free : BvAct -> Boolean
+  bv-free (x) = if x.ah == 0 then True else gpu-buf-free (x.ah)
+
+  bv-has : BvWeights, Text -> Boolean
+  bv-has (w) (name) = bv-get w name /= 0
+
+  bv-channels : BvAct -> Integer
+  bv-channels (x) = x.ac
+
+  browser-vae-ops : Text -> VaeOps BvWeights BvAct
+  browser-vae-ops (code) = VaeOps { conv = \w x p cout k pad -> bv-conv code w x p cout k pad, norm = \w x p s -> bv-norm code w x p s, add = \a b -> bv-add code a b, upsample = \x -> bv-upsample code x, attention = \w x p -> bv-attention code w x p, free = bv-free, has = bv-has, channels = bv-channels }

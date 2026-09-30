@@ -138,7 +138,7 @@ was sitting. `OperatorsManual.md` says this in the poison recipe; this step
 used to say "the FULL battery" and leave the reader to find that out.
 
 ```powershell
-build/test.ps1 -Tier all -Jobs 4 -ApprovedBy damian
+build/test.ps1 -Tier all -Jobs 16 -ApprovedBy damian
 ```
 
 **Read the kernel line it prints.** The battery uses
@@ -156,7 +156,7 @@ test is a release blocker, not a footnote.
 ## Step 2 -- The app sweep (breadth over the front end)
 
 ```powershell
-pwsh build/sweep-app-classes.ps1 -Check -Jobs 4
+pwsh build/sweep-app-classes.ps1 -Check -Jobs 16
 ```
 
 Must exit 0. The apps are the extended pin on the compiler -- 265 diverse
@@ -165,17 +165,11 @@ that stops compiling is a compiler or foreword regression until proven
 otherwise. It fails against `build/app-sweep-baseline.txt`, which names the
 units known not to compile and why; anything else dirty is the regression.
 
-**`-Jobs 4`, RE-RULED by Damian 2026-08-27, and that includes release runs.**
-It supersedes the 2026-08-02 `-Jobs 8` ruling for a different, measured
-condition: the box holds 15.8 GiB and 8 slots of 3072 MB guests overcommit
-it, killing guests with a moving culprit that reads as codegen
-(`OperatorsManual.md` "The compile batch asks for 12 GB of guest RAM, and a
-short box reports it as a CODEGEN failure"). The condition rides with the
-default on purpose -- **a workaround written into a default outlives the
-condition that justified it and then reads as a property of the harness**
-(`ExaminersAssay.md` "The parallelism default", which carries both raises
-and both lowerings now). When the box grows RAM, re-measure and re-raise.
-The sweep still re-runs no-diagnostic units alone, so the defence against
+**`-Jobs 16`, release runs included** (Damian, 2026-09-28). The box holds
+47.77 GiB and 20 logical CPUs, and CPU runs out before RAM does; the
+measurement and the condition are `CoordinationProtocol.md`, "The token does
+not cover RAM". `test.ps1` and this sweep clamp their slots to live free
+memory (`Get-VmAdmittedSlots`). The sweep still re-runs no-diagnostic units alone, so the defence against
 crash-shaped contention does not depend on the slot count.
 
 Know what this does NOT prove. It proves the apps COMPILE and nothing more.

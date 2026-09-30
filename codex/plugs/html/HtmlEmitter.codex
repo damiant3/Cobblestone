@@ -1,10 +1,11 @@
 Chapter: HTML Emitter
+  cites Foreword chapter CCE
 
 Section: Keywords and Sanitization
 
   html-sanitize : Text -> Text
   html-sanitize (name) =
-   js-reserve-guard (text-replace (text-replace (text-replace name "-" "_") "'" "") "@" "_at_")
+   js-reserve-guard (text-replace (text-replace (text-replace (text-replace name "-" "_") "'" "") "@" "_at_") "#" "_h_")
 
   js-reserve-guard : Text -> Text
   js-reserve-guard (n) =
@@ -194,12 +195,12 @@ Section: JavaScript Expression Emission
   emit-js-expr (e) (arities) (indent) =
    when e
     is IrIntLit (n) (sp) -> show n & "n"
-    is IrNumLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> "__real(" & show n & "n)"
     is IrTextLit (s) (sp) -> "\"" & js-escape s & "\""
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
-    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+    is IrCharLit (n) (sp) -> "String.fromCodePoint(" & show (to-unicode n) & ")"
     is IrName (n) (ty) (sp) -> if lookup-arity arities n == 0 then html-sanitize n & "()" else html-sanitize n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-js-binary op l r arities indent
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-js-binary op l r ty arities indent
     is IrNegate (x) (nty) (sp) -> "(-(" & emit-js-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-js-expr c arities indent & " ? " & emit-js-expr t arities indent & " : " & emit-js-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-js-let name val body arities indent
@@ -220,25 +221,24 @@ Section: JavaScript Expression Emission
 
 Section: Binary Operators
 
- A Codex Integer is a Number here, and a double holds an exact integer only
- to 2^53. BOTH arms refuse: the band cannot wrap at 64 bits and the plain arm
- cannot tell an overflow from a rounding, so the node type decides nothing and
- is not consulted. The guard is on the VALUES, so a program whose integers fit
- a double still computes and only the unrepresentable case refuses. The marker
- is what plug-oracle-test.ps1 reads as its REFUSED verdict.
+ A Codex Integer is a BigInt here. `BigInt.asIntN(64, v)` is the truncation to
+ the declared width: the wrapping band takes it as the answer, and the plain arm
+ compares it against the unbounded result as the overflow test. The marker is
+ what plug-oracle-test.ps1 reads as its REFUSED verdict.
 
-  js-int-refuse : Text, Text, Text -> Text
-  js-int-refuse (sym) (lhs) (rhs) =
-   "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
+  js-int-arith : Text, Text, Text, CodexType -> Text
+  js-int-arith (sym) (lhs) (rhs) (ty) =
+   if int-ty-wraps ty then "BigInt.asIntN(64, " & lhs & " " & sym & " " & rhs & ")"
+   else "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
 
-  emit-js-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
-  emit-js-binary (op) (l) (r) (arities) (indent) =
+  emit-js-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  emit-js-binary (op) (l) (r) (ty) (arities) (indent) =
    let lhs = emit-js-expr l arities indent
    in let rhs = emit-js-expr r arities indent
    in when op
-    is IrAddInt -> js-int-refuse "+" lhs rhs
-    is IrSubInt -> js-int-refuse "-" lhs rhs
-    is IrMulInt -> js-int-refuse "*" lhs rhs
+    is IrAddInt -> js-int-arith "+" lhs rhs ty
+    is IrSubInt -> js-int-arith "-" lhs rhs ty
+    is IrMulInt -> js-int-arith "*" lhs rhs ty
     is IrDivInt -> "(" & lhs & " / " & rhs & ")"
     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
@@ -299,9 +299,7 @@ Section: Apply
      in let args = emit-js-apply-args (chain.args) arities indent 0
      in let supplied = list-length (chain.args)
      in let ar = lookup-arity arities n
-     in if ar > supplied & supplied > 0 then
-         let remaining = ar - supplied
-         in html-partial-wrappers 0 remaining & func & "(" & args & ", " & html-partial-params 0 remaining & ")"
+     in if ar > supplied & supplied > 0 then "__pa(" & func & ", " & integer-to-text ar & ", [" & args & "])"
         else if ar > 0 & supplied > ar then
          emit-html-curried (func & "(" & emit-js-apply-args-upto (chain.args) arities indent 0 ar & ")") (chain.args) arities indent ar
         else func & "(" & args & ")"
@@ -377,6 +375,14 @@ Section: Match
  the block and reach the next test. Sequential ifs give that and an else-if
  chain cannot.
 
+  html-lit-pat : Text, CodexType -> Text
+  html-lit-pat (text) (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (m) -> text & "n"
+    is CharTy -> "String.fromCodePoint(" & show (to-unicode (text-to-integer text)) & ")"
+    is BooleanTy -> if text == "True" then "true" else "false"
+    is otherwise -> text
+
   html-guard-trivial : IRExpr -> Boolean
   html-guard-trivial (g) =
    when g
@@ -387,7 +393,7 @@ Section: Match
   emit-js-pattern-cond (p) (scrut) =
    when p
     is IrVarPat (name) (ty) (sp) -> "true"
-    is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
+    is IrLitPat (text) (ty) (sp) -> scrut & " === " & html-lit-pat text ty
     is IrCtorPat (name) (subs) (ty) (sp) -> if is-mktup-name name then "true" else scrut & "._tag === \"" & name & "\""
     is IrWildPat (sp) -> "true"
     is IrVecPat (pats) (ty) (sp) -> "true"
@@ -436,17 +442,6 @@ Section: Records
   emit-js-record : Text, List IRFieldVal, List ArityEntry, Integer -> Text
   emit-js-record (name) (fields) (arities) (indent) =
    "{ _type: \"" & name & "\"" & emit-js-record-fields fields arities indent 0 & " }"
-
-  html-partial-params : Integer, Integer -> Text
-  html-partial-params (i) (count) =
-   if i == count then ""
-   else if i == count - 1 then "_p" & integer-to-text i & "_"
-   else "_p" & integer-to-text i & "_" & ", " & html-partial-params (i + 1) count
-
-  html-partial-wrappers : Integer, Integer -> Text
-  html-partial-wrappers (i) (count) =
-   if i == count then ""
-   else "(_p" & integer-to-text i & "_) => " & html-partial-wrappers (i + 1) count
 
  `__record-set` writes through its target and returns that same record, as
  native Codex does (L-ALIAS); a copy loses the write when the result is discarded.
@@ -513,7 +508,7 @@ Section: Definition Emission
    else if n == "random-int" then True
    else if n == "fetch-json" then True
    else if n == "json-stringify" then True
-   else if n == "json-parse" then True
+   else if n == "json-parse-rows" then True
    else if n == "json-parse-obj" then True
    else if n == "json-obj-field" then True
    else if n == "url-encode" then True
@@ -545,6 +540,17 @@ Section: Definition Emission
    else if n == "inject-theme-css" then True
    else if n == "fetch-then" then True
    else if n == "fetch-get-then" then True
+   else if n == "fetch-with-then" then True
+   else if n == "page-data" then True
+   else if n == "location-hash" then True
+   else if n == "location-clear-hash" then True
+   else if n == "on-hash-change" then True
+   else if n == "uri-decode-component" then True
+   else if n == "json-valid" then True
+   else if n == "pick-file-text" then True
+   else if n == "wasm-run-then" then True
+   else if n == "gpu-probe-then" then True
+   else if html-is-gpu-bridge n then True
    else if n == "dom-on-click" then True
    else if n == "dom-on-input" then True
    else if n == "dom-on-key" then True
@@ -568,21 +574,146 @@ Section: Definition Emission
    else if n == "load-layout" then True
    else False
 
-  emit-js-def : IRDef, List ArityEntry -> Text
-  emit-js-def (d) (arities) =
+  emit-js-def : IRDef, List ArityEntry, List Text -> Text
+  emit-js-def (d) (arities) (tramp) =
    if text-length (d.name) == 0 then ""
    else if is-html-builtin (d.name) then ""
    else let sname = html-sanitize (d.name)
-   in "function " & sname & "(" & emit-js-param-names (d.params) 0 & ") {\n  return " & emit-js-expr (d.body) (arity-hide-params arities (d.params) 0) 1 & ";\n}\n\n"
+   in let scope = arity-hide-params arities (d.params) 0
+   in let n = list-length (d.params)
+   in if n > 0 & html-text-in tramp (d.name) 0
+      then "function " & sname & "__tb(" & html-tail-args n 0 & ") {\n  while (true) {\n" & html-tail-binds (d.params) 0 & emit-js-tail (d.name) (d.params) (d.body) scope tramp 2 & "  }\n}\n"
+       & "function " & sname & "(...a) {\n  let r = " & sname & "__tb(...a);\n  while (r instanceof __TC) { r = r.f(...r.a); }\n  return r;\n}\n\n"
+      else if n > 0 & html-has-self-tail (d.name) n (d.body)
+      then "function " & sname & "(" & html-tail-args n 0 & ") {\n  while (true) {\n" & html-tail-binds (d.params) 0 & emit-js-tail (d.name) (d.params) (d.body) scope [] 2 & "  }\n}\n\n"
+      else "function " & sname & "(" & emit-js-param-names (d.params) 0 & ") {\n  return " & emit-js-expr (d.body) scope 1 & ";\n}\n\n"
+
+  html-text-in : List Text, Text, Integer -> Boolean
+  html-text-in (xs) (x) (i) =
+   if i >= list-length xs then False
+   else if list-at xs i == x then True
+   else html-text-in xs x (i + 1)
+
+  html-tramp-set : List IRDef, List ArityEntry, Integer, List Text -> List Text
+  html-tramp-set (defs) (arities) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in if list-length (d.params) > 0 & html-has-other-tail (d.name) (d.body) arities
+      then html-tramp-set defs arities (i + 1) (list-push acc (d.name))
+      else html-tramp-set defs arities (i + 1) acc
+
+  html-has-other-tail : Text, IRExpr, List ArityEntry -> Boolean
+  html-has-other-tail (name) (e) (arities) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) -> html-has-other-tail name t arities | html-has-other-tail name el arities
+    is IrLet (nm) (ty) (v) (b) (sp) -> html-has-other-tail name b arities
+    is IrMatch (s) (bs) (ty) (sp) -> html-branches-other-tail name bs arities 0
+    is IrApply (f) (a) (ty) (sp) -> html-is-def-call name e arities
+    is otherwise -> False
+
+  html-branches-other-tail : Text, List IRBranch, List ArityEntry, Integer -> Boolean
+  html-branches-other-tail (name) (bs) (arities) (i) =
+   if i >= list-length bs then False
+   else if html-has-other-tail name ((list-at bs i).body) arities then True
+   else html-branches-other-tail name bs arities (i + 1)
+
+  html-is-def-call : Text, IRExpr, List ArityEntry -> Boolean
+  html-is-def-call (name) (e) (arities) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (r) (ty) (sp) -> r /= name & is-html-builtin r == False & list-length (chain.args) > 0 & lookup-arity arities r == list-length (chain.args)
+    is otherwise -> False
+
+  html-tramp-root : List Text, IRExpr, List ArityEntry -> Text
+  html-tramp-root (tramp) (e) (arities) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (r) (ty) (sp) -> if html-text-in tramp r 0 & list-length (chain.args) > 0 & lookup-arity arities r == list-length (chain.args) then r else ""
+    is otherwise -> ""
+
+  html-has-self-tail : Text, Integer, IRExpr -> Boolean
+  html-has-self-tail (name) (n) (e) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) -> html-has-self-tail name n t | html-has-self-tail name n el
+    is IrLet (nm) (ty) (v) (b) (sp) -> if nm == name then False else html-has-self-tail name n b
+    is IrMatch (s) (bs) (ty) (sp) -> html-branches-self-tail name n bs 0
+    is IrApply (f) (a) (ty) (sp) -> html-is-self-call name n e
+    is otherwise -> False
+
+  html-branches-self-tail : Text, Integer, List IRBranch, Integer -> Boolean
+  html-branches-self-tail (name) (n) (bs) (i) =
+   if i >= list-length bs then False
+   else if html-has-self-tail name n ((list-at bs i).body) then True
+   else html-branches-self-tail name n bs (i + 1)
+
+  html-is-self-call : Text, Integer, IRExpr -> Boolean
+  html-is-self-call (name) (n) (e) =
+   let chain = collect-apply-chain e []
+   in when (chain.root)
+    is IrName (r) (ty) (sp) -> r == name & list-length (chain.args) == n
+    is otherwise -> False
+
+  emit-js-tail : Text, List IRParam, IRExpr, List ArityEntry, List Text, Integer -> Text
+  emit-js-tail (name) (params) (e) (arities) (tramp) (indent) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     html-indent indent & "if (" & emit-js-expr c arities indent & ") {\n" & emit-js-tail name params t arities tramp (indent + 1)
+     & html-indent indent & "} else {\n" & emit-js-tail name params el arities tramp (indent + 1) & html-indent indent & "}\n"
+    is IrLet (nm) (ty) (v) (b) (sp) ->
+     html-indent indent & "{\n" & html-indent (indent + 1) & "const " & html-sanitize nm & " = " & emit-js-expr v arities (indent + 1) & ";\n"
+     & emit-js-tail name params b (arity-hide arities nm) tramp (indent + 1) & html-indent indent & "}\n"
+    is IrMatch (scrut) (bs) (ty) (sp) ->
+     html-indent indent & "{\n" & html-indent (indent + 1) & "const _s = " & emit-js-expr scrut arities (indent + 1) & ";\n"
+     & emit-js-tail-branches name params bs arities tramp (indent + 1) 0 & html-indent indent & "}\n"
+    is otherwise ->
+     if html-is-self-call name (list-length params) e then emit-js-tail-jump params ((collect-apply-chain e []).args) arities indent
+     else let target = html-tramp-root tramp e arities
+     in if target /= "" then html-indent indent & "return new __TC(" & html-sanitize target & "__tb, [" & emit-js-apply-args ((collect-apply-chain e []).args) arities indent 0 & "]);\n"
+     else html-indent indent & "return " & emit-js-expr e arities indent & ";\n"
+
+  emit-js-tail-branches : Text, List IRParam, List IRBranch, List ArityEntry, List Text, Integer, Integer -> Text
+  emit-js-tail-branches (name) (params) (bs) (arities) (tramp) (indent) (i) =
+   if i >= list-length bs then html-indent indent & "throw new Error('non-exhaustive match');\n"
+   else let b = list-at bs i
+   in let scope = arity-hide-pat arities (b.pattern)
+   in let body = emit-js-tail name params (b.body) scope tramp (indent + 2)
+   in let inner = if html-guard-trivial (b.guard) then body
+      else html-indent (indent + 1) & "if (" & emit-js-expr (b.guard) scope indent & ") {\n" & body & html-indent (indent + 1) & "}\n"
+   in html-indent indent & "if (" & emit-js-pattern-cond (b.pattern) "_s" & ") {\n" & emit-js-pattern-binds (b.pattern) "_s" indent & inner & html-indent indent & "}\n"
+    & emit-js-tail-branches name params bs arities tramp indent (i + 1)
+
+  emit-js-tail-jump : List IRParam, List IRExpr, List ArityEntry, Integer -> Text
+  emit-js-tail-jump (params) (args) (arities) (indent) =
+   html-indent indent & "{\n" & emit-js-tail-temps args arities (indent + 1) 0 & emit-js-tail-assigns params (indent + 1) 0 & html-indent (indent + 1) & "continue;\n" & html-indent indent & "}\n"
+
+  emit-js-tail-temps : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-js-tail-temps (args) (arities) (indent) (i) =
+   if i >= list-length args then ""
+   else html-indent indent & "const __tc" & integer-to-text i & " = " & emit-js-expr (list-at args i) arities indent & ";\n" & emit-js-tail-temps args arities indent (i + 1)
+
+  emit-js-tail-assigns : List IRParam, Integer, Integer -> Text
+  emit-js-tail-assigns (params) (indent) (i) =
+   if i >= list-length params then ""
+   else html-indent indent & "__a" & integer-to-text i & " = __tc" & integer-to-text i & ";\n" & emit-js-tail-assigns params indent (i + 1)
+
+  html-tail-args : Integer, Integer -> Text
+  html-tail-args (n) (i) =
+   if i >= n then ""
+   else (if i > 0 then ", " else "") & "__a" & integer-to-text i & html-tail-args n (i + 1)
+
+  html-tail-binds : List IRParam, Integer -> Text
+  html-tail-binds (params) (i) =
+   if i >= list-length params then ""
+   else "    const " & html-sanitize (list-at params i).name & " = __a" & integer-to-text i & ";\n" & html-tail-binds params (i + 1)
 
   emit-js-defs : List IRDef, Integer, List ArityEntry -> Text
   emit-js-defs (defs) (i) (arities) =
-   text-concat-list (emit-js-defs-acc defs i (list-length defs) arities [])
+   text-concat-list (emit-js-defs-acc defs i (list-length defs) arities (html-tramp-set defs arities 0 []) [])
 
-  emit-js-defs-acc : List IRDef, Integer, Integer, List ArityEntry, List Text -> List Text
-  emit-js-defs-acc (defs) (i) (len) (arities) (acc) =
+  emit-js-defs-acc : List IRDef, Integer, Integer, List ArityEntry, List Text, List Text -> List Text
+  emit-js-defs-acc (defs) (i) (len) (arities) (tramp) (acc) =
    if i >= len then acc
-   else emit-js-defs-acc defs (i + 1) len arities (list-push acc (emit-js-def (list-at defs i) arities))
+   else emit-js-defs-acc defs (i + 1) len arities tramp (list-push acc (emit-js-def (list-at defs i) arities tramp))
 
 Section: HTML Page Assembly
 
@@ -611,14 +742,28 @@ Section: Chapter Emission
   emit-html-chapter (m) (meta) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
-   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction print_line_raw(s) { print_line_uni(s); }\nfunction show(n) { return typeof n === 'boolean' ? (n ? 'True' : 'False') : String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(Number(start), Number(start) + Number(len)); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return BigInt(s.charCodeAt(Number(i))); }\nfunction int_mod(a, b) { return a % b; }\nfunction list_snoc(xs, x) { return [...xs, x]; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(c.charCodeAt ? c.charCodeAt(0) : c); }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (a^b);}\nfunction bit_and(a,b){return (a&b);}\nfunction bit_or(a,b){return (a|b);}\nfunction bit_shl(a,n){return BigInt.asIntN(64, a<<n);}\nfunction bit_shr(a,n){return (a>>n);}\nfunction bit_shru(a,n){return BigInt.asIntN(64, BigInt.asUintN(64, a)>>n);}\nfunction bit_not(a){return (~a);}\nfunction __narrow(n) { return n; }\n\n"
+   in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction print_line_raw(s) { print_line_uni(s); }\nfunction show(n) { return typeof n === 'boolean' ? (n ? 'True' : 'False') : String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(Number(start), Number(start) + Number(len)); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return BigInt(__u2c(s.codePointAt(Number(i)))); }\nfunction int_mod(a, b) { return a % b; }\nfunction list_snoc(xs, x) { xs.push(x); return xs; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { xs.push(x); return xs; }\nfunction list_set_at(xs, i, x) { const k = Number(i); if (k < 0 || k >= xs.length) { throw new Error(\"CODEX_TRAP_index_out_of_bounds\"); } xs[k] = x; return xs; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(typeof c === 'string' ? __u2c(c.codePointAt(0)) : c); }\nfunction code_to_char(cp) { return String.fromCodePoint(__c2u(Number(cp))); }\nfunction char_encode(c) { return c; }\nfunction text_concat_list(xs) { return xs.join(''); }\nfunction __list_with_capacity(n) { return []; }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (a^b);}\nfunction bit_and(a,b){return (a&b);}\nfunction bit_or(a,b){return (a|b);}\nfunction bit_shl(a,n){return BigInt.asIntN(64, a<<n);}\nfunction bit_shr(a,n){return (a>>n);}\nfunction bit_shru(a,n){return BigInt.asIntN(64, BigInt.asUintN(64, a)>>n);}\nfunction bit_not(a){return (~a);}\nfunction __narrow(n) { return n; }\nfunction __TC(f, a) { this.f = f; this.a = a; }\nfunction __real(b) { return new Float64Array(new BigInt64Array([b]).buffer)[0]; }\nfunction real_from_int(n) { return Number(n); }\nfunction real_to_int(x) { return BigInt(Math.trunc(x)); }\nfunction real_to_bits(x) { return new BigInt64Array(new Float64Array([x]).buffer)[0]; }\nfunction bits_to_real(b) { return __real(BigInt.asIntN(64, b)); }\nfunction text_to_double_bits(t) { return real_to_bits(parseFloat(t)); }\nfunction __pa(f, n, got) { return (...more) => { const all = got.concat(more); if (all.length < n) { return __pa(f, n, all); } const r = f(...all.slice(0, n)); return all.length > n && typeof r === 'function' ? r(...all.slice(n)) : r; }; }\n\n"
    in let types-text = emit-js-type-defs type-defs 0
    in let defs-text = emit-js-defs (m.defs) 0 arities
    in let entry = if lookup-arity arities "opening" >= 0 then "// Entry\ntry { opening(); } catch(e) { console.error(e); }\n" else "// Entry: this chapter declares no opening\n"
-   in let dom-bi = emit-dom-builtins
+   in let dom-bi = emit-dom-builtins & (if html-uses-gpu-bridge (m.defs) 0 then emit-dom-gpu-bridge else "") & (if html-uses-byte-heap defs-text then emit-dom-byte-heap else "")
    in let wraps = "function __int(v) { return typeof v === 'number' ? BigInt(Math.trunc(v)) : v; }\n" & html-int-wraps (m.defs) 0 ""
-   in let js = builtins & dom-bi & wraps & types-text & defs-text & entry
+   in let js = html-cce-runtime & builtins & dom-bi & wraps & types-text & defs-text & entry
    in emit-html-page title (emit-default-css) js
+
+  html-cce-list : List Integer, Integer, Text -> Text
+  html-cce-list (xs) (i) (acc) =
+   if i >= list-length xs then acc
+   else html-cce-list xs (i + 1) (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
+
+  html-cce-runtime : Text
+  html-cce-runtime =
+   "var __cce_t0=[" & html-cce-list cce-to-unicode-table 0 "" & "],__cce_t1=[" & html-cce-list cce-tier1-block-bases 0 "" & "],__cce_t2=[" & html-cce-list cce-tier2-block-table 0 "" & "];\n"
+   & "function __c2u(cp){if(cp<0)return 65533;if(cp<128)return __cce_t0[cp];if(cp<2176){var v=cp-128;var b=v<256?0:v<384?1:v<512?2:v<640?3:v<768?4:v<896?5:v<1024?6:v<1152?7:v<1664?8:v<1920?9:v<2048?10:-1;if(b<0)return 65533;"
+   & "var off=v<256?v:v<1152?(v-256)%128:v<1664?v-1152:v<1920?v-1664:v-1920;return __cce_t1[b*2]+off}"
+   & "if(cp<67712){var base=2176;for(var k=0;k*2<__cce_t2.length;k++){var size=__cce_t2[k*2+1];if(cp>=base&&cp<base+size)return __cce_t2[k*2]+(cp-base);base+=size}}return 65533}\n"
+   & "function __u2c(u){var t=__cce_t0.indexOf(u);if(t>=0)return t;for(var b=0;b*2<__cce_t1.length;b++){var base=__cce_t1[b*2],size=__cce_t1[b*2+1];if(u>=base&&u<base+size){var start=b==0?128:b<8?256+b*128:b==8?1280:b==9?1792:b==10?2048:-1;return start<0?-1:start+(u-base)}}"
+   & "var cb=2176;for(var k=0;k*2<__cce_t2.length;k++){var tb=__cce_t2[k*2],ts=__cce_t2[k*2+1];if(u>=tb&&u<tb+ts)return cb+(u-tb);cb+=ts}return -1}\n"
 
   html-result-type : CodexType, Integer -> CodexType
   html-result-type (t) (n) =
@@ -647,7 +792,7 @@ Section: Chapter Emission
 
   emit-dom-builtins : Text
   emit-dom-builtins =
-   emit-dom-core & emit-dom-ajax & emit-dom-state & emit-dom-events & emit-dom-reactive & emit-dom-dialog & emit-dom-a11y & emit-dom-anim & emit-dom-persist & emit-dom-sd & emit-dom-theme & emit-dom-widget & emit-dom-svg
+   emit-dom-core & emit-dom-ajax & emit-dom-host & emit-dom-wasm & emit-dom-gpu & emit-dom-state & emit-dom-events & emit-dom-reactive & emit-dom-dialog & emit-dom-a11y & emit-dom-anim & emit-dom-persist & emit-dom-sd & emit-dom-theme & emit-dom-widget & emit-dom-svg
 
   emit-dom-svg : Text
   emit-dom-svg =
@@ -691,7 +836,7 @@ Section: Chapter Emission
    & "function dom_query(sel){return document.querySelector(sel);}\n"
    & "function dom_body(){return document.body;}\n"
    & "function random_int(lo,hi){lo=Number(lo);return lo+Math.floor(Math.random()*(Number(hi)-lo+1));}\n"
-   & "function set_timeout(fn,ms){return setTimeout(fn,Number(ms));}\n"
+   & "function set_timeout(fn,ms){return setTimeout(function(){fn(0n)},Number(ms));}\n"
    & "var _actx=null;function _audioctx(){if(!_actx){try{_actx=new (window.AudioContext||window.webkitAudioContext)()}catch(e){return null}}if(_actx.state==='suspended'){try{_actx.resume()}catch(e){}}return _actx}\n"
    & "function play_tone(freq,ms,wave){freq=Number(freq);ms=Number(ms);wave=Number(wave);try{var c=_audioctx();if(!c)return 0;var o=c.createOscillator();var g=c.createGain();o.type=wave===1?'triangle':wave===2?'square':wave===3?'sawtooth':'sine';o.frequency.value=freq;o.connect(g);g.connect(c.destination);var t=c.currentTime;var d=ms/1000;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.25,t+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t+d);o.start(t);o.stop(t+d+0.02)}catch(e){}return 0}\n"
    & "function local_storage_get(k){try{return localStorage.getItem(k)||'';}catch(e){return'';}}\n"
@@ -702,7 +847,7 @@ Section: Chapter Emission
   emit-dom-ajax =
    "function fetch_json(u,m,b){var o={method:m,headers:{'Content-Type':'application/json'}};if(b)o.body=b;return fetch(u,o).then(function(r){return r.json();});}\n"
    & "function json_stringify(v){return JSON.stringify(v);}\n"
-   & "function json_parse(s){return JSON.parse(s);}\n"
+   & "function json_parse_rows(s){return JSON.parse(s);}\n"
    & "function json_parse_obj(s){return JSON.parse(s);}\n"
    & "function json_obj_field(o,k){if(o==null)return '';var v=o[k];return v==null?'':typeof v==='object'?JSON.stringify(v):String(v);}\n"
    & "function url_encode(s){return encodeURIComponent(s);}\n"
@@ -712,6 +857,171 @@ Section: Chapter Emission
    & ".then(function(d){cb(json_stringify(d))})"
    & ".catch(function(e){cb('{\"error\":\"'+e.message+'\"}')});return 0}\n"
    & "function fetch_get_then(u,cb){return fetch_then(u,'GET','',cb)}\n"
+
+  emit-dom-host : Text
+  emit-dom-host =
+   "function page_data(k){var d=window.__DATA||{};var v=d[k];return v==null?'':typeof v==='string'?v:JSON.stringify(v);}\n"
+   & "function location_hash(x){return location.hash||'';}\n"
+   & "function location_clear_hash(x){try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}return 0;}\n"
+   & "function on_hash_change(cb){window.addEventListener('hashchange',function(){cb(location.hash||'')});return 0;}\n"
+   & "function uri_decode_component(s){try{return decodeURIComponent(s)}catch(e){return ''}}\n"
+   & "function json_valid(s){try{var v=JSON.parse(s);return v!==null&&typeof v==='object'}catch(e){return false}}\n"
+   & "function fetch_with_then(u,m,h,b,cb){var o={method:m,mode:'cors',headers:{}};try{var hh=h?JSON.parse(h):{};for(var k in hh)o.headers[k]=hh[k]}catch(e){}"
+   & "if(b)o.body=b;fetch(u,o).then(function(r){return r.text()}).then(function(t){cb(t)})"
+   & ".catch(function(e){cb(JSON.stringify({ok:false,err:String(e&&e.message||e)}))});return 0;}\n"
+   & "function pick_file_text(a,cb){var i=document.createElement('input');i.type='file';i.accept=a;i.onchange=function(){var f=i.files&&i.files[0];if(!f)return;"
+   & "if(f.size>65536){cb('');return}f.text().then(function(t){cb(t)})};i.click();return 0;}\n"
+
+ A WASI program here gets exactly two calls, fd_write and fd_read, and reads its
+ input as one NUL-terminated stream; that is the contract the compiler and the
+ plugs built for the browser are built against.
+
+  emit-dom-wasm : Text
+  emit-dom-wasm =
+   "var _wasmMods={};function _wasmBytes(n){if(!_wasmMods[n]){var s=(window.__DATA||{})[n];if(!s)throw new Error(n+' is not in this page');"
+   & "var b=atob(s),u=new Uint8Array(b.length);for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);_wasmMods[n]=u.buffer}return _wasmMods[n]}\n"
+   & "function _wasiRun(bytes,input){var mem=null,pos=0,chunks=[],total=0;var imp={wasi_snapshot_preview1:{"
+   & "fd_write:function(fd,iovs,n,outp){var v=new DataView(mem.buffer),t=0;for(var i=0;i<n;i++){var p=v.getUint32(iovs+i*8,true),l=v.getUint32(iovs+i*8+4,true);"
+   & "chunks.push(new Uint8Array(mem.buffer.slice(p,p+l)));total+=l;t+=l}v.setUint32(outp,t,true);return 0},"
+   & "fd_read:function(fd,iovs,n,outp){var v=new DataView(mem.buffer),t=0;for(var i=0;i<n;i++){var p=v.getUint32(iovs+i*8,true),l=v.getUint32(iovs+i*8+4,true);"
+   & "var d=new Uint8Array(mem.buffer,p,l),k=0;while(k<l&&pos<input.length){d[k++]=input[pos++]}t+=k;if(k<l)break}v.setUint32(outp,t,true);return 0}}};"
+   & "var inst=new WebAssembly.Instance(new WebAssembly.Module(bytes),imp);mem=inst.exports.memory;inst.exports._start();"
+   & "var all=new Uint8Array(total),o=0;for(var c of chunks){all.set(c,o);o+=c.length}return all}\n"
+   & "var _ww=null,_wseq=0,_wwait={};\n"
+   & "function wasm_run_then(n,s,cb){var bytes;var e0=new TextEncoder().encode(s);var input=new Uint8Array(e0.length+1);input.set(e0);"
+   & "try{bytes=_wasmBytes(n)}catch(e){cb('!WASM '+e.message);return 0}"
+   & "var direct=function(){try{cb(new TextDecoder().decode(_wasiRun(bytes,input)))}catch(e){cb('!WASM '+(e&&e.message||e))}};"
+   & "try{if(!_ww){_ww=new Worker(URL.createObjectURL(new Blob(['var _wasiRun='+_wasiRun.toString()+';onmessage=function(e){try{var o=_wasiRun(e.data.b,e.data.i);postMessage({id:e.data.id,ok:true,o:o},[o.buffer])}catch(x){postMessage({id:e.data.id,ok:false,e:String(x&&x.message||x)})}}'],{type:'text/javascript'})));"
+   & "_ww.onmessage=function(e){var w=_wwait[e.data.id];delete _wwait[e.data.id];if(w)w(e.data)}}}catch(e){_ww=null}"
+   & "if(!_ww){setTimeout(direct,0);return 0}"
+   & "var id=++_wseq;_wwait[id]=function(d){if(d.ok)cb(new TextDecoder().decode(d.o));else if(/call stack|stack size/i.test(d.e))direct();else cb('!WASM '+d.e)};"
+   & "_ww.postMessage({id:id,b:bytes,i:input});return 0}\n"
+
+ WebGPU exposes no device memory size, so the probe reports what it can see:
+ the adapter's identity, its buffer limits, shader-f16, and a timed f32 GEMM.
+ The GEMM's inputs are integers in -2..2, so every sum of N products is exact
+ in f32 in any order, and 64 sampled outputs are compared for equality with
+ the host's own dot products; a GEMM that computes nothing reports bad
+ samples rather than a fast time.
+
+  emit-dom-gpu : Text
+  emit-dom-gpu =
+   "function _gpuGemm(d,ms,o){var N=1024,A=new Float32Array(N*N),B=new Float32Array(N*N);for(var k=0;k<N*N;k++){A[k]=((k*7)%5)-2;B[k]=((k*13)%5)-2}"
+   & "var S=GPUBufferUsage.STORAGE;var mk=function(x){var b=d.createBuffer({size:x.byteLength,usage:S,mappedAtCreation:true});new Float32Array(b.getMappedRange()).set(x);b.unmap();return b};"
+   & "var bA=mk(A),bB=mk(B),bC=d.createBuffer({size:N*N*4,usage:S|GPUBufferUsage.COPY_SRC}),bR=d.createBuffer({size:N*N*4,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});"
+   & "var code='@group(0) @binding(0) var<storage,read> a:array<f32>;@group(0) @binding(1) var<storage,read> b:array<f32>;@group(0) @binding(2) var<storage,read_write> c:array<f32>;"
+   & "var<workgroup> ta:array<f32,256>;var<workgroup> tb:array<f32,256>;@compute @workgroup_size(16,16) fn main(@builtin(global_invocation_id) g:vec3<u32>,@builtin(local_invocation_id) l:vec3<u32>){"
+   & "let n='+N+'u;var s=0.0;for(var t=0u;t<n;t=t+16u){ta[l.y*16u+l.x]=a[g.y*n+t+l.x];tb[l.y*16u+l.x]=b[(t+l.y)*n+g.x];workgroupBarrier();"
+   & "for(var k=0u;k<16u;k=k+1u){s=s+ta[l.y*16u+k]*tb[k*16u+l.x];}workgroupBarrier();}c[g.y*n+g.x]=s;}';"
+   & "var p=d.createComputePipeline({layout:'auto',compute:{module:d.createShaderModule({code:code}),entryPoint:'main'}});"
+   & "var bg=d.createBindGroup({layout:p.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:bA}},{binding:1,resource:{buffer:bB}},{binding:2,resource:{buffer:bC}}]});"
+   & "var run=function(){var e=d.createCommandEncoder(),c=e.beginComputePass();c.setPipeline(p);c.setBindGroup(0,bg);c.dispatchWorkgroups(N/16,N/16);c.end();d.queue.submit([e.finish()]);return d.queue.onSubmittedWorkDone()};"
+   & "var t0=0,runs=0;var loop=function(){return run().then(function(){runs++;if(performance.now()-t0<ms&&runs<500)return loop()})};"
+   & "return run().then(function(){t0=performance.now();return loop()}).then(function(){var sec=(performance.now()-t0)/1000;o.n=N;o.runs=runs;o.seconds=sec;o.gflops=2*N*N*N*runs/sec/1e9;"
+   & "var e=d.createCommandEncoder();e.copyBufferToBuffer(bC,0,bR,0,N*N*4);d.queue.submit([e.finish()]);return bR.mapAsync(GPUMapMode.READ)}).then(function(){"
+   & "var C=new Float32Array(bR.getMappedRange()),bad=0;for(var s=0;s<64;s++){var i=(s*9973)%N,j=(s*7919+s)%N,v=0;for(var k=0;k<N;k++)v+=A[i*N+k]*B[k*N+j];if(C[i*N+j]!==v)bad++}"
+   & "o.checked=64;o.bad=bad;bR.unmap();d.destroy()})}\n"
+   & "function gpu_probe_then(ms,cb){ms=Number(ms);var o={webgpu:!!(typeof navigator!=='undefined'&&navigator.gpu)};var fin=function(){cb(JSON.stringify(o))};"
+   & "if(!o.webgpu){o.err='no-webgpu';fin();return 0}"
+   & "navigator.gpu.requestAdapter({powerPreference:'high-performance'}).then(function(a){if(!a){o.err='no-adapter';return null}"
+   & "var i=a.info||{};o.vendor=i.vendor||'';o.architecture=i.architecture||'';o.device=i.device||'';o.description=i.description||'';o.fallback=!!(a.isFallbackAdapter||i.isFallbackAdapter);"
+   & "o.maxBufferSize=Number(a.limits.maxBufferSize);o.maxStorageBufferBindingSize=Number(a.limits.maxStorageBufferBindingSize);o.f16=a.features.has('shader-f16');"
+   & "return a.requestDevice().then(function(d){return _gpuGemm(d,ms,o)})}).then(fin).catch(function(e){o.err=String(e&&e.message||e);fin()});return 0}\n"
+
+  html-uses-gpu-bridge : List IRDef, Integer -> Boolean
+  html-uses-gpu-bridge (defs) (i) =
+   if i >= list-length defs then False
+   else if html-is-gpu-bridge ((list-at defs i).name) then True
+   else html-uses-gpu-bridge defs (i + 1)
+
+  html-uses-byte-heap : Text -> Boolean
+  html-uses-byte-heap (js) = text-contains js "alloc_bytes(" | text-contains js "peek_byte(" | text-contains js "poke_byte(" | text-contains js "peek_32(" | text-contains js "poke_32(" | text-contains js "__memset("
+
+ The byte heap behind alloc-bytes, peek and poke: one growable ArrayBuffer, an
+ address being a byte offset into it from 16 (0 stays null); peek-32
+ zero-extends, a poke answers 0 and __memset its address, as the C# plug's
+ _Buf does.
+
+  emit-dom-byte-heap : Text
+  emit-dom-byte-heap =
+   "var _hb=new ArrayBuffer(1048576),_hv=new DataView(_hb),_hu=new Uint8Array(_hb),_hp=16;\n"
+   & "function _hgrow(n){if(n<=_hb.byteLength)return;var c=_hb.byteLength;while(c<n)c*=2;var b=new ArrayBuffer(c);new Uint8Array(b).set(_hu);_hb=b;_hv=new DataView(b);_hu=new Uint8Array(b)}\n"
+   & "function alloc_bytes(n){var a=_hp;_hp=Math.ceil((_hp+Number(n))/8)*8;_hgrow(_hp);return BigInt(a)}\n"
+   & "function peek_byte(b,o){return BigInt(_hu[Number(b)+Number(o)])}\n"
+   & "function poke_byte(b,o,v){_hu[Number(b)+Number(o)]=Number(BigInt.asUintN(8,BigInt(v)));return 0n}\n"
+   & "function peek_32(b,o){return BigInt(_hv.getUint32(Number(b)+Number(o),true))}\n"
+   & "function poke_32(b,o,v){_hv.setUint32(Number(b)+Number(o),Number(BigInt.asUintN(32,BigInt(v))),true);return 0n}\n"
+   & "function __memset(b,v,n){_hu.fill(Number(BigInt.asUintN(8,BigInt(v))),Number(b),Number(b)+Number(n));return b}\n"
+
+  html-is-gpu-bridge : Text -> Boolean
+  html-is-gpu-bridge (n) =
+   text-contains " gpu-open-then gpu-buf-alloc gpu-buf-free gpu-buf-write-words gpu-buf-download-then gpu-buf-upload-then gpu-buf-show-then gpu-launch gpu-error gpu-f32-bits pick-file-then file-read-then " (" " & n & " ")
+
+ The GPU bridge (apps/webapp/WebGpu.codex). A handle indexes _gb from 1. A
+ launch binds by the WGSL plug's `// cx-kernel <entry> wg=<n> p=bK|uK ...` line:
+ bK is storage binding K, uK field K of the uniform at the binding after the
+ last storage one, and a scalar arrives as its 32-bit pattern. WebGPU reports a
+ validation error asynchronously, so a launch answers 0 once queued and
+ gpu-error reads the last error reported. A storage binding's offset must be a
+ multiple of 256 (minStorageBufferOffsetAlignment). A dimension holds at most
+ 65535 workgroups (maxComputeWorkgroupsPerDimension), so a one-dimensional gx
+ past that is dispatched as gx by gy, which the WGSL plug's entry linearizes.
+ WebGPU frees a destroyed buffer only after the work queued on it runs, so a
+ page that queues a whole generation would hold every temporary at once; a
+ freed buffer goes to a pool by size instead, and an alloc of that size takes
+ it back cleared, which is safe because one queue runs in order.
+
+  emit-dom-gpu-bridge : Text
+  emit-dom-gpu-bridge =
+   "var _gd=null,_gb=[null],_gerr='',_gmods=new Map(),_gfiles={};\n"
+   & "function _gi32(v){return Number(BigInt.asIntN(32,BigInt(v)))}\n"
+   & "function gpu_open_then(cb){if(typeof navigator==='undefined'||!navigator.gpu){cb(JSON.stringify({ok:false,err:'no-webgpu'}));return 0}"
+   & "navigator.gpu.requestAdapter({powerPreference:'high-performance'}).then(function(a){if(!a)throw new Error('no-adapter');"
+   & "return a.requestDevice({requiredLimits:{maxBufferSize:a.limits.maxBufferSize,maxStorageBufferBindingSize:a.limits.maxStorageBufferBindingSize}})})"
+   & ".then(function(d){_gd=d;d.onuncapturederror=function(e){_gerr=String(e.error&&e.error.message||e.error)};cb(JSON.stringify({ok:true,maxBufferSize:Number(d.limits.maxBufferSize),maxStorageBufferBindingSize:Number(d.limits.maxStorageBufferBindingSize)}))})"
+   & ".catch(function(e){cb(JSON.stringify({ok:false,err:String(e&&e.message||e)}))});return 0}\n"
+   & "var _gpool={};\n"
+   & "function gpu_buf_alloc(n){n=Number(n);if(!_gd||n<=0)return 0;var sz=Math.ceil(n/4)*4,p=_gpool[sz];"
+   & "if(p&&p.length){var r=p.pop(),e=_gd.createCommandEncoder();e.clearBuffer(r);_gd.queue.submit([e.finish()]);_gb.push(r);return _gb.length-1}"
+   & "try{var b=_gd.createBuffer({size:sz,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});_gb.push(b);return _gb.length-1}catch(x){_gerr=String(x&&x.message||x);return 0}}\n"
+   & "function gpu_buf_free(h){h=Number(h);var b=_gb[h];if(!b)return false;(_gpool[b.size]||(_gpool[b.size]=[])).push(b);_gb[h]=null;return true}\n"
+   & "function gpu_buf_write_words(h,off,ws){var b=_gb[Number(h)];if(!b)return false;var a=new Int32Array(ws.length);for(var i=0;i<ws.length;i++)a[i]=_gi32(ws[i]);_gd.queue.writeBuffer(b,Number(off),a);return true}\n"
+   & "function gpu_buf_download_then(h,off,n,cb){var b=_gb[Number(h)];off=Number(off);n=Math.ceil(Number(n)/4)*4;if(!b){cb(JSON.stringify({error:'no buffer '+h}));return 0}"
+   & "var r=_gd.createBuffer({size:n,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});var e=_gd.createCommandEncoder();e.copyBufferToBuffer(b,off,r,0,n);_gd.queue.submit([e.finish()]);"
+   & "r.mapAsync(GPUMapMode.READ).then(function(){var w=Array.from(new Int32Array(r.getMappedRange()));r.unmap();r.destroy();cb(JSON.stringify(w))})"
+   & ".catch(function(e){cb(JSON.stringify({error:String(e&&e.message||e)}))});return 0}\n"
+   & "function _gh2f(h){var s=h&0x8000?-1:1,e=(h>>10)&31,m=h&1023;return e===0?s*m*Math.pow(2,-24):e===31?(m?NaN:s*Infinity):s*(1+m/1024)*Math.pow(2,e-15)}\n"
+   & "function gpu_buf_upload_then(h,dst,name,foff,count,sdt,ddt,cb){var b=_gb[Number(h)],f=_gfiles[name];dst=Number(dst);foff=Number(foff);count=Number(count);sdt=Number(sdt);ddt=Number(ddt);"
+   & "var sz=[1,4,2,2,1,1];if(!b||!f){cb(JSON.stringify({error:'no buffer or file'}));return 0}"
+   & "if(!(sdt===ddt||(sdt===2&&ddt===1))){cb(JSON.stringify({error:'conversion '+sdt+' to '+ddt+' is not implemented'}));return 0}"
+   & "var want=count*sz[sdt];f.slice(foff,foff+want).arrayBuffer().then(function(ab){if(ab.byteLength!==want)throw new Error('file ends '+ab.byteLength+' bytes into a '+want+'-byte range');"
+   & "var out=ab;if(sdt!==ddt){var s=new Uint16Array(ab),o=new Float32Array(s.length);for(var i=0;i<s.length;i++)o[i]=_gh2f(s[i]);out=o.buffer}"
+   & "var u=new Uint8Array(Math.ceil(out.byteLength/4)*4);u.set(new Uint8Array(out));_gd.queue.writeBuffer(b,dst,u);cb(JSON.stringify({ok:true,bytes:out.byteLength}))})"
+   & ".catch(function(e){cb(JSON.stringify({error:String(e&&e.message||e)}))});return 0}\n"
+   & "function _gkernel(code,name){var m=new RegExp('// cx-kernel '+name+' wg=(\\\\d+)([^\\\\n]*)').exec(code);if(!m)return null;"
+   & "return {wg:Number(m[1]),ps:m[2].trim().split(/\\s+/).filter(Boolean).map(function(t){var k=t.split('=')[1];return {s:k[0],i:Number(k.slice(1))}})}}\n"
+   & "function gpu_launch(code,name,g,ps){try{if(!_gd){_gerr='launch: no device';return -1}var k=_gkernel(code,name);"
+   & "if(!k){_gerr='launch: '+name+' is not a kernel in this module';return -1}if(ps.length!==k.ps.length){_gerr='launch: '+name+' takes '+k.ps.length+' parameters, given '+ps.length;return -1}"
+   & "if(Number(g.bx)!==k.wg){_gerr='launch: '+name+' runs '+k.wg+' threads a block, asked for '+g.bx;return -1}"
+   & "var mod=_gmods.get(code);if(!mod){mod={m:_gd.createShaderModule({code:code}),p:{}};_gmods.set(code,mod)}"
+   & "var p=mod.p[name]||(mod.p[name]=_gd.createComputePipeline({layout:'auto',compute:{module:mod.m,entryPoint:name}}));"
+   & "var ent=[],nb=0,nu=0;k.ps.forEach(function(q,j){var a=ps[j];if(q.s==='b'){nb++;ent.push({binding:q.i,resource:{buffer:_gb[Number(a.handle)],offset:Number(a.value)}})}else nu=Math.max(nu,q.i+1)});"
+   & "if(nu>0){var u=new Int32Array(Math.ceil(nu/4)*4);k.ps.forEach(function(q,j){if(q.s==='u')u[q.i]=_gi32(ps[j].value)});"
+   & "var ub=_gd.createBuffer({size:u.byteLength,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});_gd.queue.writeBuffer(ub,0,u);ent.push({binding:nb,resource:{buffer:ub}})}"
+   & "var e=_gd.createCommandEncoder(),c=e.beginComputePass();c.setPipeline(p);c.setBindGroup(0,_gd.createBindGroup({layout:p.getBindGroupLayout(0),entries:ent}));"
+   & "var gx=Number(g.gx),gy=Math.max(1,Number(g.gy));if(gx>65535&&gy===1){gy=Math.ceil(gx/65535);gx=Math.ceil(gx/gy)}"
+   & "c.dispatchWorkgroups(gx,gy,Math.max(1,Number(g.gz)));c.end();_gd.queue.submit([e.finish()]);return 0}catch(x){_gerr=String(x&&x.message||x);return -1}}\n"
+   & "function gpu_buf_show_then(h,w,hh,sel,cb){var b=_gb[Number(h)];w=Number(w);hh=Number(hh);var p=w*hh,n=3*p*4;if(!b){cb(JSON.stringify({error:'no buffer '+h}));return 0}"
+   & "var r=_gd.createBuffer({size:n,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST}),e=_gd.createCommandEncoder();e.copyBufferToBuffer(b,0,r,0,n);_gd.queue.submit([e.finish()]);"
+   & "r.mapAsync(GPUMapMode.READ).then(function(){var f=new Float32Array(r.getMappedRange().slice(0));r.unmap();r.destroy();var c=document.querySelector(sel);c.width=w;c.height=hh;"
+   & "var x=c.getContext('2d'),im=x.createImageData(w,hh);for(var i=0;i<p;i++){for(var k=0;k<3;k++){var v=(f[k*p+i]+1)/2;im.data[i*4+k]=Math.round((v<0?0:v>1?1:v)*255)}im.data[i*4+3]=255}"
+   & "x.putImageData(im,0,0);cb(JSON.stringify({ok:true}))}).catch(function(x){cb(JSON.stringify({error:String(x&&x.message||x)}))});return 0}\n"
+   & "function gpu_error(x){return _gerr}\n"
+   & "function gpu_f32_bits(v){return new Int32Array(new Float32Array([Number(v)]).buffer)[0]}\n"
+   & "function file_read_then(name,off,n,cb){var f=_gfiles[name];off=Number(off);n=Number(n);if(!f){cb(JSON.stringify({error:'no file '+name}));return 0}"
+   & "f.slice(off,off+n).arrayBuffer().then(function(ab){cb(JSON.stringify(Array.from(new Uint8Array(ab))))},function(e){cb(JSON.stringify({error:String(e&&e.message||e)}))});return 0}\n"
+   & "function pick_file_then(a,cb){var i=document.createElement('input');i.type='file';i.accept=a;i.onchange=function(){var f=i.files&&i.files[0];if(!f)return;"
+   & "var n='f'+(Object.keys(_gfiles).length+1);_gfiles[n]=f;cb(JSON.stringify({name:n,file:f.name,size:f.size}))};i.click();return 0}\n"
 
   emit-dom-state : Text
   emit-dom-state =

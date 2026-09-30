@@ -15,6 +15,7 @@ Section: Types
     | FaceInside
     | FaceOutside
     | FaceBoundary
+    | FaceBoundaryOpposite
 
 Section: CSG Entry Points
 
@@ -46,7 +47,8 @@ Section: CSG Core
     if fi >= subject.tm-face-count then acc
     else let face = tri-mesh-face subject fi
     in let centroid = csg-face-centroid subject face
-    in let cls = csg-point-inside tool centroid
+    in let on = csg-on-surface tool centroid (csg-face-normal subject face) 0
+    in let cls = if on == 1 then FaceBoundary else if on == 2 then FaceBoundaryOpposite else csg-point-inside tool centroid
     in csg-classify-loop subject tool (fi + 1) (list-push acc cls)
 
   csg-face-centroid : TriMesh, TriFace -> Vec3
@@ -55,6 +57,50 @@ Section: CSG Core
     in let v1 = tri-mesh-vert mesh (face.tf-v1)
     in let v2 = tri-mesh-vert mesh (face.tf-v2)
     in vec3-new ((v0.vx + v1.vx + v2.vx) / 3.0) ((v0.vy + v1.vy + v2.vy) / 3.0) ((v0.vz + v1.vz + v2.vz) / 3.0)
+
+Section: Coincident Faces
+
+ A centroid within csg-eps of a tool face's plane and inside that triangle is
+ ON the tool's surface, where ray parity is arbitrary. The answer is 1 when
+ the two faces point the same way and 2 when they point opposite ways, 0 when
+ the centroid is on no tool face. The plane test compares squared distances so
+ no square root is taken: (n . (p - v0))^2 < eps^2 * (n . n).
+
+  csg-eps : Real = 0.0001
+
+  csg-sub : Vec3, Vec3 -> Vec3
+  csg-sub (a) (b) = vec3-new (a.vx - b.vx) (a.vy - b.vy) (a.vz - b.vz)
+
+  csg-face-normal : TriMesh, TriFace -> Vec3
+  csg-face-normal (mesh) (face) =
+    let v0 = tri-mesh-vert mesh (face.tf-v0)
+    in let v1 = tri-mesh-vert mesh (face.tf-v1)
+    in let v2 = tri-mesh-vert mesh (face.tf-v2)
+    in vec3-cross (csg-sub v1 v0) (csg-sub v2 v0)
+
+  csg-on-surface : TriMesh, Vec3, Vec3, Integer -> Integer
+  csg-on-surface (mesh) (p) (fn) (fi) =
+    if fi >= mesh.tm-face-count then 0
+    else let r = csg-on-face mesh (tri-mesh-face mesh fi) p fn
+    in if r > 0 then r else csg-on-surface mesh p fn (fi + 1)
+
+  csg-on-face : TriMesh, TriFace, Vec3, Vec3 -> Integer
+  csg-on-face (mesh) (face) (p) (fn) =
+    let v0 = tri-mesh-vert mesh (face.tf-v0)
+    in let v1 = tri-mesh-vert mesh (face.tf-v1)
+    in let v2 = tri-mesh-vert mesh (face.tf-v2)
+    in let n = vec3-cross (csg-sub v1 v0) (csg-sub v2 v0)
+    in let nn = vec3-dot n n
+    in let d = vec3-dot n (csg-sub p v0)
+    in if d * d >= csg-eps * csg-eps * nn then 0
+    else if csg-edge-side v0 v1 p n < 0.0 - csg-eps then 0
+    else if csg-edge-side v1 v2 p n < 0.0 - csg-eps then 0
+    else if csg-edge-side v2 v0 p n < 0.0 - csg-eps then 0
+    else if vec3-dot n fn > 0.0 then 1
+    else 2
+
+  csg-edge-side : Vec3, Vec3, Vec3, Vec3 -> Real
+  csg-edge-side (a) (b) (p) (n) = vec3-dot (vec3-cross (csg-sub b a) (csg-sub p a)) n
 
 Section: Point-in-Mesh
 
@@ -114,9 +160,9 @@ Section: Face Collection
   csg-keep-a : FaceClass, CsgOp -> Integer
   csg-keep-a (cls) (op) =
     when op
-      is CsgUnion -> when cls is FaceOutside -> 1 is otherwise -> 0
-      is CsgIntersect -> when cls is FaceInside -> 1 is otherwise -> 0
-      is CsgDifference -> when cls is FaceOutside -> 1 is otherwise -> 0
+      is CsgUnion -> when cls is FaceOutside -> 1 is FaceBoundary -> 1 is otherwise -> 0
+      is CsgIntersect -> when cls is FaceInside -> 1 is FaceBoundary -> 1 is otherwise -> 0
+      is CsgDifference -> when cls is FaceOutside -> 1 is FaceBoundaryOpposite -> 1 is otherwise -> 0
 
   csg-keep-b : FaceClass, CsgOp -> Integer
   csg-keep-b (cls) (op) =

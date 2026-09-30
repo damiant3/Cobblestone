@@ -4,21 +4,16 @@ Chapter: FontTrain
   cites AI chapter Activation
   cites Encode chapter TrueType
   cites Foreword chapter Console
+  cites Foreword chapter Fat16
 
- Architecture:
-   Input:  glyph-id (one-hot 95) + style (3 params) = 98 dims
-   Hidden: 64 neurons, ReLU
-   Output: 48 values (up to 6 rectangles x 8 coords)
-
- Fixed-point scale 1000. Training uses simple SGD with
- finite-difference gradient approximation.
+ Fixed-point scale 1000.
 
 Section: Training Constants
   train-input-dim : Integer = 98
   train-hidden-dim : Integer = 64
-  train-output-dim : Integer = 48
   train-lr : Integer = 10
   train-max-rects : Integer = 6
+  train-output-dim : Integer = train-max-rects * 4
 
 Section: Glyph Training Record
   GlyphSample = record {
@@ -55,6 +50,21 @@ Section: Rectangle Extraction
     in let nxx = if i == 0 then p.tp-x else if p.tp-x > xx then p.tp-x else xx
     in let nyx = if i == 0 then p.tp-y else if p.tp-y > yx then p.tp-y else yx
     in point-bounds pts (i + 1) n nxn nyn nxx nyx
+
+  glyph-sample : TtfFont, Integer -> GlyphSample
+  glyph-sample (font) (cp) =
+    let g = ttf-glyph-for-char font cp
+    in GlyphSample {
+      gs-codepoint = cp,
+      gs-advance = g.tg-advance,
+      gs-upem = font.tf-head.th-units-per-em,
+      gs-rects = contours-to-rects (g.tg-contours) 0 (list-length (g.tg-contours)) []
+    }
+
+  font-samples : TtfFont, Integer, Integer, List GlyphSample -> List GlyphSample
+  font-samples (font) (cp) (max-cp) (acc) =
+    if cp > max-cp then acc
+    else font-samples font (cp + 1) max-cp (list-push acc (glyph-sample font cp))
 
 Section: Input Encoding
   encode-input : Integer, Integer, Integer, Integer -> Tensor
@@ -170,7 +180,24 @@ Section: Weight Export
     end
 
 Section: Main
-  opening : [Console] Nothing = act
-    print-line "FontTrain: training not yet wired to data input"
-    print-line "Use train.ps1 to extract fonts and feed training data"
+  opening : [Console, Device.Block] Nothing = act
+    vol <- fat16-boot-volume
+    got <- fat16-read-bytes vol "FONT.TTF"
+    when got
+      is None -> print-line "ERROR: FONT.TTF not found"
+      is Just (buf) -> train-from-font (ttf-parse buf)
   end
+
+  train-from-font : TtfFont -> [Console] Nothing
+  train-from-font (font) =
+    let samples = font-samples font 32 126 []
+    in act
+      print-line ("SAMPLES " & show (list-length samples) & " RECT-VALUES " & show (sample-rect-values samples 0 (list-length samples) 0))
+      net <- train-network samples 1
+      export-weights net
+    end
+
+  sample-rect-values : List GlyphSample, Integer, Integer, Integer -> Integer
+  sample-rect-values (samples) (i) (n) (acc) =
+    if i >= n then acc
+    else sample-rect-values samples (i + 1) n (acc + list-length ((list-at samples i).gs-rects))

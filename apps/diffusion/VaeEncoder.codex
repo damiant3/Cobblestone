@@ -1,0 +1,83 @@
+Chapter: VaeEncoder
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter GemmPtx
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter CheckpointFile
+  cites AI chapter SafeTensors
+  cites Diffusion chapter GpuModules
+
+ The ldm AutoencoderKL encoder (Forge backend/nn/vae.py Encoder, with
+ quant_conv after it): conv_in to 128 channels; four down levels of two
+ residual blocks at 128, 256, 512 and 512, the first three ending in a
+ downsample; a middle of a residual block, a single-head attention and a
+ residual block; GroupNorm, SiLU, conv_out to 8; quant_conv. The first four of
+ the 8 channels are the posterior mean, the latent vae-decode takes. Forge's
+ Downsample pads right and bottom by one and convolves 3 x 3 at stride 2 with
+ no padding (vae.py:60-72); the conv kernel reads zero outside the image, so
+ stride 2, pad 0 and an h/2 x w/2 output is that padding with no copy.
+
+ We say:
+
+Section: Weights
+
+  ve-wanted : Text, Text -> Boolean
+  ve-wanted (prefix) (name) = text-starts-with name (prefix & "encoder.") | text-starts-with name (prefix & "quant_conv.")
+
+  ve-load-loop : Text, Text, List BoundTensor, Integer, List Text, List Integer, Integer -> VaeWeights
+  ve-load-loop (path) (prefix) (ts) (i) (names) (hs) (failed) =
+    if i >= list-length ts then VaeWeights { vw-prefix = prefix, vw-index = name-index names, vw-handles = hs, vw-failed = failed }
+    else let t = list-at ts i
+    in if ve-wanted prefix (t.bt-name) == False then ve-load-loop path prefix ts (i + 1) names hs failed
+    else let h = vd-upload path t
+    in ve-load-loop path prefix ts (i + 1) (list-push names (t.bt-name)) (list-push hs h) (failed + (if h == 0 then 1 else 0))
+
+  vae-encoder-load : Text, PartBinding, Text -> VaeWeights
+  vae-encoder-load (path) (part) (prefix) = ve-load-loop path prefix (part.pb-bound) 0 [] [] 0
+
+Section: Encoding
+
+  ve-downsample : VaeWeights, Act, Text -> Act
+  ve-downsample (w) (x) (p) =
+    let oh = x.ahh / 2
+    in let ow = x.aww / 2
+    in let c = x.ac
+    in let hx = vd-cast x
+    in let hy = gpu-buf-alloc (c * oh * ow * 4)
+    in let g = GpuGrid { gx = (oh * ow + 63) / 64, gy = (c + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
+    in let ps = [vd-buf hx, vd-buf (vw-get w (p & ".weight")), vd-buf hy, vd-int c, vd-int (x.ahh), vd-int (x.aww), vd-int c, vd-int 3, vd-int 3, vd-int 2, vd-int 0, vd-int oh, vd-int ow, vd-int 0]
+    in let c1 = if hx == 0 | hy == 0 then 0 - 1 else gm-launch gm-slot-gemm gemm-ptx "kernel_conv2d_wmma" g ps
+    in let f = if hx == 0 then True else gpu-buf-free hx
+    in let c2 = if c1 < 0 then 0 - 1 else vd-layer "kernel_add_channel" (c * oh * ow) [vd-buf hy, vd-buf (vw-get w (p & ".bias")), vd-buf hy, vd-int (oh * ow), vd-int (c * oh * ow)]
+    in vd-act hy c oh ow (c2 >= 0)
+
+  ve-level-blocks : VaeWeights, Act, Integer, Integer, Integer -> Act
+  ve-level-blocks (w) (x) (i) (j) (cout) =
+    if j >= 2 then x
+    else ve-level-blocks w (vd-then (vd-resblock w x ("encoder.down." & show i & ".block." & show j & ".") cout) x) i (j + 1) cout
+
+  ve-levels : VaeWeights, Act, Integer -> Act
+  ve-levels (w) (x) (i) =
+    if i > 3 then x
+    else let b = ve-level-blocks w x i 0 (128 * list-at [1, 2, 4, 4] i)
+    in if i == 3 then b
+    else ve-levels w (vd-then (ve-downsample w b ("encoder.down." & show i & ".downsample.conv")) b) (i + 1)
+
+ x is the picture, 3 x h x w f32 in [-1, 1] with h and w multiples of 8; the
+ result is 8 x h/8 x w/8 f32, the posterior mean in channels 0-3 and the log
+ variance in 4-7, unscaled; without a quant_conv (Flux's ae) it is 32
+ channels, the mean in 0-15. x is left allocated.
+
+  vae-encode : VaeWeights, Act -> Act
+  vae-encode (w) (x) =
+    let a1 = vd-conv w x "encoder.conv_in" 128 3 1
+    in let d = ve-levels w a1 0
+    in let m1 = vd-then (vd-resblock w d "encoder.mid.block_1." 512) d
+    in let m2 = vd-then (vd-attention w m1 "encoder.mid.attn_1.") m1
+    in let m3 = vd-then (vd-resblock w m2 "encoder.mid.block_2." 512) m2
+    in let n1 = vd-then (vd-norm w m3 "encoder.norm_out" True) m3
+    in let q = vw-get w "quant_conv.weight" /= 0
+    in let o = vd-then (vd-conv w n1 "encoder.conv_out" (if q then 8 else 32) 3 1) n1
+    in if q then vd-then (vd-conv w o "quant_conv" 8 1 0) o else o
+
+Page 1

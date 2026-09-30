@@ -1,0 +1,107 @@
+Chapter: Sag
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter NoiseGen
+  cites Diffusion chapter SamplerSchedule
+  cites Diffusion chapter UNet
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter ExtrasKernelsPtx
+
+ Forge's SAG (extensions-builtin/sd_forge_sag, forge_sag.py) on device f32
+ buffers: create_blur_map over the attended block's self-attention
+ probabilities (heads x rows x rows) and an uncond prediction (4 x lh x lw),
+ with gaussian_blur_2d at kernel size 9 and reflect padding. The kernel
+ weights round to f32 at each torch step; the convolution sums in f64.
+ PyTorch's nearest upsample takes source index floor (o * (in / out)) in f32,
+ except out == in and out == 2 in.
+
+ We say:
+
+Section: Floats
+
+  sg-get : Integer, Integer -> Real
+  sg-get (a) (i) = un-f32-real (bit-and (peek-32 a (i * 4)) #FFFFFFFF)
+
+  sg-set : Integer, Integer, Real -> Integer
+  sg-set (a) (i) (v) = poke-32 a (i * 4) (nz-f32-bits v)
+
+  sg-f32 : Real -> Real
+  sg-f32 (v) = un-f32-real (nz-f32-bits v)
+
+Section: Grid
+
+  sg-ceil-root : Integer, Integer, Integer -> Integer
+  sg-ceil-root (n) (rows) (r) = if r * r * rows >= n then r else sg-ceil-root n rows (r + 1)
+
+  sg-bit-length : Integer, Integer -> Integer
+  sg-bit-length (v) (acc) = if v <= 0 then acc else sg-bit-length (v / 2) (acc + 1)
+
+  sag-ratio : Integer, Integer, Integer -> Integer
+  sag-ratio (lh) (lw) (rows) = bit-shl 1 (sg-bit-length (sg-ceil-root (lh * lw) rows 0 - 1) 0)
+
+  sg-near : Integer, Integer, Integer -> Integer
+  sg-near (o) (inn) (out) =
+    if out == inn then o
+    else if out == 2 * inn then o / 2
+    else let v = real-to-int (sg-f32 (real-from-int o * sg-f32 (real-from-int inn / real-from-int out)))
+    in if v > inn - 1 then inn - 1 else v
+
+  sg-near-list : Integer, Integer, Integer, List Real -> List Real
+  sg-near-list (inn) (out) (o) (acc) = if o >= out then acc else sg-near-list inn out (o + 1) (list-push acc (real-from-int (sg-near o inn out)))
+
+Section: Blur weights
+
+  sg-pdf : Real, Integer, List Real -> List Real
+  sg-pdf (sigma) (i) (acc) =
+    if i >= 9 then acc
+    else let t = sg-f32 (real-from-int (i - 4) / sigma)
+    in sg-pdf sigma (i + 1) (list-push acc (sg-f32 (sm-exp (0.0 - 0.5 * sg-f32 (t * t)))))
+
+  sg-sum : List Real, Integer, Real -> Real
+  sg-sum (xs) (i) (acc) = if i >= list-length xs then acc else sg-sum xs (i + 1) (sg-f32 (acc + list-at xs i))
+
+  sg-kernel : Real -> List Real
+  sg-kernel (sigma) =
+    let p = sg-pdf sigma 0 []
+    in let s = sg-sum p 0 0.0
+    in sg-outer (sg-norm p s 0 []) 0 []
+
+  sg-norm : List Real, Real, Integer, List Real -> List Real
+  sg-norm (p) (s) (i) (acc) = if i >= 9 then acc else sg-norm p s (i + 1) (list-push acc (sg-f32 (list-at p i / s)))
+
+  sg-outer : List Real, Integer, List Real -> List Real
+  sg-outer (k) (i) (acc) = if i >= 81 then acc else sg-outer k (i + 1) (list-push acc (sg-f32 (list-at k (i / 9) * list-at k (i - (i / 9) * 9))))
+
+Section: Device
+
+  sg-run : Text, Integer, List GpuParam -> Boolean
+  sg-run (name) (n) (ps) = gm-launch gm-slot-extras extras-kernels-ptx name (GpuGrid { gx = (n + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }) ps >= 0
+
+ The mask per attended position j into the device buffer mbuf, 1 or 0: the
+ mean over heads of each row's probability at j, summed over the rows,
+ above the threshold.
+
+  sag-probs : Integer, Real, Integer, Integer, Integer -> Boolean
+  sag-probs (mbuf) (thr) (s) (heads) (rows) = sg-run "kernel_sag_mask" rows [gpu-arg-buf s 0, gpu-arg-buf mbuf 0, gpu-arg-u64 heads, gpu-arg-u64 rows, gpu-arg-u64 (real-to-bits thr)]
+
+  sg-ints : List Real, Integer, List Integer -> List Integer
+  sg-ints (xs) (i) (acc) = if i >= list-length xs then acc else sg-ints xs (i + 1) (list-push acc (real-to-int (list-at xs i)))
+
+  sag-mask-of : Integer, Integer -> List Integer
+  sag-mask-of (mbuf) (rows) = sg-ints (un-download mbuf rows) 0 []
+
+ create_blur_map of the device uncond prediction x0 into out: false when
+ the mask's grid is not the attended block's rows (Forge falls to kohya's
+ shrink shape there, which this does not run).
+
+  sag-degrade : Integer, Integer, Integer, Integer, Integer, Integer, Real -> Boolean
+  sag-degrade (x0) (out) (lh) (lw) (mbuf) (rows) (sigma) =
+    let ratio = sag-ratio lh lw rows
+    in let mh = (lh + ratio - 1) / ratio
+    in let mw = (lw + ratio - 1) / ratio
+    in if mh * mw /= rows then False
+    else let kern = un-upload (sg-kernel sigma)
+    in let rix = un-upload (sg-near-list mh lh 0 [])
+    in let cix = un-upload (sg-near-list mw lw 0 [])
+    in let ok = if kern == 0 | rix == 0 | cix == 0 then False else sg-run "kernel_sag_blur" (4 * lh * lw) [gpu-arg-buf x0 0, gpu-arg-buf out 0, gpu-arg-buf mbuf 0, gpu-arg-buf kern 0, gpu-arg-buf rix 0, gpu-arg-buf cix 0, gpu-arg-u64 lh, gpu-arg-u64 lw, gpu-arg-u64 mw]
+    in let f = un-free (un-free (un-free 0 kern) rix) cix
+    in ok

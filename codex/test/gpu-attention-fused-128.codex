@@ -1,0 +1,188 @@
+Chapter: GpuAttentionFused128
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter GemmPtx
+  cites Foreword chapter Console
+
+ kernel-attention-fused-128 over two 128-wide heads (ld 256): q, k and v are small
+ dyadic rationals, exact in f16, so each score is exact in f64. Each sampled
+ output is held to softmax (base two) of those scores times v, in f64, within
+ 1e-3; p is quantised to f16 (2^-11 relative) and |v| <= 5/8. 100 query rows
+ leave the second block's last 28 rows past sq, and the row past sq in the
+ output buffer is a guard the kernel must not write; 77 keys leave a partial
+ second tile, 200 keys four tiles. The third case multiplies q by 8 and every key past the first 32 by 4 (still exact in f16), so each row's running max rises past the kernel's rescale threshold of 8. The sabotage arm launches with 64 keys:
+ its count on the full reference must be the count where the full and 64-key
+ references agree, and it must match the 64-key reference.
+
+ We say:
+
+Section: Values
+
+  scratch : Integer = #BD700000
+  ld : Integer = 256
+  heads : Integer = 2
+
+  mix : Integer, Integer, Integer, Integer -> Integer
+  mix (i) (c) (salt) (range) = int-mod (int-mod (i * 2654435761 + c * 40503 + salt) 1000003) range
+
+  qv : Integer, Integer, Real -> Real
+  qv (i) (c) (b) = real-from-int (mix i c 17 9 - 4) / 16.0 * b
+
+  kv : Integer, Integer -> Real
+  kv (j) (c) = real-from-int (mix j c 911 7 - 3) / 4.0
+
+  vv : Integer, Integer -> Real
+  vv (j) (c) = real-from-int (mix j c 4099 11 - 5) / 8.0
+
+  kb : Integer, Real -> Real
+  kb (j) (b) = if b > 1.0 then (if j >= 32 then 4.0 else 1.0) else 1.0
+
+  val : Integer, Integer, Integer -> Real
+  val (which) (i) (c) = if which == 0 then qv i c 1.0 else if which == 3 then qv i c 8.0 else if which == 4 then kv i c * kb i 8.0 else if which == 1 then kv i c else vv i c
+
+  f16-norm : Real, Integer -> Integer
+  f16-norm (a) (e) =
+    if a >= 2.0 then f16-norm (a / 2.0) (e + 1)
+    else if a < 1.0 then f16-norm (a * 2.0) (e - 1)
+    else e * 1024 + real-to-int ((a - 1.0) * 1024.0)
+
+  f16-bits : Real -> Integer
+  f16-bits (x) =
+    if x < 0.0 then 32768 + f16-bits (0.0 - x)
+    else if x < 0.0000001 then 0
+    else f16-norm x 15
+
+  pow2 : Integer -> Real
+  pow2 (k) = bits-to-real (bit-shl (k + 1023) 52)
+
+  f32-real : Integer -> Real
+  f32-real (w) =
+    let s = bit-and (bit-shru w 31) 1
+    in let e = bit-and (bit-shru w 23) 255
+    in let m = bit-and w #7FFFFF
+    in let mag = if e == 255 then bits-to-real #7FF8000000000000 else if e == 0 then real-from-int m * pow2 (0 - 149) else (1.0 + real-from-int m / 8388608.0) * pow2 (e - 127)
+    in if s == 1 then 0.0 - mag else mag
+
+ 2^x as e^(x ln 2): the argument is reduced by 2^20 for six Taylor terms and
+ squared back, about 1e-10 relative for |x| <= 24.
+
+  exp-small : Real -> Real
+  exp-small (r) = 1.0 + r * (1.0 + r * (0.5 + r * (0.16666666666666666 + r * (0.041666666666666664 + r * 0.008333333333333333))))
+
+  square-n : Real, Integer -> Real
+  square-n (v) (k) = if k <= 0 then v else square-n (v * v) (k - 1)
+
+  pow2r : Real -> Real
+  pow2r (x) = square-n (exp-small (x * 0.6931471805599453 / 1048576.0)) 20
+
+Section: Upload
+
+  put : Integer, Integer, Integer -> Integer
+  put (which) (w) (n) =
+    if w >= n then w
+    else let i = (w * 2) / ld
+    in let c = w * 2 - i * ld
+    in let p = poke-32 scratch (w * 4) (f16-bits (val which i (c + 1)) * 65536 + f16-bits (val which i c))
+    in put which (w + 1) n
+
+  upload : Integer, Integer -> Integer
+  upload (which) (rows) =
+    let h = gpu-buf-alloc (rows * ld * 2)
+    in let p = put which 0 (rows * ld / 2)
+    in if h == 0 then 0
+    else if gpu-buf-write h 0 (rows * ld * 2) scratch then h
+    else 0
+
+  fill-guard : Integer -> Integer
+  fill-guard (i) =
+    if i >= ld then i
+    else let p = poke-32 scratch (i * 4) 12345
+    in fill-guard (i + 1)
+
+  count-guard : Integer, Integer -> Integer
+  count-guard (i) (acc) =
+    if i >= ld then acc
+    else count-guard (i + 1) (acc + (if bit-and (peek-32 scratch (i * 4)) #FFFFFFFF == 12345 then 1 else 0))
+
+Section: Reference
+
+  score : Integer, Integer, Integer, Integer, Real, Real -> Real
+  score (i) (j) (h) (c) (b) (acc) =
+    if c >= 128 then acc
+    else score i j h (c + 1) b (acc + qv i (h * 128 + c) b * kv j (h * 128 + c) * kb j b)
+
+  smax : Integer, Integer, Integer, Integer, Real, Real -> Real
+  smax (i) (h) (j) (sk) (b) (acc) =
+    if j >= sk then acc
+    else let s = score i j h 0 b 0.0
+    in smax i h (j + 1) sk b (if s > acc then s else acc)
+
+  Acc = record {
+    a-num : Real,
+    a-den : Real
+  }
+
+  wsum : Integer, Integer, Integer, Integer, Integer, Real, Real, Acc -> Acc
+  wsum (i) (h) (d) (j) (sk) (b) (m) (acc) =
+    if j >= sk then acc
+    else let p = pow2r (score i j h 0 b 0.0 - m)
+    in wsum i h d (j + 1) sk b m (Acc { a-num = acc.a-num + p * vv j (h * 128 + d), a-den = acc.a-den + p })
+
+  reference : Integer, Integer, Integer, Integer, Real -> Real
+  reference (i) (h) (d) (sk) (b) =
+    let a = wsum i h d 0 sk b (smax i h 0 sk b (0.0 - 1000000.0)) (Acc { a-num = 0.0, a-den = 0.0 })
+    in a.a-num / a.a-den
+
+  near : Real, Real -> Boolean
+  near (a) (b) = (if a > b then a - b else b - a) <= 0.001
+
+ g-full counts samples within 1e-3 of the sk-key reference, g-cut of the
+ 64-key one, g-pred the samples where those two references agree.
+
+  Grade = record {
+    g-full : Integer,
+    g-cut : Integer,
+    g-pred : Integer
+  }
+
+  sample : Integer, Integer, Integer, Real, Integer, Grade -> Grade
+  sample (ho) (sq) (sk) (b) (s) (acc) =
+    if s >= 64 then acc
+    else let i = int-mod (s * 37 + 11) sq
+    in let h = int-mod s heads
+    in let d = int-mod (s * 29 + 3) 128
+    in let want = reference i h d sk b
+    in let cut = reference i h d 64 b
+    in let ok = gpu-buf-read ho ((i * ld + h * 128 + d) * 4) 4 scratch
+    in let got = f32-real (bit-and (peek-32 scratch 0) #FFFFFFFF)
+    in sample ho sq sk b (s + 1) (Grade { g-full = acc.g-full + (if ok & near got want then 1 else 0), g-cut = acc.g-cut + (if ok & near got cut then 1 else 0), g-pred = acc.g-pred + (if near want cut then 1 else 0) })
+
+Section: Launch
+
+  launch : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  launch (hq) (hk) (hv) (ho) (sq) (sk) =
+    gpu-launch gemm-ptx "kernel_attention_fused_128" (GpuGrid { gx = (sq + 63) / 64, gy = heads * 2, gz = 1, bx = 128, by = 1, bz = 1, shared = 49152 }) [gpu-arg-buf hq 0, gpu-arg-buf hk 0, gpu-arg-buf hv 0, gpu-arg-buf ho 0, gpu-arg-u64 sq, gpu-arg-u64 sk, gpu-arg-u64 ld]
+
+  case : Integer, Integer, Real -> Text
+  case (sq) (sk) (b) =
+    let hq = upload (if b > 1.0 then 3 else 0) sq
+    in let hk = upload (if b > 1.0 then 4 else 1) sk
+    in let hv = upload 2 sk
+    in let ho = gpu-buf-alloc ((sq + 1) * ld * 4)
+    in let fg = fill-guard 0
+    in let wg = if ho == 0 then False else gpu-buf-write ho (sq * ld * 4) (ld * 4) scratch
+    in if hq == 0 | hk == 0 | hv == 0 | wg == False then "setup failed"
+    else let zero = Grade { g-full = 0, g-cut = 0, g-pred = 0 }
+    in let l1 = launch hq hk hv ho sq sk
+    in let g = sample ho sq sk b 0 zero
+    in let rg = gpu-buf-read ho (sq * ld * 4) (ld * 4) scratch
+    in let guard = count-guard 0 0
+    in let l2 = launch hq hk hv ho sq 64
+    in let s = sample ho sq sk b 0 zero
+    in "fused attention " & show sq & " x " & show sk & (if b > 1.0 then ", q x 8, keys past 32 x 4" else "") & ", 2 heads: " & show (g.g-full) & "/64 within 1e-3 of the f64 reference, guard row " & (if rg & guard == ld then "intact" else "WRITTEN") & "; sabotage 64 keys: " & show (s.g-full) & "/64 (the references predict " & show (s.g-pred) & "), " & show (s.g-cut) & "/64 on the 64-key reference" & (if l1 < 0 | l2 < 0 then ", LAUNCH REFUSED" else "")
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni (case 100 77 1.0)
+    print-line-uni (case 128 200 1.0)
+    print-line-uni (case 128 200 8.0)
+  end

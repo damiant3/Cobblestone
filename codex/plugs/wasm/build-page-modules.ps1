@@ -7,11 +7,9 @@
 #   codex/plugs/wasm/build-page-modules.ps1 -Only pe,img   # some rows
 #   codex/plugs/wasm/build-page-modules.ps1 -Missing       # absent modules only
 #
-# PARALLEL AT FOUR SLOTS since 2026-08-31, and the RAM measurement this header
-# used to defer to is 15.8 GB total with 7.4 GB free under load, which is the
-# same reasoning that put the batteries at -Jobs 4 rather than 8. The rows are
-# independent: each bundles its own source and emits its own WAT. Serial, the
-# set took about 11 minutes and left three slots idle behind the long tail.
+# PARALLEL at the fleet default (CoordinationProtocol.md, "The token does not
+# cover RAM"). The rows are independent: each bundles its own source and emits
+# its own WAT. Serial, the set took about 11 minutes behind the long tail.
 #
 # Every row carries a BUDGET and a row that overruns it is killed and named.
 # Twice, this script sat on a silent riscv-stdio for 25 minutes: the .wat
@@ -23,7 +21,7 @@ param(
     [string[]]$Only,
     [switch]$Missing,
     [string]$Kernel,
-    [int]$Jobs = 4,
+    [int]$Jobs = 16,
     [int]$TimeoutSec = 600
 )
 

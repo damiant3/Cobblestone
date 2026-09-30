@@ -4,8 +4,8 @@
 # only defensible comparison is the one those sidecars were RECORDED through.
 # That definition is `build/test-run.ps1:112-125`, and this mirrors it:
 #
-#   strip CR; strip a leading SOH from the ACTUAL; drop HEAP:/WD:/STACK: lines;
-#   drop trailing blank lines; end with exactly one LF.
+#   strip CR; drop HEAP:/WD:/STACK: lines; drop trailing blank lines; end with
+#   exactly one LF; compare ordinally, as build/test.ps1 does.
 #
 # Before this existed both harnesses did `-replace CRLF, LF` and nothing else,
 # which made them STRICTER than the battery whose oracle they borrow: a subject
@@ -13,15 +13,6 @@
 # Measured 2026-09-01, that was two false reds per arm on every run
 # (apps/annotation-query-test, apps/diagnostic-boot), on wasm, linux and
 # windows alike.
-#
-# WHAT IS DELIBERATELY NOT DONE HERE: the leading SOH is stripped from the
-# ACTUAL only, never from the sidecar. 153 of 1446 `.expected` files begin with
-# a raw 0x01 and PowerShell's `-eq` ignores it; stripping it from the sidecar as
-# well, or moving to an ordinal comparison, is a fleet-wide event in Damian's
-# battery and is his call (docs/ExaminersAssay.md, "Why the comparison has not
-# simply been changed to ordinal"). Stripping it from both sides would also lose
-# the ability to see an actual that begins with a stray SOH when its oracle does
-# not, which is a real difference.
 #
 # The mutation arm for this file is codex/plugs/common/hosted-compare-mutation.ps1.
 # Run it after ANY edit here: this decides pass and fail for both parity arms,
@@ -31,7 +22,7 @@
 function Get-HarnessActual {
     param([string]$Text)
     if ($null -eq $Text) { return '' }
-    $raw = ($Text -replace "`r", '') -replace "^\x01", ''
+    $raw = $Text -replace "`r", ''
     $lines = [System.Collections.Generic.List[string]]::new()
     foreach ($l in ($raw -split "`n")) {
         if ($l.StartsWith('HEAP:') -or $l.StartsWith('WD:') -or $l.StartsWith('STACK:')) { continue }
@@ -43,9 +34,16 @@ function Get-HarnessActual {
 }
 
 # The sidecar side gets CR stripped and nothing else, which is what
-# build/test.ps1 does. See the note above on why the SOH is left alone.
+# build/test.ps1 does.
 function Get-HarnessExpected {
     param([string]$Text)
     if ($null -eq $Text) { return '' }
     return ($Text -replace "`r", '')
+}
+
+# PowerShell's -eq is culture-sensitive and case-insensitive: it ignores SOH and
+# NUL and equates "A" with "a".
+function Test-HarnessMatch {
+    param([string]$Got, [string]$Want)
+    return [string]::Equals($Got, $Want, [StringComparison]::Ordinal)
 }

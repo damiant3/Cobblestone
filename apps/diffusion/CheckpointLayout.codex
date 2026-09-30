@@ -1,0 +1,506 @@
+Chapter: CheckpointLayout
+  cites AI chapter SafeTensors
+  cites Foreword chapter Maybe
+
+ The tensor names and shapes of a checkpoint in the original LDM key names, as
+ the released configurations build them: the UNet from ldm openaimodel.py, the
+ VAE from ldm model.py, CLIP ViT-L/14 in Hugging Face CLIPTextModel names, and
+ OpenCLIP ViT-bigG/14 in open_clip names. A name is required when the forward
+ pass reads it and optional when a checkpoint may or may not carry it
+ (position_ids, logit_scale, the CLIP-L text_projection SDXL never reads, and
+ the SD1.5 noise-schedule buffers).
+
+ We say:
+
+Section: Types
+
+  LayoutTensor = record {
+    lt-name : Text,
+    lt-shape : List Integer
+  }
+
+  LayoutPart = record {
+    lp-name : Text,
+    lp-prefix : Text,
+    lp-required : List LayoutTensor,
+    lp-optional : List Text
+  }
+
+  CheckpointLayout = record {
+    cl-family : Text,
+    cl-parts : List LayoutPart,
+    cl-extra : List Text
+  }
+
+  UNetLayoutConfig = record {
+    ul-channels : Integer,
+    ul-mults : List Integer,
+    ul-depths : List Integer,
+    ul-mid-depth : Integer,
+    ul-res-blocks : Integer,
+    ul-context : Integer,
+    ul-adm : Integer,
+    ul-linear-proj : Boolean,
+    ul-in : Integer,
+    ul-out : Integer
+  }
+
+  UlWalk = record {
+    uw-acc : List LayoutTensor,
+    uw-idx : Integer,
+    uw-ch : Integer,
+    uw-chans : List Integer,
+    uw-sp : Integer
+  }
+
+Section: Tensor Shapes
+
+  lt-w : List LayoutTensor, Text, List Integer -> List LayoutTensor
+  lt-w (acc) (name) (shape) = list-push acc (LayoutTensor { lt-name = name, lt-shape = shape })
+
+  lt-norm : List LayoutTensor, Text, Integer -> List LayoutTensor
+  lt-norm (acc) (p) (c) = lt-w (lt-w acc (p & ".weight") [c]) (p & ".bias") [c]
+
+  lt-linear : List LayoutTensor, Text, Integer, Integer -> List LayoutTensor
+  lt-linear (acc) (p) (out) (inp) = lt-w (lt-w acc (p & ".weight") [out, inp]) (p & ".bias") [out]
+
+  lt-conv : List LayoutTensor, Text, Integer, Integer, Integer -> List LayoutTensor
+  lt-conv (acc) (p) (out) (inp) (k) = lt-w (lt-w acc (p & ".weight") [out, inp, k, k]) (p & ".bias") [out]
+
+Section: The Configurations
+
+ sd_xl_base.yaml and v1-inference.yaml: 320 model channels, 2 residual blocks,
+ 4 latent channels; SDXL multipliers 1/2/4 with transformer depth 0/2/10 and
+ 10 in the middle, context 2048, ADM 2816, linear proj_in; SD1.5 multipliers
+ 1/2/4/4 with depth 1 at the three attention resolutions and 1 in the middle,
+ context 768, a 1x1 conv proj_in.
+
+  sdxl-unet-layout-config : UNetLayoutConfig
+  sdxl-unet-layout-config = UNetLayoutConfig { ul-channels = 320, ul-mults = [1, 2, 4], ul-depths = [0, 2, 10], ul-mid-depth = 10, ul-res-blocks = 2, ul-context = 2048, ul-adm = 2816, ul-linear-proj = True, ul-in = 4, ul-out = 4 }
+
+  sd15-unet-layout-config : UNetLayoutConfig
+  sd15-unet-layout-config = UNetLayoutConfig { ul-channels = 320, ul-mults = [1, 2, 4, 4], ul-depths = [1, 1, 1, 0], ul-mid-depth = 1, ul-res-blocks = 2, ul-context = 768, ul-adm = 0, ul-linear-proj = False, ul-in = 4, ul-out = 4 }
+
+Section: UNet
+
+  ul-temb : UNetLayoutConfig -> Integer
+  ul-temb (cfg) = 4 * cfg.ul-channels
+
+  ul-resblock : List LayoutTensor, Text, Integer, Integer, Integer -> List LayoutTensor
+  ul-resblock (acc) (p) (cin) (cout) (temb) =
+    let a1 = lt-norm acc (p & "in_layers.0") cin
+    in let a2 = lt-conv a1 (p & "in_layers.2") cout cin 3
+    in let a3 = lt-linear a2 (p & "emb_layers.1") cout temb
+    in let a4 = lt-norm a3 (p & "out_layers.0") cout
+    in let a5 = lt-conv a4 (p & "out_layers.3") cout cout 3
+    in if cin == cout then a5 else lt-conv a5 (p & "skip_connection") cout cin 1
+
+  ul-proj : List LayoutTensor, UNetLayoutConfig, Text, Integer -> List LayoutTensor
+  ul-proj (acc) (cfg) (p) (c) = if cfg.ul-linear-proj then lt-linear acc p c c else lt-conv acc p c c 1
+
+  ul-attention : List LayoutTensor, Text, Integer, Integer -> List LayoutTensor
+  ul-attention (acc) (p) (c) (kv) =
+    let a1 = lt-w acc (p & "to_q.weight") [c, c]
+    in let a2 = lt-w a1 (p & "to_k.weight") [c, kv]
+    in let a3 = lt-w a2 (p & "to_v.weight") [c, kv]
+    in lt-linear a3 (p & "to_out.0") c c
+
+ The feed-forward is GEGLU: its first projection is twice the 4x inner width.
+
+  ul-tblocks : List LayoutTensor, UNetLayoutConfig, Text, Integer, Integer, Integer -> List LayoutTensor
+  ul-tblocks (acc) (cfg) (p) (c) (k) (depth) =
+    if k >= depth then acc
+    else let q = p & show k & "."
+    in let a1 = ul-attention acc (q & "attn1.") c c
+    in let a2 = ul-attention a1 (q & "attn2.") c (cfg.ul-context)
+    in let a3 = lt-linear a2 (q & "ff.net.0.proj") (8 * c) c
+    in let a4 = lt-linear a3 (q & "ff.net.2") c (4 * c)
+    in let a5 = lt-norm (lt-norm (lt-norm a4 (q & "norm1") c) (q & "norm2") c) (q & "norm3") c
+    in ul-tblocks a5 cfg p c (k + 1) depth
+
+  ul-transformer : List LayoutTensor, UNetLayoutConfig, Text, Integer, Integer -> List LayoutTensor
+  ul-transformer (acc) (cfg) (p) (c) (depth) =
+    let a1 = lt-norm acc (p & "norm") c
+    in let a2 = ul-proj a1 cfg (p & "proj_in") c
+    in let a3 = ul-proj a2 cfg (p & "proj_out") c
+    in ul-tblocks a3 cfg (p & "transformer_blocks.") c 0 depth
+
+  ul-input-res : UNetLayoutConfig, Integer, Integer, Integer, UlWalk -> UlWalk
+  ul-input-res (cfg) (level) (out) (r) (w) =
+    if r >= cfg.ul-res-blocks then w
+    else let p = "input_blocks." & show (w.uw-idx) & "."
+    in let a1 = ul-resblock (w.uw-acc) (p & "0.") (w.uw-ch) out (ul-temb cfg)
+    in let depth = list-at (cfg.ul-depths) level
+    in let a2 = if depth > 0 then ul-transformer a1 cfg (p & "1.") out depth else a1
+    in ul-input-res cfg level out (r + 1) (UlWalk { uw-acc = a2, uw-idx = w.uw-idx + 1, uw-ch = out, uw-chans = list-push (w.uw-chans) out, uw-sp = 0 })
+
+  ul-downsample : UlWalk -> UlWalk
+  ul-downsample (w) =
+    let a1 = lt-conv (w.uw-acc) ("input_blocks." & show (w.uw-idx) & ".0.op") (w.uw-ch) (w.uw-ch) 3
+    in UlWalk { uw-acc = a1, uw-idx = w.uw-idx + 1, uw-ch = w.uw-ch, uw-chans = list-push (w.uw-chans) (w.uw-ch), uw-sp = 0 }
+
+  ul-input-level : UNetLayoutConfig, Integer, UlWalk -> UlWalk
+  ul-input-level (cfg) (level) (w) =
+    if level >= list-length (cfg.ul-mults) then w
+    else let out = cfg.ul-channels * list-at (cfg.ul-mults) level
+    in let w1 = ul-input-res cfg level out 0 w
+    in let w2 = if level == list-length (cfg.ul-mults) - 1 then w1 else ul-downsample w1
+    in ul-input-level cfg (level + 1) w2
+
+ Each output level takes one more residual block than an input level, each
+ reading the next skip from the top of the input stack; the last block of
+ every level but the first ends in an upsample, numbered after the attention.
+
+  ul-output-res : UNetLayoutConfig, Integer, Integer, Integer, UlWalk -> UlWalk
+  ul-output-res (cfg) (level) (out) (r) (w) =
+    if r > cfg.ul-res-blocks then w
+    else let skip = list-at (w.uw-chans) (w.uw-sp)
+    in let p = "output_blocks." & show (w.uw-idx) & "."
+    in let a1 = ul-resblock (w.uw-acc) (p & "0.") (w.uw-ch + skip) out (ul-temb cfg)
+    in let depth = list-at (cfg.ul-depths) level
+    in let a2 = if depth > 0 then ul-transformer a1 cfg (p & "1.") out depth else a1
+    in let upi = if depth > 0 then "2" else "1"
+    in let a3 = if level > 0 & r == cfg.ul-res-blocks then lt-conv a2 (p & upi & ".conv") out out 3 else a2
+    in ul-output-res cfg level out (r + 1) (UlWalk { uw-acc = a3, uw-idx = w.uw-idx + 1, uw-ch = out, uw-chans = w.uw-chans, uw-sp = w.uw-sp - 1 })
+
+  ul-output-level : UNetLayoutConfig, Integer, UlWalk -> UlWalk
+  ul-output-level (cfg) (level) (w) =
+    if level < 0 then w
+    else let out = cfg.ul-channels * list-at (cfg.ul-mults) level
+    in ul-output-level cfg (level - 1) (ul-output-res cfg level out 0 w)
+
+  ul-head : UNetLayoutConfig -> List LayoutTensor
+  ul-head (cfg) =
+    let ch = cfg.ul-channels
+    in let temb = ul-temb cfg
+    in let a1 = lt-conv [] "input_blocks.0.0" ch (cfg.ul-in) 3
+    in let a2 = lt-linear (lt-linear a1 "time_embed.0" temb ch) "time_embed.2" temb temb
+    in if cfg.ul-adm > 0 then lt-linear (lt-linear a2 "label_emb.0.0" temb (cfg.ul-adm)) "label_emb.0.2" temb temb else a2
+
+  unet-layout-tensors : UNetLayoutConfig -> List LayoutTensor
+  unet-layout-tensors (cfg) =
+    let ch = cfg.ul-channels
+    in let w0 = UlWalk { uw-acc = ul-head cfg, uw-idx = 1, uw-ch = ch, uw-chans = list-push [] ch, uw-sp = 0 }
+    in let w1 = ul-input-level cfg 0 w0
+    in let top = w1.uw-ch
+    in let temb = ul-temb cfg
+    in let m1 = ul-resblock (w1.uw-acc) "middle_block.0." top top temb
+    in let m2 = ul-transformer m1 cfg "middle_block.1." top (cfg.ul-mid-depth)
+    in let m3 = ul-resblock m2 "middle_block.2." top top temb
+    in let w2 = ul-output-level cfg (list-length (cfg.ul-mults) - 1) (UlWalk { uw-acc = m3, uw-idx = 0, uw-ch = top, uw-chans = w1.uw-chans, uw-sp = list-length (w1.uw-chans) - 1 })
+    in lt-conv (lt-norm (w2.uw-acc) "out.0" ch) "out.2" (cfg.ul-out) ch 3
+
+Section: Text Encoders
+
+  hf-clip-layers : List LayoutTensor, Text, Integer, Integer, Integer, Integer -> List LayoutTensor
+  hf-clip-layers (acc) (p) (d) (mlp) (i) (n) =
+    if i >= n then acc
+    else let q = p & show i & "."
+    in let a1 = lt-linear (lt-linear acc (q & "self_attn.q_proj") d d) (q & "self_attn.k_proj") d d
+    in let a2 = lt-linear (lt-linear a1 (q & "self_attn.v_proj") d d) (q & "self_attn.out_proj") d d
+    in let a3 = lt-norm (lt-norm a2 (q & "layer_norm1") d) (q & "layer_norm2") d
+    in let a4 = lt-linear (lt-linear a3 (q & "mlp.fc1") mlp d) (q & "mlp.fc2") d mlp
+    in hf-clip-layers a4 p d mlp (i + 1) n
+
+ CLIP ViT-L/14: 12 layers of width 768, MLP 3072, 49,408 tokens, 77 positions.
+
+  clip-l-part : Text, Text -> LayoutPart
+  clip-l-part (name) (prefix) = clip-l-part-at name prefix "transformer.text_model."
+
+  clip-l-part-at : Text, Text, Text -> LayoutPart
+  clip-l-part-at (name) (prefix) (p) =
+    let a1 = lt-w (lt-w [] (p & "embeddings.token_embedding.weight") [49408, 768]) (p & "embeddings.position_embedding.weight") [77, 768]
+    in let a2 = hf-clip-layers (lt-norm a1 (p & "final_layer_norm") 768) (p & "encoder.layers.") 768 3072 0 12
+    in LayoutPart { lp-name = name, lp-prefix = prefix, lp-required = a2, lp-optional = [p & "embeddings.position_ids", "logit_scale", "text_projection"] }
+
+  openclip-blocks : List LayoutTensor, Text, Integer, Integer, Integer, Integer -> List LayoutTensor
+  openclip-blocks (acc) (p) (d) (mlp) (i) (n) =
+    if i >= n then acc
+    else let q = p & show i & "."
+    in let a1 = lt-w (lt-w acc (q & "attn.in_proj_weight") [3 * d, d]) (q & "attn.in_proj_bias") [3 * d]
+    in let a2 = lt-linear a1 (q & "attn.out_proj") d d
+    in let a3 = lt-norm (lt-norm a2 (q & "ln_1") d) (q & "ln_2") d
+    in let a4 = lt-linear (lt-linear a3 (q & "mlp.c_fc") mlp d) (q & "mlp.c_proj") d mlp
+    in openclip-blocks a4 p d mlp (i + 1) n
+
+ OpenCLIP ViT-bigG/14: 32 blocks of width 1280, MLP 5120; SDXL reads its
+ text_projection for the pooled embedding.
+
+  openclip-g-part : Text, Text -> LayoutPart
+  openclip-g-part (name) (prefix) =
+    let a1 = lt-w (lt-w [] "model.token_embedding.weight" [49408, 1280]) "model.positional_embedding" [77, 1280]
+    in let a2 = lt-w (lt-norm a1 "model.ln_final" 1280) "model.text_projection" [1280, 1280]
+    in let a3 = openclip-blocks a2 "model.transformer.resblocks." 1280 5120 0 32
+    in LayoutPart { lp-name = name, lp-prefix = prefix, lp-required = a3, lp-optional = ["model.logit_scale"] }
+
+Section: VAE
+
+ ldm AutoencoderKL: 128 channels, multipliers 1/2/4/4, 2 residual blocks per
+ encoder level and 3 per decoder level, one attention in each middle, and 4
+ latent channels (the encoder emits a mean and a log-variance for each).
+
+  vae-resblock : List LayoutTensor, Text, Integer, Integer -> List LayoutTensor
+  vae-resblock (acc) (p) (cin) (cout) =
+    let a1 = lt-conv (lt-norm acc (p & "norm1") cin) (p & "conv1") cout cin 3
+    in let a2 = lt-conv (lt-norm a1 (p & "norm2") cout) (p & "conv2") cout cout 3
+    in if cin == cout then a2 else lt-conv a2 (p & "nin_shortcut") cout cin 1
+
+  vae-mid : List LayoutTensor, Text, Integer -> List LayoutTensor
+  vae-mid (acc) (p) (c) =
+    let a1 = vae-resblock acc (p & "mid.block_1.") c c
+    in let q = p & "mid.attn_1."
+    in let a2 = lt-conv (lt-conv (lt-norm a1 (q & "norm") c) (q & "q") c c 1) (q & "k") c c 1
+    in let a3 = lt-conv (lt-conv a2 (q & "v") c c 1) (q & "proj_out") c c 1
+    in vae-resblock a3 (p & "mid.block_2.") c c
+
+  vae-blocks : List LayoutTensor, Text, Integer, Integer, Integer, Integer -> List LayoutTensor
+  vae-blocks (acc) (p) (cin) (cout) (j) (n) =
+    if j >= n then acc
+    else vae-blocks (vae-resblock acc (p & show j & ".") cin cout) p cout cout (j + 1) n
+
+  vae-encoder : List LayoutTensor, List Integer, Integer, Integer -> List LayoutTensor
+  vae-encoder (acc) (mults) (i) (cin) =
+    if i >= list-length mults then acc
+    else let cout = 128 * list-at mults i
+    in let p = "encoder.down." & show i & "."
+    in let a1 = vae-blocks acc (p & "block.") cin cout 0 2
+    in let a2 = if i == list-length mults - 1 then a1 else lt-conv a1 (p & "downsample.conv") cout cout 3
+    in vae-encoder a2 mults (i + 1) cout
+
+  vae-decoder : List LayoutTensor, List Integer, Integer, Integer -> List LayoutTensor
+  vae-decoder (acc) (mults) (i) (cin) =
+    if i < 0 then acc
+    else let cout = 128 * list-at mults i
+    in let p = "decoder.up." & show i & "."
+    in let a1 = vae-blocks acc (p & "block.") cin cout 0 3
+    in let a2 = if i == 0 then a1 else lt-conv a1 (p & "upsample.conv") cout cout 3
+    in vae-decoder a2 mults (i - 1) cout
+
+  vae-part : Text -> LayoutPart
+  vae-part (prefix) =
+    let mults = [1, 2, 4, 4]
+    in let a1 = vae-encoder (lt-conv [] "encoder.conv_in" 128 3 3) mults 0 128
+    in let a2 = lt-conv (lt-norm (vae-mid a1 "encoder." 512) "encoder.norm_out" 512) "encoder.conv_out" 8 512 3
+    in let a3 = vae-mid (lt-conv a2 "decoder.conv_in" 512 4 3) "decoder." 512
+    in let a4 = vae-decoder a3 mults 3 512
+    in let a5 = lt-conv (lt-norm a4 "decoder.norm_out" 128) "decoder.conv_out" 3 128 3
+    in let a6 = lt-conv (lt-conv a5 "quant_conv" 8 8 1) "post_quant_conv" 4 4 1
+    in LayoutPart { lp-name = "vae", lp-prefix = prefix, lp-required = a6, lp-optional = [] }
+
+Section: The Two Families
+
+  sdxl-layout : CheckpointLayout
+  sdxl-layout =
+    let unet = LayoutPart { lp-name = "unet", lp-prefix = "model.diffusion_model.", lp-required = unet-layout-tensors sdxl-unet-layout-config, lp-optional = [] }
+    in let parts = [unet, clip-l-part "clip-l" "conditioner.embedders.0.", openclip-g-part "openclip-g" "conditioner.embedders.1.", vae-part "first_stage_model."]
+    in CheckpointLayout { cl-family = "sdxl", cl-parts = parts, cl-extra = [] }
+
+  sd15-schedule-buffers : List Text
+  sd15-schedule-buffers = ["betas", "alphas_cumprod", "alphas_cumprod_prev", "sqrt_alphas_cumprod", "sqrt_one_minus_alphas_cumprod", "log_one_minus_alphas_cumprod", "sqrt_recip_alphas_cumprod", "sqrt_recipm1_alphas_cumprod", "posterior_variance", "posterior_log_variance_clipped", "posterior_mean_coef1", "posterior_mean_coef2"]
+
+  sd15-layout : CheckpointLayout
+  sd15-layout =
+    let unet = LayoutPart { lp-name = "unet", lp-prefix = "model.diffusion_model.", lp-required = unet-layout-tensors sd15-unet-layout-config, lp-optional = [] }
+    in let parts = [unet, clip-l-part "clip-l" "cond_stage_model.", vae-part "first_stage_model."]
+    in CheckpointLayout { cl-family = "sd15", cl-parts = parts, cl-extra = sd15-schedule-buffers }
+
+ Flux's CLIP-L file, models/VAE/clip_l.safetensors: the CLIP-L text model under
+ text_model. with no other part.
+
+  flux-clip-l-layout : CheckpointLayout
+  flux-clip-l-layout = CheckpointLayout { cl-family = "flux-clip-l", cl-parts = [clip-l-part-at "clip-l" "" "text_model."], cl-extra = [] }
+
+ A bare SDXL or SD1.5 VAE file (models/VAE): the checkpoint's VAE keys with no prefix.
+
+  sd-vae-file-layout : CheckpointLayout
+  sd-vae-file-layout = CheckpointLayout { cl-family = "sd-vae", cl-parts = [vae-part ""], cl-extra = [] }
+
+Section: Binding
+
+  BoundTensor = record {
+    bt-name : Text,
+    bt-dtype : Integer,
+    bt-shape : List Integer,
+    bt-offset : Integer,
+    bt-bytes : Integer
+  }
+
+  PartBinding = record {
+    pb-name : Text,
+    pb-required : Integer,
+    pb-bound : List BoundTensor,
+    pb-missing : List Text,
+    pb-misshapen : List Text,
+    pb-optional : Integer
+  }
+
+  LayoutBinding = record {
+    lb-family : Text,
+    lb-parts : List PartBinding,
+    lb-extra : Integer,
+    lb-unknown : List Text
+  }
+
+ Header and layout names are found through an open-addressed table of slot
+ indices, twice the name count rounded up to a power of two, probed linearly
+ from a djb2 hash; list-set-at stores in place, therefore an insert or a lookup
+ allocates nothing.
+
+  NameIndex = record {
+    ni-slots : List Integer,
+    ni-mask : Integer,
+    ni-names : List Text
+  }
+
+  name-hash-loop : Text, Integer, Integer, Integer between -9223372036854775808 and 9223372036854775807 wrapping -> Integer
+  name-hash-loop (s) (i) (len) (h) =
+    if i == len then bit-and h 9223372036854775807
+    else name-hash-loop s (i + 1) len (h * 33 + char-code-at s i)
+
+  index-size : Integer, Integer -> Integer
+  index-size (size) (want) = if size >= want then size else index-size (size * 2) want
+
+  minus-ones : Integer, Integer, List Integer -> List Integer
+  minus-ones (i) (n) (acc) = if i >= n then acc else minus-ones (i + 1) n (list-push acc (0 - 1))
+
+  index-free : List Integer, Integer, Integer -> Integer
+  index-free (slots) (mask) (s) = if list-at slots s < 0 then s else index-free slots mask (bit-and (s + 1) mask)
+
+  index-insert : List Text, Integer, List Integer, Integer -> List Integer
+  index-insert (names) (i) (slots) (mask) =
+    if i >= list-length names then slots
+    else let s = index-free slots mask (bit-and (name-hash-loop (list-at names i) 0 (text-length (list-at names i)) 5381) mask)
+    in index-insert names (i + 1) (list-set-at slots s i) mask
+
+  name-index : List Text -> NameIndex
+  name-index (names) =
+    let size = index-size 16 (2 * list-length names)
+    in let slots = index-insert names 0 (minus-ones 0 size (__list-with-capacity size)) (size - 1)
+    in NameIndex { ni-slots = slots, ni-mask = size - 1, ni-names = names }
+
+  index-probe : NameIndex, Text, Integer -> Integer
+  index-probe (ni) (name) (s) =
+    let v = list-at (ni.ni-slots) s
+    in if v < 0 then 0 - 1
+    else if list-at (ni.ni-names) v == name then v
+    else index-probe ni name (bit-and (s + 1) (ni.ni-mask))
+
+  name-find : NameIndex, Text -> Integer
+  name-find (ni) (name) = index-probe ni name (bit-and (name-hash-loop name 0 (text-length name) 5381) (ni.ni-mask))
+
+  tensor-names : List StTensorMeta, Integer, List Text -> List Text
+  tensor-names (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in tensor-names ts (i + 1) (list-push acc (t.stm-name))
+  st-dtype-width : Integer -> Integer
+  st-dtype-width (d) =
+    if d == st-dtype-f32 then 4
+    else if d == st-dtype-i32 then 4
+    else if d == st-dtype-f16 then 2
+    else if d == st-dtype-bf16 then 2
+    else if d == st-dtype-i8 then 1
+    else if d == st-dtype-f8-e4m3 then 1
+    else if d == st-dtype-f8-e5m2 then 1
+    else 0
+
+  shape-equal : List Integer, List Integer, Integer -> Boolean
+  shape-equal (a) (b) (i) =
+    if i >= list-length a then i == list-length b
+    else if i >= list-length b then False
+    else if list-at a i /= list-at b i then False
+    else shape-equal a b (i + 1)
+
+  tensor-fits : LayoutTensor, StTensorMeta -> Boolean
+  tensor-fits (want) (meta) =
+    if shape-equal (want.lt-shape) (meta.stm-shape) 0 == False then False
+    else st-element-count meta * st-dtype-width (meta.stm-dtype) == meta.stm-offset-end - meta.stm-offset-start
+
+  bind-required : NameIndex, SafeTensorFile, Text, List LayoutTensor, Integer, PartBinding -> PartBinding
+  bind-required (idx) (file) (prefix) (ts) (i) (pb) =
+    if i >= list-length ts then pb
+    else let want = list-at ts i
+    in let full = prefix & want.lt-name
+    in let v = name-find idx full
+    in let next = if v < 0 then PartBinding { pb-name = pb.pb-name, pb-required = pb.pb-required, pb-bound = pb.pb-bound, pb-missing = list-push (pb.pb-missing) full, pb-misshapen = pb.pb-misshapen, pb-optional = pb.pb-optional } else bind-one file full want (list-at (file.st-tensors) v) pb
+    in bind-required idx file prefix ts (i + 1) next
+
+  bind-one : SafeTensorFile, Text, LayoutTensor, StTensorMeta, PartBinding -> PartBinding
+  bind-one (file) (full) (want) (meta) (pb) =
+    if tensor-fits want meta == False then PartBinding { pb-name = pb.pb-name, pb-required = pb.pb-required, pb-bound = pb.pb-bound, pb-missing = pb.pb-missing, pb-misshapen = list-push (pb.pb-misshapen) full, pb-optional = pb.pb-optional }
+    else let bt = BoundTensor { bt-name = full, bt-dtype = meta.stm-dtype, bt-shape = meta.stm-shape, bt-offset = file.st-data-offset + meta.stm-offset-start, bt-bytes = meta.stm-offset-end - meta.stm-offset-start }
+    in PartBinding { pb-name = pb.pb-name, pb-required = pb.pb-required, pb-bound = list-push (pb.pb-bound) bt, pb-missing = pb.pb-missing, pb-misshapen = pb.pb-misshapen, pb-optional = pb.pb-optional }
+
+  count-present : NameIndex, Text, List Text, Integer, Integer -> Integer
+  count-present (idx) (prefix) (names) (i) (acc) =
+    if i >= list-length names then acc
+    else count-present idx prefix names (i + 1) (acc + (if name-find idx (prefix & list-at names i) < 0 then 0 else 1))
+
+  bind-part : NameIndex, SafeTensorFile, LayoutPart -> PartBinding
+  bind-part (idx) (file) (part) =
+    let req = part.lp-required
+    in let pb0 = PartBinding { pb-name = part.lp-name, pb-required = list-length req, pb-bound = [], pb-missing = [], pb-misshapen = [], pb-optional = 0 }
+    in let pb = bind-required idx file (part.lp-prefix) req 0 pb0
+    in PartBinding { pb-name = pb.pb-name, pb-required = pb.pb-required, pb-bound = pb.pb-bound, pb-missing = pb.pb-missing, pb-misshapen = pb.pb-misshapen, pb-optional = count-present idx (part.lp-prefix) (part.lp-optional) 0 0 }
+
+  bind-parts : NameIndex, SafeTensorFile, List LayoutPart, Integer, List PartBinding -> List PartBinding
+  bind-parts (idx) (file) (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else bind-parts idx file parts (i + 1) (list-push acc (bind-part idx file (list-at parts i)))
+
+  layout-names : List LayoutPart, Integer, List Text -> List Text
+  layout-names (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else let part = list-at parts i
+    in layout-names parts (i + 1) (prefixed (part.lp-prefix) (part.lp-optional) 0 (required-names (part.lp-prefix) (part.lp-required) 0 acc))
+
+  required-names : Text, List LayoutTensor, Integer, List Text -> List Text
+  required-names (prefix) (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in required-names prefix ts (i + 1) (list-push acc (prefix & t.lt-name))
+
+  prefixed : Text, List Text, Integer, List Text -> List Text
+  prefixed (prefix) (names) (i) (acc) =
+    if i >= list-length names then acc
+    else prefixed prefix names (i + 1) (list-push acc (prefix & list-at names i))
+
+  unknown-names : List StTensorMeta, Integer, NameIndex, List Text -> List Text
+  unknown-names (ts) (i) (known) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in unknown-names ts (i + 1) known (if name-find known (t.stm-name) < 0 then list-push acc (t.stm-name) else acc)
+
+  layout-bind : SafeTensorFile, CheckpointLayout -> LayoutBinding
+  layout-bind (file) (layout) =
+    let idx = name-index (tensor-names (file.st-tensors) 0 (__list-with-capacity (file.st-tensor-count + 1)))
+    in let parts = layout.cl-parts
+    in let known = name-index (prefixed "" (layout.cl-extra) 0 (layout-names parts 0 []))
+    in LayoutBinding { lb-family = layout.cl-family, lb-parts = bind-parts idx file parts 0 [], lb-extra = count-present idx "" (layout.cl-extra) 0 0, lb-unknown = unknown-names (file.st-tensors) 0 known [] }
+Section: Queries
+
+  format-part-binding : PartBinding -> Text
+  format-part-binding (pb) =
+    pb.pb-name & ": " & show (pb.pb-required) & " required, " & show (list-length (pb.pb-bound)) & " bound, " & show (list-length (pb.pb-missing)) & " missing, " & show (list-length (pb.pb-misshapen)) & " misshapen, " & show (pb.pb-optional) & " optional"
+
+  layout-bound-bytes : List PartBinding, Integer, Integer -> Integer
+  layout-bound-bytes (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else let pb = list-at parts i
+    in layout-bound-bytes parts (i + 1) (acc + bound-bytes (pb.pb-bound) 0 0)
+
+  bound-bytes : List BoundTensor, Integer, Integer -> Integer
+  bound-bytes (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in bound-bytes ts (i + 1) (acc + t.bt-bytes)
+
+  layout-complete : LayoutBinding -> Boolean
+  layout-complete (lb) = list-length (lb.lb-unknown) == 0 & parts-complete (lb.lb-parts) 0
+
+  parts-complete : List PartBinding, Integer -> Boolean
+  parts-complete (parts) (i) =
+    if i >= list-length parts then True
+    else let pb = list-at parts i
+    in if list-length (pb.pb-bound) /= pb.pb-required then False
+    else parts-complete parts (i + 1)

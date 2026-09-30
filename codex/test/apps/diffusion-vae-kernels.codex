@@ -1,0 +1,121 @@
+Chapter: DiffusionVaeKernels
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter VaeKernelsPtx
+
+ Every value is a small integer or its negation, exact in f32 and in f16, so
+ each output is checked bit for bit. The sabotage arms launch the transpose
+ with rows and cols exchanged, the cast over no elements, and the scale by
+ 0.25 where 0.5 is checked.
+
+ We say:
+
+Section: Bits
+
+  scratch : Integer = #BD700000
+
+  top-bit : Integer, Integer -> Integer
+  top-bit (v) (e) = if v < 2 then e else top-bit (v / 2) (e + 1)
+
+  f32-of : Integer -> Integer
+  f32-of (n) =
+    let m = if n < 0 then 0 - n else n
+    in if m == 0 then 0
+    else let e = top-bit m 0
+    in let bits = bit-or (bit-shl (127 + e) 23) (bit-shl (m - bit-shl 1 e) (23 - e))
+    in if n < 0 then bit-or bits #80000000 else bits
+
+  f16-of : Integer -> Integer
+  f16-of (n) =
+    let m = if n < 0 then 0 - n else n
+    in if m == 0 then 0
+    else let e = top-bit m 0
+    in let bits = bit-or (bit-shl (15 + e) 10) (bit-shl (m - bit-shl 1 e) (10 - e))
+    in if n < 0 then bit-or bits #8000 else bits
+
+  value-at : Integer -> Integer
+  value-at (i) = (int-mod (i * 7) 23 - 11) * 3
+
+  poke-values : Integer, Integer -> Integer
+  poke-values (i) (n) =
+    if i >= n then n
+    else let w = poke-32 scratch (i * 4) (f32-of (value-at i))
+    in poke-values (i + 1) n
+
+  u16-at : Integer -> Integer
+  u16-at (i) = bit-or (peek-byte scratch (i * 2)) (bit-shl (peek-byte scratch (i * 2 + 1)) 8)
+
+Section: Arms
+
+  launch : Text, Integer, List GpuParam -> Integer
+  launch (name) (n) (ps) = gpu-launch vae-kernels-ptx name (GpuGrid { gx = (n + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) ps
+
+  cast-good : Integer, Integer -> Integer
+  cast-good (i) (acc) = if i >= 300 then acc else cast-good (i + 1) (acc + (if u16-at i == f16-of (value-at i) then 1 else 0))
+
+  transpose-good : Integer, Integer, Integer, Integer -> Integer
+  transpose-good (rows) (cols) (i) (acc) =
+    if i >= rows * cols then acc
+    else let r = i / cols
+    in let c = i - r * cols
+    in transpose-good rows cols (i + 1) (acc + (if u16-at (c * rows + r) == f16-of (value-at i) then 1 else 0))
+
+  run-cast : Integer, Integer, Integer -> Text
+  run-cast (hs) (hd) (n) =
+    let z = gpu-buf-write hd 0 600 (scratch + 4096)
+    in if launch "kernel_cast_f16" 300 [gpu-arg-buf hs 0, gpu-arg-buf hd 0, gpu-arg-u64 n] < 0 then "launch refused"
+    else if gpu-buf-read hd 0 600 scratch then show (cast-good 0 0) & "/300"
+    else "read refused"
+
+  run-transpose : Integer, Integer, Integer, Integer -> Text
+  run-transpose (hs) (hd) (rows) (cols) =
+    if launch "kernel_transpose_f16" 300 [gpu-arg-buf hs 0, gpu-arg-buf hd 0, gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 300] < 0 then "launch refused"
+    else if gpu-buf-read hd 0 600 scratch then show (transpose-good 12 25 0 0) & "/300"
+    else "read refused"
+
+  scale-good : Integer, Integer -> Integer
+  scale-good (i) (acc) =
+    if i >= 300 then acc
+    else let want = if value-at i == 0 then 0 else f32-of (value-at i) - bit-shl 1 23
+    in scale-good (i + 1) (acc + (if bit-and (peek-32 scratch (i * 4)) #FFFFFFFF == want then 1 else 0))
+
+  run-scale : Integer, Integer, Real -> Text
+  run-scale (hs) (hf) (s) =
+    if launch "kernel_scale_f32" 300 [gpu-arg-buf hs 0, gpu-arg-buf hf 0, gpu-arg-u64 (real-to-bits s), gpu-arg-u64 300] < 0 then "launch refused"
+    else if gpu-buf-read hf 0 1200 scratch then show (scale-good 0 0) & "/300"
+    else "read refused"
+
+  zero-bytes-at : Integer, Integer -> Integer
+  zero-bytes-at (i) (n) = if i >= n then n else let w = poke-32 scratch (4096 + i * 4) 0 in zero-bytes-at (i + 1) n
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let hs = gpu-buf-alloc 1200
+    in let hd = gpu-buf-alloc 600
+    in let p = poke-values 0 300
+    in let up = gpu-buf-write hs 0 1200 scratch
+    in let zz = zero-bytes-at 0 150
+    in let l1 = "cast 300: " & run-cast hs hd 300
+    in let l2 = "cast sabotage n 0: " & run-cast hs hd 0
+    in let l3 = "transpose 12x25: " & run-transpose hs hd 12 25
+    in let l4 = "transpose sabotage 25x12: " & run-transpose hs hd 25 12
+    in let hf = gpu-buf-alloc 1200
+    in let l5 = "scale 0.5: " & run-scale hs hf 0.5
+    in let l6 = "scale sabotage 0.25: " & run-scale hs hf 0.25
+    in let f = if gpu-buf-free hs & gpu-buf-free hd & gpu-buf-free hf then "ok" else "refused"
+    in [l1, l2, l3, l4, l5, l6, "free: " & f]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

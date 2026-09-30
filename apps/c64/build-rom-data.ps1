@@ -1,9 +1,9 @@
 # Generate apps/c64/RomData.codex from the three C64 ROM images.
 #
-# The bare-metal machine pokes each ROM into memory at boot: BASIC at #A10000,
-# KERNAL at #A12000, CHARGEN at #A14000. Each ROM is split into 200-byte
-# functions of little-endian 32-bit words; a zero word is skipped because the
-# region starts zeroed.
+# The machine pokes each ROM into its band at boot (Memory.codex, Section
+# Constants): BASIC at +#10000, KERNAL at +#12000, CHARGEN at +#14000. Each ROM
+# is split into 200-byte functions of little-endian 32-bit words; a zero word is
+# skipped because the band is the program's first allocation and starts zeroed.
 #
 #   pwsh apps/c64/build-rom-data.ps1 -BasicRom <path> -KernalRom <path> -ChargenRom <path>
 #   pwsh apps/c64/build-rom-data.ps1 -Disk apps/c64/c64-roms.disk
@@ -33,12 +33,12 @@ function L([string]$s) { [void]$sb.Append($s); [void]$sb.Append("`r`n") }
 
 L 'Chapter: RomData'
 L ''
-$roms = @(@{N='basic';T='BASIC ROM';Base=0xA10000;B=$basic}, @{N='kernal';T='KERNAL ROM';Base=0xA12000;B=$kernal}, @{N='chargen';T='CHARGEN ROM';Base=0xA14000;B=$chargen})
+$roms = @(@{N='basic';T='BASIC ROM';Base=0x10000;B=$basic}, @{N='kernal';T='KERNAL ROM';Base=0x12000;B=$kernal}, @{N='chargen';T='CHARGEN ROM';Base=0x14000;B=$chargen})
 foreach ($r in $roms) {
     L ('Section: ' + $r.T)
     $chunks = [int][Math]::Ceiling($r.B.Length / 200)
     for ($j = 0; $j -lt $chunks; $j++) {
-        $addr = '#' + ($r.Base + $j * 200).ToString('X6')
+        $addr = '(__heap-base + #' + ($r.Base + $j * 200).ToString('X5') + ')'
         L ('  init-' + $r.N + '-' + $j + ' : Integer -> Integer')
         L ('  init-' + $r.N + '-' + $j + ' (dummy) =')
         $k = 0

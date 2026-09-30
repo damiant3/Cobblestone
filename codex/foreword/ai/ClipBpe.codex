@@ -1,0 +1,718 @@
+Chapter: ClipBpe
+  cites Foreword chapter CCE
+
+ CLIP's byte-level BPE as transformers' CLIPTokenizer runs it for Diffusion
+ Forge (tokenization_clip.py, transformers 4.46.1): ftfy repairs the text,
+ whitespace runs collapse to one space and the ends are stripped, the text is
+ lowercased, and the pattern <|startoftext|> | <|endoftext|> | 's | 't | 're |
+ 've | 'm | 'll | 'd | letters+ | one digit | a run of anything else but
+ whitespace cuts it into words. Each word's UTF-8 bytes are one symbol each,
+ the last carrying </w>, and the adjacent pair of lowest merge rank is merged
+ everywhere in the word until no adjacent pair is ranked.
+
+ vocab.json keys and merges.txt parts are written in GPT-2's bytes-to-unicode
+ alphabet: bytes 33..126, 161..172 and 174..255 stand for themselves and the
+ other 68 bytes, in byte order, are the characters 256..323. They are decoded
+ to the bytes they stand for at load, and every symbol is carried as its vocab
+ id, therefore a merge is a pair of ids and its result one id.
+
+ Of ftfy's repairs only quote uncurling is made (U+02BC and U+2018..U+201B to
+ an apostrophe, U+201C..U+201F to a double quote); the others are not.
+ Letters, digits, whitespace and lowercasing above ASCII
+ follow Unicode for Latin-1, Latin Extended-A and -B, IPA, Greek, Cyrillic,
+ Hebrew, Arabic, kana, CJK, Hangul and fullwidth Latin; elsewhere a character
+ is neither letter nor digit. Capital sigma always lowers to U+03C3, where
+ Python lowers a word-final one to U+03C2.
+
+ We say:
+
+Section: Types
+  ClipBpe = record {
+    cb-status : Integer,
+    cb-vocab-count : Integer,
+    cb-merge-count : Integer,
+    cb-arena : Integer,
+    cb-dir : Integer,
+    cb-str-slots : Integer,
+    cb-pair-slots : Integer,
+    cb-byte-ids : Integer,
+    cb-u2b : Integer,
+    cb-cell : Integer,
+    cb-scratch : Integer
+  }
+
+Section: Limits
+
+ 131071 is prime (2^17 - 1), the slot count of both open-addressed tables,
+ past twice the 49,408 vocab ids and the 48,894 merges. 48,894 is the merge
+ count CLIPTokenizer reads, 49152 - 256 - 2 lines after the version line. A
+ merge rank and a vocab id each fit 16 bits, therefore a pair key is one
+ 32-bit word and a rank with its result is another.
+
+  cbpe-slots : Integer = 131071
+  cbpe-max-ids : Integer = 65536
+  cbpe-merge-limit : Integer = 48894
+  cbpe-scratch-size : Integer = 1024
+  cbpe-bos : Integer = 49406
+  cbpe-eos : Integer = 49407
+
+Section: Queries
+  clip-bpe-status : ClipBpe -> Integer
+  clip-bpe-status (t) = t.cb-status
+
+  clip-bpe-vocab-count : ClipBpe -> Integer
+  clip-bpe-vocab-count (t) = t.cb-vocab-count
+
+  clip-bpe-merge-count : ClipBpe -> Integer
+  clip-bpe-merge-count (t) = t.cb-merge-count
+
+  clip-bpe-with-specials : List Integer -> List Integer
+  clip-bpe-with-specials (ids) = [cbpe-bos] & ids & [cbpe-eos]
+
+Section: Tables
+  cbpe-new : Integer -> ClipBpe
+  cbpe-new (vocab-len) =
+    let arena = alloc-bytes (vocab-len + 8)
+    in let dir = alloc-bytes (cbpe-max-ids * 8)
+    in let strs = alloc-bytes (cbpe-slots * 4)
+    in let pairs = alloc-bytes (cbpe-slots * 8)
+    in let byte-ids = alloc-bytes 2048
+    in let u2b = alloc-bytes (324 * 4)
+    in let cell = alloc-bytes 16
+    in let scratch = alloc-bytes cbpe-scratch-size
+    in let z1 = __memset dir 0 (cbpe-max-ids * 8)
+    in let z2 = __memset strs 0 (cbpe-slots * 4)
+    in let z3 = __memset pairs 0 (cbpe-slots * 8)
+    in let z4 = __memset byte-ids 0 2048
+    in let z5 = __memset u2b 0 (324 * 4)
+    in let z6 = __memset cell 0 16
+    in let filled = cbpe-fill-u2b u2b 0 0
+    in ClipBpe { cb-status = 1, cb-vocab-count = 0, cb-merge-count = 0, cb-arena = arena, cb-dir = dir, cb-str-slots = strs, cb-pair-slots = pairs, cb-byte-ids = byte-ids, cb-u2b = u2b, cb-cell = cell, cb-scratch = scratch }
+
+  cbpe-finish : ClipBpe, Integer, Integer, Integer -> ClipBpe
+  cbpe-finish (t) (status) (v) (m) =
+    ClipBpe { cb-status = status, cb-vocab-count = v, cb-merge-count = m, cb-arena = t.cb-arena, cb-dir = t.cb-dir, cb-str-slots = t.cb-str-slots, cb-pair-slots = t.cb-pair-slots, cb-byte-ids = t.cb-byte-ids, cb-u2b = t.cb-u2b, cb-cell = t.cb-cell, cb-scratch = t.cb-scratch }
+
+  cbpe-b2u-direct : Integer -> Boolean
+  cbpe-b2u-direct (b) =
+    if b < 33 then False
+    else if b <= 126 then True
+    else if b < 161 then False
+    else if b <= 172 then True
+    else b >= 174
+
+  cbpe-fill-u2b : Integer, Integer, Integer -> Integer
+  cbpe-fill-u2b (u2b) (b) (n) =
+    if b >= 256 then n
+    else if cbpe-b2u-direct b then cbpe-fill-u2b-at u2b b n b
+    else cbpe-fill-u2b-at u2b b (n + 1) (256 + n)
+
+  cbpe-fill-u2b-at : Integer, Integer, Integer, Integer -> Integer
+  cbpe-fill-u2b-at (u2b) (b) (n) (u) =
+    let w = poke-32 u2b (u * 4) (b + 1)
+    in cbpe-fill-u2b u2b (b + 1) n
+
+  cbpe-cell-then : ClipBpe, Integer, Integer, Integer -> Integer
+  cbpe-cell-then (t) (off) (v) (ret) =
+    let w = poke-32 (t.cb-cell) off v
+    in ret
+
+  cbpe-next-slot : Integer -> Integer
+  cbpe-next-slot (slot) = if slot + 1 >= cbpe-slots then 0 else slot + 1
+
+  cbpe-hash : Integer, Integer, Integer, Integer -> Integer
+  cbpe-hash (buf) (i) (stop) (h) =
+    if i >= stop then h
+    else cbpe-hash buf (i + 1) stop (int-mod (h * 257 + peek-byte buf i + 1) cbpe-slots)
+
+  cbpe-bytes-equal : Integer, Integer, Integer, Integer -> Boolean
+  cbpe-bytes-equal (a) (b) (len) (i) =
+    if i >= len then True
+    else if peek-byte a i /= peek-byte b i then False
+    else cbpe-bytes-equal a b len (i + 1)
+
+  cbpe-id-len : ClipBpe, Integer -> Integer
+  cbpe-id-len (t) (id) = peek-32 (t.cb-dir) (id * 8 + 4)
+
+  cbpe-id-bytes : ClipBpe, Integer -> Integer
+  cbpe-id-bytes (t) (id) = t.cb-arena + peek-32 (t.cb-dir) (id * 8)
+
+  cbpe-id-matches : ClipBpe, Integer, Integer, Integer -> Boolean
+  cbpe-id-matches (t) (id) (buf) (len) =
+    if cbpe-id-len t id /= len then False
+    else cbpe-bytes-equal (cbpe-id-bytes t id) buf len 0
+
+  cbpe-str-find : ClipBpe, Integer, Integer, Integer -> Integer
+  cbpe-str-find (t) (buf) (len) (slot) =
+    let v = peek-32 (t.cb-str-slots) (slot * 4)
+    in if v == 0 then 0 - 1
+    else if cbpe-id-matches t (v - 1) buf len then v - 1
+    else cbpe-str-find t buf len (cbpe-next-slot slot)
+
+  cbpe-str-insert : ClipBpe, Integer, Integer, Integer, Integer -> Integer
+  cbpe-str-insert (t) (buf) (len) (id) (slot) =
+    let v = peek-32 (t.cb-str-slots) (slot * 4)
+    in if v == 0 then cbpe-slot-store (t.cb-str-slots) slot (id + 1)
+    else if cbpe-id-matches t (v - 1) buf len then 0 - 11
+    else cbpe-str-insert t buf len id (cbpe-next-slot slot)
+
+  cbpe-slot-store : Integer, Integer, Integer -> Integer
+  cbpe-slot-store (slots) (slot) (v) =
+    let w = poke-32 slots (slot * 4) v
+    in 0
+
+  cbpe-lookup : ClipBpe, Integer, Integer -> Integer
+  cbpe-lookup (t) (buf) (len) = cbpe-str-find t buf len (cbpe-hash buf 0 len 0)
+
+  cbpe-pair-slot : Integer, Integer -> Integer
+  cbpe-pair-slot (a) (b) = int-mod (a * 65599 + b) cbpe-slots
+
+  cbpe-pair-find : ClipBpe, Integer, Integer -> Integer
+  cbpe-pair-find (t) (key1) (slot) =
+    let k = peek-32 (t.cb-pair-slots) (slot * 8)
+    in if k == 0 then 0 - 1
+    else if k == key1 then peek-32 (t.cb-pair-slots) (slot * 8 + 4)
+    else cbpe-pair-find t key1 (cbpe-next-slot slot)
+
+  cbpe-pair-put : ClipBpe, Integer, Integer, Integer -> Integer
+  cbpe-pair-put (t) (key1) (value) (slot) =
+    let k = peek-32 (t.cb-pair-slots) (slot * 8)
+    in if k == 0 then cbpe-pair-store t key1 value slot
+    else if k == key1 then cbpe-pair-store t key1 value slot
+    else cbpe-pair-put t key1 value (cbpe-next-slot slot)
+
+  cbpe-pair-store : ClipBpe, Integer, Integer, Integer -> Integer
+  cbpe-pair-store (t) (key1) (value) (slot) =
+    let a = poke-32 (t.cb-pair-slots) (slot * 8) key1
+    in let b = poke-32 (t.cb-pair-slots) (slot * 8 + 4) value
+    in 0
+
+  cbpe-pair-value : ClipBpe, Integer, Integer -> Integer
+  cbpe-pair-value (t) (a) (b) = cbpe-pair-find t (a * 65536 + b + 1) (cbpe-pair-slot a b)
+
+Section: Loading
+
+ Status 0 is loaded. A negative status names what refused: -1 malformed
+ vocab.json, -2 an escape other than \" \\ \/, -3 a character outside the
+ bytes-to-unicode alphabet, -4 an id past 65535, -5 a merge line that is not
+ two parts, -6 a merge part not in the vocab, -7 a merge result not in the
+ vocab, -8 a symbol longer than 1024 bytes, -10 a single byte, a byte with
+ </w>, or a special token absent from the vocab, -11 an id or key given twice.
+
+  clip-bpe-load : Integer, Integer, Integer, Integer -> ClipBpe
+  clip-bpe-load (vocab) (vocab-len) (merges) (merges-len) =
+    let t = cbpe-new vocab-len
+    in let v = cbpe-vocab-parse t vocab vocab-len
+    in if v < 0 then cbpe-finish t v 0 0
+    else let b = cbpe-fill-byte-ids t 0
+    in if b < 0 then cbpe-finish t b v 0
+    else let m = cbpe-merge-loop t merges merges-len (cbpe-line-after merges 0 merges-len) 0
+    in if m < 0 then cbpe-finish t m v 0
+    else cbpe-finish t 0 v m
+
+  cbpe-is-ws : Integer -> Boolean
+  cbpe-is-ws (c) =
+    if c == 32 then True
+    else if c == 10 then True
+    else if c == 13 then True
+    else c == 9
+
+  cbpe-skip-ws : Integer, Integer, Integer -> Integer
+  cbpe-skip-ws (buf) (p) (n) =
+    if p >= n then p
+    else if cbpe-is-ws (peek-byte buf p) then cbpe-skip-ws buf (p + 1) n
+    else p
+
+  cbpe-skip-blank : Integer, Integer, Integer -> Integer
+  cbpe-skip-blank (buf) (p) (n) =
+    if p >= n then p
+    else if peek-byte buf p == 10 then p
+    else if cbpe-is-ws (peek-byte buf p) then cbpe-skip-blank buf (p + 1) n
+    else p
+
+  cbpe-line-after : Integer, Integer, Integer -> Integer
+  cbpe-line-after (buf) (p) (n) =
+    if p >= n then p
+    else if peek-byte buf p == 10 then p + 1
+    else cbpe-line-after buf (p + 1) n
+
+  cbpe-u2b-of : ClipBpe, Integer -> Integer
+  cbpe-u2b-of (t) (u) =
+    if u < 0 then 0 - 3
+    else if u >= 324 then 0 - 3
+    else if peek-32 (t.cb-u2b) (u * 4) == 0 then 0 - 3
+    else peek-32 (t.cb-u2b) (u * 4) - 1
+
+  cbpe-pack : Integer, Integer -> Integer
+  cbpe-pack (b) (k) = if b < 0 then b else b * 4 + k
+
+  cbpe-decode-char : ClipBpe, Integer, Integer, Integer -> Integer
+  cbpe-decode-char (t) (buf) (n) (p) =
+    let c = peek-byte buf p
+    in if c < 128 then cbpe-pack (cbpe-u2b-of t c) 1
+    else if c < 192 then 0 - 3
+    else if c >= 224 then 0 - 3
+    else if p + 1 >= n then 0 - 3
+    else if bit-and (peek-byte buf (p + 1)) 192 /= 128 then 0 - 3
+    else cbpe-pack (cbpe-u2b-of t (bit-and c 31 * 64 + bit-and (peek-byte buf (p + 1)) 63)) 2
+
+  cbpe-simple-escape : Integer -> Boolean
+  cbpe-simple-escape (e) =
+    if e == 34 then True
+    else if e == 92 then True
+    else e == 47
+
+  cbpe-key-char : ClipBpe, Integer, Integer, Integer -> Integer
+  cbpe-key-char (t) (buf) (n) (p) =
+    if peek-byte buf p /= 92 then cbpe-decode-char t buf n p
+    else if p + 1 >= n then 0 - 1
+    else if cbpe-simple-escape (peek-byte buf (p + 1)) then peek-byte buf (p + 1) * 4 + 2
+    else 0 - 2
+
+  cbpe-read-key : ClipBpe, Integer, Integer, Integer, Integer, Integer -> Integer
+  cbpe-read-key (t) (buf) (n) (p) (top) (len) =
+    if p >= n then 0 - 1
+    else if peek-byte buf p == 34 then cbpe-cell-then t 0 (p + 1) len
+    else if len >= cbpe-scratch-size then 0 - 8
+    else let d = cbpe-key-char t buf n p
+    in if d < 0 then d
+    else let w = poke-byte (t.cb-arena) (top + len) (d / 4)
+    in cbpe-read-key t buf n (p + bit-and d 3) top (len + 1)
+
+  cbpe-is-digit-byte : Integer -> Boolean
+  cbpe-is-digit-byte (c) = if c < 48 then False else c <= 57
+
+  cbpe-read-int : ClipBpe, Integer, Integer, Integer, Integer, Integer -> Integer
+  cbpe-read-int (t) (buf) (n) (p) (acc) (digits) =
+    if p >= n then cbpe-int-done t p acc digits
+    else if cbpe-is-digit-byte (peek-byte buf p) == False then cbpe-int-done t p acc digits
+    else if acc >= cbpe-max-ids then 0 - 4
+    else cbpe-read-int t buf n (p + 1) (acc * 10 + peek-byte buf p - 48) (digits + 1)
+
+  cbpe-int-done : ClipBpe, Integer, Integer, Integer -> Integer
+  cbpe-int-done (t) (p) (acc) (digits) =
+    if digits == 0 then 0 - 1
+    else if acc >= cbpe-max-ids then 0 - 4
+    else cbpe-cell-then t 4 p acc
+
+  cbpe-vocab-parse : ClipBpe, Integer, Integer -> Integer
+  cbpe-vocab-parse (t) (buf) (n) =
+    let p = cbpe-skip-ws buf 0 n
+    in if p >= n then 0 - 1
+    else if peek-byte buf p /= 123 then 0 - 1
+    else cbpe-vocab-loop t buf n (p + 1) 0 0
+
+  cbpe-vocab-loop : ClipBpe, Integer, Integer, Integer, Integer, Integer -> Integer
+  cbpe-vocab-loop (t) (buf) (n) (p0) (top) (count) =
+    let p = cbpe-skip-ws buf p0 n
+    in if p >= n then 0 - 1
+    else if peek-byte buf p == 125 then count
+    else let e = cbpe-vocab-entry t buf n p top
+    in if e < 0 then e
+    else let q = cbpe-skip-ws buf (peek-32 (t.cb-cell) 8) n
+    in if q >= n then 0 - 1
+    else if peek-byte buf q == 44 then cbpe-vocab-loop t buf n (q + 1) (top + e) (count + 1)
+    else if peek-byte buf q == 125 then count + 1
+    else 0 - 1
+
+  cbpe-vocab-entry : ClipBpe, Integer, Integer, Integer, Integer -> Integer
+  cbpe-vocab-entry (t) (buf) (n) (p) (top) =
+    if peek-byte buf p /= 34 then 0 - 1
+    else let klen = cbpe-read-key t buf n (p + 1) top 0
+    in if klen < 0 then klen
+    else if klen == 0 then 0 - 1
+    else let c = cbpe-skip-ws buf (peek-32 (t.cb-cell) 0) n
+    in if c >= n then 0 - 1
+    else if peek-byte buf c /= 58 then 0 - 1
+    else let id = cbpe-read-int t buf n (cbpe-skip-ws buf (c + 1) n) 0 0
+    in if id < 0 then id
+    else cbpe-vocab-record t top klen id
+
+  cbpe-vocab-record : ClipBpe, Integer, Integer, Integer -> Integer
+  cbpe-vocab-record (t) (top) (klen) (id) =
+    if cbpe-id-len t id /= 0 then 0 - 11
+    else let d1 = poke-32 (t.cb-dir) (id * 8) top
+    in let d2 = poke-32 (t.cb-dir) (id * 8 + 4) klen
+    in let ins = cbpe-str-insert t (t.cb-arena + top) klen id (cbpe-hash (t.cb-arena) top (top + klen) 0)
+    in if ins < 0 then ins
+    else cbpe-cell-then t 8 (peek-32 (t.cb-cell) 4) klen
+
+  cbpe-fill-byte-ids : ClipBpe, Integer -> Integer
+  cbpe-fill-byte-ids (t) (b) =
+    if b >= 256 then cbpe-specials-present t
+    else let s = t.cb-scratch
+    in let w0 = poke-byte s 0 b
+    in let w1 = poke-byte s 1 60
+    in let w2 = poke-byte s 2 47
+    in let w3 = poke-byte s 3 119
+    in let w4 = poke-byte s 4 62
+    in let one = cbpe-lookup t s 1
+    in let word-end = cbpe-lookup t s 5
+    in if one < 0 then 0 - 10
+    else if word-end < 0 then 0 - 10
+    else let a = poke-32 (t.cb-byte-ids) (b * 4) one
+    in let z = poke-32 (t.cb-byte-ids) ((256 + b) * 4) word-end
+    in cbpe-fill-byte-ids t (b + 1)
+
+  cbpe-specials-present : ClipBpe -> Integer
+  cbpe-specials-present (t) =
+    if cbpe-id-len t cbpe-bos == 0 then 0 - 10
+    else if cbpe-id-len t cbpe-eos == 0 then 0 - 10
+    else 0
+
+  cbpe-merge-loop : ClipBpe, Integer, Integer, Integer, Integer -> Integer
+  cbpe-merge-loop (t) (buf) (n) (p0) (rank) =
+    let p = cbpe-skip-ws buf p0 n
+    in if rank >= cbpe-merge-limit then rank
+    else if p >= n then rank
+    else let next = cbpe-merge-line t buf n p rank
+    in if next < 0 then next
+    else cbpe-merge-loop t buf n next (rank + 1)
+
+  cbpe-merge-line : ClipBpe, Integer, Integer, Integer, Integer -> Integer
+  cbpe-merge-line (t) (buf) (n) (p) (rank) =
+    let la = cbpe-read-part t buf n p 0 0
+    in if la < 0 then la
+    else if la == 0 then 0 - 5
+    else let q = cbpe-skip-blank buf (peek-32 (t.cb-cell) 0) n
+    in let lb = cbpe-read-part t buf n q la 0
+    in if lb < 0 then lb
+    else if lb == 0 then 0 - 5
+    else let r = cbpe-skip-blank buf (peek-32 (t.cb-cell) 0) n
+    in if r >= n then cbpe-merge-add t la lb rank r
+    else if peek-byte buf r /= 10 then 0 - 5
+    else cbpe-merge-add t la lb rank (r + 1)
+
+  cbpe-read-part : ClipBpe, Integer, Integer, Integer, Integer, Integer -> Integer
+  cbpe-read-part (t) (buf) (n) (p) (off) (len) =
+    if p >= n then cbpe-cell-then t 0 p len
+    else if cbpe-is-ws (peek-byte buf p) then cbpe-cell-then t 0 p len
+    else if off + len >= cbpe-scratch-size then 0 - 8
+    else let d = cbpe-decode-char t buf n p
+    in if d < 0 then d
+    else let w = poke-byte (t.cb-scratch) (off + len) (d / 4)
+    in cbpe-read-part t buf n (p + bit-and d 3) off (len + 1)
+
+  cbpe-merge-add : ClipBpe, Integer, Integer, Integer, Integer -> Integer
+  cbpe-merge-add (t) (la) (lb) (rank) (next) =
+    let s = t.cb-scratch
+    in let a = cbpe-lookup t s la
+    in let b = cbpe-lookup t (s + la) lb
+    in let r = cbpe-lookup t s (la + lb)
+    in if a < 0 then 0 - 6
+    else if b < 0 then 0 - 6
+    else if r < 0 then 0 - 7
+    else let put = cbpe-pair-put t (a * 65536 + b + 1) (rank * 65536 + r) (cbpe-pair-slot a b)
+    in next
+
+Section: Characters
+  cbpe-is-space : Integer -> Boolean
+  cbpe-is-space (u) =
+    if u == 32 then True
+    else if u < 9 then False
+    else if u <= 13 then True
+    else if u < 28 then False
+    else if u <= 31 then True
+    else if u < 133 then False
+    else if u == 133 then True
+    else if u == 160 then True
+    else if u == 5760 then True
+    else if u < 8192 then False
+    else if u <= 8202 then True
+    else if u == 8232 then True
+    else if u == 8233 then True
+    else if u == 8239 then True
+    else if u == 8287 then True
+    else u == 12288
+
+  cbpe-is-digit : Integer -> Boolean
+  cbpe-is-digit (u) =
+    if u < 48 then False
+    else if u <= 57 then True
+    else if u == 178 then True
+    else if u == 179 then True
+    else if u == 185 then True
+    else if u < 188 then False
+    else if u <= 190 then True
+    else if u < 1632 then False
+    else if u <= 1641 then True
+    else if u < 65296 then False
+    else u <= 65305
+
+  cbpe-is-letter : Integer -> Boolean
+  cbpe-is-letter (u) =
+    if u < 65 then False
+    else if u <= 90 then True
+    else if u < 97 then False
+    else if u <= 122 then True
+    else if u < 170 then False
+    else if u == 170 then True
+    else if u == 181 then True
+    else if u == 186 then True
+    else if u < 192 then False
+    else if u == 215 then False
+    else if u == 247 then False
+    else if u <= 705 then True
+    else cbpe-is-letter-mid u
+
+  cbpe-is-letter-mid : Integer -> Boolean
+  cbpe-is-letter-mid (u) =
+    if u < 710 then False
+    else if u <= 721 then True
+    else if u < 736 then False
+    else if u <= 740 then True
+    else if u == 748 then True
+    else if u == 750 then True
+    else if u < 880 then False
+    else if u <= 884 then True
+    else if u == 885 then False
+    else if u <= 887 then True
+    else if u < 890 then False
+    else if u <= 893 then True
+    else if u == 895 then True
+    else if u < 902 then False
+    else if u == 903 then False
+    else if u == 907 then False
+    else if u == 909 then False
+    else if u == 930 then False
+    else if u <= 1013 then True
+    else if u == 1014 then False
+    else if u <= 1153 then True
+    else if u < 1162 then False
+    else if u <= 1327 then True
+    else cbpe-is-letter-far u
+
+  cbpe-is-letter-far : Integer -> Boolean
+  cbpe-is-letter-far (u) =
+    if u < 1488 then False
+    else if u <= 1514 then True
+    else if u < 1568 then False
+    else if u <= 1610 then True
+    else if u < 12353 then False
+    else if u <= 12438 then True
+    else if u < 12445 then False
+    else if u <= 12447 then True
+    else if u < 12449 then False
+    else if u <= 12538 then True
+    else if u < 12540 then False
+    else if u <= 12543 then True
+    else if u < 13312 then False
+    else if u <= 19903 then True
+    else if u < 19968 then False
+    else if u <= 40959 then True
+    else if u < 44032 then False
+    else if u <= 55203 then True
+    else if u < 65313 then False
+    else if u <= 65338 then True
+    else if u < 65345 then False
+    else u <= 65370
+
+  cbpe-uncurl : Integer -> Integer
+  cbpe-uncurl (u) =
+    if u == 700 then 39
+    else if u < 8216 then u
+    else if u <= 8219 then 39
+    else if u <= 8223 then 34
+    else u
+
+  cbpe-lower : Integer -> Integer
+  cbpe-lower (u) =
+    if u < 65 then u
+    else if u <= 90 then u + 32
+    else if u < 192 then u
+    else if u == 215 then u
+    else if u <= 222 then u + 32
+    else if u < 256 then u
+    else if u <= 383 then cbpe-lower-ext-a u
+    else if u < 902 then u
+    else cbpe-lower-greek u
+
+  cbpe-lower-ext-a : Integer -> Integer
+  cbpe-lower-ext-a (u) =
+    if u == 305 then u
+    else if u == 312 then u
+    else if u == 329 then u
+    else if u == 376 then 255
+    else if u == 383 then u
+    else if u < 312 then cbpe-lower-even u
+    else if u < 329 then cbpe-lower-odd u
+    else if u < 376 then cbpe-lower-even u
+    else cbpe-lower-odd u
+
+  cbpe-lower-even : Integer -> Integer
+  cbpe-lower-even (u) = if int-mod u 2 == 0 then u + 1 else u
+
+  cbpe-lower-odd : Integer -> Integer
+  cbpe-lower-odd (u) = if int-mod u 2 == 1 then u + 1 else u
+
+  cbpe-lower-greek : Integer -> Integer
+  cbpe-lower-greek (u) =
+    if u == 902 then 940
+    else if u < 904 then u
+    else if u <= 906 then u + 37
+    else if u == 908 then 972
+    else if u < 910 then u
+    else if u <= 911 then u + 63
+    else if u < 913 then u
+    else if u == 930 then u
+    else if u <= 939 then u + 32
+    else if u < 1024 then u
+    else if u <= 1039 then u + 80
+    else if u <= 1071 then u + 32
+    else if u < 1120 then u
+    else if u <= 1153 then cbpe-lower-even u
+    else if u < 1162 then u
+    else if u <= 1215 then cbpe-lower-even u
+    else if u == 1216 then 1231
+    else if u <= 1230 then cbpe-lower-odd u
+    else if u < 1232 then u
+    else if u <= 1327 then cbpe-lower-even u
+    else if u < 65313 then u
+    else if u <= 65338 then u + 32
+    else u
+
+  cbpe-kind : Integer -> Integer
+  cbpe-kind (u) =
+    if cbpe-is-space u then 0
+    else if cbpe-is-letter u then 1
+    else if cbpe-is-digit u then 2
+    else 3
+
+Section: Tokenizing
+
+ U+0130 lowers to i followed by U+0307 in Python, two code points, which is
+ why the cleaning loop and not cbpe-lower handles it.
+
+  clip-bpe-tokenize : ClipBpe, Text -> List Integer
+  clip-bpe-tokenize (t) (text) =
+    if t.cb-status /= 0 then []
+    else let raw = text-to-unicode-bytes text
+    in let cps = cbpe-clean-loop raw 0 (list-length raw) [] False
+    in cbpe-scan t cps 0 (list-length cps) []
+
+  cbpe-clean-loop : List Integer, Integer, Integer, List Integer, Boolean -> List Integer
+  cbpe-clean-loop (cps) (i) (n) (acc) (pending) =
+    if i >= n then acc
+    else let u = cbpe-uncurl (list-at cps i)
+    in if cbpe-is-space u then cbpe-clean-loop cps (i + 1) n acc (list-length acc > 0)
+    else let spaced = if pending then list-push acc 32 else acc
+    in cbpe-clean-loop cps (i + 1) n (cbpe-push-lower spaced u) False
+
+  cbpe-push-lower : List Integer, Integer -> List Integer
+  cbpe-push-lower (acc) (u) =
+    if u == 304 then list-push (list-push acc 105) 775
+    else list-push acc (cbpe-lower u)
+
+  cbpe-scan : ClipBpe, List Integer, Integer, Integer, List Integer -> List Integer
+  cbpe-scan (t) (cps) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-at cps i == 32 then cbpe-scan t cps (i + 1) n acc
+    else let s = cbpe-special-id t cps i n
+    in if s >= 0 then cbpe-scan t cps (i + cbpe-id-len t s) n (list-push acc s)
+    else let k = cbpe-match-len t cps i n
+    in cbpe-scan t cps (i + k) n (cbpe-push-all acc (cbpe-word t cps i (i + k)) 0)
+
+  cbpe-special-id : ClipBpe, List Integer, Integer, Integer -> Integer
+  cbpe-special-id (t) (cps) (i) (n) =
+    if list-at cps i /= 60 then 0 - 1
+    else if cbpe-cps-match t cps i n cbpe-bos 0 then cbpe-bos
+    else if cbpe-cps-match t cps i n cbpe-eos 0 then cbpe-eos
+    else 0 - 1
+
+  cbpe-cps-match : ClipBpe, List Integer, Integer, Integer, Integer, Integer -> Boolean
+  cbpe-cps-match (t) (cps) (i) (n) (id) (k) =
+    if k >= cbpe-id-len t id then True
+    else if i + k >= n then False
+    else if list-at cps (i + k) /= peek-byte (cbpe-id-bytes t id) k then False
+    else cbpe-cps-match t cps i n id (k + 1)
+
+  cbpe-match-len : ClipBpe, List Integer, Integer, Integer -> Integer
+  cbpe-match-len (t) (cps) (i) (n) =
+    let u = list-at cps i
+    in if u == 39 then cbpe-apostrophe-len t cps i n
+    else if cbpe-is-letter u then cbpe-run-end t cps (i + 1) n 1 - i
+    else if cbpe-is-digit u then 1
+    else cbpe-run-end t cps (i + 1) n 3 - i
+
+  cbpe-at : List Integer, Integer, Integer -> Integer
+  cbpe-at (cps) (i) (n) = if i >= n then 0 - 1 else list-at cps i
+
+  cbpe-apostrophe-len : ClipBpe, List Integer, Integer, Integer -> Integer
+  cbpe-apostrophe-len (t) (cps) (i) (n) =
+    let a = cbpe-at cps (i + 1) n
+    in let b = cbpe-at cps (i + 2) n
+    in if a == 115 then 2
+    else if a == 116 then 2
+    else if a == 109 then 2
+    else if a == 100 then 2
+    else if a == 114 then (if b == 101 then 3 else cbpe-run-end t cps (i + 1) n 3 - i)
+    else if a == 118 then (if b == 101 then 3 else cbpe-run-end t cps (i + 1) n 3 - i)
+    else if a == 108 then (if b == 108 then 3 else cbpe-run-end t cps (i + 1) n 3 - i)
+    else cbpe-run-end t cps (i + 1) n 3 - i
+
+  cbpe-run-end : ClipBpe, List Integer, Integer, Integer, Integer -> Integer
+  cbpe-run-end (t) (cps) (j) (n) (kind) =
+    if j >= n then j
+    else if cbpe-kind (list-at cps j) /= kind then j
+    else if cbpe-special-id t cps j n >= 0 then j
+    else cbpe-run-end t cps (j + 1) n kind
+
+  cbpe-push-all : List Integer, List Integer, Integer -> List Integer
+  cbpe-push-all (acc) (xs) (i) =
+    if i >= list-length xs then acc
+    else cbpe-push-all (list-push acc (list-at xs i)) xs (i + 1)
+
+  cbpe-push-utf8 : List Integer, Integer -> List Integer
+  cbpe-push-utf8 (acc) (u) =
+    if u < 128 then list-push acc u
+    else if u < 2048 then list-push (list-push acc (bit-or 192 (bit-shru u 6))) (bit-or 128 (bit-and u 63))
+    else if u < 65536 then list-push (list-push (list-push acc (bit-or 224 (bit-shru u 12))) (bit-or 128 (bit-and (bit-shru u 6) 63))) (bit-or 128 (bit-and u 63))
+    else list-push (list-push (list-push (list-push acc (bit-or 240 (bit-shru u 18))) (bit-or 128 (bit-and (bit-shru u 12) 63))) (bit-or 128 (bit-and (bit-shru u 6) 63))) (bit-or 128 (bit-and u 63))
+
+  cbpe-word-bytes : List Integer, Integer, Integer, List Integer -> List Integer
+  cbpe-word-bytes (cps) (i) (stop) (acc) =
+    if i >= stop then acc
+    else cbpe-word-bytes cps (i + 1) stop (cbpe-push-utf8 acc (list-at cps i))
+
+  cbpe-initial : ClipBpe, List Integer, Integer, Integer, List Integer -> List Integer
+  cbpe-initial (t) (bytes) (j) (n) (acc) =
+    if j >= n then acc
+    else if j == n - 1 then list-push acc (peek-32 (t.cb-byte-ids) ((256 + list-at bytes j) * 4))
+    else cbpe-initial t bytes (j + 1) n (list-push acc (peek-32 (t.cb-byte-ids) (list-at bytes j * 4)))
+
+  cbpe-word : ClipBpe, List Integer, Integer, Integer -> List Integer
+  cbpe-word (t) (cps) (i) (stop) =
+    let bytes = cbpe-word-bytes cps i stop []
+    in cbpe-bpe t (cbpe-initial t bytes 0 (list-length bytes) [])
+
+  cbpe-bpe : ClipBpe, List Integer -> List Integer
+  cbpe-bpe (t) (syms) =
+    if list-length syms < 2 then syms
+    else let best = cbpe-best-at t syms 0 (list-length syms) (0 - 1) 0
+    in if best < 0 then syms
+    else let a = list-at syms best
+    in let b = list-at syms (best + 1)
+    in cbpe-bpe t (cbpe-merge-all syms a b (bit-and (cbpe-pair-value t a b) 65535) 0 (list-length syms) [])
+
+  cbpe-best-at : ClipBpe, List Integer, Integer, Integer, Integer, Integer -> Integer
+  cbpe-best-at (t) (syms) (i) (n) (best) (best-rank) =
+    if i + 1 >= n then best
+    else let v = cbpe-pair-value t (list-at syms i) (list-at syms (i + 1))
+    in if v < 0 then cbpe-best-at t syms (i + 1) n best best-rank
+    else if best < 0 then cbpe-best-at t syms (i + 1) n i (v / 65536)
+    else if v / 65536 < best-rank then cbpe-best-at t syms (i + 1) n i (v / 65536)
+    else cbpe-best-at t syms (i + 1) n best best-rank
+
+  cbpe-pair-at : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  cbpe-pair-at (syms) (i) (n) (a) (b) =
+    if i + 1 >= n then False
+    else if list-at syms i /= a then False
+    else list-at syms (i + 1) == b
+
+  cbpe-merge-all : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cbpe-merge-all (syms) (a) (b) (m) (i) (n) (acc) =
+    if i >= n then acc
+    else if cbpe-pair-at syms i n a b then cbpe-merge-all syms a b m (i + 2) n (list-push acc m)
+    else cbpe-merge-all syms a b m (i + 1) n (list-push acc (list-at syms i))
+
+Page 1

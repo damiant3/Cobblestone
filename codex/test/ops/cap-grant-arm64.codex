@@ -1,0 +1,110 @@
+Chapter: CapGrantArm64
+  cites Foreword chapter Arm64Encoder
+  cites Foreword chapter Console
+
+ The arm64 boot grant's instruction list runs against a one-word AArch64
+ machine: MOVZ, MOVK and MOVN place their 16 bits at the encoded shift, a
+ W-form (sf = 0) result is zero-extended, and a load or store whose address is
+ not the capability word is a fault naming it. Each row prints the word after
+ the list runs.
+
+ Bit 31 is 2147483648 and bit 40 is 1099511627776, the first mask `arm64-li`
+ builds with a shift of 32. The `w-orr` row is the CONTROL: the list with its
+ OR in the W form, driven with bits 3 and 40, which the machine must answer
+ with bit 3 alone. Without that row a machine that ignored the width would
+ pass the others.
+
+Section: Machine
+
+  Machine = record { regs : List Integer, addr : Integer, word : Integer, fault : Text }
+
+  fresh-regs : Integer, List Integer -> List Integer
+  fresh-regs (n) (acc) =
+    if n <= 0 then acc
+    else fresh-regs (n - 1) (list-push acc 0)
+
+  le-word : List Integer, Integer -> Integer
+  le-word (b) (off) =
+    bit-or (bit-or (list-at b off) (bit-shl (list-at b (off + 1)) 8)) (bit-or (bit-shl (list-at b (off + 2)) 16) (bit-shl (list-at b (off + 3)) 24))
+
+  low32 : Integer -> Integer
+  low32 (v) = bit-and v 4294967295
+
+  reg : Machine, Integer -> Integer
+  reg (m) (r) = if r == 31 then 0 else list-at (m.regs) r
+
+  set-reg : Machine, Integer, Integer -> Machine
+  set-reg (m) (r) (v) =
+    if r == 31 then m
+    else Machine { regs = list-set-at (m.regs) r v, addr = m.addr, word = m.word, fault = m.fault }
+
+  set-word : Machine, Integer -> Machine
+  set-word (m) (v) = Machine { regs = m.regs, addr = m.addr, word = v, fault = m.fault }
+
+  fail : Machine, Text -> Machine
+  fail (m) (t) = Machine { regs = m.regs, addr = m.addr, word = m.word, fault = t }
+
+  step : Machine, Integer, Integer -> Machine
+  step (m) (w) (pc) =
+    let rd = bit-and w 31
+    in let rn = bit-and (bit-shru w 5) 31
+    in let rm = bit-and (bit-shru w 16) 31
+    in let imm16 = bit-and (bit-shru w 5) 65535
+    in let sh = 16 * bit-and (bit-shru w 21) 3
+    in let placed = bit-shl imm16 sh
+    in let top = bit-and w 4286578688
+    in let top11 = bit-and w 4292870144
+    in let off = 8 * bit-and (bit-shru w 10) 4095
+    in if top == 3531603968 then set-reg m rd placed
+    else if top == 4068474880 then set-reg m rd (bit-or (bit-and (reg m rd) (bit-xor (bit-shl 65535 sh) (0 - 1))) placed)
+    else if top == 2457862144 then set-reg m rd (bit-xor placed (0 - 1))
+    else if top11 == 2852126720 then set-reg m rd (bit-or (reg m rn) (reg m rm))
+    else if top11 == 704643072 then set-reg m rd (low32 (bit-or (reg m rn) (reg m rm)))
+    else if bit-and w 4290772992 == 4181721088
+      then (if reg m rn + off /= m.addr then fail m ("load off the cap word at " & show pc)
+            else set-reg m rd (m.word))
+    else if bit-and w 4290772992 == 4177526784
+      then (if reg m rn + off /= m.addr then fail m ("store off the cap word at " & show pc)
+            else set-word m (reg m rd))
+    else fail m ("instruction " & show w & " at " & show pc)
+
+  run : Machine, List Integer, Integer -> Machine
+  run (m) (b) (pc) =
+    if m.fault /= "" then m
+    else if pc >= list-length b then m
+    else run (step m (le-word b pc) pc) b (pc + 4)
+
+Section: Scenarios
+
+  cap-addr : Integer = 1074790400
+
+  bit31 : Integer = 2147483648
+
+  bit40 : Integer = 1099511627776
+
+  word-after : List Integer, Integer -> Text
+  word-after (b) (w0) =
+    let m = run (Machine { regs = fresh-regs 32 [], addr = cap-addr, word = w0, fault = "" }) b 0
+    in if m.fault /= "" then m.fault else show (m.word)
+
+  value-of : List Integer, Integer -> Text
+  value-of (b) (r) =
+    let m = run (Machine { regs = fresh-regs 32 [], addr = cap-addr, word = 0, fault = "" }) b 0
+    in if m.fault /= "" then m.fault else show (reg m r)
+
+  w-orr : Integer, Integer -> List Integer
+  w-orr (addr) (mask) =
+    arm64-li 9 addr & arm64-ldr 10 9 0 & arm64-li 11 mask & arm64-rrr 704643072 10 10 11 & arm64-str 10 9 0
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("li-bit31 : " & value-of (arm64-li 11 bit31) 11)
+    print-line-uni ("li-bit40 : " & value-of (arm64-li 11 bit40) 11)
+    print-line-uni ("li-bit31-40-3 : " & value-of (arm64-li 11 (bit31 + bit40 + 8)) 11)
+    print-line-uni ("cell-bit31 : " & word-after (arm64-or-into-cell cap-addr bit31) 0)
+    print-line-uni ("cell-bit31-40 : " & word-after (arm64-or-into-cell cap-addr (bit31 + bit40)) 0)
+    print-line-uni ("cell-bit40 : " & word-after (arm64-or-into-cell cap-addr bit40) 1)
+    print-line-uni ("cell-bit3 : " & word-after (arm64-or-into-cell cap-addr 8) 0)
+    print-line-uni ("w-orr : " & word-after (w-orr cap-addr (bit40 + 8)) 0)
+  end

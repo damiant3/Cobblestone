@@ -3,8 +3,8 @@ Chapter: Name Resolution
   cites Codex chapter Build Settings (max-recursion-depth, demand-scope-guard-band)
   cites Codex chapter Diagnostics (make-error)
   cites Codex chapter Builtins (builtins, builtin-names-from)
-  cites Codex chapter SkipListText (skip-list-text-empty, skip-list-text-has, skip-list-text-insert, skip-list-text-clone)
-  cites Codex chapter CdxCodes (cdx-duplicate-definition)
+  cites Codex chapter SkipListText (skip-list-text-empty, skip-list-text-has, skip-list-text-insert, skip-list-text-clone, skip-list-text-from-list)
+  cites Codex chapter CdxCodes (cdx-duplicate-definition, cdx-class-shadows-derived, cdx-applied-local-is-builtin)
   cites Codex chapter Chapter Scoper (rename-lookup)
 
 Section: Scope
@@ -21,10 +21,11 @@ Section: Scope
   mutable Scope = record {
    names : SkipListText,
    locals : SkipListText,
+   builtins : SkipListText,
    chapter-renames : List RenameEntry
   }
 
-  empty-scope : Scope = Scope { names = skip-list-text-empty, locals = skip-list-text-empty, chapter-renames = [] }
+  empty-scope : Scope = Scope { names = skip-list-text-empty, locals = skip-list-text-empty, builtins = skip-list-text-empty, chapter-renames = [] }
 
   scope-has : Scope, Text -> Boolean
   scope-has (sc) (name) =
@@ -44,7 +45,7 @@ Section: Scope
 
   scope-fork : Scope -> Scope
   scope-fork (sc) =
-   Scope { names = sc.names, locals = skip-list-text-clone (sc.locals), chapter-renames = sc.chapter-renames }
+   Scope { names = sc.names, locals = skip-list-text-clone (sc.locals), builtins = sc.builtins, chapter-renames = sc.chapter-renames }
 
 Section: Built-in Names
 
@@ -198,7 +199,8 @@ Section: Build Initial Scope
    in let sc = add-names-to-scope empty-scope top-list 0 (list-length top-list)
    in let ctor-list = skip-list-text-to-list ctor-names
    in let sc2 = add-names-to-scope sc ctor-list 0 (list-length ctor-list)
-   in add-names-to-scope sc2 builtins 0 (list-length builtins)
+   in let sc3 = add-names-to-scope sc2 builtins 0 (list-length builtins)
+   in Scope { names = sc3.names, locals = sc3.locals, builtins = skip-list-text-from-list builtins, chapter-renames = sc3.chapter-renames }
 
   add-names-to-scope : Scope, List Text, Integer, Integer -> Scope
   add-names-to-scope (sc) (names) (i) (len) =
@@ -221,7 +223,7 @@ Section: Resolve Expressions
      resolve-expr-at sc left (depth + 1) & resolve-expr-at sc right (depth + 1)
     is AUnaryExpr (operand) (s) -> resolve-expr-at sc operand (depth + 1)
     is AApplyExpr (func) (arg) (s) ->
-     resolve-expr-at sc func (depth + 1) & resolve-expr-at sc arg (depth + 1)
+     applied-local-builtin sc func & resolve-expr-at sc func (depth + 1) & resolve-expr-at sc arg (depth + 1)
     is AIfExpr (cond) (then-e) (else-e) (s) ->
      resolve-expr-at sc cond (depth + 1) & resolve-expr-at sc then-e (depth + 1) & resolve-expr-at sc else-e (depth + 1)
     is ALetExpr (bindings) (body) (s) ->
@@ -250,6 +252,15 @@ Section: Resolve Expressions
     is AInductionExpr (scrut) (arms) (s) ->
      let sc2 = when scrut is ANameExpr (nm) (ss) -> scope-add-local (scope-fork sc) (nm.value) is otherwise -> sc
      in resolve-match-arms sc2 arms 0 (list-length arms) []
+
+  applied-local-builtin : Scope, AExpr -> List Diagnostic
+  applied-local-builtin (sc) (func) =
+   when func
+    is ANameExpr (name) (s) ->
+     if skip-list-text-has (sc.locals) (name.value) & skip-list-text-has (sc.builtins) (name.value)
+     then [make-error cdx-applied-local-is-builtin ("'" & name.value & "' is applied here, and it is both a local binding and a builtin, so the call does not say which one it means; rename the local") s]
+     else []
+    is otherwise -> []
 
   resolve-try-region : Scope, List AActStmt -> List Diagnostic
   resolve-try-region (sc) (stmts) =
@@ -402,7 +413,7 @@ Section: Resolve All Definitions
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments cite-slugs (def.chapter-slug) 0
    in let bivy-mark = __heap-save
    in let deck-mark = __deck-pos
-   in let fresh-scope = Scope { names = sc.names, locals = skip-list-text-empty, chapter-renames = chapter-rn }
+   in let fresh-scope = Scope { names = sc.names, locals = skip-list-text-empty, builtins = sc.builtins, chapter-renames = chapter-rn }
    in let param-result = add-def-params fresh-scope (def.params) 0 (list-length (def.params)) []
    in let body-scope = add-forall-binders (param-result.scope) def
    in let errs2 = resolve-expr body-scope (def.body)
@@ -462,9 +473,10 @@ Section: Resolve Chapter
    in let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
    in let cite-slugs = for c in (mod.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
    in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) [] colliding assignments (mod.citations) cite-slugs "" [] ceiling
+   in let class-errs = derived-class-name-errors (mod.class-defs) 0 (list-length (mod.class-defs)) []
    in let ctor-list = deck-record (skip-list-text-to-list (ctors.ctor-names))
    in deck-record (ResolveResult {
-     bag = deck-record (bag-from-list (top.errors & ctors.errors & effect-ops.errors & expr-errs)),
+     bag = deck-record (bag-from-list (top.errors & ctors.errors & effect-ops.errors & expr-errs & class-errs)),
      top-level-names = top.names,
      type-names = ctors.type-names,
      ctor-names = ctor-list
@@ -477,6 +489,15 @@ Section: Resolve Chapter
    in let acc2 = skip-list-text-union acc (r.top-level-names)
    in let acc3 = skip-list-text-union acc2 (skip-list-text-from-list (r.ctor-names))
    in collect-cited-names results (i + 1) len acc3
+
+  derived-class-name-errors : List AClassDef, Integer, Integer, List Diagnostic -> List Diagnostic
+  derived-class-name-errors (cds) (i) (len) (errs) =
+   if i == len then errs
+   else let cd = list-at cds i
+   in let name = cd.name.value
+   in if name == "Eq" | name == "Show" | name == "Ord"
+    then derived-class-name-errors cds (i + 1) len (errs & [make-error cdx-class-shadows-derived ("class '" & name & "' has the name of a derived class, so a constraint naming it would never consult this class or its instances; rename the class") (cd.span)])
+    else derived-class-name-errors cds (i + 1) len errs
 
   collect-class-method-names-nr : List AClassDef, Integer, Integer, SkipListText -> SkipListText
   collect-class-method-names-nr (cds) (i) (len) (acc) =

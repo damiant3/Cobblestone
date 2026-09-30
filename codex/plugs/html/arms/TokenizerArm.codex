@@ -1,0 +1,52 @@
+Chapter: TokenizerArm
+  cites WebApp chapter WebRuntime
+  cites AI chapter ClipBpe
+
+ The page codex/plugs/html/arms/tokenizer.mjs drives: ClipBpe loaded in the
+ page's byte heap from the vocab.json and merges.txt bytes page-data "vocab"
+ and "merges" hold, then the texts page-data "p0" to "p2" tokenized with the
+ specials; "p0" again under the first page-data "cut" bytes of merges.txt.
+
+ We say:
+
+Section: Run
+
+  tk-ints : List Text, Integer, List Integer -> List Integer
+  tk-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else tk-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  tk-list : Text -> List Integer
+  tk-list (t) = if text-length t < 3 then [] else tk-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  tk-poke : Integer, List Integer, Integer -> Integer
+  tk-poke (a) (bs) (i) =
+    if i >= list-length bs then a
+    else let p = poke-byte a i (list-at bs i)
+    in tk-poke a bs (i + 1)
+
+  tk-heap : List Integer -> Integer
+  tk-heap (bs) = tk-poke (alloc-bytes (list-length bs + 8)) bs 0
+
+  tk-text : List Integer, Integer, Text -> Text
+  tk-text (ids) (i) (acc) =
+    if i >= list-length ids then acc
+    else tk-text ids (i + 1) (if i == 0 then show (list-at ids i) else acc & "," & show (list-at ids i))
+
+  tk-ids : ClipBpe, Text -> Text
+  tk-ids (t) (key) = "[" & tk-text (clip-bpe-with-specials (clip-bpe-tokenize t (page-data key))) 0 "" & "]"
+
+  opening : [Console] Integer
+  opening =
+    let vb = tk-list (page-data "vocab")
+    in let mb = tk-list (page-data "merges")
+    in let v = tk-heap vb
+    in let m = tk-heap mb
+    in let t = clip-bpe-load v (list-length vb) m (list-length mb)
+    in let a = state-set "status" (clip-bpe-status t)
+    in let b = state-set-text "t0" (tk-ids t "p0")
+    in let c = state-set-text "t1" (tk-ids t "p1")
+    in let d = state-set-text "t2" (tk-ids t "p2")
+    in let cut = clip-bpe-load v (list-length vb) m (text-to-integer (page-data "cut"))
+    in let e = state-set-text "t-cut" (tk-ids cut "p0")
+    in state-set "done" 1

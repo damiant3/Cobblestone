@@ -1,10 +1,26 @@
 Chapter: Go
   cites Games chapter Rng
 
- Simplified 9x9 Go. Board is a List Integer of 81 cells:
- 0=empty, 1=black, 2=white. Players alternate placing stones.
- A group with no liberties is captured. Ko is tracked by a single
- forbidden point. Scoring uses simple area counting at game end.
+ 9x9 Go by the Chinese rules, with area scoring in the Tromp-Taylor form.
+ Board is a List Integer of 81 cells: 0=empty, 1=black, 2=white.
+
+ Rule 1. Black plays first; the players alternate placing a stone on an
+ empty point, or passing.
+
+ Rule 2. After a stone is placed, every opposing group left with no
+ liberty is removed.
+
+ Rule 3. Suicide is illegal: a placement whose own group has no liberty
+ after the removals of rule 2 may not be made.
+
+ Rule 4. Positional superko: a placement may not recreate any board
+ position of the game so far. The basic ko is the commonest case.
+
+ Rule 5. Two passes in a row end the game. Every stone on the board then
+ counts as alive; a dead group must be captured in play.
+
+ Rule 6. A player's area is their stones plus every empty region that
+ reaches their stones only. White adds a komi of 7.5, so no game is tied.
 
  We say:
 
@@ -19,8 +35,12 @@ Section: Types
     game-over      : Boolean,
     black-score    : Integer,
     white-score    : Integer,
-    ko-point       : Integer
+    ko-point       : Integer,
+    seen           : List Integer
   }
+
+ seen holds every board position of the game, three words each
+ (`go-key`); ko-point stays -1, the superko of rule 4 having replaced it.
 
   GoResult = record {
     black-score    : Integer,
@@ -38,7 +58,7 @@ Section: Construction
     let st = go-fill 0 []
     in GoBoard { stones = st, current-player = 1, black-captures = 0,
                  white-captures = 0, passes = 0, game-over = False,
-                 black-score = 0, white-score = 0, ko-point = (-1) }
+                 black-score = 0, white-score = 0, ko-point = (-1), seen = go-key st }
 
   go-fill : Integer, List Integer -> List Integer
   go-fill (i) (acc) =
@@ -185,30 +205,60 @@ Section: Place Stone
     else if i < 0 then
       let new-passes = b.passes + 1
       in let over = new-passes >= 2
-      in let bs = if over then go-score-black (b.stones) 0 else b.black-score
-      in let ws = if over then go-score-white (b.stones) 0 else b.white-score
+      in let bs = if over then go-area (b.stones) 1 else b.black-score
+      in let ws = if over then go-area (b.stones) 2 else b.white-score
       in GoBoard { stones = b.stones, current-player = if b.current-player == 1 then 2 else 1,
                    black-captures = b.black-captures, white-captures = b.white-captures,
                    passes = new-passes, game-over = over,
-                   black-score = bs, white-score = ws, ko-point = (-1) }
-    else if go-in-bounds i == False then b
-    else if list-at (b.stones) i /= 0 then b
-    else if i == b.ko-point then b
-    else let stones2 = list-set-at (go-copy-stones (b.stones) 0 []) i (b.current-player)
-    in let opponent = if b.current-player == 1 then 2 else 1
-    in let libs-self = count-liberties stones2 i (b.current-player)
-    in if libs-self == 0 then b
-    else let cap-result = go-capture-neighbors-of stones2 i opponent
-    in let stones3 = cap-result.stones
+                   black-score = bs, white-score = ws, ko-point = (-1), seen = b.seen }
+    else if go-legal b i == False then b
+    else let cap-result = go-resolve b i
     in let captured = cap-result.count
     in let bc2 = if b.current-player == 1 then b.black-captures + captured else b.black-captures
     in let wc2 = if b.current-player == 2 then b.white-captures + captured else b.white-captures
-    in let new-ko = if captured == 1 then go-find-ko-point stones3 i opponent else (-1)
     in let next = if b.current-player == 1 then 2 else 1
-    in GoBoard { stones = stones3, current-player = next,
+    in GoBoard { stones = cap-result.stones, current-player = next,
                  black-captures = bc2, white-captures = wc2,
                  passes = 0, game-over = False,
-                 black-score = 0, white-score = 0, ko-point = new-ko }
+                 black-score = 0, white-score = 0, ko-point = (-1),
+                 seen = b.seen & go-key (cap-result.stones) }
+
+ Rule 2 on a copy: the stone placed and the opposing groups it leaves
+ without a liberty removed.
+
+  go-resolve : GoBoard, Integer -> CaptureResult
+  go-resolve (b) (i) =
+    let stones2 = list-set-at (go-copy-stones (b.stones) 0 []) i (b.current-player)
+    in go-capture-neighbors-of stones2 i (if b.current-player == 1 then 2 else 1)
+
+ Rules 3 and 4, after rule 2.
+
+  go-legal : GoBoard, Integer -> Boolean
+  go-legal (b) (i) =
+    if b.game-over then False
+    else if go-in-bounds i == False then False
+    else if list-at (b.stones) i /= 0 then False
+    else let mark = __heap-save
+    in let r = go-resolve b i
+    in let ok = if count-liberties (r.stones) i (b.current-player) == 0 then False else go-seen (b.seen) (go-key (r.stones)) 0 == False
+    in let back = __heap-restore mark
+    in ok
+
+ A position as three words of 27 two-bit points.
+
+  go-key : List Integer -> List Integer
+  go-key (stones) = [go-pack stones 0 0 0, go-pack stones 27 0 0, go-pack stones 54 0 0]
+
+  go-pack : List Integer, Integer, Integer, Integer -> Integer
+  go-pack (stones) (start) (j) (acc) =
+    if j >= 27 then acc
+    else go-pack stones start (j + 1) (bit-or acc (bit-shl (list-at stones (start + j)) (j * 2)))
+
+  go-seen : List Integer, List Integer, Integer -> Boolean
+  go-seen (seen) (k) (i) =
+    if i + 3 > list-length seen then False
+    else if list-at seen i == list-at k 0 & list-at seen (i + 1) == list-at k 1 & list-at seen (i + 2) == list-at k 2 then True
+    else go-seen seen k (i + 3)
 
   CaptureResult = record {
     stones : List Integer,
@@ -246,6 +296,63 @@ Section: Place Stone
     else go-find-ko-ns stones color ns n (i + 1)
 
 Section: Scoring
+
+ Rule 6. An empty point belongs to a player when the whole empty region
+ around it reaches that player's stones and no others.
+
+  go-area : List Integer, Integer -> Integer
+  go-area (stones) (color) = go-area-loop stones color 0 0
+
+  go-area-loop : List Integer, Integer, Integer, Integer -> Integer
+  go-area-loop (stones) (color) (i) (acc) =
+    if i >= 81 then acc
+    else let v = list-at stones i
+    in if v == color then go-area-loop stones color (i + 1) (acc + 1)
+    else if v /= 0 then go-area-loop stones color (i + 1) acc
+    else if go-region-reaches stones i == color then go-area-loop stones color (i + 1) (acc + 1)
+    else go-area-loop stones color (i + 1) acc
+
+ Which colours the empty region of point i touches: 1 or 2 when only that
+ one, 0 when both or neither.
+
+  go-region-reaches : List Integer, Integer -> Integer
+  go-region-reaches (stones) (i) =
+    let mark = __heap-save
+    in let touch = go-region-flood stones [i] (list-set-at (go-fill 0 []) i 1) 0
+    in let r = __heap-restore mark
+    in if touch == 1 then 1 else if touch == 2 then 2 else 0
+
+  go-region-flood : List Integer, List Integer, List Integer, Integer -> Integer
+  go-region-flood (stones) (todo) (visited) (touch) =
+    if list-length todo == 0 then touch
+    else let p = list-at todo (list-length todo - 1)
+    in let rest = go-drop-last todo
+    in let ns = go-neighbors p
+    in go-region-ns stones rest visited touch ns 0
+
+  go-region-ns : List Integer, List Integer, List Integer, Integer, List Integer, Integer -> Integer
+  go-region-ns (stones) (todo) (visited) (touch) (ns) (j) =
+    if j >= list-length ns then go-region-flood stones todo visited touch
+    else let q = list-at ns j
+    in let v = list-at stones q
+    in if v /= 0 then go-region-ns stones todo visited (bit-or touch v) ns (j + 1)
+    else if list-at visited q == 1 then go-region-ns stones todo visited touch ns (j + 1)
+    else go-region-ns stones (list-push todo q) (list-set-at visited q 1) touch ns (j + 1)
+
+  go-drop-last : List Integer -> List Integer
+  go-drop-last (xs) = go-take-n xs (list-length xs - 1) 0 []
+
+  go-take-n : List Integer, Integer, Integer, List Integer -> List Integer
+  go-take-n (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else go-take-n xs n (i + 1) (list-push acc (list-at xs i))
+
+ The winner by rule 6: 1 Black, 2 White. Komi is 7.5, so Black wins when
+ twice Black's area exceeds twice White's plus 15.
+
+  go-winner-of : List Integer -> Integer
+  go-winner-of (stones) =
+    if go-area stones 1 * 2 > go-area stones 2 * 2 + 15 then 1 else 2
 
   go-score-black : List Integer, Integer -> Integer
   go-score-black (stones) (acc) =
@@ -307,17 +414,16 @@ Section: AI
   go-find-cap-loop : GoBoard, List Integer, Integer -> Integer
   go-find-cap-loop (b) (s) (i) =
     if i >= 81 then (-1)
-    else if list-at s i /= 0 then go-find-cap-loop b s (i + 1)
-    else if i == b.ko-point then go-find-cap-loop b s (i + 1)
-    else let probed = list-set-at s i (b.current-player)
-    in let libs-self = count-liberties probed i (b.current-player)
-    in let opp = if b.current-player == 1 then 2 else 1
-    in let ns = go-neighbors i
-    in let hit = if libs-self == 0 then False
-                 else go-has-capturable probed ns (list-length ns) 0 opp
-    in let restored = list-set-at probed i 0
-    in if hit then i
-    else go-find-cap-loop b restored (i + 1)
+    else if go-legal b i == False then go-find-cap-loop b s (i + 1)
+    else if go-captures b i then i
+    else go-find-cap-loop b s (i + 1)
+
+  go-captures : GoBoard, Integer -> Boolean
+  go-captures (b) (i) =
+    let mark = __heap-save
+    in let n = (go-resolve b i).count
+    in let r = __heap-restore mark
+    in n > 0
 
   go-has-capturable : List Integer, List Integer, Integer, Integer, Integer -> Boolean
   go-has-capturable (stones) (ns) (n) (i) (enemy) =
@@ -339,13 +445,23 @@ Section: AI
   go-try-center-loop (b) (s) (i) (pts) =
     if i >= list-length pts then (-1)
     else let p = list-at pts i
-    in if list-at s p /= 0 then go-try-center-loop b s (i + 1) pts
-    else if p == b.ko-point then go-try-center-loop b s (i + 1) pts
-    else let probed = list-set-at s p (b.current-player)
-    in let libs = count-liberties probed p (b.current-player)
-    in let restored = list-set-at probed p 0
-    in if libs > 0 then p
-    else go-try-center-loop b restored (i + 1) pts
+    in if go-worth b p then p
+    else go-try-center-loop b s (i + 1) pts
+
+ The engine's own judgement, not the rules: it will not fill its own eye,
+ a point whose every neighbour is its own stone, so it runs out of moves
+ worth making and passes, and its games end.
+
+  go-worth : GoBoard, Integer -> Boolean
+  go-worth (b) (i) =
+    if go-legal b i == False then False
+    else go-own-eye (b.stones) (go-neighbors i) (b.current-player) 0 == False
+
+  go-own-eye : List Integer, List Integer, Integer, Integer -> Boolean
+  go-own-eye (stones) (ns) (me) (j) =
+    if j >= list-length ns then True
+    else if list-at stones (list-at ns j) /= me then False
+    else go-own-eye stones ns me (j + 1)
 
   go-random-legal : GoBoard, Rng, Integer, Integer -> Integer
   go-random-legal (b) (rng) (tried) (limit) =
@@ -356,13 +472,8 @@ Section: AI
     if tried >= limit then (-1)
     else let rng2 = rng-next rng
     in let i = rng-mod (rng-value rng2) 81
-    in if list-at s i /= 0 then go-random-legal-loop b s rng2 (tried + 1) limit
-    else if i == b.ko-point then go-random-legal-loop b s rng2 (tried + 1) limit
-    else let probed = list-set-at s i (b.current-player)
-    in let libs = count-liberties probed i (b.current-player)
-    in let restored = list-set-at probed i 0
-    in if libs == 0 then go-random-legal-loop b restored rng2 (tried + 1) limit
-    else i
+    in if go-worth b i then i
+    else go-random-legal-loop b s rng2 (tried + 1) limit
 
 Section: Game Runner
 
@@ -383,9 +494,9 @@ Section: Game Runner
 
   make-go-result : GoBoard, Integer -> GoResult
   make-go-result (b) (moves) =
-    let bs = if b.black-score > 0 then b.black-score else go-score-black (b.stones) 0
-    in let ws = if b.white-score > 0 then b.white-score else go-score-white (b.stones) 0
-    in let w = if bs > ws + 6 then 1 else if ws + 6 > bs then 2 else 0
+    let bs = go-area (b.stones) 1
+    in let ws = go-area (b.stones) 2
+    in let w = go-winner-of (b.stones)
     in GoResult { black-score = bs, white-score = ws,
                   black-captures = b.black-captures, white-captures = b.white-captures,
                   winner = w, moves-made = moves }

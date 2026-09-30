@@ -1,0 +1,92 @@
+Chapter: DiffusionInpaintMasked
+  cites Diffusion chapter InpaintMasked
+  cites Diffusion chapter Img2Img
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/inpaint-masked-oracle.py's: per case the crop region,
+ the blurred mask, and Forge's own crop, resized mask and pasted-back picture
+ for the picture and generated picture built below; every byte must match.
+ The sabotage pastes into the box before expand_crop_region.
+
+ We say:
+
+Section: Pictures
+
+  sw : Integer = 120
+
+  sh : Integer = 80
+
+  pw : Integer = 64
+
+  ph : Integer = 48
+
+  case-bytes : Integer = 50704
+
+  put-pic : Integer, Integer -> Integer
+  put-pic (a) (i) =
+    if i >= sw * sh then a
+    else let y = i / sw
+    in let x = i - y * sw
+    in let r = poke-byte a (i * 3) (int-mod (3 * x + y) 256)
+    in let g = poke-byte a (i * 3 + 1) (int-mod (x * y / 7) 256)
+    in let b = poke-byte a (i * 3 + 2) (int-mod (5 * bit-xor x y) 256)
+    in put-pic a (i + 1)
+
+  put-gen : Integer, Integer -> Integer
+  put-gen (a) (i) =
+    if i >= pw * ph then a
+    else let y = i / pw
+    in let x = i - y * pw
+    in let r = poke-byte a (i * 3) (int-mod (x * 53 + y * 3) 256)
+    in let g = poke-byte a (i * 3 + 1) (int-mod (x * 29 + y * 101) 256)
+    in let b = poke-byte a (i * 3 + 2) (int-mod (x * y + 17) 256)
+    in put-gen a (i + 1)
+
+Section: Grading
+
+  theirs : Integer = #BD900000
+
+  diff : Integer, Integer, Integer, Integer, Integer -> Integer
+  diff (a) (b) (n) (i) (acc) =
+    if i >= n then acc
+    else diff a b n (i + 1) (acc + (if peek-byte a i == peek-byte b i then 0 else 1))
+
+  line : Text, Integer, Integer -> Text
+  line (what) (d) (n) = what & (if d == 0 then ": all " & show n & " bytes equal" else ": " & show d & " of " & show n & " bytes differ")
+
+  ref-box : Integer -> List Integer
+  ref-box (i) = if i >= 4 then [] else [bit-and (peek-32 theirs (i * 4)) #FFFFFFFF] & ref-box (i + 1)
+
+  arms : Integer, Integer, Integer, Text, Boolean -> List Text
+  arms (h) (k) (pad) (what) (sabotage) =
+    let up = gpu-buf-upload h 0 "inpaint-masked.bin" (k * case-bytes) case-bytes gpu-dt-u8 gpu-dt-u8
+    in if gpu-buf-read h 0 case-bytes theirs == False then [what & ": the fixture could not be read"]
+    else let m = theirs + 16
+    in let pic = put-pic (alloc-bytes (sw * sh * 3 + 8)) 0
+    in let raw = inpaint-crop-box m sw sh pad
+    in let box = inpaint-expand-box raw pw ph sw sh
+    in let rb = ref-box 0
+    in let full = inpaint-uncrop (put-gen (alloc-bytes (pw * ph * 3 + 8)) 0) pw ph (if sabotage then raw else box) sw sh
+    in let fin = line (what & (if sabotage then ", sabotage, pasted into the unexpanded box" else ", pasted back")) (diff (img2img-composite pic m full 0 (sw * sh * 3)) (m + sw * sh + pw * ph * 4) (sw * sh * 3) 0 0) (sw * sh * 3)
+    in if sabotage then [fin]
+    else [what & ", region " & show (list-at box 0) & " " & show (list-at box 1) & " " & show (list-at box 2) & " " & show (list-at box 3) & (if box == rb then ", Forge's" else ", NOT Forge's"),
+          line (what & ", picture cropped") (diff (inpaint-crop-rgb pic sw box pw ph) (m + sw * sh) (pw * ph * 3) 0 0) (pw * ph * 3),
+          line (what & ", mask cropped") (diff (inpaint-crop-l m sw box pw ph) (m + sw * sh + pw * ph * 3) (pw * ph) 0 0) (pw * ph),
+          fin]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Nothing
+  opening = act
+    let h = gpu-buf-alloc case-bytes
+    in print-all (arms h 0 8 "blob at 88,22, padding 8" False & arms h 1 0 "blob at 40,74, padding 0" False & arms h 0 8 "blob at 88,22" True) 0
+  end

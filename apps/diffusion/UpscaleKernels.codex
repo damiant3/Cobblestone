@@ -1,0 +1,462 @@
+Chapter: UpscaleKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ We say:
+
+Section: Leaky ReLU
+
+ dst[off + i] = src[i] when it is not negative, else slope times it, over n
+ f32 elements, one thread per element in blocks of 128; slope 1 copies.
+
+  kernel-lrelu-into : Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  kernel-lrelu-into (src) (dst) (off) (slope) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then uk-lrelu-one src dst off slope (bx * bd + tx) else 0
+  end
+
+  uk-lrelu-one : Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  uk-lrelu-one (src) (dst) (off) (slope) (i) = act
+   v <- device-load-f32 src i
+   device-store-f32 dst (off + i) (if v >= 0.0 then v else slope * v)
+  end
+
+Section: Window Attention
+
+ Self-attention inside the wh x wn windows of a map rolled by (-shy, -shx),
+ as SwinIR's WindowAttention and DAT's Spatial_Attention compute it (spandrel
+ architectures/SwinIR and architectures/DAT): per head, softmax (q scale k^T
+ + bias[rel] + mask) v, scale head_dim^-0.5 given as f32 bits, bias a table
+ of heads columns, rel = (dy + wh - 1) (2 wn - 1) + dx + wn - 1 for dy and dx
+ the query's row and column in the window minus the key's, and for a roll
+ the mask -100 between two tokens whose rolled coordinates lie in different
+ regions of calculate_mask (below n - window, below n - shift, the rest, on
+ each axis). Tokens are rows of qkv (stride ld) in image order; head h's q,
+ k and v start at qoff, koff and voff plus h hd; a token's output goes to its
+ own image position, rows of ldo from ooff plus h hd. A block of qn threads,
+ a thread per query, takes qn of one window's queries (gx: the window times
+ wh wn / qn plus the chunk) for one head (gy). Shared memory: a row of hd f32
+ per thread, q and then the output, and the probabilities in rows of wh wn +
+ 1 f32.
+
+  kernel-window-attention : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-window-attention (qkv) (out) (bias) (hh) (ww) (wh) (wn) (shy) (shx) (heads) (hd) (scale) (ld) (qoff) (koff) (voff) (ldo) (ooff) (qn) = act
+   bx <- block-idx-x
+   head <- block-idx-y
+   t <- thread-idx-x
+   n <- wh * wn
+   w <- bx / (n / qn)
+   i <- (bx - w * (n / qn)) * qn + t
+   p <- uk-wa-pos hh ww wh wn shy shx w i
+   qa <- t * hd * 4
+   row <- qn * hd * 4 + t * (n + 1) * 4
+   q <- uk-wa-stage qkv (p * ld + qoff + head * hd) qa hd (bits-to-real-approx scale) 0
+   m <- uk-wa-scores qkv bias hh ww wh wn shy shx heads head hd ld (koff + head * hd) w i qa row 0 (bits-to-real-approx #FF800000)
+   z <- uk-wa-exp row n 0 m (real-approx-from-int 0)
+   s <- uk-wa-norm row n 0 z
+   c <- uk-wa-zero qa hd 0
+   a <- uk-wa-acc qkv hh ww wh wn shy shx hd ld (voff + head * hd) w qa row 0
+   uk-wa-out out (p * ldo + ooff + head * hd) qa hd 0
+  end
+
+  uk-wa-pos : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  uk-wa-pos (hh) (ww) (wh) (wn) (shy) (shx) (w) (i) =
+    let nx = ww / wn
+    in let sy = (w / nx) * wh + i / wn
+    in let sx = (w - w / nx * nx) * wn + i - i / wn * wn
+    in let oy = sy + shy - (if sy + shy >= hh then hh else 0)
+    in let ox = sx + shx - (if sx + shx >= ww then ww else 0)
+    in oy * ww + ox
+
+  uk-wa-stage : Integer, Integer, Integer, Integer, Real approximate, Integer -> [Device] Integer
+  uk-wa-stage (src) (at) (dst) (hd) (s) (d) =
+    if d >= hd then 0
+    else act
+     x <- shared-store-approx (dst + d * 4) (device-load-approx src (at + d) * s)
+     uk-wa-stage src at dst hd s (d + 1)
+    end
+
+  uk-wa-dot : Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  uk-wa-dot (qkv) (qa) (ka) (hd) (d) (acc) =
+    if d >= hd then acc else uk-wa-dot qkv qa ka hd (d + 1) (acc + shared-load-approx (qa + d * 4) * device-load-approx qkv (ka + d))
+
+  uk-wa-rel : Integer, Integer, Integer, Integer -> Integer
+  uk-wa-rel (wh) (wn) (i) (j) = (i / wn - j / wn + wh - 1) * (2 * wn - 1) + (i - i / wn * wn) - (j - j / wn * wn) + wn - 1
+
+  uk-wa-label : Integer, Integer, Integer, Integer -> Integer
+  uk-wa-label (v) (n) (win) (shift) = if v < n - win then 0 else if v < n - shift then 1 else 2
+
+  uk-wa-region : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  uk-wa-region (hh) (ww) (wh) (wn) (shy) (shx) (w) (i) =
+    let nx = ww / wn
+    in 3 * uk-wa-label ((w / nx) * wh + i / wn) hh wh shy + uk-wa-label ((w - w / nx * nx) * wn + i - i / wn * wn) ww wn shx
+
+  uk-wa-mask : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Real approximate
+  uk-wa-mask (hh) (ww) (wh) (wn) (shy) (shx) (w) (i) (j) =
+    if (shy > 0 | shx > 0) & uk-wa-region hh ww wh wn shy shx w i /= uk-wa-region hh ww wh wn shy shx w j then real-approx-from-int (0 - 100) else real-approx-from-int 0
+
+  uk-wa-scores : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  uk-wa-scores (qkv) (bias) (hh) (ww) (wh) (wn) (shy) (shx) (heads) (head) (hd) (ld) (kcol) (w) (i) (qa) (row) (j) (m) =
+    if j >= wh * wn then m
+    else act
+     s <- uk-wa-dot qkv qa (uk-wa-pos hh ww wh wn shy shx w j * ld + kcol) hd 0 (real-approx-from-int 0) + device-load-approx bias (uk-wa-rel wh wn i j * heads + head) + uk-wa-mask hh ww wh wn shy shx w i j
+     x <- shared-store-approx (row + j * 4) s
+     uk-wa-scores qkv bias hh ww wh wn shy shx heads head hd ld kcol w i qa row (j + 1) (if s > m then s else m)
+    end
+
+ e^(s - m) as 2^((s - m) log2 e), log2 e in f32 bits.
+
+  uk-wa-exp : Integer, Integer, Integer, Real approximate, Real approximate -> [Device] Real approximate
+  uk-wa-exp (row) (n) (j) (m) (z) =
+    if j >= n then z
+    else act
+     e <- real-approx-exp2 ((shared-load-approx (row + j * 4) - m) * bits-to-real-approx #3FB8AA3B)
+     x <- shared-store-approx (row + j * 4) e
+     uk-wa-exp row n (j + 1) m (z + e)
+    end
+
+  uk-wa-norm : Integer, Integer, Integer, Real approximate -> [Device] Integer
+  uk-wa-norm (row) (n) (j) (z) =
+    if j >= n then 0
+    else act
+     x <- shared-store-approx (row + j * 4) (shared-load-approx (row + j * 4) / z)
+     uk-wa-norm row n (j + 1) z
+    end
+
+  uk-wa-zero : Integer, Integer, Integer -> [Device] Integer
+  uk-wa-zero (oa) (hd) (d) =
+    if d >= hd then 0
+    else act
+     x <- shared-store-approx (oa + d * 4) (real-approx-from-int 0)
+     uk-wa-zero oa hd (d + 1)
+    end
+
+  uk-wa-axpy : Integer, Integer, Real approximate, Integer, Integer, Integer -> [Device] Integer
+  uk-wa-axpy (qkv) (oa) (pj) (vat) (hd) (d) =
+    if d >= hd then 0
+    else act
+     x <- shared-store-approx (oa + d * 4) (shared-load-approx (oa + d * 4) + pj * device-load-approx qkv (vat + d))
+     uk-wa-axpy qkv oa pj vat hd (d + 1)
+    end
+
+  uk-wa-acc : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  uk-wa-acc (qkv) (hh) (ww) (wh) (wn) (shy) (shx) (hd) (ld) (vcol) (w) (oa) (row) (j) =
+    if j >= wh * wn then 0
+    else act
+     x <- uk-wa-axpy qkv oa (shared-load-approx (row + j * 4)) (uk-wa-pos hh ww wh wn shy shx w j * ld + vcol) hd 0
+     uk-wa-acc qkv hh ww wh wn shy shx hd ld vcol w oa row (j + 1)
+    end
+
+  uk-wa-out : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  uk-wa-out (out) (at) (oa) (hd) (d) =
+    if d >= hd then 0
+    else act
+     x <- device-store-approx out (at + d) (shared-load-approx (oa + d * 4))
+     uk-wa-out out at oa hd (d + 1)
+    end
+
+Section: Channel Attention
+
+ DAT's Adaptive_Channel_Attention (spandrel architectures/DAT) over L tokens:
+ per head, q and k of each of its hd channels normalized over the tokens
+ (F.normalize, eps 1e-12), g = temperature q k^T (hd x hd), softmax by rows,
+ and out = g v. The Gram matrix runs a block per head and query channel (gx
+ heads hd) of hd threads, a thread per key channel, the sums in f64; rows of
+ qkv (stride ld) hold q, k and v at 0, dim and 2 dim.
+
+  kernel-chan-gram : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-chan-gram (qkv) (temp) (g) (ld) (dim) (hd) (l) = act
+   b <- block-idx-x
+   c2 <- thread-idx-x
+   h <- b / hd
+   qc <- b
+   kc <- dim + h * hd + c2
+   qk <- uk-cg-sum qkv ld qc kc l 0 0.0
+   qq <- uk-cg-sum qkv ld qc qc l 0 0.0
+   kk <- uk-cg-sum qkv ld kc kc l 0 0.0
+   t <- device-load-f32 temp h
+   device-store-f32 g (b * hd + c2) (qk / (uk-cg-norm qq * uk-cg-norm kk) * t)
+  end
+
+  uk-cg-norm : Real -> Real
+  uk-cg-norm (s) = let r = real-sqrt s in if r < 0.000000000001 then 0.000000000001 else r
+
+  uk-cg-sum : Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  uk-cg-sum (x) (ld) (a) (b) (l) (r) (acc) =
+    if r >= l then acc
+    else act
+     u <- device-load-f32 x (r * ld + a)
+     v <- device-load-f32 x (r * ld + b)
+     uk-cg-sum x ld a b l (r + 1) (acc + u * v)
+    end
+
+ Rows of cols f32 softmaxed in place, a thread per row.
+
+  kernel-row-softmax : Integer, Integer, Integer -> [Device] Integer
+  kernel-row-softmax (x) (cols) (rows) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < rows then uk-rs-row x ((bx * bd + tx) * cols) cols else 0
+  end
+
+  uk-rs-row : Integer, Integer, Integer -> [Device] Integer
+  uk-rs-row (x) (at) (cols) = act
+   m <- uk-rs-max x at cols 0 (bits-to-real-approx #FF800000)
+   z <- uk-rs-exp x at cols 0 m (real-approx-from-int 0)
+   uk-rs-scale x at cols 0 z
+  end
+
+  uk-rs-max : Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  uk-rs-max (x) (at) (cols) (j) (m) =
+    if j >= cols then m
+    else act
+     v <- device-load-approx x (at + j)
+     uk-rs-max x at cols (j + 1) (if v > m then v else m)
+    end
+
+  uk-rs-exp : Integer, Integer, Integer, Integer, Real approximate, Real approximate -> [Device] Real approximate
+  uk-rs-exp (x) (at) (cols) (j) (m) (z) =
+    if j >= cols then z
+    else act
+     e <- real-approx-exp2 ((device-load-approx x (at + j) - m) * bits-to-real-approx #3FB8AA3B)
+     s <- device-store-approx x (at + j) e
+     uk-rs-exp x at cols (j + 1) m (z + e)
+    end
+
+  uk-rs-scale : Integer, Integer, Integer, Integer, Real approximate -> [Device] Integer
+  uk-rs-scale (x) (at) (cols) (j) (z) =
+    if j >= cols then 0
+    else act
+     s <- device-store-approx x (at + j) (device-load-approx x (at + j) / z)
+     uk-rs-scale x at cols (j + 1) z
+    end
+
+ out[p dim + h hd + c] = sum over c2 of g[(h hd + c) hd + c2] v[p ld + voff +
+ h hd + c2], n = L dim.
+
+  kernel-chan-apply : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-chan-apply (qkv) (g) (out) (ld) (voff) (dim) (hd) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   i <- bx * bd + tx
+   if i < n then device-store-approx out i (uk-ca-dot qkv g ((i - i / dim * dim) * hd) ((i / dim) * ld + voff + (i - i / dim * dim) / hd * hd) hd 0 (real-approx-from-int 0)) else 0
+  end
+
+  uk-ca-dot : Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  uk-ca-dot (qkv) (g) (ga) (va) (hd) (c) (acc) =
+    if c >= hd then acc else uk-ca-dot qkv g ga va hd (c + 1) (acc + device-load-approx g (ga + c) * device-load-approx qkv (va + c))
+
+Section: Maps and Gates
+
+ Channels [off, off + c) of rows of ld as a c x l map, n = c l.
+
+  kernel-cols-to-map : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-cols-to-map (x) (out) (ld) (off) (l) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   i <- bx * bd + tx
+   if i < n then device-store-approx out i (device-load-approx x ((i - i / l * l) * ld + off + i / l)) else 0
+  end
+
+ A 3x3 depthwise convolution (groups = c, padding 1) with its bias over a c
+ x hh x ww map, f32 weights, in f32.
+
+  kernel-dwconv3 : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-dwconv3 (x) (w) (b) (y) (hh) (ww) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   i <- bx * bd + tx
+   if i < n then device-store-approx y i (uk-dw-sum x w (i / (hh * ww)) ((i - i / ww * ww)) ((i / ww) - (i / ww) / hh * hh) hh ww 0 (device-load-approx b (i / (hh * ww)))) else 0
+  end
+
+  uk-dw-sum : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  uk-dw-sum (x) (w) (ch) (px) (py) (hh) (ww) (k) (acc) =
+    if k >= 9 then acc
+    else let yy = py + k / 3 - 1
+    in let xx = px + k - k / 3 * 3 - 1
+    in if yy < 0 | yy >= hh | xx < 0 | xx >= ww then uk-dw-sum x w ch px py hh ww (k + 1) acc
+    else uk-dw-sum x w ch px py hh ww (k + 1) (acc + device-load-approx w (ch * 9 + k) * device-load-approx x ((ch * hh + yy) * ww + xx))
+
+ BatchNorm in eval, in place: (x - mean) / sqrt (var + 1e-5) weight + bias,
+ channel (i / hw) mod c.
+
+  kernel-batch-norm : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-batch-norm (x) (bw) (bb) (bm) (bv) (hw) (c) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   i <- bx * bd + tx
+   if i < n then uk-bn-one x bw bb bm bv (i / hw - i / hw / c * c) i else 0
+  end
+
+  uk-bn-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  uk-bn-one (x) (bw) (bb) (bm) (bv) (ch) (i) = act
+   v <- device-load-f32 x i
+   m <- device-load-f32 bm ch
+   s <- device-load-f32 bv ch
+   g <- device-load-f32 bw ch
+   b <- device-load-f32 bb ch
+   device-store-f32 x i ((v - m) / real-sqrt (s + 0.00001) * g + b)
+  end
+
+ A 1x1 convolution with its bias at every pixel: out[p cout + o] = b[o] +
+ sum over i of w[o cin + i] x[i sc + p sp], in f64; n = l cout.
+
+  kernel-pix-mix : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-pix-mix (x) (sc) (sp) (cin) (w) (b) (out) (cout) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   i <- bx * bd + tx
+   if i < n then uk-pm-one x sc sp cin w b out cout i else 0
+  end
+
+  uk-pm-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  uk-pm-one (x) (sc) (sp) (cin) (w) (b) (out) (cout) (i) = act
+   bias <- device-load-f32 b (i - i / cout * cout)
+   device-store-f32 out i (uk-pm-dot x sc ((i / cout) * sp) w ((i - i / cout * cout) * cin) cin 0 bias)
+  end
+
+  uk-pm-dot : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  uk-pm-dot (x) (sc) (xa) (w) (wa) (cin) (k) (acc) =
+    if k >= cin then acc
+    else act
+     u <- device-load-f32 w (wa + k)
+     v <- device-load-f32 x (k * sc + xa)
+     uk-pm-dot x sc xa w wa cin (k + 1) (acc + u * v)
+    end
+
+ The mean of each of c channels over l positions, x[ch sc + p sp], in f64.
+
+  kernel-channel-mean : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-channel-mean (x) (out) (sc) (sp) (l) (c) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   ch <- bx * bd + tx
+   if ch < c then device-store-f32 out ch (uk-cm-sum x (ch * sc) sp l 0 0.0 / real-from-int l) else 0
+  end
+
+  uk-cm-sum : Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  uk-cm-sum (x) (a) (sp) (l) (p) (acc) =
+    if p >= l then acc
+    else act
+     v <- device-load-f32 x (a + p * sp)
+     uk-cm-sum x a sp l (p + 1) (acc + v)
+    end
+
+ DAT's Adaptive Interaction Module: a token-major attention output a (l x c)
+ and a c x l convolution map m become out[p c + ch] = a sigmoid (ga) + m
+ sigmoid (gm), with ga the channel map cm[ch] and gm the spatial map sm[p]
+ for the spatial block (mode 0), the other way round for the channel block
+ (mode 1); n = l c.
+
+  kernel-aim : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-aim (a) (m) (cm) (sm) (out) (c) (l) (mode) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   i <- bx * bd + tx
+   if i < n then uk-aim-one a m cm sm out c l mode (i / c) (i - i / c * c) i else 0
+  end
+
+  uk-sigmoid : Real approximate -> Real approximate
+  uk-sigmoid (v) = real-approx-from-int 1 / (real-approx-from-int 1 + real-approx-exp2 (v * bits-to-real-approx #BFB8AA3B))
+
+  uk-aim-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  uk-aim-one (a) (m) (cm) (sm) (out) (c) (l) (mode) (p) (ch) (i) = act
+   gc <- device-load-approx cm ch
+   gs <- device-load-approx sm p
+   av <- device-load-approx a i
+   mv <- device-load-approx m (ch * l + p)
+   device-store-approx out i (av * uk-sigmoid (if mode == 0 then gc else gs) + mv * uk-sigmoid (if mode == 0 then gs else gc))
+  end
+
+ DAT's SpatialGate: out[p half + ch] = x[p 2 half + ch] m[ch l + p], n = l
+ half.
+
+  kernel-gate : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-gate (x) (m) (out) (half) (l) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   i <- bx * bd + tx
+   if i < n then device-store-approx out i (device-load-approx x ((i / half) * 2 * half + i - i / half * half) * device-load-approx m ((i - i / half * half) * l + i / half)) else 0
+  end
+
+ Columns [off, off + width) of rows of ld as rows of width, n = rows width.
+
+  kernel-take-cols : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-take-cols (x) (out) (ld) (off) (width) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   i <- bx * bd + tx
+   if i < n then device-store-approx out i (device-load-approx x ((i / width) * ld + off + i - i / width * width)) else 0
+  end
+
+ PixelShuffle (2): a 4c x hh x ww map to c x 2hh x 2ww, out[ch][y][x] =
+ x[4 ch + 2 (y mod 2) + x mod 2][y / 2][x / 2]; n = 4 c hh ww.
+
+  kernel-pixel-shuffle : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-pixel-shuffle (x) (out) (hh) (ww) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   i <- bx * bd + tx
+   if i < n then device-store-approx out i (device-load-approx x (uk-ps-src hh ww i)) else 0
+  end
+
+  uk-ps-src : Integer, Integer, Integer -> Integer
+  uk-ps-src (hh) (ww) (i) =
+    let ow = 2 * ww
+    in let ch = i / (4 * hh * ww)
+    in let r = i - ch * 4 * hh * ww
+    in let y = r / ow
+    in let x = r - y * ow
+    in ((4 * ch + 2 * (y - y / 2 * 2) + x - x / 2 * 2) * hh + y / 2) * ww + x / 2
+
+Section: Tiles
+
+ modules/upscaler_utils.py's tiled_upscale_2: every model output patch, 3 x
+ ps x ps f32, added into result at (x0, y0) of a 3 x oh x ow map and 1 added
+ into weights at the same place, in f32; then result / weights.
+
+  kernel-tile-add : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-tile-add (res) (wts) (patch) (oh) (ow) (x0) (y0) (ps) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then uk-tile-add-one res wts patch oh ow x0 y0 ps (bx * bd + tx) else 0
+  end
+
+  uk-tile-add-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  uk-tile-add-one (res) (wts) (patch) (oh) (ow) (x0) (y0) (ps) (i) = act
+   c <- i / (ps * ps)
+   r <- i - c * ps * ps
+   dst <- (c * oh + y0 + r / ps) * ow + x0 + r - r / ps * ps
+   a <- device-store-approx res dst (device-load-approx res dst + device-load-approx patch i)
+   device-store-approx wts dst (device-load-approx wts dst + real-approx-from-int 1)
+  end
+
+  kernel-tile-divide : Integer, Integer, Integer -> [Device] Integer
+  kernel-tile-divide (res) (wts) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then device-store-approx res (bx * bd + tx) (device-load-approx res (bx * bd + tx) / device-load-approx wts (bx * bd + tx)) else 0
+  end
+
+  kernel-fill-zero : Integer, Integer -> [Device] Integer
+  kernel-fill-zero (dst) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then device-store-approx dst (bx * bd + tx) (real-approx-from-int 0) else 0
+  end

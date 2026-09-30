@@ -1,0 +1,64 @@
+Chapter: DiffusionFreeU
+  cites Diffusion chapter FreeU
+  cites Diffusion chapter UNet
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/freeu-oracle.py's: Forge's own FreeU output-block patch
+ over the (h, hsp) pairs built below, both presets; every value within 1e-5
+ (Forge's FFT runs in f32, the kernels sum in f64). The sabotage leaves the SDXL preset's
+ 640-channel skip unfiltered.
+
+ We say:
+
+Section: Inputs
+
+  tensor-at : Integer, Integer -> Real
+  tensor-at (i) (salt) = real-from-int (int-mod (i * (37 + salt) + 11) 257 - 128) / 64.0 + real-sin (real-from-int i * 0.01 * real-from-int (salt + 1))
+
+  fill : Integer, Integer, Integer, Integer -> Integer
+  fill (a) (salt) (i) (n) = if i >= n then a else let z = fu-set a i (tensor-at i salt) in fill a salt (i + 1) n
+
+Section: Grading
+
+  theirs : Integer = #BD900000
+
+  worst : Integer, Integer, Integer, Integer, Real -> Real
+  worst (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = fu-get a i - fu-get b i
+    in let e = if d < 0.0 then 0.0 - d else d
+    in worst a b (i + 1) n (if e > acc then e else acc)
+
+  on-device : Integer, Integer, (Integer -> Boolean) -> Boolean
+  on-device (host) (n) (f) =
+    let d = gpu-buf-alloc (n * 4)
+    in let ok = if d /= 0 & gpu-buf-write d 0 (n * 4) host then (if f d then gpu-buf-read d 0 (n * 4) host else False) else False
+    in let z = un-free 0 d
+    in ok
+
+  arm : Integer, Integer, Real, Real, Integer, Integer, Boolean, Text -> Text
+  arm (h) (at) (b) (s) (c) (side) (sabotage) (what) =
+    let n = c * side * side
+    in let up = gpu-buf-upload h 0 "freeu.bin" at (n * 8) gpu-dt-u8 gpu-dt-u8
+    in if gpu-buf-read h 0 (n * 8) theirs == False then what & ": the fixture could not be read"
+    else let hh = fill (alloc-bytes (n * 4)) 0 0 n
+    in let hs = fill (alloc-bytes (n * 4)) 5 0 n
+    in let x = if c == 1280 | c == 640 then on-device hh n (\d -> freeu-backbone d c (side * side) b) else True
+    in let y = if (c == 1280 | c == 640) & sabotage == False then on-device hs n (\d -> freeu-skip d c side side s) else True
+    in let e = worst hh theirs 0 n 0.0
+    in let f = worst hs (theirs + n * 4) 0 n 0.0
+    in what & (if e <= 0.00001 & f <= 0.00001 then ": within 1e-5" else ": PAST 1e-5")
+
+  opening : [Console] Nothing
+  opening = act
+    let h = gpu-buf-alloc (640 * 256 * 8)
+    in act
+      print-line-uni (arm h 0 1.01 0.99 1280 8 False "Forge preset, 1280 x 8 x 8")
+      print-line-uni (arm h (1280 * 64 * 8) 1.02 0.95 640 16 False "Forge preset, 640 x 16 x 16")
+      print-line-uni (arm h (1280 * 64 * 8 + 640 * 256 * 8) 1.0 1.0 320 8 False "Forge preset, 320 channels untouched")
+      print-line-uni (arm h (1280 * 64 * 8 + 640 * 256 * 8 + 320 * 64 * 8) 1.3 0.9 1280 8 False "SDXL preset, 1280 x 8 x 8")
+      print-line-uni (arm h (2 * 1280 * 64 * 8 + 640 * 256 * 8 + 320 * 64 * 8) 1.4 0.2 640 16 False "SDXL preset, 640 x 16 x 16")
+      print-line-uni (arm h (2 * 1280 * 64 * 8 + 640 * 256 * 8 + 320 * 64 * 8) 1.4 0.2 640 16 True "sabotage, the 640-channel skip unfiltered")
+    end
+  end

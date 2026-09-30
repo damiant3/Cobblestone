@@ -78,8 +78,9 @@
 
   <p class="note">Each evaluation runs a fresh instance of the module: the expression goes in
   on standard input and the answer comes back on standard output, which is how the compiler's
-  own page works. That means there is no collector to worry about and no state carried between
-  lines, so <code>x := 3</code> will not be remembered by the next expression yet.</p>
+  own page works, so there is no collector to worry about. The notebook is kept by replay: every
+  line you have entered goes in again, one per cell, so <code>x := 3</code> is remembered by the
+  lines after it.</p>
 </div>
 
 <script>
@@ -90,6 +91,7 @@ const tapeEl = document.getElementById('tape');
 const errEl  = document.getElementById('err');
 
 let mod = null;
+const session = [];
 
 // The module is a WASI program. The expression arrives on fd_read and the
 // answer leaves on fd_write, both plain UTF-8, because the foreword converts
@@ -133,8 +135,10 @@ function ask(line) {
   if (!q) return;
   let answer, bad = false;
   try {
-    answer = evaluate(q);
+    const lines = evaluate(session.concat([q]).join('\n')).split('\n');
+    answer = lines[lines.length - 1];
     bad = answer.startsWith('parse error');
+    if (!bad) session.push(q);
   } catch (e) {
     answer = 'the module failed: ' + e.message; bad = true;
   }

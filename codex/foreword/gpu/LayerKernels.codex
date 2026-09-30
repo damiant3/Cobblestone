@@ -1,0 +1,746 @@
+Chapter: LayerKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ We say:
+
+Section: Device Math
+
+ exp runs the argument down by 2^17 so six Taylor terms are exact to f64, then
+ squares back up; the squarings multiply the rounding error by 2^17, about
+ 1.5e-11 relative. Past |x| = 100 an f32 result is already 0 or infinite.
+
+  lk-exp : Real -> Real
+  lk-exp (x) =
+    let c = if x > 100.0 then 100.0 else if x < 0.0 - 100.0 then 0.0 - 100.0 else x
+    in lk-square-n (lk-exp-small (c / 131072.0)) 17
+
+  lk-exp-small : Real -> Real
+  lk-exp-small (r) = 1.0 + r * (1.0 + r * (0.5 + r * (0.16666666666666666 + r * (0.041666666666666664 + r * (0.008333333333333333 + r * 0.001388888888888889)))))
+
+  lk-square-n : Real, Integer -> Real
+  lk-square-n (v) (k) = if k <= 0 then v else lk-square-n (v * v) (k - 1)
+
+ erf by Abramowitz and Stegun 7.1.26: with t = 1 / (1 + 0.3275911 |x|),
+ erf |x| = 1 - t (a1 + t (a2 + t (a3 + t (a4 + t a5)))) e^(-x^2), absolute error
+ at most 1.5e-7. The series it replaced ran up to 150 serial terms per element
+ and was the largest device cost of an SDXL step (the codex-vm GPU CENSUS).
+
+  lk-erf : Real -> Real
+  lk-erf (x) = lk-erf-as x (lk-exp (0.0 - x * x))
+
+  lk-erf-fast : Real -> Real
+  lk-erf-fast (x) = lk-erf-as x (real-exp2-approx (0.0 - x * x * 1.4426950408889634))
+
+  lk-erf-as : Real, Real -> Real
+  lk-erf-as (x) (ex) =
+    let a = if x < 0.0 then 0.0 - x else x
+    in let t = 1.0 / (1.0 + 0.3275911 * a)
+    in let e = 1.0 - t * (0.254829592 + t * ((0.0 - 0.284496736) + t * (1.421413741 + t * ((0.0 - 1.453152027) + t * 1.061405429)))) * ex
+    in if x < 0.0 then 0.0 - e else e
+
+Section: Elementwise
+
+  kernel-add : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-add (a) (b) (out) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-add-one a b out (bx * bd + tx) else 0
+  end
+
+  lk-add-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-add-one (a) (b) (out) (i) = act
+   x <- device-load-f32 a i
+   y <- device-load-f32 b i
+   device-store-f32 out i (x + y)
+  end
+
+  kernel-add-channel : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-add-channel (x) (bias) (out) (hw) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-add-channel-one x bias out hw (bx * bd + tx) else 0
+  end
+
+  lk-add-channel-one : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-add-channel-one (x) (bias) (out) (hw) (i) = act
+   v <- device-load-f32 x i
+   b <- device-load-f32 bias (i / hw)
+   device-store-f32 out i (v + b)
+  end
+
+  kernel-silu : Integer, Integer, Integer -> [Device] Integer
+  kernel-silu (x) (out) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-silu-one x out (bx * bd + tx) else 0
+  end
+
+  lk-silu-one : Integer, Integer, Integer -> [Device] Integer
+  lk-silu-one (x) (out) (i) = act
+   v <- device-load-approx x i
+   device-store-approx out i (v / (bits-to-real-approx #3F800000 + real-approx-exp2 (v * bits-to-real-approx #BFB8AA3B)))
+  end
+
+ The exact GELU, 0.5 x (1 + erf (x / sqrt 2)), which is what the SDXL UNet's
+ GEGLU and OpenCLIP-G use.
+
+  kernel-gelu : Integer, Integer, Integer -> [Device] Integer
+  kernel-gelu (x) (out) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-gelu-one x out (bx * bd + tx) else 0
+  end
+
+  lk-gelu-one : Integer, Integer, Integer -> [Device] Integer
+  lk-gelu-one (x) (out) (i) = act
+   v <- device-load-f32 x i
+   device-store-f32 out i (0.5 * v * (1.0 + lk-erf (v * 0.7071067811865476)))
+  end
+
+ GEGLU (Forge `backend/nn/unet.py:104`): a row of the projection is [a, gate],
+ each inner wide, and the output row is a * gelu (gate).
+
+  kernel-geglu : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-geglu (x) (out) (inner) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-geglu-one x out inner (bx * bd + tx) else 0
+  end
+
+  lk-geglu-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-geglu-one (x) (out) (inner) (i) = act
+   a <- device-load-f32 x (i / inner * 2 * inner + (i - i / inner * inner))
+   g <- device-load-f32 x (i / inner * 2 * inner + inner + (i - i / inner * inner))
+   device-store-f32 out i (a * 0.5 * g * (1.0 + lk-erf-fast (g * 0.7071067811865476)))
+  end
+
+  kernel-transpose : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-transpose (x) (out) (rows) (cols) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-copy x ((bx * bd + tx - (bx * bd + tx) / rows * rows) * cols + (bx * bd + tx) / rows) out (bx * bd + tx) else 0
+  end
+
+  kernel-split-heads : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-split-heads (x) (out) (s) (heads) (d) (transposed) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-split-one x out s heads d transposed (bx * bd + tx) else 0
+  end
+
+  lk-split-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-split-one (x) (out) (s) (heads) (d) (transposed) (i) = lk-copy x (lk-split-src s heads d transposed i) out i
+
+  kernel-split-heads-f16 : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-split-heads-f16 (x) (out) (s) (heads) (d) (transposed) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-split-f16-one x out (lk-split-src s heads d transposed (bx * bd + tx)) (bx * bd + tx) else 0
+  end
+
+  lk-split-f16-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-split-f16-one (x) (out) (si) (i) = act
+   v <- device-load-f32 x si
+   device-store-f16 out i v
+  end
+
+  lk-split-src : Integer, Integer, Integer, Integer, Integer -> Integer
+  lk-split-src (s) (heads) (d) (transposed) (i) =
+    let h = i / (s * d)
+    in let r = i - h * s * d
+    in let row = if transposed == 1 then r - r / s * s else r / d
+    in let col = if transposed == 1 then r / s else r - r / d * d
+    in row * heads * d + h * d + col
+
+  kernel-merge-heads : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-merge-heads (x) (out) (s) (heads) (d) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-merge-one x out s heads d (bx * bd + tx) else 0
+  end
+
+  lk-merge-one : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-merge-one (x) (out) (s) (heads) (d) (i) =
+    let row = i / (heads * d)
+    in let h = (i - row * heads * d) / d
+    in lk-copy x ((h * s + row) * d + i - row * heads * d - h * d) out i
+
+ CLIP-L's quick_gelu, x sigmoid (1.702 x).
+
+  kernel-quick-gelu : Integer, Integer, Integer -> [Device] Integer
+  kernel-quick-gelu (x) (out) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-quick-gelu-one x out (bx * bd + tx) else 0
+  end
+
+  lk-quick-gelu-one : Integer, Integer, Integer -> [Device] Integer
+  lk-quick-gelu-one (x) (out) (i) = act
+   v <- device-load-f32 x i
+   device-store-f32 out i (v / (1.0 + lk-exp (0.0 - 1.702 * v)))
+  end
+
+Section: Normalization
+
+  kernel-row-stats : Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  kernel-row-stats (x) (stats) (len) (eps) (rows) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < rows then lk-row-stats-one x stats len eps (bx * bd + tx) else 0
+  end
+
+  lk-row-stats-one : Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  lk-row-stats-one (x) (stats) (len) (eps) (r) = act
+   s <- lk-sum x (r * len) (r * len + len) 0.0
+   let mean = s / real-from-int len
+   in lk-store-stats stats r mean (lk-sq-dev x (r * len) (r * len + len) mean 0.0 / real-from-int len) eps
+  end
+
+  lk-store-stats : Integer, Integer, Real, Real, Real -> [Device] Integer
+  lk-store-stats (stats) (r) (mean) (var) (eps) = act
+   m <- device-store-f64 stats (r * 2) mean
+   device-store-f64 stats (r * 2 + 1) (1.0 / real-sqrt (var + eps))
+  end
+
+  lk-sum : Integer, Integer, Integer, Real -> [Device] Real
+  lk-sum (x) (i) (e) (acc) =
+    if i >= e then acc
+    else act
+     v <- device-load-f32 x i
+     lk-sum x (i + 1) e (acc + v)
+    end
+
+  lk-sq-dev : Integer, Integer, Integer, Real, Real -> [Device] Real
+  lk-sq-dev (x) (i) (e) (mean) (acc) =
+    if i >= e then acc
+    else act
+     v <- device-load-f32 x i
+     lk-sq-dev x (i + 1) e mean (acc + (v - mean) * (v - mean))
+    end
+
+  kernel-layer-norm : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-layer-norm (x) (stats) (gamma) (beta) (out) (dim) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-affine x stats gamma beta out ((bx * bd + tx) / dim) ((bx * bd + tx) - (bx * bd + tx) / dim * dim) (bx * bd + tx) else 0
+  end
+
+  kernel-group-norm : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-group-norm (x) (stats) (gamma) (beta) (out) (c) (hw) (groups) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-group-norm-one x stats gamma beta out c hw groups (bx * bd + tx) else 0
+  end
+
+  lk-group-norm-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-group-norm-one (x) (stats) (gamma) (beta) (out) (c) (hw) (groups) (i) =
+    let b = i / hw / c
+    in let ch = i / hw - b * c
+    in lk-affine x stats gamma beta out (b * groups + ch / (c / groups)) ch i
+
+  lk-affine : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-affine (x) (stats) (gamma) (beta) (out) (row) (ch) (i) = act
+   v <- device-load-f32 x i
+   mean <- device-load-f64 stats (row * 2)
+   rstd <- device-load-f64 stats (row * 2 + 1)
+   g <- device-load-f32 gamma ch
+   b <- device-load-f32 beta ch
+   device-store-f32 out i ((v - mean) * rstd * g + b)
+  end
+
+Section: A Block per Row
+
+ Launch with one block per row (gx = rows) of a power-of-two block width; part
+ holds rows x width f64 partials.
+
+  kernel-row-stats-wide : Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  kernel-row-stats-wide (x) (stats) (part) (len) (eps) (rows) = act
+   r <- block-idx-x
+   bd <- block-dim-x
+   t <- thread-idx-x
+   p1 <- device-store-f64 part (r * bd + t) (lk-sum-by x (r * len + t) (r * len + len) bd 0.0)
+   b1 <- sync-threads
+   s1 <- lk-tree part (r * bd) t (bd / 2) 1
+   total <- device-load-f64 part (r * bd)
+   b2 <- sync-threads
+   p2 <- device-store-f64 part (r * bd + t) (lk-sq-dev-by x (r * len + t) (r * len + len) bd (total / real-from-int len) 0.0)
+   b3 <- sync-threads
+   s2 <- lk-tree part (r * bd) t (bd / 2) 1
+   dev <- device-load-f64 part (r * bd)
+   if t == 0 then lk-store-stats stats r (total / real-from-int len) (dev / real-from-int len) eps else 0
+  end
+
+  kernel-softmax-rows-wide : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-softmax-rows-wide (s) (part) (cols) (rows) = act
+   r <- block-idx-x
+   bd <- block-dim-x
+   t <- thread-idx-x
+   z <- lk-softmax-exp s part cols r bd t
+   lk-scale-by s (r * cols + t) (r * cols + cols) bd (1.0 / z)
+  end
+
+ The same, with the probabilities written as f16 to p, s left holding the
+ unnormalised exponentials.
+
+  kernel-softmax-rows-wide-f16 : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-softmax-rows-wide-f16 (s) (p) (part) (cols) (rows) = act
+   r <- block-idx-x
+   bd <- block-dim-x
+   t <- thread-idx-x
+   z <- lk-softmax-exp s part cols r bd t
+   lk-scale-f16-by s p (r * cols + t) (r * cols + cols) bd (1.0 / z)
+  end
+
+  lk-softmax-exp : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Real
+  lk-softmax-exp (s) (part) (cols) (r) (bd) (t) = act
+   first <- device-load-f32 s (r * cols)
+   p1 <- device-store-f64 part (r * bd + t) (lk-max-by s (r * cols + t) (r * cols + cols) bd first)
+   b1 <- sync-threads
+   s1 <- lk-tree part (r * bd) t (bd / 2) 0
+   m <- device-load-f64 part (r * bd)
+   b2 <- sync-threads
+   p2 <- device-store-f64 part (r * bd + t) (lk-exp-store-by s (r * cols + t) (r * cols + cols) bd m 0.0)
+   b3 <- sync-threads
+   s2 <- lk-tree part (r * bd) t (bd / 2) 1
+   device-load-f64 part (r * bd)
+  end
+
+  lk-tree : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-tree (part) (base) (t) (stride) (op) =
+    if stride <= 0 then 0
+    else act
+     a <- if t < stride then lk-tree-step part (base + t) (base + t + stride) op else 0
+     b <- sync-threads
+     lk-tree part base t (stride / 2) op
+    end
+
+  lk-tree-step : Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-tree-step (part) (i) (j) (op) = act
+   x <- device-load-f64 part i
+   y <- device-load-f64 part j
+   device-store-f64 part i (if op == 0 then (if y > x then y else x) else x + y)
+  end
+
+  lk-sum-by : Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lk-sum-by (x) (i) (e) (step) (acc) =
+    if i >= e then acc
+    else act
+     v <- device-load-f32 x i
+     lk-sum-by x (i + step) e step (acc + v)
+    end
+
+  lk-sq-dev-by : Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  lk-sq-dev-by (x) (i) (e) (step) (mean) (acc) =
+    if i >= e then acc
+    else act
+     v <- device-load-f32 x i
+     lk-sq-dev-by x (i + step) e step mean (acc + (v - mean) * (v - mean))
+    end
+
+  lk-max-by : Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lk-max-by (s) (i) (e) (step) (acc) =
+    if i >= e then acc
+    else act
+     v <- device-load-f32 s i
+     lk-max-by s (i + step) e step (if v > acc then v else acc)
+    end
+
+  lk-exp-store-by : Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  lk-exp-store-by (s) (i) (e) (step) (m) (acc) =
+    if i >= e then acc
+    else act
+     v <- device-load-f32 s i
+     w <- device-store-f32 s i (real-exp2-approx ((v - m) * 1.4426950408889634))
+     u <- device-load-f32 s i
+     lk-exp-store-by s (i + step) e step m (acc + u)
+    end
+
+  lk-scale-by : Integer, Integer, Integer, Integer, Real -> [Device] Integer
+  lk-scale-by (s) (i) (e) (step) (k) =
+    if i >= e then 0
+    else act
+     v <- device-load-f32 s i
+     w <- device-store-f32 s i (v * k)
+     lk-scale-by s (i + step) e step k
+    end
+
+  lk-scale-f16-by : Integer, Integer, Integer, Integer, Integer, Real -> [Device] Integer
+  lk-scale-f16-by (s) (p) (i) (e) (step) (k) =
+    if i >= e then 0
+    else act
+     v <- device-load-f32 s i
+     w <- device-store-f16 p i (v * k)
+     lk-scale-f16-by s p (i + step) e step k
+    end
+
+Section: Softmax Attention
+
+  kernel-attn-scores : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  kernel-attn-scores (q) (k) (s) (heads) (sq) (sk) (d) (scale) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-score-one q k s heads sq sk d scale (bx * bd + tx) else 0
+  end
+
+  lk-score-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  lk-score-one (q) (k) (s) (heads) (sq) (sk) (d) (scale) (idx) =
+    let h = idx / (sq * sk)
+    in let qi = (idx - h * sq * sk) / sk
+    in let kj = idx - h * sq * sk - qi * sk
+    in lk-store-score s idx (lk-dot q k ((qi * heads + h) * d) ((kj * heads + h) * d) 0 d 0.0 * scale)
+
+  lk-store-score : Integer, Integer, Real -> [Device] Integer
+  lk-store-score (s) (idx) (v) = device-store-f32 s idx v
+
+  lk-dot : Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lk-dot (a) (b) (ao) (bo) (t) (d) (acc) =
+    if t >= d then acc
+    else act
+     x <- device-load-f32 a (ao + t)
+     y <- device-load-f32 b (bo + t)
+     lk-dot a b ao bo (t + 1) d (acc + x * y)
+    end
+
+  kernel-softmax-rows : Integer, Integer, Integer -> [Device] Integer
+  kernel-softmax-rows (s) (cols) (rows) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < rows then lk-softmax-row s ((bx * bd + tx) * cols) ((bx * bd + tx) * cols + cols) else 0
+  end
+
+  lk-softmax-row : Integer, Integer, Integer -> [Device] Integer
+  lk-softmax-row (s) (lo) (hi) = act
+   m0 <- device-load-f32 s lo
+   m <- lk-max s (lo + 1) hi m0
+   z <- lk-exp-sum s lo hi m 0.0
+   lk-softmax-write s lo hi m z
+  end
+
+  lk-max : Integer, Integer, Integer, Real -> [Device] Real
+  lk-max (s) (i) (e) (acc) =
+    if i >= e then acc
+    else act
+     v <- device-load-f32 s i
+     lk-max s (i + 1) e (if v > acc then v else acc)
+    end
+
+  lk-exp-sum : Integer, Integer, Integer, Real, Real -> [Device] Real
+  lk-exp-sum (s) (i) (e) (m) (acc) =
+    if i >= e then acc
+    else act
+     v <- device-load-f32 s i
+     lk-exp-sum s (i + 1) e m (acc + lk-exp (v - m))
+    end
+
+  lk-softmax-write : Integer, Integer, Integer, Real, Real -> [Device] Integer
+  lk-softmax-write (s) (i) (e) (m) (z) =
+    if i >= e then 0
+    else act
+     v <- device-load-f32 s i
+     w <- device-store-f32 s i (lk-exp (v - m) / z)
+     lk-softmax-write s (i + 1) e m z
+    end
+
+  kernel-softmax-causal : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-softmax-causal (s) (cols) (sq) (rows) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < rows then lk-softmax-causal-row s ((bx * bd + tx) * cols) (bx * bd + tx - (bx * bd + tx) / sq * sq + 1) cols else 0
+  end
+
+  lk-softmax-causal-row : Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-softmax-causal-row (s) (lo) (seen) (cols) = act
+   m0 <- device-load-f32 s lo
+   m <- lk-max s (lo + 1) (lo + (if seen < cols then seen else cols)) m0
+   z <- lk-exp-sum s lo (lo + (if seen < cols then seen else cols)) m 0.0
+   w <- lk-softmax-write s lo (lo + (if seen < cols then seen else cols)) m z
+   lk-zero s (lo + (if seen < cols then seen else cols)) (lo + cols)
+  end
+
+  lk-zero : Integer, Integer, Integer -> [Device] Integer
+  lk-zero (s) (i) (e) =
+    if i >= e then 0
+    else act
+     w <- device-store-f32 s i 0.0
+     lk-zero s (i + 1) e
+    end
+
+  kernel-attn-values : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-attn-values (p) (v) (out) (heads) (sq) (sk) (d) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-value-one p v out heads sq sk d (bx * bd + tx) else 0
+  end
+
+  lk-value-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-value-one (p) (v) (out) (heads) (sq) (sk) (d) (idx) =
+    let qi = idx / (heads * d)
+    in let h = (idx - qi * heads * d) / d
+    in let c = idx - qi * heads * d - h * d
+    in lk-store-score out idx (lk-weighted p v ((h * sq + qi) * sk) (h * d + c) (heads * d) 0 sk 0.0)
+
+  lk-weighted : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lk-weighted (p) (v) (po) (vo) (vstride) (j) (sk) (acc) =
+    if j >= sk then acc
+    else act
+     w <- device-load-f32 p (po + j)
+     x <- device-load-f32 v (vo + j * vstride)
+     lk-weighted p v po vo vstride (j + 1) sk (acc + w * x)
+    end
+
+Section: Layout
+
+  kernel-concat : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-concat (a) (b) (out) (ca) (cb) (inner) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-concat-one a b out ca cb inner (bx * bd + tx) else 0
+  end
+
+  lk-concat-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-concat-one (a) (b) (out) (ca) (cb) (inner) (i) =
+    let plane = i / inner
+    in let bt = plane / (ca + cb)
+    in let ch = plane - bt * (ca + cb)
+    in let off = i - plane * inner
+    in if ch < ca then lk-copy a ((bt * ca + ch) * inner + off) out i
+    else lk-copy b ((bt * cb + ch - ca) * inner + off) out i
+
+  lk-copy : Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-copy (src) (si) (dst) (di) = act
+   v <- device-load-f32 src si
+   device-store-f32 dst di v
+  end
+
+  kernel-upsample-nearest : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-upsample-nearest (x) (out) (h) (w) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-upsample-one x out h w (bx * bd + tx) else 0
+  end
+
+  lk-upsample-one : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-upsample-one (x) (out) (h) (w) (i) =
+    let plane = i / (4 * h * w)
+    in let oy = (i - plane * 4 * h * w) / (2 * w)
+    in let ox = i - plane * 4 * h * w - oy * 2 * w
+    in lk-copy x (plane * h * w + (oy / 2) * w + ox / 2) out i
+
+Section: Timestep Embedding
+
+ The LDM sinusoidal embedding (Forge `backend/nn/unet.py:55`): for half =
+ dim / 2 and k < half, frequency exp (-ln (max period) k / half), and the row
+ is [cos (t f), sin (t f)], cosines first. SDXL's max period is 10000 for the
+ timestep and the size conditioning, and its dims are even.
+
+  kernel-timestep-embedding : Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  kernel-timestep-embedding (t) (out) (dim) (log-period) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-timestep-one t out dim log-period (bx * bd + tx) else 0
+  end
+
+  lk-timestep-one : Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  lk-timestep-one (t) (out) (dim) (log-period) (i) = act
+   tv <- device-load-f32 t (i / dim)
+   let j = i - i / dim * dim
+   in let half = dim / 2
+   in let kk = if j < half then j else j - half
+   in let arg = tv * lk-exp (0.0 - log-period * real-from-int kk / real-from-int half)
+   in device-store-f32 out i (if j < half then real-cos arg else real-sin arg)
+  end
+
+Section: Flux
+
+ Forge `backend/nn/flux.py`. The tanh GELU is 0.5 x (1 + tanh (sqrt (2 / pi)
+ (x + 0.044715 x^3))), tanh u as 1 - 2 / (e^(2u) + 1).
+
+  kernel-gelu-tanh : Integer, Integer, Integer -> [Device] Integer
+  kernel-gelu-tanh (x) (out) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-gelu-tanh-one x out (bx * bd + tx) else 0
+  end
+
+  lk-gelu-tanh-one : Integer, Integer, Integer -> [Device] Integer
+  lk-gelu-tanh-one (x) (out) (i) = act
+   v <- device-load-u32 (x + i * 4)
+   e <- f32-ex2-bits (f32-mul-bits v (f32-add-bits #C0135761 (f32-mul-bits #BDD2D3E8 (f32-mul-bits v v))))
+   device-store-u32 (out + i * 4) (f32-div-bits v (f32-add-bits #3F800000 e))
+  end
+
+ RMSNorm statistics a block per row, as kernel-row-stats-wide: the mean is
+ stored as 0 and the rstd is 1 / sqrt (mean square + eps), so kernel-rms-norm
+ and kernel-layer-norm both read them.
+
+  kernel-rms-stats-wide : Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  kernel-rms-stats-wide (x) (stats) (part) (len) (eps) (rows) = act
+   r <- block-idx-x
+   bd <- block-dim-x
+   t <- thread-idx-x
+   p1 <- device-store-f64 part (r * bd + t) (lk-sq-dev-by x (r * len + t) (r * len + len) bd 0.0 0.0)
+   b1 <- sync-threads
+   s1 <- lk-tree part (r * bd) t (bd / 2) 1
+   ss <- device-load-f64 part (r * bd)
+   if t == 0 then lk-store-stats stats r 0.0 (ss / real-from-int len) eps else 0
+  end
+
+  kernel-rms-norm : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-rms-norm (x) (stats) (scale) (out) (dim) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-rms-one x stats scale out dim (bx * bd + tx) else 0
+  end
+
+  lk-rms-one : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-rms-one (x) (stats) (scale) (out) (dim) (i) = act
+   v <- device-load-f32 x i
+   rstd <- device-load-f64 stats ((i / dim) * 2 + 1)
+   g <- device-load-f32 scale (i - i / dim * dim)
+   device-store-f32 out i (v * rstd * g)
+  end
+
+ LayerNorm without affine, then the modulation x (1 + scale) + shift, scale
+ and shift each dim wide.
+
+  kernel-layer-norm-mod : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-layer-norm-mod (x) (stats) (scale) (shift) (out) (dim) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-mod-one x stats scale shift out dim (bx * bd + tx) else 0
+  end
+
+  lk-mod-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-mod-one (x) (stats) (scale) (shift) (out) (dim) (i) = act
+   v <- device-load-f32 x i
+   mean <- device-load-f64 stats ((i / dim) * 2)
+   rstd <- device-load-f64 stats ((i / dim) * 2 + 1)
+   s <- device-load-f32 scale (i - i / dim * dim)
+   b <- device-load-f32 shift (i - i / dim * dim)
+   device-store-f32 out i ((v - mean) * rstd * (1.0 + s) + b)
+  end
+
+ The gated residual x + gate y, gate dim wide.
+
+  kernel-gated-add : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-gated-add (x) (y) (gate) (out) (dim) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-gated-one x y gate out dim (bx * bd + tx) else 0
+  end
+
+  lk-gated-one : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-gated-one (x) (y) (gate) (out) (dim) (i) = act
+   a <- device-load-f32 x i
+   b <- device-load-f32 y i
+   g <- device-load-f32 gate (i - i / dim * dim)
+   device-store-f32 out i (a + g * b)
+  end
+
+ RoPE over rows of ld, the heads of 128 from column off: each pair (x0, x1)
+ of a head becomes (cos x0 - sin x1, sin x0 + cos x1), cos and sin from
+ table[(token 64 + pair) 2 ..]. n = tokens heads 64; out may be x.
+
+  kernel-rope : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-rope (x) (table) (out) (ld) (off) (heads) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-rope-one x table out ld off heads (bx * bd + tx) else 0
+  end
+
+  lk-rope-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-rope-one (x) (table) (out) (ld) (off) (heads) (p) = act
+   let t = p / (heads * 64)
+   in let h = (p - t * heads * 64) / 64
+   in let j = p - t * heads * 64 - h * 64
+   in let s = t * ld + off + h * 128 + j * 2
+   in act
+    x0 <- device-load-f32 x s
+    x1 <- device-load-f32 x (s + 1)
+    c <- device-load-f32 table ((t * 64 + j) * 2)
+    sn <- device-load-f32 table ((t * 64 + j) * 2 + 1)
+    w <- device-store-f32 out s (c * x0 - sn * x1)
+    device-store-f32 out (s + 1) (sn * x0 + c * x1)
+   end
+  end
+
+ 2 x 2 patches, "b c (h ph) (w pw) -> b (h w) (c ph pw)" and back; h and w
+ are the latent's, n = c h w.
+
+  kernel-patchify : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-patchify (lat) (out) (c) (h) (w) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-copy lat (lk-patch-src (bx * bd + tx) c h w) out (bx * bd + tx) else 0
+  end
+
+  lk-patch-src : Integer, Integer, Integer, Integer -> Integer
+  lk-patch-src (i) (c) (h) (w) =
+    let tok = i / (c * 4)
+    in let f = i - tok * c * 4
+    in let ch = f / 4
+    in let py = (f - ch * 4) / 2
+    in let px = f - ch * 4 - py * 2
+    in let ty = tok / (w / 2)
+    in ch * h * w + (ty * 2 + py) * w + (tok - ty * (w / 2)) * 2 + px
+
+  kernel-unpatchify : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-unpatchify (tokens) (out) (c) (h) (w) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-copy tokens (lk-unpatch-src (bx * bd + tx) c h w) out (bx * bd + tx) else 0
+  end
+
+ Rows of width into rows of ld from column off: the single block's
+ [attention, GELU (mlp)], and with ld = width a plain copy. n = rows width.
+
+  kernel-copy-cols : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-copy-cols (src) (out) (ld) (off) (width) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then lk-copy-col-one src out ld off width (bx * bd + tx) else 0
+  end
+
+  lk-copy-col-one : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  lk-copy-col-one (src) (out) (ld) (off) (width) (i) = act
+   v <- device-load-f32 src i
+   device-store-f32 out ((i / width) * ld + off + i - (i / width) * width) v
+  end
+
+  lk-unpatch-src : Integer, Integer, Integer, Integer -> Integer
+  lk-unpatch-src (i) (c) (h) (w) =
+    let ch = i / (h * w)
+    in let y = (i - ch * h * w) / w
+    in let x = i - ch * h * w - y * w
+    in ((y / 2) * (w / 2) + x / 2) * c * 4 + ch * 4 + (y - y / 2 * 2) * 2 + (x - x / 2 * 2)
+
+Page 1

@@ -1,5 +1,9 @@
 Chapter: PortMonitor
   cites Cvmm chapter CvmmTypes
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Foreword chapter MathLib (int-widen)
   cites UI chapter Widget
   cites UI chapter Layout
   cites UI chapter DataTable
@@ -364,4 +368,50 @@ Section: JSON
     & ",\"bytesIn\":" & show (l.pl-bytes-in).bs-bytes
     & ",\"bytesOut\":" & show (l.pl-bytes-out).bs-bytes & "}"
 
+Section: Live Transport
+
+  portmon-conn-state : TcpState -> ConnState
+  portmon-conn-state (s) = when s
+    is TcpClosed -> ConnClosed
+    is TcpListening -> ConnListening
+    is TcpSynSent -> ConnSynSent
+    is TcpSynReceived -> ConnSynRecv
+    is TcpEstablished -> ConnEstablished
+    is TcpFinWait1 -> ConnFinWait
+    is TcpFinWait2 -> ConnFinWait
+    is TcpCloseWait -> ConnCloseWait
+    is TcpLastAck -> ConnCloseWait
+    is TcpTimeWait -> ConnTimeWait
+
+  portmon-ip-text : List Integer, Integer, Text -> Text
+  portmon-ip-text (ip) (i) (acc) =
+    if i >= list-length ip then acc
+    else portmon-ip-text ip (i + 1) (if i == 0 then show (list-at ip i) else acc & "." & show (list-at ip i))
+
+ The view of ONE transport: a listening socket is a listener row, any other
+ open state is a connection row, and a closed one is no row at all. The
+ transport counts messages, not bytes, so the byte columns read 0.
+
+  portmon-live : TcpTransportState, Text, Text -> PortMonitorState
+  portmon-live (ts) (service-id) (service-name) =
+    let c = (ts.session).conn
+    in when c.state
+      is TcpClosed -> port-monitor-new
+      is TcpListening -> portmon-add-listener port-monitor-new (portmon-live-listener c service-id service-name)
+      is otherwise -> portmon-add-connection port-monitor-new (portmon-live-conn c service-id)
+
+  portmon-live-listener : TcpConnection, Text, Text -> PortListener
+  portmon-live-listener (c) (service-id) (service-name) = PortListener {
+    pl-port = int-widen (c.local-port), pl-protocol = ProtoTcp, pl-bind-addr = "0.0.0.0",
+    pl-service-id = service-id, pl-service-name = service-name,
+    pl-pid = 0, pl-connections = 0, pl-bytes-in = bytes 0, pl-bytes-out = bytes 0
+  }
+
+  portmon-live-conn : TcpConnection, Text -> NetConnection
+  portmon-live-conn (c) (service-id) = NetConnection {
+    nc-id = service-id, nc-local-port = int-widen (c.local-port),
+    nc-remote-addr = portmon-ip-text (c.remote-ip) 0 "", nc-remote-port = int-widen (c.remote-port),
+    nc-protocol = ProtoTcp, nc-state = portmon-conn-state (c.state),
+    nc-bytes-in = bytes 0, nc-bytes-out = bytes 0, nc-pid = 0, nc-duration = 0
+  }
 Page 1

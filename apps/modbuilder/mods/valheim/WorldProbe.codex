@@ -1793,6 +1793,9 @@ Section: Typed Interop
                           (CstExpression (CstCall (CstName "InspectEnvironment" []) [])),
                           (CstExpression (CstCall (CstName "LayoutAndHoverChecks" []) [])),
                           (CstExpression (CstCall (CstName "WarehouseCost" []) [])),
+                          (CstExpression (CstCall (CstName "StationHoverChecks" []) [])),
+                          (CstExpression (CstCall (CstName "HudDump" []) [])),
+                          (CstExpression (CstCall (CstName "HudLayoutChecks" []) [])),
                           (CstExpression
                             (CstCall
                               (CstMemberAccess (CstMemberAccess (CstName "InventoryGui" []) "instance" []) "Show" [])
@@ -7432,9 +7435,13 @@ Section: Typed Interop
                       )
                     },
                     CstArgument { ca-mode = [], ca-name = "", ca-value = (CstString "remaining population does not start clearance cooldown") }
-                  ]
-                )
-              ),
+                    ]
+                  )
+                ),
+                (CstExpression (CstCall (CstName "Check" []) [
+                  CstArgument { ca-mode = [], ca-name = "", ca-value = CstUnary CstNot (CstCast (CstNamedType "bool" []) (CstCall (CstMemberAccess (CstName "allowed" []) "Invoke" []) [CstArgument { ca-mode = [], ca-name = "", ca-value = CstNull }, CstArgument { ca-mode = [], ca-name = "", ca-value = CstArrayNew (CstNamedType "object" []) [] [CstName "zone" [], CstName "now" []] True }])) },
+                  CstArgument { ca-mode = [], ca-name = "", ca-value = CstString "partially cleared neck population cannot refill" }
+                ])),
               (CstVariables
                 []
                 CstInferredType
@@ -10617,6 +10624,400 @@ Section: Typed Interop
       }
     )
 
+  hp-n : Text -> CstExpr
+  hp-n (name) = CstName name []
+
+  hp-d : CstExpr, Text -> CstExpr
+  hp-d (target) (member) = CstMemberAccess target member []
+
+  hp-a : CstExpr -> CstArgument
+  hp-a (value) = CstArgument { ca-mode = [], ca-name = "", ca-value = value }
+
+  hp-c0 : CstExpr -> CstExpr
+  hp-c0 (f) = CstCall f []
+
+  hp-c1 : CstExpr, CstExpr -> CstExpr
+  hp-c1 (f) (a) = CstCall f [hp-a a]
+
+  hp-c2 : CstExpr, CstExpr, CstExpr -> CstExpr
+  hp-c2 (f) (a) (b) = CstCall f [hp-a a, hp-a b]
+
+  hp-c3 : CstExpr, CstExpr, CstExpr, CstExpr -> CstExpr
+  hp-c3 (f) (a) (b) (c) = CstCall f [hp-a a, hp-a b, hp-a c]
+
+  hp-add : CstExpr, CstExpr -> CstExpr
+  hp-add (a) (b) = CstBinary CstAdd a b
+
+  hp-var : Text, CstExpr -> CstStmt
+  hp-var (name) (value) = CstVariables [] CstInferredType [CstVariable { cv-name = name, cv-value = Just value }]
+
+  hp-do : CstExpr -> CstStmt
+  hp-do (e) = CstExpression e
+
+  hp-check : CstExpr, CstExpr -> CstStmt
+  hp-check (cond) (message) = hp-do (hp-c2 (hp-n "Check") cond message)
+
+  hp-contains : Text, Text -> CstExpr
+  hp-contains (text) (want) = hp-c1 (hp-d (hp-n text) "Contains") (hp-n want)
+
+  hp-log : Text -> CstStmt
+  hp-log (message) = hp-do (hp-c1 (hp-d (hp-d (hp-n "UnityEngine") "Debug") "Log") (CstString message))
+
+  hp-spawn : Text, Text, CstExpr -> CstStmt
+  hp-spawn (name) (prefab) (spot) =
+    hp-var name (hp-c3 (hp-d (hp-d (hp-n "UnityEngine") "Object") "Instantiate") (hp-c1 (hp-d (hp-d (hp-n "ZNetScene") "instance") "GetPrefab") (CstString prefab)) spot (hp-d (hp-d (hp-n "UnityEngine") "Quaternion") "identity"))
+
+  hp-component : Text, Text, Text -> CstStmt
+  hp-component (name) (go) (kind) = hp-var name (CstCall (CstMemberAccess (hp-n go) "GetComponent" [CstNamedType kind []]) [])
+
+  hp-zdo : Text, Text -> CstStmt
+  hp-zdo (name) (go) = hp-var name (hp-c0 (hp-d (CstCall (CstMemberAccess (hp-n go) "GetComponent" [CstNamedType "ZNetView" []]) []) "GetZDO"))
+
+  hp-set : Text, Text, CstExpr -> CstStmt
+  hp-set (zdo) (key) (value) = hp-do (hp-c2 (hp-d (hp-n zdo) "Set") (hp-d (hp-n "ZDOVars") key) value)
+
+  hp-ticks-ago : CstExpr -> CstExpr
+  hp-ticks-ago (seconds) = hp-d (hp-c1 (hp-d (hp-c0 (hp-d (hp-d (hp-n "ZNet") "instance") "GetTime")) "AddSeconds") (CstUnary CstNegate seconds)) "Ticks"
+
+  hp-clock : CstExpr -> CstExpr
+  hp-clock (seconds) = hp-c1 (hp-n "Clock") seconds
+
+  hp-destroy : Text -> CstStmt
+  hp-destroy (go) = hp-do (hp-c1 (hp-d (hp-d (hp-n "ZNetScene") "instance") "Destroy") (hp-n go))
+
+  valheim-world-probe-clock : Integer -> CstMember
+  valheim-world-probe-clock (unused) =
+    let two = \e -> hp-c1 (hp-d (CstParenthesized e) "ToString") (CstString "00")
+    in CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPrivate, CstStatic],
+      cm-result = CstNamedType "string" [],
+      cm-name = "Clock",
+      cm-type-params = [],
+      cm-params = [CstParameter { cp-modifiers = [], cp-type = CstNamedType "long" [], cp-name = "seconds", cp-default = None }],
+      cm-body = Just (CstBlock [
+        hp-var "s" (CstConditional (CstBinary CstLess (hp-n "seconds") (CstNumber "0" CstLong)) (CstNumber "0" CstLong) (hp-n "seconds")),
+        hp-var "h" (CstBinary CstDivide (hp-n "s") (CstNumber "3600" CstLong)),
+        hp-var "m" (CstBinary CstDivide (CstBinary CstRemainder (hp-n "s") (CstNumber "3600" CstLong)) (CstNumber "60" CstLong)),
+        hp-var "r" (CstBinary CstRemainder (hp-n "s") (CstNumber "60" CstLong)),
+        CstReturn (Just (CstConditional (CstBinary CstGreater (hp-n "h") (CstNumber "0" CstLong)) (hp-add (hp-add (hp-add (hp-add (hp-c0 (hp-d (hp-n "h") "ToString")) (CstString ":")) (two (hp-n "m"))) (CstString ":")) (two (hp-n "r"))) (hp-add (hp-add (hp-c0 (hp-d (hp-n "m") "ToString")) (CstString ":")) (two (hp-n "r")))))
+      ])
+    }
+
+  valheim-world-probe-station-hover-checks : Integer -> CstMember
+  valheim-world-probe-station-hover-checks (unused) =
+    CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPrivate],
+      cm-result = CstNamedType "void" [],
+      cm-name = "StationHoverChecks",
+      cm-type-params = [],
+      cm-params = [],
+      cm-body = Just (CstBlock (valheim-world-probe-hover-setup 0 & valheim-world-probe-hover-smelter 0 & valheim-world-probe-hover-fermenter 0 & valheim-world-probe-hover-tame 0))
+    }
+
+  valheim-world-probe-hover-setup : Integer -> List CstStmt
+  valheim-world-probe-hover-setup (unused) =
+    let body = hp-d (hp-n "player") "transform"
+    in [
+      hp-var "hoverType" (hp-c1 (hp-d (hp-d (CstTypeOf (CstNamedType "PrismWorldProbe" [])) "Assembly") "GetType") (CstString "PrismGenerated.PrismStationHover")),
+      CstIf (CstBinary CstEqual (hp-n "hoverType") CstNull) (CstBlock [hp-log "PRISM WORLD HOVER SKIPPED: no station hover feature", CstReturn None]) None,
+      hp-var "origin" (hp-add (hp-d body "position") (CstBinary CstMultiply (hp-d body "forward") (CstNumber "6" CstFloat))),
+      hp-var "side" (CstBinary CstMultiply (hp-d body "right") (CstNumber "3" CstFloat))
+    ]
+
+  valheim-world-probe-hover-smelter : Integer -> List CstStmt
+  valheim-world-probe-hover-smelter (unused) =
+    let next = CstBinary CstSubtract (hp-n "sec") (CstNumber "10" CstLong)
+    in [
+      hp-spawn "smelterGo" "smelter" (hp-n "origin"),
+      hp-component "smelter" "smelterGo" "Smelter",
+      hp-zdo "smelterZdo" "smelterGo",
+      hp-set "smelterZdo" "s_queued" (CstNumber "3" CstInt),
+      hp-set "smelterZdo" "s_bakeTimer" (CstNumber "10" CstFloat),
+      hp-set "smelterZdo" "s_fuel" (CstNumber "20" CstFloat),
+      hp-check (CstBinary CstAnd (CstBinary CstGreater (hp-d (hp-n "smelter") "m_maxFuel") (CstNumber "0" CstInt)) (CstBinary CstLessEqual (hp-d (hp-n "smelter") "m_fuelPerProduct") (CstNumber "6" CstInt))) (CstString "smelter fixture burns fuel and 20 units cover three items"),
+      hp-var "sec" (CstCast (CstNamedType "long" []) (hp-d (hp-n "smelter") "m_secPerProduct")),
+      hp-var "smelterWant" (hp-add (hp-add (hp-add (CstString "next in ") (hp-clock next)) (CstString ", 3 done in ")) (hp-clock (hp-add next (CstBinary CstMultiply (CstNumber "2" CstLong) (hp-n "sec"))))),
+      hp-var "smelterText" (CstCast (CstNamedType "string" []) (hp-c2 (hp-n "Call") (hp-n "smelter") (CstString "OnHoverAddOre"))),
+      hp-check (hp-contains "smelterText" "smelterWant") (hp-add (CstString "smelter hover shows ") (hp-n "smelterWant")),
+      hp-set "smelterZdo" "s_fuel" (CstNumber "1" CstFloat),
+      hp-var "starvedWant" (hp-add (hp-add (hp-add (hp-add (CstString "next in ") (hp-clock next)) (CstString ", 1 done in ")) (hp-clock next)) (CstString ", then out of fuel")),
+      hp-var "starvedText" (CstCast (CstNamedType "string" []) (hp-c2 (hp-n "Call") (hp-n "smelter") (CstString "OnHoverAddOre"))),
+      hp-check (hp-contains "starvedText" "starvedWant") (hp-add (CstString "fuel-limited smelter hover shows ") (hp-n "starvedWant")),
+      hp-destroy "smelterGo"
+    ]
+
+  valheim-world-probe-hover-fermenter : Integer -> List CstStmt
+  valheim-world-probe-hover-fermenter (unused) = [
+    hp-spawn "fermenterGo" "fermenter" (hp-add (hp-n "origin") (hp-n "side")),
+    hp-component "fermenter" "fermenterGo" "Fermenter",
+    hp-zdo "fermenterZdo" "fermenterGo",
+    hp-set "fermenterZdo" "s_content" (CstString "MeadBaseTasty"),
+    hp-set "fermenterZdo" "s_startTime" (hp-ticks-ago (CstNumber "100.5" CstDouble)),
+    hp-var "fermenterWant" (hp-add (CstString "ready in ") (hp-clock (CstBinary CstSubtract (CstCast (CstNamedType "long" []) (hp-d (hp-n "fermenter") "m_fermentationDuration")) (CstNumber "100" CstLong)))),
+    hp-var "fermenterText" (hp-c0 (hp-d (hp-n "fermenter") "GetHoverText")),
+    hp-check (hp-contains "fermenterText" "fermenterWant") (hp-add (CstString "fermenter hover shows ") (hp-n "fermenterWant")),
+    hp-destroy "fermenterGo"
+  ]
+
+  valheim-world-probe-hover-tame : Integer -> List CstStmt
+  valheim-world-probe-hover-tame (unused) = [
+    hp-spawn "boarGo" "Boar" (CstBinary CstSubtract (hp-n "origin") (hp-n "side")),
+    hp-component "tame" "boarGo" "Tameable",
+    hp-zdo "boarZdo" "boarGo",
+    hp-var "wildText" (hp-c0 (hp-d (hp-n "tame") "GetHoverText")),
+    hp-check (CstBinary CstAnd (CstUnary CstNot (hp-c1 (hp-d (hp-n "wildText") "Contains") (CstString "tame in"))) (CstUnary CstNot (hp-c1 (hp-d (hp-n "wildText") "Contains") (CstString "hungry:")))) (CstString "an untouched wild boar keeps the vanilla hover"),
+    hp-set "boarZdo" "s_tameTimeLeft" (CstNumber "600" CstFloat),
+    hp-set "boarZdo" "s_tameLastFeeding" (hp-ticks-ago (CstNumber "10.5" CstDouble)),
+    hp-var "fedLeft" (CstCast (CstNamedType "long" []) (CstBinary CstSubtract (hp-d (hp-n "tame") "m_fedDuration") (CstNumber "10.5" CstDouble))),
+    hp-var "tameWant" (CstConditional (CstBinary CstGreaterEqual (hp-n "fedLeft") (CstNumber "600" CstLong)) (CstString "tame in about 10:00") (hp-add (CstString "tame in about 10:00, feed again within ") (hp-clock (hp-n "fedLeft")))),
+    hp-var "tameText" (hp-c0 (hp-d (hp-n "tame") "GetHoverText")),
+    hp-check (hp-contains "tameText" "tameWant") (hp-add (CstString "taming hover shows ") (hp-n "tameWant")),
+    hp-set "boarZdo" "s_tameLastFeeding" (hp-ticks-ago (hp-add (hp-d (hp-n "tame") "m_fedDuration") (CstNumber "5" CstDouble))),
+    hp-var "hungryText" (hp-c0 (hp-d (hp-n "tame") "GetHoverText")),
+    hp-check (hp-c1 (hp-d (hp-n "hungryText") "Contains") (CstString "hungry: feed it to keep taming, about 10:00 left")) (CstString "a hungry taming boar says to feed it"),
+    hp-destroy "boarGo",
+    hp-log "PRISM WORLD HOVER PASS"
+  ]
+  valheim-world-probe-hud-dump-node : Integer -> CstMember
+  valheim-world-probe-hud-dump-node (unused) =
+    let rt = hp-n "rt"
+    in let v2 = \e -> hp-c0 (hp-d e "ToString")
+    in CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPrivate, CstStatic],
+      cm-result = CstNamedType "void" [],
+      cm-name = "HudDumpNode",
+      cm-type-params = [],
+      cm-params = [CstParameter { cp-modifiers = [], cp-type = CstNamedType "UnityEngine.Transform" [], cp-name = "node", cp-default = None }, CstParameter { cp-modifiers = [], cp-type = CstNamedType "string" [], cp-name = "path", cp-default = None }, CstParameter { cp-modifiers = [], cp-type = CstNamedType "int" [], cp-name = "depth", cp-default = None }],
+      cm-body = Just (CstBlock [
+        CstIf (CstBinary CstEqual (hp-n "node") CstNull) (CstReturn None) None,
+        hp-var "here" (hp-add (hp-add (hp-n "path") (CstString "/")) (hp-d (hp-n "node") "name")),
+        hp-var "rt" (CstAs (hp-n "node") (CstNamedType "UnityEngine.RectTransform" [])),
+        hp-var "line" (hp-add (hp-add (hp-add (hp-add (CstString "PRISM HUD NODE ") (hp-n "here")) (CstString " active=")) (hp-c0 (hp-d (hp-d (hp-d (hp-n "node") "gameObject") "activeSelf") "ToString"))) (hp-add (CstString " rot=") (v2 (hp-d (hp-n "node") "localEulerAngles")))),
+        CstIf (CstBinary CstNotEqual rt CstNull) (hp-do (CstAssignment CstAddAssign (hp-n "line") (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (CstString " amin=") (v2 (hp-d rt "anchorMin"))) (CstString " amax=")) (v2 (hp-d rt "anchorMax"))) (CstString " pivot=")) (v2 (hp-d rt "pivot"))) (CstString " pos=")) (v2 (hp-d rt "anchoredPosition"))) (CstString " size=")) (v2 (hp-d rt "sizeDelta"))) (hp-add (CstString " scale=") (v2 (hp-d (hp-n "node") "localScale")))))) None,
+        hp-do (hp-c1 (hp-d (hp-d (hp-n "UnityEngine") "Debug") "Log") (hp-n "line")),
+        CstIf (CstBinary CstLessEqual (hp-n "depth") (CstNumber "0" CstInt)) (CstReturn None) None,
+        CstFor (hp-var "i" (CstNumber "0" CstInt)) (Just (CstBinary CstLess (hp-n "i") (hp-d (hp-n "node") "childCount"))) [CstUnary CstPostIncrement (hp-n "i")] (hp-do (hp-c3 (hp-n "HudDumpNode") (hp-c1 (hp-d (hp-n "node") "GetChild") (hp-n "i")) (hp-n "here") (CstBinary CstSubtract (hp-n "depth") (CstNumber "1" CstInt))))
+      ])
+    }
+
+  valheim-world-probe-hud-dump : Integer -> CstMember
+  valheim-world-probe-hud-dump (unused) =
+    let hud = hp-d (hp-n "Hud") "instance"
+    in let root = \field -> hp-do (hp-c3 (hp-n "HudDumpNode") (hp-d hud field) (CstString ("hud." & field)) (CstNumber "4" CstInt))
+    in CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPrivate],
+      cm-result = CstNamedType "void" [],
+      cm-name = "HudDump",
+      cm-type-params = [],
+      cm-params = [],
+      cm-body = Just (CstBlock [
+        CstIf (CstUnary CstNot hud) (CstBlock [hp-log "PRISM HUD DUMP: no hud", CstReturn None]) None,
+        hp-var "chain" (CstString ""),
+        CstFor (hp-var "p" (hp-d (hp-d hud "m_healthPanel") "parent")) (Just (CstBinary CstNotEqual (hp-n "p") CstNull)) [CstAssignment CstAssign (hp-n "p") (hp-d (hp-n "p") "parent")] (hp-do (CstAssignment CstAssign (hp-n "chain") (hp-add (hp-add (hp-d (hp-n "p") "name") (CstString " < ")) (hp-n "chain")))),
+        hp-do (hp-c1 (hp-d (hp-d (hp-n "UnityEngine") "Debug") "Log") (hp-add (CstString "PRISM HUD CHAIN healthPanel: ") (hp-n "chain"))),
+        root "m_healthPanel",
+        root "m_healthBarRoot",
+        root "m_foodBarRoot",
+        root "m_foodBaseBar",
+        root "m_staminaBar2Root",
+        root "m_eitrBarRoot",
+        hp-do (hp-c3 (hp-n "HudDumpNode") (hp-d (hp-d hud "m_buildHud") "transform") (CstString "hud.m_buildHud") (CstNumber "3" CstInt)),
+        hp-do (hp-c3 (hp-n "HudDumpNode") (hp-d (hp-d hud "m_pieceSelectionWindow") "transform") (CstString "hud.m_pieceSelectionWindow") (CstNumber "3" CstInt)),
+        hp-do (hp-c1 (hp-d (hp-d (hp-n "UnityEngine") "Debug") "Log") (hp-add (hp-add (hp-add (CstString "PRISM HUD SCREEN ") (hp-d (hp-d (hp-n "UnityEngine") "Screen") "width")) (CstString "x")) (hp-d (hp-d (hp-n "UnityEngine") "Screen") "height"))),
+        hp-corners "healthBar" (hp-d hud "m_healthBarRoot"),
+        hp-corners "staminaParent" (hp-d (hp-d hud "m_staminaBar2Root") "parent"),
+        hp-corners "foodSlot0" (hp-d (hp-d (CstIndex (hp-d hud "m_foodIcons") [hp-a (CstNumber "0" CstInt)]) "transform") "parent"),
+        hp-corners "buildHud" (hp-d (hp-d hud "m_buildHud") "transform"),
+        hp-corners "selWindow" (hp-d (hp-d hud "m_pieceSelectionWindow") "transform"),
+        hp-corners "listMask" (hp-d hud "m_pieceListMask"),
+        hp-corners "buildSelection" (hp-d (hp-d hud "m_buildSelection") "transform"),
+        hp-corners "pieceDesc" (hp-d (hp-d hud "m_pieceDescription") "transform"),
+        hp-corners "req0" (hp-d (CstIndex (hp-d hud "m_requirementItems") [hp-a (CstNumber "0" CstInt)]) "transform"),
+        hp-corners "req0parent" (hp-d (hp-d (CstIndex (hp-d hud "m_requirementItems") [hp-a (CstNumber "0" CstInt)]) "transform") "parent"),
+        hp-corners "req0grand" (hp-d (hp-d (hp-d (CstIndex (hp-d hud "m_requirementItems") [hp-a (CstNumber "0" CstInt)]) "transform") "parent") "parent"),
+        hp-log "PRISM HUD DUMP END"
+      ])
+    }
+
+  hp-corners : Text, CstExpr -> CstStmt
+  hp-corners (label) (node) = hp-do (hp-c2 (hp-n "HudCorners") (CstString label) node)
+
+  valheim-world-probe-hud-corners : Integer -> CstMember
+  valheim-world-probe-hud-corners (unused) =
+    let zero = hp-d (hp-d (hp-n "UnityEngine") "Vector3") "zero"
+    in let c = \i -> CstIndex (hp-n "c") [hp-a (CstNumber i CstInt)]
+    in CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPrivate, CstStatic],
+      cm-result = CstNamedType "void" [],
+      cm-name = "HudCorners",
+      cm-type-params = [],
+      cm-params = [CstParameter { cp-modifiers = [], cp-type = CstNamedType "string" [], cp-name = "label", cp-default = None }, CstParameter { cp-modifiers = [], cp-type = CstNamedType "UnityEngine.Transform" [], cp-name = "node", cp-default = None }],
+      cm-body = Just (CstBlock [
+        hp-var "rt" (CstAs (hp-n "node") (CstNamedType "UnityEngine.RectTransform" [])),
+        CstIf (CstBinary CstEqual (hp-n "rt") CstNull) (CstBlock [hp-do (hp-c1 (hp-d (hp-d (hp-n "UnityEngine") "Debug") "Log") (hp-add (CstString "PRISM HUD CORNERS none ") (hp-n "label"))), CstReturn None]) None,
+        hp-var "c" (CstArrayNew (CstNamedType "UnityEngine.Vector3" []) [] [zero, zero, zero, zero] True),
+        hp-do (hp-c1 (hp-d (hp-n "rt") "GetWorldCorners") (hp-n "c")),
+        hp-do (hp-c1 (hp-d (hp-d (hp-n "UnityEngine") "Debug") "Log") (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (hp-add (CstString "PRISM HUD CORNERS ") (hp-n "label")) (CstString " activeInHierarchy=")) (hp-d (hp-d (hp-n "node") "gameObject") "activeInHierarchy")) (CstString " sib=")) (hp-c0 (hp-d (hp-n "node") "GetSiblingIndex"))) (CstString " parent=")) (hp-d (hp-d (hp-n "node") "parent") "name")) (CstString " min=")) (hp-c0 (hp-d (c "0") "ToString"))) (hp-add (CstString " max=") (hp-c0 (hp-d (c "2") "ToString")))))
+      ])
+    }
+
+  hp-abs-lt : CstExpr, Text -> CstExpr
+  hp-abs-lt (value) (limit) = CstBinary CstLess (hp-c1 (hp-d (hp-n "UnityEngine.Mathf") "Abs") value) (CstNumber limit CstFloat)
+
+  hp-level : CstExpr -> CstExpr
+  hp-level (angle) = hp-abs-lt (hp-c2 (hp-d (hp-n "UnityEngine.Mathf") "DeltaAngle") angle (CstNumber "0" CstFloat)) "0.01"
+
+  hp-eat : Text -> CstExpr
+  hp-eat (slot) = CstCast (CstNamedType "bool" []) (hp-c2 (hp-d (hp-n "eat") "Invoke") CstNull (CstArrayNew (CstNamedType "object" []) [] [hp-n "player", CstNumber slot CstInt] True))
+
+  hp-count : CstExpr
+  hp-count = CstCall (hp-d (hp-n "inventory") "CountItems") [hp-a (hp-n "foodName"), hp-a (CstNumber "-1" CstInt), hp-a (CstBoolean True)]
+
+  valheim-world-probe-hud-layout-checks : Integer -> CstMember
+  valheim-world-probe-hud-layout-checks (unused) =
+    CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPrivate],
+      cm-result = CstNamedType "void" [],
+      cm-name = "HudLayoutChecks",
+      cm-type-params = [],
+      cm-params = [],
+      cm-body = Just (CstBlock (valheim-world-probe-hud-geometry 0 & valheim-world-probe-hud-eat 0 & valheim-world-probe-hud-food-row 0))
+    }
+
+  valheim-world-probe-hud-geometry : Integer -> List CstStmt
+  valheim-world-probe-hud-geometry (unused) =
+    let bar = hp-n "bar"
+    in let stamina = hp-n "stamina"
+    in let slot = hp-n "slotRect"
+    in [
+      hp-var "layoutType" (hp-c1 (hp-d (hp-d (CstTypeOf (CstNamedType "PrismWorldProbe" [])) "Assembly") "GetType") (CstString "PrismGenerated.PrismHudLayout")),
+      CstIf (CstBinary CstEqual (hp-n "layoutType") CstNull) (CstBlock [hp-log "PRISM WORLD HUD SKIPPED: no hud layout feature", CstReturn None]) None,
+      hp-var "hud" (hp-d (hp-n "Hud") "instance"),
+      hp-check (CstBinary CstNotEqual (hp-n "hud") CstNull) (CstString "the HUD exists for the layout checks"),
+      hp-var "bar" (hp-d (hp-n "hud") "m_healthBarRoot"),
+      hp-var "stamina" (hp-d (hp-n "hud") "m_staminaBar2Root"),
+      hp-check (CstBinary CstEqual (hp-d bar "parent") (hp-d stamina "parent")) (CstString "the health bar shares the stamina bar's parent"),
+      hp-check (hp-level (hp-d (hp-d bar "localEulerAngles") "z")) (CstString "the health bar lies flat"),
+      hp-check (hp-level (hp-d (hp-d (hp-d (hp-d (hp-n "hud") "m_healthText") "transform") "eulerAngles") "z")) (CstString "the health number reads upright"),
+      hp-check (CstBinary CstAnd (CstBinary CstAnd (CstBinary CstEqual (hp-d (hp-d bar "anchorMin") "x") (CstNumber "0.5" CstFloat)) (CstBinary CstEqual (hp-d (hp-d bar "pivot") "x") (CstNumber "0.5" CstFloat))) (hp-abs-lt (hp-d (hp-d bar "anchoredPosition") "x") "0.01")) (CstString "the health bar is centred"),
+      hp-var "barTop" (hp-add (hp-d (hp-d bar "anchoredPosition") "y") (CstBinary CstDivide (hp-d (hp-d bar "sizeDelta") "y") (CstNumber "2" CstFloat))),
+      hp-var "barBottom" (CstBinary CstSubtract (hp-d (hp-d bar "anchoredPosition") "y") (CstBinary CstDivide (hp-d (hp-d bar "sizeDelta") "y") (CstNumber "2" CstFloat))),
+      hp-check (CstBinary CstLessEqual (hp-n "barTop") (hp-d (hp-d stamina "anchoredPosition") "y")) (hp-add (hp-add (hp-add (CstString "the health bar sits below the stamina bar: top ") (hp-n "barTop")) (CstString ", stamina bottom ")) (hp-d (hp-d stamina "anchoredPosition") "y")),
+
+    ]
+
+  valheim-world-probe-hud-eat : Integer -> List CstStmt
+  valheim-world-probe-hud-eat (unused) = [
+    hp-var "eat" (hp-c1 (hp-d (hp-n "layoutType") "GetMethod") (CstString "EatFoodSlot")),
+    hp-var "inventory" (hp-c0 (hp-d (hp-n "player") "GetInventory")),
+    hp-var "meat" (hp-c2 (hp-n "Item") (CstString "CookedMeat") (CstNumber "3" CstInt)),
+    hp-var "foodName" (hp-d (hp-d (hp-n "meat") "m_shared") "m_name"),
+    hp-check (hp-c1 (hp-d (hp-n "inventory") "AddItem") (hp-n "meat")) (CstString "three cooked meat added to the inventory"),
+    hp-var "start" hp-count,
+    hp-check (CstCall (hp-d (hp-n "player") "ConsumeItem") [hp-a (hp-n "inventory"), hp-a (CstCall (hp-d (hp-n "inventory") "GetItem") [hp-a (hp-n "foodName"), hp-a (CstNumber "-1" CstInt), hp-a (CstBoolean False)]), hp-a (CstBoolean False)]) (CstString "the vanilla path eats the fixture food"),
+    hp-var "slotIndex" (hp-c1 (hp-d (hp-c0 (hp-d (hp-n "player") "GetFoods")) "FindIndex") (CstLambda [CstParameter { cp-modifiers = [], cp-type = CstInferredType, cp-name = "f", cp-default = None }] (CstBinary CstEqual (hp-d (hp-d (hp-d (hp-n "f") "m_item") "m_shared") "m_name") (hp-n "foodName")))),
+    hp-check (CstBinary CstGreaterEqual (hp-n "slotIndex") (CstNumber "0" CstInt)) (CstString "the eaten meat occupies a food slot"),
+    hp-var "afterFirst" hp-count,
+    hp-check (CstBinary CstEqual (hp-n "afterFirst") (CstBinary CstSubtract (hp-n "start") (CstNumber "1" CstInt))) (CstString "the first eat took one meat"),
+    hp-var "fresh" (CstCast (CstNamedType "bool" []) (hp-c2 (hp-d (hp-n "eat") "Invoke") CstNull (CstArrayNew (CstNamedType "object" []) [] [hp-n "player", hp-n "slotIndex"] True))),
+    hp-check (CstBinary CstAnd (CstUnary CstNot (hp-n "fresh")) (CstBinary CstEqual hp-count (hp-n "afterFirst"))) (CstString "a fresh food is not eaten again"),
+    hp-do (CstAssignment CstAssign (hp-d (CstIndex (hp-c0 (hp-d (hp-n "player") "GetFoods")) [hp-a (hp-n "slotIndex")]) "m_time") (CstNumber "1" CstFloat)),
+    hp-var "again" (CstCast (CstNamedType "bool" []) (hp-c2 (hp-d (hp-n "eat") "Invoke") CstNull (CstArrayNew (CstNamedType "object" []) [] [hp-n "player", hp-n "slotIndex"] True))),
+    hp-check (CstBinary CstAnd (CstBinary CstAnd (hp-n "again") (CstBinary CstEqual hp-count (CstBinary CstSubtract (hp-n "afterFirst") (CstNumber "1" CstInt)))) (CstBinary CstGreater (hp-d (CstIndex (hp-c0 (hp-d (hp-n "player") "GetFoods")) [hp-a (hp-n "slotIndex")]) "m_time") (CstNumber "1" CstFloat))) (CstString "the food hotkey re-eats the slot's food from the inventory"),
+    hp-check (CstUnary CstNot (hp-eat "7")) (CstString "a food slot past the last eats nothing"),
+    hp-do (CstCall (hp-d (hp-n "inventory") "RemoveItem") [hp-a (hp-n "foodName"), hp-a hp-count, hp-a (CstNumber "-1" CstInt), hp-a (CstBoolean True)]),
+    hp-log "PRISM WORLD HUD EAT PASS"
+  ]
+
+  valheim-world-probe-hud-food-row : Integer -> List CstStmt
+  valheim-world-probe-hud-food-row (unused) =
+    let stamina = hp-n "stamina"
+    in let slot = hp-n "slotRect"
+    in let shown = CstIndex (hp-d (hp-n "hud") "m_foodIcons") [hp-a (hp-n "i")]
+    in [
+      hp-do (hp-c3 (hp-n "Call") (hp-n "hud") (CstString "UpdateFood") (hp-n "player")),
+      hp-var "layout" (hp-c1 (hp-d (hp-d (hp-n "UnityEngine") "Object") "FindObjectOfType") (hp-n "layoutType")),
+      hp-do (hp-c2 (hp-n "Call") (hp-n "layout") (CstString "LateUpdate")),
+      hp-var "shownCount" (CstNumber "0" CstInt),
+      hp-var "lastRight" (hp-d (hp-n "float") "MinValue"),
+      hp-var "firstLeft" (CstNumber "0" CstFloat),
+      hp-var "firstY" (CstNumber "0" CstFloat),
+      hp-var "sumX" (CstNumber "0" CstFloat),
+      CstFor (hp-var "i" (CstNumber "0" CstInt)) (Just (CstBinary CstLess (hp-n "i") (hp-d (hp-d (hp-n "hud") "m_foodIcons") "Length"))) [CstUnary CstPostIncrement (hp-n "i")] (CstBlock [
+        CstIf (hp-d (hp-d shown "gameObject") "activeSelf") (hp-do (CstUnary CstPostIncrement (hp-n "shownCount"))) None,
+        hp-var "slotRect" (CstAs (hp-d (hp-d shown "transform") "parent") (CstNamedType "UnityEngine.RectTransform" [])),
+        hp-var "halfW" (CstBinary CstDivide (hp-d (hp-d slot "sizeDelta") "x") (CstNumber "2" CstFloat)),
+        hp-check (CstBinary CstEqual (hp-d slot "parent") (hp-d stamina "parent")) (hp-add (CstString "food slot moved beside the bars: ") (hp-n "i")),
+        hp-check (CstBinary CstLessEqual (hp-add (hp-d (hp-d slot "anchoredPosition") "y") (CstBinary CstDivide (hp-d (hp-d slot "sizeDelta") "y") (CstNumber "2" CstFloat))) (hp-n "barBottom")) (hp-add (CstString "food slot sits below the health bar: ") (hp-n "i")),
+        hp-check (CstBinary CstGreaterEqual (CstBinary CstSubtract (hp-d (hp-d slot "anchoredPosition") "x") (hp-n "halfW")) (hp-n "lastRight")) (hp-add (CstString "food slots, empty ones included, run left to right without overlap: ") (hp-n "i")),
+        CstIf (CstBinary CstEqual (hp-n "i") (CstNumber "0" CstInt)) (CstBlock [
+          hp-do (CstAssignment CstAssign (hp-n "firstLeft") (CstBinary CstSubtract (hp-d (hp-d slot "anchoredPosition") "x") (hp-n "halfW"))),
+          hp-do (CstAssignment CstAssign (hp-n "firstY") (hp-d (hp-d slot "anchoredPosition") "y"))
+        ]) None,
+        hp-do (CstAssignment CstAssign (hp-n "lastRight") (hp-add (hp-d (hp-d slot "anchoredPosition") "x") (hp-n "halfW"))),
+        hp-do (CstAssignment CstAddAssign (hp-n "sumX") (hp-d (hp-d slot "anchoredPosition") "x"))
+      ]),
+      hp-check (CstBinary CstAnd (CstBinary CstGreater (hp-n "shownCount") (CstNumber "0" CstInt)) (CstBinary CstLess (hp-n "shownCount") (hp-d (hp-d (hp-n "hud") "m_foodIcons") "Length"))) (hp-add (CstString "the row holds an eaten and an empty slot, so the overlap checks ran, shown ") (hp-n "shownCount")),
+      hp-check (hp-abs-lt (hp-n "sumX") "0.01") (CstString "the whole food row is centred under the bar"),
+      hp-var "fork" (CstAs (hp-c1 (hp-d (hp-d (hp-n "hud") "m_healthPanel") "Find") (CstString "foodicon (1)")) (CstNamedType "UnityEngine.RectTransform" [])),
+      hp-var "forkRect" (CstAs (hp-c1 (hp-d (hp-d stamina "parent") "Find") (CstString "foodicon (1)")) (CstNamedType "UnityEngine.RectTransform" [])),
+      hp-check (CstBinary CstAnd (CstBinary CstEqual (hp-n "fork") CstNull) (CstBinary CstNotEqual (hp-n "forkRect") CstNull)) (CstString "the fork icon moved out of the health panel beside the bars"),
+      hp-check (CstBinary CstLessEqual (hp-add (hp-d (hp-d (hp-n "forkRect") "anchoredPosition") "x") (CstBinary CstDivide (hp-d (hp-d (hp-n "forkRect") "sizeDelta") "x") (CstNumber "2" CstFloat))) (hp-n "firstLeft")) (CstString "the fork icon sits left of the first food slot without overlap"),
+      hp-check (hp-abs-lt (CstBinary CstSubtract (hp-d (hp-d (hp-n "forkRect") "anchoredPosition") "y") (hp-n "firstY")) "0.01") (CstString "the fork icon rides the food row")
+    ] & valheim-world-probe-hud-build 0
+
+  hp-corner : Text, CstExpr, Text -> CstExpr
+  hp-corner (i) (node) (axis) = hp-d (hp-c2 (hp-n "HudCorner") node (CstNumber i CstInt)) axis
+
+  valheim-world-probe-hud-build : Integer -> List CstStmt
+  valheim-world-probe-hud-build (unused) =
+    let build = hp-n "build"
+    in let info = hp-n "info"
+    in let list = hp-n "list"
+    in let under = \node -> CstBinary CstLess (hp-c0 (hp-d node "GetSiblingIndex")) (hp-c0 (hp-d build "GetSiblingIndex"))
+    in [
+      hp-var "build" (hp-d (hp-d (hp-n "hud") "m_buildHud") "transform"),
+      hp-check (CstBinary CstEqual (hp-d build "parent") (hp-d (hp-n "stamina") "parent")) (CstString "the build HUD shares the moved bars' parent"),
+      hp-check (under (hp-n "bar")) (CstString "the health bar draws under the build HUD"),
+      hp-check (under (hp-n "forkRect")) (CstString "the fork icon draws under the build HUD"),
+      CstFor (hp-var "i" (CstNumber "0" CstInt)) (Just (CstBinary CstLess (hp-n "i") (hp-d (hp-d (hp-n "hud") "m_foodIcons") "Length"))) [CstUnary CstPostIncrement (hp-n "i")] (hp-check (under (hp-d (hp-d (CstIndex (hp-d (hp-n "hud") "m_foodIcons") [hp-a (hp-n "i")]) "transform") "parent")) (hp-add (CstString "food slot draws under the build HUD: ") (hp-n "i"))),
+      hp-var "info" (hp-c1 (hp-d build "Find") (CstString "SelectedInfo")),
+      hp-var "list" (hp-c1 (hp-d build "Find") (CstString "bar")),
+      hp-check (CstBinary CstAnd (CstBinary CstNotEqual info CstNull) (CstBinary CstNotEqual list CstNull)) (CstString "the build HUD has its details panel and piece list"),
+      hp-var "healthTop" (hp-corner "2" (hp-n "bar") "y"),
+      hp-var "infoBottom" (hp-corner "0" info "y"),
+      hp-var "infoTop" (hp-corner "2" info "y"),
+      hp-var "listBottom" (hp-corner "0" list "y"),
+      hp-var "listTop" (hp-corner "2" list "y"),
+      hp-var "screenTop" (hp-corner "2" (hp-d build "parent") "y"),
+      hp-check (CstBinary CstGreaterEqual (hp-n "infoBottom") (hp-n "healthTop")) (hp-add (hp-add (hp-add (CstString "the build details panel sits above the health bar: panel bottom ") (hp-n "infoBottom")) (CstString ", bar top ")) (hp-n "healthTop")),
+      hp-check (CstBinary CstLessEqual (hp-n "infoTop") (hp-n "listBottom")) (hp-add (hp-add (hp-add (CstString "the piece list sits above the build details panel: list bottom ") (hp-n "listBottom")) (CstString ", panel top ")) (hp-n "infoTop")),
+      hp-check (CstBinary CstLessEqual (hp-n "listTop") (hp-n "screenTop")) (hp-add (hp-add (hp-add (CstString "the piece list stays on screen: list top ") (hp-n "listTop")) (CstString ", screen top ")) (hp-n "screenTop")),
+      hp-log "PRISM WORLD HUD PASS"
+    ]
+
+  valheim-world-probe-hud-corner : Integer -> CstMember
+  valheim-world-probe-hud-corner (unused) =
+    let zero = hp-d (hp-d (hp-n "UnityEngine") "Vector3") "zero"
+    in CstMethod CstMethodSpec {
+      cm-attributes = [],
+      cm-modifiers = [CstPrivate, CstStatic],
+      cm-result = CstNamedType "UnityEngine.Vector3" [],
+      cm-name = "HudCorner",
+      cm-type-params = [],
+      cm-params = [CstParameter { cp-modifiers = [], cp-type = CstNamedType "UnityEngine.Transform" [], cp-name = "node", cp-default = None }, CstParameter { cp-modifiers = [], cp-type = CstNamedType "int" [], cp-name = "i", cp-default = None }],
+      cm-body = Just (CstBlock [
+        hp-var "c" (CstArrayNew (CstNamedType "UnityEngine.Vector3" []) [] [zero, zero, zero, zero] True),
+        hp-do (hp-c1 (hp-d (CstAs (hp-n "node") (CstNamedType "UnityEngine.RectTransform" [])) "GetWorldCorners") (hp-n "c")),
+        CstReturn (Just (CstIndex (hp-n "c") [hp-a (hp-n "i")]))
+      ])
+    }
   valheim-world-probe-members : List (Integer -> CstMember)
   valheim-world-probe-members = [
     valheim-world-probe-reflection-flags,
@@ -10665,7 +11066,14 @@ Section: Typed Interop
     valheim-world-probe-verify-padding-and-hover,
     valheim-world-probe-measure-warehouse-cost,
     valheim-world-probe-total-stored-items,
-    valheim-world-probe-verify-linked-crafting
+    valheim-world-probe-verify-linked-crafting,
+    valheim-world-probe-clock,
+    valheim-world-probe-station-hover-checks,
+    valheim-world-probe-hud-dump-node,
+    valheim-world-probe-hud-dump,
+    valheim-world-probe-hud-corners,
+    valheim-world-probe-hud-corner,
+    valheim-world-probe-hud-layout-checks
   ]
 
   opening : [Console] Nothing = act

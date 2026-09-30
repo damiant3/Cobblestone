@@ -1,0 +1,116 @@
+Chapter: ErpPage
+  cites UI chapter Theme
+  cites UI chapter Widget
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebTheme
+  cites WebApp chapter WebWidgets
+  cites ERP chapter ErpSnapshot
+
+Section: Money
+
+  erp-money : Integer -> Text
+  erp-money (c) =
+    if c < 0 then "-" & erp-money-pos (0 - c)
+    else erp-money-pos c
+
+  erp-money-pos : Integer -> Text
+  erp-money-pos (c) =
+    let dollars = c / 100
+    in let cents = c - dollars * 100
+    in "$" & erp-thousands dollars & "." & erp-pad2 cents
+
+  erp-thousands : Integer -> Text
+  erp-thousands (n) =
+    if n < 1000 then show n
+    else erp-thousands (n / 1000) & "," & erp-pad3 (n - (n / 1000) * 1000)
+
+  erp-pad2 : Integer -> Text
+  erp-pad2 (n) = if n < 10 then "0" & show n else show n
+
+  erp-pad3 : Integer -> Text
+  erp-pad3 (n) = if n < 10 then "00" & show n else if n < 100 then "0" & show n else show n
+
+Section: Page Tree
+
+  erp-tile : Text, Text, Integer -> WidgetNode
+  erp-tile (id) (name) (cents) =
+    widget-panel id DirColumn 4 [
+      widget-label (id & "-name") name,
+      widget-label (id & "-value") (erp-money cents)
+    ]
+
+  erp-tiles : Integer -> WidgetNode
+  erp-tiles (x) =
+    widget-panel "kpi" DirRow 16 [
+      erp-tile "kpi-revenue" "Revenue" erp-snap-revenue,
+      erp-tile "kpi-expenses" "Expenses" erp-snap-expenses,
+      erp-tile "kpi-net" "Net income" erp-snap-net,
+      erp-tile "kpi-cash" "Cash" erp-snap-cash,
+      erp-tile "kpi-assets" "Assets" erp-snap-assets,
+      erp-tile "kpi-liabilities" "Liabilities" erp-snap-liabilities,
+      erp-tile "kpi-equity" "Equity" erp-snap-equity
+    ]
+
+  erp-tb-row : ErpSnapLine -> WidgetNode
+  erp-tb-row (l) =
+    widget-panel ("tb-" & l.esl-account) DirRow 16 [
+      widget-label ("tb-acct-" & l.esl-account) (l.esl-account),
+      widget-label ("tb-name-" & l.esl-account) (l.esl-name),
+      widget-label ("tb-dr-" & l.esl-account) (erp-money (l.esl-debit)),
+      widget-label ("tb-cr-" & l.esl-account) (erp-money (l.esl-credit))
+    ]
+
+  erp-tb-rows : List ErpSnapLine, Integer, List WidgetNode -> List WidgetNode
+  erp-tb-rows (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else erp-tb-rows lines (i + 1) (list-push acc (erp-tb-row (list-at lines i)))
+
+  erp-sum-dr : List ErpSnapLine, Integer, Integer -> Integer
+  erp-sum-dr (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else let l = list-at lines i
+    in erp-sum-dr lines (i + 1) (acc + l.esl-debit)
+
+  erp-sum-cr : List ErpSnapLine, Integer, Integer -> Integer
+  erp-sum-cr (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else let l = list-at lines i
+    in erp-sum-cr lines (i + 1) (acc + l.esl-credit)
+
+  erp-page-tree : Integer -> WidgetNode
+  erp-page-tree (x) =
+    let tb = erp-snap-tb
+    in let dr = erp-sum-dr tb 0 0
+    in let cr = erp-sum-cr tb 0 0
+    in widget-panel "erp-root" DirColumn 16 [
+      widget-label "erp-title" "CODEX Corp, June 2026: one month of books",
+      widget-label "erp-source" ("A snapshot of a native run of the ERP scenario, built by " & erp-snap-build),
+      erp-tiles 0,
+      widget-panel "open-items" DirRow 16 [
+        erp-tile "ap-open" "Payables open" erp-snap-ap-open,
+        erp-tile "ar-open" "Receivables open" erp-snap-ar-open
+      ],
+      widget-separator "sep-tb",
+      widget-label "tb-title" "Trial balance",
+      widget-panel "tb" DirColumn 4 (erp-tb-rows tb 0 []),
+      widget-panel "tb-total" DirRow 16 [
+        widget-label "tb-total-name" "Total",
+        widget-label "tb-total-dr" (erp-money dr),
+        widget-label "tb-total-cr" (erp-money cr)
+      ],
+      widget-label "tb-balanced" (if dr == cr then "Debits equal credits" else "OUT OF BALANCE")
+    ]
+
+  erp-render : Integer -> Integer
+  erp-render (x) = mount-widget-themed theme-terminal (erp-page-tree 0)
+
+  erp-css : Text = "body{background:#0b0e14;color:#d6dde8;font-family:system-ui,sans-serif;margin:0;padding:24px}.wk-row{display:flex;flex-direction:row;align-items:baseline}.wk-col{display:flex;flex-direction:column}.wk-col>.wk-panel,.wk-col>.wk-label{flex:0 0 auto!important}#kpi>.wk-panel,#open-items>.wk-panel{flex:1 1 140px!important}#erp-root{flex:0 0 auto!important}#erp-root{max-width:1100px;margin:0 auto}#erp-title{font-size:22px;font-weight:600}#erp-source{font-size:12px;color:#8a96a8;margin-bottom:12px}#kpi,#open-items{flex-wrap:wrap}#kpi>.wk-panel,#open-items>.wk-panel{min-width:140px;padding:10px 12px}#kpi .wk-label:last-child,#open-items .wk-label:last-child{font-size:18px;font-weight:600}#tb>.wk-panel>span:nth-child(1){flex:0 0 60px!important}#tb>.wk-panel>span:nth-child(2),#tb-total>span:nth-child(1){flex:1 1 auto!important}#tb>.wk-panel>span:nth-child(3),#tb>.wk-panel>span:nth-child(4),#tb-total>span:nth-child(2),#tb-total>span:nth-child(3){flex:0 0 140px!important;text-align:right}#tb-total{padding:4px 6px}#tb-balanced{margin-top:8px;color:#7fd39a}"
+
+Section: Entry
+
+  opening : [Console] Integer
+  opening = act
+    let t = inject-app-style theme-terminal erp-css
+    in let s = set-render erp-render
+    in erp-render 0
+  end

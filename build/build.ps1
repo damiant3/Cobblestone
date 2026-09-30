@@ -11,9 +11,14 @@ param(
     # ONLY when a file it depends on changed in this workspace. Everything else
     # is caught by the next full gate. A public/release build passes no
     # -Internal and runs every phase.
-    [switch]$Internal
+    [switch]$Internal,
+    # With -Internal: print the phase map for the changed set and exit before
+    # any phase, compile or guest. The only way to test a trigger while the
+    # -Internal gate itself is not run (R-GATE).
+    [switch]$PlanOnly
 )
 
+if ($PlanOnly -and -not $Internal) { Write-Host 'REFUSED: -PlanOnly prints the -Internal phase map; pass -Internal with it.'; exit 2 }
 # On success, prints only a story. On failure, prints technical details.
 # Phases: clean -> source -> CDX build -> sign -> canary -> jonquil ->
 #         sem-equiv -> text fixed point -> CDX fixed point -> battery ->
@@ -39,14 +44,17 @@ $BuildLog = Join-Path $OutDir 'build.log'
 # a byte-identical self-fixed-point that boots. The regression phases below run
 # only when a file they depend on changed in THIS workspace; skipped ones are
 # caught by the next full gate. Mapping, by what actually feeds each phase:
-#   jonquil                     <- codex/compiler   (codegen)
+#   jonquil                     <- codex/compiler (codegen) or build/jonquil.ps1
 #   vm-differential             <- codex/compiler or codex/build or build:
 #     codegen is its SUBJECT, but its INSTRUMENT is two VM hosts and which
 #     host runs is decided in build/vm-config.ps1. Keyed on the subject alone
 #     it went silently stale: reek 19219 changed host selection and this phase
 #     skipped as not implicated (L-INSTRUMENT). A trigger must cover the files
 #     that can change a phase's ANSWER, not only the ones it is about.
-#   plug-*                      <- codex/plugs or codex/compiler (codegen feeds plugs)
+#   plug-*                      <- codex/plugs or codex/compiler (codegen feeds plugs),
+#     plus its runner: build/plug-source-digest.ps1 for plug-binary and
+#     plug-smoke, build/check-cross-smoke.ps1 and the two test-cross scripts
+#     for cross-smoke
 #   gen-scripts / deck-headroom <- codex/build or build or codex/compiler:
 #     both are COMPILED answers, not static ones. gen-scripts compiles every
 #     generator with the current kernel and diffs the emitted text, and
@@ -57,9 +65,12 @@ $BuildLog = Join-Path $OutDir 'build.log'
 #     a pure compiler change skips the phase that would see it. ~1 change in
 #     50 on main is compiler-without-build, so this costs 31 s and 63 s that
 #     rarely.
-#   app-sweep                   <- apps or codex/compiler (the compiler builds the apps)
+#   app-sweep                   <- apps or codex/compiler (the compiler builds the apps),
+#     or its runner: build/sweep-app-classes.ps1, sweep-classes.ps1, app-sweep-baseline.txt
 #   wasm-bundles                <- apps, codex/plugs or codex/compiler
 #   wasm-run                    <- codex/plugs/wasm or codex/compiler
+#   page-build, browser-checks  <- never: release gate only (root, 2026-09-29; Damian's
+#     GPUSHOW-1 ruling (b), 2026-09-29)
 #   run-list                    <- tools/codex-vm.c or .exe, or build/check-run-list.ps1:
 #     a per-file trigger, which the audit above calls the precise fix and
 #     declined for the six existing phases only because widening them to
@@ -143,6 +154,10 @@ if ($Internal) {
     $tApps     = [bool]($changed | Where-Object { $_ -match '^apps/' })
     $tFrontEnd = [bool]($changed | Where-Object { $_ -match '^codex/compiler/(Syntax|Ast)/' -or $_ -match '^codex/compiler/Emit/CodexEmitter\.codex$' -or $_ -match '^codex/compiler/Core/(TextFormat|SourceText)\.codex$' })
     $tVm       = [bool]($changed | Where-Object { $_ -match '^tools/codex-vm\.(c|exe)$' -or $_ -match '^build/check-run-list\.ps1$' })
+    $tJonquilRun = [bool]($changed | Where-Object { $_ -match '^build/jonquil\.ps1$' })
+    $tPlugRun    = [bool]($changed | Where-Object { $_ -match '^build/plug-source-digest\.ps1$' })
+    $tCrossRun   = [bool]($changed | Where-Object { $_ -match '^build/(check-cross-smoke|test-cross|test-cross-batch)\.ps1$' })
+    $tSweepRun   = [bool]($changed | Where-Object { $_ -match '^build/(sweep-app-classes|sweep-classes)\.ps1$' -or $_ -match '^build/app-sweep-baseline\.txt$' })
     # A gate runs only the steps the change can affect (Damian, 2026-09-02).
     # $tKernel is the set that can move the COMPILER BINARY, so it is what
     # decides whether the fixed-point core is worth running at all. Wide on
@@ -174,16 +189,18 @@ if ($Internal) {
         'test-bvt'        = ($tKernel -or $tTest)
         'oracles'         = ($tKernel -or $tTest)
         'check-errors'    = ($tKernel -or $tTest)
-        'jonquil'         = $tCompiler
-        'plug-binary'     = ($tPlugs -or $tCompiler)
-        'cross-smoke'     = ($tPlugs -or $tCompiler)
-        'plug-smoke'      = ($tPlugs -or $tCompiler)
+        'jonquil'         = ($tCompiler -or $tJonquilRun)
+        'plug-binary'     = ($tPlugs -or $tCompiler -or $tPlugRun)
+        'cross-smoke'     = ($tPlugs -or $tCompiler -or $tCrossRun)
+        'plug-smoke'      = ($tPlugs -or $tCompiler -or $tPlugRun)
         'gen-scripts'     = ($tBuild -or $tCompiler)
         'vm-differential' = ($tCompiler -or $tBuild)
         'deck-headroom'   = ($tBuild -or $tCompiler)
-        'app-sweep'       = ($tApps -or $tCompiler)
+        'app-sweep'       = ($tApps -or $tCompiler -or $tSweepRun)
         'wasm-bundles'    = ($tApps -or $tPlugs -or $tCompiler)
         'wasm-run'        = (($changedPlugs -contains 'wasm') -or $tCompiler)
+        'page-build'      = $false
+        'browser-checks'  = $false
         'run-list'        = $tVm
         'uefi-conout'     = ($tCompiler -or $tTest -or $tVm)
         'text-stage1'     = $coreRuns
@@ -196,6 +213,7 @@ if ($Internal) {
     Write-Host ('  [internal gate] changed here: ' + $(if ($changed.Count) { ($changed | Sort-Object -Unique) -join ', ' } else { 'nothing opened' }))
     Write-Host ('  [internal gate] running: ' + $(if ($ran.Count) { ($ran -join ', ') } else { '(nothing implicated)' }))
     Write-Host ('  [internal gate] deferred to the next full gate: ' + $(if ($SkipPhases.Count) { (@($SkipPhases) | Sort-Object) -join ', ' } else { '(none)' }))
+    if ($PlanOnly) { Write-Host '  [internal gate] -PlanOnly: nothing run.'; exit 0 }
     # THE LINE A CL DESCRIPTION MAY QUOTE. A deferred core does not run
     # SUT === stage1, so a run that skipped it cannot claim the fixed point
     # and must say what it DID grade with instead. Printing the truthful
@@ -335,7 +353,7 @@ function Invoke-BuildText {
             return $false
         }
 
-        $raw = [System.IO.File]::ReadAllText($outputFile) -replace "`r", '' -replace "^\x01", ''
+        $raw = [System.IO.File]::ReadAllText($outputFile) -replace "`r", ''
         $lines = $raw -split "`n"
         $textLines = [System.Collections.Generic.List[string]]::new()
         $halted = $false
@@ -975,7 +993,7 @@ Write-Host 'imploding vacuum, it sinks into the ground.'
 Measure-Phase 'test-bvt' {
     $bvtScript = Join-Path $PSScriptRoot 'bvt.ps1'
     $testOut = Join-Path $OutDir 'test-results.txt'
-    & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 8 > $testOut 2>&1
+    & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 16 > $testOut 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host ''
         Write-Host 'FAIL: BVT'
@@ -1021,11 +1039,11 @@ Measure-Phase 'oracles' {
 # list is how thirteen came to stand for a hundred and seventy-six. It always
 # runs, like the BVT and the oracles, because the diagnostic path is what a
 # codegen or foreword change moves without moving any other phase. Measured
-# 23.4s over 203 refusals, measured at -Jobs 8; re-measure at 4 (L-COUNT).
+# 23.4s over 203 refusals at -Jobs 8 (L-COUNT).
 Measure-Phase 'check-errors' {
     $chkErrors = Join-Path $PSScriptRoot 'check-errors.ps1'
     if (Test-Path $chkErrors) {
-        & pwsh -NoProfile -File $chkErrors -Kernel $testKernel -Jobs 8 2>&1 | ForEach-Object { Write-Host "$_" }
+        & pwsh -NoProfile -File $chkErrors -Kernel $testKernel -Jobs 16 2>&1 | ForEach-Object { Write-Host "$_" }
         if ($LASTEXITCODE -ne 0) {
             Write-Host 'FAIL: a program the compiler must refuse was not refused as declared'
             exit 1
@@ -1116,7 +1134,7 @@ Measure-Phase 'test-run' {
         Write-Host '  test-run: OK (no cited chapter carries an .expected)'
     } else {
         $bvtScript = Join-Path $PSScriptRoot 'bvt.ps1'
-        & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 8 -SubjectsFile $subjectList 2>&1 |
+        & pwsh -NoProfile -File $bvtScript -CodexCdx $testKernel -Jobs 16 -SubjectsFile $subjectList 2>&1 |
             ForEach-Object { Write-Host "  $_" }
         if ($LASTEXITCODE -ne 0) {
             Write-Host 'FAIL: a cited test chapter RAN and disagreed with its .expected'
@@ -1428,7 +1446,7 @@ Measure-Phase 'deck-headroom' {
     if (Test-Path $chkDeck) {
         # -Fresh: the script serves cached logs without it.
         $dkOut = @(& pwsh -NoProfile -File $chkDeck -Quire 'codex\build' -WithSelf -MinMargin 1.25 `
-              -Tag 'gate' -Top 5 -Jobs 8 -Fresh 2>&1 | ForEach-Object { "$_" })
+              -Tag 'gate' -Top 5 -Jobs 16 -Fresh 2>&1 | ForEach-Object { "$_" })
         $dkCode = $LASTEXITCODE
 # A filter at the pipe keeps the COUNT and discards the SHAPE: the unit names
 # print as two spaces and a path and match no alternative, so every failure
@@ -1447,7 +1465,7 @@ Measure-Phase 'deck-headroom' {
 # build.ps1 passes, not at the derivation, or this asks a question the
 # build never asks.
         $dkpOut = @(& pwsh -NoProfile -File $chkDeck -Plugs -MinMargin 1.25 `
-              -Tag 'gate-plugs' -Top 5 -Jobs 8 -Fresh 2>&1 | ForEach-Object { "$_" })
+              -Tag 'gate-plugs' -Top 5 -Jobs 16 -Fresh 2>&1 | ForEach-Object { "$_" })
         $dkpCode = $LASTEXITCODE
         if ($dkpCode -ne 0) { $dkpOut | ForEach-Object { Write-Host "  $_" } }
         else { $dkpOut | Where-Object { $_ -match '^\s+margin\s+\d|OK, tightest' } | ForEach-Object { Write-Host "  $_" } }
@@ -1498,7 +1516,7 @@ Measure-Phase 'app-sweep' {
         # only half the phase was broken.
         $sweepArgs = @()
         if ($Internal) { $sweepArgs = @(if ($tCompiler) { @('-Sample', '30') } else { @('-CiteScoped') }) }
-        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 8 -Kernel $SutCdx @sweepArgs 2>&1 | ForEach-Object { "$_" })
+        $swOut = @(& pwsh -NoProfile -File $sweep -Check -Jobs 16 -Kernel $SutCdx @sweepArgs 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Host ''
@@ -1545,15 +1563,54 @@ Measure-Phase 'wasm-bundles' {
 # -- the wasm plug, RUN: wasm-bundles only assembles modules, and a missing builtin arm
 # assembles and traps at runtime, so this phase compiles subjects to wasm and runs them
 # under wasmtime against the same .expected the bare-metal battery grades (plugs 2.16).
-# It grades the harness default, 60 of the hosted corpus stratified by directory, not
-# the corpus (1096 eligible, 2026-09-25). A red listed in codex/plugs/wasm/wasm-run-baseline.txt
-# does not fail it; a listed subject that passes does. 68 s at -Jobs 4, 2026-09-25. After wasm-bundles, which rebuilt the plug after this
-# run's compiler existed, so the harness's plug-older-than-kernel refusal holds.
+# It grades the whole hosted corpus (-Max 0; 1119 eligible, 840 s at -Jobs 4, 2026-09-25). A red
+# listed in codex/plugs/wasm/wasm-run-baseline.txt does not fail it; a listed subject that passes
+# does. After wasm-bundles, which rebuilt the plug after this run's compiler existed, so the
+# harness's plug-older-than-kernel refusal holds.
 Measure-Phase 'wasm-run' {
-    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\hosted-wasm-test.ps1') -Kernel $SutCdx -Jobs 4 2>&1 | ForEach-Object { Write-Host "  $_" }
+    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\hosted-wasm-test.ps1') -Kernel $SutCdx -Max 0 -Jobs 16 2>&1 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'FAIL: the wasm plug disagrees with .expected; see the hosted-wasm lines above'
         exit 1
+    }
+    # wasm-e2e grades codex/plugs/wasm/test against x86-64 and runs check-emitted-runtime.ps1
+    # on the first module (88 s, 31 subjects, 2026-09-29).
+    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\wasm-e2e.ps1') -Kernel $SutCdx 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: wasm-e2e; see the lines above'
+        exit 1
+    }
+}
+
+# -- the compile page, built with this run's compiler: build-page.ps1's own arms (x86 truth,
+# cdx byte-identity, and page-example-test's calibrate and compile arms over page/examples.json)
+# are the grade. The page lands in build\output\page and is not published, so its lenses may be
+# dark; page-lens-test.ps1 grades those modules.
+Measure-Phase 'page-build' {
+    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\build-page.ps1') -Kernel $SutCdx -Source $CodexSrc -OutDir (Join-Path $OutDir 'page') -AllowDarkLenses 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'FAIL: the compile page did not build or its own arms failed; see the lines above'
+        exit 1
+    }
+}
+
+# -- every browser check, in headless Edge (GPUSHOW-1, Damian 2026-09-29): the gpushow WGSL
+# sweep (Edge is the Chromium it drives), ModBuilder's emit arms and its site test. A missing
+# node or Edge fails the phase rather than skipping it.
+Measure-Phase 'browser-checks' {
+    $bcEdge = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+    if (-not (Test-Path -PathType Leaf $bcEdge)) { Write-Host "FAIL: no Edge at $bcEdge"; exit 1 }
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Host 'FAIL: node is not on PATH'; exit 1 }
+    foreach ($bc in @(
+            @('apps\gpushow\tools\validate-all.mjs', '--chrome', $bcEdge),
+            @('apps\modbuilder\test-emit.mjs'),
+            @('apps\modbuilder\test-site.mjs'))) {
+        $bcArgs = @((Join-Path $Repo $bc[0])) + @($bc | Select-Object -Skip 1)
+        & node @bcArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "FAIL: browser check $($bc[0]); see the lines above"
+            exit 1
+        }
     }
 }
 

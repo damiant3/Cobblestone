@@ -1,0 +1,148 @@
+Chapter: Txt2ImgArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites AI chapter SafeTensors
+  cites AI chapter ClipBpe
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter NoiseGen
+  cites Diffusion chapter ClipGraph
+  cites Diffusion chapter BrowserClip
+  cites Diffusion chapter BrowserUNet
+  cites Diffusion chapter BrowserVae
+  cites Diffusion chapter BrowserTxt2Img
+
+ The page codex/plugs/html/arms/txt2img.mjs drives: a picked SD1.5
+ checkpoint's CLIP-L, UNet and VAE decoder uploaded as f32, ClipBpe loaded
+ from page-data "vocab" and "merges", the seed's torch noise read back, then
+ browser-txt2img on page-data "prompt", "negative", "seed", "steps", "cfg10"
+ (the scale in tenths), "size", shown in the canvas #out and read back.
+
+ We say:
+
+Section: Header
+
+  opening : [Console] Integer
+  opening =
+    let cv = dom-create "canvas"
+    in let a = dom-set-attr cv "id" "out"
+    in let b = dom-append (dom-query "body") cv
+    in let c = dom-on-click (dom-query "html") tx-pick
+    in state-set "armed" 1
+
+  tx-pick : Text -> Integer
+  tx-pick (id) = pick-file-then ".safetensors" tx-picked
+
+  tx-picked : Text -> Integer
+  tx-picked (r) =
+    let f = state-set-text "file" (json-obj-field (json-parse-obj r) "name")
+    in gpu-open-then tx-opened
+
+  tx-opened : Text -> Integer
+  tx-opened (r) = file-read-then (state-get-text "file") 0 8 tx-got-len
+
+  tx-ints : List Text, Integer, List Integer -> List Integer
+  tx-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else tx-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  tx-list : Text -> List Integer
+  tx-list (t) = if text-length t < 3 then [] else tx-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  tx-got-len : Text -> Integer
+  tx-got-len (r) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (tx-list r) 0) tx-got-header
+
+  tx-part : List PartBinding, Integer, Text -> List BoundTensor
+  tx-part (parts) (i) (name) =
+    if i >= list-length parts then []
+    else if (list-at parts i).pb-name == name then (list-at parts i).pb-bound
+    else tx-part parts (i + 1) name
+
+  tx-vae-wanted : List BoundTensor, Integer, List BoundTensor -> List BoundTensor
+  tx-vae-wanted (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let n = (list-at ts i).bt-name
+    in tx-vae-wanted ts (i + 1) (if text-starts-with n "first_stage_model.decoder." | text-starts-with n "first_stage_model.post_quant_conv." then list-snoc acc (list-at ts i) else acc)
+
+  tx-got-header : Text -> Integer
+  tx-got-header (r) =
+    let lb = layout-bind (st-parse-file (tx-list r)) sd15-layout
+    in let clip = tx-part (lb.lb-parts) 0 "clip-l"
+    in let unet = tx-part (lb.lb-parts) 0 "unet"
+    in let vae = tx-vae-wanted (tx-part (lb.lb-parts) 0 "vae") 0 []
+    in tx-upload clip 0 "" [] [] 0 (\cn ch cb -> tx-upload unet 0 "model.diffusion_model." [] [] cb (\un uh ub -> tx-upload vae 0 "first_stage_model." [] [] ub (\vn vh vb -> tx-loaded cn ch un uh vn vh vb)))
+
+Section: Upload
+
+  tx-dt : Integer -> Integer
+  tx-dt (d) = if d == st-dtype-f16 then gpu-dt-f16 else if d == st-dtype-f32 then gpu-dt-f32 else 0 - 1
+
+  tx-short : Text, Text -> Text
+  tx-short (prefix) (n) = substring n (text-length prefix) (text-length n - text-length prefix)
+
+  tx-upload : List BoundTensor, Integer, Text, List Text, List Integer, Integer, (List Text, List Integer, Integer -> Integer) -> Integer
+  tx-upload (ts) (i) (prefix) (ns) (hs) (bad) (next) =
+    if i >= list-length ts then next ns hs bad
+    else let t = list-at ts i
+    in let dt = tx-dt (t.bt-dtype)
+    in let elems = t.bt-bytes / st-dtype-width (t.bt-dtype)
+    in let h = if dt < 0 then 0 else gpu-buf-alloc (elems * 4)
+    in let ns2 = list-snoc ns (tx-short prefix (t.bt-name))
+    in if h == 0 then tx-upload ts (i + 1) prefix ns2 (list-snoc hs 0) (bad + 1) next
+    else gpu-buf-upload-then h 0 (state-get-text "file") (t.bt-offset) elems dt gpu-dt-f32 (\r -> tx-upload ts (i + 1) prefix ns2 (list-snoc hs h) (bad + (if text-contains r "\"ok\":true" then 0 else 1)) next)
+
+Section: Generate
+
+  tx-poke : Integer, List Integer, Integer -> Integer
+  tx-poke (a) (bs) (i) =
+    if i >= list-length bs then a
+    else let p = poke-byte a i (list-at bs i)
+    in tx-poke a bs (i + 1)
+
+  tx-heap : List Integer -> Integer
+  tx-heap (bs) = tx-poke (alloc-bytes (list-length bs + 8)) bs 0
+
+  tx-loaded : List Text, List Integer, List Text, List Integer, List Text, List Integer, Integer -> Integer
+  tx-loaded (cn) (ch) (un) (uh) (vn) (vh) (bad) =
+    let a = state-set "failed" bad
+    in let b = state-set "tensors" (list-length cn + list-length un + list-length vn)
+    in let code = page-data "bk"
+    in let cw = browser-clip-weights bc-l15-spec cn ch
+    in let m = BrowserModel { bm-code = code, bm-clip = cw, bm-unet = BuWeights { bu-names = un, bu-handles = uh }, bm-vae = BvWeights { bw-names = vn, bw-handles = vh } }
+    in let vb = tx-list (page-data "vocab")
+    in let mb = tx-list (page-data "merges")
+    in let bpe = clip-bpe-load (tx-heap vb) (list-length vb) (tx-heap mb) (list-length mb)
+    in let c = state-set "bpe" (clip-bpe-status bpe)
+    in let seed = text-to-integer (page-data "seed")
+    in let size = text-to-integer (page-data "size")
+    in let nz = bt-noise seed (4 * (size / 8) * (size / 8))
+    in let d = state-set "noise-handle" nz
+    in browser-txt2img-then m bpe (page-data "prompt") (page-data "negative") seed (text-to-integer (page-data "steps")) (real-from-int (text-to-integer (page-data "cfg10")) / 10.0) size size (\img -> tx-made img size)
+
+  tx-made : Integer, Integer -> Integer
+  tx-made (img) (size) =
+    let e = state-set "image" img
+    in let f = state-set-text "err-run" (gpu-error 0)
+    in if img <= 0 then tx-done 0
+    else gpu-buf-show-then img size size "#out" tx-shown
+
+  tx-shown : Text -> Integer
+  tx-shown (r) =
+    let s = state-set-text "shown" r
+    in let size = text-to-integer (page-data "size")
+    in gpu-buf-download-then (state-get "noise-handle") 0 (4 * (size / 8) * (size / 8) * 4) tx-got-noise
+
+  tx-got-noise : Text -> Integer
+  tx-got-noise (r) =
+    let s = state-set-text "noise" r
+    in let size = text-to-integer (page-data "size")
+    in gpu-buf-download-then (state-get "image") 0 (3 * size * size * 4) tx-got-image
+
+  tx-got-image : Text -> Integer
+  tx-got-image (r) =
+    let s = state-set-text "pixels" r
+    in tx-done 0
+
+  tx-done : Integer -> Integer
+  tx-done (z) =
+    let e = state-set-text "err" (gpu-error 0)
+    in state-set "done" 1

@@ -148,17 +148,15 @@ it is measured:
   advances no finer than the frame rate -- about 16 ms in the bed on the host
   rasterizer, 86 to 135 ms on the software path, near a second on metal. It
   still advances, which is the whole point.
-- **A step must drain the keyboard itself if its iteration is slow.**
-  `kbd-pump-one` advances a THREE-phase state machine one step per call and
-  `kbd-take` calls it once, so one take per iteration is one PHASE per
-  iteration. `desk-loop` takes exactly once. On a pane whose iteration costs a
-  frame that is a report every three frames, and on metal it measured as keys
-  swallowed unless held down and Esc failing to close the pane (ASUS,
-  2026-08-08, which is why `gsc-poll` exists at all). `gsc-step` uses the desk's
-  scancode when it found one and polls further when it did not. Any future step
-  slower than a poll needs the same, and a step that also OWNS a key must read
-  it from its own poll rather than from the desk's `sc`, or the poll will
-  swallow it.
+- **The desktop collector owns input draining.** `GopInput` advances each
+  keyboard through bounded pump rounds, consumes completed mouse reports and
+  rearms mouse endpoints before returning. `GopInputQueue` preserves collection
+  order across keys, button transitions and adjacent motion groups. A pane
+  consumes the desk's delivered event rather than taking another device event.
+  `gsc-poll` remains only for callers without the desktop collector. Software
+  scene clear, raster and presentation rows collect input between work units;
+  collection does not re-enter pane handlers. Pane dispatch remains in the
+  desk loop. The proof and limits belong to `DeskScheduler.md`.
 - **Paint the chrome through `dk-chrome-paint`, never `comp-render` directly.**
   The band is painted from the widget tree, whose `task-clock` label is empty
   because the clock's TEXT is hand-painted over it once a second, so every
@@ -492,10 +490,8 @@ owner and no instrument** -- `stack-min-rsp-addr` only moves in a
 
 ## 2. The `ds` block, and the rule about pointers in it
 
-`ds` is `alloc-zeroed 128 64` in `desk-run`: thirty-two 32-bit cells at offsets
-0..124. It is how a pane gets state without every pane signature growing a
-parameter. It was 64 bytes until 2026-08-21, when the click sound took the
-first two cells of the second half.
+`ds` is `alloc-zeroed dk-ds-bytes 64` in `desk-run`; `dk-ds-bytes` is 512.
+The block holds raw addresses and integer state shared with pane steps.
 
 | offset | constant | holds |
 |---:|---|---|
@@ -531,69 +527,38 @@ first two cells of the second half.
 | 116 | `dk-files-cell` | pointer: the Files pane's block (val, 2026-08-25). The window slot and nothing else; Files' own state is a `FilesState` in `DeskApps`, which no cell can hold. **The Editor needed no new cell**: its window slot is 44 through 60 of the block `desk-edit-cell` has always pointed at, which grew to 192 bytes so those offsets could be the desk's |
 | 120 | `dk-drag-cell` | which window is being dragged by its titlebar, `desk-focus-none` when none (val, 2026-08-26). Holding the id IS the in-progress flag; there is no separate one |
 | 124 | `dk-drag-off-cell` | the grab offset, `dx * 65536 + dy` (val, 2026-08-26). Packed because this is the last cell the block has: `dx` is bounded by the window's width and `dy` by the titlebar's height, and both are non-negative because the press was inside the bar |
-
 | 128 | `dk-rate-n-cell` | `desk-loop` iterations counted so far in the open window (val, 2026-08-26) |
 | 132 | `dk-rate-t0-cell` | the HPET tick the window opened at, masked to 32 bits because `peek-32` zero-extends and the counter passes 2^32 in about five minutes |
 | 136 | `dk-rate-cell` | the last completed rate in iterations per second, which is what the topbar paints |
 | 140 | `dk-rate-armed-cell` | whether the counter has taken its first sample. It exists so the first iteration can force one paint: a readout that appears only on success cannot report a stopped HPET (L-STATES) |
-
 | 144 | `dk-size-cell` | which resize zone is in progress, `dk-size-none` when none (val, 2026-08-26). Holding the zone IS the in-progress flag, the way `dk-drag-cell` holds the id |
 | 148 | `dk-size-fid-cell` | which window is being resized |
 | 152 | `dk-size-x0-cell` | the window's x at GRAB time. Signed through `dk-cell-signed`, because a window may sit at a negative x and `peek-32` zero-extends |
 | 156 | `dk-size-y0-cell` | its y at grab time |
 | 160 | `dk-size-w0-cell` | its width at grab time |
 | 164 | `dk-size-h0-cell` | its height at grab time. **The rect at grab time and not the current one**: the step rewrites the block every sample, so computing from the live rect would compound each sample onto the last and the window would run away from the pointer |
-
 | 168 | `dk-task-edge-cell` | which edge the task band is docked to, one of `dk-edge-bottom`/`top`/`left`/`right`. Written from settings by `dk-settings-into` |
 | 172..200 | the flick's eight cells | `dk-flick-p1`, `-t1`, `-p0`, `-t0` are the two-sample velocity baseline; `-cell` is the armed window's focus id, `-dir` the edge the release vector pointed at, `-org` the release point and `-rt` the release time |
 | 204, 208 | `dk-pillc-cell`, `dk-pillc-t-cell` | the double-click latch on a pill: which pill was last clicked and when |
 | 212 | `dk-pedge-cell` | pointer: a block of `dk-pedge-slots` (19 as of 2026-09-08; this row said 17 while the code said 18, L-COUNT) entries, one per focus id, holding the edge that app's pill is docked to (val, 2026-08-27, ShellRefinement 6.7.1). **Stored as the edge PLUS ONE so that zero means unwritten**, because `alloc-zeroed` hands back zeros and `dk-edge-bottom` is 0; without the offset a never-flicked app and one flicked to the bottom are the same bits. `dk-pedge-get` falls back to `dk-task-edge ds` for an unwritten or out-of-range id. Allocated by `dk-pedge-init` from `desk-run` before the base mark, for the reason every other pointer cell here is |
-
 | 216, 220 | `dk-strip-h-cell`, `dk-strip-v-cell` | the depth a PILL-ONLY strip takes on a horizontal and on a vertical edge, in device pixels (val, 2026-08-27, ShellRefinement 6.7.3a). Measured once by `dk-strip-init` from `desk-run` the way `dk-task-init` measures the band, by laying one specimen pill and taking its minimum, so "thinner than the band" is a consequence of carrying no Cobblestone button and no clock rather than a chosen number. Two orientations because a row of pills decides a height and a column of them a width, which is why `dk-task-w` is not `dk-task-h`. Not pointers, so they need no allocation before the base mark; zero means unmeasured and `dk-strip-depth` falls back to the same floors the band uses |
-
 | 224, 228 | `desk-root-cell`, `desk-rootend-cell` | the frontier immediately BEFORE and immediately AFTER the current desktop root was built (val, 2026-08-28, WORKS-58). Not pointers, so they need no allocation before the base mark; zero in either means unwritten and nothing is reclaimed. **`desk-root-reclaim` frees the root a rebuild replaces only when no LIVE mark sits at or above where the last root ENDED.** A pane opened after the root has its state above the root, and freeing that is WORKS-57. `desk-root-note` records both after every `desk-draw`, at all eight sites, and a site that builds a root without noting would leave the pair describing a superseded root. **This row said "only when the frontier still stands exactly where the last root ENDED" until 2026-08-28 and the code has never done that** (val). The difference is not academic and both halves are measured: the mark test alone shipped WORKS-59, a guest halt, because a mark records where a pane's state STARTED and the Browser rebuilds its state elsewhere; and the frontier equality this row described is INERT, which WORKS-58's own entry had already recorded ("THE FIRST FORMULATION WAS INERT") and which re-measuring put a number on: 2,394,032 bytes a minimise-restore cycle, because an ordinary re-entry leaves the frontier above the root end, so the reclaim never fires again. **So the rule is the mark test, and the obligation it creates is that a pane which moves its state must move its mark** -- `desk-marks-remark`, called by `desk-browser-reenter`, which is the only pane that does. Any future pane rebuilding its state after its `-open` inherits that obligation. `codex/test/desk-root-guard` pins the decision; its `live-at-e` row is the one remarking produces and a sabotage of the mark test moves |
-
 | 232 | `dk-prev-cell` | pointer: `dk-prev-slots` (19 as of 2026-09-08; this row said 17 while the code said 18, L-COUNT) downscaled window snapshots, one per focus id, 128 by 72 DEVICE pixels each (val, 2026-08-28, ShellRefinement hover preview P.1). Allocated by `desk-run` before the base mark, for the reason every other pointer cell here is; 700,416 bytes at boot (2026-09-08), half a per cent of the flying image's 128 MB region. **Written only by `dk-prev-capture` from `desk-app-hide`**, which is the single choke point every windowed pane's minimise reaches, and it is the last moment a minimised window's pixels are both correct and on the glass. Read by nothing yet except the Monitor's `preview` row |
-
 | 236, 240 | `dk-hover-cell`, `dk-hover-t-cell` | the pill the pointer is resting on and the HPET tick it arrived, which is the hover dwell the preview bubble is gated on (val, 2026-08-28, ShellRefinement hover preview P.2). Not pointers, so no allocation before the base mark. **`dk-hover-note` takes `now` as a PARAMETER rather than reading `hpet-ticks` itself**, because `desk.ps1 -Rtc` pins the HPET and a frozen-clock capture could otherwise never satisfy a dwell; passing it in is what lets `codex/test/desk-hover` pin the timing with synthetic values. Both sides masked to 32 bits for the reason `dk-rate-*` is. **Re-noting the same pill must NOT reset the arrival tick**, or a jittering pointer never reaches the threshold; that is the `restated` line of the arm |
-
 | 244 | `dk-pinned-cell` | the pinned-app set as a BITMASK, one bit per focus id (val, 2026-09-07, ShellRefinement task frame stage 3). Not a pointer: eighteen bits fit in the cell, so it needs no allocation and no init before the base mark, which is the whole reason it is a mask rather than a block per id like `dk-pedge`. **Zero is unambiguous here where it is not there**, so this stores the bit raw and needs none of `dk-pedge-set`'s plus-one: an unpinned app and an unwritten cell mean the same thing. Persisted as `dk-set-pinned`, high limit `dk-pinned-all` (524287, which is 2^19 - 1, widened 2026-09-08 for focus id 18; widening a high limit reads an older stored value unchanged, because every value the narrower limit admitted is inside the wider one). **An app with no scancode in `dk-fid-sc` can never be pinned**, because `dk-pinned-get` refuses it, which is what keeps the system menu (focus id 15, an overlay and not an app) out of the set |
-
 | 256 | `dk-sheet-cell` | pointer: the Sheets pane's block (val, 2026-09-08, SHEET-9). **Offset 0 is the pane's SHIFT STATE and the desk owns 44 up for the window slot**, the same split the console's block carries, because a scancode says which key moved rather than which character it means. The sheet it shows is a `SheetPane`, which no cell can hold: a Sheet is a store handle plus a `Program` whose formula table is a list. `gsh-tree` renders one it is handed (SHEET-10 step 1); the field on `DeskApps` that keeps one across repaints is step 2, and until then the desk builds a fresh pane per repaint |
-
 | 260, 264 | `dk-apps-lo-cell`, `dk-apps-hi-cell` | where the last close's `DeskApps` record region began and ended (val, 2026-09-24). Not pointers, so no allocation before the base mark. A close whose root reclaim leaves the frontier exactly at the recorded end restores to the recorded start, which frees the record the previous close stranded under the root; any other frontier means something else lies between, and nothing is freed |
-| 268 | `dk-restay-cell` | the top visible window at the last `desk-wnd-paint-all`, whose next chrome step answers `desk-wnd-ev-stay` once so the pane repaints its own content (val, 2026-09-24); `desk-focus-none` when nothing is pending. Not a pointer |
+| 268 | `dk-restay-cell` | the top visible window at the last `desk-wnd-paint-all`. The next empty chrome step answers `desk-wnd-ev-stay` once and clears the flag. A step carrying a key or click processes the input and preserves the repaint request; `desk-focus-none` means nothing is pending. Not a pointer |
 | 272 | `dk-notice-cell` | pointer: the taskbar notice, allocated by `dk-notice-init` from `desk-run` before the base mark. Offset 0 the seconds left, 4 the length, 8 the last RTC second counted, 12 up one character code per 32-bit cell, `dk-notice-cols` of them. `dk-notice-set` writes it and invalidates cell 8; `desk-clock` paints it in the clock cell in place of the time until `dk-notice-secs` distinct seconds have passed, which is the one home a transient notice has, because the band is the only surface that repaints every second (val, 2026-09-24, WORKS-37) |
+| 276 | `dk-input-cell` | pointer: the fixed input queue, trace and metadata block, allocated in `desk-run` below the base heap mark. `GopInputQueue` owns the layout; `desk-input-step` collects and delivers under `desk-loop`'s frame heap mark. Queue exhaustion and transfer errors retain separate causes and notification flags; both invalidate lossless collection. |
 
-**THE BLOCK IS 512 BYTES SINCE 2026-09-08 (val), AND EVERY CELL 0 THROUGH
-272 IS TAKEN; 276 THROUGH 508 ARE FREE (2026-09-24).** It grew because focus id 18
-needs a window slot and there was no cell left to point at one. Cells 0
-through 252 were verified taken from the DEFINITIONS rather than from
-this list, by enumerating every `*-cell` constant in `apps/works` and
-looking for a gap; there was none.
+**The block is 512 bytes. Cells 0 through 276 are occupied; cells 280
+through 508 are free (source checked 2026-09-29).**
 
-**THE SIZE IS NOW A CONSTANT, `dk-ds-bytes` IN `GopDesk`, AND EVERY SITE
-NAMES IT.** The next growth is that one line. The paragraph below is kept
-because the trap it describes is the reason the constant exists. This paragraph said "168
-through 252 are free" until 2026-08-27, which was true the day it was written
-and stopped being true within hours: `dk-task-edge-cell`, the flick's eight and
-the pill latch's two took 168 through 208 that same week and none of them added
-a row here (L-COUNT). The rows above are the re-measurement, taken from the
-definitions rather than from this list. It grew because the
-scheduler needs a period per pane for fourteen panes and the desk-loop rate
-counter needs three more, and the block had been full since `dk-drag-off-cell`
-took cell 124 that morning. Announce first, the way this section already asks.
-
-**IT COST 52 LINES ACROSS 37 FILES THE LAST TIME, AND THAT IS WHY IT IS A
-CONSTANT NOW.** Re-measured 2026-09-08: `desk-run` plus 51 sites across 36
-test files, against the 29 this paragraph claimed (L-COUNT). The trap the
-constant removes: **read the BINDING, never the size.** Four allocations
-of exactly 256 bytes are NOT a `ds` and a blind search-and-replace takes
-them with it -- `GopUsb`, `GopUsbKbd`, `GopUsbMsc` and the
-`usb-cam-frame` arm each allocate a 256-byte USB CONFIG DESCRIPTOR, and
-every one of them binds `cfg`. Those four still carry the literal, which
-is correct: a descriptor's size is the USB spec's number and has nothing
-to do with the desk.
+Every desk-state allocation uses `dk-ds-bytes` from `GopDesk`. Announce a
+new cell before claiming it and update the table. Identify allocations by
+their binding, not by matching a byte count: USB configuration-descriptor
+buffers also use 256 bytes and remain independent of the desk-state size.
 
 **A WINDOW MAY HANG OFF THE GLASS, AND WHAT KEEPS THE TASKBAR IS THE PAINT
 ORDER** (val, 2026-08-26, superseding the rule that stood here earlier the same

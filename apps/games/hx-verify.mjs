@@ -182,6 +182,26 @@ ok('control: different cells give different boards',
   ok('control: and accepts it once completed', connects(g, 1));
 }
 
+// -- THE RULES: the swap rule ------------------------------------------------
+{
+  const first = e.hx_place(e.hx_new(), 2 * 11 + 5);
+  ok('swap: offered to player 2 in place of the second move, and never before',
+     e.hx_canswap(e.hx_new()) === 0 && e.hx_canswap(first) === 1);
+  const swapped = e.hx_swap(first);
+  const g = cells(swapped);
+  ok('swap: the stone becomes player 2\'s on the mirrored cell, and player 1 moves',
+     g[2 * 11 + 5] === 0 && g[5 * 11 + 2] === 2 && g.filter(v => v).length === 1 && e.hx_cur(swapped) === 1,
+     `stones ${g.map((v, i) => v ? `${i}:${v}` : '').filter(x => x).join(',')} to move ${e.hx_cur(swapped)}`);
+  ok('swap: only once, and not after the second move', e.hx_canswap(swapped) === 0 &&
+     e.hx_canswap(e.hx_place(first, 60)) === 0 && e.hx_swap(e.hx_place(first, 60)) !== undefined);
+  ok('swap: the board swapped from is untouched', cells(first)[2 * 11 + 5] === 1);
+  const gg = (await import('../landing/web/games/arcade.js')).GAMES.find(x => x.id === 'hexgame');
+  const central = e.hx_place(e.hx_new(), 60), corner = e.hx_place(e.hx_new(), 0);
+  const a = gg.step(e, central), b = gg.step(e, corner);
+  ok('page: the engine swaps a central opening and plays on after a corner one',
+     cells(a)[60] === 2 && cells(a).filter(v => v).length === 1 && cells(b)[0] === 1 && cells(b).filter(v => v).length === 2);
+}
+
 console.log(fail === 0
   ? `\nPASS: Hex declares a win exactly when one exists (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

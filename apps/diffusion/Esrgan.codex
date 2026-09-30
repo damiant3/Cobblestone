@@ -1,0 +1,283 @@
+Chapter: Esrgan
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter PthFile
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter UpscaleKernelsPtx
+  cites Diffusion chapter Noise
+
+ RealESRGAN's RRDBNet (basicsr rrdbnet_arch.py, as spandrel's ESRGAN
+ architecture runs the state dicts both installed checkpoints hold):
+ conv_first; num_block RRDBs of three residual dense blocks, each five 3x3
+ convs over the growing channel concatenation, leaky ReLU 0.2 after the
+ first four, the fifth scaled by 0.2 onto the block's input; each RRDB's
+ output scaled by 0.2 onto its input; conv_body added to conv_first's
+ output; two nearest 2x upsamples each followed by a conv and leaky ReLU;
+ conv_hr, leaky ReLU, conv_last. Every conv is 3x3 with padding 1.
+
+ We say:
+
+Section: Weights
+
+ Conv weights in f16 and biases in f32, as VaeDecoder holds them.
+
+  esr-upload : PthFile, PthTensorAt -> Integer
+  esr-upload (f) (t) =
+    let conv = list-length (t.pa-shape) == 4
+    in let h = gpu-buf-alloc (t.pa-count * (if conv then 2 else 4))
+    in if h == 0 then 0
+    else if pth-upload f t h 0 (if conv then gpu-dt-f16 else gpu-dt-f32) < 0 then 0
+    else h
+
+  esr-load-loop : PthFile, Integer, List Text, List Integer, Integer -> VaeWeights
+  esr-load-loop (f) (i) (names) (hs) (failed) =
+    if i >= list-length (f.pf-tensors) then VaeWeights { vw-prefix = "", vw-index = name-index names, vw-handles = hs, vw-failed = failed }
+    else let t = list-at (f.pf-tensors) i
+    in let h = esr-upload f t
+    in esr-load-loop f (i + 1) (list-push names (t.pa-name)) (list-push hs h) (failed + (if h == 0 then 1 else 0))
+
+  esr-load : PthFile -> VaeWeights
+  esr-load (f) = esr-load-loop f 0 (__list-with-capacity (list-length (f.pf-tensors) + 1)) (__list-with-capacity (list-length (f.pf-tensors) + 1)) 0
+
+ The number of RRDBs: the first k with no body.k.rdb1.conv1.weight.
+
+  esr-blocks : PthFile, Integer -> Integer
+  esr-blocks (f) (k) = if pth-find f ("body." & show k & ".rdb1.conv1.weight") 0 < 0 then k else esr-blocks f (k + 1)
+
+Section: Network
+
+  esr-lrelu-into : Act, Integer, Integer, Real -> Integer
+  esr-lrelu-into (x) (dst) (off) (slope) =
+    let n = x.ac * x.ahh * x.aww
+    in if x.ah == 0 | dst == 0 then 0 - 1
+    else gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_lrelu_into" (vd-grid n) [vd-buf (x.ah), vd-buf dst, vd-int off, gpu-arg-u64 (real-to-bits slope), vd-int n]
+
+  esr-lrelu : Act -> Act
+  esr-lrelu (x) = vd-act (x.ah) (x.ac) (x.ahh) (x.aww) (esr-lrelu-into x (x.ah) 0 0.2 >= 0)
+
+ One dense conv: the first c channels of cat to 32, leaky ReLU, written
+ after them.
+
+  esr-dense : VaeWeights, Integer, Act, Text, Integer -> Integer
+  esr-dense (w) (cat) (x) (p) (c) =
+    let y = vd-conv w (Act { ah = cat, ac = c, ahh = x.ahh, aww = x.aww }) p 32 3 1
+    in let r = if y.ah == 0 then 0 - 1 else esr-lrelu-into y cat (c * x.ahh * x.aww) 0.2
+    in let f = vd-free y
+    in r
+
+  esr-rdb : VaeWeights, Act, Text -> Act
+  esr-rdb (w) (x) (p) =
+    let hw = x.ahh * x.aww
+    in let cat = gpu-buf-alloc (192 * hw * 4)
+    in let c0 = esr-lrelu-into x cat 0 1.0
+    in let s1 = if c0 < 0 then 0 - 1 else esr-dense w cat x (p & ".conv1") 64
+    in let s2 = if s1 < 0 then 0 - 1 else esr-dense w cat x (p & ".conv2") 96
+    in let s3 = if s2 < 0 then 0 - 1 else esr-dense w cat x (p & ".conv3") 128
+    in let s4 = if s3 < 0 then 0 - 1 else esr-dense w cat x (p & ".conv4") 160
+    in let x5 = if s4 < 0 then vd-act 0 64 (x.ahh) (x.aww) False else vd-conv w (Act { ah = cat, ac = 192, ahh = x.ahh, aww = x.aww }) (p & ".conv5") 64 3 1
+    in let r = if x5.ah == 0 then 0 - 1 else sm-lincomb (x5.ah) (x.ah) (x.ah) (x5.ah) 0.2 1.0 0.0 (64 * hw)
+    in let f = if cat == 0 then True else gpu-buf-free cat
+    in vd-act (x5.ah) 64 (x.ahh) (x.aww) (r >= 0)
+
+  esr-rrdb : VaeWeights, Act, Text -> Act
+  esr-rrdb (w) (x) (p) =
+    let a = esr-rdb w x (p & ".rdb1")
+    in let b = esr-rdb w a (p & ".rdb2")
+    in let fa = vd-free a
+    in let c = esr-rdb w b (p & ".rdb3")
+    in let fb = vd-free b
+    in let r = if c.ah == 0 then 0 - 1 else sm-lincomb (c.ah) (x.ah) (x.ah) (c.ah) 0.2 1.0 0.0 (64 * x.ahh * x.aww)
+    in vd-act (c.ah) 64 (x.ahh) (x.aww) (r >= 0)
+
+ The trunk from its input x, which stays alive for the skip.
+
+  esr-body : VaeWeights, Act, Act, Integer, Integer -> Act
+  esr-body (w) (x) (trunk) (k) (n) =
+    if k >= n | x.ah == 0 then x
+    else let y = esr-rrdb w x ("body." & show k)
+    in let f = if x.ah == trunk.ah then True else vd-free x
+    in esr-body w y trunk (k + 1) n
+
+ The picture img (3 channels, values in 0 to 1) to 4 times its size; the
+ caller frees the answer.
+
+  esr-forward : VaeWeights, Act, Integer -> Act
+  esr-forward (w) (img) (nb) =
+    let fea = vd-conv w img "conv_first" 64 3 1
+    in let body = esr-body w fea fea 0 nb
+    in let tb = vd-conv w body "conv_body" 64 3 1
+    in let fb = if body.ah == fea.ah then True else vd-free body
+    in let sum = vd-add fea tb
+    in let ft = vd-free tb
+    in let u1 = vd-upsample sum
+    in let f1 = vd-free sum
+    in let c1 = esr-lrelu (vd-conv w u1 "conv_up1" 64 3 1)
+    in let g1 = vd-free u1
+    in let u2 = vd-upsample c1
+    in let g2 = vd-free c1
+    in let c2 = esr-lrelu (vd-conv w u2 "conv_up2" 64 3 1)
+    in let g3 = vd-free u2
+    in let hr = esr-lrelu (vd-conv w c2 "conv_hr" 64 3 1)
+    in let g4 = vd-free c2
+    in let out = vd-conv w hr "conv_last" 3 3 1
+    in let g5 = vd-free hr
+    in out
+
+Section: Tiles
+
+ Forge's upscale_with_model (modules/upscaler_utils.py) over images.py's
+ split_grid and combine_grid: tiles of tile x tile at x = int (col dx), dx =
+ (w - tile) / (cols - 1), cols = ceil ((w - overlap) / (tile - overlap)),
+ clamped to the last whole tile, and the same down the rows; each tile as a
+ BGR tensor of byte / 255, the model's output clamped to 0..1, times 255,
+ rounded half to even, back to RGB. A row of tiles is pasted left to right,
+ each after the first blending its first overlap columns into what is there
+ through the mask r 255 / overlap truncated to a byte (r the column), and
+ the rows likewise down the picture; PIL blends a byte as ((t >> 8) + t) >> 8
+ with t = old (255 - m) + new m + 128 (Paste.c, BLEND and DIV255). The
+ overlap here is the scaled one, 4 times the requested.
+
+  esr-bgr-in : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  esr-bgr-in (rgb) (w) (x0) (y0) (t) (dst) (i) =
+    if i >= t * t then dst
+    else let yy = i / t
+    in let xx = i - yy * t
+    in let s = ((y0 + yy) * w + x0 + xx) * 3
+    in let b = poke-32 dst (i * 4) (nz-f32-bits (real-from-int (peek-byte rgb (s + 2)) / 255.0))
+    in let g = poke-32 dst ((t * t + i) * 4) (nz-f32-bits (real-from-int (peek-byte rgb (s + 1)) / 255.0))
+    in let r = poke-32 dst ((2 * t * t + i) * 4) (nz-f32-bits (real-from-int (peek-byte rgb s) / 255.0))
+    in esr-bgr-in rgb w x0 y0 t dst (i + 1)
+
+ A value rounded to f16, half to even, as Forge's half-precision model
+ leaves its output.
+
+  esr-f16 : Real -> Real
+  esr-f16 (v) =
+    if v ~0 0.0 then 0.0
+    else let e0 = bit-and (bit-shru (real-to-bits v) 52) 2047 - 1023
+    in let e = if e0 < 0 - 14 then 0 - 14 else e0
+    in let q = bits-to-real (bit-shl (e - 10 + 1023) 52)
+    in let r = v / q
+    in let f = real-from-int (real-to-int r)
+    in let d = r - f
+    in let k = if d > 0.5 then f + 1.0 else if d < 0.0 - 0.5 then f - 1.0 else if d ~0 0.5 | d ~0 (0.0 - 0.5) then (if real-to-int f - real-to-int f / 2 * 2 == 0 then f else f + (if d > 0.0 then 1.0 else 0.0 - 1.0)) else f
+    in k * q
+
+  esr-byte : Real -> Integer
+  esr-byte (v0) = esr-byte-f32 (esr-f16 v0)
+
+ A model output in f32 to a byte: clamped to 0..1, times 255 in f32, rounded
+ half to even.
+
+  esr-byte-f32 : Real -> Integer
+  esr-byte-f32 (v) =
+    let c = if v < 0.0 then 0.0 else if v > 1.0 then 1.0 else v
+    in let y = sm-f32 (c * 255.0)
+    in let f = real-from-int (real-to-int y)
+    in let d = y - f
+    in real-to-int f + (if d > 0.5 then 1 else if d < 0.5 then 0 else real-to-int f - real-to-int f / 2 * 2)
+
+  esr-f32 : Integer -> Real
+  esr-f32 (raw) =
+    let b = bit-and raw #FFFFFFFF
+    in let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-shru b 31) 63) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+ The model's planar BGR output of side s at src as an RGB tile of bytes,
+ through f16 first for a half-precision model.
+
+  esr-to-byte : Boolean, Integer -> Integer
+  esr-to-byte (half) (raw) = if half then esr-byte (esr-f32 raw) else esr-byte-f32 (esr-f32 raw)
+
+  esr-rgb-out : Boolean, Integer, Integer, Integer, Integer -> Integer
+  esr-rgb-out (half) (src) (s) (dst) (i) =
+    if i >= s * s then dst
+    else let r = poke-byte dst (i * 3) (esr-to-byte half (peek-32 src ((2 * s * s + i) * 4)))
+    in let g = poke-byte dst (i * 3 + 1) (esr-to-byte half (peek-32 src ((s * s + i) * 4)))
+    in let b = poke-byte dst (i * 3 + 2) (esr-to-byte half (peek-32 src (i * 4)))
+    in esr-rgb-out half src s dst (i + 1)
+
+  esr-blend : Integer, Integer, Integer -> Integer
+  esr-blend (old) (new) (m) = let t = old * (255 - m) + new * m + 128 in (bit-shru t 8 + t) / 256
+
+ Tile bytes (side s) into a buffer of width bw at (x, y); columns below ov
+ blend with the column mask, rows below ovr with the row mask (0 for none).
+
+  esr-paste : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  esr-paste (dst) (bw) (src) (sw) (sh) (x) (y) (ov) (ovr) (i) =
+    if i >= sw * sh then 0
+    else let yy = i / sw
+    in let xx = i - yy * sw
+    in let m = if xx < ov then (xx * 255) / ov else if yy < ovr then (yy * 255) / ovr else 255
+    in let d = ((y + yy) * bw + x + xx) * 3
+    in let a = poke-byte dst d (esr-blend (peek-byte dst d) (peek-byte src (i * 3)) m)
+    in let b = poke-byte dst (d + 1) (esr-blend (peek-byte dst (d + 1)) (peek-byte src (i * 3 + 1)) m)
+    in let c = poke-byte dst (d + 2) (esr-blend (peek-byte dst (d + 2)) (peek-byte src (i * 3 + 2)) m)
+    in esr-paste dst bw src sw sh x y ov ovr (i + 1)
+
+  esr-starts : Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  esr-starts (n) (tile) (count) (k) (d) (acc) =
+    if k >= count then acc
+    else let p = if count > 1 then (k * (n - tile)) / (count - 1) else 0
+    in esr-starts n tile count (k + 1) d (list-push acc (if p + tile >= n then n - tile else p))
+
+  esr-count : Integer, Integer, Integer -> Integer
+  esr-count (n) (tile) (ov) = (n - ov + (tile - ov) - 1) / (tile - ov)
+
+ The buffers one upscale reuses: stage (a tile's BGR f32), host (the
+ network's output), tile (its bytes) and row (a row of tiles, every byte of
+ which the row's tiles write before it is read).
+
+  EsrBufs = record {
+    eb-stage : Integer,
+    eb-host : Integer,
+    eb-tile : Integer,
+    eb-row : Integer
+  }
+
+ One tile of side t at (x, y) of the picture through the network fwd, as
+ bytes of side 4t in bufs' tile; False when it did not run.
+
+  esr-tile : (Act -> Act), Boolean, Integer, Integer, Integer, Integer, Integer, EsrBufs -> Boolean
+  esr-tile (fwd) (half) (rgb) (width) (x) (y) (t) (bufs) =
+    let img = gpu-buf-alloc (3 * t * t * 4)
+    in let ok = img /= 0 & gpu-buf-write img 0 (3 * t * t * 4) (esr-bgr-in rgb width x y t (bufs.eb-stage) 0)
+    in let out = if ok then fwd (vd-act img 3 t t True) else vd-act 0 3 t t False
+    in let s = 4 * t
+    in let got = out.ah /= 0 & gpu-buf-read (out.ah) 0 (3 * s * s * 4) (bufs.eb-host)
+    in let f = vd-free out & (if img == 0 then True else gpu-buf-free img)
+    in if got then esr-rgb-out half (bufs.eb-host) s (bufs.eb-tile) 0 > 0 else False
+
+  esr-row : (Act -> Act), Boolean, Integer, Integer, Integer, List Integer, Integer, Integer, Integer, EsrBufs -> Boolean
+  esr-row (fwd) (half) (rgb) (width) (y) (xs) (k) (t) (ov) (bufs) =
+    if k >= list-length xs then True
+    else let x = list-at xs k
+    in if esr-tile fwd half rgb width x y t bufs == False then False
+    else let p = esr-paste (bufs.eb-row) (4 * width) (bufs.eb-tile) (4 * t) (4 * t) (4 * x) 0 (if x == 0 then 0 else 4 * ov) 0 0
+    in esr-row fwd half rgb width y xs (k + 1) t ov bufs
+
+  esr-rows : (Act -> Act), Boolean, Integer, Integer, Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, EsrBufs -> Integer
+  esr-rows (fwd) (half) (rgb) (width) (height) (xs) (ys) (k) (t) (ov) (out) (bufs) =
+    if k >= list-length ys then out
+    else let y = list-at ys k
+    in if esr-row fwd half rgb width y xs 0 t ov bufs == False then 0
+    else let p = esr-paste out (4 * width) (bufs.eb-row) (4 * width) (4 * t) 0 (4 * y) 0 (if y == 0 then 0 else 4 * ov) 0
+    in esr-rows fwd half rgb width height xs ys (k + 1) t ov out bufs
+
+ The picture of width x height RGB bytes at rgb, at least tile on each side,
+ upscaled 4 times by the network fwd as Forge's upscale_with_model does it,
+ its output through f16 when half; the answer's RGB bytes, or 0.
+
+  esr-upscale-by : (Act -> Act), Boolean, Integer, Integer, Integer, Integer, Integer -> Integer
+  esr-upscale-by (fwd) (half) (rgb) (width) (height) (tile) (ov) =
+    if width < tile | height < tile | tile <= ov then 0
+    else let xs = esr-starts width tile (esr-count width tile ov) 0 0 (__list-with-capacity 64)
+    in let ys = esr-starts height tile (esr-count height tile ov) 0 0 (__list-with-capacity 64)
+    in esr-rows fwd half rgb width height xs ys 0 tile ov (alloc-bytes (16 * width * height * 3)) (EsrBufs { eb-stage = alloc-bytes (3 * tile * tile * 4), eb-host = alloc-bytes (48 * tile * tile * 4), eb-tile = alloc-bytes (48 * tile * tile), eb-row = alloc-bytes (48 * width * tile) })
+
+  esr-upscale : VaeWeights, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  esr-upscale (w) (nb) (rgb) (width) (height) (tile) (ov) = esr-upscale-by (\x -> esr-forward w x nb) True rgb width height tile ov

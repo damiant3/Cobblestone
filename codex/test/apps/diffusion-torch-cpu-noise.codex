@@ -1,0 +1,58 @@
+Chapter: DiffusionTorchCpuNoise
+  cites Diffusion chapter Noise
+  cites Diffusion chapter Sampler
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/torch-cpu-noise-oracle.py's, torch.randn on the CPU
+ after torch.manual_seed, in its case order; a value agrees within 1e-5.
+
+ We say:
+
+Section: Arms
+
+  ours : Integer = #BD700000
+
+  theirs : Integer = #BD900000
+
+  f32-real : Integer -> Real
+  f32-real (raw) =
+    let b = bit-and raw #FFFFFFFF
+    in let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-shru b 31) 63) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+  load : Integer, Integer, Integer -> Boolean
+  load (h) (at) (n) =
+    let u = gpu-buf-upload h 0 "torch-cpu-noise.bin" (at * 4) n gpu-dt-f32 gpu-dt-f32
+    in gpu-buf-read h 0 (n * 4) theirs
+
+  over : Integer, Integer, Integer -> Integer
+  over (i) (n) (acc) =
+    if i >= n then acc
+    else let d = f32-real (peek-32 ours (i * 4)) - f32-real (peek-32 theirs (i * 4))
+    in let a = if d < 0.0 then 0.0 - d else d
+    in over (i + 1) n (acc + (if a > 0.00001 then 1 else 0))
+
+  arm : Integer, Integer, Integer, Integer, Text -> Text
+  arm (h) (at) (n) (seed) (what) =
+    if load h at n == False then what & ": the fixture could not be read"
+    else let z = noise-torch-cpu-into ours seed n
+    in let bad = over 0 n 0
+    in if bad == 0 then what & ": all " & show n & " within 1e-5" else what & ": " & show bad & " of " & show n & " off"
+
+  arms : Integer -> [Console] Nothing
+  arms (h) = act
+    print-line-uni (arm h 0 16384 44769 "1x4x64x64 seed 44769")
+    print-line-uni (arm h 16384 65536 44769 "1x4x128x128 seed 44769")
+    print-line-uni (arm h 81920 100 0 "1x4x5x5 seed 0, the last 16 drawn again")
+    print-line-uni (arm h 82020 256 65535 "1x4x8x8 seed 65535")
+    print-line-uni (arm h 0 16384 44770 "sabotage, seed 44770 against 44769")
+    print-line-uni ("refused under 16: " & show (noise-torch-cpu-into ours 0 15))
+  end
+
+  opening : [Console] Integer
+  opening = act
+    arms (gpu-buf-alloc (65536 * 4))
+    let r = 0 in r
+  end

@@ -697,6 +697,7 @@ body.cl-open { padding-right: 400px; }
 </div>
 
 <script>
+const PAGE_PROFILE = window.__PRISM_PROFILE || {};
 const SAMPLE = [
   'Chapter: Greeting',
   '',
@@ -766,6 +767,8 @@ const PLUG_FILE = {
 // Which pill row a tab shows, and which lens it starts on. A tab whose modules
 // are all absent still switches; the lens simply reports itself dark.
 const TAB_PILLS = { code: 'pills-code', scripts: 'pills-scripts', frameworks: 'pills-frameworks', binary: 'pills-binary' };
+Object.assign(PLUG_FILE, PAGE_PROFILE.plugs || {});
+function plugInput(plug, ir) { return ((PAGE_PROFILE.prefixes || {})[plug] || '') + ir; }
 
 const goBtn = document.getElementById('go');
 const srcEl = document.getElementById('src');
@@ -969,16 +972,12 @@ function mapDiagLine(l) {
   return l;
 }
 
-// ---- Storage: OPFS always, a real folder when the browser grants one --------
-// Everything stays on this machine: the origin-private file system keeps the
-// project across visits, and Open folder binds a directory on disk so edits
-// save into real files. The folder link lasts this session; the OPFS copy is
-// what survives a reload either way.
 function setSaveState(s) { saveState = s; setSrcStatus(); }
+function fileProjectPrefix() { return (PAGE_PROFILE.storage || 'prism') + '.file.' + encodeURIComponent(location.pathname) + '.'; }
 async function opfsProjectDir(create) {
   try {
     const root = await navigator.storage.getDirectory();
-    const prism = await root.getDirectoryHandle('prism', { create: !!create });
+    const prism = await root.getDirectoryHandle(PAGE_PROFILE.storage || 'prism', { create: !!create });
     return await prism.getDirectoryHandle('scratch', { create: !!create });
   } catch (e) { return null; }
 }
@@ -998,18 +997,37 @@ async function persistFile(path) {
   const f = fileByPath(path); if (!f) return;
   setSaveState('saving');
   let ok = false;
-  const d = await opfsProjectDir(true);
+  if (location.protocol === 'file:') {
+    try { localStorage.setItem(fileProjectPrefix() + path, f.text); ok = true; } catch (_) {}
+  }
+  const d = location.protocol === 'file:' ? null : await opfsProjectDir(true);
   if (d) { try { await writeTo(d, path, f.text); ok = true; } catch (e) {} }
   if (fsaDir) { try { await writeTo(fsaDir, path, f.text); ok = true; } catch (e) { setSaveState('folder write failed'); return; } }
   setSaveState(ok ? 'saved' : 'not persisted (no storage granted)');
 }
 async function persistDelete(path) {
   const boundDir = fsaDir;
-  const d = await opfsProjectDir(false);
+  if (location.protocol === 'file:') {
+    try { localStorage.removeItem(fileProjectPrefix() + path); } catch (_) {}
+  }
+  const d = location.protocol === 'file:' ? null : await opfsProjectDir(false);
   if (d) { try { const { dir, leaf } = await dirForPath(d, path, false); await dir.removeEntry(leaf); } catch (e) {} }
   if (boundDir) { try { const { dir, leaf } = await dirForPath(boundDir, path, false); await dir.removeEntry(leaf); } catch (e) {} }
 }
 async function loadPersisted() {
+  if (location.protocol === 'file:') {
+    const files = [], prefix = fileProjectPrefix();
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith(prefix)) continue;
+        const text = localStorage.getItem(key);
+        if (text !== null && text.length <= MAX_FILE) files.push({ path: key.slice(prefix.length), text: eolLf(text) });
+      }
+    } catch (_) { return null; }
+    files.sort((a, b) => a.path < b.path ? -1 : 1);
+    return files.length ? files : null;
+  }
   const d = await opfsProjectDir(false);
   if (!d) return null;
   const files = [];
@@ -1801,6 +1819,7 @@ async function epPost(ep, path, body) {
 // An endpoint that fails is reported beside the status and never fails the
 // build: the artifact is already in the page, and the endpoint is another box.
 async function epKick(name, payload) {
+  if (PAGE_PROFILE.autoEndpoints === false) return;
   const eps = epAll().filter(e => e.auto && e.url);
   const el = document.getElementById('ep-status');
   if (!eps.length) { el.innerHTML = ''; return; }
@@ -1934,18 +1953,13 @@ const cfgBody = document.getElementById('cfg-body');
 const cfgTitle = document.getElementById('cfg-title');
 const cfgStatus = document.getElementById('cfg-status');
 const TARGET_TYPES = {
-  unity: { label: 'Unity game extension', profile: 'windows-x64-mono-6000.0.75f1', module: 'unity-stdio.wasm',
-    fields: { gamePath: 'Game directory', testSavePath: 'Separate test save directory', msvcRoot: 'MSVC toolset directory', windowsSdkRoot: 'Windows SDK directory', windowsSdkVersion: 'Windows SDK version' },
-    note: 'Valheim on Windows x64, Mono, Unity 6000.0.75f1. Build extension packages one DLL. Test uses an isolated game copy. Solo play: linked resources support crafting, upgrades and construction; the storage demo keeps initial neck populations and applies a seven-to-fourteen-game-day cooldown after a zone is cleared and includes a distant midday cirrus arc.' },
   darwin: { label: 'Apple Silicon / Darwin', profile: 'macos-arm64-darwin', module: 'arm64-stdio.wasm',
     fields: { macToolchain: 'Mac packaging toolchain path', minimumOS: 'Minimum macOS version' },
     note: 'Apoorva Pendse ARM64 backend (PR 144). Produces Darwin code/data wire. Mach-O wrapping, signing and execution require a separately configured Mac toolchain.' }
 };
 function targetDefaults(kind) {
   return { version: 1, id: kind + '-local', kind, profile: TARGET_TYPES[kind].profile,
-    gamePath: '', testSavePath: '', macToolchain: '', minimumOS: '',
-    msvcRoot: '', windowsSdkRoot: '', windowsSdkVersion: '',
-    groupLimit: 4, workbenchLinks: true };
+    macToolchain: '', minimumOS: '' };
 }
 function targetValidate(p) {
   if (!p || p.version !== 1 || !Object.prototype.hasOwnProperty.call(TARGET_TYPES, p.kind)) throw new Error('Unknown target schema or family');
@@ -1954,15 +1968,6 @@ function targetValidate(p) {
   if (p.profile !== TARGET_TYPES[p.kind].profile) throw new Error('Unsupported target version: ' + p.profile);
   for (const k of Object.keys(TARGET_TYPES[p.kind].fields)) {
     if (typeof p[k] !== 'string' || p[k].length > 1024 || /[\x00-\x1f]/.test(p[k])) throw new Error('Invalid ' + k);
-  }
-  if (p.kind === 'unity') {
-    delete p.chestRadius; delete p.stationRadius;
-    if (Number.isInteger(p.groupLimit) && p.groupLimit > 4 && p.groupLimit <= 128) p.groupLimit = 4;
-    for (const [k, lo, hi] of [['groupLimit', 1, 4]]) {
-      if (!Number.isFinite(p[k]) || p[k] < lo || p[k] > hi) throw new Error(k + ' must be between ' + lo + ' and ' + hi);
-    }
-    if (!Number.isInteger(p.groupLimit) || typeof p.workbenchLinks !== 'boolean') throw new Error('Invalid storage configuration');
-    if (p.gamePath && p.testSavePath && p.gamePath.replace(/[\\/]+$/, '').toLowerCase() === p.testSavePath.replace(/[\\/]+$/, '').toLowerCase()) throw new Error('Test saves need a separate directory');
   }
   return p;
 }
@@ -1980,7 +1985,7 @@ function targetDownload(name, bytes) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function showTargets(profile) {
-  const p = profile || targetDefaults('unity');
+  const p = profile || targetDefaults('darwin');
   const family = TARGET_TYPES[p.kind];
   cfgTitle.textContent = 'Build targets'; cfgPanel.style.display = ''; cfgSay('');
   cfgBody.innerHTML = '<div class="cfg-row"><label>Target</label><select id="target-kind">' +
@@ -1990,22 +1995,14 @@ function showTargets(profile) {
     '<div class="cfg-row"><label>Profile name</label><input id="target-id" value="' + esc(p.id) + '"></div>' +
     '<div class="cfg-row"><label>Version</label><input id="target-profile" readonly value="' + esc(p.profile) + '"></div>' +
     Object.entries(family.fields).map(([k,v]) => '<div class="cfg-row"><label>' + esc(v) + '</label><input id="target-' + k + '" value="' + esc(p[k] || '') + '"></div>').join('') +
-    (p.kind === 'unity' ? [['groupLimit','Maximum linked chests per bench']].map(([k,v]) =>
-        '<div class="cfg-row"><label>' + v + '</label><input type="number" min="1" max="4" step="1" id="target-' + k + '" value="' + p[k] + '"></div>').join('') +
-      '<div class="cfg-row"><label>Workbench links</label><input type="checkbox" id="target-workbenchLinks"' + (p.workbenchLinks ? ' checked' : '') + '>Explicit links only, within the game\'s chopping block range</div>' : '') +
     '<div class="cfg-hint">' + esc(family.note) + '</div>' +
     '<div class="cfg-acts"><button class="go" id="target-save">Save profile</button><button class="go" id="target-export">Export profile</button>' +
     '<button class="go" id="target-import">Import profile</button><input type="file" id="target-file" accept=".json" hidden>' +
-    '<button class="go" id="target-emit">' + (p.kind === 'unity' ? 'Emit Unity C#' : 'Build Darwin wire') + '</button>' +
-    (p.kind === 'unity' ? '<button class="go" id="target-inspect">Inspect game</button><button class="go" id="target-build">Build extension</button><button class="go" id="target-test" disabled>Test extension</button><button class="go" id="target-demo">Load storage demo</button>' : '') +
+    '<button class="go" id="target-emit">Build Darwin wire</button>' +
     '</div><div class="runout" id="target-result" style="display:block"></div>' + cfgBridgeRow();
   const read = () => {
     const q = Object.assign({}, p, { id: cfgBody.querySelector('#target-id').value.trim() });
     for (const k of Object.keys(family.fields)) q[k] = cfgBody.querySelector('#target-' + k).value.trim();
-    if (p.kind === 'unity') {
-      for (const k of ['groupLimit']) q[k] = Number(cfgBody.querySelector('#target-' + k).value);
-      q.workbenchLinks = cfgBody.querySelector('#target-workbenchLinks').checked;
-    }
     return targetValidate(q);
   };
   const output = cfgBody.querySelector('#target-result');
@@ -2028,24 +2025,6 @@ function showTargets(profile) {
   action('#target-emit', async q => {
     const a = await targetEmit(q); targetDownload(q.id + a.extension, a.bytes); output.textContent = a.note;
   });
-  if (p.kind === 'unity') {
-    let artifact = null;
-    const host = async (q, operation, code, builtArtifact) => {
-      const r = await fetch(bridgeUrl() + '/target', { method: 'POST', mode: 'cors',
-        headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': bridgeToken() },
-        body: JSON.stringify({ operation, profile: q, code: code || '', artifact: builtArtifact || '', features: project.mod ? project.mod.features : null }) });
-      const result = await r.json(); output.textContent = JSON.stringify(result, null, 2);
-      if (!r.ok || !result.ok) throw new Error(result.err || result.out || 'Target action refused');
-      return result;
-    };
-    action('#target-inspect', q => host(q, 'inspect'));
-    action('#target-build', async q => { artifact = null; cfgBody.querySelector('#target-test').disabled = true; const a = await targetEmit(q); const built = await host(q, 'package', new TextDecoder().decode(a.bytes)); artifact = built.artifact; cfgBody.querySelector('#target-test').disabled = false; });
-    action('#target-test', async q => { if (!artifact) throw new Error('Build the extension first'); const a = await targetEmit(q); await host(q, 'test', new TextDecoder().decode(a.bytes), artifact); });
-    cfgBody.querySelector('#target-demo').addEventListener('click', () => {
-      if (!TEMPLATES || !TEMPLATES.ValheimLinkedStorage) { output.textContent = 'Storage demo sources are absent from this page build'; return; }
-      templatesEl.value = 'ValheimLinkedStorage'; templatesEl.dispatchEvent(new Event('change'));
-    });
-  }
   cfgWireBridge();
 }
 async function targetEmit(profile) {
@@ -2057,13 +2036,8 @@ async function targetEmit(profile) {
   const lines = c.text.split('\n'), first = lines.indexOf('IR-BEGIN'), last = lines.indexOf('IR-END');
   if (first < 0 || last <= first) throw new Error(c.text || 'Compiler produced no IR');
   const ir = lines.slice(first + 1, last).join('\n');
-  const header = profile.kind === 'unity' ? 'UNITY ' + profile.profile + '\n' : 'DARWIN\n';
-  const emitted = await runW(await moduleBytes(TARGET_TYPES[profile.kind].module), header + ir);
+  const emitted = await runW(await moduleBytes(TARGET_TYPES[profile.kind].module), 'DARWIN\n' + ir);
   if (/^(REFUSED|\[UNSUPPORTED\]|!EXC|OUT OF MEMORY)/m.test(emitted.text)) throw new Error(emitted.text);
-  if (profile.kind === 'unity') {
-    if (!emitted.text.includes('public static class PrismUnityEntry')) throw new Error('No Unity library entry emitted');
-    return { bytes: new TextEncoder().encode(emitted.text), extension: '.cs', note: 'Unity C# emitted. Build library compiles against the inspected game. No mod installed.' };
-  }
   if (emitted.bytes.length < 12) throw new Error('No ARM64 wire emitted');
   const wire = new DataView(emitted.bytes.buffer, emitted.bytes.byteOffset, emitted.bytes.byteLength);
   let at = 12 + wire.getUint32(0, true) + wire.getUint32(4, true);
@@ -2316,7 +2290,7 @@ async function benchIr(ex) {
   return null;
 }
 async function benchLens(plug, ir) {
-  const p = await runW(await moduleBytes(PLUG_FILE[plug]), ir);
+  const p = await runW(await moduleBytes(PLUG_FILE[plug]), plugInput(plug, ir));
   return p.text.split('\n').filter(l => !l.startsWith('WD:') && !l.startsWith('PM:')).join('\n');
 }
 async function benchNative(cmd) {
@@ -3498,7 +3472,9 @@ goBtn.addEventListener('click', async () => {
       endBusy(); return;
     }
 
-    const p = await runW(await moduleBytes(PLUG_FILE[lens.plug]), ir);
+    const p = await runW(await moduleBytes(PLUG_FILE[lens.plug]), plugInput(lens.plug, ir));
+    if (PAGE_PROFILE.plugs && PAGE_PROFILE.plugs[lens.plug] &&
+        /^(REFUSED|\[UNSUPPORTED\]|!EXC|OUT OF MEMORY|!WASM)/m.test(p.text)) throw new Error(p.text);
     const plines = p.text.split('\n');
     const body = plines.filter(l => !l.startsWith('WD:') && !l.startsWith('PM:'));
     lastRun = { body };
@@ -3788,7 +3764,7 @@ examplesEl.addEventListener('change', async () => {
       return;
     }
     for (const f of project.files) persistDelete(f.path);
-    project.files = []; openTabs = []; activePath = null; project.mod = null;
+    project.files = []; openTabs = []; activePath = null;
     mainPath = addFile('Codex.codex', text, false);
     setStatus('idle', 'run');
   } else {
@@ -3899,7 +3875,7 @@ function startProject(t) {
   }
   fsaDir = null;
   for (const f of project.files) persistDelete(f.path);
-  project.files = []; openTabs = []; activePath = null; project.mod = t.mod || null;
+  project.files = []; openTabs = []; activePath = null;
   let main = null;
   for (const path of Object.keys(t.files)) {
     const added = addFile(path, t.files[path], false);
@@ -3913,36 +3889,6 @@ function startProject(t) {
   outEl.textContent = 'Press Compile.';
   setStatus(t.title + ': ' + count + ' file(s) here, the rest resolves off the library', 'run');
 }
-
-/* ---- Game mods ---------------------------------------------------------------
-   mods.html links here as #mod=<game>:<feature>,<feature>. Each game's catalogue
-   (apps/prism/mods/<game>/features.json, embedded as __MODS) names every
-   feature's sources, its engine effect and its start call; the project is the
-   chosen features' sources plus an entry chapter declaring and starting only
-   those. The Unity lens emits a feature only when the entry starts it. */
-const MODS = (typeof window !== 'undefined' && window.__MODS) || null;
-function composeMod(game, ids) {
-  const g = MODS && MODS[game];
-  if (!g) throw new Error('no mod catalogue for ' + game);
-  const unknown = ids.filter(id => !g.features.some(f => f.id === id));
-  if (unknown.length) throw new Error(g.title + ' has no feature ' + unknown.join(', '));
-  const chosen = g.features.filter(f => ids.includes(f.id));
-  if (!chosen.length) throw new Error('choose at least one feature');
-  const files = {};
-  for (const f of chosen) for (const s of f.sources) files[s] = g.files[s];
-  files[g.entry] = 'Chapter: ' + g.entryChapter + '\n\nSection: Engine Entry\n\n  effect Process where\n' +
-    chosen.map(f => '    ' + f.effect).join('\n') + '\n\nSection: Entry\n\n  opening : [Process] Nothing = act\n' +
-    chosen.map(f => '    ' + f.start).join('\n') + '\n  end\n';
-  return { title: g.title + ' mod (' + chosen.map(f => f.title).join(', ') + ')', files, main: g.entry, mod: { game, features: chosen.map(f => f.id) } };
-}
-function modFromHash() {
-  const m = /^#mod=([a-z0-9-]+):([a-z0-9,-]+)$/.exec(location.hash);
-  if (!m) return;
-  try { startProject(composeMod(m[1], m[2].split(','))); }
-  catch (e) { setStatus(esc(String(e && e.message || e)), 'err'); }
-  history.replaceState(null, '', location.pathname + location.search);
-}
-window.addEventListener('hashchange', modFromHash);
 
 newFileBtn.addEventListener('click', () => {
   const name = prompt('New file (a .codex file joins the compile unit):', 'chapter.codex');
@@ -4209,7 +4155,7 @@ async function compileForAgent() {
 async function lensForAgent(plug) {
   if (!PLUG_FILE[plug]) throw new Error('no such lens: ' + plug);
   if (!lastAgentCompile || !lastAgentCompile.ir) throw new Error('nothing compiled yet; run compile first');
-  const p = await runW(await moduleBytes(PLUG_FILE[plug]), lastAgentCompile.ir);
+  const p = await runW(await moduleBytes(PLUG_FILE[plug]), plugInput(plug, lastAgentCompile.ir));
   return p.text.split('\n').filter(l => !l.startsWith('WD:') && !l.startsWith('PM:')).join('\n');
 }
 
@@ -4437,12 +4383,18 @@ if (typeof window !== 'undefined' && window.__claude) {
   clRefreshKeyRow();
   const persisted = await loadPersisted();
   if (persisted) { project.files = persisted; setSaveState('saved'); }
-  else project.files = [{ path: 'greeting.codex', text: SAMPLE }];
+  else project.files = PAGE_PROFILE.initialProject
+    ? Object.entries(PAGE_PROFILE.initialProject.files).map(([path, text]) => ({ path, text }))
+    : [{ path: 'greeting.codex', text: SAMPLE }];
+  if (!persisted && PAGE_PROFILE.initialProject) {
+    for (const f of project.files) await persistFile(f.path);
+  }
   const first = project.files.find(f => isUnitFile(f.path)) || project.files[0];
   if (first) openFile(first.path);
   loadExamples();
-  modFromHash();
   if (cannotFetch()) fileOriginNotice();
+  window.__prismReady = true;
+  window.dispatchEvent(new Event('prism-ready'));
 })();
 </script>
 

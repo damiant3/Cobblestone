@@ -1,0 +1,70 @@
+Chapter: TokenIdentity
+
+  cites Foreword chapter Console
+  cites Codex chapter Lexer
+  cites Codex chapter Tokens
+  cites Codex chapter Phase Allocator
+  cites Codex chapter Build Settings
+
+ The serial input is two chapters joined by the line LAYOUTSPLITLAYOUTSPLIT,
+ CCE bytes on the serial ring, as the compiler reads its source (build/vm-config.ps1,
+ ConvertTo-CceBytes).
+
+ We say:
+
+Section: Tokens
+
+  ti-split : Text
+  ti-split = "\nLAYOUTSPLITLAYOUTSPLIT\n"
+
+  ti-layout : TokenKind -> Boolean
+  ti-layout (k) = when k
+    is Newline -> True
+    is Indent -> True
+    is Dedent -> True
+    is otherwise -> False
+
+  ti-keep : List Token, Integer, List Token -> List Token
+  ti-keep (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else if ti-layout ((list-at ts i).kind) then ti-keep ts (i + 1) acc
+    else ti-keep ts (i + 1) (list-push acc (list-at ts i))
+
+  ti-where : Token -> Text
+  ti-where (t) = show (t.line) & ":" & show (t.column) & " '" & token-text t & "'"
+
+  ti-first-diff : List Token, List Token, Integer -> Integer
+  ti-first-diff (a) (b) (i) =
+    if i >= list-length a | i >= list-length b then i
+    else if (list-at a i).kind == (list-at b i).kind & token-text (list-at a i) == token-text (list-at b i) then ti-first-diff a b (i + 1)
+    else i
+
+  ti-report : List Token, List Token -> Text
+  ti-report (a) (b) =
+    let d = ti-first-diff a b 0
+    in let head = "tokens " & show (list-length a) & " and " & show (list-length b)
+    in if d >= list-length a & d >= list-length b then head & ", identical"
+    else if d >= list-length a | d >= list-length b then head & ", DIFFER in length after token " & show d
+    else head & ", DIFFER at token " & show d & ": " & ti-where (list-at a d) & " against " & ti-where (list-at b d)
+
+Section: Entry
+
+  ti-run : Text -> Text
+  ti-run (all) =
+    let s = text-index-of all ti-split
+    in if s < 0 then "refused: no LAYOUTSPLITLAYOUTSPLIT line in the input"
+    else let mb = init-phase-allocator
+    in let base = build demand-lex-floor
+    in let ph = phase-start
+    in let ra = tokenize-into (substring all 0 s) 0 False (base + demand-lex-floor)
+    in let rb = tokenize-into (substring all (s + text-length ti-split) (text-length all - s - text-length ti-split)) 1 False (base + demand-lex-floor)
+    in if list-length (ra.errors) > 0 | list-length (rb.errors) > 0 then "refused: a chapter does not lex (" & show (list-length (ra.errors)) & " and " & show (list-length (rb.errors)) & " lexer errors)"
+    else ti-report (ti-keep (ra.tokens) 0 []) (ti-keep (rb.tokens) 0 [])
+
+  opening : [Console] Nothing
+  opening = act
+    all <- read-serial-cce ""
+    print-line-uni (ti-run all)
+  end
+
+Page 1

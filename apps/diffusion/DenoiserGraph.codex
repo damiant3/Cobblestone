@@ -1,0 +1,80 @@
+Chapter: DenoiserGraph
+  cites Diffusion chapter SamplerSchedule
+  cites Diffusion chapter SamplerGraph
+  cites Diffusion chapter UNetGraph
+  cites Diffusion chapter UNet15Graph
+
+ The SDXL or SD1.5 UNet as the denoiser a sampler's loop calls, as Forge's
+ KModel runs it (backend/modules/k_model.py:25-45): the latent scaled by
+ 1 / sqrt (sigma^2 + 1), the model run at the nearest discrete timestep, and
+ x - eps sigma answered.
+
+ We say:
+
+Section: Timesteps
+
+ The log sigmas of the discrete schedule, ascending, computed once and
+ passed to every lookup.
+
+  unet-log-sigmas : Integer -> List Real
+  unet-log-sigmas (z) = ud-table 0 []
+
+  ud-table : Integer, List Real -> List Real
+  ud-table (i) (acc) =
+    if i >= 1000 then acc
+    else ud-table (i + 1) (list-push acc (sm-ln (sm-discrete-sigma i)))
+
+ Forge's Prediction.timestep (k_prediction.py:148-151): the entry nearest in
+ log sigma, the lower on a tie (argmin).
+
+  unet-sigma-to-t : List Real, Real -> Real
+  unet-sigma-to-t (tab) (s) =
+    let ls = sm-ln s
+    in let low = ud-low tab ls 0 0
+    in let lo = if low > 998 then 998 else low
+    in let a = list-at tab lo
+    in let b = list-at tab (lo + 1)
+    in let da = if ls < a then a - ls else ls - a
+    in let db = if ls < b then b - ls else ls - b
+    in real-from-int (if da <= db then lo else lo + 1)
+
+  ud-low : List Real, Real, Integer, Integer -> Integer
+  ud-low (tab) (ls) (i) (last) =
+    if i >= 1000 then last
+    else ud-low tab ls (i + 1) (if list-at tab i <= ls then i else last)
+
+Section: Denoiser
+
+  unet-denoise-with : UNetOps a, SamplerOps, a, List Real, Integer, Integer, Integer, Integer, Integer, Real -> Integer
+  unet-denoise-with (ops) (sops) (u) (tab) (y) (ctx) (h) (w) (x) (sigma) = ud-step-with ops sops (unet-embedding-with ops u (unet-sigma-to-t tab sigma) y) h w x sigma 20 (\xin embs -> unet-forward-with ops u xin embs ctx h w)
+
+  unet15-denoise-with : UNetOps a, SamplerOps, a, List Real, Integer, Integer, Integer, Integer, Real -> Integer
+  unet15-denoise-with (ops) (sops) (u) (tab) (ctx) (h) (w) (x) (sigma) = ud-step-with ops sops (unet15-embedding-with ops u (unet-sigma-to-t tab sigma)) h w x sigma 26 (\xin embs -> unet15-forward-with ops u xin embs ctx h w)
+
+  ud-step-with : UNetOps a, SamplerOps, Integer, Integer, Integer, Integer, Real, Integer, (Integer, Integer -> List Integer) -> Integer
+  ud-step-with (ops) (sops) (emb) (h) (w) (x) (sigma) (nblocks) (forward) =
+    let n = 4 * h * w
+    in let embs = ops.silu emb 1280
+    in let xin = ops.alloc (n * 4)
+    in let scaled = if xin == 0 then False else sops.lincomb x x x xin (1.0 / sm-sqrt (sigma * sigma + 1.0)) 0.0 0.0 n >= 0
+    in let blocks = if scaled then forward xin embs else []
+    in let eps = if list-length blocks == nblocks then list-at blocks (nblocks - 1) else 0
+    in let d = ops.alloc (n * 4)
+    in let ok = if eps == 0 | d == 0 then False else sops.lincomb x eps eps d 1.0 (0.0 - sigma) 0.0 n >= 0
+    in ops.free (ops.free (ops.free (ud-free-all-with ops (if ok then d else ops.free 0 d) blocks 0) emb) embs) xin
+
+ Classifier-free guidance as Forge combines the two estimates: uncond + cfg
+ (cond - uncond), into a fresh buffer.
+
+  guided-with : UNetOps a, SamplerOps, (Integer, Real -> Integer), (Integer, Real -> Integer), Real, Integer, Integer, Real -> Integer
+  guided-with (ops) (sops) (cond) (uncond) (cfg) (n) (x) (sigma) =
+    let dc = cond x sigma
+    in let du = uncond x sigma
+    in let out = ops.alloc (n * 4)
+    in let r = if dc == 0 | du == 0 | out == 0 then 0 - 1 else sops.lincomb du dc dc out (1.0 - cfg) cfg 0.0 n
+    in ops.free (ops.free (if r < 0 then ops.free 0 out else out) dc) du
+
+  ud-free-all-with : UNetOps a, Integer, List Integer, Integer -> Integer
+  ud-free-all-with (ops) (keep) (hs) (i) =
+    if i >= list-length hs then keep
+    else ud-free-all-with ops (ops.free keep (list-at hs i)) hs (i + 1)

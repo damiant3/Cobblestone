@@ -1,0 +1,305 @@
+Chapter: DiffusionImg2ImgParts
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Img2Img
+  cites Diffusion chapter Noise
+  cites Foreword chapter FactDisk
+
+ Img2Img's arithmetic against Forge's own code over the same formula inputs.
+ The disk is build/mint-clip-bpe-disk.ps1's with two extras from
+ codex/test/apps/img2img-ref, written by build/img2img-oracle.py: reals.ref,
+ little-endian f64 (the 8 schedule lengths, the schedules, the posterior
+ sample, the hires latent resize, the stand-in runs, masked content latent
+ nothing then latent noise for seed 1234), and bytes.ref (per mask, opaque then
+ transparent: binary, blurred and overlay masks at 64 x 48, reduced and
+ latent masks at 8 x 6; then the pasted-back picture, 64 x 48 x 3). The
+ sabotage arms must move: the blur at sigma 3, the hires schedule read as
+ img2img's, and the paste under the inverted overlay mask, and the mask applied to the stand-in model's output but not its input. The schedules are
+ compared to 1e-4 of each sigma because k-diffusion builds them in f32 (1.3e-5 is
+ the largest gap measured); the blur, cv2's fixed-point arithmetic, is
+ graded by how many bytes differ and by how much. Latent noise is graded
+ to 1e-5, the bound noise-torch holds against torch's CUDA draws
+ (diffusion-torch-noise).
+
+ We say:
+
+Section: Disk
+  ip-load : Integer, Integer -> [Device.Block] Integer
+  ip-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+Section: Inputs
+
+  case-steps : List Integer
+  case-steps = [6, 6, 20, 10, 6, 4, 6, 3]
+
+  case-denoise : List Real
+  case-denoise = [0.5, 0.75, 0.3, 1.0, 0.7, 0.35, 1.0, 0.2]
+
+  case-hires : List Integer
+  case-hires = [0, 0, 0, 0, 1, 1, 1, 1]
+
+  picture-at : Integer -> Integer
+  picture-at (i) =
+    let p = i / 3
+    in let c = i - p * 3
+    in if c == 0 then int-mod (p * 37 + 11) 256 else if c == 1 then int-mod (p * 91 + 7) 256 else int-mod (p * 13 + 200) 256
+
+  generated-at : Integer -> Integer
+  generated-at (i) =
+    let p = i / 3
+    in let c = i - p * 3
+    in if c == 0 then int-mod (p * 53 + 3) 256 else if c == 1 then int-mod (p * 29 + 101) 256 else int-mod (p * 71 + 17) 256
+
+  mask-at : Integer, Boolean -> Integer
+  mask-at (i) (alpha) =
+    let p = i / 4
+    in let c = i - p * 4
+    in let x = int-mod p 64
+    in let y = p / 64
+    in let inside = (x - 30) * (x - 30) + (y - 22) * (y - 22) < 225 | (x > 50 & y < 10)
+    in let n = int-mod (x * 7 + y * 3) 40
+    in let g = if inside then 255 - n else n
+    in if alpha then (if c == 0 then 200 else if c == 1 then 90 else if c == 2 then 30 else if inside then 255 else 0)
+    else if c == 0 then g else if c == 1 then int-mod (g * 3) 256 else if c == 2 then 255 - g else 255
+
+  moment-at : Integer -> Real
+  moment-at (i) = real-from-int (int-mod (i * 37 + 11) 257 - 128) / 64.0
+
+  draw-at : Integer -> Real
+  draw-at (i) = real-from-int (int-mod (i * 53 + 17) 263 - 131) / 128.0
+
+  latent-at : Integer -> Real
+  latent-at (i) = real-from-int (int-mod (i * 13 + 5) 251 - 125) / 256.0
+
+  bytes-by : Integer, Integer -> Integer
+  bytes-by (n) (which) = bytes-by-fill (alloc-bytes n) 0 n which
+
+  bytes-by-fill : Integer, Integer, Integer, Integer -> Integer
+  bytes-by-fill (a) (i) (n) (which) =
+    if i >= n then a
+    else let w = poke-byte a i (if which == 0 then picture-at i else if which == 1 then generated-at i else if which == 2 then mask-at i False else mask-at i True)
+    in bytes-by-fill a (i + 1) n which
+
+  reals-by : Integer, Integer -> Integer
+  reals-by (which) (n) = reals-by-fill (alloc-bytes (n * 4)) which 0 n
+
+  reals-by-fill : Integer, Integer, Integer, Integer -> Integer
+  reals-by-fill (a) (which) (i) (n) =
+    if i >= n then a
+    else let w = i2-set a i (if which == 0 then moment-at i else if which == 1 then draw-at i else latent-at i)
+    in reals-by-fill a which (i + 1) n
+
+  byte-copy : Integer, Integer, Integer -> Integer
+  byte-copy (src) (n) (i) = byte-copy-fill src (alloc-bytes n) 0 n
+
+  byte-copy-fill : Integer, Integer, Integer, Integer -> Integer
+  byte-copy-fill (src) (dst) (i) (n) = if i >= n then dst else let w = poke-byte dst i (peek-byte src i) in byte-copy-fill src dst (i + 1) n
+
+Section: Reference
+
+  ref-real : Integer, Integer -> Real
+  ref-real (r) (k) = bits-to-real (bit-or (bit-and (peek-32 r (k * 8)) #FFFFFFFF) (bit-shl (bit-and (peek-32 r (k * 8 + 4)) #FFFFFFFF) 32))
+
+  ref-sched : Integer = 8
+
+  ref-posterior : Integer = 61
+
+  ref-bilinear : Integer = 157
+
+  mask-base : Boolean -> Integer
+  mask-base (alpha) = if alpha then 9312 else 0
+
+  ref-composite : Integer = 18624
+
+Section: Grading
+
+  mismatches : Integer, Integer, Integer, Integer, Integer -> Integer
+  mismatches (a) (ref) (i) (n) (acc) =
+    if i >= n then acc
+    else mismatches a ref (i + 1) n (if peek-byte a i == peek-byte ref i then acc else acc + 1)
+
+  worst-diff : Integer, Integer, Integer, Integer, Integer -> Integer
+  worst-diff (a) (ref) (i) (n) (acc) =
+    if i >= n then acc
+    else let d = peek-byte a i - peek-byte ref i
+    in let e = if d < 0 then 0 - d else d
+    in worst-diff a ref (i + 1) n (if e > acc then e else acc)
+
+  bytes-line : Text, Integer, Integer, Integer -> Text
+  bytes-line (label) (a) (ref) (n) = label & ": " & show (mismatches a ref 0 n 0) & " of " & show n & " differ, by at most " & show (worst-diff a ref 0 n 0)
+
+  max-err : Integer, Integer, Integer, Integer, Integer, Real -> Real
+  max-err (a) (r) (at) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = i2-abs (i2-get a i - ref-real r (at + i))
+    in max-err a r at (i + 1) n (if e > acc then e else acc)
+
+  reals-line : Text, Integer, Integer, Integer, Integer, Real -> Text
+  reals-line (label) (a) (r) (at) (n) (tol) = label & ": " & (if max-err a r at 0 n 0.0 <= tol then "within " else "PAST ") & (if tol < 0.000002 then "1e-6" else "1e-5")
+
+Section: Schedules
+
+  sched-ok : List Real, Integer, Integer, Integer -> Boolean
+  sched-ok (got) (r) (start) (i) =
+    if i >= list-length got then True
+    else let v = ref-real r (ref-sched + start + i)
+    in if i2-abs (list-at got i - v) > 0.0001 * (if v > 0.0 then v else 1.0) then False
+    else sched-ok got r start (i + 1)
+
+  sched-lines : Integer, Integer, Integer, List Text -> List Text
+  sched-lines (r) (k) (start) (acc) =
+    if k >= 8 then acc
+    else let steps = list-at case-steps k
+    in let d = list-at case-denoise k
+    in let hr = list-at case-hires k == 1
+    in let got = img2img-sigmas steps d hr
+    in let n = real-to-int (ref-real r k)
+    in let ok = list-length got == n & sched-ok got r start 0
+    in sched-lines r (k + 1) (start + n) (list-push acc ("schedule " & show steps & " steps at " & show (real-to-int (d * 100.0 + 0.5)) & "%" & (if hr then " (hires)" else "") & ": " & (if ok then "ok, " & show n & " sigmas" else "WRONG, " & show (list-length got) & " sigmas")))
+
+Section: Masks
+
+  mask-lines : Text, Boolean, Integer -> List Text
+  mask-lines (tag) (alpha) (b) =
+    let base = b + mask-base alpha
+    in let px = bytes-by 12288 (if alpha then 3 else 2)
+    in [bytes-line (tag & " binary mask") (img2img-binary-mask px 3072) base 3072,
+        bytes-line (tag & " blurred mask") (img2img-blur (byte-copy base 3072 0) 64 48 4) (base + 3072) 3072,
+        bytes-line (tag & " overlay mask") (img2img-overlay-mask (base + 3072) 3072) (base + 6144) 3072,
+        bytes-line (tag & " reduced mask") (img2img-reduce (base + 3072) 64 48 8 6) (base + 9216) 48,
+        bytes-line (tag & " latent mask") (img2img-latent-mask (base + 3072) 64 48) (base + 9264) 48]
+
+Section: Stand-in Sampler
+
+ img2img over a stand-in model D(x)_i = x_i / 2 + x_(i+1) / 4, Euler over the 6-step 50%
+ schedule, from the formula init latent and noise; masked, the per-call noise
+ is call-draw of the call's index. Their bound is 1e-5: five Euler steps in f32
+ against torch's f32 differ by 1.3e-6 (measured 2026-09-29).
+
+  call-draw : Integer, Integer -> Real
+  call-draw (i) (k) = real-from-int (int-mod (i * 29 + k * 101 + 7) 241 - 120) / 128.0
+
+  sigma-index : List Real, Real, Integer -> Integer
+  sigma-index (sig) (s) (i) = if i >= list-length sig then 0 else if list-at sig i ~0 s then i else sigma-index sig s (i + 1)
+
+  device-of : Integer, Integer -> Integer
+  device-of (a) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 then 0 else if gpu-buf-write h 0 (n * 4) a then h else 0
+
+  draws-for : Integer, Integer, Integer -> Integer
+  draws-for (a) (k) (i) = if i >= 96 then a else let w = i2-set a i (call-draw i k) in draws-for a k (i + 1)
+
+  mix-into : Integer, Integer, Integer -> Integer
+  mix-into (a) (o) (i) = if i >= 96 then o else let w = i2-set o i (0.5 * i2-get a i + 0.25 * i2-get a (int-mod (i + 1) 96)) in mix-into a o (i + 1)
+
+  half : Integer, Real -> Integer
+  half (x) (s) =
+    let a = alloc-bytes 384
+    in let d = gpu-buf-alloc (96 * 4)
+    in if d == 0 | gpu-buf-read x 0 384 a == False then 0
+    else if gpu-buf-write d 0 384 (mix-into a (alloc-bytes 384) 0) then d else 0
+
+  output-only : I2Mask, Integer, Real -> Integer
+  output-only (m) (x) (s) =
+    let d = half x s
+    in if d == 0 then 0 else if img2img-settle m d then d else 0
+
+  start-of : Integer, Integer, Real, Integer -> Integer
+  start-of (init) (a) (s0) (i) = if i >= 96 then a else let w = i2-set a i (draw-at i * s0 + i2-get init i) in start-of init a s0 (i + 1)
+
+  nmask-bytes : Integer, Integer -> Integer
+  nmask-bytes (a) (p) = if p >= 24 then a else let w = poke-byte a p (if int-mod p 6 < 3 then 1 else 0) in nmask-bytes a (p + 1)
+
+  stand-in : Integer, Boolean, Boolean -> Text
+  stand-in (r) (masked) (settle) =
+    let sig = img2img-sigmas 6 0.5 False
+    in let init = reals-by 2 96
+    in let x = device-of (start-of init (alloc-bytes 384) (list-at sig 0) 0) 96
+    in let nb = gpu-buf-alloc (96 * 4)
+    in let scratch = alloc-bytes 384
+    in let noise = \s -> (if gpu-buf-write nb 0 384 (draws-for scratch (sigma-index sig s 0) 0) then nb else 0)
+    in let mk = I2Mask { mk-latent = nmask-bytes (alloc-bytes 24) 0, mk-init = init, mk-hw = 24, mk-gx = alloc-bytes 384, mk-gn = alloc-bytes 384, mk-dev = gpu-buf-alloc 384 }
+    in let den = if masked == False then (\xh s -> half xh s) else if settle then (\xh s -> img2img-masked mk (\xx ss -> half xx ss) noise xh s) else (\xh s -> output-only mk xh s)
+    in let bad = sample-euler den x sig 96
+    in let ok = if masked then img2img-settle mk x else True
+    in let got = alloc-bytes 384
+    in let read = x /= 0 & gpu-buf-read x 0 384 got
+    in let label = if masked == False then "img2img over a stand-in model" else if settle then "masked img2img over a stand-in model" else "sabotage, masked img2img with the mask on the output only"
+    in if bad > 0 | ok == False | read == False then label & ": NO OUTPUT"
+    else reals-line label got r (if masked then 589 else 685) 96 0.00001
+
+Section: Masked Content
+
+  content-of : Integer -> Integer
+  content-of (fill) =
+    let init = reals-by 2 96
+    in let c = img2img-content fill init (nmask-bytes (alloc-bytes 24) 0) 24 1234
+    in init
+
+  wrong-draw : Integer -> Integer
+  wrong-draw (seed) =
+    let init = reals-by 2 96
+    in let nz = alloc-bytes 384
+    in let z = noise-torch-into nz seed 1 96
+    in let c = i2-content init nz (nmask-bytes (alloc-bytes 24) 0) 24 0 96
+    in init
+
+Section: Entry
+
+  i2-invert : Integer, Integer, Integer, Integer -> Integer
+  i2-invert (src) (dst) (i) (n) = if i >= n then dst else let w = poke-byte dst i (255 - peek-byte src i) in i2-invert src dst (i + 1) n
+
+  run-all : Integer, Integer -> List Text
+  run-all (r) (b) =
+    let a = sched-lines r 0 0 []
+    in let post = alloc-bytes (96 * 4)
+    in let p = img2img-posterior (reals-by 0 192) (reals-by 1 96) post 24 0.13025 0
+    in let pl = reals-line "posterior sample" post r ref-posterior 96 0.000001
+    in let c = mask-lines "opaque" False b
+    in let d = mask-lines "transparent" True b
+    in let rgb = bytes-by 9216 0
+    in let ov = b + 6144
+    in let e = bytes-line "pasted-back picture" (img2img-composite rgb ov (bytes-by 9216 1) 0 9216) (b + ref-composite) 9216
+    in let up = alloc-bytes (432 * 4)
+    in let u = img2img-bilinear (reals-by 2 192) up 6 8 9 12 0
+    in let f = reals-line "hires latent resize" up r ref-bilinear 432 0.000001
+    in let s1 = bytes-line "sabotage, opaque blurred mask at sigma 3" (img2img-blur (byte-copy b 3072 0) 64 48 3) (b + 3072) 3072
+    in let hs = img2img-sigmas 6 0.7 False
+    in let s2 = "sabotage, the 6-step 70% hires schedule read as img2img's: " & (if list-length hs == real-to-int (ref-real r 4) & sched-ok hs r 30 0 then "ok" else "WRONG")
+    in let s3 = bytes-line "sabotage, pasted back under the inverted overlay mask" (img2img-composite rgb (i2-invert ov (alloc-bytes 3072) 0 3072) (bytes-by 9216 1) 0 9216) (b + ref-composite) 9216
+    in let g = [stand-in r True True, stand-in r False False, stand-in r True False]
+    in let mc = [reals-line "masked content, latent nothing" (content-of 3) r 781 96 0.000001, reals-line "masked content, latent noise" (content-of 2) r 877 96 0.00001, reals-line "sabotage, latent noise from the seed's second draw" (wrong-draw 1234) r 877 96 0.00001]
+    in let dn = alloc-bytes (192 * 4)
+    in let dz = img2img-bilinear (reals-by 2 432) dn 9 12 6 8 0
+    in a & [pl] & c & d & [e, f] & g & [s1, s2, s3] & mc & [reals-line "latent upscale's resize taken down" dn r 973 192 0.000001]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  ip-go : Integer, Integer, Integer, Integer -> [Console, Device.Block] Nothing
+  ip-go (rs) (rl) (bs) (bl) =
+    act
+      r <- ip-load rs rl
+      b <- ip-load bs bl
+      print-all (run-all r b) 0
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    ip-go (peek-32 h 12) (peek-32 h 16) (peek-32 h 20) (peek-32 h 24)
+  end

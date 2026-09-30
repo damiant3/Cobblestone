@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+const {specialize}=createRequire(import.meta.url)('./winhost.js');
+const base=readFileSync('build-output/native-helper/ModBuilder.exe.base');
+const map=readFileSync('build-output/native-helper/ModBuilder.exe.map','utf8');
+assert.throws(()=>specialize(new Uint8Array(8),map),/Expected PE/);
+assert.throws(()=>specialize(base,''),/expected one mb-native-call/);
+assert.throws(()=>specialize(base,map+'\n'+map),/expected one mb-native-call/);
+assert.throws(()=>specialize(base,map,false,{returnUrl:'javascript:alert(1)'}),/Unsupported helper return URL/);
+const bad=Buffer.from(base),pe=bad.readUInt32LE(60);bad.writeBigUInt64LE(0x200000n,pe+48);
+assert.throws(()=>specialize(bad,map),/Unsupported hosted Windows layout/);
+writeFileSync('build-output/native-helper/ModBuilder-console.exe',specialize(base,map,true));
+console.log('PASS native PE refusal controls and console test artifact');

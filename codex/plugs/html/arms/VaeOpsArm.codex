@@ -1,0 +1,61 @@
+Chapter: VaeOpsArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter BrowserVae
+
+ The page codex/plugs/html/arms/vae-ops.mjs drives: a 64 x 4 x 4 activation and
+ a GroupNorm and a 3 x 3 conv's weights written to the device, then bv-norm with
+ SiLU and bv-conv, and the result read back. Values are (i * s mod 128 - 64) / 64.
+
+ We say:
+
+Section: Data
+
+  vo-val : Integer, Integer -> Real
+  vo-val (i) (s) = vo-real (i * s - (i * s) / 128 * 128) / 64.0 - 1.0
+
+  vo-real : Integer -> Real
+  vo-real (k) = vo-real-loop k 0.0
+
+  vo-real-loop : Integer, Real -> Real
+  vo-real-loop (k) (acc) = if k <= 0 then acc else vo-real-loop (k - 1) (acc + 1.0)
+
+  vo-words : Integer, Integer, Integer, List Integer -> List Integer
+  vo-words (i) (n) (s) (acc) =
+    if i >= n then acc
+    else vo-words (i + 1) n s (list-snoc acc (gpu-f32-bits (vo-val i s)))
+
+  vo-buf : Integer, Integer -> Integer
+  vo-buf (n) (s) =
+    let h = gpu-buf-alloc (n * 4)
+    in let w = gpu-buf-write-words h 0 (vo-words 0 n s [])
+    in h
+
+Section: Run
+
+  opening : [Console] Integer
+  opening = gpu-open-then vo-opened
+
+  vo-opened : Text -> Integer
+  vo-opened (r) =
+    let code = page-data "bk"
+    in let w = BvWeights { bw-names = ["n.weight", "n.bias", "c.weight", "c.bias"], bw-handles = [vo-buf 64 37, vo-buf 64 11, vo-buf (64 * 64 * 9) 53, vo-buf 64 29] }
+    in let x = BvAct { ah = vo-buf (64 * 16) 41, ac = 64, ahh = 4, aww = 4 }
+    in let n = bv-norm code w x "n" True
+    in let y = bv-conv code w n "c" 64 3 1
+    in let s = state-set "ok" (if y.ah == 0 then 0 else 1)
+    in let aw = BvWeights { bw-names = ["a.norm.weight", "a.norm.bias", "a.q.weight", "a.q.bias", "a.k.weight", "a.k.bias", "a.v.weight", "a.v.bias", "a.proj_out.weight", "a.proj_out.bias"], bw-handles = [vo-buf 64 37, vo-buf 64 11, vo-buf 4096 13, vo-buf 64 17, vo-buf 4096 19, vo-buf 64 23, vo-buf 4096 31, vo-buf 64 43, vo-buf 4096 47, vo-buf 64 59] }
+    in let a = bv-attention code aw x "a."
+    in let t = state-set "attn-handle" (a.ah)
+    in gpu-buf-download-then (y.ah) 0 (64 * 16 * 4) vo-got
+
+  vo-got : Text -> Integer
+  vo-got (r) =
+    let s = state-set-text "y" r
+    in gpu-buf-download-then (state-get "attn-handle") 0 (64 * 16 * 4) vo-got-attn
+
+  vo-got-attn : Text -> Integer
+  vo-got-attn (r) =
+    let s = state-set-text "attn" r
+    in let e = state-set-text "err" (gpu-error 0)
+    in state-set "done" 1

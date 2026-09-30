@@ -52,7 +52,11 @@ $Root = (Resolve-Path $Root).Path
 # A token the caller cannot guess. New every run: a bridge you restarted is a
 # bridge whose old token stops working, which is the behaviour you want if you
 # ever pasted it somewhere you should not have.
+# A launcher that opens the page itself (apps/modbuilder/run.ps1) generates the
+# token and hands it over in the environment, never on disk or the command line.
 $token = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(18)).TrimEnd('=').Replace('+','-').Replace('/','_')
+if ($env:PRISM_BRIDGE_TOKEN -match '^[A-Za-z0-9_-]{24}$') { $token = $env:PRISM_BRIDGE_TOKEN }
+Remove-Item Env:PRISM_BRIDGE_TOKEN -ErrorAction SilentlyContinue
 
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://127.0.0.1:$Port/")

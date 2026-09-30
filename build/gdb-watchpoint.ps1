@@ -125,10 +125,13 @@ $gdbErr = Join-Path $env:TEMP "codex-gdb-$PID.err"
 
 try {
     $savedAccel = $script:FallbackAccelFlags
+    $savedAccelName = $script:FallbackAccel
     $script:FallbackAccelFlags = @('-accel', $Accel)
+    $script:FallbackAccel = $Accel
     Write-Host "[1/4] Starting QEMU ($Accel mode) with GDB stub on :1234..."
     $run = Start-VmRun -Kernel $Kernel -ConnectTimeoutSec 30 -MemMB 3072 -ExtraArgs @('-gdb', 'tcp::1234', '-S')
     $script:FallbackAccelFlags = $savedAccel
+    $script:FallbackAccel = $savedAccelName
     if ((-not $run)) {
         [Console]::Error.WriteLine('QEMU failed to start')
         exit 3

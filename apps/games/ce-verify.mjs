@@ -117,29 +117,17 @@ function playGame(seed, players) {
   return { h, turns };
 }
 
-// A game ends one of two ways. Somebody goes out, and holds nothing; or the
-// position is DEAD, with the pile empty and no seat holding a playable card,
-// and the smallest hand wins it (a tie for smallest is a draw, winner -1).
-function anyPlayable(h) {
-  let n = 0;
-  for (let p = 0; p < e.ce_players(h); p++)
-    for (let c = 0; c < 52; c++) n += e.ce_can(h, p, c);
-  return n;
-}
+// A game ends when somebody goes out. It cannot block: an empty stock is
+// remade from the discards, so when nothing can be drawn every card but the
+// top one is in a hand, and some hand holds the suit in force.
 function judgeEnd(h) {
   const np = e.ce_players(h), w = e.ce_winner(h);
   const sizes = [...Array(np)].map((_, p) => e.ce_size(h, p));
   if (w >= 0 && sizes[w] === 0) return { how: 'out' };
-  if (e.ce_pile(h) !== 0) return { bad: `ended with ${e.ce_pile(h)} in the pile and nobody out` };
-  if (anyPlayable(h) > 0) return { bad: `ended with ${anyPlayable(h)} playable cards and nobody out` };
-  const least = Math.min(...sizes);
-  const holders = sizes.filter(n => n === least).length;
-  const want = holders > 1 ? -1 : sizes.indexOf(least);
-  if (w !== want) return { bad: `blocked with hands ${sizes.join(',')}: winner ${w}, want ${want}` };
-  return { how: 'blocked' };
+  return { bad: `ended with hands ${sizes.join(',')} and nobody out, winner ${w}` };
 }
 {
-  let broke = null, winners = new Set(), outs = 0, blocked = 0;
+  let broke = null, winners = new Set(), outs = 0;
   const unfinished = [];
   for (let seed = 1; seed <= 20 && !broke; seed++) {
     const players = 2 + (seed % 3);
@@ -148,24 +136,14 @@ function judgeEnd(h) {
     if (e.ce_done(r.h) !== 1) { unfinished.push(`seed ${seed} (${players}p)`); continue; }
     winners.add(e.ce_winner(r.h));
     const j = judgeEnd(r.h);
-    if (j.bad) broke = `seed ${seed} (${players}p): ${j.bad}`;
-    else if (j.how === 'out') outs++; else blocked++;
+    if (j.bad) broke = `seed ${seed} (${players}p): ${j.bad}`; else outs++;
   }
-  ok('the flags and the counters agree on every turn of 20 games, and every ending is legal',
-     broke === null, broke ?? `${outs} went out, ${blocked} blocked`);
-  ok('every game ends, going out or blocked, inside the turn cap',
-     unfinished.length === 0, unfinished.join('; ') || '20 of 20');
+  ok('the flags and the counters agree on every turn of 20 games, and every game ends with a player out',
+     broke === null, broke ?? `${outs} went out`);
+  ok('every game ends inside the turn cap', unfinished.length === 0, unfinished.join('; ') || '20 of 20');
   ok('more than one seat wins across the set', winners.size > 1,
      `winners: ${[...winners].sort().join(',')}`);
-  // CONTROL: the blocked ending must be REACHED, or the arm above says nothing
-  // about it. Seed 12 at two players is the position measured dead from turn
-  // 200 to turn 800 before the engine could end it.
-  const d = playGame(12, 2);
-  const jd = e.ce_done(d.h) === 1 ? judgeEnd(d.h) : { bad: 'did not end' };
-  ok('CONTROL: seed 12 at two players ends BLOCKED, and the smallest hand wins',
-     jd.how === 'blocked', jd.bad ?? `${d.turns} turns, hands ${e.ce_size(d.h, 0)},${e.ce_size(d.h, 1)}, winner ${e.ce_winner(d.h)}`);
-}
-// -- Playability agrees with the rules -----------------------------------
+}// -- Playability agrees with the rules -----------------------------------
 // ce-can-play says a card is playable when it is an eight, matches the
 // discard rank, or matches the declared suit. Re-derive that here.
 {
@@ -210,6 +188,77 @@ ok('control: the same seed deals the same', snapshot(e.ce_new(6, 3)) === snapsho
 ok('control: the flags reader counts something',
    held(s0, 0) > 0 && held(s0, 0) < 52, held(s0, 0));
 
+// -- RULES: every class of turn, from positions built card by card ----------
+// pagat's basic game, as CrazyEights.codex states it. A card is suit 13 +
+// rank; rank 0 is the two, 6 the eight, 9-11 J Q K, 12 the ace.
+{
+  const C = (r, s) => s * 13 + r;
+  const legal = h => { const out = []; for (let c = 0; c < 52; c++) if (e.ce_canplay(h, c) === 1) out.push(c); return out; };
+  const build = (np, top, hands, stock, call) => {
+    let h = e.ce_empty(np, top);
+    hands.forEach((cs, p) => cs.forEach(c => { h = e.ce_give(h, p, c); }));
+    for (const c of stock) h = e.ce_stock(h, c);
+    if (call !== undefined) h = e.ce_call(h, call);
+    return h;
+  };
+  for (const [np, each] of [[2, 7], [3, 5], [4, 5]]) {
+    const h = e.ce_new(9, np);
+    ok(`${np} players are dealt ${each} each, one card starts the pile, the rest is the stock`,
+       [...Array(np)].every((_, p) => e.ce_size(h, p) === each) && e.ce_pile(h) === 52 - np * each - 1,
+       [...Array(np)].map((_, p) => e.ce_size(h, p)).join(',') + ` stock ${e.ce_pile(h)}`);
+  }
+  {
+    let seed = 1, h = e.ce_new(seed, 3);
+    while (e.ce_drank(h) !== 6 && seed < 400) h = e.ce_new(++seed, 3);
+    ok('a starting eight calls its own suit', e.ce_drank(h) === 6 && e.ce_declared(h) === e.ce_dsuit(h), `seed ${seed}`);
+  }
+  {
+    const hand = [C(3, 3), C(7, 1), C(6, 0), C(11, 3), C(0, 2)];
+    const h = build(2, C(3, 1), [hand, [C(4, 0)]], [C(5, 0)]);
+    ok('on a five of hearts: the other five, a heart and an eight go; a club king and a diamond two do not',
+       JSON.stringify(legal(h)) === JSON.stringify([C(6, 0), C(3, 3), C(7, 1)].sort((a, b) => a - b)),
+       JSON.stringify(legal(h)));
+  }
+  {
+    const h = build(2, C(6, 0), [[C(6, 1), C(10, 2), C(10, 0), C(1, 0)], [C(4, 3)]], [C(5, 3)], 2);
+    ok('on an eight that named diamonds: another eight or a diamond, never the eight\'s own suit',
+       JSON.stringify(legal(h)) === JSON.stringify([C(10, 2), C(6, 1)].sort((a, b) => a - b)), JSON.stringify(legal(h)));
+  }
+  {
+    const h = build(2, C(3, 1), [[C(7, 1), C(2, 0)], [C(4, 0), C(9, 3)]], [C(5, 0), C(12, 2)]);
+    ok('a draw is offered even with a card to play', e.ce_candraw(h) === 1 && legal(h).length === 1);
+    const d = e.ce_draw(h);
+    ok('a draw takes one card and ends the turn', e.ce_size(d, 0) === 3 && e.ce_has(d, 0, C(5, 0)) === 1 && e.ce_cur(d) === 1 && e.ce_pile(d) === 1);
+  }
+  {
+    // Stock empty; the discards are every card in no hand and not on top.
+    const hands = [[C(7, 1), C(2, 0)], [C(4, 0), C(9, 3)]];
+    const h = build(2, C(3, 1), hands, []);
+    const d = e.ce_draw(h);
+    let drawn = -1;
+    for (let c = 0; c < 52; c++) if (e.ce_has(d, 0, c) === 1 && !hands[0].includes(c)) drawn = c;
+    ok('an empty stock is remade from the discards under the top card, and the draw comes from it',
+       e.ce_candraw(h) === 1 && e.ce_size(d, 0) === 3 && e.ce_pile(d) === 52 - 4 - 1 - 1 && drawn >= 0 &&
+       drawn !== C(3, 1) && !hands[1].includes(drawn), `drawn ${drawn}, stock ${e.ce_pile(d)}`);
+  }
+  {
+    // Every card but the top one in the two hands: nothing to draw.
+    const all = [...Array(52).keys()].filter(c => c !== C(3, 1));
+    const h = build(2, C(3, 1), [all.slice(0, 26), all.slice(26)], []);
+    ok('with every other card in a hand there is nothing to draw', e.ce_candraw(h) === 0 && e.ce_draw(h) === h);
+    ok('and some hand still holds the suit in force, so the game goes on', legal(h).length > 0 && e.ce_done(h) === 0);
+  }
+  {
+    const h = e.ce_play(build(2, C(3, 1), [[C(0, 1), C(9, 0)], [C(4, 0), C(8, 3)]], [C(5, 0)]), C(0, 1), -1);
+    ok('a two is an ordinary card: the next player simply plays or draws',
+       e.ce_cur(h) === 1 && e.ce_candraw(h) === 1 && e.ce_size(h, 1) === 2, `cur ${e.ce_cur(h)}`);
+  }
+  {
+    const h = e.ce_play(build(2, C(3, 1), [[C(7, 1)], [C(6, 0), C(11, 2), C(12, 3), C(5, 1)]], [C(5, 0)]), C(7, 1), -1);
+    ok('playing the last card goes out and wins', e.ce_done(h) === 1 && e.ce_winner(h) === 0);
+    ok('the others\' penalty: an eight 50, a picture 10, an ace 1, a seven 7', e.ce_points(h, 1) === 68, e.ce_points(h, 1));
+  }
+}
 console.log(fail === 0
   ? `\nPASS: Crazy Eights keeps its hands honest (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

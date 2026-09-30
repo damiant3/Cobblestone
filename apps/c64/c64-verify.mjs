@@ -38,8 +38,9 @@ const WASM = process.argv[2]
   ? resolve(process.argv[2])
   : join(HERE, '..', 'landing', 'web', 'c64', 'c64.wasm');
 
-// The machine's band, as apps/c64/Memory.codex declares it.
-const KERNAL_ROM = 0xA12000;
+// The KERNAL's offset in the machine's band, as apps/c64/Memory.codex declares
+// it; the band itself sits at the heap base, which the module reports.
+const KERNAL_OFFSET = 0x12000;
 const KERNAL_LEN = 0x2000;
 
 const MAX_FRAMES = 600;   // ~10 s of emulated time; the KERNAL reaches READY in ~2
@@ -122,11 +123,11 @@ if (bootFrame > 0) {
 
 // -- the control: zero the KERNAL and the banner must NOT appear ----------
 // If this passes, every arm above measured the ROM rather than the harness.
-new Uint8Array(x.memory.buffer, KERNAL_ROM, KERNAL_LEN).fill(0);
+new Uint8Array(x.memory.buffer, (x.c64_base(0) >>> 0) + KERNAL_OFFSET, KERNAL_LEN).fill(0);
 // c64_reset reloads the ROMs from the source literals, so the sabotage has to
 // land after it. Run the frames by hand rather than through runUntilBanner.
 x.c64_reset(0);
-new Uint8Array(x.memory.buffer, KERNAL_ROM, KERNAL_LEN).fill(0);
+new Uint8Array(x.memory.buffer, (x.c64_base(0) >>> 0) + KERNAL_OFFSET, KERNAL_LEN).fill(0);
 let sabotaged = false;
 for (let f = 1; f <= MAX_FRAMES; f++) {
   x.c64_frame(0);

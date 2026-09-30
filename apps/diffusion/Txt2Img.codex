@@ -1,0 +1,487 @@
+Chapter: Txt2Img
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites AI chapter ClipBpe
+  cites Gpu chapter LayerKernelsPtx
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter ClipPrompt
+  cites Diffusion chapter UNet
+  cites Diffusion chapter UNetDenoiser
+  cites Diffusion chapter UNetGraph
+  cites Diffusion chapter DenoiserGraph
+  cites Diffusion chapter FreeU
+  cites Diffusion chapter Sag
+  cites Diffusion chapter DynThresh
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter Noise
+  cites Diffusion chapter BrownianTree
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter ImageOut
+  cites Diffusion chapter GpuModules
+
+ SDXL text to image as Forge runs it (backend/diffusion_engine/sdxl.py): the
+ two text encoders give the cross-attention context and the pooled vector;
+ the ADM vector is the pooled vector followed by the 256-wide timestep
+ embeddings of height, width, crop top 0, crop left 0, target height and
+ target width; classifier-free guidance combines the two denoised latents
+ as uncond + cfg (cond - uncond); the latent is divided by the SDXL VAE's
+ scaling factor 0.13025 before the decode.
+
+ We say:
+
+Section: Request
+
+  Txt2Img = record {
+    ti-ckpt : Text,
+    ti-prompt : Text,
+    ti-negative : Text,
+    ti-sampler : Integer,
+    ti-scheduler : Integer,
+    ti-steps : Integer,
+    ti-cfg : Real,
+    ti-seed : Integer,
+    ti-width : Integer,
+    ti-height : Integer,
+    ti-out : Text,
+    ti-params : Text,
+    ti-clip-skip : Integer,
+    ti-extras : TiExtras
+  }
+
+ Forge's built-in extras a request turns on: FreeU's b1, b2, s1 and s2 (none,
+ or all four), then its start and end step, PAG's scale (0 is off), SAG's
+ scale, blur sigma and threshold (none, or all three), dynamic thresholding's
+ settings (none, or one). tx-step is the request's own shared.state for
+ FreeU's denoiser_callback: model calls, sampler, total_sampling_steps and
+ doFreeU (none, or all four).
+
+  TiExtras = record {
+    tx-freeu : List Real,
+    tx-pag : Real,
+    tx-sag : List Real,
+    tx-dt : List DtSet,
+    tx-step : List Integer
+  }
+
+  ti-no-extras : TiExtras
+  ti-no-extras = TiExtras { tx-freeu = [], tx-pag = 0.0, tx-sag = [], tx-dt = [], tx-step = [] }
+  ti-euler : Integer = 0
+
+  ti-dpmpp-sde : Integer = 1
+
+Section: Samplers
+
+ Forge's sampler and schedule labels (modules/sd_samplers_kdiffusion.py,
+ sd_samplers_timesteps.py, sd_samplers_lcm.py, modules_forge/alter_samplers.py,
+ sd_schedulers.py); a request names one by label and the code is its index.
+ Automatic is the sampler's own schedule option (Karras for DPM++ 2M, DPM++
+ SDE, DPM++ 2S a, DPM2, DPM2 a and Restart, Exponential for the three DPM++ SDE
+ multistep samplers), else the predictor's get_sigmas, which is Uniform, and
+ for LCM its own 50-sigma schedule. DPM2, DPM2 a and DPM++ 3M SDE take one
+ more step and drop the next-to-last sigma. DDIM, DDIM CFG++, PLMS and UniPC
+ are timestep samplers: they take no schedule and start from unit noise.
+
+  ti-sampler-names : List Text = ["Euler", "DPM++ SDE", "DPM++ 2M", "DPM++ 2M SDE", "DPM++ 2M SDE Heun", "DPM++ 2S a", "DPM++ 3M SDE", "Euler a", "LMS", "Heun", "DPM2", "DPM2 a", "DPM fast", "DPM adaptive", "Restart", "HeunPP2", "IPNDM", "IPNDM_V", "DEIS", "DDIM", "DDIM CFG++", "PLMS", "UniPC", "LCM", "DDPM"]
+
+  ti-scheduler-names : List Text = ["Automatic", "Uniform", "Karras", "Exponential", "Polyexponential", "SGM Uniform", "KL Optimal", "Align Your Steps", "Simple", "Normal", "DDIM", "Beta", "Turbo", "Align Your Steps GITS", "Align Your Steps 11", "Align Your Steps 32"]
+
+  ti-name-index : List Text, Text, Integer -> Integer
+  ti-name-index (names) (s) (i) = if i >= list-length names then 0 - 1 else if list-at names i == s then i else ti-name-index names s (i + 1)
+
+  ti-dpm-fast : Integer = 12
+
+  ti-dpm-adaptive : Integer = 13
+
+  ti-ddim-cfgpp : Integer = 20
+
+  ti-lcm : Integer = 23
+
+  ti-timestep-sampler : Integer -> Boolean
+  ti-timestep-sampler (s) = s >= 19 & s <= 22
+
+  ti-discards : Integer -> Boolean
+  ti-discards (s) = s == 6 | s == 10 | s == 11
+
+  ti-auto-schedule : Integer -> Integer
+  ti-auto-schedule (s) = if s == 1 | s == 2 | s == 5 | s == 10 | s == 11 | s == 14 then 2 else if s == 3 | s == 4 | s == 6 then 3 else 1
+
+  ti-schedule : Integer, Integer, Boolean -> List Real
+  ti-schedule (k) (n) (sd15) =
+    if k == 1 then uniform-sigmas n
+    else if k == 2 then (if n == 1 then [sm-pow (sm-pow (sm-discrete-sigma 999) (1.0 / 7.0)) 7.0, 0.0] else sdxl-karras-sigmas n)
+    else if k == 3 then sdxl-exponential-sigmas n
+    else if k == 4 then sdxl-polyexponential-sigmas n
+    else if k == 5 then sgm-uniform-sigmas n
+    else if k == 6 then sdxl-kl-optimal-sigmas n
+    else if k == 7 then align-your-steps-sigmas n (sd15 == False)
+    else if k == 8 then simple-sigmas n
+    else if k == 9 then normal-sigmas n
+    else if k == 10 then ddim-sigmas n
+    else if k == 11 then sdxl-beta-sigmas n
+    else if k == 12 then turbo-sigmas n
+    else if k == 13 then ays-gits-sigmas n (sd15 == False)
+    else if k == 14 then ays-11-sigmas n (sd15 == False)
+    else ays-32-sigmas n (sd15 == False)
+
+  ti-drop-penult : List Real, Integer, List Real -> List Real
+  ti-drop-penult (xs) (i) (acc) = if i >= list-length xs then acc else ti-drop-penult xs (i + 1) (if i == list-length xs - 2 then acc else list-push acc (list-at xs i))
+
+ The sigmas a sampler runs for steps steps under schedule k (Forge's
+ get_sigmas).
+
+  ti-sigmas : Integer, Integer, Integer, Boolean -> List Real
+  ti-sigmas (sampler) (k) (steps) (sd15) =
+    if sampler == ti-lcm & k == 0 then lcm-sigmas steps
+    else let d = ti-discards sampler
+    in let s = ti-schedule (if k == 0 then ti-auto-schedule sampler else k) (if d then steps + 1 else steps) sd15
+    in if d then ti-drop-penult s 0 [] else s
+
+ A sampler over sigmas sig, or for a timestep sampler over steps steps. DPM
+ fast and DPM adaptive run between smin and smax, in nfe evaluations for DPM
+ fast. den3 is the guided denoiser that also writes the unguided estimate,
+ for DDIM CFG++.
+
+  ti-run : Integer, (Integer, Real -> Integer), (Integer -> Integer), (Integer, Real, Integer -> Integer), Integer, List Real, Integer, Real, Real, Integer, Integer -> Integer
+  ti-run (s) (den) (noise) (den3) (x) (sig) (steps) (smin) (smax) (nfe) (n) =
+    if s == 0 then sample-euler den x sig n
+    else if s == 1 then sample-dpmpp-sde den noise x sig n
+    else if s == 2 then sample-dpmpp-2m den x sig n
+    else if s == 3 then sample-dpmpp-2m-sde den noise x sig n
+    else if s == 4 then sample-dpmpp-2m-sde-heun den noise x sig n
+    else if s == 5 then sample-dpmpp-2s-ancestral den noise x sig n
+    else if s == 6 then sample-dpmpp-3m-sde den noise x sig n
+    else if s == 7 then sample-euler-ancestral den noise x sig n
+    else if s == 8 then sample-lms den x sig n
+    else if s == 9 then sample-heun den x sig n
+    else if s == 10 then sample-dpm2 den x sig n
+    else if s == 11 then sample-dpm2-ancestral den noise x sig n
+    else if s == 12 then sample-dpm-fast den noise x smin smax nfe n
+    else if s == 13 then sample-dpm-adaptive den noise x smin smax n
+    else if s == 14 then sample-restart den noise x sig n
+    else if s == 15 then sample-heunpp2 den x sig n
+    else if s == 16 then sample-ipndm den x sig n
+    else if s == 17 then sample-ipndm-v den x sig n
+    else if s == 18 then sample-deis den x sig n
+    else if s == 19 then sample-ddim den x steps n
+    else if s == 20 then sample-ddim-cfgpp den3 x steps n
+    else if s == 21 then sample-plms den x steps n
+    else if s == 22 then sample-unipc den x steps n
+    else if s == 23 then sample-lcm den noise x sig n
+    else sample-ddpm den noise x sig n
+
+Section: FreeU's step
+
+ Forge's callback_state sets state.sampling_step to each sampler callback's
+ i and launch_sampling resets it to 0, so model call k sees the i of the last
+ callback before it: a sampler makes a calls before its first callback, then
+ c per step (DPM adaptive per attempt). DPM fast's step i makes orders[i]
+ calls (dpm_solver_fast) and calls back after its first. build/freeu-step-oracle.py
+ runs Forge's samplers for the sequences.
+
+  ti-seen-step : Integer, Integer, Integer -> Integer
+  ti-seen-step (s) (steps) (k) =
+    if s == ti-dpm-fast then ti-fast-seen steps k 0
+    else let a = if s == ti-dpm-adaptive then 3 else if s == 21 | s == 22 then 2 else 1
+    in let c = if s == ti-dpm-adaptive | s == 15 then 3 else if s == 1 | s == 5 | s == 9 | s == 10 | s == 11 | s == 14 then 2 else 1
+    in if k < a then 0 else (k - a) / c
+
+  ti-fast-order : Integer, Integer -> Integer
+  ti-fast-order (nfe) (i) =
+    let m = nfe / 3 + 1
+    in let r = nfe - nfe / 3 * 3
+    in if r == 0 then (if i < m - 2 then 3 else if i == m - 2 then 2 else 1)
+    else if i < m - 1 then 3 else r
+
+  ti-fast-seen : Integer, Integer, Integer -> Integer
+  ti-fast-seen (nfe) (k) (i) =
+    let o = ti-fast-order nfe i
+    in if k >= o & i < nfe then ti-fast-seen nfe (k - o) (i + 1)
+    else if k == 0 & i > 0 then i - 1
+    else i
+
+ denoiser_callback: FreeU runs where step / (total - 1) lies within start and
+ end. At one total step Forge's division raises, the callback's exception is
+ reported and doFreeU keeps its last value, True in a fresh Forge; here it is
+ True.
+
+  ti-freeu-in : List Real, Integer, Integer -> Boolean
+  ti-freeu-in (fu) (seen) (steps) =
+    if list-length fu < 6 | steps < 2 then True
+    else let t = real-from-int seen / real-from-int (steps - 1)
+    in t >= list-at fu 4 & t <= list-at fu 5
+
+  ti-launch : TiExtras, Integer, Integer -> Boolean
+  ti-launch (ex) (s) (steps) =
+    let g = ex.tx-step
+    in if list-length g < 4 then True
+    else let a = list-set-at g 0 0
+    in let b = list-set-at g 1 s
+    in let c = list-set-at g 2 steps
+    in let d = list-set-at g 3 1
+    in True
+
+  ti-tick : TiExtras -> Boolean
+  ti-tick (ex) =
+    let g = ex.tx-step
+    in if list-length g < 4 then True
+    else let k = list-at g 0
+    in let a = list-set-at g 0 (k + 1)
+    in let on = ti-freeu-in (ex.tx-freeu) (ti-seen-step (list-at g 1) (list-at g 2) k) (list-at g 2)
+    in let b = list-set-at g 3 (if on then 1 else 0)
+    in on
+
+  ti-freeu-on : TiExtras -> Boolean
+  ti-freeu-on (ex) = list-length (ex.tx-step) < 4 | list-at (ex.tx-step) 3 == 1
+
+Section: Conditioning
+
+  ti-scratch : Integer = #BD700000
+
+  ti-put : Integer, List Integer, Integer -> Integer
+  ti-put (addr) (vs) (i) = if i >= list-length vs then i else let w = poke-32 addr (i * 4) (nz-f32-bits (real-from-int (list-at vs i))) in ti-put addr vs (i + 1)
+
+  ti-adm : Integer, Integer, Integer -> Integer
+  ti-adm (pooled) (h) (w) =
+    let t = gpu-buf-alloc 24
+    in let p = ti-put ti-scratch [h, w, 0, 0, h, w] 0
+    in let tw = gpu-buf-write t 0 24 ti-scratch
+    in let emb = gpu-buf-alloc (1536 * 4)
+    in let g = GpuGrid { gx = 12, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }
+    in let e = gm-launch gm-slot-layer layer-kernels-ptx "kernel_timestep_embedding" g [gpu-arg-buf t 0, gpu-arg-buf emb 0, gpu-arg-u64 256, gpu-arg-u64 (real-to-bits 9.210340371976184), gpu-arg-u64 1536]
+    in let y = gpu-buf-alloc (2816 * 4)
+    in let ok = e >= 0 & gpu-buf-read pooled 0 5120 ti-scratch & gpu-buf-write y 0 5120 ti-scratch & gpu-buf-read emb 0 6144 ti-scratch & gpu-buf-write y 5120 6144 ti-scratch
+    in let f = gpu-buf-free t & gpu-buf-free emb
+    in if ok then y else 0
+
+Section: Guidance
+
+  TiCfg = record {
+    tc-unet : UNetFile,
+    tc-tab : List Real,
+    tc-yc : Integer,
+    tc-cc : Integer,
+    tc-yu : Integer,
+    tc-cu : Integer,
+    tc-h : Integer,
+    tc-w : Integer,
+    tc-cfg : Real,
+    tc-sd15 : Boolean,
+    tc-extras : TiExtras
+  }
+
+  ti-model : TiCfg, Integer, Integer, Integer, Real -> Integer
+  ti-model (c) (y) (ctx) (x) (s) = ti-model-ops c (ti-ops c 0 0) y ctx x s
+
+  ti-model-ops : TiCfg, UNetOps UNetFile, Integer, Integer, Integer, Real -> Integer
+  ti-model-ops (c) (ops) (y) (ctx) (x) (s) = if c.tc-sd15 then unet15-denoise-with ops sampler-native-ops (c.tc-unet) (c.tc-tab) ctx (c.tc-h) (c.tc-w) x s else unet-denoise-with ops sampler-native-ops (c.tc-unet) (c.tc-tab) y ctx (c.tc-h) (c.tc-w) x s
+
+ The ops of one model call: FreeU's patch when the request has one; mode 1
+ records SAG's attention into mbuf, mode 2 answers v in PAG's middle-block
+ self-attention. Forge looks up ("middle", 0, block) before ("middle", 0), so
+ while SAG holds its key PAG's first middle attention is SAG's (normal here).
+
+  ti-sag-key : Text = "middle_block.1.transformer_blocks.0.attn1."
+
+  ti-ops : TiCfg, Integer, Integer -> UNetOps UNetFile
+  ti-ops (c) (mode) (mbuf) =
+    let fu = (c.tc-extras).tx-freeu
+    in let thr = if ti-sag-patched c then list-at ((c.tc-extras).tx-sag) 2 else 1.0
+    in let held = ti-sag-patched c
+    in unet-ops-with (if list-length fu >= 4 & ti-freeu-on (c.tc-extras) then (\a sk cx cs hh ww -> freeu-patch (list-at fu 0) (list-at fu 1) (list-at fu 2) (list-at fu 3) a sk cx cs hh ww) else (\a sk cx cs hh ww -> True)) (\p -> mode == 2 & text-starts-with p "middle_block." & (held == False | p /= ti-sag-key)) (\p -> mode == 1 & p == ti-sag-key) (\sb hd r -> sag-probs mbuf thr sb hd r)
+
+ SAG patches the model only where the guidance scale is above 1 (Forge
+ prints and skips it otherwise).
+
+  ti-sag-patched : TiCfg -> Boolean
+  ti-sag-patched (c) = list-length ((c.tc-extras).tx-sag) == 3 & c.tc-cfg > 1.0
+
+  ti-mid-rows : TiCfg -> Integer
+  ti-mid-rows (c) =
+    if c.tc-sd15 then unet-half (unet-half (unet-half (c.tc-h))) * unet-half (unet-half (unet-half (c.tc-w)))
+    else unet-half (unet-half (c.tc-h)) * unet-half (unet-half (c.tc-w))
+  ti-den : TiCfg, Integer, Real -> Integer
+  ti-den (c) (x) (s) =
+    let tick = ti-tick (c.tc-extras)
+    in let n = 4 * c.tc-h * c.tc-w
+    in let sag = ti-sag-patched c
+    in let mbuf = if sag then gpu-buf-alloc (ti-mid-rows c * 4) else 0
+    in let dc = ti-model c (c.tc-yc) (c.tc-cc) x s
+    in let du = ti-model-ops c (ti-ops c (if sag then 1 else 0) mbuf) (c.tc-yu) (c.tc-cu) x s
+    in let out = gpu-buf-alloc (n * 4)
+    in let r = if dc == 0 | du == 0 | out == 0 then 0 - 1 else ti-combine c s dc du out n
+    in let post = if r < 0 then 0 else ti-post c x s dc du mbuf out
+    in let f = (if dc == 0 then True else gpu-buf-free dc) & (if du == 0 then True else gpu-buf-free du)
+    in let g = if mbuf == 0 then True else gpu-buf-free mbuf
+    in post
+
+ Guidance: uncond + cfg (cond - uncond), or dynamic thresholding, Forge's
+ sampler_cfg_function, at step 999 - t.
+
+  ti-combine : TiCfg, Real, Integer, Integer, Integer, Integer -> Integer
+  ti-combine (c) (s) (dc) (du) (out) (n) =
+    let dt = (c.tc-extras).tx-dt
+    in if list-length dt == 0 then sm-lincomb du dc dc out (1.0 - c.tc-cfg) (c.tc-cfg) 0.0 n
+    else if dt-guide dc du out (c.tc-h * c.tc-w) (c.tc-cfg) (999.0 - unet-sigma-to-t (c.tc-tab) s) (list-at dt 0) then 0
+    else 0 - 1
+
+ Forge's post-CFG functions in its script order, SAG (12.5) then PAG (13):
+ each answers a fresh buffer and frees the one it replaced.
+
+  ti-post : TiCfg, Integer, Real, Integer, Integer, Integer, Integer -> Integer
+  ti-post (c) (x) (s) (dc) (du) (mbuf) (out) =
+    let o1 = if ti-sag-patched c & mbuf /= 0 & c.tc-h > 4 & c.tc-w > 4 then ti-sag c x s du mbuf out else out
+    in if o1 == 0 | (c.tc-extras).tx-pag ~0 0.0 then o1 else ti-pag c x s dc o1
+
+ sd_forge_sag's post_cfg_function: the uncond prediction blurred where the
+ recorded attention is spread, noised back by x - uncond, run as uncond, and
+ cfg + scale (degraded - that).
+
+  ti-sag : TiCfg, Integer, Real, Integer, Integer, Integer -> Integer
+  ti-sag (c) (x) (s) (du) (mbuf) (out) =
+    let n = 4 * c.tc-h * c.tc-w
+    in let sg = (c.tc-extras).tx-sag
+    in let deg = gpu-buf-alloc (n * 4)
+    in let dn = gpu-buf-alloc (n * 4)
+    in let ok = if deg == 0 | dn == 0 then False else if sag-degrade du deg (c.tc-h) (c.tc-w) mbuf (ti-mid-rows c) (list-at sg 1) then sm-lincomb deg x du dn 1.0 1.0 (0.0 - 1.0) n >= 0 else False
+    in let sg2 = if ok then ti-model c (c.tc-yu) (c.tc-cu) dn s else 0
+    in let res = gpu-buf-alloc (n * 4)
+    in let r = if sg2 == 0 | res == 0 then 0 - 1 else sm-lincomb out deg sg2 res 1.0 (list-at sg 0) (0.0 - list-at sg 0) n
+    in let f = ti-free-all [deg, dn, sg2, out] 0 0 + (if r < 0 & res /= 0 then ti-free-all [res] 0 0 else 0)
+    in if r < 0 then 0 else res
+
+ sd_forge_perturbed_attention's post_cfg_function: one more cond call with
+ PAG's attention, and denoised + scale (cond - that).
+
+  ti-pag : TiCfg, Integer, Real, Integer, Integer -> Integer
+  ti-pag (c) (x) (s) (dc) (out) =
+    let n = 4 * c.tc-h * c.tc-w
+    in let k = (c.tc-extras).tx-pag
+    in let deg = ti-model-ops c (ti-ops c 2 0) (c.tc-yc) (c.tc-cc) x s
+    in let res = gpu-buf-alloc (n * 4)
+    in let r = if deg == 0 | res == 0 then 0 - 1 else sm-lincomb out dc deg res 1.0 k (0.0 - k) n
+    in let f = ti-free-all (if dc == out then [deg] else [deg, out]) 0 0 + (if r < 0 & res /= 0 then ti-free-all [res] 0 0 else 0)
+    in if r < 0 then 0 else res
+
+  ti-den3 : TiCfg, Integer, Real, Integer -> Integer
+  ti-den3 (c) (x) (s) (ub) =
+    let tick = ti-tick (c.tc-extras)
+    in let n = 4 * c.tc-h * c.tc-w
+    in let sag = ti-sag-patched c
+    in let mbuf = if sag then gpu-buf-alloc (ti-mid-rows c * 4) else 0
+    in let dc = ti-model c (c.tc-yc) (c.tc-cc) x s
+    in let du = ti-model-ops c (ti-ops c (if sag then 1 else 0) mbuf) (c.tc-yu) (c.tc-cu) x s
+    in let out = gpu-buf-alloc (n * 4)
+    in let r = if dc == 0 | du == 0 | out == 0 then 0 - 1 else ti-combine c s dc du out n
+    in let u = if r < 0 then r else sm-lincomb du du du ub 1.0 0.0 0.0 n
+    in let post = if u < 0 then 0 else ti-post c x s dc du mbuf out
+    in let f = (if dc == 0 then True else gpu-buf-free dc) & (if du == 0 then True else gpu-buf-free du)
+    in let g = if mbuf == 0 then True else gpu-buf-free mbuf
+    in post
+
+ A sampler's draws continue the generator that drew the start, one torch
+ draw per call in the order the sampler asks, as Forge's ImageRNG.next
+ does; drawn holds how many the generator has given.
+
+  ti-noise : Integer, Integer, Integer, List Integer -> Integer
+  ti-noise (nb) (seed) (n) (drawn) =
+    let k = list-at drawn 0
+    in let c = list-set-at drawn 0 (k + 1)
+    in if noise-torch nb seed k n then nb else 0
+
+ Forge's brownian_noise samplers (DPM++ SDE, DPM++ 2M SDE and its Heun,
+ DPM++ 3M SDE) draw from a Brownian tree over the whole schedule full
+ (create_noise_sampler), draw k at the k-th call's times; every other
+ sampler continues the image generator.
+
+  ti-brownian : Integer -> Boolean
+  ti-brownian (s) = s == 1 | s == 3 | s == 4 | s == 6
+
+  ti-bnoise : BtTree, Integer, List Real, Integer, Integer -> Integer
+  ti-bnoise (t) (nb) (qs) (n) (k) =
+    if n > nz-chunk | 2 * k + 1 >= list-length qs then 0
+    else let z = brownian-draw t (list-at qs (2 * k)) (list-at qs (2 * k + 1)) nz-scratch
+    in if gpu-buf-write nb 0 (n * 4) nz-scratch then nb else 0
+
+  ti-sample-with : Integer, (Integer, Real -> Integer), (Integer, Real, Integer -> Integer), Integer, List Real, List Real, Integer, Real, Real, Integer, Integer, Integer, Integer -> Integer
+  ti-sample-with (s) (den) (den3) (x) (sig) (full) (steps) (smin) (smax) (nfe) (n) (nb) (seed) =
+    if ti-brownian s then ti-run-tree s den den3 x sig steps smin smax nfe n nb (brownian-tree seed n full) (brownian-queries (s == ti-dpmpp-sde) sig 0 [])
+    else let drawn = [1]
+    in ti-run s den (\k -> ti-noise nb seed n drawn) den3 x sig steps smin smax nfe n
+
+  ti-run-tree : Integer, (Integer, Real -> Integer), (Integer, Real, Integer -> Integer), Integer, List Real, Integer, Real, Real, Integer, Integer, Integer, BtTree, List Real -> Integer
+  ti-run-tree (s) (den) (den3) (x) (sig) (steps) (smin) (smax) (nfe) (n) (nb) (t) (qs) = ti-run s den (\k -> ti-bnoise t nb qs n k) den3 x sig steps smin smax nfe n
+
+  ti-free-all : List Integer, Integer, Integer -> Integer
+  ti-free-all (hs) (i) (bad) = if i >= list-length hs then bad else ti-free-all hs (i + 1) (bad + (if gpu-buf-free (list-at hs i) then 0 else 1))
+
+  ti-vae-part : List PartBinding, Integer -> PartBinding
+  ti-vae-part (parts) (i) =
+    let pb = list-at parts i
+    in if pb.pb-name == "vae" then pb else ti-vae-part parts (i + 1)
+
+Section: The Image
+
+ The cross-attention context of the UNet is one 77-token chunk; a prompt
+ that needs more is refused rather than cut.
+
+ Text to image from the unit noise in x: scaled by the first sigma unless the
+ sampler is a timestep sampler; DPM fast and DPM adaptive run over the
+ model's whole sigma range, DPM fast in steps evaluations (Forge's sample).
+
+  ti-txt2img-run : Txt2Img, TiCfg, Integer, Integer -> Integer
+  ti-txt2img-run (r) (tc) (x) (n) = ti-txt2img-run-with r tc x n (\xh s -> ti-den tc xh s) (\xh s ub -> ti-den3 tc xh s ub)
+
+  ti-txt2img-run-with : Txt2Img, TiCfg, Integer, Integer, (Integer, Real -> Integer), (Integer, Real, Integer -> Integer) -> Integer
+  ti-txt2img-run-with (r) (tc) (x) (n) (den) (den3) =
+    let sig = ti-sigmas (r.ti-sampler) (r.ti-scheduler) (r.ti-steps) (tc.tc-sd15)
+    in let s0 = if ti-timestep-sampler (r.ti-sampler) then 0 else sm-lincomb x x x x (list-at sig 0) 0.0 0.0 n
+    in let nb = gpu-buf-alloc (n * 4)
+    in let l = ti-launch (tc.tc-extras) (r.ti-sampler) (r.ti-steps)
+    in let bad = if s0 < 0 | nb == 0 then 1 else ti-sample-with (r.ti-sampler) den den3 x sig sig (r.ti-steps) (sm-discrete-sigma 0) (sm-discrete-sigma 999) (r.ti-steps) n nb (r.ti-seed)
+    in let f = if nb == 0 then True else gpu-buf-free nb
+    in bad
+
+  ti-sample : Txt2Img, UNetFile, Integer, Integer, Integer, Integer -> Integer
+  ti-sample (r) (u) (yc) (cc) (yu) (cu) =
+    let lh = r.ti-height / 8
+    in let lw = r.ti-width / 8
+    in let n = 4 * lh * lw
+    in let tab = unet-log-sigmas 0
+    in let x = gpu-buf-alloc (n * 4)
+    in let x0 = noise-torch x (r.ti-seed) 0 n
+    in let tc = TiCfg { tc-unet = u, tc-tab = tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = lh, tc-w = lw, tc-cfg = r.ti-cfg, tc-sd15 = False, tc-extras = r.ti-extras }
+    in let bad = ti-txt2img-run r tc x n
+    in if bad > 0 | x0 == False then 0 - bad - (if x0 then 0 else 1000) else x
+
+  txt2img : ClipBpe, Txt2Img -> Text
+  txt2img (bpe) (r) =
+    let file = ckpt-open (r.ti-ckpt)
+    in let lb = layout-bind file sdxl-layout
+    in let wl = clip-load (r.ti-ckpt) file lb clip-l-spec
+    in let wg = clip-load (r.ti-ckpt) file lb openclip-g-spec
+    in let c = clip-condition (ce-skip wl (r.ti-clip-skip)) (ce-skip wg (r.ti-clip-skip)) bpe (r.ti-prompt) False
+    in let un = clip-condition (ce-skip wl (r.ti-clip-skip)) (ce-skip wg (r.ti-clip-skip)) bpe (r.ti-negative) True
+    in if c.cn-status /= 0 | un.cn-status /= 0 then "text encoders failed " & show (c.cn-status) & " " & show (un.cn-status)
+    else if c.cn-chunks /= 1 | un.cn-chunks /= 1 then "refused: prompt " & show (c.cn-chunks) & " chunks, negative " & show (un.cn-chunks) & "; the UNet context is one 77-token chunk"
+    else let cc = clip-crossattn c
+    in let cu = clip-crossattn un
+    in let yc = ti-adm (c.cn-pooled) (r.ti-height) (r.ti-width)
+    in let yu = ti-adm (un.cn-pooled) (r.ti-height) (r.ti-width)
+    in if cc == 0 | cu == 0 | yc == 0 | yu == 0 then "conditioning failed: context " & show cc & " " & show cu & ", adm " & show yc & " " & show yu
+    else let f1 = clip-cond-free c + clip-cond-free un
+    in let u = unet-load (unet-open (r.ti-ckpt))
+    in let x = ti-sample r u yc cc yu cu
+    in let f2 = ti-free-all (u.uf-handles) 0 0 + ti-free-all [cc, cu, yc, yu] 0 0
+    in if x <= 0 then "sampling failed: " & show (0 - x) & " refused steps (1000 = noise)"
+    else let lh = r.ti-height / 8
+    in let lw = r.ti-width / 8
+    in let z = sm-lincomb x x x x (1.0 / 0.13025) 0.0 0.0 (4 * lh * lw)
+    in let vw = vae-load (r.ti-ckpt) (ti-vae-part (lb.lb-parts) 0) "first_stage_model."
+    in let img = vae-decode vw (Act { ah = x, ac = 4, ahh = lh, aww = lw })
+    in let f3 = vae-free vw 0 0
+    in if img.ah == 0 then "decode failed"
+    else let bytes = png-save img (r.ti-out) (r.ti-params)
+    in let f4 = vd-free img & gpu-buf-free x
+    in if bytes < 0 then "save refused" else "png " & show (r.ti-width) & "x" & show (r.ti-height) & ": " & show bytes & " bytes"

@@ -15,7 +15,8 @@
 #
 # There is no SQL text parser in this application and this pipeline does not
 # pretend otherwise: what crosses the boundary is the NAME of a relational
-# plan, and the page shows the algebra beside the answer.
+# plan or one filter, `<column> <op> <value>`, and the page shows the algebra
+# beside the answer.
 #
 # If the module fails to build, that is a PARITY finding for the wasm plug lane
 # (reek), not something to work around here.

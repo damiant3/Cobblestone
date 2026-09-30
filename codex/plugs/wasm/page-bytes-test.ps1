@@ -103,6 +103,31 @@ else {
     $refTxt = if ($ref) { [Text.Encoding]::UTF8.GetString($ref) } else { '' }
     if ($refTxt -match 'REFUSED') { $rows += [pscustomobject]@{ arm = 'pe refusal'; verdict = 'OK'; note = ($refTxt.Trim() -split "`n")[0] } }
     else { $rows += [pscustomobject]@{ arm = 'pe refusal'; verdict = 'BAD'; note = 'unknown mode 9 was not refused' } }
+
+    # Mode 3 is the Windows console EXE, and its import table is an ABI the
+    # hosted-windows code calls through by absolute address. cdx-to-pe-console.ps1
+    # asserts every slot against X86_64Boot.codex, so byte identity with it is the
+    # grade, and an MZ shape check cannot see a slot in the wrong place.
+    $winCdxFile = Join-Path $work 'subject-win.cdx'
+    & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') `
+        -Src $srcFile -Out $winCdxFile -Log (Join-Path $work 'subject-win.log') -Kernel $Kernel -RawFlags hosted-windows | Out-Null
+    $refExe = Join-Path $work 'subject-win.ref.exe'
+    Remove-Item $refExe -Force -ErrorAction SilentlyContinue
+    if (Test-Path -PathType Leaf $winCdxFile) {
+        & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\pe\cdx-to-pe-console.ps1') -CdxInput $winCdxFile -Out $refExe | Out-Null
+    }
+    if (-not (Test-Path -PathType Leaf $refExe)) { $rows += [pscustomobject]@{ arm = 'pe mode 3'; verdict = 'BAD'; note = "no reference EXE; see $work\subject-win.log" } }
+    else {
+        $want = [IO.File]::ReadAllBytes($refExe)
+        $got = Invoke-BytesModule $peWasm ([byte[]](@([byte]3) + [IO.File]::ReadAllBytes($winCdxFile))) 'pe-mode3'
+        if ($null -eq $got) { $rows += [pscustomobject]@{ arm = 'pe mode 3'; verdict = 'TRAP'; note = 'no clean exit' } }
+        elseif ([Convert]::ToBase64String($got) -eq [Convert]::ToBase64String($want)) { $rows += [pscustomobject]@{ arm = 'pe mode 3'; verdict = 'OK'; note = "identical to cdx-to-pe-console.ps1, $($got.Length) bytes" } }
+        else {
+            $n = [Math]::Min($got.Length, $want.Length); $at = 0
+            while ($at -lt $n -and $got[$at] -eq $want[$at]) { $at++ }
+            $rows += [pscustomobject]@{ arm = 'pe mode 3'; verdict = 'BAD'; note = "differs from cdx-to-pe-console.ps1 at byte 0x$($at.ToString('X')) ($($got.Length) vs $($want.Length) bytes)" }
+        }
+    }
 }
 
 # -- img: FAT16 positive (PE + CDX), short-header refusal ---------------------

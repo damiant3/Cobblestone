@@ -72,10 +72,6 @@ $outputBytes = [System.IO.File]::ReadAllBytes($outFile)
 # "the change moved the output" when both arms crashed and neither emitted
 # anything (reek, 2026-08-28, an hour spent before the bytes were read).
 # Feeding IR-UNI where the plug wants IR-CCE is one way to land here.
-# The dump may carry codex-vm's leading 0x01 marker, so the tag is FOUND in the
-# first few bytes rather than compared at offset zero. An anchored compare reads
-# \x01!EX and misses every fault that carries the marker, which is the shape
-# that actually arrives here.
 $leadAscii = [System.Text.Encoding]::ASCII.GetString($outputBytes, 0, [Math]::Min(8, $outputBytes.Length))
 if ($leadAscii.Contains('!EXC')) {
     $dump = [System.Text.Encoding]::ASCII.GetString($outputBytes)

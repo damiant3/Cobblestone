@@ -171,8 +171,8 @@ measurement, and each is stated so that (A) can win it.
 **Two facts measured before the probe, because both change what (B) costs
 and one of them corrects this section.** The emitter is 2,882 lines. It
 already emits imports and already emits them CONDITIONALLY: two WASI
-(`fd_write`, `fd_read`) plus `env.blit_framebuf` and `env.on_key` behind
-`needs-blit` / `needs-key` (`WasmEmitter.codex:1592-1595`). The text above
+(`fd_write`, `fd_read`) plus `env.on_key` and `random_get` behind
+`needs-key` / `needs-random` (`wat-runtime-header` in `WasmEmitter.codex`). The text above
 says (B) "needs the wasm target to answer the block-device builtins through
 new imports" as though the mechanism were absent; it is present, with a
 precedent for exactly the gating (B) wants, so (B) adds names to a pattern
@@ -1148,16 +1148,17 @@ hold a second chapter (main 23526), which also taught the generator the
 **HOSTED HTTPS is `apps/works/HostedServeTls.codex`.** `hosted-serve-tls-on`
 takes the same route function and a `hosted-tls` configuration (an Ed25519
 key and a certificate, `x509-dev-cert-ed25519` for a DEV-ONLY self-signed
-one), and pumps `TlsEndpoint` between `host-socket` and the HTTP codec. Each
+one) or a `hosted-tls-p256` one (a P-256 key, `x509-dev-cert-p256`, the key
+type a browser offers), and pumps `TlsEndpoint` between `host-socket` and the HTTP codec. Each
 connection draws its X25519 key and random from `hardware-random` (RDRAND,
 present on both hosted targets) and its roughly 19 MB is reclaimed at close,
 so the route must not keep anything it allocates across requests. Arm:
-`codex/plugs/elf/hosted-https-arm.ps1` over `codex/test/hosted-https.codex`,
-both targets, OpenSSL `s_client` pinned to the certificate the subject
-prints, with a wrong-pin arm and `s_server` and dead-port controls. Open:
-the development certificate is Ed25519, which no browser offers (a P-256 one
-is signable through `Foreword chapter EcdsaP256Sign`), and CORE-9 step 3 (a
-CA; no browser trusts a self-signed leaf). `hosted-listen`
+`codex/plugs/elf/hosted-https-arm.ps1` over `codex/test/hosted-https.codex`
+(`-Key p256`: `hosted-https-p256.codex`, the client offering only
+ecdsa_secp256r1_sha256), both targets, OpenSSL `s_client` pinned to the
+certificate the subject prints and `openssl verify -check_ss_sig` over it,
+with a wrong-pin arm and `s_server` and dead-port controls. Open: CORE-9
+step 3 (a CA; no browser trusts a self-signed leaf). `hosted-listen`
 binds INADDR_ANY; `host-socket`'s bind takes the address as its third argument
 (network order, `#0100007F` for 127.0.0.1), so a caller can bind loopback.
 

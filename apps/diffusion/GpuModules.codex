@@ -1,0 +1,38 @@
+Chapter: GpuModules
+  cites Kernel chapter GpuBridge
+
+ A PTX module's text crosses the bridge once per run, not once per launch:
+ the guest copies text a character at a time, so a module sent with every
+ launch costs its whole length each time. Each module has a slot; the slot's two words below the reply scratch window hold
+ its handle and its text's length, the length checked on every use. A refused
+ load falls back to sending the text.
+
+ We say:
+
+Section: Slots
+
+  gm-cells : Integer = #BD6FFF00
+
+  gm-slot-layer : Integer = 0
+  gm-slot-vae : Integer = 1
+  gm-slot-gemm : Integer = 2
+  gm-slot-sampler : Integer = 3
+  gm-slot-lora : Integer = 4
+  gm-slot-upscale : Integer = 5
+
+  gm-slot-extras : Integer = 6
+
+  gm-module : Integer, Text -> Integer
+  gm-module (slot) (ptx) =
+    let h = bit-and (peek-32 gm-cells (slot * 8)) #FFFFFFFF
+    in let len = bit-and (peek-32 gm-cells (slot * 8 + 4)) #FFFFFFFF
+    in if h > 0 & h <= 64 & len == text-length ptx then h
+    else let n = gpu-module-load ptx
+    in let a = poke-32 gm-cells (slot * 8) n
+    in let b = poke-32 gm-cells (slot * 8 + 4) (text-length ptx)
+    in n
+
+  gm-launch : Integer, Text, Text, GpuGrid, List GpuParam -> Integer
+  gm-launch (slot) (ptx) (name) (g) (ps) =
+    let m = gm-module slot ptx
+    in if m > 0 then gpu-launch-module m name g ps else gpu-launch ptx name g ps

@@ -1208,9 +1208,9 @@ Section: Expression Emission
       state = restore-locals (act-r.state) act-locals,
       reg = act-r.reg
      }
-    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-fc-barrier (emit-with-timeout (fc-flush st) secs body)
-    is IrFork (body) (ty) (sp) -> emit-fc-barrier (emit-fork (fc-flush st) body sp)
-    is IrAwait (task) (ty) (sp) -> emit-fc-barrier (emit-await (fc-flush st) task)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-fc-barrier (emit-with-timeout (fc-flush (st-refuse-hosted st "with-timeout" sp)) secs body)
+    is IrFork (body) (ty) (sp) -> emit-fc-barrier (emit-fork (fc-flush (st-refuse-hosted st "fork" sp)) body sp)
+    is IrAwait (task) (ty) (sp) -> emit-fc-barrier (emit-await (fc-flush (st-refuse-hosted st "await" sp)) task)
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-fc-barrier (emit-handle (fc-flush st) eff body clauses ty)
     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-fc-barrier (emit-try (fc-flush st) max body fb fail)
     is IrLambda (params) (body) (ty) (sp) -> EmitResult {
@@ -1465,6 +1465,11 @@ Section: Expression Emission
      in let ld = load-local st2 (tmp.reg)
      in st-append-code (ld.state) (mov-store reg-r11 (ld.reg) 0)
       else st
+
+  st-refuse-hosted : CodegenState, Text, SourceSpan -> CodegenState
+  st-refuse-hosted (st) (name) (sp) =
+   if st-hosted st then st-add-error st cdx-emit-not-implemented (name & " is not implemented for a hosted target: a hosted process has no scheduler or tick to drive it") sp
+   else st
 
   emit-with-timeout : CodegenState, Integer, IRExpr -> EmitResult
   emit-with-timeout (st) (secs) (body) =

@@ -1153,7 +1153,7 @@ dispatching a lane to build a gesture that had already shipped.
 
 | item | state |
 |---|---|
-| a virtual desktop space to move into (Damian, 2026-09-07) | **WAITS ON HIS WORDING.** Two readings, several virtual desktops with a switcher, or a desk larger than the screen. Root carries the question; neither is built until he answers |
+| a virtual desktop space to move into (Damian, 2026-09-07) | **WAITS ON HIS WORDING**, asked with its options in `docs/PM/Active/DamianDecisions.md` 3.11. The drag clamp (main 23592) is built; several desktops with a switcher, or a desk larger than the screen, is not built until he answers |
 
 **The stranding ruling, Damian 2026-08-27 evening.** Buried heap marks become
 reclaimable and close-from-a-pill stops lying. The three cheaper options,

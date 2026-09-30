@@ -1,0 +1,78 @@
+Chapter: Machine
+  cites C64 chapter Memory
+  cites C64 chapter Cpu6502
+  cites C64 chapter Cia
+
+Section: Running the Machine
+
+  c64-run-cycles : CpuState, Integer -> CpuState
+  c64-run-cycles (s) (remaining) =
+    if remaining <= 0 then s
+    else if s.cpu-halted /= 0 then s
+    else c64-run-cycles (cpu-step s) (remaining - 1)
+
+ PAL: 312 raster lines of 63 cycles. Line number is published to the VIC
+ raster register at #12 with its ninth bit in #11, because a program that
+ waits on the raster is waiting on those two.
+
+  c64-run-raster : CpuState, Integer -> CpuState
+  c64-run-raster (s) (line) =
+    if line >= 312 then s
+    else let d = poke-byte vic-state #12 (bit-and line #FF)
+    in let d2 = if line > 255
+      then poke-byte vic-state #11 (bit-or (peek-byte vic-state #11) #80)
+      else poke-byte vic-state #11 (bit-and (peek-byte vic-state #11) #7F)
+    in c64-run-raster (c64-run-cycles s 63) (line + 1)
+
+ One frame: drain the keyboard ring, run the 312 lines, raise the CIA1
+ timer interrupt (ICR bit 0 with bit 7 set, #81) and take the IRQ.
+
+  c64-frame-step : CpuState -> CpuState
+  c64-frame-step (s) =
+    let dk = kbd-poll 0
+    in let s1 = c64-run-raster s 0
+    in let dc = poke-byte cia-state 29 (bit-or (peek-byte cia-state 29) #81)
+    in cpu-irq s1
+
+Section: Bringing the Machine Up
+
+  c64-init-screen : Integer -> Integer
+  c64-init-screen (i) =
+    if i >= 1000 then 0
+    else let d = poke-byte c64-ram (#0400 + i) 32
+    in d + c64-init-screen (i + 1)
+
+  c64-init-color : Integer -> Integer
+  c64-init-color (i) =
+    if i >= 1000 then 0
+    else let d = poke-byte color-ram-base i 14
+    in d + c64-init-color (i + 1)
+
+ #2F and #37 are the 6510 data-direction register and processor port at
+ $0000 and $0001: all ROMs and I/O banked in, which is what the KERNAL
+ reset expects to find.
+
+  c64-init-ram : Integer -> Integer
+  c64-init-ram (dummy) =
+    let d0 = poke-byte c64-ram 0 #2F
+    in let d1 = poke-byte c64-ram 1 #37
+    in d0 + d1 + c64-init-screen 0 + c64-init-color 0
+
+ VIC control and memory pointers: 25 rows and the screen on, 40 columns,
+ screen at $0400 with the character generator at $1000, no interrupts,
+ light blue on blue.
+
+  c64-init-vic : Integer -> Integer
+  c64-init-vic (dummy) =
+    let d0 = poke-byte vic-state #11 #1B
+    in let d1 = poke-byte vic-state #16 #C8
+    in let d2 = poke-byte vic-state #18 #15
+    in let d3 = poke-byte vic-state #19 0
+    in let d4 = poke-byte vic-state #20 14
+    in let d5 = poke-byte vic-state #21 6
+    in d0 + d1 + d2 + d3 + d4 + d5
+
+  c64-boot-cpu : Integer -> CpuState
+  c64-boot-cpu (dummy) = __record-set cpu-new "cpu-pc" (mem-read-16 #FFFC)
+
+Page 1

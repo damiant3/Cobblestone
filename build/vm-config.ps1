@@ -538,7 +538,7 @@ function Get-VmChardevCtrl { param([int]$Port) "socket,id=ch1,host=127.0.0.1,por
 # How many guests of $GuestMB the box can take right now. Answers a COUNT
 # rather than refusing, because the failure this exists to stop is a guest
 # killed for want of host RAM and then reported as a codegen defect
-# (OperatorsManual, the -Jobs 4 section; deck-headroom read a contended run
+# (OperatorsManual, the -Jobs 16 section; deck-headroom read a contended run
 # as 'a plug bundle has grown into its deck reservation', main 20381).
 #
 # Called at a FAN-OUT, before any guest starts, never per guest: a per-guest
@@ -553,11 +553,9 @@ function Get-VmChardevCtrl { param([int]$Port) "socket,id=ch1,host=127.0.0.1,por
 # the workload. Budgeting the ask would have admitted ONE slot where four
 # demonstrably run green, quietly serialising every battery.
 #
-# The measured figure also re-derives Damian's -Jobs 4 ruling from the other
-# end: 8 x 1100 = 8,800 MB against ~6,400 MB free overcommits, 4 x 1100 =
-# 4,400 MB fits. Re-measure both numbers on a box with different RAM rather
-# than carrying them (L-COUNT); the sampling recipe is a Get-Process loop on
-# codex-vm's WorkingSet64 while a compile runs.
+# Re-measure the figure on a box with different RAM rather than carrying it
+# (L-COUNT); the sampling recipe is a Get-Process loop on codex-vm's
+# WorkingSet64 while a compile runs.
 #
 # 1100 IS THE PER-TEST GUEST AND NOT EVERY GUEST, so the arithmetic above
 # sizes the wrong thing for a battery. `test.ps1` passes -GuestMB 2200 for
@@ -578,7 +576,7 @@ function Get-VmAdmittedSlots {
     try { $freeMB = [int]([double](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1024) } catch { return $Slots }
     if ($freeMB -le 0) { return $Slots }
     # Live guests are loads the free figure only half sees: a guest that just
-    # launched shows a small working set and grows toward GuestMB, and a Renode
+    # launched shows a small working set and grows, and a Renode
     # instance is a VM load under another name (OperatorsManual, 'A Renode
     # instance is a VM load'). Measured 2026-09-02: one freshly launched
     # codex-vm moved free by 23 MB and the answer not at all. Reserve each
@@ -587,7 +585,9 @@ function Get-VmAdmittedSlots {
     try {
         foreach ($p in @(Get-Process -Name codex-vm, Renode, renode -ErrorAction SilentlyContinue)) {
             $ws = [int]($p.WorkingSet64 / 1MB)
-            $grow = $GuestMB - $ws
+            # A live guest grows to the 1 GiB run-guest bar at most, whatever this
+            # caller's GuestMB (docs/Agents/box-*-2026-09-28.csv).
+            $grow = [Math]::Min($GuestMB, 1024) - $ws
             if ($grow -gt 0) { $liveMB += $grow }
             $live += "$($p.ProcessName)#$($p.Id)=${ws}MB"
         }

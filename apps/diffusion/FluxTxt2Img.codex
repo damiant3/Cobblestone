@@ -1,0 +1,80 @@
+Chapter: FluxTxt2Img
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites AI chapter ClipBpe
+  cites AI chapter T5Tokenizer
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter ClipEncoder
+  cites Diffusion chapter ClipPrompt
+  cites Diffusion chapter T5Encoder
+  cites Diffusion chapter FluxCondition
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter Noise
+  cites Diffusion chapter Flux
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter ImageOut
+  cites Diffusion chapter Txt2Img
+  cites Diffusion chapter Img2Img
+  cites Diffusion chapter Lora
+  cites Diffusion chapter LoraResident
+  cites Diffusion chapter FluxLora
+
+ Flux schnell text to image as Forge runs it (backend/diffusion_engine/flux.py):
+ T5 and CLIP-L's pooled output from FluxCondition, no guidance (schnell's CFG
+ 1), Euler over the simple schedule, the latent mapped for ae and decoded.
+ The text encoders are read before the 11.9 GB transformer is loaded, and the
+ transformer is freed before the decode.
+
+ We say:
+
+Section: Sampling
+
+ schnell's sampling from seed: torch's unit noise (Noise chapter) at the
+ first simple sigma, then Euler through flux-denoise; the answer is the
+ 16 x h x w latent, or 0.
+
+  flux-sample : FluxFile, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  flux-sample (f) (ctx) (txt) (y) (h) (w) (steps) (seed) =
+    let n = 16 * h * w
+    in let sig = flux-simple-sigmas steps
+    in let x = gpu-buf-alloc (n * 4)
+    in let ok = if x == 0 then False else noise-torch x seed 0 n
+    in let s0 = if ok then sm-lincomb x x x x (list-at sig 0) 0.0 0.0 n else 0 - 1
+    in let bad = if s0 < 0 then 1 else sample-euler (\xh s -> flux-denoise f ctx txt y h w xh s) x sig n
+    in if bad > 0 then un-free 0 x else x
+
+Section: The Image
+
+  fti-free-all : List Integer, Integer -> Integer
+  fti-free-all (hs) (i) = if i >= list-length hs then i else let f = gpu-buf-free (list-at hs i) in fti-free-all hs (i + 1)
+
+  flux-txt2img : ClipBpe, T5Tok, Txt2Img, List LoraFile -> Text
+  flux-txt2img (bpe) (tok) (r) (ls) =
+    let file = ckpt-open "clip_l.safetensors"
+    in let tf = t5-open "t5xxl_fp8_e4m3fn.safetensors"
+    in if file.st-valid == False | (tf.tf-file).st-valid == False then "refused: clip_l.safetensors or t5xxl_fp8_e4m3fn.safetensors is missing"
+    else let wl = clip-load "clip_l.safetensors" file (layout-bind file flux-clip-l-layout) clip-l-flux-spec
+    in let lc = if list-length ls == 0 then 0 else lr-clip "clip_l.safetensors" file wl ls False 0 0
+    in let fc = if lc < 0 then FluxCond { fc-status = 0 - 1, fc-t5 = 0, fc-rows = 0, fc-pooled = 0 } else flux-condition tf tok wl bpe (r.ti-prompt)
+    in let fwl = i2-clip-free wl
+    in if fc.fc-status /= 0 then "text encoders failed " & show (fc.fc-status)
+    else let f = flux-load (flux-open (r.ti-ckpt))
+    in let la = if list-length ls == 0 then 0 else flux-lora-apply f ls
+    in let h = r.ti-height / 8
+    in let w = r.ti-width / 8
+    in let x = if la < 0 then 0 else flux-sample f (fc.fc-t5) (fc.fc-rows) (fc.fc-pooled) h w (r.ti-steps) (r.ti-seed)
+    in let fcf = un-free (un-free 0 (fc.fc-t5)) (fc.fc-pooled)
+    in let fw = fti-free-all (f.ff-handles) 0
+    in if la < 0 then "refused: a LoRA could not be merged into the Flux transformer"
+    else if flux-latent-to-vae x (16 * h * w) == False then "latent map failed"
+    else let vw = vae-load "ae.safetensors" (flux-vae-part "ae.safetensors") ""
+    in let img = vae-decode vw (Act { ah = x, ac = 16, ahh = h, aww = w })
+    in let fv = vae-free vw 0 0
+    in if img.ah == 0 then "decode failed"
+    else let bytes = png-save img (r.ti-out) (r.ti-params)
+    in let fi = vd-free img & gpu-buf-free x
+    in if bytes < 0 then "save refused" else "png " & show (r.ti-width) & "x" & show (r.ti-height) & ": " & show bytes & " bytes"
+
+Page 1

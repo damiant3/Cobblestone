@@ -16,8 +16,5 @@ Design: `apps/explorer/design/Active/`. The working server is
 
 | # | Capability | State of the gap |
 |---|---|---|
-| EXP-1 | **GameWorldDesigner relationship and event tables** | The relationship table and the event table are not built. |
-| EXP-2 | **`/api/generate` and `/api/config` have an in-repo implementation** | All three designer pages call them. `ExplorerServer.codex` does not route them, and `apps/explorer/server.ps1` defines `Invoke-SdGenerate` / `Feed-SdConfig` and then never dispatches to them. So the prompt-building half works and the generation half answers nothing from a fresh sync. |
-| EXP-3 | **`apps/explorer/server.ps1` works from a fresh sync** | It serves pages from `D:\Projects\CodexMagic\explorer\pages` -- a path outside the depot, on one machine. Fold the SD generation code into `run-designers-demo.ps1` and retire the out-of-repo path. |
-| EXP-4 | **`build/build-explorer-pages.ps1` is live or gone** | Stale: it runs `build-output\{carddesigner,characterdesigner,settingdesigner,voicestudio}.cdx`, which nothing in the tree produces, and writes outside the depot. The live driver is `build/build-apps.ps1`. Delete it or rewrite it over `codex\plugs\html\run.ps1`. |
-| EXP-5 | **A route reaches `CardDesignerApp`** | It compiles, and no server routes it: `run-designers-demo.ps1`'s page map has no `card` key. `VoiceStudio`, `WorkflowExporter`, `StoryGraph`, `WorldForge` and `NameForge` are in the same state -- chapters that compile and are reachable from no page. |
+| EXP-5 | **`CardDesignerApp` is a card designer** | Routed at `/card`, and the page is a stub: `opening` prints `card-designer-app loaded` and nothing else. Its dimensions (model, sampler, steps, CFG, LoRA) are SD knobs, so the page needs `/api/config` to list the WebUI's models, samplers and LoRAs, which answers only `current_model` today. |
+| EXP-6 | **`VoiceStudio` and `WorkflowExporterMain` are pages** | Both `opening`s print a hand-written HTML and JS document as text, so the HTML plug renders the source, escaped, and no route serves them. Nothing answers VoiceStudio's `/api/tts/status` or `/api/tts/generate`. |

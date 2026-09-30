@@ -77,6 +77,19 @@ Section: The Browser Interface
   sg-wasm-sets-here : SetGameState -> Integer
   sg-wasm-sets-here (s) = find-all-sets (s.tableau)
 
+Section: Setting Up a Position
+
+ A grader builds a table and a deck card by card, on copies.
+
+  sg-wasm-empty : Integer -> SetGameState
+  sg-wasm-empty (z) = SetGameState { deck = [], tableau = [], found = 0, seed = 0 }
+
+  sg-wasm-push-tab : SetGameState, Integer -> SetGameState
+  sg-wasm-push-tab (s) (id) = SetGameState { deck = set-take (s.deck) 0 (list-length (s.deck)) [], tableau = list-push (set-take (s.tableau) 0 (list-length (s.tableau)) []) id, found = s.found, seed = s.seed }
+
+  sg-wasm-push-deck : SetGameState, Integer -> SetGameState
+  sg-wasm-push-deck (s) (id) = SetGameState { deck = list-push (set-take (s.deck) 0 (list-length (s.deck)) []) id, tableau = set-take (s.tableau) 0 (list-length (s.tableau)) [], found = s.found, seed = s.seed }
+
 Section: Playing By Hand
 
  `sg-wasm-valid` takes card ids; everything below takes tableau indices. An
@@ -99,8 +112,8 @@ Section: Playing By Hand
     in let c = set-card-from-id (list-at (s.tableau) k)
     in if is-valid-set a b c then 1 else 0
 
- A taken set is refilled from the deck up to twelve cards; a short deck
- leaves a smaller table.
+ A taken set is refilled from the deck up to twelve cards, so a table
+ grown past twelve shrinks by three; a short deck leaves a smaller table.
 
   sg-keep-rest : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
   sg-keep-rest (tab) (i) (j) (k) (n) (acc) =
@@ -121,7 +134,7 @@ Section: Playing By Hand
     else let kept = sg-keep-rest (s.tableau) i j k 0 []
     in let want = 12 - list-length kept
     in let have = list-length (s.deck)
-    in let take-n = if have < want then have else want
+    in let take-n = if want <= 0 then 0 else if have < want then have else want
     in let filled = sg-refill kept (s.deck) 0 take-n
     in let rest = set-drop (s.deck) take-n have []
     in SetGameState { deck = rest, tableau = filled, found = s.found + 1, seed = s.seed }

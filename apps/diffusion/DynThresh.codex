@@ -1,0 +1,160 @@
+Chapter: DynThresh
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter NoiseGen
+  cites Diffusion chapter SamplerSchedule
+  cites Diffusion chapter UNet
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter ExtrasKernelsPtx
+
+ mcmonkey's dynamic thresholding as Forge's sd_forge_dynamic_thresholding
+ installs it (a sampler_cfg_function answering dynthresh (cond, uncond,
+ cfg), lib_dynamic_thresholding/dynthres_core.py): experiment_mode 0,
+ max_steps 999, step 999 - t for the model's discrete timestep t. Forge's
+ tensors are f32 and torch.quantile interpolates in f32; the references
+ here round to f32, the sums run in f64.
+
+ We say:
+
+Section: Settings
+
+ Modes index DynThresh.Modes. sep is Separate Feature Channels, zero the
+ ZERO startpoint (else MEAN), std the STD measure (else AD).
+
+  DtSet = record {
+    dt-mimic : Real,
+    dt-pct : Real,
+    dt-mimic-mode : Integer,
+    dt-mimic-min : Real,
+    dt-cfg-mode : Integer,
+    dt-cfg-min : Real,
+    dt-sched : Real,
+    dt-sep : Boolean,
+    dt-zero : Boolean,
+    dt-std : Boolean,
+    dt-phi : Real
+  }
+
+  dt-modes : List Text = ["Constant", "Linear Down", "Cosine Down", "Half Cosine Down", "Linear Up", "Cosine Up", "Half Cosine Up", "Power Up", "Power Down", "Linear Repeating", "Cosine Repeating", "Sawtooth"]
+
+Section: Schedule
+
+  dt-mod1 : Real -> Real
+  dt-mod1 (x) = x - real-from-int (real-to-int x)
+
+  dt-pow : Real, Real -> Real
+  dt-pow (x) (y) = if x <= 0.0 then (if y ~0 0.0 then 1.0 else 0.0) else sm-pow x y
+
+  dt-factor : Integer, Real, Real -> Real
+  dt-factor (mode) (sched) (frac) =
+    if mode == 1 then 1.0 - frac
+    else if mode == 2 then real-cos (frac * 1.5707)
+    else if mode == 3 then real-cos frac
+    else if mode == 4 then frac
+    else if mode == 5 then 1.0 - real-cos (frac * 1.5707)
+    else if mode == 6 then 1.0 - real-cos frac
+    else if mode == 7 then dt-pow frac sched
+    else if mode == 8 then 1.0 - dt-pow frac sched
+    else if mode == 9 then (let p = dt-mod1 (frac * sched) in if p < 0.5 then (0.5 - p) * 2.0 else (p - 0.5) * 2.0)
+    else if mode == 10 then real-cos (frac * 6.28318 * sched) * 0.5 + 0.5
+    else if mode == 11 then dt-mod1 (frac * sched)
+    else 1.0
+
+  dt-scale : Real, Integer, Real, Real, Real -> Real
+  dt-scale (scale) (mode) (mn) (sched) (step) =
+    if mode == 0 then scale - mn + mn
+    else (scale - mn) * dt-factor mode sched (step / 998.0) + mn
+
+Section: References
+
+  dt-f32 : Real -> Real
+  dt-f32 (v) = un-f32-real (nz-f32-bits v)
+
+  dt-get64 : Integer, Integer -> Real
+  dt-get64 (a) (i) = bits-to-real (bit-or (bit-and (peek-32 a (i * 8)) #FFFFFFFF) (bit-shl (bit-and (peek-32 a (i * 8 + 4)) #FFFFFFFF) 32))
+
+  dt-put64 : Integer, List Real, Integer -> Integer
+  dt-put64 (a) (xs) (i) =
+    if i >= list-length xs then i
+    else let b = real-to-bits (list-at xs i)
+    in let z = poke-32 a (i * 8) (bit-and b #FFFFFFFF)
+    in let y = poke-32 a (i * 8 + 4) (bit-and (bit-shru b 32) #FFFFFFFF)
+    in dt-put64 a xs (i + 1)
+
+ torch.lerp: start + w (end - start) below one half, end - (end - start)
+ (1 - w) from it.
+
+  dt-lerp : Real, Real, Real -> Real
+  dt-lerp (a) (b) (w) = dt-f32 (if w < 0.5 then a + w * (b - a) else b - (b - a) * (1.0 - w))
+
+ host holds the stats (c * 6: mimic mean, CFG mean, mimic max |x - mean|,
+ mimic sum of squares, CFG max |x - mean|, CFG sum of squares) and at 24
+ the rank values (group * 2, then * 2 + 1).
+
+  dt-max4 : Integer, Integer -> Real
+  dt-max4 (host) (k) =
+    let a = dt-get64 host k
+    in let b = dt-get64 host (6 + k)
+    in let c = dt-get64 host (12 + k)
+    in let d = dt-get64 host (18 + k)
+    in let x = if a > b then a else b
+    in let y = if c > d then c else d
+    in if x > y then x else y
+
+  dt-sum4 : Integer, Integer -> Real
+  dt-sum4 (host) (k) = dt-get64 host k + dt-get64 host (6 + k) + dt-get64 host (12 + k) + dt-get64 host (18 + k)
+
+  dt-ref : Integer, DtSet, Integer, Integer, Boolean, Real, Integer -> Real
+  dt-ref (host) (st) (hw) (c) (mimic) (w) (k0) =
+    let am = if mimic then 2 else 4
+    in let aq = if mimic then 3 else 5
+    in if st.dt-std then dt-f32 (sm-sqrt (if st.dt-sep then dt-get64 host (c * 6 + aq) / real-from-int (hw - 1) else dt-sum4 host aq / real-from-int (4 * hw - 1)))
+    else if mimic | st.dt-pct >= 1.0 then dt-f32 (if st.dt-sep then dt-get64 host (c * 6 + am) else dt-max4 host am)
+    else let g = if st.dt-sep then c else 0
+    in dt-lerp (dt-get64 host (24 + g * 2)) (dt-get64 host (24 + g * 2 + 1)) w
+
+  dt-refs : Integer, DtSet, Integer, Real, Integer, Integer, List Real -> List Real
+  dt-refs (host) (st) (hw) (w) (k0) (c) (acc) =
+    if c >= 4 then acc
+    else dt-refs host st hw w k0 (c + 1) (acc & [dt-f32 (dt-get64 host (c * 6 + 1)), dt-ref host st hw c True w k0, dt-ref host st hw c False w k0])
+
+Section: Guide
+
+  dt-run : Text, Integer, List GpuParam -> Boolean
+  dt-run (name) (n) (ps) = gm-launch gm-slot-extras extras-kernels-ptx name (GpuGrid { gx = (n + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }) ps >= 0
+
+  dt-free : List Integer, Integer -> Integer
+  dt-free (hs) (i) = if i >= list-length hs then 0 else let z = un-free 0 (list-at hs i) in dt-free hs (i + 1)
+
+ dynthresh of the device predictions dc and du (4 x hw each) at the CFG
+ scale cfg and step 999 - t, into out.
+
+  dt-guide : Integer, Integer, Integer, Integer, Real, Real, DtSet -> Boolean
+  dt-guide (dc) (du) (out) (hw) (cfg) (step) (st) =
+    let n = 4 * hw
+    in let ms = dt-scale (st.dt-mimic) (st.dt-mimic-mode) (st.dt-mimic-min) (st.dt-sched) step
+    in let cs = dt-scale cfg (st.dt-cfg-mode) (st.dt-cfg-min) (st.dt-sched) step
+    in let mim = gpu-buf-alloc (n * 4)
+    in let cfgt = gpu-buf-alloc (n * 4)
+    in let stats = gpu-buf-alloc (24 * 8)
+    in let qv = gpu-buf-alloc (8 * 8)
+    in let refs = gpu-buf-alloc (12 * 8)
+    in let gn = if st.dt-sep then hw else n
+    in let pos = dt-f32 (dt-f32 (st.dt-pct) * real-from-int (gn - 1))
+    in let k0 = real-to-int pos
+    in let k1 = if k0 + 1 > gn - 1 then gn - 1 else k0 + 1
+    in let rank = st.dt-std == False & st.dt-pct < 1.0
+    in let mark = __heap-save
+    in let host = alloc-bytes (32 * 8)
+    in let hr = alloc-bytes (12 * 8)
+    in let ok = if mim == 0 | cfgt == 0 | stats == 0 | qv == 0 | refs == 0 then False
+       else if dt-run "kernel_dt_targets" n [gpu-arg-buf dc 0, gpu-arg-buf du 0, gpu-arg-buf mim 0, gpu-arg-buf cfgt 0, gpu-arg-u64 n, gpu-arg-u64 (real-to-bits ms), gpu-arg-u64 (real-to-bits cs)] == False then False
+       else if dt-run "kernel_dt_stats" 4 [gpu-arg-buf mim 0, gpu-arg-buf cfgt 0, gpu-arg-buf stats 0, gpu-arg-u64 hw] == False then False
+       else if (if rank then dt-run "kernel_dt_rank" n [gpu-arg-buf cfgt 0, gpu-arg-buf stats 0, gpu-arg-buf qv 0, gpu-arg-u64 hw, gpu-arg-u64 (if st.dt-sep then 1 else 0), gpu-arg-u64 k0, gpu-arg-u64 k1] else True) == False then False
+       else if gpu-buf-read stats 0 (24 * 8) host == False then False
+       else if (if rank then gpu-buf-read qv 0 (8 * 8) (host + 24 * 8) else True) == False then False
+       else if dt-put64 hr (dt-refs host st hw (pos - real-from-int k0) k0 0 []) 0 /= 12 then False
+       else if gpu-buf-write refs 0 (12 * 8) hr == False then False
+       else dt-run "kernel_dt_apply" n [gpu-arg-buf cfgt 0, gpu-arg-buf out 0, gpu-arg-buf refs 0, gpu-arg-u64 hw, gpu-arg-u64 (if st.dt-zero then 1 else 0), gpu-arg-u64 (if st.dt-std then 1 else 0), gpu-arg-u64 (real-to-bits (st.dt-phi))]
+    in let back = __heap-restore mark
+    in let f = dt-free [mim, cfgt, stats, qv, refs] 0
+    in ok

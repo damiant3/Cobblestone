@@ -22,24 +22,8 @@ Section: Keyboard State
   uk-ph-armed : Integer = 1
   uk-ph-drain : Integer = 2
 
- Enumerate what the pair can say, because the interesting state is the
- one no bed here can produce (reek, 2026-08-04, at the cost of a board
- trip):
-
- ok=n                     enumeration failed. Every bed reproduces it by not attaching a keyboard.
- ok=Y ev=0 sc=0           enumerated, and the interrupt pipe has never completed. THE EMULATED KEYBOARD ALWAYS ANSWERS, so no bed in this tree can make this state, and it is what the ASUS TUF shows.
- ok=Y ev>0 sc=0           reports arrive and decode to nothing. This is kbd-drain's ground, and it is the arm kbd-diag-v16 was written for and never flew.
- ok=Y ev>0 sc>0           the whole path works.
-
- Two more, added 2026-08-04 when the board answered `ev` climbing and
- `rp=0000000000000000` with a key held: completions arrive carrying no
- data, so the fault is the transfer and not hid-step.
-
- `cc` is the last completion code, which xhci-wait-xfer returns and
- nobody kept. SUCCESS(1) with an empty buffer means the bytes were
- written somewhere that is not uk-report; SHORT PACKET(13) means the
- device completed with fewer bytes than asked; TRANSACTION ERROR(4) or
- STALL(6) name themselves.
+ xHCI completion codes: 1 success, 13 short packet, 4 transaction error,
+ 6 stall. A short packet completed with fewer bytes than requested.
 
   uk-cell-events : Integer = 8
   uk-cell-scans : Integer = 16
@@ -48,20 +32,8 @@ Section: Keyboard State
 
   uk-cell-nonzero : Integer = 40
 
- The counters above live in `uk-state`, which is a per-keyboard heap
- allocation, so nothing outside this chapter can find them: a diagnostic
- holding no UsbKbd cannot read them at all. These cells are the same five
- numbers at a FIXED address, so a passive reader (the diag ladder's
- `mscalign` neighbour, `DiagKbd`) can separate never-armed from
- armed-but-silent from firing-but-empty without touching the device.
-
- 112..119 IS TAKEN OUT OF THE xdiag REGISTRY, and the registry is the one in
- `OperatorsManual.md`, "The xdiag cell registry", which this block is added
- to in the same change. Nothing arbitrates that array and no gate looks, so
- two owners of one cell is green everywhere and surfaces as a wrong number on
- a photograph of a boot screen: the HID note block sat at 80 until 2026-08-13
- and spent that time showing storage state under device-descriptor labels.
- 96..111 is that block, four devices deep, so this one starts at 112.
+ xdiag cells 112..119 follow the HID descriptor block at 96..111. The
+ registry is in OperatorsManual.md, "The xdiag cell registry".
 
  The mirror writes sit at the four sites that already increment, one poke
  each, so the idle path that "must allocate NOTHING" gains no allocation and
@@ -292,11 +264,6 @@ Section: Connect
 
 Section: The Pump
 
- One action per call, from the consumer's own poll loop. The armed
- check is non-blocking: fuel zero means xhci-wait-event looks at the
- event ring exactly once. A device holding the transfer NAKed until a
- key changes state costs the loop nothing.
-
   kbd-set-phase : UsbKbd, Integer -> Integer
   kbd-set-phase (k) (ph) =
     let w = poke-32 (k.uk-state) 0 ph
@@ -324,7 +291,11 @@ Section: The Pump
   kbd-check : UsbKbd -> Integer
   kbd-check (k) =
     let code = xhci-wait-xfer (k.uk-host) ((k.uk-dev).ud-slot) (k.uk-dci) 0
-    in if code == 0 then 0
+    in kbd-completion k code
+
+  kbd-completion : UsbKbd, Integer -> Integer
+  kbd-completion (k) (code) =
+    if code == 0 then 0
     else let n = poke-32 (k.uk-state) uk-cell-events (peek-32 (k.uk-state) uk-cell-events + 1)
     in let c = poke-32 (k.uk-state) uk-cell-code code
     in let pe = xdiag-put kbd-cell-events (peek-32 (k.uk-state) uk-cell-events)

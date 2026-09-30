@@ -1571,6 +1571,41 @@ static int usb_bot_revive  = 0;
 static int usb_bot_die_on_nic = 0;
 static int usb_bot_nic_armed  = 0;
 
+/* -usb-bot-stall-lba L -usb-bot-stall-after B [-usb-bot-stall-nth K]: on the
+   Kth WRITE(10) at exactly LBA L whose data phase is longer than B bytes, the
+   target takes the first B bytes and then stops: the rest of that data TRB is
+   not consumed and no transfer event is posted, so the host's wait runs out of
+   fuel in the data phase. The target stays in that command's data-out phase
+   until the declared length is complete: a Bulk-Only Mass Storage Reset is
+   answered STALL and does not resynchronise it, an IN transfer gets no answer,
+   and every later OUT packet is taken as the next 512 bytes of write data
+   (high-speed bulk max packet), so a 31-byte CBW lands at the start of the next
+   sector of the stalled write.
+
+   The shape is sitting 17's (2026-09-29, `diag17-returned-20260929.img`),
+   read off the returned medium rather than inferred from the glass. The bank's
+   FAT flush wrote the second FAT copy as 64 sectors at 2153; LBA 2209..2216,
+   the last 8 sectors of that command, each begin with a CBW (signature USBC,
+   tags 0x110..0x117, READ(10) of the FAT at 2049 and the root at 2257, the
+   remount's), so the target stopped 56 sectors (28672 bytes) in and later
+   stored the host's next eight commands as data. The row read cc=256 ph=2
+   rty=1: the data phase got no completion and the recovery returned false
+   before any retry, which is why the absorbed commands are the remount's reads
+   and not a retried write. Which recovery step failed on metal is not known;
+   the STALL on the class reset is this model's choice of the one that fails.
+   Once the absorbed packets complete the stalled write the target latches dead
+   (usb_bot_dead) for the rest of the boot: on the returned medium nothing
+   landed after those eight sectors, the sink's mount read timed out, and
+   GUEST.CDX read as absent. */
+static int usb_bot_stall_lba   = -1;
+static int usb_bot_stall_after = 0;
+static int usb_bot_stall_nth   = 1;
+static int usb_bot_stall_seen  = 0;
+static int usb_bot_stuck       = 0;
+static unsigned long long usb_bot_stall_trb = 0;
+static int usb_bot_stall_resid = 0;
+static int usb_bot_stall_short = 0;
+
 /* Called from e1000_write on the first bring-up observable. Idempotent: only
    the FIRST one arms, so a driver that writes CTRL.SLU repeatedly during a
    retry does not restate the reading. */
@@ -1978,6 +2013,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                                         ((tctl >> 10) & 0x3F) != 6) {
                                         fse_code = 26;
                                         fse_resid = (int)(*(unsigned int *)((unsigned char *)guest_mem + cur_dq + 8) & 0x1FFFF);
+                                        if (usb_bot_stuck && cur_dq == usb_bot_stall_trb) fse_resid = usb_bot_stall_resid;
                                     }
                                 }
                                 xhci_post_event_ep_resid(32, slot, dci, fse_code, cur_dq, fse_resid);
@@ -2149,7 +2185,11 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                    command it was trying to replace. Reset Recovery therefore
                    had no bed at all. Sense is deliberately left alone -- a BOT
                    reset does not clear a pending UNIT ATTENTION. */
-                if (kind == XHCI_KIND_MSC && bmRequestType == 0x21 && bRequest == 0xFF) {
+                if (kind == XHCI_KIND_MSC && bmRequestType == 0x21 && bRequest == 0xFF && usb_bot_stuck) {
+                    fprintf(stderr, "xHCI: -usb-bot-stall: Mass Storage Reset refused (STALL) mid data-out, data_done=%u of %u\n",
+                            bot.data_done, bot.xfer_len);
+                    ctrl_cc = 6;
+                } else if (kind == XHCI_KIND_MSC && bmRequestType == 0x21 && bRequest == 0xFF) {
                     fprintf(stderr, "xHCI: BOT Mass Storage Reset (active=%d, data_done=%u) -- abandoning command\n",
                             bot.active, bot.data_done);
                     bot.active = 0;
@@ -2441,11 +2481,14 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     fprintf(stderr, "BOT: slot=%d dci=%d kind=%d disk=%d buf=0x%llx len=%d active=%d\n",
                             db, ep_idx, kind, ide.data ? 1 : 0,
                             (unsigned long long)buf_addr, buf_len, bot.active);
+                int bot_nak = 0;
                 if (kind == 1 && ide.data && buf_addr > 0 &&
                     buf_addr + (unsigned long long)buf_len <= guest_mem_size) {
                     unsigned char *buf = (unsigned char *)guest_mem + buf_addr;
                     int ring_is_in = (ep_idx >= 2) && (ep_idx & 1); /* odd DCI = IN endpoint */
-                    if (!ring_is_in) {
+                    if (usb_bot_stuck && (ring_is_in || tr_dequeue == usb_bot_stall_trb)) {
+                        bot_nak = 1;
+                    } else if (!ring_is_in) {
                         /* Bulk OUT ring: a CBW, or write data following one */
                         if (!bot.active && buf_len >= 31 && *(unsigned int *)buf == 0x43425355) {
                             bot.active = 1;
@@ -2501,6 +2544,28 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                         } else if (bot.active && !bot.dir_in && bot.data_done < bot.xfer_len) {
                             unsigned int n = (unsigned int)buf_len;
                             if (n > bot.xfer_len - bot.data_done) n = bot.xfer_len - bot.data_done;
+                            unsigned int adv = n;
+                            if (usb_bot_stuck) {
+                                adv = ((n + 511) / 512) * 512;
+                                if (adv > bot.xfer_len - bot.data_done) adv = bot.xfer_len - bot.data_done;
+                                if (n % 512) usb_bot_stall_short++;
+                                fprintf(stderr, "xHCI: -usb-bot-stall: %u-byte OUT transfer taken as write data at offset %u of the stalled command\n",
+                                        n, bot.data_done);
+                            } else if (usb_bot_stall_lba >= 0 && bot.cb[0] == 0x2A && bot.data_done == 0 &&
+                                       bot.xfer_len > (unsigned int)usb_bot_stall_after) {
+                                unsigned int slba = ((unsigned int)bot.cb[2] << 24) | ((unsigned int)bot.cb[3] << 16) |
+                                                    ((unsigned int)bot.cb[4] << 8) | bot.cb[5];
+                                if (slba == (unsigned int)usb_bot_stall_lba && ++usb_bot_stall_seen == usb_bot_stall_nth) {
+                                    if (n > (unsigned int)usb_bot_stall_after) n = (unsigned int)usb_bot_stall_after;
+                                    adv = n;
+                                    usb_bot_stuck = 1;
+                                    usb_bot_stall_trb = tr_dequeue;
+                                    usb_bot_stall_resid = buf_len - (int)n;
+                                    bot_nak = 1;
+                                    fprintf(stderr, "xHCI: -usb-bot-stall: target STOPPED %u bytes into a %u-byte write at lba=%u (write %d at that lba); no completion\n",
+                                            n, bot.xfer_len, slba, usb_bot_stall_seen);
+                                }
+                            }
                             if (bot.cb[0] == 0x2A) { /* WRITE_10 */
                                 unsigned int lba = ((unsigned int)bot.cb[2] << 24) | ((unsigned int)bot.cb[3] << 16) |
                                                    ((unsigned int)bot.cb[4] << 8) | bot.cb[5];
@@ -2517,7 +2582,16 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                                 bot.csw_status = 1; /* OUT data for a non-write command */
                                 fprintf(stderr, "BOT: OUT data for op=%02x n=%u\n", bot.cb[0], n);
                             }
-                            bot.data_done += n;
+                            bot.data_done += adv;
+                            if (usb_bot_stuck && !bot_nak && bot.data_done >= bot.xfer_len) {
+                                usb_bot_stuck = 0;
+                                if (usb_bot_stall_short) {
+                                    usb_bot_dead = 1;
+                                    fprintf(stderr, "xHCI: -usb-bot-stall: the stalled write was completed by %d short packets; nothing answers from here\n", usb_bot_stall_short);
+                                } else {
+                                    fprintf(stderr, "xHCI: -usb-bot-stall: the stalled write is complete; the target returns its CSW\n");
+                                }
+                            }
                         }
                     } else if (bot.active) {
                         /* Bulk IN ring: the data phase of an IN command, then the CSW */
@@ -2578,8 +2652,9 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                        TRB that asks for one (IOC, bit 5). The BOT driver
                        drives CBW, data, and CSW as three separate awaited
                        transfers, so each must complete with its own event. */
-                    if (ctrl & 0x20) xhci_post_event_ep(32, db, ep_idx, 1, tr_dequeue);
+                    if ((ctrl & 0x20) && !bot_nak) xhci_post_event_ep(32, db, ep_idx, 1, tr_dequeue);
                 }
+                if (bot_nak) break;   /* NAKed: the TD stays at the dequeue pointer */
                 tr_dequeue += 16;
             } else if (tt == 5) { /* ISOCH (isochronous transfer) */
                 unsigned long long buf_addr = *(unsigned long long *)trb;
@@ -7426,6 +7501,7 @@ typedef struct {
     int mask;
     int isr;            /* in-service register */
     int irr;            /* interrupt request register */
+    int aeoi;           /* ICW4 bit 1: the chip clears isr itself on delivery */
 } PicState;
 
 /* Forward declarations for NAT (defined after NE2K) */
@@ -10313,6 +10389,10 @@ static void input_drip_feed(void) {
 
 /* Output buffer: accumulate guest UART writes (port 0x3F8 OUT) */
 static unsigned char *output_buf = NULL;
+/* COM1's LCR (0x3FB). While its DLAB bit (0x80) is set, 0x3F8 and 0x3F9 are
+   the baud-rate divisor latch, not THR and IER, so a write there is not a
+   transmitted byte. */
+static unsigned char com1_lcr = 0;
 static size_t output_len = 0;
 static size_t output_cap = 0;
 /* Serial bytes dropped because the buffer could not grow. Reported once when
@@ -10879,20 +10959,30 @@ static void pic_handle_out(PicState *p, int port_is_data, int val) {
             p->icw_step = 1;
             p->isr = 0;
             p->irr = 0;
-        } else if (val == 0x20) {
-            /* EOI */
-            p->isr = 0;
-            /* serial_irq_pending removed -- no serial */
+        } else if ((val & 0x18) == 0) {
+            /* OCW2. A non-specific EOI clears the highest-priority in-service
+               bit, a specific EOI clears the bit it names. An EOI sent to the
+               local APIC instead clears nothing here, and that IRQ and every
+               lower-priority one stay blocked, as on the 8259 (COMPILER-104). */
+            int op = (val >> 5) & 7;
+            if (op == 1) p->isr &= p->isr - 1;
+            else if (op == 3) p->isr &= ~(1 << (val & 7));
         }
     } else {
         /* Data port */
         switch (p->icw_step) {
         case 1: p->vector_base = val & 0xF8; p->icw_step = 2; break;
         case 2: p->icw_step = 3; break; /* ICW3: cascade config, just consume */
-        case 3: p->icw_step = 0; break; /* ICW4: mode, just consume */
+        case 3: p->aeoi = (val & 2) != 0; p->icw_step = 0; break; /* ICW4 */
         default: p->mask = val; break;  /* OCW1: interrupt mask */
         }
     }
+}
+
+/* The 8259's fully nested priority: IRQ n is held while n or any
+   higher-priority (lower-numbered) IRQ is in service. */
+static int pic_master_can_deliver(int irq) {
+    return (pic_master.isr & ((2 << irq) - 1)) == 0;
 }
 
 static int pic_handle_in(PicState *p, int port_is_data) {
@@ -12107,6 +12197,27 @@ typedef CUresult_t (*pfn_cuLaunchKernel)(CUfunction_t, unsigned, unsigned, unsig
                                          unsigned, void *, void **, void **);
 typedef CUresult_t (*pfn_cuCtxSynchronize)(void);
 typedef CUresult_t (*pfn_cuGetErrorString)(CUresult_t, const char **);
+typedef CUresult_t (*pfn_cuModuleLoadDataEx)(CUmodule_t *, const void *, unsigned int, int *, void **);
+typedef void *CUevent_t;
+typedef CUresult_t (*pfn_cuEventCreate)(CUevent_t *, unsigned int);
+typedef CUresult_t (*pfn_cuEventRecord)(CUevent_t, void *);
+typedef CUresult_t (*pfn_cuEventElapsedTime)(float *, CUevent_t, CUevent_t);
+typedef CUresult_t (*pfn_cuFuncSetAttribute)(CUfunction_t, int, int);
+
+/* CUfunction_attribute (cuda.h): a launch may ask for more than 48 KB of
+   dynamic shared memory only after the function is allowed that much. */
+#define CUDA_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES 8
+
+/* CUjit_option values (cuda.h): the driver writes its JIT diagnostics into
+   these buffers, and a failed load says nothing else about why. */
+#define CUDA_JIT_INFO_LOG_BUFFER             3
+#define CUDA_JIT_INFO_LOG_BUFFER_SIZE_BYTES  4
+#define CUDA_JIT_ERROR_LOG_BUFFER            5
+#define CUDA_JIT_ERROR_LOG_BUFFER_SIZE_BYTES 6
+#define CUDA_JIT_LOG_BYTES                   4096
+
+#define CUDA_MODULE_CACHE 16
+#define CUDA_FN_CACHE 256
 
 static struct {
     int state;                      /* 0 untried, 1 ready, -1 unavailable */
@@ -12127,16 +12238,31 @@ static struct {
     pfn_cuLaunchKernel launch;
     pfn_cuCtxSynchronize sync;
     pfn_cuGetErrorString err_string;
-    /* One-module cache. A JIT of a small kernel is milliseconds, which is
-       a thousand times the dispatch this bridge exists to make cheap, so
-       relaunching the same kernel must not pay for it twice. Keyed on the
-       PTX bytes and the kernel name together, because the same text can
-       be asked for a different entry point. */
-    unsigned char *cached_ptx;
-    unsigned int cached_ptx_len;
-    char cached_name[COM3_PTX_NAME_MAX];
-    CUmodule_t cached_module;
-    CUfunction_t cached_fn;
+    pfn_cuModuleLoadDataEx module_load_ex;
+    pfn_cuEventCreate event_create;
+    pfn_cuEventRecord event_record;
+    pfn_cuEventElapsedTime event_elapsed;
+    pfn_cuFuncSetAttribute func_set_attr;
+    /* A module load (the JIT) costs about a millisecond, so a module is
+       loaded once per distinct PTX text and its entry points are cached
+       apart from it: one SDXL image launches about 25 kernels out of 5
+       modules, and a cache keyed on (text, kernel) reloaded the whole
+       module for every kernel, 4936 loads an image. A text the bridge
+       keeps for the run (op 47's modules, the built-in matmul) is matched
+       by address; a text copied in per launch is matched by content. */
+    struct {
+        unsigned char *ptx;
+        unsigned int ptx_len;
+        const void *src;
+        CUmodule_t module;
+    } mods[CUDA_MODULE_CACHE];
+    unsigned int mods_next;
+    struct {
+        int mod;
+        char name[COM3_PTX_NAME_MAX];
+        CUfunction_t fn;
+    } fns[CUDA_FN_CACHE];
+    unsigned int fns_next;
 } cuda;
 
 static const char *cuda_err(CUresult_t r) {
@@ -12187,6 +12313,14 @@ static int cuda_ready(void) {
 #undef CUDA_SYM
     /* Optional: only used to make an error message readable. */
     cuda.err_string = (pfn_cuGetErrorString)(void *)GetProcAddress(cuda.lib, "cuGetErrorString");
+    /* Optional: only used to report why a JIT failed. */
+    cuda.module_load_ex = (pfn_cuModuleLoadDataEx)(void *)GetProcAddress(cuda.lib, "cuModuleLoadDataEx");
+    /* Optional: without events every launch is synchronous (gpu_async_ok). */
+    cuda.event_create = (pfn_cuEventCreate)(void *)GetProcAddress(cuda.lib, "cuEventCreate");
+    cuda.event_record = (pfn_cuEventRecord)(void *)GetProcAddress(cuda.lib, "cuEventRecord");
+    /* Optional: without it a launch past 48 KB of shared memory is refused. */
+    cuda.func_set_attr = (pfn_cuFuncSetAttribute)(void *)GetProcAddress(cuda.lib, "cuFuncSetAttribute");
+    cuda.event_elapsed = (pfn_cuEventElapsedTime)(void *)GetProcAddress(cuda.lib, "cuEventElapsedTime");
 
     if ((r = cuda.init(0)) != 0) {
         fprintf(stderr, "CUDA: cuInit failed: %s\n", cuda_err(r));
@@ -12207,23 +12341,62 @@ static int cuda_ready(void) {
     return 1;
 }
 
-/* Resolve the kernel, reusing the cached module when the same PTX and the
-   same entry point are asked for again. Answers 0 on success. */
+/* Resolve the kernel: the module from the module cache (loading it on a
+   miss), the entry point from the function cache. stable says the caller
+   keeps this exact text at this address for the run. Answers 0 on success. */
 static int cuda_get_function(const unsigned char *ptx, unsigned int ptx_len,
-                             const char *name, CUfunction_t *out_fn) {
+                             const char *name, CUfunction_t *out_fn, int stable) {
     CUresult_t r;
     CUmodule_t mod = 0;
     CUfunction_t fn = 0;
+    unsigned int i, slot;
+    int m = -1;
 
-    if (cuda.cached_module && cuda.cached_ptx_len == ptx_len &&
-        memcmp(cuda.cached_ptx, ptx, ptx_len) == 0 &&
-        strcmp(cuda.cached_name, name) == 0) {
-        *out_fn = cuda.cached_fn;
+    for (i = 0; i < CUDA_MODULE_CACHE && m < 0; i++) {
+        if (!cuda.mods[i].module || cuda.mods[i].ptx_len != ptx_len) continue;
+        if (stable ? cuda.mods[i].src == (const void *)ptx : memcmp(cuda.mods[i].ptx, ptx, ptx_len) == 0) m = (int)i;
+    }
+    if (m >= 0) {
+        for (i = 0; i < CUDA_FN_CACHE; i++) {
+            if (cuda.fns[i].mod == m && strcmp(cuda.fns[i].name, name) == 0) {
+                *out_fn = cuda.fns[i].fn;
+                return 0;
+            }
+        }
+        if ((r = cuda.module_get_fn(&fn, cuda.mods[m].module, name)) != 0) {
+            fprintf(stderr, "CUDA: module has no kernel '%s': %s\n", name, cuda_err(r));
+            return 1;
+        }
+        slot = cuda.fns_next;
+        cuda.fns_next = (cuda.fns_next + 1) % CUDA_FN_CACHE;
+        cuda.fns[slot].mod = m;
+        strncpy(cuda.fns[slot].name, name, sizeof(cuda.fns[slot].name) - 1);
+        cuda.fns[slot].name[sizeof(cuda.fns[slot].name) - 1] = 0;
+        cuda.fns[slot].fn = fn;
+        *out_fn = fn;
         return 0;
     }
 
-    if ((r = cuda.module_load(&mod, ptx)) != 0) {
-        fprintf(stderr, "CUDA: PTX would not load: %s\n", cuda_err(r));
+    if (cuda.module_load_ex) {
+        static char err_log[CUDA_JIT_LOG_BYTES], info_log[CUDA_JIT_LOG_BYTES];
+        int opts[4] = { CUDA_JIT_ERROR_LOG_BUFFER, CUDA_JIT_ERROR_LOG_BUFFER_SIZE_BYTES,
+                        CUDA_JIT_INFO_LOG_BUFFER, CUDA_JIT_INFO_LOG_BUFFER_SIZE_BYTES };
+        void *vals[4];
+        err_log[0] = 0;
+        info_log[0] = 0;
+        vals[0] = err_log;
+        vals[1] = (void *)(size_t)sizeof(err_log);
+        vals[2] = info_log;
+        vals[3] = (void *)(size_t)sizeof(info_log);
+        r = cuda.module_load_ex(&mod, ptx, 4, opts, vals);
+        if (r != 0) {
+            fprintf(stderr, "CUDA: PTX would not load (%u bytes, kernel '%s'): %s\n", ptx_len, name, cuda_err(r));
+            fprintf(stderr, "CUDA: JIT error log: %s\n", err_log[0] ? err_log : "(empty)");
+            if (info_log[0]) fprintf(stderr, "CUDA: JIT info log: %s\n", info_log);
+            return 1;
+        }
+    } else if ((r = cuda.module_load(&mod, ptx)) != 0) {
+        fprintf(stderr, "CUDA: PTX would not load (%u bytes, kernel '%s'): %s\n", ptx_len, name, cuda_err(r));
         return 1;
     }
     if ((r = cuda.module_get_fn(&fn, mod, name)) != 0) {
@@ -12232,20 +12405,26 @@ static int cuda_get_function(const unsigned char *ptx, unsigned int ptx_len,
         return 1;
     }
 
-    if (cuda.cached_module) cuda.module_unload(cuda.cached_module);
-    free(cuda.cached_ptx);
-    cuda.cached_ptx = (unsigned char *)malloc(ptx_len ? ptx_len : 1);
-    if (!cuda.cached_ptx) {          /* keep going uncached rather than fail */
-        cuda.cached_module = 0;
-        cuda.cached_ptx_len = 0;
-        cuda.cached_name[0] = 0;
-    } else {
-        memcpy(cuda.cached_ptx, ptx, ptx_len);
-        cuda.cached_ptx_len = ptx_len;
-        strncpy(cuda.cached_name, name, sizeof(cuda.cached_name) - 1);
-        cuda.cached_name[sizeof(cuda.cached_name) - 1] = 0;
-        cuda.cached_module = mod;
-        cuda.cached_fn = fn;
+    slot = cuda.mods_next;
+    cuda.mods_next = (cuda.mods_next + 1) % CUDA_MODULE_CACHE;
+    if (cuda.mods[slot].module) {
+        cuda.module_unload(cuda.mods[slot].module);
+        for (i = 0; i < CUDA_FN_CACHE; i++) if (cuda.fns[i].mod == (int)slot) cuda.fns[i].mod = -1;
+    }
+    free(cuda.mods[slot].ptx);
+    cuda.mods[slot].module = 0;
+    cuda.mods[slot].ptx = (unsigned char *)malloc(ptx_len ? ptx_len : 1);
+    if (cuda.mods[slot].ptx) {       /* uncached rather than failed when malloc refuses */
+        memcpy(cuda.mods[slot].ptx, ptx, ptx_len);
+        cuda.mods[slot].ptx_len = ptx_len;
+        cuda.mods[slot].src = stable ? (const void *)ptx : 0;
+        cuda.mods[slot].module = mod;
+        i = cuda.fns_next;
+        cuda.fns_next = (cuda.fns_next + 1) % CUDA_FN_CACHE;
+        cuda.fns[i].mod = (int)slot;
+        strncpy(cuda.fns[i].name, name, sizeof(cuda.fns[i].name) - 1);
+        cuda.fns[i].name[sizeof(cuda.fns[i].name) - 1] = 0;
+        cuda.fns[i].fn = fn;
     }
     *out_fn = fn;
     return 0;
@@ -12398,7 +12577,7 @@ static int cuda_matmul(const float *in, float *out,
     void *args[5];
 
     if (cuda_get_function((const unsigned char *)CUDA_PTX_MATMUL,
-                          (unsigned int)strlen(CUDA_PTX_MATMUL), "mm", &fn)) return 1;
+                          (unsigned int)strlen(CUDA_PTX_MATMUL), "mm", &fn, 1)) return 1;
     if ((r = cuda.mem_alloc(&d_in, n_in * sizeof(float))) != 0) return 1;
     if ((r = cuda.mem_alloc(&d_out, n_out * sizeof(float))) != 0) { cuda.mem_free(d_in); return 1; }
     if ((r = cuda.memcpy_htod(d_in, in, n_in * sizeof(float))) != 0) goto fail;
@@ -12477,7 +12656,7 @@ static void com3_launch_ptx(unsigned int cmd_bytes) {
     for (i = 0; i < n_in; i++)
         host_in[i] = com3_get_f32(com3.cmd + COM3_PTX_HDR_BYTES + ptx_len + name_len + i * 4);
 
-    if (cuda_get_function((const unsigned char *)ptx_text, ptx_len, kernel_name, &fn)) {
+    if (cuda_get_function((const unsigned char *)ptx_text, ptx_len, kernel_name, &fn, 0)) {
         com3_put_u32(COM3_STATUS_ERROR);
         return;
     }
@@ -12529,6 +12708,654 @@ static void com3_launch_ptx(unsigned int cmd_bytes) {
 
     com3_put_u32(COM3_STATUS_COMPLETE);
     for (i = 0; i < n_out; i++) com3_put_f32(host_out[i]);
+}
+
+/* ── Device buffers (ops 40-45) ───────────────────────────────────────
+
+   Data never passes through com3.cmd here: a buffer lives on the device
+   under a handle, bytes move between it and guest RAM or a host file by
+   address, and a kernel is launched on handles. Every field is a
+   little-endian u32 or u64 at the offset shown; every reply begins with a
+   status u32.
+
+     40 alloc     8 bytes u64                          -> 4 handle u32
+     41 free      8 handle
+     42 write     8 handle  12 dst-off u64  20 bytes u64  28 guest-src u64
+     43 read      8 handle  12 src-off u64  20 bytes u64  28 guest-dst u64
+     44 upload    8 handle  12 dst-off u64  20 file-off u64  28 count u64
+                  36 src-dtype  40 dst-dtype  44 path-len  48 path bytes
+                                                       -> 4 bytes-written u64
+     45 launch    8 grid x  12 y  16 z  20 block x  24 y  28 z
+                  32 shared-bytes  36 ptx-len  40 name-len  44 n-params
+                  48 params, 16 bytes each: kind u32, handle u32, value u64
+                  then the PTX text, then the kernel name
+                                                       -> 4 kernel microseconds u64
+
+   A launch parameter is a buffer (kind 0: device address of handle plus
+   value as a byte offset), a u32 (kind 1), a u64 (kind 2) or an f32 (kind
+   3, the low 32 bits of value). An upload path is relative to -gpu-files
+   and reads count elements of src-dtype from file-off, converting each to
+   dst-dtype on the way. */
+
+#define GPU_OP_BUF_ALLOC   40
+#define GPU_OP_BUF_FREE    41
+#define GPU_OP_BUF_WRITE   42
+#define GPU_OP_BUF_READ    43
+#define GPU_OP_BUF_UPLOAD  44
+#define GPU_OP_LAUNCH      45
+#define GPU_OP_BUF_SAVE    46
+#define GPU_OP_MODULE_LOAD 47
+#define GPU_OP_LAUNCH_MODULE 48
+#define GPU_MODULE_MAX     64
+
+/* A module the guest hands over once (op 47) and then launches by handle
+   (op 48), so a kernel's PTX crosses the bridge once rather than per launch. */
+static struct { char *ptx; unsigned int len; } gpu_modules[GPU_MODULE_MAX];
+#define GPU_BUF_MAX        4096
+#define GPU_LAUNCH_PARAMS_MAX 32
+#define GPU_UPLOAD_CHUNK   (16u << 20)
+
+enum { GPU_DT_U8 = 0, GPU_DT_F32 = 1, GPU_DT_F16 = 2, GPU_DT_BF16 = 3,
+       GPU_DT_FP8_E4M3 = 4, GPU_DT_FP8_E5M2 = 5 };
+
+static struct { CUdeviceptr_t ptr; unsigned long long bytes; } gpu_bufs[GPU_BUF_MAX];
+#define GPU_FILES_ROOTS 4
+static char gpu_files_roots[GPU_FILES_ROOTS][MAX_PATH];
+static int gpu_files_root_count;
+static char gpu_out_root[MAX_PATH];
+#define gpu_files_root gpu_files_roots[0]
+
+static unsigned long long com3_get_u64(const unsigned char *p) {
+    return (unsigned long long)com3_get_u32(p) | ((unsigned long long)com3_get_u32(p + 4) << 32);
+}
+
+static void com3_put_u64(unsigned long long v) {
+    com3_put_u32((unsigned int)(v & 0xFFFFFFFFu));
+    com3_put_u32((unsigned int)(v >> 32));
+}
+
+static int gpu_dtype_size(unsigned int dt) {
+    switch (dt) {
+    case GPU_DT_U8: case GPU_DT_FP8_E4M3: case GPU_DT_FP8_E5M2: return 1;
+    case GPU_DT_F16: case GPU_DT_BF16: return 2;
+    case GPU_DT_F32: return 4;
+    }
+    return 0;
+}
+
+static float gpu_half_to_f32(unsigned int h) {
+    unsigned int s = (h >> 15) & 1, e = (h >> 10) & 31, m = h & 1023;
+    float v;
+    if (e == 0) v = ldexpf((float)m, -24);
+    else if (e == 31) v = m ? NAN : INFINITY;
+    else v = ldexpf((float)(m | 1024), (int)e - 25);
+    return s ? -v : v;
+}
+
+/* IEEE-754 binary16, round to nearest even; overflow saturates to infinity. */
+static unsigned int gpu_f32_to_half(float f) {
+    unsigned int x, s, m;
+    int e;
+    memcpy(&x, &f, 4);
+    s = (x >> 16) & 0x8000u;
+    e = (int)((x >> 23) & 0xFF) - 127 + 15;
+    m = x & 0x7FFFFFu;
+    if (((x >> 23) & 0xFF) == 0xFF) return s | 0x7C00u | (m ? 0x200u : 0);
+    if (e >= 31) return s | 0x7C00u;
+    if (e <= 0) {
+        unsigned int shift, full, r, rest, half;
+        if (e < -10) return s;
+        full = m | 0x800000u;
+        shift = (unsigned int)(14 - e);
+        r = full >> shift;
+        rest = full & ((1u << shift) - 1);
+        half = 1u << (shift - 1);
+        if (rest > half || (rest == half && (r & 1))) r++;
+        return s | r;
+    }
+    {
+        unsigned int r = ((unsigned int)e << 10) | (m >> 13), rest = m & 0x1FFFu;
+        if (rest > 0x1000u || (rest == 0x1000u && (r & 1))) r++;
+        return s | r;
+    }
+}
+
+/* fp8 e4m3fn (bias 7, no infinities, S.1111.111 is NaN) and e5m2 (the top
+   byte of an IEEE binary16), as the OCP 8-bit floating point spec defines them. */
+static float gpu_fp8_to_f32(unsigned int b, int e5m2) {
+    unsigned int s = (b >> 7) & 1;
+    float v;
+    if (e5m2) return gpu_half_to_f32(b << 8);
+    {
+        unsigned int e = (b >> 3) & 15, m = b & 7;
+        if (e == 15 && m == 7) return NAN;
+        v = e == 0 ? ldexpf((float)m, -9) : ldexpf((float)(m | 8), (int)e - 10);
+    }
+    return s ? -v : v;
+}
+
+static float gpu_load_f32(const unsigned char *p, unsigned int dt) {
+    unsigned int raw;
+    float f;
+    switch (dt) {
+    case GPU_DT_F32: raw = com3_get_u32(p); memcpy(&f, &raw, 4); return f;
+    case GPU_DT_F16: return gpu_half_to_f32((unsigned int)p[0] | ((unsigned int)p[1] << 8));
+    case GPU_DT_BF16: raw = ((unsigned int)p[0] << 16) | ((unsigned int)p[1] << 24); memcpy(&f, &raw, 4); return f;
+    case GPU_DT_FP8_E4M3: return gpu_fp8_to_f32(p[0], 0);
+    case GPU_DT_FP8_E5M2: return gpu_fp8_to_f32(p[0], 1);
+    }
+    return 0.0f;
+}
+
+/* Widening to f32 by table: gpu_load_f32 per element costs about 7 ns (the
+   ldexpf in gpu_half_to_f32), 20 s of every LoRA merge over the SDXL UNet;
+   a table built from the same functions answers the same bits in under 1 ns. */
+static float *gpu_widen_table(unsigned int dt) {
+    static float *t16, *t8[2];
+    unsigned int i, n;
+    float **slot;
+    if (dt == GPU_DT_F16) { slot = &t16; n = 65536; }
+    else if (dt == GPU_DT_FP8_E4M3 || dt == GPU_DT_FP8_E5M2) { slot = &t8[dt == GPU_DT_FP8_E5M2]; n = 256; }
+    else return 0;
+    if (!*slot) {
+        float *t = (float *)malloc(n * sizeof(float));
+        if (!t) return 0;
+        for (i = 0; i < n; i++) t[i] = n == 256 ? gpu_fp8_to_f32(i, dt == GPU_DT_FP8_E5M2) : gpu_half_to_f32(i);
+        *slot = t;
+    }
+    return *slot;
+}
+
+static void gpu_store(unsigned char *p, unsigned int dt, float f) {
+    unsigned int raw;
+    if (dt == GPU_DT_F32) { memcpy(p, &f, 4); return; }
+    if (dt == GPU_DT_F16) { raw = gpu_f32_to_half(f); p[0] = (unsigned char)raw; p[1] = (unsigned char)(raw >> 8); return; }
+    /* bf16: round the f32 to nearest even in its top 16 bits. */
+    memcpy(&raw, &f, 4);
+    if ((raw & 0x7F800000u) != 0x7F800000u) raw += 0x7FFFu + ((raw >> 16) & 1);
+    p[0] = (unsigned char)(raw >> 16); p[1] = (unsigned char)(raw >> 24);
+}
+
+static int gpu_buf_ok(unsigned int h) { return h >= 1 && h <= GPU_BUF_MAX && gpu_bufs[h - 1].ptr; }
+
+static int gpu_range_ok(unsigned int h, unsigned long long off, unsigned long long bytes) {
+    return gpu_buf_ok(h) && off <= gpu_bufs[h - 1].bytes && bytes <= gpu_bufs[h - 1].bytes - off;
+}
+
+static int gpu_guest_ok(unsigned long long addr, unsigned long long bytes) {
+    return addr <= guest_mem_size && bytes <= guest_mem_size - addr;
+}
+
+/* The guest names a path under -gpu-files; it must stay there. An absolute
+   path, a drive, a stream (':') or any '..' component is refused before
+   the file system sees it. -gpu-files may be given up to GPU_FILES_ROOTS
+   times: the first root holding the path serves it, and when none does the
+   first root's path is answered so the open reports it. */
+static int gpu_rel_path(const unsigned char *name, unsigned int len, char *rel) {
+    unsigned int i;
+    if (len == 0 || len >= MAX_PATH) return 0;
+    for (i = 0; i < len; i++) {
+        char c = (char)name[i];
+        if (c == 0 || c == ':') return 0;
+        rel[i] = c == '/' ? '\\' : c;
+    }
+    rel[len] = 0;
+    if (rel[0] == '\\') return 0;
+    for (i = 0; i < len; i++) {
+        if (rel[i] == '.' && rel[i + 1] == '.' && (i == 0 || rel[i - 1] == '\\') &&
+            (rel[i + 2] == '\\' || rel[i + 2] == 0)) return 0;
+    }
+    return 1;
+}
+
+static int gpu_resolve_path(const unsigned char *name, unsigned int len, char *out, size_t cap) {
+    char rel[MAX_PATH];
+    unsigned int i;
+    if (!gpu_files_root[0] || !gpu_rel_path(name, len, rel)) return 0;
+    for (i = 0; i < (unsigned int)gpu_files_root_count; i++) {
+        DWORD a;
+        if (snprintf(out, cap, "%s\\%s", gpu_files_roots[i], rel) >= (int)cap) return 0;
+        a = GetFileAttributesA(out);
+        if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY)) return 1;
+    }
+    return snprintf(out, cap, "%s\\%s", gpu_files_roots[0], rel) < (int)cap;
+}
+
+#define GPU_CENSUS_KEY_MAX (COM3_PTX_NAME_MAX + 128)
+static void gpu_census_add(const char *name, unsigned long long gpu_us, unsigned long long host_us, unsigned int ptx);
+
+/* Launches are asynchronous: op 45/48 queue the kernel between two events
+   and answer at once, and the card runs the queue while the guest builds
+   the next command. The queue drains (one cuCtxSynchronize) before a read,
+   a save, a free, at a full list and at exit, which is where a kernel's
+   fault surfaces: that op answers an error naming the kernels in flight.
+   Writes and uploads need no drain, because the legacy default stream runs
+   a copy after every kernel queued before it. Synchronizing after every
+   launch cost 83,899 waits, 32 s, per SDXL image (Nsight Systems).
+   CODEX_VM_GPU_SYNC=1 restores a wait after every launch. */
+#define GPU_PENDING_MAX 1024
+static struct { char key[GPU_CENSUS_KEY_MAX + 1]; CUevent_t e0, e1; unsigned long long host_us; unsigned int ptx; } gpu_pend[GPU_PENDING_MAX];
+static int gpu_pend_n;
+static int gpu_async = -1;
+
+static int gpu_async_ok(void) {
+    if (gpu_async < 0)
+        gpu_async = (cuda.event_create && cuda.event_record && cuda.event_elapsed && !getenv("CODEX_VM_GPU_SYNC")) ? 1 : 0;
+    return gpu_async;
+}
+
+static CUresult_t gpu_flush(void) {
+    CUresult_t r;
+    int i;
+    if (gpu_pend_n == 0) return 0;
+    r = cuda.sync();
+    for (i = 0; i < gpu_pend_n; i++) {
+        float ms = 0.0f;
+        if (r == 0 && cuda.event_elapsed(&ms, gpu_pend[i].e0, gpu_pend[i].e1) != 0) ms = 0.0f;
+        gpu_census_add(gpu_pend[i].key, (unsigned long long)(ms * 1000.0f), gpu_pend[i].host_us, gpu_pend[i].ptx);
+    }
+    if (r != 0)
+        fprintf(stderr, "CUDA: a kernel failed after launch (%d in flight, first '%s', last '%s'): %s\n",
+                gpu_pend_n, gpu_pend[0].key, gpu_pend[gpu_pend_n - 1].key, cuda_err(r));
+    gpu_pend_n = 0;
+    return r;
+}
+
+static void gpu_buffer_op(unsigned int op, unsigned int cmd_bytes) {
+    unsigned char *g = (unsigned char *)guest_mem;
+    CUresult_t r;
+
+    if (!cuda_ready()) { com3_put_u32(COM3_STATUS_ERROR); return; }
+
+    if (op == GPU_OP_BUF_ALLOC) {
+        unsigned long long bytes = cmd_bytes >= 16 ? com3_get_u64(com3.cmd + 8) : 0;
+        unsigned int h;
+        CUdeviceptr_t p = 0;
+        for (h = 0; h < GPU_BUF_MAX && gpu_bufs[h].ptr; h++) {}
+        if (bytes == 0 || h == GPU_BUF_MAX) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        if ((r = cuda.mem_alloc(&p, (size_t)bytes)) != 0) {
+            fprintf(stderr, "CUDA: alloc of %llu bytes failed: %s\n", bytes, cuda_err(r));
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        gpu_bufs[h].ptr = p;
+        gpu_bufs[h].bytes = bytes;
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        com3_put_u32(h + 1);
+        return;
+    }
+    if (op == GPU_OP_BUF_FREE) {
+        unsigned int h = cmd_bytes >= 12 ? com3_get_u32(com3.cmd + 8) : 0;
+        if (!gpu_buf_ok(h)) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        if (gpu_flush() != 0) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        cuda.mem_free(gpu_bufs[h - 1].ptr);
+        gpu_bufs[h - 1].ptr = 0;
+        gpu_bufs[h - 1].bytes = 0;
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        return;
+    }
+    if (op == GPU_OP_BUF_WRITE || op == GPU_OP_BUF_READ) {
+        unsigned int h;
+        unsigned long long off, bytes, addr;
+        if (op == GPU_OP_BUF_READ && gpu_flush() != 0) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        if (cmd_bytes != 36) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        h = com3_get_u32(com3.cmd + 8);
+        off = com3_get_u64(com3.cmd + 12);
+        bytes = com3_get_u64(com3.cmd + 20);
+        addr = com3_get_u64(com3.cmd + 28);
+        if (!gpu_range_ok(h, off, bytes) || !gpu_guest_ok(addr, bytes)) {
+            fprintf(stderr, "GPU: %s refused (handle %u off %llu bytes %llu guest 0x%llx)\n",
+                    op == GPU_OP_BUF_WRITE ? "write" : "read", h, off, bytes, addr);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        guest_commit_range(addr, bytes);
+        r = op == GPU_OP_BUF_WRITE
+            ? cuda.memcpy_htod(gpu_bufs[h - 1].ptr + off, g + addr, (size_t)bytes)
+            : cuda.memcpy_dtoh(g + addr, gpu_bufs[h - 1].ptr + off, (size_t)bytes);
+        if (r != 0) {
+            fprintf(stderr, "CUDA: buffer copy failed: %s\n", cuda_err(r));
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        return;
+    }
+    if (op == GPU_OP_BUF_UPLOAD) {
+        unsigned int h, sdt, ddt, plen;
+        int ss, ds;
+        unsigned long long doff, foff, count, done = 0;
+        char path[MAX_PATH * 2];
+        HANDLE fh;
+        unsigned char *src = 0, *dst = 0;
+        if (cmd_bytes < 48) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        h = com3_get_u32(com3.cmd + 8);
+        doff = com3_get_u64(com3.cmd + 12);
+        foff = com3_get_u64(com3.cmd + 20);
+        count = com3_get_u64(com3.cmd + 28);
+        sdt = com3_get_u32(com3.cmd + 36);
+        ddt = com3_get_u32(com3.cmd + 40);
+        plen = com3_get_u32(com3.cmd + 44);
+        ss = gpu_dtype_size(sdt);
+        ds = gpu_dtype_size(ddt);
+        /* A conversion needs a float destination; raw bytes go byte for byte. */
+        if (cmd_bytes != 48 + plen || !ss || !ds || count == 0 ||
+            (sdt != ddt && (sdt == GPU_DT_U8 || ddt == GPU_DT_U8 || ddt == GPU_DT_FP8_E4M3 || ddt == GPU_DT_FP8_E5M2)) ||
+            count > (~0ULL) / 4 || !gpu_range_ok(h, doff, count * (unsigned long long)ds) ||
+            !gpu_resolve_path(com3.cmd + 48, plen, path, sizeof(path))) {
+            fprintf(stderr, "GPU: upload refused (handle %u count %llu dtypes %u->%u path-len %u root %s)\n",
+                    h, count, sdt, ddt, plen, gpu_files_root[0] ? gpu_files_root : "(none: pass -gpu-files)");
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        fh = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0);
+        if (fh == INVALID_HANDLE_VALUE) {
+            fprintf(stderr, "GPU: upload cannot open %s\n", path);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        {
+            LARGE_INTEGER at;
+            at.QuadPart = (LONGLONG)foff;
+            src = (unsigned char *)malloc(GPU_UPLOAD_CHUNK);
+            dst = sdt == ddt ? src : (unsigned char *)malloc((size_t)GPU_UPLOAD_CHUNK / ss * ds);
+            if (!src || !dst || !SetFilePointerEx(fh, at, 0, FILE_BEGIN)) goto upload_fail;
+            while (done < count) {
+                unsigned long long n = count - done, k;
+                DWORD want, got = 0;
+                if (n > GPU_UPLOAD_CHUNK / ss) n = GPU_UPLOAD_CHUNK / ss;
+                want = (DWORD)(n * ss);
+                if (!ReadFile(fh, src, want, &got, 0) || got != want) {
+                    fprintf(stderr, "GPU: upload short read in %s at element %llu (%lu of %lu bytes)\n",
+                            path, done, (unsigned long)got, (unsigned long)want);
+                    goto upload_fail;
+                }
+                if (sdt != ddt) {
+                    const float *wt = ddt == GPU_DT_F32 ? gpu_widen_table(sdt) : 0;
+                    if (wt && ss == 2)
+                        for (k = 0; k < n; k++) ((float *)dst)[k] = wt[src[2 * k] | ((unsigned int)src[2 * k + 1] << 8)];
+                    else if (wt)
+                        for (k = 0; k < n; k++) ((float *)dst)[k] = wt[src[k]];
+                    else
+                        for (k = 0; k < n; k++) gpu_store(dst + k * ds, ddt, gpu_load_f32(src + k * ss, sdt));
+                }
+                if ((r = cuda.memcpy_htod(gpu_bufs[h - 1].ptr + doff + done * ds, dst, (size_t)(n * ds))) != 0) {
+                    fprintf(stderr, "CUDA: upload copy failed: %s\n", cuda_err(r));
+                    goto upload_fail;
+                }
+                done += n;
+            }
+        }
+        CloseHandle(fh);
+        if (dst != src) free(dst);
+        free(src);
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        com3_put_u64(count * (unsigned long long)ds);
+        return;
+upload_fail:
+        CloseHandle(fh);
+        if (dst && dst != src) free(dst);
+        free(src);
+        com3_put_u32(COM3_STATUS_ERROR);
+        return;
+    }
+    if (op == GPU_OP_BUF_SAVE) {
+        unsigned int h, plen;
+        unsigned long long off, bytes, done = 0;
+        if (gpu_flush() != 0) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        char rel[MAX_PATH], path[MAX_PATH * 2];
+        unsigned char *buf;
+        HANDLE fh;
+        if (cmd_bytes < 32) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        h = com3_get_u32(com3.cmd + 8);
+        off = com3_get_u64(com3.cmd + 12);
+        bytes = com3_get_u64(com3.cmd + 20);
+        plen = com3_get_u32(com3.cmd + 28);
+        if (!gpu_out_root[0]) {
+            fprintf(stderr, "GPU: save refused: no -gpu-out root\n");
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        if (cmd_bytes != 32 + plen || !gpu_rel_path(com3.cmd + 32, plen, rel) ||
+            snprintf(path, sizeof(path), "%s\\%s", gpu_out_root, rel) >= (int)sizeof(path)) {
+            fprintf(stderr, "GPU: save refused: the path must stay under -gpu-out %s\n", gpu_out_root);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        if (bytes == 0 || !gpu_range_ok(h, off, bytes)) {
+            fprintf(stderr, "GPU: save refused (handle %u off %llu bytes %llu)\n", h, off, bytes);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        fh = CreateFileA(path, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+        if (fh == INVALID_HANDLE_VALUE) {
+            fprintf(stderr, "GPU: save cannot create %s\n", path);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        buf = (unsigned char *)malloc(GPU_UPLOAD_CHUNK);
+        while (buf && done < bytes) {
+            unsigned long long n = bytes - done;
+            DWORD put = 0;
+            if (n > GPU_UPLOAD_CHUNK) n = GPU_UPLOAD_CHUNK;
+            if (cuda.memcpy_dtoh(buf, gpu_bufs[h - 1].ptr + off + done, (size_t)n) != 0 ||
+                !WriteFile(fh, buf, (DWORD)n, &put, 0) || put != (DWORD)n) break;
+            done += n;
+        }
+        free(buf);
+        CloseHandle(fh);
+        if (done != bytes) {
+            fprintf(stderr, "GPU: save of %s stopped at %llu of %llu bytes\n", path, done, bytes);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        com3_put_u64(bytes);
+        return;
+    }
+    if (op == GPU_OP_MODULE_LOAD) {
+        unsigned int plen = cmd_bytes >= 12 ? com3_get_u32(com3.cmd + 8) : 0, h, fr = GPU_MODULE_MAX;
+        if (plen == 0 || cmd_bytes != 12 + plen) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        for (h = 0; h < GPU_MODULE_MAX; h++) {
+            if (gpu_modules[h].ptx && gpu_modules[h].len == plen && memcmp(gpu_modules[h].ptx, com3.cmd + 12, plen) == 0) break;
+            if (!gpu_modules[h].ptx && fr == GPU_MODULE_MAX) fr = h;
+        }
+        if (h == GPU_MODULE_MAX) {
+            if (fr == GPU_MODULE_MAX || !(gpu_modules[fr].ptx = (char *)malloc(plen + 1))) { com3_put_u32(COM3_STATUS_ERROR); return; }
+            memcpy(gpu_modules[fr].ptx, com3.cmd + 12, plen);
+            gpu_modules[fr].ptx[plen] = 0;
+            gpu_modules[fr].len = plen;
+            h = fr;
+        }
+        com3_put_u32(COM3_STATUS_COMPLETE);
+        com3_put_u32(h + 1);
+        return;
+    }
+    if (op == GPU_OP_LAUNCH || op == GPU_OP_LAUNCH_MODULE) {
+        unsigned int gx, gy, gz, bx, by, bz, shared, plen, nlen, np, i;
+        unsigned long long vals[GPU_LAUNCH_PARAMS_MAX];
+        unsigned int vals32[GPU_LAUNCH_PARAMS_MAX];
+        void *args[GPU_LAUNCH_PARAMS_MAX];
+        static char ptx_text[sizeof(com3.cmd) + 1];
+        char kernel_name[COM3_PTX_NAME_MAX + 1];
+        CUfunction_t fn = 0;
+        const unsigned char *p;
+        LARGE_INTEGER t0, t1, freq, top;
+        unsigned int mh = 0, slen;
+        const char *src;
+        QueryPerformanceCounter(&top);
+        if (cmd_bytes < 48) { com3_put_u32(COM3_STATUS_ERROR); return; }
+        gx = com3_get_u32(com3.cmd + 8);  gy = com3_get_u32(com3.cmd + 12); gz = com3_get_u32(com3.cmd + 16);
+        bx = com3_get_u32(com3.cmd + 20); by = com3_get_u32(com3.cmd + 24); bz = com3_get_u32(com3.cmd + 28);
+        shared = com3_get_u32(com3.cmd + 32);
+        plen = com3_get_u32(com3.cmd + 36);
+        nlen = com3_get_u32(com3.cmd + 40);
+        np = com3_get_u32(com3.cmd + 44);
+        if (op == GPU_OP_LAUNCH_MODULE) {
+            /* +36 names the module; no text follows the parameters. */
+            mh = plen;
+            if (mh == 0 || mh > GPU_MODULE_MAX || !gpu_modules[mh - 1].ptx) {
+                fprintf(stderr, "GPU: launch names no loaded module (handle %u)\n", mh);
+                com3_put_u32(COM3_STATUS_ERROR);
+                return;
+            }
+            plen = 0;
+        }
+        if (!gx || !gy || !gz || !bx || !by || !bz || (plen == 0 && !mh) || nlen == 0 || nlen > COM3_PTX_NAME_MAX ||
+            np > GPU_LAUNCH_PARAMS_MAX || (unsigned long long)cmd_bytes != 48ULL + np * 16ULL + plen + nlen) {
+            fprintf(stderr, "GPU: launch header refused (grid %ux%ux%u block %ux%ux%u ptx %u name %u params %u len %u)\n",
+                    gx, gy, gz, bx, by, bz, plen, nlen, np, cmd_bytes);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        for (i = 0; i < np; i++) {
+            p = com3.cmd + 48 + i * 16;
+            {
+                unsigned int kind = com3_get_u32(p), h = com3_get_u32(p + 4);
+                unsigned long long v = com3_get_u64(p + 8);
+                if (kind == 0) {
+                    if (!gpu_buf_ok(h) || v > gpu_bufs[h - 1].bytes) {
+                        fprintf(stderr, "GPU: launch parameter %u names no buffer (handle %u offset %llu)\n", i, h, v);
+                        com3_put_u32(COM3_STATUS_ERROR);
+                        return;
+                    }
+                    vals[i] = gpu_bufs[h - 1].ptr + v;
+                    args[i] = &vals[i];
+                } else if (kind == 1 || kind == 3) {
+                    vals32[i] = (unsigned int)v;
+                    args[i] = &vals32[i];
+                } else if (kind == 2) {
+                    vals[i] = v;
+                    args[i] = &vals[i];
+                } else {
+                    com3_put_u32(COM3_STATUS_ERROR);
+                    return;
+                }
+            }
+        }
+        p = com3.cmd + 48 + np * 16;
+        memcpy(kernel_name, p + plen, nlen);
+        kernel_name[nlen] = 0;
+        if (mh) {
+            src = gpu_modules[mh - 1].ptx;
+            slen = gpu_modules[mh - 1].len;
+        } else {
+            memcpy(ptx_text, p, plen);
+            ptx_text[plen] = 0;
+            src = ptx_text;
+            slen = plen;
+        }
+        if (cuda_get_function((const unsigned char *)src, slen, kernel_name, &fn, mh != 0)) {
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        {
+            static int by_shape = -1;
+            char key[GPU_CENSUS_KEY_MAX + 1];
+            if (by_shape < 0) by_shape = getenv("CODEX_VM_GPU_CENSUS_SHAPE") ? 1 : 0;
+            if (by_shape) {
+                int at = snprintf(key, sizeof(key), "%s@%ux%ux%u", kernel_name, gx, gy, gz);
+                for (i = 0; i < np && at > 0 && at < (int)sizeof(key) - 24; i++) {
+                    unsigned int kind = com3_get_u32(com3.cmd + 48 + i * 16);
+                    if (kind != 0) at += snprintf(key + at, sizeof(key) - at, ",%lld", (long long)com3_get_u64(com3.cmd + 48 + i * 16 + 8));
+                }
+            } else {
+                snprintf(key, sizeof(key), "%s", kernel_name);
+            }
+            if (shared > 49152 && cuda.func_set_attr)
+                cuda.func_set_attr(fn, CUDA_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)shared);
+            QueryPerformanceFrequency(&freq);
+            if (gpu_async_ok()) {
+                int s;
+                if (gpu_pend_n == GPU_PENDING_MAX && gpu_flush() != 0) { com3_put_u32(COM3_STATUS_ERROR); return; }
+                s = gpu_pend_n;
+                if ((!gpu_pend[s].e0 && cuda.event_create(&gpu_pend[s].e0, 0) != 0) ||
+                    (!gpu_pend[s].e1 && cuda.event_create(&gpu_pend[s].e1, 0) != 0)) {
+                    fprintf(stderr, "CUDA: no event for the launch census; launches wait from here on\n");
+                    gpu_async = 0;
+                } else {
+                    r = cuda.event_record(gpu_pend[s].e0, 0);
+                    if (r == 0) r = cuda.launch(fn, gx, gy, gz, bx, by, bz, shared, 0, np ? args : 0, 0);
+                    if (r == 0) r = cuda.event_record(gpu_pend[s].e1, 0);
+                    if (r != 0) {
+                        fprintf(stderr, "CUDA: launch of '%s' failed: %s\n", kernel_name, cuda_err(r));
+                        com3_put_u32(COM3_STATUS_ERROR);
+                        return;
+                    }
+                    QueryPerformanceCounter(&t1);
+                    strncpy(gpu_pend[s].key, key, GPU_CENSUS_KEY_MAX);
+                    gpu_pend[s].key[GPU_CENSUS_KEY_MAX] = 0;
+                    gpu_pend[s].host_us = (unsigned long long)((t1.QuadPart - top.QuadPart) * 1000000LL / freq.QuadPart);
+                    gpu_pend[s].ptx = plen;
+                    gpu_pend_n++;
+                    /* The device time is not known yet: the census books it at the drain. */
+                    com3_put_u32(COM3_STATUS_COMPLETE);
+                    com3_put_u64(0);
+                    return;
+                }
+            }
+            QueryPerformanceCounter(&t0);
+            r = cuda.launch(fn, gx, gy, gz, bx, by, bz, shared, 0, np ? args : 0, 0);
+            if (r == 0) r = cuda.sync();
+            QueryPerformanceCounter(&t1);
+            if (r != 0) {
+                fprintf(stderr, "CUDA: launch of '%s' failed: %s\n", kernel_name, cuda_err(r));
+                com3_put_u32(COM3_STATUS_ERROR);
+                return;
+            }
+            com3_put_u32(COM3_STATUS_COMPLETE);
+            com3_put_u64((unsigned long long)((t1.QuadPart - t0.QuadPart) * 1000000LL / freq.QuadPart));
+            gpu_census_add(key, (unsigned long long)((t1.QuadPart - t0.QuadPart) * 1000000LL / freq.QuadPart),
+                           (unsigned long long)((t1.QuadPart - top.QuadPart) * 1000000LL / freq.QuadPart), plen);
+        }
+        return;
+    }
+    com3_put_u32(COM3_STATUS_ERROR);
+}
+
+/* The launch census: per kernel, launches, device time (launch to sync), host
+   time for the whole op 45 (header, PTX copy, module lookup, launch), and the
+   PTX bytes the guest sent. Printed at exit when anything launched; the gap
+   between the run's wall time and the host total is the guest's own cost. */
+/* CODEX_VM_GPU_CENSUS_SHAPE keys each row by kernel, grid and scalar
+   arguments instead of kernel alone, so one kernel's time splits by shape. */
+#define GPU_CENSUS_MAX 1024
+static struct { char name[GPU_CENSUS_KEY_MAX + 1]; unsigned long long n, gpu_us, host_us, ptx; } gpu_census[GPU_CENSUS_MAX];
+static int gpu_census_used;
+
+static void gpu_census_add(const char *name, unsigned long long gpu_us, unsigned long long host_us, unsigned int ptx) {
+    int i;
+    for (i = 0; i < gpu_census_used && strcmp(gpu_census[i].name, name) != 0; i++) {}
+    if (i == gpu_census_used) {
+        if (gpu_census_used == GPU_CENSUS_MAX) return;
+        strncpy(gpu_census[i].name, name, GPU_CENSUS_KEY_MAX);
+        gpu_census_used++;
+    }
+    gpu_census[i].n++;
+    gpu_census[i].gpu_us += gpu_us;
+    gpu_census[i].host_us += host_us;
+    gpu_census[i].ptx += ptx;
+}
+
+static void gpu_census_print(void) {
+    unsigned long long n = 0, g = 0, h = 0, p = 0;
+    int i;
+    for (i = 0; i < gpu_census_used; i++) {
+        fprintf(stderr, "GPU CENSUS: %-28s launches %8llu  gpu_us %11llu  host_us %11llu  ptx_bytes %13llu\n",
+                gpu_census[i].name, gpu_census[i].n, gpu_census[i].gpu_us, gpu_census[i].host_us, gpu_census[i].ptx);
+        n += gpu_census[i].n; g += gpu_census[i].gpu_us; h += gpu_census[i].host_us; p += gpu_census[i].ptx;
+    }
+    if (gpu_census_used)
+        fprintf(stderr, "GPU CENSUS: %-28s launches %8llu  gpu_us %11llu  host_us %11llu  ptx_bytes %13llu\n", "TOTAL", n, g, h, p);
+    /* Buffers the guest never freed. A guest that pools its frees (GpuBridge,
+       gpu-buf-pool-held) holds them on purpose, so this line reads beside the
+       guest's own count rather than as a leak. */
+    {
+        unsigned long long live = 0, bytes = 0;
+        for (i = 0; i < GPU_BUF_MAX; i++) if (gpu_bufs[i].ptr) { live++; bytes += gpu_bufs[i].bytes; }
+        if (gpu_census_used || live)
+            fprintf(stderr, "GPU BUFFERS: live %llu  bytes %llu\n", live, bytes);
+    }
 }
 
 static void com3_execute(void) {
@@ -12833,7 +13660,7 @@ static void com3_doorbell(unsigned int cmd_bytes) {
     /* Every refusal below still answers STATUS_ERROR rather than leaving
        the reply empty: a guest that cannot tell "refused" from "nothing
        happened" has to time out to learn anything. */
-    if (cmd_bytes < (unsigned int)COM3_HDR_BYTES || cmd_bytes > sizeof(com3.cmd) ||
+    if (cmd_bytes < 8 || cmd_bytes > sizeof(com3.cmd) ||
         (size_t)com3_cmd_addr + cmd_bytes > guest_mem_size) {
         fprintf(stderr, "COM3: doorbell cmd addr 0x%x len %u out of range\n",
                 com3_cmd_addr, cmd_bytes);
@@ -12848,7 +13675,11 @@ static void com3_doorbell(unsigned int cmd_bytes) {
            cannot be derived from three dimension fields. It validates
            its own header and is routed around com3_shape rather than
            given a fake shape there. */
-        if (op == COM3_OP_LAUNCH_PTX) {
+        if (op >= GPU_OP_BUF_ALLOC && op <= GPU_OP_LAUNCH_MODULE) {
+            gpu_buffer_op(op, cmd_bytes);
+        } else if (cmd_bytes < (unsigned int)COM3_HDR_BYTES) {
+            com3_put_u32(COM3_STATUS_ERROR);
+        } else if (op == COM3_OP_LAUNCH_PTX) {
             com3_launch_ptx(cmd_bytes);
         } else if (op == COM3_OP_CONV2D) {
             /* conv2d carries eight shape fields, not three, so it validates
@@ -12974,7 +13805,7 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
            The generic COM1 path below takes its byte from RAX, where string
            data does not live, so without this arm a burst would emit one
            garbage byte and skip the rest. Consume the whole count here. */
-        if (ctx->IoPortAccess.AccessInfo.StringOp && port == 0x3F8) {
+        if (ctx->IoPortAccess.AccessInfo.StringOp && port == 0x3F8 && !(com1_lcr & 0x80)) {
             unsigned long long gpa = ctx->IoPortAccess.Rsi;
             unsigned long long cnt = ctx->IoPortAccess.Rcx;
             unsigned long long done = 0;
@@ -13025,7 +13856,8 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
         }
         /* COM1 OUT: buffer the byte for file output */
         if (port >= 0x3F8 && port <= 0x3FF) {
-            if (port == 0x3F8) {
+            if (port == 0x3FB) com1_lcr = (unsigned char)val;
+            if (port == 0x3F8 && !(com1_lcr & 0x80)) {
                 output_buf_write((unsigned char)val);
                 if (r10dump && (unsigned char)val == '\n') {
                     WHV_REGISTER_NAME rns[2] = { WHvX64RegisterR10, WHvX64RegisterRsp };
@@ -15619,6 +16451,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-usb-bot-die-lba") && i+1 < argc) usb_bot_die_lba = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-bot-revive-on-reset")) usb_bot_revive = 1;
         else if (!strcmp(argv[i], "-usb-bot-die-on-nic")) usb_bot_die_on_nic = 1;
+        else if (!strcmp(argv[i], "-usb-bot-stall-lba") && i+1 < argc) usb_bot_stall_lba = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-bot-stall-after") && i+1 < argc) usb_bot_stall_after = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-usb-bot-stall-nth") && i+1 < argc) usb_bot_stall_nth = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-bot-drops") && i+1 < argc) usb_bot_drops = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-bot-drop-len") && i+1 < argc) usb_bot_drop_len = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-usb-bot-drop-len-max") && i+1 < argc) usb_bot_drop_len_max = atoi(argv[++i]);
@@ -15666,6 +16501,33 @@ int main(int argc, char **argv) {
             if (xhci_hub_tiers > XHCI_HUB_TIERS) xhci_hub_tiers = XHCI_HUB_TIERS;
         }
         else if (!strcmp(argv[i], "-mem-nocap")) mem_nocap = 1;
+        else if (!strcmp(argv[i], "-gpu-files") && i+1 < argc) {
+            char *root;
+            DWORD n;
+            if (gpu_files_root_count >= GPU_FILES_ROOTS) {
+                fprintf(stderr, "codex-vm: -gpu-files: at most %d roots\n", GPU_FILES_ROOTS);
+                return 1;
+            }
+            root = gpu_files_roots[gpu_files_root_count];
+            n = GetFullPathNameA(argv[++i], (DWORD)MAX_PATH, root, 0);
+            if (n == 0 || n >= MAX_PATH ||
+                !(GetFileAttributesA(root) & FILE_ATTRIBUTE_DIRECTORY) ||
+                GetFileAttributesA(root) == INVALID_FILE_ATTRIBUTES) {
+                fprintf(stderr, "codex-vm: -gpu-files: not a directory: %s\n", argv[i]);
+                return 1;
+            }
+            while (n > 3 && root[n - 1] == '\\') root[--n] = 0;
+            gpu_files_root_count++;
+        }
+        else if (!strcmp(argv[i], "-gpu-out") && i+1 < argc) {
+            DWORD n = GetFullPathNameA(argv[++i], (DWORD)sizeof(gpu_out_root), gpu_out_root, 0);
+            if (n == 0 || n >= sizeof(gpu_out_root) || GetFileAttributesA(gpu_out_root) == INVALID_FILE_ATTRIBUTES ||
+                !(GetFileAttributesA(gpu_out_root) & FILE_ATTRIBUTE_DIRECTORY)) {
+                fprintf(stderr, "codex-vm: -gpu-out: not a directory: %s\n", argv[i]);
+                return 1;
+            }
+            while (n > 3 && gpu_out_root[n - 1] == '\\') gpu_out_root[--n] = 0;
+        }
         else if (!strcmp(argv[i], "-uefi")) uefi_mode = 1;
         else if (!strcmp(argv[i], "-uefi-strict")) { uefi_mode = 1; uefi_strict = 1; }
         else if (!strcmp(argv[i], "-gop")) { gop_active = 1; }
@@ -16149,6 +17011,7 @@ int main(int argc, char **argv) {
     unsigned long long exits = 0;
     int watch_hits = 0;
     int pending_irq = -1;      /* next interrupt vector to deliver, or -1 */
+    int pending_pic_irq = -1;  /* the master PIC line behind pending_irq, or -1 */
     int halted = 0;
     int window_registered = 0;
 
@@ -16185,7 +17048,9 @@ int main(int argc, char **argv) {
                 inj_names[1] = WHvRegisterInternalActivityState;
                 /* inj_vals[1] = zero (clear any activity block) */
                 WHvSetVirtualProcessorRegisters(partition, 0, inj_names, 2, inj_vals);
+                if (pending_pic_irq >= 0 && !pic_master.aeoi) pic_master.isr |= 1 << pending_pic_irq;
                 pending_irq = -1;
+                pending_pic_irq = -1;
                 halted = 0;
                 window_registered = 0;
             } else if (!can_inject && !window_registered && exits > 0) {
@@ -16754,9 +17619,10 @@ int main(int argc, char **argv) {
         }
         if (pending_irq < 0) {
             int vec = pic_master.vector_base ? pic_master.vector_base : 32;
-            if (kbd_irq_pending && kbd_count > 0 && pic_master.vector_base && !(pic_master.mask & (1 << 1))) {
+            if (kbd_irq_pending && kbd_count > 0 && pic_master.vector_base && !(pic_master.mask & (1 << 1)) && pic_master_can_deliver(1)) {
                 kbd_irq_pending = 0;
                 pending_irq = vec + 1;  /* IRQ 1 = keyboard */
+                pending_pic_irq = 1;
             } else if (!halted && pic_master.vector_base) {
                 /* Busy guest: deliver the PIT tick on schedule. Exits during
                    compute come from the timer-kick thread cancelling the VP
@@ -16766,9 +17632,10 @@ int main(int argc, char **argv) {
                 LARGE_INTEGER bnow;
                 QueryPerformanceCounter(&bnow);
                 double belapsed = (double)(bnow.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
-                if (!no_timer && belapsed >= pit0_period()) {
+                if (!no_timer && belapsed >= pit0_period() && pic_master_can_deliver(0)) {
                     QueryPerformanceCounter(&last_tick);
                     pending_irq = vec;  /* timer tick */
+                    pending_pic_irq = 0;
                 }
             } else if (halted) {
                 /* Halted waiting for interrupt -- timer only (no serial) */
@@ -16787,8 +17654,11 @@ int main(int argc, char **argv) {
                         memset(&clr_val, 0, sizeof(clr_val));
                         WHvSetVirtualProcessorRegisters(partition, 0, &clr_name, 1, &clr_val);
                         halted = 0;
-                    } else {
+                    } else if (pic_master_can_deliver(0)) {
                         pending_irq = vec;  /* timer tick */
+                        pending_pic_irq = 0;
+                    } else {
+                        Sleep(10);  /* IRQ0 still in service: nothing can wake this guest */
                     }
                 } else {
                     DWORD ms = (DWORD)((period - elapsed) * 1000.0);
@@ -16796,9 +17666,10 @@ int main(int argc, char **argv) {
                     if (ms > 0) Sleep(ms);
                     QueryPerformanceCounter(&now);
                     elapsed = (double)(now.QuadPart - last_tick.QuadPart) / perf_freq.QuadPart;
-                    if (!no_timer && elapsed >= period) {
+                    if (!no_timer && elapsed >= period && pic_master_can_deliver(0)) {
                         QueryPerformanceCounter(&last_tick);
                         pending_irq = vec;
+                        pending_pic_irq = 0;
                     }
                 }
             }
@@ -16932,6 +17803,8 @@ int main(int argc, char **argv) {
         }
     }
 done:
+    if (cuda.state == 1) gpu_flush();
+    gpu_census_print();
     fprintf(stderr, "VM exited (code=%d, exits=%llu, watch_hits=%d)\n", debug_exit_code, exits, watch_hit_count);
     io_report_by_vp();
     /* Before the summaries and the output dump, not after: an AP still

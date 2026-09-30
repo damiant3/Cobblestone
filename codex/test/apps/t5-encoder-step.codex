@@ -1,0 +1,131 @@
+Chapter: T5EncoderStep
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter T5Encoder
+  cites Diffusion chapter T5Reference
+  cites Diffusion chapter UNetReference
+  cites Diffusion chapter Sampler
+  cites Foreword chapter Console
+  cites Foreword chapter FactDisk
+  cites AI chapter T5Tokenizer
+  cites Diffusion chapter T5Prompt
+
+ T5Encoder over the prompt chunk build/t5-encoder-oracle.py fed transformers'
+ T5EncoderModel (t5xxl_fp8_e4m3fn cast to f32): the embedding, every block's
+ output and the final layer norm, each graded at the 64 sampled positions
+ within the larger of 1% of its rms and twice the deviation the same model
+ shows with f16 GEMM operands. The buckets for every distance -255 to 255
+ against transformers' own. Then t5-condition over a weighted prompt against Forge's
+ T5 engine with Original emphasis, the tokenizer read from the disk
+ t5-tokenizer-forge uses (its fifth extra is tokenizer.json), with the same
+ chunk encoded without emphasis as its control. The control grades the final output against
+ block 23's reference, and the sabotage runs block 0 with the relative position
+ bias zeroed.
+
+ We say:
+
+Section: Grading
+
+  ckpt : Text = "t5xxl_fp8_e4m3fn.safetensors"
+
+  results : Integer = #BDF00000
+
+  sample-at : Integer, Integer -> Real
+  sample-at (h) (j) =
+    let pos = int-mod (j * unet-ref-stride + unet-ref-offset) (256 * 4096)
+    in if gpu-buf-read h (pos * 4) 4 (results + 1024) then un-f32-real-t5 (bit-and (peek-32 (results + 1024) 0) #FFFFFFFF) else 0.0 - 1000000.0
+
+  un-f32-real-t5 : Integer -> Real
+  un-f32-real-t5 (w) =
+    let e = bit-and (bit-shru w 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-and w #80000000) 32) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and w #7FFFFF) 29)))
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  tol : Integer -> Real
+  tol (k) = let d = 2.0 * list-at t5-ref-f16-dev k in if d > 0.01 then d else 0.01
+
+  near : Integer, UNetRefBlock, Real, Integer, Integer -> Integer
+  near (h) (ref) (tl) (j) (acc) =
+    if j >= unet-ref-samples then acc
+    else near h ref tl (j + 1) (if abs (sample-at h j - list-at (ref.urb-samples) j) <= tl * ref.urb-rms then acc + 1 else acc)
+
+ The count for reference k is kept at results + 4 k.
+
+  grade-into : Integer, Integer -> Integer
+  grade-into (h) (k) = poke-32 results (k * 4) (near h (list-at t5-ref-blocks k) (tol k) 0 0)
+
+  line : Integer -> Text
+  line (k) = (list-at t5-ref-blocks k).urb-name & ": " & show (peek-32 results (k * 4)) & "/" & show unet-ref-samples & " within " & show (real-to-int (tol k * 1000.0)) & " per mille of rms"
+
+  lines : Integer, List Text -> List Text
+  lines (k) (acc) = if k > 25 then acc else lines (k + 1) (list-push acc (line k))
+
+  bucket-misses : Integer, Integer -> Integer
+  bucket-misses (i) (acc) = if i >= list-length t5-ref-buckets then acc else bucket-misses (i + 1) (acc + (if t5-bucket (i - 255) == list-at t5-ref-buckets i then 0 else 1))
+
+  clear : Integer -> Integer
+  clear (k) = if k > 26 then 0 else let w = poke-32 results (k * 4) 0 in clear (k + 1)
+
+  no-bias : T5File -> Integer
+  no-bias (tf) =
+    let h = t5-embed tf t5-ref-ids
+    in let b = t5-bias tf 256
+    in let z = if b == 0 then 0 - 1 else sm-lincomb b b b b 0.0 0.0 0.0 (64 * 256 * 256)
+    in let ok = z >= 0 & h /= 0 & t5-block tf h b 256 0
+    in let n = if ok then near h (list-at t5-ref-blocks 1) (tol 1) 0 0 else 0 - 1
+    in let f = (if h == 0 then True else gpu-buf-free h) & (if b == 0 then True else gpu-buf-free b)
+    in n
+  emph-lines : T5File, T5Tok -> List Text
+  emph-lines (tf) (tok) =
+    let c = t5-condition tf tok t5-ref-emph-prompt
+    in let g = if c.t5k-h == 0 then 0 - 1 else near (c.t5k-h) t5-ref-emph (tol 25) 0 0
+    in let f = if c.t5k-h == 0 then True else gpu-buf-free (c.t5k-h)
+    in let raw = t5-encode tf ((list-at (t5-prompt-chunks tok t5-ref-emph-prompt) 0).t5c-ids)
+    in let r = if raw == 0 then 0 - 1 else near raw t5-ref-emph (tol 25) 0 0
+    in let f2 = if raw == 0 then True else gpu-buf-free raw
+    in ["emphasis: " & show g & "/" & show unet-ref-samples & " within " & show (real-to-int (tol 25 * 1000.0)) & " per mille of rms", "control, without emphasis: " & show r & "/" & show unet-ref-samples]
+
+  tf-load : Integer, Integer -> [Device.Block] Integer
+  tf-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+  run-all : T5Tok -> List Text
+  run-all (tok) =
+    let tf = t5-open ckpt
+    in if (tf.tf-file).st-valid == False then ["SKIP: no " & ckpt & " under the model root build-output/diffusion-text-encoders"]
+    else let c = clear 0
+    in let out = t5-encode-with tf t5-ref-ids 24 (\h i -> grade-into h (i + 1))
+    in let g = if out == 0 then 0 else grade-into out 25
+    in let ctl = if out == 0 then 0 else near out (list-at t5-ref-blocks 24) (tol 25) 0 0
+    in let f = if out == 0 then True else gpu-buf-free out
+    in ["buckets: " & show (bucket-misses 0 0) & " of " & show (list-length t5-ref-buckets) & " differ from transformers'"] & lines 0 [] & ["control, the final output against block 23: " & show ctl & "/" & show unet-ref-samples, "sabotage, block 0 with no position bias: " & show (no-bias tf) & "/" & show unet-ref-samples] & emph-lines tf tok
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  go : Integer, Integer -> [Console, Device.Block] Nothing
+  go (start) (len) =
+    act
+      j <- tf-load start len
+      let tt = t5-json-tables j len
+      in print-all (run-all (t5-tok-load (tt.tt-vocab) (tt.tt-charsmap))) 0
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    go (peek-32 h (12 + 8 * 4)) (peek-32 h (16 + 8 * 4))
+  end

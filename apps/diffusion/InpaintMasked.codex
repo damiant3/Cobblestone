@@ -1,0 +1,112 @@
+Chapter: InpaintMasked
+  cites Diffusion chapter ResizeMode
+
+ Forge's inpaint "only masked" (inpaint_full_res, modules/processing.py
+ 1718-1729 and 1776-1778): the crop region is the blurred mask's bounding box
+ of nonzero pixels (PIL getbbox, right and bottom exclusive), grown by the
+ padding and clipped (masking.get_crop_region_v2), then grown to the
+ processing size's aspect (masking.expand_crop_region: Python floats, the
+ difference truncated by int, split by // 2, shifted back inside the picture
+ on the axis it grew). The picture and the mask are cropped to it and resized
+ to the processing size by resize mode 2; the generated picture is resized
+ back to the region by mode 1 and pasted into a transparent canvas the
+ picture's size (uncrop), under the overlay of the picture itself.
+
+ We say:
+
+Section: Region
+
+  im-col-any : Integer, Integer, Integer, Integer, Integer -> Boolean
+  im-col-any (m) (w) (x) (y) (h) = if y >= h then False else if peek-byte m (y * w + x) /= 0 then True else im-col-any m w x (y + 1) h
+
+  im-row-any : Integer, Integer, Integer, Integer -> Boolean
+  im-row-any (m) (w) (y) (x) = if x >= w then False else if peek-byte m (y * w + x) /= 0 then True else im-row-any m w y (x + 1)
+
+  im-first-col : Integer, Integer, Integer, Integer -> Integer
+  im-first-col (m) (w) (h) (x) = if x >= w then w else if im-col-any m w x 0 h then x else im-first-col m w h (x + 1)
+
+  im-last-col : Integer, Integer, Integer, Integer -> Integer
+  im-last-col (m) (w) (h) (x) = if x < 0 then 0 else if im-col-any m w x 0 h then x + 1 else im-last-col m w h (x - 1)
+
+  im-first-row : Integer, Integer, Integer, Integer -> Integer
+  im-first-row (m) (w) (h) (y) = if y >= h then h else if im-row-any m w y 0 then y else im-first-row m w h (y + 1)
+
+  im-last-row : Integer, Integer, Integer, Integer -> Integer
+  im-last-row (m) (w) (h) (y) = if y < 0 then 0 else if im-row-any m w y 0 then y + 1 else im-last-row m w h (y - 1)
+
+  im-max : Integer, Integer -> Integer
+  im-max (a) (b) = if a > b then a else b
+
+  im-min : Integer, Integer -> Integer
+  im-min (a) (b) = if a < b then a else b
+
+  inpaint-crop-box : Integer, Integer, Integer, Integer -> List Integer
+  inpaint-crop-box (m) (w) (h) (pad) =
+    let x1 = im-first-col m w h 0
+    in if x1 >= w then []
+    else [im-max (x1 - pad) 0, im-max (im-first-row m w h 0 - pad) 0, im-min (im-last-col m w h (w - 1) + pad) w, im-min (im-last-row m w h (h - 1) + pad) h]
+
+  im-grow : Integer, Integer, Integer, Integer -> List Integer
+  im-grow (a1) (a2) (diff) (size) =
+    let b1 = a1 - diff / 2
+    in let b2 = a2 + diff - diff / 2
+    in let c1 = if b2 >= size then b1 - (b2 - size) else b1
+    in let c2 = if b2 >= size then size else b2
+    in let d2 = if c1 < 0 then c2 - c1 else c2
+    in let d1 = if c1 < 0 then 0 else c1
+    in [d1, (if d2 >= size then size else d2)]
+
+  inpaint-expand-box : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  inpaint-expand-box (b) (pw) (ph) (iw) (ih) =
+    let x1 = list-at b 0
+    in let y1 = list-at b 1
+    in let x2 = list-at b 2
+    in let y2 = list-at b 3
+    in let rc = real-from-int (x2 - x1) / real-from-int (y2 - y1)
+    in let rp = real-from-int pw / real-from-int ph
+    in if rc > rp then
+      (let d = real-to-int (real-from-int (x2 - x1) / rp - real-from-int (y2 - y1))
+       in let g = im-grow y1 y2 d ih
+       in [x1, list-at g 0, x2, list-at g 1])
+    else let d = real-to-int (real-from-int (y2 - y1) * rp - real-from-int (x2 - x1))
+    in let g = im-grow x1 x2 d iw
+    in [list-at g 0, y1, list-at g 1, y2]
+
+Section: Crops
+
+  im-crop : Integer, Integer, Integer, List Integer, Integer, Integer -> Integer
+  im-crop (src) (w) (bpp) (b) (d) (i) =
+    let cw = (list-at b 2 - list-at b 0) * bpp
+    in let n = cw * (list-at b 3 - list-at b 1)
+    in if i >= n then d
+    else let y = i / cw
+    in let z = poke-byte d i (peek-byte src ((list-at b 1 + y) * w * bpp + list-at b 0 * bpp + i - y * cw))
+    in im-crop src w bpp b d (i + 1)
+
+  inpaint-crop-rgb : Integer, Integer, List Integer, Integer, Integer -> Integer
+  inpaint-crop-rgb (src) (w) (b) (pw) (ph) =
+    let cw = list-at b 2 - list-at b 0
+    in let ch = list-at b 3 - list-at b 1
+    in resize-mode 2 (im-crop src w 3 b (alloc-bytes (cw * ch * 3 + 8)) 0) cw ch pw ph
+
+  inpaint-crop-l : Integer, Integer, List Integer, Integer, Integer -> Integer
+  inpaint-crop-l (m) (w) (b) (pw) (ph) =
+    let cw = list-at b 2 - list-at b 0
+    in let ch = list-at b 3 - list-at b 1
+    in resize-mode-l 2 (im-crop m w 1 b (alloc-bytes (cw * ch + 8)) 0) cw ch pw ph
+
+Section: Uncrop
+
+  im-place : Integer, Integer, Integer, List Integer, Integer, Integer -> Integer
+  im-place (d) (w) (r) (b) (i) (n) =
+    if i >= n then d
+    else let cw = (list-at b 2 - list-at b 0) * 3
+    in let y = i / cw
+    in let z = poke-byte d ((list-at b 1 + y) * w * 3 + list-at b 0 * 3 + i - y * cw) (peek-byte r i)
+    in im-place d w r b (i + 1) n
+
+  inpaint-uncrop : Integer, Integer, Integer, List Integer, Integer, Integer -> Integer
+  inpaint-uncrop (gen) (pw) (ph) (b) (w) (h) =
+    let cw = list-at b 2 - list-at b 0
+    in let ch = list-at b 3 - list-at b 1
+    in im-place (alloc-bytes (w * h * 3 + 8)) w (resize-mode 1 gen pw ph cw ch) b 0 (cw * ch * 3)

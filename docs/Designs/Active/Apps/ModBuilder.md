@@ -33,8 +33,8 @@ Mono). Source of truth `apps/modbuilder/design/Active/GameTargets.md`.
 
 | piece | where | state |
 |---|---|---|
-| Mod source in Codex | `apps/modbuilder/mods/valheim/` (LinkedStorage, MeadowsSpawns, CircumhorizontalArc) | built |
-| Feature catalogue and subset builds | `features.json`, Prism `#mod=`, `apps/modbuilder/mods.html` | built; `mods.html` not deployed |
+| Mod source in Codex | `apps/modbuilder/mods/valheim/` (LinkedStorage, MeadowsSpawns, CircumhorizontalArc, StationHover, HudLayout, PlantRows) | built |
+| Feature catalogue and subset builds | `features.json`, the ModBuilder page `apps/modbuilder/web/modbuilder.html` (`#mod=`) | built; not deployed (MB-1) |
 | Codex to typed C# to DLL | `codex/plugs/csharp/CsSyntax.codex`, `codex/plugs/unity/*` with the game bindings in `apps/modbuilder/bindings/valheim/`, Roslyn against the installed game | proven (byte-level DLL comparison with a failing negative control) |
 | Loader, no BepInEx or Harmony | owned C++ bootstrap as a `winhttp.dll` proxy, pins game and player hashes | proven in play |
 | Isolated test worlds and vanilla revert | `apps/modbuilder/test-game.ps1`, `test-world.ps1`, `run.json` receipts | proven |
@@ -53,8 +53,8 @@ Each milestone is a unit the fleet already knows how to prove.
 
 | milestone | work | size |
 |---|---|---|
-| **M0 Extraction** | Done: the game parts live in `apps/modbuilder/` (mods, game bindings, `GameTargets.md`, `target-toolchain.ps1`, `test-game.ps1`, `test-world.ps1`, `test-mods.mjs`, `mods.html`). The Unity plug stays in `codex/plugs/unity/`, where the plug tooling expects it. `build-bridge.ps1` and `CsSyntax` are shared. The Targets panel and `#mod=` remain in the Prism page until M1 (MB-5). | done |
-| **M1 Valheim complete** | Close MB-4's manual acceptance; move the Targets panel and `#mod=` onto a ModBuilder page (MB-5); deploy the ModBuilder page; a game-update flow that re-pins hashes and rebuilds every installed mod from source. | small |
+| **M0 Extraction** | Done: the game parts live in `apps/modbuilder/` (mods, game bindings, `GameTargets.md`, `target-toolchain.ps1`, `test-game.ps1`, `test-world.ps1`, `test-mods.mjs`, `mods.html`). The Unity plug stays in `codex/plugs/unity/`, where the plug tooling expects it. `build-bridge.ps1` and `CsSyntax` are shared. The ModBuilder page (`apps/modbuilder/web/modbuilder.html`) composes, emits and drives the bridge; Prism keeps only the Darwin target. | done |
+| **M1 Valheim complete** | Close MB-4's manual acceptance; deploy the ModBuilder page; a game-update flow that re-pins hashes and rebuilds every installed mod from source. | small |
 | **M2 Signed source packages** | A mod package = source + manifest + author signature. Install runs `ImportGate` (hash, signature, key score) under the player's `TrustLattice` policy, then builds and compares receipts. | medium |
 | **M3 Sharing without a site** | A content-addressed index of packages, served as static files from any mirror; vouches are signed facts synced by `FactSync`; no accounts. | medium |
 | **M4 Valheim features** | More features in the Valheim pack beyond storage, meadows and the arc, each one a showcase for the campaign. | ongoing |

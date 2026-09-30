@@ -940,7 +940,17 @@ if (!only.length) {
       // ask about the turn passing rather than about how many clicks a turn
       // costs; for the games where a turn IS one click the two counts are
       // the same number and nothing about them changes.
-      const answered = d.reply();
+      // The page (index.html, afterHuman) steps until the game ends or the
+      // choice is yours again, with no cap. One 40-step reply ran out in a
+      // Liar's Dice game the person had been knocked out of, and the arm
+      // then read the remaining seats' play as a stalled game. Reply until
+      // a reply moves nothing, as the page does, within 50 replies so an
+      // engine that never yields still ends the arm.
+      let answered = 0;
+      for (let n = d.reply(), k = 1; ; n = d.reply(), k++) {
+        answered += n;
+        if (n === 0 || d.done() || d.yourTurn() || k >= 50) break;
+      }
       theirs += answered;
       if (answered > 0) myTurns++;
       // Do NOT clear the turn here. A game where you throw your own dice

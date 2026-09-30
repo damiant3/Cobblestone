@@ -160,7 +160,7 @@ function Invoke-Action($r) {
             return @{status='ok'}
         }
         'run-artifact' {return Invoke-Guest $r (Path-Of $r.program) '' (Path-Of $r.output)}
-        'read-output' {return @{status='ok';actual=(Read-Bounded (Path-Of $r.output)).TrimStart([char]1);expected=(Read-Bounded (Path-Of $r.expected))}}
+        'read-output' {return @{status='ok';actual=(Read-Bounded (Path-Of $r.output));expected=(Read-Bounded (Path-Of $r.expected))}}
         'write-normalized' {[IO.File]::WriteAllText((Join-Path $OutDir 'output.txt'),[string]$r.text,$utf8);return @{status='ok'}}
         'compare-bytes' {
             $left=[IO.File]::OpenRead((Path-Of $r.left));$right=[IO.File]::OpenRead((Path-Of $r.right))

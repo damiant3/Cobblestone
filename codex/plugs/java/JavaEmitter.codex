@@ -85,7 +85,7 @@ Section: Expression Emission
     is IrBoolLit (b) (sp) -> if b then "true" else "false"
     is IrCharLit (n) (sp) -> "(char)" & show n
     is IrName (n) (ty) (sp) -> jv-sanitize n
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-jv-binary op l r arities indent
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-jv-binary op l r ty arities indent
     is IrNegate (x) (nty) (sp) -> "(-(long)(" & emit-jv-expr x arities indent & "))"
     is IrIf (c) (t) (el) (ty) (sp) -> "((boolean)(" & emit-jv-expr c arities indent & ") ? " & emit-jv-expr t arities indent & " : " & emit-jv-expr el arities indent & ")"
     is IrLet (name) (ty) (val) (body) (sp) -> emit-jv-let name val body arities indent
@@ -106,14 +106,14 @@ Section: Expression Emission
 
 Section: Binary Operators
 
-  emit-jv-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
-  emit-jv-binary (op) (l) (r) (arities) (indent) =
+  emit-jv-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, List ArityEntry, Integer -> Text
+  emit-jv-binary (op) (l) (r) (ty) (arities) (indent) =
    let lhs = emit-jv-expr l arities indent
    in let rhs = emit-jv-expr r arities indent
    in when op
-    is IrAddInt -> "((long)" & lhs & " + (long)" & rhs & ")"
-    is IrSubInt -> "((long)" & lhs & " - (long)" & rhs & ")"
-    is IrMulInt -> "((long)" & lhs & " * (long)" & rhs & ")"
+    is IrAddInt -> jv-int-arith "+" "addExact" lhs rhs ty
+    is IrSubInt -> jv-int-arith "-" "subtractExact" lhs rhs ty
+    is IrMulInt -> jv-int-arith "*" "multiplyExact" lhs rhs ty
     is IrDivInt -> "((long)" & lhs & " / (long)" & rhs & ")"
     is IrRemInt -> "((long)" & lhs & " % (long)" & rhs & ")"
     is IrPowInt -> "_cx_ipow((long)" & lhs & ", (long)" & rhs & ")"
@@ -138,6 +138,14 @@ Section: Binary Operators
     is IrAppendText -> "((String)" & lhs & " + (String)" & rhs & ")"
     is IrAppendList -> "((java.util.function.Supplier<Object>)(() -> { var _l = new java.util.ArrayList<>((java.util.List<?>)" & lhs & "); _l.addAll((java.util.List<?>)" & rhs & "); return _l; })).get()"
     is IrConsList -> "((java.util.function.Supplier<Object>)(() -> { var _l = new java.util.ArrayList<>(); _l.add(" & lhs & "); _l.addAll((java.util.List<?>)" & rhs & "); return _l; })).get()"
+
+ A Java long wraps, so the wrapping band is the bare operator; `Math.addExact`
+ and its two siblings throw ArithmeticException on signed overflow.
+
+  jv-int-arith : Text, Text, Text, Text, CodexType -> Text
+  jv-int-arith (sym) (exact) (lhs) (rhs) (ty) =
+   if int-ty-wraps ty then "((long)" & lhs & " " & sym & " (long)" & rhs & ")"
+   else "Math." & exact & "((long)" & lhs & ", (long)" & rhs & ")"
 
 Section: Apply and Helpers
 

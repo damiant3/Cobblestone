@@ -1,11 +1,15 @@
 Chapter: GoFish
   cites Games chapter Rng
 
- Go Fish: standard 52-card deck, 2-4 players. Card encoding: 0-51,
- rank = card mod 13, suit = card / 13. 7 cards each (5 if 4+ players).
- Ask opponent for a rank; if they have it, take all of that rank.
- If not, draw from pile. Complete 4-of-a-kind = book. Game ends
- when all 13 books are collected or deck + hands are empty.
+ Go Fish as pagat.com gives it (https://www.pagat.com/quartet/gofish.html),
+ for 2 to 4 players here: a 52-card deck, card = suit 13 + rank. 7 cards each
+ for two players, 5 each otherwise; the rest is the stock. A turn asks one
+ other player for a rank the asker holds. If that player holds any, all of
+ them are handed over and the asker asks again. If not ("go fish") the asker
+ draws the top of the stock; a card of the rank asked is shown and the asker
+ asks again, and otherwise the turn passes to the left. Four of a rank are a
+ book, laid down at once. The game ends as soon as a player has no cards or
+ the stock is empty, and the most books wins; equal most is no single winner.
 
  We say:
 
@@ -26,7 +30,8 @@ Section: Types
   GoFishResult = record {
     winner     : Integer,
     books-each : List Integer,
-    turns      : Integer
+    turns      : Integer,
+    stop       : Integer
   }
 
 Section: Card Helpers
@@ -97,7 +102,7 @@ Section: Initial Deal
   gf-init : Integer, Integer -> GoFishState
   gf-init (seed) (num-players) =
     let deck = gf-shuffle (gf-build-deck 0 []) (rng-new seed)
-    in let cards-each = if num-players >= 4 then 5 else 7
+    in let cards-each = if num-players == 2 then 7 else 5
     in let hand-slots = gf-build-zeroes 0 (num-players * 52) []
     in let sizes = gf-build-zeroes 0 num-players []
     in let books = gf-build-zeroes 0 num-players []
@@ -251,7 +256,7 @@ Section: AI Strategy
     if i >= s.num-players then best-target
     else if i == player then gf-target-loop s player rank (i + 1) best-target best-score
     else let sz = list-at (s.hand-sizes) i
-    in let score = if gf-count-rank-in-hand s i rank > 0 then 1000 + sz else sz
+    in let score = sz
     in if score > best-score then gf-target-loop s player rank (i + 1) i score
     else gf-target-loop s player rank (i + 1) best-target best-score
 
@@ -262,22 +267,16 @@ Section: Turn
     if s.game-over then s
     else let player = s.current-player
     in let rank = gf-ai-rank-to-ask s player
-    in let cnt-held = gf-count-rank-in-hand s player rank
-    in if cnt-held == 0 then
-      let s2 = gf-draw-card s player
-      in let s3 = gf-check-game-over s2
-      in gf-advance-player s3
-    else let target = gf-ai-target s player rank
-    in let target-has = gf-count-rank-in-hand s target rank
-    in if target-has > 0 then
-      let s2 = gf-transfer-rank s target player rank
-      in let s3 = gf-check-books s2 player
-      in let s4 = gf-check-game-over s3
-      in gf-advance-player s4
-    else
-      let s2 = gf-draw-card s player
-      in let s3 = gf-check-game-over s2
-      in gf-advance-player s3
+    in gf-resolve-ask s player (gf-ai-target s player rank) rank
+
+ One ask, resolved: a hit or a fished card of the rank asked keeps the turn.
+
+  gf-resolve-ask : GoFishState, Integer, Integer, Integer -> GoFishState
+  gf-resolve-ask (s) (player) (target) (rank) =
+    if gf-count-rank-in-hand s target rank > 0 then gf-check-game-over (gf-check-books (gf-transfer-rank s target player rank) player)
+    else let drawn = if s.pile-size > 0 then gf-rank (list-at (s.draw-pile) 0) else (0 - 1)
+    in let s2 = gf-check-game-over (gf-draw-card s player)
+    in if drawn == rank then s2 else gf-advance-player s2
 
   gf-advance-player : GoFishState -> GoFishState
   gf-advance-player (s) =
@@ -296,7 +295,7 @@ Section: Turn
 
   gf-check-game-over : GoFishState -> GoFishState
   gf-check-game-over (s) =
-    let done = s.total-books >= 13 | s.pile-size == 0 & gf-all-hands-empty s
+    let done = s.total-books >= 13 | s.pile-size == 0 | gf-any-hand-empty s 0
     in GoFishState {
          hands = s.hands,
          hand-sizes = s.hand-sizes,
@@ -308,6 +307,12 @@ Section: Turn
          game-over = done,
          total-books = s.total-books
        }
+
+  gf-any-hand-empty : GoFishState, Integer -> Boolean
+  gf-any-hand-empty (s) (i) =
+    if i >= s.num-players then False
+    else if list-at (s.hand-sizes) i == 0 then True
+    else gf-any-hand-empty s (i + 1)
 
   gf-all-hands-empty : GoFishState -> Boolean
   gf-all-hands-empty (s) =
@@ -336,13 +341,15 @@ Section: Game Runner
   gf-make-result : GoFishState, Integer -> GoFishResult
   gf-make-result (s) (turns) =
     let winner = gf-find-winner s 0 0 (-1)
-    in GoFishResult { winner = winner, books-each = s.books, turns = turns }
+    in let stop = if s.game-over == False then 0 else if gf-any-hand-empty s 0 then 1 else if s.pile-size == 0 then 2 else 3
+    in GoFishResult { winner = winner, books-each = s.books, turns = turns, stop = stop }
 
   gf-find-winner : GoFishState, Integer, Integer, Integer -> Integer
   gf-find-winner (s) (i) (best-books) (best-player) =
     if i >= s.num-players then best-player
     else let b = list-at (s.books) i
     in if b > best-books then gf-find-winner s (i + 1) b i
+    else if b == best-books then gf-find-winner s (i + 1) best-books (0 - 1)
     else gf-find-winner s (i + 1) best-books best-player
 
 Section: Formatting

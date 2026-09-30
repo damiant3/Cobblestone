@@ -1,12 +1,41 @@
 Chapter: Yahtzee
   cites Games chapter Rng
 
- Yahtzee simulation. 5 dice, up to 3 rolls per turn, 13 scoring categories.
- Categories: ones(0) twos(1) threes(2) fours(3) fives(4) sixes(5)
+ Yahtzee. Categories: ones(0) twos(1) threes(2) fours(3) fives(4) sixes(5)
  three-of-kind(6) four-of-kind(7) full-house(8) sm-straight(9)
- lg-straight(10) yahtzee(11) chance(12).
+ lg-straight(10) yahtzee(11) chance(12). The scorecard holds a fourteenth
+ entry, the Yahtzee bonus points.
 
  We say:
+
+Section: The Rules
+
+ The rules as Hasbro publishes them (Yahtzee, rules leaflet, "Scoring" and
+ "Yahtzee Bonus Chips and Joker Rules").
+
+ Rule 1. A turn is up to three rolls; before the second and third, any dice
+ may be set aside and only the rest rolled. After the last roll the player
+ fills one open box; a filled box is never filled again, and thirteen turns
+ fill the card. (The roll count is the page's to keep; the engine answers
+ which boxes may be filled and what each scores.)
+
+ Rule 2. The upper boxes score the sum of the dice showing their number.
+ Three and four of a kind score the sum of all five dice when at least that
+ many show one number; a full house (three of one number and two of another)
+ 25; a small straight (four in sequence) 30; a large straight (five in
+ sequence) 40; Yahtzee (five alike) 50; chance the sum of all five. A box
+ whose pattern the dice do not make may still be filled, for 0.
+
+ Rule 3. When the upper boxes total 63 or more, the player scores a 35 point
+ bonus.
+
+ Rule 4. A Yahtzee rolled when the Yahtzee box already holds 50 scores a 100
+ point bonus; when that box holds 0 it scores none. Either way, when the
+ Yahtzee box is filled, a Yahtzee is a Joker: it must fill the upper box of
+ its number if that box is open; else it fills any open lower box, and there
+ full house scores 25, small straight 30 and large straight 40, the others
+ as usual; else it must fill an open upper box, for 0. When the Yahtzee box
+ is open, a Yahtzee is scored as any other roll.
 
 Section: Types
 
@@ -153,6 +182,62 @@ Section: Scoring
     else if cat == 11 then yh-score-yahtzee dice
     else yh-score-chance dice
 
+Section: Legal Boxes
+
+ Rule 4's Joker: five alike with the Yahtzee box filled.
+
+  yh-joker : List Integer, List Integer -> Boolean
+  yh-joker (dice) (scored) = yh-max-count dice == 5 & list-at scored 11 == 1
+
+  yh-any-open : List Integer, Integer, Integer -> Boolean
+  yh-any-open (scored) (i) (stop) = if i >= stop then False else if list-at scored i == 0 then True else yh-any-open scored (i + 1) stop
+
+ Whether box cat may be filled with these dice (Rules 1 and 4).
+
+  yh-legal : List Integer, List Integer, Integer -> Boolean
+  yh-legal (dice) (scored) (cat) =
+    if cat < 0 | cat > 12 then False
+    else if list-at scored cat == 1 then False
+    else if yh-joker dice scored == False then True
+    else let upper = list-at dice 0 - 1
+    in if list-at scored upper == 0 then cat == upper
+    else if yh-any-open scored 6 13 then cat >= 6
+    else cat < 6
+
+ What filling box cat scores (Rules 2 and 4).
+
+  yh-take-score : List Integer, List Integer, Integer -> Integer
+  yh-take-score (dice) (scored) (cat) =
+    if yh-joker dice scored & cat == 8 then 25
+    else if yh-joker dice scored & cat == 9 then 30
+    else if yh-joker dice scored & cat == 10 then 40
+    else yh-score-category dice cat
+
+ The Yahtzee bonus a fill earns (Rule 4), read before the fill.
+
+  yh-bonus-gain : List Integer, List Integer, List Integer -> Integer
+  yh-bonus-gain (dice) (scorecard) (scored) = if yh-joker dice scored & list-at scorecard 11 == 50 then 100 else 0
+
+ Fills box cat of scorecard in place, bonus included, and answers it.
+
+  yh-fill : List Integer, List Integer, List Integer, Integer -> List Integer
+  yh-fill (scorecard) (scored) (dice) (cat) =
+    let b = yh-bonus-gain dice scorecard scored
+    in let s1 = list-set-at scorecard 13 (list-at scorecard 13 + b)
+    in list-set-at s1 cat (yh-take-score dice scored cat)
+
+ The card's total: the thirteen boxes, Rule 3's upper bonus and the Yahtzee
+ bonus.
+
+  yh-upper-bonus : List Integer -> Integer
+  yh-upper-bonus (sc) = if yh-total-score-to sc 0 6 0 >= 63 then 35 else 0
+
+  yh-total-score-to : List Integer, Integer, Integer, Integer -> Integer
+  yh-total-score-to (sc) (i) (stop) (acc) = if i >= stop then acc else yh-total-score-to sc (i + 1) stop (acc + list-at sc i)
+
+  yh-total : List Integer -> Integer
+  yh-total (sc) = yh-total-score sc 0 0 + yh-upper-bonus sc + (if list-length sc > 13 then list-at sc 13 else 0)
+
 Section: AI Keep Mask
 
   yh-build-keep-mask : List Integer -> List Integer
@@ -186,9 +271,9 @@ Section: AI Turn
   yh-pick-best-cat : List Integer, List Integer, List Integer, Integer, Integer, Integer -> Integer
   yh-pick-best-cat (dice) (scorecard) (scored) (cat) (best-cat) (best-score) =
     if cat >= 13 then if best-cat < 0 then 12 else best-cat
-    else if list-at scored cat == 1 then
+    else if yh-legal dice scored cat == False then
       yh-pick-best-cat dice scorecard scored (cat + 1) best-cat best-score
-    else let sc = yh-score-category dice cat
+    else let sc = yh-take-score dice scored cat
     in if sc > best-score then
       yh-pick-best-cat dice scorecard scored (cat + 1) cat sc
     else yh-pick-best-cat dice scorecard scored (cat + 1) best-cat best-score
@@ -204,8 +289,7 @@ Section: AI Turn
     in let r3 = rng-next r2
     in let d3 = yh-reroll-some d2 mask2 r3
     in let cat = yh-ai-pick-category d3 (s.scorecard) (s.scored)
-    in let sc = yh-score-category d3 cat
-    in let new-scorecard = list-set-at (s.scorecard) cat sc
+    in let new-scorecard = yh-fill (s.scorecard) (s.scored) d3 cat
     in let new-scored = list-set-at (s.scored) cat 1
     in YahtzeeState {
          scorecard  = new-scorecard,
@@ -218,7 +302,7 @@ Section: Game Runner
 
   yh-init : Integer -> YahtzeeState
   yh-init (seed) =
-    let sc = yh-build-zeroes 13 []
+    let sc = yh-build-zeroes 14 []
     in let scored = yh-build-zeroes 13 []
     in YahtzeeState {
          scorecard  = sc,
@@ -244,7 +328,7 @@ Section: Game Runner
 
   yh-make-result : YahtzeeState, Integer -> YahtzeeResult
   yh-make-result (s) (turns) =
-    let total = yh-total-score (s.scorecard) 0 0
+    let total = yh-total (s.scorecard)
     in YahtzeeResult { final-score = total, turns-taken = turns }
 
   yh-total-score : List Integer, Integer, Integer -> Integer

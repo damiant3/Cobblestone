@@ -1,0 +1,78 @@
+Chapter: DeskInputQueueTest
+  cites Works chapter GopInputQueue
+  cites Foreword chapter Console
+
+Section: Checks
+
+  dq-fill : Integer, Integer -> Integer
+  dq-fill (q) (n) =
+    if n <= 0 then 0
+    else let a = di-push q di-key 0 0 n 0 0 n
+    in dq-fill q (n - 1)
+
+  dq-drain : Integer, Integer -> Boolean
+  dq-drain (q) (n) =
+    if n <= 0 then di-front q == 0
+    else let e = di-front q
+    in if e == 0 then False
+    else let ok = peek-qword e 40 == n
+    in let p = di-pop q 0
+    in ok & dq-drain q (n - 1)
+
+  dq-wrap : Integer, Integer -> Boolean
+  dq-wrap (q) (n) =
+    if n <= 0 then True
+    else let advance = di-push q di-key 0 0 17 0 0 0
+    in let pop = di-pop q 0
+    in let f = dq-fill q di-cap
+    in let ok = dq-drain q di-cap
+    in let a = di-push q di-motion 1 2 0 1 2 0
+    in let b = di-push q di-motion 3 4 0 4 6 0
+    in let front = di-front q
+    in let merged = peek-qword q di-count == 1 & peek-qword front 24 == 4 & peek-qword front 32 == 6
+    in let done = di-pop q 0
+    in ok & merged & dq-wrap q (n - 1)
+
+  dq-yn : Boolean -> Text
+  dq-yn (ok) = if ok then "yes" else "FAIL"
+
+  dq-traces : Integer, Integer -> Integer
+  dq-traces (q) (n) =
+    if n <= 0 then 0
+    else let t = di-trace q 9 n n 123
+    in dq-traces q (n - 1)
+
+  opening : [Console] Nothing =
+    let q = di-new 0
+    in let mark = alloc-bytes 0
+    in let a = di-push q di-motion 7 9 0 7 9 10
+    in let b = di-push q di-motion (-3) 4 0 4 13 11
+    in let e = di-front q
+    in let merged = peek-qword q di-count == 1 & peek-qword e 24 == 4 & peek-qword e 32 == 13 & peek-qword e 8 == 1 & peek-qword e 16 == 2
+    in let c = di-push q di-button 0 0 1 4 13 12
+    in let d = di-push q di-motion 2 1 1 6 14 13
+    in let k = di-push q di-key 0 0 30 6 14 14
+    in let m = di-push q di-motion 1 1 1 7 15 15
+    in let r = di-push q di-button 0 0 0 7 15 16
+    in let separated = peek-qword q di-count == 6 & peek-qword (di-at q 1) 0 == di-button & peek-qword (di-at q 3) 0 == di-key & peek-qword (di-at q 5) 40 == 0
+    in let reset = poke-qword q di-count 0
+    in let wrapped = dq-wrap q 3
+    in let fill = dq-fill q di-cap
+    in let oldest = peek-qword (di-front q) 8
+    in let refused = di-push q di-button 0 0 1 0 0 0 == 0
+    in let overflow = refused & peek-qword q di-overflow == 1 & peek-qword q di-loss == 1 & peek-qword q di-count == di-cap & peek-qword (di-front q) 8 == oldest
+    in let finish = alloc-bytes 0
+    in let trace = di-new 1
+    in let trace-start = alloc-bytes 0
+    in let traced = dq-traces trace (di-trace-cap + 1)
+    in let trace-finish = alloc-bytes 0
+    in let first = trace + di-meta-bytes + di-cap * di-event-bytes
+    in let trace-ok = peek-qword trace di-trace-count == di-trace-cap & peek-qword trace di-trace-loss == 1 & peek-qword first 8 == di-trace-cap + 1 & trace-start == trace-finish
+    in act
+      print-line-uni ("motion sums and sequences: " & dq-yn merged)
+      print-line-uni ("key and button boundaries: " & dq-yn separated)
+      print-line-uni ("ring wraps preserve order: " & dq-yn wrapped)
+      print-line-uni ("full queue refuses and reports loss: " & dq-yn overflow)
+      print-line-uni ("queue operations allocate zero: " & dq-yn (finish == mark))
+      print-line-uni ("trace overflow is explicit and allocation-free: " & dq-yn trace-ok)
+    end

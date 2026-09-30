@@ -1,0 +1,116 @@
+Chapter: DiffusionBrownian
+  cites Diffusion chapter BrownianTree
+  cites Diffusion chapter Noise
+  cites Diffusion chapter Sampler
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/brownian-oracle.py's: Forge's BrownianTreeNoiseSampler
+ on the CUDA device, seed 20260929, shape 4 x 8 x 8, every call DPM++ SDE
+ makes over SDXL's 6-step Karras sigmas (10) and DPM++ 2M SDE over its
+ 6-step Exponential sigmas (5), with Forge's f32 sigmas, query times and
+ draws. Over Forge's sigmas a query agrees bit for bit and a value within
+ 1e-5. Our schedules are Forge's to a few f32 ulps, not bit for bit, which
+ moves the tree's 6-decimal times; the last arm counts what that moves.
+
+ We say:
+
+Section: Arms
+
+  n : Integer = 256
+
+  ours : Integer = #BD700000
+
+  theirs : Integer = #BD900000
+
+  times : Integer = #BDA00000
+
+  sched : Integer = #BDA10000
+
+  over : Real, Integer, Integer -> Integer
+  over (tol) (i) (acc) =
+    if i >= n then acc
+    else let d = bt-f32 (peek-32 ours (i * 4)) - bt-f32 (peek-32 theirs (i * 4))
+    in let a = if d < 0.0 then 0.0 - d else d
+    in over tol (i + 1) (acc + (if a > tol then 1 else 0))
+
+  same-time : Integer, Real -> Boolean
+  same-time (j) (v) = bit-and (peek-32 times (j * 4)) #FFFFFFFF == nz-f32-bits v
+
+  ulps : Integer, Real -> Integer
+  ulps (j) (v) = let d = bit-and (peek-32 times (j * 4)) #FFFFFFFF - nz-f32-bits v in if d < 0 then 0 - d else d
+
+  fixture : Integer, Integer -> Boolean
+  fixture (h) (kf) =
+    let u = gpu-buf-upload h 0 "brownian-noise.bin" (kf * n * 4) n gpu-dt-f32 gpu-dt-f32
+    in gpu-buf-read h 0 (n * 4) theirs
+
+  arm : BtTree, Integer, Integer, List Real, Integer, Integer -> Text
+  arm (t) (h) (k) (qs) (j) (kf) =
+    if fixture h kf == False then "draw " & show k & ": the fixture could not be read"
+    else let a = list-at qs (2 * j)
+    in let b = list-at qs (2 * j + 1)
+    in let u2 = ulps (2 * k) a + ulps (2 * k + 1) b
+    in let q = if u2 == 0 then "query as Forge's" else "query " & show u2 & " f32 ulps from Forge's"
+    in let z = brownian-draw t a b ours
+    in let bad = over 0.00001 0 0
+    in "draw " & show k & ": " & q & ", " & (if bad == 0 then "all 256 within 1e-5" else show bad & " of 256 off")
+
+  arms : BtTree, Integer, List Real, Integer, Integer, Integer -> [Console] Nothing
+  arms (t) (h) (qs) (base) (j) (count) = if j >= count then act print-line-uni ("calls " & show count) end else act
+    print-line-uni (arm t h (base + j) qs j (base + j))
+    arms t h qs base (j + 1) count
+  end
+
+ Values more than tol from Forge's over draws j to count of a tree.
+
+  drift : BtTree, Integer, List Real, Integer, Integer, Integer, Real, Integer -> Integer
+  drift (t) (h) (qs) (base) (j) (count) (tol) (acc) =
+    if j >= count then acc
+    else let f = fixture h (base + j)
+    in let z = brownian-draw t (list-at qs (2 * j)) (list-at qs (2 * j + 1)) ours
+    in drift t h qs base (j + 1) count tol (acc + (if f then over tol 0 0 else n))
+
+  fsig : Integer, Integer, List Real -> List Real
+  fsig (base) (i) (acc) = if i >= 7 then acc else fsig base (i + 1) (list-push acc (bt-f32 (peek-32 sched ((base + i) * 4))))
+
+ The control: DPM++ SDE's step i asks at sigma_fn (t_fn sigma_i) (time 4 i)
+ and ends at sigma_fn (t_fn sigma_i+1) (time 4 i + 3); the plain sigmas in
+ their place.
+
+  plain : List Real, Integer, Integer -> Integer
+  plain (sig) (i) (acc) =
+    if i >= 5 then acc
+    else plain sig (i + 1) (acc + (if same-time (4 * i) (list-at sig i) then 0 else 1) + (if same-time (4 * i + 3) (list-at sig (i + 1)) then 0 else 1))
+
+  own : Integer, Real -> Integer
+  own (h) (tol) =
+    let k = sdxl-karras-sigmas 6
+    in let e = sdxl-exponential-sigmas 6
+    in drift (brownian-tree 20260929 n k) h (brownian-queries True k 0 []) 0 0 10 tol 0 + drift (brownian-tree 20260929 n e) h (brownian-queries False e 0 []) 10 0 5 tol 0
+
+  run : Integer -> [Console] Nothing
+  run (h) = arms-over h (fsig 0 0 []) (fsig 7 0 [])
+
+  arms-over : Integer, List Real, List Real -> [Console] Nothing
+  arms-over (h) (karras) (expo) = act
+    print-line-uni "DPM++ SDE, Karras 6:"
+    arms (brownian-tree 20260929 n karras) h (brownian-queries True karras 0 []) 0 0 (list-length (brownian-queries True karras 0 []) / 2)
+    print-line-uni "DPM++ 2M SDE, Exponential 6:"
+    arms (brownian-tree 20260929 n expo) h (brownian-queries False expo 0 []) 10 0 (list-length (brownian-queries False expo 0 []) / 2)
+    print-line-uni ("control, DPM++ SDE at the plain sigmas: " & show (plain karras 0 0) & " of 10 times not Forge's")
+    print-line-uni ("sabotage, " & arm (brownian-tree 20260929 n karras) h 1 (brownian-queries True karras 0 []) 0 1)
+    print-line-uni ("our schedules: " & show (own h 0.0001) & " of 3840 values off by more than 1e-4, " & show (own h 0.001) & " by more than 1e-3, " & show (own h 0.01) & " by more than 1e-2")
+  end
+
+  load : Integer -> Integer
+  load (h) =
+    let u = gpu-buf-upload h 0 "brownian-queries.bin" 0 30 gpu-dt-f32 gpu-dt-f32
+    in let v = gpu-buf-upload h 128 "brownian-sigmas.bin" 0 14 gpu-dt-f32 gpu-dt-f32
+    in if gpu-buf-read h 0 120 times & gpu-buf-read h 128 56 sched then h else 0
+
+  opening : [Console] Integer
+  opening = act
+    run (load (gpu-buf-alloc (n * 4)))
+    let r = 0 in r
+  end

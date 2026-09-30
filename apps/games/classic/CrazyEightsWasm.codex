@@ -29,7 +29,6 @@ Section: Copying
       current-player = s.current-player,
       num-players = s.num-players,
       direction = s.direction,
-      draw-penalty = s.draw-penalty,
       game-over = s.game-over,
       winner = s.winner,
       declared-suit = s.declared-suit
@@ -51,13 +50,12 @@ Section: Playing By Hand
  itself, so the declared suit is set afterwards; `ce-advance` and the
  winning branch both carry `declared-suit` through untouched.
 
- Rank 0 is a two and rank 6 an eight. A two adds two to the draw penalty,
- and while a penalty stands the only legal turn is to take it.
+ Rank 6 is an eight. A turn plays one legal card or draws one card, and the
+ draw is open whenever a card can be drawn, a card to play or not.
 
   ce-wasm-can-play : CrazyEightsState, Integer -> Integer
   ce-wasm-can-play (s) (card) =
     if s.game-over then 0
-    else if s.draw-penalty > 0 then 0
     else if card < 0 then 0
     else if card >= 52 then 0
     else if ce-can-play s (s.current-player) card then 1
@@ -79,52 +77,55 @@ Section: Playing By Hand
       draw-pile = s.draw-pile, pile-size = s.pile-size,
       discard-rank = s.discard-rank, discard-suit = s.discard-suit,
       current-player = s.current-player, num-players = s.num-players,
-      direction = s.direction, draw-penalty = s.draw-penalty,
+      direction = s.direction,
       game-over = s.game-over, winner = s.winner,
       declared-suit = suit
     }
 
- A draw is legal only when the player to move holds no playable card.
-
   ce-wasm-stuck : CrazyEightsState -> Integer
   ce-wasm-stuck (s) =
     if s.game-over then 0
-    else if s.draw-penalty > 0 then 0
     else if ce-find-play s (s.current-player) >= 0 then 0
     else 1
 
+  ce-wasm-can-draw : CrazyEightsState -> Integer
+  ce-wasm-can-draw (s) = if s.game-over == False & ce-can-draw s then 1 else 0
+
   ce-wasm-draw : CrazyEightsState -> CrazyEightsState
   ce-wasm-draw (s) =
-    if s.game-over then s
-    else if s.draw-penalty > 0 then s
-    else if ce-find-play s (s.current-player) >= 0 then s
-    else let s2 = ce-draw-one (ce-copy-state s) (s.current-player)
-    in ce-advance s2
+    if ce-wasm-can-draw s == 0 then s
+    else ce-advance (ce-draw-one (ce-copy-state s) (s.current-player))
 
-  ce-wasm-can-take-penalty : CrazyEightsState -> Integer
-  ce-wasm-can-take-penalty (s) =
-    if s.game-over then 0
-    else if s.draw-penalty > 0 then 1
-    else 0
+  ce-wasm-points : CrazyEightsState, Integer -> Integer
+  ce-wasm-points (s) (player) = if player < 0 | player >= s.num-players then (-1) else ce-hand-points s player 0 0
 
-  ce-wasm-take-penalty : CrazyEightsState -> CrazyEightsState
-  ce-wasm-take-penalty (s) =
-    if ce-wasm-can-take-penalty s == 0 then s
-    else let s2 = ce-draw-n (ce-copy-state s) (s.current-player) (s.draw-penalty)
-    in ce-advance (ce-clear-penalty s2)
+  ce-wasm-top : CrazyEightsState -> Integer
+  ce-wasm-top (s) = ce-top s
 
-  ce-clear-penalty : CrazyEightsState -> CrazyEightsState
-  ce-clear-penalty (s) =
-    CrazyEightsState {
-      hands = s.hands, hand-sizes = s.hand-sizes,
-      draw-pile = s.draw-pile, pile-size = s.pile-size,
-      discard-rank = s.discard-rank, discard-suit = s.discard-suit,
-      current-player = s.current-player, num-players = s.num-players,
-      direction = s.direction, draw-penalty = 0,
-      game-over = s.game-over, winner = s.winner,
-      declared-suit = s.declared-suit
-    }
+Section: Setting Up a Position
 
+ A grader seats np players with empty hands and stock, a top card, then deals
+ each card where it wants it, on copies.
+
+  ce-wasm-empty : Integer, Integer -> CrazyEightsState
+  ce-wasm-empty (np) (top) =
+    let n = if np < 2 then 2 else if np > 4 then 4 else np
+    in CrazyEightsState { hands = ce-build-zeroes 0 (n * 52) [], hand-sizes = ce-build-zeroes 0 n [], draw-pile = ce-build-zeroes 0 52 [], pile-size = 0, discard-rank = ce-rank top, discard-suit = ce-suit top, current-player = 0, num-players = n, direction = 1, game-over = False, winner = 0, declared-suit = ce-suit top }
+
+  ce-wasm-give : CrazyEightsState, Integer, Integer -> CrazyEightsState
+  ce-wasm-give (s) (player) (card) =
+    if player < 0 | player >= s.num-players | card < 0 | card >= 52 then s
+    else ce-hand-set (ce-copy-state s) player card 1
+
+  ce-wasm-stock : CrazyEightsState, Integer -> CrazyEightsState
+  ce-wasm-stock (s) (card) =
+    if card < 0 | card >= 52 | s.pile-size >= 52 then s
+    else let c = ce-copy-state s
+    in let w = list-set-at (c.draw-pile) (c.pile-size) card
+    in CrazyEightsState { hands = c.hands, hand-sizes = c.hand-sizes, draw-pile = c.draw-pile, pile-size = c.pile-size + 1, discard-rank = c.discard-rank, discard-suit = c.discard-suit, current-player = c.current-player, num-players = c.num-players, direction = c.direction, game-over = c.game-over, winner = c.winner, declared-suit = c.declared-suit }
+
+  ce-wasm-call : CrazyEightsState, Integer -> CrazyEightsState
+  ce-wasm-call (s) (suit) = ce-declare (ce-copy-state s) suit
   ce-wasm-has : CrazyEightsState, Integer, Integer -> Integer
   ce-wasm-has (s) (player) (card) =
     if player < 0 then 0
@@ -164,9 +165,6 @@ Section: Playing By Hand
 
   ce-wasm-declared : CrazyEightsState -> Integer
   ce-wasm-declared (s) = s.declared-suit
-
-  ce-wasm-penalty : CrazyEightsState -> Integer
-  ce-wasm-penalty (s) = s.draw-penalty
 
   ce-wasm-done : CrazyEightsState -> Integer
   ce-wasm-done (s) = if s.game-over then 1 else 0

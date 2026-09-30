@@ -4,17 +4,11 @@
 param(
     [ValidateSet('arm64','riscv64')]
     [string]$Arch = 'arm64',
-    # Eight, not four. Four was chosen because eight Renode slots flaked -- a
-    # passing test would come back FAIL_RUNTIME with no uart after ~2s -- and
-    # that was tried twice, filed as "cause not found", and worked around by
-    # halving the parallelism. The cause was not in this harness: the box's
-    # DDR5 was running on an XMP profile it was not stable at. With the memory
-    # back in spec the machine has run 25+ concurrent VMs without a fault
-    # (Damian, 2026-07-22), so the workaround is retired rather than kept as
-    # folklore. If slot-count flakes ever come back, suspect the hardware
-    # before the harness: this one cost two investigations that could not have
-    # succeeded.
-    [int]$Jobs = 8,
+    # CoordinationProtocol.md, "The token does not cover RAM". The run phase
+    # clamps to free memory (Get-VmAdmittedSlots below). If slot-count flakes
+    # appear, suspect the hardware before the harness (ExaminersAssay.md, "The
+    # parallelism default").
+    [int]$Jobs = 16,
     # Emulator budget per test -- a CEILING, not a sentence. A run ends the
     # moment its output is COMPLETE against .expected (filtered line count
     # reached, final newline seen): a complete answer, right or wrong, is a

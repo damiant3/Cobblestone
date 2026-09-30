@@ -1,0 +1,90 @@
+Chapter: LayoutArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter SafeTensors
+
+ The page codex/plugs/html/arms/layout.mjs drives: a picked checkpoint header
+ read through file-read-then, parsed by st-parse-file and bound by
+ CheckpointLayout's layout-bind against its family's layout and, as the
+ control, the other family's, reported in the lines of
+ codex/test/apps/diffusion-layout. page-data "family" names the file's family.
+
+ We say:
+
+Section: Report
+
+  la-last-bound : List PartBinding, Integer, BoundTensor -> BoundTensor
+  la-last-bound (parts) (i) (best) =
+    if i >= list-length parts then best
+    else let pb = list-at parts i
+    in la-last-bound parts (i + 1) (la-last-in (pb.pb-bound) 0 best)
+
+  la-last-in : List BoundTensor, Integer, BoundTensor -> BoundTensor
+  la-last-in (ts) (i) (best) =
+    if i >= list-length ts then best
+    else let t = list-at ts i
+    in la-last-in ts (i + 1) (if t.bt-offset > best.bt-offset then t else best)
+
+  la-report-parts : Text, List PartBinding, Integer, Text -> Text
+  la-report-parts (label) (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else la-report-parts label parts (i + 1) (acc & label & " " & format-part-binding (list-at parts i) & "\n")
+
+  la-report : Text, SafeTensorFile, CheckpointLayout -> Text
+  la-report (label) (file) (layout) =
+    let head = label & ": header " & show (file.st-header-len) & ", tensors " & show (file.st-tensor-count) & ", valid " & (if file.st-valid then "yes" else "no") & "\n"
+    in let lb = layout-bind file layout
+    in let parts = la-report-parts label (lb.lb-parts) 0 ""
+    in let tail = label & " extra " & show (lb.lb-extra) & ", unknown " & show (list-length (lb.lb-unknown)) & ", complete " & (if layout-complete lb then "yes" else "no") & "\n"
+    in let none = BoundTensor { bt-name = "none", bt-dtype = 0, bt-shape = [], bt-offset = 0, bt-bytes = 0 }
+    in let far = la-last-bound (lb.lb-parts) 0 none
+    in let bytes = label & " bound bytes " & show (layout-bound-bytes (lb.lb-parts) 0 0) & "\n"
+    in head & parts & tail & bytes & label & " last: " & far.bt-name & " offset " & show (far.bt-offset) & " bytes " & show (far.bt-bytes) & "\n"
+
+  la-control-parts : List PartBinding, Integer, Text -> Text
+  la-control-parts (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else let pb = list-at parts i
+    in la-control-parts parts (i + 1) (acc & pb.pb-name & " " & show (list-length (pb.pb-bound)) & "/" & show (pb.pb-required) & " ")
+
+  la-control : Text, SafeTensorFile, CheckpointLayout -> Text
+  la-control (label) (file) (layout) =
+    let lb = layout-bind file layout
+    in label & ": complete " & (if layout-complete lb then "yes" else "no") & ", unknown " & show (list-length (lb.lb-unknown)) & ", " & la-control-parts (lb.lb-parts) 0 "" & "\n"
+
+Section: Read
+
+  opening : [Console] Integer
+  opening =
+    let c = dom-on-click (dom-query "html") la-pick
+    in state-set "armed" 1
+
+  la-pick : Text -> Integer
+  la-pick (id) = pick-file-then ".safetensors" la-picked
+
+  la-picked : Text -> Integer
+  la-picked (r) =
+    let f = state-set-text "file" (json-obj-field (json-parse-obj r) "name")
+    in file-read-then (state-get-text "file") 0 8 la-got-len
+
+  la-ints : List Text, Integer, List Integer -> List Integer
+  la-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else la-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  la-bytes : Text -> List Integer
+  la-bytes (t) = if text-length t < 3 then [] else la-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  la-got-len : Text -> Integer
+  la-got-len (r) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (la-bytes r) 0) la-got-header
+
+  la-got-header : Text -> Integer
+  la-got-header (r) =
+    let file = st-parse-file (la-bytes r)
+    in let fam = page-data "family"
+    in let own = if fam == "sdxl" then sdxl-layout else sd15-layout
+    in let other = if fam == "sdxl" then sd15-layout else sdxl-layout
+    in let ctl = if fam == "sdxl" then "sdxl as sd15" else "sd15 as sdxl"
+    in let s = state-set-text "lines" (la-report fam file own & la-control ctl file other)
+    in state-set "done" 1

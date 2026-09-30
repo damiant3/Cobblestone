@@ -3,10 +3,31 @@ Chapter: Sudoku
 
  We say:
 
+Section: The Rules
+
+ The rules as Nikoli, which named the puzzle, publishes them, and as the
+ World Puzzle Federation sets them for its championships.
+
+ Rule 1. The grid is nine rows by nine columns, divided into nine boxes of
+ three by three. The puzzle sets a digit in a subset of the cells, the
+ givens.
+
+ Rule 2. A digit from 1 to 9 goes in each empty cell so that every row,
+ every column and every box holds each digit exactly once.
+
+ Rule 3. A given digit is part of the puzzle and is never changed or
+ removed.
+
+ Rule 4. A proper puzzle has exactly one solution.
+
+ Rule 5. The puzzle is solved when every cell holds a digit and rule 2
+ holds for all twenty-seven rows, columns and boxes.
+
 Section: Types
 
   SudokuState = record {
     grid       : List Integer,
+    fixed      : List Integer,
     iterations : Integer
   }
 
@@ -21,7 +42,7 @@ Section: Construction
   sudoku-new : Rng -> SudokuState
   sudoku-new (rng) =
     let empty = sudoku-fill 0 []
-    in let st = SudokuState { grid = empty, iterations = 0 }
+    in let st = SudokuState { grid = empty, fixed = sudoku-fill 0 [], iterations = 0 }
     in let st1 = sudoku-fill-box st rng 0 0
     in let r2 = rng-next rng
     in let st2 = sudoku-fill-box st1 r2 3 3
@@ -47,7 +68,7 @@ Section: Construction
     in let col = box-col + dc
     in let val = list-at digits i
     in let new-grid = list-set-at (st.grid) (row * 9 + col) val
-    in sudoku-place-digits (SudokuState { grid = new-grid, iterations = st.iterations }) digits box-row box-col (i + 1)
+    in sudoku-place-digits (SudokuState { grid = new-grid, fixed = st.fixed, iterations = st.iterations }) digits box-row box-col (i + 1)
 
   sudoku-shuffle-digits : Rng -> List Integer
   sudoku-shuffle-digits (rng) =
@@ -110,10 +131,59 @@ Section: Validity Checks
     sudoku-valid-col grid col val &
     sudoku-valid-box grid row col val
 
+  sudoku-peers : Integer, Integer -> Boolean
+  sudoku-peers (a) (b) =
+    let ra = a / 9
+    in let ca = a - ra * 9
+    in let rb = b / 9
+    in let cb = b - rb * 9
+    in if ra == rb then True
+    else if ca == cb then True
+    else if ra / 3 == rb / 3 then ca / 3 == cb / 3
+    else False
+
+  sudoku-clash : List Integer, Integer, Integer, Integer -> Boolean
+  sudoku-clash (grid) (i) (val) (j) =
+    if j >= 81 then False
+    else if j == i then sudoku-clash grid i val (j + 1)
+    else if list-at grid j /= val then sudoku-clash grid i val (j + 1)
+    else if sudoku-peers i j then True
+    else sudoku-clash grid i val (j + 1)
+
+  sudoku-fits : List Integer, Integer, Integer -> Boolean
+  sudoku-fits (grid) (i) (val) =
+    if val < 1 then False
+    else if val > 9 then False
+    else sudoku-clash grid i val 0 == False
+
+  sudoku-won : List Integer -> Boolean
+  sudoku-won (grid) = sudoku-won-loop grid 0
+
+  sudoku-won-loop : List Integer, Integer -> Boolean
+  sudoku-won-loop (grid) (i) =
+    if i >= 81 then True
+    else if sudoku-fits grid i (list-at grid i) then sudoku-won-loop grid (i + 1)
+    else False
+
+  sudoku-is-fixed : SudokuState, Integer -> Boolean
+  sudoku-is-fixed (st) (i) = list-at (st.fixed) i /= 0
+
+  sudoku-copy-list : List Integer, Integer, List Integer -> List Integer
+  sudoku-copy-list (src) (i) (acc) =
+    if i >= 81 then acc
+    else sudoku-copy-list src (i + 1) (list-push acc (list-at src i))
+
+  sudoku-copy : SudokuState -> SudokuState
+  sudoku-copy (st) =
+    SudokuState { grid = sudoku-copy-list (st.grid) 0 [], fixed = sudoku-copy-list (st.fixed) 0 [], iterations = st.iterations }
+
 Section: Backtracking Solver
 
   sudoku-solve : SudokuState -> SudokuState
-  sudoku-solve (st) =
+  sudoku-solve (st) = sudoku-search (sudoku-copy st)
+
+  sudoku-search : SudokuState -> SudokuState
+  sudoku-search (st) =
     let empty = sudoku-find-empty (st.grid) 0
     in if empty < 0 then st
     else let row = empty / 9
@@ -128,27 +198,74 @@ Section: Backtracking Solver
 
   sudoku-try-values : SudokuState, Integer, Integer, Integer -> SudokuState
   sudoku-try-values (st) (row) (col) (val) =
-    if val > 9 then SudokuState { grid = st.grid, iterations = st.iterations }
+    if val > 9 then SudokuState { grid = st.grid, fixed = st.fixed, iterations = st.iterations }
     else let new-iter = st.iterations + 1
     in if sudoku-is-valid (st.grid) row col val == False then
-      sudoku-try-values (SudokuState { grid = st.grid, iterations = new-iter }) row col (val + 1)
+      sudoku-try-values (SudokuState { grid = st.grid, fixed = st.fixed, iterations = new-iter }) row col (val + 1)
     else let new-grid = list-set-at (st.grid) (row * 9 + col) val
-    in let st2 = sudoku-solve (SudokuState { grid = new-grid, iterations = new-iter })
+    in let st2 = sudoku-search (SudokuState { grid = new-grid, fixed = st.fixed, iterations = new-iter })
     in let solved = sudoku-find-empty (st2.grid) 0 < 0
     in if solved then st2
     else let cleared = list-set-at (st2.grid) (row * 9 + col) 0
-    in sudoku-try-values (SudokuState { grid = cleared, iterations = st2.iterations }) row col (val + 1)
+    in sudoku-try-values (SudokuState { grid = cleared, fixed = st.fixed, iterations = st2.iterations }) row col (val + 1)
+
+Section: Counting Solutions
+
+ The count stops at `limit`, therefore asking whether a puzzle is proper
+ costs a search for a second solution and never an enumeration.
+
+  sudoku-candidates : List Integer, Integer, Integer, Integer -> Integer
+  sudoku-candidates (grid) (i) (val) (acc) =
+    if val > 9 then acc
+    else if sudoku-is-valid grid (i / 9) (rng-mod i 9) val then sudoku-candidates grid i (val + 1) (acc + 1)
+    else sudoku-candidates grid i (val + 1) acc
+
+  sudoku-tightest : List Integer, Integer, Integer, Integer -> Integer
+  sudoku-tightest (grid) (i) (best) (best-n) =
+    if i >= 81 then best
+    else if list-at grid i /= 0 then sudoku-tightest grid (i + 1) best best-n
+    else let n = sudoku-candidates grid i 1 0
+    in if n <= 1 then i
+    else if n < best-n then sudoku-tightest grid (i + 1) i n
+    else sudoku-tightest grid (i + 1) best best-n
+
+  sudoku-count-solutions : List Integer, Integer -> Integer
+  sudoku-count-solutions (grid) (limit) =
+    let i = sudoku-tightest grid 0 (-1) 10
+    in if i < 0 then 1
+    else sudoku-count-try grid i 1 limit 0
+
+  sudoku-count-try : List Integer, Integer, Integer, Integer, Integer -> Integer
+  sudoku-count-try (grid) (i) (val) (limit) (acc) =
+    if val > 9 then acc
+    else if acc >= limit then acc
+    else if sudoku-is-valid grid (i / 9) (rng-mod i 9) val == False then sudoku-count-try grid i (val + 1) limit acc
+    else let placed = list-set-at grid i val
+    in let n = sudoku-count-solutions placed (limit - acc)
+    in let cleared = list-set-at placed i 0
+    in sudoku-count-try cleared i (val + 1) limit (acc + n)
+
+  sudoku-count : SudokuState, Integer -> Integer
+  sudoku-count (st) (limit) = sudoku-count-solutions ((sudoku-copy st).grid) limit
 
 Section: Puzzle Creation (remove cells)
 
   sudoku-remove-cells : SudokuState, Rng, Integer -> SudokuState
   sudoku-remove-cells (st) (rng) (count) =
+    let punched = sudoku-punch (sudoku-copy st) rng count
+    in SudokuState { grid = punched.grid, fixed = sudoku-copy-list (punched.grid) 0 [], iterations = punched.iterations }
+
+  sudoku-punch : SudokuState, Rng, Integer -> SudokuState
+  sudoku-punch (st) (rng) (count) =
     if count <= 0 then st
     else let r = rng-next rng
     in let idx = rng-range r 0 80
-    in if list-at (st.grid) idx == 0 then sudoku-remove-cells st r (count - 1)
-    else let new-grid = list-set-at (st.grid) idx 0
-    in sudoku-remove-cells (SudokuState { grid = new-grid, iterations = st.iterations }) r (count - 1)
+    in let v = list-at (st.grid) idx
+    in if v == 0 then sudoku-punch st r (count - 1)
+    else let holed = list-set-at (st.grid) idx 0
+    in if sudoku-count-solutions holed 2 == 1 then sudoku-punch st r (count - 1)
+    else let restored = list-set-at holed idx v
+    in sudoku-punch (SudokuState { grid = restored, fixed = st.fixed, iterations = st.iterations }) r (count - 1)
 
   sudoku-count-givens : List Integer -> Integer
   sudoku-count-givens (grid) =

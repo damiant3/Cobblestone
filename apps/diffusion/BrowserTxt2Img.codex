@@ -1,0 +1,115 @@
+Chapter: BrowserTxt2Img
+  cites WebApp chapter WebGpu
+  cites AI chapter ClipBpe
+  cites Diffusion chapter SamplerSchedule
+  cites Diffusion chapter SamplerGraph
+  cites Diffusion chapter NoiseGen
+  cites Diffusion chapter ClipGraph
+  cites Diffusion chapter UNetGraph
+  cites Diffusion chapter UNet15Graph
+  cites Diffusion chapter VaeGraph
+  cites Diffusion chapter DenoiserGraph
+  cites Diffusion chapter BrowserClip
+  cites Diffusion chapter BrowserUNet
+  cites Diffusion chapter BrowserVae
+  cites Diffusion chapter BrowserSampler
+  cites Diffusion chapter ClipPromptText
+
+ SD1.5 text to image in a page as Forge runs it with Euler at the Automatic
+ schedule (the predictor's uniform sigmas): torch's GPU noise from the seed,
+ scaled by the first sigma; uncond + cfg (cond - uncond); the latent divided
+ by the VAE's 0.18215 before the decode. A prompt is parsed and weighted as
+ Forge's (ClipPromptText) and must fit one 77-token chunk, as the native
+ SD1.5 route requires.
+
+ We say:
+
+Section: Model
+
+  BrowserModel = record {
+    bm-code : Text,
+    bm-clip : BcWeights,
+    bm-unet : BuWeights,
+    bm-vae : BvWeights
+  }
+
+Section: Prompt
+
+  bt-ints : List Text, Integer, List Integer -> List Integer
+  bt-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else bt-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  bt-poke32 : Integer, List Integer, Integer -> Integer
+  bt-poke32 (a) (ws) (i) =
+    if i >= list-length ws then a
+    else let p = poke-32 a (i * 4) (list-at ws i)
+    in bt-poke32 a ws (i + 1)
+
+ A chunk's cond with Forge's emphasis applied: read back, weighted by
+ ClipPromptText's cp-emphasise in the page's byte heap, written again.
+
+  bt-emphasised : Integer, List Real, Text -> Integer
+  bt-emphasised (h) (mults) (r) =
+    let ws = if text-length r < 3 then [] else bt-ints (text-split (substring r 1 (text-length r - 2)) ",") 0 []
+    in let a = bt-poke32 (alloc-bytes (list-length ws * 4 + 8)) ws 0
+    in let e = cp-emphasise a mults 768
+    in if list-length ws /= clip-tokens * 768 then 0
+    else if gpu-buf-write-words h 0 (bt-words a 0 (list-length ws) []) then h
+    else 0
+
+  bt-cond : BrowserModel, ClipChunk, (Integer -> Integer) -> Integer
+  bt-cond (m) (c) (k) =
+    let o = clip-encode-with (browser-clip-ops (m.bm-code)) (m.bm-clip) (c.cc-ids)
+    in if o.co-status /= 0 then k 0
+    else if cp-all-ones (c.cc-mults) 0 then k (o.co-cond)
+    else gpu-buf-download-then (o.co-cond) 0 (clip-tokens * 768 * 4) (\r -> k (bt-emphasised (o.co-cond) (c.cc-mults) r))
+
+ The prompt's and the negative's conds, each one chunk, to k; k gets 0 for
+ either when a prompt is over one chunk or an encode was refused.
+
+  browser-conds-then : BrowserModel, ClipBpe, Text, Text, (Integer, Integer -> Integer) -> Integer
+  browser-conds-then (m) (bpe) (prompt) (negative) (k) =
+    let pc = clip-prompt-chunks bpe prompt
+    in let nc = clip-prompt-chunks bpe negative
+    in if list-length pc /= 1 | list-length nc /= 1 then k 0 0
+    else bt-cond m (list-at pc 0) (\cc -> bt-cond m (list-at nc 0) (\cu -> k cc cu))
+
+Section: Noise
+
+  bt-words : Integer, Integer, Integer, List Integer -> List Integer
+  bt-words (a) (i) (n) (acc) = if i >= n then acc else bt-words a (i + 1) n (list-snoc acc (peek-32 a (i * 4)))
+
+  bt-noise : Integer, Integer -> Integer
+  bt-noise (seed) (n) =
+    let a = alloc-bytes (n * 4)
+    in let z = noise-torch-into a seed 0 n
+    in let h = gpu-buf-alloc (n * 4)
+    in if h == 0 then 0
+    else if gpu-buf-write-words h 0 (bt-words a 0 n []) then h
+    else if gpu-buf-free h then 0 else 0
+
+Section: The Image
+
+ done gets the image as an f32 3 x height x width buffer, or -1 a prompt over
+ one chunk, -2 an encode refused, -3 sampling or the decode refused.
+
+  browser-txt2img-then : BrowserModel, ClipBpe, Text, Text, Integer, Integer, Real, Integer, Integer, (Integer -> Integer) -> Integer
+  browser-txt2img-then (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (done) =
+    if list-length (clip-prompt-chunks bpe prompt) /= 1 | list-length (clip-prompt-chunks bpe negative) /= 1 then done (0 - 1)
+    else browser-conds-then m bpe prompt negative (\cc cu -> done (if cc == 0 | cu == 0 then 0 - 2 else bt-sample m cc cu seed steps cfg (width / 8) (height / 8)))
+
+  bt-sample : BrowserModel, Integer, Integer, Integer, Integer, Real, Integer, Integer -> Integer
+  bt-sample (m) (cc) (cu) (seed) (steps) (cfg) (lw) (lh) =
+    let ops = browser-unet-ops (m.bm-code)
+    in let sops = browser-sampler-ops (m.bm-code)
+    in let n = 4 * lh * lw
+    in let tab = unet-log-sigmas 0
+    in let sig = uniform-sigmas steps
+    in let x = bt-noise seed n
+    in let s0 = if x == 0 then 0 - 1 else sops.lincomb x x x x (list-at sig 0) 0.0 0.0 n
+    in let bad = if s0 < 0 then 1 else sample-euler-with sops (\xh s -> guided-with ops sops (\a b -> unet15-denoise-with ops sops (m.bm-unet) tab cc lh lw a b) (\a b -> unet15-denoise-with ops sops (m.bm-unet) tab cu lh lw a b) cfg n xh s) x sig n
+    in let z = if bad > 0 then 0 - 1 else sops.lincomb x x x x (1.0 / 0.18215) 0.0 0.0 n
+    in let img = if z < 0 then BvAct { ah = 0, ac = 3, ahh = 0, aww = 0 } else vae-decode-with (browser-vae-ops (m.bm-code)) (m.bm-vae) (BvAct { ah = x, ac = 4, ahh = lh, aww = lw })
+    in let f = gpu-buf-free cc & gpu-buf-free cu & (if x == 0 then True else gpu-buf-free x)
+    in if img.ah == 0 then 0 - 3 else img.ah

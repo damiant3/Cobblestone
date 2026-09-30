@@ -1,0 +1,111 @@
+Chapter: DeskScenePresentLoopTest
+  cites Works chapter GopDesk
+  cites Works chapter GopScene
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopXhci
+  cites Works chapter GopFont
+  cites Works chapter GopRtc
+  cites Works chapter GopAhci
+  cites Engine chapter Renderer3D
+  cites Kernel chapter BitmapFont
+  cites Kernel chapter Hpet
+  cites UI chapter Widget
+  cites Foreword chapter Console
+
+  SceneLoopFixture = record {
+    sl-pane : ScenePane,
+    sl-fb : Integer,
+    sl-q : Integer,
+    sl-cs : Integer
+  }
+
+  sl-child : SceneLoopFixture -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  sl-child (f) =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let q = poke-32 ds dk-input-cell (f.sl-q)
+    in let ws = alloc-zeroed 64 64
+    in let blk = alloc-zeroed 64 64
+    in let reg = poke-32 ds dk-wr-cell ws
+    in let scene = poke-32 ds dk-scene-cell blk
+    in let focus = poke-32 ds desk-focus-cell desk-focus-scene
+    in let opened = dk-wr-open ws desk-focus-scene
+    in let bar = dk-wnd-bar-h gfont-none (ui-wscale 96)
+    in let placed = dk-wnd-place blk 0 0 82 (40 + bar + 1)
+    in let pl = desk-scene-place (f.sl-pane) (f.sl-fb) 96 96 128 gfont-none ds desk-focus-scene
+    in let source = __record-set (f.sl-pane) "sp-ready" 1
+    in let progress = __record-set (f.sl-pane) "sp-present" 0
+    in let rate = poke-32 ds dk-rate-armed-cell 1
+    in let now = poke-32 ds dk-rate-t0-cell (bit-and hpet-ticks dk-rate-mask)
+    in let notice = dk-notice-init ds
+    in let pos = alloc-zeroed 64 64
+    in let mouse = UsbMouse {
+      um-ok = False,
+      um-host = xhci-no-host,
+      um-dev = xhci-no-dev,
+      um-dci = 0,
+      um-ring = 0,
+      um-report = 0,
+      um-state = pos,
+      um-pos = pos,
+      um-peers = []
+    }
+    in let apps = desk-apps-empty (gapp-fallback cbf-init)
+    in let attached = __record-set apps "da-scene" (Just (f.sl-pane))
+    in let root = widget-label "fixture" ""
+    in act
+      second <- rtc-seconds 0
+      let clock = poke-32 ds desk-second-cell second
+      in desk-loop (f.sl-fb) 96 96 128 cbf-init gfont-none kbd-no-kbd mouse ds (f.sl-cs) apps root
+    end
+
+  sl-await-copy : ScenePane, Integer -> Boolean
+  sl-await-copy (sp) (fuel) =
+    if sp.sp-present == 1024 then sp.sp-n == 0
+    else if sp.sp-n > 0 | fuel <= 0 then False
+    else let y = process-yield
+    in sl-await-copy sp (fuel - 1)
+
+  sl-await-key : ScenePane, Integer, Integer -> Boolean
+  sl-await-key (sp) (q) (fuel) =
+    if sp.sp-sh == 1 then
+      sp.sp-present < 0 & sp.sp-n == 0 & peek-qword q di-out-key == 31
+    else if sp.sp-n > 0 | fuel <= 0 then False
+    else let y = process-yield
+    in sl-await-key sp q (fuel - 1)
+
+  sl-yn : Boolean -> Text
+  sl-yn (ok) = if ok then "yes" else "NO"
+
+  opening : [Console, Concurrent, Capability, Device.Port, Gpu.Compute, Gpu.Memory] Nothing =
+    let fb = alloc-zeroed (128 * 96 * 4) 64
+    in let cs = alloc-zeroed 2048 64
+    in let q = di-new 0
+    in act
+      sp <- gsc-new fb 128 cs 0 37 80 40
+      let shadow = __record-set sp "sp-sh" 0
+      in let source = r3d-target-clear (sp.sp-tgt) 37
+      in let f = SceneLoopFixture { sl-pane = sp, sl-fb = fb, sl-q = q, sl-cs = cs }
+      in act
+        pid <- process-spawn-with-heap (\ignored -> sl-child f) 8388608
+        let partial = if pid < 0 then False else sl-await-copy sp 16
+        in let key = if partial then di-push q di-key 0 0 31 0 0 hpet-ticks else 0
+        in let delivered = if partial then sl-await-key sp q 16 else False
+        in act
+          stopped <- if pid < 0 then 0 else process-kill pid
+          let tgt = sp.sp-tgt
+          in let gv = sp.sp-gv
+          in let dst = sp.sp-fb + gv.gv-x * 4
+          in let next = (1024 / tgt.r3t-w) * 128 + int-mod 1024 tgt.r3t-w
+          in let prefix = peek-32 dst 0 == 37 & peek-32 dst (next * 4) == 0
+          in act
+            print-line-uni ("desk loop returns between copy units: " & sl-yn partial)
+            print-line-uni ("desk dispatch cancels copy on input: " & sl-yn delivered)
+            print-line-uni ("input precedes the next copy unit: " & sl-yn (delivered & prefix))
+          end
+        end
+      end
+    end
+
+Page 1

@@ -1,0 +1,131 @@
+Chapter: LoraResident
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter Lora
+  cites Diffusion chapter LoraKernelsPtx
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter UNet
+  cites Diffusion chapter ClipEncoder
+
+ We say:
+
+Section: Patch
+
+  lr-put16 : Integer, List Integer, List Integer, Integer, Integer -> Boolean
+  lr-put16 (h32) (hs) (e0s) (n) (i) =
+    if i >= list-length hs then True
+    else if gm-launch gm-slot-lora lora-kernels-ptx "kernel_lora_to_f16" (lora-grid n) [gpu-arg-buf h32 (list-at e0s i * 4), gpu-arg-buf (list-at hs i) 0, gpu-arg-u64 n] < 0 then False
+    else lr-put16 h32 hs e0s n (i + 1)
+
+  lr-put32 : Integer, List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  lr-put32 (h32) (hs) (e0s) (n) (buf) (i) =
+    if i >= list-length hs then True
+    else if gpu-buf-read h32 (list-at e0s i * 4) (n * 4) buf == False then False
+    else if gpu-buf-write (list-at hs i) 0 (n * 4) buf == False then False
+    else lr-put32 h32 hs e0s n buf (i + 1)
+
+ Restoring puts back what the loader uploaded: each range read from the file
+ with the loader's own conversion (a 1-D tensor to f32, the rest to f16).
+
+  lr-restore : Text, Integer, Integer, List Integer, List Integer, Integer, Boolean, Integer -> Boolean
+  lr-restore (path) (off) (dtype) (hs) (e0s) (n) (wide) (i) =
+    if i >= list-length hs then True
+    else let dst = if wide then gpu-dt-f32 else gpu-dt-f16
+    in if gpu-buf-upload (list-at hs i) 0 path (off + list-at e0s i * st-dtype-width dtype) n (ckpt-gpu-dtype dtype) dst /= n * (if wide then 4 else 2) then False
+    else lr-restore path off dtype hs e0s n wide (i + 1)
+
+ A merge starts from the resident copy, which the loader or lora-resident-restore
+ left equal to the file: each handle widened on the device into the f32 scratch.
+
+  lr-fill : Integer, List Integer, List Integer, Integer, Boolean, Integer -> Boolean
+  lr-fill (h32) (hs) (e0s) (n) (wide) (i) =
+    if i >= list-length hs then True
+    else if gm-launch gm-slot-lora lora-kernels-ptx (if wide then "kernel_lora_copy32" else "kernel_lora_from_f16") (lora-grid n) [gpu-arg-buf (list-at hs i) 0, gpu-arg-buf h32 (list-at e0s i * 4), gpu-arg-u64 n] < 0 then False
+    else lr-fill h32 hs e0s n wide (i + 1)
+
+  lr-patch : Text, Integer, Integer, Integer, Integer, List LoraFile, List LoraSlot, List Integer, List Integer, Integer, Boolean, Boolean -> Integer
+  lr-patch (path) (off) (dtype) (total) (rows) (ls) (slots) (hs) (e0s) (n) (wide) (restore) =
+    if list-length slots == 0 | rows <= 0 then 0
+    else if lora-names-any ls slots 0 0 == False then 0
+    else if restore then (if lr-restore path off dtype hs e0s n wide 0 then 1 else 0 - 1)
+    else let h32 = gpu-buf-alloc (total * 4)
+    in let up = if h32 == 0 then 0 else if lr-fill h32 hs e0s n wide 0 then total * 4 else 0
+    in let applied = if up == total * 4 then lora-apply-slots ls slots h32 (total / rows) 0 0 else 0 - 1
+    in let put = if applied <= 0 then False else if wide then lr-put32 h32 hs e0s n (alloc-bytes (n * 4)) 0 else lr-put16 h32 hs e0s n 0
+    in lora-free (if applied == 0 then 0 else if put then 1 else 0 - 1) h32
+
+  lr-tally : Integer, Integer -> Integer
+  lr-tally (acc) (r) = if acc < 0 then acc else if r < 0 then r else acc + r
+
+Section: UNet
+
+  lr-unet : UNetFile, List LoraFile, Boolean, Integer, Integer, Integer -> Integer
+  lr-unet (u) (ls) (restore) (i) (j) (acc) =
+    if acc < 0 | i >= list-length ((u.uf-file).st-tensors) then acc
+    else let m = list-at ((u.uf-file).st-tensors) i
+    in if text-starts-with (m.stm-name) "model.diffusion_model." == False then lr-unet u ls restore (i + 1) j acc
+    else let h = list-at (u.uf-handles) j
+    in let rows = list-at (m.stm-shape) 0
+    in let total = st-element-count m
+    in let r = if h == 0 then 0 else lr-patch (u.uf-path) ((u.uf-file).st-data-offset + m.stm-offset-start) (m.stm-dtype) total rows ls (lora-slots (m.stm-name) rows 2 sdxl-te-l sdxl-te-g) [h] [0] total (list-length (m.stm-shape) == 1) restore
+    in lr-unet u ls restore (i + 1) (j + 1) (lr-tally acc r)
+
+Section: Text Encoders
+
+  lr-named : Text, SafeTensorFile, List LoraFile, Text, List Integer, List Integer, Integer, Boolean, Boolean -> Integer
+  lr-named (path) (file) (ls) (name) (hs) (e0s) (n) (wide) (restore) =
+    when st-find-tensor file name
+     is None -> 0
+     is Just (m) -> lr-patch path (file.st-data-offset + m.stm-offset-start) (m.stm-dtype) (st-element-count m) (list-at (m.stm-shape) 0) ls (lora-slots name (list-at (m.stm-shape) 0) 2 sdxl-te-l sdxl-te-g) hs e0s n wide restore
+
+  lr-one : Text, SafeTensorFile, List LoraFile, Text, Integer, Integer, Boolean, Boolean -> Integer
+  lr-one (path) (file) (ls) (name) (h) (n) (wide) (restore) = lr-named path file ls name [h] [0] n wide restore
+
+  lr-hf-layer : Text, SafeTensorFile, List LoraFile, Boolean, Text, ClipLayer, Integer, Integer -> Integer
+  lr-hf-layer (path) (file) (ls) (restore) (p) (y) (d) (mlp) =
+    let a = lr-tally (lr-one path file ls (p & "self_attn.q_proj.weight") (y.cy-q-w) (d * d) False restore) (lr-one path file ls (p & "self_attn.q_proj.bias") (y.cy-q-b) d True restore)
+    in let b = lr-tally (lr-tally a (lr-one path file ls (p & "self_attn.k_proj.weight") (y.cy-k-w) (d * d) False restore)) (lr-one path file ls (p & "self_attn.k_proj.bias") (y.cy-k-b) d True restore)
+    in let c = lr-tally (lr-tally b (lr-one path file ls (p & "self_attn.v_proj.weight") (y.cy-v-w) (d * d) False restore)) (lr-one path file ls (p & "self_attn.v_proj.bias") (y.cy-v-b) d True restore)
+    in let e = lr-tally (lr-tally c (lr-one path file ls (p & "self_attn.out_proj.weight") (y.cy-o-w) (d * d) False restore)) (lr-one path file ls (p & "self_attn.out_proj.bias") (y.cy-o-b) d True restore)
+    in let f = lr-tally (lr-tally e (lr-one path file ls (p & "mlp.fc1.weight") (y.cy-fc1-w) (mlp * d) False restore)) (lr-one path file ls (p & "mlp.fc1.bias") (y.cy-fc1-b) mlp True restore)
+    in lr-tally (lr-tally f (lr-one path file ls (p & "mlp.fc2.weight") (y.cy-fc2-w) (d * mlp) False restore)) (lr-one path file ls (p & "mlp.fc2.bias") (y.cy-fc2-b) d True restore)
+
+  lr-open-layer : Text, SafeTensorFile, List LoraFile, Boolean, Text, ClipLayer, Integer, Integer -> Integer
+  lr-open-layer (path) (file) (ls) (restore) (p) (y) (d) (mlp) =
+    let a = lr-named path file ls (p & "attn.in_proj_weight") [y.cy-q-w, y.cy-k-w, y.cy-v-w] [0, d * d, 2 * d * d] (d * d) False restore
+    in let b = lr-tally a (lr-named path file ls (p & "attn.in_proj_bias") [y.cy-q-b, y.cy-k-b, y.cy-v-b] [0, d, 2 * d] d True restore)
+    in let e = lr-tally (lr-tally b (lr-one path file ls (p & "attn.out_proj.weight") (y.cy-o-w) (d * d) False restore)) (lr-one path file ls (p & "attn.out_proj.bias") (y.cy-o-b) d True restore)
+    in let f = lr-tally (lr-tally e (lr-one path file ls (p & "mlp.c_fc.weight") (y.cy-fc1-w) (mlp * d) False restore)) (lr-one path file ls (p & "mlp.c_fc.bias") (y.cy-fc1-b) mlp True restore)
+    in lr-tally (lr-tally f (lr-one path file ls (p & "mlp.c_proj.weight") (y.cy-fc2-w) (d * mlp) False restore)) (lr-one path file ls (p & "mlp.c_proj.bias") (y.cy-fc2-b) d True restore)
+
+  lr-clip : Text, SafeTensorFile, ClipWeights, List LoraFile, Boolean, Integer, Integer -> Integer
+  lr-clip (path) (file) (w) (ls) (restore) (i) (acc) =
+    if acc < 0 | i >= list-length (w.cw-layers) then acc
+    else let s = w.cw-spec
+    in let p = ce-layer-prefix s i
+    in let y = list-at (w.cw-layers) i
+    in let r = if s.cs-open then lr-open-layer path file ls restore p y (s.cs-width) (s.cs-mlp) else lr-hf-layer path file ls restore p y (s.cs-width) (s.cs-mlp)
+    in lr-clip path file w ls restore (i + 1) (lr-tally acc r)
+
+Section: Entry
+
+  lora-resident-apply : UNetFile, ClipWeights, ClipWeights, List LoraFile -> Integer
+  lora-resident-apply (u) (wl) (wg) (ls) = lr-walk u wl wg ls False
+
+ Every tensor the LoRAs in ls name, put back as the loader left it; the count
+ restored, or negative when an upload refused.
+
+  lora-resident-restore : UNetFile, ClipWeights, ClipWeights, List LoraFile -> Integer
+  lora-resident-restore (u) (wl) (wg) (ls) = lr-walk u wl wg ls True
+
+  lr-walk : UNetFile, ClipWeights, ClipWeights, List LoraFile, Boolean -> Integer
+  lr-walk (u) (wl) (wg) (ls) (restore) =
+    if list-length ls == 0 then 0
+    else let a = lr-unet u ls restore 0 0 0
+    in let b = lr-tally a (lr-clip (u.uf-path) (u.uf-file) wl ls restore 0 0)
+    in lr-tally b (lr-clip (u.uf-path) (u.uf-file) wg ls restore 0 0)
+
+Page 1

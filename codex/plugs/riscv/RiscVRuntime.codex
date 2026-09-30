@@ -571,87 +571,186 @@ Section: __real_to_text at or past 2^63
 
 Section: __text_to_double (a0=text -> f64 bits in a0)
 
+ Correctly rounded decimal-to-binary64, the x86-64 `__text_to_double`
+ algorithm as ported to ARM64 (`Arm64Runtime.codex` "Text to Double"):
+ value = N / 5^f * 2^(-f), by binary long division over 4-word (256-bit)
+ magnitudes, 53 bits taken and rounded half to even with a sticky
+ remainder. 5^108 < 2^256 covers the widest fraction the front end accepts.
+ Constants: the IEEE bias 1075 = 52 + 1023, and CCE 73 and 65 for '-' and
+ '.'. Carries and borrows come from sltu.
+
+  rv-ttd-shl1 : Integer -> List Integer
+  rv-ttd-shl1 (rb) =
+   rv-ld rv-t0 rb 0 & rv-srli rv-t1 rv-t0 63 & rv-slli rv-t0 rv-t0 1 & rv-sd rb rv-t0 0
+   & rv-ld rv-t0 rb 8 & rv-srli rv-t2 rv-t0 63 & rv-slli rv-t0 rv-t0 1 & rv-or rv-t0 rv-t0 rv-t1 & rv-sd rb rv-t0 8
+   & rv-ld rv-t0 rb 16 & rv-srli rv-t1 rv-t0 63 & rv-slli rv-t0 rv-t0 1 & rv-or rv-t0 rv-t0 rv-t2 & rv-sd rb rv-t0 16
+   & rv-ld rv-t0 rb 24 & rv-slli rv-t0 rv-t0 1 & rv-or rv-t0 rv-t0 rv-t1 & rv-sd rb rv-t0 24
+
+ a2 = 1 when the 4-word value at ra is at least the one at rb, unsigned.
+ Instructions 18 and 20 answer 0 and 1 and 21 is the exit, so each word
+ block's branch offsets are fixed by its start s.
+
+  rv-ttd-cmp-block : Integer, Integer, Integer, Integer -> List Integer
+  rv-ttd-cmp-block (ra) (rb) (off) (s) =
+   rv-ld rv-t0 ra off & rv-ld rv-t1 rb off
+   & rv-bltu rv-t1 rv-t0 ((20 - (s + 2)) * 4) & rv-bltu rv-t0 rv-t1 ((18 - (s + 3)) * 4)
+
+  rv-ttd-cmp-ge : Integer, Integer -> List Integer
+  rv-ttd-cmp-ge (ra) (rb) =
+   rv-ttd-cmp-block ra rb 24 0 & rv-ttd-cmp-block ra rb 16 4 & rv-ttd-cmp-block ra rb 8 8
+   & rv-ld rv-t0 ra 0 & rv-ld rv-t1 rb 0 & rv-sltu rv-t2 rv-t0 rv-t1 & rv-addi rv-a2 rv-zero 1 & rv-sub rv-a2 rv-a2 rv-t2
+   & rv-j 16 & rv-addi rv-a2 rv-zero 0 & rv-j 8 & rv-addi rv-a2 rv-zero 1
+
+  rv-ttd-sub-word : Integer, Integer, Integer -> List Integer
+  rv-ttd-sub-word (ra) (rb) (off) =
+   rv-ld rv-t0 ra off & rv-ld rv-t1 rb off & rv-sltu rv-t2 rv-t0 rv-t1 & rv-sub rv-t3 rv-t0 rv-t1
+   & rv-sltu rv-t4 rv-t3 rv-a3 & rv-sub rv-t3 rv-t3 rv-a3 & rv-sd ra rv-t3 off & rv-or rv-a3 rv-t2 rv-t4
+
+  rv-ttd-sub : Integer, Integer -> List Integer
+  rv-ttd-sub (ra) (rb) =
+   rv-mv rv-a3 rv-zero & rv-ttd-sub-word ra rb 0 & rv-ttd-sub-word ra rb 8
+   & rv-ttd-sub-word ra rb 16 & rv-ttd-sub-word ra rb 24
+
+  rv-ttd-mul5-word : Integer, Integer -> List Integer
+  rv-ttd-mul5-word (rb) (off) =
+   rv-ld rv-t0 rb off & rv-srli rv-t1 rv-t0 62 & rv-slli rv-t2 rv-t0 2 & rv-add rv-t3 rv-t2 rv-t0
+   & rv-sltu rv-t4 rv-t3 rv-t2 & rv-add rv-t1 rv-t1 rv-t4 & rv-add rv-t5 rv-t3 rv-a3
+   & rv-sltu rv-t4 rv-t5 rv-t3 & rv-add rv-t1 rv-t1 rv-t4 & rv-sd rb rv-t5 off & rv-mv rv-a3 rv-t1
+
+  rv-ttd-mul5 : Integer -> List Integer
+  rv-ttd-mul5 (rb) =
+   rv-mv rv-a3 rv-zero & rv-ttd-mul5-word rb 0 & rv-ttd-mul5-word rb 8
+   & rv-ttd-mul5-word rb 16 & rv-ttd-mul5-word rb 24
+
+  rv-ttd-copy : Integer, Integer -> List Integer
+  rv-ttd-copy (dst) (src) =
+   rv-ld rv-t0 src 0 & rv-sd dst rv-t0 0 & rv-ld rv-t0 src 8 & rv-sd dst rv-t0 8
+   & rv-ld rv-t0 src 16 & rv-sd dst rv-t0 16 & rv-ld rv-t0 src 24 & rv-sd dst rv-t0 24
+
+ s2 length then den, s3 bytes then R, s4 index then tmp and counters, s5
+ negative flag, s6 N, s7 fraction digits, s8 dot flag then exponent, a1
+ the 53-bit accumulator. den, R and tmp live at sp + 0, 32 and 64.
+
   rv-rt-text-to-double : List Integer
   rv-rt-text-to-double =
    let i = []
-   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp (0 - 64))
-   in let i = rv-rt-emit i (rv-sd rv-sp rv-ra 56)
-   in let i = rv-rt-emit i (rv-sd rv-sp rv-s0 48)
-   in let i = rv-rt-emit i (rv-sd rv-sp rv-s2 40)
-   in let i = rv-rt-emit i (rv-sd rv-sp rv-s3 32)
-   in let i = rv-rt-emit i (rv-sd rv-sp rv-s4 24)
-   in let i = rv-rt-emit i (rv-sd rv-sp rv-s5 16)
-   in let i = rv-rt-emit i (rv-sd rv-sp rv-s6 8)
-   in let i = rv-rt-emit i (rv-mv rv-s0 rv-sp)
-   in let i = rv-rt-emit i (rv-ld rv-s2 rv-a0 0)
-   in let i = rv-rt-emit i (rv-addi rv-s3 rv-a0 8)
-   in let i = rv-rt-emit i (rv-mv rv-s4 rv-zero)
-   in let i = rv-rt-emit i (rv-mv rv-s5 rv-zero)
-   in let i = rv-rt-emit i (rv-mv rv-s6 rv-zero)
-   in let i = rv-rt-emit i (rv-lb rv-t0 rv-s3 0)
-   in let i = rv-rt-emit i (rv-addi rv-t1 rv-zero 73)
-   in let not-neg = list-length i / 4
-   in let i = rv-rt-emit i rv-nop
-   in let i = rv-rt-emit i (rv-addi rv-s5 rv-zero 1)
-   in let i = rv-rt-emit i (rv-addi rv-s6 rv-s6 1)
-   in let not-neg-label = list-length i / 4
-   in let i = rv-patch-insn-raw i not-neg (rv-bne rv-t0 rv-t1 ((not-neg-label - not-neg) * 4))
-   in let int-loop = list-length i / 4
-   in let int-exit = list-length i / 4
-   in let i = rv-rt-emit i rv-nop
-   in let i = rv-rt-emit i (rv-add rv-t0 rv-s3 rv-s6)
-   in let i = rv-rt-emit i (rv-lb rv-t0 rv-t0 0)
-   in let i = rv-rt-emit i (rv-addi rv-t1 rv-zero 65)
-   in let is-dot = list-length i / 4
-   in let i = rv-rt-emit i rv-nop
-   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 (0 - 3))
-   in let i = rv-rt-emit i (rv-addi rv-t1 rv-zero 10)
-   in let i = rv-rt-emit i (rv-mul rv-s4 rv-s4 rv-t1)
-   in let i = rv-rt-emit i (rv-add rv-s4 rv-s4 rv-t0)
-   in let i = rv-rt-emit i (rv-addi rv-s6 rv-s6 1)
-   in let i = rv-rt-emit i (rv-j ((int-loop - list-length i / 4) * 4))
-   in let dot-label = list-length i / 4
-   in let i = rv-patch-insn-raw i is-dot (rv-beq rv-t0 rv-t1 ((dot-label - is-dot) * 4))
-   in let int-exit-label = list-length i / 4
-   in let i = rv-patch-insn-raw i int-exit (rv-bge rv-s6 rv-s2 ((int-exit-label - int-exit) * 4))
-   in let i = rv-rt-emit i (rv-fcvt-d-l rv-ft0 rv-s4)
-   in let i = rv-rt-emit i (rv-addi rv-s6 rv-s6 1)
-   in let i = rv-rt-emit i (rv-mv rv-s4 rv-zero)
-   in let i = rv-rt-emit i (rv-addi rv-t2 rv-zero 1)
-   in let frac-loop = list-length i / 4
-   in let frac-exit = list-length i / 4
-   in let i = rv-rt-emit i rv-nop
-   in let i = rv-rt-emit i (rv-add rv-t0 rv-s3 rv-s6)
-   in let i = rv-rt-emit i (rv-lb rv-t0 rv-t0 0)
-   in let i = rv-rt-emit i (rv-addi rv-t0 rv-t0 (0 - 3))
-   in let i = rv-rt-emit i (rv-addi rv-t1 rv-zero 10)
-   in let i = rv-rt-emit i (rv-mul rv-s4 rv-s4 rv-t1)
-   in let i = rv-rt-emit i (rv-add rv-s4 rv-s4 rv-t0)
-   in let i = rv-rt-emit i (rv-mul rv-t2 rv-t2 rv-t1)
-   in let i = rv-rt-emit i (rv-addi rv-s6 rv-s6 1)
-   in let i = rv-rt-emit i (rv-j ((frac-loop - list-length i / 4) * 4))
-   in let frac-exit-label = list-length i / 4
-   in let i = rv-patch-insn-raw i frac-exit (rv-bge rv-s6 rv-s2 ((frac-exit-label - frac-exit) * 4))
-   in let i = rv-rt-emit i (rv-fcvt-d-l rv-ft1 rv-s4)
-   in let i = rv-rt-emit i (rv-fcvt-d-l rv-ft2 rv-t2)
-   in let i = rv-rt-emit i (rv-fdiv-d rv-ft1 rv-ft1 2)
-   in let i = rv-rt-emit i (rv-fadd-d rv-ft0 rv-ft0 rv-ft1)
-   in let skip-neg = list-length i / 4
-   in let i = rv-rt-emit i rv-nop
-   in let i = rv-rt-emit i (rv-fmv-d-x rv-ft1 rv-zero)
-   in let i = rv-rt-emit i (rv-fsub-d rv-ft0 rv-ft1 rv-ft0)
-   in let done-label = list-length i / 4
-   in let i = rv-patch-insn-raw i skip-neg (rv-beq rv-s5 rv-zero ((done-label - skip-neg) * 4))
-   in let i = rv-rt-emit i (rv-fmv-x-d rv-a0 rv-ft0)
-   in let i = rv-rt-emit i (rv-ld rv-s6 rv-sp 8)
-   in let i = rv-rt-emit i (rv-ld rv-s5 rv-sp 16)
-   in let i = rv-rt-emit i (rv-ld rv-s4 rv-sp 24)
-   in let i = rv-rt-emit i (rv-ld rv-s3 rv-sp 32)
-   in let i = rv-rt-emit i (rv-ld rv-s2 rv-sp 40)
-   in let i = rv-rt-emit i (rv-ld rv-s0 rv-sp 48)
-   in let i = rv-rt-emit i (rv-ld rv-ra rv-sp 56)
-   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp 64)
-   in i & rv-ret
+   in let i = rv-rt-emit i (rv-addi rv-sp rv-sp (0 - 160))
+   in let i = i & rv-sd rv-sp rv-ra 96 & rv-sd rv-sp rv-s2 104 & rv-sd rv-sp rv-s3 112 & rv-sd rv-sp rv-s4 120
+   in let i = i & rv-sd rv-sp rv-s5 128 & rv-sd rv-sp rv-s6 136 & rv-sd rv-sp rv-s7 144 & rv-sd rv-sp rv-s8 152
+   in let i = i & rv-ld rv-s2 rv-a0 0 & rv-addi rv-s3 rv-a0 8
+   in let i = i & rv-mv rv-s4 rv-zero & rv-mv rv-s5 rv-zero & rv-mv rv-s6 rv-zero & rv-mv rv-s7 rv-zero & rv-mv rv-s8 rv-zero
+   in let empty = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-lbu rv-t0 rv-s3 0 & rv-addi rv-t1 rv-zero 73
+   in let not-minus = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-addi rv-s5 rv-zero 1 & rv-addi rv-s4 rv-s4 1
+   in let parse-loop = list-length i / 4
+   in let parse-exit = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-add rv-t0 rv-s3 rv-s4 & rv-lbu rv-t0 rv-t0 0 & rv-addi rv-s4 rv-s4 1 & rv-addi rv-t1 rv-zero 65
+   in let not-dot = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-addi rv-s8 rv-zero 1
+   in let i = i & rv-j ((parse-loop - list-length i / 4) * 4)
+   in let digit = list-length i / 4
+   in let i = i & rv-addi rv-t0 rv-t0 (0 - 3) & rv-addi rv-t1 rv-zero 10 & rv-mul rv-s6 rv-s6 rv-t1 & rv-add rv-s6 rv-s6 rv-t0 & rv-add rv-s7 rv-s7 rv-s8
+   in let i = i & rv-j ((parse-loop - list-length i / 4) * 4)
+   in let parse-done = list-length i / 4
+   in let nonzero = list-length i / 4
+   in let i = i & rv-nop
+   in let zero = list-length i / 4
+   in let i = i & rv-mv rv-a0 rv-zero
+   in let zero-pos = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-addi rv-a0 rv-zero 1 & rv-slli rv-a0 rv-a0 63
+   in let zero-ret = list-length i / 4
+   in let i = i & rv-nop
+   in let body = list-length i / 4
+   in let i = i & rv-addi rv-s2 rv-sp 0 & rv-addi rv-s3 rv-sp 32 & rv-addi rv-t0 rv-zero 1
+   in let i = i & rv-sd rv-s2 rv-t0 0 & rv-sd rv-s2 rv-zero 8 & rv-sd rv-s2 rv-zero 16 & rv-sd rv-s2 rv-zero 24
+   in let i = i & rv-sd rv-s3 rv-s6 0 & rv-sd rv-s3 rv-zero 8 & rv-sd rv-s3 rv-zero 16 & rv-sd rv-s3 rv-zero 24
+   in let i = i & rv-mv rv-s4 rv-s7
+   in let pow-loop = list-length i / 4
+   in let pow-exit = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-ttd-mul5 rv-s2 & rv-addi rv-s4 rv-s4 (0 - 1)
+   in let i = i & rv-j ((pow-loop - list-length i / 4) * 4)
+   in let pow-done = list-length i / 4
+   in let i = i & rv-mv rv-s8 rv-zero & rv-addi rv-s4 rv-sp 64
+   in let i = i & rv-ttd-cmp-ge rv-s3 rv-s2
+   in let to-small = list-length i / 4
+   in let i = i & rv-nop
+   in let big-loop = list-length i / 4
+   in let i = i & rv-ttd-copy rv-s4 rv-s2 & rv-ttd-shl1 rv-s4 & rv-ttd-cmp-ge rv-s3 rv-s4
+   in let big-exit = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-ttd-copy rv-s2 rv-s4 & rv-addi rv-s8 rv-s8 1
+   in let i = i & rv-j ((big-loop - list-length i / 4) * 4)
+   in let small-loop = list-length i / 4
+   in let i = i & rv-ttd-cmp-ge rv-s3 rv-s2
+   in let small-exit = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-ttd-shl1 rv-s3 & rv-addi rv-s8 rv-s8 (0 - 1)
+   in let i = i & rv-j ((small-loop - list-length i / 4) * 4)
+   in let norm-done = list-length i / 4
+   in let i = i & rv-addi rv-a1 rv-zero 1 & rv-ttd-sub rv-s3 rv-s2 & rv-addi rv-s4 rv-zero 53
+   in let bit-loop = list-length i / 4
+   in let i = i & rv-ttd-shl1 rv-s3 & rv-ttd-cmp-ge rv-s3 rv-s2
+   in let bit-zero = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-ttd-sub rv-s3 rv-s2 & rv-slli rv-a1 rv-a1 1 & rv-addi rv-a1 rv-a1 1
+   in let bit-one-done = list-length i / 4
+   in let i = i & rv-nop
+   in let bit-zero-label = list-length i / 4
+   in let i = i & rv-slli rv-a1 rv-a1 1
+   in let bit-next = list-length i / 4
+   in let i = i & rv-addi rv-s4 rv-s4 (0 - 1)
+   in let i = i & rv-bne rv-s4 rv-zero ((bit-loop - list-length i / 4) * 4)
+   in let i = i & rv-ld rv-t5 rv-s3 0 & rv-ld rv-t0 rv-s3 8 & rv-or rv-t5 rv-t5 rv-t0 & rv-ld rv-t0 rv-s3 16 & rv-or rv-t5 rv-t5 rv-t0
+   in let i = i & rv-ld rv-t0 rv-s3 24 & rv-or rv-t5 rv-t5 rv-t0
+   in let i = i & rv-addi rv-t0 rv-zero 1 & rv-and rv-t6 rv-a1 rv-t0 & rv-srli rv-a0 rv-a1 1
+   in let i = i & rv-addi rv-a4 rv-s8 (0 - 52) & rv-sub rv-a4 rv-a4 rv-s7
+   in let no-half = list-length i / 4
+   in let i = i & rv-nop
+   in let sticky = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-addi rv-t0 rv-zero 1 & rv-and rv-t0 rv-a0 rv-t0
+   in let even = list-length i / 4
+   in let i = i & rv-nop
+   in let round-up = list-length i / 4
+   in let i = i & rv-addi rv-a0 rv-a0 1 & rv-addi rv-t0 rv-zero 1 & rv-slli rv-t0 rv-t0 53
+   in let no-carry = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-srli rv-a0 rv-a0 1 & rv-addi rv-a4 rv-a4 1
+   in let assemble = list-length i / 4
+   in let i = i & rv-addi rv-a4 rv-a4 1075 & rv-addi rv-t0 rv-zero 1 & rv-slli rv-t0 rv-t0 52 & rv-sub rv-a0 rv-a0 rv-t0
+   in let i = i & rv-slli rv-a4 rv-a4 52 & rv-or rv-a0 rv-a0 rv-a4
+   in let positive = list-length i / 4
+   in let i = i & rv-nop
+   in let i = i & rv-addi rv-t0 rv-zero 1 & rv-slli rv-t0 rv-t0 63 & rv-or rv-a0 rv-a0 rv-t0
+   in let done = list-length i / 4
+   in let i = i & rv-ld rv-s8 rv-sp 152 & rv-ld rv-s7 rv-sp 144 & rv-ld rv-s6 rv-sp 136 & rv-ld rv-s5 rv-sp 128
+   in let i = i & rv-ld rv-s4 rv-sp 120 & rv-ld rv-s3 rv-sp 112 & rv-ld rv-s2 rv-sp 104 & rv-ld rv-ra rv-sp 96
+   in let i = i & rv-addi rv-sp rv-sp 160 & rv-ret
+   in let i = rv-patch-insn-raw i empty (rv-beq rv-s2 rv-zero ((zero - empty) * 4))
+   in let i = rv-patch-insn-raw i not-minus (rv-bne rv-t0 rv-t1 ((parse-loop - not-minus) * 4))
+   in let i = rv-patch-insn-raw i parse-exit (rv-bge rv-s4 rv-s2 ((parse-done - parse-exit) * 4))
+   in let i = rv-patch-insn-raw i not-dot (rv-bne rv-t0 rv-t1 ((digit - not-dot) * 4))
+   in let i = rv-patch-insn-raw i nonzero (rv-bne rv-s6 rv-zero ((body - nonzero) * 4))
+   in let i = rv-patch-insn-raw i zero-pos (rv-beq rv-s5 rv-zero ((done - zero-pos) * 4))
+   in let i = rv-patch-insn-raw i zero-ret (rv-j ((done - zero-ret) * 4))
+   in let i = rv-patch-insn-raw i pow-exit (rv-beq rv-s4 rv-zero ((pow-done - pow-exit) * 4))
+   in let i = rv-patch-insn-raw i to-small (rv-beq rv-a2 rv-zero ((small-loop - to-small) * 4))
+   in let i = rv-patch-insn-raw i big-exit (rv-beq rv-a2 rv-zero ((norm-done - big-exit) * 4))
+   in let i = rv-patch-insn-raw i small-exit (rv-bne rv-a2 rv-zero ((norm-done - small-exit) * 4))
+   in let i = rv-patch-insn-raw i bit-zero (rv-beq rv-a2 rv-zero ((bit-zero-label - bit-zero) * 4))
+   in let i = rv-patch-insn-raw i bit-one-done (rv-j ((bit-next - bit-one-done) * 4))
+   in let i = rv-patch-insn-raw i no-half (rv-beq rv-t6 rv-zero ((assemble - no-half) * 4))
+   in let i = rv-patch-insn-raw i sticky (rv-bne rv-t5 rv-zero ((round-up - sticky) * 4))
+   in let i = rv-patch-insn-raw i even (rv-beq rv-t0 rv-zero ((assemble - even) * 4))
+   in let i = rv-patch-insn-raw i no-carry (rv-bne rv-a0 rv-t0 ((assemble - no-carry) * 4))
+   in rv-patch-insn-raw i positive (rv-beq rv-s5 rv-zero ((done - positive) * 4))
 
 Section: __list_cons
 
@@ -793,6 +892,11 @@ Section: __list_push
    in let i = rv-rt-emit i rv-nop
    in let i = rv-rt-emit i (rv-mv rv-t3 rv-t4)
    in let cap-ok-label = list-length i / 4
+   in let i = rv-rt-emit i (rv-addi rv-t5 rv-t1 1)
+   in let len-ok-pos = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-mv rv-t3 rv-t5)
+   in let len-ok-label = list-length i / 4
    in let i = rv-rt-emit i (rv-sd rv-s1 rv-t3 0)
    in let i = rv-rt-emit i (rv-addi rv-s1 rv-s1 8)
    in let i = rv-rt-emit i (rv-mv rv-a0 rv-s1)
@@ -819,6 +923,7 @@ Section: __list_push
    in let i = rv-rt-emit i rv-ret
    in let i = rv-patch-insn-raw i grow-pos (rv-bge rv-t1 rv-t2 ((grow-label - grow-pos) * 4))
    in let i = rv-patch-insn-raw i cap-ok-pos (rv-bge rv-t3 rv-t4 ((cap-ok-label - cap-ok-pos) * 4))
+   in let i = rv-patch-insn-raw i len-ok-pos (rv-bge rv-t3 rv-t5 ((len-ok-label - len-ok-pos) * 4))
    in rv-patch-insn-raw i copy-exit (rv-bge rv-t3 rv-t1 ((copy-exit-label - copy-exit) * 4))
 
 Section: __list_empty
@@ -835,7 +940,7 @@ Section: __list_empty
 
 Section: Try-Fail Flag
 
-  rv-try-fail-flag-addr : Integer = #80080200
+  rv-try-fail-flag-addr : Integer = rv-fixed-base + #200
 
   rv-rt-try-fail : List Integer
   rv-rt-try-fail =
@@ -964,8 +1069,19 @@ Section: Address Remap Helpers
 
 Section: CCE to Unicode Lookup Table
 
-  rv-cce-table-addr : Integer = #80080000
-  rv-ascii-to-cce-table-addr : Integer = #80080100
+ Every fixed cell above the image is an offset from `rv-fixed-base`, and the
+ image must end below it (`rv-check-image-fits`). #80800000 leaves an image
+ 8 MiB less the 128-byte header; the block itself ends at `rv-memo-addr`,
+ whose 512 bytes of memo cells precede the heap.
+
+  rv-fixed-base : Integer = #80800000
+
+  rv-memo-addr : Integer = rv-fixed-base + #80200
+
+  rv-heap-start : Integer = rv-memo-addr + 512
+
+  rv-cce-table-addr : Integer = rv-fixed-base
+  rv-ascii-to-cce-table-addr : Integer = rv-fixed-base + #100
 
   rv-build-ascii-to-cce : List Integer, Integer -> List Integer
   rv-build-ascii-to-cce (acc) (ascii) =
@@ -1251,15 +1367,48 @@ Section: Builtin Helpers
    in let i = rv-rt-emit i (rv-lbu rv-a0 rv-t0 8)
    in rv-rt-emit i rv-ret
 
+  rv-rt-refuse-negative-a0 : List Integer
+  rv-rt-refuse-negative-a0 = rv-bge rv-a0 rv-zero 8 & rv-ebreak
+
   rv-rt-char-to-text : List Integer
   rv-rt-char-to-text =
-   let i = []
+   let i = rv-rt-refuse-negative-a0
    in let i = rv-rt-emit i (rv-mv rv-t0 rv-a0)
    in let i = rv-rt-emit i (rv-mv rv-a0 rv-s1)
    in let i = rv-rt-emit i (rv-addi rv-s1 rv-s1 16)
    in let i = rv-rt-emit i (rv-addi rv-t1 rv-zero 1)
    in let i = rv-rt-emit i (rv-sd rv-a0 rv-t1 0)
    in let i = rv-rt-emit i (rv-sb rv-a0 rv-t0 8)
+   in rv-rt-emit i rv-ret
+
+Section: raw-bytes-to-text (a0=List Integer -> Text)
+
+  rv-rt-raw-bytes-to-text : List Integer
+  rv-rt-raw-bytes-to-text =
+   let i = []
+   in let i = rv-rt-emit i (rv-addi rv-s1 rv-s1 7)
+   in let i = rv-rt-emit i (rv-srli rv-s1 rv-s1 3)
+   in let i = rv-rt-emit i (rv-slli rv-s1 rv-s1 3)
+   in let i = rv-rt-emit i (rv-ld rv-t0 rv-a0 0)
+   in let i = rv-rt-emit i (rv-mv rv-t1 rv-s1)
+   in let i = rv-rt-emit i (rv-sd rv-t1 rv-t0 0)
+   in let i = rv-rt-emit i (rv-addi rv-t2 rv-t0 15)
+   in let i = rv-rt-emit i (rv-srli rv-t2 rv-t2 3)
+   in let i = rv-rt-emit i (rv-slli rv-t2 rv-t2 3)
+   in let i = rv-rt-emit i (rv-add rv-s1 rv-s1 rv-t2)
+   in let i = rv-rt-emit i (rv-mv rv-t3 rv-zero)
+   in let top = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-slli rv-t4 rv-t3 3)
+   in let i = rv-rt-emit i (rv-add rv-t4 rv-a0 rv-t4)
+   in let i = rv-rt-emit i (rv-ld rv-t4 rv-t4 8)
+   in let i = rv-rt-emit i (rv-add rv-t5 rv-t1 rv-t3)
+   in let i = rv-rt-emit i (rv-sb rv-t5 rv-t4 8)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 1)
+   in let i = rv-rt-emit i (rv-j ((top - list-length i / 4) * 4))
+   in let done = list-length i / 4
+   in let i = rv-patch-insn-raw i top (rv-bge rv-t3 rv-t0 ((done - top) * 4))
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-t1)
    in rv-rt-emit i rv-ret
 
 Section: char-encode (a0=CCE code point -> Text)
@@ -1276,7 +1425,7 @@ Section: char-encode (a0=CCE code point -> Text)
 
   rv-rt-char-encode : List Integer
   rv-rt-char-encode =
-   let i = rv-addi rv-s1 rv-s1 7 & rv-srli rv-s1 rv-s1 3 & rv-slli rv-s1 rv-s1 3
+   let i = rv-rt-refuse-negative-a0 & rv-addi rv-s1 rv-s1 7 & rv-srli rv-s1 rv-s1 3 & rv-slli rv-s1 rv-s1 3
    in let i = i & rv-mv rv-t0 rv-s1 & rv-addi rv-s1 rv-s1 16 & rv-mv rv-t1 rv-a0
    in let i = i & rv-li rv-t2 128
    in let ce-b2 = list-length i / 4
@@ -1626,13 +1775,13 @@ Section: Heap Management Helpers
   rv-rt-heap-save = rv-mv rv-a0 rv-s1 & rv-ret
 
   rv-rt-heap-base : List Integer
-  rv-rt-heap-base = rv-addi rv-a0 rv-zero 1 & rv-slli rv-a0 rv-a0 31 & rv-ret
+  rv-rt-heap-base = rv-li rv-a0 rv-heap-start & rv-ret
 
   rv-rt-heap-restore : List Integer
   rv-rt-heap-restore = rv-mv rv-s1 rv-a0 & rv-mv rv-a0 rv-zero & rv-ret
 
   rv-rt-heap-advance : List Integer
-  rv-rt-heap-advance = rv-add rv-s1 rv-s1 rv-a0 & rv-mv rv-a0 rv-zero & rv-ret
+  rv-rt-heap-advance = rv-add rv-s1 rv-s1 rv-a0 & rv-addi rv-s1 rv-s1 7 & rv-andi rv-s1 rv-s1 (0 - 8) & rv-mv rv-a0 rv-zero & rv-ret
 
 Section: Trap Handler
 
@@ -2437,11 +2586,7 @@ Section: Process Table
 
   rv-emit-or-into-cell : RvState, Integer, Integer -> RvState
   rv-emit-or-into-cell (st) (addr) (mask) =
-   let st1 = rv-emit-li st rv-t1 addr
-   in let st2 = rv-emit st1 (rv-ld rv-t2 rv-t1 0)
-   in let st3 = rv-emit-li st2 rv-t0 mask
-   in let st4 = rv-emit st3 (rv-or rv-t2 rv-t2 rv-t0)
-   in rv-emit st4 (rv-sd rv-t1 rv-t2 0)
+   rv-emit-insn-list st (rv-or-into-cell addr mask) 0
 
   rv-emit-store-scope : RvState, Integer, Text -> RvState
   rv-emit-store-scope (st) (addr) (scope) =
@@ -2455,9 +2600,7 @@ Section: Process Table
   rv-emit-boot-grant (st) =
    let mask = st.boot-cap-mask
    in let cap0 = rv-proc-table-base + rv-proc-cap-offset
-   in let st1 = if bit-shru mask 31 /= 0
-    then rv-add-shadow-warning st "[UNSUPPORTED] boot capability grant: a capability at bit 31 or above is REFUSED on riscv and no grant is emitted. rv-emit-li is unmeasured for a mask that wide and the riscv bed is unavailable, so this refuses rather than miscompiling (COMPILER-17)."
-    else if mask == 0 then st else rv-emit-or-into-cell st cap0 mask
+   in let st1 = if mask == 0 then st else rv-emit-or-into-cell st cap0 mask
    in let st2 = rv-emit-store-scope st1 (rv-proc-table-base + rv-proc-scope-offset) (st.boot-fs-scope)
    in let st3 = rv-emit-store-scope st2 (rv-proc-table-base + rv-proc-net-scope-offset) (st.boot-net-scope)
    in rv-emit-or-into-cell st3 (rv-proc-table-base + 256 + rv-proc-cap-offset) 1
@@ -2541,40 +2684,39 @@ Section: Block device helpers
 
  The rings need a fixed page-aligned home clear of everything else. This
  lane's fixed map is the 32 KB mirror window at the image base (holding the
- process table at 0x80005000), the CCE tables at 0x80080000-0x80080180 and
- 0x80080400-0x80080518, the
- AP marker at 0x80090000, the effect-op slots at 0x80100000 and the heap
- from 0x80100200. Measured 2026-08-17, an fs-servicer image spans
- 0x80000080 to 0x80015498, so 0x80091000 is above the image and its tables,
- below the effect-op slots, and leaves the 12,288 bytes of rings plus the
- cached device word inside one clear span.
+ process table at 0x80005000), then above the image, from `rv-fixed-base`:
+ the CCE tables at +#0-#180 and +#400-#518, the AP marker at +#10000, the
+ effect-op slots at +#80000, the memo cells at +#80200 and the heap from
+ +#80400. The rings at +#11000
+ sit above the tables, below the effect-op slots, and leave the 12,288 bytes
+ of rings plus the cached device word inside one clear span.
 
   rv-vblk-mmio-base : Integer = #10001000
   rv-vblk-mmio-stride : Integer = #1000
   rv-vblk-mmio-slots : Integer = 8
-  rv-vblk-ring-base : Integer = #80091000
+  rv-vblk-ring-base : Integer = rv-fixed-base + #11000
 
  x86-64 keeps its `fs-elevated` cell at absolute 36232 and ARM64 mirrors it
  at that offset, but this lane's mirror window is 32 KiB, so 36232 is past
  its end and lands in the image body. The cell is therefore lane-local, and
  it sits in the block driver's own reserved span: the rings run from
  `rv-vblk-ring-base` for 12,288 bytes with the cached device word behind
- them, ending at `#80094008`.
+ them, ending at `rv-fixed-base + #14008`.
 
   rv-cap-block-device : Integer = 10
-  rv-fs-elevated-addr : Integer = #80094100
+  rv-fs-elevated-addr : Integer = rv-fixed-base + #14100
 
  The deck's three cells. A deck is a WATERMARK inside the same bump heap,
  not a second arena, so this is all the state it takes: `build` saves the
  heap position, records it with `__deck-set` and advances past the
  reservation, and `phase-compact` is `__heap-restore (__deck-pos)`. `s1` is
  this lane's allocation pointer as `x28` is ARM64's. They sit above the
- block driver's span, which ends at `#80094108`, and below the effect-op
- slots at `#80100000` and the heap from `#80100200`.
+ block driver's span, which ends at `rv-fixed-base + #14108`, and below the
+ effect-op slots and the heap.
 
-  rv-deck-pos-addr : Integer = #80095000
-  rv-deck-bound-counter-addr : Integer = #80095008
-  rv-bivy-save-addr : Integer = #80095010
+  rv-deck-pos-addr : Integer = rv-fixed-base + #15000
+  rv-deck-bound-counter-addr : Integer = rv-fixed-base + #15008
+  rv-bivy-save-addr : Integer = rv-fixed-base + #15010
 
  The gate ARM64 puts behind its SVC, inline here because these are emitted
  helpers rather than a syscall (x86-64 gates its network family the same
@@ -2765,10 +2907,11 @@ Section: FileSystem servicer
   rv-emit-boot-closure (st) (code-name) (slot) =
    let st1 = rv-emit-li st rv-t1 slot
    in let st2 = rv-emit st1 (rv-mv rv-t2 rv-heap-reg)
-   in let st3 = rv-emit st2 (rv-addi rv-heap-reg rv-heap-reg 8)
+   in let st3 = rv-emit st2 (rv-addi rv-heap-reg rv-heap-reg 16)
    in let st4 = rv-emit-load-func-addr st3 rv-t0 code-name
    in let st5 = rv-emit st4 (rv-sd rv-t2 rv-t0 0)
-   in rv-emit st5 (rv-sd rv-t1 rv-t2 0)
+   in let st5a = rv-emit st5 (rv-sd rv-t2 rv-zero 8)
+   in rv-emit st5a (rv-sd rv-t1 rv-t2 0)
 
   rv-emit-seed-fs-handler : RvState, Text, Text -> RvState
   rv-emit-seed-fs-handler (st) (op-name) (stub-name) =
@@ -2782,6 +2925,72 @@ Section: FileSystem servicer
    in let st2 = rv-emit-seed-fs-handler st1 "write-file" "__fs-write-servicer"
    in if list-length (st.handled-ops) == 0 then st2
    else rv-emit-boot-closure st2 wh-resume-id (rv-resume-slot st)
+
+Section: Apply One
+
+ A closure is [code, arity, captures...]. `__rv_apply1` applies the closure in
+ a0 to the one argument in a1: an arity of 0 (unknown) or 1 calls it, and a
+ larger arity answers a 32-byte partial [trampoline, arity - 1, closure,
+ argument] whose trampoline puts the argument first and calls through.
+
+  rv-rt-apply1 : List Integer
+  rv-rt-apply1 =
+   let i = []
+   in let i = rv-rt-emit i (rv-ld rv-t3 rv-a0 8)
+   in let i = rv-rt-emit i (rv-addi rv-t4 rv-zero 2)
+   in let ap-call-br = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-addi rv-heap-reg rv-heap-reg 7)
+   in let i = rv-rt-emit i (rv-srli rv-heap-reg rv-heap-reg 3)
+   in let i = rv-rt-emit i (rv-slli rv-heap-reg rv-heap-reg 3)
+   in let i = rv-rt-emit i (rv-mv rv-t5 rv-heap-reg)
+   in let i = rv-rt-emit i (rv-addi rv-heap-reg rv-heap-reg 32)
+   in let ap-adr = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i rv-nop
+   in let i = rv-rt-emit i (rv-sd rv-t5 rv-t6 0)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 (0 - 1))
+   in let i = rv-rt-emit i (rv-sd rv-t5 rv-t3 8)
+   in let i = rv-rt-emit i (rv-sd rv-t5 rv-a0 16)
+   in let i = rv-rt-emit i (rv-sd rv-t5 rv-a1 24)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-t5)
+   in let i = rv-rt-emit i rv-ret
+   in let ap-call = list-length i / 4
+   in let i = rv-patch-insn-raw i ap-call-br (rv-bltu rv-t3 rv-t4 ((ap-call - ap-call-br) * 4))
+   in let i = rv-rt-emit i (rv-mv rv-t2 rv-a0)
+   in let i = rv-rt-emit i (rv-mv rv-a0 rv-a1)
+   in let i = rv-rt-emit i (rv-ld rv-t1 rv-t2 0)
+   in let i = rv-rt-emit i (rv-jalr rv-zero rv-t1 0)
+   in let ap-tramp = list-length i / 4
+   in let i = rv-patch-insn-raw i ap-adr (rv-auipc rv-t6 0)
+   in let i = rv-patch-insn-raw i (ap-adr + 1) (rv-addi rv-t6 rv-t6 ((ap-tramp - ap-adr) * 4))
+   in let i = rv-rt-emit i (rv-ld rv-t3 rv-t2 8)
+   in let i = rv-rt-emit i (rv-addi rv-t4 rv-zero 8)
+   in let ap-small = list-length i / 4
+   in let i = rv-rt-emit i rv-nop
+   in let ap-move = list-length i / 4
+   in let i = rv-rt-emit i (rv-addi rv-t5 rv-t3 (0 - 7))
+   in let i = rv-rt-emit i (rv-slli rv-t5 rv-t5 3)
+   in let i = rv-rt-emit i (rv-sub rv-t5 rv-sp rv-t5)
+   in let i = rv-rt-emit i (rv-ld rv-t6 rv-t5 8)
+   in let i = rv-rt-emit i (rv-sd rv-t5 rv-t6 0)
+   in let i = rv-rt-emit i (rv-addi rv-t3 rv-t3 (0 - 1))
+   in let ap-back = list-length i / 4
+   in let i = rv-rt-emit i (rv-blt rv-t4 rv-t3 ((ap-move - ap-back) * 4))
+   in let i = rv-rt-emit i (rv-sd rv-sp (rv-a0 + 7) (0 - 8))
+   in let ap-shift = list-length i / 4
+   in let i = rv-patch-insn-raw i ap-small (rv-blt rv-t3 rv-t4 ((ap-shift - ap-small) * 4))
+   in let i = rv-rt-emit i (rv-mv (rv-a0 + 7) (rv-a0 + 6))
+   in let i = rv-rt-emit i (rv-mv (rv-a0 + 6) (rv-a0 + 5))
+   in let i = rv-rt-emit i (rv-mv (rv-a0 + 5) (rv-a0 + 4))
+   in let i = rv-rt-emit i (rv-mv (rv-a0 + 4) (rv-a0 + 3))
+   in let i = rv-rt-emit i (rv-mv (rv-a0 + 3) (rv-a0 + 2))
+   in let i = rv-rt-emit i (rv-mv (rv-a0 + 2) rv-a1)
+   in let i = rv-rt-emit i (rv-mv rv-a1 rv-a0)
+   in let i = rv-rt-emit i (rv-ld rv-a0 rv-t2 24)
+   in let i = rv-rt-emit i (rv-ld rv-t2 rv-t2 16)
+   in let i = rv-rt-emit i (rv-ld rv-t1 rv-t2 0)
+   in rv-rt-emit i (rv-jalr rv-zero rv-t1 0)
 
 Section: Process Lifecycle
 
@@ -3048,7 +3257,7 @@ Section: Process Lifecycle
    in let st22 = rv-emit-copy-cell st21 rv-t4 rv-t5 rv-proc-cap-offset
    in let st23 = rv-emit-copy-cell st22 rv-t4 rv-t5 rv-proc-scope-offset
    in let st24 = rv-emit-copy-cell st23 rv-t4 rv-t5 rv-proc-net-scope-offset
-   in let st25 = rv-emit-zero-cells st24 rv-t5 [32, 88, 96, 104, 112, 120, 128, 176, 184, 192, 200, 208, 248] 0
+   in let st25 = rv-emit-zero-cells st24 rv-t5 [32, 40, 88, 96, 104, 112, 120, 128, 176, 184, 192, 200, 208, 248] 0
    in let st25a = rv-emit st25 (rv-sd rv-t5 rv-s0 rv-proc-saved-s0-offset)
    in let st26 = rv-emit st25a (rv-addi rv-t6 rv-zero rv-proc-state-ready)
    in let st27 = rv-emit st26 (rv-sd rv-t5 rv-t6 0)
@@ -3094,7 +3303,7 @@ Section: Emit All Runtime Helpers
  __start at reset. __start reads mhartid first: hart 0 takes the normal
  boot (stack, FP, heap, CCE tables, trap vector, call opening); a hart
  whose id is non-zero is a secondary and branches to the AP path, which
- stores a marker to a fixed DRAM cell (0x80090000) and parks in wfi. The
+ stores a marker to a fixed DRAM cell (`rv-fixed-base + #10000`) and parks in wfi. The
  marker is written only by a core that executed guest code, so a guest
  that reads it back non-zero has proof a secondary hart ran.
 
@@ -3103,14 +3312,13 @@ Section: Emit All Runtime Helpers
    let st1 = rv-record-func st "__start"
    in let st1w = rv-emit-mirror-window st1
    in let st1h = rv-emit st1w (rv-csrrs rv-t0 #F14 rv-zero)
-   in let bne-idx = st1h.insn-count
-   in let st1p = rv-emit st1h rv-nop
+   in let hart-idx = st1h.insn-count
+   in let st1p = rv-emit (rv-emit st1h rv-nop) rv-nop
    in let st2 = rv-emit-li st1p rv-sp #BFFF0000
    in let st2a = rv-emit-li st2 rv-t0 #6000
    in let st2b = rv-emit st2a (rv-csrrs rv-zero #300 rv-t0)
-   in let st3 = rv-emit-li st2b rv-s1 #80100200
-   in let st3 = rv-emit st3 (rv-mv rv-s0 rv-s1)
-   in let st3 = rv-emit st3 (rv-addi rv-s1 rv-s1 512)
+   in let st3 = rv-emit-li st2b rv-s0 rv-memo-addr
+   in let st3 = rv-emit-li st3 rv-s1 rv-heap-start
    in let st3 = rv-emit-zero-memo st3 rv-s0 0
    in let st3a = rv-emit-li st3 rv-t0 rv-cce-table-addr
    in let cce-table = rv-build-cce-table [] 0
@@ -3133,12 +3341,12 @@ Section: Emit All Runtime Helpers
    in let st5 = rv-emit st5 rv-wfi
    in let st6 = rv-emit st5 (rv-j (0 - 4))
    in let ap-idx = st6.insn-count
-   in let st6a = rv-emit-li st6 rv-t1 #80090000
+   in let st6a = rv-emit-li st6 rv-t1 (rv-fixed-base + #10000)
    in let st6b = rv-emit-li st6a rv-t2 1
    in let st6c = rv-emit st6b (rv-sd rv-t1 rv-t2 0)
    in let st6d = rv-emit st6c rv-wfi
    in let st6e = rv-emit st6d (rv-j (0 - 4))
-   in let st6f = rv-patch-insn st6e bne-idx (rv-bne rv-t0 rv-zero ((ap-idx - bne-idx) * 4))
+   in let st6f = rv-patch-insn (rv-patch-insn st6e hart-idx (rv-beq rv-t0 rv-zero 8)) (hart-idx + 1) (rv-j ((ap-idx - hart-idx - 1) * 4))
    in let st7 = rv-record-func st6f "print-line-uni"
    in let st7a = rv-record-func st7 "print-line"
    in let st8 = rv-emit-block st7a rv-rt-print-line-uni
@@ -3182,7 +3390,9 @@ Section: Emit All Runtime Helpers
    in let st38 = rv-emit-block st37 rv-rt-char-to-text
    in let st38c = rv-record-func st38 "char-encode"
    in let st38d = rv-emit-block st38c rv-rt-char-encode
-   in let st39 = rv-record-func st38d "show"
+   in let st38e = rv-record-func st38d "raw-bytes-to-text"
+   in let st38f = rv-emit-block st38e rv-rt-raw-bytes-to-text
+   in let st39 = rv-record-func st38f "show"
    in let st40 = rv-emit-block st39 rv-rt-itoa
    in let st41 = rv-record-func st40 "int-mod"
    in let st42 = rv-emit-block st41 rv-rt-int-mod
@@ -3333,7 +3543,9 @@ Section: Emit All Runtime Helpers
    in let st178 = rv-emit-li st177 rv-t2 rv-ascii-to-cce-table-addr
    in let st179 = rv-emit st178 (rv-add rv-t2 rv-t2 rv-a0)
    in let st180 = rv-emit st179 (rv-lbu rv-a0 rv-t2 0)
-   in let st181 = rv-emit st180 rv-ret
+   in let st181a = rv-emit st180 rv-ret
+   in let st181b = rv-record-func st181a "__rv_apply1"
+   in let st181 = rv-emit-block st181b rv-rt-apply1
    in let st182 = rv-emit-proc-helpers st181
    in let st183 = rv-emit-net-helpers st182
    in let st184 = rv-emit-lifecycle-helpers st183

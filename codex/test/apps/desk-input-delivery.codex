@@ -1,0 +1,54 @@
+Chapter: DeskInputDeliveryTest
+  cites Works chapter GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopAhci
+  cites Works chapter GopXhci
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Console
+
+  dd-yn : Boolean -> Text
+  dd-yn (ok) = if ok then "yes" else "FAIL"
+
+  opening : [Console, Device.Port] Nothing =
+    let pos = alloc-zeroed 64 64
+    in let mouse = UsbMouse { um-ok = True, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = 0, um-state = pos, um-pos = pos, um-peers = [] }
+    in let q = di-new 0
+    in let position = di-set-pointer mouse 10 20 1 0
+    in let replay = mouse-put-click mouse
+    in let release = di-push q di-button 0 0 0 15 27 1
+    in let key = di-push q di-key 0 0 30 15 27 2
+    in let first = di-deliver q mouse
+    in let kept = first == 0 & peek-qword q di-count == 2 & mouse-x mouse == 10 & mouse-y mouse == 20 & mouse-clicked mouse
+    in let clicked = mouse-take-click mouse
+    in let second = di-deliver q mouse
+    in let released = second == 1 & peek-qword q di-count == 1 & mouse-buttons mouse == 0 & mouse-x mouse == 15 & mouse-y mouse == 27 & mouse-take-click mouse == False
+    in let third = di-deliver q mouse
+    in let ordered = third == 1 & peek-qword q di-out-key == 30 & peek-qword q di-count == 0
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let mon-block = poke-32 ds dk-mon-cell (alloc-zeroed 64 64)
+    in let registry = poke-32 ds dk-wr-cell (alloc-zeroed 64 64)
+    in let opened = dk-wr-open (peek-32 ds dk-wr-cell) desk-focus-mon
+    in let cs = alloc-zeroed 2048 64
+    in let pending = poke-32 ds dk-restay-cell desk-focus-mon
+    in act
+      print-line-uni ("forwarded click precedes queued input: " & dd-yn (kept & clicked))
+      print-line-uni ("queued release preserves its position: " & dd-yn released)
+      print-line-uni ("queued key follows release: " & dd-yn ordered)
+      idle <- desk-wnd-chrome-step 4096 1024 768 1024 cbf-init gfont-none mouse ds cs desk-focus-mon 0 False
+      print-line-uni ("empty repaint step remains empty: " & dd-yn (idle == desk-wnd-ev-stay & peek-32 ds dk-restay-cell == desk-focus-none))
+      let pending-key = poke-32 ds dk-restay-cell desk-focus-mon
+      in act
+        keyed <- desk-wnd-chrome-step 4096 1024 768 1024 cbf-init gfont-none mouse ds cs desk-focus-mon 88 False
+        print-line-uni ("key preserves pending repaint: " & dd-yn (keyed == desk-wnd-ev-pass & peek-32 ds dk-restay-cell == desk-focus-mon))
+        repainted <- desk-wnd-chrome-step 4096 1024 768 1024 cbf-init gfont-none mouse ds cs desk-focus-mon 0 False
+        print-line-uni ("empty step consumes preserved repaint: " & dd-yn (repainted == desk-wnd-ev-stay & peek-32 ds dk-restay-cell == desk-focus-none))
+        let pending-click = poke-32 ds dk-restay-cell desk-focus-mon
+        in act
+          click <- desk-wnd-chrome-step 4096 1024 768 1024 cbf-init gfont-none mouse ds cs desk-focus-mon 0 True
+          print-line-uni ("click preserves pending repaint: " & dd-yn (click == desk-wnd-ev-pass & peek-32 ds dk-restay-cell == desk-focus-mon))
+        end
+      end
+    end

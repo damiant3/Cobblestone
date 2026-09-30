@@ -25,7 +25,7 @@ A data-driven, browser-based world-building and game-asset design suite. Users d
 
 ## Completeness
 
-70% -- The core pipeline is functional end-to-end: server compiles and serves, designer apps are DB-backed, NameForge/StoryGraph/WorldForge run in the browser, AuthClient and the creations API work. The ExcaliburSlice demo is complete. Gaps: VoiceStudio has no TTS backend, WorkflowExporter download/launch path not integrated, CardDesignerApp interactive flow partially wired, no test harness.
+70% -- The core pipeline is functional end-to-end: server compiles and serves, designer apps are DB-backed, NameForge/StoryGraph/WorldForge run in the browser, AuthClient and the creations API work. The ExcaliburSlice demo is complete. Gaps: VoiceStudio has no TTS backend, WorkflowExporter download/launch path not integrated, CardDesignerApp is a stub page (routed at /card, no interaction), no test harness.
 
 ## Codex Conformance
 

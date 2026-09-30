@@ -109,7 +109,7 @@ Section: TCP Fetch
           ts3 <- net-io-close (recv.transport)
           if recv.has-data
             then let resp = http-parse-response (recv.data)
-              in process-response resp host path opts
+              in process-response resp (recv.data) host path opts
             else FetchNetworkError ("No response from: " & host)
         end
       end
@@ -134,8 +134,8 @@ Section: TCP Fetch
 
 Section: Response Processing
 
-  process-response : HttpClientResponse, Text, Text, FetchOptions -> FetchResult
-  process-response (resp) (host) (path) (opts) =
+  process-response : HttpClientResponse, List Integer, Text, Text, FetchOptions -> FetchResult
+  process-response (resp) (raw) (host) (path) (opts) =
     if resp.valid == False
     then FetchNetworkError ("Connection failed: " & host)
     else if resp.status-code == 404
@@ -144,95 +144,114 @@ Section: Response Processing
     then FetchNetworkError ("HTTP " & show resp.status-code & ": " & resp.status-text)
     else if resp.status-code /= 200
     then FetchNetworkError ("Unexpected status: " & show resp.status-code)
-    else process-success resp host path opts
+    else process-success raw host path opts
 
-  process-success : HttpClientResponse, Text, Text, FetchOptions -> FetchResult
-  process-success (resp) (host) (path) (opts) =
-    let body = text-to-bytes resp.body
+  process-success : List Integer, Text, Text, FetchOptions -> FetchResult
+  process-success (raw) (host) (path) (opts) =
+    let len = list-length raw
+    in let head = fetch-head-lines raw 0 len (__list-with-capacity 16)
+    in let body = list-drop raw (find-body-start raw 0 len)
     in let size = list-length body
     in if size > opts.fo-max-size
       then FetchNetworkError ("Response too large: " & show size & " bytes")
-      else let is-source = is-codex-source resp
+      else let is-source = is-codex-source head
         in let hash = if is-source
               then content-hash-source body
               else content-hash-cdx body
-        in let raw = resp.body
-        in verify-and-build body hash raw is-source size opts
+        in verify-and-build body hash head is-source size opts
 
-  is-codex-source : HttpClientResponse -> Boolean
-  is-codex-source (resp) =
-    text-contains resp.status-text "codex"
+  is-codex-source : List Text -> Boolean
+  is-codex-source (head) =
+    text-contains (header-value head "Content-Type") "application/codex"
 
-  verify-and-build : List Integer, ContentHash, Text, Boolean, Integer, FetchOptions -> FetchResult
-  verify-and-build (body) (hash) (raw) (is-source) (size) (opts) =
-    let expected-hex = extract-header-value raw "Content-Hash"
+  verify-and-build : List Integer, ContentHash, List Text, Boolean, Integer, FetchOptions -> FetchResult
+  verify-and-build (body) (hash) (head) (is-source) (size) (opts) =
+    let expected-hex = header-value head "Content-Hash"
     in if text-length expected-hex > 0
       then let actual-hex = content-hash-to-hex hash
         in if actual-hex == expected-hex
-          then FetchOk (build-page body hash raw is-source size)
+          then FetchOk (build-page body hash head is-source size)
           else FetchHashMismatch (actual-hex) (expected-hex)
       else if opts.fo-require-hash
       then FetchNetworkError "Server did not provide Content-Hash header"
-      else FetchOk (build-page body hash raw is-source size)
+      else FetchOk (build-page body hash head is-source size)
 
 Section: Page Construction
 
-  build-page : List Integer, ContentHash, Text, Boolean, Integer -> FetchedPage
-  build-page (body) (hash) (raw) (is-source) (size) =
+  build-page : List Integer, ContentHash, List Text, Boolean, Integer -> FetchedPage
+  build-page (body) (hash) (head) (is-source) (size) =
     FetchedPage {
       fp-bytes = body,
       fp-content-hash = hash,
-      fp-publisher = parse-pub-key raw,
-      fp-signature = parse-sig raw,
-      fp-capabilities = parse-caps raw,
+      fp-publisher = parse-pub-key head,
+      fp-signature = parse-sig head,
+      fp-capabilities = parse-caps head,
       fp-is-source = is-source,
-      fp-version = parse-ver raw,
+      fp-version = parse-ver head,
       fp-content-type = if is-source then "application/codex" else "application/cdx",
       fp-size = size
     }
 
 Section: Header Extraction
 
-  extract-header-value : Text, Text -> Text
-  extract-header-value (raw) (header-name) =
-    let lines = text-split raw "\n"
-    in find-header-line lines header-name
+  fetch-head-lines : List Integer, Integer, Integer, List Text -> List Text
+  fetch-head-lines (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = fetch-line-end bs i len
+    in if e == i then acc
+    else let line = text-concat-list (read-line-from-bytes bs i len (__list-with-capacity 64))
+    in fetch-head-lines bs (fetch-next-line bs e len) len (list-push acc line)
 
-  find-header-line : List Text, Text -> Text
-  find-header-line (lines) (name) =
-    if list-length lines == 0 then ""
-    else let line = list-at lines 0
-        in let prefix = name & ": "
-        in if text-starts-with line prefix
-          then text-drop line (text-length prefix)
-          else find-header-line (list-drop lines 1) name
+  fetch-line-end : List Integer, Integer, Integer -> Integer
+  fetch-line-end (bs) (i) (len) =
+    if i >= len then len
+    else if list-at bs i == 13 then i
+    else if list-at bs i == 10 then i
+    else fetch-line-end bs (i + 1) len
 
-  parse-pub-key : Text -> Maybe (List Integer)
-  parse-pub-key (raw) =
-    let val = extract-header-value raw "X-Codex-Publisher"
+  fetch-next-line : List Integer, Integer, Integer -> Integer
+  fetch-next-line (bs) (e) (len) =
+    if e + 1 >= len then len
+    else if list-at bs e == 13 then (if list-at bs (e + 1) == 10 then e + 2 else e + 1)
+    else e + 1
+
+  header-value : List Text, Text -> Text
+  header-value (head) (name) = header-value-at head (name & ": ") 1 (list-length head)
+
+  header-value-at : List Text, Text, Integer, Integer -> Text
+  header-value-at (head) (prefix) (i) (len) =
+    if i >= len then ""
+    else let line = list-at head i
+    in if text-starts-with line prefix
+      then text-drop line (text-length prefix)
+      else header-value-at head prefix (i + 1) len
+
+  parse-pub-key : List Text -> Maybe (List Integer)
+  parse-pub-key (head) =
+    let val = header-value head "X-Codex-Publisher"
     in if text-length val > 0
       then if text-starts-with val "ed25519:"
         then Just (text-to-bytes (text-drop val 8))
         else Just (text-to-bytes val)
       else None
 
-  parse-sig : Text -> Maybe (List Integer)
-  parse-sig (raw) =
-    let val = extract-header-value raw "X-Codex-Signature"
+  parse-sig : List Text -> Maybe (List Integer)
+  parse-sig (head) =
+    let val = header-value head "X-Codex-Signature"
     in if text-length val > 0
       then Just (text-to-bytes val)
       else None
 
-  parse-caps : Text -> List Text
-  parse-caps (raw) =
-    let val = extract-header-value raw "X-Codex-Capabilities"
+  parse-caps : List Text -> List Text
+  parse-caps (head) =
+    let val = header-value head "X-Codex-Capabilities"
     in if text-length val > 0
       then text-split val ","
       else ["Display"]
 
-  parse-ver : Text -> Integer
-  parse-ver (raw) =
-    let val = extract-header-value raw "X-Codex-Version"
+  parse-ver : List Text -> Integer
+  parse-ver (head) =
+    let val = header-value head "X-Codex-Version"
     in if text-length val > 0
       then parse-decimal-full val
       else 0

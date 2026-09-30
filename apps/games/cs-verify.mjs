@@ -40,6 +40,7 @@ const imports = {
 const inst = new WebAssembly.Instance(
   new WebAssembly.Module(readFileSync(wasmPath)), imports);
 const e = inst.exports;
+const GAMES_CHESS = (await import('../landing/web/games/arcade.js')).GAMES.find(x => x.id === 'chess');
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail) => {
@@ -438,6 +439,68 @@ function walkGame(seed, plies) {
   ok('a from-and-to pair that is not a move answers -1', e.cs_find(h, 52, 20) === -1);
   ok('the search depth is clamped rather than trusted',
      e.cs_ai(h, 99) >= 0 && e.cs_ai(h, -5) >= 0);
+}
+
+// -- THE RULES: promotion's choice, repetition, dead positions -------------
+// Positions are set up piece by piece: 6 is a White king, 12 a Black one,
+// and White pieces are 1 to 6 (pawn, knight, bishop, rook, queen, king).
+const setUp = (pieces, side = 0) =>
+  e.cs_seal(e.cs_side(pieces.reduce((h, [sq, p]) => e.cs_place(h, sq, p), e.cs_blank()), side));
+{
+  const pr = setUp([[60, 6], [7, 12], [8, 1]]);
+  const made = [2, 3, 4, 5].map(k => { const m = e.cs_findp(pr, 8, 0, k); return m < 0 ? -1 : e.cs_cell(e.cs_apply(pr, m), 0); });
+  ok('rules: a pawn on the last rank becomes the piece chosen, any of the four',
+     JSON.stringify(made) === '[2,3,4,5]', JSON.stringify(made));
+  ok('rules: it may not stay a pawn or become a king',
+     e.cs_findp(pr, 8, 0, 1) === -1 && e.cs_findp(pr, 8, 0, 6) === -1);
+
+  const { GAMES } = await import('../landing/web/games/arcade.js');
+  const g = GAMES.find(x => x.id === 'chess');
+  const pick = g.move(e, pr, 8, { sel: null });
+  const held = g.move(e, pr, 0, { sel: 8 });
+  const knight = g.actions.find(a => a.label === 'Promote to Knight');
+  const done = held && knight.enabled(e, pr, null, held.sel) ? knight.run(e, pr, () => 1, null, held.sel) : null;
+  ok('page: a promotion click holds the move and offers the four pieces, and the knight is a knight',
+     pick && pick.sel === 8 && held && held.sel >= 4096 && done && e.cs_cell(done.handle, 0) === 2,
+     `${JSON.stringify(pick)} ${JSON.stringify(held)} ${done && e.cs_cell(done.handle, 0)}`);
+  ok('page: no promotion piece is offered while nothing is held', !knight.enabled(e, pr, null, null));
+}
+{
+  // The knights go out and come back: the opening position recurs after
+  // every four plies, a second time at ply 4 and a third at ply 8.
+  const tour = [[62, 45], [6, 21], [45, 62], [21, 6]];
+  let h = e.cs_new();
+  const reps = [];
+  for (let ply = 0; ply < 8; ply++) {
+    const [f, t] = tour[ply % 4];
+    h = e.cs_apply(h, e.cs_find(h, f, t));
+    reps.push(e.cs_reps(h));
+  }
+  ok('rules: the second occurrence is counted and play goes on',
+     reps[3] === 2 && e.cs_done(e.cs_apply(e.cs_new(), 0)) === 0, JSON.stringify(reps));
+  ok('rules: the third occurrence of a position is a draw',
+     reps[7] === 3 && e.cs_done(h) === 1 && e.cs_result(h) === 2 && e.cs_drawkind(h) === 3,
+     `reps ${JSON.stringify(reps)} done ${e.cs_done(h)} kind ${e.cs_drawkind(h)}`);
+  ok('rules: the drawn game takes no more moves', e.cs_apply(h, 0) === h && e.cs_ai(h, 1) === -1);
+  ok('page: the status names the repetition', g_status(h) === 'The same position a third time: a draw', g_status(h));
+}
+function g_status(h) { return GAMES_CHESS.status(e, h); }
+{
+  const dead = (name, pieces, want) => {
+    const h = setUp(pieces);
+    const got = e.cs_drawkind(h) === 4 && e.cs_done(h) === 1;
+    ok(`rules: ${name}`, got === want, `drawkind ${e.cs_drawkind(h)} done ${e.cs_done(h)}`);
+  };
+  dead('king against king is dead', [[60, 6], [4, 12]], true);
+  dead('a king and a bishop against a king is dead', [[60, 6], [4, 12], [58, 3]], true);
+  dead('a king and a knight against a king is dead', [[60, 6], [4, 12], [57, 2]], true);
+  dead('bishops all on one colour are dead', [[60, 6], [4, 12], [58, 3], [5, 9]], true);
+  dead('bishops on both colours are not', [[60, 6], [4, 12], [58, 3], [2, 9]], false);
+  dead('two knights are not', [[60, 6], [4, 12], [57, 2], [62, 2]], false);
+  dead('a pawn is not', [[60, 6], [4, 12], [52, 1]], false);
+  dead('a rook is not', [[60, 6], [4, 12], [56, 4]], false);
+  ok('page: the status names the dead position',
+     g_status(setUp([[60, 6], [4, 12]])) === 'Neither side can mate: a dead position');
 }
 
 const pages = e.memory.buffer.byteLength / 65536;

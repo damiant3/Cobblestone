@@ -1,0 +1,147 @@
+Chapter: CdxChain
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+
+Section: Checking The Image
+
+ Header offsets are the CDX layout's: 168 text offset, 176 text size, 184
+ rodata offset, 192 rodata size, 200 the `__start` offset from the text.
+
+  cdxc-align8 : Integer -> Integer
+  cdxc-align8 (n) = bit-and (n + 7) (0 - 8)
+
+  cdxc-tiles : List Integer -> Boolean
+  cdxc-tiles (hdr) =
+    if read-le64 hdr 168 /= cdx-header-fixed-size then False
+    else if read-le64 hdr 192 == 0 then True
+    else read-le64 hdr 184 == read-le64 hdr 168 + cdxc-align8 (read-le64 hdr 176)
+
+  cdxc-sig-refusal : List Integer, Boolean -> Text
+  cdxc-sig-refusal (hdr) (need-sig) =
+    if need-sig == False then ""
+    else if cdx-verify-signature hdr then ""
+    else "signature invalid"
+
+  cdxc-refusal : Integer, Integer, Boolean -> Text
+  cdxc-refusal (addr) (len) (need-sig) =
+    if len < cdx-header-fixed-size then "image shorter than a CDX header"
+    else let hdr = cdx-at-read addr 0 cdx-header-fixed-size []
+    in if cdx-verify-magic hdr == False then "bad magic"
+    else if cdxc-tiles hdr == False then "sections do not tile"
+    else if read-le64 hdr 200 >= read-le64 hdr 176 then "entry outside the text"
+    else if cdx-at-content-hash-ok addr len hdr == False then "content hash mismatch"
+    else cdxc-sig-refusal hdr need-sig
+
+Section: The Trampoline
+
+ Low memory the trampoline owns, inside the profiler's sample buffer
+ [0x60000, 0x70000), which nothing writes while interrupts are off: code and
+ stack on 0x60000, then a PML4, a PDPT and four page directories mapping
+ [0, 4 GB) identity in 2 MB pages. The image's own `__start` rebuilds its
+ tables at 0x8000, so the caller's tables (which may BE 0x8000) must not be
+ live while it does.
+
+  cdxc-page : Integer = 393216
+  cdxc-stack-top : Integer = 397296
+  cdxc-pml4 : Integer = 397312
+  cdxc-pdpt : Integer = 401408
+  cdxc-pd : Integer = 405504
+  cdxc-load-addr : Integer = 1048576
+
+ Cells the image's `__start` reads: 4072 is its stack top; 0x8000, 30704 and
+ 30712 are the UEFI system table and image handle, which it must find zero
+ once the firmware is gone (X86_64Boot.codex, `uefi-systab-addr`).
+
+  cdxc-ram-top-cell : Integer = 4072
+
+  cdxc-zero : Integer, Integer -> Integer
+  cdxc-zero (base) (i) =
+    if i >= 4096 then 0
+    else let w = poke-qword base i 0
+    in cdxc-zero base (i + 8)
+
+ A PD entry is the 2 MB frame address with 0x83: present, writable, page size.
+
+  cdxc-fill-pd : Integer, Integer -> Integer
+  cdxc-fill-pd (i) (n) =
+    if i >= n then 0
+    else let w = poke-qword cdxc-pd (i * 8) (i * 2097152 + 131)
+    in cdxc-fill-pd (i + 1) n
+
+  cdxc-fill-pdpt : Integer -> Integer
+  cdxc-fill-pdpt (i) =
+    if i >= 4 then 0
+    else let w = poke-qword cdxc-pdpt (i * 8) (cdxc-pd + i * 4096 + 3)
+    in cdxc-fill-pdpt (i + 1)
+
+  cdxc-build-map : Integer -> Integer
+  cdxc-build-map (x) =
+    let a = cdxc-zero cdxc-pml4 0
+    in let b = cdxc-zero cdxc-pdpt 0
+    in let c = poke-qword cdxc-pml4 0 (cdxc-pdpt + 3)
+    in let d = cdxc-fill-pdpt 0
+    in cdxc-fill-pd 0 2048
+
+ x86-64 encodings: FA cli; 48 B8 mov rax,imm64; 0F 22 D8 mov cr3,rax;
+ 48 BC/BE/BF/B9 mov rsp/rsi/rdi/rcx,imm64; FC cld; F3 A4 rep movsb;
+ 31 C0 xor eax,eax; 48 89 04 25 mov [disp32],rax; FF E0 jmp rax.
+
+  cdxc-code-copy : Integer, Integer -> List Integer
+  cdxc-code-copy (src) (len) =
+    let a = [250, 72, 184] & le64 cdxc-pml4
+    in let b = [15, 34, 216, 72, 188] & le64 cdxc-stack-top
+    in let c = [72, 190] & le64 src & [72, 191] & le64 cdxc-load-addr
+    in let d = [72, 185] & le64 len & [252, 243, 164]
+    in a & b & c & d
+
+  cdxc-code-enter : Integer, Integer -> List Integer
+  cdxc-code-enter (entry) (stack) =
+    let z = [49, 192, 72, 137, 4, 37] & le32 32768
+    in let s = [72, 137, 4, 37] & le32 30704 & [72, 137, 4, 37] & le32 30712
+    in let r = [72, 184] & le64 stack & [72, 137, 4, 37] & le32 cdxc-ram-top-cell
+    in let j = [72, 184] & le64 entry & [255, 224]
+    in z & s & r & j
+
+  cdxc-put : List Integer, Integer, Integer -> Integer
+  cdxc-put (code) (i) (n) =
+    if i >= n then 0
+    else let w = poke-byte cdxc-page i (list-at code i)
+    in cdxc-put code (i + 1) n
+
+Section: The Transfer
+
+ A closure's first word is its code address, and calling one loads that word
+ and calls it. A fresh partial application is a closure on the heap, so
+ pointing its first word at the trampoline makes the call land there.
+
+  cdxc-stub : Integer, Integer -> Integer
+  cdxc-stub (a) (b) = a + b
+
+  cdxc-call : (Integer -> Integer), Integer -> Integer
+  cdxc-call (f) (x) = f x
+
+  cdxc-jump : Integer -> Integer
+  cdxc-jump (x) =
+    let c = cdxc-stub 0
+    in let p = poke-qword (address-of c) 0 cdxc-page
+    in cdxc-call c x
+
+  cdxc-go : Integer, Integer -> Integer
+  cdxc-go (addr) (stack) =
+    let hdr = cdx-at-read addr 0 cdx-header-fixed-size []
+    in let text-sz = read-le64 hdr 176
+    in let ro-sz = read-le64 hdr 192
+    in let len = if ro-sz == 0 then text-sz else cdxc-align8 text-sz + ro-sz
+    in let entry = cdxc-load-addr + read-le64 hdr 200
+    in let top = if stack == 0 then peek-qword cdxc-ram-top-cell 0 else stack
+    in let code = cdxc-code-copy (addr + cdx-header-fixed-size) len & cdxc-code-enter entry top
+    in let m = cdxc-build-map 0
+    in let w = cdxc-put code 0 (list-length code)
+    in cdxc-jump 0
+
+  cdxc-chain : Integer, Integer, Boolean, Integer -> Text
+  cdxc-chain (addr) (len) (need-sig) (stack) =
+    let why = cdxc-refusal addr len need-sig
+    in if text-length why > 0 then why
+    else let r = cdxc-go addr stack
+    in "the chained image returned"

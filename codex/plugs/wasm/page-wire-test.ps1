@@ -23,9 +23,8 @@
 #      default pipeline rather than adding to it, so passing it to one arm and
 #      not the other grades folded-and-inlined IR against unfolded IR. That
 #      surfaces as a difference at wire byte 0 and reads like a codegen defect.
-#   3. THE METAL CAPTURE IS NOT THE WIRE. codex-vm writes a leading 0x01
-#      marker, and the plug prints FUNCMAP/WCET text after the wire, so the
-#      wire is the middle. Comparing captures compares the tail too.
+#   3. THE METAL CAPTURE IS NOT THE WIRE. The plug prints FUNCMAP/WCET text
+#      after the wire, so comparing captures compares the tail too.
 #
 # -Calibrate is what makes a green mean anything, and it is a SABOTAGE rather
 # than a garbage-input arm: corrupt one byte of the module's wire and the run
@@ -148,22 +147,21 @@ foreach ($W in $WIRES) {
         continue
     }
 
-    $off = if ($m.Length -gt 0 -and $m[0] -eq 1) { 1 } else { 0 }
-    if ($m.Length - $off -lt $w.Length) {
+    if ($m.Length -lt $w.Length) {
         $rows += [pscustomobject]@{ plug = $plug; verdict = 'TRUNC'; bytes = $w.Length
-                                    note = "capture holds $($m.Length - $off) wire bytes, module produced $($w.Length)" }
+                                    note = "capture holds $($m.Length) wire bytes, module produced $($w.Length)" }
         continue
     }
     $diff = -1
-    for ($i = 0; $i -lt $w.Length; $i++) { if ($w[$i] -ne $m[$off + $i]) { $diff = $i; break } }
+    for ($i = 0; $i -lt $w.Length; $i++) { if ($w[$i] -ne $m[$i]) { $diff = $i; break } }
     if ($diff -ge 0) {
         $rows += [pscustomobject]@{ plug = $plug; verdict = 'DIFFERS'; bytes = $w.Length
-                                    note = ("first difference at wire byte {0}: wasm 0x{1:X2} vs metal 0x{2:X2}" -f $diff, $w[$diff], $m[$off + $diff]) }
+                                    note = ("first difference at wire byte {0}: wasm 0x{1:X2} vs metal 0x{2:X2}" -f $diff, $w[$diff], $m[$diff]) }
         continue
     }
     $code = [BitConverter]::ToUInt32($w,0); $data = [BitConverter]::ToUInt32($w,4); $funcs = [BitConverter]::ToUInt32($w,8)
     $rows += [pscustomobject]@{ plug = $plug; verdict = 'OK'; bytes = $w.Length
-                                note = "code=$code data=$data funcs=$funcs, tail $($m.Length - $off - $w.Length) bytes" }
+                                note = "code=$code data=$data funcs=$funcs, tail $($m.Length - $w.Length) bytes" }
 }
 
 $refusalRows = @()

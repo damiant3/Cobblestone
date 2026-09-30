@@ -208,17 +208,22 @@ Section: Function Application
    let saved = save-args-loop (st-set-tail-pos st False) (flat.args) 0 []
    in let arg-count = list-length (flat.args)
    in let reg-count = if arg-count < 6 then arg-count else 6
-   in let st1 = push-reg-args (saved.state) (saved.locals) 0 reg-count
-   in let st2 = pop-to-arg-regs st1 (reg-count - 1)
-   in let closure-load = load-local st2 (lookup-local (st2.locals) (flat.func-name))
-   in let st3 = st-append-code (closure-load.state) (mov-rr reg-r11 (closure-load.reg))
+   in let st0 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
+   in let st1 = push-reg-args st0 (saved.locals) 0 reg-count
+   in let closure-load = load-local st1 (lookup-local (st1.locals) (flat.func-name))
+   in let st2 = st-append-code (closure-load.state) (mov-rr reg-r11 (closure-load.reg))
+   in let st3 = pop-to-arg-regs st2 (reg-count - 1)
    in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
    in let st4a = st-append-code st4 (push-i32 arg-count)
-   in let st5 = st-append-code st4a [255, 208]
+   in let st5 = drop-closure-stack-args (st-append-code st4a [255, 208]) arg-count
    in EmitResult {
    state = __record-set st5 "next-temp" (st5.next-temp + 1),
    reg = reg-rax
   }
+
+  drop-closure-stack-args : CodegenState, Integer -> CodegenState
+  drop-closure-stack-args (st) (arg-count) =
+   if arg-count > 6 then st-append-code st (add-ri reg-rsp ((arg-count - 6) * 8)) else st
 
   emit-call-or-effect-op : CodegenState, FlatApply, Integer -> EmitResult
   emit-call-or-effect-op (st) (flat) (user-arity) =
@@ -232,13 +237,14 @@ Section: Function Application
    let saved = save-args-loop (st-set-tail-pos st False) args 0 []
    in let arg-count = list-length args
    in let reg-count = if arg-count < 6 then arg-count else 6
-   in let st1 = push-reg-args (saved.state) (saved.locals) 0 reg-count
+   in let st0 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
+   in let st1 = push-reg-args st0 (saved.locals) 0 reg-count
    in let st2 = pop-to-arg-regs st1 (reg-count - 1)
    in let st3 = st-append-code st2 (li reg-r11 addr)
    in let st4 = st-append-code st3 (mov-load reg-r11 reg-r11 0)
    in let st5 = st-append-code st4 (mov-load reg-rax reg-r11 0)
    in let st5a = st-append-code st5 (push-i32 arg-count)
-   in let st6 = st-append-code st5a [255, 208]
+   in let st6 = drop-closure-stack-args (st-append-code st5a [255, 208]) arg-count
    in let tmp = alloc-temp st6
    in EmitResult {
     state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
@@ -285,13 +291,14 @@ Section: Function Application
    in let saved = save-args-loop st-save args 0 []
    in let arg-count = list-length args
    in let reg-count = if arg-count < 6 then arg-count else 6
-   in let st1 = push-reg-args (saved.state) (saved.locals) 0 reg-count
-   in let st2 = pop-to-arg-regs st1 (reg-count - 1)
-   in let closure-reload = load-local st2 (closure-local.reg)
-   in let st3 = st-append-code (closure-reload.state) (mov-rr reg-r11 (closure-reload.reg))
+   in let st0 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
+   in let st1 = push-reg-args st0 (saved.locals) 0 reg-count
+   in let closure-reload = load-local st1 (closure-local.reg)
+   in let st2 = st-append-code (closure-reload.state) (mov-rr reg-r11 (closure-reload.reg))
+   in let st3 = pop-to-arg-regs st2 (reg-count - 1)
    in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
    in let st4a = st-append-code st4 (push-i32 arg-count)
-   in let st5 = st-append-code st4a [255, 208]
+   in let st5 = drop-closure-stack-args (st-append-code st4a [255, 208]) arg-count
    in let tmp = alloc-temp st5
    in EmitResult {
    state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
@@ -756,22 +763,30 @@ Section: Closures and Partial Application
 
   emit-reclose-block : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-reclose-block (st) (c) (m) (target-offset) =
-   let st1 = emit-consume-arg-count st
+   let mr = if m < 6 then m else 6
+   in let st1 = emit-consume-arg-count st
    in let st2 = st-append-code st1 (push-r reg-r11)
-   in let st3 = emit-reclose-push-args st2 (m - 1)
+   in let st3 = emit-reclose-push-args st2 (mr - 1)
    in let st4 = st-append-code st3 (li reg-rdi ((1 + c + m) * 8))
    in let st5 = emit-call-to st4 "__alloc"
    in let st6 = emit-load-known-func-offset st5 reg-r11 target-offset
    in let st7 = st-append-code st6 (mov-store reg-rax reg-r11 0)
-   in let st8 = emit-reclose-store-new st7 0 m c
+   in let st8 = emit-reclose-store-new st7 0 mr c
    in let st9 = st-append-code st8 (pop-r reg-r11)
    in let st10 = emit-reclose-copy-captures st9 0 c
-   in st-append-code st10 x86-ret
+   in let st11 = emit-reclose-copy-stack-args st10 6 m c
+   in st-append-code st11 x86-ret
+
+  emit-reclose-copy-stack-args : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-reclose-copy-stack-args (st) (j) (m) (c) =
+   if j >= m then st
+   else let st1 = st-append-code st (mov-load reg-rdi reg-rsp (8 + (j - 6) * 8))
+   in let st2 = st-append-code st1 (mov-store reg-rax reg-rdi (8 + (c + j) * 8))
+   in emit-reclose-copy-stack-args st2 (j + 1) m c
 
   emit-trampoline-under-cases : CodegenState, Integer, Integer, Integer, List Integer, Integer -> CodegenState
   emit-trampoline-under-cases (st) (c) (m) (r) (offsets) (total-arity) =
    if m >= r then st
-   else if m > 6 then st
    else let st1 = st-append-code st (cmp-ri reg-rax m)
    in let skip = st1.code-len
    in let st2 = st-append-code st1 (jcc cc-ne 0)
@@ -785,12 +800,94 @@ Section: Closures and Partial Application
    in let sa = st-append-code st (mov-load reg-rax reg-rsp 8)
    in let st1 = if r <= 1 then sa
     else emit-trampoline-under-cases sa c 1 r offsets total-arity
-   in let st1b = emit-trampoline-over-dynamic st1 func-name c r
-   in let st2 = emit-consume-arg-count st1b
+   in if total-arity > 6 then emit-trampoline-general st1 func-name c r
+   else let st1b = emit-trampoline-over-dynamic st1 func-name c r
+   in let st1c = st-append-code st1b (cmp-ri reg-rax r)
+   in let general-pos = st1c.code-len
+   in let st1d = st-append-code st1c (jcc cc-g 0)
+   in let st2 = emit-consume-arg-count st1d
    in let st3 = emit-trampoline-shift-args st2 5 c
    in let st4 = emit-trampoline-load-captures st3 0 c
    in let st5 = emit-load-func-addr st4 reg-rax func-name
-   in st-append-code st5 [255, 224]
+   in let st6 = st-append-code st5 [255, 224]
+   in let st7 = st-append-code (patch-jcc-at st6 general-pos (st6.code-len)) (push-i32 r)
+   in emit-jmp-to st7 "__clo_over_big"
+
+ The general path serves every call whose values do not fit the six argument
+ registers. Frame on entry, before the push of rbp: [rsp] return address,
+ [rsp+8] the count word, [rsp+16] onward the caller's arguments past the sixth.
+ After the spill, with rbp set: [rbp-8] the closure, [rbp-16] the count,
+ [rbp-24-8i] argument i below 6, [rbp+24+8(i-6)] argument i from 6, and
+ [rbp-72] the index of the next surplus argument once the call returns.
+ __clo_over_big is entered with the closure's remaining arity pushed above the
+ return address, which moves every caller slot up by 8.
+
+  emit-trampoline-general : CodegenState, Text, Integer, Integer -> CodegenState
+  emit-trampoline-general (st) (func-name) (c) (r) =
+   let n = c + r
+   in let st1 = st-append-code st (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-r11 & push-r reg-rax)
+   in let st2 = emit-trampoline-spill-args st1 0
+   in let st3 = st-append-code st2 (mov-load reg-r11 reg-rbp (0 - 8))
+   in let st4 = emit-trampoline-general-push st3 c (n - 1)
+   in let st5 = emit-trampoline-general-regs st4 c n 0
+   in let st6 = emit-load-func-addr st5 reg-rax func-name
+   in let st7 = st-append-code st6 [255, 208]
+   in let st8 = if n > 6 then st-append-code st7 (add-ri reg-rsp ((n - 6) * 8)) else st7
+   in let st9 = st-append-code st8 (li reg-r11 r & push-r reg-r11)
+   in let st10 = emit-trampoline-general-surplus st9 (0 - 24)
+   in st-append-code st10 (mov-rr reg-rsp reg-rbp & pop-r reg-rbp & mov-load reg-r11 reg-rsp 0 & mov-store reg-rsp reg-r11 8 & add-ri reg-rsp 8 & x86-ret)
+
+  emit-clo-over-big : CodegenState -> CodegenState
+  emit-clo-over-big (st) =
+   let st0 = record-func-offset st "__clo_over_big"
+   in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-r11 & push-r reg-rax)
+   in let st2 = emit-trampoline-spill-args st1 0
+   in let st3 = st-append-code st2 (mov-load reg-rax reg-rbp 8 & push-r reg-rax & mov-load reg-r11 reg-rbp (0 - 8) & mov-load reg-rax reg-r11 0 & [255, 208])
+   in let st4 = st-append-code st3 (mov-load reg-r11 reg-rbp 8 & push-r reg-r11)
+   in let st5 = emit-trampoline-general-surplus st4 (0 - 16)
+   in st-append-code st5 (mov-rr reg-rsp reg-rbp & pop-r reg-rbp & mov-load reg-r11 reg-rsp 8 & mov-store reg-rsp reg-r11 16 & add-ri reg-rsp 16 & x86-ret)
+
+  emit-trampoline-spill-args : CodegenState, Integer -> CodegenState
+  emit-trampoline-spill-args (st) (i) =
+   if i >= 6 then st
+   else emit-trampoline-spill-args (st-append-code st (push-r (list-at arg-regs i))) (i + 1)
+
+  emit-trampoline-general-load : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-trampoline-general-load (st) (reg) (c) (p) =
+   if p < c then st-append-code st (mov-load reg reg-r11 (8 + p * 8))
+   else if p - c < 6 then st-append-code st (mov-load reg reg-rbp (0 - 24 - (p - c) * 8))
+   else st-append-code st (mov-load reg reg-rbp (24 + (p - c - 6) * 8))
+
+  emit-trampoline-general-push : CodegenState, Integer, Integer -> CodegenState
+  emit-trampoline-general-push (st) (c) (p) =
+   if p < 6 then st
+   else emit-trampoline-general-push (st-append-code (emit-trampoline-general-load st reg-rax c p) (push-r reg-rax)) c (p - 1)
+
+  emit-trampoline-general-regs : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-trampoline-general-regs (st) (c) (n) (p) =
+   if p >= n then st
+   else if p >= 6 then st
+   else emit-trampoline-general-regs (emit-trampoline-general-load st (list-at arg-regs p) c p) c n (p + 1)
+
+  emit-trampoline-general-surplus : CodegenState, Integer -> CodegenState
+  emit-trampoline-general-surplus (st) (high-bias) =
+   let top = st.code-len
+   in let st1 = st-append-code st (mov-load reg-r11 reg-rbp (0 - 72) & mov-load reg-rdi reg-rbp (0 - 16) & cmp-rr reg-r11 reg-rdi)
+   in let done-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ge 0)
+   in let st3 = st-append-code st2 (cmp-ri reg-r11 6)
+   in let high-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ge 0)
+   in let st5 = st-append-code st4 (mov-rr reg-rdi reg-r11 & shl-ri reg-rdi 3 & mov-rr reg-rsi reg-rbp & sub-rr reg-rsi reg-rdi & mov-load reg-rdi reg-rsi (0 - 24))
+   in let got-pos = st5.code-len
+   in let st6 = st-append-code st5 (jmp 0)
+   in let st7 = patch-jcc-at st6 high-pos (st6.code-len)
+   in let st8 = st-append-code st7 (mov-rr reg-rdi reg-r11 & shl-ri reg-rdi 3 & add-rr reg-rdi reg-rbp & mov-load reg-rdi reg-rdi high-bias)
+   in let st9 = patch-jmp-at st8 got-pos (st8.code-len)
+   in let st10 = st-append-code st9 (add-ri reg-r11 1 & mov-store reg-rbp reg-r11 (0 - 72))
+   in let st11 = st-append-code st10 (mov-rr reg-r11 reg-rax & mov-load reg-rax reg-r11 0 & push-i32 1 & [255, 208])
+   in let st12 = st-append-code st11 (jmp (top - (st11.code-len + 5)))
+   in patch-jcc-at st12 done-pos (st12.code-len)
 
   emit-over-push-extras : CodegenState, Integer, Integer -> CodegenState
   emit-over-push-extras (st) (i) (lo) =
@@ -803,9 +900,11 @@ Section: Closures and Partial Application
  did when each count had its own block.
 
  Registers on entry are fixed by the closure convention: rax is the argument
- count, r11 is the closure, and the captures are read through r11 by
- emit-trampoline-load-captures, so the surplus count is carried in r10, which
- the convention leaves free, until the captures are loaded.
+ count, r11 is the closure, and r10 is the heap pointer the called function
+ allocates through, so none of the three is free. The surplus count is swapped
+ into the count word's slot on the stack and popped back into rax, which the
+ argument shifts and the capture loads leave alone; r11 is free once the
+ captures are loaded.
 
  The loop keeps two words on the stack below the pushed arguments, the surplus
  count at offset 0 and the address of the next surplus argument at offset 8,
@@ -824,15 +923,15 @@ Section: Closures and Partial Application
    in let st3 = st-append-code st2 (cmp-ri reg-rax 6)
    in let high = st3.code-len
    in let st4 = st-append-code st3 (jcc cc-g 0)
-   in let st5 = st-append-code st4 (mov-rr reg-r10 reg-rax)
-   in let st6 = st-append-code st5 (sub-ri reg-r10 r)
-   in let st7 = emit-consume-arg-count st6
+   in let st5 = st-append-code st4 (sub-ri reg-rax r)
+   in let st6 = st-append-code st5 (xchg-mem reg-rax reg-rsp 0)
+   in let st7 = st-append-code st6 (mov-store reg-rsp reg-rax 8 & pop-r reg-rax)
    in let st8 = emit-over-push-extras st7 5 r
    in let st9 = emit-trampoline-shift-args st8 5 c
    in let st10 = emit-trampoline-load-captures st9 0 c
-   in let st11 = st-append-code st10 (mov-rr reg-rax reg-rsp)
-   in let st12 = st-append-code st11 (push-r reg-rax)
-   in let st13 = st-append-code st12 (push-r reg-r10)
+   in let st11 = st-append-code st10 (mov-rr reg-r11 reg-rsp)
+   in let st12 = st-append-code st11 (push-r reg-r11)
+   in let st13 = st-append-code st12 (push-r reg-rax)
    in let st14 = emit-load-func-addr st13 reg-rax func-name
    in let st15 = st-append-code st14 [255, 208]
    in let st16 = emit-over-apply-loop st15 r

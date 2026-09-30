@@ -1,0 +1,48 @@
+Chapter: DeskInputLoopTest
+  cites Works chapter GopDesk
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopXhci
+  cites Works chapter GopKey
+  cites Works chapter GopFont
+  cites Works chapter GopAhci
+  cites Kernel chapter BitmapFont
+  cites Kernel chapter Hpet
+  cites UI chapter Widget
+  cites Foreword chapter Console
+
+  dil-child : Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  dil-child (q) =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let attach = poke-32 ds dk-input-cell q
+    in let registry = poke-32 ds dk-wr-cell (alloc-zeroed 64 64)
+    in let drag = poke-32 ds dk-drag-cell desk-focus-mon
+    in let rate = poke-32 ds dk-rate-armed-cell 1
+    in let now = poke-32 ds dk-rate-t0-cell (bit-and hpet-ticks dk-rate-mask)
+    in let pos = alloc-zeroed 64 64
+    in let mouse = UsbMouse { um-ok = False, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = 0, um-state = pos, um-pos = pos, um-peers = [] }
+    in let fb = alloc-zeroed (96 * 64 * 4) 64
+    in let cs = alloc-zeroed 2048 64
+    in let apps = desk-apps-empty (gapp-fallback cbf-init)
+    in let root = widget-label "fixture" ""
+    in desk-loop fb 96 64 96 cbf-init gfont-none kbd-no-kbd mouse ds cs apps root
+
+  dil-await : Integer, Integer -> Boolean
+  dil-await (q) (fuel) =
+    if peek-qword q di-out-key == 48 then peek-qword q di-count == 0 & peek-qword q di-out-kind == di-key & peek-qword q di-passes > 0
+    else if fuel <= 0 then False
+    else let y = process-yield
+    in dil-await q (fuel - 1)
+
+  opening : [Console, Concurrent, Capability] Nothing =
+    let q = di-new 0
+    in let key = poke-32 gk-cell 0 48
+    in act
+      pid <- process-spawn-with-heap (\ignored -> dil-child q) 8388608
+      let delivered = if pid < 0 then False else dil-await q 8
+      in act
+        stopped <- if pid < 0 then 0 else process-kill pid
+        print-line-uni ("desk-loop collects and delivers input: " & if delivered then "yes" else "FAIL")
+      end
+    end

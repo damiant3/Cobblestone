@@ -162,6 +162,113 @@ ok('the secret is a real code', e.mm_secret(s0) >= 0 && e.mm_secret(s0) < 1296, 
   ok('control: the games took real work', totalGuesses > 60, `${totalGuesses} guesses over 60 games`);
 }
 
+// -- THE RULES (Mastermind.codex, "The Rules") ----------------------------
+//
+// Rule 3 over the whole set: every ordered pair of the 1296 codes.
+{
+  const dg = [...Array(1296)].map((_, c) => digits(c));
+  const counts = dg.map(d => [0, 1, 2, 3, 4, 5].map(k => d.filter(x => x === k).length));
+  let bad = 0, first = '';
+  for (let a = 0; a < 1296; a++) {
+    for (let b = 0; b < 1296; b++) {
+      let bl = 0, ov = 0;
+      for (let i = 0; i < 4; i++) if (dg[a][i] === dg[b][i]) bl++;
+      for (let k = 0; k < 6; k++) ov += Math.min(counts[a][k], counts[b][k]);
+      const want = bl * 10 + ov - bl, got = e.mm_score(a, b);
+      if (got !== want) { if (!bad) first = `secret ${dg[a]} guess ${dg[b]}: engine ${got}, rules ${want}`; bad++; }
+    }
+  }
+  ok('rules: the key pegs of every ordered pair of codes', bad === 0, bad ? `${bad} wrong; ${first}` : '1679616 pairs');
+}
+
+// Rule 2 and rule 4, the codebreaker's legal set at each state class: every
+// code is a legal guess until the code is broken or ten rows are spent, and
+// none after. A refused guess answers the same handle.
+{
+  const wrongOf = s => (s + 1) % 1296;
+  const after = (seed, n) => {
+    let h = e.mm_new(seed);
+    const s = e.mm_secret(h);
+    // n guesses, none of them the secret and none repeating.
+    for (let k = 0; k < n; k++) h = e.mm_guessat(h, (s + 1 + k * 97) % 1296);
+    return h;
+  };
+  const classes = [
+    ['a new game', after(5, 0), 1],
+    ['after five wrong guesses', after(5, 5), 1],
+    ['after nine wrong guesses (the tenth row)', after(5, 9), 1],
+    ['after ten wrong guesses', after(5, 10), 0],
+  ];
+  for (const [name, h, want] of classes) {
+    const s = e.mm_secret(h), g0 = e.mm_guesses(h);
+    let bad = '', taken = 0, wonOn = 0;
+    for (let c = 0; c < 1296 && !bad; c++) {
+      const n = e.mm_guessat(h, c);
+      const tookIt = n !== h;
+      if (tookIt !== (want === 1)) { bad = `code ${c}: ${tookIt ? 'taken' : 'refused'}`; break; }
+      if (!tookIt) continue;
+      taken++;
+      const sc = e.mm_blacks(n) * 10 + e.mm_whites(n);
+      if (e.mm_guesses(n) !== g0 + 1 || e.mm_guess(n) !== c || sc !== score(s, c)) {
+        bad = `code ${c}: guesses ${e.mm_guesses(n)}, last ${e.mm_guess(n)}, score ${sc} vs ${score(s, c)}`;
+      }
+      const won = e.mm_solved(n) === 1;
+      if (won !== (c === s)) bad = `code ${c}: solved ${won}, secret ${s}`;
+      if (won) wonOn++;
+      const over = c !== s && g0 + 1 >= 10;
+      if ((e.mm_done(n) === 1) !== (won || over)) bad = `code ${c}: done ${e.mm_done(n)}`;
+    }
+    ok(`rules: ${name}, ${want ? 'every code is a legal guess' : 'no guess is legal'}`,
+       !bad && e.mm_canguess(h) === want && taken === (want ? 1296 : 0) && wonOn === want,
+       bad || `${taken} taken, canguess ${e.mm_canguess(h)}`);
+  }
+  const lost = after(5, 10);
+  ok('rules: ten wrong guesses lose, and the game is over',
+     e.mm_solved(lost) === 0 && e.mm_done(lost) === 1 && e.mm_guesses(lost) === 10);
+  let won = e.mm_new(6);
+  won = e.mm_guessat(won, e.mm_secret(won));
+  ok('rules: a broken code refuses every further guess',
+     e.mm_solved(won) === 1 && e.mm_canguess(won) === 0
+       && [0, 1, 700, 1295, e.mm_secret(won)].every(c => e.mm_guessat(won, c) === won));
+  const fresh = e.mm_new(5);
+  ok('rules: a code off the set is not a guess',
+     [-1, 1296, 5000].every(c => e.mm_guessat(fresh, c) === fresh));
+}
+
+// The count the page shows ("codes still fit") is the set of codes consistent
+// with every score so far, recomputed here from the history alone, through
+// human guesses and the solver taking over part way.
+{
+  let bad = '', games = 0, plies = 0;
+  let rnd = 777;
+  const next = () => (rnd = (rnd * 1103515245 + 12345) % 2147483648);
+  for (let seed = 1; seed <= 20 && !bad; seed++) {
+    let h = e.mm_new(seed);
+    const s = e.mm_secret(h), hist = [];
+    for (let k = 0; e.mm_done(h) === 0 && k < 10 && !bad; k++) {
+      h = k < 3 ? e.mm_guessat(h, next() % 1296) : e.mm_step(h);
+      hist.push([e.mm_guess(h), score(s, e.mm_guess(h))]);
+      plies++;
+      if (e.mm_solved(h) === 1) break;
+      const want = [];
+      for (let c = 0; c < 1296; c++) if (hist.every(([g, sc]) => score(c, g) === sc)) want.push(c);
+      const got = pool(h);
+      if (got.length !== want.length || got.some((c, i) => c !== want[i])) {
+        bad = `seed ${seed} ply ${k}: pool ${got.length}, rules ${want.length}`;
+      }
+    }
+    games++;
+  }
+  ok('rules: the codes still fitting are exactly those every score allows', !bad, bad || `${games} games, ${plies} guesses`);
+}
+
+// Rule 1: every code, repeats included, can be the secret.
+{
+  const seen = new Set();
+  for (let seed = 1; seed <= 20000 && seen.size < 1296; seed++) seen.add(e.mm_secret(e.mm_new(seed)));
+  ok('rules: every one of the 1296 codes is a reachable secret', seen.size === 1296, `${seen.size} reached`);
+}
+
 // -- Refusals -------------------------------------------------------------
 ok('a code off the set is refused in scoring',
    e.mm_score(-1, 0) === -1 && e.mm_score(0, 1296) === -1);

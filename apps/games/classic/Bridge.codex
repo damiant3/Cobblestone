@@ -1,11 +1,20 @@
 Chapter: Bridge
   cites Games chapter Rng
 
- Contract Bridge, 4 players (N/S team 0 vs E/W team 1).
- Standard 52-card deck: suit = card / 13, rank = card mod 13
- (0=2 up to 12=Ace). HCP: A=4, K=3, Q=2, J=1.
- Simplified bidding: count HCP and longest suit, bid accordingly.
- No dummy: every seat plays its own hand. Score for making/defeating.
+ Contract bridge by pagat.com (https://www.pagat.com/auctionwhist/bridge.html),
+ one duplicate board: N/S team 0 against E/W team 1. Standard 52-card deck:
+ suit = card / 13 (0 spades, 1 hearts, 2 diamonds, 3 clubs), rank = card
+ mod 13 (0=2 up to 12=Ace). HCP: A=4, K=3, Q=2, J=1.
+
+ The dealer calls first and the call passes clockwise. A bid names a level
+ and a denomination, clubs lowest, then diamonds, hearts, spades, no trumps,
+ and must beat the last bid. A seat may double the opponents' last bid if it
+ is undoubled, and redouble its own side's bid if the opponents doubled it.
+ Three passes after a bid end the auction; four passes at the start pass the
+ board out. The declarer is the first of the winning side to have named the
+ denomination. The declarer's left leads, the dummy is then exposed, and the
+ declarer plays the dummy's cards. Duplicate scoring, with the dealer and
+ vulnerability of the board number.
 
  We say:
 
@@ -136,44 +145,6 @@ Section: Point Counting
     in if n > best-count then longest-suit-loop cards (s + 1) n s
     else longest-suit-loop cards (s + 1) best-count best-suit
 
-Section: Bidding
-
-  bid-hand : List Integer -> Integer
-  bid-hand (cards) =
-    let pts = hand-hcp cards
-    in let suit = longest-suit cards
-    in if pts >= 25 then suit * 10 + 6
-    else if pts >= 22 then suit * 10 + 5
-    else if pts >= 19 then suit * 10 + 4
-    else if pts >= 16 then suit * 10 + 3
-    else if pts >= 13 then suit * 10 + 2
-    else if pts >= 10 then suit * 10 + 1
-    else (-1)
-
-  combine-bids : Integer, Integer -> Integer
-  combine-bids (b1) (b2) =
-    if b1 < 0 & b2 < 0 then (-1)
-    else if b1 < 0 then b2
-    else if b2 < 0 then b1
-    else let level1 = rng-mod b1 10
-    in let level2 = rng-mod b2 10
-    in if level1 >= level2 then b1 else b2
-
-  determine-contract : BridgeState -> BridgeState
-  determine-contract (st) =
-    let ns-bid = combine-bids (bid-hand (st.north)) (bid-hand (st.south))
-    in let ew-bid = combine-bids (bid-hand (st.east)) (bid-hand (st.west))
-    in let ns-level = if ns-bid < 0 then 0 else rng-mod ns-bid 10
-    in let ew-level = if ew-bid < 0 then 0 else rng-mod ew-bid 10
-    in if ns-level >= ew-level & ns-bid >= 0 then
-      let trump = ns-bid / 10
-      in let level = ns-level
-      in __record-set (__record-set (__record-set st "trump" trump) "contract" level) "declarer" 0
-    else if ew-bid >= 0 then
-      let trump = ew-bid / 10
-      in let level = ew-level
-      in __record-set (__record-set (__record-set st "trump" trump) "contract" level) "declarer" 1
-    else __record-set (__record-set st "contract" 1) "declarer" 0
 
 Section: Trick Taking
 
@@ -359,75 +330,362 @@ Section: Trick Taking
       done = over
     }
 
-  br-play-at : BridgeState, Integer -> BridgeState
-  br-play-at (st) (idx) =
-    if br-legal st idx then br-place st idx else st
+  br-partner : Integer -> Integer
+  br-partner (s) =
+    if s == 0 then 1
+    else if s == 1 then 0
+    else if s == 2 then 3
+    else 2
 
-  br-step : BridgeState -> BridgeState
-  br-step (st) =
-    if st.done then st
-    else let idx = br-ai-pick st
-    in if idx < 0 then st else br-place st idx
-
- The opening lead belongs to the side that did not take the contract, which
- is known only after the bidding.
-
-  br-lead-seat : Integer -> Integer
-  br-lead-seat (declarer) = if declarer == 0 then 3 else 1
-
-  br-begin : BridgeState -> BridgeState
-  br-begin (st) =
-    let ld = br-lead-seat (st.declarer)
-    in BridgeState {
+  br-with-turn : BridgeState, Integer -> BridgeState
+  br-with-turn (st) (seat) =
+    BridgeState {
       north = st.north, south = st.south, east = st.east, west = st.west,
-      trump = st.trump,
-      contract = st.contract,
-      declarer = st.declarer,
-      leader = ld,
-      turn = ld,
-      p0 = (-1), p1 = (-1), p2 = (-1), p3 = (-1),
-      ns-tricks = 0, ew-tricks = 0, tricks = 0, done = False
+      trump = st.trump, contract = st.contract, declarer = st.declarer,
+      leader = seat, turn = seat,
+      p0 = st.p0, p1 = st.p1, p2 = st.p2, p3 = st.p3,
+      ns-tricks = st.ns-tricks, ew-tricks = st.ew-tricks, tricks = st.tricks, done = st.done
     }
 
-  br-play-out : BridgeState, Integer -> BridgeState
-  br-play-out (st) (fuel) =
-    if fuel <= 0 then st
-    else if st.done then st
-    else br-play-out (br-step st) (fuel - 1)
+Section: The Board
 
-Section: Scoring
+ A duplicate board fixes its dealer and vulnerability by its number: the
+ dealer goes North, East, South, West, and the vulnerability runs through
+ pagat's sixteen-board table (0 neither, 1 north-south, 2 east-west, 3 both).
 
-  bridge-score : Integer, Integer, Integer -> Integer
-  bridge-score (level) (tricks-made) (trump) =
-    let needed = level + 6
-    in if tricks-made >= needed then
-      let overtricks = tricks-made - needed
-      in let per-trick = if trump >= 3 then 30 else 20
-      in level * per-trick + overtricks * 50 + if level >= 6 then 500 else 0
-    else
-      let undertricks = needed - tricks-made
-      in -(undertricks * 50)
+  br-board-of : Integer -> Integer
+  br-board-of (seed) = 1 + rng-mod ((if seed < 1 then 1 else seed) - 1) 16
+
+  br-board-dealer : Integer -> Integer
+  br-board-dealer (board) =
+    let k = rng-mod (board - 1) 4
+    in if k == 0 then 0 else if k == 1 then 2 else if k == 2 then 1 else 3
+
+  br-board-vul : Integer -> Integer
+  br-board-vul (board) = list-at [0, 1, 2, 3, 1, 2, 3, 0, 2, 3, 0, 1, 3, 0, 1, 2] (board - 1)
+
+  br-vulnerable : Integer, Integer -> Boolean
+  br-vulnerable (vul) (team) =
+    if vul == 3 then True
+    else if team == 0 then vul == 1
+    else vul == 2
+
+ `phase` is 0 for the auction, 1 for the play and 2 once the board is
+ scored or passed out. A call is 0 pass, 1 double, 2 redouble, or a bid
+ 5 * level + denomination with the denomination 0 clubs to 4 no trumps, so
+ a later bid is always a larger number. `calls` holds seat * 100 + call in
+ the order made. `score` is north-south's.
+
+  BrTable = record {
+    st       : BridgeState,
+    phase    : Integer,
+    board    : Integer,
+    dealer   : Integer,
+    vul      : Integer,
+    calls    : List Integer,
+    last-bid : Integer,
+    bidder   : Integer,
+    dbl      : Integer,
+    passes   : Integer,
+    decl     : Integer,
+    score    : Integer
+  }
+
+  br-new-board : Integer -> BrTable
+  br-new-board (seed) =
+    let board = br-board-of seed
+    in let dealer = br-board-dealer board
+    in BrTable { st = br-with-turn (br-deal (br-shuffle br-deck-new (rng-new seed))) dealer,
+                 phase = 0, board = board, dealer = dealer, vul = br-board-vul board,
+                 calls = [], last-bid = 0, bidder = (-1), dbl = 0, passes = 0,
+                 decl = (-1), score = 0 }
+
+  br-strain-suit : Integer -> Integer
+  br-strain-suit (strain) = if strain >= 4 then 4 else 3 - strain
+
+Section: The Auction
+
+  br-can-call : BrTable, Integer -> Boolean
+  br-can-call (g) (code) =
+    let seat = (g.st).turn
+    in if g.phase /= 0 then False
+    else if code == 0 then True
+    else if code == 1 then g.last-bid > 0 & g.dbl == 0 & br-team (g.bidder) /= br-team seat
+    else if code == 2 then g.last-bid > 0 & g.dbl == 1 & br-team (g.bidder) == br-team seat
+    else if code < 5 then False
+    else if code > 39 then False
+    else code > g.last-bid
+
+  br-copy : List Integer, Integer, List Integer -> List Integer
+  br-copy (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else br-copy xs (i + 1) (list-push acc (list-at xs i))
+
+  br-call : BrTable, Integer -> BrTable
+  br-call (g) (code) =
+    if br-can-call g code == False then g
+    else let seat = (g.st).turn
+    in let calls = list-push (br-copy (g.calls) 0 []) (seat * 100 + code)
+    in let passes = if code == 0 then g.passes + 1 else 0
+    in let bid = if code >= 5 then code else g.last-bid
+    in let bidder = if code >= 5 then seat else g.bidder
+    in let dbl = if code >= 5 then 0 else if code == 0 then g.dbl else code
+    in let g2 = BrTable { st = br-with-turn (g.st) (br-next-seat seat), phase = 0,
+                          board = g.board, dealer = g.dealer, vul = g.vul, calls = calls,
+                          last-bid = bid, bidder = bidder, dbl = dbl, passes = passes,
+                          decl = (-1), score = 0 }
+    in if bid == 0 & passes >= 4 then br-passed-out g2
+    else if bid > 0 & passes >= 3 then br-win-auction g2
+    else g2
+
+  br-passed-out : BrTable -> BrTable
+  br-passed-out (g) =
+    BrTable { st = g.st, phase = 2, board = g.board, dealer = g.dealer, vul = g.vul,
+              calls = g.calls, last-bid = 0, bidder = (-1), dbl = 0, passes = g.passes,
+              decl = (-1), score = 0 }
+
+  br-first-namer : List Integer, Integer, Integer, Integer, Integer -> Integer
+  br-first-namer (calls) (team) (strain) (i) (fallback) =
+    if i >= list-length calls then fallback
+    else let c = list-at calls i
+    in let seat = c / 100
+    in let code = rng-mod c 100
+    in if code >= 5 & rng-mod code 5 == strain & br-team seat == team then seat
+    else br-first-namer calls team strain (i + 1) fallback
+
+  br-win-auction : BrTable -> BrTable
+  br-win-auction (g) =
+    let strain = rng-mod (g.last-bid) 5
+    in let level = g.last-bid / 5
+    in let decl = br-first-namer (g.calls) (br-team (g.bidder)) strain 0 (g.bidder)
+    in let st = g.st
+    in let lead = br-next-seat decl
+    in BrTable { st = BridgeState {
+                        north = st.north, south = st.south, east = st.east, west = st.west,
+                        trump = br-strain-suit strain, contract = level, declarer = br-team decl,
+                        leader = lead, turn = lead,
+                        p0 = (-1), p1 = (-1), p2 = (-1), p3 = (-1),
+                        ns-tricks = 0, ew-tricks = 0, tricks = 0, done = False },
+                 phase = 1, board = g.board, dealer = g.dealer, vul = g.vul, calls = g.calls,
+                 last-bid = g.last-bid, bidder = g.bidder, dbl = g.dbl, passes = g.passes,
+                 decl = decl, score = 0 }
+
+Section: The Other Seats' Calls
+
+ A seat with nothing bid on its side opens 1NT on 15 to 17 balanced and one
+ of its longest suit on 12 or more, overcalls a five-card suit at the one or
+ two level on 10 or more, and doubles an opposing game on 13. Once partner
+ has bid it counts partner at 13 for a suit opening, 16 for no trumps and
+ 8 for a response, and bids the level their combined points reach in
+ partner's suit with three cards of it, else its own five-card suit, else no
+ trumps. It never bids over a partner already at that level.
+
+  br-suit-strain : Integer -> Integer
+  br-suit-strain (suit) = 3 - suit
+
+  br-balanced : List Integer -> Boolean
+  br-balanced (hand) =
+    let a = count-suit-in-hand hand 0
+    in let b = count-suit-in-hand hand 1
+    in let c = count-suit-in-hand hand 2
+    in let d = count-suit-in-hand hand 3
+    in let twos = (if a == 2 then 1 else 0) + (if b == 2 then 1 else 0) + (if c == 2 then 1 else 0) + (if d == 2 then 1 else 0)
+    in if a < 2 | b < 2 | c < 2 | d < 2 then False
+    else if a > 5 | b > 5 | c > 5 | d > 5 then False
+    else twos <= 1
+
+  br-bid-by : List Integer, Integer, Integer, Integer, Boolean -> Integer
+  br-bid-by (calls) (seat) (i) (found) (first) =
+    if i >= list-length calls then found
+    else let c = list-at calls i
+    in let code = rng-mod c 100
+    in if c / 100 == seat & code >= 5 & (first == False | found == 0)
+      then br-bid-by calls seat (i + 1) code first
+    else br-bid-by calls seat (i + 1) found first
+
+  br-ai-call : BrTable -> Integer
+  br-ai-call (g) =
+    let seat = (g.st).turn
+    in let hand = br-hand (g.st) seat
+    in let pts = hand-hcp hand
+    in let pb = br-bid-by (g.calls) (br-partner seat) 0 0 False
+    in let mb = br-bid-by (g.calls) seat 0 0 False
+    in let code = if pb > 0 then br-ai-support g hand pts
+       else if mb > 0 then 0
+       else br-ai-first g hand pts
+    in if br-can-call g code then code else 0
+
+  br-ai-first : BrTable, List Integer, Integer -> Integer
+  br-ai-first (g) (hand) (pts) =
+    let ls = longest-suit hand
+    in let s = br-suit-strain ls
+    in if g.last-bid == 0 then br-ai-open hand pts s
+    else if g.last-bid / 5 >= 4 & pts >= 13 & br-can-call g 1 then 1
+    else if pts >= 10 & count-suit-in-hand hand ls >= 5 then br-overcall g s
+    else 0
+
+  br-ai-open : List Integer, Integer, Integer -> Integer
+  br-ai-open (hand) (pts) (s) =
+    if pts >= 15 & pts <= 17 & br-balanced hand then 9
+    else if pts >= 12 then 5 + s
+    else 0
+
+  br-overcall : BrTable, Integer -> Integer
+  br-overcall (g) (s) =
+    let lvl = g.last-bid / 5 + (if s > rng-mod (g.last-bid) 5 then 0 else 1)
+    in if lvl <= 2 then lvl * 5 + s else 0
+
+  br-ai-support : BrTable, List Integer, Integer -> Integer
+  br-ai-support (g) (hand) (pts) =
+    let seat = (g.st).turn
+    in let first = br-bid-by (g.calls) (br-partner seat) 0 0 True
+    in let pb = br-bid-by (g.calls) (br-partner seat) 0 0 False
+    in let mine = br-bid-by (g.calls) seat 0 0 True
+    in let opened = mine == 0 | first < mine
+    in let pe = if opened == False then 8 else if rng-mod first 5 == 4 then 16 else 13
+    in let comb = pts + pe
+    in let ps = rng-mod pb 5
+    in let ls = longest-suit hand
+    in let strain = if ps < 4 & count-suit-in-hand hand (br-strain-suit ps) >= 3 then ps
+       else if count-suit-in-hand hand ls >= 5 then br-suit-strain ls
+       else 4
+    in let game = if strain == 4 then 3 else if strain >= 2 then 4 else 5
+    in let lvl = if comb >= 37 then 7
+       else if comb >= 33 then 6
+       else if comb >= 26 then game
+       else if comb >= 23 then (if game < 3 then game else 3)
+       else if comb >= 20 then 2
+       else 0
+    in if lvl == 0 then 0
+    else if g.bidder == br-partner seat & g.last-bid / 5 >= lvl then 0
+    else lvl * 5 + strain
+
+Section: The Play
+
+ The declarer decides for the dummy.
+
+  br-dummy : BrTable -> Integer
+  br-dummy (g) = if g.decl < 0 then (-1) else br-partner (g.decl)
+
+  br-who : BrTable -> Integer
+  br-who (g) =
+    if g.phase == 2 then (-1)
+    else if g.phase == 1 & (g.st).turn == br-dummy g then g.decl
+    else (g.st).turn
+
+  br-with-st : BrTable, BridgeState -> BrTable
+  br-with-st (g) (st) =
+    BrTable { st = st, phase = g.phase, board = g.board, dealer = g.dealer, vul = g.vul,
+              calls = g.calls, last-bid = g.last-bid, bidder = g.bidder, dbl = g.dbl,
+              passes = g.passes, decl = g.decl, score = g.score }
+
+  br-legal-now : BrTable, Integer -> Boolean
+  br-legal-now (g) (idx) = if g.phase /= 1 then False else br-legal (g.st) idx
+
+  br-play-card : BrTable, Integer -> BrTable
+  br-play-card (g) (idx) =
+    if br-legal-now g idx then br-after-play g (br-place (g.st) idx) else g
+
+  br-after-play : BrTable, BridgeState -> BrTable
+  br-after-play (g) (st) =
+    if st.done then br-score-board (br-with-st g st) else br-with-st g st
+
+  br-step : BrTable -> BrTable
+  br-step (g) =
+    if g.phase == 0 then br-call g (br-ai-call g)
+    else if g.phase == 1 then br-step-play g
+    else g
+
+  br-step-play : BrTable -> BrTable
+  br-step-play (g) =
+    let idx = br-ai-pick (g.st)
+    in if idx < 0 then g else br-after-play g (br-place (g.st) idx)
+
+  br-decl-tricks : BrTable -> Integer
+  br-decl-tricks (g) =
+    if br-team (g.decl) == 0 then (g.st).ns-tricks else (g.st).ew-tricks
+
+  br-score-board : BrTable -> BrTable
+  br-score-board (g) =
+    let team = br-team (g.decl)
+    in let s = br-dup-score (g.last-bid / 5) (rng-mod (g.last-bid) 5) (g.dbl) (br-vulnerable (g.vul) team) (br-decl-tricks g)
+    in BrTable { st = g.st, phase = 2, board = g.board, dealer = g.dealer, vul = g.vul,
+                 calls = g.calls, last-bid = g.last-bid, bidder = g.bidder, dbl = g.dbl,
+                 passes = g.passes, decl = g.decl,
+                 score = (if team == 0 then s else 0 - s) }
+
+Section: Duplicate Scoring
+
+ pagat's duplicate table, from the declaring side. Trick values are 20 in
+ the minors, 30 in the majors, and 40 then 30 in no trumps, times 2 doubled
+ and 4 redoubled. Overtricks are worth a trick undoubled and 100 or 200 a
+ trick doubled, not vulnerable or vulnerable, twice that redoubled. Game
+ (contract points of 100 or more) is 300 or 500, a part score 50, a small
+ slam 500 or 750 and a grand slam 1000 or 1500, and making a doubled or
+ redoubled contract earns 50 or 100. Undertricks are 50 or 100 each
+ undoubled; doubled, 100, 200, 200, then 300 each not vulnerable, and 200
+ then 300 each vulnerable; twice that redoubled.
+
+  br-dup-score : Integer, Integer, Integer, Boolean, Integer -> Integer
+  br-dup-score (level) (strain) (dbl) (vul) (tricks) =
+    let need = level + 6
+    in let mult = if dbl == 2 then 4 else if dbl == 1 then 2 else 1
+    in let per = if strain <= 1 then 20 else 30
+    in let base = if strain == 4 then 40 + 30 * (level - 1) else per * level
+    in let cp = base * mult
+    in if tricks >= need then br-made-score level dbl vul cp per (tricks - need)
+    else 0 - br-down-score dbl vul (need - tricks)
+
+  br-made-score : Integer, Integer, Boolean, Integer, Integer, Integer -> Integer
+  br-made-score (level) (dbl) (vul) (cp) (per) (over) =
+    let over-pts = if dbl == 0 then over * per
+       else over * (if vul then 200 else 100) * (if dbl == 2 then 2 else 1)
+    in let game = if cp >= 100 then (if vul then 500 else 300) else 50
+    in let slam = if level == 6 then (if vul then 750 else 500)
+       else if level == 7 then (if vul then 1500 else 1000)
+       else 0
+    in let insult = if dbl == 2 then 100 else if dbl == 1 then 50 else 0
+    in cp + over-pts + game + slam + insult
+
+  br-down-score : Integer, Boolean, Integer -> Integer
+  br-down-score (dbl) (vul) (u) =
+    if dbl == 0 then u * (if vul then 100 else 50)
+    else (if dbl == 2 then 2 else 1) * br-doubled-down vul u
+
+  br-doubled-down : Boolean, Integer -> Integer
+  br-doubled-down (vul) (u) =
+    if vul then 200 + 300 * (u - 1)
+    else let second = if u - 1 < 2 then u - 1 else 2
+    in let rest = if u - 3 > 0 then u - 3 else 0
+    in 100 + 200 * second + 300 * rest
 
 Section: Game Runner
 
+ One board, every seat played by the other seats' rules. The score is the
+ declaring side's; a passed-out board has no declarer and scores 0.
+
+  br-run-to-end : BrTable, Integer -> BrTable
+  br-run-to-end (g) (fuel) =
+    if fuel <= 0 then g
+    else if g.phase == 2 then g
+    else br-run-to-end (br-step g) (fuel - 1)
+
   run-bridge-hand : Integer -> BridgeResult
   run-bridge-hand (seed) =
-    let deck = br-shuffle br-deck-new (rng-new seed)
-    in let st0 = br-deal deck
-    in let st = br-begin (determine-contract st0)
-    in let fin = br-play-out st 60
-    in let ns-tricks = fin.ns-tricks
-    in let tricks-for-decl = if st.declarer == 0 then ns-tricks else 13 - ns-tricks
-    in let score = bridge-score (st.contract) tricks-for-decl (st.trump)
-    in let winner = if score >= 0 then st.declarer else 1 - st.declarer
-    in BridgeResult { declarer-team = st.declarer, contract-level = st.contract,
-                      tricks-made = tricks-for-decl, score = score }
+    let fin = br-run-to-end (br-new-board seed) 400
+    in if fin.decl < 0 then
+      BridgeResult { declarer-team = (-1), contract-level = 0, tricks-made = 0, score = 0 }
+    else let team = br-team (fin.decl)
+    in BridgeResult { declarer-team = team, contract-level = fin.last-bid / 5,
+                      tricks-made = br-decl-tricks fin,
+                      score = (if team == 0 then fin.score else 0 - fin.score) }
 
 Section: Formatting
 
   format-bridge-result : BridgeResult -> Text
   format-bridge-result (r) =
-    let team = if r.declarer-team == 0 then "NS" else "EW"
+    if r.declarer-team < 0 then "Bridge: passed out"
+    else let team = if r.declarer-team == 0 then "NS" else "EW"
     in let outcome = if r.score >= 0 then "made" else "down"
     in "Bridge: " & team & " contract=" & show (r.contract-level) &
        " tricks=" & show (r.tricks-made) & " " & outcome &

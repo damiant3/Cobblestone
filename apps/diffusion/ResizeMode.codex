@@ -1,0 +1,121 @@
+Chapter: ResizeMode
+  cites Diffusion chapter Resize
+
+ Forge's images.resize_image for img2img (modules/images.py, the upscaler
+ None, so every resize is Pillow's LANCZOS) over RGB bytes. Mode 0 resizes to
+ the target. Mode 1 resizes to cover it, the other side im.width * height //
+ im.height or im.height * width // im.width as the aspect decides (ratio >
+ src_ratio compared exactly as ow * h > w * oh), then pastes centred at
+ (ow // 2 - sw // 2, oh // 2 - sh // 2), cropping what falls outside. Mode 2
+ fits instead and fills the margins from the edges (below); any other mode is 0.
+
+ We say:
+
+Section: Paste
+
+  rm-paste-row : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  rm-paste-row (dst) (src) (di) (si) (n) (k) (z) =
+    if k >= n then 0
+    else rm-paste-row dst src di si n (k + 1) (poke-byte dst (di + k) (peek-byte src (si + k)))
+
+  rm-paste : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  rm-paste (dst) (ow) (oh) (src) (sw) (sh) (ox) (oy) (y) =
+    if y >= oh then dst
+    else let sy = y - oy
+    in let x0 = if ox > 0 then ox else 0
+    in let x1 = if ox + sw < ow then ox + sw else ow
+    in let z = if sy >= 0 & sy < sh & x1 > x0 then rm-paste-row dst src ((y * ow + x0) * 3) ((sy * sw + x0 - ox) * 3) ((x1 - x0) * 3) 0 0 else 0
+    in rm-paste dst ow oh src sw sh ox oy (y + 1)
+
+Section: Modes
+
+  resize-mode : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  resize-mode (mode) (src) (w) (h) (ow) (oh) =
+    if mode == 0 then resize-lanczos src w h ow oh
+    else if mode == 1 then
+      (let sw = if ow * h > w * oh then ow else w * oh / h
+       in let sh = if ow * h <= w * oh then oh else h * ow / w
+       in rm-paste (alloc-bytes (ow * oh * 3 + 8)) ow oh (resize-lanczos src w h sw sh) sw sh (ow / 2 - sw / 2) (oh / 2 - sh / 2) 0)
+    else if mode == 2 then rm-fill src w h ow oh
+    else 0
+
+Section: One Band
+
+ An L picture (an inpaint mask) the same way: Pillow's L resize is the RGB
+ arithmetic on one band, resize_image pastes into an RGB canvas for modes 1
+ and 2, and every mode other than 0 and 1 takes the fill branch.
+
+  rm-spread : Integer, Integer, Integer, Integer -> Integer
+  rm-spread (src) (d) (i) (n) = if i >= n then d else let v = peek-byte src (i / 3) in let z = poke-byte d i v in rm-spread src d (i + 1) n
+
+  rm-band : Integer, Integer, Integer, Integer -> Integer
+  rm-band (src) (d) (i) (n) = if i >= n then d else let z = poke-byte d i (peek-byte src (i * 3)) in rm-band src d (i + 1) n
+
+  resize-mode-l : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  resize-mode-l (mode) (src) (w) (h) (ow) (oh) =
+    let rgb = resize-mode (if mode == 0 | mode == 1 then mode else 2) (rm-spread src (alloc-bytes (w * h * 3 + 8)) 0 (w * h * 3)) w h ow oh
+    in if rgb == 0 then 0 else rm-band rgb (alloc-bytes (ow * oh + 8)) 0 (ow * oh)
+
+Section: Fill
+
+ Mode 2 fits, pastes centred on black, then fills each margin with Pillow's
+ resize of a zero-size box at an edge (box=(0, 0, w, 0) and its kin). Forge
+ passes no resample there, so Pillow 9.5 uses its default, BICUBIC (a = -0.5,
+ support 2), not LANCZOS. The scale is 0, so every output line centres on that
+ edge and takes the taps from int (e - 1.5) to int (e + 2.5), clamped.
+
+  rm-repeat : Integer, Integer, List Integer -> List Integer
+  rm-repeat (v) (n) (acc) = if list-length acc >= n then acc else rm-repeat v n (list-push acc v)
+
+  rm-repeat-k : List Integer, Integer, Integer, List Integer -> List Integer
+  rm-repeat-k (k) (n) (i) (acc) = if i >= n then acc else rm-repeat-k k n (i + 1) (acc & k)
+
+  rm-cubic : Real -> Real
+  rm-cubic (v) =
+    let x = if v < 0.0 then 0.0 - v else v
+    in if x < 1.0 then (1.5 * x - 2.5) * x * x + 1.0
+    else if x < 2.0 then (((x - 5.0) * x + 8.0) * x - 4.0) * (0.0 - 0.5)
+    else 0.0
+
+  rm-cubic-weights : Integer, Integer, Real, Real, List Real -> List Real
+  rm-cubic-weights (x) (count) (xmin) (center) (acc) =
+    if x >= count then acc
+    else rm-cubic-weights (x + 1) count xmin center (list-push acc (rm-cubic (real-from-int x + xmin - center + 0.5)))
+
+  rm-edge-axis : Integer, Integer, Integer -> RzAxis
+  rm-edge-axis (insize) (outsize) (e) =
+    let center = real-from-int e
+    in let lo = rz-trunc (center - 2.0 + 0.5)
+    in let xmin = if lo < 0 then 0 else lo
+    in let hi = rz-trunc (center + 2.0 + 0.5)
+    in let count = (if hi > insize then insize else hi) - xmin
+    in let ws = rm-cubic-weights 0 count (real-from-int xmin) center []
+    in let k = rz-push-k ws (rz-sum ws 0 0.0) 0 5 []
+    in RzAxis { rz-min = rm-repeat xmin outsize [], rz-count = rm-repeat count outsize [], rz-k = rm-repeat-k k outsize 0 [], rz-ksize = 5 }
+
+  rm-zero : Integer, Integer, Integer -> Integer
+  rm-zero (a) (n) (i) =
+    if i >= n then a
+    else let z = poke-byte a i 0
+    in rm-zero a n (i + 1)
+
+  rm-fill : Integer, Integer, Integer, Integer, Integer -> Integer
+  rm-fill (src) (w) (h) (ow) (oh) =
+    let narrow = ow * h < w * oh
+    in let sw = if narrow then ow else w * oh / h
+    in let sh = if ow * h >= w * oh then oh else h * ow / w
+    in let rs = resize-lanczos src w h sw sh
+    in let dst = rm-paste (rm-zero (alloc-bytes (ow * oh * 3 + 8)) (ow * oh * 3) 0) ow oh rs sw sh (ow / 2 - sw / 2) (oh / 2 - sh / 2) 0
+    in if narrow then
+      (let fh = oh / 2 - sh / 2
+       in if fh <= 0 then dst
+       else let top = rz-vertical rs sw (alloc-bytes (sw * fh * 3 + 8)) fh (rm-edge-axis sh fh 0) 0 0
+       in let bot = rz-vertical rs sw (alloc-bytes (sw * fh * 3 + 8)) fh (rm-edge-axis sh fh sh) 0 0
+       in rm-paste (rm-paste dst ow oh top sw fh 0 0 0) ow oh bot sw fh 0 (fh + sh) 0)
+    else if ow * h > w * oh then
+      (let fw = ow / 2 - sw / 2
+       in if fw <= 0 then dst
+       else let lft = rz-horizontal rs sw 0 (alloc-bytes (fw * oh * 3 + 8)) fw (rm-edge-axis sw fw 0) oh 0
+       in let rgt = rz-horizontal rs sw 0 (alloc-bytes (fw * oh * 3 + 8)) fw (rm-edge-axis sw fw sw) oh 0
+       in rm-paste (rm-paste dst ow oh lft fw oh 0 0 0) ow oh rgt fw oh (fw + sw) 0 0)
+    else dst

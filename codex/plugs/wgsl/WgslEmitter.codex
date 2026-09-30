@@ -79,7 +79,8 @@ Section: Context
    buffers : List Text,
    kprefix : Text,
    brens : List BufRen,
-   bbinds : List BufBind
+   bbinds : List BufBind,
+   multi : List Text
   }
 
  A helper names a buffer by ITS OWN parameter name and the module-scope
@@ -95,7 +96,7 @@ Section: Context
 
   empty-wgsl-ctx : List ATypeDef -> WgslCtx
   empty-wgsl-ctx (tds) =
-   WgslCtx { type-defs = tds, indent = "  ", buffers = [], kprefix = "", brens = [], bbinds = [] }
+   WgslCtx { type-defs = tds, indent = "  ", buffers = [], kprefix = "", brens = [], bbinds = [], multi = [] }
 
   wgsl-contains : List Text, Text -> Boolean
   wgsl-contains (xs) (name) =
@@ -294,12 +295,15 @@ Section: Math Intrinsics
    else if name == "real-sin" then True
    else if name == "real-cos" then True
    else if name == "real-sqrt" then True
+   else if name == "real-exp2-approx" then True
    else if name == "real-abs" then True
    else if name == "real-min" then True
    else if name == "real-max" then True
    else if name == "real-floor" then True
    else if name == "real-ceil" then True
    else if name == "real-from-int" then True
+   else if name == "real-approx-from-int" then True
+   else if name == "bits-to-real-approx" then True
    else if name == "real-to-int" then True
    else if name == "__int-to-real" then True
    else if name == "__real-to-int" then True
@@ -313,12 +317,15 @@ Section: Math Intrinsics
    else if name == "real-sin" then "sin"
    else if name == "real-cos" then "cos"
    else if name == "real-sqrt" then "sqrt"
+   else if name == "real-exp2-approx" then "exp2"
    else if name == "real-abs" then "abs"
    else if name == "real-min" then "min"
    else if name == "real-max" then "max"
    else if name == "real-floor" then "floor"
    else if name == "real-ceil" then "ceil"
    else if name == "real-from-int" then "f32"
+   else if name == "real-approx-from-int" then "f32"
+   else if name == "bits-to-real-approx" then "bitcast<f32>"
    else if name == "real-to-int" then "i32"
    else if name == "__int-to-real" then "f32"
    else if name == "__real-to-int" then "i32"
@@ -380,12 +387,13 @@ Section: Bit Intrinsics
    else if name == "bit-shr" then "(" & a & " >> " & sh & ")"
    else "bitcast<i32>(bitcast<u32>(" & a & ") >> " & sh & ")"
 
- Storage buffers are emitted as array<i32> (wgsl-emit-buffer-decls), so the
- f64 forms are recognised here, which is what makes buffer discovery find their
- base, and then refused at emission: reading array<i32> for a value the source
- said was a Real hands back the wrong number with nothing to see. A float
- buffer needs an array<f32> binding and a second element type through the whole
- discovery path, which is a capability rather than a patch.
+ Storage buffers are emitted as array<i32> (wgsl-emit-buffer-decls). An f32
+ element is the same 32 bits, therefore device-load-f32 and device-store-f32
+ move it through bitcast, which reinterprets and never converts. WGSL has no
+ f64, and an f16 element is half a 32-bit word, which a store cannot write
+ without racing the thread that owns the other half; those forms are
+ recognised here, which is what makes buffer discovery find their base, and
+ then refused at emission.
 
   wgsl-is-f64-device-op : Text -> Boolean
   wgsl-is-f64-device-op (name) =
@@ -393,17 +401,78 @@ Section: Bit Intrinsics
    else if name == "device-store-f64" then True
    else False
 
+  wgsl-is-f16-device-op : Text -> Boolean
+  wgsl-is-f16-device-op (name) =
+   if name == "device-load-f16" then True
+   else if name == "device-store-f16" then True
+   else False
+
   wgsl-is-device-load : Text -> Boolean
   wgsl-is-device-load (name) =
    if name == "device-load" then True
+   else if name == "device-load-f32" then True
+   else if name == "device-load-approx" then True
+   else if name == "device-load-f16-approx" then True
+   else if name == "device-load-f16" then True
    else if name == "device-load-f64" then True
    else False
 
   wgsl-is-device-store : Text -> Boolean
   wgsl-is-device-store (name) =
    if name == "device-store" then True
+   else if name == "device-store-f32" then True
+   else if name == "device-store-approx" then True
+   else if name == "device-store-f16" then True
    else if name == "device-store-f64" then True
    else False
+
+Section: Workgroup Model
+
+ The device intrinsics the PTX plug lowers for a block of threads, lowered onto
+ one WGSL workgroup. Shared memory is byte-addressed, as PTX's is, over i32
+ words. 4096 words is the 16384 bytes WebGPU guarantees as
+ maxComputeWorkgroupStorageSize, and 256 invocations is its guaranteed
+ maxComputeInvocationsPerWorkgroup; a kernel that reaches any of these runs in
+ workgroups of 256, every other kernel in workgroups of 64.
+
+  wgsl-model-group : Integer = 256
+
+  wgsl-model-words : Integer = 4096
+
+  wgsl-model-names : Text =
+   " thread-idx-x block-idx-x block-dim-x shared-base sync-threads shared-load-u32 shared-store-u32 shared-load-approx shared-store-approx "
+
+  wgsl-is-shared-store : Text -> Boolean
+  wgsl-is-shared-store (name) =
+   if name == "shared-store-u32" then True
+   else name == "shared-store-approx"
+
+  wgsl-shared-at : WgslCtx, List IRExpr, Integer -> Text
+  wgsl-shared-at (ctx) (args) (depth) =
+   if list-length args < 1 then wgsl-refuse "shared_access_arity"
+   else "cx_shared[(" & wgsl-expr-at ctx (list-at args 0) (depth + 1) & ") / 4]"
+
+  wgsl-uses-model : List Text, Integer -> Boolean
+  wgsl-uses-model (ns) (i) =
+   if i >= list-length ns then False
+   else if text-contains wgsl-model-names (" " & list-at ns i & " ") then True
+   else wgsl-uses-model ns (i + 1)
+
+ A statement the model contributes: a barrier or a shared store. Empty when the
+ expression is neither.
+
+  wgsl-model-stmt : WgslCtx, IRExpr -> Text
+  wgsl-model-stmt (ctx) (e) =
+   let chain = collect-apply-chain e []
+   in let n = wgsl-root-name (chain.root)
+   in if n == "sync-threads" then ctx.indent & "workgroupBarrier();\n"
+   else if n == "shared-store-u32" then
+    (if list-length (chain.args) < 2 then ctx.indent & "_ = " & wgsl-refuse "shared_access_arity" & ";\n"
+     else ctx.indent & wgsl-shared-at ctx (chain.args) 0 & " = " & wgsl-iexpr ctx (list-at (chain.args) 1) & ";\n")
+   else if n == "shared-store-approx" then
+    (if list-length (chain.args) < 2 then ctx.indent & "_ = " & wgsl-refuse "shared_access_arity" & ";\n"
+     else ctx.indent & wgsl-shared-at ctx (chain.args) 0 & " = bitcast<i32>(" & wgsl-expr ctx (list-at (chain.args) 1) & ");\n")
+   else ""
 
 Section: Expression Emission
 
@@ -422,6 +491,11 @@ Section: Expression Emission
     is IrName (n) (ty) (sp) ->
      if n == "True" then "true"
      else if n == "False" then "false"
+     else if n == "thread-idx-x" then "cx_lid"
+     else if n == "block-idx-x" then "cx_wid"
+     else if n == "block-dim-x" then integer-to-text wgsl-model-group
+     else if n == "shared-base" then "0"
+     else if n == "sync-threads" then wgsl-refuse "sync_threads_as_a_value"
      else wgsl-sanitize n
     is IrBinary (op) (l) (r) (ty) (sp) ->
      wgsl-emit-binary ctx op l r ty
@@ -473,10 +547,17 @@ Section: Expression Emission
     is IrName (n) (ty) (sp) ->
      if n == "__narrow" then wgsl-expr-at ctx (list-at (chain.args) 0) (depth + 1)
      else if wgsl-is-f64-device-op n then wgsl-refuse "float_storage_buffer_access"
+     else if wgsl-is-f16-device-op n then wgsl-refuse "f16_storage_buffer_access"
+     else if n == "device-load-f16-approx" then wgsl-emit-f16-load ctx (chain.args) depth
+     else if n == "shared-load-u32" then wgsl-shared-at ctx (chain.args) depth
+     else if n == "shared-load-approx" then "bitcast<f32>(" & wgsl-shared-at ctx (chain.args) depth & ")"
+     else if wgsl-is-shared-store n then wgsl-refuse "shared_store_as_a_value"
+     else if n == "device-load-f32" | n == "device-load-approx" then "bitcast<f32>(" & wgsl-emit-device-load ctx (chain.args) depth & ")"
      else if wgsl-is-device-load n then wgsl-emit-device-load ctx (chain.args) depth
      else if wgsl-is-bit-intrinsic n then wgsl-emit-bit ctx n (chain.args) depth
+     else if n == "bits-to-real-approx" | n == "real-approx-from-int" then wgsl-math-builtin n & "(" & wgsl-emit-args ctx (chain.args) depth & ")"
      else if wgsl-is-math-intrinsic n then wgsl-math-builtin n & "(" & wgsl-emit-fargs ctx (chain.args) depth & ")"
-     else wgsl-sanitize n & "(" & wgsl-emit-args ctx (chain.args) depth & ")"
+     else wgsl-fn-name ctx n & "(" & wgsl-emit-args ctx (chain.args) depth & ")"
     is otherwise -> wgsl-refuse "call_through_a_computed_callee"
 
   wgsl-emit-device-load : WgslCtx, List IRExpr, Integer -> Text
@@ -485,6 +566,17 @@ Section: Expression Emission
    else let base = list-at args 0
    in let idx = list-at args 1
    in wgsl-load-base ctx base & "[" & wgsl-expr-at ctx idx (depth + 1) & "]"
+
+ A packed f16 element: element i is the low half of word i / 2 when i is even
+ and the high half when odd, the little-endian order a file of f16 values has
+ when read as 32-bit words. unpack2x16float is core WGSL, so this needs no
+ `enable f16` and no shader-f16 device feature.
+
+  wgsl-emit-f16-load : WgslCtx, List IRExpr, Integer -> Text
+  wgsl-emit-f16-load (ctx) (args) (depth) =
+   if list-length args < 2 then wgsl-refuse "device_load_arity"
+   else let i = wgsl-expr-at ctx (list-at args 1) (depth + 1)
+   in "unpack2x16float(bitcast<u32>(" & wgsl-load-base ctx (list-at args 0) & "[(" & i & ") / 2]))[(" & i & ") % 2]"
 
   wgsl-load-base : WgslCtx, IRExpr -> Text
   wgsl-load-base (ctx) (base) =
@@ -608,8 +700,10 @@ Section: Statement Body Emission
     is IrName (n) (ty) (sp) ->
      if wgsl-is-f64-device-op n then
       ctx.indent & "_ = " & wgsl-refuse "float_storage_buffer_access" & ";\n"
+     else if wgsl-is-f16-device-op n then
+      ctx.indent & "_ = " & wgsl-refuse "f16_storage_buffer_access" & ";\n"
      else if wgsl-is-device-store n then
-      wgsl-emit-device-store ctx (chain.args) depth
+      wgsl-emit-device-store ctx n (chain.args) depth
        & (if is-kernel then "" else ctx.indent & "return 0;\n")
      else wgsl-tail-value ctx e is-kernel
     is otherwise -> wgsl-tail-value ctx e is-kernel
@@ -619,13 +713,14 @@ Section: Statement Body Emission
    if is-kernel then ctx.indent & "_ = " & wgsl-expr ctx e & ";\n"
    else ctx.indent & "return " & wgsl-expr ctx e & ";\n"
 
-  wgsl-emit-device-store : WgslCtx, List IRExpr, Integer -> Text
-  wgsl-emit-device-store (ctx) (args) (depth) =
+  wgsl-emit-device-store : WgslCtx, Text, List IRExpr, Integer -> Text
+  wgsl-emit-device-store (ctx) (name) (args) (depth) =
    if list-length args < 3 then ctx.indent & "_ = " & wgsl-refuse "device_store_arity" & ";\n"
    else let base = list-at args 0
    in let idx = list-at args 1
    in let val = list-at args 2
-   in ctx.indent & wgsl-load-base ctx base & "[" & wgsl-expr ctx idx & "] = " & wgsl-iexpr ctx val & ";\n"
+   in let v = if name == "device-store-f32" | name == "device-store-approx" then "bitcast<i32>(" & wgsl-expr ctx val & ")" else wgsl-iexpr ctx val
+   in ctx.indent & wgsl-load-base ctx base & "[" & wgsl-expr ctx idx & "] = " & v & ";\n"
 
   wgsl-is-store-expr : IRExpr -> Boolean
   wgsl-is-store-expr (e) =
@@ -639,13 +734,27 @@ Section: Statement Body Emission
    let chain = collect-apply-chain e []
    in if wgsl-store-is-f64 (chain.root) then
     ctx.indent & "_ = " & wgsl-refuse "float_storage_buffer_access" & ";\n"
-   else wgsl-emit-device-store ctx (chain.args) 0
+   else if wgsl-store-is-f16 (chain.root) then
+    ctx.indent & "_ = " & wgsl-refuse "f16_storage_buffer_access" & ";\n"
+   else wgsl-emit-device-store ctx (wgsl-root-name (chain.root)) (chain.args) 0
 
   wgsl-store-is-f64 : IRExpr -> Boolean
   wgsl-store-is-f64 (root) =
    when root
     is IrName (n) (ty) (sp) -> wgsl-is-f64-device-op n
     is otherwise -> False
+
+  wgsl-store-is-f16 : IRExpr -> Boolean
+  wgsl-store-is-f16 (root) =
+   when root
+    is IrName (n) (ty) (sp) -> wgsl-is-f16-device-op n
+    is otherwise -> False
+
+  wgsl-root-name : IRExpr -> Text
+  wgsl-root-name (root) =
+   when root
+    is IrName (n) (ty) (sp) -> n
+    is otherwise -> ""
 
 Section: Act Block Emission
 
@@ -657,11 +766,13 @@ Section: Act Block Emission
    in when s
     is IrDoBind (name) (ty) (val) (sp) ->
      (if wgsl-is-store-expr val then wgsl-store-stmt ctx val
+      else if wgsl-model-stmt ctx val /= "" then wgsl-model-stmt ctx val
       else ctx.indent & "let " & wgsl-sanitize name & " = " & wgsl-expr ctx val & ";\n")
       & wgsl-act ctx stmts is-kernel (i + 1) depth
     is IrDoExec (e) (sp) ->
      if is-last then wgsl-body ctx e is-kernel (depth + 1)
      else (if wgsl-is-store-expr e then wgsl-store-stmt ctx e
+           else if wgsl-model-stmt ctx e /= "" then wgsl-model-stmt ctx e
            else ctx.indent & "_ = " & wgsl-expr ctx e & ";\n")
       & wgsl-act ctx stmts is-kernel (i + 1) depth
 
@@ -847,8 +958,9 @@ Section: Buffer Forwarding
   wgsl-bufmap-fix : List IRDef, List BufEntry, Integer -> List BufEntry
   wgsl-bufmap-fix (defs) (m) (iters) =
    if iters <= 0 then m
-   else let m2 = wgsl-bufmap-round defs m 0 []
-   in if wgsl-bufmap-size m2 0 0 == wgsl-bufmap-size m 0 0 then m2
+   else let before = wgsl-bufmap-size m 0 0
+   in let m2 = wgsl-bufmap-round defs m 0 []
+   in if wgsl-bufmap-size m2 0 0 == before then m2
    else wgsl-bufmap-fix defs m2 (iters - 1)
 
   wgsl-bufmap : List IRDef -> List BufEntry
@@ -873,12 +985,9 @@ Section: Buffer Name Binding
  parameter and the argument are all in hand at once. `bb-kernel` is settled
  there too, so resolving a chain later needs the binds and nothing else.
 
- THE ANSWER IS UNIQUE because no helper in the tree is called with more than
- one kernel's buffers -- the property this rests on, checked over the whole
- tree. A helper reached from two kernels would need one emission per kernel,
- and `wgsl-resolve-prefix` would answer with whichever call it met first;
- there are none, and a second one would be a refusal worth adding rather than
- a silent wrong name.
+ A helper whose binds reach two or more kernels is emitted once per kernel,
+ as `<helper>__<kernel>`: WGSL createShaderModule rejects an entry point that
+ references two module-scope variables on one binding.
 
   BufBind = record {
    bb-callee : Text,
@@ -1005,6 +1114,58 @@ Section: Buffer Name Binding
    in let g = wgsl-resolve-global bs callee pn 8
    in wgsl-helper-rens bs callee bufs (i + 1) (list-push acc (BufRen { br-from = pn, br-to = g }))
 
+  wgsl-kernels-of : List BufBind, Text, Text, Integer, List Text -> List Text
+  wgsl-kernels-of (bs) (callee) (param) (fuel) (acc) =
+   wgsl-kernels-of-loop bs callee param fuel acc 0
+
+  wgsl-kernels-of-loop : List BufBind, Text, Text, Integer, List Text, Integer -> List Text
+  wgsl-kernels-of-loop (bs) (callee) (param) (fuel) (acc) (i) =
+   if fuel <= 0 then acc
+   else if i >= list-length bs then acc
+   else let b = list-at bs i
+   in let hit = if b.bb-callee == callee then b.bb-param == param else False
+   in let acc1 = if hit == False then acc
+      else if b.bb-kernel then wgsl-add-name (b.bb-caller) acc
+      else wgsl-kernels-of bs (b.bb-caller) (b.bb-arg) (fuel - 1) acc
+   in wgsl-kernels-of-loop bs callee param fuel acc1 (i + 1)
+
+  wgsl-resolve-in : List BufBind, Text, Text, Text, Integer -> Text
+  wgsl-resolve-in (bs) (callee) (param) (k) (fuel) =
+   wgsl-resolve-in-loop bs callee param k fuel 0
+
+  wgsl-resolve-in-loop : List BufBind, Text, Text, Text, Integer, Integer -> Text
+  wgsl-resolve-in-loop (bs) (callee) (param) (k) (fuel) (i) =
+   if fuel <= 0 then ""
+   else if i >= list-length bs then ""
+   else let b = list-at bs i
+   in let hit = if b.bb-callee == callee then b.bb-param == param else False
+   in let got = if hit == False then ""
+      else if b.bb-kernel then (if b.bb-caller == k then b.bb-arg else "")
+      else wgsl-resolve-in bs (b.bb-caller) (b.bb-arg) k (fuel - 1)
+   in if got == "" then wgsl-resolve-in-loop bs callee param k fuel (i + 1) else got
+
+  wgsl-helper-rens-in : List BufBind, Text, List Text, Text, Integer, List BufRen -> List BufRen
+  wgsl-helper-rens-in (bs) (callee) (bufs) (k) (i) (acc) =
+   if i >= list-length bufs then acc
+   else let pn = list-at bufs i
+   in let g = wgsl-resolve-in bs callee pn k 8
+   in let dest = if g == "" then pn else g
+   in wgsl-helper-rens-in bs callee bufs k (i + 1) (list-push acc (BufRen { br-from = pn, br-to = dest }))
+
+  wgsl-multi : List IRDef, List BufEntry, List BufBind, Integer, List Text -> List Text
+  wgsl-multi (defs) (m) (bs) (i) (acc) =
+   if i >= list-length defs then acc
+   else let d = list-at defs i
+   in let hb = wgsl-bufs-of m (d.name)
+   in let many = if wgsl-is-kernel d then False else if list-length hb == 0 then False else list-length (wgsl-kernels-of bs (d.name) (list-at hb 0) 8 []) > 1
+   in wgsl-multi defs m bs (i + 1) (if many then list-push acc (d.name) else acc)
+
+  wgsl-fn-name : WgslCtx, Text -> Text
+  wgsl-fn-name (ctx) (n) =
+   if wgsl-contains (ctx.multi) n then
+    (if ctx.kprefix == "" then wgsl-sanitize n else wgsl-sanitize n & "__" & ctx.kprefix)
+   else wgsl-sanitize n
+
 Section: Helper Function Emission
 
   wgsl-emit-params : List IRParam, Integer -> Text
@@ -1032,13 +1193,15 @@ Section: Helper Function Emission
 
  The pointer bought nothing. The buffers are module-scope `var<storage>` in
  every kernel that has them, and the entry point already reads them by name --
- only the helpers took the long way round. Checked before relying on it: of the
- eleven pointer-taking helpers in the tree, NONE is called with more than one
- kernel's buffers, so naming the global is always unambiguous.
+ only the helpers took the long way round.
 
   wgsl-helper-ctx : WgslCtx, Text, List Text -> WgslCtx
   wgsl-helper-ctx (ctx) (hname) (hbufs) =
-   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = wgsl-resolve-prefix (ctx.bbinds) hname hbufs 8, brens = wgsl-helper-rens (ctx.bbinds) hname hbufs 0 [], bbinds = ctx.bbinds }
+   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = wgsl-resolve-prefix (ctx.bbinds) hname hbufs 8, brens = wgsl-helper-rens (ctx.bbinds) hname hbufs 0 [], bbinds = ctx.bbinds, multi = ctx.multi }
+
+  wgsl-helper-ctx-in : WgslCtx, Text, List Text, Text -> WgslCtx
+  wgsl-helper-ctx-in (ctx) (hname) (hbufs) (k) =
+   WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = hbufs, kprefix = wgsl-sanitize k, brens = wgsl-helper-rens-in (ctx.bbinds) hname hbufs k 0 [], bbinds = ctx.bbinds, multi = ctx.multi }
 
  A buffer reaches a helper through the module scope now, so it is neither a
  parameter nor an argument. Filtering the lists keeps the separator logic in the
@@ -1065,9 +1228,18 @@ Section: Helper Function Emission
   wgsl-emit-helper : WgslCtx, List BufEntry, IRDef -> Text
   wgsl-emit-helper (ctx) (bmap) (d) =
    let hbufs = wgsl-bufs-of bmap (d.name)
-   in let hctx = wgsl-helper-ctx ctx (d.name) hbufs
-   in if wgsl-is-self-recursive d then wgsl-emit-loop-helper hctx d
-   else let name = wgsl-sanitize (d.name)
+   in if wgsl-contains (ctx.multi) (d.name) then wgsl-emit-per-kernel ctx hbufs d (wgsl-kernels-of (ctx.bbinds) (d.name) (list-at hbufs 0) 8 []) 0
+   else wgsl-emit-helper-in (wgsl-helper-ctx ctx (d.name) hbufs) hbufs d
+
+  wgsl-emit-per-kernel : WgslCtx, List Text, IRDef, List Text, Integer -> Text
+  wgsl-emit-per-kernel (ctx) (hbufs) (d) (ks) (i) =
+   if i >= list-length ks then ""
+   else wgsl-emit-helper-in (wgsl-helper-ctx-in ctx (d.name) hbufs (list-at ks i)) hbufs d & wgsl-emit-per-kernel ctx hbufs d ks (i + 1)
+
+  wgsl-emit-helper-in : WgslCtx, List Text, IRDef -> Text
+  wgsl-emit-helper-in (hctx) (hbufs) (d) =
+   if wgsl-is-self-recursive d then wgsl-emit-loop-helper hctx d
+   else let name = wgsl-fn-name hctx (d.name)
    in let params = wgsl-emit-params (wgsl-drop-buf-params (d.params) hbufs 0 []) 0
    in let body = wgsl-body hctx (d.body) False 0
    in "fn " & name & "(" & params & ") -> " & wgsl-ty-text (d.type-val) & " {\n" & body & "}\n\n"
@@ -1161,11 +1333,20 @@ Section: Recursion to Loop
    in let is-last = i == list-length stmts - 1
    in when s
     is IrDoBind (name) (ty) (val) (sp) ->
-     "    let " & wgsl-sanitize name & " = " & wgsl-expr ctx val & ";\n"
+     (if wgsl-is-store-expr val then wgsl-store-stmt (wgsl-at-indent ctx "    ") val
+      else if wgsl-model-stmt ctx val /= "" then wgsl-model-stmt (wgsl-at-indent ctx "    ") val
+      else "    let " & wgsl-sanitize name & " = " & wgsl-expr ctx val & ";\n")
       & wgsl-loop-act ctx selfn ps stmts (i + 1) depth
     is IrDoExec (e) (sp) ->
      if is-last then wgsl-loop-body ctx selfn ps e (depth + 1)
-     else "    _ = " & wgsl-expr ctx e & ";\n" & wgsl-loop-act ctx selfn ps stmts (i + 1) depth
+     else (if wgsl-is-store-expr e then wgsl-store-stmt (wgsl-at-indent ctx "    ") e
+           else if wgsl-model-stmt ctx e /= "" then wgsl-model-stmt (wgsl-at-indent ctx "    ") e
+           else "    _ = " & wgsl-expr ctx e & ";\n")
+      & wgsl-loop-act ctx selfn ps stmts (i + 1) depth
+
+  wgsl-at-indent : WgslCtx, Text -> WgslCtx
+  wgsl-at-indent (ctx) (ind) =
+   WgslCtx { type-defs = ctx.type-defs, indent = ind, buffers = ctx.buffers, kprefix = ctx.kprefix, brens = ctx.brens, bbinds = ctx.bbinds, multi = ctx.multi }
 
   wgsl-loop-params-b : List IRParam, List Text, Integer -> Text
   wgsl-loop-params-b (ps) (bufs) (i) =
@@ -1187,7 +1368,7 @@ Section: Recursion to Loop
 
   wgsl-emit-loop-helper : WgslCtx, IRDef -> Text
   wgsl-emit-loop-helper (ctx) (d) =
-   "fn " & wgsl-sanitize (d.name) & "(" & wgsl-loop-params-b (wgsl-drop-buf-params (d.params) (ctx.buffers) 0 []) (ctx.buffers) 0 & ") -> " & wgsl-ty-text (d.type-val) & " {\n"
+   "fn " & wgsl-fn-name ctx (d.name) & "(" & wgsl-loop-params-b (wgsl-drop-buf-params (d.params) (ctx.buffers) 0 []) (ctx.buffers) 0 & ") -> " & wgsl-ty-text (d.type-val) & " {\n"
     & wgsl-loop-vars-b (d.params) (ctx.buffers) 0
     & "  loop {\n"
     & wgsl-loop-body ctx (d.name) (d.params) (d.body) 0
@@ -1237,12 +1418,31 @@ Section: Kernel Emission
    else let s = wgsl-sanitize (list-at scalars i)
    in indent & "let " & s & " = " & uvar & "." & s & ";\n" & wgsl-emit-scalar-lets indent uvar scalars (i + 1)
 
-  wgsl-emit-kernel : WgslCtx, List BufEntry, IRDef -> Text
-  wgsl-emit-kernel (ctx) (bmap) (d) =
+ The kernel's parameters in Codex order, each named by where it lands: bK is
+ storage binding K, uK is field K of the uniform struct. A host that launches
+ by position (the browser bridge's gpu-launch) binds from this line.
+
+  wgsl-param-map : List IRParam, List Text, List Text, Integer -> Text
+  wgsl-param-map (ps) (buffers) (scalars) (i) =
+   if i >= list-length ps then ""
+   else let n = (list-at ps i).name
+   in let piece = if n == "gid" then ""
+      else if wgsl-contains buffers n then " " & wgsl-sanitize n & "=b" & integer-to-text (wgsl-index-of buffers n 0)
+      else " " & wgsl-sanitize n & "=u" & integer-to-text (wgsl-index-of scalars n 0)
+   in piece & wgsl-param-map ps buffers scalars (i + 1)
+
+  wgsl-index-of : List Text, Text, Integer -> Integer
+  wgsl-index-of (xs) (n) (i) =
+   if i >= list-length xs then 0 - 1
+   else if list-at xs i == n then i
+   else wgsl-index-of xs n (i + 1)
+
+  wgsl-emit-kernel : WgslCtx, List BufEntry, IRDef, Boolean -> Text
+  wgsl-emit-kernel (ctx) (bmap) (d) (model) =
    let kname = wgsl-sanitize (d.name)
    in let buffers = wgsl-bufs-of bmap (d.name)
    in let scalars = wgsl-scalar-params (d.params) buffers 0 []
-   in let kctx = WgslCtx { type-defs = ctx.type-defs, indent = "  ", buffers = buffers, kprefix = kname, brens = [], bbinds = ctx.bbinds }
+   in let kctx = WgslCtx { type-defs = ctx.type-defs, indent = "  ", buffers = buffers, kprefix = kname, brens = [], bbinds = ctx.bbinds, multi = ctx.multi }
    in let buf-decls = wgsl-emit-buffer-decls kname buffers 0
    in let uvar = "u_" & kname
    in let has-scalars = list-length scalars > 0
@@ -1253,10 +1453,16 @@ Section: Kernel Emission
       else ""
    in let scalar-lets = if has-scalars then wgsl-emit-scalar-lets "  " uvar scalars 0 else ""
    in let body = wgsl-body kctx (d.body) True 0
-   in buf-decls & uni-decl
-    & "\n@compute @workgroup_size(64)\n"
-    & "fn " & kname & "_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {\n"
-    & "  let gid = i32(gid_vec.x);\n"
+   in let entry = if model then
+       "\n@compute @workgroup_size(" & integer-to-text wgsl-model-group & ")\n"
+       & "fn " & kname & "_main(@builtin(global_invocation_id) gid_vec : vec3<u32>, @builtin(local_invocation_id) lid_vec : vec3<u32>, @builtin(workgroup_id) wid_vec : vec3<u32>, @builtin(num_workgroups) nwg_vec : vec3<u32>) {\n"
+       & "  let gid = i32(gid_vec.x + gid_vec.y * nwg_vec.x * " & integer-to-text wgsl-model-group & "u);\n  cx_lid = i32(lid_vec.x);\n  cx_wid = i32(wid_vec.x + wid_vec.y * nwg_vec.x);\n"
+      else "\n@compute @workgroup_size(64)\n"
+       & "fn " & kname & "_main(@builtin(global_invocation_id) gid_vec : vec3<u32>, @builtin(num_workgroups) nwg_vec : vec3<u32>) {\n"
+       & "  let gid = i32(gid_vec.x + gid_vec.y * nwg_vec.x * 64u);\n"
+   in "// cx-kernel " & kname & "_main wg=" & (if model then integer-to-text wgsl-model-group else "64") & wgsl-param-map (d.params) buffers scalars 0 & "\n"
+    & buf-decls & uni-decl
+    & entry
     & scalar-lets
     & body
     & "}\n\n"
@@ -1409,8 +1615,33 @@ Section: Chapter Emission
   wgsl-emit-kernels (ctx) (bmap) (defs) (i) =
    if i >= list-length defs then ""
    else let d = list-at defs i
-   in if wgsl-is-kernel d then wgsl-emit-kernel ctx bmap d & wgsl-emit-kernels ctx bmap defs (i + 1)
+   in if wgsl-is-kernel d then wgsl-emit-kernel ctx bmap d (wgsl-kernel-model defs d) & wgsl-emit-kernels ctx bmap defs (i + 1)
    else wgsl-emit-kernels ctx bmap defs (i + 1)
+
+  wgsl-kernel-model : List IRDef, IRDef -> Boolean
+  wgsl-kernel-model (defs) (d) =
+   wgsl-uses-model (wgsl-reach-of defs (wgsl-collect-calls (d.body) []) (list-length defs)) 0
+
+ The size is captured before the pass: wgsl-add-callees pushes into the list
+ it is handed (COMPILER-42), so the list after is the list before.
+
+  wgsl-reach-of : List IRDef, List Text, Integer -> List Text
+  wgsl-reach-of (defs) (acc) (iters) =
+   if iters <= 0 then acc
+   else let before = list-length acc
+   in let acc2 = wgsl-add-callees defs acc 0
+   in if list-length acc2 == before then acc2 else wgsl-reach-of defs acc2 (iters - 1)
+
+  wgsl-any-model : List IRDef, Integer -> Boolean
+  wgsl-any-model (defs) (i) =
+   if i >= list-length defs then False
+   else let d = list-at defs i
+   in if wgsl-is-kernel d then (if wgsl-kernel-model defs d then True else wgsl-any-model defs (i + 1))
+   else wgsl-any-model defs (i + 1)
+
+  wgsl-model-decls : Text
+  wgsl-model-decls =
+   "var<private> cx_lid : i32;\nvar<private> cx_wid : i32;\nvar<workgroup> cx_shared : array<i32, " & integer-to-text wgsl-model-words & ">;\n\n"
 
 Section: Undelivered Definitions
 
@@ -1488,7 +1719,8 @@ Section: Undelivered Definitions
    in let alldefs = wgsl-all-helper-names (ch.defs) 0 []
    in let emitset = if has-k then wgsl-intersect (wgsl-reachable (ch.defs)) alldefs 0 [] else alldefs
    in let bmap = wgsl-bufmap (ch.defs)
-   in let bctx = WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = ctx.buffers, kprefix = ctx.kprefix, brens = ctx.brens, bbinds = wgsl-binds (ch.defs) bmap }
+   in let binds = wgsl-binds (ch.defs) bmap
+   in let bctx = WgslCtx { type-defs = ctx.type-defs, indent = ctx.indent, buffers = ctx.buffers, kprefix = ctx.kprefix, brens = ctx.brens, bbinds = binds, multi = wgsl-multi (ch.defs) bmap binds 0 [] }
    in let acc0 = EmitAcc { text = "", done = [] }
    in let emitted = wgsl-topo-loop bctx bmap (ch.defs) emitset acc0 (list-length (ch.defs) + 1)
    in let emitted-count = list-length (emitted.done)
@@ -1498,5 +1730,6 @@ Section: Undelivered Definitions
    in "// Generated by Codex WGSL Plug\n"
     & "// Compute shaders lowered from Codex [Device] kernels.\n\n"
     & wgsl-diagnostics (ch.defs) emitset (emitted.done) grew
+    & (if has-k then (if wgsl-any-model (ch.defs) 0 then wgsl-model-decls else "") else "")
     & helpers
     & wgsl-emit-kernels bctx bmap (ch.defs) 0

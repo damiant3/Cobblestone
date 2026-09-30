@@ -3,11 +3,11 @@ Chapter: C64Wasm
   cites C64 chapter Cpu6502
   cites C64 chapter Cia
   cites C64 chapter RomData
+  cites C64 chapter Machine
 
- The C64's state already lives at fixed absolute addresses -- RAM at
- #A00000, the ROMs, colour RAM, the SID, VIC and CIA registers, all
- inside one band under #A18000. A wasm module's linear memory persists
- between calls and the emitter declares 256 pages (16 MB), so that band
+ The C64's state lives in one band at the heap base (`Memory.codex`,
+ Section Constants), reserved by the first `c64w-reset`. A wasm module's
+ linear memory and its heap pointer persist between calls, so that band
  survives from one call to the next with no handle and no page-held
  state.
 
@@ -28,17 +28,17 @@ Chapter: C64Wasm
 Section: The Browser Machine's Addresses
 
  The framebuffer is 640 by 480 by 4 bytes = 1,228,800, so it runs
- #C00000 to #D2C000 and stays clear of both the machine band below it
- and the 16 MB ceiling above.
+ #C00000 to #D2C000, above anything the per-frame heap reaches and below
+ the 16 MB ceiling.
 
   c64w-fb : Integer = #C00000
   c64w-width : Integer = 640
   c64w-height : Integer = 480
 
- Fourteen registers, one 32-bit slot each, above the VIC registers at
- #A17000 and below the keyboard ring.
+ Fourteen registers, one 32-bit slot each, in the band above the
+ keyboard ring.
 
-  c64w-cpu : Integer = #A19000
+  c64w-cpu : Integer = __heap-base + #18800
 
 Section: Carrying the Registers Across a Call
 
@@ -168,92 +168,31 @@ Section: Rendering
     in let d1 = c64w-fill-band 440 c64w-height border
     in d0 + d1 + c64w-render-chars bg 0
 
-Section: Running the Machine
-
-  c64w-run-cycles : CpuState, Integer -> CpuState
-  c64w-run-cycles (s) (remaining) =
-    if remaining <= 0 then s
-    else if s.cpu-halted /= 0 then s
-    else c64w-run-cycles (cpu-step s) (remaining - 1)
-
- PAL: 312 raster lines of 63 cycles. Line number is published to the VIC
- raster register at #12 with its ninth bit in #11, because a program that
- waits on the raster is waiting on those two.
-
-  c64w-run-raster : CpuState, Integer -> CpuState
-  c64w-run-raster (s) (line) =
-    if line >= 312 then s
-    else let d = poke-byte vic-state #12 (bit-and line #FF)
-    in let d2 = if line > 255
-      then poke-byte vic-state #11 (bit-or (peek-byte vic-state #11) #80)
-      else poke-byte vic-state #11 (bit-and (peek-byte vic-state #11) #7F)
-    in c64w-run-raster (c64w-run-cycles s 63) (line + 1)
-
-Section: Bringing the Machine Up
-
-  c64w-init-screen : Integer -> Integer
-  c64w-init-screen (i) =
-    if i >= 1000 then 0
-    else let d = poke-byte c64-ram (#0400 + i) 32
-    in d + c64w-init-screen (i + 1)
-
-  c64w-init-color : Integer -> Integer
-  c64w-init-color (i) =
-    if i >= 1000 then 0
-    else let d = poke-byte color-ram-base i 14
-    in d + c64w-init-color (i + 1)
-
- #2F and #37 are the 6510 data-direction register and processor port at
- $0000 and $0001: all ROMs and I/O banked in, which is what the KERNAL
- reset expects to find.
-
-  c64w-init-ram : Integer -> Integer
-  c64w-init-ram (dummy) =
-    let d0 = poke-byte c64-ram 0 #2F
-    in let d1 = poke-byte c64-ram 1 #37
-    in d0 + d1 + c64w-init-screen 0 + c64w-init-color 0
-
- VIC control and memory pointers: 25 rows and the screen on, 40 columns,
- screen at $0400 with the character generator at $1000, no interrupts,
- light blue on blue.
-
-  c64w-init-vic : Integer -> Integer
-  c64w-init-vic (dummy) =
-    let d0 = poke-byte vic-state #11 #1B
-    in let d1 = poke-byte vic-state #16 #C8
-    in let d2 = poke-byte vic-state #18 #15
-    in let d3 = poke-byte vic-state #19 0
-    in let d4 = poke-byte vic-state #20 14
-    in let d5 = poke-byte vic-state #21 6
-    in d0 + d1 + d2 + d3 + d4 + d5
-
 Section: The Browser Interface
 
   wasm-exports : Text = ""
 
   c64w-reset : Integer -> Integer
   c64w-reset (dummy) =
-    let d0 = c64w-init-ram 0
+    let reserved = c64-reserve 0
+    in let d0 = c64-init-ram 0
     in let d1 = cia-init 0
-    in let d2 = c64w-init-vic 0
+    in let d2 = c64-init-vic 0
     in let d3 = init-all-roms 0
     in let d4 = poke-byte kbd-ring-base 0 0
     in let d5 = poke-byte kbd-ring-base 1 0
-    in let boot = __record-set cpu-new "cpu-pc" (mem-read-16 #FFFC)
+    in let boot = c64-boot-cpu 0
     in d0 + d1 + d2 + d3 + d4 + d5 + c64w-cpu-save boot
 
   c64w-frame : Integer -> Integer
   c64w-frame (dummy) =
     let h = __heap-save
     in let s = c64w-cpu-load 0
-    in let dk = kbd-poll 0
-    in let s1 = c64w-run-raster s 0
-    in let dc = poke-byte cia-state 29 (bit-or (peek-byte cia-state 29) #81)
-    in let s2 = cpu-irq s1
+    in let s2 = c64-frame-step s
     in let ds = c64w-cpu-save s2
     in let dr = c64w-render 0
     in let restored = __heap-restore h
-    in dk + dc + ds + dr
+    in ds + dr
 
  A PC set-1 scancode into the ring `kbd-poll` drains. Byte 0 is the write
  counter, byte 1 the read counter, and the 64 slots start at 16.
@@ -266,6 +205,9 @@ Section: The Browser Interface
 
   c64w-fb-addr : Integer -> Integer
   c64w-fb-addr (dummy) = c64w-fb
+
+  c64w-band-base : Integer -> Integer
+  c64w-band-base (dummy) = c64-ram
 
   c64w-frame-width : Integer -> Integer
   c64w-frame-width (dummy) = c64w-width

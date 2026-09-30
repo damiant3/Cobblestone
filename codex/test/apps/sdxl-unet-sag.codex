@@ -1,0 +1,127 @@
+Chapter: SdxlUnetSag
+
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter UNet
+  cites Diffusion chapter UNetGraph
+  cites Diffusion chapter Sag
+  cites Diffusion chapter UNetSagReference
+
+ The step of sdxl-unet-step as SAG's uncond call, the middle block's first
+ self-attention handing its probabilities to sag-probs, graded against
+ build/sdxl-unet-oracle.py --sag, which runs sd_forge_sag's own
+ attn_and_record: every block within 1%, the recorded mask bit for bit,
+ and sag-degrade over it against Forge's create_blur_map within 1e-5. The
+ sabotage is the mask an unrecorded run leaves, all zero.
+
+ We say:
+
+Section: Inputs
+
+  latent-at : Integer -> Real
+  latent-at (i) = real-from-int (int-mod (i * 37 + 11) 257 - 128) / 128.0
+
+  label-at : Integer -> Real
+  label-at (i) = real-from-int (int-mod (i * 29 + 3) 241 - 120) / 256.0
+
+  context-at : Integer -> Real
+  context-at (i) = real-from-int (int-mod (i * 13 + 5) 251 - 125) / 256.0
+
+  build : Integer, Integer, Integer, List Real -> List Real
+  build (which) (i) (n) (acc) =
+    if i >= n then acc
+    else build which (i + 1) n (list-push acc (if which == 0 then latent-at i else if which == 1 then label-at i else context-at i))
+
+Section: Grading
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  count-near : List Real, UNetSagRefBlock, Real, Integer, Integer -> Integer
+  count-near (got) (ref) (tol) (j) (acc) =
+    if j >= unet-sag-ref-samples then acc
+    else let n = list-length got
+    in let v = list-at got (int-mod (j * unet-sag-ref-stride + unet-sag-ref-offset) n)
+    in count-near got ref tol (j + 1) (if abs (v - list-at (ref.usb-samples) j) <= tol * ref.usb-rms then acc + 1 else acc)
+
+  sum-sq : List Real, Integer, Real -> Real
+  sum-sq (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else sum-sq xs (i + 1) (acc + list-at xs i * list-at xs i)
+
+  rms-near : List Real, UNetSagRefBlock -> Boolean
+  rms-near (got) (ref) =
+    let n = list-length got
+    in let ms = if n == 0 then 0.0 else sum-sq got 0 0.0 / real-from-int n
+    in abs (ms - ref.usb-rms * ref.usb-rms) <= 0.02 * ref.usb-rms * ref.usb-rms
+
+  grade : Integer, Integer -> Text
+  grade (h) (k) =
+    let ref = list-at unet-sag-ref-blocks k
+    in let n = ref.usb-c * ref.usb-h * ref.usb-w
+    in let got = if h == 0 then [] else un-download h n
+    in if list-length got /= n then ref.usb-name & ": NO OUTPUT"
+    else ref.usb-name & ": " & show (count-near got ref 0.01 0 0) & "/" & show unet-sag-ref-samples & " within 1% of rms, rms " & (if rms-near got ref then "near" else "FAR")
+
+  grade-all : List Integer, Integer, List Text -> List Text
+  grade-all (hs) (k) (acc) = if k >= list-length unet-sag-ref-blocks then acc else grade-all hs (k + 1) (list-push acc (grade (if k < list-length hs then list-at hs k else 0) k))
+
+  zeros : Integer, List Real -> List Real
+  zeros (n) (acc) = if list-length acc >= n then acc else zeros n (list-push acc 0.0)
+
+  same-bits : List Integer, Integer, Integer -> Integer
+  same-bits (m) (i) (acc) = if i >= list-length m then acc else same-bits m (i + 1) (if list-at m i == list-at unet-sag-mask i then acc + 1 else acc)
+
+  worst-of : List Real, Integer, Real -> Real
+  worst-of (got) (i) (acc) = if i >= list-length got then acc else worst-of got (i + 1) (let e = abs (list-at got i - list-at unet-sag-degraded i) in if e > acc then e else acc)
+
+  degrade-line : Text, Integer -> Text
+  degrade-line (what) (mbuf) =
+    let x0 = un-upload (sag-x0 0 [])
+    in let out = gpu-buf-alloc (1024 * 4)
+    in let mask = sag-mask-of mbuf 16
+    in let got = if sag-degrade x0 out 16 16 mbuf 16 2.0 then un-download out 1024 else []
+    in what & ": mask " & show (same-bits mask 0 0) & "/16 as Forge's, degraded " & (if list-length got == 1024 & worst-of got 0 0.0 <= 0.00001 then "within 1e-5" else "PAST 1e-5")
+
+  sag-x0 : Integer, List Real -> List Real
+  sag-x0 (i) (acc) = if i >= 1024 then acc else sag-x0 (i + 1) (list-push acc (real-from-int (int-mod (i * 37 + 11) 257 - 128) / 64.0))
+
+  free-all : List Integer, Integer -> Integer
+  free-all (hs) (i) = if i >= list-length hs then 0 else let z = un-free 0 (list-at hs i) in free-all hs (i + 1)
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let u = unet-open "dreamshaperXL_lightningDPMSDE.safetensors"
+    in if (u.uf-file).st-valid == False then ["SKIP: no dreamshaperXL_lightningDPMSDE.safetensors under the model root build-output/diffusion-models"]
+    else run-step (unet-load u)
+
+  run-step : UNetFile -> List Text
+  run-step (u) =
+    let y = un-upload (build 1 0 2816 [])
+    in let ctx = un-upload (build 2 0 157696 [])
+    in let emb = unet-embedding u unet-sag-ref-t y
+    in let embs = un-silu emb 1280
+    in let x = un-upload (build 0 0 1024 [])
+    in let mbuf = gpu-buf-alloc (16 * 4)
+    in let ops = unet-ops-with (\x s cx cs hh ww -> True) (\p -> False) (\p -> p == "middle_block.1.transformer_blocks.0.attn1.") (\s hd r -> sag-probs mbuf 1.0 s hd r)
+    in let blocks = unet-forward-with ops u x embs ctx 16 16
+    in let lines = grade-all blocks 0 []
+    in let f = free-all blocks 0
+    in lines & [degrade-line "recorded" mbuf, degrade-line "sabotage, no mask recorded" (un-upload (zeros 16 []))]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

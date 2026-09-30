@@ -1,0 +1,228 @@
+Chapter: UNetGraph
+
+ The SDXL UNet (ldm openaimodel.py) as a graph over a UNetOps value, whose
+ first field argument is the weight file.
+
+ We say:
+
+Section: Op Set
+
+  UNetOps a = record {
+    conv : (a, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer),
+    linear : (a, Integer, Integer, Integer, Integer, Text -> Integer),
+    linear-b : (a, Integer, Integer, Integer, Integer, Text, Boolean -> Integer),
+    group-norm : (a, Integer, Integer, Integer, Real, Text -> Integer),
+    layer-norm : (a, Integer, Integer, Integer, Text -> Integer),
+    silu : (Integer, Integer -> Integer),
+    add : (Integer, Integer, Integer -> Integer),
+    add-channel : (Integer, Integer, Integer, Integer -> Integer),
+    transpose : (Integer, Integer, Integer -> Integer),
+    concat : (Integer, Integer, Integer, Integer, Integer -> Integer),
+    attention : (a, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer),
+    alloc : (Integer -> Integer),
+    free : (Integer, Integer -> Integer),
+    temp : (Integer -> Integer),
+    tfree : (Integer, Integer, Integer -> Integer),
+    upload : (List Real -> Integer),
+    geglu : (Integer, Integer, Integer, Integer -> Boolean),
+    upsample : (Integer, Integer, Integer, Integer, Integer -> Boolean),
+    crop : (Integer, Integer, Integer, Integer, Integer, Integer -> Integer),
+    timestep : (Integer, Integer -> Boolean),
+    attn-scores : (Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> Boolean),
+    softmax-rows : (Integer, Integer, Integer -> Boolean),
+    attn-values : (Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean),
+    out-patch : (Integer, Integer, Integer, Integer, Integer, Integer -> Boolean),
+    self-v : (Text -> Boolean),
+    probs-at : (Text -> Boolean),
+    probs : (Integer, Integer, Integer -> Boolean)
+  }
+
+Section: Attention
+
+  un-feed-forward-with : UNetOps a, a, Integer, Integer, Integer, Text -> Integer
+  un-feed-forward-with (ops) (u) (x) (rows) (c) (p) =
+    let pr = ops.linear u x rows c (8 * c) (p & "net.0.proj")
+    in let g = ops.temp (rows * 4 * c * 4)
+    in let ok = if pr == 0 | g == 0 then False else ops.geglu pr g (4 * c) (rows * 4 * c)
+    in let out = if ok then ops.linear u g rows (4 * c) c (p & "net.2") else 0
+    in ops.tfree (ops.free out pr) g (rows * 4 * c * 4)
+
+ Self-attention with its softmax replaced by the identity on v, as Forge's
+ attn1 replace patch returning v leaves it: to_out (to_v x).
+
+  un-value-attn-with : UNetOps a, a, Integer, Integer, Integer, Text -> Integer
+  un-value-attn-with (ops) (u) (x) (rows) (c) (p) =
+    let v = ops.linear-b u x rows c c (p & "to_v") False
+    in ops.free (ops.linear u v rows c c (p & "to_out.0")) v
+
+ Self-attention in the explicit form, 64-wide heads, handing its softmax to
+ ops.probs before the values.
+
+  un-rec-attn-with : UNetOps a, a, Integer, Integer, Integer, Text -> Integer
+  un-rec-attn-with (ops) (u) (x) (rows) (c) (p) =
+    let q = ops.linear-b u x rows c c (p & "to_q") False
+    in let k = ops.linear-b u x rows c c (p & "to_k") False
+    in let v = ops.linear-b u x rows c c (p & "to_v") False
+    in let s = ops.alloc ((c / 64) * rows * rows * 4)
+    in let o = ops.alloc (rows * c * 4)
+    in let ok = if q == 0 | k == 0 | v == 0 | s == 0 | o == 0 then False
+       else if ops.attn-scores q k s (c / 64) rows rows 64 0.125 == False then False
+       else if ops.softmax-rows s rows ((c / 64) * rows) == False then False
+       else if ops.probs s (c / 64) rows == False then False
+       else ops.attn-values s v o (c / 64) rows rows 64
+    in let out = if ok then ops.linear u o rows c c (p & "to_out.0") else 0
+    in ops.free (ops.free (ops.free (ops.free (ops.free out q) k) v) s) o
+
+ BasicTransformerBlock: self-attention, cross-attention over the context,
+ then the feed-forward, each after its LayerNorm and added back.
+
+  un-tblock-with : UNetOps a, a, Integer, Integer, Integer, Integer, Text -> Integer
+  un-tblock-with (ops) (u) (x) (rows) (c) (ctx) (p) =
+    let n1 = ops.layer-norm u x rows c (p & "norm1")
+    in let a1 = if ops.self-v (p & "attn1.") then un-value-attn-with ops u n1 rows c (p & "attn1.") else if ops.probs-at (p & "attn1.") then un-rec-attn-with ops u n1 rows c (p & "attn1.") else ops.attention u n1 rows c n1 rows c (p & "attn1.")
+    in let x1 = ops.add x a1 (rows * c)
+    in let n2 = ops.layer-norm u x1 rows c (p & "norm2")
+    in let a2 = ops.attention u n2 rows c ctx 77 2048 (p & "attn2.")
+    in let x2 = ops.add x1 a2 (rows * c)
+    in let n3 = ops.layer-norm u x2 rows c (p & "norm3")
+    in let f = un-feed-forward-with ops u n3 rows c (p & "ff.")
+    in let x3 = ops.add x2 f (rows * c)
+    in ops.free (ops.free (ops.free (ops.free (ops.free (ops.free (ops.free (ops.free x3 n1) a1) x1) n2) a2) x2) n3) f
+
+  un-tblocks-with : UNetOps a, a, Integer, Integer, Integer, Integer, Text, Integer, Integer -> Integer
+  un-tblocks-with (ops) (u) (x) (rows) (c) (ctx) (p) (k) (depth) =
+    if k >= depth | x == 0 then x
+    else let y = un-tblock-with ops u x rows c ctx (p & show k & ".")
+    in let freed = if k > 0 then ops.free y x else y
+    in un-tblocks-with ops u freed rows c ctx p (k + 1) depth
+
+ SpatialTransformer with a linear proj_in: GroupNorm32 at eps 1e-6 (Forge
+ unet.py:292), tokens as rows, the blocks, proj_out, back to channels, plus
+ the input.
+
+  unet-transformer-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Text, Integer -> Integer
+  unet-transformer-with (ops) (u) (x) (c) (h) (w) (ctx) (p) (depth) =
+    let hw = h * w
+    in let g = ops.group-norm u x c hw 0.000001 (p & "norm")
+    in let t = ops.transpose g c hw
+    in let pi = ops.linear u t hw c c (p & "proj_in")
+    in let b = un-tblocks-with ops u pi hw c ctx (p & "transformer_blocks.") 0 depth
+    in let po = ops.linear u b hw c c (p & "proj_out")
+    in let back = ops.transpose po hw c
+    in let out = ops.add back x (c * hw)
+    in let freed = ops.free (ops.free (ops.free (ops.free (ops.free out g) t) pi) po) back
+    in if b == pi then freed else ops.free freed b
+
+Section: Embedding
+
+ ln 10000, the LDM max period.
+
+  unet-embedding-with : UNetOps a, a, Real, Integer -> Integer
+  unet-embedding-with (ops) (u) (t) (y) =
+    let tb = ops.upload [t]
+    in let temb = ops.alloc (320 * 4)
+    in let ok = if tb == 0 | temb == 0 then False else ops.timestep tb temb
+    in let e1 = if ok then ops.linear u temb 1 320 1280 "time_embed.0" else 0
+    in let s1 = ops.silu e1 1280
+    in let e2 = ops.linear u s1 1 1280 1280 "time_embed.2"
+    in let l1 = ops.linear u y 1 2816 1280 "label_emb.0.0"
+    in let s2 = ops.silu l1 1280
+    in let l2 = ops.linear u s2 1 1280 1280 "label_emb.0.2"
+    in let emb = ops.add e2 l2 1280
+    in ops.free (ops.free (ops.free (ops.free (ops.free (ops.free (ops.free (ops.free emb tb) temb) e1) s1) e2) l1) s2) l2
+
+Section: Blocks
+
+  unet-conv-in-with : UNetOps a, a, Integer, Integer, Integer -> Integer
+  unet-conv-in-with (ops) (u) (x) (h) (w) = ops.conv u x 4 h w 320 3 1 1 "input_blocks.0.0"
+
+  unet-downsample-with : UNetOps a, a, Integer, Integer, Integer, Integer, Text -> Integer
+  unet-downsample-with (ops) (u) (x) (c) (h) (w) (p) = ops.conv u x c h w c 3 2 1 (p & "op")
+
+ ldm Upsample: nearest to the skip's size, then a 3x3 conv (Forge's Upsample
+ interpolates to output_shape). With ceil halving that size is 2h or 2h - 1,
+ and nearest from h to 2h - 1 takes row floor (i h / (2h - 1)) = floor (i / 2),
+ therefore the 2x picture with its last row or column dropped.
+
+  unet-upsample-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  unet-upsample-with (ops) (u) (x) (c) (h) (w) (oh) (ow) (p) =
+    let up = ops.alloc (c * 4 * h * w * 4)
+    in let ok = if x == 0 | up == 0 then False else ops.upsample x up h w (c * 4 * h * w)
+    in let fit = if ok == False then 0 else if oh == 2 * h & ow == 2 * w then up else ops.crop up c (2 * h) (2 * w) oh ow
+    in let out = if fit /= 0 then ops.conv u fit c oh ow c 3 1 1 (p & "conv") else 0
+    in let f = if fit /= 0 & fit /= up then ops.free 0 fit else 0
+    in ops.free out up
+
+  unet-half : Integer -> Integer
+  unet-half (n) = (n + 1) / 2
+
+ A ResBlock and, at depth above zero, its SpatialTransformer.
+
+  unet-stage-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text, Integer -> Integer
+  unet-stage-with (ops) (u) (x) (embs) (ctx) (cin) (cout) (h) (w) (p) (depth) =
+    let r = unet-resblock-with ops u x embs cin cout h w (p & "0.")
+    in if depth == 0 then r
+    else ops.free (unet-transformer-with ops u r cout h w ctx (p & "1.") depth) r
+
+ An output block: the running tensor concatenated with its skip, then the stage.
+
+  unet-out-stage-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  unet-out-stage-with (ops) (u) (x) (skip) (embs) (ctx) (cx) (cs) (cout) (h) (w) (k) =
+    let depth = if cout == 320 then 0 else if cout == 640 then 2 else 10
+    in let patched = ops.out-patch x skip cx cs h w
+    in let cat = if patched then ops.concat x skip cx cs (h * w) else 0
+    in ops.free (unet-stage-with ops u cat embs ctx (cx + cs) cout h w ("output_blocks." & show k & ".") depth) cat
+
+ One SDXL UNet step on a 4 x h x w latent: the 20 block outputs in the
+ order of UNetReference, the last being the predicted noise.
+
+  unet-forward-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer -> List Integer
+  unet-forward-with (ops) (u) (x) (embs) (ctx) (h) (w) =
+    let h0 = unet-conv-in-with ops u x h w
+    in let h1 = unet-stage-with ops u h0 embs ctx 320 320 h w "input_blocks.1." 0
+    in let h2 = unet-stage-with ops u h1 embs ctx 320 320 h w "input_blocks.2." 0
+    in let h3 = unet-downsample-with ops u h2 320 h w "input_blocks.3.0."
+    in let h4 = unet-stage-with ops u h3 embs ctx 320 640 (unet-half h) (unet-half w) "input_blocks.4." 2
+    in let h5 = unet-stage-with ops u h4 embs ctx 640 640 (unet-half h) (unet-half w) "input_blocks.5." 2
+    in let h6 = unet-downsample-with ops u h5 640 (unet-half h) (unet-half w) "input_blocks.6.0."
+    in let h7 = unet-stage-with ops u h6 embs ctx 640 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) "input_blocks.7." 10
+    in let h8 = unet-stage-with ops u h7 embs ctx 1280 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) "input_blocks.8." 10
+    in let m0 = unet-resblock-with ops u h8 embs 1280 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) "middle_block.0."
+    in let m1 = unet-transformer-with ops u m0 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) ctx "middle_block.1." 10
+    in let mid = unet-resblock-with ops u m1 embs 1280 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) "middle_block.2."
+    in let o0 = unet-out-stage-with ops u mid h8 embs ctx 1280 1280 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) 0
+    in let o1 = unet-out-stage-with ops u o0 h7 embs ctx 1280 1280 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) 1
+    in let o2s = unet-out-stage-with ops u o1 h6 embs ctx 1280 640 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) 2
+    in let o2 = unet-upsample-with ops u o2s 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) (unet-half h) (unet-half w) "output_blocks.2.2."
+    in let o3 = unet-out-stage-with ops u o2 h5 embs ctx 1280 640 640 (unet-half h) (unet-half w) 3
+    in let o4 = unet-out-stage-with ops u o3 h4 embs ctx 640 640 640 (unet-half h) (unet-half w) 4
+    in let o5s = unet-out-stage-with ops u o4 h3 embs ctx 640 320 640 (unet-half h) (unet-half w) 5
+    in let o5 = unet-upsample-with ops u o5s 640 (unet-half h) (unet-half w) h w "output_blocks.5.2."
+    in let o6 = unet-out-stage-with ops u o5 h2 embs ctx 640 320 320 h w 6
+    in let o7 = unet-out-stage-with ops u o6 h1 embs ctx 320 320 320 h w 7
+    in let o8 = unet-out-stage-with ops u o7 h0 embs ctx 320 320 320 h w 8
+    in let n0 = ops.group-norm u o8 320 (h * w) 0.00001 "out.0"
+    in let n1 = ops.silu n0 (320 * h * w)
+    in let out = ops.conv u n1 320 h w 4 3 1 1 "out.2"
+    in let freed = ops.free (ops.free (ops.free (ops.free (ops.free (ops.free out m0) m1) o2s) o5s) n0) n1
+    in [h0, h1, h2, h3, h4, h5, h6, h7, h8, mid, o0, o1, o2, o3, o4, o5, o6, o7, o8, freed]
+
+ ldm ResBlock: in_layers GroupNorm32, SiLU, conv 3x3; emb_layers SiLU,
+ linear, added per channel; out_layers GroupNorm32, SiLU, conv 3x3; a 1x1
+ skip_connection when the width changes. GroupNorm32's eps is 1e-5.
+
+  unet-resblock-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  unet-resblock-with (ops) (u) (x) (embs) (cin) (cout) (h) (w) (p) =
+    let hw = h * w
+    in let a1 = ops.group-norm u x cin hw 0.00001 (p & "in_layers.0")
+    in let a2 = ops.silu a1 (cin * hw)
+    in let a3 = ops.conv u a2 cin h w cout 3 1 1 (p & "in_layers.2")
+    in let e = ops.linear u embs 1 1280 cout (p & "emb_layers.1")
+    in let a4 = ops.add-channel a3 e hw (cout * hw)
+    in let b1 = ops.group-norm u a4 cout hw 0.00001 (p & "out_layers.0")
+    in let b2 = ops.silu b1 (cout * hw)
+    in let b3 = ops.conv u b2 cout h w cout 3 1 1 (p & "out_layers.3")
+    in let skip = if cin == cout then x else ops.conv u x cin h w cout 1 1 0 (p & "skip_connection")
+    in let out = ops.add skip b3 (cout * hw)
+    in let freed = ops.free (ops.free (ops.free (ops.free (ops.free (ops.free (ops.free (ops.free out a1) a2) a3) e) a4) b1) b2) b3
+    in if cin == cout then freed else ops.free freed skip

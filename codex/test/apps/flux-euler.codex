@@ -1,0 +1,105 @@
+Chapter: FluxEuler
+
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter Flux
+  cites Diffusion chapter FluxReference
+  cites Diffusion chapter FluxSamplerReference
+
+ Flux schnell's flow sampling against build/flux-oracle.py's sampler
+ reference: Forge's simple schedule over PredictionFlux (mu = 1) sigma for
+ sigma, then k-diffusion's sample_euler through Forge's model, each step's
+ latent 64 samples within 2% of its rms, the worst printed: the error grows by
+ step (0.3, 0.3, 0.4, 0.6% of rms, 2026-09-29) from f16 GEMM operands against
+ Forge's f32, where a wrong schedule or update lands near 60%. The inputs are
+ flux-step's; the start
+ is noise(i) at sigma 1. The sabotage arm takes the first step to the
+ unshifted sigma 0.75.
+
+ We say:
+
+Section: Inputs
+
+  context-at : Integer -> Real
+  context-at (i) = real-from-int (int-mod (i * 13 + 5) 251 - 125) / 256.0
+
+  pooled-at : Integer -> Real
+  pooled-at (i) = real-from-int (int-mod (i * 29 + 3) 241 - 120) / 256.0
+
+  noise-at : Integer -> Real
+  noise-at (i) = real-from-int (int-mod (i * 53 + 17) 263 - 131) / 128.0
+
+  build : Integer, Integer, Integer, List Real -> List Real
+  build (which) (i) (n) (acc) =
+    if i >= n then acc
+    else build which (i + 1) n (list-push acc (if which == 1 then context-at i else if which == 2 then pooled-at i else noise-at i))
+
+Section: Grading
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  count-near : List Real, FluxRefStep, Integer, Integer -> Integer
+  count-near (got) (ref) (j) (acc) =
+    if j >= flux-ref-samples then acc
+    else let v = list-at got (int-mod (j * flux-ref-stride + flux-ref-offset) (list-length got))
+    in count-near got ref (j + 1) (if abs (v - list-at (ref.frs-samples) j) <= 0.02 * ref.frs-rms then acc + 1 else acc)
+
+  worst : List Real, FluxRefStep, Integer, Real -> Real
+  worst (got) (ref) (j) (acc) =
+    if j >= flux-ref-samples then acc
+    else let d = abs (list-at got (int-mod (j * flux-ref-stride + flux-ref-offset) (list-length got)) - list-at (ref.frs-samples) j)
+    in worst got ref (j + 1) (if d > acc then d else acc)
+
+  grade : Integer, Integer -> Text
+  grade (x) (k) =
+    let ref = list-at flux-sampler-ref-steps k
+    in let got = un-download x (16 * flux-ref-h * flux-ref-w)
+    in if list-length got == 0 then "NO OUTPUT"
+    else show (count-near got ref 0 0) & "/" & show flux-ref-samples & " within 2% of rms, worst " & show (real-to-int (worst got ref 0 0.0 / ref.frs-rms * 1000.0)) & "/1000 of rms"
+
+  sigmas-match : List Real, Integer, Integer -> Integer
+  sigmas-match (ours) (i) (acc) =
+    if i >= list-length flux-sampler-ref-sigmas then acc
+    else sigmas-match ours (i + 1) (if i < list-length ours & abs (list-at ours i - list-at flux-sampler-ref-sigmas i) <= 0.0000001 then acc + 1 else acc)
+
+Section: Entry
+
+  steps : FluxFile, Integer, Integer, Integer, Integer, List Real, Integer, List Text -> List Text
+  steps (f) (ctx) (y) (x) (n) (sig) (i) (acc) =
+    if i >= list-length sig - 1 then acc
+    else let bad = sample-euler (\xin s -> flux-denoise f ctx flux-ref-txt y flux-ref-h flux-ref-w xin s) x [list-at sig i, list-at sig (i + 1)] n
+    in steps f ctx y x n sig (i + 1) (list-push acc ("step " & show i & " to sigma " & show (real-to-int (list-at sig (i + 1) * 10000.0)) & "/10000: " & (if bad > 0 then "REFUSED" else grade x i)))
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let f0 = flux-open "flux1-schnell-fp8-e4m3fn.safetensors"
+    in if (f0.ff-file).st-valid == False then ["SKIP: no flux1-schnell-fp8-e4m3fn.safetensors under the model root build-output/diffusion-models"]
+    else let f = flux-load f0
+    in let n = 16 * flux-ref-h * flux-ref-w
+    in let sig = flux-simple-sigmas 4
+    in let l1 = "simple sigmas: " & show (sigmas-match sig 0 0) & "/" & show (list-length flux-sampler-ref-sigmas) & " match Forge's"
+    in let ctx = un-upload (build 1 0 (flux-ref-txt * 4096) [])
+    in let y = un-upload (build 2 0 768 [])
+    in let x = un-upload (build 3 0 n [])
+    in let ls = steps f ctx y x n sig 0 [l1]
+    in let xs = un-upload (build 3 0 n [])
+    in let bad = sample-euler (\xin s -> flux-denoise f ctx flux-ref-txt y flux-ref-h flux-ref-w xin s) xs [1.0, 0.75] n
+    in list-push ls ("sabotage, step 0 to the unshifted 0.75: " & grade xs 0)
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

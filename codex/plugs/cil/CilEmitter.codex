@@ -1,0 +1,366 @@
+Chapter: CIL Emitter
+
+  CilEnv = | CilEmpty | CilBinding (Text) (Integer) (CilEnv)
+  CilMethod = record { code : List Integer, locals : List CodexType, label : Text }
+  CilProgram = record { md : CilMetadata, defs : List IRDef, names : List (List CilKey), members : List (List CilKey), records : List CilRecord, closures : List CilClosure, corlib : Integer, object-ref : Integer, unity-ref : Integer, record-methods : Integer, methods : List Integer, error : Text }
+
+  cil-refuse : CilProgram, Text -> Integer
+  cil-refuse (p) (why) =
+   let set = if p.error == "" then __record-set p "error" why else p
+   in 0
+
+  cil-core-type : CodexType -> CodexType
+  cil-core-type (ty) = when ty
+   is UnitTy (n) (t) -> cil-core-type t
+   is EffectfulTy (e) (s) (t) -> cil-core-type t
+   is otherwise -> ty
+
+  cil-void : CodexType -> Boolean
+  cil-void (ty) = when cil-core-type ty
+   is NothingTy -> True
+   is VoidTy -> True
+   is ProofTy -> True
+   is PropEqTy (a) (b) -> True
+   is otherwise -> False
+
+  cil-type : CilProgram, CodexType -> List Integer
+  cil-type (p) (ty) = when cil-core-type ty
+   is IntegerTy (lo) (hi) (mode) -> [10]
+   is RealTy (RwF64) (RmDefault) -> [13]
+   is BooleanTy -> [2]
+   is CharTy -> [10]
+   is TextTy -> [14]
+   is ListTy (elem) -> cil-list-signature p elem
+   is FunTy (arg) (effects) (ret) -> cil-func-signature p arg ret
+   is RecordTy (name) (args) (fields) -> cil-record-signature p (name.value)
+   is ConstructedTy (name) (args) -> cil-record-signature p (name.value)
+   is NothingTy -> [1]
+   is VoidTy -> [1]
+   is ProofTy -> [1]
+   is PropEqTy (a) (b) -> [1]
+   is otherwise -> let refused = cil-refuse p "unsupported managed signature type" in [28]
+
+  cil-value-type : CilProgram, CodexType -> List Integer
+  cil-value-type (p) (ty) =
+   if cil-void ty then let refused = cil-refuse p "void is not a managed value type" in [28]
+   else cil-type p ty
+
+  cil-put : CilMethod, List Integer -> Integer
+  cil-put (method) (bytes) = let set = __record-set method "code" (cil-append (method.code) bytes 0) in 0
+
+  cil-branch : CilMethod, Integer -> Integer
+  cil-branch (method) (op) =
+   let offset = list-length (method.code) + 1
+   in let put = cil-put method ([op] & write-i32 0)
+   in offset
+
+  cil-patch-bytes : List Integer, Integer, List Integer, Integer -> Integer
+  cil-patch-bytes (code) (at) (bytes) (i) =
+   if i >= list-length bytes then 0
+   else let set = list-set-at code (at + i) (list-at bytes i)
+   in cil-patch-bytes code at bytes (i + 1)
+
+  cil-patch : CilMethod, Integer -> Integer
+  cil-patch (method) (operand) = cil-patch-bytes (method.code) operand (write-i32 (list-length (method.code) - operand - 4)) 0
+
+  cil-env-find : CilEnv, Text -> Integer
+  cil-env-find (env) (name) = when env
+   is CilEmpty -> 0
+   is CilBinding (key) (slot) (rest) -> if key == name then slot else cil-env-find rest name
+
+  cil-param-env : List IRParam, Integer, CilEnv -> CilEnv
+  cil-param-env (params) (i) (env) =
+   if i >= list-length params then env
+   else cil-param-env params (i + 1) (CilBinding ((list-at params i).name) (i + 1) env)
+
+  cil-find-def : CilProgram, Text -> Integer
+  cil-find-def (p) (name) = cil-key-find (list-at (p.names) (cil-name-hash name 0 0)) name 0
+
+  cil-index-defs : CilProgram, Integer -> Integer
+  cil-index-defs (p) (i) =
+   if i >= list-length (p.defs) then 0
+   else let name = (list-at (p.defs) i).name
+   in let bucket = cil-name-hash name 0 0
+   in let entries = list-at (p.names) bucket
+   in if cil-key-find entries name 0 >= 0 then cil-refuse p ("duplicate definition " & name)
+   else let put = list-set-at (p.names) bucket (list-push entries (CilKey { key = name, value = i }))
+   in cil-index-defs p (i + 1)
+
+  cil-local : CilMethod, CodexType -> Integer
+  cil-local (method) (ty) =
+   let index = list-length (method.locals)
+   in let set = __record-set method "locals" (list-push (method.locals) ty)
+   in index
+
+  cil-int-op : CilProgram, IRBinaryOp, CodexType -> Integer
+  cil-int-op (p) (op) (ty) =
+   let wrapping = when cil-core-type ty
+    is IntegerTy (lo) (hi) (OvWrapping) ->
+     let limit = if lo /= i64-min | hi /= i64-max then cil-refuse p "bounded wrapping arithmetic is not lowered yet" else 0
+     in True
+    is IntegerTy (lo) (hi) (OvClamping) -> let refused = cil-refuse p "clamping integer arithmetic is not lowered yet" in False
+    is otherwise -> False
+   in when op
+    is IrAddInt -> if wrapping then 88 else 214
+    is IrSubInt -> if wrapping then 89 else 218
+    is IrMulInt -> if wrapping then 90 else 216
+    is IrDivInt -> 91
+    is IrRemInt -> 93
+    is IrAddNum -> 88
+    is IrSubNum -> 89
+    is IrMulNum -> 90
+    is IrDivNum -> 91
+    is IrAnd -> 95
+    is IrOr -> 96
+    is otherwise -> 0
+
+  cil-compare : IRBinaryOp -> List Integer
+  cil-compare (op) = when op
+   is IrEq -> [254, 1]
+   is IrNotEq -> [254, 1, 22, 254, 1]
+   is IrLt -> [254, 4]
+   is IrGt -> [254, 2]
+   is IrLtEq -> [254, 2, 22, 254, 1]
+   is IrGtEq -> [254, 4, 22, 254, 1]
+   is otherwise -> []
+
+  cil-emit-args : CilProgram, CilMethod, CilEnv, List IRExpr, Integer, Integer -> Integer
+  cil-emit-args (p) (method) (env) (args) (i) (depth) =
+   if i >= list-length args then 0
+   else let emitted = cil-expr p method env (list-at args i) depth
+   in cil-emit-args p method env args (i + 1) depth
+
+  cil-expr : CilProgram, CilMethod, CilEnv, IRExpr, Integer -> Integer
+  cil-expr (p) (method) (env) (expr) (depth) =
+   if p.error /= "" then 0
+   else if depth > 256 then cil-refuse p (method.label & ": expression depth exceeds CIL limit")
+   else when expr
+    is IrIntLit (n) (sp) -> cil-put method ([33] & write-i64 n)
+    is IrNumLit (bits) (sp) -> cil-put method ([35] & write-i64 bits)
+    is IrBoolLit (b) (sp) -> cil-put method [if b then 23 else 22]
+    is IrCharLit (c) (sp) -> cil-put method ([33] & write-i64 c)
+    is IrTextLit (s) (sp) -> cil-put method ([114] & write-i32 (1879048192 + cil-user-string (p.md) s))
+    is IrName (name) (ty) (sp) ->
+     let slot = cil-env-find env name
+     in if slot > 0 then cil-put method ([254, 9] & write-i16 (slot - 1))
+     else if slot < 0 then cil-put method ([254, 12] & write-i16 (0 - slot - 1))
+     else if name == "nothing" then 0
+     else let target = cil-find-def p name
+     in if target < 0 then cil-refuse p (method.label & ": unresolved name " & name)
+     else if list-length ((list-at (p.defs) target).params) /= 0 then cil-partial p method target 0
+     else cil-put method ([40] & write-i32 (100663297 + target))
+    is IrBinary (op) (left) (right) (ty) (sp) ->
+     when op
+      is IrAppendList -> cil-list-append p method env left right ty (depth + 1)
+      is IrAppendText ->
+       let a = cil-expr p method env left (depth + 1)
+       in let b = cil-expr p method env right (depth + 1)
+       in let owner = cil-core-ref p "System" "String"
+       in cil-put method ([40] & write-i32 (cil-member p "String:Concat" (owner * 8 + 1) "Concat" [0, 2, 14, 14, 14]))
+      is otherwise -> cil-binary p method env op left right ty (depth + 1)
+    is IrList (values) (ty) (sp) ->
+     let elem = ty
+     in let made = cil-put method ([115] & write-i32 (cil-list-member p elem "new"))
+     in cil-list-literal p method env values elem 0 (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> cil-record-expression p method env name fields (depth + 1)
+    is IrFieldAccess (owner) (name) (ty) (sp) ->
+     let loaded = cil-expr p method env owner (depth + 1)
+     in cil-field-load p method (ir-expr-type owner) name
+    is IrFieldStore (owner) (name) (value) (ty) (sp) ->
+     let loaded = cil-expr p method env owner (depth + 1)
+     in let dup = cil-put method [37]
+     in let v = cil-expr p method env value (depth + 1)
+     in cil-put method ([125] & write-i32 (cil-field-token p (ir-expr-type owner) name))
+    is IrNegate (value) (ty) (sp) -> cil-negate p method env value ty (depth + 1)
+    is IrIf (condition) (yes) (no) (ty) (sp) ->
+     let c = cil-expr p method env condition (depth + 1)
+     in let alternate = cil-branch method 57
+     in let y = cil-expr p method env yes (depth + 1)
+     in let done = cil-branch method 56
+     in let patch = cil-patch method alternate
+     in let n = cil-expr p method env no (depth + 1)
+     in cil-patch method done
+    is IrLet (name) (ty) (value) (body) (sp) ->
+     let index = cil-local method ty
+     in let v = cil-expr p method env value (depth + 1)
+     in let save = cil-put method ([254, 14] & write-i16 index)
+     in cil-expr p method (CilBinding name (0 - index - 1) env) body (depth + 1)
+    is IrApply (f) (arg) (ty) (sp) ->
+     let chain = collect-apply-chain expr []
+     in cil-call p method env (chain.root) (chain.args) (depth + 1)
+    is IrAct (stmts) (ty) (sp) -> cil-act p method env stmts 0 (depth + 1)
+    is otherwise -> cil-refuse p (method.label & ": unsupported IR expression")
+
+  cil-binary : CilProgram, CilMethod, CilEnv, IRBinaryOp, IRExpr, IRExpr, CodexType, Integer -> Integer
+  cil-binary (p) (method) (env) (op) (left) (right) (ty) (depth) =
+     let a = cil-expr p method env left depth
+     in let narrow-a = cil-bool-constant method left (ir-expr-type right)
+     in let b = cil-expr p method env right depth
+     in let narrow-b = cil-bool-constant method right (ir-expr-type left)
+     in let code = cil-int-op p op ty
+     in if code /= 0 then cil-put method [code]
+     else let compare = cil-compare op
+     in if list-length compare > 0 then
+      when cil-core-type (ir-expr-type left)
+       is TextTy -> cil-text-compare p method op
+       is RecordTy (name) (args) (fields) -> cil-refuse p (method.label & ": record comparison is not lowered yet")
+       is ConstructedTy (name) (args) -> cil-refuse p (method.label & ": record comparison is not lowered yet")
+       is ListTy (elem) -> cil-refuse p (method.label & ": list comparison is not lowered yet")
+       is RealTy (w) (m) ->
+        when op
+         is IrLtEq -> cil-put method [254, 3, 22, 254, 1]
+         is IrGtEq -> cil-put method [254, 5, 22, 254, 1]
+         is otherwise -> cil-put method compare
+       is otherwise -> cil-put method compare
+     else cil-refuse p (method.label & ": unsupported binary operator")
+
+  cil-text-compare : CilProgram, CilMethod, IRBinaryOp -> Integer
+  cil-text-compare (p) (method) (op) =
+   let equal = when op
+    is IrEq -> True
+    is IrNotEq -> True
+    is otherwise -> False
+   in if equal == False then cil-refuse p "ordered text comparison is not lowered yet"
+   else let owner = cil-core-ref p "System" "String"
+   in let call = cil-put method ([40] & write-i32 (cil-member p "String:op_Equality" (owner * 8 + 1) "op_Equality" [0, 2, 2, 14, 14]))
+   in when op
+    is IrNotEq -> cil-put method [22, 254, 1]
+    is otherwise -> 0
+
+  cil-bool-constant : CilMethod, IRExpr, CodexType -> Integer
+  cil-bool-constant (method) (expr) (other) = when cil-core-type other
+   is BooleanTy -> when expr
+    is IrIntLit (n) (sp) -> cil-put method [105]
+    is otherwise -> 0
+   is otherwise -> 0
+  cil-negate : CilProgram, CilMethod, CilEnv, IRExpr, CodexType, Integer -> Integer
+  cil-negate (p) (method) (env) (value) (ty) (depth) =
+     when cil-core-type ty
+      is IntegerTy (lo) (hi) (OvError) ->
+       let zero = cil-put method ([33] & write-i64 0)
+       in let a = cil-expr p method env value depth
+       in cil-put method [218]
+      is IntegerTy (lo) (hi) (OvClamping) -> cil-refuse p (method.label & ": clamping negate is not lowered yet")
+      is IntegerTy (lo) (hi) (OvWrapping) ->
+       if lo /= i64-min | hi /= i64-max then cil-refuse p (method.label & ": bounded wrapping negate is not lowered yet")
+       else let a = cil-expr p method env value depth in cil-put method [101]
+      is otherwise -> let a = cil-expr p method env value depth in cil-put method [101]
+
+  cil-act : CilProgram, CilMethod, CilEnv, List IRActStmt, Integer, Integer -> Integer
+  cil-act (p) (method) (env) (stmts) (i) (depth) =
+   if i >= list-length stmts then 0
+   else let stmt = list-at stmts i
+   in when stmt
+    is IrDoExec (value) (sp) ->
+     let v = cil-expr p method env value depth
+     in let pop = if i + 1 < list-length stmts & cil-void (ir-expr-type value) == False then cil-put method [38] else 0
+     in cil-act p method env stmts (i + 1) depth
+    is IrDoBind (name) (ty) (value) (sp) ->
+     let slot = cil-local method ty
+     in let v = cil-expr p method env value depth
+     in let save = cil-put method ([254, 14] & write-i16 slot)
+     in cil-act p method (CilBinding name (0 - slot - 1) env) stmts (i + 1) depth
+
+  cil-param-types : CilProgram, List IRParam, Integer, List Integer -> List Integer
+  cil-param-types (p) (params) (i) (out) =
+   if i >= list-length params then out
+   else cil-param-types p params (i + 1) (cil-append out (cil-value-type p ((list-at params i).type-val)) 0)
+
+  cil-local-types : CilProgram, List CodexType, Integer, List Integer -> List Integer
+  cil-local-types (p) (types) (i) (out) =
+   if i >= list-length types then out
+   else cil-local-types p types (i + 1) (cil-append out (cil-value-type p (list-at types i)) 0)
+
+  cil-param-rows : CilProgram, List IRParam, Integer -> Integer
+  cil-param-rows (p) (params) (i) =
+   if i >= list-length params then 0
+   else let row = cil-row (p.md) 8 [CilU2 0, CilU2 (i + 1), CilString (cil-string (p.md) ((list-at params i).name))]
+   in cil-param-rows p params (i + 1)
+
+  cil-stack-args : List IRExpr, Integer, Integer -> Integer
+  cil-stack-args (args) (i) (peak) =
+   if i >= list-length args then peak
+   else cil-stack-args args (i + 1) (max peak (i + cil-stack (list-at args i)))
+
+  cil-stack-stmts : List IRActStmt, Integer, Integer -> Integer
+  cil-stack-stmts (stmts) (i) (peak) =
+   if i >= list-length stmts then peak
+   else cil-stack-stmts stmts (i + 1) (max peak (cil-stack (ir-act-stmt-expr (list-at stmts i))))
+
+  cil-stack : IRExpr -> Integer
+  cil-stack (expr) = when expr
+   is IrBinary (op) (a) (b) (ty) (sp) ->
+    let ordinary = max (cil-stack a) (1 + cil-stack b)
+    in when op
+     is IrAppendList -> max 3 ordinary
+     is otherwise -> ordinary
+   is IrNegate (v) (ty) (sp) -> 1 + cil-stack v
+   is IrIf (c) (y) (n) (ty) (sp) -> max (cil-stack c) (max (cil-stack y) (cil-stack n))
+   is IrLet (name) (ty) (v) (body) (sp) -> max (cil-stack v) (cil-stack body)
+   is IrApply (f) (a) (ty) (sp) -> let chain = collect-apply-chain expr [] in max (cil-stack (chain.root)) (1 + cil-stack-args (chain.args) 0 4)
+   is IrList (values) (ty) (sp) -> cil-stack-list values 0 1
+   is IrRecord (name) (fields) (ty) (sp) -> cil-stack-fields fields 0 (list-length fields)
+   is IrFieldAccess (owner) (name) (ty) (sp) -> cil-stack owner
+   is IrFieldStore (owner) (name) (value) (ty) (sp) -> max (cil-stack owner) (2 + cil-stack value)
+   is IrAct (stmts) (ty) (sp) -> cil-stack-stmts stmts 0 1
+   is IrName (name) (ty) (sp) -> 3
+   is otherwise -> 1
+
+  cil-stack-fields : List IRFieldVal, Integer, Integer -> Integer
+  cil-stack-fields (fields) (i) (peak) =
+   if i >= list-length fields then max peak 1
+   else cil-stack-fields fields (i + 1) (max peak (cil-stack ((list-at fields i).value)))
+
+  cil-stack-list : List IRExpr, Integer, Integer -> Integer
+  cil-stack-list (values) (i) (peak) =
+   if i >= list-length values then peak
+   else cil-stack-list values (i + 1) (max peak (2 + cil-stack (list-at values i)))
+
+  cil-method-body : CilProgram, CilMethod, Integer -> Integer
+  cil-method-body (p) (method) (peak) =
+   let loc-sig = if list-length (method.locals) == 0 then 0 else
+    let blob = cil-blob (p.md) ([7] & cil-compressed (list-length (method.locals)) & cil-local-types p (method.locals) 0 [])
+    in 285212672 + cil-row (p.md) 17 [CilBlob blob]
+   in let limit = if peak > 65535 | list-length (method.locals) > 65535 then cil-refuse p "method exceeds CIL stack/local limit" else 0
+   in let header = write-i16 12307 & write-i16 peak & write-i32 (list-length (method.code)) & write-i32 loc-sig
+   in let at = align-up (list-length (p.methods)) 4
+   in let padding = cil-append (p.methods) (pad-zeros (at - list-length (p.methods))) 0
+   in let methods = __record-set p "methods" (cil-append padding (header & method.code) 0)
+   in cil-method-base + at
+
+  cil-emit-def : CilProgram, IRDef -> Integer
+  cil-emit-def (p) (def) =
+   let limit = if list-length (def.params) > 65535 then cil-refuse p "method exceeds CIL parameter limit" else 0
+   in let method = CilMethod { code = [], locals = [], label = def.name }
+   in let body = cil-tail p method (cil-param-env (def.params) 0 CilEmpty) (def.body) 0
+   in let peak = if p.error == "" then cil-stack (def.body) else 1
+   in let rva = cil-method-body p method peak
+   in let signature = cil-blob (p.md) ([0] & cil-compressed (list-length (def.params)) & cil-type p (cil-drop-args (def.type-val) (list-length (def.params))) & cil-param-types p (def.params) 0 [])
+   in let param-start = list-at ((p.md).counts) 8 + 1
+   in let params = cil-param-rows p (def.params) 0
+   in cil-row (p.md) 6 [CilU4 rva, CilU2 0, CilU2 150, CilString (cil-string (p.md) (def.name)), CilBlob signature, CilTable 8 param-start]
+
+  cil-emit-defs : CilProgram, Integer -> Integer
+  cil-emit-defs (p) (i) =
+   if i >= list-length (p.defs) | p.error /= "" then 0
+   else let emit = cil-emit-def p (list-at (p.defs) i)
+   in cil-emit-defs p (i + 1)
+
+  cil-program : ParsedIR -> CilProgram
+  cil-program (ir) = cil-program-mode ir False
+
+  cil-program-mode : ParsedIR, Boolean -> CilProgram
+  cil-program-mode (ir) (unity) =
+   let md = cil-new-metadata 0
+   in let module = cil-row md 0 [CilU2 0, CilString (cil-string md "PrismMod.dll"), CilGuid 1, CilGuid 0, CilGuid 0]
+   in let assembly = cil-row md 32 [CilU4 0, CilU2 1, CilU2 0, CilU2 0, CilU2 0, CilU4 0, CilBlob 0, CilString (cil-string md "PrismMod"), CilString 0]
+   in let corlib = cil-row md 35 [CilU2 4, CilU2 0, CilU2 0, CilU2 0, CilU4 0, CilBlob (cil-blob md [183, 122, 92, 86, 25, 52, 224, 137]), CilString (cil-string md "mscorlib"), CilString 0, CilBlob 0]
+   in let obj = cil-row md 1 [CilCoded 2 [0, 26, 35, 1] (corlib * 4 + 2), CilString (cil-string md "Object"), CilString (cil-string md "System")]
+   in let root = cil-row md 2 [CilU4 0, CilString (cil-string md "<Module>"), CilString 0, CilCoded 2 [2, 1, 27] 0, CilTable 4 1, CilTable 6 1]
+   in let program = cil-row md 2 [CilU4 1048961, CilString (cil-string md "Codex_Program"), CilString (cil-string md "PrismGenerated"), CilCoded 2 [2, 1, 27] (obj * 4 + 1), CilTable 4 1, CilTable 6 1]
+   in let p = CilProgram { md = md, defs = (ir.chapter).defs, names = cil-empty-buckets 1024 [], members = cil-empty-buckets 1024 [], records = [], closures = [], corlib = corlib, object-ref = obj, unity-ref = 0, record-methods = 0, methods = [], error = "" }
+   in let indexed = cil-index-defs p 0
+   in let configured = if unity then cil-unity-configure p else 0
+   in let collected = cil-collect-records p (ir.type-defs) 0 1
+   in let declared = cil-declare-records p 0
+   in p

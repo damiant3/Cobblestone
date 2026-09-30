@@ -1,0 +1,123 @@
+Chapter: GpuBridgeArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+
+ The page codex/plugs/html/arms/gpu-bridge.mjs drives: a buffer round trip,
+ then a picked file's ranges uploaded (x, w and b as f32, and w again as f16
+ widened to f32) and bk_linear from page-data "bk" launched over both weight
+ buffers. Every answer lands in the page state for the arm to read.
+
+ We say:
+
+Section: Round Trip
+
+  gba-words : Integer, Integer, List Integer -> List Integer
+  gba-words (n) (i) (acc) =
+    if i >= n then acc
+    else gba-words n (i + 1) (list-snoc acc ((i * 40503 - (i * 40503) / 65536 * 65536 - 32768) * 65535))
+
+  opening : [Console] Integer
+  opening = gpu-open-then gba-opened
+
+  gba-opened : Text -> Integer
+  gba-opened (r) =
+    let s = state-set-text "open" r
+    in let h = gpu-buf-alloc 1024
+    in let w = gpu-buf-write-words h 0 (gba-words 256 0 [])
+    in gpu-buf-download-then h 0 1024 gba-round-trip
+
+ A file chooser opens only on a user's gesture, so the pick waits for a click.
+
+  gba-round-trip : Text -> Integer
+  gba-round-trip (r) =
+    let s = state-set-text "rt" r
+    in let c = dom-on-click (dom-query "html") gba-pick
+    in state-set "armed" 1
+
+  gba-pick : Text -> Integer
+  gba-pick (id) = pick-file-then ".bin" gba-picked
+
+Section: Linear
+
+ The file holds x (37 x 70), w (45 x 70) and b (45) as f32, then w as f16.
+
+  gba-m : Integer = 37
+
+  gba-n : Integer = 45
+
+  gba-k : Integer = 70
+
+  gba-picked : Text -> Integer
+  gba-picked (r) =
+    let f = state-set-text "file" (json-obj-field (json-parse-obj r) "name")
+    in let a = state-set "hx" (gpu-buf-alloc (gba-m * gba-k * 4))
+    in let b = state-set "hw" (gpu-buf-alloc (gba-n * gba-k * 4))
+    in let c = state-set "hb" (gpu-buf-alloc (gba-n * 4))
+    in let d = state-set "hw2" (gpu-buf-alloc (gba-n * gba-k * 4))
+    in let e = state-set "hy" (gpu-buf-alloc (gba-m * gba-n * 4))
+    in let g = state-set "hy2" (gpu-buf-alloc (gba-m * gba-n * 4))
+    in let l = state-set "hl" (gpu-buf-alloc (gba-m * gba-k * 4))
+    in let l2 = state-set "hl2" (gpu-buf-alloc (gba-m * gba-k * 4))
+    in gpu-buf-upload-then (state-get "hx") 0 f 0 (gba-m * gba-k) gpu-dt-f32 gpu-dt-f32 gba-up-w
+
+  gba-up-w : Text -> Integer
+  gba-up-w (r) =
+    let s = state-set-text "up-x" r
+    in gpu-buf-upload-then (state-get "hw") 0 (state-get-text "file") (gba-m * gba-k * 4) (gba-n * gba-k) gpu-dt-f32 gpu-dt-f32 gba-up-b
+
+  gba-up-b : Text -> Integer
+  gba-up-b (r) =
+    let s = state-set-text "up-w" r
+    in gpu-buf-upload-then (state-get "hb") 0 (state-get-text "file") ((gba-m * gba-k + gba-n * gba-k) * 4) gba-n gpu-dt-f32 gpu-dt-f32 gba-up-wh
+
+  gba-up-wh : Text -> Integer
+  gba-up-wh (r) =
+    let s = state-set-text "up-b" r
+    in gpu-buf-upload-then (state-get "hw2") 0 (state-get-text "file") ((gba-m * gba-k + gba-n * gba-k + gba-n) * 4) (gba-n * gba-k) gpu-dt-f16 gpu-dt-f32 gba-launch
+
+  gba-grid : GpuGrid
+  gba-grid = GpuGrid { gx = ((gba-m + 15) / 16) * ((gba-n + 15) / 16), gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+
+  gba-args : Integer, Integer -> List GpuParam
+  gba-args (hw) (hy) =
+    [gpu-arg-buf (state-get "hx") 0, gpu-arg-buf hw 0, gpu-arg-buf (state-get "hb") 0, gpu-arg-buf hy 0, gpu-arg-u32 gba-m, gpu-arg-u32 gba-n, gpu-arg-u32 gba-k]
+
+  gba-launch : Text -> Integer
+  gba-launch (r) =
+    let s = state-set-text "up-wh" r
+    in let a = state-set "launch" (gpu-launch (page-data "bk") "bk_linear_main" gba-grid (gba-args (state-get "hw") (state-get "hy")))
+    in let b = state-set "launch2" (gpu-launch (page-data "bk") "bk_linear_main" gba-grid (gba-args (state-get "hw2") (state-get "hy2")))
+    in let c = state-set "launch3" (gpu-launch (page-data "bk") "bk_lincomb3_main" gba-lc-grid (gba-lc-args (state-get "hl") (gpu-arg-f32 0.5)))
+    in let d = state-set "launch4" (gpu-launch (page-data "bk") "bk_lincomb3_main" gba-lc-grid (gba-lc-args (state-get "hl2") (gpu-arg-u32 1)))
+    in gpu-buf-download-then (state-get "hy") 0 (gba-m * gba-n * 4) gba-got-y
+
+ The sampler's a x + b y + c z over x, w and the f16 w, with a = 0.5, b = -2 and
+ c = 0.25 as f32 scalars; the second launch passes a's slot the integer 1.
+
+  gba-lc-grid : GpuGrid
+  gba-lc-grid = GpuGrid { gx = (gba-m * gba-k + 63) / 64, gy = 1, gz = 1, bx = 64, by = 1, bz = 1, shared = 0 }
+
+  gba-lc-args : Integer, GpuParam -> List GpuParam
+  gba-lc-args (out) (a) =
+    [gpu-arg-buf (state-get "hx") 0, gpu-arg-buf (state-get "hw") 0, gpu-arg-buf (state-get "hw2") 0, gpu-arg-buf out 0, a, gpu-arg-f32 (0.0 - 2.0), gpu-arg-f32 0.25, gpu-arg-u32 (gba-m * gba-k)]
+
+  gba-got-y : Text -> Integer
+  gba-got-y (r) =
+    let s = state-set-text "y" r
+    in gpu-buf-download-then (state-get "hy2") 0 (gba-m * gba-n * 4) gba-got-y2
+
+  gba-got-y2 : Text -> Integer
+  gba-got-y2 (r) =
+    let s = state-set-text "y2" r
+    in gpu-buf-download-then (state-get "hl") 0 (gba-m * gba-k * 4) gba-got-l
+
+  gba-got-l : Text -> Integer
+  gba-got-l (r) =
+    let s = state-set-text "l" r
+    in gpu-buf-download-then (state-get "hl2") 0 (gba-m * gba-k * 4) gba-got-l2
+
+  gba-got-l2 : Text -> Integer
+  gba-got-l2 (r) =
+    let s = state-set-text "l2" r
+    in let e = state-set-text "err" (gpu-error 0)
+    in state-set "done" 1

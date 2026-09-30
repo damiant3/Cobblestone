@@ -1,0 +1,146 @@
+Chapter: GpuLinearFp8
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter GemmPtx
+  cites AI chapter SafeTensors
+  cites Diffusion chapter CheckpointFile
+  cites Foreword chapter Console
+
+ The weights are flux1-schnell-fp8's double_blocks.0.img_attn.qkv (9216 x 3072
+ e4m3 and its 9216 e4m3 biases), read raw from the installed file through the
+ -gpu-files root. x is 200 x 3072 integers in -4..4, exact in f16. Each sampled
+ entry of y = x W^T + b is held to an f64 dot product over the same bytes
+ decoded here, within 1e-5 of the sum of its terms' magnitudes; the sabotage
+ arm runs the kernel with K four short.
+
+ We say:
+
+Section: Values
+
+  scratch : Integer = #BD700000
+
+  mm : Integer = 200
+  nn : Integer = 9216
+  kk : Integer = 3072
+
+  xv : Integer, Integer -> Integer
+  xv (i) (k) = int-mod (i * 7 + k * 13) 9 - 4
+
+  f16-small : Integer -> Integer
+  f16-small (v) =
+    let a = if v < 0 then 0 - v else v
+    in let mag = if a == 0 then 0 else if a == 1 then 15360 else if a == 2 then 16384 else if a == 3 then 16896 else 17408
+    in if v < 0 then mag + 32768 else mag
+
+  pow2 : Integer -> Real
+  pow2 (k) = bits-to-real (bit-shl (k + 1023) 52)
+
+  e4m3 : Integer -> Real
+  e4m3 (v) =
+    let s = v / 128
+    in let e = (v - s * 128) / 8
+    in let m = v - s * 128 - e * 8
+    in let mag = if e == 0 then real-from-int m * pow2 (0 - 9) else (1.0 + real-from-int m / 8.0) * pow2 (e - 7)
+    in if s == 1 then 0.0 - mag else mag
+
+  f32-real : Integer -> Real
+  f32-real (w) =
+    let s = bit-and (bit-shru w 31) 1
+    in let e = bit-and (bit-shru w 23) 255
+    in let m = bit-and w #7FFFFF
+    in let mag = if e == 0 then real-from-int m * pow2 (0 - 149) else (1.0 + real-from-int m / 8388608.0) * pow2 (e - 127)
+    in if s == 1 then 0.0 - mag else mag
+
+Section: Upload
+
+  put-x : Integer, Integer -> Integer
+  put-x (w) (n) =
+    if w >= n then w
+    else let i = (w * 2) / kk
+    in let k = w * 2 - i * kk
+    in let p = poke-32 scratch (w * 4) (f16-small (xv i (k + 1)) * 65536 + f16-small (xv i k))
+    in put-x (w + 1) n
+
+  upload-raw : Text, Integer, Integer -> Integer
+  upload-raw (path) (off) (bytes) =
+    let h = gpu-buf-alloc bytes
+    in if h == 0 then 0
+    else if gpu-buf-upload h 0 path off bytes gpu-dt-u8 gpu-dt-u8 == bytes then h
+    else 0
+
+Section: Reference
+
+  Dot = record {
+    d-sum : Real,
+    d-abs : Real,
+    d-sub : Integer
+  }
+
+  dot : Integer, Integer, Dot -> Dot
+  dot (i) (k) (acc) =
+    if k >= kk then acc
+    else let v = bit-and (peek-byte (scratch + 64) k) 255
+    in let t = e4m3 v * real-from-int (xv i k)
+    in dot i (k + 1) (Dot { d-sum = acc.d-sum + t, d-abs = acc.d-abs + (if t < 0.0 then 0.0 - t else t), d-sub = acc.d-sub + (if v - (v / 128) * 128 < 8 & v - (v / 128) * 128 > 0 then 1 else 0) })
+
+  Grade = record {
+    g-good : Integer,
+    g-sub : Integer
+  }
+
+  sample : Integer, Integer, Integer, Integer, Grade -> Grade
+  sample (hw) (hy) (hbr) (s) (acc) =
+    if s >= 64 then acc
+    else let i = int-mod (s * 37 + 11) mm
+    in let j = int-mod (s * 2654435761 + 5) nn
+    in let rw = gpu-buf-read hw (j * kk) kk (scratch + 64)
+    in let rb = gpu-buf-read hbr (j - int-mod j 4) 4 (scratch + 32)
+    in let b = e4m3 (bit-and (peek-byte (scratch + 32) (int-mod j 4)) 255)
+    in let ry = gpu-buf-read hy ((i * nn + j) * 4) 4 scratch
+    in let got = f32-real (bit-and (peek-32 scratch 0) #FFFFFFFF)
+    in let d = dot i 0 (Dot { d-sum = 0.0, d-abs = 0.0, d-sub = 0 })
+    in let want = d.d-sum + b
+    in let diff = if got > want then got - want else want - got
+    in let ok = rw & rb & ry & diff <= 0.00001 * (d.d-abs + (if b < 0.0 then 0.0 - b else b))
+    in sample hw hy hbr (s + 1) (Grade { g-good = acc.g-good + (if ok then 1 else 0), g-sub = acc.g-sub + d.d-sub })
+
+Section: Launch
+
+  launch : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  launch (mode) (hx) (hw) (hb) (hy) (kact) =
+    if mode == 2 then gpu-launch gemm-ptx "kernel_linear_fast_fp8_mfirst" (GpuGrid { gx = (mm + 127) / 128, gy = (nn + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 39936 }) [gpu-arg-buf hx 0, gpu-arg-buf hw 0, gpu-arg-buf hb 0, gpu-arg-buf hy 0, gpu-arg-u64 mm, gpu-arg-u64 nn, gpu-arg-u64 kact, gpu-arg-u64 0, gpu-arg-u64 0]
+    else if mode == 1 then gpu-launch gemm-ptx "kernel_linear_fast_fp8" (GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 39936 }) [gpu-arg-buf hx 0, gpu-arg-buf hw 0, gpu-arg-buf hb 0, gpu-arg-buf hy 0, gpu-arg-u64 mm, gpu-arg-u64 nn, gpu-arg-u64 kact, gpu-arg-u64 0, gpu-arg-u64 0]
+    else gpu-launch gemm-ptx "kernel_linear_fp8" (GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }) [gpu-arg-buf hx 0, gpu-arg-buf hw 0, gpu-arg-buf hb 0, gpu-arg-buf hy 0, gpu-arg-u64 mm, gpu-arg-u64 nn, gpu-arg-u64 kact, gpu-arg-u64 0]
+
+  run : Integer -> Text
+  run (z) =
+    let path = "flux1-schnell-fp8-e4m3fn.safetensors"
+    in let file = ckpt-open path
+    in if file.st-valid == False then "SKIP: no " & path & " under the -gpu-files root"
+    else when st-find-tensor file "double_blocks.0.img_attn.qkv.weight"
+     is None -> "no qkv weight"
+     is Just (mw) -> (when st-find-tensor file "double_blocks.0.img_attn.qkv.bias"
+      is None -> "no qkv bias"
+      is Just (mb) ->
+       let hw = upload-raw path (file.st-data-offset + mw.stm-offset-start) (nn * kk)
+       in let hbr = upload-raw path (file.st-data-offset + mb.stm-offset-start) nn
+       in let hb = gpu-buf-alloc (nn * 4)
+       in let ub = if hb == 0 then 0 else gpu-buf-upload hb 0 path (file.st-data-offset + mb.stm-offset-start) nn gpu-dt-fp8-e4m3 gpu-dt-f32
+       in let hx = gpu-buf-alloc (mm * kk * 2)
+       in let px = put-x 0 (mm * kk / 2)
+       in let wx = if hx == 0 then False else gpu-buf-write hx 0 (mm * kk * 2) scratch
+       in let hy = gpu-buf-alloc (mm * nn * 4)
+       in if hw == 0 | hbr == 0 | ub /= nn * 4 | wx == False | hy == 0 then "setup failed"
+       else arm 0 hx hw hb hy hbr "fp8 qkv 200 x 9216 x 3072 + b: " & "\n" & arm 1 hx hw hb hy hbr "pipelined fp8 qkv 200 x 9216 x 3072 + b: " & "\n" & arm 2 hx hw hb hy hbr "pipelined fp8, row tiles first, qkv 200 x 9216 x 3072 + b: ")
+
+  arm : Integer, Integer, Integer, Integer, Integer, Integer, Text -> Text
+  arm (mode) (hx) (hw) (hb) (hy) (hbr) (label) =
+    let l1 = launch mode hx hw hb hy kk
+    in let g = sample hw hy hbr 0 (Grade { g-good = 0, g-sub = 0 })
+    in let l2 = launch mode hx hw hb hy (kk - 4)
+    in let s = sample hw hy hbr 0 (Grade { g-good = 0, g-sub = 0 })
+    in label & show (g.g-good) & "/64 within 1e-5 of the f64 reference, " & show (g.g-sub) & " subnormal weights in the sampled rows; sabotage K - 4: " & show (s.g-good) & "/64" & (if l1 < 0 | l2 < 0 then ", LAUNCH REFUSED" else "")
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni (run 0)
+  end

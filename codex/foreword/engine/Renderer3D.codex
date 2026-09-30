@@ -36,8 +36,26 @@ Section: Flat Raster Target
     r3t-depth : Integer,
     r3t-w : Integer,
     r3t-h : Integer,
-    r3t-stride : Integer
+    r3t-stride : Integer,
+    r3t-service : Integer -> Integer
   }
+
+  r3d-no-service : Integer -> Integer
+  r3d-no-service (ignored) = 0
+
+ Sixteen-row units amortise device polling without leaving a full raster or
+ presentation pass between checkpoints. Twenty-four indices bound a group
+ of eight triangles, including clipped and culled triangles.
+
+  r3d-service-rows : Integer = 16
+
+  r3d-service-row : R3dTriState, Integer -> Integer
+  r3d-service-row (st) (y) =
+    if int-mod y r3d-service-rows == 0 then (st.r3t-service) 0 else 0
+
+  r3d-service-tri : R3dTriState, Integer -> Integer
+  r3d-service-tri (st) (i) =
+    if int-mod i 24 == 0 then (st.r3t-service) 0 else 0
 
   r3d-far-depth : Integer = 999999999
 
@@ -102,26 +120,29 @@ Section: Flat Raster Target
     in let dp = alloc-bytes (w * h * 4)
     in let c1 = r3d-fill-32 px bg 0 (w * h)
     in let c2 = r3d-fill-32 dp r3d-far-depth 0 (w * h)
-    in R3dTriState { r3t-base = px, r3t-depth = dp, r3t-w = w, r3t-h = h, r3t-stride = w }
+    in R3dTriState { r3t-base = px, r3t-depth = dp, r3t-w = w, r3t-h = h, r3t-stride = w, r3t-service = r3d-no-service }
 
   r3d-target-at : Integer, Integer, Integer, Integer, Integer -> R3dTriState
   r3d-target-at (base) (stride) (w) (h) (bg) =
     let dp = alloc-bytes (w * h * 4)
     in let c1 = r3d-fill-rows base stride w h bg 0
     in let c2 = r3d-fill-32 dp r3d-far-depth 0 (w * h)
-    in R3dTriState { r3t-base = base, r3t-depth = dp, r3t-w = w, r3t-h = h, r3t-stride = stride }
-
- IT ANSWERS THE REFUSAL RATHER THAN SWALLOWING IT, so a caller can tell the
- frame did not clear. Answering 0 either way is what would make a skipped
- clear look like a clear that worked (L-BAILVALUE).
+    in R3dTriState { r3t-base = base, r3t-depth = dp, r3t-w = w, r3t-h = h, r3t-stride = stride, r3t-service = r3d-no-service }
 
   r3d-target-clear : R3dTriState, Integer -> Integer
   r3d-target-clear (st) (bg) =
     if r3d-base-ok (st.r3t-base) == False then r3d-refused
     else if r3d-base-ok (st.r3t-depth) == False then r3d-refused
     else
-      let c1 = r3d-fill-rows (st.r3t-base) (st.r3t-stride) (st.r3t-w) (st.r3t-h) bg 0
-      in r3d-fill-32 (st.r3t-depth) r3d-far-depth 0 (st.r3t-w * st.r3t-h)
+      r3d-clear-serviced st bg 0
+
+  r3d-clear-serviced : R3dTriState, Integer, Integer -> Integer
+  r3d-clear-serviced (st) (bg) (y) =
+    if y >= st.r3t-h then 0
+    else let service = r3d-service-row st y
+    in let c = r3d-fill-span-at (st.r3t-base) (y * st.r3t-stride) (st.r3t-w) bg 0
+    in let d = r3d-fill-span-at (st.r3t-depth) (y * st.r3t-w) (st.r3t-w) r3d-far-depth 0
+    in r3d-clear-serviced st bg (y + 1)
 
   r3d-plot : R3dTriState, Integer, Integer, Integer, Integer -> Integer
   r3d-plot (st) (x) (y) (depth) (color) =
@@ -256,7 +277,8 @@ Section: Triangle Rasterization with Depth
   r3d-scan-rows : R3dTriState, ProjVert, ProjVert, ProjVert, Integer, Integer, Integer, Integer, Integer -> Integer
   r3d-scan-rows (st) (a) (b) (c) (color) (y) (max-y) (min-x) (max-x) =
     if y > max-y then 0
-    else let n = r3d-scan-cols st a b c color y min-x max-x
+    else let service = r3d-service-row st y
+    in let n = r3d-scan-cols st a b c color y min-x max-x
     in r3d-scan-rows st a b c color (y + 1) max-y min-x max-x
 
  The barycentric weights are computed inline rather than through
@@ -527,7 +549,8 @@ Section: Per-Pixel Shading
   r3d-scan-rows-sh : R3dTriState, ProjVert, ProjVert, ProjVert, R3dShadeCtx, Integer, Integer, Integer, Integer, Integer -> Integer
   r3d-scan-rows-sh (st) (a) (b) (c) (ctx) (bias) (y) (max-y) (min-x) (max-x) =
     if y > max-y then 0
-    else let n = r3d-scan-cols-sh st a b c ctx bias y min-x max-x
+    else let service = r3d-service-row st y
+    in let n = r3d-scan-cols-sh st a b c ctx bias y min-x max-x
     in r3d-scan-rows-sh st a b c ctx bias (y + 1) max-y min-x max-x
 
   r3d-scan-cols-sh : R3dTriState, ProjVert, ProjVert, ProjVert, R3dShadeCtx, Integer, Integer, Integer, Integer -> Integer
@@ -676,7 +699,8 @@ Section: Per-Pixel Shading
   r3d-render-tris-gouraud : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-gouraud (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (half-w) (half-h) (i) (n) =
     if i >= n then 0
-    else let i0 = mesh-index-at mesh i
+    else let service = r3d-service-tri st i
+    in let i0 = mesh-index-at mesh i
     in let i1 = mesh-index-at mesh (i + 1)
     in let i2 = mesh-index-at mesh (i + 2)
     in let c0 = r3d-clip-vertex (mesh-vertex-at mesh i0) mvp model
@@ -691,7 +715,8 @@ Section: Per-Pixel Shading
   r3d-render-tris-phong : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-phong (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (half-w) (half-h) (i) (n) =
     if i >= n then 0
-    else let i0 = mesh-index-at mesh i
+    else let service = r3d-service-tri st i
+    in let i0 = mesh-index-at mesh i
     in let i1 = mesh-index-at mesh (i + 1)
     in let i2 = mesh-index-at mesh (i + 2)
     in let c0 = r3d-clip-vertex (mesh-vertex-at mesh i0) mvp model
@@ -858,7 +883,8 @@ Section: Shadow Mapping
   r3d-render-tris-flat-sw : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, R3dShadow, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-flat-sw (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (sh) (half-w) (half-h) (i) (n) =
     if i >= n then 0
-    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp model
+    else let service = r3d-service-tri st i
+    in let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp model
     in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp model
     in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp model
     in let poly = r3d-clip-tri c0 c1 c2
@@ -874,7 +900,8 @@ Section: Shadow Mapping
   r3d-render-tris-gouraud-sw : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, R3dShadow, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-gouraud-sw (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (sh) (half-w) (half-h) (i) (n) =
     if i >= n then 0
-    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp model
+    else let service = r3d-service-tri st i
+    in let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp model
     in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp model
     in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp model
     in let poly = r3d-clip-tri c0 c1 c2
@@ -896,7 +923,8 @@ Section: Shadow Mapping
   r3d-render-tris-phong-sw : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, R3dShadow, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-phong-sw (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (sh) (half-w) (half-h) (i) (n) =
     if i >= n then 0
-    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp model
+    else let service = r3d-service-tri st i
+    in let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp model
     in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp model
     in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp model
     in let poly = r3d-clip-tri c0 c1 c2
@@ -941,6 +969,7 @@ Section: Shadow Mapping
       is Just (dir) ->
         let lvp = r3d-light-vp scene dir
         in let sh-st = r3d-target-new map-size map-size 0
+        in let service = __record-set sh-st "r3t-service" (st.r3t-service)
         in let dp = r3d-shadow-pass sh-st scene lvp
         in let sh = R3dShadow { rs-base = sh-st.r3t-depth, rs-size = map-size, rs-bias = r3d-shadow-bias, rs-vp = lvp }
         in let vp = camera3d-vp (scene.s3-camera)
@@ -1049,7 +1078,8 @@ Section: Unlit Triangle Rendering
   r3d-render-tris-unlit-tex : R3dTriState, Mesh, Mat4, EngineMaterial, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-unlit-tex (st) (mesh) (mvp) (mat) (half-w) (half-h) (i) (n) =
     if i >= n then 0
-    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp mat4-identity
+    else let service = r3d-service-tri st i
+    in let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp mat4-identity
     in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp mat4-identity
     in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp mat4-identity
     in let poly = r3d-clip-tri c0 c1 c2
@@ -1060,7 +1090,8 @@ Section: Unlit Triangle Rendering
   r3d-render-tris-unlit : R3dTriState, Mesh, Mat4, EngineMaterial, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-unlit (st) (mesh) (mvp) (mat) (half-w) (half-h) (i) (n) =
     if i >= n then 0
-    else let i0 = mesh-index-at mesh i
+    else let service = r3d-service-tri st i
+    in let i0 = mesh-index-at mesh i
     in let i1 = mesh-index-at mesh (i + 1)
     in let i2 = mesh-index-at mesh (i + 2)
     in let v0 = mesh-vertex-at mesh i0
@@ -1084,7 +1115,8 @@ Section: Unlit Triangle Rendering
   r3d-render-tris-caster : R3dTriState, Mesh, Mat4, EngineMaterial, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-caster (st) (mesh) (mvp) (mat) (half-w) (half-h) (i) (n) =
     if i >= n then 0
-    else let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp mat4-identity
+    else let service = r3d-service-tri st i
+    in let c0 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh i)) mvp mat4-identity
     in let c1 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 1))) mvp mat4-identity
     in let c2 = r3d-clip-vertex (mesh-vertex-at mesh (mesh-index-at mesh (i + 2))) mvp mat4-identity
     in let poly = r3d-clip-tri c0 c1 c2
@@ -1105,7 +1137,8 @@ Section: Flat/Phong Triangle Rendering
   r3d-render-tris-flat : R3dTriState, Mesh, Mat4, Mat4, EngineMaterial, List Light3D, Vec3, Integer, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-flat (st) (mesh) (model) (mvp) (mat) (lights) (eye) (ambient) (half-w) (half-h) (i) (n) =
     if i >= n then 0
-    else let i0 = mesh-index-at mesh i
+    else let service = r3d-service-tri st i
+    in let i0 = mesh-index-at mesh i
     in let i1 = mesh-index-at mesh (i + 1)
     in let i2 = mesh-index-at mesh (i + 2)
     in let v0 = mesh-vertex-at mesh i0

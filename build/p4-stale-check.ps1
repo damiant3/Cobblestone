@@ -70,13 +70,16 @@ $ErrorActionPreference = 'Stop'
 # reassuring thing it can say. Measured 2026-08-15.
 $script:SourceExtensions = @(
     '.codex', '.ps1', '.md', '.expected', '.failing',
-    '.disk', '.disk-mint', '.disk2-mint', '.cross-refusal', '.cross-fatal', '.no-cross', '.vmargs'
+    '.disk', '.disk-mint', '.disk2-mint', '.cross-refusal', '.wasm-refusal', '.cross-fatal', '.no-cross', '.vmargs'
 )
 
 # Returns the count of untracked files carrying a tracked source extension.
 # 0 means nothing to fail on, whatever else was printed.
 function Show-Untracked {
-    $untracked = @(p4 status 2>&1 | Select-String 'reconcile to add' | ForEach-Object { $_.Line })
+    # -a: adds only. Bare status digests every tracked file on the client
+    # (one rpc per file, 15,718 here); 418 of 3,707 bare calls in the server
+    # log took 60 to 399 s. -a sends 13 and finds the same adds.
+    $untracked = @(p4 status -a 2>&1 | Select-String 'reconcile to add' | ForEach-Object { $_.Line })
     if (-not $untracked) { return 0 }
     $sourceHits = @()
     foreach ($line in $untracked) {

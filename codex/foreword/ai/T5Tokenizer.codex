@@ -1,0 +1,503 @@
+Chapter: T5Tokenizer
+
+ Flux's T5 tokenizer, FLUX.1-schnell's tokenizer_2 as the tokenizers library
+ runs its tokenizer.json. Normalizer: SentencePiece's precompiled charsmap
+ (a darts-clone double-array trie of UTF-8 keys and a pool of NUL-ended
+ replacements; each character takes the replacement of its shortest matching
+ prefix, else stays), then the trailing whitespace stripped, then every run of
+ two or more spaces replaced by one U+2581. Pre-tokenizer: Metaspace, each
+ space made U+2581, one U+2581 put in front when the text does not begin with
+ it, and the text split before every U+2581. Model: Unigram, the Viterbi
+ segmentation of greatest total score, a character no piece covers alone
+ being <unk> (id 2) at the lowest score less 10, adjacent unknowns fused. The
+ ids end with </s> (id 1).
+
+ The tables come from tokenizer.json (t5-json-tables, t5-tok-from-json), in
+ the layout of vocab.bin and charsmap.bin, which build/t5-tokenizer-oracle.py
+ writes from the same file. Every character is its own grapheme here;
+ a combining sequence the library treats as one grapheme is normalized
+ character by character.
+
+ We say:
+
+Section: Types
+  T5Tok = record {
+    tk-count : Integer,
+    tk-scores : Integer,
+    tk-offs : Integer,
+    tk-lens : Integer,
+    tk-slots : Integer,
+    tk-trie : Integer,
+    tk-pool : Integer,
+    tk-unk : Real
+  }
+
+  t5-slots : Integer = 131072
+
+Section: Words
+
+  tk-u32 : Integer, Integer -> Integer
+  tk-u32 (a) (i) = bit-and (peek-32 a (i * 4)) #FFFFFFFF
+
+  tk-score : T5Tok, Integer -> Real
+  tk-score (t) (id) = bits-to-real (bit-or (tk-u32 (t.tk-scores + id * 8) 0) (bit-shl (tk-u32 (t.tk-scores + id * 8) 1) 32))
+
+Section: Loading
+
+ vocab.bin: the count, the f64 scores, then each piece as a length byte and
+ its bytes. The table maps a piece's bytes (FNV-1a) to its id plus one.
+
+  tk-hash : Integer, Integer, Integer, Integer -> Integer
+  tk-hash (a) (i) (n) (h) = if i >= n then h else tk-hash a (i + 1) n (bit-and ((bit-xor h (peek-byte a i)) * 16777619) #FFFFFFFF)
+
+  tk-same : Integer, Integer, Integer, Integer -> Boolean
+  tk-same (a) (b) (i) (n) = if i >= n then True else if peek-byte a i /= peek-byte b i then False else tk-same a b (i + 1) n
+
+  tk-find : T5Tok, Integer, Integer, Integer -> Integer
+  tk-find (t) (a) (n) (slot) =
+    let v = tk-u32 (t.tk-slots) slot
+    in if v == 0 then 0 - 1
+    else let id = v - 1
+    in if tk-u32 (t.tk-lens) id == n & tk-same (tk-u32 (t.tk-offs) id) a 0 n then id
+    else tk-find t a n (bit-and (slot + 1) (t5-slots - 1))
+
+  t5-piece-id : T5Tok, Integer, Integer -> Integer
+  t5-piece-id (t) (a) (n) = tk-find t a n (bit-and (tk-hash a 0 n 2166136261) (t5-slots - 1))
+
+  tk-free-slot : Integer, Integer -> Integer
+  tk-free-slot (slots) (s) = if tk-u32 slots s == 0 then s else tk-free-slot slots (bit-and (s + 1) (t5-slots - 1))
+
+  tk-index : Integer, Integer, Integer, Integer, Integer, Integer, Real -> Real
+  tk-index (v) (offs) (lens) (slots) (id) (pos) (low) =
+    if id >= tk-u32 v 0 then low
+    else let n = peek-byte v pos
+    in let a = poke-32 offs (id * 4) (v + pos + 1)
+    in let b = poke-32 lens (id * 4) n
+    in let s = poke-32 slots (tk-free-slot slots (bit-and (tk-hash (v + pos + 1) 0 n 2166136261) (t5-slots - 1)) * 4) (id + 1)
+    in let sc = bits-to-real (bit-or (tk-u32 (v + 4 + id * 8) 0) (bit-shl (tk-u32 (v + 4 + id * 8) 1) 32))
+    in tk-index v offs lens slots (id + 1) (pos + 1 + n) (if sc < low then sc else low)
+
+  tk-zero : Integer, Integer, Integer -> Integer
+  tk-zero (a) (i) (n) = if i >= n then a else let w = poke-32 a (i * 4) 0 in tk-zero a (i + 1) n
+
+  t5-tok-load : Integer, Integer -> T5Tok
+  t5-tok-load (v) (cm) =
+    let n = tk-u32 v 0
+    in let offs = alloc-bytes (n * 4)
+    in let lens = alloc-bytes (n * 4)
+    in let slots = tk-zero (alloc-bytes (t5-slots * 4)) 0 t5-slots
+    in let low = tk-index v offs lens slots 0 (4 + n * 8) 0.0
+    in T5Tok { tk-count = n, tk-scores = v + 4, tk-offs = offs, tk-lens = lens, tk-slots = slots, tk-trie = cm + 4, tk-pool = cm + 4 + tk-u32 cm 0, tk-unk = low - 10.0 }
+
+Section: tokenizer.json
+
+ tokenizer.json (the tokenizers library's JSON) read from its bytes at j:
+ model.vocab, an array of [piece, score] pairs in id order, and the
+ Precompiled normalizer's precompiled_charsmap, base64 (RFC 4648) of the
+ charsmap, become the two tables t5-tok-load takes. A piece is a JSON string
+ (RFC 8259: the escapes \" \\ \/ \b \f \n \r \t and \uXXXX, a surrogate pair
+ being one character) written as UTF-8. A score is a JSON number made the
+ f64 nearest to it, ties to even, as Python's json gives it: the decimal
+ digits as an integer m over 10^k, divided exactly by shifting the remainder
+ until 55 significant bits and a sticky bit are known. At most 18
+ significant digits and |k| <= 18 are taken.
+
+  T5Tables = record {
+    tt-vocab : Integer,
+    tt-vocab-len : Integer,
+    tt-charsmap : Integer,
+    tt-charsmap-len : Integer,
+    tt-why : Text
+  }
+
+  tj-is-ws : Integer -> Boolean
+  tj-is-ws (b) = b == 32 | b == 9 | b == 10 | b == 13
+
+  tj-ws : Integer, Integer, Integer -> Integer
+  tj-ws (j) (n) (i) = if i < n & tj-is-ws (peek-byte j i) then tj-ws j n (i + 1) else i
+
+  tj-at : Integer, Integer, List Integer, Integer -> Boolean
+  tj-at (j) (i) (pat) (k) = if k >= list-length pat then True else if peek-byte j (i + k) /= list-at pat k then False else tj-at j i pat (k + 1)
+
+  tj-find : Integer, Integer, List Integer, Integer -> Integer
+  tj-find (j) (n) (pat) (i) = if i + list-length pat > n then 0 - 1 else if tj-at j i pat 0 then i else tj-find j n pat (i + 1)
+
+  tj-key : Text -> List Integer
+  tj-key (s) = tj-key-bytes s 0 [34]
+
+  tj-key-bytes : Text, Integer, List Integer -> List Integer
+  tj-key-bytes (s) (i) (acc) = if i >= text-length s then list-push acc 34 else tj-key-bytes s (i + 1) (list-push acc (to-unicode (char-code (char-at s i))))
+
+ The position after the ':' that follows the key's closing quote, or -1.
+
+  tj-value : Integer, Integer, Text -> Integer
+  tj-value (j) (n) (key) =
+    let k = tj-find j n (tj-key key) 0
+    in if k < 0 then 0 - 1
+    else let c = tj-ws j n (k + text-length key + 2)
+    in if c < n & peek-byte j c == 58 then tj-ws j n (c + 1) else 0 - 1
+
+  tj-hex : Integer -> Integer
+  tj-hex (b) = if b >= 48 & b <= 57 then b - 48 else if b >= 97 & b <= 102 then b - 87 else if b >= 65 & b <= 70 then b - 55 else 0 - 1
+
+  tj-hex4 : Integer, Integer -> Integer
+  tj-hex4 (j) (i) =
+    let a = tj-hex (peek-byte j i)
+    in let b = tj-hex (peek-byte j (i + 1))
+    in let c = tj-hex (peek-byte j (i + 2))
+    in let d = tj-hex (peek-byte j (i + 3))
+    in if a < 0 | b < 0 | c < 0 | d < 0 then 0 - 1 else ((a * 16 + b) * 16 + c) * 16 + d
+
+ One code point as UTF-8 at out; answers the bytes written.
+
+  tj-utf8 : Integer, Integer -> Integer
+  tj-utf8 (out) (u) =
+    if u < 128 then let w = poke-byte out 0 u in 1
+    else if u < 2048 then let a = poke-byte out 0 (192 + bit-shru u 6) in let b = poke-byte out 1 (128 + bit-and u 63) in 2
+    else if u < 65536 then let a = poke-byte out 0 (224 + bit-shru u 12) in let b = poke-byte out 1 (128 + bit-and (bit-shru u 6) 63) in let c = poke-byte out 2 (128 + bit-and u 63) in 3
+    else let a = poke-byte out 0 (240 + bit-shru u 18) in let b = poke-byte out 1 (128 + bit-and (bit-shru u 12) 63) in let c = poke-byte out 2 (128 + bit-and (bit-shru u 6) 63) in let d = poke-byte out 3 (128 + bit-and u 63) in 4
+
+ A JSON string whose opening quote is at i, decoded to out: answers the
+ position after the closing quote, and the length written at out - 1 as one
+ byte; -1 for a malformed or over-long string.
+
+  tj-string : Integer, Integer, Integer, Integer, Integer -> Integer
+  tj-string (j) (n) (i) (out) (len) =
+    if i >= n | len > 255 then 0 - 1
+    else let b = peek-byte j i
+    in if b == 34 then (let w = poke-byte out (0 - 1) len in i + 1)
+    else if b /= 92 then (let w = poke-byte out len b in tj-string j n (i + 1) out (len + 1))
+    else let e = peek-byte j (i + 1)
+    in if e == 117 then tj-string-u j n i out len
+    else let c = if e == 34 then 34 else if e == 92 then 92 else if e == 47 then 47 else if e == 98 then 8 else if e == 102 then 12 else if e == 110 then 10 else if e == 114 then 13 else if e == 116 then 9 else 0 - 1
+    in if c < 0 then 0 - 1 else (let w = poke-byte out len c in tj-string j n (i + 2) out (len + 1))
+
+  tj-string-u : Integer, Integer, Integer, Integer, Integer -> Integer
+  tj-string-u (j) (n) (i) (out) (len) =
+    let u = tj-hex4 j (i + 2)
+    in let pair = u >= 55296 & u < 56320 & i + 11 < n & peek-byte j (i + 6) == 92 & peek-byte j (i + 7) == 117
+    in let lo = if pair then tj-hex4 j (i + 8) else 0 - 1
+    in if u < 0 then 0 - 1
+    else if pair & lo >= 56320 & lo < 57344 then tj-string j n (i + 12) out (len + tj-utf8 (out + len) (65536 + (u - 55296) * 1024 + (lo - 56320)))
+    else tj-string j n (i + 6) out (len + tj-utf8 (out + len) u)
+
+Section: Scores
+
+  tj-pow10 : Integer -> Integer
+  tj-pow10 (k) = if k <= 0 then 1 else 10 * tj-pow10 (k - 1)
+
+  tj-bitlen : Integer, Integer -> Integer
+  tj-bitlen (v) (n) = if v == 0 then n else tj-bitlen (bit-shru v 1) (n + 1)
+
+ m / d as a binary expansion: acc holds the bits so far and fb of them lie
+ after the binary point; the expansion stops at 55 significant bits, r being
+ the remainder left.
+
+  TjExp = record {
+    te-acc : Integer,
+    te-fb : Integer,
+    te-r : Integer
+  }
+
+  tj-expand : Integer, Integer, Integer, Integer -> TjExp
+  tj-expand (acc) (r) (d) (fb) =
+    if acc >= 18014398509481984 then TjExp { te-acc = acc, te-fb = fb, te-r = r }
+    else let r2 = 2 * r
+    in if r2 >= d then tj-expand (2 * acc + 1) (r2 - d) d (fb + 1) else tj-expand (2 * acc) r2 d (fb + 1)
+
+ The f64 bits of (-1)^neg m / 10^k, rounded to nearest, ties to even.
+
+  tj-dec-bits : Boolean, Integer, Integer -> Integer
+  tj-dec-bits (neg) (m) (k) =
+    if m == 0 then (if neg then bit-shl 1 63 else 0)
+    else let d = tj-pow10 k
+    in let q = m / d
+    in let sh = if tj-bitlen q 0 > 55 then tj-bitlen q 0 - 55 else 0
+    in let x = tj-expand (bit-shru q sh) (m - q * d) d 0
+    in let sticky = x.te-r /= 0 | bit-and q (bit-shl 1 sh - 1) /= 0
+    in let m53 = bit-shru (x.te-acc) 2
+    in let rem = bit-and (x.te-acc) 3
+    in let up = rem == 3 | (rem == 2 & (sticky | bit-and m53 1 == 1))
+    in let m2 = if up then m53 + 1 else m53
+    in let top = m2 >= 9007199254740992
+    in let mf = if top then bit-shru m2 1 else m2
+    in let e = 1023 + 54 - (x.te-fb - sh) + (if top then 1 else 0)
+    in bit-or (if neg then bit-shl 1 63 else 0) (bit-or (bit-shl e 52) (mf - 4503599627370496))
+
+  TjDec = record {
+    td-m : Integer,
+    td-k : Integer,
+    td-end : Integer
+  }
+
+  tj-bad : TjDec
+  tj-bad = TjDec { td-m = 0, td-k = 0, td-end = 0 - 1 }
+
+  tj-digit : Integer, Integer, Integer -> Boolean
+  tj-digit (j) (n) (i) = i < n & peek-byte j i >= 48 & peek-byte j i <= 57
+
+ The digits of a JSON number from i: m, the digits after the point k (less
+ an exponent), and the position after the number.
+
+  tj-digits : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> TjDec
+  tj-digits (j) (n) (i) (m) (k) (frac) (seen) =
+    if tj-digit j n i then (if m >= 100000000000000000 then tj-bad else tj-digits j n (i + 1) (m * 10 + peek-byte j i - 48) (k + frac) frac (seen + 1))
+    else if i < n & peek-byte j i == 46 & frac == 0 then tj-digits j n (i + 1) m k 1 seen
+    else if seen == 0 then tj-bad
+    else if i < n & (peek-byte j i == 101 | peek-byte j i == 69) then tj-exponent j n (i + 1) m k
+    else TjDec { td-m = m, td-k = k, td-end = i }
+
+  tj-exponent : Integer, Integer, Integer, Integer, Integer -> TjDec
+  tj-exponent (j) (n) (i) (m) (k) =
+    let minus = i < n & peek-byte j i == 45
+    in let s = if i < n & (peek-byte j i == 45 | peek-byte j i == 43) then i + 1 else i
+    in if tj-digit j n s == False then tj-bad
+    else tj-exp-digits j n s m k minus 0
+
+  tj-exp-digits : Integer, Integer, Integer, Integer, Integer, Boolean, Integer -> TjDec
+  tj-exp-digits (j) (n) (i) (m) (k) (minus) (x) =
+    if tj-digit j n i & x < 1000 then tj-exp-digits j n (i + 1) m k minus (x * 10 + peek-byte j i - 48)
+    else TjDec { td-m = m, td-k = (if minus then k + x else k - x), td-end = i }
+
+  TjNum = record {
+    tn-bits : Integer,
+    tn-end : Integer
+  }
+
+ A JSON number at i: its f64 bits and the position after it; tn-end -1 when
+ malformed or outside the taken range.
+
+  tj-number : Integer, Integer, Integer -> TjNum
+  tj-number (j) (n) (i) =
+    let neg = i < n & peek-byte j i == 45
+    in let d = tj-digits j n (if neg then i + 1 else i) 0 0 0 0
+    in if d.td-end < 0 | d.td-k < 0 | d.td-k > 18 then TjNum { tn-bits = 0, tn-end = 0 - 1 }
+    else TjNum { tn-bits = tj-dec-bits neg (d.td-m) (d.td-k), tn-end = d.td-end }
+Section: Charsmap
+
+  tj-b64 : Integer -> Integer
+  tj-b64 (c) = if c >= 65 & c <= 90 then c - 65 else if c >= 97 & c <= 122 then c - 71 else if c >= 48 & c <= 57 then c + 4 else if c == 43 then 62 else if c == 47 then 63 else 0 - 1
+
+ base64 from i up to the closing quote into out: answers the bytes written,
+ -1 on a character outside the alphabet.
+
+  tj-base64 : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  tj-base64 (j) (n) (i) (out) (len) (acc) (bits) =
+    if i >= n then 0 - 1
+    else let c = peek-byte j i
+    in if c == 34 then len
+    else if c == 61 then tj-base64 j n (i + 1) out len acc bits
+    else let v = tj-b64 c
+    in if v < 0 then 0 - 1
+    else let a2 = bit-and (bit-or (bit-shl acc 6) v) 16777215
+    in if bits + 6 >= 8 then (let w = poke-byte out len (bit-and (bit-shru a2 (bits - 2)) 255) in tj-base64 j n (i + 1) out (len + 1) a2 (bits - 2))
+    else tj-base64 j n (i + 1) out len a2 (bits + 6)
+
+Section: Vocab
+
+ Entries from i, the position after the vocab array's '[': each [piece,
+ score] adds its piece to pieces at pl (a length byte then the bytes) and
+ its score's f64 bits at scores + 8 id.
+
+  TjVocab = record {
+    tv-count : Integer,
+    tv-pieces-len : Integer,
+    tv-ok : Boolean
+  }
+
+  tj-entries : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> TjVocab
+  tj-entries (j) (n) (i) (scores) (pieces) (pl) (id) =
+    let a = tj-ws j n i
+    in if a >= n then TjVocab { tv-count = id, tv-pieces-len = pl, tv-ok = False }
+    else if peek-byte j a == 93 then TjVocab { tv-count = id, tv-pieces-len = pl, tv-ok = True }
+    else if peek-byte j a == 44 then tj-entries j n (a + 1) scores pieces pl id
+    else if peek-byte j a /= 91 then TjVocab { tv-count = id, tv-pieces-len = pl, tv-ok = False }
+    else let s = tj-ws j n (a + 1)
+    in let se = if peek-byte j s == 34 then tj-string j n (s + 1) (pieces + pl + 1) 0 else 0 - 1
+    in if se < 0 then TjVocab { tv-count = id, tv-pieces-len = pl, tv-ok = False }
+    else let c = tj-ws j n se
+    in let v = if peek-byte j c == 44 then tj-number j n (tj-ws j n (c + 1)) else TjNum { tn-bits = 0, tn-end = 0 - 1 }
+    in let close = if v.tn-end < 0 then 0 - 1 else tj-ws j n (v.tn-end)
+    in if close < 0 | peek-byte j close /= 93 then TjVocab { tv-count = id, tv-pieces-len = pl, tv-ok = False }
+    else let w1 = poke-32 scores (id * 8) (bit-and (v.tn-bits) #FFFFFFFF)
+    in let w2 = poke-32 scores (id * 8 + 4) (bit-and (bit-shru (v.tn-bits) 32) #FFFFFFFF)
+    in tj-entries j n (close + 1) scores pieces (pl + 1 + peek-byte pieces pl) (id + 1)
+
+ The two tables from tokenizer.json's n bytes at j: vocab as vocab.bin (the
+ count, the f64 scores, then each piece as a length byte and its bytes) and
+ the decoded charsmap as charsmap.bin.
+
+  t5-json-tables : Integer, Integer -> T5Tables
+  t5-json-tables (j) (n) =
+    let vi = tj-value j n "vocab"
+    in let ci = tj-value j n "precompiled_charsmap"
+    in if vi < 0 | ci < 0 | peek-byte j vi /= 91 | peek-byte j ci /= 34 then T5Tables { tt-vocab = 0, tt-vocab-len = 0, tt-charsmap = 0, tt-charsmap-len = 0, tt-why = "tokenizer.json: no model.vocab array or precompiled_charsmap string" }
+    else let cap = n / 8 + 1
+    in let scores = alloc-bytes (cap * 8)
+    in let pieces = alloc-bytes n
+    in let tv = tj-entries j n (vi + 1) scores pieces 0 0
+    in let cm = alloc-bytes (n * 3 / 4 + 4)
+    in let cl = tj-base64 j n (ci + 1) cm 0 0 0
+    in if tv.tv-ok == False | cl < 0 then T5Tables { tt-vocab = 0, tt-vocab-len = 0, tt-charsmap = 0, tt-charsmap-len = 0, tt-why = "tokenizer.json: malformed vocab entry " & show (tv.tv-count) & " or charsmap" }
+    else let vlen = 4 + tv.tv-count * 8 + tv.tv-pieces-len
+    in let v = alloc-bytes vlen
+    in let h = poke-32 v 0 (tv.tv-count)
+    in let s = tj-copy (v + 4) scores (tv.tv-count * 8)
+    in let p = tj-copy (v + 4 + tv.tv-count * 8) pieces (tv.tv-pieces-len)
+    in T5Tables { tt-vocab = v, tt-vocab-len = vlen, tt-charsmap = cm, tt-charsmap-len = cl, tt-why = "" }
+
+  tj-copy : Integer, Integer, Integer -> Integer
+  tj-copy (dst) (src) (k) = if k <= 0 then dst else let w = poke-byte dst 0 (peek-byte src 0) in tj-copy (dst + 1) (src + 1) (k - 1)
+
+  t5-tok-from-json : Integer, Integer -> T5Tok
+  t5-tok-from-json (j) (n) =
+    let tt = t5-json-tables j n
+    in t5-tok-load (tt.tt-vocab) (tt.tt-charsmap)
+
+Section: Normalizing
+
+ darts-clone's commonPrefixSearch over one character's bytes: the pool
+ offset of the shortest key that prefixes them, or -1.
+
+  tk-offset : Integer -> Integer
+  tk-offset (u) = bit-shl (bit-shru u 10) (bit-shru (bit-and u 512) 6)
+
+  tk-trie-at : T5Tok, Integer, Integer, Integer, Integer -> Integer
+  tk-trie-at (t) (a) (i) (n) (pos) =
+    if i >= n then 0 - 1
+    else let c = peek-byte a i
+    in let p = bit-xor pos c
+    in let u = tk-u32 (t.tk-trie) p
+    in if bit-and u #800000FF /= c then 0 - 1
+    else let q = bit-xor p (tk-offset u)
+    in if bit-and (bit-shru u 8) 1 == 1 then bit-and (tk-u32 (t.tk-trie) q) #7FFFFFFF
+    else tk-trie-at t a (i + 1) n q
+
+  tk-char-len : Integer -> Integer
+  tk-char-len (b) = if b < 128 then 1 else if b < 224 then 2 else if b < 240 then 3 else 4
+
+  tk-copy : Integer, Integer, Integer, List Integer -> List Integer
+  tk-copy (a) (i) (n) (acc) = if i >= n then acc else tk-copy a (i + 1) n (list-push acc (peek-byte a i))
+
+  tk-pool-copy : Integer, Integer, List Integer -> List Integer
+  tk-pool-copy (pool) (i) (acc) = if peek-byte pool i == 0 then acc else tk-pool-copy pool (i + 1) (list-push acc (peek-byte pool i))
+
+  tk-charsmap : T5Tok, Integer, Integer, Integer, List Integer -> List Integer
+  tk-charsmap (t) (a) (i) (n) (acc) =
+    if i >= n then acc
+    else let k = tk-char-len (peek-byte a i)
+    in let v = tk-trie-at t (a + i) 0 k (tk-offset (tk-u32 (t.tk-trie) 0))
+    in tk-charsmap t a (i + k) n (if v < 0 then tk-copy a i (i + k) acc else tk-pool-copy (t.tk-pool) v acc)
+
+  tk-is-ws : Integer -> Boolean
+  tk-is-ws (b) = b == 32 | b == 9 | b == 10 | b == 13 | b == 11 | b == 12
+
+  tk-strip-end : List Integer, Integer -> Integer
+  tk-strip-end (bs) (n) = if n > 0 & tk-is-ws (list-at bs (n - 1)) then tk-strip-end bs (n - 1) else n
+
+  tk-meta : List Integer -> List Integer
+  tk-meta (acc) = list-push (list-push (list-push acc 226) 150) 129
+
+ The strip, the run replacement and Metaspace's space replacement in one
+ pass: a run of two or more spaces becomes one U+2581, a single space one
+ U+2581.
+
+  tk-spaces : List Integer, Integer, Integer, List Integer -> List Integer
+  tk-spaces (bs) (i) (n) (acc) =
+    if i >= n then acc
+    else if list-at bs i /= 32 then tk-spaces bs (i + 1) n (list-push acc (list-at bs i))
+    else tk-spaces bs (tk-run-end bs i n) n (tk-meta acc)
+
+  tk-run-end : List Integer, Integer, Integer -> Integer
+  tk-run-end (bs) (i) (n) = if i < n & list-at bs i == 32 then tk-run-end bs (i + 1) n else i
+
+  tk-is-meta : List Integer, Integer -> Boolean
+  tk-is-meta (bs) (i) = i + 2 < list-length bs & list-at bs i == 226 & list-at bs (i + 1) == 150 & list-at bs (i + 2) == 129
+
+Section: Segmenting
+
+ Viterbi over one word's character boundaries: best score and the step that
+ reached each boundary, pieces up to 64 bytes long.
+
+  TkNode = record {
+    tn-score : Real,
+    tn-from : Integer,
+    tn-id : Integer
+  }
+
+  tk-bytes : List Integer, Integer -> Integer
+  tk-bytes (bs) (n) = tk-bytes-fill bs (alloc-bytes (if n > 0 then n else 1)) 0 n
+
+  tk-bytes-fill : List Integer, Integer, Integer, Integer -> Integer
+  tk-bytes-fill (bs) (a) (i) (n) = if i >= n then a else let w = poke-byte a i (list-at bs i) in tk-bytes-fill bs a (i + 1) n
+
+  tk-relax : T5Tok, Integer, Integer, Integer, Integer, Integer, List TkNode, Boolean -> List TkNode
+  tk-relax (t) (a) (n) (j) (e) (single) (best) (found) =
+    if e > n | e - j > 64 then (if found then best else tk-offer best j single (t.tk-unk) 2)
+    else if e < n & peek-byte a e >= 128 & peek-byte a e < 192 then tk-relax t a n j (e + 1) single best found
+    else let id = t5-piece-id t (a + j) (e - j)
+    in let b2 = if id < 0 then best else tk-offer best j e (tk-score t id) id
+    in tk-relax t a n j (e + 1) single b2 (found | (id >= 0 & e == single))
+
+  tk-offer : List TkNode, Integer, Integer, Real, Integer -> List TkNode
+  tk-offer (best) (j) (e) (score) (id) =
+    let from = list-at best j
+    in let cand = from.tn-score + score
+    in let cur = list-at best e
+    in if from.tn-from < 0 & j > 0 then best
+    else if cur.tn-from >= 0 & cand <= cur.tn-score then best
+    else list-set-at best e (TkNode { tn-score = cand, tn-from = j, tn-id = id })
+
+  tk-starts : T5Tok, Integer, Integer, Integer, List TkNode -> List TkNode
+  tk-starts (t) (a) (n) (j) (best) =
+    if j >= n then best
+    else let single = j + tk-char-len (peek-byte a j)
+    in tk-starts t a n single (tk-relax t a n j (j + 1) single best False)
+
+  tk-empty : Integer, Integer, List TkNode -> List TkNode
+  tk-empty (i) (n) (acc) = if i > n then acc else tk-empty (i + 1) n (list-push acc (TkNode { tn-score = 0.0, tn-from = 0 - 1, tn-id = 0 }))
+
+  tk-back : List TkNode, Integer, List Integer -> List Integer
+  tk-back (best) (e) (acc) =
+    if e <= 0 then acc
+    else let nd = list-at best e
+    in tk-back best (nd.tn-from) ([nd.tn-id] & acc)
+
+  tk-fuse : List Integer, Integer, List Integer -> List Integer
+  tk-fuse (ids) (i) (acc) =
+    if i >= list-length ids then acc
+    else if list-at ids i == 2 & list-length acc > 0 & list-at acc (list-length acc - 1) == 2 then tk-fuse ids (i + 1) acc
+    else tk-fuse ids (i + 1) (list-push acc (list-at ids i))
+
+  tk-word : T5Tok, List Integer, Integer, Integer -> List Integer
+  tk-word (t) (bs) (from) (to) =
+    let n = to - from
+    in let a = tk-bytes (tk-slice bs from to []) n
+    in tk-fuse (tk-back (tk-starts t a n 0 (tk-empty 0 n [])) n []) 0 []
+
+  tk-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  tk-slice (bs) (i) (e) (acc) = if i >= e then acc else tk-slice bs (i + 1) e (list-push acc (list-at bs i))
+
+  tk-words : T5Tok, List Integer, Integer, Integer, List Integer -> List Integer
+  tk-words (t) (bs) (start) (i) (acc) =
+    if i >= list-length bs then (if i > start then acc & tk-word t bs start i else acc)
+    else if i > start & tk-is-meta bs i then tk-words t bs i (i + 3) (acc & tk-word t bs start i)
+    else tk-words t bs start (i + 1) acc
+
+Section: Entry
+
+ The ids of n UTF-8 bytes at a, ending in </s>.
+
+  t5-tokenize : T5Tok, Integer, Integer -> List Integer
+  t5-tokenize (t) (a) (n) = list-push (t5-tokenize-plain t a n) 1
+
+ The same without </s> (add_special_tokens False).
+
+  t5-tokenize-plain : T5Tok, Integer, Integer -> List Integer
+  t5-tokenize-plain (t) (a) (n) =
+    let norm = tk-charsmap t a 0 n []
+    in let spaced = tk-spaces norm 0 (tk-strip-end norm (list-length norm)) []
+    in let meta = if list-length spaced > 0 & tk-is-meta spaced 0 then spaced else tk-meta [] & spaced
+    in if list-length spaced == 0 then [] else tk-words t meta 0 0 []
+
+Page 1

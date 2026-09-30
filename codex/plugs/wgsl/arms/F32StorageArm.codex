@@ -1,0 +1,28 @@
+Chapter: F32StorageArm
+  cites Gpu chapter DeviceEffect
+
+ The positive arm for f32 storage. Bindings are array<i32>, so an f32 element
+ crosses them by bitcast (WgslSpec.md 16.8, bitcast<T> reinterprets the bits):
+
+   device-load-f32 b i        bitcast<f32>(b[i])
+   device-store-f32 b i v     b[i] = bitcast<i32>(v)
+
+ fs-copy moves a value through both and must hand back the same 32 bits;
+ fs-axpy must compute on the float, which a conversion in place of a bitcast
+ (i32(x), f32(b[i])) gets wrong for every input that is not an integer.
+
+ We say:
+
+Section: Kernels
+
+  fs-copy : Integer, Integer, Integer -> [Device] Integer
+  fs-copy (xb) (yb) (gid) = device-store-f32 yb gid (device-load-f32 xb gid)
+
+  fs-axpy : Integer, Integer, Integer -> [Device] Integer
+  fs-axpy (xb) (yb) (gid) = device-store-f32 yb gid (device-load-f32 xb gid * 2.5 + 1.0)
+
+  fs-copy-approx : Integer, Integer, Integer -> [Device] Integer
+  fs-copy-approx (xb) (yb) (gid) = device-store-approx yb gid (device-load-approx xb gid)
+
+  fs-const-approx : Integer, Integer, Integer -> [Device] Integer
+  fs-const-approx (xb) (yb) (gid) = device-store-approx yb gid (device-load-approx xb gid * bits-to-real-approx #BF000000 + real-approx-from-int 3)

@@ -181,6 +181,58 @@ ok('control: a deeper search may choose differently, so depth is read',
    typeof e.mc_ai(s0, 1) === 'number' && e.mc_ai(s0, 1) >= 0 && e.mc_ai(s0, 5) >= 0,
    `depth 1 picks ${e.mc_ai(s0, 1)}, depth 5 picks ${e.mc_ai(s0, 5)}`);
 
+// -- THE RULES: Kalah, in lockstep with an oracle written from the rules ----
+// Sow one seed per pit counter-clockwise from the next pit, skipping the
+// opponent's store; a last seed in the mover's store earns another turn; a
+// last seed in the mover's own EMPTY pit, with seeds opposite, captures both
+// into the store; when either row is empty the game ends and each side's
+// remaining seeds go to that side's store.
+function kalah(b, turn, pit) {
+  const p = b.slice(), myStore = turn === 0 ? 6 : 13, theirStore = turn === 0 ? 13 : 6;
+  let n = p[pit], i = pit, ev = {};
+  p[pit] = 0;
+  while (n > 0) { i = (i + 1) % 14; if (i === theirStore) { ev.skipped = true; continue; } p[i]++; n--; }
+  const own = turn === 0 ? i >= 0 && i <= 5 : i >= 7 && i <= 12;
+  if (own && p[i] === 1) {
+    if (p[12 - i] > 0) { p[myStore] += p[12 - i] + 1; p[12 - i] = 0; p[i] = 0; ev.captured = true; }
+    else ev.emptyOpposite = true;
+  }
+  let next = i === myStore ? turn : 1 - turn;
+  if (i === myStore) ev.extra = true;
+  const southEmpty = p.slice(0, 6).every(x => x === 0), northEmpty = p.slice(7, 13).every(x => x === 0);
+  let over = false;
+  if (southEmpty || northEmpty) {
+    for (let k = 0; k < 6; k++) { p[6] += p[k]; p[k] = 0; p[13] += p[k + 7]; p[k + 7] = 0; }
+    over = true; ev.sweep = southEmpty ? 'south' : 'north';
+  }
+  return { pits: p, turn: over ? turn : next, over, ev };
+}
+{
+  let s = 5, bad = null, plies = 0;
+  const seen = { extra: 0, captured: 0, emptyOpposite: 0, skipped: 0, south: 0, north: 0 };
+  const rnd = n => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s >>> 16) % n; };
+  for (let g = 0; g < 60 && !bad; g++) {
+    let h = e.mc_new(), b = pits(h), turn = 0, over = false;
+    while (!over && !bad) {
+      const legal = [...Array(14).keys()].filter(i => (turn === 0 ? i <= 5 : i >= 7 && i <= 12) && b[i] > 0);
+      const eng = [...Array(14).keys()].filter(i => e.mc_legal(h, i) === 1);
+      if (JSON.stringify(legal) !== JSON.stringify(eng)) { bad = `game ${g}: legal ${eng} against ${legal}`; break; }
+      const pit = g % 3 === 0 ? e.mc_ai(h, 1) : legal[rnd(legal.length)];
+      const r = kalah(b, turn, pit);
+      h = e.mc_move(h, pit); plies++;
+      for (const k of ['extra', 'captured', 'emptyOpposite', 'skipped']) if (r.ev[k]) seen[k]++;
+      if (r.ev.sweep) seen[r.ev.sweep]++;
+      if (JSON.stringify(pits(h)) !== JSON.stringify(r.pits) || e.mc_turn(h) !== r.turn || (e.mc_done(h) === 1) !== r.over) {
+        bad = `game ${g} pit ${pit}: engine ${JSON.stringify(pits(h))} turn ${e.mc_turn(h)} done ${e.mc_done(h)}, rules ${JSON.stringify(r.pits)} turn ${r.turn} over ${r.over}`;
+      }
+      b = r.pits; turn = r.turn; over = r.over;
+    }
+  }
+  ok('rules: sixty games in lockstep with Kalah, every pit, turn and ending', bad === null, bad ?? `${plies} plies`);
+  ok('rules: the games reached every rule: extra turns, captures, landings opposite an empty pit, laps past a store, and both sweeps',
+     Object.values(seen).every(n => n > 0), JSON.stringify(seen));
+}
+
 console.log(fail === 0
   ? `\nPASS: Mancala searches without disturbing the board (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

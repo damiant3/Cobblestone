@@ -30,7 +30,7 @@
 [CmdletBinding()]
 param(
     [string]$Filter = '',         # substring match on the relative path
-    [int]$Jobs = 8,
+    [int]$Jobs = 16,
     [int]$TimeoutSec = 300,
     [string]$OutDir = '',
     [switch]$Check,               # exit non-zero when a unit regresses
@@ -198,6 +198,8 @@ if ($Sample -gt 0 -and $Sample -lt $files.Count) {
     Write-Host "Sweep: SAMPLED $($files.Count) of $sweepAll entry chapters (every ${stride}th); the rest are the release gate's"
 }
 
+. (Join-Path $PSScriptRoot 'vm-config.ps1')
+$Jobs = Get-VmAdmittedSlots -Slots $Jobs -GuestMB 256 -What 'app sweep'
 Write-Host "Sweep: $($files.Count) entry chapters  (jobs=$Jobs)"
 $compile = Join-Path $Repo 'build\compile.ps1'
 $sw = [Diagnostics.Stopwatch]::StartNew()

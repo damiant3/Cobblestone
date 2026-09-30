@@ -96,8 +96,8 @@ Valid states: `Idle`, `Working`, `Building`, `WaitingForBuild`, `Error`.
 
 **`context` is mandatory on every write** (Damian, 2026-09-07): the lane's
 context used, a whole-number percent, e.g. `"context": 62`. The commander
-reads it on every pulse and ORDERS `/handoff` at 70; a lane that reads 70 or
-more hands off on its own without waiting to be told. A lane whose `context`
+reads it on every pulse and ORDERS `/handoff` at 75, never earlier; a lane
+that reads 75 or more hands off on its own without waiting to be told. A lane whose `context`
 has not moved across two pulses while its state says `Working` is checked
 for exhaustion first, before its terminal or its run.
 
@@ -447,7 +447,7 @@ p4 diff -du //Codex/blu/... # PATHS, not -c <CL>, which is not a diff option (P-
 # The proof happened BEFORE the request, each run granted by the commander:
 #   build/compile.ps1 -Src <each touched test> -Out <o> -Log <l> -Kernel seed\Codex.cdx
 #   the scratch fixed point: stage 2 == stage 3, built from the DEPOT seed
-#   build/bvt.ps1 -CodexCdx <candidate> -Jobs 4
+#   build/bvt.ps1 -CodexCdx <candidate> -Jobs 16
 #   the signer compiled and run over the candidate, then test-self-verify
 #     printing that the seed verifies itself; a seed lands signed and
 #     self-verified or not at all
@@ -525,12 +525,28 @@ So the shape of a seed-affecting landing is:
 
 ## The token does not cover RAM (Damian, 2026-09-01)
 
-**The box is one DIMM down and stays that way until the RMA lands: 16 GB
-is all there is** (15.8 GiB visible, measured 2026-09-01). The token
+**The box holds 47.77 GiB (three 16 GB DIMMs) and 20 logical CPUs, with
+about 31 GiB free when the fleet is at rest** (measured 2026-09-28). The token
 serialises GATES on the same code; it says nothing about two lanes each
-booting guests at the same time, and on this box that overcommit is what
-kills guests with a plausible-looking codegen error (`OperatorsManual.md`,
-"The compile batch asks for 12 GB").
+booting guests at the same time, and an overcommit still kills guests with a
+plausible-looking codegen error (`OperatorsManual.md`, "The compile batch
+asks for 12 GB").
+
+**GPU memory is a box resource the RAM bar does not see (root, 2026-09-29).**
+The RTX 4060 Ti holds 16 GB; a full SDXL run needs about 7 GB before
+activations (UNet 5 GB, text encoders 1.7 GB). **Full-model GPU runs are
+serial:** before launch, a lane names its GPU run (pid, expected GB) in
+`status.json` `runs`, and checks that no other lane names one; root arbitrates
+a collision. A small kernel test is not a full-model run. A timing measurement
+also needs the card to itself: a shared card moved one UNet step between 2.5
+and 6.4 s.
+
+**At 47.77 GiB, CPU runs out before RAM does** (2026-09-28, depot seed
+`533C6D63`, profiles `docs/Agents/box-*-2026-09-28.csv`): the 306-unit app
+sweep at `-Jobs 8` took 2.0 min, a 30.02 GiB free floor and 42% mean CPU; at
+`-Jobs 16` it took 1.2 min, a 30.59 GiB floor and 82% mean CPU (100% peak);
+the BVT at `-Jobs 16` passed 147 of 147 in 22.5 s with a 30.75 GiB floor.
+Run wide.
 
 **THE BOX IS NOT GATED PER RUN (Damian, 2026-09-07 19:35: "the box is
 chronically under utilized"). The standing rule:**
@@ -554,10 +570,9 @@ chronically under utilized"). The standing rule:**
   count, its PID and its log in `status.json`; if not, wait and say so in
   `status.json`, then re-measure. The 3072 MB a runner passes as `-MemMB` is
   a ceiling, not a consumption (L-REQUEST).
-  Check `Get-Process msedge` first: Edge idles at about 1.7 GB and Damian
-  kills it on request, so a fan-out that misses by that much is a message to
-  root, not a wait. A gate's compiler stages take the box whole: no fan-out
-  launches beside a running gate. The commander no longer grants fan-outs;
+  A lane's scratch fixed point and another lane's fan-out may overlap when
+  free memory covers both; only a RELEASE gate's compiler stages take the box
+  whole. The commander no longer grants fan-outs;
   root arbitrates a collision (two fan-outs measured against the same free
   memory in the same minute) and holds the box for a release gate's compiler
   stages, which is where a hold still comes from. The per-guest figures above
@@ -580,10 +595,16 @@ chronically under utilized"). The standing rule:**
   guest's measured peak, 2.2 GiB, plus margin) or beside a fan-out; a fan-out is held beside a rehearsal or under
   its own guests' need. Memory percent alone never justifies a hold.
 
-- **`-Jobs 8` is the default** (Damian, 2026-09-01), conditioned on one
-  heavy run at a time: a gate whose change touches the compiler runs ALONE
-  on this box, nothing else booting; only a cite-scoped gate (apps, docs,
-  tests) may overlap a single-guest run. **Renode arms run ALONE.**
+- **`-Jobs 16` is the default on every parallel harness, release runs
+  included** (Damian, 2026-09-28: "we should have ample room to run wide").
+  `test.ps1`, `test-cross-batch.ps1`, `deck-headroom.ps1`,
+  `sweep-app-classes.ps1`, `check-errors.ps1` and `check-subset-cites.ps1`
+  clamp their slots to live free memory (`Get-VmAdmittedSlots`,
+  `build/vm-config.ps1`; the last three at the 0.25 GiB compile-guest bar).
+  `bvt.ps1` does not, so measure before launching it.
+  Two 16-way fan-outs at once contend for 20 CPUs: they slow, they do not
+  die, and the second one launches at `-Jobs 8`. **Renode arms run ALONE**
+  until a Renode bed is measured on this box.
   `WHvSetupPartition 0x800705aa` is the refusal signature. A run that dies
   is re-run alone, and the death is reported with its time.
 - **`build/test.ps1 -All` and every full-battery run are PROHIBITED except
@@ -607,8 +628,8 @@ chronically under utilized"). The standing rule:**
   parent outlived it (`OperatorsManual.md`, "A gate run as a tool-call child
   dies with the session").
 
-This section dies with its condition: when `Win32_PhysicalMemory` shows two
-rows, re-measure and rewrite it.
+When `Win32_PhysicalMemory` changes its row count, re-measure and rewrite
+this section.
 
 ## Fleet Messages
 
@@ -898,8 +919,7 @@ step to keep the verification simple and cumulative."*
 
 **Iterate on your own stream: submit each step to `//Codex/<agent>`, verify
 each step by compiling it and running the specific tests it touches, and
-prove ONCE per batch.** **Damian, 2026-09-01, with the box one DIMM down:
-"we need to have the agents batch up their builds, so they can ask for the
+prove ONCE per batch.** **Damian, 2026-09-01: "we need to have the agents batch up their builds, so they can ask for the
 token less, and get more done in a shot."** A step is verified by
 `compile.ps1` plus its focused tests, several steps stack into one batch, and
 the batch's proof runs once, at the end, BEFORE the token is requested: the

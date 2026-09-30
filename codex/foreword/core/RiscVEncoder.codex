@@ -50,20 +50,36 @@ Section: Encoding Helpers
   rv-r-type (opcode) (rd) (funct3) (rs1) (rs2) (funct7) =
     rv-encode (bit-or (bit-or (bit-or (bit-or (bit-or opcode (bit-shl rd 7)) (bit-shl funct3 12)) (bit-shl rs1 15)) (bit-shl rs2 20)) (bit-shl funct7 25))
 
+ An immediate that does not fit its field answers `rv-imm-refused`, four
+ cells of 256, which no byte holds: `rv-emit` reports it as [UNSUPPORTED],
+ and a writer that does not check stores 0x00000000, an illegal instruction,
+ rather than a branch or store at a wrapped address. Field ranges (RISC-V
+ unprivileged ISA): S -2048..2047, B -4096..4094, J -1048576..1048574. I takes
+ -2048..4095 because CSR numbers and shift encodings fill the field unsigned;
+ U takes -524288..1048575 for the same reason.
+
+  rv-imm-refused : List Integer = [256, 256, 256, 256]
+
+  rv-imm-fits : Integer, Integer, Integer -> Boolean
+  rv-imm-fits (v) (lo) (hi) = v >= lo & v <= hi
+
   rv-i-type : Integer, Integer, Integer, Integer, Integer -> List Integer
   rv-i-type (opcode) (rd) (funct3) (rs1) (imm12) =
-    rv-encode (bit-or (bit-or (bit-or (bit-or opcode (bit-shl rd 7)) (bit-shl funct3 12)) (bit-shl rs1 15)) (bit-shl (bit-and imm12 #FFF) 20))
+    if rv-imm-fits imm12 (0 - 2048) 4095 == False then rv-imm-refused
+    else rv-encode (bit-or (bit-or (bit-or (bit-or opcode (bit-shl rd 7)) (bit-shl funct3 12)) (bit-shl rs1 15)) (bit-shl (bit-and imm12 #FFF) 20))
 
   rv-s-type : Integer, Integer, Integer, Integer, Integer -> List Integer
   rv-s-type (opcode) (funct3) (rs1) (rs2) (imm12) =
-    let imm = bit-and imm12 #FFF
+    if rv-imm-fits imm12 (0 - 2048) 2047 == False then rv-imm-refused
+    else let imm = bit-and imm12 #FFF
     in let lo5 = bit-and imm #1F
     in let hi7 = bit-and (bit-shru imm 5) #7F
     in rv-encode (bit-or (bit-or (bit-or (bit-or (bit-or opcode (bit-shl lo5 7)) (bit-shl funct3 12)) (bit-shl rs1 15)) (bit-shl rs2 20)) (bit-shl hi7 25))
 
   rv-b-type : Integer, Integer, Integer, Integer, Integer -> List Integer
   rv-b-type (opcode) (funct3) (rs1) (rs2) (imm13) =
-    let imm = bit-and imm13 #1FFE
+    if rv-imm-fits imm13 (0 - 4096) 4094 == False then rv-imm-refused
+    else let imm = bit-and imm13 #1FFE
     in let bit11 = bit-and (bit-shru imm 11) 1
     in let bits4-1 = bit-and (bit-shru imm 1) #F
     in let bits10-5 = bit-and (bit-shru imm 5) #3F
@@ -72,11 +88,13 @@ Section: Encoding Helpers
 
   rv-u-type : Integer, Integer, Integer -> List Integer
   rv-u-type (opcode) (rd) (imm20) =
-    rv-encode (bit-or (bit-or opcode (bit-shl rd 7)) (bit-shl (bit-and imm20 #FFFFF) 12))
+    if rv-imm-fits imm20 (0 - 524288) 1048575 == False then rv-imm-refused
+    else rv-encode (bit-or (bit-or opcode (bit-shl rd 7)) (bit-shl (bit-and imm20 #FFFFF) 12))
 
   rv-j-type : Integer, Integer, Integer -> List Integer
   rv-j-type (opcode) (rd) (imm21) =
-    let imm = bit-and imm21 #1FFFFF
+    if rv-imm-fits imm21 (0 - 1048576) 1048574 == False then rv-imm-refused
+    else let imm = bit-and imm21 #1FFFFF
     in let bits19-12 = bit-and (bit-shru imm 12) #FF
     in let bit11 = bit-and (bit-shru imm 11) 1
     in let bits10-1 = bit-and (bit-shru imm 1) #3FF
@@ -451,5 +469,13 @@ Section: Pseudo-Instructions
     in let shifted = hi-insns & rv-slli rd rd 32
     in if lo32 == 0 then shifted
     else shifted & rv-li tmp lo32-signed & rv-add rd rd tmp
+
+ `rv-li-64` writes t0, or t1 when its destination is t0, so the mask goes to
+ t2 while t1 holds the address. With the mask in t0 a grant at bit 31 or above
+ overwrote the address and stored the word elsewhere (COMPILER-17).
+
+  rv-or-into-cell : Integer, Integer -> List Integer
+  rv-or-into-cell (addr) (mask) =
+    rv-li rv-t1 addr & rv-li rv-t2 mask & rv-ld rv-t0 rv-t1 0 & rv-or rv-t0 rv-t0 rv-t2 & rv-sd rv-t1 rv-t0 0
 
 Page 1

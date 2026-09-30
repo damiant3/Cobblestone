@@ -51,6 +51,8 @@ Each test `foo.codex` may have sidecars that control its behavior:
 | `foo.disk-src` | First line names ANOTHER test; that test's freshly compiled CDX is attached as this test's disk. `.disk` names a file and is therefore frozen, which is no use to a test pinning what the CURRENT compiler emits. `manifest-pin` is the case it was built for, and it had been skipped for want of it |
 | `foo.smp` | Core count. The test is booted with `-smp N`. This is how a test covers multi-core; without it every test boots single-core, which is why nothing exercised SMP for so long (`codex/test/smp-cores.codex` is the first) |
 | `foo.vmargs` | Extra codex-vm flags, whitespace-separated, `#` comments and blank lines ignored. For a test whose subject is the MACHINE rather than the program: a bus topology, an absent device. Before it existed, such a test could only be a `.skip` with the command in its prose -- an unrun test, which proves less than no test because it reads as coverage. `codex/test/apps/usb-kbd-hub` is the first, passing `-xhci-no-root-kbd` to unplug the root keyboard so the hub is the only route to one |
+| `foo.bare-metal` | The subject needs a bare-metal machine; the first line names what it reaches. The hosted selection rule (`codex/plugs/elf/hosted-elf-test.ps1`, shared by the hosted wasm arm) drops it, and both harnesses print every drop by reason. For a need that arrives through a cited chapter or a bed, which no source term can see: a subject naming a ring-0 builtin itself is dropped by the rule's term list without one |
+| `foo.hosted-refusal` | What the hosted targets do not serve (a kernel scheduler, the NIC), one reason line; a line `CDXnnnn` instead requires the hosted compile to be refused with that diagnostic. Read by `codex/plugs/elf/hosted-elf-test.ps1` only, NOT by the shared selection rule, so the wasm arm keeps the subject (`web-mux-heap` runs there); the harness prints the refused count and each subject with its reason |
 
 A test with no sidecar compiles but is unverified (PASS_UNVERIFIED). Measured
 2026-07-27: only **11 of 456** tests in `codex/test` are in that state, and
@@ -116,112 +118,49 @@ character the comparison can ignore.
 unless the rest of the output matches exactly, so this is a floor on how many
 sidecars carry it, never a count. Do not turn "two" into a census.
 
-### An `.expected` comparison is not byte-for-byte, and 139 sidecars rely on that without anyone knowing
+### An `.expected` comparison is ordinal; a hand comparison with `-eq` is not
 
-Found 2026-07-30 by blu, while diagnosing what looked like two failing tests
-that are in fact passing. Nothing here is broken today. What is wrong is the
-belief about what a green row means, and this section exists so the next
-person does not spend the same hour.
+**What the comparison is.** `build/test.ps1`, `build/bvt.ps1` and the hosted
+harnesses (`Test-HarnessMatch` in `codex/plugs/common/hosted-compare-lib.ps1`)
+filter the actual (CR stripped, `HEAP:`/`WD:`/`STACK:` lines dropped, trailing
+blank lines cut, one final LF), strip CR from the sidecar, and decide pass and
+fail with `[string]::Equals(expected, actual, [StringComparison]::Ordinal)`
+(plugs 2.91, ruled by Damian 2026-09-28).
 
-**What the comparison actually is.** `build/test.ps1` decides pass and fail
-with three lines:
-
-```powershell
-$expectedBytes = [System.IO.File]::ReadAllText($expectedFile) -replace "`r",''
-$actualBytes   = [System.IO.File]::ReadAllText($actual)
-if ($expectedBytes -eq $actualBytes) { PASS } else { FAIL }
-```
-
-Despite the variable names those are STRINGS, and `-eq` on two strings in
-PowerShell is a **culture-sensitive** comparison, not an ordinal one. A
-culture-sensitive comparison ignores characters that carry no collation
-weight, which includes several control characters. It is a one-line
-demonstration:
+**A comparison typed by hand with `-eq` answers a different question.** `-eq`
+on two strings in PowerShell is culture-sensitive and case-insensitive: it
+ignores characters that carry no collation weight, SOH (0x01), BEL (0x07) and
+NUL (0x00) among them, and equates `A` with `a`. VT (0x0B) is not ignored.
 
 ```powershell
 "`u{0001}abc" -eq "abc"                                     # True
+"ABC" -eq "abc"                                             # True
 [string]::Equals("`u{0001}abc", "abc", 'Ordinal')           # False
 ```
 
-SOH (0x01), BEL (0x07) and NUL (0x00) are ignored this way. VT (0x0B) is
-not, and ordinary text differences are caught exactly as you would expect
-(`"abd" -eq "abc"` is False). So the oracle is sound about content and blind
-to a specific class of invisible bytes.
-
-**Where the invisible byte comes from.** The guest's serial stream opens with
-a `0x01` SOH. `build/test-run.ps1` strips it from the ACTUAL output, along
-with CR, the `HEAP:`/`WD:`/`STACK:` lines and trailing newline noise, which
-is why recording an `.expected` **through the harness** is the standing rule.
-A sidecar recorded by copying a raw `codex-vm -output` file instead keeps the
-SOH, and the file then begins with a byte the program's real output does not
-have. That sidecar still passes, because the comparison above cannot see the
-difference.
+**Record an `.expected` through `build/test-run.ps1`, never by copying a raw
+`-output` file.** A codex-vm built before plugs 2.91 recorded the 16550
+divisor-latch write (the `1` every kernel sends to 0x3F8 with DLAB set) as a
+0x01 at the start of `-output` and again after a chained image; the depot
+binary drops that write.
 
 **The CR strip is not a courtesy to a few odd files: measured 2026-08-27, all
 1,429 `.expected` under `codex/test` are CRLF and not one is LF.** So a
 comparison done BY HAND rather than through the harness reports a phantom
 mismatch on every test in the tree, not on a handful of older ones. Strip CR
 from the sidecar side the way `test.ps1` does before reading any verdict off a
-hand diff. This note replaced a private belief that four named desk sidecars
-were CRLF exceptions; the control that killed it was reading three unrelated
-`.expected` files, which are CRLF too (L-COUNT).
+hand diff (L-COUNT).
 
-**Measured 2026-07-30, by reading the first byte of every file:** 1181
-`.expected` sidecars under `codex/test`, of which **139 begin with the raw
-SOH**. They span the tree rather than clustering in one campaign
-(`codex/test`, `codex/test/apps`, `codex/test/forewords`, `codex/test/lib`,
-`codex/test/ops`), so this has been happening for a long time and no run has
-ever mentioned it. **Re-measure before quoting** (L-COUNT).
+**A sidecar with no final LF can never match** (fester, 2026-08-16).
+`test-run.ps1` writes `($lines -join "\n") + "\n"`, so the actual always ends
+in exactly one LF, and the comparison strips CR from the expected side only.
 
-**What it costs, and it is two things rather than a crisis.**
-
-1. **The oracle cannot express a difference made only of ignorable
-   characters.** If a program began emitting a stray SOH or NUL where it
-   previously emitted none, no `.expected` row in the battery would move.
-   That is a narrow blind spot, but it is a blind spot in the instrument
-   every other claim in this document rests on (L-GAP: ask what the suite
-   cannot express before reading its silence as agreement).
-2. **A hand-run byte compare disagrees with the battery**, and the battery
-   is the one that is right about pass and fail. On 2026-07-30 a byte-exact
-   comparison reported `e1000-phy` and `e1000-phy-absent` as failing; they
-   pass, and the whole difference was the leading SOH in their sidecars. An
-   agent who trusted the byte compare would have reported a red test to
-   another lane and sent them hunting a defect that does not exist.
-
-**So: record an `.expected` through `build/test-run.ps1`, never by copying a
-raw `-output` file.** That rule already existed for the CR and the
-`HEAP:` lines; the SOH is the part that survives the mistake silently,
-because the CR and the extra lines would fail loudly.
-
-**The same rule broken the other way: a MISSING trailing newline** (fester,
-2026-08-16). `test-run.ps1` writes `($lines -join "\n") + "\n"`, so the
-actual always ends in exactly one LF; the comparison strips CR from the
-expected side only. LF is NOT one of the ignorable characters above: with a
-literal newline in the right operand, `"abc" -eq "abc<LF>"` is False, where
-the SOH form on line 106 is True. So a sidecar with no final LF can never
-match, whatever else is right about it.
-
-**And that is the interesting part, because this failure is LOUD.** Three
-sidecars shipped in CL 15313 anyway (`gpt-hdr-crc-guard`,
-`gpt-array-crc-guard`, `gpt-array-geom-guard`) and sat unpassable until
-root's release battery found them on 2026-08-16. A loud failure still needs
-something to hear it, and the full battery is Damian's tool, so a test can
-land and never be run at all. Do not read "it would have failed" as "it
-would have been caught".
-
-Measured across every `.expected` under `codex/test` and `apps`: **1,273
-files, exactly those 3 without a final LF** (L-COUNT: re-measure, do not
-quote this). That ratio is why it is worth a runner rather than a rule --
-1,270 files already get it right, so a check fires on real defects and
-never spuriously. Unlike the ordinal-comparison repair above, this one is
-not a fleet-wide event: it is three files.
-
-**Why the comparison has not simply been changed to ordinal.** Making it
-`[string]::Equals(..., 'Ordinal')` is a two-word edit that turns **139 tests
-red in one run**, none of them for a real defect. The repair on the other
-side is equally mechanical (strip a leading `0x01` from each sidecar), but
-doing both at once is a fleet-wide event in the battery, which is Damian's
-tool and Damian's call. It is written down here rather than done quietly.
+**And that failure is LOUD, which is not the same as caught.** Three sidecars
+shipped in CL 15313 anyway (`gpt-hdr-crc-guard`, `gpt-array-crc-guard`,
+`gpt-array-geom-guard`) and sat unpassable until root's release battery found
+them on 2026-08-16. The full battery is Damian's tool, so a test can land and
+never be run at all. `build/check-sidecars.ps1` refuses a sidecar with no
+final LF.
 
 ### 181 of 425 foreword chapters are never asked whether they answer correctly
 
@@ -472,8 +411,8 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **242** expected-failure tests (measured
-2026-09-25).
+`codex/test/errors/` holds **244** expected-failure tests (measured
+2026-09-28).
 
 ## What the standing gate does not cover
 
@@ -1068,9 +1007,9 @@ regenerate would destroy working scripts.
 was run is `test-cross.ps1 -Arch riscv64 -Test rv-frameless-temp` through the
 changed path (compile OK, run PASS, exit 0) and `check-generated-scripts -Only
 test-cross` at 0 drift, which is the only gate check that reads this script.
-`build/build.ps1 -Internal` was not run: Renode is banned on this box from
-2026-09-01, the box being one DIMM down and a riscv arm peaking 2.0 GB per boot.
-Rerun the cross phase when the ban lifts.
+`build/build.ps1 -Internal` was not run. Rerun the cross phase alone: Renode
+arms run ALONE on this box (`CoordinationProtocol.md`), and a riscv arm peaks
+at 2.0 GB per boot.
 
 ### What the cross battery actually covers, and the word "parity"
 
@@ -1129,7 +1068,7 @@ have no cross coverage by construction.
 on that architecture** in both cross harnesses (`test-cross.ps1`,
 `test-cross-batch.ps1`); the x86-64 battery never reads it. It is for an answer
 that is RIGHT and differs by bed or layout: `qemu-virt-board`'s PL011 writes,
-`wademo-bulk`'s heap count (plugs 2.73). Pin only a value that reproduces
+`web-mux-heap`'s per-connection heap (plugs 2.73). Pin only a value that reproduces
 run to run on the same seed and plug. `.no-cross` skips a test whose subject
 the cross beds lack (`e1000-tx-deadline`, the x86 HPET). `<name>.arch-only`
 lists, one per line, the architectures a test runs on (`x86-64`, `arm64`,
@@ -1180,6 +1119,10 @@ Distinct from untested. Both plugs refuse rather than miscompile, and each
 refusal is pinned by a `.cross-refusal` sidecar (23 of them), so a refusal
 arm that silently disappears turns the row red instead of emitting wrong
 code. Refusals carry an `[UNSUPPORTED]` line on the compile log.
+The wasm plug refuses by emitting a `(codex-refused-<name>-...)` token that
+wat2wasm rejects; a `.wasm-refusal` sidecar lists the names, and
+`codex/plugs/wasm/hosted-wasm-test.ps1` passes the subject only when every token is
+in the WAT and the module fails to assemble. Such subjects join every draw.
 
 **Two real capability gaps, both on ARM64 and RISC-V:**
 
@@ -1216,48 +1159,30 @@ says so in full and names its own deletion condition.
 
 ### The parallelism default, and the flake that was not the harness's
 
-`-Jobs` defaults to **8**. It was 4, and the 4 was a workaround: at eight
-Renode slots a passing test would come back `FAIL_RUNTIME` with no uart after
-about two seconds. That was investigated twice, no cause was found inside the
-harness, and the default was halved instead.
+**`-Jobs 16` is the default on every parallel harness, release proofs
+included** (Damian, 2026-09-28). The box holds 47.77 GiB and 20 logical CPUs
+and CPU runs out before RAM does; the measurement and its condition are
+`CoordinationProtocol.md`, "The token does not cover RAM". When the box
+changes, re-measure and re-rule.
 
-**The cause was the machine.** Its DDR5 was running an XMP profile it was not
-stable at. With the memory back in spec the box has run 25+ concurrent VMs with
-no fault (2026-07-22), and the default is 8.
-
-Worth keeping because the shape recurs: two investigations that cannot find a
-cause inside the software are evidence about where the cause is not. A
-workaround written into a default outlives the condition that justified it and
-then reads as a property of the harness. If slot-count flakes return, suspect
-the hardware first.
-
-**And it recurred here, in this document's own neighbours. RULED 2026-08-02 by
-Damian: `-Jobs 8` everywhere, release proofs included.** The default above went
-back to 8, but the halved number survived in every place that had copied it out
-as a literal: the poison recipe in `OperatorsManual.md` said `-Jobs 4`, the
-release skill said `-Jobs 3` **and told the reader not to raise it**, and
-`sweep-app-classes.ps1` defaulted to 6 on a measurement taken 2026-07-20, two
-days before the XMP fix that killed its cause. The cost was paid on 2026-08-02:
-a release poison battery spent **977 s in its compile phase at 4 slots on a
-12-core box**, because the recipe said 4 and the recipe was followed.
+**A workaround written into a default outlives the condition that justified
+it and then reads as a property of the harness.** Name the condition beside
+the number, so the default dies with it. When slot-count flakes appear and two
+investigations find no cause inside the software, suspect the hardware first:
+an unstable XMP memory profile once produced `FAIL_RUNTIME` with no uart at
+eight slots and was fixed in the BIOS, not the harness.
 
 **A default that is corrected in one place and copied as a literal in five is
-not corrected.** The paragraph above had the right answer and the right general
-lesson written down, and neither reached the scripts that had already
-copied the wrong number out of it.
+not corrected.** A recipe that copies the number out (`-Jobs N` in a skill, a
+poison recipe, a script default) keeps the old value after the ruling moves,
+and the recipe is what gets followed. Change every copy when the ruling
+changes, or do not copy it.
 
-**RE-RULED 2026-08-27 by Damian: `-Jobs 4`, superseding the 8.** Not the old
-workaround returning: a different condition, measured, and NAMED here so this
-default dies with its condition rather than outliving it, which is this
-section's own lesson. The box holds 15.8 GiB; `check-test-compile` at 4 ways
-times `-mem 3072` commits ~12 GB and free host RAM fell 8.5 GB to 1.9 GB with
-four VMs live, so 8 slots of 3072 MB guests cannot fit. The tell that it is
-RAM and not codegen: the named casualty MOVES between runs (three runs, three
-different chapters, 326/1076/340 casualties, one workspace, one kernel, each
-chapter clean alone). The account with the control matrix is
-`OperatorsManual.md` "The compile batch asks for 12 GB of guest RAM, and a
-short box reports it as a CODEGEN failure" (blu, main 20370). When the box
-grows RAM, re-measure and re-raise.
+**The tell that a slot-count failure is RAM and not codegen: the named
+casualty MOVES between runs** (three runs, three different chapters, one
+workspace, one kernel, each chapter clean alone). The account with the control
+matrix is `OperatorsManual.md` "The compile batch asks for 12 GB of guest RAM,
+and a short box reports it as a CODEGEN failure" (blu, main 20370).
 
 ### A harness that can throw is a harness that can take itself down, and the fix was already in the file
 
@@ -1668,7 +1593,7 @@ writes (the `smp-cores` discipline) -- "an ap executed guest code" at
 nothing; these fail single-core.
 
 - `codex/test/smp-riscv-boot.codex` -- hart 0 boots; a non-zero `mhartid`
-  branches in `__start` to an AP path that marks `0x80090000` and parks
+  branches in `__start` to an AP path that marks `0x80810000` and parks
   (park-the-secondaries; no SBI).
 - `codex/test/smp-arm64-boot.codex` -- QEMU holds the ARM64 secondaries, so
   core 0's `__start` issues PSCI `CPU_ON` (conduit HVC, id `0xC4000003`) to
@@ -3849,6 +3774,20 @@ only its own arm. Two arms are built so one check alone refuses them:
 `[255, 255]` is short but checksums to zero, and `not-a-byte` replaces payload
 `7, 9` with `6, 265`, the same 16-bit word, so the checksum still verifies.
 
+## The SNTP Reply Guard (`codex/test/apps/sntp-guard`)
+
+Track D row 13, `codex/foreword/encode/Sntp.codex`, no production caller;
+`sntp-encode` runs the accessors on its own request only. `sntp-transmit-seconds`
+reads bytes 40 to 43 and `sntp-mode` byte 0 with no length check, so a short
+packet traps. `sntp-reply-checked` answers `None` unless the packet is at least
+48 bytes, every value is a byte, and the mode is 4 (server, RFC 4330 section 5);
+a longer packet (a trailing authenticator) is accepted.
+
+Nine arms predicted before the run; three guards ablated alone, each moving
+only its own arms: length (`short-47`, `short-44` accepted, `empty` traps at
+`!EXC=06`), bytes (`not-a-byte`, `negative`), mode (`client-mode`,
+`broadcast-mode`).
+
 ## The Encode Markdown Guard (`codex/test/apps/md-encode-guard`)
 
 Track D row 13, `codex/foreword/encode/Markdown.codex` `md-parse`, reached by
@@ -5779,8 +5718,8 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-242 tests in `codex/test/errors/` verify that the compiler rejects
-invalid programs with the correct diagnostic codes (counted 2026-09-25). Each has a
+244 tests in `codex/test/errors/` verify that the compiler rejects
+invalid programs with the correct diagnostic codes (counted 2026-09-28). Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
 `infinite-type` (CDX2010), `linear-twice` (CDX2061).
@@ -7870,10 +7809,10 @@ each exit 1; the clean tree is 83 modules and 0 errors, exit 0. Note the broken
 kernel produced ONE module rather than two, because the page stops before
 building its render shader, so a module COUNT is not a coverage check.
 
-**It is an instrument, not a gate**, for the same reason as
-`build/check-app-pages.ps1`: it needs an installed browser, so it cannot live
-in `build/build.ps1`. Nothing invokes it automatically. Run it when you touch a
-kernel, the WGSL plug, or a demo page.
+**The release gate runs it** in `build/build.ps1`'s `browser-checks` phase, with
+headless Edge as the Chromium (`--chrome <msedge.exe>`), beside ModBuilder's
+`test-emit.mjs` and `test-site.mjs` (Damian's GPUSHOW-1 ruling, 2026-09-29). No
+lane gate does. Run it when you touch a kernel, the WGSL plug, or a demo page.
 
 Both tools ask the OS for a free CDP port rather than pinning one. The
 single-file `validate.mjs` pinned 9223, which on a shared box lets a peer's
@@ -7947,33 +7886,31 @@ writer's own manifest** (`codex/plugs/img/run.ps1 -ManifestOut`, a TSV of
 directory, 8.3 name and path). Folding the names a second time on the reading
 side would agree with a shared mistake by construction (L-BOTHARMS).
 
-**What is comparable, measured 2026-09-09 over `codex/test`: 123 of 648.** The
-exclusions are printed rather than folded into the denominator (L-DENOM): 511
-chapters carry `cites` and the runner compiles each chapter ALONE with no cite
-resolution, 10 carry `.skip`, and 4 carry `.flags` whose compile flags the
-runner does not pass, which would measure the invocation rather than the
-subject (L-SIDECAR).
+**Each subject is bundled on the host** with the resolver `compile.ps1` uses,
+so a chapter carrying `cites` is comparable. The guest prints every error code
+with its unit position; `Get-DiagRegions` maps each back to its file, and a
+`.failing` sidecar passes when EVERY code it records appears, at its position
+when it gives one: `bvt.ps1`'s rule. A codegen error is graded like a frontend
+one. A subject the host cannot resolve passes only if its sidecar records 3010,
+which is what `compile.ps1` reports for it.
 
-**A fourth class is reported as NOT COMPARABLE rather than as a failure, and
-the guest's own message is what classifies it.** The desugarer writes names the
-author never cites (`for x in xs -> ...` becomes `map-list`, a tuple literal
-becomes `MkTup<N>`), so `build/quire-map.ps1` walks Foreword ListUtils and
-Tuple into every host unit; a guest compiling one chapter alone has neither.
-The script reads those two chapters for the names they define rather than
-carrying a list.
+**The default selection is `codex/test` and `codex/test/errors`.** Dropped and
+printed rather than folded into the denominator (L-DENOM): `.skip`, `.flags`
+(compile flags the runner does not pass, L-SIDECAR), and `.arch-only` not
+naming x86-64, by `bvt.ps1`'s test.
 
-**Result at head: 120 pass, 2 not comparable, 1 disagreement**, and the
-disagreement is registered as COMPILER-76: `type-name-existence` compiles clean
-on the host and raises CDX2001 `Type mismatch: VectorMask 4 vs Boolean` in the
-guest. Flags and the sugar chapters are both eliminated as causes.
+**Result, 2026-09-29, seed `8617D27629B6731B`: 984 of 984 pass**, 21 dropped
+(6 `.flags`, 10 `.skip`, 5 `.arch-only`).
 
-**It fails in both directions, ablated 2026-09-09**: a sidecar carrying a code
-the guest does not raise fails with the codes named, and a clean chapter given
-a `.failing` sidecar fails as an expected failure that did not happen. It also
-refuses a run whose guest never printed `runner done`, and refuses a run that
-graded nothing, because an incomplete run and a clean one otherwise read alike.
+**It fails in every direction it grades, ablated 2026-09-29**: a sidecar
+position the guest does not report, a sidecar code the guest does not raise, a
+clean chapter given a `.failing`, and a wrong codegen code each fail with the
+guest's codes named. It fails a subject that printed no verdict and a shard
+whose guest never printed `runner done`, and refuses a run that graded nothing.
 
-**Cost, measured 2026-09-09:** two guests, one to build the image through the
-img plug and one to boot the runner, about 185 s for all 123 subjects at seed
-`EC179CDE95FA59DB`. `-ListOnly` prints the selection and its exclusions without
-starting a guest.
+**Cost, measured 2026-09-29:** the corpus bundles to 80.6 MB and runs in 15
+shards of at most 250 subjects or 6 MB (`-ShardSize`, `-ShardBytes`), because
+`test-run.ps1` gives a guest 60 s and the img plug aborted on a 20 MB payload.
+Each shard is two guests in sequence; the image costs about 5 minutes, the
+slowest guest 11 s, the whole run about 75 minutes, one guest at a time.
+`-ListOnly` prints the selection without starting a guest.

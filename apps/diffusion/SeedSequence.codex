@@ -1,0 +1,119 @@
+Chapter: SeedSequence
+  cites Foreword chapter Wrap64
+
+ numpy's SeedSequence (numpy 1.26, `numpy/random/bit_generator.pyx`), which
+ torchsde's Brownian interval seeds each split from: the entropy and the
+ spawn key as little-endian 32-bit words, the entropy padded with zeros to
+ the pool size when there is a spawn key; the pool filled and mixed with
+ hashmix and mix; generate_state cycling the pool through its own hash. Every
+ value is 32-bit and wraps. The constants are numpy's: INIT_A 0x43b0d7e5,
+ MULT_A 0x931e8875, INIT_B 0x8b51f9dd, MULT_B 0x58f38ded, MIX_MULT_L
+ 0xca01f9dd, MIX_MULT_R 0x4973f715, and a shift of 16.
+
+ We say:
+
+Section: Words
+
+  ss-lo : Integer -> Integer
+  ss-lo (x) = bit-and x #FFFFFFFF
+
+  ss-mul : Integer, Integer -> Integer
+  ss-mul (a) (b) = ss-lo (w64-mul a b)
+
+  ss-words : Integer, List Integer -> List Integer
+  ss-words (x) (acc) =
+    if x <= 0 then acc
+    else ss-words (bit-shru x 32) (list-push acc (ss-lo x))
+
+  ss-int-words : Integer -> List Integer
+  ss-int-words (x) = if x == 0 then [0] else ss-words x []
+
+  ss-append : List Integer, List Integer, Integer -> List Integer
+  ss-append (acc) (xs) (i) =
+    if i >= list-length xs then acc
+    else ss-append (list-push acc (list-at xs i)) xs (i + 1)
+
+  ss-key-words : List Integer, Integer, List Integer -> List Integer
+  ss-key-words (key) (i) (acc) =
+    if i >= list-length key then acc
+    else ss-key-words key (i + 1) (ss-append acc (ss-int-words (list-at key i)) 0)
+
+  ss-pad : List Integer, Integer -> List Integer
+  ss-pad (xs) (n) = if list-length xs >= n then xs else ss-pad (list-push xs 0) n
+
+  ss-entropy : Integer, List Integer, Integer -> List Integer
+  ss-entropy (entropy) (key) (pool) =
+    let run = ss-append [] (ss-int-words entropy) 0
+    in let spawn = ss-key-words key 0 []
+    in let padded = if list-length spawn > 0 then ss-pad run pool else run
+    in ss-append padded spawn 0
+
+Section: Mixing
+
+ The hash constant is a one-word list the hash moves on in place.
+
+  ss-hashmix : Integer, List Integer -> Integer
+  ss-hashmix (value) (hc) =
+    let v = bit-xor value (list-at hc 0)
+    in let h = ss-mul (list-at hc 0) #931E8875
+    in let s = list-set-at hc 0 h
+    in let w = ss-mul v h
+    in bit-xor w (bit-shru w 16)
+
+  ss-mix : Integer, Integer -> Integer
+  ss-mix (x) (y) =
+    let r = ss-lo (ss-mul #CA01F9DD x - ss-mul #4973F715 y)
+    in bit-xor r (bit-shru r 16)
+
+  ss-fill : List Integer, List Integer, List Integer, Integer -> List Integer
+  ss-fill (pool) (e) (hc) (i) =
+    if i >= list-length pool then pool
+    else let v = ss-hashmix (if i < list-length e then list-at e i else 0) hc
+    in ss-fill (list-set-at pool i v) e hc (i + 1)
+
+  ss-cross : List Integer, List Integer, Integer, Integer -> List Integer
+  ss-cross (pool) (hc) (src) (dst) =
+    let n = list-length pool
+    in if src >= n then pool
+    else if dst >= n then ss-cross pool hc (src + 1) 0
+    else if src == dst then ss-cross pool hc src (dst + 1)
+    else let m = ss-mix (list-at pool dst) (ss-hashmix (list-at pool src) hc)
+    in ss-cross (list-set-at pool dst m) hc src (dst + 1)
+
+  ss-rest : List Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  ss-rest (pool) (e) (hc) (src) (dst) =
+    let n = list-length pool
+    in if src >= list-length e then pool
+    else if dst >= n then ss-rest pool e hc (src + 1) 0
+    else let m = ss-mix (list-at pool dst) (ss-hashmix (list-at e src) hc)
+    in ss-rest (list-set-at pool dst m) e hc src (dst + 1)
+
+  ss-zeros : Integer, List Integer -> List Integer
+  ss-zeros (n) (acc) = if n <= 0 then acc else ss-zeros (n - 1) (list-push acc 0)
+
+ The mixed pool of SeedSequence(entropy, spawn_key = key, pool_size = pool).
+
+  seed-sequence : Integer, List Integer, Integer -> List Integer
+  seed-sequence (entropy) (key) (pool) =
+    let e = ss-entropy entropy key pool
+    in let hc = [#43B0D7E5]
+    in let p = ss-fill (ss-zeros pool []) e hc 0
+    in let q = ss-cross p hc 0 0
+    in ss-rest q e hc pool 0
+
+Section: State
+
+  ss-state : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ss-state (pool) (n) (i) (hc) (acc) =
+    if i >= n then acc
+    else let d = bit-xor (list-at pool (i - (i / list-length pool) * list-length pool)) hc
+    in let h = ss-mul hc #58F38DED
+    in let w = ss-mul d h
+    in ss-state pool n (i + 1) h (list-push acc (bit-xor w (bit-shru w 16)))
+
+ generate_state(n) as 32-bit words.
+
+  seed-sequence-state : List Integer, Integer -> List Integer
+  seed-sequence-state (pool) (n) = ss-state pool n 0 #8B51F9DD []
+
+Page 1

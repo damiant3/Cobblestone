@@ -19,9 +19,26 @@ Section: Keywords and Sanitization
 
   wat-sanitize : Text -> Text
   wat-sanitize (name) =
-   let s = text-replace (text-replace (text-replace (text-replace name "-" "_") "[" "<") "]" ">") "," "|"
+   let s0 = text-replace (text-replace (text-replace (text-replace name "-" "_") "[" "<") "]" ">") "," "|"
+   in let s = if wat-has-foreign s0 0 then wat-ascii-ident s0 0 "" else s0
    in if wat-is-keyword s 0 then s & "_v"
       else s
+
+ A WAT identifier is ASCII only. CCE codes 97 and up are the non-ASCII
+ characters (13..64 letters, 3..12 digits, 65..96 punctuation), so each one
+ becomes `_u<code>_`.
+
+  wat-has-foreign : Text, Integer -> Boolean
+  wat-has-foreign (s) (i) =
+   if i >= text-length s then False
+   else if char-code (char-at s i) >= 97 then True
+   else wat-has-foreign s (i + 1)
+
+  wat-ascii-ident : Text, Integer, Text -> Text
+  wat-ascii-ident (s) (i) (acc) =
+   if i >= text-length s then acc
+   else let c = char-code (char-at s i)
+   in wat-ascii-ident s (i + 1) (acc & (if c >= 97 then "_u" & integer-to-text c & "_" else char-to-text (char-at s i)))
 
   wat-escape : Text -> Text
   wat-escape (s) =
@@ -33,7 +50,8 @@ Section: Arity Map
   ArityEntry = record {
    name : Text,
    arity : Integer between 0 and 255,
-   generic-count : Integer between 0 and 255
+   generic-count : Integer between 0 and 255,
+   wat-id : Text
   }
 
   bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
@@ -57,8 +75,51 @@ Section: Arity Map
    in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
     name = d.name,
     arity = __narrow (list-length (d.params)),
-    generic-count = 0
+    generic-count = 0,
+    wat-id = wat-sanitize (d.name)
    }))
+
+ A definition whose sanitized name is a runtime function's id takes a `~`
+ suffix: no Codex identifier contains `~`, so the suffixed id is free.
+
+  wat-assign-ids : List ArityEntry, Text, Integer, List ArityEntry -> List ArityEntry
+  wat-assign-ids (xs) (taken) (i) (acc) =
+   if i >= list-length xs then acc
+   else let e = list-at xs i
+   in let id = if text-contains taken ("|" & e.wat-id & "|") then e.wat-id & "~" else e.wat-id
+   in wat-assign-ids xs taken (i + 1) (list-push acc (ArityEntry { name = e.name, arity = e.arity, generic-count = e.generic-count, wat-id = id }))
+
+  wat-arity-id : List ArityEntry, Text -> Text
+  wat-arity-id (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then wat-sanitize name
+      else let e = list-at entries pos
+      in if e.name == name then e.wat-id else wat-sanitize name
+
+  wat-func-ids : Text -> Text
+  wat-func-ids (s) = "|" & text-concat-list (wat-func-ids-loop s 0 (text-length s) [])
+
+  wat-func-ids-loop : Text, Integer, Integer, List Text -> List Text
+  wat-func-ids-loop (s) (i) (len) (acc) =
+   if i + 7 > len then acc
+   else if wat-at-func-open s i 0 then
+    let e = wat-id-end s (i + 7) len
+    in wat-func-ids-loop s e len (list-push acc (substring s (i + 7) (e - i - 7) & "|"))
+   else wat-func-ids-loop s (i + 1) len acc
+
+  wat-at-func-open : Text, Integer, Integer -> Boolean
+  wat-at-func-open (s) (i) (k) =
+   if k >= 7 then True
+   else if char-code-at s (i + k) == char-code-at "(func $" k then wat-at-func-open s i (k + 1)
+   else False
+
+  wat-id-end : Text, Integer, Integer -> Integer
+  wat-id-end (s) (i) (len) =
+   if i >= len then i
+   else let c = char-code-at s i
+   in if c == char-code-at " " 0 | c == char-code-at ")" 0 | c == char-code-at "\n" 0 then i
+      else wat-id-end s (i + 1) len
 
   lookup-arity : List ArityEntry, Text -> Integer
   lookup-arity (entries) (name) =
@@ -108,7 +169,7 @@ Section: Arity Map
   wat-emit-elem-span : List ArityEntry, Integer, Integer -> Text
   wat-emit-elem-span (entries) (lo) (hi) =
    if lo >= hi then ""
-   else if hi - lo == 1 then " $" & wat-sanitize ((list-at entries lo).name)
+   else if hi - lo == 1 then " $" & (list-at entries lo).wat-id
    else let mid = lo + (hi - lo) / 2
    in wat-emit-elem-span entries lo mid & wat-emit-elem-span entries mid hi
 
@@ -512,7 +573,9 @@ Section: Emitter Context
    bound : List Text,
    scrut-depth : Integer,
    inplace : List Text,
-   eff-ops : List WhOp
+   eff-ops : List WhOp,
+   try-level : Integer,
+   has-fail : Boolean
   }
 
   wat-scrut-name : Integer -> Text
@@ -542,7 +605,7 @@ Section: Emitter Context
 
   ctx-deeper : WasmCtx -> WasmCtx
   ctx-deeper (ctx) =
-   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = ctx.bound, scrut-depth = ctx.scrut-depth + 1, inplace = ctx.inplace, eff-ops = ctx.eff-ops }
+   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = ctx.bound, scrut-depth = ctx.scrut-depth + 1, inplace = ctx.inplace, eff-ops = ctx.eff-ops, try-level = ctx.try-level, has-fail = ctx.has-fail }
 
 Section: Local Collection
 
@@ -563,11 +626,11 @@ Section: Local Collection
 
   ctx-with : WasmCtx, List Text -> WasmCtx
   ctx-with (ctx) (bd) =
-   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = bd, scrut-depth = ctx.scrut-depth, inplace = ctx.inplace, eff-ops = ctx.eff-ops }
+   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = bd, scrut-depth = ctx.scrut-depth, inplace = ctx.inplace, eff-ops = ctx.eff-ops, try-level = ctx.try-level, has-fail = ctx.has-fail }
 
   ctx-with-inplace : WasmCtx, List Text -> WasmCtx
   ctx-with-inplace (ctx) (ip) =
-   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = ctx.bound, scrut-depth = ctx.scrut-depth, inplace = ip, eff-ops = ctx.eff-ops }
+   WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = ctx.bound, scrut-depth = ctx.scrut-depth, inplace = ip, eff-ops = ctx.eff-ops, try-level = ctx.try-level, has-fail = ctx.has-fail }
 
   collect-locals-params : List IRParam, Integer, List Text -> List Text
   collect-locals-params (ps) (i) (acc) =
@@ -828,7 +891,7 @@ Section: Expression Emission
     is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-wat-field-store ctx rec field val ty depth
     is IrFork (body) (ty) (sp) -> "(call $clo_apply1 " & emit-wat-expr-at ctx body (depth + 1) & " (i64.const 0))"
     is IrAwait (task) (ty) (sp) -> emit-wat-expr-at ctx task (depth + 1)
-    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-wat-act ctx body
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-wat-try ctx max body fb fail-stmts
     is IrError (msg) (ty) (sp) -> "(unreachable)"
 
   emit-wat-if-chain : WasmCtx, IRExpr, Integer -> Text
@@ -1001,21 +1064,41 @@ Section: Expression Emission
    else if n == "True" then "(i64.const 1)"
    else if n == "False" then "(i64.const 0)"
    else if n == "Nothing" then "(i64.const 0)"
+   else if wat-def-outranks-builtin ctx n then wat-emit-def-ref ctx n
    else if n == "__heap-save" then "(i64.extend_i32_u (global.get $heap_ptr))"
    else if n == "__deck-pos" then "(i64.extend_i32_u (global.get $deck_ptr))"
    else if n == "__deck-enter" then "(block (result i64) (call $__deck_enter) (i64.const 0))"
    else if n == "__deck-exit" then "(block (result i64) (call $__deck_exit) (i64.const 0))"
-   else if n == "__self-type-defs" then "(call $list_with_capacity (i64.const 0))"
+   else if n == "__self-type-defs" | n == "vec-empty" then "(call $list_with_capacity (i64.const 0))"
    else if n == "read-line" then wat-emit-maybe-line ctx "$read_line_raw"
    else if n == "read-line-cce" then wat-emit-maybe-line ctx "$read_line_cce_raw"
    else if n == "block-sector-count" then "(i64.extend_i32_u (i32.div_u (global.get $disk_size) (i32.const 512)))"
    else if n == "process-get-pid" then "(i64.const 0)"
+   else if n == "process-count" then "(i64.const 1)"
+   else if n == "hardware-random" then "(i64.load (block (result i32) (drop (call $random_get (global.get $heap_ptr) (i32.const 8))) (global.get $heap_ptr)))"
+   else if n == "process-yield" then "(i64.const 0)"
    else if n == "hosted-kind" then "(i64.const 1)"
    else if n == "__heap-base" then "(i64.extend_i32_u (global.get $heap_start))"
    else if wh-op-arity (ctx.eff-ops) n 0 >= 0 then wh-emit-op-call ctx n []
    else if is-ctor-name (ctx.type-defs) n 0 then emit-wat-ctor ctx n []
-   else let ar = lookup-arity (ctx.arities) n
-   in if ar == 0 then "(call $" & wat-sanitize n & ")"
+   else wat-emit-def-ref ctx n
+
+ A definition outranks a builtin of the same name, except an intrinsic's
+ portable fallback: `deck-record (x) = x` beside the phase allocator stands
+ in for the deck arm on a target without one, and x86-64 keeps the intrinsic
+ there (`deck-record-intrinsic`). The IR text carries no chapter slug, so the
+ allocator being defined in the unit stands for x86-64's same-chapter test.
+
+  wat-def-outranks-builtin : WasmCtx, Text -> Boolean
+  wat-def-outranks-builtin (ctx) (n) =
+   if lookup-arity (ctx.arities) n < 0 then False
+   else if n == "deck-record" then lookup-arity (ctx.arities) "init-phase-allocator" < 0
+   else True
+
+  wat-emit-def-ref : WasmCtx, Text -> Text
+  wat-emit-def-ref (ctx) (n) =
+   let ar = lookup-arity (ctx.arities) n
+   in if ar == 0 then "(call $" & wat-arity-id (ctx.arities) n & ")"
       else if ar > 0 then "(i64.const " & integer-to-text (lookup-fn-index (ctx.arities) n) & ")"
       else wat-refuse-name n
 
@@ -1235,6 +1318,54 @@ Section: Expression Emission
   emit-wat-act (ctx) (stmts) =
    emit-wat-act-stmts ctx stmts 0
 
+ Eight is the try nesting cap: every level declares three locals in every function that has a try.
+
+  wat-try-max-level : Integer = 8
+
+  emit-wat-try : WasmCtx, Integer, List IRActStmt, List IRActStmt, List IRActStmt -> Text
+  emit-wat-try (ctx) (max) (body) (fb) (fail-stmts) =
+   if ctx.has-fail == False then emit-wat-act ctx body
+   else if ctx.try-level >= wat-try-max-level then "(unreachable (; wasm plug: try nested deeper than 8 ;))"
+   else let k = integer-to-text (ctx.try-level)
+   in let ictx = WasmCtx { arities = ctx.arities, strings = ctx.strings, type-defs = ctx.type-defs, bound = ctx.bound, scrut-depth = ctx.scrut-depth, inplace = ctx.inplace, eff-ops = ctx.eff-ops, try-level = ctx.try-level + 1, has-fail = True }
+   in let n = "$_try_n" & k
+   in let h = "$_try_h" & k
+   in let head = "(block $try_end" & k & " (result i64) (local.set " & n & " (i64.const 0)) (local.set " & h & " (i64.extend_i32_u (global.get $heap_ptr))) "
+   in let attempt = "(loop $try_retry" & k & " (global.set $try_fail (i32.const 0)) (global.set $heap_ptr (i32.wrap_i64 (local.get " & h & "))) (block $try_failed" & k & " " & emit-wat-try-body ictx k body 0 & ") "
+   in let count = "(local.set " & n & " (i64.add (local.get " & n & ") (i64.const 1))) (br_if $try_retry" & k & " (i64.lt_s (local.get " & n & ") (i64.const " & integer-to-text max & ")))) "
+   in head & attempt & count & emit-wat-try-exhausted ictx k fb fail-stmts & ")"
+
+  emit-wat-try-body : WasmCtx, Text, List IRActStmt, Integer -> Text
+  emit-wat-try-body (ctx) (k) (stmts) (i) =
+   if i >= list-length stmts then "(br $try_end" & k & " (i64.const 0))"
+   else let check = " (br_if $try_failed" & k & " (global.get $try_fail)) "
+   in let is-last = i == list-length stmts - 1
+   in when list-at stmts i
+    is IrDoBind (name) (ty) (val) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr ctx val & ")" & check & emit-wat-try-body ctx k stmts (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then "(local.set $_try_v" & k & " " & emit-wat-expr ctx e & ")" & check & "(br $try_end" & k & " (local.get $_try_v" & k & "))"
+     else "(drop " & emit-wat-expr ctx e & ")" & check & emit-wat-try-body ctx k stmts (i + 1)
+
+  emit-wat-try-exhausted : WasmCtx, Text, List IRActStmt, List IRActStmt -> Text
+  emit-wat-try-exhausted (ctx) (k) (fb) (fail-stmts) =
+   if list-length fb == 0 then "(i64.const 0)"
+   else let v = "$_try_v" & k
+   in let run-fb = "(global.set $try_fail (i32.const 0)) (local.set " & v & " " & emit-wat-act ctx fb & ") "
+   in if list-length fail-stmts == 0 then run-fb & "(local.get " & v & ")"
+      else run-fb & "(if (result i64) (global.get $try_fail) (then (global.set $try_fail (i32.const 0)) " & emit-wat-act ctx fail-stmts & ") (else (local.get " & v & ")))"
+
+  wat-try-local-decls : WasmCtx, Text -> Text
+  wat-try-local-decls (ctx) (body) =
+   if ctx.has-fail == False then ""
+   else if text-contains body "$_try_n" == False then ""
+   else wat-try-local-decls-from 0
+
+  wat-try-local-decls-from : Integer -> Text
+  wat-try-local-decls-from (i) =
+   if i >= wat-try-max-level then ""
+   else let k = integer-to-text i
+   in "(local $_try_n" & k & " i64) (local $_try_h" & k & " i64) (local $_try_v" & k & " i64) " & wat-try-local-decls-from (i + 1)
+
   emit-wat-act-stmts : WasmCtx, List IRActStmt, Integer -> Text
   emit-wat-act-stmts (ctx) (stmts) (i) =
    if i == list-length stmts then "(i64.const 0)"
@@ -1287,12 +1418,12 @@ Section: Apply Emission
   wat-emit-named-apply : WasmCtx, Text, List IRExpr, Integer -> Text
   wat-emit-named-apply (ctx) (n) (args) (ar) =
    let k = list-length args
-   in if k == ar then "(call $" & wat-sanitize n & " " & emit-wat-apply-args ctx args 0 & ")"
+   in if k == ar then "(call $" & wat-arity-id (ctx.arities) n & " " & emit-wat-apply-args ctx args 0 & ")"
    else if k < ar then
     let seed = "(i64.const " & integer-to-text (lookup-fn-index (ctx.arities) n) & ")"
     in wat-emit-apply-chain ctx args 0 seed
    else
-    let sat = "(call $" & wat-sanitize n & " " & emit-wat-apply-args ctx (list-take args ar) 0 & ")"
+    let sat = "(call $" & wat-arity-id (ctx.arities) n & " " & emit-wat-apply-args ctx (list-take args ar) 0 & ")"
     in wat-emit-apply-chain ctx (list-drop args ar) 0 sat
 
 
@@ -1670,9 +1801,15 @@ Section: Apply Emission
 
   wat-try-builtin : WasmCtx, Text, List IRExpr -> Text
   wat-try-builtin (ctx) (n) (args) =
-   if n == "__heap-restore" then "(block (result i64) (global.set $heap_ptr (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")) (i64.const 0))"
+   if wat-def-outranks-builtin ctx n then ""
+   else if n == "fail" then "(block (result i64) (drop " & emit-wat-expr ctx (list-at args 0) & ") (global.set $try_fail (i32.const 1)) (i64.const 0))"
+   else if n == "__heap-restore" then "(block (result i64) (global.set $heap_ptr (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")) (i64.const 0))"
    else if n == "peek-byte" then "(i64.load8_u " & wat-addr-of ctx args & ")"
    else if n == "peek-qword" then "(i64.load " & wat-addr-of ctx args & ")"
+   else if n == "peek-16" then "(i64.load16_u " & wat-addr-of ctx args & ")"
+   else if n == "poke-qword" then "(i64.store " & wat-addr-of ctx args & " " & emit-wat-expr ctx (list-at args 2) & ") (i64.const 0)"
+   else if n == "tag-equal" then "(i64.extend_i32_u (i64.eq (i64.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")) (i64.load (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 1) & "))))"
+   else if n == "suggested-vector-width" then (if is-real-f32 (ir-expr-type (list-at args 0)) then "(i64.const 4)" else "(i64.const 2)")
    else if n == "poke-byte" then "(i64.store8 " & wat-addr-of ctx args & " " & emit-wat-expr ctx (list-at args 2) & ") (i64.const 0)"
    else if n == "poke-16" then "(i64.store16 " & wat-addr-of ctx args & " " & emit-wat-expr ctx (list-at args 2) & ") (i64.const 0)"
    else if n == "address-of" then emit-wat-expr ctx (list-at args 0)
@@ -1720,6 +1857,10 @@ Section: Apply Emission
    else if n == "list-length" | n == "__list-len" then "(call $list_length " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "list-at" then "(call $list_at " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
    else if n == "list-push" | n == "list-snoc" then "(call $list_push " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
+   else if n == "vec-length" then "(call $list_length " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "vec-head" then "(call $list_at " & emit-wat-expr ctx (list-at args 0) & " (i64.const 0))"
+   else if n == "vec-singleton" then "(call $list_push (call $list_with_capacity (i64.const 1)) " & emit-wat-expr ctx (list-at args 0) & ")"
+   else if n == "vec-cons" then "(call $list_push " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 0) & ")"
    else if n == "char-code" then emit-wat-expr ctx (list-at args 0)
    else if n == "code-to-char" then emit-wat-expr ctx (list-at args 0)
    else if n == "__list-head" then "(call $list_at " & emit-wat-expr ctx (list-at args 0) & " (i64.const 0))"
@@ -1763,7 +1904,6 @@ Section: Apply Emission
    else if n == "vec4-reduce-add" then wat-emit-vec-reduce ctx (list-at args 0)
    else if n == "real-approx-to-bits" then "(i64.extend_i32_u (i32.reinterpret_f32 (f32.demote_f64 " & wat-f64-in (emit-wat-expr ctx (list-at args 0)) & ")))"
    else if n == "bits-to-real-approx" then wat-f64-out ("(f64.promote_f32 (f32.reinterpret_i32 (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")))")
-   else if n == "blit-framebuf" then "(call $blit_framebuf (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")) (i64.const 0)"
    else if n == "__buf-write-byte" then "(call $buf_write_byte " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ")"
    else if n == "__buf-write-bytes" then "(call $buf_write_bytes " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ")"
    else if n == "__buf-read-bytes" then "(call $buf_read_bytes " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ")"
@@ -1895,7 +2035,7 @@ Section: Tail Call Optimization
    else if locals-contains (ctx.bound) (wat-sanitize n) then emit-wat-apply ctx e
    else let ar = lookup-arity (ctx.arities) n
    in if ar > 0 & list-length args == ar then
-    "(return_call $" & wat-sanitize n & " " & emit-wat-apply-args ctx args 0 & ")"
+    "(return_call $" & wat-arity-id (ctx.arities) n & " " & emit-wat-apply-args ctx args 0 & ")"
    else emit-wat-apply ctx e
 
   emit-wat-match-tco : WasmCtx, Text, List IRParam, IRExpr, List IRBranch, Integer -> Text
@@ -2077,7 +2217,7 @@ Section: Definition Emission
 
   emit-wat-def : WasmCtx, IRDef -> Text
   emit-wat-def (ctx) (d) =
-   let name = wat-sanitize (d.name)
+   let name = wat-arity-id (ctx.arities) (d.name)
    in let all-locals = collect-locals-expr (d.body) (collect-locals-params (d.params) 0 [])
    in let locals = locals-minus-params all-locals (d.params) 0 []
    in let bound = collect-locals-params (d.params) 0 all-locals
@@ -2087,9 +2227,11 @@ Section: Definition Emission
     in let tco-temps = emit-tco-temp-decls 0 pc
     in let local-text = emit-local-decls locals 0
     in let ip = wip-accumulators d 0 []
-    in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & tco-temps & "\n    " & emit-wip-guards ip 0 & "(loop $tco_loop (result i64) " & emit-wat-expr-tco (ctx-with-inplace dctx ip) (d.name) (d.params) (d.body) 0 & "))\n"
+    in let body-text = emit-wat-expr-tco (ctx-with-inplace dctx ip) (d.name) (d.params) (d.body) 0
+     in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & tco-temps & wat-try-local-decls ctx body-text & "\n    " & emit-wip-guards ip 0 & "(loop $tco_loop (result i64) " & body-text & "))\n"
    else let local-text = emit-local-decls locals 0
-   in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & "\n    " & emit-wat-expr-tco dctx "" (d.params) (d.body) 0 & ")\n"
+   in let body-text = emit-wat-expr-tco dctx "" (d.params) (d.body) 0
+   in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & wat-try-local-decls ctx body-text & "\n    " & body-text & ")\n"
 
   emit-wat-def-params : List IRParam, Integer -> Text
   emit-wat-def-params (params) (i) =
@@ -2099,22 +2241,46 @@ Section: Definition Emission
 Section: WASI Runtime Helpers
 
  A WASI host supplies `wasi_snapshot_preview1` and nothing else, so an `env`
- import the host lacks fails instantiation (`unknown import:
- env::blit_framebuf` under wasmtime); the two `env` imports are emitted only
- when the program calls them.
+ import the host lacks fails instantiation (`unknown import: env::on_key`
+ under wasmtime); `env.on_key` and `random_get` are imported only when the
+ program uses them.
 
-  wat-runtime-header : Integer, Boolean, Boolean -> Text
-  wat-runtime-header (heap-start) (needs-blit) (needs-key) =
+ The deck region is 1 MiB. It holds only what a module decks before its first
+ `__deck-set`; after that the cursor lives in a reservation the program carved
+ from its own heap. The compiler sets it in `init-phase-allocator` before any
+ deck, and a bump_alloc that trapped on a deck allocation below `$deck_end`
+ stayed silent while the compiler compiled `6 * 7`, a 50 KB unit and its own
+ source at decks=125 (fester 2026-09-28). The largest region use in the hosted
+ corpus is 8,576 bytes (reek 2026-09-26). Wasm memory is contiguous and the heap
+ starts above the region, so every byte of it raises the heap floor of every
+ module that opens a deck; only such a module reserves it.
+
+ The heap starts 8 bytes past `$deck_end`, so a cursor exactly at `$deck_end`
+ can only be a region filled to the byte, never a `__deck-set` to the heap's
+ first address (`init-phase-allocator` sets exactly that), and bump_alloc
+ refuses the next deck allocation from there. With no gap the two were the
+ same address, the check had to skip it, and a deck ending on the boundary ran
+ on into the heap unrefused.
+
+  wat-deck-region-bytes : Integer = 1048576
+
+  wat-heap-floor : Integer, Integer -> Integer
+  wat-heap-floor (heap-start) (deck-bytes) =
+   if deck-bytes > 0 then heap-start + deck-bytes + 8 else heap-start
+
+  wat-runtime-header : Integer, Integer, Boolean, Boolean -> Text
+  wat-runtime-header (heap-start) (deck-bytes) (needs-key) (needs-random) =
    "(module\n" &
    "  (import \"wasi_snapshot_preview1\" \"fd_write\" (func $fd_write (param i32 i32 i32 i32) (result i32)))\n" &
    "  (import \"wasi_snapshot_preview1\" \"fd_read\" (func $fd_read (param i32 i32 i32 i32) (result i32)))\n" &
-   (if needs-blit then "  (import \"env\" \"blit_framebuf\" (func $blit_framebuf (param i32)))\n" else "") &
+   (if needs-random then "  (import \"wasi_snapshot_preview1\" \"random_get\" (func $random_get (param i32 i32) (result i32)))\n" else "") &
    (if needs-key then "  (import \"env\" \"on_key\" (func $on_key_import (param i32) (result i32)))\n" else "") &
    "  (memory (export \"memory\") 256)\n" &
-   "  (global $heap_ptr (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
-   "  (global $heap_start i32 (i32.const " & integer-to-text heap-start & "))\n" &
+   "  (global $heap_ptr (mut i32) (i32.const " & integer-to-text (wat-heap-floor heap-start deck-bytes) & "))\n" &
+   "  (global $heap_start i32 (i32.const " & integer-to-text (wat-heap-floor heap-start deck-bytes) & "))\n" &
    "  (global $deck_ptr (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
-   "  (global $bivy_save (mut i32) (i32.const " & integer-to-text heap-start & "))\n" &
+   "  (global $deck_end i32 (i32.const " & integer-to-text (heap-start + deck-bytes) & "))\n" &
+   "  (global $bivy_save (mut i32) (i32.const " & integer-to-text (wat-heap-floor heap-start deck-bytes) & "))\n" &
    "  (global $deck_depth (mut i32) (i32.const 0))\n" &
    "  (global $rd_len (mut i32) (i32.const 0))\n" &
    "  (global $rd_pos (mut i32) (i32.const 0))\n" &
@@ -2223,11 +2389,24 @@ Section: WASI Runtime Helpers
    "    (local $ptr i32) (local $need i32) (local $have i32)\n" &
    "    (local.set $ptr (global.get $heap_ptr))\n" &
    "    (local.set $need (i32.add (local.get $ptr) (local.get $size)))\n" &
+   "    (if (global.get $deck_depth) (then (if (i32.and (i32.le_u (local.get $ptr) (global.get $deck_end)) (i32.gt_u (local.get $need) (global.get $deck_end))) (then (call $deck_overflow)))))\n" &
    "    (local.set $have (i32.mul (memory.size) (i32.const 65536)))\n" &
    "    (if (i32.gt_u (local.get $need) (local.get $have))\n" &
    "      (then (call $grow_by (local.get $need) (local.get $have))))\n" &
    "    (global.set $heap_ptr (local.get $need))\n" &
-   "    (local.get $ptr))\n\n"
+   "    (local.get $ptr))\n\n" &
+   "  (func $deck_overflow (local $b i32)\n" &
+   "    (local.set $b (i32.sub (i32.mul (memory.size) (i32.const 65536)) (i32.const 64)))\n" &
+   wat-store-bytes-at "$b" 16 [67, 79, 68, 69, 88, 95, 84, 82, 65, 80, 95, 100, 101, 99, 107, 95, 111, 118, 101, 114, 102, 108, 111, 119, 10] 0 &
+   "    (i32.store (local.get $b) (i32.add (local.get $b) (i32.const 16)))\n" &
+   "    (i32.store (i32.add (local.get $b) (i32.const 4)) (i32.const 25))\n" &
+   "    (drop (call $fd_write (i32.const 2) (local.get $b) (i32.const 1) (i32.add (local.get $b) (i32.const 8))))\n" &
+   "    (unreachable))\n\n"
+
+  wat-store-bytes-at : Text, Integer, List Integer, Integer -> Text
+  wat-store-bytes-at (base) (off) (bs) (i) =
+   if i >= list-length bs then ""
+   else "    (i32.store8 (i32.add (local.get " & base & ") (i32.const " & integer-to-text (off + i) & ")) (i32.const " & integer-to-text (list-at bs i) & "))\n" & wat-store-bytes-at base off bs (i + 1)
 
   wat-rt-print-i64 : Text =
    "  (func $wasi_print_i64 (param $val i64)\n" &
@@ -2815,14 +2994,16 @@ Section: WASI Runtime Helpers
   wat-rt-char-text : Text =
    "  (func $char_to_text (param $ch i64) (result i64)\n" &
    "    (local $ptr i32)\n" &
+   "    (if (i64.lt_s (local.get $ch) (i64.const 0)) (then (unreachable)))\n" &
    "    (local.set $ptr (call $bump_alloc (i32.const 5)))\n" &
    "    (i32.store (local.get $ptr) (i32.const 1))\n" &
    "    (i32.store8 (i32.add (local.get $ptr) (i32.const 4)) (i32.wrap_i64 (local.get $ch)))\n" &
    "    (i64.extend_i32_u (local.get $ptr)))\n\n" &
    "  (func $char_encode (param $ch i64) (result i64)\n" &
    "    (local $c i32) (local $v i32) (local $ptr i32)\n" &
+   "    (if (i64.lt_s (local.get $ch) (i64.const 0)) (then (unreachable)))\n" &
    "    (local.set $c (i32.wrap_i64 (local.get $ch)))\n" &
-   "    (if (i32.lt_u (local.get $c) (i32.const 128)) (then\n" &
+   "    (if (i32.lt_s (local.get $c) (i32.const 128)) (then\n" &
    "      (local.set $ptr (call $bump_alloc (i32.const 5)))\n" &
    "      (i32.store (local.get $ptr) (i32.const 1))\n" &
    "      (i32.store8 (i32.add (local.get $ptr) (i32.const 4)) (local.get $c))\n" &
@@ -3763,13 +3944,13 @@ Section: Chapter Emission
     is IrTextLit (s) (sp) -> False
     is IrBoolLit (bv) (sp) -> False
     is IrCharLit (cv) (sp) -> False
-    is IrName (nm) (ty) (sp) -> False
+    is IrName (nm) (ty) (sp) -> nm == n
     is IrBinary (op) (l) (r) (ty) (sp) -> wat-expr-calls-name l n | wat-expr-calls-name r n
     is IrNegate (operand) (nty) (sp) -> wat-expr-calls-name operand n
     is IrIf (c) (t) (el) (ty) (sp) -> wat-expr-calls-name c n | wat-expr-calls-name t n | wat-expr-calls-name el n
-    is IrLet (name) (ty) (val) (body) (sp) -> wat-expr-calls-name val n | wat-expr-calls-name body n
+    is IrLet (name) (ty) (val) (body) (sp) -> wat-expr-calls-name val n | (if name == n then False else wat-expr-calls-name body n)
     is IrApply (f) (a) (ty) (sp) -> wat-apply-head-is f n | wat-expr-calls-name f n | wat-expr-calls-name a n
-    is IrLambda (params) (body) (ty) (sp) -> wat-expr-calls-name body n
+    is IrLambda (params) (body) (ty) (sp) -> if wat-params-bind params n 0 then False else wat-expr-calls-name body n
     is IrList (elems) (ty) (sp) -> wat-list-calls-name elems n 0
     is IrMatch (scrut) (branches) (ty) (sp) -> wat-expr-calls-name scrut n | wat-branches-call-name branches n 0
     is IrAct (stmts) (ty) (sp) -> wat-stmts-call-name stmts n 0
@@ -3792,6 +3973,7 @@ Section: Chapter Emission
   wat-branches-call-name : List IRBranch, Text, Integer -> Boolean
   wat-branches-call-name (bs) (n) (i) =
    if i >= list-length bs then False
+   else if wat-pat-binds ((list-at bs i).pattern) n then wat-branches-call-name bs n (i + 1)
    else if wat-expr-calls-name ((list-at bs i).guard) n then True
    else if wat-expr-calls-name ((list-at bs i).body) n then True
    else wat-branches-call-name bs n (i + 1)
@@ -3802,7 +3984,30 @@ Section: Chapter Emission
    else let hit = when (list-at ss i)
     is IrDoBind (name) (ty) (val) (sp) -> wat-expr-calls-name val n
     is IrDoExec (e) (sp) -> wat-expr-calls-name e n
-   in if hit then True else wat-stmts-call-name ss n (i + 1)
+   in let rebinds = when (list-at ss i)
+    is IrDoBind (name) (ty) (val) (sp) -> name == n
+    is IrDoExec (e) (sp) -> False
+   in if hit then True else if rebinds then False else wat-stmts-call-name ss n (i + 1)
+
+  wat-params-bind : List IRParam, Text, Integer -> Boolean
+  wat-params-bind (ps) (n) (i) =
+   if i >= list-length ps then False
+   else if (list-at ps i).name == n then True
+   else wat-params-bind ps n (i + 1)
+
+  wat-pat-binds : IRPat, Text -> Boolean
+  wat-pat-binds (p) (n) =
+   when p
+    is IrVarPat (v) (ty) (sp) -> v == n
+    is IrCtorPat (c) (subs) (ty) (sp) -> wat-pats-bind subs n 0
+    is IrVecPat (subs) (ty) (sp) -> wat-pats-bind subs n 0
+    is otherwise -> False
+
+  wat-pats-bind : List IRPat, Text, Integer -> Boolean
+  wat-pats-bind (ps) (n) (i) =
+   if i >= list-length ps then False
+   else if wat-pat-binds (list-at ps i) n then True
+   else wat-pats-bind ps n (i + 1)
 
   wat-fields-call-name : List IRFieldVal, Text, Integer -> Boolean
   wat-fields-call-name (fs) (n) (i) =
@@ -3816,6 +4021,7 @@ Section: Chapter Emission
   wat-defs-call-name (defs) (n) (i) =
    if n == wasm-no-builtin then False
    else if i >= list-length defs then False
+   else if wat-params-bind ((list-at defs i).params) n 0 then wat-defs-call-name defs n (i + 1)
    else if wat-expr-calls-name ((list-at defs i).body) n then True
    else wat-defs-call-name defs n (i + 1)
 
@@ -3832,7 +4038,7 @@ Section: Chapter Emission
    else let h = __heap-save
    in let d = list-at defs i
    in let off = strtab-lookup tables (d.name) 0
-   in let text = if off > 0 then "  (func $" & wat-sanitize (d.name) & " (result i64) (i64.const " & integer-to-text off & "))\n" else emit-wat-def ctx d
+   in let text = if off > 0 then "  (func $" & wat-arity-id (ctx.arities) (d.name) & " (result i64) (i64.const " & integer-to-text off & "))\n" else emit-wat-def ctx d
    in act
     print-uni text
     print-uni "\n"
@@ -3915,18 +4121,22 @@ Section: Chapter Emission
    in let tables-base = if int-mod arity-end 8 == 0 then arity-end else arity-end + 8 - int-mod arity-end 8
    in let tables = wat-shared-tables (m.defs) (shared-const-names (m.defs)) 0 tables-base []
    in let heap-start = if list-length tables == 0 then arity-end else wat-tables-end (m.defs) tables tables-base
-   in let ctx = WasmCtx { arities = arities, strings = strings, type-defs = type-defs, bound = [], scrut-depth = 0, inplace = [], eff-ops = lifted.ops }
    in let runtime = wat-runtime-funcs cce-tab-base cce-t2-base cce-out-base fnarity-base max-arity cce-rev-base cce-in-base
-   in let data-text = emit-data-sections strings 0
    in let types-text = emit-wat-type-defs type-defs 0 & wat-eq-funcs type-defs 0
+   in let wh-text = wh-runtime (lifted.ops)
+   in let taken = wat-func-ids (wat-runtime-header 0 0 True True & wh-text & runtime & types-text)
+   in let ctx = WasmCtx { arities = wat-assign-ids arities taken 0 [], strings = strings, type-defs = type-defs, bound = [], scrut-depth = 0, inplace = [], eff-ops = lifted.ops, try-level = 0, has-fail = wat-defs-call-name (m.defs) "fail" 0 }
+   in let data-text = emit-data-sections strings 0
    in let entry = wat-emit-entry ctx (m.defs)
-   in let needs-blit = wasm-mention-any (m.defs) runtime types-text entry "$blit_framebuf" "blit-framebuf"
    in let needs-key = wasm-mention-any (m.defs) runtime types-text entry "$on_key_import" wasm-no-builtin
-   in let header = wat-runtime-header heap-start needs-blit needs-key
+   in let needs-random = wasm-mention-any (m.defs) runtime types-text entry "$random_get" "hardware-random"
+   in let needs-deck = wat-defs-call-name (m.defs) "deck-record" 0 | wat-defs-call-name (m.defs) "__deck-enter" 0 | wat-defs-call-name (m.defs) "__deck-alloc" 0
+   in let header = wat-runtime-header heap-start (if needs-deck then wat-deck-region-bytes else 0) needs-key needs-random
    in act
     print-uni header
-    print-uni (wh-runtime (lifted.ops))
-    print-uni (wat-emit-table arities)
+    print-uni (if ctx.has-fail then "  (global $try_fail (mut i32) (i32.const 0))\n" else "")
+    print-uni wh-text
+    print-uni (wat-emit-table (ctx.arities))
     print-uni data-text
     print-uni (wat-emit-arity-data arities fnarity-base 0 [])
     print-uni (wat-table-data (m.defs) tables 0 [])
@@ -3940,21 +4150,21 @@ Section: Chapter Emission
     print-uni "\n"
    end
 
-  wat-emit-exports : List IRDef -> Text
-  wat-emit-exports (defs) =
+  wat-emit-exports : WasmCtx, List IRDef -> Text
+  wat-emit-exports (ctx) (defs) =
    let declared = wat-declared-exports defs 0 (list-length defs)
    in if declared < 0 then ""
       else let d = list-at defs declared
       in if list-length (d.params) > 0 then "(wasm-exports-requires-text-literal)\n"
          else when d.body
-          is IrTextLit (s) (sp) -> wat-exports-declared (wat-export-names s) 0
+          is IrTextLit (s) (sp) -> wat-exports-declared ctx (wat-export-names s) 0
           is otherwise -> "(wasm-exports-requires-text-literal)\n"
 
-  wat-exports-declared : List Text, Integer -> Text
-  wat-exports-declared (names) (i) =
+  wat-exports-declared : WasmCtx, List Text, Integer -> Text
+  wat-exports-declared (ctx) (names) (i) =
    if i >= list-length names then ""
-   else let sn = wat-sanitize (list-at names i)
-   in "  (export \"" & sn & "\" (func $" & sn & "))\n" & wat-exports-declared names (i + 1)
+   else let n = list-at names i
+   in "  (export \"" & wat-sanitize n & "\" (func $" & wat-arity-id (ctx.arities) n & "))\n" & wat-exports-declared ctx names (i + 1)
 
   wat-declared-exports : List IRDef, Integer, Integer -> Integer
   wat-declared-exports (defs) (i) (n) =
@@ -4046,7 +4256,7 @@ Section: Chapter Emission
       wat-entry-ctor-arms ctx cs (i + 1)
 
   wat-emit-entry : WasmCtx, List IRDef -> Text
-  wat-emit-entry (ctx) (defs) = wat-emit-entry-loop ctx defs 0 & wat-emit-exports defs
+  wat-emit-entry (ctx) (defs) = wat-emit-entry-loop ctx defs 0 & wat-emit-exports ctx defs
 
   wat-emit-entry-loop : WasmCtx, List IRDef, Integer -> Text
   wat-emit-entry-loop (ctx) (defs) (i) =
@@ -4070,19 +4280,19 @@ Section: Chapter Emission
           is otherwise -> False
      in let ctors = wat-ctors-of (ctx.type-defs) (wat-entry-type-name ret-type) 0
      in if is-void then
-      "  (func $__start (drop (call $" & wat-sanitize opening-entry-point & ")))\n" &
+      "  (func $__start (drop (call $" & wat-arity-id (ctx.arities) opening-entry-point & ")))\n" &
       "  (export \"_start\" (func $__start))\n"
      else if list-length ctors > 0 then
       "  (func $__start\n" &
       "    (local $__r i64)\n" &
-      "    (local.set $__r (call $" & wat-sanitize opening-entry-point & "))\n" &
+      "    (local.set $__r (call $" & wat-arity-id (ctx.arities) opening-entry-point & "))\n" &
       wat-entry-ctor-arms ctx ctors 0 &
       "    (call $wasi_print_newline))\n" &
       "  (export \"_start\" (func $__start))\n"
      else
       "  (func $__start\n" &
       "    (local $__r i64)\n" &
-      "    (local.set $__r (call $" & wat-sanitize opening-entry-point & "))\n" &
+      "    (local.set $__r (call $" & wat-arity-id (ctx.arities) opening-entry-point & "))\n" &
       "    (call " & print-fn & " " & print-arg & ")\n" &
       "    (call $wasi_print_newline))\n" &
       "  (export \"_start\" (func $__start))\n"

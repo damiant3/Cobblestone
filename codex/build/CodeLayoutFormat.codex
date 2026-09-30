@@ -1,0 +1,444 @@
+Chapter: CodeLayoutFormat
+
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Lines
+
+  clf-width : Integer = 100
+
+  clf-lines : Text, Integer, Integer, List Text -> List Text
+  clf-lines (t) (i) (start) (acc) =
+    if i >= text-length t then (if start < i then list-push acc (substring t start (i - start)) else acc)
+    else if char-code-at t i == char-code '\n' then clf-lines t (i + 1) (i + 1) (list-push acc (substring t start (i - start)))
+    else clf-lines t (i + 1) start acc
+
+  clf-indent : Text, Integer -> Integer
+  clf-indent (l) (i) = if i < text-length l & char-code-at l i == char-code ' ' then clf-indent l (i + 1) else i
+
+  clf-spaces : Integer, Text -> Text
+  clf-spaces (n) (acc) = if n <= 0 then acc else clf-spaces (n - 1) (acc & " ")
+
+Section: Record Literals
+
+  clf-open : Text, Integer -> Integer
+  clf-open (l) (i) =
+    if i + 1 >= text-length l then 0 - 1
+    else let c = char-code-at l i
+    in if c == char-code '"' | c == char-code '\'' then clf-open l (clf-lit-end l i)
+    else if (c == char-code '{' | c == char-code '[') & char-code-at l (i - 1) == char-code ' ' & clf-opens-here l i then i
+    else clf-open l (i + 1)
+
+  clf-opens-here : Text, Integer -> Boolean
+  clf-opens-here (l) (i) =
+    let c = clf-close-at l (i + 1) 1
+    in if c /= clf-tail l then False
+    else if clf-trim (substring l (i + 1) (c - i - 1)) == "" then False
+    else if char-code-at l i == char-code '[' then clf-all-literal (clf-fields l (i + 1) c 0 (i + 1) []) 0 == False
+    else True
+
+  clf-literal : Text -> Boolean
+  clf-literal (s) =
+    if text-length s == 0 then False
+    else let c = char-code-at s 0
+    in if c >= 3 & c <= 12 then True
+    else c == char-code '"' | c == char-code '-' | c == char-code '\''
+
+  clf-all-literal : List Text, Integer -> Boolean
+  clf-all-literal (fs) (i) =
+    if i >= list-length fs then True
+    else if clf-literal (list-at fs i) then clf-all-literal fs (i + 1)
+    else False
+
+  clf-tail : Text -> Integer
+  clf-tail (l) = clf-tail-at l (text-length l - 1)
+
+  clf-tail-at : Text, Integer -> Integer
+  clf-tail-at (l) (i) =
+    if i >= 0 & (char-code-at l i == char-code ')' | char-code-at l i == char-code ',') then clf-tail-at l (i - 1)
+    else i
+
+  clf-close-at : Text, Integer, Integer -> Integer
+  clf-close-at (l) (i) (d) =
+    if i >= text-length l then 0 - 1
+    else let c = char-code-at l i
+    in if c == char-code '"' | c == char-code '\'' then clf-close-at l (clf-lit-end l i) d
+    else if c == char-code '{' | c == char-code '(' | c == char-code '[' then clf-close-at l (i + 1) (d + 1)
+    else if c == char-code '}' | c == char-code ')' | c == char-code ']' then (if d == 1 then i else clf-close-at l (i + 1) (d - 1))
+    else clf-close-at l (i + 1) d
+
+  clf-str-end : Text, Integer -> Integer
+  clf-str-end (l) (i) =
+    if i >= text-length l then i
+    else if char-code-at l i == char-code '\\' then clf-str-end l (i + 2)
+    else if char-code-at l i == char-code '"' then i + 1
+    else clf-str-end l (i + 1)
+
+  clf-char-end : Text, Integer -> Integer
+  clf-char-end (l) (i) =
+    if i + 2 < text-length l & char-code-at l (i + 2) == char-code '\'' then i + 3
+    else if i + 3 < text-length l & char-code-at l (i + 1) == char-code '\\' & char-code-at l (i + 3) == char-code '\'' then i + 4
+    else i + 1
+
+  clf-lit-end : Text, Integer -> Integer
+  clf-lit-end (l) (i) =
+    if char-code-at l i == char-code '"' then clf-str-end l (i + 1)
+    else if char-code-at l i == char-code '\'' then clf-char-end l i
+    else i
+
+ The fields between the braces, split at depth-zero commas and trimmed.
+
+  clf-fields : Text, Integer, Integer, Integer, Integer, List Text -> List Text
+  clf-fields (l) (i) (stop) (d) (start) (acc) =
+    if i >= stop then list-push acc (clf-trim (substring l start (stop - start)))
+    else let c = char-code-at l i
+    in if c == char-code '"' | c == char-code '\'' then clf-fields l (clf-lit-end l i) stop d start acc
+    else if c == char-code '{' | c == char-code '(' | c == char-code '[' then clf-fields l (i + 1) stop (d + 1) start acc
+    else if c == char-code '}' | c == char-code ')' | c == char-code ']' then clf-fields l (i + 1) stop (d - 1) start acc
+    else if c == char-code ',' & d == 0 then clf-fields l (i + 1) stop d (i + 1) (list-push acc (clf-trim (substring l start (i - start))))
+    else clf-fields l (i + 1) stop d start acc
+
+  clf-trim : Text -> Text
+  clf-trim (s) =
+    let a = clf-indent s 0
+    in let b = clf-trim-end s (text-length s)
+    in if b <= a then "" else substring s a (b - a)
+
+  clf-trim-end : Text, Integer -> Integer
+  clf-trim-end (s) (i) = if i > 0 & char-code-at s (i - 1) == char-code ' ' then clf-trim-end s (i - 1) else i
+
+  clf-join : List Text, Integer, Text, Text -> Text
+  clf-join (fs) (i) (pad) (acc) =
+    if i >= list-length fs then acc
+    else clf-join fs (i + 1) pad (acc & "\n" & clf-r5 (pad & list-at fs i & (if i + 1 < list-length fs then "," else "")))
+
+  clf-r5 : Text -> Text
+  clf-r5 (l) =
+    if text-length l <= clf-width then l
+    else let o = clf-open l 1
+    in if o < 0 then l
+    else let c = clf-close-at l (o + 1) 1
+    in let ind = clf-indent l 0
+    in let fs = clf-fields l (o + 1) c 0 (o + 1) []
+    in substring l 0 (o + 1) & clf-join fs 0 (clf-spaces (ind + 2) "") "" & "\n" & clf-spaces ind "" & substring l c (text-length l - c)
+
+Section: Keywords
+
+  ClfKw = record {
+    kw-word : Text,
+    kw-start : Integer,
+    kw-end : Integer,
+    kw-depth : Integer
+  }
+
+  clf-word-char : Integer -> Boolean
+  clf-word-char (c) =
+    if c >= 3 & c <= 64 then True
+    else if c >= 97 & c <= 127 then True
+    else c == char-code '-' | c == char-code '_' | c == char-code '.'
+
+  clf-word-end : Text, Integer -> Integer
+  clf-word-end (t) (i) =
+    if i >= text-length t then i
+    else if clf-word-char (char-code-at t i) then clf-word-end t (i + 1)
+    else i
+
+  clf-first-word : Text -> Text
+  clf-first-word (t) = substring t 0 (clf-word-end t 0)
+
+  clf-is-kw : Text -> Boolean
+  clf-is-kw (w) = w == "if" | w == "then" | w == "else" | w == "let" | w == "in" | w == "for"
+
+  clf-kw-at : Text, Integer, Integer -> ClfKw
+  clf-kw-at (t) (i) (d) =
+    if i >= text-length t then ClfKw { kw-word = "", kw-start = i, kw-end = i, kw-depth = d }
+    else let c = char-code-at t i
+    in if c == char-code '"' | c == char-code '\'' then clf-kw-at t (clf-lit-end t i) d
+    else if c == char-code '{' | c == char-code '(' | c == char-code '[' then clf-kw-at t (i + 1) (d + 1)
+    else if c == char-code '}' | c == char-code ')' | c == char-code ']' then clf-kw-at t (i + 1) (d - 1)
+    else if clf-word-char c then clf-kw-word t i (clf-word-end t i) d
+    else clf-kw-at t (i + 1) d
+
+  clf-kw-word : Text, Integer, Integer, Integer -> ClfKw
+  clf-kw-word (t) (i) (e) (d) =
+    let w = substring t i (e - i)
+    in if d == 0 & clf-is-kw w then ClfKw { kw-word = w, kw-start = i, kw-end = e, kw-depth = d }
+    else clf-kw-at t e d
+
+  clf-find-kw : Text, Integer, Text -> Integer
+  clf-find-kw (t) (i) (w) =
+    let k = clf-kw-at t i 0
+    in if k.kw-word == "" then 0 - 1
+    else if k.kw-word == w then k.kw-end
+    else clf-find-kw t (k.kw-end) w
+
+  clf-match-else : Text, Integer, Integer -> Integer
+  clf-match-else (t) (i) (n) =
+    let k = clf-kw-at t i 0
+    in if k.kw-word == "" then 0 - 1
+    else if k.kw-word == "if" then clf-match-else t (k.kw-end) (n + 1)
+    else if k.kw-word == "else" then (if n == 0 then k.kw-start else clf-match-else t (k.kw-end) (n - 1))
+    else clf-match-else t (k.kw-end) n
+
+Section: Decisions
+
+  ClfSt = record {
+    st-ifs : List Integer,
+    st-nifs : Integer,
+    st-lets : List Integer,
+    st-nlets : Integer,
+    st-ao : List Integer,
+    st-ad : List Integer,
+    st-na : Integer,
+    st-fors : Integer,
+    st-depth : Integer,
+    st-branch : Integer,
+    st-out : List Text
+  }
+
+  clf-state-new : Integer -> ClfSt
+  clf-state-new (n) = ClfSt {
+    st-ifs = [],
+    st-nifs = n,
+    st-lets = [],
+    st-nlets = n,
+    st-ao = [],
+    st-ad = [],
+    st-na = n,
+    st-fors = n,
+    st-depth = n,
+    st-branch = 0 - 1,
+    st-out = []
+  }
+
+  clf-put : List Integer, Integer, Integer -> List Integer
+  clf-put (xs) (n) (v) = if n < list-length xs then list-set-at xs n v else list-push xs v
+
+  clf-top : List Integer, Integer, Integer -> Integer
+  clf-top (xs) (n) (dflt) = if n > 0 then list-at xs (n - 1) else dflt
+
+  clf-reset : ClfSt -> ClfSt
+  clf-reset (st) =
+    let s1 = __record-set st "st-nifs" 0
+    in let s2 = __record-set s1 "st-nlets" 0
+    in let s3 = __record-set s2 "st-na" 0
+    in let s4 = __record-set s3 "st-fors" 0
+    in let s5 = __record-set s4 "st-depth" 0
+    in __record-set s5 "st-branch" (0 - 1)
+
+  clf-anc-find : ClfSt, Integer, Integer -> Integer
+  clf-anc-find (st) (o) (n) =
+    if n <= 0 then 0
+    else if list-at (st.st-ao) (n - 1) > o then clf-anc-find st o (n - 1)
+    else n
+
+  clf-anc-delta : ClfSt, Integer -> Integer
+  clf-anc-delta (st) (o) =
+    let n = clf-anc-find st o (st.st-na)
+    in if n > 0 then list-at (st.st-ad) (n - 1) else 0
+
+  clf-anc-write : ClfSt, Integer, Integer, Integer -> ClfSt
+  clf-anc-write (st) (k) (o) (dl) =
+    let ao = clf-put (st.st-ao) k o
+    in let ad = clf-put (st.st-ad) k dl
+    in __record-set (__record-set (__record-set st "st-ao" ao) "st-ad" ad) "st-na" (k + 1)
+
+  clf-anc-set : ClfSt, Integer, Integer -> ClfSt
+  clf-anc-set (st) (o) (dl) =
+    let n = clf-anc-find st o (st.st-na)
+    in if n > 0 then (if list-at (st.st-ao) (n - 1) == o then clf-anc-write st (n - 1) o dl else clf-anc-write st n o dl)
+    else clf-anc-write st n o dl
+
+  clf-new-indent : ClfSt, Integer, Text -> Integer
+  clf-new-indent (st) (o) (t) =
+    let w = clf-first-word t
+    in let ni = if st.st-depth > 0 then o + clf-anc-delta st o
+      else if w == "else" & st.st-nifs > 0 then clf-top (st.st-ifs) (st.st-nifs) o
+      else if w == "in" & st.st-fors == 0 & st.st-nlets > 0 then clf-top (st.st-lets) (st.st-nlets) o
+      else if st.st-branch >= 0 then st.st-branch
+      else o + clf-anc-delta st o
+    in if ni <= 2 then o else ni
+
+  clf-push-if : ClfSt, Integer -> ClfSt
+  clf-push-if (st) (ni) = __record-set (__record-set st "st-ifs" (clf-put (st.st-ifs) (st.st-nifs) ni)) "st-nifs" (st.st-nifs + 1)
+
+  clf-push-let : ClfSt, Integer -> ClfSt
+  clf-push-let (st) (ni) = __record-set (__record-set st "st-lets" (clf-put (st.st-lets) (st.st-nlets) ni)) "st-nlets" (st.st-nlets + 1)
+
+  clf-then : ClfSt, Boolean, Integer -> ClfSt
+  clf-then (st) (last) (ni) =
+    if last then __record-set st "st-branch" (clf-top (st.st-ifs) (st.st-nifs) ni + 2)
+    else st
+
+  clf-else : ClfSt, Boolean -> ClfSt
+  clf-else (st) (last) =
+    if st.st-nifs == 0 then st
+    else let col = list-at (st.st-ifs) (st.st-nifs - 1)
+    in let s1 = __record-set st "st-nifs" (st.st-nifs - 1)
+    in if last then __record-set s1 "st-branch" (col + 2) else s1
+
+  clf-in : ClfSt -> ClfSt
+  clf-in (st) =
+    if st.st-fors > 0 then __record-set st "st-fors" (st.st-fors - 1)
+    else if st.st-nlets > 0 then __record-set st "st-nlets" (st.st-nlets - 1)
+    else st
+
+  clf-apply : ClfSt, Text, Boolean, Integer -> ClfSt
+  clf-apply (st) (w) (last) (ni) =
+    if w == "if" then clf-push-if st ni
+    else if w == "then" then clf-then st last ni
+    else if w == "else" then clf-else st last
+    else if w == "let" then clf-push-let st ni
+    else if w == "in" then clf-in st
+    else __record-set st "st-fors" (st.st-fors + 1)
+
+  clf-scan : ClfSt, Text, Integer, Integer, Integer -> ClfSt
+  clf-scan (st) (t) (i) (d) (ni) =
+    let k = clf-kw-at t i d
+    in if k.kw-word == "" then __record-set st "st-depth" (k.kw-depth)
+    else clf-scan (clf-apply st (k.kw-word) (k.kw-end == text-length t) ni) t (k.kw-end) 0 ni
+
+  clf-emit : ClfSt, Integer, Text, Integer -> ClfSt
+  clf-emit (st) (o) (t) (ni) =
+    let d = st.st-depth
+    in let s1 = clf-anc-set st o (ni - o)
+    in let s2 = __record-set s1 "st-branch" (0 - 1)
+    in let s3 = clf-scan s2 t 0 d ni
+    in __record-set s3 "st-out" (list-push (s3.st-out) (clf-spaces ni "" & t))
+
+  clf-body-line : ClfSt, Integer, Text -> ClfSt
+  clf-body-line (st) (o) (t) =
+    let ni = clf-new-indent st o t
+    in if st.st-depth == 0 & ni + text-length t > clf-width then clf-split st o t ni
+    else clf-emit st o t ni
+
+  clf-split : ClfSt, Integer, Text, Integer -> ClfSt
+  clf-split (st) (o) (t) (ni) =
+    let th = clf-find-kw t 0 "then"
+    in if th > 0 & th < text-length t then clf-split-then st o t th
+    else if clf-first-word t == "else" then clf-split-else st o t ni
+    else clf-emit st o t ni
+
+  clf-split-then : ClfSt, Integer, Text, Integer -> ClfSt
+  clf-split-then (st) (o) (t) (th) =
+    let rest = clf-trim (substring t th (text-length t - th))
+    in let e = clf-match-else rest 0 0
+    in let s1 = clf-body-line st o (clf-trim (substring t 0 th))
+    in if e <= 0 then clf-body-line s1 o rest
+    else clf-body-line (clf-body-line s1 o (clf-trim (substring rest 0 e))) o (clf-trim (substring rest e (text-length rest - e)))
+
+  clf-split-else : ClfSt, Integer, Text, Integer -> ClfSt
+  clf-split-else (st) (o) (t) (ni) =
+    let rest = clf-trim (substring t 4 (text-length t - 4))
+    in let w = clf-first-word rest
+    in if w == "if" | w == "let" | rest == "" then clf-emit st o t ni
+    else clf-body-line (clf-body-line st o "else") o rest
+
+  clf-ends-eq : Text -> Boolean
+  clf-ends-eq (t) = char-code-at t (text-length t - 1) == char-code '='
+
+  clf-top-line : ClfSt, Text, Integer, Text -> ClfSt
+  clf-top-line (st) (l) (o) (t) =
+    let s1 = clf-reset st
+    in let s2 = __record-set s1 "st-out" (list-push (s1.st-out) l)
+    in if o < 2 then s2
+    else let s3 = clf-scan s2 t 0 0 4
+    in if s3.st-branch < 0 & clf-ends-eq t then __record-set s3 "st-branch" 4 else s3
+
+  clf-line : ClfSt, Text -> ClfSt
+  clf-line (st) (l) =
+    let t = clf-trim l
+    in let o = clf-indent l 0
+    in if t == "" then __record-set st "st-out" (list-push (st.st-out) l)
+    else if o <= 2 then clf-top-line st l o t
+    else clf-body-line st o t
+
+  clf-layout : List Text, Integer, ClfSt -> ClfSt
+  clf-layout (ls) (i) (st) =
+    if i >= list-length ls then st
+    else clf-layout ls (i + 1) (clf-line st (list-at ls i))
+
+Section: The R7 Report
+
+  clf-final : List Text, Integer, List Text -> List Text
+  clf-final (ls) (i) (acc) =
+    if i >= list-length ls then acc
+    else let r = clf-r5 (list-at ls i)
+    in clf-final ls (i + 1) (if r == "" then list-push acc "" else clf-lines r 0 0 acc)
+
+  clf-amp-at : Text, Integer, Integer -> Boolean
+  clf-amp-at (l) (i) (d) =
+    if i >= text-length l then False
+    else let c = char-code-at l i
+    in if c == char-code '"' | c == char-code '\'' then clf-amp-at l (clf-lit-end l i) d
+    else if c == char-code '{' | c == char-code '(' | c == char-code '[' then clf-amp-at l (i + 1) (d + 1)
+    else if c == char-code '}' | c == char-code ')' | c == char-code ']' then clf-amp-at l (i + 1) (d - 1)
+    else if c == char-code '&' & d == 0 then True
+    else clf-amp-at l (i + 1) d
+
+  clf-long-str : Text, Integer, Integer -> Integer
+  clf-long-str (l) (i) (best) =
+    if i >= text-length l then best
+    else if char-code-at l i == char-code '"' then clf-long-str-at l i (clf-str-end l (i + 1)) best
+    else clf-long-str l (i + 1) best
+
+  clf-long-str-at : Text, Integer, Integer, Integer -> Integer
+  clf-long-str-at (l) (i) (e) (best) = clf-long-str l e (if e - i > best then e - i else best)
+
+  clf-has-table : Text, Integer -> Boolean
+  clf-has-table (l) (i) =
+    if i + 1 >= text-length l then False
+    else let c = char-code-at l i
+    in if c == char-code '"' | c == char-code '\'' then clf-has-table l (clf-lit-end l i)
+    else if c == char-code '[' then clf-table-at l i
+    else clf-has-table l (i + 1)
+
+  clf-table-at : Text, Integer -> Boolean
+  clf-table-at (l) (i) =
+    let c = clf-close-at l (i + 1) 1
+    in if c < 0 then False
+    else if clf-all-literal (clf-fields l (i + 1) c 0 (i + 1) []) 0 then True
+    else clf-has-table l (i + 1)
+
+  clf-kind : Text -> Text
+  clf-kind (l) =
+    if clf-long-str l 0 0 > clf-width - clf-indent l 0 then "string"
+    else if clf-has-table l 0 then "table"
+    else if clf-amp-at l 0 0 then "& chain"
+    else "application"
+
+  clf-report : List Text, Integer -> [Console] Nothing
+  clf-report (ls) (i) =
+    if i >= list-length ls then act print-uni "" end
+    else if text-length (list-at ls i) <= clf-width then clf-report ls (i + 1)
+    else act
+      print-line-uni (show (i + 1) & ": " & clf-kind (list-at ls i) & ": " & show (text-length (list-at ls i)))
+      clf-report ls (i + 1)
+    end
+
+Section: Entry
+
+  clf-print : List Text, Integer -> [Console] Nothing
+  clf-print (ls) (i) =
+    if i >= list-length ls then act print-uni "" end
+    else act
+      print-line-uni (list-at ls i)
+      clf-print ls (i + 1)
+    end
+
+  clf-is-report : List Text -> Boolean
+  clf-is-report (ls) = if list-length ls == 0 then False else list-at ls 0 == "LAYOUTREPORT"
+
+  clf-run : List Text -> [Console] Nothing
+  clf-run (ls) =
+    if clf-is-report ls then clf-report (clf-final ((clf-layout ls 1 (clf-state-new 0)).st-out) 0 []) 0
+    else clf-print (clf-final ((clf-layout ls 0 (clf-state-new 0)).st-out) 0 []) 0
+
+  opening : [Console] Nothing
+  opening = act
+    all <- read-serial-cce ""
+    clf-run (clf-lines all 0 0 [])
+  end
+
+Page 1

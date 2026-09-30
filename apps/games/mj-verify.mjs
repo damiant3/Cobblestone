@@ -154,6 +154,35 @@ ok('a tile off the layout is refused', e.mj_tile(s0, 144) === -1 && e.mj_tile(s0
 ok('an empty slot has no type', e.mj_type(0) === -1 && e.mj_type(-3) === -1);
 ok('a slot off the layout is not free', e.mj_free(s0, 200) === 0 && e.mj_free(s0, -1) === 0);
 
+// -- The whole legal set, both directions (Rules 2 and 3) -----------------
+{
+  const present = (h, i) => e.mj_tile(h, i) > 0;
+  const free = (h, i) => {
+    const c = i % 12;
+    return present(h, i) && (c === 0 || !present(h, i - 1) || c === 11 || !present(h, i + 1));
+  };
+  const group = (h, i) => Math.floor((e.mj_tile(h, i) - 1) / 4);
+  const bad = [];
+  let states = 0, legal = 0, refused = 0;
+  for (let seed = 1; seed <= 6 && bad.length < 3; seed++) {
+    let h = e.mj_new(seed);
+    for (let n = 0; n < 80 && bad.length < 3; n++) {
+      states++;
+      let any = false;
+      for (let a = 0; a < 144 && bad.length < 3; a++) for (let b = 0; b < 144; b++) {
+        const want = a !== b && free(h, a) && free(h, b) && group(h, a) === group(h, b) ? 1 : 0;
+        if (want) { legal++; any = true; } else refused++;
+        if (e.mj_cantake(h, a, b) !== want) { bad.push(`seed ${seed} step ${n}: take ${a},${b} is ${1 - want} by the engine`); break; }
+      }
+      if ((e.mj_stuck(h) === 1) === any && e.mj_remaining(h) > 0) bad.push(`seed ${seed} step ${n}: stuck ${e.mj_stuck(h)} with a legal pair ${any}`);
+      if (e.mj_done(h) === 1) break;
+      h = e.mj_step(h);
+    }
+  }
+  ok('every ordered pair at every state of 6 deals: taken exactly when both are free and of one group',
+     bad.length === 0, bad.slice(0, 3).join('; ') || `${states} states, ${legal} legal and ${refused} refused pairs`);
+}
+
 // -- Controls -------------------------------------------------------------
 ok('control: two new deals are different handles', e.mj_new(1) !== e.mj_new(1));
 ok('control: different seeds lay out differently',

@@ -1,0 +1,125 @@
+Chapter: DiffusionVaeOdd
+  cites Diffusion chapter VaeDecoder
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites AI chapter SafeTensors
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The weights are dreamshaperXL_lightningDPMSDE's VAE, read from the installed
+ Forge checkpoint (the second -gpu-files root, on the box that has it). The
+ latent and the reference are build/vae-decode-oracle.py's: Forge's own VAE
+ encodes a fixed 200 x 136 picture (--odd) to vae-latent-odd.bin (4 x 17 x 25 f32),
+ then decodes it in f32 to vae-reference-odd.bin (200 x 136 RGB bytes): 425
+ positions through the mid-block attention, not a multiple of 8. The sabotage
+ arm decodes the same latent with channels 0 and 1 exchanged.
+
+ We say:
+
+Section: Pixels
+
+  out-scratch : Integer = #BD700000
+
+  ref-scratch : Integer = #BD900000
+
+  ckpt : Text = "dreamshaperXL_lightningDPMSDE.safetensors"
+
+ clamp ((v + 1) / 2, 0, 1) * 255 rounded, from the f32 bits, in units of
+ 2^-24.
+
+  pixel-of : Integer -> Integer
+  pixel-of (raw) =
+    let bits = bit-and raw #FFFFFFFF
+    in let neg = bit-and bits #80000000 /= 0
+    in let e = bit-and (bit-shru bits 23) 255
+    in if e == 255 then 1000
+    else if e >= 128 then (if neg then 0 else 255)
+    else let m = bit-or (bit-and bits #7FFFFF) #800000
+    in let fx = if e == 0 then 0 else if e >= 126 then bit-shl m (e - 126) else bit-shru m (126 - e)
+    in let v = if neg then 0 - fx else fx
+    in if v <= 0 - 16777216 then 0
+    else if v >= 16777216 then 255
+    else ((v + 16777216) * 255 + 16777216) / 33554432
+
+  Diff = record {
+    d-max : Integer,
+    d-sum : Integer,
+    d-one : Integer,
+    d-three : Integer,
+    d-nan : Integer
+  }
+
+  diff-loop : Integer, Integer, Diff -> Diff
+  diff-loop (i) (hw) (d) =
+    if i >= hw * 3 then d
+    else let pix = i / 3
+    in let c = i - pix * 3
+    in let got = pixel-of (peek-32 out-scratch ((c * hw + pix) * 4))
+    in let want = peek-byte ref-scratch i
+    in let a = if got > want then got - want else want - got
+    in diff-loop (i + 1) hw (Diff { d-max = if a > d.d-max then a else d.d-max, d-sum = d.d-sum + a, d-one = d.d-one + (if a <= 1 then 1 else 0), d-three = d.d-three + (if a <= 3 then 1 else 0), d-nan = d.d-nan + (if got == 1000 then 1 else 0) })
+
+  format-diff : Diff, Integer -> Text
+  format-diff (d) (n) =
+    "max " & show (d.d-max) & ", mean " & show (d.d-sum * 1000 / n) & "/1000, within 1: " & show (d.d-one) & ", within 3: " & show (d.d-three) & " of " & show n & ", nan " & show (d.d-nan)
+
+Section: Arms
+
+  latent : Boolean -> Act
+  latent (swap) =
+    let h = gpu-buf-alloc 6800
+    in let a = if swap then gpu-buf-upload h 0 "vae-latent-odd.bin" 1700 425 gpu-dt-f32 gpu-dt-f32 else gpu-buf-upload h 0 "vae-latent-odd.bin" 0 1700 gpu-dt-f32 gpu-dt-f32
+    in let b = if swap then gpu-buf-upload h 1700 "vae-latent-odd.bin" 0 425 gpu-dt-f32 gpu-dt-f32 else 0
+    in let c = if swap then gpu-buf-upload h 3400 "vae-latent-odd.bin" 3400 850 gpu-dt-f32 gpu-dt-f32 else 0
+    in Act { ah = if a < 0 | b < 0 | c < 0 then 0 else h, ac = 4, ahh = 17, aww = 25 }
+
+  decode-report : VaeWeights, Boolean -> Text
+  decode-report (w) (swap) =
+    let z = latent swap
+    in let out = vae-decode w z
+    in let f = vd-free z
+    in if out.ah == 0 then "decode refused"
+    else if gpu-buf-read (out.ah) 0 326400 out-scratch == False then "read refused"
+    else let d = diff-loop 0 27200 (Diff { d-max = 0, d-sum = 0, d-one = 0, d-three = 0, d-nan = 0 })
+    in let g = vd-free out
+    in show (out.ac) & "x" & show (out.ahh) & "x" & show (out.aww) & ": " & format-diff d 81600
+
+  load-reference : Integer -> Boolean
+  load-reference (z) =
+    let h = gpu-buf-alloc 81600
+    in let ok = if h == 0 then False else if gpu-buf-upload h 0 "vae-reference-odd.bin" 0 81600 gpu-dt-u8 gpu-dt-u8 /= 81600 then False else gpu-buf-read h 0 81600 ref-scratch
+    in let f = if h == 0 then True else gpu-buf-free h
+    in ok
+
+  find-vae-part : List PartBinding, Integer -> PartBinding
+  find-vae-part (parts) (i) =
+    let pb = list-at parts i
+    in if pb.pb-name == "vae" then pb else find-vae-part parts (i + 1)
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let file = ckpt-open ckpt
+    in let lb = layout-bind file sdxl-layout
+    in let w = vae-load ckpt (find-vae-part (lb.lb-parts) 0) "first_stage_model."
+    in let l1 = "weights: " & show (list-length (w.vw-handles)) & " uploaded, " & show (w.vw-failed) & " failed"
+    in let l2 = "reference: " & (if load-reference 0 then "loaded" else "refused")
+    in let l3 = "decode " & decode-report w False
+    in let l4 = "sabotage channels 0 and 1 exchanged " & decode-report w True
+    in let l5 = "free: " & (if vae-free w 0 0 == 0 then "ok" else "refused")
+    in [l1, l2, l3, l4, l5]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

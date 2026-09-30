@@ -1,23 +1,12 @@
-// Grade the Pinochle wasm module.
+// Grade the Pinochle wasm module against pagat's single deck partnership
+// pinochle (https://www.pagat.com/marriage/pinmain.html).
 //
-// A Pinochle deck has TWO of every card, and that is the whole reason this
-// grader exists. Every scoring rule in the game has a single form and a
-// double form, and an engine that asks "do I hold a king and a queen of
-// this suit" answers the same for one marriage and for two. So the arms
-// here are in three layers.
-//
-// The deal is checked as a permutation: forty-eight distinct ids, twelve to
-// each hand, and trump taken from the top card.
-//
-// The meld is checked against a second implementation of the engine's own
-// single-copy table, which must agree everywhere. That arm is a CONTROL: it
-// says the card encoding and the point table are read correctly here, so a
-// disagreement in the next layer is about the rule and not about the reader.
-//
-// The third layer counts, over many deals, how often a hand holds a second
-// copy that standard Pinochle scores again and this engine does not. That is
-// a measurement and not an assertion: what to do about it is recorded in
-// games-backlog.md, not decided here.
+// Every rule below is written out here from pagat, not read from the
+// engine: the meld table row by row, the auction's order, the four cards
+// each way, following and heading the trick, counters and the last trick,
+// making or going set, and the game at 1500. A deck holds TWO of every
+// card, so every meld has a single and a double form, and the built hands
+// below name both.
 //
 // Usage: node apps/games/pn-verify.mjs [path/to/pinochle.wasm]
 
@@ -46,296 +35,382 @@ const ok = (name, cond, detail) => {
   else { console.log(`  FAIL  ${name}${detail !== undefined ? ': ' + detail : ''}`); fail++; }
 };
 
-// id = suit * 12 + copy * 6 + rank; ranks 0..5 are 9, J, Q, K, 10, A.
+// id = suit * 12 + copy * 6 + rank; ranks 0..5 are 9, J, Q, K, 10, A;
+// suits 0..3 are clubs, diamonds, hearts, spades.
 const suitOf = c => Math.floor(c / 12);
 const rankOf = c => c % 6;
 const NINE = 0, JACK = 1, QUEEN = 2, KING = 3, TEN = 4, ACE = 5;
-const POINTS = { [ACE]: 11, [TEN]: 10, [KING]: 4, [QUEEN]: 3, [JACK]: 2, [NINE]: 0 };
+const CLUBS = 0, DIAMONDS = 1, HEARTS = 2, SPADES = 3;
+const id = (s, r, copy = 0) => s * 12 + copy * 6 + r;
+// Counters: aces, tens and kings, ten each.
+const POINTS = c => [ACE, TEN, KING].includes(rankOf(c)) ? 10 : 0;
+const PHASE = { AUCTION: 0, TRUMP: 1, PARTNER: 2, BACK: 3, PLAY: 4, SCORED: 5, OVER: 6 };
 
-const hand = (h, p) => {
-  const out = [];
-  for (let i = 0; i < 12; i++) out.push(e.pn_card(h, p, i));
-  return out;
-};
 const countOf = (cards, s, r) => cards.filter(c => suitOf(c) === s && rankOf(c) === r).length;
+const handOf = (g, p) => [...Array(e.pn_count(g, p)).keys()].map(i => e.pn_card(g, p, i));
 
-// The engine's own table, single copy only. This must agree everywhere.
-function meldSingle(cards, trump) {
+// pagat's meld table, row by row.
+function meldPagat(cards, trump) {
   let m = 0;
   for (let s = 0; s < 4; s++) {
-    if (countOf(cards, s, KING) >= 1 && countOf(cards, s, QUEEN) >= 1) m += (s === trump ? 40 : 20);
+    if (s === trump) continue;
+    m += 20 * Math.min(countOf(cards, s, KING), countOf(cards, s, QUEEN)); // common marriage
   }
-  if (countOf(cards, 1, JACK) >= 1 && countOf(cards, 3, QUEEN) >= 1) m += 40;
-  const around = { [ACE]: 100, [KING]: 80, [QUEEN]: 60, [JACK]: 40 };
-  for (const r of [ACE, KING, QUEEN, JACK]) {
-    if ([0, 1, 2, 3].every(s => countOf(cards, s, r) >= 1)) m += around[r];
+  if (trump >= 0) {
+    const n = r => countOf(cards, trump, r);
+    const runs = Math.min(n(ACE), n(TEN), n(KING), n(QUEEN), n(JACK));
+    if (runs >= 2) m += 1500;                                 // double run
+    else if (runs === 1) {
+      const extra = (n(KING) === 2 ? 'K' : '') + (n(QUEEN) === 2 ? 'Q' : '');
+      m += { '': 150, K: 190, Q: 190, KQ: 230 }[extra];       // run, with extra king/queen/marriage
+    } else m += 40 * Math.min(n(KING), n(QUEEN));             // royal marriage
+    m += 10 * n(NINE);                                        // the nine of trump
   }
-  if ([ACE, TEN, KING, QUEEN, JACK].every(r => countOf(cards, trump, r) >= 1)) m += 150;
-  return m;
-}
-
-// Standard Pinochle, where a second copy scores again.
-function meldDouble(cards, trump) {
-  let m = 0;
-  for (let s = 0; s < 4; s++) {
-    const n = Math.min(countOf(cards, s, KING), countOf(cards, s, QUEEN));
-    m += n * (s === trump ? 40 : 20);
-  }
-  const pin = Math.min(countOf(cards, 1, JACK), countOf(cards, 3, QUEEN));
+  const pin = Math.min(countOf(cards, DIAMONDS, JACK), countOf(cards, SPADES, QUEEN));
   m += pin >= 2 ? 300 : pin === 1 ? 40 : 0;
   const single = { [ACE]: 100, [KING]: 80, [QUEEN]: 60, [JACK]: 40 };
-  const dbl = { [ACE]: 1000, [KING]: 800, [QUEEN]: 600, [JACK]: 400 };
   for (const r of [ACE, KING, QUEEN, JACK]) {
-    const n = Math.min(...[0, 1, 2, 3].map(s => countOf(cards, s, r)));
-    m += n >= 2 ? dbl[r] : n === 1 ? single[r] : 0;
+    const k = Math.min(...[0, 1, 2, 3].map(s => countOf(cards, s, r)));
+    m += k >= 2 ? single[r] * 10 : k === 1 ? single[r] : 0;
   }
-  const run = Math.min(...[ACE, TEN, KING, QUEEN, JACK].map(r => countOf(cards, trump, r)));
-  m += run >= 2 ? 1500 : run === 1 ? 150 : 0;
   return m;
 }
 
 console.log(`pn-verify ${wasmPath}`);
 
-// -- The deal -------------------------------------------------------------
+// -- THE MELD TABLE ---------------------------------------------------------
 {
-  const bad = [];
-  let deals = 0;
-  for (let seed = 1; seed <= 60; seed++) {
-    const h = e.pn_new(seed);
-    const all = [0, 1, 2, 3].flatMap(p => hand(h, p));
-    deals++;
-    if (all.length !== 48) { bad.push(`seed ${seed}: ${all.length} cards`); continue; }
-    if (new Set(all).size !== 48) bad.push(`seed ${seed}: a card was dealt twice`);
-    if (all.some(c => c < 0 || c > 47)) bad.push(`seed ${seed}: a card is off the deck`);
-    if (e.pn_trump(h) !== suitOf(hand(h, 0)[0])) {
-      bad.push(`seed ${seed}: trump ${e.pn_trump(h)} against top card suit ${suitOf(hand(h, 0)[0])}`);
-    }
-    if (e.pn_card(h, 0, 12) !== -1 || e.pn_card(h, 4, 0) !== -1 || e.pn_card(h, -1, 0) !== -1) {
-      bad.push(`seed ${seed}: a card off the hand did not read -1`);
-    }
+  const run = s => [ACE, TEN, KING, QUEEN, JACK].map(r => id(s, r));
+  const built = [
+    ['a bare run', run(HEARTS), HEARTS, 150],
+    ['a run with an extra king', [...run(HEARTS), id(HEARTS, KING, 1)], HEARTS, 190],
+    ['a run with an extra queen', [...run(HEARTS), id(HEARTS, QUEEN, 1)], HEARTS, 190],
+    ['a run with an extra marriage', [...run(HEARTS), id(HEARTS, KING, 1), id(HEARTS, QUEEN, 1)], HEARTS, 230],
+    ['a double run', [...run(HEARTS), ...[ACE, TEN, KING, QUEEN, JACK].map(r => id(HEARTS, r, 1))], HEARTS, 1500],
+    ['the same run out of trump is one common marriage', run(HEARTS), CLUBS, 20],
+    ['a royal marriage', [id(SPADES, KING), id(SPADES, QUEEN)], SPADES, 40],
+    ['two royal marriages', [id(SPADES, KING), id(SPADES, QUEEN), id(SPADES, KING, 1), id(SPADES, QUEEN, 1)], SPADES, 80],
+    ['two common marriages', [id(CLUBS, KING), id(CLUBS, QUEEN), id(CLUBS, KING, 1), id(CLUBS, QUEEN, 1)], HEARTS, 40],
+    ['one nine of trump', [id(DIAMONDS, NINE)], DIAMONDS, 10],
+    ['both nines of trump', [id(DIAMONDS, NINE), id(DIAMONDS, NINE, 1)], DIAMONDS, 20],
+    ['a nine off trump', [id(DIAMONDS, NINE)], CLUBS, 0],
+    ['a pinochle', [id(DIAMONDS, JACK), id(SPADES, QUEEN)], CLUBS, 40],
+    ['a double pinochle', [id(DIAMONDS, JACK), id(SPADES, QUEEN), id(DIAMONDS, JACK, 1), id(SPADES, QUEEN, 1)], CLUBS, 300],
+    ['aces around', [0, 1, 2, 3].map(s => id(s, ACE)), CLUBS, 100],
+    ['aces around twice', [0, 1, 2, 3].flatMap(s => [id(s, ACE), id(s, ACE, 1)]), CLUBS, 1000],
+    ['kings around, two of them a royal marriage with the queen', [...[0, 1, 2, 3].map(s => id(s, KING)), id(CLUBS, QUEEN)], CLUBS, 120],
+    ['jacks around with a pinochle in them', [...[0, 1, 2, 3].map(s => id(s, JACK)), id(SPADES, QUEEN)], HEARTS, 80],
+  ];
+  const oracle = [], engine = [];
+  for (const [name, cards, trump, want] of built) {
+    if (meldPagat(cards, trump) !== want) oracle.push(`${name}: ${meldPagat(cards, trump)}`);
+    let l = e.pn_cards0(0);
+    for (const c of cards) l = e.pn_cardsadd(l, c);
+    const got = e.pn_meldof(l, trump);
+    if (got !== want) engine.push(`${name}: ${got}, pagat ${want}`);
   }
-  ok('every deal is the forty-eight card deck split four ways, trump off the top',
-     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : `${deals} deals`);
-  ok('control: the deck really does hold two of every card',
-     [0, 1, 2, 3].every(s => [0, 1, 2, 3, 4, 5].every(r =>
-       [...Array(48)].map((_, c) => c).filter(c => suitOf(c) === s && rankOf(c) === r).length === 2)));
-  ok('control: the deck is worth 240 in trick points',
-     [...Array(48)].map((_, c) => POINTS[rankOf(c)]).reduce((a, b) => a + b, 0) === 240);
-}
+  ok('control: this side reads pagat\'s table right on every built hand', oracle.length === 0,
+     oracle.length ? oracle.join('; ') : `${built.length} hands`);
+  ok('every built hand melds what pagat\'s table says', engine.length === 0,
+     engine.length ? engine.join('; ') : `${built.length} hands`);
 
-// -- THE MELD -------------------------------------------------------------
-{
   const bad = [];
   let hands = 0, nonZero = 0;
-  for (let seed = 1; seed <= 60; seed++) {
-    const h = e.pn_new(seed), trump = e.pn_trump(h);
+  for (let seed = 1; seed <= 40; seed++) {
+    const g = e.pn_new(seed);
     for (let p = 0; p < 4; p++) {
-      const cards = hand(h, p), want = meldDouble(cards, trump), got = e.pn_meld(h, p);
-      hands++;
-      if (want !== 0) nonZero++;
-      if (want !== got) bad.push(`seed ${seed} player ${p}: engine ${got}, the rules say ${want}`);
-    }
-  }
-  ok('the meld matches the rules on every hand, second copies included',
-     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : `${hands} hands`);
-  ok('control: most hands scored something, so the table was exercised',
-     nonZero > hands / 2, `${nonZero} of ${hands} hands melded`);
-  ok('a player off the table reads -1',
-     e.pn_meld(e.pn_new(1), 4) === -1 && e.pn_meld(e.pn_new(1), -1) === -1);
-}
-
-// -- The result is an identity --------------------------------------------
-{
-  const bad = [];
-  for (let seed = 1; seed <= 60; seed++) {
-    const h = e.pn_new(seed), r = e.pn_run(seed);
-    const melds = [0, 1, 2, 3].map(p => e.pn_meld(h, p));
-    // The deck carries 240 and the last trick is worth ten on top of what
-    // its cards carry, so a played-out hand accounts for 250. The engine
-    // paid no last-trick bonus at all until 2026-09-02, and this arm read
-    // that as correct because it was asking for 240.
-    const want = melds[0] + melds[2] + melds[1] + melds[3] + 250;
-    const got = e.pn_t0(r) + e.pn_t1(r);
-    if (want !== got) bad.push(`seed ${seed}: scores sum to ${got}, meld plus 250 is ${want}`);
-    const w = e.pn_winner(r);
-    const t0 = e.pn_t0(r), t1 = e.pn_t1(r);
-    const wantW = t0 > t1 ? 0 : t1 > t0 ? 1 : -1;
-    if (w !== wantW) bad.push(`seed ${seed}: winner ${w} against scores ${t0}/${t1}`);
-  }
-  ok('the two team scores sum to the meld plus the 250 a hand is worth',
-     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '60 hands');
-  ok('control: pn_new and pn_run agree on the deal for a seed',
-     e.pn_trump(e.pn_new(7)) === e.pn_trump(e.pn_new(7)));
-}
-
-// -- WHAT THE SECOND COPY WAS WORTH ---------------------------------------
-// meldSingle is the rule the engine had before GAME-25: it asked whether a
-// card was present, so one marriage and two scored the same. Kept as the
-// arm that says the fix discriminates rather than shifting everything.
-{
-  let hands = 0, differing = 0, totalGap = 0, biggest = 0, example = '';
-  for (let seed = 1; seed <= 200; seed++) {
-    const h = e.pn_new(seed), trump = e.pn_trump(h);
-    for (let p = 0; p < 4; p++) {
-      const cards = hand(h, p);
-      const single = meldSingle(cards, trump), double = meldDouble(cards, trump);
-      hands++;
-      if (single !== double) {
-        differing++; totalGap += double - single;
-        if (double - single > biggest) {
-          biggest = double - single;
-          example = `seed ${seed} player ${p}: ${single} against ${double}`;
-        }
+      for (let t = 0; t < 4; t++) {
+        const want = meldPagat(handOf(g, p), t), got = e.pn_meldin(g, p, t);
+        hands++;
+        if (want) nonZero++;
+        if (want !== got) bad.push(`seed ${seed} player ${p} trump ${t}: engine ${got}, pagat ${want}`);
       }
     }
   }
-  ok('control: the old rule and the new one agree wherever no card is held twice',
-     differing > 0 && differing < hands, `${hands - differing} of ${hands} hands agree`);
-  console.log(`  note  the fix moved ${differing} of ${hands} hands ` +
-              `(${(100 * differing / hands).toFixed(1)} per cent), ` +
-              `${totalGap} points in total, largest ${biggest} on ${example}`);
+  ok('every dealt hand melds by the table under every trump', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : `${hands} hand-and-trump pairs, ${nonZero} melding`);
 }
 
-// -- Controls -------------------------------------------------------------
+// -- THE DEAL ---------------------------------------------------------------
 {
-  ok('control: different seeds deal different hands',
-     JSON.stringify(hand(e.pn_new(1), 0)) !== JSON.stringify(hand(e.pn_new(2), 0)));
-  // L-FALSIF: the single-copy table must reject a hand it should reject.
-  const trump = 0;
-  const noMeld = [0, 6, 12, 18, 24, 30, 36, 42, 1, 7, 13, 19].filter(c => rankOf(c) === NINE || rankOf(c) === JACK);
-  ok('control: the table scores a hand with no marriage at zero',
-     meldSingle([0, 6, 12, 18], trump) === 0, `${noMeld.length} nine-and-jack cards used`);
-  ok('control: the table finds a marriage that is there',
-     meldSingle([2, 3], 1) === 20 && meldSingle([2, 3], 0) === 40,
-     'queen and king of clubs, off trump then on it');
-  ok('control: the double table pays a second marriage and the single one does not',
-     meldDouble([2, 3, 8, 9], 1) === 40 && meldSingle([2, 3, 8, 9], 1) === 20);
+  const bad = [];
+  for (let seed = 1; seed <= 40; seed++) {
+    const g = e.pn_new(seed);
+    const all = [0, 1, 2, 3].flatMap(p => handOf(g, p));
+    if ([0, 1, 2, 3].some(p => e.pn_count(g, p) !== 12)) bad.push(`seed ${seed}: hands of ${[0, 1, 2, 3].map(p => e.pn_count(g, p))}`);
+    if (new Set(all).size !== 48 || all.some(c => c < 0 || c > 47)) bad.push(`seed ${seed}: not the 48 cards`);
+    if (e.pn_trump(g) !== -1) bad.push(`seed ${seed}: trump ${e.pn_trump(g)} before the auction`);
+    if (e.pn_phase(g) !== PHASE.AUCTION) bad.push(`seed ${seed}: opens in phase ${e.pn_phase(g)}`);
+    if (e.pn_cur(g) !== (e.pn_dealer(g) + 1) % 4) bad.push(`seed ${seed}: seat ${e.pn_cur(g)} opens, dealer ${e.pn_dealer(g)}`);
+    if (e.pn_card(g, 0, 12) !== -1 || e.pn_card(g, 4, 0) !== -1) bad.push(`seed ${seed}: a card off the hand did not read -1`);
+  }
+  ok('every deal is the 48 cards twelve each, no trump yet, the auction opened at the dealer\'s left',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '40 deals');
+  ok('control: the deck holds two of every card, and 24 counters make 240',
+     [0, 1, 2, 3].every(s => [0, 1, 2, 3, 4, 5].every(r =>
+       [...Array(48).keys()].filter(c => suitOf(c) === s && rankOf(c) === r).length === 2))
+     && [...Array(48).keys()].reduce((a, c) => a + POINTS(c), 0) === 240);
+  ok('you open the first auction', e.pn_cur(e.pn_new(1)) === 0 && e.pn_dealer(e.pn_new(1)) === 3);
 }
 
-// -- PLAYING IT -----------------------------------------------------------
-// Everything above grades a DEAL. From 2026-09-02 the state carries the
-// trick and a hand is played one card at a time, so these arms grade the
-// play: that the card leaving a hand is the card that was played, that the
-// legality is the game's and not a suggestion, and that a whole hand lands
-// on the 250 the deck plus the last trick are worth.
+// -- A WHOLE HAND, EVERY TRANSITION WATCHED ---------------------------------
 //
-// The trick winner is recomputed here from the four cards and `pn_beats`
-// is NOT exported, so this side decides it with its own comparison. That is
-// the point: an oracle that asked the engine who won would agree with it
-// whatever it answered.
-{
-  const handNow = (h, p) => {
-    const out = [];
-    for (let i = 0; i < e.pn_count(h, p); i++) out.push(e.pn_card(h, p, i));
-    return out;
-  };
-  // Trump beats a plain suit, a higher card beats a lower of the same suit,
-  // and anything off both is out of it. Ties keep the card played first.
-  const beats = (c, best, led, trump) => {
-    const cs = suitOf(c), bs = suitOf(best);
-    if (cs === trump && bs !== trump) return true;
-    if (cs === trump && bs === trump) return rankOf(c) > rankOf(best);
-    if (cs === bs) return rankOf(c) > rankOf(best);
-    return false;
-  };
-
-  const bad = [];
-  let refusals = 0, asked = 0, offSuitOffered = 0, tricksChecked = 0;
-  for (const seed of [11, 42, 77, 101, 999]) {
-    if (e.__heap_reset) e.__heap_reset();
-    const h = e.pn_new(seed);
-    if (e.pn_cur(h) !== 0) bad.push(`seed ${seed}: opens on seat ${e.pn_cur(h)}, not yours`);
-    if ([0, 1, 2, 3].some(p => e.pn_count(h, p) !== 12)) {
-      bad.push(`seed ${seed}: hands are ${[0, 1, 2, 3].map(p => e.pn_count(h, p))}`);
-    }
-
-    // NOT index 0. A loop that drops the first card of a hand looks correct
-    // exactly when the card played happens to be the first one, which is
-    // the bug GAME-17 had in bridge for as long as that engine existed.
-    const before = handNow(h, 0);
-    const pick = 3;
-    const played = before[pick];
-    const h2 = e.pn_play(h, pick);
-    if (e.pn_trick(h2, 0) !== played) {
-      bad.push(`seed ${seed}: played ${played}, the trick holds ${e.pn_trick(h2, 0)}`);
-    }
-    const after = handNow(h2, 0);
-    const wantAfter = before.filter((_, k) => k !== pick);
-    if (after.join(',') !== wantAfter.join(',')) {
-      bad.push(`seed ${seed}: the hand went ${before.join(',')} to ${after.join(',')}`);
-    }
-    if (handNow(h, 0).join(',') !== before.join(',')) {
-      bad.push(`seed ${seed}: playing wrote through the handle the caller still holds`);
-    }
-
-    // Play it out, and at every trick check the winner against this side's
-    // own comparison. The card each seat played is read as the difference
-    // its hand shows across the step, which needs nothing from the engine
-    // beyond the hands themselves.
-    let g = h, guard = 0, tally = [0, 0];
-    let trick = [], leadSeat = e.pn_leader(g);
-    while (e.pn_done(g) !== 1 && guard++ < 200) {
-      const seat = e.pn_cur(g);
-      const led = e.pn_leader(g) === seat && trick.length === 0 ? -1 : suitOf(trick[0].c);
-      if (led >= 0) {
-        const mine = handNow(g, seat);
-        const hasLed = mine.some(c => suitOf(c) === led);
-        const wrong = mine.findIndex(c => suitOf(c) !== led);
-        if (hasLed && wrong >= 0) {
-          asked++;
-          if (e.pn_legal(g, wrong) === 1) offSuitOffered++;
-          if (e.pn_play(g, wrong) === g) refusals++;
-          else bad.push(`seed ${seed}: an off-suit card was taken`);
+// `hand` steps one hand from its deal to its score, every seat played by
+// the module, and grades each transition as it goes. The trick winner, the
+// counters and the score are all decided on this side.
+const beats = (c, best, trump) => {
+  const cs = suitOf(c), bs = suitOf(best);
+  if (cs === trump && bs !== trump) return true;
+  if (cs === bs) return rankOf(c) > rankOf(best);
+  return false;
+};
+const tally = {
+  bids: 0, passes: 0, stuck: 0, hands: 0, made: 0, set: 0, defZero: 0,
+  revokeAsked: 0, revokeRefused: 0, tricks: 0, ties: 0,
+};
+function hand(g0, bad, label) {
+  let g = g0, guard = 0;
+  let calledBid = false;
+  let meld = null, played = [], trick = [], pts = [0, 0];
+  while (e.pn_phase(g) < PHASE.SCORED && guard++ < 400) {
+    const ph = e.pn_phase(g), seat = e.pn_cur(g);
+    const before = g;
+    if (ph === PHASE.AUCTION) {
+      const bid = e.pn_bid(g), min = e.pn_minbid(g);
+      if (min !== (bid === 0 ? 250 : bid + 10)) bad.push(`${label}: minimum ${min} over ${bid}`);
+      if (e.pn_out(g, seat) === 1) bad.push(`${label}: seat ${seat}, out, asked to call`);
+      g = e.pn_step(g);
+      if (e.pn_phase(g) === PHASE.AUCTION) {
+        if (e.pn_bid(g) !== bid) {
+          tally.bids++; calledBid = true;
+          if (e.pn_bidder(g) !== seat || e.pn_bid(g) < min || e.pn_bid(g) % 10 !== 0) bad.push(`${label}: seat ${seat} bid ${e.pn_bid(g)}`);
+        } else {
+          tally.passes++;
+          if (e.pn_out(g, seat) !== 1) bad.push(`${label}: seat ${seat} passed and is not out`);
+        }
+        let want = (seat + 1) % 4;
+        while (e.pn_out(g, want) === 1) want = (want + 1) % 4;
+        if (e.pn_cur(g) !== want) bad.push(`${label}: after seat ${seat} the call went to ${e.pn_cur(g)}, not ${want}`);
+      } else {
+        const outs = [0, 1, 2, 3].filter(s => e.pn_out(g, s) === 1);
+        const decl = [0, 1, 2, 3].find(s => e.pn_out(g, s) === 0);
+        if (outs.length !== 3) bad.push(`${label}: the auction ended with ${outs.length} out`);
+        if (e.pn_bidder(g) !== decl || e.pn_cur(g) !== decl) bad.push(`${label}: declarer ${e.pn_bidder(g)}, the seat still in ${decl}`);
+        if (!calledBid) {
+          tally.stuck++;
+          if (decl !== e.pn_dealer(g) || e.pn_bid(g) !== 250) bad.push(`${label}: nobody bid, and seat ${decl} took it at ${e.pn_bid(g)}`);
         }
       }
-      const handBefore = handNow(g, seat);
-      const next = e.pn_step(g);
-      const handAfter = handNow(next, seat);
-      const gone = handBefore.filter(c => !handAfter.includes(c));
-      if (gone.length !== 1) {
-        bad.push(`seed ${seed}: a step took ${gone.length} cards out of seat ${seat}`);
-        break;
+    } else if (ph === PHASE.TRUMP) {
+      g = e.pn_step(g);
+      const decl = e.pn_bidder(g);
+      if (e.pn_trump(g) < 0 || e.pn_trump(g) > 3) bad.push(`${label}: trump ${e.pn_trump(g)}`);
+      if (e.pn_cur(g) !== (decl + 2) % 4) bad.push(`${label}: seat ${e.pn_cur(g)} passes first, not the partner`);
+    } else if (ph === PHASE.PARTNER || ph === PHASE.BACK) {
+      const giver = seat, taker = (seat + 2) % 4;
+      const gb = handOf(g, giver), tb = handOf(g, taker);
+      g = e.pn_step(g);
+      const ga = handOf(g, giver), ta = handOf(g, taker);
+      const left = gb.filter(c => !ga.includes(c)), arrived = ta.filter(c => !tb.includes(c));
+      if (left.length !== 4 || ga.length !== gb.length - 4 || ta.length !== tb.length + 4
+          || left.slice().sort().join() !== arrived.slice().sort().join()) {
+        bad.push(`${label}: seat ${giver} passed ${left.length}, seat ${taker} took ${arrived.length}`);
       }
-      if (trick.length === 0) leadSeat = seat;
+      if (ph === PHASE.PARTNER && giver !== (e.pn_bidder(g) + 2) % 4) bad.push(`${label}: seat ${giver} passed first`);
+      if (ph === PHASE.BACK && giver !== e.pn_bidder(g)) bad.push(`${label}: seat ${giver} passed back`);
+      if (e.pn_phase(g) === PHASE.PLAY) {
+        if ([0, 1, 2, 3].some(p => e.pn_count(g, p) !== 12)) bad.push(`${label}: after the pass, hands of ${[0, 1, 2, 3].map(p => e.pn_count(g, p))}`);
+        if (e.pn_cur(g) !== e.pn_bidder(g)) bad.push(`${label}: seat ${e.pn_cur(g)} leads, the declarer is ${e.pn_bidder(g)}`);
+        const t = e.pn_trump(g);
+        meld = [0, 1, 2, 3].map(p => meldPagat(handOf(g, p), t));
+        for (const team of [0, 1]) {
+          if (e.pn_hmeld(g, team) !== meld[team] + meld[team + 2]) bad.push(`${label}: team ${team} melded ${e.pn_hmeld(g, team)}, pagat ${meld[team] + meld[team + 2]}`);
+        }
+      }
+    } else if (ph === PHASE.PLAY) {
+      const mine = handOf(g, seat);
+      if (trick.length) {
+        const led = suitOf(trick[0].c);
+        const wrong = mine.findIndex(c => suitOf(c) !== led);
+        if (mine.some(c => suitOf(c) === led) && wrong >= 0) {
+          tally.revokeAsked++;
+          if (e.pn_legal(g, wrong) === 0 && e.pn_play(g, wrong) === g) tally.revokeRefused++;
+        }
+      }
+      g = e.pn_step(g);
+      const after = handOf(g, seat);
+      const gone = mine.filter(c => !after.includes(c));
+      if (gone.length !== 1) { bad.push(`${label}: seat ${seat} lost ${gone.length} cards`); break; }
       trick.push({ seat, c: gone[0] });
       if (trick.length === 4) {
-        const trump = e.pn_trump(g);
-        const led2 = suitOf(trick[0].c);
+        const t = e.pn_trump(g);
         let w = trick[0];
-        for (const t of trick) if (beats(t.c, w.c, led2, trump)) w = t;
-        const pts = trick.reduce((a, t) => a + POINTS[rankOf(t.c)], 0);
-        const last = e.pn_done(next) === 1;
-        tally[w.seat % 2] += pts + (last ? 10 : 0);
-        tricksChecked++;
+        for (const x of trick) if (beats(x.c, w.c, t)) w = x;
+        if (trick.filter(x => x.c !== w.c && suitOf(x.c) === suitOf(w.c) && rankOf(x.c) === rankOf(w.c)).length) tally.ties++;
+        played.push(...trick.map(x => x.c));
+        const last = played.length === 48;
+        pts[w.seat % 2] += trick.reduce((a, x) => a + POINTS(x.c), 0) + (last ? 10 : 0);
+        tally.tricks++;
+        if (!last && e.pn_cur(g) !== w.seat) bad.push(`${label}: seat ${e.pn_cur(g)} leads, seat ${w.seat} won the trick`);
         trick = [];
       }
-      g = next;
     }
-    if (e.pn_done(g) !== 1) bad.push(`seed ${seed}: the hand never finished`);
-    if (e.pn_tricks(g) !== 12) bad.push(`seed ${seed}: ${e.pn_tricks(g)} tricks, not 12`);
-    if ([0, 1, 2, 3].some(p => e.pn_count(g, p) !== 0)) {
-      bad.push(`seed ${seed}: hands left over`);
+    if (g === before) { bad.push(`${label}: phase ${ph} seat ${seat} would not move`); break; }
+  }
+  return { g, meld, pts, played };
+}
+
+// Score a finished hand on this side and compare.
+function gradeScore(g0, r, bad, label) {
+  const { g, meld, pts } = r;
+  if (!meld) { bad.push(`${label}: never reached the play`); return; }
+  if (pts[0] + pts[1] !== 250) bad.push(`${label}: the tricks came to ${pts[0] + pts[1]}`);
+  for (const team of [0, 1]) {
+    if (e.pn_pts(g, team) !== pts[team]) bad.push(`${label}: team ${team} took ${e.pn_pts(g, team)}, decided here ${pts[team]}`);
+  }
+  const d = e.pn_bidder(g) % 2, bid = e.pn_bid(g);
+  const m = [meld[0] + meld[2], meld[1] + meld[3]];
+  const make = m[d] + pts[d] >= bid;
+  const delta = [0, 0];
+  delta[d] = make ? m[d] + pts[d] : -bid;
+  delta[1 - d] = pts[1 - d] > 0 ? m[1 - d] + pts[1 - d] : 0;
+  tally.hands++;
+  if (make) tally.made++; else tally.set++;
+  if (pts[1 - d] === 0) tally.defZero++;
+  if (e.pn_made(g) !== (make ? 1 : 0)) bad.push(`${label}: made ${e.pn_made(g)}, ${m[d]} + ${pts[d]} against ${bid}`);
+  for (const team of [0, 1]) {
+    const want = e.pn_score(g0, team) + delta[team];
+    if (e.pn_score(g, team) !== want) bad.push(`${label}: team ${team} scored ${e.pn_score(g, team)}, wanted ${want}`);
+  }
+}
+
+{
+  const bad = [];
+  for (let seed = 1; seed <= 40; seed++) {
+    const g0 = e.pn_new(seed);
+    const r = hand(g0, bad, `seed ${seed}`);
+    gradeScore(g0, r, bad, `seed ${seed}`);
+  }
+  ok('CONTROL: the auctions held bids, passes, and a dealer stuck at 250',
+     tally.bids > 0 && tally.passes > 0 && tally.stuck > 0, `${tally.bids} bids, ${tally.passes} passes, ${tally.stuck} stuck`);
+  ok('CONTROL: hands were made and hands went set', tally.made > 0 && tally.set > 0,
+     `${tally.made} made, ${tally.set} set of ${tally.hands}`);
+  ok('CONTROL: tricks were decided between two identical cards', tally.ties > 0, `${tally.ties} tricks`);
+  ok('CONTROL: a revoke was offered and refused every time', tally.revokeAsked > 0 && tally.revokeRefused === tally.revokeAsked,
+     `${tally.revokeRefused} of ${tally.revokeAsked}`);
+  ok('a hand is the auction, trump, four each way, the declarer\'s lead, the play and the score, all by pagat',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : `${tally.hands} hands, ${tally.tricks} tricks`);
+  console.log(`  note  the defenders took no counter and not the last trick in ${tally.defZero} of ${tally.hands} hands`);
+}
+
+// -- YOUR SEAT ----------------------------------------------------------------
+// The calls a person makes through the page's exports, and what each refuses.
+{
+  const bad = [];
+  let named = 0, gave = 0;
+  for (let seed = 1; seed <= 60; seed++) {
+    let g = e.pn_new(seed);
+    const min = e.pn_minbid(g);
+    if (e.pn_callbid(g, min - 10) !== g || e.pn_callbid(g, min + 5) !== g) bad.push(`seed ${seed}: an illegal bid was taken`);
+    if (e.pn_canbid(g, min) !== 1 || e.pn_canbid(g, min + 40) !== 1) bad.push(`seed ${seed}: a legal bid was refused`);
+    if (e.pn_play(g, 0) !== g || e.pn_name(g, 0) !== g || e.pn_give(g) !== g || e.pn_next(g) !== g) bad.push(`seed ${seed}: a move out of its phase was taken`);
+    // You bid, and the others play on until it is your call again.
+    g = e.pn_callbid(g, min + 40);
+    if (e.pn_bid(g) !== min + 40 || e.pn_bidder(g) !== 0) bad.push(`seed ${seed}: a jump to ${min + 40} made ${e.pn_bid(g)}`);
+    let guard = 0;
+    while (e.pn_phase(g) === PHASE.AUCTION && guard++ < 50) {
+      g = e.pn_cur(g) === 0 ? e.pn_pass(g) : e.pn_step(g);
     }
-    const total = e.pn_pts(g, 0) + e.pn_pts(g, 1);
-    if (total !== 250) bad.push(`seed ${seed}: the hand accounted for ${total}, not 250`);
-    if (e.pn_pts(g, 0) !== tally[0] || e.pn_pts(g, 1) !== tally[1]) {
-      bad.push(`seed ${seed}: engine ${e.pn_pts(g, 0)}/${e.pn_pts(g, 1)},`
-        + ` decided here ${tally[0]}/${tally[1]}`);
+    if (e.pn_phase(g) === PHASE.TRUMP && e.pn_cur(g) === 0) {
+      if (e.pn_name(g, 4) !== g || e.pn_name(g, -1) !== g) bad.push(`seed ${seed}: a fifth suit was named`);
+      const s = seed % 4;
+      g = e.pn_name(g, s);
+      named++;
+      if (e.pn_trump(g) !== s) bad.push(`seed ${seed}: named ${s}, trump is ${e.pn_trump(g)}`);
+    }
+    guard = 0;
+    while (e.pn_phase(g) < PHASE.PLAY && guard++ < 20) {
+      if ((e.pn_phase(g) === PHASE.PARTNER || e.pn_phase(g) === PHASE.BACK) && e.pn_cur(g) === 0) {
+        const before = handOf(g, 0);
+        let h = g;
+        for (const i of [1, 3, 5]) h = e.pn_mark(h, i);
+        if (e.pn_cangive(h) !== 0 || e.pn_give(h) !== h) bad.push(`seed ${seed}: three cards could be passed`);
+        if (e.pn_mark(h, 3) !== h) bad.push(`seed ${seed}: a card was marked twice`);
+        const four = e.pn_mark(h, 7);
+        if (e.pn_marked(g, 1) !== 0) bad.push(`seed ${seed}: marking wrote through the handle the caller held`);
+        if (e.pn_mark(four, 8) !== four) bad.push(`seed ${seed}: a fifth card was marked`);
+        const cleared = e.pn_clear(four);
+        if ([1, 3, 5, 7].some(i => e.pn_marked(cleared, i) !== 0)) bad.push(`seed ${seed}: the marks did not clear`);
+        const next = e.pn_give(four);
+        const sent = [1, 3, 5, 7].map(i => before[i]).sort().join();
+        const left = before.filter(c => !handOf(next, 0).includes(c)).sort().join();
+        if (sent !== left) bad.push(`seed ${seed}: marked ${sent}, sent ${left}`);
+        gave++;
+        g = next;
+      } else g = e.pn_step(g);
     }
   }
-  ok('a hand plays out one card at a time and lands on 250', bad.length === 0,
-     bad.length ? bad.slice(0, 3).join('; ') : '5 hands');
-  ok('every trick goes to the seat this side says won it', tricksChecked === 60,
-     `${tricksChecked} tricks checked against an independent comparison`);
-  ok('no off-suit card was ever offered while the suit led was held',
-     offSuitOffered === 0, `${offSuitOffered} of ${asked} would have been a revoke`);
-  // An arm that never reached its condition is not an arm (L-VACUOUS): the
-  // two above measure nothing unless a revoke was actually available.
-  ok('control: the follow-suit question was reachable', asked > 0 && refusals === asked,
-     `asked ${asked} times, refused ${refusals}`);
+  ok('CONTROL: you named trump and passed cards', named > 0 && gave > 0, `named ${named}, passed ${gave}`);
+  ok('your bids, trump and pass take only what the rules allow, and refusals hand back the same handle',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : '60 deals');
+}
+
+// -- THE GAME ---------------------------------------------------------------
+{
+  const bad = [];
+  let games = 0, handsPlayed = 0, both = 0, dealerTurns = 0;
+  for (let seed = 1; seed <= 6; seed++) {
+    if (e.__heap_reset) e.__heap_reset();
+    let g = e.pn_new(seed * 101), guard = 0;
+    while (e.pn_done(g) === 0 && guard++ < 40) {
+      const g0 = g, dealer = e.pn_dealer(g);
+      const r = hand(g, bad, `game ${seed} hand ${e.pn_hands(g)}`);
+      gradeScore(g0, r, bad, `game ${seed} hand ${e.pn_hands(g)}`);
+      g = r.g;
+      handsPlayed++;
+      const s0 = e.pn_score(g, 0), s1 = e.pn_score(g, 1);
+      const over = s0 >= 1500 || s1 >= 1500;
+      if ((e.pn_done(g) === 1) !== over) bad.push(`game ${seed}: ${s0} to ${s1}, over ${e.pn_done(g)}`);
+      if (over) {
+        const d = e.pn_bidder(g) % 2;
+        const want = s0 >= 1500 && s1 >= 1500 ? d : s0 >= 1500 ? 0 : 1;
+        if (s0 >= 1500 && s1 >= 1500) both++;
+        if (e.pn_gwinner(g) !== want) bad.push(`game ${seed}: won by ${e.pn_gwinner(g)} at ${s0} to ${s1}`);
+        if (e.pn_step(g) !== g || e.pn_next(g) !== g) bad.push(`game ${seed}: moved after the game was over`);
+      } else {
+        const n = e.pn_step(g);
+        if (e.pn_dealer(n) === (dealer + 1) % 4 && e.pn_hands(n) === e.pn_hands(g) + 1) dealerTurns++;
+        else bad.push(`game ${seed}: the next deal is dealer ${e.pn_dealer(n)} after ${dealer}`);
+        if (e.pn_score(n, 0) !== s0 || e.pn_score(n, 1) !== s1) bad.push(`game ${seed}: the scores moved at the deal`);
+        g = n;
+      }
+    }
+    if (e.pn_done(g) === 1) games++;
+  }
+  ok('CONTROL: whole games reached 1500', games > 0, `${games} games, ${handsPlayed} hands`);
+  ok('scores carry from hand to hand, the deal passes left, and the game ends at 1500',
+     bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : `${dealerTurns} new deals`);
+  console.log(`  note  both teams passed 1500 on one hand in ${both} of ${games} games`);
+}
+
+// -- The session runner is one hand of the same game ------------------------
+{
+  const bad = [];
+  for (let seed = 1; seed <= 20; seed++) {
+    let g = e.pn_new(seed), guard = 0;
+    while (e.pn_phase(g) < PHASE.SCORED && guard++ < 400) g = e.pn_step(g);
+    const r = e.pn_run(seed);
+    if (e.pn_t0(r) !== e.pn_score(g, 0) || e.pn_t1(r) !== e.pn_score(g, 1)) {
+      bad.push(`seed ${seed}: the runner says ${e.pn_t0(r)}/${e.pn_t1(r)}, the hand ${e.pn_score(g, 0)}/${e.pn_score(g, 1)}`);
+    }
+    const w = e.pn_winner(r), t0 = e.pn_t0(r), t1 = e.pn_t1(r);
+    if (w !== (t0 > t1 ? 0 : t1 > t0 ? 1 : -1)) bad.push(`seed ${seed}: winner ${w} at ${t0}/${t1}`);
+  }
+  ok('the session runner scores one hand the way the table does', bad.length === 0,
+     bad.length ? bad.slice(0, 3).join('; ') : '20 hands');
 }
 
 console.log(fail === 0
-  ? `\nPASS: Pinochle deals and melds by the rules (${pass} arms).`
+  ? `\nPASS: Pinochle plays by pagat's partnership rules (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);
 process.exitCode = fail === 0 ? 0 : 1;

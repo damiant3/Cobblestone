@@ -1,0 +1,116 @@
+Chapter: Resize
+  cites Gpu chapter DeviceMath
+
+ Pillow 9.5's Image.resize with LANCZOS over RGB bytes (libImaging
+ Resample.c), as Forge resizes an upscaled picture. Per axis, output xx takes
+ center (xx + 0.5) s, s = in / out; with f = max (s, 1) the support is 3 f,
+ the inputs from int (center - 3 f + 0.5) up to int (center + 3 f + 0.5)
+ clamped to the picture, each weighed lanczos ((x - center + 0.5) / f) =
+ sinc (x) sinc (x / 3) on -3 <= x < 3, normalised to sum 1, then fixed at
+ 22 fraction bits (PRECISION_BITS = 32 - 8 - 2), rounded half away from 0. A
+ pass sums 2^21 plus byte times coefficient and keeps the sum shifted down 22
+ bits, clamped to 0..255. The horizontal pass runs first, over only the rows
+ the vertical pass reads; a pass whose size does not change is skipped.
+
+ We say:
+
+Section: Coefficients
+
+  RzAxis = record {
+    rz-min : List Integer,
+    rz-count : List Integer,
+    rz-k : List Integer,
+    rz-ksize : Integer
+  }
+
+  rz-sinc : Real -> Real
+  rz-sinc (x) = if x ~0 0.0 then 1.0 else let y = x * 3.141592653589793 in real-sin y / y
+
+  rz-lanczos : Real -> Real
+  rz-lanczos (x) = if x >= 0.0 - 3.0 & x < 3.0 then rz-sinc x * rz-sinc (x / 3.0) else 0.0
+
+  rz-trunc : Real -> Integer
+  rz-trunc (v) = real-to-int v
+
+  rz-weights : Integer, Integer, Real, Real, Real, List Real -> List Real
+  rz-weights (x) (count) (xmin) (center) (ss) (acc) =
+    if x >= count then acc
+    else rz-weights (x + 1) count xmin center ss (list-push acc (rz-lanczos ((real-from-int x + xmin - center + 0.5) * ss)))
+
+  rz-sum : List Real, Integer, Real -> Real
+  rz-sum (ws) (i) (acc) = if i >= list-length ws then acc else rz-sum ws (i + 1) (acc + list-at ws i)
+
+  rz-fixed : Real -> Integer
+  rz-fixed (k) = if k < 0.0 then rz-trunc (0.0 - 0.5 + k * 4194304.0) else rz-trunc (0.5 + k * 4194304.0)
+
+  rz-push-k : List Real, Real, Integer, Integer, List Integer -> List Integer
+  rz-push-k (ws) (ww) (i) (ksize) (acc) =
+    if i >= ksize then acc
+    else let k = if i < list-length ws then (if ww ~0 0.0 then list-at ws i else list-at ws i / ww) else 0.0
+    in rz-push-k ws ww (i + 1) ksize (list-push acc (rz-fixed k))
+
+  rz-coeffs : Integer, Integer, Real, Real, Real, Integer, Integer, RzAxis -> RzAxis
+  rz-coeffs (insize) (outsize) (scale) (support) (ss) (ksize) (xx) (a) =
+    if xx >= outsize then a
+    else let center = (real-from-int xx + 0.5) * scale
+    in let lo = rz-trunc (center - support + 0.5)
+    in let xmin = if lo < 0 then 0 else lo
+    in let hi = rz-trunc (center + support + 0.5)
+    in let count = (if hi > insize then insize else hi) - xmin
+    in let ws = rz-weights 0 count (real-from-int xmin) center ss (__list-with-capacity (count + 1))
+    in rz-coeffs insize outsize scale support ss ksize (xx + 1) (RzAxis { rz-min = list-push (a.rz-min) xmin, rz-count = list-push (a.rz-count) count, rz-k = rz-push-k ws (rz-sum ws 0 0.0) 0 ksize (a.rz-k), rz-ksize = ksize })
+
+  rz-axis : Integer, Integer -> RzAxis
+  rz-axis (insize) (outsize) =
+    let scale = real-from-int insize / real-from-int outsize
+    in let f = if scale < 1.0 then 1.0 else scale
+    in let support = 3.0 * f
+    in let c = rz-trunc support
+    in let ksize = (if real-from-int c < support then c + 1 else c) * 2 + 1
+    in rz-coeffs insize outsize scale support (1.0 / f) ksize 0 (RzAxis { rz-min = __list-with-capacity (outsize + 1), rz-count = __list-with-capacity (outsize + 1), rz-k = __list-with-capacity (outsize * ksize + 1), rz-ksize = ksize })
+
+Section: Passes
+
+  rz-clip : Integer -> Integer
+  rz-clip (ss) = if ss < 0 then 0 else let v = ss / 4194304 in if v > 255 then 255 else v
+
+ One output byte: the sum over the axis's taps of the byte at base plus
+ step times (xmin + x), for channel ch.
+
+  rz-tap : Integer, Integer, Integer, RzAxis, Integer, Integer, Integer, Integer -> Integer
+  rz-tap (src) (base) (step) (a) (o) (x) (count) (ss) =
+    if x >= count then ss
+    else rz-tap src base step a o (x + 1) count (ss + peek-byte src (base + step * (list-at (a.rz-min) o + x)) * list-at (a.rz-k) (o * a.rz-ksize + x))
+
+  rz-horizontal : Integer, Integer, Integer, Integer, Integer, RzAxis, Integer, Integer -> Integer
+  rz-horizontal (src) (w) (y0) (dst) (ow) (a) (rows) (i) =
+    if i >= rows * ow * 3 then dst
+    else let ch = i - i / 3 * 3
+    in let px = i / 3
+    in let yy = px / ow
+    in let xx = px - yy * ow
+    in let v = rz-clip (rz-tap src (((y0 + yy) * w) * 3 + ch) 3 a xx 0 (list-at (a.rz-count) xx) 2097152)
+    in let p = poke-byte dst i v
+    in rz-horizontal src w y0 dst ow a rows (i + 1)
+
+  rz-vertical : Integer, Integer, Integer, Integer, RzAxis, Integer, Integer -> Integer
+  rz-vertical (src) (w) (dst) (oh) (a) (shift) (i) =
+    if i >= oh * w * 3 then dst
+    else let ch = i - i / 3 * 3
+    in let px = i / 3
+    in let yy = px / w
+    in let xx = px - yy * w
+    in let v = rz-clip (rz-tap src ((xx - shift * w) * 3 + ch) (w * 3) a yy 0 (list-at (a.rz-count) yy) 2097152)
+    in let p = poke-byte dst i v
+    in rz-vertical src w dst oh a shift (i + 1)
+
+ The picture of w x h RGB bytes at src resized to ow x oh; fresh bytes.
+
+  resize-lanczos : Integer, Integer, Integer, Integer, Integer -> Integer
+  resize-lanczos (src) (w) (h) (ow) (oh) =
+    let av = rz-axis h oh
+    in let first = list-at (av.rz-min) 0
+    in let last = list-at (av.rz-min) (oh - 1) + list-at (av.rz-count) (oh - 1)
+    in let hz = if ow == w then src else rz-horizontal src w first (alloc-bytes (ow * (last - first) * 3 + 8)) ow (rz-axis w ow) (last - first) 0
+    in if oh == h then (if ow == w then rz-horizontal src w 0 (alloc-bytes (w * h * 3 + 8)) w (rz-axis w w) h 0 else hz)
+    else rz-vertical hz ow (alloc-bytes (ow * oh * 3 + 8)) oh av (if ow == w then 0 else first) 0

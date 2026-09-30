@@ -1,6 +1,7 @@
 Chapter: FontExtract
   cites Encode chapter TrueType
   cites Foreword chapter Console
+  cites Foreword chapter Fat16
 
  Output format per glyph:
    GLYPH <codepoint> <advance> <lsb> <xmin> <ymin> <xmax> <ymax> <num-contours>
@@ -9,57 +10,64 @@ Chapter: FontExtract
    END
 
 Section: Entry
-  opening : [Console] Nothing = act
-    let buf = read-all-bytes
-    in let size = list-length buf
-    in print-line ("FONT size=" & show size)
-    in if size < 100 then print-line "ERROR: too small"
-    else let font = ttf-parse buf
-    in let upem = font.tf-head.th-units-per-em
-    in print-line ("UPEM " & show upem)
-    in print-line ("GLYPHS " & show (font.tf-num-glyphs))
-    in let d = extract-ascii font 32 127
-    in print-line "DONE"
+  opening : [Console, Device.Block] Nothing = act
+    vol <- fat16-boot-volume
+    got <- fat16-read-bytes vol "FONT.TTF"
+    when got
+      is None -> print-line "ERROR: FONT.TTF not found"
+      is Just (buf) -> extract-font buf
+  end
+
+  extract-font : List Integer -> [Console] Nothing
+  extract-font (buf) = act
+    print-line ("FONT size=" & show (list-length buf))
+    if list-length buf < 100 then print-line "ERROR: too small"
+    else extract-parsed (ttf-parse buf)
+  end
+
+  extract-parsed : TtfFont -> [Console] Nothing
+  extract-parsed (font) = act
+    print-line ("UPEM " & show (font.tf-head.th-units-per-em))
+    print-line ("GLYPHS " & show (font.tf-num-glyphs))
+    d <- extract-ascii font 32 127
+    print-line "DONE"
   end
 
 Section: Extract ASCII Range
-  extract-ascii : TtfFont, Integer, Integer -> Integer
+  extract-ascii : TtfFont, Integer, Integer -> [Console.Write] Integer
   extract-ascii (font) (cp) (max-cp) =
     if cp > max-cp then 0
-    else let d = extract-glyph font cp
-    in extract-ascii font (cp + 1) max-cp
+    else act
+      d <- extract-glyph font cp
+      extract-ascii font (cp + 1) max-cp
+    end
 
-  extract-glyph : TtfFont, Integer -> Integer
+  extract-glyph : TtfFont, Integer -> [Console.Write] Integer
   extract-glyph (font) (cp) =
     let g = ttf-glyph-for-char font cp
     in let nc = list-length (g.tg-contours)
-    in let d = print-line ("GLYPH " & show cp & " " & show (g.tg-advance) & " " & show (g.tg-lsb) & " " & show (g.tg-x-min) & " " & show (g.tg-y-min) & " " & show (g.tg-x-max) & " " & show (g.tg-y-max) & " " & show nc)
-    in let d2 = extract-contours (g.tg-contours) 0 nc
-    in print-line "END"
+    in act
+      print-line ("GLYPH " & show cp & " " & show (g.tg-advance) & " " & show (g.tg-lsb) & " " & show (g.tg-x-min) & " " & show (g.tg-y-min) & " " & show (g.tg-x-max) & " " & show (g.tg-y-max) & " " & show nc)
+      d <- extract-contours (g.tg-contours) 0 nc
+      print-line "END"
+      0
+    end
 
-  extract-contours : List TtfContour, Integer, Integer -> Integer
+  extract-contours : List TtfContour, Integer, Integer -> [Console.Write] Integer
   extract-contours (contours) (i) (n) =
     if i >= n then 0
-    else let c = list-at contours i
-    in let pts = c.tc-points
-    in let np = list-length pts
-    in let d = print-line ("CONTOUR " & show np)
-    in let d2 = extract-points pts 0 np
-    in extract-contours contours (i + 1) n
+    else let pts = (list-at contours i).tc-points
+    in act
+      print-line ("CONTOUR " & show (list-length pts))
+      d <- extract-points pts 0 (list-length pts)
+      extract-contours contours (i + 1) n
+    end
 
-  extract-points : List TtfPoint, Integer, Integer -> Integer
+  extract-points : List TtfPoint, Integer, Integer -> [Console.Write] Integer
   extract-points (pts) (i) (n) =
     if i >= n then 0
     else let p = list-at pts i
-    in let d = print-line ("POINT " & show (p.tp-x) & " " & show (p.tp-y) & " " & show (p.tp-on-curve))
-    in extract-points pts (i + 1) n
-
-Section: Read All Bytes from Serial
-  read-all-bytes : List Integer
-  read-all-bytes = read-bytes-loop []
-
-  read-bytes-loop : List Integer -> List Integer
-  read-bytes-loop (acc) =
-    let b = read-byte
-    in if b < 0 then acc
-    else read-bytes-loop (list-push acc b)
+    in act
+      print-line ("POINT " & show (p.tp-x) & " " & show (p.tp-y) & " " & show (p.tp-on-curve))
+      extract-points pts (i + 1) n
+    end

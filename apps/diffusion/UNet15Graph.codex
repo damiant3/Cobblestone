@@ -1,0 +1,129 @@
+Chapter: UNet15Graph
+  cites Diffusion chapter UNetGraph
+
+ The SD1.5 UNet (v1-inference.yaml, Forge's SD15 config): 320 channels at
+ multipliers 1/2/4/4, a transformer of depth 1 at the first three levels and
+ in the middle, none at the fourth, 8 heads whatever the width, a 77 x 768
+ context, 1x1-conv proj_in and proj_out, and no label embedding.
+
+ We say:
+
+Section: Attention
+
+ ldm CrossAttention with 8 heads of c/8, scaled by 1/sqrt(c/8): 40, 80 and
+ 160 wide at 320, 640 and 1280.
+
+  u15-scale : Integer -> Real
+  u15-scale (d) = if d == 40 then 0.15811388300841897 else if d == 80 then 0.11180339887498948 else if d == 160 then 0.07905694150420949 else 0.125
+
+  u15-attention-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  u15-attention-with (ops) (u) (x) (sq) (c) (ctx) (sk) (kv) (p) =
+    let d = c / 8
+    in let q = ops.linear-b u x sq c c (p & "to_q") False
+    in let k = ops.linear-b u ctx sk kv c (p & "to_k") False
+    in let v = ops.linear-b u ctx sk kv c (p & "to_v") False
+    in let s = ops.alloc (8 * sq * sk * 4)
+    in let o = ops.alloc (sq * c * 4)
+    in let ok = if q == 0 | k == 0 | v == 0 | s == 0 | o == 0 then False
+       else if ops.attn-scores q k s 8 sq sk d (u15-scale d) == False then False
+       else if ops.softmax-rows s sk (8 * sq) == False then False
+       else if (if ops.probs-at p then ops.probs s 8 sq == False else False) then False
+       else ops.attn-values s v o 8 sq sk d
+    in let out = if ok then ops.linear u o sq c c (p & "to_out.0") else 0
+    in ops.free (ops.free (ops.free (ops.free (ops.free out q) k) v) s) o
+
+  u15-tblock-with : UNetOps a, a, Integer, Integer, Integer, Integer, Text -> Integer
+  u15-tblock-with (ops) (u) (x) (rows) (c) (ctx) (p) =
+    let n1 = ops.layer-norm u x rows c (p & "norm1")
+    in let a1 = if ops.self-v (p & "attn1.") then un-value-attn-with ops u n1 rows c (p & "attn1.") else u15-attention-with ops u n1 rows c n1 rows c (p & "attn1.")
+    in let x1 = ops.add x a1 (rows * c)
+    in let n2 = ops.layer-norm u x1 rows c (p & "norm2")
+    in let a2 = u15-attention-with ops u n2 rows c ctx 77 768 (p & "attn2.")
+    in let x2 = ops.add x1 a2 (rows * c)
+    in let n3 = ops.layer-norm u x2 rows c (p & "norm3")
+    in let f = un-feed-forward-with ops u n3 rows c (p & "ff.")
+    in let x3 = ops.add x2 f (rows * c)
+    in ops.free (ops.free (ops.free (ops.free (ops.free (ops.free (ops.free (ops.free x3 n1) a1) x1) n2) a2) x2) n3) f
+
+ SpatialTransformer with 1x1-conv projections, which on tokens as rows are
+ the linear of the same c x c weights.
+
+  u15-transformer-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  u15-transformer-with (ops) (u) (x) (c) (h) (w) (ctx) (p) =
+    let hw = h * w
+    in let g = ops.group-norm u x c hw 0.000001 (p & "norm")
+    in let t = ops.transpose g c hw
+    in let pi = ops.linear u t hw c c (p & "proj_in")
+    in let b = u15-tblock-with ops u pi hw c ctx (p & "transformer_blocks.0.")
+    in let po = ops.linear u b hw c c (p & "proj_out")
+    in let back = ops.transpose po hw c
+    in let out = ops.add back x (c * hw)
+    in ops.free (ops.free (ops.free (ops.free (ops.free (ops.free out g) t) pi) b) po) back
+
+Section: Embedding
+
+  unet15-embedding-with : UNetOps a, a, Real -> Integer
+  unet15-embedding-with (ops) (u) (t) =
+    let tb = ops.upload [t]
+    in let temb = ops.alloc (320 * 4)
+    in let ok = if tb == 0 | temb == 0 then False else ops.timestep tb temb
+    in let e1 = if ok then ops.linear u temb 1 320 1280 "time_embed.0" else 0
+    in let s1 = ops.silu e1 1280
+    in let e2 = ops.linear u s1 1 1280 1280 "time_embed.2"
+    in ops.free (ops.free (ops.free (ops.free e2 tb) temb) e1) s1
+
+Section: Blocks
+
+  u15-stage-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text, Boolean -> Integer
+  u15-stage-with (ops) (u) (x) (embs) (ctx) (cin) (cout) (h) (w) (p) (attn) =
+    let r = unet-resblock-with ops u x embs cin cout h w (p & "0.")
+    in if attn == False then r
+    else ops.free (u15-transformer-with ops u r cout h w ctx (p & "1.")) r
+
+  u15-out-stage-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  u15-out-stage-with (ops) (u) (x) (skip) (embs) (ctx) (cx) (cs) (cout) (h) (w) (k) =
+    let patched = ops.out-patch x skip cx cs h w
+    in let cat = if patched then ops.concat x skip cx cs (h * w) else 0
+    in ops.free (u15-stage-with ops u cat embs ctx (cx + cs) cout h w ("output_blocks." & show k & ".") (k > 2)) cat
+
+ One SD1.5 UNet step on a 4 x h x w latent, h and w multiples of 8: the 26
+ block outputs in the order of UNet15Reference, the last being the predicted
+ noise.
+
+  unet15-forward-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer -> List Integer
+  unet15-forward-with (ops) (u) (x) (embs) (ctx) (h) (w) =
+    let h0 = unet-conv-in-with ops u x h w
+    in let h1 = u15-stage-with ops u h0 embs ctx 320 320 h w "input_blocks.1." True
+    in let h2 = u15-stage-with ops u h1 embs ctx 320 320 h w "input_blocks.2." True
+    in let h3 = unet-downsample-with ops u h2 320 h w "input_blocks.3.0."
+    in let h4 = u15-stage-with ops u h3 embs ctx 320 640 (unet-half h) (unet-half w) "input_blocks.4." True
+    in let h5 = u15-stage-with ops u h4 embs ctx 640 640 (unet-half h) (unet-half w) "input_blocks.5." True
+    in let h6 = unet-downsample-with ops u h5 640 (unet-half h) (unet-half w) "input_blocks.6.0."
+    in let h7 = u15-stage-with ops u h6 embs ctx 640 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) "input_blocks.7." True
+    in let h8 = u15-stage-with ops u h7 embs ctx 1280 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) "input_blocks.8." True
+    in let h9 = unet-downsample-with ops u h8 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) "input_blocks.9.0."
+    in let h10 = u15-stage-with ops u h9 embs ctx 1280 1280 (unet-half (unet-half (unet-half h))) (unet-half (unet-half (unet-half w))) "input_blocks.10." False
+    in let h11 = u15-stage-with ops u h10 embs ctx 1280 1280 (unet-half (unet-half (unet-half h))) (unet-half (unet-half (unet-half w))) "input_blocks.11." False
+    in let m0 = unet-resblock-with ops u h11 embs 1280 1280 (unet-half (unet-half (unet-half h))) (unet-half (unet-half (unet-half w))) "middle_block.0."
+    in let m1 = u15-transformer-with ops u m0 1280 (unet-half (unet-half (unet-half h))) (unet-half (unet-half (unet-half w))) ctx "middle_block.1."
+    in let mid = unet-resblock-with ops u m1 embs 1280 1280 (unet-half (unet-half (unet-half h))) (unet-half (unet-half (unet-half w))) "middle_block.2."
+    in let o0 = u15-out-stage-with ops u mid h11 embs ctx 1280 1280 1280 (unet-half (unet-half (unet-half h))) (unet-half (unet-half (unet-half w))) 0
+    in let o1 = u15-out-stage-with ops u o0 h10 embs ctx 1280 1280 1280 (unet-half (unet-half (unet-half h))) (unet-half (unet-half (unet-half w))) 1
+    in let o2s = u15-out-stage-with ops u o1 h9 embs ctx 1280 1280 1280 (unet-half (unet-half (unet-half h))) (unet-half (unet-half (unet-half w))) 2
+    in let o2 = unet-upsample-with ops u o2s 1280 (unet-half (unet-half (unet-half h))) (unet-half (unet-half (unet-half w))) (unet-half (unet-half h)) (unet-half (unet-half w)) "output_blocks.2.1."
+    in let o3 = u15-out-stage-with ops u o2 h8 embs ctx 1280 1280 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) 3
+    in let o4 = u15-out-stage-with ops u o3 h7 embs ctx 1280 1280 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) 4
+    in let o5s = u15-out-stage-with ops u o4 h6 embs ctx 1280 640 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) 5
+    in let o5 = unet-upsample-with ops u o5s 1280 (unet-half (unet-half h)) (unet-half (unet-half w)) (unet-half h) (unet-half w) "output_blocks.5.2."
+    in let o6 = u15-out-stage-with ops u o5 h5 embs ctx 1280 640 640 (unet-half h) (unet-half w) 6
+    in let o7 = u15-out-stage-with ops u o6 h4 embs ctx 640 640 640 (unet-half h) (unet-half w) 7
+    in let o8s = u15-out-stage-with ops u o7 h3 embs ctx 640 320 640 (unet-half h) (unet-half w) 8
+    in let o8 = unet-upsample-with ops u o8s 640 (unet-half h) (unet-half w) h w "output_blocks.8.2."
+    in let o9 = u15-out-stage-with ops u o8 h2 embs ctx 640 320 320 h w 9
+    in let o10 = u15-out-stage-with ops u o9 h1 embs ctx 320 320 320 h w 10
+    in let o11 = u15-out-stage-with ops u o10 h0 embs ctx 320 320 320 h w 11
+    in let n0 = ops.group-norm u o11 320 (h * w) 0.00001 "out.0"
+    in let n1 = ops.silu n0 (320 * h * w)
+    in let out = ops.conv u n1 320 h w 4 3 1 1 "out.2"
+    in let freed = ops.free (ops.free (ops.free (ops.free (ops.free (ops.free (ops.free out m0) m1) o2s) o5s) o8s) n0) n1
+    in [h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, mid, o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, o10, o11, freed]

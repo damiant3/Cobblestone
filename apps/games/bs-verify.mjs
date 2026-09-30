@@ -48,11 +48,13 @@ const count = (g, v) => g.flat().filter(x => x === v).length;
 
 console.log(`bs-verify ${wasmPath}`);
 
+const occ = g => g.flat().filter(v => v > 0).length;
+
 // -- Placement ------------------------------------------------------------
 const s0 = e.bs_new(42);
 ok('a new game places seventeen ship cells for each side',
-   count(ships(s0, 1), 1) === 17 && count(ships(s0, 2), 1) === 17,
-   `p1 ${count(ships(s0, 1), 1)}, p2 ${count(ships(s0, 2), 1)}`);
+   occ(ships(s0, 1)) === 17 && occ(ships(s0, 2)) === 17,
+   `p1 ${occ(ships(s0, 1))}, p2 ${occ(ships(s0, 2))}`);
 ok('nothing has been shot at yet',
    count(track(s0, 1), 0) === 100 && count(track(s0, 2), 0) === 100);
 ok('no hits, no shots, not over',
@@ -65,7 +67,7 @@ ok('no hits, no shots, not over',
   for (let seed = 1; seed <= 40; seed++) {
     const h = e.bs_new(seed);
     for (const p of [1, 2]) {
-      const n = count(ships(h, p), 1);
+      const n = occ(ships(h, p));
       if (n !== 17) wrong.push(`seed ${seed} p${p}: ${n} cells`);
     }
   }
@@ -96,9 +98,9 @@ ok('stepping answers a different state', s1 !== s0, `${s0} -> ${s1}`);
 ok('THE COPY ARM: the state stepped from has an untouched tracking grid',
    JSON.stringify(track(s0, 1)) === beforeTrack,
    `${count(track(s0, 1), 0)} cells still unknown`);
-ok('a round fires exactly one shot for each side',
-   e.bs_shots(s1, 1) === 1 && e.bs_shots(s1, 2) === 1 &&
-   100 - count(track(s1, 1), 0) === 1 && 100 - count(track(s1, 2), 0) === 1);
+ok("a step fires one shot, player 1's first (Rule 2)",
+   e.bs_shots(s1, 1) === 1 && e.bs_shots(s1, 2) === 0 &&
+   100 - count(track(s1, 1), 0) === 1 && 100 - count(track(s1, 2), 0) === 0);
 ok('the ships are not disturbed by shooting',
    JSON.stringify(ships(s1, 1)) === beforeShips);
 
@@ -107,7 +109,7 @@ function playGame(seed) {
   let h = e.bs_new(seed);
   const fleet1 = JSON.stringify(ships(h, 1)), fleet2 = JSON.stringify(ships(h, 2));
   let rounds = 0, prev1 = track(h, 1), prev2 = track(h, 2);
-  while (e.bs_done(h) === 0 && rounds < 120) {
+  while (e.bs_done(h) === 0 && rounds < 240) {
     rounds++;
     h = e.bs_step(h);
     // Ships never move.
@@ -118,8 +120,8 @@ function playGame(seed) {
       for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 10; c++) {
           // A mark must agree with the OPPONENT's ships.
-          if (t[r][c] === 2 && o[r][c] !== 1) return { bad: `p${p} hit on empty water at ${r},${c}`, h };
-          if (t[r][c] === 1 && o[r][c] === 1) return { bad: `p${p} miss on a ship at ${r},${c}`, h };
+          if (t[r][c] === 2 && o[r][c] === 0) return { bad: `p${p} hit on empty water at ${r},${c}`, h };
+          if (t[r][c] === 1 && o[r][c] > 0) return { bad: `p${p} miss on a ship at ${r},${c}`, h };
           // Knowledge is never unlearned.
           if (prev[r][c] !== 0 && t[r][c] !== prev[r][c]) {
             return { bad: `p${p} changed a known cell at ${r},${c}`, h };
@@ -153,6 +155,72 @@ ok('the games reach a finish', finished === 12, `${finished} of 12`);
 ok('the winner sank all seventeen cells', broke === null && finished > 0);
 ok('both players win some of them', winners.size === 2, `winners: ${[...winners].join(',')}`);
 
+// -- The fleet and the turns, by the rules --------------------------------
+{
+  // Rule 1: ship k (1 to 5) is one straight run of its size, in every fleet.
+  const SIZE = [0, 5, 4, 3, 3, 2];
+  const bad = [];
+  for (let seed = 1; seed <= 500 && bad.length < 3; seed++) {
+    const h = e.bs_new(seed);
+    for (const p of [1, 2]) {
+      const g = ships(h, p);
+      for (let k = 1; k <= 5; k++) {
+        const cells = [];
+        for (let r = 0; r < 10; r++) for (let c = 0; c < 10; c++) if (g[r][c] === k) cells.push([r, c]);
+        const rows = new Set(cells.map(x => x[0])), cols = new Set(cells.map(x => x[1]));
+        const line = rows.size === 1 || cols.size === 1;
+        const span = rows.size === 1 ? Math.max(...cells.map(x => x[1])) - Math.min(...cells.map(x => x[1])) + 1 : Math.max(...cells.map(x => x[0])) - Math.min(...cells.map(x => x[0])) + 1;
+        if (cells.length !== SIZE[k] || !line || span !== SIZE[k]) { bad.push(`seed ${seed} p${p}: ship ${k} has ${cells.length} cells, straight ${line}, span ${span}`); break; }
+      }
+      if (g.flat().some(v => v < 0 || v > 5)) bad.push(`seed ${seed} p${p}: a cell outside 0 to 5`);
+    }
+  }
+  ok('Rule 1: in 1000 fleets every ship is one straight run of its own size, none overlapping',
+     bad.length === 0, bad.slice(0, 3).join('; ') || '1000 fleets');
+}
+{
+  // Rules 2 to 4 in lockstep: who fires, what the shot does, sinking, the end.
+  const sunkOracle = (h, p, k) => {
+    const g = ships(h, p), t = track(h, p === 1 ? 2 : 1);
+    for (let r = 0; r < 10; r++) for (let c = 0; c < 10; c++) if (g[r][c] === k && t[r][c] !== 2) return 0;
+    return 1;
+  };
+  const bad = [];
+  let steps = 0, sinks = 0, fires = 0, games = 0;
+  for (let seed = 1; seed <= 40 && bad.length < 3; seed++) {
+    let h = e.bs_new(seed);
+    for (let n = 0; n < 250 && bad.length < 3; n++) {
+      steps++;
+      const p = e.bs_shots(h, 1) === e.bs_shots(h, 2) ? 1 : 2;
+      if (e.bs_done(h) === 0 && e.bs_tomove(h) !== p) bad.push(`seed ${seed}: player ${e.bs_tomove(h)} to move, the rules say ${p}`);
+      for (const q of [1, 2]) for (let k = 1; k <= 5; k++) if (e.bs_sunk(h, q, k) !== sunkOracle(h, q, k)) bad.push(`seed ${seed}: p${q} ship ${k} sunk ${e.bs_sunk(h, q, k)}`);
+      // Firing by hand: only on player 1's turn, only at unknown water.
+      for (let i = 0; i < 100; i++) {
+        const want = e.bs_done(h) === 0 && p === 1 && track(h, 1)[Math.floor(i / 10)][i % 10] === 0 ? 1 : 0;
+        if (e.bs_canfire(h, Math.floor(i / 10), i % 10) !== want) { bad.push(`seed ${seed}: canfire ${i} is ${1 - want}`); break; }
+      }
+      if (e.bs_done(h) === 1) { games++; break; }
+      const t = e.bs_step(h);
+      const opp = p === 1 ? 2 : 1;
+      if (e.bs_shots(t, p) !== e.bs_shots(h, p) + 1 || e.bs_shots(t, opp) !== e.bs_shots(h, opp)) bad.push(`seed ${seed}: shots ${e.bs_shots(h, 1)},${e.bs_shots(h, 2)} to ${e.bs_shots(t, 1)},${e.bs_shots(t, 2)} with player ${p} to move`);
+      const over = e.bs_hits(t, p) === 17;
+      if ((e.bs_done(t) === 1) !== over || (over && e.bs_winner(t) !== p)) bad.push(`seed ${seed}: player ${p} at ${e.bs_hits(t, p)} hits, done ${e.bs_done(t)}, winner ${e.bs_winner(t)}`);
+      for (let k = 1; k <= 5; k++) if (e.bs_sunk(t, opp, k) > e.bs_sunk(h, opp, k)) sinks++;
+      // The hand arm: player 1 fires at the first unknown cell, then player 2 answers unless it ended.
+      if (p === 1) {
+        const i = track(h, 1).flat().indexOf(0);
+        const f = e.bs_fire(h, Math.floor(i / 10), i % 10);
+        fires++;
+        const end = e.bs_done(f) === 1 && e.bs_winner(f) === 1;
+        if (e.bs_shots(f, 1) !== e.bs_shots(h, 1) + 1 || e.bs_shots(f, 2) !== e.bs_shots(h, 2) + (end ? 0 : 1)) bad.push(`seed ${seed}: a fire moved the shots to ${e.bs_shots(f, 1)},${e.bs_shots(f, 2)}`);
+      }
+      h = t;
+    }
+  }
+  ok('Rules 2 to 4 at every shot of 40 games: whose turn, hand firing, each sunk ship, and the shot that ends it',
+     bad.length === 0, bad.slice(0, 3).join('; ') || `${steps} states, ${fires} hand shots, ${sinks} sinkings, ${games} games finished`);
+  ok('control: the games sank ships and finished', sinks >= 150 && games === 40, `${sinks} sinkings, ${games} games`);
+}
 // -- Controls -------------------------------------------------------------
 ok('control: two new games are different handles', e.bs_new(1) !== e.bs_new(1));
 ok('control: different seeds place different fleets',
@@ -163,7 +231,7 @@ ok('control: the same seed places the same fleet',
 // agreement arm above passed by being blind (L-FALSIF).
 {
   const t = [[2]], o = [[0]];
-  const wouldCatch = t[0][0] === 2 && o[0][0] !== 1;
+  const wouldCatch = t[0][0] === 2 && o[0][0] === 0;
   ok('control: the agreement reader would report a hit on empty water', wouldCatch);
 }
 

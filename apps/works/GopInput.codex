@@ -1,0 +1,154 @@
+Chapter: GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopKey
+  cites Works chapter GopXhci
+  cites Kernel chapter Hpet
+
+Section: Collection
+
+  di-transfer-error : Integer, Integer -> Integer
+  di-transfer-error (q) (code) =
+    let a = poke-qword q di-errors (peek-qword q di-errors + 1)
+    in let b = poke-qword q di-error-code code
+    in poke-qword q di-loss (peek-qword q di-loss + 1)
+
+ A poll consumes at most four xHCI event TRBs. Completions for another
+ endpoint retain the driver's latch path; a continuously replenished ring
+ cannot hold the collector indefinitely.
+
+  di-xfer : XhciHost, Integer, Integer, Integer -> Integer
+  di-xfer (xh) (slot) (dci) (fuel) =
+    let latched = xhci-latch-take xh slot dci
+    in if latched /= 0 then latched
+    else if fuel <= 0 then 0
+    else let deq = peek-32 (xh.xh-state) xh-st-evt-deq
+    in let cyc = peek-32 (xh.xh-state) xh-st-evt-cyc
+    in let ctl = peek-32 (xh.xh-evt-ring) (deq * 16 + 12)
+    in if bit-and ctl 1 /= cyc then 0
+    else let sts = peek-32 (xh.xh-evt-ring) (deq * 16 + 8)
+    in let advance = xhci-evt-advance xh deq cyc
+    in if bit-and (bit-shru ctl 10) 63 /= trb-t-xfer-event then di-xfer xh slot dci (fuel - 1)
+    else let eslot = bit-and (bit-shru ctl 24) 255
+    in let edci = bit-and (bit-shru ctl 16) 31
+    in if eslot == slot & edci == dci then bit-and (bit-shru sts 24) 255
+    else let save = xhci-latch-evt xh eslot edci sts
+    in di-xfer xh slot dci (fuel - 1)
+
+  di-mouse-poll : Integer, UsbMouse, Integer, Integer -> Integer
+  di-mouse-poll (q) (m) (w) (h) =
+    if peek-32 (m.um-state) 0 == um-ph-idle then mouse-arm m
+    else let code = di-xfer (m.um-host) ((m.um-dev).ud-slot) (m.um-dci) 4
+    in if code == 0 then 0
+    else if code == 1 | code == 13 then mouse-consume m w h
+    else let loss = di-transfer-error q code
+    in mouse-arm m
+
+  di-mouse-one : Integer, UsbMouse, Integer, Integer -> Integer
+  di-mouse-one (q) (m) (w) (h) =
+    if m.um-ok == False then 0
+    else if peek-qword q di-no-rearm /= 0 & mouse-events m > 0 & peek-32 (m.um-state) 0 == um-ph-idle then 0
+    else let before = mouse-events m
+    in let p = di-mouse-poll q m w h
+    in if mouse-events m == before then 0
+    else let now = hpet-ticks
+    in let dx = mouse-sext (peek-byte (m.um-report) 1)
+    in let dy = mouse-sext (peek-byte (m.um-report) 2)
+    in let buttons = mouse-buttons m
+    in let prev = peek-qword q di-col-buttons
+    in let x = mouse-x m
+    in let y = mouse-y m
+    in let motion = if dx /= 0 | dy /= 0 then di-push q di-motion dx dy prev x y now else 0
+    in let edge = if prev == buttons then 0 else if peek-qword q di-drop-edge /= 0 then 0 else di-push q di-button 0 0 buttons x y now
+    in let b = poke-qword q di-col-buttons buttons
+    in let cx = poke-qword q di-col-x x
+    in let cy = poke-qword q di-col-y y
+    in let arm = if peek-qword q di-no-rearm == 0 then mouse-arm m else 0
+    in let note = if peek-qword q di-no-rearm == 0 then di-rearm-note q now else 0
+    in 1
+
+  di-rearm-note : Integer, Integer -> Integer
+  di-rearm-note (q) (now) =
+    let a = poke-qword q di-rearms (peek-qword q di-rearms + 1)
+    in di-trace q 3 (peek-qword q di-sequence) now 0
+
+  di-mouse-peers : Integer, UsbMouse, Integer, Integer, Integer -> Integer
+  di-mouse-peers (q) (m) (w) (h) (i) =
+    if i >= mouse-peers m then di-mouse-one q m w h
+    else let a = di-mouse-one q (mouse-peer m i) w h
+    in di-mouse-peers q m w h (i + 1)
+
+  di-key-cell : Integer -> Integer
+  di-key-cell (q) =
+    let sc = gk-take 0
+    in if sc == 0 then 0
+    else di-push q di-key 0 0 sc (peek-qword q di-col-x) (peek-qword q di-col-y) hpet-ticks
+
+  di-kbd-one : Integer, UsbKbd -> Integer
+  di-kbd-one (q) (k) =
+    let a = di-key-cell q
+    in let b = if k.uk-ok == False then 0 else if xhci-released 0 /= 0 then 0
+      else if peek-32 (k.uk-state) 0 /= uk-ph-armed then kbd-pump-one k
+      else let code = di-xfer (k.uk-host) ((k.uk-dev).ud-slot) (k.uk-dci) 4
+      in if code == 0 | code == 1 | code == 13 then kbd-completion k code
+      else let loss = di-transfer-error q code
+      in kbd-set-phase k uk-ph-idle
+    in di-key-cell q
+
+  di-kbd-peers : Integer, UsbKbd, Integer -> Integer
+  di-kbd-peers (q) (k) (i) =
+    if i >= kbd-peers k then di-kbd-one q k
+    else let a = di-kbd-one q (kbd-peer k i)
+    in di-kbd-peers q k (i + 1)
+
+  di-kbd-rounds : Integer, UsbKbd, Integer -> Integer
+  di-kbd-rounds (q) (k) (n) =
+    if n <= 0 then 0
+    else let a = di-kbd-peers q k 0
+    in di-kbd-rounds q k (n - 1)
+
+  di-set-pointer : UsbMouse, Integer, Integer, Integer, Integer -> Integer
+  di-set-pointer (m) (x) (y) (buttons) (click) =
+    if m.um-ok == False then 0
+    else let a = poke-32 (m.um-pos) 4 x
+    in let b = poke-32 (m.um-pos) 8 y
+    in let c = poke-32 (m.um-pos) 12 buttons
+    in let d = poke-32 (m.um-pos) 16 click
+    in um-publish x y buttons
+
+  di-collect : Integer, UsbKbd, UsbMouse, Integer, Integer -> Integer
+  di-collect (q) (kbd) (mouse) (w) (h) =
+    if q == 0 then 0
+    else let pass = di-pass q hpet-ticks
+    in let x = if mouse.um-ok then mouse-x mouse else 0
+    in let y = if mouse.um-ok then mouse-y mouse else 0
+    in let buttons = if mouse.um-ok then mouse-buttons mouse else 0
+    in let click = if mouse.um-ok then peek-32 (mouse.um-pos) 16 else 0
+    in let col = di-set-pointer mouse (peek-qword q di-col-x) (peek-qword q di-col-y) (peek-qword q di-col-buttons) 0
+    in let m = di-mouse-peers q mouse w h 0
+    in let k = di-kbd-rounds q kbd 8
+    in let restore = di-set-pointer mouse x y buttons click
+    in 0
+
+Section: Delivery
+
+  di-deliver : Integer, UsbMouse -> Integer
+  di-deliver (q) (mouse) =
+    let a = poke-qword q di-out-kind 0
+    in let b = poke-qword q di-out-key 0
+    in let c = poke-qword q di-out-click 0
+    in let e = di-front q
+    in if (if mouse.um-ok then mouse-clicked mouse else False) then 0
+    else if e == 0 then 0
+    else let kind = peek-qword e 0
+    in let value = peek-qword e 40
+    in let old = if mouse.um-ok then mouse-buttons mouse else 0
+    in let buttons = if kind == di-key then old else value
+    in let click = if kind == di-button then mouse-click-edge old buttons else 0
+    in let p = di-set-pointer mouse (peek-qword e 48) (peek-qword e 56) buttons click
+    in let d = poke-qword q di-out-kind kind
+    in let f = poke-qword q di-out-key (if kind == di-key then value else 0)
+    in let g = poke-qword q di-out-click click
+    in let s = poke-qword q di-out-sequence (peek-qword e 16)
+    in di-pop q hpet-ticks

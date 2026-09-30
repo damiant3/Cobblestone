@@ -1,0 +1,39 @@
+Chapter: CvmmServiceTable
+  cites Cvmm chapter ServiceManager
+  cites OS chapter ServiceRegistry
+  cites Foreword chapter Console
+
+ The view follows the registry: two registered services show two rows, a
+ stop and a failure change their rows' states, and an unregister removes a
+ row. Rows are looked up by id because the map's walk order is its hash order.
+
+Section: Report
+
+  st-row : ServiceManagerState, Text -> Text
+  st-row (st) (id) = st-find (st.sm-services) id 0 (st.sm-count)
+
+  st-find : List SvcEntry, Text, Integer, Integer -> Text
+  st-find (svcs) (id) (i) (n) =
+    if i >= n then id & " absent"
+    else let s = list-at svcs i
+    in if s.svc-id == id then id & " " & svc-state-label (s.svc-state) & " pid " & show (s.svc-pid) & " restarts " & show (s.svc-restart-count)
+    else st-find svcs id (i + 1) n
+
+  st-line : Text, ServiceManagerState -> Text
+  st-line (tag) (st) = tag & ": count " & show (st.sm-count) & "; " & st-row st "web" & "; " & st-row st "dns"
+
+Section: Entry
+  opening : [Console] Nothing = act
+    let r0 = service-register (service-register service-registry-empty "web" 20 3) "dns" 45 1
+    in let r1 = service-mark-stopped r0 "dns"
+    in let r2 = service-mark-failed r1 "web" "out of memory"
+    in let r3 = service-mark-restarted r2 "web" 21
+    in let r4 = service-unregister r3 "dns"
+    in act
+      print-line-uni (st-line "registered" (sm-from-registry r0))
+      print-line-uni (st-line "dns stopped" (sm-from-registry r1))
+      print-line-uni (st-line "web failed" (sm-from-registry r2))
+      print-line-uni (st-line "web restarted" (sm-from-registry r3))
+      print-line-uni (st-line "dns gone" (sm-from-registry r4))
+    end
+  end

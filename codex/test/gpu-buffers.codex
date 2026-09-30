@@ -1,0 +1,226 @@
+Chapter: GpuBuffers
+
+  cites Kernel chapter GpuBridge
+  cites AI chapter GpuProxy
+  cites Foreword chapter Maybe
+
+ We say:
+
+Section: Kernels
+
+ Two hand-written PTX kernels. fill writes ((i * mul) mod m) - bias as f16,
+ so every operand is a small integer and the GEMM is exact in f32. gemm is
+ one thread per output, f16 in and f32 accumulated.
+
+  ptx-head : Text
+  ptx-head = ".version 7.0\n.target sm_60\n.address_size 64\n\n"
+
+  ptx-fill : Text
+  ptx-fill =
+    let a = ".visible .entry fill(.param .u64 p_out, .param .u32 p_n, .param .u32 p_mul, .param .u32 p_mod, .param .u32 p_bias)\n{\n"
+    in let b = ".reg .pred %p<2>;\n.reg .b32 %r<12>;\n.reg .b64 %rd<6>;\n.reg .f32 %f<2>;\n.reg .b16 %h<2>;\n"
+    in let c = "ld.param.u64 %rd1, [p_out];\nld.param.u32 %r1, [p_n];\nld.param.u32 %r2, [p_mul];\nld.param.u32 %r3, [p_mod];\nld.param.u32 %r4, [p_bias];\n"
+    in let d = "mov.u32 %r5, %ctaid.x;\nmov.u32 %r6, %ntid.x;\nmov.u32 %r7, %tid.x;\nmad.lo.s32 %r8, %r5, %r6, %r7;\nsetp.ge.u32 %p1, %r8, %r1;\n@%p1 bra DONE;\n"
+    in let e = "mul.lo.u32 %r9, %r8, %r2;\nrem.u32 %r10, %r9, %r3;\nsub.s32 %r11, %r10, %r4;\ncvt.rn.f32.s32 %f1, %r11;\ncvt.rn.f16.f32 %h1, %f1;\n"
+    in let f = "cvta.to.global.u64 %rd2, %rd1;\nmul.wide.u32 %rd3, %r8, 2;\nadd.s64 %rd4, %rd2, %rd3;\nst.global.b16 [%rd4], %h1;\nDONE:\nret;\n}\n"
+    in ptx-head & a & b & c & d & e & f
+
+  ptx-gemm : Text
+  ptx-gemm =
+    let a = ".visible .entry gemm(.param .u64 p_a, .param .u64 p_b, .param .u64 p_c, .param .u32 p_n)\n{\n"
+    in let b = ".reg .pred %p<3>;\n.reg .b32 %r<16>;\n.reg .b64 %rd<12>;\n.reg .f32 %f<6>;\n.reg .b16 %h<3>;\n"
+    in let c = "ld.param.u64 %rd1, [p_a];\nld.param.u64 %rd2, [p_b];\nld.param.u64 %rd3, [p_c];\nld.param.u32 %r1, [p_n];\ncvta.to.global.u64 %rd1, %rd1;\ncvta.to.global.u64 %rd2, %rd2;\ncvta.to.global.u64 %rd3, %rd3;\n"
+    in let d = "mov.u32 %r2, %ctaid.x;\nmov.u32 %r3, %ntid.x;\nmov.u32 %r4, %tid.x;\nmad.lo.s32 %r5, %r2, %r3, %r4;\nmov.u32 %r6, %ctaid.y;\nmov.u32 %r7, %ntid.y;\nmov.u32 %r8, %tid.y;\nmad.lo.s32 %r9, %r6, %r7, %r8;\n"
+    in let e = "setp.ge.u32 %p1, %r5, %r1;\nsetp.ge.u32 %p2, %r9, %r1;\nor.pred %p1, %p1, %p2;\n@%p1 bra DONE;\nmul.lo.u32 %r10, %r9, %r1;\nmov.u32 %r11, %r5;\nmov.f32 %f1, 0f00000000;\nmov.u32 %r12, 0;\n"
+    in let f = "LOOP:\nsetp.ge.u32 %p2, %r12, %r1;\n@%p2 bra STORE;\nadd.u32 %r13, %r10, %r12;\nmul.wide.u32 %rd4, %r13, 2;\nadd.s64 %rd5, %rd1, %rd4;\nld.global.b16 %h1, [%rd5];\n"
+    in let g = "mul.wide.u32 %rd6, %r11, 2;\nadd.s64 %rd7, %rd2, %rd6;\nld.global.b16 %h2, [%rd7];\ncvt.f32.f16 %f2, %h1;\ncvt.f32.f16 %f3, %h2;\nfma.rn.f32 %f1, %f2, %f3, %f1;\nadd.u32 %r11, %r11, %r1;\nadd.u32 %r12, %r12, 1;\nbra LOOP;\n"
+    in let h = "STORE:\nadd.u32 %r14, %r10, %r5;\nmul.wide.u32 %rd8, %r14, 4;\nadd.s64 %rd9, %rd3, %rd8;\nst.global.f32 [%rd9], %f1;\nDONE:\nret;\n}\n"
+    in ptx-head & a & b & c & d & e & f & g & h
+
+Section: Guest Scratch
+
+ Read-backs land in the reply region past the few bytes a reply uses.
+
+  scratch : Integer = #BD700000
+
+  n : Integer = 4096
+
+Section: File Range
+
+  pattern-byte : Integer -> Integer
+  pattern-byte (i) = int-mod (i * 37 + 11) 251
+
+  bytes-match : Integer, Integer, Integer, Integer, Integer -> Integer
+  bytes-match (addr) (file-off) (i) (len) (acc) =
+    if i >= len then acc
+    else let ok = if peek-byte addr i == pattern-byte (file-off + i) then 1 else 0
+    in bytes-match addr file-off (i + 1) len (acc + ok)
+
+  range-report : Integer, Integer, Integer, Integer -> Text
+  range-report (h) (dst-off) (file-off) (len) =
+    let up = gpu-buf-upload h dst-off "pattern.bin" file-off len gpu-dt-u8 gpu-dt-u8
+    in if up /= len then "upload answered " & show up
+    else if gpu-buf-read h dst-off len scratch then show (bytes-match scratch file-off 0 len 0) & "/" & show len & " exact"
+    else "read refused"
+
+  second-root : Integer -> Text
+  second-root (h) =
+    let up = gpu-buf-upload h 0 "only-b.bin" 0 16 gpu-dt-u8 gpu-dt-u8
+    in if up /= 16 then "upload answered " & show up
+    else if gpu-buf-read h 0 16 scratch then show (b-match 0 0) & "/16 exact"
+    else "read refused"
+
+  b-match : Integer, Integer -> Integer
+  b-match (i) (acc) = if i >= 16 then acc else b-match (i + 1) (acc + (if peek-byte scratch i == 200 + i then 1 else 0))
+
+  refusal : Integer -> Text
+  refusal (v) = if v < 0 then "refused" else "SERVED " & show v
+
+Section: Conversions
+
+  want-f16 : List Integer
+  want-f16 = [#3E00, #C100, #3600, #5F00, #A400]
+
+  want-f32 : List Integer
+  want-f32 = [#3FC00000, #C0200000, #3EC00000, #43E00000, #BC800000]
+
+  u16-at : Integer, Integer -> Integer
+  u16-at (addr) (i) = bit-or (peek-byte addr (i * 2)) (bit-shl (peek-byte addr (i * 2 + 1)) 8)
+
+  u32-at : Integer, Integer -> Integer
+  u32-at (addr) (i) = bit-and (peek-32 addr (i * 4)) #FFFFFFFF
+
+  all-u16 : Integer, Integer -> Boolean
+  all-u16 (addr) (i) =
+    if i >= 5 then True
+    else if u16-at addr i /= list-at want-f16 i then False
+    else all-u16 addr (i + 1)
+
+  all-u32 : Integer, Integer -> Boolean
+  all-u32 (addr) (i) =
+    if i >= 5 then True
+    else if u32-at addr i /= list-at want-f32 i then False
+    else all-u32 addr (i + 1)
+
+  convert-report : Integer, Integer, Integer, Integer -> Text
+  convert-report (h) (file-off) (src-dt) (dst-dt) =
+    let up = gpu-buf-upload h 0 "floats.bin" file-off 5 src-dt dst-dt
+    in let width = if dst-dt == gpu-dt-f32 then 4 else 2
+    in if up /= 5 * width then "upload answered " & show up
+    else if not (gpu-buf-read h 0 (5 * width) scratch) then "read refused"
+    else if dst-dt == gpu-dt-f32 then (if all-u32 scratch 0 then "ok" else "WRONG " & show (u32-at scratch 0))
+    else if all-u16 scratch 0 then "ok"
+    else "WRONG " & show (u16-at scratch 0) & " " & show (u16-at scratch 1)
+
+Section: GEMM
+
+  a-at : Integer, Integer -> Integer
+  a-at (r) (k) = int-mod ((r * n + k) * 7) 17 - 8
+
+  b-at : Integer, Integer -> Integer
+  b-at (k) (c) = int-mod ((k * n + c) * 13) 11 - 5
+
+  dot : Integer, Integer, Integer, Integer -> Integer
+  dot (r) (c) (k) (acc) =
+    if k >= n then acc
+    else dot r c (k + 1) (acc + a-at r k * b-at k c)
+
+  f32-int : Integer -> Integer
+  f32-int (bits) =
+    if bit-and bits #7FFFFFFF == 0 then 0
+    else let e = bit-and (bit-shru bits 23) 255
+    in let m = bit-or (bit-and bits #7FFFFF) #800000
+    in let mag = if e >= 150 then bit-shl m (e - 150) else bit-shru m (150 - e)
+    in if bit-and bits #80000000 /= 0 then 0 - mag else mag
+
+  tile-r0 : Integer = 1000
+  tile-c0 : Integer = 2000
+
+  read-rows : Integer, Integer, Integer -> Boolean
+  read-rows (hc) (i) (ok) =
+    if i >= 16 then True
+    else if not (gpu-buf-read hc (((tile-r0 + i) * n + tile-c0) * 4) 64 (scratch + i * 64)) then False
+    else read-rows hc (i + 1) ok
+
+  tile-check : Integer, Integer, Integer -> Integer
+  tile-check (i) (good) (sum) =
+    if i >= 256 then good * 1000000 + int-mod (sum + 1000000) 1000000
+    else let r = i / 16
+    in let c = int-mod i 16
+    in let got = f32-int (peek-32 scratch (i * 4))
+    in let want = dot (tile-r0 + r) (tile-c0 + c) 0 0
+    in tile-check (i + 1) (good + (if got == want then 1 else 0)) (sum + want)
+
+  fill : Integer, Integer, Integer, Integer -> Integer
+  fill (h) (mul) (m) (bias) =
+    let g = GpuGrid { gx = n * n / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+    in let ps = [gpu-arg-buf h 0, gpu-arg-u32 (n * n), gpu-arg-u32 mul, gpu-arg-u32 m, gpu-arg-u32 bias]
+    in gpu-launch ptx-fill "fill" g ps
+
+  run-gemm : Integer, Integer, Integer -> Integer
+  run-gemm (ha) (hb) (hc) =
+    let g = GpuGrid { gx = n / 16, gy = n / 16, gz = 1, bx = 16, by = 16, bz = 1, shared = 0 }
+    in let ps = [gpu-arg-buf ha 0, gpu-arg-buf hb 0, gpu-arg-buf hc 0, gpu-arg-u32 n]
+    in gpu-launch ptx-gemm "gemm" g ps
+
+  gemm-report : Integer, Integer, Integer -> Text
+  gemm-report (ha) (hb) (hc) =
+    if ha == 0 then "alloc refused"
+    else if hb == 0 then "alloc refused"
+    else if hc == 0 then "alloc refused"
+    else if fill ha 7 17 8 < 0 then "fill A refused"
+    else if fill hb 13 11 5 < 0 then "fill B refused"
+    else if run-gemm ha hb hc < 0 then "gemm refused"
+    else if not (read-rows hc 0 0) then "tile read refused"
+    else let t = tile-check 0 0 0
+    in "tile " & show (t / 1000000) & "/256, checksum " & show (int-mod t 1000000)
+
+Section: Entry
+
+  both-freed : Integer, Integer, Integer, Integer -> Text
+  both-freed (ha) (hb) (hc) (hf) =
+    let a = gpu-buf-free ha
+    in let b = gpu-buf-free hb
+    in let c = gpu-buf-free hc
+    in let d = gpu-buf-free hf
+    in if a & b & c & d then "ok" else "refused"
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let hf = gpu-buf-alloc 8192
+    in let l1 = "file range: " & range-report hf 0 1000 4096
+    in let l2 = "file tail: " & range-report hf 4096 7000 1192
+    in let l3 = "past end of file: " & refusal (gpu-buf-upload hf 0 "pattern.bin" 8000 1000 gpu-dt-u8 gpu-dt-u8)
+    in let l4 = "escape root: " & refusal (gpu-buf-upload hf 0 "../gpu-ptx.codex" 0 16 gpu-dt-u8 gpu-dt-u8)
+    in let l5 = "past buffer: " & refusal (gpu-buf-upload hf 8000 "pattern.bin" 0 1000 gpu-dt-u8 gpu-dt-u8)
+    in let l5b = "second root: " & second-root hf
+    in let l5c = "save without -gpu-out: " & refusal (gpu-buf-save hf 0 16 "gpu-buffers-save.bin")
+    in let l6 = "f32 to f16: " & convert-report hf 0 gpu-dt-f32 gpu-dt-f16
+    in let l7 = "bf16 to f16: " & convert-report hf 20 gpu-dt-bf16 gpu-dt-f16
+    in let l8 = "e4m3 to f16: " & convert-report hf 30 gpu-dt-fp8-e4m3 gpu-dt-f16
+    in let l9 = "e5m2 to f16: " & convert-report hf 35 gpu-dt-fp8-e5m2 gpu-dt-f16
+    in let l10 = "f16 to f16: " & convert-report hf 40 gpu-dt-f16 gpu-dt-f16
+    in let l11 = "f16 to f32: " & convert-report hf 40 gpu-dt-f16 gpu-dt-f32
+    in let ha = gpu-buf-alloc (n * n * 2)
+    in let hb = gpu-buf-alloc (n * n * 2)
+    in let hc = gpu-buf-alloc (n * n * 4)
+    in let l12 = "gemm 4096^3 f16: " & gemm-report ha hb hc
+    in let l13 = "free: " & both-freed ha hb hc hf
+    in let l14 = "double free: " & (if gpu-buf-free ha then "SERVED" else "refused")
+    in [l1, l2, l3, l4, l5, l5b, l5c, l6, l7, l8, l9, l10, l11, l12, l13, l14]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

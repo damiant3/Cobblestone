@@ -1,0 +1,120 @@
+Chapter: VaeDecodeArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter VaeGraph
+  cites Diffusion chapter BrowserVae
+  cites AI chapter SafeTensors
+
+ The page codex/plugs/html/arms/vae-decode.mjs drives: a picked SDXL
+ checkpoint's VAE decoder uploaded to the device as f32, then vae-decode-with
+ over browser-vae-ops on the latent page-data "latent" names and on the same
+ latent with channels 0 and 1 exchanged ("swapped"), both 4 x 32 x 32 f32 bit
+ patterns, and both results read back.
+
+ We say:
+
+Section: Header
+
+  opening : [Console] Integer
+  opening =
+    let c = dom-on-click (dom-query "html") vda-pick
+    in state-set "armed" 1
+
+  vda-pick : Text -> Integer
+  vda-pick (id) = pick-file-then ".safetensors" vda-picked
+
+  vda-picked : Text -> Integer
+  vda-picked (r) =
+    let f = state-set-text "file" (json-obj-field (json-parse-obj r) "name")
+    in gpu-open-then vda-opened
+
+  vda-opened : Text -> Integer
+  vda-opened (r) = file-read-then (state-get-text "file") 0 8 vda-got-len
+
+  vda-ints : List Text, Integer, List Integer -> List Integer
+  vda-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else vda-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  vda-list : Text -> List Integer
+  vda-list (t) = if text-length t < 3 then [] else vda-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  vda-got-len : Text -> Integer
+  vda-got-len (r) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (vda-list r) 0) vda-got-header
+
+  vda-part : List PartBinding, Integer, Text -> List BoundTensor
+  vda-part (parts) (i) (name) =
+    if i >= list-length parts then []
+    else if (list-at parts i).pb-name == name then (list-at parts i).pb-bound
+    else vda-part parts (i + 1) name
+
+  vda-got-header : Text -> Integer
+  vda-got-header (r) =
+    let lb = layout-bind (st-parse-file (vda-list r)) sdxl-layout
+    in vda-upload (vda-filter (vda-part (lb.lb-parts) 0 "vae") 0 []) 0 [] [] 0
+
+Section: Upload
+
+  vda-prefix : Text = "first_stage_model."
+
+  vda-wanted : BoundTensor -> Boolean
+  vda-wanted (t) = text-starts-with (t.bt-name) (vda-prefix & "decoder.") | text-starts-with (t.bt-name) (vda-prefix & "post_quant_conv.")
+
+  vda-filter : List BoundTensor, Integer, List BoundTensor -> List BoundTensor
+  vda-filter (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else if vda-wanted (list-at ts i) then vda-filter ts (i + 1) (list-snoc acc (list-at ts i))
+    else vda-filter ts (i + 1) acc
+
+  vda-short : Text -> Text
+  vda-short (n) = substring n (text-length vda-prefix) (text-length n - text-length vda-prefix)
+
+  vda-dt : Integer -> Integer
+  vda-dt (d) = if d == st-dtype-f16 then gpu-dt-f16 else if d == st-dtype-f32 then gpu-dt-f32 else 0 - 1
+
+  vda-upload : List BoundTensor, Integer, List Text, List Integer, Integer -> Integer
+  vda-upload (ts) (i) (ns) (hs) (bad) =
+    if i >= list-length ts then vda-decode (BvWeights { bw-names = ns, bw-handles = hs }) bad
+    else let t = list-at ts i
+    in let dt = vda-dt (t.bt-dtype)
+    in let elems = t.bt-bytes / st-dtype-width (t.bt-dtype)
+    in let h = if dt < 0 then 0 else gpu-buf-alloc (elems * 4)
+    in let ns2 = list-snoc ns (vda-short (t.bt-name))
+    in if h == 0 then vda-upload ts (i + 1) ns2 (list-snoc hs 0) (bad + 1)
+    else gpu-buf-upload-then h 0 (state-get-text "file") (t.bt-offset) elems dt gpu-dt-f32 (\r -> vda-uploaded ts i ns2 (list-snoc hs h) bad r)
+
+  vda-uploaded : List BoundTensor, Integer, List Text, List Integer, Integer, Text -> Integer
+  vda-uploaded (ts) (i) (ns) (hs) (bad) (r) =
+    if text-contains r "\"ok\":true" then vda-upload ts (i + 1) ns hs bad
+    else vda-upload ts (i + 1) ns hs (bad + 1)
+
+Section: Decode
+
+  vda-latent : Text -> BvAct
+  vda-latent (key) =
+    let h = gpu-buf-alloc 16384
+    in let w = if h == 0 then False else gpu-buf-write-words h 0 (vda-list (page-data key))
+    in BvAct { ah = if w then h else 0, ac = 4, ahh = 32, aww = 32 }
+
+  vda-decode : BvWeights, Integer -> Integer
+  vda-decode (w) (bad) =
+    let a = state-set "tensors" (list-length (w.bw-names))
+    in let b = state-set "failed" bad
+    in let ops = browser-vae-ops (page-data "bk")
+    in let out = vae-decode-with ops w (vda-latent "latent")
+    in let sw = vae-decode-with ops w (vda-latent "swapped")
+    in let c = state-set-text "shape" (show (out.ac) & "x" & show (out.ahh) & "x" & show (out.aww))
+    in let d = state-set "swapped-handle" (sw.ah)
+    in gpu-buf-download-then (out.ah) 0 (out.ac * out.ahh * out.aww * 4) vda-got
+
+  vda-got : Text -> Integer
+  vda-got (r) =
+    let s = state-set-text "out" r
+    in gpu-buf-download-then (state-get "swapped-handle") 0 786432 vda-got-swapped
+
+  vda-got-swapped : Text -> Integer
+  vda-got-swapped (r) =
+    let s = state-set-text "swapped" r
+    in let e = state-set-text "err" (gpu-error 0)
+    in state-set "done" 1

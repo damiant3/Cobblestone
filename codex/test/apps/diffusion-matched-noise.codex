@@ -1,0 +1,114 @@
+Chapter: DiffusionMatchedNoise
+  cites Diffusion chapter MatchedNoise
+  cites Foreword chapter FactDisk
+
+ MatchedNoise against Forge's own get_matched_noise (outpainting mk2) over
+ the same formula picture and masks. The disk is build/mint-clip-bpe-disk.ps1's
+ with one extra, codex/test/apps/matched-noise-ref/noise.ref, written by
+ build/matched-noise-oracle.py: little-endian f64, case A (64 x 128, the left
+ 32 columns masked, noise_q 1, color variation 0.05) then case B (the right 24
+ columns and the bottom 16 rows masked, noise_q 1.5, color variation 0.3),
+ each H x W x 3 in C order. Graded to 1e-6 and as the bytes the script makes
+ of it, clip (v 255) truncated. The sabotage arm must move: case B at
+ noise_q 1.
+
+ We say:
+
+Section: Disk
+
+  mn-load : Integer, Integer -> [Device.Block] Integer
+  mn-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+Section: Inputs
+
+  hh : Integer
+  hh = 64
+
+  ww : Integer
+  ww = 128
+
+  pic-byte : Integer -> Integer
+  pic-byte (i) =
+    let p = i / 3
+    in let c = i - p * 3
+    in let y = p / 128
+    in let x = p - y * 128
+    in int-mod (x * 7 + y * 13 + c * 50 + int-mod (x * y) 23) 256
+
+  pic-bytes : Integer, Integer -> Integer
+  pic-bytes (dst) (i) = if i >= 64 * 128 * 3 then dst else let s = poke-byte dst i (pic-byte i) in pic-bytes dst (i + 1)
+
+  pic-reals : Integer, Integer, Integer -> Integer
+  pic-reals (bytes) (dst) (i) = if i >= 64 * 128 * 3 then dst else let s = md-set dst i (real-from-int (peek-byte bytes i) / 255.0) in pic-reals bytes dst (i + 1)
+
+  mask-of : Integer, Integer, Integer -> Integer
+  mask-of (case) (dst) (i) =
+    if i >= 64 * 128 * 3 then dst
+    else let p = i / 3
+    in let y = p / 128
+    in let x = p - y * 128
+    in let on = if case == 0 then x < 32 else x >= 128 - 24 | y >= 64 - 16
+    in let s = md-set dst i (if on then 1.0 else 0.0)
+    in mask-of case dst (i + 1)
+
+Section: Grading
+
+  max-err : Integer, Integer, Integer, Integer, Integer, Real -> Real
+  max-err (a) (r) (at) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = md-get a i - md-get r (at + i)
+    in let ae = if e < 0.0 then 0.0 - e else e
+    in max-err a r at (i + 1) n (if ae > acc then ae else acc)
+
+  to-byte : Real -> Integer
+  to-byte (v) = let c = v * 255.0 in real-to-int (if c < 0.0 then 0.0 else if c > 255.0 then 255.0 else c)
+
+  byte-diffs : Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  byte-diffs (a) (r) (at) (i) (n) (count) =
+    if i >= n then [count]
+    else byte-diffs a r at (i + 1) n (if to-byte (md-get a i) == to-byte (md-get r (at + i)) then count else count + 1)
+
+  verdict : Text, Integer, Integer, Integer -> Text
+  verdict (label) (a) (r) (at) =
+    let n = 64 * 128 * 3
+    in label & ": " & (if max-err a r at 0 n 0.0 <= 0.000001 then "within 1e-6" else "PAST 1e-6") & ", " & show (list-at (byte-diffs a r at 0 n 0) 0) & " of " & show n & " bytes differ"
+
+Section: Run
+
+  run-all : Integer -> List Text
+  run-all (r) =
+    let b = pic-bytes (alloc-bytes (64 * 128 * 3)) 0
+    in let src = pic-reals b (md-new (64 * 128 * 3)) 0
+    in let a = matched-noise src (mask-of 0 (md-new (64 * 128 * 3)) 0) b 64 128 1.0 0.05
+    in let bb = matched-noise src (mask-of 1 (md-new (64 * 128 * 3)) 0) b 64 128 1.5 0.3
+    in let s2 = matched-noise src (mask-of 1 (md-new (64 * 128 * 3)) 0) b 64 128 1.0 0.3
+    in [verdict "case A" a r 0, verdict "case B" bb r (64 * 128 * 3), verdict "sabotage, case B at noise_q 1" s2 r (64 * 128 * 3)]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  mn-go : Integer, Integer -> [Console, Device.Block] Nothing
+  mn-go (rs) (rl) =
+    act
+      r <- mn-load rs rl
+      print-all (run-all r) 0
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    mn-go (peek-32 h 12) (peek-32 h 16)
+  end

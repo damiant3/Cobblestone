@@ -19,7 +19,10 @@ const modBytes = readFileSync(join(here, 'web', 'starmap.wasm'));
 const dat = new Uint8Array(readFileSync(join(here, 'data', 'starmap.dat')));
 
 const CELL_STARS = 256, CELL_VISIBLE = 260, CELL_READY = 264, CELL_DATLEN = 268,
-      CELL_NAMED = 272, CELL_NAMEOFF = 284, CELL_ERROR = 288;
+      CELL_NAMED = 272, CELL_DSOCOUNT = 276, CELL_DSOOFF = 280, CELL_NAMEOFF = 284,
+      CELL_ERROR = 288, CELL_DSOVIS = 292, CELL_CONLINES = 296, CELL_CONCOUNT = 300;
+const CON_BUF = 6438912;
+const DSO_BUF = 6422528, DSO_REC = 80, D_MAG = 16, D_KIND = 18, D_NAMELEN = 22, D_NAME = 23;
 const CAM = 352, CAM_YAW = 24, CAM_PITCH = 28, CAM_MAG = 48, CAM_FOV = 56, CAM_FLAGS = 60;
 const DAT_BASE = 1048576, HDR_SIZE = 64, REC = 32;
 const R_X = 4, R_MAG = 16, R_BV = 20, R_FLAGS = 26, R_NAMEIDX = 27;
@@ -70,12 +73,37 @@ check('a file past the window is refused', w.sm_load(99999999) < 0 && geti(CELL_
 check('a header claiming more stars than delivered is refused',
   w.sm_load(1024) < 0 && geti(CELL_ERROR) === 4, 'err ' + geti(CELL_ERROR));
 
+u8.set(dat, DAT_BASE);
+const keepDso = dv.getInt32(DAT_BASE + 20, true);
+dv.setInt32(DAT_BASE + 20, keepDso + 100, true);
+check('a header claiming more deep-sky records than delivered is refused',
+  w.sm_load(dat.length) < 0 && geti(CELL_ERROR) === 5, 'err ' + geti(CELL_ERROR));
+dv.setInt32(DAT_BASE + 20, keepDso, true);
+
+const keepLines = dv.getInt32(DAT_BASE + 36, true);
+dv.setInt32(DAT_BASE + 36, keepLines + 1, true);
+check('a header claiming more constellation lines than the section holds is refused',
+  w.sm_load(dat.length) < 0 && geti(CELL_ERROR) === 6, 'err ' + geti(CELL_ERROR));
+dv.setInt32(DAT_BASE + 36, keepLines, true);
+
 // --- the real catalogue ----------------------------------------------
 u8.set(dat, DAT_BASE);
 const n = w.sm_load(dat.length);
 check('the real catalogue loads', n > 0 && geti(CELL_ERROR) === 0, n + ' stars, err ' + geti(CELL_ERROR));
 check('117,931 stars', geti(CELL_STARS) === 117931, geti(CELL_STARS));
 check('489 names', geti(CELL_NAMED) === 489, geti(CELL_NAMED));
+// The colour ramp the page draws with is the module's, so it is graded here
+// against the palette the page shipped, written out again independently
+// (GAME-42): each threshold is checked on both sides.
+const RAMP = [[-200, [155, 176, 255]], [0, [170, 191, 255]], [300, [202, 215, 255]],
+              [600, [248, 247, 255]], [900, [255, 244, 234]], [1300, [255, 210, 161]],
+              [1700, [255, 179, 119]], [Infinity, [255, 143, 92]]];
+const oracle = bv => RAMP.find(([t]) => bv < t)[1];
+const rgbOf = bv => { const c = w.sm_bv_rgb(bv) >>> 0; return [(c >> 16) & 255, (c >> 8) & 255, c & 255]; };
+for (const bv of [-201, -200, -1, 0, 299, 300, 599, 600, 899, 900, 1299, 1300, 1699, 1700, 2500]) {
+  const got = rgbOf(bv), want = oracle(bv);
+  check(`B-V ${bv} colour`, got.join() === want.join(), `got ${got.join()} want ${want.join()}`);
+}
 check('ready cell set', geti(CELL_READY) === 1, geti(CELL_READY));
 
 // The catalogue's own answer, computed here from the bytes, so the module's
@@ -104,6 +132,59 @@ for (let k = 0; k < geti(CELL_VISIBLE); k++) {
 }
 check('every selected star passes the cut', violation === -1,
   violation === -1 ? 'none' : ('index ' + violation + ' at mag ' + magOf(violation)));
+
+// --- deep-sky objects --------------------------------------------------
+// Counted here from the header and the 80-byte records, independently of the
+// module's own pass.
+const dsoN = dv.getInt32(DAT_BASE + 20, true), dsoOff = dv.getInt32(DAT_BASE + 24, true);
+const dsoAt = j => DAT_BASE + dsoOff + j * DSO_REC;
+const dsoMag = j => dv.getInt16(dsoAt(j) + D_MAG, true);
+const dsoName = j => new TextDecoder().decode(u8.subarray(dsoAt(j) + D_NAME, dsoAt(j) + D_NAME + u8[dsoAt(j) + D_NAMELEN]));
+const dsoUnder = lim => { let c = 0; for (let j = 0; j < dsoN; j++) if (dsoMag(j) <= lim) c++; return c; };
+check('125 deep-sky records published', geti(CELL_DSOCOUNT) === 125 && dsoN === 125, geti(CELL_DSOCOUNT));
+check('the first record is M1 Crab Nebula, a supernova remnant',
+  dsoName(0) === 'M1 Crab Nebula' && u8[dsoAt(0) + D_KIND] === 7, dsoName(0) + ' kind ' + u8[dsoAt(0) + D_KIND]);
+check('the default cut selects the deep-sky records the bytes say it should',
+  geti(CELL_DSOVIS) === dsoUnder(6000), geti(CELL_DSOVIS) + ' vs ' + dsoUnder(6000));
+w.sm_set_mag_limit(10000);
+check('a wider cut reselects the deep-sky records', geti(CELL_DSOVIS) === dsoUnder(10000),
+  geti(CELL_DSOVIS) + ' vs ' + dsoUnder(10000));
+let dsoViolation = -1;
+for (let k = 0; k < geti(CELL_DSOVIS); k++) {
+  const j = geti(DSO_BUF + k * 4);
+  if (j < 0 || j >= dsoN || dsoMag(j) > 10000) { dsoViolation = j; break; }
+}
+check('every selected deep-sky record exists and passes the cut', dsoViolation === -1,
+  dsoViolation === -1 ? 'none' : ('record ' + dsoViolation));
+w.sm_set_mag_limit(6000);
+w.sm_select_obj(117931 + 124);
+check('a deep-sky record is selectable after the stars', geti(CAM + 40) === 117931 + 124, geti(CAM + 40));
+w.sm_select_obj(117931 + 125);
+check('one past the last deep-sky record is refused', geti(CAM + 40) === 65535, geti(CAM + 40));
+
+// --- constellation figures ---------------------------------------------
+// The shipped header keeps the section offset at 28 and 0 at 32. Walked here
+// independently of the module: 27 bytes of head, a 16-bit line count at 25,
+// then 8 bytes per line.
+const conOff = dv.getInt32(DAT_BASE + 32, true) > 0 ? dv.getInt32(DAT_BASE + 32, true) : dv.getInt32(DAT_BASE + 28, true);
+const conWant = dv.getInt32(DAT_BASE + 36, true);
+const segIds = [];
+let cp = conOff, conN = 0;
+while (segIds.length < conWant) {
+  const lc = dv.getUint16(DAT_BASE + cp + 25, true);
+  for (let k = 0; k < lc; k++) segIds.push([dv.getInt32(DAT_BASE + cp + 27 + k * 8, true), dv.getInt32(DAT_BASE + cp + 31 + k * 8, true)]);
+  cp += 27 + lc * 8; conN++;
+}
+const idOf = i => dv.getInt32(DAT_BASE + HDR_SIZE + i * REC, true);
+check('239 constellation lines published', geti(CELL_CONLINES) === 239 && conWant === 239, geti(CELL_CONLINES));
+check('36 constellations walked', geti(CELL_CONCOUNT) === 36 && conN === 36, geti(CELL_CONCOUNT));
+let segBad = -1;
+for (let k = 0; k < geti(CELL_CONLINES); k++) {
+  const a = geti(CON_BUF + k * 8), b = geti(CON_BUF + k * 8 + 4);
+  if (idOf(a) !== segIds[k][0] || idOf(b) !== segIds[k][1]) { segBad = k; break; }
+}
+check('every line joins the two stars its HYG ids name', segBad === -1,
+  segBad === -1 ? 'none' : ('line ' + segBad));
 
 // --- camera ----------------------------------------------------------
 const y0 = geti(CAM + CAM_YAW);
@@ -145,6 +226,25 @@ dv.setInt16(DAT_BASE + HDR_SIZE + R_MAG, 11000, true);
 w.sm_select();
 control('the magnitude-query arm', geti(CELL_VISIBLE) === before - 1 && geti(6291456) !== 0);
 dv.setInt16(DAT_BASE + HDR_SIZE + R_MAG, keepMag, true);
+w.sm_load(dat.length);
+
+// push the last deep-sky record (Sgr A*, magnitude 0) past the cut; the
+// deep-sky selection must shrink by exactly one
+const dsoBefore = geti(CELL_DSOVIS);
+const keepDsoMag = dv.getInt16(dsoAt(124) + D_MAG, true);
+dv.setInt16(dsoAt(124) + D_MAG, 11000, true);
+w.sm_select();
+control('the deep-sky query arm', geti(CELL_DSOVIS) === dsoBefore - 1);
+dv.setInt16(dsoAt(124) + D_MAG, keepDsoMag, true);
+w.sm_load(dat.length);
+
+// point the first line at an id no star carries; that line must drop
+const firstFrom = DAT_BASE + conOff + 27;
+const keepFrom = dv.getInt32(firstFrom, true);
+dv.setInt32(firstFrom, 999999999, true);
+w.sm_load(dat.length);
+control('the constellation resolution arm', geti(CELL_CONLINES) === 238);
+dv.setInt32(firstFrom, keepFrom, true);
 w.sm_load(dat.length);
 
 console.log('');

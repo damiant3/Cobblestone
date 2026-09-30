@@ -535,7 +535,7 @@ branch, so `for x in xs do f x` is a parse error (CDX1000 at the `do`).
 ```
 
 Inside an act block, newlines separate statements. Outside, newlines
-are whitespace -- multi-line function applications work everywhere.
+are whitespace, except that a newline ends a function application unless the application is inside `(` or `[` (see "A newline ends an application" under Pitfalls).
 
 Effect declarations:
 
@@ -1535,9 +1535,8 @@ On packed vectors the four are lane-wise and produce a mask: `==` and `/=` on
 approximate)`, each lane answering as the scalar operator would. `==` on Real
 lanes is CDX2085; every other combination, a 256-bit vector included, is
 CDX2099. They lower to `vec-eq`, `vec-ne`, `vec-approx-eq`, `vec-approx-exact`,
-`vec4-approx-eq` and `vec4-approx-exact`, served on x86-64 only: ARM64 and
-RISC-V refuse the names at compile time (`codex/test/vec-eq-cross-refused`),
-and the wasm plug emits `unreachable` for them.
+`vec4-approx-eq` and `vec4-approx-exact`, served on x86-64, ARM64 and RISC-V
+(`codex/test/vector-eq`); the wasm plug emits `unreachable` for them.
 
 ### Real Type
 

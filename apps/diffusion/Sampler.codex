@@ -1,0 +1,1163 @@
+Chapter: Sampler
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter SamplerKernelsPtx
+  cites Diffusion chapter GpuModules
+  cites Gpu chapter DeviceMath
+  cites Diffusion chapter SamplerGraph
+  cites Diffusion chapter SamplerSchedule
+
+ k-diffusion's samplers as Forge runs them (k_diffusion/sampling.py): the
+ Karras schedule over the model's discrete sigmas, sample_euler with no
+ churn, and sample_dpmpp_sde with eta 1, s_noise 1 and r = 1/2. A denoiser
+ maps a latent buffer and a sigma to a fresh buffer holding its estimate of
+ the clean latent; a noise source maps a draw index to a buffer of standard
+ normal draws. Latents are n f32 elements on the device.
+
+ We say:
+
+Section: Kernels
+
+  sm-lincomb : Integer, Integer, Integer, Integer, Real, Real, Real, Integer -> Integer
+  sm-lincomb (x) (y) (z) (out) (a) (b) (c) (n) =
+    let g = GpuGrid { gx = (n + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }
+    in gm-launch gm-slot-sampler sampler-kernels-ptx "kernel_lincomb3" g [gpu-arg-buf x 0, gpu-arg-buf y 0, gpu-arg-buf z 0, gpu-arg-buf out 0, gpu-arg-u64 (real-to-bits a), gpu-arg-u64 (real-to-bits b), gpu-arg-u64 (real-to-bits c), gpu-arg-u64 n]
+
+Section: Euler
+
+  sampler-native-ops : SamplerOps
+  sampler-native-ops = SamplerOps { lincomb = sm-lincomb, free = gpu-buf-free }
+
+  sample-euler : (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-euler (den) (x) (sigmas) (n) = sample-euler-with sampler-native-ops den x sigmas n
+
+Section: Heun
+
+ k-diffusion sample_heun at s_churn 0: an Euler step to x2, then
+ x + dt/2 ((x - D)/sigma + (x2 - D2)/sigma'), and a plain Euler step when sigma'
+ is 0.
+
+  heun-step : (Integer, Real -> Integer), Integer, Integer, Real, Real, Integer -> Integer
+  heun-step (den) (x) (d) (s) (s1) (n) =
+    let dt = s1 - s
+    in let x2 = gpu-buf-alloc (n * 4)
+    in let r1 = if x2 == 0 then 0 - 1 else sm-lincomb x d d x2 (1.0 + dt / s) (0.0 - dt / s) 0.0 n
+    in let d2 = if r1 < 0 then 0 else den x2 s1
+    in let r2 = if d2 == 0 then 0 - 1 else sm-lincomb x d x2 x (1.0 + dt / (2.0 * s)) (0.0 - dt / (2.0 * s)) (dt / (2.0 * s1)) n
+    in let r3 = if r2 < 0 then 0 - 1 else sm-lincomb x d2 d2 x 1.0 (0.0 - dt / (2.0 * s1)) 0.0 n
+    in let f = (if x2 == 0 then True else gpu-buf-free x2) & (if d2 == 0 then True else gpu-buf-free d2)
+    in r3
+
+  heun-loop : (Integer, Real -> Integer), Integer, List Real, Integer, Integer, Integer -> Integer
+  heun-loop (den) (x) (sig) (i) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else let s = list-at sig i
+    in let s1 = list-at sig (i + 1)
+    in let d = den x s
+    in let r = if d == 0 then 0 - 1
+     else if s1 <= 0.0 then sm-lincomb x d d x (1.0 + (s1 - s) / s) (0.0 - (s1 - s) / s) 0.0 n
+     else heun-step den x d s s1 n
+    in let f = if d == 0 then True else gpu-buf-free d
+    in heun-loop den x sig (i + 1) n (bad + (if r < 0 then 1 else 0))
+
+  sample-heun : (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-heun (den) (x) (sigmas) (n) = heun-loop den x sigmas 0 n 0
+
+ k-diffusion sample_heunpp2 at s_churn 0: an Euler step when sigma' is the
+ last sigma; Heun's two slopes weighted 1 - w2 and w2 = sigma' / (2 sigma_0)
+ when the sigma after it is the last; otherwise two chained Euler steps give
+ slopes at sigma' and sigma'', weighted w2 = sigma' / (3 sigma_0), w3 =
+ sigma'' / (3 sigma_0) and 1 - w2 - w3.
+
+  sm-free : Integer -> Boolean
+  sm-free (h) = if h == 0 then True else gpu-buf-free h
+
+  sm-deriv : (Integer, Real -> Integer), Integer, Real, Integer -> Integer
+  sm-deriv (den) (x) (s) (n) =
+    let d = den x s
+    in let out = if d == 0 then 0 else gpu-buf-alloc (n * 4)
+    in let r = if out == 0 then 0 - 1 else sm-lincomb x d d out (1.0 / s) (0.0 - 1.0 / s) 0.0 n
+    in let f = sm-free d
+    in if r < 0 then (if sm-free out then 0 else 0) else out
+
+  sm-step-new : Integer, Integer, Real, Integer -> Integer
+  sm-step-new (x) (y) (a) (n) =
+    let out = gpu-buf-alloc (n * 4)
+    in let r = if out == 0 then 0 - 1 else sm-lincomb x y y out 1.0 a 0.0 n
+    in if r < 0 then (if sm-free out then 0 else 0) else out
+
+  heunpp2-close : Integer, Integer, Integer, Integer, Real, Real, Real, Real, Integer -> Integer
+  heunpp2-close (x) (d1) (d2) (d3) (dt) (w1) (w2) (w3) (n) =
+    let r1 = sm-lincomb x d1 (if d2 == 0 then d1 else d2) x 1.0 (dt * w1) (if d2 == 0 then 0.0 else dt * w2) n
+    in let r2 = if r1 < 0 | d3 == 0 then r1 else sm-lincomb x d3 d3 x 1.0 (dt * w3) 0.0 n
+    in let f = sm-free d1 & sm-free d2 & sm-free d3
+    in r2
+
+  heunpp2-third : (Integer, Real -> Integer), Integer, Integer, Integer, Integer, Real, Real, Real, Real, Integer -> Integer
+  heunpp2-third (den) (x) (x2) (d1) (d2) (s0) (s) (s1) (s2) (n) =
+    let x3 = sm-step-new x2 d2 (s2 - s1) n
+    in let d3 = if x3 == 0 then 0 else sm-deriv den x3 s2 n
+    in let f = sm-free x2 & sm-free x3
+    in let w = 3.0 * s0
+    in if d3 == 0 then (if sm-free d1 & sm-free d2 then 0 - 1 else 0 - 1)
+    else heunpp2-close x d1 d2 d3 (s1 - s) (1.0 - s1 / w - s2 / w) (s1 / w) (s2 / w) n
+
+  heunpp2-more : (Integer, Real -> Integer), Integer, List Real, Integer, Integer, Integer -> Integer
+  heunpp2-more (den) (x) (sig) (i) (d1) (n) =
+    let s = list-at sig i
+    in let s1 = list-at sig (i + 1)
+    in let s0 = list-at sig 0
+    in let x2 = sm-step-new x d1 (s1 - s) n
+    in let d2 = if x2 == 0 then 0 else sm-deriv den x2 s1 n
+    in if d2 == 0 then (if sm-free x2 & sm-free d1 then 0 - 1 else 0 - 1)
+    else if list-at sig (i + 2) == list-at sig (list-length sig - 1) then (if sm-free x2 then heunpp2-close x d1 d2 0 (s1 - s) (1.0 - s1 / (2.0 * s0)) (s1 / (2.0 * s0)) 0.0 n else 0 - 1)
+    else heunpp2-third den x x2 d1 d2 s0 s s1 (list-at sig (i + 2)) n
+
+  heunpp2-loop : (Integer, Real -> Integer), Integer, List Real, Integer, Integer, Integer -> Integer
+  heunpp2-loop (den) (x) (sig) (i) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else let d1 = sm-deriv den x (list-at sig i) n
+    in let r = if d1 == 0 then 0 - 1
+     else if list-at sig (i + 1) == list-at sig (list-length sig - 1) then heunpp2-close x d1 0 0 (list-at sig (i + 1) - list-at sig i) 1.0 0.0 0.0 n
+     else heunpp2-more den x sig i d1 n
+    in heunpp2-loop den x sig (i + 1) n (bad + (if r < 0 then 1 else 0))
+
+  sample-heunpp2 : (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-heunpp2 (den) (x) (sigmas) (n) = heunpp2-loop den x sigmas 0 n 0
+
+Section: DPM2
+
+ k-diffusion sample_dpm_2 at s_churn 0: the midpoint sigma is the geometric
+ mean exp((ln sigma + ln sigma') / 2); x2 = x + (x - D)/sigma (mid - sigma),
+ then x + (x2 - D2)/mid (sigma' - sigma), and a plain Euler step when sigma'
+ is 0.
+
+  dpm2-step : (Integer, Real -> Integer), Integer, Integer, Real, Real, Integer -> Integer
+  dpm2-step (den) (x) (d) (s) (s1) (n) =
+    let mid = sm-exp ((sm-ln s + sm-ln s1) / 2.0)
+    in let x2 = gpu-buf-alloc (n * 4)
+    in let r1 = if x2 == 0 then 0 - 1 else sm-lincomb x d d x2 (1.0 + (mid - s) / s) (0.0 - (mid - s) / s) 0.0 n
+    in let d2 = if r1 < 0 then 0 else den x2 mid
+    in let r2 = if d2 == 0 then 0 - 1 else sm-lincomb x x2 d2 x 1.0 ((s1 - s) / mid) (0.0 - (s1 - s) / mid) n
+    in let f = (if x2 == 0 then True else gpu-buf-free x2) & (if d2 == 0 then True else gpu-buf-free d2)
+    in r2
+
+  dpm2-loop : (Integer, Real -> Integer), Integer, List Real, Integer, Integer, Integer -> Integer
+  dpm2-loop (den) (x) (sig) (i) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else let s = list-at sig i
+    in let s1 = list-at sig (i + 1)
+    in let d = den x s
+    in let r = if d == 0 then 0 - 1
+     else if s1 <= 0.0 then sm-lincomb x d d x (1.0 + (s1 - s) / s) (0.0 - (s1 - s) / s) 0.0 n
+     else dpm2-step den x d s s1 n
+    in let f = if d == 0 then True else gpu-buf-free d
+    in dpm2-loop den x sig (i + 1) n (bad + (if r < 0 then 1 else 0))
+
+  sample-dpm2 : (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-dpm2 (den) (x) (sigmas) (n) = dpm2-loop den x sigmas 0 n 0
+
+Section: DPM2 Ancestral
+
+ k-diffusion sample_dpm_2_ancestral at eta 1: the DPM2 step aims at the
+ ancestral sigma_down, an Euler step when sigma_down is 0, and sigma_up times
+ one draw is added while sigma' is above 0.
+
+  dpm2a-noise : (Integer -> Integer), Integer, Integer, Real, Real, Integer -> Integer
+  dpm2a-noise (noise) (x) (k) (s) (sn) (n) =
+    let z = noise k
+    in sm-lincomb x z z x 1.0 (sm-up s sn) 0.0 n
+
+  dpm2a-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Integer, Integer -> Integer
+  dpm2a-loop (den) (noise) (x) (sig) (i) (k) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in let d = den x s
+    in let sd = if sn > 0.0 then sm-down s sn else 0.0
+    in let r = if d == 0 then 0 - 1
+     else if sd <= 0.0 then sm-lincomb x d d x (sd / s) (1.0 - sd / s) 0.0 n
+     else dpm2-step den x d s sd n
+    in let f = if d == 0 then True else gpu-buf-free d
+    in let rn = if r >= 0 & sn > 0.0 then dpm2a-noise noise x k s sn n else r
+    in dpm2a-loop den noise x sig (i + 1) (if sn > 0.0 then k + 1 else k) n (bad + (if rn < 0 then 1 else 0))
+
+  sample-dpm2-ancestral : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-dpm2-ancestral (den) (noise) (x) (sigmas) (n) = dpm2a-loop den noise x sigmas 0 0 n 0
+
+Section: DPM++ 2S Ancestral
+
+ k-diffusion sample_dpmpp_2s_ancestral at eta 1, in sigma terms: with m the
+ geometric mean of sigma and sigma_down, x2 = (m/sigma) x + (1 - m/sigma) D and
+ x = (sigma_down/sigma) x + (1 - sigma_down/sigma) D2; an Euler step when
+ sigma_down is 0, and sigma_up times one draw while sigma' is above 0.
+
+  dpmpp-2sa-step : (Integer, Real -> Integer), Integer, Integer, Real, Real, Integer -> Integer
+  dpmpp-2sa-step (den) (x) (d) (s) (sd) (n) =
+    let mid = sm-exp ((sm-ln s + sm-ln sd) / 2.0)
+    in let x2 = gpu-buf-alloc (n * 4)
+    in let r1 = if x2 == 0 then 0 - 1 else sm-lincomb x d d x2 (mid / s) (1.0 - mid / s) 0.0 n
+    in let d2 = if r1 < 0 then 0 else den x2 mid
+    in let r2 = if d2 == 0 then 0 - 1 else sm-lincomb x d2 d2 x (sd / s) (1.0 - sd / s) 0.0 n
+    in let f = (if x2 == 0 then True else gpu-buf-free x2) & (if d2 == 0 then True else gpu-buf-free d2)
+    in r2
+
+  dpmpp-2sa-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Integer, Integer -> Integer
+  dpmpp-2sa-loop (den) (noise) (x) (sig) (i) (k) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in let d = den x s
+    in let sd = if sn > 0.0 then sm-down s sn else 0.0
+    in let r = if d == 0 then 0 - 1
+     else if sd <= 0.0 then sm-lincomb x d d x (sd / s) (1.0 - sd / s) 0.0 n
+     else dpmpp-2sa-step den x d s sd n
+    in let f = if d == 0 then True else gpu-buf-free d
+    in let rn = if r >= 0 & sn > 0.0 then dpm2a-noise noise x k s sn n else r
+    in dpmpp-2sa-loop den noise x sig (i + 1) (if sn > 0.0 then k + 1 else k) n (bad + (if rn < 0 then 1 else 0))
+
+  sample-dpmpp-2s-ancestral : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-dpmpp-2s-ancestral (den) (noise) (x) (sigmas) (n) = dpmpp-2sa-loop den noise x sigmas 0 0 n 0
+
+Section: DPM++ SDE
+
+ get_ancestral_step with eta 1: sigma_up = min (to, sqrt (to^2 (from^2 - to^2)
+ / from^2)), sigma_down = sqrt (to^2 - up^2).
+
+  sm-up : Real, Real -> Real
+  sm-up (from) (to) =
+    let u = sm-sqrt (to * to * (from * from - to * to) / (from * from))
+    in if u < to then u else to
+
+  sm-down : Real, Real -> Real
+  sm-down (from) (to) = let u = sm-up from to in sm-sqrt (to * to - u * u)
+
+ With r = 1/2 the second stage's denoised is the midpoint estimate alone
+ (fac = 1). The last step, to sigma 0, is an Euler step, which lands on D.
+
+  dpmpp-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Integer, Integer -> Integer
+  dpmpp-loop (den) (noise) (x) (sig) (i) (k) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in let d0 = den x s
+    in if sn <= 0.0 then dpmpp-last den noise x sig i k n bad d0
+    else let t = 0.0 - sm-ln s
+    in let sig-mid = sm-exp (0.0 - (t + (0.0 - sm-ln sn - t) / 2.0))
+    in let sd = sm-down s sig-mid
+    in let x2 = gpu-buf-alloc (n * 4)
+    in let r1 = sm-lincomb x d0 (noise k) x2 (sd / s) (1.0 - sd / s) (sm-up s sig-mid) n
+    in let d2 = den x2 sig-mid
+    in let sd2 = sm-down s sn
+    in let r2 = sm-lincomb x d2 (noise (k + 1)) x (sd2 / s) (1.0 - sd2 / s) (sm-up s sn) n
+    in let f = gpu-buf-free d0 & gpu-buf-free x2 & gpu-buf-free d2
+    in dpmpp-loop den noise x sig (i + 1) (k + 2) n (bad + (if r1 < 0 | r2 < 0 then 1 else 0))
+
+  dpmpp-last : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Integer, Integer, Integer -> Integer
+  dpmpp-last (den) (noise) (x) (sig) (i) (k) (n) (bad) (d0) =
+    let r = sm-lincomb x d0 d0 x 0.0 1.0 0.0 n
+    in let f = gpu-buf-free d0
+    in dpmpp-loop den noise x sig (i + 1) k n (bad + (if r < 0 then 1 else 0))
+
+  sample-dpmpp-sde : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-dpmpp-sde (den) (noise) (x) (sigmas) (n) = dpmpp-loop den noise x sigmas 0 0 n 0
+
+Section: Euler Ancestral
+
+ sample_euler_ancestral with eta 1 and s_noise 1: an Euler step to sigma_down,
+ then sigma_up of a fresh draw, and no draw on the step to sigma 0.
+
+  euler-a-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Integer, Integer -> Integer
+  euler-a-loop (den) (noise) (x) (sig) (i) (k) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in let d = den x s
+    in let sd = if sn > 0.0 then sm-down s sn else 0.0
+    in let z = if sn > 0.0 then noise k else d
+    in let r = if d == 0 then 0 - 1 else sm-lincomb x d z x (sd / s) (1.0 - sd / s) (if sn > 0.0 then sm-up s sn else 0.0) n
+    in let f = if d == 0 then True else gpu-buf-free d
+    in euler-a-loop den noise x sig (i + 1) (if sn > 0.0 then k + 1 else k) n (bad + (if r < 0 then 1 else 0))
+
+  sample-euler-ancestral : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-euler-ancestral (den) (noise) (x) (sigmas) (n) = euler-a-loop den noise x sigmas 0 0 n 0
+
+Section: DPM++ 2M
+
+ sample_dpmpp_2m: x = (sigma' / sigma) x + (1 - sigma' / sigma) D', where D'
+ is D on the first step and the step to 0, and otherwise (1 + 1/2r) D -
+ (1/2r) D_prev with r the ratio of the last step's log-sigma length to this one's.
+
+  dpmpp-2m-loop : (Integer, Real -> Integer), Integer, List Real, Integer, Integer, Integer, Integer -> Integer
+  dpmpp-2m-loop (den) (x) (sig) (i) (old) (n) (bad) =
+    if i >= list-length sig - 1 then (if old == 0 then bad else (if gpu-buf-free old then bad else bad + 1))
+    else let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in let d = den x s
+    in let a = 1.0 - sn / s
+    in let r = if d == 0 then 0 - 1
+       else if old == 0 | sn <= 0.0 then sm-lincomb x d d x (sn / s) a 0.0 n
+       else let rr = (sm-ln (list-at sig (i - 1)) - sm-ln s) / (sm-ln s - sm-ln sn)
+       in sm-lincomb x d old x (sn / s) (a * (1.0 + 1.0 / (2.0 * rr))) (0.0 - a / (2.0 * rr)) n
+    in let f = if old == 0 then True else gpu-buf-free old
+    in dpmpp-2m-loop den x sig (i + 1) d n (bad + (if r < 0 then 1 else 0))
+
+  sample-dpmpp-2m : (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-dpmpp-2m (den) (x) (sigmas) (n) = dpmpp-2m-loop den x sigmas 0 0 n 0
+
+Section: DPM++ 2M SDE
+
+ sample_dpmpp_2m_sde with eta 1, s_noise 1 and the midpoint correction: with
+ h the step's log-sigma length and e = exp (-h), x = e^2 x + (1 - e^2) D, plus
+ (1 - e^2) / 2r (D - D_prev) after the first step (r the last step's length
+ over this one's), plus sigma' sqrt (1 - e^2)
+ of a draw; the step to 0 lands on D and draws nothing.
+
+  dpmpp-2m-sde-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Integer, Real, Integer, Integer, Boolean -> Integer
+  dpmpp-2m-sde-loop (den) (noise) (x) (sig) (i) (k) (old) (hlast) (n) (bad) (heun) =
+    if i >= list-length sig - 1 then (if old == 0 then bad else (if gpu-buf-free old then bad else bad + 1))
+    else let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in let d = den x s
+    in let h = if sn > 0.0 then sm-ln s - sm-ln sn else 0.0
+    in let e2 = if sn > 0.0 then sm-exp (0.0 - 2.0 * h) else 0.0
+    in let c = if old == 0 | sn <= 0.0 then 0.0 else if heun then (1.0 - (1.0 - e2) / (2.0 * h)) * h / hlast else 0.5 * (1.0 - e2) * h / hlast
+    in let r1 = if d == 0 then 0 - 1 else sm-lincomb x d (if old == 0 then d else old) x e2 (1.0 - e2 + c) (0.0 - c) n
+    in let r2 = if d == 0 | sn <= 0.0 then 0 else sm-lincomb x (noise k) x x 1.0 (sn * sm-sqrt (1.0 - e2)) 0.0 n
+    in let f = if old == 0 then True else gpu-buf-free old
+    in dpmpp-2m-sde-loop den noise x sig (i + 1) (if sn > 0.0 then k + 1 else k) d (if sn > 0.0 then h else hlast) n (bad + (if r1 < 0 | r2 < 0 then 1 else 0)) heun
+
+Section: DPM++ 3M SDE
+
+ sample_dpmpp_3m_sde with eta 1, s_noise 1: with h the step's log-sigma
+ length, e = exp (-h), phi2 = 1 - (1 - e^2) / 2h and phi3 = phi2 / 2h - 1/2,
+ x = e^2 x + (1 - e^2) D + phi2 d1 - phi3 d2, where d1 and d2 are the first and
+ second differences of D over the last two steps (only phi2 (D - D1) / r after
+ one step, neither on the first), plus sigma' sqrt (1 - e^2) of a draw; the
+ step to 0 lands on D and draws nothing.
+
+  dpmpp-3m-coef-one : Real, Real, Real, Integer -> Real
+  dpmpp-3m-coef-one (p2) (e2) (r) (which) =
+    if which == 0 then 1.0 - e2 + p2 / r else if which == 1 then 0.0 - p2 / r else 0.0
+
+  dpmpp-3m-coef : Real, Real, Real, Real, Integer, Integer -> Real
+  dpmpp-3m-coef (h) (e2) (h1) (h2) (level) (which) =
+    let p2 = 1.0 - (1.0 - e2) / (2.0 * h)
+    in let p3 = p2 / (2.0 * h) - 0.5
+    in let r0 = h1 / h
+    in let r1 = h2 / h
+    in let a = p2 * (1.0 + r0 / (r0 + r1)) - p3 / (r0 + r1)
+    in let b = p3 / (r0 + r1) - p2 * r0 / (r0 + r1)
+    in if level == 0 then (if which == 0 then 1.0 - e2 else 0.0)
+    else if level == 1 then dpmpp-3m-coef-one p2 e2 r0 which
+    else if which == 0 then 1.0 - e2 + a / r0
+    else if which == 1 then b / r1 - a / r0
+    else 0.0 - b / r1
+
+  dpmpp-3m-free : Integer, Integer, Integer -> Integer
+  dpmpp-3m-free (o1) (o2) (bad) =
+    let a = if o1 == 0 then True else gpu-buf-free o1
+    in let b = if o2 == 0 then True else gpu-buf-free o2
+    in if a & b then bad else bad + 1
+
+  dpmpp-3m-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Integer, Integer, Real, Real, Integer, Integer -> Integer
+  dpmpp-3m-loop (den) (noise) (x) (sig) (i) (k) (o1) (o2) (h1) (h2) (n) (bad) =
+    if i >= list-length sig - 1 then dpmpp-3m-free o1 o2 bad
+    else let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in let d = den x s
+    in let lvl = if o2 /= 0 then 2 else if o1 /= 0 then 1 else 0
+    in let h = if sn > 0.0 then sm-ln s - sm-ln sn else 0.0
+    in let e2 = if sn > 0.0 then sm-exp (0.0 - 2.0 * h) else 0.0
+    in let r1 = if d == 0 then 0 - 1
+     else if sn <= 0.0 then sm-lincomb x d d x 0.0 1.0 0.0 n
+     else sm-lincomb x d (if o1 == 0 then d else o1) x e2 (dpmpp-3m-coef h e2 h1 h2 lvl 0) (dpmpp-3m-coef h e2 h1 h2 lvl 1) n
+    in let r2 = if r1 < 0 | sn <= 0.0 | lvl < 2 then 0 else sm-lincomb x o2 o2 x 1.0 (dpmpp-3m-coef h e2 h1 h2 lvl 2) 0.0 n
+    in let r3 = if r1 < 0 | sn <= 0.0 then 0 else sm-lincomb x (noise k) x x 1.0 (sn * sm-sqrt (1.0 - e2)) 0.0 n
+    in let f = if o2 == 0 then True else gpu-buf-free o2
+    in dpmpp-3m-loop den noise x sig (i + 1) (if sn > 0.0 then k + 1 else k) d o1 (if sn > 0.0 then h else h1) (if sn > 0.0 then h1 else h2) n (bad + (if r1 < 0 | r2 < 0 | r3 < 0 then 1 else 0))
+
+  sample-dpmpp-3m-sde : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-dpmpp-3m-sde (den) (noise) (x) (sigmas) (n) = dpmpp-3m-loop den noise x sigmas 0 0 0 0 0.0 0.0 n 0
+
+Section: LMS
+
+ sample_lms at order 4: d = (x - D) / sigma kept for the last four steps, and
+ x += sum over j of c_j d at step i - j, c_j the integral over [sigma_i,
+ sigma_i+1] of the Lagrange basis on sigma_i ... sigma_i-order+1. Forge
+ integrates with scipy's quad, exact for these cubics; so is 3-point
+ Gauss-Legendre.
+
+  lms-basis : List Real, Integer, Integer, Integer, Real, Integer, Real -> Real
+  lms-basis (sig) (i) (ord) (j) (tau) (k) (acc) =
+    if k >= ord then acc
+    else if k == j then lms-basis sig i ord j tau (k + 1) acc
+    else lms-basis sig i ord j tau (k + 1) (acc * (tau - list-at sig (i - k)) / (list-at sig (i - j) - list-at sig (i - k)))
+
+  lms-coeff : List Real, Integer, Integer, Integer -> Real
+  lms-coeff (sig) (i) (ord) (j) =
+    if j >= ord then 0.0
+    else let m = (list-at sig i + list-at sig (i + 1)) / 2.0
+    in let h = (list-at sig (i + 1) - list-at sig i) / 2.0
+    in let r = 0.7745966692414834
+    in h * (5.0 / 9.0 * lms-basis sig i ord j (m - h * r) 0 1.0 + 8.0 / 9.0 * lms-basis sig i ord j m 0 1.0 + 5.0 / 9.0 * lms-basis sig i ord j (m + h * r) 0 1.0)
+
+ The multistep loop LMS, IPNDM, IPNDM_V and DEIS share: d at the last three
+ steps is kept, and x += c0 d + c1 d1 + c2 d2 + c3 d3 with c the sampler's
+ coefficient rule at order min (i + 1, its maximum order).
+
+  ms-loop : (Integer, Real -> Integer), (List Real, Integer, Integer, Integer -> Real), Integer, Integer, List Real, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ms-loop (den) (coef) (maxord) (x) (sig) (i) (p1) (p2) (p3) (n) (bad) =
+    if i >= list-length sig - 1 then (if (p1 == 0 | gpu-buf-free p1) & (p2 == 0 | gpu-buf-free p2) & (p3 == 0 | gpu-buf-free p3) then bad else bad + 1)
+    else let s = list-at sig i
+    in let d = den x s
+    in let dn = if d == 0 then 0 else gpu-buf-alloc (n * 4)
+    in let r0 = if dn == 0 then 0 - 1 else sm-lincomb x d d dn (1.0 / s) (0.0 - 1.0 / s) 0.0 n
+    in let f0 = if d == 0 then True else gpu-buf-free d
+    in let ord = if i + 1 < maxord then i + 1 else maxord
+    in let r1 = if r0 < 0 then r0 else sm-lincomb x dn (if p1 == 0 then dn else p1) x 1.0 (coef sig i ord 0) (if p1 == 0 then 0.0 else coef sig i ord 1) n
+    in let r2 = if r1 < 0 | p2 == 0 then r1 else sm-lincomb x p2 (if p3 == 0 then p2 else p3) x 1.0 (coef sig i ord 2) (if p3 == 0 then 0.0 else coef sig i ord 3) n
+    in let f3 = if p3 == 0 then True else gpu-buf-free p3
+    in ms-loop den coef maxord x sig (i + 1) dn p1 p2 n (bad + (if r2 < 0 then 1 else 0))
+
+  sample-lms : (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-lms (den) (x) (sigmas) (n) = ms-loop den (\sg i o j -> lms-coeff sg i o j) 4 x sigmas 0 0 0 0 n 0
+
+Section: IPNDM
+
+ sample_ipndm, max order 4: the Adams-Bashforth weights of the order times the
+ step, with no special last step.
+
+  ab-coef : Integer, Integer -> Real
+  ab-coef (ord) (j) =
+    if ord == 1 then (if j == 0 then 1.0 else 0.0)
+    else if ord == 2 then (if j == 0 then 1.5 else if j == 1 then 0.0 - 0.5 else 0.0)
+    else if ord == 3 then (if j == 0 then 23.0 / 12.0 else if j == 1 then 0.0 - 16.0 / 12.0 else if j == 2 then 5.0 / 12.0 else 0.0)
+    else if j == 0 then 55.0 / 24.0 else if j == 1 then 0.0 - 59.0 / 24.0 else if j == 2 then 37.0 / 24.0 else 0.0 - 9.0 / 24.0
+
+  ipndm-coef : List Real, Integer, Integer, Integer -> Real
+  ipndm-coef (sig) (i) (ord) (j) = (list-at sig (i + 1) - list-at sig i) * ab-coef ord j
+
+  sample-ipndm : (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-ipndm (den) (x) (sigmas) (n) = ms-loop den (\sg i o j -> ipndm-coef sg i o j) 4 x sigmas 0 0 0 0 n 0
+
+ sample_ipndm_v, max order 4: the variable-step weights over h = sigma' -
+ sigma and the last three step lengths h1, h2, h3, as Forge spells them.
+
+  ipndmv-temp1 : Real, Real, Real -> Real
+  ipndmv-temp1 (h) (h1) (h2) = (1.0 - ((h / (3.0 * (h + h1))) * (h * (h + h1))) / (h1 * (h1 + h2))) / 2.0
+
+  ipndmv-temp2 : Real, Real, Real, Real -> Real
+  ipndmv-temp2 (h) (h1) (h2) (h3) = (((1.0 - h / (3.0 * (h + h1))) / 2.0 + ((1.0 - h / (2.0 * (h + h1))) * h) / (6.0 * (h + h1 + h2))) * (h * (h + h1) * (h + h1 + h2))) / (h1 * (h1 + h2) * (h1 + h2 + h3))
+
+  ipndmv-c : Real, Real, Real, Real, Integer, Integer -> Real
+  ipndmv-c (h) (h1) (h2) (h3) (ord) (j) =
+    let r = h / h1
+    in let t1 = if ord >= 3 then ipndmv-temp1 h h1 h2 else 0.0
+    in let t2 = if ord >= 4 then ipndmv-temp2 h h1 h2 h3 else 0.0
+    in let q = if ord >= 4 then h1 * (h1 + h2) / (h2 * (h2 + h3)) else 0.0
+    in if ord == 1 then (if j == 0 then 1.0 else 0.0)
+    else if j == 0 then (2.0 + r) / 2.0 + t1 + t2
+    else if j == 1 then (if ord == 2 then 0.0 - r / 2.0 else if ord == 3 then 0.0 - r / 2.0 - (1.0 + h1 / h2) * t1 else 0.0 - r / 2.0 - (1.0 + h1 / h2) * t1 - (1.0 + h1 / h2 + q) * t2)
+    else if j == 2 then (if ord == 3 then t1 * h1 / h2 else if ord == 4 then t1 * h1 / h2 + (h1 / h2 + q * (1.0 + h2 / h3)) * t2 else 0.0)
+    else if ord == 4 then 0.0 - t2 * q * h1 / h2 else 0.0
+
+  ipndmv-coef : List Real, Integer, Integer, Integer -> Real
+  ipndmv-coef (sig) (i) (ord) (j) =
+    let h = list-at sig (i + 1) - list-at sig i
+    in let h1 = if i >= 1 then list-at sig i - list-at sig (i - 1) else 1.0
+    in let h2 = if i >= 2 then list-at sig (i - 1) - list-at sig (i - 2) else 1.0
+    in let h3 = if i >= 3 then list-at sig (i - 2) - list-at sig (i - 3) else 1.0
+    in h * ipndmv-c h h1 h2 h3 ord j
+
+  sample-ipndm-v : (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-ipndm-v (den) (x) (sigmas) (n) = ms-loop den (\sg i o j -> ipndmv-coef sg i o j) 4 x sigmas 0 0 0 0 n 0
+
+Section: DEIS
+
+ sample_deis in Forge's 'tab' mode at max order 3 (k_diffusion/deis.py). edm2t
+ maps each sigma to VP time t = (sqrt (b0^2 + 2 bd ln (sigma^2 + 1)) - b0) /
+ bd, where EDM's range sigma 0.002 to 80 at epsilon 1e-3 fixes bd = 2 (ln
+ (0.002^2 + 1) / 1e-3 - ln 6401) / (1e-3 - 1) and b0 = ln 6401 - bd/2, and b1 =
+ b0 + bd. A step's coefficient j is the sum over the 10000 points of
+ torch.linspace (t, t') of 0.5 (b0 + (b1 - b0) tau) / sqrt (alpha (1 - alpha)),
+ alpha = exp (-(b1 - b0) tau^2 / 2 - b0 tau), times the Lagrange basis j on
+ the order's last VP times, times (t' - t) / 10000: a left Riemann sum, not
+ the integral. The first step and the step to 0 are Euler steps. edm2t and
+ linspace run in f32 in Forge, so each of their operations is rounded to
+ f32 here.
+
+  deis-bd : Integer -> Real
+  deis-bd (z) =
+    let s = sm-f32 0.002
+    in let a = sm-f32 (sm-ln (sm-f32 (sm-f32 (s * s) + 1.0)))
+    in sm-f32 (2.0 * sm-f32 (sm-f32 (a / sm-f32 0.001) - sm-f32 (sm-ln 6401.0)) / sm-f32 (0.001 - 1.0))
+
+  deis-b0 : Real -> Real
+  deis-b0 (bd) = sm-f32 (sm-f32 (sm-ln 6401.0) - 0.5 * bd)
+
+  deis-t : Real, Real, Real -> Real
+  deis-t (bd) (b0) (s) =
+    let s32 = sm-f32 s
+    in let l = sm-f32 (sm-ln (sm-f32 (sm-f32 (s32 * s32) + 1.0)))
+    in let r = sm-f32 (sm-sqrt (sm-f32 (sm-f32 (b0 * b0) + sm-f32 (2.0 * bd * l))))
+    in sm-f32 (sm-f32 (r - b0) / bd)
+
+  deis-basis : Real, Real, Real, Real, Integer, Integer -> Real
+  deis-basis (tau) (p0) (p1) (p2) (ord) (j) =
+    if ord == 2 then (if j == 0 then (tau - p1) / (p0 - p1) else (tau - p0) / (p1 - p0))
+    else if j == 0 then (tau - p1) * (tau - p2) / ((p0 - p1) * (p0 - p2))
+    else if j == 1 then (tau - p0) * (tau - p2) / ((p1 - p0) * (p1 - p2))
+    else (tau - p0) * (tau - p1) / ((p2 - p0) * (p2 - p1))
+
+  deis-tau : Real, Real, Real, Integer -> Real
+  deis-tau (a) (b) (step) (k) = if k < 5000 then sm-f32 (a + sm-f32 (step * real-from-int k)) else sm-f32 (b - sm-f32 (step * real-from-int (9999 - k)))
+
+  deis-sum : Real, Real, Real, Real, Real, Real, Real, Real, Integer, Integer, Real, Real, Real -> List Real
+  deis-sum (b0) (c) (a) (b) (step) (p0) (p1) (p2) (ord) (k) (s0) (s1) (s2) =
+    if k >= 10000 then [s0, s1, s2]
+    else let tau = deis-tau a b step k
+    in let alpha = sm-exp (0.0 - 0.5 * tau * tau * c - tau * b0)
+    in let g = 0.5 * (tau * c + b0) / sm-sqrt (alpha * (1.0 - alpha))
+    in deis-sum b0 c a b step p0 p1 p2 ord (k + 1) (s0 + g * deis-basis tau p0 p1 p2 ord 0) (s1 + g * deis-basis tau p0 p1 p2 ord 1) (if ord >= 3 then s2 + g * deis-basis tau p0 p1 p2 ord 2 else 0.0)
+
+  deis-row : Real, Real, List Real, Integer -> List Real
+  deis-row (b0) (b1) (ts) (i) =
+    let ord = if i + 1 < 3 then i + 1 else 3
+    in let a = list-at ts i
+    in let b = list-at ts (i + 1)
+    in let dtau = sm-f32 (sm-f32 (b - a) / 10000.0)
+    in let sums = deis-sum b0 (sm-f32 (b1 - b0)) a b (sm-f32 (sm-f32 (b - a) / 9999.0)) a (list-at ts (i - 1)) (if ord >= 3 then list-at ts (i - 2) else 0.0) ord 0 0.0 0.0 0.0
+    in [list-at sums 0 * dtau, list-at sums 1 * dtau, list-at sums 2 * dtau, 0.0]
+
+  deis-table-loop : Real, Real, List Real, List Real, Integer, List Real -> List Real
+  deis-table-loop (b0) (b1) (sig) (ts) (i) (acc) =
+    if i >= list-length sig - 1 then acc
+    else if i == 0 | list-at sig (i + 1) <= 0.0 then deis-table-loop b0 b1 sig ts (i + 1) (acc & [0.0, 0.0, 0.0, 0.0])
+    else deis-table-loop b0 b1 sig ts (i + 1) (acc & deis-row b0 b1 ts i)
+
+  deis-ts : Real, Real, List Real, Integer, List Real -> List Real
+  deis-ts (bd) (b0) (sig) (i) (acc) = if i >= list-length sig then acc else deis-ts bd b0 sig (i + 1) (list-push acc (deis-t bd b0 (list-at sig i)))
+
+  deis-table : List Real -> List Real
+  deis-table (sig) =
+    let bd = deis-bd 0
+    in let b0 = deis-b0 bd
+    in deis-table-loop b0 (sm-f32 (bd + b0)) sig (deis-ts bd b0 sig 0 []) 0 []
+
+  deis-coef : List Real, List Real, Integer, Integer, Integer -> Real
+  deis-coef (tab) (sig) (i) (ord) (j) =
+    if ord == 1 | list-at sig (i + 1) <= 0.0 then (if j == 0 then list-at sig (i + 1) - list-at sig i else 0.0)
+    else if j >= ord then 0.0
+    else list-at tab (i * 4 + j)
+
+  sample-deis : (Integer, Real -> Integer), Integer, List Real, Integer -> Integer
+  sample-deis (den) (x) (sigmas) (n) =
+    let tab = deis-table sigmas
+    in ms-loop den (\sg i o j -> deis-coef tab sg i o j) 3 x sigmas 0 0 0 0 n 0
+
+Section: DDIM
+
+ Forge's ddim (modules/sd_samplers_timesteps_impl.py) at eta 0 over
+ CompVisSampler's timesteps, range (0, 1000, 1000 // steps) + 1 capped at 999.
+ x is in the variance-preserving space and the model's eps is Forge's classic
+ estimate from the denoiser, (k x - D (k x, sigma)) / sigma with k = sqrt
+ (sigma^2 + 1). With a = 1 / (sigma^2 + 1) at the timestep and a' at the one
+ before, a step is x' = sqrt (a'/a) x + (sqrt (1 - a') - sqrt (a' (1 - a) /
+ a)) eps; the last step lands on the first timestep, not on 0.
+
+  ddim-ts-loop : Integer, Integer, List Integer -> List Integer
+  ddim-ts-loop (t) (st) (acc) =
+    if t >= 1000 then acc
+    else ddim-ts-loop (t + st) st (list-push acc (if t + 1 > 999 then 999 else t + 1))
+
+  ddim-timesteps : Integer -> List Integer
+  ddim-timesteps (steps) = ddim-ts-loop 0 (1000 / steps) []
+
+  sm-alpha : Integer -> Real
+  sm-alpha (t) = let s = sm-discrete-sigma t in 1.0 / (s * s + 1.0)
+
+  ddim-loop : (Integer, Real -> Integer), Integer, List Integer, Integer, Integer, Integer -> Integer
+  ddim-loop (den) (x) (ts) (index) (n) (bad) =
+    if index < 1 then bad
+    else let sg = sm-discrete-sigma (list-at ts index)
+    in let a = sm-alpha (list-at ts index)
+    in let ap = sm-alpha (list-at ts (index - 1))
+    in let k = sm-sqrt (sg * sg + 1.0)
+    in let xs = gpu-buf-alloc (n * 4)
+    in let r0 = if xs == 0 then 0 - 1 else sm-lincomb x x x xs k 0.0 0.0 n
+    in let d = if r0 < 0 then 0 else den xs sg
+    in let c2 = sm-sqrt (1.0 - ap) - sm-sqrt (ap * (1.0 - a) / a)
+    in let r = if d == 0 then 0 - 1 else sm-lincomb x d d x (sm-sqrt (ap / a) + c2 * k / sg) (0.0 - c2 / sg) 0.0 n
+    in let f = (if xs == 0 then True else gpu-buf-free xs) & (if d == 0 then True else gpu-buf-free d)
+    in ddim-loop den x ts (index - 1) n (bad + (if r < 0 then 1 else 0))
+
+  sample-ddim : (Integer, Real -> Integer), Integer, Integer, Integer -> Integer
+  sample-ddim (den) (x) (steps) (n) =
+    let ts = ddim-timesteps steps
+    in ddim-loop den x ts (list-length ts - 1) n 0
+
+Section: PLMS
+
+ Forge's plms over the same timesteps and eps estimate as DDIM: the DDIM step
+ taken with a combined eps, which on the first step is the mean of eps at x
+ and eps at the DDIM step's result, and after it the Adams-Bashforth weights
+ over the last one to three eps.
+
+  plms-eps : (Integer, Real -> Integer), Integer, Integer, Integer -> Integer
+  plms-eps (den) (x) (t) (n) =
+    let sg = sm-discrete-sigma t
+    in let k = sm-sqrt (sg * sg + 1.0)
+    in let xs = gpu-buf-alloc (n * 4)
+    in let r0 = if xs == 0 then 0 - 1 else sm-lincomb x x x xs k 0.0 0.0 n
+    in let d = if r0 < 0 then 0 else den xs sg
+    in let out = if d == 0 then 0 else gpu-buf-alloc (n * 4)
+    in let r = if out == 0 then 0 - 1 else sm-lincomb x d d out (k / sg) (0.0 - 1.0 / sg) 0.0 n
+    in let f = sm-free xs & sm-free d
+    in if r < 0 then (if sm-free out then 0 else 0) else out
+
+  plms-first : (Integer, Real -> Integer), Integer, Integer, Integer, Real, Real, Integer -> Integer
+  plms-first (den) (x) (e) (tnext) (ca) (ce) (n) =
+    let xp = gpu-buf-alloc (n * 4)
+    in let r1 = if xp == 0 then 0 - 1 else sm-lincomb x e e xp ca ce 0.0 n
+    in let en = if r1 < 0 then 0 else plms-eps den xp tnext n
+    in let r2 = if en == 0 then 0 - 1 else sm-lincomb x e en x ca (ce / 2.0) (ce / 2.0) n
+    in let f = sm-free xp & sm-free en
+    in r2
+
+  plms-loop : (Integer, Real -> Integer), Integer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  plms-loop (den) (x) (ts) (index) (o1) (o2) (o3) (n) (bad) =
+    if index < 1 then (if sm-free o1 & sm-free o2 & sm-free o3 then bad else bad + 1)
+    else let a = sm-alpha (list-at ts index)
+    in let ap = sm-alpha (list-at ts (index - 1))
+    in let ca = sm-sqrt (ap / a)
+    in let ce = sm-sqrt (1.0 - ap) - sm-sqrt (ap * (1.0 - a) / a)
+    in let e = plms-eps den x (list-at ts index) n
+    in let ord = if o1 == 0 then 1 else if o2 == 0 then 2 else if o3 == 0 then 3 else 4
+    in let r1 = if e == 0 then 0 - 1
+     else if o1 == 0 then plms-first den x e (list-at ts (index - 1)) ca ce n
+     else sm-lincomb x e o1 x ca (ce * ab-coef ord 0) (ce * ab-coef ord 1) n
+    in let r2 = if r1 < 0 | o2 == 0 then r1 else sm-lincomb x o2 (if o3 == 0 then o2 else o3) x 1.0 (ce * ab-coef ord 2) (if o3 == 0 then 0.0 else ce * ab-coef ord 3) n
+    in let f = sm-free o3
+    in plms-loop den x ts (index - 1) e o1 o2 n (bad + (if r2 < 0 then 1 else 0))
+
+  sample-plms : (Integer, Real -> Integer), Integer, Integer, Integer -> Integer
+  sample-plms (den) (x) (steps) (n) =
+    let ts = ddim-timesteps steps
+    in plms-loop den x ts (list-length ts - 1) 0 0 0 n 0
+
+Section: UniPC
+
+ Forge's unipc (modules/sd_samplers_timesteps_impl.py, modules/models/diffusion/
+ uni_pc) with its defaults: multistep, variant bh1, data prediction, order 3,
+ lower order final, time-uniform t from 1 to 1/1000 over as many steps as
+ CompVisSampler has timesteps. The schedule is NoiseScheduleVP 'discrete':
+ log alpha (t) linear between 0.5 ln alphas_cumprod at t = (j + 1) / 1000.
+ The model's x0 is (x - sigma_t eps) / alpha_t, eps the classic estimate at
+ the timestep (t - 1/1000) 1000 rounded.
+
+  uni-la : Integer -> Real
+  uni-la (j) = let s = sm-discrete-sigma j in 0.5 * sm-ln (1.0 / (s * s + 1.0))
+
+  uni-log-alpha : Real -> Real
+  uni-log-alpha (t) =
+    let pos = t * 1000.0 - 1.0
+    in let j0 = real-to-int pos
+    in let j = if j0 < 0 then 0 else if j0 > 998 then 998 else j0
+    in let w = pos - real-from-int j
+    in (1.0 - w) * uni-la j + w * uni-la (j + 1)
+
+  uni-alpha : Real -> Real
+  uni-alpha (t) = sm-exp (uni-log-alpha t)
+
+  uni-std : Real -> Real
+  uni-std (t) = sm-sqrt (1.0 - sm-exp (2.0 * uni-log-alpha t))
+
+  uni-lambda : Real -> Real
+  uni-lambda (t) = let la = uni-log-alpha t in la - 0.5 * sm-ln (1.0 - sm-exp (2.0 * la))
+
+  uni-x0 : (Integer, Real -> Integer), Integer, Real, Integer -> Integer
+  uni-x0 (den) (x) (t) (n) =
+    let tr = real-to-int ((t - 0.001) * 1000.0 + 0.5)
+    in let sd = sm-discrete-sigma (if tr < 0 then 0 else if tr > 999 then 999 else tr)
+    in let k = sm-sqrt (sd * sd + 1.0)
+    in let xs = gpu-buf-alloc (n * 4)
+    in let r0 = if xs == 0 then 0 - 1 else sm-lincomb x x x xs k 0.0 0.0 n
+    in let d = if r0 < 0 then 0 else den xs sd
+    in let at = uni-alpha t
+    in let st = uni-std t
+    in let out = if d == 0 then 0 else gpu-buf-alloc (n * 4)
+    in let r = if out == 0 then 0 - 1 else sm-lincomb x d d out (1.0 / at - st * k / (at * sd)) (st / (at * sd)) 0.0 n
+    in let f = (if xs == 0 then True else gpu-buf-free xs) & (if d == 0 then True else gpu-buf-free d)
+    in if r < 0 then (if out == 0 then 0 else (if gpu-buf-free out then 0 else 0)) else out
+
+ multistep_uni_pc_bh_update's b: h phi_k runs from (e^hh - 1) / hh - 1 by
+ phi / hh - 1 / (i + 1)!, and b_i = h phi_k i! / hh, with hh = -h.
+
+  uni-b : Real, Integer -> Real
+  uni-b (hh) (i) = uni-b-loop hh ((sm-exp hh - 1.0) / hh - 1.0) 1 1 i
+
+  uni-b-loop : Real, Real, Integer, Integer, Integer -> Real
+  uni-b-loop (hh) (phi) (fact) (k) (i) =
+    if k >= i then phi * real-from-int fact / hh
+    else uni-b-loop hh (phi / hh - 1.0 / real-from-int (fact * (k + 1))) (fact * (k + 1)) (k + 1) i
+
+  uni-det3 : Real, Real, Real, Real, Real, Real, Real, Real, Real -> Real
+  uni-det3 (a) (b) (c) (d) (e) (f) (g) (h) (i) = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+
+ One update: x becomes (sigma_t / sigma_0) x + c0 m0 + c1 m1 + c2 m2 [+ ct mt],
+ m0 the newest data estimate. The predictor's weights solve R[:-1,:-1] (order
+ 3) or are 1/2 (order 2); the corrector's solve R, or are 1/2 at order 1. The
+ answer is the corrector's model estimate at t, 0 without a corrector, - 1 on
+ a refusal.
+
+  uni-update : (Integer, Real -> Integer), Integer, Integer, Integer, Integer, Real, Real, Real, Real, Integer, Boolean, Integer -> Integer
+  uni-update (den) (x) (m0) (m1) (m2) (t0) (t1) (t2) (t) (ord) (corr) (n) =
+    let l0 = uni-lambda t0
+    in let h = uni-lambda t - l0
+    in let hh = 0.0 - h
+    in let r1 = if ord >= 2 then (uni-lambda t1 - l0) / h else 1.0
+    in let r2 = if ord >= 3 then (uni-lambda t2 - l0) / h else 1.0
+    in let b1 = uni-b hh 1
+    in let b2 = uni-b hh 2
+    in let b3 = uni-b hh 3
+    in let at = uni-alpha t
+    in let ratio = uni-std t / uni-std t0
+    in let base0 = 0.0 - at * (sm-exp hh - 1.0)
+    in let dp = r2 - r1
+    in let p1 = if ord == 2 then 0.5 else if ord == 3 then (b1 * r2 - b2) / dp else 0.0
+    in let p2 = if ord == 3 then (b2 - b1 * r1) / dp else 0.0
+    in let q1 = 0.0 - at * hh * p1 / r1
+    in let q2 = 0.0 - at * hh * p2 / r2
+    in let xp = gpu-buf-alloc (n * 4)
+    in let ra = if xp == 0 then 0 - 1 else sm-lincomb x m0 (if ord >= 2 then m1 else m0) xp ratio (base0 - q1 - q2) (if ord >= 2 then q1 else 0.0) n
+    in let rb = if ra < 0 | ord < 3 then ra else sm-lincomb xp m2 m2 xp 1.0 q2 0.0 n
+    in if rb < 0 then (if xp == 0 then 0 - 1 else (if gpu-buf-free xp then 0 - 1 else 0 - 1))
+    else if corr == False then (if sm-lincomb xp xp xp x 1.0 0.0 0.0 n < 0 | gpu-buf-free xp == False then 0 - 1 else 0)
+    else let mt = uni-x0 den xp t n
+    in let f = gpu-buf-free xp
+    in let d3 = uni-det3 1.0 1.0 1.0 r1 r2 1.0 (r1 * r1) (r2 * r2) 1.0
+    in let c1 = if ord == 2 then (b1 - b2) / (1.0 - r1) else if ord == 3 then uni-det3 b1 1.0 1.0 b2 r2 1.0 b3 (r2 * r2) 1.0 / d3 else 0.0
+    in let c2 = if ord == 3 then uni-det3 1.0 b1 1.0 r1 b2 1.0 (r1 * r1) b3 1.0 / d3 else 0.0
+    in let cl = if ord == 1 then 0.5 else if ord == 2 then (b2 - r1 * b1) / (1.0 - r1) else uni-det3 1.0 1.0 b1 r1 r2 b2 (r1 * r1) (r2 * r2) b3 / d3
+    in let k1 = 0.0 - at * hh * c1 / r1
+    in let k2 = 0.0 - at * hh * c2 / r2
+    in let kt = 0.0 - at * hh * cl
+    in let s1 = if mt == 0 then 0 - 1 else sm-lincomb x m0 (if ord >= 2 then m1 else m0) x ratio (base0 - k1 - k2 - kt) (if ord >= 2 then k1 else 0.0) n
+    in let s2 = if s1 < 0 then s1 else sm-lincomb x (if ord >= 3 then m2 else mt) mt x 1.0 (if ord >= 3 then k2 else 0.0) kt n
+    in if s2 < 0 then 0 - 1 else mt
+
+  uni-t : Integer, Integer -> Real
+  uni-t (k) (steps) = 1.0 + (0.001 - 1.0) * real-from-int k / real-from-int steps
+
+  uni-free : Integer -> Boolean
+  uni-free (h) = if h > 0 then gpu-buf-free h else True
+
+  unipc-loop : (Integer, Real -> Integer), Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  unipc-loop (den) (x) (step) (steps) (m0) (m1) (m2) (n) (bad) =
+    if step > steps then (if uni-free m0 & uni-free m1 & uni-free m2 then bad else bad + 1)
+    else let ord = if step < 3 then step else (if steps + 1 - step < 3 then steps + 1 - step else 3)
+    in let mt = uni-update den x m0 m1 m2 (uni-t (step - 1) steps) (uni-t (step - 2) steps) (uni-t (step - 3) steps) (uni-t step steps) ord (step < steps) n
+    in let f = uni-free m2
+    in unipc-loop den x (step + 1) steps (if mt > 0 then mt else 0) m0 m1 n (bad + (if mt < 0 then 1 else 0))
+
+  sample-unipc : (Integer, Real -> Integer), Integer, Integer, Integer -> Integer
+  sample-unipc (den) (x) (steps) (n) =
+    let nt = list-length (ddim-timesteps steps)
+    in let m = uni-x0 den x 1.0 n
+    in if m == 0 then 1 else unipc-loop den x 1 nt m 0 0 n 0
+
+  sample-dpmpp-2m-sde : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-dpmpp-2m-sde (den) (noise) (x) (sigmas) (n) = dpmpp-2m-sde-loop den noise x sigmas 0 0 0 0.0 n 0 False
+
+ Forge's "DPM++ 2M SDE Heun": the same sampler with solver_type heun, whose
+ correction coefficient is (1 - (1 - e^2) / 2h) / r in place of (1 - e^2) / 2r.
+
+  sample-dpmpp-2m-sde-heun : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-dpmpp-2m-sde-heun (den) (noise) (x) (sigmas) (n) = dpmpp-2m-sde-loop den noise x sigmas 0 0 0 0.0 n 0 True
+
+Section: LCM
+
+ Forge's sample_lcm (modules/sd_samplers_lcm.py): x = D, plus sigma' times a
+ draw while sigma' is above 0. Forge's sampling_function calls the UNet
+ directly, so LCMCompVisDenoiser's c_skip and c_out never apply; what the
+ wrapper does contribute is the Automatic schedule, get_sigmas over the 50
+ f32 sigmas at timesteps 19, 39, ... 999, t = linspace (999, 19, n) mapped
+ to (t - 19) / 20 and interpolated in log sigma.
+
+  lcm-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Integer, Integer -> Integer
+  lcm-loop (den) (noise) (x) (sig) (i) (k) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else let sn = list-at sig (i + 1)
+    in let d = den x (list-at sig i)
+    in let z = if sn > 0.0 then noise k else d
+    in let r = if d == 0 then 0 - 1 else sm-lincomb d z z x 1.0 (if sn > 0.0 then sn else 0.0) 0.0 n
+    in let f = if d == 0 then True else gpu-buf-free d
+    in lcm-loop den noise x sig (i + 1) (if sn > 0.0 then k + 1 else k) n (bad + (if r < 0 then 1 else 0))
+
+  sample-lcm : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-lcm (den) (noise) (x) (sigmas) (n) = lcm-loop den noise x sigmas 0 0 n 0
+
+  lcm-valid-sigma : Integer -> Real
+  lcm-valid-sigma (j) =
+    let s = sm-discrete-sigma (19 + 20 * j)
+    in let ac = sm-f32 (1.0 / sm-f32 (sm-f32 (s * s) + 1.0))
+    in sm-f32 (sm-sqrt (sm-f32 (sm-f32 (1.0 - ac) / ac)))
+
+  lcm-log-sigma : Integer -> Real
+  lcm-log-sigma (j) = sm-f32 (sm-ln (lcm-valid-sigma j))
+
+  lcm-sched-loop : Integer, Integer, List Real -> List Real
+  lcm-sched-loop (i) (n) (acc) =
+    if i >= n then list-push acc 0.0
+    else let fr = if n > 1 then real-from-int i / real-from-int (n - 1) else 0.0
+    in let tt = sm-f32 ((980.0 - 980.0 * fr) / 20.0)
+    in let c = if tt < 0.0 then 0.0 else if tt > 49.0 then 49.0 else tt
+    in let lo = real-to-int c
+    in let w = c - real-from-int lo
+    in let hi = if w > 0.0 then lo + 1 else lo
+    in lcm-sched-loop (i + 1) n (list-push acc (sm-exp ((1.0 - w) * lcm-log-sigma lo + w * lcm-log-sigma hi)))
+
+  lcm-sigmas : Integer -> List Real
+  lcm-sigmas (n) = lcm-sched-loop 0 n []
+
+Section: DDPM
+
+ Forge's sample_ddpm (backend/modules/k_diffusion_extra.py): with a and a'
+ the alphas_cumprod 1 / (sigma^2 + 1) at sigma and sigma', alpha = a / a',
+ x / sqrt (1 + sigma^2) steps to sqrt (1 / alpha) (x_in - (1 - alpha) eps /
+ sqrt (1 - a)), eps = (x - D) / sigma, plus sqrt ((1 - alpha) (1 - a') /
+ (1 - a)) of a draw while sigma' is above 0, and is scaled back by sqrt (1 +
+ sigma'^2) unless sigma' is 0.
+
+  ddpm-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Integer, Integer -> Integer
+  ddpm-loop (den) (noise) (x) (sig) (i) (k) (n) (bad) =
+    if i >= list-length sig - 1 then bad
+    else let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in let d = den x s
+    in let ac = 1.0 / (s * s + 1.0)
+    in let acp = 1.0 / (sn * sn + 1.0)
+    in let al = ac / acp
+    in let a = sm-sqrt (1.0 / al)
+    in let b = (1.0 - al) / sm-sqrt (1.0 - ac)
+    in let m = if sn > 0.0 then sm-sqrt (1.0 + sn * sn) else 1.0
+    in let c = if sn > 0.0 then sm-sqrt ((1.0 - al) * (1.0 - acp) / (1.0 - ac)) else 0.0
+    in let z = if sn > 0.0 then noise k else d
+    in let r = if d == 0 then 0 - 1 else sm-lincomb x d z x (m * a * (1.0 / sm-sqrt (1.0 + s * s) - b / s)) (m * a * b / s) (m * c) n
+    in let f = if d == 0 then True else gpu-buf-free d
+    in ddpm-loop den noise x sig (i + 1) (if sn > 0.0 then k + 1 else k) n (bad + (if r < 0 then 1 else 0))
+
+  sample-ddpm : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-ddpm (den) (noise) (x) (sigmas) (n) = ddpm-loop den noise x sigmas 0 0 n 0
+
+Section: Restart
+
+ Forge's restart_sampler (modules/sd_samplers_extra.py) with its automatic
+ restart list. Below 20 steps it is Heun over the sigmas. From 20 steps the
+ sigmas are replaced by the Karras schedule of steps - rs rt steps between the
+ last nonzero sigma and the first, with rs = 9 and rt = 1, or rs = steps div 4
+ and rt = 2 from 36 steps; after the step that lands on the sigma nearest
+ 0.1, the Karras schedule of rs + 1 sigmas from that sigma up to the sigma
+ nearest 2 (its trailing 0 dropped) is run rt times. Each step is a Heun step
+ (Euler to 0), and a step that starts above where the last one ended first
+ adds sqrt (sigma^2 - last^2) of a draw. argmin keeps the first of equal
+ distances.
+
+  sm-argmin-loop : List Real, Real, Integer, Integer, Real -> Integer
+  sm-argmin-loop (sig) (v) (i) (best) (bd) =
+    if i >= list-length sig then best
+    else let d = list-at sig i - v
+    in let ad = if d < 0.0 then 0.0 - d else d
+    in if ad < bd then sm-argmin-loop sig v (i + 1) i ad else sm-argmin-loop sig v (i + 1) best bd
+
+  sm-argmin : List Real, Real -> Integer
+  sm-argmin (sig) (v) = sm-argmin-loop sig v 0 0 1000000000.0
+
+  rs-seg : List Real, Integer, List Real -> List Real
+  rs-seg (sr) (j) (acc) =
+    if j + 1 >= list-length sr - 1 then acc
+    else rs-seg sr (j + 1) (list-push (list-push acc (list-at sr j)) (list-at sr (j + 1)))
+
+  rs-times : List Real, Integer, List Real -> List Real
+  rs-times (sr) (t) (acc) = if t <= 0 then acc else rs-times sr (t - 1) (rs-seg sr 0 acc)
+
+  rs-plan-loop : List Real, Integer, Integer, Integer, Integer, List Real -> List Real
+  rs-plan-loop (sig) (i) (at) (rsteps) (rtimes) (acc) =
+    if i >= list-length sig - 1 then acc
+    else let a1 = list-push (list-push acc (list-at sig i)) (list-at sig (i + 1))
+    in let mx = sm-argmin sig 2.0
+    in let a2 = if i + 1 == at & mx < i + 1 then rs-times (karras-sigmas rsteps (list-at sig (i + 1)) (list-at sig mx)) rtimes a1 else a1
+    in rs-plan-loop sig (i + 1) at rsteps rtimes a2
+
+ The plan is the step list flattened, from and to of each step in turn.
+
+  restart-plan : List Real -> List Real
+  restart-plan (sig) =
+    let steps = list-length sig - 1
+    in if steps < 20 then rs-plan-loop sig 0 (0 - 1) 0 0 []
+    else let rs = if steps >= 36 then steps / 4 else 9
+    in let rt = if steps >= 36 then 2 else 1
+    in let base = karras-sigmas (steps - rs * rt) (list-at sig (steps - 1)) (list-at sig 0)
+    in rs-plan-loop base 0 (sm-argmin base 0.1) (rs + 1) rt []
+
+  restart-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer, Integer, Real, Integer, Integer -> Integer
+  restart-loop (den) (noise) (x) (pl) (i) (k) (last) (n) (bad) =
+    if 2 * i + 1 >= list-length pl then bad
+    else let s = list-at pl (2 * i)
+    in let s1 = list-at pl (2 * i + 1)
+    in let up = i > 0 & last < s
+    in let rn = if up then sm-lincomb x (noise k) x x 1.0 (sm-sqrt (s * s - last * last)) 0.0 n else 0
+    in let d = if rn < 0 then 0 else den x s
+    in let r = if d == 0 then 0 - 1
+     else if s1 <= 0.0 then sm-lincomb x d d x (1.0 + (s1 - s) / s) (0.0 - (s1 - s) / s) 0.0 n
+     else heun-step den x d s s1 n
+    in let f = if d == 0 then True else gpu-buf-free d
+    in restart-loop den noise x pl (i + 1) (if up then k + 1 else k) s1 n (bad + (if r < 0 then 1 else 0))
+
+  sample-restart : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, Integer -> Integer
+  sample-restart (den) (noise) (x) (sigmas) (n) = restart-loop den noise x (restart-plan sigmas) 0 0 0.0 n 0
+
+Section: DPM-Solver
+
+ k-diffusion's DPMSolver in t = - ln sigma: eps = (u - D (u, sigma)) / sigma,
+ and with h = t' - t and E (h) = e^h - 1, the order 1 step is x - sigma' E (h)
+ eps; order 2 at r1 evaluates u1 = x - sigma (t + r1 h) E (r1 h) eps and steps
+ x - sigma' E (h) eps - sigma' / 2r1 E (h) (eps1 - eps); order 3 (r1 = 1/3, r2 =
+ 2/3) adds u2 = x - sigma (s2) E (r2 h) eps - 2 sigma (s2) (E (r2 h) / r2 h -
+ 1) (eps1 - eps) and steps x - sigma' E (h) eps - sigma' / r2 (E (h) / h - 1)
+ (eps2 - eps).
+
+  dpm-sig : Real -> Real
+  dpm-sig (t) = sm-exp (0.0 - t)
+
+  dpm-em : Real -> Real
+  dpm-em (h) = sm-exp h - 1.0
+
+  dpm-eps : (Integer, Real -> Integer), Integer, Real, Integer -> Integer
+  dpm-eps (den) (u) (t) (n) =
+    let s = dpm-sig t
+    in let d = den u s
+    in let e = if d == 0 then 0 else gpu-buf-alloc (n * 4)
+    in let r = if e == 0 then 0 - 1 else sm-lincomb u d d e (1.0 / s) (0.0 - 1.0 / s) 0.0 n
+    in let f = if d == 0 then True else gpu-buf-free d
+    in if r < 0 then (if e == 0 then 0 else (if gpu-buf-free e then 0 else 0)) else e
+
+  dpm-e1 : (Integer, Real -> Integer), Integer, Integer, Real, Real, Real, Integer -> Integer
+  dpm-e1 (den) (x) (e0) (t) (h) (r1) (n) =
+    let s1 = t + r1 * h
+    in let u1 = gpu-buf-alloc (n * 4)
+    in let r = if u1 == 0 then 0 - 1 else sm-lincomb x e0 e0 u1 1.0 (0.0 - dpm-sig s1 * dpm-em (r1 * h)) 0.0 n
+    in let e1 = if r < 0 then 0 else dpm-eps den u1 s1 n
+    in let f = if u1 == 0 then True else gpu-buf-free u1
+    in e1
+
+  dpm-e2 : (Integer, Real -> Integer), Integer, Integer, Integer, Real, Real, Integer -> Integer
+  dpm-e2 (den) (x) (e0) (e1) (t) (h) (n) =
+    let s2 = t + 2.0 / 3.0 * h
+    in let g = dpm-sig s2 * 2.0 * (dpm-em (2.0 / 3.0 * h) / (2.0 / 3.0 * h) - 1.0)
+    in let u2 = gpu-buf-alloc (n * 4)
+    in let r = if u2 == 0 then 0 - 1 else sm-lincomb x e0 e1 u2 1.0 (g - dpm-sig s2 * dpm-em (2.0 / 3.0 * h)) (0.0 - g) n
+    in let e2 = if r < 0 then 0 else dpm-eps den u2 s2 n
+    in let f = if u2 == 0 then True else gpu-buf-free u2
+    in e2
+
+  dpm-step2 : Integer, Integer, Integer, Real, Real, Real, Integer, Integer -> Integer
+  dpm-step2 (x) (e0) (e1) (tn) (h) (r1) (out) (n) =
+    let c = dpm-sig tn * dpm-em h
+    in sm-lincomb x e0 e1 out 1.0 (c / (2.0 * r1) - c) (0.0 - c / (2.0 * r1)) n
+
+  dpm-step3 : Integer, Integer, Integer, Real, Real, Integer, Integer -> Integer
+  dpm-step3 (x) (e0) (e2) (tn) (h) (out) (n) =
+    let c = dpm-sig tn * 1.5 * (dpm-em h / h - 1.0)
+    in sm-lincomb x e0 e2 out 1.0 (c - dpm-sig tn * dpm-em h) (0.0 - c) n
+
+  dpm-free : Integer, Integer, Integer -> Boolean
+  dpm-free (a) (b) (c) = (if a == 0 then True else gpu-buf-free a) & (if b == 0 then True else gpu-buf-free b) & (if c == 0 then True else gpu-buf-free c)
+
+Section: DPM fast
+
+ sample_dpm_fast at Forge's eta, eta_ancestral 1: nfe steps become m = nfe
+ div 3 + 1 intervals of t linear from - ln sigma_max to - ln sigma_min, at
+ orders 3 ... 3, 2, 1 when 3 divides nfe and 3 ... 3, nfe mod 3 otherwise.
+ Each interval aims at t' = min (t_end, - ln sigma_down) of the ancestral
+ step and adds sqrt (sigma (t_next)^2 - sigma (t')^2) of a draw, one draw per
+ interval.
+
+  dpm-threes : Integer, List Integer -> List Integer
+  dpm-threes (k) (acc) = if k <= 0 then acc else dpm-threes (k - 1) (list-push acc 3)
+
+  dpm-fast-orders : Integer -> List Integer
+  dpm-fast-orders (nfe) =
+    let m = nfe / 3 + 1
+    in if int-mod nfe 3 == 0 then list-push (list-push (dpm-threes (m - 2) []) 2) 1
+    else list-push (dpm-threes (m - 1) []) (int-mod nfe 3)
+
+  dpm-ts : Real, Real, Integer, Integer, List Real -> List Real
+  dpm-ts (a) (b) (m) (i) (acc) = if i > m then acc else dpm-ts a b m (i + 1) (list-push acc (a + (b - a) * real-from-int i / real-from-int m))
+
+  dpm-fast-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, List Real, List Integer, Real, Integer, Integer, Integer -> Integer
+  dpm-fast-loop (den) (noise) (x) (ts) (ords) (tend) (i) (n) (bad) =
+    if i >= list-length ords then bad
+    else let t = list-at ts i
+    in let tnx = list-at ts (i + 1)
+    in let sd = sm-down (dpm-sig t) (dpm-sig tnx)
+    in let tn = if 0.0 - sm-ln sd < tend then 0.0 - sm-ln sd else tend
+    in let su = sm-sqrt (dpm-sig tnx * dpm-sig tnx - dpm-sig tn * dpm-sig tn)
+    in let h = tn - t
+    in let o = list-at ords i
+    in let e0 = dpm-eps den x t n
+    in let e1 = if e0 == 0 | o < 2 then 0 else dpm-e1 den x e0 t h (if o == 2 then 0.5 else 1.0 / 3.0) n
+    in let e2 = if e1 == 0 | o < 3 then 0 else dpm-e2 den x e0 e1 t h n
+    in let r = if e0 == 0 then 0 - 1
+     else if o == 1 then sm-lincomb x e0 e0 x 1.0 (0.0 - dpm-sig tn * dpm-em h) 0.0 n
+     else if o == 2 then (if e1 == 0 then 0 - 1 else dpm-step2 x e0 e1 tn h 0.5 x n)
+     else if e2 == 0 then 0 - 1 else dpm-step3 x e0 e2 tn h x n
+    in let rz = if r < 0 then r else sm-lincomb x (noise i) x x 1.0 su 0.0 n
+    in let f = dpm-free e0 e1 e2
+    in dpm-fast-loop den noise x ts ords tend (i + 1) n (bad + (if rz < 0 then 1 else 0))
+
+  sample-dpm-fast : (Integer, Real -> Integer), (Integer -> Integer), Integer, Real, Real, Integer, Integer -> Integer
+  sample-dpm-fast (den) (noise) (x) (smin) (smax) (nfe) (n) =
+    let ords = dpm-fast-orders nfe
+    in let tend = 0.0 - sm-ln smin
+    in dpm-fast-loop den noise x (dpm-ts (0.0 - sm-ln smax) tend (list-length ords) 0 []) ords tend 0 n 0
+
+Section: DPM adaptive
+
+ sample_dpm_adaptive at Forge's eta 1 and its defaults: order 3, rtol 0.05,
+ atol 0.0078, h_init 0.05, and the PID controller with only the integral
+ term, of order 1.5 because eta is not 0. Each attempt from s aims at t = min
+ (t_end, s + h), moved to the ancestral t' as DPM fast does; x_low is the
+ order 2 step at r1 = 1/3 and x_high the order 3 step, sharing eps and eps1.
+ error = |(x_low - x_high) / delta|_2 / sqrt n, delta = max (atol, rtol max
+ (|x_low|, |x_prev|)) in f32. The factor 1 + atan ((1 / (error + 1e-8))^(2/3)
+ - 1) scales h after every attempt, and the attempt is accepted when it is at
+ least 0.81: x_prev = x_low, x = x_high plus sigma_up of a draw, s = t. The
+ loop runs while s < t_end - 1e-5.
+
+  sm-atan-series : Real, Real, Real, Integer -> Real
+  sm-atan-series (x2) (term) (acc) (k) =
+    if k > 61 then acc
+    else let t = 0.0 - term * x2
+    in sm-atan-series x2 t (acc + t / real-from-int (k + 2)) (k + 2)
+
+ Two half-angle reductions bring |x| <= 1 under tan (pi/16), where 31 terms
+ are exact.
+
+  sm-atan-small : Real -> Real
+  sm-atan-small (x) =
+    let y = x / (1.0 + sm-sqrt (1.0 + x * x))
+    in let z = y / (1.0 + sm-sqrt (1.0 + y * y))
+    in 4.0 * sm-atan-series (z * z) z z 1
+
+  sm-atan : Real -> Real
+  sm-atan (x) =
+    if x > 1.0 then 1.5707963267948966 - sm-atan-small (1.0 / x)
+    else if x < 0.0 - 1.0 then 0.0 - 1.5707963267948966 - sm-atan-small (1.0 / x)
+    else sm-atan-small x
+
+  sm-f32-real : Integer -> Real
+  sm-f32-real (raw) =
+    let b = bit-and raw #FFFFFFFF
+    in let e = bit-and (bit-shru b 23) 255
+    in if e == 0 then 0.0
+    else bits-to-real (bit-or (bit-shl (bit-shru b 31) 63) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
+
+ The three buffers are read back 256K elements at a time into the 4 MB
+ scratch window the other chapters share.
+
+  ad-scr : Integer = #BD700000
+
+  ad-chunk : Integer = 262144
+
+  ad-sum : Integer, Integer, Real, Real, Real -> Real
+  ad-sum (i) (k) (rtol) (atol) (acc) =
+    if i >= k then acc
+    else let l = sm-f32-real (peek-32 ad-scr (i * 4))
+    in let hi = sm-f32-real (peek-32 (ad-scr + 1048576) (i * 4))
+    in let p = sm-f32-real (peek-32 (ad-scr + 2097152) (i * 4))
+    in let al = if l < 0.0 then 0.0 - l else l
+    in let ap = if p < 0.0 then 0.0 - p else p
+    in let m = sm-f32 (rtol * (if al > ap then al else ap))
+    in let q = sm-f32 (sm-f32 (l - hi) / (if m > atol then m else atol))
+    in ad-sum (i + 1) k rtol atol (acc + q * q)
+
+  ad-err-loop : Integer, Integer, Integer, Integer, Integer, Real -> Real
+  ad-err-loop (xl) (xh) (xp) (done) (n) (acc) =
+    if done >= n then acc
+    else let k = if n - done < ad-chunk then n - done else ad-chunk
+    in let ok = gpu-buf-read xl (done * 4) (k * 4) ad-scr & gpu-buf-read xh (done * 4) (k * 4) (ad-scr + 1048576) & gpu-buf-read xp (done * 4) (k * 4) (ad-scr + 2097152)
+    in if ok == False then 0.0 - 1.0
+    else ad-err-loop xl xh xp (done + k) n (ad-sum 0 k (sm-f32 0.05) (sm-f32 0.0078) acc)
+
+  ad-error : Integer, Integer, Integer, Integer -> Real
+  ad-error (xl) (xh) (xp) (n) =
+    let s = ad-err-loop xl xh xp 0 n 0.0
+    in if s < 0.0 then s else sm-sqrt s / sm-sqrt (real-from-int n)
+
+  ad-accept : Integer, Integer, Integer, Integer, Real, Integer -> Integer
+  ad-accept (x) (xh) (xp) (z) (su) (n) =
+    let rz = sm-lincomb xh z xh x 1.0 su 0.0 n
+    in let f = gpu-buf-free xh & gpu-buf-free xp
+    in rz
+
+ A fuel of 10000 attempts stands in for Forge's unbounded loop.
+
+  ad-loop : (Integer, Real -> Integer), (Integer -> Integer), Integer, Integer, Real, Real, Real, Integer, Integer, Integer, Integer -> Integer
+  ad-loop (den) (noise) (x) (xp) (s) (tend) (h) (k) (n) (bad) (fuel) =
+    if s >= tend - 0.00001 | fuel >= 10000 then (if gpu-buf-free xp then bad else bad + 1) + (if fuel >= 10000 then 1 else 0)
+    else let t = if s + h < tend then s + h else tend
+    in let sd = sm-down (dpm-sig s) (dpm-sig t)
+    in let t2 = if 0.0 - sm-ln sd < tend then 0.0 - sm-ln sd else tend
+    in let su = sm-sqrt (dpm-sig t * dpm-sig t - dpm-sig t2 * dpm-sig t2)
+    in let hh = t2 - s
+    in let e0 = dpm-eps den x s n
+    in let e1 = if e0 == 0 then 0 else dpm-e1 den x e0 s hh (1.0 / 3.0) n
+    in let e2 = if e1 == 0 then 0 else dpm-e2 den x e0 e1 s hh n
+    in let xl = if e2 == 0 then 0 else gpu-buf-alloc (n * 4)
+    in let xh = if xl == 0 then 0 else gpu-buf-alloc (n * 4)
+    in let r1 = if xh == 0 then 0 - 1 else dpm-step2 x e0 e1 t2 hh (1.0 / 3.0) xl n
+    in let r2 = if r1 < 0 then r1 else dpm-step3 x e0 e2 t2 hh xh n
+    in let err = if r2 < 0 then 0.0 - 1.0 else ad-error xl xh xp n
+    in let f = dpm-free e0 e1 e2
+    in if err < 0.0 then (if dpm-free xl xh xp then bad + 1 else bad + 2)
+    else let fac = 1.0 + sm-atan (sm-exp (sm-ln (1.0 / (err + 0.00000001)) / 1.5) - 1.0)
+    in if fac >= 0.81 then ad-loop den noise x xl t tend (h * fac) (k + 1) n (bad + (if ad-accept x xh xp (noise k) su n < 0 then 1 else 0)) (fuel + 1)
+    else ad-loop den noise x xp s tend (h * fac) k n (bad + (if dpm-free xl xh 0 then 0 else 1)) (fuel + 1)
+
+  sample-dpm-adaptive : (Integer, Real -> Integer), (Integer -> Integer), Integer, Real, Real, Integer -> Integer
+  sample-dpm-adaptive (den) (noise) (x) (smin) (smax) (n) =
+    let xp = gpu-buf-alloc (n * 4)
+    in let r = if xp == 0 then 0 - 1 else sm-lincomb x x x xp 1.0 0.0 0.0 n
+    in if r < 0 then 1 else ad-loop den noise x xp (0.0 - sm-ln smax) (0.0 - sm-ln smin) 0.05 0 n 0 0
+
+Section: DDIM CFG++
+
+ Forge's ddim_cfgpp at eta 0: the DDIM step with the direction term taken from
+ the unconditional eps, (k x - Du) / sigma, in place of the guided one. It
+ sets cond_scale_miltiplier and nothing reads it, so the guidance is the full
+ CFG scale. The denoiser answers the guided D and writes Du into its third
+ argument.
+
+  ddim-cfgpp-loop : (Integer, Real, Integer -> Integer), Integer, List Integer, Integer, Integer, Integer -> Integer
+  ddim-cfgpp-loop (den) (x) (ts) (index) (n) (bad) =
+    if index < 1 then bad
+    else let sg = sm-discrete-sigma (list-at ts index)
+    in let a = sm-alpha (list-at ts index)
+    in let ap = sm-alpha (list-at ts (index - 1))
+    in let k = sm-sqrt (sg * sg + 1.0)
+    in let xs = gpu-buf-alloc (n * 4)
+    in let ub = gpu-buf-alloc (n * 4)
+    in let r0 = if xs == 0 | ub == 0 then 0 - 1 else sm-lincomb x x x xs k 0.0 0.0 n
+    in let d = if r0 < 0 then 0 else den xs sg ub
+    in let q = sm-sqrt (ap / a)
+    in let c1 = q * sm-sqrt (1.0 - a) / sg
+    in let c2 = sm-sqrt (1.0 - ap) / sg
+    in let r = if d == 0 then 0 - 1 else sm-lincomb x d ub x (q - c1 * k + c2 * k) c1 (0.0 - c2) n
+    in let f = dpm-free xs ub d
+    in ddim-cfgpp-loop den x ts (index - 1) n (bad + (if r < 0 then 1 else 0))
+
+  sample-ddim-cfgpp : (Integer, Real, Integer -> Integer), Integer, Integer, Integer -> Integer
+  sample-ddim-cfgpp (den) (x) (steps) (n) =
+    let ts = ddim-timesteps steps
+    in ddim-cfgpp-loop den x ts (list-length ts - 1) n 0

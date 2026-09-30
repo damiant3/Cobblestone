@@ -125,9 +125,19 @@ const varyA = evaluate('2+2'), varyB = evaluate('3+3');
 check('CONTROL: the answer tracks the input',
       varyA !== varyB, `2+2 -> "${varyA}", 3+3 -> "${varyB}"`);
 
+// SESSION. The page keeps a notebook by REPLAY: it sends every line so far and
+// the module answers one line per cell against one symbol table. The binding
+// row can only pass if the table survives from one line to the next, and its
+// control is the same second line with no binding before it, which must stay
+// symbolic rather than answer 7.
+const sess = evaluate('x := 3\nx + 4').split('\n');
+check('a binding is visible to the next line', sess[sess.length - 1] === '7', `got "${sess.join(' | ')}"`);
+check('one answer per line', sess.length === 2, `got ${sess.length} lines`);
+const unbound = evaluate('x + 4');
+check('CONTROL: without the binding the same line stays symbolic', unbound !== '7', `got "${unbound}"`);
 // The other half of the control is a SABOTAGE, and it does not live here
 // because this grader loads a built module and cannot rebuild one. It is run
-// against the source: point `mb-eval` at `fold-constants` instead of
+// against the source: point `mb-cell` at `fold-constants` instead of
 // `simplify` and the nested row must go red while the flat rows stay green.
 // Measured 2026-09-02 and it moved FIVE of the twelve rows: the nested row,
 // its named rival, and the parenthesised, rational and symbolic rows, while

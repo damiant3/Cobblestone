@@ -1,6 +1,8 @@
 # Serial REPL from the boot menu
 
-**Status: PROPOSAL** (val, 2026-09-24). Owner: val. Register row: WORKS-5,
+**Status: PARKED** (Damian, 2026-09-25). The chain is built and proven in
+codex-vm; the GopBoot row, the quiesce and the OVMF arm are not. Unpark
+trigger: a target machine with a UART, or a USB serial console. Owner: val. Register row: WORKS-5,
 `apps/works/works-backlog.md`. Root ruled 2026-09-24: not DeskBuildLoop's
 `vm-compile-cdx` (it needs VT-x and no bed can run it), and no second loader
 if one exists. None does: no GopBoot row executes a CDX; `seed-line` and the
@@ -53,15 +55,19 @@ return; Restart is the way out.
 3. **Quiesce, then jump to the trampoline.** Before the jump GopBoot halts
    every controller it started that masters memory (the xHCI's Run/Stop, at
    least), because GopBoot's heap is about to be reused by nobody who knows
-   the rings are there. The trampoline, with interrupts off and on a stack of
-   its own inside its page: copies the staged image over 0x100000; writes
-   cell 4072 with the compiler's stack top (see the open question); ZEROES
-   the system-table cells at 0x8000 and `uefi-systab-addr` (30704) and the
-   image-handle cell, because `__start` copies 0x8000 into 30704 whenever
-   30704 is zero (`X86_64Chapter.codex`, `emit-start`), so zeroing one is not
-   enough; and jumps to 0x100000 + the header's `__start` offset (bytes
-   200..207). `__start` pushes five registers before its own `cli`, which is
-   why the trampoline's stack must already be valid.
+   the rings are there. The trampoline is `apps/works/CdxChain.codex`
+   (`cdxc-chain`). Its code, stack and page tables live in the profiler
+   buffer [0x60000, 0x70000). With interrupts off it loads CR3 with its own
+   [0, 4 GB) identity map, because the caller's tables can BE the PML4 at
+   0x8000 that `__start` is about to rebuild; copies text and rodata (one
+   range, rodata follows the 8-aligned text) over 0x100000; ZEROES 0x8000,
+   30704 and 30712, because `__start` copies 0x8000 into 30704 whenever
+   30704 is zero; writes cell 4072 with the stack top (0 keeps the caller's);
+   and jumps to 0x100000 + the header's `__start` offset (bytes 200..207).
+   `__start` pushes five registers before its own `cli`, which is why the
+   trampoline's stack must already be valid. The jump needs no builtin: a
+   heap closure's first word is its code address, so `cdxc-jump` points a
+   fresh partial application's first word at the trampoline and calls it.
 4. The compiler's `__start` rebuilds page tables and the heap and falls into
    `repl-loop`. The stick's `CODEX.CDX` is the seed, built `-Repl`; a
    non-REPL build would run once and halt.
@@ -87,11 +93,11 @@ return; Restart is the way out.
   blocker for the bed.
 ## Proof
 
-1. A codex-vm arm, no GOP: a test payload that reads a small CDX (a REPL
-   echo program, built `-Repl`) from a `.disk`, chains into it by the
-   mechanism above, and the chained program's serial output is the
-   `.expected`. CONTROL: a CDX with one content byte flipped is refused with
-   the hash reason, and the payload's own next line still prints.
+1. **Built:** `codex/test/apps/cdx-chain`, a codex-vm arm with no GOP. Its
+   `.disk-src` is `cdx-chain-subject` freshly compiled; it stages the image,
+   is refused with one content byte flipped (hash) and with a signature
+   required (the subject is unsigned), then chains, and the subject's own
+   line is the last line of the `.expected`.
 2. OVMF: GopBoot's row chains into the stick's `CODEX.CDX`; `test-ovmf.ps1`
    pre-loads nothing, so the serial log must show the REPL's banner, then one
    compile fed through the QEMU serial (a `-serial` pipe arm, to be added to

@@ -29,13 +29,15 @@ count does.
 
 ## Done
 
-### Update 64 -- a second release on one day killed the box sampler at launch
+### Update 64 -- a second release on one day left the box sampler writing nothing
 
 Step 0a named its output `box-release-<date>.csv`. Update 63 had shipped
-that morning, so the name was Update 63's submitted, read-only record; the
-sampler exited on its first write and nothing said so, and the gate, battery,
-sweep, poison battery and DDC ran unsampled. The skill's command now names
-the Update number (`box-release-<date>-u<N>.csv`). After launching, check the
+that morning, so the name was Update 63's submitted, read-only record. The
+sampler kept running for the whole release while every write failed, because
+`build/box-sample.ps1` wraps each `Add-Content` in `try { } catch {}`, and
+the gate, battery, sweep, poison battery and DDC ran unsampled. The skill's command now names
+the Update number (`box-release-<date>-u<N>.csv`), and `box-sample.ps1` refuses an existing
+`-Out` and stops after three failed writes in a row. After launching, check the
 file grows:
 
 ```powershell
@@ -72,7 +74,7 @@ run on x86-64, a new `*.ps1`, or a parser rule that refuses more gets:
 ```powershell
 build/check-test-compile.ps1 -Full -Kernel <candidate.cdx> -Ways 4
 pwsh build/checks/tool-catalog.ps1 -Repo (Get-Location).Path
-build/sweep-app-classes.ps1 -Check -Jobs 4 -Kernel <candidate.cdx>
+build/sweep-app-classes.ps1 -Check -Jobs 16 -Kernel <candidate.cdx>
 ```
 
 The battery then found `-Prose` mode silently skipping the CDX1101 prose
@@ -109,9 +111,9 @@ batch cap: the same shape as Update 60's timeout. Read the admission line; at
 one slot, run the battery as tier groups whose union is `-Tier all`:
 
 ```powershell
-build/test.ps1 -Tier lang -Jobs 4 -ApprovedBy damian
-build/test.ps1 -Tier lib,fw,oracles -Jobs 4 -ApprovedBy damian
-build/test.ps1 -Tier apps,hardware,traps,slow -Jobs 4 -ApprovedBy damian
+build/test.ps1 -Tier lang -Jobs 16 -ApprovedBy damian
+build/test.ps1 -Tier lib,fw,oracles -Jobs 16 -ApprovedBy damian
+build/test.ps1 -Tier apps,hardware,traps,slow -Jobs 16 -ApprovedBy damian
 ```
 
 ### Update 62 -- a library signature change broke the diag stick, and only the release builds it

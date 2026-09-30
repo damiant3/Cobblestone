@@ -1,0 +1,231 @@
+Chapter: ImageGen
+  cites Site chapter SiteTheme
+
+ We say:
+
+Section: Measurements
+
+ The reference machine is an RTX 4060 Ti 16 GB. A 1024 x 1024 SDXL image at
+ 6 steps is 6 x 3.7 s of sampling plus 6.4 s of loading, text encoding, VAE
+ decode and PNG, therefore about 29 s warm; the first image after the server
+ starts took 55 s, and the resident server holds 9,599 MiB of device memory
+ (Diffusion.md stages 5 and 7, measured 2026-09-29). ig-ref-gflops is this
+ page's own f32 GEMM on that card in headless Edge, 668 and 688 GFLOPS in two
+ runs of test-imagegen.mjs on 2026-09-29; the estimate scales 29 s by the
+ ratio of the reference's GEMM to the visitor's, which prices the device and
+ nothing else.
+
+  ig-ref-seconds : Integer = 29
+  ig-ref-gflops : Integer = 680
+
+Section: Page CSS
+
+  ig-css : Text
+  ig-css =
+    ".ig{max-width:960px;margin:0 auto;padding:0 24px}"
+    & "#root .wk-label{min-width:0!important;overflow-wrap:anywhere}"
+    & ".card{text-align:left}"
+    & ".ig-a{display:inline-block;margin-top:10px;margin-right:16px;color:#d4a017;font-size:14px}"
+    & ".ig-a:hover{color:#e8c04a}"
+    & ".ig-probe{background:rgba(20,20,30,.7);border:1px solid #1e1e2e;border-radius:12px;padding:22px 28px;margin:12px auto 0;max-width:760px;text-align:left}"
+    & ".ig-body .wk-label{display:block;line-height:1.6;color:#c8ccd4;margin-bottom:.5em}"
+    & ".ig-good{color:#7fc97f!important}.ig-warn{color:#e8c04a!important}.ig-bad{color:#e87f7f!important}"
+    & ".ig-probe button{background:#d4a017;color:#0a0a12;border:0;border-radius:10px;padding:10px 20px;font-weight:600;cursor:pointer;margin-bottom:14px}"
+    & ".ig-step{max-width:760px;margin:18px auto 0;text-align:left}"
+    & ".ig-step>.wk-label:first-child{display:block;color:#e8c04a;font-weight:600;margin-bottom:.4em}"
+
+Section: Builders
+
+  ig-link : Text, Text, Text -> WidgetNode
+  ig-link (id) (href) (label) =
+    wk-attach (widget-custom id ("link:ig-a|" & href) 0 0) [widget-label (id & "t") label] 0 1
+
+  ig-step : Text, Text, List WidgetNode -> WidgetNode
+  ig-step (id) (title) (body) =
+    widget-box id "ig-step" [widget-label (id & "h") title, widget-box (id & "b") "ig-body" body]
+
+  ig-text : Text, Text -> WidgetNode
+  ig-text (id) (t) = widget-label id t
+
+Section: The Probe
+
+  ig-num : List Text, Text -> Integer
+  ig-num (o) (k) = text-to-integer (json-obj-field o k)
+
+  ig-arch-native : Text -> Boolean
+  ig-arch-native (a) =
+    if a == "lovelace" then True
+    else a == "blackwell"
+
+  ig-arch-old : Text -> Boolean
+  ig-arch-old (a) =
+    if a == "fermi" then True
+    else if a == "kepler" then True
+    else if a == "maxwell" then True
+    else if a == "pascal" then True
+    else if a == "volta" then True
+    else if a == "turing" then True
+    else a == "ampere"
+
+  ig-card-line : List Text -> WidgetNode
+  ig-card-line (o) =
+    let vendor = json-obj-field o "vendor"
+    in let arch = json-obj-field o "architecture"
+    in let named = if json-obj-field o "description" == "" then vendor & " " & arch else json-obj-field o "description"
+    in if vendor /= "nvidia" then widget-label "pv" ("Your browser reports a " & named & " GPU. The local route runs on NVIDIA cards only: its kernels are PTX, run by the NVIDIA driver. There is no local route for this GPU yet.")
+    else if ig-arch-native arch then widget-box "pvb" "ig-good" [widget-label "pv" ("An NVIDIA " & arch & " GPU (" & named & "). This generation runs the native route.")]
+    else if ig-arch-old arch then widget-box "pvb" "ig-bad" [widget-label "pv" ("An NVIDIA " & arch & " GPU (" & named & "). The native route needs an RTX 40-series card or newer: its kernels are PTX for compute capability 8.9, which older cards cannot run.")]
+    else widget-box "pvb" "ig-warn" [widget-label "pv" ("An NVIDIA GPU (" & named & "), but the browser does not say which generation. The native route needs compute capability 8.9 or higher, an RTX 40-series card or newer; nvidia-smi --query-gpu=name,compute_cap --format=csv answers it.")]
+
+  ig-gemm-line : List Text -> WidgetNode
+  ig-gemm-line (o) =
+    let g = ig-num o "gflops"
+    in if json-obj-field o "bad" /= "0" then widget-box "pgb" "ig-bad" [widget-label "pg" ("The GPU test multiplied two 1024 x 1024 matrices and " & json-obj-field o "bad" & " of " & json-obj-field o "checked" & " sampled results were wrong, so no speed is reported.")]
+    else widget-label "pg" ("The GPU test multiplied two 1024 x 1024 matrices " & json-obj-field o "runs" & " times: " & show g & " GFLOPS in f32, every one of " & json-obj-field o "checked" & " sampled results exact.")
+
+  ig-estimate-line : List Text -> WidgetNode
+  ig-estimate-line (o) =
+    let g = ig-num o "gflops"
+    in if ig-ref-gflops <= 0 then widget-label "pe" "An RTX 4060 Ti 16 GB makes a 1024 x 1024 SDXL image in about 29 seconds at 6 steps, once the model is loaded; the first image after starting takes about a minute."
+    else if g <= 0 then widget-label "pe" "No estimate: the test measured no speed."
+    else widget-label "pe" ("Scaled from an RTX 4060 Ti 16 GB (29 seconds for a 1024 x 1024 SDXL image at 6 steps), this GPU would take about " & show (ig-ref-seconds * ig-ref-gflops / g) & " seconds, if the native route runs on it. The estimate prices the GPU only.")
+
+  ig-memory-line : WidgetNode
+  ig-memory-line = widget-label "pm" "Which families fit depends on the card's memory, which a browser cannot read. SDXL holds 9.6 GB on the device while it serves; SD1.5 holds less. Flux is not served yet. nvidia-smi --query-gpu=name,memory.total --format=csv shows the memory."
+
+  ig-result : Text -> List WidgetNode
+  ig-result (t) =
+    if t == "" then [widget-label "p0" "The check reads what your browser can see of your GPU and times a small matrix multiplication on it, for about three seconds. Nothing leaves this page."]
+    else if t == "running" then [widget-label "p0" "Checking..."]
+    else let o = json-parse-obj t
+    in if json-obj-field o "webgpu" /= "true" then [widget-box "p1b" "ig-warn" [widget-label "p1" "This browser does not offer WebGPU, so the page cannot see your GPU. The local route does not use the browser at all: nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv tells you what the steps below need to know."]]
+    else if json-obj-field o "err" /= "" then [widget-box "p1b" "ig-warn" [widget-label "p1" ("WebGPU is present but the check stopped: " & json-obj-field o "err" & ".")], ig-memory-line]
+    else [ig-card-line o, ig-gemm-line o, ig-estimate-line o, ig-memory-line]
+
+  ig-probe-box : WidgetNode
+  ig-probe-box =
+    widget-box "probe" "ig-probe" [widget-button "probe-btn" "Run the check", widget-box "pres" "ig-body" (ig-result (state-get-text "probe"))]
+
+Section: Tree
+
+  ig-nav : WidgetNode
+  ig-nav = site-nav [
+    ig-link "nl0" "landing.html" "Home",
+    ig-link "nl1" "#check" "Check",
+    ig-link "nl2" "#setup" "Set up",
+    ig-link "nl3" "#models" "Models",
+    ig-link "nl4" "#run" "Run"
+  ]
+
+  ig-hero : WidgetNode
+  ig-hero = site-hero "RUN IT AT HOME" "Make images on your own GPU" "codex_image is the project&#39;s own Stable Diffusion pipeline: SDXL and SD1.5, text to image, img2img, inpaint and hires fix, with LoRAs. Codex drives it and every layer runs as a GPU kernel the project&#39;s own compiler emitted. It runs on your machine and sends nothing anywhere." []
+
+  ig-check : WidgetNode
+  ig-check = site-section "check" "STEP 0" "Check this machine" "The local route needs an NVIDIA RTX 40-series card or newer, running Windows. This check reads what the browser can see." [ig-probe-box]
+
+  ig-need : WidgetNode
+  ig-need = site-section "need" "WHAT YOU NEED" "Before you start" "" [
+    site-card-grid "need-grid" [
+      site-card "n0" "&#x1F3AE;" "An NVIDIA RTX 40-series GPU or newer" "Compute capability 8.9 or higher, with a current driver. About 10 GB of free GPU memory for SDXL.",
+      site-card "n1" "&#x1FA9F;" "Windows 10 or 11, 64-bit" "With Windows Hypervisor Platform turned on: the pipeline runs inside codex-vm, the project&#39;s own virtual machine.",
+      site-card "n2" "&#x1F6E0;" "Git, PowerShell 7, Visual Studio 2022, an MCP client" "Visual Studio 2022 Community in its default folder, with Desktop development with C++ (the build script looks for it there), to build codex-vm. An MCP client such as Claude Code, to ask for images.",
+      site-card "n3" "&#x1F4BE;" "About 12 GB of disk" "7 GB for an SDXL checkpoint, 2 GB for an SD1.5 one, and room for LoRAs."
+    ]
+  ]
+
+  ig-setup : WidgetNode
+  ig-setup = site-section "setup" "SET UP" "Build the pieces" "Once, in PowerShell 7. The paths below put the code in C:&#92;Cobblestone; any folder works." [
+    ig-step "s1" "1. Turn on Windows Hypervisor Platform" [
+      ig-text "s1a" "Windows Features (Turn Windows features on or off), tick Windows Hypervisor Platform, and restart. Or, in PowerShell as administrator:",
+      site-code-block "s1c" "PowerShell (administrator)" "Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform"
+    ],
+    ig-step "s2" "2. Get the code" [
+      site-code-block "s2c" "PowerShell" "git clone https://github.com/damiant3/Cobblestone C:&#92;Cobblestone<br>cd C:&#92;Cobblestone"
+    ],
+    ig-step "s3" "3. Build codex-vm" [
+      ig-text "s3a" "The virtual machine the pipeline runs in, built from tools&#92;codex-vm.c with Visual Studio&#39;s C compiler.",
+      site-code-block "s3c" "PowerShell" "pwsh tools&#92;build-vm.ps1"
+    ],
+    ig-step "s4" "4. Build the diffusion driver" [
+      ig-text "s4a" "The Codex program that runs the pipeline, compiled by the project&#39;s own compiler (seed&#92;Codex.cdx, itself run in codex-vm). It takes seconds; build-output&#92;diffusion&#92;DiffusionDriver.cdx exists when it has worked, and driver.log beside it says why when it has not.",
+      site-code-block "s4c" "PowerShell" "mkdir build-output&#92;diffusion<br>pwsh build&#92;compile.ps1 -Src apps&#92;diffusion&#92;DiffusionDriver.codex -Out build-output&#92;diffusion&#92;DiffusionDriver.cdx -Log build-output&#92;diffusion&#92;driver.log -Kernel seed&#92;Codex.cdx"
+    ],
+    ig-step "s5" "5. Build the tokenizer disk" [
+      ig-text "s5a" "The text encoders read CLIP&#39;s vocabulary from a small disk image. Build it before the first run: the server would otherwise look for the vocabulary in a Forge install. Download vocab.json and merges.txt from Stable Diffusion XL&#39;s tokenizer folder into C:&#92;Cobblestone&#92;tokenizer, then:",
+      ig-link "s5l" "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/tree/main/tokenizer" "stabilityai/stable-diffusion-xl-base-1.0, tokenizer folder (CreativeML Open RAIL++-M) &#8594;",
+      site-code-block "s5c" "PowerShell" "pwsh build&#92;mint-clip-bpe-disk.ps1 -Source C:&#92;Cobblestone&#92;tokenizer -Out build-output&#92;diffusion&#92;clip-bpe.img"
+    ]
+  ]
+
+  ig-models : WidgetNode
+  ig-models = site-section "models" "MODELS" "Checkpoints and LoRAs" "One models folder, with two folders inside: C:&#92;models&#92;Stable-diffusion for checkpoints and C:&#92;models&#92;Lora for LoRAs. A request names a file in them, never a path." [
+    ig-step "m1" "SDXL: DreamShaper XL Lightning" [
+      ig-text "m1a" "DreamShaperXL_Lightning.safetensors, 6.94 GB, CreativeML Open RAIL++-M. The exact file this pipeline was built and measured against. Save it as dreamshaperXL_lightningDPMSDE.safetensors, the server&#39;s default model name. Its settings: DPM++ SDE, 6 steps, CFG 2, the server&#39;s defaults.",
+      ig-link "m1l" "https://huggingface.co/Lykon/dreamshaper-xl-lightning/blob/main/DreamShaperXL_Lightning.safetensors" "Lykon/dreamshaper-xl-lightning on Hugging Face &#8594;"
+    ],
+    ig-step "m2" "SD1.5: Realistic Vision V6.0" [
+      ig-text "m2a" "Realistic_Vision_V6.0_NV_B1_fp16.safetensors, 2.13 GB, CreativeML Open RAIL-M. Every tensor the SD1.5 path reads matches the file it was built against, name for name and shape for shape. Try 20 steps, CFG 7, 512 x 512.",
+      ig-link "m2l" "https://huggingface.co/SG161222/Realistic_Vision_V6.0_B1_noVAE/blob/main/Realistic_Vision_V6.0_NV_B1_fp16.safetensors" "SG161222/Realistic_Vision_V6.0_B1_noVAE on Hugging Face &#8594;"
+    ],
+    ig-step "m3" "LoRAs from Civitai" [
+      ig-text "m3a" "Filter by base model (SDXL 1.0 or SD 1.5) and by type LoRA or LyCORIS, and download the .safetensors into C:&#92;models&#92;Lora. LoRA, LoCon, LoHa, LoKr, GLoRA, DoRA and full-difference files load; IA3, OFT and BOFT do not. Use a LoRA with a checkpoint of its own base model. Each model page states its licence.",
+      ig-link "m3l" "https://civitai.com/models" "civitai.com/models &#8594;"
+    ],
+    ig-step "m4" "Flux" [
+      ig-text "m4a" "Not served yet. The pipeline has made its first Flux image; the server takes SDXL and SD1.5 today."
+    ]
+  ]
+
+  ig-run : WidgetNode
+  ig-run = site-section "run" "RUN" "Generate" "codex_image is an MCP server: any MCP client can call it. With Claude Code:" [
+    ig-step "r1" "Register the server once" [
+      site-code-block "r1c" "PowerShell" "claude mcp add codex-image -- pwsh -NoProfile -File C:&#92;Cobblestone&#92;apps&#92;diffusion&#92;serve.ps1 -Models C:&#92;models"
+    ],
+    ig-step "r2" "Ask for a picture" [
+      ig-text "r2a" "Ask for an image in words; Claude calls codex_image with a prompt and, when you name them, the model, LoRAs (up to eight, weights from -4 to 4), sampler, scheduler, steps, CFG, seed and size (width and height multiples of 64, at most 1024 x 1024 pixels in all, so 2048 x 512 is allowed). Pictures and masks for img2img and inpaint go in C:&#92;Cobblestone&#92;build-output&#92;diffusion-inputs. The PNG lands in C:&#92;Cobblestone&#92;build-output&#92;diffusion-images with its settings written into it.",
+      ig-text "r2b" "The server keeps the model on the GPU between calls and frees it after ten idle minutes."
+    ]
+  ]
+
+  ig-foot : WidgetNode
+  ig-foot = site-footer [
+    ig-link "f0" "landing.html" "Home",
+    ig-link "f1" "https://github.com/damiant3/Cobblestone/tree/master/apps/diffusion" "The pipeline&#39;s source"
+  ]
+
+  page-tree : Integer -> WidgetNode
+  page-tree (x) =
+    widget-box "root" "" [
+      ig-nav,
+      ig-hero,
+      widget-box "ig" "ig" [ig-check, ig-need, ig-setup, ig-models, ig-run],
+      ig-foot
+    ]
+
+Section: Entry
+
+  ig-probed : Text -> Integer
+  ig-probed (t) =
+    let s = state-set-text "probe" t
+    in request-render 0
+
+  ig-click : Text -> Integer
+  ig-click (id) =
+    if id == "probe-btn" then
+      let s = state-set-text "probe" "running"
+      in let r = request-render 0
+      in gpu-probe-then 3000 ig-probed
+    else 0
+
+  render-ig : Integer -> Integer
+  render-ig (x) = mount-widget-themed site-theme (page-tree 0)
+
+  opening : [Console] Integer
+  opening = act
+    let t = site-init ig-css
+    in let s = set-render render-ig
+    in let h = register-handlers no-pick ig-click
+    in render-ig 0
+  end
+
+Page 1

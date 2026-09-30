@@ -1,0 +1,378 @@
+Chapter: LoraKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ We say:
+
+Section: Merge
+
+ w += scale up down over a rows x cols f32 weight, up rows x rank and down
+ rank x cols f32, one entry per thread in blocks of 256; the dot runs in f64.
+
+  lora-dot : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lora-dot (up) (down) (o) (c) (cols) (rank) (r) (acc) =
+   if r >= rank then acc
+   else act
+    a <- device-load-f32 up (o * rank + r)
+    b <- device-load-f32 down (r * cols + c)
+    lora-dot up down o c cols rank (r + 1) (acc + a * b)
+   end
+
+  kernel-lora-delta : Integer, Integer, Integer, Real, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-delta (w) (up) (down) (scale) (rows) (cols) (rank) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < rows * cols then act
+    o <- i / cols
+    old <- device-load-f32 w i
+    d <- lora-dot up down o (i - o * cols) cols rank 0 0.0
+    device-store-f32 w i (old + scale * d)
+   end
+   else 0
+  end
+
+  kernel-lora-to-f16 : Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-to-f16 (w32) (w16) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < n then act
+    v <- device-load-f32 w32 i
+    device-store-f16 w16 i v
+   end
+   else 0
+  end
+
+ The resident copy widened back to f32 for a merge: an f16 weight exactly
+ (every f16 is an f32), an f32 bias copied.
+
+  kernel-lora-from-f16 : Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-from-f16 (w16) (w32) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < n then act
+    v <- device-load-f16-approx w16 i
+    device-store-approx w32 i v
+   end
+   else 0
+  end
+
+  kernel-lora-copy32 : Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-copy32 (src) (dst) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < n then act
+    v <- device-load-approx src i
+    device-store-approx dst i v
+   end
+   else 0
+  end
+
+Section: Other Kinds
+
+ LoHa adds scale (w1a w1b) * (w2a w2b), the product entrywise (Forge
+ backend/patcher/lora.py:201); LoKr adds scale kron (w1, w2) with w1 a x b and
+ w2 c x d over an (a c) x (b d) weight (:154), a low-rank factor first
+ multiplied out by kernel-lora-matmul; a full diff adds scale d. One entry per
+ thread, blocks of 256.
+
+  kernel-lora-loha : Integer, Integer, Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-loha (w) (w1a) (w1b) (w2a) (w2b) (scale) (rows) (cols) (r1) (r2) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < rows * cols then act
+    o <- i / cols
+    old <- device-load-f32 w i
+    d1 <- lora-dot w1a w1b o (i - o * cols) cols r1 0 0.0
+    d2 <- lora-dot w2a w2b o (i - o * cols) cols r2 0 0.0
+    device-store-f32 w i (old + scale * (d1 * d2))
+   end
+   else 0
+  end
+
+  kernel-lora-matmul : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-matmul (out) (a) (b) (rows) (cols) (rank) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < rows * cols then act
+    o <- i / cols
+    d <- lora-dot a b o (i - o * cols) cols rank 0 0.0
+    device-store-f32 out i d
+   end
+   else 0
+  end
+
+  kernel-lora-kron : Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-kron (w) (w1) (w2) (scale) (rows) (cols) (c) (d) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < rows * cols then act
+    o <- i / cols
+    q <- i - o * cols
+    old <- device-load-f32 w i
+    x1 <- device-load-f32 w1 ((o / c) * (cols / d) + q / d)
+    x2 <- device-load-f32 w2 ((o - (o / c) * c) * d + (q - (q / d) * d))
+    device-store-f32 w i (old + scale * (x1 * x2))
+   end
+   else 0
+  end
+
+  kernel-lora-axpy : Integer, Integer, Real, Integer -> [Device] Integer
+  kernel-lora-axpy (w) (x) (scale) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < n then act
+    old <- device-load-f32 w i
+    v <- device-load-f32 x i
+    device-store-f32 w i (old + scale * v)
+   end
+   else 0
+  end
+
+ GLoRA adds scale (b2 b1 + (W a2) a1) (Forge backend/patcher/lora.py:239); the
+ caller forms W a2 first with kernel-lora-matmul, which only reads W.
+
+  kernel-lora-sum2 : Integer, Integer, Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-sum2 (w) (p1) (q1) (p2) (q2) (scale) (rows) (cols) (r1) (r2) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < rows * cols then act
+    o <- i / cols
+    old <- device-load-f32 w i
+    d1 <- lora-dot p1 q1 o (i - o * cols) cols r1 0 0.0
+    d2 <- lora-dot p2 q2 o (i - o * cols) cols r2 0 0.0
+    device-store-f32 w i (old + scale * (d1 + d2))
+   end
+   else 0
+  end
+
+ DoRA (Forge backend/patcher/lora.py:52, weight_decompose): with d the kind's
+ delta at strength 1, every input channel c of W + d is rescaled by
+ dora[c] / |W + d|_c, the norm over all rows and the inner (kernel) columns
+ of that channel, then blended in at the strength (replacing W when full = 1,
+
+  kernel-lora-zero : Integer, Integer -> [Device] Integer
+  kernel-lora-zero (w) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < n then device-store-f32 w i 0.0 else 0
+  end
+
+  lora-col-sq : Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lora-col-sq (w) (d) (cols) (j) (rows) (o) (acc) =
+   if o >= rows then acc
+   else act
+    a <- device-load-f32 w (o * cols + j)
+    b <- device-load-f32 d (o * cols + j)
+    lora-col-sq w d cols j rows (o + 1) (acc + (a + b) * (a + b))
+   end
+
+  lora-chan-sq : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lora-chan-sq (w) (d) (rows) (cols) (c) (inner) (t) (acc) =
+   if t >= inner then acc
+   else act
+    s <- lora-col-sq w d cols (c * inner + t) rows 0 0.0
+    lora-chan-sq w d rows cols c inner (t + 1) (acc + s)
+   end
+
+  kernel-lora-dora-norm : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-dora-norm (w) (d) (norms) (rows) (cols) (inner) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   c <- bx * 256 + tid
+   if c < cols / inner then act
+    s <- lora-chan-sq w d rows cols c inner 0 0.0
+    device-store-f32 norms c (real-sqrt s)
+   end
+   else 0
+  end
+
+  kernel-lora-dora-apply : Integer, Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-dora-apply (w) (d) (norms) (dora) (strength) (full) (rows) (cols) (inner) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < rows * cols then act
+    c <- (i - (i / cols) * cols) / inner
+    old <- device-load-f32 w i
+    dv <- device-load-f32 d i
+    nv <- device-load-f32 norms c
+    sv <- device-load-f32 dora c
+    wc <- (old + dv) * (sv / nv)
+    device-store-f32 w i (if full == 1 then wc else old + strength * (wc - old))
+   end
+   else 0
+  end
+
+ LoCon's lora_mid folds into an effective down before the ordinary delta
+ (Forge backend/patcher/lora.py:141-144): out[s][ci kk + q] = sum over t of
+ mid[s][t][q] down[t][ci], mid rank x rank x kk and down rank x cin.
+
+  lora-mid-dot : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lora-mid-dot (mid) (down) (s) (ci) (q) (rank) (cin) (kk) (t) (acc) =
+   if t >= rank then acc
+   else act
+    a <- device-load-f32 mid ((s * rank + t) * kk + q)
+    b <- device-load-f32 down (t * cin + ci)
+    lora-mid-dot mid down s ci q rank cin kk (t + 1) (acc + a * b)
+   end
+
+  kernel-lora-mid : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-mid (out) (mid) (down) (rank) (cin) (kk) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < rank * cin * kk then act
+    s <- i / (cin * kk)
+    ci <- (i - s * cin * kk) / kk
+    d <- lora-mid-dot mid down s ci (i - s * cin * kk - ci * kk) rank cin kk 0 0.0
+    device-store-f32 out i d
+   end
+   else 0
+  end
+
+ A Tucker half, Forge's einsum ("i j k l, j r, i p -> p r k l", lora.py:215):
+ out[p][r][q] = sum over i, j of t[i][j][q] wb[j][r] wa[i][p], t rank x rank x
+ kk, wa rank x rows, wb rank x cin; LoHa then adds scale m1 * m2 entrywise.
+
+  lora-tucker-j : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lora-tucker-j (t) (wb) (i) (r) (q) (rank) (cin) (kk) (j) (acc) =
+   if j >= rank then acc
+   else act
+    a <- device-load-f32 t ((i * rank + j) * kk + q)
+    b <- device-load-f32 wb (j * cin + r)
+    lora-tucker-j t wb i r q rank cin kk (j + 1) (acc + a * b)
+   end
+
+  lora-tucker-i : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  lora-tucker-i (t) (wa) (wb) (p) (r) (q) (rank) (rows) (cin) (kk) (i) (acc) =
+   if i >= rank then acc
+   else act
+    s <- lora-tucker-j t wb i r q rank cin kk 0 0.0
+    x <- device-load-f32 wa (i * rows + p)
+    lora-tucker-i t wa wb p r q rank rows cin kk (i + 1) (acc + s * x)
+   end
+
+  kernel-lora-tucker : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-tucker (out) (t) (wa) (wb) (rank) (rows) (cin) (kk) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   e <- bx * 256 + tid
+   if e < rows * cin * kk then act
+    p <- e / (cin * kk)
+    r <- (e - p * cin * kk) / kk
+    d <- lora-tucker-i t wa wb p r (e - p * cin * kk - r * kk) rank rows cin kk 0 0.0
+    device-store-f32 out e d
+   end
+   else 0
+  end
+
+  kernel-lora-prod : Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  kernel-lora-prod (w) (m1) (m2) (scale) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < n then act
+    old <- device-load-f32 w i
+    a <- device-load-f32 m1 i
+    b <- device-load-f32 m2 i
+    device-store-f32 w i (old + scale * (a * b))
+   end
+   else 0
+  end
+
+ LoKr over a conv: w1 (a x b) unsqueezed to a x b x 1 x 1 and w2 c x d x kk,
+ so entry (o, j kk + q) of the (a c) x (b d kk) weight is w1[o / c][j / d]
+ w2[o mod c][j mod d][q] (Forge's torch.kron after lora.py:185-186).
+
+  kernel-lora-kron4 : Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-kron4 (w) (w1) (w2) (scale) (rows) (cols) (c) (d) (kk) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i < rows * cols then act
+    o <- i / cols
+    j <- (i - o * cols) / kk
+    old <- device-load-f32 w i
+    x1 <- device-load-f32 w1 ((o / c) * (cols / (d * kk)) + j / d)
+    x2 <- device-load-f32 w2 (((o - (o / c) * c) * d + (j - (j / d) * d)) * kk + (i - o * cols - j * kk))
+    device-store-f32 w i (old + scale * (x1 * x2))
+   end
+   else 0
+  end
+
+Section: Float8
+
+ torch's float8_e4m3fn (c10/util/Float8_e4m3fn.h): a sign, four exponent bits
+ at bias 7, three mantissa bits, no infinities, S.1111.111 the NaN. Widening
+ is exact (fp8e4m3fn_to_fp32_value; its NaN is 0x7FF00000). Narrowing is
+ fp8e4m3fn_from_fp32_value: NaN at or above 480 (0x43F00000); under 2^-6
+ (121 << 23) the value plus 16384.0 (141 << 23) in f32, less those bits;
+ else the exponent rebiased by 7 - 127, 0x7FFFF plus the kept mantissa's
+ low bit added, the byte taken at bit 20. Four bytes to a u32 word, one word
+ a thread.
+
+  lora-f8-f32 : Integer -> Integer
+  lora-f8-f32 (b) =
+    let s = if b >= 128 then 2147483648 else 0
+    in let b7 = if b >= 128 then b - 128 else b
+    in let e = b7 / 8
+    in let m = b7 - e * 8
+    in if e == 15 & m == 7 then s + #7FF00000
+    else if e > 0 then s + (e + 120) * 8388608 + m * 1048576
+    else if m == 0 then s
+    else if m >= 4 then s + 120 * 8388608 + (m - 4) * 2097152
+    else if m >= 2 then s + 119 * 8388608 + (m - 2) * 4194304
+    else s + 118 * 8388608
+
+  lora-f32-f8 : Integer -> [Device] Integer
+  lora-f32-f8 (bits) = act
+   fb <- if bits < 0 then bits + 4294967296 else bits
+   s <- if fb >= 2147483648 then 2147483648 else 0
+   f <- fb - s
+   r <- if f >= #43F00000 then 127
+    else if f < #3C800000 then f32-add-bits f #46800000 - #46800000
+    else (f - #3C000000 + #7FFFF + (f / 1048576 - (f / 2097152) * 2)) / 1048576
+   if s > 0 then r + 128 else r
+  end
+
+  kernel-lora-from-f8 : Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-from-f8 (w8) (w32) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i * 4 < n then act
+    word <- device-load-u32 (w8 + i * 4)
+    w <- if word < 0 then word + 4294967296 else word
+    a <- device-store-u32 (w32 + i * 16) (lora-f8-f32 (w - (w / 256) * 256))
+    b <- device-store-u32 (w32 + i * 16 + 4) (lora-f8-f32 (w / 256 - (w / 65536) * 256))
+    c <- device-store-u32 (w32 + i * 16 + 8) (lora-f8-f32 (w / 65536 - (w / 16777216) * 256))
+    device-store-u32 (w32 + i * 16 + 12) (lora-f8-f32 (w / 16777216))
+   end
+   else 0
+  end
+
+  kernel-lora-to-f8 : Integer, Integer, Integer -> [Device] Integer
+  kernel-lora-to-f8 (w32) (w8) (n) = act
+   tid <- thread-idx-x
+   bx <- block-idx-x
+   i <- bx * 256 + tid
+   if i * 4 < n then act
+    a <- lora-f32-f8 (device-load-u32 (w32 + i * 16))
+    b <- lora-f32-f8 (device-load-u32 (w32 + i * 16 + 4))
+    c <- lora-f32-f8 (device-load-u32 (w32 + i * 16 + 8))
+    d <- lora-f32-f8 (device-load-u32 (w32 + i * 16 + 12))
+    device-store-u32 (w8 + i * 4) (a + b * 256 + c * 65536 + d * 16777216)
+   end
+   else 0
+  end
+

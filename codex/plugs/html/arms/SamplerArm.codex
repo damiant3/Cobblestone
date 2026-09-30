@@ -1,0 +1,48 @@
+Chapter: SamplerArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter SamplerGraph
+  cites Diffusion chapter BrowserSampler
+
+ The page codex/plugs/html/arms/sampler.mjs drives: Euler from SamplerGraph over
+ browser-sampler-ops, with a denoiser answering 0.5 x and sigmas 4, 3, 1.5:
+ the steps are 0.75 x + 0.25 (x/2) = 0.875 x, then 0.5 x + 0.5 (x/2) = 0.75 x,
+ so the answer is 0.65625 x, exact in f32.
+
+ We say:
+
+Section: Euler
+
+  sa-n : Integer = 256
+
+  sa-words : Integer, Real, List Integer -> List Integer
+  sa-words (i) (v) (acc) =
+    if i >= sa-n then acc
+    else sa-words (i + 1) (v + 0.015625) (list-snoc acc (gpu-f32-bits v))
+
+  opening : [Console] Integer
+  opening = gpu-open-then sa-opened
+
+  sa-opened : Text -> Integer
+  sa-opened (r) =
+    let s = state-set-text "open" r
+    in let x = gpu-buf-alloc (sa-n * 4)
+    in let w = gpu-buf-write-words x 0 (sa-words 0 (0.0 - 2.0) [])
+    in let hx = state-set "hx" x
+    in let y = bs-scaled (page-data "bk") x 0.5 sa-n
+    in gpu-buf-download-then y 0 (sa-n * 4) sa-got-y
+
+  sa-got-y : Text -> Integer
+  sa-got-y (r) =
+    let s = state-set-text "y" r
+    in let code = page-data "bk"
+    in let x = state-get "hx"
+    in let bad = state-set "bad" (sample-euler-with (browser-sampler-ops code) (\h s -> bs-scaled code h 0.5 sa-n) x [4.0, 3.0, 1.5] sa-n)
+    in let e = state-set-text "err" (gpu-error 0)
+    in gpu-buf-download-then x 0 (sa-n * 4) sa-got
+
+  sa-got : Text -> Integer
+  sa-got (r) =
+    let s = state-set-text "x" r
+    in let e = state-set-text "err2" (gpu-error 0)
+    in state-set "done" 1

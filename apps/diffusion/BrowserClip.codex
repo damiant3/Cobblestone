@@ -1,0 +1,162 @@
+Chapter: BrowserClip
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter ClipGraph
+
+ The text encoder's operations over BrowserKernels' WGSL module, for a page.
+ Every weight is an f32 device buffer by its checkpoint name, the token
+ embedding table included; activations stay f32, therefore the native casts
+ to f16 are copies. WebGPU refuses one buffer bound twice as writable storage,
+ so an operation the native encoder runs in place (the residual add into x,
+ GELU, the causal softmax) goes through a temporary and back.
+
+ We say:
+
+Section: Weights
+
+  BcWeights = record {
+    bc-spec : ClipSpec,
+    bc-status : Integer,
+    bc-tok : Integer,
+    bc-pos : Integer,
+    bc-layers : List ClipLayer,
+    bc-final-g : Integer,
+    bc-final-b : Integer
+  }
+
+ SD1.5's CLIP-L as Forge's sd15.py configures it: clip skip 1 and the final
+ LayerNorm (ClipEncoder's clip-l15-spec).
+
+  bc-l15-spec : ClipSpec
+  bc-l15-spec = ClipSpec { cs-width = 768, cs-heads = 12, cs-layers = 12, cs-mlp = 3072, cs-erf-gelu = False, cs-open = False, cs-pool = False, cs-prefix = "cond_stage_model.transformer.text_model.", cs-part = 1, cs-pad = 49407, cs-skip = 1, cs-final-norm = True }
+
+  bc-find : List Text, List Integer, Text, Integer -> Integer
+  bc-find (ns) (hs) (name) (i) =
+    if i >= list-length ns then 0
+    else if list-at ns i == name then list-at hs i
+    else bc-find ns hs name (i + 1)
+
+  bc-layer : List Text, List Integer, Text -> ClipLayer
+  bc-layer (ns) (hs) (p) =
+    ClipLayer {
+      cy-ln1-g = bc-find ns hs (p & "layer_norm1.weight") 0,
+      cy-ln1-b = bc-find ns hs (p & "layer_norm1.bias") 0,
+      cy-q-w = bc-find ns hs (p & "self_attn.q_proj.weight") 0,
+      cy-q-b = bc-find ns hs (p & "self_attn.q_proj.bias") 0,
+      cy-k-w = bc-find ns hs (p & "self_attn.k_proj.weight") 0,
+      cy-k-b = bc-find ns hs (p & "self_attn.k_proj.bias") 0,
+      cy-v-w = bc-find ns hs (p & "self_attn.v_proj.weight") 0,
+      cy-v-b = bc-find ns hs (p & "self_attn.v_proj.bias") 0,
+      cy-o-w = bc-find ns hs (p & "self_attn.out_proj.weight") 0,
+      cy-o-b = bc-find ns hs (p & "self_attn.out_proj.bias") 0,
+      cy-ln2-g = bc-find ns hs (p & "layer_norm2.weight") 0,
+      cy-ln2-b = bc-find ns hs (p & "layer_norm2.bias") 0,
+      cy-fc1-w = bc-find ns hs (p & "mlp.fc1.weight") 0,
+      cy-fc1-b = bc-find ns hs (p & "mlp.fc1.bias") 0,
+      cy-fc2-w = bc-find ns hs (p & "mlp.fc2.weight") 0,
+      cy-fc2-b = bc-find ns hs (p & "mlp.fc2.bias") 0
+    }
+
+  bc-layer-ok : ClipLayer -> Boolean
+  bc-layer-ok (y) =
+    if y.cy-ln1-g == 0 | y.cy-ln1-b == 0 | y.cy-q-w == 0 | y.cy-q-b == 0 then False
+    else if y.cy-k-w == 0 | y.cy-k-b == 0 | y.cy-v-w == 0 | y.cy-v-b == 0 then False
+    else if y.cy-o-w == 0 | y.cy-o-b == 0 | y.cy-ln2-g == 0 | y.cy-ln2-b == 0 then False
+    else if y.cy-fc1-w == 0 | y.cy-fc1-b == 0 | y.cy-fc2-w == 0 then False
+    else y.cy-fc2-b /= 0
+
+  bc-layers : ClipSpec, List Text, List Integer, Integer, List ClipLayer -> List ClipLayer
+  bc-layers (s) (ns) (hs) (i) (acc) =
+    if i >= s.cs-layers then acc
+    else let y = bc-layer ns hs (s.cs-prefix & "encoder.layers." & show i & ".")
+    in if bc-layer-ok y then bc-layers s ns hs (i + 1) (list-push acc y)
+    else acc
+
+ ns and hs are the uploaded tensors' checkpoint names and handles. Status 0 is
+ loaded; -1 a tensor missing; -5 an OpenCLIP layout, which is SDXL's.
+
+  browser-clip-weights : ClipSpec, List Text, List Integer -> BcWeights
+  browser-clip-weights (s) (ns) (hs) =
+    let p = s.cs-prefix
+    in let tok = bc-find ns hs (p & "embeddings.token_embedding.weight") 0
+    in let pos = bc-find ns hs (p & "embeddings.position_embedding.weight") 0
+    in let ys = bc-layers s ns hs 0 []
+    in let fg = bc-find ns hs (p & "final_layer_norm.weight") 0
+    in let fb = bc-find ns hs (p & "final_layer_norm.bias") 0
+    in let status = if s.cs-open then 0 - 5
+      else if tok == 0 | pos == 0 | fg == 0 | fb == 0 | list-length ys < s.cs-layers then 0 - 1
+      else 0
+    in BcWeights { bc-spec = s, bc-status = status, bc-tok = tok, bc-pos = pos, bc-layers = ys, bc-final-g = fg, bc-final-b = fb }
+
+Section: Launches
+
+ Each answers 0, or -4 when a launch was refused, as ClipGraph's steps do.
+
+  bc-grid : Integer -> GpuGrid
+  bc-grid (n) = GpuGrid { gx = (n + 63) / 64, gy = 1, gz = 1, bx = 64, by = 1, bz = 1, shared = 0 }
+
+  bc-run : Text, Text, Integer, List GpuParam -> Integer
+  bc-run (code) (name) (n) (ps) = if gpu-launch code name (bc-grid n) ps < 0 then 0 - 4 else 0
+
+ A copy of n words, src and dst at byte offsets that are multiples of 256
+ (minStorageBufferOffsetAlignment).
+
+  bc-copy : Text, Integer, Integer, Integer, Integer, Integer -> Integer
+  bc-copy (code) (src) (soff) (dst) (doff) (n) = bc-run code "bk_scale_main" n [gpu-arg-buf src soff, gpu-arg-buf dst doff, gpu-arg-f32 1.0, gpu-arg-u32 n]
+
+  bc-through : Text, Text, List GpuParam, Integer, Integer, Integer -> Integer
+  bc-through (code) (name) (ps) (tmp) (dst) (n) =
+    let r = if tmp == 0 then 0 - 3 else bc-run code name n ps
+    in let c = if r < 0 then r else bc-copy code tmp 0 dst 0 n
+    in let f = if tmp == 0 then True else gpu-buf-free tmp
+    in c
+
+  bc-norm : Text, ClipWork, Integer, Integer, Integer, Integer, Integer -> Integer
+  bc-norm (code) (w) (x) (g) (b) (d) (rows) =
+    if bc-run code "bk_row_mean_main" rows [gpu-arg-buf x 0, gpu-arg-buf (w.ck-stats) 0, gpu-arg-u32 d, gpu-arg-u32 rows] < 0 then 0 - 4
+    else if bc-run code "bk_row_rstd_main" rows [gpu-arg-buf x 0, gpu-arg-buf (w.ck-stats) 0, gpu-arg-u32 d, gpu-arg-f32 0.00001, gpu-arg-u32 rows] < 0 then 0 - 4
+    else bc-run code "bk_layer_affine_main" (rows * d) [gpu-arg-buf x 0, gpu-arg-buf (w.ck-stats) 0, gpu-arg-buf g 0, gpu-arg-buf b 0, gpu-arg-buf (w.ck-h) 0, gpu-arg-u32 d, gpu-arg-u32 (rows * d)]
+
+  bc-linear : Text, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bc-linear (code) (x) (w) (b) (y) (m) (n) (k) =
+    let zb = if b == 0 then gpu-buf-alloc (n * 4) else 0
+    in let bias = if b == 0 then zb else b
+    in let g = GpuGrid { gx = ((m + 15) / 16) * ((n + 15) / 16), gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+    in let r = if bias == 0 then 0 - 3 else if gpu-launch code "bk_linear_main" g [gpu-arg-buf x 0, gpu-arg-buf w 0, gpu-arg-buf bias 0, gpu-arg-buf y 0, gpu-arg-u32 m, gpu-arg-u32 n, gpu-arg-u32 k] < 0 then 0 - 4 else 0
+    in let f = if zb == 0 then True else gpu-buf-free zb
+    in r
+
+  bc-add : Text, Integer, Integer, Integer, Integer -> Integer
+  bc-add (code) (a) (b) (out) (n) =
+    if out /= a & out /= b then bc-run code "bk_add_main" n [gpu-arg-buf a 0, gpu-arg-buf b 0, gpu-arg-buf out 0, gpu-arg-u32 n]
+    else let t = gpu-buf-alloc (n * 4)
+    in bc-through code "bk_add_main" [gpu-arg-buf a 0, gpu-arg-buf b 0, gpu-arg-buf t 0, gpu-arg-u32 n] t out n
+
+  bc-gelu : Text, Boolean, Integer, Integer -> Integer
+  bc-gelu (code) (erf) (x) (n) =
+    let t = gpu-buf-alloc (n * 4)
+    in bc-through code (if erf then "bk_gelu_main" else "bk_quick_gelu_main") [gpu-arg-buf x 0, gpu-arg-buf t 0, gpu-arg-u32 n] t x n
+
+  bc-softmax-causal : Text, Integer, Integer, Integer, Integer -> Integer
+  bc-softmax-causal (code) (s) (cols) (sq) (rows) =
+    let t = gpu-buf-alloc (rows * cols * 4)
+    in bc-through code "bk_softmax_causal_main" [gpu-arg-buf s 0, gpu-arg-buf t 0, gpu-arg-u32 cols, gpu-arg-u32 sq, gpu-arg-u32 (rows * cols)] t s (rows * cols)
+
+  bc-embed : Text, BcWeights, Integer, List Integer, Integer -> Integer
+  bc-embed (code) (cw) (x) (ids) (r) =
+    if r >= clip-tokens then 0
+    else let d = (cw.bc-spec).cs-width
+    in if bc-copy code (cw.bc-tok) (list-at ids r * d * 4) x (r * d * 4) d < 0 then 0 - 4
+    else bc-embed code cw x ids (r + 1)
+
+  bc-zeros : Integer, List Integer -> List Integer
+  bc-zeros (n) (acc) = if n <= 0 then acc else bc-zeros (n - 1) (list-snoc acc 0)
+
+  bc-work-sizes : ClipSpec -> List Integer
+  bc-work-sizes (s) =
+    let t = clip-tokens
+    in let d = s.cs-width
+    in let f = s.cs-mlp
+    in [t * d * 4, t * d * 4, t * f * 4, t * d * 4, t * d * 4, t * d * 4, s.cs-heads * t * t * 4, t * d * 4, t * d * 4, t * f * 4, t * f * 4, t * 16, t * d * 4]
+
+  browser-clip-ops : Text -> ClipOps BcWeights
+  browser-clip-ops (code) = ClipOps { norm = \w x g b d rows -> bc-norm code w x g b d rows, cast = \src dst n -> bc-copy code src 0 dst 0 n, linear = \x w b y m n k -> bc-linear code x w b y m n k, add = \a b out n -> bc-add code a b out n, attn-scores = \q k s heads sq sk dh scale -> bc-run code "bk_attn_scores_main" (heads * sq * sk) [gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf s 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 dh, gpu-arg-f32 scale, gpu-arg-u32 (heads * sq * sk)], softmax-causal = \s cols sq rows -> bc-softmax-causal code s cols sq rows, attn-values = \s v o heads sq sk dh -> bc-run code "bk_attn_values_main" (sq * heads * dh) [gpu-arg-buf s 0, gpu-arg-buf v 0, gpu-arg-buf o 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 dh, gpu-arg-u32 (sq * heads * dh)], gelu = \erf x n -> bc-gelu code erf x n, cast-at = \src off dst n -> bc-copy code src off dst 0 n, copy-row = \src off bytes dst -> bc-copy code src off dst 0 (bytes / 4) >= 0, alloc = gpu-buf-alloc, free = gpu-buf-free, embed = \cw x ids r -> bc-embed code cw x ids r, zero-fill = \h bytes -> (if gpu-buf-write-words h 0 (bc-zeros (bytes / 4) []) then 0 else 0 - 2), work-sizes = bc-work-sizes, spec = \cw -> cw.bc-spec, status = \cw -> cw.bc-status, pos = \cw -> cw.bc-pos, layers = \cw -> cw.bc-layers, final-g = \cw -> cw.bc-final-g, final-b = \cw -> cw.bc-final-b, proj = \cw -> 0 }

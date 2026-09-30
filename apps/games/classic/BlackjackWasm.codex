@@ -3,86 +3,77 @@ Chapter: BlackjackWasm
   cites Games chapter Rng
   cites Foreword chapter List
 
- `bj-deal-card` appends with `list-push`, which writes in place when the
- backing array has spare capacity and copies otherwise, so every deal copies
- both hands first. The deck is only read, at `deck-pos`, so successive states
- share one deck.
+ The page holds a BjTable handle; every action answers a new table, copied
+ inside bt-act, so a handle already read stays as it was.
 
  We say:
 
-Section: Copying
+Section: The Browser Interface
 
   wasm-exports : Text = ""
 
-  bj-copy-hand : List Integer, Integer, Integer, List Integer -> List Integer
-  bj-copy-hand (src) (i) (n) (acc) =
-    if i >= n then acc
-    else bj-copy-hand src (i + 1) n (list-push acc (list-at src i))
+  bj-wasm-new : Integer -> BjTable
+  bj-wasm-new (seed) = bt-new seed
 
-  bj-copy-state : BjState -> BjState
-  bj-copy-state (s) =
-    BjState {
-      player-cards = bj-copy-hand (s.player-cards) 0 (s.player-count) [],
-      player-count = s.player-count,
-      dealer-cards = bj-copy-hand (s.dealer-cards) 0 (s.dealer-count) [],
-      dealer-count = s.dealer-count,
-      player-soft = s.player-soft,
-      dealer-soft = s.dealer-soft,
-      deck = s.deck,
-      deck-pos = s.deck-pos,
-      rng = s.rng
-    }
+  bj-wasm-phase : BjTable -> Integer
+  bj-wasm-phase (t) = t.phase
 
-Section: The Browser Interface
+  bj-wasm-nhands : BjTable -> Integer
+  bj-wasm-nhands (t) = t.nhands
 
-  bj-wasm-new : Integer -> BjState
-  bj-wasm-new (seed) =
-    let s0 = bj-fresh-state (rng-new seed)
-    in let s1 = bj-deal-card s0 [] 0
-    in let s2 = bj-deal-card s1 [] 1
-    in let s3 = bj-deal-card s2 [] 0
-    in bj-deal-card s3 [] 1
+  bj-wasm-cur : BjTable -> Integer
+  bj-wasm-cur (t) = t.cur
 
-  bj-wasm-pvalue : BjState -> Integer
-  bj-wasm-pvalue (s) = bj-best-value (s.player-cards) (s.player-count)
+  bj-wasm-hand-ok : BjTable, Integer -> Boolean
+  bj-wasm-hand-ok (t) (k) = k >= 0 & k < t.nhands
 
-  bj-wasm-dvalue : BjState -> Integer
-  bj-wasm-dvalue (s) = bj-best-value (s.dealer-cards) (s.dealer-count)
+  bj-wasm-hcount : BjTable, Integer -> Integer
+  bj-wasm-hcount (t) (k) = if bj-wasm-hand-ok t k then bt-count t k else (-1)
 
-  bj-wasm-hit : BjState -> BjState
-  bj-wasm-hit (s) =
-    if bj-wasm-pvalue s > 21 then s
-    else if s.deck-pos >= 52 then s
-    else bj-deal-card (bj-copy-state s) [] 0
+  bj-wasm-hcard : BjTable, Integer, Integer -> Integer
+  bj-wasm-hcard (t) (k) (i) =
+    if bj-wasm-hand-ok t k == False then (-1)
+    else if i < 0 | i >= bt-count t k then (-1)
+    else bt-card t k i
 
-  bj-wasm-stand : BjState -> BjState
-  bj-wasm-stand (s) =
-    if bj-wasm-pvalue s > 21 then s
-    else bj-dealer-turn (bj-copy-state s)
+  bj-wasm-hvalue : BjTable, Integer -> Integer
+  bj-wasm-hvalue (t) (k) = if bj-wasm-hand-ok t k then bt-value t k else (-1)
 
-  bj-wasm-auto : BjState -> BjState
-  bj-wasm-auto (s) =
-    let s2 = bj-player-turn (bj-copy-state s)
-    in if bj-best-value (s2.player-cards) (s2.player-count) > 21 then s2
-    else bj-dealer-turn s2
+  bj-wasm-hsoft : BjTable, Integer -> Integer
+  bj-wasm-hsoft (t) (k) = if bj-wasm-hand-ok t k == False then (-1) else if bj-soft-at (t.cards) (k * bt-slot) (bt-count t k) then 1 else 0
 
-  bj-wasm-pcount : BjState -> Integer
-  bj-wasm-pcount (s) = s.player-count
+  bj-wasm-hbet : BjTable, Integer -> Integer
+  bj-wasm-hbet (t) (k) = if bj-wasm-hand-ok t k then list-at (t.bets) k else (-1)
 
-  bj-wasm-dcount : BjState -> Integer
-  bj-wasm-dcount (s) = s.dealer-count
+  bj-wasm-hstate : BjTable, Integer -> Integer
+  bj-wasm-hstate (t) (k) = if bj-wasm-hand-ok t k then list-at (t.states) k else (-1)
 
-  bj-wasm-pcard : BjState, Integer -> Integer
-  bj-wasm-pcard (s) (i) =
-    if i < 0 then (-1)
-    else if i >= s.player-count then (-1)
-    else list-at (s.player-cards) i
+  bj-wasm-dcount : BjTable -> Integer
+  bj-wasm-dcount (t) = t.dcount
 
-  bj-wasm-dcard : BjState, Integer -> Integer
-  bj-wasm-dcard (s) (i) =
-    if i < 0 then (-1)
-    else if i >= s.dealer-count then (-1)
-    else list-at (s.dealer-cards) i
+  bj-wasm-dcard : BjTable, Integer -> Integer
+  bj-wasm-dcard (t) (i) = if i < 0 | i >= t.dcount then (-1) else list-at (t.dealer) i
+
+  bj-wasm-dvalue : BjTable -> Integer
+  bj-wasm-dvalue (t) = bt-dvalue t
+
+  bj-wasm-can : BjTable, Integer -> Integer
+  bj-wasm-can (t) (a) = if a >= 0 & bt-can t a then 1 else 0
+
+  bj-wasm-act : BjTable, Integer -> BjTable
+  bj-wasm-act (t) (a) = if a < 0 then t else bt-act t a
+
+  bj-wasm-auto : BjTable -> BjTable
+  bj-wasm-auto (t) = bt-auto t
+
+  bj-wasm-net : BjTable -> Integer
+  bj-wasm-net (t) = bt-net t
+
+  bj-wasm-insured : BjTable -> Integer
+  bj-wasm-insured (t) = t.insurance
+
+  bj-wasm-deckpos : BjTable -> Integer
+  bj-wasm-deckpos (t) = t.deck-pos
 
   bj-wasm-card-rank : Integer -> Integer
   bj-wasm-card-rank (card) =
@@ -92,16 +83,32 @@ Section: The Browser Interface
   bj-wasm-card-value (card) =
     if card < 0 then (-1) else bj-card-value card
 
-  bj-wasm-psoft : BjState -> Integer
-  bj-wasm-psoft (s) = if bj-is-soft (s.player-cards) (s.player-count) then 1 else 0
+Section: Setting Up a Position
 
-  bj-wasm-bust : BjState -> Integer
-  bj-wasm-bust (s) = if bj-wasm-pvalue s > 21 then 1 else 0
+ A grader stacks a deck card by card, in dealing order, and deals from it.
 
-  bj-wasm-result : BjState -> Integer
-  bj-wasm-result (s) = bj-hand-result s
+  bj-wasm-stack : Integer -> BjTable
+  bj-wasm-stack (z) = bt-make [] 0 0 [] 0 [] [] [] [] [] 0 0 0 (0 - 1)
 
-  bj-wasm-deckpos : BjState -> Integer
-  bj-wasm-deckpos (s) = s.deck-pos
+  bj-wasm-stack-push : BjTable, Integer -> BjTable
+  bj-wasm-stack-push (t) (card) =
+    let d = list-push (bj-copy-list (t.deck) 0 (t.deck-len) []) card
+    in bt-make d (t.deck-len + 1) 0 [] 0 [] [] [] [] [] 0 0 0 (0 - 1)
+
+  bj-wasm-stack-deal : BjTable -> BjTable
+  bj-wasm-stack-deal (t) = if t.deck-len < 4 then t else bt-deal-round (t.deck) (t.deck-len)
+
+Section: The Runner as a Reference
+
+ The self-playing runner's result for the seed's deck (1, 0, -1), which the
+ table under the same policy must reproduce.
+
+  bj-wasm-ref : Integer -> Integer
+  bj-wasm-ref (seed) =
+    let s0 = bj-fresh-state (rng-new seed)
+    in let s4 = bj-deal-card (bj-deal-card (bj-deal-card (bj-deal-card s0 [] 0) [] 1) [] 0) [] 1
+    in let s5 = bj-player-turn s4
+    in if bj-best-value (s5.player-cards) (s5.player-count) > 21 then (-1)
+    else bj-hand-result (bj-dealer-turn s5)
 
 Page 1

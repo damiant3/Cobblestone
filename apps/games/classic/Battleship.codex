@@ -1,11 +1,30 @@
 Chapter: Battleship
   cites Games chapter Rng
 
- Battleship: two players each have a 10x10 grid. Ships placed randomly.
- Five ships with sizes 5, 4, 3, 3, 2. Each player tracks their own ship
- grid and a tracking grid for shots fired at the opponent.
+ Battleship: two players, each with a 10x10 ship grid and a tracking grid of
+ the shots fired at the other. A ship cell holds its ship's number, 1 to 5.
 
  We say:
+
+Section: The Rules
+
+ The rules as Hasbro publishes them (Battleship, the classic game's rules
+ leaflet).
+
+ Rule 1. Each fleet is a carrier (5 squares), a battleship (4), a cruiser
+ (3), a submarine (3) and a destroyer (2), placed horizontally or
+ vertically, never diagonally, inside the grid and not overlapping; ships
+ may touch.
+
+ Rule 2. Players take turns firing one shot at a square of the other's
+ grid, the first player first. The other calls hit or miss; a square is
+ fired at once.
+
+ Rule 3. When every square of a ship has been hit, its owner announces
+ which ship was sunk.
+
+ Rule 4. The first player to sink the whole of the other fleet wins. A shot
+ that sinks the last ship ends the game at once.
 
 Section: Types
 
@@ -70,31 +89,43 @@ Section: Ship Placement
   bs-place-ships (rng) =
     let g0 = bs-empty-grid
     in let r1 = rng-next rng
-    in let g1 = bs-place-ship g0 r1 5
+    in let g1 = bs-place-ship g0 r1 5 1
     in let r2 = rng-next r1
-    in let g2 = bs-place-ship g1 r2 4
+    in let g2 = bs-place-ship g1 r2 4 2
     in let r3 = rng-next r2
-    in let g3 = bs-place-ship g2 r3 3
+    in let g3 = bs-place-ship g2 r3 3 3
     in let r4 = rng-next r3
-    in let g4 = bs-place-ship g3 r4 3
+    in let g4 = bs-place-ship g3 r4 3 4
     in let r5 = rng-next r4
-    in bs-place-ship g4 r5 2
+    in bs-place-ship g4 r5 2 5
 
-  bs-place-ship : BsGrid, Rng, Integer -> BsGrid
-  bs-place-ship (g) (rng) (size) =
-    bs-try-place g rng size 0
+  bs-place-ship : BsGrid, Rng, Integer, Integer -> BsGrid
+  bs-place-ship (g) (rng) (size) (id) =
+    bs-try-place g rng size id 0
 
-  bs-try-place : BsGrid, Rng, Integer, Integer -> BsGrid
-  bs-try-place (g) (rng) (size) (attempts) =
-    if attempts >= 200 then g
+ Random places first; after 200 misses, the first place that fits in a scan
+ of rows, columns and both directions, so the fleet is always whole.
+
+  bs-scan-place : BsGrid, Integer, Integer, Integer -> BsGrid
+  bs-scan-place (g) (size) (id) (k) =
+    if k >= 200 then g
+    else let horiz = k >= 100
+    in let row = (k - (if horiz then 100 else 0)) / 10
+    in let col = k - (if horiz then 100 else 0) - row * 10
+    in if bs-fits g row col size horiz then bs-fill-ship g row col size horiz id
+    else bs-scan-place g size id (k + 1)
+
+  bs-try-place : BsGrid, Rng, Integer, Integer, Integer -> BsGrid
+  bs-try-place (g) (rng) (size) (id) (attempts) =
+    if attempts >= 200 then bs-scan-place g size id 0
     else let r1 = rng-next rng
     in let r2 = rng-next r1
     in let r3 = rng-next r2
     in let horiz = rng-bit r3 == 0
     in let row = rng-range r1 0 9
     in let col = rng-range r2 0 9
-    in if bs-fits g row col size horiz then bs-fill-ship g row col size horiz
-    else bs-try-place g r3 size (attempts + 1)
+    in if bs-fits g row col size horiz then bs-fill-ship g row col size horiz id
+    else bs-try-place g r3 size id (attempts + 1)
 
   bs-fits : BsGrid, Integer, Integer, Integer, Boolean -> Boolean
   bs-fits (g) (row) (col) (size) (horiz) =
@@ -113,16 +144,16 @@ Section: Ship Placement
     in if bs-cell g r c /= 0 then False
     else bs-all-empty g row col size horiz (i + 1)
 
-  bs-fill-ship : BsGrid, Integer, Integer, Integer, Boolean -> BsGrid
-  bs-fill-ship (g) (row) (col) (size) (horiz) =
-    bs-fill-loop g row col size horiz 0
+  bs-fill-ship : BsGrid, Integer, Integer, Integer, Boolean, Integer -> BsGrid
+  bs-fill-ship (g) (row) (col) (size) (horiz) (id) =
+    bs-fill-loop g row col size horiz id 0
 
-  bs-fill-loop : BsGrid, Integer, Integer, Integer, Boolean, Integer -> BsGrid
-  bs-fill-loop (g) (row) (col) (size) (horiz) (i) =
+  bs-fill-loop : BsGrid, Integer, Integer, Integer, Boolean, Integer, Integer -> BsGrid
+  bs-fill-loop (g) (row) (col) (size) (horiz) (id) (i) =
     if i >= size then g
     else let r = if horiz then row else row + i
     in let c = if horiz then col + i else col
-    in bs-fill-loop (bs-set g r c 1) row col size horiz (i + 1)
+    in bs-fill-loop (bs-set g r c id) row col size horiz id (i + 1)
 
 Section: Shooting
 
@@ -132,7 +163,7 @@ Section: Shooting
   bs-shoot : BsGrid, BsGrid, Integer, Integer -> BsGrid
   bs-shoot (ships) (tracking) (row) (col) =
     let v = bs-cell ships row col
-    in let hit-val = if v == 1 then 2 else 1
+    in let hit-val = if v >= 1 then 2 else 1
     in bs-set tracking row col hit-val
 
   bs-count-hits : BsGrid, Integer, Integer -> Integer
@@ -220,33 +251,62 @@ Section: Game Runner
   bs-loop : BsState -> BattleshipResult
   bs-loop (st) =
     if st.game-over then BattleshipResult { winner = st.winner, p1-shots = st.p1-shots, p2-shots = st.p2-shots }
-    else if st.p1-shots > 100 then BattleshipResult { winner = 0, p1-shots = st.p1-shots, p2-shots = st.p2-shots }
-    else let r1 = rng-next (st.rng)
-    in let p1-idx = bs-ai-pick-shot (st.p1-tracking) r1
-    in let p1-row = p1-idx / 10
-    in let p1-col = p1-idx - p1-row * 10
-    in let new-p1-track = bs-shoot (st.p2-ships) (st.p1-tracking) p1-row p1-col
-    in let new-p1-hits = bs-count-hits new-p1-track 0 0
-    in let r2 = rng-next r1
-    in let p2-idx = bs-ai-pick-shot (st.p2-tracking) r2
-    in let p2-row = p2-idx / 10
-    in let p2-col = p2-idx - p2-row * 10
-    in let new-p2-track = bs-shoot (st.p1-ships) (st.p2-tracking) p2-row p2-col
-    in let new-p2-hits = bs-count-hits new-p2-track 0 0
-    in let p1-won = new-p1-hits >= bs-total-ship-cells
-    in let p2-won = new-p2-hits >= bs-total-ship-cells
-    in let over = p1-won | p2-won
-    in let winner = if p1-won then 1 else if p2-won then 2 else 0
-    in let next = BsState { p1-ships = st.p1-ships, p1-tracking = new-p1-track, p2-ships = st.p2-ships, p2-tracking = new-p2-track, p1-hits = new-p1-hits, p2-hits = new-p2-hits, p1-shots = st.p1-shots + 1, p2-shots = st.p2-shots + 1, rng = r2, game-over = over, winner = winner }
-    in bs-loop next
+    else bs-loop (bs-step-shot st)
 
+Section: Turns
+
+ Rule 2: player 1 fires when both have fired as often, else player 2.
+
+  bs-to-move : BsState -> Integer
+  bs-to-move (st) = if st.p1-shots == st.p2-shots then 1 else 2
+
+ Player p fires at (row, col): the tracking grid is written in place, and a
+ shot that brings p's hits to 17 ends the game with p the winner (Rule 4).
+
+  bs-shot-by : BsState, Integer, Integer, Integer -> BsState
+  bs-shot-by (st) (p) (row) (col) =
+    let track = if p == 1 then bs-shoot (st.p2-ships) (st.p1-tracking) row col else bs-shoot (st.p1-ships) (st.p2-tracking) row col
+    in let hits = bs-count-hits track 0 0
+    in let won = hits >= bs-total-ship-cells
+    in BsState {
+         p1-ships = st.p1-ships, p1-tracking = (if p == 1 then track else st.p1-tracking),
+         p2-ships = st.p2-ships, p2-tracking = (if p == 1 then st.p2-tracking else track),
+         p1-hits = (if p == 1 then hits else st.p1-hits), p2-hits = (if p == 1 then st.p2-hits else hits),
+         p1-shots = st.p1-shots + (if p == 1 then 1 else 0), p2-shots = st.p2-shots + (if p == 1 then 0 else 1),
+         rng = st.rng, game-over = won, winner = (if won then p else 0) }
+
+ The computer's shot for the player to move.
+
+  bs-step-shot : BsState -> BsState
+  bs-step-shot (st) =
+    if st.game-over then st
+    else let p = bs-to-move st
+    in let r = rng-next (st.rng)
+    in let idx = bs-ai-pick-shot (if p == 1 then st.p1-tracking else st.p2-tracking) r
+    in let s2 = bs-shot-by st p (idx / 10) (idx - idx / 10 * 10)
+    in BsState { p1-ships = s2.p1-ships, p1-tracking = s2.p1-tracking, p2-ships = s2.p2-ships, p2-tracking = s2.p2-tracking, p1-hits = s2.p1-hits, p2-hits = s2.p2-hits, p1-shots = s2.p1-shots, p2-shots = s2.p2-shots, rng = r, game-over = s2.game-over, winner = s2.winner }
+
+ Rule 3: ship id of player p's fleet is sunk when every one of its squares
+ has been hit.
+
+  bs-sunk : BsState, Integer, Integer -> Boolean
+  bs-sunk (st) (p) (id) =
+    let ships = if p == 1 then st.p1-ships else st.p2-ships
+    in let track = if p == 1 then st.p2-tracking else st.p1-tracking
+    in bs-sunk-at ships track id 0
+
+  bs-sunk-at : BsGrid, BsGrid, Integer, Integer -> Boolean
+  bs-sunk-at (ships) (track) (id) (i) =
+    if i >= 100 then True
+    else if list-at (ships.cells) i == id & list-at (track.cells) i /= 2 then False
+    else bs-sunk-at ships track id (i + 1)
 Section: Formatting
 
   format-battleship-result : BattleshipResult -> Text
   format-battleship-result (r) =
     let w = if r.winner == 1 then "Player 1 wins"
             else if r.winner == 2 then "Player 2 wins"
-            else "Draw"
+            else "nobody"
     in "Battleship: " & w & " P1-shots=" & show (r.p1-shots) & " P2-shots=" & show (r.p2-shots)
 
 Page 1

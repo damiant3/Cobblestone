@@ -1,0 +1,164 @@
+Chapter: BrowserUNet
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter UNetGraph
+
+ The UNet's operations over BrowserKernels' WGSL module, for a page. Weights
+ are f32 device buffers by their name under model.diffusion_model.
+
+ We say:
+
+Section: Types
+
+  BuWeights = record {
+    bu-names : List Text,
+    bu-handles : List Integer
+  }
+
+Section: Launches
+
+  bu-get-loop : BuWeights, Text, Integer -> Integer
+  bu-get-loop (w) (name) (i) =
+    if i >= list-length (w.bu-names) then 0
+    else if list-at (w.bu-names) i == name then list-at (w.bu-handles) i
+    else bu-get-loop w name (i + 1)
+
+  bu-get : BuWeights, Text -> Integer
+  bu-get (w) (name) = bu-get-loop w name 0
+
+  bu-grid : Integer -> GpuGrid
+  bu-grid (n) = GpuGrid { gx = (n + 63) / 64, gy = 1, gz = 1, bx = 64, by = 1, bz = 1, shared = 0 }
+
+  bu-tiles : Integer, Integer -> GpuGrid
+  bu-tiles (m) (n) = GpuGrid { gx = ((m + 15) / 16) * ((n + 15) / 16), gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+
+  bu-run : Text, Text, Integer, List GpuParam -> Boolean
+  bu-run (code) (name) (n) (ps) = gpu-launch code name (bu-grid n) ps >= 0
+
+  bu-free : Integer, Integer -> Integer
+  bu-free (keep) (h) =
+    let f = if h > 0 then gpu-buf-free h else False
+    in keep
+
+  bu-out : Integer, Boolean -> Integer
+  bu-out (h) (ok) = if ok then h else bu-free 0 h
+
+Section: Operations
+
+  bu-silu : Text, Integer, Integer -> Integer
+  bu-silu (code) (x) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 | x == 0 then bu-free 0 h
+    else bu-out h (bu-run code "bk_silu_main" n [gpu-arg-buf x 0, gpu-arg-buf h 0, gpu-arg-u32 n])
+
+  bu-add : Text, Integer, Integer, Integer -> Integer
+  bu-add (code) (a) (b) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 | a == 0 | b == 0 then bu-free 0 h
+    else bu-out h (bu-run code "bk_add_main" n [gpu-arg-buf a 0, gpu-arg-buf b 0, gpu-arg-buf h 0, gpu-arg-u32 n])
+
+  bu-add-channel : Text, Integer, Integer, Integer, Integer -> Integer
+  bu-add-channel (code) (x) (bias) (hw) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 | x == 0 | bias == 0 then bu-free 0 h
+    else bu-out h (bu-run code "bk_add_channel_main" n [gpu-arg-buf x 0, gpu-arg-buf bias 0, gpu-arg-buf h 0, gpu-arg-u32 hw, gpu-arg-u32 n])
+
+  bu-transpose : Text, Integer, Integer, Integer -> Integer
+  bu-transpose (code) (x) (rows) (cols) =
+    let h = gpu-buf-alloc (rows * cols * 4)
+    in if h == 0 | x == 0 then bu-free 0 h
+    else bu-out h (bu-run code "bk_transpose_main" (rows * cols) [gpu-arg-buf x 0, gpu-arg-buf h 0, gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 (rows * cols)])
+
+  bu-concat : Text, Integer, Integer, Integer, Integer, Integer -> Integer
+  bu-concat (code) (a) (b) (ca) (cb) (hw) =
+    let h = gpu-buf-alloc ((ca + cb) * hw * 4)
+    in if h == 0 | a == 0 | b == 0 then bu-free 0 h
+    else bu-out h (bu-run code "bk_concat_main" ((ca + cb) * hw) [gpu-arg-buf a 0, gpu-arg-buf b 0, gpu-arg-buf h 0, gpu-arg-u32 ca, gpu-arg-u32 cb, gpu-arg-u32 hw, gpu-arg-u32 ((ca + cb) * hw)])
+
+ bk-linear always adds a bias, so an unbiased linear adds a zero one (WebGPU
+ zero-fills a new buffer).
+
+  bu-linear-b : Text, BuWeights, Integer, Integer, Integer, Integer, Text, Boolean -> Integer
+  bu-linear-b (code) (u) (x) (mm) (kk) (nn) (name) (biased) =
+    let w = bu-get u (name & ".weight")
+    in let zb = if biased then 0 else gpu-buf-alloc (nn * 4)
+    in let b = if biased then bu-get u (name & ".bias") else zb
+    in let y = gpu-buf-alloc (mm * nn * 4)
+    in let ok = if x == 0 | w == 0 | b == 0 | y == 0 then False else gpu-launch code "bk_linear_main" (bu-tiles mm nn) [gpu-arg-buf x 0, gpu-arg-buf w 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 mm, gpu-arg-u32 nn, gpu-arg-u32 kk] >= 0
+    in bu-free (bu-out y ok) zb
+
+  bu-conv : Text, BuWeights, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  bu-conv (code) (u) (x) (cin) (h) (wd) (cout) (k) (stride) (pad) (name) =
+    let oh = (h + 2 * pad - k) / stride + 1
+    in let ow = (wd + 2 * pad - k) / stride + 1
+    in let w = bu-get u (name & ".weight")
+    in let b = bu-get u (name & ".bias")
+    in let y = gpu-buf-alloc (cout * oh * ow * 4)
+    in let ok = if x == 0 | w == 0 | b == 0 | y == 0 then False else gpu-launch code "bk_conv2d_main" (bu-tiles cout (oh * ow)) [gpu-arg-buf x 0, gpu-arg-buf w 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 cin, gpu-arg-u32 h, gpu-arg-u32 wd, gpu-arg-u32 cout, gpu-arg-u32 k, gpu-arg-u32 k, gpu-arg-u32 stride, gpu-arg-u32 pad, gpu-arg-u32 oh, gpu-arg-u32 ow] >= 0
+    in bu-out y ok
+
+  bu-group-norm : Text, BuWeights, Integer, Integer, Integer, Real, Text -> Integer
+  bu-group-norm (code) (u) (x) (c) (hw) (eps) (name) =
+    let n = c * hw
+    in let s = gpu-buf-alloc (32 * 2 * 4)
+    in let g = bu-get u (name & ".weight")
+    in let b = bu-get u (name & ".bias")
+    in let y = gpu-buf-alloc (n * 4)
+    in let ok = if x == 0 | s == 0 | g == 0 | b == 0 | y == 0 then False
+       else if bu-run code "bk_row_mean_main" 32 [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 (n / 32), gpu-arg-u32 32] == False then False
+       else if bu-run code "bk_row_rstd_main" 32 [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 (n / 32), gpu-arg-f32 eps, gpu-arg-u32 32] == False then False
+       else bu-run code "bk_group_affine_main" n [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-buf g 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 c, gpu-arg-u32 hw, gpu-arg-u32 32, gpu-arg-u32 n]
+    in bu-free (bu-out y ok) s
+
+  bu-layer-norm : Text, BuWeights, Integer, Integer, Integer, Text -> Integer
+  bu-layer-norm (code) (u) (x) (rows) (dim) (name) =
+    let n = rows * dim
+    in let s = gpu-buf-alloc (rows * 2 * 4)
+    in let g = bu-get u (name & ".weight")
+    in let b = bu-get u (name & ".bias")
+    in let y = gpu-buf-alloc (n * 4)
+    in let ok = if x == 0 | s == 0 | g == 0 | b == 0 | y == 0 then False
+       else if bu-run code "bk_row_mean_main" rows [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 dim, gpu-arg-u32 rows] == False then False
+       else if bu-run code "bk_row_rstd_main" rows [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 dim, gpu-arg-f32 0.00001, gpu-arg-u32 rows] == False then False
+       else bu-run code "bk_layer_affine_main" n [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-buf g 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 dim, gpu-arg-u32 n]
+    in bu-free (bu-out y ok) s
+
+ The native softmax is in place; WebGPU refuses one buffer bound twice as
+ writable storage, so the rows go out through a temporary and back by a scale
+ of 1.
+
+  bu-softmax-rows : Text, Integer, Integer, Integer -> Boolean
+  bu-softmax-rows (code) (s) (cols) (rows) =
+    let n = cols * rows
+    in let m = gpu-buf-alloc (rows * 2 * 4)
+    in let y = gpu-buf-alloc (n * 4)
+    in let ok = if s == 0 | m == 0 | y == 0 then False
+       else if bu-run code "bk_row_max_main" rows [gpu-arg-buf s 0, gpu-arg-buf m 0, gpu-arg-u32 cols, gpu-arg-u32 rows] == False then False
+       else if bu-run code "bk_row_expsum_main" rows [gpu-arg-buf s 0, gpu-arg-buf m 0, gpu-arg-u32 cols, gpu-arg-u32 rows] == False then False
+       else if bu-run code "bk_softmax_apply_main" n [gpu-arg-buf s 0, gpu-arg-buf m 0, gpu-arg-buf y 0, gpu-arg-u32 cols, gpu-arg-u32 n] == False then False
+       else bu-run code "bk_scale_main" n [gpu-arg-buf y 0, gpu-arg-buf s 0, gpu-arg-f32 1.0, gpu-arg-u32 n]
+    in let f = bu-free (bu-free 0 y) m
+    in ok
+
+  bu-upload : List Real -> Integer
+  bu-upload (xs) =
+    let h = gpu-buf-alloc (list-length xs * 4)
+    in if h == 0 then 0
+    else if gpu-buf-write-words h 0 (bu-bits xs 0 []) then h
+    else bu-free 0 h
+
+  bu-bits : List Real, Integer, List Integer -> List Integer
+  bu-bits (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else bu-bits xs (i + 1) (list-snoc acc (gpu-f32-bits (list-at xs i)))
+
+ ln 10000, the LDM max period.
+
+  bu-timestep : Text, Integer, Integer -> Boolean
+  bu-timestep (code) (tb) (temb) = bu-run code "bk_timestep_main" 320 [gpu-arg-buf tb 0, gpu-arg-buf temb 0, gpu-arg-u32 320, gpu-arg-f32 9.210340371976184, gpu-arg-u32 320]
+
+ attention is the SDXL graph's fused one (UNetGraph); the SD1.5 graph builds
+ its own from linear-b and the three launches, so a page refuses it until
+ SDXL runs in the browser.
+
+  browser-unet-ops : Text -> UNetOps BuWeights
+  browser-unet-ops (code) = UNetOps { conv = \u x cin h wd cout k st pd nm -> bu-conv code u x cin h wd cout k st pd nm, linear = \u x mm kk nn nm -> bu-linear-b code u x mm kk nn nm True, linear-b = \u x mm kk nn nm bi -> bu-linear-b code u x mm kk nn nm bi, group-norm = \u x c hw eps nm -> bu-group-norm code u x c hw eps nm, layer-norm = \u x rows dim nm -> bu-layer-norm code u x rows dim nm, silu = \x n -> bu-silu code x n, add = \a b n -> bu-add code a b n, add-channel = \x b hw n -> bu-add-channel code x b hw n, transpose = \x r c -> bu-transpose code x r c, concat = \a b ca cb hw -> bu-concat code a b ca cb hw, attention = \u x sq c ctx sk kv p -> 0, alloc = gpu-buf-alloc, free = bu-free, temp = gpu-buf-alloc, tfree = \keep h bytes -> bu-free keep h, upload = bu-upload, geglu = \pr g inner n -> bu-run code "bk_geglu_main" n [gpu-arg-buf pr 0, gpu-arg-buf g 0, gpu-arg-u32 inner, gpu-arg-u32 n], upsample = \x up h w n -> bu-run code "bk_upsample_main" n [gpu-arg-buf x 0, gpu-arg-buf up 0, gpu-arg-u32 h, gpu-arg-u32 w, gpu-arg-u32 n], crop = \x c h w oh ow -> 0, timestep = \tb temb -> bu-timestep code tb temb, attn-scores = \q k s heads sq sk d scale -> bu-run code "bk_attn_scores_main" (heads * sq * sk) [gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf s 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 d, gpu-arg-f32 scale, gpu-arg-u32 (heads * sq * sk)], softmax-rows = \s cols rows -> bu-softmax-rows code s cols rows, attn-values = \s v o heads sq sk d -> bu-run code "bk_attn_values_main" (sq * heads * d) [gpu-arg-buf s 0, gpu-arg-buf v 0, gpu-arg-buf o 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 d, gpu-arg-u32 (sq * heads * d)], out-patch = \x s cx cs hh ww -> True, self-v = \p -> False, probs-at = \p -> False, probs = \s hd r -> True }

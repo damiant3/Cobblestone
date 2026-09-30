@@ -1,0 +1,56 @@
+Chapter: CheckpointFile
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Diffusion chapter CheckpointLayout
+
+ We say:
+
+Section: The Header
+
+ The header comes through the GPU bridge's file-range upload (op 44) as u8
+ into a device buffer and back into the reply region, the one guest window the
+ bridge writes. The reply region is 10 MB (#BD600000 to #BE000000); the read
+ lands 1 MB in, therefore a header past 9 MB is refused. The largest installed
+ header is 364,856 bytes (dreamshaperXL, 2026-09-29).
+
+  ckpt-scratch : Integer = #BD700000
+
+  ckpt-header-cap : Integer = 9437184
+
+  ckpt-invalid : Integer -> SafeTensorFile
+  ckpt-invalid (hlen) = SafeTensorFile { st-header-len = hlen, st-data-offset = 0, st-tensors = [], st-tensor-count = 0, st-valid = False }
+
+  ckpt-read-range : Text, Integer, Integer -> Boolean
+  ckpt-read-range (path) (off) (len) =
+    let h = gpu-buf-alloc len
+    in if h == 0 then False
+    else let n = gpu-buf-upload h 0 path off len gpu-dt-u8 gpu-dt-u8
+    in let ok = if n == len then gpu-buf-read h 0 len ckpt-scratch else False
+    in let freed = gpu-buf-free h
+    in ok
+
+  ckpt-open : Text -> SafeTensorFile
+  ckpt-open (path) =
+    if ckpt-read-range path 0 8 == False then ckpt-invalid 0
+    else let hlen = bit-or (peek-32 ckpt-scratch 0) (bit-shl (peek-32 ckpt-scratch 4) 32)
+    in if hlen <= 0 | hlen > ckpt-header-cap then ckpt-invalid hlen
+    else if ckpt-read-range path 8 hlen == False then ckpt-invalid hlen
+    else st-parse-header-at ckpt-scratch hlen
+
+Section: Tensors
+
+  ckpt-gpu-dtype : Integer -> Integer
+  ckpt-gpu-dtype (d) =
+    if d == st-dtype-f32 then gpu-dt-f32
+    else if d == st-dtype-f16 then gpu-dt-f16
+    else if d == st-dtype-bf16 then gpu-dt-bf16
+    else if d == st-dtype-f8-e4m3 then gpu-dt-fp8-e4m3
+    else if d == st-dtype-f8-e5m2 then gpu-dt-fp8-e5m2
+    else 0 - 1
+
+  ckpt-upload : Text, BoundTensor, Integer, Integer, Integer -> Integer
+  ckpt-upload (path) (t) (h) (dst-off) (dst-dt) =
+    let src = ckpt-gpu-dtype (t.bt-dtype)
+    in let width = st-dtype-width (t.bt-dtype)
+    in if src < 0 | width <= 0 then 0 - 1
+    else gpu-buf-upload h dst-off path (t.bt-offset) (t.bt-bytes / width) src dst-dt

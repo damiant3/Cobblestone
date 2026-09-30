@@ -1,0 +1,58 @@
+Chapter: DiffusionInpaintFill
+  cites Diffusion chapter InpaintFill
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/inpaint-fill-oracle.py's: per case its blurred mask,
+ then Forge's own masking.fill of the picture built below under it; every
+ byte must match. The sabotage fills under the inverted mask.
+
+ We say:
+
+Section: Picture
+
+  put-px : Integer, Integer, Integer, Integer -> Integer
+  put-px (a) (w) (n) (i) =
+    if i >= n then a
+    else let y = i / w
+    in let x = i - y * w
+    in let r = poke-byte a (i * 3) (int-mod (3 * x + y) 256)
+    in let g = poke-byte a (i * 3 + 1) (int-mod (x * y / 7) 256)
+    in let b = poke-byte a (i * 3 + 2) (int-mod (5 * bit-xor x y) 256)
+    in put-px a w n (i + 1)
+
+Section: Grading
+
+  theirs : Integer = #BD900000
+
+  diff : Integer, Integer, Integer, Integer, Integer -> Integer
+  diff (a) (b) (n) (i) (acc) =
+    if i >= n then acc
+    else diff a b n (i + 1) (acc + (if peek-byte a i == peek-byte b i then 0 else 1))
+
+  copy-out : Integer, Integer, Integer, Integer -> Integer
+  copy-out (s) (d) (i) (n) = if i >= n then d else let z = poke-byte d i (peek-byte s i) in copy-out s d (i + 1) n
+
+  invert : Integer, Integer, Integer -> Integer
+  invert (m) (i) (n) = if i >= n then m else let z = poke-byte m i (255 - peek-byte m i) in invert m (i + 1) n
+
+  arm : Integer, Integer, Integer, Integer, Boolean, Text -> Text
+  arm (h) (at) (w) (hh) (sabotage) (what) =
+    let n = w * hh
+    in let up = gpu-buf-upload h 0 "inpaint-fill.bin" at (n * 4) gpu-dt-u8 gpu-dt-u8
+    in if gpu-buf-read h 0 (n * 4) theirs == False then what & ": the fixture could not be read"
+    else let mask = copy-out theirs (alloc-bytes n) 0 n
+    in let m = if sabotage then invert mask 0 n else mask
+    in let got = inpaint-fill (put-px (alloc-bytes (n * 3)) w n 0) m w hh
+    in let d = diff got (theirs + n) (n * 3) 0 0
+    in what & (if d == 0 then ": all " & show (n * 3) & " bytes equal" else ": " & show d & " of " & show (n * 3) & " bytes differ")
+
+  opening : [Console] Nothing
+  opening = act
+    let h = gpu-buf-alloc (200 * 136 * 4)
+    in act
+      print-line-uni (arm h 0 72 40 False "72x40, narrower than the box at radii 64 and 256")
+      print-line-uni (arm h (72 * 40 * 4) 200 136 False "200x136, wider than the box at radius 64")
+      print-line-uni (arm h 0 72 40 True "sabotage, 72x40 filled under the inverted mask")
+    end
+  end

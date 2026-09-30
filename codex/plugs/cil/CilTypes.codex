@@ -1,0 +1,276 @@
+Chapter: CIL Types
+
+  CilRecord = record { name : Text, fields : List RecordField, row : Integer, first-field : Integer, constructor : Integer, external : Boolean }
+
+  cil-cache-get : List (List CilKey), Text -> Integer
+  cil-cache-get (cache) (key) = cil-key-find (list-at cache (cil-name-hash key 0 0)) key 0
+
+  cil-cache-put : List (List CilKey), Text, Integer -> Integer
+  cil-cache-put (cache) (key) (value) =
+   let bucket = cil-name-hash key 0 0
+   in let put = list-set-at cache bucket (list-push (list-at cache bucket) (CilKey { key = key, value = value }))
+   in value
+
+  cil-core-ref : CilProgram, Text, Text -> Integer
+  cil-core-ref (p) (space) (name) =
+   if space == "System" & name == "Object" then p.object-ref
+   else let key = "type:" & space & "." & name
+   in let found = cil-cache-get (p.members) key
+   in if found >= 0 then found
+   else let row = cil-row (p.md) 1 [CilCoded 2 [0, 26, 35, 1] (p.corlib * 4 + 2), CilString (cil-string (p.md) name), CilString (cil-string (p.md) space)]
+   in cil-cache-put (p.members) key row
+
+  cil-member : CilProgram, Text, Integer, Text, List Integer -> Integer
+  cil-member (p) (key) (owner) (name) (signature) =
+   let found = cil-cache-get (p.members) ("member:" & key)
+   in if found >= 0 then found
+   else let row = cil-row (p.md) 10 [CilCoded 3 [2, 1, 26, 6, 27] owner, CilString (cil-string (p.md) name), CilBlob (cil-blob (p.md) signature)]
+   in cil-cache-put (p.members) ("member:" & key) (167772160 + row)
+
+  cil-type-key : CodexType -> Text
+  cil-type-key (ty) = when cil-core-type ty
+   is IntegerTy (lo) (hi) (mode) -> "i64"
+   is CharTy -> "i64"
+   is BooleanTy -> "bool"
+   is RealTy (w) (m) -> "real"
+   is TextTy -> "text"
+   is ListTy (elem) -> "list<" & cil-type-key elem & ">"
+   is RecordTy (name) (args) (fields) -> "record:" & name.value
+   is ConstructedTy (name) (args) -> "record:" & name.value
+   is FunTy (arg) (row) (ret) -> "fn<" & cil-type-key arg & "," & cil-type-key ret & ">"
+   is otherwise -> "void"
+
+  cil-record-index : List CilRecord, Text, Integer -> Integer
+  cil-record-index (records) (name) (i) =
+   if i >= list-length records then -1
+   else if (list-at records i).name == name then i else cil-record-index records name (i + 1)
+
+  cil-record-name : CodexType -> Text
+  cil-record-name (ty) = when cil-core-type ty
+   is RecordTy (name) (args) (fields) -> name.value
+   is ConstructedTy (name) (args) -> name.value
+   is otherwise -> ""
+
+  cil-record-signature : CilProgram, Text -> List Integer
+  cil-record-signature (p) (name) =
+   let index = cil-record-index (p.records) name 0
+   in if index < 0 then let refused = cil-refuse p ("unknown record type " & name) in [28]
+   else let rec = list-at (p.records) index
+   in [18] & cil-compressed (rec.row * 4 + (if rec.external then 1 else 0))
+
+  cil-record-save-values : CilProgram, CilMethod, CilEnv, List IRFieldVal, Integer, Integer, CilEnv -> CilEnv
+  cil-record-save-values (p) (method) (env) (fields) (i) (depth) (saved) =
+   if i >= list-length fields then saved
+   else let field = list-at fields i
+   in let slot = cil-local method (ir-expr-type (field.value))
+   in let emitted = cil-expr p method env (field.value) depth
+   in let stored = cil-put method ([254, 14] & write-i16 slot)
+   in cil-record-save-values p method env fields (i + 1) depth (CilBinding (field.name) (0 - slot - 1) saved)
+
+  cil-record-load-values : CilProgram, CilMethod, CilRecord, CilEnv, Integer -> Integer
+  cil-record-load-values (p) (method) (rec) (saved) (i) =
+   if i >= list-length (rec.fields) then 0
+   else let name = (list-at (rec.fields) i).name.value
+   in let slot = cil-env-find saved name
+   in if slot == 0 then cil-refuse p ("missing record field " & name)
+   else let loaded = cil-put method ([254, 12] & write-i16 (0 - slot - 1))
+   in cil-record-load-values p method rec saved (i + 1)
+
+  cil-record-expression : CilProgram, CilMethod, CilEnv, Text, List IRFieldVal, Integer -> Integer
+  cil-record-expression (p) (method) (env) (name) (fields) (depth) =
+   let index = cil-record-index (p.records) name 0
+   in if index < 0 then cil-refuse p ("unknown record constructor " & name)
+   else let rec = list-at (p.records) index
+   in if list-length fields /= list-length (rec.fields) then cil-refuse p ("record field count differs for " & name)
+   else let saved = cil-record-save-values p method env fields 0 depth CilEmpty
+   in let loaded = cil-record-load-values p method rec saved 0
+   in cil-put method ([115] & write-i32 (if rec.external then rec.constructor else 100663296 + rec.constructor))
+
+  cil-list-literal : CilProgram, CilMethod, CilEnv, List IRExpr, CodexType, Integer, Integer -> Integer
+  cil-list-literal (p) (method) (env) (values) (elem) (i) (depth) =
+   if i >= list-length values then 0
+   else let dup = cil-put method [37]
+   in let value = cil-expr p method env (list-at values i) depth
+   in let add = cil-put method ([111] & write-i32 (cil-list-member p elem "add"))
+   in cil-list-literal p method env values elem (i + 1) depth
+
+  cil-list-builtin : CilProgram, CilMethod, CilEnv, Text, List IRExpr, Integer -> Boolean
+  cil-list-builtin (p) (method) (env) (name) (args) (depth) =
+   if name == "__record-set" then
+    if list-length args /= 3 then let refused = cil-refuse p "invalid record-set call" in True
+    else when list-at args 1
+     is IrTextLit (field) (sp) ->
+      let owner = list-at args 0
+      in let loaded = cil-expr p method env owner depth
+      in let dup = cil-put method [37]
+      in let value = cil-expr p method env (list-at args 2) depth
+      in let set = cil-put method ([125] & write-i32 (cil-field-token p (ir-expr-type owner) field))
+      in True
+     is otherwise -> let refused = cil-refuse p "record-set needs a constant field name" in True
+   else if name /= "list-length" & name /= "list-at" & name /= "list-push" & name /= "list-snoc" & name /= "list-set-at" then False
+   else let count = if name == "list-length" then 1 else if name == "list-set-at" then 3 else 2
+   in if list-length args /= count then let refused = cil-refuse p ("invalid collection call " & name) in True
+   else let list = list-at args 0
+   in let ty = ir-expr-type list
+   in let elem = cil-list-element ty
+   in let first = cil-expr p method env list depth
+   in let emitted = if name == "list-length" then
+    cil-put method ([111] & write-i32 (cil-list-member p elem "count") & [106])
+   else if name == "list-at" then
+    let index = cil-expr p method env (list-at args 1) depth
+    in cil-put method ([183, 111] & write-i32 (cil-list-member p elem "item"))
+   else if name == "list-push" | name == "list-snoc" then
+    let value = cil-expr p method env (list-at args 1) depth
+    in let slot = cil-local method elem
+    in let stored = cil-put method ([254, 14] & write-i16 slot & [37, 254, 12] & write-i16 slot)
+    in cil-put method ([111] & write-i32 (cil-list-member p elem "add"))
+   else
+    let index = cil-expr p method env (list-at args 1) depth
+    in let value = cil-expr p method env (list-at args 2) depth
+    in let value-slot = cil-local method elem
+    in let index-slot = cil-local method int-ty-default
+    in let stored = cil-put method ([254, 14] & write-i16 value-slot & [254, 14] & write-i16 index-slot & [37, 254, 12] & write-i16 index-slot & [183, 254, 12] & write-i16 value-slot)
+    in cil-put method ([111] & write-i32 (cil-list-member p elem "set"))
+   in True
+
+  cil-list-append : CilProgram, CilMethod, CilEnv, IRExpr, IRExpr, CodexType, Integer -> Integer
+  cil-list-append (p) (method) (env) (left) (right) (ty) (depth) =
+   let a = cil-expr p method env left depth
+   in let b = cil-expr p method env right depth
+   in let rhs = cil-local method ty
+   in let stored = cil-put method ([254, 14] & write-i16 rhs)
+   in let elem = cil-list-element ty
+   in cil-put method ([115] & write-i32 (cil-list-member p elem "copy") & [37, 254, 12] & write-i16 rhs & [111] & write-i32 (cil-list-member p elem "range"))
+
+  cil-list-signature : CilProgram, CodexType -> List Integer
+  cil-list-signature (p) (elem) =
+   let generic = cil-core-ref p "System.Collections.Generic" "List`1"
+   in [21, 18] & cil-compressed (generic * 4 + 1) & [1] & cil-value-type p elem
+
+  cil-list-spec : CilProgram, CodexType -> Integer
+  cil-list-spec (p) (elem) =
+   let key = "spec:list:" & cil-type-key elem
+   in let found = cil-cache-get (p.members) key
+   in if found >= 0 then found
+   else let row = cil-row (p.md) 27 [CilBlob (cil-blob (p.md) (cil-list-signature p elem))]
+   in cil-cache-put (p.members) key row
+
+  cil-enumerable-var : CilProgram -> List Integer
+  cil-enumerable-var (p) =
+   let generic = cil-core-ref p "System.Collections.Generic" "IEnumerable`1"
+   in [21, 18] & cil-compressed (generic * 4 + 1) & [1, 19, 0]
+
+  cil-list-member : CilProgram, CodexType, Text -> Integer
+  cil-list-member (p) (elem) (operation) =
+   let owner = cil-list-spec p elem * 8 + 4
+   in let key = "list:" & cil-type-key elem & ":" & operation
+   in if operation == "new" then cil-member p key owner ".ctor" [32, 0, 1]
+   else if operation == "copy" then cil-member p key owner ".ctor" ([32, 1, 1] & cil-enumerable-var p)
+   else if operation == "add" then cil-member p key owner "Add" [32, 1, 1, 19, 0]
+   else if operation == "range" then cil-member p key owner "AddRange" ([32, 1, 1] & cil-enumerable-var p)
+   else if operation == "count" then cil-member p key owner "get_Count" [32, 0, 8]
+   else if operation == "set" then cil-member p key owner "set_Item" [32, 2, 1, 8, 19, 0]
+   else cil-member p key owner "get_Item" [32, 1, 19, 0, 8]
+
+  cil-list-element : CodexType -> CodexType
+  cil-list-element (ty) = when cil-core-type ty
+   is ListTy (elem) -> elem
+   is otherwise -> ErrorTy
+
+  cil-record-fields : List ARecordFieldDef, Integer, List RecordField -> List RecordField
+  cil-record-fields (fields) (i) (out) =
+   if i >= list-length fields then out
+   else let field = list-at fields i
+   in cil-record-fields fields (i + 1) (list-push out (RecordField { name = field.name, type-val = atype-to-codex-type (field.type-expr) }))
+
+  cil-collect-records : CilProgram, List ATypeDef, Integer, Integer -> Integer
+  cil-collect-records (p) (types) (i) (first-field) =
+   if i >= list-length types then 0
+   else when list-at types i
+    is ARecordTypeDef (name) (parameters) (fields) (is-mutable) (span) ->
+     if list-length parameters > 0 then cil-refuse p "generic record definitions are not lowered yet"
+     else let external = p.unity-ref /= 0 & cil-unity-record (name.value)
+     in let index = p.record-methods
+     in let row = if external then cil-unity-type p (name.value) else index + 3
+     in let rec = CilRecord { name = name.value, fields = cil-record-fields fields 0 [], row = row, first-field = first-field, constructor = list-length (p.defs) + index + 1, external = external }
+     in let checked = if external then
+      if cil-unity-fields-abi (rec.fields) 0 "" /= cil-unity-record-abi (rec.name) then cil-refuse p ("Unity record ABI differs: " & rec.name) else 0
+      else 0
+     in let put = __record-set p "records" (list-push (p.records) rec)
+     in let count = if external then 0 else let set = __record-set p "record-methods" (index + 1) in 0
+     in cil-collect-records p types (i + 1) (first-field + (if external then 0 else list-length fields))
+    is AUnitTypeDef (name) (base) (span) -> cil-collect-records p types (i + 1) first-field
+    is otherwise -> cil-refuse p "sum type definitions are not lowered yet"
+
+  cil-declare-fields : CilProgram, CilRecord, Integer -> Integer
+  cil-declare-fields (p) (rec) (i) =
+   if i >= list-length (rec.fields) then 0
+   else let field = list-at (rec.fields) i
+   in let row = cil-row (p.md) 4 [CilU2 6, CilString (cil-string (p.md) (field.name.value)), CilBlob (cil-blob (p.md) ([6] & cil-value-type p (field.type-val)))]
+   in cil-declare-fields p rec (i + 1)
+
+  cil-declare-records : CilProgram, Integer -> Integer
+  cil-declare-records (p) (i) =
+   if i >= list-length (p.records) then 0
+   else let rec = list-at (p.records) i
+   in if rec.external then
+    let signature = [32] & cil-compressed (list-length (rec.fields)) & [1] & cil-record-param-types p (rec.fields) 0 []
+    in let constructor = cil-member p ("unity-record:" & rec.name) (rec.row * 8 + 1) ".ctor" signature
+    in let set = __record-set rec "constructor" constructor
+    in cil-declare-records p (i + 1)
+   else let row = cil-row (p.md) 2 [CilU4 (1048576 + 256 + 1), CilString (cil-string (p.md) (rec.name)), CilString (cil-string (p.md) "PrismGenerated"), CilCoded 2 [2, 1, 27] (p.object-ref * 4 + 1), CilTable 4 (rec.first-field), CilTable 6 (rec.constructor)]
+   in let fields = cil-declare-fields p rec 0
+   in cil-declare-records p (i + 1)
+
+  cil-field-index : List RecordField, Text, Integer -> Integer
+  cil-field-index (fields) (name) (i) =
+   if i >= list-length fields then -1
+   else let declared = (list-at fields i).name.value
+   in if declared == name | (declared & "/" & show i) == name then i else cil-field-index fields name (i + 1)
+
+  cil-field-token : CilProgram, CodexType, Text -> Integer
+  cil-field-token (p) (ty) (name) =
+   let index = cil-record-index (p.records) (cil-record-name ty) 0
+   in if index < 0 then let refused = cil-refuse p ("field on unknown record " & name) in 0
+   else let rec = list-at (p.records) index
+   in let field = cil-field-index (rec.fields) name 0
+   in if field < 0 then let refused = cil-refuse p ("unknown record field " & name) in 0
+   else if rec.external then let refused = cil-refuse p "Unity adapter records are immutable" in 0
+   else 67108864 + rec.first-field + field
+
+  cil-field-load : CilProgram, CilMethod, CodexType, Text -> Integer
+  cil-field-load (p) (method) (ty) (name) =
+   let index = cil-record-index (p.records) (cil-record-name ty) 0
+   in if index < 0 then cil-refuse p ("field on unknown record " & name)
+   else let rec = list-at (p.records) index
+   in if rec.external == False then cil-put method ([123] & write-i32 (cil-field-token p ty name))
+   else let field = cil-field-index (rec.fields) name 0
+   in if field < 0 then cil-refuse p ("unknown adapter field " & name)
+   else let value = list-at (rec.fields) field
+   in let getter = cil-member p ("unity-get:" & rec.name & ":" & value.name.value) (rec.row * 8 + 1) ("get_" & text-replace (value.name.value) "-" "_") ([32, 0] & cil-type p (value.type-val))
+   in cil-put method ([111] & write-i32 getter)
+
+  cil-record-param-types : CilProgram, List RecordField, Integer, List Integer -> List Integer
+  cil-record-param-types (p) (fields) (i) (out) =
+   if i >= list-length fields then out
+   else cil-record-param-types p fields (i + 1) (cil-append out (cil-value-type p ((list-at fields i).type-val)) 0)
+
+  cil-ctor-stores : CilMethod, CilRecord, Integer -> Integer
+  cil-ctor-stores (method) (rec) (i) =
+   if i >= list-length (rec.fields) then 0
+   else let put = cil-put method ([2, 254, 9] & write-i16 (i + 1) & [125] & write-i32 (67108864 + rec.first-field + i))
+   in cil-ctor-stores method rec (i + 1)
+
+  cil-emit-record-ctors : CilProgram, Integer -> Integer
+  cil-emit-record-ctors (p) (i) =
+   if i >= list-length (p.records) | p.error /= "" then 0
+   else let rec = list-at (p.records) i
+   in if rec.external then cil-emit-record-ctors p (i + 1)
+   else let objctor = cil-member p "Object:.ctor" (p.object-ref * 8 + 1) ".ctor" [32, 0, 1]
+   in let method = CilMethod { code = [2, 40] & write-i32 objctor, locals = [], label = rec.name & ".ctor" }
+   in let stores = cil-ctor-stores method rec 0
+   in let ret = cil-put method [42]
+   in let rva = cil-method-body p method 2
+   in let signature = cil-blob (p.md) ([32] & cil-compressed (list-length (rec.fields)) & [1] & cil-record-param-types p (rec.fields) 0 [])
+   in let row = cil-row (p.md) 6 [CilU4 rva, CilU2 0, CilU2 (6 + 128 + 2048 + 4096), CilString (cil-string (p.md) ".ctor"), CilBlob signature, CilTable 8 (list-at ((p.md).counts) 8 + 1)]
+   in cil-emit-record-ctors p (i + 1)

@@ -1,0 +1,468 @@
+Chapter: UNet
+  cites Kernel chapter GpuBridge
+  cites AI chapter SafeTensors
+  cites Foreword chapter Maybe
+  cites Gpu chapter LayerKernelsPtx
+  cites Gpu chapter GemmPtx
+  cites Diffusion chapter VaeKernelsPtx
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter GpuModules
+  cites Diffusion chapter UNetGraph
+
+ We say:
+
+Section: Host Words
+
+ Host-side values reach the device through the reply region past the first
+ megabyte, the window CheckpointFile reads headers through.
+
+  un-scratch : Integer = #BD700000
+
+  un-f32-bits : Real -> Integer
+  un-f32-bits (x) =
+    let b = real-to-bits x
+    in if bit-and b #7FFFFFFFFFFFFFFF == 0 then 0
+    else let s = bit-and (bit-shru b 63) 1
+    in let e = bit-and (bit-shru b 52) 2047
+    in bit-or (bit-shl s 31) (bit-or (bit-shl (e - 896) 23) (bit-and (bit-shru b 29) #7FFFFF))
+
+  un-f32-real : Integer -> Real
+  un-f32-real (w) =
+    let s = bit-and (bit-shru w 31) 1
+    in let e = bit-and (bit-shru w 23) 255
+    in let m = bit-and w #7FFFFF
+    in if e == 255 then bits-to-real #7FF8000000000000
+    else if e == 0 then (if s == 1 then 0.0 - 1.0 else 1.0) * real-from-int m * bits-to-real (bit-shl 874 52)
+    else bits-to-real (bit-or (bit-shl s 63) (bit-or (bit-shl (e + 896) 52) (bit-shl m 29)))
+
+  un-put : List Real, Integer -> Integer
+  un-put (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = poke-32 un-scratch (i * 4) (un-f32-bits (list-at xs i))
+    in un-put xs (i + 1)
+
+  un-upload : List Real -> Integer
+  un-upload (xs) =
+    let h = gpu-buf-alloc (list-length xs * 4)
+    in let w = un-put xs 0
+    in if h == 0 then 0
+    else if gpu-buf-write h 0 (list-length xs * 4) un-scratch then h
+    else 0
+
+  un-take : Integer, Integer, List Real -> List Real
+  un-take (i) (n) (acc) =
+    if i >= n then acc
+    else un-take (i + 1) n (list-push acc (un-f32-real (bit-and (peek-32 un-scratch (i * 4)) #FFFFFFFF)))
+
+  un-read-at : Integer, Integer -> Real
+  un-read-at (h) (i) =
+    if gpu-buf-read h (i * 4) 4 un-scratch then un-f32-real (bit-and (peek-32 un-scratch 0) #FFFFFFFF)
+    else bits-to-real #7FF8000000000000
+
+  un-download : Integer, Integer -> List Real
+  un-download (h) (n) =
+    if gpu-buf-read h 0 (n * 4) un-scratch then un-take 0 n []
+    else []
+
+Section: Launch
+
+  un-grid : Integer -> GpuGrid
+  un-grid (n) = GpuGrid { gx = (n + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }
+
+  un-buf : Integer -> GpuParam
+  un-buf (h) = gpu-arg-buf h 0
+
+  un-int : Integer -> GpuParam
+  un-int (v) = gpu-arg-u64 v
+
+  un-real : Real -> GpuParam
+  un-real (x) = gpu-arg-u64 (real-to-bits x)
+
+  un-run : Integer, Text, Text, GpuGrid, List GpuParam -> Integer
+  un-run (slot) (ptx) (name) (g) (ps) = gm-launch slot ptx name g ps
+
+  un-layer : Text, Integer, List GpuParam -> Boolean
+  un-layer (name) (n) (ps) = un-run 0 layer-kernels-ptx name (un-grid n) ps >= 0
+
+  un-rows : Text, Integer, List GpuParam -> Boolean
+  un-rows (name) (rows) (ps) = un-run 0 layer-kernels-ptx name (GpuGrid { gx = rows, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) ps >= 0
+
+  un-vae : Text, Integer, List GpuParam -> Boolean
+  un-vae (name) (n) (ps) = un-run 1 vae-kernels-ptx name (un-grid n) ps >= 0
+
+  un-out : Integer, Boolean -> Integer
+  un-out (h) (ok) = if ok then h else 0
+
+  un-free : Integer, Integer -> Integer
+  un-free (keep) (h) =
+    let f = if h > 0 then gpu-buf-free h else False
+    in keep
+
+Section: Temporaries
+
+ A temporary never leaves the operation that takes it, so it returns to a pool
+ keyed by its byte size instead of to the host, where each free is four VM
+ exits and a device synchronisation. The pool's table sits in the reply region
+ between the replies and un-mod-cell: 16 bytes per entry (size low and high
+ words, handle), the count, the bytes held and a magic word that marks the
+ table initialised. Past un-pool-cap bytes held, a temporary goes to the host.
+
+  un-pool : Integer = #BD610000
+  un-pool-head : Integer = #BD6FFF40
+  un-pool-slots : Integer = 4096
+  un-pool-cap : Integer = 2147483648
+  un-pool-magic : Integer = #504F4F4C
+
+  un-word : Integer, Integer -> Integer
+  un-word (base) (off) = bit-and (peek-32 base off) #FFFFFFFF
+
+  un-put64 : Integer, Integer, Integer -> Integer
+  un-put64 (base) (off) (v) =
+    let lo = poke-32 base off (bit-and v #FFFFFFFF)
+    in poke-32 base (off + 4) (bit-shru v 32)
+
+  un-get64 : Integer, Integer -> Integer
+  un-get64 (base) (off) = bit-or (un-word base off) (bit-shl (un-word base (off + 4)) 32)
+
+  un-pool-count : Integer -> Integer
+  un-pool-count (z) =
+    if un-word un-pool-head 12 == un-pool-magic then un-word un-pool-head 0
+    else let a = poke-32 un-pool-head 0 0
+    in let b = un-put64 un-pool-head 4 0
+    in let c = poke-32 un-pool-head 12 un-pool-magic
+    in 0
+
+  un-pool-find : Integer, Integer, Integer -> Integer
+  un-pool-find (bytes) (i) (n) =
+    if i >= n then 0 - 1
+    else if un-get64 un-pool (i * 16) == bytes then i
+    else un-pool-find bytes (i + 1) n
+
+  un-temp : Integer -> Integer
+  un-temp (bytes) =
+    let n = un-pool-count 0
+    in let i = un-pool-find bytes 0 n
+    in if i < 0 then gpu-buf-alloc bytes
+    else let h = un-word un-pool (i * 16 + 8)
+    in let m1 = un-put64 un-pool (i * 16) (un-get64 un-pool ((n - 1) * 16))
+    in let m2 = poke-32 un-pool (i * 16 + 8) (un-word un-pool ((n - 1) * 16 + 8))
+    in let c = poke-32 un-pool-head 0 (n - 1)
+    in let d = un-put64 un-pool-head 4 (un-get64 un-pool-head 4 - bytes)
+    in h
+
+  un-tfree : Integer, Integer, Integer -> Integer
+  un-tfree (keep) (h) (bytes) =
+    if h <= 0 then keep
+    else let n = un-pool-count 0
+    in let held = un-get64 un-pool-head 4
+    in if n >= un-pool-slots | held + bytes > un-pool-cap then un-free keep h
+    else let a = un-put64 un-pool (n * 16) bytes
+    in let b = poke-32 un-pool (n * 16 + 8) h
+    in let c = poke-32 un-pool-head 0 (n + 1)
+    in let d = un-put64 un-pool-head 4 (held + bytes)
+    in keep
+
+  un-pool-drain : Integer -> Integer
+  un-pool-drain (freed) =
+    let n = un-pool-count 0
+    in if n <= 0 then freed
+    else let h = un-word un-pool ((n - 1) * 16 + 8)
+    in let c = poke-32 un-pool-head 0 (n - 1)
+    in let d = un-put64 un-pool-head 4 (un-get64 un-pool-head 4 - un-get64 un-pool ((n - 1) * 16))
+    in let f = gpu-buf-free h
+    in un-pool-drain (freed + 1)
+
+Section: Weights
+
+ A weight is uploaded by its LDM name under model.diffusion_model., converted
+ on the way to dst-dt: f16 for a matrix the GEMM reads, f32 for a bias or a
+ norm's scale and shift.
+
+  UNetFile = record {
+    uf-path : Text,
+    uf-file : SafeTensorFile,
+    uf-index : NameIndex,
+    uf-handles : List Integer
+  }
+
+  unet-open : Text -> UNetFile
+  unet-open (path) = UNetFile { uf-path = path, uf-file = ckpt-open path, uf-index = name-index [], uf-handles = [] }
+
+ Every UNet tensor uploaded once and kept on the device: a 1-D tensor (a bias, a
+ norm's scale or shift) as f32, the rest as f16. 5.1 GB for SDXL.
+
+  unet-load : UNetFile -> UNetFile
+  unet-load (u) =
+    let names = un-unet-names ((u.uf-file).st-tensors) 0 []
+    in let hs = un-load-all u names 0 []
+    in UNetFile { uf-path = u.uf-path, uf-file = u.uf-file, uf-index = name-index names, uf-handles = hs }
+
+  un-unet-names : List StTensorMeta, Integer, List Text -> List Text
+  un-unet-names (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let nm = (list-at ts i).stm-name
+    in un-unet-names ts (i + 1) (if text-starts-with nm "model.diffusion_model." then list-push acc nm else acc)
+
+  un-load-all : UNetFile, List Text, Integer, List Integer -> List Integer
+  un-load-all (u) (names) (i) (acc) =
+    if i >= list-length names then acc
+    else let m = st-find-tensor (u.uf-file) (list-at names i)
+    in let h = when m
+     is None -> 0
+     is Just (mm) -> un-weight-meta u mm (if list-length (mm.stm-shape) == 1 then gpu-dt-f32 else gpu-dt-f16)
+    in un-load-all u names (i + 1) (list-push acc h)
+
+  un-resident : UNetFile -> Boolean
+  un-resident (u) = list-length (u.uf-handles) > 0
+
+ A weight the caller must free: one it uploaded, not one the cache holds.
+
+  un-drop : UNetFile, Integer, Integer -> Integer
+  un-drop (u) (keep) (h) = if un-resident u then keep else un-free keep h
+
+  un-weight : UNetFile, Text, Integer -> Integer
+  un-weight (u) (name) (dt) =
+    if un-resident u then un-cached u (name-find (u.uf-index) ("model.diffusion_model." & name))
+    else when st-find-tensor (u.uf-file) ("model.diffusion_model." & name)
+     is None -> 0
+     is Just (m) -> un-weight-meta u m dt
+
+  un-cached : UNetFile, Integer -> Integer
+  un-cached (u) (i) = if i < 0 then 0 else list-at (u.uf-handles) i
+
+  un-weight-meta : UNetFile, StTensorMeta, Integer -> Integer
+  un-weight-meta (u) (m) (dt) =
+    let count = st-element-count m
+    in let width = if dt == gpu-dt-f32 then 4 else 2
+    in let h = gpu-buf-alloc (count * width)
+    in if h == 0 then 0
+    else if gpu-buf-upload h 0 (u.uf-path) ((u.uf-file).st-data-offset + m.stm-offset-start) count (ckpt-gpu-dtype (m.stm-dtype)) dt == count * width then h
+    else un-free 0 h
+
+Section: Operations
+
+ Each operation answers a fresh f32 buffer, or 0 when an allocation, an
+ upload or a launch was refused, and frees its temporaries.
+
+  un-cast16 : Integer, Integer -> Integer
+  un-cast16 (x) (n) =
+    let h = un-temp (n * 2)
+    in if h == 0 | x == 0 then un-tfree 0 h (n * 2)
+    else if un-vae "kernel_cast_f16" n [un-buf x, un-buf h, un-int n] then h
+    else un-tfree 0 h (n * 2)
+
+  un-silu : Integer, Integer -> Integer
+  un-silu (x) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 | x == 0 then un-free 0 h
+    else un-out h (un-layer "kernel_silu" n [un-buf x, un-buf h, un-int n])
+
+  un-add : Integer, Integer, Integer -> Integer
+  un-add (a) (b) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 | a == 0 | b == 0 then un-free 0 h
+    else un-out h (un-layer "kernel_add" n [un-buf a, un-buf b, un-buf h, un-int n])
+
+  un-add-channel : Integer, Integer, Integer, Integer -> Integer
+  un-add-channel (x) (bias) (hw) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 | x == 0 | bias == 0 then un-free 0 h
+    else un-out h (un-layer "kernel_add_channel" n [un-buf x, un-buf bias, un-buf h, un-int hw, un-int n])
+
+ y = x W^T + b over mm rows of kk, W and b the named linear.
+
+  un-linear : UNetFile, Integer, Integer, Integer, Integer, Text -> Integer
+  un-linear (u) (x) (mm) (kk) (nn) (name) = un-linear-b u x mm kk nn name True
+
+  un-linear-b : UNetFile, Integer, Integer, Integer, Integer, Text, Boolean -> Integer
+  un-linear-b (u) (x) (mm) (kk) (nn) (name) (biased) =
+    let xh = un-cast16 x (mm * kk)
+    in let w = un-weight u (name & ".weight") gpu-dt-f16
+    in let b = if biased then un-weight u (name & ".bias") gpu-dt-f32 else 0
+    in let y = gpu-buf-alloc (mm * nn * 4)
+    in let bp = if biased then un-buf b else un-int 0
+    in let ok = if xh == 0 | w == 0 | (biased & b == 0) | y == 0 then False else un-gemm-linear (un-buf xh) (un-buf w) bp (un-buf y) mm nn kk >= 0
+    in un-drop u (un-drop u (un-tfree (un-out y ok) xh (mm * kk * 2)) w) b
+
+ kernel-linear-fast needs kk a multiple of 8 (every SDXL linear); anything
+ else takes the plain WMMA kernel. Under 136 blocks of 128 x 128 (two waves
+ of the RTX 4060 Ti's 34 SMs at two blocks each) the grid ends in a thin wave
+ and the 128 x 64 tile runs instead, bit for bit the same output: 1024 x 1280
+ x 1280 went from 756 to 663 ms an image (census, idle card, 2026-09-29).
+
+  un-gemm-linear : GpuParam, GpuParam, GpuParam, GpuParam, Integer, Integer, Integer -> Integer
+  un-gemm-linear (xh) (w) (bp) (y) (mm) (nn) (kk) =
+    if kk - kk / 8 * 8 == 0 then (if ((nn + 127) / 128) * ((mm + 127) / 128) < 136 then un-run 2 gemm-ptx "kernel_linear_fast_n64" (GpuGrid { gx = (nn + 63) / 64, gy = (mm + 127) / 128, gz = 1, bx = 128, by = 1, bz = 1, shared = 30720 }) [xh, w, bp, y, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0]
+      else un-run 2 gemm-ptx "kernel_linear_fast" (GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 }) [xh, w, bp, y, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0])
+    else un-run 2 gemm-ptx "kernel_linear_wmma" (GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }) [xh, w, bp, y, un-int mm, un-int nn, un-int kk, un-int 0]
+
+ A square conv of the named weights with its bias, over a cin x h x w input.
+
+  un-conv : UNetFile, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  un-conv (u) (x) (cin) (h) (wd) (cout) (k) (stride) (pad) (name) =
+    if cin - cin / 32 * 32 == 0 then un-conv-fast u x cin h wd cout k stride pad name
+    else un-conv-wmma u x cin h wd cout k stride pad name
+
+ kernel-conv2d-fast (cin a multiple of 32) reads the input as h x w x cin and
+ the weights as cout x kh x kw x cin, and adds the bias itself.
+
+  un-per256 : Integer -> GpuGrid
+  un-per256 (n) = GpuGrid { gx = (n + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+
+  un-conv-fast : UNetFile, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  un-conv-fast (u) (x) (cin) (h) (wd) (cout) (k) (stride) (pad) (name) =
+    let oh = (h + 2 * pad - k) / stride + 1
+    in let ow = (wd + 2 * pad - k) / stride + 1
+    in let xh = un-cast16 x (cin * h * wd)
+    in let xn = un-temp (cin * h * wd * 2)
+    in let w = un-weight u (name & ".weight") gpu-dt-f16
+    in let wp = un-temp (cout * cin * k * k * 2)
+    in let b = un-weight u (name & ".bias") gpu-dt-f32
+    in let y = gpu-buf-alloc (cout * oh * ow * 4)
+    in let g = GpuGrid { gx = (oh * ow + 127) / 128, gy = (cout + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 }
+    in let ok = if xh == 0 | xn == 0 | w == 0 | wp == 0 | b == 0 | y == 0 then False
+       else if un-run 2 gemm-ptx "kernel_nchw_to_nhwc" (GpuGrid { gx = (h * wd + 31) / 32, gy = (cin + 31) / 32, gz = 1, bx = 256, by = 1, bz = 1, shared = 2176 }) [un-buf xh, un-buf xn, un-int cin, un-int (h * wd), un-int (cin * h * wd)] < 0 then False
+       else if un-run 2 gemm-ptx "kernel_conv_weight_khwc" (un-per256 (cout * cin * k * k)) [un-buf w, un-buf wp, un-int cin, un-int k, un-int k, un-int (cout * cin * k * k)] < 0 then False
+       else un-run 2 gemm-ptx "kernel_conv2d_fast" g [un-buf xn, un-buf wp, un-buf b, un-buf y, un-int cin, un-int h, un-int wd, un-int cout, un-int k, un-int k, un-int stride, un-int pad, un-int oh, un-int ow, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0] >= 0
+    in un-drop u (un-drop u (un-tfree (un-tfree (un-tfree (un-out y ok) xh (cin * h * wd * 2)) xn (cin * h * wd * 2)) wp (cout * cin * k * k * 2)) w) b
+
+  un-conv-wmma : UNetFile, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  un-conv-wmma (u) (x) (cin) (h) (wd) (cout) (k) (stride) (pad) (name) =
+    let oh = (h + 2 * pad - k) / stride + 1
+    in let ow = (wd + 2 * pad - k) / stride + 1
+    in let xh = un-cast16 x (cin * h * wd)
+    in let w = un-weight u (name & ".weight") gpu-dt-f16
+    in let b = un-weight u (name & ".bias") gpu-dt-f32
+    in let y = gpu-buf-alloc (cout * oh * ow * 4)
+    in let g = GpuGrid { gx = (oh * ow + 63) / 64, gy = (cout + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
+    in let ok = if xh == 0 | w == 0 | b == 0 | y == 0 then False else un-run 2 gemm-ptx "kernel_conv2d_wmma" g [un-buf xh, un-buf w, un-buf y, un-int cin, un-int h, un-int wd, un-int cout, un-int k, un-int k, un-int stride, un-int pad, un-int oh, un-int ow, un-int 0] >= 0
+    in let biased = if ok then un-add-channel y b (oh * ow) (cout * oh * ow) else 0
+    in un-free (un-drop u (un-drop u (un-tfree biased xh (cin * h * wd * 2)) w) b) y
+
+  un-group-norm : UNetFile, Integer, Integer, Integer, Real, Text -> Integer
+  un-group-norm (u) (x) (c) (hw) (eps) (name) =
+    let st = un-temp (32 * 16)
+    in let part = un-temp (32 * 128 * 8)
+    in let gamma = un-weight u (name & ".weight") gpu-dt-f32
+    in let beta = un-weight u (name & ".bias") gpu-dt-f32
+    in let y = gpu-buf-alloc (c * hw * 4)
+    in let ok = if x == 0 | st == 0 | part == 0 | gamma == 0 | beta == 0 | y == 0 then False
+       else if un-rows "kernel_row_stats_wide" 32 [un-buf x, un-buf st, un-buf part, un-int (c / 32 * hw), un-real eps, un-int 32] then un-layer "kernel_group_norm" (c * hw) [un-buf x, un-buf st, un-buf gamma, un-buf beta, un-buf y, un-int c, un-int hw, un-int 32, un-int (c * hw)]
+       else False
+    in un-drop u (un-drop u (un-tfree (un-tfree (un-out y ok) st (32 * 16)) part (32 * 128 * 8)) gamma) beta
+
+  un-layer-norm : UNetFile, Integer, Integer, Integer, Text -> Integer
+  un-layer-norm (u) (x) (rows) (dim) (name) =
+    let st = un-temp (rows * 16)
+    in let part = un-temp (rows * 128 * 8)
+    in let gamma = un-weight u (name & ".weight") gpu-dt-f32
+    in let beta = un-weight u (name & ".bias") gpu-dt-f32
+    in let y = gpu-buf-alloc (rows * dim * 4)
+    in let ok = if x == 0 | st == 0 | part == 0 | gamma == 0 | beta == 0 | y == 0 then False
+       else if un-rows "kernel_row_stats_wide" rows [un-buf x, un-buf st, un-buf part, un-int dim, un-real 0.00001, un-int rows] then un-layer "kernel_layer_norm" (rows * dim) [un-buf x, un-buf st, un-buf gamma, un-buf beta, un-buf y, un-int dim, un-int (rows * dim)]
+       else False
+    in un-drop u (un-drop u (un-tfree (un-tfree (un-out y ok) st (rows * 16)) part (rows * 128 * 8)) gamma) beta
+
+  un-transpose : Integer, Integer, Integer -> Integer
+  un-transpose (x) (rows) (cols) =
+    let h = gpu-buf-alloc (rows * cols * 4)
+    in if h == 0 | x == 0 then un-free 0 h
+    else un-out h (un-layer "kernel_transpose" (rows * cols) [un-buf x, un-buf h, un-int rows, un-int cols, un-int (rows * cols)])
+
+Section: Op Set
+
+ The graph (UNetGraph, UNet15Graph) does its GPU work through a UNetOps value,
+ so one graph runs over these native operations and over the browser's
+ (docs/Designs/Active/Apps/InBrowserDiffusion.md, stage 3). The launches the
+ graph used to make itself are the six below, unchanged.
+
+  un-geglu-launch : Integer, Integer, Integer, Integer -> Boolean
+  un-geglu-launch (pr) (g) (inner) (n) = un-layer "kernel_geglu" n [un-buf pr, un-buf g, un-int inner, un-int n]
+
+  un-upsample-launch : Integer, Integer, Integer, Integer, Integer -> Boolean
+  un-upsample-launch (x) (up) (h) (w) (n) = un-layer "kernel_upsample_nearest" n [un-buf x, un-buf up, un-int h, un-int w, un-int n]
+
+  un-crop : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  un-crop (x) (c) (h) (w) (oh) (ow) =
+    let m = __heap-save
+    in let src = alloc-bytes (c * h * w * 4)
+    in let dst = alloc-bytes (c * oh * ow * 4)
+    in let out = gpu-buf-alloc (c * oh * ow * 4)
+    in let ok = out /= 0 & gpu-buf-read x 0 (c * h * w * 4) src & un-crop-rows src dst h w oh ow 0 (c * oh * ow) & gpu-buf-write out 0 (c * oh * ow * 4) dst
+    in let back = __heap-restore m
+    in if ok then out else (if out == 0 then 0 else un-free 0 out)
+
+  un-crop-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  un-crop-rows (src) (dst) (h) (w) (oh) (ow) (i) (n) =
+    if i >= n then True
+    else let plane = i / (oh * ow)
+    in let r = i - plane * oh * ow
+    in let y = r / ow
+    in let s = poke-32 dst (i * 4) (peek-32 src (((plane * h + y) * w + r - y * ow) * 4))
+    in un-crop-rows src dst h w oh ow (i + 1) n
+
+  un-timestep-launch : Integer, Integer -> Boolean
+  un-timestep-launch (tb) (temb) = un-layer "kernel_timestep_embedding" 320 [un-buf tb, un-buf temb, un-int 320, un-real 9.210340371976184, un-int 320]
+
+  un-scores-launch : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> Boolean
+  un-scores-launch (q) (k) (s) (heads) (sq) (sk) (d) (scale) = un-layer "kernel_attn_scores" (heads * sq * sk) [un-buf q, un-buf k, un-buf s, un-int heads, un-int sq, un-int sk, un-int d, un-real scale, un-int (heads * sq * sk)]
+
+  un-softmax-launch : Integer, Integer, Integer -> Boolean
+  un-softmax-launch (s) (cols) (rows) = un-layer "kernel_softmax_rows" rows [un-buf s, un-int cols, un-int rows]
+
+  un-values-launch : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  un-values-launch (s) (v) (o) (heads) (sq) (sk) (d) = un-layer "kernel_attn_values" (sq * heads * d) [un-buf s, un-buf v, un-buf o, un-int heads, un-int sq, un-int sk, un-int d, un-int (sq * heads * d)]
+
+  unet-ops-with : (Integer, Integer, Integer, Integer, Integer, Integer -> Boolean), (Text -> Boolean), (Text -> Boolean), (Integer, Integer, Integer -> Boolean) -> UNetOps UNetFile
+  unet-ops-with (patch) (selfv) (probsat) (pr) = UNetOps { conv = un-conv, linear = un-linear, linear-b = un-linear-b, group-norm = un-group-norm, layer-norm = un-layer-norm, silu = un-silu, add = un-add, add-channel = un-add-channel, transpose = un-transpose, concat = un-concat, attention = un-attention, alloc = gpu-buf-alloc, free = un-free, temp = un-temp, tfree = un-tfree, upload = un-upload, geglu = un-geglu-launch, upsample = un-upsample-launch, crop = un-crop, timestep = un-timestep-launch, attn-scores = un-scores-launch, softmax-rows = un-softmax-launch, attn-values = un-values-launch, out-patch = patch, self-v = selfv, probs-at = probsat, probs = pr }
+
+  unet-native-ops : UNetOps UNetFile
+  unet-native-ops = unet-ops-with (\x s cx cs hh ww -> True) (\p -> False) (\p -> False) (\s hd r -> True)
+
+Section: Attention
+
+ ldm CrossAttention with SDXL's 64-wide heads: to_q, to_k and to_v carry no
+ bias, softmax (q k^T / 8) v per head, then to_out.0. kernel-attention-fused
+ takes q scaled by 0.125 log2 e (0.18033688011112042), its scores base-two
+ exponents.
+
+  un-attention : UNetFile, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  un-attention (u) (x) (sq) (c) (ctx) (sk) (kv) (p) =
+    let q = un-linear-b u x sq c c (p & "to_q") False
+    in let k = un-linear-b u ctx sk kv c (p & "to_k") False
+    in let v = un-linear-b u ctx sk kv c (p & "to_v") False
+    in let scaled = if q == 0 then False else un-vae "kernel_scale_f32" (sq * c) [un-buf q, un-buf q, un-real 0.18033688011112042, un-int (sq * c)]
+    in let qh = if scaled then un-cast16 q (sq * c) else 0
+    in let kh = un-cast16 k (sk * c)
+    in let vh = un-cast16 v (sk * c)
+    in let o = un-temp (sq * c * 4)
+    in let ok = if qh == 0 | kh == 0 | vh == 0 | o == 0 then False
+       else un-run 2 gemm-ptx "kernel_attention_fused" (GpuGrid { gx = (sq + 63) / 64, gy = c / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 45056 }) [un-buf qh, un-buf kh, un-buf vh, un-buf o, un-int sq, un-int sk, un-int c] >= 0
+    in let out = if ok then un-linear u o sq c c (p & "to_out.0") else 0
+    in let back = un-tfree (un-tfree (un-tfree (un-tfree out qh (sq * c * 2)) kh (sk * c * 2)) vh (sk * c * 2)) o (sq * c * 4)
+    in un-free (un-free (un-free back q) k) v
+
+Section: Blocks
+
+  un-concat : Integer, Integer, Integer, Integer, Integer -> Integer
+  un-concat (a) (b) (ca) (cb) (hw) =
+    let h = gpu-buf-alloc ((ca + cb) * hw * 4)
+    in if h == 0 | a == 0 | b == 0 then un-free 0 h
+    else un-out h (un-layer "kernel_concat" ((ca + cb) * hw) [un-buf a, un-buf b, un-buf h, un-int ca, un-int cb, un-int hw, un-int ((ca + cb) * hw)])
+
+Section: Native Graph
+
+  unet-transformer : UNetFile, Integer, Integer, Integer, Integer, Integer, Text, Integer -> Integer
+  unet-transformer (u) (x) (c) (h) (w) (ctx) (p) (depth) = unet-transformer-with unet-native-ops u x c h w ctx p depth
+
+  unet-embedding : UNetFile, Real, Integer -> Integer
+  unet-embedding (u) (t) (y) = unet-embedding-with unet-native-ops u t y
+
+  unet-forward : UNetFile, Integer, Integer, Integer, Integer, Integer -> List Integer
+  unet-forward (u) (x) (embs) (ctx) (h) (w) = unet-forward-with unet-native-ops u x embs ctx h w
+
+  unet-resblock : UNetFile, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  unet-resblock (u) (x) (embs) (cin) (cout) (h) (w) (p) = unet-resblock-with unet-native-ops u x embs cin cout h w p
+
+Page 1

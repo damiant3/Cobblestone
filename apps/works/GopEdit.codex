@@ -15,6 +15,7 @@ Chapter: GopEdit
   cites Works chapter SyntaxHighlight
   cites UI chapter KeyInput
   cites Kernel chapter BitmapFont
+  cites Kernel chapter Hpet
   cites Foreword chapter Fat16
   cites Foreword chapter CCE
   cites Foreword chapter Maybe
@@ -68,6 +69,25 @@ Section: The State Block
 
   ged-set-verdict : Integer, Integer -> Integer
   ged-set-verdict (es) (v) = poke-32 es 20 v
+
+ The last printable keystroke's cost in microseconds, the insert and the
+ repaint together, on the HPET; 0 means none yet. A clock that did not move
+ (no HPET, or a bed that pins it) stores `ged-key-noclock` rather than a
+ duration, because a floor would read as a fast keystroke. The desk owns
+ bytes 44 through 67 of this block, so the cell sits above them.
+
+  ged-key-us-cell : Integer = 100
+  ged-key-noclock : Integer = 2147483647
+
+  ged-key-us : Integer -> Integer
+  ged-key-us (es) = peek-32 es ged-key-us-cell
+
+  ged-note-key : Integer, Integer -> Integer
+  ged-note-key (es) (t0) =
+    let hz = hpet-ticks-per-second
+    in let dt = hpet-ticks - t0
+    in if hz <= 0 | dt <= 0 then poke-32 es ged-key-us-cell ged-key-noclock
+    else poke-32 es ged-key-us-cell (dt * 1000000 / hz)
 
 Section: The Line Index
 
@@ -1007,7 +1027,8 @@ Section: Drawing The Pane
     let flag = if ged-dirty es == 1 then " [+]" else ""
     in let said = ged-verdict-text (ged-verdict es)
     in let tail = if said == "" then "" else "   " & said
-    in "L" & show (cur + 1) & ":" & show (col + 1) & flag & "  " & show (ged-count es) & " lines  " & show (ged-size es) & " bytes" & tail
+    in let key = if ged-key-us es == 0 then "" else if ged-key-us es == ged-key-noclock then "  key no clock" else "  key " & show (ged-key-us es) & " us"
+    in "L" & show (cur + 1) & ":" & show (col + 1) & flag & "  " & show (ged-count es) & " lines  " & show (ged-size es) & " bytes" & key & tail
 
   ged-draw : Integer, LayoutRect, Integer, Integer, Integer, Integer, Integer, GopAppFont, Palette, Integer, Text, Integer, Integer, Integer -> Integer
   ged-draw (base) (box) (w) (h) (stride) (rows) (s) (font) (pal) (es) (name) (top) (cur) (col) =
@@ -1166,7 +1187,7 @@ Section: Step
   ged-moved (st) (mouse) = st.ed-ptr /= (mouse-x mouse) * 4096 + (mouse-y mouse)
 
   ged-init-bytes : Integer =
-    ged-cap + ged-max-lines * 4 + ged-undo-cap * ged-undo-rec + ged-marks-bytes + (ged-chap-max + 1) * 4 + 5 * 64
+    ged-cap + ged-max-lines * 4 + ged-undo-cap * ged-undo-rec + ged-marks-bytes + ((ged-chap-max + 1) * 4 + 7) / 8 * 8 + 5 * 64
 
   ged-mount : Integer -> [Device.Port] GfatMount
   ged-mount (start) =
@@ -1526,8 +1547,10 @@ Section: Step
       in let p = ged-repaint base box w h stride s font pal mouse cs es name top cur col
       in 1
     else if ged-printable ch then
-      let e = ged-insert-u es at ch
+      let t0 = hpet-ticks
+      in let e = ged-insert-u es at ch
       in let p = ged-repaint base box w h stride s font pal mouse cs es name top cur (col + 1)
+      in let k = ged-note-key es t0
       in ged-put st top cur (col + 1)
     else
       let p = if moved then ged-repaint base box w h stride s font pal mouse cs es name top2 cur2 col2 else 0

@@ -1,0 +1,533 @@
+Chapter: PeBootstrap
+  cites Pe chapter PeWriter
+  cites Pe chapter PeExports
+  cites Common chapter ByteHelpers
+  cites Foreword chapter CCE
+
+Section: Win64 Assembly
+
+ PbCode is a single-owner emission cursor. RIP displacements refer to image
+ RVAs, not preferred virtual addresses. Win64 frames reserve shadow space
+ and leave RSP aligned at every call. Each frame has matching unwind data.
+
+  PbCode = record { pb-buffer : Integer, pb-position : Integer, pb-base : Integer, pb-data : Integer }
+
+  pb-bytes : PbCode, List Integer -> Integer
+  pb-bytes (a) (bytes) =
+    let next = ped-put (a.pb-buffer) (a.pb-position) bytes
+    in let w = __record-set a "pb-position" next
+    in next
+
+  pb-rel : PbCode, List Integer, Integer -> Integer
+  pb-rel (a) (op) (rva) =
+    let next = ped-rel (a.pb-buffer) (a.pb-position) op (rva - a.pb-base)
+    in let w = __record-set a "pb-position" next
+    in next
+
+  pb-ref : PbCode, List Integer, Integer -> Integer
+  pb-ref (a) (op) (off) = pb-rel a op (a.pb-data + off)
+
+  pb-api : PbCode, Integer -> Integer
+  pb-api (a) (i) = pb-ref a [255, 21] (192 + i * 8)
+
+  pb-call : PbCode, Integer -> Integer
+  pb-call (a) (off) = pb-rel a [232] (a.pb-base + off)
+
+  pb-jump : PbCode, List Integer -> Integer
+  pb-jump (a) (op) = pb-rel a op 0
+
+  pb-fix : PbCode, Integer, Integer -> Integer
+  pb-fix (a) (after) (target) = ped-put (a.pb-buffer) (after - 4) (write-i32 (target - after))
+
+  pb-string : PbCode, List Integer, Integer -> Integer
+  pb-string (a) (op) (i) = pb-ref a op (1600 + i * 128)
+
+  pb-frame : PbCode, Integer -> Integer
+  pb-frame (a) (size) = pb-bytes a ([72, 129, 236] & write-i32 size)
+
+  pb-return : PbCode, Integer -> Integer
+  pb-return (a) (size) = pb-bytes a ([72, 129, 196] & write-i32 size & [195])
+
+  pb-log-message : PbCode, Integer -> Integer
+  pb-log-message (a) (i) =
+    let w = pb-string a [72, 141, 13] i
+    in pb-call a 6144
+
+Section: Entry and Import Hook
+
+  pb-entry : PbCode -> Integer
+  pb-entry (a) =
+    let p = pb-frame a 56
+    in let w0 = pb-bytes a [72, 137, 76, 36, 32, 137, 84, 36, 40]
+    in let old = pb-rel a [232] 4096
+    in let w1 = pb-bytes a [131, 124, 36, 40, 1]
+    in let skip = pb-jump a [15, 133]
+    in let w2 = pb-bytes a [72, 139, 76, 36, 32]
+    in let w3 = pb-ref a [72, 137, 13] 1408
+    in let w4 = pb-api a 14
+    in let w5 = pb-string a [72, 141, 13] 0
+    in let w6 = pb-api a 0
+    in let w7 = pb-bytes a [72, 137, 193]
+    in let w8 = pb-call a 256
+    in let done = a.pb-position
+    in let w9 = pb-bytes a [184, 1, 0, 0, 0]
+    in let last = pb-return a 56
+    in let f = pb-fix a skip done
+    in last
+
+  pb-install : PbCode -> Integer
+  pb-install (a) =
+    let p = pb-frame a 104
+    in let w0 = pb-bytes a [72, 137, 76, 36, 32, 72, 133, 201]
+    in let no-module = pb-jump a [15, 132]
+    in let w1 = pb-bytes a [102, 129, 57, 77, 90]
+    in let bad-mz = pb-jump a [15, 133]
+    in let w2 = pb-bytes a [139, 65, 60, 72, 1, 200, 129, 56, 80, 69, 0, 0]
+    in let bad-pe = pb-jump a [15, 133]
+    in let w3 = pb-bytes a [139, 128, 144, 0, 0, 0, 133, 192]
+    in let no-imports = pb-jump a [15, 132]
+    in let w4 = pb-bytes a [72, 1, 200, 72, 137, 68, 36, 40, 199, 68, 36, 72, 0, 0, 0, 0]
+    in let descriptor = a.pb-position
+    in let w5 = pb-bytes a [72, 139, 68, 36, 40, 131, 120, 12, 0]
+    in let finish-desc = pb-jump a [15, 132]
+    in let w6 = pb-bytes a [139, 16, 133, 210]
+    in let no-names = pb-jump a [15, 132]
+    in let w7 = pb-bytes a [72, 3, 84, 36, 32, 72, 137, 84, 36, 48, 139, 80, 16, 72, 3, 84, 36, 32, 72, 137, 84, 36, 56]
+    in let symbol = a.pb-position
+    in let w8 = pb-bytes a [72, 139, 68, 36, 48, 72, 139, 0, 72, 133, 192]
+    in let finish-names = pb-jump a [15, 132]
+    in let ordinal = pb-jump a [15, 136]
+    in let w9 = pb-bytes a [72, 3, 68, 36, 32, 72, 141, 72, 2]
+    in let w10 = pb-string a [72, 141, 21] 1
+    in let w11 = pb-api a 7
+    in let w12 = pb-bytes a [133, 192]
+    in let other-name = pb-jump a [15, 133]
+    in let w13 = pb-bytes a [72, 139, 76, 36, 56, 186, 8, 0, 0, 0, 65, 184, 4, 0, 0, 0, 76, 141, 76, 36, 64]
+    in let w14 = pb-api a 2
+    in let w15 = pb-bytes a [133, 192]
+    in let protect-failed = pb-jump a [15, 132]
+    in let w16 = pb-rel a [72, 141, 5] (a.pb-base + 1536)
+    in let w17 = pb-bytes a [72, 139, 76, 36, 56, 72, 135, 1,
+      199, 68, 36, 72, 1, 0, 0, 0, 186, 8, 0, 0, 0,
+      68, 139, 68, 36, 64, 76, 141, 76, 36, 68]
+    in let w18 = pb-api a 2
+    in let next-name = a.pb-position
+    in let w19 = pb-bytes a [72, 131, 68, 36, 48, 8, 72, 131, 68, 36, 56, 8]
+    in let back-name = pb-rel a [233] (a.pb-base + symbol)
+    in let next-desc = a.pb-position
+    in let w20 = pb-bytes a [72, 131, 68, 36, 40, 20]
+    in let back-desc = pb-rel a [233] (a.pb-base + descriptor)
+    in let check-found = a.pb-position
+    in let w21 = pb-bytes a [131, 124, 36, 72, 0]
+    in let found = pb-jump a [15, 133]
+    in let refuse = a.pb-position
+    in let message = pb-log-message a 28
+    in let done = a.pb-position
+    in let last = pb-return a 104
+    in let f0 = pb-fix a no-module refuse
+    in let f1 = pb-fix a bad-mz refuse
+    in let f2 = pb-fix a bad-pe refuse
+    in let f3 = pb-fix a no-imports refuse
+    in let f4 = pb-fix a finish-desc check-found
+    in let f5 = pb-fix a no-names next-desc
+    in let f6 = pb-fix a finish-names next-desc
+    in let f7 = pb-fix a ordinal next-name
+    in let f8 = pb-fix a other-name next-name
+    in let f9 = pb-fix a protect-failed next-name
+    in let f10 = pb-fix a found done
+    in last
+
+  pb-resolve-mono : PbCode, Integer, Integer -> Integer
+  pb-resolve-mono (a) (name) (slot) =
+    let w0 = pb-ref a [72, 139, 13] 1416
+    in let w1 = pb-string a [72, 141, 21] name
+    in let w2 = pb-api a 1
+    in let w3 = pb-ref a [72, 137, 5] slot
+    in pb-bytes a [72, 133, 192]
+
+  pb-getproc : PbCode -> Integer
+  pb-getproc (a) =
+    let p = pb-frame a 72
+    in let w0 = pb-bytes a [72, 137, 76, 36, 32, 72, 137, 84, 36, 40]
+    in let w1 = pb-api a 1
+    in let w2 = pb-bytes a [72, 137, 68, 36, 48, 72, 133, 192]
+    in let absent = pb-jump a [15, 132]
+    in let w3 = pb-bytes a [72, 139, 76, 36, 40, 72, 129, 249, 255, 255, 0, 0]
+    in let ordinal = pb-jump a [15, 134]
+    in let w4 = pb-string a [72, 141, 21] 2
+    in let w5 = pb-api a 7
+    in let w6 = pb-bytes a [133, 192]
+    in let other = pb-jump a [15, 133]
+    in let w7 = pb-bytes a [72, 139, 68, 36, 32]
+    in let w8 = pb-ref a [72, 137, 5] 1416
+    in let w9 = pb-bytes a [72, 139, 68, 36, 48]
+    in let w10 = pb-ref a [72, 137, 5] 1424
+    in let w11 = pb-resolve-mono a 3 1432
+    in let missing1 = pb-jump a [15, 132]
+    in let w12 = pb-resolve-mono a 4 1440
+    in let missing2 = pb-jump a [15, 132]
+    in let w13 = pb-resolve-mono a 5 1448
+    in let missing3 = pb-jump a [15, 132]
+    in let w14 = pb-log-message a 19
+    in let w15 = pb-rel a [72, 141, 5] (a.pb-base + 2560)
+    in let w16 = pb-bytes a [72, 137, 68, 36, 48]
+    in let yes = pb-jump a [233]
+    in let refuse = a.pb-position
+    in let w17 = pb-log-message a 21
+    in let done = a.pb-position
+    in let w18 = pb-bytes a [72, 139, 68, 36, 48]
+    in let last = pb-return a 72
+    in let f0 = pb-fix a absent done
+    in let f1 = pb-fix a ordinal done
+    in let f2 = pb-fix a other done
+    in let f3 = pb-fix a missing1 refuse
+    in let f4 = pb-fix a missing2 refuse
+    in let f5 = pb-fix a missing3 refuse
+    in let f6 = pb-fix a yes done
+    in last
+
+Section: Mono Invocation
+
+  pb-invoke : PbCode -> Integer
+  pb-invoke (a) =
+    let p = pb-frame a 88
+    in let w0 = pb-bytes a [72, 137, 76, 36, 32, 76, 137, 76, 36, 40]
+    in let w1 = pb-ref a [255, 21] 1424
+    in let w2 = pb-bytes a [72, 137, 68, 36, 48]
+    in let w3 = pb-ref a [139, 5] 1456
+    in let w4 = pb-bytes a [133, 192]
+    in let initialized = pb-jump a [15, 133]
+    in let w5 = pb-bytes a [72, 139, 76, 36, 32, 72, 133, 201]
+    in let no-method = pb-jump a [15, 132]
+    in let w6 = pb-ref a [255, 21] 1432
+    in let w7 = pb-bytes a [72, 133, 192]
+    in let no-name = pb-jump a [15, 132]
+    in let w8 = pb-bytes a [72, 137, 193]
+    in let w9 = pb-string a [72, 141, 21] 8
+    in let w10 = pb-api a 7
+    in let w11 = pb-bytes a [133, 192]
+    in let not-awake = pb-jump a [15, 133]
+    in let w12 = pb-bytes a [72, 139, 76, 36, 32]
+    in let w13 = pb-ref a [255, 21] 1440
+    in let w14 = pb-bytes a [72, 133, 192]
+    in let no-class = pb-jump a [15, 132]
+    in let w15 = pb-bytes a [72, 137, 193]
+    in let w16 = pb-ref a [255, 21] 1448
+    in let w17 = pb-bytes a [72, 137, 68, 36, 56, 72, 133, 192]
+    in let no-owner = pb-jump a [15, 132]
+    in let w18 = pb-bytes a [72, 137, 193]
+    in let w19 = pb-string a [72, 141, 21] 6
+    in let w20 = pb-api a 7
+    in let w21 = pb-bytes a [133, 192]
+    in let scene = pb-jump a [15, 132]
+    in let w22 = pb-bytes a [72, 139, 76, 36, 56]
+    in let w23 = pb-string a [72, 141, 21] 7
+    in let w24 = pb-api a 7
+    in let w25 = pb-bytes a [133, 192]
+    in let not-startup = pb-jump a [15, 133]
+    in let check-exception = a.pb-position
+    in let w26 = pb-bytes a [72, 139, 68, 36, 40, 72, 133, 192]
+    in let no-exception-slot = pb-jump a [15, 132]
+    in let w27 = pb-bytes a [72, 131, 56, 0]
+    in let raised = pb-jump a [15, 133]
+    in let acquire = a.pb-position
+    in let w28 = pb-bytes a [49, 192, 185, 1, 0, 0, 0]
+    in let w29 = pb-ref a [240, 15, 177, 13] 1456
+    in let raced = pb-jump a [15, 133]
+    in let w30 = pb-log-message a 20
+    in let w31 = pb-call a 4096
+    in let done = a.pb-position
+    in let w32 = pb-bytes a [72, 139, 68, 36, 48]
+    in let last = pb-return a 88
+    in let f0 = pb-fix a initialized done
+    in let f1 = pb-fix a no-method done
+    in let f2 = pb-fix a no-name done
+    in let f3 = pb-fix a not-awake done
+    in let f4 = pb-fix a no-class done
+    in let f5 = pb-fix a no-owner done
+    in let f6 = pb-fix a scene check-exception
+    in let f7 = pb-fix a not-startup done
+    in let f8 = pb-fix a no-exception-slot acquire
+    in let f9 = pb-fix a raised done
+    in let f10 = pb-fix a raced done
+    in last
+
+  pb-initialize : PbCode -> Integer
+  pb-initialize (a) =
+    let p = pb-frame a 136
+    in let w0 = pb-resolve-mono a 9 1464
+    in let missing0 = pb-jump a [15, 132]
+    in let w1 = pb-resolve-mono a 10 1472
+    in let missing1 = pb-jump a [15, 132]
+    in let w2 = pb-resolve-mono a 11 1480
+    in let missing2 = pb-jump a [15, 132]
+    in let w3 = pb-resolve-mono a 12 1488
+    in let missing3 = pb-jump a [15, 132]
+    in let w4 = pb-resolve-mono a 13 1496
+    in let missing4 = pb-jump a [15, 132]
+    in let w5 = pb-ref a [72, 139, 13] 1408
+    in let w6 = pb-bytes a [186, 101, 0, 0, 0, 65, 184, 10, 0, 0, 0]
+    in let w7 = pb-api a 10
+    in let w8 = pb-bytes a [72, 137, 68, 36, 40, 72, 133, 192]
+    in let no-resource = pb-jump a [15, 132]
+    in let w9 = pb-ref a [72, 139, 13] 1408
+    in let w10 = pb-bytes a [72, 137, 194]
+    in let w11 = pb-api a 11
+    in let w12 = pb-bytes a [72, 133, 192]
+    in let no-load = pb-jump a [15, 132]
+    in let w13 = pb-bytes a [72, 137, 193]
+    in let w14 = pb-api a 12
+    in let w15 = pb-bytes a [72, 137, 68, 36, 48, 72, 133, 192]
+    in let no-data = pb-jump a [15, 132]
+    in let w16 = pb-ref a [72, 139, 13] 1408
+    in let w17 = pb-bytes a [72, 139, 84, 36, 40]
+    in let w18 = pb-api a 13
+    in let w19 = pb-bytes a [133, 192]
+    in let no-size = pb-jump a [15, 132]
+    in let w20 = pb-bytes a [137, 194, 72, 139, 76, 36, 48, 65, 184, 1, 0, 0, 0,
+      76, 141, 76, 36, 80, 199, 68, 36, 80, 0, 0, 0, 0, 72, 199, 68, 36, 32, 0, 0, 0, 0]
+    in let w21 = pb-ref a [255, 21] 1464
+    in let w22 = pb-bytes a [72, 133, 192]
+    in let no-image = pb-jump a [15, 132]
+    in let w23 = pb-bytes a [131, 124, 36, 80, 0]
+    in let bad-image = pb-jump a [15, 133]
+    in let w24 = pb-bytes a [72, 137, 193]
+    in let w25 = pb-string a [72, 141, 21] 14
+    in let w26 = pb-bytes a [76, 141, 68, 36, 80, 69, 49, 201]
+    in let w27 = pb-ref a [255, 21] 1472
+    in let w28 = pb-bytes a [72, 133, 192]
+    in let no-assembly = pb-jump a [15, 132]
+    in let w29 = pb-bytes a [131, 124, 36, 80, 0]
+    in let bad-assembly = pb-jump a [15, 133]
+    in let w30 = pb-bytes a [72, 137, 193]
+    in let w31 = pb-ref a [255, 21] 1480
+    in let w32 = pb-bytes a [72, 133, 192]
+    in let no-loaded-image = pb-jump a [15, 132]
+    in let w33 = pb-bytes a [72, 137, 193]
+    in let w34 = pb-string a [72, 141, 21] 15
+    in let w35 = pb-string a [76, 141, 5] 16
+    in let w36 = pb-ref a [255, 21] 1488
+    in let w37 = pb-bytes a [72, 133, 192]
+    in let no-class = pb-jump a [15, 132]
+    in let w38 = pb-bytes a [72, 137, 193]
+    in let w39 = pb-string a [72, 141, 21] 17
+    in let w40 = pb-bytes a [69, 49, 192]
+    in let w41 = pb-ref a [255, 21] 1496
+    in let w42 = pb-bytes a [72, 133, 192]
+    in let no-method = pb-jump a [15, 132]
+    in let w43 = pb-bytes a [72, 137, 193, 49, 210, 69, 49, 192, 76, 141, 76, 36, 88, 72, 199, 68, 36, 88, 0, 0, 0, 0]
+    in let w44 = pb-ref a [255, 21] 1424
+    in let w45 = pb-bytes a [72, 131, 124, 36, 88, 0]
+    in let raised = pb-jump a [15, 133]
+    in let w46 = pb-log-message a 27
+    in let good = pb-jump a [233]
+    in let except-msg = a.pb-position
+    in let w47 = pb-log-message a 26
+    in let except-done = pb-jump a [233]
+    in let missing-msg = a.pb-position
+    in let w48 = pb-log-message a 21
+    in let missing-done = pb-jump a [233]
+    in let resource-msg = a.pb-position
+    in let w49 = pb-log-message a 22
+    in let resource-done = pb-jump a [233]
+    in let image-msg = a.pb-position
+    in let w50 = pb-log-message a 23
+    in let image-done = pb-jump a [233]
+    in let assembly-msg = a.pb-position
+    in let w51 = pb-log-message a 24
+    in let assembly-done = pb-jump a [233]
+    in let method-msg = a.pb-position
+    in let w52 = pb-log-message a 25
+    in let done = a.pb-position
+    in let last = pb-return a 136
+    in let f0 = pb-fix a missing0 missing-msg
+    in let f1 = pb-fix a missing1 missing-msg
+    in let f2 = pb-fix a missing2 missing-msg
+    in let f3 = pb-fix a missing3 missing-msg
+    in let f4 = pb-fix a missing4 missing-msg
+    in let f5 = pb-fix a no-resource resource-msg
+    in let f6 = pb-fix a no-load resource-msg
+    in let f7 = pb-fix a no-data resource-msg
+    in let f8 = pb-fix a no-size resource-msg
+    in let f9 = pb-fix a no-image image-msg
+    in let f10 = pb-fix a bad-image image-msg
+    in let f11 = pb-fix a no-assembly assembly-msg
+    in let f12 = pb-fix a bad-assembly assembly-msg
+    in let f13 = pb-fix a no-loaded-image assembly-msg
+    in let f14 = pb-fix a no-class method-msg
+    in let f15 = pb-fix a no-method method-msg
+    in let f16 = pb-fix a raised except-msg
+    in let f17 = pb-fix a good done
+    in let f18 = pb-fix a except-done done
+    in let f19 = pb-fix a missing-done done
+    in let f20 = pb-fix a resource-done done
+    in let f21 = pb-fix a image-done done
+    in let f22 = pb-fix a assembly-done done
+    in last
+
+Section: Failure Log
+
+  pb-log : PbCode -> Integer
+  pb-log (a) =
+    let p = pb-frame a 648
+    in let w0 = pb-bytes a [72, 137, 76, 36, 64]
+    in let w1 = pb-ref a [72, 139, 13] 1408
+    in let w2 = pb-bytes a [72, 141, 84, 36, 96, 65, 184, 4, 1, 0, 0]
+    in let w3 = pb-api a 3
+    in let w4 = pb-bytes a [133, 192]
+    in let no-path = pb-jump a [15, 132]
+    in let w5 = pb-bytes a [61, 4, 1, 0, 0]
+    in let long-path = pb-jump a [15, 131]
+    in let w6 = pb-bytes a [72, 141, 84, 36, 96]
+    in let scan = a.pb-position
+    in let w7 = pb-bytes a [102, 131, 124, 66, 254, 92]
+    in let slash = pb-jump a [15, 132]
+    in let w8 = pb-bytes a [255, 200]
+    in let again = pb-rel a [15, 133] (a.pb-base + scan)
+    in let no-directory = pb-jump a [233]
+    in let found = a.pb-position
+    in let w9 = pb-bytes a [61, 239, 0, 0, 0]
+    in let no-room = pb-jump a [15, 131]
+    in let w10 = pb-bytes a [102, 199, 4, 66, 0, 0, 72, 137, 209]
+    in let w11 = pb-string a [72, 141, 21] 18
+    in let w12 = pb-api a 9
+    in let w13 = pb-bytes a [72, 141, 76, 36, 96, 186, 4, 0, 0, 0, 65, 184, 3, 0, 0, 0, 69, 49, 201,
+      72, 199, 68, 36, 32, 4, 0, 0, 0, 72, 199, 68, 36, 40, 128, 0, 0, 0, 72, 199, 68, 36, 48, 0, 0, 0, 0]
+    in let w14 = pb-api a 4
+    in let w15 = pb-bytes a [72, 137, 68, 36, 72, 72, 131, 248, 255]
+    in let no-file = pb-jump a [15, 132]
+    in let w16 = pb-bytes a [72, 139, 76, 36, 64]
+    in let w17 = pb-api a 8
+    in let w18 = pb-bytes a [65, 137, 192, 72, 139, 76, 36, 72, 72, 139, 84, 36, 64, 76, 141, 76, 36, 80, 72, 199, 68, 36, 32, 0, 0, 0, 0]
+    in let w19 = pb-api a 5
+    in let w20 = pb-bytes a [72, 139, 76, 36, 72]
+    in let w21 = pb-api a 6
+    in let done = a.pb-position
+    in let last = pb-return a 648
+    in let f0 = pb-fix a no-path done
+    in let f1 = pb-fix a long-path done
+    in let f2 = pb-fix a slash found
+    in let f3 = pb-fix a no-directory done
+    in let f4 = pb-fix a no-room done
+    in let f5 = pb-fix a no-file done
+    in last
+
+Section: Imports and Strings
+
+  pb-import-name : Integer -> Text
+  pb-import-name (i) = list-at ["GetModuleHandleW", "GetProcAddress", "VirtualProtect", "GetModuleFileNameW", "CreateFileW", "WriteFile", "CloseHandle", "lstrcmpA", "lstrlenA", "lstrcatW", "FindResourceW", "LoadResource", "LockResource", "SizeofResource", "DisableThreadLibraryCalls"] i
+
+  pb-imports : Integer, Integer, Integer -> Integer
+  pb-imports (buf) (rva) (i) =
+    if i >= 15 then 0
+    else let w0 = ped-put buf (64 + i * 8) (write-i64 (rva + 320 + i * 64))
+    in let w1 = ped-put buf (192 + i * 8) (write-i64 (rva + 320 + i * 64))
+    in let w2 = ped-ascii buf (322 + i * 64) (pb-import-name i) 0
+    in pb-imports buf rva (i + 1)
+
+  pb-name : Integer -> Text
+  pb-name (i) = list-at ["UnityPlayer.dll", "GetProcAddress", "mono_runtime_invoke", "mono_method_get_name", "mono_method_get_class", "mono_class_get_name", "SceneLoader", "FejdStartup", "Awake", "mono_image_open_from_data_full", "mono_assembly_load_from_full", "mono_assembly_get_image", "mono_class_from_name", "mono_class_get_method_from_name", "PrismMod.dll", "", "PrismUnityEntry", "Initialize", "prism-bootstrap.log", "Prism captured mono_runtime_invoke\n", "Prism entering managed initializer after scene Awake\n", "REFUSED missing Mono entry points\n", "REFUSED managed payload missing\n", "REFUSED managed image\n", "REFUSED managed assembly\n", "REFUSED managed initializer missing\n", "FAILED managed initializer exception\n", "PASS managed initializer returned\n", "REFUSED Unity import hook\n"] i
+
+  pb-wide : Integer, Integer, Text, Integer -> Integer
+  pb-wide (buf) (off) (s) (i) =
+    if i >= text-length s then ped-put buf (off + i * 2) [0, 0]
+    else let w = ped-put buf (off + i * 2) (write-i16 (to-unicode (char-code-at s i)))
+    in pb-wide buf off s (i + 1)
+
+  pb-strings : Integer, Integer -> Integer
+  pb-strings (buf) (i) =
+    if i >= 29 then 0
+    else let w = if i == 0 | i == 18 then pb-wide buf (1600 + i * 128) (pb-name i) 0 else ped-ascii buf (1600 + i * 128) (pb-name i) 0
+    in pb-strings buf (i + 1)
+
+Section: DLL Extension
+
+  pb-offset : Integer -> Integer
+  pb-offset (i) = list-at [0, 256, 1536, 2560, 4096, 6144] i
+
+  pb-stack : Integer -> Integer
+  pb-stack (i) = list-at [56, 104, 72, 88, 136, 648] i
+
+  pb-function : PbCode, Integer -> Integer
+  pb-function (a) (i) =
+    if i == 0 then pb-entry a
+    else if i == 1 then pb-install a
+    else if i == 2 then pb-getproc a
+    else if i == 3 then pb-invoke a
+    else if i == 4 then pb-initialize a
+    else pb-log a
+
+  pb-functions : PbCode, Integer, Integer, Integer, Integer -> Boolean
+  pb-functions (a) (data) (table) (unwind) (i) =
+    if i >= 6 then True
+    else let start = pb-offset i
+    in let s = __record-set a "pb-position" start
+    in let finish = pb-function a i
+    in let limit = if i == 5 then 8192 else pb-offset (i + 1)
+    in if finish > limit then False
+    else let w0 = ped-put data (table + i * 12) (write-i32 (a.pb-base + start) & write-i32 (a.pb-base + finish) & write-i32 (a.pb-data + unwind + i * 8))
+    in let w1 = ped-put data (unwind + i * 8) ([1, 7, 2, 0, 7, 1] & write-i16 (pb-stack i / 8))
+    in pb-functions a data table unwind (i + 1)
+
+  pb-shift-sections : Integer, Integer -> Integer
+  pb-shift-sections (buf) (i) =
+    if i >= 4 then 0
+    else let off = 328 + i * 40 + 20
+    in let w = ped-put buf off (write-i32 (pex-u32 buf off + 512))
+    in pb-shift-sections buf (i + 1)
+
+  build-mono-winhttp : List PeExport, Integer, Integer -> PeForwardDll
+  build-mono-winhttp (exports) (payload) (payload-size) =
+    if payload-size < 1 | payload-size > 67108864 then PeForwardDll { pfd-buffer = 0, pfd-size = 0, pfd-why = "managed payload outside 1..64 MiB" }
+    else let forward = build-forwarding-winhttp exports
+    in if forward.pfd-why /= "" then forward
+    else let old = forward.pfd-buffer
+    in let old-size = forward.pfd-size
+    in let code-rva = pex-u32 old 144
+    in let data-rva = code-rva + 8192
+    in let old-table-size = pex-u32 old 228
+    in let data-size = align-up (6000 + old-table-size + 72 + 48) 4096
+    in let resource-rva = data-rva + data-size
+    in let resource-size = 88 + payload-size
+    in let code-raw = old-size + 512
+    in let data-raw = code-raw + 8192
+    in let resource-raw = data-raw + data-size
+    in let size = resource-raw + align-up resource-size 512
+    in let buf = alloc-bytes size
+    in let zero = __memset buf 0 size
+    in let c0 = pec-copy buf 0 old 0 512
+    in let c1 = pec-copy buf 1024 old 512 (old-size - 512)
+    in let shifted = pb-shift-sections buf 0
+    in let h0 = ped-put buf 70 (write-i16 7)
+    in let h1 = ped-put buf 104 (write-i32 code-rva)
+    in let h2 = ped-put buf 144 (write-i32 (align-up (resource-rva + resource-size) 4096))
+    in let h3 = ped-put buf 148 (write-i32 1024)
+    in let h4 = ped-put buf 92 (write-i32 (pex-u32 old 92 + 8192))
+    in let h5 = ped-put buf 96 (write-i32 (pex-u32 old 96 + data-size + align-up resource-size 512))
+    in let h6 = ped-put buf 208 (write-i32 data-rva & write-i32 60)
+    in let h7 = ped-put buf 216 (write-i32 resource-rva & write-i32 resource-size)
+    in let h8 = ped-put buf 224 (write-i32 (data-rva + 6000) & write-i32 (old-table-size + 72))
+    in let h9 = ped-put buf 296 (pad-zeros 8)
+    in let h10 = ped-put buf 488 (
+      pec-section [46, 98, 111, 111, 116] 8192 code-rva 8192 code-raw pe-section-code
+      & pec-section [46, 98, 100, 97, 116, 97] data-size data-rva data-size data-raw pec-section-idata-rw
+      & pec-section [46, 114, 115, 114, 99] resource-size resource-rva (align-up resource-size 512) resource-raw pe-section-idata-read)
+    in let data = buf + data-raw
+    in let old-data-raw = pex-u32 old 388
+    in let imports = pec-copy data 0 old old-data-raw 20
+    in let imp = ped-put data 20 (write-i32 (data-rva + 64) & pad-zeros 8 & write-i32 (data-rva + 1344) & write-i32 (data-rva + 192))
+    in let imps = pb-imports data data-rva 0
+    in let dll = ped-ascii data 1344 "kernel32.dll" 0
+    in let strings = pb-strings data 0
+    in let old-pdata-raw = pex-u32 old 428
+    in let copy-table = pec-copy data 6000 old old-pdata-raw old-table-size
+    in let asm = PbCode { pb-buffer = buf + code-raw, pb-position = 0, pb-base = code-rva, pb-data = data-rva }
+    in let valid = pb-functions asm data (6000 + old-table-size) (6000 + old-table-size + 72) 0
+    in let r = buf + resource-raw
+    in let resource = ped-put r 0 (pad-zeros 14 & write-i16 1 & write-i32 10 & write-i32 2147483672
+      & pad-zeros 14 & write-i16 1 & write-i32 101 & write-i32 2147483696
+      & pad-zeros 14 & write-i16 1 & write-i32 0 & write-i32 72
+      & write-i32 (resource-rva + 88) & write-i32 payload-size & pad-zeros 8)
+    in let body = pec-copy r 88 payload 0 payload-size
+    in if not valid then PeForwardDll { pfd-buffer = 0, pfd-size = 0, pfd-why = "bootstrap function exceeds its section slot" }
+    else PeForwardDll { pfd-buffer = buf, pfd-size = size, pfd-why = "" }

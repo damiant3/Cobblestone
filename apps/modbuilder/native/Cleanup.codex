@@ -1,0 +1,176 @@
+Chapter: Cleanup
+
+  mb-executable : MbHost -> Text
+  mb-executable (h) =
+   let buf = mb-alloc 8192
+   in let n = mb-call (h.modulepath) 0 buf 4096 0 0 0 0 0
+   in if n <= 0 | n >= 4096 then "" else mb-from-wide buf n
+
+  mb-parent-at : Text, Integer -> Text
+  mb-parent-at (path) (i) = if i < 0 then "" else if substring path i 1 == "\\" then substring path 0 i else mb-parent-at path (i - 1)
+
+  mb-path-listed : List JsonValue, Text, Integer -> Boolean
+  mb-path-listed (xs) (path) (i) =
+   if i >= list-length xs then False
+   else when list-at xs i
+    is JsonStr (value) -> if text-to-lower value == text-to-lower path then True else mb-path-listed xs path (i + 1)
+    is otherwise -> mb-path-listed xs path (i + 1)
+
+  mb-register-executable : MbHost, Text -> Boolean
+  mb-register-executable (h) (root) =
+   let path = mb-executable h
+   in let file = root & "\\helpers.json"
+   in let prior = if mb-exists h file then mb-json-file h file else JsonArray []
+   in if path == "" then False else when prior
+    is JsonArray (xs) -> if mb-path-listed xs path 0 then True else mb-write h file (json-emit (JsonArray (list-push xs (JsonStr path))))
+    is otherwise -> False
+
+  mb-image-match : Integer, Text, Integer, Integer -> Boolean
+  mb-image-match (p) (needle) (n) (i) = if i >= n then True else if peek-byte p i /= char-code-at needle i then False else mb-image-match p needle n (i + 1)
+
+  mb-image-contains : Integer, Integer, Text, Integer, Integer -> Boolean
+  mb-image-contains (p) (size) (needle) (n) (i) =
+   if i > size - n then False else if mb-image-match (p + i) needle n 0 then True else mb-image-contains p size needle n (i + 1)
+
+ The hosted PE layout and both CCE identity literals are required; a filename
+ alone never grants deletion. Deletion rechecks the image through the same
+ handle passed to FileDispositionInfo.
+
+  mb-owned-image : Integer, Integer -> Boolean
+  mb-owned-image (p) (size) =
+   if size < 512 then False else if peek-16 p 0 /= 23117 then False
+   else let pe = peek-32 p 60
+   in if pe < 64 | pe > size - 264 then False
+   else if peek-32 p pe /= 17744 | peek-16 p (pe + 4) /= 34404 | peek-16 p (pe + 24) /= 523 | peek-qword p (pe + 48) /= 1048576 then False
+   else mb-image-contains p size mb-owner (text-length mb-owner) 0 & mb-image-contains p size mb-stop-name (text-length mb-stop-name) 0
+
+  mb-inspect-handle : MbHost, Integer -> Boolean
+  mb-inspect-handle (h) (file) =
+   let size = mb-alloc 8
+   in let got = mb-call (h.filesize) file size 0 0 0 0 0 0
+   in let n = peek-qword size 0
+   in if got == 0 | n < 512 | n > 8388608 then False
+   else let buf = mb-alloc n
+   in let count = mb-alloc 8
+   in let read = mb-call (h.read) file buf n count 0 0 0 0
+   in if read == 0 | peek-32 count 0 /= n then False else mb-owned-image buf n
+
+  mb-is-helper : MbHost, Text -> Boolean
+  mb-is-helper (h) (path) =
+   let mark = __heap-save
+   in let file = mb-call (h.open) (mb-wide path) 2147483648 7 0 3 2097280 0 0
+   in let owned = if file == -1 then False else mb-inspect-handle h file
+   in let closed = if file == -1 then 0 else mb-call (h.close) file 0 0 0 0 0 0 0
+   in let restored = __heap-restore mark
+   in owned
+
+  mb-delete-helper : MbHost, Text, Text, Boolean -> Integer
+  mb-delete-helper (h) (path) (self) (strict) =
+   let mark = __heap-save
+   in let result = if path == "" | mb-exists h path == False then 0
+    else if mb-canonical h path == self then 0
+    else if mb-link h path | mb-is-helper h path == False then (if strict then -1 else 0)
+    else let file = mb-call (h.open) (mb-wide path) 2147549184 1 0 3 2097280 0 0
+    in if file == -1 then -1
+    else let owned = mb-inspect-handle h file
+    in let flag = mb-alloc 8
+    in let yes = poke-32 flag 0 1
+    in let removed = if owned then mb-call (h.disposition) file 4 flag 4 0 0 0 0 else 0
+    in let closed = mb-call (h.close) file 0 0 0 0 0 0 0
+    in if removed /= 0 & closed /= 0 then 1 else -1
+   in let restored = __heap-restore mark
+   in result
+
+  mb-known-folder : MbHost, Boolean -> Text
+  mb-known-folder (h) (desktop) =
+   if mb-testing h then mb-env h (if desktop then "MODBUILDER_TEST_DESKTOP" else "MODBUILDER_TEST_DOWNLOADS")
+   else let bytes = if desktop then [58, 204, 191, 180, 44, 219, 76, 66, 176, 41, 127, 233, 154, 135, 198, 65] else [144, 226, 77, 55, 63, 18, 101, 69, 145, 100, 57, 196, 146, 94, 70, 123]
+   in let guid = mb-alloc 16
+   in let filled = __buf-write-bytes guid 0 bytes
+   in let out = mb-alloc 8
+   in let got = mb-call (h.knownfolder) guid 0 0 out 0 0 0 0
+   in if got /= 0 then "" else let ptr = peek-qword out 0
+   in let path = mb-from-wide ptr 4096
+   in let freed = mb-call (h.cofree) ptr 0 0 0 0 0 0 0
+   in path
+
+  mb-clean-files : MbHost, Text, Text, Integer, Integer, Integer -> Text
+  mb-clean-files (h) (folder) (self) (finder) (entry) (mark) =
+   let path = folder & "\\" & mb-from-wide (entry + 44) 260
+   in let result = if bit-and (peek-32 entry 0) 1040 /= 0 then 0 else mb-delete-helper h path self False
+   in if result < 0 then path else let restored = __heap-restore mark
+   in let next = mb-call (h.findnext) finder entry 0 0 0 0 0 0
+   in if next /= 0 then mb-clean-files h folder self finder entry mark
+   else if mb-call (h.error) 0 0 0 0 0 0 0 0 == 18 then "" else folder
+
+  mb-clean-folder : MbHost, Text, Text -> Text
+  mb-clean-folder (h) (folder) (self) =
+   if folder == "" | mb-exists h folder == False then ""
+   else let entry = mb-alloc 592
+   in let finder = mb-call (h.findfirst) (mb-wide (folder & "\\*ModBuilder*.exe")) entry 0 0 0 0 0 0
+   in if finder == -1 then (if mb-call (h.error) 0 0 0 0 0 0 0 0 == 2 then "" else folder)
+   else let mark = __heap-save
+   in let problem = mb-clean-files h folder self finder entry mark
+   in let closed = mb-call (h.findclose) finder 0 0 0 0 0 0 0
+   in problem
+
+  mb-clean-records : MbHost, List JsonValue, Text, Integer -> Text
+  mb-clean-records (h) (xs) (self) (i) =
+   if i >= list-length xs then "" else when list-at xs i
+    is JsonStr (path) -> if mb-delete-helper h path self True < 0 then path else mb-clean-records h xs self (i + 1)
+    is otherwise -> "Invalid helper executable record"
+
+  mb-listener-pid-at : Integer, Integer, Integer, Integer -> Integer
+  mb-listener-pid-at (table) (size) (count) (i) =
+   let row = 4 + i * 24
+   in if i >= count | row > size - 24 then 0
+   else if peek-byte table (row + 4) == 127 & peek-byte table (row + 5) == 0 & peek-byte table (row + 6) == 0 & peek-byte table (row + 7) == 1 & peek-byte table (row + 8) == mb-port / 256 & peek-byte table (row + 9) == int-mod mb-port 256 then peek-32 table (row + 20)
+   else mb-listener-pid-at table size count (i + 1)
+
+  mb-listener-pid : MbHost -> Integer
+  mb-listener-pid (h) =
+   let size = mb-alloc 8
+   in let zero = poke-qword size 0 0
+   in let query = mb-call (h.tcptable) 0 size 0 2 3 0 0 0
+   in let n = peek-32 size 0
+   in if query /= 122 | n < 4 | n > 1048576 then 0
+   else let table = mb-alloc n
+   in let got = mb-call (h.tcptable) table size 0 2 3 0 0 0
+   in if got /= 0 then 0 else mb-listener-pid-at table n (peek-32 table 0) 0
+
+  MbHelperProcess = record { handle : Integer, path : Text }
+
+  mb-running-helper : MbHost -> MbHelperProcess
+  mb-running-helper (h) =
+   let pid = mb-listener-pid h
+   in let process = if pid == 0 then 0 else mb-call (h.openprocess) 1052672 0 pid 0 0 0 0 0
+   in if process == 0 then MbHelperProcess { handle = 0, path = "" }
+   else let buf = mb-alloc 8192
+   in let size = mb-alloc 8
+   in let initialized = poke-32 size 0 4096
+   in let got = mb-call (h.imagepath) process 0 buf size 0 0 0 0
+   in let path = if got == 0 then "" else mb-from-wide buf (peek-32 size 0)
+   in if path /= "" & mb-is-helper h path then MbHelperProcess { handle = process, path = path }
+   else let closed = mb-call (h.close) process 0 0 0 0 0 0 0
+   in MbHelperProcess { handle = 0, path = "" }
+
+  mb-clean-helpers : MbHost, Text, Text -> Text
+  mb-clean-helpers (h) (root) (running) =
+   let exe = mb-executable h
+   in let self = mb-canonical h exe
+   in if self == "" then "Could not resolve the uninstaller executable"
+   else if running /= "" & mb-delete-helper h running self True < 0 then running
+   else let file = root & "\\helpers.json"
+   in let recorded = if mb-exists h file == False then "" else when mb-json-file h file
+    is JsonArray (xs) -> mb-clean-records h xs self 0
+    is otherwise -> file
+   in if recorded /= "" then recorded
+   else let desktop-path = mb-known-folder h True
+   in if desktop-path == "" & mb-testing h == False then "Could not resolve the Desktop folder"
+   else let desktop = mb-clean-folder h desktop-path self
+   in if desktop /= "" then desktop
+   else let downloads-path = mb-known-folder h False
+   in if downloads-path == "" & mb-testing h == False then "Could not resolve the Downloads folder"
+   else let downloads = mb-clean-folder h downloads-path self
+   in if downloads /= "" then downloads
+   else mb-clean-folder h (mb-parent-at exe (text-length exe - 1)) self

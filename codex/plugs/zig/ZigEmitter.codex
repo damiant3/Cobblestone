@@ -85,8 +85,8 @@ Section: Keywords and Sanitization
  both arms reproduced.
 
  Most of the 74 are `cx_`-prefixed, which is effectively this plug's namespace
- and is why no corpus program ever collided. Five are not: CxList and
- CxFn1..CxFn4, the comptime type constructors. Codex type names are CamelCase,
+ and is why no corpus program ever collided. Six are not: CxList and
+ CxFn1..CxFn5, the comptime type constructors. Codex type names are CamelCase,
  so `CxList` is a name a program can pick without any sense of trespassing,
  and that is the collision worth caring about.
 
@@ -101,7 +101,7 @@ Section: Keywords and Sanitization
    "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest",
    "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best",
    "cx_deck_stride", "cx_deck_armed", "cx_deck_slack", "cx_deck_fd", "cx_environ", "cx_init", "cx_env", "CxFn1", "CxFn2",
-   "CxFn3", "CxFn4", "CxList", "cx_ll_empty", "cx_ll_push", "cx_ll_of",
+   "CxFn3", "CxFn4", "CxFn5", "CxList", "cx_ll_empty", "cx_ll_push", "cx_ll_of",
    "cx_ll_concat", "cx_ll_copy", "cx_ll_tail", "cx_raw_bytes_to_text", "cx_ll_cons", "cx_ll_insert_at",
    "cx_ll_with_capacity",
    "cx_text_compare", "cx_text_to_double_bits", "cx_bits_to_real_approx",
@@ -190,6 +190,14 @@ Section: Keywords and Sanitization
    let s0 = text-replace name "-" "_"
    in zig-ascii-ident (text-replace s0 "/" "_")
 
+ A generic type's parameters are comptime locals of its type function, and
+ zig forbids a local shadowing a container declaration, so they take a `_`
+ prefix no Codex name can produce: `d` as a type parameter and `d` as a
+ function both sanitized to `d_` and refused the whole program.
+
+  zig-tvar-ident : Text -> Text
+  zig-tvar-ident (name) = "_tv_" & zig-raw-ident name
+
  Field names arrive from the IR as name/index pairs like errors/5; the
  index restates what the name already says, so accessors drop it.
 
@@ -255,7 +263,7 @@ Section: Type Mapping
   zig-tparam-params : List Name, Integer -> Text
   zig-tparam-params (ps) (i) =
    if i >= list-length ps then ""
-   else let one = "comptime " & zig-sanitize ((list-at ps i).value) & ": type"
+   else let one = "comptime " & zig-tvar-ident ((list-at ps i).value) & ": type"
    in if i == list-length ps - 1 then one
       else one & ", " & zig-tparam-params ps (i + 1)
 
@@ -279,7 +287,7 @@ Section: Type Mapping
 
   zig-closure-type : Integer, Text, Text -> Text
   zig-closure-type (n) (params) (result) =
-   if n < 1 | n > 4
+   if n < 1 | n > 5
    then "@compileError(\"closure arity " & integer-to-text n & " unsupported\")"
    else "CxFn" & integer-to-text n & "(" & params & ", " & result & ")"
 
@@ -516,7 +524,9 @@ Section: Type Mapping
    when te
     is ANamedType (name) (s) ->
      let mapped = zig-lookup-type zig-type-map (name.value) 0
-     in if text-length mapped > 0 then mapped else zig-sanitize (name.value)
+     in if text-length mapped > 0 then mapped
+        else if zig-is-tvar-name (name.value) then zig-tvar-ident (name.value)
+        else zig-sanitize (name.value)
     is AAppType (base) (args) (s) ->
      when base
       is ANamedType (bn) (bs) ->
@@ -1514,7 +1524,7 @@ Section: Type Definition Emission
   zig-tparam-args : List Name, Integer -> Text
   zig-tparam-args (tparams) (i) =
    if i >= list-length tparams then ""
-   else let one = zig-sanitize ((list-at tparams i).value)
+   else let one = zig-tvar-ident ((list-at tparams i).value)
    in if i == list-length tparams - 1 then one
       else one & ", " & zig-tparam-args tparams (i + 1)
 
@@ -1561,7 +1571,7 @@ Section: Type Definition Emission
   zig-tparam-typenames : List Name, Integer -> Text
   zig-tparam-typenames (tps) (i) =
    if i >= list-length tps then ""
-   else " ++ \" \" ++ @typeName(" & zig-sanitize ((list-at tps i).value) & ")" & zig-tparam-typenames tps (i + 1)
+   else " ++ \" \" ++ @typeName(" & zig-tvar-ident ((list-at tps i).value) & ")" & zig-tparam-typenames tps (i + 1)
 
   zig-first-stray : Text, Text -> Text
   zig-first-stray (a) (b) = if text-length a > 0 then a else b
@@ -2550,7 +2560,7 @@ Section: Apply Emission
      else let ci = zig-find-ctor (ctx.ctors) n 0
      in if ci >= 0 then emit-zig-ctor-apply (list-at (ctx.ctors) ci) args ctx d (zig-expr-type e)
      else let ar = lookup-arity (ctx.arities) n
-     in if ar < 0 then (if zig-name-known ctx n then zig-closure-invoke (zig-local-ref ctx n) args ctx d else zig-unknown-name n)
+     in if ar < 0 then (if zig-name-known ctx n then zig-closure-apply (zig-local-ref ctx n) ty args ctx d (zig-expr-type e) else zig-unknown-name n)
         else if list-length args < ar then zig-closure-make n args ctx d (zig-expr-type e)
         else if list-length args > ar then zig-over-apply n args ar ctx d (zig-expr-type e)
         else let atys = zig-arg-types args 0 []
@@ -2898,6 +2908,26 @@ Section: Apply Emission
   zig-closure-invoke (f) (args) (ctx) (d) =
    f & ".call(" & f & ".ctx" & zig-closure-args args ctx d 0 & ")"
 
+  zig-closure-apply : Text, CodexType, List IRExpr, ZigCtx, Integer, CodexType -> Text
+  zig-closure-apply (f) (fty0) (args) (ctx) (d) (pty0) =
+   let fty = zig-subst-ctx fty0 ctx
+   in if list-length args >= zig-fn-param-count fty then zig-closure-invoke f args ctx d
+   else let pty = zig-subst-ctx pty0 ctx
+   in let stray = zig-stray-tvar pty (ctx.scope-tvars)
+   in if stray >= 0 then zig-tvar-refusal stray f
+   else let rem = zig-fn-param-count pty
+   in let lbl = zig-label d
+   in let env = "_Env" & integer-to-text d
+   in let ev = "_e" & integer-to-text d
+   in let cx = "_ctx" & integer-to-text d
+   in let ret = emit-zig-type (zig-fn-result pty) (ctx.scope-tvars)
+   in lbl & ": { const " & env & " = struct { cf: " & emit-zig-type fty (ctx.scope-tvars) & ", " & zig-closure-fields args ctx 0
+    & "fn call(" & cx & ": *anyopaque, " & zig-closure-params pty 0 (ctx.scope-tvars) & ") " & ret
+    & " { const " & ev & ": *@This() = @ptrCast(@alignCast(" & cx & ")); return " & ev & ".cf.call(" & ev & ".cf.ctx, "
+    & zig-closure-env-refs ev (list-length args) 0 & zig-closure-pass rem 0 & "); } }; break :"
+    & lbl & " " & zig-closure-type rem (zig-fn-param-types pty (ctx.scope-tvars)) ret
+    & "{ .ctx = cx_new(" & env & "{ .cf = " & f & ", " & zig-closure-inits args ctx d 0 & " }), .call = &" & env & ".call }; }"
+
  An application may carry MORE arguments than the callee was emitted with,
  because a definition returning a function is emitted at its parameter
  count and the wire hands the whole curried chain over at once.
@@ -3199,6 +3229,9 @@ Section: Apply Emission
    let chain = collect-apply-chain e []
    in let args = chain.args
    in if list-length args == 0 then emit-zig-expr (chain.root) ctx (d + 1)
+   else let rty = zig-expr-type (chain.root)
+   in if list-length args < zig-fn-param-count (zig-subst-ctx rty ctx)
+   then zig-closure-apply (emit-zig-expr (chain.root) ctx (d + 1)) rty args ctx d (zig-expr-type e)
    else let fv = "_f" & integer-to-text d
    in zig-label d & ": { const " & fv & " = " & emit-zig-expr (chain.root) ctx (d + 1)
     & "; break :" & zig-label d & " " & fv & ".call(" & fv & ".ctx"
@@ -4094,6 +4127,9 @@ Section: Chapter Emission
   zig-p-cxfn4 : List ShakeFrag
   zig-p-cxfn4 = [ShakeLit "fn ", ShakeUse "CxFn4", ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D) R };\n}\n"]
 
+  zig-p-cxfn5 : List ShakeFrag
+  zig-p-cxfn5 = [ShakeLit "fn ", ShakeUse "CxFn5", ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime E: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D, E) R };\n}\n"]
+
   zig-p-cxlist : List ShakeFrag
   zig-p-cxlist = [ShakeLit "fn ", ShakeUse "CxList", ShakeLit "(comptime T: type) type {\n    return struct { items: ", ShakeUse "std", ShakeLit ".ArrayListUnmanaged(T) = .empty, view: bool = false };\n}\n"]
 
@@ -4501,6 +4537,7 @@ Section: Chapter Emission
     ShakePart { name = "CxFn2", frags = zig-p-cxfn2 },
     ShakePart { name = "CxFn3", frags = zig-p-cxfn3 },
     ShakePart { name = "CxFn4", frags = zig-p-cxfn4 },
+    ShakePart { name = "CxFn5", frags = zig-p-cxfn5 },
     ShakePart { name = "CxList", frags = zig-p-cxlist },
     ShakePart { name = "cx_ll_empty", frags = zig-p-cx-ll-empty },
     ShakePart { name = "cx_ll_push", frags = zig-p-cx-ll-push },

@@ -1,0 +1,34 @@
+Chapter: Noise
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter Sampler
+  cites Diffusion chapter NoiseGen
+
+ We say:
+
+Section: Device
+
+  nz-scratch : Integer = #BD700000
+
+  nz-chunk : Integer = 1048576
+
+  nz-upload : Integer, Integer, Integer, Integer, Integer -> Boolean
+  nz-upload (h) (seed) (ctr) (done) (n) =
+    if done >= n then True
+    else let k = if n - done < nz-chunk then n - done else nz-chunk
+    in let next = nz-fill nz-scratch seed ctr 0 k
+    in if gpu-buf-write h (done * 4) (k * 4) nz-scratch == False then False
+    else nz-upload h seed next (done + k) n
+
+ n draws for seed into the f32 buffer h; False when a write is refused.
+
+  noise-fill : Integer, Integer, Integer -> Boolean
+  noise-fill (h) (seed) (n) = nz-upload h seed 0 0 n
+
+ noise-torch-into's draw in the f32 device buffer h; False when n is over the
+ staging chunk or the write is refused.
+
+  noise-torch : Integer, Integer, Integer, Integer -> Boolean
+  noise-torch (h) (seed) (draw) (n) =
+    if n > nz-chunk then False
+    else let z = noise-torch-into nz-scratch seed draw n
+    in gpu-buf-write h 0 (n * 4) nz-scratch

@@ -145,6 +145,57 @@ function playGame(seed, players) {
      `winners: ${[...winners].sort().join(',')}`);
 }
 
+// -- The rules in lockstep (Rules 2 and 3) -------------------------------
+// Written from the rules text: the legal bids of a state, and who loses and
+// who opens after a challenge. Every state of 30 games is checked, every
+// computer turn is judged, and every state with a bid is also called by hand.
+{
+  const legalBid = (h, q, f) => {
+    if (e.ld_alivenum(h) <= 1 || f < 1 || f > 6 || q < 1 || q > e.ld_total(h)) return false;
+    if (e.ld_bid(h) === 0) return true;
+    return q > e.ld_qty(h) || (q === e.ld_qty(h) && f > e.ld_face(h));
+  };
+  const nextIn = (h, p) => { for (let k = 1; k <= np(h); k++) { const q = (p + k) % np(h); if (e.ld_alive(h, q) === 1) return q; } return p; };
+  // After a challenge of state s ending in state t, by challenger c.
+  const judgeCall = (s, t, c, where) => {
+    const loser = countFace(s, e.ld_face(s)) >= e.ld_qty(s) ? c : e.ld_lastbid(s);
+    const drop = dice(s).map((d, p) => d - e.ld_dice(t, p));
+    if (drop.filter(x => x !== 0).length !== 1 || drop[loser] !== 1) return `${where}: dice ${dice(s)} to ${dice(t)}, the rules take one from seat ${loser}`;
+    const opener = e.ld_alive(t, loser) === 1 ? loser : nextIn(t, loser);
+    if (e.ld_turn(t) !== opener) return `${where}: seat ${e.ld_turn(t)} opens, the rules say seat ${opener} (loser ${loser})`;
+    if (e.ld_bid(t) !== 0) return `${where}: a bid stands after the challenge`;
+    return null;
+  };
+  const bad = [];
+  let states = 0, bids = 0, calls = 0, outs = 0;
+  for (let g = 0; g < 30 && bad.length < 3; g++) {
+    let s = e.ld_new(500 + g, 2 + (g % 3));
+    for (let turn = 0; turn < 3000 && e.ld_done(s) === 0 && bad.length < 3; turn++) {
+      states++;
+      for (let q = 0; q <= e.ld_total(s) + 1; q++) for (let f = 0; f <= 7; f++)
+        if ((e.ld_canbid(s, q, f) === 1) !== legalBid(s, q, f)) { bad.push(`game ${g}: bid ${q}x${f} ${e.ld_canbid(s, q, f) ? 'allowed' : 'refused'}, the rules say otherwise`); q = 99; break; }
+      if (e.ld_bid(s) !== 0) {
+        const r = judgeCall(s, e.ld_call(s), e.ld_turn(s), `game ${g} by hand`);
+        if (r) bad.push(r);
+      }
+      const t = e.ld_step(s);
+      if (e.ld_bid(t) !== 0) {
+        bids++;
+        if (!legalBid(s, e.ld_qty(t), e.ld_face(t))) bad.push(`game ${g}: the computer bid ${e.ld_qty(t)}x${e.ld_face(t)} over ${e.ld_qty(s)}x${e.ld_face(s)} with ${e.ld_total(s)} dice`);
+        if (e.ld_lastbid(t) !== e.ld_turn(s) || e.ld_turn(t) !== nextIn(s, e.ld_turn(s))) bad.push(`game ${g}: after a bid, seat ${e.ld_turn(t)} is to act`);
+      } else {
+        calls++;
+        if (e.ld_alivenum(t) < e.ld_alivenum(s)) outs++;
+        const r = judgeCall(s, t, e.ld_turn(s), `game ${g}`);
+        if (r) bad.push(r);
+      }
+      s = t;
+    }
+  }
+  ok('every state: the legal bids, every computer bid, and every challenge\'s loser and next opener, by the rules',
+     bad.length === 0, bad.slice(0, 3).join('; ') || `${states} states, ${bids} bids, ${calls} challenges`);
+  ok('control: challenges put players out, so the eliminated-loser case was reached', outs >= 30, `${outs} eliminations`);
+}
 // -- Refusals -------------------------------------------------------------
 ok('a seat off the table is refused',
    e.ld_dice(s0, 9) === -1 && e.ld_alive(s0, -1) === -1 && e.ld_die(s0, 9, 0) === -1);

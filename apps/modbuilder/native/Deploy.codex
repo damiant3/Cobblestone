@@ -1,0 +1,519 @@
+Chapter: Deploy
+  cites Encode chapter Json
+
+  mb-option : Integer -> Integer
+  mb-option (offset) = peek-qword (1048576 + 4096 + offset) 0
+
+  mb-port : Integer = if mb-option 2120 == 0 then 8789 else mb-option 2120
+
+  mb-testing : MbHost -> Boolean
+  mb-testing (h) = text-contains (mb-from-wide (mb-call (h.command) 0 0 0 0 0 0 0 0) 32768) " --test"
+
+  mb-game-hash : Text = "__MODBUILDER_GAME_HASH__"
+  mb-player-hash : Text = "__MODBUILDER_PLAYER_HASH__"
+
+  mb-zero : Integer, Integer -> Integer
+  mb-zero (p) (n) = if n <= 0 then 0 else let w = poke-byte p (n - 1) 0 in mb-zero p (n - 1)
+
+  mb-copy-bytes : Integer, Integer, Integer, Integer -> Integer
+  mb-copy-bytes (dest) (source) (n) (i) = if i >= n then 0 else let w = poke-byte dest i (peek-byte source i) in mb-copy-bytes dest source n (i + 1)
+
+  mb-write-bytes : MbHost, Text, Integer, Integer -> Boolean
+  mb-write-bytes (h) (path) (data) (n) =
+   let file = mb-call (h.open) (mb-wide path) 1073741824 0 0 2 128 0 0
+   in if file == -1 then False
+   else let count = mb-alloc 8
+   in let result = mb-call (h.write) file data n count 0 0 0 0
+   in let flushed = mb-call (h.flush) file 0 0 0 0 0 0 0
+   in let closed = mb-call (h.close) file 0 0 0 0 0 0 0
+   in result /= 0 & flushed /= 0 & peek-32 count 0 == n
+
+  mb-hash-loop : MbHost, Integer, Integer, Integer, Integer, Integer -> Boolean
+  mb-hash-loop (h) (file) (hash) (buf) (count) (mark) =
+   let read = mb-call (h.read) file buf 65536 count 0 0 0 0
+   in let n = peek-32 count 0
+   in if read == 0 then False
+   else if n == 0 then True
+   else let status = mb-call (h.hashdata) hash buf n 0 0 0 0 0
+   in if status /= 0 then False
+   else let restored = __heap-restore mark in mb-hash-loop h file hash buf count mark
+
+  mb-hash : MbHost, Text -> Text
+  mb-hash (h) (path) =
+   let file = mb-call (h.open) (mb-wide path) 2147483648 1 0 3 128 0 0
+   in if file == -1 then ""
+   else let algorithm = mb-alloc 8
+   in let opened = mb-call (h.hashopen) algorithm (mb-wide "SHA256") 0 0 0 0 0 0
+   in let hash = mb-alloc 8
+   in let cleared = poke-qword hash 0 0
+   in let created = if opened == 0 then mb-call (h.hashcreate) (peek-qword algorithm 0) hash 0 0 0 0 0 0 else -1
+   in let buf = mb-alloc 65536
+   in let count = mb-alloc 8
+   in let digest = mb-alloc 32
+   in let mark = __heap-save
+   in let read = if created == 0 then mb-hash-loop h file (peek-qword hash 0) buf count mark else False
+   in let finished = if read then mb-call (h.hashfinish) (peek-qword hash 0) digest 32 0 0 0 0 0 else -1
+   in let destroy = if created == 0 then mb-call (h.hashdestroy) (peek-qword hash 0) 0 0 0 0 0 0 0 else 0
+   in let closed = if opened == 0 then mb-call (h.hashclose) (peek-qword algorithm 0) 0 0 0 0 0 0 0 else 0
+   in let closed-file = mb-call (h.close) file 0 0 0 0 0 0 0
+   in if finished /= 0 then "" else let xs = mb-token-loop digest 0 [] in mb-join xs 0 (list-length xs)
+
+  mb-canonical : MbHost, Text -> Text
+  mb-canonical (h) (path) =
+   let file = mb-call (h.open) (mb-wide path) 0 7 0 3 33554432 0 0
+   in if file == -1 then ""
+   else let buf = mb-alloc 8192
+   in let n = mb-call (h.finalpath) file buf 4096 0 0 0 0 0
+   in let closed = mb-call (h.close) file 0 0 0 0 0 0 0
+   in if n <= 0 | n >= 4096 then "" else text-to-lower (mb-from-wide buf n)
+
+  mb-link : MbHost, Text -> Boolean
+  mb-link (h) (path) =
+   let attrs = mb-call (h.attrs) (mb-wide path) 0 0 0 0 0 0 0
+   in attrs /= 4294967295 & bit-and attrs 1024 /= 0
+
+  mb-json-file : MbHost, Text -> JsonValue
+  mb-json-file (h) (path) = when json-parse (mb-read h path)
+   is Just (value) -> value
+   is None -> JsonNull
+
+  mb-target-error : MbHost, Text, Text -> Text
+  mb-target-error (h) (game) (dest) =
+   if dest == "" then "Choose a separate Valheim play copy, or create one."
+   else if mb-game-valid h dest == False then "The selected folder is not a complete Valheim installation."
+   else let source = mb-canonical h game
+   in let target = mb-canonical h dest
+   in if source == "" | target == "" then "Windows could not resolve the game folders."
+   else if target == source | text-starts-with target (source & "\\") then "Choose a separate play copy. The Steam installation is not a deployment target."
+   else if mb-link h dest | mb-link h (dest & "\\Support") | mb-link h (dest & "\\Support\\deployment.json") | mb-link h (dest & "\\winhttp.dll") then "Deployment folders and loader files must not be links."
+   else let expected-game = if mb-testing h then mb-env h "MODBUILDER_TEST_GAME_HASH" else mb-game-hash
+   in let expected-player = if mb-testing h then mb-env h "MODBUILDER_TEST_PLAYER_HASH" else mb-player-hash
+   in if expected-game == "" | expected-player == "" then "The helper has no certified game hashes. Recompile the current helper."
+   else if mb-hash h (dest & "\\valheim_Data\\Managed\\assembly_valheim.dll") /= text-to-lower expected-game then "The game assembly differs from this ModBuilder version. Update the page and helper."
+   else if mb-hash h (dest & "\\UnityPlayer.dll") /= text-to-lower expected-player then "The Unity player differs from this ModBuilder version. Update the page and helper."
+   else if mb-exists h (dest & "\\winhttp.dll") == False then ""
+   else let prior = mb-json-file h (dest & "\\Support\\deployment.json")
+   in let owned-path = json-get-str prior "game" ""
+   in let owned-source = json-get-str prior "baseGame" ""
+   in if owned-path == "" | owned-source == "" then "An existing loader is not owned by ModBuilder. No files were changed."
+   else if mb-canonical h owned-path /= target | mb-canonical h owned-source /= source then "The existing deployment record belongs to a different game folder."
+   else let actual = mb-hash h (dest & "\\winhttp.dll")
+   in if actual == "" then "The existing loader cannot be read. Close Valheim and try again."
+   else if actual /= text-to-lower (json-get-str prior "modHash" "") & actual /= text-to-lower (json-get-str prior "pendingHash" "") then "The existing loader changed outside ModBuilder. No files were changed."
+   else ""
+
+  mb-running-loop : MbHost, Integer, Integer, Integer -> Boolean
+  mb-running-loop (h) (snapshot) (entry) (ok) =
+   if ok == 0 then False
+   else if text-to-lower (mb-from-wide (entry + 44) 260) == "valheim.exe" then True
+   else mb-running-loop h snapshot entry (mb-call (h.processnext) snapshot entry 0 0 0 0 0 0)
+
+  mb-game-running : MbHost -> Boolean
+  mb-game-running (h) =
+   if mb-testing h then mb-env h "MODBUILDER_TEST_RUNNING" == "1"
+   else let snapshot = mb-call (h.snapshot) 2 0 0 0 0 0 0 0
+   in if snapshot == -1 then True
+   else let entry = mb-alloc 568
+   in let zero = mb-zero entry 568
+   in let size = poke-32 entry 0 568
+   in let running = mb-running-loop h snapshot entry (mb-call (h.processfirst) snapshot entry 0 0 0 0 0 0)
+   in let closed = mb-call (h.close) snapshot 0 0 0 0 0 0 0
+   in running
+
+  mb-destination : MbHost -> Text
+  mb-destination (h) = json-get-str (mb-json-file h (mb-settings h & "\\destination.txt")) "destination" ""
+
+  mb-default-folder : Text -> Text
+  mb-default-folder (game) =
+   let suffix = "\\steamapps\\common\\Valheim"
+   in if text-ends-with (text-to-lower game) (text-to-lower suffix) then substring game 0 (text-length game - text-length suffix) & "\\ModBuilder" else ""
+
+  mb-target-scan : MbHost, Text, Text, Integer, Integer, Integer, Integer -> Integer
+  mb-target-scan (h) (game) (folder) (finder) (entry) (best) (mark) =
+   let name = mb-from-wide (entry + 44) 260
+   in let path = folder & "\\" & name
+   in let candidate = name /= "." & name /= ".." & bit-and (peek-32 entry 0) 1040 == 16
+   in let valid = if candidate then mb-target-error h game path == "" else False
+   in let receipt = if valid then mb-json-file h (path & "\\Support\\deployment.json") else JsonNull
+   in let deployed = if valid & mb-exists h (path & "\\winhttp.dll") then mb-hash h (path & "\\winhttp.dll") == json-get-str receipt "modHash" "" else False
+   in let stamp = if deployed then
+    let info = mb-alloc 592
+    in let found = mb-call (h.findfirst) (mb-wide (path & "\\Support\\deployment.json")) info 0 0 0 0 0 0
+    in if found == -1 then 0 else let time = peek-qword info 20
+    in let closed = mb-call (h.findclose) found 0 0 0 0 0 0 0
+    in time
+   else 0
+   in let wide = if valid then mb-wide path else 0
+   in let size = if valid then mb-wide-count wide 0 else -1
+   in let chosen = if valid & size >= 0 & (peek-16 best 8 == 0 | stamp > peek-qword best 0) then
+    let time = poke-qword best 0 stamp
+    in let zero = mb-zero (best + 8) 8192
+    in mb-copy-bytes (best + 8) wide ((size + 1) * 2) 0
+   else 0
+   in let restored = __heap-restore mark
+   in let next = mb-call (h.findnext) finder entry 0 0 0 0 0 0
+   in if next /= 0 then mb-target-scan h game folder finder entry best mark else 0
+
+  mb-default-target : MbHost, Text -> Text
+  mb-default-target (h) (game) =
+   let folder = mb-default-folder game
+   in if folder == "" | mb-link h folder then ""
+   else let entry = mb-alloc 592
+   in let best = mb-alloc 8200
+   in let zero = mb-zero best 8200
+   in let finder = mb-call (h.findfirst) (mb-wide (folder & "\\*")) entry 0 0 0 0 0 0
+   in if finder == -1 then ""
+   else let mark = __heap-save
+   in let scanned = mb-target-scan h game folder finder entry best mark
+   in let closed = mb-call (h.findclose) finder 0 0 0 0 0 0 0
+   in mb-from-wide (best + 8) 4096
+
+  mb-default-selection : MbHost, Text -> Boolean
+  mb-default-selection (h) (game) =
+   let mark = __heap-save
+   in let saved = mb-write h (mb-settings h & "\\destination.txt") ("{\"destination\":" & mb-json (mb-default-target h game) & "}")
+   in let restored = __heap-restore mark
+   in saved
+
+  mb-deployment-info : MbHost, Text -> Text
+  mb-deployment-info (h) (game) =
+   let dest = mb-destination h
+   in let problem = mb-target-error h game dest
+   in let build = if problem == "" then mb-installed-build h dest else ""
+   in let kind = if dest == "" then "" else if mb-link h (dest & "\\valheim_Data") | mb-link h (dest & "\\MonoBleedingEdge") then "light" else "full"
+   in "{\"ok\":true,\"destination\":" & mb-json dest & ",\"defaultFolder\":" & mb-json (mb-default-folder game) & ",\"hasDeployment\":" & (if problem == "" & mb-exists h (dest & "\\winhttp.dll") then "true" else "false") & ",\"targetType\":" & mb-json kind & ",\"steamReady\":" & (if mb-steam-ready h then "true" else "false") & ",\"buildNumber\":" & mb-json build & ",\"ready\":" & (if problem == "" then "true" else "false") & ",\"gameRunning\":" & (if mb-game-running h then "true" else "false") & ",\"message\":" & mb-json problem & "}"
+
+  mb-steam-number : MbHost, Text -> Integer
+  mb-steam-number (h) (name) =
+   let data = mb-alloc 8
+   in let size = mb-alloc 8
+   in let init = poke-32 size 0 4
+   in let got = mb-call (h.registry) -2147483647 (mb-wide "Software\\Valve\\Steam\\ActiveProcess") (mb-wide name) 16 0 data size 0
+   in if got == 0 then peek-32 data 0 else 0
+
+  mb-steam-ready : MbHost -> Boolean
+  mb-steam-ready (h) =
+   if mb-testing h then mb-env h "MODBUILDER_TEST_STEAM_READY" /= "0"
+   else let pid = mb-steam-number h "pid"
+   in if pid == 0 | mb-steam-number h "ActiveUser" == 0 then False
+   else let process = mb-call (h.openprocess) 4096 0 pid 0 0 0 0 0
+   in if process == 0 then False
+   else let buf = mb-alloc 8192
+   in let size = mb-alloc 8
+   in let init = poke-32 size 0 4096
+   in let got = mb-call (h.imagepath) process 0 buf size 0 0 0 0
+   in let closed = mb-call (h.close) process 0 0 0 0 0 0 0
+   in if got == 0 then False else mb-canonical h (mb-from-wide buf (peek-32 size 0)) == mb-canonical h (mb-steam h & "\\steam.exe")
+
+  mb-start-steam : MbHost -> Text
+  mb-start-steam (h) =
+   let opened = if mb-testing h then 0 else mb-call (h.shell) 0 (mb-wide "open") (mb-wide (mb-steam h & "\\steam.exe")) 0 0 1 0 0
+   in mb-deploy-error (if opened > 32 then "Steam has been opened. Sign in and wait for Steam to be ready, then choose Launch Valheim again." else "Open Steam and sign in before launching Valheim, then try again.")
+
+  mb-installed-build : MbHost, Text -> Text
+  mb-installed-build (h) (dest) =
+   let receipt = mb-json-file h (dest & "\\Support\\deployment.json")
+   in let hash = json-get-str receipt "modHash" ""
+   in if hash == "" | mb-hash h (dest & "\\winhttp.dll") /= hash then ""
+   else json-get-str receipt "buildNumber" ""
+
+  mb-launch : MbHost, Text -> Text
+  mb-launch (h) (game) =
+   let dest = mb-destination h
+   in let problem = mb-target-error h game dest
+   in if problem /= "" then mb-deploy-error problem
+   else if mb-game-running h then mb-deploy-error "Valheim is already running. Close it before launching another copy."
+   else if mb-steam-ready h == False then mb-start-steam h
+   else let build = mb-installed-build h dest
+   in if build == "" then mb-deploy-error "Deploy a mod with this helper before launching."
+   else if text-contains dest "\"" | mb-link h (dest & "\\valheim.exe") | mb-link h (dest & "\\Saves") then mb-deploy-error "The executable and Saves folder must belong to the selected copy."
+   else if mb-exists h (dest & "\\Saves") == False | mb-read h (dest & "\\prism-local-saves.marker") /= "Prism local saves" then mb-deploy-error "This copy has no isolated Saves folder. Create a separate game copy in Step 5."
+   else let args = "-savedir \"" & dest & "\\Saves\" -screen-fullscreen 1"
+   in let result = mb-call (h.shell) 0 (mb-wide "open") (mb-wide (dest & "\\valheim.exe")) (mb-wide args) (mb-wide dest) 1 0 0
+   in if result <= 32 then mb-deploy-error "Windows could not start Valheim. Check the selected game copy and try again."
+   else "{\"ok\":true,\"launched\":true,\"destination\":" & mb-json dest & ",\"buildNumber\":" & mb-json build & "}"
+
+  mb-rva : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  mb-rva (data) (size) (section) (count) (rva) (need) =
+   if count <= 0 | section < 0 | section > size - 40 then -1
+   else let delta = rva - peek-32 data (section + 12)
+   in let raw = peek-32 data (section + 20)
+   in if delta >= 0 & delta + need <= peek-32 data (section + 16) & raw + delta + need <= size then raw + delta
+   else mb-rva data size (section + 40) (count - 1) rva need
+
+  mb-guid-stream : Integer, Integer, Integer, Integer, Integer -> Text
+  mb-guid-stream (data) (meta) (limit) (pos) (count) =
+   if count <= 0 | pos < meta | pos > limit - 14 then ""
+   else let start = meta + peek-32 data pos
+   in let size = peek-32 data (pos + 4)
+   in let name = mb-from-ascii (data + pos + 8) 5
+   in if name == "#GUID" & peek-byte data (pos + 13) == 0 & size == 16 & start >= meta & start <= limit - 16 then
+    let order = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15]
+    in mb-guid-text data start order 0 ""
+   else let next = mb-stream-name-end data (pos + 8) limit 0
+   in if next < 0 then "" else mb-guid-stream data meta limit (meta + ((next - meta + 3) / 4) * 4) (count - 1)
+
+  mb-stream-name-end : Integer, Integer, Integer, Integer -> Integer
+  mb-stream-name-end (data) (pos) (limit) (n) =
+   if pos >= limit | n >= 32 then -1
+   else if peek-byte data pos == 0 then pos + 1 else mb-stream-name-end data (pos + 1) limit (n + 1)
+
+  mb-guid-text : Integer, Integer, List Integer, Integer, Text -> Text
+  mb-guid-text (data) (start) (order) (i) (out) =
+   if i >= 16 then out
+   else let b = peek-byte data (start + list-at order i)
+   in let hex = "0123456789abcdef"
+   in mb-guid-text data start order (i + 1) (out & substring hex (b / 16) 1 & substring hex (int-mod b 16) 1)
+
+  mb-build-number : Integer, Integer -> Text
+  mb-build-number (data) (size) =
+   if mb-managed-image data size == False then ""
+   else let pe = peek-32 data 60
+   in if pe > size - 280 then ""
+   else let opt = pe + 24
+   in let sections = opt + peek-16 data (pe + 20)
+   in let count = peek-16 data (pe + 6)
+   in let cli = mb-rva data size sections count (peek-32 data (opt + (if peek-16 data opt == 267 then 96 else 112) + 112)) 16
+   in if cli < 0 then ""
+   else let length = peek-32 data (cli + 12)
+   in let meta = mb-rva data size sections count (peek-32 data (cli + 8)) length
+   in if meta < 0 | length < 20 then ""
+   else if peek-32 data meta /= 1112167234 then ""
+   else let pos = meta + 16 + peek-32 data (meta + 12)
+   in if pos > meta + length - 4 then ""
+   else mb-guid-stream data meta (meta + length) (pos + 4) (peek-16 data (pos + 2))
+
+  mb-pick-folder : MbHost, Boolean -> Text
+  mb-pick-folder (h) (create) =
+   if mb-testing h then mb-env h (if create then "MODBUILDER_TEST_NEW_DEST" else "MODBUILDER_TEST_DEST") else
+    let initialized = mb-call (h.coinit) 0 2 0 0 0 0 0 0
+    in let info = mb-alloc 64
+    in let zero = mb-zero info 64
+    in let display = mb-alloc 8192
+    in let a = poke-qword info 16 display
+    in let b = poke-qword info 24 (mb-wide (if create then "Create or choose an empty folder for your new Valheim target" else "Choose an existing Valheim play copy"))
+    in let c = poke-32 info 32 (if create then 81 else 593)
+    in let item = mb-call (h.browse) info 0 0 0 0 0 0 0
+    in if item == 0 then ""
+    else let path = mb-alloc 8192
+    in let got = mb-call (h.browsepath) item path 0 0 0 0 0 0
+    in let freed = mb-call (h.cofree) item 0 0 0 0 0 0 0
+    in if got == 0 then "" else mb-from-wide path 4096
+
+  mb-choose-destination : MbHost, Text -> Text
+  mb-choose-destination (h) (game) =
+   let dest = mb-pick-folder h False
+   in if dest == "" then "{\"ok\":false,\"err\":\"Folder selection cancelled\"}"
+   else let problem = mb-target-error h game dest
+   in if problem /= "" then "{\"ok\":false,\"err\":" & mb-json problem & "}"
+   else if mb-write h (mb-settings h & "\\destination.txt") ("{\"destination\":" & mb-json dest & "}") == False then "{\"ok\":false,\"err\":\"Could not save the destination\"}"
+   else mb-deployment-info h game
+
+  mb-managed-image : Integer, Integer -> Boolean
+  mb-managed-image (data) (size) =
+   if size < 512 then False
+   else if peek-16 data 0 /= 23117 then False
+   else let pe = peek-32 data 60
+   in if pe < 64 | pe > size - 256 then False
+   else if peek-32 data pe /= 17744 | bit-and (peek-16 data (pe + 22)) 8192 == 0 then False
+   else let magic = peek-16 data (pe + 24)
+   in if magic /= 267 & magic /= 523 then False
+   else let cli = pe + 24 + (if magic == 267 then 96 else 112) + 14 * 8
+   in peek-32 data cli /= 0 & peek-32 data (cli + 4) >= 72
+
+  mb-deploy-error : Text -> Text
+  mb-deploy-error (error) = "{\"ok\":false,\"err\":" & mb-json error & "}"
+
+  mb-keep-receipt : List JsonPair, Integer, List JsonPair -> List JsonPair
+  mb-keep-receipt (pairs) (i) (out) =
+   if i >= list-length pairs then out
+   else let pair = list-at pairs i
+   in let key = pair.key
+   in let replaced = key == "version" | key == "owner" | key == "game" | key == "baseGame" | key == "modHash" | key == "pendingHash" | key == "backup" | key == "managedHash" | key == "features" | key == "buildNumber" | key == "receipt" | key == "verification" | key == "sourceChangelist"
+   in mb-keep-receipt pairs (i + 1) (if replaced then out else list-push out pair)
+
+  mb-merge-receipt : JsonValue, Text -> Text
+  mb-merge-receipt (prior) (current) =
+   let kept = when prior
+    is JsonObject (pairs) -> mb-keep-receipt pairs 0 []
+    is otherwise -> []
+   in when json-parse current
+    is Just (JsonObject (pairs)) -> json-emit (JsonObject (kept & pairs))
+    is otherwise -> ""
+
+  mb-body-size : Text, Integer, Integer -> Integer
+  mb-body-size (s) (i) (n) =
+   if i >= text-length s then n
+   else if i >= 8 then -1
+   else let digit = to-unicode (char-code-at s i) - 48
+   in if digit < 0 | digit > 9 then -1 else mb-body-size s (i + 1) (n * 10 + digit)
+
+  mb-receive-body : MbHost, Integer, Integer, Integer, Integer, Integer -> Boolean
+  mb-receive-body (h) (socket) (body) (size) (offset) (deadline) =
+   if offset >= size then True
+   else if mb-call (h.ticks) 0 0 0 0 0 0 0 0 > deadline then False
+   else let read = mb-call (h.recv) socket (body + offset) (size - offset) 0 0 0 0 0
+   in if read <= 0 | read > size - offset then False else mb-receive-body h socket body size (offset + read) deadline
+
+  mb-multi-wide : Text -> Integer
+  mb-multi-wide (s) =
+   let p = mb-alloc ((text-length s + 2) * 2)
+   in let zero = mb-zero p ((text-length s + 2) * 2)
+   in let write = mb-wide-loop s p 0 0
+   in p
+
+  mb-wide-count : Integer, Integer -> Integer
+  mb-wide-count (p) (i) = if i >= 4096 then -1 else if peek-16 p (i * 2) == 0 then i else mb-wide-count p (i + 1)
+
+  mb-junction : MbHost, Text, Text -> Boolean
+  mb-junction (h) (path) (source) =
+   let canonical = mb-canonical h source
+   in if canonical == "" then False
+   else if mb-link h path then mb-canonical h path == canonical
+   else if text-starts-with canonical "\\\\?\\" == False then False
+   else let target = mb-wide ("\\??\\" & substring canonical 4 (text-length canonical - 4))
+   in let display = mb-wide source
+   in let target-size = mb-wide-count target 0 * 2
+   in let display-size = mb-wide-count display 0 * 2
+   in if target-size < 0 | display-size < 0 then False
+   else let total = 20 + target-size + display-size
+   in let data = mb-alloc total
+   in let zero = mb-zero data total
+   in let tag = poke-32 data 0 2684354563
+   in let length = poke-16 data 4 (total - 8)
+   in let sub-length = poke-16 data 10 target-size
+   in let print-offset = poke-16 data 12 (target-size + 2)
+   in let print-length = poke-16 data 14 display-size
+   in let sub = mb-copy-bytes (data + 16) target (target-size + 2) 0
+   in let printed = mb-copy-bytes (data + 18 + target-size) display (display-size + 2) 0
+   in let made = mb-call (h.mkdir) (mb-wide path) 0 0 0 0 0 0 0
+   in let directory = mb-call (h.open) (mb-wide path) 1073741824 0 0 3 35651584 0 0
+   in if directory == -1 then False
+   else let count = mb-alloc 8
+   in let set = mb-call (h.control) directory 589988 data total 0 0 count 0
+   in let closed = mb-call (h.close) directory 0 0 0 0 0 0 0
+   in set /= 0 & closed /= 0 & mb-canonical h path == canonical
+
+  mb-light-files : MbHost, Text, Text, List Text, Integer -> Boolean
+  mb-light-files (h) (game) (dest) (names) (i) =
+   if i >= list-length names then True
+   else let name = list-at names i
+   in let source = game & "\\" & name
+   in let target = dest & "\\" & name
+   in let copied = if mb-exists h source == False then True
+    else if mb-link h target then False
+    else if mb-exists h target then mb-hash h source == mb-hash h target
+    else mb-call (h.copy) (mb-wide source) (mb-wide target) 1 0 0 0 0 0 /= 0
+   in copied & mb-light-files h game dest names (i + 1)
+
+  mb-light-copy : MbHost, Text, Text -> Boolean
+  mb-light-copy (h) (game) (dest) =
+   mb-light-files h game dest ["valheim.exe", "UnityPlayer.dll", "UnityCrashHandler64.exe", "steam_appid.txt"] 0
+   & mb-junction h (dest & "\\valheim_Data") (game & "\\valheim_Data")
+   & mb-junction h (dest & "\\MonoBleedingEdge") (game & "\\MonoBleedingEdge")
+   & (if mb-exists h (game & "\\D3D12") then mb-junction h (dest & "\\D3D12") (game & "\\D3D12") else True)
+
+  mb-folder-empty-loop : MbHost, Integer, Integer -> Boolean
+  mb-folder-empty-loop (h) (finder) (entry) =
+   let name = mb-from-wide (entry + 44) 260
+   in if name /= "." & name /= ".." then False
+   else let next = mb-call (h.findnext) finder entry 0 0 0 0 0 0
+   in if next /= 0 then mb-folder-empty-loop h finder entry else mb-call (h.error) 0 0 0 0 0 0 0 0 == 18
+
+  mb-folder-empty : MbHost, Text -> Boolean
+  mb-folder-empty (h) (path) =
+   let entry = mb-alloc 592
+   in let finder = mb-call (h.findfirst) (mb-wide (path & "\\*")) entry 0 0 0 0 0 0
+   in if finder == -1 then mb-call (h.error) 0 0 0 0 0 0 0 0 == 2
+   else let empty = mb-folder-empty-loop h finder entry
+   in let closed = mb-call (h.findclose) finder 0 0 0 0 0 0 0
+   in empty
+
+  mb-create-copy : MbHost, Text, Boolean, Boolean -> Text
+  mb-create-copy (h) (game) (light) (choose) =
+   let default = mb-default-folder game
+   in let dest = if choose then mb-pick-folder h True else if default == "" then "" else default & (if light then "\\Valheim-Light" else "\\Valheim")
+   in if dest == "" then mb-deploy-error "Folder selection cancelled or no default folder is available. Choose a new target folder."
+   else if mb-game-running h then mb-deploy-error "Close Valheim before preparing a play copy."
+   else if mb-exists h (game & "\\winhttp.dll") then mb-deploy-error "The Steam installation already has a mod loader. Choose a separate clean play copy."
+   else let parent = mb-parent-at dest (text-length dest - 1)
+   in let owner = "ModBuilder play copy\n" & mb-json game & (if light then "\nlight" else "")
+   in if mb-link h parent | mb-link h dest then mb-deploy-error "The play-copy folders must not be links."
+   else if mb-link h (dest & "\\modbuilder-copy.owner") | mb-link h (dest & "\\modbuilder-copy.complete") | mb-link h (dest & "\\prism-local-saves.marker") then mb-deploy-error "The play-copy markers must not be links."
+   else if mb-canonical h parent == mb-canonical h game | text-starts-with (mb-canonical h parent) (mb-canonical h game & "\\") then mb-deploy-error "Choose a new folder outside the Steam game installation."
+   else if mb-exists h dest & mb-read h (dest & "\\modbuilder-copy.owner") /= owner & mb-folder-empty h dest == False then mb-deploy-error "Choose an empty folder for the new target. This folder already contains files and is not owned by ModBuilder."
+   else if light == False & (mb-link h (dest & "\\valheim_Data") | mb-link h (dest & "\\MonoBleedingEdge") | mb-link h (dest & "\\D3D12")) then mb-deploy-error "This target contains linked game folders. Select it as an existing lightweight target."
+   else let allowed = if mb-testing h then 6 else mb-dialog h ("Create a separate Valheim target at:\n" & dest & (if light then "\n\nThe large game folders will link to Steam's installation. Steam updates affect those shared files; keep the original installation available." else "\n\nWindows will copy the Valheim game files. This uses more disk space.") & "\n\nThe target uses its own Saves folder; existing worlds and characters are not moved.") 65572
+   in if allowed /= 6 then mb-deploy-error "Copy cancelled"
+   else let made-parent = mb-call (h.mkdir) (mb-wide parent) 0 0 0 0 0 0 0
+   in let made-dest = mb-call (h.mkdir) (mb-wide dest) 0 0 0 0 0 0 0
+   in let source = mb-canonical h game
+   in let target = mb-canonical h dest
+   in if source == "" | target == "" | target == source | text-starts-with target (source & "\\") then mb-deploy-error "Choose a new folder outside the Steam game installation."
+   else if mb-write h (dest & "\\modbuilder-copy.owner") owner == False then mb-deploy-error "The play-copy folder could not be created."
+   else let copied = if mb-read h (dest & "\\modbuilder-copy.complete") == owner then 0 else if light then (if mb-light-copy h game dest then 0 else -1) else
+    let operation = mb-alloc 56
+    in let zero = mb-zero operation 56
+    in let kind = poke-32 operation 8 2
+    in let source-path = poke-qword operation 16 (mb-multi-wide (game & "\\*"))
+    in let target-path = poke-qword operation 24 (mb-multi-wide dest)
+    in let flags = poke-16 operation 32 (3600 + (if mb-testing h then 4 else 0))
+    in let result = mb-call (h.shellcopy) operation 0 0 0 0 0 0 0
+    in if peek-32 operation 36 /= 0 then -1 else result
+   in if copied /= 0 then mb-deploy-error "The game copy did not finish. The original game is unchanged; retry to complete the copy."
+   else let problem = mb-target-error h game dest
+   in if problem /= "" then mb-deploy-error problem
+   else if mb-link h (dest & "\\Saves") then mb-deploy-error "The new copy's Saves folder must not be a link."
+   else let saves = mb-call (h.mkdir) (mb-wide (dest & "\\Saves")) 0 0 0 0 0 0 0
+   in let prior-app-id = mb-read h (dest & "\\steam_appid.txt")
+   in let app-id = if mb-link h (dest & "\\steam_appid.txt") then False else if prior-app-id == "892970" | prior-app-id == "892970\n" then True else mb-write h (dest & "\\steam_appid.txt") "892970\n"
+   in let marker = mb-write h (dest & "\\prism-local-saves.marker") "Prism local saves"
+   in let complete = mb-write h (dest & "\\modbuilder-copy.complete") owner
+   in if app-id == False | marker == False | complete == False then mb-deploy-error "Could not finish the play-copy settings."
+   else if mb-write h (mb-settings h & "\\destination.txt") ("{\"destination\":" & mb-json dest & "}") == False then mb-deploy-error "Could not remember the play copy."
+   else mb-deployment-info h game
+
+  mb-deploy : MbHost, Text, Integer, Integer -> Text
+  mb-deploy (h) (game) (data) (size) =
+   let dest = mb-destination h
+   in let problem = mb-target-error h game dest
+   in if problem /= "" then mb-deploy-error problem
+   else if mb-game-running h then mb-deploy-error "Close Valheim before deploying, then try again."
+   else if mb-managed-image data size == False then mb-deploy-error "Choose the managed PrismMod.dll produced by Build mod DLL."
+   else let build = mb-build-number data size
+   in if build == "" then mb-deploy-error "The DLL has no supported ModBuilder build identifier. Build it again in the page."
+   else if mb-option 2112 < 512 then mb-deploy-error "This helper has no loader. Compile and run the updated helper."
+   else let prior-build = mb-installed-build h dest
+   in let allowed = if mb-testing h then 6 else mb-dialog h ("Deploy this mod to:\n" & dest & (if mb-exists h (dest & "\\winhttp.dll") then "\n\nThis replaces the existing deployment" & (if prior-build == "" then "." else " (build " & prior-build & ").") else "") & "\n\nThe previous loader will be backed up. Your saves and original Steam installation will be kept.") 65572
+   in if allowed /= 6 then mb-deploy-error "Deployment cancelled"
+   else if mb-game-running h then mb-deploy-error "Close Valheim before deploying, then try again."
+   else let support = dest & "\\Support"
+   in let made = mb-call (h.mkdir) (mb-wide support) 0 0 0 0 0 0 0
+   in let backup = support & "\\Before-native-" & mb-token h
+   in let created = mb-call (h.mkdir) (mb-wide backup) 0 0 0 0 0 0 0
+   in if created == 0 then mb-deploy-error "Could not create the backup folder. No loader was changed."
+   else let old = dest & "\\winhttp.dll"
+   in let prior-hash = if mb-exists h old then mb-hash h old else ""
+   in let copied = if prior-hash == "" then 1 else mb-call (h.copy) (mb-wide old) (mb-wide (backup & "\\winhttp.dll")) 1 0 0 0 0 0
+   in let receipt = support & "\\deployment.json"
+   in let saved = if mb-exists h receipt then mb-call (h.copy) (mb-wide receipt) (mb-wide (backup & "\\deployment.json")) 1 0 0 0 0 0 else 1
+   in if copied == 0 | saved == 0 then mb-deploy-error "The previous deployment could not be backed up. No loader was changed."
+   else let stage = backup & "\\new-winhttp.dll"
+   in let written = mb-write-bytes h stage (mb-option 2104) (mb-option 2112)
+   in let resource = if written then mb-call (h.beginresource) (mb-wide stage) 1 0 0 0 0 0 0 else 0
+   in if resource == 0 then mb-deploy-error "Could not prepare the loader. No loader was changed."
+   else let updated = mb-call (h.updateresource) resource 10 101 0 data size 0 0
+   in let ended = mb-call (h.endresource) resource (if updated == 0 then 1 else 0) 0 0 0 0 0 0
+   in if updated == 0 | ended == 0 then mb-deploy-error "Could not embed the mod. No loader was changed."
+   else let hash = mb-hash h stage
+   in if hash == "" then mb-deploy-error "Could not verify the prepared loader."
+   else let journal = "{\"version\":2,\"owner\":\"ModBuilder native deploy\",\"game\":" & mb-json dest & ",\"baseGame\":" & mb-json game & ",\"modHash\":" & mb-json hash & ",\"pendingHash\":" & mb-json prior-hash & ",\"backup\":" & mb-json backup & "}"
+   in let model-saved = mb-write-bytes h (backup & "\\PrismMod.dll") data size
+   in let merged = mb-merge-receipt (mb-json-file h receipt) (substring journal 0 (text-length journal - 1) & ",\"buildNumber\":" & mb-json build & "}")
+   in let recorded = if model-saved then mb-write h (backup & "\\next-receipt.json") merged else False
+   in let journalled = if recorded then mb-call (h.move) (mb-wide (backup & "\\next-receipt.json")) (mb-wide receipt) 9 0 0 0 0 0 else 0
+   in if journalled == 0 then mb-deploy-error "Could not record the deployment. No loader was changed."
+   else let committed = mb-call (h.move) (mb-wide stage) (mb-wide old) 9 0 0 0 0 0
+   in if committed == 0 then mb-deploy-error "Windows refused the loader replacement. Close Valheim and try again. The previous loader is unchanged."
+   else if mb-hash h old /= hash then mb-deploy-error "The installed loader failed verification. Keep the backup and do not launch this copy."
+   else "{\"ok\":true,\"installed\":true,\"buildNumber\":" & mb-json build & ",\"destination\":" & mb-json dest & ",\"artifact\":" & mb-json old & ",\"backup\":" & mb-json backup & ",\"sha256\":" & mb-json hash & "}"

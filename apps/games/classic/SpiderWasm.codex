@@ -32,7 +32,8 @@ Section: Copying
       col8 = sp-copy-of (st.col8), col9 = sp-copy-of (st.col9),
       stock = sp-copy-of (st.stock),
       completed-suits = st.completed-suits,
-      moves = st.moves
+      moves = st.moves,
+      downs = sp-copy-of (st.downs)
     }
 
 Section: The Card
@@ -70,7 +71,20 @@ Section: The Browser Interface
     else let col = sp-get-col st c
     in if i < 0 then (-1)
     else if i >= list-length col then (-1)
+    else if i < sp-down-at st c then (-1)
     else list-at col i
+
+ A face-down card reads -1 above; this is how many a column hides. A grader
+ counts the deck with sp-wasm-peek, which the page never calls.
+
+  sp-wasm-peek : SpiderState, Integer, Integer -> Integer
+  sp-wasm-peek (st) (c) (i) =
+    if c < 0 | c >= 10 then (-1)
+    else let col = sp-get-col st c
+    in if i < 0 | i >= list-length col then (-1) else list-at col i
+
+  sp-wasm-down : SpiderState, Integer -> Integer
+  sp-wasm-down (st) (c) = if c < 0 | c >= 10 then (-1) else sp-down-at st c
 
   sp-wasm-stock-size : SpiderState -> Integer
   sp-wasm-stock-size (st) = list-length (st.stock)
@@ -103,6 +117,7 @@ Section: The Browser Interface
     else let from-col = sp-get-col st from-c
     in if seq-start < 0 then 0
     else if seq-start >= list-length from-col then 0
+    else if seq-start < sp-down-at st from-c then 0
     else if sp-seq-len from-col seq-start /= (list-length from-col) - seq-start then 0
     else if sp-can-move from-col (sp-get-col st to-c) seq-start then 1
     else 0
@@ -120,6 +135,19 @@ Section: The Browser Interface
   sp-wasm-suggest : SpiderState -> Integer
   sp-wasm-suggest (st) = sp-suggest-move st
 
+ Set-up for the grader: swap the deepest card of two columns that both
+ still hold a face-down card. A hint that reads only face-up cards answers
+ the same move for both positions.
+
+  sp-wasm-swap-down : SpiderState, Integer, Integer -> SpiderState
+  sp-wasm-swap-down (st) (a) (b) =
+    if a < 0 | a >= 10 | b < 0 | b >= 10 | a == b then st
+    else if sp-down-at st a < 1 | sp-down-at st b < 1 then st
+    else let ca = sp-take-loop (sp-get-col st a) 0 (list-length (sp-get-col st a)) 0 []
+    in let cb = sp-take-loop (sp-get-col st b) 0 (list-length (sp-get-col st b)) 0 []
+    in let x = list-at ca 0
+    in let y = list-at cb 0
+    in sp-set-col (sp-set-col st a (list-set-at ca 0 y)) b (list-set-at cb 0 x)
   sp-wasm-move-from : Integer -> Integer
   sp-wasm-move-from (code) =
     if code < 0 then (-1)

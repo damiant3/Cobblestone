@@ -4,11 +4,8 @@ Chapter: ChessWasm
 
  `chess-apply` copies the cells before it writes, so no copy is needed here.
 
- Threefold repetition is not offered: `chess-repetitions` needs the whole
- history, and the page holds one board. A draw reaches the page through the
- fifty-move clock and stalemate.
-
- `cs-wasm-find` prefers the queen when a pawn push offers four promotions.
+ `cs-wasm-find` prefers the queen when a pawn push offers four promotions;
+ `cs-wasm-find-promote` names the piece.
 
  We say:
 
@@ -103,6 +100,18 @@ Section: The Legal Moves
     else if cs-kind (m.promote) == 5 then i
     else cs-wasm-find-loop ms n from to (i + 1) (if best < 0 then i else best)
 
+  cs-wasm-find-promote : ChessBoard, Integer, Integer, Integer -> Integer
+  cs-wasm-find-promote (b) (from) (to) (kind) =
+    let ms = chess-legal b
+    in cs-wasm-promote-loop ms (list-length ms) from to kind 0
+
+  cs-wasm-promote-loop : List ChessMove, Integer, Integer, Integer, Integer, Integer -> Integer
+  cs-wasm-promote-loop (ms) (n) (from) (to) (kind) (i) =
+    if i >= n then (-1)
+    else let m = list-at ms i
+    in if m.from-sq == from then (if m.to-sq == to then (if m.promote /= 0 then (if cs-kind (m.promote) == kind then i else cs-wasm-promote-loop ms n from to kind (i + 1)) else cs-wasm-promote-loop ms n from to kind (i + 1)) else cs-wasm-promote-loop ms n from to kind (i + 1))
+    else cs-wasm-promote-loop ms n from to kind (i + 1)
+
   cs-wasm-can : ChessBoard, Integer -> Integer
   cs-wasm-can (b) (from) =
     let ms = chess-legal b
@@ -119,17 +128,17 @@ Section: Playing And Ending
   cs-wasm-apply : ChessBoard, Integer -> ChessBoard
   cs-wasm-apply (b) (i) =
     let ms = chess-legal b
-    in if chess-fifty b then b
+    in if chess-draw-kind b > 0 then b
     else if i < 0 then b
     else if i >= list-length ms then b
-    else chess-apply b (list-at ms i)
+    else chess-make b (list-at ms i)
 
  Depth is clamped to 1..3: a deeper search freezes the tab.
 
   cs-wasm-ai : ChessBoard, Integer -> Integer
   cs-wasm-ai (b) (depth) =
     let d = if depth < 1 then 1 else if depth > 3 then 3 else depth
-    in if chess-fifty b then (-1)
+    in if chess-draw-kind b > 0 then (-1)
     else chess-best-move b d
 
   cs-wasm-check : ChessBoard -> Integer
@@ -138,18 +147,52 @@ Section: Playing And Ending
   cs-wasm-done : ChessBoard -> Integer
   cs-wasm-done (b) =
     if list-length (chess-legal b) == 0 then 1
-    else if chess-fifty b then 1
+    else if chess-draw-kind b > 0 then 1
     else 0
 
- A mate on the hundredth halfmove is a win, not a draw, so the empty legal
- list is read before the clock.
+ A mate on the hundredth halfmove, or by a move that repeats a position,
+ is a win, not a draw (FIDE articles 5.1.1 and 9.3), so the empty legal
+ list is read before the draws.
 
   cs-wasm-result : ChessBoard -> Integer
   cs-wasm-result (b) =
     if list-length (chess-legal b) == 0 then
       (if chess-in-check b (b.turn) then 1 - b.turn else 2)
-    else if chess-fifty b then 2
+    else if chess-draw-kind b > 0 then 2
     else (-1)
+
+ Why the game was drawn: 1 stalemate, 2 fifty moves, 3 threefold
+ repetition, 4 a dead position; 0 for a game not drawn.
+
+  cs-wasm-draw-kind : ChessBoard -> Integer
+  cs-wasm-draw-kind (b) =
+    if list-length (chess-legal b) == 0 then (if chess-in-check b (b.turn) then 0 else 1)
+    else chess-draw-kind b
+
+  cs-wasm-occurrences : ChessBoard -> Integer
+  cs-wasm-occurrences (b) = chess-occurrences b
+
+Section: Setting Up A Position
+
+ An empty board with no rights and White to move, then a piece at a time,
+ the side to move, and the four castling rights (1 kept, 0 lost).
+
+  cs-wasm-blank : ChessBoard
+  cs-wasm-blank = chess-blank
+
+  cs-wasm-place : ChessBoard, Integer, Integer -> ChessBoard
+  cs-wasm-place (b) (sq) (piece) =
+    if sq < 0 | sq >= 64 | piece < 0 | piece > 12 then b
+    else chess-place b sq piece
+
+  cs-wasm-side : ChessBoard, Integer -> ChessBoard
+  cs-wasm-side (b) (side) = chess-to-move b side
+
+  cs-wasm-rights : ChessBoard, Integer, Integer, Integer, Integer -> ChessBoard
+  cs-wasm-rights (b) (wk) (wq) (bk) (bq) = chess-rights b (wk == 1) (wq == 1) (bk == 1) (bq == 1)
+
+  cs-wasm-seal : ChessBoard -> ChessBoard
+  cs-wasm-seal (b) = __record-set (chess-set-halfmove b (b.halfmove)) "seen" (cs-key b)
 
 Section: The Oracle
 

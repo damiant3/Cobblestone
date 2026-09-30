@@ -234,6 +234,238 @@ Section: Game Runner
     in let new-pushes = if outcome == 0 then pushes + 1 else pushes
     in bj-session-loop r2 (remaining - 1) new-wins new-losses new-pushes
 
+Section: The Table
+
+ The rules, from pagat's casino blackjack (https://www.pagat.com/banking/
+ blackjack.html), with each of its variations settled. One player against
+ the dealer, one 52-card deck, a bet of 2 units. The player gets two cards
+ face up, the dealer one up and one down (the hole card), dealt player,
+ dealer, player, dealer. An ace and a ten-valued card as the first two cards
+ of an unsplit hand are a natural, which beats every other hand and pays 3:2.
+ When the dealer's up card is an ace the player may first insure, a side bet
+ of half the bet (1 unit) paid 2:1 when the dealer has a natural. The dealer
+ then checks the hole card: a dealer natural ends the round (a player natural
+ pushes it, everything else loses), and a player natural against no dealer
+ natural is paid at once. Otherwise each hand in turn, until it stands:
+ hit, one card, and a hand that reaches 21 stands and one past 21 busts;
+ stand; double down on the first two cards when they total 9, 10 or 11, for
+ a second bet and exactly one card; split two cards of the same rank into two
+ hands, a new bet on the second, up to 4 hands, each split hand taking its
+ second card when play reaches it, split aces one card each and no more, and
+ a 21 after a split an ordinary 21. No surrender. Then the dealer, unless
+ every hand busted, draws to 17 and hits a soft 17. A hand pays 1:1 when it
+ beats the dealer or the dealer busts, a bust or lower total loses its bet,
+ and equal totals push. An empty deck refuses every card a player asks for
+ and stops the dealer drawing.
+
+  BjTable = record {
+    deck      : List Integer,
+    deck-len  : Integer,
+    deck-pos  : Integer,
+    dealer    : List Integer,
+    dcount    : Integer,
+    cards     : List Integer,
+    counts    : List Integer,
+    bets      : List Integer,
+    states    : List Integer,
+    split-ace : List Integer,
+    nhands    : Integer,
+    cur       : Integer,
+    insurance : Integer,
+    phase     : Integer
+  }
+
+ Hand k's card i is cards (k 12 + i): a hand holds at most 11 cards before it
+ passes 21. states: 0 in play, 1 stood, 2 bust. phase: 0 the insurance
+ offer, 1 the player's hands, 2 settled.
+
+  bt-slot : Integer = 12
+
+  bt-make : List Integer, Integer, Integer, List Integer, Integer, List Integer, List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer -> BjTable
+  bt-make (deck) (dl) (dp) (dealer) (dc) (cards) (counts) (bets) (states) (sa) (nh) (cur) (ins) (ph) = BjTable { deck = deck, deck-len = dl, deck-pos = dp, dealer = dealer, dcount = dc, cards = cards, counts = counts, bets = bets, states = states, split-ace = sa, nhands = nh, cur = cur, insurance = ins, phase = ph }
+
+  bj-zeros : Integer, List Integer -> List Integer
+  bj-zeros (n) (acc) = if n <= 0 then acc else bj-zeros (n - 1) (list-push acc 0)
+
+  bj-copy-list : List Integer, Integer, Integer, List Integer -> List Integer
+  bj-copy-list (src) (i) (n) (acc) = if i >= n then acc else bj-copy-list src (i + 1) n (list-push acc (list-at src i))
+
+ Every action works on a copy, because list-set-at writes in place and a
+ table handed out must not change under its holder.
+
+  bt-copy : BjTable -> BjTable
+  bt-copy (t) = bt-make (t.deck) (t.deck-len) (t.deck-pos) (bj-copy-list (t.dealer) 0 bt-slot []) (t.dcount) (bj-copy-list (t.cards) 0 (4 * bt-slot) []) (bj-copy-list (t.counts) 0 4 []) (bj-copy-list (t.bets) 0 4 []) (bj-copy-list (t.states) 0 4 []) (bj-copy-list (t.split-ace) 0 4 []) (t.nhands) (t.cur) (t.insurance) (t.phase)
+
+  bt-with-phase : BjTable, Integer, Integer -> BjTable
+  bt-with-phase (t) (cur) (ph) = bt-make (t.deck) (t.deck-len) (t.deck-pos) (t.dealer) (t.dcount) (t.cards) (t.counts) (t.bets) (t.states) (t.split-ace) (t.nhands) cur (t.insurance) ph
+
+  bj-sum-at : List Integer, Integer, Integer, Integer -> Integer
+  bj-sum-at (cs) (base) (i) (n) = if i >= n then 0 else bj-card-value (list-at cs (base + i)) + bj-sum-at cs base (i + 1) n
+
+  bj-aces-at : List Integer, Integer, Integer, Integer -> Integer
+  bj-aces-at (cs) (base) (i) (n) = if i >= n then 0 else (if bj-rank (list-at cs (base + i)) == 12 then 1 else 0) + bj-aces-at cs base (i + 1) n
+
+  bj-value-at : List Integer, Integer, Integer -> Integer
+  bj-value-at (cs) (base) (n) = bj-soften (bj-sum-at cs base 0 n) (bj-aces-at cs base 0 n)
+
+  bj-soft-at : List Integer, Integer, Integer -> Boolean
+  bj-soft-at (cs) (base) (n) =
+    let total = bj-sum-at cs base 0 n
+    in let aces = bj-aces-at cs base 0 n
+    in bj-soften total aces > total - 10 * aces
+
+  bt-count : BjTable, Integer -> Integer
+  bt-count (t) (k) = list-at (t.counts) k
+
+  bt-card : BjTable, Integer, Integer -> Integer
+  bt-card (t) (k) (i) = list-at (t.cards) (k * bt-slot + i)
+
+  bt-value : BjTable, Integer -> Integer
+  bt-value (t) (k) = bj-value-at (t.cards) (k * bt-slot) (bt-count t k)
+
+  bt-dvalue : BjTable -> Integer
+  bt-dvalue (t) = bj-value-at (t.dealer) 0 (t.dcount)
+
+  bt-natural : BjTable, Integer -> Boolean
+  bt-natural (t) (k) = t.nhands == 1 & bt-count t k == 2 & bt-value t k == 21
+
+  bt-dnatural : BjTable -> Boolean
+  bt-dnatural (t) = t.dcount == 2 & bt-dvalue t == 21
+
+  bt-has-card : BjTable -> Boolean
+  bt-has-card (t) = t.deck-pos < t.deck-len
+
+ The next card off the deck to hand k, or to the dealer when k is -1, on a
+ table already copied.
+
+  bt-deal-to : BjTable, Integer -> BjTable
+  bt-deal-to (t) (k) =
+    if bt-has-card t == False then t
+    else let c = list-at (t.deck) (t.deck-pos)
+    in let w = if k < 0 then list-set-at (t.dealer) (t.dcount) c else list-set-at (t.cards) (k * bt-slot + bt-count t k) c
+    in let w2 = if k < 0 then t.counts else list-set-at (t.counts) k (bt-count t k + 1)
+    in bt-make (t.deck) (t.deck-len) (t.deck-pos + 1) (t.dealer) (if k < 0 then t.dcount + 1 else t.dcount) (t.cards) (t.counts) (t.bets) (t.states) (t.split-ace) (t.nhands) (t.cur) (t.insurance) (t.phase)
+
+  bt-set-state : BjTable, Integer, Integer -> BjTable
+  bt-set-state (t) (k) (v) = let w = list-set-at (t.states) k v in t
+
+  bt-dealer-draws : BjTable -> BjTable
+  bt-dealer-draws (t) =
+    let v = bt-dvalue t
+    in let soft17 = v == 17 & bj-soft-at (t.dealer) 0 (t.dcount)
+    in if (v < 17 | soft17) & bt-has-card t then bt-dealer-draws (bt-deal-to t (0 - 1)) else t
+
+  bt-all-bust : BjTable, Integer -> Boolean
+  bt-all-bust (t) (k) = if k >= t.nhands then True else if list-at (t.states) k /= 2 then False else bt-all-bust t (k + 1)
+
+  bt-finish : BjTable -> BjTable
+  bt-finish (t) = bt-with-phase (if bt-all-bust t 0 then t else bt-dealer-draws t) (t.cur) 2
+
+ Play moves to hand k. A split hand arrives with one card and takes its
+ second here; a split ace, or a 21, stands at once and play moves on.
+
+  bt-enter : BjTable, Integer -> BjTable
+  bt-enter (t) (k) =
+    if k >= t.nhands then bt-finish t
+    else let t1 = bt-with-phase t k 1
+    in let t2 = if bt-count t1 k == 1 then bt-deal-to t1 k else t1
+    in if list-at (t2.split-ace) k == 1 | bt-value t2 k >= 21 then bt-enter (bt-set-state t2 k (if bt-value t2 k > 21 then 2 else 1)) (k + 1)
+    else t2
+
+  bt-peek : BjTable -> BjTable
+  bt-peek (t) = if bt-dnatural t | bt-natural t 0 then bt-with-phase t 0 2 else bt-enter t 0
+
+  bt-deal-round : List Integer, Integer -> BjTable
+  bt-deal-round (deck) (dl) =
+    let t0 = bt-make deck dl 0 (bj-zeros bt-slot []) 0 (bj-zeros (4 * bt-slot) []) (bj-zeros 4 []) (bj-zeros 4 []) (bj-zeros 4 []) (bj-zeros 4 []) 1 0 0 0
+    in let w = list-set-at (t0.bets) 0 2
+    in let t1 = bt-deal-to (bt-deal-to (bt-deal-to (bt-deal-to t0 0) (0 - 1)) 0) (0 - 1)
+    in if t1.dcount == 2 & bj-rank (list-at (t1.dealer) 0) == 12 then bt-with-phase t1 0 0 else bt-peek t1
+
+ The actions: 0 hit, 1 stand, 2 double, 3 split, 4 insure, 5 decline the
+ insurance. A refused action answers the table it was given.
+
+  bt-can : BjTable, Integer -> Boolean
+  bt-can (t) (a) =
+    if a >= 4 then t.phase == 0 & a <= 5
+    else if t.phase /= 1 then False
+    else let k = t.cur
+    in let n = bt-count t k
+    in if a == 0 then bt-value t k < 21 & bt-has-card t
+    else if a == 1 then True
+    else if a == 2 then n == 2 & bt-value t k >= 9 & bt-value t k <= 11 & bt-has-card t
+    else if a == 3 then n == 2 & bj-rank (bt-card t k 0) == bj-rank (bt-card t k 1) & t.nhands < 4 & bt-has-card t
+    else False
+
+  bt-after-card : BjTable, Integer -> BjTable
+  bt-after-card (t) (k) =
+    if bt-value t k > 21 then bt-enter (bt-set-state t k 2) (k + 1)
+    else if bt-value t k == 21 then bt-enter (bt-set-state t k 1) (k + 1)
+    else t
+
+  bt-split : BjTable, Integer -> BjTable
+  bt-split (t) (k) =
+    let nk = t.nhands
+    in let c2 = bt-card t k 1
+    in let w1 = list-set-at (t.cards) (nk * bt-slot) c2
+    in let w2 = list-set-at (t.counts) nk 1
+    in let w3 = list-set-at (t.counts) k 1
+    in let w4 = list-set-at (t.bets) nk (list-at (t.bets) k)
+    in let ace = if bj-rank c2 == 12 then 1 else 0
+    in let w5 = list-set-at (t.split-ace) k ace
+    in let w6 = list-set-at (t.split-ace) nk ace
+    in let t2 = bt-make (t.deck) (t.deck-len) (t.deck-pos) (t.dealer) (t.dcount) (t.cards) (t.counts) (t.bets) (t.states) (t.split-ace) (nk + 1) k (t.insurance) (t.phase)
+    in bt-enter t2 k
+
+  bt-act : BjTable, Integer -> BjTable
+  bt-act (t) (a) =
+    if bt-can t a == False then t
+    else let c = bt-copy t
+    in let k = c.cur
+    in if a == 4 then bt-peek (bt-make (c.deck) (c.deck-len) (c.deck-pos) (c.dealer) (c.dcount) (c.cards) (c.counts) (c.bets) (c.states) (c.split-ace) (c.nhands) (c.cur) 1 (c.phase))
+    else if a == 5 then bt-peek c
+    else if a == 0 then bt-after-card (bt-deal-to c k) k
+    else if a == 1 then bt-enter (bt-set-state c k 1) (k + 1)
+    else if a == 2 then (let w = list-set-at (c.bets) k (2 * list-at (c.bets) k) in let d = bt-deal-to c k in bt-enter (bt-set-state d k (if bt-value d k > 21 then 2 else 1)) (k + 1))
+    else bt-split c k
+
+ The round's result in units, the insurance included; 0 until settled.
+
+  bt-hand-net : BjTable, Integer -> Integer
+  bt-hand-net (t) (k) =
+    let bet = list-at (t.bets) k
+    in let v = bt-value t k
+    in let dv = bt-dvalue t
+    in if list-at (t.states) k == 2 then 0 - bet
+    else if bt-dnatural t then (if bt-natural t k then 0 else 0 - bet)
+    else if bt-natural t k then bet * 3 / 2
+    else if dv > 21 then bet
+    else if v > dv then bet
+    else if v < dv then 0 - bet
+    else 0
+
+  bt-net-loop : BjTable, Integer, Integer -> Integer
+  bt-net-loop (t) (k) (acc) = if k >= t.nhands then acc else bt-net-loop t (k + 1) (acc + bt-hand-net t k)
+
+  bt-net : BjTable -> Integer
+  bt-net (t) =
+    if t.phase /= 2 then 0
+    else bt-net-loop t 0 0 + (if t.insurance == 1 then (if bt-dnatural t then 2 else 0 - 1) else 0)
+
+ The runner's policy on the table: decline insurance, hit below 17, stand.
+
+  bt-auto : BjTable -> BjTable
+  bt-auto (t) =
+    if t.phase == 0 then bt-auto (bt-act t 5)
+    else if t.phase /= 1 then t
+    else if bt-value t (t.cur) < 17 & bt-can t 0 then bt-auto (bt-act t 0)
+    else bt-auto (bt-act t 1)
+
+  bt-new : Integer -> BjTable
+  bt-new (seed) =
+    let s = bj-fresh-state (rng-new seed)
+    in bt-deal-round (s.deck) 52
+
 Section: Formatting
 
   format-blackjack-result : BlackjackResult -> Text

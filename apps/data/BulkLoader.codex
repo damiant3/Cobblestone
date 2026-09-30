@@ -58,9 +58,6 @@ Section: Text Import (CSV-like)
   default-import-config : ImportConfig
   default-import-config = ImportConfig { ic-delimiter = 44, ic-has-header = True, ic-null-marker = "NULL" }
 
-  tab-import-config : ImportConfig
-  tab-import-config = ImportConfig { ic-delimiter = 9, ic-has-header = True, ic-null-marker = "NULL" }
-
   pipe-import-config : ImportConfig
   pipe-import-config = ImportConfig { ic-delimiter = 124, ic-has-header = False, ic-null-marker = "" }
 
@@ -74,17 +71,30 @@ Section: Text Import (CSV-like)
  66 in CCE, not 44 -- so a delimiter written the way a human writes it
  must be compared after conversion, never against the raw character. The
  character itself is carried back into the field unconverted, because the
- field is Text and Text is CCE. Note that a delimiter with no CCE code
- point (a tab, a vertical bar) cannot appear in Codex Text at all, so the
- tab and pipe configs below cannot match anything.
+ field is Text and Text is CCE. A tab has no CCE code point and cannot
+ appear in Codex Text, so there is no tab-delimited config.
+
+ RFC 4180 quoting: a double quote (34) at the start of a field opens a
+ quoted run, a doubled quote inside the run is one literal quote, and a
+ delimiter inside the run is part of the field. A quote anywhere else is a
+ literal character.
 
   split-delimited : Text, Integer, Integer, Integer, List Text, Text -> List Text
   split-delimited (line) (delim) (i) (len) (acc) (current) =
+    split-quoted line delim i len acc current False
+
+  split-quoted : Text, Integer, Integer, Integer, List Text, Text, Boolean -> List Text
+  split-quoted (line) (delim) (i) (len) (acc) (current) (inq) =
     if i >= len then list-push acc current
     else let ch = text-char-at line i
-    in if to-unicode ch == delim then split-delimited line delim (i + 1) len (list-push acc current) ""
-    else split-delimited line delim (i + 1) len acc (current & text-from-char ch)
-
+    in let u = to-unicode ch
+    in let doubled = if i + 1 < len then to-unicode (text-char-at line (i + 1)) == 34 else False
+    in if inq & u == 34 & doubled then split-quoted line delim (i + 2) len acc (current & text-from-char ch) True
+    else if inq & u == 34 then split-quoted line delim (i + 1) len acc current False
+    else if inq then split-quoted line delim (i + 1) len acc (current & text-from-char ch) True
+    else if u == 34 & text-length current == 0 then split-quoted line delim (i + 1) len acc current True
+    else if u == delim then split-quoted line delim (i + 1) len (list-push acc current) "" False
+    else split-quoted line delim (i + 1) len acc (current & text-from-char ch) False
   parse-fields : List Text, List ColumnType, Text, Integer, Integer, List ColumnValue -> List ColumnValue
   parse-fields (fields) (types) (null-marker) (i) (len) (acc) =
     if i >= len then acc

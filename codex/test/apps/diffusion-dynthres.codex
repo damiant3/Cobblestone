@@ -1,0 +1,83 @@
+Chapter: DiffusionDynThresh
+  cites Diffusion chapter DynThresh
+  cites Diffusion chapter UNet
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Console
+
+ The fixture is build/dynthres-oracle.py's: mcmonkey's DynThresh.dynthresh as
+ Forge's extension builds it, over the cond and uncond built below, in the
+ oracle's CASES order: Forge's defaults, the quantile path with and without
+ separate channels, STD, ZERO with STD, ZERO with interpolation, then each of
+ the 12 schedule modes for the mimic scale (the CFG scale's mode 5 on). Every
+ value within 1e-5. The sabotage runs case 1 at percentile 1.
+
+ We say:
+
+Section: Inputs
+
+  value-at : Integer, Integer -> Real
+  value-at (which) (i) = if which == 0 then real-from-int (int-mod (i * 37 + 11) 257 - 128) / 64.0 else real-from-int (int-mod (i * 53 + 17) 263 - 131) / 64.0
+
+  build : Integer, Integer, List Real -> List Real
+  build (which) (i) (acc) = if i >= 1024 then acc else build which (i + 1) (list-push acc (value-at which i))
+
+  case-at : Integer -> DtSet
+  case-at (k) =
+    if k == 0 then DtSet { dt-mimic = 7.0, dt-pct = 1.0, dt-mimic-mode = 0, dt-mimic-min = 0.0, dt-cfg-mode = 0, dt-cfg-min = 0.0, dt-sched = 1.0, dt-sep = True, dt-zero = False, dt-std = False, dt-phi = 1.0 }
+    else if k == 1 then DtSet { dt-mimic = 7.0, dt-pct = 0.95, dt-mimic-mode = 0, dt-mimic-min = 0.0, dt-cfg-mode = 0, dt-cfg-min = 0.0, dt-sched = 1.0, dt-sep = True, dt-zero = False, dt-std = False, dt-phi = 1.0 }
+    else if k == 2 then DtSet { dt-mimic = 7.0, dt-pct = 0.9, dt-mimic-mode = 0, dt-mimic-min = 0.0, dt-cfg-mode = 0, dt-cfg-min = 0.0, dt-sched = 1.0, dt-sep = False, dt-zero = False, dt-std = False, dt-phi = 1.0 }
+    else if k == 3 then DtSet { dt-mimic = 7.0, dt-pct = 1.0, dt-mimic-mode = 0, dt-mimic-min = 0.0, dt-cfg-mode = 0, dt-cfg-min = 0.0, dt-sched = 1.0, dt-sep = True, dt-zero = False, dt-std = True, dt-phi = 1.0 }
+    else if k == 4 then DtSet { dt-mimic = 7.0, dt-pct = 1.0, dt-mimic-mode = 0, dt-mimic-min = 0.0, dt-cfg-mode = 0, dt-cfg-min = 0.0, dt-sched = 1.0, dt-sep = False, dt-zero = True, dt-std = True, dt-phi = 1.0 }
+    else if k == 5 then DtSet { dt-mimic = 7.0, dt-pct = 0.97, dt-mimic-mode = 0, dt-mimic-min = 0.0, dt-cfg-mode = 0, dt-cfg-min = 0.0, dt-sched = 1.0, dt-sep = True, dt-zero = True, dt-std = False, dt-phi = 0.7 }
+    else DtSet { dt-mimic = 7.0, dt-pct = 1.0, dt-mimic-mode = k - 6, dt-mimic-min = 1.0, dt-cfg-mode = int-mod (k - 6 + 5) 12, dt-cfg-min = 0.5, dt-sched = 1.5, dt-sep = True, dt-zero = False, dt-std = False, dt-phi = 1.0 }
+
+  step-of : Integer -> Real
+  step-of (k) = if k < 6 then 300.0 else 400.0
+
+Section: Grading
+
+  theirs : Integer = #BD900000
+
+  worst : List Real, Integer, Integer, Real -> Real
+  worst (got) (at) (i) (acc) =
+    if i >= 1024 then acc
+    else let d = list-at got i - un-f32-real (bit-and (peek-32 theirs ((at + i) * 4)) #FFFFFFFF)
+    in let e = if d < 0.0 then 0.0 - d else d
+    in worst got at (i + 1) (if e > acc then e else acc)
+
+  arm : Integer, Integer, Integer, DtSet, Real, Integer, Text -> Text
+  arm (dc) (du) (out) (st) (step) (k) (what) =
+    let got = if dt-guide dc du out 256 12.0 step st then un-download out 1024 else []
+    in if list-length got /= 1024 then what & ": refused"
+    else what & (if worst got (k * 1024) 0 0.0 <= 0.00001 then ": within 1e-5" else ": PAST 1e-5")
+
+  arms : Integer, Integer, Integer, Integer, List Text -> List Text
+  arms (dc) (du) (out) (k) (acc) = if k >= 18 then acc else arms dc du out (k + 1) (list-push acc (arm dc du out (case-at k) (step-of k) k ("case " & show k & (if k >= 6 then ", mimic mode " & list-at dt-modes (k - 6) else ""))))
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let h = gpu-buf-alloc (18 * 4096)
+    in let up = gpu-buf-upload h 0 "dynthres.bin" 0 (18 * 4096) gpu-dt-u8 gpu-dt-u8
+    in if gpu-buf-read h 0 (18 * 4096) theirs == False then ["the fixture could not be read"]
+    else let dc = un-upload (build 0 0 [])
+    in let du = un-upload (build 1 0 [])
+    in let out = gpu-buf-alloc 4096
+    in let c1 = case-at 1
+    in let sab = DtSet { dt-mimic = c1.dt-mimic, dt-pct = 1.0, dt-mimic-mode = 0, dt-mimic-min = 0.0, dt-cfg-mode = 0, dt-cfg-min = 0.0, dt-sched = 1.0, dt-sep = True, dt-zero = False, dt-std = False, dt-phi = 1.0 }
+    in arms dc du out 0 [] & [arm dc du out sab 300.0 1 "sabotage, case 1 at percentile 1"]
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

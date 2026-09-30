@@ -1,0 +1,89 @@
+Chapter: CceArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Foreword chapter CCE
+  cites AI chapter SafeTensors
+
+ The page codex/plugs/html/arms/cce.mjs drives: every tier 0 and tier 1 CCE
+ code and a sample of tier 2 through code-to-char and back; char literals
+ against char-code-at over the same text and against CCE's from-unicode; a
+ char pattern; then a picked safetensors checkpoint's header parsed by
+ st-parse-file. Every answer lands in the page state.
+
+ We say:
+
+Section: Codes
+
+  cce-rt-bad : Integer, Integer, Integer -> Integer
+  cce-rt-bad (cp) (stop) (bad) =
+    if cp >= stop then bad
+    else cce-rt-bad (cp + 1) stop (bad + (if char-code (code-to-char cp) == from-unicode (to-unicode cp) then 0 else 1))
+
+  cce-sample : Text
+  cce-sample = "Az09 {}[]:,\"é Ж 日本"
+
+  cce-pattern : Char -> Integer
+  cce-pattern (c) =
+    when c
+      is 'é' -> 1
+      is '{' -> 2
+      is otherwise -> 0
+
+  cce-literals : Text
+  cce-literals =
+    show (char-code-at cce-sample 0 == char-code 'A') & ","
+    & show (char-code-at cce-sample 5 == char-code '{') & ","
+    & show (char-code-at cce-sample 12 == char-code 'é') & ","
+    & show (char-code 'é' == from-unicode 233) & ","
+    & show (char-code-at cce-sample 14 == from-unicode 1046 & char-code 'д' == from-unicode 1076) & ","
+    & show (char-code-at cce-sample 16 == from-unicode 26085) & ","
+    & show (char-code 'A' == from-unicode 65) & ","
+    & show (cce-pattern (char-at cce-sample 12)) & ","
+    & show (cce-pattern '{') & ","
+    & show (cce-pattern 'A')
+
+Section: Header
+
+  opening : [Console] Integer
+  opening =
+    let a = state-set "rt-bad-01" (cce-rt-bad 0 2176 0)
+    in let b = state-set "rt-bad-2" (cce-rt-bad 2176 (2176 + 4096) 0)
+    in let c = state-set-text "literals" cce-literals
+    in let d = dom-on-click (dom-query "html") cce-pick
+    in state-set "armed" 1
+
+  cce-pick : Text -> Integer
+  cce-pick (id) = pick-file-then ".safetensors" cce-picked
+
+  cce-picked : Text -> Integer
+  cce-picked (r) =
+    let f = state-set-text "file" (json-obj-field (json-parse-obj r) "name")
+    in file-read-then (state-get-text "file") 0 8 cce-got-len
+
+  cce-ints : List Text, Integer, List Integer -> List Integer
+  cce-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else cce-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  cce-bytes : Text -> List Integer
+  cce-bytes (t) = if text-length t < 3 then [] else cce-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  cce-got-len : Text -> Integer
+  cce-got-len (r) =
+    let hlen = st-read-u64 (cce-bytes r) 0
+    in let s = state-set "hlen" hlen
+    in file-read-then (state-get-text "file") 0 (8 + hlen) cce-got-header
+
+  cce-names : List StTensorMeta, Integer, Text -> Text
+  cce-names (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in cce-names ts (i + 1) (acc & t.stm-name & ":" & show (t.stm-ndim) & ":" & show (t.stm-offset-start) & "-" & show (t.stm-offset-end) & "\n")
+
+  cce-got-header : Text -> Integer
+  cce-got-header (r) =
+    let f = st-parse-file (cce-bytes r)
+    in let a = state-set "valid" (if f.st-valid then 1 else 0)
+    in let b = state-set "count" (f.st-tensor-count)
+    in let c = state-set-text "tensors" (cce-names (f.st-tensors) 0 "")
+    in state-set "done" 1
