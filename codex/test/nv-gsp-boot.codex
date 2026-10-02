@@ -1,0 +1,135 @@
+Chapter: NvGspBootTest
+  cites Kernel chapter NvGspBoot
+  cites Kernel chapter NvFwsec
+  cites Kernel chapter NvFirmware
+  cites Foreword chapter Format
+
+Section: Logging backend
+
+  nb-log : Integer, Integer, Integer, Integer, Integer -> Integer
+  nb-log (trace) (kind) (a) (b) (payload) =
+    let off = peek-qword trace 0
+    in let next = off + 24 + ((payload + 7) / 8) * 8
+    in if next > 65536 then (let w = poke-qword trace 8 1 in -1)
+    else let k = poke-qword trace off kind
+    in let x = poke-qword trace (off + 8) a
+    in let y = poke-qword trace (off + 16) b
+    in let p = poke-qword trace 0 next
+    in off
+
+  nb-read-value : Integer, Integer, Integer -> Integer
+  nb-read-value (trace) (case-no) (addr) =
+    let n = if case-no == 1 then 1 else 0
+    in if addr == #1100F4 | addr == #8400F4 then
+      if n == 1 & addr == #8400F4 then #80000000
+      else if case-no == 6 & addr == #1100F4 then #80001400 else #80000400
+    else if addr == #111668 | addr == #841668 then (if case-no == 9 & addr == #111668 then 0 else 1)
+    else if addr == #110624 | addr == #840624 then #A5000055 + n * #1000
+    else if addr == #110600 | addr == #840600 then #12340003 + n * #1000
+    else if addr == #110118 | addr == #840118 then
+      let count = peek-qword trace 16
+      in let bump = if addr == #110118 then poke-qword trace 16 (count + 1) else 0
+      in if case-no == 5 & addr == #110118 then 3
+      else if case-no == 8 & addr == #110118 & count == 0 then 3 else 2
+    else if addr == #110100 | addr == #840100 then
+      if case-no == 10 & addr == #110100 then #2040 else if n == 1 then #2010 else #2050
+    else if addr == #1FA828 then (if case-no == 2 then 0 else #40000)
+    else if addr == #840040 then (if case-no == 3 then 7 else 0)
+    else if addr == #840044 then #A5
+    else if addr == #111388 then (if case-no == 4 then 0 else #80)
+    else #DEADBEEF
+
+  nb-read : Integer, Integer, Integer -> Integer
+  nb-read (trace) (case-no) (addr) =
+    let value = nb-read-value trace case-no addr
+    in let event = nb-log trace 2 addr value 0
+    in value
+
+  nb-write : Integer, Integer, Integer, Integer -> Boolean
+  nb-write (trace) (case-no) (addr) (value) = let event = nb-log trace 1 addr value 0 in if event < 0 then False else (case-no == 11 & addr == #1103C0 & value == 1) == False
+
+  nb-delay : Integer, Integer, Integer -> Boolean
+  nb-delay (trace) (case-no) (us) = let event = nb-log trace 3 us 0 0 in event >= 0 & case-no /= 13
+
+  nb-poll : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  nb-poll (trace) (case-no) (addr) (mask) (value) (remaining) =
+    if remaining <= 0 then False
+    else if bit-and (nb-read trace case-no addr) mask == value then True
+    else nb-poll trace case-no addr mask value (remaining - 1)
+
+  nb-rpc-bytes : Integer, Integer, List Integer, Integer -> Integer
+  nb-rpc-bytes (trace) (off) (bs) (i) = if i >= list-length bs then 0 else let w = poke-byte trace (off + i) (list-at bs i) in nb-rpc-bytes trace off bs (i + 1)
+
+  nb-rpc : Integer, Integer, Integer, List Integer -> Boolean
+  nb-rpc (trace) (case-no) (func) (bs) =
+    let event = nb-log trace 4 func (list-length bs) (list-length bs)
+    in if event < 0 then False else let w = nb-rpc-bytes trace (event + 24) bs 0 in case-no /= 12
+
+  nb-wait : Integer, Integer, Integer -> Boolean
+  nb-wait (trace) (case-no) (event) = let logged = nb-log trace 5 event 0 0 in if logged < 0 then False else case-no /= 7
+
+Section: Inputs
+
+  nb-config : Integer -> NvBootConfig
+  nb-config (case-no) =
+    let n = if case-no == 1 then 1 else 0
+    in let fw = NvFwsec { version = 3, descriptor-offset = 0, descriptor-size = 0, image-offset = 0, image-size = 4096, imem-base = #1000 + n * #1000, imem-size = 512 + n * 256, imem-virtual = #2000 + n * #1000, dmem-offset = 512 + n * 256, dmem-base = #200 + n * #200, dmem-size = 768 + n * 256, interface-offset = 0, v2-nonsec-size = 0, v2-sec-base = 0, v2-sec-size = 0, signature-offset = 0, signature-size = 384, pkc-offset = 384 + n * 128, engine-mask = #1234 + n, ucode-id = 7 + n, signature-count = 1, signature-versions = 1 }
+    in let booter = NvBooterLoad { image-offset = 0, image-size = 4096, signature-offset = 0, signature-size = 0, patch-offset = 0, code-offset = #100 + n * #100, code-size = 512 + n, data-offset = #500 + n * #100, data-size = 256 + n }
+    in let pci = NvBootPci { bar0 = #C0000000 + n * #1000000, bar1 = #1000000000 + n * #2000000000, bar3 = #F0000000 + n * #100000, bus = 1 + n, device = n * 3, function = n, id = #28A010DE + n, subsystem = #12341043 + n, revision = 1 + n }
+    in NvBootConfig { fwsec = fw, fwsec-address = #1000000 + n * #2EF000000, booter = booter, booter-address = #2000000 + n * #1000000, libos-address = #123456789000 + n * #111000, wpr-address = #23456789A000 + n * #222000, chip-id = #190600A1 + n, pci = pci }
+
+Section: Trace output
+
+  nb-hex : Integer, Integer, Integer -> Text
+  nb-hex (buf) (off) (size) = if size <= 0 then "" else fmt-hex-pad (peek-byte buf off) 2 & nb-hex buf (off + 1) (size - 1)
+
+  nb-dump : Integer, Integer -> [Console] Nothing
+  nb-dump (trace) (off) = act
+   if off >= peek-qword trace 0 then print-uni ""
+   else let kind = peek-qword trace off
+   in let a = peek-qword trace (off + 8)
+   in let b = peek-qword trace (off + 16)
+   in act
+    if kind == 1 then print-line-uni ("W " & fmt-hex-pad a 8 & " " & fmt-hex-pad b 8)
+    else if kind == 2 then print-line-uni ("R " & fmt-hex-pad a 8 & " " & fmt-hex-pad b 8)
+    else if kind == 3 then print-line-uni ("D " & show a)
+    else if kind == 4 then print-line-uni ("RPC " & show a & " " & nb-hex trace (off + 24) b)
+    else if kind == 5 then print-line-uni ("WAIT " & show a)
+    else print-line-uni "UNKNOWN EVENT"
+    nb-dump trace (off + 24 + (if kind == 4 then ((b + 7) / 8) * 8 else 0))
+   end
+  end
+
+  nb-case : Integer -> [Console] Nothing
+  nb-case (case-no) = act
+   let mark = __heap-save
+   in let trace = alloc-bytes 65536
+   in let z = __memset trace 0 32
+   in let cursor = poke-qword trace 0 32
+   in let io = NvBootIo { read = (\addr -> nb-read trace case-no addr), write = (\addr value -> nb-write trace case-no addr value), delay = (\us -> nb-delay trace case-no us), poll = (\addr mask value -> nb-poll trace case-no addr mask value 9), rpc-send = (\func bytes -> nb-rpc trace case-no func bytes), rpc-wait = (\event -> nb-wait trace case-no event) }
+   in let result = nv-gsp-boot (nb-config case-no) io
+   in act
+    print-line-uni ("CASE " & show case-no)
+    nb-dump trace 32
+    if peek-qword trace 8 /= 0 then print-line-uni "TRACE OVERFLOW" else print-uni ""
+    print-line-uni ("RESULT " & show case-no & " " & show result)
+    let restore = __heap-restore mark in print-uni ""
+   end
+  end
+
+  opening : [Console] Nothing = act
+   nb-case 0
+   nb-case 1
+   nb-case 2
+   nb-case 3
+   nb-case 4
+   nb-case 5
+   nb-case 6
+   nb-case 7
+   nb-case 8
+   nb-case 9
+   nb-case 10
+   nb-case 11
+   nb-case 12
+   nb-case 13
+  end

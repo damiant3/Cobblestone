@@ -1,0 +1,74 @@
+Chapter: NvAcrTest
+  cites Kernel chapter NvAcr
+  cites Foreword chapter Format
+
+Section: Test
+
+  acr-pattern : Integer, Integer, List Integer -> List Integer
+  acr-pattern (base) (i) (acc) = if i >= 152 then acc else acr-pattern base (i + 1) (list-push acc (base + i))
+
+  acr-hex : List Integer, Integer -> Text
+  acr-hex (ws) (i) = if i >= list-length ws then "" else " " & fmt-hex-pad (list-at ws i) 8 & acr-hex ws (i + 1)
+
+  acr-line : Text, List Integer -> Text
+  acr-line (tag) (ws) = tag & " " & show (list-length ws) & acr-hex ws 0
+
+  acr-signature : Integer, Integer, List Integer -> List Integer
+  acr-signature (base) (i) (acc) = if i >= 19 then acc else acr-signature base (i + 1) (list-push acc (base + i))
+
+  wpr-case : Integer -> [Console] Nothing
+  wpr-case (rtos) = act
+   let a = nv-wpr-slot 220 4097 76
+   in let b = nv-wpr-slot (list-at a 4) 8193 76
+   in act
+    print-line-uni (acr-line "SLOT 0" a)
+    print-line-uni (acr-line "SLOT 1" b)
+    print-line-uni (acr-line "WPR 0" (nv-wpr-header 2 (list-at a 0) rtos))
+    print-line-uni (acr-line "WPR 1" (nv-wpr-header 3 (list-at b 0) rtos))
+    print-line-uni (acr-line "END 0" nv-wpr-end)
+    print-line-uni (acr-line "LSB 0" (nv-wpr-lsb (acr-signature #12340000 0 []) (NvLsbImage { image-offset = list-at a 1, ucode-size = 4352, data-size = 512, boot-code-size = 256, boot-imem-offset = #180, boot-data-offset = list-at a 2, boot-data-size = list-at a 3, app-start = 256, app-code-offset = 17, app-code-size = 4097, app-data-offset = 4099, app-data-size = 321, flags = 0 })))
+    print-line-uni (acr-line "LSB 1" (nv-wpr-lsb (acr-signature #ABCD0000 0 []) (NvLsbImage { image-offset = list-at b 1, ucode-size = 8704, data-size = 768, boot-code-size = 512, boot-imem-offset = #280, boot-data-offset = list-at b 2, boot-data-size = list-at b 3, app-start = 512, app-code-offset = 35, app-code-size = 8193, app-data-offset = 8195, app-data-size = 654, flags = 8 })))
+   end
+  end
+
+  lsf-bytes : Integer, Integer, Integer, List Integer -> List Integer
+  lsf-bytes (base) (n) (i) (acc) = if i >= n then acc else lsf-bytes base n (i + 1) (list-push acc (bit-and (base + i) 255))
+
+  lsf-hex : List Integer, Integer -> Text
+  lsf-hex (xs) (i) = if i >= list-length xs then "" else fmt-hex-pad (list-at xs i) 2 & lsf-hex xs (i + 1)
+
+  load-case : Integer, Integer, Integer, Integer, Integer, Integer -> [Console] Nothing
+  load-case (n) (code-size) (tag) (inst-size) (data-size) (wpr-base) = act
+   let layout = nv-lsf-layout code-size tag inst-size data-size
+   in let boot = lsf-bytes (16 + n) (list-at layout 0) 0 []
+   in let inst = lsf-bytes (64 + n) inst-size 0 []
+   in let data = lsf-bytes (160 + n) data-size 0 []
+   in let image = nv-lsf-image code-size boot inst data
+   in let p = NvLsbImage { image-offset = 4096 + n * 8192, ucode-size = list-at layout 10, data-size = list-at layout 11, boot-code-size = list-at layout 0, boot-imem-offset = list-at layout 1, boot-data-offset = 0, boot-data-size = 256, app-start = list-at layout 2, app-code-offset = n * 17, app-code-size = list-at layout 5, app-data-offset = list-at layout 6, app-data-size = list-at layout 7, flags = n * 8 }
+   in act
+    print-line-uni (acr-line ("LOAD " & show n) layout)
+    print-line-uni ("IMAGE " & show n & " " & show (list-length image) & " " & lsf-hex image 0)
+    print-line-uni (acr-line ("BLD " & show n) (nv-lsf-bootdesc p (n * 19) 0))
+    print-line-uni (acr-line ("RELOC " & show n) (nv-lsf-bootdesc p (n * 19) wpr-base))
+   end
+  end
+
+  opening : [Console] Nothing = act
+   let a = acr-pattern #12340000 0 []
+   in let b = nv-acr-setup a #1234560000 #12345A0000
+   in act
+    print-line-uni (acr-line "DESC 0" b)
+    print-line-uni ("PRESERVE " & show (list-at a 128 == #12340080))
+   end
+   print-line-uni (acr-line "DESC 1" (nv-acr-setup (acr-pattern #A5A50000 0 []) #FFFFFF0000 #FFFFFFFF00))
+   print-line-uni (acr-line "HS 0" (nv-acr-hs-load (NvHsLoad { code-base = #123456789000, nonsec-offset = #100, nonsec-size = #234, sec-offset = #567, sec-size = #890, data-offset = #ABC, data-size = #DEF })))
+   print-line-uni (acr-line "HS 1" (nv-acr-hs-load (NvHsLoad { code-base = #FFFFFFF0, nonsec-offset = 0, nonsec-size = 1, sec-offset = #FFFFFFFF, sec-size = 2, data-offset = #1234, data-size = 3 })))
+   print-line-uni ("REFUSE " & show (list-length (nv-acr-setup [] 0 256)) & " " & show (list-length (nv-acr-setup (acr-pattern 0 0 []) 1 256)) & " " & show (list-length (nv-acr-setup (acr-pattern 0 0 []) 256 256)))
+   print-line-uni ("HS-REFUSE " & show (list-length (nv-acr-hs-load (NvHsLoad { code-base = 0, nonsec-offset = 0, nonsec-size = 0, sec-offset = 0, sec-size = 0, data-offset = #100000000, data-size = 0 }))))
+   wpr-case -1
+   wpr-case 3
+   print-line-uni ("WPR-REFUSE " & show (list-length (nv-wpr-slot #FFFFFF00 4096 76)) & " " & show (list-length (nv-wpr-header #FFFFFFFF 0 -1)))
+   load-case 0 73 3 257 13 #1234560000
+   load-case 1 257 #ABC 1 257 #FFFFFF00
+   print-line-uni ("LOAD-REFUSE " & show (list-length (nv-lsf-layout 0 #1000000 0 0)) & " " & show (list-length (nv-lsf-image 1 [] [] [])) & " " & show (list-length (nv-lsf-layout #FFFFFFFF 0 1 1)))
+  end

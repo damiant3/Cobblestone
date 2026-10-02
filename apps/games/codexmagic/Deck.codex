@@ -180,19 +180,37 @@ Section: Deck Construction Helpers
 
 Section: Starter Deck Generation
 
-  gen-starter-deck : GeneralTemplate, List CardTemplate, Integer -> DeckList
+  StarterDeckResult =
+    | StarterDeck (DeckList)
+    | StarterRefused (Text)
+
+  starter-refusal : GeneralTemplate, Integer, Integer, Text -> StarterDeckResult
+  starter-refusal (general) (seed) (short) (reason) =
+    StarterRefused ("Starter deck refused for " & general.name & ", seed " & show seed & ": " & show short & " cards short; " & reason)
+
+  gen-starter-deck : GeneralTemplate, List CardTemplate, Integer -> StarterDeckResult
   gen-starter-deck (general) (templates) (seed) =
-    let r = rng-new seed
+    if list-length templates == 0 then starter-refusal general seed 60 "no card templates"
+    else let r = rng-new seed
     in let gems = pick-gems-for-general general templates 24
     in let spells = pick-spells-for-general general templates r 36 0 []
     in let all-cards = gems & spells
-    in make-deck (general.id) all-cards FormatStandard
+    in let deck = make-deck (general.id) all-cards FormatStandard
+    in if list-length gems < 24 then starter-refusal general seed (60 - deck.num-cards) "required basic gemstones unavailable"
+    else if deck.num-cards < 60 then starter-refusal general seed (60 - deck.num-cards) "eligible spell copies exhausted"
+    else let checked = validate-deck deck templates general
+    in if checked.valid then StarterDeck deck else starter-refusal general seed 0 checked.reason
 
   pick-gems-for-general : GeneralTemplate, List CardTemplate, Integer -> List Integer
   pick-gems-for-general (general) (templates) (count) =
-    let gem-id = find-basic-gem-for-color templates (primary-color (general.color)) 0 (list-length templates)
-    in if gem-id >= 0 then add-n-copies [] gem-id count
-    else add-n-copies [] 0 count
+    let color = primary-color (general.color)
+    in if color == Purple then pick-gems-for-color templates Red (count / 2) & pick-gems-for-color templates Blue (count - count / 2)
+    else pick-gems-for-color templates color count
+
+  pick-gems-for-color : List CardTemplate, GemColor, Integer -> List Integer
+  pick-gems-for-color (templates) (color) (count) =
+    let gem-id = find-basic-gem-for-color templates color 0 (list-length templates)
+    in if gem-id >= 0 then add-n-copies [] gem-id count else []
 
   primary-color : ColorSet -> GemColor
   primary-color (cs) =
@@ -210,7 +228,7 @@ Section: Starter Deck Generation
     else let t = list-at templates i
     in when t.card-type
       is Gemstone ->
-        if t.is-basic then
+        if t.is-basic & t.is-token == False then
           if t.gem-stone >= 0 then
             if gem-stone-color-matches t color then t.id
             else find-basic-gem-for-color templates color (i + 1) len
@@ -221,24 +239,42 @@ Section: Starter Deck Generation
   gem-stone-color-matches : CardTemplate, GemColor -> Boolean
   gem-stone-color-matches (t) (target) =
     when target
-      is Red -> t.color.red
-      is Yellow -> t.color.yellow
-      is Blue -> t.color.blue
-      is Orange -> t.color.orange
-      is Green -> t.color.green
+      is Red -> t.gem-stone == 0
+      is Yellow -> t.gem-stone == 1
+      is Blue -> t.gem-stone == 2
+      is Orange -> t.gem-stone == 3
+      is Green -> t.gem-stone == 4
+      is Colorless -> t.gem-stone == 5
       is otherwise -> False
 
   pick-spells-for-general : GeneralTemplate, List CardTemplate, Rng, Integer, Integer, List Integer -> List Integer
   pick-spells-for-general (general) (templates) (r) (target) (picked) (acc) =
-    if picked >= target then acc
-    else let idx = rng-mod (rng-value r) (list-length templates)
-    in let t = list-at templates idx
-    in when t.card-type
-      is Gemstone -> pick-spells-for-general general templates (rng-next r) target picked acc
-      is General -> pick-spells-for-general general templates (rng-next r) target picked acc
-      is otherwise ->
-        if t.is-token then pick-spells-for-general general templates (rng-next r) target picked acc
-        else if color-outside-identity (t.color) (general.color) then pick-spells-for-general general templates (rng-next r) target picked acc
-        else pick-spells-for-general general templates (rng-next r) target (picked + 1) (list-push acc (t.id))
+    pick-spells-bounded general templates r target picked acc 0
+
+  pick-spells-bounded : GeneralTemplate, List CardTemplate, Rng, Integer, Integer, List Integer, Integer -> List Integer
+  pick-spells-bounded (general) (templates) (r) (target) (picked) (acc) (misses) =
+    let len = list-length templates
+    in if picked >= target | len == 0 then acc
+    else let idx = if misses >= len then find-starter-spell general templates acc picked 0 len else rng-mod (rng-value r) len
+    in if idx < 0 then acc
+    else let t = list-at templates idx
+    in if starter-spell-available general t acc picked then
+      pick-spells-bounded general templates (rng-next r) target (picked + 1) (list-push acc (t.id)) 0
+    else pick-spells-bounded general templates (rng-next r) target picked acc (misses + 1)
+
+  starter-spell-available : GeneralTemplate, CardTemplate, List Integer, Integer -> Boolean
+  starter-spell-available (general) (t) (cards) (count) = when t.card-type
+    is Gemstone -> False
+    is General -> False
+    is otherwise ->
+      if t.is-token | color-outside-identity (t.color) (general.color) then False
+      else if t.is-basic then True
+      else count-card-in-list cards (t.id) 0 count 0 < max-copies FormatStandard
+
+  find-starter-spell : GeneralTemplate, List CardTemplate, List Integer, Integer, Integer, Integer -> Integer
+  find-starter-spell (general) (templates) (cards) (count) (i) (len) =
+    if i >= len then -1
+    else if starter-spell-available general (list-at templates i) cards count then i
+    else find-starter-spell general templates cards count (i + 1) len
 
 Page 1

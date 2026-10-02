@@ -16,8 +16,9 @@ Chapter: ClipArm
  browser-clip-ops on the 77 ids page-data "cat" and "empty" name, and "cat"
  again at clip skip 2 without the final LayerNorm; then page-data "emph"
  chunked by ClipPromptText over ClipBpe (page-data "vocab" and "merges") and
- encoded with Forge's emphasis by bt-cond, and the same ids without it. Each
- cond is read back.
+ encoded with Forge's emphasis by bt-cond, and the same ids without it; then
+ page-data "long" (three chunks) and "two" (two) through browser-conds-then,
+ whose conds are the chunks' end to end. Each cond is read back.
 
  We say:
 
@@ -96,7 +97,7 @@ Section: Encode
     in let c = state-set "load" (cw.bc-status)
     in let cat = clip-encode-with ops cw (ca-list (page-data "cat"))
     in let empty = clip-encode-with ops cw (ca-list (page-data "empty"))
-    in let sw = BcWeights { bc-spec = ca-skip2 bc-l15-spec, bc-status = cw.bc-status, bc-tok = cw.bc-tok, bc-pos = cw.bc-pos, bc-layers = cw.bc-layers, bc-final-g = cw.bc-final-g, bc-final-b = cw.bc-final-b }
+    in let sw = BcWeights { bc-spec = ca-skip2 bc-l15-spec, bc-status = cw.bc-status, bc-tok = cw.bc-tok, bc-pos = cw.bc-pos, bc-layers = cw.bc-layers, bc-final-g = cw.bc-final-g, bc-final-b = cw.bc-final-b, bc-proj = cw.bc-proj }
     in let skip = clip-encode-with ops sw (ca-list (page-data "cat"))
     in let d = state-set-text "status" (show (cat.co-status) & "," & show (empty.co-status) & "," & show (skip.co-status))
     in let e = state-set-text "err-run" (gpu-error 0)
@@ -110,7 +111,7 @@ Section: Encode
     in let h = state-set-text "emph-ids" (ca-join (ch.cc-ids) 0 "")
     in let k = state-set-text "emph-mults" (ca-join-reals (ch.cc-mults) 0 "")
     in let raw = clip-encode-with ops cw (ch.cc-ids)
-    in bt-cond m ch (\eh -> ca-download [cat.co-cond, empty.co-cond, skip.co-cond, eh, raw.co-cond] 0)
+    in bt-cond m ch (\eh -> browser-conds-then m bpe (page-data "long") (page-data "two") (\hl ht kl kt -> ca-download [cat.co-cond, empty.co-cond, skip.co-cond, eh, raw.co-cond, hl, ht] [77, 77, 77, 77, 77, kl, kt] 0))
 
   ca-poke : Integer, List Integer, Integer -> Integer
   ca-poke (a) (bs) (i) =
@@ -127,15 +128,16 @@ Section: Encode
   ca-join-reals : List Real, Integer, Text -> Text
   ca-join-reals (xs) (i) (acc) = if i >= list-length xs then acc else ca-join-reals xs (i + 1) (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
 
-  ca-download : List Integer, Integer -> Integer
-  ca-download (hs) (i) =
+  ca-download : List Integer, List Integer, Integer -> Integer
+  ca-download (hs) (ks) (i) =
     if i >= list-length hs then ca-done 0
-    else gpu-buf-download-then (list-at hs i) 0 (77 * 768 * 4) (\r -> ca-got hs i r)
+    else let s = state-set ("rows" & show i) (list-at ks i)
+    in gpu-buf-download-then (list-at hs i) 0 (list-at ks i * 768 * 4) (\r -> ca-got hs ks i r)
 
-  ca-got : List Integer, Integer, Text -> Integer
-  ca-got (hs) (i) (r) =
+  ca-got : List Integer, List Integer, Integer, Text -> Integer
+  ca-got (hs) (ks) (i) (r) =
     let s = state-set-text ("c" & show i) r
-    in ca-download hs (i + 1)
+    in ca-download hs ks (i + 1)
 
   ca-done : Integer -> Integer
   ca-done (z) =

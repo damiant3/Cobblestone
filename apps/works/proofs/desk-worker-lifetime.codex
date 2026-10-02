@@ -1,0 +1,147 @@
+Chapter: DeskWorkerLifetime
+  cites Foreword chapter Console
+
+ The mailbox uses qword cells: request 0, result 8, ready 16, reply token
+ 24, transient pointer 32, acknowledge 40, reuse pointer 48, owned pointer
+ 56, exit 64, current token 72, live 80, consumed 88, publications 96,
+ reuse-ready 112 and reuse-acknowledge 120. Only one core runs the fixture.
+
+  lifetime-control : Integer = 0
+
+  LifetimeResult = record {
+    setup : Boolean,
+    transient : Boolean,
+    copied : Boolean,
+    rejected : Boolean,
+    duplicate : Boolean
+  }
+
+  wl-fill : Integer, Integer, Integer -> Integer
+  wl-fill (ptr) (generation) (i) =
+    if i >= 16 then 0
+    else let wrote = poke-32 ptr (i * 4) (generation * 100 + i + 1)
+    in wl-fill ptr generation (i + 1)
+
+  wl-matches : Integer, Integer, Integer -> Boolean
+  wl-matches (ptr) (generation) (i) =
+    if ptr <= 0 then False
+    else if i >= 16 then True
+    else peek-32 ptr (i * 4) == generation * 100 + i + 1 & wl-matches ptr generation (i + 1)
+
+  wl-await : Integer, Integer, Integer -> [Concurrent] Boolean
+  wl-await (cell) (offset) (fuel) =
+    if peek-qword cell offset == 1 then True
+    else if fuel <= 0 then False
+    else act
+      yielded <- process-yield
+      wl-await cell offset (fuel - 1)
+    end
+
+  wl-worker : Integer -> [Concurrent] Integer
+  wl-worker (cell) =
+    let generation = peek-qword cell 0
+    in let owned = alloc-bytes 64
+    in let target = if lifetime-control == 1 then peek-qword cell 32 else owned
+    in let pixels = wl-fill target generation 0
+    in let own = poke-qword cell 56 owned
+    in let ptr = poke-qword cell 8 target
+    in let token = poke-qword cell 24 generation
+    in let ready = poke-qword cell 16 1
+    in act
+      acknowledged <- wl-await cell 40 1000000
+      poke-qword cell 64 1
+    end
+
+  wl-reuse : Integer -> [Concurrent] Integer
+  wl-reuse (cell) =
+    let owned = alloc-bytes 64
+    in let poison = wl-fill owned 999 0
+    in let ptr = poke-qword cell 48 owned
+    in let ready = poke-qword cell 112 1
+    in act
+      acknowledged <- wl-await cell 120 1000000
+      0
+    end
+
+  wl-copy : Integer, Integer, Integer -> Integer
+  wl-copy (dst) (src) (i) =
+    if i >= 16 then 0
+    else let copied = poke-32 dst (i * 4) (peek-32 src (i * 4))
+    in wl-copy dst src (i + 1)
+
+  wl-publish : Integer, Integer -> Integer
+  wl-publish (cell) (surface) =
+    if peek-qword cell 16 /= 1 then 0
+    else if lifetime-control /= 5 & peek-qword cell 88 /= 0 then 0
+    else if lifetime-control /= 3 & peek-qword cell 80 /= 1 then 0
+    else if lifetime-control /= 2 & peek-qword cell 24 /= peek-qword cell 72 then 0
+    else let source = peek-qword cell 8
+    in let copied = if lifetime-control == 4 then 0 else wl-copy surface source 0
+    in let consumed = poke-qword cell 88 1
+    in let count = poke-qword cell 96 (peek-qword cell 96 + 1)
+    in if lifetime-control == 4 then source else surface
+
+  wl-case : Integer -> [Concurrent] LifetimeResult
+  wl-case (kind) =
+    let cell = alloc-bytes 128
+    in let cleared = __memset cell 0 128
+    in let surface = alloc-bytes 64
+    in let sentinel = wl-fill surface 777 0
+    in let requested = poke-qword cell 0 kind
+    in let current = poke-qword cell 72 kind
+    in let live = poke-qword cell 80 1
+    in let entry = \ignored -> wl-worker cell
+    in let mark = __heap-save
+    in let temporary = alloc-bytes 64
+    in let temp = poke-qword cell 32 temporary
+    in act
+      pid <- process-spawn entry
+      ready <- if pid > 0 then wl-await cell 16 10000 else False
+      let source = peek-qword cell 8
+      in let owned = peek-qword cell 56
+      in let held = peek-qword cell 64 == 0
+      in let reclaimed = __heap-restore mark
+      in let replacement = alloc-bytes 64
+      in let overwrite = wl-fill replacement 888 0
+      in let setup = ready & held & replacement == temporary & owned > 0
+      in let intact = if ready then wl-matches source kind 0 else False
+      in let close = if kind == 3 then poke-qword cell 80 0 else 0
+      in let reopen = if kind == 2 then poke-qword cell 72 (kind + 1) else 0
+      in let result = if setup then wl-publish cell surface else 0
+      in let rejected = result == 0 & peek-qword cell 96 == 0 & wl-matches surface 777 0
+      in let again = if kind == 1 & setup then wl-publish cell surface else 0
+      in let duplicate = again == 0 & peek-qword cell 96 == 1
+      in let ack = poke-qword cell 40 1
+      in act
+        waited <- if pid > 0 then process-wait pid else 0
+        if kind /= 1 then LifetimeResult { setup = setup, transient = intact, copied = True, rejected = rejected, duplicate = True }
+        else act
+          reused <- process-spawn (\ignored -> wl-reuse cell)
+          overwritten <- if reused > 0 then wl-await cell 112 10000 else False
+          let same-slot = reused == pid & peek-qword cell 48 == owned
+          in let copied = if overwritten then wl-matches result kind 0 else False
+          in let release = poke-qword cell 120 1
+          in act
+            finished <- if reused > 0 then process-wait reused else 0
+            LifetimeResult { setup = setup & overwritten & same-slot, transient = intact, copied = copied, rejected = True, duplicate = duplicate }
+          end
+        end
+      end
+    end
+
+  opening : [Console, Concurrent, Capability, Device.Port] Nothing = act
+    initialized <- runtime-init 0
+    first <- wl-case 1
+    stale <- wl-case 2
+    closed <- wl-case 3
+    port-out-byte 33 255
+    port-out-byte 161 255
+    print-line-uni ("control=" & show lifetime-control)
+    print-line-uni ("setup=" & show (first.setup & stale.setup & closed.setup))
+    print-line-uni ("transient=" & show (first.transient))
+    print-line-uni ("owned-copy=" & show (first.copied))
+    print-line-uni ("stale=" & show (stale.rejected))
+    print-line-uni ("closed=" & show (closed.rejected))
+    print-line-uni ("duplicate=" & show (first.duplicate))
+    print-line-uni "worker-lifetime-end"
+  end

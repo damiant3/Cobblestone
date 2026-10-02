@@ -179,7 +179,12 @@ Section: Expression Parsing
     in if is-left-paren (next-tok.kind) | is-left-bracket (next-tok.kind) | is-literal (next-tok.kind) then
       if next-tok.line > last-tok.line & next-tok.column > line-start-column (st.tokens) (st.pos - 1) (last-tok.line) then
         let span = span-at (next-tok.line) (next-tok.column) (next-tok.offset) (next-tok.length) (next-tok.file-id)
-        in __record-set st "bag" (bag-add (st.bag) (make-error cdx-multiline-application ("Application ended at newline; '" & token-text next-tok & "' is not parsed as an argument (column " & integer-to-text (next-tok.column) & ", application started at column " & integer-to-text app-col & "): a newline ends an application. Place all arguments on one line, or bind the value with a let.") span))
+        in let prefix = "Application ended at newline; '" & token-text next-tok
+        in let column = prefix & "' is not parsed as an argument (column " & integer-to-text (next-tok.column)
+        in let origin = column & ", application started at column " & integer-to-text app-col
+        in let msg = origin & "): a newline ends an application. Place all arguments on one line, or bind the value with a let."
+        in let diag = make-error cdx-multiline-application msg span
+        in __record-set st "bag" (bag-add (st.bag) diag)
       else st
     else st
 
@@ -256,7 +261,10 @@ Section: Expression Parsing
       then let st3 = skip-newlines (advance st2)
       in parse-revised-fields base [] st3
     else
-      ExprOk base (__record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-expected-token-kind ("Expected '{' after 'revised' (got '" & token-text (current st2) & "')") (token-to-span (current st2)))))
+      let msg = "Expected '{' after 'revised' (got '" & token-text (current st2) & "')"
+      in let diag = make-error cdx-expected-token-kind msg (token-to-span (current st2))
+      in let next = __record-set st2 "bag" (bag-add (st2.bag) diag)
+      in ExprOk base next
 
   parse-revised-fields : Expr, LinkedList RecordFieldExpr, ParseState -> ParseExprResult
   parse-revised-fields (base) (acc) (st) =
@@ -264,7 +272,10 @@ Section: Expression Parsing
       ExprOk (deck-record (RevisedExpr base (deck-record (__linked-list-to-list acc)))) (advance st)
     else if is-field-name-token (current-kind st) then parse-revised-field base acc st
     else
-      ExprOk (deck-record (RevisedExpr base (deck-record (__linked-list-to-list acc)))) (__record-set st "bag" (bag-add (st.bag) (make-error cdx-bad-field-syntax "Expected field name in revised expression" (token-to-span (current st)))))
+      let expr = deck-record (RevisedExpr base (deck-record (__linked-list-to-list acc)))
+      in let diag = make-error cdx-bad-field-syntax "Expected field name in revised expression" (token-to-span (current st))
+      in let next = __record-set st "bag" (bag-add (st.bag) diag)
+      in ExprOk expr next
 
   parse-revised-field : Expr, LinkedList RecordFieldExpr, ParseState -> ParseExprResult
   parse-revised-field (base) (acc) (st) =
@@ -358,7 +369,10 @@ Section: Compound Expression Parsing
       ExprOk (deck-record (RecordExpr type-name (deck-record (__linked-list-to-list acc)))) (advance st)
     else if is-field-name-token kind then parse-record-field type-name acc st
     else
-      ExprOk (deck-record (RecordExpr type-name (deck-record (__linked-list-to-list acc)))) (__record-set st "bag" (bag-add (st.bag) (make-error cdx-bad-field-syntax "Expected field name in record literal" (token-to-span (current st)))))
+      let expr = deck-record (RecordExpr type-name (deck-record (__linked-list-to-list acc)))
+      in let diag = make-error cdx-bad-field-syntax "Expected field name in record literal" (token-to-span (current st))
+      in let next = __record-set st "bag" (bag-add (st.bag) diag)
+      in ExprOk expr next
 
   parse-record-field : Token, LinkedList RecordFieldExpr, ParseState -> ParseExprResult
   parse-record-field (type-name) (acc) (st) =
@@ -391,7 +405,11 @@ Section: Compound Expression Parsing
     if is-right-bracket (current-kind st) then
       ExprOk (deck-record (ListExpr (deck-record (__linked-list-to-list acc)) sp)) (advance st)
     else if is-done st then
-      ExprOk (deck-record (ListExpr (deck-record (__linked-list-to-list acc)) sp)) (__record-set st "bag" (bag-add (st.bag) (make-error cdx-list-no-close "Unclosed list literal: expected ']' before end of input" (token-to-span (current st)))))
+      let expr = deck-record (ListExpr (deck-record (__linked-list-to-list acc)) sp)
+      in let msg = "Unclosed list literal: expected ']' before end of input"
+      in let diag = make-error cdx-list-no-close msg (token-to-span (current st))
+      in let next = __record-set st "bag" (bag-add (st.bag) diag)
+      in ExprOk expr next
     else let elem = parse-expr st
     in unwrap-expr-ok elem (finish-list-element acc sp)
 
@@ -403,7 +421,11 @@ Section: Compound Expression Parsing
     else if is-right-bracket (current-kind st2) then
       parse-list-elements (__linked-list-push acc e) sp st2
     else
-      ExprOk (deck-record (ListExpr (deck-record (__linked-list-to-list (__linked-list-push acc e))) sp)) (__record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-list-no-close "Unclosed list literal: expected ',' or ']'" (token-to-span (current st2)))))
+      let expr = deck-record (ListExpr (deck-record (__linked-list-to-list (__linked-list-push acc e))) sp)
+      in let msg = "Unclosed list literal: expected ',' or ']'"
+      in let diag = make-error cdx-list-no-close msg (token-to-span (current st2))
+      in let next = __record-set st2 "bag" (bag-add (st2.bag) diag)
+      in ExprOk expr next
 
   parse-if-expr : ParseState -> ParseExprResult
   parse-if-expr (st) =
@@ -486,9 +508,15 @@ Section: Compound Expression Parsing
     in if tok.column <= min-col then ExprOk b st
     else ExprOk b (__record-set st "bag" (bag-add (st.bag) (body-tokens-left-error b tok)))
 
+  body-tokens-left-tail : Text
+  body-tokens-left-tail =
+    "' is left inside its body, so it is not part of the definition. A newline ends an application; prose belongs at column 2."
+
   body-tokens-left-error : Expr, Token -> Diagnostic
   body-tokens-left-error (b) (tok) =
-    let left = make-error cdx-body-tokens-left ("The definition's expression has ended, and '" & token-text tok & "' is left inside its body, so it is not part of the definition. A newline ends an application; prose belongs at column 2.") (token-to-span tok)
+    let prefix = "The definition's expression has ended, and '" & token-text tok
+    in let msg = prefix & body-tokens-left-tail
+    in let left = make-error cdx-body-tokens-left msg (token-to-span tok)
     in when b
       is NameExpr (n) -> if token-text n == "do" then
         make-error cdx-not-codex-operator "`do` is not Codex; use act ... end" (token-to-span n)
@@ -648,7 +676,10 @@ Section: Compound Expression Parsing
     let st2 = skip-newlines (advance st)
     in if is-arrow (current-kind st2)
        then let tok = current st2
-       in let st3 = __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-match-no-arrow ("Expected pattern after '|' in match arm (got '" & (token-text tok) & "')") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+       in let msg = "Expected pattern after '|' in match arm (got '" & (token-text tok) & "')"
+       in let span = span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id)
+       in let diag = make-error cdx-match-no-arrow msg span
+       in let st3 = __record-set st2 "bag" (bag-add (st2.bag) diag)
        in let st4 = skip-newlines (advance st3)
        in let body = parse-expr-col st4 col
        in unwrap-expr-ok body (finish-alt-match scrut acc col ln pats)
@@ -757,7 +788,11 @@ Section: Compound Expression Parsing
     else if is-end-keyword (current-kind st) then
       let acc-list = deck-record (__linked-list-to-list acc)
       in if list-length acc-list == 0 then
-        ExprOk (deck-record (ActExpr acc-list)) (advance (__record-set st "bag" (bag-add (st.bag) (make-error cdx-empty-act "Empty act block: 'act end' must contain at least one statement" (token-to-span (current st))))))
+        let expr = deck-record (ActExpr acc-list)
+        in let msg = "Empty act block: 'act end' must contain at least one statement"
+        in let diag = make-error cdx-empty-act msg (token-to-span (current st))
+        in let next = __record-set st "bag" (bag-add (st.bag) diag)
+        in ExprOk expr (advance next)
       else
         ExprOk (deck-record (ActExpr acc-list)) (advance (check-discarded-literals acc-list 0 (list-length acc-list - 1) st))
     else if is-act-bind st then parse-act-bind-stmt acc st

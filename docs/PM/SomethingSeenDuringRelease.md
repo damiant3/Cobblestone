@@ -29,6 +29,41 @@ count does.
 
 ## Done
 
+### Update 66 -- the full gate has no resume, and its reds past test-run were the bed and the corpus
+
+Three reds at step 0b, 2026-10-02, none a compiler defect; the compiler stages
+were green first time (SUT === stage1, Sut equal to the depot seed). First,
+the test-run phase: 19 GPU subjects over the 60 s wall budget with 16 guests on
+one GPU. Alone, 17 passed; `flux-step` and `flux-euler` took 71 s every run
+with exact output, because each streams the 11.07 GB Flux checkpoint from the
+SATA HDD (a plain read takes 80.8 s), and both now carry `.slow` (main 34267).
+Second, the app sweep: two diffusion reference chapters compile only through
+their runners, which rename `DiffusionDriver`'s `opening`; baselined with the
+runner named, and the split is `InBrowserDiffusion.md` BROWSER-DRIVER-ENTRY
+(main 34269). Third, wasm-run: `check-empty-fidelity-lifetime` grades the
+compiler's phase trace, which only `serial-byte` writes, so hosted wasm traps
+on `unreachable`; `.bare-metal` (main 34272).
+
+`build.ps1` cannot restart at a phase, so the remaining phases ran from a copy
+outside the workspace (an untracked `.ps1` under `build/` fails
+`p4-stale-check`), with every proven phase added to `$SkipPhases`, its
+`$PSScriptRoot` pinned to the release workspace's `build`, and
+`$script:seedVerdict` set to the verdict the full run proved:
+
+```powershell
+$t = [IO.File]::ReadAllText('build/build.ps1').Replace('$PSScriptRoot', "'<release workspace>\build'")
+# insert after the line '$coreRuns = $true':
+#   foreach ($p in @('clean', ..., '<last green phase>')) { [void]$SkipPhases.Add($p) }
+#   $script:seedVerdict = 'one-pass'
+```
+
+Before a release gate, time the Flux subjects alone and check what the model
+disk reads at:
+
+```powershell
+Measure-Command { $s = [IO.File]::OpenRead('D:\AI\DiffusionForge\webui\models\Stable-diffusion\flux1-schnell-fp8-e4m3fn.safetensors'); $b = [byte[]]::new(16MB); while ($s.Read($b, 0, $b.Length)) {}; $s.Close() }
+```
+
 ### Update 65 -- the full gate's reds past its preflight were the bed, not the compiler
 
 Five, all fixed at step 0b, 2026-09-30. First, `build.ps1`'s clean phase kept

@@ -1,0 +1,68 @@
+Chapter: RuntimeInitSlices
+  cites Kernel chapter Hpet
+  cites Foreword chapter Console
+
+ The x86 slice table has four qwords at 30008: kernel, system, normal,
+ background. Poison it before runtime-init to distinguish initialization
+ from values left by the ordinary startup. A zero-normal control runs the
+ child to completion; the positive arm requires timer return before that.
+
+  slice-control : Integer = 0
+
+  slice-table-ok : Integer -> Boolean
+  slice-table-ok (dummy) =
+    let high = peek-qword 30008 0 == 0 & peek-qword 30008 8 == 6
+    in high & peek-qword 30008 16 == 3 & peek-qword 30008 24 == 1
+
+  slice-worker-loop : Integer, Integer, Integer -> Integer
+  slice-worker-loop (cell) (until) (fuel) =
+    if hpet-ticks >= until | fuel <= 0 then poke-qword cell 8 1
+    else let progress = poke-qword cell 0 (peek-qword cell 0 + 1)
+    in slice-worker-loop cell until (fuel - 1)
+
+  slice-worker : Integer -> Integer
+  slice-worker (cell) =
+    slice-worker-loop cell (hpet-ticks + hpet-ticks-per-second) 100000000
+
+  slice-hold : Integer, Integer -> Integer
+  slice-hold (until) (fuel) =
+    if hpet-ticks >= until | fuel <= 0 then fuel
+    else slice-hold until (fuel - 1)
+
+  opening : [Console, Concurrent, Capability, Device.Port] Nothing =
+    let entry-ok = slice-table-ok 0
+    in let poison = __memset 30008 255 32
+    in act
+      initialized <- runtime-init 0
+      let table-ok = slice-table-ok 0
+      in let sabotage = if slice-control == 1 then poke-qword 30008 16 0 else 0
+      in let clock = hpet-start
+      in let rate = hpet-ticks-per-second
+      in let cell = alloc-bytes 16
+      in let zeroed = __memset cell 0 16
+      in act
+        pid <- process-spawn (\ignored -> slice-worker cell)
+        let held = slice-hold (hpet-ticks + rate / 10) 100000000
+        in let before = peek-qword cell 0
+        in let tick0 = peek-32 28672 0
+        in act
+          yielded <- process-yield
+          let progress = peek-qword cell 0
+          in let done = peek-qword cell 8
+          in let ticks = peek-32 28672 0 - tick0
+          in act
+            killed <- if pid > 0 then process-kill pid else 0
+            port-out-byte 33 255
+            port-out-byte 161 255
+            print-line-uni ("entry-slices=" & show entry-ok)
+            print-line-uni ("runtime-slices=" & show table-ok)
+            print-line-uni ("kernel-cooperative=" & show (before == 0 & held > 0))
+            let returned = pid > 0 & rate > 0 & progress > 0 & done == 0 & ticks > 0
+            in print-line-uni ("timer-return=" & show returned)
+            let completed = pid > 0 & rate > 0 & progress > 0 & done == 1 & ticks > 0
+            in print-line-uni ("control-completed=" & show completed)
+            print-line-uni "slice-proof-end"
+          end
+        end
+      end
+    end

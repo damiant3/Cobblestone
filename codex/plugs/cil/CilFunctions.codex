@@ -1,54 +1,60 @@
 Chapter: CIL Functions
 
-  CilClosure = record { target : Integer, captured : Integer, row : Integer, first-field : Integer, constructor : Integer }
+  CilClosure = record {
+    target : Integer,
+    captured : Integer,
+    row : Integer,
+    first-field : Integer,
+    constructor : Integer
+  }
 
   cil-drop-args : CodexType, Integer -> CodexType
   cil-drop-args (ty) (count) =
-   if count == 0 then ty else when cil-core-type ty
-    is FunTy (arg) (effects) (ret) -> cil-drop-args ret (count - 1)
-    is otherwise -> ErrorTy
+    if count == 0 then ty else when cil-core-type ty
+     is FunTy (arg) (effects) (ret) -> cil-drop-args ret (count - 1)
+     is otherwise -> ErrorTy
 
   cil-tail-stores : CilMethod, Integer -> Integer
   cil-tail-stores (method) (i) =
-   if i < 0 then cil-put method ([56] & write-i32 (0 - list-length (method.code) - 5))
-   else let stored = cil-put method ([254, 11] & write-i16 i)
-   in cil-tail-stores method (i - 1)
+    if i < 0 then cil-put method ([56] & write-i32 (0 - list-length (method.code) - 5))
+    else let stored = cil-put method ([254, 11] & write-i16 i)
+    in cil-tail-stores method (i - 1)
 
   cil-tail : CilProgram, CilMethod, CilEnv, IRExpr, Integer -> Integer
   cil-tail (p) (method) (env) (expr) (depth) =
-   if depth > 256 then cil-refuse p (method.label & ": expression depth exceeds CIL limit")
-   else when expr
-    is IrIf (condition) (yes) (no) (ty) (sp) ->
-     let c = cil-expr p method env condition (depth + 1)
-     in let alternate = cil-branch method 57
-     in let y = cil-tail p method env yes (depth + 1)
-     in let patch = cil-patch method alternate
-     in cil-tail p method env no (depth + 1)
-    is IrLet (name) (ty) (value) (body) (sp) ->
-     let index = cil-local method ty
-     in let v = cil-expr p method env value (depth + 1)
-     in let save = cil-put method ([254, 14] & write-i16 index)
-     in cil-tail p method (CilBinding name (0 - index - 1) env) body (depth + 1)
-    is IrApply (f) (arg) (ty) (sp) ->
-     let chain = collect-apply-chain expr []
-     in let self = when chain.root
-      is IrName (name) (fn-ty) (span) -> name == method.label & cil-env-find env name == 0
-      is otherwise -> False
-     in if self then
-      let target = cil-find-def p (method.label)
-      in let def = list-at (p.defs) target
-      in if list-length (chain.args) == list-length (def.params) then
-       let args = cil-emit-args p method env (chain.args) 0 (depth + 1)
-       in cil-tail-stores method (list-length (chain.args) - 1)
+    if depth > 256 then cil-refuse p (method.label & ": expression depth exceeds CIL limit")
+    else when expr
+     is IrIf (condition) (yes) (no) (ty) (sp) ->
+      let c = cil-expr p method env condition (depth + 1)
+      in let alternate = cil-branch method 57
+      in let y = cil-tail p method env yes (depth + 1)
+      in let patch = cil-patch method alternate
+      in cil-tail p method env no (depth + 1)
+     is IrLet (name) (ty) (value) (body) (sp) ->
+      let index = cil-local method ty
+      in let v = cil-expr p method env value (depth + 1)
+      in let save = cil-put method ([254, 14] & write-i16 index)
+      in cil-tail p method (CilBinding name (0 - index - 1) env) body (depth + 1)
+     is IrApply (f) (arg) (ty) (sp) ->
+      let chain = collect-apply-chain expr []
+      in let self = when chain.root
+       is IrName (name) (fn-ty) (span) -> name == method.label & cil-env-find env name == 0
+       is otherwise -> False
+      in if self then
+        let target = cil-find-def p (method.label)
+        in let def = list-at (p.defs) target
+        in if list-length (chain.args) == list-length (def.params) then
+          let args = cil-emit-args p method env (chain.args) 0 (depth + 1)
+          in cil-tail-stores method (list-length (chain.args) - 1)
+        else let value = cil-expr p method env expr (depth + 1) in cil-put method [42]
       else let value = cil-expr p method env expr (depth + 1) in cil-put method [42]
-     else let value = cil-expr p method env expr (depth + 1) in cil-put method [42]
-    is otherwise -> let value = cil-expr p method env expr (depth + 1) in cil-put method [42]
+     is otherwise -> let value = cil-expr p method env expr (depth + 1) in cil-put method [42]
 
   cil-func-signature : CilProgram, CodexType, CodexType -> List Integer
   cil-func-signature (p) (arg) (ret) =
-   let action = cil-void ret
-   in let generic = cil-core-ref p "System" (if action then "Action`1" else "Func`2")
-   in [21, 18] & cil-compressed (generic * 4 + 1) & [if action then 1 else 2] & cil-value-type p arg & (if action then [] else cil-type p ret)
+    let action = cil-void ret
+    in let generic = cil-core-ref p "System" (if action then "Action`1" else "Func`2")
+    in [21, 18] & cil-compressed (generic * 4 + 1) & [if action then 1 else 2] & cil-value-type p arg & (if action then [] else cil-type p ret)
 
   cil-func-member : CilProgram, CodexType, Boolean -> Integer
   cil-func-member (p) (ty) (constructor) = when cil-core-type ty
@@ -56,115 +62,149 @@ Chapter: CIL Functions
     let key = "func:" & cil-type-key ty
     in let found = cil-cache-get (p.members) key
     in let spec = if found >= 0 then found else
-     let row = cil-row (p.md) 27 [CilBlob (cil-blob (p.md) (cil-func-signature p arg ret))]
-     in cil-cache-put (p.members) key row
+      let row = cil-row (p.md) 27 [CilBlob (cil-blob (p.md) (cil-func-signature p arg ret))]
+      in cil-cache-put (p.members) key row
     in if constructor then cil-member p (key & ":ctor") (spec * 8 + 4) ".ctor" [32, 2, 1, 28, 24]
-    else cil-member p (key & ":invoke") (spec * 8 + 4) "Invoke" ([32, 1] & (if cil-void ret then [1] else [19, 1]) & [19, 0])
+    else
+      cil-member p (key & ":invoke") (spec * 8 + 4) "Invoke" ([32, 1] & (if cil-void ret then [1] else [19, 1]) & [19, 0])
    is otherwise -> let refused = cil-refuse p "invocation requires a function type" in 0
 
   cil-closure-fields : CilProgram, IRDef, Integer, Integer -> Integer
   cil-closure-fields (p) (def) (count) (i) =
-   if i >= count then 0
-   else let param = list-at (def.params) i
-   in let field = cil-row (p.md) 4 [CilU2 1, CilString (cil-string (p.md) (param.name)), CilBlob (cil-blob (p.md) ([6] & cil-value-type p (param.type-val)))]
-   in cil-closure-fields p def count (i + 1)
+    if i >= count then 0
+    else let param = list-at (def.params) i
+    in let field = cil-row (p.md) 4 [
+      CilU2 1,
+      CilString (cil-string (p.md) (param.name)),
+      CilBlob (cil-blob (p.md) ([6] & cil-value-type p (param.type-val)))
+    ]
+    in cil-closure-fields p def count (i + 1)
 
   cil-get-closure : CilProgram, Integer, Integer -> CilClosure
   cil-get-closure (p) (target) (count) =
-   let key = "closure:" & show target & ":" & show count
-   in let found = cil-cache-get (p.members) key
-   in if found >= 0 then list-at (p.closures) found
-   else let index = list-length (p.closures)
-   in let first-field = list-at ((p.md).counts) 4 + 1
-   in let constructor = list-length (p.defs) + p.record-methods + index * 2 + 1
-   in let row = cil-row (p.md) 2 [CilU4 (1048576 + 256), CilString (cil-string (p.md) ("Closure" & show index)), CilString (cil-string (p.md) "PrismGenerated"), CilCoded 2 [2, 1, 27] (p.object-ref * 4 + 1), CilTable 4 first-field, CilTable 6 constructor]
-   in let closure = CilClosure { target = target, captured = count, row = row, first-field = first-field, constructor = constructor }
-   in let fields = cil-closure-fields p (list-at (p.defs) target) count 0
-   in let put = __record-set p "closures" (list-push (p.closures) closure)
-   in let cache = cil-cache-put (p.members) key index
-   in closure
+    let key = "closure:" & show target & ":" & show count
+    in let found = cil-cache-get (p.members) key
+    in if found >= 0 then list-at (p.closures) found
+    else let index = list-length (p.closures)
+    in let first-field = list-at ((p.md).counts) 4 + 1
+    in let constructor = list-length (p.defs) + p.record-methods + index * 2 + 1
+    in let row = cil-row (p.md) 2 [
+      CilU4 (1048576 + 256),
+      CilString (cil-string (p.md) ("Closure" & show index)),
+      CilString (cil-string (p.md) "PrismGenerated"),
+      CilCoded 2 [2, 1, 27] (p.object-ref * 4 + 1),
+      CilTable 4 first-field,
+      CilTable 6 constructor
+    ]
+    in let closure = CilClosure {
+      target = target,
+      captured = count,
+      row = row,
+      first-field = first-field,
+      constructor = constructor
+    }
+    in let fields = cil-closure-fields p (list-at (p.defs) target) count 0
+    in let put = __record-set p "closures" (list-push (p.closures) closure)
+    in let cache = cil-cache-put (p.members) key index
+    in closure
 
   cil-partial : CilProgram, CilMethod, Integer, Integer -> Integer
   cil-partial (p) (method) (target) (count) =
-   let def = list-at (p.defs) target
-   in let ty = cil-drop-args (def.type-val) count
-   in if count == 0 & list-length (def.params) == 1 then
-    cil-put method ([20, 254, 6] & write-i32 (100663297 + target) & [115] & write-i32 (cil-func-member p ty True))
-   else let closure = cil-get-closure p target count
-   in cil-put method ([115] & write-i32 (100663296 + closure.constructor) & [254, 6] & write-i32 (100663297 + closure.constructor) & [115] & write-i32 (cil-func-member p ty True))
+    let def = list-at (p.defs) target
+    in let ty = cil-drop-args (def.type-val) count
+    in if count == 0 & list-length (def.params) == 1 then
+      cil-put method ([20, 254, 6] & write-i32 (100663297 + target) & [115] & write-i32 (cil-func-member p ty True))
+    else let closure = cil-get-closure p target count
+    in cil-put method ([115] & write-i32 (100663296 + closure.constructor) & [254, 6] & write-i32 (100663297 + closure.constructor) & [115] & write-i32 (cil-func-member p ty True))
 
   cil-invoke-args : CilProgram, CilMethod, CilEnv, CodexType, List IRExpr, Integer, Integer -> Integer
   cil-invoke-args (p) (method) (env) (ty) (args) (i) (depth) =
-   if i >= list-length args then 0
-   else let arg = cil-expr p method env (list-at args i) depth
-   in let called = cil-put method ([111] & write-i32 (cil-func-member p ty False))
-   in cil-invoke-args p method env (cil-drop-args ty 1) args (i + 1) depth
+    if i >= list-length args then 0
+    else let arg = cil-expr p method env (list-at args i) depth
+    in let called = cil-put method ([111] & write-i32 (cil-func-member p ty False))
+    in cil-invoke-args p method env (cil-drop-args ty 1) args (i + 1) depth
 
   cil-emit-prefix : CilProgram, CilMethod, CilEnv, List IRExpr, Integer, Integer, Integer -> Integer
   cil-emit-prefix (p) (method) (env) (args) (i) (stop) (depth) =
-   if i >= stop then 0
-   else let arg = cil-expr p method env (list-at args i) depth
-   in cil-emit-prefix p method env args (i + 1) stop depth
+    if i >= stop then 0
+    else let arg = cil-expr p method env (list-at args i) depth
+    in cil-emit-prefix p method env args (i + 1) stop depth
 
   cil-call : CilProgram, CilMethod, CilEnv, IRExpr, List IRExpr, Integer -> Integer
   cil-call (p) (method) (env) (root) (args) (depth) =
-   let target = when root
-    is IrName (name) (ty) (sp) -> if cil-env-find env name == 0 then cil-find-def p name else -1
-    is otherwise -> -1
-   in if target >= 0 then
-    let def = list-at (p.defs) target
-    in let arity = list-length (def.params)
-    in let count = list-length args
-    in let values = cil-emit-prefix p method env args 0 (min arity count) depth
-    in if count < arity then cil-partial p method target count
-    else let call = cil-put method ([40] & write-i32 (100663297 + target))
-    in cil-invoke-args p method env (cil-drop-args (def.type-val) arity) args arity depth
-   else if cil-unity-call p method env root args depth then 0
-   else let builtin = when root
-    is IrName (name) (ty) (sp) -> if cil-env-find env name == 0 then cil-list-builtin p method env name args depth else False
-    is otherwise -> False
-   in if builtin then 0
-   else let fn = cil-expr p method env root depth
-   in cil-invoke-args p method env (ir-expr-type root) args 0 depth
+    let target = when root
+     is IrName (name) (ty) (sp) -> if cil-env-find env name == 0 then cil-find-def p name else -1
+     is otherwise -> -1
+    in if target >= 0 then
+      let def = list-at (p.defs) target
+      in let arity = list-length (def.params)
+      in let count = list-length args
+      in let values = cil-emit-prefix p method env args 0 (min arity count) depth
+      in if count < arity then cil-partial p method target count
+      else let call = cil-put method ([40] & write-i32 (100663297 + target))
+      in cil-invoke-args p method env (cil-drop-args (def.type-val) arity) args arity depth
+    else if cil-unity-call p method env root args depth then 0
+    else let builtin = when root
+     is IrName (name) (ty) (sp) -> if cil-env-find env name == 0 then
+       cil-list-builtin p method env name args depth
+     else False
+     is otherwise -> False
+    in if builtin then 0
+    else let fn = cil-expr p method env root depth
+    in cil-invoke-args p method env (ir-expr-type root) args 0 depth
 
   cil-closure-param-types : CilProgram, IRDef, Integer, Integer, List Integer -> List Integer
   cil-closure-param-types (p) (def) (count) (i) (out) =
-   if i >= count then out
-   else cil-closure-param-types p def count (i + 1) (cil-append out (cil-type p ((list-at (def.params) i).type-val)) 0)
+    if i >= count then out
+    else
+      cil-closure-param-types p def count (i + 1) (cil-append out (cil-type p ((list-at (def.params) i).type-val)) 0)
 
   cil-closure-stores : CilMethod, CilClosure, Integer -> Integer
   cil-closure-stores (method) (closure) (i) =
-   if i >= closure.captured then 0
-   else let put = cil-put method ([2, 254, 9] & write-i16 (i + 1) & [125] & write-i32 (67108864 + closure.first-field + i))
-   in cil-closure-stores method closure (i + 1)
+    if i >= closure.captured then 0
+    else let put = cil-put method ([2, 254, 9] & write-i16 (i + 1) & [125] & write-i32 (67108864 + closure.first-field + i))
+    in cil-closure-stores method closure (i + 1)
 
   cil-closure-loads : CilMethod, CilClosure, Integer -> Integer
   cil-closure-loads (method) (closure) (i) =
-   if i >= closure.captured then 0
-   else let put = cil-put method ([2, 123] & write-i32 (67108864 + closure.first-field + i))
-   in cil-closure-loads method closure (i + 1)
+    if i >= closure.captured then 0
+    else let put = cil-put method ([2, 123] & write-i32 (67108864 + closure.first-field + i))
+    in cil-closure-loads method closure (i + 1)
 
   cil-generated-method : CilProgram, CilMethod, Integer, Text, Integer, List Integer -> Integer
   cil-generated-method (p) (method) (peak) (name) (flags) (signature) =
-   let rva = cil-method-body p method peak
-   in cil-row (p.md) 6 [CilU4 rva, CilU2 0, CilU2 flags, CilString (cil-string (p.md) name), CilBlob (cil-blob (p.md) signature), CilTable 8 (list-at ((p.md).counts) 8 + 1)]
+    let rva = cil-method-body p method peak
+    in cil-row (p.md) 6 [
+      CilU4 rva,
+      CilU2 0,
+      CilU2 flags,
+      CilString (cil-string (p.md) name),
+      CilBlob (cil-blob (p.md) signature),
+      CilTable 8 (list-at ((p.md).counts) 8 + 1)
+    ]
 
   cil-emit-closures : CilProgram, Integer -> Integer
   cil-emit-closures (p) (i) =
-   if i >= list-length (p.closures) | p.error /= "" then 0
-   else let closure = list-at (p.closures) i
-   in let def = list-at (p.defs) (closure.target)
-   in let objctor = cil-member p "Object:.ctor" (p.object-ref * 8 + 1) ".ctor" [32, 0, 1]
-   in let ctor = CilMethod { code = [2, 40] & write-i32 objctor, locals = [], label = "closure constructor" }
-   in let stores = cil-closure-stores ctor closure 0
-   in let ret = cil-put ctor [42]
-   in let ctor-row = cil-generated-method p ctor 2 ".ctor" (6 + 128 + 2048 + 4096) ([32] & cil-compressed (closure.captured) & [1] & cil-closure-param-types p def (closure.captured) 0 [])
-   in let invoke = CilMethod { code = [], locals = [], label = "closure invoke" }
-   in let loads = cil-closure-loads invoke closure 0
-   in let arg = cil-put invoke [3]
-   in let count = closure.captured + 1
-   in let call = if count == list-length (def.params) then cil-put invoke ([40] & write-i32 (100663297 + closure.target)) else cil-partial p invoke (closure.target) count
-   in let finished = cil-put invoke [42]
-   in let signature = [32, 1] & cil-type p (cil-drop-args (def.type-val) count) & cil-type p ((list-at (def.params) (closure.captured)).type-val)
-   in let invoke-row = cil-generated-method p invoke (max count 3) "Invoke" 134 signature
-   in cil-emit-closures p (i + 1)
+    if i >= list-length (p.closures) | p.error /= "" then 0
+    else let closure = list-at (p.closures) i
+    in let def = list-at (p.defs) (closure.target)
+    in let objctor = cil-member p "Object:.ctor" (p.object-ref * 8 + 1) ".ctor" [32, 0, 1]
+    in let ctor = CilMethod {
+      code = [2, 40] & write-i32 objctor,
+      locals = [],
+      label = "closure constructor"
+    }
+    in let stores = cil-closure-stores ctor closure 0
+    in let ret = cil-put ctor [42]
+    in let ctor-row = cil-generated-method p ctor 2 ".ctor" (6 + 128 + 2048 + 4096) ([32] & cil-compressed (closure.captured) & [1] & cil-closure-param-types p def (closure.captured) 0 [])
+    in let invoke = CilMethod { code = [], locals = [], label = "closure invoke" }
+    in let loads = cil-closure-loads invoke closure 0
+    in let arg = cil-put invoke [3]
+    in let count = closure.captured + 1
+    in let call = if count == list-length (def.params) then
+      cil-put invoke ([40] & write-i32 (100663297 + closure.target))
+    else cil-partial p invoke (closure.target) count
+    in let finished = cil-put invoke [42]
+    in let signature = [32, 1] & cil-type p (cil-drop-args (def.type-val) count) & cil-type p ((list-at (def.params) (closure.captured)).type-val)
+    in let invoke-row = cil-generated-method p invoke (max count 3) "Invoke" 134 signature
+    in cil-emit-closures p (i + 1)

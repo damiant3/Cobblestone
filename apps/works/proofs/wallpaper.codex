@@ -1,0 +1,104 @@
+Chapter: WallpaperProof
+  cites Works chapter GopDesk
+  cites Works chapter GopWallpaper
+  cites Works chapter GopSettingsFacts
+  cites Foreword chapter Console
+
+  wpf-phase : Integer = 1
+
+  wpf-snapshot : Integer, Integer, List Integer -> List Integer
+  wpf-snapshot (pixels) (i) (acc) = if i >= 64 * 48 then acc else wpf-snapshot pixels (i + 1) (list-push acc (peek-32 pixels (i * 4)))
+
+  wpf-equal : Integer, List Integer, Integer -> Boolean
+  wpf-equal (pixels) (before) (i) = if i >= 64 * 48 then True else if peek-32 pixels (i * 4) /= list-at before i then False else wpf-equal pixels before (i + 1)
+
+  wpf-photo : Integer -> Boolean
+  wpf-photo (s) =
+    let p = peek-qword s 0
+    in gwp-name s == "PHOTO.BMP" & peek-qword s 56 == 1 & peek-qword s 24 == 0 & peek-qword s 32 == 0 & peek-qword s 40 == 64 & peek-qword s 48 == 48 & peek-32 p 0 == #FF0000 & peek-32 p (63 * 4) == #00FF00 & peek-32 p (47 * 64 * 4) == #0000FF & peek-32 p ((48 * 64 - 1) * 4) == #FFFFFF
+
+  wpf-action : Integer, Integer -> [Device.Port] Integer
+  wpf-action (ds) (code) =
+    let mark = __heap-save
+    in act
+      result <- dk-settings-action ds code
+      let released = __heap-restore mark
+      in let overwrite = alloc-zeroed 1048576 64
+      in let restored = __heap-restore mark
+      in 0
+    end
+
+  wpf-choose : Integer, Text -> [Device.Port] Integer
+  wpf-choose (ds) (name) = act
+    opened <- dk-settings-action ds 140
+    let draft = gwp-text-put (dk-wallpaper-state ds) 168 name 0
+    in wpf-action ds 141
+  end
+
+  wpf-keys : Integer, List Integer, Integer -> Integer
+  wpf-keys (ds) (keys) (i) = if i >= list-length keys then 0 else let key = dk-wallpaper-key ds (list-at keys i) in wpf-keys ds keys (i + 1)
+
+  opening : [Device.Port, Console] Nothing =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let blk = alloc-zeroed dk-settings-bytes 64
+    in let attached = poke-32 ds dk-sty-cell blk
+    in let state = dk-wallpaper-state ds
+    in let cache = gwp-state-init state 64 48
+    in let mark = __heap-save
+    in act
+      boot <- dk-settings-boot ds
+      let reclaimed = __heap-save == mark
+      in let overwrite = alloc-zeroed 1048576 64
+      in if wpf-phase == 1 then act
+        opened <- dk-settings-action ds 140
+        let typed = wpf-keys ds [25,35,24,20,24,52,48,50,25] 0
+        in let back = dk-wallpaper-key ds 14
+        in let retyped = dk-wallpaper-key ds 25
+        in let enter = dk-wallpaper-key ds 28
+        in act
+          if gwp-draft state == "PHOTO.BMP" then print-line-uni "" else print-line-uni ("draft=" & gwp-draft state & " length=" & show (peek-qword state 168) & " enter=" & show enter)
+          print-line-uni ("filename keyboard input: " & show (gwp-draft state == "PHOTO.BMP" & enter == 141))
+          chosen <- wpf-action ds enter
+          if wpf-photo state then print-line-uni "" else print-line-uni ("refusal=" & dk-settings-message-read blk 0 (peek-32 blk 68))
+          print-line-uni ("photo applied and cached: " & show (wpf-photo state))
+          snapshot <- gsf-load (gst-store dk-settings-keys)
+          let persisted = when snapshot is SettingsLoaded (s) -> gst-get-text s 6 "" == "PHOTO.BMP" is otherwise -> False
+          in print-line-uni ("wallpaper filename persisted: " & show persisted)
+        end
+      end
+      else if wpf-phase == 2 then act
+        print-line-uni ("wallpaper survived reboot and scratch overwrite: " & show (reclaimed & wpf-photo state))
+        before <- gfs-mount
+        let previous = wpf-snapshot (peek-qword state 0) 0 []
+        in act
+          bad <- wpf-choose ds "BAD.BMP"
+          after <- gfs-mount
+          let why = dk-settings-message-read blk 0 (peek-32 blk 68)
+          in print-line-uni ("bad file preserves choice, cache and fact count: " & show (wpf-photo state & wpf-equal (peek-qword state 0) previous 0 & before.gfs-count == after.gfs-count & text-starts-with why "wallpaper requires"))
+          other <- wpf-choose ds "OTHER.BMP"
+          let first = (peek-qword state 32 * 64 + peek-qword state 24) * 4
+          in print-line-uni ("top-down BGRX32 file applied: " & show (gwp-name state == "OTHER.BMP" & peek-qword state 56 == 1 & peek-32 (peek-qword state 0) first == #112233))
+          requested <- dk-settings-action ds 120
+          reset <- dk-settings-action ds 121
+          print-line-uni ("confirmed reset removes wallpaper: " & show (gwp-name state == "" & peek-qword state 56 == 0))
+        end
+      end
+      else if wpf-phase == 3 then act
+        snapshot <- gsf-load (gst-store dk-settings-keys)
+        let persisted = when snapshot is SettingsLoaded (s) -> gst-get-text s 6 "wrong" == "" is otherwise -> False
+        in print-line-uni ("wallpaper reset survived reboot: " & show (persisted & gwp-name state == "" & peek-qword state 56 == 0 & reclaimed))
+        photo <- wpf-choose ds "PHOTO.BMP"
+        print-line-uni ("photo restored for idle proof: " & show (wpf-photo state))
+      end
+      else act
+        before <- gfs-mount
+        let full = __record-set before "gfs-head" (before.gfs-limit)
+        in let previous = wpf-snapshot (peek-qword state 0) 0 []
+        in act
+          checkpoint <- gfs-checkpoint full
+          rejected <- wpf-choose ds "OTHER.BMP"
+          after <- gfs-mount
+          print-line-uni ("failed publication preserves wallpaper cache: " & show (wpf-photo state & wpf-equal (peek-qword state 0) previous 0 & after.gfs-count == checkpoint.gfs-count & text-starts-with (dk-settings-message-read blk 0 (peek-32 blk 68)) "Save refused:"))
+        end
+      end
+    end

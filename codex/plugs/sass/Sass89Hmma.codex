@@ -1,0 +1,60 @@
+Chapter: Sass89Hmma
+  cites Sass chapter SassCtrl
+
+ SM 8.9 F16 HMMA fields follow Mesa 26.2.4, nak/sm70_encode.rs OpHmma.
+ The two words are in memory order, each little-endian. Turingas GenCode
+ returns the first word in the high half of its Python integer; its
+ cubin.GenerateText serializes that half first. No cubin is built here.
+ Controls occupy bits 105..125. This slice admits three source reuse bits,
+ barriers 0..5 or 7 (none), and normal or inverted P0..P6, or plain PT.
+ Shapes are m16n8k8 and m16n8k16, with F16 inputs and F16/F32 accumulation.
+ Register fields are raw indices; fragment layout and scheduling are not
+ proved by encoding agreement. NAK's SM90 uniform-predicate field is absent.
+
+  Hmma89 = record {
+   k : Integer,
+   accum-bits : Integer,
+   dst : Integer,
+   a : Integer,
+   b : Integer,
+   c : Integer,
+   guard : Integer,
+   guard-neg : Integer,
+   control : CtrlCode
+  }
+
+  Sass89Encoding =
+   | Sass89Words (Integer) (Integer)
+   | Sass89Refused (Text)
+
+  sass89-bar-valid : Integer -> Boolean
+  sass89-bar-valid (v) = (v >= 0 & v <= 5) | v == 7
+
+  sass89-hmma-error : Hmma89 -> Text
+  sass89-hmma-error (i) =
+    let c = i.control
+    in if sass-ctrl-valid c == False | c.reuse > 7 then "control"
+    else if sass89-bar-valid c.write-bar == False | sass89-bar-valid c.read-bar == False then "barrier"
+    else if sass-ctrl-in-range i.guard 7 == False | sass-ctrl-in-range i.guard-neg 1 == False then "guard"
+    else if i.guard == 7 & i.guard-neg /= 0 then "guard"
+    else if sass-ctrl-in-range i.dst 255 == False | sass-ctrl-in-range i.a 255 == False then "register"
+    else if sass-ctrl-in-range i.b 255 == False | sass-ctrl-in-range i.c 255 == False then "register"
+    else if i.k /= 8 & i.k /= 16 then "shape"
+    else if i.accum-bits /= 16 & i.accum-bits /= 32 then "accumulator"
+    else ""
+
+  sass89-control-high : CtrlCode -> Integer
+  sass89-control-high (c) =
+    bit-or (bit-shl (sass-ctrl-pack c) 41) (bit-shl c.reuse 58)
+
+  sass89-hmma : Hmma89 -> Sass89Encoding
+  sass89-hmma (i) =
+    let error = sass89-hmma-error i
+    in if error /= "" then Sass89Refused error
+    else let pred = bit-or (bit-shl i.guard 12) (bit-shl i.guard-neg 15)
+    in let ab = bit-or (bit-shl i.a 24) (bit-shl i.b 32)
+    in let low = bit-or #23C (bit-or pred (bit-or (bit-shl i.dst 16) ab))
+    in let shape = if i.k == 16 then bit-shl 1 11 else 0
+    in let accum = if i.accum-bits == 32 then bit-shl 1 12 else 0
+    in let high = bit-or (sass89-control-high (i.control)) (bit-or i.c (bit-or shape accum))
+    in Sass89Words low high

@@ -1,0 +1,62 @@
+Chapter: SceneAnimationTime
+  cites Works chapter GopScene
+  cites Works chapter GopFish
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopXhci
+  cites Works chapter GopFont
+  cites Engine chapter Scene3D
+  cites Kernel chapter BitmapFont
+  cites Kernel chapter Hpet
+  cites Foreword chapter Console
+
+  sat-build : Integer, Integer -> Scene3DState
+  sat-build (stats) (phase) =
+    let saved = poke-qword stats 0 phase
+    in scene3d-new (gsc-camera 0 1.333)
+
+  sat-advance : Integer, Scene3DState, Integer -> Integer
+  sat-advance (stats) (scene) (phase) = poke-qword stats 8 phase
+
+  sat-unit : Integer -> Boolean
+  sat-unit (angle) =
+    let q = gf-yaw angle
+    in let norm = quat-norm-squared q
+    in norm > 0.9999 & norm < 1.0001
+
+  sat-facing : Boolean
+  sat-facing =
+    let axis = vec3-new 1.0 0.0 0.0
+    in let quarter = quat-rotate-vec (gf-yaw 1571) axis
+    in let half = quat-rotate-vec (gf-yaw 3142) axis
+    in quarter.vx > -0.02 & quarter.vx < 0.02 & quarter.vz < -0.99 & half.vx < -0.99
+
+  opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing = act
+    let clock = hpet-start
+    in let stats = alloc-zeroed 64 64
+    in let fb = alloc-zeroed (64 * 64 * 4) 64
+    in let cs = alloc-zeroed 2048 64
+    in let q = di-new 0
+    in let pos = alloc-zeroed 64 64
+    in let mouse = UsbMouse { um-ok = False, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = 0, um-state = pos, um-pos = pos, um-peers = [] }
+    in act
+      sp <- gsc-new fb 64 cs 0 37 32 32
+      let look = __record-set sp "sp-look" 1
+      in let shadows = __record-set sp "sp-sh" 0
+      in act
+        built <- gsc-step fb 64 64 64 (gapp-fallback cbf-init) kbd-no-kbd mouse cs (sat-build stats) sp 0 0 q
+        let owned = gsc-own sp (scene3d-new (gsc-camera 0 1.333)) (sat-advance stats)
+        in let cancel = gsc-cancel sp
+        in act
+          advanced <- gsc-step fb 64 64 64 (gapp-fallback cbf-init) kbd-no-kbd mouse cs (sat-build stats) sp 0 0 q
+          print-line ("build-phase " & show (peek-qword stats 0))
+          print-line ("owned-phase " & show (peek-qword stats 8))
+          print-line ("animation-with-fixed-camera " & show (sp.sp-look == 1 & sp.sp-yaw == 0))
+          print-line ("full-turn-yaw " & show (sat-unit 0 & sat-unit 1571 & sat-unit 3142 & sat-unit 4712 & sat-unit 6283 & sat-unit 7854 & sat-unit 100000 & sat-unit (-1571) & sat-facing))
+        end
+      end
+    end
+  end
+
+Page 1

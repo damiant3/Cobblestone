@@ -1,0 +1,66 @@
+Chapter: NvGrInit
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ GM204's gm200_gr_load uses gk20a_gr_load_sw (Linux v6.12 nouveau).
+ sw_nonctx and sw_bundle_init contain little-endian address/value pairs;
+ sw_ctx contains address/index/value triples, with index unused by the
+ converter. sw_method_init packs class in the low 16 address bits and
+ method/4 in the high 16. Consecutive class runs become separate packs.
+ None refuses incomplete records, non-byte inputs, method class zero,
+ or a sixteenth method pack. No firmware or register writes occur here.
+
+Section: Entries
+
+  NvGrEntry = record {
+   group : Integer,
+   class : Integer,
+   address : Integer,
+   count : Integer,
+   pitch : Integer,
+   data : Integer
+  }
+
+  gr-bytes-valid : List Integer, Integer -> Boolean
+  gr-bytes-valid (xs) (i) =
+    if i >= list-length xs then True
+    else if list-at xs i < 0 then False
+    else if list-at xs i > 255 then False
+    else gr-bytes-valid xs (i + 1)
+
+  gr-u32 : List Integer, Integer -> Integer
+  gr-u32 (xs) (off) = bit-or (list-at xs off) (bit-or (bit-shl (list-at xs (off + 1)) 8) (bit-or (bit-shl (list-at xs (off + 2)) 16) (bit-shl (list-at xs (off + 3)) 24)))
+
+  gr-collect : ConsList NvGrEntry, List NvGrEntry -> List NvGrEntry
+  gr-collect (xs) (acc) =
+    when xs
+     is Nil -> acc
+     is Cons (head) (tail) -> gr-collect tail (list-push acc head)
+
+  gr-decode : List Integer, Integer, Integer, Integer, Integer, ConsList NvGrEntry -> Maybe (List NvGrEntry)
+  gr-decode (xs) (mode) (off) (prev) (groups) (acc) =
+    if off >= list-length xs then Just (gr-collect (cl-reverse acc) [])
+    else let raw = gr-u32 xs off
+    in let cls = if mode == 2 then bit-and raw #FFFF else 0
+    in let next-groups = if mode == 2 then (if cls /= prev then groups + 1 else groups) else 1
+    in if mode == 2 & cls == 0 then None
+    else if next-groups >= 16 then None
+    else let address = if mode == 2 then bit-shru (bit-and raw #FFFF0000) 14 else raw
+    in let value = gr-u32 xs (off + (if mode == 1 then 8 else 4))
+    in let entry = NvGrEntry { group = next-groups - 1, class = cls, address = address, count = 1, pitch = 1, data = value }
+    in gr-decode xs mode (off + (if mode == 1 then 12 else 8)) cls next-groups (Cons entry acc)
+
+  gr-decode-checked : List Integer, Integer, Integer -> Maybe (List NvGrEntry)
+  gr-decode-checked (xs) (mode) (stride) =
+    if int-mod (list-length xs) stride /= 0 then None
+    else if gr-bytes-valid xs 0 == False then None
+    else gr-decode xs mode 0 0 0 Nil
+
+  nv-gr-av : List Integer -> Maybe (List NvGrEntry)
+  nv-gr-av (xs) = gr-decode-checked xs 0 8
+
+  nv-gr-aiv : List Integer -> Maybe (List NvGrEntry)
+  nv-gr-aiv (xs) = gr-decode-checked xs 1 12
+
+  nv-gr-methods : List Integer -> Maybe (List NvGrEntry)
+  nv-gr-methods (xs) = gr-decode-checked xs 2 8

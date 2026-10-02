@@ -1,0 +1,115 @@
+Chapter: WallpaperBmpArm
+  cites Works chapter GopWallpaper
+  cites UI chapter Layout
+  cites Foreword chapter Console
+
+  wa-yes : Boolean -> Text
+  wa-yes (v) = if v then "yes" else "NO"
+
+  wa-fixture : Integer
+  wa-fixture =
+    let b = alloc-zeroed 80 64
+    in let a = poke-byte b 0 66
+    in let c = poke-byte b 1 77
+    in let d = poke-32 b 2 70
+    in let e = poke-32 b 10 54
+    in let f = poke-32 b 14 40
+    in let g = poke-32 b 18 2
+    in let h = poke-32 b 22 2
+    in let i = poke-16 b 26 1
+    in let j = poke-16 b 28 24
+    in let blue = poke-byte b 54 255
+    in let white1 = poke-byte b 57 255
+    in let white2 = poke-byte b 58 255
+    in let white3 = poke-byte b 59 255
+    in let red = poke-byte b 64 255
+    in let green = poke-byte b 66 255
+    in b
+
+  wa-refused : WallpaperRead -> Boolean
+  wa-refused (r) = when r is WallpaperReadRefused (why) -> text-length why > 0 is otherwise -> False
+
+  wa-fit-refused : WallpaperFit -> Boolean
+  wa-fit-refused (r) = when r is WallpaperFitRefused (why) -> text-length why > 0 is otherwise -> False
+
+  wa-top : WallpaperRead -> Boolean
+  wa-top (r) = when r is WallpaperBmp (bm) -> gwp-pixel bm 0 0 == 255 & gwp-pixel bm 0 1 == 16711680 is otherwise -> False
+
+  wa-redraw : WallpaperFrame, Integer, Integer -> Integer
+  wa-redraw (f) (dest) (n) =
+    if n <= 0 then 0
+    else let mark = __heap-save
+    in let draw = gwp-blit f dest 8 5 (layout-rect 2 1 2 2)
+    in let restore = __heap-restore mark
+    in wa-redraw f dest (n - 1)
+
+  opening : [Console] Nothing =
+    let b = wa-fixture
+    in when gwp-bmp b 70
+      is WallpaperReadRefused (why) -> print-line-uni why
+      is WallpaperBmp (bm) ->
+        let pixels = gwp-pixel bm 0 0 == 16711680 & gwp-pixel bm 1 0 == 65280 & gwp-pixel bm 0 1 == 255 & gwp-pixel bm 1 1 == 16777215
+        in let top = poke-32 b 22 4294967294
+        in let flipped = wa-top (gwp-bmp b 70)
+        in let bottom = poke-32 b 22 2
+        in let truncated = wa-refused (gwp-bmp b 69) & wa-refused (gwp-bmp b 12)
+        in let huge = poke-32 b 18 2147483647
+        in let oversized = wa-refused (gwp-bmp b 70)
+        in let width = poke-32 b 18 2
+        in let offset = poke-32 b 10 20
+        in let bad-offset = wa-refused (gwp-bmp b 70)
+        in let restore-offset = poke-32 b 10 54
+        in let compressed = poke-32 b 30 1
+        in let format = wa-refused (gwp-bmp b 70)
+        in let uncompressed = poke-32 b 30 0
+        in let plane = poke-16 b 26 2
+        in let bad-plane = wa-refused (gwp-bmp b 70)
+        in let one-plane = poke-16 b 26 1
+        in let signature = poke-byte b 0 0
+        in let bad-signature = wa-refused (gwp-bmp b 70)
+        in let signature-back = poke-byte b 0 66
+        in let dib = poke-32 b 14 39
+        in let bad-dib = wa-refused (gwp-bmp b 70)
+        in let dib-back = poke-32 b 14 40
+        in let bits = poke-16 b 28 16
+        in let bad-bits = wa-refused (gwp-bmp b 70)
+        in let bits-back = poke-16 b 28 24
+        in let cache = alloc-zeroed 96 64
+        in let left = poke-32 cache 0 42
+        in let right = poke-32 cache 20 43
+        in let refused = wa-fit-refused (gwp-fit bm cache 95 6 4) & wa-fit-refused (gwp-fit bm cache 96 0 4) & wa-fit-refused (gwp-fit bm cache 96 8192 8192) & peek-32 cache 0 == 42
+        in when gwp-fit bm cache 96 6 4
+          is WallpaperFitRefused (why) -> print-line-uni why
+          is WallpaperReady (frame) ->
+            let fit = frame.wf-x == 1 & frame.wf-y == 0 & frame.wf-w == 4 & frame.wf-h == 4 & peek-32 cache 4 == 16711680 & peek-32 cache 16 == 65280 & peek-32 cache 76 == 255 & peek-32 cache 88 == 16777215 & peek-32 cache 0 == 42 & peek-32 cache 20 == 43
+            in let dest = alloc-zeroed 168 64
+            in let canary = poke-qword dest 160 12345
+            in let source-changed = poke-byte b 54 0
+            in let mark = __heap-save
+            in let repeated = wa-redraw frame dest 100
+            in let stable = __heap-save == mark
+            in let clip = gwp-pixel bm 0 1 == 0 & peek-32 dest 40 == 16711680 & peek-32 dest 44 == 65280 & peek-32 dest 72 == 255 & peek-32 dest 76 == 16777215 & peek-32 dest 36 == 0 & peek-qword dest 160 == 12345
+            in let wide = poke-16 b 28 32
+            in let white = poke-32 b 58 16777215
+            in let red32 = poke-32 b 62 16711680
+            in let green32 = poke-32 b 66 65280
+            in let alpha = poke-byte b 65 128
+            in let x32 = when gwp-bmp b 70 is WallpaperBmp (v) -> gwp-pixel v 0 0 == 16711680 & gwp-pixel v 1 0 == 65280 is otherwise -> False
+            in let large = alloc-bytes (1920 * 1080 * 4)
+            in let fit-mark = __heap-save
+            in let large-fit = gwp-fit bm large (1920 * 1080 * 4) 1920 1080
+            in let fit-cost = __heap-save - fit-mark
+            in let bounded-fit = when large-fit is WallpaperReady (f) -> f.wf-w == 1080 & f.wf-h == 1080 & fit-cost < 4096 is otherwise -> False
+            in act
+              print-line-uni ("BGR24 rows, channels and padding: " & wa-yes pixels)
+              print-line-uni ("top-down BMP orientation: " & wa-yes flipped)
+              print-line-uni ("truncated and oversized inputs refused: " & wa-yes (truncated & oversized))
+              print-line-uni ("bad BMP headers and formats refused: " & wa-yes (bad-offset & format & bad-plane & bad-signature & bad-dib & bad-bits))
+              print-line-uni ("display and capacity refusal preserve buffer: " & wa-yes refused)
+              print-line-uni ("cached fit preserves aspect and margins: " & wa-yes fit)
+              print-line-uni ("clipped blit preserves adjacent pixels: " & wa-yes clip)
+              print-line-uni ("repeated paint reclaims all temporary heap: " & wa-yes stable)
+              print-line-uni ("BGRX32 ignores reserved byte: " & wa-yes x32)
+              print-line-uni ("CCE filename letters and path limits: " & wa-yes (gwp-name-base "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 0 26 & gwp-name-ok "TEST.BMP" & gwp-name-ok "PHOTO.BMP" & gwp-name-ok "../PHOTO.BMP" == False & gwp-name-char 131072 == False & gwp-name-char (0 - 1) == False))
+              print-line-uni ("full-display fit has bounded non-pixel allocation: " & wa-yes bounded-fit)
+            end

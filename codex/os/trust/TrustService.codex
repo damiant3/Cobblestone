@@ -18,10 +18,25 @@ Section: Handler Types
   }
 
   handler-no-response : ForensicChain -> HandlerResult
-  handler-no-response (log) = HandlerResult { response = MsgDeny (DenyMsg { id = [], proposal = [], from = AgentIdentity { public-key = [] }, reason = InsufficientTrust, evidence = [], signature = [] }), has-response = False, log-entry = log }
+  handler-no-response (log) = HandlerResult {
+    response = MsgDeny (DenyMsg {
+      id = [],
+      proposal = [],
+      from = AgentIdentity { public-key = [] },
+      reason = InsufficientTrust,
+      evidence = [],
+      signature = []
+    }),
+    has-response = False,
+    log-entry = log
+  }
 
   handler-with-response : AgentMessage, ForensicChain -> HandlerResult
-  handler-with-response (msg) (log) = HandlerResult { response = msg, has-response = True, log-entry = log }
+  handler-with-response (msg) (log) = HandlerResult {
+    response = msg,
+    has-response = True,
+    log-entry = log
+  }
 
 Section: Handler Table
   MessageHandler = record {
@@ -64,11 +79,25 @@ Section: Service State
   }
 
   service-new : TrustNode -> TrustService
-  service-new (n) = TrustService { node = n, handlers = handler-table-empty, log = [], log-count = 0, messages-processed = 0, messages-denied = 0 }
+  service-new (n) = TrustService {
+    node = n,
+    handlers = handler-table-empty,
+    log = [],
+    log-count = 0,
+    messages-processed = 0,
+    messages-denied = 0
+  }
 
   trust-service-register : TrustService, Integer, Text, Integer -> TrustService
   trust-service-register (svc) (tag) (name) (min-trust) =
-    TrustService { node = svc.node, handlers = handler-table-add (svc.handlers) tag name min-trust, log = svc.log, log-count = svc.log-count, messages-processed = svc.messages-processed, messages-denied = svc.messages-denied }
+    TrustService {
+      node = svc.node,
+      handlers = handler-table-add (svc.handlers) tag name min-trust,
+      log = svc.log,
+      log-count = svc.log-count,
+      messages-processed = svc.messages-processed,
+      messages-denied = svc.messages-denied
+    }
 
 Section: Message Processing
   ServiceProcessResult = record {
@@ -82,7 +111,21 @@ Section: Message Processing
   service-process : TrustService, Integer -> ServiceProcessResult
   service-process (svc) (current-time) =
     let rr = node-recv (svc.node) current-time
-    in if rr.has-message == False then ServiceProcessResult { service = TrustService { node = rr.node, handlers = svc.handlers, log = svc.log, log-count = svc.log-count, messages-processed = svc.messages-processed, messages-denied = svc.messages-denied }, handled = False, handler-name = "", denied = False, deny-reason = "" }
+    in if rr.has-message == False then
+      ServiceProcessResult {
+        service = TrustService {
+          node = rr.node,
+          handlers = svc.handlers,
+          log = svc.log,
+          log-count = svc.log-count,
+          messages-processed = svc.messages-processed,
+          messages-denied = svc.messages-denied
+        },
+        handled = False,
+        handler-name = "",
+        denied = False,
+        deny-reason = ""
+      }
     else let tag = encode-agent-msg (rr.message)
     in let maybe-handler = handler-table-lookup (svc.handlers) tag
     in when maybe-handler
@@ -95,7 +138,14 @@ Section: Message Processing
     in let chain1 = chain-add-percept chain ("unhandled msg from " & rr.from-peer) 100
     in let chain2 = chain-add-policy chain1 "no-handler" False "no registered handler"
     in ServiceProcessResult {
-      service = TrustService { node = rr.node, handlers = svc.handlers, log = list-push (svc.log) chain2, log-count = svc.log-count + 1, messages-processed = svc.messages-processed + 1, messages-denied = svc.messages-denied + 1 },
+      service = TrustService {
+        node = rr.node,
+        handlers = svc.handlers,
+        log = list-push (svc.log) chain2,
+        log-count = svc.log-count + 1,
+        messages-processed = svc.messages-processed + 1,
+        messages-denied = svc.messages-denied + 1
+      },
       handled = False,
       handler-name = "",
       denied = True,
@@ -109,7 +159,14 @@ Section: Message Processing
     in if rr.policy-allowed == False then
       let chain2 = chain-add-policy chain1 "policy-deny" False "policy rejected"
       in ServiceProcessResult {
-        service = TrustService { node = rr.node, handlers = svc.handlers, log = list-push (svc.log) chain2, log-count = svc.log-count + 1, messages-processed = svc.messages-processed + 1, messages-denied = svc.messages-denied + 1 },
+        service = TrustService {
+          node = rr.node,
+          handlers = svc.handlers,
+          log = list-push (svc.log) chain2,
+          log-count = svc.log-count + 1,
+          messages-processed = svc.messages-processed + 1,
+          messages-denied = svc.messages-denied + 1
+        },
         handled = False,
         handler-name = handler.name,
         denied = True,
@@ -119,7 +176,14 @@ Section: Message Processing
     in if peer-trust < handler.min-trust then
       let chain2 = chain-add-policy chain1 "trust-threshold" False "peer trust below handler minimum"
       in ServiceProcessResult {
-        service = TrustService { node = rr.node, handlers = svc.handlers, log = list-push (svc.log) chain2, log-count = svc.log-count + 1, messages-processed = svc.messages-processed + 1, messages-denied = svc.messages-denied + 1 },
+        service = TrustService {
+          node = rr.node,
+          handlers = svc.handlers,
+          log = list-push (svc.log) chain2,
+          log-count = svc.log-count + 1,
+          messages-processed = svc.messages-processed + 1,
+          messages-denied = svc.messages-denied + 1
+        },
         handled = False,
         handler-name = handler.name,
         denied = True,
@@ -128,7 +192,14 @@ Section: Message Processing
     else let chain2 = chain-add-policy chain1 (handler.name) True "allowed"
     in let chain3 = chain-add-action chain2 "dispatch" (handler.name) (msg-type-name (rr.message))
     in ServiceProcessResult {
-      service = TrustService { node = rr.node, handlers = svc.handlers, log = list-push (svc.log) chain3, log-count = svc.log-count + 1, messages-processed = svc.messages-processed + 1, messages-denied = svc.messages-denied },
+      service = TrustService {
+        node = rr.node,
+        handlers = svc.handlers,
+        log = list-push (svc.log) chain3,
+        log-count = svc.log-count + 1,
+        messages-processed = svc.messages-processed + 1,
+        messages-denied = svc.messages-denied
+      },
       handled = True,
       handler-name = handler.name,
       denied = False,

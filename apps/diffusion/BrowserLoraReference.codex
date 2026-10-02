@@ -1,0 +1,51 @@
+Chapter: BrowserLoraReference
+  cites Diffusion chapter DiffusionDriver
+
+ We say:
+
+  blr-checkpoint : Text = "build-output/diffusion-models/realisticVisionV60B1_v20Novae.safetensors"
+
+  blr-request : Text, Text -> Text
+  blr-request (weight) (out) =
+    "model=" & blr-checkpoint & "\nlora=codex/test/gpu-files/lora-sd15.safetensors:" & weight &
+    "\nprompt=a photo of a cat\nnegative=\nsampler=Euler\nscheduler=Automatic\nsteps=6\ncfg=7\nseed=7\nwidth=512\nheight=512\npath=" & out & "\n"
+
+  blr-case : ClipBpe, I2Model, Text, Text -> [Console] Nothing
+  blr-case (bpe) (m) (weight) (out) =
+    let mark = __heap-save
+    in let request = blr-request weight out
+    in let fs = dr-loras (dr-lora-lines (text-split request "\n") 0 []) 0 []
+    in let bad = dr-loras-bad fs 0
+    in let restored = if bad == "" then lora-resident-restore (m.im-unet) (m.im-wl) (m.im-wg) fs else 0 - 1
+    in let applied = if restored < 0 then 0 - 1 else lora-resident-apply (m.im-unet) (m.im-wl) (m.im-wg) fs
+    in let result = if m.im-why /= "" then m.im-why else if applied /= 3 then "refused: expected three native LoRA targets" else dr-run bpe m request
+    in act
+      print-line-uni (out & ": " & result)
+      let pool = un-pool-drain 0
+      in let drained = gpu-buf-pool-drain 0
+      in let back = __heap-restore mark
+      in print-line-uni "request arena restored"
+    end
+
+  blr-images : ClipBpe -> [Console] Nothing
+  blr-images (bpe) =
+    let m = img2img-model blr-checkpoint
+    in act
+      blr-case bpe m "0" "lora-0.png"
+      blr-case bpe m "0.75" "lora-75.png"
+      blr-case bpe m "-0.5" "lora-minus50.png"
+      let closed = img2img-model-free m in print-line-uni "model closed"
+    end
+
+  blr-load : Integer, Integer -> [Console, Device.Block] Nothing
+  blr-load (vlen) (mlen) = act
+    vocab <- dr-load 1 vlen
+    merges <- dr-load (1 + (vlen + 511) / 512) mlen
+    blr-images (clip-bpe-load vocab vlen merges mlen)
+  end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    blr-load (peek-32 h 0) (peek-32 h 4)
+  end

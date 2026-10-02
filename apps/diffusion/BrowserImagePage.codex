@@ -1,23 +1,19 @@
 Chapter: ImageGenBrowser
   cites WebApp chapter WebRuntime
-  cites WebApp chapter WebGpu
-  cites AI chapter SafeTensors
-  cites AI chapter ClipBpe
-  cites Diffusion chapter CheckpointLayout
-  cites Diffusion chapter ClipGraph
-  cites Diffusion chapter BrowserClip
-  cites Diffusion chapter BrowserUNet
-  cites Diffusion chapter BrowserVae
-  cites Diffusion chapter BrowserTxt2Img
-
- Stable Diffusion 1.5 in a browser tab: pick a checkpoint, write a prompt,
- generate. page-data "bk" is BrowserKernels' WGSL; "vocab" and "merges", when
- a build carries them, the CLIP tokenizer's two files as byte lists
- (build-browser-page.mjs), else the page reads them from the models folder.
+  cites Diffusion chapter BrowserSdxlLoad
 
  We say:
 
-Section: Layout
+  IpModel = record {
+    im-family : Text,
+    im-width : Integer,
+    im-height : Integer,
+    im-close : (Integer -> Integer),
+    im-run : (Text, Text, Text, Text, Text, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer)
+  }
+
+  ip-empty : IpModel
+  ip-empty = IpModel { im-family = "", im-width = 512, im-height = 512, im-close = \z -> 0, im-run = \p n s t c w h log done -> done (0 - 3) "Load a checkpoint first." }
 
   ip-el : Text, Text, Text -> DomElement
   ip-el (tag) (id) (text) =
@@ -35,307 +31,236 @@ Section: Layout
     in let b = dom-set-attr i "id" id
     in let c = dom-set-value i value
     in let d = dom-set-style i "width" "100%"
-    in dom-append l i
-
-  opening : [Console] Integer
-  opening =
-    let root = dom-create "div"
-    in let a = dom-set-attr root "id" "ip"
-    in let b = dom-set-style root "max-width" "560px"
-    in let c = dom-append (dom-query "body") root
-    in let home = ip-el "a" "home" "Home"
-    in let hl = dom-set-attr home "href" "landing.html"
-    in let h = ip-el "h1" "title" "Stable Diffusion 1.5 in this tab"
-    in let p = ip-el "p" "about" "The model runs on your GPU through WebGPU; nothing leaves this page. Choose your models folder: every .safetensors in it is checked by its header alone, and each SD1.5 checkpoint can be loaded with a click."
-    in let pick = ip-el "button" "pick" "Choose models folder"
-    in let s = ip-el "p" "status" "No checkpoint loaded."
-    in let ms = ip-el "div" "models" ""
-    in let f1 = ip-field "Prompt" "prompt" "a photo of a cat"
-    in let f2 = ip-field "Negative prompt" "negative" ""
-    in let f3 = ip-field "Seed" "seed" "0"
-    in let f4 = ip-field "Steps" "steps" "20"
-    in let f5 = ip-field "CFG scale" "cfg" "7"
-    in let gb = ip-el "div" "go-box" ""
-    in let go = dom-append gb (ip-go-button "Generate (load a checkpoint first)")
-    in let cv = ip-el "canvas" "out" ""
-    in let e = dom-set-style cv "display" "block"
-    in let st = ip-el "pre" "stats" ""
-    in let ch = ip-el "h3" "console-h" "Console"
-    in let co = ip-el "div" "console" ""
-    in let cs = dom-set-style (dom-set-style co "font-family" "monospace") "font-size" "12px"
-    in let hh = ip-el "h3" "history-h" "Finished jobs"
-    in let hi = ip-el "div" "history" ""
-    in let k = dom-on-click pick ip-pick
-    in state-set "ready" 1
+    in let e = dom-append l i
+    in i
 
   ip-status : Text -> Integer
-  ip-status (t) =
-    let e = dom-set-text (dom-query "#status") t
-    in 0
-
- One console line, stamped with the seconds since the page opened.
+  ip-status (text) = let e = dom-set-text (dom-query "#status") text in 0
 
   ip-log : Text -> Integer
-  ip-log (t) =
+  ip-log (text) =
     let ms = clock-ms 0
-    in let line = dom-set-text (dom-create "div") ("[" & show (ms / 1000) & "." & show (ms / 100 - ms / 1000 * 10) & "s] " & t)
+    in let line = dom-set-text (dom-create "div") ("[" & show (ms / 1000) & "." & show (ms / 100 - ms / 1000 * 10) & "s] " & text)
     in let a = dom-append (dom-query "#console") line
     in 0
 
- The Generate button lives alone in #go-box and is made again for each loaded
- checkpoint, therefore exactly one click handler is ever live.
+  ip-button : Text, Text -> DomElement
+  ip-button (id) (label) = let b = dom-create "button" in let a = dom-set-attr b "id" id in dom-set-text b label
 
-  ip-go-button : Text -> DomElement
-  ip-go-button (label) =
-    let b = dom-create "button"
-    in let a = dom-set-attr b "id" "go"
-    in dom-set-text b label
+  ip-picker : IpModel -> Integer
+  ip-picker (m) =
+    let box = dom-set-html (dom-query "#pick-box") ""
+    in let button = ip-button "pick" "Choose models folder"
+    in let added = dom-append box button
+    in let click = dom-on-click button (\id -> ip-pick m)
+    in 0
 
-Section: The Checkpoint List
+  ip-go : IpModel -> Integer
+  ip-go (m) =
+    let box = dom-set-html (dom-query "#go-box") ""
+    in let button = ip-button "go" (if m.im-family == "" then "Generate (load a checkpoint first)" else "Generate")
+    in let added = dom-append box button
+    in let enabled = if m.im-family == "" then dom-set-attr button "disabled" "disabled" else dom-on-click button (\id -> ip-generate m)
+    in 0
 
-  ip-pick : Text -> Integer
-  ip-pick (id) = pick-dir-then "" ip-listed
+  ip-bind : IpModel, List (List Text) -> Integer
+  ip-bind (m) (rows) =
+    let picker = ip-picker m
+    in let go = ip-go m
+    in let box = dom-set-html (dom-query "#unload-box") ""
+    in let button = ip-button "unload" "Unload checkpoint"
+    in let unload = if m.im-family == "" then box else (let added = dom-append box button in dom-on-click button (\id -> ip-unload m rows))
+    in let clear = dom-set-html (dom-query "#models") ""
+    in ip-rows m rows 0
+
+  ip-pick : IpModel -> Integer
+  ip-pick (m) = if state-get "busy" /= 0 then 0 else pick-dir-then "" (\r -> ip-listed m r)
 
   ip-ending : List (List Text), Integer, Text, List (List Text) -> List (List Text)
   ip-ending (rows) (i) (suffix) (acc) =
     if i >= list-length rows then acc
-    else ip-ending rows (i + 1) suffix (if ip-ends (json-obj-field (list-at rows i) "path") suffix then list-snoc acc (list-at rows i) else acc)
-
-  ip-ends : Text, Text -> Boolean
-  ip-ends (t) (s) = text-length t >= text-length s & substring t (text-length t - text-length s) (text-length s) == s
-
- The CLIP tokenizer's file, as the setup page's step 5 places it
- (tokenizers/clip/ under the models folder) or anywhere else in the folder.
+    else ip-ending rows (i + 1) suffix (if text-ends-with (json-obj-field (list-at rows i) "path") suffix then list-push acc (list-at rows i) else acc)
 
   ip-tokenizer-file : List (List Text), Text -> Text
   ip-tokenizer-file (all) (file) =
     let hits = ip-ending all 0 ("/" & file) []
     in let clip = ip-ending hits 0 ("tokenizers/clip/" & file) []
     in if list-length clip > 0 then json-obj-field (list-at clip 0) "name"
-    else if list-length hits > 0 then json-obj-field (list-at hits 0) "name"
-    else ""
+    else if list-length hits > 0 then json-obj-field (list-at hits 0) "name" else ""
 
-  ip-listed : Text -> Integer
-  ip-listed (r) =
-    let all = json-parse-rows r
+  ip-listed : IpModel, Text -> Integer
+  ip-listed (m) (data) =
+    if state-get "busy" /= 0 then 0
+    else if json-obj-field (json-parse-obj data) "error" /= "" then ip-status ("Model selection unchanged: " & json-obj-field (json-parse-obj data) "error")
+    else let busy = state-set "busy" 1
+    in let all = json-parse-rows data
     in let rows = ip-ending all 0 ".safetensors" []
     in let v = state-set-text "vocab-file" (ip-tokenizer-file all "vocab.json")
-    in let m = state-set-text "merges-file" (ip-tokenizer-file all "merges.txt")
-    in let box = dom-set-html (dom-query "#models") ""
-    in if list-length rows == 0 then ip-status "No .safetensors files in that folder."
-    else let a = ip-rows rows 0
-    in let s = ip-status ("Checking " & show (list-length rows) & " files by their headers...")
-    in ip-check rows 0 0
+    in let mg = state-set-text "merges-file" (ip-tokenizer-file all "merges.txt")
+    in let clear = dom-set-html (dom-query "#models") ""
+    in let s = ip-status ("Checking " & show (list-length rows) & " checkpoint files...")
+    in ip-check m rows 0 0
 
-  ip-rows : List (List Text), Integer -> Integer
-  ip-rows (rows) (i) =
+  ip-check : IpModel, List (List Text), Integer, Integer -> Integer
+  ip-check (m) (rows) (i) (good) =
+    if i >= list-length rows then
+      let idle = state-set "busy" 0
+      in let bind = ip-bind m rows
+      in ip-status ("Checked " & show (list-length rows) & " files: " & show good & " supported SD1.5 or SDXL checkpoints. Click one to load it.")
+    else bl-family-then (json-obj-field (list-at rows i) "name") (\family -> (let saved = state-set-text ("family" & show i) family in ip-check m rows (i + 1) (if family == "" then good else good + 1)))
+
+  ip-rows : IpModel, List (List Text), Integer -> Integer
+  ip-rows (m) (rows) (i) =
     if i >= list-length rows then 0
     else let row = list-at rows i
+    in let family = state-get-text ("family" & show i)
     in let e = dom-create "div"
-    in let a = dom-set-attr e "id" ("m" & show i)
-    in let b = dom-set-text e (json-obj-field row "path" & "  (" & show (text-to-integer (json-obj-field row "size") / 1048576) & " MB)")
-    in let c = dom-set-style e "color" "#999"
-    in let d = dom-append (dom-query "#models") e
-    in ip-rows rows (i + 1)
+    in let id = dom-set-attr e "id" ("m" & show i)
+    in let text = dom-set-text e (json-obj-field row "path" & "  (" & (if family == "" then "unsupported checkpoint" else family) & ")")
+    in let color = dom-set-style e "color" (if family == "" then "#b00" else "#000")
+    in let added = dom-append (dom-query "#models") e
+    in let click = if family == "" then e else dom-on-click (dom-set-style e "cursor" "pointer") (\id -> ip-load m rows row family)
+    in ip-rows m rows (i + 1)
 
-  ip-check : List (List Text), Integer, Integer -> Integer
-  ip-check (rows) (i) (good) =
-    if i >= list-length rows then ip-status ("Checked " & show (list-length rows) & " files: " & show good & " are SD1.5. Click one to load it.")
-    else let name = json-obj-field (list-at rows i) "name"
-    in file-read-then name 0 8 (\r -> ip-check-len rows i good name r)
+  ip-unload : IpModel, List (List Text) -> Integer
+  ip-unload (m) (rows) =
+    if state-get "busy" /= 0 then 0
+    else let busy = state-set "busy" 1
+    in let closed = m.im-close 0
+    in let disabled = ip-go ip-empty
+    in gpu-trim-then (\r -> (let idle = state-set "busy" 0 in let loaded = state-set "loaded" 0 in let bind = ip-bind ip-empty rows in ip-status (if r == "" then "Checkpoint unloaded." else "GPU release failed: " & r)))
 
-  ip-check-len : List (List Text), Integer, Integer, Text, Text -> Integer
-  ip-check-len (rows) (i) (good) (name) (r) =
-    let bs = ip-list r
-    in let n = if list-length bs < 8 then 0 else st-read-u64 bs 0
-    in if n <= 0 | n > 100000000 then ip-mark rows i good name False
-    else file-read-then name 0 (8 + n) (\h -> ip-mark rows i good name (ip-sd15 h))
+  ip-failed : List (List Text), Text -> Integer
+  ip-failed (rows) (why) =
+    let weights = bl-free-weights (bl-list ("[" & state-get-text "bl-weights" & "]")) 0
+    in gpu-trim-then (\r -> (let idle = state-set "busy" 0 in let loaded = state-set "loaded" 0 in let bind = ip-bind ip-empty rows in ip-status ("Load failed: " & why & (if r == "" then "" else "; " & r))))
 
-  ip-sd15 : Text -> Boolean
-  ip-sd15 (h) =
-    let f = st-parse-file (ip-list h)
-    in f.st-valid & ip-parts-bound ((layout-bind f sd15-layout).lb-parts) 0
+  ip-load : IpModel, List (List Text), List Text, Text -> Integer
+  ip-load (old) (rows) (row) (family) =
+    if state-get "busy" /= 0 then 0
+    else let busy = state-set "busy" 1
+    in let closed = old.im-close 0
+    in let loaded = state-set "loaded" 0
+    in let disabled = ip-go ip-empty
+    in let path = state-set-text "path" (json-obj-field row "path")
+    in let time = state-set "load-t0" (clock-ms 0)
+    in let s = ip-status ("Loading " & family & ": " & state-get-text "path" & "...")
+    in gpu-trim-then (\r -> if r /= "" then ip-failed rows r else gpu-open-then (\opened -> ip-opened rows row family opened))
 
-  ip-parts-bound : List PartBinding, Integer -> Boolean
-  ip-parts-bound (ps) (i) =
-    if i >= list-length ps then True
-    else let p = list-at ps i
-    in if list-length (p.pb-missing) > 0 | list-length (p.pb-misshapen) > 0 | list-length (p.pb-bound) == 0 then False
-    else ip-parts-bound ps (i + 1)
+  ip-opened : List (List Text), List Text, Text, Text -> Integer
+  ip-opened (rows) (row) (family) (result) =
+    if text-contains result "\"ok\":true" == False then ip-failed rows result
+    else let adapter = state-set-text "bl-adapter" (json-obj-field (json-parse-obj result) "adapter")
+    in let opened = state-set "bl-gpu" 1
+    in bl-bpe-then (state-get-text "vocab-file") (state-get-text "merges-file") (\why -> ip-failed rows why) (\bpe ->
+      if clip-bpe-status bpe /= 0 then ip-failed rows "The CLIP tokenizer did not load."
+      else if family == "SDXL" then browser-sdxl-open (json-obj-field row "name") (text-to-integer (json-obj-field row "size")) (page-data "bk") (page-data "clip") (\m -> ip-xl-ready rows bpe m) (\why -> ip-failed rows why)
+      else bl-load-then (json-obj-field row "name") ip-progress (\why -> ip-failed rows why) (\m -> ip-sd-ready rows bpe m))
 
-  ip-mark : List (List Text), Integer, Integer, Text, Boolean -> Integer
-  ip-mark (rows) (i) (good) (name) (ok) =
-    let e = dom-query ("#m" & show i)
-    in let a = dom-set-style e "color" (if ok then "#000" else "#b00")
-    in let b = if ok then dom-set-style e "cursor" "pointer" else dom-set-text e (json-obj-field (list-at rows i) "path" & "  (not SD1.5)")
-    in let c = if ok then dom-on-click e (\id -> ip-load name (json-obj-field (list-at rows i) "path")) else e
-    in ip-check rows (i + 1) (if ok then good + 1 else good)
+  ip-progress : Integer, Integer -> Integer
+  ip-progress (done) (total) = ip-status ("Loading weights: " & show done & " of " & show total)
 
-Section: Loading
+  ip-sd-ready : List (List Text), ClipBpe, BrowserModel -> Integer
+  ip-sd-ready (rows) (bpe) (m) =
+    let handles = bl-list ("[" & state-get-text "bl-weights" & "]")
+    in ip-ready rows (IpModel { im-family = "SD1.5", im-width = 512, im-height = 512, im-close = \z -> bl-free-weights handles 0, im-run = \p n seed steps cfg w h log made -> bl-run m bpe p n seed steps cfg log made })
 
- The GPU is opened once; a checkpoint loaded over another frees the other's
- weights first, from the handles kept in "weights".
+  ip-xl-run : BrowserSdxlModel, ClipBpe, Text, Text, Text, Text, Text, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer
+  ip-xl-run (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (log) (made) =
+    let start = clock-ms 0
+    in let settings = BrowserSdxlSettings { bs-width = width, bs-height = height, bs-seed = bl-digits seed, bs-steps = bl-digits steps, bs-cfg = bl-real cfg }
+    in browser-sdxl-euler-then m bpe prompt negative settings (\phase current total -> log (phase & ": " & show current & "/" & show total)) (\img -> made img ("total " & show (clock-ms 0 - start) & " ms")) (\why -> made (0 - 3) why)
 
-  ip-load : Text, Text -> Integer
-  ip-load (name) (path) =
-    let f = state-set-text "file" name
-    in let p = state-set-text "path" path
-    in let t = state-set "load-t0" (clock-ms 0)
-    in let l = ip-log ("checkpoint " & path & ": reading the header")
-    in let w = ip-free-weights (ip-list ("[" & state-get-text "weights" & "]")) 0
-    in let s = ip-status ("Loading " & path & "...")
-    in if state-get "gpu" == 1 then ip-opened "{\"ok\":true}"
-    else gpu-open-then ip-opened
+  ip-xl-ready : List (List Text), ClipBpe, BrowserSdxlModel -> Integer
+  ip-xl-ready (rows) (bpe) (m) =
+    ip-ready rows (IpModel { im-family = "SDXL", im-width = 1024, im-height = 1024, im-close = \z -> if browser-sdxl-close m then 0 else 0 - 1, im-run = \p n seed steps cfg w h log made -> ip-xl-run m bpe p n seed steps cfg w h log made })
 
-  ip-free-weights : List Integer, Integer -> Integer
-  ip-free-weights (hs) (i) =
-    if i >= list-length hs then ip-weights-cleared
-    else let f = if list-at hs i > 0 then gpu-buf-free (list-at hs i) else False
-    in ip-free-weights hs (i + 1)
+  ip-ready : List (List Text), IpModel -> Integer
+  ip-ready (rows) (m) =
+    let family = state-set-text "family" (m.im-family)
+    in let steps = dom-set-value (dom-query "#steps") (if m.im-family == "SDXL" then "6" else "20")
+    in let cfg = dom-set-value (dom-query "#cfg") (if m.im-family == "SDXL" then "2" else "7")
+    in let settings = dom-set-text (dom-query "#settings") (show (m.im-width) & " x " & show (m.im-height) & ", Euler, " & (if m.im-family == "SDXL" then "Karras" else "Automatic (uniform)"))
+    in let loaded = state-set "loaded" 1
+    in let idle = state-set "busy" 0
+    in let bind = ip-bind m rows
+    in let log = ip-log ("checkpoint loaded: " & show (clock-ms 0 - state-get "load-t0") & " ms")
+    in ip-status ("Ready: " & state-get-text "path" & " (" & m.im-family & ").")
 
-  ip-weights-cleared : Integer
-  ip-weights-cleared =
-    let t = state-set-text "weights" ""
-    in 0
+  ip-digits : Text, Integer -> Boolean
+  ip-digits (t) (i) = if i >= text-length t then True else let c = char-code-at t i in c >= char-code-at "0" 0 & c <= char-code-at "9" 0 & ip-digits t (i + 1)
 
-  ip-opened : Text -> Integer
-  ip-opened (r) =
-    if text-contains r "\"ok\":true" then (let g = state-set "gpu" 1 in let ad = (if state-get-text "adapter" == "" then state-set-text "adapter" (json-obj-field (json-parse-obj r) "adapter") else "") in file-read-then (state-get-text "file") 0 8 ip-got-len)
-    else ip-status "WebGPU is not available in this browser."
+  ip-integer : Text -> Boolean
+  ip-integer (t) = let start = if text-starts-with t "-" then 1 else 0 in text-length t > start & ip-digits t start
 
-  ip-ints : List Text, Integer, List Integer -> List Integer
-  ip-ints (ts) (i) (acc) =
-    if i >= list-length ts then acc
-    else ip-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
-
-  ip-list : Text -> List Integer
-  ip-list (t) = if text-length t < 3 then [] else ip-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
-
-  ip-got-len : Text -> Integer
-  ip-got-len (r) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (ip-list r) 0) ip-got-header
-
-  ip-part : List PartBinding, Integer, Text -> List BoundTensor
-  ip-part (parts) (i) (name) =
-    if i >= list-length parts then []
-    else if (list-at parts i).pb-name == name then (list-at parts i).pb-bound
-    else ip-part parts (i + 1) name
-
-  ip-vae : List BoundTensor, Integer, List BoundTensor -> List BoundTensor
-  ip-vae (ts) (i) (acc) =
-    if i >= list-length ts then acc
-    else let n = (list-at ts i).bt-name
-    in ip-vae ts (i + 1) (if text-starts-with n "first_stage_model.decoder." | text-starts-with n "first_stage_model.post_quant_conv." then list-snoc acc (list-at ts i) else acc)
-
-  ip-got-header : Text -> Integer
-  ip-got-header (r) =
-    let lb = layout-bind (st-parse-file (ip-list r)) sd15-layout
-    in let clip = ip-part (lb.lb-parts) 0 "clip-l"
-    in let unet = ip-part (lb.lb-parts) 0 "unet"
-    in let vae = ip-vae (ip-part (lb.lb-parts) 0 "vae") 0 []
-    in let total = list-length clip + list-length unet + list-length vae
-    in if list-length clip == 0 | list-length unet == 0 | list-length vae == 0 then ip-status "This file is not an SD1.5 checkpoint."
-    else ip-upload clip 0 "" [] [] 0 total (\cn ch d1 -> ip-upload unet 0 "model.diffusion_model." [] [] d1 total (\un uh d2 -> ip-upload vae 0 "first_stage_model." [] [] d2 total (\vn vh d3 -> ip-loaded cn ch un uh vn vh)))
-
-  ip-dt : Integer -> Integer
-  ip-dt (d) = if d == st-dtype-f16 then gpu-dt-f16 else if d == st-dtype-f32 then gpu-dt-f32 else 0 - 1
-
-  ip-short : Text, Text -> Text
-  ip-short (prefix) (n) = substring n (text-length prefix) (text-length n - text-length prefix)
-
-  ip-upload : List BoundTensor, Integer, Text, List Text, List Integer, Integer, Integer, (List Text, List Integer, Integer -> Integer) -> Integer
-  ip-upload (ts) (i) (prefix) (ns) (hs) (done) (total) (next) =
-    if i >= list-length ts then next ns hs done
-    else let t = list-at ts i
-    in let dt = ip-dt (t.bt-dtype)
-    in let elems = t.bt-bytes / st-dtype-width (t.bt-dtype)
-    in let h = if dt < 0 then 0 else gpu-buf-alloc (if bt-half t then (elems + 1) / 2 * 4 else elems * 4)
-    in let ns2 = list-snoc ns (ip-short prefix (t.bt-name))
-    in let s = if done - done / 25 * 25 == 0 then ip-status ("Loading weights: " & show done & " of " & show total & " tensors") else 0
-    in let l = if done - done / 100 * 100 == 0 then ip-log ("checkpoint: " & show done & " of " & show total & " tensors on the device") else 0
-    in if h == 0 then ip-status "The GPU refused a weight buffer; this device may not have the memory (about 2.1 GB)."
-    else gpu-buf-upload-then h 0 (state-get-text "file") (t.bt-offset) elems dt (if bt-half t then gpu-dt-f16 else gpu-dt-f32) (\r -> ip-upload ts (i + 1) prefix ns2 (list-snoc hs h) (done + 1) total next)
-
-  ip-poke : Integer, List Integer, Integer -> Integer
-  ip-poke (a) (bs) (i) =
-    if i >= list-length bs then a
-    else let p = poke-byte a i (list-at bs i)
-    in ip-poke a bs (i + 1)
-
-  ip-heap : List Integer -> Integer
-  ip-heap (bs) = ip-poke (alloc-bytes (list-length bs + 8)) bs 0
-
-  ip-loaded : List Text, List Integer, List Text, List Integer, List Text, List Integer -> Integer
-  ip-loaded (cn) (ch) (un) (uh) (vn) (vh) =
-    let m = BrowserModel { bm-code = page-data "bk", bm-clip = browser-clip-weights bc-l15-spec cn ch, bm-unet = BuWeights { bu-names = un, bu-handles = uh }, bm-vae = BvWeights { bw-names = vn, bw-handles = vh } }
-    in let w = state-set-text "weights" (ip-join (ch & uh & vh) 0 "")
-    in ip-bpe-then (\bpe -> ip-ready m bpe)
-
- The tokenizer from page-data when a build carries it, else from the models
- folder's vocab.json and merges.txt.
-
-  ip-bpe-of : List Integer, List Integer -> ClipBpe
-  ip-bpe-of (vb) (mb) = clip-bpe-load (ip-heap vb) (list-length vb) (ip-heap mb) (list-length mb)
-
-  ip-bpe-then : (ClipBpe -> Integer) -> Integer
-  ip-bpe-then (k) =
-    if text-length (page-data "vocab") > 2 then k (ip-bpe-of (ip-list (page-data "vocab")) (ip-list (page-data "merges")))
-    else if state-get-text "vocab-file" == "" | state-get-text "merges-file" == "" then ip-status "No CLIP tokenizer in the models folder: put vocab.json and merges.txt in tokenizers/clip (the setup page's step 5)."
-    else file-read-then (state-get-text "vocab-file") 0 100000000 (\v -> file-read-then (state-get-text "merges-file") 0 100000000 (\mg -> k (ip-bpe-of (ip-list v) (ip-list mg))))
-
-  ip-ready : BrowserModel, ClipBpe -> Integer
-  ip-ready (m) (bpe) =
-    let box = dom-set-html (dom-query "#go-box") ""
-    in let go = dom-append box (ip-go-button "Generate")
-    in let a = dom-on-click (dom-query "#go") (\id -> ip-generate m bpe)
-    in let d = state-set "loaded" 1
-    in let l = ip-log ("checkpoint loaded: " & show (clock-ms 0 - state-get "load-t0") & " ms, tokenizer " & (if clip-bpe-status bpe == 0 then "ready" else "refused"))
-    in ip-status (if clip-bpe-status bpe /= 0 then "The tokenizer did not load." else "Ready: " & state-get-text "path" & ". Write a prompt and press Generate.")
-
-  ip-join : List Integer, Integer, Text -> Text
-  ip-join (xs) (i) (acc) = if i >= list-length xs then acc else ip-join xs (i + 1) (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
-
-Section: Generating
-
-  ip-digits : Text -> Integer
-  ip-digits (t) = if text-length t == 0 then 0 else text-to-integer t
-
-  ip-real : Text -> Real
-  ip-real (t) =
+  ip-decimal : Text -> Boolean
+  ip-decimal (t) =
     let parts = text-split t "."
-    in let whole = real-from-int (ip-digits (list-at parts 0))
-    in if list-length parts < 2 then whole
-    else let f = list-at parts 1
-    in whole + real-from-int (ip-digits f) / ip-pow10 (text-length f) 1.0
+    in if text-length t == 0 | t == "." | list-length parts > 2 then False
+    else ip-digits (list-at parts 0) 0 & (if list-length parts == 2 then ip-digits (list-at parts 1) 0 else True)
 
-  ip-pow10 : Integer, Real -> Real
-  ip-pow10 (k) (acc) = if k <= 0 then acc else ip-pow10 (k - 1) (acc * 10.0)
+  ip-generate : IpModel -> Integer
+  ip-generate (m) =
+    if state-get "busy" /= 0 | m.im-family == "" then 0
+    else let seed = dom-get-value (dom-query "#seed")
+    in let steps = dom-get-value (dom-query "#steps")
+    in let cfg = dom-get-value (dom-query "#cfg")
+    in if ip-integer seed == False | ip-integer steps == False | ip-decimal cfg == False then ip-status "Enter an integer seed and step count, and a decimal CFG scale."
+    else if bl-digits steps < 2 | bl-digits steps > 50 | bl-real cfg > 30.0 then ip-status "Steps must be 2-50 and CFG scale 0-30."
+    else let busy = state-set "busy" 2
+    in let disabled = dom-set-attr (dom-query "#go") "disabled" "disabled"
+    in let s = ip-status "Generating..."
+    in set-timeout (\z -> ip-run m seed steps cfg) 50
 
-  ip-generate : BrowserModel, ClipBpe -> Integer
-  ip-generate (m) (bpe) =
-    let s = ip-status "Generating..."
-    in set-timeout (\z -> ip-run m bpe) 50
-
-  ip-settings : Text
-  ip-settings = "512 x 512, Euler, Automatic (uniform), " & dom-get-value (dom-query "#steps") & " steps, CFG " & dom-get-value (dom-query "#cfg") & ", seed " & dom-get-value (dom-query "#seed") & ", " & state-get-text "path"
-
-  ip-run : BrowserModel, ClipBpe -> Integer
-  ip-run (m) (bpe) =
+  ip-run : IpModel, Text, Text, Text -> Integer
+  ip-run (m) (seed) (steps) (cfg) =
     let job = state-get "generated" + 1
-    in let settings = ip-settings
-    in let l = ip-log ("job " & show job & ": start, " & settings)
-    in browser-txt2img-timed m bpe (dom-get-value (dom-query "#prompt")) (dom-get-value (dom-query "#negative")) (ip-digits (dom-get-value (dom-query "#seed"))) (ip-digits (dom-get-value (dom-query "#steps"))) (ip-real (dom-get-value (dom-query "#cfg"))) 512 512 (\t -> ip-log t) (\img summary -> ip-made img job summary settings)
+    in let settings = show (m.im-width) & " x " & show (m.im-height) & ", Euler, " & (if m.im-family == "SDXL" then "Karras" else "Automatic (uniform)") & ", " & steps & " steps, CFG " & cfg & ", seed " & seed & ", " & state-get-text "path"
+    in let log = ip-log ("job " & show job & ": start, " & settings)
+    in m.im-run (dom-get-value (dom-query "#prompt")) (dom-get-value (dom-query "#negative")) seed steps cfg (m.im-width) (m.im-height) ip-log (\img summary -> ip-made m img job summary settings)
 
-  ip-made : Integer, Integer, Text, Text -> Integer
-  ip-made (img) (job) (summary) (settings) =
-    if img == 0 - 1 then ip-status "The prompt is longer than one 77-token chunk; shorten it."
-    else if img <= 0 then ip-status ("Generation failed (" & show img & "): " & gpu-error 0)
-    else gpu-buf-show-then img 512 512 "#out" (\r -> ip-shown img job summary settings r)
+  ip-made : IpModel, Integer, Integer, Text, Text -> Integer
+  ip-made (m) (img) (job) (summary) (settings) =
+    if img <= 0 then (let idle = state-set "busy" 0 in let go = ip-go m in ip-status ("Generation failed: " & summary & " " & gpu-error 0))
+    else gpu-buf-show-then img (m.im-width) (m.im-height) "#out" (\r -> ip-shown m img job summary settings r)
 
-  ip-shown : Integer, Integer, Text, Text, Text -> Integer
-  ip-shown (img) (job) (summary) (settings) (r) =
+  ip-shown : IpModel, Integer, Integer, Text, Text, Text -> Integer
+  ip-shown (m) (img) (job) (summary) (settings) (result) =
     let f = gpu-buf-free img
-    in let e = state-set "generated" job
-    in let l = ip-log ("job " & show job & ": done, " & summary)
-    in let s = dom-set-text (dom-query "#stats") (summary & "\n" & settings & "\nGPU: " & state-get-text "adapter")
-    in let h = dom-append (dom-query "#history") (dom-set-text (dom-create "div") ("job " & show job & ": " & summary & "; " & settings))
-    in ip-status (if text-contains r "\"ok\":true" then "Done." else "The image could not be drawn: " & r)
+    in let idle = state-set "busy" 0
+    in let go = ip-go m
+    in if text-contains result "\"ok\":true" == False then ip-status ("The image could not be drawn: " & result)
+    else let done = state-set "generated" job
+    in let log = ip-log ("job " & show job & ": done, " & summary)
+    in let stats = dom-set-text (dom-query "#stats") (summary & "\n" & settings & "\nGPU: " & bl-adapter)
+    in let history = dom-append (dom-query "#history") (dom-set-text (dom-create "div") ("job " & show job & ": " & summary & "; " & settings))
+    in ip-status "Done."
+
+  opening : [Console] Integer
+  opening =
+    let root = dom-create "div"
+    in let id = dom-set-attr root "id" "ip"
+    in let width = dom-set-style root "max-width" "640px"
+    in let body = dom-append (dom-query "body") root
+    in let home = dom-set-attr (ip-el "a" "home" "Home") "href" "landing.html"
+    in let title = ip-el "h1" "title" "Stable Diffusion in this tab"
+    in let about = ip-el "p" "about" "Choose an SD1.5 or SDXL checkpoint from your models folder. Images are generated locally on your GPU."
+    in let pick = ip-el "div" "pick-box" ""
+    in let status = ip-el "p" "status" "No checkpoint loaded."
+    in let models = ip-el "div" "models" ""
+    in let prompt = ip-field "Prompt" "prompt" "a photo of a cat"
+    in let negative = ip-field "Negative prompt" "negative" ""
+    in let seed = ip-field "Seed" "seed" "0"
+    in let steps = ip-field "Steps (2-50)" "steps" "20"
+    in let cfg = ip-field "CFG scale (0-30)" "cfg" "7"
+    in let settings = ip-el "p" "settings" ""
+    in let go = ip-el "div" "go-box" ""
+    in let unload = ip-el "div" "unload-box" ""
+    in let canvas = dom-set-style (ip-el "canvas" "out" "") "max-width" "100%"
+    in let stats = ip-el "pre" "stats" ""
+    in let ch = ip-el "h3" "console-h" "Console"
+    in let console = dom-set-style (dom-set-style (ip-el "div" "console" "") "font-family" "monospace") "font-size" "12px"
+    in let hh = ip-el "h3" "history-h" "Finished jobs"
+    in let history = ip-el "div" "history" ""
+    in let bind = ip-bind ip-empty []
+    in state-set "ready" 1

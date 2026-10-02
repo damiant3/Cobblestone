@@ -19,7 +19,13 @@ Section: Session State
   }
 
   trust-session-new : TcpTransportState -> TrustSession
-  trust-session-new (ts) = TrustSession { transport = ts, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = 0 }
+  trust-session-new (ts) = TrustSession {
+    transport = ts,
+    peer-key = [],
+    peer-trust = 0,
+    authenticated = False,
+    messages-exchanged = 0
+  }
 
 Section: Handshake Over Transport
   TrustConnectResult = record {
@@ -34,7 +40,13 @@ Section: Handshake Over Transport
     in let hello-body = frame-encode-bytes (hello.public-key) & frame-encode-bytes (hello.pow-nonce) & frame-le32 (hello.pow-difficulty)
     in let sr = transport-send-message (sess.transport) tag-hello hello-body
     in TrustConnectResult {
-      session = TrustSession { transport = sr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = False, messages-exchanged = sess.messages-exchanged },
+      session = TrustSession {
+        transport = sr.transport,
+        peer-key = sess.peer-key,
+        peer-trust = sess.peer-trust,
+        authenticated = False,
+        messages-exchanged = sess.messages-exchanged
+      },
       success = sr.success,
       error = ""
     }
@@ -42,16 +54,56 @@ Section: Handshake Over Transport
   trust-respond-hello : TrustSession, List Integer, TrustLattice, Integer -> TrustConnectResult
   trust-respond-hello (sess) (challenge-nonce) (lattice) (required-difficulty) =
     let rr = transport-try-recv (sess.transport)
-    in if rr.has-message == False then TrustConnectResult { session = sess, success = False, error = "no hello received" }
-    else if rr.tag /= tag-hello then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "expected hello" }
+    in if rr.has-message == False then
+      TrustConnectResult { session = sess, success = False, error = "no hello received" }
+    else if rr.tag /= tag-hello then
+      TrustConnectResult {
+        session = TrustSession {
+          transport = rr.transport,
+          peer-key = [],
+          peer-trust = 0,
+          authenticated = False,
+          messages-exchanged = sess.messages-exchanged
+        },
+        success = False,
+        error = "expected hello"
+      }
     else let hd = decode-hello-body-checked (rr.body)
-    in if hd.valid == False then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "malformed hello" }
+    in if hd.valid == False then
+      TrustConnectResult {
+        session = TrustSession {
+          transport = rr.transport,
+          peer-key = [],
+          peer-trust = 0,
+          authenticated = False,
+          messages-exchanged = sess.messages-exchanged
+        },
+        success = False,
+        error = "malformed hello"
+      }
     else let hello = hd.hello
     in let hr = hs-receive-hello hello challenge-nonce lattice required-difficulty
-    in if hs-is-failed (hr.state) then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = hs-failure-reason (hr.state) }
+    in if hs-is-failed (hr.state) then
+      TrustConnectResult {
+        session = TrustSession {
+          transport = rr.transport,
+          peer-key = [],
+          peer-trust = 0,
+          authenticated = False,
+          messages-exchanged = sess.messages-exchanged
+        },
+        success = False,
+        error = hs-failure-reason (hr.state)
+      }
     else let sr = transport-send-message (rr.transport) tag-challenge (frame-encode-bytes challenge-nonce)
     in TrustConnectResult {
-      session = TrustSession { transport = sr.transport, peer-key = hello.public-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged },
+      session = TrustSession {
+        transport = sr.transport,
+        peer-key = hello.public-key,
+        peer-trust = 0,
+        authenticated = False,
+        messages-exchanged = sess.messages-exchanged
+      },
       success = True,
       error = ""
     }
@@ -59,33 +111,113 @@ Section: Handshake Over Transport
   trust-complete-as-initiator : TrustSession, List Integer -> TrustConnectResult
   trust-complete-as-initiator (sess) (signed-nonce) =
     let rr = transport-try-recv (sess.transport)
-    in if rr.has-message == False then TrustConnectResult { session = sess, success = False, error = "no challenge received" }
-    else if rr.tag /= tag-challenge then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "expected challenge" }
+    in if rr.has-message == False then
+      TrustConnectResult { session = sess, success = False, error = "no challenge received" }
+    else if rr.tag /= tag-challenge then
+      TrustConnectResult {
+        session = TrustSession {
+          transport = rr.transport,
+          peer-key = sess.peer-key,
+          peer-trust = 0,
+          authenticated = False,
+          messages-exchanged = sess.messages-exchanged
+        },
+        success = False,
+        error = "expected challenge"
+      }
     else let sr = transport-send-message (rr.transport) tag-prove (frame-encode-bytes signed-nonce)
     in let rr2 = transport-try-recv (sr.transport)
-    in if rr2.has-message == False then TrustConnectResult { session = TrustSession { transport = sr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "no accept/reject" }
+    in if rr2.has-message == False then
+      TrustConnectResult {
+        session = TrustSession {
+          transport = sr.transport,
+          peer-key = sess.peer-key,
+          peer-trust = 0,
+          authenticated = False,
+          messages-exchanged = sess.messages-exchanged
+        },
+        success = False,
+        error = "no accept/reject"
+      }
     else if rr2.tag == tag-accept then
       let score = frame-read-le32 (rr2.body) 0
       in TrustConnectResult {
-        session = TrustSession { transport = rr2.transport, peer-key = sess.peer-key, peer-trust = __narrow score, authenticated = True, messages-exchanged = sess.messages-exchanged },
+        session = TrustSession {
+          transport = rr2.transport,
+          peer-key = sess.peer-key,
+          peer-trust = __narrow score,
+          authenticated = True,
+          messages-exchanged = sess.messages-exchanged
+        },
         success = True,
         error = ""
       }
-    else TrustConnectResult { session = TrustSession { transport = rr2.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "rejected" }
+    else
+      TrustConnectResult {
+        session = TrustSession {
+          transport = rr2.transport,
+          peer-key = sess.peer-key,
+          peer-trust = 0,
+          authenticated = False,
+          messages-exchanged = sess.messages-exchanged
+        },
+        success = False,
+        error = "rejected"
+      }
 
   trust-complete-as-responder : TrustSession, List Integer, TrustLattice -> TrustConnectResult
   trust-complete-as-responder (sess) (challenge-nonce) (lattice) =
     let rr = transport-try-recv (sess.transport)
-    in if rr.has-message == False then TrustConnectResult { session = sess, success = False, error = "no prove received" }
-    else if rr.tag /= tag-prove then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "expected prove" }
+    in if rr.has-message == False then
+      TrustConnectResult { session = sess, success = False, error = "no prove received" }
+    else if rr.tag /= tag-prove then
+      TrustConnectResult {
+        session = TrustSession {
+          transport = rr.transport,
+          peer-key = sess.peer-key,
+          peer-trust = 0,
+          authenticated = False,
+          messages-exchanged = sess.messages-exchanged
+        },
+        success = False,
+        error = "expected prove"
+      }
     else let pr = frame-decode-bytes (rr.body) 0
-    in if pr.valid == False then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "malformed prove" }
+    in if pr.valid == False then
+      TrustConnectResult {
+        session = TrustSession {
+          transport = rr.transport,
+          peer-key = sess.peer-key,
+          peer-trust = 0,
+          authenticated = False,
+          messages-exchanged = sess.messages-exchanged
+        },
+        success = False,
+        error = "malformed prove"
+      }
     else let hr = hs-receive-prove challenge-nonce (sess.peer-key) (pr.value) lattice
-    in if hs-is-failed (hr.state) then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = hs-failure-reason (hr.state) }
+    in if hs-is-failed (hr.state) then
+      TrustConnectResult {
+        session = TrustSession {
+          transport = rr.transport,
+          peer-key = sess.peer-key,
+          peer-trust = 0,
+          authenticated = False,
+          messages-exchanged = sess.messages-exchanged
+        },
+        success = False,
+        error = hs-failure-reason (hr.state)
+      }
     else let score = hs-trust-score (hr.state)
     in let sr = transport-send-message (rr.transport) tag-accept (frame-le32 score)
     in TrustConnectResult {
-      session = TrustSession { transport = sr.transport, peer-key = sess.peer-key, peer-trust = __narrow score, authenticated = True, messages-exchanged = sess.messages-exchanged },
+      session = TrustSession {
+        transport = sr.transport,
+        peer-key = sess.peer-key,
+        peer-trust = __narrow score,
+        authenticated = True,
+        messages-exchanged = sess.messages-exchanged
+      },
       success = True,
       error = ""
     }
@@ -109,7 +241,8 @@ Section: Hello Decode
     in let nr = frame-decode-bytes bs (kr.next-offset)
     in if kr.valid == False then HelloDecodeResult { hello = decode-hello-body bs, valid = False }
     else if nr.valid == False then HelloDecodeResult { hello = decode-hello-body bs, valid = False }
-    else if (nr.next-offset + 4) > list-length bs then HelloDecodeResult { hello = decode-hello-body bs, valid = False }
+    else if (nr.next-offset + 4) > list-length bs then
+      HelloDecodeResult { hello = decode-hello-body bs, valid = False }
     else HelloDecodeResult { hello = decode-hello-body bs, valid = True }
 
 Section: Agent Message Serialization
@@ -273,9 +406,13 @@ Section: Agent Message Deserialization
 
   decode-agent-msg-checked : Integer, List Integer -> AgentMsgDecodeResult
   decode-agent-msg-checked (tag) (body) =
-    if agent-tag-known tag == False then AgentMsgDecodeResult { message = decode-agent-msg tag body, valid = False }
+    if agent-tag-known tag == False then
+      AgentMsgDecodeResult { message = decode-agent-msg tag body, valid = False }
     else let msg = decode-agent-msg tag body
-    in AgentMsgDecodeResult { message = msg, valid = amsg-bytes-equal (encode-agent-msg-body msg) body }
+    in AgentMsgDecodeResult {
+      message = msg,
+      valid = amsg-bytes-equal (encode-agent-msg-body msg) body
+    }
 
   agent-tag-known : Integer -> Boolean
   agent-tag-known (t) =
@@ -337,7 +474,15 @@ Section: Agent Message Deserialization
     in let cr = decode-capability bs (r3.next-offset)
     in let expires = frame-read-le64 bs (cr.next-offset)
     in let r4 = frame-decode-bytes bs (cr.next-offset + 8)
-    in ProposeMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, capability = cr.cap, context = [], expires = expires, signature = r4.value }
+    in ProposeMsg {
+      id = r1.value,
+      from = AgentIdentity { public-key = r2.value },
+      to = AgentIdentity { public-key = r3.value },
+      capability = cr.cap,
+      context = [],
+      expires = expires,
+      signature = r4.value
+    }
 
   decode-grant-body : List Integer -> GrantMsg
   decode-grant-body (bs) =
@@ -348,7 +493,16 @@ Section: Agent Message Deserialization
     in let sr = decode-scope bs (cr.next-offset)
     in let expires = frame-read-le64 bs (sr.next-offset)
     in let r4 = frame-decode-bytes bs (sr.next-offset + 8)
-    in GrantMsg { id = r1.value, proposal = r2.value, from = AgentIdentity { public-key = r3.value }, capability = cr.cap, scope = sr.scope, expires = expires, conditions = [], signature = r4.value }
+    in GrantMsg {
+      id = r1.value,
+      proposal = r2.value,
+      from = AgentIdentity { public-key = r3.value },
+      capability = cr.cap,
+      scope = sr.scope,
+      expires = expires,
+      conditions = [],
+      signature = r4.value
+    }
 
   decode-deny-body : List Integer -> DenyMsg
   decode-deny-body (bs) =
@@ -357,7 +511,14 @@ Section: Agent Message Deserialization
     in let r3 = frame-decode-bytes bs (r2.next-offset)
     in let dr = decode-denial-reason bs (r3.next-offset)
     in let r4 = frame-decode-bytes bs (dr.next-offset)
-    in DenyMsg { id = r1.value, proposal = r2.value, from = AgentIdentity { public-key = r3.value }, reason = dr.reason, evidence = [], signature = r4.value }
+    in DenyMsg {
+      id = r1.value,
+      proposal = r2.value,
+      from = AgentIdentity { public-key = r3.value },
+      reason = dr.reason,
+      evidence = [],
+      signature = r4.value
+    }
 
   decode-explain-body : List Integer -> ExplainMsg
   decode-explain-body (bs) =
@@ -367,7 +528,14 @@ Section: Agent Message Deserialization
     in let r4 = frame-decode-bytes bs (r3.next-offset)
     in let depth = decode-explain-depth (frame-byte-at bs (r4.next-offset))
     in let r5 = frame-decode-bytes bs (r4.next-offset + 1)
-    in ExplainMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, subject = r4.value, depth = depth, signature = r5.value }
+    in ExplainMsg {
+      id = r1.value,
+      from = AgentIdentity { public-key = r2.value },
+      to = AgentIdentity { public-key = r3.value },
+      subject = r4.value,
+      depth = depth,
+      signature = r5.value
+    }
 
   decode-narrate-body : List Integer -> NarrateMsg
   decode-narrate-body (bs) =
@@ -376,7 +544,14 @@ Section: Agent Message Deserialization
     in let r3 = frame-decode-bytes bs (r2.next-offset)
     in let tr = frame-decode-text bs (r3.next-offset)
     in let r4 = frame-decode-bytes bs (tr.next-offset)
-    in NarrateMsg { id = r1.value, in-reply-to = r2.value, from = AgentIdentity { public-key = r3.value }, chain = [], summary = tr.value, signature = r4.value }
+    in NarrateMsg {
+      id = r1.value,
+      in-reply-to = r2.value,
+      from = AgentIdentity { public-key = r3.value },
+      chain = [],
+      summary = tr.value,
+      signature = r4.value
+    }
 
   decode-interrupt-body : List Integer -> InterruptMsg
   decode-interrupt-body (bs) =
@@ -386,7 +561,15 @@ Section: Agent Message Deserialization
     in let reason = decode-interrupt-reason (frame-byte-at bs (r3.next-offset))
     in let ar = decode-interrupt-action bs (r3.next-offset + 1)
     in let r4 = frame-decode-bytes bs (ar.next-offset)
-    in InterruptMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, reason = reason, action = ar.action, authority = [], signature = r4.value }
+    in InterruptMsg {
+      id = r1.value,
+      from = AgentIdentity { public-key = r2.value },
+      to = AgentIdentity { public-key = r3.value },
+      reason = reason,
+      action = ar.action,
+      authority = [],
+      signature = r4.value
+    }
 
   decode-handoff-body : List Integer -> HandoffMsg
   decode-handoff-body (bs) =
@@ -399,7 +582,17 @@ Section: Agent Message Deserialization
     in let revoke = frame-byte-at bs (sr.next-offset + 8)
     in let audit = frame-byte-at bs (sr.next-offset + 9)
     in let r4 = frame-decode-bytes bs (sr.next-offset + 10)
-    in HandoffMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, capability = cr.cap, scope = sr.scope, expires = expires, revoke-from = revoke == 1, audit-required = audit == 1, signature = r4.value }
+    in HandoffMsg {
+      id = r1.value,
+      from = AgentIdentity { public-key = r2.value },
+      to = AgentIdentity { public-key = r3.value },
+      capability = cr.cap,
+      scope = sr.scope,
+      expires = expires,
+      revoke-from = revoke == 1,
+      audit-required = audit == 1,
+      signature = r4.value
+    }
 
   decode-annotate-body : List Integer -> AnnotateMsg
   decode-annotate-body (bs) =
@@ -407,7 +600,12 @@ Section: Agent Message Deserialization
     in let r2 = frame-decode-bytes bs (r1.next-offset)
     in let r3 = frame-decode-bytes bs (r2.next-offset)
     in let r4 = frame-decode-bytes bs (r3.next-offset)
-    in AnnotateMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, payload = r3.value, signature = r4.value }
+    in AnnotateMsg {
+      id = r1.value,
+      from = AgentIdentity { public-key = r2.value },
+      payload = r3.value,
+      signature = r4.value
+    }
 
   decode-verdict-body : List Integer -> VerdictMsg
   decode-verdict-body (bs) =
@@ -416,7 +614,13 @@ Section: Agent Message Deserialization
     in let r3 = frame-decode-bytes bs (r2.next-offset)
     in let r4 = frame-decode-bytes bs (r3.next-offset)
     in let r5 = frame-decode-bytes bs (r4.next-offset)
-    in VerdictMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, in-reply-to = r3.value, payload = r4.value, signature = r5.value }
+    in VerdictMsg {
+      id = r1.value,
+      from = AgentIdentity { public-key = r2.value },
+      in-reply-to = r3.value,
+      payload = r4.value,
+      signature = r5.value
+    }
 
   decode-sync-offer-body : List Integer -> SyncOfferMsg
   decode-sync-offer-body (bs) =
@@ -441,7 +645,11 @@ Section: Agent Message Deserialization
     let r1 = frame-decode-bytes bs 0
     in let hr = frame-decode-text bs (r1.next-offset)
     in let pr = frame-decode-text bs (hr.next-offset)
-    in WorkReplyMsg { from = AgentIdentity { public-key = r1.value }, hash = hr.value, payload = pr.value }
+    in WorkReplyMsg {
+      from = AgentIdentity { public-key = r1.value },
+      hash = hr.value,
+      payload = pr.value
+    }
 
   decode-locate-request-body : List Integer -> LocateRequestMsg
   decode-locate-request-body (bs) =
@@ -454,19 +662,30 @@ Section: Agent Message Deserialization
     let r1 = frame-decode-bytes bs 0
     in let hr = frame-decode-text bs (r1.next-offset)
     in let pr = frame-decode-text bs (hr.next-offset)
-    in LocateReplyMsg { from = AgentIdentity { public-key = r1.value }, hash = hr.value, peers = pr.value }
+    in LocateReplyMsg {
+      from = AgentIdentity { public-key = r1.value },
+      hash = hr.value,
+      peers = pr.value
+    }
 
   decode-announce-request-body : List Integer -> AnnounceRequestMsg
   decode-announce-request-body (bs) =
     let r1 = frame-decode-bytes bs 0
     in let ar = frame-decode-text bs (r1.next-offset)
     in let hr = frame-decode-text bs (ar.next-offset)
-    in AnnounceRequestMsg { from = AgentIdentity { public-key = r1.value }, address = ar.value, hashes = hr.value }
+    in AnnounceRequestMsg {
+      from = AgentIdentity { public-key = r1.value },
+      address = ar.value,
+      hashes = hr.value
+    }
 
   decode-announce-reply-body : List Integer -> AnnounceReplyMsg
   decode-announce-reply-body (bs) =
     let r1 = frame-decode-bytes bs 0
-    in AnnounceReplyMsg { from = AgentIdentity { public-key = r1.value }, accepted = frame-read-le32 bs (r1.next-offset) }
+    in AnnounceReplyMsg {
+      from = AgentIdentity { public-key = r1.value },
+      accepted = frame-read-le32 bs (r1.next-offset)
+    }
 
 Section: Sub-Decoders
   CapDecodeResult = record {
@@ -479,7 +698,10 @@ Section: Sub-Decoders
     let nr = frame-decode-text bs off
     in let dir = frame-byte-at bs (nr.next-offset)
     in let sr = frame-decode-text bs (nr.next-offset + 1)
-    in CapDecodeResult { cap = Capability { name = nr.value, direction = __narrow dir, scope = sr.value }, next-offset = sr.next-offset }
+    in CapDecodeResult {
+      cap = Capability { name = nr.value, direction = __narrow dir, scope = sr.value },
+      next-offset = sr.next-offset
+    }
 
   ScopeDecodeResult = record {
     scope : Scope,
@@ -491,7 +713,10 @@ Section: Sub-Decoders
     let dir = frame-byte-at bs off
     in let pr = frame-decode-text bs (off + 1)
     in let dur = frame-read-le32 bs (pr.next-offset)
-    in ScopeDecodeResult { scope = Scope { direction = __narrow dir, path = pr.value, duration = __narrow dur }, next-offset = __narrow (pr.next-offset + 4) }
+    in ScopeDecodeResult {
+      scope = Scope { direction = __narrow dir, path = pr.value, duration = __narrow dur },
+      next-offset = __narrow (pr.next-offset + 4)
+    }
 
   DenialDecodeResult = record {
     reason : DenialReason,
@@ -501,8 +726,10 @@ Section: Sub-Decoders
   decode-denial-reason : List Integer, Integer -> DenialDecodeResult
   decode-denial-reason (bs) (off) =
     let tag = frame-byte-at bs off
-    in if tag == 0 then DenialDecodeResult { reason = InsufficientTrust, next-offset = __narrow (off + 1) }
-    else if tag == 1 then DenialDecodeResult { reason = PolicyViolation, next-offset = __narrow (off + 1) }
+    in if tag == 0 then
+      DenialDecodeResult { reason = InsufficientTrust, next-offset = __narrow (off + 1) }
+    else if tag == 1 then
+      DenialDecodeResult { reason = PolicyViolation, next-offset = __narrow (off + 1) }
     else if tag == 2 then DenialDecodeResult { reason = Expired, next-offset = __narrow (off + 1) }
     else let tr = frame-decode-text bs (off + 1)
     in DenialDecodeResult { reason = CustomDenial (tr.value), next-offset = tr.next-offset }
@@ -545,7 +772,13 @@ Section: Send and Receive Agent Messages
     in let body = encode-agent-msg-body msg
     in let sr = transport-send-message (sess.transport) tag body
     in TrustSendResult {
-      session = TrustSession { transport = sr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged + 1 },
+      session = TrustSession {
+        transport = sr.transport,
+        peer-key = sess.peer-key,
+        peer-trust = sess.peer-trust,
+        authenticated = sess.authenticated,
+        messages-exchanged = sess.messages-exchanged + 1
+      },
       success = sr.success
     }
 
@@ -559,18 +792,50 @@ Section: Send and Receive Agent Messages
   trust-recv (sess) =
     let rr = transport-try-recv (sess.transport)
     in if rr.has-message == False then TrustRecvResult {
-      session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged },
-      message = MsgDeny (DenyMsg { id = [], proposal = [], from = AgentIdentity { public-key = [] }, reason = InsufficientTrust, evidence = [], signature = [] }),
+      session = TrustSession {
+        transport = rr.transport,
+        peer-key = sess.peer-key,
+        peer-trust = sess.peer-trust,
+        authenticated = sess.authenticated,
+        messages-exchanged = sess.messages-exchanged
+      },
+      message = MsgDeny (DenyMsg {
+        id = [],
+        proposal = [],
+        from = AgentIdentity { public-key = [] },
+        reason = InsufficientTrust,
+        evidence = [],
+        signature = []
+      }),
       has-message = False
     }
     else let dr = decode-agent-msg-checked (rr.tag) (rr.body)
     in if dr.valid == False then TrustRecvResult {
-      session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged },
-      message = MsgDeny (DenyMsg { id = [], proposal = [], from = AgentIdentity { public-key = [] }, reason = InsufficientTrust, evidence = [], signature = [] }),
+      session = TrustSession {
+        transport = rr.transport,
+        peer-key = sess.peer-key,
+        peer-trust = sess.peer-trust,
+        authenticated = sess.authenticated,
+        messages-exchanged = sess.messages-exchanged
+      },
+      message = MsgDeny (DenyMsg {
+        id = [],
+        proposal = [],
+        from = AgentIdentity { public-key = [] },
+        reason = InsufficientTrust,
+        evidence = [],
+        signature = []
+      }),
       has-message = False
     }
     else TrustRecvResult {
-      session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged + 1 },
+      session = TrustSession {
+        transport = rr.transport,
+        peer-key = sess.peer-key,
+        peer-trust = sess.peer-trust,
+        authenticated = sess.authenticated,
+        messages-exchanged = sess.messages-exchanged + 1
+      },
       message = dr.message,
       has-message = True
     }
@@ -578,7 +843,13 @@ Section: Send and Receive Agent Messages
   trust-feed-frame : TrustSession, List Integer -> TrustSession
   trust-feed-frame (sess) (frame) =
     let rr = transport-process-frame (sess.transport) frame
-    in TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged }
+    in TrustSession {
+      transport = rr.transport,
+      peer-key = sess.peer-key,
+      peer-trust = sess.peer-trust,
+      authenticated = sess.authenticated,
+      messages-exchanged = sess.messages-exchanged
+    }
 
 Section: Session Queries
   trust-is-authenticated : TrustSession -> Boolean

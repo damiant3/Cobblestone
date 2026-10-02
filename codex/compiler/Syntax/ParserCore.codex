@@ -96,7 +96,10 @@ Section: Parser State
       in let st2 = __record-set (__record-set st1 "stall" 0) "stall-pos" (0 - 1)
       in advance st2
     else
-      __record-set st "bag" (bag-add (st.bag) (make-error cdx-resource-exhausted ("compiler resource exhausted in parser." & op & " (budget " & integer-to-text max-parse-fuel & ")") (token-to-span (current st))))
+      let prefix = "compiler resource exhausted in parser." & op & " (budget "
+      in let msg = prefix & integer-to-text max-parse-fuel & ")"
+      in let diag = make-error cdx-resource-exhausted msg (token-to-span (current st))
+      in __record-set st "bag" (bag-add (st.bag) diag)
 
   token-to-span : Token -> SourceSpan
   token-to-span (tok) =
@@ -146,7 +149,12 @@ Section: TokenKind Predicates
   is-keyword : TokenKind -> Boolean
   is-keyword (k) =
     when k
-      is LetKeyword | InKeyword | BetweenKeyword | IfKeyword | IsKeyword | OtherwiseKeyword | ThenKeyword | ElseKeyword | WhenKeyword | WhereKeyword | SuchThatKeyword | ActKeyword | EndKeyword | RecordKeyword | CitesKeyword | GroundsKeyword | ClaimKeyword | ProofKeyword | QedKeyword | InductionKeyword | ForAllKeyword | ThereExistsKeyword | LinearKeyword | MutableKeyword | PunctualKeyword | UnitKeyword | EffectKeyword | ClassKeyword | InstanceKeyword | WithKeyword | WithTimeoutKeyword | TryingKeyword | LazyKeyword | ForKeyword | RevisedKeyword | TrueKeyword | FalseKeyword -> True
+      is LetKeyword | InKeyword | BetweenKeyword | IfKeyword | IsKeyword | OtherwiseKeyword | ThenKeyword |
+         ElseKeyword | WhenKeyword | WhereKeyword | SuchThatKeyword | ActKeyword | EndKeyword | RecordKeyword |
+         CitesKeyword | GroundsKeyword | ClaimKeyword | ProofKeyword | QedKeyword | InductionKeyword |
+         ForAllKeyword | ThereExistsKeyword | LinearKeyword | MutableKeyword | PunctualKeyword | UnitKeyword |
+         EffectKeyword | ClassKeyword | InstanceKeyword | WithKeyword | WithTimeoutKeyword | TryingKeyword |
+         LazyKeyword | ForKeyword | RevisedKeyword | TrueKeyword | FalseKeyword -> True
       is otherwise -> False
 
   is-revised-keyword : TokenKind -> Boolean
@@ -170,7 +178,8 @@ Section: TokenKind Predicates
   is-field-name-token : TokenKind -> Boolean
   is-field-name-token (k) =
     when k
-      is Identifier | ActKeyword | EndKeyword | QedKeyword | EffectKeyword | WhereKeyword | WithKeyword | LinearKeyword | ClaimKeyword | ProofKeyword | RecordKeyword | ClassKeyword | InstanceKeyword -> True
+      is Identifier | ActKeyword | EndKeyword | QedKeyword | EffectKeyword | WhereKeyword | WithKeyword |
+         LinearKeyword | ClaimKeyword | ProofKeyword | RecordKeyword | ClassKeyword | InstanceKeyword -> True
       is otherwise -> False
 
   is-type-ident : TokenKind -> Boolean
@@ -436,7 +445,12 @@ Section: TokenKind Predicates
   is-reserved-keyword : TokenKind -> Boolean
   is-reserved-keyword (k) =
     when k
-      is LetKeyword | InKeyword | BetweenKeyword | IfKeyword | IsKeyword | OtherwiseKeyword | ThenKeyword | ElseKeyword | WhenKeyword | WhereKeyword | SuchThatKeyword | ActKeyword | EndKeyword | RecordKeyword | CitesKeyword | GroundsKeyword | ClaimKeyword | ProofKeyword | QedKeyword | InductionKeyword | ForAllKeyword | ThereExistsKeyword | LinearKeyword | MutableKeyword | PunctualKeyword | UnitKeyword | LazyKeyword | EffectKeyword | WithKeyword | RevisedKeyword | TrueKeyword | FalseKeyword | ClassKeyword | InstanceKeyword -> True
+      is LetKeyword | InKeyword | BetweenKeyword | IfKeyword | IsKeyword | OtherwiseKeyword | ThenKeyword |
+         ElseKeyword | WhenKeyword | WhereKeyword | SuchThatKeyword | ActKeyword | EndKeyword | RecordKeyword |
+         CitesKeyword | GroundsKeyword | ClaimKeyword | ProofKeyword | QedKeyword | InductionKeyword |
+         ForAllKeyword | ThereExistsKeyword | LinearKeyword | MutableKeyword | PunctualKeyword | UnitKeyword |
+         LazyKeyword | EffectKeyword | WithKeyword | RevisedKeyword | TrueKeyword | FalseKeyword |
+         ClassKeyword | InstanceKeyword -> True
       is otherwise -> False
 
   is-minus : TokenKind -> Boolean
@@ -514,7 +528,8 @@ Section: TokenKind Predicates
   is-app-start : TokenKind -> Boolean
   is-app-start (k) =
     when k
-      is Identifier | TypeIdentifier | IntegerLiteral | NumberLiteral | TextLiteral | CharLiteral | TrueKeyword | FalseKeyword | LeftParen | LeftBracket | ActKeyword | WithKeyword | LazyKeyword -> True
+      is Identifier | TypeIdentifier | IntegerLiteral | NumberLiteral | TextLiteral | CharLiteral |
+         TrueKeyword | FalseKeyword | LeftParen | LeftBracket | ActKeyword | WithKeyword | LazyKeyword -> True
       is otherwise -> False
 
  A minus that touches the token after it is a negation and begins an
@@ -535,7 +550,8 @@ Section: TokenKind Predicates
   is-compound : Expr -> Boolean
   is-compound (e) =
     when e
-      is MatchExpr (s) (arms) | IfExpr (c) (t) (el) | LetExpr (binds) (body) | ActExpr (stmts) | FieldAssignExpr (l) (f) (r) | SeqExpr (a) (b) | LambdaExpr (ltok) (ps) (bd) | ForExpr (v) (l) (b) -> True
+      is MatchExpr (s) (arms) | IfExpr (c) (t) (el) | LetExpr (binds) (body) | ActExpr (stmts) |
+         FieldAssignExpr (l) (f) (r) | SeqExpr (a) (b) | LambdaExpr (ltok) (ps) (bd) | ForExpr (v) (l) (b) -> True
       is otherwise -> False
 
   is-type-arg-start : TokenKind -> Boolean
@@ -578,7 +594,10 @@ Section: Token Helpers
   expect (kind) (st) =
     if current-kind st == kind then advance st
     else let tok = current st
-    in __record-set st "bag" (bag-add (st.bag) (make-error cdx-expected-token-kind ("Expected token kind mismatch, got " & got-text st tok) (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+    in let msg = "Expected token kind mismatch, got " & got-text st tok
+    in let span = span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id)
+    in let diag = make-error cdx-expected-token-kind msg span
+    in __record-set st "bag" (bag-add (st.bag) diag)
 
   expect-coded : TokenKind, Integer between 0 and 65535, Text, ParseState -> ParseState
   expect-coded (kind) (code) (msg) (st) =
@@ -593,7 +612,11 @@ Section: Token Helpers
   report-reserved-keyword : Text, ParseState -> ParseState
   report-reserved-keyword (context) (st) =
     let tok = current st
-    in __record-set st "bag" (bag-add (st.bag) (make-error cdx-reserved-keyword-as-identifier ("'" & (token-text tok) & "' is a reserved keyword and cannot be used as " & context & "; rename it") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+    in let prefix = "'" & (token-text tok) & "' is a reserved keyword and cannot be used as "
+    in let msg = prefix & context & "; rename it"
+    in let span = span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id)
+    in let diag = make-error cdx-reserved-keyword-as-identifier msg span
+    in __record-set st "bag" (bag-add (st.bag) diag)
 
   skip-newlines-pos : List Token, Integer between 0 and 4294967295, Integer -> Integer between 0 and 4294967295
   skip-newlines-pos (tokens) (pos) (len) =

@@ -32,9 +32,11 @@ const pwsh = (script, args) => execFileSync('pwsh', ['-NoProfile', '-File', join
 // (f32), then cond (f32, 77 x 768 a chunk).
 const ref = (name) => {
   const b = readFileSync(join(repo, 'codex', 'test', 'apps', 'clip-sd15-ref', name + '.ref')), n = b.readInt32LE(0);
-  return { n, ids: Array.from({ length: 77 }, (_, i) => b.readInt32LE(4 + i * 4)), weights: Array.from({ length: 77 * n }, (_, i) => b.readFloatLE(4 + n * 308 + i * 4)), cond: Array.from({ length: 77 * 768 }, (_, i) => b.readFloatLE(4 + n * 616 + i * 4)) };
+  return { n, ids: Array.from({ length: 77 }, (_, i) => b.readInt32LE(4 + i * 4)), weights: Array.from({ length: 77 * n }, (_, i) => b.readFloatLE(4 + n * 308 + i * 4)), cond: Array.from({ length: 77 * 768 * n }, (_, i) => b.readFloatLE(4 + n * 616 + i * 4)) };
 };
-const cat = ref('cat'), empty = ref('empty'), emph = ref('emphasis');
+const cat = ref('cat'), empty = ref('empty'), emph = ref('emphasis'), long = ref('long'), two = ref('two');
+const longPrompt = 'painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, a viking smithy at night where glowing runes are hammered into an amulet on an anvil, sparks flying, open book of runes on the bench, snowy mountains through an arched window, carved dragon heads on the rafters, frost on the windows, a sleeping wolf by the hearth BREAK a longship on a calm fjord at dawn';
+const twoPrompt = 'painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, a longship with a striped sail on a calm fjord at dawn, (mist:1.2) over the water, snowy peaks, a lighthouse of stacked stones, ravens circling, oars dipping in unison, shields along the rail, a carved serpent prow, golden light on the waves';
 const tokDir = 'D:\\AI\\DiffusionForge\\webui\\backend\\huggingface\\stabilityai\\stable-diffusion-xl-base-1.0\\tokenizer';
 const emphPrompt = '(masterpiece:1.2), ((best quality)), a [red] cat on a \\(wooden\\) table, (glowing runes:0.8), [[blurry]] (sharp:1.5 edges';
 const maxErr = (words, want, skipBos) => {
@@ -50,7 +52,7 @@ try {
   pwsh('build/bundle-app.ps1', ['-Src', join(repo, 'codex', 'plugs', 'html', 'arms', 'ClipArm.codex'), '-Out', join(work, 'ca.codex')]);
   pwsh('codex/plugs/html/run.ps1', ['-Src', join(work, 'ca.codex'), '-Out', join(work, 'ca.html')]);
   pwsh('codex/plugs/wgsl/run.ps1', ['-Src', join(repo, 'codex', 'foreword', 'gpu', 'BrowserKernels.codex'), '-Out', join(work, 'bk.wgsl')]);
-  const data = { bk: readFileSync(join(work, 'bk.wgsl'), 'utf8'), cat: JSON.stringify(cat.ids), empty: JSON.stringify(empty.ids), emph: emphPrompt, vocab: JSON.stringify(Array.from(readFileSync(join(tokDir, 'vocab.json')))), merges: JSON.stringify(Array.from(readFileSync(join(tokDir, 'merges.txt')))) };
+  const data = { bk: readFileSync(join(work, 'bk.wgsl'), 'utf8'), cat: JSON.stringify(cat.ids), empty: JSON.stringify(empty.ids), emph: emphPrompt, long: longPrompt, two: twoPrompt, vocab: JSON.stringify(Array.from(readFileSync(join(tokDir, 'vocab.json')))), merges: JSON.stringify(Array.from(readFileSync(join(tokDir, 'merges.txt')))) };
   const html = readFileSync(join(work, 'ca.html'), 'utf8').replace('<script>', `<script>window.__DATA=${JSON.stringify(data)};</script><script>`);
   const port = await freePort();
   server = http.createServer((q, r) => { r.writeHead(200, { 'Content-Type': 'text/html' }); r.end(html); });
@@ -107,6 +109,20 @@ try {
   ok('emphasis cond, all rows within Forge f16 (0.0303)', ea <= 0.0303, `max ${ea.toExponential(3)}`);
   ok('emphasis cond, non-BOS rows within Forge f16 (0.01499)', eb <= 0.01499, `max ${eb.toExponential(3)}`);
   ok('control, the same ids with every weight 1, misses the non-BOS bound', en > 0.01499, `max ${en.toExponential(3)}`);
+  // Several chunks (codex/test/apps/clip-sd15-prompt's long, three chunks, and
+  // two, two chunks with an emphasised one): the page's cond is the chunks' end
+  // to end, graded over every row by that test's bounds. The control is the
+  // three-chunk cond shifted by one chunk, which the grade must see.
+  const c5 = parse(st.c5), c6 = parse(st.c6);
+  ok('the several-chunk prompts are as long as Forge\'s', long.n === 3 && two.n === 2 && st.rows5 === 231 && st.rows6 === 154, `long ${st.rows5} rows (Forge ${77 * long.n}), two ${st.rows6} (Forge ${77 * two.n})`);
+  for (const [label, got, want, all, body] of [['long (3 chunks)', c5, long, 0.03046, 0.01583], ['two (2 chunks)', c6, two, 0.03046, 0.02052]]) {
+    const ea = maxErr(got, want.cond, false), eb = maxErr(got, want.cond, true);
+    ok(`${label} cond, all rows within Forge f16 (${all})`, ea <= all, `max ${ea.toExponential(3)}`);
+    ok(`${label} cond, non-BOS rows within Forge f16 (${body})`, eb <= body, `max ${eb.toExponential(3)}`);
+  }
+  const shifted = Array.isArray(c5) ? c5.slice(77 * 768).concat(c5.slice(0, 77 * 768)) : null;
+  const esh = maxErr(shifted, long.cond, true);
+  ok('control, the three-chunk cond shifted by one chunk, misses the non-BOS bound', esh > 0.01583, `max ${esh.toExponential(3)}`);
 } catch (e) {
   ok('the arm ran', false, String(e && e.message || e));
 } finally {

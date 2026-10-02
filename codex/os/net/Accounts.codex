@@ -13,7 +13,12 @@ Section: Model
 
   Account = record { acc-id : Integer, handle : Text, display : Text, pwhash : Text }
   Session = record { token : Text, sess-uid : Integer }
-  AuthState = record { accounts : List Account, sessions : List Session, next-id : Integer, nonce : Integer }
+  AuthState = record {
+    accounts : List Account,
+    sessions : List Session,
+    next-id : Integer,
+    nonce : Integer
+  }
   AuthStep = record { astate : AuthState, resp : Text }
 
   auth-empty : AuthState
@@ -63,7 +68,7 @@ Section: Lookups
     if i >= n then acc
     else let se = list-at xs i
     in if se.token == tok then drop-token xs (i + 1) n tok acc
-       else drop-token xs (i + 1) n tok (list-push acc se)
+    else drop-token xs (i + 1) n tok (list-push acc se)
 
   whoami : AuthState, Text -> Maybe Account
   whoami (s) (tok) =
@@ -85,7 +90,12 @@ Section: Operations
         let id = s.next-id
         in let ph = hash-pw (salt-for id) pw
         in let acc = Account { acc-id = id, handle = h, display = d, pwhash = ph }
-        in let s2 = AuthState { accounts = list-push (s.accounts) acc, sessions = s.sessions, next-id = id + 1, nonce = s.nonce + 1 }
+        in let s2 = AuthState {
+          accounts = list-push (s.accounts) acc,
+          sessions = s.sessions,
+          next-id = id + 1,
+          nonce = s.nonce + 1
+        }
         in act
           sv <- accounts-save s2
           AuthStep { astate = s2, resp = "{\"id\":" & show id & ",\"handle\":" & jstr h & "}" }
@@ -98,15 +108,25 @@ Section: Operations
       is Just (a) ->
         if hash-pw (salt-for (a.acc-id)) pw == a.pwhash
         then let tok = digest (h & "|" & show (s.nonce))
-          in let sess = Session { token = tok, sess-uid = a.acc-id }
-          in let s2 = AuthState { accounts = s.accounts, sessions = list-push (s.sessions) sess, next-id = s.next-id, nonce = s.nonce + 1 }
-          in AuthStep { astate = s2, resp = "{\"token\":" & jstr tok & ",\"handle\":" & jstr h & "}" }
+        in let sess = Session { token = tok, sess-uid = a.acc-id }
+        in let s2 = AuthState {
+          accounts = s.accounts,
+          sessions = list-push (s.sessions) sess,
+          next-id = s.next-id,
+          nonce = s.nonce + 1
+        }
+        in AuthStep { astate = s2, resp = "{\"token\":" & jstr tok & ",\"handle\":" & jstr h & "}" }
         else AuthStep { astate = s, resp = err-json "invalid credentials" }
 
   auth-logout : AuthState, Text -> AuthStep
   auth-logout (s) (tok) =
     let kept = drop-token (s.sessions) 0 (list-length (s.sessions)) tok []
-    in let s2 = AuthState { accounts = s.accounts, sessions = kept, next-id = s.next-id, nonce = s.nonce }
+    in let s2 = AuthState {
+      accounts = s.accounts,
+      sessions = kept,
+      next-id = s.next-id,
+      nonce = s.nonce
+    }
     in AuthStep { astate = s2, resp = "{\"ok\":true}" }
 
   auth-me : AuthState, Text -> Text
@@ -131,7 +151,7 @@ Section: Request Parsing
     else let kv = text-split (list-at parts i) "="
     in if list-length kv >= 2
        then (if list-at kv 0 == key then list-at kv 1 else qp-scan parts (i + 1) n key)
-       else qp-scan parts (i + 1) n key
+    else qp-scan parts (i + 1) n key
 
   qp : Text, Text -> Text
   qp (p) (key) =
@@ -174,7 +194,7 @@ Section: Durability
     if i >= maxlen then acc
     else let c = peek-byte buf (off + i)
     in if c == 0 then acc
-       else ar-fixed-loop buf off (i + 1) maxlen (acc & cce-foreign-byte-text c)
+    else ar-fixed-loop buf off (i + 1) maxlen (acc & cce-foreign-byte-text c)
 
   ar-fixed : Integer, Integer, Integer -> Text
   ar-fixed (buf) (off) (maxlen) = ar-fixed-loop buf off 0 maxlen ""
@@ -188,7 +208,12 @@ Section: Durability
 
   ar-acct : Integer, Integer -> Account
   ar-acct (buf) (so) =
-    Account { acc-id = ar-u16 buf so, handle = ar-fixed buf (so + 4) 30, display = ar-fixed buf (so + 36) 30, pwhash = ar-fixed buf (so + 68) 70 }
+    Account {
+      acc-id = ar-u16 buf so,
+      handle = ar-fixed buf (so + 4) 30,
+      display = ar-fixed buf (so + 36) 30,
+      pwhash = ar-fixed buf (so + 68) 70
+    }
 
   aw-accts : Integer, List Account, Integer, Integer -> Integer
   aw-accts (buf) (xs) (i) (n) =
@@ -222,7 +247,8 @@ Section: Routing + Serve Loop
   auth-route : (Maybe Account, Text -> [Device.Block] Text), AuthState, Text -> [Device.Block] AuthStep
   auth-route (app) (s) (path) =
     let base = path-base path
-    in if base == "/api/auth/register" then auth-register s (qp path "u") (qp path "d") (qp path "p")
+    in if base == "/api/auth/register" then
+      auth-register s (qp path "u") (qp path "d") (qp path "p")
     else if base == "/api/auth/login" then auth-login s (qp path "u") (qp path "p")
     else if base == "/api/auth/logout" then auth-logout s (qp path "t")
     else if base == "/api/auth/me" then AuthStep { astate = s, resp = auth-me s (qp path "t") }
@@ -262,4 +288,3 @@ Section: Routing + Serve Loop
     end
 
 Page 1
-

@@ -1,0 +1,24 @@
+Chapter: SparkLlmContextArm
+  cites Spark chapter SparkLlm
+  cites Foreword chapter Console
+
+  slt-yes : Boolean -> Text
+  slt-yes (v) = if v then "yes" else "NO"
+
+  slt-context : Text -> Boolean
+  slt-context (result) = when json-parse result
+    is Just (value) -> json-get-bool value "ok" False & text-contains (json-get-str value "context" "") "lighthouse" & text-contains (json-get-str value "context" "") "desert" == False
+    is None -> False
+
+  slt-refusal : Text -> Boolean
+  slt-refusal (result) = when json-parse result is Just (value) -> json-get-bool value "ok" True == False & text-length (json-get-str value "error" "") > 0 is None -> False
+
+  opening : [Console] Nothing =
+    let matched = spark-llm-context "{\"query\":\"lighthouse\",\"documents\":[{\"name\":\"Coast.md\",\"content\":\"A lighthouse overlooks the icy sea.\"},{\"name\":\"Desert.md\",\"content\":\"A desert caravan crosses dunes.\"}]}"
+    in let empty = spark-llm-context "{\"query\":\"nothing\",\"documents\":[]}"
+    in let no-context = when json-parse empty is Just (value) -> json-get-bool value "ok" False & json-get-str value "context" "bad" == "" is None -> False
+    in act
+      print-line-uni ("shared document matcher supplies relevant context: " & slt-yes (slt-context matched))
+      print-line-uni ("empty context is explicit successful result: " & slt-yes no-context)
+      print-line-uni ("malformed and unnamed context refuse: " & slt-yes (slt-refusal (spark-llm-context "bad") & slt-refusal (spark-llm-context "{\"query\":\"x\",\"documents\":[{}]}")))
+    end

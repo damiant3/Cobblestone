@@ -1,0 +1,74 @@
+Chapter: MusicLMArm
+  cites Spark chapter MusicLMLoad
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  la-refuse : Text -> Integer
+  la-refuse (why) = let e = state-set-text "error" why in state-set "done" 1
+
+  la-got : MusicLM, MusicLMOutput, Integer, Integer, Integer, Text -> Integer
+  la-got (w) (out) (case) (rows) (index) (data) =
+    let written = state-set-text ("c" & show case & "-v" & show index) data
+    in la-download w out case rows (index + 1)
+
+  la-download : MusicLM, MusicLMOutput, Integer, Integer, Integer -> Integer
+  la-download (w) (out) (case) (rows) (index) =
+    if index >= w.ml-layers + 4 then (let f = music-lm-output-free out in la-production w case)
+    else let h = if index < w.ml-layers then list-at (out.ml-blocks) index else list-at (out.ml-heads) (index - w.ml-layers)
+    in let width = if index < w.ml-layers then (w.ml-weights).t5m-width else 2048
+    in gpu-buf-download-then h 0 (rows * width * 4) (\r -> la-got w out case rows index r)
+
+  la-production-got : MusicLM, MusicLMOutput, Integer, Integer, Integer, Text -> Integer
+  la-production-got (w) (out) (case) (rows) (head) (data) =
+    let a = state-set-text ("p" & show case & "-h" & show head) data
+    in la-production-download w out case rows (head + 1)
+
+  la-production-download : MusicLM, MusicLMOutput, Integer, Integer, Integer -> Integer
+  la-production-download (w) (out) (case) (rows) (head) =
+    if head >= 4 then (let f = music-lm-output-free out in la-case w (case + 1))
+    else gpu-buf-download-then (list-at (out.ml-heads) head) 0 (rows * 2048 * 4) (\r -> la-production-got w out case rows head r)
+
+  la-production : MusicLM, Integer -> Integer
+  la-production (w) (case) =
+    let ids = el-bytes (page-data ("codes" & show case))
+    in let cond = el-bytes (page-data ("condition" & show case))
+    in let rows = text-to-integer (page-data ("rows" & show case))
+    in let context = bt5-buffer (list-length cond * 4)
+    in let written = gpu-buf-write-words context 0 cond
+    in let out = music-lm-forward (page-data "base") (page-data "code") w ids rows context (list-length cond / ((w.ml-weights).t5m-width)) False
+    in let f = be-drop context
+    in if written == False | list-length (out.ml-heads) /= 4 then (let f2 = music-lm-output-free out in let f3 = bt5-close (w.ml-weights) in la-refuse "MusicGen LM production forward refused")
+    else la-production-download w out case rows 0
+
+  la-case : MusicLM, Integer -> Integer
+  la-case (w) (case) =
+    if case >= text-to-integer (page-data "count") then (let f = bt5-close (w.ml-weights) in let e = state-set-text "error" (gpu-error 0) in state-set "done" 1)
+    else let ids = el-bytes (page-data ("codes" & show case))
+    in let cond = el-bytes (page-data ("condition" & show case))
+    in let rows = text-to-integer (page-data ("rows" & show case))
+    in let keys = list-length cond / ((w.ml-weights).t5m-width)
+    in let context = bt5-buffer (list-length cond * 4)
+    in let written = gpu-buf-write-words context 0 cond
+    in let out = music-lm-forward (page-data "base") (page-data "code") w ids rows context keys True
+    in let f = be-drop context
+    in let seen = state-set "case" case
+    in if written == False | list-length (out.ml-heads) /= 4 then (let f2 = music-lm-output-free out in let f3 = bt5-close (w.ml-weights) in la-refuse "MusicGen LM forward refused")
+    else la-download w out case rows 0
+
+  la-ready : MusicLM -> Integer
+  la-ready (w) = let a = state-set "need" 1 in let b = state-set "layers" (w.ml-layers) in la-case w 0
+
+  la-opened : Text, Integer, Text -> Integer
+  la-opened (file) (size) (result) = if text-contains result "\"ok\":true" then music-lm-load file size la-ready la-refuse else la-refuse result
+
+  la-picked : Text -> Integer
+  la-picked (data) =
+    let obj = json-parse-obj data
+    in gpu-open-then (\r -> la-opened (json-obj-field obj "name") (text-to-integer (json-obj-field obj "size")) r)
+
+  la-pick : Text -> Integer
+  la-pick (id) = if state-get "need" == 0 then (let busy = state-set "need" (0 - 1) in pick-file-then ".bin" la-picked) else 0
+
+  opening : [Console] Integer
+  opening = let c = dom-on-click (dom-query "html") la-pick in state-set "need" 0

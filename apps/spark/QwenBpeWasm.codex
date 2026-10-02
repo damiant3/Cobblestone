@@ -1,0 +1,238 @@
+Chapter: QwenBpeWasm
+
+ We say:
+
+  wasm-exports : Text = "|bpe-new|bpe-pairs|bpe-bytes|bpe-init|bpe-input|bpe-encode|bpe-used|"
+
+  BpJob = record {
+    bp-model : Integer,
+    bp-nodes : Integer,
+    bp-heap : Integer
+  }
+
+  bp-u32 : Integer, Integer -> Integer
+  bp-u32 (p) (o) = bit-and (peek-32 p o) #FFFFFFFF
+
+  bp-cap : Integer, Integer -> Integer
+  bp-cap (n) (c) = if c >= n * 2 then c else bp-cap n (c * 2)
+
+  bp-alloc : Integer -> Integer
+  bp-alloc (n) = let p = alloc-bytes (n + 8) in (p + 7) / 8 * 8
+
+  bp-zero : Integer, Integer, Integer -> Integer
+  bp-zero (p) (n) (i) = if i >= n then 0 else let z = poke-qword p i 0 in bp-zero p n (i + 8)
+
+  bp-hash : Integer, Integer, Integer -> Integer
+  bp-hash (a) (b) (mask) =
+    let h = bit-and (bit-xor (a * #9E3779B1) (b * #85EBCA77)) #FFFFFFFF
+    in let h1 = bit-and (bit-xor h (bit-shru h 16) * #45D9F3B) #FFFFFFFF
+    in let h2 = bit-and (bit-xor h1 (bit-shru h1 16) * #45D9F3B) #FFFFFFFF
+    in bit-and (bit-xor h2 (bit-shru h2 16)) mask
+
+  bpe-new : Integer, Integer -> Integer
+  bpe-new (count) (vocab) =
+    if count < 0 | count > 1000000 | vocab < 256 | vocab > 1000000 then 0
+    else let m = bp-alloc 72
+    in let cap = bp-cap count 256
+    in let table = bp-alloc (cap * 16)
+    in let bytes = bp-alloc 1024
+    in let input = bp-alloc 262144
+    in let cleared = bp-zero table (cap * 16) 0
+    in let a = poke-qword m 0 table
+    in let b = poke-qword m 8 (cap - 1)
+    in let c = poke-qword m 16 count
+    in let d = poke-qword m 24 vocab
+    in let e = poke-qword m 32 bytes
+    in let f = poke-qword m 40 input
+    in let mark = __heap-save
+    in let pairs = bp-alloc (count * 12)
+    in let g = poke-qword m 48 pairs
+    in let h = poke-qword m 56 mark
+    in let j = poke-qword m 64 0
+    in m
+
+  bpe-pairs : Integer -> Integer
+  bpe-pairs (m) = peek-qword m 48
+
+  bpe-bytes : Integer -> Integer
+  bpe-bytes (m) = peek-qword m 32
+
+  bpe-input : Integer -> Integer
+  bpe-input (m) = peek-qword m 40
+
+  bpe-used : Integer -> Integer
+  bpe-used (m) = __heap-save
+
+  bp-find : Integer, Integer, Integer, Integer, Integer -> Integer
+  bp-find (m) (a) (b) (slot) (probes) =
+    if probes >= 1024 then 0
+    else let p = peek-qword m 0 + slot * 16
+    in let left = bp-u32 p 0
+    in if left == 0 then 0
+    else if left == a + 1 & bp-u32 p 4 == b then p
+    else bp-find m a b (bit-and (slot + 1) (peek-qword m 8)) (probes + 1)
+
+  bp-insert : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bp-insert (m) (a) (b) (value) (rank) (slot) (probes) =
+    if probes >= 1024 then 0
+    else let p = peek-qword m 0 + slot * 16
+    in let left = bp-u32 p 0
+    in if left == a + 1 & bp-u32 p 4 == b then 0
+    else if left /= 0 then bp-insert m a b value rank (bit-and (slot + 1) (peek-qword m 8)) (probes + 1)
+    else let x = poke-32 p 0 (a + 1)
+    in let y = poke-32 p 4 b
+    in let z = poke-32 p 8 (value + 1)
+    in let w = poke-32 p 12 rank
+    in 1
+
+  bp-init-bytes : Integer, Integer -> Boolean
+  bp-init-bytes (m) (i) =
+    if i >= 256 then True
+    else if bp-u32 (peek-qword m 32) (i * 4) >= peek-qword m 24 then False
+    else bp-init-bytes m (i + 1)
+
+  bp-init-pairs : Integer, Integer -> Integer
+  bp-init-pairs (m) (i) =
+    if i >= peek-qword m 16 then 1
+    else let p = peek-qword m 48 + i * 12
+    in let a = bp-u32 p 0
+    in let b = bp-u32 p 4
+    in let value = bp-u32 p 8
+    in if a >= peek-qword m 24 | b >= peek-qword m 24 | value >= peek-qword m 24 then 0
+    else if bp-insert m a b value i (bp-hash a b (peek-qword m 8)) 0 == 0 then 0
+    else bp-init-pairs m (i + 1)
+
+  bpe-init : Integer -> Integer
+  bpe-init (m) =
+    if peek-qword m 64 /= 0 | peek-qword m 48 == 0 then 0
+    else let ok = if bp-init-bytes m 0 then bp-init-pairs m 0 else 0
+    in let restored = __heap-restore (peek-qword m 56)
+    in let a = poke-qword m 48 0
+    in let b = poke-qword m 64 ok
+    in ok
+
+  bp-node : BpJob, Integer -> Integer
+  bp-node (s) (i) = s.bp-nodes + (i - 1) * 16
+
+  bp-entry : BpJob, Integer -> Integer
+  bp-entry (s) (i) = s.bp-heap + i * 24
+
+  bp-swap : Integer, Integer, Integer -> Integer
+  bp-swap (a) (b) (i) =
+    if i >= 24 then 0
+    else let x = bp-u32 a i
+    in let y = poke-32 a i (bp-u32 b i)
+    in let z = poke-32 b i x
+    in bp-swap a b (i + 4)
+
+  bp-less : BpJob, Integer, Integer -> Boolean
+  bp-less (s) (a) (b) =
+    let p = bp-entry s a
+    in let q = bp-entry s b
+    in bp-u32 p 0 < bp-u32 q 0 | (bp-u32 p 0 == bp-u32 q 0 & bp-u32 p 4 < bp-u32 q 4)
+
+  bp-up : BpJob, Integer -> Integer
+  bp-up (s) (i) =
+    if i == 0 then 0
+    else let parent = (i - 1) / 2
+    in if bp-less s i parent then let swapped = bp-swap (bp-entry s i) (bp-entry s parent) 0 in bp-up s parent
+    else 0
+
+  bp-down : BpJob, Integer, Integer -> Integer
+  bp-down (s) (size) (i) =
+    let left = i * 2 + 1
+    in if left >= size then 0
+    else let child = if left + 1 < size & bp-less s (left + 1) left then left + 1 else left
+    in if bp-less s child i then let swapped = bp-swap (bp-entry s child) (bp-entry s i) 0 in bp-down s size child
+    else 0
+
+  bp-offer : BpJob, Integer, Integer -> Integer
+  bp-offer (s) (size) (left) =
+    if left == 0 then size
+    else let p = bp-node s left
+    in let right = bp-u32 p 8
+    in if right == 0 then size
+    else let q = bp-node s right
+    in let a = bp-u32 p 0 - 1
+    in let b = bp-u32 q 0 - 1
+    in let m = s.bp-model
+    in let pair = bp-find m a b (bp-hash a b (peek-qword m 8)) 0
+    in if pair == 0 then size
+    else let entry = bp-entry s size
+    in let v0 = poke-32 entry 0 (bp-u32 pair 12)
+    in let v1 = poke-32 entry 4 left
+    in let v2 = poke-32 entry 8 right
+    in let v3 = poke-32 entry 12 (bp-u32 p 12)
+    in let v4 = poke-32 entry 16 (bp-u32 q 12)
+    in let v5 = poke-32 entry 20 (bp-u32 pair 8)
+    in let ordered = bp-up s size
+    in size + 1
+
+  bp-seed-nodes : BpJob, Integer, Integer -> Integer
+  bp-seed-nodes (s) (n) (i) =
+    if i >= n then 0
+    else let m = s.bp-model
+    in let p = bp-node s (i + 1)
+    in let byte = peek-byte (peek-qword m 40) i
+    in let a = poke-32 p 0 (bp-u32 (peek-qword m 32) (byte * 4) + 1)
+    in let b = poke-32 p 4 i
+    in let c = poke-32 p 8 (if i + 1 < n then i + 2 else 0)
+    in let d = poke-32 p 12 1
+    in bp-seed-nodes s n (i + 1)
+
+  bp-seed-heap : BpJob, Integer, Integer, Integer -> Integer
+  bp-seed-heap (s) (n) (i) (size) = if i >= n then size else bp-seed-heap s n (i + 1) (bp-offer s size i)
+
+  bp-merge : BpJob, Integer, Integer, Integer, Integer -> Integer
+  bp-merge (s) (size) (left) (right) (value) =
+    let p = bp-node s left
+    in let q = bp-node s right
+    in let following = bp-u32 q 8
+    in let a = poke-32 p 0 value
+    in let b = poke-32 p 8 following
+    in let c = poke-32 p 12 (bp-u32 p 12 + 1)
+    in let d = poke-32 q 0 0
+    in let e = if following == 0 then 0 else poke-32 (bp-node s following) 4 left
+    in bp-offer s (bp-offer s size (bp-u32 p 4)) left
+
+  bp-loop : BpJob, Integer -> Integer
+  bp-loop (s) (size) =
+    if size == 0 then 0
+    else let entry = bp-entry s 0
+    in let left = bp-u32 entry 4
+    in let right = bp-u32 entry 8
+    in let lv = bp-u32 entry 12
+    in let rv = bp-u32 entry 16
+    in let value = bp-u32 entry 20
+    in let p = bp-node s left
+    in let q = bp-node s right
+    in let valid = bp-u32 p 0 /= 0 & bp-u32 q 0 /= 0 & bp-u32 p 8 == right & bp-u32 p 12 == lv & bp-u32 q 12 == rv
+    in let popped = bp-swap entry (bp-entry s (size - 1)) 0
+    in let ordered = bp-down s (size - 1) 0
+    in bp-loop s (if valid then bp-merge s (size - 1) left right value else size - 1)
+
+  bp-collect : BpJob, Integer, Integer, Integer -> Integer
+  bp-collect (s) (p) (i) (out) =
+    if p == 0 then i
+    else let node = bp-node s p
+    in let w = poke-32 out (4 + i * 4) (bp-u32 node 0 - 1)
+    in bp-collect s (bp-u32 node 8) (i + 1) out
+
+  bpe-encode : Integer, Integer -> Integer
+  bpe-encode (m) (n) =
+    if peek-qword m 64 /= 1 | n < 0 | n > 262144 then 0
+    else let reset = __heap-restore (peek-qword m 56)
+    in let out = bp-alloc (4 + n * 4)
+    in let mark = __heap-save
+    in let nodes = bp-alloc (n * 16)
+    in let heap = bp-alloc (n * 48)
+    in let s = BpJob { bp-model = m, bp-nodes = nodes, bp-heap = heap }
+    in let seeded = bp-seed-nodes s n 0
+    in let size = bp-seed-heap s n 1 0
+    in let merged = bp-loop s size
+    in let count = if n == 0 then 0 else bp-collect s 1 0 out
+    in let written = poke-32 out 0 count
+    in let restored = __heap-restore mark
+    in out
+
+  opening : Integer = 0

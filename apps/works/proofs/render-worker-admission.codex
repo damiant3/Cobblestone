@@ -1,0 +1,80 @@
+Chapter: RenderWorkerAdmission
+  cites Works chapter GopRenderWorker
+  cites Works chapter GopRenderMailbox
+  cites Works chapter GopFish
+  cites Foreword chapter Console
+
+  rwa-control : Integer = 0
+
+  rwa-copy : Integer, Integer, Integer, Integer -> Integer
+  rwa-copy (dst) (src) (n) (i) =
+    if i >= n then dst
+    else let stored = poke-32 dst (i * 4) (peek-32 src (i * 4))
+    in rwa-copy dst src n (i + 1)
+
+  rwa-snapshot : Integer, Integer -> Integer
+  rwa-snapshot (src) (n) =
+    if src <= 0 then 0
+    else let dst = alloc-bytes (n * 4)
+    in rwa-copy dst src n 0
+
+  rwa-same : Integer, Integer, Integer, Integer -> Boolean
+  rwa-same (a) (b) (n) (i) =
+    if a <= 0 | b <= 0 then False
+    else if i >= n then True
+    else if peek-32 a (i * 4) /= peek-32 b (i * 4) then False
+    else rwa-same a b n (i + 1)
+
+  rwa-await : Integer, Integer, Integer -> [Concurrent] Boolean
+  rwa-await (cell) (owner) (fuel) =
+    if grm-ready cell owner then act True end
+    else if fuel <= 0 | grm-failed cell owner then act False end
+    else act
+      yielded <- process-yield
+      rwa-await cell owner (fuel - 1)
+    end
+
+  opening : [Console, Concurrent, Capability, Device.Port] Nothing = act
+    initialized <- runtime-init 0
+    let cell = grm-new 0
+    in let w = 2048
+    in let h = (grm-heap-bytes - grm-reserve-bytes) / (w * 8)
+    in act
+      pid <- grw-start cell
+      let owner = grm-open cell 2
+      in let token = grm-submit cell owner w h 50 50 gf-sky 1
+      in act
+        ready <- rwa-await cell owner 1000000
+        let peak = peek-qword cell grm-peak
+        in let pixels = if ready then peek-qword cell grm-pixels else 0
+        in let depth = if ready then peek-qword cell grm-depth else 0
+        in let color-copy = rwa-snapshot pixels (w * h)
+        in let depth-copy = rwa-snapshot depth (w * h)
+        in let boundary = grm-size-ok w h & grm-size-ok w (h + 1) == False
+        in let rejected = grm-submit cell owner w (h + 1) 0 0 gf-sky 1 < 0
+        in act
+        yielded <- process-yield
+        let damage = if rwa-control == 1 & pixels > 0 then poke-32 pixels ((w * h - 1) * 4) (bit-xor (peek-32 pixels ((w * h - 1) * 4)) 1)
+          else if rwa-control == 2 & depth > 0 then poke-32 depth ((w * h - 1) * 4) (bit-xor (peek-32 depth ((w * h - 1) * 4)) 1)
+          else 0
+        in let intact = peek-qword cell grm-request == token & grm-ready cell owner
+        in let color-intact = peek-qword cell grm-pixels == pixels & rwa-same color-copy pixels (w * h) 0
+        in let depth-intact = peek-qword cell grm-depth == depth & rwa-same depth-copy depth (w * h) 0
+        in act
+          stopped <- grw-stop cell
+          port-out-byte 33 255
+          port-out-byte 161 255
+          print-line-uni ("setup=" & show (pid > 0 & token > 0 & ready))
+          print-line-uni ("boundary=" & show boundary)
+          print-line-uni ("refusal-preserves-held-frame=" & show (rejected & intact))
+          print-line-uni ("held-color=" & show color-intact)
+          print-line-uni ("held-depth=" & show depth-intact)
+          print-line-uni ("heap-within-grant=" & show (peak > w * h * 8 & peak < grm-heap-bytes))
+          print-line-uni ("dimensions=" & show w & "x" & show h)
+          print-line-uni ("worker-peak=" & show peak)
+          print-line-uni "render-admission-end"
+        end
+        end
+      end
+    end
+  end

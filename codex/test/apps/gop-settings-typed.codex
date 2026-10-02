@@ -1,0 +1,85 @@
+Chapter: GopSettingsTyped
+  cites Works chapter GopSettings
+  cites Foreword chapter Console
+
+  st-yes : Boolean -> Text
+  st-yes (v) = if v then "yes" else "NO"
+
+  st-refused : SetResult -> Boolean
+  st-refused (r) = when r
+    is SetRefused (why) -> text-length why > 0
+    is SetOk (s) -> False
+
+  st-count-keys : Integer, List SettingKey -> List SettingKey
+  st-count-keys (n) (acc) = if n <= 0 then acc else st-count-keys (n - 1) (list-push acc (gst-int-key n "key" 0 0 9))
+
+  st-count-ok : SetResult, Integer -> Boolean
+  st-count-ok (r) (n) = when r
+    is SetOk (s) -> s.st-count == n
+    is SetRefused (why) -> False
+
+  st-value-ok : SettingsStore -> Boolean
+  st-value-ok (s) = when gst-value s 3
+    is Just (SettingText (t)) -> t == "custom" & st-number-value s & st-bool-value s
+    is otherwise -> False
+
+  st-number-value : SettingsStore -> Boolean
+  st-number-value (s) = when gst-value s 1
+    is Just (SettingInteger (n)) -> n == 125
+    is otherwise -> False
+
+  st-bool-value : SettingsStore -> Boolean
+  st-bool-value (s) = when gst-value s 2
+    is Just (SettingBoolean (b)) -> b
+    is otherwise -> False
+
+  opening : [Console] Nothing =
+    let keys = [gst-int-key 1 "scale" 100 50 200, gst-bool-key 2 "sound" False, gst-text-key 3 "wallpaper" "none" 6, gst-int-key 4 "mode" 7 0 9]
+    in let s = gst-store keys
+    in let schema = gst-schema-why keys 0 == "" & st-count-ok (gst-checked-store keys) 4 & st-count-ok (gst-checked-store (st-count-keys 48 [])) 48
+    in let int-set = gst-set-value s 1 (SettingInteger 125)
+    in let bool-set = gst-set-value s 2 (SettingBoolean True)
+    in let text-set = gst-set-value s 3 (SettingText "custom")
+    in let good = st-count-ok int-set 4 & st-count-ok bool-set 4 & st-count-ok text-set 4 & gst-get s 1 0 == 125 & gst-get-bool s 2 False & st-value-ok s
+    in let int-bool = gst-set-value s 2 (SettingInteger 0)
+    in let bool-int = gst-set-value s 4 (SettingBoolean False)
+    in let text-int = gst-set-value s 1 (SettingText "100")
+    in let int-text = gst-set-value s 3 (SettingInteger 0)
+    in let text-bool = gst-set-value s 2 (SettingText "false")
+    in let bool-text = gst-set-value s 3 (SettingBoolean False)
+    in let types = st-refused int-bool & st-refused bool-int & st-refused text-int & st-refused int-text & st-refused text-bool & st-refused bool-text & gst-get s 4 0 == 7
+    in let high = gst-set-value s 1 (SettingInteger 201)
+    in let low = gst-set-value s 1 (SettingInteger 49)
+    in let long = gst-set-value s 3 (SettingText "toolong")
+    in let kept = st-refused high & st-refused low & st-refused long & gst-get s 1 0 == 125 & gst-get-text s 3 "" == "custom" & gst-get-bool s 2 False
+    in let clone = gst-copy s
+    in let raw-text = list-set-at (clone.st-texts) 2 "raw"
+    in let raw-int = list-set-at (clone.st-vals) 0 160
+    in let raw-copy = gst-get-text s 3 "" == "custom" & gst-get s 1 0 == 125 & gst-get-text clone 3 "" == "raw" & gst-get clone 1 0 == 160
+    in let changed = gst-set-text clone 3 "other"
+    in let changed-int = gst-set clone 1 150
+    in let changed-bool = gst-set-bool clone 2 False
+    in let copied = raw-copy & st-count-ok changed 4 & st-count-ok changed-int 4 & st-count-ok changed-bool 4 & gst-get-text s 3 "" == "custom" & gst-get-text clone 3 "" == "other" & gst-get s 1 0 == 125 & gst-get clone 1 0 == 150 & gst-get-bool s 2 False & gst-get-bool clone 2 True == False
+    in let reset = gst-reset s 3
+    in let one = st-count-ok reset 4 & gst-get-text s 3 "" == "none" & gst-get s 1 0 == 125
+    in let all = gst-reset-all s
+    in let defaults = gst-get all 1 0 == 100 & gst-get-bool all 2 True == False & gst-get-text all 3 "" == "none"
+    in let bad-range = st-refused (gst-checked-store [gst-int-key 1 "bad" 5 0 4])
+    in let bad-text = st-refused (gst-checked-store [gst-text-key 1 "bad" "long" 3])
+    in let duplicate = st-refused (gst-checked-store [gst-bool-key 1 "a" True, gst-bool-key 1 "b" False])
+    in let capped = st-refused (gst-checked-store (st-count-keys 49 []))
+    in let bad-id = st-refused (gst-checked-store [gst-int-key 0 "bad" 0 0 1])
+    in let bad-name = st-refused (gst-checked-store [gst-int-key 1 "" 0 0 1])
+    in let inverted = st-refused (gst-checked-store [gst-int-key 1 "bad" 0 2 1])
+    in let bad-kind = st-refused (gst-checked-store [__record-set (gst-int-key 1 "bad" 0 0 1) "sk-kind" 9])
+    in let bad-bool = st-refused (gst-checked-store [__record-set (gst-bool-key 1 "bad" True) "sk-hi" 2])
+    in act
+      print-line-uni ("typed schema accepted: " & st-yes schema)
+      print-line-uni ("typed values read back: " & st-yes good)
+      print-line-uni ("cross-type values refused: " & st-yes types)
+      print-line-uni ("range and length refuse without changing values: " & st-yes kept)
+      print-line-uni ("copy changes do not mutate source: " & st-yes copied)
+      print-line-uni ("explicit single reset preserves other values: " & st-yes one)
+      print-line-uni ("explicit reset-all restores defaults: " & st-yes defaults)
+      print-line-uni ("bad schemas refused: " & st-yes (bad-range & bad-text & duplicate & capped & bad-id & bad-name & inverted & bad-kind & bad-bool))
+    end

@@ -31,11 +31,13 @@ Stages 1 to 4 are done: every core runs a 10 ms quantum (stage 4, below).
   `smp-proc0-pinned`, `spawn-reuse`, `process-exit-status`, `supervisor-pattern`,
   `supervisor-kill-restart`, `chan-lost-wakeup`, `scheduler-integration`.
 
-**The heap needs no work either.** The bump frontier is register `r10`
+**Each process has its own heap frontier.** The bump frontier is register `r10`
 (`__heap-save` is `mov rd, r10`, `__heap-restore` is `mov r10, rd`), so it is
 part of the CPU context and every process already has its own. The stack
 collision guard is `cmp rsp, r10`, per context for the same reason, and
 `emit-create-process` writes a per-process heap base.
+The backing pool's ownership is a separate contract; see
+[UEFI-owned process pool](../../../ArchitectsSketchbook.md#uefi-owned-process-pool).
 
 ## Open: `codex/os/sched` is a second, unrelated model of the same idea
 
@@ -44,16 +46,20 @@ executes nothing, a `CoreHeap` that computes arena records nothing allocates
 from, cited only by its own tests. It duplicates in records what the emitter
 does in instructions. Whether it is deleted or kept as a bookkeeping view over
 real processes is a decision for whoever next needs it, and nothing here waits
-on it. `DeskScheduler.md` (cooperative pane rates, PARKED) is a different
-subject and is not superseded by this page.
+on it. [DeskScheduler](DeskScheduler.md) owns pane rates, bounded presentation
+and the production render-worker integration; this page does not supersede it.
 
 ## Each process keeps its own XMM state
 
 Every context save (the timer handler, `process-yield`, the two blocking IPC
 waits, and the process-wait block) calls `__fx_save`, and `__process_resume`
-FXRSTORs the incoming process, so a switch preserves XMM0-XMM15 and MXCSR. The
-512-byte area of slot N is the top page of its spawn region (`fx-area-offset`
-in `X86_64Boot.codex`); a spawn seeds it with the spawner's state through
+restores the incoming process, so a switch preserves XMM0-XMM15 and MXCSR.
+Each slot reserves its top 4096-byte page for vector state. Save/restore uses
+the enabled XSAVE/XRSTOR path or FXSAVE/FXRSTOR fallback. Native boot and legacy
+UEFI use the fixed pool; the v4 UEFI handoff selects the firmware-owned pool.
+PID lookup, child carving and vector-state save/init/restore use the same
+active pool base (`emit-load-spawn-base`, `X86_64Boot.codex`). A spawn seeds
+the area with the spawner's state through
 `__fx_init`, so the first restore never loads a zero MXCSR. The arm is
 `codex/test/xmm-preempt` (`-smp 2`): four children on one core and 12,000,000
 vector passes, 1 to 4 wrong results a run before the fix, 0 after. A probe of
@@ -98,14 +104,16 @@ an UNSCOPED effect and is admitted by the language's own meaning of one.
 **The implementation is `gopweb-hold` in `apps/works/GopWeb.codex`:** proc 0
 spawns the service, then restricts its OWN `cap-network-read` and
 `cap-network-write`, then runs the desk. The desk stays proc 0; a spawned child
-gets `proc-spawn-heap-size`, 1 MiB. `apps/works/DeskVm.codex`'s `opening`
+gets the explicit 8 MiB `gopweb-heap-bytes` grant through
+`process-spawn-with-heap`. `apps/works/DeskVm.codex`'s `opening`
 carries `Concurrent, Capability, Network.Read, Network.Write` because
 `gopweb-hold`'s row demands them, so dropping them is a compile error rather
 than a silent loss of the bits.
 
 **The order is a load-bearing invariant: spawn, then restrict.** After the
-restrict, proc 0 cannot regain Network in this boot, and a service started after
-the restrict inherits the restricted word and is refused.
+restrict, proc 0 cannot regain Network in this boot. A replacement process
+spawned afterward inherits the restricted word and is refused. Start and
+Restart commands reuse the existing service process.
 
 **The falsifier is `codex/test/apps/gopweb-hold`** (smp 4): the service's
 capability word carries both Network bits, the holder's own `net-status` is -1
@@ -120,8 +128,9 @@ not reach the spawner; widening that row still compiles and deletes the evidence
 silently, which is why the file says not to.
 
 **Where the service runs.** It lands wherever the scheduler puts it. The desk
-yields once per `desk-loop` iteration and `gopweb-pump` on every empty poll,
-which is what lets a child on the boot processor run at all. `gopweb-pump`
+collects input before deciding whether to yield; the pane policy bounds bursts
+of queued input. `gopweb-pump` yields on empty polls. These cooperative points
+let other processes on the boot processor run. `gopweb-pump`
 has no round bound: it compacts its heap in place (`web-mux-compact`) and
 lives until it is killed.
 
@@ -140,21 +149,27 @@ confirmation, not the gate (L-HUMAN).
 
 **The admin pane is `desk-focus-web` in `GopDesk.codex`,** a window over the
 block `gopweb-hold` allocates and shares with the service: the service pumps its
-own mux loop, reads a command cell each round (stop drops frames, start resumes)
-and writes every request its route answers into a sixteen-slot ring; the pane
-shows Stop, Start, the state and the ring. **Control rides the shared block, not
-`chan-kern-*`,** because the desk's row carries no `Concurrent` and a send would
+own mux loop and reads a command cell each round. Stop closes the listener
+and connections; Start from a stopped state reacquires DHCP before listening.
+The service records observed requests in a 64-slot ring owned by `GopWebAdmin`.
+Start, Stop and Restart use sequenced command acknowledgements; the pane shows
+the DHCP binding, service state and filtered request log. The detailed contract
+is [Web Server administration](../../../../apps/works/works-desk-contract.md#web-server-administration).
+**Control rides the shared block, not
+`chan-kern-*`,** because `desk-loop`'s row carries no `Concurrent` and a send would
 widen `desk-loop`'s row through every step, and an integer channel cannot carry
 a log line.
 
-**Two facts a later reader needs.** The desk has launched no app from a keystroke
-since 2026-08-26, so a bed recipe opens a pane by mouse. And `/api/health` is
-answered by the web stack's `web-standard` before the route sees it, so it is
-served and never logged (WORKS-48's residue).
+The Windows key opens the Cobblestone menu; arrows select and Enter launches.
+Mouse launch remains available. Request logging observes the service transport,
+including `/api/health`; it no longer depends on the application route seeing
+every request. Native/OVMF rehearsals do not establish physical input delivery.
 
-**On metal** the service holds the network and serves nothing until Track B binds
-the Intel NIC. `GopBoot.codex` calls `gopweb-hold` before its flow, the way
-`DeskVm.codex` does, with the `boot-flow` row unchanged.
+`GopBoot` captures the handoff and initializes the runtime before calling
+`gopweb-hold`; resetting the process table afterward would erase the service.
+The service brings up its driver and acquires a DHCP lease before listening.
+Physical input and LAN acceptance remain open in
+[HardwareSitting](../../../Hardware/HardwareSitting.md#works-81-owned-pool-diagnostic-candidate).
 
 ## Stage 4 -- the quantum: every core is at 10 ms
 
@@ -164,8 +179,7 @@ timer (masked, one-shot, divide-by-16) and leaves the count in cell 36352, which
 `emit-ap-timer-init` programs on every AP. With no HPET, a period outside the
 specification, or a frozen counter it keeps `lapic-timer-count`, the old
 1,000,000. `codex/test/smp-quantum` pins it: under codex-vm the count measures
-62,585 (10.01 ms at the modelled 100 MHz bus), and the depot compiler fails all
-three lines.
+62,585 (10.01 ms at the modelled 100 MHz bus).
 
 **Core 0 is the PIT at count 11,932** (`pit-reload-count`, 10.0002 ms, 99.998 Hz).
 Vector 48 jumps over the tick increment, so cell 28672 is core 0's clock alone.
@@ -208,7 +222,22 @@ right, been that way since processors were like 60mhz").
 
 ## On one core the boot process is never preempted
 
-A spawned process is preempted on core 0 and the boot process is not: under single-core codex-vm (seed 0291C387, 2026-09-24) a boot process spinning with no yield left a spawned counter at 0 after 100 ticks, and the same boot process yielding let the counter reach 619,258,781 while the counter, which never yields, still gave the core back. **The two beds then disagree about the yielding parent.** codex-vm reschedules a boot process that yielded while its child spins; under OVMF (	est-ovmf.ps1) the boot process that fed the Dev Console's key ring ran ONE pass after its first yield and never again until the console yielded too. So work the boot process must keep doing while a spawned process runs needs the spawned process to yield: the Dev Console's idle pass calls `ugc-yield` (`UefiConsole`) for exactly this reason. Arms: `codex/test/apps/uefi-gop-keys-proc` and `uefi-gop-keys-yield`; the OVMF reading is `works-backlog.md` WORKS-5.
+Proc 0 has a zero slice and must yield for a child to run on the same core.
+A normal child can be preempted only when the slice table is initialized.
+Both `emit-process-setup` and `emit-runtime-init-fn` call
+`emit-slice-table-init` before enabling interrupts. The shared table supplies
+kernel/system/normal/background slices 0/6/3/1. `process-yield` reloads the
+selected child's slice; zero disables timer preemption. The UEFI wrapper enters
+`opening`, so its `runtime-init` call establishes this state independently of
+ordinary CDX startup.
+
+COMPILER-111's initialization repair is landed. The
+[single-core evidence](DeskScheduler.md#single-core-preemption-evidence)
+records the poisoned-table regression and zero-normal-slice control in native
+and OVMF beds. The fixture is `codex/test/apps/runtime-init-slices.codex`.
+This enables child preemption; it does not make proc 0 preemptible or remove
+the need for cooperative yields in long desktop operations. Physical latency
+and multicore fairness remain separate claims.
 
 ## What it must not break
 

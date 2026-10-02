@@ -1,0 +1,206 @@
+Chapter: SparkMusicGenerate
+  cites Spark chapter SparkMusicModels
+  cites Spark chapter SparkAudio
+  cites Encode chapter Json
+
+  SmgSession = record {
+    smg-engine : Maybe MusicGenEngine,
+    smg-refresh : Text -> Integer
+  }
+
+  SmgJob = record {
+    smg-tab : Text,
+    smg-prompt : Text,
+    smg-category : Text,
+    smg-settings : MusicGenSettings,
+    smg-count : Integer,
+    smg-batch : Boolean,
+    smg-index : Integer,
+    smg-id : Integer,
+    smg-file : Text
+  }
+
+  smg-status : Text, Text -> Integer
+  smg-status (k) (message) = let e = dom-set-text (dom-get (k & "-status")) message in 0
+
+  smg-ready : SmgSession, MusicGenEngine -> Integer
+  smg-ready (s) (engine) = let a = __record-set s "smg-engine" (Just engine) in state-set "musicgen-ready" 1
+
+  smg-closed : SmgSession -> Integer
+  smg-closed (s) = let a = __record-set s "smg-engine" None in state-set "musicgen-ready" 0
+
+  smg-value : Text -> JsonValue
+  smg-value (id) = when json-parse (dom-get-value (dom-get id))
+    is Just (value) -> value
+    is None -> JsonNull
+
+  smg-scale : Real, Integer -> Real
+  smg-scale (v) (n) = if n == 0 then v else if n > 0 then smg-scale (v / 10.0) (n - 1) else smg-scale (v * 10.0) (n + 1)
+
+  smg-real : JsonValue -> Real
+  smg-real (v) = when v
+    is JsonInt (n) -> real-from-int n
+    is JsonNum (n) -> (if n.jn-decimals < 0 - 6 | n.jn-decimals > 6 then 0.0 - 1.0 else smg-scale (real-from-int (n.jn-mantissa)) (n.jn-decimals))
+    is otherwise -> 0.0 - 1.0
+
+  smg-int : JsonValue -> Integer
+  smg-int (v) = when v
+    is JsonInt (n) -> n
+    is otherwise -> 0 - 2
+
+  smg-catalog-valid : Text -> Boolean
+  smg-catalog-valid (text) = if text == "" then True else when json-parse text
+    is Just (value) -> (when value
+      is JsonArray (items) -> True
+      is otherwise -> False)
+    is None -> False
+
+  smg-refuse : Text, Text -> Integer
+  smg-refuse (k) (why) = let a = smg-status k ("refused: " & why) in state-set (k & "-refused") (state-get (k & "-refused") + 1)
+
+  smg-generate : SmgSession, Text -> Integer
+  smg-generate (s) (k) =
+    let count = if k == "mus" then 1 else smg-int (smg-value (k & "-batch"))
+    in smg-start s k count (smg-int (smg-value (k & "-seed"))) (k == "sfx" & count > 1)
+
+  smg-regenerate : SmgSession, Text -> Integer
+  smg-regenerate (s) (k) =
+    if state-get "musicgen-ready" /= 1 then smg-refuse k "Load MusicGen model files first; the rated track was removed from the catalog."
+    else let track = sa-root (state-get-text (k & "-variant"))
+    in let old = when json-get track "temperature"
+      is Just (value) -> smg-real value
+      is None -> 1.0
+    in let varied = old + real-from-int (random-int 0 399999) / 1000000.0 - 0.2
+    in let temperature = if varied < 0.3 then 0.3 else if varied > 1.8 then 1.8 else varied
+    in let prompt = dom-set-value (dom-get (k & "-prompt")) (json-get-str track "prompt" "")
+    in let temp = dom-set-value (dom-get (k & "-temp")) (json-emit (smg-number temperature))
+    in smg-start s k 1 (0 - 1) False
+
+  smg-start : SmgSession, Text, Integer, Integer, Boolean -> Integer
+  smg-start (s) (k) (count) (seed) (batch) =
+    let prompt = dom-get-value (dom-get (k & "-prompt"))
+    in let duration = smg-real (smg-value (k & "-dur"))
+    in let temperature = smg-real (smg-value (k & "-temp"))
+    in let guidance = smg-real (smg-value (k & "-cfg"))
+    in let why = if state-get "audio-busy" == 1 then "Audio generation or saving is already running."
+      else if state-get "project-picking" == 1 | state-get "audio-done" /= 1 then "Open a project and wait for its catalogs first."
+      else if state-get "writable" /= 1 then "Open a writable project before generating audio."
+      else if sa-blank prompt 0 then "Write a prompt first."
+      else if state-get "musicgen-ready" /= 1 then "Load MusicGen model files first."
+      else if duration < 0.02 | duration > 30.0 then "Duration must be between 0.02 and 30 seconds."
+      else if temperature < 0.1 | temperature > 2.0 | guidance < 1.0 | guidance > 10.0 then "Temperature must be 0.1 to 2; CFG must be 1 to 10."
+      else if seed < 0 - 1 | seed > 2147483646 then "Seed must be -1 (random) or an integer from 0 to 2147483646."
+      else if count < 1 | count > 10 then "Choose 1 to 10 variants."
+      else if smg-catalog-valid (state-get-text (k & "-json")) == False then "The audio catalog is invalid; repair it before generating."
+      else ""
+    in if why /= "" then smg-refuse k why
+    else when s.smg-engine
+      is None -> smg-refuse k "Load MusicGen model files first."
+      is Just (engine) -> (let busy = state-set "audio-busy" 1
+        in let cancel = state-set "audio-cancel" 0
+        in let frames = real-to-int (duration * 50.0 + 0.5)
+        in let settings = MusicGenSettings { mg-frames = frames, mg-seed = seed, mg-sampling = True, mg-top-k = 250, mg-temperature = temperature, mg-guidance = guidance }
+        in let detected = if k == "mus" then "" else spark-sfx-category prompt
+        in let selected = if k == "mus" then "" else dom-get-value (dom-get "sfx-cat")
+        in let category = if detected /= "" then detected else if selected == "All" then "" else selected
+        in let job = SmgJob { smg-tab = k, smg-prompt = prompt, smg-category = category, smg-settings = settings, smg-count = count, smg-batch = batch, smg-index = 0, smg-id = 0, smg-file = "" }
+        in smg-next s engine job)
+
+  smg-finish : Text, Text -> Integer
+  smg-finish (k) (message) = let a = state-set "audio-busy" 0 in smg-status k message
+
+  smg-next : SmgSession, MusicGenEngine, SmgJob -> Integer
+  smg-next (s) (engine) (job) =
+    if state-get "audio-cancel" == 1 then smg-finish (job.smg-tab) "Cancelled; completed files remain saved."
+    else if job.smg-index >= job.smg-count then smg-finish (job.smg-tab) ("Saved " & show (job.smg-count) & " audio file(s).")
+    else let settings = job.smg-settings
+    in let seed = if settings.mg-seed < 0 then random-int 0 2147483646 else (settings.mg-seed + job.smg-index) - (settings.mg-seed + job.smg-index) / 2147483647 * 2147483647
+    in let varied = settings.mg-temperature + real-from-int (job.smg-index) * 0.15 - real-from-int (job.smg-count) * 0.075
+    in let temperature = if job.smg-batch then (if varied < 0.2 then 0.2 else if varied > 1.9 then 1.9 else varied) else settings.mg-temperature
+    in let actual = MusicGenSettings { mg-frames = settings.mg-frames, mg-seed = seed, mg-sampling = settings.mg-sampling, mg-top-k = settings.mg-top-k, mg-temperature = temperature, mg-guidance = settings.mg-guidance }
+    in let id = state-get (job.smg-tab & "-next")
+    in let file = if job.smg-tab == "mus" then spark-music-file-name id (job.smg-prompt) else spark-sfx-file-name id (job.smg-prompt)
+    in let a = __record-set job "smg-id" id
+    in let b = __record-set job "smg-file" file
+    in musicgen-generate engine (job.smg-prompt) actual (\phase current total -> smg-progress job phase current total) (\audio -> smg-wave s engine job actual audio) (\why -> smg-finish (job.smg-tab) why)
+
+  smg-progress : SmgJob, Text, Integer, Integer -> Integer
+  smg-progress (job) (phase) (current) (total) =
+    let a = smg-status (job.smg-tab) ("Variant " & show (job.smg-index + 1) & "/" & show (job.smg-count) & ": " & phase & " " & show current & "/" & show total)
+    in if state-get "audio-cancel" == 1 then 0 - 1 else 0
+
+  smg-wave : SmgSession, MusicGenEngine, SmgJob, MusicGenSettings, MusicGenAudio -> Integer
+  smg-wave (s) (engine) (job) (settings) (audio) =
+    if state-get "audio-cancel" == 1 then smg-finish (job.smg-tab) "Cancelled before saving."
+    else let wave = audio.mga-wave
+    in let path = (if job.smg-tab == "mus" then "Music/" else "SoundFX/") & job.smg-file
+    in let a = smg-status (job.smg-tab) ("Saving " & path)
+    in file-save-bytes-then path (wave.mw-address) (wave.mw-bytes) (\result -> smg-saved s engine job settings path result)
+
+  smg-number : Real -> JsonValue
+  smg-number (n) = JsonNum (JsonNumber { jn-mantissa = real-to-int (n * 1000000.0 + 0.5), jn-decimals = 6 })
+
+  smg-metric : JsonValue -> Real
+  smg-metric (value) = when value
+    is JsonInt (n) -> sm-f32 (real-from-int n)
+    is JsonNum (n) -> sm-f32 (smg-scale (real-from-int (n.jn-mantissa)) (n.jn-decimals))
+    is otherwise -> 0.0
+
+  smg-sfx-vibe : JsonValue -> Text
+  smg-sfx-vibe (analysis) =
+    let envelope = sa-array analysis "envelope"
+    in let rms = when json-get analysis "rmsDb"
+      is Just (value) -> smg-metric value
+      is None -> 0.0 - 96.0
+    in let attack = if list-length envelope > 1 & smg-metric (list-at envelope 0) > sm-f32 (rms + 3.0) then "sharp attack" else "soft onset"
+    in let body = if sa-above analysis "rmsDb" (0 - 10) then "loud" else if sa-above analysis "rmsDb" (0 - 20) then "moderate" else "quiet"
+    in let tone = if sa-above analysis "centroid" 4000 then "bright/crispy" else if sa-above analysis "centroid" 2000 then "mid-range" else "deep/bassy"
+    in attack & ", " & body & ", " & tone
+
+  smg-track : SmgJob, MusicGenSettings, Text, JsonValue -> JsonValue
+  smg-track (job) (settings) (path) (analysis) = JsonObject [
+    json-pair "id" (JsonInt (job.smg-id)),
+    json-pair "title" (JsonStr (spark-audio-title (job.smg-prompt) (if job.smg-tab == "mus" then 5 else 4) (if job.smg-tab == "mus" then 40 else 35))),
+    json-pair "prompt" (JsonStr (job.smg-prompt)),
+    json-pair "category" (JsonStr (job.smg-category)),
+    json-pair "filePath" (JsonStr path),
+    json-pair "duration" (smg-number (real-from-int (settings.mg-frames) / 50.0)),
+    json-pair "temperature" (smg-number (settings.mg-temperature)),
+    json-pair "cfgCoeff" (smg-number (settings.mg-guidance)),
+    json-pair "seed" (JsonInt (settings.mg-seed)),
+    json-pair "createdUtc" (JsonStr (clock-utc-text 0)),
+    json-pair "vibeTag" (JsonStr (if job.smg-tab == "mus" then spark-audio-vibe analysis else smg-sfx-vibe analysis)),
+    json-pair "bpm" (when json-get analysis "bpm"
+      is Just (value) -> value
+      is None -> JsonInt 0),
+    json-pair "rating" (JsonInt 0),
+    json-pair "saved" (JsonBool False),
+    json-pair "deleted" (JsonBool False)
+  ]
+
+  smg-saved : SmgSession, MusicGenEngine, SmgJob, MusicGenSettings, Text, Text -> Integer
+  smg-saved (s) (engine) (job) (settings) (path) (result) =
+    let parsed = sa-root result
+    in if json-get-bool parsed "ok" False == False then smg-finish (job.smg-tab) ("Audio not saved: " & json-get-str parsed "error" result)
+    else let k = job.smg-tab
+    in let a = state-set (k & "-next") (job.smg-id + 1)
+    in let b = state-set-text ("afile:" & job.smg-file) (json-get-str parsed "name" "")
+    in let status = smg-status k ("Analyzing " & path)
+    in audio-analyze-then (json-get-str parsed "name" "") (\r -> smg-analyzed s engine job settings path r)
+
+  smg-analyzed : SmgSession, MusicGenEngine, SmgJob, MusicGenSettings, Text, Text -> Integer
+  smg-analyzed (s) (engine) (job) (settings) (path) (result) =
+    let analysis = sa-root result
+    in if json-get-bool analysis "ok" False == False then smg-finish (job.smg-tab) ("Saved " & path & " but analysis failed: " & json-get-str analysis "error" result)
+    else let k = job.smg-tab
+    in let json = json-emit (JsonArray (list-snoc (spark-audio-tracks (state-get-text (k & "-json"))) (smg-track job settings path analysis)))
+    in file-write-then (if k == "mus" then "Music/.music_catalog.json" else "SoundFX/.sfx_catalog.json") json (\r -> smg-catalogued s engine job path json r)
+
+  smg-catalogued : SmgSession, MusicGenEngine, SmgJob, Text, Text, Text -> Integer
+  smg-catalogued (s) (engine) (job) (path) (json) (result) =
+    if json-get-bool (sa-root result) "ok" False == False then smg-finish (job.smg-tab) ("Saved " & path & " but its catalog could not be saved: " & json-get-str (sa-root result) "error" result)
+    else let a = state-set-text (job.smg-tab & "-json") json
+    in let b = (s.smg-refresh) (job.smg-tab)
+    in let c = state-set (job.smg-tab & "-generated") (state-get (job.smg-tab & "-generated") + 1)
+    in let d = __record-set job "smg-index" (job.smg-index + 1)
+    in smg-next s engine job

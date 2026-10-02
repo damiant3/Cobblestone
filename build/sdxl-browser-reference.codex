@@ -1,0 +1,37 @@
+Chapter: SdxlBrowserReference
+  cites Diffusion chapter Txt2Img
+  cites AI chapter ClipBpe
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter FactDisk
+  cites Foreword chapter Console
+
+ We say:
+
+  xr-load : Integer, Integer -> [Device.Block] Integer
+  xr-load (start) (len) =
+    let sectors = (len + 511) / 512
+    in let buf = alloc-bytes (sectors * 512)
+    in act
+      loaded <- fd-load-sectors start sectors buf 0
+      buf
+    end
+
+  xr-request : Txt2Img
+  xr-request =
+    let prompt = "painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, four iron-bound wooden chests around a carpenter workbench, joined by glowing golden rune threads, inside a torch-lit longhouse"
+    in let negative = "text, letters, words, watermark, signature, logo, ui, blurry, deformed, ugly, lowres, jpeg artifacts, photo, photograph, modern"
+    in let parameters = prompt & "\nNegative prompt: " & negative & "\nSteps: 6, Sampler: Euler, Schedule type: Karras, CFG scale: 2, Seed: 7201, Size: 1024x1024, Model: dreamshaperXL_lightningDPMSDE"
+    in Txt2Img { ti-ckpt = "dreamshaperXL_lightningDPMSDE.safetensors", ti-prompt = prompt, ti-negative = negative, ti-sampler = ti-euler, ti-scheduler = 2, ti-steps = 6, ti-cfg = 2.0, ti-seed = 7201, ti-width = 1024, ti-height = 1024, ti-out = "euler-reference.png", ti-params = parameters, ti-clip-skip = 1, ti-extras = ti-no-extras }
+
+  xr-go : Integer, Integer -> [Console, Device.Block] Nothing
+  xr-go (vlen) (mlen) = act
+    vocab <- xr-load 1 vlen
+    merges <- xr-load (1 + (vlen + 511) / 512) mlen
+    print-line-uni (txt2img (clip-bpe-load vocab vlen merges mlen) xr-request)
+  end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    xr-go (peek-32 h 0) (peek-32 h 4)
+  end

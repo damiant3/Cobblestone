@@ -38,15 +38,36 @@ Section: The Object Tree
 
   lwm2m-res : Integer, Integer, Integer, List Integer -> Lwm2mRes
   lwm2m-res (o) (i) (r) (v) =
-    Lwm2mRes { lr-object = o, lr-instance = i, lr-resource = r, lr-value = v, lr-writable = False, lr-executable = False }
+    Lwm2mRes {
+      lr-object = o,
+      lr-instance = i,
+      lr-resource = r,
+      lr-value = v,
+      lr-writable = False,
+      lr-executable = False
+    }
 
   lwm2m-res-rw : Integer, Integer, Integer, List Integer -> Lwm2mRes
   lwm2m-res-rw (o) (i) (r) (v) =
-    Lwm2mRes { lr-object = o, lr-instance = i, lr-resource = r, lr-value = v, lr-writable = True, lr-executable = False }
+    Lwm2mRes {
+      lr-object = o,
+      lr-instance = i,
+      lr-resource = r,
+      lr-value = v,
+      lr-writable = True,
+      lr-executable = False
+    }
 
   lwm2m-res-exec : Integer, Integer, Integer -> Lwm2mRes
   lwm2m-res-exec (o) (i) (r) =
-    Lwm2mRes { lr-object = o, lr-instance = i, lr-resource = r, lr-value = [], lr-writable = False, lr-executable = True }
+    Lwm2mRes {
+      lr-object = o,
+      lr-instance = i,
+      lr-resource = r,
+      lr-value = [],
+      lr-writable = False,
+      lr-executable = True
+    }
 
 Section: Registration
 
@@ -90,7 +111,11 @@ Section: Registration
   lwm2m-client-deregister (c) =
     if c.lc-registered == False then Lwm2mStep { ls-client = c, ls-out = [] }
     else let st = lwm2m-client-relocate c CoapDelete
-    in Lwm2mStep { ls-client = (st.ls-client) revised { lc-registered = False, lc-location = [], lc-ticks-left = 0 },
+    in Lwm2mStep { ls-client = (st.ls-client) revised {
+      lc-registered = False,
+      lc-location = [],
+      lc-ticks-left = 0
+    },
                    ls-out = st.ls-out }
 
   lwm2m-client-relocate : Lwm2mClient, CoapMethod -> Lwm2mStep
@@ -107,7 +132,10 @@ Section: Registration
   lwm2m-loc-options : List (List Integer), Integer, List CoapOption -> List CoapOption
   lwm2m-loc-options (segs) (i) (acc) =
     if i >= list-length segs then acc
-    else lwm2m-loc-options segs (i + 1) (acc & [CoapOption { number = coap-opt-uri-path, value = list-at segs i }])
+    else
+      lwm2m-loc-options segs (i + 1) (acc & [
+        CoapOption { number = coap-opt-uri-path, value = list-at segs i }
+      ])
 
   lwm2m-bump : Lwm2mClient -> Lwm2mClient
   lwm2m-bump (c) = c revised { lc-msg-id = bit-and (c.lc-msg-id + 1) 65535 }
@@ -142,7 +170,14 @@ Section: Receive
   lwm2m-client-response (c) (m) =
     if m.cm-code /= coap-201-created then Lwm2mStep { ls-client = c, ls-out = [] }
     else let loc = coap-find-options (m.cm-options) coap-opt-location-path
-    in Lwm2mStep { ls-client = c revised { lc-location = loc, lc-registered = True, lc-ticks-left = (c.lc-reg).lifetime }, ls-out = [] }
+    in Lwm2mStep {
+      ls-client = c revised {
+        lc-location = loc,
+        lc-registered = True,
+        lc-ticks-left = (c.lc-reg).lifetime
+      },
+      ls-out = []
+    }
 
   lwm2m-digits : List Integer, Integer, Integer -> Integer
   lwm2m-digits (bs) (i) (acc) =
@@ -202,8 +237,8 @@ Section: Device Management
   lwm2m-tlv-instance (res) (o) (i) (k) (acc) =
     if k >= list-length res then acc
     else let e = list-at res k
-    in if e.lr-object == o & e.lr-instance == i & e.lr-executable == False
-    then lwm2m-tlv-instance res o i (k + 1) (acc & lwm2m-encode-tlv-resource (e.lr-resource) (e.lr-value))
+    in if e.lr-object == o & e.lr-instance == i & e.lr-executable == False then
+      lwm2m-tlv-instance res o i (k + 1) (acc & lwm2m-encode-tlv-resource (e.lr-resource) (e.lr-value))
     else lwm2m-tlv-instance res o i (k + 1) acc
 
  A Write to a resource that exists but is not writable is 4.05 and not
@@ -220,8 +255,10 @@ Section: Device Management
   lwm2m-write-one (c) (m) (path) =
     let idx = lwm2m-find c (list-at path 0) (list-at path 1) (list-at path 2) 0
     in if idx < 0 then lwm2m-answer c m coap-404-not-found []
-    else if (list-at (c.lc-res) idx).lr-writable == False then lwm2m-answer c m coap-405-not-allowed []
-    else lwm2m-answer (c revised { lc-res = lwm2m-store (c.lc-res) idx (m.cm-payload) 0 [] }) m coap-204-changed []
+    else if (list-at (c.lc-res) idx).lr-writable == False then
+      lwm2m-answer c m coap-405-not-allowed []
+    else
+      lwm2m-answer (c revised { lc-res = lwm2m-store (c.lc-res) idx (m.cm-payload) 0 [] }) m coap-204-changed []
 
   lwm2m-store : List Lwm2mRes, Integer, List Integer, Integer, List Lwm2mRes -> List Lwm2mRes
   lwm2m-store (res) (idx) (v) (i) (acc) =
@@ -239,7 +276,8 @@ Section: Device Management
   lwm2m-execute-one (c) (m) (path) =
     let idx = lwm2m-find c (list-at path 0) (list-at path 1) (list-at path 2) 0
     in if idx < 0 then lwm2m-answer c m coap-404-not-found []
-    else if (list-at (c.lc-res) idx).lr-executable == False then lwm2m-answer c m coap-405-not-allowed []
+    else if (list-at (c.lc-res) idx).lr-executable == False then
+      lwm2m-answer c m coap-405-not-allowed []
     else lwm2m-answer (c revised { lc-exec-count = (c.lc-exec-count) + 1 }) m coap-204-changed []
 
   lwm2m-find : Lwm2mClient, Integer, Integer, Integer, Integer -> Integer

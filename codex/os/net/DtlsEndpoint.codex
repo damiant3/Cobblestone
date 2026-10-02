@@ -152,7 +152,8 @@ Section: Receive
       is None -> dtls-ep-idle ep
       is Just (p) ->
         if dtls-replay-ok (ep.ep-hs-window) (p.dp-seq) == False then dtls-ep-idle ep
-        else dtls-ep-on-enc-hs (__record-set ep "ep-hs-window" (dtls-replay-accept (ep.ep-hs-window) (p.dp-seq))) p now
+        else
+          dtls-ep-on-enc-hs (__record-set ep "ep-hs-window" (dtls-replay-accept (ep.ep-hs-window) (p.dp-seq))) p now
 
   dtls-ep-on-enc-hs : DtlsEp, DtlsPlain, Integer -> DtlsEpStep
   dtls-ep-on-enc-hs (ep) (p) (now) =
@@ -242,7 +243,10 @@ Section: Server
   dtls-ep-send-hrr (ep) (m) =
     let ch1-hash = tls13-transcript-hash (dtls-msg-to-transcript m)
     in let cookie = dtls-ep-cookie (ep.ep-cookie-secret) (ep.ep-addr) ch1-hash
-    in DtlsEpStep { es-ep = ep, es-out = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 (dtls-hrr-body [] cookie) }
+    in DtlsEpStep {
+      es-ep = ep,
+      es-out = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 (dtls-hrr-body [] cookie)
+    }
 
  A cookie that does not verify MUST abort. It is not the same as no
  cookie: re-issuing a HelloRetryRequest here would give an attacker a
@@ -368,7 +372,10 @@ Section: Client Receive
     else let tr = (ep.ep-transcript) & tls13-msg-transcript dtls-hs-server-hello (m.dm-body)
     in let hs = tls13-handshake-secret shared
     in let th = tls13-transcript-hash tr
-    in DtlsEpStep { es-ep = dtls-ep-with-keys ep peer hs tr (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th), es-out = [] }
+    in DtlsEpStep {
+      es-ep = dtls-ep-with-keys ep peer hs tr (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th),
+      es-out = []
+    }
 
   dtls-ep-client-other : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-other (ep) (m) =
@@ -383,7 +390,10 @@ Section: Client Receive
 
   dtls-ep-fold : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-fold (ep) (m) =
-    DtlsEpStep { es-ep = __record-set ep "ep-transcript" ((ep.ep-transcript) & dtls-msg-to-transcript m), es-out = [] }
+    DtlsEpStep {
+      es-ep = __record-set ep "ep-transcript" ((ep.ep-transcript) & dtls-msg-to-transcript m),
+      es-out = []
+    }
 
   dtls-ep-cert-peer-key : DtlsEp, DtlsMsg -> DtlsEp
   dtls-ep-cert-peer-key (ep) (m) =
@@ -421,7 +431,8 @@ Section: Client Receive
   dtls-ep-client-fin-check (ep) (m) =
     let th = tls13-transcript-hash (ep.ep-transcript)
     in if tls13-finished-ok (ep.ep-s-hs) th (m.dm-body) == False then dtls-ep-idle ep
-    else dtls-ep-client-send-fin (dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished (m.dm-body)))
+    else
+      dtls-ep-client-send-fin (dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished (m.dm-body)))
 
   dtls-ep-auth-missing : DtlsEp -> Boolean
   dtls-ep-auth-missing (ep) =
@@ -482,7 +493,11 @@ Section: Application Data
 
   dtls-ep-keys : List Integer -> DtlsKeys
   dtls-ep-keys (secret) =
-    DtlsKeys { dk-key = tls13-traffic-key secret, dk-iv = tls13-traffic-iv secret, dk-sn-key = dtls-sn-key secret 16 }
+    DtlsKeys {
+      dk-key = tls13-traffic-key secret,
+      dk-iv = tls13-traffic-iv secret,
+      dk-sn-key = dtls-sn-key secret 16
+    }
 
   dtls-ep-seal-hs : DtlsKeys, Integer, List Integer -> List Integer
   dtls-ep-seal-hs (k) (seq) (msg) =
@@ -493,7 +508,10 @@ Section: Application Data
     if ep.ep-done == False then dtls-ep-idle ep
     else let secret = if ep.ep-server then ep.ep-s-ap else ep.ep-c-ap
     in let rec = dtls-seal (dtls-ep-keys secret) dtls-ep-app-epoch (ep.ep-app-write-seq) data dtls-ep-content-app
-    in DtlsEpStep { es-ep = __record-set ep "ep-app-write-seq" (ep.ep-app-write-seq + 1), es-out = [rec] }
+    in DtlsEpStep {
+      es-ep = __record-set ep "ep-app-write-seq" (ep.ep-app-write-seq + 1),
+      es-out = [rec]
+    }
 
  RFC 9147 section 4.5.1: a record whose sequence number is already in the
  window, or has fallen off the left of it, is discarded. The order here is
@@ -522,8 +540,8 @@ Section: Application Data
   dtls-ep-app-accept (ep) (p) =
     let e0 = __record-set ep "ep-app-window" (dtls-replay-accept (ep.ep-app-window) (p.dp-seq))
     in let e1 = __record-set e0 "ep-app-read-seq" (ep.ep-app-read-seq + 1)
-    in if p.dp-type == dtls-ep-content-app
-    then __record-set e1 "ep-app-in" (dtls-ep-append (ep.ep-app-in) (p.dp-content) 0 (list-length (p.dp-content)))
+    in if p.dp-type == dtls-ep-content-app then
+      __record-set e1 "ep-app-in" (dtls-ep-append (ep.ep-app-in) (p.dp-content) 0 (list-length (p.dp-content)))
     else e1
 
  Application data accumulates into ONE list, reserved to capacity at the
@@ -587,7 +605,8 @@ Section: Fragmentation
   dtls-ep-plain-loop : List (List Integer), Integer, Integer, List (List Integer) -> List (List Integer)
   dtls-ep-plain-loop (fs) (base) (i) (acc) =
     if i >= list-length fs then acc
-    else dtls-ep-plain-loop fs base (i + 1) (list-push acc (dtls-plain-encode dtls-content-handshake 0 (base + i) (list-at fs i)))
+    else
+      dtls-ep-plain-loop fs base (i + 1) (list-push acc (dtls-plain-encode dtls-content-handshake 0 (base + i) (list-at fs i)))
 
   dtls-ep-seal-into : DtlsKeys, List (List Integer), Integer, Integer, Integer, List Integer -> List (List Integer)
   dtls-ep-seal-into (k) (acc) (rec-seq) (msg-type) (msg-seq) (body) =
@@ -596,7 +615,8 @@ Section: Fragmentation
   dtls-ep-seal-loop : DtlsKeys, List (List Integer), Integer, Integer, List (List Integer) -> List (List Integer)
   dtls-ep-seal-loop (k) (fs) (base) (i) (acc) =
     if i >= list-length fs then acc
-    else dtls-ep-seal-loop k fs base (i + 1) (list-push acc (dtls-ep-seal-hs k (base + i) (list-at fs i)))
+    else
+      dtls-ep-seal-loop k fs base (i + 1) (list-push acc (dtls-ep-seal-hs k (base + i) (list-at fs i)))
 
 Section: Helpers
 

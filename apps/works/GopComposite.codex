@@ -1,4 +1,5 @@
 Chapter: GopComposite
+  cites Works chapter GopWallpaper
   cites Foreword chapter MathLib
   cites Works chapter GopDraw
   cites Works chapter GopIcon
@@ -377,24 +378,33 @@ Section: Node Drawing
     else comp-box base stride rows clip b st (st.ws-bg) s
 
   comp-fg : Theme, WidgetNode, WidgetStyle -> Integer
-  comp-fg (th) (node) (st) = theme-tone-fg th (node.wn-tone) (st.ws-fg)
+  comp-fg (th) (node) (st) =
+    if th.th-name == "High contrast" & node.wn-tone == tone-muted then st.ws-fg
+    else theme-tone-fg th (node.wn-tone) (st.ws-fg)
 
   comp-focus-ring : Integer, Integer, Integer, LayoutRect, WidgetNode, Theme, Integer -> Integer
   comp-focus-ring (base) (stride) (rows) (clip) (node) (th) (s) =
-    if flag-has (widget-flags node) flag-focused == False then 0
-    else if widget-state-of node == state-focused then 0
+    if s <= 0 | flag-has (widget-flags node) flag-focused == False | flag-has (widget-flags node) flag-disabled then 0
     else let r = comp-mul-rect (comp-border-box (node.wn-bounds) (widget-resolve-style node th)) s
-    in let c = (th.th-palette).pal-accent
-    in let t = comp-fill base stride rows clip (r.lr-x) (r.lr-y) (r.lr-w) s c
-    in let b = comp-fill base stride rows clip (r.lr-x) (r.lr-y + r.lr-h - s) (r.lr-w) s c
-    in let l = comp-fill base stride rows clip (r.lr-x) (r.lr-y) s (r.lr-h) c
-    in comp-fill base stride rows clip (r.lr-x + r.lr-w - s) (r.lr-y) s (r.lr-h) c
+    in let outer = comp-focus-band base stride rows clip r s 0
+    in let inner = layout-rect (r.lr-x + s) (r.lr-y + s) (r.lr-w - 2 * s) (r.lr-h - 2 * s)
+    in comp-focus-band base stride rows clip inner s 16777215
+
+  comp-focus-band : Integer, Integer, Integer, LayoutRect, LayoutRect, Integer, Integer -> Integer
+  comp-focus-band (base) (stride) (rows) (clip) (r) (s) (c) =
+    if r.lr-w <= 0 | r.lr-h <= 0 then 0
+    else let sh = math-min s (r.lr-h)
+    in let sw = math-min s (r.lr-w)
+    in let t = comp-fill base stride rows clip (r.lr-x) (r.lr-y) (r.lr-w) sh c
+    in let b = comp-fill base stride rows clip (r.lr-x) (r.lr-y + r.lr-h - sh) (r.lr-w) sh c
+    in let l = comp-fill base stride rows clip (r.lr-x) (r.lr-y) sw (r.lr-h) c
+    in comp-fill base stride rows clip (r.lr-x + r.lr-w - sw) (r.lr-y) sw (r.lr-h) c
 
   comp-draw-node : Integer, Integer, Integer, LayoutRect, CbfFont, GopFont, WidgetNode, Theme, Integer -> Integer
   comp-draw-node (base) (stride) (rows) (clip) (font) (tf) (node) (th) (s) =
     let d = comp-draw-kind base stride rows clip font tf node th s
-    in let f = comp-focus-ring base stride rows clip node th s
-    in comp-state-marks base stride rows clip node th s
+    in let marks = comp-state-marks base stride rows clip node th s
+    in comp-focus-ring base stride rows clip node th s
 
   comp-state-marks : Integer, Integer, Integer, LayoutRect, WidgetNode, Theme, Integer -> Integer
   comp-state-marks (base) (stride) (rows) (clip) (node) (th) (s) =
@@ -425,7 +435,9 @@ Section: Node Drawing
         let bg = comp-box base stride rows clip b st (st.ws-bg) s
         in comp-gauge-fill base stride rows clip c v mx fg
       is WkInput (t) (cur) -> comp-input base stride rows clip font tf b c st t cur fg s
-      is WkCustom (tag) -> comp-custom base stride rows clip b c st tag fg s
+      is WkCustom (tag) ->
+        let background = comp-custom base stride rows clip b c st tag fg s
+        in if tag == "desktop-wallpaper" then gwp-paint (node.wn-data) base stride rows (comp-clip clip (comp-mul-rect (comp-border-box b st) s)) else background
       is otherwise -> 0
 
 Section: Translate

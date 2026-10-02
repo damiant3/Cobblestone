@@ -1,0 +1,136 @@
+Chapter: MusicSampling
+  cites Diffusion chapter NoiseGen
+  cites Diffusion chapter SamplerSchedule
+
+ PyTorch 2.1 multinomial with one sample draws Exp(1) for every probability
+ and selects the largest f32 p/q. On the graded RTX4060Ti, its CUDA launch
+ for [4,2048] uses8192 Philox threads, one word per thread, one counter per
+ draw. Inputs must be finite nonnegative probabilities with positive row sums.
+
+ We say:
+
+  ms-real : Integer -> Real
+  ms-real (word) =
+    let w = bit-and word #FFFFFFFF
+    in let sign = if bit-and w #80000000 == 0 then 1.0 else 0.0 - 1.0
+    in let e = bit-and (bit-shru w 23) 255
+    in let m = bit-and w #7FFFFF
+    in if e == 0 then sign * real-from-int m * sm-pow2 (0 - 149)
+    else sign * bits-to-real (bit-or (bit-shl (e + 896) 52) (bit-shl m 29))
+
+  ms-get : Integer, Integer -> Real
+  ms-get (addr) (i) = ms-real (peek-32 addr (i * 4))
+
+  ms-exponential : Integer, Integer, Integer, Integer, Integer -> Integer
+  ms-exponential (addr) (scratch) (seed) (draw) (i) =
+    if i >= 8192 then addr
+    else let a = poke-32 scratch 0 (nt-lo draw)
+    in let b = poke-32 scratch 4 (bit-shru draw 32)
+    in let c = poke-32 scratch 8 i
+    in let d = poke-32 scratch 12 0
+    in let r = nt-philox scratch (nt-lo seed) (nt-lo (bit-shru seed 32)) 0
+    in let u = sm-f32 (sm-f32 (real-from-int (bit-and (peek-32 scratch 0) #FFFFFFFF)) * nt-inv + nt-inv / 2.0)
+    in let q = sm-f32 (if u >= 0.9999999403953552 then 0.000000059604644775390625 else 0.0 - sm-ln u)
+    in let w = poke-32 addr (i * 4) (nz-f32-bits q)
+    in ms-exponential addr scratch seed draw (i + 1)
+
+  ms-argmax : Integer, Integer, Integer, Integer, Integer, Real -> Integer
+  ms-argmax (probs) (q) (base) (i) (best) (value) =
+    if i >= 2048 then best
+    else let score = sm-f32 (ms-get probs (base + i) / ms-get q (base + i))
+    in if score > value then ms-argmax probs q base (i + 1) i score else ms-argmax probs q base (i + 1) best value
+
+  music-multinomial : Integer, Integer -> List Integer
+  music-multinomial (probs) (q) = [ms-argmax probs q 0 0 0 (0.0 - 1.0), ms-argmax probs q 2048 0 0 (0.0 - 1.0), ms-argmax probs q 4096 0 0 (0.0 - 1.0), ms-argmax probs q 6144 0 0 (0.0 - 1.0)]
+
+  ms-bits : Real -> Integer
+  ms-bits (v) =
+    let bits = real-to-bits v
+    in let e = bit-and (bit-shru bits 52) 2047
+    in if e >= 897 then nz-f32-bits v
+    else let scaled = (if v < 0.0 then 0.0 - v else v) * sm-pow2 149
+    in let low = real-to-int scaled
+    in let fraction = scaled - real-from-int low
+    in let rounded = low + (if fraction > 0.5 | (fraction ~0 0.5 & bit-and low 1 == 1) then 1 else 0)
+    in bit-or rounded (if v < 0.0 then #80000000 else 0)
+
+  ms-put : Integer, Integer, Real -> Integer
+  ms-put (a) (i) (v) = poke-32 a (i * 4) (ms-bits v)
+
+  ms-max : Integer, Integer, Integer, Real -> Real
+  ms-max (a) (base) (i) (v) = if i >= 2048 then v else ms-max a base (i + 1) (if ms-get a (base + i) > v then ms-get a (base + i) else v)
+
+  ms-greedy-row : Integer, Integer, Integer, Integer, Real -> Integer
+  ms-greedy-row (a) (base) (i) (best) (v) =
+    if i >= 2048 then best
+    else let next = ms-get a (base + i)
+    in if next > v then ms-greedy-row a base (i + 1) i next else ms-greedy-row a base (i + 1) best v
+
+  music-greedy : Integer -> List Integer
+  music-greedy (a) = [ms-greedy-row a 0 1 0 (ms-get a 0), ms-greedy-row a 2048 1 0 (ms-get a 2048), ms-greedy-row a 4096 1 0 (ms-get a 4096), ms-greedy-row a 6144 1 0 (ms-get a 6144)]
+
+  ms-heap-swap : Integer, Integer, Integer -> Integer
+  ms-heap-swap (h) (i) (j) = let a = peek-32 h (i * 4) in let b = peek-32 h (j * 4) in let w = poke-32 h (i * 4) b in poke-32 h (j * 4) a
+
+  ms-heap-up : Integer, Integer -> Integer
+  ms-heap-up (h) (i) =
+    if i == 0 then 0
+    else let parent = (i - 1) / 2
+    in if ms-get h i >= ms-get h parent then 0 else let w = ms-heap-swap h i parent in ms-heap-up h parent
+
+  ms-heap-down : Integer, Integer, Integer -> Integer
+  ms-heap-down (h) (i) (k) =
+    if 2 * i + 1 >= k then 0
+    else let left = 2 * i + 1
+    in let child = if left + 1 < k then (if ms-get h (left + 1) < ms-get h left then left + 1 else left) else left
+    in if ms-get h i <= ms-get h child then 0 else let w = ms-heap-swap h i child in ms-heap-down h child k
+
+  ms-topk : Integer, Integer, Integer, Integer, Integer -> Real
+  ms-topk (a) (base) (heap) (k) (i) =
+    if i >= 2048 then ms-get heap 0
+    else let v = ms-get a (base + i)
+    in let w = if i < k then (let a = ms-put heap i v in ms-heap-up heap i)
+               else if v > ms-get heap 0 then (let a = ms-put heap 0 v in ms-heap-down heap 0 k) else 0
+    in ms-topk a base heap k (i + 1)
+
+  ms-scale : Integer, Integer, Real, Integer -> Boolean
+  ms-scale (a) (p) (temperature) (i) =
+    if i >= 8192 then True
+    else if bit-and (peek-32 a (i * 4)) #7F800000 == #7F800000 then False
+    else let w = ms-put p i (ms-get a i / temperature) in ms-scale a p temperature (i + 1)
+
+  ms-exp-row : Integer, Integer, Real, Integer, Real -> Real
+  ms-exp-row (p) (base) (maximum) (i) (sum) =
+    if i >= 2048 then sm-f32 sum
+    else let delta = ms-get p (base + i) - maximum
+    in let v = if delta < (0.0 - 104.0) then 0.0 else sm-exp delta
+    in let w = ms-put p (base + i) v
+    in ms-exp-row p base maximum (i + 1) (sum + ms-get p (base + i))
+
+  ms-divide-row : Integer, Integer, Real, Integer -> Integer
+  ms-divide-row (p) (base) (sum) (i) = if i >= 2048 then 0 else let w = ms-put p (base + i) (ms-get p (base + i) / sum) in ms-divide-row p base sum (i + 1)
+
+  ms-filter-row : Integer, Integer, Real, Integer, Real -> Real
+  ms-filter-row (p) (base) (threshold) (i) (sum) =
+    if i >= 2048 then sm-f32 sum
+    else let v = ms-get p (base + i)
+    in let keep = v >= threshold
+    in let w = if keep then 0 else poke-32 p ((base + i) * 4) 0
+    in ms-filter-row p base threshold (i + 1) (sum + (if keep then v else 0.0))
+
+  ms-prob-rows : Integer, Integer, Integer, Integer -> Boolean
+  ms-prob-rows (p) (heap) (k) (row) =
+    if row >= 4 then True
+    else let base = row * 2048
+    in let maximum = ms-max p base 1 (ms-get p base)
+    in let total = ms-exp-row p base maximum 0 0.0
+    in let normalized = ms-divide-row p base total 0
+    in let threshold = if k == 0 then 0.0 else ms-topk p base heap k 0
+    in let kept = ms-filter-row p base threshold 0 0.0
+    in let normalized2 = ms-divide-row p base kept 0
+    in kept > 0.0 & ms-prob-rows p heap k (row + 1)
+
+  music-probabilities : Integer, Integer, Integer, Integer, Real -> Boolean
+  music-probabilities (logits) (probs) (heap) (top-k) (temperature) =
+    if temperature <= 0.0 | top-k < 0 | top-k > 2048 then False
+    else ms-scale logits probs temperature 0 & ms-prob-rows probs heap top-k 0

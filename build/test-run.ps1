@@ -25,7 +25,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
 $sample = ([System.IO.Path]::GetFileNameWithoutExtension($Kernel))
-$wallBudgetMs = 60000
+$wallBudgetMs = 300000
 
 Write-SweepLog "$sample run-start pcore=$PCore"
 
@@ -70,6 +70,15 @@ try {
         $vmArgs += @('-smp', "$Smp")
     }
     if (($VmArgsFile -and (Test-Path -PathType Leaf $VmArgsFile))) {
+        # A model root the flags name must exist, or codex-vm refuses to start and prints nothing.
+        $proc = $null
+        $rootArgs = @{}
+        $rootArgs['VmArgsFile'] = $VmArgsFile
+        & (Join-Path $PSScriptRoot 'diffusion-roots.ps1') @rootArgs *>&1 | Tee-Object -FilePath $OutFile | Out-Null
+        if (-not ($LASTEXITCODE -eq 0)) {
+            [Console]::Error.WriteLine('a diffusion model root this test names is missing: build/diffusion-roots.ps1 -Provision')
+            exit 1
+        }
         # Whitespace-separated flags, '#' comments, blank lines ignored.
         foreach ($line in (Get-Content $VmArgsFile)) {
             $line = $line.Trim()

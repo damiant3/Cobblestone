@@ -1,0 +1,46 @@
+Chapter: SparkPromptFileTest
+  cites Spark chapter SparkPromptFile
+  cites Foreword chapter CCE
+
+ Parses the prompt file below and prints every prompt in the format the WPF
+ original's own parser prints (PromptParser.cs run over the same text). The
+ file is a literal because a .stdin sidecar reaches read-line one byte at a
+ time, so a non-ASCII dash would arrive as two unrelated characters.
+
+Section: Output
+
+  spt-file : Text
+  spt-file = "ART PROMPTS: THE TEST SET\n\nSERIES ONE: THE FRONTIER\n\nPROMPT 01 — \"First Light on Brennan-Yee\"\n\nA lone explorer at the lip of a pit.\nHer lamp is a single amber needle.\n\nPainted concept art, wide 16:9, amber light\n\nPROMPT 2 – \"Café & Co. (No. 2)\"\nLORA: InkStyle:0.65\nOnly one paragraph here, with a \\ backslash.\n\nPROMPT 03-\"Tight Dash\"\n\nFirst paragraph.\n   \n  \nSecond paragraph.\n\nlora: soft glow\n\nThird paragraph is the style.\n\nSERIES TWO: THE DEEP DARK\n\nPROMPT 12 — \"Numbers 12\"\n\nScene of twelve.\n\nLORA: Heavy:1\n\nStyle twelve.\n\nPRODUCTION NOTES\nNothing after this is a prompt body.\n\nPROMPT 13 — \"After Notes\"\nBody mentions SERIES of events and stops there.\n\nThis paragraph is cut.\n"
+
+  spt-esc : List Integer, Integer, List Integer -> List Integer
+  spt-esc (u) (i) (acc) =
+    if i >= list-length u then acc
+    else let c = list-at u i
+    in spt-esc u (i + 1) (if c == 92 then list-push (list-push acc 92) 92 else (if c == 10 then list-push (list-push acc 92) 110 else list-push acc c))
+
+  spt-text : List Integer -> Text
+  spt-text (u) = unicode-bytes-to-text (spt-esc u 0 [])
+
+  spt-cents : Integer -> Text
+  spt-cents (c) =
+    let f = c - c / 100 * 100
+    in show (c / 100) & "." & (if f < 10 then "0" else "") & show f
+
+  spt-lora : List Integer -> Text
+  spt-lora (u) = if list-length u == 0 then "-" else spt-text u
+
+  spt-one : SparkPrompt -> Text
+  spt-one (p) =
+    let head = "P " & show (p.sp-number) & " | " & spt-text (p.sp-title) & " | " & spt-text (p.sp-series)
+    in let tail = " | " & spt-lora (p.sp-lora) & " | " & spt-cents (p.sp-weight-cents) & " | " & spark-prompt-filename p
+    in head & tail & "\nS " & spt-text (p.sp-scene) & "\nT " & spt-text (p.sp-style)
+
+  spt-render : List SparkPrompt, Integer, Text -> Text
+  spt-render (ps) (i) (acc) =
+    if i >= list-length ps then acc
+    else spt-render ps (i + 1) (acc & "\n" & spt-one (list-at ps i))
+
+  opening : [Console] Nothing = act
+    let ps = spark-prompts-parse spt-file
+    in print-line (spt-render ps 0 ("prompts " & show (list-length ps)))
+  end

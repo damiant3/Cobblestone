@@ -1,0 +1,135 @@
+Chapter: MusicGenEngine
+  cites Spark chapter MusicGeneration
+  cites Spark chapter MusicLMLoad
+  cites Spark chapter MusicT5Tokenizer
+  cites Spark chapter MusicWave
+
+ We say:
+
+  MusicGenFile = record { mgf-name : Text, mgf-size : Integer }
+
+  MusicGenSources = record {
+    mgs-tokenizer : MusicGenFile,
+    mgs-text : MusicGenFile,
+    mgs-model : MusicGenFile,
+    mgs-audio : MusicGenFile
+  }
+
+  MusicGenShaders = record {
+    mgh-base : Text,
+    mgh-text : Text,
+    mgh-model : Text,
+    mgh-audio : Text
+  }
+
+  MusicGenEngine = record {
+    mge-tokenizer : T5Tok,
+    mge-text : MusicT5Model,
+    mge-model : MusicLM,
+    mge-audio : BeWeights,
+    mge-shaders : MusicGenShaders,
+    mge-state : Integer
+  }
+
+  MusicGenAudio = record { mga-wave : MusicWave, mga-codes : List Integer }
+
+  mge-fill-bytes : Integer, List Integer, Integer -> Integer
+  mge-fill-bytes (a) (bs) (i) = if i >= list-length bs then a else let w = poke-byte a i (list-at bs i) in mge-fill-bytes a bs (i + 1)
+
+  mge-opened-audio : T5Tok, MusicT5Model, MusicLM, MusicGenShaders, (MusicGenEngine -> Integer), BeWeights -> Integer
+  mge-opened-audio (tok) (text) (model) (shaders) (ready) (audio) =
+    let state = alloc-bytes 4
+    in let reset = poke-32 state 0 0
+    in ready (MusicGenEngine { mge-tokenizer = tok, mge-text = text, mge-model = model, mge-audio = audio, mge-shaders = shaders, mge-state = state })
+
+  mge-opened-model : MusicGenSources, MusicGenShaders, T5Tok, MusicT5Model, (MusicGenEngine -> Integer), (Text -> Integer), MusicLM -> Integer
+  mge-opened-model (files) (shaders) (tok) (text) (ready) (refuse) (model) =
+    if (model.ml-weights).t5m-width /= text.t5m-width then (let f = bt5-close text & bt5-close (model.ml-weights) in refuse "MusicGen projection and language model dimensions differ")
+    else encodec-load ((files.mgs-audio).mgf-name) ((files.mgs-audio).mgf-size) (shaders.mgh-audio) (\audio -> mge-opened-audio tok text model shaders ready audio) (\why -> (let f = bt5-close text & bt5-close (model.ml-weights) in refuse why))
+
+  mge-opened-projection : MusicGenSources, MusicGenShaders, T5Tok, (MusicGenEngine -> Integer), (Text -> Integer), MusicT5Model -> Integer
+  mge-opened-projection (files) (shaders) (tok) (ready) (refuse) (text) =
+    music-lm-load ((files.mgs-model).mgf-name) ((files.mgs-model).mgf-size) (\model -> mge-opened-model files shaders tok text ready refuse model) (\why -> (let f = bt5-close text in refuse why))
+
+  mge-opened-text : MusicGenSources, MusicGenShaders, T5Tok, (MusicGenEngine -> Integer), (Text -> Integer), MusicT5Model -> Integer
+  mge-opened-text (files) (shaders) (tok) (ready) (refuse) (text) =
+    music-t5-load-projection ((files.mgs-model).mgf-name) ((files.mgs-model).mgf-size) text (\next -> mge-opened-projection files shaders tok ready refuse next) refuse
+
+  mge-device : MusicGenSources, MusicGenShaders, T5Tok, (MusicGenEngine -> Integer), (Text -> Integer), Text -> Integer
+  mge-device (files) (shaders) (tok) (ready) (refuse) (result) =
+    if text-contains result "\"ok\":true" == False then refuse ("WebGPU open failed: " & result)
+    else music-t5-load-encoder ((files.mgs-text).mgf-name) ((files.mgs-text).mgf-size) (\text -> mge-opened-text files shaders tok ready refuse text) refuse
+
+  mge-tokenizer-read : MusicGenSources, MusicGenShaders, (MusicGenEngine -> Integer), (Text -> Integer), Text -> Integer
+  mge-tokenizer-read (files) (shaders) (ready) (refuse) (data) =
+    if text-starts-with data "[" == False | text-ends-with data "]" == False then refuse ("Tokenizer read failed: " & data)
+    else let bytes = el-bytes data
+    in if list-length bytes /= (files.mgs-tokenizer).mgf-size then refuse "Tokenizer read was truncated"
+    else let a = mge-fill-bytes (alloc-bytes (list-length bytes + 8)) bytes 0
+    in let tables = t5-json-tables a (list-length bytes)
+    in if tables.tt-why /= "" then refuse (tables.tt-why)
+    else let tok = t5-tok-load (tables.tt-vocab) (tables.tt-charsmap)
+    in if tok.tk-count /= 32100 then refuse "Expected the t5-base tokenizer vocabulary"
+    else gpu-open-then (\r -> mge-device files shaders tok ready refuse r)
+
+  musicgen-open : MusicGenSources, MusicGenShaders, (MusicGenEngine -> Integer), (Text -> Integer) -> Integer
+  musicgen-open (files) (shaders) (ready) (refuse) =
+    if (files.mgs-tokenizer).mgf-size <= 0 | (files.mgs-tokenizer).mgf-size > 8388608 | (files.mgs-text).mgf-size <= 0 | (files.mgs-model).mgf-size <= 0 | (files.mgs-audio).mgf-size <= 0 then refuse "MusicGen file sizes are invalid"
+    else file-read-then ((files.mgs-tokenizer).mgf-name) 0 ((files.mgs-tokenizer).mgf-size) (\r -> mge-tokenizer-read files shaders ready refuse r)
+
+  musicgen-close : MusicGenEngine -> Boolean
+  musicgen-close (engine) =
+    if peek-32 (engine.mge-state) 0 == 1 then False
+    else if peek-32 (engine.mge-state) 0 == 2 then True
+    else let a = bt5-close (engine.mge-text)
+    in let b = bt5-close ((engine.mge-model).ml-weights)
+    in let c = be-close (engine.mge-audio)
+    in let closed = poke-32 (engine.mge-state) 0 2
+    in a & b & c
+
+  mge-fail : MusicGenEngine, Text, (Text -> Integer) -> Integer
+  mge-fail (engine) (why) (refuse) = let idle = poke-32 (engine.mge-state) 0 0 in refuse why
+
+  mge-audio-read : MusicGenEngine, Integer, Integer, List Integer, (Text, Integer, Integer -> Integer), (MusicGenAudio -> Integer), (Text -> Integer), Text -> Integer
+  mge-audio-read (engine) (handle) (samples) (tokens) (progress) (ready) (refuse) (data) =
+    let f = be-drop handle
+    in if gpu-error 0 /= "" then mge-fail engine ("MusicGen GPU error: " & gpu-error 0) refuse
+    else if text-starts-with data "[" == False | text-ends-with data "]" == False then mge-fail engine ("Audio readback failed: " & data) refuse
+    else let words = el-bytes data
+    in if list-length words /= samples then mge-fail engine "Audio readback length differs" refuse
+    else let step = progress "decoding" 1 1
+    in if step < 0 then mge-fail engine "MusicGen generation cancelled" refuse
+    else let wave = music-wave words
+    in if wave.mw-valid == False then mge-fail engine "Audio contains nonfinite samples" refuse
+    else let idle = poke-32 (engine.mge-state) 0 0
+    in ready (MusicGenAudio { mga-wave = wave, mga-codes = tokens })
+
+  mge-tokens : MusicGenEngine, MusicT5Output, Integer, (Text, Integer, Integer -> Integer), (MusicGenAudio -> Integer), (Text -> Integer), List Integer -> Integer
+  mge-tokens (engine) (text) (frames) (progress) (ready) (refuse) (tokens) =
+    let f = music-t5-output-free text
+    in let step = progress "decoding" 0 1
+    in if step < 0 then mge-fail engine "MusicGen generation cancelled" refuse
+    else let h = browser-encodec ((engine.mge-shaders).mgh-audio) (engine.mge-audio) tokens frames
+    in if h == 0 then mge-fail engine "EnCodec decoding failed" refuse
+    else gpu-buf-download-then h 0 (frames * 640 * 4) (\r -> mge-audio-read engine h (frames * 640) tokens progress ready refuse r)
+
+  mge-mask : Integer, Integer, List Integer -> List Integer
+  mge-mask (n) (value) (acc) = if list-length acc >= n then acc else mge-mask n value (list-push acc value)
+
+  mge-finite : Real -> Boolean
+  mge-finite (v) = bit-and (bit-shru (real-to-bits v) 52) 2047 /= 2047
+
+  musicgen-generate : MusicGenEngine, Text, MusicGenSettings, (Text, Integer, Integer -> Integer), (MusicGenAudio -> Integer), (Text -> Integer) -> Integer
+  musicgen-generate (engine) (prompt) (settings) (progress) (ready) (refuse) =
+    if peek-32 (engine.mge-state) 0 /= 0 then refuse (if peek-32 (engine.mge-state) 0 == 1 then "Audio generation is already running" else "The MusicGen engine is closed")
+    else if gpu-error 0 /= "" then refuse ("MusicGen GPU error: " & gpu-error 0)
+    else if settings.mg-frames < 1 | settings.mg-frames > 1500 | mge-finite (settings.mg-temperature) == False | mge-finite (settings.mg-guidance) == False | settings.mg-temperature < 0.1 | settings.mg-temperature > 2.0 | settings.mg-guidance < 1.0 | settings.mg-guidance > 10.0 | settings.mg-top-k < 0 | settings.mg-top-k > 2048 then refuse "MusicGen settings are outside the supported range"
+    else let ids = music-t5-tokenize (engine.mge-tokenizer) prompt
+    in if list-length ids > 512 then refuse "The prompt exceeds 512 text tokens"
+    else let busy = poke-32 (engine.mge-state) 0 1
+    in let step = progress "encoding" 0 1
+    in if step < 0 then mge-fail engine "MusicGen generation cancelled" refuse
+    else let shaders = engine.mge-shaders
+    in let text = music-t5-encode (shaders.mgh-base) (shaders.mgh-text) (engine.mge-text) ids (mge-mask (list-length ids) (if prompt == "" then 0 else 1) []) False
+    in if text.t5o-condition == 0 then (let f = music-t5-output-free text in mge-fail engine "T5 prompt encoding failed" refuse)
+    else music-generate (shaders.mgh-base) (shaders.mgh-model) (engine.mge-model) (text.t5o-condition) (list-length ids) settings (\current total logits draws -> progress "generating" current total) (\tokens -> mge-tokens engine text (settings.mg-frames) progress ready refuse tokens) (\why -> (let f = music-t5-output-free text in mge-fail engine why refuse))

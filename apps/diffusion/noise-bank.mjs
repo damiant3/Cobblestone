@@ -1,0 +1,43 @@
+import {execFileSync,spawnSync} from 'node:child_process';
+import {readFileSync,writeFileSync,mkdirSync,existsSync} from 'node:fs';
+import {resolve,dirname,join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {createHash} from 'node:crypto';
+import {buildNoiseWasm} from './build-noise-wasm.mjs';
+
+const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
+const out=process.argv[2]&&resolve(process.argv[2]);
+if(!out||/\s/.test(out)||existsSync(out))throw new Error('Usage: noise-bank.mjs new-output-directory-without-spaces');
+mkdirSync(out,{recursive:true});
+const hash=b=>createHash('sha256').update(b).digest('hex');
+const memory=()=>{const m=JSON.parse(execFileSync('pwsh',['-NoProfile','-Command','Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,FreeVirtualMemory | ConvertTo-Json -Compress'],{encoding:'utf8',windowsHide:true}));if(m.FreePhysicalMemory<=1572864||m.FreeVirtualMemory<=26214400)throw new Error('RAM/commit admission refused');return m;};
+const run=(script,args,label)=>{const r=spawnSync('pwsh',['-NoProfile','-File',join(repo,script),...args],{cwd:repo,encoding:'utf8',windowsHide:true,maxBuffer:16777216});writeFileSync(join(out,label+'.log'),r.stdout||'');writeFileSync(join(out,label+'.err'),r.stderr||'');if(r.stdout)console.log(r.stdout.trim());if(r.stderr)console.error(r.stderr.trim());if(r.error)throw r.error;if(r.status!==0)throw new Error(label+' failed: '+r.status);};
+const kernel=join(repo,'seed/Codex.cdx'),source=join(repo,'apps/diffusion/NoiseBankReference.codex');
+const evidence={kernelSha256:hash(readFileSync(kernel)),nativeSourceSha256:hash(readFileSync(source)),wasmSourceSha256:hash(readFileSync(join(repo,'apps/diffusion/BrowserNoiseWasm.codex')))};
+const wasm=buildNoiseWasm(join(out,'noise.wasm'));evidence.wasmSha256=hash(wasm);
+evidence.wasmBundledSha256=hash(readFileSync(join(out,'noise.codex')));
+run('build/bundle-app.ps1',['-Src',source,'-Out',join(out,'native-source.codex')],'bundle');
+evidence.nativeBundledSha256=hash(readFileSync(join(out,'native-source.codex')));
+evidence.compileMemory=memory();
+run('build/compile.ps1',['-Src',join(out,'native-source.codex'),'-Out',join(out,'native.cdx'),'-Log',join(out,'native.compile.log'),'-Kernel',kernel],'compile');
+writeFileSync(join(out,'native.vmargs'),'-gpu-out '+out.replaceAll('\\','/')+'\n');
+evidence.runMemory=memory();
+run('build/test-run.ps1',['-Kernel',join(out,'native.cdx'),'-OutFile',join(out,'native.result'),'-VmArgsFile',join(out,'native.vmargs')],'run');
+const nativeResult=readFileSync(join(out,'native.result'),'utf8');
+const module=new WebAssembly.Module(wasm);const rows=[];
+for(const [n,seed,steps,kinds] of [[256,20260929,6,[1,3,4,5,6]],[65536,7201,6,[1,3,4,5,6]],[64512,0,6,[1,3,4,5,6]],[256,1,50,[1,3,4,5,6]],[65536,7201,50,[1]]])for(const kind of kinds){
+  let mem;const instance=new WebAssembly.Instance(module,{wasi_snapshot_preview1:{fd_write(fd,vs,count,p){const v=new DataView(mem.buffer);let bytes=0;for(let i=0;i<count;i++)bytes+=v.getUint32(vs+i*8+4,true);v.setUint32(p,bytes,true);return 0;},fd_read(fd,vs,count,p){new DataView(mem.buffer).setUint32(p,0,true);return 0;}}});
+  mem=instance.exports.memory;instance.exports._start();
+  const started=performance.now(),p=Number(instance.exports.noise_bank(BigInt(seed),BigInt(n),BigInt(kind),BigInt(steps)));
+  const v=new DataView(mem.buffer),len=v.getUint32(p,true),width=v.getUint32(p+4,true),expected=n*4*(steps-1)*(kind===1?2:1);
+  const file=`noise-${kind}-${n}-${seed}-${steps}.bin`;
+  if(len!==expected||width!==n||!nativeResult.replaceAll('\r','').split('\n').includes(file+': '+expected))throw new Error('Native/Wasm shape or native result differs: '+file);
+  const bytes=Buffer.from(mem.buffer,p+8,len),native=readFileSync(join(out,file));
+  if(!bytes.equals(native))throw new Error('Noise bits differ: '+file);
+  const row={kind,n,seed,steps,file,bytes:len,sha256:hash(native),wasmMs:performance.now()-started,arenaBytes:mem.buffer.byteLength};rows.push(row);console.log('EXACT '+JSON.stringify(row));
+  instance.exports.__heap_reset();
+}
+evidence.rows=rows;evidence.nativeCdxSha256=hash(readFileSync(join(out,'native.cdx')));
+if(hash(readFileSync(kernel))!==evidence.kernelSha256||hash(readFileSync(source))!==evidence.nativeSourceSha256||hash(readFileSync(join(out,'native-source.codex')))!==evidence.nativeBundledSha256||hash(readFileSync(join(out,'noise.codex')))!==evidence.wasmBundledSha256)throw new Error('Reference inputs moved');
+writeFileSync(join(out,'evidence.json'),JSON.stringify(evidence,null,2)+'\n');
+console.log('PASS: every noise byte matches existing native noise routes in all '+rows.length+' cases');

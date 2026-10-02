@@ -63,9 +63,16 @@ Section: Scanning
       let u = aj-quad s (i + 1)
       in if u >= 55296 & u <= 56319 then
         let v = aj-quad s (i + 7)
-        in AccpScan { next = i + 11, ok = aj-is s (i + 5) "\\" & aj-is s (i + 6) "u" & v >= 56320 & v <= 57343 }
+        in AccpScan {
+          next = i + 11,
+          ok = aj-is s (i + 5) "\\" & aj-is s (i + 6) "u" & v >= 56320 & v <= 57343
+        }
       else AccpScan { next = i + 5, ok = u >= 0 & (u < 56320 | u > 57343) }
-    else AccpScan { next = i + 1, ok = aj-is s i "\"" | aj-is s i "\\" | aj-is s i "/" | aj-is s i "b" | aj-is s i "f" | aj-is s i "n" | aj-is s i "r" | aj-is s i "t" }
+    else
+      AccpScan {
+        next = i + 1,
+        ok = aj-is s i "\"" | aj-is s i "\\" | aj-is s i "/" | aj-is s i "b" | aj-is s i "f" | aj-is s i "n" | aj-is s i "r" | aj-is s i "t"
+      }
 
   aj-digit : Text, Integer -> Boolean
   aj-digit (s) (i) =
@@ -96,9 +103,12 @@ Section: Scanning
     else if aj-is s i "\"" then aj-string s i
     else if aj-is s i "{" then aj-container s (i + 1) depth True True
     else if aj-is s i "[" then aj-container s (i + 1) depth False True
-    else if i + 4 <= text-length s & substring s i 4 == "true" then AccpScan { next = i + 4, ok = True }
-    else if i + 4 <= text-length s & substring s i 4 == "null" then AccpScan { next = i + 4, ok = True }
-    else if i + 5 <= text-length s & substring s i 5 == "false" then AccpScan { next = i + 5, ok = True }
+    else if i + 4 <= text-length s & substring s i 4 == "true" then
+      AccpScan { next = i + 4, ok = True }
+    else if i + 4 <= text-length s & substring s i 4 == "null" then
+      AccpScan { next = i + 4, ok = True }
+    else if i + 5 <= text-length s & substring s i 5 == "false" then
+      AccpScan { next = i + 5, ok = True }
     else aj-number s i
 
   aj-container : Text, Integer, Integer, Boolean, Boolean -> AccpScan
@@ -137,7 +147,10 @@ Section: Object Fields
     in let v = aj-value s start 1
     in let z = aj-ws s v.next
     in if aj-has acc key 0 then AccpObject { fields = [], ok = False }
-    else let next = list-push acc (AccpField { key = key, raw = substring s start (v.next - start) })
+    else let next = list-push acc (AccpField {
+      key = key,
+      raw = substring s start (v.next - start)
+    })
     in if aj-is s z "}" then AccpObject { fields = next, ok = True }
     else aj-fields s (z + 1) next
 
@@ -177,23 +190,25 @@ Section: Strings
 
   aj-decode-loop : Text, Integer, Integer, List Text -> Text
   aj-decode-loop (s) (i) (start) (parts) =
-    if i >= text-length s - 1 then text-concat-list (list-push parts (substring s start (i - start)))
+    if i >= text-length s - 1 then
+      text-concat-list (list-push parts (substring s start (i - start)))
     else if aj-is s i "\\" then
       let p = list-push parts (substring s start (i - start))
       in let esc = aj-at s (i + 1)
       in let u = if esc == char-code-at "u" 0 then aj-quad s (i + 2)
-        else if esc == char-code-at "n" 0 then 10
-        else if esc == char-code-at "r" 0 then 13
-        else if esc == char-code-at "t" 0 then 9
-        else if esc == char-code-at "b" 0 then 8
-        else if esc == char-code-at "f" 0 then 12
-        else to-unicode esc
+      else if esc == char-code-at "n" 0 then 10
+      else if esc == char-code-at "r" 0 then 13
+      else if esc == char-code-at "t" 0 then 9
+      else if esc == char-code-at "b" 0 then 8
+      else if esc == char-code-at "f" 0 then 12
+      else to-unicode esc
       in let pair = u >= 55296 & u <= 56319
       in let cp = if pair then 65536 + (u - 55296) * 1024 + aj-quad s (i + 8) - 56320 else u
       in let n = if pair then i + 12 else if esc == char-code-at "u" 0 then i + 6 else i + 2
       in let c = from-unicode cp
       in if esc == char-code-at "t" 0 then aj-decode-loop s n n (list-push p " ")
-      else if esc == char-code-at "r" 0 | esc == char-code-at "b" 0 | esc == char-code-at "f" 0 then aj-decode-loop s n n p
+      else if esc == char-code-at "r" 0 | esc == char-code-at "b" 0 | esc == char-code-at "f" 0 then
+        aj-decode-loop s n n p
       else if c < 0 then ""
       else aj-decode-loop s n n (list-push p (char-encode (code-to-char c)))
     else aj-decode-loop s (i + 1) start parts

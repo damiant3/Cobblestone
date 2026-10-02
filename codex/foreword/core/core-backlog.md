@@ -140,3 +140,13 @@ The two attest different things and have opposite exposure profiles, a signing
 key being used rarely in one place and a server key sitting in a
 network-facing process on every host. A server key is generated per
 deployment.
+
+## CCE has no Dingbats block
+
+U+2700..U+27BF (Dingbats) is in neither CCE tier, so a character from it
+reaches Codex text as `?`. Measured 2026-09-30 by `codex/test/apps/spark-audio`:
+the WPF Spark's `sfx_config.json` labels its 15 Magic presets with U+2728
+(sparkles), and every other character in that file and in `music_config.json`
+(Latin-1 letters, U+2013, U+266D, U+266F, emoji) survives. The oracle
+`build/spark-audio-oracle.ps1` applies the same substitution by name, so the
+test stays green on the rest and turns red the day the block is added.

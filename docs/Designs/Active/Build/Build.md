@@ -771,7 +771,7 @@ dropped, a byte of 128 or more kept, the rest mapped through the CCE table, then
 `dispatch-on-mode` does. `fat16-read-source` maps a high byte on its own, so a
 UTF-8 identifier (`ident-letters`) compiled to different text on the guest.
 
-**Shards.** `test-run.ps1` gives a guest 60 s and the img plug aborted its
+**Shards.** The img plug aborted its
 connection on a 20 MB payload, so the corpus is imaged in shards of 250 subjects
 or 6 MB of bundles. Measured 2026-09-29: 982 bundles are 80.6 MB (a subject
 citing the compiler bundles to 2.8 MB), 15 shards, the slowest guest 11 s, each
@@ -1009,6 +1009,17 @@ one `test-cross-batch.ps1` sizes its admission by.
   `web-mux-long-run` carry a `.no-cross` from this measurement, because all
   three acquire from a pool whose head is an x86-64 process-table address.
 ### Open, unowned
+
+| Source | JSON emission gap |
+|---|---|
+| `codex/build/applyannotationsScript.codex:34`, generated `build/apply-annotations.ps1:86` | The sidecar builder quotes target/kind/author without escaping and applies replacement only to body. Repair the generator, regenerate the script and prove quoted/backslash/control metadata round-trips. Source-inspected 2026-10-01 at main 33668. |
+
+- **Document-count patterns and published counts need reconciliation.** On
+  2026-09-30, `build/check-doc-counts.ps1` reported 18 advisory failures against
+  the depot baseline before MusicGen stage 0; 14 remain after the affected plug
+  and test counts were corrected. Six `TechnicalDetails.md` patterns do not
+  match the document's dated forms. Re-run the checker before taking the work;
+  change its Codex generator for pattern repairs, not the generated script.
 
 - **The gate's unaccounted wall time: `p4-stale-check` now runs `p4 status -a`,
   and whether that removed it is NOT yet measured.** The bare `p4 status` it

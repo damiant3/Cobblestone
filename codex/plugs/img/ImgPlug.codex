@@ -55,96 +55,106 @@ Section: Streaming Send
 
   send-buf-loop : TcpTransportState, Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] ImgSendResult
   send-buf-loop (ts) (buf) (off) (remaining) (sent) =
-   if remaining <= 0 then ImgSendResult { is-transport = ts, is-sent = sent, is-complete = True }
-   else let chunk = if remaining > 1400 then 1400 else remaining
-   in let bs = __buf-read-bytes buf off chunk
-   in act
-    r <- net-io-send-raw-checked ts bs
-    if r.ns-complete then send-buf-loop (r.ns-transport) buf (off + chunk) (remaining - chunk) (sent + (r.ns-sent))
-       else ImgSendResult { is-transport = r.ns-transport, is-sent = sent + (r.ns-sent), is-complete = False }
-   end
+    if remaining <= 0 then ImgSendResult { is-transport = ts, is-sent = sent, is-complete = True }
+    else let chunk = if remaining > 1400 then 1400 else remaining
+    in let bs = __buf-read-bytes buf off chunk
+    in act
+     r <- net-io-send-raw-checked ts bs
+     if r.ns-complete then
+       send-buf-loop (r.ns-transport) buf (off + chunk) (remaining - chunk) (sent + (r.ns-sent))
+     else
+       ImgSendResult {
+         is-transport = r.ns-transport,
+         is-sent = sent + (r.ns-sent),
+         is-complete = False
+       }
+    end
 
 Section: Drain
 
   drain-wait : TcpTransportState, Integer -> [Network.Read] Integer
   drain-wait (ts) (tries) =
-   if tries > 5000000 then 0
-   else act
-    frame <- ne2k-recv-frame
-    if list-length frame == 0 then drain-wait ts (tries + 1)
-    else 0
-   end
+    if tries > 5000000 then 0
+    else act
+     frame <- ne2k-recv-frame
+     if list-length frame == 0 then drain-wait ts (tries + 1)
+     else 0
+    end
 
 Section: Refusal
 
   img-refuse : TcpTransportState, Text, Integer -> [Console, Network.Read, Network.Write] Nothing
   img-refuse (ts) (why) (total-sectors) =
-   act
-    ts6 <- net-io-close ts
-    drained <- drain-wait ts6 0
-    print-line-uni ("REFUSED fat16 sectors=" & show (total-sectors + drained - drained) & ": " & why)
-   end
+    act
+     ts6 <- net-io-close ts
+     drained <- drain-wait ts6 0
+     print-line-uni ("REFUSED fat16 sectors=" & show (total-sectors + drained - drained) & ": " & why)
+    end
 
 Section: Read Helpers
 
   img-read-i32 : List Integer, Integer -> Integer
   img-read-i32 (bs) (off) =
-   list-at bs off + list-at bs (off + 1) * 256 + list-at bs (off + 2) * 65536 + list-at bs (off + 3) * 16777216
+    list-at bs off + list-at bs (off + 1) * 256 + list-at bs (off + 2) * 65536 + list-at bs (off + 3) * 16777216
 
 Section: Body
 
   opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
-   let sess = net-session-new local-mac local-ip gateway-ip 49152 9118 host-ip 1000
-   in let ts = transport-new sess
-   in act
-    ts1 <- net-io-connect ts
-    recv <- net-io-recv-loop ts1 0
-    if recv.has-message then
-     let payload = recv.body
-     in let fs-type = list-at payload 0
-     in let total-sectors = img-read-i32 payload 1
-     in let pe-size = img-read-i32 payload 5
-     in let cdx-size = img-read-i32 payload 9
-     in let src-count = img-read-i32 payload 13
-     in let dir-count = img-read-i32 payload 17
-     in let dtbl-off = 21
-     in let tbl-off = dtbl-off + dir-count * 15
-     in let hdr-len = tbl-off + src-count * 15
-     in let payload-buf = __heap-save
-     in let pa = __heap-advance (list-length payload)
-     in let pw = __buf-write-bytes payload-buf 0 payload
-     in let img-bytes = total-sectors * gpt-sector-size
-     in let img-buf = __heap-save
-     in let img-advance = __heap-advance img-bytes
-     in let w0 = gpt-write-all img-buf total-sectors
-     in let hp1 = __heap-save
-     in let efi-bytes = __buf-read-bytes payload-buf hdr-len pe-size
-     in let cdx-bytes = __buf-read-bytes payload-buf (hdr-len + pe-size) cdx-size
-     in if fs-type == 0 then
-      let lay = fat32-compute-layout total-sectors
-      in let w1 = fat32-write-all img-buf lay efi-bytes cdx-bytes
-      in let restored = __heap-restore hp1
-      in act
-       sent <- send-buf-loop (recv.transport) img-buf 0 img-bytes 0
-       ts6 <- net-io-close (sent.is-transport)
-       drained <- drain-wait ts6 0
-       if sent.is-complete then print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " sent=" & show (sent.is-sent) & " fat32 sectors=" & show total-sectors)
-       else print-line-uni ("TRUNCATED sent=" & show (sent.is-sent) & " of " & show (img-bytes + drained - drained) & " fat32 sectors=" & show total-sectors)
-      end
-     else
-      let lay = fat16w-compute-layout total-sectors
-      in let why = fat16w-refusal lay pe-size cdx-size src-count payload-buf tbl-off dir-count dtbl-off
-      in if text-length why > 0 then img-refuse (recv.transport) why total-sectors
-      else let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes src-count payload-buf tbl-off (hdr-len + pe-size + cdx-size) dir-count dtbl-off
-      in let restored = __heap-restore hp1
-      in act
-       sent <- send-buf-loop (recv.transport) img-buf 0 img-bytes 0
-       ts6 <- net-io-close (sent.is-transport)
-       drained <- drain-wait ts6 0
-       if sent.is-complete then print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " sent=" & show (sent.is-sent) & " fat16 sectors=" & show total-sectors)
-       else print-line-uni ("TRUNCATED sent=" & show (sent.is-sent) & " of " & show (img-bytes + drained - drained) & " fat16 sectors=" & show total-sectors)
-      end
-    else print-line-uni "FAIL"
-   end
+    let sess = net-session-new local-mac local-ip gateway-ip 49152 9118 host-ip 1000
+    in let ts = transport-new sess
+    in act
+     ts1 <- net-io-connect ts
+     recv <- net-io-recv-loop ts1 0
+     if recv.has-message then
+       let payload = recv.body
+       in let fs-type = list-at payload 0
+       in let total-sectors = img-read-i32 payload 1
+       in let pe-size = img-read-i32 payload 5
+       in let cdx-size = img-read-i32 payload 9
+       in let src-count = img-read-i32 payload 13
+       in let dir-count = img-read-i32 payload 17
+       in let dtbl-off = 21
+       in let tbl-off = dtbl-off + dir-count * 15
+       in let hdr-len = tbl-off + src-count * 15
+       in let payload-buf = __heap-save
+       in let pa = __heap-advance (list-length payload)
+       in let pw = __buf-write-bytes payload-buf 0 payload
+       in let img-bytes = total-sectors * gpt-sector-size
+       in let img-buf = __heap-save
+       in let img-advance = __heap-advance img-bytes
+       in let w0 = gpt-write-all img-buf total-sectors
+       in let hp1 = __heap-save
+       in let efi-bytes = __buf-read-bytes payload-buf hdr-len pe-size
+       in let cdx-bytes = __buf-read-bytes payload-buf (hdr-len + pe-size) cdx-size
+       in if fs-type == 0 then
+         let lay = fat32-compute-layout total-sectors
+         in let w1 = fat32-write-all img-buf lay efi-bytes cdx-bytes
+         in let restored = __heap-restore hp1
+         in act
+          sent <- send-buf-loop (recv.transport) img-buf 0 img-bytes 0
+          ts6 <- net-io-close (sent.is-transport)
+          drained <- drain-wait ts6 0
+          if sent.is-complete then
+            print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " sent=" & show (sent.is-sent) & " fat32 sectors=" & show total-sectors)
+          else
+            print-line-uni ("TRUNCATED sent=" & show (sent.is-sent) & " of " & show (img-bytes + drained - drained) & " fat32 sectors=" & show total-sectors)
+         end
+       else
+         let lay = fat16w-compute-layout total-sectors
+         in let why = fat16w-refusal lay pe-size cdx-size src-count payload-buf tbl-off dir-count dtbl-off
+         in if text-length why > 0 then img-refuse (recv.transport) why total-sectors
+         else let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes src-count payload-buf tbl-off (hdr-len + pe-size + cdx-size) dir-count dtbl-off
+         in let restored = __heap-restore hp1
+         in act
+          sent <- send-buf-loop (recv.transport) img-buf 0 img-bytes 0
+          ts6 <- net-io-close (sent.is-transport)
+          drained <- drain-wait ts6 0
+          if sent.is-complete then
+            print-line-uni ("OK img=" & show (img-bytes + drained - drained) & " sent=" & show (sent.is-sent) & " fat16 sectors=" & show total-sectors)
+          else
+            print-line-uni ("TRUNCATED sent=" & show (sent.is-sent) & " of " & show (img-bytes + drained - drained) & " fat16 sectors=" & show total-sectors)
+         end
+     else print-line-uni "FAIL"
+    end
 
 Page 1

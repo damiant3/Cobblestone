@@ -95,7 +95,9 @@ pwsh build\dump-usb.ps1 -DiskNumber 2 -Out D:\Projects\stick-archive\<what>-<yyy
 
 | in the archive | SHA-256 | what it is |
 |---|---|---|
-| `pre-desk-stage2-20260930.img` | `839915EB80DFD53AD3C378BEC50429DB4F8E0332621E2955D75E7076EB863DAA` | Raw disk 2 dump before the DeskScheduler acceptance flash, USB serial `FE21E85142604D33`. The first 16 MiB hash matches `diag18-returned-20260930.img`; the preserved dump covers 32 MiB. Dump receipt: `pre-desk-stage2-20260930.log`. Flashed `D:/Projects/sitting-images/desk-stage2-32370/desk-stage2-32370.img`, SHA-256 `66588CC0C83C0220CF0C9975A07A9DA00DE5D55EE9A73AB541B06BAC1CD4A3EB`, including fester CL 32449. `flash-usb.ps1 -SpecFit` exited 0 with full image and all GPT patches verified; receipt `desk-stage2-flash-20260930.log`. Physical acceptance remains unrun. |
+| `works81-returned-20261001.img` | `BA2243F0745A8A3F6927127B15A91BCBAC01977BD24A09492094F9F62E3C247F` | Read-only 32 MiB archive of the returned WORKS-81 image after physical PID -1 refusal. Covers both partitions of disk 2, serial `FE21E85142604D33`. Dump receipt: `works81-returned-20261001.log`; taken before replacement `07A837D1` was flashed. |
+| `pre-works81-lan-20261001.img` | `000139208865F981876B4191E128AB6508A1D16F4268029FFB29D410991536A9` | Read-only 32 MiB archive of disk 2, serial `FE21E85142604D33`, before the authorized WORKS-81 LAN flash. Covers both existing partitions. Dump receipt: `pre-works81-lan-20261001.log`; device identity: `pre-works81-lan-20261001.disk.json`. |
+| `pre-desk-stage2-20260930.img` | `839915EB80DFD53AD3C378BEC50429DB4F8E0332621E2955D75E7076EB863DAA` | Raw disk 2 dump before the DeskScheduler acceptance flash, USB serial `FE21E85142604D33`. The first 16 MiB hash matches `diag18-returned-20260930.img`; the preserved dump covers 32 MiB. Dump receipt: `pre-desk-stage2-20260930.log`. Flashed `D:/Projects/sitting-images/desk-stage2-32370/desk-stage2-32370.img`, SHA-256 `66588CC0C83C0220CF0C9975A07A9DA00DE5D55EE9A73AB541B06BAC1CD4A3EB`, including fester CL 32449. `flash-usb.ps1 -SpecFit` exited 0 with full image and all GPT patches verified; receipt `desk-stage2-flash-20260930.log`. Physical acceptance failed on 2026-09-30: Clock/hover flashing and slow scene progress (WORKS-78). The desk acceptance section records the replacement's outcome. |
 | `diag18-returned-20260930.img` | `98DB43A9 C12D9880 7F3A3DCD EB484586 0D97E0AF 68D40E4B E7058D1E 11FF00B5` | SITTING 18 as it came back 2026-09-30, image 81B75294. The ladder ran TWICE: run 1 with no keyboard attached read `sink mount-fail`, `vmx no-guest GUEST.CDX absent` and `bank=lost at=b3` (photograph only; xhci `binds=3 asked int=2 maxpkt=32`); run 2 with the keyboard overwrote `DIAG.TXT`. `DIAG.TXT` 6,938 bytes whole, ending `END`, extracted as `diag18-20260930\DIAG.TXT`: sink `state=ok size=2745998 read=2745998 bad=0 fuel=806239` (WORKS-9 green); `vmx-hold ok guest=94046 fc=5 ptimer=on` against the bed's `fc=1 ptimer=off`; the launch wedged at `vmx running` and banked no row (WORKS-76); edit big `shift-us=14652 reindex-us=16702`; avx `lanes=10 match=10`. Boot 2 (desk, keyboard and mouse): the editor's last keystroke `key 114248 us` at the top of the 72,922-line `SOURCE.SRC` (WORKS-19); every click repaints and flashes the whole desk (WORKS-78). Dump log `diag18-returned-20260930.dump.log`. |
 | `before-diag18-20260930.img` | `1EE841FB 942EF5F1 F77077F0 66101FF4 7D42EACD 2E3D7C38 94C72DFD 2D2FB7D1` | disk 2 read off by root 2026-09-30 before sitting 18 (`diag-sitting18.img` 81B75294) went over it. **Differs from `diag17-returned-20260929.img` in exactly one sector, LBA 2290**, the same sector that differed before sitting 17: a host-side write lands there between flights. Logs `before-diag18-20260930.dump.log`, `diag18-flash-20260930.log`. |
 | `diag17-returned-20260929.img` | `E260FB33 71F27F79 B19DC518 E7230E79 BC9313BC C540152B 54869019 1113FE5B` | SITTING 17 as it came back 2026-09-29, image 9B08E2EB: bank lost at `edit`. `DIAG.TXT` 5,895 bytes ending `END` after the skipped rows; FAT copies differ in 87 entries; 158 clusters (1745 up) allocated to nothing. Extracted as `diag17-20260929\DIAG.TXT`. Dump log `diag17-returned-20260929.dump.log`. |
@@ -160,17 +162,159 @@ entries say only "on blu's box", and that vagueness is half of what made
 "Sittings are open, but same rules as before: answer all open question in 1
 sit, and don't waste my time or my back." Root composes the next sitting from
 every open metal question (`CurrentPlan.md`, "SITTINGS ARE OPEN"). The I219
-medium-death hunt stays parked (Damian, 2026-08-24). Sitting 16, below, is the
-last sitting flown.
+medium-death hunt stays parked (Damian, 2026-08-24). The latest numbered
+diagnostic sitting recorded below is sitting 18.
 
-### Queued desk acceptance: bounded rendering and pane policy
+### WORKS-81 owned-pool diagnostic candidate
 
-This check rides the next coordinated desk boot. It does not request a
-separate flash. Build the desk from the submitted stage-2 candidate named in
-`docs/Designs/Active/OS/DeskScheduler.md`, then record the composed image hash
-and rehearse those exact bytes through the sitting's normal procedure.
-The software renderer, input queue and pane policy must all be present;
-an older desk image cannot answer this question.
+Image: `D:/Projects/sitting-images/guios-input-ownedpool-20261001/guios-input.img`
+
+SHA-256: `F0863CAFF3A2F66FC9A8DD5EA24B856917F0653803550EC77B3A44008B7C4296`
+
+Image compiler: `E006FE45F3C25DD33FC25405A2141C325EABB98B485C3E407446EFEA931E24AC`.
+The standard `BEDIDENT.DAT` identity is unchanged. This frozen diagnostic
+uses `160653BC` desktop/input source with the owned process-pool runtime,
+v4 handoff accessors and a diagnostic welcome screen. It excludes main 33967
+and the later Windows-key/triple-CAD shortcuts, Settings and render-worker
+changes. Absence of those shortcuts is expected here; use the mouse and
+Aquarium's `S` key for input acceptance.
+
+The welcome screen reports root heap bounds, child pool, root/Web PIDs,
+USB readiness, report/controller DMA addresses and the handback diagnostic.
+Photograph it first. The adjacent and embedded `ACCEPT.TXT` requests one
+sitting; if input fails, record the screen and stop. Purple before payload
+entry means the firmware could not reserve the separate process pool.
+
+The predecessor `D883A778` passed native 1024x768 mouse launch, keyboard input and HTTP
+during Aquarium at frame 65. USB-only OVMF3072 at 1920x1080 showed root PID 0,
+Web PID 1, both USB devices ready and DHCP 192.168.76.15/24 with gateway
+192.168.76.2. Mouse launch, keyboard shadow toggle, request search/filter and
+HTTP during Aquarium frames 124 to 126 passed. The package holds captures,
+HTTP logs, source, artifacts and the hash-bound rehearsal record.
+`F0863CAF` corrects only the embedded acceptance card and its directory size:
+raise Aquarium before peer HTTP requests, then return to Web for the log.
+All other image byte ranges equal the booted predecessor. The package keeps
+that predecessor and the independently checked `card-correction.json` evidence.
+The card-only derivative has not itself been booted.
+This image has not been flashed; physical cause and acceptance remain open.
+
+<a id="works-81-lan-candidate-rehearsed-physical-acceptance-pending"></a>
+
+### WORKS-81 LAN candidate: input failure on metal
+
+Prepared 2026-10-01 with boot heap exclusion from main 33898, keyboard
+shortcuts from main 33944 and USB ownership retention from main 33967.
+Seed `CC3FC522` and the standard `BEDIDENT.DAT` identity are unchanged.
+The frozen desktop closure is in the package; later Settings GUI landings
+are not included. Damian's physical report, relayed by root on 2026-10-01:
+"this img is functionally identical to me. no mouse in the desk, no keyboard
+commands work either... ctrl-alt-del 3 times did not reboot it either."
+The emulator rehearsal below is not physical acceptance.
+
+Image: `D:/Projects/sitting-images/guios-input-20261001/guios-input.img`
+
+SHA-256: `D5FD7CB697D29EE5F12BA90A91499BBF6C84CBA9728B6A95D3576D4E8CF771B2`
+
+The adjacent `ACCEPT.TXT` is embedded byte-for-byte in the image. The card
+checks the displayed DHCP lease, remote `/` and `/api/health` during
+Aquarium animation, request-log filters/search, and Stop/Start/Restart.
+`README.txt` names the compiler hash, build settings and rehearsal limits.
+`guios-input.rehearsed` binds the rehearsal to the image hash. The card also
+checks idle-screen USB input, Windows-key menu navigation and triple
+Ctrl+Alt+Delete. If mouse motion fails, record click-dependent checks as
+blocked, complete available keyboard checks and then test reboot.
+
+Native codex-vm at 1024x768 returned both URLs successfully and captured
+Aquarium at frame 65. USB-only OVMF3072 at 1920x1080 showed Web PID 1 and
+DHCP binding, Aquarium advancing from frame 6 to 14 across fresh requests,
+working filters/search/paging, Stop refusal and Start/Restart recovery.
+Captures and HTTP records are in `native/` and `ovmf/`. Rehearsal
+used exact-image copies; no physical LAN pass is claimed.
+
+OVMF retained ownership after 42 seconds idle on Storage, then accepted
+Enter and desktop mouse motion/clicks. Both Windows keys, menu selection,
+Enter and Escape worked. A held first Ctrl+Alt+Delete and a second press
+did not reset; the third produced QMP `guest-reset` from Aquarium.
+The live native never-proven-keyboard control still reaches the timeout
+branch. Its cleared diagnostics do not prove physical firmware reclamation.
+
+Image `07A837D1` failed physical input acceptance: Damian reported a
+stationary cursor on two boots, with keyboard input working through login.
+The ASUS ownership state and desktop keyboard delivery were not measured.
+Main 33967 fixes a reproduced idle-screen handback after decoded USB input;
+the physical mouse cause remains unconfirmed. After a keyboard has decoded
+input, a later failure no longer triggers automatic handback. A keyboard
+that never supplies decoded input retains the existing fallback.
+
+The earlier heapfix package's `ovmf/` reduced-RAM experiment showed PID 1 but failed DHCP and
+timed out on HTTP. Firmware placed the NIC BAR at `0x80840000`, below the
+driver's existing 3 GiB device window (`MemoryMap` and `e1000-bar-verdict`).
+That experiment is not a LAN pass. OVMF software rendering also required
+slower input pacing; captures do not certify input latency or scanout.
+
+The previous image `160653BC` had working mouse input but failed LAN acceptance:
+Damian reported
+PID -1, "Service process unavailable", no DHCP address and zero gateway.
+ASUS heap/stack placement was not measured. The controlled spawn probe
+in fester's `build-output/works81/pe-heap` reproduces parent14/child-1 with
+the old default OVMF1536 allocation; the new stub gives parent0/child1 for
+16 MiB and 512 MiB root heaps. Forced overlapping placement refuses before
+entry. The physical cause remains an inference until the replacement sits.
+The first refusal checker missed an ANSI-interrupted serial prefix;
+the corrected negative arm, generator comparison and deck check pass.
+
+The previous image was flashed 2026-10-01 on Damian's authorization to disk 2, serial
+`FE21E85142604D33`, after the archive recorded above. `flash-usb.ps1`
+with `-SpecFit` and the expected image hash exited 0. All 33,554,432 image
+bytes and the four GPT patches passed readback verification. The receipt is
+`D:/Projects/sitting-images/guios-works81-main33794/flash-20261001.log`.
+The returned contents were archived as `works81-returned-20261001.img`
+before replacement `07A837D1` was flashed on Damian's authorization to the
+same disk and serial. `flash-usb.ps1 -SpecFit -ExpectHash` exited 0 and
+verified all 33,554,432 image bytes plus all four GPT patches. Receipt:
+`D:/Projects/sitting-images/guios-works81-heapfix-20261001/flash-20261001.log`.
+The desktop CDX in `160653BC` and `07A837D1` is byte-identical:
+`E57FA86474BE3B7AA00753A4A085A31BE2A642B4B7E565C7763AC6E0C25B3ED9`.
+That pair isolates the PE stub change. USB DMA storage follows the root heap;
+the hardware failure mechanism is still unproved. The next candidate keeps
+the original allocation policy and owns a separate process/FX pool. It uses
+the `160653BC` input source, excludes main 33967, and displays root heap range,
+USB DMA addresses and Web PID for one diagnostic sitting.
+Archive the returned stick's current contents before another flash.
+
+### Desk acceptance: GUI accepted, Web pane check open
+
+The accepted image is `D:/Projects/sitting-images/desk-scheduler-33130/desk-scheduler.img`,
+SHA-256 `90B8CEFA51C2B699D21FC708C80BC449CBAC132331DCCA1176476E9D6DE23358`.
+The compiler is seed `AF9057E8`, with COMPILER-112 timer selection from main
+CL 33111 and COMPILER-111 slice initialization from main CL 33130. The image
+uses the standard test identity.
+The replacement retains completed pixels during painting, batches bounded
+scene service, and corrects scene phase, fish yaw and raster arithmetic.
+Damian's physical acceptance, 2026-10-01, verbatim:
+
+> it boots, the guiOS works much better. no flashing screens, everything looks good. apps all work as well as expected, and the repaint the whole screen problem is gone!
+
+The report closes WORKS-78's whole-screen repaint/flashing defect and accepts
+general GUI/app usability on this image. Web pane port 9100 was not reported.
+The accepted image predates WORKS-81's DHCP/admin implementation; use the
+LAN candidate above for the pending physical network acceptance. The report
+does not enumerate individual gestures or measure latency, frame rate or
+hardware GPU behavior.
+
+Retain the following sequence for focused regression checks; the report
+above is general acceptance, not a per-step execution log.
+The adjacent `ACCEPT.TXT` starts with the original Clock and hover failures:
+watch several Clock second changes, hover over controls, then move between
+menu rows and type Calculator digits. Completed windows and surrounding UI
+must remain visible without blank flashes. Run those checks before the scene
+sequence below. The adjacent rehearsal
+directory holds the VM images and logs; VM acceptance does not establish
+physical frame rate or scanout behavior. Native software scenes completed
+frames; USB-only OVMF at 1920x1080 showed Clock progress, Aquarium shadows,
+minimize/restore and continuing 3D frames. Frame captures do not certify
+input latency. README.txt records limits and boot instructions; the adjacent
+`desk-scheduler.rehearsed` names the exact image hash.
 
 Use a USB keyboard and mouse. Film the pointer and pane together during the
 following sequence, and photograph any refusal or input-error notice.
@@ -187,19 +331,22 @@ following sequence, and photograph any refusal or input-error notice.
    publishing after close. A live framebuffer copy can still tear.
 3. Repeat the interaction in **Aquarium**. Fish must keep animating after
    completed frames. Release a held pointer button, move again, and check that
-   the released drag does not remain active. Hide the pane with Tab, open the
-   editor or console, and verify ordinary typing and button releases.
-4. If the Web pane reports a working network service, request its displayed
-   address on port 9100 from the host before and during 3D interaction, then
-   inspect the request log. Responses during rendering establish background
-   service progress. A missing network baseline leaves this physical check
-   unrun; the two-bed cooperative process fixture is separate evidence.
+   the released drag does not remain active. Minimize using the title-bar
+   control, open the editor or console, and verify ordinary typing and button
+   releases.
+4. The accepted `desk-scheduler` image `90B8CEFA` predates DHCP/admin
+   support and cannot establish LAN acceptance. Use the WORKS-81 candidate
+   above and its embedded `ACCEPT.TXT` for the pending physical network
+   check. Responses during Aquarium animation establish background service
+   progress on the target; the cooperative process fixture does not.
 
 Record pane, action and outcome for any failure, plus the image hash. Input
 queue overflow, transfer error, `3D WORK REFUSED`, stuck input, stale publication
 or a stopped background service fails the affected case. Bed acceptance and
-cost evidence are in `DeskScheduler.md`; physical acceptance remains unrun
-until this sequence is observed on the board.
+cost evidence are in `DeskScheduler.md`. GUI/repaint acceptance is recorded
+above; physical port 9100 acceptance uses the new WORKS-81 candidate.
+The corrected external `ACCEPT.TXT` beside the accepted `desk-scheduler`
+image supersedes the network instruction embedded in that unchanged image.
 
 ### PRE-FLIGHT CARD, SITTING 18: `diag-sitting18.img` 81B75294, the ASUS, TWO BOOTS ON ONE STICK (red for root, 2026-09-29)
 

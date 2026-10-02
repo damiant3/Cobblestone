@@ -1,0 +1,217 @@
+Chapter: SparkDocuments
+  cites Foreword chapter CCE
+
+ The WPF original's DocumentStore (D:\Projects\Spark\Spark\DocumentStore.cs):
+ a project's story documents, indexed by keyword and matched against a prompt
+ by overlap, the best chunks going in front of it. A score is the original's
+ double arithmetic, so equal scores keep the original's order. A token is a
+ run of the bytes [a-zA-Z0-9'], lowercased.
+
+Section: Records
+
+  SparkDoc = record {
+    sd-name : Text,
+    sd-role : Text,
+    sd-content : Text,
+    sd-keywords : List Text
+  }
+
+  SparkChunk = record {
+    sc-source : Text,
+    sc-text : Text,
+    sc-score : Real
+  }
+
+Section: Tokens
+
+  sdoc-word-byte : Integer -> Boolean
+  sdoc-word-byte (c) = (c >= 97 & c <= 122) | (c >= 65 & c <= 90) | (c >= 48 & c <= 57) | c == 39
+
+  sdoc-lower-byte : Integer -> Integer
+  sdoc-lower-byte (c) = if c >= 65 & c <= 90 then c + 32 else c
+
+  sdoc-tok-loop : List Integer, Integer, List Integer, List Text -> List Text
+  sdoc-tok-loop (u) (i) (cur) (acc) =
+    if i >= list-length u then (if list-length cur > 0 then list-push acc (unicode-bytes-to-text cur) else acc)
+    else let c = list-at u i
+    in if sdoc-word-byte c then sdoc-tok-loop u (i + 1) (list-push cur (sdoc-lower-byte c)) acc
+    else if list-length cur > 0 then sdoc-tok-loop u (i + 1) [] (list-push acc (unicode-bytes-to-text cur))
+    else sdoc-tok-loop u (i + 1) cur acc
+
+  spark-doc-tokenize : Text -> List Text
+  spark-doc-tokenize (t) = sdoc-tok-loop (text-to-unicode-bytes t) 0 [] []
+
+  sdoc-member : List Text, Text, Integer -> Boolean
+  sdoc-member (xs) (t) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == t then True
+    else sdoc-member xs t (i + 1)
+
+ The original's stopwords, in its order (ExtractKeywords).
+
+  sdoc-stopwords : List Text
+  sdoc-stopwords =
+    [ "the", "and", "for", "are", "but", "not", "you", "all", "can", "her"
+    , "was", "one", "our", "out", "has", "have", "had", "this", "that", "with"
+    , "they", "from", "been", "said", "each", "which", "their", "will", "other"
+    , "about", "many", "then", "them", "these", "some", "would", "into"
+    ]
+
+  sdoc-keys-loop : List Text, List Text, Integer, List Text -> List Text
+  sdoc-keys-loop (toks) (stop) (i) (acc) =
+    if i >= list-length toks | list-length acc >= 200 then acc
+    else let t = list-at toks i
+    in if text-length t >= 3 & sdoc-member stop t 0 == False & sdoc-member acc t 0 == False then sdoc-keys-loop toks stop (i + 1) (list-push acc t)
+    else sdoc-keys-loop toks stop (i + 1) acc
+
+  spark-doc-keywords : Text -> List Text
+  spark-doc-keywords (t) = sdoc-keys-loop (spark-doc-tokenize t) sdoc-stopwords 0 []
+
+Section: Roles
+
+  sdoc-find : Text, Text, Integer -> Integer
+  sdoc-find (hay) (needle) (i) =
+    if i + text-length needle > text-length hay then 0 - 1
+    else if substring hay i (text-length needle) == needle then i
+    else sdoc-find hay needle (i + 1)
+
+  sdoc-has : Text, Text -> Boolean
+  sdoc-has (hay) (needle) = sdoc-find hay needle 0 >= 0
+
+  sdoc-lower-loop : List Integer, Integer, List Integer -> List Integer
+  sdoc-lower-loop (u) (i) (acc) = if i >= list-length u then acc else sdoc-lower-loop u (i + 1) (list-push acc (sdoc-lower-byte (list-at u i)))
+
+  sdoc-lower : Text -> Text
+  sdoc-lower (t) = unicode-bytes-to-text (sdoc-lower-loop (text-to-unicode-bytes t) 0 [])
+
+  spark-doc-role : Text -> Text
+  spark-doc-role (name) =
+    let n = sdoc-lower name
+    in if sdoc-has n "prompt" then "prompts"
+    else if sdoc-has n "universe" | sdoc-has n "glossary" | sdoc-has n "lore" then "universe"
+    else if sdoc-has n "character" | sdoc-has n "npc" then "characters"
+    else if sdoc-has n "location" | sdoc-has n "place" | sdoc-has n "world" then "locations"
+    else "reference"
+
+  spark-doc-index : Text, Text -> SparkDoc
+  spark-doc-index (name) (content) = SparkDoc {
+    sd-name = name,
+    sd-role = spark-doc-role name,
+    sd-content = content,
+    sd-keywords = spark-doc-keywords content
+  }
+
+Section: Chunks
+
+ ChunkText splits on the regex \n\s*\n, whose \s here is a space or a newline,
+ then fills chunks paragraph by paragraph: a chunk closes when the next
+ paragraph would take it past the size, the joining blank line not counted.
+
+  sdoc-ws : Integer, Integer, Integer -> Boolean
+  sdoc-ws (c) (nl) (sp) = c == nl | c == sp
+
+  sdoc-last-nl : Text, Integer, Integer, Integer, Integer -> Integer
+  sdoc-last-nl (t) (i) (last) (nl) (sp) =
+    if i < text-length t & sdoc-ws (char-code-at t i) nl sp then sdoc-last-nl t (i + 1) (if char-code-at t i == nl then i else last) nl sp
+    else last
+
+  sdoc-paras : Text, Integer, Integer, List Text, Integer, Integer -> List Text
+  sdoc-paras (t) (start) (i) (acc) (nl) (sp) =
+    if i >= text-length t then list-push acc (substring t start (text-length t - start))
+    else if char-code-at t i == nl then
+      (let k = sdoc-last-nl t (i + 1) (0 - 1) nl sp
+      in if k > i then sdoc-paras t (k + 1) (k + 1) (list-push acc (substring t start (i - start))) nl sp
+      else sdoc-paras t start (i + 1) acc nl sp)
+    else sdoc-paras t start (i + 1) acc nl sp
+
+  sdoc-fill : List Text, Integer, Integer, Text, List Text -> List Text
+  sdoc-fill (ps) (size) (i) (cur) (acc) =
+    if i >= list-length ps then (if text-length cur > 0 then list-push acc cur else acc)
+    else let p = list-at ps i
+    in let flush = text-length cur + text-length p > size & text-length cur > 0
+    in let kept = if flush then "" else cur
+    in let next = if text-length kept > 0 then kept & "\n\n" & p else p
+    in sdoc-fill ps size (i + 1) next (if flush then list-push acc cur else acc)
+
+  spark-doc-chunks : Text, Integer -> List Text
+  spark-doc-chunks (t) (size) =
+    if text-length t <= size then [t]
+    else sdoc-fill (sdoc-paras t 0 0 [] (char-code-at "\n" 0) (char-code-at " " 0)) size 0 "" []
+
+  sdoc-trim-start : Text, Integer, Integer, Integer -> Integer
+  sdoc-trim-start (t) (i) (nl) (sp) = if i < text-length t & sdoc-ws (char-code-at t i) nl sp then sdoc-trim-start t (i + 1) nl sp else i
+
+  sdoc-trim-end : Text, Integer, Integer, Integer -> Integer
+  sdoc-trim-end (t) (e) (nl) (sp) = if e > 0 & sdoc-ws (char-code-at t (e - 1)) nl sp then sdoc-trim-end t (e - 1) nl sp else e
+
+  sdoc-trim : Text -> Text
+  sdoc-trim (t) =
+    let nl = char-code-at "\n" 0
+    in let sp = char-code-at " " 0
+    in let a = sdoc-trim-start t 0 nl sp
+    in let e = sdoc-trim-end t (text-length t) nl sp
+    in if e <= a then "" else substring t a (e - a)
+
+Section: Relevance
+
+ ScoreKeywordOverlap: the query tokens found in the document's set, counted
+ with repeats, over the query's token count.
+
+  sdoc-hits : List Text, List Text, Integer, Integer -> Integer
+  sdoc-hits (q) (d) (i) (n) = if i >= list-length q then n else sdoc-hits q d (i + 1) (if sdoc-member d (list-at q i) 0 then n + 1 else n)
+
+  sdoc-overlap : List Text, List Text -> Real
+  sdoc-overlap (q) (d) =
+    if list-length d == 0 then 0.0
+    else let h = sdoc-hits q d 0 0
+    in if h > 0 then real-from-int h / real-from-int (list-length q) else 0.0
+
+  sdoc-score-chunks : List Text, Text, List Text, Real, Integer, List SparkChunk -> List SparkChunk
+  sdoc-score-chunks (q) (name) (cs) (doc-score) (i) (acc) =
+    if i >= list-length cs then acc
+    else let c = list-at cs i
+    in let s = sdoc-overlap q (spark-doc-tokenize c)
+    in let hit = SparkChunk { sc-source = name, sc-text = sdoc-trim c, sc-score = s + doc-score * 0.3 }
+    in sdoc-score-chunks q name cs doc-score (i + 1) (if s > 0.0 then list-push acc hit else acc)
+
+  sdoc-score-docs : List Text, List SparkDoc, Integer, Integer, List SparkChunk -> List SparkChunk
+  sdoc-score-docs (q) (docs) (size) (i) (acc) =
+    if i >= list-length docs then acc
+    else let d = list-at docs i
+    in let ds = sdoc-overlap q (d.sd-keywords)
+    in if ds > 0.0 then sdoc-score-docs q docs size (i + 1) (sdoc-score-chunks q (d.sd-name) (spark-doc-chunks (d.sd-content) size) ds 0 acc)
+    else sdoc-score-docs q docs size (i + 1) acc
+
+ A stable sort, highest score first, as LINQ's OrderByDescending.
+
+  sdoc-insert : List SparkChunk, SparkChunk, Integer, List SparkChunk, Boolean -> List SparkChunk
+  sdoc-insert (sorted) (c) (i) (acc) (placed) =
+    if i >= list-length sorted then (if placed then acc else list-push acc c)
+    else let x = list-at sorted i
+    in if placed == False & c.sc-score > x.sc-score then sdoc-insert sorted c (i + 1) (list-push (list-push acc c) x) True
+    else sdoc-insert sorted c (i + 1) (list-push acc x) placed
+
+  sdoc-sort : List SparkChunk, Integer, List SparkChunk -> List SparkChunk
+  sdoc-sort (cs) (i) (acc) = if i >= list-length cs then acc else sdoc-sort cs (i + 1) (sdoc-insert acc (list-at cs i) 0 [] False)
+
+  sdoc-take : List SparkChunk, Integer, Integer, List SparkChunk -> List SparkChunk
+  sdoc-take (cs) (n) (i) (acc) = if i >= list-length cs | i >= n then acc else sdoc-take cs n (i + 1) (list-push acc (list-at cs i))
+
+  spark-doc-find : List SparkDoc, Text, Integer, Integer -> List SparkChunk
+  spark-doc-find (docs) (prompt) (max-chunks) (size) =
+    let q = spark-doc-tokenize prompt
+    in if list-length q == 0 then []
+    else sdoc-take (sdoc-sort (sdoc-score-docs q docs size 0 []) 0 []) max-chunks 0 []
+
+ BuildContext: the five best chunks while their length stays within four
+ characters per token of the budget, joined by spaces.
+
+  sdoc-context-loop : List SparkChunk, Integer, Integer, Integer, Text -> Text
+  sdoc-context-loop (cs) (i) (budget) (total) (acc) =
+    if i >= list-length cs then acc
+    else let c = list-at cs i
+    in if total + text-length (c.sc-text) > budget then acc
+    else sdoc-context-loop cs (i + 1) budget (total + text-length (c.sc-text)) (if i == 0 then c.sc-text else acc & " " & c.sc-text)
+
+  spark-doc-context : List SparkDoc, Text, Integer -> Text
+  spark-doc-context (docs) (prompt) (max-tokens) = sdoc-context-loop (spark-doc-find docs prompt 5 300) 0 (max-tokens * 4) 0 ""

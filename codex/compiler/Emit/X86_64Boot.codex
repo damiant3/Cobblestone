@@ -53,6 +53,7 @@ Section: Memory Address Map
   slice-table-addr : Integer = 30008
   fork-free-head-addr : Integer = 30040
   starve-counter-addr : Integer = 30048
+  starve-cursor-addr : Integer = 30052
   boot-factstore-addr : Integer = 30056
   identity-table-base : Integer = 30064
   device-seed-addr : Integer = 30576
@@ -685,9 +686,10 @@ Section: Size and Threshold Constants
   spawn-slot-region-size : Integer = 33554432
   spawn-slot-region-shift : Integer = 25
   spawn-pool-span : Integer = 536870912
+  spawn-pool-cell : Integer = 127200
   proc-starvation-threshold : Integer = 100
 
- A process's FXSAVE area is the top page of its slot's spawn region: FXSAVE
+ A process's FXSAVE area is the top page of its active-pool slot: FXSAVE
  writes 512 bytes at a 16-aligned address, and the 256-byte process entry
  cannot hold them. Slot 0 is the boot process, which no spawn claims, so the
  same formula serves it. A spawn may therefore use at most the region less
@@ -696,6 +698,59 @@ Section: Size and Threshold Constants
   fx-area-size : Integer = 4096
   fx-area-offset : Integer = spawn-pool-base + spawn-slot-region-size - fx-area-size
   spawn-slot-usable-size : Integer = spawn-slot-region-size - fx-area-size
+
+ The UEFI handoff v4 extends the existing 224-byte block with pool base,
+ root allocation bounds and pool span. Native boot initializes the same
+ pool-base cell to its fixed reservation before scheduling can run.
+
+  emit-load-spawn-base : CodegenState, Integer -> CodegenState
+  emit-load-spawn-base (st) (dest) =
+    st-append-code st (li dest spawn-pool-cell & mov-load dest dest 0)
+
+  emit-spawn-pool-default : CodegenState -> CodegenState
+  emit-spawn-pool-default (st) =
+    st-append-code st (li reg-rdi spawn-pool-cell & li reg-rax spawn-pool-base & mov-store reg-rdi reg-rax 0)
+
+  emit-spawn-pool-admit : CodegenState -> CodegenState
+  emit-spawn-pool-admit (st) =
+    let s0 = st-append-code st (li reg-rdi 126976 & mov-load reg-rax reg-rdi 0 & li reg-rcx 5063257923364865091 & cmp-rr reg-rax reg-rcx)
+    in let legacy1 = s0.code-len
+    in let s1 = st-append-code s0 (jcc cc-ne 0 & mov-load-u32 reg-rax reg-rdi 8 & cmp-ri reg-rax 4)
+    in let legacy2 = s1.code-len
+    in let s2 = st-append-code s1 (jcc cc-b 0 & mov-load-u32 reg-rax reg-rdi 12 & cmp-ri reg-rax 256)
+    in let short = s2.code-len
+    in let s3 = st-append-code s2 (jcc cc-b 0 & mov-load reg-rdx reg-rdi 224 & cmp-ri reg-rdx 6291456)
+    in let low = s3.code-len
+    in let s4 = st-append-code s3 (jcc cc-b 0 & mov-rr reg-rax reg-rdx & and-ri reg-rax 4095 & test-rr reg-rax reg-rax)
+    in let align = s4.code-len
+    in let s5 = st-append-code s4 (jcc cc-ne 0 & mov-load reg-rcx reg-rdi 248 & cmp-ri reg-rcx spawn-pool-span)
+    in let span = s5.code-len
+    in let s6 = st-append-code s5 (jcc cc-ne 0 & cmp-ri reg-rdx (2147483648 - spawn-pool-span))
+    in let high = s6.code-len
+    in let s7 = st-append-code s6 (jcc cc-a 0 & mov-rr reg-rax reg-rdx & add-ri reg-rax spawn-pool-span & mov-load reg-rcx reg-rdi 232 & test-rr reg-rcx reg-rcx)
+    in let empty = s7.code-len
+    in let bounds = st-append-code s7 (jcc cc-e 0 & mov-load reg-r8 reg-rdi 240 & cmp-rr reg-r8 reg-rcx)
+    in let reversed = bounds.code-len
+    in let stacklo = st-append-code bounds (jcc cc-be 0 & cmp-rr reg-rsp reg-rcx)
+    in let stack-low = stacklo.code-len
+    in let stackhi = st-append-code stacklo (jcc cc-b 0 & cmp-rr reg-rsp reg-r8)
+    in let stack-high = stackhi.code-len
+    in let s8 = st-append-code stackhi (jcc cc-ae 0 & cmp-rr reg-rax reg-rcx)
+    in let below = s8.code-len
+    in let s9 = st-append-code s8 (jcc cc-be 0 & mov-load reg-rax reg-rdi 240 & cmp-rr reg-rdx reg-rax)
+    in let above-pos = s9.code-len
+    in let s10 = st-append-code s9 (jcc cc-ae 0)
+    in let refused = s10.code-len
+    in let s11 = emit-jmp-to s10 "__out_of_memory"
+    in let legacy = s11.code-len
+    in let s12 = emit-spawn-pool-default s11
+    in let done = s12.code-len
+    in let p0 = patch-jcc-at (patch-jcc-at s12 legacy1 legacy) legacy2 legacy
+    in let p1 = patch-jcc-at (patch-jcc-at p0 short refused) low refused
+    in let p2 = patch-jcc-at (patch-jcc-at p1 align refused) span refused
+    in let p3 = patch-jcc-at (patch-jcc-at (patch-jcc-at p2 high refused) empty refused) reversed refused
+    in let p4 = patch-jcc-at (patch-jcc-at p3 stack-low refused) stack-high refused
+    in patch-jcc-at (patch-jcc-at p4 below done) above-pos done
 
 Section: I/O Port Constants
   ata-data-port : Integer = 496
@@ -1525,11 +1580,11 @@ Section: Which Process Is Running
  stored anywhere.
 
  Every spawned process runs on a stack inside its own slot-indexed
- region -- spawn-pool-base + slot * spawn-slot-region-size -- so the
+ region -- active pool base + slot * spawn-slot-region-size -- so the
  slot index is recoverable from a stack address by arithmetic alone:
  subtract the pool base, and the region shift is the slot. An address
- outside the pool belongs to proc 0, the program the machine booted,
- whose stack is the boot stack at the top of RAM.
+ outside the pool belongs to proc 0, the program the machine booted.
+ UEFI v4 owns a disjoint pool; native boot uses spawn-pool-base.
 
  emit-load-current-proc reads it from the live RSP. emit-slot-from-addr
  takes an address already in the destination register -- the interrupt
@@ -1545,7 +1600,10 @@ Section: Which Process Is Running
 
   emit-slot-from-addr : CodegenState, Integer -> CodegenState
   emit-slot-from-addr (st) (dest) =
-    let st1 = st-append-code st (sub-ri dest spawn-pool-base)
+    let temp = if dest == reg-rax then reg-rcx else reg-rax
+    in let s0 = st-append-code st (push-r temp)
+    in let s1 = emit-load-spawn-base s0 temp
+    in let st1 = st-append-code s1 (sub-rr dest temp & pop-r temp)
     in let st2 = st-append-code st1 (cmp-ri dest spawn-pool-span)
     in let outside-pos = st2.code-len
     in let st3 = st-append-code st2 (jcc cc-ae 0)
@@ -1751,11 +1809,11 @@ Section: Common Interrupt Handler
     in let sp40 = st-append-code sp39 (li reg-r8 (-1))
     in let sp41 = st-append-code sp40 (li reg-r9 4)
     in let sp41c = st-append-code sp41 (mov-load reg-r11 reg-rcx proc-core-offset)
-    in let sp42 = st-append-code sp41c (xor-rr reg-rax reg-rax)
+    in let sp42 = st-append-code sp41c (mov-rr reg-rax reg-rdi)
     in let pscan-top = sp42.code-len
-    in let sp43 = st-append-code sp42 (cmp-ri reg-rax 16)
+    in let sp43 = st-append-code sp42 (add-ri reg-rax 1 & and-ri reg-rax 15 & cmp-rr reg-rax reg-rdi)
     in let pscan-done = sp43.code-len
-    in let sp44 = st-append-code sp43 (jcc cc-ge 0)
+    in let sp44 = st-append-code sp43 (jcc cc-e 0)
     in let sp45 = st-append-code sp44 (cmp-rr reg-rax reg-rdi)
     in let pscan-skip = sp45.code-len
     in let sp46 = st-append-code sp45 (jcc cc-e 0)
@@ -1788,8 +1846,7 @@ Section: Common Interrupt Handler
     in let sp56 = st-append-code sp55 (mov-rr reg-r8 reg-rax)
     in let sp57 = st-append-code sp56 (mov-rr reg-r9 reg-rdx)
     in let pscan-next = sp57.code-len
-    in let sp58 = st-append-code sp57 (add-ri reg-rax 1)
-    in let sp59 = st-append-code sp58 (jmp (pscan-top - (sp58.code-len + 5)))
+    in let sp59 = st-append-code sp57 (jmp (pscan-top - (sp57.code-len + 5)))
     in let sp60 = patch-jcc-at sp59 pscan-skip pscan-next
     in let sp61 = patch-jcc-at sp60 pscan-nr pscan-next
     in let sp62 = patch-jcc-at sp61 pscan-worse pscan-next
@@ -1797,26 +1854,27 @@ Section: Common Interrupt Handler
     in let sp62b = patch-jcc-at sp62a pscan-s0 pscan-next
     in let sp63 = patch-jcc-at sp62b pscan-done (sp62b.code-len)
     in let sv0 = st-append-code sp63 (li reg-rsi starve-counter-addr)
-    in let sv1 = st-append-code sv0 (mov-load reg-rcx reg-rsi 0)
+    in let sv1 = st-append-code sv0 (mov-load-u32 reg-rcx reg-rsi 0)
     in let sv2 = st-append-code sv1 (add-ri reg-rcx 1)
-    in let sv3 = st-append-code sv2 (mov-store reg-rsi reg-rcx 0)
+    in let sv3 = st-append-code sv2 (mov-store-32 reg-rsi reg-rcx 0)
     in let sv4 = st-append-code sv3 (cmp-ri reg-rcx starve-threshold)
     in let sv-skip-pos = sv4.code-len
     in let sv5 = st-append-code sv4 (jcc cc-l 0)
     in let sv6 = st-append-code sv5 (xor-rr reg-rcx reg-rcx)
-    in let sv7 = st-append-code sv6 (mov-store reg-rsi reg-rcx 0)
+    in let sv7 = st-append-code sv6 (mov-store-32 reg-rsi reg-rcx 0)
     in let sv8 = st-append-code sv7 (cmp-ri reg-r9 2)
     in let sv-nolo = sv8.code-len
     in let sv9 = st-append-code sv8 (jcc cc-ge 0)
     in let sv10 = st-append-code sv9 (cmp-ri reg-r8 (-1))
     in let sv-none = sv10.code-len
     in let sv11 = st-append-code sv10 (jcc cc-e 0)
-    in let sv12 = st-append-code sv11 (xor-rr reg-rax reg-rax)
-    in let rscan-top = sv12.code-len
-    in let sv13 = st-append-code sv12 (cmp-ri reg-rax 16)
+    in let sv12 = st-append-code sv11 (li reg-rax starve-cursor-addr)
+    in let sv12a = st-append-code sv12 (mov-load-u32 reg-rax reg-rax 0 & li reg-rcx 16)
+    in let rscan-top = sv12a.code-len
+    in let sv13 = st-append-code sv12a (test-rr reg-rcx reg-rcx)
     in let rscan-done = sv13.code-len
-    in let sv14 = st-append-code sv13 (jcc cc-ge 0)
-    in let sv15 = st-append-code sv14 (cmp-rr reg-rax reg-rdi)
+    in let sv14 = st-append-code sv13 (jcc cc-e 0)
+    in let sv15 = st-append-code sv14 (add-ri reg-rax 1 & and-ri reg-rax 15 & cmp-rr reg-rax reg-rdi)
     in let rscan-skip = sv15.code-len
     in let sv16 = st-append-code sv15 (jcc cc-e 0)
     in let sv16g0 = st-append-code sv16 (test-rr reg-rax reg-rax)
@@ -1847,10 +1905,11 @@ Section: Common Interrupt Handler
     in let sv25 = st-append-code sv24 (jcc cc-l 0)
     in let sv26 = st-append-code sv25 (mov-rr reg-r8 reg-rax)
     in let sv27 = st-append-code sv26 (mov-rr reg-r9 reg-rdx)
-    in let rscan-found = sv27.code-len
-    in let sv28 = st-append-code sv27 (jmp 0)
+    in let sv27a = st-append-code sv27 (li reg-rsi starve-cursor-addr & mov-store-32 reg-rsi reg-rax 0)
+    in let rscan-found = sv27a.code-len
+    in let sv28 = st-append-code sv27a (jmp 0)
     in let rscan-next = sv28.code-len
-    in let sv29 = st-append-code sv28 (add-ri reg-rax 1)
+    in let sv29 = st-append-code sv28 (sub-ri reg-rcx 1)
     in let sv30 = st-append-code sv29 (jmp (rscan-top - (sv29.code-len + 5)))
     in let sv31 = patch-jcc-at sv30 rscan-skip rscan-next
     in let sv32 = patch-jcc-at sv31 rscan-nr rscan-next
@@ -2419,7 +2478,8 @@ Section: Runtime Init Builtin
     in let m4 = st-append-code m3 [15, 50]
     in let m5 = st-append-code m4 ([72, 13] & write-i32 efer-sce-nxe)
     in let m6 = st-append-code m5 [15, 48]
-    in let z0 = emit-zero-region m6 proc-table-base 512
+    in let pool = emit-spawn-pool-admit m6
+    in let z0 = emit-zero-region pool proc-table-base 512
     in let p0a = st-append-code z0 (li reg-rdi proc-table-base)
     in let p0b = st-append-code p0a (li reg-rax proc-state-running)
     in let p0c = st-append-code p0b (mov-store reg-rdi reg-rax 0)
@@ -2437,7 +2497,8 @@ Section: Runtime Init Builtin
     in let z13 = st-append-code z12 (mov-store reg-rdi reg-rax 0)
     in let z14 = st-append-code z13 (li reg-rdi prof-cursor-addr)
     in let z15 = st-append-code z14 (mov-store reg-rdi reg-rax 0)
-    in let s0 = emit-interrupt-setup z15
+    in let slices = emit-slice-table-init z15
+    in let s0 = emit-interrupt-setup slices
     in let e0 = st-append-code s0 (li reg-rax 0)
     in st-append-code e0 [195]
 
@@ -3016,7 +3077,8 @@ Section: Process Management
     in let st1c = emit-device-seed-init st1b
     in let st1d = emit-zero-region st1c identity-key-addr 6
     in let st1e = emit-ata-active-init st1d
-    in let apd0 = st-append-code st1e (li reg-rdi ap-dispatch-count-addr)
+    in let st1f = emit-zero-region st1e starve-counter-addr 1
+    in let apd0 = st-append-code st1f (li reg-rdi ap-dispatch-count-addr)
     in let apd1 = st-append-code apd0 (li reg-rax 0)
     in let apd2 = st-append-code apd1 (mov-store reg-rdi reg-rax 0)
     in let app0 = st-append-code apd2 (li reg-rdi ap-preempt-count-addr)
@@ -3028,15 +3090,7 @@ Section: Process Management
     in let dvv0 = st-append-code dvc2 (li reg-rdi devint-last-vec-addr)
     in let dvv1 = st-append-code dvv0 (li reg-rax 0)
     in let dvv2 = st-append-code dvv1 (mov-store reg-rdi reg-rax 0)
-    in let slt0 = st-append-code dvv2 (li reg-rdi slice-table-addr)
-    in let slt1 = st-append-code slt0 (li reg-rax 0)
-    in let slt2 = st-append-code slt1 (mov-store reg-rdi reg-rax 0)
-    in let slt3 = st-append-code slt2 (li reg-rax proc-slice-system)
-    in let slt4 = st-append-code slt3 (mov-store reg-rdi reg-rax 8)
-    in let slt5 = st-append-code slt4 (li reg-rax proc-slice-normal)
-    in let slt6 = st-append-code slt5 (mov-store reg-rdi reg-rax 16)
-    in let slt7 = st-append-code slt6 (li reg-rax proc-slice-background)
-    in let slt8 = st-append-code slt7 (mov-store reg-rdi reg-rax 24)
+    in let slt8 = emit-slice-table-init dvv2
     in let st5 = emit-build-process-page-tables slt8 32768 6291456
     in let st5u = emit-demand-unmap st5
     in let saff0 = st-append-code st5u (li reg-rdi spawn-affinity-addr)
@@ -3049,6 +3103,18 @@ Section: Process Management
     in let st7 = st-append-code p0aff2 (li reg-rax 32768)
     in let st8 = st-append-code st7 [15, 34, 216]
     in st-append-code st8 (li reg-r10 6291456)
+
+  emit-slice-table-init : CodegenState -> CodegenState
+  emit-slice-table-init (st) =
+    let slt0 = st-append-code st (li reg-rdi slice-table-addr)
+    in let slt1 = st-append-code slt0 (li reg-rax 0)
+    in let slt2 = st-append-code slt1 (mov-store reg-rdi reg-rax 0)
+    in let slt3 = st-append-code slt2 (li reg-rax proc-slice-system)
+    in let slt4 = st-append-code slt3 (mov-store reg-rdi reg-rax 8)
+    in let slt5 = st-append-code slt4 (li reg-rax proc-slice-normal)
+    in let slt6 = st-append-code slt5 (mov-store reg-rdi reg-rax 16)
+    in let slt7 = st-append-code slt6 (li reg-rax proc-slice-background)
+    in st-append-code slt7 (mov-store reg-rdi reg-rax 24)
 
 Section: Device Seed
   emit-device-seed-init : CodegenState -> CodegenState

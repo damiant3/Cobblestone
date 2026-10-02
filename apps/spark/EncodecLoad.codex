@@ -1,0 +1,146 @@
+Chapter: EncodecLoad
+  cites WebApp chapter WebRuntime
+  cites Spark chapter BrowserEncodec
+  cites AI chapter TorchZip
+
+ We say:
+
+  el-bytes : Text -> List Integer
+  el-bytes (r) = if text-length r < 3 then [] else el-scan r 1 (text-length r - 1) (char-code-at "0" 0) (char-code-at "-" 0) 0 False False []
+
+  el-scan : Text, Integer, Integer, Integer, Integer, Integer, Boolean, Boolean, List Integer -> List Integer
+  el-scan (r) (i) (stop) (zero) (minus) (n) (neg) (inside) (acc) =
+    if i >= stop then (if inside then list-push acc (if neg then 0 - n else n) else acc)
+    else let c = char-code-at r i
+    in if c >= zero & c <= zero + 9 then el-scan r (i + 1) stop zero minus (n * 10 + c - zero) neg True acc
+    else if c == minus then el-scan r (i + 1) stop zero minus n True True acc
+    else if inside then el-scan r (i + 1) stop zero minus 0 False False (list-push acc (if neg then 0 - n else n))
+    else el-scan r (i + 1) stop zero minus 0 False False acc
+
+  el-book : Text, Integer -> Integer
+  el-book (name) (i) =
+    if i >= 4 then 0 - 1
+    else if name == ("quantizer.vq.layers." & show i & "._codebook.embed") then i
+    else el-book name (i + 1)
+
+  el-refuse : BeWeights, Text, (Text -> Integer) -> Integer
+  el-refuse (w) (why) (refuse) = let f = be-close w in refuse why
+
+  el-shape-equal : List Integer, List Integer, Integer -> Boolean
+  el-shape-equal (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else list-at a i == list-at b i & el-shape-equal a b (i + 1)
+
+  el-shape : List StTensorMeta, Text, List Integer, Integer -> Boolean
+  el-shape (ts) (name) (shape) (i) =
+    if i >= list-length ts then False
+    else let t = list-at ts i
+    in if t.stm-name == name then t.stm-dtype == st-dtype-f32 & el-shape-equal (t.stm-shape) shape 0
+    else el-shape ts name shape (i + 1)
+
+  el-conv-shape : List StTensorMeta, Text, Integer, Integer, Integer, Integer -> Boolean
+  el-conv-shape (ts) (p) (first) (second) (k) (out) =
+    el-shape ts (p & ".weight_v") [first, second, k] 0 & el-shape ts (p & ".weight_g") [first, 1, 1] 0 & el-shape ts (p & ".bias") [out] 0
+
+  el-up-shapes : List StTensorMeta, Integer, Integer -> Boolean
+  el-up-shapes (ts) (stage) (channels) =
+    if stage >= 4 then True
+    else let index = stage * 3 + 3
+    in let ratio = if stage == 0 then 8 else if stage == 1 then 5 else 4
+    in let p = "decoder.model." & show index
+    in let q = "decoder.model." & show (index + 1)
+    in el-conv-shape ts (p & ".convtr.convtr") channels (channels / 2) (ratio * 2) (channels / 2)
+       & el-conv-shape ts (q & ".block.1.conv.conv") (channels / 4) (channels / 2) 3 (channels / 4)
+       & el-conv-shape ts (q & ".block.3.conv.conv") (channels / 2) (channels / 4) 1 (channels / 2)
+       & el-up-shapes ts (stage + 1) (channels / 2)
+
+  el-lstm-shapes : List StTensorMeta, Integer -> Boolean
+  el-lstm-shapes (ts) (layer) =
+    if layer >= 2 then True
+    else let p = "decoder.model.1.lstm."
+    in let suffix = "_l" & show layer
+    in el-shape ts (p & "weight_ih" & suffix) [4096, 1024] 0 & el-shape ts (p & "weight_hh" & suffix) [4096, 1024] 0
+       & el-shape ts (p & "bias_ih" & suffix) [4096] 0 & el-shape ts (p & "bias_hh" & suffix) [4096] 0 & el-lstm-shapes ts (layer + 1)
+
+  el-book-shapes : List StTensorMeta, Integer -> Boolean
+  el-book-shapes (ts) (i) = if i >= 4 then True else el-shape ts ("quantizer.vq.layers." & show i & "._codebook.embed") [2048, 128] 0 & el-book-shapes ts (i + 1)
+
+  el-model-shapes : List StTensorMeta -> Boolean
+  el-model-shapes (ts) = el-book-shapes ts 0 & el-lstm-shapes ts 0 & el-up-shapes ts 0 1024
+    & el-conv-shape ts "decoder.model.0.conv.conv" 1024 128 7 1024 & el-conv-shape ts "decoder.model.15.conv.conv" 1 64 7 1
+
+  el-normalize : Text, List StTensorMeta, Integer, BeWeights, (BeWeights -> Integer), (Text -> Integer) -> Integer
+  el-normalize (code) (ts) (i) (w) (ready) (refuse) =
+    if i >= list-length ts then ready w
+    else let t = list-at ts i
+    in if text-starts-with (t.stm-name) "decoder." == False | text-ends-with (t.stm-name) ".weight_v" == False then el-normalize code ts (i + 1) w ready refuse
+    else let name = substring (t.stm-name) 0 (text-length (t.stm-name) - 2)
+    in let n = (t.stm-offset-end - t.stm-offset-start) / 4
+    in let rows = list-at (t.stm-shape) 0
+    in let len = n / rows
+    in let s = gpu-buf-alloc (rows * 4)
+    in let y = gpu-buf-alloc (n * 4)
+    in let v = be-get w (t.stm-name)
+    in let g = be-get w (name & "_g")
+    in let r1 = if s == 0 | y == 0 | v == 0 | g == 0 then 0 - 1 else gpu-launch code "ec_weight_scale_main" (be-grid rows) [gpu-arg-buf v 0, gpu-arg-buf g 0, gpu-arg-buf s 0, gpu-arg-u32 len, gpu-arg-u32 rows]
+    in let r2 = if r1 < 0 then r1 else gpu-launch code "ec_weight_apply_main" (be-grid n) [gpu-arg-buf v 0, gpu-arg-buf s 0, gpu-arg-buf y 0, gpu-arg-u32 len, gpu-arg-u32 n]
+    in let f = be-drop s
+    in let normalized = be-result y r2
+    in if normalized == 0 then el-refuse w "EnCodec weight normalization failed" refuse
+    else el-normalize code ts (i + 1) (BeWeights { be-names = list-push (w.be-names) name, be-handles = list-push (w.be-handles) normalized, be-books = w.be-books }) ready refuse
+
+  el-uploaded : Text, Text, List StTensorMeta, Integer, BeWeights, (BeWeights -> Integer), (Text -> Integer), Text -> Integer
+  el-uploaded (file) (code) (ts) (i) (w) (ready) (refuse) (result) =
+    if text-contains result "\"ok\":true" then el-upload file code ts (i + 1) w ready refuse
+    else el-refuse w ("EnCodec weight upload failed: " & result) refuse
+
+  el-upload : Text, Text, List StTensorMeta, Integer, BeWeights, (BeWeights -> Integer), (Text -> Integer) -> Integer
+  el-upload (file) (code) (ts) (i) (w) (ready) (refuse) =
+    if i >= list-length ts then el-normalize code ts 0 w ready refuse
+    else let t = list-at ts i
+    in let book = el-book (t.stm-name) 0
+    in if book < 0 & text-starts-with (t.stm-name) "decoder." == False then el-upload file code ts (i + 1) w ready refuse
+    else if t.stm-dtype /= st-dtype-f32 then el-refuse w "EnCodec requires f32 checkpoint tensors" refuse
+    else let bytes = t.stm-offset-end - t.stm-offset-start
+    in let h = if book >= 0 then w.be-books else gpu-buf-alloc bytes
+    in let next = if book >= 0 then w else BeWeights { be-names = list-push (w.be-names) (t.stm-name), be-handles = list-push (w.be-handles) h, be-books = w.be-books }
+    in if h == 0 then el-refuse next "EnCodec weight allocation failed" refuse
+    else if book >= 0 & bytes /= 1048576 then el-refuse next "EnCodec codebook shape differs" refuse
+    else gpu-buf-upload-then h (if book >= 0 then book * 1048576 else 0) file (t.stm-offset-start) (bytes / 4) gpu-dt-f32 gpu-dt-f32 (\r -> el-uploaded file code ts i next ready refuse r)
+
+  el-parsed : Text, Text, List Text, List Integer, (BeWeights -> Integer), (Text -> Integer), Text -> Integer
+  el-parsed (file) (code) (names) (starts) (ready) (refuse) (bytes) =
+    let result = torch-zip-read (el-bytes bytes) names starts
+    in if result.tzf-why /= "" then refuse (result.tzf-why)
+    else if el-model-shapes ((result.tzf-file).st-tensors) == False then refuse "Checkpoint does not have the MusicGen EnCodec tensor shapes"
+    else let books = gpu-buf-alloc 4194304
+    in if books == 0 then refuse "EnCodec codebook allocation failed"
+    else el-upload file code ((result.tzf-file).st-tensors) 0 (BeWeights { be-names = [], be-handles = [], be-books = books }) ready refuse
+
+  el-pickle : Text, Text, List TzEntry, List Text, List Integer, Integer, (BeWeights -> Integer), (Text -> Integer) -> Integer
+  el-pickle (file) (code) (es) (names) (starts) (i) (ready) (refuse) =
+    if i >= list-length es then refuse "EnCodec checkpoint has no data.pkl"
+    else let e = list-at es i
+    in if text-ends-with (e.te-name) "/data.pkl" then file-read-then file (list-at starts i) (e.te-size) (\r -> el-parsed file code names starts ready refuse r)
+    else el-pickle file code es names starts (i + 1) ready refuse
+
+  el-starts : Text, Text, List TzEntry, Integer, List Text, List Integer, (BeWeights -> Integer), (Text -> Integer) -> Integer
+  el-starts (file) (code) (es) (i) (names) (starts) (ready) (refuse) =
+    if i >= list-length es then el-pickle file code es names starts 0 ready refuse
+    else let e = list-at es i
+    in file-read-then file (e.te-local) 30 (\r -> el-starts file code es (i + 1) (list-push names (e.te-name)) (list-push starts (tz-data-at (el-bytes r) (e.te-local))) ready refuse)
+
+  el-directory : Text, Text, Integer, (BeWeights -> Integer), (Text -> Integer), Text -> Integer
+  el-directory (file) (code) (count) (ready) (refuse) (bytes) = el-starts file code (tz-entries (el-bytes bytes) 0 count []) 0 [] [] ready refuse
+
+  el-tail : Text, Text, Integer, (BeWeights -> Integer), (Text -> Integer), Text -> Integer
+  el-tail (file) (code) (off) (ready) (refuse) (bytes) =
+    let span = tz-directory-span (el-bytes bytes) off
+    in if list-length span /= 3 then refuse "EnCodec checkpoint has no zip directory"
+    else file-read-then file (list-at span 0) (list-at span 1) (\r -> el-directory file code (list-at span 2) ready refuse r)
+
+  encodec-load : Text, Integer, Text, (BeWeights -> Integer), (Text -> Integer) -> Integer
+  encodec-load (file) (size) (code) (ready) (refuse) =
+    let n = if size < 65557 then size else 65557
+    in file-read-then file (size - n) n (\r -> el-tail file code (size - n) ready refuse r)

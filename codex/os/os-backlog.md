@@ -10,6 +10,10 @@ is still real is never quietly dropped.
 
 ## Open
 
+| Source | JSON emission gap |
+|---|---|
+| `observe/NotificationLog.codex:194-200` | `nl-entry-to-json` quotes severity/source/title/body raw; `nl-export-json` joins these records. Quote, backslash and control characters can invalidate exported JSON. Source-inspected 2026-10-01 at main 33668; runtime reproduction remains for the owning fix. |
+
 Where an image already lives at an address, `verify-cdx-full-at` and
 `evaluate-load-at` (`codex/os/verify`) verify it without the eight bytes per
 byte a list costs; OTA Gate B (`ota-lwm2m-loopback`) does, and

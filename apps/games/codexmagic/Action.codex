@@ -11,10 +11,10 @@ Section: SBA Check
 
   check-sba-loop : GameState, Integer -> GameState
   check-sba-loop (gs) (iterations) =
-    if iterations >= 500 then gs
+    if iterations >= 500 then (if gs.game-over then gs else game-work-stop gs 2 iterations "State-based actions")
     else let result = apply-all-sbas gs
     in if result.changed then check-sba-loop (result.state) (iterations + 1)
-    else result.state
+    else observe-loyalty (result.state)
 
   SbaResult = record {
     state : GameState,
@@ -45,7 +45,7 @@ Section: General Life Check
     else gs
 
   game-set-winner : GameState, Integer -> GameState
-  game-set-winner (gs) (winner) = GameState { players = gs.players, generals = gs.generals, battlefield = gs.battlefield, active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = True, winner = winner, templates = gs.templates }
+  game-set-winner (gs) (winner) = GameState { queued-loyalty = gs.queued-loyalty, loyalty-state = gs.loyalty-state, queued-cards = gs.queued-cards, automatic-work = gs.automatic-work, players = gs.players, generals = gs.generals, battlefield = gs.battlefield, active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = True, winner = winner, templates = gs.templates, card-templates = gs.card-templates, card-orders = gs.card-orders, disruption = gs.disruption, queued-abilities = gs.queued-abilities }
 
 Section: Deck-out Check
 
@@ -64,18 +64,21 @@ Section: Zero Toughness
   check-zero-toughness (gs) = sba-zero-tou-loop gs 0
 
   sba-zero-tou-loop : GameState, Integer -> GameState
-  sba-zero-tou-loop (gs) (i) =
+  sba-zero-tou-loop (gs) (i) = sba-zero-tou-loop-scaled (scale-bonuses gs) gs i
+
+  sba-zero-tou-loop-scaled : ScaleBonuses, GameState, Integer -> GameState
+  sba-zero-tou-loop-scaled (bonuses) (gs) (i) =
     if i >= list-length (gs.battlefield) then gs
     else let perm = list-at (gs.battlefield) i
     in let template = list-at (gs.templates) (perm.template-id)
     in when template.card-type
       is Creature ->
-        let toughness = template.toughness + perm.toughness-mod
+        let toughness = (effective-toughness bonuses template perm)
         in if toughness <= 0 then
           let gs2 = destroy-permanent gs (perm.id)
           in sba-zero-tou-loop gs2 i
-        else sba-zero-tou-loop gs (i + 1)
-      is otherwise -> sba-zero-tou-loop gs (i + 1)
+        else sba-zero-tou-loop-scaled bonuses gs (i + 1)
+      is otherwise -> sba-zero-tou-loop-scaled bonuses gs (i + 1)
 
 Section: Lethal Damage
 
@@ -83,18 +86,21 @@ Section: Lethal Damage
   check-lethal-damage (gs) = sba-lethal-loop gs 0
 
   sba-lethal-loop : GameState, Integer -> GameState
-  sba-lethal-loop (gs) (i) =
+  sba-lethal-loop (gs) (i) = sba-lethal-loop-scaled (scale-bonuses gs) gs i
+
+  sba-lethal-loop-scaled : ScaleBonuses, GameState, Integer -> GameState
+  sba-lethal-loop-scaled (bonuses) (gs) (i) =
     if i >= list-length (gs.battlefield) then gs
     else let perm = list-at (gs.battlefield) i
     in let template = list-at (gs.templates) (perm.template-id)
     in when template.card-type
       is Creature ->
-        let toughness = template.toughness + perm.toughness-mod
+        let toughness = (effective-toughness bonuses template perm)
         in if perm.damage-marked >= toughness then
-          if has-keyword (perm.keywords) Indestructible then sba-lethal-loop gs (i + 1)
+          if has-keyword (perm.keywords) Indestructible then sba-lethal-loop-scaled bonuses gs (i + 1)
           else let gs2 = destroy-permanent gs (perm.id) in sba-lethal-loop gs2 i
-        else sba-lethal-loop gs (i + 1)
-      is otherwise -> sba-lethal-loop gs (i + 1)
+        else sba-lethal-loop-scaled bonuses gs (i + 1)
+      is otherwise -> sba-lethal-loop-scaled bonuses gs (i + 1)
 
 Section: Exsanguinate
 
@@ -120,7 +126,7 @@ Section: Exsanguinate
   is-deathtouch-marked (perm) = perm.counters < 0
 
   mark-deathtouch : Permanent -> Permanent
-  mark-deathtouch (perm) = Permanent { id = perm.id, card-id = perm.card-id, template-id = perm.template-id, controller = perm.controller, owner = perm.owner, tapped = perm.tapped, summoning-sick = perm.summoning-sick, damage-marked = perm.damage-marked, counters = -1, keywords = perm.keywords, attached-to = perm.attached-to, power-mod = perm.power-mod, toughness-mod = perm.toughness-mod, defense-mod = perm.defense-mod, equipped-to = perm.equipped-to, socketed-gem = perm.socketed-gem }
+  mark-deathtouch (perm) = Permanent { id = perm.id, card-id = perm.card-id, template-id = perm.template-id, controller = perm.controller, owner = perm.owner, tapped = perm.tapped, summoning-sick = perm.summoning-sick, damage-marked = perm.damage-marked, counters = -1, keywords = perm.keywords, attached-to = perm.attached-to, power-mod = perm.power-mod, toughness-mod = perm.toughness-mod, defense-mod = perm.defense-mod, equipped-to = perm.equipped-to, socketed-gem = perm.socketed-gem, temporary = perm.temporary }
 
 Section: Legend Rule
 
@@ -157,12 +163,14 @@ Section: Destroy Permanent
 
   destroy-permanent : GameState, Integer -> GameState
   destroy-permanent (gs) (perm-id) =
-    let owner-idx = find-permanent-owner (gs.battlefield) perm-id 0 (list-length (gs.battlefield))
+    if list-contains (gs.battlefield) (\p -> p.id == perm-id) == False then gs
+    else let perm = find-permanent (gs.battlefield) perm-id 0 (list-length (gs.battlefield))
+    in let owner-idx = perm.owner
     in let p = get-player gs owner-idx
-    in let p2 = player-add-to-graveyard p perm-id
+    in let p2 = if perm.card-id < 0 | (get-template gs (perm.template-id)).is-token then p else player-add-to-graveyard p (perm.card-id)
     in let gs2 = set-player gs owner-idx p2
     in let new-bf = remove-permanent-from-list (gs2.battlefield) perm-id 0 (list-length (gs2.battlefield)) []
-    in GameState { players = gs2.players, generals = gs2.generals, battlefield = new-bf, active-player = gs2.active-player, priority-player = gs2.priority-player, turn-number = gs2.turn-number, phase = gs2.phase, step = gs2.step, next-permanent-id = gs2.next-permanent-id, next-instance-id = gs2.next-instance-id, game-over = gs2.game-over, winner = gs2.winner, templates = gs2.templates }
+    in GameState { queued-loyalty = gs2.queued-loyalty, loyalty-state = gs2.loyalty-state, queued-cards = gs2.queued-cards, automatic-work = gs2.automatic-work, players = gs2.players, generals = gs2.generals, battlefield = new-bf, active-player = gs2.active-player, priority-player = gs2.priority-player, turn-number = gs2.turn-number, phase = gs2.phase, step = gs2.step, next-permanent-id = gs2.next-permanent-id, next-instance-id = gs2.next-instance-id, game-over = gs2.game-over, winner = gs2.winner, templates = gs2.templates, card-templates = gs2.card-templates, card-orders = gs2.card-orders, disruption = gs2.disruption, queued-abilities = gs2.queued-abilities }
 
   find-permanent-owner : List Permanent, Integer, Integer, Integer -> Integer
   find-permanent-owner (perms) (perm-id) (i) (len) =

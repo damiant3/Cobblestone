@@ -1,0 +1,122 @@
+Chapter: MusicLMStream
+  cites Spark chapter BrowserMusicLM
+
+ We say:
+
+  MusicLMCache = record {
+    mc-self-k : List Integer,
+    mc-self-v : List Integer,
+    mc-cross-k : List Integer,
+    mc-cross-v : List Integer,
+    mc-capacity : Integer,
+    mc-keys : Integer,
+    mc-valid : Boolean
+  }
+
+  music-lm-cache-close : MusicLMCache -> Boolean
+  music-lm-cache-close (c) =
+    let a = be-free-list (c.mc-self-k) 0
+    in let b = be-free-list (c.mc-self-v) 0
+    in let d = be-free-list (c.mc-cross-k) 0
+    in be-free-list (c.mc-cross-v) 0
+
+  mc-open-layers : Text, MusicLM, Integer, MusicLMCache, Integer -> MusicLMCache
+  mc-open-layers (code) (w) (context) (c) (i) =
+    if i >= w.ml-layers | c.mc-valid == False then c
+    else let dim = (w.ml-weights).t5m-width
+    in let k = bt5-buffer (c.mc-capacity * dim * 4)
+    in let v = bt5-buffer (c.mc-capacity * dim * 4)
+    in let p = "transformer.layers." & show i & ".cross_attention.in_proj_weight/"
+    in let ck = ml-linear code w context (p & "1") (c.mc-keys) dim dim
+    in let cv = ml-linear code w context (p & "2") (c.mc-keys) dim dim
+    in mc-open-layers code w context (MusicLMCache { mc-self-k = list-push (c.mc-self-k) k, mc-self-v = list-push (c.mc-self-v) v, mc-cross-k = list-push (c.mc-cross-k) ck, mc-cross-v = list-push (c.mc-cross-v) cv, mc-capacity = c.mc-capacity, mc-keys = c.mc-keys, mc-valid = k /= 0 & v /= 0 & ck /= 0 & cv /= 0 }) (i + 1)
+
+  music-lm-cache-open : Text, MusicLM, Integer, Integer, Integer -> MusicLMCache
+  music-lm-cache-open (code) (w) (context) (keys) (capacity) =
+    mc-open-layers code w context (MusicLMCache { mc-self-k = [], mc-self-v = [], mc-cross-k = [], mc-cross-v = [], mc-capacity = capacity, mc-keys = keys, mc-valid = context /= 0 & keys > 0 & capacity > 0 & capacity <= 1504 }) 0
+
+  mc-attend : Text, Text, MusicLM, Integer, Integer, Integer, Text, Integer -> Integer
+  mc-attend (base) (code) (w) (q) (k) (v) (p) (keys) =
+    let dim = (w.ml-weights).t5m-width
+    in let heads = dim / 64
+    in let n = heads * keys
+    in let scores = bt5-buffer (n * 4)
+    in let probs = bt5-buffer (n * 4)
+    in let stats = bt5-buffer (heads * 8)
+    in let values = bt5-buffer (dim * 4)
+    in let r0 = if q == 0 | k == 0 | v == 0 | scores == 0 | probs == 0 | stats == 0 | values == 0 then 0 - 1 else gpu-launch base "bk_attn_scores_main" (bt5-groups (heads * ((keys + 63) / 64))) [gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf scores 0, gpu-arg-u32 heads, gpu-arg-u32 1, gpu-arg-u32 keys, gpu-arg-u32 64, gpu-arg-f32 0.125, gpu-arg-u32 n]
+    in let r1 = if r0 < 0 then r0 else gpu-launch base "bk_row_max_main" (bt5-groups heads) [gpu-arg-buf scores 0, gpu-arg-buf stats 0, gpu-arg-u32 keys, gpu-arg-u32 heads]
+    in let r2 = if r1 < 0 then r1 else gpu-launch base "bk_row_expsum_main" (bt5-groups heads) [gpu-arg-buf scores 0, gpu-arg-buf stats 0, gpu-arg-u32 keys, gpu-arg-u32 heads]
+    in let r3 = if r2 < 0 then r2 else gpu-launch base "bk_softmax_apply_main" (be-grid n) [gpu-arg-buf scores 0, gpu-arg-buf stats 0, gpu-arg-buf probs 0, gpu-arg-u32 keys, gpu-arg-u32 n]
+    in let r4 = if r3 < 0 then r3 else gpu-launch base "bk_attn_values_main" (bt5-groups heads) [gpu-arg-buf probs 0, gpu-arg-buf v 0, gpu-arg-buf values 0, gpu-arg-u32 heads, gpu-arg-u32 1, gpu-arg-u32 keys, gpu-arg-u32 64, gpu-arg-u32 dim]
+    in let y = if r4 < 0 then 0 else ml-linear code w values (p & "out_proj.weight") 1 dim dim
+    in let f = be-free-list [scores, probs, stats, values] 0
+    in y
+
+  mc-self : Text, Text, MusicLM, MusicLMCache, Integer, Text, Integer, Integer -> Integer
+  mc-self (base) (code) (w) (cache) (x) (p) (layer) (offset) =
+    let dim = (w.ml-weights).t5m-width
+    in let q = ml-linear code w x (p & "in_proj_weight/0") 1 dim dim
+    in let k = ml-linear code w x (p & "in_proj_weight/1") 1 dim dim
+    in let v = ml-linear code w x (p & "in_proj_weight/2") 1 dim dim
+    in let kh = list-at (cache.mc-self-k) layer
+    in let vh = list-at (cache.mc-self-v) layer
+    in let r0 = if k == 0 | v == 0 then 0 - 1 else gpu-launch code "ml_cache_write_main" (be-grid dim) [gpu-arg-buf k 0, gpu-arg-buf kh 0, gpu-arg-u32 offset, gpu-arg-u32 dim]
+    in let r1 = if r0 < 0 then r0 else gpu-launch code "ml_cache_write_main" (be-grid dim) [gpu-arg-buf v 0, gpu-arg-buf vh 0, gpu-arg-u32 offset, gpu-arg-u32 dim]
+    in let y = if r1 < 0 then 0 else mc-attend base code w q kh vh p (offset + 1)
+    in let f = be-free-list [q, k, v] 0
+    in y
+
+  mc-block : Text, Text, MusicLM, MusicLMCache, Integer, Integer, Integer -> Integer
+  mc-block (base) (code) (w) (cache) (x) (layer) (offset) =
+    let dim = (w.ml-weights).t5m-width
+    in let p = "transformer.layers." & show layer & "."
+    in let a = ml-norm base code w x (p & "norm1") 1
+    in let b = mc-self base code w cache a (p & "self_attn.") layer offset
+    in let f0 = be-drop a
+    in let r = bt5-add base x b dim
+    in let f1 = be-drop b
+    in let c = ml-norm base code w r (p & "norm_cross") 1
+    in let q = ml-linear code w c (p & "cross_attention.in_proj_weight/0") 1 dim dim
+    in let f2 = be-drop c
+    in let d = mc-attend base code w q (list-at (cache.mc-cross-k) layer) (list-at (cache.mc-cross-v) layer) (p & "cross_attention.") (cache.mc-keys)
+    in let f3 = be-drop q
+    in let s = bt5-add base r d dim
+    in let f4 = be-free-list [r, d] 0
+    in let e = ml-norm base code w s (p & "norm2") 1
+    in let h = ml-linear code w e (p & "linear1.weight") 1 (dim * 4) dim
+    in let f5 = be-drop e
+    in let active = bt5-buffer (dim * 16)
+    in let ok = if h == 0 | active == 0 then 0 - 1 else gpu-launch base "bk_gelu_main" (be-grid (dim * 4)) [gpu-arg-buf h 0, gpu-arg-buf active 0, gpu-arg-u32 (dim * 4)]
+    in let f6 = be-drop h
+    in let z = if ok < 0 then 0 else ml-linear code w active (p & "linear2.weight") 1 dim (dim * 4)
+    in let f7 = be-drop active
+    in let y = bt5-add base s z dim
+    in let f8 = be-free-list [s, z] 0
+    in y
+
+  mc-blocks : Text, Text, MusicLM, MusicLMCache, Integer, Integer, Integer -> MusicLMOutput
+  mc-blocks (base) (code) (w) (cache) (x) (layer) (offset) =
+    if layer >= w.ml-layers then
+      (let final = ml-norm base code w x "out_norm" 1
+       in let f = be-drop x
+       in let heads = ml-heads code w final 1 0 []
+       in let f2 = be-drop final
+       in MusicLMOutput { ml-heads = heads, ml-blocks = [] })
+    else let y = mc-block base code w cache x layer offset
+    in let f = be-drop x
+    in mc-blocks base code w cache y (layer + 1) offset
+
+  music-lm-step : Text, Text, MusicLM, MusicLMCache, List Integer, Integer -> MusicLMOutput
+  music-lm-step (base) (code) (w) (cache) (ids) (offset) =
+    if cache.mc-valid == False | offset < 0 | offset >= cache.mc-capacity | list-length ids /= 4 | ml-valid-codes ids 0 == False then MusicLMOutput { ml-heads = [], ml-blocks = [] }
+    else let weights = w.ml-weights
+    in let dim = weights.t5m-width
+    in let ib = bt5-buffer 16
+    in let x = bt5-buffer (dim * 4)
+    in let y = bt5-buffer (dim * 4)
+    in let written = gpu-buf-write-words ib 0 ids
+    in let r0 = if ib == 0 | x == 0 | y == 0 | written == False then 0 - 1 else gpu-launch code "ml_embed_main" (be-grid dim) [gpu-arg-buf ib 0, gpu-arg-buf (bt5-get weights "emb.0.weight") 0, gpu-arg-buf (bt5-get weights "emb.1.weight") 0, gpu-arg-buf (bt5-get weights "emb.2.weight") 0, gpu-arg-buf (bt5-get weights "emb.3.weight") 0, gpu-arg-buf x 0, gpu-arg-u32 dim, gpu-arg-u32 1]
+    in let r1 = if r0 < 0 then r0 else gpu-launch code "ml_position_main" (be-grid dim) [gpu-arg-buf x 0, gpu-arg-buf y 0, gpu-arg-u32 dim, gpu-arg-u32 offset, gpu-arg-u32 dim]
+    in let f = be-free-list [ib, x] 0
+    in mc-blocks base code w cache (be-result y r1) 0 offset

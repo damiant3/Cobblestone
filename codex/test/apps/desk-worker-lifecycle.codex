@@ -1,0 +1,128 @@
+Chapter: DeskWorkerLifecycleTest
+  cites Works chapter GopDesk
+  cites Works chapter GopRenderWorker
+  cites Works chapter GopRenderMailbox
+  cites Works chapter GopScene
+  cites Works chapter GopAhci
+  cites Works chapter GopFont
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Console
+
+  DwcResult = record { dc-started : Boolean, dc-canceled : Boolean, dc-reclaimed : Boolean, dc-owner : Integer }
+
+  dwc-rendering : Integer, Integer -> [Concurrent] Boolean
+  dwc-rendering (cell) (fuel) =
+    if peek-qword cell grm-state == 1 & peek-qword cell grm-steps > 0 & peek-qword cell grm-reply == peek-qword cell grm-request then act True end
+    else if fuel <= 0 | grm-ready cell (peek-qword cell grm-owner) then act False end
+    else act
+      yielded <- process-yield
+      dwc-rendering cell (fuel - 1)
+    end
+
+  dwc-ack : Integer, Integer, Integer -> [Concurrent] Boolean
+  dwc-ack (cell) (token) (fuel) =
+    if peek-qword cell grm-cancel-ack >= token then act True end
+    else if fuel <= 0 then act False end
+    else act
+      yielded <- process-yield
+      dwc-ack cell token (fuel - 1)
+    end
+
+  dwc-poison-held : Integer, Integer, Integer -> Boolean
+  dwc-poison-held (base) (n) (at) =
+    if at >= n then True
+    else if peek-byte base at /= 165 then False
+    else dwc-poison-held base n (at + 1)
+
+  dwc-yields : Integer -> [Concurrent] Integer
+  dwc-yields (fuel) =
+    if fuel <= 0 then act 0 end
+    else act
+      yielded <- process-yield
+      dwc-yields (fuel - 1)
+    end
+
+  dwc-case : Integer, Integer, Integer, Integer, Integer, Integer -> [Concurrent, Device.Port, Gpu.Compute, Gpu.Memory] DwcResult
+  dwc-case (cell) (ds) (frame) (cursor) (kind) (prior) =
+    let mark = __heap-save
+    in act
+      sp <- gsc-new frame 64 cursor 0 gsc-sky 64 48
+      let owned = gsc-worker-own sp cell 1
+      in let owner = sp.sp-worker-owner
+      in let token = grm-submit cell owner 64 48 0 0 gsc-sky 1
+      in let old-cancel = grm-cancel cell prior
+      in let not-stale = peek-qword cell grm-request == token
+      in let top = __heap-save
+      in act
+        started <- dwc-rendering cell 200000
+        let closed = if kind == 1 then desk-render-close ds desk-focus-scene 0 else desk-scene-evict ds desk-focus-fish
+        in let canceled = peek-qword cell grm-owner == 0 & peek-qword cell grm-request == 0
+        in let restored = __heap-restore mark
+        in let replacement = alloc-bytes (top - mark)
+        in let poisoned = __memset replacement 165 (top - mark)
+        in act
+          acknowledged <- dwc-ack cell token 1000
+          let intact = replacement == mark & dwc-poison-held replacement (top - mark) 0
+          in let released = __heap-restore mark
+          in DwcResult { dc-started = started & token > 0 & not-stale, dc-canceled = canceled & acknowledged, dc-reclaimed = intact, dc-owner = owner }
+        end
+      end
+    end
+
+  opening : [Console, Concurrent, Capability, Device.Port, Gpu.Compute, Gpu.Memory] Nothing = act
+    initialized <- runtime-init 0
+    let cell = grm-new 0
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let attach = poke-32 ds dk-render-cell cell
+    in let marks = poke-32 ds desk-marks-cell (alloc-zeroed 128 64)
+    in let registry = poke-32 ds dk-wr-cell (alloc-zeroed 64 64)
+    in let frame = alloc-zeroed (64 * 48 * 4) 64
+    in let cursor = alloc-zeroed 2048 64
+    in act
+      pid <- grw-start cell
+      close <- dwc-case cell ds frame cursor 1 0
+      replace <- dwc-case cell ds frame cursor 2 (close.dc-owner)
+      sp <- gsc-new frame 64 cursor 0 gsc-sky 64 48
+      let owned = gsc-worker-own sp cell 1
+      in let owner = sp.sp-worker-owner
+      in let apps = desk-apps-empty (gapp-fallback cbf-init)
+      in let attached = __record-set apps "da-scene" (Just sp)
+      in let denied = desk-policy-scene apps desk-focus-scene 0
+      in let before = peek-qword cell grm-steps
+      in let token = grm-submit cell owner 64 48 0 0 gsc-sky 1
+      in act
+        waited <- dwc-yields 64
+        let idle = peek-qword cell grm-steps == before & peek-qword cell grm-reply /= token
+        in let allowed = desk-policy-scene apps desk-focus-scene 1
+        in act
+        started <- dwc-rendering cell 200000
+        let steps = peek-qword cell grm-steps
+        in let denied2 = desk-policy-scene apps desk-focus-scene 0
+        in act
+        waited2 <- dwc-yields 64
+        let paused-work = peek-qword cell grm-steps == steps
+        in let allowed2 = desk-policy-scene apps desk-focus-scene 1
+        in let paused = desk-render-pause ds desk-focus-scene
+        in let hidden = peek-qword cell grm-owner == owner & peek-qword cell grm-request == 0
+        in act
+          acknowledged <- dwc-ack cell token 1000
+          let resumed = grm-submit cell owner 64 48 10 10 gsc-sky 0
+          in let fresh = resumed > token & peek-qword cell grm-owner == owner
+          in act
+            stopped <- grw-stop cell
+            port-out-byte 33 255
+            port-out-byte 161 255
+            print-line-uni ("setup=" & show (pid > 0 & close.dc-started & replace.dc-started & started))
+            print-line-uni ("close-before-reclaim=" & show (close.dc-canceled & close.dc-reclaimed))
+            print-line-uni ("replace-before-reclaim=" & show (replace.dc-canceled & replace.dc-reclaimed & replace.dc-owner > close.dc-owner))
+            print-line-uni ("hide-acknowledged=" & show (hidden & acknowledged))
+            print-line-uni ("resume-new-request=" & show fresh)
+            print-line-uni ("budget-pauses-worker=" & show (idle & paused-work))
+            print-line-uni "desk-worker-lifecycle-end"
+          end
+        end
+        end
+        end
+      end
+    end
+  end

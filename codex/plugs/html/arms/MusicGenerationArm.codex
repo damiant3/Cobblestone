@@ -1,0 +1,57 @@
+Chapter: MusicGenerationArm
+  cites Spark chapter MusicGeneration
+  cites Spark chapter MusicLMLoad
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  ga-refuse : Text -> Integer
+  ga-refuse (why) = let e = state-set-text "error" why in state-set "done" 1
+
+  ga-words : Integer, Integer, Integer -> Text
+  ga-words (a) (lo) (hi) = if hi - lo == 1 then show (peek-32 a (lo * 4)) else let mid = (lo + hi) / 2 in ga-words a lo mid & "," & ga-words a mid hi
+
+  ga-tokens : List Integer, Integer, Integer -> Text
+  ga-tokens (xs) (lo) (hi) = if hi - lo == 1 then show (list-at xs lo) else let mid = (lo + hi) / 2 in ga-tokens xs lo mid & "," & ga-tokens xs mid hi
+
+  ga-seen : Integer, Integer, Integer, Integer, Integer -> Integer
+  ga-seen (case) (step) (total) (logits) (draws) =
+    let a = state-set-text ("g" & show case & "-s" & show (step - 1)) ("[" & ga-words logits 0 8192 & "]")
+    in let next = state-get ("steps" & show case) + 1
+    in let b = state-set ("steps" & show case) next
+    in let c = state-set ("offset" & show case) (draws * 4)
+    in let d = if next /= step then state-set ("order" & show case) 1 else 0
+    in state-set "progress" step
+
+  ga-complete : MusicLM, Integer, Integer, Integer, List Integer -> Integer
+  ga-complete (w) (context) (keys) (case) (tokens) =
+    let a = state-set-text ("tokens" & show case) ("[" & ga-tokens tokens 0 (list-length tokens) & "]")
+    in ga-case w context keys (case + 1)
+
+  ga-case : MusicLM, Integer, Integer, Integer -> Integer
+  ga-case (w) (context) (keys) (case) =
+    if case >= text-to-integer (page-data "count") then (let f = be-drop context in let f2 = bt5-close (w.ml-weights) in let e = state-set-text "error" (gpu-error 0) in state-set "done" 1)
+    else let a = state-set "case" case
+    in let settings = MusicGenSettings { mg-frames = text-to-integer (page-data ("frames" & show case)), mg-seed = text-to-integer (page-data ("seed" & show case)), mg-sampling = page-data ("sampling" & show case) == "1", mg-top-k = 250, mg-temperature = 1.0, mg-guidance = 3.0 }
+    in music-generate (page-data "base") (page-data "code") w context keys settings (\step total logits draws -> ga-seen case step total logits draws) (\tokens -> ga-complete w context keys case tokens) (\why -> (let f = be-drop context in let f2 = bt5-close (w.ml-weights) in ga-refuse why))
+
+  ga-ready : MusicLM -> Integer
+  ga-ready (w) =
+    let words = el-bytes (page-data "condition")
+    in let context = bt5-buffer (list-length words * 4)
+    in let filled = gpu-buf-write-words context 0 words
+    in let a = state-set "need" 1
+    in if filled == False then (let f = be-drop context in let f2 = bt5-close (w.ml-weights) in ga-refuse "Conditioning upload failed")
+    else ga-case w context (list-length words / ((w.ml-weights).t5m-width)) 0
+
+  ga-opened : Text, Integer, Text -> Integer
+  ga-opened (file) (size) (result) = if text-contains result "\"ok\":true" then music-lm-load file size ga-ready ga-refuse else ga-refuse result
+
+  ga-picked : Text -> Integer
+  ga-picked (data) = let obj = json-parse-obj data in gpu-open-then (\r -> ga-opened (json-obj-field obj "name") (text-to-integer (json-obj-field obj "size")) r)
+
+  ga-pick : Text -> Integer
+  ga-pick (id) = if state-get "need" == 0 then (let busy = state-set "need" (0 - 1) in pick-file-then ".bin" ga-picked) else 0
+
+  opening : [Console] Integer
+  opening = let c = dom-on-click (dom-query "html") ga-pick in state-set "need" 0

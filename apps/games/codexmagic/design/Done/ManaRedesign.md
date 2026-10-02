@@ -88,7 +88,7 @@ activates Fluorescence for the rest of the turn. This is a toggle:
 - Cards without a Fluorescence clause are unaffected.
 - One Obsidian activation covers all eligible spells that turn.
 - Costs 1 ray and taps the Obsidian.
-- Resets at upkeep.
+- Clears at cleanup without restoring rays; upkeep refreshes rays with the flag off.
 
 Fluorescence is not a color -- it is a modifier. It does not combine
 with other stones in a chain; it is its own separate ray assignment.
@@ -139,7 +139,7 @@ diverse deckbuilding.
 ## Turn Flow
 
 1. **Upkeep** -- All gemstones untap. All rays refresh. Gain 1 new ray.
-   Fluorescence toggle resets to off.
+   Fluorescence is off; cleanup ended the previous turn's activation.
 2. **Draw** -- Draw a card.
 3. **Main Phase 1** -- Play a gemstone (optional, 1 per turn). Assign
    rays to gemstone chains. Optionally activate Obsidian for
@@ -428,14 +428,22 @@ opponent's slow spell through a contested Focus vs Disruption check.
 
 #### Disruption Window
 
-When a player casts a Summoning or Incantation:
+When a player casts a slow spell (Summoning, Incantation or Enchantment):
 
 1. Caster assigns rays through gems, declares spell
-2. Opponent gets a **disruption window** -- may cast ONE disruption
-   spell (assigning their own rays and gems)
-3. **Contested check** -- Focus vs Disruption (see below)
-4. Spell resolves or fizzles. **Done.** No further responses.
-   One layer deep, no chaining.
+2. Opponent gets one response window: one Disruption, an opt-in manual
+   Cantrip, or an opt-in manual ordinary activated ability. The response pays
+   its own costs; no second response follows.
+3. A Disruption uses the contested Focus vs Disruption check below. A Cantrip
+   resolves immediately; an illegal resolution target fizzles it after payment.
+4. If the response ends the game, the original paid spell goes to its caster's
+   graveyard without effects. Otherwise the original rechecks its target and
+   resolves or fizzles. No further responses or chaining.
+
+The manual Cantrip and ordinary ability rules are root 2026-10-01, Damian may
+override. Loyalty abilities are excluded; timeout remains Pass and automatic
+replies remain Disruption-only.
+[AIGameplay](../Active/AIGameplay.md) owns response policy, targeting and timeout.
 
 #### Focus vs Disruption Contest
 

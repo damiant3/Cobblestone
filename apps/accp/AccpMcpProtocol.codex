@@ -55,7 +55,9 @@ Section: Responses
   mc-initialize : AccpObject, Text -> Text
   mc-initialize (params) (id) =
     let requested = aj-text params "protocolVersion"
-    in let chosen = if requested == "2024-11-05" | requested == "2025-06-18" then requested else "2025-11-25"
+    in let chosen = if requested == "2024-11-05" | requested == "2025-06-18" then
+      requested
+    else "2025-11-25"
     in mc-result id ("{\"protocolVersion\":" & aj-quote chosen & ",\"capabilities\":{\"tools\":{\"listChanged\":false},\"resources\":{\"subscribe\":false,\"listChanged\":false}},\"serverInfo\":{\"name\":\"cobblestone-accp\",\"version\":\"1.0.0\"},\"instructions\":" & aj-quote mc-instructions & "}")
 
 Section: Invocation
@@ -72,7 +74,8 @@ Section: Invocation
     if i >= list-length fs then True
     else let k = (list-at fs i).key
     in if op == "describe" then False
-    else if k == "source" | k == "limits" | k == "library" | ((k == "input" | k == "output") & op == "run") then mc-args-known fs op (i + 1)
+    else if k == "source" | k == "limits" | k == "library" | ((k == "input" | k == "output") & op == "run") then
+      mc-args-known fs op (i + 1)
     else False
 
   mc-tool-call : Text, Text, AccpObject, Text, Integer -> [Console] Text
@@ -81,16 +84,19 @@ Section: Invocation
     in let raw = aj-get params "arguments"
     in let args = aj-object (if raw == "" then "{}" else raw)
     in if op == "" then mc-error id -32602 "unknown tool"
-    else if args.ok == False | mc-args-known args.fields op 0 == False then mc-error id -32602 "invalid tool arguments"
+    else if args.ok == False | mc-args-known args.fields op 0 == False then
+      mc-error id -32602 "invalid tool arguments"
     else let fields = if raw == "" then "" else ap-fields raw
     in let request = "{\"op\":" & aj-quote op & (if op == "lens" then ",\"plug\":\"wasm\"" else "") & (if fields == "" then "" else "," & fields) & "}"
     in act
       receipt <- ap-evaluate meta header request heap-base True
-      if receipt.ok == False | aj-text receipt "status" /= "ok" then mc-error id -32603 "execution receipt unavailable"
+      if receipt.ok == False | aj-text receipt "status" /= "ok" then
+        mc-error id -32603 "execution receipt unavailable"
       else let response = aj-decode (aj-get receipt "response")
       in let parsed = aj-object response
       in if parsed.ok == False then mc-error id -32603 "execution response is malformed"
-      else mc-result id ("{\"content\":[{\"type\":\"text\",\"text\":" & aj-quote response & "}],\"structuredContent\":" & response & ",\"isError\":" & (if aj-text parsed "status" == "ok" then "false" else "true") & ",\"_meta\":{\"accp_response_base64\":" & aj-get receipt "response_base64" & "}}")
+      else
+        mc-result id ("{\"content\":[{\"type\":\"text\",\"text\":" & aj-quote response & "}],\"structuredContent\":" & response & ",\"isError\":" & (if aj-text parsed "status" == "ok" then "false" else "true") & ",\"_meta\":{\"accp_response_base64\":" & aj-get receipt "response_base64" & "}}")
     end
   end
 
@@ -111,10 +117,11 @@ Section: Lifecycle
       mc-send (mc-error "null" -32700 "invalid JSON")
       state
     end
-    else if o.ok == False | aj-text o "jsonrpc" /= "2.0" | method-name == "" | (id /= "" & mc-id-valid id == False) then act
-      mc-send (mc-error "null" -32600 "invalid JSON-RPC request")
-      state
-    end
+    else if o.ok == False | aj-text o "jsonrpc" /= "2.0" | method-name == "" | (id /= "" & mc-id-valid id == False) then
+      act
+        mc-send (mc-error "null" -32600 "invalid JSON-RPC request")
+        state
+      end
     else if id == "" then act
       mc-send ""
       mc-notification method-name state
@@ -132,10 +139,11 @@ Section: Lifecycle
         mc-send (mc-error id -32600 "already initialized")
         state
       end
-      else if aj-text params "protocolVersion" == "" | (aj-object (aj-get params "clientInfo")).ok == False | (aj-object (aj-get params "capabilities")).ok == False then act
-        mc-send (mc-error id -32602 "initialize requires protocolVersion, clientInfo and capabilities")
-        state
-      end
+      else if aj-text params "protocolVersion" == "" | (aj-object (aj-get params "clientInfo")).ok == False | (aj-object (aj-get params "capabilities")).ok == False then
+        act
+          mc-send (mc-error id -32602 "initialize requires protocolVersion, clientInfo and capabilities")
+          state
+        end
       else act
         mc-send (mc-initialize params id)
         let initialized-state = 1
@@ -155,15 +163,22 @@ Section: Lifecycle
   mc-dispatch : Text, Text, Text, AccpObject, Text, Integer -> [Console] Text
   mc-dispatch (meta) (header) (method-name) (params) (id) (heap-base) = act
     if method-name == "tools/list" then
-      if aj-get params "cursor" == "" then mc-result id mc-tools else mc-error id -32602 "cursor is unsupported"
+      if aj-get params "cursor" == "" then
+        mc-result id mc-tools
+      else mc-error id -32602 "cursor is unsupported"
     else if method-name == "tools/call" then mc-tool-call meta header params id heap-base
     else if method-name == "resources/list" then
-      if aj-get params "cursor" == "" then mc-result id mc-resources else mc-error id -32602 "cursor is unsupported"
+      if aj-get params "cursor" == "" then
+        mc-result id mc-resources
+      else mc-error id -32602 "cursor is unsupported"
     else if method-name == "resources/templates/list" then mc-result id "{\"resourceTemplates\":[]}"
     else if method-name == "resources/read" then
-      if aj-text params "uri" == "codex://accp/language" then mc-result id ("{\"contents\":[{\"uri\":\"codex://accp/language\",\"mimeType\":\"text/markdown\",\"text\":" & aj-quote mc-language-card & "}]}")
-      else if aj-text params "uri" == "codex://accp/science" then mc-result id ("{\"contents\":[{\"uri\":\"codex://accp/science\",\"mimeType\":\"text/markdown\",\"text\":" & aj-quote mc-science-card & "}]}")
-      else if aj-text params "uri" == "codex://accp/experiments" then mc-result id ("{\"contents\":[{\"uri\":\"codex://accp/experiments\",\"mimeType\":\"text/markdown\",\"text\":" & aj-quote mc-experiment-card & "}]}")
+      if aj-text params "uri" == "codex://accp/language" then
+        mc-result id ("{\"contents\":[{\"uri\":\"codex://accp/language\",\"mimeType\":\"text/markdown\",\"text\":" & aj-quote mc-language-card & "}]}")
+      else if aj-text params "uri" == "codex://accp/science" then
+        mc-result id ("{\"contents\":[{\"uri\":\"codex://accp/science\",\"mimeType\":\"text/markdown\",\"text\":" & aj-quote mc-science-card & "}]}")
+      else if aj-text params "uri" == "codex://accp/experiments" then
+        mc-result id ("{\"contents\":[{\"uri\":\"codex://accp/experiments\",\"mimeType\":\"text/markdown\",\"text\":" & aj-quote mc-experiment-card & "}]}")
       else mc-error id -32002 "resource not found"
     else mc-error id -32601 "method not found"
   end

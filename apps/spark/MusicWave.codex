@@ -1,0 +1,48 @@
+Chapter: MusicWave
+
+ RIFF/WAVE IEEE_FLOAT: mono 32 kHz, 18-byte fmt chunk and a fact sample count.
+ The f32 payload is copied without amplitude normalization or quantization.
+
+ We say:
+
+  MusicWave = record {
+    mw-address : Integer,
+    mw-bytes : Integer,
+    mw-samples : Integer,
+    mw-rate : Integer,
+    mw-valid : Boolean
+  }
+
+  mw-u16 : Integer, Integer, Integer -> Integer
+  mw-u16 (a) (off) (v) = let x = poke-byte a off (bit-and v 255) in poke-byte a (off + 1) (bit-and (bit-shru v 8) 255)
+
+  mw-copy : Integer, List Integer, Integer -> Boolean
+  mw-copy (a) (words) (i) =
+    if i >= list-length words then True
+    else let w = list-at words i
+    in if bit-and w #7F800000 == #7F800000 then False
+    else let written = poke-32 a (58 + i * 4) w in mw-copy a words (i + 1)
+
+  music-wave : List Integer -> MusicWave
+  music-wave (words) =
+    let n = list-length words
+    in let a = alloc-bytes (58 + n * 4)
+    in let h0 = poke-32 a 0 #46464952
+    in let h1 = poke-32 a 4 (50 + n * 4)
+    in let h2 = poke-32 a 8 #45564157
+    in let h3 = poke-32 a 12 #20746D66
+    in let h4 = poke-32 a 16 18
+    in let h5 = mw-u16 a 20 3
+    in let h6 = mw-u16 a 22 1
+    in let h7 = poke-32 a 24 32000
+    in let h8 = poke-32 a 28 128000
+    in let h9 = mw-u16 a 32 4
+    in let h10 = mw-u16 a 34 32
+    in let h11 = mw-u16 a 36 0
+    in let h12 = poke-32 a 38 #74636166
+    in let h13 = poke-32 a 42 4
+    in let h14 = poke-32 a 46 n
+    in let h15 = poke-32 a 50 #61746164
+    in let h16 = poke-32 a 54 (n * 4)
+    in let valid = if n <= 0 then False else mw-copy a words 0
+    in MusicWave { mw-address = a, mw-bytes = 58 + n * 4, mw-samples = n, mw-rate = 32000, mw-valid = valid }

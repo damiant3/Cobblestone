@@ -28,7 +28,8 @@ Section: Byte Codec (Unicode wire <-> CCE)
   bytes-to-text : List Integer, Integer, Integer, Text -> Text
   bytes-to-text (bs) (off) (total) (acc) =
     if off >= total then acc
-    else acc & text-concat-list (bytes-to-text-pieces bs off total (__list-with-capacity (total - off + 1)))
+    else
+      acc & text-concat-list (bytes-to-text-pieces bs off total (__list-with-capacity (total - off + 1)))
 
   bytes-to-text-pieces : List Integer, Integer, Integer, List Text -> List Text
   bytes-to-text-pieces (bs) (i) (stop) (acc) =
@@ -37,6 +38,24 @@ Section: Byte Codec (Unicode wire <-> CCE)
     in bytes-to-text-pieces bs (i + 1) stop (list-push acc (char-to-text (code-to-char cce)))
 
 Section: HTTP Serve Loop
+
+  WebRequestEvent = record {
+    wr-time : Integer,
+    wr-client : List Integer,
+    wr-method : Text,
+    wr-path : Text,
+    wr-status : Text,
+    wr-bytes : Integer,
+    wr-duration : Integer,
+    wr-complete : Boolean
+  }
+
+  web-event-none : WebRequestEvent -> Integer
+  web-event-none (event) = 0
+
+  web-send-http-result : TcpTransportState, HttpResponse -> [Network.Read, Network.Write] NetSendResult
+  web-send-http-result (ts) (resp) =
+    net-io-send-raw-checked ts (http-encode resp)
 
   web-send-http : TcpTransportState, HttpResponse -> [Network.Read, Network.Write] TcpTransportState
   web-send-http (ts) (resp) =
@@ -93,7 +112,12 @@ Section: Concurrent Event Loop
 
   nat-gw-mac : List Integer = [82, 85, 10, 0, 2, 2]
 
-  WebConn = record { transport : TcpTransportState, server : WebState, pending : List Integer, idle : Integer }
+  WebConn = record {
+    transport : TcpTransportState,
+    server : WebState,
+    pending : List Integer,
+    idle : Integer
+  }
 
  ONE RECEIVE BUFFER SERVES THE WHOLE MUX, the listen transport's, minted by
  the caller before the loop takes its compaction mark. A buffer minted inside
@@ -137,11 +161,25 @@ Section: Concurrent Event Loop
     in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
     in transport-new-with-cap sess2 serve-recv-buf-cap
 
+  web-listen-configured : List Integer, List Integer, List Integer, Integer -> TcpTransportState
+  web-listen-configured (mac) (ip) (gateway) (port) =
+    transport-new-with-cap (net-session-new mac ip gateway port 0 gateway 1000) serve-recv-buf-cap
+
   web-mux-next-listen : WebMux, Integer -> TcpTransportState
   web-mux-next-listen (m) (port) =
-    let sess = net-session-new local-mac local-ip gateway-ip port 0 gateway-ip 1000
-    in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
-    in TcpTransportState { session = sess2, recv-base = (m.listen).recv-base, recv-len = 0, recv-cap = (m.listen).recv-cap, messages-sent = 0, messages-received = 0, arena-base = 0, gen = 0 }
+    let previous = (m.listen).session
+    in let sess = net-session-new (previous.local-mac) (previous.local-ip) (previous.gateway-ip) port 0 (previous.gateway-ip) 1000
+    in let sess2 = set-arp sess (previous.arp)
+    in TcpTransportState {
+      session = sess2,
+      recv-base = (m.listen).recv-base,
+      recv-len = 0,
+      recv-cap = (m.listen).recv-cap,
+      messages-sent = 0,
+      messages-received = 0,
+      arena-base = 0,
+      gen = 0
+    }
 
  The mux must fit the 131,072-byte arena `web-mux-compact` copies it into, or
  compaction stops and the loop's garbage grows without bound. Its copy costs
@@ -161,7 +199,11 @@ Section: Concurrent Event Loop
   web-mux-pending-budget : Integer = 8192
 
   web-mux-too-large : HttpResponse
-  web-mux-too-large = HttpResponse { status = "413 Content Too Large", content-type = "text/plain", body = "Request too large" }
+  web-mux-too-large = HttpResponse {
+    status = "413 Content Too Large",
+    content-type = "text/plain",
+    body = "Request too large"
+  }
 
   web-mux-pending-held : WebMux, Integer, Integer, Integer -> Integer
   web-mux-pending-held (m) (idx) (i) (acc) =
@@ -213,7 +255,9 @@ Section: Concurrent Event Loop
   wb-parse-num (bs) (i) (len) (acc) =
     if i >= len then acc
     else let b = list-at bs i
-    in if b >= 48 then (if b <= 57 then wb-parse-num bs (i + 1) len (acc * 10 + (b - 48)) else acc) else acc
+    in if b >= 48 then
+      (if b <= 57 then wb-parse-num bs (i + 1) len (acc * 10 + (b - 48)) else acc)
+    else acc
 
   wb-headers-end : List Integer, Integer, Integer -> Integer
   wb-headers-end (bs) (i) (len) =
@@ -307,11 +351,16 @@ Section: Concurrent Event Loop
         reaped <- flush-transport-outbox (transport-close t1)
         web-mux-sweep (WebMux { listen = m.listen, conns = web-mux-remove (m.conns) i 0 [], served = m.served }) i
       end
-      else web-mux-sweep (WebMux { listen = m.listen, conns = list-set-at (m.conns) i (WebConn { transport = t1, server = c.server, pending = c.pending, idle = c.idle + 1 }), served = m.served }) (i + 1)
+      else
+        web-mux-sweep (WebMux { listen = m.listen, conns = list-set-at (m.conns) i (WebConn { transport = t1, server = c.server, pending = c.pending, idle = c.idle + 1 }), served = m.served }) (i + 1)
     end
 
   web-mux-serve-conn : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, Integer, List Integer, Integer -> [Network.Read, Network.Write] WebMux
   web-mux-serve-conn (route) (obs) (m) (idx) (frame) (stop) =
+    web-mux-serve-observed route obs web-event-none m idx frame stop
+
+  web-mux-serve-observed : (HttpRequest -> HttpResponse), (Text -> Integer), (WebRequestEvent -> Integer), WebMux, Integer, List Integer, Integer -> [Network.Read, Network.Write] WebMux
+  web-mux-serve-observed (route) (obs) (event) (m) (idx) (frame) (stop) =
     let c = list-at (m.conns) idx
     in let r = net-process-frame-within ((c.transport).session) frame stop
     in let ts1 = transport-set-session (c.transport) (r.session)
@@ -321,38 +370,98 @@ Section: Concurrent Event Loop
         ts3 <- flush-transport-outbox (transport-close ts2)
         WebMux { listen = m.listen, conns = web-mux-remove (m.conns) idx 0 [], served = m.served }
       end
-      else web-mux-drain route obs m idx ts2 (c.server) ((c.pending) & (transport-slice (r.data) (r.data-off) (r.data-stop)))
+      else
+        web-mux-drain-observed route obs event m idx ts2 (c.server) ((c.pending) & (transport-slice (r.data) (r.data-off) (r.data-stop)))
     end
 
   web-mux-refuse : WebMux, Integer, TcpTransportState -> [Network.Read, Network.Write] WebMux
-  web-mux-refuse (m) (idx) (ts) = act
-    ts2 <- web-send-http ts web-mux-too-large
-    ts3 <- flush-transport-outbox (transport-close (web-mux-settle ts2))
-    WebMux { listen = m.listen, conns = web-mux-remove (m.conns) idx 0 [], served = m.served }
-  end
+  web-mux-refuse (m) (idx) (ts) = web-mux-refuse-observed web-event-none m idx ts []
+
+  web-mux-refuse-observed : (WebRequestEvent -> Integer), WebMux, Integer, TcpTransportState, List Integer -> [Network.Read, Network.Write] WebMux
+  web-mux-refuse-observed (event) (m) (idx) (ts) (pending) =
+    let began = get-ticks
+    in let size = list-length pending
+    in let req = http-parse-request (wb-slice pending 0 (if size > 256 then 256 else size) [])
+    in act
+      sent <- web-send-http-result ts web-mux-too-large
+      let elapsed = get-ticks - began
+      in let reported = event (WebRequestEvent { wr-time = began * 10, wr-client = ((ts.session).conn).remote-ip, wr-method = req.method, wr-path = req.path, wr-status = web-mux-too-large.status, wr-bytes = sent.ns-sent, wr-duration = if elapsed < 0 then 0 else elapsed * 10, wr-complete = sent.ns-complete })
+      in act
+        closed <- flush-transport-outbox (transport-close (web-mux-settle (sent.ns-transport)))
+        WebMux { listen = m.listen, conns = web-mux-remove (m.conns) idx 0 [], served = m.served }
+      end
+    end
 
   web-mux-drain : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, Integer, TcpTransportState, WebState, List Integer -> [Network.Read, Network.Write] WebMux
   web-mux-drain (route) (obs) (m) (idx) (ts) (srv) (pending) =
+    web-mux-drain-observed route obs web-event-none m idx ts srv pending
+
+  web-mux-drain-observed : (HttpRequest -> HttpResponse), (Text -> Integer), (WebRequestEvent -> Integer), WebMux, Integer, TcpTransportState, WebState, List Integer -> [Network.Read, Network.Write] WebMux
+  web-mux-drain-observed (route) (obs) (event) (m) (idx) (ts) (srv) (pending) =
     let plen = list-length pending
     in let total = wb-request-total pending plen
     in if total < 0 then
-      if web-mux-pending-held m idx 0 plen > web-mux-pending-budget then web-mux-refuse m idx ts
-      else WebMux { listen = m.listen, conns = list-set-at (m.conns) idx (WebConn { transport = ts, server = srv, pending = pending, idle = 0 }), served = m.served }
-    else let req = http-parse-request (wb-slice pending 0 total [])
+      if web-mux-pending-held m idx 0 plen > web-mux-pending-budget then web-mux-refuse-observed event m idx ts pending
+      else
+        WebMux {
+          listen = m.listen,
+          conns = list-set-at (m.conns) idx (WebConn {
+            transport = ts,
+            server = srv,
+            pending = pending,
+            idle = 0
+          }),
+          served = m.served
+        }
+    else let began = get-ticks
+    in let req = http-parse-request (wb-slice pending 0 total [])
     in let ns = WebState { request-count = srv.request-count + 1 }
     in let resp = web-dispatch route obs ns req
     in act
-      ts2 <- web-send-http ts resp
-      web-mux-drain route obs (WebMux { listen = m.listen, conns = m.conns, served = m.served + 1 }) idx (web-mux-settle ts2) ns ((wb-slice pending total plen []) & web-mux-fed ts2)
+      sent <- web-send-http-result ts resp
+      let elapsed = get-ticks - began
+      in let reported = event (WebRequestEvent { wr-time = began * 10, wr-client = ((ts.session).conn).remote-ip, wr-method = req.method, wr-path = req.path, wr-status = resp.status, wr-bytes = sent.ns-sent, wr-duration = if elapsed < 0 then 0 else elapsed * 10, wr-complete = sent.ns-complete })
+      in act
+        ts2 <- if sent.ns-complete then sent.ns-transport else net-io-close (sent.ns-transport)
+        web-mux-drain-observed route obs event (WebMux { listen = m.listen, conns = m.conns, served = m.served + 1 }) idx (web-mux-settle ts2) ns ((wb-slice pending total plen []) & web-mux-fed ts2)
+      end
     end
 
   web-mux-accept : WebMux, List Integer, Integer, Integer -> [Network.Read, Network.Write] WebMux
   web-mux-accept (m) (frame) (stop) (port) =
-    let r = net-process-frame-within ((m.listen).session) frame stop
-    in let listen1 = transport-set-session (m.listen) (r.session)
+    web-mux-accept-configured m frame stop port [0, 0, 0, 0]
+
+  web-same-subnet : List Integer, List Integer, List Integer, Integer -> Boolean
+  web-same-subnet (a) (b) (mask) (i) =
+    if i >= 4 then True
+    else bit-and (list-at a i) (list-at mask i) == bit-and (list-at b i) (list-at mask i) & web-same-subnet a b mask (i + 1)
+
+  web-mux-accept-configured : WebMux, List Integer, Integer, Integer, List Integer -> [Network.Read, Network.Write] WebMux
+  web-mux-accept-configured (m) (frame) (stop) (port) (mask) =
+    let base = (m.listen).session
+    in let peer = ip-src-at frame eth-header-size
+    in let hop = if ip-equal mask [0, 0, 0, 0] then base.gateway-ip else if web-same-subnet (base.local-ip) peer mask 0 then peer else base.gateway-ip
+    in let sess = set-arp (net-session-new (base.local-mac) (base.local-ip) hop port 0 peer 1000) (base.arp)
+    in let listener = net-io-listen (transport-set-session (m.listen) sess)
     in act
+      resolved <- net-io-resolve listener hop
+      let detached = transport-release resolved
+      in if net-arp-known (detached.session) hop == False then m
+      else let r = net-process-frame-within (detached.session) frame stop
+      in let listen1 = transport-set-session detached (r.session)
+      in act
       listen2 <- flush-transport-outbox listen1
-      WebMux { listen = net-io-listen (web-mux-next-listen m port), conns = list-push (m.conns) (WebConn { transport = listen2, server = web-new, pending = [], idle = 0 }), served = m.served }
+      WebMux {
+        listen = net-io-listen (web-mux-next-listen m port),
+        conns = list-push (m.conns) (WebConn {
+          transport = listen2,
+          server = web-new,
+          pending = [],
+          idle = 0
+        }),
+        served = m.served
+      }
+      end
     end
 
   web-mux-feed : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, List Integer, Integer -> [Network.Read, Network.Write] WebMux
@@ -360,20 +469,79 @@ Section: Concurrent Event Loop
 
   web-mux-feed-within : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, List Integer, Integer, Integer -> [Network.Read, Network.Write] WebMux
   web-mux-feed-within (route) (obs) (m) (frame) (stop) (port) =
-    if frame-tcp-within frame stop == False then m
+    web-mux-feed-observed route obs web-event-none [0, 0, 0, 0] m frame stop port
+
+  web-mux-owner-from : List WebConn, TcpSegment, List Integer, Integer -> Integer
+  web-mux-owner-from (conns) (seg) (ip) (i) =
+    if i >= list-length conns then 0 - 1
+    else let session = ((list-at conns i).transport).session
+    in if net-session-owns-segment session seg & ip-equal ((session.conn).remote-ip) ip then i
+    else web-mux-owner-from conns seg ip (i + 1)
+
+  web-frame-valid : List Integer, Integer -> Boolean
+  web-frame-valid (frame) (stop) =
+    if frame-tcp-within frame stop == False then False
+    else if ip-length-valid-within frame eth-header-size stop == False then False
+    else if ip-header-valid-within frame eth-header-size stop == False then False
+    else tcp-checksum-valid-at frame (eth-header-size + ip-header-size) (eth-header-size + ip-total-length-at frame eth-header-size) (ip-src-at frame eth-header-size) (ip-dst-at frame eth-header-size)
+
+ RFC 9293 section 3.10.7.1: a closed port resets non-RST segments. The
+ response uses the incoming link's source MAC without learning an ARP entry.
+
+  web-closed-reply : List Integer, Integer, List Integer -> List Integer
+  web-closed-reply (frame) (stop) (mac) =
+    if web-frame-valid frame stop == False then []
     else let seg = frame-seg-within frame stop
-    in let owner = web-mux-owner (m.conns) seg 0
-    in if owner >= 0 then web-mux-serve-conn route obs m owner frame stop
+    in if tcp-has-flag seg tcp-flag-rst then []
+    else let acknowledged = tcp-has-flag seg tcp-flag-ack
+    in let length = tcp-seg-payload-len seg + (if tcp-has-flag seg tcp-flag-syn then 1 else 0) + (if tcp-has-flag seg tcp-flag-fin then 1 else 0)
+    in let reset = tcp-build-segment (seg.dst-port) (seg.src-port) (if acknowledged then seg.ack-num else 0) (if acknowledged then 0 else tcp-seq-wrap (seg.seq-num + length)) (if acknowledged then tcp-flag-rst else bit-or tcp-flag-rst tcp-flag-ack) 0 []
+    in let server-ip = ip-dst-at frame eth-header-size
+    in let peer-ip = ip-src-at frame eth-header-size
+    in let tcp = tcp-with-checksum reset server-ip peer-ip
+    in eth-build-frame (eth-src-mac frame) mac eth-type-ipv4 (ip-build-packet server-ip peer-ip ip-proto-tcp tcp)
+
+  web-mux-feed-observed : (HttpRequest -> HttpResponse), (Text -> Integer), (WebRequestEvent -> Integer), List Integer, WebMux, List Integer, Integer, Integer -> [Network.Read, Network.Write] WebMux
+  web-mux-feed-observed (route) (obs) (event) (mask) (m) (frame) (stop) (port) =
+    if eth-ethertype-within frame stop == eth-type-arp then
+      let r = net-process-frame-within ((m.listen).session) frame stop
+      in act
+        ts <- flush-transport-outbox (transport-set-session (m.listen) (r.session))
+        WebMux { listen = ts, conns = m.conns, served = m.served }
+      end
+    else if web-frame-valid frame stop == False then m
+    else if ip-equal (ip-dst-at frame eth-header-size) (((m.listen).session).local-ip) == False then m
+    else let seg = frame-seg-within frame stop
+    in let owner = web-mux-owner-from (m.conns) seg (ip-src-at frame eth-header-size) 0
+    in if owner >= 0 then web-mux-serve-observed route obs event m owner frame stop
     else if (seg.dst-port == port) then
-      if tcp-has-flag seg tcp-flag-syn then (if list-length (m.conns) >= web-mux-max-conns then m else web-mux-accept m frame stop port)
+      if tcp-has-flag seg tcp-flag-syn then
+        (if list-length (m.conns) >= web-mux-max-conns then m else web-mux-accept-configured m frame stop port mask)
       else m
     else m
+
+  web-mux-close : WebMux, Integer -> [Network.Write] WebMux
+  web-mux-close (m) (i) =
+    if i >= list-length (m.conns) then act
+      listener <- flush-transport-outbox (transport-close (m.listen))
+      WebMux { listen = listener, conns = [], served = m.served }
+    end
+    else act
+      closed <- flush-transport-outbox (transport-close ((list-at (m.conns) i).transport))
+      let released = transport-release closed
+      in web-mux-close m (i + 1)
+    end
 
   nc-webconns : List WebConn, Integer, Integer, List WebConn -> List WebConn
   nc-webconns (cs) (i) (n) (acc) =
     if i >= n then acc
     else let c = list-at cs i
-    in nc-webconns cs (i + 1) n (list-push acc (WebConn { transport = nc-transport (c.transport), server = WebState { request-count = (c.server).request-count }, pending = nc-ints (c.pending), idle = c.idle }))
+    in nc-webconns cs (i + 1) n (list-push acc (WebConn {
+      transport = nc-transport (c.transport),
+      server = WebState { request-count = (c.server).request-count },
+      pending = nc-ints (c.pending),
+      idle = c.idle
+    }))
 
   nc-webmux : WebMux -> WebMux
   nc-webmux (m) = WebMux {
@@ -402,13 +570,13 @@ Section: Concurrent Event Loop
   web-mux-run : (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, Integer, Integer, Integer, List Integer, Integer, Integer -> [Console, Network.Read, Network.Write] Integer
   web-mux-run (route) (obs) (m) (port) (tries) (since) (rx) (set) (mark) =
     if list-length rx == 0 then let s = nc-set-acquire (nc-pool-cell process-get-pid)
-      in let send-set = nc-set-release (nc-set-acquire (nc-pool-cell process-get-pid))
-      in let rx1 = net-io-rx rx
-      in let mk = __heap-save
-      in web-mux-run route obs m port tries since rx1 s mk
+    in let send-set = nc-set-release (nc-set-acquire (nc-pool-cell process-get-pid))
+    in let rx1 = net-io-rx rx
+    in let mk = __heap-save
+    in web-mux-run route obs m port tries since rx1 s mk
     else if tries > 50000000 then let served = m.served
-      in let released = nc-set-release set
-      in served
+    in let released = nc-set-release set
+    in served
     else if since >= web-sweep-interval then act
       m1 <- web-mux-sweep m 0
       web-mux-run route obs (web-mux-compact m1 set mark) port (tries + 1) 0 rx set mark
@@ -417,9 +585,9 @@ Section: Concurrent Event Loop
     in act
       n <- net-driver-recv-into rx
       if n == 0 then let restored = __heap-restore hp
-        in let y = process-yield
-        in let w = web-idle-wait tries
-        in web-mux-run route obs m port (tries + 1 + w) (since + 1 + w) rx set mark
+      in let y = process-yield
+      in let w = web-idle-wait tries
+      in web-mux-run route obs m port (tries + 1 + w) (since + 1 + w) rx set mark
       else act
         m1 <- web-mux-feed-within route obs m rx n port
         web-mux-run route obs (web-mux-compact m1 set mark) port 0 (since + 1) rx set mark

@@ -1167,3 +1167,56 @@ function Invoke-PlugVmFileSerial {
     }
     return $ok
 }
+
+
+function Get-CdxContentExtent([string]$CdxFile) {
+    $bytes = [System.IO.File]::ReadAllBytes($CdxFile)
+    $length = $bytes.Length
+    if (($length -lt 224)) {
+        throw 'CDX header is truncated'
+    }
+    if ((-not ([string]::Equals(([Text.Encoding]::ASCII).GetString($bytes, 0, 4), 'CDX1', ([StringComparison]::Ordinal))))) {
+        throw 'CDX magic is invalid'
+    }
+    $at = [long]([BitConverter]::ToUInt32($bytes, 220))
+    if (($at -eq 0)) {
+        return $length
+    }
+    if ((($at -lt 224) -or ($at -gt ($length - 12)))) {
+        throw 'MAP1 offset is outside the file'
+    }
+    if ((-not ([string]::Equals(([Text.Encoding]::ASCII).GetString($bytes, $at, 4), 'MAP1', ([StringComparison]::Ordinal))))) {
+        throw 'MAP1 magic is invalid'
+    }
+    $count = [long]([BitConverter]::ToUInt32($bytes, ($at + 4)))
+    $stringOffset = [long]([BitConverter]::ToUInt32($bytes, ($at + 8)))
+    $tableEnd = (12 + ($count * 12))
+    if ((($count -eq 0) -or (-not ($stringOffset -eq $tableEnd)))) {
+        throw 'MAP1 entry table is invalid'
+    }
+    $strings = ($at + $stringOffset)
+    if (($strings -ge $length)) {
+        throw 'MAP1 string table is outside the file'
+    }
+    $pos = $strings
+    $i = 0
+    while (($i -lt $count)) {
+        $entry = (($at + 20) + ($i * 12))
+        $nameOffset = [long]([BitConverter]::ToUInt32($bytes, $entry))
+        if ((-not ($nameOffset -eq ($pos - $strings)))) {
+            throw 'MAP1 name offsets do not describe a contiguous string table'
+        }
+        while ((($pos -lt $length) -and (-not ($bytes[$pos] -eq 0)))) {
+            $pos++
+        }
+        if (($pos -ge $length)) {
+            throw 'MAP1 name is unterminated'
+        }
+        $pos++
+        $i++
+    }
+    if ((-not ($pos -eq $length))) {
+        throw 'MAP1 extent does not end at EOF'
+    }
+    return $at
+}

@@ -110,6 +110,9 @@ try {
   const ea = errAt(attnReference(true)), eac = errAt(attnReference(false));
   ok('bv-attention matches the decoder attention in f64 within 1e-3 of its largest magnitude', ea < 1e-3, `relative error ${ea.toExponential(2)}`);
   ok('control, the reference without the 1/sqrt(512) scale, misses', eac > 1e-3, `relative error ${eac.toExponential(2)}`);
+  const ownership = await evalIn(`(async()=>{const before=_gb.filter(Boolean).length;const a=gpu_buf_alloc(16n),b=gpu_buf_alloc(16n);const words=xs=>Array.from(new Int32Array(new Float32Array(xs).buffer),BigInt);gpu_buf_write_words(a,0n,words([1,2,3,4]));gpu_buf_write_words(b,0n,words([10,20,30,40]));const result=bv_add(page_data('bk'),{ah:a,ac:1n,ahh:1n,aww:4n},{ah:b,ac:1n,ahh:1n,aww:4n});const consumed=!_gb[Number(a)],borrowed=!!_gb[Number(b)];const values=JSON.parse(await new Promise(r=>gpu_buf_download_then(result.ah,0n,16n,r)));gpu_buf_free(result.ah);gpu_buf_free(b);const failed=gpu_buf_alloc(16n),rejected=bv_act(failed,1n,1n,4n,-1n);return {consumed,borrowed,values:Array.from(new Float32Array(new Int32Array(values).buffer)),refused:Number(rejected.ah)===0&&!_gb[Number(failed)],balanced:_gb.filter(Boolean).length===before,error:gpu_error(0n)}})()`);
+  ok('VAE add consumes its first activation, preserves its borrowed input and returns exact sums', ownership?.consumed && ownership.borrowed && JSON.stringify(ownership.values) === '[11,22,33,44]' && ownership.error === '', JSON.stringify(ownership));
+  ok('failed activation releases its buffer and ownership probe leaves no live handles', ownership?.refused && ownership.balanced, JSON.stringify(ownership));
 } catch (e) {
   ok('the arm ran', false, String(e && e.message || e));
 } finally {

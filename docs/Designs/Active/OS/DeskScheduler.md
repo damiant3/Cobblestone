@@ -1,11 +1,25 @@
 # The Desk Scheduler
 
-Status: Stage 1 input collection and stage 2 bounded software rendering,
-presentation and pane policy are implemented and verified in both beds.
-Stage 2 code is on main at **CL 32370** (fester CL 32361).
-The cited gate passed 72 compile and 72 runtime subjects with no failures.
-Physical acceptance remains unrun; the queued desk sequence is in
-`docs/Hardware/HardwareSitting.md`, "Queued desk acceptance".
+Status: Buffered desktop composition and scene-progress corrections are on
+main at **CL 32619** (fester CL 32615, with scene-owner eviction from 32449).
+Focused desk, policy, scene, fish and raster suites pass. Production-loop
+positive and dispatch-bypass controls pass in codex-vm and OVMF.
+Damian accepted GUI usability and repaint behavior on 2026-10-01 with image
+`90B8CEFA`, which uses seed `AF9057E8`, including timer selection from main CL 33111 and
+runtime-init slice initialization from main CL 33130.
+Native and USB-only OVMF rehearsal evidence is in
+`D:/Projects/sitting-images/desk-scheduler-33130/rehearsal`.
+The image carries the standard test identity. Native captures show completed
+Aquarium and 3D frames. OVMF shows Clock progress, Aquarium shadows and
+minimize/restore, and continuing 3D frames. Frame captures do not certify
+input latency or flash-free scanout.
+Damian's report closes WORKS-78: the image boots, GUIOS works much better,
+screens no longer flash, apps work as expected, and the whole-screen repaint
+problem is gone. The verbatim report and image hash are in
+`docs/Hardware/HardwareSitting.md`. Web pane port 9100 was not reported and
+is unrunnable on metal until DHCP and a displayed leased IP (WORKS-81).
+The report gives no measured latency/frame-rate bound
+and does not enumerate every gesture in the retained acceptance sequence.
 Panes declare a rate or a budget and independently choose skip or run late on
 a miss. Cooperative checks report overruns; enforced caps require bounded
 work units or preemption.
@@ -136,17 +150,17 @@ import a scalable runqueue architecture before measurements justify the cost.
 | Input dispatch, desk work and the focused pane share one synchronous path. The desk collects input before yielding and skips that yield when the queue is nonempty. | `apps/works/GopDesk.codex`, `desk-loop` | Collection checkpoints protect reports during software rendering; rate limiting alone cannot interrupt other pane calls. |
 | Desktop software rendering returns after at most eight engine quanta; presentation returns after one bounded copy. The completed-frame HUD advances only after publication finishes. | `apps/works/GopScene.codex`, `gsc-step`, `gsc-render-units`; `codex/foreword/engine/SceneWork.codex` | The desktop dispatches between groups. Host-GPU calls and opaque pane callbacks remain cooperative. |
 | Mouse report consumption marks the endpoint idle; the desktop collector rearms the endpoint before returning. Legacy `mouse-pump-one` callers retain their phased behavior. | `apps/works/GopUsbMouse.codex`, `mouse-consume`, `mouse-pump-one`; `apps/works/GopInput.codex`, `di-mouse-one` | The collection proof must detect suppressed rearming through missing expected input, independently of collector-call counts. |
-| Keyboard collection advances the arm/check/drain state machine through bounded rounds. The scene uses the desk's delivered scancode when a collector exists. | `apps/works/GopInput.codex`, `di-kbd-rounds`; `apps/works/GopScene.codex`, `gsc-step`, `gsc-take` | Pane-local draining remains only for callers without the desktop collector. Physical input acceptance remains unrun. |
+| Keyboard collection advances the arm/check/drain state machine through bounded rounds. The scene uses the desk's delivered scancode when a collector exists. | `apps/works/GopInput.codex`, `di-kbd-rounds`; `apps/works/GopScene.codex`, `gsc-step`, `gsc-take` | Pane-local draining remains only for callers without the desktop collector. Detailed physical input cases remain unreported. |
 | The PIT reload is 11932 at input rate 1193182 Hz; normal/system slices are 3/6 ticks. Kernel-priority slice is zero. | `codex/compiler/Emit/X86_64Boot.codex:828`, `:853`, `:3005` | About 10 ms is the timer period, not every process's execution slice. Normal/system slices are about 30/60 ms if uninterrupted. |
 | Timer preemption bypasses a zero remaining slice. Proc 0 starts with zeroed scheduler fields and is pinned to the BSP. | `X86_64Boot.codex:1699`, `emit-common-interrupt-handler`; `:3005`, `emit-process-setup` | The desktop is not an ordinary freely preemptible application. Do not infer bounded desk latency from the existence of preemption elsewhere. |
-| Yield/idle selection and timer-expiry selection differ. Yield scans for the next eligible ready slot; timer expiry scans priorities and has a periodic starvation fallback. | `X86_64ProcessHelpers.codex:50`, `:139`; `X86_64Boot.codex:1755` onward | Equal-priority fairness, wake latency and starvation limits require direct tests. The fixed scan order is a risk to investigate, not a newly measured failure. |
+| Yield advances from the current slot. Timer expiry preserves priority preference and rotates equal-priority ties from the current slot; periodic relief rotates from the last relieved slot. | `X86_64ProcessHelpers.codex`, `emit-process-yield-helper`; `X86_64Boot.codex`, `emit-common-interrupt-handler` | The direct selection tests below grade sampled progress, loop-work balance, wake delay and low-priority service in both single-core beds. No multicore fairness or physical latency bound follows. |
 | AP startup reads the boot core-count cell before attempting startup. | `X86_64Boot.codex:2773`, `emit-smp-init` | The design must work on one core. Existing documentation says metal does not populate that cell; hardware SMP remains unproven here. |
 
-`PreemptiveScheduler.md`, "On one core the boot process is never preempted",
-also records a consequential disagreement: codex-vm resumed a yielding parent
-against a spinning child, but the OVMF Dev Console path required the child
-to yield. Resolve that disagreement
-before treating a worker-process render path as portable across the beds.
+Ordinary startup and `runtime-init` share slice-table initialization:
+kernel/system/normal/background receive 0/6/3/1. The controlled comparison
+below grades restoration from poisoned memory and timer return in both
+single-core beds. Render workers still require ownership, lifecycle and
+physical-acceptance proofs.
 
 The current `ds` layout and typed pane lifetime rules belong to
 `apps/works/works-desk-contract.md`. A suspended render cannot retain
@@ -583,7 +597,7 @@ The host-GPU path and cached compatibility redraw remain synchronous.
 Redraw cancels pending work and shows only a completed cache for an owned
 software pane; an empty cache waits for scheduled rendering. Unowned legacy
 callers retain the synchronous fresh-frame adapter. A live framebuffer copy
-can still tear. Physical acceptance remains open; these work bounds do not
+can still tear. GUI/repaint acceptance is recorded above; these work bounds do not
 establish a general desk latency or atomic display bound.
 
 Measured 2026-09-30: the optimized step positive and every named control
@@ -628,7 +642,7 @@ source/CDX hashes. Timing arithmetic was verified with `codex_run`, status
 
 ## Bounded renderer implementation contract
 
-The software job borrows a pane-owned scene for its lifetime. Geometry,
+The cooperative software job borrows its caller-owned scene for its lifetime. Geometry,
 materials, textures and lights remain stable until completion or cancellation.
 The pane updates animation poses before beginning a job. Job storage and
 surfaces are allocated below the desktop frame mark; steps copy numeric
@@ -644,9 +658,12 @@ against the near plane. Fan preparation handles one triangle. Clear and
 raster units visit at most 256 pixels or bounding-box positions, respectively.
 Culled nodes and triangles still return to the caller. Shadow rendering uses
 the same bounded phases and owned surfaces. A desktop call groups at most
-eight engine units, then returns for input dispatch. Input collection belongs
-to the desktop between groups; owned rendering does not install another
-collector inside those units. Presentation retains its collection hook.
+eight engine units. The scheduled desktop batches at most 32 such steps,
+checking input and an elapsed 2 ms service target between steps. A pending
+input event or a handled key ends the batch. Each step restores its transient
+heap. Callers without a scheduling table retain single-step service.
+Owned rendering does not install another collector inside the engine units.
+Presentation retains its collection hook.
 These are work bounds, not a hardware-independent elapsed-time guarantee.
 
 The completed frame remains available in a separate color surface during
@@ -676,16 +693,16 @@ All named positives and controls passed in both beds on the submitted code.
 
 `codex/test/apps/desk-scene-render-loop.codex` separately invokes the actual
 desktop loop in a child process in both beds. The observing process sees
-partial clearing, injects a queued key and requires render cancellation before
+an active render, injects a queued key and requires render cancellation before
 any frame completes. This proves dispatch and cooperative observer progress;
 it deliberately does not complete a frame. Pair this fixture with the renderer
 pixel-parity suite. The three runner units above do not replace this production
 loop check. Run `desk-present-proof.ps1 -Unit loop -Bed both -Mode all` for
 the production-loop positive and dispatch-bypass control. Both use explicit
 runtime initialization and mask the PIC interrupts after killing the child,
-before returning to Option A's single-halt epilog. The generic return hazard
-is recorded in the plugs backlog, 2.108. This is cooperative background
-progress, not acceptance of preemption against a non-yielding child.
+before returning to the PE wrapper's interrupt-disabled halt loop
+(`build/cdx-to-pe.ps1`). The fixture proves cooperative background progress,
+not acceptance of preemption against a non-yielding child.
 
 ## Pane policy implementation contract
 
@@ -705,13 +722,26 @@ return. A bounded render unit can cross the budget edge once. The overrun
 counter records calls ending beyond the allowance. Opaque callbacks remain
 cooperative and cannot acquire an enforced elapsed-time cap.
 
-The initial desktop declarations give 3D View and Aquarium an 8 ms allowance
-per 16 ms period with run-late behavior. Periodic polling panes use a 50 ms
+The desktop declarations give 3D View and Aquarium a 16 ms release period
+with run-late behavior: an unfinished frame continues through bounded service
+batches. Periodic polling panes use a 50 ms
 period; static panes are event-only. Only the focused pane is selected by the
 current desktop. Keyboard, pointer, click, active chrome gestures and pending
 chrome repaint bypass cosmetic admission. A budget-blocked scene processes
-input without advancing rendering. Background processes receive a yield when
-the input queue is empty and at least once per 32 queued-event passes.
+input without advancing rendering. Empty-queue passes amortize process yields
+over 2 ms rather than yielding after every tiny work unit. A queued input
+event is delivered before a timed yield; the burst limit still forces a yield
+after 32 passes. A handled scene key ends its batch and yields after handling.
+
+The desktop composes into a retained surface. `GopPresent` publishes changed
+pixels between handlers, targeting approximately 60 Hz with a working HPET.
+No scan occurs without a pending request; polling panes can request a scan
+whose comparison finds no changed pixels. A cached
+published surface avoids framebuffer reads. A scene rectangle undergoing a
+phased copy is excluded until completion, including during clock and pointer
+updates. Shadow/GPU option changes roll a partial copy back to the published
+cache before cancelling the scene job. This prevents intermediate clears and partial scene copies from
+reaching the display; CPU publication is not a synchronized scanout swap.
 
 The taskbar RTC poll has a separate 100 ms service interval. An unavailable
 HPET rate sets a fault counter, permits pane work without a timing guarantee,
@@ -720,7 +750,422 @@ rate, skip, counter wrap, burst fairness and capacity. The proof runner's
 `-Unit policy` arms disable budget enforcement, skip or burst yielding and
 require `budget False`, `skip False` or `fairness False`, respectively.
 
+## Render-worker lifetime prerequisite
+
+`apps/works/proofs/desk-worker-lifetime.codex` is a single-core handoff
+prototype. The prototype grades mailbox guards and result ownership with
+real spawned processes. The production desktop uses the worker contract below.
+No renderer, pane registry or window-close path calls the prototype.
+
+The desk owns the mailbox, destination surface and worker closure below its
+transient frame mark. A worker owns the result buffer in its process region
+and retains the region during its bounded acknowledgement wait. After filling
+the buffer, the worker publishes its result pointer and request token, then marks the result
+ready and yields until acknowledgement or fuel expiry. Successful setup
+requires the worker to remain alive before publication; the single-core desk
+does not yield between that check and acknowledgement. The desk checks
+ready, unconsumed, live and matching-token state before copying any result bytes. A successful
+copy consumes the completion once. A rejected completion changes neither
+the destination nor the publication count. Only after accepting or rejecting
+the completion does the desk acknowledge the worker and wait for exit.
+
+The retained mailbox models one in-flight job and one pane incarnation.
+Close is modeled by clearing the live flag; reopen by changing the token.
+The mailbox outlives both events. A reused PID is not an incarnation token:
+process slots and their allocation addresses are reused after exit. A
+published result must therefore reside in desk-owned storage before the
+worker region is released. Keeping the worker pointer is insufficient.
+
+The positive fixture restores the parent's heap mark and overwrites the
+same temporary allocation after the worker reports ready. Every result
+pixel must remain intact. After copying and acknowledging, the fixture
+spawns another child, requires the same PID and allocation address, and
+poisons that address. The published desk copy must still match all 16
+pixels. Separate cases attempt publication after changing the modeled
+incarnation token or clearing the live flag; both require no publication
+and an unchanged sentinel surface. Replaying an accepted completion must
+leave the count at one.
+
+Run the explicit diagnostic from the repository root:
+
+```powershell
+pwsh -NoProfile -File apps/works/proofs/desk-worker-lifetime.ps1 -Bed both -Mode all -Kernel seed/Codex.cdx
+```
+
+The runner uses fresh output directories and snapshots the source closure,
+compiler and runner. Each arm compiles once and runs the same CDX in native
+codex-vm and QEMU/OVMF, serially with one core. Native abnormal exit, missing
+completion, any unexpected graded trace or an ineffective control fails the run.
+All arms require `setup=True`, including confirmed slot/address reuse in
+the ownership case. A refusal without completed setup is not a passing
+control. `results.json` records the compiler, source, CDX and image hashes.
+
+| Mode | Removed protection | Required false field |
+|---|---|---|
+| `transient` | Worker writes into the parent's reclaimed temporary allocation | `transient`, `owned-copy` |
+| `generation` | Accept a completion with the wrong incarnation token | `stale` |
+| `closed` | Accept a completion when the pane is not live | `closed` |
+| `borrowed` | Retain the worker pointer instead of making the desk copy | `owned-copy` |
+| `duplicate` | Accept a completion already consumed | `duplicate` |
+
+Other fields must match the arm's exact expected trace. Measured 2026-10-01:
+the positive and every designated control passed in both beds. Evidence is under
+`D:/Projects/Cobblestone-fester/build-output/desk-worker-20261001/matrix/`.
+The measured compiler is
+`D2C01E16DD7E342F08DE462D5B7A842A4F5EF802CA8D5F9F791A42ED3D6456EA`.
+
+The prototype uses a fixed 128-byte mailbox and 64-byte destination per
+case, plus bounded closure/result bookkeeping and a 64-byte worker result.
+Copy and pixel comparison visit 16 cells. Polling has fuel bounds of 10000
+parent yields and 1000000 worker yields per wait; host deadlines bound a
+stalled guest. No loop allocates a collection. Full-frame copying remains
+linear in pixels and requires the existing bounded-presentation units.
+Compiler and production desktop heap/time behavior are unchanged.
+
+The prototype does not free/recycle a real pane, race multicore publication,
+or establish an input-latency bound. Physical display acceptance remains separate.
+
+## Production render worker
+
+`GopDesk` starts one persistent `GopRenderWorker` below the base heap mark.
+Desk cell 308 points to its 256-byte `GopRenderMailbox`. The closure and
+controller survive closing, replacing and reopening 3D View or Aquarium.
+The worker constructs a fixed scene from numeric request fields in its own
+process heap. It never borrows a pane record, scene or parent scratch pointer.
+The cooperative `GopScene` path remains available to callers without a worker.
+
+Pane incarnations and requests share a monotonically increasing token counter.
+Exhaustion at 2147483647 refuses instead of wrapping. Submission invalidates
+the previous request before changing fields and commits the new token last.
+The worker validates owner and token around the snapshot and between engine
+units. It publishes reply fields before marking the result ready, then keeps
+the result until consumption or cancellation. It restores the job arena before
+acknowledging cancellation. Close and replacement invalidate the controller
+before pane reclamation; they need not wait because the worker has no pointer
+into the reclaimed pane. Hide cancels the request without changing ownership.
+
+Every parent copy unit checks worker liveness, owner, matching request/reply
+and unconsumed ready state. Each unit copies at most 1024 pixels. Completion
+requires the full requested size and revalidates the result before swapping
+the parent-owned front/back color surfaces. Duplicate completions cannot
+publish again. Presentation keeps the existing bounded framebuffer-copy path.
+An unavailable worker, exhausted token counter or oversized image produces
+a visible refusal. There is no automatic restart using an old PID.
+
+This integration uses the BSP. Startup pins a free process slot before the
+custom-heap spawn publishes READY, under the runtime's single spawning writer
+contract. A different returned slot is stopped gracefully and retried, with
+at most 16 attempts. Explicit cleanup invalidates the controller, requests
+natural exit and waits. Kernel kill/wait is not a process-slot reclamation
+protocol. The two-core affinity diagnostic tests reuse of an AP-affine slot;
+it does not certify arbitrary concurrent process creation or SMP rendering.
+
+The worker yields after at most 32 engine units. The parent yields when waiting
+for a result unless input is already queued. The pane-policy allowance is
+propagated before service; denial pauses the worker before starting or between
+units. A denied pane still handles input. The production declaration remains
+16 ms rate service with run-late behavior. Budget accounting charges elapsed
+parent callback time, including yields within that callback; it does not
+separately meter worker CPU consumed outside the callback. No physical input
+latency or strict worker CPU-budget bound is claimed.
+
+Heap/time verdict: one 30 MiB worker heap plus the kernel's 1 MiB stack fits
+the 32 MiB process slot with FX storage. Admission requires positive dimensions
+no larger than 8192 and `width * height * 8 <= 30 MiB - 4 MiB`. The reserve
+covers fixed scene geometry, shadow storage and temporary render records.
+The worker checks the post-construction frontier and measures its peak;
+per-unit scratch and the whole per-frame scene are reclaimed. Parent surfaces
+retain `12 * width * height` bytes plus pane metadata; two new pane fields add
+16 bytes. Rendering cost follows the existing bounded engine; the additional
+parent copy is linear in pixels, allocation-free and bounded per unit.
+
+Run the integrated diagnostics from the repository root:
+
+```powershell
+pwsh -NoProfile -File apps/works/proofs/desk-render-worker.ps1 -Unit render -Bed both -Mode all -Kernel seed/Codex.cdx
+pwsh -NoProfile -File apps/works/proofs/desk-render-worker.ps1 -Unit lifecycle -Bed both -Mode all -Kernel seed/Codex.cdx
+pwsh -NoProfile -File apps/works/desk-present-proof.ps1 -Unit worker-loop -Bed both -Mode all -Kernel seed/Codex.cdx
+```
+
+The default OVMF commands exercise the legacy process pool. For the
+firmware-owned pool introduced in main 34159, select OVMF explicitly:
+
+```powershell
+pwsh -NoProfile -File apps/works/proofs/desk-render-worker.ps1 -Unit render -Bed ovmf -OwnedProcessPool -Mode all -Kernel seed/Codex.cdx
+pwsh -NoProfile -File apps/works/proofs/desk-render-worker.ps1 -Unit lifecycle -Bed ovmf -OwnedProcessPool -Mode all -Kernel seed/Codex.cdx
+pwsh -NoProfile -File apps/works/desk-present-proof.ps1 -Unit worker-loop -Bed ovmf -OwnedProcessPool -Mode all -Kernel seed/Codex.cdx
+```
+
+These runs require a guest-confirmed v4 handoff with the owned pool span
+before grading the unchanged worker verdicts. Each result identifies its
+process-pool mode. The switch refuses native or mixed-bed use; the presentation
+runner accepts it only for `worker-loop`. These fixtures add one bounded
+diagnostic print to the root process; production heap and time behavior is
+unchanged. Physical HID and latency still require the sitting.
+
+Measured 2026-10-01 with seed
+`342D64BAC2A39ADA01A4F831BF2DE8EB6A7DD8CD634E34217904D23669F18056`:
+owned-pool OVMF render, lifecycle and real-loop positives and controls pass
+in `build-output/render-workers/owned342D-b`. Native and legacy-OVMF lifecycle
+positives also pass. The marker establishes the selected handoff, while the
+worker fixtures grade their existing behavior; allocation ownership and child
+placement have the separate proof in the Architect's Sketchbook. The frozen
+`F0863CAF` input diagnostic does not include this production worker integration.
+The omitted-converter-flag control in `owned342D-control` prints a false
+handoff marker and is refused before a worker PASS can be recorded.
+
+The render runner grades exact color/depth parity, independent 1024-pixel copy
+progress and untouched-tail canaries, stale owner/request refusal, close,
+duplicate consumption and retained-frame survival after worker-slot poisoning.
+Controls remove each named protection and must change only the designated
+verdict. The lifecycle runner directly invokes production close, replacement,
+hide and policy helpers around pane reclaim/poisoning. Its controls cover those
+helpers, not every desktop call site. The worker-loop fixture invokes the real
+desk loop with a synthetic queued key during active rendering and requires
+cancellation before a completed frame. Its dispatch control requires the exact
+expected false fields. Physical HID and latency remain outside these fixtures.
+
+`apps/works/proofs/render-worker-admission.codex` renders a shadowed Aquarium
+at the admitted 2048x1664 boundary and checks that refusing the next row
+preserves the held request token, ready state and every color/depth pixel.
+It snapshots both complete buffers before refusal, yields to the worker,
+then compares every word and both original pointers before stopping it.
+Independent controls flip the last color or depth pixel and must fail only
+the corresponding comparison. Snapshot storage is `8 * width * height`
+parent bytes, bounded by admission; copying and comparison are linear in
+pixels with constant stack use. Production allocation and rendering costs
+are unchanged.
+
+```powershell
+pwsh -NoProfile -File apps/works/proofs/desk-render-worker.ps1 -Unit admission -Bed both -Mode all -Kernel seed/Codex.cdx
+pwsh -NoProfile -File apps/works/proofs/desk-render-worker.ps1 -Unit admission -Bed ovmf -OwnedProcessPool -Mode all -Kernel seed/Codex.cdx
+```
+
+Measured 2026-10-01 on seed `342D64BA`: the positive and both tail controls
+pass in native, legacy OVMF and owned-pool OVMF. All retain the measured
+27995912-byte worker peak. Evidence is in
+`build-output/render-workers/admission-held`, including exact expected traces,
+source and kernel hashes. This grades the completed held Aquarium frame
+after one yield, not every resize timing or every scene.
+After main 34185, compiler `267B6C83` reproduced every default/owned control
+CDX byte-for-byte; `head-compat.exit` and `head-kernel.json` bind that check.
+
+The affinity diagnostic relies on the native
+startup path to initialize APs. Run serially, measuring memory admission before
+each compile and guest as required by the project run rules:
+
+```powershell
+pwsh -NoProfile -File build/compile.ps1 -Src apps/works/proofs/render-worker-admission.codex -Out build-output/render-worker-admission.cdx -Log build-output/render-worker-admission.compile.log -Kernel seed/Codex.cdx
+pwsh -NoProfile -File build/test-run.ps1 -Kernel build-output/render-worker-admission.cdx -OutFile build-output/render-worker-admission.actual
+pwsh -NoProfile -File build/compile.ps1 -Src apps/works/proofs/render-worker-affinity.codex -Out build-output/render-worker-affinity.cdx -Log build-output/render-worker-affinity.compile.log -Kernel seed/Codex.cdx
+pwsh -NoProfile -File build/test-run.ps1 -Kernel build-output/render-worker-affinity.cdx -OutFile build-output/render-worker-affinity.actual -Smp 2
+```
+
+Check each command's exit status before continuing. Every printed Boolean must
+be True, with `render-admission-end` or `render-affinity-end`, respectively.
+
+Measured 2026-10-01 with compiler
+`0FD86AE43ACF36939E72BC968C3A98533C8FB80DA527E05BEEC72921D551806A`:
+render and lifecycle positives/controls passed in native and OVMF, as did the
+real-loop dispatch positive/control. The admission render peaked at 27995912
+worker bytes; AP-affine slot reuse rendered on the BSP. Focused scene/input
+regressions and the complete desk build passed. Evidence is in
+`build-output/render-workers/final-render`, `final-lifecycle`, `final-loop`,
+`final-resources` and `final-regress` in the fester workspace.
+After merging through main 34046, the only changed chapter in the complete
+GUI closure was `GopComposite`'s focus-ring change. Its native fixture, desk
+build and worker-loop positives in both beds passed in `postmerge` and
+`postmerge-loop`; the renderer, mailbox and pane integration were unchanged.
+
+The complete OVMF GUI rehearsal in `build-output/render-workers/gui-final`
+exercised keyboard launch, shadow toggle, mouse minimize/restore, maximize,
+close/reopen and replacement of Aquarium by 3D View. Completed scene frames
+resumed after these operations; `/` and `/api/health` returned 200 during
+Aquarium. These observations supplement the direct-helper lifecycle fixture;
+they do not turn it into exhaustive call-site coverage.
+
+A same-dependency native GUI comparison at compiler `66AE634E` captured
+248 ms/frame for the cooperative baseline and 171 ms/frame for the revised
+worker at 1024x768. Both served HTTP during Aquarium. Each number is one HUD
+capture on a shared host, not a general speedup or latency guarantee. Evidence
+is `build-output/render-workers/gui/baseline/native` and
+`build-output/render-workers/gui-v2/worker/native`.
+
+## Direct scheduler selection tests
+
+The ordinary regression is `codex/test/apps/desk-scheduler-selection.codex`
+with its `.expected` and x86-64 sidecars. The default case requires three
+normal-priority workers to receive bounded service and balanced loop progress
+under timer expiry. The diagnostic runner is:
+
+```powershell
+pwsh -NoProfile -File apps/works/proofs/desk-scheduler-selection.ps1 -Kernel seed/Codex.cdx -OutDir <fresh-directory>
+```
+
+The runner selects both beds, both dispatch paths, every case and its
+sabotage by default. Each guest has one core and 2048 MB RAM; each arm uses
+the same compiled CDX in codex-vm and QEMU/OVMF. Compilation and execution
+are serial. The configured host supplies QEMU and edk2 firmware under
+`D:/Program Files/qemu`. `results.json` retains source, compiler, CDX and image hashes
+with each trace. A failed positive is `PROPERTY-FAIL`; sabotage earns
+`CONTROL-PASS` only for rejection with the designated symptom. Either a
+failed property or an ineffective control makes the runner exit 1.
+
+The blocked parent creates the workers and waits for the designated worker's
+window to finish. The parent does not compete during measurement. Yield
+cases set all child slices to zero and explicitly yield; timer cases seed
+the normal scheduling slices and never yield in a worker. This separates
+selection mechanisms without relying on the VM's ineffective PIC mask.
+The explicit slice setup isolates selection from runtime initialization;
+the separate slice-initialization fixture below grades that contract.
+
+| Case | Required observation | Sabotage |
+|---|---|---|
+| Equal-priority pair and triple | Every worker samples at least two distinct ticks; initial, internal and final gaps are at most 12 ticks over an 80-tick window. Every pair of workers has a loop-work ratio within 2:1. | Omit worker yields on the yield path; zero normal slices on the timer path. Worker 2 must receive no samples. |
+| Newly runnable channel receiver | Receiver is observed BLOCKED before sending 77, receives 77, and resumes within both 4 PIT ticks and 50000 us of the pre-send timestamp. | Publish the message with the receiver assigned to unavailable core 1, then restore core 0 after at least 8 ticks. Delivery must still occur and exceed a latency bound. |
+| One low-priority worker beside two system workers | Repeated low-priority samples; all gaps at most 606 ticks over 1250 ticks on the timer path. | Reset the relief counter from system-worker iterations. Worker 3 must receive no samples. |
+| Two low-priority workers beside two system workers | Both receive repeated samples; all gaps at most 1206 ticks over 2500 ticks on the timer path. | Reset the relief counter. Worker 3 must receive no samples. |
+
+Yield variants of the background cases use the 80-tick window and 12-tick
+gap limit; their sabotage removes yields. The timer background allowances
+cover one relief opportunity per 100 expirations at system slices of 6 ticks,
+one or two low-priority contenders, and a slice of margin. They are diagnostic
+acceptance thresholds, not universal scheduler guarantees. Clock or fuel
+exhaustion before the tick window completes is a fixture failure, not a
+passing negative control. Wake timing is a conservative pre-send/post-receive
+envelope, not the exact READY-to-RUNNING interval or a latency distribution.
+
+Measured 2026-09-30 with depot seed `561EEBFC3ED59D96`: timer selection gave
+the third equal-priority worker zero samples over 80 ticks. Periodic relief
+gave the second low-priority worker zero samples even over 2500 ticks.
+Both failures occurred in both beds; the corresponding yield cases passed.
+The corrected two-contender allowance was measured against the old seed
+before the repair, and retained the zero-service failure.
+
+The repair scans cyclically after the current slot for equal-priority ties.
+Relief retains an independent last-selected cursor and scans every slot
+cyclically. Priority comparisons, affinity checks and the AP restriction
+against claiming proc 0 remain in both paths. The counter and cursor use
+separate 32-bit halves of the existing eight-byte starvation slot; ordinary
+startup and runtime initialization clear both halves. The periodic relief
+state remains shared across cores, so the single-core measurements do not
+assert a multicore starvation bound.
+
+The candidate matrix passed every positive and designated control in both
+beds. With three equal-priority workers, each bed recorded sample counts
+27, 27 and 26, with maximum gaps of 7 ticks. With two low-priority workers,
+both beds recorded first samples at ticks 600 and 1195 and subsequent samples
+at 1790 and 2385. The largest gaps were 1190 and 1195 ticks.
+
+| Wake path | codex-vm envelope, us | OVMF envelope, us |
+|---|---:|---:|
+| Yield | 28 | 300 |
+| Timer expiry | 30002 | 30568 |
+
+Microseconds are guest HPET readings converted with the guest's advertised
+rate and rounded down. The host was shared; these are individual observations,
+not physical input latency promises. Candidate evidence is
+`D:/Projects/Cobblestone-fester/build-output/desk-selection-20260930/candidate-matrix/`.
+Old-seed evidence is under `matrix/` and `two-round-baseline/` in the same
+parent directory. The unsigned compiler used for the candidate matrix has
+SHA-256 `FB29A4EE01BE4B68AB3BE75803FA47DCF74B213E554A7F9254CDE61704C40B50`.
+
+The merged signed candidate has SHA-256
+`8C4B42085FE2A036D76E92DC6FA973FA54A5D915E7F5001ECBA0AE3BDB19F874`.
+Every saved diagnostic source was recompiled with that candidate and produced
+a byte-identical CDX, recorded in `seed-proof3/matrix-compatibility.json` under
+the evidence root. The retained runtime traces therefore grade the same
+test artifacts. The merged depot seed `3C9A3DFD` prints `timer rotation: False`
+for the ordinary regression; the merged candidate prints `timer rotation: True`.
+The fresh fixed point, signature check, BVT and scheduler regression logs are
+under `seed-proof3/`. The source snapshot hash is
+`FB4A9970F7D8E440DE661C354008F4AC35E1726A838317C246CA95920DAA3D32`;
+unsigned stage 2 and stage 3 both hash to
+`42BB3DBABDB94AA6FB55CD190403B553441A94BCA9324987FC60788B613C591A`.
+
+The scheduler adds no heap allocation or per-process storage. Both selection
+scans remain bounded by the process-table size. The emitted instruction
+sequences add fixed compiler work per generated runtime. The diagnostic has
+fixed per-worker cells, no per-iteration collections, fuel-bounded tail loops
+and bounded reporting after worker termination. Loop-work balance measures
+useful loop progress, not exact CPU-time shares.
+
+## Single-core preemption evidence
+
+`emit-slice-table-init` supplies kernel/system/normal/background slices
+0/6/3/1 for both ordinary startup and `runtime-init`. Initialization occurs
+before interrupts are enabled. Process 0 keeps its zero slice; a child
+selected by yield reloads its slice from this table.
+
+`codex/test/apps/runtime-init-slices.codex` first reads the entry table,
+poisons all four qwords with nonzero bytes, then calls `runtime-init`.
+The exact table predicate therefore tests every store, including kernel
+zero. A spawned child performs no yield or blocking operation. The parent
+holds cooperatively, then yields and requires child progress with completion
+still false and timer ticks advancing. The `slice-control = 1` variant zeros
+only the normal slice after initialization; it must instead observe child
+completion, with valid PID, clock rate, progress and advancing ticks.
+
+Measured 2026-09-30, one core in each bed. The depot compiler was
+`8C4B42085FE2A036`; the candidate fixed point was `BD4CE1D6F8E03AF5`,
+installed with signature as `AF9057E86BDB4FD2`. The same CDX for each arm
+ran in codex-vm and OVMF. All six traces were checked against their exact
+predicates and completion marker.
+
+| Arm | Runtime table restored | Timer return before completion | Child completion |
+|---|---|---|---|
+| Depot compiler, poisoned table | False | False | True |
+| Candidate, poisoned table | True | True | False |
+| Candidate, zero-normal control | True | False | True |
+
+Both beds produced the rows above and preserved cooperative kernel behavior.
+Before poisoning, ordinary startup had the expected table; direct OVMF
+entry did not. The native `.expected` pins the ordinary startup result.
+Raw sources, kernels, logs and control outputs are in
+`D:/Projects/Cobblestone-reek/build-output/compiler111/`.
+
+Compile the fixture with `build/compile.ps1 -Src <source> -Out <cdx>`
+plus mandatory `-Log <log> -Kernel <candidate>`. Make a separate scratch
+copy changing only `slice-control` to 1 for the control. Run serially with
+`build/test-run.ps1 -Kernel <cdx> -OutFile <out>` (3072 MB, one core).
+For OVMF, wrap that CDX using `build/cdx-to-pe.ps1 -CdxInput <cdx>`
+with `-Out <efi> -HeapPages 32768 -ExitBootServices`, then
+`build/build-img.ps1 -PeInput <efi> -Out <image>`. Use QEMU q35/TCG,
+2048 MB, one core, private edk2 code/vars copies and a private serial log.
+Require `slice-proof-end` within 60 seconds; stop only the owned guest.
+Grade both `timer-return` and `control-completed`; a False timer result
+alone does not identify the control's failure mechanism.
+
+The initializer has fixed emitter cost and no runtime heap allocation.
+The fixture retains its shared cell through child cleanup, uses fixed
+allocations and performs no per-iteration allocation. Polling work is linear
+in iterations executed. Fuel limits and host timeouts bound faulty-clock
+runs; child completion is not a measurement of one second elapsed.
+These tests establish initialization and single-core timer return, not
+multicore fairness, physical latency or safe render-worker ownership.
+
+The separate PIC-mask control exposes a codex-vm limitation: the busy PIT
+path calls `pic_master_can_deliver(0)`, which checks ISR state but not the
+mask. The owning VM-host gap is `codex/plugs/plugs-backlog.md`, 1.73 residue;
+its original evidence remains in
+`D:/Projects/Cobblestone-fester/build-output/desk-cpu-20260930/`.
+The `CODEX_VM_NO_TIMER=1` attempt in that evidence timed out before fixture
+output and establishes no scheduling result.
+
 ## Cost and arithmetic evidence
+
+The physical-acceptance correction has focused fixtures under
+`apps/works/proofs/`: `desk-buffered-present.codex` for publication and
+partial-copy rollback, `scene-animation-time.codex` for animation phase
+delivery with a fixed camera, and `renderer-weight-range.codex` for the
+software-raster arithmetic fault exposed during Aquarium animation.
+
+Scene construction and owned-pose updates receive the HPET-derived animation
+phase independently of camera yaw. Fish headings use normalized CORDIC
+quaternions across a full turn. The software rasterizer uses signed edge
+determinants for barycentric weights, avoiding the fourth-degree products
+in the old formulation. Publication
+and rollback allocate no memory; raster weights remain scalar per-pixel work.
 
 ### Stage 2 completion evidence, 2026-09-30
 

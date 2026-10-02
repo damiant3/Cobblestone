@@ -1,0 +1,66 @@
+Chapter: TorchZipCheckpoints
+  cites AI chapter TorchZip
+  cites Diffusion chapter CheckpointFile
+  cites Foreword chapter Console
+
+ We say:
+
+  tc-bytes : Integer, Integer, List Integer -> List Integer
+  tc-bytes (i) (n) (acc) = if i >= n then acc else tc-bytes (i + 1) n (list-push acc (peek-byte ckpt-scratch i))
+
+  tc-read : Text, Integer, Integer -> List Integer
+  tc-read (path) (off) (n) =
+    if n < 0 | n > ckpt-header-cap then []
+    else if ckpt-read-range path off n then tc-bytes 0 n [] else []
+
+  tc-starts : Text, List TzEntry, Integer, List Integer -> List Integer
+  tc-starts (path) (es) (i) (acc) =
+    if i >= list-length es then acc
+    else let e = list-at es i
+    in tc-starts path es (i + 1) (list-push acc (tz-data-at (tc-read path (e.te-local) 30) (e.te-local)))
+
+  tc-names : List TzEntry, Integer, List Text -> List Text
+  tc-names (es) (i) (acc) = if i >= list-length es then acc else tc-names es (i + 1) (list-push acc ((list-at es i).te-name))
+
+  tc-pickle : Text, List TzEntry, List Integer, Integer -> List Integer
+  tc-pickle (path) (es) (starts) (i) =
+    if i >= list-length es then []
+    else let e = list-at es i
+    in if text-ends-with (e.te-name) "/data.pkl" then tc-read path (list-at starts i) (e.te-size)
+    else tc-pickle path es starts (i + 1)
+
+  tc-open : Text, Integer -> TorchZip
+  tc-open (path) (size) =
+    let n = if size < 65557 then size else 65557
+    in let span = tz-directory-span (tc-read path (size - n) n) (size - n)
+    in if list-length span /= 3 then tz-tensors [] 0 [] [] [] "missing zip directory"
+    else let es = tz-entries (tc-read path (list-at span 0) (list-at span 1)) 0 (list-at span 2) []
+    in let starts = tc-starts path es 0 []
+    in torch-zip-read (tc-pickle path es starts 0) (tc-names es 0 []) starts
+
+  tc-shape : List Integer, Integer, Text -> Text
+  tc-shape (xs) (i) (acc) = if i >= list-length xs then acc else tc-shape xs (i + 1) (acc & (if i == 0 then "" else ",") & show (list-at xs i))
+
+  tc-report : List StTensorMeta, Integer -> [Console] Nothing
+  tc-report (ts) (i) =
+    if i >= list-length ts then act
+      print-line-uni "END"
+    end
+    else let t = list-at ts i in act
+      print-line-uni (t.stm-name & "|" & show (t.stm-dtype) & "|" & tc-shape (t.stm-shape) 0 "" & "|" & show (t.stm-offset-start) & "|" & show (t.stm-offset-end))
+      tc-report ts (i + 1)
+    end
+
+  opening : [Console] Nothing
+  opening = act
+    path <- read-line
+    length <- read-line
+    let r = tc-open (tc-text path) (text-to-integer (tc-text length))
+    in if r.tzf-why /= "" then print-line-uni ("REFUSED: " & r.tzf-why)
+    else tc-report ((r.tzf-file).st-tensors) 0
+  end
+
+  tc-text : Maybe Text -> Text
+  tc-text (m) = when m
+    is Just (s) -> s
+    is otherwise -> ""

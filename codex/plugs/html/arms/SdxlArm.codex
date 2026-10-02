@@ -1,0 +1,135 @@
+Chapter: SdxlArm
+  cites Diffusion chapter BrowserSdxlLoad
+  cites Diffusion chapter BrownianTree
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  sx-width : Integer
+  sx-width = if page-data "width" == "" then 1024 else text-to-integer (page-data "width")
+
+  sx-height : Integer
+  sx-height = if page-data "height" == "" then 1024 else text-to-integer (page-data "height")
+
+  sx-kind : Integer
+  sx-kind = if page-data "sampler" == "" then 0 else text-to-integer (page-data "sampler")
+
+  sx-sigmas : List Integer, Integer, Integer, List Real -> List Real
+  sx-sigmas (words) (base) (i) (acc) = if i >= 7 then acc else sx-sigmas words base (i + 1) (list-push acc (bt-f32 (list-at words (base + i))))
+
+  sx-noise-diff : Integer, List Integer, Integer, Integer, Integer -> Integer
+  sx-noise-diff (p) (want) (base) (i) (bad) =
+    if i >= 256 then bad
+    else let d = bt-f32 (peek-32 p (i * 4)) - bt-f32 (list-at want (base * 256 + i))
+    in sx-noise-diff p want base (i + 1) (bad + (if d < 0.0 - 0.00001 | d > 0.00001 then 1 else 0))
+
+  sx-noise-draws : BtTree, List Real, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sx-noise-draws (tree) (qs) (want) (base) (i) (count) (p) (bad) =
+    if i >= count then bad
+    else let draw = brownian-draw tree (list-at qs (2 * i)) (list-at qs (2 * i + 1)) p
+    in sx-noise-draws tree qs want base (i + 1) count p (bad + sx-noise-diff p want (base + i) 0 0)
+
+  sx-query-diff : List Real, List Integer, Integer, Integer, Integer -> Integer
+  sx-query-diff (qs) (want) (base) (i) (bad) =
+    if i >= list-length qs then bad
+    else let d = nz-f32-bits (list-at qs i) - list-at want (base + i)
+    in sx-query-diff qs want base (i + 1) (bad + (if d < 0 - 1 | d > 1 then 1 else 0))
+
+  sx-noise-proof : Integer
+  sx-noise-proof =
+    if page-data "noise-fixture" == "" then 0
+    else let want = bl-list (page-data "noise-fixture")
+    in let words = bl-list (page-data "noise-sigmas")
+    in let times = bl-list (page-data "noise-queries")
+    in if list-length want /= 3840 | list-length words /= 14 | list-length times /= 30 then sx-fail "Brownian fixture length differs"
+    else let k = sx-sigmas words 0 0 []
+    in let e = sx-sigmas words 7 0 []
+    in let p = alloc-bytes 1024
+    in let kt = brownian-tree 20260929 256 k
+    in let et = brownian-tree 20260929 256 e
+    in let kq = brownian-queries True k 0 []
+    in let eq = brownian-queries False e 0 []
+    in let queries = sx-query-diff kq times 0 0 0 + sx-query-diff eq times 20 0 0
+    in let bad = sx-noise-draws kt kq want 0 0 10 p 0 + sx-noise-draws et eq want 10 0 5 p 0
+    in let wrong = sx-noise-diff p want 0 0 0
+    in let count = state-set "noise-fixture-values" 3840
+    in let control = state-set "noise-wrong-draw" wrong
+    in let qc = state-set "noise-query-bad" queries
+    in if bad /= 0 | wrong == 0 | queries /= 0 then sx-fail ("Brownian fixture differs: " & show bad & ", queries " & show queries) else state-set "noise-fixture-pass" 1
+
+  sx-refused : BrowserSdxlModel, ClipBpe, Integer, Integer -> Integer
+  sx-refused (m) (bpe) (w) (h) =
+    browser-sdxl-euler-then m bpe "" "" (BrowserSdxlSettings { bs-width = w, bs-height = h, bs-steps = 1, bs-seed = 0, bs-cfg = 1.0 }) sx-progress (\img -> sx-fail "Invalid dimensions accepted") (\why -> if text-contains why "supported range" then state-set "dimension-refusals" (state-get "dimension-refusals" + 1) else sx-fail why)
+
+  sx-fail : Text -> Integer
+  sx-fail (why) = let e = state-set-text "error" why in state-set "done" 1
+
+  sx-progress : Text, Integer, Integer -> Integer
+  sx-progress (phase) (current) (total) = let p = state-set-text "phase" phase in let a = state-set "progress" current in let s = if phase == "sampling" & current > 0 then sx-step-seen current else 0 in state-set "total" total
+
+  sx-step-seen : Integer -> Integer
+  sx-step-seen (current) = let n = state-get "steps" + 1 in let e = if current /= n then state-set "step-order-error" 1 else 0 in state-set "steps" n
+
+  sx-read : BrowserSdxlModel, Integer, Text -> Integer
+  sx-read (m) (h) (data) =
+    let saved = state-set-text "pixels" data
+    in let f = gpu-buf-free h
+    in let closed = state-set "closed" (if browser-sdxl-close m then 1 else 0)
+    in let e = state-set-text "error" (gpu-error 0)
+    in state-set "done" 1
+
+  sx-shown : BrowserSdxlModel, Integer, Text -> Integer
+  sx-shown (m) (h) (result) =
+    if text-contains result "\"ok\":true" == False then (let f = gpu-buf-free h in let c = browser-sdxl-close m in sx-fail result)
+    else gpu-buf-download-then h 0 (sx-width * sx-height * 3 * 4) (\r -> sx-read m h r)
+
+  sx-ready : BrowserSdxlModel -> Integer
+  sx-ready (m) =
+    let bpe = bl-bpe-of (bl-list (page-data "vocab")) (bl-list (page-data "merges"))
+    in let a = sx-refused m bpe 1344 1344
+    in let b = sx-refused m bpe 1376 768
+    in let c = sx-refused m bpe 64 63
+    in let d = sx-refused m bpe 96 65
+    in let e = sx-refused m bpe 0 768
+    in let f = sx-refused m bpe 9223372036854775807 768
+    in let settings = BrowserSdxlSettings { bs-width = sx-width, bs-height = sx-height, bs-steps = 6, bs-seed = 7201, bs-cfg = 2.0 }
+    in let unsupported = browser-sdxl-sample-then m bpe "" "" settings 7 sx-progress (\h -> sx-fail "Unsupported sampler accepted") (\why -> if why == "SDXL sampler is unsupported" then state-set "sampler-refused" 1 else sx-fail why)
+    in if sx-kind == 6 then browser-sdxl-sample-then m bpe (page-data "prompt") (page-data "negative") settings sx-kind sx-noise-cancel (\h -> sx-fail "Noise cancellation was ignored") (\why -> if why == "SDXL generation cancelled" then (let c = state-set "noise-cancelled" 1 in sx-sampling-cancel m bpe settings) else sx-fail why)
+    else sx-start m bpe settings
+
+  sx-noise-cancel : Text, Integer, Integer -> Integer
+  sx-noise-cancel (phase) (current) (total) =
+    if phase /= "noise" then 0
+    else let n = state-get "noise-polls" + 1
+    in let saved = state-set "noise-polls" n
+    in if n >= 2 then 0 - 1 else 0
+
+  sx-sampling-cancel : BrowserSdxlModel, ClipBpe, BrowserSdxlSettings -> Integer
+  sx-sampling-cancel (m) (bpe) (settings) =
+    browser-sdxl-sample-then m bpe (page-data "prompt") (page-data "negative") settings sx-kind (\phase current total -> if phase == "sampling" & current == 2 then 0 - 1 else 0) (\h -> sx-fail "Cancellation was ignored") (\why -> if why == "SDXL generation cancelled" then (let c = state-set "cancelled" 1 in sx-start m bpe settings) else sx-fail why)
+
+  sx-start : BrowserSdxlModel, ClipBpe, BrowserSdxlSettings -> Integer
+  sx-start (m) (bpe) (settings) =
+    let start = browser-sdxl-sample-then m bpe (page-data "prompt") (page-data "negative") settings sx-kind sx-progress (\h -> gpu-buf-show-then h sx-width sx-height "#out" (\r -> sx-shown m h r)) (\why -> (let c = browser-sdxl-close m in sx-fail why))
+    in let c = state-set "busy-close" (if browser-sdxl-close m then 1 else 0)
+    in browser-sdxl-euler-then m bpe "busy" "" settings sx-progress (\h -> sx-fail "Busy model accepted generation") (\why -> (let e = state-set-text "busy-error" why in 0))
+
+  sx-picked : Text -> Integer
+  sx-picked (data) =
+    let obj = json-parse-obj data
+    in let p = state-set-text "phase" "loading"
+    in browser-sdxl-open (json-obj-field obj "name") (text-to-integer (json-obj-field obj "size")) (page-data "base") (page-data "extra") sx-ready sx-fail
+
+  sx-pick : Text -> Integer
+  sx-pick (id) = if state-get "picked" == 1 then 0 else let p = state-set "picked" 1 in pick-file-then ".safetensors" sx-picked
+
+  opening : [Console] Integer
+  opening =
+    let noise = sx-noise-proof
+    in let canvas = dom-create "canvas"
+    in let id = dom-set-attr canvas "id" "out"
+    in let w = dom-set-attr canvas "width" (show sx-width)
+    in let h = dom-set-attr canvas "height" (show sx-height)
+    in let appended = dom-append (dom-query "body") canvas
+    in let clicked = dom-on-click (dom-query "html") sx-pick
+    in state-set "armed" 1

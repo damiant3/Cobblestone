@@ -1,0 +1,94 @@
+Chapter: NvFwsecTest
+  cites Kernel chapter NvFwsec
+  cites Foreword chapter Maybe
+
+Section: Synthetic VBIOS
+
+  fs-put : Integer, Integer, Integer, Integer -> Integer
+  fs-put (buf) (off) (value) (n) = if n <= 0 then 0 else let w = poke-byte buf off (bit-and value 255) in fs-put buf (off + 1) (bit-shru value 8) (n - 1)
+
+  fs-pattern : Integer, Integer, Integer, Integer, Integer -> Integer
+  fs-pattern (buf) (off) (size) (base) (i) = if i >= size then 0 else let w = poke-byte buf (off + i) (bit-and (base + i) 255) in fs-pattern buf off size base (i + 1)
+
+  fs-words : Integer, Integer, List Integer, Integer -> Integer
+  fs-words (buf) (off) (ws) (i) = if i >= list-length ws then 0 else let w = fs-put buf (off + i * 4) (list-at ws i) 4 in fs-words buf off ws (i + 1)
+
+  fs-rom : Integer, Integer, Integer, Integer -> Integer
+  fs-rom (buf) (off) (blocks) (kind) =
+    let a = fs-put buf off #AA55 2
+    in let b = fs-put buf (off + 24) 32 2
+    in let c = fs-put buf (off + 32) #52494350 4
+    in let d = fs-put buf (off + 48) blocks 2
+    in poke-byte buf (off + 52) kind
+
+  fs-fixture : Integer, Integer -> Integer
+  fs-fixture (version) (n) =
+    let buf = alloc-bytes 8192
+    in let z = __memset buf 0 8192
+    in let rom = if n == 0 then fs-rom buf 0 4 0 else (let r = fs-rom buf 0 1 3 in fs-rom buf 512 3 0)
+    in let ext = fs-rom buf 2048 (if n == 0 then 12 else 0) #E0
+    in let bit = fs-put buf #1B2 #00544942 4
+    in let stride = if n == 0 then 8 else 6
+    in let hdr = fs-put buf #1B8 (bit-or #02000C (bit-shl stride 8)) 3
+    in let t0 = fs-put buf 444 #00040170 4
+    in let t1 = fs-put buf (444 + stride) #00040270 4
+    in let ptr = fs-put buf (448 + stride) #12340300 4
+    in let table = fs-put buf #300 #900 4
+    in let base = n * 512
+    in let th = fs-put buf (base + #900) #02060601 4
+    in let tv = poke-byte buf (base + #904) version
+    in let e0 = poke-byte buf (base + #906) (if n == 0 then #84 else #85)
+    in let e1 = fs-put buf (base + #908) (if n == 0 then #FFFFFFF0 else #700) 4
+    in let earlier = if n == 1 then fs-put buf (base + #700) (bit-or #40001 (bit-shl version 8)) 4 else 0
+    in let e2 = poke-byte buf (base + #90C) #85
+    in let e3 = fs-put buf (base + #90E) #1000 4
+    in let desc = base + #1000
+    in let length = if version == 2 then 60 else 44 + 384 * (n + 1)
+    in let header = bit-or (bit-shl length 16) (bit-or (bit-shl version 8) 1)
+    in let imem = 512 + n * 256
+    in let data = if version == 2 then 256 else 768
+    in let stored = imem + data + (if version == 2 then 0 else 13)
+    in let image-size = if version == 2 then stored else ((stored + 255) / 256) * 256
+    in let fields = if version == 2 then fs-words buf desc [header, stored, stored, 0, 16, #1000 + n * 256, imem, #8000 + n * 256, #1100 + n * 256, 128 + n * 128, imem, #4000 + n * 256, data, 0, 0] 0
+      else fs-words buf desc [header, stored, 384, 16, #2000 + n * 256, imem, #9000 + n * 256, #5000 + n * 256, data, bit-or (#1234 + n) (bit-or (bit-shl (7 + n) 16) (bit-shl (1 + n) 24)), 5 + n] 0
+    in let signature = if version == 3 then fs-pattern buf (desc + 44) (length - 44) (160 + n) 0 else 0
+    in let image = fs-pattern buf (desc + length) image-size (20 + version + n) 0
+    in let app = if version == 3 then fs-put buf (desc + length + imem + 16) #01080401 4 else 0
+    in let ae = if version == 3 then fs-words buf (desc + length + imem + 20) [4, 32] 0 else 0
+    in let mapper = desc + length + imem + 32
+    in let mz = if version == 3 then (let clear = __memset (buf + mapper) 0 64 in 0) else 0
+    in let mf = if version == 3 then fs-words buf mapper [0, #00400003, 96, 48] 0 else 0
+    in buf
+
+  fs-values : NvFwsec -> List Integer
+  fs-values (p) = [p.version, p.descriptor-offset, p.descriptor-size, p.image-offset, p.image-size, p.imem-base, p.imem-size, p.imem-virtual, p.dmem-offset, p.dmem-base, p.dmem-size, p.interface-offset, p.v2-nonsec-size, p.v2-sec-base, p.v2-sec-size, p.signature-offset, p.signature-size, p.pkc-offset, p.engine-mask, p.ucode-id, p.signature-count, p.signature-versions]
+
+  fs-text : List Integer, Integer -> Text
+  fs-text (xs) (i) = if i >= list-length xs then "" else " " & show (list-at xs i) & fs-text xs (i + 1)
+
+  fs-sum : Integer, Integer, Integer, Integer, Integer -> Integer
+  fs-sum (buf) (off) (size) (i) (acc) = if i >= size then acc else fs-sum buf off size (i + 1) (acc + peek-byte buf (off + i))
+
+  fs-report : Text, Integer, Integer -> [Console] Nothing
+  fs-report (tag) (buf) (size) = act
+   when nv-vbios-fwsec buf size
+    is None -> print-line-uni (tag & " REFUSED")
+    is Just (p) -> print-line-uni (tag & fs-text (fs-values p) 0 & " " & show (fs-sum buf p.image-offset p.image-size 0 0) & " " & show (fs-sum buf p.signature-offset p.signature-size 0 0))
+  end
+
+  opening : [Console] Nothing = act
+   fs-report "V2A" (fs-fixture 2 0) 8192
+   fs-report "V2B" (fs-fixture 2 1) 8192
+   fs-report "V3A" (fs-fixture 3 0) 8192
+   fs-report "V3B" (fs-fixture 3 1) 8192
+   fs-report "SHORT" (fs-fixture 3 0) 440
+   let b = fs-fixture 3 0 in let w = fs-put b 48 0 2 in fs-report "ROMZERO" b 8192
+   let b = fs-fixture 3 0 in let w = fs-put b #1B2 0 4 in fs-report "BIT" b 8192
+   let b = fs-fixture 3 0 in let w = poke-byte b #1B9 5 in fs-report "TOKEN" b 8192
+   let b = fs-fixture 3 0 in let w = fs-put b #90E 8190 4 in fs-report "PTR" b 8192
+   let b = fs-fixture 3 0 in let w = poke-byte b #1001 4 in fs-report "VERSION" b 8192
+   let b = fs-fixture 2 0 in let w = fs-put b (#1000 + 36) 513 4 in fs-report "SECURE" b 8192
+   let b = fs-fixture 3 0 in let w = poke-byte b (#1000 + 39) 0 in fs-report "SIGCOUNT" b 8192
+   let b = fs-fixture 3 0 in let w = fs-put b (#1000 + 8) 385 4 in fs-report "PKC" b 8192
+   let b = fs-fixture 3 0 in let w = fs-put b #1B9 #FFFF 2 in fs-report "TOKENS" b 8192
+  end

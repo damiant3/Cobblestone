@@ -1,0 +1,59 @@
+Chapter: NvGspMsg
+
+ One GSP-RM command-queue record, as tinygrad frames it
+ (tinygrad/runtime/support/nv/ip.py, _send_rpc_record and _checksum, at
+ c3aec477) over the r570 structures in tinygrad/runtime/autogen/nv.py.
+
+ rpc_message_header_v (32 bytes, little-endian 32-bit fields):
+ header_version 0 = 3 << 24; signature 4 = NV_VGPU_MSG_SIGNATURE_VALID
+ (0x43505256); length 8 = payload bytes + 0x20; function 12; rpc_result 16
+ and rpc_result_private 20 = NV_VGPU_MSG_RESULT_RPC_PENDING (0xFFFFFFFF);
+ sequence 24 = 0; the union at 28 = 0.
+
+ GSP_MSG_QUEUE_ELEMENT (48 bytes) precedes it: authTagBuffer 0..15 and
+ aadBuffer 16..31 zero; checkSum 32; seqNum 36; elemCount 40, the number of
+ queue slots the record fills, ceil((48 + 32 + payload) / slot size);
+ padding 44 zero. The checksum is taken over the element with checkSum zero
+ followed by header and payload, zero-padded to a multiple of 8 bytes: the
+ XOR of its little-endian 64-bit words, then the high 32 bits XOR the low
+ 32. The record is zero-padded to elemCount slots.
+
+Section: Framing
+
+  gsp-u32 : Integer -> List Integer
+  gsp-u32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  gsp-zeros : Integer, List Integer -> List Integer
+  gsp-zeros (n) (acc) = if n <= 0 then acc else gsp-zeros (n - 1) (acc & [0])
+
+  gsp-word-at : List Integer, Integer, Integer, Integer -> Integer
+  gsp-word-at (bs) (i) (k) (acc) =
+    if k < 0 then acc
+    else let b = if i + k < list-length bs then list-at bs (i + k) else 0
+    in gsp-word-at bs i (k - 1) (bit-or (bit-shl acc 8) b)
+
+  gsp-xor-words : List Integer, Integer, Integer -> Integer
+  gsp-xor-words (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else gsp-xor-words bs (i + 8) (bit-xor acc (gsp-word-at bs i 7 0))
+
+  gsp-checksum : List Integer -> Integer
+  gsp-checksum (bs) =
+    let x = gsp-xor-words bs 0 0
+    in bit-and (bit-xor (bit-shru x 32) x) #FFFFFFFF
+
+  gsp-rpc-header : Integer, Integer -> List Integer
+  gsp-rpc-header (func) (payload-len) =
+    gsp-u32 #3000000 & gsp-u32 #43505256 & gsp-u32 (payload-len + 32) & gsp-u32 func & gsp-u32 #FFFFFFFF & gsp-u32 #FFFFFFFF & gsp-u32 0 & gsp-u32 0
+
+  gsp-element : Integer, Integer, Integer -> List Integer
+  gsp-element (checksum) (seq) (count) = gsp-zeros 32 [] & gsp-u32 checksum & gsp-u32 seq & gsp-u32 count & gsp-u32 0
+
+  nv-gsp-record : Integer, List Integer, Integer, Integer -> List Integer
+  nv-gsp-record (func) (payload) (seq) (slot) =
+    if slot < 1 then []
+    else let msg = gsp-rpc-header func (list-length payload) & payload
+    in let slots = (list-length msg + 48 + slot - 1) / slot
+    in let chk = gsp-checksum (gsp-element 0 seq slots & msg)
+    in let whole = gsp-element chk seq slots & msg
+    in whole & gsp-zeros (slots * slot - list-length whole) []

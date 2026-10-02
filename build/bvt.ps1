@@ -240,6 +240,12 @@ $sw = [System.Diagnostics.Stopwatch]::StartNew()
 Write-Host "${BvtLabel}: $($BvtTests.Count) tests, $Jobs parallel slots"
 Write-Host ''
 
+# A model root a subject's .vmargs names must exist, or its guest refuses to start and prints nothing.
+& (Join-Path $PSScriptRoot 'diffusion-roots.ps1') -Subjects $BvtTests
+if (-not ($LASTEXITCODE -eq 0)) {
+    Write-Host "ERROR: $BvtLabel refused: a diffusion model root a subject names is missing (above)"
+    exit 1
+}
 
 Write-Host '--- Phase 1: compile ---'
 $compileScript = Join-Path (Resolve-Path .).Path 'build\compile.ps1'
@@ -338,6 +344,7 @@ $slotLines = @{}
 for ($s = 0; $s -lt $Jobs; $s++) { $slotLines[$s] = [System.Collections.Generic.List[string]]::new() }
 $tempDisks = [System.Collections.Generic.List[string]]::new()
 $rawOf = @{}
+$diskSourceBytes = @{}
 $lineKey = @{}
 # A .disk-mint or .disk2-mint recipe names how build/mint-test-disk.ps1 builds
 # the image into build-output; the depot carries no image for such a test.
@@ -397,6 +404,14 @@ for ($i = 0; $i -lt $runList.Count; $i++) {
         $srcName = (Get-Content -TotalCount 1 $diskSrcFile).Trim()
         $srcCdx = Join-Path (Join-Path $OutRoot $srcName) "$srcName.cdx"
         if (Test-Path -PathType Leaf $srcCdx) {
+            $oracleExpected = (Get-Content ([IO.Path]::ChangeExtension($t, '.expected')) -Raw -ErrorAction SilentlyContinue)
+            if ($oracleExpected.Contains('{{disk-source-content-bytes}}')) {
+                if (((-not ($compilePass -contains $srcName)) -or (Test-Path -PathType Leaf (Join-Path (Split-Path $t) ([string]$srcName + '.failing'))))) {
+                    throw 'Disk source did not compile in this run'
+                }
+                $diskSourceBytes[$base] = (Get-CdxContentExtent $srcCdx)
+            }
+
             $dsWork = [System.IO.Path]::GetTempFileName()
             $tempDisks.Add($dsWork)
             [System.IO.File]::WriteAllBytes($dsWork, [System.IO.File]::ReadAllBytes($srcCdx))
@@ -505,6 +520,13 @@ foreach ($t in $runList) {
     $actual = if ($kept.Count -gt 0) { ($kept -join "`n") + "`n" } else { '' }
     [System.IO.File]::WriteAllText($runOut, $actual, [System.Text.UTF8Encoding]::new($false))
     $expected = (Get-Content $expFile -Raw -ErrorAction SilentlyContinue) -replace "`r", ''
+    if ($expected.Contains('{{disk-source-content-bytes}}')) {
+        if ((-not $diskSourceBytes.ContainsKey($base))) {
+            throw 'Expected disk-source-content-bytes requires a freshly compiled .disk-src'
+        }
+        $expected = $expected.Replace('{{disk-source-content-bytes}}', $diskSourceBytes[$base].ToString(([Globalization.CultureInfo]::InvariantCulture)))
+    }
+
     $actual = $actual.TrimEnd("`n")
     $expected = $expected.TrimEnd("`n")
     if ([string]::Equals($actual, $expected, [StringComparison]::Ordinal)) {

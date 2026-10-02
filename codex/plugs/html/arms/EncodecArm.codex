@@ -1,0 +1,43 @@
+Chapter: EncodecArm
+  cites Spark chapter EncodecLoad
+  cites Spark chapter BrowserEncodec
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  ea-refuse : Text -> Integer
+  ea-refuse (why) = let a = state-set-text "error" why in state-set "done" 1
+
+  ea-got : BeWeights, Integer, Integer, Text -> Integer
+  ea-got (w) (i) (handle) (result) =
+    let a = state-set-text ("audio" & show i) result
+    in let f = be-drop handle
+    in ea-case w (i + 1)
+
+  ea-case : BeWeights, Integer -> Integer
+  ea-case (w) (i) =
+    if i >= text-to-integer (page-data "count") then
+      (let f = be-close w in let e = state-set-text "error" (gpu-error 0) in state-set "done" 1)
+    else let frames = text-to-integer (page-data ("frames" & show i))
+    in let tokens = el-bytes (page-data ("tokens" & show i))
+    in let h = browser-encodec (page-data "code") w tokens frames
+    in if h == 0 then (let f = be-close w in ea-refuse ("EnCodec decode failed: " & gpu-error 0))
+    else gpu-buf-download-then h 0 (frames * 640 * 4) (\r -> ea-got w i h r)
+
+  ea-opened : Text, Integer, Text -> Integer
+  ea-opened (file) (size) (result) =
+    if text-contains result "\"ok\":true" then encodec-load file size (page-data "code") (\w -> ea-case w 0) ea-refuse
+    else ea-refuse result
+
+  ea-picked : Text -> Integer
+  ea-picked (r) =
+    let obj = json-parse-obj r
+    in let file = json-obj-field obj "name"
+    in let size = text-to-integer (json-obj-field obj "size")
+    in gpu-open-then (\r -> ea-opened file size r)
+
+  ea-pick : Text -> Integer
+  ea-pick (id) = pick-file-then ".bin" ea-picked
+
+  opening : [Console] Integer
+  opening = let c = dom-on-click (dom-query "html") ea-pick in state-set "armed" 1

@@ -668,7 +668,19 @@ Section: Frontend
     }))
     in let keep-metrics = phase-measure keep-phase "DESUGAR-KEEP"
     in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) fk-height
-    in let keep-note-bag = deck-record (if flags.phase-trace | flags.escape-check then bag-from-list [make-warning cdx-escape-violation ("DESUGAR-KEEP fk-base=" & show fk-base & " origin=" & show (keep-metrics.deck-origin) & " end=" & show (keep-metrics.deck-end) & " used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " desugar-deck=" & show (desugar-metrics.deck-end - desugar-metrics.deck-origin) & " desugar-bivy=" & show (desugar-metrics.bivy-hwm - desugar-metrics.bivy-origin) & " escapes-above-keep=" & show keep-escapes) synthetic-span] else no-overflow-bag)
+    in let keep-note-bag = deck-record (
+      if flags.phase-trace | flags.escape-check then
+        let msg0 = "DESUGAR-KEEP fk-base=" & show fk-base
+        in let msg1 = msg0 & " origin=" & show (keep-metrics.deck-origin)
+        in let msg2 = msg1 & " end=" & show (keep-metrics.deck-end)
+        in let msg3 = msg2 & " used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin)
+        in let msg4 = msg3 & " desugar-deck=" & show (desugar-metrics.deck-end - desugar-metrics.deck-origin)
+        in let msg5 = msg4 & " desugar-bivy=" & show (desugar-metrics.bivy-hwm - desugar-metrics.bivy-origin)
+        in let msg6 = msg5 & " escapes-above-keep=" & show keep-escapes
+        in let note = make-warning cdx-escape-violation msg6 synthetic-span
+        in bag-from-list [note]
+      else no-overflow-bag
+    )
     in let desugar-ov-bag = deck-record (if desugar-ov == 1 | dr.dr-sat == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag)
     in let keep-ov-bag = deck-record (if keep-ov == 1 | fkcopy.sat == 1 then deck-overflow-bag "DESUGAR-KEEP" else no-overflow-bag)
     in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
@@ -743,7 +755,10 @@ Section: Frontend
     in let check-ceiling = check-base + check-deck-height
     in let check-origin = __deck-pos
     in let check-phase = phase-start
-    in let check-result = deck-record (check-chapter (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments) check-ceiling check-base keep-base (keep-base + keep-height - 4194304) (if flags.poison-compact then poison-check else 0) (flags.fidelity))
+    in let check-result = deck-record (check-chapter
+      (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments)
+      check-ceiling check-base keep-base (keep-base + keep-height - 4194304)
+      (if flags.poison-compact then poison-check else 0) (flags.fidelity))
     in let batch-bag = if flags.phase-trace then
       deck-record (bag-from-list [
         make-warning cdx-escape-violation (check-result.batch-note) synthetic-span
@@ -837,7 +852,7 @@ Section: Frontend
     else []
     in let (sorted-fid, kc-fid) = if flags.fidelity then
       tail-resolve-expr-types (check-result.state) pre-fid 0 (list-length pre-fid) acc-fid mc tail-scratch tail-bivy __deck-pos
-    else ([], __deck-pos)
+    else (deck-record [], __deck-pos)
     in let tail-rewind = __heap-restore tail-bivy
     in let tail-memo-z = __memset (mc.mc-table) 0 (mc.mc-slots * 8)
     in let tail-bag = if flags.phase-trace then

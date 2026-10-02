@@ -1,0 +1,38 @@
+Chapter: RenderWorkerAffinity
+  cites Works chapter GopRenderWorker
+  cites Works chapter GopRenderMailbox
+  cites Works chapter GopScene
+  cites Foreword chapter Console
+
+  rwaff-await : Integer, Integer, Integer -> [Concurrent] Boolean
+  rwaff-await (cell) (owner) (fuel) =
+    if grm-ready cell owner then act True end
+    else if fuel <= 0 | grm-failed cell owner then act False end
+    else act
+      yielded <- process-yield
+      rwaff-await cell owner (fuel - 1)
+    end
+
+  opening : [Console, Concurrent, Capability, Device.Port] Nothing = act
+    prior <- process-spawn-on-core (\ignored -> grw-core process-get-pid) 1
+    ran-on <- if prior > 0 then process-wait prior else act (0 - 1) end
+    let cell = grm-new 0
+    in act
+      worker <- grw-start cell
+      let owner = grm-open cell 1
+      in let token = grm-submit cell owner 64 48 0 0 gsc-sky 0
+      in act
+        ready <- rwaff-await cell owner 100000
+        let placed = if worker > 0 then grw-core worker else 0 - 1
+        in let actual = peek-qword cell grm-core
+        in act
+          stopped <- grw-stop cell
+          port-out-byte 33 255
+          port-out-byte 161 255
+          print-line-uni ("setup=" & show (prior > 0 & ran-on == 1 & worker == prior & token > 0))
+          print-line-uni ("BSP-render=" & show (ready & placed == 0 & actual == 0))
+          print-line-uni "render-affinity-end"
+        end
+      end
+    end
+  end

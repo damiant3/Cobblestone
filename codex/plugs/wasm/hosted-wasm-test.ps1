@@ -177,7 +177,7 @@ $results = $subjects | ForEach-Object -ThrottleLimit $Jobs -Parallel {
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $wat)) { return [pscustomobject]@{ Name = $s; Ok = $false; Note = 'PLUG-FAILED before emitting its refusal' } }
         $watText = [System.IO.File]::ReadAllText($wat)
         $names = @(Get-Content $refusal | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
-        $missing = @($names | Where-Object { -not $watText.Contains("(codex-refused-$_-256-bit-vector-on-wasm)") })
+        $missing = @($names | Where-Object { -not ($watText.Contains("(codex-refused-$_-256-bit-vector-on-wasm)") -or $watText.Contains("(codex-refused-$_-on-wasm)")) })
         & wat2wasm --enable-tail-call $wat -o $wasm 2>$null | Out-Null
         $assembled = ($LASTEXITCODE -eq 0) -and (Test-Path $wasm)
         if ($names.Count -gt 0 -and $missing.Count -eq 0 -and -not $assembled) { return [pscustomobject]@{ Name = $s; Ok = $true; Note = '' } }

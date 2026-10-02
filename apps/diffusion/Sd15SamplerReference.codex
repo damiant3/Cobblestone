@@ -1,0 +1,47 @@
+Chapter: Sd15SamplerReference
+  cites Diffusion chapter DiffusionDriver
+
+ We say:
+
+  sr-model : Text = "build-output/diffusion-models/realisticVisionV60B1_v20Novae.safetensors"
+
+  sr-request : Integer -> Text
+  sr-request (kind) =
+    "model=" & sr-model & "\nprompt=a photo of a cat\nnegative=\nsampler=" & list-at ti-sampler-names kind &
+    "\nscheduler=" & (if kind == 0 then "Automatic" else "Karras") & "\nsteps=6\ncfg=7\nseed=7\nwidth=512\nheight=512\npath=sampler-" & show kind & ".png\n"
+
+  sr-cases : ClipBpe, I2Model, Integer -> [Console] Nothing
+  sr-cases (bpe) (m) (kind) =
+    if kind > 6 then print-line-uni "samplers complete"
+    else let mark = __heap-save
+    in let result = dr-run bpe m (sr-request kind)
+    in act
+      print-line-uni ("sampler-" & show kind & ": " & result)
+      let pool = un-pool-drain 0
+      in let drained = gpu-buf-pool-drain 0
+      in let back = __heap-restore mark
+      in sr-cases bpe m (kind + 1)
+    end
+
+  sr-images : ClipBpe -> [Console] Nothing
+  sr-images (bpe) =
+    let m = img2img-model sr-model
+    in act
+      if m.im-why /= "" then print-line-uni (m.im-why) else sr-cases bpe m 0
+      let request = text-replace (text-replace (sr-request 0) "steps=6" "steps=1") "sampler-0.png" "one-step.png"
+      in print-line-uni ("one-step: " & dr-run bpe m request)
+      let closed = img2img-model-free m in print-line-uni "model closed"
+    end
+
+  sr-load : Integer, Integer -> [Console, Device.Block] Nothing
+  sr-load (vlen) (mlen) = act
+    vocab <- dr-load 1 vlen
+    merges <- dr-load (1 + (vlen + 511) / 512) mlen
+    sr-images (clip-bpe-load vocab vlen merges mlen)
+  end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    sr-load (peek-32 h 0) (peek-32 h 4)
+  end

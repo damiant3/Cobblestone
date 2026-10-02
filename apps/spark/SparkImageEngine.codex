@@ -1,0 +1,51 @@
+Chapter: SparkImageEngine
+  cites Diffusion chapter BrowserSdxlLoad
+  cites Diffusion chapter BrowserLora
+
+  SparkImageModel =
+    | SparkSd15 (BrowserModel)
+    | SparkSdxl (BrowserSdxlModel)
+
+  spark-image-open : Text, Text, Integer, (Text -> Integer), (SparkImageModel -> Integer), (Text -> Integer) -> Integer
+  spark-image-open (family) (file) (size) (log) (ready) (refuse) =
+    if family == "sdxl checkpoint" & (page-data "bk" == "" | page-data "clip-xl" == "") then refuse "SDXL is unavailable in this page version."
+    else if family == "sdxl checkpoint" then browser-sdxl-open file size (page-data "bk") (page-data "clip-xl") (\m -> ready (SparkSdxl m)) refuse
+    else if family == "sd15 checkpoint" then bl-load-then file (\n total -> log ("weights " & show n & " of " & show total)) refuse (\m -> ready (SparkSd15 m))
+    else refuse ("Unsupported image model: " & family)
+
+  spark-image-lora-refusal : Text, Text -> Text
+  spark-image-lora-refusal (family) (lora-family) =
+    if family /= "sd15 checkpoint" & family /= "sdxl checkpoint" then "LoRA loading is unavailable for " & family
+    else if lora-family /= "sd15 LoRA" & lora-family /= "sdxl LoRA" then "Unsupported LoRA family or format: " & lora-family
+    else if (family == "sd15 checkpoint" & lora-family == "sd15 LoRA") | (family == "sdxl checkpoint" & lora-family == "sdxl LoRA") then ""
+    else "LoRA family " & lora-family & " does not match " & family
+
+  spark-image-open-lora : Text, Text, Integer, Text, Text, Integer, Real, (Text -> Integer), (SparkImageModel -> Integer), (Text -> Integer) -> Integer
+  spark-image-open-lora (family) (checkpoint) (checkpoint-size) (lora-family) (file) (size) (weight) (log) (ready) (refuse) =
+    let why = spark-image-lora-refusal family lora-family
+    in if why /= "" then refuse why
+    else if family == "sdxl checkpoint" then browser-sdxl-lora-open checkpoint checkpoint-size (page-data "bk") (page-data "clip-xl") file size weight (page-data "lora") (\m -> ready (SparkSdxl m)) refuse
+    else browser-sd15-lora-load-then checkpoint file size weight (page-data "lora") (\n total -> log ("LoRA weights " & show n & " of " & show total)) refuse (\m -> ready (SparkSd15 m))
+
+  spark-image-close : SparkImageModel -> Boolean
+  spark-image-close (model) = when model
+    is SparkSdxl (m) -> browser-sdxl-close m
+    is SparkSd15 (m) -> (let f = bl-free-weights (bl-list ("[" & state-get-text "bl-weights" & "]")) 0 in True)
+
+  spark-image-sampler-id : Text -> Integer
+  spark-image-sampler-id (name) =
+    if name == "Euler" then 0
+    else if name == "DPM++ SDE" then 1
+    else if name == "DPM++ 2M" then 2
+    else if name == "DPM++ 2M SDE" then 3
+    else if name == "DPM++ 2M SDE Heun" then 4
+    else if name == "DPM++ 3M SDE" then 6
+    else 0 - 1
+
+  spark-image-run : SparkImageModel, ClipBpe, Text, Text, Integer, Integer, Real, Integer, Integer, Text, (Text -> Integer), (Integer, Text -> Integer) -> Integer
+  spark-image-run (model) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (sampler) (log) (done) = when model
+    is SparkSd15 (m) -> if sampler /= "Euler" then done (0 - 3) "SD1.5 browser engine supports Euler only" else browser-txt2img-timed m bpe prompt negative seed steps cfg width height log done
+    is SparkSdxl (m) ->
+      let kind = spark-image-sampler-id sampler
+      in if kind < 0 then done (0 - 3) "Unsupported SDXL Studio sampler"
+      else browser-sdxl-sample-then m bpe prompt negative (BrowserSdxlSettings { bs-width = width, bs-height = height, bs-steps = steps, bs-seed = seed, bs-cfg = cfg }) kind (\phase n total -> log (phase & " " & show n & "/" & show total)) (\image -> done image ("SDXL " & sampler & "/Karras")) (\why -> done (0 - 3) why)

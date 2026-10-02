@@ -10,8 +10,11 @@
 #   $env:GEN = 'codex/build/<X>Script.codex'; pwsh build/shell-block-convert.ps1           # dry run: prints the count
 #   $env:GEN = ...; $env:WRITE = 1; pwsh build/shell-block-convert.ps1                      # rewrites the generator
 #
+#   $env:JOINPATH = 1 (with GEN, optionally WRITE): instead, ScAssign "X" (SeRaw "Join-Path ...") to SeBare (SePathJoinN ...)
+#
 # Then prove it: build/check-generated-scripts.ps1 -Only <emitted-name> -OutRoot <scratch>
-# must stay byte-level, and build/check-shell-raw.ps1 -Update -Only <X>Script in the same CL.$ErrorActionPreference = 'Stop'
+# must stay byte-level, and build/check-shell-raw.ps1 -Update -Only <X>Script in the same CL.
+$ErrorActionPreference = 'Stop'
 Set-Location D:\Projects\Cobblestone-reek
 $g = $env:GEN
 $c = [IO.File]::ReadAllText($g)
@@ -22,6 +25,11 @@ function Atom([string]$a) {
     if ($a -match '^-?\d+$') { return "(SeInt $a)" }
     if ($a -match '^\$([A-Za-z_][A-Za-z0-9_]*)$') { return 'SeVar "' + $Matches[1] + '"' }
     throw "not an atom: $a"
+}
+$argRx = $atomRx + '|"(?:[^`"]|``|`")*"'
+function Arg([string]$a) {
+    if ($a.StartsWith('"')) { return 'SeText "' + (Esc $a.Substring(1, $a.Length - 2).Replace('`"', '"').Replace('``', '`')) + '"' }
+    return Atom $a
 }
 function Wrap([string]$e) { if ($e.StartsWith('(')) { $e } else { "($e)" } }
 $ops = @{ 'eq' = 'SeIntEq'; 'ne' = 'SeStringNeq'; 'lt' = 'SeIntLt'; 'gt' = 'SeIntGt'; 'le' = 'SeIntLe'; 'ge' = 'SeIntGe' }
@@ -48,6 +56,18 @@ function LineNode([string]$b) {
     if ($b -match "^exit ($atomRx)$") { return 'ScExit ' + (Wrap (Atom $Matches[1])) }
     if ($b -match "^return ($atomRx)$") { return 'ScReturn ' + (Wrap (Atom $Matches[1])) }
     if ($b -match "^Write-Host ($atomRx)$") { return 'ScEcho ' + (Wrap (Atom $Matches[1])) }
+    if ($b -match '^Write-Host "((?:[^`"]|``|`")*)"$') { return 'ScEcho (SeText "' + (Esc $Matches[1].Replace('`"', '"').Replace('``', '`')) + '")' }
+    if ($b -match '^\$([A-Za-z_]\w*) = \[System\.IO\.Path\]::GetTempFileName\(\)$') { return 'ScTempFile "' + $Matches[1] + '"' }
+    if ($b -match "^\[Console\]::Error\.WriteLine\(($argRx)\)$") { return 'ScWriteError ' + (Wrap (Arg $Matches[1])) }
+    if ($b -match '^\$([A-Za-z_]\w*) = \[System\.IO\.File\]::ReadAllBytes\(\$([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?\)$') {
+        $v = 'SeVar "' + $Matches[2] + '"'; if ($Matches[3]) { $v = "SeProperty ($v) `"$($Matches[3])`"" }
+        return 'ScReadBytes "' + $Matches[1] + '" (' + $v + ')'
+    }
+    if ($b -match "^\`$([A-Za-z_][A-Za-z0-9_]*) = Join-Path[ ]((?:(?:$argRx) ?)+)$") {
+        $name = $Matches[1]; $rest = $Matches[2]
+        $parts = @([regex]::Matches($rest, $argRx) | ForEach-Object { Arg $_.Value })
+        if ($parts.Count -ge 2 -and ((@([regex]::Matches($rest, $argRx)) | ForEach-Object Value) -join ' ') -ceq $rest) { return 'ScAssign "' + $name + '" (SeBare (SePathJoinN [' + ($parts -join ', ') + ']))' }
+    }
     return $null
 }
 function Opener([string]$b) {
@@ -55,6 +75,19 @@ function Opener([string]$b) {
     if ($b -match "^while \((.*)\) \{$") { $k = Cond $Matches[1]; if ($k) { return @('while', $k) } }
     if ($b -match "^foreach \(\`$([A-Za-z_]\w*) in ($atomRx)\) \{$") { return @('foreach', $Matches[1], (Atom $Matches[2])) }
     return $null
+}
+if ($env:JOINPATH) {
+    # ShellDslReadability section 7: ScAssign "X" (SeRaw "Join-Path a b ...") to the SePathJoinN node.
+    $n = 0
+    $c = [regex]::Replace($c, 'ScAssign "([A-Za-z_]\w*)" \(SeRaw "((?:[^"\\]|\\.)*)"\)', {
+        param($x)
+        $p = $x.Groups[2].Value.Replace('\"', '"').Replace('\\', '\')
+        $node = if ($p.StartsWith('Join-Path ')) { LineNode ('$' + $x.Groups[1].Value + ' = ' + $p) } else { $null }
+        if ($node) { $script:n++; $node } else { $x.Value }
+    })
+    "join-path assigns converted: $n"
+    if ($env:WRITE) { [IO.File]::WriteAllText($g, $c) }
+    return
 }
 $m = @([regex]::Matches($c, 'ScRaw "((?:[^"\\]|\\.)*)"'))
 $pay = @($m | ForEach-Object { $_.Groups[1].Value.Replace('\"', '"').Replace('\\', '\') })

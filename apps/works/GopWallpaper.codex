@@ -1,0 +1,199 @@
+Chapter: GopWallpaper
+  cites Works chapter GopFat16
+  cites UI chapter Layout
+  cites UI chapter BoxModel
+  cites Foreword chapter CCE
+
+ We say:
+
+  gwp-file-limit : Integer = 16777216
+  gwp-pixel-limit : Integer = 4194304
+
+  WallpaperBitmap = record {
+    wb-buffer : Integer, wb-offset : Integer,
+    wb-width : Integer, wb-height : Integer,
+    wb-stride : Integer, wb-bytes : Integer, wb-top : Boolean
+  }
+
+  WallpaperRead =
+    | WallpaperBmp (WallpaperBitmap)
+    | WallpaperReadRefused (Text)
+
+  WallpaperFrame = record {
+    wf-buffer : Integer, wf-width : Integer, wf-height : Integer,
+    wf-x : Integer, wf-y : Integer, wf-w : Integer, wf-h : Integer
+  }
+
+  WallpaperFit =
+    | WallpaperReady (WallpaperFrame)
+    | WallpaperFitRefused (Text)
+
+ BMP uses a 14-byte file header followed by a DIB header. BI_RGB pixels
+ are BGR24 or BGRX32; the fourth byte is reserved, not alpha. A negative
+ signed height places the first row at the top. Rows are padded to 4 bytes.
+
+  gwp-bmp : Integer, Integer -> WallpaperRead
+  gwp-bmp (buf) (len) =
+    if len < 54 then WallpaperReadRefused "wallpaper BMP header is truncated"
+    else if len > gwp-file-limit then WallpaperReadRefused "wallpaper exceeds 16 MiB file limit"
+    else if peek-byte buf 0 /= 66 | peek-byte buf 1 /= 77 then WallpaperReadRefused "wallpaper requires an uncompressed 24/32-bit BMP"
+    else let dib = fat16-read-u32 buf 14
+    in let off = fat16-read-u32 buf 10
+    in let w = fat16-read-u32 buf 18
+    in let raw-h = fat16-read-u32 buf 22
+    in let top = raw-h >= 2147483648
+    in let h = if top then 4294967296 - raw-h else raw-h
+    in let bits = fat16-read-u16 buf 28
+    in if dib < 40 | dib > len - 14 | off < 14 + dib | off > len then WallpaperReadRefused "wallpaper BMP data offset is invalid"
+    else if fat16-read-u16 buf 26 /= 1 | fat16-read-u32 buf 30 /= 0 | (bits /= 24 & bits /= 32) then WallpaperReadRefused "wallpaper requires an uncompressed 24/32-bit BMP"
+    else if w < 1 | h < 1 | w > 8192 | h > 8192 then WallpaperReadRefused "wallpaper BMP dimensions must be 1..8192"
+    else let bytes = bits / 8
+    in let stride = ((w * bytes + 3) / 4) * 4
+    in if h > (len - off) / stride then WallpaperReadRefused "wallpaper BMP pixels are truncated"
+    else WallpaperBmp (WallpaperBitmap { wb-buffer = buf, wb-offset = off, wb-width = w, wb-height = h, wb-stride = stride, wb-bytes = bytes, wb-top = top })
+
+  gwp-pixel : WallpaperBitmap, Integer, Integer -> Integer
+  gwp-pixel (bm) (x) (y) =
+    let row = if bm.wb-top then y else bm.wb-height - 1 - y
+    in let off = bm.wb-offset + row * bm.wb-stride + x * bm.wb-bytes
+    in bit-or (peek-byte (bm.wb-buffer) off) (bit-or (bit-shl (peek-byte (bm.wb-buffer) (off + 1)) 8) (bit-shl (peek-byte (bm.wb-buffer) (off + 2)) 16))
+
+  gwp-scale-row : WallpaperBitmap, WallpaperFrame, Integer, Integer -> Integer
+  gwp-scale-row (bm) (f) (y) (x) =
+    if x >= f.wf-w then 0
+    else let pixel = gwp-pixel bm (x * bm.wb-width / f.wf-w) (y * bm.wb-height / f.wf-h)
+    in let wrote = poke-32 (f.wf-buffer) (((y + f.wf-y) * f.wf-width + x + f.wf-x) * 4) pixel
+    in gwp-scale-row bm f y (x + 1)
+
+  gwp-scale-rows : WallpaperBitmap, WallpaperFrame, Integer -> Integer
+  gwp-scale-rows (bm) (f) (y) = if y >= f.wf-h then 0 else let row = gwp-scale-row bm f y 0 in gwp-scale-rows bm f (y + 1)
+
+  gwp-fit : WallpaperBitmap, Integer, Integer, Integer, Integer -> WallpaperFit
+  gwp-fit (bm) (dest) (capacity) (w) (h) =
+    if w < 1 | h < 1 | w > 8192 | h > 8192 then WallpaperFitRefused "wallpaper display dimensions are invalid"
+    else if h > gwp-pixel-limit / w then WallpaperFitRefused "wallpaper display exceeds 4 million pixels"
+    else if capacity < 0 | h > (capacity / 4) / w then WallpaperFitRefused "wallpaper pixel buffer is too small"
+    else let by-width = w * bm.wb-height <= h * bm.wb-width
+    in let fit-w = if by-width then w else box-max 1 (h * bm.wb-width / bm.wb-height)
+    in let fit-h = if by-width then box-max 1 (w * bm.wb-height / bm.wb-width) else h
+    in let f = WallpaperFrame { wf-buffer = dest, wf-width = w, wf-height = h, wf-x = (w - fit-w) / 2, wf-y = (h - fit-h) / 2, wf-w = fit-w, wf-h = fit-h }
+    in let filled = gwp-scale-rows bm f 0
+    in WallpaperReady f
+
+  gwp-copy-row : Integer, Integer, Integer, Integer -> Integer
+  gwp-copy-row (src) (dest) (at) (limit) =
+    if at >= limit then 0
+    else if at + 8 <= limit then let copied = poke-qword dest at (peek-qword src at) in gwp-copy-row src dest (at + 8) limit
+    else poke-32 dest at (peek-32 src at)
+
+  gwp-copy-rows : WallpaperFrame, Integer, Integer, LayoutRect, Integer -> Integer
+  gwp-copy-rows (f) (dest) (stride) (r) (y) =
+    if y >= r.lr-y + r.lr-h then 0
+    else let copied = gwp-copy-row (f.wf-buffer + (y * f.wf-width + r.lr-x) * 4) (dest + (y * stride + r.lr-x) * 4) 0 (r.lr-w * 4)
+    in gwp-copy-rows f dest stride r (y + 1)
+
+  gwp-blit : WallpaperFrame, Integer, Integer, Integer, LayoutRect -> Integer
+  gwp-blit (f) (dest) (stride) (rows) (clip) =
+    let x = box-max 0 (box-max (f.wf-x) (clip.lr-x))
+    in let y = box-max 0 (box-max (f.wf-y) (clip.lr-y))
+    in let right = box-min stride (box-min (f.wf-x + f.wf-w) (clip.lr-x + clip.lr-w))
+    in let bottom = box-min rows (box-min (f.wf-y + f.wf-h) (clip.lr-y + clip.lr-h))
+    in if right <= x | bottom <= y then 0
+    else gwp-copy-rows f dest stride (layout-rect x y (right - x) (bottom - y)) y
+
+Section: Retained State
+
+ The 384-byte block holds only raw pointers, scalar geometry and CCE slots:
+ cache 0, width 8, height 16, fit rectangle 24..48, valid 56; saved name
+ length 64/characters 72; draft length 168/characters 176; modifiers 272.
+
+  gwp-state-bytes : Integer = 384
+
+  gwp-state-init : Integer, Integer, Integer -> Integer
+  gwp-state-init (s) (w) (h) =
+    let clear = poke-qword s 0 0
+    in let invalid = poke-qword s 56 0
+    in let a = poke-qword s 8 w
+    in let b = poke-qword s 16 h
+    in if w < 1 | h < 1 | w > 8192 | h > 8192 then 0
+    else if h > gwp-pixel-limit / w then 0
+    else poke-qword s 0 (alloc-zeroed (w * h * 4) 64)
+
+  gwp-text-put : Integer, Integer, Text, Integer -> Integer
+  gwp-text-put (s) (off) (t) (i) =
+    if i >= text-length t | i >= 12 then poke-qword s off i
+    else let put = poke-qword s (off + 8 + i * 8) (char-code-at t i)
+    in gwp-text-put s off t (i + 1)
+
+  gwp-text-get : Integer, Integer, Integer, Integer -> Text
+  gwp-text-get (s) (off) (i) (n) =
+    if i >= n then ""
+    else char-to-text (code-to-char (peek-qword s (off + 8 + i * 8))) & gwp-text-get s off (i + 1) n
+
+  gwp-name : Integer -> Text
+  gwp-name (s) = if s == 0 then "" else gwp-text-get s 64 0 (peek-qword s 64)
+
+  gwp-draft : Integer -> Text
+  gwp-draft (s) = if s == 0 then "" else gwp-text-get s 168 0 (peek-qword s 168)
+
+  gwp-set-name : Integer, Text -> Integer
+  gwp-set-name (s) (name) =
+    if s == 0 then 0
+    else let invalid = if name /= "" & gwp-name s == name then 0 else poke-qword s 56 0
+    in gwp-text-put s 64 name 0
+
+  gwp-state-frame : Integer -> WallpaperFrame
+  gwp-state-frame (s) = WallpaperFrame { wf-buffer = peek-qword s 0, wf-width = peek-qword s 8, wf-height = peek-qword s 16, wf-x = peek-qword s 24, wf-y = peek-qword s 32, wf-w = peek-qword s 40, wf-h = peek-qword s 48 }
+
+  gwp-install : Integer, WallpaperFrame -> Integer
+  gwp-install (s) (f) =
+    let x = poke-qword s 24 (f.wf-x)
+    in let y = poke-qword s 32 (f.wf-y)
+    in let w = poke-qword s 40 (f.wf-w)
+    in let h = poke-qword s 48 (f.wf-h)
+    in let copied = gwp-blit f (peek-qword s 0) (peek-qword s 8) (peek-qword s 16) (layout-rect (f.wf-x) (f.wf-y) (f.wf-w) (f.wf-h))
+    in poke-qword s 56 1
+
+  gwp-paint : Integer, Integer, Integer, Integer, LayoutRect -> Integer
+  gwp-paint (s) (dest) (stride) (rows) (clip) =
+    if s == 0 then 0 else if peek-qword s 56 == 0 then 0
+    else gwp-blit (gwp-state-frame s) dest stride rows clip
+
+Section: File Loading
+
+  gwp-name-char : Integer -> Boolean
+  gwp-name-char (ch) =
+    if ch < 0 | ch >= 128 then False
+    else is-upper (code-to-char ch) | (ch >= char-code '0' & ch <= char-code '9') | ch == char-code '_' | ch == char-code '-' | ch == char-code '~'
+
+  gwp-name-base : Text, Integer, Integer -> Boolean
+  gwp-name-base (name) (i) (n) = if i >= n then True else if gwp-name-char (char-code-at name i) then gwp-name-base name (i + 1) n else False
+
+  gwp-name-ok : Text -> Boolean
+  gwp-name-ok (name) = let n = text-length name in n >= 5 & n <= 12 & text-ends-with name ".BMP" & gwp-name-base name 0 (n - 4)
+
+  gwp-load : Text, Integer, Integer, Integer, Integer -> [Device.Port] WallpaperFit
+  gwp-load (name) (dest) (capacity) (w) (h) =
+    if gwp-name-ok name == False then act WallpaperFitRefused "Use an ESP root filename such as PHOTO.BMP (8.3 name)." end
+    else act
+      mounted <- gfat-mount-esp
+      if mounted.gm-ok == False then WallpaperFitRefused "wallpaper ESP is unavailable"
+      else act
+        let vol = mounted.gm-vol
+        in if vol.vol-fat-sectors > 8192 then WallpaperFitRefused "wallpaper FAT exceeds the 4 MiB read limit"
+        else act
+          size <- gfat-file-size vol name
+          if size < 54 then WallpaperFitRefused "wallpaper file is missing, unreadable or truncated"
+          else if size > gwp-file-limit then WallpaperFitRefused "wallpaper exceeds 16 MiB file limit"
+          else let bytes = ((size + 511) / 512) * 512
+          in let buf = alloc-bytes bytes
+          in act
+            got <- gfat-read-file-bulk vol name buf
+            if got /= size then WallpaperFitRefused "wallpaper file read failed"
+            else when gwp-bmp buf size
+              is WallpaperReadRefused (why) -> WallpaperFitRefused why
+              is WallpaperBmp (bm) -> gwp-fit bm dest capacity w h
+          end
+        end
+      end
+    end

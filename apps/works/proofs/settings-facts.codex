@@ -1,0 +1,243 @@
+Chapter: SettingsFactsProof
+  cites Works chapter GopSettingsFacts
+  cites Works chapter GopDesk
+  cites Foreword chapter Console
+
+  sfp-phase : Integer = 1
+
+  sfp-keys : List SettingKey
+  sfp-keys = [gst-int-key 1 "theme" 0 0 3, gst-int-key 2 "adornments" 15 0 15, gst-bool-key 3 "sound" False, gst-int-key 4 "edge" 0 0 2, gst-int-key 5 "pins" 0 0 524287, gst-text-key 6 "wallpaper" "none" 64]
+
+  sfp-label : SettingsRead -> Text
+  sfp-label (r) = when r
+    is SettingsLoaded (s) -> "loaded"
+    is SettingsMigrated (s) -> "migrated"
+    is SettingsLegacy (s) (why) -> "legacy: " & why
+    is SettingsMissing -> "missing"
+    is SettingsUnavailable -> "unavailable"
+    is SettingsLoadRefused (why) -> "refused: " & why
+
+  sfp-store : SettingsRead, SettingsStore -> SettingsStore
+  sfp-store (r) (fallback) = when r
+    is SettingsLoaded (s) -> s
+    is SettingsMigrated (s) -> s
+    is SettingsLegacy (s) (why) -> s
+    is otherwise -> fallback
+
+  sfp-ok : SetResult -> Boolean
+  sfp-ok (r) = when r
+    is SetOk (s) -> True
+    is SetRefused (why) -> False
+
+  sfp-values : SettingsStore -> Boolean
+  sfp-values (s) = gst-get s 1 0 == 1 & gst-get s 2 0 == 9 & gst-get-bool s 3 False & gst-get s 4 0 == 2 & gst-get s 5 0 == 17 & gst-get-text s 6 "" == "café 日本"
+
+  sfp-save : SettingsStore, Integer -> [Device.Port] Boolean
+  sfp-save (s) (timestamp) =
+    let mark = __heap-save
+    in act
+      result <- gsf-save s timestamp
+      let ok = sfp-ok result
+      in let release = __heap-restore mark
+      in ok
+    end
+
+  sfp-load-cost : SettingsStore -> [Device.Port] Integer
+  sfp-load-cost (defaults) =
+    let mark = __heap-save
+    in act
+      result <- gsf-load defaults
+      let cost = __heap-save - mark
+      in let ok = when result
+        is SettingsLoaded (s) -> sfp-values s
+        is otherwise -> False
+      in let release = __heap-restore mark
+      in if ok then cost else 0 - 1
+    end
+
+  sfp-history : SettingsStore, Integer -> [Device.Port] Boolean
+  sfp-history (s) (n) = act
+    if n == 0 then True
+    else act
+      ok <- sfp-save s (200 + n)
+      if ok then sfp-history s (n - 1) else False
+    end
+  end
+
+  sfp-first : SettingsStore -> [Device.Port, Console] Nothing
+  sfp-first (defaults) = act
+    before <- gfs-mount
+    result <- gsf-load-or-migrate defaults 100
+    after <- gfs-mount
+    print-line-uni ("load state: " & sfp-label result)
+    let s = sfp-store result defaults
+    in let migrated = sfp-label result == "migrated" & after.gfs-count == before.gfs-count + 1
+    in let preserved = gst-get s 1 0 == 2 & gst-get s 2 0 == 9 & gst-get-bool s 3 False & gst-get s 4 0 == 2 & gst-get s 5 0 == 17 & gst-get-text s 6 "" == "none"
+    in let rejected = gst-set-value s 1 (SettingInteger 4)
+    in let refusal = sfp-ok rejected == False & gst-why rejected /= "" & gst-get s 1 0 == 2
+    in let candidate = gst-copy s
+    in let a = gst-set-value candidate 1 (SettingInteger 1)
+    in let b = gst-set-value candidate 6 (SettingText "café 日本")
+    in act
+      saved <- sfp-save candidate 101
+      cost1 <- sfp-load-cost defaults
+      history <- sfp-history candidate 12
+      cost2 <- sfp-load-cost defaults
+      print-line-uni ("one migration fact: " & show migrated)
+      print-line-uni ("legacy values preserved: " & show preserved)
+      print-line-uni ("out-of-range refused without mutation: " & show refusal)
+      print-line-uni ("new typed values saved: " & show (saved & sfp-ok a & sfp-ok b))
+      print-line-uni ("history reclaimed before return: " & show (history & cost1 > gsf-limit & cost1 == cost2))
+    end
+  end
+
+  sfp-second : SettingsStore -> [Device.Port, Console] Nothing
+  sfp-second (defaults) = act
+    before <- gfs-mount
+    result <- gsf-load-or-migrate defaults 300
+    after <- gfs-mount
+    print-line-uni ("load state: " & sfp-label result)
+    let s = sfp-store result defaults
+    in let once = sfp-label result == "loaded" & before.gfs-count == after.gfs-count
+    in let survived = sfp-values s
+    in let reset = gst-reset-all s
+    in act
+      saved <- sfp-save reset 50
+      print-line-uni ("migration not repeated: " & show once)
+      print-line-uni ("typed values survived reboot: " & show survived)
+      print-line-uni ("explicit reset saved: " & show saved)
+    end
+  end
+
+  sfp-third : SettingsStore -> [Device.Port, Console] Nothing
+  sfp-third (defaults) = act
+    before <- gfs-mount
+    result <- gsf-load-or-migrate defaults 400
+    after <- gfs-mount
+    print-line-uni ("load state: " & sfp-label result)
+    let s = sfp-store result defaults
+    in let reset = gst-get s 1 (0 - 1) == 0 & gst-get s 2 0 == 15 & gst-get-bool s 3 True == False & gst-get s 4 (0 - 1) == 0 & gst-get s 5 (0 - 1) == 0 & gst-get-text s 6 "" == "none"
+    in act
+      print-line-uni ("defaults survived reboot: " & show reset)
+      print-line-uni ("legacy file did not revive settings: " & show (sfp-label result == "loaded" & before.gfs-count == after.gfs-count))
+    end
+  end
+
+  sfp-full : SettingsStore -> [Device.Port, Console] Nothing
+  sfp-full (defaults) = act
+    st <- gfs-mount
+    let full = __record-set st "gfs-head" (st.gfs-limit)
+    in act
+      published <- gfs-checkpoint full
+      result <- gsf-save defaults 500
+      after <- gfs-mount
+      print-line-uni ("full store refused: " & show (sfp-ok result == False & gst-why result /= ""))
+      print-line-uni ("refused write preserves published head: " & show (after.gfs-head == published.gfs-head & after.gfs-count == published.gfs-count))
+    end
+  end
+
+  sfp-checkpoint-failure : SettingsStore -> [Device.Port, Console] Nothing
+  sfp-checkpoint-failure (defaults) = act
+    result <- gsf-load-or-migrate defaults 100
+    after <- gfs-mount
+    let retained = when result
+      is SettingsLegacy (s) (why) -> gst-get s 1 0 == 2 & gst-get-bool s 3 False & why == "settings checkpoint was not published"
+      is otherwise -> False
+    in act
+      print-line-uni ("unpublished migration retains legacy values: " & show retained)
+      print-line-uni ("failed checkpoint reports no saved fact: " & show (after.gfs-count == 0 & after.gfs-head == fl-fact-log-start))
+    end
+  end
+
+  sfp-read-failure : SettingsStore -> [Device.Port, Console] Nothing
+  sfp-read-failure (defaults) = act
+    before <- gfs-mount
+    result <- gsf-load-or-migrate defaults 600
+    after <- gfs-mount
+    let prefix = if sfp-phase == 14 then "fact superblock read failed" else if sfp-phase == 7 then "fact content read failed" else "fact header read failed"
+    in let refused = when result
+      is SettingsLoadRefused (why) -> text-starts-with why prefix
+      is otherwise -> False
+    in act
+      print-line-uni ("fact read failure refused: " & show refused)
+      print-line-uni ("read failure did not append migration: " & show (before.gfs-count == after.gfs-count))
+      if refused then print-line-uni "" else print-line-uni ("unexpected read state: " & sfp-label result)
+    end
+  end
+
+  sfp-checked : [Device.Port, Console] Nothing = act
+    mounted <- gfs-mount-checked
+    when mounted
+      is GfsMounted (st) -> act
+        absent <- gfs-scan-all-checked st 65535
+        legacy <- gfs-scan-all st gsf-kind
+        checked <- gfs-scan-all-checked st gsf-kind
+        written <- gfs-write-and-checkpoint st 29 "" 700
+        empty <- gfs-scan-all-checked written 29
+        let missing = when absent is GfsRows (rows) -> list-length rows == 0 is otherwise -> False
+        in let compatible = when checked is GfsRows (rows) -> rows == legacy & list-length rows > 0 is otherwise -> False
+        in let content = when empty is GfsRows (rows) -> rows == [""] is otherwise -> False
+        in act
+          print-line-uni ("checked missing kind is empty success: " & show missing)
+          print-line-uni ("checked scan matches legacy successful scan: " & show compatible)
+          print-line-uni ("checked empty content is a present record: " & show content)
+        end
+      end
+      is otherwise -> print-line-uni "checked mount failed"
+  end
+
+  sfp-desk : Integer -> [Device.Port, Console] Nothing
+  sfp-desk (unused) =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let blk = alloc-zeroed dk-settings-bytes 64
+    in let attached = poke-32 ds dk-sty-cell blk
+    in let defaults = dk-settings-into ds (gst-store dk-settings-keys)
+    in if sfp-phase == 8 then
+      let s = dk-settings-of ds
+      in let theme = gst-set s 1 4
+      in let adorn = gst-set s 2 9
+      in let sound = gst-set-bool s 3 True
+      in let edge = gst-set s 4 3
+      in let pins = gst-set s 5 17
+      in act
+        result <- dk-settings-save s
+        let applied = dk-settings-commit ds result
+        in print-line-uni ("desk candidate published and applied: " & show (sfp-ok result & peek-32 ds dk-scheme-cell == 4 & dk-task-edge ds == 3))
+      end
+    else act
+      before <- gfs-mount
+      let mark = __heap-save
+      in act
+        boot <- dk-settings-boot ds
+        let reclaimed = __heap-save == mark
+        in let overwrite = alloc-zeroed 65536 64
+        in let loaded = peek-32 blk 72 == 0
+        in if sfp-phase == 9 then
+          let kept = loaded & peek-32 ds dk-scheme-cell == 4 & peek-32 ds dk-adorn-cell == 9 & peek-32 ds dk-sound-on-cell == 1 & dk-task-edge ds == 3 & peek-32 ds dk-pinned-cell == 17
+          in act
+            confirmation <- dk-settings-action ds 120
+            let requested = peek-32 blk 64 == 20 & peek-32 ds dk-scheme-cell == 4
+            in act
+              reset <- dk-settings-action ds 121
+              after <- gfs-mount
+              print-line-uni ("desk values survived cold boot and scratch overwrite: " & show (kept & reclaimed))
+              print-line-uni ("desk confirmed reset published: " & show (requested & after.gfs-count == before.gfs-count + 1 & peek-32 ds dk-scheme-cell == 0 & peek-32 ds dk-adorn-cell == 15 & peek-32 ds dk-sound-on-cell == 0 & dk-task-edge ds == 0 & peek-32 ds dk-pinned-cell == 0))
+            end
+          end
+        else act
+          after <- gfs-mount
+          snapshot <- gsf-load (gst-store dk-settings-keys)
+          let stored = when snapshot
+                is SettingsLoaded (s) -> gst-get s 1 (0 - 1) == 0 & gst-get s 2 (0 - 1) == 15 & gst-get s 3 (0 - 1) == 0 & gst-get s 4 (0 - 1) == 0 & gst-get s 5 (0 - 1) == 0
+                is otherwise -> False
+          in act
+            print-line-uni ("desk reset survived next cold boot: " & show (stored & loaded & reclaimed & peek-32 ds dk-scheme-cell == 0 & peek-32 ds dk-adorn-cell == 15 & peek-32 ds dk-sound-on-cell == 0 & dk-task-edge ds == 0 & peek-32 ds dk-pinned-cell == 0))
+            print-line-uni ("desk boot did not repeat legacy migration: " & show (before.gfs-ok & after.gfs-ok & before.gfs-count == after.gfs-count))
+          end
+        end
+      end
+    end
+
+  opening : [Device.Port, Console] Nothing =
+    let defaults = gst-store sfp-keys
+    in if sfp-phase == 12 then sfp-checked else if sfp-phase >= 8 & sfp-phase <= 10 then sfp-desk 0 else if sfp-phase == 1 then sfp-first defaults else if sfp-phase == 2 then sfp-second defaults else if sfp-phase == 3 then sfp-third defaults else if sfp-phase == 4 then sfp-full defaults else if sfp-phase == 5 then sfp-checkpoint-failure defaults else sfp-read-failure defaults

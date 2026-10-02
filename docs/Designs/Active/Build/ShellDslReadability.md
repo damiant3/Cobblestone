@@ -117,14 +117,25 @@ list's `pad`. **`ScIndent` (reek, 2026-09-30) emits its command list one
 indent deeper**, so a block at indent 4 is `ScIndent [ScIf (SeBare ...) ...]`
 and one at indent 8 nests two. **Step 3's first CL converted 25 of them** (reek,
 2026-09-30): `BuildScript` ScRaw 996 to 887, byte-level; the 26th has a non-raw
-node inside its span and was left. No other generator has a block these rules
-convert. Across all generators, 195 raw blocks have an opener that
-reproduces, and each stops at an inner line; the first such line, by shape:
-`Write-Host "..."` 12 (`ScEcho (SeText ...)` if `SeText`'s escaping matches),
-`"..." | Set-Content -Path $x -Encoding UTF8` 9, `$x = Join-Path $y "..."` 9
-(the statement-level path assignment above), `($x).Add("...")` 6,
-`$x = [System.IO.Path]::GetFileNameWithoutExtension($y)` 5, `$x = $y['k'] -replace
-'a', 'b'` 5, `[System.IO.Path]::GetTempFileName()` 4 (2026-09-30).
+node inside its span and was left. **Line rules that need no new node**
+(`build/shell-block-convert.ps1`): `Write-Host "..."` is `ScEcho (SeText ...)`
+whenever the body's only backtick escapes are ``` `` ``` and `` `" ``,
+`ps-dquote`'s exact inverse; `$x = Join-Path a b ...` is `ScAssign x (SeBare
+(SePathJoinN ...))` (109 of 148 such raw lines); `[Console]::Error.WriteLine`,
+`GetTempFileName()` and `ReadAllBytes` map to `ScWriteError`, `ScTempFile` and
+`ScReadBytes`. They converted 6 more blocks (`BuildScript` 3,
+`cdxtopeScript`, `checkvmdifferentialScript`, `vmconfigScript` 1 each).
+**Line rules have reached zero yield** (2026-09-30). 141 blocks with a
+reproducible opener still hold unconvertible lines: 36 hold one, 29 two, 23
+three, 12 four, 41 five or more. Two further levers were simulated and each
+freed 0 blocks: a `"..." | Set-Content -Path $x -Encoding UTF8` rule (every
+one of its 21 sites carries a `` `t `` inside the quotes, which `SeText`
+cannot render because `ps-dquote` doubles every backtick), and parsing
+`} else {` into `ScIf`'s else list (32 blocks carry an else, and each also
+holds another unconvertible line). The commonest unrenderable token is that
+escape: 93 raw payloads in 17 generators carry a double-quoted `` `t ``, `` `n ``
+or similar, and 17 of the 141 blocks do. A node for it is the next lever, and
+it frees no block alone either.
 
 ## 3. The ratchet
 
@@ -233,9 +244,13 @@ Re-measured 2026-09-08 over the raw payloads in `codex/build/*Script.codex`:
 | `Join-Path` embedded further in | 253 |
 
 **120 of the 123 bare payloads are DIRECTLY the right-hand side of an
-`ScAssign`.** A statement-level assign-a-path command emits `$X = Join-Path a b c`
-with no parentheses, byte-identical to what ships, and converts 120 with the
-oracle still proving the change. The alternative, a one-time reviewed
+`ScAssign`.** No new command is needed: `ScAssign "X" (SeBare (SePathJoinN
+[a, b, c]))` already emits `$X = Join-Path a b c` with no parentheses,
+byte-identical to what ships. `$env:JOINPATH` in `build/shell-block-convert.ps1`
+converted 94 of them in 12 generators, each byte-level (2026-09-30). 11 more
+sit in `compilearm64Script` and `compileriscvScript`, whose generators are
+abandoned (`Build.md`), and 7 have an argument that is not a single
+atom or double-quoted string (`bvtScript` 4, `gdbwatchpointScript` 3). The alternative, a one-time reviewed
 reparenthesization, spends that oracle instead: 123 lines of intended drift
 cannot be told from a mistake by `match / 0 drift`, and
 `check-generated-scripts.ps1` has no `-Write` precisely so the shipped script

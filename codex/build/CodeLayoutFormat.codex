@@ -6,7 +6,7 @@ Chapter: CodeLayoutFormat
 
 Section: Lines
 
-  clf-width : Integer = 100
+  clf-width : Integer = 128
 
   clf-lines : Text, Integer, Integer, List Text -> List Text
   clf-lines (t) (i) (start) (acc) =
@@ -42,8 +42,50 @@ Section: Record Literals
   clf-literal (s) =
     if text-length s == 0 then False
     else let c = char-code-at s 0
-    in if c >= 3 & c <= 12 then True
-    else c == char-code '"' | c == char-code '-' | c == char-code '\''
+    in if c == char-code '"' then clf-string-literal s 1
+    else if c == char-code '\'' then text-length s >= 3 & clf-char-end s 0 == text-length s
+    else if s == "True" | s == "False" then True
+    else clf-number s (if c == char-code '-' then 1 else 0)
+
+  clf-string-literal : Text, Integer -> Boolean
+  clf-string-literal (s) (i) =
+    if i >= text-length s then False
+    else let c = char-code-at s i
+    in if c == char-code '\\' then clf-string-literal s (i + 2)
+    else if c == char-code '"' then i + 1 == text-length s
+    else clf-string-literal s (i + 1)
+
+  clf-digit : Integer -> Boolean
+  clf-digit (c) = c >= char-code '0' & c <= char-code '9'
+
+  clf-hex-letter : Integer, Integer -> Boolean
+  clf-hex-letter (c) (i) =
+    if i >= 12 then False
+    else if char-code-at "abcdefABCDEF" i == c then True
+    else clf-hex-letter c (i + 1)
+
+  clf-digits : Text, Integer, Boolean -> Boolean
+  clf-digits (s) (i) (hex) =
+    if i >= text-length s then True
+    else let c = char-code-at s i
+    in if clf-digit c | c == char-code '_' | (hex & clf-hex-letter c 0) then clf-digits s (i + 1) hex
+    else False
+
+  clf-number : Text, Integer -> Boolean
+  clf-number (s) (i) =
+    if i >= text-length s then False
+    else if char-code-at s i == char-code '#' then
+      i + 1 < text-length s & clf-digits s (i + 1) True
+    else if clf-digit (char-code-at s i) then clf-decimal s (i + 1) False
+    else False
+
+  clf-decimal : Text, Integer, Boolean -> Boolean
+  clf-decimal (s) (i) (dot) =
+    if i >= text-length s then True
+    else let c = char-code-at s i
+    in if clf-digit c | c == char-code '_' then clf-decimal s (i + 1) dot
+    else if c == char-code '.' & dot == False then clf-decimal s (i + 1) True
+    else False
 
   clf-all-literal : List Text, Integer -> Boolean
   clf-all-literal (fs) (i) =
@@ -77,8 +119,9 @@ Section: Record Literals
 
   clf-char-end : Text, Integer -> Integer
   clf-char-end (l) (i) =
-    if i + 2 < text-length l & char-code-at l (i + 2) == char-code '\'' then i + 3
-    else if i + 3 < text-length l & char-code-at l (i + 1) == char-code '\\' & char-code-at l (i + 3) == char-code '\'' then i + 4
+    if i + 1 < text-length l & char-code-at l (i + 1) == char-code '\\' then
+      if i + 3 < text-length l & char-code-at l (i + 3) == char-code '\'' then i + 4 else i + 1
+    else if i + 2 < text-length l & char-code-at l (i + 2) == char-code '\'' then i + 3
     else i + 1
 
   clf-lit-end : Text, Integer -> Integer
@@ -390,20 +433,19 @@ Section: Decisions
   clf-ends-eq : Text -> Boolean
   clf-ends-eq (t) = char-code-at t (text-length t - 1) == char-code '='
 
-  clf-top-line : ClfSt, Text, Integer, Text -> ClfSt
-  clf-top-line (st) (l) (o) (t) =
+  clf-top-line : ClfSt, Text, Text -> ClfSt
+  clf-top-line (st) (l) (t) =
     let s1 = clf-reset st
     in let s2 = __record-set s1 "st-out" (list-push (s1.st-out) l)
-    in if o < 2 then s2
-    else let s3 = clf-scan s2 t 0 0 4 4
+    in let s3 = clf-scan s2 t 0 0 4 4
     in if s3.st-branch < 0 & clf-ends-eq t then __record-set s3 "st-branch" 4 else s3
 
   clf-line : ClfSt, Text -> ClfSt
   clf-line (st) (l) =
     let t = clf-trim l
     in let o = clf-indent l 0
-    in if t == "" then __record-set st "st-out" (list-push (st.st-out) l)
-    else if o <= 2 then clf-top-line st l o t
+    in if t == "" | o < 2 then __record-set st "st-out" (list-push (st.st-out) l)
+    else if o == 2 then clf-top-line st l t
     else clf-body-line st o t
 
   clf-layout : List Text, Integer, ClfSt -> ClfSt
@@ -432,6 +474,7 @@ Section: The R7 Report
   clf-long-str : Text, Integer, Integer -> Integer
   clf-long-str (l) (i) (best) =
     if i >= text-length l then best
+    else if char-code-at l i == char-code '\'' then clf-long-str l (clf-char-end l i) best
     else if char-code-at l i == char-code '"' then clf-long-str-at l i (clf-str-end l (i + 1)) best
     else clf-long-str l (i + 1) best
 
@@ -450,6 +493,7 @@ Section: The R7 Report
   clf-table-at (l) (i) =
     let c = clf-close-at l (i + 1) 1
     in if c < 0 then False
+    else if c - i + 1 <= clf-width - clf-indent l 0 then clf-has-table l (i + 1)
     else if clf-all-literal (clf-fields l (i + 1) c 0 (i + 1) []) 0 then True
     else clf-has-table l (i + 1)
 
@@ -464,6 +508,7 @@ Section: The R7 Report
   clf-report (ls) (i) =
     if i >= list-length ls then act print-uni "" end
     else if text-length (list-at ls i) <= clf-width then clf-report ls (i + 1)
+    else if clf-indent (list-at ls i) 0 == 1 then clf-report ls (i + 1)
     else act
       print-line-uni (show (i + 1) & ": " & clf-kind (list-at ls i) & ": " & show (text-length (list-at ls i)))
       clf-report ls (i + 1)

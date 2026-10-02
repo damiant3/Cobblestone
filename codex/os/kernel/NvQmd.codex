@@ -1,0 +1,118 @@
+Chapter: NvQmd
+  cites Foreword chapter Format
+
+ The compute launch descriptor (QMD) for MAXWELL_COMPUTE_B, in NVIDIA's
+ version 00_06 layout (cla0c0qmd.h, NVA0C0_QMDV00_06_*), the layout both of
+ Mesa's drivers fill for every compute class from Kepler to Maxwell
+ (mesa-24.2.0: gallium nve4_compute_setup_launch_desc, NAK Qmd0_6). The
+ descriptor is 64 little-endian 32-bit words; a field MW(hi:lo) occupies
+ bits lo..hi of that bit string, word lo / 32.
+
+ Fields and values set, as the union of the two fillers. From NAK:
+ QMD_MAJOR_VERSION 583:580 = 0, QMD_VERSION 579:576 = 6, SAMPLER_INDEX
+ 382:382 = INDEPENDENTLY (0). From gallium: INVALIDATE_TEXTURE_HEADER_CACHE
+ 250, INVALIDATE_TEXTURE_SAMPLER_CACHE 251, INVALIDATE_TEXTURE_DATA_CACHE
+ 252, INVALIDATE_SHADER_DATA_CACHE 253, INVALIDATE_SHADER_CONSTANT_CACHE 255,
+ all TRUE (1); RELEASE_MEMBAR_TYPE 366:366 = FE_SYSMEMBAR (1); CWD_MEMBAR_TYPE
+ 369:368 = L1_SYSMEMBAR (1); SHADER_LOCAL_MEMORY_CRS_SIZE 1527:1504 = 0x800.
+ From both: API_VISIBLE_CALL_LIMIT 378:378 = NO_CHECK (1); SASS_VERSION
+ 1535:1528 = 0x30; PROGRAM_OFFSET 287:256; CTA_RASTER_WIDTH 415:384, HEIGHT
+ 431:416, DEPTH 447:432; CTA_THREAD_DIMENSION0..2 607:592, 623:608, 639:624;
+ SHARED_MEMORY_SIZE 561:544, rounded up to 0x100; L1_CONFIGURATION 671:669,
+ 16 KB (1) up to 16 KB of shared memory, 32 KB (2) up to 32 KB, 48 KB (3) up
+ to 48 KB, and more is refused; SHADER_LOCAL_MEMORY_LOW_SIZE 1463:1440,
+ rounded up to 0x10 as NAK rounds it; SHADER_LOCAL_MEMORY_HIGH_SIZE
+ 1495:1472 = 0; REGISTER_COUNT 1503:1496; BARRIER_COUNT 1471:1467; constant
+ buffer i: ADDR_LOWER 959+64i:928+64i, ADDR_UPPER 967+64i:960+64i (a 40-bit
+ address, 256-byte aligned as gallium asserts), SIZE 991+64i:975+64i (at
+ most 0x10000), VALID 640+i.
+
+Section: Descriptor
+
+  QmdLaunch = record {
+   program-offset : Integer,
+   grid-x : Integer,
+   grid-y : Integer,
+   grid-z : Integer,
+   block-x : Integer,
+   block-y : Integer,
+   block-z : Integer,
+   shared-size : Integer,
+   local-size : Integer,
+   register-count : Integer,
+   barrier-count : Integer,
+   cb0-address : Integer,
+   cb0-size : Integer
+  }
+
+  nv-qmd-in : Integer, Integer, Integer -> Boolean
+  nv-qmd-in (v) (lo) (hi) = if v < lo then False else v <= hi
+
+  nv-qmd-round : Integer, Integer -> Integer
+  nv-qmd-round (v) (m) = ((v + m - 1) / m) * m
+
+  nv-qmd-l1 : Integer -> Integer
+  nv-qmd-l1 (smem) = if smem <= 16384 then 1 else if smem <= 32768 then 2 else 3
+
+  nv-qmd-ok : QmdLaunch -> Boolean
+  nv-qmd-ok (q) =
+    if nv-qmd-in q.program-offset 0 #FFFFFFFF == False then False
+    else if nv-qmd-in q.grid-x 1 #FFFFFFFF == False then False
+    else if nv-qmd-in q.grid-y 1 65535 == False then False
+    else if nv-qmd-in q.grid-z 1 65535 == False then False
+    else if nv-qmd-in q.block-x 1 65535 == False then False
+    else if nv-qmd-in q.block-y 1 65535 == False then False
+    else if nv-qmd-in q.block-z 1 65535 == False then False
+    else if nv-qmd-in q.shared-size 0 49152 == False then False
+    else if nv-qmd-in q.local-size 0 #FFFFF0 == False then False
+    else if nv-qmd-in q.register-count 0 255 == False then False
+    else if nv-qmd-in q.barrier-count 0 31 == False then False
+    else if nv-qmd-in q.cb0-address 0 #FFFFFFFFFF == False then False
+    else if bit-and q.cb0-address 255 /= 0 then False
+    else nv-qmd-in q.cb0-size 0 65536
+
+  nv-qmd-set : List Integer, Integer, Integer, Integer -> List Integer
+  nv-qmd-set (words) (hi) (lo) (v) =
+    let w = lo / 32
+    in if hi / 32 /= w then []
+    else let width = hi - lo + 1
+    in let mask = if width == 32 then #FFFFFFFF else bit-shl 1 width - 1
+    in let shift = lo - 32 * w
+    in let old = list-at words w
+    in let cleared = bit-and old (bit-xor #FFFFFFFF (bit-shl mask shift))
+    in nv-qmd-with words w (bit-or cleared (bit-shl (bit-and v mask) shift))
+
+  nv-qmd-with : List Integer, Integer, Integer -> List Integer
+  nv-qmd-with (words) (w) (v) = nv-qmd-copy words w v 0 []
+
+  nv-qmd-copy : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  nv-qmd-copy (words) (w) (v) (i) (acc) =
+    if i >= list-length words then acc
+    else nv-qmd-copy words w v (i + 1) (acc & [if i == w then v else list-at words i])
+
+  nv-qmd-zero : Integer, List Integer -> List Integer
+  nv-qmd-zero (n) (acc) = if n == 0 then acc else nv-qmd-zero (n - 1) (acc & [0])
+
+  nv-qmd-fields : List Integer, List (List Integer), Integer -> List Integer
+  nv-qmd-fields (words) (fs) (i) =
+    if i >= list-length fs then words
+    else if list-length words == 0 then []
+    else let f = list-at fs i
+    in nv-qmd-fields (nv-qmd-set words (list-at f 0) (list-at f 1) (list-at f 2)) fs (i + 1)
+
+  nv-qmd-v0006 : QmdLaunch -> List Integer
+  nv-qmd-v0006 (q) =
+    if nv-qmd-ok q == False then []
+    else let smem = nv-qmd-round q.shared-size 256
+    in let cb = if q.cb0-size > 0 then [[959, 928, bit-and q.cb0-address #FFFFFFFF], [967, 960, bit-shru q.cb0-address 32], [991, 975, q.cb0-size], [640, 640, 1]] else []
+    in nv-qmd-fields (nv-qmd-zero 64 []) ([
+     [583, 580, 0], [579, 576, 6], [382, 382, 0], [378, 378, 1], [1535, 1528, 48],
+     [250, 250, 1], [251, 251, 1], [252, 252, 1], [253, 253, 1], [255, 255, 1],
+     [366, 366, 1], [369, 368, 1], [1527, 1504, 2048],
+     [287, 256, q.program-offset],
+     [415, 384, q.grid-x], [431, 416, q.grid-y], [447, 432, q.grid-z],
+     [607, 592, q.block-x], [623, 608, q.block-y], [639, 624, q.block-z],
+     [561, 544, smem], [671, 669, nv-qmd-l1 smem],
+     [1463, 1440, nv-qmd-round q.local-size 16], [1495, 1472, 0],
+     [1503, 1496, q.register-count], [1471, 1467, q.barrier-count]
+    ] & cb) 0

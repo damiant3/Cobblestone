@@ -6,10 +6,30 @@ Chapter: AccpProtocol
 
 Section: Request Contract
 
-  AccpRequest = record { op : Text, source : Text, input : Text, id : Text, ms : Integer, stdout-limit : Integer, library : Text, output : Text, why : Text }
+  AccpRequest = record {
+    op : Text,
+    source : Text,
+    input : Text,
+    id : Text,
+    ms : Integer,
+    stdout-limit : Integer,
+    library : Text,
+    output : Text,
+    why : Text
+  }
 
   ap-bad : Text -> AccpRequest
-  ap-bad (why) = AccpRequest { op = "", source = "\"\"", input = "\"\"", id = "", ms = 2000, stdout-limit = 65536, library = "none", output = "text", why = why }
+  ap-bad (why) = AccpRequest {
+    op = "",
+    source = "\"\"",
+    input = "\"\"",
+    id = "",
+    ms = 2000,
+    stdout-limit = 65536,
+    library = "none",
+    output = "text",
+    why = why
+  }
 
   ap-known-fields : List AccpField, Integer -> Boolean
   ap-known-fields (fs) (i) =
@@ -60,18 +80,35 @@ Section: Request Contract
     in if limits.ok == False | list-length limits.fields > limit-count
       then ap-bad "invalid limits object"
     else if ms <= 0 | ms > 10000 | out <= 0 | out > 65536 then ap-bad "limits exceed host bounds"
-    else if id /= "" & (ap-string-size id False < 0 | text-length id > 1024) then ap-bad "id must be a bounded string"
-    else if op /= "check" & op /= "run" & op /= "lens" & op /= "describe" then ap-bad "unsupported op"
-    else if library /= "none" & library /= "math" & library /= "physics" & library /= "experiment" then ap-bad "unknown library; choose none, math, physics or experiment"
+    else if id /= "" & (ap-string-size id False < 0 | text-length id > 1024) then
+      ap-bad "id must be a bounded string"
+    else if op /= "check" & op /= "run" & op /= "lens" & op /= "describe" then
+      ap-bad "unsupported op"
+    else if library /= "none" & library /= "math" & library /= "physics" & library /= "experiment" then
+      ap-bad "unknown library; choose none, math, physics or experiment"
     else if output /= "text" & output /= "json" then ap-bad "output must be text or json"
     else if op /= "run" & output-raw /= "" then ap-bad "output is only valid for run"
     else if op == "describe" & library-raw /= "" then ap-bad "describe takes no library"
-    else if op == "describe" & (source /= "" | input /= "" | aj-get o "plug" /= "") then ap-bad "describe takes no program"
-    else if op /= "describe" & (ap-string-size source True < 0 | ap-string-size source True > 65536) then ap-bad "source must be a NUL-free string within source_bytes"
-    else if input /= "" & (op /= "run" | ap-string-size input False < 0 | ap-string-size input False > 65536) then ap-bad "invalid input or input_bytes exceeded"
+    else if op == "describe" & (source /= "" | input /= "" | aj-get o "plug" /= "") then
+      ap-bad "describe takes no program"
+    else if op /= "describe" & (ap-string-size source True < 0 | ap-string-size source True > 65536) then
+      ap-bad "source must be a NUL-free string within source_bytes"
+    else if input /= "" & (op /= "run" | ap-string-size input False < 0 | ap-string-size input False > 65536) then
+      ap-bad "invalid input or input_bytes exceeded"
     else if op == "lens" & aj-text o "plug" /= "wasm" then ap-bad "only the wasm lens is supported"
     else if op /= "lens" & aj-get o "plug" /= "" then ap-bad "plug is only valid for lens"
-    else AccpRequest { op = op, source = if source == "" then "\"\"" else source, input = if input == "" then "\"\"" else input, id = id, ms = ms, stdout-limit = out, library = library, output = output, why = "" }
+    else
+      AccpRequest {
+        op = op,
+        source = if source == "" then "\"\"" else source,
+        input = if input == "" then "\"\"" else input,
+        id = id,
+        ms = ms,
+        stdout-limit = out,
+        library = library,
+        output = output,
+        why = ""
+      }
 
 Section: Adapter Wire
 
@@ -126,14 +163,21 @@ Section: Compiler Output
   ap-contains-loop : Text, Text, Integer -> Boolean
   ap-contains-loop (s) (needle) (i) =
     if i + text-length needle > text-length s then False
-    else if substring s i (text-length needle) == needle then True else ap-contains-loop s needle (i + 1)
+    else if substring s i (text-length needle) == needle then
+      True
+    else ap-contains-loop s needle (i + 1)
 
   ap-compile : Text -> AccpCompile
   ap-compile (s) = ap-compile-lines s 0 -1 -1 0 []
 
   ap-compile-lines : Text, Integer, Integer, Integer, Integer, List Text -> AccpCompile
   ap-compile-lines (s) (i) (start) (stop) (blocks) (diags) =
-    if i >= text-length s then AccpCompile { ir = if start >= 0 & stop >= start then substring s start (stop - start) else "", diagnostics = diags, ok = blocks == 2 & start >= 0 & stop > start }
+    if i >= text-length s then
+      AccpCompile {
+        ir = if start >= 0 & stop >= start then substring s start (stop - start) else "",
+        diagnostics = diags,
+        ok = blocks == 2 & start >= 0 & stop > start
+      }
     else let stop-line = ap-line-end s i
     in let line = substring s i (stop-line - i)
     in if line == "IR-BEGIN" then
@@ -142,7 +186,9 @@ Section: Compiler Output
     else if line == "IR-END" then
       if blocks /= 1 then AccpCompile { ir = "", diagnostics = diags, ok = False }
       else ap-compile-lines s (stop-line + 1) start i 2 diags
-    else let ds = if blocks /= 1 & (ap-contains line "error CDX" | ap-contains line "CODEGEN") then list-push diags line else diags
+    else let ds = if blocks /= 1 & (ap-contains line "error CDX" | ap-contains line "CODEGEN") then
+      list-push diags line
+    else diags
     in ap-compile-lines s (stop-line + 1) start stop blocks ds
 
 Section: Pipeline
@@ -155,13 +201,16 @@ Section: Pipeline
 
   ap-source : AccpRequest -> [Console] AccpObject
   ap-source (req) = act
-    if req.library == "none" | req.why /= "" then aj-object ("{\"status\":\"ok\",\"source\":" & req.source & "}")
+    if req.library == "none" | req.why /= "" then
+      aj-object ("{\"status\":\"ok\",\"source\":" & req.source & "}")
     else act
       bundle <- ap-call ("{\"bridge\":\"library\",\"name\":" & aj-quote req.library & "}")
-      if bundle.ok == False | aj-text bundle "status" /= "ok" then aj-object (ap-error "error" "library" "library artifact unavailable")
+      if bundle.ok == False | aj-text bundle "status" /= "ok" then
+        aj-object (ap-error "error" "library" "library artifact unavailable")
       else let library-source = aj-get bundle "source"
       in let source = "\"" & substring library-source 1 (text-length library-source - 2) & "\\n" & substring req.source 1 (text-length req.source - 2) & "\""
-      in if ap-string-size source True > 65536 then aj-object (ap-error "refused" "library" "combined library and caller source exceeds source_bytes")
+      in if ap-string-size source True > 65536 then
+        aj-object (ap-error "refused" "library" "combined library and caller source exceeds source_bytes")
       else aj-object ("{\"status\":\"ok\",\"source\":" & source & "}")
     end
   end
@@ -171,12 +220,15 @@ Section: Pipeline
     compiled <- ap-call ("{\"bridge\":\"compile\",\"source\":" & source & ",\"limits\":" & ap-limits req & "}")
     if aj-text compiled "status" /= "ok" then ap-step-error compiled "compile"
     else let c = ap-compile (aj-text compiled "text")
-    in if list-length c.diagnostics > 0 then "{\"status\":\"diagnostics\",\"diagnostics\":" & ai-json-list c.diagnostics & "}"
+    in if list-length c.diagnostics > 0 then
+      "{\"status\":\"diagnostics\",\"diagnostics\":" & ai-json-list c.diagnostics & "}"
     else if c.ok == False then ap-error "error" "compile" "missing or malformed IR frame"
     else let a = ai-admit c.ir
     in if a.ok == False then ap-error "refused" "admission" a.reason
-    else if req.op == "check" then "{\"status\":\"ok\",\"diagnostics\":[]," & ap-row a & ",\"outside_ambient\":" & ai-json-list (ai-needs a) & "}"
-    else if list-length (ai-needs a) > 0 then "{\"status\":\"refused\",\"stage\":\"admission\"," & ap-row a & ",\"needs\":" & ai-json-list (ai-needs a) & "}"
+    else if req.op == "check" then
+      "{\"status\":\"ok\",\"diagnostics\":[]," & ap-row a & ",\"outside_ambient\":" & ai-json-list (ai-needs a) & "}"
+    else if list-length (ai-needs a) > 0 then
+      "{\"status\":\"refused\",\"stage\":\"admission\"," & ap-row a & ",\"needs\":" & ai-json-list (ai-needs a) & "}"
     else ap-lens-run req c.ir a
   end
 
@@ -184,11 +236,14 @@ Section: Pipeline
   ap-lens-run (req) (ir) (admission) = act
     lens <- ap-call ("{\"bridge\":\"lens\",\"ir\":" & aj-quote ir & "}")
     if aj-text lens "status" /= "ok" then ap-with-row (ap-step-error lens "lens") admission
-    else if req.op == "lens" then "{\"status\":\"ok\",\"wat\":" & aj-get lens "text" & "," & ap-row admission & "}"
+    else if req.op == "lens" then
+      "{\"status\":\"ok\",\"wat\":" & aj-get lens "text" & "," & ap-row admission & "}"
     else act
       assembled <- ap-call ("{\"bridge\":\"assemble\"}")
-      if aj-text assembled "status" /= "ok" then ap-with-row (ap-step-error assembled "assemble") admission
-      else if ab-admit (aj-text assembled "wasm") == False then ap-error "refused" "imports" "module has malformed or forbidden imports"
+      if aj-text assembled "status" /= "ok" then
+        ap-with-row (ap-step-error assembled "assemble") admission
+      else if ab-admit (aj-text assembled "wasm") == False then
+        ap-error "refused" "imports" "module has malformed or forbidden imports"
       else act
         ran <- ap-call ("{\"bridge\":\"execute\",\"input\":" & req.input & "}")
         if aj-text ran "status" /= "ok" then ap-with-row (ap-step-error ran "run") admission
@@ -203,14 +258,18 @@ Section: Completion
   ap-json-compact (s) (i) (start) (parts) =
     if i >= text-length s then text-concat-list (list-push parts (substring s start (i - start)))
     else if aj-is s i "\"" then ap-json-compact s (aj-string s i).next start parts
-    else if aj-space (aj-at s i) then ap-json-compact s (i + 1) (i + 1) (list-push parts (substring s start (i - start)))
+    else if aj-space (aj-at s i) then
+      ap-json-compact s (i + 1) (i + 1) (list-push parts (substring s start (i - start)))
     else ap-json-compact s (i + 1) start parts
 
   ap-output : AccpRequest, AccpObject, AccpAdmission -> Text
   ap-output (req) (ran) (admission) =
     let raw = aj-text ran "text"
     in let parsed = if req.output == "json" then aj-object raw else aj-object "{}"
-    in let status = if parsed.ok then "\"status\":\"ok\"" else "\"status\":\"error\",\"stage\":\"result\",\"reason\":\"stdout must contain exactly one valid JSON object\""
+    in let status = if parsed.ok then
+      "\"status\":\"ok\""
+    else
+      "\"status\":\"error\",\"stage\":\"result\",\"reason\":\"stdout must contain exactly one valid JSON object\""
     in "{" & status & ",\"stdout\":" & aj-get ran "text" & ",\"stdout_base64\":" & aj-get ran "bytes" & ",\"output_sha256\":" & aj-get ran "sha256"
       & (if req.output == "json" & parsed.ok then ",\"result\":" & ap-json-compact raw 0 0 [] else "") & "," & ap-row admission & "}"
 
@@ -235,9 +294,10 @@ Section: Completion
       prepared <- ap-source req
       hashes <- ap-call ("{\"bridge\":\"hash-inputs\",\"source\":" & req.source & ",\"input\":" & req.input & ",\"compiled_source\":" & (if req.why == "" & req.op /= "describe" & aj-text prepared "status" == "ok" then aj-get prepared "source" else "null") & "}")
       answer <- if req.why /= "" then ap-error "refused" "request" req.why
-        else if req.op == "describe" then ap-describe
-        else if aj-text prepared "status" /= "ok" then ap-error (aj-text prepared "status") "library" (aj-text prepared "reason")
-        else ap-run req (aj-get prepared "source")
+      else if req.op == "describe" then ap-describe
+      else if aj-text prepared "status" /= "ok" then
+        ap-error (aj-text prepared "status") "library" (aj-text prepared "reason")
+      else ap-run req (aj-get prepared "source")
       receipt <- ap-call "{\"bridge\":\"clock\"}"
       let library-fields = ",\"library\":" & aj-quote req.library & ",\"compiled_source_sha256\":" & aj-get hashes "compiled_source_sha256"
       in let response = ap-metadata meta (ap-response-id line req) ("{" & ap-fields answer & library-fields & ",\"ms\":" & (if receipt.ok then aj-get receipt "ms" else "{}") & "}")

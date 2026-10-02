@@ -1,0 +1,78 @@
+Chapter: NvGspArgs
+  cites Foreword chapter CCE
+
+ GSP-RM boot arguments as tinygrad builds them (tinygrad/runtime/support/
+ nv/ip.py, init_rm_args and init_libos_args, at c3aec477; structures in
+ runtime/autogen/nv.py). Little-endian throughout.
+
+ The command and status queues share one allocation: a page table of 64-bit
+ page addresses, one per 4 KB page of the whole allocation, then the command
+ queue, then the status queue, each queue-size bytes. With q = 2 * queue-size
+ / 4096 queue pages, the entry count is q + roundup(8 q, 4096) / 4096 and the
+ table occupies roundup(8 * entries, 4096) bytes.
+
+ GSP_ARGUMENTS_CACHED (72 bytes): MESSAGE_QUEUE_INIT_ARGUMENTS at 0
+ (sharedMemPhysAddr 0, the allocation's first page; pageTableEntryCount 8,
+ 32-bit; cmdQueueOffset 16, the table size; statQueueOffset 24, table size +
+ queue-size); srInitArguments 32..43 and gpuInstance 44 zero; bDmemStack 48
+ = 1; profilerArgs 56..71 zero.
+
+ The command queue's msgqTxHeader (32 bytes, 32-bit fields): version 0 = 0,
+ size 4 = queue-size, msgSize 8 = 0x1000, msgCount 12 = (queue-size -
+ 0x1000) / 0x1000, writePtr 16 = 0, flags 20 = 1, rxHdrOff 24 = 32, entryOff
+ 28 = 0x1000.
+
+ LibosMemoryRegionInitArgument (32 bytes): id8 0, eight ASCII bytes of the
+ region's name read as a big-endian integer; pa 8; size 16; kind 24 =
+ LIBOS_MEMORY_REGION_CONTIGUOUS (1); loc 25 = LIBOS_MEMORY_REGION_LOC_SYSMEM
+ (1). Six regions: LOGINIT, LOGINTR, LOGRM, LOGMNOC and LOGKRNL, 0x10000
+ bytes each at log buffer + 0x10000 i, then RMARGS, 0x1000 bytes at the
+ GSP_ARGUMENTS_CACHED page.
+
+Section: Arguments
+
+  args-u32 : Integer -> List Integer
+  args-u32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  args-u64 : Integer -> List Integer
+  args-u64 (v) = args-u32 (bit-and v #FFFFFFFF) & args-u32 (bit-shru v 32)
+
+  args-zeros : Integer, List Integer -> List Integer
+  args-zeros (n) (acc) = if n <= 0 then acc else args-zeros (n - 1) (acc & [0])
+
+  args-up : Integer, Integer -> Integer
+  args-up (v) (m) = ((v + m - 1) / m) * m
+
+  nv-gsp-queue-ptes : Integer -> Integer
+  nv-gsp-queue-ptes (queue-size) =
+    let q = (queue-size * 2) / 4096
+    in q + args-up (q * 8) 4096 / 4096
+
+  nv-gsp-queue-table-size : Integer -> Integer
+  nv-gsp-queue-table-size (queue-size) = args-up (nv-gsp-queue-ptes queue-size * 8) 4096
+
+  nv-gsp-queue-table : List Integer, Integer, List Integer -> List Integer
+  nv-gsp-queue-table (pages) (i) (acc) = if i >= list-length pages then acc else nv-gsp-queue-table pages (i + 1) (acc & args-u64 (list-at pages i))
+
+  nv-gsp-rm-args : Integer, Integer -> List Integer
+  nv-gsp-rm-args (first-page) (queue-size) =
+    let table = nv-gsp-queue-table-size queue-size
+    in args-u64 first-page & args-u32 (nv-gsp-queue-ptes queue-size) & args-zeros 4 [] & args-u64 table & args-u64 (table + queue-size) & args-zeros 16 [] & [1] & args-zeros 23 []
+
+  nv-gsp-tx-header : Integer -> List Integer
+  nv-gsp-tx-header (queue-size) =
+    args-u32 0 & args-u32 queue-size & args-u32 #1000 & args-u32 ((queue-size - #1000) / #1000) & args-u32 0 & args-u32 1 & args-u32 32 & args-u32 #1000
+
+  args-name : Text, Integer, Integer -> Integer
+  args-name (name) (i) (acc) =
+    if i >= text-length name then acc
+    else args-name name (i + 1) (bit-or (bit-shl acc 8) (to-unicode (char-code (char-at name i))))
+
+  args-region : Text, Integer, Integer -> List Integer
+  args-region (name) (pa) (size) = args-u64 (args-name name 0 0) & args-u64 pa & args-u64 size & [1, 1] & args-zeros 6 []
+
+  nv-gsp-libos-args : Integer, Integer -> List Integer
+  nv-gsp-libos-args (logbuf) (rm-args) =
+    let logs = args-region "LOGINIT" logbuf #10000 & args-region "LOGINTR" (logbuf + #10000) #10000 & args-region "LOGRM" (logbuf + #20000) #10000
+    in let more = args-region "LOGMNOC" (logbuf + #30000) #10000 & args-region "LOGKRNL" (logbuf + #40000) #10000
+    in logs & more & args-region "RMARGS" rm-args #1000

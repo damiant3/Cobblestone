@@ -1,0 +1,126 @@
+Chapter: UNetXlArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter UNetGraph
+  cites Diffusion chapter BrowserUNet
+  cites AI chapter SafeTensors
+
+ We say:
+
+Section: Header
+
+  opening : [Console] Integer
+  opening =
+    let c = dom-on-click (dom-query "html") ux-pick
+    in state-set "armed" 1
+
+  ux-pick : Text -> Integer
+  ux-pick (id) = if state-get "picked" == 1 then 0 else let p = state-set "picked" 1 in pick-file-then ".safetensors" ux-picked
+
+  ux-picked : Text -> Integer
+  ux-picked (r) =
+    let f = state-set-text "file" (json-obj-field (json-parse-obj r) "name")
+    in gpu-open-then ux-opened
+
+  ux-opened : Text -> Integer
+  ux-opened (r) = file-read-then (state-get-text "file") 0 8 ux-got-len
+
+  ux-ints : List Text, Integer, List Integer -> List Integer
+  ux-ints (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else ux-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  ux-list : Text -> List Integer
+  ux-list (t) = if text-length t < 3 then [] else ux-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  ux-got-len : Text -> Integer
+  ux-got-len (r) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (ux-list r) 0) ux-got-header
+
+  ux-part : List PartBinding, Integer, Text -> List BoundTensor
+  ux-part (parts) (i) (name) =
+    if i >= list-length parts then []
+    else if (list-at parts i).pb-name == name then (list-at parts i).pb-bound
+    else ux-part parts (i + 1) name
+
+  ux-got-header : Text -> Integer
+  ux-got-header (r) =
+    let lb = layout-bind (st-parse-file (ux-list r)) sdxl-layout
+    in ux-upload (ux-part (lb.lb-parts) 0 "unet") 0 [] [] 0
+
+Section: Upload
+
+  ux-prefix : Text = "model.diffusion_model."
+
+  ux-short : Text -> Text
+  ux-short (n) = substring n (text-length ux-prefix) (text-length n - text-length ux-prefix)
+
+  ux-dt : Integer -> Integer
+  ux-dt (d) = if d == st-dtype-f16 then gpu-dt-f16 else if d == st-dtype-f32 then gpu-dt-f32 else 0 - 1
+
+  ux-upload : List BoundTensor, Integer, List Text, List Integer, Integer -> Integer
+  ux-upload (ts) (i) (ns) (hs) (bad) =
+    if i >= list-length ts then ux-run (BuWeights { bu-names = ns, bu-handles = hs }) bad
+    else let t = list-at ts i
+    in let dt = ux-dt (t.bt-dtype)
+    in let elems = t.bt-bytes / st-dtype-width (t.bt-dtype)
+    in let h = if dt < 0 then 0 else gpu-buf-alloc (if bt-half t then (elems + 1) / 2 * 4 else elems * 4)
+    in let ns2 = list-snoc ns (ux-short (t.bt-name))
+    in if h == 0 then ux-upload ts (i + 1) ns2 (list-snoc hs 0) (bad + 1)
+    else gpu-buf-upload-then h 0 (state-get-text "file") (t.bt-offset) elems dt (if bt-half t then gpu-dt-f16 else gpu-dt-f32) (\r -> ux-uploaded ts i ns2 (list-snoc hs h) bad r)
+
+  ux-uploaded : List BoundTensor, Integer, List Text, List Integer, Integer, Text -> Integer
+  ux-uploaded (ts) (i) (ns) (hs) (bad) (r) =
+    if text-contains r "\"ok\":true" then ux-upload ts (i + 1) ns hs bad
+    else ux-upload ts (i + 1) ns hs (bad + 1)
+
+Section: Step
+
+  ux-buf : Text, Integer -> Integer
+  ux-buf (key) (n) =
+    let h = gpu-buf-alloc (n * 4)
+    in if h == 0 then 0
+    else if gpu-buf-write-words h 0 (ux-list (page-data key)) then h
+    else bu-free 0 h
+
+  ux-run : BuWeights, Integer -> Integer
+  ux-run (w) (bad) =
+    let a = state-set "tensors" (list-length (w.bu-names))
+    in let b = state-set "failed" bad
+    in let ops = browser-unet-ops (page-data "bk") (\h -> 77)
+    in let x = ux-buf "latent" 1024
+    in let y = ux-buf "label" 2816
+    in let ctx = ux-buf "context" 157696
+    in let emb = unet-embedding-with ops w 500.0 y
+    in let embs = ops.silu emb 1280
+    in let blocks = unet-forward-with ops w x embs ctx 16 16
+    in let count = state-set "blocks" (list-length blocks)
+    in let far = unet-embedding-with ops w 900.0 y
+    in let fars = ops.silu far 1280
+    in let s1 = unet-resblock-with ops w (list-at blocks 0) fars 320 320 16 16 "input_blocks.1.0."
+    in let ctx0 = gpu-buf-alloc (157696 * 4)
+    in let r4 = unet-resblock-with ops w (list-at blocks 3) embs 320 640 8 8 "input_blocks.4.0."
+    in let s4 = unet-transformer-with ops w r4 640 8 8 ctx0 "input_blocks.4.1." 2
+    in let freed = ux-free [x, y, ctx, emb, embs, far, fars, ctx0, r4] 0
+    in let e = state-set-text "err-run" (gpu-error 0)
+    in ux-download (list-snoc (list-snoc blocks s1) s4) (ux-list (page-data "sizes")) 0 (w.bu-handles)
+
+  ux-free : List Integer, Integer -> Integer
+  ux-free (hs) (i) = if i >= list-length hs then 0 else let f = gpu-buf-free (list-at hs i) in ux-free hs (i + 1)
+
+  ux-download : List Integer, List Integer, Integer, List Integer -> Integer
+  ux-download (hs) (sizes) (i) (weights) =
+    if i >= list-length hs then let f = ux-free weights 0 in ux-done 0
+    else gpu-buf-download-then (list-at hs i) 0 (list-at sizes i * 4) (\r -> ux-got hs sizes i weights r)
+
+  ux-got : List Integer, List Integer, Integer, List Integer, Text -> Integer
+  ux-got (hs) (sizes) (i) (weights) (r) =
+    let s = state-set-text ("b" & show i) r
+    in let f = gpu-buf-free (list-at hs i)
+    in ux-download hs sizes (i + 1) weights
+
+  ux-done : Integer -> Integer
+  ux-done (z) =
+    let e = state-set-text "err" (gpu-error 0)
+    in state-set "done" 1
+

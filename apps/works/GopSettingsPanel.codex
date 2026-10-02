@@ -1,0 +1,176 @@
+Chapter: GopSettingsPanel
+  cites Works chapter GopSettings
+  cites UI chapter SettingsPanel
+  cites UI chapter Widget
+  cites UI chapter Theme
+
+ We say:
+
+  SettingsPanelResult =
+    | SettingsPage (Integer)
+    | SettingsCandidate (SettingsStore)
+    | SettingsPanelRefused (Text)
+    | SettingsUnchanged
+
+  gsp-unavailable : Text, Text -> WidgetNode
+  gsp-unavailable (id) (label) = widget-add-flag (widget-label id label) flag-disabled
+
+  gsp-form : Text, List SettingsField -> WidgetNode
+  gsp-form (title) (fields) =
+    let w = settings-widget (settings-with-label-width (settings-spec "settings-fields" title fields) 128)
+    in widget-set-flex (widget-stack (w.wn-id) DirColumn 4 (gsp-rows (w.wn-children) 0 [])) 0
+
+  gsp-rows : List WidgetNode, Integer, List WidgetNode -> List WidgetNode
+  gsp-rows (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else let w = list-at rows i
+    in let row = when w.wn-kind
+          is WkPanel -> widget-stack (w.wn-id) (w.wn-layout-dir) (w.wn-gap) (w.wn-children)
+          is otherwise -> w
+    in gsp-rows rows (i + 1) (list-push acc row)
+
+  gsp-bit : Integer -> Integer
+  gsp-bit (n) = if n <= 0 then 1 else 2 * gsp-bit (n - 1)
+
+  gsp-flip : Integer, Integer -> Integer
+  gsp-flip (v) (bit) = if bit-and v bit == 0 then v + bit else v - bit
+
+  gsp-pin-fields : SettingsStore, List Text, Integer, Integer, List SettingsField -> List SettingsField
+  gsp-pin-fields (s) (names) (i) (stop) (acc) =
+    if i >= stop | i >= list-length names | i >= 19 then acc
+    else let name = list-at names i
+    in gsp-pin-fields s names (i + 1) stop (if name == "" then acc else list-push acc (sf-toggle ("settings-pin-" & show i) name (bit-and (gst-get s 5 0) (gsp-bit i) /= 0)))
+
+  gsp-body : Integer, SettingsStore, Text, Text, List Text -> WidgetNode
+  gsp-body (page) (s) (theme) (edge) (names) =
+    if page == 0 then widget-stack "settings-home-page" DirColumn 4 [
+      widget-label "settings-title" "Settings",
+      widget-button "settings-appearance" "Appearance",
+      widget-button "settings-sound" "Sound",
+      widget-button "settings-accessibility" "Accessibility",
+      gsp-unavailable "settings-accounts" "Accounts and Parental Controls",
+      gsp-unavailable "settings-accounts-reason" "awaiting Stage 7 ruling",
+      widget-button "settings-system" "System",
+      widget-button "settings-reset" "Reset all settings..."]
+    else if page == 1 then widget-stack "settings-appearance-page" DirColumn 4 [
+      gsp-form "Appearance" [sf-readonly "settings-theme" "Theme" theme,
+        sf-toggle "style-border" "Borders" (bit-and (gst-get s 2 15) 1 /= 0),
+        sf-toggle "style-grad" "Gradients" (bit-and (gst-get s 2 15) 2 /= 0),
+        sf-toggle "style-shadow" "Shadows" (bit-and (gst-get s 2 15) 4 /= 0),
+        sf-toggle "style-round" "Rounded corners" (bit-and (gst-get s 2 15) 8 /= 0)],
+      widget-set-flex (widget-stack "settings-theme-actions" DirRow 4 [widget-button "settings-theme-prev" "Previous theme", widget-button "style-scheme" "Next theme"]) 0,
+      widget-button "settings-wallpaper" "Wallpaper (W)...",
+      gsp-unavailable "settings-scale" "Text scale: awaiting Stage 6"]
+    else if page == 2 then gsp-form "Sound" [sf-toggle "style-sound" "Sounds" (gst-get s 3 0 /= 0)]
+    else if page == 3 then widget-stack "settings-accessibility-page" DirColumn 4 [
+      gsp-form "Accessibility" [sf-toggle "settings-contrast" "Shell high contrast" (gst-get s 7 0 /= 0)],
+      widget-label "settings-contrast-help" "Hides wallpaper while enabled.",
+      gsp-unavailable "settings-accessibility-reason" "Text scaling: awaiting Stage 6"]
+    else if page == 4 then widget-stack "settings-system-page" DirColumn 4 [
+      gsp-form "System" [sf-readonly "settings-edge" "Task edge" edge],
+      widget-set-flex (widget-stack "settings-edge-actions" DirRow 4 [widget-button "settings-edge-prev" "Previous edge", widget-button "style-edge" "Next edge"]) 0,
+      widget-button "settings-pins" "Pinned applications"]
+    else if page == 5 then widget-stack "settings-wallpaper-page" DirColumn 4 [
+      gsp-form "Wallpaper" [],
+      sp-labeled-row "settings-wallpaper-file" "Wallpaper file" 128 (widget-input "settings-wallpaper-file" (gst-get-text s 6 "") (text-length (gst-get-text s 6 ""))),
+      widget-label "settings-wallpaper-help" "Boot partition root: PHOTO.BMP",
+      widget-label "settings-wallpaper-format" "Uncompressed 24/32-bit BMP",
+      widget-label "settings-wallpaper-limit" "File limit: 16 MiB",
+      widget-button "settings-wallpaper-apply" "Apply image",
+      widget-button "settings-wallpaper-none" "Use theme background"]
+    else if page >= 10 & page <= 13 then widget-stack "settings-pins-page" DirColumn 4 [
+      gsp-form ("Pinned applications " & show (page - 9) & "/4") (gsp-pin-fields s names ((page - 10) * 5) ((page - 9) * 5) []),
+      widget-set-flex (widget-stack "settings-pin-pages" DirRow 4 [widget-button "settings-pins-prev" "Previous page", widget-button "settings-pins-next" "Next page"]) 0]
+    else if page == 20 then widget-stack "settings-reset-page" DirColumn 4 [
+      gsp-form "Reset all settings?" [],
+      widget-label "settings-reset-detail" "Restore theme, adornments,",
+      widget-label "settings-reset-detail-2" "sound, task edge and pins,",
+      widget-label "settings-reset-detail-3" "wallpaper and shell high contrast.",
+      widget-button "settings-reset-confirm" "Restore defaults",
+      widget-button "settings-cancel" "Cancel"]
+    else gsp-form "Settings" []
+
+  gsp-tree : Integer, SettingsStore, Text, Text, List Text, Text -> WidgetNode
+  gsp-tree (page) (s) (theme) (edge) (names) (status) =
+    widget-stack "settings" DirColumn 4 ([gsp-body page s theme edge names] &
+      (if page == 0 then [] else [widget-button "settings-home" "Back to Settings"]) &
+      [widget-label "settings-status" status])
+
+  gsp-scroll-tree : Integer, SettingsStore, Text, Text, List Text, Text, Integer -> WidgetNode
+  gsp-scroll-tree (page) (s) (theme) (edge) (names) (status) (offset) =
+    widget-stack "settings" DirColumn 4 ([
+      widget-set-scroll (widget-scroll-view "settings-scroll" DirColumn 0 [gsp-body page s theme edge names]) offset,
+      widget-set-flex (widget-stack "settings-navigation" DirRow 4 [widget-button "settings-home" "Settings", widget-button "settings-up" "Up", widget-button "settings-down" "Down"]) 0] & gsp-status-rows status 0 [])
+
+  gsp-status-rows : Text, Integer, List WidgetNode -> List WidgetNode
+  gsp-status-rows (status) (start) (acc) =
+    if start >= text-length status | start >= 120 then acc
+    else gsp-status-rows status (start + 30) (list-push acc (widget-label ("settings-status-" & show start) (gsp-status-line status start)))
+
+  gsp-status-line : Text, Integer -> Text
+  gsp-status-line (status) (start) =
+    if start >= text-length status then ""
+    else substring status start (if text-length status - start < 30 then text-length status - start else 30)
+
+  gsp-pin-code : Text, Integer -> Integer
+  gsp-pin-code (id) (i) = if i >= 19 then 0 else if id == ("settings-pin-" & show i) then 20 + i else gsp-pin-code id (i + 1)
+
+  gsp-code : Text -> Integer
+  gsp-code (id) =
+    if id == "style-scheme" then 1
+    else if id == "style-border" then 2
+    else if id == "style-grad" then 3
+    else if id == "style-shadow" then 4
+    else if id == "style-round" then 5
+    else if id == "style-sound" then 6
+    else if id == "style-edge" then 7
+    else if id == "settings-theme-prev" then 8
+    else if id == "settings-edge-prev" then 9
+    else if id == "settings-home" | id == "settings-cancel" then 100
+    else if id == "settings-appearance" then 101
+    else if id == "settings-sound" then 102
+    else if id == "settings-accessibility" then 103
+    else if id == "settings-system" then 104
+    else if id == "settings-pins" then 110
+    else if id == "settings-pins-prev" then 111
+    else if id == "settings-pins-next" then 112
+    else if id == "settings-reset" then 120
+    else if id == "settings-reset-confirm" then 121
+    else if id == "settings-up" then 131
+    else if id == "settings-down" then 132
+    else if id == "settings-wallpaper" then 140
+    else if id == "settings-wallpaper-apply" then 141
+    else if id == "settings-wallpaper-none" then 142
+    else if id == "settings-contrast" then 150
+    else gsp-pin-code id 0
+
+  gsp-candidate : SetResult -> SettingsPanelResult
+  gsp-candidate (r) = when r
+    is SetOk (s) -> SettingsCandidate s
+    is SetRefused (why) -> SettingsPanelRefused why
+
+  gsp-edit : SettingsStore, Integer, SettingValue -> SettingsPanelResult
+  gsp-edit (s) (id) (v) = gsp-candidate (gst-set-value (gst-copy s) id v)
+
+  gsp-act : Integer, Integer, SettingsStore, Integer, List Text -> SettingsPanelResult
+  gsp-act (page) (code) (s) (theme-count) (names) =
+    if code >= 100 & code <= 104 then SettingsPage (code - 100)
+    else if code == 110 then SettingsPage 10
+    else if code == 111 & page >= 10 & page <= 13 then SettingsPage (if page == 10 then 13 else page - 1)
+    else if code == 112 & page >= 10 & page <= 13 then SettingsPage (if page == 13 then 10 else page + 1)
+    else if code == 120 then SettingsPage 20
+    else if code == 140 then SettingsPage 5
+    else if code == 121 & page == 20 then SettingsCandidate (gst-reset-all s)
+    else if (code == 1 | code == 8) & page == 1 then
+      if theme-count <= 0 then SettingsPanelRefused "no themes available"
+      else gsp-edit s 1 (SettingInteger (int-mod (gst-get s 1 0 + (if code == 1 then 1 else theme-count - 1)) theme-count))
+    else if code >= 2 & code <= 5 & page == 1 then gsp-edit s 2 (SettingInteger (gsp-flip (gst-get s 2 15) (gsp-bit (code - 2))))
+    else if code == 6 & page == 2 then gsp-edit s 3 (SettingBoolean (gst-get s 3 0 == 0))
+    else if code == 150 & page == 3 then gsp-edit s 7 (SettingBoolean (gst-get s 7 0 == 0))
+    else if (code == 7 | code == 9) & page == 4 then gsp-edit s 4 (SettingInteger (int-mod (gst-get s 4 0 + (if code == 7 then 1 else 3)) 4))
+    else if code >= 20 & code <= 38 & page >= 10 & page <= 13 then
+      let i = code - 20
+      in if i >= list-length names | i < (page - 10) * 5 | i >= (page - 9) * 5 then SettingsUnchanged
+      else if list-at names i == "" then SettingsUnchanged
+      else gsp-edit s 5 (SettingInteger (gsp-flip (gst-get s 5 0) (gsp-bit i)))
+    else SettingsUnchanged

@@ -82,7 +82,8 @@ Section: Phase 3 -- Capabilities
   verify-capabilities (binary) (policy) (lattice) (current-time) =
     let cap-off = read-le64 binary 136
     in let cap-sz = read-le64 binary 144
-    in if caps-well-formed binary cap-off (cap-off + cap-sz) == False then verify-reject PhaseCapabilities "a capability entry runs past its section"
+    in if caps-well-formed binary cap-off (cap-off + cap-sz) == False then
+      verify-reject PhaseCapabilities "a capability entry runs past its section"
     else let author-key = read-author-key binary
     in let trust = lattice-trust-score lattice author-key
     in let caps = decode-capabilities binary cap-off (cap-off + cap-sz)
@@ -122,7 +123,12 @@ Section: Phase 3 -- Capabilities
     in let scope-len = read-le32 binary (off + 4)
     in let scope = verify-bytes-to-text binary (off + 8) scope-len
     in let max-dur = read-le64 binary (off + 8 + scope-len)
-    in let cap = CdxCapability { cap-id = __narrow cap-id, direction = __narrow direction, scope = scope, max-duration = max-dur }
+    in let cap = CdxCapability {
+      cap-id = __narrow cap-id,
+      direction = __narrow direction,
+      scope = scope,
+      max-duration = max-dur
+    }
     in decode-caps-loop binary (off + 16 + scope-len) limit (list-push acc cap)
 
   cap-field-clamp : Integer -> Integer
@@ -185,7 +191,8 @@ Section: Phase 3 -- Capabilities
     }
     in let decision = eval-policy policy ctx
     in if decision.allowed then check-all-caps caps policy trust agent time (i + 1) len
-    else verify-reject PhaseCapabilities ("capability " & cap-name (c.cap-id) & " denied: " & decision.reason)
+    else
+      verify-reject PhaseCapabilities ("capability " & cap-name (c.cap-id) & " denied: " & decision.reason)
 
 Section: Phase 4 -- Effects
 
@@ -194,7 +201,8 @@ Section: Phase 4 -- Effects
     let eff-off = read-le64 binary 152
     in let eff-sz = read-le64 binary 160
     in if eff-sz == 0 then verify-ok PhaseEffects
-    else if effects-well-formed binary eff-off eff-sz == False then verify-reject PhaseEffects "an effect entry runs past its section"
+    else if effects-well-formed binary eff-off eff-sz == False then
+      verify-reject PhaseEffects "an effect entry runs past its section"
     else let effects = decode-effects binary eff-off eff-sz
     in let cap-off = read-le64 binary 136
     in let cap-sz = read-le64 binary 144
@@ -257,7 +265,8 @@ Section: Phase 5 -- Proofs
     else let ro-off = read-le64 binary 184
     in let ro-sz = read-le64 binary 192
     in let proof-off = ro-off + ro-sz
-    in if proof-off >= list-length binary then verify-reject PhaseProofs "proof section out of bounds"
+    in if proof-off >= list-length binary then
+      verify-reject PhaseProofs "proof section out of bounds"
     else let entries = decode-proof-section binary proof-off
     in check-all-proofs entries store fuel 0 (list-length entries)
 
@@ -270,8 +279,9 @@ Section: Phase 5 -- Proofs
     in let found = fact-load store hash-hex
     in when found
       is None -> verify-reject PhaseProofs ("proof not found: " & proof-kind-name (entry.kind))
-      is Just (f) -> if is-proof-fact (f.kind) then check-all-proofs entries store (fuel - 1) (i + 1) len
-        else verify-reject PhaseProofs ("fact is not a proof: " & fact-kind-name (f.kind))
+      is Just (f) -> if is-proof-fact (f.kind) then
+        check-all-proofs entries store (fuel - 1) (i + 1) len
+      else verify-reject PhaseProofs ("fact is not a proof: " & fact-kind-name (f.kind))
 
 Section: Full Verification
 
@@ -314,8 +324,12 @@ Section: Verification From An Address
     in let e1 = if cap-end > eff-end then cap-end else eff-end
     in let e2 = if text-end > ro-end then text-end else ro-end
     in let section-end = if e1 > e2 then e1 else e2
-    in let content-end = if bit-and (read-le16 hdr 6) cdx-flag-has-proofs == 0 then section-end else len
-    in let n = if content-end > cdx-header-fixed-size then content-end - cdx-header-fixed-size else 0
+    in let content-end = if bit-and (read-le16 hdr 6) cdx-flag-has-proofs == 0 then
+      section-end
+    else len
+    in let n = if content-end > cdx-header-fixed-size then
+      content-end - cdx-header-fixed-size
+    else 0
     in let computed-bytes = cdxb-hash-words-to-bytes (sha256-buf addr cdx-header-fixed-size n)
     in bytes-equal (cdx-read-content-hash hdr) computed-bytes 0 32
 
@@ -344,7 +358,8 @@ Section: Verification From An Address
     let flags = read-le16 hdr 6
     in if bit-and flags cdx-flag-has-proofs == 0 then verify-ok PhaseProofs
     else let proof-off = read-le64 hdr 184 + read-le64 hdr 192
-    in if proof-off < 0 | proof-off >= len then verify-reject PhaseProofs "proof section out of bounds"
+    in if proof-off < 0 | proof-off >= len then
+      verify-reject PhaseProofs "proof section out of bounds"
     else let entries = decode-proof-section (cdx-at-read addr proof-off len []) 0
     in check-all-proofs entries store fuel 0 (list-length entries)
 

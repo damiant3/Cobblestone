@@ -66,29 +66,29 @@ Section: Flush Outbox
 
   flush-outbox-loop : NetSession, Integer, Integer -> [Network.Write] Integer
   flush-outbox-loop (sess) (i) (count) =
-   if i >= count then 0
-   else let frame = net-outbox-frame sess i
-   in act
-    sent <- net-driver-send-frame frame
-    rest <- flush-outbox-loop sess (i + 1) count
-    sent + rest
-   end
+    if i >= count then 0
+    else let frame = net-outbox-frame sess i
+    in act
+     sent <- net-driver-send-frame frame
+     rest <- flush-outbox-loop sess (i + 1) count
+     sent + rest
+    end
 
   flush-transport-outbox : TcpTransportState -> [Network.Write] TcpTransportState
   flush-transport-outbox (ts) =
-   let count = net-outbox-count (ts.session)
-   in act
-    flushed <- flush-outbox-loop (ts.session) 0 count
-    let cleared = set-outbox (ts.session) []
-    in transport-set-session ts (cleared)
-   end
+    let count = net-outbox-count (ts.session)
+    in act
+     flushed <- flush-outbox-loop (ts.session) 0 count
+     let cleared = set-outbox (ts.session) []
+     in transport-set-session ts (cleared)
+    end
 
 Section: Listen and Accept
 
   net-io-listen : TcpTransportState -> TcpTransportState
   net-io-listen (ts) =
-   let r = net-listen (ts.session)
-   in transport-set-session ts (r.session)
+    let r = net-listen (ts.session)
+    in transport-set-session ts (r.session)
 
   net-io-accept : TcpTransportState, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-accept (ts) (tries) = net-io-accept-rx ts tries [] 0
@@ -98,25 +98,25 @@ Section: Listen and Accept
 
   net-io-accept-rx : TcpTransportState, Integer, List Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-accept-rx (ts) (tries) (rx) (mark) =
-   if list-length rx == 0 & transport-stale ts then ts
-   else if list-length rx == 0 then let ta = transport-arenas ts
-     in let rx1 = net-io-rx rx
-     in let m = __heap-save
-     in net-io-accept-rx ta tries rx1 m
-   else if tries > net-io-max-polls then ts
-   else let hp = __heap-save
-   in act
-    n <- net-driver-recv-into rx
-    if n == 0 then let restored = __heap-restore hp
-      in net-io-accept-rx ts (tries + 1) rx mark
-    else let r = transport-process-frame-within ts rx n
+    if list-length rx == 0 & transport-stale ts then ts
+    else if list-length rx == 0 then let ta = transport-arenas ts
+    in let rx1 = net-io-rx rx
+    in let m = __heap-save
+    in net-io-accept-rx ta tries rx1 m
+    else if tries > net-io-max-polls then ts
+    else let hp = __heap-save
     in act
-      ts1 <- flush-transport-outbox (r.transport)
-      when (ts1.session).conn.state
-       is TcpEstablished -> ts1
-       is otherwise -> net-io-accept-rx (transport-compact-past ts1 mark) (tries + 1) rx mark
+     n <- net-driver-recv-into rx
+     if n == 0 then let restored = __heap-restore hp
+     in net-io-accept-rx ts (tries + 1) rx mark
+     else let r = transport-process-frame-within ts rx n
+     in act
+       ts1 <- flush-transport-outbox (r.transport)
+       when (ts1.session).conn.state
+        is TcpEstablished -> ts1
+        is otherwise -> net-io-accept-rx (transport-compact-past ts1 mark) (tries + 1) rx mark
+     end
     end
-   end
 
 Section: Resolve The Next Hop
 
@@ -125,68 +125,68 @@ Section: Resolve The Next Hop
 
   net-io-resolve-hop : TcpTransportState, List Integer, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-resolve-hop (ts) (target) (tries) (since) (rx) (mark) =
-   if net-arp-known (ts.session) target then ts
-   else if list-length rx == 0 & transport-stale ts then ts
-   else if list-length rx == 0 then let ta = transport-arenas ts
-     in let rx1 = net-io-rx rx
-     in let m = __heap-save
-     in net-io-resolve-hop ta target tries since rx1 m
-   else if tries > net-io-max-polls then ts
-   else if since >= net-io-tick-interval then act
-     ts1 <- flush-transport-outbox (transport-set-session ts (net-arp-solicit (ts.session) target))
-     net-io-resolve-hop (transport-compact-past ts1 mark) target (tries + 1) 0 rx mark
-   end
-   else let hp = __heap-save
-   in act
-    n <- net-driver-recv-into rx
-    if n == 0 then let restored = __heap-restore hp
-      in net-io-resolve-hop ts target (tries + 1) (since + 1) rx mark
-    else let r = net-process-frame-within (ts.session) rx n
-    in act
-      ts1 <- flush-transport-outbox (transport-set-session ts (r.session))
-      net-io-resolve-hop (transport-compact-past ts1 mark) target (tries + 1) (since + 1) rx mark
+    if net-arp-known (ts.session) target then ts
+    else if list-length rx == 0 & transport-stale ts then ts
+    else if list-length rx == 0 then let ta = transport-arenas ts
+    in let rx1 = net-io-rx rx
+    in let m = __heap-save
+    in net-io-resolve-hop ta target tries since rx1 m
+    else if tries > net-io-max-polls then ts
+    else if since >= net-io-tick-interval then act
+      ts1 <- flush-transport-outbox (transport-set-session ts (net-arp-solicit (ts.session) target))
+      net-io-resolve-hop (transport-compact-past ts1 mark) target (tries + 1) 0 rx mark
     end
-   end
+    else let hp = __heap-save
+    in act
+     n <- net-driver-recv-into rx
+     if n == 0 then let restored = __heap-restore hp
+     in net-io-resolve-hop ts target (tries + 1) (since + 1) rx mark
+     else let r = net-process-frame-within (ts.session) rx n
+     in act
+       ts1 <- flush-transport-outbox (transport-set-session ts (r.session))
+       net-io-resolve-hop (transport-compact-past ts1 mark) target (tries + 1) (since + 1) rx mark
+     end
+    end
 
 Section: Connect and Wait
 
   net-io-connect : TcpTransportState -> [Network.Read, Network.Write] TcpTransportState
   net-io-connect (ts) =
-   let ts1 = transport-connect ts
-   in act
-    ts2 <- flush-transport-outbox ts1
-    net-io-wait-established ts2 0
-   end
+    let ts1 = transport-connect ts
+    in act
+     ts2 <- flush-transport-outbox ts1
+     net-io-wait-established ts2 0
+    end
 
   net-io-wait-established : TcpTransportState, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-wait-established (ts) (tries) = net-io-wait-established-poll ts tries 0 [] 0
 
   net-io-wait-established-poll : TcpTransportState, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-wait-established-poll (ts) (tries) (since) (rx) (mark) =
-   if list-length rx == 0 & transport-stale ts then ts
-   else if list-length rx == 0 then let ta = transport-arenas ts
-     in let rx1 = net-io-rx rx
-     in let m = __heap-save
-     in net-io-wait-established-poll ta tries since rx1 m
-   else if tries > net-io-max-polls then ts
-   else if net-io-conn-closed ts then ts
-   else if since >= net-io-tick-interval then act
-     ticked <- flush-transport-outbox (transport-tick ts)
-     net-io-wait-established-poll (transport-compact-past ticked mark) (tries + 1) 0 rx mark
-   end
-   else let hp = __heap-save
-   in act
-    n <- net-driver-recv-into rx
-    if n == 0 then let restored = __heap-restore hp
-      in net-io-wait-established-poll ts (tries + 1) (since + 1) rx mark
-    else let r = transport-process-frame-within ts rx n
-    in act
-      ts1 <- flush-transport-outbox (r.transport)
-      when (ts1.session).conn.state
-       is TcpEstablished -> ts1
-       is otherwise -> net-io-wait-established-poll (transport-compact-past ts1 mark) (tries + 1) (since + 1) rx mark
+    if list-length rx == 0 & transport-stale ts then ts
+    else if list-length rx == 0 then let ta = transport-arenas ts
+    in let rx1 = net-io-rx rx
+    in let m = __heap-save
+    in net-io-wait-established-poll ta tries since rx1 m
+    else if tries > net-io-max-polls then ts
+    else if net-io-conn-closed ts then ts
+    else if since >= net-io-tick-interval then act
+      ticked <- flush-transport-outbox (transport-tick ts)
+      net-io-wait-established-poll (transport-compact-past ticked mark) (tries + 1) 0 rx mark
     end
-   end
+    else let hp = __heap-save
+    in act
+     n <- net-driver-recv-into rx
+     if n == 0 then let restored = __heap-restore hp
+     in net-io-wait-established-poll ts (tries + 1) (since + 1) rx mark
+     else let r = transport-process-frame-within ts rx n
+     in act
+       ts1 <- flush-transport-outbox (r.transport)
+       when (ts1.session).conn.state
+        is TcpEstablished -> ts1
+        is otherwise -> net-io-wait-established-poll (transport-compact-past ts1 mark) (tries + 1) (since + 1) rx mark
+     end
+    end
 
 Section: Send
 
@@ -197,52 +197,52 @@ Section: Send
 
   net-io-send-drain-rx : TcpTransportState, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-drain-rx (ts) (tries) (since) (rx) (mark) =
-   if tries > net-io-drain-polls then ts
-   else if net-rexmit-full (ts.session) == False then ts
-   else if net-io-conn-closed ts then ts
-   else if list-length rx == 0 & transport-stale ts then ts
-   else if list-length rx == 0 then let ta = transport-arenas ts
-     in let rx1 = net-io-rx rx
-     in let m = __heap-save
-     in net-io-send-drain-rx ta tries since rx1 m
-   else if since >= net-io-tick-interval then act
-     ticked <- flush-transport-outbox (transport-tick ts)
-     net-io-send-drain-rx (transport-compact-past ticked mark) (tries + 1) 0 rx mark
-   end
-   else let hp = __heap-save
-   in act
-    n <- net-driver-recv-into rx
-    if n == 0 then let restored = __heap-restore hp
-      in net-io-send-drain-rx ts (tries + 1) (since + 1) rx mark
-    else let r = net-process-frame-within (ts.session) rx n
-    in let fed = transport-feed-range ts (r.session) (r.data) (r.data-off) (r.data-stop)
-    in act
-      ts1 <- flush-transport-outbox fed
-      net-io-send-drain-rx (transport-compact-past ts1 mark) (tries + 1) (since + 1) rx mark
+    if tries > net-io-drain-polls then ts
+    else if net-rexmit-full (ts.session) == False then ts
+    else if net-io-conn-closed ts then ts
+    else if list-length rx == 0 & transport-stale ts then ts
+    else if list-length rx == 0 then let ta = transport-arenas ts
+    in let rx1 = net-io-rx rx
+    in let m = __heap-save
+    in net-io-send-drain-rx ta tries since rx1 m
+    else if since >= net-io-tick-interval then act
+      ticked <- flush-transport-outbox (transport-tick ts)
+      net-io-send-drain-rx (transport-compact-past ticked mark) (tries + 1) 0 rx mark
     end
-   end
+    else let hp = __heap-save
+    in act
+     n <- net-driver-recv-into rx
+     if n == 0 then let restored = __heap-restore hp
+     in net-io-send-drain-rx ts (tries + 1) (since + 1) rx mark
+     else let r = net-process-frame-within (ts.session) rx n
+     in let fed = transport-feed-range ts (r.session) (r.data) (r.data-off) (r.data-stop)
+     in act
+       ts1 <- flush-transport-outbox fed
+       net-io-send-drain-rx (transport-compact-past ts1 mark) (tries + 1) (since + 1) rx mark
+     end
+    end
 
   net-io-send-chunk : TcpTransportState, List Integer, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-chunk (ts) (data) (off) (total) =
-   if off >= total then ts
-   else let stop = if off + net-mss > total then total else off + net-mss
-   in let chunk = transport-slice data off stop
-   in act
-    tsd <- net-io-send-drain ts 0 0
-    if net-rexmit-full (tsd.session) then tsd
-    else if net-io-conn-closed tsd then tsd
-    else let r = net-send (tsd.session) chunk
-    in let ts1 = transport-set-session tsd (r.session)
+    if off >= total then ts
+    else let stop = if off + net-mss > total then total else off + net-mss
+    in let chunk = transport-slice data off stop
     in act
-      ts2 <- flush-transport-outbox ts1
-      net-io-send-chunk ts2 data (off + net-mss) total
+     tsd <- net-io-send-drain ts 0 0
+     if net-rexmit-full (tsd.session) then tsd
+     else if net-io-conn-closed tsd then tsd
+     else let r = net-send (tsd.session) chunk
+     in let ts1 = transport-set-session tsd (r.session)
+     in act
+       ts2 <- flush-transport-outbox ts1
+       net-io-send-chunk ts2 data (off + net-mss) total
+     end
     end
-   end
 
   net-io-send : TcpTransportState, Integer, List Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-send (ts) (tag) (body) =
-   let framed = frame-encode tag body
-   in net-io-send-chunk ts framed 0 (list-length framed)
+    let framed = frame-encode tag body
+    in net-io-send-chunk ts framed 0 (list-length framed)
 
   net-io-send-raw : TcpTransportState, List Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-raw (ts) (data) = net-io-send-chunk ts data 0 (list-length data)
@@ -264,26 +264,29 @@ Section: Send, Checked
 
   net-io-send-chunk-checked : TcpTransportState, List Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
   net-io-send-chunk-checked (ts) (data) (off) (total) =
-   if off >= total then NetSendResult { ns-transport = ts, ns-sent = total, ns-complete = True }
-   else let stop = if off + net-mss > total then total else off + net-mss
-   in let chunk = transport-slice data off stop
-   in act
-    tsd <- net-io-send-drain ts 0 0
-    if net-rexmit-full (tsd.session) then NetSendResult { ns-transport = tsd, ns-sent = off, ns-complete = False }
-    else if net-io-conn-closed tsd then NetSendResult { ns-transport = tsd, ns-sent = off, ns-complete = False }
-    else let r = net-send (tsd.session) chunk
-    in let ts1 = transport-set-session tsd (r.session)
-    in if net-outbox-count (r.session) == 0 then NetSendResult { ns-transport = ts1, ns-sent = off, ns-complete = False }
-    else act
-      ts2 <- flush-transport-outbox ts1
-      net-io-send-chunk-checked ts2 data (off + net-mss) total
+    if off >= total then NetSendResult { ns-transport = ts, ns-sent = total, ns-complete = True }
+    else let stop = if off + net-mss > total then total else off + net-mss
+    in let chunk = transport-slice data off stop
+    in act
+     tsd <- net-io-send-drain ts 0 0
+     if net-rexmit-full (tsd.session) then
+       NetSendResult { ns-transport = tsd, ns-sent = off, ns-complete = False }
+     else if net-io-conn-closed tsd then
+       NetSendResult { ns-transport = tsd, ns-sent = off, ns-complete = False }
+     else let r = net-send (tsd.session) chunk
+     in let ts1 = transport-set-session tsd (r.session)
+     in if net-outbox-count (r.session) == 0 then
+       NetSendResult { ns-transport = ts1, ns-sent = off, ns-complete = False }
+     else act
+       ts2 <- flush-transport-outbox ts1
+       net-io-send-chunk-checked ts2 data (off + net-mss) total
+     end
     end
-   end
 
   net-io-send-checked : TcpTransportState, Integer, List Integer -> [Network.Read, Network.Write] NetSendResult
   net-io-send-checked (ts) (tag) (body) =
-   let framed = frame-encode tag body
-   in net-io-send-chunk-checked ts framed 0 (list-length framed)
+    let framed = frame-encode tag body
+    in net-io-send-chunk-checked ts framed 0 (list-length framed)
 
   net-io-send-raw-checked : TcpTransportState, List Integer -> [Network.Read, Network.Write] NetSendResult
   net-io-send-raw-checked (ts) (data) = net-io-send-chunk-checked ts data 0 (list-length data)
@@ -298,29 +301,35 @@ Section: Sending Text
 
   text-to-bytes-chunk : Text, Integer, Integer, List Integer -> List Integer
   text-to-bytes-chunk (s) (i) (stop) (acc) =
-   if i >= stop then acc
-   else text-to-bytes-chunk s (i + 1) stop (list-push acc (to-unicode (char-code (char-at s i))))
+    if i >= stop then acc
+    else text-to-bytes-chunk s (i + 1) stop (list-push acc (to-unicode (char-code (char-at s i))))
 
   net-io-send-text-loop : TcpTransportState, Text, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-text-loop (ts) (t) (off) (len) =
-   if off >= len then ts
-   else let stop = if off + net-mss > len then len else off + net-mss
-   in let chunk = text-to-bytes-chunk t off stop []
-   in net-io-send-text-loop (net-io-send-chunk ts chunk 0 (list-length chunk)) t stop len
+    if off >= len then ts
+    else let stop = if off + net-mss > len then len else off + net-mss
+    in let chunk = text-to-bytes-chunk t off stop []
+    in net-io-send-text-loop (net-io-send-chunk ts chunk 0 (list-length chunk)) t stop len
 
   net-io-send-text : TcpTransportState, Text -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-text (ts) (t) = net-io-send-text-loop ts t 0 (text-length t)
 
   net-io-send-text-loop-checked : TcpTransportState, Text, Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
   net-io-send-text-loop-checked (ts) (t) (off) (len) (sent) =
-   if off >= len then NetSendResult { ns-transport = ts, ns-sent = sent, ns-complete = True }
-   else let stop = if off + net-mss > len then len else off + net-mss
-   in let chunk = text-to-bytes-chunk t off stop []
-   in act
-    r <- net-io-send-chunk-checked ts chunk 0 (list-length chunk)
-    if r.ns-complete then net-io-send-text-loop-checked (r.ns-transport) t stop len (sent + (r.ns-sent))
-    else NetSendResult { ns-transport = r.ns-transport, ns-sent = sent + (r.ns-sent), ns-complete = False }
-   end
+    if off >= len then NetSendResult { ns-transport = ts, ns-sent = sent, ns-complete = True }
+    else let stop = if off + net-mss > len then len else off + net-mss
+    in let chunk = text-to-bytes-chunk t off stop []
+    in act
+     r <- net-io-send-chunk-checked ts chunk 0 (list-length chunk)
+     if r.ns-complete then
+       net-io-send-text-loop-checked (r.ns-transport) t stop len (sent + (r.ns-sent))
+     else
+       NetSendResult {
+         ns-transport = r.ns-transport,
+         ns-sent = sent + (r.ns-sent),
+         ns-complete = False
+       }
+    end
 
   net-io-send-text-checked : TcpTransportState, Text -> [Network.Read, Network.Write] NetSendResult
   net-io-send-text-checked (ts) (t) = net-io-send-text-loop-checked ts t 0 (text-length t) 0
@@ -334,35 +343,39 @@ Section: Receive
 
   net-io-recv-loop : TcpTransportState, Integer -> [Network.Read, Network.Write] TransportRecvResult
   net-io-recv-loop (ts) (tries) =
-   let pending = transport-try-recv ts
-   in if pending.has-message then pending
-   else net-io-recv-wait (pending.transport) tries 0 [] 0
+    let pending = transport-try-recv ts
+    in if pending.has-message then pending
+    else net-io-recv-wait (pending.transport) tries 0 [] 0
 
   net-io-recv-wait : TcpTransportState, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] TransportRecvResult
   net-io-recv-wait (ts) (tries) (since) (rx) (mark) =
-   if list-length rx == 0 & transport-stale ts then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else if list-length rx == 0 then let ta = transport-arenas ts
-     in let rx1 = net-io-rx rx
-     in let m = __heap-save
-     in net-io-recv-wait ta tries since rx1 m
-   else if tries > net-io-max-polls then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else if net-io-peer-finished ts then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else if since >= net-io-tick-interval then act
-     ticked <- flush-transport-outbox (transport-tick ts)
-     net-io-recv-wait (transport-compact-past ticked mark) (tries + 1) 0 rx mark
-   end
-   else let hp = __heap-save
-   in act
-    n <- net-driver-recv-into rx
-    if n == 0 then let restored = __heap-restore hp
-      in net-io-recv-wait ts (tries + 1) (since + 1) rx mark
-    else let r = transport-process-frame-within ts rx n
-    in act
-      ts1 <- flush-transport-outbox (r.transport)
-      if r.has-message then TransportRecvResult { transport = ts1, tag = r.tag, body = r.body, has-message = True }
-      else net-io-recv-wait (transport-compact-past ts1 mark) (tries + 1) (since + 1) rx mark
+    if list-length rx == 0 & transport-stale ts then
+      TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+    else if list-length rx == 0 then let ta = transport-arenas ts
+    in let rx1 = net-io-rx rx
+    in let m = __heap-save
+    in net-io-recv-wait ta tries since rx1 m
+    else if tries > net-io-max-polls then
+      TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+    else if net-io-peer-finished ts then
+      TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+    else if since >= net-io-tick-interval then act
+      ticked <- flush-transport-outbox (transport-tick ts)
+      net-io-recv-wait (transport-compact-past ticked mark) (tries + 1) 0 rx mark
     end
-   end
+    else let hp = __heap-save
+    in act
+     n <- net-driver-recv-into rx
+     if n == 0 then let restored = __heap-restore hp
+     in net-io-recv-wait ts (tries + 1) (since + 1) rx mark
+     else let r = transport-process-frame-within ts rx n
+     in act
+       ts1 <- flush-transport-outbox (r.transport)
+       if r.has-message then
+         TransportRecvResult { transport = ts1, tag = r.tag, body = r.body, has-message = True }
+       else net-io-recv-wait (transport-compact-past ts1 mark) (tries + 1) (since + 1) rx mark
+     end
+    end
 
 Section: Receive Parked
 
@@ -375,40 +388,46 @@ Section: Receive Parked
 
   net-io-recv-idle : TcpTransportState -> [Network.Read, Network.Write] TransportRecvResult
   net-io-recv-idle (ts) =
-   let pending = transport-try-recv ts
-   in if pending.has-message then pending
-   else let started = hpet-start
-   in let per-tick = (hpet-ticks-per-second * net-driver-tick-ms) / 1000
-   in if per-tick <= 0 then net-io-recv-wait (pending.transport) 0 0 [] 0
-   else net-io-recv-parked (pending.transport) per-tick 0 0 hpet-ticks [] 0
+    let pending = transport-try-recv ts
+    in if pending.has-message then pending
+    else let started = hpet-start
+    in let per-tick = (hpet-ticks-per-second * net-driver-tick-ms) / 1000
+    in if per-tick <= 0 then net-io-recv-wait (pending.transport) 0 0 [] 0
+    else net-io-recv-parked (pending.transport) per-tick 0 0 hpet-ticks [] 0
 
   net-io-recv-parked : TcpTransportState, Integer, Integer, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] TransportRecvResult
   net-io-recv-parked (ts) (per-tick) (ticks) (tries) (mark) (rx) (hmark) =
-   if list-length rx == 0 & transport-stale ts then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else if list-length rx == 0 then let ta = transport-arenas ts
-     in let rx1 = net-io-rx rx
-     in let m = __heap-save
-     in net-io-recv-parked ta per-tick ticks tries mark rx1 m
-   else if ticks > net-io-max-ticks then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else if tries > net-io-max-polls then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else if net-io-peer-finished ts then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else if hpet-ticks - mark >= per-tick then act
-     ticked <- flush-transport-outbox (transport-tick ts)
-     net-io-recv-parked (transport-compact-past ticked hmark) per-tick (ticks + 1) (tries + 1) (mark + per-tick) rx hmark
-   end
-   else let hp = __heap-save
-   in act
-    n <- net-driver-recv-into rx
-    if n == 0 then let restored = __heap-restore hp
-      in let parked = cpu-park
-      in net-io-recv-parked ts per-tick ticks (tries + 1) (mark + parked) rx hmark
-    else let r = transport-process-frame-within ts rx n
-    in act
-      ts1 <- flush-transport-outbox (r.transport)
-      if r.has-message then TransportRecvResult { transport = ts1, tag = r.tag, body = r.body, has-message = True }
-      else net-io-recv-parked (transport-compact-past ts1 hmark) per-tick ticks (tries + 1) mark rx hmark
+    if list-length rx == 0 & transport-stale ts then
+      TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+    else if list-length rx == 0 then let ta = transport-arenas ts
+    in let rx1 = net-io-rx rx
+    in let m = __heap-save
+    in net-io-recv-parked ta per-tick ticks tries mark rx1 m
+    else if ticks > net-io-max-ticks then
+      TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+    else if tries > net-io-max-polls then
+      TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+    else if net-io-peer-finished ts then
+      TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
+    else if hpet-ticks - mark >= per-tick then act
+      ticked <- flush-transport-outbox (transport-tick ts)
+      net-io-recv-parked (transport-compact-past ticked hmark) per-tick (ticks + 1) (tries + 1) (mark + per-tick) rx hmark
     end
-   end
+    else let hp = __heap-save
+    in act
+     n <- net-driver-recv-into rx
+     if n == 0 then let restored = __heap-restore hp
+     in let parked = cpu-park
+     in net-io-recv-parked ts per-tick ticks (tries + 1) (mark + parked) rx hmark
+     else let r = transport-process-frame-within ts rx n
+     in act
+       ts1 <- flush-transport-outbox (r.transport)
+       if r.has-message then
+         TransportRecvResult { transport = ts1, tag = r.tag, body = r.body, has-message = True }
+       else
+         net-io-recv-parked (transport-compact-past ts1 hmark) per-tick ticks (tries + 1) mark rx hmark
+     end
+    end
 
 Section: Receive Raw (no framing)
 
@@ -423,51 +442,59 @@ Section: Receive Raw (no framing)
 
   net-io-recv-raw-poll : TcpTransportState, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] RawRecvResult
   net-io-recv-raw-poll (ts) (tries) (since) (rx) (mark) =
-   if list-length rx == 0 & transport-stale ts then RawRecvResult { transport = ts, data = [], has-data = False }
-   else if list-length rx == 0 then let ta = transport-arenas ts
-     in let rx1 = net-io-rx rx
-     in let m = __heap-save
-     in net-io-recv-raw-poll ta tries since rx1 m
-   else if tries > net-io-max-polls then RawRecvResult { transport = ts, data = [], has-data = False }
-   else if net-io-peer-finished ts then RawRecvResult { transport = ts, data = [], has-data = False }
-   else if since >= net-io-tick-interval then act
-     ticked <- flush-transport-outbox (transport-tick ts)
-     net-io-recv-raw-poll (transport-compact-past ticked mark) (tries + 1) 0 rx mark
-   end
-   else let hp = __heap-save
-   in act
-    n <- net-driver-recv-into rx
-    if n == 0 then let restored = __heap-restore hp
-      in net-io-recv-raw-poll ts (tries + 1) (since + 1) rx mark
-    else let r = net-process-frame-within (ts.session) rx n
-    in act
-      ts1 <- flush-transport-outbox (transport-set-session ts (r.session))
-      if (r.data-stop - r.data-off) > 0 then RawRecvResult { transport = ts1, data = transport-slice (r.data) (r.data-off) (r.data-stop), has-data = True }
-      else net-io-recv-raw-poll (transport-compact-past ts1 mark) (tries + 1) (since + 1) rx mark
+    if list-length rx == 0 & transport-stale ts then
+      RawRecvResult { transport = ts, data = [], has-data = False }
+    else if list-length rx == 0 then let ta = transport-arenas ts
+    in let rx1 = net-io-rx rx
+    in let m = __heap-save
+    in net-io-recv-raw-poll ta tries since rx1 m
+    else if tries > net-io-max-polls then
+      RawRecvResult { transport = ts, data = [], has-data = False }
+    else if net-io-peer-finished ts then
+      RawRecvResult { transport = ts, data = [], has-data = False }
+    else if since >= net-io-tick-interval then act
+      ticked <- flush-transport-outbox (transport-tick ts)
+      net-io-recv-raw-poll (transport-compact-past ticked mark) (tries + 1) 0 rx mark
     end
-   end
+    else let hp = __heap-save
+    in act
+     n <- net-driver-recv-into rx
+     if n == 0 then let restored = __heap-restore hp
+     in net-io-recv-raw-poll ts (tries + 1) (since + 1) rx mark
+     else let r = net-process-frame-within (ts.session) rx n
+     in act
+       ts1 <- flush-transport-outbox (transport-set-session ts (r.session))
+       if (r.data-stop - r.data-off) > 0 then
+         RawRecvResult {
+           transport = ts1,
+           data = transport-slice (r.data) (r.data-off) (r.data-stop),
+           has-data = True
+         }
+       else net-io-recv-raw-poll (transport-compact-past ts1 mark) (tries + 1) (since + 1) rx mark
+     end
+    end
 
 Section: Poll One
 
   net-io-poll-one : TcpTransportState, Integer -> [Network.Read] List Integer
   net-io-poll-one (ts) (tries) =
-   if tries > 5000000 then []
-   else let hp = __heap-save
-   in act
-    frame <- net-driver-recv-frame
-    if list-length frame > 0 then frame
-    else let restored = __heap-restore hp
-      in net-io-poll-one ts (tries + 1)
-   end
+    if tries > 5000000 then []
+    else let hp = __heap-save
+    in act
+     frame <- net-driver-recv-frame
+     if list-length frame > 0 then frame
+     else let restored = __heap-restore hp
+     in net-io-poll-one ts (tries + 1)
+    end
 
 Section: Close
 
   net-io-close : TcpTransportState -> [Network.Write] TcpTransportState
   net-io-close (ts) =
-   let ts1 = transport-close ts
-   in act
-    ts2 <- flush-transport-outbox ts1
-    transport-release ts2
-   end
+    let ts1 = transport-close ts
+    in act
+     ts2 <- flush-transport-outbox ts1
+     transport-release ts2
+    end
 
 Page 1

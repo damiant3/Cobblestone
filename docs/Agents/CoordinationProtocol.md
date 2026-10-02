@@ -108,6 +108,13 @@ AgentGrid's display and a lane's own estimate are both wrong after a
 `/compact`. Write what you measured, and if you have not measured since your
 last write, measure before you write.
 
+**A Codex-backend (Astra) lane writes `status.json` anyway, with
+`"context": null` and `"backend": "Codex"`** (root, 2026-09-30):
+`measure-context.ps1` reads Claude transcripts only, so no number exists,
+and a lane that skips the write leaves the commander arbitrating the GPU
+blind. `state`, `task`, `claim` and `runs` (PID, log, whether it holds the
+GPU) stay mandatory at every change.
+
 ```json
 { "state": "Working", "task": "fixing lexer fuel cap", "claim": ["codex/compiler/Lexer"], "context": 62 }
 ```

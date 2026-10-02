@@ -1,0 +1,197 @@
+Chapter: NvAcr
+
+ Linux v6.12 nouveau gm200_acr_load_setup patches flcn_acr_desc inside
+ the signed firmware image. The input and result are 152 little-endian
+ 32-bit words; every unpatched word is preserved, including reserved data.
+ gm200_acr_hsfw_load_bld writes packed flcn_bl_dmem_desc_v1, 19 words,
+ with FALCON_DMAIDX_VIRT (1). No firmware or MMIO is accessed here.
+
+Section: Words
+
+  acr-u32 : Integer -> Boolean
+  acr-u32 (x) = if x < 0 then False else x <= #FFFFFFFF
+
+  acr-valid-words : List Integer, Integer -> Boolean
+  acr-valid-words (ws) (i) = if i >= list-length ws then True else if acr-u32 (list-at ws i) == False then False else acr-valid-words ws (i + 1)
+
+  acr-setup-word : Integer, Integer, Integer, Integer -> Integer
+  acr-setup-word (i) (old) (start) (limit) =
+    if i == 128 then 1
+    else if i == 131 then 2
+    else if i == 132 then bit-shru start 8
+    else if i == 133 then bit-shru limit 8
+    else if i == 134 then 1
+    else if i == 135 then 15
+    else if i == 136 then 12
+    else if i == 137 then 2
+    else old
+
+  acr-setup-copy : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  acr-setup-copy (ws) (start) (limit) (i) (acc) =
+    if i >= list-length ws then acc
+    else acr-setup-copy ws start limit (i + 1) (list-push acc (acr-setup-word i (list-at ws i) start limit))
+
+  nv-acr-setup : List Integer, Integer, Integer -> List Integer
+  nv-acr-setup (ws) (start) (limit) =
+    if list-length ws /= 152 then []
+    else if acr-valid-words ws 0 == False then []
+    else if start < 0 then []
+    else if limit <= start then []
+    else if limit > #FFFFFFFF00 then []
+    else if bit-and (bit-or start limit) 255 /= 0 then []
+    else acr-setup-copy ws start limit 0 []
+
+Section: High-security boot descriptor
+
+  NvHsLoad = record {
+   code-base : Integer,
+   nonsec-offset : Integer,
+   nonsec-size : Integer,
+   sec-offset : Integer,
+   sec-size : Integer,
+   data-offset : Integer,
+   data-size : Integer
+  }
+
+  nv-acr-hs-load : NvHsLoad -> List Integer
+  nv-acr-hs-load (p) =
+    if p.code-base < 0 then []
+    else if acr-u32 p.data-offset == False then []
+    else if p.code-base > #7FFFFFFFFFFFFFFF - p.data-offset then []
+    else if acr-valid-words [p.nonsec-offset, p.nonsec-size, p.sec-offset, p.sec-size, p.data-size] 0 == False then []
+    else let data-base = p.code-base + p.data-offset
+    in [0, 0, 0, 0, 0, 0, 0, 0, 1,
+        bit-and p.code-base #FFFFFFFF, bit-shru p.code-base 32,
+        p.nonsec-offset, p.nonsec-size, p.sec-offset, p.sec-size, 0,
+        bit-and data-base #FFFFFFFF, bit-shru data-base 32, p.data-size]
+
+Section: WPR v0
+
+ gm200_acr_wpr_layout reserves eleven 20-byte headers. Each firmware has
+ a 256-aligned 124-byte LSB header, a 4096-aligned image, then a
+ 256-aligned boot descriptor whose allocation is rounded to 256 bytes.
+ nv-wpr-slot returns LSB/image/boot offsets, boot allocation size and next
+ cursor, or an empty list on overflow. The first cursor is 220.
+
+  acr-align : Integer, Integer -> Integer
+  acr-align (n) (alignment) = ((n + alignment - 1) / alignment) * alignment
+
+  nv-wpr-slot : Integer, Integer, Integer -> List Integer
+  nv-wpr-slot (cursor) (image-size) (boot-size) =
+    if acr-valid-words [cursor, image-size, boot-size] 0 == False then []
+    else let lsb = acr-align cursor 256
+    in let img = acr-align (lsb + 124) 4096
+    in let bld = acr-align (img + image-size) 256
+    in let size = acr-align boot-size 256
+    in let next = bld + size
+    in if next > #FFFFFFFF then [] else [lsb, img, bld, size, next]
+
+  nv-wpr-header : Integer, Integer, Integer -> List Integer
+  nv-wpr-header (falcon) (lsb) (rtos) =
+    if acr-u32 falcon == False then []
+    else if falcon == #FFFFFFFF then []
+    else if acr-u32 lsb == False then []
+    else if rtos < -1 then []
+    else if rtos > #FFFFFFFE then []
+    else [falcon, lsb, 0, (if rtos >= 0 then (if falcon /= rtos then 1 else 0) else 0), 1]
+
+  nv-wpr-end : List Integer
+  nv-wpr-end = [#FFFFFFFF]
+
+  NvLsbImage = record {
+   image-offset : Integer,
+   ucode-size : Integer,
+   data-size : Integer,
+   boot-code-size : Integer,
+   boot-imem-offset : Integer,
+   boot-data-offset : Integer,
+   boot-data-size : Integer,
+   app-start : Integer,
+   app-code-offset : Integer,
+   app-code-size : Integer,
+   app-data-offset : Integer,
+   app-data-size : Integer,
+   flags : Integer
+  }
+
+  nv-wpr-lsb : List Integer, NvLsbImage -> List Integer
+  nv-wpr-lsb (signature) (p) =
+    if list-length signature /= 19 then []
+    else if acr-valid-words signature 0 == False then []
+    else if acr-valid-words [p.app-start, p.app-code-offset, p.app-data-offset] 0 == False then []
+    else let tail = [p.image-offset, p.ucode-size, p.data-size, p.boot-code-size,
+      p.boot-imem-offset, p.boot-data-offset, p.boot-data-size,
+      p.app-start + p.app-code-offset, p.app-code-size,
+      p.app-start + p.app-data-offset, p.app-data-size, p.flags]
+    in if acr-valid-words tail 0 == False then [] else signature & tail
+
+Section: FECS and GPCCS
+
+ nvkm_acr_lsfw_load_bl_inst_data_sig rounds code/data regions to 256.
+ The layout words are boot size/IMEM offset, app start/entry, resident code
+ offset/size, resident data offset/size, app/image/ucode/data sizes.
+ Boot input includes the rounded bootloader bytes. Only instruction and
+ data padding are zero-filled. Firmware parsing/authentication is separate.
+
+  nv-lsf-layout : Integer, Integer, Integer, Integer -> List Integer
+  nv-lsf-layout (boot-code-size) (start-tag) (inst-size) (data-size) =
+    if acr-valid-words [boot-code-size, start-tag, inst-size, data-size] 0 == False then []
+    else if start-tag > #FFFFFF then []
+    else let boot = acr-align boot-code-size 256
+    in let code = acr-align inst-size 256
+    in let data = acr-align data-size 256
+    in let total = boot + code + data
+    in if total > #FFFFFFFF then []
+    else [boot, bit-shl start-tag 8, boot, 0, 0, code, code, data, code + data, total, boot + code, data]
+
+  acr-bytes-valid : List Integer, Integer, Integer -> Boolean
+  acr-bytes-valid (xs) (limit) (i) =
+    if i >= limit then True
+    else if list-at xs i < 0 then False
+    else if list-at xs i > 255 then False
+    else acr-bytes-valid xs limit (i + 1)
+
+  lsf-image-byte : List Integer, List Integer, List Integer, Integer, Integer, Integer -> Integer
+  lsf-image-byte (boot) (inst) (data) (boot-size) (data-start) (i) =
+    if i < boot-size then list-at boot i
+    else if i < boot-size + list-length inst then list-at inst (i - boot-size)
+    else if i < data-start then 0
+    else if i < data-start + list-length data then list-at data (i - data-start)
+    else 0
+
+  lsf-image-copy : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  lsf-image-copy (boot) (inst) (data) (boot-size) (data-start) (total) (i) (acc) =
+    if i >= total then acc
+    else lsf-image-copy boot inst data boot-size data-start total (i + 1) (list-push acc (lsf-image-byte boot inst data boot-size data-start i))
+
+  nv-lsf-image : Integer, List Integer, List Integer, List Integer -> List Integer
+  nv-lsf-image (code-size) (boot) (inst) (data) =
+    let layout = nv-lsf-layout code-size 0 (list-length inst) (list-length data)
+    in if list-length layout /= 12 then []
+    else let boot-size = list-at layout 0
+    in if list-length boot < boot-size then []
+    else if acr-bytes-valid boot boot-size 0 == False then []
+    else if acr-bytes-valid inst (list-length inst) 0 == False then []
+    else if acr-bytes-valid data (list-length data) 0 == False then []
+    else lsf-image-copy boot inst data boot-size (boot-size + list-at layout 6) (list-at layout 9) 0 []
+
+ gm200_gr_acr_bld_write emits the packed descriptor; bld_patch adds the
+ WPR base to both DMA addresses. UCODE DMA index is 0; secure-code fields
+ stay zero. The WPR base here is the final nonnegative physical relocation.
+
+  nv-lsf-bootdesc : NvLsbImage, Integer, Integer -> List Integer
+  nv-lsf-bootdesc (p) (entry) (wpr-base) =
+    if acr-valid-words [p.image-offset, p.app-start, p.app-code-offset, p.app-code-size, p.app-data-offset, p.app-data-size, entry] 0 == False then []
+    else let code = p.image-offset + p.app-start + p.app-code-offset
+    in let data = p.image-offset + p.app-start + p.app-data-offset
+    in if code > #FFFFFFFF then []
+    else if data > #FFFFFFFF then []
+    else if wpr-base < 0 then []
+    else if wpr-base > #7FFFFFFFFFFFFFFF - code then []
+    else if wpr-base > #7FFFFFFFFFFFFFFF - data then []
+    else let code-base = wpr-base + code
+    in let data-base = wpr-base + data
+    in [0, 0, 0, 0, 0, 0, 0, 0, 0,
+      bit-and code-base #FFFFFFFF, bit-shru code-base 32,
+      p.app-code-offset, p.app-code-size, 0, 0, entry,
+      bit-and data-base #FFFFFFFF, bit-shru data-base 32, p.app-data-size]

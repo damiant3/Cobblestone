@@ -1,0 +1,319 @@
+Chapter: QwenKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ We say:
+
+ Block layouts follow ggml-common.h at llama.cpp 7fe450e. Q4_K, 144 bytes per
+ 256 weights: d and dmin as f16, 12 bytes of packed 6-bit scales and mins,
+ 128 bytes of 4-bit quants. Q6_K, 210 bytes per 256 weights: 128 bytes of low
+ nibbles, 64 bytes of high 2-bit pairs, 16 signed 8-bit scales, d as f16. The
+ operation order matches dequantize_row_q4_K and dequantize_row_q6_K so that
+ f32 results agree bit for bit.
+
+  qk-byte : Integer, Integer -> [Device] Integer
+  qk-byte (b) (o) = act
+    w <- device-load b (o / 4)
+    bit-and (bit-shru w ((o - o / 4 * 4) * 8)) 255
+  end
+
+  q4k-sc : Integer, Integer, Integer -> [Device] Integer
+  q4k-sc (b) (bb) (j) =
+    if j < 4 then act
+      s <- qk-byte b (bb + 4 + j)
+      bit-and s 63
+    end
+    else act
+      lo <- qk-byte b (bb + 8 + j)
+      hi <- qk-byte b (bb + j)
+      bit-or (bit-and lo 15) (bit-shl (bit-shru hi 6) 4)
+    end
+
+  q4k-m : Integer, Integer, Integer -> [Device] Integer
+  q4k-m (b) (bb) (j) =
+    if j < 4 then act
+      s <- qk-byte b (bb + 8 + j)
+      bit-and s 63
+    end
+    else act
+      lo <- qk-byte b (bb + 8 + j)
+      hi <- qk-byte b (bb + 4 + j)
+      bit-or (bit-shru lo 4) (bit-shl (bit-shru hi 6) 4)
+    end
+
+  q4k-at : Integer, Integer, Integer -> [Device] Real
+  q4k-at (wb) (bb) (i) =
+    let j = i / 64
+    in let r = i - j * 64
+    in let sub = if r < 32 then 2 * j else 2 * j + 1
+    in let l = if r < 32 then r else r - 32
+    in act
+      d <- device-load-f16-approx wb (bb / 2)
+      dm <- device-load-f16-approx wb (bb / 2 + 1)
+      sc <- q4k-sc wb bb sub
+      m <- q4k-m wb bb sub
+      q <- qk-byte wb (bb + 16 + j * 32 + l)
+      let nib = if r < 32 then bit-and q 15 else bit-shru q 4
+      in (from-real-approx d * real-from-int sc) * real-from-int nib - from-real-approx dm * real-from-int m
+    end
+
+  q6k-at : Integer, Integer, Integer -> [Device] Real
+  q6k-at (wb) (bb) (i) =
+    let half = i / 128
+    in let k = i - half * 128
+    in let g = k / 32
+    in let l = k - g * 32
+    in let lo-at = bb + half * 64 + (if g == 1 | g == 3 then l + 32 else l)
+    in act
+      a <- qk-byte wb lo-at
+      h <- qk-byte wb (bb + 128 + half * 32 + l)
+      s <- qk-byte wb (bb + 192 + half * 8 + l / 16 + 2 * g)
+      d <- device-load-f16-approx wb ((bb + 208) / 2)
+      let lo = if g < 2 then bit-and a 15 else bit-shru a 4
+      in let q = bit-or lo (bit-shl (bit-and (bit-shru h (g * 2)) 3) 4) - 32
+      in let sc = if s > 127 then s - 256 else s
+      in (from-real-approx d * real-from-int sc) * real-from-int q
+    end
+
+  q4k-dequant : Integer, Integer, Integer, Integer -> [Device] Integer
+  q4k-dequant (wb) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      v <- q4k-at wb (gid / 256 * 144) (gid - gid / 256 * 256)
+      device-store-f32 yb gid v
+    end
+
+  q6k-dequant : Integer, Integer, Integer, Integer -> [Device] Integer
+  q6k-dequant (wb) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      v <- q6k-at wb (gid / 256 * 210) (gid - gid / 256 * 256)
+      device-store-f32 yb gid v
+    end
+
+ A weight row is cols / 256 consecutive superblocks. Compensated summation
+ bounds the rounding error of rows up to 12288 terms long.
+
+  q4k-dot : Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  q4k-dot (wb) (xb) (rb) (k) (cols) (sum) (correction) =
+    if k >= cols then sum
+    else act
+      w <- q4k-at wb (rb + k / 256 * 144) (k - k / 256 * 256)
+      x <- device-load-f32 xb k
+      let term = w * x - correction
+      in let next = sum + term
+      in q4k-dot wb xb rb (k + 1) cols next ((next - sum) - term)
+    end
+
+  q6k-dot : Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  q6k-dot (wb) (xb) (rb) (k) (cols) (sum) (correction) =
+    if k >= cols then sum
+    else act
+      w <- q6k-at wb (rb + k / 256 * 210) (k - k / 256 * 256)
+      x <- device-load-f32 xb k
+      let term = w * x - correction
+      in let next = sum + term
+      in q6k-dot wb xb rb (k + 1) cols next ((next - sum) - term)
+    end
+
+  q4k-matvec : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q4k-matvec (wb) (xb) (yb) (cols) (rows) (gid) =
+    if gid >= rows then 0
+    else act
+      s <- q4k-dot wb xb (gid * (cols / 256) * 144) 0 cols 0.0 0.0
+      device-store-f32 yb gid s
+    end
+
+  q6k-matvec : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q6k-matvec (wb) (xb) (yb) (cols) (rows) (gid) =
+    if gid >= rows then 0
+    else act
+      s <- q6k-dot wb xb (gid * (cols / 256) * 210) 0 cols 0.0 0.0
+      device-store-f32 yb gid s
+    end
+
+ Decoder kernels for one token. ggml's rms_norm divides the sum of squares by
+ the row length and multiplies by 1/sqrt(mean + eps) before the weight. RoPE
+ is the NeoX pairing (i, i + dim/2); the cos/sin table comes from the host,
+ because WGSL's cos and sin are accurate to 2^-11 only on [-pi, pi]. 1.4426950408889634 is log2(e).
+
+  q4k-row : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q4k-row (wb) (yb) (row) (cols) (gid) =
+    if gid >= cols then 0
+    else act
+      v <- q4k-at wb ((row * (cols / 256) + gid / 256) * 144) (gid - gid / 256 * 256)
+      device-store-f32 yb gid v
+    end
+
+  qw-square-sum : Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  qw-square-sum (xb) (base) (dim) (k) (sum) (correction) =
+    if k >= dim then sum
+    else act
+      x <- device-load-f32 xb (base + k)
+      let term = x * x - correction
+      in let next = sum + term
+      in qw-square-sum xb base dim (k + 1) next ((next - sum) - term)
+    end
+
+  rms-stat : Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  rms-stat (xb) (sb) (dim) (rows) (eps) (gid) =
+    if gid >= rows then 0
+    else act
+      total <- qw-square-sum xb (gid * dim) dim 0 0.0 0.0
+      device-store-f32 sb gid (1.0 / real-sqrt (total / real-from-int dim + eps))
+    end
+
+  rms-apply : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rms-apply (xb) (sb) (nb) (yb) (dim) (n) (gid) =
+    if gid >= n then 0
+    else act
+      x <- device-load-f32 xb gid
+      s <- device-load-f32 sb (gid / dim)
+      w <- device-load-f32 nb (gid - gid / dim * dim)
+      device-store-f32 yb gid ((x * s) * w)
+    end
+
+  f16-dot : Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  f16-dot (wb) (xb) (base) (k) (cols) (sum) (correction) =
+    if k >= cols then sum
+    else act
+      w <- device-load-f16-approx wb (base + k)
+      x <- device-load-f32 xb k
+      let term = from-real-approx w * x - correction
+      in let next = sum + term
+      in f16-dot wb xb base (k + 1) cols next ((next - sum) - term)
+    end
+
+  f16-matvec : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  f16-matvec (wb) (xb) (yb) (cols) (rows) (gid) =
+    if gid >= rows then 0
+    else act
+      s <- f16-dot wb xb (gid * cols) 0 cols 0.0 0.0
+      device-store-f32 yb gid s
+    end
+
+  rope-neox : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rope-neox (xb) (tb) (yb) (dim) (n) (gid) =
+    if gid >= n then 0
+    else let base = gid / dim * dim
+    in let i = gid - base
+    in let half = dim / 2
+    in let j = if i < half then i else i - half
+    in act
+      a <- device-load-f32 xb (base + j)
+      b <- device-load-f32 xb (base + j + half)
+      c <- device-load-f32 tb j
+      s <- device-load-f32 tb (half + j)
+      device-store-f32 yb gid (if i < half then a * c - b * s else a * s + b * c)
+    end
+
+  kv-store : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kv-store (xb) (cb) (offset) (n) (gid) =
+    if gid >= n then 0
+    else act
+      x <- device-load-f32 xb gid
+      device-store-f32 cb (offset + gid) x
+    end
+
+  qw-head-dot : Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  qw-head-dot (qb) (kb) (qa) (ka) (k) (dim) (sum) (correction) =
+    if k >= dim then sum
+    else act
+      q <- device-load-f32 qb (qa + k)
+      x <- device-load-f32 kb (ka + k)
+      let term = q * x - correction
+      in let next = sum + term
+      in qw-head-dot qb kb qa ka (k + 1) dim next ((next - sum) - term)
+    end
+
+  attn-score : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  attn-score (qb) (kb) (sb) (len) (heads) (kvheads) (dim) (scale) (gid) =
+    if gid >= heads * len then 0
+    else let h = gid / len
+    in let t = gid - h * len
+    in let kvh = h / (heads / kvheads)
+    in act
+      d <- qw-head-dot qb kb (h * dim) ((t * kvheads + kvh) * dim) 0 dim 0.0 0.0
+      device-store-f32 sb gid (d * scale)
+    end
+
+  qw-max : Integer, Integer, Integer, Integer, Real -> [Device] Real
+  qw-max (sb) (base) (len) (t) (best) =
+    if t >= len then best
+    else act
+      v <- device-load-f32 sb (base + t)
+      qw-max sb base len (t + 1) (if v > best then v else best)
+    end
+
+  qw-exp-sum : Integer, Integer, Integer, Integer, Integer, Real, Real, Real -> [Device] Real
+  qw-exp-sum (sb) (pb) (base) (len) (t) (top) (sum) (correction) =
+    if t >= len then sum
+    else act
+      v <- device-load-f32 sb (base + t)
+      let e = real-exp2-approx ((v - top) * 1.4426950408889634)
+      in act
+        w <- device-store-f32 pb (base + t) e
+        let term = e - correction
+        in let next = sum + term
+        in qw-exp-sum sb pb base len (t + 1) top next ((next - sum) - term)
+      end
+    end
+
+  qw-scale-row : Integer, Integer, Integer, Integer, Real -> [Device] Integer
+  qw-scale-row (pb) (base) (len) (t) (inv) =
+    if t >= len then 0
+    else act
+      v <- device-load-f32 pb (base + t)
+      w <- device-store-f32 pb (base + t) (v * inv)
+      qw-scale-row pb base len (t + 1) inv
+    end
+
+  attn-softmax : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  attn-softmax (sb) (pb) (len) (heads) (gid) =
+    if gid >= heads then 0
+    else act
+      top <- device-load-f32 sb (gid * len)
+      best <- qw-max sb (gid * len) len 1 top
+      total <- qw-exp-sum sb pb (gid * len) len 0 best 0.0 0.0
+      qw-scale-row pb (gid * len) len 0 (1.0 / total)
+    end
+
+  qw-weighted : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  qw-weighted (pb) (vb) (pa) (va) (stride) (len) (t) (dim) (sum) (correction) =
+    if t >= len then sum
+    else act
+      p <- device-load-f32 pb (pa + t)
+      v <- device-load-f32 vb (va + t * stride)
+      let term = p * v - correction
+      in let next = sum + term
+      in qw-weighted pb vb pa va stride len (t + 1) dim next ((next - sum) - term)
+    end
+
+  attn-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  attn-out (pb) (vb) (ob) (len) (heads) (kvheads) (dim) (gid) =
+    if gid >= heads * dim then 0
+    else let h = gid / dim
+    in let d = gid - h * dim
+    in let kvh = h / (heads / kvheads)
+    in act
+      s <- qw-weighted pb vb (h * len) (kvh * dim + d) (kvheads * dim) len 0 dim 0.0 0.0
+      device-store-f32 ob gid s
+    end
+
+  vec-add : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  vec-add (ab) (bb) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      a <- device-load-f32 ab gid
+      b <- device-load-f32 bb gid
+      device-store-f32 yb gid (a + b)
+    end
+
+  swiglu : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  swiglu (gb) (ub) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      g <- device-load-f32 gb gid
+      u <- device-load-f32 ub gid
+      device-store-f32 yb gid (g / (1.0 + real-exp2-approx (0.0 - g * 1.4426950408889634)) * u)
+    end

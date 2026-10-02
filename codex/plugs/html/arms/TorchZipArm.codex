@@ -1,0 +1,65 @@
+Chapter: TorchZipArm
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites AI chapter TorchZip
+
+ We say:
+
+  ta-ints : List Text, Integer, List Integer -> List Integer
+  ta-ints (xs) (i) (acc) = if i >= list-length xs then acc else ta-ints xs (i + 1) (list-push acc (text-to-integer (list-at xs i)))
+
+  ta-bytes : Text -> List Integer
+  ta-bytes (r) = if text-length r < 3 then [] else ta-ints (text-split (substring r 1 (text-length r - 2)) ",") 0 []
+
+  ta-done : Text -> Integer
+  ta-done (lines) = let w = state-set-text "lines" lines in state-set "done" 1
+
+  ta-shape : List Integer, Integer, Text -> Text
+  ta-shape (xs) (i) (acc) = if i >= list-length xs then acc else ta-shape xs (i + 1) (acc & (if i == 0 then "" else ",") & show (list-at xs i))
+
+  ta-report : List StTensorMeta, Integer, Text -> Text
+  ta-report (ts) (i) (acc) =
+    if i >= list-length ts then acc & "END\n"
+    else let t = list-at ts i
+    in ta-report ts (i + 1) (acc & t.stm-name & "|" & show (t.stm-dtype) & "|" & ta-shape (t.stm-shape) 0 "" & "|" & show (t.stm-offset-start) & "|" & show (t.stm-offset-end) & "\n")
+
+  ta-parsed : List Text, List Integer, Text -> Integer
+  ta-parsed (names) (starts) (bytes) =
+    let r = torch-zip-read (ta-bytes bytes) names starts
+    in ta-done (if r.tzf-why /= "" then "REFUSED: " & r.tzf-why else ta-report ((r.tzf-file).st-tensors) 0 "")
+
+  ta-pickle : Text, List TzEntry, List Text, List Integer, Integer -> Integer
+  ta-pickle (file) (es) (names) (starts) (i) =
+    if i >= list-length es then ta-done "REFUSED: missing data.pkl"
+    else let e = list-at es i
+    in if text-ends-with (e.te-name) "/data.pkl" then file-read-then file (list-at starts i) (e.te-size) (\r -> ta-parsed names starts r)
+    else ta-pickle file es names starts (i + 1)
+
+  ta-starts : Text, List TzEntry, Integer, List Text, List Integer -> Integer
+  ta-starts (file) (es) (i) (names) (starts) =
+    if i >= list-length es then ta-pickle file es names starts 0
+    else let e = list-at es i
+    in file-read-then file (e.te-local) 30 (\r -> ta-starts file es (i + 1) (list-push names (e.te-name)) (list-push starts (tz-data-at (ta-bytes r) (e.te-local))))
+
+  ta-directory : Text, Integer, Text -> Integer
+  ta-directory (file) (count) (bytes) = ta-starts file (tz-entries (ta-bytes bytes) 0 count []) 0 [] []
+
+  ta-tail : Text, Integer, Text -> Integer
+  ta-tail (file) (off) (bytes) =
+    let span = tz-directory-span (ta-bytes bytes) off
+    in if list-length span /= 3 then ta-done "REFUSED: missing zip directory"
+    else file-read-then file (list-at span 0) (list-at span 1) (\r -> ta-directory file (list-at span 2) r)
+
+  ta-picked : Text -> Integer
+  ta-picked (r) =
+    let obj = json-parse-obj r
+    in let file = json-obj-field obj "name"
+    in let size = text-to-integer (json-obj-field obj "size")
+    in let n = if size < 65557 then size else 65557
+    in file-read-then file (size - n) n (\r -> ta-tail file (size - n) r)
+
+  ta-pick : Text -> Integer
+  ta-pick (id) = pick-file-then ".bin" ta-picked
+
+  opening : [Console] Integer
+  opening = let c = dom-on-click (dom-query "html") ta-pick in state-set "armed" 1

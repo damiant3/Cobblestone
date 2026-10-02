@@ -12,12 +12,41 @@ by nobody.
 `apps/works/works-backlog.md` is the register of what is still missing. This
 file is the standing rules, not the open work.
 
+## Desktop keyboard shortcuts
+
+Either Windows key opens the Cobblestone menu from the desktop or a pane;
+pressing the key again dismisses the menu. Up/Down select an application,
+Enter launches the selection, and Escape dismisses without closing the
+underlying pane. The USB decoder emits make/break events for both GUI
+modifier bits. The desktop handles the menu shortcut before pane dispatch.
+
+Three Ctrl+Alt+Delete press edges request the existing ACPI/chipset reboot
+path. Delete must be released between presses; holding Delete never adds
+another count. Each press must follow the previous within 500 kernel ticks
+(about five seconds). Any other key press or a longer gap resets the
+sequence. Ctrl and Alt can remain held across all three presses.
+
+`GopDeskKeys` owns a retained 40-byte state block: qword offsets 0/8 hold
+Ctrl/Alt counts, 16 the Delete latch, 24 the sequence count, and 32 the last
+press tick. `desk-run` allocates the block below its base mark through
+`alloc-zeroed 40 64`, reserving 104 bytes including alignment allowance.
+Shortcut handling is constant-time and allocates nothing per event.
+
+`desk-system-keys` grades GUI/Delete decoding, held-key rejection, timeout,
+interruption and modifier requirements. `hid-decode` and `desk-input-path`
+remain passing regressions. The USB-only GUI rehearsal under
+`build-output/desk-system-keys/gui/` opens the menu from the desktop and
+Calculator, navigates and dismisses it, and records QMP `guest-reset` only
+after the third Ctrl+Alt+Delete press. The first host reboot check used too
+short a deadline; `ovmf-repeat/reboot-result.txt` and `qmp.jsonl` hold the
+completed check. Physical keyboard acceptance remains separate.
+
 ## 0. Two kinds of pane
 
 **Every pane is a STEP. No pane owns a loop.** `desk-step-of` is the only
 function that knows which id means which app, so it is also the census, and
 counting it beats reading a list here: EIGHTEEN arms at 2026-09-08, being
-Monitor, Calendar, Diffusion, Tracker, Review, Console, Appearance,
+Monitor, Calendar, Diffusion, Tracker, Review, Console, Settings,
 Calculator, Clock, Programs, the system menu, Files, Browser, 3D View,
 Aquarium, Editor, Web and Sheets. This paragraph said fourteen and named
 neither Sheets nor Web, which is what a list kept beside the thing it
@@ -403,6 +432,58 @@ pixels in its own box. Renaming it to `sysmenu` broke `desk-taskbar-hit`, which
 asserts that id resolves in the band. The test was right and the rename bought
 nothing.
 
+## Web Server administration
+
+`dk-web-cell` at desk offset 248 points to the raw shared block allocated by
+`gopweb-hold` before the desk heap mark. `GopWebAdmin` owns the block layout;
+the window manager retains offsets 0 through 63. The block stores integers
+and CCE text bytes, never pointers into the service heap.
+
+`GopBoot.opening` captures the framebuffer handoff and font, initializes the
+runtime, and only then spawns the service. Reinitializing the runtime after
+spawn would erase process ownership and capabilities. The service owns
+Network.Read and Network.Write in an 8 MiB child heap; the parent relinquishes
+those capabilities after spawn.
+
+Start from a non-running state acquires a DHCP lease and binds port 9100.
+Start while Running acknowledges the command without rebinding.
+Stop closes the listener and
+every connection but keeps the worker alive for Start. Restart closes the
+connections and reacquires a lease. Commands are checked without waiting for
+incoming traffic and carry publication and acknowledgement sequences. The
+pane shows the applied time and command delay. Missing DHCP, process spawn
+failure and lease expiry have distinct visible states. Each DHCP phase has
+a 500-tick deadline and a finite poll bound; 100 nominal PIT ticks represent
+one second. Lease expiry closes the service; Start reacquires rather than
+automatically renewing.
+
+The Overview names the leased binding, gateway and mask, lease lifetime,
+process and heap state, request totals and routes. `/` serves the built-in
+HTML page; `/api/health` returns JSON status; `/api/status` returns the
+connection request count and mode; other paths return 404 text. No disk
+directory is published.
+
+The request log retains 64 records with boot milliseconds, client IPv4,
+method, path, status, sent bytes, duration and send-completion state. Method
+and path storage stop at 16 and 128 CCE bytes; truncated records are
+marked. Overwrite increments a displayed loss counter. The writer invalidates
+a slot before changing fields and publishes the sequence last, allocating
+no heap. Request-size refusals enter the log as 413; their method/path are
+parsed from at most 256 pending bytes. Transmission time uses 10 ms ticks.
+
+The viewer pages newest first and combines method/status filters with
+case-insensitive method/path search and textual IP/status search. Search holds
+at most 96 characters. PgUp/PgDn page; Tab or Search activates typing; Enter
+or Escape ends typing. Filter changes reset paging. Rendering and hit testing
+use the same widget tree, and each event's transient allocations are reclaimed.
+Repaints cover the Web window and occluding windows, not the entire desktop.
+
+The explicit live diagnostic is `apps/works/proofs/gopweb-admin-live.ps1`.
+Its positive, no-lease and ineffective-Restart arms run on codex-vm and OVMF.
+The diagnostic drives service commands directly; actual GUI click, search,
+paging and Aquarium coexistence require a separate desk rehearsal. Neither
+emulated bed establishes physical DHCP/HTTP acceptance.
+
 ## 0.6 The annotation surface
 
 `GopEdit` marks a definition line whose definition carries a trusted
@@ -498,7 +579,7 @@ The block holds raw addresses and integer state shared with pane steps.
 | 0 | `desk-review-cell` | pointer: the Review pane's state block (red, 2026-08-19). Its own cells: 0 selection, 4 mode, 8 pointer to the reason buffer, 12 reason length, 16 the verdict kind being reasoned about, 20 shift state, 24 the detail's scroll offset in pixels, 28 the view height in rows (written by the paint that measured it, read by the key that pages, because a page key cannot compute room that depends on the theme's padding), 32 the proposal being superseded and 36 the replacement being picked. The reason BUFFER is a second pointer one level down, so `grv-init` is called from `desk-run` before the base mark for the same reason `gcon-init` is (val, 2026-08-20) |
 | 4 | `desk-mark-cell` | the base heap mark (section 3) |
 | 8 | `desk-second-cell` | last RTC second the taskbar clock painted |
-| 12 | `desk-focus-cell` | which app the desk is stepping (0 none, 1 Monitor, 2 Calendar, 3 Appearance, 4 Calculator, 5 Clock, 6 Programs, 7 Diffusion, 8 Issues, 9 Console, 10 Files, 11 Browser, 12 3D View, 13 Aquarium, 14 Editor, 15 system menu, 16 Review) |
+| 12 | `desk-focus-cell` | which app the desk is stepping (0 none, 1 Monitor, 2 Calendar, 3 Settings, 4 Calculator, 5 Clock, 6 Programs, 7 Diffusion, 8 Issues, 9 Console, 10 Files, 11 Browser, 12 3D View, 13 Aquarium, 14 Editor, 15 system menu, 16 Review) |
 | 16 | (bare literal) | the Monitor pane's repaint second |
 | 20 | `desk-marks-cell` | pointer: the app mark stack (val, 2026-08-19) |
 | 24 | (bare literal) | pointer: the calculator's state block |
@@ -518,7 +599,7 @@ The block holds raw addresses and integer state shared with pane steps.
 | 80 | `dk-wr-cell` | pointer: the window registry (val, 2026-08-25). Offset 0 is the count and entry `i` is a focus id at `4 * i + 4`, up to `dk-wr-max` of them. THE ARRAY ORDER IS THE Z ORDER: entry 0 is the bottom, the last entry is the top, and the top is the focused window. Allocated in `desk-run` before the base mark, for the reason every other pointer here is. **`dk-wr-max` is 15, which is the 64-byte block's own bound** (four bytes for the count, four an entry); it was 4, and 4 was the vertical cascade room divided by the step rather than anything about the block |
 | 84 | `dk-cal-cell` | pointer: the Calendar's block (val, 2026-08-25). It uses only the window slot at 44..60; the pane keeps no other state, which is what made it quiet, and a window is the first thing it has ever had to remember |
 | 88 | `dk-dif-cell` | pointer: the Diffusion pane's block (val, 2026-08-25), same shape and for the same reason |
-| 92 | `dk-sty-cell` | pointer: the Appearance pane's block (val, 2026-08-25). Same shape as the two above: the pane's own state is `dk-scheme-cell` and `dk-adorn-cell`, both integers in `ds`, so the window slot is the only thing this block holds |
+| 92 | `dk-sty-cell` | pointer: Settings block, 2176 bytes below the base mark. Window prefix 0-63; page at 64, status length at 68, read-failure lock at 72, scroll at 76, 120 CCE qwords at 80. Wallpaper's 384-byte raw state starts at 1088; its display cache is allocated before the base mark. Accessibility starts at 1472: focus ID length at +0, Shift state at +8, up to 96 CCE ID bytes at +16, the stored high-contrast Boolean at +112, and the 576-byte announcement channel at +128. That channel has sequence/length/live/truncation qwords at +0/+8/+16/+24 and up to 512 CCE bytes at +32; use `gax-read` for an owned stable copy. Numeric preferences remain scalar `ds` cells. No temporary record/text pointer survives a step. |
 | 96 | `dk-trk-cell` | pointer: the Issues pane's block (val, 2026-08-25). Same shape again, and the pane it belongs to keeps state without keeping a block: the filter is bare cell 32 and the selected row bare cell 40, two integers, so there was nothing a window slot could sit in |
 | 100 | `dk-mon-cell` | pointer: the Monitor's block (val, 2026-08-25). The first block that holds something the PAINTER cannot reach as well as the window slot: cell 0 is whether a USB HID keyboard was enumerated and cell 4 whether a mouse was, written once by `desk-mon-open`. `desk-wnd-paint-all` is handed the screen and `ds` and nothing else, so `kbd` and `mouse` are not in scope where this pane's tree is built, and what it wants of them is settled before `desk-run` takes the base mark and cannot change afterwards |
 | 104 | `dk-scene-cell` | pointer: the 3D View's block (val, 2026-08-25). The window slot and nothing else: everything a scene pane keeps lives in `ScenePane`, which `DeskApps` carries, and everything about where it is drawn is derived from the rect these cells hold |
@@ -553,9 +634,33 @@ The block holds raw addresses and integer state shared with pane steps.
 | 276 | `dk-input-cell` | pointer: the fixed input queue, trace and metadata block, allocated in `desk-run` below the base heap mark. `GopInputQueue` owns the layout; `desk-input-step` collects and delivers under `desk-loop`'s frame heap mark. Queue exhaustion and transfer errors retain separate causes and notification flags; both invalidate lossless collection. |
 | 280..292 | `dk-drag-x0-cell` .. `dk-drag-h0-cell` | the dragged window's rect at GRAB time, x and y signed through `dk-cell-signed`, written by `dk-drag-note-start` beside `dk-drag-begin`. The release repaints the union of this rect and the dropped one (`desk-wnd-paint-rect`) instead of the whole desk. Not pointers |
 | 296 | `dk-policy-cell` | pointer: the fixed pane-policy table and service counters. Allocated by `desk-run` below the base mark. `GopPanePolicy` owns the layout; input delivery bypasses cosmetic admission. |
+| 304 | `dk-shortcut-cell` | pointer: `GopDeskKeys` state below the base mark; modifier tracking and triple Ctrl+Alt+Delete detection survive pane reclamation. |
+| 308 | `dk-render-cell` | pointer: the 256-byte `GopRenderMailbox` controller below the base mark. One persistent BSP worker owns scene construction and software rendering for 3D View and Aquarium. Pane and request tokens govern cancellation and bounded copying into parent-owned surfaces. |
+| 300 | `dk-present-cell` | pointer: `GopPresent` state, allocated by `desk-run` below the base mark with a composition surface and a cache of published pixels. The physical framebuffer address is stored as a qword in that state. All desk drawing and cursor saves use the composition surface. `desk-loop` publishes requested changes between handlers at approximately 60 Hz with a working HPET. Pending scene-copy rectangles retain the previous visible frame until copying completes. |
 
-**The block is 512 bytes. Cells 0 through 296 are occupied; cells 300
-through 508 are free (source checked 2026-09-30).**
+`dk-web-cell` at 248 stores the shared Web service block. `dk-bub-cell` at
+252 stores the hover bubble save block. Both pointers are established below
+the desk's base heap mark.
+
+**The block is 512 bytes. Cells through 308 are assigned; cells 312
+through 508 are free (source checked 2026-10-01).**
+
+Presentation payload storage is `2 * stride * height * 4 + 128` bytes below
+the base mark, plus allocator alignment. Publication allocates nothing, scans the visible pixel area only when
+requested, and writes changed pixels without exposing intermediate clears.
+The publication interval targets approximately 60 Hz with a working HPET;
+an unavailable clock rate disables throttling. Publication is a CPU copy,
+not a synchronized scanout swap.
+
+The render controller and worker closure outlive pane reclamation. Close and
+scene replacement invalidate the owner before restoring the pane heap; hide
+and rendering changes cancel the request. The worker holds no pane pointers.
+It acknowledges cancellation after restoring its own job arena. The desk
+copies at most 1024 pixels per unit and swaps its completed surface only after
+validating the live owner, request, reply and full copy. The worker has a
+30 MiB heap grant and admits packed color/depth storage plus a 4 MiB reserve.
+See [the worker contract](../../docs/Designs/Active/OS/DeskScheduler.md#production-render-worker)
+for admission, scheduling, diagnostics and proof limits.
 
 Every desk-state allocation uses `dk-ds-bytes` from `GopDesk`. Announce a
 new cell before claiming it and update the table. Identify allocations by
@@ -619,8 +724,8 @@ know where the band is. That arity change is 40 call sites in `GopDesk` and 43
 across seven test chapters, and it is the whole cost.
 
 **THE DEFAULT IS PROVEN INERT, NOT ASSUMED INERT.** An unwritten cell reads
-zero, zero is `dk-edge-bottom`, so a desk with no `SETTINGS.DAT` is what it
-always was. Measured: the bottom-edge frame differs from a depot-built
+zero, and zero is `dk-edge-bottom`, also the Settings schema default.
+Measured: the bottom-edge frame differs from a depot-built
 pre-change frame in 24 rows, twelve topbar and twelve taskbar, which are the
 `it/s` readout and the clock. **Zero content rows differ.** `desk-pane-origin`'s
 first four rows are byte-identical across the change for the same reason and are
@@ -644,10 +749,10 @@ PATH THAT ALREADY DOES IT.** `root` is threaded through `desk-loop` and rebuilt
 only by `desk-app-hide` and `desk-app-close`; `desk-taskbar-clock` re-renders
 the time into it once a second. Moving the band with a stale `root` paints the
 clock where the band used to be, which is the same failure section 0.5 records
-for a pill. The Appearance edge row answers `dk-sc-style`, so
+for a pill. A committed Settings edit that changes the edge answers `dk-sc-style`, so
 `desk-app-close-to` rebuilds `root` and re-dispatches, and the pane reopens
-where the user left it. Every other row on that pane changes colours only and
-may answer 1.
+where the user left it. This includes a confirmed reset that moves the edge.
+Other Settings actions stay in the current pane.
 
 **AND AN ALREADY-PLACED WINDOW DOES NOT KNOW THE BOX MOVED.** A rect is a stored
 fact, so docking the band left leaves each window where it was, UNDER the band
@@ -762,40 +867,11 @@ shown cursor is undone by that restore the moment the pointer next moves. The
 pill restore shipped without `cursor-hide` in one draft and left a fragment of
 the pill on the band; a capture caught it and no arm could have.
 
-**A `ds` SHORTER THAN 128 BYTES CANNOT LEGALLY HOLD THE CELLS ABOVE 63**, and
-five test chapters were allocating 64 (`browser-pane-fit`, `desk-chrome-icons`,
-`desk-calc-click`, `desk-taskbar-hit`, `desk-style-render`). That predates cell
-76: `dk-icons-cell` is 72 and has been read off a 64-byte block since it was
-added. It never showed because the arena is bump-allocated and 64-aligned, so
-the over-read landed on padding, answered zero, and every reader's
-absent-is-zero branch took over -- which is the same reading a legitimately
-empty cell gives, so no arm could tell them apart. All five now allocate 128,
-which is what `desk-run` allocates. **A test that builds a `ds` builds a
-128-byte one.**
-
-**THE BLOCK IS 256 BYTES AND CELLS 0..244 ARE TAKEN, so 248 and 252 are the
-last two. Re-measured 2026-09-07 against `desk-run` and the cell constants
-(L-COUNT); this paragraph said 0..200 and the table above it said 0..240 on
-the same day, which is the second time this count has gone stale inside this
-file while the table beside it was right.** It was 128 for red's Review cell 0
-(2026-08-19) and val's 64, 68 and 72 (2026-08-21); the grow to 256 came with
-the desk `ds` change at 19874, and 76..168 went to the taskbar band, the
-window registry, the panes, the rate counter, the resize gesture and the band
-edge. val took **172..200 for the flick on 2026-08-27** (`dk-flick-p1`,
-`dk-flick-t1`, `dk-flick-p0`, `dk-flick-t0`, `dk-flick`, `dk-flick-dir`,
-`dk-flick-org`, `dk-flick-rt`). val took 232 (the preview slots), 236 and 240
-(the hover dwell), 244 (the pinned-pill mask, `dk-pinned-cell`), 248 (the
-block the desk shares with the web service, `dk-web-cell`, WORKS-48) and, on
-2026-09-07, **252 for the hover bubble's save block** (`dk-bub-cell`). The
-block is FULL: the next pane
-that needs a cell grows it and updates this paragraph, the table above and
-`desk-run`'s allocation together. Announce
-before you take one, the way the file claims
-table in `docs/PM/CurrentPlan.md` asks. Cell 12 was taken by val on 2026-08-18
-for the focus id and cell 20 by val on 2026-08-19 for the mark stack; the count
-above said three, then two. Two agents took cell 48 independently on
-2026-08-11; each change was green alone and the collision only surfaced in the
-merge, because nothing in the tree cross-checks this block.
+Tests allocate `dk-ds-bytes`, the same desk-state size used by `desk-run`.
+Cell 248 holds the Web service block; cell 252 holds the hover bubble's
+save block. The cell table in section 2 owns the remaining allocation map.
+Announce a new cell before taking ownership and update the table together
+with the source allocation.
 
 `dk-mon-tick-cell = 28672` is NOT a `ds` offset. It is an absolute address, read
 as `peek-32 dk-mon-tick-cell 0`.
@@ -1221,7 +1297,7 @@ model of the split.
   30, 32, 33, 37, 38, 41, 46, 48, 50, plus 1 for Esc, 15 for Tab (leave the pane
   alive, section 0.5) and 88 for F12. 41 is the backtick and opens the system
   menu, which is also the taskbar's `menu` button. Check `desk-dispatch` and
-  `dk-style-key` before choosing.
+  `dk-settings-key` before choosing.
 - **A launcher row is not free, and since 2026-09-08 there is no room for
   one.** `gpr-split` in `GopPrograms` is an ENTRY INDEX that must land on a
   group boundary, so inserting before it moves the cut and the second column

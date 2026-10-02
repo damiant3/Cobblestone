@@ -34,12 +34,12 @@ Section: Init
 
   virtio-blk-init : Arm64PciDevice -> VirtioBlkState
   virtio-blk-init (pci-dev) =
-   let vd = virtio-init-device pci-dev
-   in let features = virtio-negotiate vd 0
-   in let q = virtio-setup-queue vd vblk-queue vblk-queue-region
-   in let s = virtio-set-status vd virtio-status-driver-ok
-   in let cap = if (vd.device-cfg-base) > 0 then peek-qword (vd.device-cfg-base) 0 else 0
-   in VirtioBlkState { device = vd, queue = q, capacity = cap }
+    let vd = virtio-init-device pci-dev
+    in let features = virtio-negotiate vd 0
+    in let q = virtio-setup-queue vd vblk-queue vblk-queue-region
+    in let s = virtio-set-status vd virtio-status-driver-ok
+    in let cap = if (vd.device-cfg-base) > 0 then peek-qword (vd.device-cfg-base) 0 else 0
+    in VirtioBlkState { device = vd, queue = q, capacity = cap }
 
 Section: Descriptor Chain
 
@@ -57,72 +57,94 @@ Section: Descriptor Chain
 
   vblk-next-of : Integer, Integer, Integer -> Integer
   vblk-next-of (desc-base) (queue-size) (idx) =
-   if idx < 0 | idx >= queue-size then 0 - 1
-   else bit-and (peek-16 (desc-base + idx * 16) 14) #FFFF
+    if idx < 0 | idx >= queue-size then 0 - 1
+    else bit-and (peek-16 (desc-base + idx * 16) 14) #FFFF
 
   vblk-in-table : Integer, Integer -> Boolean
   vblk-in-table (idx) (queue-size) = idx >= 0 & idx < queue-size
 
   vblk-chain : Integer, Integer, Integer -> VblkChain
   vblk-chain (desc-base) (queue-size) (head) =
-   let d1 = vblk-next-of desc-base queue-size head
-   in let d2 = vblk-next-of desc-base queue-size d1
-   in let nf = vblk-next-of desc-base queue-size d2
-   in let in-ring = vblk-in-table head queue-size & vblk-in-table d1 queue-size & vblk-in-table d2 queue-size & vblk-in-table nf queue-size
-   in let distinct = d1 /= head & d2 /= head & d2 /= d1 & nf /= head & nf /= d1 & nf /= d2
-   in VblkChain { d1-idx = d1, d2-idx = d2, next-free = nf, ok = in-ring & distinct }
+    let d1 = vblk-next-of desc-base queue-size head
+    in let d2 = vblk-next-of desc-base queue-size d1
+    in let nf = vblk-next-of desc-base queue-size d2
+    in let in-ring = vblk-in-table head queue-size & vblk-in-table d1 queue-size & vblk-in-table d2 queue-size & vblk-in-table nf queue-size
+    in let distinct = d1 /= head & d2 /= head & d2 /= d1 & nf /= head & nf /= d1 & nf /= d2
+    in VblkChain { d1-idx = d1, d2-idx = d2, next-free = nf, ok = in-ring & distinct }
 
 Section: Read Sectors
 
   virtio-blk-read-sector : VirtioBlkState, Integer -> VirtioBlkReadResult
   virtio-blk-read-sector (st) (sector) =
-   virtio-blk-read-sectors st sector 1
+    virtio-blk-read-sectors st sector 1
 
   virtio-blk-read-sectors : VirtioBlkState, Integer, Integer -> VirtioBlkReadResult
   virtio-blk-read-sectors (st) (start-sector) (count) =
-   let chain = vblk-chain ((st.queue).desc-base) ((st.queue).queue-size) ((st.queue).free-head)
-   in if chain.ok == False then VirtioBlkReadResult { state = st, data = [], ok = False }
-   else virtio-blk-read-chain st start-sector count chain
+    let chain = vblk-chain ((st.queue).desc-base) ((st.queue).queue-size) ((st.queue).free-head)
+    in if chain.ok == False then VirtioBlkReadResult { state = st, data = [], ok = False }
+    else virtio-blk-read-chain st start-sector count chain
 
   virtio-blk-read-chain : VirtioBlkState, Integer, Integer, VblkChain -> VirtioBlkReadResult
   virtio-blk-read-chain (st) (start-sector) (count) (chain) =
-   let data-len = count * vblk-sector-size
-   in let req-addr = vblk-req-base
-   in let zero = virtio-zero-mem req-addr 16
-   in let w1 = poke-32 req-addr 0 vblk-req-read
-   in let w2 = poke-32 req-addr 4 0
-   in let w3 = mmio-write-64 req-addr 8 start-sector
-   in let data-addr = vblk-buf-base
-   in let status-addr = data-addr + data-len
-   in let w4 = poke-byte status-addr 0 #FF
-   in let q = st.queue
-   in let head = q.free-head
-   in let d0 = (q.desc-base) + head * 16
-   in let w5 = mmio-write-64 d0 0 req-addr
-   in let w6 = poke-32 d0 8 16
-   in let w7 = poke-16 d0 12 vq-desc-f-next
-   in let d1-idx = chain.d1-idx
-   in let d1 = (q.desc-base) + d1-idx * 16
-   in let w8 = mmio-write-64 d1 0 data-addr
-   in let w9 = poke-32 d1 8 data-len
-   in let w10 = poke-16 d1 12 (bit-or vq-desc-f-write vq-desc-f-next)
-   in let d2-idx = chain.d2-idx
-   in let d2 = (q.desc-base) + d2-idx * 16
-   in let w11 = mmio-write-64 d2 0 status-addr
-   in let w12 = poke-32 d2 8 1
-   in let w13 = poke-16 d2 12 vq-desc-f-write
-   in let next-free = chain.next-free
-   in let aidx = q.avail-idx
-   in let ring-off = (q.avail-base) + 4 + bit-and aidx ((q.queue-size) - 1) * 2
-   in let w14 = poke-16 ring-off 0 head
-   in let new-aidx = aidx + 1
-   in let bar = mmio-barrier
-   in let w15 = poke-16 (q.avail-base) 2 new-aidx
-   in let notified = virtio-notify (VirtqueueState { desc-base = q.desc-base, avail-base = q.avail-base, used-base = q.used-base, queue-size = q.queue-size, free-head = next-free, avail-idx = new-aidx, last-used-idx = q.last-used-idx, notify-addr = q.notify-addr })
-   in let q1 = virtio-poll-used (VirtqueueState { desc-base = q.desc-base, avail-base = q.avail-base, used-base = q.used-base, queue-size = q.queue-size, free-head = next-free, avail-idx = new-aidx, last-used-idx = q.last-used-idx, notify-addr = q.notify-addr })
-   in let status = peek-byte status-addr 0
-   in let data = virtio-blk-read-buf data-addr data-len 0 []
-   in VirtioBlkReadResult { state = VirtioBlkState { device = st.device, queue = q1, capacity = st.capacity }, data = data, ok = status == 0 }
+    let data-len = count * vblk-sector-size
+    in let req-addr = vblk-req-base
+    in let zero = virtio-zero-mem req-addr 16
+    in let w1 = poke-32 req-addr 0 vblk-req-read
+    in let w2 = poke-32 req-addr 4 0
+    in let w3 = mmio-write-64 req-addr 8 start-sector
+    in let data-addr = vblk-buf-base
+    in let status-addr = data-addr + data-len
+    in let w4 = poke-byte status-addr 0 #FF
+    in let q = st.queue
+    in let head = q.free-head
+    in let d0 = (q.desc-base) + head * 16
+    in let w5 = mmio-write-64 d0 0 req-addr
+    in let w6 = poke-32 d0 8 16
+    in let w7 = poke-16 d0 12 vq-desc-f-next
+    in let d1-idx = chain.d1-idx
+    in let d1 = (q.desc-base) + d1-idx * 16
+    in let w8 = mmio-write-64 d1 0 data-addr
+    in let w9 = poke-32 d1 8 data-len
+    in let w10 = poke-16 d1 12 (bit-or vq-desc-f-write vq-desc-f-next)
+    in let d2-idx = chain.d2-idx
+    in let d2 = (q.desc-base) + d2-idx * 16
+    in let w11 = mmio-write-64 d2 0 status-addr
+    in let w12 = poke-32 d2 8 1
+    in let w13 = poke-16 d2 12 vq-desc-f-write
+    in let next-free = chain.next-free
+    in let aidx = q.avail-idx
+    in let ring-off = (q.avail-base) + 4 + bit-and aidx ((q.queue-size) - 1) * 2
+    in let w14 = poke-16 ring-off 0 head
+    in let new-aidx = aidx + 1
+    in let bar = mmio-barrier
+    in let w15 = poke-16 (q.avail-base) 2 new-aidx
+    in let notified = virtio-notify (VirtqueueState {
+      desc-base = q.desc-base,
+      avail-base = q.avail-base,
+      used-base = q.used-base,
+      queue-size = q.queue-size,
+      free-head = next-free,
+      avail-idx = new-aidx,
+      last-used-idx = q.last-used-idx,
+      notify-addr = q.notify-addr
+    })
+    in let q1 = virtio-poll-used (VirtqueueState {
+      desc-base = q.desc-base,
+      avail-base = q.avail-base,
+      used-base = q.used-base,
+      queue-size = q.queue-size,
+      free-head = next-free,
+      avail-idx = new-aidx,
+      last-used-idx = q.last-used-idx,
+      notify-addr = q.notify-addr
+    })
+    in let status = peek-byte status-addr 0
+    in let data = virtio-blk-read-buf data-addr data-len 0 []
+    in VirtioBlkReadResult {
+      state = VirtioBlkState { device = st.device, queue = q1, capacity = st.capacity },
+      data = data,
+      ok = status == 0
+    }
 
   VirtioBlkReadResult = record {
     state : VirtioBlkState,
@@ -132,7 +154,7 @@ Section: Read Sectors
 
   virtio-blk-read-buf : Integer, Integer, Integer, List Integer -> List Integer
   virtio-blk-read-buf (addr) (len) (i) (acc) =
-   if i >= len then acc
-   else virtio-blk-read-buf addr len (i + 1) (list-push acc (peek-byte addr i))
+    if i >= len then acc
+    else virtio-blk-read-buf addr len (i + 1) (list-push acc (peek-byte addr i))
 
 Page 1

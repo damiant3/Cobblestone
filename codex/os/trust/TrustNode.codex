@@ -26,13 +26,27 @@ Section: Node State
   }
 
   node-new : List Integer, TrustLattice, Policy -> TrustNode
-  node-new (key) (lat) (pol) = TrustNode { public-key = key, lattice = lat, policy = pol, peers = [], peer-count = 0, outbound-seq = 0 }
+  node-new (key) (lat) (pol) = TrustNode {
+    public-key = key,
+    lattice = lat,
+    policy = pol,
+    peers = [],
+    peer-count = 0,
+    outbound-seq = 0
+  }
 
 Section: Peer Management
   node-add-peer : TrustNode, Text, TrustSession -> TrustNode
   node-add-peer (node) (name) (sess) =
     let peer = TrustPeer { session = sess, name = name, next-seq = 0, last-seen-seq = 0 }
-    in TrustNode { public-key = node.public-key, lattice = node.lattice, policy = node.policy, peers = list-push (node.peers) peer, peer-count = node.peer-count + 1, outbound-seq = node.outbound-seq }
+    in TrustNode {
+      public-key = node.public-key,
+      lattice = node.lattice,
+      policy = node.policy,
+      peers = list-push (node.peers) peer,
+      peer-count = node.peer-count + 1,
+      outbound-seq = node.outbound-seq
+    }
 
   node-find-peer : TrustNode, Text -> Maybe Integer
   node-find-peer (node) (name) = node-find-peer-loop (node.peers) name 0 (node.peer-count)
@@ -48,7 +62,14 @@ Section: Peer Management
 
   node-set-peer : TrustNode, Integer, TrustPeer -> TrustNode
   node-set-peer (node) (idx) (peer) =
-    TrustNode { public-key = node.public-key, lattice = node.lattice, policy = node.policy, peers = list-set-at (node.peers) idx peer, peer-count = node.peer-count, outbound-seq = node.outbound-seq }
+    TrustNode {
+      public-key = node.public-key,
+      lattice = node.lattice,
+      policy = node.policy,
+      peers = list-set-at (node.peers) idx peer,
+      peer-count = node.peer-count,
+      outbound-seq = node.outbound-seq
+    }
 
 Section: Sending
   NodeSendResult = record {
@@ -61,14 +82,35 @@ Section: Sending
   node-send (node) (peer-name) (msg) =
     let idx = node-find-peer node peer-name
     in when idx
-      is None -> NodeSendResult { node = node, success = False, error = "peer not found: " & peer-name }
+      is None -> NodeSendResult {
+        node = node,
+        success = False,
+        error = "peer not found: " & peer-name
+      }
       is Just (i) ->
         let peer = node-get-peer node i
-        in if trust-is-authenticated (peer.session) == False then NodeSendResult { node = node, success = False, error = "peer not authenticated: " & peer-name }
+        in if trust-is-authenticated (peer.session) == False then
+          NodeSendResult {
+            node = node,
+            success = False,
+            error = "peer not authenticated: " & peer-name
+          }
         else let sr = trust-send (peer.session) msg
-        in let peer1 = TrustPeer { session = sr.session, name = peer.name, next-seq = peer.next-seq + 1, last-seen-seq = peer.last-seen-seq }
+        in let peer1 = TrustPeer {
+          session = sr.session,
+          name = peer.name,
+          next-seq = peer.next-seq + 1,
+          last-seen-seq = peer.last-seen-seq
+        }
         in let node1 = node-set-peer node i peer1
-        in let node2 = TrustNode { public-key = node1.public-key, lattice = node1.lattice, policy = node1.policy, peers = node1.peers, peer-count = node1.peer-count, outbound-seq = node1.outbound-seq + 1 }
+        in let node2 = TrustNode {
+          public-key = node1.public-key,
+          lattice = node1.lattice,
+          policy = node1.policy,
+          peers = node1.peers,
+          peer-count = node1.peer-count,
+          outbound-seq = node1.outbound-seq + 1
+        }
         in NodeSendResult { node = node2, success = sr.success, error = "" }
 
 Section: Receiving
@@ -85,21 +127,53 @@ Section: Receiving
 
   node-recv-loop : TrustNode, Integer, Integer -> NodeRecvResult
   node-recv-loop (node) (current-time) (i) =
-    if i >= node.peer-count then NodeRecvResult { node = node, message = MsgDeny (DenyMsg { id = [], proposal = [], from = AgentIdentity { public-key = [] }, reason = InsufficientTrust, evidence = [], signature = [] }), from-peer = "", has-message = False, policy-allowed = False }
+    if i >= node.peer-count then
+      NodeRecvResult {
+        node = node,
+        message = MsgDeny (DenyMsg {
+          id = [],
+          proposal = [],
+          from = AgentIdentity { public-key = [] },
+          reason = InsufficientTrust,
+          evidence = [],
+          signature = []
+        }),
+        from-peer = "",
+        has-message = False,
+        policy-allowed = False
+      }
     else let peer = node-get-peer node i
     in let rr = trust-recv (peer.session)
-    in if rr.has-message == False then node-recv-loop (node-set-peer node i (TrustPeer { session = rr.session, name = peer.name, next-seq = peer.next-seq, last-seen-seq = peer.last-seen-seq })) current-time (i + 1)
-    else let peer1 = TrustPeer { session = rr.session, name = peer.name, next-seq = peer.next-seq, last-seen-seq = peer.last-seen-seq + 1 }
+    in if rr.has-message == False then
+      node-recv-loop (node-set-peer node i (TrustPeer { session = rr.session, name = peer.name, next-seq = peer.next-seq, last-seen-seq = peer.last-seen-seq })) current-time (i + 1)
+    else let peer1 = TrustPeer {
+      session = rr.session,
+      name = peer.name,
+      next-seq = peer.next-seq,
+      last-seen-seq = peer.last-seen-seq + 1
+    }
     in let node1 = node-set-peer node i peer1
     in let decision = node-eval-msg node1 rr.message (peer1.session) current-time
-    in NodeRecvResult { node = node1, message = rr.message, from-peer = peer.name, has-message = True, policy-allowed = decision.allowed }
+    in NodeRecvResult {
+      node = node1,
+      message = rr.message,
+      from-peer = peer.name,
+      has-message = True,
+      policy-allowed = decision.allowed
+    }
 
 Section: Policy Evaluation
   node-eval-msg : TrustNode, AgentMessage, TrustSession, Integer -> PolicyDecision
   node-eval-msg (node) (msg) (sess) (current-time) =
     let cap-name = node-msg-capability msg
     in let dir = node-msg-direction msg
-    in let ctx = PolicyContext { capability = cap-name, direction = __narrow dir, trust-score = __narrow (trust-peer-score sess), current-time = current-time, agent-id = node-peer-key-hex (sess.peer-key) }
+    in let ctx = PolicyContext {
+      capability = cap-name,
+      direction = __narrow dir,
+      trust-score = __narrow (trust-peer-score sess),
+      current-time = current-time,
+      agent-id = node-peer-key-hex (sess.peer-key)
+    }
     in eval-policy (node.policy) ctx
 
   node-msg-capability : AgentMessage -> Text

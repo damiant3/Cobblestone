@@ -1,7 +1,11 @@
 Chapter: GopDesk
   cites Works chapter GopInput
   cites Works chapter GopInputQueue
+  cites Works chapter GopRenderWorker
+  cites Works chapter GopRenderMailbox
+  cites Works chapter GopDeskKeys
   cites Works chapter GopPanePolicy
+  cites Works chapter GopPresent
   cites Works chapter GopSheet
   cites Works chapter GopDraw
   cites Works chapter GopWeb
@@ -11,6 +15,11 @@ Chapter: GopDesk
   cites Works chapter GopFont
   cites Works chapter GopFat16
   cites Works chapter GopSettings
+  cites Works chapter GopSettingsPanel
+  cites Works chapter GopSettingsFacts
+  cites Works chapter GopWallpaper
+  cites Works chapter GopAccessibility
+  cites Works chapter GopContrast
   cites Works chapter GopFiles
   cites Works chapter GopEdit
   cites Works chapter GopScene
@@ -40,6 +49,7 @@ Chapter: GopDesk
   cites UI chapter Layout
   cites UI chapter BoxModel
   cites UI chapter Event
+  cites UI chapter KeyInput
 
  We say:
 
@@ -168,6 +178,8 @@ Section: Appearance That Survives A Reboot
   dk-set-edge : Integer = 4
 
   dk-set-pinned : Integer = 5
+  dk-set-wallpaper : Integer = 6
+  dk-set-contrast : Integer = 7
 
   dk-pinned-all : Integer = 524287
 
@@ -175,9 +187,11 @@ Section: Appearance That Survives A Reboot
   dk-settings-keys = [
     gst-int-key dk-set-scheme "colour scheme" 0 0 (dk-scheme-count - 1),
     gst-int-key dk-set-adorn "adornments" dk-adorn-default 0 15,
-    gst-int-key dk-set-sound "sounds" 0 0 1,
+    gst-bool-key dk-set-sound "sounds" False,
     gst-int-key dk-set-edge "task frame edge" dk-edge-bottom dk-edge-bottom dk-edge-right,
-    gst-int-key dk-set-pinned "pinned apps" 0 0 dk-pinned-all
+    gst-int-key dk-set-pinned "pinned apps" 0 0 dk-pinned-all,
+    gst-text-key dk-set-wallpaper "wallpaper" "" 12,
+    gst-bool-key dk-set-contrast "shell high contrast" False
   ]
 
   dk-settings-of : Integer -> SettingsStore
@@ -187,10 +201,12 @@ Section: Appearance That Survives A Reboot
     in let s2 = gst-or-keep s1 (gst-set s1 dk-set-adorn (peek-32 ds dk-adorn-cell))
     in let s3 = gst-or-keep s2 (gst-set s2 dk-set-sound (peek-32 ds dk-sound-on-cell))
     in let s4 = gst-or-keep s3 (gst-set s3 dk-set-edge (dk-task-edge ds))
-    in gst-or-keep s4 (gst-set s4 dk-set-pinned (peek-32 ds dk-pinned-cell))
+    in let s5 = gst-or-keep s4 (gst-set s4 dk-set-pinned (peek-32 ds dk-pinned-cell))
+    in let s6 = gst-or-keep s5 (gst-set-text s5 dk-set-wallpaper (gwp-name (dk-wallpaper-state ds)))
+    in gst-or-keep s6 (gst-set-bool s6 dk-set-contrast (dk-high-contrast ds))
 
-  dk-settings-save : Integer -> [Device.Port] Boolean
-  dk-settings-save (ds) = gst-save (dk-settings-of ds)
+  dk-settings-save : SettingsStore -> [Device.Port] SetResult
+  dk-settings-save (s) = gsf-save s 0
 
   dk-settings-into : Integer, SettingsStore -> Integer
   dk-settings-into (ds) (st) =
@@ -198,7 +214,9 @@ Section: Appearance That Survives A Reboot
     in let ap = poke-32 ds dk-adorn-cell (gst-get st dk-set-adorn dk-adorn-default)
     in let sn = poke-32 ds dk-sound-on-cell (gst-get st dk-set-sound 0)
     in let ep = poke-32 ds dk-task-edge-cell (gst-get st dk-set-edge dk-edge-bottom)
-    in poke-32 ds dk-pinned-cell (gst-get st dk-set-pinned 0)
+    in let pins = poke-32 ds dk-pinned-cell (gst-get st dk-set-pinned 0)
+    in let contrast = poke-qword (dk-settings-a11y ds) 112 (gst-get st dk-set-contrast 0)
+    in gwp-set-name (dk-wallpaper-state ds) (gst-get-text st dk-set-wallpaper "")
 
 Section: Sound
 
@@ -343,13 +361,19 @@ Section: Chrome
     }
 
   dk-theme-ds : Integer -> Theme
-  dk-theme-ds (ds) = dk-theme-of (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell)
+  dk-theme-ds (ds) = if dk-high-contrast ds then gac-theme else dk-theme-of (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell)
+
+  dk-high-contrast : Integer -> Boolean
+  dk-high-contrast (ds) = if peek-32 ds dk-sty-cell == 0 then False else peek-qword (dk-settings-a11y ds) 112 /= 0
 
   dk-pal : Integer -> Palette
-  dk-pal (ds) = dk-scheme-palette (peek-32 ds dk-scheme-cell)
+  dk-pal (ds) = if dk-high-contrast ds then gac-palette else dk-scheme-palette (peek-32 ds dk-scheme-cell)
 
   dk-wall : Integer -> Integer
   dk-wall (ds) = (dk-pal ds).pal-bg
+
+  dk-bar-ink : Integer -> Integer
+  dk-bar-ink (ds) = let pal = dk-pal ds in if dk-high-contrast ds then theme-ink-on pal (pal.pal-border) else pal.pal-accent
 
   dk-gpu : Integer -> Integer
   dk-gpu (ds) = peek-32 ds desk-gpu-cell
@@ -435,6 +459,12 @@ Section: Chrome
   dk-input-cell : Integer = 276
 
   dk-policy-cell : Integer = 296
+
+  dk-present-cell : Integer = 300
+
+  dk-shortcut-cell : Integer = 304
+
+  dk-render-cell : Integer = 308
 
   dk-sheet-cell : Integer = 256
 
@@ -570,7 +600,8 @@ Section: Chrome
   desk-chrome-face : WidgetNode, Integer, Integer, GopFont -> WidgetNode
   desk-chrome-face (content) (w) (ds) (tf) =
     let s = ui-wscale w
-    in let body = widget-set-flex content 1
+    in let plain = widget-set-flex content 1
+    in let body = if dk-high-contrast ds == False & content.wn-id == "content" & content.wn-child-count == 0 then widget-set-data (__record-set plain "wn-kind" (WkCustom "desktop-wallpaper")) (dk-wallpaper-state ds) else plain
     in let m0 = list-push [] (dk-topgap w)
     in let m1 = if dk-edge-live ds dk-edge-top then list-push m0 (dk-edge-node ds tf s dk-edge-top) else m0
     in let m2 = list-push m1 body
@@ -595,7 +626,8 @@ Section: Chrome
 
   dk-chrome-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Integer -> WidgetNode
   dk-chrome-paint (base) (w) (h) (stride) (font) (tf) (tree) (ds) =
-    let laid = comp-render base stride h font tf (desk-chrome-face tree w ds tf) (dk-theme-ds ds) w h (ui-wscale w)
+    let pending = dsp-request (peek-32 ds dk-present-cell)
+    in let laid = comp-render base stride h font tf (desk-chrome-face tree w ds tf) (dk-theme-ds ds) w h (ui-wscale w)
     in let ic = desk-chrome-icons base stride h laid (dk-theme-ds ds) (ui-wscale w) tf ds
     in let inval = poke-32 ds desk-second-cell (0 - 1)
     in laid
@@ -660,7 +692,7 @@ Section: Drawing
   desk-topbar (base) (w) (stride) (font) (s) (tf) (h) (ds) =
     let pal = dk-pal ds
     in let bar = gop-fill-rect base stride h 0 0 w (dk-bar-h * s) (pal.pal-border)
-    in desk-line base stride h font s tf (8 * s) (4 * s) "Cobblestone" (pal.pal-accent)
+    in desk-line base stride h font s tf (8 * s) (4 * s) "Cobblestone" (dk-bar-ink ds)
 
   desk-window : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> Integer
   desk-window (base) (w) (h) (stride) (font) (tf) (ds) =
@@ -682,7 +714,8 @@ Section: Drawing
 
   desk-draw : Integer, Integer, Integer, Integer, CbfFont, Integer, GopFont, Integer -> WidgetNode
   desk-draw (base) (w) (h) (stride) (font) (s) (tf) (ds) =
-    let wall = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
+    let pending = dsp-request (peek-32 ds dk-present-cell)
+    in let wall = gop-fill-rect base stride h 0 0 w h (dk-wall ds)
     in let laid = comp-render base stride h font tf (desk-chrome-face (widget-panel "content" DirColumn 0 []) w ds tf) (dk-theme-ds ds) w h (ui-wscale w)
     in let ic = desk-chrome-icons base stride h laid (dk-theme-ds ds) (ui-wscale w) tf ds
     in let inval = poke-32 ds desk-second-cell (0 - 1)
@@ -741,6 +774,7 @@ Section: Clock Gate
       mo <- rtc-read 8
       yy <- rtc-read 9
       let st = poke-32 ds desk-second-cell now
+      in let pending = dsp-request (peek-32 ds dk-present-cell)
       in let cks = peek-32 ds desk-clock-cell
       in let note = dk-notice-take ds now
       in let txt = if text-length note > 0 then note
@@ -1119,7 +1153,7 @@ Section: Monitor
 
   dk-prev-render : Integer, CbfFont, GopFont, Theme, Palette, WidgetNode -> Integer
   dk-prev-render (dst) (font) (tf) (th) (pal) (tree) =
-    let bg = gop-fill-rect dst dk-prev-w 0 0 dk-prev-w dk-prev-h (pal.pal-bg)
+    let bg = gop-fill-rect dst dk-prev-w dk-prev-h 0 0 dk-prev-w dk-prev-h (pal.pal-bg)
     in let laid = comp-render-at dst dk-prev-w dk-prev-h font tf tree th 0 0 dk-prev-w dk-prev-h 1
     in 1
 
@@ -1320,6 +1354,7 @@ Section: Monitor
     in let tgt = if dep <= 0 then peek-32 ds desk-mark-cell else if rec < 0 then __heap-save else rec
     in let eb = peek-32 ds desk-edit-cell
     in let ev = desk-edit-drop eb tgt fid
+    in let render = desk-render-close ds fid dep
     in let dropped = __heap-restore tgt
     in let rc = desk-root-reclaim ds
     in let ar = desk-apps-reclaim ds
@@ -1367,7 +1402,8 @@ Section: Monitor
   desk-app-hide : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
 
   desk-app-hide (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) = act
-    let snap = dk-prev-capture base w h stride ds (peek-32 ds desk-focus-cell)
+    let render = desk-render-pause ds (peek-32 ds desk-focus-cell)
+    in let snap = dk-prev-capture base w h stride ds (peek-32 ds desk-focus-cell)
     in let cf = poke-32 ds desk-focus-cell desk-focus-none
     in let hd2 = cursor-hide cs base stride
     in let rc = desk-root-reclaim ds
@@ -1415,6 +1451,7 @@ Section: Monitor
     in let tgt = if dep <= 0 then peek-32 ds desk-mark-cell else if rec < 0 then __heap-save else rec
     in let eb = peek-32 ds desk-edit-cell
     in let ev = desk-edit-drop eb tgt fid
+    in let render = desk-render-close ds fid dep
     in let dropped = __heap-restore tgt
     in let sf = poke-32 ds desk-focus-cell nxt
     in let rc = desk-root-reclaim ds
@@ -1458,6 +1495,7 @@ Section: Monitor
     in let tgt = if dep <= 0 then peek-32 ds desk-mark-cell else if rec < 0 then __heap-save else rec
     in let eb = peek-32 ds desk-edit-cell
     in let ev = desk-edit-drop eb tgt fid
+    in let render = desk-render-close ds fid dep
     in let dropped = __heap-restore tgt
     in let rc = desk-root-reclaim ds
     in let ar = desk-apps-reclaim ds
@@ -1840,7 +1878,8 @@ Section: Windows, continued
 
   dk-wnd-frame : Integer, Integer, Integer, Integer, CbfFont, GopFont, WidgetNode, Text, Integer, Integer, Integer, Integer, Integer, Boolean -> WidgetNode
   dk-wnd-frame (base) (w) (h) (stride) (font) (tf) (tree) (title) (ds) (wx) (wy) (ww) (wh) (focused) =
-    let pal = dk-pal ds
+    let pending = dsp-request (peek-32 ds dk-present-cell)
+    in let pal = dk-pal ds
     in let ws = ui-wscale w
     in let s = ui-scale w
     in let barcol = if focused then pal.pal-primary else pal.pal-secondary
@@ -1905,7 +1944,7 @@ Section: What a windowed pane is
     else if fid == desk-focus-prog then "Program Runner"
     else if fid == desk-focus-cal then "Calendar"
     else if fid == desk-focus-dif then "Diffusion"
-    else if fid == desk-focus-style then "Appearance"
+    else if fid == desk-focus-style then "Settings"
     else if fid == desk-focus-trk then "Issues"
     else if fid == desk-focus-mon then "System Info"
     else if fid == desk-focus-scene then "3D View"
@@ -1960,7 +1999,7 @@ Section: What a windowed pane is
     else if fid == desk-focus-con then act gcon-tree (peek-32 ds desk-console-cell) end
     else if fid == desk-focus-prog then act gpr-tree (peek-32 ds desk-prog-cell) end
     else if fid == desk-focus-dif then act gdf-tree 0 end
-    else if fid == desk-focus-style then act dk-style-tree (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell) (peek-32 ds dk-sound-on-cell) (dk-task-edge ds) end
+    else if fid == desk-focus-style then act dk-settings-tree ds end
     else if fid == desk-focus-cal then act
       yy <- rtc-read 9
       mm <- rtc-read 8
@@ -2062,10 +2101,9 @@ Section: What a windowed pane is
     else let rate = hpet-ticks-per-second
     in let scene = fid == desk-focus-scene | fid == desk-focus-fish
     in let periodic = fid == desk-focus-mon | fid == desk-focus-clkp | fid == desk-focus-con | fid == desk-focus-edit | fid == desk-focus-web | fid == desk-focus-bro | fid == desk-focus-files | fid == desk-focus-menu
-    in let mode = if scene then pp-budget else if periodic then pp-rate else pp-events
+    in let mode = if scene | periodic then pp-rate else pp-events
     in let period = if scene then r-pp-max 1 (rate * 16 / 1000) else r-pp-max 1 (rate / 20)
-    in let allowance = if scene then r-pp-max 1 (rate * 8 / 1000) else 0
-    in let slot = pp-declare table fid mode period allowance pp-late hpet-ticks
+    in let slot = pp-declare table fid mode period 0 pp-late hpet-ticks
     in let refused = if slot == 0 then dk-notice-set ds "PANE POLICY REFUSED" else 0
     in slot
 
@@ -2084,7 +2122,7 @@ Section: What a windowed pane is
       is Just (sp) ->
         let cancel = if admit < 0 then gsc-cancel sp else 0
         in let allowed = __record-set sp "sp-allowed" (if admit > 0 then 1 else 0)
-        in 0
+        in gsc-worker-budget sp
 
   desk-clock-art : Integer, Integer, Integer, Integer, WidgetNode, Integer -> Integer
   desk-clock-art (base) (stride) (rows) (ws) (laid) (ds) =
@@ -2535,7 +2573,7 @@ Section: The loop's own rate
     in let x = w - dk-rate-w * s
     in let bg = gop-fill-rect base stride h x 0 (dk-rate-w * s) (dk-bar-h * s) (pal.pal-border)
     in let t = if hpet-ticks-per-second <= 0 then "no hpet" else show (peek-32 ds dk-rate-cell) & " it/s"
-    in let d = desk-line base stride h font s tf x (4 * s) t (pal.pal-accent)
+    in let d = desk-line base stride h font s tf x (4 * s) t (dk-bar-ink ds)
     in dk-cursor base w h stride cs mouse
 
   dk-drag-fid : Integer -> Integer
@@ -3404,7 +3442,7 @@ Section: The Web Server Pane
     in let wh = dk-wnd-rh blk w h st ds - bh
     in let laid = widget-layout (gopweb-tree blk) (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
     in let cmd = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
-          is Just (wgt) -> if wgt.wn-id == "web-stop" then gopweb-cmd-stop else if wgt.wn-id == "web-start" then gopweb-cmd-start else 0
+          is Just (wgt) -> gopweb-action-code (wgt.wn-id)
           is None -> 0
     in let d = __heap-restore probe
     in cmd
@@ -3412,21 +3450,24 @@ Section: The Web Server Pane
   desk-web-repaint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, UsbMouse, Integer -> [Device.Port] Integer
   desk-web-repaint (base) (w) (h) (stride) (font) (tf) (cs) (mouse) (ds) = act
     hd <- act cursor-hide cs base stride end
-    p <- desk-wnd-paint-all base w h stride font tf ds
+    p <- desk-wnd-paint-from base w h stride font tf ds desk-focus-web
     dk-cursor base w h stride cs mouse
   end
 
   dk-web-fresh : Integer, Integer -> Boolean
   dk-web-fresh (blk) (hit) =
     hit /= 0
-    | peek-32 blk gopweb-blk-count /= peek-32 blk gopweb-blk-seen
-    | peek-32 blk gopweb-blk-paused /= peek-32 blk gopweb-blk-shown
+    | peek-qword blk gopweb-blk-version /= peek-qword blk gopweb-blk-seen
 
   desk-web-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, Integer, Boolean -> [Device.Port] Integer
   desk-web-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (sc) (clicked) = act
-    ev <- desk-wnd-chrome-step base w h stride font tf mouse ds cs desk-focus-web sc clicked
     let blk = peek-32 ds dk-web-cell
-    in if ev == desk-wnd-ev-close then 0
+    in let md = gcon-shift-of (peek-qword blk gopweb-blk-mods) sc
+    in let mods = poke-qword blk gopweb-blk-mods md
+    in let chrome-key = if sc == 1 & peek-qword blk gopweb-blk-focus == 1 then 0 else sc
+    in act
+    ev <- desk-wnd-chrome-step base w h stride font tf mouse ds cs desk-focus-web chrome-key clicked
+    if ev == desk-wnd-ev-close then 0
     else if ev == desk-wnd-ev-min then desk-step-hide
     else if ev == desk-wnd-ev-stay then 1
     else if sc == 88 then act
@@ -3440,19 +3481,19 @@ Section: The Web Server Pane
     else
       let mark = __heap-save
       in let hit = if clicked then dk-web-hit w h blk (mouse-x mouse) (mouse-y mouse) ds tf else 0
-      in let sent = if hit == 0 then 0 else poke-32 blk gopweb-blk-cmd hit
-      in if dk-web-fresh blk hit == False then
+      in let sent = gopweb-action blk hit
+      in let keyed = if sc == 0 then 0 else gopweb-key blk sc (apply-mods (scancode-to-keycode sc) md)
+      in if dk-web-fresh blk (hit + keyed) == False then
         let d = __heap-restore mark
         in 1
       else
-        let nt = if peek-32 blk gopweb-blk-count /= peek-32 blk gopweb-blk-seen then dk-snd-request ds dk-snd-slot-notify else 0
-        in let sn = poke-32 blk gopweb-blk-seen (peek-32 blk gopweb-blk-count)
-        in let sh = poke-32 blk gopweb-blk-shown (peek-32 blk gopweb-blk-paused)
+        let sn = poke-qword blk gopweb-blk-seen (peek-qword blk gopweb-blk-version)
         in act
           p <- desk-web-repaint base w h stride font tf cs mouse ds
           let d = __heap-restore mark
           in 1
         end
+    end
   end
 
 Section: Calendar
@@ -3895,7 +3936,181 @@ Section: Diffusion
     end
   end
 
-Section: Appearance Pane
+Section: Settings Pane
+
+ The first 64 bytes retain the window contract. Settings owns page at 64,
+ status length at 68, read-failure lock at 72, scroll at 76 and 120 CCE
+ qwords at 80.
+
+  dk-settings-bytes : Integer = 1088 + gwp-state-bytes + 704
+
+  dk-settings-a11y : Integer -> Integer
+  dk-settings-a11y (ds) = peek-32 ds dk-sty-cell + 1088 + gwp-state-bytes
+
+  dk-settings-focus-id : Integer -> Text
+  dk-settings-focus-id (ds) =
+    let state = dk-settings-a11y ds
+    in raw-bytes-to-text (dk-settings-focus-bytes state 0 [])
+
+  dk-settings-focus-bytes : Integer, Integer, List Integer -> List Integer
+  dk-settings-focus-bytes (state) (i) (acc) =
+    if i >= peek-qword state 0 | i >= 96 then acc
+    else dk-settings-focus-bytes state (i + 1) (list-push acc (peek-byte state (16 + i)))
+
+  dk-settings-focus-put : Integer, Text, Integer -> Integer
+  dk-settings-focus-put (state) (id) (i) =
+    if i >= text-length id | i >= 96 then poke-qword state 0 i
+    else let byte = poke-byte state (16 + i) (char-code-at id i)
+    in dk-settings-focus-put state id (i + 1)
+
+  dk-settings-focus-tree : Integer, WidgetNode -> WidgetNode
+  dk-settings-focus-tree (ds) (tree) =
+    let id = dk-settings-focus-id ds
+    in if id == "" then tree else focus-apply-node tree id
+
+  dk-wallpaper-state : Integer -> Integer
+  dk-wallpaper-state (ds) = let blk = peek-32 ds dk-sty-cell in if blk == 0 then 0 else blk + 1088
+
+  dk-settings-message-put : Integer, Text, Integer -> Integer
+  dk-settings-message-put (blk) (text) (i) =
+    if i >= text-length text | i >= 120 then poke-32 blk 68 i
+    else let put = poke-qword blk (80 + i * 8) (char-code (char-at text i))
+    in dk-settings-message-put blk text (i + 1)
+
+  dk-settings-message-read : Integer, Integer, Integer -> Text
+  dk-settings-message-read (blk) (lo) (hi) =
+    if hi <= lo then ""
+    else if hi - lo == 1 then char-to-text (code-to-char (peek-qword blk (80 + lo * 8)))
+    else let mid = lo + (hi - lo) / 2
+    in dk-settings-message-read blk lo mid & dk-settings-message-read blk mid hi
+
+  dk-settings-names : Integer, List Text -> List Text
+  dk-settings-names (i) (acc) =
+    if i > dk-focus-max then acc
+    else dk-settings-names (i + 1) (list-push acc (if dk-fid-sc i == 0 then "" else desk-wnd-title i))
+
+  dk-settings-tree : Integer -> WidgetNode
+  dk-settings-tree (ds) =
+    let blk = peek-32 ds dk-sty-cell
+    in let values = dk-settings-of ds
+    in let view = if peek-32 blk 64 == 5 then gst-or-keep values (gst-set-text values dk-set-wallpaper (gwp-draft (dk-wallpaper-state ds))) else values
+    in dk-settings-focus-tree ds (gsp-scroll-tree (peek-32 blk 64) view (dk-scheme-name (peek-32 ds dk-scheme-cell)) (dk-edge-name (dk-task-edge ds)) (dk-settings-names 0 []) (dk-settings-message-read blk 0 (peek-32 blk 68)) (peek-32 blk 76))
+
+  dk-wallpaper-boot : Integer -> [Device.Port] Integer
+  dk-wallpaper-boot (ds) =
+    let s = dk-wallpaper-state ds
+    in let name = gwp-name s
+    in if name == "" then act 0 end
+    else if peek-qword s 0 == 0 then act dk-settings-message-put (peek-32 ds dk-sty-cell) "Wallpaper unavailable at this display size." 0 end
+    else act
+      loaded <- gwp-load name (peek-qword s 0) (peek-qword s 8 * peek-qword s 16 * 4) (peek-qword s 8) (peek-qword s 16)
+      when loaded
+        is WallpaperReady (frame) -> gwp-install s frame
+        is WallpaperFitRefused (why) -> dk-settings-message-put (peek-32 ds dk-sty-cell) why 0
+    end
+
+  dk-wallpaper-publish : Integer, SettingsStore, Maybe WallpaperFrame -> [Device.Port] Integer
+  dk-wallpaper-publish (ds) (values) (image) = act
+    saved <- dk-settings-save values
+    let applied = dk-settings-commit ds saved
+    in when saved
+      is SetRefused (why) -> 0
+      is SetOk (stored) ->
+        let photo = when image is Just (f) -> gwp-install (dk-wallpaper-state ds) f is None -> 0
+        in gwp-text-put (dk-wallpaper-state ds) 168 (gwp-name (dk-wallpaper-state ds)) 0
+  end
+
+  dk-wallpaper-apply : Integer, Text -> [Device.Port] Integer
+  dk-wallpaper-apply (ds) (name) =
+    let blk = peek-32 ds dk-sty-cell
+    in let state = dk-wallpaper-state ds
+    in if peek-32 blk 72 /= 0 then act 0 end
+    else let values = dk-settings-of ds
+    in when gst-set-text values dk-set-wallpaper name
+      is SetRefused (why) -> act dk-settings-message-put blk why 0 end
+      is SetOk (candidate) -> if name == "" then dk-wallpaper-publish ds candidate None
+        else if peek-qword state 0 == 0 then act dk-settings-message-put blk "Wallpaper unavailable at this display size." 0 end
+        else let w = peek-qword state 8
+        in let h = peek-qword state 16
+        in let temp = alloc-bytes (w * h * 4)
+        in act
+          loaded <- gwp-load name temp (w * h * 4) w h
+          when loaded
+            is WallpaperFitRefused (why) -> dk-settings-message-put blk why 0
+            is WallpaperReady (frame) -> dk-wallpaper-publish ds candidate (Just frame)
+        end
+
+  dk-wallpaper-key : Integer, Integer -> Integer
+  dk-wallpaper-key (ds) (sc) =
+    let s = dk-wallpaper-state ds
+    in let md = gcon-shift-of (peek-qword s 272) sc
+    in let mods = poke-qword s 272 md
+    in let n = peek-qword s 168
+    in if sc == 28 then 141
+    else if sc == 14 then let back = poke-qword s 168 (if n > 0 then n - 1 else 0) in 145
+    else if sc == 0 | sc >= 128 then 0
+    else let ch = key-upper (key-emit (apply-mods (scancode-to-keycode sc) md))
+    in if gwp-name-char ch | ch == char-code '.' then
+      if n >= 12 then let refused = dk-settings-message-put (peek-32 ds dk-sty-cell) "Wallpaper filename exceeds the 12-character limit." 0 in 145
+      else let put = poke-qword s (176 + n * 8) ch
+      in let length = poke-qword s 168 (n + 1)
+      in 145
+    else 0
+
+  dk-settings-loaded : Integer, SettingsRead -> Integer
+  dk-settings-loaded (ds) (r) =
+    let blk = peek-32 ds dk-sty-cell
+    in when r
+      is SettingsLoaded (s) -> dk-settings-into ds s
+      is SettingsMigrated (s) -> let applied = dk-settings-into ds s in dk-settings-message-put blk "Imported saved settings." 0
+      is SettingsLegacy (s) (why) -> let applied = dk-settings-into ds s in dk-settings-message-put blk ("Using legacy settings: " & why) 0
+      is SettingsMissing -> dk-settings-into ds (gst-store dk-settings-keys)
+      is SettingsUnavailable -> let applied = dk-settings-into ds (gst-store dk-settings-keys) in dk-settings-message-put blk "Settings storage unavailable; changes cannot be saved." 0
+      is SettingsLoadRefused (why) ->
+        let applied = dk-settings-into ds (gst-store dk-settings-keys)
+        in let lock = poke-32 blk 72 1
+        in dk-settings-message-put blk ("Load refused; restart before changing settings: " & why) 0
+
+  dk-settings-commit : Integer, SetResult -> Integer
+  dk-settings-commit (ds) (result) =
+    let blk = peek-32 ds dk-sty-cell
+    in when result
+      is SetRefused (why) -> dk-settings-message-put blk ("Save refused: " & why) 0
+      is SetOk (s) -> let applied = dk-settings-into ds s in dk-settings-message-put blk "Settings saved." 0
+
+  dk-settings-boot : Integer -> [Device.Port] Integer
+  dk-settings-boot (ds) =
+    let mark = __heap-save
+    in act
+      loaded <- gsf-load-or-migrate (gst-store dk-settings-keys) 0
+      let applied = dk-settings-loaded ds loaded
+      in act
+        photo <- dk-wallpaper-boot ds
+        let released = __heap-restore mark
+        in 0
+      end
+    end
+
+  dk-settings-action : Integer, Integer -> [Device.Port] Integer
+  dk-settings-action (ds) (code) =
+    let blk = peek-32 ds dk-sty-cell
+    in if code == 140 then act
+      let draft = gwp-text-put (dk-wallpaper-state ds) 168 (gwp-name (dk-wallpaper-state ds)) 0
+      in let reset = poke-32 blk 76 0
+      in let focus = dk-settings-focus-put (dk-settings-a11y ds) "" 0
+      in poke-32 blk 64 5
+    end
+    else if (code == 141 | code == 142) & peek-32 blk 64 == 5 then dk-wallpaper-apply ds (if code == 142 then "" else gwp-draft (dk-wallpaper-state ds))
+    else let result = gsp-act (peek-32 blk 64) code (dk-settings-of ds) dk-scheme-count (dk-settings-names 0 [])
+    in when result
+      is SettingsUnchanged -> act 0 end
+      is SettingsPage (page) -> act let reset = poke-32 blk 76 0 in let focus = dk-settings-focus-put (dk-settings-a11y ds) "" 0 in poke-32 blk 64 page end
+      is SettingsPanelRefused (why) -> act dk-settings-message-put blk why 0 end
+      is SettingsCandidate (s) -> if peek-32 blk 72 /= 0 then act 0 end
+        else act
+          saved <- dk-settings-save s
+          dk-settings-commit ds saved
+        end
 
   dk-edge-name : Integer -> Text
   dk-edge-name (e) =
@@ -3904,23 +4119,12 @@ Section: Appearance Pane
     else if e == dk-edge-right then "right"
     else "bottom"
 
-  dk-style-tree : Integer, Integer, Integer, Integer -> WidgetNode
-  dk-style-tree (scheme) (f) (snd) (edge) =
-    widget-panel "style" DirColumn 4 [widget-label "style-title" "APPEARANCE", widget-button "style-scheme" ("Colour scheme: " & dk-scheme-name scheme), widget-button "style-border" ("Borders: " & dk-on-off f dk-adorn-border), widget-button "style-grad" ("Gradients: " & dk-on-off f dk-adorn-gradient), widget-button "style-shadow" ("Shadows: " & dk-on-off f dk-adorn-shadow), widget-button "style-round" ("Rounded corners: " & dk-on-off f dk-adorn-round), widget-button "style-sound" ("Sounds: " & dk-sound-name snd), widget-button "style-edge" ("Task frame: " & dk-edge-name edge), widget-label "style-hint" "Click a row, or space b g s r a e.", widget-set-flex (widget-label "style-spacer" "") 1]
-
   dk-sound-name : Integer -> Text
   dk-sound-name (v) = if v == 0 then "off" else "on"
 
   dk-style-id-code : Text -> Integer
   dk-style-id-code (id) =
-    if id == "style-scheme" then 1
-    else if id == "style-border" then 2
-    else if id == "style-grad" then 3
-    else if id == "style-shadow" then 4
-    else if id == "style-round" then 5
-    else if id == "style-sound" then 6
-    else if id == "style-edge" then 7
-    else 0
+    gsp-code id
 
   dk-style-key : Integer -> Integer
   dk-style-key (sc) =
@@ -3933,10 +4137,59 @@ Section: Appearance Pane
     else if sc == 18 then 7
     else 0
 
-  dk-style-hit : Integer, Integer, Integer, Integer, Integer, GopFont -> Integer
-  dk-style-hit (w) (h) (mx) (my) (ds) (tf) =
-    let probe = __heap-save
-    in let tree = dk-style-tree (peek-32 ds dk-scheme-cell) (peek-32 ds dk-adorn-cell) (peek-32 ds dk-sound-on-cell) (dk-task-edge ds)
+  dk-settings-key : Integer, Integer -> Integer
+  dk-settings-key (ds) (sc) =
+    let page = peek-32 (peek-32 ds dk-sty-cell) 64
+    in if page == 5 then dk-wallpaper-key ds sc
+    else if page == 1 & sc == 17 then 140
+    else if page == 0 & sc >= 2 & sc <= 5 then 99 + sc
+    else if sc == 14 then 100
+    else dk-style-key sc
+
+  dk-settings-focus-reveal : Integer, WidgetNode, GaxTarget -> Integer
+  dk-settings-focus-reveal (ds) (laid) (target) =
+    when widget-find laid "settings-scroll"
+      is None -> 0
+      is Just (view) -> when widget-find view (target.gt-id)
+        is None -> 0
+        is Just (control) ->
+          let box = box-content-from-style (view.wn-bounds) (widget-resolve-style view (dk-theme-ds ds))
+          in let r = control.wn-bounds
+          in let delta = if r.lr-y < box.lr-y then r.lr-y - box.lr-y else math-max 0 (r.lr-y + r.lr-h - box.lr-y - box.lr-h)
+          in let limit = box-clamp0 (widget-scroll-extent view (dk-theme-ds ds) - box.lr-h)
+          in poke-32 (peek-32 ds dk-sty-cell) 76 (box-clamp0 (box-min limit (widget-scroll-offset view + delta)))
+
+  dk-settings-focus-next : Integer, WidgetNode, Boolean -> Integer
+  dk-settings-focus-next (ds) (laid) (reverse) =
+    when gax-collect laid []
+      is GaxRefused (why) -> let note = dk-settings-message-put (peek-32 ds dk-sty-cell) why 0 in 145
+      is GaxReady (targets) ->
+        let ring = gax-ring targets (dk-settings-focus-id ds)
+        in let next = if reverse then focus-prev ring else focus-next ring
+        in let id = focus-current next
+        in let state = dk-settings-a11y ds
+        in let kept = dk-settings-focus-put state id 0
+        in if next.fr-current < 0 then 145
+        else let target = list-at targets (next.fr-current)
+        in let reveal = dk-settings-focus-reveal ds laid target
+        in let announced = gax-publish (state + 128) (gax-say (target.gt-info)) LivePolite
+        in 145
+
+  dk-settings-focus-key : Integer, Integer, Integer, GopFont, Integer -> Integer
+  dk-settings-focus-key (w) (h) (ds) (tf) (sc) =
+    if sc == 0 then 0
+    else let state = dk-settings-a11y ds
+    in let mods = gcon-shift-of (peek-qword state 8) sc
+    in let saved = poke-qword state 8 mods
+    in let id = dk-settings-focus-id ds
+    in if sc == 15 then dk-settings-focus-next ds (dk-settings-layout w h ds tf) (mods /= 0)
+    else if id /= "" & (sc == 28 | sc == 57) & id /= "settings-wallpaper-file" then gsp-code id
+    else if id /= "" & peek-32 (peek-32 ds dk-sty-cell) 64 == 5 & id /= "settings-wallpaper-file" then 0
+    else dk-settings-key ds sc
+
+  dk-settings-layout : Integer, Integer, Integer, GopFont -> WidgetNode
+  dk-settings-layout (w) (h) (ds) (tf) =
+    let tree = dk-settings-tree ds
     in let s = ui-wscale w
     in let blk = peek-32 ds dk-sty-cell
     in let st = dk-wnd-st blk
@@ -3945,28 +4198,56 @@ Section: Appearance Pane
     in let wy = dk-wnd-ry blk w h st ds + bh
     in let ww = dk-wnd-rw blk w st ds
     in let wh = dk-wnd-rh blk w h st ds - bh
-    in let laid = widget-layout tree (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
+    in widget-layout tree (dk-theme-ds ds) (layout-rect (wx / s) (wy / s) (ww / s) (wh / s))
+
+  dk-settings-scroll : Integer, Integer, Integer, GopFont, Integer -> Integer
+  dk-settings-scroll (w) (h) (ds) (tf) (code) =
+    let laid = dk-settings-layout w h ds tf
+    in when widget-find laid "settings-scroll"
+      is None -> 0
+      is Just (view) ->
+        let content = box-content-from-style (view.wn-bounds) (widget-resolve-style view (dk-theme-ds ds))
+        in let limit = box-clamp0 (widget-scroll-extent view (dk-theme-ds ds) - content.lr-h)
+        in let next = widget-scroll-offset view + (if code == 131 then 0 - 48 else 48)
+        in poke-32 (peek-32 ds dk-sty-cell) 76 (box-clamp0 (box-min next limit))
+
+  dk-style-hit : Integer, Integer, Integer, Integer, Integer, GopFont -> Integer
+  dk-style-hit (w) (h) (mx) (my) (ds) (tf) =
+    let probe = __heap-save
+    in let laid = dk-settings-layout w h ds tf
+    in let s = ui-wscale w
     in let code = when ev-hit-widget laid (comp-hit-x mx s) (comp-hit-y my s)
-          is Just (wgt) -> dk-style-id-code (wgt.wn-id)
+          is Just (wgt) -> dk-settings-focus-click ds laid (wgt.wn-id)
           is None -> 0
     in let dropped = __heap-restore probe
     in code
 
+  dk-settings-focus-click : Integer, WidgetNode, Text -> Integer
+  dk-settings-focus-click (ds) (laid) (id) =
+    when gax-collect laid []
+      is GaxRefused (why) -> let note = dk-settings-message-put (peek-32 ds dk-sty-cell) why 0 in 145
+      is GaxReady (targets) ->
+        let ring = gax-ring targets id
+        in if ring.fr-current < 0 then 0
+        else let state = dk-settings-a11y ds
+        in let focus = dk-settings-focus-put state id 0
+        in let target = list-at targets (ring.fr-current)
+        in let note = gax-publish (state + 128) (gax-say (target.gt-info)) LivePolite
+        in if id == "settings-wallpaper-file" then 145 else dk-style-id-code id
+
+  dk-settings-announce : Integer -> Integer
+  dk-settings-announce (ds) =
+    let blk = peek-32 ds dk-sty-cell
+    in let status = dk-settings-message-read blk 0 (peek-32 blk 68)
+    in let message = when gax-collect (dk-settings-tree ds) []
+          is GaxRefused (why) -> why
+          is GaxReady (targets) ->
+            let ring = gax-ring targets (dk-settings-focus-id ds)
+            in if ring.fr-current < 0 then "Settings"
+            else gax-say ((list-at targets (ring.fr-current)).gt-info)
+    in gax-publish (dk-settings-a11y ds + 128) (message & (if status == "" then "" else ". " & status)) LivePolite
+
   dk-sc-style : Integer = 30
-
-  dk-style-flip : Integer, Integer -> Integer
-  dk-style-flip (ds) (bit) = poke-32 ds dk-adorn-cell (dk-adorn-flip (peek-32 ds dk-adorn-cell) bit)
-
-  dk-style-apply : Integer, Integer -> Integer
-  dk-style-apply (ds) (code) =
-    if code == 1 then poke-32 ds dk-scheme-cell (int-mod (peek-32 ds dk-scheme-cell + 1) dk-scheme-count)
-    else if code == 2 then dk-style-flip ds dk-adorn-border
-    else if code == 3 then dk-style-flip ds dk-adorn-gradient
-    else if code == 4 then dk-style-flip ds dk-adorn-shadow
-    else if code == 5 then dk-style-flip ds dk-adorn-round
-    else if code == 6 then poke-32 ds dk-sound-on-cell (1 - peek-32 ds dk-sound-on-cell)
-    else if code == 7 then poke-32 ds dk-task-edge-cell (int-mod (dk-task-edge ds + 1) 4)
-    else 0
 
   desk-style-paint : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer -> [Device.Port] Integer
   desk-style-paint (base) (w) (h) (stride) (font) (tf) (ds) = act
@@ -3978,7 +4259,7 @@ Section: Appearance Pane
   desk-style-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (sc) (clicked) = act
     ev <- desk-wnd-chrome-step base w h stride font tf mouse ds cs desk-focus-style sc clicked
     let click = if clicked & ev == desk-wnd-ev-pass then dk-style-hit w h (mouse-x mouse) (mouse-y mouse) ds tf else 0
-    in let code = if click /= 0 then click else dk-style-key sc
+    in let code = if click /= 0 then click else dk-settings-focus-key w h ds tf sc
     in if ev == desk-wnd-ev-close then 0
     else if ev == desk-wnd-ev-min then desk-step-hide
     else if ev == desk-wnd-ev-stay then 1
@@ -3993,17 +4274,19 @@ Section: Appearance Pane
     else if code == 0 then 1
     else act
       let mark = __heap-save
-      in let a = dk-style-apply ds code
-      in let rt = if code == 7 then dk-task-init ds tf w else 0
-      in let rf = if code == 7 then dk-wnd-refit w h ds 0 else 0
+      in let old-edge = dk-task-edge ds
       in act
-        sv <- dk-settings-save ds
-        let hd = cursor-hide cs base stride
+        sv <- if code == 131 | code == 132 then act dk-settings-scroll w h ds tf code end else dk-settings-action ds code
+        let announce = if code == 145 then 0 else dk-settings-announce ds
+        in let moved = old-edge /= dk-task-edge ds
+        in let rt = if moved then dk-task-init ds tf w else 0
+        in let rf = if moved then dk-wnd-refit w h ds 0 else 0
+        in let hd = cursor-hide cs base stride
         in act
           p <- desk-style-paint base w h stride font tf ds
           let c = dk-cursor base w h stride cs mouse
           in let d = __heap-restore mark
-          in if code == 7 then dk-sc-style else 1
+          in if moved then dk-sc-style else 1
         end
       end
     end
@@ -4368,11 +4651,27 @@ Section: Files
 
 Section: The 3D panes
 
+  desk-render-pause : Integer, Integer -> Integer
+  desk-render-pause (ds) (fid) =
+    let cell = peek-32 ds dk-render-cell
+    in if cell == 0 then 0
+    else if fid == desk-focus-scene | fid == desk-focus-fish then grm-cancel cell (peek-qword cell grm-owner)
+    else 0
+
+  desk-render-close : Integer, Integer, Integer -> Integer
+  desk-render-close (ds) (fid) (depth) =
+    let cell = peek-32 ds dk-render-cell
+    in if cell == 0 then 0
+    else if depth <= 0 | fid == desk-focus-scene | fid == desk-focus-fish then grm-close cell (peek-qword cell grm-owner)
+    else 0
+
   desk-scene-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, (Integer -> Scene3DState), Integer, Integer, Boolean -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-scene-step (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (build) (foc) (sc) (clicked) =
     when apps.da-scene
       is None -> act 0 end
       is Just (sp) -> act
+        let rollback = if sp.sp-present >= 0 & (sc == 31 | sc == 34) then dsp-rollback (peek-32 ds dk-present-cell) else 0
+        in act
         ev <- desk-wnd-chrome-step base w h stride font tf mouse ds cs foc sc clicked
         if ev == desk-wnd-ev-close then act
           v <- (gs-viewport-release)
@@ -4389,12 +4688,31 @@ Section: The 3D panes
         end
         else act
           let pl = desk-scene-place sp base w h stride tf ds foc
+          in let frame = sp.sp-n
           in act
-            r <- gsc-step base w h stride (apps.da-fonts) kbd mouse cs build sp sc (dk-task-px ds w) (peek-32 ds dk-input-cell)
-            if r == gsc-step-hide then desk-step-hide else r
+            r <- desk-scene-service base w h stride (apps.da-fonts) kbd mouse cs build sp sc (dk-task-px ds w) (peek-32 ds dk-input-cell) hpet-ticks (if peek-32 ds dk-policy-cell == 0 then 1 else 32)
+            let pending = if frame /= sp.sp-n | sp.sp-ready < 0 then dsp-request (peek-32 ds dk-present-cell) else 0
+            in if r == gsc-step-hide then desk-step-hide else r
           end
         end
+        end
       end
+
+  desk-scene-service : Integer, Integer, Integer, Integer, GopAppFont, UsbKbd, UsbMouse, Integer, (Integer -> Scene3DState), ScenePane, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  desk-scene-service (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (build) (sp) (sc) (band) (iq) (started) (fuel) =
+    let mark = __heap-save
+    in act
+      result <- gsc-step base w h stride font kbd mouse cs build sp sc band iq
+      let restored = __heap-restore mark
+      in let collected = di-collect iq kbd mouse w h
+      in let waiting = gsc-worker-waiting sp
+      in let queued = iq /= 0 & peek-qword iq di-count > 0
+      in let handed = if sc /= 0 | (waiting & queued == False) then process-yield else 0
+      in let rate = hpet-ticks-per-second
+      in let elapsed = pp-elapsed hpet-ticks started
+      in if result /= 1 | sc /= 0 | fuel <= 1 | sp.sp-allowed == 0 | rate <= 0 | elapsed >= r-pp-max 1 (rate / 500) | (iq /= 0 & peek-qword iq di-count > 0) then result
+      else desk-scene-service base w h stride font kbd mouse cs build sp 0 band iq started (fuel - 1)
+    end
 
   desk-scene-place : ScenePane, Integer, Integer, Integer, Integer, GopFont, Integer, Integer -> Integer
   desk-scene-place (sp) (base) (w) (h) (stride) (tf) (ds) (foc) =
@@ -4406,6 +4724,16 @@ Section: The 3D panes
 
   desk-scene-sibling : Integer -> Integer
   desk-scene-sibling (foc) = if foc == desk-focus-scene then desk-focus-fish else desk-focus-scene
+
+  desk-scene-evict : Integer, Integer -> Integer
+  desk-scene-evict (ds) (foc) =
+    let controller = peek-32 ds dk-render-cell
+    in let canceled = if controller == 0 then 0 else grm-close controller (peek-qword controller grm-owner)
+    in let sibling = desk-scene-sibling foc
+    in let killed = desk-marks-kill (peek-32 ds desk-marks-cell) sibling
+    in let closed = dk-wr-close (peek-32 ds dk-wr-cell) sibling
+    in let policy = pp-drop (peek-32 ds dk-policy-cell) sibling
+    in 0
 
   desk-scene-focus : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-scene-focus (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (sky) (foc) =
@@ -4436,7 +4764,7 @@ Section: The 3D panes
   desk-scene-open : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-scene-open (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) (sky) (foc) =
     let ms = peek-32 ds desk-marks-cell
-    in let ko = desk-marks-kill ms (desk-scene-sibling foc)
+    in let ko = desk-scene-evict ds foc
     in let ke = desk-browser-evict ds
     in let bw = dk-cbox-w w ds
     in let bh = dk-cbox-h w h ds
@@ -4444,7 +4772,8 @@ Section: The 3D panes
     in let mp = if hole < 0 then desk-marks-push ms foc __heap-save else 0
     in act
     sp <- gsc-new base stride cs (dk-gpu ds) sky bw bh
-    let own = if foc == desk-focus-fish then gsc-own sp (gf-scene 0) gf-advance else gsc-own sp (gsc-scene 0) gsc-no-advance
+    let own = if peek-32 ds dk-render-cell /= 0 then gsc-worker-own sp (peek-32 ds dk-render-cell) (if foc == desk-focus-fish then 2 else 1)
+      else if foc == desk-focus-fish then gsc-own sp (gf-scene 0) gf-advance else gsc-own sp (gsc-scene 0) gsc-no-advance
     in let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
     in let claimed = desk-hole-exit ms hole foc
     in let o = desk-wnd-open foc w h ds
@@ -4585,7 +4914,7 @@ Section: Browser
     let iq = peek-32 ds dk-input-cell
     in let collected = di-collect iq kbd mouse w h
     in let queued = if iq == 0 then False else peek-qword iq di-count > 0
-    in let y = if pp-yield-due (peek-32 ds dk-policy-cell) queued then process-yield else 0
+    in let y = if pp-yield-at (peek-32 ds dk-policy-cell) queued hpet-ticks hpet-ticks-per-second then process-yield else 0
     in if iq == 0 then kbd-take kbd
     else let delivered = di-deliver iq mouse
     in let lost = if peek-qword iq di-overflow /= 0 & peek-qword iq di-notified == 0 then
@@ -4599,7 +4928,9 @@ Section: Browser
 
   desk-loop : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-loop (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
-    let fmark = __heap-save
+    let held = desk-present-hold (peek-32 ds dk-present-cell) apps
+    in let shown = dsp-due (peek-32 ds dk-present-cell) hpet-ticks hpet-ticks-per-second
+    in let fmark = __heap-save
     in let iq = peek-32 ds dk-input-cell
     in let sc = desk-input-step kbd mouse w h ds
     in act
@@ -4607,6 +4938,7 @@ Section: Browser
       let rr = dk-rate-tick ds
       in let rp = if rr == 1 then desk-rate-paint base w h stride font (ui-scale w) tf cs mouse ds else 0
       in let mv = if iq == 0 then mouse-pump mouse w h else if peek-qword iq di-out-kind == di-motion | peek-qword iq di-out-kind == di-button then 1 else 0
+      in let pending = if sc /= 0 | mv == 1 | rr == 1 then dsp-request (peek-32 ds dk-present-cell) else 0
       in let zs = if mv == 1 & dk-drag-fid ds == desk-focus-none & dk-size-active ds == dk-size-none then cursor-set-shape cs (dk-size-cursor (dk-size-zone ds w h (mouse-x mouse) (mouse-y mouse))) else 0
       in let cu = if mv == 1 then cursor-update cs base stride h w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
       in let clicked = mouse-take-click mouse
@@ -4614,7 +4946,12 @@ Section: Browser
         cl <- dk-snd-click ds clicked
         fn <- dk-snd-focus-note ds
         pm <- dk-snd-pump ds
-        if desk-wnd-to-desk ds w h mouse tf clicked then
+        if dkey-step (peek-32 ds dk-shortcut-cell) sc get-ticks then acpi-reset (acpi-boot 0)
+        else if dkey-menu sc then
+          let d = __heap-restore fmark
+          in if peek-32 ds desk-focus-cell == desk-focus-menu then desk-menu-dismiss base w h stride font tf kbd mouse ds cs apps
+          else desk-menu-open base w h stride font tf kbd mouse ds cs (peek-32 ds desk-prog-cell) apps root
+        else if desk-wnd-to-desk ds w h mouse tf clicked then
           let d = __heap-restore fmark
           in desk-dispatch base w h stride font tf kbd mouse ds cs apps root sc clicked
         else if peek-32 ds desk-focus-cell /= desk-focus-none then act
@@ -4628,7 +4965,8 @@ Section: Browser
           in let essential = sc /= 0 | clicked | mv == 1 | dk-drag-fid ds /= desk-focus-none | dk-size-active ds /= dk-size-none | peek-32 ds dk-restay-cell == fid
           in act
           alive <- if admit > 0 | essential then desk-step-of base w h stride font tf kbd mouse ds cs apps root fid sc clicked else act 1 end
-          let charged = if admit > 0 | essential then pp-charge table slot started hpet-ticks else 0
+          let pending = if admit > 0 & (fid == desk-focus-edit | fid == desk-focus-bro) then dsp-request (peek-32 ds dk-present-cell) else 0
+          in let charged = if admit > 0 | essential then pp-charge table slot started hpet-ticks else 0
           in
           if alive == 0 then desk-app-close base w h stride font tf kbd mouse ds cs apps
           else if alive == desk-step-dismiss then desk-menu-dismiss base w h stride font tf kbd mouse ds cs apps
@@ -4651,6 +4989,15 @@ Section: Browser
       end
     end
   end
+
+  desk-present-hold : Integer, DeskApps -> Integer
+  desk-present-hold (state) (apps) =
+    if state == 0 then 0
+    else when apps.da-scene
+      is Just (sp) ->
+        if sp.sp-present >= 0 then dsp-hold state (sp.sp-gv.gv-x) (sp.sp-gv.gv-y) (sp.sp-gv.gv-w) (sp.sp-gv.gv-h)
+        else dsp-hold state 0 0 0 0
+      is None -> dsp-hold state 0 0 0 0
 
   dk-pillc-cell : Integer = 204
   dk-pillc-t-cell : Integer = 208
@@ -4758,6 +5105,7 @@ Section: Browser
     else if peek-32 bb dk-bub-shown /= 0 then 0
     else if fid <= desk-focus-none | fid >= dk-prev-slots then 0
     else let ch = cursor-hide cs base stride
+    in let pending = dsp-request (peek-32 ds dk-present-cell)
     in let sx = poke-32 bb dk-bub-x (r.lr-x)
     in let sy = poke-32 bb dk-bub-y (r.lr-y)
     in let sv = dk-bub-rows-in base stride (bb + dk-bub-save) (r.lr-x) (r.lr-y) 0
@@ -4770,6 +5118,7 @@ Section: Browser
     in if bb == 0 then 0
     else if peek-32 bb dk-bub-shown == 0 then 0
     else let ch = cursor-hide cs base stride
+    in let pending = dsp-request (peek-32 ds dk-present-cell)
     in let rs = dk-bub-rows-out base stride (bb + dk-bub-save) (peek-32 bb dk-bub-x) (peek-32 bb dk-bub-y) 0
     in poke-32 bb dk-bub-shown 0
 
@@ -4931,15 +5280,19 @@ Section: Browser
     end
   end
 
-  desk-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
+  desk-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
 
-  desk-run (base) (w) (h) (stride) (font) (kbd) (mouse) (web) = act
+  desk-run (screen) (w) (h) (stride) (font) (kbd) (mouse) (web) = act
     tf <- desk-font w
     af <- desk-app-fonts w tf font
     gp <- desk-gpu-present 0
-    st <- gst-load (gst-store dk-settings-keys)
     let s = ui-scale w
     in let ds = alloc-zeroed dk-ds-bytes 64
+    in let shortcuts = poke-32 ds dk-shortcut-cell (alloc-zeroed 40 64)
+    in let render = poke-32 ds dk-render-cell (grm-new 0)
+    in let display = dsp-new screen w h stride
+    in let dp = poke-32 ds dk-present-cell display
+    in let base = peek-qword display 8
     in let wbp = poke-32 ds dk-web-cell web
     in let hs = hpet-start
     in let cs = alloc-zeroed 2048 64
@@ -4958,7 +5311,8 @@ Section: Browser
     in let wrp = poke-32 ds dk-wr-cell (alloc-zeroed 64 64)
     in let calp = poke-32 ds dk-cal-cell (alloc-zeroed 64 64)
     in let difp = poke-32 ds dk-dif-cell (alloc-zeroed 64 64)
-    in let styp = poke-32 ds dk-sty-cell (alloc-zeroed 64 64)
+    in let styp = poke-32 ds dk-sty-cell (alloc-zeroed dk-settings-bytes 64)
+    in let wallpaper = gwp-state-init (dk-wallpaper-state ds) w h
     in let trkp = poke-32 ds dk-trk-cell (alloc-zeroed 64 64)
     in let monp = poke-32 ds dk-mon-cell (alloc-zeroed 64 64)
     in let scnp = poke-32 ds dk-scene-cell (alloc-zeroed 64 64)
@@ -4972,24 +5326,27 @@ Section: Browser
     in let pei = dk-pedge-init ds
     in let bbi = dk-bub-init ds
     in let nti = dk-notice-init ds
-    in let ap = dk-settings-into ds st
-    in let tki = dk-task-init ds tf w
-    in let sti = dk-strip-init ds tf w
     in act
-      ce <- clk-ensure (peek-32 ds desk-clock-cell)
-      ce2 <- clk-ensure2 (peek-32 ds desk-clock-cell)
-      let wp = mouse-warp mouse (w / 2) (h / 2)
-      in let iq = di-new 0
-      in let ip = poke-32 ds dk-input-cell iq
-      in let policy = poke-32 ds dk-policy-cell (pp-new 0)
-      in let ix = poke-qword iq di-col-x (w / 2)
-      in let iy = poke-qword iq di-col-y (h / 2)
-      in let apps = desk-apps-empty af
-      in let bm = poke-32 ds desk-mark-cell __heap-save
-      in let rm = __heap-save
-      in let root = desk-draw base w h stride font s tf ds
-      in let rn = desk-root-note ds rm
-      in let c0 = cursor-update cs base stride h w h s (w / 2) (h / 2)
-      in desk-loop base w h stride font tf kbd mouse ds cs apps root
+      ap <- dk-settings-boot ds
+      let tki = dk-task-init ds tf w
+      in let sti = dk-strip-init ds tf w
+      in act
+        worker <- grw-start (peek-32 ds dk-render-cell)
+        ce <- clk-ensure (peek-32 ds desk-clock-cell)
+        ce2 <- clk-ensure2 (peek-32 ds desk-clock-cell)
+        let wp = mouse-warp mouse (w / 2) (h / 2)
+        in let iq = di-new 0
+        in let ip = poke-32 ds dk-input-cell iq
+        in let policy = poke-32 ds dk-policy-cell (pp-new 0)
+        in let ix = poke-qword iq di-col-x (w / 2)
+        in let iy = poke-qword iq di-col-y (h / 2)
+        in let apps = desk-apps-empty af
+        in let bm = poke-32 ds desk-mark-cell __heap-save
+        in let rm = __heap-save
+        in let root = desk-draw base w h stride font s tf ds
+        in let rn = desk-root-note ds rm
+        in let c0 = cursor-update cs base stride h w h s (w / 2) (h / 2)
+        in desk-loop base w h stride font tf kbd mouse ds cs apps root
+      end
     end
   end

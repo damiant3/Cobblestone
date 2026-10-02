@@ -3,6 +3,7 @@
 #
 #   D:\AI\DiffusionForge\system\python\python.exe build/sd15-unet-oracle.py <checkpoint> <out.codex> [<sampler.codex>]
 #   ... build/sd15-unet-oracle.py <checkpoint> <out.codex> --odd   (a 15 x 11 latent, chapter UNet15OddReference)
+#   ... build/sd15-unet-oracle.py <checkpoint> <out.codex> --long  (a 154 x 768 context, two prompt chunks, chapter UNet15LongReference)
 #
 # The model is Forge's IntegratedUNet2DConditionModel (backend/nn/unet.py:481)
 # configured by Forge's own detect_unet_config from the checkpoint's keys, with
@@ -24,6 +25,7 @@ sys.path.insert(0, os.path.join(WEBUI, 'repositories', 'huggingface_guess'))
 sys.path.insert(0, os.path.join(WEBUI, 'packages_3rdparty'))
 
 H = W = 16
+CTX = 77
 CHAPTER, NAME = 'UNet15Reference', 'unet15-ref'
 T = 500.0
 SAMPLES, STRIDE, OFFSET = 64, 7919, 13
@@ -59,7 +61,7 @@ def sag_record():
 def SAG_X0(i): return ((i * 37 + 11) % 257 - 128) / 64.0
 
 def main():
-    global sys_args, H, W, CHAPTER, NAME
+    global sys_args, H, W, CHAPTER, NAME, CTX
     sys_args = list(sys.argv)
     sag = '--sag' in sys_args
     if sag:
@@ -68,6 +70,9 @@ def main():
     if '--odd' in sys_args:
         sys_args.remove('--odd')
         H, W, CHAPTER, NAME = 15, 11, 'UNet15OddReference', 'unet15-odd-ref'
+    if '--long' in sys_args:
+        sys_args.remove('--long')
+        CTX, CHAPTER, NAME = 154, 'UNet15LongReference', 'unet15-long-ref'
     ckpt, out = sys_args[1], sys_args[2]
     sys.argv = sys.argv[:1]
     from safetensors import safe_open
@@ -106,7 +111,7 @@ def main():
     model.out.register_forward_hook(hook('out'))
 
     x = torch.tensor([latent(i) for i in range(4 * H * W)], dtype=torch.float32).reshape(1, 4, H, W)
-    ctx = torch.tensor([context(i) for i in range(77 * 768)], dtype=torch.float32).reshape(1, 77, 768)
+    ctx = torch.tensor([context(i) for i in range(CTX * 768)], dtype=torch.float32).reshape(1, CTX, 768)
     opts = {}
     if sag:
         cap, create_blur_map = sag_record()

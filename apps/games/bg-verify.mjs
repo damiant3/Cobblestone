@@ -17,7 +17,8 @@
 //
 // THE PAGE. The arcade's own move() decides which legal move a click makes,
 // so it is driven here too: the bar entry must offer every enterable die,
-// the bear-off choice between two dice must be the player's, and the
+// the tray bears off with the smaller of two dice that both would while a
+// die clicked in the tray spends that die, and the
 // opponent's every move must be one the oracle allows.
 //
 // Usage: node apps/games/bg-verify.mjs [path/to/backgammon.wasm]
@@ -456,8 +457,16 @@ const click = (h, i, sel, q) => g.move(e, h, i, { sel, roll: rollOf(q), rand: ()
 }
 {
   const two = position(0, { 1: 2 }, [0, 0], [13, 0]);
-  ok('page: two dice that bear the same checker off leave the choice to you',
-     click(two, BG_OFF, 1, [5, 6]) === null);
+  const tray = click(two, BG_OFF, 1, [5, 6]);
+  ok('page: two dice that bear the same checker off: the tray spends the smaller',
+     tray && tray.handle && e.bg_off(tray.handle, 0) === 14 && JSON.stringify(tray.roll.queue) === '[6]',
+     tray && JSON.stringify(tray.roll));
+  const home = position(0, { 3: 3, 2: 2, 0: 1 }, [0, 0], [9, 0]);
+  const exact = click(home, BG_OFF, 3, [5, 4]);
+  ok('page: everything on the 4-point or lower, 5-4: the tray bears the 4-point checker off with the 4',
+     exact && exact.handle && e.bg_off(exact.handle, 0) === 10 && e.bg_point(exact.handle, 3) === 2
+       && JSON.stringify(exact.roll.queue) === '[5]',
+     exact && JSON.stringify(exact.roll));
   const by5 = click(two, BG_DIE + 5, 1, [5, 6]), by6 = click(two, BG_DIE + 6, 1, [5, 6]);
   ok('page: clicking a die in the tray spends that die',
      by5 && JSON.stringify(by5.roll.queue) === '[6]' && by6 && JSON.stringify(by6.roll.queue) === '[5]',

@@ -1,0 +1,113 @@
+Chapter: SparkScene
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Math chapter Quaternion
+  cites Spark chapter Mesh
+  cites Spark chapter MeshPrimitives
+  cites Spark chapter SceneGraph
+  cites Spark chapter SceneNode
+  cites Spark chapter SceneCamera
+  cites Spark chapter SceneRender
+  cites Spark chapter SceneTexture
+  cites Spark chapter TextureMap
+  cites Game chapter Rasterizer
+
+Section: Project
+
+  ScnObject = record { sco-shape : Text, sco-x : Integer, sco-y : Integer, sco-z : Integer, sco-texture : Text }
+  ScnProject = record { scp-yaw : Integer, scp-pitch : Integer, scp-distance : Integer, scp-objects : List ScnObject, scp-error : Text }
+  ScnTexture = record { sct-path : Text, sct-data : Texture2D }
+
+  scn-new : ScnProject
+  scn-new = ScnProject { scp-yaw = 25, scp-pitch = 20, scp-distance = 5, scp-objects = [], scp-error = "" }
+
+  scn-int : JsonValue, Text, Integer -> Integer
+  scn-int (v) (key) (fallback) = when json-get v key
+    is Just (JsonInt (n)) -> n
+    is otherwise -> fallback
+
+  scn-objects : List JsonValue, Integer, List ScnObject -> List ScnObject
+  scn-objects (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else let v = list-at xs i
+    in scn-objects xs (i + 1) (list-push acc (ScnObject { sco-shape = json-get-str v "shape" "", sco-x = scn-int v "x" 999, sco-y = scn-int v "y" 999, sco-z = scn-int v "z" 999, sco-texture = json-get-str v "texture" "" }))
+
+  scn-texture-types : List JsonValue, Integer -> Boolean
+  scn-texture-types (xs) (i) =
+    if i >= list-length xs then True
+    else let valid = when json-get (list-at xs i) "texture"
+      is None -> True
+      is Just (JsonStr (s)) -> True
+      is otherwise -> False
+    in if valid then scn-texture-types xs (i + 1) else False
+
+  scn-check : List ScnObject, Integer -> Text
+  scn-check (xs) (i) =
+    if list-length xs > 16 then "A scene can hold at most 16 objects."
+    else if i >= list-length xs then ""
+    else let o = list-at xs i
+    in if o.sco-shape /= "cube" & o.sco-shape /= "sphere" & o.sco-shape /= "plane" then "Unsupported mesh shape."
+    else if o.sco-x < (0 - 10) | o.sco-x > 10 | o.sco-y < (0 - 10) | o.sco-y > 10 | o.sco-z < (0 - 10) | o.sco-z > 10 then "Object coordinates must be whole numbers from -10 to 10."
+    else if text-contains (o.sco-texture) ".." | text-contains (o.sco-texture) ":" | text-contains (o.sco-texture) "\\" | substring (o.sco-texture) 0 1 == "/" then "A texture must name a file inside the project."
+    else scn-check xs (i + 1)
+
+  scn-read : Text -> ScnProject
+  scn-read (s) =
+    if text-length s == 0 then scn-new
+    else when json-parse s
+      is None -> __record-set scn-new "scp-error" "The scene is not valid JSON."
+      is Just (v) -> (let camera = when json-get v "camera" is Just (c) -> c is None -> JsonNull
+        in let raw = when json-get v "objects" is Just (o) -> o is None -> JsonNull
+        in let objects = when raw is JsonArray (xs) -> scn-objects xs 0 [] is otherwise -> []
+        in let yaw = scn-int camera "yaw" 999
+        in let pitch = scn-int camera "pitch" 999
+        in let distance = scn-int camera "distance" 999
+        in let err = if scn-int v "version" 0 /= 1 then "Unsupported scene version."
+          else if yaw < (0 - 180) | yaw > 180 | pitch < (0 - 75) | pitch > 75 | distance < 2 | distance > 30 then "Camera yaw must be -180 to 180, pitch -75 to 75 and distance 2 to 30, all whole numbers."
+          else when raw is JsonArray (xs) -> (if scn-texture-types xs 0 then scn-check objects 0 else "Texture paths must be text.") is otherwise -> "The scene needs an objects array."
+        in ScnProject { scp-yaw = yaw, scp-pitch = pitch, scp-distance = distance, scp-objects = objects, scp-error = err })
+
+  scn-object-json : List ScnObject, Integer, List JsonValue -> List JsonValue
+  scn-object-json (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else let o = list-at xs i
+    in scn-object-json xs (i + 1) (list-push acc (JsonObject [json-pair "shape" (JsonStr (o.sco-shape)), json-pair "x" (JsonInt (o.sco-x)), json-pair "y" (JsonInt (o.sco-y)), json-pair "z" (JsonInt (o.sco-z)), json-pair "texture" (JsonStr (o.sco-texture))]))
+
+  scn-write : ScnProject -> Text
+  scn-write (p) = json-emit (JsonObject [json-pair "version" (JsonInt 1), json-pair "camera" (JsonObject [json-pair "yaw" (JsonInt (p.scp-yaw)), json-pair "pitch" (JsonInt (p.scp-pitch)), json-pair "distance" (JsonInt (p.scp-distance))]), json-pair "objects" (JsonArray (scn-object-json (p.scp-objects) 0 []))])
+
+Section: Scene Construction
+
+  scn-mesh : Text -> TriMesh
+  scn-mesh (shape) = if shape == "sphere" then mesh-sphere 0.8 8 12 else if shape == "plane" then mesh-plane 3.0 3.0 else mesh-cube 1.5
+
+  scn-camera : ScnProject -> SparkCamera
+  scn-camera (p) =
+    let cam = __record-set (spark-camera-new 320 240) "sc-eye" (vec3-new 0.0 0.0 (real-from-int (p.scp-distance)))
+    in spark-camera-orbit cam (real-from-int (p.scp-yaw) * 0.017453292519943295) (real-from-int (p.scp-pitch) * 0.017453292519943295)
+
+  scn-graph : List ScnObject, Integer, SceneGraph3D -> SceneGraph3D
+  scn-graph (xs) (i) (sg) =
+    if i >= list-length xs then sg
+    else let o = list-at xs i
+    in scn-graph xs (i + 1) (sg-add-mesh-at sg (o.sco-shape) i (vec3-new (real-from-int (o.sco-x)) (real-from-int (o.sco-y)) (real-from-int (o.sco-z))) 0)
+
+  scn-context : List ScnObject, Integer, SceneRenderCtx -> SceneRenderCtx
+  scn-context (xs) (i) (ctx) = if i >= list-length xs then ctx else scn-context xs (i + 1) (render-ctx-add-mesh ctx (scn-mesh ((list-at xs i).sco-shape)))
+
+  scn-find-texture : List ScnTexture, Text, Integer -> Texture2D
+  scn-find-texture (xs) (path) (i) =
+    if i >= list-length xs then texture-checkerboard 16 16 4 #DDB260 #476B89
+    else if (list-at xs i).sct-path == path then (list-at xs i).sct-data
+    else scn-find-texture xs path (i + 1)
+
+  scn-textures : List ScnObject, List ScnTexture, Integer, List Texture2D -> List Texture2D
+  scn-textures (objects) (textures) (i) (acc) =
+    if i >= list-length objects then acc
+    else scn-textures objects textures (i + 1) (list-push acc (scn-find-texture textures ((list-at objects i).sco-texture) 0))
+
+  scn-render : ScnProject, List ScnTexture -> Framebuf
+  scn-render (p) (textures) =
+    let sg = scn-graph (p.scp-objects) 0 scene-graph-new
+    in let ctx = scn-context (p.scp-objects) 0 (render-ctx-new (scn-camera p) [])
+    in scene-render-textured sg ctx (scn-textures (p.scp-objects) textures 0 []) 320 240 #101A28

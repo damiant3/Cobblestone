@@ -63,7 +63,8 @@ Section: Wire
   bar-valid (actions) (i) =
     if i >= list-length actions then True
     else let a = list-at actions i
-    in if bar-supported a.ba-operation == False | bar-kinds a.ba-operation == False | a.ba-guests < 0 | a.ba-guests > 1 | a.ba-timeout-ms <= 0 | a.ba-memory-mb > 2048 then False
+    in if bar-supported a.ba-operation == False | bar-kinds a.ba-operation == False | a.ba-guests < 0 | a.ba-guests > 1 | a.ba-timeout-ms <= 0 | a.ba-memory-mb > 2048 then
+      False
     else bar-valid actions (i + 1)
 
   bar-known : List BuildArtifactRef, BuildArtifactRef, Integer -> Boolean
@@ -76,7 +77,9 @@ Section: Wire
   bar-inputs-ready : List BuildArtifactRef, List BuildArtifactRef, Integer -> Boolean
   bar-inputs-ready (refs) (available) (i) =
     if i >= list-length refs then True
-    else if bar-known available (list-at refs i) 0 then bar-inputs-ready refs available (i + 1) else False
+    else if bar-known available (list-at refs i) 0 then
+      bar-inputs-ready refs available (i + 1)
+    else False
 
   bar-dependencies : List BuildAction, Integer, List BuildArtifactRef -> Boolean
   bar-dependencies (actions) (i) (available) =
@@ -227,11 +230,14 @@ Section: Execution
         in let scratch = __heap-save - mark
         in let restored = __heap-restore mark
         in let retained = __heap-save - mark
-        in let next = if code == 0 then pipe-passed pd pi (i + 1) else pipe-exited pd pi code (i + 1)
+        in let next = if code == 0 then
+          pipe-passed pd pi (i + 1)
+        else pipe-exited pd pi code (i + 1)
         in act
           acknowledged <- bar-call (bar-request "event" ("," & bar-field "stage" (list-at plan.bap-actions i).ba-name & "," & bar-field "verdict" (bar-verdict code) & "," & bar-field "step_status" (step-status-name (bar-status code)) & "," & bar-field "workflow" (pipe-status-text next.pi-status) & ",\"scratch_bytes\":" & show scratch & ",\"retained_scratch_bytes\":" & show retained))
           if code == 0 & bar-code acknowledged == 0 then bar-loop plan pd next (i + 1)
-          else print-line-uni (bar-request "done" ("," & bar-field "verdict" (bar-verdict (if bar-code acknowledged == 0 then code else 3)) & "," & bar-field "workflow" (pipe-status-text next.pi-status)))
+          else
+            print-line-uni (bar-request "done" ("," & bar-field "verdict" (bar-verdict (if bar-code acknowledged == 0 then code else 3)) & "," & bar-field "workflow" (pipe-status-text next.pi-status)))
         end
       end
     end
@@ -244,15 +250,22 @@ Section: Execution
         let c = aj-object line
         in let name = aj-text c "plan"
         in let ms = aj-int (aj-get c "run_ms")
-        in let plan = if name == "compile-test" then ba-compile-test ms else if name == "unsupported-operation" then ba-unsupported else ba-reproduce
-        in let initial = [ba-ref "source" BaSource, ba-ref "compiler" BaCompiler, ba-ref "expected" BaExpected]
+        in let plan = if name == "compile-test" then
+          ba-compile-test ms
+        else if name == "unsupported-operation" then ba-unsupported else ba-reproduce
+        in let initial = [
+          ba-ref "source" BaSource,
+          ba-ref "compiler" BaCompiler,
+          ba-ref "expected" BaExpected
+        ]
         in if c.ok == False | (name /= "compile-test" & name /= "compile-reproduce" & name /= "unsupported-operation") | bar-valid plan.bap-actions 0 == False | bar-dependencies plan.bap-actions 0 initial == False then
           print-line-uni (bar-request "done" ("," & bar-field "verdict" "skip"))
         else let pd = pipeline-to-process (ba-pipeline plan)
         in act
           ready <- bar-call (bar-request "preflight" ("," & bar-field "plan" name & "," & bar-field "edges" (bar-edges pd.pd-transitions 0 [])))
           if bar-code ready == 0 then bar-loop plan pd (pipe-start pd 0) 0
-          else print-line-uni (bar-request "done" ("," & bar-field "verdict" (bar-verdict (bar-code ready))))
+          else
+            print-line-uni (bar-request "done" ("," & bar-field "verdict" (bar-verdict (bar-code ready))))
         end
       end
   end

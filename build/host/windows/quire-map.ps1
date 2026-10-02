@@ -39,6 +39,7 @@ $QuireDirs = @{
     'ModBuilder' = 'apps\modbuilder\native'
     'Csharp' = 'codex\plugs\csharp'
     'Pe' = 'codex\plugs\pe'
+    'Sass' = 'codex\plugs\sass'
     'WaDemo' = 'apps\wademo'
     'Diffusion' = 'apps\diffusion'
     'Explorer' = 'apps\explorer'; 'FontExplorer' = 'apps\fontexplorer'

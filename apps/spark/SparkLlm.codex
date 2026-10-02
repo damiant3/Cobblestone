@@ -1,0 +1,82 @@
+Chapter: SparkLlm
+  cites Spark chapter SparkDocuments
+  cites Spark chapter SparkPromptFile
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+
+  SparkLlmDocs =
+    | SparkLlmDocsReady (List SparkDoc)
+    | SparkLlmDocsRefused (Text)
+
+  sl-docs : List JsonValue, Integer, Integer, List SparkDoc -> SparkLlmDocs
+  sl-docs (values) (i) (size) (acc) =
+    if list-length values > 16 then SparkLlmDocsRefused "Project context exceeds 16 documents."
+    else if i >= list-length values then SparkLlmDocsReady acc
+    else let item = list-at values i
+    in let name = json-get-str item "name" ""
+    in let content = json-get-str item "content" ""
+    in if name == "" then SparkLlmDocsRefused "Context document needs a name."
+    else if size + text-length content > 32768 then SparkLlmDocsRefused "Project context exceeds the encoded-text limit."
+    else sl-docs values (i + 1) (size + text-length content) (list-push acc (spark-doc-index name content))
+
+  sl-context-result : Boolean, Text -> Text
+  sl-context-result (ok) (text) = json-emit (JsonObject [json-pair "ok" (JsonBool ok), json-pair (if ok then "context" else "error") (JsonStr text)])
+
+  spark-llm-context : Text -> Text
+  spark-llm-context (payload) =
+    if text-length payload > 262144 then sl-context-result False "Context request exceeds its size limit."
+    else when json-parse payload
+      is None -> sl-context-result False "Invalid context request."
+      is Just (request) ->
+        let query = json-get-str request "query" ""
+        in if text-length query > 16384 then sl-context-result False "Context query exceeds its size limit."
+        else when json-get request "documents"
+          is Just (JsonArray (items)) -> when sl-docs items 0 0 []
+            is SparkLlmDocsRefused (why) -> sl-context-result False why
+            is SparkLlmDocsReady (docs) -> sl-context-result True (spark-doc-context docs query 1024)
+          is otherwise -> sl-context-result False "Context document list is missing."
+
+  sl-prompt-markers : List Integer, Integer, Integer -> Integer
+  sl-prompt-markers (text) (i) (count) =
+    if count > 50 | i + 6 > list-length text then count
+    else if list-at text i == 80 & list-at text (i + 1) == 82 & list-at text (i + 2) == 79 & list-at text (i + 3) == 77 & list-at text (i + 4) == 80 & list-at text (i + 5) == 84 then
+      let start = spf-skip text (i + 6)
+      in let stop = spf-skip-digits text start
+      in if stop - start > 4 then 0 - 1 else sl-prompt-markers text (i + 6) (count + 1)
+    else sl-prompt-markers text (i + 1) count
+
+  sl-prompt-seen : List SparkPrompt, Integer, Integer, Integer -> Boolean
+  sl-prompt-seen (prompts) (number) (i) (stop) = if i >= stop then False else if (list-at prompts i).sp-number == number then True else sl-prompt-seen prompts number (i + 1) stop
+
+  sl-prompts-why : List SparkPrompt, Integer, Integer -> Text
+  sl-prompts-why (prompts) (expected) (i) =
+    if i >= list-length prompts then ""
+    else let prompt = list-at prompts i
+    in if prompt.sp-number < 1 | prompt.sp-number > 9999 then "Prompt numbers must be from 1 to 9999."
+    else if sl-prompt-seen prompts (prompt.sp-number) 0 i then "Duplicate prompt number."
+    else if expected > 0 & prompt.sp-number /= i + 1 then "Generated prompts must be numbered sequentially from 1."
+    else if list-length (prompt.sp-title) == 0 | list-length (prompt.sp-scene) == 0 then "Each prompt needs a title and scene description."
+    else sl-prompts-why prompts expected (i + 1)
+
+  sl-prompts-result : Text, Integer -> Text
+  sl-prompts-result (why) (count) = json-emit (JsonObject [json-pair "ok" (JsonBool (why == "")), json-pair "count" (JsonInt count), json-pair "error" (JsonStr why)])
+
+  spark-llm-prompts-check : Text -> Text
+  spark-llm-prompts-check (payload) =
+    if text-length payload > 262144 then sl-prompts-result "Prompt validation request exceeds its size limit." 0
+    else when json-parse payload
+      is None -> sl-prompts-result "Invalid prompt validation request." 0
+      is Just (request) -> when json-get request "count"
+        is Just (JsonInt (expected)) ->
+          let text = json-get-str request "text" ""
+          in if expected < 0 | expected > 50 then sl-prompts-result "Prompt count must be from 0 to 50." 0
+          else if text-length text > 131072 then sl-prompts-result "Prompts exceed the text limit." 0
+          else let markers = sl-prompt-markers (text-to-unicode-bytes text) 0 0
+          in if markers < 0 then sl-prompts-result "Prompt numbers may have at most four digits." 0
+          else if markers > 50 then sl-prompts-result "Prompts exceed the 50-marker limit." 0
+          else let prompts = spark-prompts-parse text
+          in let count = list-length prompts
+          in if count == 0 then sl-prompts-result "No valid PROMPT headers found." count
+          else if expected > 0 & count /= expected then sl-prompts-result ("Expected " & show expected & " prompts; found " & show count & ".") count
+          else sl-prompts-result (sl-prompts-why prompts expected 0) count
+        is otherwise -> sl-prompts-result "Prompt count must be an integer." 0

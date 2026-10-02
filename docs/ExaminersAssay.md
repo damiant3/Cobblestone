@@ -60,10 +60,24 @@ nearly all are deliberate crash demos. The assertions are healthy.
 
 ### Reproducing one failure out of a battery run
 
-**`test-output/_results/<name>` holds the VERDICT ONLY** -- a single line like
-`FAIL_OUTPUT<tab><name>`. The actual output is not kept, so there is no diff
-to read after the fact and no amount of staring at that directory will produce
-one. Re-run the test to see what it said.
+`bvt.ps1` and `test.ps1` expand the literal `{{disk-source-content-bytes}}` in an
+`.expected` file to its freshly compiled `.disk-src` peer's content extent,
+including the CDX header but excluding MAP1. `Get-CdxContentExtent` in
+`vm-config.ps1` validates CDX1, the header's MAP1 offset, MAP1 magic, entry
+table bounds and contiguous NUL-terminated names ending exactly at host EOF.
+MAP1 has no total-length field; its entry/name structure determines that end.
+A zero debug offset uses EOF. The peer must belong to this run's compile
+set and emit a CDX; an absent oracle or malformed trailer is an error.
+Expectations without this marker retain their existing comparison. The
+replacement reads neither runtime output nor the four content-section lengths.
+`cdx-chain.expected` uses it to check the staged extent while retaining its
+content-mutation, restoration, signature-refusal and child-execution lines.
+Other runners do not interpret this marker.
+
+**`test-output/_results/<name>` holds the verdict only**, such as
+`FAIL_OUTPUT<tab><name>`. The battery keeps filtered output in
+`test-output/<name>/runtime.actual`; the BVT keeps it in
+`test-output/<name>/<name>.out`.
 
 **Re-run it with the sidecar, not with the flags copied out of it:**
 
@@ -79,8 +93,9 @@ than the one being chased. Measured 2026-08-13, twice in one evening, by two
 different agents.
 
 **Compare the way the harness compares.** `test.ps1` reads the whole
-`.expected`, strips CR, and tests `-eq` against the whole actual: nothing is
-trimmed at either end. A hand check that joins lines and `.Trim()`s both sides
+`.expected`, strips CR, resolves the optional content-extent marker, and uses
+ordinal equality against the filtered actual output. It does not trim the
+expectation. A hand check that joins lines and `.Trim()`s both sides
 normalises away exactly the difference the runner is looking for, so it can
 call a genuine failure green -- and, on the same evening, wrongly flag a
 passing test as broken. **A check more forgiving than the runner is not a
@@ -295,6 +310,13 @@ deleting anything; the verdict is evidence, not an instruction.**
 looks. A keyboard read -- `uefi-read-key`, and `poll-key` above it -- reads the
 **PS/2 key cell** instead, and no quantity of `.stdin` has ever reached it.
 
+**`.stdin` is ASCII only.** The ring carries the file's bytes one at a time
+and `read-line` takes each as a character, so a UTF-8 sequence arrives as
+unrelated characters: an em-dash (`E2 80 94`) reads back as code points 0,
+65533 and 51 (measured 2026-09-30, reek). A test whose input needs non-ASCII
+text carries it as a string literal, which the compiler converts at its own
+boundary (`codex/test/apps/spark-prompt-file`).
+
 That is the whole reason a dozen tests are skipped as "blocks waiting for
 keyboard input": the battery had only the wrong input, and the skip reasons
 recorded the resulting silence as an environment limitation. codex-vm has
@@ -411,8 +433,8 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **244** expected-failure tests (measured
-2026-09-28).
+`codex/test/errors/` holds **245** expected-failure tests (measured
+2026-09-30).
 
 ## What the standing gate does not cover
 
@@ -5718,7 +5740,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-244 tests in `codex/test/errors/` verify that the compiler rejects
+245 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes (counted 2026-09-28). Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -6530,7 +6552,7 @@ nothing runs.** A `codex.project.json` `tests` entry naming a path under
 **The over-cap case on a LIVE connection is deliberately absent, and the
 reason is a finding.** A 12,600-byte send (nine chunks, so the queue fills on
 the ninth) over an established session produced NO output inside
-`test-run.ps1`'s 60-second wall budget (`build/test-run.ps1:28`); the run took
+a 60-second wall budget; the run took
 61 seconds and the outfile was empty. The send pays `net-io-max-polls`, which
 is `net-driver-poll-interval * 500`, for each remaining chunk. This is the
 poll-count-as-duration shape a third time, after `e1000-await-aneg` and
@@ -7910,7 +7932,7 @@ whose guest never printed `runner done`, and refuses a run that graded nothing.
 
 **Cost, measured 2026-09-29:** the corpus bundles to 80.6 MB and runs in 15
 shards of at most 250 subjects or 6 MB (`-ShardSize`, `-ShardBytes`), because
-`test-run.ps1` gives a guest 60 s and the img plug aborted on a 20 MB payload.
+the img plug aborted on a 20 MB payload.
 Each shard is two guests in sequence; the image costs about 5 minutes, the
 slowest guest 11 s, the whole run about 75 minutes, one guest at a time.
 `-ListOnly` prints the selection without starting a guest.

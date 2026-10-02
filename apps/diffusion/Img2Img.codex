@@ -914,14 +914,13 @@ Section: Generation
     in let c = if m.im-sd15 then clip-condition-l (m.im-wl) bpe (r.ti-prompt) else clip-condition (m.im-wl) (m.im-wg) bpe (r.ti-prompt) False
     in let un = if m.im-sd15 then clip-condition-l (m.im-wl) bpe (r.ti-negative) else clip-condition (m.im-wl) (m.im-wg) bpe (r.ti-negative) True
     in if c.cn-status /= 0 | un.cn-status /= 0 then "text encoders failed " & show (c.cn-status) & " " & show (un.cn-status)
-    else if c.cn-chunks /= 1 | un.cn-chunks /= 1 then "refused: prompt " & show (c.cn-chunks) & " chunks, negative " & show (un.cn-chunks) & "; the UNet context is one 77-token chunk"
     else let hp = if hires & q.i2-hr-prompt /= "" then q.i2-hr-prompt else r.ti-prompt
     in let hn = if hires & q.i2-hr-negative /= "" then q.i2-hr-negative else r.ti-negative
     in let same = hp == r.ti-prompt & hn == r.ti-negative
     in let c2 = if same then c else (if m.im-sd15 then clip-condition-l (m.im-wl) bpe hp else clip-condition (m.im-wl) (m.im-wg) bpe hp False)
     in let un2 = if same then un else (if m.im-sd15 then clip-condition-l (m.im-wl) bpe hn else clip-condition (m.im-wl) (m.im-wg) bpe hn True)
-    in if c2.cn-status /= 0 | un2.cn-status /= 0 | c2.cn-chunks /= 1 | un2.cn-chunks /= 1 then "refused: the hires prompt and negative must each encode to one 77-token chunk"
-    else if m.im-sd15 then i2-sample-all q m (c.cn-cond-l) (un.cn-cond-l) 0 0 0 0 (c2.cn-cond-l) (un2.cn-cond-l) fh fw (if same then [c.cn-cond-l, un.cn-cond-l] else [c.cn-cond-l, un.cn-cond-l, c2.cn-cond-l, un2.cn-cond-l])
+    in if c2.cn-status /= 0 | un2.cn-status /= 0 then "text encoders failed for the hires prompt " & show (c2.cn-status) & " " & show (un2.cn-status)
+    else if m.im-sd15 then i2-sample-all q m (c.cn-cond-l) (un.cn-cond-l) 0 0 0 0 (c2.cn-cond-l) (un2.cn-cond-l) (77 * c.cn-chunks) (77 * un.cn-chunks) (77 * c2.cn-chunks) (77 * un2.cn-chunks) fh fw (if same then [c.cn-cond-l, un.cn-cond-l] else [c.cn-cond-l, un.cn-cond-l, c2.cn-cond-l, un2.cn-cond-l])
     else let cc = clip-crossattn c
     in let cu = clip-crossattn un
     in let yc = ti-adm (c.cn-pooled) (r.ti-height) (r.ti-width)
@@ -932,17 +931,17 @@ Section: Generation
     in let yu2 = if hires then ti-adm (un2.cn-pooled) fh fw else yu
     in let f1 = clip-cond-free c + clip-cond-free un + (if same then 0 else clip-cond-free c2 + clip-cond-free un2)
     in if cc == 0 | cu == 0 | yc == 0 | yu == 0 | yc2 == 0 | yu2 == 0 | cc2 == 0 | cu2 == 0 then "conditioning failed"
-    else i2-sample-all q m cc cu yc yu yc2 yu2 cc2 cu2 fh fw (if hires then (if same then [cc, cu, yc, yu, yc2, yu2] else [cc, cu, yc, yu, yc2, yu2, cc2, cu2]) else [cc, cu, yc, yu])
+    else i2-sample-all q m cc cu yc yu yc2 yu2 cc2 cu2 (77 * c.cn-chunks) (77 * un.cn-chunks) (77 * c2.cn-chunks) (77 * un2.cn-chunks) fh fw (if hires then (if same then [cc, cu, yc, yu, yc2, yu2] else [cc, cu, yc, yu, yc2, yu2, cc2, cu2]) else [cc, cu, yc, yu])
 
  SD1.5's context is CLIP-L's cond as it stands and it takes no ADM vector,
  therefore its y handles are 0.
 
-  i2-sample-all : I2i, I2Model, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> Text
-  i2-sample-all (q) (m) (cc) (cu) (yc) (yu) (yc2) (yu2) (cc2) (cu2) (fh) (fw) (frees) =
+  i2-sample-all : I2i, I2Model, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> Text
+  i2-sample-all (q) (m) (cc) (cu) (yc) (yu) (yc2) (yu2) (cc2) (cu2) (kc) (ku) (kc2) (ku2) (fh) (fw) (frees) =
     let r = q.i2-base
     in let u = m.im-unet
-    in let tc = TiCfg { tc-unet = u, tc-tab = m.im-tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = r.ti-height / 8, tc-w = r.ti-width / 8, tc-cfg = r.ti-cfg, tc-sd15 = m.im-sd15, tc-extras = r.ti-extras }
-    in let hc = TiCfg { tc-unet = u, tc-tab = m.im-tab, tc-yc = yc2, tc-cc = cc2, tc-yu = yu2, tc-cu = cu2, tc-h = fh / 8, tc-w = fw / 8, tc-cfg = q.i2-hr-cfg, tc-sd15 = m.im-sd15, tc-extras = r.ti-extras }
+    in let tc = TiCfg { tc-unet = u, tc-tab = m.im-tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = r.ti-height / 8, tc-w = r.ti-width / 8, tc-cfg = r.ti-cfg, tc-sd15 = m.im-sd15, tc-extras = r.ti-extras, tc-kc = kc, tc-ku = ku }
+    in let hc = TiCfg { tc-unet = u, tc-tab = m.im-tab, tc-yc = yc2, tc-cc = cc2, tc-yu = yu2, tc-cu = cu2, tc-h = fh / 8, tc-w = fw / 8, tc-cfg = q.i2-hr-cfg, tc-sd15 = m.im-sd15, tc-extras = r.ti-extras, tc-kc = kc2, tc-ku = ku2 }
     in if q.i2-out-px > 0 then (let res = i2-outpaint q tc m in let f0 = ti-free-all frees 0 0 in res)
     else let st = if q.i2-hr-scale > 0.0 then (if q.i2-hr-upscaler == "" then i2-hires q tc hc else i2-hires-upscaled q tc hc m) else if q.i2-image /= "" then i2-from-picture q tc m (\k -> tc) else i2-plain q tc
     in let f2 = ti-free-all frees 0 0
@@ -1014,13 +1013,13 @@ Section: Refiner
   i2-conds-at (bpe) (m) (p) (ng) (h) (w) (cfg) (ex) =
     let c = if m.im-sd15 then clip-condition-l (m.im-wl) bpe p else clip-condition (m.im-wl) (m.im-wg) bpe p False
     in let un = if m.im-sd15 then clip-condition-l (m.im-wl) bpe ng else clip-condition (m.im-wl) (m.im-wg) bpe ng True
-    in let ok = c.cn-status == 0 & un.cn-status == 0 & c.cn-chunks == 1 & un.cn-chunks == 1
+    in let ok = c.cn-status == 0 & un.cn-status == 0
     in let cc = if ok == False then 0 else if m.im-sd15 then c.cn-cond-l else clip-crossattn c
     in let cu = if ok == False then 0 else if m.im-sd15 then un.cn-cond-l else clip-crossattn un
     in let yc = if ok & m.im-sd15 == False then ti-adm (c.cn-pooled) h w else 0
     in let yu = if ok & m.im-sd15 == False then ti-adm (un.cn-pooled) h w else 0
     in let f = if m.im-sd15 & ok then 0 else clip-cond-free c + clip-cond-free un
-    in let tc = TiCfg { tc-unet = m.im-unet, tc-tab = m.im-tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = h / 8, tc-w = w / 8, tc-cfg = cfg, tc-sd15 = m.im-sd15, tc-extras = ex }
+    in let tc = TiCfg { tc-unet = m.im-unet, tc-tab = m.im-tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = h / 8, tc-w = w / 8, tc-cfg = cfg, tc-sd15 = m.im-sd15, tc-extras = ex, tc-kc = 77 * c.cn-chunks, tc-ku = 77 * un.cn-chunks }
     in I2Cond { ic-tc = tc, ic-frees = (if m.im-sd15 then [cc, cu] else [cc, cu, yc, yu]), ic-why = if ok & cc /= 0 & cu /= 0 & (m.im-sd15 | (yc /= 0 & yu /= 0)) then "" else "conditioning failed" }
 
  The model in use, its configuration and the condition buffers to free are
@@ -1440,7 +1439,7 @@ Section: Hires Checkpoint
     in let hn = if q.i2-hr-negative /= "" then q.i2-hr-negative else r.ti-negative
     in let why1 = if m1.im-why /= "" then m1.im-why else if lora m1 < 0 then "refused: a LoRA could not be merged" else ""
     in let c1 = if why1 == "" then i2-conds-at bpe m1 hp hn fh fw (q.i2-hr-cfg) (r.ti-extras) else I2Cond { ic-tc = i2-no-cfg m1, ic-frees = [], ic-why = why1 }
-    in let tc = TiCfg { tc-unet = m1.im-unet, tc-tab = m1.im-tab, tc-yc = 0, tc-cc = 0, tc-yu = 0, tc-cu = 0, tc-h = r.ti-height / 8, tc-w = r.ti-width / 8, tc-cfg = r.ti-cfg, tc-sd15 = m1.im-sd15, tc-extras = r.ti-extras }
+    in let tc = TiCfg { tc-unet = m1.im-unet, tc-tab = m1.im-tab, tc-yc = 0, tc-cc = 0, tc-yu = 0, tc-cu = 0, tc-h = r.ti-height / 8, tc-w = r.ti-width / 8, tc-cfg = r.ti-cfg, tc-sd15 = m1.im-sd15, tc-extras = r.ti-extras, tc-kc = 77, tc-ku = 77 }
     in let rs = RefState { rs-calls = [0, if q.i2-refiner == "" | q.i2-refiner == q.i2-hr-ckpt | q.i2-refiner == r.ti-ckpt then 1 else 0], rs-models = [m1], rs-cfgs = [c1.ic-tc], rs-frees = [c1.ic-frees], rs-pass = RefPass { rp-prompt = hp, rp-negative = hn, rp-h = fh, rp-w = fw, rp-cfg = q.i2-hr-cfg } }
     in let cur = \k -> i2-ref-cfg bpe q rs (i2-ref-total q) lora
     in let st = if c1.ic-why /= "" then i2-fail (c1.ic-why) else if q.i2-hr-upscaler == "" then i2-hires-latent q (c1.ic-tc) first cur else i2-hires-picture q tc (c1.ic-tc) m1 first cur
@@ -1467,7 +1466,7 @@ Section: Hires Checkpoint
     in I2Model { im-ckpt = m.im-ckpt, im-why = (if ok then "" else "refused: " & path & " is not a readable SDXL or SD1.5 VAE"), im-sd15 = m.im-sd15, im-wl = m.im-wl, im-wg = m.im-wg, im-unet = m.im-unet, im-tab = m.im-tab, im-vd = (if ok then vae-load path vpart "" else m.im-vd), im-ve = (if ok then vae-encoder-load path vpart "" else m.im-ve) }
 
   i2-no-cfg : I2Model -> TiCfg
-  i2-no-cfg (m) = TiCfg { tc-unet = m.im-unet, tc-tab = m.im-tab, tc-yc = 0, tc-cc = 0, tc-yu = 0, tc-cu = 0, tc-h = 0, tc-w = 0, tc-cfg = 1.0, tc-sd15 = m.im-sd15, tc-extras = ti-no-extras }
+  i2-no-cfg (m) = TiCfg { tc-unet = m.im-unet, tc-tab = m.im-tab, tc-yc = 0, tc-cc = 0, tc-yu = 0, tc-cu = 0, tc-h = 0, tc-w = 0, tc-cfg = 1.0, tc-sd15 = m.im-sd15, tc-extras = ti-no-extras, tc-kc = 77, tc-ku = 77 }
 
  The request as the hires pass runs it: the hires sampler and schedule where
  the request names them (Forge's hr_sampler_name, hr_scheduler), else the

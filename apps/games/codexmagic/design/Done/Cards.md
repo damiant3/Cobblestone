@@ -108,8 +108,8 @@ are part of the AI layer. Both are printed on the card.
 The General's power scales with its army. **Army Loyalty** is a
 dynamic value computed from the combined converted mana cost (CMC)
 of all non-token creatures the General's controller has on the
-battlefield. Token creatures do not contribute -- only creatures that
-were cast from hand and paid for with real mana count toward loyalty.
+battlefield. Token creatures do not contribute. The runtime sums printed
+template costs; it does not track entry method or actual payment history.
 
 ```
 army-loyalty : GameState -> PlayerId -> Integer
@@ -144,6 +144,35 @@ ability means the ability checks that you have enough, then the
 effect resolves. If creatures die before the ability resolves (in
 response), the loyalty check may fail and the ability fizzles.
 
+A General can activate one loyalty ability per own turn
+(root 2026-09-30, Damian may override). A second activation is refused.
+
+`LoyaltyGainAbility threshold effect` is a separate trigger, not an activation.
+For a positive threshold it fires once per upward crossing at settled
+action/state-based-action checkpoints, for either player. Staying above does
+not repeat it; falling below rearms it. Simultaneous crossings resolve active
+player first, then opponent, in ability-index order. An open slow-spell window
+defers observation until the original resolves. Trigger chains use the named
+automatic-work budget and retain pending work at a stop. These are root's
+2026-10-01 rulings; Damian may override.
+[AIGameplay](../Active/AIGameplay.md), LoyaltyGain crossings, owns the runtime
+state and target contract.
+
+`LoyaltyScaleAbility divisor power-unit toughness-unit defense-unit` is a
+continuous friendly-creature aura. Each component adds its unit amount times
+`floor(army-loyalty / divisor)` for a positive divisor. Clauses add together;
+nonpositive divisors contribute nothing. It spends no activation and stores
+no grant in the permanent. General and noncreature permanents are excluded;
+tokens benefit but do not contribute loyalty. These are root 2026-10-01
+rulings; Damian may override. AIGameplay's LoyaltyScale creature aura section
+owns the stat-reader and measured-cost contract. Other scaled effects remain
+design work.
+
+Ordinary ability costs settle full state-based actions before effect targets
+are rechecked, including in a response window (root 2026-10-01, Damian may
+override). A sacrifice that reduces an aura can therefore kill another
+creature before the effect; a lost target fizzles with costs spent.
+
 This creates a natural army-building incentive: casting real creatures
 (not just spawning tokens) powers up your General. It also creates
 interesting tension -- do you cast a big creature to boost loyalty, or
@@ -152,8 +181,8 @@ your army, reducing your loyalty and locking out your best abilities.
 
 Token creatures are excluded to prevent degenerate loyalty-pumping
 via cheap token generation. A card that creates ten 1/1 tokens
-shouldn't give the General 10 loyalty worth of free abilities. Only
-mana investment counts.
+shouldn't give the General 10 loyalty worth of free abilities. The
+non-token creature's printed cost supplies the contribution.
 
 ### General Leveling
 
@@ -239,6 +268,26 @@ Ability =
   | TriggeredAbility (trigger : TriggerCondition) (effect : Effect)
   | ActivatedAbility (cost : ActivationCost) (effect : Effect)
 ```
+
+`BoostPTD` and `GainKeyword` one-shot spell effects, such as Stonehide, target
+one friendly creature and expire at cleanup. Entry and trigger boosts persist
+until the permanent leaves the battlefield (root 2026-09-30, Magic convention;
+Damian may override). The effect constructors have no explicit duration field;
+resolution context determines duration. Direct spell and loyalty grants use
+temporary modifier state; cleanup preserves innate keywords and persistent
+changes. Entry Fluorescence grants modify the entering creature and persist
+after cleanup; AIGameplay owns targeting and automatic activation limits.
+
+Activated ability ruling (root 2026-10-01, Magic convention; Damian may
+override): a player may pay a life cost when current life is at least the
+cost, including payment down to zero. Paying down to zero loses the game;
+the AI must never choose that payment. Creature tap costs obey summoning
+sickness unless Alacrity permits activation. Activated `BoostPTD` and
+`GainKeyword` grants expire at cleanup. The manual permanent-activation path
+enforces these costs and durations; its automatic-eligibility check rejects
+lethal life payment. Automatic scheduling and sacrifice decisions follow
+AIGameplay's per-main-phase allowance, default-on sacrifice prompt and Hold
+timeout. AIGameplay owns the pause, target-picker and API contract.
 
 ## Keyword Abilities
 

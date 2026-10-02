@@ -1,0 +1,176 @@
+Chapter: GopAccessibility
+  cites UI chapter Accessibility
+  cites UI chapter Focus
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ We say:
+
+  GaxTarget = record { gt-id : Text, gt-info : A11yInfo, gt-box : LayoutRect }
+  GaxBinding = record { gb-id : Text, gb-info : A11yInfo }
+  GaxScan = record { gs-targets : List GaxTarget, gs-visits : Integer, gs-error : Text }
+  GaxTargets =
+    | GaxReady (List GaxTarget)
+    | GaxRefused (Text)
+
+  gax-label : WidgetNode, Text, Text -> Text
+  gax-label (node) (row) (caption) =
+    if row /= "" then if caption == "" then row else row & ": " & caption
+    else if caption /= "" then caption else node.wn-id
+
+  gax-info : WidgetNode, Text -> A11yInfo
+  gax-info (node) (row) =
+    let info = when node.wn-kind
+          is WkButton (t) ->
+            if t == "[x]" | t == "[ ]" then a11y-checkbox (gax-label node row "") (t == "[x]")
+            else if t == "(o)" | t == "( )" then a11y-checked (a11y-label (a11y-role a11y-empty RoleRadio) (gax-label node row "")) (t == "(o)")
+            else a11y-button (gax-label node row t)
+          is WkInput (t) (cursor) -> a11y-textbox (gax-label node row "")
+          is WkGauge (v) (limit) -> a11y-value (a11y-status (gax-label node row "")) v 0 limit
+          is WkLabel (t) -> if text-ends-with (node.wn-id) "-title" then a11y-heading t 1 else a11y-label a11y-empty t
+          is WkCustom (tag) -> if tag == "desktop-wallpaper" then a11y-hidden (a11y-label (a11y-role a11y-empty RoleImage) "Desktop wallpaper") else a11y-empty
+          is otherwise -> a11y-empty
+    in if flag-has (widget-flags node) flag-disabled then a11y-description info "Unavailable" else info
+
+  gax-bound : List GaxBinding, Text, Integer -> Maybe A11yInfo
+  gax-bound (bindings) (id) (i) =
+    if i >= list-length bindings then None
+    else let b = list-at bindings i
+    in if b.gb-id == id then Just (b.gb-info) else gax-bound bindings id (i + 1)
+
+  gax-row-label : WidgetNode, Text -> Text
+  gax-row-label (node) (inherited) =
+    if text-ends-with (node.wn-id) "-row" & node.wn-child-count > 0 then when (list-at (node.wn-children) 0).wn-kind
+      is WkLabel (label) -> label
+      is otherwise -> inherited
+    else inherited
+
+  gax-seen : List GaxTarget, Text, Integer -> Boolean
+  gax-seen (targets) (id) (i) = if i >= list-length targets then False else if (list-at targets i).gt-id == id then True else gax-seen targets id (i + 1)
+
+  gax-before : GaxTarget, GaxTarget -> Boolean
+  gax-before (a) (b) =
+    let x = (a.gt-info).ai-tab-index
+    in let y = (b.gt-info).ai-tab-index
+    in x > 0 & (y == 0 | x < y)
+
+  gax-insert : List GaxTarget, GaxTarget, Integer, Boolean, List GaxTarget -> List GaxTarget
+  gax-insert (targets) (added) (i) (placed) (acc) =
+    if i >= list-length targets then if placed then acc else list-push acc added
+    else let t = list-at targets i
+    in if placed == False & gax-before added t then gax-insert targets added i True (list-push acc added)
+    else gax-insert targets added (i + 1) placed (list-push acc t)
+
+  gax-add : GaxScan, WidgetNode, A11yInfo -> Integer
+  gax-add (scan) (node) (info) =
+    let id = node.wn-id
+    in if id == "" then let error = __record-set scan "gs-error" "Focus control needs an id." in 0
+    else if text-length id > 96 then let error = __record-set scan "gs-error" "Focus control id exceeds 96 encoded bytes." in 0
+    else if list-length (scan.gs-targets) >= 256 then let error = __record-set scan "gs-error" "Pane exceeds the 256-control accessibility limit." in 0
+    else if gax-seen (scan.gs-targets) id 0 then let error = __record-set scan "gs-error" ("Duplicate focus id: " & id) in 0
+    else let t = GaxTarget { gt-id = id, gt-info = info, gt-box = node.wn-bounds }
+    in let targets = if info.ai-tab-index == 0 then list-push (scan.gs-targets) t else gax-insert (scan.gs-targets) t 0 False []
+    in let added = __record-set scan "gs-targets" targets
+    in 0
+
+  gax-walk : WidgetNode, List GaxBinding, Text, GaxScan, Integer -> Integer
+  gax-walk (node) (bindings) (row) (scan) (depth) =
+    if scan.gs-error /= "" then 0
+    else if depth > 64 | scan.gs-visits >= 4096 then let error = __record-set scan "gs-error" "Pane exceeds the accessibility tree limit." in 0
+    else let visited = __record-set scan "gs-visits" (scan.gs-visits + 1)
+    in let label = gax-row-label node row
+    in let info = when gax-bound bindings (node.wn-id) 0
+          is Just (bound-info) -> bound-info
+          is None -> gax-info node label
+    in if info.ai-hidden | flag-has (widget-flags node) flag-disabled then 0
+    else let add = if a11y-is-interactive (info.ai-role) | info.ai-tab-index > 0 then gax-add scan node info else 0
+    in gax-kids (node.wn-children) bindings label scan (depth + 1) 0
+
+  gax-kids : List WidgetNode, List GaxBinding, Text, GaxScan, Integer, Integer -> Integer
+  gax-kids (nodes) (bindings) (row) (scan) (depth) (i) =
+    if i >= list-length nodes | scan.gs-error /= "" then 0
+    else let child = gax-walk (list-at nodes i) bindings row scan depth
+    in gax-kids nodes bindings row scan depth (i + 1)
+
+  gax-collect : WidgetNode, List GaxBinding -> GaxTargets
+  gax-collect (root) (bindings) =
+    if list-length bindings > 256 then GaxRefused "Pane exceeds the accessibility binding limit."
+    else let scan = GaxScan { gs-targets = [], gs-visits = 0, gs-error = "" }
+    in let walked = gax-walk root bindings "" scan 0
+    in if scan.gs-error /= "" then GaxRefused (scan.gs-error) else GaxReady (scan.gs-targets)
+
+  gax-ids : List GaxTarget, Integer, List Text -> List Text
+  gax-ids (targets) (i) (acc) = if i >= list-length targets then acc else gax-ids targets (i + 1) (list-push acc ((list-at targets i).gt-id))
+
+  gax-ring : List GaxTarget, Text -> FocusRing
+  gax-ring (targets) (current) = focus-set (focus-ring (gax-ids targets 0 [])) current
+
+  gax-say : A11yInfo -> Text
+  gax-say (info) =
+    let base = a11y-announce info
+    in let checked = when info.ai-checked is Just (on) -> if on then ", checked" else ", not checked" is None -> ""
+    in let expanded = when info.ai-expanded is Just (on) -> if on then ", expanded" else ", collapsed" is None -> ""
+    in let value = when info.ai-role is RoleSlider -> ", " & show (info.ai-value-now) is otherwise -> ""
+    in base & checked & expanded & value
+
+Section: Latest Announcement
+
+ A single-writer latest-value channel coalesces earlier messages. Sequence
+ at 0 is odd during publication; length/live/truncation occupy 8/16/24.
+ Bytes at 32 hold at most 512 encoded CCE bytes. Readers copy before checking
+ the sequence again; retained state never holds a temporary Text pointer.
+
+  gax-channel-bytes : Integer = 576
+  gax-channel-new : Integer =
+    let raw = __heap-save
+    in let advance = __heap-advance (gax-channel-bytes + 64)
+    in let state = bit-and (raw + 63) (0 - 64)
+    in let empty = atomic-store state 0
+    in state
+  GaxPayload = record { gp-bytes : List Integer, gp-truncated : Boolean }
+  GaxAnnouncement = record { ga-sequence : Integer, ga-text : Text, ga-live : A11yLive, ga-truncated : Boolean }
+
+  gax-encode : Text, Integer, List Integer -> GaxPayload
+  gax-encode (text) (i) (acc) =
+    if i >= text-length text then GaxPayload { gp-bytes = acc, gp-truncated = False }
+    else let need = cce-decode-length (char-code-at text i)
+    in if i + need > text-length text | list-length acc + need > 509 then GaxPayload { gp-bytes = acc & [char-code '.',char-code '.',char-code '.'], gp-truncated = True }
+    else gax-encode text (i + need) (gax-encode-copy text i (i + need) acc)
+
+  gax-encode-copy : Text, Integer, Integer, List Integer -> List Integer
+  gax-encode-copy (text) (i) (stop) (acc) = if i >= stop then acc else gax-encode-copy text (i + 1) stop (list-push acc (char-code-at text i))
+
+  gax-write-bytes : Integer, List Integer, Integer -> Integer
+  gax-write-bytes (state) (bytes) (i) = if i >= list-length bytes then 0 else let put = poke-byte state (32 + i) (list-at bytes i) in gax-write-bytes state bytes (i + 1)
+
+  gax-publish : Integer, Text, A11yLive -> Integer
+  gax-publish (state) (text) (live) =
+    let mode = when live is LiveOff -> 0 is LivePolite -> 1 is LiveAssertive -> 2
+    in if mode == 0 then 0
+    else let payload = gax-encode text 0 []
+    in let seq = atomic-load state
+    in let writing = atomic-store state (seq + 1)
+    in let copied = gax-write-bytes state (payload.gp-bytes) 0
+    in let length = poke-qword state 8 (list-length (payload.gp-bytes))
+    in let priority-code = poke-qword state 16 mode
+    in let cut = poke-qword state 24 (if payload.gp-truncated then 1 else 0)
+    in let published = atomic-store state (seq + 2)
+    in seq + 2
+
+  gax-read-bytes : Integer, Integer, Integer, List Integer -> List Integer
+  gax-read-bytes (state) (n) (i) (acc) = if i >= n then acc else gax-read-bytes state n (i + 1) (list-push acc (peek-byte state (32 + i)))
+
+  gax-read : Integer, Integer -> Maybe GaxAnnouncement
+  gax-read (state) (after) =
+    let seq = atomic-load state
+    in if seq == 0 | seq == after | bit-and seq 1 /= 0 then None
+    else let n = peek-qword state 8
+    in if n < 0 | n > 512 then None
+    else let mode = peek-qword state 16
+    in let truncated = peek-qword state 24 /= 0
+    in let bytes = gax-read-bytes state n 0 []
+    in if atomic-load state /= seq then None
+    else Just (GaxAnnouncement { ga-sequence = seq, ga-text = raw-bytes-to-text bytes, ga-live = if mode == 2 then LiveAssertive else LivePolite, ga-truncated = truncated })

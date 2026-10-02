@@ -1,0 +1,75 @@
+Chapter: LoraArm
+  cites Diffusion chapter BrowserLora
+  cites Diffusion chapter BrowserSdxlLoad
+
+ We say:
+
+  la-fail : Text -> Integer
+  la-fail (why) = let e = state-set-text "error" why in state-set "done" 1
+
+  la-image : Integer, Text -> Integer
+  la-image (h) (result) =
+    let dropped = gpu-buf-free h
+    in let weights = bl-free-weights (bl-list ("[" & state-get-text "bl-weights" & "]")) 0
+    in if text-contains result "\"ok\":true" == False then la-fail result
+    else state-set "done" 1
+
+  la-loaded : BrowserModel -> Integer
+  la-loaded (m) =
+    let bpe = bl-bpe-of (bl-list (page-data "vocab")) (bl-list (page-data "merges"))
+    in browser-txt2img-timed m bpe (page-data "prompt") "" 7 6 7.0 512 512 (\r -> let phase = state-set-text "phase" r in 0) (\h log ->
+      let saved = state-set-text "summary" log
+      in if h <= 0 then (let f = bl-free-weights (bl-list ("[" & state-get-text "bl-weights" & "]")) 0 in la-fail "Image generation failed")
+      else gpu-buf-show-then h 512 512 "#out" (\r -> la-image h r))
+
+  la-xl-image : BrowserSdxlModel, Integer, Text -> Integer
+  la-xl-image (m) (h) (result) =
+    let dropped = gpu-buf-free h
+    in let closed = browser-sdxl-close m
+    in if text-contains result "\"ok\":true" == False | closed == False then la-fail ("SDXL image/close failed: " & result)
+    else state-set "done" 1
+
+  la-xl-loaded : BrowserSdxlModel -> Integer
+  la-xl-loaded (m) =
+    let bpe = bl-bpe-of (bl-list (page-data "vocab")) (bl-list (page-data "merges"))
+    in let settings = BrowserSdxlSettings { bs-width = 1024, bs-height = 1024, bs-steps = 6, bs-seed = 7201, bs-cfg = 2.0 }
+    in browser-sdxl-euler-then m bpe (page-data "prompt") "" settings (\phase current total -> let p = state-set-text "phase" (phase & ":" & show current) in 0) (\h -> gpu-buf-show-then h 1024 1024 "#out" (\r -> la-xl-image m h r)) (\why -> let c = browser-sdxl-close m in la-fail why)
+
+  la-xl-load : Text, Integer -> Integer
+  la-xl-load (file) (size) =
+    if page-data "plain" == "1" then browser-sdxl-open (state-get-text "checkpoint") (state-get "checkpoint-size") (page-data "bk") (page-data "clip-xl") la-xl-loaded la-fail
+    else browser-sdxl-lora-open (state-get-text "checkpoint") (state-get "checkpoint-size") (page-data "bk") (page-data "clip-xl") file size (real-from-int (text-to-integer (page-data "weight100")) / 100.0) (page-data "lora-code") la-xl-loaded la-fail
+
+  la-lora : Text -> Integer
+  la-lora (result) =
+    let r = json-parse-obj result
+    in let file = json-obj-field r "name"
+    in let picked = state-set-text "lora" file
+    in let loading = state-set "picked" 2
+    in if page-data "checks-only" == "1" then 0
+    else if page-data "family" == "sdxl" then la-xl-load file (text-to-integer (json-obj-field r "size"))
+    else if page-data "plain" == "1" then bl-load-then (state-get-text "checkpoint") (\n total -> state-set "weights" n) la-fail la-loaded
+    else browser-sd15-lora-load-then (state-get-text "checkpoint") file (text-to-integer (json-obj-field r "size")) (real-from-int (text-to-integer (page-data "weight100")) / 100.0) (page-data "lora-code") (\n total -> state-set "weights" n) la-fail la-loaded
+
+  la-checkpoint : Text -> Integer
+  la-checkpoint (result) =
+    let saved = state-set-text "checkpoint" (json-obj-field (json-parse-obj result) "name")
+    in let size = state-set "checkpoint-size" (text-to-integer (json-obj-field (json-parse-obj result) "size"))
+    in state-set "picked" 1
+
+  la-pick : Text -> Integer
+  la-pick (id) =
+    if state-get "picked" == 0 then pick-file-then ".safetensors" la-checkpoint
+    else if state-get "picked" == 1 then pick-file-then ".safetensors" la-lora
+    else 0
+
+  opening : [Console] Integer
+  opening =
+    let canvas = dom-create "canvas"
+    in let id = dom-set-attr canvas "id" "out"
+    in let size = if page-data "family" == "sdxl" then "1024" else "512"
+    in let w = dom-set-attr canvas "width" size
+    in let h = dom-set-attr canvas "height" size
+    in let a = dom-append (dom-query "body") canvas
+    in let click = dom-on-click (dom-query "html") la-pick
+    in state-set "armed" 1

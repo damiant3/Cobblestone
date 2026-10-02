@@ -6,7 +6,8 @@ Section: Process Scheduler Helpers
   emit-process-resume-helper (st) =
     let st0 = record-func-offset st "__process_resume"
     in let fx0 = st-append-code st0 (mov-rr reg-rax reg-rsi & sub-ri reg-rax proc-table-base & shr-ri reg-rax 8)
-    in let fx1 = st-append-code fx0 (shl-ri reg-rax spawn-slot-region-shift & add-ri reg-rax fx-area-offset & mov-rr reg-rcx reg-rax)
+    in let fxb = emit-load-spawn-base fx0 reg-rcx
+    in let fx1 = st-append-code fxb (shl-ri reg-rax spawn-slot-region-shift & add-ri reg-rax (spawn-slot-region-size - fx-area-size) & add-rr reg-rcx reg-rax)
     in let fx2 = emit-vec-state-op fx1 xrstor64-rcx fxrstor64-rcx False
     in let st1 = st-append-code fx2 (mov-load reg-rsp reg-rsi proc-saved-rsp-offset)
     in let st2 = st-append-code st1 (sub-ri reg-rsp 40)
@@ -269,7 +270,7 @@ Section: Process Scheduler Helpers
     in emit-jmp-to st5 "process-exit-self"
 
  Spawn-region carve. Child heap and stack come from the slot-indexed
- region spawn-pool-base + slot * spawn-slot-region-size, never from
+ region active-pool-base + slot * spawn-slot-region-size, never from
  the spawner's R10 - a spawned child owns a fixed region, and carving
  a grandchild from the child's own R10 would overlap the child's
  stack. The process table IS the allocator: a slot freed by exit or
@@ -277,7 +278,7 @@ Section: Process Scheduler Helpers
  same addresses, so a long-running spawn loop plateaus at its working
  set instead of marching across the address space. Every call site
  sets R12 to the claimed slot index before calling; RDX carries the
- region size in; RDI returns the heap base, RSI the stack top.
+ region size in; RDI returns the heap base, RSI the stack top; RAX is scratch.
  process-spawn-with-heap bounds-checks its request against
  spawn-slot-region-size at the call site - a request that cannot fit
  the slot is refused with -1, never silently overlapped.
@@ -287,7 +288,8 @@ Section: Process Scheduler Helpers
     let st0 = record-func-offset st "__fx_save"
     in let st1 = st-append-code st0 (push-r reg-rax & push-r reg-rdx & push-r reg-rcx & mov-rr reg-rax reg-rcx)
     in let st2 = st-append-code st1 (sub-ri reg-rax proc-table-base & shr-ri reg-rax 8)
-    in let st3 = st-append-code st2 (shl-ri reg-rax spawn-slot-region-shift & add-ri reg-rax fx-area-offset & mov-rr reg-rcx reg-rax)
+    in let pool = emit-load-spawn-base st2 reg-rcx
+    in let st3 = st-append-code pool (shl-ri reg-rax spawn-slot-region-shift & add-ri reg-rax (spawn-slot-region-size - fx-area-size) & add-rr reg-rcx reg-rax)
     in let st4 = emit-vec-state-op st3 xsave64-rcx fxsave64-rcx True
     in st-append-code st4 (pop-r reg-rcx & pop-r reg-rdx & pop-r reg-rax & x86-ret)
 
@@ -295,7 +297,8 @@ Section: Process Scheduler Helpers
   emit-fx-init-helper (st) =
     let st0 = record-func-offset st "__fx_init"
     in let st1 = st-append-code st0 (push-r reg-rax & push-r reg-rdx & push-r reg-rcx & mov-rr reg-rax reg-r12)
-    in let st2 = st-append-code st1 (shl-ri reg-rax spawn-slot-region-shift & add-ri reg-rax fx-area-offset & mov-rr reg-rcx reg-rax)
+    in let pool = emit-load-spawn-base st1 reg-rcx
+    in let st2 = st-append-code pool (shl-ri reg-rax spawn-slot-region-shift & add-ri reg-rax (spawn-slot-region-size - fx-area-size) & add-rr reg-rcx reg-rax)
     in let st3 = emit-vec-state-op st2 xsave64-rcx fxsave64-rcx True
     in st-append-code st3 (pop-r reg-rcx & pop-r reg-rdx & pop-r reg-rax & x86-ret)
 
@@ -326,10 +329,11 @@ Section: Process Scheduler Helpers
 
   emit-spawn-pool-carve-helper : CodegenState -> CodegenState
   emit-spawn-pool-carve-helper (st) =
-    let st0 = record-func-offset st "__spawn_pool_carve"
+    let st0 = record-func-offset st "__spawn_pool_carve_v2"
     in let st1 = st-append-code st0 (mov-rr reg-rdi reg-r12)
     in let st2 = st-append-code st1 (shl-ri reg-rdi spawn-slot-region-shift)
-    in let st3 = st-append-code st2 (add-ri reg-rdi spawn-pool-base)
+    in let pool = emit-load-spawn-base st2 reg-rax
+    in let st3 = st-append-code pool (add-rr reg-rdi reg-rax)
     in let st4 = st-append-code st3 (mov-rr reg-rsi reg-rdi)
     in let st5 = st-append-code st4 (add-rr reg-rsi reg-rdx)
     in st-append-code st5 x86-ret
@@ -369,7 +373,7 @@ Section: Process Scheduler Helpers
     in let st15 = st-append-code st14 (mov-rr reg-r12 reg-rcx)
     in let st16 = st-append-code st15 (mov-rr reg-r13 reg-rdx)
     in let st17 = st-append-code st16 (li reg-rdx (proc-spawn-heap-size + proc-spawn-stack-size))
-    in let st19a = emit-call-to st17 "__spawn_pool_carve"
+    in let st19a = emit-call-to st17 "__spawn_pool_carve_v2"
     in let st19b = emit-call-to st19a "__fx_init"
     in let st19c = emit-spawn-stack-pretouch st19b
     in let st20 = emit-load-func-addr st19c reg-rax "__proc_entry"
@@ -477,7 +481,7 @@ Section: Process Scheduler Helpers
     in let st17 = st-append-code st16 (mov-rr reg-r12 reg-rcx)
     in let st18 = st-append-code st17 (mov-rr reg-r13 reg-rdx)
     in let st19 = st-append-code st18 (li reg-rdx (proc-spawn-heap-size + proc-spawn-stack-size))
-    in let st23a = emit-call-to st19 "__spawn_pool_carve"
+    in let st23a = emit-call-to st19 "__spawn_pool_carve_v2"
     in let st23 = emit-call-to st23a "__fx_init"
     in let st23c = emit-spawn-stack-pretouch st23
     in let st24 = emit-load-func-addr st23c reg-rax "__proc_entry"

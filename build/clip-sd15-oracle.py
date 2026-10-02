@@ -42,6 +42,7 @@ PROMPTS = [
     ('emphasis', '(masterpiece:1.2), ((best quality)), a [red] cat on a \\(wooden\\) table, (glowing runes:0.8), [[blurry]] (sharp:1.5 edges'),
     ('long', STYLE + 'a viking smithy at night where glowing runes are hammered into an amulet on an anvil, sparks flying, open book of runes on the bench, snowy mountains through an arched window, carved dragon heads on the rafters, frost on the windows, a sleeping wolf by the hearth BREAK a longship on a calm fjord at dawn'),
     ('empty', ''),
+    ('two', STYLE + 'a longship with a striped sail on a calm fjord at dawn, (mist:1.2) over the water, snowy peaks, a lighthouse of stacked stones, ravens circling, oars dipping in unison, shields along the rail, a carved serpent prow, golden light on the waves'),
 ]
 PREFIX = 'cond_stage_model.transformer.'
 

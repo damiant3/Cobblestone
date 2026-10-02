@@ -1,0 +1,342 @@
+Chapter: TorchZip
+  cites AI chapter SafeTensors
+  cites Foreword chapter StringUtils
+
+ A PyTorch checkpoint (torch.save's zip) read as a SafeTensorFile, so
+ CheckpointLayout binds it as it binds a .safetensors file: every tensor's
+ name, dtype, shape and absolute byte range in the file.
+
+ The zip layout is PKWARE's APPNOTE: the end of central directory record
+ (signature 0x06054b50) holds the entry count at +10, the directory's size at
+ +12 and offset at +16; a directory record (0x02014b50) holds the method at
+ +10, sizes at +20 and +24, name, extra and comment lengths at +28, +30, +32,
+ the local header offset at +42 and the name at +46; a local header
+ (0x04034b50) is 30 bytes with its name and extra lengths at +26 and +28, the
+ data after them. torch.save stores every entry (method 0) and needs no zip64
+ below 4 GiB; both are refused by name otherwise.
+
+ The pickle is read by a closed machine: the 21 opcodes and 4 GLOBALs every
+ checkpoint the engine reads uses (docs/Designs/Active/Apps/MusicGen.md), and a
+ REDUCE may only rebuild a tensor or make an empty OrderedDict. Anything else
+ is refused by name, because a pickle is a program and this reader runs none.
+ A tensor must be contiguous (row-major strides).
+
+ We say:
+
+Section: Values
+
+  TzVal =
+    | TzInt (Integer)
+    | TzText (Text)
+    | TzBool (Boolean)
+    | TzMark
+    | TzTuple (List TzVal)
+    | TzDict (List TzVal)
+    | TzGlobal (Text)
+    | TzStorage (Integer) (Text)
+    | TzTensor (Integer) (Text) (Integer) (List Integer) (List Integer)
+
+  TzState = record {
+    tz-stack : List TzVal,
+    tz-sp : Integer,
+    tz-memo : List TzVal,
+    tz-pos : Integer,
+    tz-err : Text,
+    tz-done : Boolean
+  }
+
+  TzEntry = record {
+    te-name : Text,
+    te-local : Integer,
+    te-size : Integer
+  }
+
+Section: Bytes
+
+  tz-u16 : List Integer, Integer -> Integer
+  tz-u16 (d) (i) = list-at d i + list-at d (i + 1) * 256
+
+  tz-u32 : List Integer, Integer -> Integer
+  tz-u32 (d) (i) = tz-u16 d i + tz-u16 d (i + 2) * 65536
+
+  tz-i32 : List Integer, Integer -> Integer
+  tz-i32 (d) (i) = let u = tz-u32 d i in if u >= 2147483648 then u - 4294967296 else u
+
+  tz-hex : Integer -> Text
+  tz-hex (b) = tz-nib (b / 16) & tz-nib (b - b / 16 * 16)
+
+  tz-nib : Integer -> Text
+  tz-nib (n) = substring "0123456789abcdef" n 1
+
+Section: Zip Directory
+
+ The end record is searched backwards through tail, which starts at file
+ offset tail-at; the answer is the directory's file offset and size, or -1
+ and the refusal.
+
+  tz-eocd-at : List Integer, Integer -> Integer
+  tz-eocd-at (d) (i) =
+    if i < 0 then 0 - 1
+    else if tz-u32 d i == 101010256 then i
+    else tz-eocd-at d (i - 1)
+
+  tz-directory-span : List Integer, Integer -> List Integer
+  tz-directory-span (tail) (tail-at) =
+    let e = tz-eocd-at tail (list-length tail - 22)
+    in if e < 0 then []
+    else if tz-u32 tail (e + 16) == 4294967295 then []
+    else [tz-u32 tail (e + 16), tz-u32 tail (e + 12), tz-u16 tail (e + 10)]
+
+  tz-entries : List Integer, Integer, Integer, List TzEntry -> List TzEntry
+  tz-entries (cd) (i) (left) (acc) =
+    if left <= 0 | i + 46 > list-length cd then acc
+    else if tz-u32 cd i /= 33639248 then acc
+    else if tz-u16 cd (i + 10) /= 0 then []
+    else let nl = tz-u16 cd (i + 28)
+    in let skip = 46 + nl + tz-u16 cd (i + 30) + tz-u16 cd (i + 32)
+    in tz-entries cd (i + skip) (left - 1) (acc & [TzEntry { te-name = st-extract-text cd (i + 46) nl "", te-local = tz-u32 cd (i + 42), te-size = tz-u32 cd (i + 24) }])
+
+ An entry's data starts after its 30-byte local header, whose name and extra
+ lengths can differ from the directory's.
+
+  tz-data-at : List Integer, Integer -> Integer
+  tz-data-at (lh) (local) =
+    if tz-u32 lh 0 /= 67324752 then 0 - 1
+    else local + 30 + tz-u16 lh 26 + tz-u16 lh 28
+
+Section: Pickle Machine
+
+  tz-allowed : Text -> Boolean
+  tz-allowed (g) = g == "collections.OrderedDict" | g == "torch._utils._rebuild_tensor_v2" | g == "torch.HalfStorage" | g == "torch.FloatStorage"
+
+  tz-storage-dtype : Text -> Integer
+  tz-storage-dtype (g) = if g == "torch.HalfStorage" then st-dtype-f16 else if g == "torch.FloatStorage" then st-dtype-f32 else st-dtype-unknown
+
+  tz-fail : TzState, Text -> TzState
+  tz-fail (s) (why) = TzState { tz-stack = s.tz-stack, tz-sp = s.tz-sp, tz-memo = s.tz-memo, tz-pos = s.tz-pos, tz-err = why, tz-done = True }
+
+  tz-push : TzState, TzVal, Integer -> TzState
+  tz-push (s) (v) (next) =
+    let st = if s.tz-sp < list-length (s.tz-stack) then list-set-at (s.tz-stack) (s.tz-sp) v else list-push (s.tz-stack) v
+    in TzState { tz-stack = st, tz-sp = s.tz-sp + 1, tz-memo = s.tz-memo, tz-pos = next, tz-err = "", tz-done = False }
+
+  tz-top : TzState, Integer -> TzVal
+  tz-top (s) (k) = list-at (s.tz-stack) (s.tz-sp - 1 - k)
+
+  tz-drop : TzState, Integer -> TzState
+  tz-drop (s) (n) = TzState { tz-stack = s.tz-stack, tz-sp = s.tz-sp - n, tz-memo = s.tz-memo, tz-pos = s.tz-pos, tz-err = "", tz-done = False }
+
+  tz-mark-at : TzState, Integer -> Integer
+  tz-mark-at (s) (i) =
+    if i < 0 then 0 - 1
+    else when list-at (s.tz-stack) i
+     is TzMark -> i
+     is otherwise -> tz-mark-at s (i - 1)
+
+  tz-slice : List TzVal, Integer, Integer, List TzVal -> List TzVal
+  tz-slice (xs) (i) (stop) (acc) = if i >= stop then acc else tz-slice xs (i + 1) stop (acc & [list-at xs i])
+
+  tz-memo-put : TzState, Integer -> TzState
+  tz-memo-put (s) (k) =
+    let v = tz-top s 0
+    in let m = tz-memo-grow (s.tz-memo) k
+    in let m2 = list-set-at m k v
+    in TzState { tz-stack = s.tz-stack, tz-sp = s.tz-sp, tz-memo = m2, tz-pos = s.tz-pos, tz-err = "", tz-done = False }
+
+  tz-memo-grow : List TzVal, Integer -> List TzVal
+  tz-memo-grow (m) (k) = if list-length m > k then m else tz-memo-grow (list-push m TzMark) k
+
+  tz-at : TzState, Integer -> TzState
+  tz-at (s) (p) = TzState { tz-stack = s.tz-stack, tz-sp = s.tz-sp, tz-memo = s.tz-memo, tz-pos = p, tz-err = "", tz-done = False }
+
+  tz-line-end : List Integer, Integer -> Integer
+  tz-line-end (d) (i) = if i >= list-length d then i else if list-at d i == 10 then i else tz-line-end d (i + 1)
+
+  tz-run : List Integer, TzState -> TzState
+  tz-run (d) (s) =
+    if s.tz-done then s
+    else if s.tz-pos >= list-length d then tz-fail s "the pickle ends before STOP"
+    else tz-run d (tz-step d s (list-at d (s.tz-pos)) (s.tz-pos + 1))
+
+  tz-step : List Integer, TzState, Integer, Integer -> TzState
+  tz-step (d) (s) (op) (p) =
+    if op == 128 then tz-at s (p + 1)
+    else if op == 46 then TzState { tz-stack = s.tz-stack, tz-sp = s.tz-sp, tz-memo = s.tz-memo, tz-pos = p, tz-err = "", tz-done = True }
+    else if op == 99 then tz-global d s p
+    else if op == 82 then tz-reduce s p
+    else if op == 81 then tz-persid s p
+    else if op == 40 then tz-push s TzMark p
+    else if op == 125 then tz-push s (TzDict []) p
+    else if op == 117 then tz-setitems s p
+    else if op == 41 then tz-push s (TzTuple []) p
+    else if op == 116 then tz-tuple-mark s p
+    else if op == 133 then tz-tuple-n s 1 p
+    else if op == 134 then tz-tuple-n s 2 p
+    else if op == 135 then tz-tuple-n s 3 p
+    else if op == 74 then tz-push s (TzInt (tz-i32 d p)) (p + 4)
+    else if op == 75 then tz-push s (TzInt (list-at d p)) (p + 1)
+    else if op == 77 then tz-push s (TzInt (tz-u16 d p)) (p + 2)
+    else if op == 88 then tz-push s (TzText (st-extract-text d (p + 4) (tz-u32 d p) "")) (p + 4 + tz-u32 d p)
+    else if op == 137 then tz-push s (TzBool False) p
+    else if op == 113 then tz-at (tz-memo-put s (list-at d p)) (p + 1)
+    else if op == 114 then tz-at (tz-memo-put s (tz-u32 d p)) (p + 4)
+    else if op == 104 then tz-push s (list-at (s.tz-memo) (list-at d p)) (p + 1)
+    else tz-fail s ("opcode 0x" & tz-hex op & " refused")
+
+  tz-global : List Integer, TzState, Integer -> TzState
+  tz-global (d) (s) (p) =
+    let e1 = tz-line-end d p
+    in let e2 = tz-line-end d (e1 + 1)
+    in let g = st-extract-text d p (e1 - p) "" & "." & st-extract-text d (e1 + 1) (e2 - e1 - 1) ""
+    in if tz-allowed g then tz-push s (TzGlobal g) (e2 + 1)
+    else tz-fail s ("GLOBAL " & g & " refused")
+
+  tz-tuple-n : TzState, Integer, Integer -> TzState
+  tz-tuple-n (s) (n) (p) = tz-push (tz-drop s n) (TzTuple (tz-slice (s.tz-stack) (s.tz-sp - n) (s.tz-sp) [])) p
+
+  tz-tuple-mark : TzState, Integer -> TzState
+  tz-tuple-mark (s) (p) =
+    let m = tz-mark-at s (s.tz-sp - 1)
+    in if m < 0 then tz-fail s "TUPLE with no MARK"
+    else tz-push (tz-drop s (s.tz-sp - m)) (TzTuple (tz-slice (s.tz-stack) (m + 1) (s.tz-sp) [])) p
+
+  tz-pairs : List TzVal, Integer, List TzVal -> List TzVal
+  tz-pairs (xs) (i) (acc) = if i + 1 >= list-length xs then acc else tz-pairs xs (i + 2) (acc & [TzTuple [list-at xs i, list-at xs (i + 1)]])
+
+  tz-setitems : TzState, Integer -> TzState
+  tz-setitems (s) (p) =
+    let m = tz-mark-at s (s.tz-sp - 1)
+    in if m < 1 then tz-fail s "SETITEMS with no MARK or no dict"
+    else let items = tz-pairs (tz-slice (s.tz-stack) (m + 1) (s.tz-sp) []) 0 []
+    in when list-at (s.tz-stack) (m - 1)
+     is TzDict (ps) -> tz-push (tz-drop s (s.tz-sp - m + 1)) (TzDict (ps & items)) p
+     is otherwise -> tz-fail s "SETITEMS below something that is not a dict"
+
+  tz-persid : TzState, Integer -> TzState
+  tz-persid (s) (p) =
+    when tz-top s 0
+     is TzTuple (xs) -> tz-persid-of s xs p
+     is otherwise -> tz-fail s "a persistent id that is not a tuple refused"
+
+  tz-persid-of : TzState, List TzVal, Integer -> TzState
+  tz-persid-of (s) (xs) (p) =
+    if list-length xs /= 5 then tz-fail s "a persistent id that is not a 5-tuple refused"
+    else when list-at xs 0
+     is TzText (tag) -> (if tag /= "storage" then tz-fail s ("a persistent id tagged " & tag & " refused") else tz-storage s (list-at xs 1) (list-at xs 2) p)
+     is otherwise -> tz-fail s "a persistent id with no tag refused"
+
+  tz-storage : TzState, TzVal, TzVal, Integer -> TzState
+  tz-storage (s) (g) (k) (p) =
+    when g
+     is TzGlobal (name) -> (when k
+       is TzText (key) -> tz-push (tz-drop s 1) (TzStorage (tz-storage-dtype name) key) p
+       is otherwise -> tz-fail s "a storage key that is not text refused")
+     is otherwise -> tz-fail s "a storage type that is not a GLOBAL refused"
+
+  tz-reduce : TzState, Integer -> TzState
+  tz-reduce (s) (p) =
+    when tz-top s 1
+     is TzGlobal (g) -> (when tz-top s 0
+       is TzTuple (args) -> tz-apply (tz-drop s 2) g args p
+       is otherwise -> tz-fail s "REDUCE with arguments that are not a tuple refused")
+     is otherwise -> tz-fail s "REDUCE of something that is not an allowed GLOBAL refused"
+
+  tz-apply : TzState, Text, List TzVal, Integer -> TzState
+  tz-apply (s) (g) (args) (p) =
+    if g == "collections.OrderedDict" & list-length args == 0 then tz-push s (TzDict []) p
+    else if g == "torch._utils._rebuild_tensor_v2" & list-length args == 6 then tz-rebuild s args p
+    else tz-fail s ("REDUCE of " & g & " with " & show (list-length args) & " arguments refused")
+
+  tz-ints : List TzVal, Integer, List Integer -> List Integer
+  tz-ints (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else when list-at xs i
+     is TzInt (n) -> tz-ints xs (i + 1) (list-snoc acc n)
+     is otherwise -> tz-ints xs (i + 1) (list-snoc acc (0 - 1))
+
+  tz-rebuild : TzState, List TzVal, Integer -> TzState
+  tz-rebuild (s) (args) (p) =
+    when list-at args 0
+     is TzStorage (dt) (key) -> (when list-at args 1
+       is TzInt (off) -> (when list-at args 2
+         is TzTuple (size) -> (when list-at args 3
+           is TzTuple (stride) -> tz-push s (TzTensor dt key off (tz-ints size 0 []) (tz-ints stride 0 [])) p
+           is otherwise -> tz-fail s "a tensor with no stride tuple refused")
+         is otherwise -> tz-fail s "a tensor with no size tuple refused")
+       is otherwise -> tz-fail s "a tensor with no storage offset refused")
+     is otherwise -> tz-fail s "a tensor rebuilt from something that is not a storage refused"
+
+Section: The Checkpoint
+
+  TorchZip = record {
+    tzf-file : SafeTensorFile,
+    tzf-why : Text
+  }
+
+  tz-width : Integer -> Integer
+  tz-width (dt) = if dt == st-dtype-f16 then 2 else if dt == st-dtype-f32 then 4 else 0
+
+  tz-contiguous : List Integer, List Integer, Integer, Integer -> Boolean
+  tz-contiguous (size) (stride) (i) (want) =
+    if i < 0 then True
+    else if list-at size i > 1 & list-at stride i /= want then False
+    else tz-contiguous size stride (i - 1) (want * list-at size i)
+
+  tz-numel : List Integer, Integer, Integer -> Integer
+  tz-numel (size) (i) (acc) = if i >= list-length size then acc else tz-numel size (i + 1) (acc * list-at size i)
+
+  tz-storage-at : List Text, List Integer, Text, Integer -> Integer
+  tz-storage-at (names) (starts) (key) (i) =
+    if i >= list-length names then 0 - 1
+    else if text-ends-with (list-at names i) ("/data/" & key) then list-at starts i
+    else tz-storage-at names starts key (i + 1)
+
+ The tensors of the pickle's top dict, their storages found by key among the
+ zip entries (names, and each entry's data offset from tz-data-at).
+
+  tz-tensors : List TzVal, Integer, List Text, List Integer, List StTensorMeta, Text -> TorchZip
+  tz-tensors (pairs) (i) (names) (starts) (acc) (why) =
+    if why /= "" then TorchZip { tzf-file = SafeTensorFile { st-header-len = 0, st-data-offset = 0, st-tensors = [], st-tensor-count = 0, st-valid = False }, tzf-why = why }
+    else if i >= list-length pairs then TorchZip { tzf-file = SafeTensorFile { st-header-len = 0, st-data-offset = 0, st-tensors = acc, st-tensor-count = list-length acc, st-valid = True }, tzf-why = "" }
+    else when list-at pairs i
+     is TzTuple (kv) -> tz-pair kv pairs i names starts acc
+     is otherwise -> tz-tensors pairs (i + 1) names starts acc "a dict item that is not a pair"
+
+  tz-pair : List TzVal, List TzVal, Integer, List Text, List Integer, List StTensorMeta -> TorchZip
+  tz-pair (kv) (pairs) (i) (names) (starts) (acc) =
+    when list-at kv 0
+     is TzText (name) -> (when list-at kv 1
+       is TzTensor (dt) (key) (off) (size) (stride) -> tz-meta pairs i names starts acc name dt key off size stride
+       is otherwise -> tz-tensors pairs (i + 1) names starts acc ("'" & name & "' is not a tensor"))
+     is otherwise -> tz-tensors pairs (i + 1) names starts acc "a dict key that is not text"
+
+  tz-meta : List TzVal, Integer, List Text, List Integer, List StTensorMeta, Text, Integer, Text, Integer, List Integer, List Integer -> TorchZip
+  tz-meta (pairs) (i) (names) (starts) (acc) (name) (dt) (key) (off) (size) (stride) =
+    let w = tz-width dt
+    in let base = tz-storage-at names starts key 0
+    in let n = tz-numel size 0 1
+    in if w == 0 then tz-tensors pairs (i + 1) names starts acc ("'" & name & "' has a storage type outside the allowlist")
+    else if base < 0 then tz-tensors pairs (i + 1) names starts acc ("'" & name & "' names storage " & key & ", which is not in the zip")
+    else if tz-contiguous size stride (list-length size - 1) 1 == False then tz-tensors pairs (i + 1) names starts acc ("'" & name & "' is not contiguous")
+    else tz-tensors pairs (i + 1) names starts (list-snoc acc (StTensorMeta { stm-name = name, stm-dtype = dt, stm-shape = size, stm-ndim = list-length size, stm-offset-start = base + off * w, stm-offset-end = base + (off + n) * w })) ""
+
+  tz-state-dict : List TzVal, Integer, List Text, List Integer -> TorchZip
+  tz-state-dict (ps) (i) (names) (starts) =
+    if i >= list-length ps then tz-tensors ps 0 names starts [] ""
+    else when list-at ps i
+     is TzTuple (kv) -> (when list-at kv 0
+       is TzText (name) -> (if name /= "best_state" then tz-state-dict ps (i + 1) names starts
+         else when list-at kv 1
+          is TzDict (tensors) -> tz-tensors tensors 0 names starts [] ""
+          is otherwise -> tz-tensors [] 0 names starts [] "best_state is not a dict")
+       is otherwise -> tz-state-dict ps (i + 1) names starts)
+     is otherwise -> tz-state-dict ps (i + 1) names starts
+
+  torch-zip-read : List Integer, List Text, List Integer -> TorchZip
+  torch-zip-read (pkl) (names) (starts) =
+    let s = tz-run pkl (TzState { tz-stack = [], tz-sp = 0, tz-memo = [], tz-pos = 0, tz-err = "", tz-done = False })
+    in if s.tz-err /= "" then tz-tensors [] 0 names starts [] (s.tz-err)
+    else if s.tz-sp /= 1 then tz-tensors [] 0 names starts [] "the pickle does not end on one value"
+    else when tz-top s 0
+     is TzDict (ps) -> tz-state-dict ps 0 names starts
+     is otherwise -> tz-tensors [] 0 names starts [] "the pickle's value is not a dict"

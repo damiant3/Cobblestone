@@ -24,14 +24,16 @@ Section: Forms
       let q = aj-string s i
       in AccpForm { start = i, next = q.next, ok = q.ok }
     else let n = ai-atom-end s i
-      in AccpForm { start = i, next = n, ok = n > i }
+    in AccpForm { start = i, next = n, ok = n > i }
 
   ai-balance : Text, Integer, Integer, Integer -> AccpForm
   ai-balance (s) (start) (i) (depth) =
     if i >= text-length s | depth > 512 then AccpForm { start = start, next = i, ok = False }
     else if aj-is s i "\"" then
       let q = aj-string s i
-      in if q.ok then ai-balance s start q.next depth else AccpForm { start = start, next = i, ok = False }
+      in if q.ok then
+        ai-balance s start q.next depth
+      else AccpForm { start = start, next = i, ok = False }
     else if aj-is s i "(" then ai-balance s start (i + 1) (depth + 1)
     else if aj-is s i ")" then
       if depth == 1 then AccpForm { start = start, next = i + 1, ok = True }
@@ -54,7 +56,8 @@ Section: Forms
   ai-string-list (s) (at) (stop) (acc) =
     let i = aj-ws s at
     in if i == stop then AccpAdmission { ok = True, reason = "", row = acc, scopes = [] }
-    else if i > stop | list-length acc >= 32 | aj-is s i "\"" == False then ai-fail "malformed effect list"
+    else if i > stop | list-length acc >= 32 | aj-is s i "\"" == False then
+      ai-fail "malformed effect list"
     else let q = aj-string s i
     in if q.ok == False | q.next > stop then ai-fail "malformed effect string"
     else ai-string-list s q.next stop (list-push acc (aj-decode (substring s i (q.next - i))))
@@ -71,11 +74,14 @@ Section: Entry Type
     else let e = ai-form s (ai-after-head s f)
     in let c = ai-form s e.next
     in let r = ai-form s c.next
-    in if e.ok == False | c.ok == False | r.ok == False | aj-ws s r.next /= f.next - 1 then ai-fail "malformed effectful type"
-    else if ai-head s e /= "effs" | ai-head s c /= "scopes" | ai-scalar (ai-raw s r) == False then ai-fail "unsupported effectful type"
+    in if e.ok == False | c.ok == False | r.ok == False | aj-ws s r.next /= f.next - 1 then
+      ai-fail "malformed effectful type"
+    else if ai-head s e /= "effs" | ai-head s c /= "scopes" | ai-scalar (ai-raw s r) == False then
+      ai-fail "unsupported effectful type"
     else let es = ai-string-list s (ai-after-head s e) (e.next - 1) []
     in let cs = ai-string-list s (ai-after-head s c) (c.next - 1) []
-    in if es.ok == False | cs.ok == False | list-length es.row /= list-length cs.row then ai-fail "effects and scopes disagree"
+    in if es.ok == False | cs.ok == False | list-length es.row /= list-length cs.row then
+      ai-fail "effects and scopes disagree"
     else if ai-duplicates es.row cs.row 0 1 then ai-fail "duplicate effect entry"
     else AccpAdmission { ok = True, reason = "", row = es.row, scopes = cs.row }
 
@@ -93,9 +99,12 @@ Section: Entry Type
     in let ps = ai-form s chapter.next
     in let ty = ai-form s ps.next
     in let body = ai-form s ty.next
-    in if chapter.ok == False | ps.ok == False | ty.ok == False | body.ok == False then ai-fail "incomplete opening definition"
-    else if aj-is s chapter.start "\"" == False | ai-head s ps /= "params" then ai-fail "malformed opening header"
-    else if aj-ws s (ai-after-head s ps) /= ps.next - 1 then ai-fail "opening must have zero parameters"
+    in if chapter.ok == False | ps.ok == False | ty.ok == False | body.ok == False then
+      ai-fail "incomplete opening definition"
+    else if aj-is s chapter.start "\"" == False | ai-head s ps /= "params" then
+      ai-fail "malformed opening header"
+    else if aj-ws s (ai-after-head s ps) /= ps.next - 1 then
+      ai-fail "opening must have zero parameters"
     else ai-type s ty
 
   ai-defs : Text, Integer, Integer, Integer, AccpAdmission -> AccpAdmission
@@ -116,16 +125,19 @@ Section: Entry Type
     let i = aj-ws s at
     in if i == stop then if found == 1 then result else ai-fail "missing defs"
     else let f = ai-form s i
-    in if f.ok == False | f.next > stop | aj-is s f.start "(" == False then ai-fail "malformed chapter"
+    in if f.ok == False | f.next > stop | aj-is s f.start "(" == False then
+      ai-fail "malformed chapter"
     else if ai-head s f == "defs" then
       if found > 0 then ai-fail "duplicate defs"
-      else ai-chapter s f.next stop 1 (ai-defs s (ai-after-head s f) (f.next - 1) 0 (ai-fail "missing opening"))
+      else
+        ai-chapter s f.next stop 1 (ai-defs s (ai-after-head s f) (f.next - 1) 0 (ai-fail "missing opening"))
     else ai-chapter s f.next stop found result
 
   ai-admit : Text -> AccpAdmission
   ai-admit (s) =
     let f = ai-form s 0
-    in if f.ok == False | aj-ws s f.next /= text-length s | ai-head s f /= "chapter" then ai-fail "malformed IR chapter"
+    in if f.ok == False | aj-ws s f.next /= text-length s | ai-head s f /= "chapter" then
+      ai-fail "malformed IR chapter"
     else let name = ai-form s (ai-after-head s f)
     in if name.ok == False | aj-is s name.start "\"" == False then ai-fail "malformed chapter name"
     else ai-chapter s name.next (f.next - 1) 0 (ai-fail "missing defs")
@@ -147,7 +159,9 @@ Section: Ambient Authority
     if i >= list-length a.row then acc
     else let e = list-at a.row i
     in let sc = list-at a.scopes i
-    in let n = if ai-console e sc then acc else list-push acc (e & (if sc == "" then "" else " " & aj-quote sc))
+    in let n = if ai-console e sc then
+      acc
+    else list-push acc (e & (if sc == "" then "" else " " & aj-quote sc))
     in ai-needs-loop a (i + 1) n
 
   ai-json-list : List Text -> Text
@@ -156,6 +170,7 @@ Section: Ambient Authority
   ai-json-parts : List Text, Integer, List Text -> List Text
   ai-json-parts (xs) (i) (acc) =
     if i >= list-length xs then acc
-    else ai-json-parts xs (i + 1) (list-push acc ((if i == 0 then "" else ",") & aj-quote (list-at xs i)))
+    else
+      ai-json-parts xs (i + 1) (list-push acc ((if i == 0 then "" else ",") & aj-quote (list-at xs i)))
 
 Page 1

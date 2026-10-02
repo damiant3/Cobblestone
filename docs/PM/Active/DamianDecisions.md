@@ -10,7 +10,6 @@ here.
 
 | # | decision | options | what waits on the decision |
 |---|---|---|---|
-| 1.1 | **Batch republish of the public site** (the release later on 2026-09-29) | first, CobblestoneWeb; then, the ModBuilder page (`cobblestoneproject.com/modbuilder/`) | The published site ships the old `fishtank.wasm` (reek, main 30043) and the pre-MB-14 `unity-stdio.wasm` (root, main 30111). |
 | 1.2 | **Sitting 18 shape** | accept two boots: first, the diag ladder (sink, vmx); then Ctrl-Alt-Del; finally, the desk image with Damian typing (WORKS-19). Or name a different shape. | red composes the card after blu's repair of the sitting 17 medium loss (`bank-desync`, main 30132). The card must say how one stick carries two images. |
 
 ## 2. ModBuilder

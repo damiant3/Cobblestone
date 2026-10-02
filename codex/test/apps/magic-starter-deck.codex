@@ -1,0 +1,153 @@
+Chapter: MagicStarterDeck
+  cites CodexMagic chapter Deck
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter CardPool
+  cites CodexMagic chapter General
+  cites CodexMagic chapter Mana
+  cites Foreword chapter Console
+
+  StarterCounts = record { tested : Integer, violations : Integer, first-seed : Integer }
+
+  sd-has : List Integer, Integer, Integer -> Boolean
+  sd-has (seeds) (seed) (i) =
+    if i >= list-length seeds then False
+    else if list-at seeds i == seed then True
+    else sd-has seeds seed (i + 1)
+
+  sd-add : List Integer, Integer -> List Integer
+  sd-add (seeds) (seed) = if sd-has seeds seed 0 then seeds else list-push seeds seed
+
+  sd-range : Integer, List Integer -> List Integer
+  sd-range (seed) (acc) = if seed > 200 then acc else sd-range (seed + 1) (sd-add acc seed)
+
+  sd-batch : Integer, Integer, List Integer -> List Integer
+  sd-batch (base) (i) (acc) =
+    if i >= 100 then acc
+    else sd-batch base (i + 1) (sd-add (sd-add acc (base + i * 97 + 1)) (base + i * 97 + 2))
+
+  sd-copies : List Integer, List CardTemplate, Integer, Integer -> Boolean
+  sd-copies (cards) (templates) (counts) (i) =
+    if i >= list-length cards then True
+    else let id = list-at cards i
+    in if id < 0 | id >= list-length templates then False
+    else let t = list-at templates id
+    in let n = peek-32 counts (id * 4) + 1
+    in let saved = poke-32 counts (id * 4) n
+    in if t.is-basic == False & n > 4 then False
+    else if t.is-token then False
+    else when t.card-type
+      is General -> False
+      is otherwise -> sd-copies cards templates counts (i + 1)
+
+  sd-zero-counts : Integer, Integer, Integer -> Integer
+  sd-zero-counts (counts) (n) (i) =
+    if i >= n then 0
+    else let cleared = poke-32 counts (i * 4) 0
+    in sd-zero-counts counts n (i + 1)
+
+  sd-valid : StarterDeckResult, List CardTemplate, GeneralTemplate -> Boolean
+  sd-valid (result) (templates) (general) = when result
+    is StarterRefused (why) -> False
+    is StarterDeck (deck) ->
+      let counts = alloc-bytes (list-length templates * 4)
+      in let cleared = sd-zero-counts counts (list-length templates) 0
+      in let independent = sd-copies (deck.cards) templates counts 0
+      in let validator = validate-deck deck templates general
+      in deck.num-cards == 60 & list-length (deck.cards) == 60 & independent & validator.valid & sd-deck-gems (deck.cards) general 0
+
+  sd-deck-gems : List Integer, GeneralTemplate, Integer -> Boolean
+  sd-deck-gems (cards) (general) (i) =
+    if i >= 24 then True
+    else let expected = if general.id == 0 then 0 else if general.id == 1 then 2 else if general.id == 2 then 4 else if general.id == 3 then (if i < 12 then 0 else 2) else 1
+    in list-at cards i == expected & sd-deck-gems cards general (i + 1)
+
+  sd-selected : GemColor, Integer, Integer -> Boolean
+  sd-selected (color) (first) (second) =
+    let general = __record-set general-warlord "color" (color-set-mono color)
+    in let gems = pick-gems-for-general general full-card-pool 24
+    in list-length gems == 24
+    & count-card-in-list gems first 0 (list-length gems) 0 == (if first == second then 24 else 12)
+    & count-card-in-list gems second 0 (list-length gems) 0 == (if first == second then 24 else 12)
+
+  sd-gem-boundaries : Boolean
+  sd-gem-boundaries =
+    let ruby = __record-set (make-basic-gem 0 "Ruby" 0 9) "color" (color-set-mono Blue)
+    in let token = __record-set (make-basic-gem 0 "Token Ruby" 0 9) "is-token" True
+    in gem-stone-color-matches ruby Red & gem-stone-color-matches ruby Blue == False
+    & find-basic-gem-for-color [token] Red 0 1 < 0
+    & list-length (pick-gems-for-general general-warlord [token] 24) == 0
+    & gem-stone-color-matches pool-obsidian Colorless == False
+
+  sd-purple-missing : Boolean
+  sd-purple-missing = when gen-starter-deck general-shadow-prince [pool-ruby] 99
+    is StarterDeck (deck) -> False
+    is StarterRefused (why) -> text-contains why (general-shadow-prince.name) & text-contains why "48 cards short" & text-contains why "required basic gemstones unavailable"
+
+  sd-basic : StarterDeckResult -> Boolean
+  sd-basic (result) = when result
+    is StarterRefused (why) -> False
+    is StarterDeck (deck) -> sd-basic-many (deck.cards) full-card-pool 0 & (validate-deck deck full-card-pool general-dawn-commander).valid
+
+  sd-basic-many : List Integer, List CardTemplate, Integer -> Boolean
+  sd-basic-many (cards) (templates) (i) =
+    if i >= list-length cards then False
+    else let id = list-at cards i
+    in if (list-at templates id).is-basic & count-card-in-list cards id 0 (list-length cards) 0 > 4 then True
+    else sd-basic-many cards templates (i + 1)
+
+  sd-refused : StarterDeckResult, Integer, Text -> Boolean
+  sd-refused (result) (short) (reason) = when result
+    is StarterDeck (deck) -> False
+    is StarterRefused (why) -> text-contains why (general-dawn-commander.name) & text-contains why "seed 99" & text-contains why (show short & " cards short") & text-contains why reason
+
+  sd-sweep : GeneralTemplate, List CardTemplate, List Integer, Integer, Integer, Integer, Integer -> StarterCounts
+  sd-sweep (general) (templates) (seeds) (i) (tested) (violations) (first) =
+    if i >= list-length seeds then StarterCounts { tested = tested, violations = violations, first-seed = first }
+    else let seed = list-at seeds i
+    in let mark = __heap-save
+    in let deck = gen-starter-deck general templates seed
+    in let failed = if sd-valid deck templates general then 0 else 1
+    in let next-first = if failed == 1 & violations == 0 then seed else first
+    in let restore = __heap-restore mark
+    in sd-sweep general templates seeds (i + 1) (tested + 1) (violations + failed) next-first
+
+  sd-generals : List GeneralTemplate, List CardTemplate, List Integer, Integer, Integer, Integer -> [Console] Nothing
+  sd-generals (generals) (templates) (seeds) (i) (tested) (violations) =
+    if i >= list-length generals then act
+      print-line ("total tested=" & show tested & " violations=" & show violations)
+    end
+    else let general = list-at generals i
+    in let result = sd-sweep general templates seeds 0 0 0 0
+    in act
+      print-line (general.name & ": tested=" & show result.tested & " violations=" & show result.violations & " first=" & show result.first-seed)
+      sd-generals generals templates seeds (i + 1) (tested + result.tested) (violations + result.violations)
+    end
+
+  opening : [Console] Nothing =
+    let seeds = sd-batch 32345 0 (sd-batch 12345 0 (sd-range 1 []))
+    in let templates = full-card-pool
+    in let generals = [general-warlord, general-high-sage, general-verdant-keeper, general-shadow-prince, general-dawn-commander]
+    in let dawn = gen-starter-deck general-dawn-commander templates 99
+    in let topaz = make-basic-gem 0 "Topaz" 1 8
+    in let tiny = [topaz, make-creature 1 "Only spell" (light-cost-y 1) 1 1 0 keywords-none]
+    in let short = gen-starter-deck general-dawn-commander tiny 99
+    in let none = gen-starter-deck general-dawn-commander [topaz] 99
+    in let missing = gen-starter-deck general-dawn-commander [pool-ruby] 99
+    in let empty = gen-starter-deck general-dawn-commander [] 99
+    in act
+      print-line ("primary gemstones=" & show (sd-selected Red 0 0 & sd-selected Yellow 1 1 & sd-selected Blue 2 2 & sd-selected Orange 3 3 & sd-selected Green 4 4))
+      print-line ("purple Ruby Sapphire split=" & show (sd-selected Purple 0 2))
+      print-line ("colorless Diamond=" & show (sd-selected Colorless 5 5))
+      print-line ("gem metadata and token boundaries=" & show sd-gem-boundaries)
+      print-line ("missing Purple component refused=" & show sd-purple-missing)
+      print-line ("seed99 valid=" & show (sd-valid dawn templates general-dawn-commander))
+      print-line ("basic exemption=" & show (sd-basic dawn))
+      print-line ("exhausted pool named refusal=" & show (sd-refused short 32 "eligible spell copies exhausted"))
+      print-line ("no eligible spells named refusal=" & show (sd-refused none 36 "eligible spell copies exhausted"))
+      print-line ("empty pool named refusal=" & show (sd-refused empty 60 "no card templates"))
+      print-line ("missing required gemstones refused=" & show (sd-refused missing 60 "required basic gemstones unavailable"))
+      print-line ("corpus seeds=" & show (list-length seeds))
+      sd-generals generals templates seeds 0 0 0
+    end
+
+Page 1

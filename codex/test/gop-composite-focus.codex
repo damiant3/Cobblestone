@@ -9,21 +9,13 @@ Chapter: GopCompositeFocus
   cites UI chapter BoxModel
   cites Kernel chapter BitmapFont
 
- Control-state flags. A button hovered AND focused resolves
- to the hover slot, and its focus is a ring: every pixel that differs from
- the same button hovered alone lies on the ring around its border box. The
- precedence lines read `widget-state-of` for each combination.
-
- THE CONTROLS: a button focused and nothing else resolves to the focused
- slot, so it changes pixels off the ring where a ring alone would change
- none; and a node with no flags resolves to normal.
-
 Section: Geometry
 
   cf-w : Integer = 200
   cf-h : Integer = 40
   cf-cells : Integer = 8000
   cf-bytes : Integer = 32000
+  cf-band : Integer = 2
 
 Section: Counting
 
@@ -42,7 +34,10 @@ Section: Counting
   on-ring : LayoutRect, Integer, Integer -> Boolean
   on-ring (r) (x) (y) =
     x >= r.lr-x & x < r.lr-x + r.lr-w & y >= r.lr-y & y < r.lr-y + r.lr-h
-    & (x == r.lr-x | x == r.lr-x + r.lr-w - 1 | y == r.lr-y | y == r.lr-y + r.lr-h - 1)
+    & (x < r.lr-x + cf-band | x >= r.lr-x + r.lr-w - cf-band | y < r.lr-y + cf-band | y >= r.lr-y + r.lr-h - cf-band)
+
+  cf-ring-area : LayoutRect -> Integer
+  cf-ring-area (r) = r.lr-w * r.lr-h - box-clamp0 (r.lr-w - 2 * cf-band) * box-clamp0 (r.lr-h - 2 * cf-band)
 
   count-ring : Integer, Integer, LayoutRect, Integer, Integer -> Integer
   count-ring (a) (b) (r) (i) (acc) =
@@ -85,8 +80,8 @@ Section: Main
       in let in2 = count-ring base subj ring2 0 0
       in let b = widget-button "b" "OK"
       in act
-        print-line-uni ("focused and hovered draws a ring: " & show all1 & " pixels, all on it: " & yn (all1 > 0 & in1 == all1))
-        print-line-uni ("CONTROL, focused alone paints the focused slot, not a ring: " & yn (all2 > in2))
+        print-line-uni ("focused and hovered draws a ring: " & show all1 & " pixels, all on it: " & yn (all1 > 0 & all1 == cf-ring-area ring & in1 == all1))
+        print-line-uni ("CONTROL, focused alone also paints the focused slot: " & yn (all2 > in2))
         print-line-uni ("hovered and focused resolve to hover: " & yn (widget-state-of (widget-set-flags b (flag-hovered + flag-focused)) == state-hover))
         print-line-uni ("disabled wins over pressed: " & yn (widget-state-of (widget-set-flags b (flag-disabled + flag-pressed)) == state-disabled))
         print-line-uni ("pressed wins over hovered: " & yn (widget-state-of (widget-set-flags b (flag-pressed + flag-hovered)) == state-pressed))

@@ -1,0 +1,95 @@
+Chapter: MusicLMLoad
+  cites Spark chapter BrowserMusicLM
+  cites Spark chapter MusicT5Load
+
+ We say:
+
+  lm-shape : List StTensorMeta, Text, List Integer -> Boolean
+  lm-shape (ts) (name) (shape) =
+    let t = lt5-meta ts name 0
+    in t.stm-dtype == st-dtype-f16 & el-shape-equal (t.stm-shape) shape 0
+
+  lm-block-shapes : List StTensorMeta, Integer, Integer, Integer -> Boolean
+  lm-block-shapes (ts) (dim) (layers) (i) =
+    if i >= layers then True
+    else let p = "transformer.layers." & show i & "."
+    in lm-shape ts (p & "self_attn.in_proj_weight") [dim * 3, dim]
+       & lm-shape ts (p & "self_attn.out_proj.weight") [dim, dim]
+       & lm-shape ts (p & "cross_attention.in_proj_weight") [dim * 3, dim]
+       & lm-shape ts (p & "cross_attention.out_proj.weight") [dim, dim]
+       & lm-shape ts (p & "linear1.weight") [dim * 4, dim]
+       & lm-shape ts (p & "linear2.weight") [dim, dim * 4]
+       & lm-shape ts (p & "norm1.weight") [dim] & lm-shape ts (p & "norm1.bias") [dim]
+       & lm-shape ts (p & "norm2.weight") [dim] & lm-shape ts (p & "norm2.bias") [dim]
+       & lm-shape ts (p & "norm_cross.weight") [dim] & lm-shape ts (p & "norm_cross.bias") [dim]
+       & lm-block-shapes ts dim layers (i + 1)
+
+  lm-book-shapes : List StTensorMeta, Integer, Integer -> Boolean
+  lm-book-shapes (ts) (dim) (i) = if i >= 4 then True else lm-shape ts ("emb." & show i & ".weight") [2049, dim] & lm-shape ts ("linears." & show i & ".weight") [2048, dim] & lm-book-shapes ts dim (i + 1)
+
+  lm-refuse : MusicLM, Text, (Text -> Integer) -> Integer
+  lm-refuse (w) (why) (refuse) = let f = bt5-close (w.ml-weights) in refuse why
+
+  lm-uploaded : Text, List StTensorMeta, Integer, Integer, MusicLM, (MusicLM -> Integer), (Text -> Integer), Text -> Integer
+  lm-uploaded (file) (ts) (i) (part) (w) (ready) (refuse) (result) =
+    if text-contains result "\"ok\":true" then lm-upload file ts i part w ready refuse else lm-refuse w ("MusicGen LM upload failed: " & result) refuse
+
+  lm-upload : Text, List StTensorMeta, Integer, Integer, MusicLM, (MusicLM -> Integer), (Text -> Integer) -> Integer
+  lm-upload (file) (ts) (i) (part) (w) (ready) (refuse) =
+    if i >= list-length ts then ready w
+    else let t = list-at ts i
+    in if text-starts-with (t.stm-name) "condition_provider." then lm-upload file ts (i + 1) 0 w ready refuse
+    else let split = text-ends-with (t.stm-name) "in_proj_weight"
+    in let count = (t.stm-offset-end - t.stm-offset-start) / (if split then 6 else 2)
+    in let vector = t.stm-ndim == 1
+    in let bytes = count * (if vector then 4 else 2)
+    in let name = t.stm-name & (if split then "/" & show part else "")
+    in let h = gpu-buf-alloc bytes
+    in let weights = w.ml-weights
+    in let next = MusicLM { ml-layers = w.ml-layers, ml-weights = MusicT5Model { t5m-names = list-push (weights.t5m-names) name, t5m-handles = list-push (weights.t5m-handles) h, t5m-zero = weights.t5m-zero, t5m-width = weights.t5m-width } }
+    in if h == 0 | t.stm-dtype /= st-dtype-f16 then lm-refuse next "MusicGen LM allocation or dtype failed" refuse
+    else gpu-buf-upload-then h 0 file (t.stm-offset-start + (if split then part * count * 2 else 0)) count gpu-dt-f16 (if vector then gpu-dt-f32 else gpu-dt-f16) (\r -> lm-uploaded file ts (if split & part < 2 then i else i + 1) (if split & part < 2 then part + 1 else 0) next ready refuse r)
+
+  lm-bind : Text, List StTensorMeta, (MusicLM -> Integer), (Text -> Integer) -> Integer
+  lm-bind (file) (ts) (ready) (refuse) =
+    let first = lt5-meta ts "emb.0.weight" 0
+    in if first.stm-ndim /= 2 then refuse "MusicGen LM embeddings are missing"
+    else let dim = list-at (first.stm-shape) 1
+    in let layers = if dim == 1024 then 24 else if dim == 1536 then 48 else 0
+    in let valid = layers > 0 & lm-book-shapes ts dim 0 & lm-block-shapes ts dim layers 0 & lm-shape ts "out_norm.weight" [dim] & lm-shape ts "out_norm.bias" [dim]
+    in if valid == False then refuse "Checkpoint does not have MusicGen small or medium LM shapes"
+    else let zero = gpu-buf-alloc (dim * 16)
+    in if zero == 0 then refuse "MusicGen LM zero-bias allocation failed"
+    else lm-upload file ts 0 0 (MusicLM { ml-layers = layers, ml-weights = MusicT5Model { t5m-names = [], t5m-handles = [], t5m-zero = zero, t5m-width = dim } }) ready refuse
+
+  lm-parsed : Text, List Text, List Integer, (MusicLM -> Integer), (Text -> Integer), Text -> Integer
+  lm-parsed (file) (names) (starts) (ready) (refuse) (bytes) =
+    let result = torch-zip-read (el-bytes bytes) names starts
+    in if result.tzf-why /= "" then refuse (result.tzf-why) else lm-bind file ((result.tzf-file).st-tensors) ready refuse
+
+  lm-pickle : Text, List TzEntry, List Text, List Integer, Integer, (MusicLM -> Integer), (Text -> Integer) -> Integer
+  lm-pickle (file) (es) (names) (starts) (i) (ready) (refuse) =
+    if i >= list-length es then refuse "MusicGen checkpoint has no data.pkl"
+    else let e = list-at es i
+    in if text-ends-with (e.te-name) "/data.pkl" then file-read-then file (list-at starts i) (e.te-size) (\r -> lm-parsed file names starts ready refuse r)
+    else lm-pickle file es names starts (i + 1) ready refuse
+
+  lm-starts : Text, List TzEntry, Integer, List Text, List Integer, (MusicLM -> Integer), (Text -> Integer) -> Integer
+  lm-starts (file) (es) (i) (names) (starts) (ready) (refuse) =
+    if i >= list-length es then lm-pickle file es names starts 0 ready refuse
+    else let e = list-at es i
+    in file-read-then file (e.te-local) 30 (\r -> lm-starts file es (i + 1) (list-push names (e.te-name)) (list-push starts (tz-data-at (el-bytes r) (e.te-local))) ready refuse)
+
+  lm-directory : Text, Integer, (MusicLM -> Integer), (Text -> Integer), Text -> Integer
+  lm-directory (file) (count) (ready) (refuse) (bytes) = lm-starts file (tz-entries (el-bytes bytes) 0 count []) 0 [] [] ready refuse
+
+  lm-tail : Text, Integer, (MusicLM -> Integer), (Text -> Integer), Text -> Integer
+  lm-tail (file) (off) (ready) (refuse) (bytes) =
+    let span = tz-directory-span (el-bytes bytes) off
+    in if list-length span /= 3 then refuse "MusicGen checkpoint has no zip directory"
+    else file-read-then file (list-at span 0) (list-at span 1) (\r -> lm-directory file (list-at span 2) ready refuse r)
+
+  music-lm-load : Text, Integer, (MusicLM -> Integer), (Text -> Integer) -> Integer
+  music-lm-load (file) (size) (ready) (refuse) =
+    let n = if size < 65557 then size else 65557
+    in file-read-then file (size - n) n (\r -> lm-tail file (size - n) ready refuse r)

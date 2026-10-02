@@ -1,0 +1,41 @@
+Chapter: MusicT5TokenizerArm
+  cites AI chapter T5Tokenizer
+  cites Spark chapter MusicT5Tokenizer
+  cites Spark chapter EncodecLoad
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  mt-heap-fill : Integer, List Integer, Integer -> Integer
+  mt-heap-fill (a) (bs) (i) = if i >= list-length bs then a else let w = poke-byte a i (list-at bs i) in mt-heap-fill a bs (i + 1)
+
+  mt-heap : List Integer -> Integer
+  mt-heap (bs) = mt-heap-fill (alloc-bytes (list-length bs + 8)) bs 0
+
+  mt-join : List Integer, Integer, Text -> Text
+  mt-join (xs) (i) (acc) = if i >= list-length xs then acc else mt-join xs (i + 1) (acc & (if i == 0 then "" else ",") & show (list-at xs i))
+
+  mt-cases : T5Tok, Integer -> Integer
+  mt-cases (tok) (i) =
+    if i >= text-to-integer (page-data "count") then state-set "done" 1
+    else let prompt = page-data ("prompt" & show i)
+    in let ids = music-t5-tokenize tok prompt
+    in let write = state-set-text ("ids" & show i) (mt-join ids 0 "")
+    in let mask = state-set ("mask" & show i) (if prompt == "" then 0 else 1)
+    in mt-cases tok (i + 1)
+
+  mt-read : Text -> Integer
+  mt-read (r) =
+    let bs = el-bytes r
+    in let tables = t5-json-tables (mt-heap bs) (list-length bs)
+    in if tables.tt-why /= "" then (let e = state-set-text "error" (tables.tt-why) in state-set "done" 1)
+    else mt-cases (t5-tok-load (tables.tt-vocab) (tables.tt-charsmap)) 0
+
+  mt-picked : Text -> Integer
+  mt-picked (r) = let obj = json-parse-obj r in file-read-then (json-obj-field obj "name") 0 (text-to-integer (json-obj-field obj "size")) mt-read
+
+  mt-pick : Text -> Integer
+  mt-pick (id) = pick-file-then ".json" mt-picked
+
+  opening : [Console] Integer
+  opening = let c = dom-on-click (dom-query "html") mt-pick in state-set "armed" 1

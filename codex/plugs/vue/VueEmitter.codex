@@ -4,7 +4,7 @@ Section: Sanitization
 
   vue-sanitize : Text -> Text
   vue-sanitize (name) =
-   text-replace (text-replace name "-" "_") "'" ""
+    text-replace (text-replace name "-" "_") "'" ""
 
  The IR spells a record field as `name/slot`, so a field name reaches the
  emitter as `a/0` and reads as a division in every target that has one.
@@ -12,27 +12,27 @@ Section: Sanitization
 
   vue-slash-pos : Text, Integer, Integer -> Integer
   vue-slash-pos (f) (i) (len) =
-   if i >= len then (-1)
-   else if char-to-text (char-at f i) == "/" then i
-   else vue-slash-pos f (i + 1) len
+    if i >= len then (-1)
+    else if char-to-text (char-at f i) == "/" then i
+    else vue-slash-pos f (i + 1) len
 
   vue-field : Text -> Text
   vue-field (f) =
-   let slash = vue-slash-pos f 0 (text-length f)
-   in if slash >= 0 then vue-sanitize (substring f 0 slash)
-      else vue-sanitize f
+    let slash = vue-slash-pos f 0 (text-length f)
+    in if slash >= 0 then vue-sanitize (substring f 0 slash)
+    else vue-sanitize f
 
   vue-escape : Text -> Text
   vue-escape (s) =
-   let s1 = text-replace s "\\" "\\\\"
-   in let s2 = text-replace s1 "\"" "\\\""
-   in let s3 = text-replace s2 "\n" "\\n"
-   in s3
+    let s1 = text-replace s "\\" "\\\\"
+    in let s2 = text-replace s1 "\"" "\\\""
+    in let s3 = text-replace s2 "\n" "\\n"
+    in s3
 
   vue-indent : Integer -> Text
   vue-indent (n) =
-   if n <= 0 then ""
-   else "  " & vue-indent (n - 1)
+    if n <= 0 then ""
+    else "  " & vue-indent (n - 1)
 
 Section: Arity Map
 
@@ -44,108 +44,116 @@ Section: Arity Map
 
   bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
   bsearch-arity-pos (entries) (name) (lo) (hi) =
-   if lo >= hi then lo
-   else let mid = lo + (hi - lo) / 2
-   in let mid-name = (list-at entries mid).name
-   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
-      else bsearch-arity-pos entries name (mid + 1) hi
+    if lo >= hi then lo
+    else let mid = lo + (hi - lo) / 2
+    in let mid-name = (list-at entries mid).name
+    in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+    else bsearch-arity-pos entries name (mid + 1) hi
 
   sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
   sorted-insert-arity (xs) (e) =
-   let len = list-length xs
-   in let pos = bsearch-arity-pos xs (e.name) 0 len
-   in list-insert-at xs pos e
+    let len = list-length xs
+    in let pos = bsearch-arity-pos xs (e.name) 0 len
+    in list-insert-at xs pos e
 
   build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
   build-arity-map (defs) (i) (acc) =
-   if i == list-length defs then acc
-   else let d = list-at defs i
-   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
-    name = d.name,
-    arity = __narrow (list-length (d.params)),
-    generic-count = 0
-   }))
+    if i == list-length defs then acc
+    else let d = list-at defs i
+    in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+     name = d.name,
+     arity = __narrow (list-length (d.params)),
+     generic-count = 0
+    }))
 
   lookup-arity : List ArityEntry, Text -> Integer
   lookup-arity (entries) (name) =
-   let len = list-length entries
-   in let pos = bsearch-arity-pos entries name 0 len
-   in if pos >= len then 0 - 1
-      else let e = list-at entries pos
-      in if e.name == name then e.arity else 0 - 1
+    let len = list-length entries
+    in let pos = bsearch-arity-pos entries name 0 len
+    in if pos >= len then 0 - 1
+    else let e = list-at entries pos
+    in if e.name == name then e.arity else 0 - 1
 
 Section: Expression Emission
 
   emit-vue-name : Text, List ArityEntry -> Text
   emit-vue-name (n) (arities) =
-   if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then vue-sanitize n
-   else let ar = lookup-arity arities n
-   in if ar == 0 then vue-sanitize n & "()"
-      else if ar >= 2 then emit-vue-partial-wrappers 0 ar & vue-sanitize n & "(" & emit-vue-partial-params 0 ar & ")"
-      else vue-sanitize n
+    if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then vue-sanitize n
+    else let ar = lookup-arity arities n
+    in if ar == 0 then vue-sanitize n & "()"
+    else if ar >= 2 then
+      emit-vue-partial-wrappers 0 ar & vue-sanitize n & "(" & emit-vue-partial-params 0 ar & ")"
+    else vue-sanitize n
 
   emit-vue-lambda-params : List IRParam, Integer -> Text
   emit-vue-lambda-params (params) (i) =
-   if i == list-length params then ""
-   else "(" & vue-sanitize (list-at params i).name & ") => " & emit-vue-lambda-params params (i + 1)
+    if i == list-length params then ""
+    else
+      "(" & vue-sanitize (list-at params i).name & ") => " & emit-vue-lambda-params params (i + 1)
 
   is-upper-letter : Integer -> Boolean
   is-upper-letter (code) =
-   if code >= char-code 'E' then code <= char-code 'Z'
-   else False
+    if code >= char-code 'E' then code <= char-code 'Z'
+    else False
 
   prelude-arities : Text -> List ArityEntry
   prelude-arities (src) = prelude-scan (text-split src "function ") 1 []
 
   prelude-scan : List Text, Integer, List ArityEntry -> List ArityEntry
   prelude-scan (parts) (i) (acc) =
-   if i >= list-length parts then acc
-   else prelude-scan parts (i + 1) (sorted-insert-arity acc (prelude-entry (list-at parts i)))
+    if i >= list-length parts then acc
+    else prelude-scan parts (i + 1) (sorted-insert-arity acc (prelude-entry (list-at parts i)))
 
   prelude-entry : Text -> ArityEntry
   prelude-entry (part) =
-   let open = prelude-pos part "(" 0
-   in let close = prelude-pos part ")" open
-   in let params = substring part (open + 1) (close - open - 1)
-   in ArityEntry { name = prelude-name (substring part 0 open), arity = __narrow (if text-length params == 0 then 0 else list-length (text-split params ",")), generic-count = 0 }
+    let open = prelude-pos part "(" 0
+    in let close = prelude-pos part ")" open
+    in let params = substring part (open + 1) (close - open - 1)
+    in ArityEntry {
+      name = prelude-name (substring part 0 open),
+      arity = __narrow (if text-length params == 0 then 0 else list-length (text-split params ",")),
+      generic-count = 0
+    }
 
   prelude-pos : Text, Text, Integer -> Integer
   prelude-pos (s) (ch) (i) =
-   if i >= text-length s then i
-   else if char-to-text (char-at s i) == ch then i
-   else prelude-pos s ch (i + 1)
+    if i >= text-length s then i
+    else if char-to-text (char-at s i) == ch then i
+    else prelude-pos s ch (i + 1)
 
   prelude-name : Text -> Text
   prelude-name (n) =
-   if text-starts-with n "__" then n else text-replace n "_" "-"
+    if text-starts-with n "__" then n else text-replace n "_" "-"
 
   emit-vue-expr : IRExpr, List ArityEntry, Integer -> Text
   emit-vue-expr (e) (arities) (indent) =
-   when e
-    is IrIntLit (n) (sp) -> show n & "n"
-    is IrNumLit (n) (sp) -> show n
-    is IrTextLit (s) (sp) -> "\"" & vue-escape s & "\""
-    is IrBoolLit (b) (sp) -> if b then "true" else "false"
-    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
-    is IrName (n) (ty) (sp) -> emit-vue-name n arities
-    is IrBinary (op) (l) (r) (ty) (sp) -> emit-vue-binary op l r arities indent
-    is IrNegate (x) (nty) (sp) -> "(-(" & emit-vue-expr x arities indent & "))"
-    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-vue-expr c arities indent & " ? " & emit-vue-expr t arities indent & " : " & emit-vue-expr el arities indent & ")"
-    is IrLet (name) (ty) (val) (body) (sp) -> "(() => { const " & vue-sanitize name & " = " & emit-vue-expr val arities indent & "; return " & emit-vue-expr body arities indent & "; })()"
-    is IrApply (f) (a) (ty) (sp) -> emit-vue-apply e arities indent
-    is IrLambda (params) (body) (ty) (sp) -> if list-length params == 0 then "(() => " & emit-vue-expr body arities indent & ")" else "(" & emit-vue-lambda-params params 0 & emit-vue-expr body arities indent & ")"
-    is IrList (elems) (ty) (sp) -> "[" & emit-vue-list-elems elems arities indent 0 & "]"
-    is IrMatch (scrut) (branches) (ty) (sp) -> emit-vue-match scrut branches arities indent
-    is IrAct (stmts) (ty) (sp) -> emit-vue-act stmts arities indent
-    is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-vue-record-fields fields arities indent 0 & " }"
-    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-vue-expr rec arities indent & "." & vue-field field
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-vue-expr rec arities indent & "." & vue-field field & " = " & emit-vue-expr val arities indent & ")"
-    is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-vue-expr body arities indent & ")"
-    is IrAwait (task) (ty) (sp) -> "(await " & emit-vue-expr task arities indent & ")"
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-vue-expr body arities indent
-    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-vue-expr body arities indent
-    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-vue-act body arities indent
-    is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & vue-escape msg & "\"); })()"
+    when e
+     is IrIntLit (n) (sp) -> show n & "n"
+     is IrNumLit (n) (sp) -> show n
+     is IrTextLit (s) (sp) -> "\"" & vue-escape s & "\""
+     is IrBoolLit (b) (sp) -> if b then "true" else "false"
+     is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+     is IrName (n) (ty) (sp) -> emit-vue-name n arities
+     is IrBinary (op) (l) (r) (ty) (sp) -> emit-vue-binary op l r arities indent
+     is IrNegate (x) (nty) (sp) -> "(-(" & emit-vue-expr x arities indent & "))"
+     is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-vue-expr c arities indent & " ? " & emit-vue-expr t arities indent & " : " & emit-vue-expr el arities indent & ")"
+     is IrLet (name) (ty) (val) (body) (sp) -> "(() => { const " & vue-sanitize name & " = " & emit-vue-expr val arities indent & "; return " & emit-vue-expr body arities indent & "; })()"
+     is IrApply (f) (a) (ty) (sp) -> emit-vue-apply e arities indent
+     is IrLambda (params) (body) (ty) (sp) -> if list-length params == 0 then
+       "(() => " & emit-vue-expr body arities indent & ")"
+     else "(" & emit-vue-lambda-params params 0 & emit-vue-expr body arities indent & ")"
+     is IrList (elems) (ty) (sp) -> "[" & emit-vue-list-elems elems arities indent 0 & "]"
+     is IrMatch (scrut) (branches) (ty) (sp) -> emit-vue-match scrut branches arities indent
+     is IrAct (stmts) (ty) (sp) -> emit-vue-act stmts arities indent
+     is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-vue-record-fields fields arities indent 0 & " }"
+     is IrFieldAccess (rec) (field) (ty) (sp) -> emit-vue-expr rec arities indent & "." & vue-field field
+     is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-vue-expr rec arities indent & "." & vue-field field & " = " & emit-vue-expr val arities indent & ")"
+     is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-vue-expr body arities indent & ")"
+     is IrAwait (task) (ty) (sp) -> "(await " & emit-vue-expr task arities indent & ")"
+     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-vue-expr body arities indent
+     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-vue-expr body arities indent
+     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-vue-act body arities indent
+     is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & vue-escape msg & "\"); })()"
 
 Section: Binary Operators
 
@@ -158,40 +166,40 @@ Section: Binary Operators
 
   vue-int-refuse : Text, Text, Text -> Text
   vue-int-refuse (sym) (lhs) (rhs) =
-   "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
+    "((_v) => { if (BigInt.asIntN(64, _v) !== _v) { throw new Error(\"CODEX_TRAP_integer_overflow\"); } return _v; })(" & lhs & " " & sym & " " & rhs & ")"
 
   emit-vue-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   emit-vue-binary (op) (l) (r) (arities) (indent) =
-   let lhs = emit-vue-expr l arities indent
-   in let rhs = emit-vue-expr r arities indent
-   in when op
-    is IrAddInt -> vue-int-refuse "+" lhs rhs
-    is IrSubInt -> vue-int-refuse "-" lhs rhs
-    is IrMulInt -> vue-int-refuse "*" lhs rhs
-    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
-    is IrRemInt -> "(" & lhs & " % " & rhs & ")"
-    is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
-    is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
-    is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
-    is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
-    is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
-    is IrAddVec -> lhs & ".map((v, i) => v + " & rhs & "[i])"
-    is IrSubVec -> lhs & ".map((v, i) => v - " & rhs & "[i])"
-    is IrMulVec -> lhs & ".map((v, i) => v * " & rhs & "[i])"
-    is IrDivVec -> lhs & ".map((v, i) => v / " & rhs & "[i])"
-    is IrEq -> "(" & lhs & " === " & rhs & ")"
-    is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
-    is IrLt | IrLtVec -> "(" & lhs & " < " & rhs & ")"
-    is IrGt | IrGtVec -> "(" & lhs & " > " & rhs & ")"
-    is IrLtEq | IrLtEqVec -> "(" & lhs & " <= " & rhs & ")"
-    is IrGtEq | IrGtEqVec -> "(" & lhs & " >= " & rhs & ")"
-    is IrApproxEq -> "(" & lhs & " === " & rhs & ")"
-    is IrApproxEqExact -> "(" & lhs & " === " & rhs & ")"
-    is IrAnd -> "(" & lhs & " && " & rhs & ")"
-    is IrOr -> "(" & lhs & " || " & rhs & ")"
-    is IrAppendText -> "(" & lhs & " + " & rhs & ")"
-    is IrAppendList -> "([..." & lhs & ", ..." & rhs & "])"
-    is IrConsList -> "[" & lhs & ", ..." & rhs & "]"
+    let lhs = emit-vue-expr l arities indent
+    in let rhs = emit-vue-expr r arities indent
+    in when op
+     is IrAddInt -> vue-int-refuse "+" lhs rhs
+     is IrSubInt -> vue-int-refuse "-" lhs rhs
+     is IrMulInt -> vue-int-refuse "*" lhs rhs
+     is IrDivInt -> "(" & lhs & " / " & rhs & ")"
+     is IrRemInt -> "(" & lhs & " % " & rhs & ")"
+     is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
+     is IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "(" & lhs & " + " & rhs & ")"
+     is IrSubNum | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "(" & lhs & " - " & rhs & ")"
+     is IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "(" & lhs & " * " & rhs & ")"
+     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "(" & lhs & " / " & rhs & ")"
+     is IrAddVec -> lhs & ".map((v, i) => v + " & rhs & "[i])"
+     is IrSubVec -> lhs & ".map((v, i) => v - " & rhs & "[i])"
+     is IrMulVec -> lhs & ".map((v, i) => v * " & rhs & "[i])"
+     is IrDivVec -> lhs & ".map((v, i) => v / " & rhs & "[i])"
+     is IrEq -> "(" & lhs & " === " & rhs & ")"
+     is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
+     is IrLt | IrLtVec -> "(" & lhs & " < " & rhs & ")"
+     is IrGt | IrGtVec -> "(" & lhs & " > " & rhs & ")"
+     is IrLtEq | IrLtEqVec -> "(" & lhs & " <= " & rhs & ")"
+     is IrGtEq | IrGtEqVec -> "(" & lhs & " >= " & rhs & ")"
+     is IrApproxEq -> "(" & lhs & " === " & rhs & ")"
+     is IrApproxEqExact -> "(" & lhs & " === " & rhs & ")"
+     is IrAnd -> "(" & lhs & " && " & rhs & ")"
+     is IrOr -> "(" & lhs & " || " & rhs & ")"
+     is IrAppendText -> "(" & lhs & " + " & rhs & ")"
+     is IrAppendList -> "([..." & lhs & ", ..." & rhs & "])"
+     is IrConsList -> "[" & lhs & ", ..." & rhs & "]"
 
 Section: Apply and Helpers
 
@@ -202,86 +210,88 @@ Section: Apply and Helpers
 
   collect-apply-chain : IRExpr, List IRExpr -> FlatApply
   collect-apply-chain (e) (acc) =
-   when e
-    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
-    is otherwise -> FlatApply { root = e, args = acc }
+    when e
+     is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+     is otherwise -> FlatApply { root = e, args = acc }
 
   emit-vue-apply : IRExpr, List ArityEntry, Integer -> Text
   emit-vue-apply (e) (arities) (indent) =
-   let chain = collect-apply-chain e []
-   in let func = emit-vue-expr (chain.root) arities indent
-   in when (chain.root)
-    is IrName (n) (ty) (sp) ->
-     if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then vue-sanitize n & "(" & emit-vue-apply-args (chain.args) arities indent 0 & ")"
-     else let ar = lookup-arity arities n
-     in if ar < 0 then vue-sanitize n & emit-vue-apply-rest (chain.args) arities indent 0
-        else if ar == 0 then vue-sanitize n & "()" & emit-vue-apply-rest (chain.args) arities indent 0
-        else emit-vue-apply-split (vue-sanitize n) (chain.args) ar arities indent
-    is otherwise -> "(" & func & ")" & emit-vue-apply-rest (chain.args) arities indent 0
+    let chain = collect-apply-chain e []
+    in let func = emit-vue-expr (chain.root) arities indent
+    in when (chain.root)
+     is IrName (n) (ty) (sp) ->
+      if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then
+        vue-sanitize n & "(" & emit-vue-apply-args (chain.args) arities indent 0 & ")"
+      else let ar = lookup-arity arities n
+      in if ar < 0 then vue-sanitize n & emit-vue-apply-rest (chain.args) arities indent 0
+      else if ar == 0 then vue-sanitize n & "()" & emit-vue-apply-rest (chain.args) arities indent 0
+      else emit-vue-apply-split (vue-sanitize n) (chain.args) ar arities indent
+     is otherwise -> "(" & func & ")" & emit-vue-apply-rest (chain.args) arities indent 0
 
   emit-vue-apply-split : Text, List IRExpr, Integer, List ArityEntry, Integer -> Text
   emit-vue-apply-split (func) (args) (ar) (arities) (indent) =
-   if ar > 0 & list-length args > ar
-   then func & "(" & emit-vue-apply-args (list-take args ar) arities indent 0 & ")" & emit-vue-apply-rest (list-drop args ar) arities indent 0
-   else if ar > 0 & list-length args > 0 & list-length args < ar
-   then emit-vue-partial-wrappers 0 (ar - list-length args) & func & "(" & emit-vue-apply-args args arities indent 0 & ", " & emit-vue-partial-params 0 (ar - list-length args) & ")"
-   else func & "(" & emit-vue-apply-args args arities indent 0 & ")"
+    if ar > 0 & list-length args > ar then
+      func & "(" & emit-vue-apply-args (list-take args ar) arities indent 0 & ")" & emit-vue-apply-rest (list-drop args ar) arities indent 0
+    else if ar > 0 & list-length args > 0 & list-length args < ar then
+      emit-vue-partial-wrappers 0 (ar - list-length args) & func & "(" & emit-vue-apply-args args arities indent 0 & ", " & emit-vue-partial-params 0 (ar - list-length args) & ")"
+    else func & "(" & emit-vue-apply-args args arities indent 0 & ")"
 
   emit-vue-partial-wrappers : Integer, Integer -> Text
   emit-vue-partial-wrappers (i) (count) =
-   if i == count then ""
-   else "(_p" & show i & "_) => " & emit-vue-partial-wrappers (i + 1) count
+    if i == count then ""
+    else "(_p" & show i & "_) => " & emit-vue-partial-wrappers (i + 1) count
 
   emit-vue-partial-params : Integer, Integer -> Text
   emit-vue-partial-params (i) (count) =
-   if i == count then ""
-   else (if i > 0 then ", " else "") & "_p" & show i & "_" & emit-vue-partial-params (i + 1) count
+    if i == count then ""
+    else (if i > 0 then ", " else "") & "_p" & show i & "_" & emit-vue-partial-params (i + 1) count
 
   emit-vue-apply-rest : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-vue-apply-rest (args) (arities) (indent) (i) =
-   if i == list-length args then ""
-   else "(" & emit-vue-expr (list-at args i) arities indent & ")" & emit-vue-apply-rest args arities indent (i + 1)
+    if i == list-length args then ""
+    else
+      "(" & emit-vue-expr (list-at args i) arities indent & ")" & emit-vue-apply-rest args arities indent (i + 1)
 
   emit-vue-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-vue-apply-args (args) (arities) (indent) (i) =
-   if i == list-length args then ""
-   else let sep = if i > 0 then ", " else ""
-   in sep & emit-vue-expr (list-at args i) arities indent & emit-vue-apply-args args arities indent (i + 1)
+    if i == list-length args then ""
+    else let sep = if i > 0 then ", " else ""
+    in sep & emit-vue-expr (list-at args i) arities indent & emit-vue-apply-args args arities indent (i + 1)
 
   emit-vue-params : List IRParam, Integer -> Text
   emit-vue-params (params) (i) =
-   if i == list-length params then ""
-   else let sep = if i > 0 then ", " else ""
-   in sep & vue-sanitize (list-at params i).name & emit-vue-params params (i + 1)
+    if i == list-length params then ""
+    else let sep = if i > 0 then ", " else ""
+    in sep & vue-sanitize (list-at params i).name & emit-vue-params params (i + 1)
 
   emit-vue-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-vue-list-elems (elems) (arities) (indent) (i) =
-   if i == list-length elems then ""
-   else let sep = if i > 0 then ", " else ""
-   in sep & emit-vue-expr (list-at elems i) arities indent & emit-vue-list-elems elems arities indent (i + 1)
+    if i == list-length elems then ""
+    else let sep = if i > 0 then ", " else ""
+    in sep & emit-vue-expr (list-at elems i) arities indent & emit-vue-list-elems elems arities indent (i + 1)
 
   emit-vue-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
   emit-vue-record-fields (fields) (arities) (indent) (i) =
-   if i == list-length fields then ""
-   else let f = list-at fields i
-   in ", " & vue-sanitize (f.name) & ": " & emit-vue-expr (f.value) arities indent & emit-vue-record-fields fields arities indent (i + 1)
+    if i == list-length fields then ""
+    else let f = list-at fields i
+    in ", " & vue-sanitize (f.name) & ": " & emit-vue-expr (f.value) arities indent & emit-vue-record-fields fields arities indent (i + 1)
 
 Section: Match
 
   emit-vue-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
   emit-vue-match (scrut) (branches) (arities) (indent) =
-   "(() => { const _s = " & emit-vue-expr scrut arities indent & "; " & emit-vue-branches branches arities indent 0 & " })()"
+    "(() => { const _s = " & emit-vue-expr scrut arities indent & "; " & emit-vue-branches branches arities indent 0 & " })()"
 
   emit-vue-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
   emit-vue-branches (branches) (arities) (indent) (i) =
-   if i == list-length branches then "throw new Error('non-exhaustive match');"
-   else let b = list-at branches i
-   in let cond = emit-vue-pat-cond (b.pattern) "_s"
-   in let binds = emit-vue-pat-binds (b.pattern) "_s"
-   in let body = emit-vue-expr (b.body) arities indent
-   in let ret = if vue-guard-trivial (b.guard) then "return " & body & "; "
-                else "if (" & emit-vue-expr (b.guard) arities indent & ") { return " & body & "; } "
-   in "if (" & cond & ") { " & binds & ret & "} " & emit-vue-branches branches arities indent (i + 1)
+    if i == list-length branches then "throw new Error('non-exhaustive match');"
+    else let b = list-at branches i
+    in let cond = emit-vue-pat-cond (b.pattern) "_s"
+    in let binds = emit-vue-pat-binds (b.pattern) "_s"
+    in let body = emit-vue-expr (b.body) arities indent
+    in let ret = if vue-guard-trivial (b.guard) then "return " & body & "; "
+    else "if (" & emit-vue-expr (b.guard) arities indent & ") { return " & body & "; } "
+    in "if (" & cond & ") { " & binds & ret & "} " & emit-vue-branches branches arities indent (i + 1)
 
  A guarded arm must not chain with else: the guard needs the pattern
  bindings, which sit inside the block, so a failed guard has to fall OUT
@@ -289,142 +299,146 @@ Section: Match
 
   vue-guard-trivial : IRExpr -> Boolean
   vue-guard-trivial (g) =
-   when g
-    is IrBoolLit (v) (sp) -> v
-    is otherwise -> False
+    when g
+     is IrBoolLit (v) (sp) -> v
+     is otherwise -> False
 
   emit-vue-pat-cond : IRPat, Text -> Text
   emit-vue-pat-cond (p) (scrut) =
-   when p
-    is IrVarPat (name) (ty) (sp) -> "true"
-    is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
-    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
-    is IrWildPat (sp) -> "true"
-    is IrVecPat (pats) (ty) (sp) -> "true"
+    when p
+     is IrVarPat (name) (ty) (sp) -> "true"
+     is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
+     is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+     is IrWildPat (sp) -> "true"
+     is IrVecPat (pats) (ty) (sp) -> "true"
 
   emit-vue-pat-binds : IRPat, Text -> Text
   emit-vue-pat-binds (p) (scrut) =
-   when p
-    is IrVarPat (name) (ty) (sp) -> "const " & vue-sanitize name & " = " & scrut & "; "
-    is IrLitPat (text) (ty) (sp) -> ""
-    is IrCtorPat (name) (subs) (ty) (sp) -> emit-vue-ctor-binds subs scrut 0
-    is IrWildPat (sp) -> ""
-    is IrVecPat (pats) (ty) (sp) -> ""
+    when p
+     is IrVarPat (name) (ty) (sp) -> "const " & vue-sanitize name & " = " & scrut & "; "
+     is IrLitPat (text) (ty) (sp) -> ""
+     is IrCtorPat (name) (subs) (ty) (sp) -> emit-vue-ctor-binds subs scrut 0
+     is IrWildPat (sp) -> ""
+     is IrVecPat (pats) (ty) (sp) -> ""
 
   emit-vue-ctor-binds : List IRPat, Text, Integer -> Text
   emit-vue-ctor-binds (subs) (scrut) (i) =
-   if i == list-length subs then ""
-   else let sub = list-at subs i
-   in let access = scrut & "._" & show i
-   in emit-vue-pat-binds sub access & emit-vue-ctor-binds subs scrut (i + 1)
+    if i == list-length subs then ""
+    else let sub = list-at subs i
+    in let access = scrut & "._" & show i
+    in emit-vue-pat-binds sub access & emit-vue-ctor-binds subs scrut (i + 1)
 
 Section: Act Blocks
 
   emit-vue-act : List IRActStmt, List ArityEntry, Integer -> Text
   emit-vue-act (stmts) (arities) (indent) =
-   "(() => {\n" & emit-vue-act-stmts stmts arities (indent + 1) 0 & vue-indent indent & "})()"
+    "(() => {\n" & emit-vue-act-stmts stmts arities (indent + 1) 0 & vue-indent indent & "})()"
 
   emit-vue-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
   emit-vue-act-stmts (stmts) (arities) (indent) (i) =
-   if i == list-length stmts then ""
-   else let s = list-at stmts i
-   in let is-last = i == list-length stmts - 1
-   in when s
-    is IrDoBind (name) (ty) (val) (sp) -> vue-indent indent & "const " & vue-sanitize name & " = " & emit-vue-expr val arities indent & ";\n" & emit-vue-act-stmts stmts arities indent (i + 1)
-    is IrDoExec (e) (sp) ->
-     if is-last then vue-indent indent & "return " & emit-vue-expr e arities indent & ";\n"
-     else vue-indent indent & emit-vue-expr e arities indent & ";\n" & emit-vue-act-stmts stmts arities indent (i + 1)
+    if i == list-length stmts then ""
+    else let s = list-at stmts i
+    in let is-last = i == list-length stmts - 1
+    in when s
+     is IrDoBind (name) (ty) (val) (sp) -> vue-indent indent & "const " & vue-sanitize name & " = " & emit-vue-expr val arities indent & ";\n" & emit-vue-act-stmts stmts arities indent (i + 1)
+     is IrDoExec (e) (sp) ->
+      if is-last then vue-indent indent & "return " & emit-vue-expr e arities indent & ";\n"
+      else
+        vue-indent indent & emit-vue-expr e arities indent & ";\n" & emit-vue-act-stmts stmts arities indent (i + 1)
 
 Section: Type Definitions
 
   emit-vue-type-def : ATypeDef -> Text
   emit-vue-type-def (td) =
-   when td
-    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
-     "function " & vue-sanitize (name.value) & "(fields: any): any { return { _type: \"" & name.value & "\", ...fields }; }\n"
-    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     emit-vue-variant-ctors ctors 0
-    is AUnitTypeDef (name) (unitbase) (s) -> ""
+    when td
+     is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+      "function " & vue-sanitize (name.value) & "(fields: any): any { return { _type: \"" & name.value & "\", ...fields }; }\n"
+     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+      emit-vue-variant-ctors ctors 0
+     is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-vue-variant-ctors : List AVariantCtorDef, Integer -> Text
   emit-vue-variant-ctors (ctors) (i) =
-   if i == list-length ctors then ""
-   else let c = list-at ctors i
-   in let n = list-length (c.fields)
-   in let ctor-text = if n == 0 then "const " & vue-sanitize (c.name.value) & ": any = { _tag: \"" & c.name.value & "\" };\n"
-      else "function " & vue-sanitize (c.name.value) & "(" & emit-vue-ctor-params n 0 & "): any { return { _tag: \"" & c.name.value & "\"" & emit-vue-ctor-fields n 0 & " }; }\n"
-   in ctor-text & emit-vue-variant-ctors ctors (i + 1)
+    if i == list-length ctors then ""
+    else let c = list-at ctors i
+    in let n = list-length (c.fields)
+    in let ctor-text = if n == 0 then
+      "const " & vue-sanitize (c.name.value) & ": any = { _tag: \"" & c.name.value & "\" };\n"
+    else
+      "function " & vue-sanitize (c.name.value) & "(" & emit-vue-ctor-params n 0 & "): any { return { _tag: \"" & c.name.value & "\"" & emit-vue-ctor-fields n 0 & " }; }\n"
+    in ctor-text & emit-vue-variant-ctors ctors (i + 1)
 
   emit-vue-ctor-params : Integer, Integer -> Text
   emit-vue-ctor-params (n) (i) =
-   if i == n then ""
-   else let sep = if i > 0 then ", " else ""
-   in sep & "_" & show i & ": any" & emit-vue-ctor-params n (i + 1)
+    if i == n then ""
+    else let sep = if i > 0 then ", " else ""
+    in sep & "_" & show i & ": any" & emit-vue-ctor-params n (i + 1)
 
   emit-vue-ctor-fields : Integer, Integer -> Text
   emit-vue-ctor-fields (n) (i) =
-   if i == n then ""
-   else ", _" & show i & ": _" & show i & emit-vue-ctor-fields n (i + 1)
+    if i == n then ""
+    else ", _" & show i & ": _" & show i & emit-vue-ctor-fields n (i + 1)
 
 Section: Definition Emission
 
   emit-vue-def : IRDef, List ArityEntry -> Text
   emit-vue-def (d) (arities) =
-   if text-length (d.name) == 0 then ""
-   else let sname = vue-sanitize (d.name)
-   in if list-length (d.params) == 0
-      then "function " & sname & "() {\n  return " & emit-vue-expr (d.body) arities 1 & ";\n}\n\n"
-      else "function " & sname & "(" & emit-vue-params (d.params) 0 & "): any {\n  return " & emit-vue-expr (d.body) arities 1 & ";\n}\n\n"
+    if text-length (d.name) == 0 then ""
+    else let sname = vue-sanitize (d.name)
+    in if list-length (d.params) == 0
+       then "function " & sname & "() {\n  return " & emit-vue-expr (d.body) arities 1 & ";\n}\n\n"
+    else
+      "function " & sname & "(" & emit-vue-params (d.params) 0 & "): any {\n  return " & emit-vue-expr (d.body) arities 1 & ";\n}\n\n"
 
   emit-vue-defs : List IRDef, Integer, List ArityEntry -> Text
   emit-vue-defs (defs) (i) (arities) =
-   if i == list-length defs then ""
-   else emit-vue-def (list-at defs i) arities & emit-vue-defs defs (i + 1) arities
+    if i == list-length defs then ""
+    else emit-vue-def (list-at defs i) arities & emit-vue-defs defs (i + 1) arities
 
   emit-vue-type-defs : List ATypeDef, Integer -> Text
   emit-vue-type-defs (tds) (i) =
-   if i == list-length tds then ""
-   else emit-vue-type-def (list-at tds i) & emit-vue-type-defs tds (i + 1)
+    if i == list-length tds then ""
+    else emit-vue-type-def (list-at tds i) & emit-vue-type-defs tds (i + 1)
 
 Section: Vue SFC Assembly
 
   emit-vue-chapter : IRChapter, List ATypeDef -> Text
   emit-vue-chapter (m) (type-defs) =
-   let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction negate(n: bigint): bigint { return -n; }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\n\n"
-   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
-   in let types-text = emit-vue-type-defs type-defs 0
-   in let defs-text = emit-vue-defs (m.defs) 0 arities
-   in let script = "<script setup lang=\"ts\">\nimport { ref, onMounted } from 'vue';\n\nconst output = ref<string[]>([]);\n\n" & builtins & types-text & defs-text & "onMounted(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n"
-   in let template = "<template>\n  <div class=\"app\">\n    <div v-for=\"(line, i) in output\" :key=\"i\">{{ line }}</div>\n  </div>\n</template>\n\n"
-   in let style = "<style scoped>\n.app { font-family: system-ui, sans-serif; padding: 1rem; }\n</style>\n"
-   in script & template & style
+    let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction negate(n: bigint): bigint { return -n; }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\n\n"
+    in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+    in let types-text = emit-vue-type-defs type-defs 0
+    in let defs-text = emit-vue-defs (m.defs) 0 arities
+    in let script = "<script setup lang=\"ts\">\nimport { ref, onMounted } from 'vue';\n\nconst output = ref<string[]>([]);\n\n" & builtins & types-text & defs-text & "onMounted(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n"
+    in let template = "<template>\n  <div class=\"app\">\n    <div v-for=\"(line, i) in output\" :key=\"i\">{{ line }}</div>\n  </div>\n</template>\n\n"
+    in let style = "<style scoped>\n.app { font-family: system-ui, sans-serif; padding: 1rem; }\n</style>\n"
+    in script & template & style
 
   emit-vue-chapter-stream-head : IRChapter, List ATypeDef -> Text
   emit-vue-chapter-stream-head (m) (type-defs) =
-   let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction negate(n: bigint): bigint { return -n; }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\n\n"
-   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
-   in let types-text = emit-vue-type-defs type-defs 0
-   in let template = "<template>\n  <div class=\"app\">\n    <div v-for=\"(line, i) in output\" :key=\"i\">{{ line }}</div>\n  </div>\n</template>\n\n"
-   in let style = "<style scoped>\n.app { font-family: system-ui, sans-serif; padding: 1rem; }\n</style>\n"
-   in "<script setup lang=\"ts\">\nimport { ref, onMounted } from 'vue';\n\nconst output = ref<string[]>([]);\n\n" & builtins & types-text
+    let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction negate(n: bigint): bigint { return -n; }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\n\n"
+    in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+    in let types-text = emit-vue-type-defs type-defs 0
+    in let template = "<template>\n  <div class=\"app\">\n    <div v-for=\"(line, i) in output\" :key=\"i\">{{ line }}</div>\n  </div>\n</template>\n\n"
+    in let style = "<style scoped>\n.app { font-family: system-ui, sans-serif; padding: 1rem; }\n</style>\n"
+    in "<script setup lang=\"ts\">\nimport { ref, onMounted } from 'vue';\n\nconst output = ref<string[]>([]);\n\n" & builtins & types-text
 
   emit-vue-chapter-stream-tail : IRChapter, List ATypeDef -> Text
   emit-vue-chapter-stream-tail (m) (type-defs) =
-   let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction negate(n: bigint): bigint { return -n; }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\n\n"
-   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
-   in let types-text = emit-vue-type-defs type-defs 0
-   in let template = "<template>\n  <div class=\"app\">\n    <div v-for=\"(line, i) in output\" :key=\"i\">{{ line }}</div>\n  </div>\n</template>\n\n"
-   in let style = "<style scoped>\n.app { font-family: system-ui, sans-serif; padding: 1rem; }\n</style>\n"
-   in "onMounted(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n" & template & style
+    let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction negate(n: bigint): bigint { return -n; }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\n\n"
+    in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+    in let types-text = emit-vue-type-defs type-defs 0
+    in let template = "<template>\n  <div class=\"app\">\n    <div v-for=\"(line, i) in output\" :key=\"i\">{{ line }}</div>\n  </div>\n</template>\n\n"
+    in let style = "<style scoped>\n.app { font-family: system-ui, sans-serif; padding: 1rem; }\n</style>\n"
+    in "onMounted(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n" & template & style
 
   emit-vue-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
   emit-vue-chapter-stream-env (m) (type-defs) =
-   let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction negate(n: bigint): bigint { return -n; }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\n\n"
-   in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
-   in let types-text = emit-vue-type-defs type-defs 0
-   in let template = "<template>\n  <div class=\"app\">\n    <div v-for=\"(line, i) in output\" :key=\"i\">{{ line }}</div>\n  </div>\n</template>\n\n"
-   in let style = "<style scoped>\n.app { font-family: system-ui, sans-serif; padding: 1rem; }\n</style>\n"
-   in arities
+    let builtins = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { output.value.push(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction negate(n: bigint): bigint { return -n; }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\function char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\n\n"
+    in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
+    in let types-text = emit-vue-type-defs type-defs 0
+    in let template = "<template>\n  <div class=\"app\">\n    <div v-for=\"(line, i) in output\" :key=\"i\">{{ line }}</div>\n  </div>\n</template>\n\n"
+    in let style = "<style scoped>\n.app { font-family: system-ui, sans-serif; padding: 1rem; }\n</style>\n"
+    in arities
 
   emit-vue-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text
   emit-vue-chapter-stream-def (m) (v) (i) = emit-vue-def (list-at (m.defs) i) v

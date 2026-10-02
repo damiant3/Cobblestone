@@ -102,11 +102,21 @@ Section: Emitter
   json-escape-into : Text, Integer, Integer, List Text -> List Text
   json-escape-into (s) (i) (len) (acc) =
     if i >= len then acc
-    else let u = to-unicode (char-code (char-at s i))
-    in let piece = if u == 34 then
-      "\\\""
-    else if u == 92 then "\\\\" else if u == 10 then "\\n" else char-to-text (char-at s i)
-    in json-escape-into s (i + 1) len (list-push acc piece)
+    else let c = char-code-at s i
+    in let piece = if c == char-code-at "\"" 0 then "\\\""
+      else if c == char-code-at "\\" 0 then "\\\\"
+      else if c == char-code-at "\n" 0 then "\\n"
+      else if c == 0 then "\\u0000" else ""
+    in if piece /= "" then json-escape-into s (i + 1) len (list-push acc piece)
+    else let stop = json-plain-end s (i + 1) len
+    in json-escape-into s stop len (list-push acc (substring s i (stop - i)))
+
+  json-plain-end : Text, Integer, Integer -> Integer
+  json-plain-end (s) (i) (len) =
+    if i >= len then i
+    else let c = char-code-at s i
+    in if c == 0 | c == char-code-at "\n" 0 | c == char-code-at "\"" 0 | c == char-code-at "\\" 0 then i
+    else json-plain-end s (i + 1) len
 
   json-emit-array : List JsonValue, Integer, Integer, List Text -> List Text
   json-emit-array (items) (i) (len) (acc) =

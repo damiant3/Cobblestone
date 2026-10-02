@@ -8,6 +8,100 @@ left.**
 
 ## Standing hazards
 
+### EVIDENCE-JSON -- preserve SBOM string values
+
+| Source | Gap |
+|---|---|
+| `evidence/EvidencePackage.codex:498` | `ev-json-str` deletes quotation marks and omits backslash/control escaping. CycloneDX product/file text can be altered or produce invalid JSON. Use complete string serialization and test decoded-value preservation. Source census 2026-10-01, main 33668. |
+
+### HTML-NOISE-BANK -- exact words and job-local worker ownership
+
+Main 33680 adds `gpu-noise-bank-then`, which runs the packaged `sdxl-noise`
+Wasm module in a fresh worker. It transfers the native f32 bank, terminates
+the worker before the callback and uploads the bytes directly. Negative
+progress cancels; worker,
+shape, upload and timeout failures share the same cleanup. The page byte
+heap does not hold the tree. Physical memory reclamation remains a browser
+decision. `gpu-buf-copy-range` copies aligned, bounded bytes between distinct
+live buffers without passing the words through floating-point arithmetic.
+
+`node apps/diffusion/noise-bank.mjs <new-output-directory>` builds and runs the
+native witness and compares every Wasm word. Then run
+`node codex/plugs/html/arms/noise-bank.mjs <arm.html> <noise.wasm> <evidence-dir>`
+using the SdxlArm build in `docs/Designs/Active/Apps/InBrowserDiffusion.md`.
+The 21 fixtures pass native/Wasm/GPU byte equality (2026-10-01), including
+65536 values and 50 steps together. Repeated jobs and failure controls end
+with 39 created/terminated workers, zero live handles and unchanged page
+byte heap. The bridge retains O(bank bytes) transfer storage; Wasm work and
+arena storage follow the native tree. Each job releases arena ownership.
+
+### HTML-GPU-TRIM -- release pooled model storage
+
+Main 33426 adds `gpu-trim-then` in WebGpu/HtmlEmitter. At invocation it
+detaches the current free-buffer pool, submits pending work, then destroys
+that snapshot after queue completion. Active handles and buffers freed
+after invocation survive. The callback runs once, with empty text for
+success or error text. Close a model and await trim before loading another.
+`callback-once.mjs` passes 26 checks including snapshot ownership, no-device
+completion, rejection and throwing callbacks (2026-10-01). The diffusion
+chooser grade also switches SD1.5/SDXL/SD1.5 and ends with no active or
+pooled buffers. Trim uses O(pooled-buffer count) temporary references and
+destruction work; queued work determines wait time. Driver-reported memory
+need not fall immediately, and live buffers and shader caches remain.
+
+### HTML-RANDOM-INTEGER -- Integer results from browser primitives
+
+Fix main 33360 keeps `random-int` bounds and results as BigInt. Number
+results broke MusicGen's seeded bit operations, including the default
+random-seed path; fixed-seed grades did not expose the mismatch. Random-word
+rejection sampling preserves inclusive bounds beyond Number precision;
+reversed bounds throw. Math.random supplies the random words.
+After rebuilding the HTML plug, run
+`node codex/plugs/html/arms/random-int.mjs`. The compiled fixture composes
+random values with bit operations and rejects accidental stub emission;
+runtime controls cover wide singleton bounds, signed endpoints and
+rejection. On 2026-10-01 all 6 checks and all 21 HTML arm scripts passed.
+For fixed-width Integer ranges, transient storage is bounded and runtime
+is expected constant time, with no worst-case bound on rejection retries.
+The compiled draw is controlled, so the arm is not a distribution grade.
+
+The XL graders terminate only Edge processes bearing their unique profile
+and verify that none remain. Numerical checks passing before cleanup is
+not a successful process exit. Main 33360 replaced PID-tree cleanup after
+one CLIP XL cleanup process exited 4294967295; the affected arms then exited 0.
+
+### HTML-WAVE-F32 -- generated audio analysis
+
+Fix main 33324 extends `HtmlEmitter.codex` audio analysis from PCM16 to
+finite IEEE-f32 WAVE, including MusicGen's 18-byte format and fact chunks.
+Sample amplitudes remain unclipped. Bad headers, truncated chunks, invalid
+alignment, empty data, unsupported formats and nonfinite samples refuse.
+After `pwsh codex/plugs/html/build.ps1`, run
+`node codex/plugs/html/arms/wave-analyze.mjs`: the compiled callback checks
+PCM/f32 equivalence, unequal stereo mixing and malformed-input refusals.
+The Spark arms are `node apps/spark/audio-analyze.mjs` and the same command
+with `--float32`; the latter converts original PCM fixtures to identical
+f32 samples before analysis, while the WPF/NAudio oracle remains independent.
+On 2026-10-01 the plug arm passed 13 checks, Spark PCM passed 10 and Spark
+f32 passed 11 over 14 tracks; all 19 HTML arm scripts exited 0 on compiler
+`D2C01E16DD7E342F`. The SDXL arms need the explicit HTML/base/extra-WGSL
+arguments printed by their usage checks. The converted-fixture grade proves
+analysis; playback of actual generated WAVE is covered by Spark's MusicGen
+integration grade, not by replacement of already-cached media URLs.
+
+### HTML-NESTED-CTOR -- nested variant guards
+
+Fix main 33066 repairs `HtmlEmitter.codex`'s constructor condition emission:
+`Just (JsonInt n)` must reject `Just (JsonNum value)` before binding the
+payload. The Spark video malformed-timeline arm exposed the missing inner
+tag check. All 15 HTML arm scripts passed on 2026-09-30, including the new
+nested-constructor arm; the Spark video grader passed 17 arms.
+`codex/plugs/html/arms/nested-ctor.mjs` grades wrong inner and outer tags,
+three nested constructors, a literal leaf and the fallback binding. Rebuild
+with `pwsh codex/plugs/html/build.ps1`, then run every `.mjs` directly under
+`codex/plugs/html/arms` serially with `node`; every process must exit 0.
+The GPU/model arms require their named local checkpoints and fixtures.
+
 **A STDIO PLUG'S IR ARRIVES AS UTF-8 AND `PlugStdio` DECODES IT.** Every feeder (the pages' `runW`, the
 `codex_run` service) sends the compiler's `IR-UNI` through `TextEncoder`; `read-file-uni` maps only bytes
 below 128, so `PlugStdio` runs `utf8-to-cce` (Codex chapter UTF-8 To CCE, `codex/compiler/Core/Utf8Cce.codex`,
@@ -127,8 +221,26 @@ extended is a list a CALLER still holds, which is the defect COMPILER-42
 records.
 ## Open
 
-34 rows (audited against head 2026-09-25): 19 open, 7
-latent, 4 deferred, 4 standing notes. Rows keep their original numbers.
+Rows keep their original identifiers.
+
+**WGSL-BOOL-HELPER -- OPEN (unowned): Boolean helper parameters become i32.**
+`WgslEmitter.codex`'s `wgsl-ty-text` maps non-real helper types to `i32`, but a
+direct Boolean conditional emits that integer as `select`'s condition. The
+shader is invalid. MusicGen uses an Integer flag compared with 1. Evidence:
+red `build-output/musicgen-stage3/lm-norm.wgsl` and refused `medium-norm` run;
+`lm-norm2.wgsl` with the comparison runs. The consumer constraint is also in
+`docs/Designs/Active/Apps/InBrowserDiffusion.md`.
+
+**WGSL-HELPER-BUFFERS -- OPEN (unowned): repeated helper calls lose distinct buffer bindings.**
+Calling one Device dot helper with `a/b` and then `c/d` in one kernel emits
+both calls against a helper reading `a/b`. The metadata still names `c/d`,
+and WebGPU rejects binding 3 because the active layout omits the unused
+buffers. Evidence: red `build-output/browser-lycoris/lora-helper-binding-bad.wgsl`
+and `layout.err` (2026-10-01, compiler `CC3FC5222D726096`). Hada and sum2
+consumer kernels use a distinct right-dot helper as a workaround. The plug
+must specialize helpers for each buffer mapping or issue a named refusal;
+silently reusing the first mapping is incorrect. The LoRA grader now runs
+every emitted kernel's layout with zero elements before image generation.
 
 **Takeable now, no ruling or toolchain needed:** 1.73 (nothing left to run),
 2.17, 2.38, 2.53.
@@ -289,6 +401,15 @@ plugs it runs. What is measured, kept apart from what is not:
 - **The codex-vm serial-drop check (`output buffer growth failed`, exit 10) has
   no QEMU counterpart**, so on that host a short console is not detected. Say
   so rather than read its silence as agreement (L-FALSIF).
+- **codex-vm delivers PIT interrupts despite the master PIC mask.** Measured
+  2026-09-30 by the PIC-masked arm in `DeskScheduler.md`, "Single-core
+  preemption evidence": OVMF reports zero tick advance and no preemption;
+  codex-vm reports three ticks and preemption. `tools/codex-vm.c` busy PIT
+  delivery checks `pic_master_can_deliver(0)`, whose implementation checks
+  ISR state but not `pic_master.mask`; keyboard delivery checks its mask
+  separately. The masked timer control cannot grade native preemption until
+  PIT delivery honors the mask. Keep the slice-zero control as a distinct
+  native scheduling check, not a timer-disable claim.
 - `produced nothing` and `differs` should not read alike in the failure text:
   the first is a statement about the host, the second about the subject, and
   only the second is ever a plug finding.
@@ -653,6 +774,14 @@ routed: it is fixed on OUR side, `$f64_to_text` in `WasmEmitter.codex` at head
 
 ## 2.38 -- OPEN: the undefined-callee check covers the six text plugs whose toolchain is on the box; the rest need an analyzer or a toolchain
 
+WGSL also needs the check: a device helper using `int-mod at 4` emits an
+`int_mod(at, 4)` call without a definition or refusal marker, and `run.ps1`
+reports success (red, 2026-10-01, compiler `CC3FC5222D726096`). The invalid
+module then prevents its other kernels from running. `BrowserLoraKernels`
+uses `at - at / 4 * 4` for nonnegative byte offsets to avoid that call.
+The plug must lower the remainder or refuse the unresolved callee before
+reporting a successful shader build.
+
 `build/check-plug-callees.ps1` reads the source `plug-oracle-test.ps1 -KeepArtifacts`
 leaves in `build-output/plug-oracle` and fails on a name that is called, bound
 nowhere in the file, and not a global of the language's own runtime (python's
@@ -771,72 +900,3 @@ mentions one 20 times and still drops it at this subject.
 No runtime for any of the four is on this box, so the oracle cannot grade a repair and the guards checker
 reads text only (L-VACUOUS): a repair here needs a toolchain decision first (WE DO NOT DO TOOLCHAINS,
 Damian 2026-09-07), or a refusal of guarded matches as the honest answer.
-
-## 2.104 -- the html runtime has no alloc-bytes, so no page can reach the Data quire
-
-`codex/plugs/html` defines no `alloc_bytes` (nor the peek and poke family over
-the block it would return), so a page whose cite closure reaches
-`apps/data/Page.codex` `page-new` throws `ReferenceError: alloc_bytes is not
-defined` at load and renders nothing (measured 2026-09-29 on a page that ran
-`apps/erp` `ErpScenario` `run-month`, whose `gl-init` builds a `Data` server).
-`apps/erp` ships a snapshot page instead (ERP-1). Closing this is a memory model
-for the page: a `Uint8Array`-backed block per `alloc-bytes`, and the byte and
-word access builtins over it. Unowned.
-
-## 2.105 -- division by a runtime value in PTX kernels
-
-ptxas lowers every `div.s64` to a software-divide CALL. The PTX plug emits a
-power-of-two literal divisor as a shift and inlines non-recursive helpers into
-kernels, so `kernel-linear-fast` runs 35 TFLOPS at 4096^3 and `kernel-conv2d-fast`
-24 on 3x3 320->320 128x128 (idle card, CUDA-driver host, 2026-09-29; cuBLAS 46).
-The `div.s64` left divide by a runtime value (`n / ow`, `kx / (kh * kw)`,
-`i / inner` in `lk-geglu-one`); a 32-bit `div.u32` where both operands provably
-fit, or a divisor hoisted to a reciprocal multiply outside the loop, is the next
-lever. Graded by the kernel's arm staying exact and its time falling. reek.
-
-## 2.106 -- the D plug prints a Real literal's f64 bits as its value
-
-`IrNumLit` carries the literal's f64 bit pattern (`Lowering.codex:380`,
-`text-to-double-bits`); `DEmitter.codex:148` emits `integer-to-text n & ".0"`,
-so `0.5` compiles to `4602678819172646912.0`. The C#, Zig, Compose, WPF and
-html emitters decode the bits (html through `__real`). Graded by a D subject
-whose `.expected` prints a Real literal. Unowned.
-
-## 2.107 -- the html runtime calls a throwing callback a second time, with an error
-
-Five asynchronous runtime functions in `HtmlEmitter.codex` end `.then(function(..){cb(..)}).catch(function(e){cb(error)})` (the fetch at 710, 723, `gpu_open_then`, `gpu_buf_download_then`, `gpu_buf_upload_then`), so an exception the page's own callback throws is caught and the callback runs again with an error object, and a page carries on over that. Measured with `codex/plugs/html/arms/file-read.mjs`: its `file_read_then` in the `.catch` form ran a throwing callback twice (`calls 2`); in the `.then(ok, err)` form, once. The repair is that form at each site. Unowned.
-
-## 2.108 -- Option A return epilog can resume after its single halt
-
-`codex/build/cdxtopeScript.codex`, `p04-body`, emits a single `hlt` after
-calling `opening` (`build/cdx-to-pe.ps1:1538`). A returning payload that
-called `runtime-init` has enabled timer interrupts. Under QEMU/OVMF on
-2026-09-30, `desk-scene-render-loop` printed every successful verdict and
-then QEMU exited before the proof runner collected the end marker. Masking
-both PICs before returning kept QEMU alive and the same loop assertions
-passed. Evidence: fester `build-output/desk-stage2/unit3-loop/ovmf-positive`
-and `unit3-loop-masked/ovmf-positive`. The fixture owns that local shutdown
-workaround; the generic epilog still needs a terminal interrupt-safe loop
-and a returning-runtime payload regression test. Unowned.
-
-Reproduce from `apps/works/desk-present-proof.ps1 -Unit loop -Bed ovmf
--Mode positive`: bundle the same fixture into scratch, remove its two
-`port-out-byte` calls to ports 33 and 161, and use the runner's explicit-seed
-compile and `-ExitBootServices` PE packaging commands. Leave QEMU running
-after `render-loop-end` through subsequent timer interrupts. A corrected
-epilog must remain halted with the payload's PIC masks removed; merely
-capturing the end marker is insufficient.
-
-## 2.109 -- the wasm plug compiles the GPU bridge builtins and traps instead of refusing
-
-`codex/test/apps/diffusion-layout` cites Diffusion chapter `CheckpointFile`,
-which calls `gpu-buf-alloc`, `gpu-buf-upload` and `gpu-buf-read` (codex-vm's
-GPU bridge, op 44). `codex/plugs/wasm` names none of the three, yet the
-subject compiled to a module that wasmtime ran into `out of bounds memory
-access` at wasm address 0xbd5fff0c in 16 MiB of linear memory (U65 wasm-run,
-2026-09-30, kernel B3256BF8). The builtin must be REFUSED at compile, the way
-`.cross-refusal` subjects print `[UNSUPPORTED] <name>` (L-BAILVALUE). The
-subject carries `.bare-metal` until then (main 32432); a `.wasm-refusal`
-arm replaces it once the plug refuses. Reproduce: delete the sidecar, then
-`codex/plugs/wasm/hosted-wasm-test.ps1 -Kernel seed\Codex.cdx -Subject
-apps/diffusion-layout`. Unowned.

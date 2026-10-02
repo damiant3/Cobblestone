@@ -1,0 +1,86 @@
+Chapter: Sd15SamplerArm
+  cites Diffusion chapter BrowserLoad
+  cites Diffusion chapter BrowserSd15
+
+ We say:
+
+  sa-settings : Integer -> BrowserSd15Settings
+  sa-settings (ignored) = BrowserSd15Settings { b15-width = 512, b15-height = 512, b15-steps = text-to-integer (page-data "steps"), b15-seed = 7, b15-cfg = 7.0 }
+
+  sa-fail : Text -> Integer
+  sa-fail (why) = let e = state-set-text "error" why in let b = state-set "busy" 0 in state-set "done" 1
+
+  sa-progress : Text, Integer, Integer -> Integer
+  sa-progress (phase) (current) (total) =
+    let p = state-set-text "phase" (phase & ":" & show current)
+    in if phase == "sampling" & current > 0 then
+      let n = state-get "steps" + 1
+      in let bad = if current /= n then state-set "order-error" 1 else 0
+      in state-set "steps" n
+    else 0
+
+  sa-shown : Integer, Text -> Integer
+  sa-shown (h) (result) =
+    let f = gpu-buf-free h
+    in if text-contains result "\"ok\":true" == False then sa-fail result
+    else let idle = state-set "busy" 0 in state-set "done" 1
+
+  sa-generate : BrowserModel, ClipBpe, Integer -> Integer
+  sa-generate (m) (bpe) (kind) =
+    browser-sd15-sample-then m bpe "a photo of a cat" "" (sa-settings 0) kind sa-progress (\h -> gpu-buf-show-then h 512 512 "#out" (\r -> sa-shown h r)) sa-fail
+
+  sa-cancel-sampling : BrowserModel, ClipBpe, Integer -> Integer
+  sa-cancel-sampling (m) (bpe) (kind) =
+    browser-sd15-sample-then m bpe "a photo of a cat" "" (sa-settings 0) kind (\phase current total -> if phase == "sampling" & current == 2 then 0 - 1 else 0) (\h -> sa-fail "Sampling cancellation ignored") (\why ->
+      if why /= "SD1.5 generation cancelled" then sa-fail why
+      else let c = state-set "sampling-cancelled" 1 in sa-generate m bpe kind)
+
+  sa-noise-progress : Text, Integer, Integer -> Integer
+  sa-noise-progress (phase) (current) (total) =
+    if phase /= "noise" then 0
+    else let n = state-get "noise-polls" + 1
+    in let saved = state-set "noise-polls" n
+    in if n >= 2 then 0 - 1 else 0
+
+  sa-start : BrowserModel, ClipBpe -> Integer
+  sa-start (m) (bpe) =
+    if state-get "busy" /= 0 then state-set "busy-refused" 1
+    else let busy = state-set "busy" 1
+    in let kind = text-to-integer (page-data "sampler")
+    in if kind /= 6 then sa-generate m bpe kind
+    else browser-sd15-sample-then m bpe "a photo of a cat" "" (sa-settings 0) kind sa-noise-progress (\h -> sa-fail "Noise cancellation ignored") (\why ->
+      if why /= "SD1.5 generation cancelled" then sa-fail why
+      else let c = state-set "noise-cancelled" 1 in sa-cancel-sampling m bpe kind)
+
+  sa-loaded : BrowserModel -> Integer
+  sa-loaded (m) =
+    let bpe = bl-bpe-of (bl-list (page-data "vocab")) (bl-list (page-data "merges"))
+    in let one = uniform-sigmas 1
+    in let maximum = list-at (uniform-sigmas 6) 0
+    in let schedule = state-set "one-step-schedule" (if list-length one == 2 & list-at one 1 ~0 0.0 & list-at one 0 ~0 maximum & maximum > 0.0 & bit-and (bit-shru (real-to-bits maximum) 52) 2047 /= 2047 then 1 else 0)
+    in let a = browser-sd15-sample-then m bpe "" "" (sa-settings 0) 7 sa-progress (\h -> sa-fail "Invalid sampler accepted") (\why -> if why == "SD1.5 sampler is unsupported" then state-set "sampler-refused" 1 else sa-fail why)
+    in let invalid = BrowserSd15Settings { b15-width = 65, b15-height = 512, b15-steps = 6, b15-seed = 7, b15-cfg = 7.0 }
+    in let b = browser-sd15-sample-then m bpe "" "" invalid 0 sa-progress (\h -> sa-fail "Invalid dimensions accepted") (\why -> if text-contains why "supported range" then state-set "dimensions-refused" 1 else sa-fail why)
+    in let c = dom-on-click (dom-query "#generate") (\id -> sa-start m bpe)
+    in let close = dom-on-click (dom-query "#close") (\id -> if state-get "busy" /= 0 then state-set "busy-refused" 1 else let f = bl-free-weights (bl-list ("[" & state-get-text "bl-weights" & "]")) 0 in state-set "closed" 1)
+    in state-set "loaded" 1
+
+  sa-picked : Text -> Integer
+  sa-picked (result) = bl-load-then (json-obj-field (json-parse-obj result) "name") (\n total -> state-set "weights" n) sa-fail sa-loaded
+
+  sa-button : Text -> DomElement
+  sa-button (id) = let e = dom-create "button" in let a = dom-set-attr e "id" id in let b = dom-set-text e id in dom-append (dom-query "body") e
+
+  opening : [Console] Integer
+  opening =
+    let p = sa-button "pick"
+    in let g = sa-button "generate"
+    in let c = sa-button "close"
+    in let canvas = dom-create "canvas"
+    in let block = dom-set-style canvas "display" "block"
+    in let id = dom-set-attr canvas "id" "out"
+    in let w = dom-set-attr canvas "width" "512"
+    in let h = dom-set-attr canvas "height" "512"
+    in let a = dom-append (dom-query "body") canvas
+    in let click = dom-on-click (dom-query "#pick") (\id -> pick-file-then ".safetensors" sa-picked)
+    in state-set "armed" 1

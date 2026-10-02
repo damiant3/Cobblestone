@@ -1,0 +1,57 @@
+Chapter: ConstructorReturnParser
+  cites Codex chapter Opening
+
+  refusal-token : TokenKind, Text -> Token
+  refusal-token (kind) (name) = deck-record (Token {
+   kind = kind, source = name, offset = 0, length = __narrow (text-length name),
+   line = 11, column = 5, file-id = 1
+  })
+
+  refusal-ctors : List VariantCtorDef, Integer -> [Console] Nothing
+  refusal-ctors (ctors) (i) =
+    if i >= list-length ctors then print-uni ""
+    else let ctor = list-at ctors i
+    in let fields = show (list-length (ctor.fields))
+    in let returns = show (list-length (ctor.return-type))
+    in act
+      print-line-uni (token-text (ctor.name) & "|" & fields & "|" & returns)
+      refusal-ctors ctors (i + 1)
+    end
+
+  refusal-case : Text, List Token -> [Console] Nothing
+  refusal-case (label) (tokens) =
+    let name = refusal-token TypeIdentifier "Shape"
+    in let ctor-name = refusal-token TypeIdentifier "First"
+    in let st = make-parse-state tokens ""
+    in let mark = __heap-save
+    in let floor = __deck-pos
+    in let result = parse-ctor-fields ctor-name [] st name [] []
+    in when result.maybe-type-def
+      is Just (d) ->
+        let kept-def = deck-record (copy-sx-typedef floor d)
+        in let kept = deck-record (parse-state-keep floor (result.state))
+        in let back = __heap-restore mark
+        in act
+          print-line-uni (label & "|" & show (kept.bag.error-count))
+          when kept-def.body
+            is VariantBody (ctors) -> refusal-ctors ctors 0
+            is otherwise -> print-line-uni "FAIL body"
+        end
+      is None -> print-line-uni "FAIL missing definition"
+
+  opening : [Console] Nothing =
+    let init = init-phase-allocator
+    in let arena = build 8388608
+    in act
+      refusal-case "eof" [refusal-token Colon ":", refusal-token EndOfFile ""]
+      refusal-case "recovery" [
+        refusal-token Colon ":", refusal-token LeftParen "(", refusal-token Pipe "|",
+        refusal-token TypeIdentifier "Second", refusal-token LeftParen "(",
+        refusal-token TypeIdentifier "Integer", refusal-token RightParen ")",
+        refusal-token Colon ":", refusal-token TypeIdentifier "Shape", refusal-token EndOfFile ""
+      ]
+      refusal-case "ordinary" [
+        refusal-token LeftParen "(", refusal-token TypeIdentifier "Integer",
+        refusal-token RightParen ")", refusal-token EndOfFile ""
+      ]
+    end

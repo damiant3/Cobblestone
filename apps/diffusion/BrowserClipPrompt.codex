@@ -1,0 +1,80 @@
+Chapter: BrowserClipPrompt
+  cites Diffusion chapter BrowserClipLoad
+  cites Diffusion chapter BrowserTxt2Img
+
+ We say:
+
+  BcpJob = record {
+    bpj-code : Text,
+    bpj-l : BcWeights,
+    bpj-g : BcWeights,
+    bpj-chunks : List ClipChunk,
+    bpj-out : ClipCond,
+    bpj-scratch : Integer
+  }
+
+  browser-clip-cond-free : ClipCond -> Integer
+  browser-clip-cond-free (c) = bcl-free [c.cn-cond-l, c.cn-cond-g, c.cn-pooled] 0
+
+  bcp-fail : BcpJob, (Text -> Integer), Text -> Integer
+  bcp-fail (job) (refuse) (why) = let f = browser-clip-cond-free (job.bpj-out) in refuse why
+
+  bcp-place : Integer, Integer, Integer, Integer, List Real, Text -> Boolean
+  bcp-place (scratch) (dst) (chunk) (dim) (weights) (data) =
+    if text-starts-with data "[" == False | text-ends-with data "]" == False then False
+    else let words = bt-text-ints (text-split (substring data 1 (text-length data - 2)) ",") 0 []
+    in if list-length words /= 77 * dim then False
+    else let copied = bt-poke32 scratch words 0
+    in let weighted = cp-emphasise scratch weights dim
+    in gpu-buf-write-words dst (chunk * 77 * dim * 4) (bt-words scratch 0 (77 * dim) [])
+
+  bcp-got-g : BcpJob, Integer, Integer, (ClipCond -> Integer), (Text -> Integer), Text -> Integer
+  bcp-got-g (job) (i) (h) (ready) (refuse) (data) =
+    let placed = bcp-place (job.bpj-scratch) ((job.bpj-out).cn-cond-g) i 1280 ((list-at (job.bpj-chunks) i).cc-mults) data
+    in let f = gpu-buf-free h
+    in if placed == False then bcp-fail job refuse "OpenCLIP conditioning readback/write failed"
+    else bcp-next job (i + 1) ready refuse
+
+  bcp-got-l : BcpJob, Integer, Integer, Integer, (ClipCond -> Integer), (Text -> Integer), Text -> Integer
+  bcp-got-l (job) (i) (hl) (hg) (ready) (refuse) (data) =
+    let placed = bcp-place (job.bpj-scratch) ((job.bpj-out).cn-cond-l) i 768 ((list-at (job.bpj-chunks) i).cc-mults) data
+    in let f = gpu-buf-free hl
+    in if placed == False then (let g = gpu-buf-free hg in bcp-fail job refuse "CLIP-L conditioning readback/write failed")
+    else gpu-buf-download-then hg 0 (77 * 1280 * 4) (\r -> bcp-got-g job i hg ready refuse r)
+
+  bcp-next : BcpJob, Integer, (ClipCond -> Integer), (Text -> Integer) -> Integer
+  bcp-next (job) (i) (ready) (refuse) =
+    if i >= list-length (job.bpj-chunks) then
+      if gpu-error 0 /= "" then bcp-fail job refuse (gpu-error 0) else ready (job.bpj-out)
+    else let ids = (list-at (job.bpj-chunks) i).cc-ids
+    in let ops = browser-clip-ops (job.bpj-code)
+    in let l = clip-encode-with ops (job.bpj-l) ids
+    in let g = clip-encode-with ops (job.bpj-g) ids
+    in let pooled = if i == 0 & g.co-status == 0 then bc-copy (job.bpj-code) (g.co-pooled) 0 ((job.bpj-out).cn-pooled) 0 1280 else 0
+    in let f = if g.co-pooled == 0 then True else gpu-buf-free (g.co-pooled)
+    in if l.co-status /= 0 | g.co-status /= 0 | pooled < 0 then
+      let freed = bcl-free [l.co-cond, g.co-cond] 0
+      in bcp-fail job refuse "SDXL chunk encoding failed"
+    else gpu-buf-download-then (l.co-cond) 0 (77 * 768 * 4) (\r -> bcp-got-l job i (l.co-cond) (g.co-cond) ready refuse r)
+
+  browser-clip-chunks-then : Text, BcWeights, BcWeights, List ClipChunk, Boolean, (ClipCond -> Integer), (Text -> Integer) -> Integer
+  browser-clip-chunks-then (code) (l) (g) (chunks) (zero) (ready) (refuse) =
+    let n = list-length chunks
+    in if n <= 0 then refuse "SDXL conditioning needs at least one chunk"
+    else let out = ClipCond { cn-status = 0, cn-chunks = n, cn-cond-l = gpu-buf-alloc (77 * n * 768 * 4), cn-cond-g = gpu-buf-alloc (77 * n * 1280 * 4), cn-pooled = gpu-buf-alloc (1280 * 4) }
+    in let job = BcpJob { bpj-code = code, bpj-l = l, bpj-g = g, bpj-chunks = chunks, bpj-out = out, bpj-scratch = if zero then 0 else alloc-bytes (77 * 1280 * 4) }
+    in if out.cn-cond-l == 0 | out.cn-cond-g == 0 | out.cn-pooled == 0 then bcp-fail job refuse "SDXL conditioning allocation failed"
+    else if zero then ready out
+    else bcp-next job 0 ready refuse
+
+  browser-clip-condition-then : Text, BcWeights, BcWeights, ClipBpe, Text, Boolean, (ClipCond -> Integer), (Text -> Integer) -> Integer
+  browser-clip-condition-then (code) (l) (g) (bpe) (prompt) (negative) (ready) (refuse) =
+    browser-clip-chunks-then code l g (clip-prompt-chunks bpe prompt) (negative & prompt == "") ready refuse
+
+  browser-clip-crossattn : Text, ClipCond -> Integer
+  browser-clip-crossattn (code) (c) =
+    let n = c.cn-chunks * 77 * 2048
+    in let h = gpu-buf-alloc (n * 4)
+    in if h == 0 then 0
+    else if bc-run code "bk_concat_main" n [gpu-arg-buf (c.cn-cond-l) 0, gpu-arg-buf (c.cn-cond-g) 0, gpu-arg-buf h 0, gpu-arg-u32 768, gpu-arg-u32 1280, gpu-arg-u32 1, gpu-arg-u32 n] < 0 then (let f = gpu-buf-free h in 0)
+    else h

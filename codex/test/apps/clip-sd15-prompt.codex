@@ -8,17 +8,17 @@ Chapter: ClipSd15Prompt
   cites Kernel chapter GpuBridge
   cites Foreword chapter FactDisk
 
- The disk is build/mint-clip-bpe-disk.ps1's with four extras from
+ The disk is build/mint-clip-bpe-disk.ps1's with five extras from
  codex/test/apps/clip-sd15-ref, written by build/clip-sd15-oracle.py through
  Forge's own ClassicTextProcessingEngine configured as sd15.py configures it:
  the chunk count as i32, the 77 tokens per chunk as i32, the token weights as
  f32, then cond as f32. The weights are the installed realisticVisionV60B1
  v20Novae checkpoint. empty is the empty prompt, which SD1.5 encodes rather
- than zeroes.
+ than zeroes; two is two chunks, one emphasised.
 
  Each bound is the deviation of the same chunks through the f16 model, with
  the same emphasis arithmetic, from the f32 answer, as the oracle printed it
- on 2026-09-29, over all rows and over the rows that are not a chunk's BOS.
+ on 2026-09-29 (two on 2026-09-30), over all rows and over the rows that are not a chunk's BOS.
  The sabotage arms must fail: cat through SDXL's clip skip 2 with no final
  LayerNorm, and the emphasis prompt with its weights set to 1.
 
@@ -136,8 +136,8 @@ Section: Arms
     in let f = clip-cond-free c
     in v
 
-  c15-run : ClipBpe, Integer, Integer, Integer, Integer -> List Text
-  c15-run (bpe) (cat) (emph) (long) (empty) =
+  c15-run : ClipBpe, Integer, Integer, Integer, Integer, Integer -> List Text
+  c15-run (bpe) (cat) (emph) (long) (empty) (two) =
     let path = "realisticVisionV60B1_v20Novae.safetensors"
     in let file = ckpt-open path
     in let lb = layout-bind file sd15-layout
@@ -153,8 +153,10 @@ Section: Arms
     in let b = c15-prompt bpe wl "emphasis" emph-prompt emph 0.0303 0.01499
     in let c = c15-prompt bpe wl "long" long-prompt long 0.03046 0.01583
     in let d = c15-prompt bpe wl "empty" "" empty 0.03046 0.01251
+    in let two-prompt = "painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, a longship with a striped sail on a calm fjord at dawn, (mist:1.2) over the water, snowy peaks, a lighthouse of stacked stones, ravens circling, oars dipping in unison, shields along the rail, a carved serpent prow, golden light on the waves"
+    in let t = c15-prompt bpe wl "two" two-prompt two 0.03046 0.02052
     in let e = [c15-skip2-arm bpe wl cat 0.01266, c15-no-emphasis bpe wl emph-prompt emph 0.01499]
-    in head & a & b & c & d & e
+    in head & a & b & c & d & t & e
 
 Section: Body
   c15-print : List Text, Integer -> [Console] Nothing
@@ -176,14 +178,15 @@ Section: Body
       emph <- c15-load (list-at hd 5) (list-at hd 6)
       long <- c15-load (list-at hd 7) (list-at hd 8)
       empty <- c15-load (list-at hd 9) (list-at hd 10)
-      c15-print (c15-run (clip-bpe-load vbuf (list-at hd 0) mbuf (list-at hd 1)) cat emph long empty) 0
+      two <- c15-load (list-at hd 11) (list-at hd 12)
+      c15-print (c15-run (clip-bpe-load vbuf (list-at hd 0) mbuf (list-at hd 1)) cat emph long empty two) 0
     end
 
  The header's words are copied out before any load, which reuses the sector
  buffer block-read-sector answers.
 
   c15-words : Integer, Integer, List Integer -> List Integer
-  c15-words (h) (i) (acc) = if i >= 11 then acc else c15-words h (i + 1) (list-push acc (peek-32 h (i * 4)))
+  c15-words (h) (i) (acc) = if i >= 13 then acc else c15-words h (i + 1) (list-push acc (peek-32 h (i * 4)))
 
   opening : [Console, Device.Block] Nothing
   opening = act

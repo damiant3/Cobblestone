@@ -16,31 +16,33 @@ Section: Drain
 
   drain-wait : TcpTransportState, Integer -> [Network.Read] Integer
   drain-wait (ts) (tries) =
-   if tries > 5000000 then 0
-   else act
-    frame <- ne2k-recv-frame
-    if list-length frame == 0 then drain-wait ts (tries + 1)
-    else 0
-   end
+    if tries > 5000000 then 0
+    else act
+     frame <- ne2k-recv-frame
+     if list-length frame == 0 then drain-wait ts (tries + 1)
+     else 0
+    end
 
 Section: Body
 
   opening : [Console, FileSystem, Network.Read, Network.Write] Nothing =
-   let sess = net-session-new local-mac local-ip gateway-ip 49152 9126 host-ip 1000
-   in let ts = transport-new sess
-   in act
-    ts1 <- net-io-connect ts
-    recv <- net-io-recv-loop ts1 0
-    if recv.has-message then
-     let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body))
-     in let parsed = parse-ir-chapter ir-text
-     in let output = emit-ocaml-chapter (parsed.chapter) (parsed.type-defs)
-     in act
-      sent <- net-io-send-text-checked (recv.transport) output
-      ts3 <- net-io-close (sent.ns-transport)
-      drained <- drain-wait ts3 0
-      if sent.ns-complete then print-line-uni ("OK defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
-      else print-line-uni ("TRUNCATED sent=" & show (sent.ns-sent) & " of " & show (text-length output) & " defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
-     end
-    else print-line-uni "FAIL"
-   end
+    let sess = net-session-new local-mac local-ip gateway-ip 49152 9126 host-ip 1000
+    in let ts = transport-new sess
+    in act
+     ts1 <- net-io-connect ts
+     recv <- net-io-recv-loop ts1 0
+     if recv.has-message then
+       let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body))
+       in let parsed = parse-ir-chapter ir-text
+       in let output = emit-ocaml-chapter (parsed.chapter) (parsed.type-defs)
+       in act
+        sent <- net-io-send-text-checked (recv.transport) output
+        ts3 <- net-io-close (sent.ns-transport)
+        drained <- drain-wait ts3 0
+        if sent.ns-complete then
+          print-line-uni ("OK defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
+        else
+          print-line-uni ("TRUNCATED sent=" & show (sent.ns-sent) & " of " & show (text-length output) & " defs=" & show (list-length ((parsed.chapter).defs) + drained - drained))
+       end
+     else print-line-uni "FAIL"
+    end

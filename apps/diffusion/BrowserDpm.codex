@@ -1,0 +1,183 @@
+Chapter: BrowserDpm
+  cites Encode chapter Json
+  cites WebApp chapter WebRuntime
+  cites Diffusion chapter BrowserSampler
+  cites Diffusion chapter SamplerSchedule
+
+ We say:
+
+  BdState = record {
+    bd-kind : Integer,
+    bd-history : List Integer,
+    bd-times : List Real,
+    bd-buffer : Integer,
+    bd-bank : List Integer,
+    bd-noise : (Integer -> Integer),
+    bd-prepare : ((Integer, Integer -> Integer), (Text -> Integer) -> Integer)
+  }
+
+  bd-bank-draw : List Integer, Integer, Integer, Integer -> Integer
+  bd-bank-draw (bank) (h) (n) (k) =
+    if gpu-buf-copy-range (list-at bank 0) (k * n * 4) h 0 (n * 4) then h else 0
+
+  bd-bank-ready : List Integer, (Integer, Integer -> Integer), (Text -> Integer), Text -> Integer
+  bd-bank-ready (bank) (progress) (ready) (result) =
+    if text-contains result "\"ok\":true" == False then ready (if text-contains result "\"cancelled\":true" then "SDXL generation cancelled" else "SDXL noise failed: " & result)
+    else let saved = list-set-at bank 0 (text-to-integer (json-obj-field (json-parse-obj result) "handle"))
+    in if progress 1 1 < 0 then ready "SDXL generation cancelled" else ready ""
+
+  bd-prepare-bank : Integer, Integer, Integer, Integer, List Integer, (Integer, Integer -> Integer), (Text -> Integer) -> Integer
+  bd-prepare-bank (kind) (seed) (n) (steps) (bank) (progress) (ready) =
+    if progress 0 1 < 0 then ready "SDXL generation cancelled"
+    else gpu-noise-bank-then "sdxl-noise" seed n kind steps progress (\r -> bd-bank-ready bank progress ready r)
+
+  bd-state : Integer, Integer, List Integer, (Integer -> Integer), ((Integer, Integer -> Integer), (Text -> Integer) -> Integer) -> BdState
+  bd-state (kind) (h) (bank) (noise) (prepare) = BdState { bd-kind = kind, bd-history = [0, 0], bd-times = [0.0, 0.0], bd-buffer = h, bd-bank = bank, bd-noise = noise, bd-prepare = prepare }
+
+  bd-new : Integer, Integer, Integer, List Real -> BdState
+  bd-new (kind) (seed) (n) (sig) =
+    let bank = [0]
+    in if kind == 0 | kind == 2 then bd-state kind 0 bank (\k -> 0) (\progress ready -> ready "")
+    else let h = gpu-buf-alloc (n * 4)
+    in bd-state kind h bank (\k -> bd-bank-draw bank h n k) (\progress ready -> bd-prepare-bank kind seed n (list-length sig - 1) bank progress ready)
+
+  bd-free : Integer -> Boolean
+  bd-free (h) = if h == 0 then True else gpu-buf-free h
+
+  bd-close : BdState -> Boolean
+  bd-close (s) = bd-free (list-at (s.bd-bank) 0) & bd-free (s.bd-buffer) & bd-free (list-at (s.bd-history) 0) & bd-free (list-at (s.bd-history) 1)
+
+  bd-mix : SamplerOps, Integer, Integer, Integer, Integer, Real, Real, Real, Integer -> Integer
+  bd-mix (ops) (x) (y) (z) (out) (a) (b) (c) (n) =
+    if x == 0 | y == 0 | z == 0 | out == 0 then 0 - 1 else ops.lincomb x y z out a b c n
+
+  bd-up : Real, Real -> Real
+  bd-up (from) (to) = let u = sm-sqrt (to * to * (from * from - to * to) / (from * from)) in if u < to then u else to
+
+  bd-down : Real, Real -> Real
+  bd-down (from) (to) = let u = bd-up from to in sm-sqrt (to * to - u * u)
+
+  bd-sde : SamplerOps, (Integer, Real -> Integer), BdState, Integer, Real, Real, Integer, Integer -> Integer
+  bd-sde (ops) (den) (state) (x) (s) (sn) (i) (n) =
+    let d = den x s
+    in let r = if d == 0 then 0 - 1 else if sn <= 0.0 then bd-mix ops x d d x 0.0 1.0 0.0 n else bd-sde-mid ops den state x d s sn i n
+    in let f = bd-free d
+    in r
+
+  bd-sde-mid : SamplerOps, (Integer, Real -> Integer), BdState, Integer, Integer, Real, Real, Integer, Integer -> Integer
+  bd-sde-mid (ops) (den) (state) (x) (d) (s) (sn) (i) (n) =
+    let t = 0.0 - sm-ln s
+    in let mid = sm-exp (0.0 - (t + (0.0 - sm-ln sn - t) / 2.0))
+    in let sd = bd-down s mid
+    in let x2 = gpu-buf-alloc (n * 4)
+    in let z = if x2 == 0 then 0 else state.bd-noise (2 * i)
+    in let r1 = bd-mix ops x d z x2 (sd / s) (1.0 - sd / s) (bd-up s mid) n
+    in let d2 = if r1 < 0 then 0 else den x2 mid
+    in let z2 = if d2 == 0 then 0 else state.bd-noise (2 * i + 1)
+    in let sd2 = bd-down s sn
+    in let r2 = bd-mix ops x d2 z2 x (sd2 / s) (1.0 - sd2 / s) (bd-up s sn) n
+    in let f = bd-free x2 & bd-free d2
+    in r2
+
+  bd-2sa-mid : SamplerOps, (Integer, Real -> Integer), Integer, Integer, Real, Real, Integer -> Integer
+  bd-2sa-mid (ops) (den) (x) (d) (s) (sd) (n) =
+    let mid = sm-exp ((sm-ln s + sm-ln sd) / 2.0)
+    in let x2 = gpu-buf-alloc (n * 4)
+    in let r1 = bd-mix ops x d d x2 (mid / s) (1.0 - mid / s) 0.0 n
+    in let d2 = if r1 < 0 then 0 else den x2 mid
+    in let r2 = bd-mix ops x d2 d2 x (sd / s) (1.0 - sd / s) 0.0 n
+    in let f = bd-free x2 & bd-free d2
+    in r2
+
+  bd-2sa : SamplerOps, (Integer, Real -> Integer), BdState, Integer, Real, Real, Integer, Integer -> Integer
+  bd-2sa (ops) (den) (state) (x) (s) (sn) (i) (n) =
+    let d = den x s
+    in let sd = if sn > 0.0 then bd-down s sn else 0.0
+    in let r = if d == 0 then 0 - 1 else if sd <= 0.0 then bd-mix ops x d d x (sd / s) (1.0 - sd / s) 0.0 n else bd-2sa-mid ops den x d s sd n
+    in let f = bd-free d
+    in if r < 0 | sn <= 0.0 then r else bd-mix ops x (state.bd-noise i) x x 1.0 (bd-up s sn) 0.0 n
+
+  bd-remember : BdState, Integer, Real, Boolean -> Integer
+  bd-remember (state) (d) (h) (two) =
+    let old = list-at (state.bd-history) 0
+    in let f = bd-free (if two then list-at (state.bd-history) 1 else old)
+    in let a = list-set-at (state.bd-history) 1 (if two then old else 0)
+    in let b = list-set-at (state.bd-history) 0 d
+    in let c = list-set-at (state.bd-times) 1 (list-at (state.bd-times) 0)
+    in let e = list-set-at (state.bd-times) 0 h
+    in 0
+
+  bd-2m : SamplerOps, (Integer, Real -> Integer), BdState, Integer, List Real, Integer, Integer -> Integer
+  bd-2m (ops) (den) (state) (x) (sig) (i) (n) =
+    let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in let d = den x s
+    in let old = list-at (state.bd-history) 0
+    in let a = 1.0 - sn / s
+    in let r = if d == 0 then 0 - 1 else if old == 0 | sn <= 0.0 then bd-mix ops x d d x (sn / s) a 0.0 n
+      else let rr = (sm-ln (list-at sig (i - 1)) - sm-ln s) / (sm-ln s - sm-ln sn)
+      in bd-mix ops x d old x (sn / s) (a * (1.0 + 1.0 / (2.0 * rr))) (0.0 - a / (2.0 * rr)) n
+    in let saved = bd-remember state d 0.0 False
+    in r
+
+  bd-2m-sde : SamplerOps, (Integer, Real -> Integer), BdState, Integer, Real, Real, Integer, Integer -> Integer
+  bd-2m-sde (ops) (den) (state) (x) (s) (sn) (i) (n) =
+    let d = den x s
+    in let old = list-at (state.bd-history) 0
+    in let hlast = list-at (state.bd-times) 0
+    in let h = if sn > 0.0 then sm-ln s - sm-ln sn else 0.0
+    in let e2 = if sn > 0.0 then sm-exp (0.0 - 2.0 * h) else 0.0
+    in let c = if old == 0 | sn <= 0.0 then 0.0 else if state.bd-kind == 4 then (1.0 - (1.0 - e2) / (2.0 * h)) * h / hlast else 0.5 * (1.0 - e2) * h / hlast
+    in let r1 = bd-mix ops x d (if old == 0 then d else old) x e2 (1.0 - e2 + c) (0.0 - c) n
+    in let r2 = if r1 < 0 | sn <= 0.0 then r1 else bd-mix ops x (state.bd-noise i) x x 1.0 (sn * sm-sqrt (1.0 - e2)) 0.0 n
+    in let saved = bd-remember state d h False
+    in r2
+
+  bd-coef : Real, Real, Real, Real, Integer, Integer -> Real
+  bd-coef (h) (e2) (h1) (h2) (level) (which) =
+    if level == 0 then (if which == 0 then 1.0 - e2 else 0.0)
+    else let p2 = 1.0 - (1.0 - e2) / (2.0 * h)
+    in let r0 = h1 / h
+    in if level == 1 then (if which == 0 then 1.0 - e2 + p2 / r0 else if which == 1 then 0.0 - p2 / r0 else 0.0)
+    else let p3 = p2 / (2.0 * h) - 0.5
+    in let r1 = h2 / h
+    in let a = p2 * (1.0 + r0 / (r0 + r1)) - p3 / (r0 + r1)
+    in let b = p3 / (r0 + r1) - p2 * r0 / (r0 + r1)
+    in if which == 0 then 1.0 - e2 + a / r0 else if which == 1 then b / r1 - a / r0 else 0.0 - b / r1
+
+  bd-3m : SamplerOps, (Integer, Real -> Integer), BdState, Integer, Real, Real, Integer, Integer -> Integer
+  bd-3m (ops) (den) (state) (x) (s) (sn) (i) (n) =
+    let d = den x s
+    in let o1 = list-at (state.bd-history) 0
+    in let o2 = list-at (state.bd-history) 1
+    in let h1 = list-at (state.bd-times) 0
+    in let h2 = list-at (state.bd-times) 1
+    in let level = if o2 /= 0 then 2 else if o1 /= 0 then 1 else 0
+    in let h = if sn > 0.0 then sm-ln s - sm-ln sn else 0.0
+    in let e2 = if sn > 0.0 then sm-exp (0.0 - 2.0 * h) else 0.0
+    in let r1 = if d == 0 then 0 - 1 else if sn <= 0.0 then bd-mix ops x d d x 0.0 1.0 0.0 n
+      else bd-mix ops x d (if o1 == 0 then d else o1) x e2 (bd-coef h e2 h1 h2 level 0) (bd-coef h e2 h1 h2 level 1) n
+    in let r2 = if r1 < 0 | sn <= 0.0 | level < 2 then r1 else bd-mix ops x o2 o2 x 1.0 (bd-coef h e2 h1 h2 level 2) 0.0 n
+    in let r3 = if r2 < 0 | sn <= 0.0 then r2 else bd-mix ops x (state.bd-noise i) x x 1.0 (sn * sm-sqrt (1.0 - e2)) 0.0 n
+    in let saved = bd-remember state d h True
+    in r3
+
+  bd-step : SamplerOps, (Integer, Real -> Integer), BdState, Integer, List Real, Integer, Integer -> Integer
+  bd-step (ops) (den) (state) (x) (sig) (i) (n) =
+    let s = list-at sig i
+    in let sn = list-at sig (i + 1)
+    in if state.bd-kind == 0 then (if euler-step-with ops den x sig i n == 0 then 0 else 0 - 1)
+    else if state.bd-kind == 1 then bd-sde ops den state x s sn i n
+    else if state.bd-kind == 2 then bd-2m ops den state x sig i n
+    else if state.bd-kind == 3 | state.bd-kind == 4 then bd-2m-sde ops den state x s sn i n
+    else if state.bd-kind == 5 then bd-2sa ops den state x s sn i n
+    else bd-3m ops den state x s sn i n
+
+  bd-drop-penult : List Real, Integer, List Real -> List Real
+  bd-drop-penult (sig) (i) (acc) = if i >= list-length sig then acc else bd-drop-penult sig (i + 1) (if i == list-length sig - 2 then acc else list-push acc (list-at sig i))
+
+  bd-sigmas : Integer, Integer -> List Real
+  bd-sigmas (kind) (steps) =
+    if kind == 6 then bd-drop-penult (sdxl-karras-sigmas (steps + 1)) 0 []
+    else if steps == 1 then [sm-pow (sm-pow (sm-discrete-sigma 999) (1.0 / 7.0)) 7.0, 0.0]
+    else sdxl-karras-sigmas steps

@@ -1,0 +1,338 @@
+Chapter: SparkPromptFile
+  cites Foreword chapter CCE
+
+ Spark's prompt file, parsed as the WPF original's PromptParser.Parse does
+ (D:\Projects\Spark\Spark\PromptParser.cs:30-101), over the Unicode code
+ points of the text. Each scan below reproduces one of the original's .NET
+ regexes: \s is .NET's whitespace set, \p{Pd} the Unicode dash punctuation
+ set, and the LORA line keeps .NET's lazy-name, optional-weight order.
+
+Section: Records
+
+  SparkPrompt = record {
+    sp-number : Integer,
+    sp-title : List Integer,
+    sp-series : List Integer,
+    sp-scene : List Integer,
+    sp-style : List Integer,
+    sp-lora : List Integer,
+    sp-weight-cents : Integer
+  }
+
+  SeriesMark = record {
+    sm-pos : Integer,
+    sm-name : List Integer
+  }
+
+  PromptMatch = record {
+    pm-start : Integer,
+    pm-end : Integer,
+    pm-number : Integer,
+    pm-title : List Integer
+  }
+
+  LoraHit = record {
+    lh-start : Integer,
+    lh-end : Integer,
+    lh-name : List Integer,
+    lh-cents : Integer
+  }
+
+Section: Characters
+
+ .NET's \s and String.Trim both use this set: the C0 controls 9 to 13, the
+ next-line control, and Unicode's space, line and paragraph separators.
+
+  spf-ws : Integer -> Boolean
+  spf-ws (c) =
+    (c >= 9 & c <= 13) | c == 32 | c == 133 | c == 160 | c == 5760
+    | (c >= 8192 & c <= 8202) | c == 8232 | c == 8233 | c == 8239 | c == 8287 | c == 12288
+
+ Unicode's Dash_Punctuation category, which the original's \p{Pd} matches.
+
+  spf-dash : Integer -> Boolean
+  spf-dash (c) =
+    c == 45 | c == 1418 | c == 1470 | c == 5120 | c == 6150 | (c >= 8208 & c <= 8213)
+    | c == 11799 | c == 11802 | c == 11834 | c == 11835 | c == 11840 | c == 11869
+    | c == 12316 | c == 12336 | c == 12448 | c == 65073 | c == 65074 | c == 65112
+    | c == 65123 | c == 65293 | c == 69293
+
+  spf-digit : Integer -> Boolean
+  spf-digit (c) = c >= 48 & c <= 57
+
+  spf-word : Integer -> Boolean
+  spf-word (c) =
+    spf-digit c | (c >= 65 & c <= 90) | (c >= 97 & c <= 122) | c == 95
+    | (c >= 192 & spf-ws c == False & spf-dash c == False)
+
+  spf-at : List Integer, Integer -> Integer
+  spf-at (u) (i) = if i >= 0 & i < list-length u then list-at u i else 0 - 1
+
+Section: Slices
+
+  spf-slice-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  spf-slice-loop (u) (i) (e) (acc) =
+    if i >= e then acc
+    else spf-slice-loop u (i + 1) e (list-push acc (list-at u i))
+
+  spf-slice : List Integer, Integer, Integer -> List Integer
+  spf-slice (u) (a) (b) = spf-slice-loop u a b []
+
+  spf-trim-start : List Integer, Integer -> Integer
+  spf-trim-start (u) (i) = if i < list-length u & spf-ws (list-at u i) then spf-trim-start u (i + 1) else i
+
+  spf-trim-end : List Integer, Integer -> Integer
+  spf-trim-end (u) (e) = if e > 0 & spf-ws (list-at u (e - 1)) then spf-trim-end u (e - 1) else e
+
+  spf-trim : List Integer -> List Integer
+  spf-trim (u) =
+    let a = spf-trim-start u 0
+    in spf-slice u a (spf-trim-end u (list-length u))
+
+  spf-append-loop : List Integer, List Integer, Integer -> List Integer
+  spf-append-loop (acc) (v) (i) =
+    if i >= list-length v then acc
+    else spf-append-loop (list-push acc (list-at v i)) v (i + 1)
+
+  spf-cat : List Integer, List Integer -> List Integer
+  spf-cat (a) (b) = spf-append-loop (spf-append-loop [] a 0) b 0
+
+  spf-lit : Text -> List Integer
+  spf-lit (t) = text-to-unicode-bytes t
+
+  spf-starts : List Integer, Integer, List Integer, Integer -> Boolean
+  spf-starts (u) (i) (w) (j) =
+    if j >= list-length w then True
+    else if spf-at u (i + j) /= list-at w j then False
+    else spf-starts u i w (j + 1)
+
+  spf-index-of : List Integer, List Integer, Integer -> Integer
+  spf-index-of (u) (w) (i) =
+    if i + list-length w > list-length u then 0 - 1
+    else if spf-starts u i w 0 then i
+    else spf-index-of u w (i + 1)
+
+  spf-skip : List Integer, Integer -> Integer
+  spf-skip (u) (i) = if spf-ws (spf-at u i) then spf-skip u (i + 1) else i
+
+  spf-skip-digits : List Integer, Integer -> Integer
+  spf-skip-digits (u) (i) = if spf-digit (spf-at u i) then spf-skip-digits u (i + 1) else i
+
+  spf-skip-word : List Integer, Integer -> Integer
+  spf-skip-word (u) (i) = if spf-word (spf-at u i) then spf-skip-word u (i + 1) else i
+
+  spf-line-end : List Integer, Integer -> Integer
+  spf-line-end (u) (i) = if i >= list-length u | list-at u i == 10 then i else spf-line-end u (i + 1)
+
+  spf-number : List Integer, Integer, Integer, Integer -> Integer
+  spf-number (u) (i) (e) (acc) =
+    if i >= e then acc
+    else spf-number u (i + 1) e (acc * 10 + list-at u i - 48)
+
+Section: Series Headers
+
+ ^SERIES\s+\w+:\s+(.+)$ at every line start; the capture runs to the line's end.
+
+  spf-series-at : List Integer, Integer -> List SeriesMark
+  spf-series-at (u) (i) =
+    let a = i + 6
+    in let b = spf-skip u a
+    in let c = spf-skip-word u b
+    in if spf-starts u i (spf-lit "SERIES") 0 == False | b == a | c == b | spf-at u c /= 58 then []
+    else let d = spf-skip u (c + 1)
+    in let e = spf-line-end u d
+    in if d == c + 1 | e == d then [] else [SeriesMark { sm-pos = i, sm-name = spf-trim (spf-slice u d e) }]
+
+  spf-series-loop : List Integer, Integer, List SeriesMark -> List SeriesMark
+  spf-series-loop (u) (i) (acc) =
+    if i >= list-length u then acc
+    else let here = if i == 0 | list-at u (i - 1) == 10 then spf-series-at u i else []
+    in spf-series-loop u (i + 1) (if list-length here > 0 then list-push acc (list-at here 0) else acc)
+
+  spf-series-before : List SeriesMark, Integer, Integer, List Integer -> List Integer
+  spf-series-before (ms) (pos) (i) (best) =
+    if i >= list-length ms then best
+    else let m = list-at ms i
+    in if m.sm-pos < pos then spf-series-before ms pos (i + 1) (m.sm-name) else best
+
+Section: Prompt Headers
+
+ PROMPT\s+(\d+)\s*\p{Pd}\s*"([^"]+)", matched left to right without overlap.
+
+  spf-prompt-at : List Integer, Integer -> List PromptMatch
+  spf-prompt-at (u) (i) =
+    let a = i + 6
+    in let b = spf-skip u a
+    in let c = spf-skip-digits u b
+    in let d = spf-skip u c
+    in let f = spf-skip u (d + 1)
+    in if spf-starts u i (spf-lit "PROMPT") 0 == False | b == a | c == b | spf-dash (spf-at u d) == False | spf-at u f /= 34 then []
+    else let g = spf-close-quote u (f + 1)
+    in if g < 0 | g == f + 1 then []
+    else [PromptMatch { pm-start = i, pm-end = g + 1, pm-number = spf-number u b c 0, pm-title = spf-trim (spf-slice u (f + 1) g) }]
+
+  spf-close-quote : List Integer, Integer -> Integer
+  spf-close-quote (u) (i) =
+    if i >= list-length u then 0 - 1
+    else if list-at u i == 34 then i
+    else spf-close-quote u (i + 1)
+
+  spf-prompt-loop : List Integer, Integer, List PromptMatch -> List PromptMatch
+  spf-prompt-loop (u) (i) (acc) =
+    if i >= list-length u then acc
+    else let here = spf-prompt-at u i
+    in if list-length here > 0 then spf-prompt-loop u ((list-at here 0).pm-end) (list-push acc (list-at here 0))
+    else spf-prompt-loop u (i + 1) acc
+
+Section: The LORA Line
+
+ ^LORA:\s*(.+?)(?::(\d+(?:\.\d+)?))?\s*$ with IgnoreCase, the first match in
+ the body. The lazy name ends at the first place where the rest of the line
+ is an optional weight and then whitespace only. The match's \s* then runs on
+ through any blank lines, stopping before the last newline of the run.
+
+  spf-lora-word : List Integer, Integer -> Boolean
+  spf-lora-word (u) (i) =
+    (spf-at u i == 76 | spf-at u i == 108) & (spf-at u (i + 1) == 79 | spf-at u (i + 1) == 111)
+    & (spf-at u (i + 2) == 82 | spf-at u (i + 2) == 114) & (spf-at u (i + 3) == 65 | spf-at u (i + 3) == 97) & spf-at u (i + 4) == 58
+
+  spf-all-ws : List Integer, Integer, Integer -> Boolean
+  spf-all-ws (u) (i) (e) = if i >= e then True else if spf-ws (list-at u i) then spf-all-ws u (i + 1) e else False
+
+ The weight's value in hundredths, from its digits, rounded half up.
+
+  spf-cents : List Integer, Integer, Integer -> Integer
+  spf-cents (u) (i) (e) =
+    let dot = spf-digits-end u i e
+    in let whole = spf-number u i dot 0
+    in let d1 = if dot + 1 < e then list-at u (dot + 1) - 48 else 0
+    in let d2 = if dot + 2 < e then list-at u (dot + 2) - 48 else 0
+    in let d3 = if dot + 3 < e then list-at u (dot + 3) - 48 else 0
+    in whole * 100 + d1 * 10 + d2 + (if d3 >= 5 then 1 else 0)
+
+  spf-digits-end : List Integer, Integer, Integer -> Integer
+  spf-digits-end (u) (i) (e) = if i < e & spf-digit (list-at u i) then spf-digits-end u (i + 1) e else i
+
+ The weight group's end when the rest [i, e) starts with :\d+(\.\d+)?, else -1.
+
+  spf-weight-end : List Integer, Integer, Integer -> Integer
+  spf-weight-end (u) (i) (e) =
+    let a = spf-digits-end u (i + 1) e
+    in if i >= e | list-at u i /= 58 | a == i + 1 then 0 - 1
+    else if a < e & list-at u a == 46 & a + 1 < e & spf-digit (list-at u (a + 1)) then spf-digits-end u (a + 1) e
+    else a
+
+  spf-lora-name : List Integer, Integer, Integer, Integer -> List LoraHit
+  spf-lora-name (u) (b) (k) (le) =
+    if k > le then []
+    else let w = spf-weight-end u k le
+    in if w >= 0 & spf-all-ws u w le then [LoraHit { lh-start = 0, lh-end = le, lh-name = spf-trim (spf-slice u b k), lh-cents = spf-cents u (k + 1) w }]
+    else if spf-all-ws u k le then [LoraHit { lh-start = 0, lh-end = le, lh-name = spf-trim (spf-slice u b k), lh-cents = 80 }]
+    else spf-lora-name u b (k + 1) le
+
+  spf-last-newline : List Integer, Integer, Integer, Integer -> Integer
+  spf-last-newline (u) (i) (e) (last) =
+    if i >= e then last
+    else spf-last-newline u (i + 1) e (if list-at u i == 10 then i else last)
+
+  spf-lora-at : List Integer, Integer -> List LoraHit
+  spf-lora-at (u) (i) =
+    let b = spf-skip u (i + 5)
+    in let le = spf-line-end u b
+    in if spf-lora-word u i == False | b >= list-length u then []
+    else let hit = spf-lora-name u b (b + 1) le
+    in if list-length hit == 0 then []
+    else let run = spf-skip u le
+    in let stop = if run >= list-length u then run else spf-last-newline u le run le
+    in [LoraHit { lh-start = i, lh-end = stop, lh-name = (list-at hit 0).lh-name, lh-cents = (list-at hit 0).lh-cents }]
+
+  spf-lora-loop : List Integer, Integer -> List LoraHit
+  spf-lora-loop (u) (i) =
+    if i >= list-length u then []
+    else let here = if i == 0 | list-at u (i - 1) == 10 then spf-lora-at u i else []
+    in if list-length here > 0 then here else spf-lora-loop u (i + 1)
+
+Section: Paragraphs
+
+ Regex.Split on \n\s*\n, each piece trimmed, empty pieces dropped: a split
+ falls at every whitespace run holding two or more newlines.
+
+  spf-newlines : List Integer, Integer, Integer, Integer -> Integer
+  spf-newlines (u) (i) (e) (n) = if i >= e then n else spf-newlines u (i + 1) e (if list-at u i == 10 then n + 1 else n)
+
+  spf-paras : List Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  spf-paras (u) (start) (i) (acc) =
+    if i >= list-length u then spf-keep acc (spf-trim (spf-slice u start i))
+    else if spf-ws (list-at u i) then
+      (let e = spf-skip u i
+      in if spf-newlines u i e 0 >= 2 then spf-paras u e e (spf-keep acc (spf-trim (spf-slice u start i)))
+      else spf-paras u start e acc)
+    else spf-paras u start (i + 1) acc
+
+  spf-keep : List (List Integer), List Integer -> List (List Integer)
+  spf-keep (acc) (p) = if list-length p == 0 then acc else list-push acc p
+
+  spf-join-paras : List (List Integer), Integer, Integer, List Integer -> List Integer
+  spf-join-paras (ps) (i) (e) (acc) =
+    if i >= e then acc
+    else spf-join-paras ps (i + 1) e (if i == 0 then list-at ps 0 else spf-cat (spf-cat acc [10, 10]) (list-at ps i))
+
+Section: Parse
+
+  spf-body-end : List Integer, Integer, Integer -> Integer
+  spf-body-end (u) (s) (e) =
+    let prod = spf-index-of u (spf-lit "PRODUCTION NOTES") s
+    in let e2 = if prod >= 0 & prod < e then prod else e
+    in let ser = spf-index-of u (spf-lit "SERIES ") s
+    in if ser >= 0 & ser < e2 then ser else e2
+
+  spf-strip-lora : List Integer, List LoraHit -> List Integer
+  spf-strip-lora (body) (hit) =
+    if list-length hit == 0 then body
+    else let h = list-at hit 0
+    in spf-trim (spf-cat (spf-slice body 0 (spf-trim-end body (h.lh-start))) (spf-slice body (spf-trim-start body (h.lh-end)) (list-length body)))
+
+  spf-prompt : List Integer, List SeriesMark, List PromptMatch, Integer -> SparkPrompt
+  spf-prompt (u) (ms) (pms) (i) =
+    let m = list-at pms i
+    in let next = if i + 1 < list-length pms then (list-at pms (i + 1)).pm-start else list-length u
+    in let raw = spf-trim (spf-slice u (m.pm-end) (spf-body-end u (m.pm-end) next))
+    in let hit = spf-lora-loop raw 0
+    in let body = spf-strip-lora raw hit
+    in let ps = spf-paras body 0 0 []
+    in let n = list-length ps
+    in SparkPrompt {
+      sp-number = m.pm-number,
+      sp-title = m.pm-title,
+      sp-series = spf-series-before ms (m.pm-start) 0 [],
+      sp-scene = if n >= 2 then spf-join-paras ps 0 (n - 1) [] else body,
+      sp-style = if n >= 2 then list-at ps (n - 1) else [],
+      sp-lora = if list-length hit > 0 then (list-at hit 0).lh-name else [],
+      sp-weight-cents = if list-length hit > 0 then (list-at hit 0).lh-cents else 80
+    }
+
+  spf-prompts-loop : List Integer, List SeriesMark, List PromptMatch, Integer, List SparkPrompt -> List SparkPrompt
+  spf-prompts-loop (u) (ms) (pms) (i) (acc) =
+    if i >= list-length pms then acc
+    else spf-prompts-loop u ms pms (i + 1) (list-push acc (spf-prompt u ms pms i))
+
+  spark-prompts-parse : Text -> List SparkPrompt
+  spark-prompts-parse (t) =
+    let u = text-to-unicode-bytes t
+    in spf-prompts-loop u (spf-series-loop u 0 []) (spf-prompt-loop u 0 []) 0 []
+
+Section: Filename
+
+ The original's Filename: prompt_NN_ and the title lowered, spaces to
+ underscores, then everything but a-z, 0-9 and _ removed.
+
+  spf-file-loop : List Integer, Integer, List Integer -> List Integer
+  spf-file-loop (t) (i) (acc) =
+    if i >= list-length t then acc
+    else let c0 = list-at t i
+    in let c = if c0 >= 65 & c0 <= 90 then c0 + 32 else (if c0 == 32 then 95 else c0)
+    in spf-file-loop t (i + 1) (if (c >= 97 & c <= 122) | spf-digit c | c == 95 then list-push acc c else acc)
+
+  spark-prompt-filename : SparkPrompt -> Text
+  spark-prompt-filename (p) =
+    "prompt_" & (if p.sp-number < 10 then "0" else "") & show (p.sp-number) & "_" & unicode-bytes-to-text (spf-file-loop (p.sp-title) 0 [])

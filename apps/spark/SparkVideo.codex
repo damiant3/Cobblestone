@@ -1,0 +1,110 @@
+Chapter: SparkVideo
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Game chapter Rasterizer
+  cites Spark chapter VideoCompositor
+  cites Spark chapter Timeline
+  cites Spark chapter AnimPlayer
+  cites Spark chapter AnimChannel
+  cites Spark chapter Keyframe
+
+Section: Project
+
+  SvClip = record { sv-file : Text, sv-frames : Integer, sv-fade : Integer }
+  SvProject = record { sv-fps : Integer, sv-prompt : Text, sv-audio : Text, sv-clips : List SvClip, sv-error : Text }
+  SvImage = record { svi-file : Text, svi-frame : Framebuf }
+
+  sv-new : SvProject
+  sv-new = SvProject { sv-fps = 24, sv-prompt = "", sv-audio = "", sv-clips = [], sv-error = "" }
+
+  sv-array : JsonValue -> List JsonValue
+  sv-array (v) = when v
+    is JsonArray (xs) -> xs
+    is otherwise -> []
+
+  sv-int : JsonValue, Text, Integer -> Integer
+  sv-int (v) (key) (fallback) = when json-get v key
+    is Just (JsonInt (n)) -> n
+    is otherwise -> fallback
+
+  sv-clips-read : List JsonValue, Integer, List SvClip -> List SvClip
+  sv-clips-read (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else let v = list-at xs i
+    in sv-clips-read xs (i + 1) (list-push acc (SvClip { sv-file = json-get-str v "file" "", sv-frames = sv-int v "frames" 0, sv-fade = sv-int v "fade" (0 - 1) }))
+
+  sv-path-ok : Text -> Boolean
+  sv-path-ok (p) = text-length p > 0 & substring p 0 1 /= "/" & text-contains p ".." == False & text-contains p ":" == False & text-contains p "\\" == False
+
+  sv-check-clips : List SvClip, Integer -> Text
+  sv-check-clips (xs) (i) =
+    if list-length xs > 128 then "A timeline can hold at most 128 stills."
+    else if i >= list-length xs then ""
+    else let c = list-at xs i
+    in if sv-path-ok (c.sv-file) == False then "A clip must name a file inside the project."
+    else if c.sv-frames < 1 | c.sv-frames > 36000 then "Clip duration must be 1 to 36000 frames."
+    else if c.sv-fade < 0 | c.sv-fade > c.sv-frames then "A crossfade must fit inside its clip."
+    else sv-check-clips xs (i + 1)
+
+  sv-read : Text -> SvProject
+  sv-read (s) =
+    if text-length s == 0 then sv-new
+    else when json-parse s
+      is None -> __record-set sv-new "sv-error" "The timeline is not valid JSON."
+      is Just (v) -> (let fps = sv-int v "fps" 0
+        in let raw = when json-get v "clips" is Just (a) -> a is None -> JsonNull
+        in let clips = sv-clips-read (sv-array raw) 0 []
+        in let err = if sv-int v "version" 0 /= 1 then "Unsupported timeline version."
+          else if fps < 1 | fps > 60 then "Frame rate must be 1 to 60."
+          else when raw is JsonArray (xs) -> sv-check-clips clips 0 is otherwise -> "The timeline needs a clips array."
+        in let audio = json-get-str v "audio" ""
+        in SvProject { sv-fps = fps, sv-prompt = json-get-str v "prompt" "", sv-audio = audio, sv-clips = clips, sv-error = if text-length audio > 0 & sv-path-ok audio == False then "Audio must name a file inside the project." else err })
+
+  sv-clips-json : List SvClip, Integer, List JsonValue -> List JsonValue
+  sv-clips-json (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else let c = list-at xs i
+    in sv-clips-json xs (i + 1) (list-push acc (JsonObject [json-pair "file" (JsonStr (c.sv-file)), json-pair "frames" (JsonInt (c.sv-frames)), json-pair "fade" (JsonInt (c.sv-fade))]))
+
+  sv-write : SvProject -> Text
+  sv-write (p) = json-emit (JsonObject [json-pair "version" (JsonInt 1), json-pair "fps" (JsonInt (p.sv-fps)), json-pair "prompt" (JsonStr (p.sv-prompt)), json-pair "audio" (JsonStr (p.sv-audio)), json-pair "clips" (JsonArray (sv-clips-json (p.sv-clips) 0 []))])
+
+  sv-total : List SvClip, Integer, Integer -> Integer
+  sv-total (xs) (i) (n) = if i >= list-length xs then n else sv-total xs (i + 1) (n + (list-at xs i).sv-frames)
+
+  sv-index : List SvClip, Integer, Integer -> Integer
+  sv-index (xs) (frame) (i) = if i >= list-length xs then 0 - 1 else if frame < (list-at xs i).sv-frames then i else sv-index xs (frame - (list-at xs i).sv-frames) (i + 1)
+
+  sv-start : List SvClip, Integer, Integer, Integer -> Integer
+  sv-start (xs) (limit) (i) (n) = if i >= limit then n else sv-start xs limit (i + 1) (n + (list-at xs i).sv-frames)
+
+  sv-player : SvProject -> TimelineState
+  sv-player (p) =
+    let ap = anim-player-new anim-channel-set-new (p.sv-fps)
+    in let last = sv-total (p.sv-clips) 0 0 - 1
+    in timeline-new (__record-set ap "ap-end-frame" (if last < 0 then 0 else last)) 80
+
+Section: Preview
+
+  sv-image : List SvImage, Text, Integer, Integer, Integer -> Framebuf
+  sv-image (images) (path) (i) (w) (h) =
+    if i >= list-length images then fb-new w h 0
+    else if (list-at images i).svi-file == path then (list-at images i).svi-frame
+    else sv-image images path (i + 1) w h
+
+  sv-layer : Framebuf, Real -> VideoLayer
+  sv-layer (fb) (opacity) = VideoLayer { vl-name = "still", vl-frames = [fb], vl-frame-count = 1, vl-in-point = 0, vl-out-point = 1, vl-opacity = opacity, vl-visible = True }
+
+  sv-render : SvProject, List SvImage, Integer, Integer, Integer -> Framebuf
+  sv-render (p) (images) (frame) (w) (h) =
+    let xs = p.sv-clips
+    in let i = sv-index xs frame 0
+    in if i < 0 then fb-new w h 0
+    else let clip = list-at xs i
+    in let local = frame - sv-start xs i 0 0
+    in let comp = compositor-add-layer (compositor-new w h (p.sv-fps) 1) (sv-layer (sv-image images (clip.sv-file) 0 w h) 1.0)
+    in let fade = clip.sv-fade
+    in if fade == 0 | i + 1 >= list-length xs | local < clip.sv-frames - fade then compositor-render-frame comp 0
+    else let track = keytrack-add-linear (keytrack-add-linear (keytrack-new "crossfade") (clip.sv-frames - fade) 0.0) (clip.sv-frames) 1.0
+    in let next = sv-image images ((list-at xs (i + 1)).sv-file) 0 w h
+    in compositor-render-frame (compositor-add-layer comp (sv-layer next (keytrack-eval track local))) 0

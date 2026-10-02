@@ -17,9 +17,8 @@ is that every game works before the CobblestoneWeb deploy. Magic is skipped
 by his direction (2026-09-01).
 
 **All 35 rows of `apps/games/build-wasm.ps1` build and pass both graders**,
-their own `<prefix>-verify.mjs` and `ar-verify.mjs`, measured 2026-09-25 on
-seed 9093EDA39488F68D with the wasm plug rebuilt first; every module was
-rewritten by that run.
+their own `<prefix>-verify.mjs` and `ar-verify.mjs` (790 arms), measured
+2026-09-30 on seed B3256BF8B4CC8327 with every module rebuilt.
 
 **Rebuild the wasm plug before anything else.** Every
 `apps/landing/web/games/*.wasm` and the plug at
@@ -41,6 +40,37 @@ scratch and compare bytes, or run the module's grader
 (`apps/fishtank/ft-verify.mjs`) by hand before a publish.
 
 ## Rules campaign: open
+
+## CodexMagic integration
+
+**The named skill ladder needs validation on shuffled play.** The MAIN33929
+measurement used gemstone-first unshuffled starter order, not live New Game
+setup. Its 400 runs/profile gave Master and Expert 41 wins each, but those
+numbers do not describe shuffled play. Root's 2026-10-01 assignment requires
+every adjacent level to beat the lower level by more than two paired standard
+errors, without relabeling. AIGameplay's Skill Levels section owns the locked
+holdout, approved shuffle correction and reporting contract. Tuning remains open.
+
+**Ranked skill-level enforcement is open.** `/game/new` has no live
+ranked/casual selector. Requiring Master in ranked play needs that mode contract
+and wiring; the current skill-level ranking unit does not invent one
+(root ruling 2026-10-01).
+
+| Source | Open JSON gap outside the string-escaping repair |
+|---|---|
+| `GameServer.codex:439` | The classic-games `respond-error` quotes arbitrary message text raw, bypassing the normal `Encode/Json` response construction. Source-inspected 2026-10-01 at main 33668. |
+| `codexmagic/PlaneServer.codex:642` | RPG status emits `hp` as an unquoted `current/max` fragment, which is not a JSON number. Choose a typed representation and grade the response separately from escaping. |
+
+**Crafting's dormant compilation unit has a Material name collision.**
+`codexmagic/Crafting.codex` declares a `Material` record and cites
+`RPGEngine.codex`, whose `ItemType` has a `Material` variant. A Crafting-only
+citer on unchanged depot source fails at `RPGEngine.codex:253` with
+`CDX2001: Rec:Material vs Sum:ItemType` (2026-09-30, seed
+`AF9057E86BDB4FD2`). Disambiguate the names before integrating Crafting.
+No source in `apps` or `codex/test` cites Crafting at that measurement;
+Crafting's own GameState citation is unused. A synthetic citer that also
+adds the card-game Engine introduces a separate `advance-turn` collision
+with RPGEngine and does not represent a live application unit.
 
 ## Where game defects hide
 

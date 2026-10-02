@@ -1,0 +1,115 @@
+Chapter: SparkModelFile
+  cites AI chapter SafeTensors
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter LoraNames
+
+ A picked .safetensors file classified from its header alone.
+
+Section: Checkpoints
+
+ codex_image's own test (apps/diffusion/serve.ps1, Is-Flux; Img2Img.codex,
+ img2img-model): Flux holds the first double block's attention; otherwise the
+ first family whose whole layout binds, SDXL before SD1.5.
+
+  spark-checkpoint-family : SafeTensorFile -> Text
+  spark-checkpoint-family (f) =
+    if f.st-valid == False then ""
+    else when st-find-tensor f "double_blocks.0.img_attn.qkv.weight"
+      is Just (m) -> "flux"
+      is None -> if parts-complete ((layout-bind f sdxl-layout).lb-parts) 0 then "sdxl"
+        else if parts-complete ((layout-bind f sd15-layout).lb-parts) 0 then "sd15"
+        else ""
+
+Section: LoRAs
+
+ A LoRA belongs to a family when codex_image's merge names every tensor it
+ holds: each tensor is a module that Lora.codex (lora-slots, lora-module) or
+ FluxLora.codex (flux-lora-slots) finds for a weight of that family's
+ checkpoint, followed by the module's own suffix. When every tensor is named
+ in more than one family the answer is "ambiguous"; in none, "none".
+
+  sf-lora-file : SafeTensorFile -> LoraFile
+  sf-lora-file (f) = LoraFile { lf-path = "", lf-file = f, lf-names = name-index (tensor-names (f.st-tensors) 0 []), lf-strength = 1.0 }
+
+  sf-found : LoraFile, List LoraSlot, Integer, List Text -> List Text
+  sf-found (l) (slots) (i) (acc) =
+    if i >= list-length slots then acc
+    else let m = lora-module l (list-at slots i) 0
+    in sf-found l slots (i + 1) (if m == "" then acc else list-push acc m)
+
+  sf-layout-modules : LoraFile, List LayoutPart, Integer, Integer, Integer, List Text -> List Text
+  sf-layout-modules (l) (parts) (p) (t) (res) (acc) =
+    if p >= list-length parts then acc
+    else let part = list-at parts p
+    in if t >= list-length (part.lp-required) then sf-layout-modules l parts (p + 1) 0 res acc
+    else let lt = list-at (part.lp-required) t
+    in let rows = if list-length (lt.lt-shape) > 0 then list-at (lt.lt-shape) 0 else 0
+    in sf-layout-modules l parts p (t + 1) res (sf-found l (lora-slots (part.lp-prefix & lt.lt-name) rows res sdxl-te-l sdxl-te-g) 0 acc)
+
+ Flux.1's transformer: 19 double blocks and 38 single blocks (the released
+ configuration's depth and depth_single_blocks); guidance_in is dev's only.
+
+  sf-flux-double : List Text
+  sf-flux-double = ["img_attn.proj", "img_attn.qkv", "img_mlp.0", "img_mlp.2", "img_mod.lin", "txt_attn.proj", "txt_attn.qkv", "txt_mlp.0", "txt_mlp.2", "txt_mod.lin"]
+
+  sf-flux-single : List Text
+  sf-flux-single = ["linear1", "linear2", "modulation.lin"]
+
+  sf-flux-rest : List Text
+  sf-flux-rest = ["img_in", "txt_in", "time_in.in_layer", "time_in.out_layer", "vector_in.in_layer", "vector_in.out_layer", "guidance_in.in_layer", "guidance_in.out_layer", "final_layer.linear", "final_layer.adaLN_modulation.1"]
+
+  sf-blocks : Text, Integer, Integer, List Text, Integer, List Text -> List Text
+  sf-blocks (p) (b) (n) (ms) (j) (acc) =
+    if b >= n then acc
+    else if j >= list-length ms then sf-blocks p (b + 1) n ms 0 acc
+    else sf-blocks p b n ms (j + 1) (list-push acc (p & show b & "." & list-at ms j & ".weight"))
+
+  sf-weights : List Text, Integer, List Text -> List Text
+  sf-weights (ms) (i) (acc) = if i >= list-length ms then acc else sf-weights ms (i + 1) (list-push acc (list-at ms i & ".weight"))
+
+  sf-flux-names : List Text
+  sf-flux-names = sf-weights sf-flux-rest 0 (sf-blocks "single_blocks." 0 38 sf-flux-single 0 (sf-blocks "double_blocks." 0 19 sf-flux-double 0 []))
+
+  sf-flux-modules : LoraFile, List Text, Integer, List Text -> List Text
+  sf-flux-modules (l) (names) (i) (acc) = if i >= list-length names then acc else sf-flux-modules l names (i + 1) (sf-found l (flux-lora-slots (list-at names i) 0) 0 acc)
+
+ Whether every tensor name is a found module, a dot, and a suffix.
+
+  sf-named-at : NameIndex, Text, Integer -> Boolean
+  sf-named-at (found) (k) (i) =
+    if i >= text-length k then False
+    else if char-code-at k i == char-code-at "." 0 & name-find found (substring k 0 i) >= 0 then True
+    else sf-named-at found k (i + 1)
+
+  sf-all-named : NameIndex, List Text, Integer -> Boolean
+  sf-all-named (found) (ks) (i) =
+    if i >= list-length ks then True
+    else if sf-named-at found (list-at ks i) 0 then sf-all-named found ks (i + 1)
+    else False
+
+  sf-fits : List Text, List Text -> Boolean
+  sf-fits (keys) (modules) = list-length keys > 0 & list-length modules > 0 & sf-all-named (name-index modules) keys 0
+
+  spark-lora-family : SafeTensorFile -> Text
+  spark-lora-family (f) =
+    if f.st-valid == False then "none"
+    else let l = sf-lora-file f
+    in let keys = tensor-names (f.st-tensors) 0 []
+    in let xl = sf-fits keys (sf-layout-modules l (sdxl-layout.cl-parts) 0 0 (sdxl-unet-layout-config.ul-res-blocks) [])
+    in let v15 = sf-fits keys (sf-layout-modules l (sd15-layout.cl-parts) 0 0 (sd15-unet-layout-config.ul-res-blocks) [])
+    in let fx = sf-fits keys (sf-layout-modules l (flux-clip-l-layout.cl-parts) 0 0 0 (sf-flux-modules l sf-flux-names 0 []))
+    in let n = (if xl then 1 else 0) + (if v15 then 1 else 0) + (if fx then 1 else 0)
+    in if n > 1 then "ambiguous"
+    else if xl then "sdxl"
+    else if v15 then "sd15"
+    else if fx then "flux"
+    else "none"
+
+  spark-file-family : SafeTensorFile -> Text
+  spark-file-family (f) =
+    let c = spark-checkpoint-family f
+    in if c /= "" then c & " checkpoint"
+    else let l = spark-lora-family f
+    in if l == "none" then "none" else l & " LoRA"

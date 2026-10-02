@@ -3,13 +3,9 @@ Chapter: DeskPreviewOwnTest
   cites Works chapter GopFont
   cites Kernel chapter BitmapFont
   cites UI chapter BoxModel
+  cites UI chapter Widget
+  cites UI chapter Layout
   cites Foreword chapter Console
-
- Which pane supplies its own preview, and that the bubble asks before it
- blits. Two slots are filled with a sentinel colour no palette carries. The
- pane that declines leaves the sentinel in the bubble; the pane that supplies
- paints its body colour over it. The wiring is the only thing between the two
- answers: an open that never asks blits the sentinel for both.
 
 Section: Body
 
@@ -29,6 +25,12 @@ Section: Body
 
   po-px : Integer, Integer, Integer -> Integer
   po-px (fb) (x) (y) = peek-32 fb ((y * po-w + x) * 4)
+
+  po-all : Integer, Integer, Integer, Integer -> Boolean
+  po-all (buf) (n) (color) (i) =
+    if i >= n then True
+    else if peek-32 buf (i * 4) /= color then False
+    else po-all buf n color (i + 1)
 
   po-ttf : GopFont = GopFont { gf-ok = False, gf-base = 0, gf-gw = 0, gf-gh = 0, gf-asc = 0, gf-cap = 0 }
 
@@ -50,6 +52,13 @@ Section: Entry
     in let r = dk-prev-bubble 300 (po-h - 40) 80 30 dk-edge-bottom po-w po-h
     in let cx = r.lr-x + dk-prev-w / 2
     in let cy = r.lr-y + dk-prev-h / 2
+    in let pixels = dk-prev-w * dk-prev-h
+    in let probe = alloc-bytes ((pixels + 2) * 4)
+    in let marked = po-fill probe (pixels + 2) po-mark 0
+    in let blank = widget-stack "blank" DirColumn 0 []
+    in let drawn = dk-prev-render (probe + 4) font po-ttf (dk-theme-ds ds) (dk-pal ds) blank
+    in let background = po-all (probe + 4) pixels ((dk-pal ds).pal-bg) 0
+    in let guards = peek-32 probe 0 == po-mark & peek-32 probe ((pixels + 1) * 4) == po-mark
     in act
       o1 <- dk-bub-open fb po-w po-h po-w font po-ttf ds cs desk-focus-cal r
       let kept = po-px fb cx cy == po-mark
@@ -62,6 +71,7 @@ Section: Entry
         in act
           print-line-uni ("own: clock " & po-yn (dk-prev-own desk-focus-clkp) & "  calendar " & po-yn (dk-prev-own desk-focus-cal) & "  files " & po-yn (dk-prev-own desk-focus-files))
           print-line-uni ("calendar keeps its snapshot " & po-yn kept & "  clock supplies its own " & po-yn own & "  slot rewritten " & po-yn slot & "  restored " & po-yn (po-px fb cx cy == po-bg))
+          print-line-uni ("transparent preview background " & po-yn background & "  buffer guards " & po-yn guards)
         end
       end
     end

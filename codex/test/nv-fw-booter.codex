@@ -1,0 +1,105 @@
+Chapter: NvFwBooterTest
+  cites Kernel chapter NvFirmware
+  cites Foreword chapter Maybe
+  cites Foreword chapter Format
+
+Section: Fixtures
+
+  bt-put : Integer, Integer, Integer, Integer -> Integer
+  bt-put (buf) (off) (value) (n) = if n <= 0 then 0 else let w = poke-byte buf off (bit-and value 255) in bt-put buf (off + 1) (bit-shru value 8) (n - 1)
+
+  bt-pattern : Integer, Integer, Integer, Integer, Integer -> Integer
+  bt-pattern (buf) (off) (size) (base) (i) = if i >= size then 0 else let w = poke-byte buf (off + i) (bit-and (base + i) 255) in bt-pattern buf off size base (i + 1)
+
+  bt-header : Integer, Integer, Integer, Integer -> Integer
+  bt-header (buf) (desc) (image) (size) =
+    let a = bt-put buf 0 #10DE 4
+    in let b = bt-put buf 4 1 4
+    in let c = bt-put buf 8 768 4
+    in let d = bt-put buf 12 desc 4
+    in let e = bt-put buf 16 image 4
+    in bt-put buf 20 size 4
+
+  bt-riscv : Integer -> Integer
+  bt-riscv (n) =
+    let buf = alloc-bytes 768
+    in let z = __memset buf 0 768
+    in let desc = 48 + n * 48
+    in let h = bt-header buf desc (256 + n * 128) (128 + n * 64)
+    in let v = bt-put buf desc 1 4
+    in let c0 = bt-put buf (desc + 48) (8 + n * 8) 4
+    in let c1 = bt-put buf (desc + 52) (24 + n * 8) 4
+    in let d0 = bt-put buf (desc + 40) (40 + n * 24) 4
+    in let d1 = bt-put buf (desc + 44) (16 + n * 8) 4
+    in let m0 = bt-put buf (desc + 32) (80 + n * 48) 4
+    in let m1 = bt-put buf (desc + 36) (32 + n * 16) 4
+    in let enabled = bt-put buf (desc + 56) 1 4
+    in let data = bt-pattern buf (256 + n * 128) (128 + n * 64) (20 + n) 0
+    in buf
+
+  bt-booter : Integer -> Integer
+  bt-booter (n) =
+    let buf = alloc-bytes 768
+    in let z = __memset buf 0 768
+    in let h = bt-header buf 32 (256 + n * 64) (96 + n * 32)
+    in let s0 = bt-put buf 32 (160 + n * 32) 4
+    in let s1 = bt-put buf 36 (32 + n * 16) 4
+    in let pl = bt-put buf 40 80 4
+    in let ps = bt-put buf 44 84 4
+    in let ns = bt-put buf 56 88 4
+    in let lh = bt-put buf 60 112 4
+    in let hs = bt-put buf 64 36 4
+    in let p0 = bt-put buf 80 (24 + n * 56) 4
+    in let p1 = bt-put buf 84 (16 + n * 8) 4
+    in let p2 = bt-put buf 88 (2 + n * 2) 4
+    in let d0 = bt-put buf 120 (64 + n * 32) 4
+    in let d1 = bt-put buf 124 16 4
+    in let apps = bt-put buf 128 1 4
+    in let c0 = bt-put buf 132 (4 + n * 12) 4
+    in let c1 = bt-put buf 136 (24 + n * 16) 4
+    in let sig = bt-pattern buf (160 + n * 32) (32 + n * 16) (128 + n) 0
+    in let img = bt-pattern buf (256 + n * 64) (96 + n * 32) (1 + n) 0
+    in buf
+
+  bt-sum : Integer, Integer, Integer, Integer, Integer -> Integer
+  bt-sum (buf) (off) (size) (i) (acc) = if i >= size then acc else bt-sum buf off size (i + 1) (acc + peek-byte buf (off + i))
+
+  bt-hex : Integer, Integer, Integer -> Text
+  bt-hex (buf) (size) (i) = if i >= size then "" else fmt-hex-pad (peek-byte buf i) 2 & bt-hex buf size (i + 1)
+
+  bt-report-riscv : Integer, Integer -> [Console] Nothing
+  bt-report-riscv (n) (buf) = act
+   when nv-gsp-bootloader buf 768
+    is None -> print-line-uni ("RISCV " & show n & " REFUSED")
+    is Just (p) -> print-line-uni ("RISCV " & show n & " " & show p.image-offset & " " & show p.image-size & " " & show p.descriptor-offset & " " & show p.code-offset & " " & show p.code-size & " " & show p.data-offset & " " & show p.data-size & " " & show p.manifest-offset & " " & show p.manifest-size & " " & show (bt-sum buf p.image-offset p.image-size 0 0))
+  end
+
+  bt-report : Integer, Integer, Integer -> [Console] Nothing
+  bt-report (n) (buf) (size) = act
+   when nv-gsp-booter-load buf size
+    is None -> print-line-uni ("BOOTER " & show n & " REFUSED")
+    is Just (p) -> act
+     print-line-uni ("BOOTER " & show n & " " & show p.image-offset & " " & show p.image-size & " " & show p.signature-offset & " " & show p.signature-size & " " & show p.patch-offset & " " & show p.code-offset & " " & show p.code-size & " " & show p.data-offset & " " & show p.data-size)
+     when nv-gsp-booter-image buf size
+      is None -> print-line-uni "PATCH REFUSED"
+      is Just (image) -> print-line-uni ("PATCH " & show n & " " & show image.size & " " & bt-hex image.buffer image.size 0)
+     print-line-uni ("SOURCE " & show n & " " & show (bt-sum buf p.image-offset p.image-size 0 0))
+    end
+  end
+
+  opening : [Console] Nothing = act
+   bt-report-riscv 0 (bt-riscv 0)
+   bt-report-riscv 1 (bt-riscv 1)
+   bt-report 0 (bt-booter 0) 768
+   bt-report 1 (bt-booter 1) 768
+   bt-report 2 (bt-booter 0) 23
+   let b = bt-booter 0 in let w = bt-put b 88 0 4 in bt-report 3 b 768
+   let b = bt-booter 0 in let w = bt-put b 80 97 4 in bt-report 4 b 768
+   let b = bt-booter 0 in let w = bt-put b 84 32 4 in bt-report 5 b 768
+   let b = bt-booter 0 in let w = bt-put b 128 0 4 in bt-report 6 b 768
+   let b = bt-booter 0 in let w = bt-put b 132 97 4 in bt-report 7 b 768
+   let b = bt-booter 0 in let w = bt-put b 12 750 4 in bt-report 8 b 768
+   let b = bt-riscv 0 in let w = bt-put b 12 750 4 in bt-report-riscv 2 b
+   let b = bt-riscv 0 in let w = bt-put b 96 200 4 in bt-report-riscv 3 b
+   let b = bt-riscv 0 in let w = bt-put b 16 740 4 in bt-report-riscv 4 b
+  end

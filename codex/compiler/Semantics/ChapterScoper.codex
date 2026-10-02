@@ -9,7 +9,8 @@ Chapter: Chapter Scoper
   cites Codex chapter Collections (bsearch-text-set)
   cites Codex chapter SkipListText (skip-list-text-empty, skip-list-text-has, skip-list-text-insert)
   cites Codex chapter Name (opening-entry-point)
-  cites Codex chapter CdxCodes (cdx-duplicate-definition, cdx-shadows-builtin, cdx-collides-across-chapters)
+  cites Codex chapter CdxCodes (cdx-duplicate-definition, cdx-shadows-builtin)
+  cites Codex chapter CdxCodes (cdx-collides-across-chapters)
 
 Section: Chapter Assignment
   ChapterAssignment = record {
@@ -44,12 +45,17 @@ Section: Collision Detection
     in if pos < slen then
       if list-at seen-names pos == a.def-name then
         if list-at seen-slugs pos /= a.chapter-slug then
-          find-collisions-loop assignments (i + 1) len (skip-list-text-insert acc (a.def-name)) seen-names seen-slugs
+          let next = skip-list-text-insert acc (a.def-name)
+          in find-collisions-loop assignments (i + 1) len next seen-names seen-slugs
         else find-collisions-loop assignments (i + 1) len acc seen-names seen-slugs
       else
-        find-collisions-loop assignments (i + 1) len acc (list-insert-at seen-names pos (a.def-name)) (list-insert-at seen-slugs pos (a.chapter-slug))
+        let names = list-insert-at seen-names pos (a.def-name)
+        in let slugs = list-insert-at seen-slugs pos (a.chapter-slug)
+        in find-collisions-loop assignments (i + 1) len acc names slugs
     else
-      find-collisions-loop assignments (i + 1) len acc (list-insert-at seen-names pos (a.def-name)) (list-insert-at seen-slugs pos (a.chapter-slug))
+      let names = list-insert-at seen-names pos (a.def-name)
+      in let slugs = list-insert-at seen-slugs pos (a.chapter-slug)
+      in find-collisions-loop assignments (i + 1) len acc names slugs
 
   count-openings : List ChapterAssignment, Integer, Integer, Integer -> Integer
   count-openings (assignments) (i) (len) (count) =
@@ -62,7 +68,8 @@ Section: Collision Detection
   check-entry-point-duplicate (assignments) =
     if count-openings assignments 0 (list-length assignments) 0 >= 2 then
       [
-        make-error cdx-duplicate-definition "'opening' is defined in multiple chapters. A program has exactly one entry point." synthetic-span
+        let msg = "'opening' is defined in multiple chapters. A program has exactly one entry point."
+        in make-error cdx-duplicate-definition msg synthetic-span
       ]
     else []
 
@@ -94,7 +101,10 @@ Section: Builtin Shadowing
     else let h = list-at headers i
     in let n = token-text (h.name)
     in if skip-list-text-has bset n then
-      check-shadowed-builtins headers bset (i + 1) len (list-push acc (make-warning cdx-shadows-builtin ("Definition '" & n & "' has the same name as a builtin. Whether a call site gets this definition or the builtin depends on how that builtin is lowered, and the source does not say which -- so if this is deliberate, it is deliberate about something you cannot read here. If it is not, rename it. Check the COST as well as the answer: a shadow that computes the same result more slowly is the failure mode that has actually cost time here. This chapter's shadow applies to the whole compilation unit, and to any unit that cites it.") (token-span (h.name))))
+      let suffix = "' has the same name as a builtin. Whether a call site gets this definition or the builtin depends on how that builtin is lowered, and the source does not say which -- so if this is deliberate, it is deliberate about something you cannot read here. If it is not, rename it. Check the COST as well as the answer: a shadow that computes the same result more slowly is the failure mode that has actually cost time here. This chapter's shadow applies to the whole compilation unit, and to any unit that cites it."
+      in let msg = "Definition '" & n & suffix
+      in let diag = make-warning cdx-shadows-builtin msg (token-span (h.name))
+      in check-shadowed-builtins headers bset (i + 1) len (list-push acc diag)
     else check-shadowed-builtins headers bset (i + 1) len acc
 
 Section: Colliding Across Chapters
@@ -121,7 +131,12 @@ Section: Colliding Across Chapters
     in let n = token-text (h.name)
     in if skip-list-text-has colliding n then
       let other = colliding-other-chapter assignments n (h.chapter-slug) 0 (list-length assignments)
-      in check-cross-chapter-collisions headers colliding assignments (i + 1) len (list-push acc (make-warning cdx-collides-across-chapters ("Definition '" & n & "' is also defined in chapter '" & other & "'. Both are kept and each chapter sees its own, so this compiles and runs -- but which definition a mention gets depends on the chapter the mention sits in, and in a chapter that defines neither it depends on the order the build globs files. Move this body to the other chapter and it silently means the other thing. Give one of them a chapter-specific prefix, or cite the one you mean instead of defining it twice.") (token-span (h.name))))
+      in let prefix = "Definition '" & n & "' is also defined in chapter '" & other
+      in let suffix = "'. Both are kept and each chapter sees its own, so this compiles and runs -- but which definition a mention gets depends on the chapter the mention sits in, and in a chapter that defines neither it depends on the order the build globs files. Move this body to the other chapter and it silently means the other thing. Give one of them a chapter-specific prefix, or cite the one you mean instead of defining it twice."
+      in let msg = prefix & suffix
+      in let diag = make-warning cdx-collides-across-chapters msg (token-span (h.name))
+      in let next = list-push acc diag
+      in check-cross-chapter-collisions headers colliding assignments (i + 1) len next
     else check-cross-chapter-collisions headers colliding assignments (i + 1) len acc
 
 Section: Name Mangling
@@ -171,7 +186,9 @@ Section: Binary Search -- RenameEntry (lower bound by original)
 
   sorted-rename-insert : List RenameEntry, RenameEntry -> List RenameEntry
   sorted-rename-insert (entries) (entry) =
-    list-insert-at entries (bsearch-rename-pos entries (entry.original) 0 (list-length entries)) entry
+    let len = list-length entries
+    in let pos = bsearch-rename-pos entries (entry.original) 0 len
+    in list-insert-at entries pos entry
 
 Section: Apply Rename
   scope-copy-text : Text -> Text
@@ -322,38 +339,38 @@ Section: Chapter Scoping Pipeline
   build-mod-renames (colliding) (assignments) (cur-chap) (i) (len) (acc) =
     if i == len then acc
     else let a = list-at assignments i
-    in if is-colliding colliding (a.def-name)
-       then if a.chapter-slug == cur-chap
-            then let cleaned = remove-rename acc (a.def-name)
-            in build-mod-renames colliding assignments cur-chap (i + 1) len (sorted-rename-insert cleaned (RenameEntry {
-                          original = a.def-name,
-                          mangled = mangle-name cur-chap (a.def-name)
-                         }))
-       else if has-rename acc (a.def-name)
-            then build-mod-renames colliding assignments cur-chap (i + 1) len acc
-       else
-         build-mod-renames colliding assignments cur-chap (i + 1) len (sorted-rename-insert acc (RenameEntry {
+    in if is-colliding colliding (a.def-name) then
+      if a.chapter-slug == cur-chap then
+        let cleaned = remove-rename acc (a.def-name)
+        in let entry = RenameEntry {
           original = a.def-name,
-          mangled = mangle-name (a.chapter-slug) (a.def-name)
-         }))
+          mangled = mangle-name cur-chap (a.def-name)
+        }
+        in let next = sorted-rename-insert cleaned entry
+        in build-mod-renames colliding assignments cur-chap (i + 1) len next
+      else if has-rename acc (a.def-name) then
+        build-mod-renames colliding assignments cur-chap (i + 1) len acc
+      else let entry = RenameEntry {
+        original = a.def-name,
+        mangled = mangle-name (a.chapter-slug) (a.def-name)
+      }
+      in let next = sorted-rename-insert acc entry
+      in build-mod-renames colliding assignments cur-chap (i + 1) len next
     else build-mod-renames colliding assignments cur-chap (i + 1) len acc
 
   build-global-rename-table : List ChapterAssignment, SkipListText -> List RenameEntry
   build-global-rename-table (assignments) (colliding) =
-    let pushed = build-global-renames assignments colliding (list-length assignments - 1) (__list-with-capacity (list-length assignments))
+    let count = list-length assignments
+    in let first = count - 1
+    in let entries = __list-with-capacity count
+    in let pushed = build-global-renames assignments colliding first entries
     in dedupe-renames (sort-by pushed compare-rename-originals)
 
- The table is built by a single reversed push pass, one merge sort,
- and an adjacent dedupe - O(n log n). The previous per-entry
- sorted-rename-insert rebuilt the whole immutable list on every
- insert: O(n squared) ALLOCATION, and because the call site runs
- inside deck-record the quadratic garbage landed on the scope deck
- and was retained for the entire compile (~180 MB on the selfhost -
- the largest single retained block in the compiler, found by the
- MEASURE deck-span map). Winner preservation: the old leftmost-equal
- bsearch returned the LAST-inserted duplicate; pushing in reverse
- assignment order and relying on merge-sort stability puts that same
- entry leftmost, and the dedupe keeps it.
+ Preallocated reverse pushes avoid per-entry sorted-insertion copies
+ retained on the scope deck. sort-by uses in-place quicksort: average
+ O(n log n), worst-case O(n squared) comparison work. Equal-key order is
+ not stable, so retaining the first sorted duplicate does not guarantee
+ the last assignment wins. The duplicate-selection gap is COMPILER-115.
 
   compare-rename-originals : RenameEntry, RenameEntry -> Integer
   compare-rename-originals (a) (b) = text-compare (a.original) (b.original)
@@ -413,7 +430,10 @@ Section: Duplicate Cite Detection
 
   add-duplicate-cite-error : DiagnosticBag, ACitesDecl, Text, Text -> DiagnosticBag
   add-duplicate-cite-error (bag) (cite) (name-val) (conflict) =
-    bag-add bag (make-error cdx-duplicate-cite ("Name '" & name-val & "' is cited from both '" & (cite.chapter-name.value) & "' and '" & conflict & "' in chapter '" & (cite.citing-chapter) & "'") (cite.span))
+    let prefix = "Name '" & name-val & "' is cited from both '" & (cite.chapter-name.value)
+    in let msg = prefix & "' and '" & conflict & "' in chapter '" & (cite.citing-chapter) & "'"
+    in let diag = make-error cdx-duplicate-cite msg (cite.span)
+    in bag-add bag diag
 
   check-cite-names : ACitesDecl, Integer, Integer, List ACitesDecl, Integer, Integer, DiagnosticBag -> DiagnosticBag
   check-cite-names (cite) (j) (nlen) (all-citations) (i) (total) (bag) =

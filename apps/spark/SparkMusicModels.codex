@@ -1,0 +1,100 @@
+Chapter: SparkMusicModels
+  cites Spark chapter MusicGenEngine
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Foreword chapter Maybe
+
+  SmmSession = record {
+    smm-files : List MusicGenFile,
+    smm-engine : Maybe MusicGenEngine,
+    smm-loading : Boolean,
+    smm-ready : MusicGenEngine -> Integer,
+    smm-closed : Integer -> Integer
+  }
+
+  smm-empty : MusicGenFile
+  smm-empty = MusicGenFile { mgf-name = "", mgf-size = 0 }
+
+  smm-status : Text -> Integer
+  smm-status (s) = let e = dom-set-text (dom-get "musicgen-status") s in 0
+
+  smm-element : DomElement, Text, Text, Text -> DomElement
+  smm-element (parent) (tag) (id) (text) =
+    let el = dom-set-text (dom-set-attr (dom-create tag) "id" id) text
+    in let a = dom-append parent el
+    in el
+
+  music-models-panel : DomElement, (MusicGenEngine -> Integer), (Integer -> Integer) -> Integer
+  music-models-panel (parent) (ready) (closed) =
+    let s = SmmSession { smm-files = [smm-empty, smm-empty, smm-empty, smm-empty], smm-engine = None, smm-loading = False, smm-ready = ready, smm-closed = closed }
+    in let box = smm-element parent "details" "musicgen-models" ""
+    in let summary = smm-element box "summary" "" "MusicGen model files"
+    in let note = smm-element box "p" "" "Choose your local T5 and MusicGen files. Loading keeps model weights on the shared WebGPU device until Unload."
+    in let a = smm-picker box s 0 "T5 tokenizer.json" ".json"
+    in let b = smm-picker box s 1 "T5 model.safetensors" ".safetensors"
+    in let c = smm-picker box s 2 "MusicGen state_dict.bin" ".bin"
+    in let d = smm-picker box s 3 "EnCodec compression_state_dict.bin" ".bin"
+    in let load = dom-on-click (smm-element box "button" "musicgen-load" "Load MusicGen") (\x -> smm-open s)
+    in let close = dom-on-click (smm-element box "button" "musicgen-close" "Unload MusicGen") (\x -> if smm-release s then smm-status "MusicGen unloaded." else smm-status "MusicGen is busy; finish or cancel the current operation first.")
+    in let status = smm-element box "p" "musicgen-status" "No MusicGen engine loaded."
+    in 0
+
+  smm-picker : DomElement, SmmSession, Integer, Text, Text -> Integer
+  smm-picker (box) (s) (slot) (label) (accept) =
+    let row = smm-element box "div" "" ""
+    in let button = dom-on-click (smm-element row "button" ("musicgen-pick" & show slot) label) (\x -> smm-pick s slot accept)
+    in let name = smm-element row "span" ("musicgen-file" & show slot) " No file selected"
+    in 0
+
+  smm-release : SmmSession -> Boolean
+  smm-release (s) =
+    if s.smm-loading then False
+    else when s.smm-engine
+      is None -> True
+      is Just (engine) -> (if musicgen-close engine then (let a = __record-set s "smm-engine" None in let b = (s.smm-closed) 0 in True) else False)
+
+  smm-pick : SmmSession, Integer, Text -> Integer
+  smm-pick (s) (slot) (accept) =
+    if s.smm-loading | state-get "audio-busy" == 1 then smm-status "MusicGen is busy; finish or cancel the current operation first."
+    else pick-file-then accept (\r -> smm-picked s slot r)
+
+  smm-picked : SmmSession, Integer, Text -> Integer
+  smm-picked (s) (slot) (r) =
+    let fields = json-parse-obj r
+    in let name = json-obj-field fields "name"
+    in let size = text-to-integer (json-obj-field fields "size")
+    in let err = json-obj-field fields "error"
+    in if err /= "" then smm-status ("Model selection unchanged: " & err)
+    else if name == "" | size <= 0 then smm-status "No usable model file was selected."
+    else if smm-release s == False then smm-status "MusicGen is busy; finish or cancel the current operation first."
+    else let files = list-set-at (s.smm-files) slot (MusicGenFile { mgf-name = name, mgf-size = size })
+    in let a = __record-set s "smm-files" files
+    in let label = dom-set-text (dom-get ("musicgen-file" & show slot)) (" " & json-obj-field fields "file")
+    in smm-status "Model selection changed. Press Load MusicGen when all four files are selected."
+
+  smm-complete : List MusicGenFile, Integer -> Boolean
+  smm-complete (files) (i) = if i >= 4 then True else if (list-at files i).mgf-size <= 0 then False else smm-complete files (i + 1)
+
+  smm-open : SmmSession -> Integer
+  smm-open (s) =
+    if s.smm-loading then smm-status "MusicGen is already loading."
+    else if smm-complete (s.smm-files) 0 == False then smm-status "Select all four MusicGen model files first."
+    else if smm-release s == False then smm-status "MusicGen is busy; finish or cancel the current operation first."
+    else let files = s.smm-files
+    in let shaders = MusicGenShaders { mgh-base = page-data "bk", mgh-text = page-data "music-text", mgh-model = page-data "music-model", mgh-audio = page-data "music-audio" }
+    in if shaders.mgh-base == "" | shaders.mgh-text == "" | shaders.mgh-model == "" | shaders.mgh-audio == "" then smm-status "MusicGen is unavailable in this page version."
+    else let loading = __record-set s "smm-loading" True
+    in let status = smm-status "Loading MusicGen model weights..."
+    in musicgen-open (MusicGenSources { mgs-tokenizer = list-at files 0, mgs-text = list-at files 1, mgs-model = list-at files 2, mgs-audio = list-at files 3 }) shaders (\engine -> smm-opened s engine) (\why -> smm-failed s why)
+
+  smm-opened : SmmSession, MusicGenEngine -> Integer
+  smm-opened (s) (engine) =
+    let a = __record-set s "smm-engine" (Just engine)
+    in let b = __record-set s "smm-loading" False
+    in let ready = (s.smm-ready) engine
+    in smm-status "MusicGen models loaded."
+
+  smm-failed : SmmSession, Text -> Integer
+  smm-failed (s) (why) =
+    let a = __record-set s "smm-loading" False
+    in smm-status ("MusicGen could not load: " & why)

@@ -4,94 +4,100 @@ Section: Type Definition Emission
 
   emit-type-defs : List ATypeDef, Integer, List Text -> Text
   emit-type-defs (tds) (i) (muts) =
-   if i == list-length tds then ""
-   else if type-def-name-before tds (type-def-name (list-at tds i)) 0 i then emit-type-defs tds (i + 1) muts
-   else emit-type-def (list-at tds i) muts & "\n" & emit-type-defs tds (i + 1) muts
+    if i == list-length tds then ""
+    else if type-def-name-before tds (type-def-name (list-at tds i)) 0 i then
+      emit-type-defs tds (i + 1) muts
+    else emit-type-def (list-at tds i) muts & "\n" & emit-type-defs tds (i + 1) muts
 
   type-def-name : ATypeDef -> Text
   type-def-name (td) =
-   when td
-    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) -> name.value
-    is AVariantTypeDef (name) (tparams) (ctors) (s) -> name.value
-    is AUnitTypeDef (name) (unitbase) (s) -> name.value
+    when td
+     is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) -> name.value
+     is AVariantTypeDef (name) (tparams) (ctors) (s) -> name.value
+     is AUnitTypeDef (name) (unitbase) (s) -> name.value
 
   type-def-name-before : List ATypeDef, Text, Integer, Integer -> Boolean
   type-def-name-before (tds) (nm) (i) (stop) =
-   if i >= stop then False
-   else if type-def-name (list-at tds i) == nm then True
-   else type-def-name-before tds nm (i + 1) stop
+    if i >= stop then False
+    else if type-def-name (list-at tds i) == nm then True
+    else type-def-name-before tds nm (i + 1) stop
 
   infer-tparams-from-fields : List ARecordFieldDef, Integer, List Name -> List Name
   infer-tparams-from-fields (fields) (i) (acc) =
-   if i >= list-length fields then acc
-   else let f = list-at fields i
-   in infer-tparams-from-fields fields (i + 1) (infer-tparams-from-type-expr (f.type-expr) acc)
+    if i >= list-length fields then acc
+    else let f = list-at fields i
+    in infer-tparams-from-fields fields (i + 1) (infer-tparams-from-type-expr (f.type-expr) acc)
 
   infer-tparams-from-type-expr : ATypeExpr, List Name -> List Name
   infer-tparams-from-type-expr (te) (acc) =
-   when te
-    is ANamedType (name) (s) ->
-     if is-type-var-name (name.value) then
-      if tparam-already-present acc (name.value) 0 then acc
-      else list-push acc name
-     else acc
-    is AAppType (base) (args) (s) -> infer-tparams-from-type-exprs args 0 acc
-    is AFunType (p) (r) (s) -> infer-tparams-from-type-expr r (infer-tparams-from-type-expr p acc)
-    is otherwise -> acc
+    when te
+     is ANamedType (name) (s) ->
+      if is-type-var-name (name.value) then
+        if tparam-already-present acc (name.value) 0 then acc
+        else list-push acc name
+      else acc
+     is AAppType (base) (args) (s) -> infer-tparams-from-type-exprs args 0 acc
+     is AFunType (p) (r) (s) -> infer-tparams-from-type-expr r (infer-tparams-from-type-expr p acc)
+     is otherwise -> acc
 
   infer-tparams-from-type-exprs : List ATypeExpr, Integer, List Name -> List Name
   infer-tparams-from-type-exprs (args) (i) (acc) =
-   if i >= list-length args then acc
-   else infer-tparams-from-type-exprs args (i + 1) (infer-tparams-from-type-expr (list-at args i) acc)
+    if i >= list-length args then acc
+    else
+      infer-tparams-from-type-exprs args (i + 1) (infer-tparams-from-type-expr (list-at args i) acc)
 
   tparam-already-present : List Name, Text, Integer -> Boolean
   tparam-already-present (ns) (v) (i) =
-   if i >= list-length ns then False
-   else if (list-at ns i).value == v then True
-   else tparam-already-present ns v (i + 1)
+    if i >= list-length ns then False
+    else if (list-at ns i).value == v then True
+    else tparam-already-present ns v (i + 1)
 
   is-tup-type : Text -> Boolean
   is-tup-type (n) =
-   n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
+    n == "Tup2" | n == "Tup3" | n == "Tup4" | n == "Tup5"
 
   emit-type-def : ATypeDef, List Text -> Text
   emit-type-def (td) (muts) =
-   when td
-    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
-     let gen = emit-tparameter-suffix tparams
-     in let head = "public sealed record " & sanitize (name.value) & gen & "(" & emit-record-field-defs fields tparams 0 & ")"
-     in if name-in-list muts (name.value) 0
-        then head & "\n{\n" & emit-settable-fields fields tparams 0 & "}\n"
-        else head & ";\n"
-    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     if is-tup-type (name.value) then ""
-     else
-     let gen = emit-tparameter-suffix tparams
-     in if list-length ctors == 1 then
-      if (list-at ctors 0).name.value == name.value then
-       let c = list-at ctors 0
-       in if list-length (c.fields) == 0 then "public sealed record " & sanitize (name.value) & gen & " : _ICodexVariant { public long _ctag => 0L; }\n\n"
-          else "public sealed record " & sanitize (name.value) & gen & "(" & emit-ctor-fields (c.fields) tparams 0 & ") : _ICodexVariant { public long _ctag => 0L; }\n\n"
-      else "public abstract record " & sanitize (name.value) & gen & " : _ICodexVariant { public virtual long _ctag => 0L; }\n" & emit-variant-ctors ctors name tparams 0 & "\n"
-     else "public abstract record " & sanitize (name.value) & gen & " : _ICodexVariant { public virtual long _ctag => 0L; }\n" & emit-variant-ctors ctors name tparams 0 & "\n"
-    is AUnitTypeDef (name) (unitbase) (s) -> ""
+    when td
+     is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
+      let gen = emit-tparameter-suffix tparams
+      in let head = "public sealed record " & sanitize (name.value) & gen & "(" & emit-record-field-defs fields tparams 0 & ")"
+      in if name-in-list muts (name.value) 0
+         then head & "\n{\n" & emit-settable-fields fields tparams 0 & "}\n"
+      else head & ";\n"
+     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+      if is-tup-type (name.value) then ""
+      else
+        let gen = emit-tparameter-suffix tparams
+        in if list-length ctors == 1 then
+          if (list-at ctors 0).name.value == name.value then
+            let c = list-at ctors 0
+            in if list-length (c.fields) == 0 then
+              "public sealed record " & sanitize (name.value) & gen & " : _ICodexVariant { public long _ctag => 0L; }\n\n"
+            else
+              "public sealed record " & sanitize (name.value) & gen & "(" & emit-ctor-fields (c.fields) tparams 0 & ") : _ICodexVariant { public long _ctag => 0L; }\n\n"
+          else
+            "public abstract record " & sanitize (name.value) & gen & " : _ICodexVariant { public virtual long _ctag => 0L; }\n" & emit-variant-ctors ctors name tparams 0 & "\n"
+        else
+          "public abstract record " & sanitize (name.value) & gen & " : _ICodexVariant { public virtual long _ctag => 0L; }\n" & emit-variant-ctors ctors name tparams 0 & "\n"
+     is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-tparameter-suffix : List Name -> Text
   emit-tparameter-suffix (tparams) =
-   if list-length tparams == 0 then ""
-   else "<" & emit-tparameter-names tparams 0 & ">"
+    if list-length tparams == 0 then ""
+    else "<" & emit-tparameter-names tparams 0 & ">"
 
   emit-tparameter-names : List Name, Integer -> Text
   emit-tparameter-names (tparams) (i) =
-   if i == list-length tparams then ""
-   else if i == list-length tparams - 1 then "T" & integer-to-text i
-   else "T" & integer-to-text i & ", " & emit-tparameter-names tparams (i + 1)
+    if i == list-length tparams then ""
+    else if i == list-length tparams - 1 then "T" & integer-to-text i
+    else "T" & integer-to-text i & ", " & emit-tparameter-names tparams (i + 1)
 
   emit-record-field-defs : List ARecordFieldDef, List Name, Integer -> Text
   emit-record-field-defs (fields) (tparams) (i) =
-   if i == list-length fields then ""
-   else let f = list-at fields i
-   in emit-type-expr-tp (f.type-expr) tparams & " " & sanitize (f.name.value) & (if i < list-length fields - 1 then ", " else "") & emit-record-field-defs fields tparams (i + 1)
+    if i == list-length fields then ""
+    else let f = list-at fields i
+    in emit-type-expr-tp (f.type-expr) tparams & " " & sanitize (f.name.value) & (if i < list-length fields - 1 then ", " else "") & emit-record-field-defs fields tparams (i + 1)
 
  C# positional record parameters synthesize init-only properties, which
  no assignment can target. Declaring a property with the SAME name and
@@ -104,434 +110,449 @@ Section: Type Definition Emission
 
   emit-settable-fields : List ARecordFieldDef, List Name, Integer -> Text
   emit-settable-fields (fields) (tparams) (i) =
-   if i == list-length fields then ""
-   else let f = list-at fields i
-   in let nm = sanitize (f.name.value)
-   in "    public " & emit-type-expr-tp (f.type-expr) tparams & " " & nm & " { get; set; } = " & nm & ";\n" & emit-settable-fields fields tparams (i + 1)
+    if i == list-length fields then ""
+    else let f = list-at fields i
+    in let nm = sanitize (f.name.value)
+    in "    public " & emit-type-expr-tp (f.type-expr) tparams & " " & nm & " { get; set; } = " & nm & ";\n" & emit-settable-fields fields tparams (i + 1)
 
   emit-variant-ctors : List AVariantCtorDef, Name, List Name, Integer -> Text
   emit-variant-ctors (ctors) (base-name) (tparams) (i) =
-   if i == list-length ctors then ""
-   else let c = list-at ctors i
-   in emit-variant-ctor c base-name tparams i & emit-variant-ctors ctors base-name tparams (i + 1)
+    if i == list-length ctors then ""
+    else let c = list-at ctors i
+    in emit-variant-ctor c base-name tparams i & emit-variant-ctors ctors base-name tparams (i + 1)
 
   emit-variant-ctor : AVariantCtorDef, Name, List Name, Integer -> Text
   emit-variant-ctor (c) (base-name) (tparams) (idx) =
-   let gen = emit-tparameter-suffix tparams
-   in let tag = " { public override long _ctag => " & integer-to-text idx & "L; }\n"
-   in if list-length (c.fields) == 0 then "public sealed record " & sanitize (c.name.value) & gen & " : " & sanitize (base-name.value) & gen & tag
-      else "public sealed record " & sanitize (c.name.value) & gen & "(" & emit-ctor-fields (c.fields) tparams 0 & ") : " & sanitize (base-name.value) & gen & tag
+    let gen = emit-tparameter-suffix tparams
+    in let tag = " { public override long _ctag => " & integer-to-text idx & "L; }\n"
+    in if list-length (c.fields) == 0 then
+      "public sealed record " & sanitize (c.name.value) & gen & " : " & sanitize (base-name.value) & gen & tag
+    else
+      "public sealed record " & sanitize (c.name.value) & gen & "(" & emit-ctor-fields (c.fields) tparams 0 & ") : " & sanitize (base-name.value) & gen & tag
 
   emit-ctor-fields : List ATypeExpr, List Name, Integer -> Text
   emit-ctor-fields (fields) (tparams) (i) =
-   if i == list-length fields then ""
-   else emit-type-expr-tp (list-at fields i) tparams & " Field" & integer-to-text i & (if i < list-length fields - 1 then ", " else "") & emit-ctor-fields fields tparams (i + 1)
+    if i == list-length fields then ""
+    else
+      emit-type-expr-tp (list-at fields i) tparams & " Field" & integer-to-text i & (if i < list-length fields - 1 then ", " else "") & emit-ctor-fields fields tparams (i + 1)
 
   emit-type-expr : ATypeExpr -> Text
   emit-type-expr (te) =
-   emit-type-expr-tp te []
+    emit-type-expr-tp te []
 
   emit-type-expr-tp : ATypeExpr, List Name -> Text
   emit-type-expr-tp (te) (tparams) =
-   when te
-    is ANamedType (name) (s) ->
-     let idx = find-tparam-index tparams (name.value) 0
-     in if idx >= 0 then "T" & integer-to-text idx
-        else when-type-name (name.value)
-    is AFunType (p) (r) (s) -> "Func<" & emit-type-expr-tp p tparams & ", " & emit-type-expr-tp r tparams & ">"
-    is AAppType (base) (args) (s) -> emit-type-expr-tp base tparams & "<" & emit-type-expr-list-tp args tparams 0 & ">"
-    is AEffectType (effs) (scopes) (efftail) (r) (s) -> emit-type-expr-tp r tparams
-    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-type-expr-tp b tparams
-    is ALinearType (b) (s) -> emit-type-expr-tp b tparams
-    is AConstrainedType (ctcls) (ctparam) (b) (s) -> emit-type-expr-tp b tparams
-    is AForallType (fav) (favt) (b) (s) -> emit-type-expr-tp b tparams
-    is APropEqType (b) (peright) (s) -> emit-type-expr-tp b tparams
+    when te
+     is ANamedType (name) (s) ->
+      let idx = find-tparam-index tparams (name.value) 0
+      in if idx >= 0 then "T" & integer-to-text idx
+      else when-type-name (name.value)
+     is AFunType (p) (r) (s) -> "Func<" & emit-type-expr-tp p tparams & ", " & emit-type-expr-tp r tparams & ">"
+     is AAppType (base) (args) (s) -> emit-type-expr-tp base tparams & "<" & emit-type-expr-list-tp args tparams 0 & ">"
+     is AEffectType (effs) (scopes) (efftail) (r) (s) -> emit-type-expr-tp r tparams
+     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-type-expr-tp b tparams
+     is ALinearType (b) (s) -> emit-type-expr-tp b tparams
+     is AConstrainedType (ctcls) (ctparam) (b) (s) -> emit-type-expr-tp b tparams
+     is AForallType (fav) (favt) (b) (s) -> emit-type-expr-tp b tparams
+     is APropEqType (b) (peright) (s) -> emit-type-expr-tp b tparams
 
   find-tparam-index : List Name, Text, Integer -> Integer
   find-tparam-index (tparams) (name) (i) =
-   if i == list-length tparams then -1
-   else if (list-at tparams i).value == name then i
-   else find-tparam-index tparams name (i + 1)
+    if i == list-length tparams then -1
+    else if (list-at tparams i).value == name then i
+    else find-tparam-index tparams name (i + 1)
 
   is-type-var-name : Text -> Boolean
   is-type-var-name (n) =
-   if text-length n == 1 then
-    let c = char-code (char-at n 0)
-    in c >= 13 & c <= 38
-   else False
+    if text-length n == 1 then
+      let c = char-code (char-at n 0)
+      in c >= 13 & c <= 38
+    else False
 
   is-cs-real-atom : Text -> Boolean
   is-cs-real-atom (n) =
-   n == "real" | n == "real-approx" | n == "real-trapping" | n == "real-saturating"
-   | n == "real-approx-trapping" | n == "real-approx-saturating"
+    n == "real" | n == "real-approx" | n == "real-trapping" | n == "real-saturating"
+    | n == "real-approx-trapping" | n == "real-approx-saturating"
 
   when-type-name : Text -> Text
   when-type-name (n) =
-   if n == "Integer" then "long"
-   else if n == "Real" then "double"
-   else if is-cs-real-atom n then "double"
-   else if n == "Text" then "string"
-   else if n == "Boolean" then "bool"
-   else if n == "List" then "List"
-   else if n == "LinkedList" then "List"
-   else if is-type-var-name n then "object"
-   else sanitize n
+    if n == "Integer" then "long"
+    else if n == "Real" then "double"
+    else if is-cs-real-atom n then "double"
+    else if n == "Text" then "string"
+    else if n == "Boolean" then "bool"
+    else if n == "List" then "List"
+    else if n == "LinkedList" then "List"
+    else if is-type-var-name n then "object"
+    else sanitize n
 
   emit-type-expr-list : List ATypeExpr, Integer -> Text
   emit-type-expr-list (args) (i) =
-   if i == list-length args then ""
-   else emit-type-expr (list-at args i) & (if i < list-length args - 1 then ", " else "") & emit-type-expr-list args (i + 1)
+    if i == list-length args then ""
+    else
+      emit-type-expr (list-at args i) & (if i < list-length args - 1 then ", " else "") & emit-type-expr-list args (i + 1)
 
   emit-type-expr-list-tp : List ATypeExpr, List Name, Integer -> Text
   emit-type-expr-list-tp (args) (tparams) (i) =
-   if i == list-length args then ""
-   else emit-type-expr-tp (list-at args i) tparams & (if i < list-length args - 1 then ", " else "") & emit-type-expr-list-tp args tparams (i + 1)
+    if i == list-length args then ""
+    else
+      emit-type-expr-tp (list-at args i) tparams & (if i < list-length args - 1 then ", " else "") & emit-type-expr-list-tp args tparams (i + 1)
 
 Section: Generic Helpers
 
   collect-type-var-ids : CodexType, List Integer -> List Integer
   collect-type-var-ids (ty) (acc) =
-   when ty
-    is TypeVar (id) -> if list-contains-int acc id then acc
-    else list-append-int acc id
-    is FunTy (p) (fnrow) (r) -> collect-type-var-ids r (collect-type-var-ids p acc)
-    is ListTy (elem) -> collect-type-var-ids elem acc
-    is ForAllTy (id) (body) -> collect-type-var-ids body acc
-    is ForAllEff (id) (body) -> collect-type-var-ids body acc
-    is LinearTy (body) -> collect-type-var-ids body acc
-    is TypeApply (body) (tyarg) -> collect-type-var-ids body acc
-    is ConstructedTy (name) (args) -> collect-type-var-ids-list args acc
-    is TypeCon (name) -> acc
-    is otherwise -> acc
+    when ty
+     is TypeVar (id) -> if list-contains-int acc id then acc
+     else list-append-int acc id
+     is FunTy (p) (fnrow) (r) -> collect-type-var-ids r (collect-type-var-ids p acc)
+     is ListTy (elem) -> collect-type-var-ids elem acc
+     is ForAllTy (id) (body) -> collect-type-var-ids body acc
+     is ForAllEff (id) (body) -> collect-type-var-ids body acc
+     is LinearTy (body) -> collect-type-var-ids body acc
+     is TypeApply (body) (tyarg) -> collect-type-var-ids body acc
+     is ConstructedTy (name) (args) -> collect-type-var-ids-list args acc
+     is TypeCon (name) -> acc
+     is otherwise -> acc
 
   collect-type-var-ids-list : List CodexType, List Integer -> List Integer
   collect-type-var-ids-list (types) (acc) =
-   collect-type-var-ids-list-loop types acc 0 (list-length types)
+    collect-type-var-ids-list-loop types acc 0 (list-length types)
 
   collect-type-var-ids-list-loop : List CodexType, List Integer, Integer, Integer -> List Integer
   collect-type-var-ids-list-loop (types) (acc) (i) (len) =
-   if i == len then acc
-   else collect-type-var-ids-list-loop types (collect-type-var-ids (list-at types i) acc) (i + 1) len
+    if i == len then acc
+    else
+      collect-type-var-ids-list-loop types (collect-type-var-ids (list-at types i) acc) (i + 1) len
 
   list-contains-int : List Integer, Integer -> Boolean
   list-contains-int (xs) (n) =
-   list-contains-int-loop xs n 0 (list-length xs)
+    list-contains-int-loop xs n 0 (list-length xs)
 
   list-contains-int-loop : List Integer, Integer, Integer, Integer -> Boolean
   list-contains-int-loop (xs) (n) (i) (len) =
-   if i == len then False
-   else if list-at xs i == n then True
-   else list-contains-int-loop xs n (i + 1) len
+    if i == len then False
+    else if list-at xs i == n then True
+    else list-contains-int-loop xs n (i + 1) len
 
   list-append-int : List Integer, Integer -> List Integer
   list-append-int (xs) (n) =
-   xs & [n]
+    xs & [n]
 
   generic-suffix : CodexType -> Text
   generic-suffix (ty) =
-   let ids = collect-type-var-ids ty []
-   in if list-length ids == 0 then ""
-      else "<" & emit-type-params ids 0 & ">"
+    let ids = collect-type-var-ids ty []
+    in if list-length ids == 0 then ""
+    else "<" & emit-type-params ids 0 & ">"
 
   emit-type-params : List Integer, Integer -> Text
   emit-type-params (ids) (i) =
-   if i == list-length ids then ""
-   else if i == list-length ids - 1 then "T" & integer-to-text (list-at ids i)
-   else "T" & integer-to-text (list-at ids i) & ", " & emit-type-params ids (i + 1)
+    if i == list-length ids then ""
+    else if i == list-length ids - 1 then "T" & integer-to-text (list-at ids i)
+    else "T" & integer-to-text (list-at ids i) & ", " & emit-type-params ids (i + 1)
 
   collect-record-field-tvar-ids : List RecordField, Integer, List Integer -> List Integer
   collect-record-field-tvar-ids (fields) (i) (acc) =
-   if i == list-length fields then acc
-   else let f = list-at fields i
-   in collect-record-field-tvar-ids fields (i + 1) (collect-type-var-ids (f.type-val) acc)
+    if i == list-length fields then acc
+    else let f = list-at fields i
+    in collect-record-field-tvar-ids fields (i + 1) (collect-type-var-ids (f.type-val) acc)
 
   extract-ctor-type-args : CodexType -> Text
   extract-ctor-type-args (ty) =
-   when ty
-    is ConstructedTy (name) (args) ->
-     if list-length args == 0 then ""
-     else "<" & emit-cs-type-args args 0 & ">"
-    is SumTy (name) (args) (ctors) ->
-     if list-length args == 0 then ""
-     else "<" & emit-cs-type-args args 0 & ">"
-    is RecordTy (name) (args) (fields) ->
-     if list-length args > 0 then "<" & emit-cs-type-args args 0 & ">"
-     else let ids = collect-record-field-tvar-ids fields 0 []
-     in if list-length ids == 0 then ""
-     else "<" & emit-type-params ids 0 & ">"
-    is otherwise -> ""
+    when ty
+     is ConstructedTy (name) (args) ->
+      if list-length args == 0 then ""
+      else "<" & emit-cs-type-args args 0 & ">"
+     is SumTy (name) (args) (ctors) ->
+      if list-length args == 0 then ""
+      else "<" & emit-cs-type-args args 0 & ">"
+     is RecordTy (name) (args) (fields) ->
+      if list-length args > 0 then "<" & emit-cs-type-args args 0 & ">"
+      else let ids = collect-record-field-tvar-ids fields 0 []
+      in if list-length ids == 0 then ""
+      else "<" & emit-type-params ids 0 & ">"
+     is otherwise -> ""
 
   cs-type-or-object : CodexType -> Text
   cs-type-or-object (ty) =
-   when ty
-    is TypeVar (id) -> "object"
-    is otherwise -> cs-type ty
+    when ty
+     is TypeVar (id) -> "object"
+     is otherwise -> cs-type ty
 
   emit-cs-type-args-safe : List CodexType, Integer -> Text
   emit-cs-type-args-safe (args) (i) =
-   if i == list-length args then ""
-   else let t = cs-type-or-object (list-at args i)
-   in if i == list-length args - 1 then t
-      else t & ", " & emit-cs-type-args-safe args (i + 1)
+    if i == list-length args then ""
+    else let t = cs-type-or-object (list-at args i)
+    in if i == list-length args - 1 then t
+    else t & ", " & emit-cs-type-args-safe args (i + 1)
 
   extract-fn-type-args : CodexType -> Text
   extract-fn-type-args (ty) =
-   when ty
-    is ConstructedTy (name) (args) ->
-     if list-length args == 0 then ""
-     else "<" & emit-cs-type-args-safe args 0 & ">"
-    is SumTy (name) (args) (ctors) ->
-     if list-length args == 0 then ""
-     else "<" & emit-cs-type-args-safe args 0 & ">"
-    is RecordTy (name) (args) (fields) ->
-     if list-length args == 0 then ""
-     else "<" & emit-cs-type-args-safe args 0 & ">"
-    is otherwise -> ""
+    when ty
+     is ConstructedTy (name) (args) ->
+      if list-length args == 0 then ""
+      else "<" & emit-cs-type-args-safe args 0 & ">"
+     is SumTy (name) (args) (ctors) ->
+      if list-length args == 0 then ""
+      else "<" & emit-cs-type-args-safe args 0 & ">"
+     is RecordTy (name) (args) (fields) ->
+      if list-length args == 0 then ""
+      else "<" & emit-cs-type-args-safe args 0 & ">"
+     is otherwise -> ""
 
 Section: Tail Call Optimization
 
   is-self-call : IRExpr, Text -> Boolean
   is-self-call (e) (func-name) =
-   let chain = collect-apply-chain e []
-   in is-self-call-root (chain.root) func-name
+    let chain = collect-apply-chain e []
+    in is-self-call-root (chain.root) func-name
 
   is-self-call-root : IRExpr, Text -> Boolean
   is-self-call-root (e) (func-name) =
-   when e
-    is IrName (n) (ty) (sp) -> n == func-name
-    is otherwise -> False
+    when e
+     is IrName (n) (ty) (sp) -> n == func-name
+     is otherwise -> False
 
   has-tail-call : IRExpr, Text -> Boolean
   has-tail-call (e) (func-name) =
-   when e
-    is IrIf (c) (t) (el) (ty) (sp) -> has-tail-call t func-name | has-tail-call el func-name
-    is IrLet (name) (ty) (val) (body) (sp) -> has-tail-call body func-name
-    is IrMatch (scrut) (branches) (ty) (sp) -> has-tail-call-branches branches func-name 0
-    is IrApply (f) (a) (ty) (sp) -> is-self-call e func-name
-    is IrAct (stmts) (ty) (sp) -> has-tail-call-act stmts func-name
-    is otherwise -> False
+    when e
+     is IrIf (c) (t) (el) (ty) (sp) -> has-tail-call t func-name | has-tail-call el func-name
+     is IrLet (name) (ty) (val) (body) (sp) -> has-tail-call body func-name
+     is IrMatch (scrut) (branches) (ty) (sp) -> has-tail-call-branches branches func-name 0
+     is IrApply (f) (a) (ty) (sp) -> is-self-call e func-name
+     is IrAct (stmts) (ty) (sp) -> has-tail-call-act stmts func-name
+     is otherwise -> False
 
   has-tail-call-branches : List IRBranch, Text, Integer -> Boolean
   has-tail-call-branches (branches) (func-name) (i) =
-   if i == list-length branches then False
-   else let b = list-at branches i
-   in if has-tail-call (b.body) func-name then True
-      else has-tail-call-branches branches func-name (i + 1)
+    if i == list-length branches then False
+    else let b = list-at branches i
+    in if has-tail-call (b.body) func-name then True
+    else has-tail-call-branches branches func-name (i + 1)
 
   has-tail-call-act : List IRActStmt, Text -> Boolean
   has-tail-call-act (stmts) (func-name) =
-   let len = list-length stmts
-   in if len == 0 then False
+    let len = list-length stmts
+    in if len == 0 then False
     else let last = list-at stmts (len - 1)
-     in when last
-      is IrDoExec (e) (sp) -> has-tail-call e func-name
-      is otherwise -> False
+    in when last
+     is IrDoExec (e) (sp) -> has-tail-call e func-name
+     is otherwise -> False
 
   should-tco : IRDef -> Boolean
   should-tco (d) =
-   if list-length (d.params) == 0 then False
-   else has-tail-call (d.body) (d.name)
+    if list-length (d.params) == 0 then False
+    else has-tail-call (d.body) (d.name)
 
   emit-tco-def : IRDef, CsCtx -> Text
   emit-tco-def (d) (ctx) =
-   let ret = get-return-type (d.type-val) (list-length (d.params))
-   in if is-lam-def (d.name) then "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "        }\n    }\n"
-   else let gen = generic-suffix (d.type-val)
-   in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "        }\n    }\n"
+    let ret = get-return-type (d.type-val) (list-length (d.params))
+    in if is-lam-def (d.name) then
+      "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "        }\n    }\n"
+    else let gen = generic-suffix (d.type-val)
+    in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "        }\n    }\n"
 
   emit-tco-body : IRExpr, Text, List IRParam, CsCtx, Integer -> Text
   emit-tco-body (e) (func-name) (params) (ctx) (depth) =
-   when e
-    is IrIf (c) (t) (el) (ty) (sp) -> emit-tco-if c t el func-name params ctx depth
-    is IrLet (name) (ty) (val) (body) (sp) -> emit-tco-let name ty val body func-name params ctx depth
-    is IrMatch (scrut) (branches) (ty) (sp) -> emit-tco-match scrut branches func-name params ctx depth
-    is IrApply (f) (a) (rty) (sp) -> emit-tco-apply e func-name params ctx
-    is IrAct (stmts) (ty) (sp) -> emit-tco-act stmts func-name params ctx depth
-    is otherwise -> "            return " & emit-expr e ctx & ";\n"
+    when e
+     is IrIf (c) (t) (el) (ty) (sp) -> emit-tco-if c t el func-name params ctx depth
+     is IrLet (name) (ty) (val) (body) (sp) -> emit-tco-let name ty val body func-name params ctx depth
+     is IrMatch (scrut) (branches) (ty) (sp) -> emit-tco-match scrut branches func-name params ctx depth
+     is IrApply (f) (a) (rty) (sp) -> emit-tco-apply e func-name params ctx
+     is IrAct (stmts) (ty) (sp) -> emit-tco-act stmts func-name params ctx depth
+     is otherwise -> "            return " & emit-expr e ctx & ";\n"
 
   emit-tco-act : List IRActStmt, Text, List IRParam, CsCtx, Integer -> Text
   emit-tco-act (stmts) (func-name) (params) (ctx) (depth) =
-   emit-tco-act-stmts stmts func-name params ctx depth 0 (list-length stmts)
+    emit-tco-act-stmts stmts func-name params ctx depth 0 (list-length stmts)
 
   emit-tco-act-stmts : List IRActStmt, Text, List IRParam, CsCtx, Integer, Integer, Integer -> Text
   emit-tco-act-stmts (stmts) (func-name) (params) (ctx) (depth) (i) (len) =
-   if i == len then "            return default;\n"
-   else let s = list-at stmts i
-   in let is-last = i == len - 1
-   in if is-last then when s
-     is IrDoExec (e) (sp) -> emit-tco-body e func-name params ctx depth
-     is IrDoBind (name) (ty) (val) (sp) -> "            " & cs-type-or-dynamic ty & " " & sanitize name & " = " & emit-expr val ctx & ";\n            return default;\n"
+    if i == len then "            return default;\n"
+    else let s = list-at stmts i
+    in let is-last = i == len - 1
+    in if is-last then when s
+      is IrDoExec (e) (sp) -> emit-tco-body e func-name params ctx depth
+      is IrDoBind (name) (ty) (val) (sp) -> "            " & cs-type-or-dynamic ty & " " & sanitize name & " = " & emit-expr val ctx & ";\n            return default;\n"
     else emit-tco-act-stmt s ctx & emit-tco-act-stmts stmts func-name params ctx depth (i + 1) len
 
   emit-tco-act-stmt : IRActStmt, CsCtx -> Text
   emit-tco-act-stmt (s) (ctx) =
-   when s
-    is IrDoBind (name) (ty) (val) (sp) -> "            " & cs-type-or-dynamic ty & " " & sanitize name & " = " & emit-expr val ctx & ";\n"
-    is IrDoExec (e) (sp) ->
-     if is-irif-expr e then "            _ = (" & emit-expr e ctx & ");\n"
-     else "            " & emit-expr e ctx & ";\n"
+    when s
+     is IrDoBind (name) (ty) (val) (sp) -> "            " & cs-type-or-dynamic ty & " " & sanitize name & " = " & emit-expr val ctx & ";\n"
+     is IrDoExec (e) (sp) ->
+      if is-irif-expr e then "            _ = (" & emit-expr e ctx & ");\n"
+      else "            " & emit-expr e ctx & ";\n"
 
   emit-tco-apply : IRExpr, Text, List IRParam, CsCtx -> Text
   emit-tco-apply (e) (func-name) (params) (ctx) =
-   if is-self-call e func-name then emit-tco-jump e params ctx
-   else "            return " & emit-expr e ctx & ";\n"
+    if is-self-call e func-name then emit-tco-jump e params ctx
+    else "            return " & emit-expr e ctx & ";\n"
 
   emit-tco-if : IRExpr, IRExpr, IRExpr, Text, List IRParam, CsCtx, Integer -> Text
   emit-tco-if (cond) (t) (el) (func-name) (params) (ctx) (depth) =
-   "            if (" & emit-expr cond ctx & ")\n            {\n" & emit-tco-body t func-name params ctx depth & "            }\n            else\n            {\n" & emit-tco-body el func-name params ctx depth & "            }\n"
+    "            if (" & emit-expr cond ctx & ")\n            {\n" & emit-tco-body t func-name params ctx depth & "            }\n            else\n            {\n" & emit-tco-body el func-name params ctx depth & "            }\n"
 
   emit-tco-let : Text, CodexType, IRExpr, IRExpr, Text, List IRParam, CsCtx, Integer -> Text
   emit-tco-let (name) (ty) (val) (body) (func-name) (params) (ctx) (depth) =
-   "            " & cs-type-or-dynamic ty & " " & sanitize name & " = " & emit-expr val ctx & ";\n" & emit-tco-body body func-name params ctx depth
+    "            " & cs-type-or-dynamic ty & " " & sanitize name & " = " & emit-expr val ctx & ";\n" & emit-tco-body body func-name params ctx depth
 
   emit-tco-match : IRExpr, List IRBranch, Text, List IRParam, CsCtx, Integer -> Text
   emit-tco-match (scrut) (branches) (func-name) (params) (ctx) (depth) =
-   let s-var = tco-scrut-var depth
-   in "            " & cs-type-or-dynamic (ir-expr-type scrut) & " " & s-var & " = " & emit-expr scrut ctx & ";\n" & emit-tco-match-branches branches func-name params ctx 0 True depth
+    let s-var = tco-scrut-var depth
+    in "            " & cs-type-or-dynamic (ir-expr-type scrut) & " " & s-var & " = " & emit-expr scrut ctx & ";\n" & emit-tco-match-branches branches func-name params ctx 0 True depth
 
   emit-tco-match-branches : List IRBranch, Text, List IRParam, CsCtx, Integer, Boolean, Integer -> Text
   emit-tco-match-branches (branches) (func-name) (params) (ctx) (i) (is-first) (depth) =
-   if i == list-length branches then
-    (if cs-tco-has-open-catch-all branches 0 then ""
-     else "            else { throw new InvalidOperationException(\"Non-exhaustive match\"); }\n")
-   else let b = list-at branches i
-   in emit-tco-match-branch b func-name params ctx i is-first depth & emit-tco-match-branches branches func-name params ctx (i + 1) False depth
+    if i == list-length branches then
+      (if cs-tco-has-open-catch-all branches 0 then ""
+       else "            else { throw new InvalidOperationException(\"Non-exhaustive match\"); }\n")
+    else let b = list-at branches i
+    in emit-tco-match-branch b func-name params ctx i is-first depth & emit-tco-match-branches branches func-name params ctx (i + 1) False depth
 
  object.Equals boxes both sides, and a boxed long never equals a boxed int,
  so an integer literal needs the suffix its scrutinee carries.
 
   cs-tco-lit-text : Text, CodexType -> Text
   cs-tco-lit-text (text) (ty) =
-   if text == "True" | text == "False" then cs-bool-lit-text text
-   else when ty
-    is IntegerTy (lo) (hi) (mode) -> text & "L"
-    is otherwise -> text
+    if text == "True" | text == "False" then cs-bool-lit-text text
+    else when ty
+     is IntegerTy (lo) (hi) (mode) -> text & "L"
+     is otherwise -> text
 
   cs-tco-has-open-catch-all : List IRBranch, Integer -> Boolean
   cs-tco-has-open-catch-all (branches) (i) =
-   if i == list-length branches then False
-   else let b = list-at branches i
-   in if cs-guard-trivial (b.guard) & cs-tco-pat-catch-all (b.pattern) then True
-      else cs-tco-has-open-catch-all branches (i + 1)
+    if i == list-length branches then False
+    else let b = list-at branches i
+    in if cs-guard-trivial (b.guard) & cs-tco-pat-catch-all (b.pattern) then True
+    else cs-tco-has-open-catch-all branches (i + 1)
 
   cs-tco-pat-catch-all : IRPat -> Boolean
   cs-tco-pat-catch-all (p) =
-   when p
-    is IrVarPat (name) (ty) (sp) -> True
-    is IrWildPat (sp) -> True
-    is IrVecPat (pats) (ty) (sp) -> True
-    is IrCtorPat (name) (subs) (ty) (sp) -> is-mktup-name name
-    is otherwise -> False
+    when p
+     is IrVarPat (name) (ty) (sp) -> True
+     is IrWildPat (sp) -> True
+     is IrVecPat (pats) (ty) (sp) -> True
+     is IrCtorPat (name) (subs) (ty) (sp) -> is-mktup-name name
+     is otherwise -> False
 
   emit-tco-match-branch : IRBranch, Text, List IRParam, CsCtx, Integer, Boolean, Integer -> Text
   emit-tco-match-branch (b) (func-name) (params) (ctx) (idx) (is-first) (depth) =
-   let s-var = tco-scrut-var depth
-   in let keyword = if is-first then "if" else "else if"
-   in let guarded = cs-guard-trivial (b.guard) == False
-   in when b.pattern
-    is IrWildPat (sp) ->
-     if guarded == False then "            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-     else "            " & keyword & " (" & emit-expr (b.guard) ctx & ")\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-    is IrVecPat (pats) (ty) (sp) ->
-     if guarded == False then "            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-     else "            " & keyword & " (" & emit-expr (b.guard) ctx & ")\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-    is IrVarPat (name) (ty) (sp) ->
-     let bind = "                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & s-var & ";\n"
-     in if guarded == False then "            {\n" & bind & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-        else "            " & keyword & " (((Func<bool>)(() => { " & cs-type-or-dynamic ty & " " & sanitize name & " = " & s-var & "; return " & emit-expr (b.guard) ctx & "; }))())\n            {\n" & bind & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-    is IrCtorPat (name) (subs) (ty) (sp) ->
-     if is-mktup-name name
-     then "            {\n" & emit-tco-tup-let-bindings subs s-var 0 & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-     else let match-var = tco-match-var depth idx
-          in let g = if guarded == False then ""
-             else " && ((Func<bool>)(() => {\n" & emit-tco-ctor-bindings subs match-var 0 & "                return " & emit-expr (b.guard) ctx & ";\n            }))()"
-          in "            " & keyword & " (" & s-var & " is " & sanitize name & extract-ctor-type-args ty & " " & match-var & g & ")\n            {\n" & emit-tco-ctor-bindings subs match-var 0 & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
-    is IrLitPat (text) (ty) (sp) ->
-     let g = if guarded == False then "" else " && (" & emit-expr (b.guard) ctx & ")"
-     in "            " & keyword & " (object.Equals(" & s-var & ", " & cs-tco-lit-text text ty & ")" & g & ")\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+    let s-var = tco-scrut-var depth
+    in let keyword = if is-first then "if" else "else if"
+    in let guarded = cs-guard-trivial (b.guard) == False
+    in when b.pattern
+     is IrWildPat (sp) ->
+      if guarded == False then
+        "            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+      else
+        "            " & keyword & " (" & emit-expr (b.guard) ctx & ")\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+     is IrVecPat (pats) (ty) (sp) ->
+      if guarded == False then
+        "            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+      else
+        "            " & keyword & " (" & emit-expr (b.guard) ctx & ")\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+     is IrVarPat (name) (ty) (sp) ->
+      let bind = "                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & s-var & ";\n"
+      in if guarded == False then
+        "            {\n" & bind & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+      else
+        "            " & keyword & " (((Func<bool>)(() => { " & cs-type-or-dynamic ty & " " & sanitize name & " = " & s-var & "; return " & emit-expr (b.guard) ctx & "; }))())\n            {\n" & bind & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+     is IrCtorPat (name) (subs) (ty) (sp) ->
+      if is-mktup-name name then
+        "            {\n" & emit-tco-tup-let-bindings subs s-var 0 & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+      else let match-var = tco-match-var depth idx
+      in let g = if guarded == False then ""
+      else
+        " && ((Func<bool>)(() => {\n" & emit-tco-ctor-bindings subs match-var 0 & "                return " & emit-expr (b.guard) ctx & ";\n            }))()"
+      in "            " & keyword & " (" & s-var & " is " & sanitize name & extract-ctor-type-args ty & " " & match-var & g & ")\n            {\n" & emit-tco-ctor-bindings subs match-var 0 & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
+     is IrLitPat (text) (ty) (sp) ->
+      let g = if guarded == False then "" else " && (" & emit-expr (b.guard) ctx & ")"
+      in "            " & keyword & " (object.Equals(" & s-var & ", " & cs-tco-lit-text text ty & ")" & g & ")\n            {\n" & emit-tco-body (b.body) func-name params ctx (depth + 1) & "            }\n"
 
   tco-scrut-var : Integer -> Text
   tco-scrut-var (depth) =
-   if depth == 0 then "_tco_s" else "_tco_s" & integer-to-text depth
+    if depth == 0 then "_tco_s" else "_tco_s" & integer-to-text depth
 
   tco-match-var : Integer, Integer -> Text
   tco-match-var (depth) (idx) =
-   if depth == 0 then "_tco_m" & integer-to-text idx
-   else "_tco_m" & integer-to-text depth & "_" & integer-to-text idx
+    if depth == 0 then "_tco_m" & integer-to-text idx
+    else "_tco_m" & integer-to-text depth & "_" & integer-to-text idx
 
   emit-tco-ctor-bindings : List IRPat, Text, Integer -> Text
   emit-tco-ctor-bindings (subs) (match-var) (i) =
-   if i == list-length subs then ""
-   else let sub = list-at subs i
-   in emit-tco-ctor-binding sub match-var i & emit-tco-ctor-bindings subs match-var (i + 1)
+    if i == list-length subs then ""
+    else let sub = list-at subs i
+    in emit-tco-ctor-binding sub match-var i & emit-tco-ctor-bindings subs match-var (i + 1)
 
   emit-tco-ctor-binding : IRPat, Text, Integer -> Text
   emit-tco-ctor-binding (sub) (match-var) (i) =
-   when sub
-    is IrVarPat (name) (ty) (sp) -> "                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & match-var & ".Field" & integer-to-text i & ";\n"
-    is otherwise -> ""
+    when sub
+     is IrVarPat (name) (ty) (sp) -> "                " & cs-type-or-dynamic ty & " " & sanitize name & " = " & match-var & ".Field" & integer-to-text i & ";\n"
+     is otherwise -> ""
 
   emit-tco-tup-let-bindings : List IRPat, Text, Integer -> Text
   emit-tco-tup-let-bindings (subs) (scrut-var) (i) =
-   if i == list-length subs then ""
-   else let sub = list-at subs i
-   in let binding = when sub
-       is IrVarPat (name) (ty) (sp) -> "                var " & sanitize name & " = " & scrut-var & ".Item" & integer-to-text (i + 1) & ";\n"
-       is otherwise -> ""
-   in binding & emit-tco-tup-let-bindings subs scrut-var (i + 1)
+    if i == list-length subs then ""
+    else let sub = list-at subs i
+    in let binding = when sub
+        is IrVarPat (name) (ty) (sp) -> "                var " & sanitize name & " = " & scrut-var & ".Item" & integer-to-text (i + 1) & ";\n"
+        is otherwise -> ""
+    in binding & emit-tco-tup-let-bindings subs scrut-var (i + 1)
 
   emit-tco-jump : IRExpr, List IRParam, CsCtx -> Text
   emit-tco-jump (e) (params) (ctx) =
-   let chain = collect-apply-chain e []
-   in emit-tco-temps (chain.args) params ctx 0 & emit-tco-assigns params 0 & "            continue;\n"
+    let chain = collect-apply-chain e []
+    in emit-tco-temps (chain.args) params ctx 0 & emit-tco-assigns params 0 & "            continue;\n"
 
   emit-tco-temps : List IRExpr, List IRParam, CsCtx, Integer -> Text
   emit-tco-temps (args) (params) (ctx) (i) =
-   if i == list-length args then ""
-   else let p = list-at params i
-   in "            " & cs-type-or-dynamic (p.type-val) & " _tco_" & integer-to-text i & " = " & emit-expr (list-at args i) ctx & ";\n" & emit-tco-temps args params ctx (i + 1)
+    if i == list-length args then ""
+    else let p = list-at params i
+    in "            " & cs-type-or-dynamic (p.type-val) & " _tco_" & integer-to-text i & " = " & emit-expr (list-at args i) ctx & ";\n" & emit-tco-temps args params ctx (i + 1)
 
   emit-tco-assigns : List IRParam, Integer -> Text
   emit-tco-assigns (params) (i) =
-   if i == list-length params then ""
-   else let p = list-at params i
-   in "            " & sanitize (p.name) & " = _tco_" & integer-to-text i & ";\n" & emit-tco-assigns params (i + 1)
+    if i == list-length params then ""
+    else let p = list-at params i
+    in "            " & sanitize (p.name) & " = _tco_" & integer-to-text i & ";\n" & emit-tco-assigns params (i + 1)
 
 Section: Definition Emission
 
   emit-def : IRDef, CsCtx -> Text
   emit-def (d) (ctx) =
-   if is-seam-override (d.name) then ""
-   else let dctx0 = __record-set ctx "locals" (param-names (d.params) 0 [])
-   in let dyn-lam = if is-lam-def (d.name) then is-identity-lam d == False else False
-   in let dctx = __record-set dctx0 "dyn-locals" (if dyn-lam then tvar-param-names (d.params) 0 [] else [])
-   in if should-tco d then emit-tco-def d dctx
-   else let ret = get-return-type (d.type-val) (list-length (d.params))
-   in if dyn-lam then "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
-   else let gen = generic-suffix (d.type-val)
-   in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
+    if is-seam-override (d.name) then ""
+    else let dctx0 = __record-set ctx "locals" (param-names (d.params) 0 [])
+    in let dyn-lam = if is-lam-def (d.name) then is-identity-lam d == False else False
+    in let dctx = __record-set dctx0 "dyn-locals" (if dyn-lam then tvar-param-names (d.params) 0 [] else [])
+    in if should-tco d then emit-tco-def d dctx
+    else let ret = get-return-type (d.type-val) (list-length (d.params))
+    in if dyn-lam then
+      "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
+    else let gen = generic-suffix (d.type-val)
+    in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
 
   get-return-type : CodexType, Integer -> CodexType
   get-return-type (ty) (n) =
-   if n == 0 then strip-forall ty
-   else when strip-forall ty
-    is FunTy (p) (fnrow) (r) -> get-return-type r (n - 1)
-    is otherwise -> ty
+    if n == 0 then strip-forall ty
+    else when strip-forall ty
+     is FunTy (p) (fnrow) (r) -> get-return-type r (n - 1)
+     is otherwise -> ty
 
   strip-forall : CodexType -> CodexType
   strip-forall (ty) =
-   when ty
-    is ForAllTy (id) (body) -> strip-forall body
-    is ForAllEff (id) (body) -> strip-forall body
-    is LinearTy (body) -> strip-forall body
-    is TypeApply (body) (tyarg) -> strip-forall body
-    is otherwise -> ty
+    when ty
+     is ForAllTy (id) (body) -> strip-forall body
+     is ForAllEff (id) (body) -> strip-forall body
+     is LinearTy (body) -> strip-forall body
+     is TypeApply (body) (tyarg) -> strip-forall body
+     is otherwise -> ty
 
   emit-def-params : List IRParam, Integer -> Text
   emit-def-params (params) (i) =
-   if i == list-length params then ""
-   else let p = list-at params i
-   in cs-type (p.type-val) & " " & sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & emit-def-params params (i + 1)
+    if i == list-length params then ""
+    else let p = list-at params i
+    in cs-type (p.type-val) & " " & sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & emit-def-params params (i + 1)
 
  A lifted lambda reaches this plug with UNRESOLVED type variables in its
  signature: the compiler's IR-CCE lift runs after the resolve pass, so a
@@ -544,7 +565,7 @@ Section: Definition Emission
 
   is-lam-def : Text -> Boolean
   is-lam-def (n) =
-   text-length n >= 6 & substring n 0 6 == "__lam_"
+    text-length n >= 6 & substring n 0 6 == "__lam_"
 
  An identity lambda reads no field of its parameter, so it takes the
  generic rendering: `dynamic` there would erase the element type of
@@ -552,28 +573,28 @@ Section: Definition Emission
 
   is-identity-lam : IRDef -> Boolean
   is-identity-lam (d) =
-   if list-length (d.params) /= 1 then False
-   else when d.body
-    is IrName (n) (nty) (sp) -> n == (list-at (d.params) 0).name
-    is otherwise -> False
+    if list-length (d.params) /= 1 then False
+    else when d.body
+     is IrName (n) (nty) (sp) -> n == (list-at (d.params) 0).name
+     is otherwise -> False
 
   tvar-param-names : List IRParam, Integer, List Text -> List Text
   tvar-param-names (ps) (i) (acc) =
-   if i >= list-length ps then acc
-   else let p = list-at ps i
-   in (when p.type-val is TypeVar (id) -> tvar-param-names ps (i + 1) (list-snoc acc (p.name)) is otherwise -> tvar-param-names ps (i + 1) acc)
+    if i >= list-length ps then acc
+    else let p = list-at ps i
+    in (when p.type-val is TypeVar (id) -> tvar-param-names ps (i + 1) (list-snoc acc (p.name)) is otherwise -> tvar-param-names ps (i + 1) acc)
 
   cs-type-lam : CodexType -> Text
   cs-type-lam (ty) =
-   when ty
-    is TypeVar (id) -> "dynamic"
-    is otherwise -> cs-type ty
+    when ty
+     is TypeVar (id) -> "dynamic"
+     is otherwise -> cs-type ty
 
   emit-def-params-lam : List IRParam, Integer -> Text
   emit-def-params-lam (params) (i) =
-   if i == list-length params then ""
-   else let p = list-at params i
-   in cs-type-lam (p.type-val) & " " & sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & emit-def-params-lam params (i + 1)
+    if i == list-length params then ""
+    else let p = list-at params i
+    in cs-type-lam (p.type-val) & " " & sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & emit-def-params-lam params (i + 1)
 
 Section: Chapter Emission
 
@@ -585,119 +606,119 @@ Section: Chapter Emission
 
   cs-cce-mask : Text -> Integer
   cs-cce-mask (t) =
-   (if text-contains t "FromUnicode" then 1 else 0)
-   + (if text-contains t "UniToCce" then 2 else 0)
-   + (if text-contains t "CceToUni" then 4 else 0)
-   + (if text-contains t "ReadStream" then 8 else 0)
-   + (if text-contains t "FromUnicodeArr" then 16 else 0)
-   + (if text-contains t "FromUnicodeList" | text-contains t "FromUnicodeRows" then 32 else 0)
-   + (if text-contains t "FromUnicodeRows" then 64 else 0)
-   + (if text-contains t "RawBytesToText" then 128 else 0)
+    (if text-contains t "FromUnicode" then 1 else 0)
+    + (if text-contains t "UniToCce" then 2 else 0)
+    + (if text-contains t "CceToUni" then 4 else 0)
+    + (if text-contains t "ReadStream" then 8 else 0)
+    + (if text-contains t "FromUnicodeArr" then 16 else 0)
+    + (if text-contains t "FromUnicodeList" | text-contains t "FromUnicodeRows" then 32 else 0)
+    + (if text-contains t "FromUnicodeRows" then 64 else 0)
+    + (if text-contains t "RawBytesToText" then 128 else 0)
 
   cce-member-when-used : Integer, Integer, Text -> Text
   cce-member-when-used (mask) (bit) (src) =
-   if bit-and mask bit == bit then src else ""
+    if bit-and mask bit == bit then src else ""
 
   emit-cce-runtime : Integer -> Text
   emit-cce-runtime (mask) =
-   text-concat-list [
-   "static class _Cce {\n",
-   "    static readonly int[] _toUni = {\n",
-   "        0, 10, 32,\n",
-   "        48, 49, 50, 51, 52, 53, 54, 55, 56, 57,\n",
-   "        101, 116, 97, 111, 105, 110, 115, 104, 114, 100,\n",
-   "        108, 99, 117, 109, 119, 102, 103, 121, 112, 98,\n",
-   "        118, 107, 106, 120, 113, 122,\n",
-   "        69, 84, 65, 79, 73, 78, 83, 72, 82, 68,\n",
-   "        76, 67, 85, 77, 87, 70, 71, 89, 80, 66,\n",
-   "        86, 75, 74, 88, 81, 90,\n",
-   "        46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,\n",
-   "        43, 61, 42, 60, 62,\n",
-   "        47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,\n",
-   "        94,\n",
-   "        36, 37,\n",
-   "        233, 232, 234, 235, 225, 224, 226, 228,\n",
-   "        243, 244, 246, 250, 252, 241, 231, 237,\n",
-   "        1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,\n",
-   "        1074, 1083, 1082, 1084, 1076, 1087, 1091\n",
-   "    };\n",
-   "    static readonly Dictionary<int, int> _fromUni = new();\n",
-   "    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }\n",
-   "    static readonly int[] _t1 = { 128, 256, 1024, 128, 880, 128, 1536, 128, 1424, 128, 2304, 128, 3584, 128, 4352, 128, 19968, 512, 12352, 256, 8704, 128 };\n",
-   "    static readonly int[] _t1c = { 128, 384, 512, 640, 768, 896, 1024, 1152, 1280, 1792, 2048 };\n",
-   "    static readonly int[] _t2 = { 12288, 64, 12352, 96, 12448, 96, 19968, 20992, 13312, 6592, 44032, 11172, 3584, 256, 8192, 512, 127744, 1024, 9728, 256 };\n",
-   "    public static int CpToUni(int cp) {\n",
-   "        if (cp < 0) return 65533;\n",
-   "        if (cp < 128) return _toUni[cp];\n",
-   "        if (cp < 2176) { for (int b = 10; b >= 0; b--) if (cp >= _t1c[b]) return _t1[2*b] + (cp - _t1c[b]); return 65533; }\n",
-   "        if (cp < 67712) { int c = 2176; for (int b = 0; b < 10; b++) { int n = _t2[2*b+1]; if (cp < c + n) return _t2[2*b] + (cp - c); c += n; } }\n",
-   "        return 65533;\n",
-   "    }\n",
-   "    public static int UniToCp(int u) {\n",
-   "        if (_fromUni.TryGetValue(u, out int c0)) return c0;\n",
-   "        for (int b = 0; b < 11; b++) { int bu = _t1[2*b]; if (u >= bu && u < bu + _t1[2*b+1]) return _t1c[b] + (u - bu); }\n",
-   "        int c = 2176; for (int b = 0; b < 10; b++) { int bu = _t2[2*b], n = _t2[2*b+1]; if (u >= bu && u < bu + n) return c + (u - bu); c += n; }\n",
-   "        return -1;\n",
-   "    }\n",
-   "    static void AppendFrame(System.Text.StringBuilder sb, int c) {\n",
-   "        if (c < 128) { sb.Append((char)c); return; }\n",
-   "        if (c < 2176) { int v = c - 128; sb.Append((char)(192 | (v >> 6))); sb.Append((char)(128 | (v & 63))); return; }\n",
-   "        int w = c - 2176; sb.Append((char)(224 | (w >> 12))); sb.Append((char)(128 | ((w >> 6) & 63))); sb.Append((char)(128 | (w & 63)));\n",
-   "    }\n",
-   cce-member-when-used mask 1 (text-concat-list [
-   "    public static string FromUnicode(string s) {\n",
-   "        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");\n",
-   "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n",
-   "        for (int i = 0; i < s.Length; i++) {\n",
-   "            int u = s[i];\n",
-   "            if (char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i+1])) { u = char.ConvertToUtf32(s[i], s[i+1]); i++; }\n",
-   "            int c = UniToCp(u);\n",
-   "            AppendFrame(sb, c < 0 ? 68 : c);\n",
-   "        }\n",
-   "        return sb.ToString();\n",
-   "    }\n"]),
-   "    public static string ToUnicode(string s) {\n",
-   "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n",
-   "        for (int i = 0; i < s.Length; i++) {\n",
-   "            int b = s[i];\n",
-   "            int n = b < 128 ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : (b & 0xF8) == 0xF0 ? 4 : 0;\n",
-   "            if (n == 0 || i + n > s.Length) { sb.Append((char)65533); continue; }\n",
-   "            int cp = n == 1 ? b\n",
-   "                : n == 2 ? 128 + (((b & 0x1F) << 6) | (s[i+1] & 0x3F))\n",
-   "                : n == 3 ? 2176 + (((b & 0x0F) << 12) | ((s[i+1] & 0x3F) << 6) | (s[i+2] & 0x3F))\n",
-   "                : 67712 + (((b & 0x07) << 18) | ((s[i+1] & 0x3F) << 12) | ((s[i+2] & 0x3F) << 6) | (s[i+3] & 0x3F));\n",
-   "            int u = CpToUni(cp);\n",
-   "            if (u >= 0xD800 && u <= 0xDFFF) u = 65533;\n",
-   "            sb.Append(char.ConvertFromUtf32(u)); i += n - 1;\n",
-   "        }\n",
-   "        return sb.ToString();\n",
-   "    }\n",
-   cce-member-when-used mask 2 (text-concat-list [
-   "    public static long UniToCce(long u) {\n",
-   "        int c = UniToCp((int)u);\n",
-   "        return c < 0 ? 68 : c;\n",
-   "    }\n"]),
-   cce-member-when-used mask 4 (text-concat-list [
-   "    public static long CceToUni(long b) {\n",
-   "        return CpToUni((int)b);\n",
-   "    }\n"]),
-   cce-member-when-used mask 8 (text-concat-list [
-   "    public static string ReadStream() {\n",
-   "        string s = Console.In.ReadToEnd();\n",
-   "        int e = s.IndexOf('\\u0004');\n",
-   "        return e < 0 ? s : s.Substring(0, e);\n",
-   "    }\n"]),
-   cce-member-when-used mask 16 "    public static List<string> FromUnicodeArr(string[] xs) { List<string> r = new List<string>(xs.Length); foreach (string s in xs) r.Add(FromUnicode(s)); return r; }\n",
-   cce-member-when-used mask 32 "    public static List<string> FromUnicodeList(List<string> xs) { List<string> r = new List<string>(xs.Count); foreach (string s in xs) r.Add(FromUnicode(s)); return r; }\n",
-   cce-member-when-used mask 64 "    public static List<List<string>> FromUnicodeRows(List<List<string>> rs) { List<List<string>> r = new List<List<string>>(rs.Count); foreach (List<string> x in rs) r.Add(FromUnicodeList(x)); return r; }\n",
-   cce-member-when-used mask 128 (text-concat-list [
-   "    public static string RawBytesToText(object bs) {\n",
-   "        List<long> l = (List<long>)bs;\n",
-   "        char[] cs = new char[l.Count];\n",
-   "        for (int i = 0; i < l.Count; i++) cs[i] = (char)l[i];\n",
-   "        return new string(cs);\n",
-   "    }\n"]),
-   "}\n\n"]
+    text-concat-list [
+    "static class _Cce {\n",
+    "    static readonly int[] _toUni = {\n",
+    "        0, 10, 32,\n",
+    "        48, 49, 50, 51, 52, 53, 54, 55, 56, 57,\n",
+    "        101, 116, 97, 111, 105, 110, 115, 104, 114, 100,\n",
+    "        108, 99, 117, 109, 119, 102, 103, 121, 112, 98,\n",
+    "        118, 107, 106, 120, 113, 122,\n",
+    "        69, 84, 65, 79, 73, 78, 83, 72, 82, 68,\n",
+    "        76, 67, 85, 77, 87, 70, 71, 89, 80, 66,\n",
+    "        86, 75, 74, 88, 81, 90,\n",
+    "        46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,\n",
+    "        43, 61, 42, 60, 62,\n",
+    "        47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,\n",
+    "        94,\n",
+    "        36, 37,\n",
+    "        233, 232, 234, 235, 225, 224, 226, 228,\n",
+    "        243, 244, 246, 250, 252, 241, 231, 237,\n",
+    "        1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,\n",
+    "        1074, 1083, 1082, 1084, 1076, 1087, 1091\n",
+    "    };\n",
+    "    static readonly Dictionary<int, int> _fromUni = new();\n",
+    "    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }\n",
+    "    static readonly int[] _t1 = { 128, 256, 1024, 128, 880, 128, 1536, 128, 1424, 128, 2304, 128, 3584, 128, 4352, 128, 19968, 512, 12352, 256, 8704, 128 };\n",
+    "    static readonly int[] _t1c = { 128, 384, 512, 640, 768, 896, 1024, 1152, 1280, 1792, 2048 };\n",
+    "    static readonly int[] _t2 = { 12288, 64, 12352, 96, 12448, 96, 19968, 20992, 13312, 6592, 44032, 11172, 3584, 256, 8192, 512, 127744, 1024, 9728, 256 };\n",
+    "    public static int CpToUni(int cp) {\n",
+    "        if (cp < 0) return 65533;\n",
+    "        if (cp < 128) return _toUni[cp];\n",
+    "        if (cp < 2176) { for (int b = 10; b >= 0; b--) if (cp >= _t1c[b]) return _t1[2*b] + (cp - _t1c[b]); return 65533; }\n",
+    "        if (cp < 67712) { int c = 2176; for (int b = 0; b < 10; b++) { int n = _t2[2*b+1]; if (cp < c + n) return _t2[2*b] + (cp - c); c += n; } }\n",
+    "        return 65533;\n",
+    "    }\n",
+    "    public static int UniToCp(int u) {\n",
+    "        if (_fromUni.TryGetValue(u, out int c0)) return c0;\n",
+    "        for (int b = 0; b < 11; b++) { int bu = _t1[2*b]; if (u >= bu && u < bu + _t1[2*b+1]) return _t1c[b] + (u - bu); }\n",
+    "        int c = 2176; for (int b = 0; b < 10; b++) { int bu = _t2[2*b], n = _t2[2*b+1]; if (u >= bu && u < bu + n) return c + (u - bu); c += n; }\n",
+    "        return -1;\n",
+    "    }\n",
+    "    static void AppendFrame(System.Text.StringBuilder sb, int c) {\n",
+    "        if (c < 128) { sb.Append((char)c); return; }\n",
+    "        if (c < 2176) { int v = c - 128; sb.Append((char)(192 | (v >> 6))); sb.Append((char)(128 | (v & 63))); return; }\n",
+    "        int w = c - 2176; sb.Append((char)(224 | (w >> 12))); sb.Append((char)(128 | ((w >> 6) & 63))); sb.Append((char)(128 | (w & 63)));\n",
+    "    }\n",
+    cce-member-when-used mask 1 (text-concat-list [
+    "    public static string FromUnicode(string s) {\n",
+    "        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");\n",
+    "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n",
+    "        for (int i = 0; i < s.Length; i++) {\n",
+    "            int u = s[i];\n",
+    "            if (char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i+1])) { u = char.ConvertToUtf32(s[i], s[i+1]); i++; }\n",
+    "            int c = UniToCp(u);\n",
+    "            AppendFrame(sb, c < 0 ? 68 : c);\n",
+    "        }\n",
+    "        return sb.ToString();\n",
+    "    }\n"]),
+    "    public static string ToUnicode(string s) {\n",
+    "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n",
+    "        for (int i = 0; i < s.Length; i++) {\n",
+    "            int b = s[i];\n",
+    "            int n = b < 128 ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : (b & 0xF8) == 0xF0 ? 4 : 0;\n",
+    "            if (n == 0 || i + n > s.Length) { sb.Append((char)65533); continue; }\n",
+    "            int cp = n == 1 ? b\n",
+    "                : n == 2 ? 128 + (((b & 0x1F) << 6) | (s[i+1] & 0x3F))\n",
+    "                : n == 3 ? 2176 + (((b & 0x0F) << 12) | ((s[i+1] & 0x3F) << 6) | (s[i+2] & 0x3F))\n",
+    "                : 67712 + (((b & 0x07) << 18) | ((s[i+1] & 0x3F) << 12) | ((s[i+2] & 0x3F) << 6) | (s[i+3] & 0x3F));\n",
+    "            int u = CpToUni(cp);\n",
+    "            if (u >= 0xD800 && u <= 0xDFFF) u = 65533;\n",
+    "            sb.Append(char.ConvertFromUtf32(u)); i += n - 1;\n",
+    "        }\n",
+    "        return sb.ToString();\n",
+    "    }\n",
+    cce-member-when-used mask 2 (text-concat-list [
+    "    public static long UniToCce(long u) {\n",
+    "        int c = UniToCp((int)u);\n",
+    "        return c < 0 ? 68 : c;\n",
+    "    }\n"]),
+    cce-member-when-used mask 4 (text-concat-list [
+    "    public static long CceToUni(long b) {\n",
+    "        return CpToUni((int)b);\n",
+    "    }\n"]),
+    cce-member-when-used mask 8 (text-concat-list [
+    "    public static string ReadStream() {\n",
+    "        string s = Console.In.ReadToEnd();\n",
+    "        int e = s.IndexOf('\\u0004');\n",
+    "        return e < 0 ? s : s.Substring(0, e);\n",
+    "    }\n"]),
+    cce-member-when-used mask 16 "    public static List<string> FromUnicodeArr(string[] xs) { List<string> r = new List<string>(xs.Length); foreach (string s in xs) r.Add(FromUnicode(s)); return r; }\n",
+    cce-member-when-used mask 32 "    public static List<string> FromUnicodeList(List<string> xs) { List<string> r = new List<string>(xs.Count); foreach (string s in xs) r.Add(FromUnicode(s)); return r; }\n",
+    cce-member-when-used mask 64 "    public static List<List<string>> FromUnicodeRows(List<List<string>> rs) { List<List<string>> r = new List<List<string>>(rs.Count); foreach (List<string> x in rs) r.Add(FromUnicodeList(x)); return r; }\n",
+    cce-member-when-used mask 128 (text-concat-list [
+    "    public static string RawBytesToText(object bs) {\n",
+    "        List<long> l = (List<long>)bs;\n",
+    "        char[] cs = new char[l.Count];\n",
+    "        for (int i = 0; i < l.Count; i++) cs[i] = (char)l[i];\n",
+    "        return new string(cs);\n",
+    "    }\n"]),
+    "}\n\n"]
 
  The _Buf arena is allocated lazily on the first byte-level access, not
  at class load: the pointer moves record a high-water mark in _need and
@@ -717,112 +738,112 @@ Section: Chapter Emission
 
   emit-buf-runtime : Text
   emit-buf-runtime =
-   text-concat-list [
-   "public interface _ICodexVariant { long _ctag { get; } }\n",
-   "static class _CxText {\n",
-   "    public static long ToInteger(string s) {\n",
-   "        string t = _Cce.ToUnicode(s);\n",
-   "        int i = 0; bool neg = false;\n",
-   "        if (t.Length > 0 && t[0] == '-') { neg = true; i = 1; }\n",
-   "        long v = 0;\n",
-   "        while (i < t.Length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++; }\n",
-   "        return neg ? -v : v;\n",
-   "    }\n",
-   "    public static string Replace(string s, string a, string b) { return a.Length == 0 ? s : s.Replace(a, b, StringComparison.Ordinal); }\n",
-   "    public static string CharEncode(long c) {\n",
-   "        if (c < 128) return ((char)c).ToString();\n",
-   "        if (c < 2176) { long v = c - 128; return new string(new char[]{ (char)(192 | (v >> 6)), (char)(128 | (v & 63)) }); }\n",
-   "        if (c < 67712) { long v = c - 2176; return new string(new char[]{ (char)(224 | (v >> 12)), (char)(128 | ((v >> 6) & 63)), (char)(128 | (v & 63)) }); }\n",
-   "        long w = c - 67712;\n",
-   "        return new string(new char[]{ (char)(240 | (w >> 18)), (char)(128 | ((w >> 12) & 63)), (char)(128 | ((w >> 6) & 63)), (char)(128 | (w & 63)) });\n",
-   "    }\n",
-   "    public static List<string> Split(string s, string sep) {\n",
-   "        var r = new List<string>();\n",
-   "        if (sep.Length == 0) { r.Add(s); return r; }\n",
-   "        foreach (var part in s.Split(sep)) r.Add(part);\n",
-   "        return r;\n",
-   "    }\n",
-   "}\n",
-   "static class _Buf {\n",
-   "    static byte[] _mem_;\n",
-   "    static long _need = 0;\n",
-   "    const long _MAXLEN = 0x7FFFFFC7;\n",
-   "    static long _floor() { long mb = 512; string e = Environment.GetEnvironmentVariable(\"LENS_BUF_MB\"); if (!string.IsNullOrEmpty(e) && long.TryParse(e, out long v) && v > 0) mb = v; return mb * 1024 * 1024; }\n",
-   "    static void _want(long n) {\n",
-   "        if (n <= _need) return;\n",
-   "        _need = n;\n",
-   "        if (_mem_ != null && n > _mem_.LongLength) _regrow(n);\n",
-   "    }\n",
-   "    static void _regrow(long n) {\n",
-   "        if (n > _MAXLEN) throw new InvalidOperationException(\"codex arena: needs \" + n + \" bytes; a .NET byte[] tops out at \" + _MAXLEN + \". The bump pointer has run past what one array can hold.\");\n",
-   "        long want = _mem_.LongLength;\n",
-   "        while (want < n) want = want > _MAXLEN / 2 ? _MAXLEN : want * 2;\n",
-   "        byte[] fresh = new byte[want];\n",
-   "        Array.Copy(_mem_, 0, fresh, 0, _mem_.LongLength);\n",
-   "        _mem_ = fresh;\n",
-   "    }\n",
-   "    static byte[] _mem { get { if (_mem_ == null) { long n = Math.Max(_need, _floor()); if (n > _MAXLEN) throw new InvalidOperationException(\"codex arena: needs \" + n + \" bytes; a .NET byte[] tops out at \" + _MAXLEN + \".\"); _mem_ = new byte[n]; } return _mem_; } }\n",
-   "    // The bump pointer boots at bare metal's own heap base (boot does mov r10, 6291456),\n",
-   "    // because the absolute value is observable: arith-narrow-proven asserts __heap-save > 0.\n",
-   "    static long _ptr = 6291456;\n",
-   "    static long _dptr = 0;\n",
-   "    static long _bivy = 0;\n",
-   "    static long _nest = 0;\n",
-   "    public static long deck_enter() { if (_nest++ == 0) { _bivy = _ptr; _ptr = _dptr; } return 0; }\n",
-   "    public static long deck_exit() { if (--_nest == 0) { _dptr = _ptr; _ptr = _bivy; } return 0; }\n",
-   "    public static T deck_scope<T>(Func<T> body) { deck_enter(); T r = body(); deck_exit(); return r; }\n",
-   "    public static T store<T, V>(T r, V assigned) => r;\n",
-   "    public static T rset<T>(T r, Action<T> f) { f(r); return r; }\n",
-   "    public static List<T> lpush<T>(List<T> l, T v) { if (l.Count < l.Capacity) { l.Add(v); return l; } int c = l.Count * 2; if (c < 4) c = 4; var n = new List<T>(c); n.AddRange(l); n.Add(v); return n; }\n",
-   "    public static dynamic dmap(Func<dynamic, dynamic> f, System.Collections.IEnumerable xs) {\n",
-   "        var r = (System.Collections.IList)Activator.CreateInstance(xs.GetType());\n",
-   "        foreach (object x in xs) r.Add((object)f(x));\n",
-   "        return r;\n",
-   "    }\n",
-   "    public static long vtag(object o) => o is _ICodexVariant v ? v._ctag : 0L;\n",
-   "    public static long deck_pos() => _dptr;\n",
-   "    public static long deck_set(object p) { _dptr = (long)p; _want(_dptr); return 0; }\n",
-   "    public static long deck_alloc(object n) { long q = _dptr; _dptr += (long)n; _want(_dptr); return q; }\n",
-   "    public static long heap_save() => _ptr;\n",
-   "    public static long heap_restore(object p) { _ptr = (long)p; return 0; }\n",
-   "    public static long heap_advance(object n) { _ptr += (long)n; _want(_ptr); return 0; }\n",
-   "    public static long buf_write_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return (long)off + 1; }\n",
-   "    public static long buf_write_bytes(object b, object off, object vs) {\n",
-   "        List<long> list = (List<long>)vs; long o = (long)off; long ba = (long)b;\n",
-   "        for (int i = 0; i < list.Count; i++) _mem[ba + o + i] = (byte)list[i];\n",
-   "        return o + list.Count;\n",
-   "    }\n",
-   "    public static List<long> buf_read_bytes(object b, object off, object n) {\n",
-   "        long ba = (long)b; long o = (long)off; int cnt = (int)(long)n;\n",
-   "        List<long> r = new List<long>(cnt);\n",
-   "        for (int i = 0; i < cnt; i++) r.Add(_mem[ba + o + i]);\n",
-   "        return r;\n",
-   "    }\n",
-   "    public static dynamic list_with_capacity(object cap) => new List<object>((int)(long)cap);\n",
-   "    static System.IO.Stream _so_;\n",
-   "    static System.IO.Stream _so { get { if (_so_ == null) _so_ = Console.OpenStandardOutput(); return _so_; } }\n",
-   "    public static long alloc_bytes(object n) { long p = _ptr; _ptr += (long)n; _want(_ptr); return p; }\n",
-   "    public static long peek_32(object b, object off) { long a = (long)b + (long)off; return (long)(uint)(_mem[a] | (_mem[a + 1] << 8) | (_mem[a + 2] << 16) | (_mem[a + 3] << 24)); }\n",
-   "    public static long poke_32(object b, object off, object v) { long a = (long)b + (long)off; long w = (long)v; _mem[a] = (byte)w; _mem[a + 1] = (byte)(w >> 8); _mem[a + 2] = (byte)(w >> 16); _mem[a + 3] = (byte)(w >> 24); return 0; }\n",
-   "    public static long peek_16(object b, object off) { long a = (long)b + (long)off; return (long)(ushort)(_mem[a] | (_mem[a + 1] << 8)); }\n",
-   "    public static long poke_16(object b, object off, object v) { long a = (long)b + (long)off; long w = (long)v; _mem[a] = (byte)w; _mem[a + 1] = (byte)(w >> 8); return 0; }\n",
-   "    public static long peek_byte(object b, object off) { return _mem[(long)b + (long)off]; }\n",
-   "    public static long peek_qword(object b, object off) { long a = (long)b + (long)off; long v = 0; for (int i = 7; i >= 0; i--) v = (v << 8) | _mem[a + i]; return v; }\n",
-   "    public static long poke_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return 0; }\n",
-   "    public static object memset(object b, object v, object n) { long a = (long)b; byte x = (byte)(long)v; long c = (long)n; for (long i = 0; i < c; i++) _mem[a + i] = x; return null; }\n",
-   "    public static System.IO.Stream out_stream() { return _so; }\n",
-   "    public static object write_binary(object bs) { Console.Out.Flush(); List<long> l = (List<long>)bs; foreach (long b in l) _so.WriteByte((byte)b); _so.Flush(); return null; }\n",
-   "    public static object write_binary_buf(object b, object off, object n) { Console.Out.Flush(); _so.Write(_mem, (int)((long)b + (long)off), (int)(long)n); _so.Flush(); return null; }\n",
-   "}\n\n"]
+    text-concat-list [
+    "public interface _ICodexVariant { long _ctag { get; } }\n",
+    "static class _CxText {\n",
+    "    public static long ToInteger(string s) {\n",
+    "        string t = _Cce.ToUnicode(s);\n",
+    "        int i = 0; bool neg = false;\n",
+    "        if (t.Length > 0 && t[0] == '-') { neg = true; i = 1; }\n",
+    "        long v = 0;\n",
+    "        while (i < t.Length && t[i] >= '0' && t[i] <= '9') { v = v * 10 + (t[i] - '0'); i++; }\n",
+    "        return neg ? -v : v;\n",
+    "    }\n",
+    "    public static string Replace(string s, string a, string b) { return a.Length == 0 ? s : s.Replace(a, b, StringComparison.Ordinal); }\n",
+    "    public static string CharEncode(long c) {\n",
+    "        if (c < 128) return ((char)c).ToString();\n",
+    "        if (c < 2176) { long v = c - 128; return new string(new char[]{ (char)(192 | (v >> 6)), (char)(128 | (v & 63)) }); }\n",
+    "        if (c < 67712) { long v = c - 2176; return new string(new char[]{ (char)(224 | (v >> 12)), (char)(128 | ((v >> 6) & 63)), (char)(128 | (v & 63)) }); }\n",
+    "        long w = c - 67712;\n",
+    "        return new string(new char[]{ (char)(240 | (w >> 18)), (char)(128 | ((w >> 12) & 63)), (char)(128 | ((w >> 6) & 63)), (char)(128 | (w & 63)) });\n",
+    "    }\n",
+    "    public static List<string> Split(string s, string sep) {\n",
+    "        var r = new List<string>();\n",
+    "        if (sep.Length == 0) { r.Add(s); return r; }\n",
+    "        foreach (var part in s.Split(sep)) r.Add(part);\n",
+    "        return r;\n",
+    "    }\n",
+    "}\n",
+    "static class _Buf {\n",
+    "    static byte[] _mem_;\n",
+    "    static long _need = 0;\n",
+    "    const long _MAXLEN = 0x7FFFFFC7;\n",
+    "    static long _floor() { long mb = 512; string e = Environment.GetEnvironmentVariable(\"LENS_BUF_MB\"); if (!string.IsNullOrEmpty(e) && long.TryParse(e, out long v) && v > 0) mb = v; return mb * 1024 * 1024; }\n",
+    "    static void _want(long n) {\n",
+    "        if (n <= _need) return;\n",
+    "        _need = n;\n",
+    "        if (_mem_ != null && n > _mem_.LongLength) _regrow(n);\n",
+    "    }\n",
+    "    static void _regrow(long n) {\n",
+    "        if (n > _MAXLEN) throw new InvalidOperationException(\"codex arena: needs \" + n + \" bytes; a .NET byte[] tops out at \" + _MAXLEN + \". The bump pointer has run past what one array can hold.\");\n",
+    "        long want = _mem_.LongLength;\n",
+    "        while (want < n) want = want > _MAXLEN / 2 ? _MAXLEN : want * 2;\n",
+    "        byte[] fresh = new byte[want];\n",
+    "        Array.Copy(_mem_, 0, fresh, 0, _mem_.LongLength);\n",
+    "        _mem_ = fresh;\n",
+    "    }\n",
+    "    static byte[] _mem { get { if (_mem_ == null) { long n = Math.Max(_need, _floor()); if (n > _MAXLEN) throw new InvalidOperationException(\"codex arena: needs \" + n + \" bytes; a .NET byte[] tops out at \" + _MAXLEN + \".\"); _mem_ = new byte[n]; } return _mem_; } }\n",
+    "    // The bump pointer boots at bare metal's own heap base (boot does mov r10, 6291456),\n",
+    "    // because the absolute value is observable: arith-narrow-proven asserts __heap-save > 0.\n",
+    "    static long _ptr = 6291456;\n",
+    "    static long _dptr = 0;\n",
+    "    static long _bivy = 0;\n",
+    "    static long _nest = 0;\n",
+    "    public static long deck_enter() { if (_nest++ == 0) { _bivy = _ptr; _ptr = _dptr; } return 0; }\n",
+    "    public static long deck_exit() { if (--_nest == 0) { _dptr = _ptr; _ptr = _bivy; } return 0; }\n",
+    "    public static T deck_scope<T>(Func<T> body) { deck_enter(); T r = body(); deck_exit(); return r; }\n",
+    "    public static T store<T, V>(T r, V assigned) => r;\n",
+    "    public static T rset<T>(T r, Action<T> f) { f(r); return r; }\n",
+    "    public static List<T> lpush<T>(List<T> l, T v) { if (l.Count < l.Capacity) { l.Add(v); return l; } int c = l.Count * 2; if (c < 4) c = 4; var n = new List<T>(c); n.AddRange(l); n.Add(v); return n; }\n",
+    "    public static dynamic dmap(Func<dynamic, dynamic> f, System.Collections.IEnumerable xs) {\n",
+    "        var r = (System.Collections.IList)Activator.CreateInstance(xs.GetType());\n",
+    "        foreach (object x in xs) r.Add((object)f(x));\n",
+    "        return r;\n",
+    "    }\n",
+    "    public static long vtag(object o) => o is _ICodexVariant v ? v._ctag : 0L;\n",
+    "    public static long deck_pos() => _dptr;\n",
+    "    public static long deck_set(object p) { _dptr = (long)p; _want(_dptr); return 0; }\n",
+    "    public static long deck_alloc(object n) { long q = _dptr; _dptr += (long)n; _want(_dptr); return q; }\n",
+    "    public static long heap_save() => _ptr;\n",
+    "    public static long heap_restore(object p) { _ptr = (long)p; return 0; }\n",
+    "    public static long heap_advance(object n) { _ptr += (long)n; _want(_ptr); return 0; }\n",
+    "    public static long buf_write_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return (long)off + 1; }\n",
+    "    public static long buf_write_bytes(object b, object off, object vs) {\n",
+    "        List<long> list = (List<long>)vs; long o = (long)off; long ba = (long)b;\n",
+    "        for (int i = 0; i < list.Count; i++) _mem[ba + o + i] = (byte)list[i];\n",
+    "        return o + list.Count;\n",
+    "    }\n",
+    "    public static List<long> buf_read_bytes(object b, object off, object n) {\n",
+    "        long ba = (long)b; long o = (long)off; int cnt = (int)(long)n;\n",
+    "        List<long> r = new List<long>(cnt);\n",
+    "        for (int i = 0; i < cnt; i++) r.Add(_mem[ba + o + i]);\n",
+    "        return r;\n",
+    "    }\n",
+    "    public static dynamic list_with_capacity(object cap) => new List<object>((int)(long)cap);\n",
+    "    static System.IO.Stream _so_;\n",
+    "    static System.IO.Stream _so { get { if (_so_ == null) _so_ = Console.OpenStandardOutput(); return _so_; } }\n",
+    "    public static long alloc_bytes(object n) { long p = _ptr; _ptr += (long)n; _want(_ptr); return p; }\n",
+    "    public static long peek_32(object b, object off) { long a = (long)b + (long)off; return (long)(uint)(_mem[a] | (_mem[a + 1] << 8) | (_mem[a + 2] << 16) | (_mem[a + 3] << 24)); }\n",
+    "    public static long poke_32(object b, object off, object v) { long a = (long)b + (long)off; long w = (long)v; _mem[a] = (byte)w; _mem[a + 1] = (byte)(w >> 8); _mem[a + 2] = (byte)(w >> 16); _mem[a + 3] = (byte)(w >> 24); return 0; }\n",
+    "    public static long peek_16(object b, object off) { long a = (long)b + (long)off; return (long)(ushort)(_mem[a] | (_mem[a + 1] << 8)); }\n",
+    "    public static long poke_16(object b, object off, object v) { long a = (long)b + (long)off; long w = (long)v; _mem[a] = (byte)w; _mem[a + 1] = (byte)(w >> 8); return 0; }\n",
+    "    public static long peek_byte(object b, object off) { return _mem[(long)b + (long)off]; }\n",
+    "    public static long peek_qword(object b, object off) { long a = (long)b + (long)off; long v = 0; for (int i = 7; i >= 0; i--) v = (v << 8) | _mem[a + i]; return v; }\n",
+    "    public static long poke_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return 0; }\n",
+    "    public static object memset(object b, object v, object n) { long a = (long)b; byte x = (byte)(long)v; long c = (long)n; for (long i = 0; i < c; i++) _mem[a + i] = x; return null; }\n",
+    "    public static System.IO.Stream out_stream() { return _so; }\n",
+    "    public static object write_binary(object bs) { Console.Out.Flush(); List<long> l = (List<long>)bs; foreach (long b in l) _so.WriteByte((byte)b); _so.Flush(); return null; }\n",
+    "    public static object write_binary_buf(object b, object off, object n) { Console.Out.Flush(); _so.Write(_mem, (int)((long)b + (long)off), (int)(long)n); _so.Flush(); return null; }\n",
+    "}\n\n"]
 
   emit-state-runtime : Text
   emit-state-runtime =
-   text-concat-list [
-   "static class _State {\n",
-   "    public static long _value = 0;\n",
-   "    public static long get_state => _value;\n",
-   "    public static long set_state(long v) { _value = v; return 0; }\n",
-   "}\n\n"]
+    text-concat-list [
+    "static class _State {\n",
+    "    public static long _value = 0;\n",
+    "    public static long get_state => _value;\n",
+    "    public static long set_state(long v) { _value = v; return 0; }\n",
+    "}\n\n"]
 
  _LensSql backs the lens-sql-exec seam binding (Lens Target B). One
  process-wide connection, opened lazily from the
@@ -836,31 +857,31 @@ Section: Chapter Emission
 
   emit-lenssql-runtime : Text
   emit-lenssql-runtime =
-   text-concat-list [
-   "static class _LensSql {\n",
-   "    static Microsoft.Data.SqlClient.SqlConnection _cn;\n",
-   "    static Microsoft.Data.SqlClient.SqlConnection _open() {\n",
-   "        if (_cn == null) {\n",
-   "            string _cs = Environment.GetEnvironmentVariable(\"LENS_SQL_CONN\");\n",
-   "            if (string.IsNullOrEmpty(_cs)) throw new InvalidOperationException(\"LENS_SQL_CONN not set\");\n",
-   "            _cn = new Microsoft.Data.SqlClient.SqlConnection(_cs);\n",
-   "            _cn.Open();\n",
-   "        }\n",
-   "        return _cn;\n",
-   "    }\n",
-   "    public static List<List<string>> exec(string sql) {\n",
-   "        List<List<string>> _rows = new List<List<string>>();\n",
-   "        using (Microsoft.Data.SqlClient.SqlCommand _cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, _open()))\n",
-   "        using (Microsoft.Data.SqlClient.SqlDataReader _rd = _cmd.ExecuteReader()) {\n",
-   "            while (_rd.Read()) {\n",
-   "                List<string> _row = new List<string>(_rd.FieldCount);\n",
-   "                for (int _i = 0; _i < _rd.FieldCount; _i++) _row.Add(_rd.IsDBNull(_i) ? \"NULL\" : Convert.ToString(_rd.GetValue(_i)));\n",
-   "                _rows.Add(_row);\n",
-   "            }\n",
-   "        }\n",
-   "        return _rows;\n",
-   "    }\n",
-   "}\n\n"]
+    text-concat-list [
+    "static class _LensSql {\n",
+    "    static Microsoft.Data.SqlClient.SqlConnection _cn;\n",
+    "    static Microsoft.Data.SqlClient.SqlConnection _open() {\n",
+    "        if (_cn == null) {\n",
+    "            string _cs = Environment.GetEnvironmentVariable(\"LENS_SQL_CONN\");\n",
+    "            if (string.IsNullOrEmpty(_cs)) throw new InvalidOperationException(\"LENS_SQL_CONN not set\");\n",
+    "            _cn = new Microsoft.Data.SqlClient.SqlConnection(_cs);\n",
+    "            _cn.Open();\n",
+    "        }\n",
+    "        return _cn;\n",
+    "    }\n",
+    "    public static List<List<string>> exec(string sql) {\n",
+    "        List<List<string>> _rows = new List<List<string>>();\n",
+    "        using (Microsoft.Data.SqlClient.SqlCommand _cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, _open()))\n",
+    "        using (Microsoft.Data.SqlClient.SqlDataReader _rd = _cmd.ExecuteReader()) {\n",
+    "            while (_rd.Read()) {\n",
+    "                List<string> _row = new List<string>(_rd.FieldCount);\n",
+    "                for (int _i = 0; _i < _rd.FieldCount; _i++) _row.Add(_rd.IsDBNull(_i) ? \"NULL\" : Convert.ToString(_rd.GetValue(_i)));\n",
+    "                _rows.Add(_row);\n",
+    "            }\n",
+    "        }\n",
+    "        return _rows;\n",
+    "    }\n",
+    "}\n\n"]
 
  _LensHttp backs the lens-http-next, lens-http-reply, and
  lens-http-reply-html seam bindings (apps/lens/LensSeam.codex, Http
@@ -877,59 +898,59 @@ Section: Chapter Emission
 
   emit-lenshttp-runtime : Text
   emit-lenshttp-runtime =
-   text-concat-list [
-   "static class _LensHttp {\n",
-   "    static readonly Dictionary<long, System.Net.HttpListener> _ls = new Dictionary<long, System.Net.HttpListener>();\n",
-   "    static readonly Dictionary<long, System.Net.HttpListenerContext> _pending = new Dictionary<long, System.Net.HttpListenerContext>();\n",
-   "    static System.Net.HttpListener _listener(long port) {\n",
-   "        if (!_ls.TryGetValue(port, out System.Net.HttpListener _l)) {\n",
-   "            _l = new System.Net.HttpListener();\n",
-   "            _l.Prefixes.Add(\"http://localhost:\" + port + \"/\");\n",
-   "            _l.Start();\n",
-   "            _ls[port] = _l;\n",
-   "        }\n",
-   "        return _l;\n",
-   "    }\n",
-   "    public static List<string> next(long port) {\n",
-   "        System.Net.HttpListenerContext _cx = _listener(port).GetContext();\n",
-   "        _pending[port] = _cx;\n",
-   "        string _body;\n",
-   "        using (System.IO.StreamReader _rd = new System.IO.StreamReader(_cx.Request.InputStream, System.Text.Encoding.UTF8)) _body = _rd.ReadToEnd().Replace(\"\\r\", \"\");\n",
-   "        return new List<string> { _cx.Request.HttpMethod, _cx.Request.Url.AbsolutePath, _body };\n",
-   "    }\n",
-   "    public static long reply(long port, string body) => _send(port, body, \"application/json\");\n",
-   "    public static long reply_html(long port, string body) => _send(port, body, \"text/html; charset=utf-8\");\n",
-   "    static long _send(long port, string body, string ct) {\n",
-   "        if (!_pending.TryGetValue(port, out System.Net.HttpListenerContext _cx)) return 1;\n",
-   "        _pending.Remove(port);\n",
-   "        byte[] _bs = System.Text.Encoding.UTF8.GetBytes(body);\n",
-   "        _cx.Response.StatusCode = 200;\n",
-   "        _cx.Response.ContentType = ct;\n",
-   "        _cx.Response.ContentLength64 = _bs.Length;\n",
-   "        _cx.Response.OutputStream.Write(_bs, 0, _bs.Length);\n",
-   "        _cx.Response.OutputStream.Close();\n",
-   "        return 0;\n",
-   "    }\n",
-   "}\n\n"]
+    text-concat-list [
+    "static class _LensHttp {\n",
+    "    static readonly Dictionary<long, System.Net.HttpListener> _ls = new Dictionary<long, System.Net.HttpListener>();\n",
+    "    static readonly Dictionary<long, System.Net.HttpListenerContext> _pending = new Dictionary<long, System.Net.HttpListenerContext>();\n",
+    "    static System.Net.HttpListener _listener(long port) {\n",
+    "        if (!_ls.TryGetValue(port, out System.Net.HttpListener _l)) {\n",
+    "            _l = new System.Net.HttpListener();\n",
+    "            _l.Prefixes.Add(\"http://localhost:\" + port + \"/\");\n",
+    "            _l.Start();\n",
+    "            _ls[port] = _l;\n",
+    "        }\n",
+    "        return _l;\n",
+    "    }\n",
+    "    public static List<string> next(long port) {\n",
+    "        System.Net.HttpListenerContext _cx = _listener(port).GetContext();\n",
+    "        _pending[port] = _cx;\n",
+    "        string _body;\n",
+    "        using (System.IO.StreamReader _rd = new System.IO.StreamReader(_cx.Request.InputStream, System.Text.Encoding.UTF8)) _body = _rd.ReadToEnd().Replace(\"\\r\", \"\");\n",
+    "        return new List<string> { _cx.Request.HttpMethod, _cx.Request.Url.AbsolutePath, _body };\n",
+    "    }\n",
+    "    public static long reply(long port, string body) => _send(port, body, \"application/json\");\n",
+    "    public static long reply_html(long port, string body) => _send(port, body, \"text/html; charset=utf-8\");\n",
+    "    static long _send(long port, string body, string ct) {\n",
+    "        if (!_pending.TryGetValue(port, out System.Net.HttpListenerContext _cx)) return 1;\n",
+    "        _pending.Remove(port);\n",
+    "        byte[] _bs = System.Text.Encoding.UTF8.GetBytes(body);\n",
+    "        _cx.Response.StatusCode = 200;\n",
+    "        _cx.Response.ContentType = ct;\n",
+    "        _cx.Response.ContentLength64 = _bs.Length;\n",
+    "        _cx.Response.OutputStream.Write(_bs, 0, _bs.Length);\n",
+    "        _cx.Response.OutputStream.Close();\n",
+    "        return 0;\n",
+    "    }\n",
+    "}\n\n"]
 
   emit-seam-runtimes : List ArityEntry -> Text
   emit-seam-runtimes (arities) =
-   let sql = if lookup-arity arities "lens-sql-exec" >= 0 then emit-lenssql-runtime else ""
-   in let http = if lookup-arity arities "lens-http-next" >= 0 then emit-lenshttp-runtime
-      else if lookup-arity arities "lens-http-reply" >= 0 then emit-lenshttp-runtime
-      else if lookup-arity arities "lens-http-reply-html" >= 0 then emit-lenshttp-runtime
-      else ""
-   in sql & http
+    let sql = if lookup-arity arities "lens-sql-exec" >= 0 then emit-lenssql-runtime else ""
+    in let http = if lookup-arity arities "lens-http-next" >= 0 then emit-lenshttp-runtime
+    else if lookup-arity arities "lens-http-reply" >= 0 then emit-lenshttp-runtime
+    else if lookup-arity arities "lens-http-reply-html" >= 0 then emit-lenshttp-runtime
+    else ""
+    in sql & http
 
   opening-return-type : List IRDef -> CodexType
   opening-return-type (defs) = opening-return-loop defs 0
 
   opening-return-loop : List IRDef, Integer -> CodexType
   opening-return-loop (defs) (i) =
-   if i >= list-length defs then NothingTy
-   else let d = list-at defs i in
-     if d.name == opening-entry-point then strip-fun-args (d.type-val)
-     else opening-return-loop defs (i + 1)
+    if i >= list-length defs then NothingTy
+    else let d = list-at defs i in
+      if d.name == opening-entry-point then strip-fun-args (d.type-val)
+      else opening-return-loop defs (i + 1)
 
  The .NET main thread gets a 1 MB stack and Codex source assumes the
  bare-metal one. Mutually recursive functions are the case that reaches
@@ -941,7 +962,7 @@ Section: Chapter Emission
 
   opening-emit-entry : Text, CodexType -> Text
   opening-emit-entry (class-name) (ret-ty) =
-   opening-on-big-stack (opening-call-text class-name ret-ty)
+    opening-on-big-stack (opening-call-text class-name ret-ty)
 
   opening-call-text : Text, CodexType -> Text
   opening-call-text (class-name) (ret-ty) = when ret-ty
@@ -956,50 +977,55 @@ Section: Chapter Emission
 
   opening-on-big-stack : Text -> Text
   opening-on-big-stack (call) =
-   text-concat-list [
-   "{\n",
-   "    Console.SetOut(new StreamWriter(_Buf.out_stream(), new System.Text.UTF8Encoding(false)));\n",
-   "    long _stackMb = 512;\n",
-   "    string _sm = Environment.GetEnvironmentVariable(\"CODEX_STACK_MB\");\n",
-   "    if (!string.IsNullOrEmpty(_sm) && long.TryParse(_sm, out long _smv) && _smv > 0) _stackMb = _smv;\n",
-   "    System.Exception _err = null;\n",
-   "    System.Threading.Thread _codexMain = new System.Threading.Thread(() => { try { ", call, " } catch (System.Exception _e) { _err = _e; } }, (int)(_stackMb * 1024 * 1024));\n",
-   "    _codexMain.Start();\n",
-   "    _codexMain.Join();\n",
-   "    Console.Out.Flush();\n",
-   "    if (_err != null) throw new System.Exception(\"codex: \" + _err.Message, _err);\n",
-   "}\n\n"]
+    text-concat-list [
+    "{\n",
+    "    Console.SetOut(new StreamWriter(_Buf.out_stream(), new System.Text.UTF8Encoding(false)));\n",
+    "    long _stackMb = 512;\n",
+    "    string _sm = Environment.GetEnvironmentVariable(\"CODEX_STACK_MB\");\n",
+    "    if (!string.IsNullOrEmpty(_sm) && long.TryParse(_sm, out long _smv) && _smv > 0) _stackMb = _smv;\n",
+    "    System.Exception _err = null;\n",
+    "    System.Threading.Thread _codexMain = new System.Threading.Thread(() => { try { ", call, " } catch (System.Exception _e) { _err = _e; } }, (int)(_stackMb * 1024 * 1024));\n",
+    "    _codexMain.Start();\n",
+    "    _codexMain.Join();\n",
+    "    Console.Out.Flush();\n",
+    "    if (_err != null) throw new System.Exception(\"codex: \" + _err.Message, _err);\n",
+    "}\n\n"]
 
   emit-csharp-text-chapter : IRChapter, List ATypeDef, List Text -> Text
   emit-csharp-text-chapter (m) (type-defs) (muts) =
-   text-concat-list (emit-csharp-parts m type-defs muts)
+    text-concat-list (emit-csharp-parts m type-defs muts)
 
   emit-csharp-parts : IRChapter, List ATypeDef, List Text -> List Text
   emit-csharp-parts (m) (type-defs) (muts) =
-   let ctx = CsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs, locals = [], dyn-locals = [] }
-   in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
-   in let class-name = "Codex_" & sanitize (m.name.value)
-   in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
-   in let rest = [emit-buf-runtime, emit-state-runtime, emit-seam-runtimes (ctx.arities), emit-type-defs type-defs 0 muts, emit-class-header (m.name.value), cs-ipow-runtime] & emit-defs-list (m.defs) 0 ctx & ["}\n"]
-   in let mask = cs-cce-mask (entry & text-concat-list rest)
-   in [header, entry, emit-cce-runtime mask] & rest
+    let ctx = CsCtx {
+      arities = build-arity-map (m.defs) 0 [],
+      type-defs = type-defs,
+      locals = [],
+      dyn-locals = []
+    }
+    in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
+    in let class-name = "Codex_" & sanitize (m.name.value)
+    in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
+    in let rest = [emit-buf-runtime, emit-state-runtime, emit-seam-runtimes (ctx.arities), emit-type-defs type-defs 0 muts, emit-class-header (m.name.value), cs-ipow-runtime] & emit-defs-list (m.defs) 0 ctx & ["}\n"]
+    in let mask = cs-cce-mask (entry & text-concat-list rest)
+    in [header, entry, emit-cce-runtime mask] & rest
 
   emit-class-header : Text -> Text
   emit-class-header (name) =
-   "public static class Codex_" & sanitize name & "\n{\n"
+    "public static class Codex_" & sanitize name & "\n{\n"
 
   cs-ipow-runtime : Text
   cs-ipow-runtime =
-   "    public static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; unchecked { while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } } return r; }\n\n"
+    "    public static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; unchecked { while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } } return r; }\n\n"
 
   emit-defs-list : List IRDef, Integer, CsCtx -> List Text
   emit-defs-list (defs) (i) (ctx) =
-   emit-defs-list-acc defs 0 (list-length defs) ctx []
+    emit-defs-list-acc defs 0 (list-length defs) ctx []
 
   emit-defs-list-acc : List IRDef, Integer, Integer, CsCtx, List Text -> List Text
   emit-defs-list-acc (defs) (i) (len) (ctx) (acc) =
-   if i == len then acc
-   else emit-defs-list-acc defs (i + 1) len ctx (list-snoc (list-snoc acc (emit-def (list-at defs i) ctx)) "\n")
+    if i == len then acc
+    else
+      emit-defs-list-acc defs (i + 1) len ctx (list-snoc (list-snoc acc (emit-def (list-at defs i) ctx)) "\n")
 
 Page 1 of 2
-

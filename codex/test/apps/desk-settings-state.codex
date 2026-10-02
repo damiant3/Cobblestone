@@ -1,0 +1,72 @@
+Chapter: DeskSettingsState
+  cites Works chapter GopDesk
+  cites Works chapter GopSettings
+  cites Works chapter GopSettingsFacts
+  cites Works chapter GopSettingsPanel
+  cites Works chapter GopFont
+  cites UI chapter Widget
+  cites UI chapter Layout
+  cites Foreword chapter Console
+
+  dss-yes : Boolean -> Text
+  dss-yes (v) = if v then "yes" else "NO"
+
+  dss-hit : Integer, Text, Integer -> Boolean
+  dss-hit (ds) (id) (code) =
+    let tree = dk-settings-layout 1024 768 ds gfont-none
+    in when widget-find tree id
+      is None -> False
+      is Just (w) -> let r = w.wn-bounds in r.lr-w > 0 & r.lr-h > 0 & dk-style-hit 1024 768 (r.lr-x + r.lr-w / 2) (r.lr-y + r.lr-h / 2) ds gfont-none == code
+
+  opening : [Console, Device.Port] Nothing =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let blk = alloc-zeroed dk-settings-bytes 64
+    in let attached = poke-32 ds dk-sty-cell blk
+    in let base = dk-settings-into ds (gst-store dk-settings-keys)
+    in let mark = __heap-save
+    in let candidate = dk-settings-of ds
+    in let theme = gst-set candidate 1 2
+    in let sound = gst-set-bool candidate 3 True
+    in let edge = gst-set candidate 4 3
+    in let pins = gst-set candidate 5 17
+    in let refused = dk-settings-commit ds (SetRefused "injected full store")
+    in let kept = peek-32 ds dk-scheme-cell == 0 & peek-32 ds dk-sound-on-cell == 0 & dk-task-edge ds == 0 & peek-32 ds dk-pinned-cell == 0
+    in let reason = dk-settings-message-read blk 0 (peek-32 blk 68) == "Save refused: injected full store"
+    in let committed = dk-settings-commit ds (SetOk candidate)
+    in let saved = peek-32 ds dk-scheme-cell == 2 & peek-32 ds dk-sound-on-cell == 1 & dk-task-edge ds == 3 & peek-32 ds dk-pinned-cell == 17
+    in let restored = __heap-restore mark
+    in let overwritten = alloc-zeroed 65536 64
+    in let survives = peek-32 ds dk-scheme-cell == 2 & dk-settings-message-read blk 0 (peek-32 blk 68) == "Settings saved."
+    in let lock = dk-settings-loaded ds (SettingsLoadRefused "injected read failure")
+    in let page = poke-32 blk 64 1
+    in act
+      blocked <- dk-settings-action ds 1
+      let locked = peek-32 blk 72 == 1 & peek-32 ds dk-scheme-cell == 0 & text-starts-with (dk-settings-message-read blk 0 (peek-32 blk 68)) "Load refused;"
+      in act
+        home <- dk-settings-action ds 100
+        sound-page <- dk-settings-action ds 102
+        let routed = peek-32 blk 64 == 2 & dk-settings-key ds 14 == 100
+        in let mark2 = __heap-save
+        in let placed = dk-wnd-place blk 160 100 300 260
+        in let page2 = poke-32 blk 64 1
+        in let buttons = dss-hit ds "settings-up" 131 & dss-hit ds "settings-down" 132 & dss-hit ds "settings-home" 100
+        in let scrolled = dk-settings-scroll 1024 768 ds gfont-none 132
+        in let down = peek-32 blk 76 > 0
+        in let scroll2 = dk-settings-scroll 1024 768 ds gfont-none 132
+        in let scroll3 = dk-settings-scroll 1024 768 ds gfont-none 132
+        in let scroll4 = dk-settings-scroll 1024 768 ds gfont-none 132
+        in let lower = dss-hit ds "style-scheme" 1 & dss-hit ds "settings-theme-prev" 8
+        in let clear = poke-32 blk 76 48
+        in let up = dk-settings-scroll 1024 768 ds gfont-none 131
+        in let scroll = down & peek-32 blk 76 == 0 & buttons & lower
+        in let released = __heap-restore mark2
+        in act
+          print-line-uni ("save refusal preserves live preferences: " & dss-yes (kept & reason))
+          print-line-uni ("successful publication applies candidate: " & dss-yes saved)
+          print-line-uni ("raw preferences and status survive frame reclaim: " & dss-yes survives)
+          print-line-uni ("failed load locks changes with reason: " & dss-yes locked)
+          print-line-uni ("category navigation uses desktop dispatch: " & dss-yes routed)
+          print-line-uni ("small Settings window scrolls and returns: " & dss-yes scroll)
+        end
+      end
+    end

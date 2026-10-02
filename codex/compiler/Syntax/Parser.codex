@@ -160,7 +160,10 @@ Section: Type Parsing
   report-bound-int-error : ParseState -> ParseState
   report-bound-int-error (st) =
     let tok = current st
-    in __record-set st "bag" (bag-add (st.bag) (make-error cdx-expected-token-kind ("expected integer literal in bound annotation, got '" & (token-text tok) & "'") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+    in let msg = "expected integer literal in bound annotation, got '" & (token-text tok) & "'"
+    in let span = span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id)
+    in let diag = make-error cdx-expected-token-kind msg span
+    in __record-set st "bag" (bag-add (st.bag) diag)
 
   parse-bound-between : TypeExpr, ParseState -> ParseTypeResult
   parse-bound-between (base) (st) =
@@ -193,7 +196,10 @@ Section: Type Parsing
     else if is-ident (current-kind st) & token-text (current st) == "and"
     then advance st
     else let tok = current st
-    in __record-set st "bag" (bag-add (st.bag) (make-error cdx-expected-token-kind ("expected 'and' in bound annotation, got '" & (token-text tok) & "'") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
+    in let msg = "expected 'and' in bound annotation, got '" & (token-text tok) & "'"
+    in let span = span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id)
+    in let diag = make-error cdx-expected-token-kind msg span
+    in __record-set st "bag" (bag-add (st.bag) diag)
 
   parse-overflow-mode : ParseState -> (OverflowMode, ParseState)
   parse-overflow-mode (st) =
@@ -252,7 +258,10 @@ Section: Type Parsing
   make-fun-type-arrow : TypeExpr, SourceSpan, TypeExpr, ParseState -> ParseTypeResult
   make-fun-type-arrow (left) (arrow-span) (right) (st) =
     let st2 = when right
-      is FunType (p) (r) -> __record-set st "bag" (bag-add (st.bag) (make-error cdx-chained-arrow-type "Chained '->' in a type is not allowed; use commas for multiple parameters: 'A, B -> C' not 'A -> B -> C'" arrow-span))
+      is FunType (p) (r) ->
+        let msg = "Chained '->' in a type is not allowed; use commas for multiple parameters: 'A, B -> C' not 'A -> B -> C'"
+        in let diag = make-error cdx-chained-arrow-type msg arrow-span
+        in __record-set st "bag" (bag-add (st.bag) diag)
       is otherwise -> st
     in TypeOk (deck-record (FunType left right)) st2
 
@@ -410,13 +419,19 @@ Section: Type Parsing
     let tok = current st
     in let st2 = advance st
     in if is-dot (current-kind st2) then
-      let st3 = __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-row-tail-decorated ("a row variable is a bare lowercase identifier; '" & token-text tok & "' cannot take a dotted sub-effect") (token-to-span tok)))
+      let msg = "a row variable is a bare lowercase identifier; '" & token-text tok & "' cannot take a dotted sub-effect"
+      in let diag = make-error cdx-row-tail-decorated msg (token-to-span tok)
+      in let st3 = __record-set st2 "bag" (bag-add (st2.bag) diag)
       in parse-dotted-effect st3 tok acc sacc tacc
     else if is-text-lit (current-kind st2) then
-      let st3 = __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-row-tail-decorated ("a row variable is a bare lowercase identifier; '" & token-text tok & "' cannot take a scope literal") (token-to-span tok)))
+      let msg = "a row variable is a bare lowercase identifier; '" & token-text tok & "' cannot take a scope literal"
+      in let diag = make-error cdx-row-tail-decorated msg (token-to-span tok)
+      in let st3 = __record-set st2 "bag" (bag-add (st2.bag) diag)
       in parse-effect-names (advance st3) acc sacc (list-push tacc tok)
     else if list-length tacc > 0 then
-      let st3 = __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-row-two-tails ("an effect row may name at most one row variable; found '" & token-text tok & "' after an earlier row variable") (token-to-span tok)))
+      let msg = "an effect row may name at most one row variable; found '" & token-text tok & "' after an earlier row variable"
+      in let diag = make-error cdx-row-two-tails msg (token-to-span tok)
+      in let st3 = __record-set st2 "bag" (bag-add (st2.bag) diag)
       in parse-effect-names st3 acc sacc tacc
     else parse-effect-names st2 acc sacc (list-push tacc tok)
 
@@ -911,18 +926,42 @@ Section: Type Definition Parsing
      state = st
     }
 
+  ctor-return-end : List Token, Integer between 0 and 4294967295, Integer, Integer -> Integer between 0 and 4294967295
+  ctor-return-end (tokens) (pos) (line) (column) =
+    if pos >= list-length tokens - 1 then pos
+    else let tok = list-at tokens pos
+    in when tok.kind
+      is Pipe -> pos
+      is Newline | Indent | Dedent -> ctor-return-end tokens (pos + 1) line column
+      is otherwise ->
+        if tok.line > line & tok.column <= column then pos
+        else ctor-return-end tokens (pos + 1) line column
+
   parse-ctor-fields : Token, LinkedList TypeExpr, ParseState, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
   parse-ctor-fields (ctor-name) (fields) (st) (name-tok) (tparams) (acc) =
     if is-left-paren (current-kind st) then let st-in = advance st
     in let st-checked = if classify-paren-type st-in 0 False False == 2 then
-      __record-set st-in "bag" (bag-add (st-in.bag) (make-error cdx-ctor-field-comma "A constructor field written (A, B) has no arrow: write two fields as (A) (B), or one tuple field as ((A, B))" (token-to-span (current st))))
+      let msg = "A constructor field written (A, B) has no arrow: write two fields as (A) (B), or one tuple field as ((A, B))"
+      in let diag = make-error cdx-ctor-field-comma msg (token-to-span (current st))
+      in __record-set st-in "bag" (bag-add (st-in.bag) diag)
     else st-in
     in let field-result = parse-type st-checked
     in unwrap-ctor-field field-result ctor-name fields name-tok tparams acc
     else let st2 = skip-newlines st
     in if is-colon (current-kind st2) then
-      let ret-result = parse-type (advance st2) in unwrap-ctor-return ret-result ctor-name fields name-tok tparams acc
-    else let ctor = deck-record (VariantCtorDef { name = ctor-name, fields = deck-record (__linked-list-to-list fields), return-type = [] }) in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) st2
+      let colon = current st2
+      in let msg = "Constructor return annotations are not supported."
+      in let diag = make-error cdx-ctor-return-annotation-unsupported msg (token-to-span colon)
+      in let rejected = __record-set st2 "bag" (bag-add (st2.bag) diag)
+      in let next = advance rejected
+      in let stop = ctor-return-end (next.tokens) (next.pos) (colon.line) (name-tok.column)
+      in parse-ctor-fields ctor-name fields (__record-set next "pos" stop) name-tok tparams acc
+    else let ctor = deck-record (VariantCtorDef {
+      name = ctor-name,
+      fields = deck-record (__linked-list-to-list fields),
+      return-type = []
+    })
+    in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) st2
 
   unwrap-ctor-field : ParseTypeResult, Token, LinkedList TypeExpr, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
   unwrap-ctor-field (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
@@ -934,7 +973,13 @@ Section: Type Definition Parsing
   unwrap-ctor-return : ParseTypeResult, Token, LinkedList TypeExpr, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
   unwrap-ctor-return (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
     when r
-      is TypeOk (ty) (st) -> let ctor = deck-record (VariantCtorDef { name = ctor-name, fields = deck-record (__linked-list-to-list fields), return-type = [ty] }) in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) (skip-newlines st)
+      is TypeOk (ty) (st) ->
+        let ctor = deck-record (VariantCtorDef {
+          name = ctor-name,
+          fields = deck-record (__linked-list-to-list fields),
+          return-type = []
+        })
+        in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) (skip-newlines st)
 
 Section: Document Parsing
 
@@ -1307,9 +1352,11 @@ Section: Chapter Pagination
         make-error cdx-chapter-pagination ("Chapter '" & (o.po-chapter) & "' spans " & show k & " files, but this page carries no 'Page N of M' marker. Number the pages, or an accidental duplicate chapter name is indistinguishable from a deliberate page and the two merge silently.") (o.po-span)
       ])
     else if o.po-m /= k then
-      check-pagination-loop occs (i + 1) len (errs & [
-        make-error cdx-chapter-pagination ("Chapter '" & (o.po-chapter) & "' spans " & show k & " files but this page declares 'of " & show (o.po-m) & "'. The declared page count must equal the number of files the chapter spans.") (o.po-span)
-      ])
+      let prefix = "Chapter '" & (o.po-chapter) & "' spans " & show k
+      in let declared = prefix & " files but this page declares 'of " & show (o.po-m)
+      in let msg = declared & "'. The declared page count must equal the number of files the chapter spans."
+      in let diag = make-error cdx-chapter-pagination msg (o.po-span)
+      in check-pagination-loop occs (i + 1) len (errs & [diag])
     else if count-chapter-page-n occs (o.po-chapter) (o.po-n) 0 len 0 > 1 then
       check-pagination-loop occs (i + 1) len (errs & [
         make-error cdx-chapter-pagination ("Chapter '" & (o.po-chapter) & "' has two pages numbered " & show (o.po-n) & ". Each page of a chapter needs a distinct number.") (o.po-span)
@@ -1822,7 +1869,10 @@ Section: Chapter Pagination
 
   refuse-dropped-token : ParseState, Token -> ParseState
   refuse-dropped-token (st) (tok) =
-    __record-set st "bag" (bag-add (st.bag) (make-error cdx-top-level-token-dropped ("`" & token-text tok & "` at column " & integer-to-text (tok.column) & " begins no definition, so it would be dropped; indent a continuation past column 3") (token-to-span tok)))
+    let prefix = "`" & token-text tok & "` at column " & integer-to-text (tok.column)
+    in let msg = prefix & " begins no definition, so it would be dropped; indent a continuation past column 3"
+    in let diag = make-error cdx-top-level-token-dropped msg (token-to-span tok)
+    in __record-set st "bag" (bag-add (st.bag) diag)
 
  A type definition is tried first and the definition parse re-reads from
  the SAME state when it is not one -- st, not the type parser's returned
@@ -2040,7 +2090,11 @@ Section: Prose-Notation Consistency
     in if prose-name == def-name then
       check-prose-param-names prose-params def-params (i + 1) len acc
     else
-      list-push (check-prose-param-names prose-params def-params (i + 1) len acc) (make-warning cdx-prose-parameter-mismatch ("Prose parameter " & show (i + 1) & " is '" & prose-name & "' but notation has '" & def-name & "'") synthetic-span)
+      let rest = check-prose-param-names prose-params def-params (i + 1) len acc
+      in let prefix = "Prose parameter " & show (i + 1) & " is '" & prose-name
+      in let msg = prefix & "' but notation has '" & def-name & "'"
+      in let diag = make-warning cdx-prose-parameter-mismatch msg synthetic-span
+      in list-push rest diag
 
   check-prose-block-against-defs : ProseBlock, List Def, List TypeDef, List EffectDef, List Diagnostic -> List Diagnostic
   check-prose-block-against-defs (block) (defs) (type-defs) (effect-defs) (acc) =

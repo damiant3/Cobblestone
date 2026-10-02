@@ -1,0 +1,123 @@
+Chapter: MusicT5Load
+  cites Spark chapter BrowserMusicT5
+  cites Spark chapter EncodecLoad
+  cites AI chapter SafeTensors
+  cites AI chapter TorchZip
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  lt5-refuse : MusicT5Model, Text, (Text -> Integer) -> Integer
+  lt5-refuse (w) (why) (refuse) = let f = bt5-close w in refuse why
+
+  lt5-block-shapes : List StTensorMeta, Integer -> Boolean
+  lt5-block-shapes (ts) (i) =
+    if i >= 12 then True
+    else let p = "encoder.block." & show i & ".layer."
+    in el-shape ts (p & "0.layer_norm.weight") [768] 0
+       & el-shape ts (p & "0.SelfAttention.q.weight") [768, 768] 0
+       & el-shape ts (p & "0.SelfAttention.k.weight") [768, 768] 0
+       & el-shape ts (p & "0.SelfAttention.v.weight") [768, 768] 0
+       & el-shape ts (p & "0.SelfAttention.o.weight") [768, 768] 0
+       & el-shape ts (p & "1.layer_norm.weight") [768] 0
+       & el-shape ts (p & "1.DenseReluDense.wi.weight") [3072, 768] 0
+       & el-shape ts (p & "1.DenseReluDense.wo.weight") [768, 3072] 0 & lt5-block-shapes ts (i + 1)
+
+  lt5-uploaded : Text, Integer, List StTensorMeta, Integer, MusicT5Model, (MusicT5Model -> Integer), (Text -> Integer), Text -> Integer
+  lt5-uploaded (file) (base) (ts) (i) (w) (ready) (refuse) (result) =
+    if text-contains result "\"ok\":true" then lt5-upload file base ts (i + 1) w ready refuse
+    else lt5-refuse w ("T5 weight upload failed: " & result) refuse
+
+  lt5-upload : Text, Integer, List StTensorMeta, Integer, MusicT5Model, (MusicT5Model -> Integer), (Text -> Integer) -> Integer
+  lt5-upload (file) (base) (ts) (i) (w) (ready) (refuse) =
+    if i >= list-length ts then ready w
+    else let t = list-at ts i
+    in if t.stm-name /= "shared.weight" & text-starts-with (t.stm-name) "encoder." == False then lt5-upload file base ts (i + 1) w ready refuse
+    else if t.stm-dtype /= st-dtype-f32 then lt5-refuse w "T5-base encoder requires f32 tensors" refuse
+    else let bytes = t.stm-offset-end - t.stm-offset-start
+    in let h = gpu-buf-alloc bytes
+    in let next = MusicT5Model { t5m-names = list-push (w.t5m-names) (t.stm-name), t5m-handles = list-push (w.t5m-handles) h, t5m-zero = w.t5m-zero, t5m-width = 0 }
+    in if h == 0 then lt5-refuse next "T5 weight allocation failed" refuse
+    else gpu-buf-upload-then h 0 file (base + t.stm-offset-start) (bytes / 4) gpu-dt-f32 gpu-dt-f32 (\r -> lt5-uploaded file base ts i next ready refuse r)
+
+  lt5-header : Text, (MusicT5Model -> Integer), (Text -> Integer), Text -> Integer
+  lt5-header (file) (ready) (refuse) (bytes) =
+    let parsed = st-parse-file (el-bytes bytes)
+    in let ts = parsed.st-tensors
+    in let valid = parsed.st-valid & el-shape ts "shared.weight" [32128, 768] 0 & el-shape ts "encoder.final_layer_norm.weight" [768] 0
+       & el-shape ts "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight" [32, 12] 0 & lt5-block-shapes ts 0
+    in if valid == False then refuse "Checkpoint does not have the t5-base encoder tensor shapes"
+    else let zero = gpu-buf-alloc 12288
+    in if zero == 0 then refuse "T5 buffer allocation failed"
+    else lt5-upload file (parsed.st-data-offset) ts 0 (MusicT5Model { t5m-names = [], t5m-handles = [], t5m-zero = zero, t5m-width = 0 }) ready refuse
+
+  lt5-length : Text, Integer, (MusicT5Model -> Integer), (Text -> Integer), Text -> Integer
+  lt5-length (file) (size) (ready) (refuse) (bytes) =
+    let bs = el-bytes bytes
+    in if list-length bs /= 8 then refuse "T5 checkpoint header is truncated"
+    else let n = st-read-u64 bs 0
+    in if n <= 0 | n > 9437184 | n + 8 > size then refuse "T5 checkpoint header length is invalid"
+    else file-read-then file 0 (n + 8) (\r -> lt5-header file ready refuse r)
+
+  music-t5-load-encoder : Text, Integer, (MusicT5Model -> Integer), (Text -> Integer) -> Integer
+  music-t5-load-encoder (file) (size) (ready) (refuse) = file-read-then file 0 8 (\r -> lt5-length file size ready refuse r)
+
+  lt5-meta : List StTensorMeta, Text, Integer -> StTensorMeta
+  lt5-meta (ts) (name) (i) =
+    if i >= list-length ts then StTensorMeta { stm-name = "", stm-dtype = 99, stm-shape = [], stm-ndim = 0, stm-offset-start = 0, stm-offset-end = 0 }
+    else if (list-at ts i).stm-name == name then list-at ts i else lt5-meta ts name (i + 1)
+
+  lt5-proj-uploaded : MusicT5Model, Text, (MusicT5Model -> Integer), (Text -> Integer) -> Integer
+  lt5-proj-uploaded (w) (result) (ready) (refuse) = if text-contains result "\"ok\":true" then ready w else lt5-refuse w ("MusicGen projection upload failed: " & result) refuse
+
+  lt5-proj-bias : Text, StTensorMeta, Integer, MusicT5Model, (MusicT5Model -> Integer), (Text -> Integer), Text -> Integer
+  lt5-proj-bias (file) (bias) (bh) (w) (ready) (refuse) (result) =
+    if text-contains result "\"ok\":true" == False then lt5-refuse w ("MusicGen projection upload failed: " & result) refuse
+    else gpu-buf-upload-then bh 0 file (bias.stm-offset-start) (w.t5m-width) gpu-dt-f16 gpu-dt-f32 (\r -> lt5-proj-uploaded w r ready refuse)
+
+  lt5-project : Text, MusicT5Model, List StTensorMeta, (MusicT5Model -> Integer), (Text -> Integer) -> Integer
+  lt5-project (file) (w) (ts) (ready) (refuse) =
+    let p = "condition_provider.conditioners.description.output_proj."
+    in let weight = lt5-meta ts (p & "weight") 0
+    in let bias = lt5-meta ts (p & "bias") 0
+    in if weight.stm-ndim /= 2 | bias.stm-ndim /= 1 then lt5-refuse w "MusicGen projection is missing" refuse
+    else let width = list-at (weight.stm-shape) 0
+    in if (width /= 1024 & width /= 1536) | list-at (weight.stm-shape) 1 /= 768 | list-at (bias.stm-shape) 0 /= width | weight.stm-dtype /= st-dtype-f16 | bias.stm-dtype /= st-dtype-f16 then lt5-refuse w "MusicGen projection shape or dtype differs" refuse
+    else let wh = gpu-buf-alloc (width * 768 * 4)
+    in let bh = gpu-buf-alloc (width * 4)
+    in let next = MusicT5Model { t5m-names = list-push (list-push (w.t5m-names) "musicgen.weight") "musicgen.bias", t5m-handles = list-push (list-push (w.t5m-handles) wh) bh, t5m-zero = w.t5m-zero, t5m-width = width }
+    in if wh == 0 | bh == 0 then lt5-refuse next "MusicGen projection allocation failed" refuse
+    else gpu-buf-upload-then wh 0 file (weight.stm-offset-start) (width * 768) gpu-dt-f16 gpu-dt-f32 (\r -> lt5-proj-bias file bias bh next ready refuse r)
+
+  lt5-parsed : Text, MusicT5Model, List Text, List Integer, (MusicT5Model -> Integer), (Text -> Integer), Text -> Integer
+  lt5-parsed (file) (w) (names) (starts) (ready) (refuse) (bytes) =
+    let result = torch-zip-read (el-bytes bytes) names starts
+    in if result.tzf-why /= "" then lt5-refuse w (result.tzf-why) refuse
+    else lt5-project file w ((result.tzf-file).st-tensors) ready refuse
+
+  lt5-pickle : Text, MusicT5Model, List TzEntry, List Text, List Integer, Integer, (MusicT5Model -> Integer), (Text -> Integer) -> Integer
+  lt5-pickle (file) (w) (es) (names) (starts) (i) (ready) (refuse) =
+    if i >= list-length es then lt5-refuse w "MusicGen checkpoint has no data.pkl" refuse
+    else let e = list-at es i
+    in if text-ends-with (e.te-name) "/data.pkl" then file-read-then file (list-at starts i) (e.te-size) (\r -> lt5-parsed file w names starts ready refuse r)
+    else lt5-pickle file w es names starts (i + 1) ready refuse
+
+  lt5-starts : Text, MusicT5Model, List TzEntry, Integer, List Text, List Integer, (MusicT5Model -> Integer), (Text -> Integer) -> Integer
+  lt5-starts (file) (w) (es) (i) (names) (starts) (ready) (refuse) =
+    if i >= list-length es then lt5-pickle file w es names starts 0 ready refuse
+    else let e = list-at es i
+    in file-read-then file (e.te-local) 30 (\r -> lt5-starts file w es (i + 1) (list-push names (e.te-name)) (list-push starts (tz-data-at (el-bytes r) (e.te-local))) ready refuse)
+
+  lt5-directory : Text, MusicT5Model, Integer, (MusicT5Model -> Integer), (Text -> Integer), Text -> Integer
+  lt5-directory (file) (w) (count) (ready) (refuse) (bytes) = lt5-starts file w (tz-entries (el-bytes bytes) 0 count []) 0 [] [] ready refuse
+
+  lt5-tail : Text, MusicT5Model, Integer, (MusicT5Model -> Integer), (Text -> Integer), Text -> Integer
+  lt5-tail (file) (w) (off) (ready) (refuse) (bytes) =
+    let span = tz-directory-span (el-bytes bytes) off
+    in if list-length span /= 3 then lt5-refuse w "MusicGen checkpoint has no zip directory" refuse
+    else file-read-then file (list-at span 0) (list-at span 1) (\r -> lt5-directory file w (list-at span 2) ready refuse r)
+
+  music-t5-load-projection : Text, Integer, MusicT5Model, (MusicT5Model -> Integer), (Text -> Integer) -> Integer
+  music-t5-load-projection (file) (size) (w) (ready) (refuse) =
+    let n = if size < 65557 then size else 65557
+    in file-read-then file (size - n) n (\r -> lt5-tail file w (size - n) ready refuse r)

@@ -1,0 +1,104 @@
+Chapter: BrowserSd15
+  cites Diffusion chapter BrowserTxt2Img
+  cites Diffusion chapter BrowserDpm
+
+ We say:
+
+  BrowserSd15Settings = record {
+    b15-width : Integer,
+    b15-height : Integer,
+    b15-steps : Integer,
+    b15-seed : Integer,
+    b15-cfg : Real
+  }
+
+  B15Job = record {
+    bj-model : BrowserModel,
+    bj-settings : BrowserSd15Settings,
+    bj-context : Integer,
+    bj-negative : Integer,
+    bj-keys : Integer,
+    bj-nkeys : Integer,
+    bj-x : Integer,
+    bj-sigmas : List Real,
+    bj-table : List Real,
+    bj-dpm : BdState,
+    bj-progress : (Text, Integer, Integer -> Integer),
+    bj-ready : (Integer -> Integer),
+    bj-refuse : (Text -> Integer)
+  }
+
+  b15-free : B15Job -> Boolean
+  b15-free (job) = bd-close (job.bj-dpm) & bd-free (job.bj-context) & bd-free (job.bj-negative) & bd-free (job.bj-x)
+
+  b15-fail : B15Job, Text -> Integer
+  b15-fail (job) (why) = let f = b15-free job in job.bj-refuse why
+
+  b15-decoded : B15Job, Integer, Text -> Integer
+  b15-decoded (job) (image) (result) =
+    if result /= "" | gpu-error 0 /= "" then let f = bd-free image in b15-fail job ("SD1.5 decode completion failed: " & result & gpu-error 0)
+    else let cancelled = job.bj-progress "decoding" 1 1 < 0
+    in let f = b15-free job
+    in if cancelled then let d = bd-free image in job.bj-refuse "SD1.5 generation cancelled"
+    else job.bj-ready image
+
+  b15-decode : B15Job -> Integer
+  b15-decode (job) =
+    if job.bj-progress "decoding" 0 1 < 0 then b15-fail job "SD1.5 generation cancelled"
+    else let m = job.bj-model
+    in let s = job.bj-settings
+    in let w = s.b15-width / 8
+    in let h = s.b15-height / 8
+    in let scaled = (browser-sampler-ops (m.bm-code)).lincomb (job.bj-x) (job.bj-x) (job.bj-x) (job.bj-x) (1.0 / 0.18215) 0.0 0.0 (4 * w * h)
+    in if scaled < 0 then b15-fail job "SD1.5 latent scaling failed"
+    else let image = vae-decode-with (browser-vae-ops (m.bm-code)) (m.bm-vae) (BvAct { ah = job.bj-x, ac = 4, ahh = h, aww = w })
+    in if image.ah == 0 then b15-fail job "SD1.5 VAE decode failed"
+    else gpu-done-then (\r -> b15-decoded job (image.ah) r)
+
+  b15-stepped : B15Job, Integer, Text -> Integer
+  b15-stepped (job) (i) (result) =
+    if result /= "" | gpu-error 0 /= "" then b15-fail job ("SD1.5 step completion failed: " & result & gpu-error 0)
+    else if job.bj-progress "sampling" (i + 1) ((job.bj-settings).b15-steps) < 0 then b15-fail job "SD1.5 generation cancelled"
+    else b15-step job (i + 1)
+
+  b15-step : B15Job, Integer -> Integer
+  b15-step (job) (i) =
+    let s = job.bj-settings
+    in if i >= s.b15-steps then b15-decode job
+    else let m = job.bj-model
+    in let w = s.b15-width / 8
+    in let h = s.b15-height / 8
+    in let ops = browser-unet-ops (m.bm-code) (\ctx -> if ctx == job.bj-negative then job.bj-nkeys else job.bj-keys)
+    in let sampler = browser-sampler-ops (m.bm-code)
+    in let bad = bd-step sampler (\x sigma -> guided-with ops sampler (\a b -> unet15-denoise-with ops sampler (m.bm-unet) (job.bj-table) (job.bj-context) h w a b) (\a b -> unet15-denoise-with ops sampler (m.bm-unet) (job.bj-table) (job.bj-negative) h w a b) (s.b15-cfg) (4 * w * h) x sigma) (job.bj-dpm) (job.bj-x) (job.bj-sigmas) i (4 * w * h)
+    in if bad < 0 then b15-fail job "SD1.5 sampler step failed"
+    else gpu-done-then (\r -> b15-stepped job i r)
+
+  b15-prepared : B15Job, Text -> Integer
+  b15-prepared (job) (result) =
+    if result /= "" then b15-fail job (if text-starts-with result "SDXL" then "SD1.5" & substring result 4 (text-length result - 4) else result)
+    else if job.bj-progress "sampling" 0 ((job.bj-settings).b15-steps) < 0 then b15-fail job "SD1.5 generation cancelled"
+    else b15-step job 0
+
+  b15-encoded : BrowserModel, BrowserSd15Settings, Integer, (Text, Integer, Integer -> Integer), (Integer -> Integer), (Text -> Integer), Integer, Integer, Integer, Integer -> Integer
+  b15-encoded (m) (s) (kind) (progress) (ready) (refuse) (cc) (cu) (kc) (ku) =
+    if cc == 0 | cu == 0 then let f = bd-free cc & bd-free cu in refuse "SD1.5 text encoding failed"
+    else if progress "encoding" 1 1 < 0 then let f = bd-free cc & bd-free cu in refuse "SD1.5 generation cancelled"
+    else let n = 4 * (s.b15-width / 8) * (s.b15-height / 8)
+    in let sig = if kind == 0 then uniform-sigmas (s.b15-steps) else bd-sigmas kind (s.b15-steps)
+    in let x = bt-noise (s.b15-seed) n
+    in let dpm = bd-new kind (s.b15-seed) n sig
+    in let job = B15Job { bj-model = m, bj-settings = s, bj-context = cc, bj-negative = cu, bj-keys = kc, bj-nkeys = ku, bj-x = x, bj-sigmas = sig, bj-table = unet-log-sigmas 0, bj-dpm = dpm, bj-progress = progress, bj-ready = ready, bj-refuse = refuse }
+    in if x == 0 | (kind /= 0 & kind /= 2 & dpm.bd-buffer == 0) then b15-fail job "SD1.5 noise allocation failed"
+    else let scaled = (browser-sampler-ops (m.bm-code)).lincomb x x x x (list-at sig 0) 0.0 0.0 n
+    in if scaled < 0 then b15-fail job "SD1.5 noise scaling failed"
+    else dpm.bd-prepare (\current total -> progress "noise" current total) (\r -> b15-prepared job r)
+
+  browser-sd15-sample-then : BrowserModel, ClipBpe, Text, Text, BrowserSd15Settings, Integer, (Text, Integer, Integer -> Integer), (Integer -> Integer), (Text -> Integer) -> Integer
+  browser-sd15-sample-then (m) (bpe) (prompt) (negative) (s) (kind) (progress) (ready) (refuse) =
+    if kind < 0 | kind > 6 then refuse "SD1.5 sampler is unsupported"
+    else if clip-bpe-status bpe /= 0 then refuse "CLIP tokenizer is invalid"
+    else if s.b15-width < 64 | s.b15-width > 768 | s.b15-height < 64 | s.b15-height > 768 then refuse "SD1.5 dimensions are outside the supported range"
+    else if int-mod (s.b15-width) 64 /= 0 | int-mod (s.b15-height) 64 /= 0 | s.b15-steps < 1 | s.b15-steps > 50 | bit-and (bit-shru (real-to-bits (s.b15-cfg)) 52) 2047 == 2047 | s.b15-cfg < 0.0 | s.b15-cfg > 30.0 then refuse "SD1.5 settings are outside the supported range"
+    else if progress "encoding" 0 1 < 0 then refuse "SD1.5 generation cancelled"
+    else browser-conds-then m bpe prompt negative (\cc cu kc ku -> b15-encoded m s kind progress ready refuse cc cu kc ku)

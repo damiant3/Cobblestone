@@ -5,13 +5,12 @@ and platform constraints for the Codex bare-metal compiler.
 
 ## Memory Layout
 
-The bare-metal system occupies a single flat physical address space.
-All addresses are identity-mapped (virtual = physical). The single
-governing constant is `bare-metal-ram-size` (3 GB) in
-`codex/compiler/Emit/X86_64State.codex`. Every other memory value derives from
-it.
+The bare-metal system occupies a flat physical address space with identity
+mapping (virtual = physical). Native boot uses `bare-metal-ram-size`
+(3 GiB by default) in `codex/compiler/Emit/X86_64State.codex`.
+UEFI root and process-pool allocations have the separate contract below.
 
-### Static Layout (boot time)
+### Static Layout (native boot)
 
 ```
 Address              Size       Region
@@ -35,6 +34,64 @@ Address              Size       Region
      │                           ◄── Stack grows DOWN
 0x0C0000000 (3 GB)    ────      Stack top (bare-metal-stack-top = ram-size)
 ```
+
+### UEFI-owned process pool
+
+`build/cdx-to-pe.ps1 -OwnedProcessPool` retains the root heap allocation
+request and allocates a separate 512 MiB `EfiLoaderData` process pool
+afterward. It requires the `__spawn_pool_carve_v2` runtime marker, default
+`opening` entry and `-ExitBootServices`. Allocation failure stops before
+payload entry with serial `Q` and a purple framebuffer. It never falls back
+to unreserved memory. The unchanged default PE path retains its legacy heap
+exclusion behavior; that path is not evidence of working physical USB input.
+
+The v4 GOP handoff keeps all v3 fields and extends its size from 224 to 256
+bytes. Offsets from physical address 126976 are:
+
+| Offset | Qword |
+|---|---|
+| 224 | Active process-pool base |
+| 232 | Root allocation base |
+| 240 | Root allocation end, exclusive |
+| 248 | Process-pool span, 536870912 bytes |
+
+Before enabling scheduling, `runtime-init` validates the versioned extent,
+page alignment, fixed pool span, root range and live root stack, and disjoint
+root/pool ranges. The pool must begin at or above 6 MiB and end at or below
+2 GiB, inside the runtime demand-mapping interval. Invalid v4 metadata
+refuses through the memory-failure path; it cannot select the legacy pool.
+Native `__start` and legacy handoffs initialize the active base to 1 GiB,
+preserving the native contract. A legacy overlapping root remains unsupported.
+
+PID classification, child carving, and FX save/init/restore all read the same
+base. The process table still has sixteen 32 MiB slots. Slot zero supplies
+the root FX page; each other slot supplies its child's heap, stack and FX
+page. UEFI owns the entire pool for the boot lifetime. Natural process exit
+reuses a slot without releasing that firmware allocation. The initial root
+allocation is never freed or relocated by the owned-pool path. Its address
+can still vary when a different PE image changes firmware's loader footprint.
+
+Heap/time: one additional fixed 512 MiB firmware reservation on the opt-in
+path; PID/FX lookup remains constant-time and allocation-free. PID lookup
+uses one saved scratch register and one cached pool-base read. Pool admission
+is a bounded startup check. Firmware fragmentation can refuse the reservation.
+
+`apps/works/proofs/owned-process-pool.ps1` snapshots its compiler, converter
+pair and probe closure. Supply `-Kernel`, `-LegacyStub` (the converter from
+main before 33898) and a fresh `-OutDir`. It checks exact traces, root/child
+PIDs, all spawn variants, child allocation and saved-stack bounds, slot reuse,
+timer preemption of a non-yielding child, a parent sentinel and targeted FX
+canaries. Legacy layout means fixed-base selection, not root disjointness.
+FX canary coverage is required for the owned desktop-size arm and its control.
+Malformed span, overlap, alignment and root-range cases must refuse.
+
+The legacy comparison PE is padded only in `SizeOfImage` and trailing file
+bytes to match the owned PE's loader footprint; its executable sections are
+unchanged. This prevents an added stub page from masquerading as heap
+relocation. The recorded original hash and footprint fields identify this
+controlled input. Paired entry-heap/root-end equality and a deliberately
+different-placement control grade preservation. This is allocator evidence,
+not physical DMA reachability or USB input acceptance.
 
 ### Kernel Metadata Cells (0x7000 region)
 
@@ -95,7 +152,8 @@ $cells | Where-Object { $doc -notcontains $_ }      # must be empty
 | 30000 | ata-sector-count-addr | 8 | ATA detected sector count |
 | 30008 | slice-table-addr | 32 | Scheduler time-slice table |
 | 30040 | fork-free-head-addr | 8 | Fork pool free-list head |
-| 30048 | starve-counter-addr | 8 | Scheduler starvation counter |
+| 30048 | starve-counter-addr | 4 | Scheduler starvation counter |
+| 30052 | starve-cursor-addr | 4 | Last slot selected for periodic low-priority relief |
 | 30056 | boot-factstore-addr | 8 | Boot fact store pointer |
 | 30064 | identity-table-base | 512 | Spans 30064..30575 |
 | 30576 | **device-seed-addr** | 32 | Entropy seed, filled by the Option A UEFI stub from RDRAND where the processor has it and four rotated TSC samples where it does not. `GopWizard` and `IdentityManager` both mix it into keygen; it is weak in the TSC case and is never the all-zero cell the first keygen mixed in |

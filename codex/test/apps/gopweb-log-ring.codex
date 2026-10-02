@@ -1,58 +1,89 @@
 Chapter: GopWebLogRingTest
   cites Works chapter GopWeb
-  cites Works chapter WebRoute
-  cites Works chapter Http
-  cites UI chapter Widget
+  cites Works chapter GopDesk
   cites Foreword chapter Console
 
- The request log the service writes and the pane reads, over a block and no
- network. Nineteen requests through the real dispatch: the ring keeps the
- last sixteen, the oldest three are overwritten in place, the count keeps
- climbing, and the pane's tree carries one row per kept entry with the
- newest last. The sabotage: make `gopweb-log` forget to advance the count and
- "count" turns 1 while "newest" turns True by accident; make `gopweb-slot-at`
- forget the modulus and "oldest overwritten" turns False.
-
- The requests go through `web-dispatch` with the observer the service hands
- it, not through a wrapper of this arm's own, which makes the last two lines
- WIRING rather than painting: `/api/health` and `/api/status` are answered by
- `web-standard` before the route is ever consulted, so a log written from
- inside the route records neither, and the only way either line reaches the
- ring is `web-dispatch` calling the observer.
-
-Section: Body
-
-  lr-yn : Boolean -> Text
-  lr-yn (v) = if v then "yes" else "no"
-
-  lr-req : Text -> HttpRequest
-  lr-req (p) = HttpRequest { method = "GET", path = p, body = "", valid = True }
-
-  lr-serve : Integer, HttpRequest -> HttpResponse
-  lr-serve (blk) (req) = web-dispatch gopweb-route (\line -> gopweb-log blk line) web-new req
+  lr-event : Integer -> WebRequestEvent
+  lr-event (n) = WebRequestEvent { wr-time = n * 10, wr-client = [192, 168, 1, 42], wr-method = if int-mod n 2 == 0 then "GET" else "POST", wr-path = "/item/" & show n, wr-status = if int-mod n 3 == 0 then "404 Not Found" else "200 OK", wr-bytes = n + 10, wr-duration = int-mod n 4 * 10, wr-complete = True }
 
   lr-fire : Integer, Integer, Integer -> Integer
-  lr-fire (blk) (i) (n) =
-    if i >= n then 0
-    else let r = lr-serve blk (lr-req ("/p" & show i))
-    in lr-fire blk (i + 1) n
+  lr-fire (blk) (n) (stop) =
+    if n >= stop then 0
+    else let put = gopweb-observe blk (lr-event n)
+    in lr-fire blk (n + 1) stop
 
-  lr-children : WidgetNode -> Integer
-  lr-children (n) = list-length (n.wn-children)
+  lr-long : Integer, Text -> Text
+  lr-long (n) (text) = if n <= 0 then text else lr-long (n - 1) (text & "x")
 
-Section: Entry
+  lr-fits : WidgetNode, Integer, Integer -> Boolean
+  lr-fits (node) (width) (height) =
+    let b = node.wn-bounds
+    in b.lr-x >= 0 & b.lr-y >= 0 & b.lr-x + b.lr-w <= width & b.lr-y + b.lr-h <= height & lr-kids-fit (node.wn-children) width height 0
+
+  lr-kids-fit : List WidgetNode, Integer, Integer, Integer -> Boolean
+  lr-kids-fit (nodes) (width) (height) (i) =
+    if i >= list-length nodes then True else lr-fits (list-at nodes i) width height & lr-kids-fit nodes width height (i + 1)
+
+  lr-overflow : WidgetNode, Integer, Integer -> Text
+  lr-overflow (node) (width) (height) =
+    let b = node.wn-bounds
+    in (if b.lr-x + b.lr-w > width | b.lr-y + b.lr-h > height then node.wn-id & "=" & show (b.lr-x) & "," & show (b.lr-y) & "," & show (b.lr-w) & "," & show (b.lr-h) & "; " else "") & lr-kids-overflow (node.wn-children) width height 0
+
+  lr-kids-overflow : List WidgetNode, Integer, Integer, Integer -> Text
+  lr-kids-overflow (nodes) (width) (height) (i) =
+    if i >= list-length nodes then "" else lr-overflow (list-at nodes i) width height & lr-kids-overflow nodes width height (i + 1)
 
   opening : [Console] Nothing =
     let blk = gopweb-blk-new
-    in let empty = gopweb-tree blk
-    in let f = lr-fire blk 0 19
-    in let c = peek-32 blk gopweb-blk-count
-    in let root = lr-serve blk (lr-req "/")
-    in let tree = gopweb-tree blk
+    in let filled = lr-fire blk 0 70
+    in let count = peek-qword blk gopweb-blk-count
+    in let ring = count == 70 & peek-qword blk gopweb-blk-dropped == 6
+    in let retained = gopweb-log-matches blk 2 "" == False & gopweb-log-matches blk 6 "" & gopweb-log-matches blk 69 ""
+    in let totals = peek-qword blk gopweb-blk-bytes-sent == 70 * 10 + 70 * 69 / 2 & peek-qword blk 136 == 46 & peek-qword blk 152 == 24
+    in let search = gopweb-match-count blk 6 70 "ItEm/6" == 11
+    in let get = poke-qword blk gopweb-blk-filter-method 1
+    in let method = gopweb-match-count blk 6 70 "ItEm/6" == 6
+    in let status = poke-qword blk gopweb-blk-filter-status 4
+    in let combined = gopweb-match-count blk 6 70 "ItEm/6" == 3 & gopweb-match-count blk 6 70 "missing" == 0
+    in let pending = poke-qword (gopweb-slot-at blk 66) 0 0
+    in let writing = gopweb-log-matches blk 66 "item" == False
+    in let reset = poke-qword blk gopweb-blk-filter-method 0
+    in let reset2 = poke-qword blk gopweb-blk-filter-status 0
+    in let unicode = WebRequestEvent { wr-time = 700, wr-client = [10, 20, 30, 40], wr-method = "GET", wr-path = "/café/猫", wr-status = "500 Internal Server Error", wr-bytes = 123, wr-duration = 20, wr-complete = False }
+    in let before = __heap-save
+    in let wrote = gopweb-observe blk unicode
+    in let no-allocation = __heap-save == before
+    in let slot = gopweb-slot-at blk 70
+    in let encoded = gopweb-text-read slot 192 0 (peek-qword slot 56) == "/café/猫" & peek-qword slot 1224 == 0 & peek-qword slot 16 == gopweb-ip-pack [10, 20, 30, 40]
+    in let long = WebRequestEvent { wr-time = 710, wr-client = [1, 2, 3, 4], wr-method = "ABCDEFGHIJKLMNOPQ", wr-path = lr-long 140 "", wr-status = "200 OK", wr-bytes = 1, wr-duration = 0, wr-complete = True }
+    in let truncated = gopweb-observe blk long
+    in let last = gopweb-slot-at blk 71
+    in let limits = peek-qword last 48 == 16 & peek-qword last 56 == 128 & peek-qword last 1216 == 3
+    in let logtab = gopweb-action blk 12
+    in let rows = gopweb-rows blk 71 8 "" 0 gopweb-page-rows []
+    in let older = gopweb-action blk 6
+    in let scroll = peek-qword blk gopweb-blk-scroll == gopweb-page-rows & list-length rows == gopweb-page-rows
+    in let focused = gopweb-action blk 9
+    in let typed = gopweb-key blk 30 65
+    in let query = gopweb-query-text blk == "A"
+    in let popped = gopweb-key blk 14 0
+    in let cleared = query & gopweb-query-text blk == ""
+    in let log-tree = widget-layout (gopweb-tree blk) (dk-theme-of 0 0) (layout-rect 0 0 600 282)
+    in let fit = lr-fits log-tree 600 282
+    in let overview = gopweb-action blk 11
+    in let overview-fit = lr-fits (widget-layout (gopweb-tree blk) (dk-theme-of 0 0) (layout-rect 0 0 600 282)) 600 282
     in act
-      print-line-uni ("empty rows " & show (lr-children empty) & "  head " & (gopweb-head 0))
-      print-line-uni ("count " & show c & "  newest " & gopweb-log-read blk 18 & "  oldest overwritten " & lr-yn (gopweb-log-read blk 2 == "GET /p18 404 Not Found") & "  kept " & gopweb-log-read blk 4)
-      print-line-uni ("root " & gopweb-log-read blk 19 & "  rows " & show (lr-children tree - 2) & "  head " & gopweb-head (peek-32 blk gopweb-blk-count) & "  first shown " & show (gopweb-log-first (peek-32 blk gopweb-blk-count)))
-      print-line-uni ("the route never sees these two: health " & (lr-serve blk (lr-req "/api/health")).status & "  status " & (lr-serve blk (lr-req "/api/status")).status)
-      print-line-uni ("and the ring holds them anyway: " & gopweb-log-read blk 20 & " | " & gopweb-log-read blk 21 & "  count " & show (peek-32 blk gopweb-blk-count))
+      print-line-uni ("ring wrap and loss count " & show ring)
+      print-line-uni ("retained sequence guards " & show retained)
+      print-line-uni ("request byte and status totals " & show totals)
+      print-line-uni ("case insensitive search " & show search)
+      print-line-uni ("method filter " & show method)
+      print-line-uni ("combined filters " & show combined)
+      print-line-uni ("in progress record rejected " & show writing)
+      print-line-uni ("CCE text and partial send " & show encoded)
+      print-line-uni ("bounded record truncation " & show limits)
+      print-line-uni ("log writer allocation free " & show no-allocation)
+      print-line-uni ("scroll and search input " & show (scroll & cleared))
+      print-line-uni ("log controls fit 1600x900 pane " & show fit & (if fit then "" else lr-overflow log-tree 600 282))
+      print-line-uni ("overview fits 1600x900 pane " & show overview-fit & (if overview-fit then "" else lr-overflow (widget-layout (gopweb-tree blk) (dk-theme-of 0 0) (layout-rect 0 0 600 282)) 600 282))
     end

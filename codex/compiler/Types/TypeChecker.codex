@@ -2528,44 +2528,50 @@ Section: Punctual Mutual Recursion
 Section: Proof Acyclicity
 
 
-  type-mentions-proof : CodexType, Integer -> Boolean
-  type-mentions-proof (ty) (fuel) =
-    if fuel <= 0 then True
+ Whether a type states a proof: 0 no, 1 yes, 2 undecided because the walk
+ ran out of fuel. A function's result is walked at the same fuel, so a long
+ curried arity costs none and only nesting does.
+
+  tp-or : Integer, Integer -> Integer
+  tp-or (a) (b) = if a == 1 | b == 1 then 1 else if a == 2 | b == 2 then 2 else 0
+
+  type-proof-class : CodexType, Integer -> Integer
+  type-proof-class (ty) (fuel) =
+    if fuel <= 0 then 2
     else when ty
-     is ProofTy | PropEqTy (a) (b) -> True
-     is FunTy (p) (row) (r) -> type-mentions-proof p (fuel - 1) | type-mentions-proof r (fuel - 1)
-     is ListTy (e) -> type-mentions-proof e (fuel - 1)
-     is LinkedListTy (e) -> type-mentions-proof e (fuel - 1)
-     is ForAllTy (id) (b) -> type-mentions-proof b (fuel - 1)
-     is ForAllEff (id) (b) -> type-mentions-proof b (fuel - 1)
-     is EffectfulTy (effs) (sc) (r) -> type-mentions-proof r (fuel - 1)
-     is UnitTy (n) (inner) -> type-mentions-proof inner (fuel - 1)
-     is LinearTy (inner) -> type-mentions-proof inner (fuel - 1)
-     is VectorTy (n) (e) -> type-mentions-proof e (fuel - 1)
-     is TypeApply (f) (a) -> type-mentions-proof f (fuel - 1) | type-mentions-proof a (fuel - 1)
-     is ConstructedTy (n) (args) -> types-mention-proof args (fuel - 1) 0 (list-length args)
-     is SumTy (n) (args) (ctors) -> types-mention-proof args (fuel - 1) 0 (list-length args) | ctors-mention-proof ctors (fuel - 1) 0 (list-length ctors)
-     is RecordTy (n) (args) (fields) -> types-mention-proof args (fuel - 1) 0 (list-length args) | fields-mention-proof fields (fuel - 1) 0 (list-length fields)
-     is otherwise -> False
+     is ProofTy | PropEqTy (a) (b) -> 1
+     is FunTy (p) (row) (r) -> tp-or (type-proof-class p (fuel - 1)) (type-proof-class r fuel)
+     is ListTy (e) -> type-proof-class e (fuel - 1)
+     is LinkedListTy (e) -> type-proof-class e (fuel - 1)
+     is ForAllTy (id) (b) -> type-proof-class b (fuel - 1)
+     is ForAllEff (id) (b) -> type-proof-class b (fuel - 1)
+     is EffectfulTy (effs) (sc) (r) -> type-proof-class r (fuel - 1)
+     is UnitTy (n) (inner) -> type-proof-class inner (fuel - 1)
+     is LinearTy (inner) -> type-proof-class inner (fuel - 1)
+     is VectorTy (n) (e) -> type-proof-class e (fuel - 1)
+     is TypeApply (f) (a) -> tp-or (type-proof-class f (fuel - 1)) (type-proof-class a (fuel - 1))
+     is ConstructedTy (n) (args) -> types-proof-class args (fuel - 1) 0 (list-length args) 0
+     is SumTy (n) (args) (ctors) -> tp-or (types-proof-class args (fuel - 1) 0 (list-length args) 0) (ctors-proof-class ctors (fuel - 1) 0 (list-length ctors) 0)
+     is RecordTy (n) (args) (fields) -> tp-or (types-proof-class args (fuel - 1) 0 (list-length args) 0) (fields-proof-class fields (fuel - 1) 0 (list-length fields) 0)
+     is otherwise -> 0
 
-  types-mention-proof : List CodexType, Integer, Integer, Integer -> Boolean
-  types-mention-proof (ts) (fuel) (i) (len) =
-    if i >= len then False
-    else if type-mentions-proof (list-at ts i) fuel then True
-    else types-mention-proof ts fuel (i + 1) len
+  types-proof-class : List CodexType, Integer, Integer, Integer, Integer -> Integer
+  types-proof-class (ts) (fuel) (i) (len) (acc) =
+    if i >= len | acc == 1 then acc
+    else types-proof-class ts fuel (i + 1) len (tp-or acc (type-proof-class (list-at ts i) fuel))
 
-  ctors-mention-proof : List SumCtor, Integer, Integer, Integer -> Boolean
-  ctors-mention-proof (ctors) (fuel) (i) (len) =
-    if i >= len then False
-    else if types-mention-proof ((list-at ctors i).fields) fuel 0 (list-length ((list-at ctors i).fields)) then
-      True
-    else ctors-mention-proof ctors fuel (i + 1) len
+  ctors-proof-class : List SumCtor, Integer, Integer, Integer, Integer -> Integer
+  ctors-proof-class (ctors) (fuel) (i) (len) (acc) =
+    if i >= len | acc == 1 then acc
+    else ctors-proof-class ctors fuel (i + 1) len (tp-or acc (types-proof-class ((list-at ctors i).fields) fuel 0 (list-length ((list-at ctors i).fields)) 0))
 
-  fields-mention-proof : List RecordField, Integer, Integer, Integer -> Boolean
-  fields-mention-proof (fields) (fuel) (i) (len) =
-    if i >= len then False
-    else if type-mentions-proof ((list-at fields i).type-val) fuel then True
-    else fields-mention-proof fields fuel (i + 1) len
+  fields-proof-class : List RecordField, Integer, Integer, Integer, Integer -> Integer
+  fields-proof-class (fields) (fuel) (i) (len) (acc) =
+    if i >= len | acc == 1 then acc
+    else fields-proof-class fields fuel (i + 1) len (tp-or acc (type-proof-class ((list-at fields i).type-val) fuel))
+
+  type-mentions-proof : CodexType, Integer -> Boolean
+  type-mentions-proof (ty) (fuel) = type-proof-class ty fuel == 1
 
   build-proof-names : List ADef, List TypeBinding, Integer, Integer, List Text -> List Text
   build-proof-names (defs) (types) (i) (len) (acc) =
@@ -2574,6 +2580,14 @@ Section: Proof Acyclicity
     else if type-mentions-proof ((list-at types i).bound-type) 64
      then build-proof-names defs types (i + 1) len (list-push acc ((list-at defs i).name.value))
     else build-proof-names defs types (i + 1) len acc
+
+  proof-undecided : List ADef, List TypeBinding, Integer, Integer, UnificationState -> UnificationState
+  proof-undecided (defs) (types) (i) (len) (st) =
+    if i >= len then st
+    else if i >= list-length types then st
+    else if type-proof-class ((list-at types i).bound-type) 64 == 2 then
+      proof-undecided defs types (i + 1) len (__record-set st "bag" (bag-add (st.bag) (make-error cdx-proof-undecided ("'" & ((list-at defs i).name.value) & "' has a type nested more than 64 levels deep, so whether it states a proof cannot be decided; the definition is refused rather than guessed. Name an inner type (a record or a sum) to shorten the nesting.") ((list-at defs i).span))))
+    else proof-undecided defs types (i + 1) len st
 
   build-proof-edges : List ADef, List Text, Integer, Integer, List RtEdges -> List RtEdges
   build-proof-edges (defs) (names) (i) (len) (acc) =
@@ -2587,8 +2601,9 @@ Section: Proof Acyclicity
     else build-proof-edges defs names (i + 1) len acc
 
   check-proof-cycles : List ADef, List TypeBinding, UnificationState -> UnificationState
-  check-proof-cycles (defs) (types) (st) =
-    let names = build-proof-names defs types 0 (list-length defs) []
+  check-proof-cycles (defs) (types) (st0) =
+    let st = proof-undecided defs types 0 (list-length defs) st0
+    in let names = build-proof-names defs types 0 (list-length defs) []
     in if list-length names == 0 then st
     else let g = build-proof-edges defs names 0 (list-length defs) []
     in check-proof-cycles-loop g defs names 0 (list-length defs) st

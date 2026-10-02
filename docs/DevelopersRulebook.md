@@ -205,7 +205,7 @@ The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading
 the code first and passing both gates (sample battery + pingpong).
 
-### codex.os (165 modules) -- Operating System
+### codex.os (181 modules) -- Operating System
 
 Split across sub-quires. Re-measured 2026-07-29, when adding one kernel
 chapter turned `check-doc-counts.ps1` red and showed the table had
@@ -218,7 +218,7 @@ internally inconsistent.
 |-----------|---------|---------|
 | codex.os.core | 4 | Core OS abstractions |
 | codex.os.dev | 38 | Device management |
-| codex.os.kernel | 36 | Hardware drivers (PCI, xHCI, NE2K, e1000e, VGA, IDE, HDA, USB HID, and Hpet, the monotonic clock) |
+| codex.os.kernel | 52 | Hardware drivers (PCI, xHCI, NE2K, e1000e, VGA, IDE, HDA, USB HID, and Hpet, the monotonic clock) |
 | codex.os.net | 43 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, CoapsEndpoint and Lwm2mCoaps, which carry CoAP and the LwM2M client as DTLS application data, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
 | codex.os.observe | 8 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
@@ -245,7 +245,7 @@ chapters elsewhere compile against it. The layering rule above orders the
 QUIRES (`codex.foreword` -> `codex` -> `codex.os` -> apps) and says nothing
 about sub-quires, which is why these cites are legal.
 
-### codex.plugs (58 plugs) -- Transpiler Plugs
+### codex.plugs (59 plugs, 2026-10-02) -- Transpiler Plugs
 
 48 language and UI transpilers (Ada to Zig, 14 UI frameworks, GPU PTX +
 SPIR-V + WGSL), 6 native backends (ARM64, RISC-V, T3ISA, ELF, PE, IMG),

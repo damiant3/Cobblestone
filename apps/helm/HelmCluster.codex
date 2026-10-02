@@ -41,7 +41,7 @@ Section: Message Ingestion
     }
     in let updated = if room.rm-mode == RmClustered
           then cluster-message room msg now
-          else sequential-message room msg
+    else sequential-message room msg
     in let mode-checked = check-mode-switch updated now
     in __record-set mode-checked "rm-next-msg-id" (room.rm-next-msg-id + 1)
 
@@ -49,20 +49,20 @@ Section: Message Ingestion
   sequential-message (room) (msg) =
     if room.rm-current-count == 0
     then let cur = current-new room.rm-next-current-id "Chat" msg
-      in __record-set (__record-set (__record-set room "rm-currents" [cur]) "rm-current-count" 1) "rm-next-current-id" (room.rm-next-current-id + 1)
+    in __record-set (__record-set (__record-set room "rm-currents" [cur]) "rm-current-count" 1) "rm-next-current-id" (room.rm-next-current-id + 1)
     else let first = list-at room.rm-currents 0
-      in let updated = current-add-message first msg
-      in __record-set (__record-set room "rm-currents" [updated]) "rm-message-count" (room.rm-message-count + 1)
+    in let updated = current-add-message first msg
+    in __record-set (__record-set room "rm-currents" [updated]) "rm-message-count" (room.rm-message-count + 1)
 
   cluster-message : Room, Message, Integer -> Room
   cluster-message (room) (msg) (now) =
     let best = find-best-current room.rm-currents msg.msg-content 0 room.rm-current-count (-1) 0
     in if best.bc-id >= 0
       then let updated-currents = update-current-at room.rm-currents best.bc-id msg now
-        in __record-set (__record-set room "rm-currents" updated-currents) "rm-message-count" (room.rm-message-count + 1)
-      else let topic = extract-topic msg.msg-content
-        in let cur = current-new room.rm-next-current-id topic msg
-        in __record-set (__record-set (__record-set (__record-set room "rm-currents" (list-push room.rm-currents cur)) "rm-current-count" (room.rm-current-count + 1)) "rm-next-current-id" (room.rm-next-current-id + 1)) "rm-message-count" (room.rm-message-count + 1)
+      in __record-set (__record-set room "rm-currents" updated-currents) "rm-message-count" (room.rm-message-count + 1)
+    else let topic = extract-topic msg.msg-content
+    in let cur = current-new room.rm-next-current-id topic msg
+    in __record-set (__record-set (__record-set (__record-set room "rm-currents" (list-push room.rm-currents cur)) "rm-current-count" (room.rm-current-count + 1)) "rm-next-current-id" (room.rm-next-current-id + 1)) "rm-message-count" (room.rm-message-count + 1)
 
 Section: Current Construction
 
@@ -74,7 +74,12 @@ Section: Current Construction
       cur-summary = msg.msg-content,
       cur-messages = [msg],
       cur-count = 1,
-      cur-attention = AttentionScore { as-participants = 1, as-clicks = 0, as-recency = 100, as-velocity = 1 },
+      cur-attention = AttentionScore {
+        as-participants = 1,
+        as-clicks = 0,
+        as-recency = 100,
+        as-velocity = 1
+      },
       cur-sentiment = SentNeutral,
       cur-sub-currents = [],
       cur-sub-count = 0,
@@ -101,8 +106,8 @@ Section: Similarity Matching
     in if score > best-score
       then if score >= 30
         then find-best-current currents content (i + 1) len cur.cur-id score
-        else find-best-current currents content (i + 1) len best-id best-score
       else find-best-current currents content (i + 1) len best-id best-score
+    else find-best-current currents content (i + 1) len best-id best-score
 
   keyword-similarity : Text, Text -> Integer
   keyword-similarity (topic) (content) =
@@ -116,8 +121,8 @@ Section: Similarity Matching
       else matches * 100 / len
     else let word = list-at words i
     in let hit = if text-length word > 2 then
-          if text-contains content word then 1 else 0
-        else 0
+      if text-contains content word then 1 else 0
+    else 0
     in keyword-sim-loop words content (i + 1) len (matches + hit)
 
   extract-topic : Text -> Text
@@ -132,8 +137,12 @@ Section: List Utilities
 
   text-split-loop : Text, Text, Integer, Integer, List Text -> List Text
   text-split-loop (s) (sep) (start) (i) (acc) =
-    if i > text-length s - text-length sep then acc & [text-substring s start (text-length s - start)]
-    else if text-substring s i (text-length sep) == sep then text-split-loop s sep (i + text-length sep) (i + text-length sep) (acc & [text-substring s start (i - start)])
+    if i > text-length s - text-length sep then
+      acc & [text-substring s start (text-length s - start)]
+    else if text-substring s i (text-length sep) == sep then
+      text-split-loop s sep (i + text-length sep) (i + text-length sep) (acc & [
+        text-substring s start (i - start)
+      ])
     else text-split-loop s sep start (i + 1) acc
 
 Section: Current Update
@@ -155,8 +164,8 @@ Section: Mode Switching
     in if recent-count >= 10
       then if unique-senders >= 10
         then __record-set room "rm-mode" RmClustered
-        else room
-      else __record-set room "rm-mode" RmSequential
+      else room
+    else __record-set room "rm-mode" RmSequential
 
   count-recent-messages : Room, Integer, Integer -> Integer
   count-recent-messages (room) (now) (window-sec) =
@@ -184,8 +193,8 @@ Section: Decay
   decay-current (now) (cur) =
     let age = now - cur.cur-last-active
     in let new-decay = if age > 300 then 0
-          else if age > 60 then 50
-          else 100
+    else if age > 60 then 50
+    else 100
     in __record-set (__record-set cur "cur-decay" new-decay) "cur-attention" (__record-set cur.cur-attention "as-recency" new-decay)
 
 Section: Current Ranking
@@ -224,17 +233,17 @@ Section: Sentiment Detection
     else let m = list-at msgs i
     in let hit = if text-contains m.msg-content "!"
           then 1
-          else if text-contains m.msg-content "yes"
-          then 1
-          else if text-contains m.msg-content "great"
-          then 1
-          else if text-contains m.msg-content "good"
-          then 1
-          else if text-contains m.msg-content "love"
-          then 1
-          else if text-contains m.msg-content "agree"
-          then 1
-          else 0
+    else if text-contains m.msg-content "yes"
+    then 1
+    else if text-contains m.msg-content "great"
+    then 1
+    else if text-contains m.msg-content "good"
+    then 1
+    else if text-contains m.msg-content "love"
+    then 1
+    else if text-contains m.msg-content "agree"
+    then 1
+    else 0
     in count-positive msgs (i + 1) len (acc + hit)
 
   count-negative : List Message, Integer, Integer, Integer -> Integer
@@ -243,15 +252,15 @@ Section: Sentiment Detection
     else let m = list-at msgs i
     in let hit = if text-contains m.msg-content "no "
           then 1
-          else if text-contains m.msg-content "bad"
-          then 1
-          else if text-contains m.msg-content "wrong"
-          then 1
-          else if text-contains m.msg-content "disagree"
-          then 1
-          else if text-contains m.msg-content "terrible"
-          then 1
-          else 0
+    else if text-contains m.msg-content "bad"
+    then 1
+    else if text-contains m.msg-content "wrong"
+    then 1
+    else if text-contains m.msg-content "disagree"
+    then 1
+    else if text-contains m.msg-content "terrible"
+    then 1
+    else 0
     in count-negative msgs (i + 1) len (acc + hit)
 
   current-update-sentiment : Current -> Current
@@ -264,7 +273,8 @@ Section: Room Sender Tracking
   room-track-sender (room) (author) =
     if sender-exists room.rm-senders author 0 room.rm-sender-count
     then room
-    else __record-set (__record-set room "rm-senders" (list-push room.rm-senders author)) "rm-sender-count" (room.rm-sender-count + 1)
+    else
+      __record-set (__record-set room "rm-senders" (list-push room.rm-senders author)) "rm-sender-count" (room.rm-sender-count + 1)
 
   sender-exists : List Text, Text, Integer, Integer -> Boolean
   sender-exists (senders) (author) (i) (len) =

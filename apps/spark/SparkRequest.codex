@@ -1,0 +1,422 @@
+Chapter: SparkRequest
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Spark chapter SparkPromptFile
+
+ One generation request as the WPF original builds it
+ (D:\Projects\Spark\Spark\ImageGenerator.cs, ArtDirections.cs,
+ CreativeEngine.cs; MainViewModel.cs:340-374): settings, the refine presets,
+ art directions and creative pools read from the project's own JSON, and the
+ final prompt, negative prompt and output path of GenerateAsync. CFG is the
+ exact decimal the JSON wrote; the original's settings tag prints the double
+ of a short decimal as that decimal.
+
+Section: Settings
+
+  SparkSettings = record {
+    ss-width : Integer,
+    ss-height : Integer,
+    ss-steps : Integer,
+    ss-cfg : JsonNumber,
+    ss-sampler : Text,
+    ss-scheduler : Text,
+    ss-seed : Integer,
+    ss-negative : Text
+  }
+
+ The original's ImageGeneratorSettings defaults.
+
+  spark-settings-default : SparkSettings
+  spark-settings-default = SparkSettings {
+    ss-width = 1344,
+    ss-height = 768,
+    ss-steps = 20,
+    ss-cfg = JsonNumber { jn-mantissa = 7, jn-decimals = 0 },
+    ss-sampler = "DPM++ 2M SDE",
+    ss-scheduler = "karras",
+    ss-seed = 0 - 1,
+    ss-negative = "watermark, text, signature, logo, deformed, bad anatomy, disfigured, mutated, extra limbs, missing limbs, poorly drawn face, poorly drawn hands, low quality, worst quality, blurry, out of focus"
+  }
+
+  sreq-pow10 : Integer -> Integer
+  sreq-pow10 (k) = if k <= 0 then 1 else 10 * sreq-pow10 (k - 1)
+
+  sreq-norm : JsonNumber -> JsonNumber
+  sreq-norm (n) =
+    if n.jn-decimals > 0 & n.jn-mantissa - (n.jn-mantissa / 10) * 10 == 0 then sreq-norm (JsonNumber { jn-mantissa = n.jn-mantissa / 10, jn-decimals = n.jn-decimals - 1 })
+    else n
+
+  spark-decimal-text : JsonNumber -> Text
+  spark-decimal-text (n) = json-emit-num (sreq-norm n)
+
+  sreq-replace-loop : Text, Text, Text, Integer, Text -> Text
+  sreq-replace-loop (t) (a) (b) (i) (acc) =
+    if i >= text-length t then acc
+    else if i + text-length a <= text-length t & substring t i (text-length a) == a then sreq-replace-loop t a b (i + text-length a) (acc & b)
+    else sreq-replace-loop t a b (i + 1) (acc & substring t i 1)
+
+  sreq-replace : Text, Text, Text -> Text
+  sreq-replace (t) (a) (b) = sreq-replace-loop t a b 0 ""
+
+ SettingsTag: the folder an image is written under.
+
+  spark-settings-tag : SparkSettings -> Text
+  spark-settings-tag (s) =
+    let sampler = sreq-replace (sreq-replace (s.ss-sampler) "++ " "pp") " " "-"
+    in show (s.ss-width) & "x" & show (s.ss-height) & "_s" & show (s.ss-steps) & "_cfg" & spark-decimal-text (s.ss-cfg) & "_" & sampler & "_" & s.ss-scheduler & "_seed" & show (s.ss-seed)
+
+  sreq-cmp : JsonNumber, JsonNumber -> Integer
+  sreq-cmp (a) (b) =
+    let d = if a.jn-decimals > b.jn-decimals then a.jn-decimals else b.jn-decimals
+    in let x = a.jn-mantissa * sreq-pow10 (d - a.jn-decimals)
+    in let y = b.jn-mantissa * sreq-pow10 (d - b.jn-decimals)
+    in if x < y then 0 - 1 else if x > y then 1 else 0
+
+  sreq-add : JsonNumber, JsonNumber -> JsonNumber
+  sreq-add (a) (b) =
+    let d = if a.jn-decimals > b.jn-decimals then a.jn-decimals else b.jn-decimals
+    in JsonNumber { jn-mantissa = a.jn-mantissa * sreq-pow10 (d - a.jn-decimals) + b.jn-mantissa * sreq-pow10 (d - b.jn-decimals), jn-decimals = d }
+
+  sreq-int : Integer -> JsonNumber
+  sreq-int (n) = JsonNumber { jn-mantissa = n, jn-decimals = 0 }
+
+ Math.Clamp(cfg + nudge, 3, 15), and Math.Clamp(steps + nudge, 10, 50).
+
+  sreq-clamp-cfg : JsonNumber -> JsonNumber
+  sreq-clamp-cfg (c) = if sreq-cmp c (sreq-int 3) < 0 then sreq-int 3 else if sreq-cmp c (sreq-int 15) > 0 then sreq-int 15 else c
+
+  sreq-clamp-steps : Integer -> Integer
+  sreq-clamp-steps (n) = if n < 10 then 10 else if n > 50 then 50 else n
+
+  sreq-with-cfg : SparkSettings, JsonNumber -> SparkSettings
+  sreq-with-cfg (s) (c) = SparkSettings { ss-width = s.ss-width, ss-height = s.ss-height, ss-steps = s.ss-steps, ss-cfg = c, ss-sampler = s.ss-sampler, ss-scheduler = s.ss-scheduler, ss-seed = s.ss-seed, ss-negative = s.ss-negative }
+
+  sreq-with-steps : SparkSettings, Integer -> SparkSettings
+  sreq-with-steps (s) (n) = SparkSettings { ss-width = s.ss-width, ss-height = s.ss-height, ss-steps = n, ss-cfg = s.ss-cfg, ss-sampler = s.ss-sampler, ss-scheduler = s.ss-scheduler, ss-seed = s.ss-seed, ss-negative = s.ss-negative }
+
+  sreq-with-size : SparkSettings, Integer, Integer -> SparkSettings
+  sreq-with-size (s) (w) (h) = SparkSettings { ss-width = w, ss-height = h, ss-steps = s.ss-steps, ss-cfg = s.ss-cfg, ss-sampler = s.ss-sampler, ss-scheduler = s.ss-scheduler, ss-seed = s.ss-seed, ss-negative = s.ss-negative }
+
+  sreq-with-sampler : SparkSettings, Text -> SparkSettings
+  sreq-with-sampler (s) (x) = SparkSettings { ss-width = s.ss-width, ss-height = s.ss-height, ss-steps = s.ss-steps, ss-cfg = s.ss-cfg, ss-sampler = x, ss-scheduler = s.ss-scheduler, ss-seed = s.ss-seed, ss-negative = s.ss-negative }
+
+  sreq-with-seed-negative : SparkSettings, Integer, Text -> SparkSettings
+  sreq-with-seed-negative (s) (seed) (neg) = SparkSettings { ss-width = s.ss-width, ss-height = s.ss-height, ss-steps = s.ss-steps, ss-cfg = s.ss-cfg, ss-sampler = s.ss-sampler, ss-scheduler = s.ss-scheduler, ss-seed = seed, ss-negative = neg }
+
+Section: JSON fields
+
+  sreq-str : JsonValue, Text -> Text
+  sreq-str (v) (k) = json-get-str v k ""
+
+  sreq-has : JsonValue, Text -> Boolean
+  sreq-has (v) (k) = when json-get-num v k
+    is Just (n) -> True
+    is None -> False
+
+  sreq-num : JsonValue, Text -> JsonNumber
+  sreq-num (v) (k) = when json-get-num v k
+    is Just (n) -> n
+    is None -> sreq-int 0
+
+  sreq-items : JsonValue -> List JsonValue
+  sreq-items (v) = when v
+    is JsonArray (xs) -> xs
+    is otherwise -> []
+
+  sreq-text-of : JsonValue -> Text
+  sreq-text-of (v) = when v
+    is JsonStr (s) -> s
+    is otherwise -> ""
+
+  sreq-texts-loop : List JsonValue, Integer, List Text -> List Text
+  sreq-texts-loop (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else sreq-texts-loop xs (i + 1) (list-push acc (sreq-text-of (list-at xs i)))
+
+  sreq-texts : JsonValue, Text -> List Text
+  sreq-texts (v) (k) = when json-get v k
+    is Just (a) -> sreq-texts-loop (sreq-items a) 0 []
+    is None -> []
+
+Section: Refine presets
+
+  SparkPreset = record {
+    pr-name : Text,
+    pr-width : Integer,
+    pr-height : Integer,
+    pr-steps : Integer,
+    pr-has-cfg : Boolean,
+    pr-cfg : JsonNumber,
+    pr-prompt-suffix : Text,
+    pr-negative-suffix : Text
+  }
+
+  sreq-preset-none : SparkPreset
+  sreq-preset-none = SparkPreset { pr-name = "none", pr-width = 0 - 1, pr-height = 0 - 1, pr-steps = 0 - 1, pr-has-cfg = False, pr-cfg = sreq-int 0, pr-prompt-suffix = "", pr-negative-suffix = "" }
+
+  sreq-preset : JsonValue -> SparkPreset
+  sreq-preset (v) = SparkPreset {
+    pr-name = sreq-str v "name",
+    pr-width = json-get-int v "width" (0 - 1),
+    pr-height = json-get-int v "height" (0 - 1),
+    pr-steps = json-get-int v "steps" (0 - 1),
+    pr-has-cfg = sreq-has v "cfgScale",
+    pr-cfg = sreq-num v "cfgScale",
+    pr-prompt-suffix = sreq-str v "promptSuffix",
+    pr-negative-suffix = sreq-str v "negativeSuffix"
+  }
+
+  sreq-presets-loop : List JsonValue, Integer, List SparkPreset -> List SparkPreset
+  sreq-presets-loop (xs) (i) (acc) = if i >= list-length xs then acc else sreq-presets-loop xs (i + 1) (list-push acc (sreq-preset (list-at xs i)))
+
+ refine_presets.json; a file that does not parse gives the one preset "none",
+ as the original's fallback does.
+
+  spark-presets-parse : Text -> List SparkPreset
+  spark-presets-parse (json) = when json-parse json
+    is Just (v) -> when v
+      is JsonArray (xs) -> sreq-presets-loop xs 0 []
+      is otherwise -> [sreq-preset-none]
+    is None -> [sreq-preset-none]
+
+  SparkApplied = record {
+    ap-settings : SparkSettings,
+    ap-prompt-suffix : Text,
+    ap-negative-suffix : Text
+  }
+
+  sreq-preset-find : List SparkPreset, Text, Integer -> Integer
+  sreq-preset-find (ps) (name) (i) =
+    if i >= list-length ps then 0 - 1
+    else if (list-at ps i).pr-name == name then i
+    else sreq-preset-find ps name (i + 1)
+
+  spark-preset-apply : List SparkPreset, Text, SparkSettings -> SparkApplied
+  spark-preset-apply (ps) (name) (s) =
+    let i = sreq-preset-find ps name 0
+    in if i < 0 | name == "none" then SparkApplied { ap-settings = s, ap-prompt-suffix = "", ap-negative-suffix = "" }
+    else let p = list-at ps i
+    in let s1 = sreq-with-size s (if p.pr-width >= 0 then p.pr-width else s.ss-width) (if p.pr-height >= 0 then p.pr-height else s.ss-height)
+    in let s2 = if p.pr-steps >= 0 then sreq-with-steps s1 (p.pr-steps) else s1
+    in let s3 = if p.pr-has-cfg then sreq-with-cfg s2 (p.pr-cfg) else s2
+    in SparkApplied { ap-settings = s3, ap-prompt-suffix = p.pr-prompt-suffix, ap-negative-suffix = p.pr-negative-suffix }
+
+Section: Art directions
+
+  SparkDirection = record {
+    dr-category : Text,
+    dr-label : Text,
+    dr-prompt-add : Text,
+    dr-negative-add : Text,
+    dr-has-cfg : Boolean,
+    dr-cfg : JsonNumber,
+    dr-has-steps : Boolean,
+    dr-steps : Integer
+  }
+
+  sreq-direction : Text, JsonValue -> SparkDirection
+  sreq-direction (cat) (v) = SparkDirection {
+    dr-category = cat,
+    dr-label = sreq-str v "label",
+    dr-prompt-add = sreq-str v "promptAdd",
+    dr-negative-add = sreq-str v "negativeAdd",
+    dr-has-cfg = sreq-has v "cfgNudge",
+    dr-cfg = sreq-num v "cfgNudge",
+    dr-has-steps = sreq-has v "stepsNudge",
+    dr-steps = json-get-int v "stepsNudge" 0
+  }
+
+  sreq-dir-items : Text, List JsonValue, Integer, List SparkDirection -> List SparkDirection
+  sreq-dir-items (cat) (xs) (i) (acc) = if i >= list-length xs then acc else sreq-dir-items cat xs (i + 1) (list-push acc (sreq-direction cat (list-at xs i)))
+
+  sreq-dir-groups : List JsonValue, Integer, List SparkDirection -> List SparkDirection
+  sreq-dir-groups (gs) (i) (acc) =
+    if i >= list-length gs then acc
+    else let g = list-at gs i
+    in let items = when json-get g "items"
+      is Just (a) -> sreq-items a
+      is None -> []
+    in sreq-dir-groups gs (i + 1) (sreq-dir-items (sreq-str g "category") items 0 acc)
+
+ art_directions.json: every group's items in order, as ArtDirections.All();
+ a file that does not parse gives none.
+
+  spark-directions-parse : Text -> List SparkDirection
+  spark-directions-parse (json) = when json-parse json
+    is Just (v) -> when json-get v "groups"
+      is Just (gs) -> sreq-dir-groups (sreq-items gs) 0 []
+      is None -> []
+    is None -> []
+
+  spark-direction-find : List SparkDirection, Text, Integer -> Integer
+  spark-direction-find (ds) (label) (i) =
+    if i >= list-length ds then 0 - 1
+    else if (list-at ds i).dr-label == label then i
+    else spark-direction-find ds label (i + 1)
+
+ DirectedRegen: the nudges, the negative addition, and a fresh seed.
+
+  spark-direction-apply : SparkDirection, SparkSettings -> SparkSettings
+  spark-direction-apply (d) (s) =
+    let s1 = if d.dr-has-cfg then sreq-with-cfg s (sreq-clamp-cfg (sreq-add (s.ss-cfg) (d.dr-cfg))) else s
+    in let s2 = if d.dr-has-steps then sreq-with-steps s1 (sreq-clamp-steps (s1.ss-steps + d.dr-steps)) else s1
+    in let neg = if text-length (d.dr-negative-add) > 0 then s2.ss-negative & ", " & d.dr-negative-add else s2.ss-negative
+    in sreq-with-seed-negative s2 (0 - 1) neg
+
+  spark-direction-augment : SparkDirection, Text -> Text
+  spark-direction-augment (d) (augment) = if text-length augment > 0 then d.dr-prompt-add & ", " & augment else d.dr-prompt-add
+
+Section: Creative pools
+
+  SparkPools = record {
+    po-colors : List Text,
+    po-comps : List Text,
+    po-insps : List Text,
+    po-moods : List Text,
+    po-lights : List Text,
+    po-samplers : List Text
+  }
+
+  sreq-pools-default : SparkPools
+  sreq-pools-default = SparkPools {
+    po-colors = ["bold color palette"],
+    po-comps = ["wide composition"],
+    po-insps = ["concept art style"],
+    po-moods = ["atmospheric mood"],
+    po-lights = ["dramatic lighting"],
+    po-samplers = [""]
+  }
+
+  spark-pools-parse : Text -> SparkPools
+  spark-pools-parse (json) = when json-parse json
+    is Just (v) -> SparkPools {
+      po-colors = sreq-texts v "colorThemes",
+      po-comps = sreq-texts v "compositions",
+      po-insps = sreq-texts v "inspirations",
+      po-moods = sreq-texts v "moods",
+      po-lights = sreq-texts v "lightingSetups",
+      po-samplers = sreq-texts v "samplerHints"
+    }
+    is None -> sreq-pools-default
+
+ The picks come from a Park-Miller generator (x * 48271 mod 2^31 - 1), whose
+ product stays below 2^47, so no Integer step overflows. The original's CFG
+ nudge is a uniform double in [-2, 2); here it is a half step in that range,
+ which keeps every CFG a decimal the settings tag prints exactly.
+
+  spark-rng-next : Integer -> Integer
+  spark-rng-next (x) = (x * 48271) - ((x * 48271) / 2147483647) * 2147483647
+
+  sreq-pick : List Text, Integer -> Text
+  sreq-pick (xs) (r) = if list-length xs == 0 then "" else list-at xs (r - (r / list-length xs) * list-length xs)
+
+  SparkCreative = record {
+    cr-augment : Text,
+    cr-settings : SparkSettings,
+    cr-rng : Integer
+  }
+
+  spark-creative : SparkPools, SparkSettings, Integer -> SparkCreative
+  spark-creative (p) (s) (rng) =
+    let r1 = spark-rng-next rng
+    in let r2 = spark-rng-next r1
+    in let r3 = spark-rng-next r2
+    in let r4 = spark-rng-next r3
+    in let r5 = spark-rng-next r4
+    in let r6 = spark-rng-next r5
+    in let r7 = spark-rng-next r6
+    in let r8 = spark-rng-next r7
+    in let augment = sreq-pick (p.po-comps) r2 & ", " & sreq-pick (p.po-colors) r1 & ", " & sreq-pick (p.po-lights) r5 & ", " & sreq-pick (p.po-moods) r4 & ", " & sreq-pick (p.po-insps) r3
+    in let halves = (r6 - (r6 / 8) * 8) - 4
+    in let steps = (r7 - (r7 / 13) * 13) - 5
+    in let hint = sreq-pick (p.po-samplers) r8
+    in let s1 = sreq-with-cfg s (sreq-clamp-cfg (sreq-add (s.ss-cfg) (JsonNumber { jn-mantissa = halves * 5, jn-decimals = 1 })))
+    in let s2 = sreq-with-seed-negative (sreq-with-steps s1 (sreq-clamp-steps (s1.ss-steps + steps))) (0 - 1) (s1.ss-negative)
+    in SparkCreative { cr-augment = augment, cr-settings = if text-length hint > 0 then sreq-with-sampler s2 hint else s2, cr-rng = r8 }
+
+Section: The prompt
+
+  sreq-blank-loop : Text, Integer -> Boolean
+  sreq-blank-loop (t) (i) =
+    if i >= text-length t then True
+    else let c = substring t i 1
+    in if c == " " | c == "\n" then sreq-blank-loop t (i + 1) else False
+
+  sreq-blank : Text -> Boolean
+  sreq-blank (t) = sreq-blank-loop t 0
+
+  sreq-trim-start : Text, Integer -> Integer
+  sreq-trim-start (t) (i) = if i < text-length t & (substring t i 1 == " " | substring t i 1 == "\n") then sreq-trim-start t (i + 1) else i
+
+  sreq-trim-end : Text, Integer -> Integer
+  sreq-trim-end (t) (e) = if e > 0 & (substring t (e - 1) 1 == " " | substring t (e - 1) 1 == "\n") then sreq-trim-end t (e - 1) else e
+
+  sreq-trim : Text -> Text
+  sreq-trim (t) = let a = sreq-trim-start t 0 in let e = sreq-trim-end t (text-length t) in if e <= a then "" else substring t a (e - a)
+
+ ArtPrompt.FullText: the scene, then a blank line and the style when there is one.
+
+  spark-prompt-full-text : SparkPrompt -> Text
+  spark-prompt-full-text (p) =
+    let scene = unicode-bytes-to-text (p.sp-scene)
+    in if list-length (p.sp-style) > 0 then scene & "\n\n" & unicode-bytes-to-text (p.sp-style) else scene
+
+ {weight:F1} of the double nearest weight-cents / 100. Off a hundredths
+ midpoint the tenth is plain; on one (x.x5) the double lies above or below it,
+ and that side is found exactly: v = cents * 2^s lands in [2^52, 2^53) * 100,
+ and the double's significand m, rounded to even, is above the true value
+ when m * 100 > v. A midpoint the double holds exactly (x.25, x.75) rounds
+ to the even tenth, as .NET does (0.25 is 0.2, 0.75 is 0.8).
+
+  sreq-scale : Integer -> Integer
+  sreq-scale (v) = if v >= 450359962737049600 then v else sreq-scale (v * 2)
+
+  sreq-double-above : Integer -> Integer
+  sreq-double-above (cents) =
+    let v = sreq-scale cents
+    in let q = v / 100
+    in let rem = v - q * 100
+    in let m = if rem * 2 > 100 | (rem * 2 == 100 & q - (q / 2) * 2 == 1) then q + 1 else q
+    in if m * 100 > v then 1 else if m * 100 < v then 0 - 1 else 0
+
+  spark-weight-f1 : Integer -> Text
+  spark-weight-f1 (cents) =
+    let k = cents / 10
+    in let r = cents - k * 10
+    in let side = if r == 5 then sreq-double-above cents else 0
+    in let up = if r > 5 then True else if r < 5 then False else if side == 0 then k - (k / 2) * 2 == 1 else side > 0
+    in let t = if up then k + 1 else k
+    in show (t / 10) & "." & show (t - (t / 10) * 10)
+
+  spark-lora-tag : Text, Integer -> Text
+  spark-lora-tag (name) (cents) = "<lora:" & name & ":" & spark-weight-f1 cents & ">"
+
+  spark-prompt-lora-tag : SparkPrompt -> Text
+  spark-prompt-lora-tag (p) = if list-length (p.sp-lora) > 0 then spark-lora-tag (unicode-bytes-to-text (p.sp-lora)) (p.sp-weight-cents) else ""
+
+Section: The request
+
+  SparkRequest = record {
+    rq-prompt : Text,
+    rq-negative : Text,
+    rq-settings : SparkSettings,
+    rq-path : Text
+  }
+
+ GenerateAsync: the preset applied, the augment and the LoRA tag appended,
+ the preset's suffixes last; the path is the settings tag's folder and the
+ prompt's file name with _rNN from the second run on.
+
+  spark-request : Text, Text, Integer, List SparkPreset, Text, SparkSettings, Text, Text -> SparkRequest
+  spark-request (text) (filename) (run) (presets) (preset) (s) (lora) (augment) =
+    let ap = spark-preset-apply presets preset s
+    in let b1 = if sreq-blank augment then text else text & ", " & sreq-trim augment
+    in let b2 = if sreq-blank lora then b1 else b1 & " " & lora
+    in let suffix = if run > 0 then "_r" & (if run < 10 then "0" else "") & show run else ""
+    in SparkRequest {
+      rq-prompt = b2 & ap.ap-prompt-suffix,
+      rq-negative = ap.ap-settings.ss-negative & ap.ap-negative-suffix,
+      rq-settings = ap.ap-settings,
+      rq-path = spark-settings-tag (ap.ap-settings) & "/" & filename & suffix & ".png"
+    }

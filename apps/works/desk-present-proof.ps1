@@ -1,12 +1,14 @@
 [CmdletBinding()]
 param(
     [ValidateSet('codex-vm','ovmf','both')][string]$Bed='both',
-    [ValidateSet('unit','step','render','bounded','policy','loop')][string]$Unit='unit',
+    [ValidateSet('unit','step','render','bounded','policy','loop','worker-loop')][string]$Unit='unit',
     [string]$Mode='all',
     [string]$Kernel='seed/Codex.cdx',
+    [switch]$OwnedProcessPool,
     [string]$OutDir=''
 )
 $ErrorActionPreference='Stop'
+if($OwnedProcessPool -and ($Bed -ne 'ovmf' -or $Unit -ne 'worker-loop')){throw 'OwnedProcessPool requires -Bed ovmf -Unit worker-loop'}
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location $repo
 $allowed=switch($Unit){
@@ -16,16 +18,18 @@ $allowed=switch($Unit){
     bounded {@('positive','render-cancel','front-publish','render-budget','render-quanta')}
     policy {@('positive','budget-bypass','skip-bypass','burst-bypass')}
     loop {@('positive','dispatch-bypass')}
+    worker-loop {@('positive','dispatch-bypass')}
 }
 if($Mode -ne 'all' -and $Mode -notin $allowed){throw "Unknown $Unit control: $Mode"}
-$subject=switch($Unit){render {'codex/test/apps/scene-render-work'} bounded {'codex/test/apps/scene-bounded-step'} policy {'codex/test/apps/pane-policy'} loop {'codex/test/apps/desk-scene-render-loop'} default {"codex/test/apps/scene-present-$Unit"}}
-$marker=switch($Unit){unit {'present-proof-end'} step {'scene-step-proof-end'} render {'render-work-end'} bounded {'bounded-step-end'} policy {'pane-policy-end'} loop {'render-loop-end'}}
-$first=switch($Unit){unit {'stable='} step {'render completes before publication:'} render {'done '} bounded {'staged '} policy {'budget '} loop {'desk loop returns during rendering:'}}
+$subject=switch($Unit){render {'codex/test/apps/scene-render-work'} bounded {'codex/test/apps/scene-bounded-step'} policy {'codex/test/apps/pane-policy'} loop {'codex/test/apps/desk-scene-render-loop'} worker-loop {'codex/test/apps/desk-worker-loop'} default {"codex/test/apps/scene-present-$Unit"}}
+$marker=switch($Unit){unit {'present-proof-end'} step {'scene-step-proof-end'} render {'render-work-end'} bounded {'bounded-step-end'} policy {'pane-policy-end'} loop {'render-loop-end'} worker-loop {'render-loop-end'}}
+$first=switch($Unit){unit {'stable='} step {'render completes before publication:'} render {'done '} bounded {'staged '} policy {'budget '} loop {'desk loop returns during rendering:'} worker-loop {'desk loop returns during rendering:'}}
 if(-not $OutDir){$OutDir=Join-Path $repo ('build-output/desk-present-'+[Guid]::NewGuid().ToString('N'))}
 if(-not [IO.Path]::IsPathRooted($OutDir)){$OutDir=Join-Path $repo $OutDir}
 $OutDir=[IO.Path]::GetFullPath($OutDir)
 if(Test-Path $OutDir){throw 'Choose a fresh proof output directory'}
 New-Item -ItemType Directory -Path $OutDir|Out-Null
+Copy-Item -LiteralPath $PSCommandPath -Destination "$OutDir/runner.ps1"
 $originalKernel=(Resolve-Path $Kernel).Path
 $kernelHash=(Get-FileHash $originalKernel).Hash
 $kernelPath=Join-Path $OutDir 'kernel.cdx'
@@ -59,7 +63,8 @@ function Read-Live([string]$path){
     }finally{$file.Dispose()}
 }
 function Run-Ovmf([string]$cdx,[string]$run){
-    & pwsh -NoProfile -File build/cdx-to-pe.ps1 -CdxInput $cdx -Out "$run/proof.efi" -HeapPages 32768 -ExitBootServices
+    $poolArgs=@(if($OwnedProcessPool){'-OwnedProcessPool'})
+    & pwsh -NoProfile -File build/cdx-to-pe.ps1 -CdxInput $cdx -Out "$run/proof.efi" -HeapPages 32768 -ExitBootServices @poolArgs
     if($LASTEXITCODE -ne 0){throw 'PE conversion failed'}
     & pwsh -NoProfile -File build/build-img.ps1 -PeInput "$run/proof.efi" -Out "$run/boot.img"
     if($LASTEXITCODE -ne 0){throw 'Image build failed'}
@@ -90,6 +95,9 @@ function Run-Ovmf([string]$cdx,[string]$run){
 }
 foreach($arm in $modes){
     $source=$template
+    if($OwnedProcessPool){
+        $source=Replace-One $source 'initialized <- runtime-init 0' ('initialized <- runtime-init 0'+"`n"+'    print-line-uni ("\nproof-owned-pool=" & show (peek-32 126976 8 == 4 & peek-32 126976 12 >= 256 & peek-qword 126976 248 == 536870912 & peek-qword 127200 0 > 0))')
+    }
     $reason=''
     switch($arm){
         bound {$source=Replace-One $source 'gsc-present-pixels : Integer = 1024' 'gsc-present-pixels : Integer = 1000000000';$reason='bound=NO'}
@@ -198,6 +206,7 @@ foreach($arm in $modes){
             if($LASTEXITCODE -ne 0){throw "$bedName $arm execution failed"}
         }else{Run-Ovmf $cdx $run}
         $trace=[IO.File]::ReadAllText("$run/trace.log").Replace("`r",'')
+        if($OwnedProcessPool -and @([regex]::Matches($trace,'(?m)^proof-owned-pool=True$')).Count -ne 1){throw 'Guest did not confirm the owned process pool'}
         if($trace.Contains('!EXC')){throw "$bedName $arm trapped"}
         $start=$trace.IndexOf($first)
         if($start -lt 0){throw "$bedName $arm produced no verdict"}
@@ -205,8 +214,13 @@ foreach($arm in $modes){
         $shape='^'+[regex]::Escape($expected).Replace('yes','(?:yes|NO)').Replace('True','(?:True|False)')+'$'
         $valid=$body -match $shape
         $ok=$valid -and $(if($arm -eq 'positive'){[string]::Equals($body,$expected,[StringComparison]::Ordinal)}else{$body.Contains($reason) -and ($Unit -ne 'unit' -or $body.Contains('accepted=NO'))})
+        if($Unit -eq 'worker-loop' -and $arm -ne 'positive'){
+            $wanted=$expected.Replace('desk dispatch cancels render on input: yes','desk dispatch cancels render on input: NO').Replace('background observer progresses during rendering: yes','background observer progresses during rendering: NO')
+            $ok=[string]::Equals($body,$wanted,[StringComparison]::Ordinal)
+        }
         if((Get-FileHash $cdx).Hash -ne $cdxHash -or (Get-FileHash $kernelPath).Hash -ne $kernelHash -or (Get-FileHash (Join-Path $repo 'tools/codex-vm.exe')).Hash -ne $vmHash){throw 'Proof artifact changed during execution'}
         $record=[ordered]@{unit=$Unit;bed=$bedName;arm=$arm;passed=$ok;kernel=$kernelHash;vm=$vmHash;source=(Get-FileHash $src).Hash;cdx=$cdxHash;trace="$run/trace.log"}
+        $record.processPool=if($bedName -eq 'codex-vm'){'native-fixed'}elseif($OwnedProcessPool){'uefi-owned'}else{'uefi-legacy'}
         if($bedName -eq 'ovmf'){$record.image=(Get-Content "$run/image.sha256" -Raw).Trim()}
         $records.Add($record)
         $records|ConvertTo-Json -Depth 5|Set-Content "$OutDir/results.json" -Encoding utf8

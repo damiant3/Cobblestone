@@ -1,0 +1,66 @@
+Chapter: NoiseBankReference
+  cites Diffusion chapter Txt2Img
+  cites Foreword chapter Console
+
+ We say:
+
+  NrCase = record { nr-kind : Integer, nr-n : Integer, nr-seed : Integer, nr-steps : Integer }
+
+  nr-fill : (Integer -> Integer), Integer, Integer, Integer, Integer -> Boolean
+  nr-fill (draw) (out) (n) (count) (i) =
+    if i >= count then True
+    else let h = draw i
+    in if h == 0 | gpu-buf-read h 0 (n * 4) (out + i * n * 4) == False then False
+    else nr-fill draw out n count (i + 1)
+
+  nr-save : (Integer -> Integer), Integer, Integer, Text -> Integer
+  nr-save (draw) (n) (count) (name) =
+    let bytes = n * count * 4
+    in let out = alloc-bytes bytes
+    in let filled = nr-fill draw out n count 0
+    in let h = gpu-buf-alloc bytes
+    in let written = if filled & h /= 0 then gpu-buf-write h 0 bytes out else False
+    in let saved = if written then gpu-buf-save h 0 bytes name else 0 - 1
+    in let free = if h == 0 then True else gpu-buf-free h
+    in saved
+
+  nr-name : NrCase -> Text
+  nr-name (c) = "noise-" & show (c.nr-kind) & "-" & show (c.nr-n) & "-" & show (c.nr-seed) & "-" & show (c.nr-steps) & ".bin"
+
+  nr-run : NrCase -> Integer
+  nr-run (c) =
+    let sig = ti-sigmas (c.nr-kind) 2 (c.nr-steps) False
+    in let h = gpu-buf-alloc (c.nr-n * 4)
+    in let drawn = [1]
+    in let saved = if c.nr-kind == 5 then nr-save (\k -> ti-noise h (c.nr-seed) (c.nr-n) drawn) (c.nr-n) (c.nr-steps - 1) (nr-name c)
+      else let tree = brownian-tree (c.nr-seed) (c.nr-n) sig
+      in let qs = brownian-queries (c.nr-kind == 1) sig 0 []
+      in nr-save (\k -> ti-bnoise tree h qs (c.nr-n) k) (c.nr-n) (list-length qs / 2) (nr-name c)
+    in let free = gpu-buf-free h
+    in saved
+
+  nr-case : NrCase -> [Console] Nothing
+  nr-case (c) =
+    let mark = __heap-save
+    in let saved = nr-run c
+    in act
+      print-line-uni (nr-name c & ": " & show saved)
+      let restored = __heap-restore mark in print-line-uni "arena restored"
+    end
+
+  nr-kinds : List Integer, Integer, Integer, Integer, Integer -> [Console] Nothing
+  nr-kinds (kinds) (i) (n) (seed) (steps) =
+    if i >= list-length kinds then print-line-uni "group complete"
+    else act
+      nr-case (NrCase { nr-kind = list-at kinds i, nr-n = n, nr-seed = seed, nr-steps = steps })
+      nr-kinds kinds (i + 1) n seed steps
+    end
+
+  opening : [Console] Nothing
+  opening = act
+    nr-kinds [1, 3, 4, 5, 6] 0 256 20260929 6
+    nr-kinds [1, 3, 4, 5, 6] 0 65536 7201 6
+    nr-kinds [1, 3, 4, 5, 6] 0 64512 0 6
+    nr-kinds [1, 3, 4, 5, 6] 0 256 1 50
+    nr-kinds [1] 0 65536 7201 50
+  end

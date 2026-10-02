@@ -1,0 +1,78 @@
+Chapter: NvGspWpr
+
+ GspFwWprMeta (256 bytes, r570) for a GPU booted without FMC (Ada), laid
+ out as tinygrad lays it out (tinygrad/runtime/support/nv/ip.py,
+ init_wpr_meta, at c3aec477; the structure in runtime/autogen/nv.py).
+
+ Fields set, little-endian 64-bit at these byte offsets: magic 0
+ (GSP_FW_WPR_META_MAGIC 0xdc3aae21371a60b3), revision 8 (1),
+ sysmemAddrOfRadix3Elf 16, sizeOfRadix3Elf 24, sysmemAddrOfBootloader 32,
+ sizeOfBootloader 40, bootloaderCodeOffset 48, bootloaderDataOffset 56,
+ bootloaderManifestOffset 64, sysmemAddrOfSignature 72, sizeOfSignature 80
+ (0x1000), gspFwRsvdStart 88, nonWprHeapOffset 96, nonWprHeapSize 104,
+ gspFwWprStart 112, gspFwHeapOffset 120, gspFwHeapSize 128, gspFwOffset 136,
+ bootBinOffset 144, frtsOffset 152, frtsSize 160, gspFwWprEnd 168, fbSize
+ 176, vgaWorkspaceOffset 184, vgaWorkspaceSize 192; every other byte zero.
+
+ The framebuffer layout, from the top of video memory down: a 1 MB VGA
+ workspace ending at the top, whose offset is also gspFwWprEnd; 1 MB of FRTS
+ below it; the booter image below that; the GSP image below the booter,
+ rounded down to 64 KB; a 0x8100000-byte GSP heap below the image, rounded
+ down to 1 MB; the WPR start 4 KB below the heap, rounded down to 1 MB; and
+ a 1 MB non-WPR heap below the WPR start, rounded down to 1 MB, which is also
+ gspFwRsvdStart.
+
+Section: Layout
+
+  GspWprInputs = record {
+   vram-size : Integer,
+   boot-size : Integer,
+   radix3-size : Integer,
+   boot-addr : Integer,
+   radix3-addr : Integer,
+   signature-addr : Integer,
+   code-offset : Integer,
+   data-offset : Integer,
+   manifest-offset : Integer
+  }
+
+  gsp-down : Integer, Integer -> Integer
+  gsp-down (v) (m) = (v / m) * m
+
+  gsp-u64 : Integer -> List Integer
+  gsp-u64 (v) = gsp-u64-from v 0 []
+
+  gsp-u64-from : Integer, Integer, List Integer -> List Integer
+  gsp-u64-from (v) (i) (acc) = if i >= 8 then acc else gsp-u64-from v (i + 1) (acc & [bit-and (bit-shru v (8 * i)) 255])
+
+  gsp-zero-bytes : Integer, List Integer -> List Integer
+  gsp-zero-bytes (n) (acc) = if n <= 0 then acc else gsp-zero-bytes (n - 1) (acc & [0])
+
+  gsp-u64s : List Integer, Integer, List Integer -> List Integer
+  gsp-u64s (vs) (i) (acc) = if i >= list-length vs then acc else gsp-u64s vs (i + 1) (acc & gsp-u64 (list-at vs i))
+
+  nv-gsp-wpr-meta : GspWprInputs -> List Integer
+  nv-gsp-wpr-meta (w) =
+    let vga-off = w.vram-size - #100000
+    in let frts-off = vga-off - #100000
+    in let boot-off = frts-off - w.boot-size
+    in let gsp-off = gsp-down (boot-off - w.radix3-size) #10000
+    in let heap-off = gsp-down (gsp-off - #8100000) #100000
+    in let wpr-start = gsp-down (heap-off - #1000) #100000
+    in let non-wpr-off = gsp-down (wpr-start - #100000) #100000
+    in if boot-off - w.radix3-size < 0 then []
+    else if gsp-off - #8100000 < 0 then []
+    else if heap-off - #1000 < 0 then []
+    else if wpr-start - #100000 < 0 then []
+    else if w.boot-size < 0 then []
+    else if w.radix3-size < 0 then []
+    else gsp-u64s [
+     #DC3AAE21371A60B3, 1,
+     w.radix3-addr, w.radix3-size, w.boot-addr, w.boot-size,
+     w.code-offset, w.data-offset, w.manifest-offset,
+     w.signature-addr, #1000,
+     non-wpr-off, non-wpr-off, #100000,
+     wpr-start, heap-off, #8100000, gsp-off,
+     boot-off, frts-off, #100000, vga-off,
+     w.vram-size, vga-off, #100000
+    ] 0 [] & gsp-zero-bytes 56 []

@@ -1,0 +1,63 @@
+Chapter: NvGspAlloc
+
+ The GSP_RM_ALLOC RPC payload (NV_VGPU_MSG_FUNCTION_GSP_RM_ALLOC, 103) as
+ tinygrad builds it (tinygrad/runtime/support/nv/ip.py, rpc_rm_alloc, at
+ c3aec477; structures in runtime/autogen/nv.py). rpc_gsp_rm_alloc_v03_00
+ (32 bytes, little-endian): hClient 0, hParent 4, hObject 8, hClass 12,
+ status 16 = 0, paramsSize 20, flags 24 = 0, reserved 28..31 zero; the
+ class's parameter structure follows, paramsSize bytes, none when the class
+ takes none.
+
+Section: Payload
+
+  nv-gsp-fn-rm-alloc : Integer
+  nv-gsp-fn-rm-alloc = 103
+
+  alloc-u32 : Integer -> List Integer
+  alloc-u32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  nv-gsp-rm-alloc : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  nv-gsp-rm-alloc (client) (parent) (object) (hclass) (params) =
+    alloc-u32 client & alloc-u32 parent & alloc-u32 object & alloc-u32 hclass & alloc-u32 0 & alloc-u32 (list-length params) & alloc-u32 0 & alloc-u32 0 & params
+
+Section: Golden-context allocation parameters
+
+ r570 init_golden_image uses zeroed NV0000 (120 bytes), NV2080 (4 bytes)
+ and NV_VASPACE (48 bytes). NV0080 is 56 bytes with hClientShare at byte 4;
+ all other fields and alignment padding remain zero.
+
+  alloc-zeroes : Integer, List Integer -> List Integer
+  alloc-zeroes (n) (acc) = if n <= 0 then acc else alloc-zeroes (n - 1) (list-push acc 0)
+
+  nv-gsp-root-params : List Integer
+  nv-gsp-root-params = alloc-zeroes 120 []
+
+  nv-gsp-device-params : Integer -> List Integer
+  nv-gsp-device-params (client-share) = alloc-u32 0 & alloc-u32 client-share & alloc-zeroes 48 []
+
+  nv-gsp-subdevice-params : List Integer
+  nv-gsp-subdevice-params = alloc-u32 0
+
+  nv-gsp-vaspace-params : List Integer
+  nv-gsp-vaspace-params = alloc-zeroes 48 []
+
+ r570's golden-context NV_CHANNEL_ALLOC_PARAMS is 368 bytes. Instance and
+ RAMFC share the allocated page. USERD is the FIFO allocation's physical
+ address plus 256. Addresses are supplied by the driver's allocator.
+ The user-client error-notifier branch of rpc_rm_alloc is outside this builder.
+
+  alloc-u64 : Integer -> List Integer
+  alloc-u64 (v) = alloc-u32 v & alloc-u32 (bit-shru v 32)
+
+  alloc-memory : Integer, Integer -> List Integer
+  alloc-memory (base) (size) = alloc-u64 base & alloc-u64 size & alloc-u32 2 & alloc-u32 0
+
+  nv-gsp-golden-channel-params : Integer, Integer, Integer, Integer, Integer -> List Integer
+  nv-gsp-golden-channel-params (fifo-va) (userd-pa) (instance-pa) (method-pa) (vaspace) =
+    alloc-zeroes 8 [] & alloc-u64 fifo-va & alloc-u32 32 & alloc-u32 #200320 &
+    alloc-u32 0 & alloc-u32 vaspace & alloc-zeroes 32 [] &
+    alloc-u64 256 & alloc-zeroes 56 [] &
+    alloc-u32 1 & alloc-u32 3 & alloc-zeroes 8 [] &
+    alloc-memory instance-pa #1000 & alloc-memory userd-pa #20 &
+    alloc-memory instance-pa #200 & alloc-memory method-pa #5000 &
+    alloc-u32 0 & alloc-u32 #1A & alloc-zeroes 120 []

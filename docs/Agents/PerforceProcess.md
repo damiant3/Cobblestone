@@ -341,6 +341,7 @@ esolve -at takes the delete over your add. | Copy up a restored file BEFORE any 
 | P-EOL | A five-line change reports as the entire file replaced, because an edit tool wrote the result back as bare LF over a CRLF file. It turns the merge-down of any contended document into a conflict and hides your real change from review. | If `p4 diff` shows far more lines than you touched, count the endings and repair at the BYTE level (section 4.2). Never through `Get-Content`/`Set-Content`, which also rewrites the encoding of a `unicode`-typed file. The same shape arrives from a whole-file rewrite, which the fleet's models reach for over an in-place edit on small changes; edit surgically, and a five-line change then diffs as five lines. |
 | P-SELECTSTRING | `Select-String` misreads p4 `unicode`-typed files, which is most `.codex` by typemap. | Use the Grep tool (ripgrep) for content searches over depot files. |
 | P-CRTRIGGER | A stray CR in a `.codex` (a `\r\r\n` line, or a CR at the end of a `Chapter:` header) survives every line-end translation as CONTENT, puts the CR in the chapter name (CDX3007, PR 133), and makes git publish the file CRLF throughout on the mirror. | The server refuses it: the `check-source-cr` change-content trigger fails the submit and names the file and line (4.8). Strip the byte; do not touch the terminators. |
+| P-CATTRIGGER | A copy-up adds a `.ps1` (or another discovered tool) without its `build/tool-catalog.json` entry, and `tool-catalog.ps1` goes red at main for every lane that merges next (twice on 2026-09-30/10-01). | The server refuses it: the `check-tool-catalog` change-content trigger on `//Codex/main/...` names each unclassified added tool (4.9). Put the classified entry in the same copy-up. |
 | P-DAMIAN | `p4 opened -a` shows a file held by `Damian@BigWhite_Codex_main`, often many revisions behind head. | That is his editor checking a file out on open. It is not a pending change, it will not clobber yours, it needs no coordination, and it is not a hazard to report (Damian, 2026-07-21). Any OTHER client holding a file is a real agent and a real merge concern. |
 | P-EXPECTED | A test passes every way you check it by hand and arrives RED in the battery. The `.expected` is one byte short: `Set-Content -NoNewline` leaves the file on `...yes` where the guest emits `...yes\n`. The harness strips CR from expected and compares exactly, so a missing trailing newline is a guaranteed fail. | **Every `.expected` in the tree ends with a trailing NEWLINE.** Write the newline. Do NOT copy the CR: every dev client is `LineEnd: local`, so the CRLF you observe is produced by YOUR sync and is a client property, not a depot fact, and the runner strips CR from the expected side anyway. The trailing newline is the half the harness actually tests. Verify with the RUNNER's own rule (section 4.6), never a `.Trim()` on both sides -- that normalises away exactly the difference the harness looks for (L-SIDECAR). A `text`-typed sidecar can also gain CR bytes on sync; `p4 retype -t binary <file>` if it keeps happening. |
 | P-SEEDSTALE (L) | A green gate does NOT mean the seed matches the source. `build.ps1` compares SUT against stage1 -- the compiler built from current source being a fixed point of itself. It never compares the seed against the SUT and cannot usefully, so `hard fixed point in one pass` is exactly what a stale seed looks like. | Ask not "does this change what the compiler emits" but **"does this change the compiler BINARY"**. Renames, added or removed definitions and chapter moves all qualify: a pure rename once shortened the mangled names baked into the compiler and moved the seed 672 bytes. Verify against the DEPOT every session (section 4.3). |
@@ -802,6 +803,37 @@ line 1, and the same file with plain CRLF terminators submits. `p4 triggers
 -o` shows the entry; if it is absent
 the server has been rebuilt and the trigger must be reinstalled from this
 section.
+
+### 4.9 The server refuses an unclassified new tool on main (P-CATTRIGGER)
+
+One `change-content` trigger on `//Codex/main/...` (Damian, 2026-10-01). A
+submit that ADDS a file (add, branch, move/add, import) which
+`build/tool-catalog.json`'s discovery rules call a tool must carry a classified
+entry for it: a disposition other than `legacy-pending`, and owner, callers,
+inputs, outputs, capabilities and replacement filled. The catalog is read as
+the change leaves it, so the entry travels in the same copy-up as the tool. A
+refused submit reads:
+
+```
+check-tool-catalog: change N adds a tool that build/tool-catalog.json does not classify.
+  Uncataloged tool: //Codex/main/<path>
+```
+
+Add the entry in your stream, run `build/checks/tool-catalog.ps1 -Repo <ws>`,
+and copy both up together. The trigger grades additions only; the full check
+(duplicates, missing paths, edits) stays the lane's.
+
+The source is `build/check-tool-catalog-trigger.ps1`; the server runs a COPY at
+`D:\PerforceRoot\triggers\check-tool-catalog-trigger.ps1`. After editing the
+source, re-copy it there. The table entry:
+
+```
+check-tool-catalog change-content //Codex/main/... "C:\PROGRA~1\POWERS~1\7\pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\PerforceRoot\triggers\check-tool-catalog-trigger.ps1 %changelist% %serverport%"
+```
+
+Calibrated both ways on `//Codex/root/...` before it moved to main: a change
+adding an uncataloged `.ps1` is refused naming it, and the change adding this
+trigger with its own entry submits.
 
 ---
 

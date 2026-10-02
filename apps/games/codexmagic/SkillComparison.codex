@@ -1,0 +1,72 @@
+Chapter: SkillComparison
+  cites CodexMagic chapter Simulate
+  cites CodexMagic chapter Supervisor
+  cites CodexMagic chapter CardPool
+
+ We say:
+
+  SkillTally = record { wins : Integer, losses : Integer, draws : Integer, stopped : Integer, refused : Integer, first-problem : Integer }
+  SkillCell = record { skill : Integer, config : Integer, seat : Integer, tally : SkillTally }
+
+  skill-tally-empty : SkillTally
+  skill-tally-empty = SkillTally { wins = 0, losses = 0, draws = 0, stopped = 0, refused = 0, first-problem = 0 - 1 }
+
+  skill-outcome : Integer, Integer, Integer, Integer -> Integer
+  skill-outcome (skill) (config) (seat) (seed) =
+    let mark = __heap-save
+    in let ga = general-warlord
+    in let gb = general-dawn-commander
+    in let pool = full-card-pool
+    in let outcome = when gen-starter-deck ga pool (seed + 1)
+      is StarterRefused (why) -> 4
+      is StarterDeck (da) -> (when gen-starter-deck gb pool (seed + 2)
+        is StarterRefused (why) -> 4
+        is StarterDeck (db) ->
+          let gs = game-new pool ga gb
+          in let loaded = load-deck-for-sim (load-deck-for-sim gs 0 (da.cards) 0) 1 (db.cards) 0
+          in let dealt = draw-n-sim (draw-n-sim loaded 0 7) 1 7
+          in let pa = posture-at-skill posture-unattended (if seat == 0 then skill else 2)
+          in let pb = posture-at-skill posture-unattended (if seat == 1 then skill else 2)
+          in let rules = if config == 0 then rules-baseline else rules-prismatic-proposed
+          in let m = run-sim-game-orders dealt rules ga gb seed pa pb
+          in if m.stop-reason /= "" then 3 else if m.winner < 0 then 2 else if m.winner == seat then 0 else 1)
+    in let restored = __heap-restore mark
+    in outcome
+
+  skill-corpus : Integer, Integer, Integer, Integer, SkillTally -> SkillTally
+  skill-corpus (skill) (config) (seat) (i) (t) =
+    if i >= 100 then t
+    else let seed = 12345 + (if config == 0 then 0 else 20000) + i * 97
+    in let outcome = skill-outcome skill config seat seed
+    in let next = SkillTally { wins = t.wins + (if outcome == 0 then 1 else 0), losses = t.losses + (if outcome == 1 then 1 else 0), draws = t.draws + (if outcome == 2 then 1 else 0), stopped = t.stopped + (if outcome == 3 then 1 else 0), refused = t.refused + (if outcome == 4 then 1 else 0), first-problem = (if t.first-problem < 0 & outcome >= 3 then seed else t.first-problem) }
+    in skill-corpus skill config seat (i + 1) next
+
+  skill-cell : Integer -> SkillCell
+  skill-cell (i) =
+    let skill = i / 4
+    in let config = int-mod (i / 2) 2
+    in let seat = int-mod i 2
+    in SkillCell { skill = skill, config = config, seat = seat, tally = skill-corpus skill config seat 0 skill-tally-empty }
+
+  skill-total : List SkillCell, Integer, Integer, SkillTally -> SkillTally
+  skill-total (cells) (skill) (i) (t) =
+    if i >= list-length cells then t
+    else let c = list-at cells i
+    in if c.skill /= skill then skill-total cells skill (i + 1) t
+    else let a = c.tally
+    in let next = SkillTally { wins = t.wins + a.wins, losses = t.losses + a.losses, draws = t.draws + a.draws, stopped = t.stopped + a.stopped, refused = t.refused + a.refused, first-problem = (if t.first-problem < 0 then a.first-problem else t.first-problem) }
+    in skill-total cells skill (i + 1) next
+
+  skill-row : Integer, Text, Integer, Integer, SkillTally -> Text
+  skill-row (skill) (config) (seat) (attempted) (t) =
+    let completed = t.wins + t.losses + t.draws
+    in skill-name skill & "," & config & "," & show seat & "," & show attempted & "," & show completed & "," & show (t.wins) & "," & show (t.losses) & "," & show (t.draws) & "," & show (t.stopped) & "," & show (t.refused) & "," & show (if completed == 0 then 0 - 1 else t.wins * 10000 / completed) & "," & show (t.first-problem)
+
+  opening : [Console] Nothing =
+    let cells = for i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] -> skill-cell i
+    in let rows = for c in cells -> skill-row (c.skill) (if c.config == 0 then "baseline" else "proposed") (c.seat) 100 (c.tally) & "\n"
+    in let totals = for skill in [0, 1, 2, 3] -> skill-row skill "all" (0 - 1) 400 (skill-total cells skill 0 skill-tally-empty) & "\n"
+    in act
+      print-line-uni "skill,rule,subject_seat,attempted,completed,wins,losses,draws,stopped,refused,win_basis_points,first_problem_seed"
+      print-line-uni (text-concat-list rows & text-concat-list totals)
+    end

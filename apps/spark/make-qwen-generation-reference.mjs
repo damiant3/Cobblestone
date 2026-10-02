@@ -1,0 +1,14 @@
+import {readFileSync,writeFileSync} from 'node:fs';
+import {dirname,join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+const [url]=process.argv.slice(2);
+if(!url)throw new Error('Usage: node apps/spark/make-qwen-generation-reference.mjs http://127.0.0.1:<llama-server port>');
+const fixture=join(dirname(fileURLToPath(import.meta.url)),'tests/qwen3-generation-reference.json');
+const prompt=JSON.parse(readFileSync(fixture,'utf8')).prompt;
+const props=await (await fetch(url+'/props')).json();
+const tok=await (await fetch(url+'/tokenize',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content:prompt,add_special:true,parse_special:true})})).json();
+const gen=await (await fetch(url+'/completion',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({prompt:tok.tokens,n_predict:32,temperature:0,top_k:1,seed:42,cache_prompt:false,n_probs:2,return_tokens:true})})).json();
+const steps=gen.completion_probabilities.map(s=>({id:s.id,top:s.top_logprobs.map(t=>({id:t.id,logprob:t.logprob}))}));
+const out={modelSha256:'a3de86cd1c132c822487ededd47a324c50491393e6565cd14bafa40d0b8e686f',oracle:'llama.cpp '+props.build_info+' llama-server CPU (-ngl 0, f32 KV cache, no flash attention), temperature 0, top_k 1',prompt,promptTokens:tok.tokens,tokens:gen.tokens,steps};
+writeFileSync(fixture,JSON.stringify(out,null,1).replace(/\n/g,'\r\n')+'\r\n');
+console.log(tok.tokens.length,'prompt tokens;',gen.tokens.length,'generated:',JSON.stringify(gen.content),'margins',steps.map(s=>s.top.length>1?(s.top[0].logprob-s.top[1].logprob).toFixed(3):'-').join(' '));

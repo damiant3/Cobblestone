@@ -1,0 +1,119 @@
+Chapter: GopSettingsPanelArm
+  cites Works chapter GopSettingsPanel
+  cites Works chapter GopSettings
+  cites UI chapter Widget
+  cites UI chapter Theme
+  cites UI chapter Layout
+  cites UI chapter Event
+  cites Foreword chapter Console
+
+  gpa-yes : Boolean -> Text
+  gpa-yes (b) = if b then "yes" else "NO"
+
+  gpa-store : SettingsStore
+  gpa-store = gst-store [gst-int-key 1 "theme" 0 0 5, gst-int-key 2 "adornments" 15 0 15, gst-bool-key 3 "sound" False, gst-int-key 4 "edge" 0 0 3, gst-int-key 5 "pins" 0 0 524287, gst-text-key 6 "wallpaper" "" 12, gst-bool-key 7 "shell high contrast" False]
+
+  gpa-value : SettingsPanelResult, Integer, Integer -> Boolean
+  gpa-value (r) (id) (value) = when r
+    is SettingsCandidate (s) -> gst-get s id (0 - 99) == value
+    is otherwise -> False
+
+  gpa-page : SettingsPanelResult, Integer -> Boolean
+  gpa-page (r) (page) = when r
+    is SettingsPage (p) -> p == page
+    is otherwise -> False
+
+  gpa-unchanged : SettingsPanelResult -> Boolean
+  gpa-unchanged (r) = when r
+    is SettingsUnchanged -> True
+    is otherwise -> False
+
+  gpa-refused : SettingsPanelResult -> Boolean
+  gpa-refused (r) = when r
+    is SettingsPanelRefused (why) -> text-length why > 0
+    is otherwise -> False
+
+  gpa-defaults : SettingsPanelResult -> Boolean
+  gpa-defaults (r) = when r
+    is SettingsCandidate (s) -> gst-get s 1 99 == 0 & gst-get s 2 99 == 15 & gst-get s 3 99 == 0 & gst-get s 4 99 == 0 & gst-get s 5 99 == 0 & gst-get-text s 6 "wrong" == "" & gst-get s 7 99 == 0
+    is otherwise -> False
+
+  gpa-find : WidgetNode, Text -> Maybe WidgetNode
+  gpa-find (w) (id) = if w.wn-id == id then Just w else gpa-children (w.wn-children) id 0
+
+  gpa-children : List WidgetNode, Text, Integer -> Maybe WidgetNode
+  gpa-children (ws) (id) (i) = if i >= list-length ws then None else when gpa-find (list-at ws i) id
+    is Just (w) -> Just w
+    is None -> gpa-children ws id (i + 1)
+
+  gpa-disabled : WidgetNode, Text, Text -> Boolean
+  gpa-disabled (tree) (id) (label) = when gpa-find tree id
+    is Just (w) -> flag-has (widget-flags w) flag-disabled & (when w.wn-kind is WkLabel (t) -> t == label is otherwise -> False)
+    is None -> False
+
+  gpa-button : WidgetNode, Text, Text -> Boolean
+  gpa-button (tree) (id) (label) = when gpa-find tree id
+    is Just (w) -> flag-has (widget-flags w) flag-disabled == False & (when w.wn-kind is WkButton (t) -> t == label is otherwise -> False)
+    is None -> False
+
+  gpa-reachable : WidgetNode, Text -> Boolean
+  gpa-reachable (tree) (id) = when gpa-find tree id
+    is None -> False
+    is Just (w) ->
+      let r = w.wn-bounds
+      in r.lr-w > 0 & r.lr-h > 0 & r.lr-y >= 12 & r.lr-y + r.lr-h <= 412 & (when ev-hit-widget tree (r.lr-x + r.lr-w / 2) (r.lr-y + r.lr-h / 2)
+        is Just (hit) -> hit.wn-id == id
+        is None -> False)
+
+  opening : [Console] Nothing =
+    let s = gpa-store
+    in let names = ["Clock", "", "Files", "Console", "Calculator", "Calendar"]
+    in let next = gsp-act 1 1 s 6 names
+    in let prev = gsp-act 1 8 s 6 names
+    in let border = gsp-act 1 2 s 6 names
+    in let grad = gsp-act 1 3 s 6 names
+    in let shadow = gsp-act 1 4 s 6 names
+    in let round = gsp-act 1 5 s 6 names
+    in let sound = gsp-act 2 6 s 6 names
+    in let edge = gsp-act 4 9 s 6 names
+    in let pin = gsp-act 10 22 s 6 names
+    in let controls = gpa-value next 1 1 & gpa-value prev 1 5 & gpa-value border 2 14 & gpa-value grad 2 13 & gpa-value shadow 2 11 & gpa-value round 2 7 & gpa-value sound 3 1 & gpa-value edge 4 3 & gpa-value pin 5 4
+    in let isolated = gst-get s 1 99 == 0 & gst-get s 2 99 == 15 & gst-get s 3 99 == 0 & gst-get s 4 99 == 0 & gst-get s 5 99 == 0
+    in let bad = gsp-edit s 1 (SettingInteger 6)
+    in let wrong = gsp-edit s 3 (SettingInteger 1)
+    in let refused = gpa-refused bad & gpa-refused wrong & gst-get s 1 99 == 0 & gst-get s 3 99 == 0
+    in let changed = gst-copy s
+    in let set = gst-set changed 1 4
+    in let set-adorn = gst-set changed 2 0
+    in let set-sound = gst-set-bool changed 3 True
+    in let set-edge = gst-set changed 4 3
+    in let set-pins = gst-set changed 5 524287
+    in let set-wallpaper = gst-set-text changed 6 "PHOTO.BMP"
+    in let set-contrast = gst-set-bool changed 7 True
+    in let reset = gsp-act 20 121 changed 6 names
+    in let cancel = gsp-act 20 (gsp-code "settings-cancel") changed 6 names
+    in let explicit = gpa-page (gsp-act 0 120 changed 6 names) 20 & gst-get changed 1 99 == 4 & gst-get changed 2 99 == 0 & gst-get changed 3 99 == 1 & gst-get changed 4 99 == 3 & gst-get changed 5 99 == 524287 & gpa-page cancel 0 & gpa-unchanged (gsp-act 0 121 changed 6 names) & gpa-defaults reset
+    in let guard = gpa-unchanged (gsp-act 0 1 s 6 names) & gpa-unchanged (gsp-act 10 21 s 6 names) & gpa-unchanged (gsp-act 10 25 s 6 names) & gpa-unchanged (gsp-act 13 38 s 6 names)
+    in let pages = gpa-page (gsp-act 0 (gsp-code "settings-appearance") s 6 names) 1 & gpa-page (gsp-act 0 (gsp-code "settings-sound") s 6 names) 2 & gpa-page (gsp-act 0 (gsp-code "settings-accessibility") s 6 names) 3 & gpa-page (gsp-act 0 (gsp-code "settings-system") s 6 names) 4 & gpa-page (gsp-act 10 111 s 6 names) 13 & gpa-page (gsp-act 13 112 s 6 names) 10 & gpa-refused (gsp-act 1 1 s 0 names)
+    in let home = gsp-tree 0 s "seahawk" "bottom" names ""
+    in let categories = gpa-button home "settings-appearance" "Appearance" & gpa-button home "settings-sound" "Sound" & gpa-button home "settings-accessibility" "Accessibility" & gpa-button home "settings-system" "System" & gpa-disabled home "settings-accounts" "Accounts and Parental Controls"
+    in let appearance = gsp-tree 1 s "seahawk" "bottom" names ""
+    in let access = gsp-tree 3 s "seahawk" "bottom" names ""
+    in let disabled = gpa-disabled home "settings-accounts-reason" "awaiting Stage 7 ruling" & gpa-disabled appearance "settings-scale" "Text scale: awaiting Stage 6" & gpa-disabled access "settings-accessibility-reason" "Text scaling: awaiting Stage 6" & gsp-code "settings-accounts" == 0
+    in let wallpaper = gpa-button appearance "settings-wallpaper" "Wallpaper (W)..." & gpa-page (gsp-act 1 (gsp-code "settings-wallpaper") s 6 names) 5
+    in let widgets = gpa-button appearance "style-border" "[x]" & gpa-button (gsp-tree 2 s "seahawk" "bottom" names "") "style-sound" "[ ]" & gpa-button (gsp-tree 10 s "seahawk" "bottom" names "") "settings-pin-2" "[ ]" & gsp-code "settings-pin-18" == 38
+    in let laid = widget-layout appearance theme-terminal (layout-rect 8 12 480 400)
+    in let hit = gpa-reachable laid "style-border" & gpa-reachable laid "style-grad" & gpa-reachable laid "style-shadow" & gpa-reachable laid "style-round" & gpa-reachable laid "style-scheme" & gpa-reachable laid "settings-theme-prev" & gpa-reachable laid "settings-home"
+    in act
+      print-line-uni ("live preference candidates: " & gpa-yes (controls & gpa-value (gsp-act 3 (gsp-code "settings-contrast") s 6 names) 7 1 & gpa-button access "settings-contrast" "[ ]"))
+      print-line-uni ("candidate edits preserve active settings: " & gpa-yes isolated)
+      print-line-uni ("range and type failures preserve values: " & gpa-yes refused)
+      print-line-uni ("reset requires explicit confirmation: " & gpa-yes explicit)
+      print-line-uni ("inactive and unavailable controls do nothing: " & gpa-yes guard)
+      print-line-uni ("category and pin navigation: " & gpa-yes pages)
+      print-line-uni ("all categories listed with accounts disabled: " & gpa-yes categories)
+      print-line-uni ("disabled rows explain missing stages: " & gpa-yes disabled)
+      print-line-uni ("wallpaper navigation enabled: " & gpa-yes wallpaper)
+      print-line-uni ("SettingsPanel emits native button controls: " & gpa-yes widgets)
+      print-line-uni ("placed Appearance controls receive pointer hits: " & gpa-yes hit)
+    end

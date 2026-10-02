@@ -67,20 +67,47 @@ Section: Decode Session
 
   crf-decode : List Integer -> CrfDecodeResult
   crf-decode (bs) =
-    if list-length bs < 4 then CrfDecodeResult { session = session-new "" "", success = False, error = "too short" }
-    else if list-at bs 0 /= 67 then CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
-    else if list-at bs 1 /= 82 then CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
-    else if list-at bs 2 /= 70 then CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
-    else if list-at bs 3 /= 49 then CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
+    if list-length bs < 4 then
+      CrfDecodeResult { session = session-new "" "", success = False, error = "too short" }
+    else if list-at bs 0 /= 67 then
+      CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
+    else if list-at bs 1 /= 82 then
+      CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
+    else if list-at bs 2 /= 70 then
+      CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
+    else if list-at bs 3 /= 49 then
+      CrfDecodeResult { session = session-new "" "", success = False, error = "bad magic" }
     else let pr = frame-decode-text bs 4
     in let cr = frame-decode-text bs (pr.next-offset)
     in let event-count = frame-read-le32 bs (cr.next-offset)
     in let events-result = crf-decode-events bs (cr.next-offset + 4) event-count 0 []
-    in let session = ReplaySession { program-hash = pr.value, context-hash = cr.value, events = events-result.events, event-count = __narrow (list-length (events-result.events)), cursor = 0 }
-    in if pr.valid == False then CrfDecodeResult { session = session-new "" "", success = False, error = "truncated program hash" }
-    else if cr.valid == False then CrfDecodeResult { session = session-new "" "", success = False, error = "truncated context hash" }
-    else if crf-has bs (cr.next-offset) 4 == False then CrfDecodeResult { session = session-new "" "", success = False, error = "truncated event count" }
-    else if events-result.valid == False then CrfDecodeResult { session = session, success = False, error = "truncated events" }
+    in let session = ReplaySession {
+      program-hash = pr.value,
+      context-hash = cr.value,
+      events = events-result.events,
+      event-count = __narrow (list-length (events-result.events)),
+      cursor = 0
+    }
+    in if pr.valid == False then
+      CrfDecodeResult {
+        session = session-new "" "",
+        success = False,
+        error = "truncated program hash"
+      }
+    else if cr.valid == False then
+      CrfDecodeResult {
+        session = session-new "" "",
+        success = False,
+        error = "truncated context hash"
+      }
+    else if crf-has bs (cr.next-offset) 4 == False then
+      CrfDecodeResult {
+        session = session-new "" "",
+        success = False,
+        error = "truncated event count"
+      }
+    else if events-result.valid == False then
+      CrfDecodeResult { session = session, success = False, error = "truncated events" }
     else CrfDecodeResult {
       session = session,
       success = True,
@@ -119,7 +146,12 @@ Section: Decode Session
 
   crf-decode-event : List Integer, Integer -> EventDecodeResult
   crf-decode-event (bs) (off) =
-    if crf-has bs off 1 == False then EventDecodeResult { event = ExitEvent 0 0, next-offset = __narrow (frame-next-offset bs off), valid = False }
+    if crf-has bs off 1 == False then
+      EventDecodeResult {
+        event = ExitEvent 0 0,
+        next-offset = __narrow (frame-next-offset bs off),
+        valid = False
+      }
     else let tag = list-at bs off
     in if tag == crf-tag-input then decode-input-event bs (off + 1)
     else if tag == crf-tag-time then decode-time-event bs (off + 1)
@@ -133,14 +165,22 @@ Section: Decode Session
     in let cap = frame-read-le32 bs (off + 4)
     in let tr = frame-decode-text bs (off + 8)
     in let br = frame-decode-bytes bs (tr.next-offset)
-    in EventDecodeResult { event = InputEvent agent cap (tr.value) (br.value), next-offset = br.next-offset, valid = crf-has bs off 8 & tr.valid & br.valid }
+    in EventDecodeResult {
+      event = InputEvent agent cap (tr.value) (br.value),
+      next-offset = br.next-offset,
+      valid = crf-has bs off 8 & tr.valid & br.valid
+    }
 
   decode-time-event : List Integer, Integer -> EventDecodeResult
   decode-time-event (bs) (off) =
     let agent = frame-read-le32 bs off
     in let cap = frame-read-le32 bs (off + 4)
     in let logical-time = frame-read-le64 bs (off + 8)
-    in EventDecodeResult { event = TimeEvent agent cap logical-time, next-offset = __narrow (frame-next-offset bs (off + 16)), valid = crf-has bs off 16 }
+    in EventDecodeResult {
+      event = TimeEvent agent cap logical-time,
+      next-offset = __narrow (frame-next-offset bs (off + 16)),
+      valid = crf-has bs off 16
+    }
 
   decode-spawn-event : List Integer, Integer -> EventDecodeResult
   decode-spawn-event (bs) (off) =
@@ -148,20 +188,32 @@ Section: Decode Session
     in let child = frame-read-le32 bs (off + 4)
     in let entry = frame-read-le32 bs (off + 8)
     in let caps = frame-read-le32 bs (off + 12)
-    in EventDecodeResult { event = SpawnEvent parent child entry caps, next-offset = __narrow (frame-next-offset bs (off + 16)), valid = crf-has bs off 16 }
+    in EventDecodeResult {
+      event = SpawnEvent parent child entry caps,
+      next-offset = __narrow (frame-next-offset bs (off + 16)),
+      valid = crf-has bs off 16
+    }
 
   decode-schedule-event : List Integer, Integer -> EventDecodeResult
   decode-schedule-event (bs) (off) =
     let from = frame-read-le32 bs off
     in let to = frame-read-le32 bs (off + 4)
     in let reason = decode-reason (frame-byte-at bs (off + 8))
-    in EventDecodeResult { event = ScheduleEvent from to reason, next-offset = __narrow (frame-next-offset bs (off + 9)), valid = crf-has bs off 9 }
+    in EventDecodeResult {
+      event = ScheduleEvent from to reason,
+      next-offset = __narrow (frame-next-offset bs (off + 9)),
+      valid = crf-has bs off 9
+    }
 
   decode-exit-event : List Integer, Integer -> EventDecodeResult
   decode-exit-event (bs) (off) =
     let agent = frame-read-le32 bs off
     in let code = frame-read-le32 bs (off + 4)
-    in EventDecodeResult { event = ExitEvent agent code, next-offset = __narrow (frame-next-offset bs (off + 8)), valid = crf-has bs off 8 }
+    in EventDecodeResult {
+      event = ExitEvent agent code,
+      next-offset = __narrow (frame-next-offset bs (off + 8)),
+      valid = crf-has bs off 8
+    }
 
   decode-reason : Integer -> ScheduleReason
   decode-reason (b) =
